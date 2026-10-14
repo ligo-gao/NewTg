@@ -1,6 +1,12 @@
-// Package contract 是 NewTG 中继核心的**冻结接口契约**的 Go 表达。
+// Package contract 是 NewTG **中继 + 计费**两侧共用的**冻结接口契约**的 Go 表达。
 //
-// 本文件由 `docs/design/relay/00-中继核心接口契约.md` v1.1 的类型定义**逐字转写**而来，
+// 路径为中性（`internal/contract`）而非挂在 relay 下 —— 因为中继与计费共用同一个
+// 契约面（IR、用量事实、定价快照、计费会话），拆成两个包会产生 import 循环。
+//
+// 来源：
+//   - 中继侧（IR / 适配器 / 上下文 / 渠道类型）→ `docs/design/relay/00-中继核心接口契约.md` v1.1
+//   - 计费侧（定价模式 / 快照 / 归一化 / 配额数学）→ `docs/design/billing/00-计费引擎接口契约.md` v1.0
+//
 // 唯一目的是让编译器替我们检查契约的自洽性：任何「被引用却没有定义」的类型，
 // `go build` 都会报 undefined。
 //
@@ -550,6 +556,7 @@ type BillingSession interface {
 	Terminate(fact UsageFact) error                    // 终结会话并结算最终差额；幂等（取代原 Settle）
 	Refund() error                                     // 全额退款，幂等
 	Reserved() int64                                   // 当前预留量
+	NeedsRefund() bool                                 // 【M3 新增】调用方据此决定是否走退款路径（对齐基线的 BillingSettler）
 }
 
 // SessionBilling 是连接级会话（v1.1 · 决议 B3 + 补遗 8）。

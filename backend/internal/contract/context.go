@@ -81,12 +81,8 @@ type ClampEvent struct {
 	Clamped   int64  // 钳制后值
 }
 
-// PriceSnapshot 是计费引擎产出的定价快照。
-//
-// **对中继是不透明的**：中继只持有与透传，不读取其内部字段 —— 这正是契约 §6.3
-// 「中继不参与定价」的直接体现。字段定义归 M3 计费引擎，本处**刻意不展开**
-// （这不是缺口，是有意的边界）。
-type PriceSnapshot struct{}
+// PriceSnapshot 见 billing.go —— M3 计费契约给出了它的真实字段定义。
+// 中继侧仍遵守「只持有与透传、不读字段」的约定（契约 §6.3）。
 
 // ConversionStepEntry 是请求转换链的一步（追加式审计）。
 type ConversionStepEntry struct {
