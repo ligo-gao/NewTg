@@ -47,11 +47,11 @@ type RelayContext struct {
 	CreatedTime   time.Time // 渠道路由元数据的建渠道时点（v1.1 · 决议 F2，供 Azure 点号规则用）
 
 	// —— 计费组（写入方：PriceSnapshot/QuotaEstimate/UsageFact/Discount 由计费接缝写；
-	//             ClampEvent 由产生钳制的一方写、计费接缝汇总，见契约 §5.1）——
+	//             QuotaClamp 由产生钳制的一方写、计费接缝汇总，见契约 §5.1）——
 	PriceSnapshot *PriceSnapshot
 	QuotaEstimate *QuotaEstimate
 	UsageFact     *UsageFact
-	ClampEvent    *ClampEvent
+	QuotaClamp    *QuotaClamp // 见 billing.go（M3 决议 B3：与旧 ClampEvent 合并为同一类型）
 	Discount      float64
 
 	// —— 流式组（写入方：执行层）——
@@ -71,15 +71,13 @@ type RelayContext struct {
 	Diagnostics     []DiagnosticEntry
 }
 
-// ClampEvent 是钳制/饱和事件的审计标记（契约 §5；rules/billing.md 要求「钳制事件可审计」）。
-// 由**产生钳制的一方**（归一化层或适配器本地）写入，在计费接缝处汇总，日志层落库到
-// `usage_logs.other.admin_info.quota_saturation`（管理员可见，非管理员日志视图剥离）。
-type ClampEvent struct {
-	Field     string // 发生钳制的字段名
-	Reason    string // saturation | nan | negative | overflow
-	Requested int64  // 原值（溢出时截断保存）
-	Clamped   int64  // 钳制后值
-}
+// 钳制事件的类型见 billing.go 的 `QuotaClamp`。
+//
+// 【M3 决议 B3】此处原有的 `ClampEvent` 与计费侧的 `QuotaClamp` 是同一语义的
+// **两个类型**（且字段类型不一致），已合并为 `QuotaClamp` 单一类型。
+// 写入方约定不变：由**产生钳制的一方**（归一化层或适配器本地）写入，
+// 在计费接缝处汇总，日志层落库到 `usage_logs.other.admin_info.quota_saturation`
+// （管理员可见，非管理员日志视图剥离）。
 
 // PriceSnapshot 见 billing.go —— M3 计费契约给出了它的真实字段定义。
 // 中继侧仍遵守「只持有与透传、不读字段」的约定（契约 §6.3）。

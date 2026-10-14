@@ -1,5 +1,7 @@
 package contract
 
+import "time"
+
 // ============================================================================
 // 计费契约（M3 · billing/00-计费引擎接口契约.md）
 //
@@ -87,6 +89,51 @@ const (
 	MaxWalletQuota = int64(1)<<53 - 1 // 钱包/充值边界（JS 安全整数域）
 )
 
+// 任务时长边界（M3 决议 A1：**语义不同，拆为两个常量**）。
+//
+// 二者此前共用一个名字（`MaxTaskDurationSeconds`），导致「请求拒绝阈值」与
+// 「冒烟测试上界」在四处出现两个值。拆开后各司其职。
+const (
+	// MaxRequestTaskDurationSeconds 是**用户在请求里可声明的任务时长上界**；超出即 400 拒绝。
+	MaxRequestTaskDurationSeconds = 3600
+
+	// MaxTaskDurationSmokeBound 是**表达式冒烟测试用的宿主上界**（`second` 单位字段的测试覆盖上限）；
+	// 仅测试用，不影响请求校验。
+	MaxTaskDurationSmokeBound = 86400
+)
+
+// InflightLease 是「请求仍在飞」的心跳租约（M3 决议 A3）。
+//
+// 计费会话在预扣成功后写入、请求期间更新心跳；worker 的崩溃兜底扫描
+// **只回收心跳超 TTL 的会话** —— 否则会把仍合法的长请求误当崩溃残留退掉。
+type InflightLease struct {
+	RequestID   string
+	HeartbeatAt time.Time // 最后一次心跳；超过 TTL 视为副本已死
+}
+
+// 在飞租约与崩溃兜底的参数（M3 决议 A3b）。
+//
+// 【关键：这是**两组**参数，不得混用】
+//   - 租约参数（TTL / 心跳间隔）决定「会话是否还活着」
+//   - 扫描参数（周期 / 判定窗口）决定「worker 多久扫一次、多老的会话才纳入扫描」
+//
+// 判定窗口必须**显著大于** TTL，否则会把仍在发心跳的活跃会话误判为悬挂。
+const (
+	// InflightLeaseTTLSeconds 是心跳超时阈值：超过此时长无心跳即视为所属副本已死、可被回收。
+	// 必须显著大于正常请求时长，否则会把仍合法的长请求误退。
+	InflightLeaseTTLSeconds = 300
+
+	// InflightHeartbeatSeconds 是会话更新心跳的间隔（远小于 TTL）。
+	InflightHeartbeatSeconds = 30
+
+	// AbandonedScanIntervalSeconds 是 worker 扫描悬挂会话的周期（属扫描参数，与 TTL 无关）。
+	AbandonedScanIntervalSeconds = 300
+
+	// AbandonedWindowSeconds 是「悬挂」判定窗口的下限：会话开始后至少这么久才纳入扫描。
+	// 【必须 > InflightLeaseTTLSeconds】否则活跃会话会被误回收。
+	AbandonedWindowSeconds = 600
+)
+
 // ---------------------------------------------------------------------------
 // Token 归一化
 // ---------------------------------------------------------------------------
@@ -140,6 +187,7 @@ type PriceData struct {
 	ModelRatio           float64 // 模型倍率
 	CompletionRatio      float64 // 补全倍率
 	CacheRatio           float64 // 缓存读倍率（未配置 → 1.0）
+	CacheCreationRatio   float64 // 【M3 补】缓存创建基值（5m/1h 分档的基）
 	CacheCreation5mRatio float64 // 缓存创建 5m/通用（未配置 → 1.25）
 	CacheCreation1hRatio float64 // 缓存创建 1h（未配置 → CreateCacheRatio × 6/3.75，**该系数只对名字含 claude 的模型继承**）
 	ImageRatio           float64 // 图片倍率（为 1 时图片输入含在 p 里，不生成独立 img 项）
@@ -149,8 +197,11 @@ type PriceData struct {
 	// 显式零标记（契约 §3.2）：每个倍率各自配一个，避免「未设置」与「显式 0」混淆
 	CacheRatioSet    bool
 	CacheCreationSet bool
-	ImageRatioSet    bool
-	AudioRatioSet    bool
+	// CacheCreationRatioSet 标记缓存创建**基准**是否被显式配置 ——
+	// 5m/1h 两档由基准派生，故「基准的显式零」需单独判定（M3 决议 C7a）。
+	CacheCreationRatioSet bool
+	ImageRatioSet         bool
+	AudioRatioSet         bool
 
 	GroupRatioInfo GroupRatioInfo
 
@@ -161,6 +212,7 @@ type PriceData struct {
 
 // GroupRatioInfo 是分组倍率信息。
 type GroupRatioInfo struct {
+	Group             string // 【M3 补】分组名（日志与诊断需要）
 	GroupRatio        float64
 	GroupSpecialRatio float64 // 分组特殊倍率（若配置）
 	HasSpecialRatio   bool
@@ -178,6 +230,7 @@ type PriceSnapshot struct {
 	ExprHash                 string         // 表达式哈希（用于取 usedVars 缓存，避免重算）
 	GroupRatio               float64        // 选中分组的倍率（跨组重试时刷新）
 	EstimatedQuotaAfterGroup int64          // 选中分组后的估算配额（抬预留用）
+	EstimatedImageCount      int            // 【M3 补】发送前的估算张数（两段预扣的第二段用）
 	PreConsumeMultiplier     float64        // 预扣倍数（快照冻结供图片重试复用）
 	CacheWriteMode           CacheWriteMode // 只读元信息，不参与求值
 	IsClaudeUsageSemantic    bool           // 上游格式事实（归一化的输入之一）

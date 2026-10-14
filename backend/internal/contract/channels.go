@@ -20,6 +20,7 @@ import "slices"
 // ⚠️ 一处转写修正：基线序号 19 的显示名为「360」，**不能作为 Go 标识符**
 //（标识符不可数字开头），故常量名用 `ChannelAi360`；其 slug 值仍为 "360"。
 // 其余 59 个常量名与 `02` §5 表逐行一致。
+// slug 取值以架构 spec §2.1 的措辞为准（如 `azure_openai` 而非 `azure`，前者语义更明确）。
 // ============================================================================
 
 // ChannelType 是渠道类型标识（**string slug**，见文件头）。
@@ -33,7 +34,7 @@ const (
 
 	ChannelTypeOpenAI         ChannelType = "openai"          // 基线序号 1  —— OpenAI 兼容
 	ChannelTypeMidjourney     ChannelType = "midjourney"      // 基线序号 2  —— 任务平台（绘图中继）
-	ChannelTypeAzure          ChannelType = "azure"           // 基线序号 3  —— OpenAI 兼容（Azure 变体）
+	ChannelTypeAzure          ChannelType = "azure_openai"    // 基线序号 3  —— OpenAI 兼容（Azure 变体）
 	ChannelTypeOllama         ChannelType = "ollama"          // 基线序号 4  —— Ollama 自有协议
 	ChannelTypeMidjourneyPlus ChannelType = "midjourney_plus" // 基线序号 5  —— 任务平台
 	ChannelTypeOpenAIMax      ChannelType = "openai_max"      // 基线序号 6  —— 遗留

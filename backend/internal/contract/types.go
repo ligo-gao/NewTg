@@ -97,9 +97,6 @@ type Usage struct {
 	Reasoning    int64 // 思考 token
 	AudioSeconds int64 // 音频时长（秒）（v1.1 · 决议 C2，合并 CCR-5）
 
-	// —— 任务单位事实（v1.1 · 决议 C2，合并 CR-F-06）——
-	Units map[BillingUnit]float64
-
 	// —— 子类明细（阶梯表达式结算需要）——
 	PromptDetail     UsageDetail // 图片 / 音频 / 文本 各自的 prompt 构成
 	CompletionDetail UsageDetail
@@ -117,6 +114,7 @@ type UsageDetail struct {
 	Audio                 int64 // 音频 token
 	Text                  int64 // 文本 token
 	CacheRead, CacheWrite int64
+	CacheReadImage        int64 // 【M3 补】图片缓存读（img_cr 的承载位，契约 §5.4 三段式拆分用）
 }
 
 type BillingUnit int
@@ -126,6 +124,18 @@ const (
 	UnitSecond                    // 秒
 	UnitToken                     // token
 	UnitCredit                    // 积分
+)
+
+// ResultUnit 是**表达式求值结果**的单位（与 BillingUnit 不同：后者是任务用量事实的单位）。
+//
+// 【命名避让 · M3 决议 B2】`BillingUnit` 一词曾被兼指三件事（任务用量单位、
+// 结果单位、日志键 `billing_unit`）。现拆分：结果单位独立为 `ResultUnit`；
+// 日志键 `billing_unit` 保持原名（既有对外字段，不改名）。
+type ResultUnit int
+
+const (
+	ResultToken   ResultUnit = iota // 结果按 token 计价（$/1M tokens）
+	ResultRequest                   // 结果按请求固定价（USD/request）
 )
 
 // UsageSource 字面量冻结唯一一套（v1.1 · 决议 C5）。
@@ -226,8 +236,22 @@ type TaskStatus struct {
 
 // TaskUsageFact 是任务用量事实（v1.1 · 决议 A1/A5）。
 type TaskUsageFact struct {
-	Units  map[BillingUnit]float64 // count | second | token | credit → 数量
+	// 【键 = 插件在 meta.usageSchema 里声明的字段名】，**不是单位枚举** ——
+	// 同一单位可有多个字段（如 seconds 与 clips 都是 second），按单位做键会互相覆盖。
+	Facts  map[string]UsageFactValue // 字段名 → 取值；键必须是插件已声明的字面量键
+	Units  map[string]BillingUnit    // 字段名 → 单位（与 Facts 同键；枚举字段无单位，可不入表）
 	Source UsageSource
+}
+
+// UsageFactValue 是任务用量事实的取值：**数值或字符串**。
+//
+// 【为什么不能只用 float64 · M3 决议 A2b】任务用量表达式同时支持
+// **数值档位**（`u("seconds") * 0.4`）与**枚举档位**（`u("mode") == "pro" ? ... : ...`）。
+// 插件 schema 里既有数值字段也有枚举字段，二者共用同一张 Facts 表；
+// 用 `map[string]float64` 会把枚举字段直接堵死。
+type UsageFactValue struct {
+	Num *float64 // 数值事实（数值字段）；与 Str 互斥
+	Str *string  // 字符串事实（枚举字段）；与 Num 互斥
 }
 
 type Artifact struct {
@@ -519,7 +543,7 @@ type QuotaEstimate struct {
 	MaxTokens    *int  // 用户声明的输出上界
 	PromptTokens int64 // 本地估算
 	ImageCount   int   // 图像请求量
-	TaskDuration int   // 任务时长（秒）——用户声明的值；使用前必须校验 ≤ MaxTaskDurationSeconds
+	TaskDuration int   // 任务时长（秒）——用户声明的值；使用前必须校验 ≤ MaxRequestTaskDurationSeconds
 	UsePrice     bool  // 按次计价
 
 	// —— v1.1 · 决议 B5 ——
@@ -557,6 +581,8 @@ type BillingSession interface {
 	Refund() error                                     // 全额退款，幂等
 	Reserved() int64                                   // 当前预留量
 	NeedsRefund() bool                                 // 【M3 新增】调用方据此决定是否走退款路径（对齐基线的 BillingSettler）
+	RecoverAbandoned(requestID string) error           // 【M3 新增 · 决议 A3】崩溃兜底：按 requestID 终结悬挂会话并全额退款；幂等。
+	//                                                    由 worker 的兜底扫描调用（见 billing/06），归属本接口的实现方。
 }
 
 // SessionBilling 是连接级会话（v1.1 · 决议 B3 + 补遗 8）。
