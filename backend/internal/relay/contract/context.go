@@ -171,9 +171,7 @@ const (
 	FilterResponsesWebSocket                      // 是否支持 Responses WebSocket
 )
 
-// ChannelType 是渠道类型标识（完整 60 值见 `02-协议适配器层-设计.md` §5）。
-// 定义在此以保证契约自洽；**取值的唯一真源是 02**。
-type ChannelType int
+// ChannelType 见 channels.go（该枚举的唯一出处；60 个具名类型 + 显示名映射）。
 
 // AdapterKey 是适配器注册键（等价基线的「API 类型」，见契约 §3.3）。
 type AdapterKey string
