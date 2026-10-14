@@ -1,0 +1,24 @@
+# Binaries
+bin/
+*.exe
+*.test
+
+# Go
+backend/bin/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env & secrets
+.env
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
