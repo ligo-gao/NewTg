@@ -16,6 +16,9 @@ frontend/dist/
 *.pem
 *.key
 
+# DB dumps from the pg-backup bind mount (deploy/backups)
+deploy/backups/
+
 # OS / editor
 .DS_Store
 .idea/

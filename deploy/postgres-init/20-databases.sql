@@ -7,9 +7,12 @@
 
 \getenv logs_db POSTGRES_LOGS_DB
 
-\if :'logs_db' = ''
+-- fail-fast：库名为空则中止 initdb（psql \if 不接受表达式，先 \gset 存布尔结果；
+-- psql 16 的 \quit 不支持退出码，故用 ON_ERROR_STOP + RAISE 产生非 0 退出）。
+SELECT (:'logs_db' = '') AS db_empty \gset
+\if :db_empty
 \echo 'ERROR: POSTGRES_LOGS_DB is empty'
-\quit 3
+DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_LOGS_DB is empty'; END $$;
 \endif
 
 -- 幂等创建（\gexec 执行查询结果；CREATE DATABASE 不能位于事务块内，psql 自动提交）。

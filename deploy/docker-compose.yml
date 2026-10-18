@@ -5,6 +5,7 @@
 #
 # 净室声明：本文件全新编写，不复制、不翻译任何既有网关仓库的配置或文案。
 # 密钥一律 ${VAR:?...}：deploy/.env 缺项时 docker compose 直接报错退出，绝不落默认口令。
+# 应用镜像统一由 NEWTG_IMAGE 指定（默认与 Makefile 的 IMAGE ?= newtg/gateway:dev 对齐）。
 
 name: newtg
 
@@ -49,7 +50,7 @@ services:
 
   # 管理 API + 中继；2 副本用于验证无状态（不设 container_name，避免与副本数冲突）。
   gateway:
-    image: newtg/gateway:local
+    image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: unless-stopped
     deploy:
       replicas: 2
@@ -80,7 +81,7 @@ services:
 
   # 一次性迁移：唯一 DDL 账号 newtg_migrate；跑完即退出（成功退出码 0）。
   migrate:
-    image: newtg/gateway:local
+    image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: "no"
     environment:
       <<: *app-env
@@ -95,7 +96,7 @@ services:
 
   # 后台任务；单副本，允许固定名。M0 无对外 HTTP，探活为进程存活（R-07）。
   worker:
-    image: newtg/gateway:local
+    image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: unless-stopped
     container_name: newtg-worker
     deploy:

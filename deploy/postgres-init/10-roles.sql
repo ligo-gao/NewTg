@@ -17,17 +17,23 @@
 \getenv db_name          POSTGRES_DB
 
 -- fail-fast：口令为空则中止 initdb（compose 侧已有 :? 守卫，此处为兜底）。
-\if :'app_password' = ''
+-- 注意：psql 的 \if 不接受 `:'var' = ''` 这类表达式作为直接参数，须先用 \gset
+-- 把比较结果存成变量；且 psql 16 的 \quit 不支持退出码参数（会被忽略并退 0），
+-- 故用 ON_ERROR_STOP + RAISE EXCEPTION 产生非 0 退出以真正中止 entrypoint。
+SELECT (:'app_password' = '') AS pw_empty \gset
+\if :pw_empty
 \echo 'ERROR: POSTGRES_APP_PASSWORD is empty'
-\quit 3
+DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_APP_PASSWORD is empty'; END $$;
 \endif
-\if :'migrate_password' = ''
+SELECT (:'migrate_password' = '') AS pw_empty \gset
+\if :pw_empty
 \echo 'ERROR: POSTGRES_MIGRATE_PASSWORD is empty'
-\quit 3
+DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_MIGRATE_PASSWORD is empty'; END $$;
 \endif
-\if :'backup_password' = ''
+SELECT (:'backup_password' = '') AS pw_empty \gset
+\if :pw_empty
 \echo 'ERROR: POSTGRES_BACKUP_PASSWORD is empty'
-\quit 3
+DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_BACKUP_PASSWORD is empty'; END $$;
 \endif
 
 -- 建角色（幂等；initdb 只会跑一次，幂等仅为人工重放的容错）。

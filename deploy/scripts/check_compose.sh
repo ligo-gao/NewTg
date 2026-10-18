@@ -136,6 +136,27 @@ fi
 [ "$(q '.services.redis.ports // [] | length')" = "0" ] \
   && ok "redis 不发布宿主端口" \
   || bad "redis 不应发布宿主端口"
+
+# 应用镜像统一走 NEWTG_IMAGE（默认与 Makefile 的 IMAGE ?= newtg/gateway:dev 对齐）。
+img_refs="$(grep -cF 'image: ${NEWTG_IMAGE:-newtg/gateway:dev}' "$compose")"
+if [ "$img_refs" = "3" ]; then
+  ok "gateway/worker/migrate 统一使用 \${NEWTG_IMAGE:-newtg/gateway:dev}"
+else
+  bad "gateway/worker/migrate 应统一使用 \${NEWTG_IMAGE:-newtg/gateway:dev}（匹配 $img_refs 处，期望 3）"
+fi
+
+# Caddy：live_feed 是 SSE，须在 /api/* 的压缩路由之前声明（handle 先匹配先生效）。
+caddyfile="$root/deploy/edge/Caddyfile"
+sse_home="$(grep -nF 'handle /api/home/live-feed' "$caddyfile" | head -1 | cut -d: -f1)"
+sse_public="$(grep -nF 'handle /api/public/live-feed' "$caddyfile" | head -1 | cut -d: -f1)"
+api_block="$(grep -nF 'handle /api/*' "$caddyfile" | head -1 | cut -d: -f1)"
+if [ -n "$sse_home" ] && [ -n "$sse_public" ] && [ -n "$api_block" ] \
+   && [ "$sse_home" -lt "$api_block" ] && [ "$sse_public" -lt "$api_block" ]; then
+  ok "Caddy SSE 路由先于 /api/*（不压缩）"
+else
+  bad "Caddy 的 /api/home/live-feed 与 /api/public/live-feed 必须声明在 /api/* 之前"
+fi
+
 edge_pub="$(q '.services.edge.ports[0].published // ""')"
 edge_target="$(q '.services.edge.ports[0].target // ""')"
 if [ "$edge_pub" = "8080" ] && [ "$edge_target" = "80" ]; then

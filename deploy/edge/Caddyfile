@@ -26,7 +26,21 @@
 		}
 	}
 
-	# 管理 API（JSON）：允许 gzip/zstd。
+	# 公开 live_feed 是 SSE（modules-08 /api/home/live-feed；M7 另加
+	# /api/public/live-feed）。它虽在 /api/* 下，但压缩会缓冲/破坏事件流，
+	# 因此必须先于 /api/* 声明为不压缩的显式路由（handle 互斥、先匹配先生效）。
+	handle /api/home/live-feed {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+	handle /api/public/live-feed {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+
+	# 其余管理 API（JSON）：允许 gzip/zstd。
 	handle /api/* {
 		encode gzip zstd
 		reverse_proxy gateway:3000 {
