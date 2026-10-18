@@ -17,6 +17,7 @@ import { routeTree } from '@/routeTree.gen'
 const ORIGIN = 'http://localhost:3000'
 
 const PUBLIC_STATUS = {
+  system_initialized: true,
   auth: {
     signup_enabled: true,
     password_login_enabled: true,
@@ -82,6 +83,7 @@ describe('route guard chain (web-00 §9.3)', () => {
 
   it('lands a signed-in non-admin on /403 for an admin route', async () => {
     server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
       http.get(`${ORIGIN}/api/me`, () =>
         HttpResponse.json({ username: 'alice', role: 'user', status: 'enabled' }),
       ),
@@ -91,6 +93,29 @@ describe('route guard chain (web-00 §9.3)', () => {
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/403')
+    })
+  })
+
+  it('funnels every route to /setup while the site is uninitialized', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({ ...PUBLIC_STATUS, system_initialized: false }),
+      ),
+    )
+
+    const { router } = renderAt('/profile')
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/setup')
+    })
+  })
+
+  it('sends an initialized site from /setup to /sign-in', async () => {
+    guestHandlers()
+    const { router } = renderAt('/setup')
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/sign-in')
     })
   })
 })

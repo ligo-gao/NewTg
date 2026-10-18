@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
@@ -7,12 +6,14 @@ import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 import { sanitizeAuthRedirect } from '@/lib/auth-redirect'
 import { passwordPolicyProblem } from '@/lib/password-policy'
+import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
 import { AuthPageShell } from './AuthPageShell'
 import { EmailCodeField } from './EmailCodeField'
+import { TurnstileWidget } from './TurnstileWidget'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const USERNAME_PATTERN = /^[a-zA-Z0-9_-]{3,32}$/
@@ -52,14 +53,12 @@ export function SignUpPage({
   const [errors, setErrors] = useState<FieldErrors>({})
   const [formError, setFormError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
+  const [turnstileToken, setTurnstileToken] = useState<string | undefined>(undefined)
+  const [turnstileReset, setTurnstileReset] = useState(0)
 
-  const status = useQuery({
-    // Shared public-status cache key (web-00 §5.3); `no-store` upstream means
-    // the toggles must be live, hence staleTime 0.
-    queryKey: ['public', 'status'],
-    queryFn: async () => requireData(await apiClient.GET('/api/status')),
-    staleTime: 0,
-  })
+  const status = usePublicStatus()
+  const turnstile = status.data?.auth.turnstile
+  const turnstileEnabled = turnstile?.enabled ?? false
 
   if (status.isError) {
     return (
@@ -130,6 +129,10 @@ export function SignUpPage({
     event.preventDefault()
     setFormError(undefined)
     if (!validate()) return
+    if (turnstileEnabled && (turnstileToken === undefined || turnstileToken === '')) {
+      setFormError(t('auth.turnstile.required'))
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -142,6 +145,7 @@ export function SignUpPage({
       }
       if (verificationRequired) body.email_code = emailCode
       if (aff !== undefined && aff !== '') body.aff = aff
+      if (turnstileEnabled) body.turnstile_token = turnstileToken
 
       const data = requireData(await apiClient.POST('/api/auth/register', { body }))
 
@@ -161,6 +165,12 @@ export function SignUpPage({
         setFormError(t('auth.sign_up.error'))
       }
     } finally {
+      if (turnstileEnabled) {
+        // Single-use token: it was consumed by the attempt regardless of the
+        // outcome, so drop it and restart the challenge.
+        setTurnstileToken(undefined)
+        setTurnstileReset((value) => value + 1)
+      }
       setSubmitting(false)
     }
   }
@@ -282,6 +292,14 @@ export function SignUpPage({
         </label>
         {errors.agree !== undefined ? (
           <p className="text-xs text-danger">{errors.agree}</p>
+        ) : null}
+
+        {turnstileEnabled ? (
+          <TurnstileWidget
+            siteKey={turnstile?.site_key ?? ''}
+            onToken={setTurnstileToken}
+            resetSignal={turnstileReset}
+          />
         ) : null}
 
         <Button type="submit" className="h-11 w-full" disabled={submitting}>

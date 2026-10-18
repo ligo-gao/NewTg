@@ -9,6 +9,7 @@ import {
   buildLoginCredentials,
   LoginEncryptionUnavailableError,
 } from '@/lib/password-encryption'
+import { usePublicStatus } from '@/lib/public-status'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { useCountdown } from '@/shared/lib/use-countdown'
@@ -16,6 +17,7 @@ import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
 import { AuthPageShell } from './AuthPageShell'
+import { TurnstileWidget } from './TurnstileWidget'
 
 export interface SignInPageProps {
   /** Sanitized `?redirect=` target from the route. */
@@ -70,14 +72,12 @@ export function SignInPage({
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
   const countdown = useCountdown()
+  const [turnstileToken, setTurnstileToken] = useState<string | undefined>(undefined)
+  const [turnstileReset, setTurnstileReset] = useState(0)
 
-  const statusQuery = useQuery({
-    // Shared public-status cache key (web-00 §5.3); the upstream response is
-    // `no-store`, so toggles must be re-read, not served from a 30s window.
-    queryKey: ['public', 'status'],
-    queryFn: async () => requireData(await apiClient.GET('/api/status')),
-    staleTime: 0,
-  })
+  const statusQuery = usePublicStatus()
+  const turnstile = statusQuery.data?.auth.turnstile
+  const turnstileEnabled = turnstile?.enabled ?? false
 
   // An authenticated visitor must never see the sign-in form again.
   const meQuery = useQuery(meQueryOptions())
@@ -91,12 +91,22 @@ export function SignInPage({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
+    if (turnstileEnabled && (turnstileToken === undefined || turnstileToken === '')) {
+      // Turnstile enabled means the server rejects a token-less login with
+      // 403; fail here instead of spending an attempt.
+      setError(t('auth.turnstile.required'))
+      return
+    }
     setError(undefined)
     setSubmitting(true)
     try {
       const credentials = await buildLoginCredentials(identifier.trim(), password)
       const data = requireData(
-        await apiClient.POST('/api/auth/login', { body: credentials }),
+        await apiClient.POST('/api/auth/login', {
+          body: turnstileEnabled
+            ? { ...credentials, turnstile_token: turnstileToken }
+            : credentials,
+        }),
       )
 
       if ('status' in data) {
@@ -124,6 +134,12 @@ export function SignInPage({
       }
       setError(signInErrorMessage(caught, t))
     } finally {
+      if (turnstileEnabled) {
+        // Turnstile tokens are single-use and a failed login already consumed
+        // this one: clear it and restart the challenge.
+        setTurnstileToken(undefined)
+        setTurnstileReset((value) => value + 1)
+      }
       setSubmitting(false)
     }
   }
@@ -181,6 +197,14 @@ export function SignInPage({
               {t('auth.sign_in.forgot')}
             </a>
           </div>
+
+          {turnstileEnabled ? (
+            <TurnstileWidget
+              siteKey={turnstile?.site_key ?? ''}
+              onToken={setTurnstileToken}
+              resetSignal={turnstileReset}
+            />
+          ) : null}
 
           <Button
             type="submit"

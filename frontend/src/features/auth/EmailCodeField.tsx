@@ -2,10 +2,14 @@ import { useState } from 'react'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
+import type { components } from '@/api/schema'
+import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { TextField } from '@/shared/ui/form'
+
+import { TurnstileWidget } from './TurnstileWidget'
 
 export type EmailCodePurpose = 'register' | 'reset' | 'verify' | 'bind'
 
@@ -51,6 +55,12 @@ export function EmailCodeField({
   const countdown = useCountdown()
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+  const [turnstileToken, setTurnstileToken] = useState<string | undefined>(undefined)
+  const [turnstileReset, setTurnstileReset] = useState(0)
+
+  const statusQuery = usePublicStatus()
+  const turnstile = statusQuery.data?.auth.turnstile
+  const turnstileEnabled = turnstile?.enabled ?? false
 
   const emailValid = EMAIL_PATTERN.test(email)
   const fallback = cooldownSeconds ?? EMAIL_CODE_DEFAULT_COOLDOWN[purpose]
@@ -58,11 +68,15 @@ export function EmailCodeField({
 
   async function requestCode(): Promise<void> {
     setError(undefined)
+    if (turnstileEnabled && (turnstileToken === undefined || turnstileToken === '')) {
+      setError(t('auth.turnstile.required'))
+      return
+    }
     setSending(true)
     try {
-      await apiClient.POST('/api/auth/email-code', {
-        body: { email, purpose },
-      })
+      const body: components['schemas']['EmailCodeRequest'] = { email, purpose }
+      if (turnstileEnabled) body.turnstile_token = turnstileToken
+      await apiClient.POST('/api/auth/email-code', { body })
       countdown.start(fallback)
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 429) {
@@ -72,6 +86,12 @@ export function EmailCodeField({
         setError(t('auth.email_code.failed'))
       }
     } finally {
+      if (turnstileEnabled) {
+        // The gate verified (or at least consumed) the token; ask for a new
+        // one so the post-cooldown resend is not rejected as token-less.
+        setTurnstileToken(undefined)
+        setTurnstileReset((value) => value + 1)
+      }
       setSending(false)
     }
   }
@@ -108,6 +128,13 @@ export function EmailCodeField({
               : t('auth.email_code.send')}
         </Button>
       </div>
+      {turnstileEnabled ? (
+        <TurnstileWidget
+          siteKey={turnstile?.site_key ?? ''}
+          onToken={setTurnstileToken}
+          resetSignal={turnstileReset}
+        />
+      ) : null}
       {!emailValid ? (
         <p className="text-xs text-ink-3">{t('auth.email_code.invalid_email')}</p>
       ) : null}

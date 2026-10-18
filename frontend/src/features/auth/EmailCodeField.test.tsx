@@ -2,7 +2,7 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -13,6 +13,26 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // The field reads the public status for the Turnstile switch; these tests
+  // exercise the disabled path.
+  server.use(
+    http.get(`${ORIGIN}/api/status`, () =>
+      HttpResponse.json({
+        system_initialized: true,
+        auth: {
+          signup_enabled: true,
+          password_login_enabled: true,
+          email_verification_required: false,
+          turnstile: { enabled: false, site_key: '' },
+        },
+        password_login_encryption_enabled: false,
+        languages: ['en'],
+        default_language: 'en',
+      }),
+    ),
+  )
+})
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 

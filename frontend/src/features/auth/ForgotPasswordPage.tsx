@@ -2,12 +2,15 @@ import { useState, type FormEvent } from 'react'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
+import type { components } from '@/api/schema'
+import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, TextField } from '@/shared/ui/form'
 
 import { AuthPageShell } from './AuthPageShell'
+import { TurnstileWidget } from './TurnstileWidget'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 // Server cooldown is 60s (`passwordResetResendAfter`, handlers_password.go:58)
@@ -37,6 +40,12 @@ export function ForgotPasswordPage({
   const [sent, setSent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const countdown = useCountdown()
+  const [turnstileToken, setTurnstileToken] = useState<string | undefined>(undefined)
+  const [turnstileReset, setTurnstileReset] = useState(0)
+
+  const statusQuery = usePublicStatus()
+  const turnstile = statusQuery.data?.auth.turnstile
+  const turnstileEnabled = turnstile?.enabled ?? false
 
   async function send(): Promise<void> {
     setFormError(undefined)
@@ -44,12 +53,18 @@ export function ForgotPasswordPage({
       setFieldError(t('auth.validation.email'))
       return
     }
+    if (turnstileEnabled && (turnstileToken === undefined || turnstileToken === '')) {
+      setFormError(t('auth.turnstile.required'))
+      return
+    }
     setFieldError(undefined)
     setSubmitting(true)
     try {
-      await apiClient.POST('/api/auth/password-reset/request', {
-        body: { email: email.trim() },
-      })
+      const body: components['schemas']['PasswordResetRequest'] = {
+        email: email.trim(),
+      }
+      if (turnstileEnabled) body.turnstile_token = turnstileToken
+      await apiClient.POST('/api/auth/password-reset/request', { body })
       setSent(true)
       countdown.start(RESEND_SECONDS)
     } catch (caught) {
@@ -62,6 +77,11 @@ export function ForgotPasswordPage({
         setFormError(t('auth.forgot.error'))
       }
     } finally {
+      if (turnstileEnabled) {
+        // Single-use token; restart the challenge for the next resend.
+        setTurnstileToken(undefined)
+        setTurnstileReset((value) => value + 1)
+      }
       setSubmitting(false)
     }
   }
@@ -83,6 +103,13 @@ export function ForgotPasswordPage({
           <p className="text-[13px] text-ink-3">
             {t('auth.forgot.sent_enumeration')}
           </p>
+          {turnstileEnabled ? (
+            <TurnstileWidget
+              siteKey={turnstile?.site_key ?? ''}
+              onToken={setTurnstileToken}
+              resetSignal={turnstileReset}
+            />
+          ) : null}
           <Button
             variant="secondary"
             className="h-11 w-full"
@@ -116,6 +143,13 @@ export function ForgotPasswordPage({
             error={fieldError}
             required
           />
+          {turnstileEnabled ? (
+            <TurnstileWidget
+              siteKey={turnstile?.site_key ?? ''}
+              onToken={setTurnstileToken}
+              resetSignal={turnstileReset}
+            />
+          ) : null}
           <Button type="submit" className="h-11 w-full" disabled={submitting}>
             {submitting
               ? t('auth.forgot.submitting')
