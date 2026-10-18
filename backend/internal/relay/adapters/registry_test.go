@@ -12,14 +12,15 @@ import (
 // ① 每个具名类型都有条目（AC-B-01）；② AdapterKey 非空；③ FallbackTo 指向已注册键；
 // ④ ForbidFallback 与 FallbackTo 互斥；⑤ 哨兵不参与选择。
 func TestRegistryDispatchTableInvariants(t *testing.T) {
-	if got, want := len(DispatchTable), len(contract.ChannelTypes); got != want {
+	table := DispatchTable()
+	if got, want := len(table), len(contract.ChannelTypes); got != want {
 		t.Fatalf("DispatchTable 条目 = %d, want %d（59 个具名类型）", got, want)
 	}
-	if _, ok := DispatchTable[contract.ChannelTypeUnknown]; ok {
+	if _, ok := table[contract.ChannelTypeUnknown]; ok {
 		t.Fatal("哨兵类型不得出现在 DispatchTable（不参与选择，relay-02 §2.3）")
 	}
 	for _, ct := range contract.ChannelTypes {
-		entry, ok := DispatchTable[ct]
+		entry, ok := table[ct]
 		if !ok {
 			t.Fatalf("渠道类型 %q 缺少分派条目", ct)
 		}
@@ -37,7 +38,13 @@ func TestRegistryDispatchTableInvariants(t *testing.T) {
 		}
 	}
 	// 不变量校验函数本身必须能通过（init 已执行一次，这里显式再跑一遍）。
-	validateDispatchTable(DispatchTable)
+	validateDispatchTable(dispatchTable)
+
+	// 只读访问器返回副本：修改快照不得影响运行时分派。
+	table[contract.ChannelTypeOpenAI] = contract.DispatchEntry{AdapterKey: "hacked"}
+	if got := dispatchTable[contract.ChannelTypeOpenAI].AdapterKey; got != AKOpenAI {
+		t.Fatalf("DispatchTable() 返回的副本影响了内部状态：AdapterKey = %q", got)
+	}
 }
 
 // TestLookupAllNamedTypes 断言 59 个具名类型全部命中（R-P6：21/61 也必须有条目）。
@@ -112,36 +119,88 @@ func TestDispatchOpenAIAndAzure(t *testing.T) {
 // TestRegistryMoonshotAndSora 覆盖 R-01 / R-04：
 // moonshot → AKAnthropicNative；sora → AKTask 且只有 RoleTask（无 RoleChat）。
 func TestRegistryMoonshotAndSora(t *testing.T) {
-	if got := DispatchTable[contract.ChannelTypeMoonshot].AdapterKey; got != string(AKAnthropicNative) {
+	table := DispatchTable()
+	if got := table[contract.ChannelTypeMoonshot].AdapterKey; got != AKAnthropicNative {
 		t.Fatalf("moonshot AdapterKey = %q, want %q（R-01）", got, AKAnthropicNative)
 	}
-	if got := DispatchTable[contract.ChannelTypeSora].AdapterKey; got != string(AKTask) {
+	if got := table[contract.ChannelTypeSora].AdapterKey; got != AKTask {
 		t.Fatalf("sora AdapterKey = %q, want %q（R-04）", got, AKTask)
 	}
 	ctor, ok := Lookup(contract.ChannelTypeSora)
 	if !ok {
 		t.Fatal("Lookup(sora) 未命中")
 	}
-	roles := ctor().Caps().Roles
-	if !reflect.DeepEqual(roles, []contract.ChannelRole{contract.RoleTask}) {
-		t.Fatalf("sora Roles = %v, want [RoleTask]（不得含 RoleChat）", roles)
+	caps := ctor().Caps()
+	if !reflect.DeepEqual(caps.Roles, []contract.ChannelRole{contract.RoleTask}) {
+		t.Fatalf("sora Roles = %v, want [RoleTask]（不得含 RoleChat）", caps.Roles)
+	}
+	if !reflect.DeepEqual(caps.TaskPlatforms, []string{"sora"}) {
+		t.Fatalf("sora TaskPlatforms = %v, want [sora]（relay-02 §2.5）", caps.TaskPlatforms)
 	}
 	if got := NewOpenAI().Caps().Roles; !reflect.DeepEqual(got, []contract.ChannelRole{contract.RoleChat}) {
 		t.Fatalf("OpenAI Caps().Roles = %v, want [RoleChat]", got)
 	}
 }
 
-// TestRegistryFallbackDeclarations 断言基线遗留类型在表中显式写出回退（relay-02 §2.3 关键约束）。
+// TestRegistryTaskPlatforms 断言纯任务类型的任务插件键声明（relay-02 §2.5 末段）。
+func TestRegistryTaskPlatforms(t *testing.T) {
+	want := map[contract.ChannelType][]string{
+		contract.ChannelTypeMidjourney:     {"mj"},
+		contract.ChannelTypeMidjourneyPlus: {"mj+"},
+		contract.ChannelTypeSunoAPI:        {"sunoapi"},
+		contract.ChannelTypeKling:          {"kling"},
+		contract.ChannelTypeJimeng:         {"jimeng"},
+		contract.ChannelTypeVidu:           {"vidu"},
+		contract.ChannelTypeDoubaoVideo:    {"doubao"},
+		contract.ChannelTypeSora:           {"sora"},
+	}
+	for ct, platforms := range want {
+		ctor, ok := Lookup(ct)
+		if !ok {
+			t.Fatalf("Lookup(%q) 未命中", ct)
+		}
+		caps := ctor().Caps()
+		if !reflect.DeepEqual(caps.TaskPlatforms, platforms) {
+			t.Fatalf("%q TaskPlatforms = %v, want %v", ct, caps.TaskPlatforms, platforms)
+		}
+		if !reflect.DeepEqual(caps.Roles, []contract.ChannelRole{contract.RoleTask}) {
+			t.Fatalf("%q Roles = %v, want [RoleTask]", ct, caps.Roles)
+		}
+	}
+	// 61：插件键由 task_plugin_key 声明，静态能力表必须留空。
+	if caps := mustLookup(t, contract.ChannelTypeTaskPlugin).Caps(); len(caps.TaskPlatforms) != 0 {
+		t.Fatalf("task_plugin TaskPlatforms = %v, want 空（插件声明）", caps.TaskPlatforms)
+	}
+}
+
+func mustLookup(t *testing.T, ct contract.ChannelType) contract.Adapter {
+	t.Helper()
+	ctor, ok := Lookup(ct)
+	if !ok {
+		t.Fatalf("Lookup(%q) 未命中", ct)
+	}
+	return ctor()
+}
+
+// TestRegistryFallbackDeclarations 断言 relay-02 §2.1 列出的 11 个 OpenAI 兼容类型
+// （3/6/7/8/9/10/12/13/19/22/31）在表中显式写出回退，以及 21/61 的显式禁止回退。
 func TestRegistryFallbackDeclarations(t *testing.T) {
+	table := DispatchTable()
 	for _, ct := range []contract.ChannelType{
+		contract.ChannelTypeAzure,
 		contract.ChannelTypeOpenAIMax,
+		contract.ChannelTypeOhMyGPT,
+		contract.ChannelTypeCustom,
 		contract.ChannelTypeAILS,
 		contract.ChannelTypeAIProxy,
 		contract.ChannelTypeAPI2GPT,
 		contract.ChannelTypeAIGC2D,
+		contract.ChannelAi360,
+		contract.ChannelTypeFastGPT,
+		contract.ChannelTypeLingYiWanWu,
 	} {
-		entry := DispatchTable[ct]
-		if entry.FallbackTo != string(AKOpenAI) {
+		entry := table[ct]
+		if entry.FallbackTo != AKOpenAI {
 			t.Fatalf("%q FallbackTo = %q, want %q（逐类型显式声明，禁止 map 未命中的隐式默认）",
 				ct, entry.FallbackTo, AKOpenAI)
 		}
@@ -150,7 +209,7 @@ func TestRegistryFallbackDeclarations(t *testing.T) {
 		}
 	}
 	for _, ct := range []contract.ChannelType{contract.ChannelTypeAIProxyLibrary, contract.ChannelTypeTaskPlugin} {
-		entry := DispatchTable[ct]
+		entry := table[ct]
 		if !entry.ForbidFallback || entry.FallbackTo != "" {
 			t.Fatalf("%q = %+v, want ForbidFallback=true 且 FallbackTo 为空", ct, entry)
 		}
@@ -168,8 +227,8 @@ func TestRegistryAdapterKeysUnique(t *testing.T) {
 		AKCodex: true, AKAdvancedCustom: true, AKSub2API: true, AKNewAPI: true,
 		AKTask: true, AKTaskPlugin: true, AKAIProxyLibrary: true,
 	}
-	seen := make(map[contract.ChannelType]bool, len(DispatchTable))
-	for ct, entry := range DispatchTable {
+	seen := make(map[contract.ChannelType]bool, len(contract.ChannelTypes))
+	for ct, entry := range DispatchTable() {
 		if seen[ct] {
 			t.Fatalf("渠道类型 %q 重复", ct)
 		}

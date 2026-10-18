@@ -167,6 +167,80 @@ func TestOpenAIBuildRequestAzureRequiresBaseURL(t *testing.T) {
 	}
 }
 
+// TestOpenAIBuildRequestRequiredBaseURLTypes 覆盖 relay-02 §7.1 的必填基址集合：
+// 缺失时不得静默落到 https://api.openai.com（会把凭据发往错误上游）。
+func TestOpenAIBuildRequestRequiredBaseURLTypes(t *testing.T) {
+	for _, ct := range []contract.ChannelType{
+		contract.ChannelTypeAzure,
+		contract.ChannelTypeCustom,
+		contract.ChannelTypeSunoAPI,
+		contract.ChannelTypeVolcEngine,
+		contract.ChannelTypeDoubaoVideo,
+		contract.ChannelTypeNewAPI,
+		contract.ChannelTypeTaskPlugin,
+		contract.ChannelTypeVLLM,
+		contract.ChannelTypeSGLang,
+	} {
+		t.Run(string(ct), func(t *testing.T) {
+			_, err := NewOpenAI().BuildRequest(&contract.RelayContext{
+				ChannelType: ct,
+				Credential:  "secret-key",
+				// APIBase 为空
+			}, &contract.Request{Model: "m"})
+			if err == nil {
+				t.Fatalf("%q 缺 base_url 必须失败", ct)
+			}
+			if !errors.Is(err, ErrChannelConfig) {
+				t.Fatalf("%q error = %v, want ErrChannelConfig-class", ct, err)
+			}
+		})
+	}
+}
+
+// TestOpenAIBuildRequestCustomFullURL 覆盖类型 8 的整 URL 语义：
+// 替换 {model} 后直接作为完整 URL，绝不追加 /v1/chat/completions。
+func TestOpenAIBuildRequestCustomFullURL(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://custom.example/v2/generate?key=public&model={model}",
+		Credential:    "custom-key",
+		UpstreamModel: "mapped-model.v1",
+	}
+	req := &contract.Request{Model: "client-model", Messages: []contract.Message{{Role: contract.RoleUser, Content: []contract.ContentPart{{Kind: contract.PartText, Text: "hi"}}}}}
+	httpReq, err := NewOpenAI().BuildRequest(rc, req)
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	want := "https://custom.example/v2/generate?key=public&model=mapped-model.v1"
+	if got := httpReq.URL.String(); got != want {
+		t.Fatalf("URL = %q, want %q（整 URL，不追加 /v1/chat/completions）", got, want)
+	}
+	if !strings.Contains(httpReq.URL.Path, "/v2/generate") {
+		t.Fatalf("path = %q，不得被改写为 chat/completions", httpReq.URL.Path)
+	}
+	if got := httpReq.Header.Get("Authorization"); got != "Bearer custom-key" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+// TestOpenAIBuildRequestCustomModelEscaped 断言 {model} 的模型名经过转义，
+// 防止模型名中的 ? / # / ../ 改写完整 URL。
+func TestOpenAIBuildRequestCustomModelEscaped(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://custom.example/api/{model}",
+		Credential:    "k",
+		UpstreamModel: "evil?x=1#frag",
+	}
+	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if strings.Contains(httpReq.URL.RawQuery, "x=1") || httpReq.URL.Fragment != "" {
+		t.Fatalf("模型名改写了 URL 结构：%s", httpReq.URL.String())
+	}
+}
+
 // TestOpenAIErrorsDoNotLeakBaseURLOrCredential 覆盖 GC-6：错误串不得含上游 base_url / 凭据。
 func TestOpenAIErrorsDoNotLeakBaseURLOrCredential(t *testing.T) {
 	secretBase := "https://user:super-secret@bad host.example/"
@@ -264,6 +338,7 @@ func TestOpenAIClassifyError(t *testing.T) {
 		{http.StatusUnauthorized, contract.ErrUpstreamAuth},
 		{http.StatusForbidden, contract.ErrUpstreamAuth},
 		{http.StatusNotFound, contract.ErrParamInvalid},
+		{http.StatusRequestTimeout, contract.ErrUnknown}, // relay-01 §6.2：408 属不重试固定集合
 		{http.StatusTooManyRequests, contract.ErrUpstreamRateLimit},
 		{http.StatusInternalServerError, contract.ErrUpstreamServer},
 		{http.StatusBadGateway, contract.ErrUpstreamServer},
@@ -405,5 +480,35 @@ func TestOpenAIStreamEventsDoneWithoutFinishChunk(t *testing.T) {
 	}
 	if finish != 1 {
 		t.Fatalf("finish events = %d, want 1", finish)
+	}
+}
+
+// TestOpenAIStreamEventsPreservesRawFieldsAndSkipsEmptyData 覆盖：
+// ① event:/id:/data: 行保留在事件 Raw 中（转码/审计需要原始事件体）；
+// ② 空 data 事件（`data:` 心跳）被跳过，不得产生伪 JSON 错误。
+func TestOpenAIStreamEventsPreservesRawFieldsAndSkipsEmptyData(t *testing.T) {
+	stream := "event: message\nid: 42\ndata: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data:\n\n" +
+		"data: [DONE]\n\n"
+	var delta *contract.StreamEvent
+	for ev := range NewOpenAI().StreamEvents(&contract.RelayContext{}, bytes.NewBufferString(stream)) {
+		ev := ev
+		switch ev.Kind {
+		case contract.EventError:
+			t.Fatalf("空 data 不得产生错误事件：%s", ev.Raw)
+		case contract.EventDelta:
+			if ev.Delta == "hi" {
+				delta = &ev
+			}
+		}
+	}
+	if delta == nil {
+		t.Fatal("缺少内容 delta 事件")
+	}
+	raw := string(delta.Raw)
+	for _, want := range []string{"event: message", "id: 42", "data: "} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("事件 Raw 未保留原始行 %q：%q", want, raw)
+		}
 	}
 }

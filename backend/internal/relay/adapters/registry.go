@@ -63,22 +63,28 @@ const (
 // 共用 AKOpenAI 键，但 `Type()` 必须返回各自渠道类型（契约 §3.1 Type 注释）。
 type AdapterConstructor func() contract.Adapter
 
-// DispatchTable 是渠道类型 → 分派入口的声明式数据（契约 §3.3）。
+// dispatchTable 是渠道类型 → 分派入口的声明式数据（契约 §3.3）。
 //
 // 59 个具名类型逐行写出（R-03 的「59 named + 1 sentinel」中指类型全集；
 // 哨兵 "" 不参与选择，因此不入表 —— relay-02 §2.3 允许省略或显式 ForbidFallback）。
-var DispatchTable = map[contract.ChannelType]contract.DispatchEntry{
+//
+// 不导出：导出可变 map 会让任何调用方在 init 快照之后篡改分派语义。
+// 只读视图走 DispatchTable()（返回副本），运行时入口保持 Lookup/Dispatch。
+var dispatchTable = map[contract.ChannelType]contract.DispatchEntry{
 	// 基线序号 1–13
-	contract.ChannelTypeOpenAI:         {AdapterKey: string(AKOpenAI)},
-	contract.ChannelTypeMidjourney:     {AdapterKey: string(AKTask)},
-	contract.ChannelTypeAzure:          {AdapterKey: string(AKOpenAI)}, // Azure 变体，键同为 OpenAI（relay-02 §2.2）
+	contract.ChannelTypeOpenAI:     {AdapterKey: string(AKOpenAI)},
+	contract.ChannelTypeMidjourney: {AdapterKey: string(AKTask)},
+	// 3 属 §2.1 的「未单列 OpenAI 系类型」：基线隐式回退 OpenAI，
+	// 新系统逐类型显式写出（R-P6 / relay-02 §2.3）。
+	contract.ChannelTypeAzure:          {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeOllama:         {AdapterKey: string(AKOllama)},
 	contract.ChannelTypeMidjourneyPlus: {AdapterKey: string(AKTask)},
-	// 6/9/10/12/13 是遗留 OpenAI 兼容类型：行为照搬基线，但回退必须逐类型显式写出
-	// FallbackTo（relay-02 §2.3 关键约束），不得依赖 map 未命中的隐式默认。
+	// 3/6/7/8/9/10/12/13/19/22/31 是 §2.1 列出的 OpenAI 兼容类型：基线隐式回退
+	// APITypeOpenAI；新系统必须逐类型显式写出 FallbackTo（relay-02 §2.3 关键约束），
+	// 不得依赖 map 未命中的隐式默认。
 	contract.ChannelTypeOpenAIMax: {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
-	contract.ChannelTypeOhMyGPT:   {AdapterKey: string(AKOpenAI)},
-	contract.ChannelTypeCustom:    {AdapterKey: string(AKOpenAI)},
+	contract.ChannelTypeOhMyGPT:   {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
+	contract.ChannelTypeCustom:    {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeAILS:      {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeAIProxy:   {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypePaLM:      {AdapterKey: string(AKPaLM)},
@@ -90,12 +96,12 @@ var DispatchTable = map[contract.ChannelType]contract.DispatchEntry{
 	contract.ChannelTypeZhipu:      {AdapterKey: string(AKZhipu)},
 	contract.ChannelTypeAli:        {AdapterKey: string(AKOpenAI)},
 	contract.ChannelTypeXunfei:     {AdapterKey: string(AKXunfei)},
-	contract.ChannelAi360:          {AdapterKey: string(AKOpenAI)},
+	contract.ChannelAi360:          {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeOpenRouter: {AdapterKey: string(AKOpenAI)},
 	// 21：基线的 GetAdaptor 返回 nil（invalid api type）。新系统保留枚举并显式失败，
 	// 不静默回落（U-10 裁决；relay-02 §2.3）。
 	contract.ChannelTypeAIProxyLibrary: {AdapterKey: string(AKAIProxyLibrary), ForbidFallback: true},
-	contract.ChannelTypeFastGPT:        {AdapterKey: string(AKOpenAI)},
+	contract.ChannelTypeFastGPT:        {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeTencent:        {AdapterKey: string(AKTencent)},
 	contract.ChannelTypeGemini:         {AdapterKey: string(AKGeminiNative)},
 	// 25：R-01 裁决 —— moonshot → Anthropic 原生（relay-02 §5 行 25）。
@@ -103,7 +109,7 @@ var DispatchTable = map[contract.ChannelType]contract.DispatchEntry{
 	contract.ChannelTypeZhipuV4:    {AdapterKey: string(AKOpenAI)},
 	contract.ChannelTypePerplexity: {AdapterKey: string(AKOpenAI)},
 	// 基线序号 31–43（28/29/30/32 为空洞）
-	contract.ChannelTypeLingYiWanWu: {AdapterKey: string(AKOpenAI)},
+	contract.ChannelTypeLingYiWanWu: {AdapterKey: string(AKOpenAI), FallbackTo: string(AKOpenAI)},
 	contract.ChannelTypeAws:         {AdapterKey: string(AKAws)},
 	contract.ChannelTypeCohere:      {AdapterKey: string(AKCohere)},
 	contract.ChannelTypeMiniMax:     {AdapterKey: string(AKMiniMax)},
@@ -139,6 +145,19 @@ var DispatchTable = map[contract.ChannelType]contract.DispatchEntry{
 	// 基线序号 62–63：advanced custom 预设，统一键。
 	contract.ChannelTypeVLLM:   {AdapterKey: string(AKAdvancedCustom)},
 	contract.ChannelTypeSGLang: {AdapterKey: string(AKAdvancedCustom)},
+}
+
+// DispatchTable 返回分派表的只读快照。
+//
+// 数据本身不导出：导出的可变 map 会让调用方在 init() 快照之后篡改分派语义
+// （Lookup/Dispatch 已按 init 时的内容建表，两者会不一致）。公共入口保持
+// Lookup/Dispatch；此访问器仅供诊断、表单与测试读取。
+func DispatchTable() contract.DispatchTable {
+	snapshot := make(contract.DispatchTable, len(dispatchTable))
+	for channelType, entry := range dispatchTable {
+		snapshot[channelType] = entry
+	}
+	return snapshot
 }
 
 // adapterConstructors 是「已实现」的适配器键 → 工厂。
@@ -186,14 +205,29 @@ var keyRoles = map[AdapterKey][]contract.ChannelRole{
 	AKAIProxyLibrary:  {contract.RoleChat},
 }
 
+// taskPlatforms 声明纯任务类型对应的任务平台键（relay-02 §2.5 末段、§2.4）。
+//
+// 61（task_plugin）的插件键由插件自身的 `task_plugin_key` 决定，不在本任务
+// 静态声明（因此不在此表，Caps().TaskPlatforms 为空并保持该语义）。
+var taskPlatforms = map[contract.ChannelType][]string{
+	contract.ChannelTypeMidjourney:     {"mj"},
+	contract.ChannelTypeMidjourneyPlus: {"mj+"},
+	contract.ChannelTypeSunoAPI:        {"sunoapi"},
+	contract.ChannelTypeKling:          {"kling"},
+	contract.ChannelTypeJimeng:         {"jimeng"},
+	contract.ChannelTypeVidu:           {"vidu"},
+	contract.ChannelTypeDoubaoVideo:    {"doubao"},
+	contract.ChannelTypeSora:           {"sora"},
+}
+
 // lookupTable 是 Lookup 的数据源：59 个具名类型各有一个构造器。
 // 无实现的键返回 declaredAdapter（能力可读、协议方法显式失败）。
 var lookupTable = make(map[contract.ChannelType]AdapterConstructor, len(contract.ChannelTypes))
 
 func init() {
-	validateDispatchTable(DispatchTable)
+	validateDispatchTable(dispatchTable)
 
-	for channelType, entry := range DispatchTable {
+	for channelType, entry := range dispatchTable {
 		key := AdapterKey(entry.AdapterKey)
 		if factory, ok := adapterConstructors[key]; ok {
 			lookupTable[channelType] = func() contract.Adapter { return factory(channelType) }
@@ -237,19 +271,27 @@ func validateDispatchTable(table contract.DispatchTable) {
 // declaredAdapter 只声明能力，不实现协议。用于尚无适配器的键（含 21/61 的
 // 显式失败条目）。Dispatch 永远不会把它当作可用实现返回。
 type declaredAdapter struct {
-	channelType contract.ChannelType
-	roles       []contract.ChannelRole
+	channelType   contract.ChannelType
+	roles         []contract.ChannelRole
+	taskPlatforms []string
 }
 
 func newDeclaredAdapter(channelType contract.ChannelType) *declaredAdapter {
-	key := AdapterKey(DispatchTable[channelType].AdapterKey)
-	return &declaredAdapter{channelType: channelType, roles: keyRoles[key]}
+	key := AdapterKey(dispatchTable[channelType].AdapterKey)
+	return &declaredAdapter{
+		channelType:   channelType,
+		roles:         keyRoles[key],
+		taskPlatforms: taskPlatforms[channelType],
+	}
 }
 
 func (a *declaredAdapter) Type() contract.ChannelType { return a.channelType }
 
 func (a *declaredAdapter) Caps() contract.Capabilities {
-	return contract.Capabilities{Roles: append([]contract.ChannelRole(nil), a.roles...)}
+	return contract.Capabilities{
+		Roles:         append([]contract.ChannelRole(nil), a.roles...),
+		TaskPlatforms: append([]string(nil), a.taskPlatforms...),
+	}
 }
 
 func (a *declaredAdapter) unsupported() error {
@@ -289,7 +331,7 @@ func Lookup(channelType contract.ChannelType) (AdapterConstructor, bool) {
 //
 // 任何失败路径都返回 nil 适配器（R-P6：never a nil adapter）。
 func Dispatch(channelType contract.ChannelType) (contract.Adapter, error) {
-	entry, ok := DispatchTable[channelType]
+	entry, ok := dispatchTable[channelType]
 	if !ok {
 		return nil, fmt.Errorf("adapters: channel type %q has no dispatch entry: %w", string(channelType), ErrEndpointUnsupported)
 	}

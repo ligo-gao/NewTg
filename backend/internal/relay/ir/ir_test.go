@@ -347,8 +347,9 @@ func TestIRParseOpenAIResponseUsage(t *testing.T) {
 	if usage.PromptDetail.Image != 10 || usage.PromptDetail.Text != 90 {
 		t.Fatalf("prompt detail = %+v", usage.PromptDetail)
 	}
-	if usage.CompletionDetail.Text != 20 {
-		t.Fatalf("completion detail = %+v（Completion 含 Reasoning，文本子类须扣除）", usage.CompletionDetail)
+	// Completion 是文本 token 维度：reasoning 也是文本输出，只扣音频，不扣 reasoning。
+	if usage.CompletionDetail.Text != 40 || usage.CompletionDetail.Audio != 0 {
+		t.Fatalf("completion detail = %+v", usage.CompletionDetail)
 	}
 	if usage.Source != contract.UsageUpstreamExact {
 		t.Fatalf("source = %v, want upstream_exact", usage.Source)
@@ -468,6 +469,47 @@ func TestIRFromIRBuildsOpenAIJSON(t *testing.T) {
 	}
 	if string(src.Raw) != "" {
 		t.Fatal("FromIR 不得修改入参的 Raw")
+	}
+}
+
+func TestIRParseOpenAIResponseEmptyUsageIsEstimated(t *testing.T) {
+	body := `{"id":"c","model":"m","choices":[],"usage":{}}`
+	_, usage, err := ParseOpenAIResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse: %v", err)
+	}
+	if usage.Source != contract.UsageEstimated {
+		t.Fatalf("空 usage 的 Source = %v, want UsageEstimated（不得标成 upstream_exact）", usage.Source)
+	}
+	if !usage.PromptIncludesCache || !usage.ReasoningIncludedInCompletion {
+		t.Fatalf("关系布尔必须显式赋值：%+v", usage)
+	}
+}
+
+func TestIRParseOpenAIRequestNegativeMaxCompletionTokensRejected(t *testing.T) {
+	_, err := ParseOpenAIRequest([]byte(`{"model":"m","messages":[],"max_completion_tokens":-5}`))
+	if err == nil || !errors.Is(err, ErrParamInvalid) {
+		t.Fatalf("负的 max_completion_tokens 必须被拒绝（回填后仍须校验），got %v", err)
+	}
+}
+
+func TestIRBuildOpenAIRequestBodySkipsRawWhenFormatUnknown(t *testing.T) {
+	// RawFormat 为空说明不是本包解析出的 OpenAI 请求：不得把 Raw 字段混入目标请求。
+	body, err := BuildOpenAIRequestBody(&contract.Request{
+		Model:     "m",
+		RawFormat: "",
+		Raw:       contract.ProtocolBody(`{"logprobs":true,"user":"u-1"}`),
+		Messages:  []contract.Message{{Role: contract.RoleUser, Content: []contract.ContentPart{{Kind: contract.PartText, Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenAIRequestBody: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if _, ok := obj["logprobs"]; ok {
+		t.Fatalf("空 RawFormat 不得透传 Raw 字段（body=%s）", body)
 	}
 }
 

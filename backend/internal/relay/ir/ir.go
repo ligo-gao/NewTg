@@ -83,12 +83,14 @@ func ParseOpenAIRequest(body []byte) (*contract.Request, error) {
 	if payload.Model != nil {
 		req.Model = *payload.Model
 	}
-	if err := validateScalars(payload.MaxTokens, payload.Temperature, payload.TopP); err != nil {
-		return nil, err
-	}
 	req.MaxTokens = payload.MaxTokens
 	if req.MaxTokens == nil {
 		req.MaxTokens = payload.MaxCompletionTokens
+	}
+	// 校验必须发生在 max_completion_tokens 回填之后：否则负数会绕过
+	// validateScalars 进入 IR，成为负的计费乘数（billing.md 硬约束）。
+	if err := validateScalars(req.MaxTokens, payload.Temperature, payload.TopP); err != nil {
+		return nil, err
 	}
 	req.Temperature = payload.Temperature
 	req.TopP = payload.TopP
@@ -575,11 +577,12 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 
 // isOpenAIRawFormat 判断原始层是否与 OpenAI Chat 同形。
 //
-// 契约未冻结 RelayFormat 字面量，故此处接受常见拼写；未知格式一律按
-// 「不同形」处理（不透传），宁可少透传也不污染目标协议。
+// 契约未冻结 RelayFormat 字面量，故接受常见拼写；空值与未知格式一律按
+// 「不同形」处理（不透传）—— ParseOpenAIRequest 总会写入 FormatOpenAIChat，
+// 空 RawFormat 说明该请求不是由本包解析的 OpenAI 请求，透传会污染目标协议。
 func isOpenAIRawFormat(format contract.RelayFormat) bool {
 	switch strings.ToLower(string(format)) {
-	case "", "openai", "openai_chat", "openai_chat_completions", "chat", "chat_completions":
+	case "openai", "openai_chat", "openai_chat_completions", "chat", "chat_completions":
 		return true
 	default:
 		return false
@@ -930,6 +933,15 @@ func parseOpenAIUsage(raw json.RawMessage) contract.Usage {
 	}
 	var rawMap map[string]any
 	_ = json.Unmarshal(raw, &rawMap)
+	if len(rawMap) == 0 {
+		// 空 usage 对象（`"usage": {}`）没有任何上游事实，不能标成 upstream_exact；
+		// 按「无 usage」处理，提示调用方走 relay-03 §7 兜底估算。
+		return contract.Usage{
+			PromptIncludesCache:           true,
+			ReasoningIncludedInCompletion: true,
+			Source:                        contract.UsageEstimated,
+		}
+	}
 
 	usage := contract.Usage{
 		Prompt:                        nonNeg(payload.PromptTokens),
@@ -969,9 +981,9 @@ func parseOpenAIUsage(raw json.RawMessage) contract.Usage {
 	}
 	usage.CompletionDetail = contract.UsageDetail{
 		Audio: completionAudio,
-		// Completion 已包含 Reasoning（ReasoningIncludedInCompletion=true），
-		// 文本子类须扣除音频与推理，避免阶梯价重复计入。
-		Text: nonNeg(usage.Completion - completionAudio - reasoning),
+		// Completion 是**文本** token 维度：thinking/reasoning token 也是文本输出，
+		// 不再从 Text 中扣除（Reasoning 仅作为独立计费维度另行记录）；只扣除音频。
+		Text: nonNeg(usage.Completion - completionAudio),
 	}
 	// total_tokens 缺失时按 Prompt+Completion 派生（仅在两者非零时）。
 	if usage.Total == 0 && usage.Prompt+usage.Completion > 0 {

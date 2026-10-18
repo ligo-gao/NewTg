@@ -106,6 +106,12 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel %d has no credential", rc.ChannelID)
 	}
 
+	// relay-02 §7.1 的「必填 base_url」类型不得静默落到 OpenAI 默认基址：
+	// 那会把凭据发往错误的上游（凭据错向风险）。
+	if strings.TrimSpace(rc.APIBase) == "" && requiresExplicitBaseURL(channelType) {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel type %q requires a base URL", channelType)
+	}
+
 	// 模型映射后的上游模型名优先；未映射时使用客户端模型名。
 	upstreamReq := *req
 	if rc.UpstreamModel != "" {
@@ -113,16 +119,14 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 	}
 	body, err := ir.BuildOpenAIRequestBody(&upstreamReq)
 	if err != nil {
-		return nil, err
+		// IR 编码错误是请求参数问题（不重试），统一带上契约分类供执行层判定。
+		return nil, classifiedf(contract.ErrParamInvalid, "%w", err)
 	}
 
 	requestPath := openAIChatPath
 	var query url.Values
 	if azure {
-		// Azure 变体：base_url 必填（relay-02 §7.1/§7.4），路径携带部署名与 api-version。
-		if strings.TrimSpace(rc.APIBase) == "" {
-			return nil, classifiedf(contract.ErrChannelConfig, "adapters: azure_openai requires a base URL")
-		}
+		// Azure 变体：base_url 已在上方必填校验；路径携带部署名与 api-version。
 		deployment := azureDeploymentName(upstreamReq.Model, rc.CreatedTime)
 		requestPath = "/openai/deployments/" + url.PathEscape(deployment) + "/chat/completions"
 		query = url.Values{}
@@ -133,7 +137,14 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 	if baseURL == "" {
 		baseURL = openAIDefaultBaseURL
 	}
-	fullURL, err := joinURL(baseURL, requestPath, query)
+	var fullURL string
+	if channelType == contract.ChannelTypeCustom {
+		// 类型 8（custom）：base_url 是**完整 URL**（relay-02 §5 行 8、§7.2），
+		// 支持 {model} 占位；不得再拼接 /v1/chat/completions。
+		fullURL, err = customURL(baseURL, upstreamReq.Model)
+	} else {
+		fullURL, err = joinURL(baseURL, requestPath, query)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +167,40 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 		httpReq.Header.Set("Authorization", "Bearer "+rc.Credential)
 	}
 	return httpReq, nil
+}
+
+// requiredBaseURLTypes 是 relay-02 §7.1 的「必填 base_url」类型集合：
+// 3 azure_openai、8 custom、36 sunoapi、45 volcengine、54 doubao_video、
+// 60 newapi、61 task_plugin、62 vllm、63 sglang。缺失时校验期即拒绝
+// （ErrChannelConfig），不得回落到默认基址。
+var requiredBaseURLTypes = map[contract.ChannelType]bool{
+	contract.ChannelTypeAzure:       true,
+	contract.ChannelTypeCustom:      true,
+	contract.ChannelTypeSunoAPI:     true,
+	contract.ChannelTypeVolcEngine:  true,
+	contract.ChannelTypeDoubaoVideo: true,
+	contract.ChannelTypeNewAPI:      true,
+	contract.ChannelTypeTaskPlugin:  true,
+	contract.ChannelTypeVLLM:        true,
+	contract.ChannelTypeSGLang:      true,
+}
+
+func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
+	return requiredBaseURLTypes[channelType]
+}
+
+// customURL 处理类型 8（custom）的整 URL 语义（relay-02 §5 行 8、§7.2）：
+// base_url 本身就是完整请求 URL，支持 {model} 占位；结果不再拼接任何路径。
+//
+// 模型名做 PathEscape 后再替换：模型名是用户可控量，直接拼进 URL 会形成
+// 路径注入面（可注入 ? / # / ../）。替换后重新解析校验，错误不回显 URL（GC-6）。
+func customURL(baseURL, model string) (string, error) {
+	substituted := strings.ReplaceAll(baseURL, "{model}", url.PathEscape(model))
+	parsed, err := url.Parse(substituted)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
+	}
+	return parsed.String(), nil
 }
 
 // azureDeploymentName 实现 Azure 部署名的点号保留规则（relay-02 §7.4）。
@@ -245,7 +290,9 @@ func (o *OpenAI) ClassifyError(status int, _ []byte) contract.ErrorClass {
 	case status == http.StatusUnauthorized, status == http.StatusForbidden:
 		return contract.ErrUpstreamAuth
 	case status == http.StatusRequestTimeout:
-		return contract.ErrRetryable // 超时
+		// relay-01 §6.2 把 408 列入「不重试的固定集合」；不得分类为可重试，
+		// 否则与执行层的固定集合语义冲突。归为未分类（由执行层固定集合兜底）。
+		return contract.ErrUnknown
 	case status == http.StatusTooManyRequests:
 		return contract.ErrUpstreamRateLimit
 	case status >= 500:
