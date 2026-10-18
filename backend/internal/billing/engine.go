@@ -55,9 +55,13 @@ type Registry interface {
 // Status 取 usage_logs.status 的整型枚举（0=refused / 1=success /
 // 2=error / 3=refunded）。Cost/PreDeducted/Refunded 均为整数积分。
 type SettlementOutcome struct {
-	Cost         int64 // 实际应扣（结算后）
-	PreDeducted  int64 // 预扣总量
-	Refunded     int64 // 退还量（≥0）
+	Cost        int64 // 实际应扣（结算后）
+	PreDeducted int64 // 预扣总量
+	Refunded    int64 // 退还量（≥0）
+	// RetainedCost 是 status=refunded 时**保留不退**的 ChargeIncrement 消耗
+	// （R-39/R-59）：崩溃兜底只退剩余 hold，已交付用量的增量扣款不随崩溃退。
+	// 其它状态忽略该字段（success 用 Cost，refused/error 强制 0）。
+	RetainedCost int64
 	Status       int16 // usage_logs.status（0..3）
 	ErrorClass   string
 	ErrorMessage string

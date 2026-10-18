@@ -7,14 +7,18 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"newtg/gateway/internal/contract"
 )
 
 // 本文件是 usage_logs 落库与月分区的集成验收（真 PG 日志库）。
@@ -214,18 +218,28 @@ func TestSaturateIntegrationIdempotent(t *testing.T) {
 	}
 
 	// worker 在 Saturate 与主库结算之间判定悬挂并退款：success 行收敛为 refunded。
-	refunded := SettlementOutcome{PreDeducted: 100, Refunded: 100, Status: UsageLogStatusRefunded}
+	// R-59：已交付用量的 ChargeIncrement 消耗（30）保留为 cost，退回的 hold=100。
+	refunded := SettlementOutcome{
+		PreDeducted: 100, Refunded: 100, RetainedCost: 30,
+		Status: UsageLogStatusRefunded, ErrorClass: "worker_refund", ErrorMessage: "abandoned",
+	}
 	if err := l.Saturate(ctx, nil, rc, refunded); err != nil {
 		t.Fatalf("Saturate(refunded): %v", err)
 	}
 	var status int16
 	var cost, refundedAmt int64
-	if err := db.QueryRow(`SELECT status, cost, refunded FROM usage_logs WHERE request_id = $1::uuid`,
-		rc.RequestID).Scan(&status, &cost, &refundedAmt); err != nil {
+	var errorClass string
+	if err := db.QueryRow(
+		`SELECT status, cost, refunded, COALESCE(error_class, '') FROM usage_logs WHERE request_id = $1::uuid`,
+		rc.RequestID).Scan(&status, &cost, &refundedAmt, &errorClass); err != nil {
 		t.Fatalf("read converged row: %v", err)
 	}
-	if status != UsageLogStatusRefunded || cost != 0 || refundedAmt != 100 {
-		t.Fatalf("converged row = status %d cost %d refunded %d", status, cost, refundedAmt)
+	if status != UsageLogStatusRefunded || cost != 30 || refundedAmt != 100 {
+		t.Fatalf("converged row = status %d cost %d refunded %d（want 3/30/100）",
+			status, cost, refundedAmt)
+	}
+	if errorClass != "worker_refund" {
+		t.Fatalf("converged error_class = %q, want worker_refund（收敛需记录退款原因）", errorClass)
 	}
 
 	// 终态之后迟到的 success 绝不能把 refunded 降级。
@@ -355,7 +369,7 @@ func TestPartitionIntegrationEnsure(t *testing.T) {
 		}
 	}
 
-	for _, name := range names {
+	for i, name := range names {
 		var exists bool
 		if err := db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
 			t.Fatalf("check %s: %v", name, err)
@@ -370,6 +384,20 @@ func TestPartitionIntegrationEnsure(t *testing.T) {
 		}
 		if !isPartition {
 			t.Fatalf("%s 不是 usage_logs 的分区", name)
+		}
+		// 断言精确的 [月初, 次月初) 边界，而不只是「分区存在」。
+		var bound string
+		if err := db.QueryRow(`
+			SELECT pg_get_expr(c.relpartbound, c.oid) FROM pg_class c WHERE c.relname = $1`,
+			name).Scan(&bound); err != nil {
+			t.Fatalf("relpartbound %s: %v", name, err)
+		}
+		wantBounds := []string{
+			"FOR VALUES FROM ('2099-03-01 00:00:00+00') TO ('2099-04-01 00:00:00+00')",
+			"FOR VALUES FROM ('2099-04-01 00:00:00+00') TO ('2099-05-01 00:00:00+00')",
+		}
+		if bound != wantBounds[i] {
+			t.Fatalf("%s 边界 = %q, want %q", name, bound, wantBounds[i])
 		}
 	}
 
@@ -412,17 +440,178 @@ func mustLogsDSN(t *testing.T) string {
 	return u.String()
 }
 
-// TestSaturateIntegrationNoConflictingPartitionKeys 保证测试上下文里
-// buildUsageLogOther 的 model 参数与 rc 一致时的映射标记行为（回归：
-// 上游模型相同不得写 is_model_mapped）。
-func TestSaturateIntegrationNoConflictingPartitionKeys(t *testing.T) {
+// TestPartitionIntegrationDDLUnavailable 验证 R-56 的「运行期身份无 DDL」路径：
+// 非属主且无 schema CREATE 的连接必须在尝试任何 DDL 之前得到可识别的
+// *PartitionDDLUnavailableError（worker 据此记 warn，而不是反复报错）。
+func TestPartitionIntegrationDDLUnavailable(t *testing.T) {
+	admin := openLogsTestDB(t)
+	ctx := context.Background()
+	role := fmt.Sprintf("t6_noddl_%d", time.Now().UnixNano())
+	dsn := logsDSNForUser(t, role, "t6probe")
+
+	if _, err := admin.Exec(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD 't6probe'", role)); err != nil {
+		t.Skipf("无法创建临时角色（需要 CREATEROLE），跳过 DDL 权限路径: %v", err)
+	}
+	var db *sql.DB
+	t.Cleanup(func() {
+		if db != nil {
+			_ = db.Close()
+		}
+		_, _ = admin.Exec("DROP ROLE " + role)
+	})
+	for _, stmt := range []string{
+		"GRANT CONNECT ON DATABASE newtg_logs TO " + role,
+		"GRANT USAGE ON SCHEMA public TO " + role,
+		"GRANT SELECT ON usage_logs TO " + role,
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("grant to temp role: %v (%s)", err, stmt)
+		}
+	}
+
+	var err error
+	db, err = sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open temp role db: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping temp role db: %v", err)
+	}
+
+	now := time.Date(2099, 3, 15, 8, 0, 0, 0, time.UTC)
+	err = EnsureUsagePartitions(ctx, db, now)
+	var ddlErr *PartitionDDLUnavailableError
+	if !errors.As(err, &ddlErr) {
+		t.Fatalf("EnsureUsagePartitions = %v, want *PartitionDDLUnavailableError", err)
+	}
+	if ddlErr.SchemaCreate || ddlErr.OwnsParent {
+		t.Fatalf("权限探测 = %+v, want schema_create=false owns_parent=false", ddlErr)
+	}
+	if !strings.Contains(err.Error(), "migrate credentials") {
+		t.Fatalf("错误信息缺少运维指引: %v", err)
+	}
+	// 未授权身份绝不能创建出分区。
+	var exists bool
+	if err := admin.QueryRow(`SELECT to_regclass('usage_logs_209903') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatalf("check partition: %v", err)
+	}
+	if exists {
+		t.Fatal("无 DDL 权限的连接不应创建出分区")
+	}
+}
+
+// TestSaturateIntegrationRefundedRetainedCost 验证 R-59 的落库：
+// refunded 保留的 ChargeIncrement 消耗写 cost，纯退款仍为 0。
+func TestSaturateIntegrationRefundedRetainedCost(t *testing.T) {
+	db := openLogsTestDB(t)
+	l := NewDBLogger(db)
+	ctx := context.Background()
+
+	retained := testRelayContext()
+	retained.RequestID = newTestUUID(t)
+	cleanupUsageLog(t, db, retained.RequestID)
+	if err := l.Saturate(ctx, nil, retained, SettlementOutcome{
+		PreDeducted: 300, Refunded: 300, RetainedCost: 50, Status: UsageLogStatusRefunded,
+	}); err != nil {
+		t.Fatalf("Saturate(retained): %v", err)
+	}
+	var cost, refunded int64
+	var status int16
+	if err := db.QueryRow(`SELECT status, cost, refunded FROM usage_logs WHERE request_id = $1::uuid`,
+		retained.RequestID).Scan(&status, &cost, &refunded); err != nil {
+		t.Fatalf("read retained row: %v", err)
+	}
+	if status != UsageLogStatusRefunded || cost != 50 || refunded != 300 {
+		t.Fatalf("retained row = status %d cost %d refunded %d, want 3/50/300", status, cost, refunded)
+	}
+
+	plain := testRelayContext()
+	plain.RequestID = newTestUUID(t)
+	cleanupUsageLog(t, db, plain.RequestID)
+	if err := l.Saturate(ctx, nil, plain, SettlementOutcome{
+		PreDeducted: 300, Refunded: 300, Status: UsageLogStatusRefunded,
+	}); err != nil {
+		t.Fatalf("Saturate(plain): %v", err)
+	}
+	if err := db.QueryRow(`SELECT cost FROM usage_logs WHERE request_id = $1::uuid`,
+		plain.RequestID).Scan(&cost); err != nil {
+		t.Fatalf("read plain row: %v", err)
+	}
+	if cost != 0 {
+		t.Fatalf("plain refunded cost = %d, want 0", cost)
+	}
+}
+
+// TestSaturateIntegrationNULPath 回归 I2：带 NUL 的请求路径曾使日志 INSERT
+// 以 SQLSTATE 22P05 失败，进而阻塞结算。other 的字符串值必须被清洗。
+func TestSaturateIntegrationNULPath(t *testing.T) {
+	db := openLogsTestDB(t)
 	rc := testRelayContext()
-	rc.UpstreamModel = rc.OriginModel
-	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{})
-	if _, ok := other["upstream_model_name"]; ok {
-		t.Fatal("上游模型与请求模型相同，不应写 upstream_model_name")
+	rc.RequestID = newTestUUID(t)
+	rc.RequestPath = "/v1/chat\x00/completions"
+	rc.UpstreamModel = "gpt\x00-4o-upstream"
+	cleanupUsageLog(t, db, rc.RequestID)
+
+	l := NewDBLogger(db)
+	if err := l.Saturate(context.Background(), testUsageFact(), rc,
+		SettlementOutcome{Status: UsageLogStatusSuccess}); err != nil {
+		t.Fatalf("Saturate(NUL path) = %v, want nil（清洗后应可落库）", err)
 	}
-	if _, ok := other["is_model_mapped"]; ok {
-		t.Fatal("上游模型与请求模型相同，不应写 is_model_mapped")
+	var path string
+	if err := db.QueryRow(`SELECT other->>'request_path' FROM usage_logs WHERE request_id = $1::uuid`,
+		rc.RequestID).Scan(&path); err != nil {
+		t.Fatalf("read other.request_path: %v", err)
 	}
+	if strings.ContainsRune(path, '\x00') {
+		t.Fatalf("request_path 仍含 NUL: %q", path)
+	}
+}
+
+// TestSaturateIntegrationLockCanonicalizesUUID 回归 I1：同一个 UUID 的大小写/
+// 花括号拼写必须共享同一把咨询锁，否则并发写会插入两行（评审探针 99/100）。
+func TestSaturateIntegrationLockCanonicalizesUUID(t *testing.T) {
+	db := openLogsTestDB(t)
+	l := NewDBLogger(db)
+
+	for i := 0; i < 10; i++ {
+		canonical := newTestUUID(t)
+		cleanupUsageLog(t, db, canonical)
+		spellings := []string{strings.ToUpper(canonical), "{" + canonical + "}"}
+		outcome := SettlementOutcome{Cost: 1, Status: UsageLogStatusSuccess}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make(chan error, len(spellings))
+		for _, spelling := range spellings {
+			wg.Add(1)
+			go func(spelling string) {
+				defer wg.Done()
+				<-start
+				rc := &contract.RelayContext{RequestID: spelling, UserID: 1}
+				if err := l.Saturate(context.Background(), testUsageFact(), rc, outcome); err != nil {
+					errs <- err
+				}
+			}(spelling)
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("iteration %d: Saturate: %v", i, err)
+		}
+		if n := countUsageLog(t, db, canonical); n != 1 {
+			t.Fatalf("iteration %d: 行数 = %d, want 1（UUID 拼写必须共享同一把锁）", i, n)
+		}
+	}
+}
+
+// logsDSNForUser 返回以指定角色/口令连接 newtg_logs 的 DSN。
+func logsDSNForUser(t *testing.T, user, password string) string {
+	t.Helper()
+	u, err := url.Parse(mustLogsDSN(t))
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	u.User = url.UserPassword(user, password)
+	return u.String()
 }

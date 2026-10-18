@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -148,15 +150,15 @@ func TestSaturateRowNullsAndForcing(t *testing.T) {
 }
 
 // TestSaturateRejectsInvalidInput 验证缺 requestID/非法 status/负金额被拒绝。
+//
+// 必须直接调用 buildUsageLogRow：经 Saturate 且 logsDB=nil 时，任何输入都会
+// 先撞上「没有日志库」错误，断言会变成永真的空测试。
 func TestSaturateRejectsInvalidInput(t *testing.T) {
-	l := NewDBLogger(nil)
-	ctx := context.Background()
-
-	if err := l.Saturate(ctx, testUsageFact(), nil, SettlementOutcome{}); err == nil {
-		t.Fatal("Saturate(nil rc) = nil, want error")
+	if _, err := buildUsageLogRow(testUsageFact(), nil, SettlementOutcome{}); err == nil {
+		t.Fatal("buildUsageLogRow(nil rc) = nil, want error")
 	}
-	if err := l.Saturate(ctx, testUsageFact(), &contract.RelayContext{}, SettlementOutcome{}); err == nil {
-		t.Fatal("Saturate(empty request id) = nil, want error")
+	if _, err := buildUsageLogRow(testUsageFact(), &contract.RelayContext{}, SettlementOutcome{}); err == nil {
+		t.Fatal("buildUsageLogRow(empty request id) = nil, want error")
 	}
 
 	rc := testRelayContext()
@@ -169,6 +171,7 @@ func TestSaturateRejectsInvalidInput(t *testing.T) {
 		{"negative cost", SettlementOutcome{Status: UsageLogStatusSuccess, Cost: -1}},
 		{"negative pre_deducted", SettlementOutcome{Status: UsageLogStatusSuccess, PreDeducted: -1}},
 		{"negative refunded", SettlementOutcome{Status: UsageLogStatusSuccess, Refunded: -1}},
+		{"negative retained", SettlementOutcome{Status: UsageLogStatusRefunded, RetainedCost: -1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,6 +179,143 @@ func TestSaturateRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("buildUsageLogRow(%+v) = nil, want error", tc.outcome)
 			}
 		})
+	}
+}
+
+// TestSaturateRetainedCost 钉死 R-59：refunded 状态保留的 ChargeIncrement
+// 消耗写 cost（>0），纯退款仍为 0；其它非 success 状态一律 0。
+func TestSaturateRetainedCost(t *testing.T) {
+	rc := testRelayContext()
+
+	row, err := buildUsageLogRow(nil, rc, SettlementOutcome{
+		PreDeducted: 300, Refunded: 300, RetainedCost: 50, Status: UsageLogStatusRefunded,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(refunded retained): %v", err)
+	}
+	if row.cost != 50 {
+		t.Fatalf("refunded retained cost = %d, want 50（与钱包保留消费一致）", row.cost)
+	}
+	if row.refunded != 300 {
+		t.Fatalf("refunded = %d, want 300（退回的 hold）", row.refunded)
+	}
+
+	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{
+		PreDeducted: 300, Refunded: 300, Status: UsageLogStatusRefunded,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(plain refunded): %v", err)
+	}
+	if row.cost != 0 {
+		t.Fatalf("plain refunded cost = %d, want 0", row.cost)
+	}
+
+	// success 只用 Cost，RetainedCost 不参与。
+	row, err = buildUsageLogRow(testUsageFact(), rc, SettlementOutcome{
+		Cost: 10, RetainedCost: 50, Status: UsageLogStatusSuccess,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(success): %v", err)
+	}
+	if row.cost != 10 {
+		t.Fatalf("success cost = %d, want 10", row.cost)
+	}
+
+	// error 即使带了 RetainedCost 也强制 0（没有保留消费语义）。
+	row, err = buildUsageLogRow(testUsageFact(), rc, SettlementOutcome{
+		Cost: 10, RetainedCost: 50, Status: UsageLogStatusError,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(error): %v", err)
+	}
+	if row.cost != 0 {
+		t.Fatalf("error cost = %d, want 0", row.cost)
+	}
+}
+
+// TestSaturateOtherSanitizesNUL 验证 other 的字符串值去掉 NUL/非法 UTF-8：
+// jsonb 不接受 \u0000（SQLSTATE 22P05），一个带 %00 的路径就能阻塞结算。
+func TestSaturateOtherSanitizesNUL(t *testing.T) {
+	rc := testRelayContext()
+	rc.RequestPath = "/v1/chat\x00/completions"
+	rc.UpstreamModel = "gpt\x00-4o-upstream"
+
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{})
+	blob, err := json.Marshal(other)
+	if err != nil {
+		t.Fatalf("marshal other: %v", err)
+	}
+	if strings.Contains(string(blob), `\u0000`) {
+		t.Fatalf("other 含 NUL 转义: %s", blob)
+	}
+	if got := other["request_path"]; got != "/v1/chat/completions" {
+		t.Fatalf("request_path = %q, want NUL removed", got)
+	}
+	if got := other["upstream_model_name"]; got != "gpt-4o-upstream" {
+		t.Fatalf("upstream_model_name = %q, want NUL removed", got)
+	}
+}
+
+// TestSaturateClampsTimingFields 验证 latency/first_token 钳到 PG int32 域。
+func TestSaturateClampsTimingFields(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("int 为 32 位，无法构造超 int32 的输入")
+	}
+	huge := int64(math.MaxInt32) + 7
+	ttft := int(huge)
+	fact := testUsageFact()
+	fact.LatencyMS = int(huge)
+	fact.FirstTokenMS = &ttft
+
+	row, err := buildUsageLogRow(fact, testRelayContext(), SettlementOutcome{
+		Status: UsageLogStatusSuccess,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow: %v", err)
+	}
+	if row.latencyMS.Int64 != math.MaxInt32 {
+		t.Fatalf("latency = %d, want MaxInt32", row.latencyMS.Int64)
+	}
+	if row.firstTokenMS.Int64 != math.MaxInt32 {
+		t.Fatalf("first_token = %d, want MaxInt32", row.firstTokenMS.Int64)
+	}
+}
+
+// TestSaturateStreamPrecedence 验证 fact.Stream 优先于 rc.Streaming；只有
+// worker 退款占位（fact=nil）才回退到 rc.Streaming。
+func TestSaturateStreamPrecedence(t *testing.T) {
+	rc := testRelayContext()
+	rc.Streaming = true
+	fact := testUsageFact()
+	fact.Stream = false
+
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(fact): %v", err)
+	}
+	if row.stream {
+		t.Fatal("fact.Stream=false 必须优先于 rc.Streaming=true")
+	}
+
+	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{Status: UsageLogStatusRefunded})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(nil fact): %v", err)
+	}
+	if !row.stream {
+		t.Fatal("fact=nil 时应回退到 rc.Streaming=true")
+	}
+}
+
+// TestSaturateNoModelMappingWhenSame 验证上游模型与请求模型相同时不写映射标记。
+func TestSaturateNoModelMappingWhenSame(t *testing.T) {
+	rc := testRelayContext()
+	rc.UpstreamModel = rc.OriginModel
+	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{})
+	if _, ok := other["upstream_model_name"]; ok {
+		t.Fatal("上游模型与请求模型相同，不应写 upstream_model_name")
+	}
+	if _, ok := other["is_model_mapped"]; ok {
+		t.Fatal("上游模型与请求模型相同，不应写 is_model_mapped")
 	}
 }
 

@@ -114,6 +114,20 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 			return
 		}
 		if err := ensurePartitions(ctx, deps.LogsDB, now()); err != nil {
+			// R-56：生产 worker 以 newtg_app 运行，没有分区 DDL 权限；
+			// 这是**预期身份**而不是故障——分区由日志迁移预建 12 个月。
+			// 用 warn + 明确 ops 信息提示扩窗方式，绝不按 error 反复告警，
+			// 也不阻断本轮悬挂扫描。
+			var ddlErr *PartitionDDLUnavailableError
+			if errors.As(err, &ddlErr) {
+				log.Warn("usage_logs partition DDL unavailable (runtime role is not the table owner); "+
+					"partitions are pre-created by the logs migration with a 12-month lookahead — "+
+					"extend the lookahead with migrate credentials before it runs out",
+					"schema", ddlErr.Schema,
+					"schema_create", ddlErr.SchemaCreate,
+					"owns_parent", ddlErr.OwnsParent)
+				return
+			}
 			log.Error("ensure usage_logs partitions failed; retrying next round", "error", err)
 		}
 	}

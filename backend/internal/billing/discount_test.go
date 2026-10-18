@@ -149,6 +149,19 @@ func TestDiscountMatching(t *testing.T) {
 	}
 }
 
+// TestDiscountUserScopePreFiltered 钉死 R-57：user 作用域与有效期由配置域
+// 预过滤；本函数对 `user:` 保持 fail-closed，绝不把它当通配符。
+func TestDiscountUserScopePreFiltered(t *testing.T) {
+	target := DiscountTarget{Model: "m", Group: "vip", Channel: "1"}
+	got := ResolveDiscount([]contract.Discount{
+		{Rate: 0, Target: "user:42"},
+		{Rate: 0.5, Target: "user:42"},
+	}, target)
+	if got.Target != "" || got.Rate != 1 {
+		t.Fatalf("ResolveDiscount(user:42) = %+v, want 未命中（配置域必须先过滤）", got)
+	}
+}
+
 // TestDiscountTieDeterminism 验证同 rate 的确定性与 SortDiscounts 的稳定排序。
 func TestDiscountTieDeterminism(t *testing.T) {
 	target := DiscountTarget{Model: "m", Group: "vip", Channel: "1"}

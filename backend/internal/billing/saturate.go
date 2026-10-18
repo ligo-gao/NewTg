@@ -118,32 +118,46 @@ func buildUsageLogRow(fact *contract.UsageFact,
 	if outcome.Status < UsageLogStatusRefused || outcome.Status > UsageLogStatusRefunded {
 		return usageLogRow{}, fmt.Errorf("billing: invalid usage log status %d", outcome.Status)
 	}
-	if outcome.Cost < 0 || outcome.PreDeducted < 0 || outcome.Refunded < 0 {
+	if outcome.Cost < 0 || outcome.PreDeducted < 0 || outcome.Refunded < 0 ||
+		outcome.RetainedCost < 0 {
 		return usageLogRow{}, fmt.Errorf(
-			"billing: negative usage log amounts (cost=%d pre_deducted=%d refunded=%d)",
-			outcome.Cost, outcome.PreDeducted, outcome.Refunded)
+			"billing: negative usage log amounts (cost=%d pre_deducted=%d refunded=%d retained=%d)",
+			outcome.Cost, outcome.PreDeducted, outcome.Refunded, outcome.RetainedCost)
 	}
 
-	// status 语义（platform-01 §12）：只有 success 的 cost 是实际消耗；
-	// refused（预扣前拒绝）、error（上游失败全退）、refunded（worker 兜底）
-	// 的 cost 一律为 0。这里强制归零而不是信任调用方，避免出现
-	// 「status=error 但 cost>0」的对账矛盾。
+	// cost 语义（platform-01 §12 + R-39/R-59）：
+	//   - success  → Cost（实际应扣）；
+	//   - refunded → RetainedCost：崩溃兜底只退剩余 hold，已交付用量经
+	//     ChargeIncrement 扣掉的增量不随崩溃退回（R-39），日志必须与钱包
+	//     一致（cost=保留的消耗，refunded=退回的 hold）；0 = 纯全额退款。
+	//     注意 billing-06 §5.3 写的是「refunded → cost=0」，那是未考虑
+	//     ChargeIncrement 的字面表述，以 R-39/R-59 为准（已登记文档冲突）。
+	//   - refused / error → 强制 0（没有保留消费）。
 	cost := outcome.Cost
-	if outcome.Status != UsageLogStatusSuccess {
+	switch outcome.Status {
+	case UsageLogStatusSuccess:
+		// 保留 outcome.Cost。
+	case UsageLogStatusRefunded:
+		cost = outcome.RetainedCost
+	default:
 		cost = 0
 	}
 
+	// 流式标志优先级：UsageFact.Stream 是结算事实的权威值；只有 worker 的
+	// 退款占位（fact==nil，没有 usage 事实）才回退到 rc.Streaming。
 	stream := rc.Streaming
 	latency := sql.NullInt64{}
 	firstToken := sql.NullInt64{}
 	if fact != nil {
 		stream = fact.Stream
+		// PG 的 int 是 32 位；用量事实来自上游/适配器，直接写入越界值会让
+		// 整条日志插入失败。与 token 列同一口径钳到 int32（负数视为未知）。
 		if fact.LatencyMS >= 0 {
-			latency = sql.NullInt64{Int64: int64(fact.LatencyMS), Valid: true}
+			latency = sql.NullInt64{Int64: int64(clampTokenCount(int64(fact.LatencyMS))), Valid: true}
 		}
 		// 非流式按契约不得有 TTFT（platform-01 §12：非流式为 null）。
 		if stream && fact.FirstTokenMS != nil && *fact.FirstTokenMS >= 0 {
-			firstToken = sql.NullInt64{Int64: int64(*fact.FirstTokenMS), Valid: true}
+			firstToken = sql.NullInt64{Int64: int64(clampTokenCount(int64(*fact.FirstTokenMS))), Valid: true}
 		}
 	}
 
@@ -277,6 +291,12 @@ func setPublicKey(dst map[string]any, key string, value any) {
 	if _, reserved := usageLogReservedPublicKeys[key]; reserved {
 		return
 	}
+	// 字符串值统一清洗：PostgreSQL 的 jsonb 不接受 \u0000（SQLSTATE 22P05），
+	// 一个带 `%00` 的请求路径就能让整条日志插入失败并阻塞结算。truncateLogText
+	// 同时去掉 NUL 并修复非法 UTF-8；max=0 表示不做长度截断。
+	if s, ok := value.(string); ok {
+		value = truncateLogText(s, 0)
+	}
 	dst[key] = value
 }
 
@@ -293,8 +313,12 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 【I1】先 ::uuid 规范化再取文本：UUID 的合法输入拼写不止一种
+	// （大小写、带花括号 `{...}`），直接对原始文本做哈希会让同一个
+	// requestID 落到两把不同的锁上，进而并发写出两行日志。PG 的
+	// uuid→text 输出固定为小写无花括号形式，保证所有拼写共享同一把锁。
 	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, row.requestID); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 0))`, row.requestID); err != nil {
 		return fmt.Errorf("lock usage log request id: %w", err)
 	}
 
@@ -309,15 +333,21 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
 			return tx.Commit()
 		}
 		// 单向收敛到 refunded：billing-06 §5.3 第 6 步要求「若存在日志行，
-		// 置 status=refunded、cost=0」。refunded 金额取调用方新值与既有值
-		// 的较大者，重复退款不会把已记录金额改小。
+		// 置 status=refunded」；cost 取本次结算的保留消耗（R-39/R-59：已交付
+		// 用量的 ChargeIncrement 不随 hold 退回，纯退款时为 0）。refunded
+		// 金额取调用方新值与既有值的较大者，重复退款不会把已记录金额改小。
+		// error_class/error_message 仅在本次提供时覆盖（worker 的退款原因），
+		// 保留原有的错误归类信息。
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE usage_logs
 			   SET status = $2,
-			       cost = 0,
-			       refunded = GREATEST(COALESCE(refunded, 0), $3)
+			       cost = $3,
+			       refunded = GREATEST(COALESCE(refunded, 0), $4),
+			       error_class = COALESCE(NULLIF($5, ''), error_class),
+			       error_message = COALESCE(NULLIF($6, ''), error_message)
 			 WHERE request_id = $1::uuid`,
-			row.requestID, row.status, row.refunded); err != nil {
+			row.requestID, row.status, row.cost, row.refunded,
+			row.errorClass.String, row.errorMessage.String); err != nil {
 			return fmt.Errorf("converge usage log to refunded: %w", err)
 		}
 		return tx.Commit()

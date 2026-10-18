@@ -12,7 +12,8 @@
 #   f. gateway healthcheck 走内置子命令 `/newtg healthcheck`（GC-6/R-07）；
 #   g. gateway/migrate/worker 的 stop_grace_period 均为 35s（终审修复回归守卫）；
 #   h. R-23：worker 挂非 internal 的 egress 网，postgres/redis 不挂。
-#   i. R-25：日志库仅 usage_logs 授 newtg_app UPDATE（收敛 refunded），audit_logs 保持 append-only。
+#   i. R-25/R-59：日志库仅 usage_logs 授 newtg_app 列级 UPDATE（status,cost,refunded）；audit_logs 保持 append-only；
+#      R-56：日志库迁移预建 12 个月分区（运行期 worker 无 DDL 权限）。
 #
 # 渲染所需口令在脚本内以哑值兜底（shell 环境优先于 deploy/.env），因此本脚本
 # 不依赖、也不创建 deploy/.env，可直接在 CI 中运行。
@@ -243,24 +244,30 @@ for key in DATABASE_URL DB_LOGS_DSN; do
   fi
 done
 
-# --- i. 日志库 UPDATE 例外（R-25 终态收敛） ------------------------------
-# usage_logs 是唯一需要 newtg_app UPDATE 的日志表；audit_logs 必须 append-only。
+# --- i. 日志库 UPDATE 例外与分区预建（R-25/R-56/R-59） -------------------
+# usage_logs 是唯一需要 newtg_app UPDATE 的日志表，且只授三列；audit_logs
+# 必须 append-only。运行期 worker（newtg_app）没有 DDL 权限，分区由迁移预建。
 init_sql="$root/deploy/postgres-init/20-databases.sql"
-if grep -Fq 'GRANT UPDATE ON usage_logs TO newtg_app' "$init_sql"; then
-  ok "20-databases.sql 为 usage_logs 授予 newtg_app UPDATE（R-25）"
+if grep -Fq 'GRANT UPDATE (status, cost, refunded) ON usage_logs TO newtg_app' "$init_sql"; then
+  ok "20-databases.sql 为 usage_logs 授予 newtg_app 列级 UPDATE（R-25/R-59）"
 else
-  bad "20-databases.sql 缺少 usage_logs 的 UPDATE 授权（R-25 收敛需要）"
+  bad "20-databases.sql 缺少 usage_logs 的列级 UPDATE 授权（R-25/R-59）"
 fi
 if grep -Eq 'GRANT[[:space:]]+UPDATE[^;]*ON[[:space:]]+audit_logs' "$init_sql"; then
   bad "audit_logs 不得授予 UPDATE（保持 append-only）"
 else
   ok "audit_logs 未授予 UPDATE（append-only）"
 fi
-# initdb 早于建表，新库的实际授权由日志库迁移执行；断言它存在。
-if grep -Fq 'GRANT UPDATE ON usage_logs TO newtg_app' "$root"/backend/migrations-logs/*.up.sql 2>/dev/null; then
-  ok "日志库迁移授予 usage_logs 的 newtg_app UPDATE（首次 initdb 后表才存在）"
+# initdb 早于建表，新库的实际授权与 12 个月分区预建由日志库迁移执行。
+if grep -Fq 'GRANT UPDATE (status, cost, refunded) ON usage_logs TO newtg_app' "$root"/backend/migrations-logs/*.up.sql 2>/dev/null; then
+  ok "日志库迁移授予 usage_logs 的列级 UPDATE（首次 initdb 后表才存在）"
 else
-  bad "日志库迁移缺少 usage_logs 的 UPDATE 授权"
+  bad "日志库迁移缺少 usage_logs 的列级 UPDATE 授权"
+fi
+if grep -Fq 'FOR i IN 0..11 LOOP' "$root"/backend/migrations-logs/*.up.sql 2>/dev/null; then
+  ok "日志库迁移预建 12 个月 usage_logs 分区（R-56）"
+else
+  bad "日志库迁移缺少 12 个月分区预建（R-56）"
 fi
 
 if [ "$fail" -ne 0 ]; then

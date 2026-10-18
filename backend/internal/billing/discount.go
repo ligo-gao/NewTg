@@ -27,8 +27,14 @@ import (
 //
 // 无前缀或不认识的前缀一律视为**未命中**（fail-closed）：把未知标识当成
 // 任意作用域可能把别人的折扣应用到本请求上，宁可全额计费。
-// billing-04 的 `user:<id>` 作用域不在 M3 冻结的 DiscountTarget 形状内，
-// 必须由配置快照层在调用前按用户过滤（用户维度不可由本函数验证）。
+//
+// 【R-57】`user:<id>` 作用域与有效期窗口（valid_from/valid_until）由**配置域**
+// 在调用 ResolveDiscount 之前过滤：本函数只收到「已经按用户、时间、启用
+// 状态筛过」的候选规则，因此不再做用户匹配。`user:` 前缀在这里**保持
+// fail-closed**（未命中），绝不把它当通配符——否则任一用户的规则都会命中
+// 所有人。T9 的配置层必须在预扣与结算两侧应用同一份冻结折扣，并把
+// applied_discount / discount_target 写入 usage_logs.other（见 task-6-report
+// 的契约缺口：RelayContext 尚无 DiscountTarget 字段）。
 type DiscountTarget struct {
 	Model   string
 	Group   string

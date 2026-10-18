@@ -30,9 +30,10 @@ REVOKE CREATE ON SCHEMA public FROM newtg_app, newtg_backup;
 
 -- 日志库内全部表都是日志/审计表：newtg_app 默认只有 INSERT + SELECT
 -- （platform-01 §12.6 / security-09：不授 UPDATE/DELETE；保留清理归独立维护主体）。
--- 【R-25 例外】usage_logs 是唯一需要 UPDATE 的日志表：worker 兜底退款必须把
--- 已有的 success/error 行单向收敛为 refunded（billing-06 §5.3 第 6 步）。
--- audit_logs **保持 append-only**，绝不授 UPDATE。
+-- 【R-25/R-59 例外】usage_logs 是唯一需要 UPDATE 的日志表：worker 兜底退款
+-- 必须把已有的 success/error 行单向收敛为 refunded，并在保留 ChargeIncrement
+-- 消耗时更新 cost。只授**列级** UPDATE (status, cost, refunded)，不授表级
+-- UPDATE；audit_logs **保持 append-only**，绝不授 UPDATE。
 ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
     GRANT SELECT, INSERT ON TABLES TO newtg_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
@@ -42,14 +43,14 @@ ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
     GRANT SELECT ON SEQUENCES TO newtg_backup;
 
--- usage_logs 的 UPDATE 例外（R-25）。initdb 早于迁移：首次初始化时 usage_logs
--- 还不存在，因此这里只能对「表已存在」的情形补授（例如对既有数据卷重跑本
--- 脚本）；新库的真正授权由日志库迁移 20261019000000_usage_logs_app_update 执行。
--- 只授 usage_logs，不写全表族授权，audit_logs 不会因此获得 UPDATE。
+-- usage_logs 的列级 UPDATE 例外（R-25/R-59）。initdb 早于迁移：首次初始化时
+-- usage_logs 还不存在，因此这里只能对「表已存在」的情形补授（例如对既有
+-- 数据卷重跑本脚本）；新库的真正授权由日志库迁移
+-- 20261019000000_usage_logs_app_update 执行。只授三列，audit_logs 不受影响。
 DO $$
 BEGIN
     IF to_regclass('public.usage_logs') IS NOT NULL THEN
-        EXECUTE 'GRANT UPDATE ON usage_logs TO newtg_app';
+        EXECUTE 'GRANT UPDATE (status, cost, refunded) ON usage_logs TO newtg_app';
     END IF;
 END
 $$;

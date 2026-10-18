@@ -2,6 +2,8 @@ package billing
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,6 +57,23 @@ func TestPartitionBounds(t *testing.T) {
 func TestPartitionEnsureRequiresDB(t *testing.T) {
 	if err := EnsureUsagePartitions(context.Background(), nil, time.Now()); err == nil {
 		t.Fatal("EnsureUsagePartitions(nil) = nil, want error")
+	}
+}
+
+// TestPartitionDDLUnavailableError 验证 R-56 的 typed error 可被 errors.As 识别，
+// 且消息包含「用 migrate 凭据扩窗」的运维指引（worker 依赖该语义分流 warn）。
+func TestPartitionDDLUnavailableError(t *testing.T) {
+	err := &PartitionDDLUnavailableError{Schema: "public", SchemaCreate: false, OwnsParent: false}
+	var target *PartitionDDLUnavailableError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As(*PartitionDDLUnavailableError) = false")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "migrate credentials") {
+		t.Fatalf("错误信息缺少运维指引: %s", msg)
+	}
+	if !strings.Contains(msg, "CREATE=false") || !strings.Contains(msg, "ownership=false") {
+		t.Fatalf("错误信息缺少探测结果: %s", msg)
 	}
 }
 
