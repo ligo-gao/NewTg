@@ -1562,9 +1562,6 @@ func (h *authHandlers) auditLogin(r *http.Request, user *UserRecord, result, rea
 	}
 }
 
-// auditRegister 写 auth.register 审计（成功/失败）。成功时 Actor 是新用户 id；
-// 失败时 actor=0（writer 回退 user#0）。detail 只含结果与原因，绝不含口令、
-// 验证码、Turnstile token 或邮箱原文（PII 最小化）。
 // loginAuditLimitedKeyPrefix 限制登录「限流拒绝」审计的写入频率：/api/auth/login
 // 是未认证端点，429/锁定可被无限重放；每 IP+identifier 每窗口至多一条。
 const loginAuditLimitedKeyPrefix = "login:audit:limited:"
@@ -1585,6 +1582,9 @@ func (h *authHandlers) auditLoginLimited(r *http.Request, ip, identifier string,
 	h.auditLogin(r, user, "failed", reason)
 }
 
+// auditRegister 写 auth.register 审计（成功/失败）。成功时 Actor 是新用户 id；
+// 失败时 actor=0（writer 回退 user#0）。detail 只含结果与原因，绝不含口令、
+// 验证码、Turnstile token 或邮箱原文（PII 最小化）。
 func (h *authHandlers) auditRegister(r *http.Request, actor int64, result, reason string) {
 	if h.audit == nil {
 		return
