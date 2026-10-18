@@ -90,7 +90,9 @@ export function ChannelListPage() {
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [busyRow, setBusyRow] = useState<number | null>(null)
+  // Row-scoped busy state. A Set rather than a single id: overlapping mutations
+  // on different rows must not clear each other's lock when one finishes.
+  const [busyRows, setBusyRows] = useState<Set<number>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [sheet, setSheet] = useState<SheetState>({ open: false })
   const [testTarget, setTestTarget] = useState<Channel | null>(null)
@@ -210,6 +212,17 @@ export function ChannelListPage() {
     setSelected(all ? new Set() : new Set(items.map((channel) => channel.id)))
   }
 
+  /** Adds/removes one row's busy entry without touching other rows. */
+  function setRowBusy(id: number, busy: boolean): void {
+    setBusyRows((current) => {
+      if (busy === current.has(id)) return current
+      const next = new Set(current)
+      if (busy) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
   function clearFilters(): void {
     setKeywordInput('')
     setModelInput('')
@@ -240,7 +253,7 @@ export function ChannelListPage() {
 
   async function handleToggleStatus(channel: Channel): Promise<void> {
     const target: 1 | 2 = channel.status === 1 ? 2 : 1
-    setBusyRow(channel.id)
+    setRowBusy(channel.id, true)
     try {
       await updateChannel(channel.id, {
         expected_version: channel.version,
@@ -265,7 +278,7 @@ export function ChannelListPage() {
         reportError(reason)
       }
     } finally {
-      setBusyRow(null)
+      setRowBusy(channel.id, false)
     }
   }
 
@@ -278,7 +291,7 @@ export function ChannelListPage() {
       })
       return
     }
-    setBusyRow(channel.id)
+    setRowBusy(channel.id, true)
     try {
       const result = await testChannel(channel.id, { model, stream: false })
       if (result.success) {
@@ -309,7 +322,7 @@ export function ChannelListPage() {
         reportError(reason)
       }
     } finally {
-      setBusyRow(null)
+      setRowBusy(channel.id, false)
     }
   }
 
@@ -428,9 +441,12 @@ export function ChannelListPage() {
     items.length > 0 && items.every((channel) => selected.has(channel.id))
   const deleteCount = deleteTarget?.kind === 'bulk' ? selected.size : 1
   const loading = channelsQuery.isPending
-  // A bulk write must not run while a selected row still has a mutation in
-  // flight (modules-06 §2: one write per row at a time).
-  const bulkDisabled = bulkBusy || (busyRow !== null && selected.has(busyRow))
+  // A bulk write must not run while any selected row still has a mutation in
+  // flight (modules-06 §2: one write per row at a time). Checking every selected
+  // row — not just the last-started one — keeps the lock correct when row
+  // mutations overlap.
+  const bulkDisabled =
+    bulkBusy || Array.from(selected).some((id) => busyRows.has(id))
 
   return (
     <section className="flex flex-col gap-4">
@@ -647,7 +663,7 @@ export function ChannelListPage() {
               </tr>
             ) : (
               items.map((channel) => {
-                const busy = busyRow === channel.id
+                const busy = busyRows.has(channel.id)
                 const expanded = expandedId === channel.id
                 return (
                   <Fragment key={channel.id}>
@@ -1068,19 +1084,10 @@ function ChannelDetailPanel({ channel }: { channel: Channel }) {
       value: new Date(channel.updated_at).toLocaleString(locale),
     },
   ]
-  if (channel.credentials_masked !== undefined) {
-    rows.push({
-      label: t('common.channels.detail.credentials'),
-      value: channel.credentials_masked.api_key,
-    })
-  } else if (channel.credentials_set !== undefined) {
-    rows.push({
-      label: t('common.channels.detail.credentials'),
-      value: channel.credentials_set
-        ? t('common.channels.detail.credentialsSet')
-        : t('common.channels.detail.credentialsUnset'),
-    })
-  }
+  // The list DTO deliberately omits credentials_masked and credentials_set
+  // (GC-6); only the detail endpoint returns them. Expanding a list row therefore
+  // has no credentials cell to render — the mask is shown by the edit sheet's
+  // detail load (and verified through the POST/detail response).
   return (
     <dl className="grid grid-cols-4 gap-4 text-sm">
       {rows.map((row) => (

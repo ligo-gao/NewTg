@@ -495,4 +495,102 @@ describe('ChannelListPage', () => {
     })
     expect(disabled('Edit')).toBe(false)
   })
+
+  it('keeps each row busy independently when two row mutations overlap', async () => {
+    const user = userEvent.setup()
+    const releases = new Map<number, (response: Response) => void>()
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({ id: 1, name: 'alpha', supported_models: ['gpt-4'] }),
+            makeChannel({ id: 2, name: 'beta', supported_models: ['gpt-4'] }),
+          ]),
+        )
+      }
+      const testMatch = /^\/api\/channels\/(\d+)\/test$/.exec(
+        request.url.pathname,
+      )
+      if (request.method === 'POST' && testMatch !== null) {
+        const id = Number(testMatch[1])
+        return new Promise<Response>((resolve) => {
+          releases.set(id, resolve)
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+    // Both rows are selected so the bulk bar reflects any busy selected row.
+    await user.click(screen.getByLabelText('Select alpha'))
+    await user.click(screen.getByLabelText('Select beta'))
+
+    const alphaRow = screen.getByTestId('channel-row-1')
+    const betaRow = screen.getByTestId('channel-row-2')
+    await user.click(
+      within(alphaRow).getByRole('button', { name: 'Test connection' }),
+    )
+    expect(await screen.findByTestId('channel-row-busy-1')).toBeTruthy()
+
+    // Only row 1 is busy, so row 2 can start its own mutation.
+    await user.click(
+      within(betaRow).getByRole('button', { name: 'Test connection' }),
+    )
+    expect(await screen.findByTestId('channel-row-busy-2')).toBeTruthy()
+
+    const bulkEnable = screen.getByRole('button', {
+      name: 'Enable selected',
+    }) as HTMLButtonElement
+    expect(bulkEnable.disabled).toBe(true)
+
+    await waitFor(() => {
+      expect(releases.has(1)).toBe(true)
+    })
+    releases.get(1)?.(jsonResponse({ success: true, latency_ms: 1, model: 'gpt-4' }))
+
+    // Row 1 finishing must not clear row 2's busy entry, and the bulk action
+    // must stay locked while the selected row 2 is still in flight.
+    await waitFor(() => {
+      expect(screen.queryByTestId('channel-row-busy-1')).toBeNull()
+    })
+    expect(screen.getByTestId('channel-row-busy-2')).toBeTruthy()
+    expect(bulkEnable.disabled).toBe(true)
+
+    await waitFor(() => {
+      expect(releases.has(2)).toBe(true)
+    })
+    releases.get(2)?.(jsonResponse({ success: true, latency_ms: 1, model: 'gpt-4' }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('channel-row-busy-2')).toBeNull()
+    })
+    expect(bulkEnable.disabled).toBe(false)
+  })
+
+  it('renders the expanded list row without a credentials cell', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        // List rows never carry credentials_masked or credentials_set (GC-6).
+        return jsonResponse(
+          makeListResponse([makeChannel({ id: 3, name: 'maskless' })]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('maskless')
+    await user.click(
+      screen.getByRole('button', { name: 'Expand details for maskless' }),
+    )
+
+    const detail = await screen.findByTestId('channel-detail-3')
+    expect(within(detail).queryByText('API key')).toBeNull()
+    expect(within(detail).queryByText('Set')).toBeNull()
+    expect(within(detail).queryByText('Not set')).toBeNull()
+    // The non-credential fields still render.
+    expect(within(detail).getByText('ID')).toBeTruthy()
+  })
 })
