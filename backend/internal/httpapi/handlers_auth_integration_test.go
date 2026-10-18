@@ -227,6 +227,16 @@ func TestIntegrationAuthFlow(t *testing.T) {
 	}
 
 	suffix := uniqueAuthSuffix()
+	// 注册赠送按 signup_grant:ip:<sha256(clientIP)> 限 3 次/24h，而共享测试 Redis
+	// 会被其他运行/任务复用。httptest 默认 RemoteAddr 恒为 192.0.2.1，同一天第 4 次
+	// 运行就会拿到 bonus=0。这里每次运行使用唯一客户端 IP，并在收尾时清理该 IP 的
+	// 计数键（其余键随 TTL 自然过期），使断言与运行顺序/并行度无关。
+	testIP := "it-" + suffix
+	t.Cleanup(func() {
+		_ = rdb.Del(context.Background(),
+			"signup_grant:ip:"+sha256Hex(testIP),
+			"email_code:ip:"+sha256Hex(testIP)).Err()
+	})
 	username := "flow_" + suffix
 	email := "flow_" + suffix + "@example.com"
 	password := "N7x!qPz2wR"
@@ -241,6 +251,7 @@ func TestIntegrationAuthFlow(t *testing.T) {
 			}
 		}
 		req := httptest.NewRequest(method, path, bytes.NewReader(raw))
+		req.RemoteAddr = testIP + ":1234"
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
