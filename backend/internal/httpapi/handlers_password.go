@@ -3,7 +3,7 @@
 //
 // 路由挂载：Task 8 不修改 routes.go。装配方在 NewRouter 之后、开始服务之前调用
 //
-//	rt.RegisterPasswordRoutes(cfg.PublicBaseURL)
+//	rt.RegisterPasswordRoutes(cfg.PublicBaseURL, auditLogger)
 //
 // 三个重置端点注册到公开 mux（与 /api/auth/email-code 同级，豁免 CSRF/Origin：
 // 它们只凭一次性 token/邮箱工作，不依赖既有会话）；POST /api/password 注册到
@@ -11,12 +11,13 @@
 //
 // 安全口径：
 //   - 找回密码对「邮箱是否存在」给出逐字相同的响应（防枚举）；限流先行，
-//     已注册与未注册邮箱同样计入 IP/邮箱桶。
+//     已注册与未注册邮箱同样计入 IP/邮箱桶。重置邮件在响应写出后异步投递，
+//     SMTP 延迟不进入响应时序。
 //   - 重置 token 是 256-bit CSPRNG（32 字节 base64url），Redis 30 分钟、
 //     一次性消费（GET+DEL 原子脚本），明文只出现在发给用户的链接里，
 //     绝不写日志。
 //   - 改密/重置成功后吊销会话：重置吊销全部；改密保留当前会话并轮换 CSRF
-//     （security-01 §2.2「刷新时机」）。
+//     （security-01 §2.2「刷新时机」），并写审计事件（不含任何口令材料）。
 //   - 口令写入只存 argon2id 哈希（GC-9），并清除 must_change_password
 //     （R-02：临时口令在用户自选新口令后自然解除）。
 package httpapi
@@ -26,6 +27,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,10 +35,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 )
 
@@ -47,8 +51,10 @@ const (
 	passwordResetTokenBytes = 32
 	// passwordResetTokenTTL：重置链接 30 分钟有效（F-01-05 冻结）。
 	passwordResetTokenTTL = 30 * time.Minute
-	// passwordResetResendAfter：同邮箱重发冷却（UI 30s 倒计时，服务端取 60s，
-	// 与邮箱验证码同口径 F-01-02/F-08-16）。
+	// passwordResetResendAfter：同邮箱重发冷却。设计 UI 文案写 30s，但服务端
+	// 口径取 60s（与邮箱验证码 F-01-02/F-08-16 一致）；前端倒计时需按 60s
+	// 实现——这是对 modules-01 F-01-05「30s 重发倒计时」的有意收紧，已登记
+	// 在任务报告中。
 	passwordResetResendAfter = 60 * time.Second
 	// passwordResetIPLimit / passwordResetIPWindow：5 次/分钟/IP（F-08-16）。
 	passwordResetIPLimit  = 5
@@ -56,6 +62,12 @@ const (
 	// passwordChangeLimit / passwordChangeWindow：5 次/10 分钟/IP+user（F-01-16）。
 	passwordChangeLimit  = 5
 	passwordChangeWindow = 10 * time.Minute
+
+	// 重置邮件异步投递：响应路径只做非阻塞入队，SMTP 延迟不参与响应时序
+	// （消除「已注册邮箱比未注册慢」的枚举侧信道）。队列满时丢弃并计数。
+	passwordResetSendWorkers = 4
+	passwordResetSendQueue   = 128
+	passwordResetSendTimeout = 30 * time.Second
 )
 
 // Redis 键前缀。邮箱/IP 一律先 SHA-256 再入键，避免 PII 明文进入 Redis 快照。
@@ -179,38 +191,59 @@ type passwordHandlers struct {
 	sessions *auth.SessionManager
 	sender   EmailCodeSender
 	checker  auth.CompromisedPasswordChecker
+	audit    *audit.Logger
 	log      *slog.Logger
 
 	verifyPassword func(hash, plain string) bool
 	hashPassword   func(plain string) (string, error)
 
-	// publicBaseURL 是重置链接的固定源。为空时拒绝发信（见 resetLink）：
-	// 用请求 Host 拼链接会把 Host 头注入变成「重置 token 钓到攻击者域名」。
+	// publicBaseURL 是重置链接的固定源（已归一化为单一 scheme://host）。
+	// 不能用请求 Host 拼链接：Host 头可伪造，会把重置 token 钓到攻击者域名。
 	publicBaseURL string
+
+	// 异步投递队列与分类计数：失败/丢弃只记数量，绝不记录收件地址、
+	// 重置 URL 或 sender 错误原文（SMTP 实现可能把链接带进错误串）。
+	sendQueue    chan passwordResetJob
+	sendFailures atomic.Int64
+	sendDropped  atomic.Int64
 }
 
-func newPasswordHandlers(base *authHandlers, repo PasswordRepo, publicBaseURL string) *passwordHandlers {
-	return &passwordHandlers{
+type passwordResetJob struct {
+	email string
+	link  string
+}
+
+func newPasswordHandlers(base *authHandlers, repo PasswordRepo, publicBaseURL string, auditLog *audit.Logger) *passwordHandlers {
+	h := &passwordHandlers{
 		base:           base,
 		repo:           repo,
 		rdb:            base.rdb,
 		sessions:       base.sessions,
 		sender:         base.sender,
 		checker:        base.checker,
+		audit:          auditLog,
 		log:            base.log,
 		verifyPassword: base.verifyPassword,
 		hashPassword:   base.hashPassword,
-		publicBaseURL:  strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
+		publicBaseURL:  publicBaseURL,
+		sendQueue:      make(chan passwordResetJob, passwordResetSendQueue),
 	}
+	for i := 0; i < passwordResetSendWorkers; i++ {
+		go h.resetSendWorker()
+	}
+	return h
 }
 
 // RegisterPasswordRoutes 注册 Task 8 的全部端点。装配方在 NewRouter 之后调用
-// 一次；返回装配错误（缺少 PasswordRepo）而不是带病运行。
+// 一次；返回装配错误而不是带病运行：
 //
-// publicBaseURL 用于拼重置链接（如 https://app.example.com）。为空时不发重置
-// 邮件但仍返回统一成功态——宁可让运维发现 PUBLIC_BASE_URL 未配置，也不能把
-// 攻击者可控的 Host 头写进受害者邮件。
-func (rt *Router) RegisterPasswordRoutes(publicBaseURL string) error {
+//   - publicBaseURL 必须至少包含一个合法的 http(s) origin（可逗号分隔多个，
+//     与 RouterConfig.PublicBaseURL 同格式；重置链接取第一个合法项）。
+//   - 非 nil 的 EmailSender 必须同时实现 PasswordResetSender；否则重置邮件
+//     永远不会发出，而端点仍回 204，属于「静默成功」——装配期直接拒绝。
+//   - nil EmailSender 是 M1「未配置 SMTP」的显式状态：启动时告警一次，
+//     重置链接不投递但响应保持统一成功态。
+func (rt *Router) RegisterPasswordRoutes(publicBaseURL string, auditLog *audit.Logger) error {
 	if rt == nil || rt.handlers == nil {
 		return errors.New("httpapi: router is not initialized")
 	}
@@ -218,7 +251,18 @@ func (rt *Router) RegisterPasswordRoutes(publicBaseURL string) error {
 	if !ok {
 		return errors.New("httpapi: password routes require a PasswordRepo (FindUserByEmail/FindUserByID/UpdatePasswordHash)")
 	}
-	h := newPasswordHandlers(rt.handlers, repo, publicBaseURL)
+	base, err := passwordResetBaseURL(publicBaseURL)
+	if err != nil {
+		return err
+	}
+	if rt.handlers.sender != nil {
+		if _, ok := rt.handlers.sender.(PasswordResetSender); !ok {
+			return errors.New("httpapi: configured EmailSender must implement PasswordResetSender for password reset links")
+		}
+	} else {
+		rt.handlers.log.Warn("no email sender configured; password reset links will not be delivered (M1 explicit state)")
+	}
+	h := newPasswordHandlers(rt.handlers, repo, base, auditLog)
 
 	// 公开端点：不挂 CSRF/Origin（无会话可依赖，token/邮箱即凭据）。
 	rt.mux.HandleFunc("POST /api/auth/password-reset/request", h.handleResetRequest)
@@ -229,10 +273,38 @@ func (rt *Router) RegisterPasswordRoutes(publicBaseURL string) error {
 	return nil
 }
 
-// writeReauthRequired 是 Task 10（换邮箱/删账号）复用的 403 出口：
-// ReauthGate 返回 auth.ErrReauthRequired 时调用。
+// passwordResetBaseURL 从 PUBLIC_BASE_URL（可逗号分隔多个 origin）取第一个
+// 合法项并归一化为 scheme://host。这样链接不会变成 "https://a,https://b/..."。
+func passwordResetBaseURL(raw string) (string, error) {
+	for _, candidate := range parseAllowedOrigins(raw) {
+		if origin, _, ok := normalizeOrigin(candidate); ok {
+			return origin, nil
+		}
+	}
+	return "", errors.New("httpapi: PUBLIC_BASE_URL must contain at least one valid http(s) origin")
+}
+
+// writeReauthRequired 是 Task 10（换邮箱/删账号）复用的 403 出口。
 func writeReauthRequired(w http.ResponseWriter) {
 	writeProblem(w, http.StatusForbidden, problemTypeReauthRequired, "Reauthentication required")
+}
+
+// writeReauthFailure 把 ReauthGate.Authorize 的错误映射为 HTTP 响应：
+// 锁定 → 429 + Retry-After；因子失败 → 403 reauth_required；其余 → 503。
+func writeReauthFailure(w http.ResponseWriter, err error) {
+	var locked *auth.ReauthLockedError
+	switch {
+	case errors.As(err, &locked):
+		w.Header().Set("Retry-After", retrySeconds(locked.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests,
+			"Too many failed reauthentication attempts")
+	case errors.Is(err, auth.ErrReauthRequired):
+		writeReauthRequired(w)
+	default:
+		w.Header().Set("Retry-After", "5")
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Reauthentication is temporarily unavailable")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -317,15 +389,20 @@ func (h *passwordHandlers) handleResetRequest(w http.ResponseWriter, r *http.Req
 	}
 
 	if link, ok := h.resetLink(token); ok {
-		h.sendResetLink(ctx, email, link)
-	} else {
-		// 与成功态一致：配置缺失只影响投递，不向客户端泄露账号存在性。
-		h.log.Warn("PUBLIC_BASE_URL is not configured; password reset email not sent")
+		// 先写响应，再非阻塞入队：SMTP 延迟不进入响应时序，且队列满时不
+		// 拖慢请求。投递失败只影响用户能否收到邮件，不影响统一成功态。
+		w.WriteHeader(http.StatusNoContent)
+		h.enqueueResetLink(email, link)
+		return
 	}
+	// 装配期已拒绝空 PUBLIC_BASE_URL；走到这里说明配置在运行期被绕过，
+	// 仍保持统一成功态，只记录告警（不含邮箱/链接）。
+	h.log.Warn("password reset base URL is empty; reset email not queued")
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// resetLink 用配置的固定源拼重置链接；未配置时返回 ok=false（拒绝发信）。
+// resetLink 用配置的固定源拼重置链接。publicBaseURL 已在装配期归一化，
+// 这里不可能为空（除非被运行期篡改）；空值时返回 ok=false。
 func (h *passwordHandlers) resetLink(token string) (string, bool) {
 	if h.publicBaseURL == "" {
 		return "", false
@@ -333,18 +410,33 @@ func (h *passwordHandlers) resetLink(token string) (string, bool) {
 	return h.publicBaseURL + "/reset-password?token=" + url.QueryEscape(token), true
 }
 
-// sendResetLink 通过专用发送器投递；发送失败只记日志，不让响应产生差异
-// （否则「发送失败」会成为账号存在性的旁路）。明文 token 绝不入日志。
-func (h *passwordHandlers) sendResetLink(ctx context.Context, email, link string) {
-	sender, ok := h.sender.(PasswordResetSender)
-	if !ok {
-		if h.sender != nil {
-			h.log.Warn("email sender does not implement PasswordResetSender; password reset link not sent")
-		}
-		return
+// enqueueResetLink 把投递任务交给有界 worker；队列满时丢弃并计数。
+// 非阻塞是刻意设计：绝不因 SMTP 背压改变响应时序。
+func (h *passwordHandlers) enqueueResetLink(email, link string) {
+	select {
+	case h.sendQueue <- passwordResetJob{email: email, link: link}:
+	default:
+		n := h.sendDropped.Add(1)
+		h.log.Error("password reset email queue full; delivery dropped", "dropped_total", n)
 	}
-	if err := sender.SendPasswordReset(ctx, email, link); err != nil {
-		h.log.Error("send password reset email failed", "error", err)
+}
+
+// resetSendWorker 消费投递队列。错误只记分类计数，不记录原始错误、收件
+// 地址或重置链接（三者都可能含敏感材料）。
+func (h *passwordHandlers) resetSendWorker() {
+	for job := range h.sendQueue {
+		sender, ok := h.sender.(PasswordResetSender)
+		if !ok {
+			// 装配期已校验；nil sender 是 M1 显式状态，不产生日志噪音。
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), passwordResetSendTimeout)
+		err := sender.SendPasswordReset(ctx, job.email, job.link)
+		cancel()
+		if err != nil {
+			n := h.sendFailures.Add(1)
+			h.log.Error("password reset email delivery failed", "failures_total", n)
+		}
 	}
 }
 
@@ -426,21 +518,19 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Passwords do not match")
 		return
 	}
-	if h.checker.Check(req.NewPassword) {
-		writeProblem(w, http.StatusBadRequest, authProblemBadRequest,
-			"Password is too weak or has been compromised")
-		return
-	}
 	ctx := r.Context()
+	key := passwordResetKeyPrefix + req.Token
 
-	uidRaw, err := consumePasswordResetScript.Run(ctx, h.rdb,
-		[]string{passwordResetKeyPrefix + req.Token}).Text()
+	// 先做「非消费式」token 存在性检查并解析用户，再跑泄露口令筛查：
+	// HIBP/上下文词表是有成本、可观测的动作，不能允许未持有效 token 的
+	// 匿名请求触发它（也避免对随机 token 做无意义的筛查）。
+	uidRaw, err := h.rdb.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		h.writeInvalidResetToken(w)
 		return
 	}
 	if err != nil {
-		h.log.Error("consume password reset token failed", "error", err)
+		h.log.Error("read password reset token failed", "error", err)
 		h.writeUnavailable(w, "Password reset is temporarily unavailable")
 		return
 	}
@@ -451,7 +541,6 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		h.writeInvalidResetToken(w)
 		return
 	}
-
 	user, err := h.repo.FindUserByID(ctx, userID)
 	if err != nil {
 		h.log.Error("find reset user failed", "error", err)
@@ -462,6 +551,12 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		h.writeInvalidResetToken(w)
 		return
 	}
+	// 每用户上下文（username）参与泄露口令判定：重置路径不能比注册路径更宽。
+	if h.checker.CheckWithContext(req.NewPassword, user.Username) {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest,
+			"Password is too weak or has been compromised")
+		return
+	}
 
 	hash, err := h.hashPassword(req.NewPassword)
 	if err != nil {
@@ -469,6 +564,25 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Password reset failed")
 		return
 	}
+
+	// 最后才原子消费 token：并发提交同一 token 时只有一个请求能拿到值，
+	// 其余得到空（400）；比较值与先前读取一致，防止检查与消费之间被替换。
+	consumed, err := consumePasswordResetScript.Run(ctx, h.rdb, []string{key}).Text()
+	if errors.Is(err, redis.Nil) {
+		h.writeInvalidResetToken(w)
+		return
+	}
+	if err != nil {
+		h.log.Error("consume password reset token failed", "error", err)
+		h.writeUnavailable(w, "Password reset is temporarily unavailable")
+		return
+	}
+	if strings.TrimSpace(consumed) != strings.TrimSpace(uidRaw) {
+		h.writeInvalidResetToken(w)
+		return
+	}
+
+	// 先吊销再落库：任何 204 都保证旧会话已全部失效；Redis 故障时不改口令。
 	if err := h.sessions.RevokeUser(ctx, user.ID, ""); err != nil {
 		h.log.Error("revoke sessions after reset failed", "error", err)
 		h.writeUnavailable(w, "Password reset is temporarily unavailable")
@@ -483,6 +597,8 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after reset failed", "error", err)
 	}
+	h.auditEvent(r, audit.ActionAuthPasswordReset, user.ID,
+		map[string]string{"action": "password_reset", "field": "password"})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -606,7 +722,35 @@ func (h *passwordHandlers) handleChangePassword(w http.ResponseWriter, r *http.R
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after password change failed", "error", err)
 	}
+	h.auditEvent(r, audit.ActionAuthPasswordChange, user.ID,
+		map[string]string{"action": "password_change", "field": "password"})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditEvent 写一条口令变更审计（F-01-06/F-01-16 的事件）。detail 只含
+// 变更字段名，绝不含口令、哈希或 token；审计失败不阻断业务（日志库独立，
+// 与 Task 12 的令牌审计同一处理口径）。
+func (h *passwordHandlers) auditEvent(r *http.Request, action string, userID int64, detail map[string]string) {
+	if h.audit == nil {
+		return
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		raw = nil
+	}
+	event := audit.Event{
+		Action:     action,
+		Actor:      userID,
+		IP:         clientIP(r),
+		UserAgent:  r.UserAgent(),
+		Method:     r.Method,
+		Route:      r.Pattern,
+		StatusCode: http.StatusNoContent,
+		Detail:     raw,
+	}
+	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+		h.log.Warn("password audit write failed", "action", action, "actor", userID, "error", err)
+	}
 }
 
 func (h *passwordHandlers) writeCurrentPasswordIncorrect(w http.ResponseWriter) {

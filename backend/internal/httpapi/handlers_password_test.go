@@ -3,11 +3,13 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 )
 
@@ -142,16 +145,74 @@ type passwordTestEnv struct {
 	rdb      *redis.Client
 	mr       *miniredis.Miniredis
 	sender   *resetTestSender
+	audit    *pwdAuditExec
+	baseURL  string
 }
 
+// pwdAuditExec 捕获 audit.Logger 的 INSERT 参数，供断言事件与脱敏。
+// 参数顺序见 audit.insertSQL：actor, username, category, ip, ua, method,
+// route, status, result, detail, before, after。
+type pwdAuditExec struct {
+	mu    sync.Mutex
+	calls []pwdAuditCall
+}
+
+type pwdAuditCall struct {
+	Actor    int64
+	Category string
+	IP       string
+	Detail   string
+}
+
+func (e *pwdAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	call := pwdAuditCall{Category: args[2].(string)}
+	if actor, ok := args[0].(int64); ok {
+		call.Actor = actor
+	}
+	if ip, ok := args[3].(string); ok {
+		call.IP = ip
+	}
+	if detail, ok := args[9].(string); ok {
+		call.Detail = detail
+	}
+	e.calls = append(e.calls, call)
+	return pwdAuditResult{}, nil
+}
+
+func (e *pwdAuditExec) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.calls)
+}
+
+func (e *pwdAuditExec) last(t *testing.T) pwdAuditCall {
+	t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.calls) == 0 {
+		t.Fatal("没有任何审计事件被写入")
+	}
+	return e.calls[len(e.calls)-1]
+}
+
+type pwdAuditResult struct{}
+
+func (pwdAuditResult) LastInsertId() (int64, error) { return 0, nil }
+func (pwdAuditResult) RowsAffected() (int64, error) { return 1, nil }
+
 func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
+	return newPasswordTestEnvWith(t, passwordTestBaseURL, &resetTestSender{})
+}
+
+func newPasswordTestEnvWith(t *testing.T, baseURL string, sender EmailCodeSender) *passwordTestEnv {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	repo := newPwdTestRepo()
-	sender := &resetTestSender{}
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	router, err := NewRouter(RouterConfig{
 		Redis:         rdb,
@@ -164,12 +225,14 @@ func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	if err := router.RegisterPasswordRoutes(passwordTestBaseURL); err != nil {
+	auditExec := &pwdAuditExec{}
+	if err := router.RegisterPasswordRoutes(baseURL, audit.New(auditExec)); err != nil {
 		t.Fatalf("RegisterPasswordRoutes: %v", err)
 	}
+	testSender, _ := sender.(*resetTestSender)
 	return &passwordTestEnv{
 		t: t, router: router, repo: repo, sessions: sessions,
-		rdb: rdb, mr: mr, sender: sender,
+		rdb: rdb, mr: mr, sender: testSender, audit: auditExec, baseURL: baseURL,
 	}
 }
 
@@ -204,13 +267,28 @@ func (e *passwordTestEnv) requestReset(email, ip string) *httptest.ResponseRecor
 		})
 }
 
+// waitLinks 等待异步投递 worker 把第 n 封邮件送入发送器（最多 2s）。
+// 投递已移出响应路径，测试必须轮询而不是立即断言。
+func (e *passwordTestEnv) waitLinks(n int) {
+	e.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for e.sender.count() < n {
+		if !time.Now().Before(deadline) {
+			e.t.Fatalf("2s 内只收到 %d 封重置邮件，期望 %d 封", e.sender.count(), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // resetTokenFor 请求重置并从已发送链接中取出明文 token。
 func (e *passwordTestEnv) resetTokenFor(email, ip string) string {
 	e.t.Helper()
+	before := e.sender.count()
 	rr := e.requestReset(email, ip)
 	if rr.Code != http.StatusNoContent {
 		e.t.Fatalf("重置请求 status = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
 	}
+	e.waitLinks(before + 1)
 	link := e.sender.last(e.t)
 	u, err := url.Parse(link.ResetURL)
 	if err != nil {
@@ -278,6 +356,9 @@ func TestPasswordResetRequestUniform(t *testing.T) {
 	if known.Body.String() != unknown.Body.String() {
 		t.Fatalf("响应体不同：known=%q unknown=%q（防枚举）", known.Body.String(), unknown.Body.String())
 	}
+	env.waitLinks(1)
+	// 未注册邮箱不得产生任何投递；给 worker 一小段时间确认没有第二封。
+	time.Sleep(50 * time.Millisecond)
 	if env.sender.count() != 1 {
 		t.Fatalf("发送次数 = %d，期望只给已注册邮箱发送 1 封", env.sender.count())
 	}
@@ -286,6 +367,18 @@ func TestPasswordResetRequestUniform(t *testing.T) {
 	}
 	if !strings.HasPrefix(env.sender.last(t).ResetURL, passwordTestBaseURL+"/reset-password?token=") {
 		t.Fatalf("重置链接形态不符: %q", env.sender.last(t).ResetURL)
+	}
+	// 未注册邮箱不得在 Redis 落任何重置 token（只有冷却/IP 计数键）。
+	tokens := 0
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, passwordResetKeyPrefix) &&
+			!strings.HasPrefix(key, passwordResetCooldownKey) &&
+			!strings.HasPrefix(key, passwordResetIPKey) {
+			tokens++
+		}
+	}
+	if tokens != 1 {
+		t.Fatalf("Redis 中重置 token 键数 = %d，期望 1（仅已注册邮箱）", tokens)
 	}
 }
 
@@ -366,12 +459,29 @@ func TestPasswordResetConfirmFlow(t *testing.T) {
 	sid1 := mustSession(t, env.sessions, userID, "user")
 	sid2 := mustSession(t, env.sessions, userID, "user")
 	token := env.resetTokenFor("alice@example.com", "192.0.2.40")
+	// 预置一个再认证窗口：改密/重置后必须被清除。
+	env.mr.Set("reauth:"+strconv.FormatInt(userID, 10), "1")
 
 	rr := env.request(http.MethodPost, "/api/auth/password-reset/confirm", map[string]any{
 		"token": token, "new_password": newPassword, "confirm": newPassword,
 	}, nil)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("confirm status = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
+	}
+	if env.mr.Exists("reauth:" + strconv.FormatInt(userID, 10)) {
+		t.Fatal("重置成功后必须清除再认证窗口")
+	}
+
+	// 审计：security 分类、actor=用户，detail 只含字段名，不含口令材料。
+	call := env.audit.last(t)
+	if call.Category != "security" || call.Actor != userID {
+		t.Fatalf("审计 = %+v，期望 security/%d", call, userID)
+	}
+	if !strings.Contains(call.Detail, "password_reset") {
+		t.Fatalf("审计 detail = %q，期望包含 password_reset", call.Detail)
+	}
+	if strings.Contains(call.Detail, newPassword) || strings.Contains(call.Detail, token) {
+		t.Fatalf("审计 detail 泄露口令/令牌: %q", call.Detail)
 	}
 
 	stored := env.repo.storedHash(t, userID)
@@ -489,6 +599,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 
 	sidCurrent, csrfCurrent := env.sessionWithCSRF(userID)
 	sidOther := mustSession(t, env.sessions, userID, "user")
+	env.mr.Set("reauth:"+strconv.FormatInt(userID, 10), "1")
 
 	rr := env.authedRequest(http.MethodPost, "/api/password", map[string]any{
 		"current_password": authTestPassword,
@@ -496,6 +607,21 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 	}, sidCurrent, csrfCurrent)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("改密 status = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
+	}
+	if env.mr.Exists("reauth:" + strconv.FormatInt(userID, 10)) {
+		t.Fatal("改密成功后必须清除再认证窗口")
+	}
+
+	// 审计：security 分类、actor=用户，detail 只含字段名，不含口令材料。
+	call := env.audit.last(t)
+	if call.Category != "security" || call.Actor != userID {
+		t.Fatalf("审计 = %+v，期望 security/%d", call, userID)
+	}
+	if !strings.Contains(call.Detail, "password_change") {
+		t.Fatalf("审计 detail = %q，期望包含 password_change", call.Detail)
+	}
+	if strings.Contains(call.Detail, newPassword) || strings.Contains(call.Detail, authTestPassword) {
+		t.Fatalf("审计 detail 泄露口令: %q", call.Detail)
 	}
 
 	// 当前会话存活，其余会话失效。
@@ -631,21 +757,114 @@ func TestReauthRequiredProblem(t *testing.T) {
 	}
 }
 
-// TestRegisterPasswordRoutesRequiresPasswordRepo：装配期必须拒绝缺少
-// PasswordRepo 的仓储，不能等到请求时才失败。
-func TestRegisterPasswordRoutesRequiresPasswordRepo(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
-	t.Cleanup(func() { _ = rdb.Close() })
-	router, err := NewRouter(RouterConfig{
-		Redis:         rdb,
-		Repo:          newFakeAuthRepo(), // 只有 AuthRepo，没有 PasswordRepo
-		SessionSecret: []byte(testSessionSecret),
-	})
-	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+// TestReauthFailureProblemMapping：ReauthGate 的三种失败形态映射为
+// 429（锁定，带 Retry-After）/ 403 reauth_required / 503（基础设施故障）。
+func TestReauthFailureProblemMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		want     int
+		wantType string
+	}{
+		{"锁定", &auth.ReauthLockedError{RetryAfter: 15 * time.Minute},
+			http.StatusTooManyRequests, authProblemTooManyRequests},
+		{"因子失败", auth.ErrReauthRequired, http.StatusForbidden, problemTypeReauthRequired},
+		{"基础设施故障", errors.New("redis down"), http.StatusServiceUnavailable, authProblemServiceUnavailable},
 	}
-	if err := router.RegisterPasswordRoutes(""); err == nil {
-		t.Fatal("缺少 PasswordRepo 时 RegisterPasswordRoutes 必须返回错误")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			writeReauthFailure(rr, tc.err)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d，期望 %d（body=%q）", rr.Code, tc.want, rr.Body.String())
+			}
+			if got := decodeProblemType(t, rr); got != tc.wantType {
+				t.Fatalf("problem type = %q，期望 %q", got, tc.wantType)
+			}
+			if tc.want != http.StatusForbidden && rr.Header().Get("Retry-After") == "" {
+				t.Fatal("429/503 必须带 Retry-After")
+			}
+		})
+	}
+}
+
+// codeOnlySender 只实现验证码接口，模拟「配置了 SMTP 但没实现重置链接
+// 发送」的装配错误。
+type codeOnlySender struct{}
+
+func (codeOnlySender) SendEmailCode(context.Context, string, string, string) error { return nil }
+
+// TestRegisterPasswordRoutesValidation 覆盖装配期校验：缺 PasswordRepo、
+// 空/非法 PUBLIC_BASE_URL、非合规 sender 一律失败；nil sender 是允许的
+// M1 显式状态；多 origin 输入取第一个合法项。
+func TestRegisterPasswordRoutesValidation(t *testing.T) {
+	newRouter := func(t *testing.T, repo AuthRepo, sender EmailCodeSender) *Router {
+		t.Helper()
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+		t.Cleanup(func() { _ = rdb.Close() })
+		router, err := NewRouter(RouterConfig{
+			Redis:         rdb,
+			Repo:          repo,
+			SessionSecret: []byte(testSessionSecret),
+			EmailSender:   sender,
+		})
+		if err != nil {
+			t.Fatalf("NewRouter: %v", err)
+		}
+		return router
+	}
+
+	t.Run("缺少 PasswordRepo", func(t *testing.T) {
+		router := newRouter(t, newFakeAuthRepo(), &resetTestSender{})
+		if err := router.RegisterPasswordRoutes(passwordTestBaseURL, nil); err == nil {
+			t.Fatal("缺少 PasswordRepo 时必须返回错误")
+		}
+	})
+	t.Run("空 base URL", func(t *testing.T) {
+		router := newRouter(t, newPwdTestRepo(), &resetTestSender{})
+		if err := router.RegisterPasswordRoutes("", nil); err == nil {
+			t.Fatal("空 PUBLIC_BASE_URL 必须装配失败")
+		}
+	})
+	t.Run("非法 base URL", func(t *testing.T) {
+		router := newRouter(t, newPwdTestRepo(), &resetTestSender{})
+		if err := router.RegisterPasswordRoutes("not a url, ftp://x", nil); err == nil {
+			t.Fatal("没有合法 http(s) origin 时必须装配失败")
+		}
+	})
+	t.Run("sender 未实现 PasswordResetSender", func(t *testing.T) {
+		router := newRouter(t, newPwdTestRepo(), codeOnlySender{})
+		if err := router.RegisterPasswordRoutes(passwordTestBaseURL, nil); err == nil {
+			t.Fatal("配置了 EmailSender 但不是 PasswordResetSender 时必须装配失败")
+		}
+	})
+	t.Run("nil sender 允许（M1 无 SMTP）", func(t *testing.T) {
+		router := newRouter(t, newPwdTestRepo(), nil)
+		if err := router.RegisterPasswordRoutes(passwordTestBaseURL, nil); err != nil {
+			t.Fatalf("nil sender 应允许装配（M1 显式状态）: %v", err)
+		}
+	})
+}
+
+// TestPasswordResetUsesFirstConfiguredOrigin：PUBLIC_BASE_URL 支持逗号分隔
+// 多个 origin（与 RouterConfig.PublicBaseURL 同格式），重置链接必须取第一个
+// 合法项，不能把整串拼进 URL。
+func TestPasswordResetUsesFirstConfiguredOrigin(t *testing.T) {
+	sender := &resetTestSender{}
+	env := newPasswordTestEnvWith(t, " https://first.example.com:443, https://second.example.com/ ", sender)
+	env.addUser("alice", "alice@example.com", authTestPasswordHash())
+
+	rr := env.requestReset("alice@example.com", "192.0.2.80")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d，期望 204", rr.Code)
+	}
+	env.waitLinks(1)
+	link := env.sender.last(t).ResetURL
+	if !strings.HasPrefix(link, "https://first.example.com/reset-password?token=") {
+		t.Fatalf("重置链接 = %q，期望以第一个归一化 origin 开头", link)
+	}
+	if strings.Contains(link, "second.example.com") || strings.Contains(link, ",") {
+		t.Fatalf("重置链接混入了其它 origin: %q", link)
 	}
 }

@@ -149,7 +149,7 @@ func TestIntegrationPasswordResetAndChangeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	if err := router.RegisterPasswordRoutes(passwordTestBaseURL); err != nil {
+	if err := router.RegisterPasswordRoutes(passwordTestBaseURL, nil); err != nil {
 		t.Fatalf("RegisterPasswordRoutes: %v", err)
 	}
 
@@ -184,10 +184,17 @@ func TestIntegrationPasswordResetAndChangeFlow(t *testing.T) {
 		t.Fatal("登录未下发会话 Cookie")
 	}
 
-	// 找回密码：从捕获的链接提取 token。
+	// 找回密码：投递是异步的，轮询等待链接出现（最多 2s）。
 	if rr := pwdDoJSON(t, router, http.MethodPost, "/api/auth/password-reset/request",
 		map[string]any{"email": email}, nil); rr.Code != http.StatusNoContent {
 		t.Fatalf("重置请求 status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for sender.count() == 0 {
+		if !time.Now().Before(deadline) {
+			t.Fatal("2s 内未收到重置邮件")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	link := sender.last(t)
 	parsed, err := url.Parse(link.ResetURL)

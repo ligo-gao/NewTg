@@ -31,10 +31,37 @@ import (
 // 自最近一次成功再认证起算，窗口内的后续敏感操作可直接通过。
 const ReauthWindow = 5 * time.Minute
 
+// 再认证失败锁定（security-01 §2.6「连续失败计入既有认证失败锁定」的再认证
+// 专用桶）：连续 5 次失败锁定 15 分钟，与登录失败的阈值/时长同口径。
+const (
+	// ReauthMaxFailures 是触发锁定的连续失败次数。
+	ReauthMaxFailures = 5
+	// ReauthLockDuration 是锁定时长。
+	ReauthLockDuration = 15 * time.Minute
+	// reauthFailureKeyPrefix 是每用户失败计数键；计数含 TTL，成功后清零。
+	reauthFailureKeyPrefix = "reauth_fail:"
+)
+
 // ErrReauthRequired 表示再认证未通过：因子缺失/错误、窗口已过期、账号没有
 // 可用口令，或已启用 MFA 但第二因子缺失。HTTP 层映射 403 reauth_required。
 // Redis/存储故障使用普通 error，便于调用方区分 503 与 403（两者都是拒绝）。
 var ErrReauthRequired = errors.New("auth: reauthentication required")
+
+// ErrReauthLocked 是锁定哨兵；剩余时间用 ReauthLockedError.RetryAfter 读取。
+// HTTP 层映射 429 + Retry-After（与登录锁定同口径）。
+var ErrReauthLocked = errors.New("auth: reauthentication temporarily locked")
+
+// ReauthLockedError 携带剩余锁定时间，供 Retry-After 使用。
+type ReauthLockedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *ReauthLockedError) Error() string {
+	return fmt.Sprintf("auth: reauthentication locked for %s", e.RetryAfter)
+}
+
+// Unwrap 让 errors.Is(err, ErrReauthLocked) 成立。
+func (e *ReauthLockedError) Unwrap() error { return ErrReauthLocked }
 
 // ReauthFactor 是一次再认证提交的因子。Password 是当前密码（未启用 MFA 时
 // 的唯一因子）；TOTPCode 是账号已启用 MFA 时必填的第二因子。
@@ -76,23 +103,106 @@ func (f ReauthMaterialFunc) ReauthMaterial(ctx context.Context, userID int64) (*
 // (secret, code, now)，使 server NTP 时间成为唯一时间源、测试可注入固定时钟。
 type TOTPVerifier func(secret, code string, now time.Time) bool
 
+// ReauthLimiter 是再认证失败计数的接缝。Check 在每次因子校验前调用，返回
+// *ReauthLockedError 表示处于锁定窗口；Record 记录一次尝试的结果（ok=true
+// 清零连续失败）。默认实现是 RedisReauthLimiter；nil 表示禁用锁定（仅测试）。
+type ReauthLimiter interface {
+	Check(ctx context.Context, userID int64) error
+	Record(ctx context.Context, userID int64, ok bool) error
+}
+
+// RedisReauthLimiter 用 Redis 实现「连续 5 次失败锁 15 分钟」。
+// 计数按用户，不含 IP：再认证发生在已登录会话内，userID 是更准确的维度。
+type RedisReauthLimiter struct {
+	rdb *redis.Client
+}
+
+// NewRedisReauthLimiter 构造默认限流器。
+func NewRedisReauthLimiter(rdb *redis.Client) *RedisReauthLimiter {
+	return &RedisReauthLimiter{rdb: rdb}
+}
+
+// Check 判断用户是否处于再认证锁定窗口。
+func (l *RedisReauthLimiter) Check(ctx context.Context, userID int64) error {
+	key := reauthFailureKey(userID)
+	n, err := l.rdb.Get(ctx, key).Int()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auth: reauth limiter check: %w", err)
+	}
+	if n < ReauthMaxFailures {
+		return nil
+	}
+	ttl, err := l.rdb.PTTL(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("auth: reauth limiter ttl: %w", err)
+	}
+	if ttl <= 0 || ttl > ReauthLockDuration {
+		// 无 TTL（异常数据）按完整锁定窗口处理：既不永久锁定也不提前放行。
+		ttl = ReauthLockDuration
+	}
+	return &ReauthLockedError{RetryAfter: ttl}
+}
+
+// Record 记录一次再认证结果。成功清零；失败 INCR 并把 TTL 重置为 15 分钟。
+func (l *RedisReauthLimiter) Record(ctx context.Context, userID int64, ok bool) error {
+	key := reauthFailureKey(userID)
+	if ok {
+		if err := l.rdb.Del(ctx, key).Err(); err != nil {
+			return fmt.Errorf("auth: reauth limiter reset: %w", err)
+		}
+		return nil
+	}
+	if _, err := reauthFailureScript.Run(ctx, l.rdb, []string{key},
+		strconv.FormatInt(ReauthLockDuration.Milliseconds(), 10)).Result(); err != nil {
+		return fmt.Errorf("auth: reauth limiter record: %w", err)
+	}
+	return nil
+}
+
+// reauthFailureScript 原子 INCR + 重置 TTL，避免 INCR 成功而 EXPIRE 失败导致
+// 计数器永不过期（与登录失败计数同一实现口径）。
+var reauthFailureScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return n
+`)
+
+func reauthFailureKey(userID int64) string {
+	return reauthFailureKeyPrefix + strconv.FormatInt(userID, 10)
+}
+
 // ReauthGate 校验再认证因子并维护用户的再认证窗口。可并发使用。
 type ReauthGate struct {
 	rdb        *redis.Client
 	users      ReauthUserSource
 	verifyTOTP TOTPVerifier
-	// now 是可替换时钟，仅供测试跨越 5 分钟窗口；生产恒为 time.Now。
+	limiter    ReauthLimiter
+	// now 是 TOTP 校验的服务端时钟（NTP）；窗口过期由 Redis TTL 独立判定，
+	// 两者刻意分离——窗口是权威存储状态，不应随进程时钟漂移。
 	now func() time.Time
 }
 
 // NewReauthGate 构造再认证门。rdb 与 users 必填；verifyTOTP 为 nil 时，
 // 已启用 MFA 的账号无法通过再认证（fail-closed），装配层应在 Task 7 落地后
-// 注入 auth.VerifyTOTP。
+// 注入 auth.VerifyTOTP。失败锁定默认启用（RedisReauthLimiter）。
 func NewReauthGate(rdb *redis.Client, users ReauthUserSource, verifyTOTP TOTPVerifier) *ReauthGate {
-	return &ReauthGate{rdb: rdb, users: users, verifyTOTP: verifyTOTP, now: time.Now}
+	g := &ReauthGate{rdb: rdb, users: users, verifyTOTP: verifyTOTP, now: time.Now}
+	if rdb != nil {
+		g.limiter = NewRedisReauthLimiter(rdb)
+	}
+	return g
 }
 
-// setClock 替换时钟（仅测试使用；生产装配不调用）。
+// SetLimiter 替换失败计数实现；nil 表示禁用锁定（仅测试使用）。
+// 必须在开始服务前调用。
+func (m *ReauthGate) SetLimiter(l ReauthLimiter) {
+	m.limiter = l
+}
+
+// setClock 替换 TOTP 校验时钟（仅测试使用；生产装配不调用）。
 func (m *ReauthGate) setClock(now func() time.Time) {
 	if now != nil {
 		m.now = now
@@ -105,7 +215,9 @@ func (m *ReauthGate) setClock(now func() time.Time) {
 //     成功后写入/刷新 reauth:{userID} 窗口（5 分钟）。
 //   - 未提供因子时：仅当窗口仍有效时返回 nil，否则 ErrReauthRequired。
 //
-// 返回值约定：认证失败 == ErrReauthRequired；基础设施故障 == 其他 error。
+// 返回值约定：认证失败 == ErrReauthRequired；连续失败锁定 ==
+// *ReauthLockedError（errors.Is(err, ErrReauthLocked)）；基础设施故障 ==
+// 其他 error。因子路径受失败锁定约束；纯窗口检查不产生猜测，不计数。
 func (m *ReauthGate) Authorize(ctx context.Context, userID int64, factor ReauthFactor) error {
 	if m == nil || m.rdb == nil || m.users == nil {
 		return errors.New("auth: reauth gate is not configured")
@@ -122,33 +234,55 @@ func (m *ReauthGate) Authorize(ctx context.Context, userID int64, factor ReauthF
 		return nil
 	}
 
+	// 锁定检查在读取用户材料/执行 KDF 之前：锁定期间不再消耗 argon2 与 DB。
+	if m.limiter != nil {
+		if err := m.limiter.Check(ctx, userID); err != nil {
+			return err
+		}
+	}
+	fail := func() error {
+		if m.limiter != nil {
+			if err := m.limiter.Record(ctx, userID, false); err != nil {
+				return err
+			}
+		}
+		return ErrReauthRequired
+	}
+
 	material, err := m.users.ReauthMaterial(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("auth: load reauth material: %w", err)
 	}
 	if material == nil {
-		return ErrReauthRequired
+		return fail()
 	}
 
 	if material.PasswordHash == "" {
 		// OAuth-only 用户没有口令，不能「空口令通过」；仍然执行一次等价
 		// KDF，避免通过响应时间判断账号是否设置过密码。
 		_ = VerifyPassword(dummyReauthHash(), factor.Password)
-		return ErrReauthRequired
+		return fail()
 	}
 	if !VerifyPassword(material.PasswordHash, factor.Password) {
-		return ErrReauthRequired
+		return fail()
 	}
 
 	if material.TOTPEnabled {
 		if factor.TOTPCode == "" || m.verifyTOTP == nil {
-			return ErrReauthRequired
+			return fail()
 		}
 		if !m.verifyTOTP(material.TOTPSecret, factor.TOTPCode, m.now()) {
-			return ErrReauthRequired
+			return fail()
 		}
 	}
 
+	// 成功先清零失败计数，再写窗口：若计数清零失败则不放行（fail-closed），
+	// 避免「已经锁定但本次成功换来了窗口」的旁路。
+	if m.limiter != nil {
+		if err := m.limiter.Record(ctx, userID, true); err != nil {
+			return err
+		}
+	}
 	// 只有全部因子通过后才记录窗口；失败不会留下任何可被复用的状态。
 	if err := m.rdb.Set(ctx, reauthKey(userID), "1", ReauthWindow).Err(); err != nil {
 		return fmt.Errorf("auth: record reauth window: %w", err)

@@ -88,18 +88,22 @@ func TestReauthGatePasswordOnly(t *testing.T) {
 }
 
 // TestReauthGateTOTP 覆盖已启用 MFA：必须同时提供正确 TOTP，缺失或错误都拒绝；
-// 注入的校验器必须是唯一验证入口（Task 7 落地后由装配层注入 auth.VerifyTOTP）。
+// 注入的校验器必须是唯一验证入口（Task 7 落地后由装配层注入 auth.VerifyTOTP），
+// 且必须收到服务端注入的时钟。
 func TestReauthGateTOTP(t *testing.T) {
 	const secret = "JBSWY3DPEHPK3PXP"
+	fixedNow := time.Date(2026, 10, 18, 12, 30, 0, 0, time.UTC)
 	var seenSecret, seenCode string
-	verify := func(s, code string, _ time.Time) bool {
-		seenSecret, seenCode = s, code
+	var seenNow time.Time
+	verify := func(s, code string, now time.Time) bool {
+		seenSecret, seenCode, seenNow = s, code, now
 		return s == secret && code == "123456"
 	}
 	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
 		9: {PasswordHash: reauthTestPasswordHash, TOTPEnabled: true, TOTPSecret: secret},
 	}}
 	gate, mr := newReauthTestGate(t, source, verify)
+	gate.setClock(func() time.Time { return fixedNow })
 	ctx := context.Background()
 
 	if err := gate.Authorize(ctx, 9, ReauthFactor{Password: reauthTestPassword}); !errors.Is(err, ErrReauthRequired) {
@@ -118,6 +122,9 @@ func TestReauthGateTOTP(t *testing.T) {
 	if seenSecret != secret || seenCode != "123456" {
 		t.Fatalf("校验器收到 secret=%q code=%q，期望 %q/123456", seenSecret, seenCode, secret)
 	}
+	if !seenNow.Equal(fixedNow) {
+		t.Fatalf("校验器收到时钟 = %v，期望注入的 %v", seenNow, fixedNow)
+	}
 }
 
 // TestReauthGateTOTPWithoutVerifierFailsClosed：已启用 MFA 但装配层忘了注入
@@ -135,32 +142,29 @@ func TestReauthGateTOTPWithoutVerifierFailsClosed(t *testing.T) {
 	}
 }
 
-// TestReauthGateWindowExpiry 覆盖「5 分钟窗口自最近一次成功再认证起算」：
-// 窗口过期后空因子失效；再次成功会重新计时（刷新窗口）。
+// TestReauthGateWindowExpiry 覆盖「5 分钟窗口自最近一次成功再认证起算」的
+// 边界：4:59 仍有效、5:01 失效、再次成功刷新 TTL。窗口过期以 Redis TTL 为
+// 权威（不是进程时钟），因此用 miniredis 推进真实 TTL。
 func TestReauthGateWindowExpiry(t *testing.T) {
 	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
 		11: {PasswordHash: reauthTestPasswordHash},
 	}}
 	gate, mr := newReauthTestGate(t, source, nil)
 	ctx := context.Background()
-
-	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-	gate.setClock(func() time.Time { return now })
-
 	if err := gate.Authorize(ctx, 11, ReauthFactor{Password: reauthTestPassword}); err != nil {
 		t.Fatalf("首次再认证 err = %v", err)
 	}
 
-	// 窗口内（4:59）仍然有效。
-	now = now.Add(ReauthWindow - time.Second)
+	// 4:59：窗口仍在。
+	mr.FastForward(ReauthWindow - time.Second)
 	if err := gate.Authorize(ctx, 11, ReauthFactor{}); err != nil {
-		t.Fatalf("窗口内 err = %v，期望 nil", err)
+		t.Fatalf("4:59 窗口内 err = %v，期望 nil", err)
 	}
 
-	// 越过 5 分钟后，Redis TTL 已到期（miniredis 需手动推进）。
-	mr.FastForward(ReauthWindow + time.Second)
+	// 再前进 2 秒越过 5 分钟：窗口失效。
+	mr.FastForward(2 * time.Second)
 	if err := gate.Authorize(ctx, 11, ReauthFactor{}); !errors.Is(err, ErrReauthRequired) {
-		t.Fatalf("窗口过期 err = %v，期望 ErrReauthRequired", err)
+		t.Fatalf("5:01 窗口外 err = %v，期望 ErrReauthRequired", err)
 	}
 
 	// 重新认证成功后窗口重新计时。
@@ -236,4 +240,96 @@ func TestReauthClearWindow(t *testing.T) {
 	if err := gate.Authorize(ctx, 15, ReauthFactor{}); !errors.Is(err, ErrReauthRequired) {
 		t.Fatalf("清除后空因子 err = %v，期望 ErrReauthRequired", err)
 	}
+}
+
+// TestReauthGateFailureLockout：连续 5 次失败后锁定 15 分钟，锁定期间即使
+// 提交正确因子也必须 429（*ReauthLockedError）；锁定到期后恢复。
+func TestReauthGateFailureLockout(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		21: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, mr := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	for i := 0; i < ReauthMaxFailures; i++ {
+		err := gate.Authorize(ctx, 21, ReauthFactor{Password: "wrong"})
+		if !errors.Is(err, ErrReauthRequired) {
+			t.Fatalf("第 %d 次失败 err = %v，期望 ErrReauthRequired", i+1, err)
+		}
+	}
+
+	err := gate.Authorize(ctx, 21, ReauthFactor{Password: reauthTestPassword})
+	var locked *ReauthLockedError
+	if !errors.As(err, &locked) {
+		t.Fatalf("锁定后正确密码 err = %v，期望 *ReauthLockedError", err)
+	}
+	if !errors.Is(err, ErrReauthLocked) {
+		t.Fatalf("errors.Is(err, ErrReauthLocked) = false（err=%v）", err)
+	}
+	if locked.RetryAfter <= 0 || locked.RetryAfter > ReauthLockDuration {
+		t.Fatalf("RetryAfter = %v，期望 (0, %v]", locked.RetryAfter, ReauthLockDuration)
+	}
+	if mr.Exists("reauth:21") {
+		t.Fatal("锁定期间不得写入再认证窗口")
+	}
+
+	// 锁定到期后恢复。
+	mr.FastForward(ReauthLockDuration + time.Second)
+	if err := gate.Authorize(ctx, 21, ReauthFactor{Password: reauthTestPassword}); err != nil {
+		t.Fatalf("锁定到期后 err = %v，期望 nil", err)
+	}
+}
+
+// TestReauthGateSuccessResetsFailures：成功再认证清零连续失败计数，
+// 4 次失败 + 成功 + 4 次失败不应锁定（第 5 次连续失败才触发锁定）。
+func TestReauthGateSuccessResetsFailures(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		22: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	for i := 0; i < ReauthMaxFailures-1; i++ {
+		if err := gate.Authorize(ctx, 22, ReauthFactor{Password: "wrong"}); !errors.Is(err, ErrReauthRequired) {
+			t.Fatalf("前置失败 err = %v", err)
+		}
+	}
+	if err := gate.Authorize(ctx, 22, ReauthFactor{Password: reauthTestPassword}); err != nil {
+		t.Fatalf("成功再认证 err = %v", err)
+	}
+	for i := 0; i < ReauthMaxFailures-1; i++ {
+		err := gate.Authorize(ctx, 22, ReauthFactor{Password: "wrong"})
+		if !errors.Is(err, ErrReauthRequired) {
+			t.Fatalf("复位后第 %d 次失败 err = %v（应仍是 ErrReauthRequired，未锁定）", i+1, err)
+		}
+	}
+	// 第 5 次连续失败后应进入锁定。
+	if err := gate.Authorize(ctx, 22, ReauthFactor{Password: "wrong"}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("第 5 次连续失败 err = %v，期望 ErrReauthRequired", err)
+	}
+	var locked *ReauthLockedError
+	if err := gate.Authorize(ctx, 22, ReauthFactor{Password: reauthTestPassword}); !errors.As(err, &locked) {
+		t.Fatalf("第 5 次失败后 err = %v，期望 *ReauthLockedError", err)
+	}
+}
+
+// TestReauthGateLimiterErrorFailsClosed：限流器故障不得放行。
+func TestReauthGateLimiterErrorFailsClosed(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		23: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+	gate.SetLimiter(reauthErrorLimiter{err: errors.New("limiter down")})
+
+	err := gate.Authorize(context.Background(), 23, ReauthFactor{Password: reauthTestPassword})
+	if err == nil || errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("限流器故障 err = %v，期望普通错误（fail-closed）", err)
+	}
+}
+
+type reauthErrorLimiter struct{ err error }
+
+func (l reauthErrorLimiter) Check(context.Context, int64) error { return l.err }
+func (l reauthErrorLimiter) Record(context.Context, int64, bool) error {
+	return l.err
 }
