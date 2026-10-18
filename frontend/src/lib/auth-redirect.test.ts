@@ -26,6 +26,19 @@ describe('sanitizeAuthRedirect', () => {
     )
   })
 
+  it('rejects dot-segment normalisation that yields a protocol-relative path', () => {
+    // Each of these resolves to origin=localhost but pathname=//evil.example.
+    expect(sanitizeAuthRedirect('/..//evil.example')).toBe(DEFAULT_AUTH_REDIRECT)
+    expect(sanitizeAuthRedirect('/.//evil.example')).toBe(DEFAULT_AUTH_REDIRECT)
+    expect(sanitizeAuthRedirect('/%2e%2e//evil.example')).toBe(DEFAULT_AUTH_REDIRECT)
+    expect(sanitizeAuthRedirect('/..\\/evil.example')).toBe(DEFAULT_AUTH_REDIRECT)
+  })
+
+  it('preserves path, query and fragment for safe same-origin targets', () => {
+    expect(sanitizeAuthRedirect('/users/1?x=1#y')).toBe('/users/1?x=1#y')
+    expect(sanitizeAuthRedirect('/users/../admin')).toBe('/admin')
+  })
+
   it('falls back for empty values and bare relative strings', () => {
     expect(sanitizeAuthRedirect(undefined)).toBe(DEFAULT_AUTH_REDIRECT)
     expect(sanitizeAuthRedirect('')).toBe(DEFAULT_AUTH_REDIRECT)

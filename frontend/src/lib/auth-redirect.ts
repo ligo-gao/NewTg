@@ -37,14 +37,30 @@ export function sanitizeAuthRedirect(raw: string | null | undefined): string {
     return DEFAULT_AUTH_REDIRECT
   }
   if (hasControlCharacter(raw)) return DEFAULT_AUTH_REDIRECT
+  // The WHATWG parser treats `\` as `/` for special schemes; reject it up
+  // front so `/..\/evil.example` cannot be folded into a protocol-relative
+  // path during normalisation.
+  if (raw.includes('\\')) return DEFAULT_AUTH_REDIRECT
 
   const origin = currentOrigin()
   try {
     const resolved = new URL(raw, origin)
     if (resolved.origin !== origin) return DEFAULT_AUTH_REDIRECT
-    // Return the normalised same-origin relative form (never the raw input,
-    // which may still carry parser-substituted characters).
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`
+
+    // Dot-segment normalisation can turn a same-origin input into a
+    // protocol-relative path while the origin stays local:
+    //   `/..//evil.example`   → pathname `//evil.example`
+    //   `/.//evil.example`    → pathname `//evil.example`
+    //   `/%2e%2e//evil.example` → pathname `//evil.example`
+    // `location.assign('//evil.example')` would leave the site, so the
+    // normalised pathname must be relative to exactly one leading slash.
+    const { pathname, search, hash } = resolved
+    if (!pathname.startsWith('/')) return DEFAULT_AUTH_REDIRECT
+    if (pathname.startsWith('//') || pathname.startsWith('/\\')) {
+      return DEFAULT_AUTH_REDIRECT
+    }
+
+    return `${pathname}${search}${hash}`
   } catch {
     return DEFAULT_AUTH_REDIRECT
   }

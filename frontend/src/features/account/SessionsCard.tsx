@@ -22,8 +22,8 @@ export interface SessionsCardProps {
 }
 
 /**
- * F-01-13/F-01-14 session list. Revoking one session is immediate (no data
- * loss, per the design); revoking all others goes through the confirm dialog.
+ * F-01-13/F-01-14 session list. Both single-session revocation and "sign out
+ * everywhere else" are confirmed, because the affected devices lose access.
  */
 export function SessionsCard({ className }: SessionsCardProps) {
   const { t, locale } = useI18n()

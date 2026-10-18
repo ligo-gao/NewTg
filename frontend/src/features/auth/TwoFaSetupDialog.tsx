@@ -25,9 +25,9 @@ type Step = 'scan' | 'verify' | 'codes'
  * succeeds, so the order is scan → verify → save codes (the design's visual
  * step numbering is preserved, only the data dependency fixes the order).
  *
- * A QR image is intentionally not generated client-side: adding a QR encoder
- * would be a new dependency, and the design already provides the manual-key
- * path for authenticators. The otpauth URI is shown verbatim instead.
+ * The `otpauth://` URI is rendered as an SVG QR code (`qrcode.react`, pinned
+ * ISC dependency); the manual setup key remains as the fallback for
+ * authenticators that cannot scan.
  */
 export function TwoFaSetupDialog({
   open,
