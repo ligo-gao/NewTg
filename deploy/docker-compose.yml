@@ -52,6 +52,9 @@ services:
   gateway:
     image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: unless-stopped
+    # Docker 默认只等 10s 就 SIGKILL，短于应用 SHUTDOWN_GRACE_SECONDS（默认 30）：
+    # 优雅停机窗口未走完进程即被强杀，在途请求会被硬断。35s 为 30s 窗口留 5s 余量。
+    stop_grace_period: 35s
     deploy:
       replicas: 2
     environment:
@@ -83,6 +86,9 @@ services:
   migrate:
     image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: "no"
+    # 一次性迁移若在事务中途被 SIGKILL，schema_migrations 会留下 dirty=true；
+    # 与其他应用角色同取 35s，覆盖应用侧 SHUTDOWN_GRACE_SECONDS（默认 30）。
+    stop_grace_period: 35s
     environment:
       <<: *app-env
       RUN_MODE: migrate
@@ -99,6 +105,8 @@ services:
     image: ${NEWTG_IMAGE:-newtg/gateway:dev}
     restart: unless-stopped
     container_name: newtg-worker
+    # 与 gateway 同理：worker 同样消费 SHUTDOWN_GRACE_SECONDS，必须留足优雅退出窗口。
+    stop_grace_period: 35s
     deploy:
       replicas: 1
     environment:

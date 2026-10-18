@@ -5,9 +5,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { CSRF_COOKIE, CSRF_HEADER, createApiClient } from './client'
 
 /**
- * The M0 `paths` type is the frozen empty placeholder, so these tests call the
- * client through a loose structural facade; the assertions target runtime
- * behaviour (headers, replay, normalization), not generated types.
+ * These tests deliberately call test-only routes (`/api/me`, `/api/offline`)
+ * that the generated contract does not define, so they go through a loose
+ * structural facade; the assertions target runtime behaviour (headers, replay,
+ * normalization), not generated types.
  */
 const BASE_URL = 'http://localhost'
 

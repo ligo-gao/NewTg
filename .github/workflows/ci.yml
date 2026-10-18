@@ -186,6 +186,13 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - name: 迁移文件静态断言（主库）
+        # 为什么需要这层断言：migrate CLI 只执行 up/down 序列，孤儿 down、缺失配对
+        # 和命名违规都会被静默忽略——只有静态检查能挡住，且无需 DB，故不受 paths 过滤。
+        run: bash backend/scripts/check_migrations.sh backend/migrations
+      - name: 迁移文件静态断言（日志库）
+        # 日志库是独立迁移流（无 request_registry），同一组断言必须单独跑一遍。
+        run: bash backend/scripts/check_migrations.sh backend/migrations-logs
       - name: 判定 paths 过滤
         # 迁移/存储层变更必须跑全序列；无关 PR 省略重型步骤（push main 始终跑）。
         # 用步骤输出而非 job 级 paths：workflow 级 paths 会把整个 CI 一起跳过，
@@ -198,7 +205,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
             if git diff --name-only FETCH_HEAD HEAD \
-                 | grep -qE '^(backend/migrations/|backend/migrations-logs/|backend/internal/store/|backend/scripts/migrate_verify\.sh$|backend/go\.mod$|backend/go\.sum$)'; then
+                 | grep -qE '^(backend/migrations/|backend/migrations-logs/|backend/internal/store/|backend/scripts/migrate_verify\.sh$|backend/scripts/check_migrations\.sh$|backend/go\.mod$|backend/go\.sum$)'; then
               run=true
             else
               run=false
@@ -206,7 +213,7 @@ jobs:
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           if [ "$run" = false ]; then
-            echo "::notice::migrate-verify 跳过：本 PR 未改动 backend/migrations/、backend/migrations-logs/、backend/internal/store/、backend/scripts/migrate_verify.sh 或 backend/go.{mod,sum}"
+            echo "::notice::migrate-verify 迁移序列跳过：本 PR 未改动 backend/migrations/、backend/migrations-logs/、backend/internal/store/、backend/scripts/migrate_verify.sh、backend/scripts/check_migrations.sh 或 backend/go.{mod,sum}"
           fi
       - name: 建日志库 newtg_logs
         if: steps.filter.outputs.run == 'true'
