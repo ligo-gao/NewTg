@@ -157,8 +157,8 @@ func (m *AuthzMiddleware) SetWritePolicy(action AuthzAction, policy *FieldPolicy
 // 无法保证已加载时，请改用 ResolvePermissions（或走 Handler）并接线
 // PermissionLoader：装载失败会返回 error，调用方必须拒绝，绝不能把
 // 「未加载」当成 FULL。
-func (m *AuthzMiddleware) Authorize(p auth.Principal, _ AuthzCtx, action AuthzAction) AuthzDecision {
-	return authorize(p, action.ActionName, action)
+func (m *AuthzMiddleware) Authorize(p auth.Principal, ctx AuthzCtx, action AuthzAction) AuthzDecision {
+	return authorize(p, ctx, action.ActionName, action)
 }
 
 // ResolvePermissions 在配置了 PermissionLoader 时按 UserID 读取权威权限集，
@@ -169,8 +169,8 @@ func (m *AuthzMiddleware) Authorize(p auth.Principal, _ AuthzCtx, action AuthzAc
 // 未配置装载器时原样返回 p——这表示调用方明确保证 Permissions 已由 DB 填充。
 func (m *AuthzMiddleware) ResolvePermissions(ctx context.Context, p auth.Principal) (auth.Principal, error) {
 	loader := m.permissionLoaderFor()
-	if loader == nil || p.Role != RoleAdmin {
-		return p, nil
+	if loader == nil || p.Role != RoleAdmin || p.UserID == 0 {
+		return p, nil // UserID=0 是未认证，后续功能级会拒绝，不做无意义的 user 0 查询
 	}
 	perms, err := loader.Load(ctx, p.UserID)
 	if err != nil {
@@ -185,7 +185,8 @@ func (m *AuthzMiddleware) ResolvePermissions(ctx context.Context, p auth.Princip
 // authorize 是 Authorize 与 Handler 的共同实现：required 由路由声明显式传入，
 // 从而让 Handler(required, action) 中的 required 成为功能级的唯一真源；
 // 直接调用 Authorize 时则取 action.ActionName。
-func authorize(p auth.Principal, required string, action AuthzAction) AuthzDecision {
+// ctx 目前只作为 §2.5 风险带/step-up 的预留缝，三层判定本身不消费它。
+func authorize(p auth.Principal, _ AuthzCtx, required string, action AuthzAction) AuthzDecision {
 	if !functionalAllowed(p, required) {
 		return denyDecision(ReasonPermissionDenied)
 	}
@@ -255,6 +256,10 @@ func (m *AuthzMiddleware) CheckFields(action AuthzAction, body map[string]any) A
 //
 // "*" 是 FULL 的同义词，只有 FULL 授权者才能授予；非 FULL 管理员把 "*" 授予
 // 他人等于绕过超集校验完成提权。
+//
+// 调用契约：p 必须是已经过 ResolvePermissions（或等价 DB 装载）解析的 Principal。
+// 直接传会话中间件产出的原始 Principal（Permissions 为 nil）会被当作 DB NULL
+// = FULL，等于绕过超集校验——nil 是「数据库 NULL」，不是「尚未加载」。
 func (m *AuthzMiddleware) AuthorizeGrant(p auth.Principal, requested []string) AuthzDecision {
 	if p.UserID == 0 || p.Role != RoleAdmin {
 		return denyDecision(ReasonPermissionDenied)
@@ -305,9 +310,13 @@ func (m *AuthzMiddleware) Handler(required string, action AuthzAction) func(http
 				writeProblem(w, http.StatusForbidden, problemTypeForbidden, "Forbidden", "", nil)
 				return
 			}
+			// 把解析后的身份写回请求上下文：否则下游 handler 读到的仍是会话
+			// 中间件注入的原始 Principal（Permissions=nil=FULL），受限 admin
+			// 会在业务层被当成全权管理员。下游必须看到「授权判定时用的那份」。
+			r = r.WithContext(auth.WithPrincipal(r.Context(), &resolved))
 
 			// 顺序不可交换：功能级/数据级拒绝优先于字段级（§2.6.1 规则 4）。
-			if d := authorize(resolved, required, action); d.Effect != EffectAllow {
+			if d := authorize(resolved, ContextFromRequest(r), required, action); d.Effect != EffectAllow {
 				writeDecision(w, d, nil)
 				return
 			}
@@ -360,8 +369,9 @@ func actionKey(action AuthzAction) string {
 // offendingFields 返回请求体中不在白名单内的字段路径（如 "profile.email"）。
 //
 // 递归规则：命中的字段若登记了子树，则对象逐键继续校验、对象数组逐元素校验；
-// 未登记字段直接记为越权。非对象值没有「内部字段」可校验，类型问题留给
-// handler 的 schema；这里只回答授权问题。
+// 未登记字段直接记为越权。声明为子树却收到标量/null（或数组里的非对象元素）时
+// 也失败关闭：无法证明其内部字段合法，不能因为「没有键可检查」就放行。需要
+// 接受任意标量或自由形态 map 的字段应登记为叶子（nil 子树）。
 func offendingFields(policy *FieldPolicy, body map[string]any) []string {
 	var bad []string
 	for key, value := range body {
@@ -380,10 +390,15 @@ func offendingFields(policy *FieldPolicy, body map[string]any) []string {
 			for i, item := range v {
 				obj, ok := item.(map[string]any)
 				if !ok {
+					// 子树声明为对象数组，元素却不是对象：失败关闭。
+					bad = append(bad, fieldPath(key, i))
 					continue
 				}
 				bad = append(bad, prefixFields(fieldPath(key, i), offendingFields(child, obj))...)
 			}
+		default:
+			// 标量、null 等：子树声明的不是可校验对象，失败关闭。
+			bad = append(bad, key)
 		}
 	}
 	return bad
@@ -404,8 +419,10 @@ func fieldPath(key string, index int) string {
 // readJSONObject 读取并缓存请求体，再把 r.Body 还原给下游 handler。
 //
 // present=false 表示请求没有 body（或全为空白）：没有字段可写，字段层无事可做。
-// 返回 error 的三种情况（读取失败、超限、不是 JSON 对象）都按失败关闭处理：
-// 无法证明字段合法时必须拒绝，而不是放行给 handler 自行解释。
+// 返回 error 的情况（读取失败、超限、重复键、不是 JSON 对象）都按失败关闭处理：
+// 无法证明字段合法时必须拒绝，而不是放行给 handler 自行解释。非 JSON 写体
+// （form、数组、标量）一律 403——本中间件只保护 JSON 管理 API，无法为其
+// 建立字段白名单。
 func readJSONObject(r *http.Request) (body map[string]any, present bool, err error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, false, nil
@@ -423,11 +440,87 @@ func readJSONObject(r *http.Request) (body map[string]any, present bool, err err
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, false, nil
 	}
+	// 重复键必须在交给 map 之前拒绝：map 只保留后值，而下游 struct 解码会合并
+	// 重复父对象，两者对同一字节流产生不同视图（parser differential）。
+	if err := rejectDuplicateKeys(raw); err != nil {
+		if errors.Is(err, errDuplicateJSONKey) {
+			return nil, true, err
+		}
+		return nil, true, errors.New("request body is not a JSON object")
+	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, true, errors.New("request body is not a JSON object")
 	}
 	return obj, true, nil
+}
+
+// errDuplicateJSONKey 标记请求体在任意层级出现重复对象键。
+var errDuplicateJSONKey = errors.New("request body contains duplicate object keys")
+
+// rejectDuplicateKeys 以 token 级遍历拒绝任意层级的重复对象键。
+//
+// 为什么不能只检查 map：encoding/json 的两条解码路径对重复键行为不同——
+// 解码到 map[string]any 时后值覆盖前值；解码到 struct 时重复父对象的子字段
+// 会被**合并**（同名覆盖、未出现的子字段保留）。攻击者因此能让最后一份分支
+// 「合法」而下游 struct 仍保留前一份的越权字段（如 role），击穿 BOPLA
+// （IS-B-10、TC-B-10/21/22）。token 遍历是唯一不依赖具体解码目标的判定方式；
+// 不能用「重新编码后再下发」替代：float64 往返会破坏 int64 精度。
+func rejectDuplicateKeys(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := walkJSONValue(dec, "$"); err != nil {
+		return err
+	}
+	// 顶层值之后不得再有 token；json.Unmarshal 也会拒绝，这里提前给出明确错误。
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("trailing data after JSON value")
+	}
+	return nil
+}
+
+func walkJSONValue(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // 标量：没有键可重复
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("invalid object key at %s", path)
+			}
+			if _, dup := seen[key]; dup {
+				return fmt.Errorf("%w: %s.%s", errDuplicateJSONKey, path, key)
+			}
+			seen[key] = struct{}{}
+			if err := walkJSONValue(dec, path+"."+key); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // 消费 '}'
+		return err
+	case '[':
+		for i := 0; dec.More(); i++ {
+			if err := walkJSONValue(dec, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // 消费 ']'
+		return err
+	default:
+		return fmt.Errorf("unexpected delimiter %q at %s", delim, path)
+	}
 }
 
 // isWriteMethod 按 RFC 9110 安全方法白名单判定：GET/HEAD/OPTIONS/TRACE 之外
@@ -441,12 +534,12 @@ func isWriteMethod(method string) bool {
 	}
 }
 
-// authzCtxFromRequest 采集服务端可信上下文。
+// ContextFromRequest 采集服务端可信上下文，供 Authorize/Handler 使用。
 //
 // ClientIP 只取 RemoteAddr：X-Forwarded-For 等头在未配置可信代理时可由客户端
 // 任意伪造，用它做风控信号等于把攻击者可控值送进风险带。UA 只存 SHA-256，
 // 与 security-01 的会话元数据口径一致，避免把设备指纹原文落库/落日志。
-func authzCtxFromRequest(r *http.Request) AuthzCtx {
+func ContextFromRequest(r *http.Request) AuthzCtx {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host

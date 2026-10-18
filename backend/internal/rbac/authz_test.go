@@ -379,6 +379,23 @@ func TestWriteFieldBOPLA(t *testing.T) {
 		assertFieldDenied(t, rr, called, "")
 	})
 
+	t.Run("子树字段收到标量失败关闭", func(t *testing.T) {
+		rr, called := serve(t, m, &p, PermUsersUpdate, policyAction, newWrite(`{"profile":"not-an-object"}`))
+		assertFieldDenied(t, rr, called, "profile")
+	})
+
+	t.Run("子树对象数组中的非对象元素失败关闭", func(t *testing.T) {
+		rr, called := serve(t, m, &p, PermUsersUpdate, policyAction, newWrite(`{"profile":[{"bio":"hi"},"scalar"]}`))
+		assertFieldDenied(t, rr, called, "profile[1]")
+	})
+
+	t.Run("非 JSON 写体一律 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/9", strings.NewReader("display_name=Alice"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr, called := serve(t, m, &p, PermUsersUpdate, policyAction, req)
+		assertFieldDenied(t, rr, called, "")
+	})
+
 	t.Run("读请求不触发字段层", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/users/9", nil)
 		rr, called := serve(t, m, &p, PermUsersUpdate, policyAction, req)
@@ -467,7 +484,7 @@ func TestAuthzContextUsesServerObservedValues(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "sess-abc"})
 
-	got := authzCtxFromRequest(req)
+	got := ContextFromRequest(req)
 	if got.ClientIP != "203.0.113.9" {
 		t.Fatalf("ClientIP = %q，期望取自 RemoteAddr（忽略 X-Forwarded-For）", got.ClientIP)
 	}
@@ -477,6 +494,59 @@ func TestAuthzContextUsesServerObservedValues(t *testing.T) {
 	}
 	if got.SessionID != "sess-abc" {
 		t.Fatalf("SessionID = %q，期望会话 Cookie 值", got.SessionID)
+	}
+}
+
+// CRITICAL 回归（parser differential）：重复 JSON 键。
+//
+// map[string]any 对重复键只保留最后一次，而 encoding/json 解码到 struct 时
+// 会按出现顺序合并重复父对象；攻击者用两段 profile 可让中间件看到「干净」的
+// 最后一份、下游却拿到合并后的越权字段。任何层级的重复键都必须 403 且不调用
+// 下游（IS-B-10、TC-B-10/21/22）。
+func TestDuplicateJSONKeysFailClosed(t *testing.T) {
+	m := NewAuthzMiddleware()
+	action := AuthzAction{ResourceKind: "user", ActionName: "me:update"}
+	m.SetWritePolicy(action, &FieldPolicy{Fields: map[string]*FieldPolicy{
+		"display_name": nil,
+		"profile": {Fields: map[string]*FieldPolicy{
+			"bio": nil,
+		}},
+	}})
+
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			// 中间件只看最后一份 profile（bio 合法），下游 struct 却会合并出 Role。
+			name:    "重复父对象夹带越权字段",
+			payload: `{"display_name":"Alice","profile":{"role":"admin"},"profile":{"bio":"hi"}}`,
+		},
+		{
+			name:    "顶层重复键",
+			payload: `{"display_name":"Alice","display_name":"Bob"}`,
+		},
+		{
+			name:    "嵌套重复键",
+			payload: `{"profile":{"bio":"a","bio":"b"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPatch, "/api/me", strings.NewReader(tc.payload))
+			req.Header.Set("Content-Type", "application/json")
+			rr, called := serve(t, m, ptr(admin(1)), PermUsersUpdate, action, req)
+			if called {
+				t.Fatal("重复 JSON 键请求被放行到下游（parser differential）")
+			}
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("HTTP 状态 = %d，期望 403", rr.Code)
+			}
+			if got := decodeProblem(t, rr).Type; got != problemTypeFieldNotWritable {
+				t.Fatalf("problem type = %q，期望 %q", got, problemTypeFieldNotWritable)
+			}
+		})
 	}
 }
 
@@ -579,4 +649,65 @@ func TestPermissionLoaderIsAuthoritativeAndFailsClosed(t *testing.T) {
 			t.Fatalf("user 角色触发了权限查询：%v", loader.calls)
 		}
 	})
+}
+
+// Handler 成功路径必须同时做到：用 loader 的值判定，并把解析后的 Principal
+// 写回请求上下文供下游 handler 使用（否则下游读到的仍是 nil=FULL）。
+func TestHandlerLoadsPermissionsAndPropagatesToDownstream(t *testing.T) {
+	m := NewAuthzMiddleware()
+	loader := &fakePermissionLoader{perms: []string{PermUsersRead}}
+	m.SetPermissionLoader(loader)
+
+	// 会话 Principal 的 Permissions 为 nil（未加载）。若 Handler 把 nil 当 FULL，
+	// users:create 会被放行；若只用于判定而不写回 context，下游仍会看到 nil。
+	p := auth.Principal{UserID: 9, Role: RoleAdmin}
+
+	var seen []string
+	var sawPrincipal bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok := auth.PrincipalFrom(r.Context())
+		sawPrincipal = ok
+		if ok {
+			seen = got.Permissions
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// users:create → 403，不进入下游。
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil).
+		WithContext(auth.WithPrincipal(context.Background(), &p))
+	rr := httptest.NewRecorder()
+	m.Handler(PermUsersCreate, targetAction(PermUsersCreate))(next).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("users:create status = %d，期望 403", rr.Code)
+	}
+
+	// users:read → 204，下游必须看到 loader 返回的权限集。
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil).
+		WithContext(auth.WithPrincipal(context.Background(), &p))
+	rr = httptest.NewRecorder()
+	m.Handler(PermUsersRead, targetAction(PermUsersRead))(next).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("users:read status = %d，期望 204", rr.Code)
+	}
+	if !sawPrincipal || !reflect.DeepEqual(seen, []string{PermUsersRead}) {
+		t.Fatalf("下游 Principal.Permissions = %v（present=%v），期望 loader 返回值", seen, sawPrincipal)
+	}
+	if want := []int64{9, 9}; !reflect.DeepEqual(loader.calls, want) {
+		t.Fatalf("loader.calls = %v，期望 %v", loader.calls, want)
+	}
+
+	// user 角色走 Handler：loader 零调用（权限数组对 user 无意义）。
+	u := user(3, "*")
+	before := len(loader.calls)
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil).
+		WithContext(auth.WithPrincipal(context.Background(), &u))
+	rr = httptest.NewRecorder()
+	m.Handler(PermUsersRead, targetAction(PermUsersRead))(next).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("user 调管理动作 status = %d，期望 403", rr.Code)
+	}
+	if len(loader.calls) != before {
+		t.Fatalf("user 角色触发了权限查询：%v", loader.calls)
+	}
 }
