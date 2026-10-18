@@ -150,7 +150,9 @@ export function PricePreview({
         <div className="flex flex-col gap-2" role="alert">
           <p className="text-sm text-danger">
             {validationError
-              ? t('admin.pricing.preview_invalid')
+              ? mode === 'tiered_expr'
+                ? t('admin.pricing.expression_invalid')
+                : t('admin.pricing.preview_invalid_input')
               : t('admin.pricing.preview_failed')}
           </p>
           {validationError ? null : (
@@ -173,9 +175,13 @@ export function PricePreview({
           <span className="text-ink-2">
             {t('admin.pricing.preview_yuan', { amount: previewQuery.data.amount_yuan })}
           </span>
-          <Tag>{t(pricingModeKey(previewQuery.data.mode))}</Tag>
+          <Tag ariaLabel={t(pricingModeKey(previewQuery.data.mode))}>
+            {t(pricingModeKey(previewQuery.data.mode))}
+          </Tag>
           {previewQuery.data.free_model ? (
-            <Tag variant="success">{t('admin.pricing.free')}</Tag>
+            <Tag variant="success" ariaLabel={t('admin.pricing.free')}>
+              {t('admin.pricing.free')}
+            </Tag>
           ) : null}
           {previewQuery.data.clamped ? (
             <Tag variant="warning">{t('admin.pricing.preview_clamped')}</Tag>

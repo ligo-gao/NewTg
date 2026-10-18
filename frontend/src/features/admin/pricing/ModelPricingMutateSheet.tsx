@@ -131,6 +131,11 @@ export function ModelPricingMutateSheet({
     if (pricingMode === 'tiered_expr' && expr.trim() === '') {
       errors.expr = t('admin.pricing.expression_required')
     }
+    // 预览端点与保存使用同一解析器：预览已判定非法时不再发保存请求，
+    // 避免一次注定 400 的写入。
+    if (pricingMode === 'tiered_expr' && previewInvalid) {
+      errors.expr = t('admin.pricing.expression_invalid')
+    }
     const priceError = t(
       unit === 'credits'
         ? 'admin.pricing.price_invalid_credits'
@@ -191,14 +196,49 @@ export function ModelPricingMutateSheet({
         push({ tone: 'success', message: t('admin.pricing.saved') })
       }
       await queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
+      // 模型模式/价格变化会影响分组覆盖价的展示（mode/source_status），
+      // 删除则会级联删除覆盖价；模型选择器也缓存了 mode/status。
+      await queryClient.invalidateQueries({ queryKey: ['admin-pricing-models'] })
+      await queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
       onSaved()
       onOpenChange(false)
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'conflict') {
-        // 刷新列表，让下一次编辑从胜出版本开始；抽屉保持打开并保留
-        // 操作者的输入（web-00 §5.6）。
-        await queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
-        setFormError(t('admin.pricing.save_conflict'))
+        // 创建 409 几乎总是 model 唯一键；更新 409 是 updated_at 乐观锁。
+        if (mode === 'create' || error.fields?.includes('model') === true) {
+          setFieldErrors((current) => ({
+            ...current,
+            model: t('admin.pricing.model_exists'),
+          }))
+        } else {
+          // 刷新列表，让下一次编辑从胜出版本开始；抽屉保持打开并保留
+          // 操作者的输入（web-00 §5.6）。
+          await queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
+          setFormError(t('admin.pricing.save_conflict'))
+        }
+      } else if (error instanceof ApiError && error.fields !== undefined) {
+        // 把 problem.fields 定位回编辑器/价格输入（F-06-14 字段级 400/422）。
+        const next: Record<string, string> = {}
+        for (const field of error.fields) {
+          if (field === 'billing_expr') {
+            next.expr = t('admin.pricing.expression_invalid')
+          } else if (field === 'model') {
+            next.model =
+              mode === 'create'
+                ? t('admin.pricing.model_exists')
+                : t('admin.pricing.model_invalid')
+          } else if (field === 'prompt_price') {
+            next.prompt = t('admin.pricing.price_server_rejected')
+          } else if (field === 'completion_price') {
+            next.completion = t('admin.pricing.price_server_rejected')
+          } else if (field === 'cache_read_price') {
+            next.cacheRead = t('admin.pricing.price_server_rejected')
+          } else if (field === 'cache_write_price') {
+            next.cacheWrite = t('admin.pricing.price_server_rejected')
+          }
+        }
+        setFieldErrors(next)
+        if (Object.keys(next).length === 0) setFormError(t('admin.pricing.save_error'))
       } else {
         setFormError(t('admin.pricing.save_error'))
       }
@@ -327,15 +367,24 @@ export function ModelPricingMutateSheet({
             unit={unit}
             values={prices}
             errors={{
-              prompt: priceErrorText(parsed.errors.prompt, unit, t),
-              completion: priceErrorText(parsed.errors.completion, unit, t),
-              cacheRead: priceErrorText(parsed.errors.cacheRead, unit, t),
-              cacheWrite: priceErrorText(parsed.errors.cacheWrite, unit, t),
+              prompt:
+                priceErrorText(parsed.errors.prompt, unit, t) ??
+                fieldErrors.prompt,
+              completion:
+                priceErrorText(parsed.errors.completion, unit, t) ??
+                fieldErrors.completion,
+              cacheRead:
+                priceErrorText(parsed.errors.cacheRead, unit, t) ??
+                fieldErrors.cacheRead,
+              cacheWrite:
+                priceErrorText(parsed.errors.cacheWrite, unit, t) ??
+                fieldErrors.cacheWrite,
             }}
             quotaPerUnit={factor}
             onUnitChange={changeUnit}
             onChange={(key, value) => {
               setPrices((current) => ({ ...current, [key]: value }))
+              setFieldErrors((current) => withoutKey(current, key))
             }}
           />
         )}

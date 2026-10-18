@@ -75,7 +75,7 @@ describe('console layout i18n', () => {
 
     const { getByRole, getByText, queryByText } = await renderWithProviders(
       <ConsoleHeader />,
-      ['common', 'admin'],
+      ['common'],
     )
 
     const nav = getByRole('navigation')
@@ -90,9 +90,11 @@ describe('console layout i18n', () => {
     expect(nav.textContent).toContain('Dashboard')
     expect(nav.textContent).toContain('Profile')
     expect(nav.textContent).toContain('Security')
+    // 导航标签来自 always-loaded 的 common 词典（F1）；这里只加载 common，
+    // 若键错放进懒加载的 admin 词典，页面会显示原始 key。
+    expect(getByRole('group', { name: 'Pricing' })).toBeTruthy()
     expect(getByText('NewTG')).toBeTruthy()
     expect(queryByText(/common\./)).toBeNull()
-    expect(queryByText(/admin\./)).toBeNull()
   })
 
   it('hides the admin section from a non-admin session', async () => {
@@ -111,7 +113,7 @@ describe('console layout i18n', () => {
 
     const { getByRole, findByText } = await renderWithProviders(
       <ConsoleHeader />,
-      ['common', 'admin'],
+      ['common'],
     )
 
     await findByText('Dashboard')
@@ -136,10 +138,7 @@ describe('console layout i18n', () => {
       },
     })
 
-    const { getByRole } = await renderWithProviders(<ConsoleHeader />, [
-      'common',
-      'admin',
-    ])
+    const { getByRole } = await renderWithProviders(<ConsoleHeader />, ['common'])
 
     const nav = getByRole('navigation')
     await waitFor(() => {
@@ -160,10 +159,7 @@ describe('console layout i18n', () => {
       },
     })
 
-    const { getByRole } = await renderWithProviders(<ConsoleHeader />, [
-      'common',
-      'admin',
-    ])
+    const { getByRole } = await renderWithProviders(<ConsoleHeader />, ['common'])
 
     const nav = getByRole('navigation')
     await waitFor(() => {
@@ -178,7 +174,7 @@ describe('console layout i18n', () => {
 
     const { findByRole } = await renderWithProviders(
       <ConsoleHeader activePath="/admin/pricing/model-pricing" />,
-      ['common', 'admin'],
+      ['common'],
     )
 
     const modelLink = await findByRole('link', { name: 'Model pricing' })

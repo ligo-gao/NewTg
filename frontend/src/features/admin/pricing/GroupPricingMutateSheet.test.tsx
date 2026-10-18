@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor } from '@testing-library/react'
+import { waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -132,6 +132,66 @@ describe('GroupPricingMutateSheet', () => {
       cache_read_price: 0,
       cache_write_price: 0,
       status: 1,
+    })
+  })
+
+  it('explains that empty override prices mean zero and confirms an all-zero save', async () => {
+    installHandlers()
+    let posts = 0
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${ORIGIN}/api/group-pricing`, async ({ request }) => {
+        posts += 1
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json(
+          {
+            id: 1,
+            group: 'vip',
+            model: 'gpt-5',
+            mode: 'per_token',
+            prompt_price: 0,
+            completion_price: 0,
+            cache_read_price: 0,
+            cache_write_price: 0,
+            status: 1,
+            source_status: 1,
+            created_at: '2026-10-01T10:00:00Z',
+            updated_at: '2026-10-01T10:00:00Z',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+
+    const { findByRole, findByText, getByLabelText, getByRole } = await renderSheet()
+    const user = userEvent.setup()
+
+    await findByRole('option', { name: 'vip' })
+    await user.selectOptions(getByLabelText('Group'), 'vip')
+    await findByRole('option', { name: 'gpt-5' })
+    await user.selectOptions(getByLabelText('Model'), 'gpt-5')
+
+    // 覆盖价的空输入是 0（免费），提示必须与模型定价的「留空 = 默认」区分。
+    expect(
+      await findByText('Credits per 1M tokens; integers only. Empty means 0 (free).'),
+    ).toBeTruthy()
+
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    const dialog = await findByRole('dialog', {
+      name: 'All override prices are zero',
+    })
+    expect(posts).toBe(0)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Save as free' }))
+    await waitFor(() => {
+      expect(posts).toBe(1)
+    })
+    expect(bodies[0]).toMatchObject({
+      prompt_price: 0,
+      completion_price: 0,
+      cache_read_price: 0,
+      cache_write_price: 0,
     })
   })
 })

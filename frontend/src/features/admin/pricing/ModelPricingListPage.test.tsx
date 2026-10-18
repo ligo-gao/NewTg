@@ -47,6 +47,7 @@ interface InstallOptions {
   permissions?: string[] | null
   items?: ModelPricing[]
   total?: number
+  usersStatus?: number
   record?: (params: URLSearchParams) => void
   recordActor?: () => void
 }
@@ -55,6 +56,7 @@ function installBaseHandlers({
   permissions = null,
   items = [pricingRow()],
   total = 1,
+  usersStatus,
   record,
   recordActor,
 }: InstallOptions = {}) {
@@ -64,6 +66,12 @@ function installBaseHandlers({
     ),
     http.get(`${ORIGIN}/api/users`, () => {
       recordActor?.()
+      if (usersStatus !== undefined) {
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Forbidden' },
+          { status: usersStatus },
+        )
+      }
       return HttpResponse.json({
         items: [
           {
@@ -299,7 +307,49 @@ describe('ModelPricingListPage', () => {
 
     expect(await findByText('embed-3')).toBeTruthy()
     // 只有服务端标记的行挂 Free Tag；第二行仍然渲染字面 0 单元格。
-    expect(getAllByTestId('tag').filter((tag) => tag.textContent === 'Free')).toHaveLength(1)
+    const freeTags = getAllByTestId('tag').filter((tag) => tag.textContent === 'Free')
+    expect(freeTags).toHaveLength(1)
+    expect(freeTags[0]?.getAttribute('aria-label')).toBe('Free')
     expect((await findByText('partial-zero')).closest('tr')?.textContent).toContain('0')
+  })
+
+  it('skips the list request entirely when pricing:read is absent', async () => {
+    let actorLoaded = false
+    let listCalls = 0
+    installBaseHandlers({
+      permissions: ['users:read'],
+      record: () => {
+        listCalls += 1
+      },
+      recordActor: () => {
+        actorLoaded = true
+      },
+    })
+
+    const { findByText, queryByRole } = await renderWithProviders(
+      <ModelPricingListPage />,
+      ['common', 'admin'],
+    )
+
+    expect(await findByText('Access denied')).toBeTruthy()
+    await waitFor(() => {
+      expect(actorLoaded).toBe(true)
+    })
+    // F8：能力已知且无读权限时，不在挂载阶段发出注定 403 的列表请求。
+    expect(listCalls).toBe(0)
+    expect(queryByRole('table')).toBeNull()
+  })
+
+  it('still loads read-only rows when the actor row cannot be read', async () => {
+    installBaseHandlers({ usersStatus: 403 })
+
+    const { findByText, queryByRole } = await renderWithProviders(
+      <ModelPricingListPage />,
+      ['common', 'admin'],
+    )
+
+    // 能力无法判定：允许服务端裁决读权限（列表成功），写操作隐藏。
+    expect(await findByText('gpt-5')).toBeTruthy()
+    expect(queryByRole('button', { name: 'New pricing' })).toBeNull()
   })
 })

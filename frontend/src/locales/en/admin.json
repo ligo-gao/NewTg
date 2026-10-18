@@ -169,9 +169,6 @@
   },
   "pricing": {
     "title": "Model Pricing",
-    "nav_section": "Pricing",
-    "nav_model_pricing": "Model pricing",
-    "nav_group_pricing": "Group pricing",
     "keyword": "Model prefix",
     "all": "All",
     "search": "Search",
@@ -264,7 +261,6 @@
     "preview_sample": "Sample: 1M input + 1M output tokens",
     "preview_wait": "Enter a price or expression to preview.",
     "preview_loading": "Evaluating...",
-    "preview_invalid": "The expression is invalid.",
     "preview_failed": "Preview failed.",
     "preview_retry": "Retry preview",
     "preview_quota": "{quota} credits",
@@ -305,6 +301,16 @@
     "override_delete_title": "Delete override",
     "override_delete_body": "This override will be removed. The group will be billed at base price × ratio.",
     "source_disabled": "Source pricing is disabled",
-    "source_missing": "Source pricing is missing"
+    "source_missing": "Source pricing is missing",
+    "model_exists": "Pricing already exists for this model.",
+    "price_server_rejected": "This price was rejected by the server.",
+    "preview_invalid_input": "The preview input is invalid.",
+    "price_hint_group_tokens": "Credits per 1M tokens; integers only. Empty means 0 (free).",
+    "price_hint_group_request": "Credits per request; integers only. Empty means 0 (free).",
+    "override_group_invalid": "This group does not exist or is disabled.",
+    "override_model_invalid": "This source model is not priced or cannot be overridden.",
+    "override_all_zero_title": "All override prices are zero",
+    "override_all_zero_body": "All prices are 0. This makes the model free for this group. Save anyway?",
+    "override_all_zero_confirm": "Save as free"
   }
 }

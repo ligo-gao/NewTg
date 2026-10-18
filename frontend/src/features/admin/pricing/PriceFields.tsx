@@ -17,6 +17,12 @@ export interface PriceFieldsProps {
   values: PriceFieldValues
   errors: Partial<Record<PriceFieldKey, string>>
   quotaPerUnit: number
+  /**
+   * `group` 的空输入语义是 0（显式免费），`model` 的空输入是 NULL（走
+   * 默认价兜底）；提示文案必须随上下文变化，否则「留空 = 默认」会误导
+   * 覆盖价操作者。
+   */
+  context?: 'model' | 'group'
   onUnitChange: (unit: PriceUnit) => void
   onChange: (key: PriceFieldKey, value: string) => void
 }
@@ -40,6 +46,7 @@ export function PriceFields({
   values,
   errors,
   quotaPerUnit,
+  context = 'model',
   onUnitChange,
   onChange,
 }: PriceFieldsProps) {
@@ -85,9 +92,13 @@ export function PriceFields({
       </div>
 
       <p className="text-xs text-ink-3">
-        {perRequest
-          ? t('admin.pricing.price_hint_request')
-          : t('admin.pricing.price_hint_tokens')}
+        {context === 'group'
+          ? perRequest
+            ? t('admin.pricing.price_hint_group_request')
+            : t('admin.pricing.price_hint_group_tokens')
+          : perRequest
+            ? t('admin.pricing.price_hint_request')
+            : t('admin.pricing.price_hint_tokens')}
       </p>
 
       <div className={perRequest ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-2 gap-3'}>

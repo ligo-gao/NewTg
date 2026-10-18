@@ -69,7 +69,9 @@ export function ModelPricingListPage() {
 
   const listQuery = useQuery({
     queryKey: ['admin-model-pricing', applied, page, pageSize],
-    enabled: capabilities.canRead,
+    // 能力探测完成前不发列表请求：无 pricing:read 时那是注定 403 的请求，
+    // 也会避免「先闪 403 再出现表格」。
+    enabled: !capabilities.loading && capabilities.canRead,
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const query: ListQuery = {
@@ -109,6 +111,9 @@ export function ModelPricingListPage() {
       })
       setDisableTarget(null)
       await queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
+      // 启停会改变分组覆盖价展示的 source_status，也影响模型选择器。
+      await queryClient.invalidateQueries({ queryKey: ['admin-pricing-models'] })
+      await queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
@@ -138,6 +143,9 @@ export function ModelPricingListPage() {
       push({ tone: 'success', message: t('admin.pricing.deleted_success') })
       setDeleteTarget(null)
       await queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
+      // 删除模型定价会同事务级联删除分组覆盖价。
+      await queryClient.invalidateQueries({ queryKey: ['admin-pricing-models'] })
+      await queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
@@ -181,6 +189,21 @@ export function ModelPricingListPage() {
     applied.mode !== '' ||
     applied.status !== '' ||
     applied.sort !== 'model'
+
+  if (capabilities.loading) {
+    return (
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+        <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
+        <section className="rounded-xl border border-border-hairline bg-surface-card">
+          <div className="space-y-2 p-5" aria-busy="true">
+            {[0, 1, 2, 3, 4].map((index) => (
+              <div key={index} className="h-10 animate-pulse rounded bg-surface-subtle" />
+            ))}
+          </div>
+        </section>
+      </div>
+    )
+  }
 
   if (capabilities.known && !capabilities.canRead) {
     return (
@@ -383,11 +406,15 @@ export function ModelPricingListPage() {
                       <td className="px-4 py-3">
                         <span className="font-mono text-ink-1">{row.model}</span>{' '}
                         {row.free ? (
-                          <Tag variant="success">{t('admin.pricing.free')}</Tag>
+                          <Tag variant="success" ariaLabel={t('admin.pricing.free')}>
+                            {t('admin.pricing.free')}
+                          </Tag>
                         ) : null}
                       </td>
                       <td className="px-4 py-3">
-                        <Tag>{t(pricingModeKey(row.mode))}</Tag>
+                        <Tag ariaLabel={t(pricingModeKey(row.mode))}>
+                          {t(pricingModeKey(row.mode))}
+                        </Tag>
                       </td>
                       <td className="border-l border-border-hairline px-4 py-3 text-right font-mono tabular-nums text-ink-1">
                         {renderPrice(row.prompt_price)}

@@ -7,12 +7,15 @@ import { meQueryOptions } from '@/lib/session'
 export interface PricingCapabilities {
   /** 操作者授权已知（或会话表明非 admin）后为 true。 */
   known: boolean
+  /** 探测仍在进行；页面据此显示加载态而不是发注定失败的列表请求。 */
+  loading: boolean
   canRead: boolean
   canManage: boolean
 }
 
 const FULL_ACCESS: PricingCapabilities = {
   known: true,
+  loading: false,
   canRead: true,
   canManage: true,
 }
@@ -44,26 +47,40 @@ export function usePricingCapabilities(): PricingCapabilities {
           params: { query: { keyword: username ?? '', p: 1, page_size: 20 } },
         }),
       )
-      return (data.items ?? []).find((candidate) => candidate.username === username)
+      return (
+        (data.items ?? []).find(
+          (candidate) => candidate.username === username,
+        ) ?? null
+      )
     },
   })
 
   if (meQuery.isPending) {
     // 会话探测仍在进行：先渲染只读视图让表格能加载，但在授权已知前
     // 隐藏写操作。
-    return { known: false, canRead: true, canManage: false }
+    return { known: false, loading: true, canRead: true, canManage: false }
   }
   if (meQuery.data === undefined || meQuery.data.role !== 'admin') {
-    return { known: true, canRead: false, canManage: false }
+    return { known: true, loading: false, canRead: false, canManage: false }
+  }
+  if (actorQuery.isPending) {
+    return { known: false, loading: true, canRead: true, canManage: false }
   }
   if (actorQuery.data === undefined) {
-    return { known: false, canRead: true, canManage: false }
+    // 用户列表不可读（例如没有 users:read）：能力无法判定。允许列表请求
+    // 让服务端裁决读权限，但写操作保持隐藏（fail-closed）。
+    return { known: false, loading: false, canRead: true, canManage: false }
+  }
+  if (actorQuery.data === null) {
+    // 管理员自己的行都查不到：按无权限处理。
+    return { known: true, loading: false, canRead: false, canManage: false }
   }
 
   const permissions = actorQuery.data.admin_permissions
   if (permissions === null || permissions.includes('*')) return FULL_ACCESS
   return {
     known: true,
+    loading: false,
     canRead: permissions.includes('pricing:read'),
     canManage: permissions.includes('pricing:manage'),
   }

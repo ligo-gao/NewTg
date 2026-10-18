@@ -69,7 +69,8 @@ export function GroupPricingListPage() {
 
   const directoryQuery = useQuery({
     queryKey: ['admin-pricing-groups', 'directory', directoryPage, directoryPageSize],
-    enabled: capabilities.canRead && tab === 'directory',
+    enabled:
+      !capabilities.loading && capabilities.canRead && tab === 'directory',
     placeholderData: keepPreviousData,
     queryFn: async () =>
       requireData(
@@ -85,7 +86,7 @@ export function GroupPricingListPage() {
   // key，因此打开抽屉时复用缓存，不会重复请求。
   const groupOptionsQuery = useQuery({
     queryKey: ['admin-pricing-groups', 'options'],
-    enabled: capabilities.canRead,
+    enabled: !capabilities.loading && capabilities.canRead,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/groups', {
@@ -97,7 +98,8 @@ export function GroupPricingListPage() {
 
   const overridesQuery = useQuery({
     queryKey: ['admin-group-pricing', applied, page, pageSize],
-    enabled: capabilities.canRead && tab === 'overrides',
+    enabled:
+      !capabilities.loading && capabilities.canRead && tab === 'overrides',
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const query: ListQuery = { p: page, page_size: pageSize, sort: '-updated_at' }
@@ -199,6 +201,23 @@ export function GroupPricingListPage() {
 
   const hasFilters =
     applied.group !== '' || applied.keyword.trim() !== '' || applied.status !== ''
+
+  if (capabilities.loading) {
+    return (
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+        <h1 className="text-xl font-semibold text-ink-1">
+          {t('admin.pricing.group_title')}
+        </h1>
+        <section className="rounded-xl border border-border-hairline bg-surface-card">
+          <div className="space-y-2 p-5" aria-busy="true">
+            {[0, 1, 2, 3, 4].map((index) => (
+              <div key={index} className="h-10 animate-pulse rounded bg-surface-subtle" />
+            ))}
+          </div>
+        </section>
+      </div>
+    )
+  }
 
   if (capabilities.known && !capabilities.canRead) {
     return (
@@ -548,7 +567,9 @@ export function GroupPricingListPage() {
                             ) : null}
                           </td>
                           <td className="px-4 py-3">
-                            <Tag>{t(pricingModeKey(row.mode))}</Tag>
+                            <Tag ariaLabel={t(pricingModeKey(row.mode))}>
+                              {t(pricingModeKey(row.mode))}
+                            </Tag>
                           </td>
                           <td className="border-l border-border-hairline px-4 py-3 text-right font-mono tabular-nums text-ink-1">
                             {formatCredits(row.prompt_price)}

@@ -280,3 +280,118 @@ describe('PricingMutateSheet optimistic locking', () => {
     })
   })
 })
+
+describe('PricingMutateSheet server field mapping', () => {
+  it('maps a create duplicate 409 to the model field', async () => {
+    installPreview()
+    server.use(
+      http.post(`${ORIGIN}/api/model-pricing`, () =>
+        HttpResponse.json(
+          {
+            type: 'about:blank',
+            title: 'Conflict',
+            detail: 'the pricing row already exists',
+          },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    const { findByText, getByLabelText, getByRole, queryByText } =
+      await renderCreate()
+    const user = userEvent.setup()
+
+    await user.type(getByLabelText('Model'), 'gpt-5')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    expect(await findByText('Pricing already exists for this model.')).toBeTruthy()
+    // 创建冲突不应显示成乐观锁文案。
+    expect(queryByText(/Reopen the sheet to continue/)).toBeNull()
+  })
+
+  it('maps problem.fields back to the price input on 422', async () => {
+    installPreview()
+    server.use(
+      http.patch(`${ORIGIN}/api/model-pricing/gpt-5`, () =>
+        HttpResponse.json(
+          {
+            type: 'about:blank',
+            title: 'Validation failed',
+            detail: 'prompt_price must be a non-negative integer',
+            fields: ['prompt_price'],
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    const { findByText, getByLabelText, getByRole } = await renderWithProviders(
+      <ModelPricingMutateSheet
+        open
+        mode="edit"
+        pricing={pricingRow()}
+        quotaPerUnit={100}
+        onOpenChange={() => undefined}
+        onSaved={() => undefined}
+      />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    const prompt = getByLabelText('Prompt price')
+    await user.clear(prompt)
+    await user.type(prompt, '999')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    expect(await findByText('This price was rejected by the server.')).toBeTruthy()
+  })
+
+  it('blocks Save while the expression preview is invalid', async () => {
+    let createCalls = 0
+    installPreview((spec) => {
+      const expr = typeof spec.expr === 'string' ? spec.expr.trim() : ''
+      if (expr.endsWith('*')) {
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Invalid request' },
+          { status: 400 },
+        )
+      }
+      return previewSuccess('tiered_expr')
+    })
+    server.use(
+      http.post(`${ORIGIN}/api/model-pricing`, () => {
+        createCalls += 1
+        return HttpResponse.json(pricingRow(), { status: 201 })
+      }),
+    )
+
+    const { findAllByText, getByLabelText, getByRole } = await renderCreate()
+    const user = userEvent.setup()
+
+    await user.type(getByLabelText('Model'), 'gpt-5')
+    await user.click(getByRole('button', { name: 'Expression' }))
+    await user.type(getByLabelText('Billing expression'), 'p *')
+    await findAllByText('The expression is invalid.')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(createCalls).toBe(0)
+    })
+  })
+
+  it('uses input-error copy rather than expression copy outside expression mode', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/model-pricing:preview`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Invalid request', fields: ['spec'] },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    const { findByText, queryByText } = await renderCreate()
+
+    expect(await findByText('The preview input is invalid.')).toBeTruthy()
+    expect(queryByText('The expression is invalid.')).toBeNull()
+  })
+})

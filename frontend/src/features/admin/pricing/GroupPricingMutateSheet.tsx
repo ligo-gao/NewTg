@@ -8,6 +8,7 @@ import type { components } from '@/api/schema'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Sheet } from '@/shared/ui/base/sheet'
+import { Dialog } from '@/shared/ui/base/dialog'
 import { FormAlert } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -35,6 +36,14 @@ const EMPTY_PRICES: PriceFieldValues = {
   completion: '',
   cacheRead: '',
   cacheWrite: '',
+}
+
+/** 校验通过后待提交的覆盖价（已把空输入按 0 归一）。 */
+interface OverrideValues {
+  prompt: number
+  completion: number
+  cacheRead: number
+  cacheWrite: number
 }
 
 export interface GroupPricingMutateSheetProps {
@@ -74,6 +83,7 @@ export function GroupPricingMutateSheet({
   const [prices, setPrices] = useState<PriceFieldValues>(EMPTY_PRICES)
   const [status, setStatus] = useState<PricingStatus>(1)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [pendingZero, setPendingZero] = useState<OverrideValues | null>(null)
   const [formError, setFormError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
 
@@ -103,6 +113,7 @@ export function GroupPricingMutateSheet({
     })
     setStatus(override?.status ?? 1)
     setFieldErrors({})
+    setPendingZero(null)
     setFormError(undefined)
     setSubmitting(false)
   }, [open, override, factor])
@@ -121,8 +132,14 @@ export function GroupPricingMutateSheet({
     setFieldErrors({})
   }
 
-  async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault()
+  /**
+   * 校验表单并把空输入按 0 归一。返回 null 表示字段错误已展示。
+   *
+   * 分组覆盖价是 NOT NULL 的绝对价；空输入表示 0（显式免费），而不是模型
+   * 定价的 NULL/兜底三态——覆盖价表无法表达后者。按次源模型只读
+   * prompt_price，其余维度钉为 0（后端会拒绝无效写入）。
+   */
+  function collect(): OverrideValues | null {
     const errors: Record<string, string> = {}
     if (group.trim() === '') errors.group = t('admin.pricing.override_group_required')
     if (model.trim() === '') errors.model = t('admin.pricing.override_model_required')
@@ -140,28 +157,28 @@ export function GroupPricingMutateSheet({
       errors[key] = priceError
     }
     setFieldErrors(errors)
-    if (Object.keys(errors).length > 0) return
+    if (Object.keys(errors).length > 0) return null
 
+    return {
+      prompt: parsed.values.prompt ?? 0,
+      completion: modelMode === 'per_request' ? 0 : parsed.values.completion ?? 0,
+      cacheRead: modelMode === 'per_request' ? 0 : parsed.values.cacheRead ?? 0,
+      cacheWrite: modelMode === 'per_request' ? 0 : parsed.values.cacheWrite ?? 0,
+    }
+  }
+
+  async function submit(values: OverrideValues): Promise<void> {
     setFormError(undefined)
     setSubmitting(true)
     try {
-      // 分组覆盖价是 NOT NULL 的绝对价；空输入表示 0（显式免费），而不是
-      // 模型定价的 NULL/兜底三态——覆盖价表无法表达后者。
-      //
-      // 按次源模型只读 prompt_price：发送保留下来的 completion/cache 值会被
-      // 后端当作无效写入拒绝，因此这里把这两个维度钉为 0。
-      const prompt = parsed.values.prompt ?? 0
-      const completion = modelMode === 'per_request' ? 0 : parsed.values.completion ?? 0
-      const cacheRead = modelMode === 'per_request' ? 0 : parsed.values.cacheRead ?? 0
-      const cacheWrite = modelMode === 'per_request' ? 0 : parsed.values.cacheWrite ?? 0
       if (mode === 'create') {
         const body: GroupPricingCreateRequest = {
           group: group.trim(),
           model: model.trim(),
-          prompt_price: prompt,
-          completion_price: completion,
-          cache_read_price: cacheRead,
-          cache_write_price: cacheWrite,
+          prompt_price: values.prompt,
+          completion_price: values.completion,
+          cache_read_price: values.cacheRead,
+          cache_write_price: values.cacheWrite,
           status,
         }
         await apiClient.POST('/api/group-pricing', { body })
@@ -169,10 +186,10 @@ export function GroupPricingMutateSheet({
       } else if (override !== undefined) {
         const body: GroupPricingUpdateRequest = {
           updated_at: override.updated_at,
-          prompt_price: prompt,
-          completion_price: completion,
-          cache_read_price: cacheRead,
-          cache_write_price: cacheWrite,
+          prompt_price: values.prompt,
+          completion_price: values.completion,
+          cache_read_price: values.cacheRead,
+          cache_write_price: values.cacheWrite,
           status,
         }
         await apiClient.PATCH('/api/group-pricing/{group}/{model}', {
@@ -194,6 +211,26 @@ export function GroupPricingMutateSheet({
             ? t('admin.pricing.override_duplicate')
             : t('admin.pricing.save_conflict'),
         )
+      } else if (error instanceof ApiError && error.fields !== undefined) {
+        // 把 problem.fields 定位回具体输入（F-06-16 的 422 字段错误）。
+        const next: Record<string, string> = {}
+        for (const field of error.fields) {
+          if (field === 'group') {
+            next.group = t('admin.pricing.override_group_invalid')
+          } else if (field === 'model') {
+            next.model = t('admin.pricing.override_model_invalid')
+          } else if (field === 'prompt_price') {
+            next.prompt = t('admin.pricing.price_server_rejected')
+          } else if (field === 'completion_price') {
+            next.completion = t('admin.pricing.price_server_rejected')
+          } else if (field === 'cache_read_price') {
+            next.cacheRead = t('admin.pricing.price_server_rejected')
+          } else if (field === 'cache_write_price') {
+            next.cacheWrite = t('admin.pricing.price_server_rejected')
+          }
+        }
+        setFieldErrors(next)
+        if (Object.keys(next).length === 0) setFormError(t('admin.pricing.save_error'))
       } else {
         setFormError(t('admin.pricing.save_error'))
       }
@@ -202,12 +239,31 @@ export function GroupPricingMutateSheet({
     }
   }
 
+  async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const values = collect()
+    if (values === null) return
+    // 全 0 覆盖价是合法但危险的意图（该分组下此模型免费）；确认后再提交，
+    // 避免「留空」被误当成默认价（本表单的空 = 0，不是兜底）。
+    if (
+      values.prompt === 0 &&
+      values.completion === 0 &&
+      values.cacheRead === 0 &&
+      values.cacheWrite === 0
+    ) {
+      setPendingZero(values)
+      return
+    }
+    await submit(values)
+  }
+
   const groupOptions = (groupsQuery.data?.items ?? []).filter(
     (candidate) => candidate.status === 1 || candidate.name === group,
   )
 
   return (
-    <Sheet
+    <>
+      <Sheet
       open={open}
       onOpenChange={onOpenChange}
       title={
@@ -299,15 +355,24 @@ export function GroupPricingMutateSheet({
           unit={unit}
           values={prices}
           errors={{
-            prompt: priceErrorText(parsed.errors.prompt, unit, t),
-            completion: priceErrorText(parsed.errors.completion, unit, t),
-            cacheRead: priceErrorText(parsed.errors.cacheRead, unit, t),
-            cacheWrite: priceErrorText(parsed.errors.cacheWrite, unit, t),
+            prompt:
+              priceErrorText(parsed.errors.prompt, unit, t) ?? fieldErrors.prompt,
+            completion:
+              priceErrorText(parsed.errors.completion, unit, t) ??
+              fieldErrors.completion,
+            cacheRead:
+              priceErrorText(parsed.errors.cacheRead, unit, t) ??
+              fieldErrors.cacheRead,
+            cacheWrite:
+              priceErrorText(parsed.errors.cacheWrite, unit, t) ??
+              fieldErrors.cacheWrite,
           }}
           quotaPerUnit={factor}
+          context="group"
           onUnitChange={changeUnit}
           onChange={(key, value) => {
             setPrices((current) => ({ ...current, [key]: value }))
+            setFieldErrors((current) => withoutKey(current, key))
           }}
         />
 
@@ -328,7 +393,34 @@ export function GroupPricingMutateSheet({
           </select>
         </div>
       </form>
-    </Sheet>
+      </Sheet>
+
+      <Dialog
+        open={pendingZero !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setPendingZero(null)
+        }}
+        title={t('admin.pricing.override_all_zero_title')}
+        description={t('admin.pricing.override_all_zero_body')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setPendingZero(null)}>
+              {t('common.action.cancel')}
+            </Button>
+            <Button
+              disabled={submitting}
+              onClick={() => {
+                const values = pendingZero
+                setPendingZero(null)
+                if (values !== null) void submit(values)
+              }}
+            >
+              {t('admin.pricing.override_all_zero_confirm')}
+            </Button>
+          </>
+        }
+      />
+    </>
   )
 }
 

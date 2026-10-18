@@ -29,11 +29,11 @@ const NAV_ITEMS = [
 const PRICING_NAV_ITEMS = [
   {
     href: '/admin/pricing/model-pricing',
-    key: 'admin.pricing.nav_model_pricing',
+    key: 'common.nav.model_pricing',
   },
   {
     href: '/admin/pricing/group-pricing',
-    key: 'admin.pricing.nav_group_pricing',
+    key: 'common.nav.group_pricing',
   },
 ] as const
 
@@ -86,10 +86,11 @@ export function ConsoleHeader({ activePath }: ConsoleHeaderProps) {
           ))}
           {canSeePricing ? (
             <div
+              role="group"
               className="flex items-center gap-3 border-l border-border-hairline pl-4"
-              aria-label={t('admin.pricing.nav_section')}
+              aria-label={t('common.nav.pricing')}
             >
-              <span className="text-ink-3">{t('admin.pricing.nav_section')}</span>
+              <span className="text-ink-3">{t('common.nav.pricing')}</span>
               {PRICING_NAV_ITEMS.map((item) => (
                 <a
                   key={item.href}
