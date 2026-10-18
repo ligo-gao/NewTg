@@ -604,6 +604,13 @@ type dbCheck struct {
 
 // loadChecks 读取主库 16 表上的全部 CHECK 约束。
 func loadChecks(t *testing.T, db *sql.DB) map[string][]dbCheck {
+	return loadChecksOn(t, db, wantColumns)
+}
+
+// loadChecksOn 读取 tables 所列表上的全部 CHECK 约束。tables 同时充当「本库
+// 有哪些表」的白名单：主库传 wantColumns，日志库传 logsWantColumns（R-13）。
+// 解析与容差口径（pg_get_constraintdef 的 ANY/ARRAY 规范化）对两库共用。
+func loadChecksOn(t *testing.T, db *sql.DB, tables map[string]int) map[string][]dbCheck {
 	t.Helper()
 	rows, err := db.Query(`SELECT rel.relname, con.conname, pg_get_constraintdef(con.oid)
 		FROM pg_constraint con
@@ -622,7 +629,7 @@ func loadChecks(t *testing.T, db *sql.DB) map[string][]dbCheck {
 		if err := rows.Scan(&table, &c.Name, &c.Def); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if _, ok := wantColumns[table]; !ok {
+		if _, ok := tables[table]; !ok {
 			continue
 		}
 		c.Members, c.IsEnum = parseEnumMembers(c.Def)

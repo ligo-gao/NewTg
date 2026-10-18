@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	// pgx/v5 stdlib 驱动为 Task 4 冻结选型（platform-04 §9.1 同款）。
@@ -267,4 +268,83 @@ func TestLogsSchema(t *testing.T) {
 			t.Fatalf("audit_logs 不应有 request_id 列（platform-05 U-05-7）")
 		}
 	})
+
+	// (g) R-10：audit_logs 的 12 个月保留期由 audit_log_retention 分批 DELETE，
+	// 其扫描列 created_at 必须有单列索引（platform-01 §5 保留期口径）。
+	t.Run("audit_created_index", func(t *testing.T) {
+		def, unique, partial, ok := indexInfo(t, db, "audit_logs_created_idx")
+		if !ok {
+			t.Fatalf("audit_logs_created_idx 不存在（R-10 保留期清理索引）")
+		}
+		if unique || partial {
+			t.Fatalf("audit_logs_created_idx unique=%v partial=%v，want 普通全表 btree：%s",
+				unique, partial, def)
+		}
+		if !strings.Contains(def, "created_at") {
+			t.Fatalf("audit_logs_created_idx 未建在 created_at 上：%s", def)
+		}
+	})
+}
+
+// TestLogsEnumChecksMatchDB：（R-13）EnumChecksLogs 与日志库 pg_constraint 的
+// 枚举 CHECK 逐条集合相等（双向），手法与主库 TestEnumChecksMatchDB 相同；因日志库
+// 是独立连接（openLogsTestDB），故单独成测。
+func TestLogsEnumChecksMatchDB(t *testing.T) {
+	db := openLogsTestDB(t)
+	checks := loadChecksOn(t, db, logsWantColumns)
+
+	enumByName := map[string]map[string][]string{} // table -> constraint name -> members
+	for table, list := range checks {
+		enumByName[table] = map[string][]string{}
+		for _, c := range list {
+			if c.IsEnum {
+				enumByName[table][c.Name] = c.Members
+			}
+		}
+	}
+
+	// 日志库与主库物理分离：同一键不得同时登记在两套对照表中。
+	for _, key := range sortedKeys(EnumChecksLogs) {
+		if _, ok := EnumChecks[key]; ok {
+			t.Fatalf("%s 同时出现在主库 EnumChecks 与日志库 EnumChecksLogs", key)
+		}
+	}
+
+	for _, key := range sortedKeys(EnumChecksLogs) {
+		table, column, ok := strings.Cut(key, ".")
+		if !ok || table == "" || column == "" {
+			t.Fatalf("EnumChecksLogs 键 %q 须为 <table>.<column>", key)
+		}
+		if _, ok := logsWantColumns[table]; !ok {
+			t.Fatalf("EnumChecksLogs 键 %q 指向日志库两表之外的表", key)
+		}
+		want := EnumChecksLogs[key]
+		conname := table + "_" + column + "_chk"
+		got, ok := enumByName[table][conname]
+		if !ok {
+			t.Fatalf("%s：找不到 CHECK 约束 %s（DB 枚举 CHECK：%v）", key, conname, sortedKeys(enumByName[table]))
+		}
+		if !sameSet(got, want) {
+			t.Fatalf("%s：DB CHECK=%v，EnumChecksLogs=%v", key, got, want)
+		}
+	}
+
+	// 反向：日志库每个枚举型 CHECK 必须登记在 EnumChecksLogs。
+	for table, byName := range enumByName {
+		prefix, suffix := table+"_", "_chk"
+		for conname, members := range byName {
+			if !strings.HasPrefix(conname, prefix) || !strings.HasSuffix(conname, suffix) {
+				t.Fatalf("%s 上的枚举 CHECK %s 不符合 <table>_<column>_chk 命名约定", table, conname)
+			}
+			column := strings.TrimSuffix(strings.TrimPrefix(conname, prefix), suffix)
+			key := table + "." + column
+			want, ok := EnumChecksLogs[key]
+			if !ok {
+				t.Fatalf("DB 枚举 CHECK %s 未登记在 EnumChecksLogs（Members=%v）", conname, members)
+			}
+			if !sameSet(members, want) {
+				t.Fatalf("%s：DB CHECK=%v，EnumChecksLogs=%v", key, members, want)
+			}
+		}
+	}
 }
