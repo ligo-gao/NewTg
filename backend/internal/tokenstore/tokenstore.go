@@ -199,6 +199,10 @@ type cachedMeta struct {
 	expiresAt time.Time
 }
 
+// 编译期钉死 Task 4 的鉴权接缝：Store 必须能直接作为 auth.TokenLookup 交给
+// SessionAuth。签名漂移会在这里编译失败，而不是等到装配期才发现。
+var _ auth.TokenLookup = (*Store)(nil)
+
 // New 构造令牌存储。settings 可为 nil（全部走默认值）；rdb 可为 nil（无缓存/
 // 无幂等能力，仅测试装配会这么做）。
 func New(db *gorm.DB, rdb *redis.Client, settings Settings) *Store {
