@@ -27,6 +27,10 @@ var EnumChecks = map[string][]string{
 	// user_groups（§3，smallint）
 	"user_groups.status": {"1", "2"},
 
+	// custom_oauth_providers（M1 / modules-01 §3.13，smallint：
+	// 0=auto / 1=params / 2=header）
+	"custom_oauth_providers.auth_style": {"0", "1", "2"},
+
 	// channels（§6，smallint；type 除外，见上）
 	"channels.status": {"1", "2", "3"},
 

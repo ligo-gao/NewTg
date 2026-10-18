@@ -29,7 +29,9 @@ func m1ColumnInfo(t *testing.T, db *sql.DB, table, column string) (dataType, nul
 	return dataType, nullable, def, true
 }
 
-// m1UniqueOnColumn 判断某列上是否存在 UNIQUE 索引（含唯一约束自动建的索引）。
+// m1UniqueOnColumn 判断某列上是否存在**单列** UNIQUE 索引（含唯一约束自动建
+// 的索引）。要求 indnatts=1：复合唯一索引（如 (user_id, provider)）包含该列
+// 并不能证明该列自身唯一，不能算命中。
 func m1UniqueOnColumn(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()
 	var n int
@@ -39,7 +41,7 @@ func m1UniqueOnColumn(t *testing.T, db *sql.DB, table, column string) bool {
 		JOIN pg_namespace nsp ON nsp.oid = t.relnamespace
 		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY (i.indkey)
 		WHERE nsp.nspname = current_schema() AND t.relname = $1
-		  AND a.attname = $2 AND i.indisunique`, table, column).Scan(&n)
+		  AND a.attname = $2 AND i.indisunique AND i.indnatts = 1`, table, column).Scan(&n)
 	if err != nil {
 		t.Fatalf("query unique index on %s.%s: %v", table, column, err)
 	}
@@ -124,6 +126,44 @@ func TestM1Schema(t *testing.T) {
 		}
 	})
 
+	// (b.2) auto_groups 取值约定（modules-02 §1.3，R-01 来源）：'' 是「非 auto
+	// 分组」的规范值，NULL 为兼容可空，非空值必须是 JSON 数组；非法 JSON 被拒。
+	t.Run("(b.2) auto_groups 接受 NULL/空串/JSON 数组", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO user_groups (name) VALUES ('m1_probe')`); err != nil {
+			t.Fatalf("insert probe group: %v", err)
+		}
+		var userID int64
+		if err := tx.QueryRow(`INSERT INTO users (username, "group")
+			VALUES ('m1_probe_user', 'm1_probe') RETURNING id`).Scan(&userID); err != nil {
+			t.Fatalf("insert probe user: %v", err)
+		}
+		strPtr := func(s string) *string { return &s }
+		cases := []struct {
+			label string
+			value *string
+			hash  string
+		}{
+			{"NULL", nil, "m1-probe-null"},
+			{"空串", strPtr(""), "m1-probe-empty"},
+			{"JSON 数组", strPtr(`["g1","g2"]`), "m1-probe-array"},
+		}
+		for _, tc := range cases {
+			if _, err := tx.Exec(`INSERT INTO api_tokens (user_id, name, key_hash, "group", auto_groups)
+				VALUES ($1, 'probe', $2, 'm1_probe', $3)`, userID, tc.hash, tc.value); err != nil {
+				t.Fatalf("auto_groups=%s 应被接受：%v", tc.label, err)
+			}
+		}
+		if _, err := tx.Exec(`INSERT INTO api_tokens (user_id, name, key_hash, "group", auto_groups)
+			VALUES ($1, 'probe', 'm1-probe-invalid', 'm1_probe', 'not-json')`, userID); err == nil {
+			t.Fatalf("auto_groups 非法 JSON 应被 CHECK 拒绝")
+		}
+	})
+
 	// (c) login_sessions：存在、session_id_hash UNIQUE、无 FK（§22.10 逻辑引用）。
 	t.Run("(c) login_sessions", func(t *testing.T) {
 		if !m1TableExists(t, db, "login_sessions") {
@@ -147,10 +187,44 @@ func TestM1Schema(t *testing.T) {
 		}
 	})
 
+	// (d.2) I-7 双槽：部分唯一索引保证至多一个 active=true；旧槽（active=false）
+	// 可保留多个（轮换重叠窗口 ≥15 分钟）。
+	t.Run("(d.2) 至多一个 active 槽", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO login_encryption_keys (active, public_key_pem, private_key_enc, kid)
+			VALUES (true, 'probe-pem', decode('00', 'hex'), 'm1-probe-kid-1')`); err != nil {
+			t.Fatalf("首个 active 槽应被接受：%v", err)
+		}
+		// 唯一冲突会让 PostgreSQL 把整个事务置为 aborted，故用 SAVEPOINT 隔离
+		// 这次预期失败，回滚到保存点后继续验证旧槽分支。
+		if _, err := tx.Exec(`SAVEPOINT before_dup_active`); err != nil {
+			t.Fatalf("savepoint: %v", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO login_encryption_keys (active, public_key_pem, private_key_enc, kid)
+			VALUES (true, 'probe-pem', decode('00', 'hex'), 'm1-probe-kid-2')`); err == nil {
+			t.Fatalf("第二个 active=true 应被部分唯一索引拒绝（I-7）")
+		}
+		if _, err := tx.Exec(`ROLLBACK TO SAVEPOINT before_dup_active`); err != nil {
+			t.Fatalf("rollback to savepoint: %v", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO login_encryption_keys (active, public_key_pem, private_key_enc, kid)
+			VALUES (false, 'probe-pem', decode('00', 'hex'), 'm1-probe-kid-3')`); err != nil {
+			t.Fatalf("非 active 旧槽应可保留多条：%v", err)
+		}
+	})
+
 	// (e) EnumChecks 与 DB CHECK 逐列相等（沿 M0 Task 7 双向口径）。
 	t.Run("(e) EnumChecks 与 DB CHECK 逐列相等", func(t *testing.T) {
 		checks := loadChecks(t, db)
-		keys := []string{"users.role", "users.status", "api_tokens.status", "user_groups.status"}
+		keys := []string{
+			"users.role", "users.status", "api_tokens.status", "user_groups.status",
+			// M1 新表也纳入 EnumChecks 对照（auth_style 是 Tier-1 smallint 枚举）。
+			"custom_oauth_providers.auth_style",
+		}
 		// 正向：EnumChecks 的每个键都必须有同名 CHECK，且成员集合相等。
 		for _, key := range keys {
 			table, column, ok := strings.Cut(key, ".")

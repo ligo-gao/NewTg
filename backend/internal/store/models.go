@@ -17,21 +17,21 @@ type User struct {
 	// PasswordHash 可为 NULL：OAuth 即时注册用户没有口令，只能走 OAuth
 	// 或之后自行设密码（platform-01 §1 / R-01-11），故用指针区分「无口令」。
 	PasswordHash            *string   `gorm:"column:password_hash"`
-	Role                    string    `gorm:"column:role"`
-	Status                  string    `gorm:"column:status"`
+	Role                    string    `gorm:"column:role;default:user"`
+	Status                  string    `gorm:"column:status;default:enabled"`
 	Balance                 int64     `gorm:"column:balance"`
-	Group                   string    `gorm:"column:\"group\""` // 保留字双引号（platform-04 §3.7 V8）
+	Group                   string    `gorm:"column:group;default:default"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
 	AdminPermissions        []byte    `gorm:"column:admin_permissions"`
 	TOTPSecretEnc           []byte    `gorm:"column:totp_secret"` // DB 列名 totp_secret；内容是 AES-256-GCM 密文（§1）
 	TOTPEnabled             bool      `gorm:"column:totp_enabled"`
 	BackupCodes             []byte    `gorm:"column:backup_codes"` // jsonb 哈希数组，不存明文（§1）
-	Language                string    `gorm:"column:language"`
+	Language                string    `gorm:"column:language;default:en"`
 	AvatarURL               *string   `gorm:"column:avatar_url"`
 	Aff                     *string   `gorm:"column:aff"`
 	Remark                  *string   `gorm:"column:remark"`
 	NotificationPreferences []byte    `gorm:"column:notification_preferences"`
 	SidebarModules          []byte    `gorm:"column:sidebar_modules"` // jsonb 稀疏覆盖（§1 / B-16）
-	RecordIPLog             bool      `gorm:"column:record_ip_log"`
+	RecordIPLog             bool      `gorm:"column:record_ip_log;default:true"`
 	MustChangePassword      bool      `gorm:"column:must_change_password"` // R-02：临时口令强制改密
 	CreatedAt               time.Time `gorm:"column:created_at"`
 	UpdatedAt               time.Time `gorm:"column:updated_at"`
@@ -46,11 +46,11 @@ type APIToken struct {
 	UserID      int64      `gorm:"column:user_id"`
 	Name        string     `gorm:"column:name"`
 	KeyHash     string     `gorm:"column:key_hash"` // 只存 SHA-256，明文仅创建时返回一次（GC-9）
-	Status      string     `gorm:"column:status"`
+	Status      string     `gorm:"column:status;default:enabled"`
 	ExpiresAt   *time.Time `gorm:"column:expires_at"`
 	ModelLimits []byte     `gorm:"column:model_limits"`
-	Group       string     `gorm:"column:\"group\""` // 保留字双引号（platform-04 §3.7 V8）
-	RemainQuota int64      `gorm:"column:remain_quota"`
+	Group       string     `gorm:"column:group"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
+	RemainQuota int64      `gorm:"column:remain_quota;default:100000"`
 	// UnlimitedQuota 是派生字段（DB 语义：remain_quota IS NULL=不限额度），
 	// **不落库**（platform-01 §2「unlimited_quota 为 UI/派生字段」）。
 	UnlimitedQuota  bool       `gorm:"-"`
@@ -70,10 +70,10 @@ type UserGroup struct {
 	ID             int64     `gorm:"column:id;primaryKey"`
 	Name           string    `gorm:"column:name"`
 	Description    *string   `gorm:"column:description"`
-	Ratio          int32     `gorm:"column:ratio"` // PG integer（整数百分比，120=1.20x）
-	UserSelectable bool      `gorm:"column:user_selectable"`
-	IsSystem       bool      `gorm:"column:is_system"`
-	Status         int16     `gorm:"column:status"` // PG smallint（1=启用 / 2=停用）
+	Ratio          int32     `gorm:"column:ratio;default:100"` // PG integer（整数百分比，120=1.20x）
+	UserSelectable bool      `gorm:"column:user_selectable;default:true"`
+	IsSystem       bool      `gorm:"column:is_system;default:false"`
+	Status         int16     `gorm:"column:status;default:1"` // PG smallint（1=启用 / 2=停用）
 	CreatedAt      time.Time `gorm:"column:created_at"`
 	UpdatedAt      time.Time `gorm:"column:updated_at"`
 }

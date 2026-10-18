@@ -18,11 +18,16 @@
 ALTER TABLE users ADD COLUMN must_change_password boolean NOT NULL DEFAULT false;
 
 -- ==== 2. api_tokens 补列（R-01，13 → 15 列）====
--- auto_groups：自动分组候选（modules-02 §3.10）；NULL=未启用。以 text 承载
--- JSON 数组（契约按字符串数组序列化），CHECK 保证非 NULL 时必须是 JSON 数组。
+-- auto_groups：自动分组候选（modules-02 §3.10）。按 modules-02 §1.3（R-01 的来源），
+-- **非 auto 分组时以空串 `''` 为规范值**；NULL 仅为兼容可空保留。
+-- 三种取值均合法：NULL / '' / JSON 数组。CASE 保证不对 '' 求值 ::jsonb
+--（纯 OR 不保证求值顺序，''::jsonb 会直接报错）。
 ALTER TABLE api_tokens ADD COLUMN auto_groups text;
 ALTER TABLE api_tokens ADD CONSTRAINT api_tokens_auto_groups_chk
-    CHECK (auto_groups IS NULL OR jsonb_typeof(auto_groups::jsonb) = 'array');
+    CHECK (CASE
+        WHEN auto_groups IS NULL OR auto_groups = '' THEN true
+        ELSE jsonb_typeof(auto_groups::jsonb) = 'array'
+    END);
 -- cross_group_retry：主分组失败后按 auto_groups 顺序跨组重试（modules-02 §3.11）。
 ALTER TABLE api_tokens ADD COLUMN cross_group_retry boolean NOT NULL DEFAULT false;
 
@@ -146,7 +151,7 @@ CREATE TABLE custom_oauth_providers (
     CONSTRAINT custom_oauth_providers_slug_chk
         CHECK (slug ~ '^[a-z0-9_-]{2,64}$'),
     CONSTRAINT custom_oauth_providers_auth_style_chk
-        CHECK (auth_style BETWEEN 0 AND 2),
+        CHECK (auth_style IN (0, 1, 2)),
     CONSTRAINT custom_oauth_providers_access_policy_chk
         CHECK (access_policy IS NULL OR jsonb_typeof(access_policy) = 'object'),
     CONSTRAINT custom_oauth_providers_domain_allowlist_chk

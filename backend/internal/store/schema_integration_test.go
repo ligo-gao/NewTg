@@ -185,7 +185,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == platform-01 §0.1 计数（16 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（M0 16 表 + M1 6 表，共 22 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -375,7 +375,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 	db := openTestDB(t)
 
-	// (e.1) 10 张代理主键表：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 16 张代理主键表（M0 10 + M1 6）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -808,11 +808,12 @@ func TestEnumChecksMatchDB(t *testing.T) {
 // TestEnumChecksValuesSanity：smallint 枚举成员必须是数字文本（与 CHECK 解析口径一致）。
 func TestEnumChecksValuesSanity(t *testing.T) {
 	intKeys := map[string]bool{
-		"user_groups.status":   true,
-		"channels.status":      true,
-		"model_pricing.mode":   true,
-		"model_pricing.status": true,
-		"group_pricing.status": true,
+		"user_groups.status":                true,
+		"custom_oauth_providers.auth_style": true,
+		"channels.status":                   true,
+		"model_pricing.mode":                true,
+		"model_pricing.status":              true,
+		"group_pricing.status":              true,
 	}
 	for key, members := range EnumChecks {
 		for _, m := range members {
