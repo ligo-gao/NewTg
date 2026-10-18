@@ -639,22 +639,33 @@ func (r *SQLPricingRepo) GetGroupPricing(ctx context.Context, group, model strin
 
 // CreateGroupPricing 写入覆盖价。分组必须存在且启用，源模型必须已定价；
 // 表达式源与 per_request 源的无效覆盖价字段在保存期拒绝（R-69）。
+//
+// 校验与插入在同一事务内，并对源 model_pricing 行执行 SELECT ... FOR SHARE：
+// 否则「删除模型」与「创建覆盖价」在 READ COMMITTED 下会交错成孤儿覆盖价
+// （校验看到行 → 删除提交 → 插入成功），重建同名模型时旧覆盖价会复活。
+// FOR SHARE 与 DELETE 的行锁互斥：删除先持锁则本事务看到 0 行而拒绝；本事务
+// 先持锁则删除等待，随后删除会级联清掉刚写入的覆盖价。
 func (r *SQLPricingRepo) CreateGroupPricing(ctx context.Context, in GroupPricingInput) (GroupPricingRecord, error) {
-	sourceMode, err := r.validateGroupAndSource(ctx, in.Group, in.Model)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GroupPricingRecord{}, fmt.Errorf("store: begin create group_pricing: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sourceMode, err := r.validateGroupAndSource(ctx, tx, in.Group, in.Model)
 	if err != nil {
 		return GroupPricingRecord{}, err
 	}
 	if sourceMode == 1 && (in.CompletionPrice != 0 || in.CacheReadPrice != 0 || in.CacheWritePrice != 0) {
 		return GroupPricingRecord{}, ErrPricingPerRequestFields
 	}
-	_, err = r.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO group_pricing
 			("group", model, prompt_price, completion_price,
 			 cache_read_price, cache_write_price, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		in.Group, in.Model, in.PromptPrice, in.CompletionPrice,
-		in.CacheReadPrice, in.CacheWritePrice, in.Status)
-	if err != nil {
+		in.CacheReadPrice, in.CacheWritePrice, in.Status); err != nil {
 		if isUniqueViolation(err) {
 			return GroupPricingRecord{}, ErrPricingDuplicate
 		}
@@ -663,16 +674,28 @@ func (r *SQLPricingRepo) CreateGroupPricing(ctx context.Context, in GroupPricing
 		}
 		return GroupPricingRecord{}, fmt.Errorf("store: create group_pricing(%s,%s): %w", in.Group, in.Model, err)
 	}
+	if err := tx.Commit(); err != nil {
+		return GroupPricingRecord{}, fmt.Errorf("store: commit create group_pricing(%s,%s): %w", in.Group, in.Model, err)
+	}
 	return r.GetGroupPricing(ctx, in.Group, in.Model)
 }
 
 // UpdateGroupPricing 按 (group, model) + updated_at 更新。
+//
+// 价格字段的校验、源行 FOR SHARE 与 UPDATE 在同一事务内：与 CreateGroupPricing
+// 同理，防止源模型删除与覆盖价写入交错成孤儿行。
 func (r *SQLPricingRepo) UpdateGroupPricing(ctx context.Context, group, model string, patch GroupPricingPatch, expectUpdatedAt time.Time) (GroupPricingRecord, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GroupPricingRecord{}, fmt.Errorf("store: begin update group_pricing: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// 覆盖价字段的语义取决于源模型模式：表达式源不读覆盖价，per_request 源
 	// 只读 prompt_price。保存期拒绝无效写入，避免管理员以为价格已生效。
 	if patch.PromptPrice != nil || patch.CompletionPrice != nil ||
 		patch.CacheReadPrice != nil || patch.CacheWritePrice != nil {
-		sourceMode, err := r.validateGroupAndSource(ctx, group, model)
+		sourceMode, err := r.validateGroupAndSource(ctx, tx, group, model)
 		if err != nil {
 			return GroupPricingRecord{}, err
 		}
@@ -708,7 +731,7 @@ func (r *SQLPricingRepo) UpdateGroupPricing(ctx context.Context, group, model st
 	sets = append(sets, "updated_at = now()")
 	args = append(args, group, model, expectUpdatedAt.UTC())
 
-	result, err := r.db.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		`UPDATE group_pricing SET `+strings.Join(sets, ", ")+
 			fmt.Sprintf(` WHERE "group" = $%d AND model = $%d AND updated_at = $%d`,
 				len(args)-2, len(args)-1, len(args)), args...)
@@ -720,10 +743,19 @@ func (r *SQLPricingRepo) UpdateGroupPricing(ctx context.Context, group, model st
 		return GroupPricingRecord{}, fmt.Errorf("store: update group_pricing(%s,%s) rows: %w", group, model, err)
 	}
 	if affected == 0 {
-		if _, err := r.GetGroupPricing(ctx, group, model); err != nil {
-			return GroupPricingRecord{}, err
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM group_pricing WHERE "group" = $1 AND model = $2)`,
+			group, model).Scan(&exists); err != nil {
+			return GroupPricingRecord{}, fmt.Errorf("store: check group_pricing(%s,%s): %w", group, model, err)
+		}
+		if !exists {
+			return GroupPricingRecord{}, ErrPricingNotFound
 		}
 		return GroupPricingRecord{}, ErrPricingConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return GroupPricingRecord{}, fmt.Errorf("store: commit update group_pricing(%s,%s): %w", group, model, err)
 	}
 	return r.GetGroupPricing(ctx, group, model)
 }
@@ -774,11 +806,15 @@ func (r *SQLPricingRepo) SetGroupPricingStatus(ctx context.Context, group, model
 // validateGroupAndModel 把 FK 与逻辑引用提前成可读错误。
 // validateGroupAndSource 校验分组存在且启用、源模型已定价，并返回源模型模式。
 //
+// 源行读取使用 FOR SHARE：它与「删除模型」的 DELETE 行锁互斥，从而让
+// 「校验通过 → 源行已删除 → 插入覆盖价」的窗口在事务层关闭。调用方必须把
+// 本函数与后续写入放在同一事务里，否则锁在函数返回时就被释放。
+//
 // 表达式源直接拒绝：billing-02 §3.1 规定表达式是唯一价格配置，DBSource 在
 // tiered_expr 模式下跳过 group_pricing 查询——写入覆盖价不会生效。
-func (r *SQLPricingRepo) validateGroupAndSource(ctx context.Context, group, model string) (int16, error) {
+func (r *SQLPricingRepo) validateGroupAndSource(ctx context.Context, tx *sql.Tx, group, model string) (int16, error) {
 	var groupOK bool
-	if err := r.db.QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM user_groups WHERE name = $1 AND status = 1)`, group).Scan(&groupOK); err != nil {
 		return 0, fmt.Errorf("store: check group %s: %w", group, err)
 	}
@@ -789,8 +825,8 @@ func (r *SQLPricingRepo) validateGroupAndSource(ctx context.Context, group, mode
 		mode        int16
 		billingExpr *string
 	)
-	err := r.db.QueryRowContext(ctx,
-		`SELECT mode, billing_expr FROM model_pricing WHERE model = $1`, model).Scan(&mode, &billingExpr)
+	err := tx.QueryRowContext(ctx,
+		`SELECT mode, billing_expr FROM model_pricing WHERE model = $1 FOR SHARE`, model).Scan(&mode, &billingExpr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrPricingInvalidModel
 	}

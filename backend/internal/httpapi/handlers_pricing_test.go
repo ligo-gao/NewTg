@@ -1262,11 +1262,20 @@ func TestPricingPriceRangeValidation(t *testing.T) {
 	assertProblemFields(t, rr, "prompt_price")
 }
 
-// F7：author 是 NOT NULL 列，显式 null 拒绝；vendor null 允许清空。
+// F7/A3-F7：author 是 NOT NULL 列，创建与更新的显式 null 都拒绝；
+// vendor null 允许清空。
 func TestPricingAuthorPatchSemantics(t *testing.T) {
 	env := newPricingTestEnv(t)
+	// 创建时显式 null → 422（不静默用默认值）。
 	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
-		map[string]any{"model": "authors", "prompt_price": 1, "author": nil}, nil)
+		map[string]any{"model": "authors-null", "prompt_price": 1, "author": nil}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create author null = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "author")
+
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "authors", "prompt_price": 1}, nil)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
 	}
@@ -1538,4 +1547,94 @@ func TestPricingAssemblySeam(t *testing.T) {
 	if list.Total != 1 || list.Items[0].Model != "seeded" {
 		t.Fatalf("list = %+v", list)
 	}
+}
+
+// A3-F3：per_request 的隐藏价校验必须在「未提交 mode」时也生效。
+func TestPricingPerRequestHiddenPricesOnUpdate(t *testing.T) {
+	env := newPricingTestEnv(t)
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "prc-update", "mode": "per_request", "prompt_price": 10}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeModelPricingView(t, rr)
+
+	for _, value := range []any{5, 0} {
+		rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/prc-update", map[string]any{
+			"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "completion_price": value,
+		}, nil)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("completion=%v = %d，期望 422（body=%q）", value, rr.Code, rr.Body.String())
+		}
+		assertProblemFields(t, rr, "completion_price", "cache_read_price", "cache_write_price")
+	}
+	// 显式 null 只清空底层列（per_request 不读），允许。
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/prc-update", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "completion_price": nil,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("completion null = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// A3-F2：路径参数不合法（空格/控制字符/大写分组）必须 400，不能进 pgx。
+func TestPricingPathParamValidation(t *testing.T) {
+	env := newPricingTestEnv(t)
+	updated := url.QueryEscape(time.Now().UTC().Format(time.RFC3339Nano))
+	cases := []struct {
+		method string
+		path   string
+		body   any
+		field  string
+	}{
+		{http.MethodPatch, "/api/model-pricing/bad%20model", map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339Nano)}, "model"},
+		{http.MethodPatch, "/api/model-pricing/bad%00model", map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339Nano)}, "model"},
+		{http.MethodDelete, "/api/model-pricing/bad%20model?updated_at=" + updated, nil, "model"},
+		{http.MethodPost, "/api/model-pricing/bad%20model:disable", map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339Nano)}, "model"},
+		{http.MethodPatch, "/api/group-pricing/BadGroup/some-model", map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339Nano)}, "group"},
+		{http.MethodDelete, "/api/group-pricing/vip/bad%20model?updated_at=" + updated, nil, "model"},
+		{http.MethodPost, "/api/group-pricing/vip/bad%20model:disable", map[string]any{"updated_at": time.Now().UTC().Format(time.RFC3339Nano)}, "model"},
+	}
+	for _, tc := range cases {
+		rr := env.request(fullPricingAdmin(), tc.method, tc.path, tc.body, nil)
+		if rr.Code != http.StatusBadRequest && rr.Code != http.StatusNotFound {
+			t.Fatalf("%s %s = %d，期望 400/404（body=%q）", tc.method, tc.path, rr.Code, rr.Body.String())
+		}
+		if rr.Code == http.StatusBadRequest {
+			assertProblemFields(t, rr, tc.field)
+		}
+	}
+}
+
+// A3-F4：group 价列的 JSON null 不得静默当 0（会变成显式免费）。
+func TestPricingGroupPriceNullRejected(t *testing.T) {
+	env := newPricingTestEnv(t)
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "group-null", "prompt_price": 100}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": "group-null", "prompt_price": nil}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create null price = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "prompt_price")
+
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": "group-null", "prompt_price": 5}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("override seed = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var override groupPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/group-pricing/vip/group-null", map[string]any{
+		"updated_at": override.UpdatedAt.Format(time.RFC3339Nano), "cache_read_price": nil,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("update null price = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "cache_read_price")
 }

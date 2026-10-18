@@ -2334,7 +2334,9 @@ export interface components {
              * @description pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
              *     prompt_price/completion_price/cache_read_price/cache_write_price，
              *     也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
-             *     求值与保存使用同一解析器。
+             *     求值与保存使用同一解析器。按次预览可只给 model_price（自动按
+             *     per_request 解释），或显式 mode=per_request 且必须提供 model_price；
+             *     后者缺失返回 400。
              */
             spec: {
                 [key: string]: unknown;
@@ -2343,7 +2345,7 @@ export interface components {
             model?: string;
             /**
              * Format: double
-             * @description 预览用的分组倍率；缺省 1（服务端默认，不写入 schema default）。
+             * @description 预览用的分组倍率，必须 > 0；缺省 1（服务端默认）。
              */
             group_ratio?: number;
             params?: components["schemas"]["PricingPreviewParams"];

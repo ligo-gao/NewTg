@@ -362,3 +362,65 @@ func TestPricingIntegrationGroupOverrideGuards(t *testing.T) {
 		t.Fatalf("percall prompt-only override = %d（body=%q）", rr.Code, rr.Body.String())
 	}
 }
+
+// TestPricingIntegrationOverrideCreateVsModelDeleteRace 是 A3-F1 的确定性竞态
+// 验收：删除事务先持有 model_pricing 行锁（模拟已开始但未提交的删除），
+// 并发创建覆盖价必须在 FOR SHARE 上阻塞；删除提交后创建看到 0 行而拒绝，
+// 不得留下孤儿覆盖价。
+func TestPricingIntegrationOverrideCreateVsModelDeleteRace(t *testing.T) {
+	env := newPricingIntegrationEnv(t)
+	model := pricingIntegrationModel(t)
+	t.Cleanup(func() { cleanupPricingIntegration(t, env.db, model) })
+
+	rr := env.request(t, http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": model, "prompt_price": 100}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed model = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	ctx := context.Background()
+	lockTx, err := env.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback() }()
+	var one int
+	if err := lockTx.QueryRowContext(ctx,
+		`SELECT 1 FROM model_pricing WHERE model = $1 FOR UPDATE`, model).Scan(&one); err != nil {
+		t.Fatalf("lock source row: %v", err)
+	}
+
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		_, createErr := env.repo.CreateGroupPricing(ctx, store.GroupPricingInput{
+			Group: "default", Model: model, PromptPrice: 1, Status: 1,
+		})
+		done <- result{err: createErr}
+	}()
+
+	// 创建请求应阻塞在 FOR SHARE（删除事务持有排他行锁）。
+	select {
+	case got := <-done:
+		t.Fatalf("创建在删除提交前返回：%v（期望被行锁阻塞）", got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := lockTx.ExecContext(ctx, `DELETE FROM model_pricing WHERE model = $1`, model); err != nil {
+		t.Fatalf("delete source in lock tx: %v", err)
+	}
+	if err := lockTx.Commit(); err != nil {
+		t.Fatalf("commit lock tx: %v", err)
+	}
+	got := <-done
+	if got.err != store.ErrPricingInvalidModel {
+		t.Fatalf("并发创建 err = %v，期望 ErrPricingInvalidModel", got.err)
+	}
+	var count int
+	if err := env.db.QueryRow(`SELECT count(*) FROM group_pricing WHERE model = $1`, model).Scan(&count); err != nil {
+		t.Fatalf("count overrides: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("竞态留下 %d 条孤儿覆盖价", count)
+	}
+}

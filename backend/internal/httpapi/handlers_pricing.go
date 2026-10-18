@@ -591,6 +591,29 @@ func parseUpdatedAt(raw json.RawMessage) (time.Time, error) {
 	return parsed, nil
 }
 
+// validatePricingModelParam 校验路径中的模型名。
+//
+// 路径参数不受请求体字段策略保护：若不校验，`%00`/空格等值会直接进入 pgx
+// 参数（返回 500 或驱动错误），违反「非法输入 → 400/404」的契约。
+func validatePricingModelParam(w http.ResponseWriter, model string) bool {
+	if pricingModelPattern.MatchString(model) {
+		return true
+	}
+	writePricingProblemWithFields(w, http.StatusBadRequest, problemTypeValidationFailed,
+		"Validation failed", "model path parameter must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
+	return false
+}
+
+// validatePricingGroupModelParams 校验覆盖价路径中的分组名与模型名。
+func validatePricingGroupModelParams(w http.ResponseWriter, group, model string) bool {
+	if !groupNamePattern.MatchString(group) {
+		writePricingProblemWithFields(w, http.StatusBadRequest, problemTypeValidationFailed,
+			"Validation failed", "group path parameter must match ^[a-z0-9_-]{2,32}$", []string{"group"})
+		return false
+	}
+	return validatePricingModelParam(w, model)
+}
+
 // updatedAtFromRequest 读取 DELETE 的乐观锁版本：优先查询参数（DELETE 常无
 // body），其次可选 JSON body。两者都缺失时 400。
 func updatedAtFromRequest(r *http.Request) (time.Time, error) {
@@ -827,6 +850,13 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 			"model must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
 		return
 	}
+	// author 是 NOT NULL 列：创建时显式 null 与更新同样 422，而不是静默用默认值。
+	if payload.AuthorSet && payload.Author == nil {
+		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+			"Validation failed", `author cannot be null; omit it for "Unknown" or submit "Unknown"`,
+			[]string{"author"})
+		return
+	}
 	if payload.ExprSet && payload.Expr != nil {
 		if payload.ModeSet && payload.Mode != pricingModeTieredExpr {
 			writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
@@ -890,7 +920,8 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 		if modeName == pricingModePerRequest {
 			if payload.CompletionPrice != nil || payload.CacheReadPrice != nil || payload.CacheWritePrice != nil {
 				writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
-					"Validation failed", "per_request mode ignores completion/cache prices", nil)
+					"Validation failed", "per_request mode ignores completion/cache prices",
+					[]string{"completion_price", "cache_read_price", "cache_write_price"})
 				return
 			}
 		}
@@ -920,6 +951,9 @@ func (h *PricingHandlers) handleUpdateModelPricing(w http.ResponseWriter, r *htt
 	model := strings.TrimSpace(r.PathValue("model"))
 	if model == "" {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if !validatePricingModelParam(w, model) {
 		return
 	}
 	body, err := readRawObject(r)
@@ -1075,10 +1109,21 @@ func buildModelPricingPatch(current store.ModelPricingRecord, payload modelPrici
 		if payload.ModeSet {
 			mode, _, _ := parsePricingMode(modeAfterName)
 			patch.Mode = &mode
-			if modeAfterName == pricingModePerRequest &&
-				(payload.CompletionPrice != nil || payload.CacheReadPrice != nil || payload.CacheWritePrice != nil) {
-				return patch, &pricingFieldError{message: "per_request mode ignores completion/cache prices"}
-			}
+		}
+	}
+
+	// 有效模式 = 本次提交的 mode（若有）否则当前行模式。per_request 只读
+	// prompt_price；即使请求没带 mode，在当前 per_request 行上写隐藏价同样是
+	// 静默 no-op，必须 422（与 create 的显式 0 也拒绝的口径一致）。
+	effectiveMode := current.Mode
+	if payload.ModeSet && modeAfterName != pricingModeTieredExpr {
+		effectiveMode, _, _ = parsePricingMode(modeAfterName)
+	}
+	if exprAfter == nil && effectiveMode == 1 &&
+		(payload.CompletionPrice != nil || payload.CacheReadPrice != nil || payload.CacheWritePrice != nil) {
+		return patch, &pricingFieldError{
+			message: "per_request mode ignores completion/cache prices",
+			fields:  []string{"completion_price", "cache_read_price", "cache_write_price"},
 		}
 	}
 
@@ -1135,6 +1180,9 @@ func (h *PricingHandlers) handleDeleteModelPricing(w http.ResponseWriter, r *htt
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
 		return
 	}
+	if !validatePricingModelParam(w, model) {
+		return
+	}
 	expectUpdatedAt, err := updatedAtFromRequest(r)
 	if err != nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error())
@@ -1153,6 +1201,9 @@ func (h *PricingHandlers) handleModelPricingAction(w http.ResponseWriter, r *htt
 	model, action, ok := splitPricingAction(rest)
 	if !ok || model == "" {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if !validatePricingModelParam(w, model) {
 		return
 	}
 	var status int16
@@ -1471,6 +1522,14 @@ func parseGroupPricingPayload(body map[string]json.RawMessage, create bool) (sto
 		if !ok {
 			continue
 		}
+		// group_pricing 的价列是 NOT NULL：JSON null 不能被静默当 0（那会变成
+		// 「显式免费」）。缺省值只能通过省略键获得（服务端填 0）。
+		if string(raw) == "null" {
+			return input, patch, &pricingFieldError{
+				message: fmt.Sprintf("%s must be an integer; null is not allowed", field.name),
+				fields:  []string{field.name},
+			}
+		}
 		var value int64
 		if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
 			return input, patch, &pricingFieldError{
@@ -1566,6 +1625,9 @@ func (h *PricingHandlers) handleUpdateGroupPricing(w http.ResponseWriter, r *htt
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
 		return
 	}
+	if !validatePricingGroupModelParams(w, group, model) {
+		return
+	}
 	body, err := readRawObject(r)
 	if err != nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
@@ -1608,6 +1670,9 @@ func (h *PricingHandlers) handleDeleteGroupPricing(w http.ResponseWriter, r *htt
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
 		return
 	}
+	if !validatePricingGroupModelParams(w, group, model) {
+		return
+	}
 	expectUpdatedAt, err := updatedAtFromRequest(r)
 	if err != nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error())
@@ -1625,6 +1690,9 @@ func (h *PricingHandlers) handleGroupPricingAction(w http.ResponseWriter, r *htt
 	group, model, action, ok := parseGroupPricingKey(r.PathValue("rest"), true)
 	if !ok || action == "" {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if !validatePricingGroupModelParams(w, group, model) {
 		return
 	}
 	var status int16
