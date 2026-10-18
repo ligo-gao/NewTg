@@ -1,4 +1,9 @@
-import createClient, { type Middleware } from 'openapi-fetch'
+import createClient, {
+  type Client,
+  type ClientOptions,
+  type MergedOptions,
+  type Middleware,
+} from 'openapi-fetch'
 
 import { ApiError, parseProblem } from './errors'
 
@@ -11,6 +16,8 @@ import { ApiError, parseProblem } from './errors'
  */
 export type paths = Record<string, never>
 
+export type ContractClient = Client<paths>
+
 /** Methods that mutate server state and therefore carry both safety headers. */
 export const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
@@ -18,6 +25,7 @@ export const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 export const CSRF_COOKIE = '__Host-nkt_csrf'
 export const CSRF_HEADER = 'X-CSRF-Token'
 export const REQUEST_ID_HEADER = 'X-Request-ID'
+export const CSRF_REFRESH_PATH = '/api/me'
 
 /** Reads the non-HttpOnly CSRF cookie. Returns undefined outside the browser. */
 export function getCsrfToken(): string | undefined {
@@ -76,11 +84,43 @@ function newIdempotencyKey(): string {
 }
 
 /**
+ * Unconsumed copies of outgoing requests, keyed by the exact `Request` object
+ * openapi-fetch hands to `fetch()` and then to `onResponse()`. That object is
+ * body-used after dispatch, so a replay must be built from this clone instead
+ * (`new Request(usedRequest, …)` throws a TypeError and would be misreported
+ * as `offline`).
+ */
+const retrySources = new WeakMap<Request, Request>()
+
+/**
+ * Frozen recovery procedure (security-01 §2.2, §3.5): re-issue the session
+ * cookie with `GET /api/me` before replaying. The refresh is best-effort — the
+ * replay decides the outcome and a second failure surfaces as `forbidden`.
+ */
+async function refreshCsrfCookie(options: MergedOptions): Promise<void> {
+  const fallbackOrigin =
+    typeof location !== 'undefined' ? location.origin : 'http://localhost'
+  try {
+    const url = new URL(CSRF_REFRESH_PATH, options.baseUrl || fallbackOrigin)
+    await options.fetch(
+      new Request(url, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }),
+    )
+  } catch {
+    // Best effort only; the replay below still runs and normalizes its result.
+  }
+}
+
+/**
  * Contract middleware:
  * - every write gets an `Idempotency-Key` (callers may supply their own to
  *   reuse it across retries of the same user intent, web-00 §5.6);
  * - POST/PUT/PATCH/DELETE get `X-CSRF-Token` read from `__Host-nkt_csrf`;
- * - a `403 csrf_failed` re-reads the cookie and retries exactly once;
+ * - a `403 csrf_failed` triggers the frozen recovery: `GET /api/me`, re-read
+ *   the cookie, replay exactly once; a second failure stays `forbidden`;
  * - any other non-2xx response is thrown as a normalized `ApiError`;
  * - transport failures become `kind: 'offline'`.
  */
@@ -97,22 +137,45 @@ export const contractMiddleware: Middleware = {
       if (csrfToken !== undefined) headers.set(CSRF_HEADER, csrfToken)
     }
 
-    return new Request(request, { headers })
+    const outgoing = new Request(request, { headers })
+    if (isWrite(outgoing.method)) {
+      retrySources.set(outgoing, outgoing.clone())
+    }
+    return outgoing
   },
 
-  async onResponse({ request, response }) {
+  async onResponse({ request, response, options }) {
     if (response.ok) return response
 
     if (isWrite(request.method) && (await isCsrfFailure(response))) {
-      const headers = new Headers(request.headers)
+      const retrySource = retrySources.get(request)
+      retrySources.delete(request)
+      // Without an unconsumed copy a replay is impossible; surface the
+      // original `forbidden` rather than misclassifying it as offline.
+      if (retrySource === undefined) throw await toApiError(response)
+
+      await refreshCsrfCookie(options)
+
+      const headers = new Headers(retrySource.headers)
+      // Drop a stale token first: if the refresh did not produce a cookie the
+      // replay must not keep resending the rejected value.
+      headers.delete(CSRF_HEADER)
       const csrfToken = getCsrfToken()
       if (csrfToken !== undefined) headers.set(CSRF_HEADER, csrfToken)
 
+      let retryRequest: Request
+      try {
+        retryRequest = new Request(retrySource, { headers })
+      } catch {
+        throw await toApiError(response)
+      }
+
       let retried: Response
       try {
-        // A direct fetch (not a client call) guarantees a single retry: this
-        // middleware is not re-entered for the retried request.
-        retried = await fetch(new Request(request, { headers }))
+        // The client's configured fetch keeps tests/MSW and future custom
+        // transports in the loop. A direct call (not `client.fetch`) means the
+        // middleware is not re-entered, so this is structurally one retry.
+        retried = await options.fetch(retryRequest)
       } catch (error) {
         if (error instanceof TypeError) throw parseProblem({ status: 0 })
         throw error
@@ -135,11 +198,18 @@ export const contractMiddleware: Middleware = {
   },
 }
 
-export const apiClient = createClient<paths>({
-  baseUrl: '',
-  credentials: 'same-origin',
-})
+/**
+ * Builds an independently middleware-wired client. Tests pass an absolute
+ * `baseUrl`; production uses the same-origin default of the singleton below.
+ */
+export function createApiClient(options: ClientOptions = {}): ContractClient {
+  const api = createClient<paths>({
+    baseUrl: '',
+    credentials: 'same-origin',
+    ...options,
+  })
+  api.use(contractMiddleware)
+  return api
+}
 
-apiClient.use(contractMiddleware)
-
-export const client = apiClient
+export const apiClient = createApiClient()
