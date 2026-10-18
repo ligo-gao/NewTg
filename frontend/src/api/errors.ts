@@ -37,6 +37,11 @@ export interface ApiErrorFields {
   instance?: string
   problem402?: Problem402
   request_id?: string
+  /**
+   * Seconds from a `Retry-After` response header. Server-driven countdowns
+   * (email-code 429, login lockout) must never hardcode their duration.
+   */
+  retry_after?: number
   kind: ApiErrorKind
 }
 
@@ -64,6 +69,7 @@ export class ApiError extends Error {
   readonly instance?: string
   readonly problem402?: Problem402
   readonly request_id?: string
+  readonly retry_after?: number
   readonly kind: ApiErrorKind
 
   constructor(fields: ApiErrorFields) {
@@ -76,6 +82,7 @@ export class ApiError extends Error {
     this.instance = fields.instance
     this.problem402 = fields.problem402
     this.request_id = fields.request_id
+    this.retry_after = fields.retry_after
     this.kind = fields.kind
   }
 }
@@ -87,6 +94,8 @@ export interface ParseProblemInput {
   body?: unknown
   /** Value of the `X-Request-ID` response header, when present. */
   requestId?: string
+  /** Raw `Retry-After` response header, when present. */
+  retryAfter?: string
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -113,8 +122,7 @@ function readNumber(
 
 function readProblem402(
   body: Record<string, unknown> | undefined,
-): Problem402 | undefined {
-  const nested = asRecord(body?.problem402)
+): Problem402 | undefined {  const nested = asRecord(body?.problem402)
   const source = nested ?? body
   const balance = readNumber(source, 'balance')
   if (balance === undefined) return undefined
@@ -128,6 +136,18 @@ function readProblem402(
   if (topupUrl !== undefined) problem402.topup_url = topupUrl
 
   return problem402
+}
+
+/**
+ * `Retry-After` is emitted as delta-seconds by the gateway (429/503). Invalid
+ * or HTTP-date values are ignored; callers then fall back to their own
+ * documentation defaults rather than displaying garbage.
+ */
+function readRetryAfter(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined
+  return Math.ceil(seconds)
 }
 
 /**
@@ -150,6 +170,7 @@ export function parseProblem(input: ParseProblemInput): ApiError {
     instance: readString(body, 'instance'),
     problem402: kind === 'quota' ? readProblem402(body) : undefined,
     request_id: input.requestId,
+    retry_after: readRetryAfter(input.retryAfter),
     kind,
   })
 }

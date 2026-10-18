@@ -11,8 +11,19 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as SetupRouteImport } from './routes/setup'
+import { Route as SignInRouteImport } from './routes/sign-in'
+import { Route as SignUpRouteImport } from './routes/sign-up'
+import { Route as TwoFactorChallengeRouteImport } from './routes/two-factor-challenge'
+import { Route as ConsoleProfileRouteImport } from './routes/_console/profile'
+import { Route as ConsoleSecurityRouteImport } from './routes/_console/security'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
+import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
+import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
+import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -23,9 +34,54 @@ const ConsoleRoute = ConsoleRouteImport.update({
   id: '/_console',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
+  id: '/forgot-password',
+  path: '/forgot-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignInRoute = SignInRouteImport.update({
+  id: '/sign-in',
+  path: '/sign-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignUpRoute = SignUpRouteImport.update({
+  id: '/sign-up',
+  path: '/sign-up',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TwoFactorChallengeRoute = TwoFactorChallengeRouteImport.update({
+  id: '/two-factor-challenge',
+  path: '/two-factor-challenge',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsoleProfileRoute = ConsoleProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleSecurityRoute = ConsoleSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => ConsoleRoute,
+} as any)
 const Errors404Route = Errors404RouteImport.update({
   id: '/_errors/404',
   path: '/404',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LegalDocRoute = LegalDocRouteImport.update({
+  id: '/legal/$doc',
+  path: '/legal/$doc',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
@@ -33,36 +89,130 @@ const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleAdminUsersIndexRoute = ConsoleAdminUsersIndexRouteImport.update({
+  id: '/admin/users/',
+  path: '/admin/users/',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleAdminUsersGroupsRoute = ConsoleAdminUsersGroupsRouteImport.update({
+  id: '/admin/users/groups',
+  path: '/admin/users/groups',
+  getParentRoute: () => ConsoleRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/setup': typeof SetupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/profile': typeof ConsoleProfileRoute
+  '/security': typeof ConsoleSecurityRoute
   '/404': typeof Errors404Route
+  '/legal/$doc': typeof LegalDocRoute
   '/dashboard/': typeof ConsoleDashboardIndexRoute
+  '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/setup': typeof SetupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/profile': typeof ConsoleProfileRoute
+  '/security': typeof ConsoleSecurityRoute
   '/404': typeof Errors404Route
+  '/legal/$doc': typeof LegalDocRoute
   '/dashboard': typeof ConsoleDashboardIndexRoute
+  '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/admin/users': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/setup': typeof SetupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/_console/profile': typeof ConsoleProfileRoute
+  '/_console/security': typeof ConsoleSecurityRoute
   '/_errors/404': typeof Errors404Route
+  '/legal/$doc': typeof LegalDocRoute
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
+  '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/404' | '/dashboard/'
+  fullPaths:
+    | '/'
+    | '/forgot-password'
+    | '/reset-password'
+    | '/setup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/two-factor-challenge'
+    | '/profile'
+    | '/security'
+    | '/404'
+    | '/legal/$doc'
+    | '/dashboard/'
+    | '/admin/users/groups'
+    | '/admin/users/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/404' | '/dashboard'
-  id: '__root__' | '/' | '/_console' | '/_errors/404' | '/_console/dashboard/'
+  to:
+    | '/'
+    | '/forgot-password'
+    | '/reset-password'
+    | '/setup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/two-factor-challenge'
+    | '/profile'
+    | '/security'
+    | '/404'
+    | '/legal/$doc'
+    | '/dashboard'
+    | '/admin/users/groups'
+    | '/admin/users'
+  id:
+    | '__root__'
+    | '/'
+    | '/_console'
+    | '/forgot-password'
+    | '/reset-password'
+    | '/setup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/two-factor-challenge'
+    | '/_console/profile'
+    | '/_console/security'
+    | '/_errors/404'
+    | '/legal/$doc'
+    | '/_console/dashboard/'
+    | '/_console/admin/users/groups'
+    | '/_console/admin/users/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ConsoleRoute: typeof ConsoleRouteWithChildren
+  ForgotPasswordRoute: typeof ForgotPasswordRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
+  SetupRoute: typeof SetupRoute
+  SignInRoute: typeof SignInRoute
+  SignUpRoute: typeof SignUpRoute
+  TwoFactorChallengeRoute: typeof TwoFactorChallengeRoute
   Errors404Route: typeof Errors404Route
+  LegalDocRoute: typeof LegalDocRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -81,11 +231,74 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-in': {
+      id: '/sign-in'
+      path: '/sign-in'
+      fullPath: '/sign-in'
+      preLoaderRoute: typeof SignInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-up': {
+      id: '/sign-up'
+      path: '/sign-up'
+      fullPath: '/sign-up'
+      preLoaderRoute: typeof SignUpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/two-factor-challenge': {
+      id: '/two-factor-challenge'
+      path: '/two-factor-challenge'
+      fullPath: '/two-factor-challenge'
+      preLoaderRoute: typeof TwoFactorChallengeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_console/profile': {
+      id: '/_console/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ConsoleProfileRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/security': {
+      id: '/_console/security'
+      path: '/security'
+      fullPath: '/security'
+      preLoaderRoute: typeof ConsoleSecurityRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
     '/_errors/404': {
       id: '/_errors/404'
       path: '/404'
       fullPath: '/404'
       preLoaderRoute: typeof Errors404RouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/legal/$doc': {
+      id: '/legal/$doc'
+      path: '/legal/$doc'
+      fullPath: '/legal/$doc'
+      preLoaderRoute: typeof LegalDocRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_console/dashboard/': {
@@ -95,15 +308,37 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleDashboardIndexRouteImport
       parentRoute: typeof ConsoleRoute
     }
+    '/_console/admin/users/': {
+      id: '/_console/admin/users/'
+      path: '/admin/users'
+      fullPath: '/admin/users/'
+      preLoaderRoute: typeof ConsoleAdminUsersIndexRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/admin/users/groups': {
+      id: '/_console/admin/users/groups'
+      path: '/admin/users/groups'
+      fullPath: '/admin/users/groups'
+      preLoaderRoute: typeof ConsoleAdminUsersGroupsRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
   }
 }
 
 interface ConsoleRouteChildren {
+  ConsoleProfileRoute: typeof ConsoleProfileRoute
+  ConsoleSecurityRoute: typeof ConsoleSecurityRoute
   ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
+  ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
+  ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
 }
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
+  ConsoleProfileRoute: ConsoleProfileRoute,
+  ConsoleSecurityRoute: ConsoleSecurityRoute,
   ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
+  ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
+  ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
 }
 
 const ConsoleRouteWithChildren =
@@ -112,7 +347,14 @@ const ConsoleRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ConsoleRoute: ConsoleRouteWithChildren,
+  ForgotPasswordRoute: ForgotPasswordRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
+  SetupRoute: SetupRoute,
+  SignInRoute: SignInRoute,
+  SignUpRoute: SignUpRoute,
+  TwoFactorChallengeRoute: TwoFactorChallengeRoute,
   Errors404Route: Errors404Route,
+  LegalDocRoute: LegalDocRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
