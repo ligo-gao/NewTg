@@ -37,15 +37,17 @@ const (
 	argon2KeyLen    = 32 // R-05：256-bit 输出
 	argon2SaltLen   = 16 // 128-bit 随机盐，满足 security-03 MIN_ENTROPY_BITS
 
-	// 校验侧上界。哈希串来自数据库，可能损坏或被伪造；进入 argon2 前必须
-	// 拒绝越界参数：m=4294967295 会触发数 TiB 分配，t=0/p=0 会让
+	// 校验侧参数窗口。哈希串来自数据库，可能损坏或被伪造；进入 argon2 前
+	// 必须拒绝越界参数：m=4294967295 会触发数 TiB 分配，t=0/p=0 会让
 	// x/crypto/argon2 直接 panic（伪造哈希不得变成 DoS）。
-	// 上界相对冻结值留出 ≥10 倍余量，允许未来按 security-03「随算力调升」
-	// 提升成本后仍能按旧哈希记录的参数完成校验。
+	//
+	// 下限直接冻结为基线：M1 没有历史哈希，低于基线的合法哈希不存在，只可能
+	// 是伪造/降级；上限留出余量，允许未来按 security-03「随算力调升」后仍能
+	// 按旧哈希记录的参数完成校验。
 	maxVerifyMemoryKiB = 256 << 10 // 256 MiB
 	maxVerifyTime      = 10
 	maxVerifyThreads   = 16
-	minVerifyKeyLen    = 16 // 低于 128-bit 的摘要不可能是本系统产出的
+	minVerifyKeyLen    = argon2KeyLen // R-05 冻结 32B；更短的摘要只可能是伪造
 	maxVerifyKeyLen    = 1024
 	maxVerifySaltLen   = 1024
 )
@@ -166,19 +168,25 @@ func parseArgon2idParams(s string) (memory, rounds uint32, threads uint8, ok boo
 	if !seenM || !seenT || !seenP {
 		return 0, 0, 0, false
 	}
-	// t≥1、p≥1 也是 argon2.IDKey 的前置条件；m≥8p 是 RFC 9106 的合法下界。
-	if rounds < 1 || rounds > maxVerifyTime ||
-		threads < 1 || threads > maxVerifyThreads ||
-		memory < 8*uint32(threads) || memory > maxVerifyMemoryKiB {
+	// 下限 = 冻结基线（m=19456, t=2, p=1）：M1 没有历史哈希，任何低于基线的
+	// 参数只可能来自伪造/降级，必须拒绝。t≥1、p≥1 同时满足 argon2.IDKey 的
+	// 前置条件（否则会 panic）。
+	if rounds < argon2Time || rounds > maxVerifyTime ||
+		threads < argon2Threads || threads > maxVerifyThreads ||
+		memory < argon2MemoryKiB || memory > maxVerifyMemoryKiB {
 		return 0, 0, 0, false
 	}
 	return memory, rounds, threads, true
 }
 
-// ValidatePasswordLength 实施 F-01-01 的纯长度策略：8–128 个字符，按 rune
-// 计数（与前端 zod 的字符语义一致），不限制字符组成。空口令与超长口令在
-// 此拒绝；泄露筛查由 CompromisedPasswordChecker 独立完成——长度合格但
-// 已泄露的口令仍须在注册/改密路径被拒（security-01 §2.3）。
+// ValidatePasswordLength 实施 F-01-01 的纯长度策略：8–128 个字符，不限制
+// 字符组成。计数口径在此冻结为 Unicode code point（Go 的 rune）：后端是
+// 策略的唯一执行点。注意 JS 的 String.length 按 UTF-16 code unit 计数
+// （emoji 等增补平面字符会算 2），前端表单（Task 15）必须用
+// Array.from(v).length 对齐，避免前后端判定不一致。
+//
+// 空口令与超长口令在此拒绝；泄露筛查由 CompromisedPasswordChecker 独立
+// 完成——长度合格但已泄露的口令仍须在注册/改密路径被拒（security-01 §2.3）。
 func ValidatePasswordLength(plain string) bool {
 	n := utf8.RuneCountInString(plain)
 	return n >= PWDMinLen && n <= PWDMaxLen
@@ -216,28 +224,33 @@ func (c CompromisedPasswordChecker) Check(plain string) bool {
 // CheckWithContext 额外接受每用户上下文（如 username）：用户名无法预置在
 // 站点级检查器里，只能在注册/改密的调用点传入。
 func (c CompromisedPasswordChecker) CheckWithContext(plain string, contextWords ...string) bool {
-	compact := normalizePassword(plain)
-	if compact == "" {
+	// 只有空口令可以提前退出：纯符号/emoji 口令归一化后为空，但仍是纯长度
+	// 策略下的合法口令，启用 HIBP 时必须继续查询泄露库（TC-A-08）。
+	if plain == "" {
 		return false
 	}
+	compact := normalizePassword(plain)
 	folded := foldLeet(plain)
 
-	// 离线 top-3000 采用整串精确匹配；归一化只用于比对，不影响存储/校验。
-	if _, hit := commonPasswordSet[compact]; hit {
-		return true
-	}
-	if folded != compact {
-		if _, hit := commonPasswordSet[folded]; hit {
+	// 离线词表只在归一化结果非空时比对；top-3000 采用整串精确匹配，
+	// 归一化只用于比对，不影响存储/校验。
+	if compact != "" {
+		if _, hit := commonPasswordSet[compact]; hit {
 			return true
 		}
-	}
+		if folded != compact {
+			if _, hit := commonPasswordSet[folded]; hit {
+				return true
+			}
+		}
 
-	words := make([]string, 0, len(builtinContextWords)+len(c.ContextWords)+len(contextWords))
-	words = append(words, builtinContextWords...)
-	words = append(words, c.ContextWords...)
-	words = append(words, contextWords...)
-	if containsContextWord(compact, folded, words) {
-		return true
+		words := make([]string, 0, len(builtinContextWords)+len(c.ContextWords)+len(contextWords))
+		words = append(words, builtinContextWords...)
+		words = append(words, c.ContextWords...)
+		words = append(words, contextWords...)
+		if containsContextWord(compact, folded, words) {
+			return true
+		}
 	}
 
 	if c.PwnedRange != nil {
@@ -366,7 +379,8 @@ var commonPasswordSet = func() map[string]struct{} {
 }()
 
 // commonPasswordsRaw 是冻结的离线高频口令表（每行一条）。
-// 数据来源：SecLists `10k-most-common.txt`（MIT）的前 3000 条。
+// 数据来源：SecLists `10k-most-common.txt`（MIT）的前 3000 条；完整版权与
+// 许可文本见仓库根 THIRD_PARTY_NOTICES.md。
 const commonPasswordsRaw = `
 password
 123456

@@ -10,8 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/argon2"
 )
 
 func TestHashVerify(t *testing.T) {
@@ -223,6 +226,61 @@ func TestOfflineListSize(t *testing.T) {
 	}
 	if entries < 3000 {
 		t.Fatalf("offline password list has %d entries, want >= 3000", entries)
+	}
+}
+
+// TestVerifyRejectsBelowBaselineParams 守住参数下限：M1 没有历史哈希，低于
+// 冻结基线（m=19456, t=2, p=1, keyLen=32，R-05）的哈希不可能是本系统产出的，
+// 只可能被伪造或降级。这里用正确的派生值构造“本可通过校验”的哈希，证明拒绝
+// 发生在策略层，而不是碰巧摘要不匹配。
+func TestVerifyRejectsBelowBaselineParams(t *testing.T) {
+	const plain = "valid password 123"
+	salt := make([]byte, 16)
+	saltB64 := base64.RawStdEncoding.EncodeToString(salt)
+
+	encode := func(rounds, memory uint32, keyLen uint32) string {
+		key := argon2.IDKey([]byte(plain), salt, rounds, memory, argon2Threads, keyLen)
+		return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
+			memory, rounds, argon2Threads, saltB64, base64.RawStdEncoding.EncodeToString(key))
+	}
+
+	cases := map[string]string{
+		"rounds below baseline": encode(argon2Time-1, argon2MemoryKiB, argon2KeyLen),
+		"memory below baseline": encode(argon2Time, argon2MemoryKiB-1, argon2KeyLen),
+		"key below baseline":    encode(argon2Time, argon2MemoryKiB, argon2KeyLen/2),
+	}
+	for name, hash := range cases {
+		t.Run(name, func(t *testing.T) {
+			if VerifyPassword(hash, plain) {
+				t.Fatalf("VerifyPassword accepted below-baseline hash %q", hash)
+			}
+		})
+	}
+}
+
+// TestCompromisedSymbolOnlyHIBP：纯符号口令（8 位，纯长度策略下合法）归一化
+// 后为空，但启用 HIBP 时仍必须查询泄露库——归一化 guard 不能吞掉外部查询
+// （security-01 TC-A-08）。
+func TestCompromisedSymbolOnlyHIBP(t *testing.T) {
+	const plain = "!!!!!!!!"
+	if !ValidatePasswordLength(plain) {
+		t.Fatal("test fixture must satisfy the pure-length policy")
+	}
+
+	sum := sha1.Sum([]byte(plain))
+	full := strings.ToUpper(hex.EncodeToString(sum[:]))
+	var gotPrefix string
+	checker := CompromisedPasswordChecker{
+		PwnedRange: func(prefix string) (string, error) {
+			gotPrefix = prefix
+			return full[5:] + ":9\r\n", nil
+		},
+	}
+	if !checker.Check(plain) {
+		t.Fatal("symbol-only password skipped the HIBP lookup")
+	}
+	if gotPrefix != full[:5] {
+		t.Fatalf("HIBP prefix = %q, want %q", gotPrefix, full[:5])
 	}
 }
 
