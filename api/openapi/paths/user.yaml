@@ -690,7 +690,7 @@ paths:
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
         '409':
-          description: 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突
+          description: 相同 Idempotency-Key 的并发请求仍在处理中（含等待期间请求被取消）
           content:
             application/problem+json:
               schema:
@@ -699,12 +699,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error422'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
-        '503':
-          description: 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503）
-          content:
-            application/problem+json:
-              schema:
-                $ref: '../components/problem.yaml#/schemas/Problem'
 
   /api/tokens/{id}:
     get:

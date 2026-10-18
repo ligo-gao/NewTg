@@ -209,52 +209,72 @@ check_permission_catalog() { # check_permission_catalog <openapi_root> <catalog.
   return "$rc"
 }
 
-# 输出未声明 x-required-permission 的 admin operation（file:line），无违规时为空。
-# 用 4 空格缩进的 HTTP 方法行切分 operation；tags/x-required-permission 取 6 空格
-# 缩进字段。只针对仓内自有 YAML 的固定排版，解析不出 admin operation 时由调用方
-# 以「计数为 0」fail-closed，避免排版变化把断言悄悄变成永远 PASS。
-admin_ops_missing_permission() { # admin_ops_missing_permission <openapi_root>
+# 扫描每个 operation 的 tags，输出两类行：
+#   COUNT <n>           —— 本文件 admin operation 数
+#   MISSING <file:line>: … —— 该 admin operation 缺少 x-required-permission
+# 为什么不能固定匹配 `tags: [admin]`：`tags: [admin, channels]`、块式列表和
+# 引号元素都是合法 YAML；固定字符串会让未来的复合 tag operation 逃过权限门禁。
+# 因此这里按「admin 是 tags 列表中的一个元素」判定（flow/block 两种写法）。
+# operation 边界仍按 4 空格缩进的 HTTP 方法行识别；解析不到任何 admin
+# operation 时调用方以计数 0 fail-closed，排版漂移不会把断言变成永远 PASS。
+scan_admin_operations() { # scan_admin_operations <openapi_root>
   local root="$1" f
   for f in "$root"/paths/*.yaml; do
     [ -f "$f" ] || continue
     awk -v file="$f" '
+      function reset() { in_op=0; is_admin=0; has_perm=0; in_tags=0; start=0 }
       function finish() {
-        if (in_op && is_admin && !has_perm) {
-          printf "%s:%d: admin operation 缺少 x-required-permission\n", file, start
+        if (in_op && is_admin) {
+          admin_count++
+          if (!has_perm)
+            printf "MISSING %s:%d: admin operation 缺少 x-required-permission\n", file, start
         }
       }
-      /^    (get|put|post|patch|delete|head|options|trace):[[:space:]]*$/ {
-        finish(); in_op=1; is_admin=0; has_perm=0; start=NR; next
+      function elem_is_admin(v) {
+        sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+        gsub(/^["\047]+/, "", v); gsub(/["\047]+$/, "", v)
+        return v == "admin"
       }
-      in_op && /^      tags:[[:space:]]*\[admin\][[:space:]]*$/ { is_admin=1 }
-      in_op && /^      x-required-permission:/ { has_perm=1 }
-      END { finish() }
+      function flow_has_admin(s,   a, n, i) {
+        sub(/^[^[]*\[/, "", s); sub(/\].*$/, "", s)
+        n = split(s, a, ",")
+        for (i = 1; i <= n; i++) if (elem_is_admin(a[i])) return 1
+        return 0
+      }
+      /^    (get|put|post|patch|delete|head|options|trace):[[:space:]]*$/ {
+        finish(); reset(); in_op=1; start=NR; next
+      }
+      !in_op { next }
+      /^[ \t]*tags:[ \t]*\[/ { if (flow_has_admin($0)) is_admin=1; in_tags=0; next }
+      /^[ \t]*tags:[ \t]*(#.*)?$/ { in_tags=1; next }
+      in_tags && /^[ \t]*(#.*)?$/ { next }
+      in_tags && /^[ \t]*-[ \t]*/ {
+        v = $0; sub(/^[ \t]*-[ \t]*/, "", v)
+        if (elem_is_admin(v)) is_admin=1
+        next
+      }
+      in_tags { in_tags=0 }
+      /^[ \t]*x-required-permission:/ { has_perm=1 }
+      END { finish(); printf "COUNT %d\n", admin_count }
     ' "$f"
   done
 }
 
-# admin operation 总数（每 operation 只有一行 tags）。
-admin_operation_count() { # admin_operation_count <openapi_root>
-  local root="$1" f total=0 n
-  for f in "$root"/paths/*.yaml; do
-    [ -f "$f" ] || continue
-    n="$(awk '/^      tags:[[:space:]]*\[admin\][[:space:]]*$/ { c++ } END { print c+0 }' "$f")"
-    total=$((total + n))
-  done
-  printf '%s\n' "$total"
-}
-
 # 断言 2：每个 admin operation 必须声明 x-required-permission。
 check_admin_permission_required() { # check_admin_permission_required <openapi_root>
-  local root="$1" out count
-  count="$(admin_operation_count "$root")"
+  local root="$1" line count=0 missing=""
+  while IFS= read -r line; do
+    case "$line" in
+      'COUNT '*) count=$((count + ${line#COUNT })) ;;
+      'MISSING '*) missing+="${line#MISSING }"$'\n' ;;
+    esac
+  done < <(scan_admin_operations "$root")
   if [ "$count" -eq 0 ]; then
     echo "FAIL: 未解析到任何 admin operation（YAML 排版变化？断言 fail-closed）" >&2
     return 1
   fi
-  out="$(admin_ops_missing_permission "$root")"
-  if [ -n "$out" ]; then
-    printf '%s\n' "$out" >&2
+  if [ -n "$missing" ]; then
+    printf '%s' "$missing" >&2
     return 1
   fi
   echo "PASS: ${count} 个 admin operation 均声明 x-required-permission"
@@ -404,7 +424,38 @@ self_test() {
   # 恢复真实副本，避免影响后续用例与最终状态。
   cp api/openapi/paths/admin.yaml "$tmp/api/openapi/paths/admin.yaml"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）、权限（缺失声明、目录外取值）注入均已被拒绝"
+  # 用例 C：admin 不是 tags 唯一元素（flow 复合列表 + block 列表）也必须被
+  # 识别为管理面 operation 并因缺少 x-required-permission 被拒绝。固定匹配
+  # `tags: [admin]` 的实现会漏掉这两种合法写法，本用例专门证明不会。
+  cat >"$tmp/api/openapi/paths/selftest-admin-tags.yaml" <<'YAML'
+paths:
+  /selftest-admin-flow:
+    get:
+      tags: [admin, channels]
+      operationId: selftestAdminFlow
+      responses:
+        '200': {description: OK}
+  /selftest-admin-block:
+    post:
+      tags:
+        - channels
+        - admin
+      operationId: selftestAdminBlock
+      responses:
+        '200': {description: OK}
+YAML
+  if out=$(check_admin_permission_required "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [admin-tag-list-element] 未被拒绝" >&2
+    rc=1
+  elif [ "$(printf '%s\n' "$out" | grep -c '缺少 x-required-permission' || true)" -ne 2 ]; then
+    echo "FAIL: 自检 [admin-tag-list-element] 应识别 2 个复合 tag operation：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [admin-tag-list-element] 流式/块式复合 tag 均被识别并拒绝"
+  fi
+  rm -f "$tmp/api/openapi/paths/selftest-admin-tags.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）、权限（缺失声明、目录外取值、复合 tag）注入均已被拒绝"
   return "$rc"
 }
 

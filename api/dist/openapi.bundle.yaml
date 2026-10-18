@@ -206,6 +206,21 @@ paths:
           $ref: '#/components/responses/Error429'
         '500':
           $ref: '#/components/responses/Error500'
+        '503':
+          description: |
+            初始化状态存储不可用（IsInitialized 查询失败）。实现禁止猜测
+            system_initialized（猜 false 会把已初始化站点导回安装向导，猜 true
+            会把新站锁死在登录页），因此 fail-closed 返回 503。
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/geoip:
     get:
       tags:
@@ -1215,7 +1230,7 @@ paths:
         '403':
           $ref: '#/components/responses/Error403'
         '409':
-          description: 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突
+          description: 相同 Idempotency-Key 的并发请求仍在处理中（含等待期间请求被取消）
           content:
             application/problem+json:
               schema:
@@ -1224,12 +1239,6 @@ paths:
           $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
-        '503':
-          description: 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503）
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
   /api/tokens/{id}:
     get:
       tags:

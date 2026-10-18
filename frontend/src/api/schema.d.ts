@@ -2257,6 +2257,21 @@ export interface operations {
             };
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+            /**
+             * @description 初始化状态存储不可用（IsInitialized 查询失败）。实现禁止猜测
+             *     system_initialized（猜 false 会把已初始化站点导回安装向导，猜 true
+             *     会把新站锁死在登录页），因此 fail-closed 返回 503。
+             */
+            503: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getClientGeo: {
@@ -3196,7 +3211,7 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            /** @description 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突 */
+            /** @description 相同 Idempotency-Key 的并发请求仍在处理中（含等待期间请求被取消） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3207,15 +3222,6 @@ export interface operations {
             };
             422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
-            /** @description 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503） */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
         };
     };
     getToken: {
