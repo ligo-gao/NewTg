@@ -13,10 +13,17 @@ import (
 )
 
 const (
-	// openAIDefaultBaseURL 是 OpenAI 兼容族的默认基址（relay-02 §5 行 1/§7.1）。
+	// openAIDefaultBaseURL 是 OpenAI 类型的默认基址（relay-02 §5 行 1）。
+	// 其余类型的默认基址见 openAITypeSpecs（逐类型表，禁止共享 OpenAI 默认值）。
 	openAIDefaultBaseURL = "https://api.openai.com"
-	// openAIChatPath 是 OpenAI Chat Completions 的相对路径（relay-02 §7.2）。
+	// openAIChatPath 是 OpenAI 兼容族通用的 Chat Completions 路径
+	// （relay-02 §7.2）。逐类型特化路径（paas/v4、api/v3、v2、compatible-mode）
+	// 见 openAITypeSpecs。
 	openAIChatPath = "/v1/chat/completions"
+	// maxResponseBodyBytes 是非流式响应体的读取上限（64 MiB）。上游返回超大
+	// 响应时按 ErrUpstreamServer 拒绝，避免无界读入拖垮进程（final-review
+	// finding 9；与流式事件上限 sseMaxEventBytes 同口径）。
+	maxResponseBodyBytes = 64 << 20
 	// azureDefaultAPIVersion 是 Azure 变体 api_version 的缺省值（relay-02 §7.4）。
 	//
 	// ⚠️ 渠道 `other.api_version` 的读取在本任务中推迟：冻结的
@@ -29,6 +36,58 @@ const (
 	// RelayContext.CreatedTime（契约 §5 · 决议 F2）。
 	azureNoRemoveDotTime = "2025-05-10"
 )
+
+// openAITypeSpec 是一个 OpenAI 兼容渠道类型的默认基址与 Chat 路径。
+//
+// 基址为空的类型表示「没有可静默使用的默认值」：必填类型（§7.1 的 9 个）
+// 或语义上默认空、留空即不可用的类型（xinference）——两者都在 BuildRequest
+// 返回 ErrChannelConfig，绝不回落到 https://api.openai.com（凭据错向风险；
+// final-review finding 3）。
+type openAITypeSpec struct {
+	baseURL  string
+	chatPath string
+}
+
+// openAITypeSpecs 是逐 ChannelType 的默认基址/路径表（relay-02 §5/§7.1）。
+//
+// 只覆盖分派到 AKOpenAI 的 24 个类型；未列出的类型（哨兵/其他协议族）由
+// BuildRequest 显式拒绝。路径特化依据：
+//   - zhipu_v4 → /api/paas/v4/chat/completions（§5 行 26、relay-02 §8 模型路径特化）；
+//   - volcengine → /api/v3/chat/completions（§5 行 45、§8 模型路径特化）；
+//   - baidu_v2 → /v2/chat/completions（§5 行 46）；
+//   - ali → /compatible-mode/v1/chat/completions（DashScope OpenAI 兼容模式，
+//     §8 模型路径特化为 /compatible-mode/v1）；
+//   - perplexity → /chat/completions（基线 perplexity 适配器不带 /v1）；
+//   - custom → 整 URL（§7.2），不拼路径。
+var openAITypeSpecs = map[contract.ChannelType]openAITypeSpec{
+	contract.ChannelTypeOpenAI:      {baseURL: openAIDefaultBaseURL, chatPath: openAIChatPath},
+	contract.ChannelTypeOpenAIMax:   {baseURL: "https://api.openaimax.com", chatPath: openAIChatPath},
+	contract.ChannelTypeOhMyGPT:     {baseURL: "https://api.ohmygpt.com", chatPath: openAIChatPath},
+	contract.ChannelTypeCustom:      {baseURL: "", chatPath: ""}, // 必填整 URL（§7.2）
+	contract.ChannelTypeAILS:        {baseURL: "https://api.caipacity.com", chatPath: openAIChatPath},
+	contract.ChannelTypeAIProxy:     {baseURL: "https://api.aiproxy.io", chatPath: openAIChatPath},
+	contract.ChannelTypeAPI2GPT:     {baseURL: "https://api.api2gpt.com", chatPath: openAIChatPath},
+	contract.ChannelTypeAIGC2D:      {baseURL: "https://api.aigc2d.com", chatPath: openAIChatPath},
+	contract.ChannelTypeAli:         {baseURL: "https://dashscope.aliyuncs.com", chatPath: "/compatible-mode/v1/chat/completions"},
+	contract.ChannelAi360:           {baseURL: "https://api.360.cn", chatPath: openAIChatPath},
+	contract.ChannelTypeOpenRouter:  {baseURL: "https://openrouter.ai/api", chatPath: openAIChatPath},
+	contract.ChannelTypeFastGPT:     {baseURL: "https://fastgpt.run/api/openapi", chatPath: openAIChatPath},
+	contract.ChannelTypeZhipuV4:     {baseURL: "https://open.bigmodel.cn", chatPath: "/api/paas/v4/chat/completions"},
+	contract.ChannelTypePerplexity:  {baseURL: "https://api.perplexity.ai", chatPath: "/chat/completions"},
+	contract.ChannelTypeLingYiWanWu: {baseURL: "https://api.lingyiwanwu.com", chatPath: openAIChatPath},
+	contract.ChannelTypeSiliconFlow: {baseURL: "https://api.siliconflow.cn", chatPath: openAIChatPath},
+	contract.ChannelTypeMistral:     {baseURL: "https://api.mistral.ai", chatPath: openAIChatPath},
+	contract.ChannelTypeDeepSeek:    {baseURL: "https://api.deepseek.com", chatPath: openAIChatPath},
+	// volcengine 属 §7.1 必填类型（渠道必须提供 base_url），但路径固定为 /api/v3。
+	contract.ChannelTypeVolcEngine: {baseURL: "", chatPath: "/api/v3/chat/completions"},
+	contract.ChannelTypeBaiduV2:    {baseURL: "https://qianfan.baidubce.com", chatPath: "/v2/chat/completions"},
+	// xinference 默认基址空（§5 行 47）：留空不可用，不得回退 OpenAI。
+	contract.ChannelTypeXinference: {baseURL: "", chatPath: openAIChatPath},
+	contract.ChannelTypeXai:        {baseURL: "https://api.x.ai", chatPath: openAIChatPath},
+	contract.ChannelTypeSubmodel:   {baseURL: "https://llm.submodel.ai", chatPath: openAIChatPath},
+	// Azure 必填（形如 https://{resource}.openai.azure.com），路径按部署名特化。
+	contract.ChannelTypeAzure: {baseURL: "", chatPath: ""},
+}
 
 // azureNoRemoveDotTimeValue 是 azureNoRemoveDotTime 的解析值。
 // 单独成 var 以免每次构造请求都解析一次日期。
@@ -65,6 +124,11 @@ func NewOpenAI() *OpenAI {
 func (o *OpenAI) Type() contract.ChannelType { return o.channelType }
 
 // Caps 返回 OpenAI 兼容族的基础能力声明（relay-02 §5 行 1，brief 冻结值）。
+//
+// DefaultBaseURL 按实例绑定的 ChannelType 取逐类型默认值（§5/§7.1）：
+// openrouter 是 https://openrouter.ai/api、zhipu_v4 是 https://open.bigmodel.cn
+// 等，而不是统一回落到 https://api.openai.com。必填/默认空类型返回 ""，
+// 由渠道表单要求用户填写（§7.1）。
 func (o *OpenAI) Caps() contract.Capabilities {
 	return contract.Capabilities{
 		Endpoints: contract.Set[contract.Endpoint]{
@@ -75,11 +139,20 @@ func (o *OpenAI) Caps() contract.Capabilities {
 		StreamUsage:    true, // 下发 stream_options.include_usage
 		ModelList:      true, // GET /v1/models
 		CreditShape:    contract.CreditSingleKey,
-		DefaultBaseURL: openAIDefaultBaseURL,
+		DefaultBaseURL: o.defaultBaseURL(),
 		Roles:          []contract.ChannelRole{contract.RoleChat},
 		// BaseURLDefault：有默认基址、渠道可覆盖（relay-02 §7.1）。
 		BaseURLMode: contract.BaseURLDefault,
 	}
+}
+
+// defaultBaseURL 返回实例渠道类型的默认基址；未知类型返回空串（不臆造）。
+func (o *OpenAI) defaultBaseURL() string {
+	spec, ok := openAITypeSpecs[o.channelType]
+	if !ok {
+		return ""
+	}
+	return spec.baseURL
 }
 
 // BuildRequest 构造发往上游的 OpenAI Chat Completions 请求（契约 §3.1）。
@@ -101,14 +174,23 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 	}
 	azure := channelType == contract.ChannelTypeAzure
 
+	// 逐类型默认基址/路径（relay-02 §5/§7.1）。表未命中说明该类型不该由
+	// 本适配器处理：显式拒绝，绝不隐式回落到 OpenAI 默认基址
+	// （final-review finding 3：凭据错向会把渠道 key 发给错误上游）。
+	spec, ok := openAITypeSpecs[channelType]
+	if !ok {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel type %q has no OpenAI default base URL", channelType)
+	}
+
 	// 凭据由执行层每轮写入（契约 §5 渠道组）。缺失属于渠道配置问题。
 	if rc.Credential == "" {
 		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel %d has no credential", rc.ChannelID)
 	}
 
-	// relay-02 §7.1 的「必填 base_url」类型不得静默落到 OpenAI 默认基址：
-	// 那会把凭据发往错误的上游（凭据错向风险）。
-	if strings.TrimSpace(rc.APIBase) == "" && requiresExplicitBaseURL(channelType) {
+	// relay-02 §7.1 的「必填 base_url」类型（以及默认空的 xinference）不得静默
+	// 落到 OpenAI 默认基址：那会把凭据发往错误的上游（凭据错向风险）。
+	baseInput := strings.TrimSpace(rc.APIBase)
+	if baseInput == "" && (requiresExplicitBaseURL(channelType) || spec.baseURL == "") {
 		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel type %q requires a base URL", channelType)
 	}
 
@@ -123,7 +205,9 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 		return nil, classifiedf(contract.ErrParamInvalid, "%w", err)
 	}
 
-	requestPath := openAIChatPath
+	// 逐类型路径（relay-02 §5/§7.2）：不能统一用 /v1/chat/completions——
+	// zhipu_v4 / volcengine / baidu_v2 / ali 的 OpenAI 兼容端点各有前缀。
+	requestPath := spec.chatPath
 	var query url.Values
 	if azure {
 		// Azure 变体：base_url 已在上方必填校验；路径携带部署名与 api-version。
@@ -133,9 +217,9 @@ func (o *OpenAI) BuildRequest(rc *contract.RelayContext, req *contract.Request) 
 		query.Set("api-version", azureDefaultAPIVersion)
 	}
 
-	baseURL := rc.APIBase
+	baseURL := baseInput
 	if baseURL == "" {
-		baseURL = openAIDefaultBaseURL
+		baseURL = spec.baseURL // 上方已保证：无默认值（必填/默认空）时不会走到这里
 	}
 	var fullURL string
 	if channelType == contract.ChannelTypeCustom {
@@ -192,14 +276,53 @@ func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
 // customURL 处理类型 8（custom）的整 URL 语义（relay-02 §5 行 8、§7.2）：
 // base_url 本身就是完整请求 URL，支持 {model} 占位；结果不再拼接任何路径。
 //
-// 模型名做 PathEscape 后再替换：模型名是用户可控量，直接拼进 URL 会形成
-// 路径注入面（可注入 ? / # / ../）。替换后重新解析校验，错误不回显 URL（GC-6）。
+// {model} 的转义必须按占位符所在组件区分（final-review finding 6）：
+// url.PathEscape 不转义 `&`/`=`，若占位符位于 query 中，模型名
+// `a&admin=1` 会凭空注入一个 admin 参数。因此：
+//   - path/fragment 中的占位符用 PathEscape（转义 ? / # / %，保留 &/=（路径里安全））；
+//   - query 中的占位符用 QueryEscape（转义 & / = / ? / #，杜绝参数注入）。
+//
+// 实现细节：先用原始 base_url 解析出组件位置，再分别在 EscapedPath() 与
+// RawQuery 上替换。EscapedPath 会把花括号编码成 %7B/model/%7D，所以两种
+// 写法都要匹配（调用方也可能手写已编码的占位符）。替换后的 path 回填
+// Path/RawPath：RawPath 保留转义形态，URL.String 才不会把 PathEscape 的
+// `%` 二次转义成 `%25`。错误不回显 URL（GC-6）。
 func customURL(baseURL, model string) (string, error) {
-	substituted := strings.ReplaceAll(baseURL, "{model}", url.PathEscape(model))
-	parsed, err := url.Parse(substituted)
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
 	}
+
+	pathPlaceholder := func(component string) bool {
+		return strings.Contains(component, "{model}") || strings.Contains(component, "%7Bmodel%7D") ||
+			strings.Contains(component, "%7bmodel%7d")
+	}
+	replacePlaceholder := func(component, escapedModel string) string {
+		return strings.NewReplacer(
+			"%7Bmodel%7D", escapedModel,
+			"%7bmodel%7d", escapedModel,
+			"{model}", escapedModel,
+		).Replace(component)
+	}
+
+	if pathPlaceholder(parsed.Path) {
+		escapedPath := replacePlaceholder(parsed.EscapedPath(), url.PathEscape(model))
+		decodedPath, unescapeErr := url.PathUnescape(escapedPath)
+		if unescapeErr != nil {
+			return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
+		}
+		parsed.Path = decodedPath
+		parsed.RawPath = escapedPath
+	}
+	if pathPlaceholder(parsed.RawQuery) {
+		// QueryEscape 把空格转成 `+`（query 规范形态），& / = / # 全部转义。
+		parsed.RawQuery = replacePlaceholder(parsed.RawQuery, url.QueryEscape(model))
+	}
+	if pathPlaceholder(parsed.Fragment) {
+		// Fragment 不发送给上游，但仍按路径规则转义，避免残留占位符。
+		parsed.Fragment = replacePlaceholder(parsed.Fragment, url.PathEscape(model))
+	}
+
 	return parsed.String(), nil
 }
 
@@ -245,10 +368,11 @@ func (o *OpenAI) ParseResponse(_ *contract.RelayContext, resp *http.Response) (*
 	if resp == nil {
 		return nil, contract.Usage{}, classifiedf(contract.ErrUpstreamServer, "adapters: nil upstream response")
 	}
-	body, err := io.ReadAll(resp.Body)
+	// 有界读取（final-review finding 9）：64 MiB 上限，超限按上游故障拒绝，
+	// 避免恶意/异常上游用无限响应体耗尽进程内存（与流式 64 MiB 事件上限同口径）。
+	body, err := readUpstreamBody(resp.Body, maxResponseBodyBytes)
 	if err != nil {
-		// 读取失败属瞬时故障；不包装底层错误（网络错误可能含 URL）。
-		return nil, contract.Usage{}, classifiedf(contract.ErrRetryable, "adapters: read upstream response failed")
+		return nil, contract.Usage{}, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		class := o.ClassifyError(resp.StatusCode, body)
@@ -260,6 +384,22 @@ func (o *OpenAI) ParseResponse(_ *contract.RelayContext, resp *http.Response) (*
 		return nil, contract.Usage{}, classifiedf(contract.ErrUpstreamServer, "adapters: invalid upstream response")
 	}
 	return response, usage, nil
+}
+
+// readUpstreamBody 有界读取非流式响应体。
+//
+// 多读 1 字节用于区分「恰好等于上限」与「超限」：恰好 64 MiB 是合法响应，
+// 65 MiB（及以上）按 ErrUpstreamServer 拒绝。读取本身的 I/O 错误保留
+// ErrRetryable（瞬时故障，执行层可换渠道重试）；错误文本不含 URL/响应体（GC-6）。
+func readUpstreamBody(reader io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, classifiedf(contract.ErrRetryable, "adapters: read upstream response failed")
+	}
+	if int64(len(body)) > limit {
+		return nil, classifiedf(contract.ErrUpstreamServer, "adapters: upstream response exceeds %d bytes", limit)
+	}
+	return body, nil
 }
 
 // ClassifyError 按 brief/契约 §4 的 OpenAI 映射归类 HTTP 状态。

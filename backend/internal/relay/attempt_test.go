@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"math/rand/v2"
 	"reflect"
 	"testing"
 
@@ -230,5 +231,100 @@ func TestAttemptPlanEmptyAndNilContext(t *testing.T) {
 	plan = BuildAttemptPlan(rc, []contract.ChannelCandidate{{ChannelID: 1, Group: "default"}})
 	if len(plan.Candidates) != 0 {
 		t.Fatalf("异组唯一候选仍存活：%v", attemptCandidateIDs(plan.Candidates))
+	}
+}
+
+// ============================================================================
+// 同优先级加权随机（relay-01 §5.2–§5.3；final-review finding 1）
+// ============================================================================
+
+// TestSelectWithinPrioritySingleCandidate 冻结单候选短路：直接返回该候选，
+// 不消耗随机源（加权随机没有可选项）。
+func TestSelectWithinPrioritySingleCandidate(t *testing.T) {
+	called := false
+	got := SelectWithinPriority([]contract.ChannelCandidate{{ChannelID: 7, Weight: 0}}, func(uint64) uint64 {
+		called = true
+		return 0
+	})
+	if got.ChannelID != 7 {
+		t.Fatalf("单候选 = %d，期望 7", got.ChannelID)
+	}
+	if called {
+		t.Fatal("单候选不得调用随机源")
+	}
+	if got := SelectWithinPriority(nil, rand.Uint64N); got.ChannelID != 0 {
+		t.Fatalf("空候选 = %+v，期望零值", got)
+	}
+}
+
+// TestSelectWithinPriorityWeightedDistribution 覆盖 §5.3 的加权比例：
+// weight=1/1/2 时三次采样分布应约为 1:1:2（TC-A-09，容差 5%）。
+func TestSelectWithinPriorityWeightedDistribution(t *testing.T) {
+	candidates := []contract.ChannelCandidate{
+		{ChannelID: 1, Weight: 1},
+		{ChannelID: 2, Weight: 1},
+		{ChannelID: 3, Weight: 2},
+	}
+	rng := rand.New(rand.NewPCG(0x5eed, 0x1234))
+	counts := map[int]int{}
+	const runs = 60000
+	for i := 0; i < runs; i++ {
+		counts[SelectWithinPriority(candidates, rng.Uint64N).ChannelID]++
+	}
+	want := map[int]float64{1: 0.25, 2: 0.25, 3: 0.5}
+	for id, ratio := range want {
+		got := float64(counts[id]) / runs
+		if got < ratio-0.05 || got > ratio+0.05 {
+			t.Fatalf("渠道 %d 采样比例 = %.3f，期望 %.2f±0.05（counts=%v）", id, got, ratio, counts)
+		}
+	}
+}
+
+// TestSelectWithinPriorityZeroWeightsUniform 覆盖 §5.3 的全零权重边界：
+// 退化为均匀分布（甲类修正，避免 rand.Uint64N(0) panic）。
+func TestSelectWithinPriorityZeroWeightsUniform(t *testing.T) {
+	candidates := []contract.ChannelCandidate{
+		{ChannelID: 1},
+		{ChannelID: 2},
+		{ChannelID: 3},
+	}
+	rng := rand.New(rand.NewPCG(0xfeed, 0x4321))
+	counts := map[int]int{}
+	const runs = 60000
+	for i := 0; i < runs; i++ {
+		counts[SelectWithinPriority(candidates, rng.Uint64N).ChannelID]++
+	}
+	for _, id := range []int{1, 2, 3} {
+		got := float64(counts[id]) / runs
+		if got < 0.28 || got > 0.39 {
+			t.Fatalf("全零权重下渠道 %d 采样比例 = %.3f，期望约 1/3（counts=%v）", id, got, counts)
+		}
+	}
+}
+
+// TestAttemptPrioritiesClamp 冻结 §6.4 的优先级映射：去重后的优先级序列保持
+// 首次出现顺序；重试索引 i 映射到 priorities[min(i, len-1)]，越界钳到
+// **最低优先级**（不是最后一个候选）。final-review finding 11 的注释修正
+// 与这里是同一行为。
+func TestAttemptPrioritiesClamp(t *testing.T) {
+	ordered := []contract.ChannelCandidate{
+		{ChannelID: 1, Priority: 10},
+		{ChannelID: 2, Priority: 10},
+		{ChannelID: 3, Priority: 5},
+		{ChannelID: 4, Priority: 1},
+	}
+	priorities := attemptPriorities(ordered)
+	if !reflect.DeepEqual(priorities, []int{10, 5, 1}) {
+		t.Fatalf("priorities = %v，期望 [10 5 1]", priorities)
+	}
+	wantTargets := []int{10, 5, 1, 1, 1, 1}
+	for i, want := range wantTargets {
+		target := priorities[min(i, len(priorities)-1)]
+		if target != want {
+			t.Fatalf("attemptIndex %d → target = %d，期望 %d", i, target, want)
+		}
+	}
+	if got := candidatesAtPriority(ordered, 10); len(got) != 2 || got[0].ChannelID != 1 || got[1].ChannelID != 2 {
+		t.Fatalf("candidatesAtPriority(10) = %+v，期望 [1 2]", got)
 	}
 }

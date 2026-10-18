@@ -512,3 +512,192 @@ func TestOpenAIStreamEventsPreservesRawFieldsAndSkipsEmptyData(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// final-review finding 3：逐类型默认基址/路径（relay-02 §5/§7.1）
+// ============================================================================
+
+// TestOpenAIDefaultBaseURLPerType 冻结逐类型默认基址与 Chat 路径：
+// 共享 OpenAI 适配器绝不能把非 openai 类型一律发往 api.openai.com。
+func TestOpenAIDefaultBaseURLPerType(t *testing.T) {
+	cases := []struct {
+		channelType contract.ChannelType
+		apiBase     string // 空 = 用默认值
+		wantURL     string
+	}{
+		{contract.ChannelTypeOpenAI, "", "https://api.openai.com/v1/chat/completions"},
+		{contract.ChannelTypeOpenAIMax, "", "https://api.openaimax.com/v1/chat/completions"},
+		{contract.ChannelTypeOhMyGPT, "", "https://api.ohmygpt.com/v1/chat/completions"},
+		{contract.ChannelTypeAILS, "", "https://api.caipacity.com/v1/chat/completions"},
+		{contract.ChannelTypeAIProxy, "", "https://api.aiproxy.io/v1/chat/completions"},
+		{contract.ChannelTypeAPI2GPT, "", "https://api.api2gpt.com/v1/chat/completions"},
+		{contract.ChannelTypeAIGC2D, "", "https://api.aigc2d.com/v1/chat/completions"},
+		{contract.ChannelAi360, "", "https://api.360.cn/v1/chat/completions"},
+		{contract.ChannelTypeOpenRouter, "", "https://openrouter.ai/api/v1/chat/completions"},
+		{contract.ChannelTypeFastGPT, "", "https://fastgpt.run/api/openapi/v1/chat/completions"},
+		{contract.ChannelTypeZhipuV4, "", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{contract.ChannelTypePerplexity, "", "https://api.perplexity.ai/chat/completions"},
+		{contract.ChannelTypeLingYiWanWu, "", "https://api.lingyiwanwu.com/v1/chat/completions"},
+		{contract.ChannelTypeSiliconFlow, "", "https://api.siliconflow.cn/v1/chat/completions"},
+		{contract.ChannelTypeMistral, "", "https://api.mistral.ai/v1/chat/completions"},
+		{contract.ChannelTypeDeepSeek, "", "https://api.deepseek.com/v1/chat/completions"},
+		// volcengine 必填 base_url，但路径固定 /api/v3（relay-02 §5 行 45）。
+		{contract.ChannelTypeVolcEngine, "https://ark.cn-beijing.volces.com", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{contract.ChannelTypeBaiduV2, "", "https://qianfan.baidubce.com/v2/chat/completions"},
+		{contract.ChannelTypeXai, "", "https://api.x.ai/v1/chat/completions"},
+		{contract.ChannelTypeSubmodel, "", "https://llm.submodel.ai/v1/chat/completions"},
+		{contract.ChannelTypeAli, "", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		// 渠道覆盖优先于默认值。
+		{contract.ChannelTypeOpenRouter, "https://proxy.example/v1", "https://proxy.example/v1/chat/completions"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.channelType)+"/"+tc.wantURL, func(t *testing.T) {
+			adapter := &OpenAI{channelType: tc.channelType}
+			httpReq, err := adapter.BuildRequest(&contract.RelayContext{
+				ChannelType: tc.channelType,
+				APIBase:     tc.apiBase,
+				Credential:  "sk-test",
+			}, &contract.Request{Model: "m"})
+			if err != nil {
+				t.Fatalf("BuildRequest: %v", err)
+			}
+			if got := httpReq.URL.String(); got != tc.wantURL {
+				t.Fatalf("URL = %q，期望 %q（relay-02 §5/§7.1 逐类型默认值）", got, tc.wantURL)
+			}
+		})
+	}
+}
+
+// TestOpenAICapsDefaultBaseURLPerType 断言能力声明与 BuildRequest 使用同一张表：
+// 渠道表单据此展示默认基址。
+func TestOpenAICapsDefaultBaseURLPerType(t *testing.T) {
+	cases := map[contract.ChannelType]string{
+		contract.ChannelTypeOpenAI:     "https://api.openai.com",
+		contract.ChannelTypeOpenRouter: "https://openrouter.ai/api",
+		contract.ChannelTypeZhipuV4:    "https://open.bigmodel.cn",
+		contract.ChannelTypeDeepSeek:   "https://api.deepseek.com",
+		contract.ChannelTypeXinference: "", // 默认空：必须由渠道配置
+		contract.ChannelTypeAzure:      "", // 必填
+		contract.ChannelTypeCustom:     "", // 必填整 URL
+	}
+	for channelType, want := range cases {
+		adapter := &OpenAI{channelType: channelType}
+		if got := adapter.Caps().DefaultBaseURL; got != want {
+			t.Errorf("%q Caps().DefaultBaseURL = %q，期望 %q", channelType, got, want)
+		}
+	}
+}
+
+// TestOpenAIBuildRequestDefaultEmptyBaseURLFails 冻结「默认空 = 不可用」：
+// xinference（§5 行 47 默认空）与未知类型都不得静默回落到 OpenAI。
+func TestOpenAIBuildRequestDefaultEmptyBaseURLFails(t *testing.T) {
+	cases := []struct {
+		name        string
+		adapter     *OpenAI
+		channelType contract.ChannelType
+	}{
+		{"xinference", &OpenAI{channelType: contract.ChannelTypeXinference}, contract.ChannelTypeXinference},
+		{"unknown", &OpenAI{channelType: contract.ChannelTypeUnknown}, contract.ChannelTypeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.adapter.BuildRequest(&contract.RelayContext{
+				ChannelType: tc.channelType,
+				Credential:  "secret-key",
+				// APIBase 为空
+			}, &contract.Request{Model: "m"})
+			if err == nil {
+				t.Fatal("默认基址为空的类型必须返回 ErrChannelConfig")
+			}
+			if !errors.Is(err, ErrChannelConfig) {
+				t.Fatalf("error = %v，期望 ErrChannelConfig-class", err)
+			}
+		})
+	}
+}
+
+// TestOpenAIBuildRequestCustomQueryModelEscaped 冻结 finding 6：
+// {model} 位于 query 时必须用 QueryEscape，`a&admin=1` 不能注入额外参数。
+func TestOpenAIBuildRequestCustomQueryModelEscaped(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://custom.example/v2/generate?key=public&model={model}",
+		Credential:    "k",
+		UpstreamModel: "a&admin=1",
+	}
+	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if got := httpReq.URL.Query().Get("admin"); got != "" {
+		t.Fatalf("模型名注入了 admin 参数：%q（URL=%s）", got, httpReq.URL.String())
+	}
+	if got := httpReq.URL.Query().Get("model"); got != "a&admin=1" {
+		t.Fatalf("model 参数 = %q，期望解码回 a&admin=1", got)
+	}
+	if !strings.Contains(httpReq.URL.RawQuery, "model=a%26admin%3D1") {
+		t.Fatalf("query 转义不完整：%s", httpReq.URL.RawQuery)
+	}
+}
+
+// TestOpenAIBuildRequestCustomPathModelEscaped 覆盖占位符位于路径时仍用
+// PathEscape，且不得把 `?`/`#` 带成 URL 结构。
+func TestOpenAIBuildRequestCustomPathModelEscaped(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://custom.example/api/{model}",
+		Credential:    "k",
+		UpstreamModel: "a&admin=1",
+	}
+	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if httpReq.URL.Query().Get("admin") != "" || httpReq.URL.Fragment != "" {
+		t.Fatalf("路径占位符改写了 URL 结构：%s", httpReq.URL.String())
+	}
+	if !strings.Contains(httpReq.URL.EscapedPath(), "a&admin=1") {
+		t.Fatalf("路径模型名 = %q，期望保留 a&admin=1", httpReq.URL.EscapedPath())
+	}
+}
+
+// TestReadUpstreamBodyCap 冻结 finding 9 的有界读取：恰好等于上限成功，
+// 超过上限按 ErrUpstreamServer 拒绝（绝不截断后当正常响应解析）。
+func TestReadUpstreamBodyCap(t *testing.T) {
+	const limit = 8
+	body, err := readUpstreamBody(strings.NewReader("12345678"), limit)
+	if err != nil {
+		t.Fatalf("恰好等于上限应成功：%v", err)
+	}
+	if string(body) != "12345678" {
+		t.Fatalf("body = %q", body)
+	}
+
+	_, err = readUpstreamBody(strings.NewReader("123456789"), limit)
+	if err == nil {
+		t.Fatal("超限响应必须报错")
+	}
+	if class, ok := ClassOf(err); !ok || class != contract.ErrUpstreamServer {
+		t.Fatalf("超限错误分类 = %v/%v，期望 ErrUpstreamServer", class, ok)
+	}
+}
+
+// TestOpenAIStreamEventsEventCapIsHardError 冻结 finding 5：事件字节上限触发时
+// 必须产出 Raw == nil 的硬错误事件（bridgeStream 据此终止且不伪造 [DONE]），
+// 绝不能带 Raw 被当成软错误。
+func TestOpenAIStreamEventsEventCapIsHardError(t *testing.T) {
+	stream := "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"too long\"}}]}\n\n"
+	var events []contract.StreamEvent
+	for ev := range openAIStreamEvents(bytes.NewBufferString(stream), 8) {
+		events = append(events, ev)
+	}
+	if len(events) != 1 {
+		t.Fatalf("事件数 = %d，期望 1（超限即终止）：%+v", len(events), events)
+	}
+	if events[0].Kind != contract.EventError {
+		t.Fatalf("事件类型 = %v，期望 EventError", events[0].Kind)
+	}
+	if events[0].Raw != nil {
+		t.Fatalf("超限事件携带 Raw=%q，必须为 nil（硬错误形状）", events[0].Raw)
+	}
+}

@@ -178,8 +178,14 @@ func parseMessage(raw json.RawMessage, defaultRole contract.Role) (contract.Mess
 	}
 
 	// tool 角色的内容语义是「工具结果」，整条消息归一为一个 tool_result 部件。
+	// tool_call_id 必须在**解析期**校验（final-review finding 8）：BuildOpenAIRequestBody
+	// 的编码器拒绝缺少 tool_call_id 的 tool 消息，若解析放行，客户端参数错误会
+	// 穿过归一化层变成上游构造失败（端点层映射为 502），错误归因完全错位。
 	if role == contract.RoleTool {
 		callID, _ := obj["tool_call_id"].(string)
+		if callID == "" {
+			return contract.Message{}, paramErrf("tool 消息缺少 tool_call_id")
+		}
 		msg.Content = []contract.ContentPart{{
 			Kind: contract.PartToolResult,
 			Text: joinTextParts(msg.Content),
@@ -325,6 +331,11 @@ func parseToolCalls(value any) ([]contract.ContentPart, error) {
 			return nil, paramErrf("tool_calls[%d] 缺少 function 对象", i)
 		}
 		name, _ := function["name"].(string)
+		// function.name 在解析期即校验（final-review finding 8）：编码器
+		// encodeToolCall 拒绝匿名调用，解析放行会把客户端错误拖到 502。
+		if name == "" {
+			return nil, paramErrf("tool_calls[%d] 缺少 function.name", i)
+		}
 		arguments := argumentsString(function["arguments"])
 		id, _ := obj["id"].(string)
 		parts = append(parts, contract.ContentPart{
@@ -342,6 +353,10 @@ func parseFunctionCall(value any) (contract.ContentPart, error) {
 		return contract.ContentPart{}, paramErrf("function_call 必须是 JSON 对象")
 	}
 	name, _ := obj["name"].(string)
+	// 与 tool_calls 同口径：编码器要求 name，解析期就拒绝（finding 8）。
+	if name == "" {
+		return contract.ContentPart{}, paramErrf("function_call 缺少 name")
+	}
 	return contract.ContentPart{
 		Kind: contract.PartToolCall,
 		Text: argumentsString(obj["arguments"]),
@@ -524,6 +539,15 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 		}
 	}
 
+	// 原始子对象必须在覆盖前捕获（final-review finding 4/7）：
+	//   - tools/response_format 的 IR 形状丢失了 strict、json_schema.name 等字段，
+	//     编码时以 Raw 的同位子对象为基底做增量合并，IR 无法表达的字段原样保留；
+	//   - max_completion_tokens 的「原始键」决定回写键名（新模型拒绝 max_tokens）。
+	rawTools, _ := obj["tools"].([]any)
+	rawResponseFormat := obj["response_format"]
+	_, rawHasMaxTokens := obj["max_tokens"]
+	_, rawHasMaxCompletionTokens := obj["max_completion_tokens"]
+
 	// 已建模字段一律以归一化层为准。
 	obj["model"] = req.Model
 	obj["stream"] = req.Stream
@@ -534,7 +558,7 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 	obj["messages"] = messages
 
 	if len(req.Tools) > 0 {
-		tools, err := encodeTools(req.Tools)
+		tools, err := encodeTools(req.Tools, rawTools)
 		if err != nil {
 			return nil, err
 		}
@@ -548,17 +572,25 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 		obj["tool_choice"] = choice
 	}
 	if req.ResponseFormat != nil {
-		format, err := encodeResponseFormat(req.ResponseFormat)
+		format, err := encodeResponseFormat(req.ResponseFormat, rawResponseFormat)
 		if err != nil {
 			return nil, err
 		}
 		obj["response_format"] = format
 	}
 	if req.MaxTokens != nil {
-		obj["max_tokens"] = *req.MaxTokens
-		// 归一化只保留一个 max_tokens 维度；删除 Raw 里可能并存的
-		// max_completion_tokens，避免同一语义下发两次。
-		delete(obj, "max_completion_tokens")
+		if rawHasMaxCompletionTokens && !rawHasMaxTokens {
+			// 客户端原本只发 max_completion_tokens：保持该键名回写（finding 7）。
+			// o 系/GPT-5 等新模型把 max_tokens 视为已弃用/非法参数，改写键名会
+			// 让一个原本合法的请求在换渠道后 400。
+			obj["max_completion_tokens"] = *req.MaxTokens
+			delete(obj, "max_tokens")
+		} else {
+			obj["max_tokens"] = *req.MaxTokens
+			// 归一化只保留一个 max_tokens 维度；删除 Raw 里可能并存的
+			// max_completion_tokens，避免同一语义下发两次。
+			delete(obj, "max_completion_tokens")
+		}
 	}
 	if req.Temperature != nil {
 		obj["temperature"] = *req.Temperature
@@ -744,20 +776,42 @@ func encodeToolCall(part contract.ContentPart) (map[string]any, error) {
 	}, nil
 }
 
-func encodeTools(tools []contract.Tool) ([]any, error) {
+// encodeTools 编码工具声明。rawTools 是客户端 Raw 中同下标的原始 tools 元素
+// （可为 nil）：IR 的 contract.Tool 只有 name/description/schema，无法表达
+// `function.strict` 等字段，因此以原始子对象为基底、再用归一化字段覆盖，
+// 从而保留 strict 与任何未建模的扩展字段（final-review finding 4）。
+//
+// 下标对应成立的前提：ParseOpenAIRequest 按输入顺序生成 IR 工具列表；归一化层
+// 若重排/过滤工具，rawTools 下标可能错位，此时合并仍安全（只保留形状兼容的
+// 原始字段），但 strict 可能来自另一个工具——这是「不得丢字段」与「无扩展 IR」
+// 之间的显式取舍，扩展 contract.Tool 属 M3 契约变更，不在本修复范围。
+func encodeTools(tools []contract.Tool, rawTools []any) ([]any, error) {
 	out := make([]any, 0, len(tools))
 	for i, tool := range tools {
 		if tool.Name == "" {
 			return nil, paramErrf("tools[%d] 缺少 name", i)
 		}
-		function := map[string]any{
-			"name":       tool.Name,
-			"parameters": tool.Schema,
+		item := map[string]any{}
+		if i < len(rawTools) {
+			if rawItem, ok := rawTools[i].(map[string]any); ok {
+				item = cloneMap(rawItem) // 深拷贝：不得原地改写 Raw 解码结果
+			}
 		}
+		function := map[string]any{}
+		if rawFunction, ok := item["function"].(map[string]any); ok {
+			// cloneMap(rawItem) 已深拷贝，这里直接复用嵌套 map。
+			function = rawFunction
+		}
+		item["type"] = "function"
+		function["name"] = tool.Name
+		function["parameters"] = tool.Schema
 		if tool.Description != "" {
 			function["description"] = tool.Description
 		}
-		out = append(out, map[string]any{"type": "function", "function": function})
+		// Description 为空时保留 Raw 的原值（IR 无法区分「未设置」与「显式空」；
+		// 丢弃原始 description 会改变客户端请求的语义）。
+		item["function"] = function
+		out = append(out, item)
 	}
 	return out, nil
 }
@@ -779,22 +833,50 @@ func encodeToolChoice(choice contract.ToolChoice) (any, error) {
 	}
 }
 
-func encodeResponseFormat(format *contract.ResponseFormat) (map[string]any, error) {
+// encodeResponseFormat 编码 response_format。raw 是客户端 Raw 中的原始
+// response_format 子对象（可为 nil）。
+//
+// 契约的 ResponseFormat 只有 Kind/Schema，无法表达 json_schema.name 与
+// strict（final-review finding 4）；因此对 json_schema 以原始子对象为基底，
+// 只覆盖 type 与 schema，保留 name/strict/description 及其它未建模字段。
+// name 缺失时仍补 OpenAI 要求的占位名 "response"。
+func encodeResponseFormat(format *contract.ResponseFormat, raw any) (map[string]any, error) {
+	item := map[string]any{}
+	if rawObj, ok := raw.(map[string]any); ok {
+		item = cloneMap(rawObj)
+	}
+	// 只有原始 type 与归一化 Kind 一致时才以原始子对象为基底：转换层若故意
+	// 改写了 response_format 类型，保留旧类型的子对象会把矛盾的形状发给上游。
+	rawType, _ := item["type"].(string)
 	switch format.Kind {
 	case contract.ResponseFormatText:
-		return map[string]any{"type": "text"}, nil
+		if rawType != "text" {
+			item = map[string]any{}
+		}
+		item["type"] = "text"
+		return item, nil
 	case contract.ResponseFormatJSONObject:
-		return map[string]any{"type": "json_object"}, nil
+		if rawType != "json_object" {
+			item = map[string]any{}
+		}
+		item["type"] = "json_object"
+		return item, nil
 	case contract.ResponseFormatJSONSchema:
-		// 契约的 ResponseFormat 没有 name 字段（OpenAI 要求 json_schema.name）；
-		// 用固定占位名 "response"，schema 原样下发。
-		return map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "response",
-				"schema": format.Schema,
-			},
-		}, nil
+		if rawType != "json_schema" {
+			item = map[string]any{}
+		}
+		item["type"] = "json_schema"
+		jsonSchema := map[string]any{}
+		if rawSchema, ok := item["json_schema"].(map[string]any); ok {
+			jsonSchema = rawSchema
+		}
+		jsonSchema["schema"] = format.Schema
+		if _, ok := jsonSchema["name"]; !ok {
+			// OpenAI 要求 json_schema.name；契约没有该字段，补占位名。
+			jsonSchema["name"] = "response"
+		}
+		item["json_schema"] = jsonSchema
+		return item, nil
 	default:
 		return nil, paramErrf("response_format 类型 %q 不受支持", format.Kind)
 	}

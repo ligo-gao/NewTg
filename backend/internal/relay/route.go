@@ -11,6 +11,7 @@ import (
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/usage"
 )
 
 // ============================================================================
@@ -271,7 +272,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	}
 
 	// —— 2. pin 优先（约束由上游路由层写入候选，本层不解析凭据）——
-	ordered, pinSingleAttempt, err := preferPinned(plan.Candidates)
+	ordered, pinned, pinSingleAttempt, err := preferPinned(plan.Candidates)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +323,12 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	attempts := 0
 	var lastErr error
 
+	// 去重后的优先级序列（relay-01 §6.4）：本轮尝试索引 i 映射到
+	// priorities[min(i, len-1)]——索引越界时钳到**最低优先级**并把该优先级内
+	// 的候选再试一遍，而不是钳到某个固定候选。这是照搬的乙类怪癖：重试预算
+	// 小于优先级数时低优先级候选永不参与；预算大于优先级数时末位优先级被重复。
+	priorities := attemptPriorities(ordered)
+
 	for i := 0; i < maxAttempts; i++ {
 		// 每次换轮前检查取消：客户端断开后不再消耗重试预算。
 		if err := ctx.Err(); err != nil {
@@ -329,12 +336,18 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 			break
 		}
 
-		// relay-01 §6.4（乙类怪癖，照搬）：retry 索引直接索引降序优先级数组，
-		// 越界取末位。因此「尝试轮数 < 候选数」时低优先级候选可能永不被触达；
-		// 反过来候选数少于轮数时，末位候选会被重复尝试。
-		candidate, ok := Next(effective, min(i, len(ordered)-1))
-		if !ok {
-			break // ordered 非空时不可达；防御编程错误
+		// 每轮选谁（relay-01 §5.2–§5.3 / §6.4）：
+		//   - pin 的首轮固定选 pin 候选（§5.4 A 步），不受加权随机影响；
+		//   - 其余轮次先按 §6.4 把尝试索引映射到目标优先级，再在该优先级内
+		//     按权重加权随机（SelectWithinPriority，全零权重退化为均匀）。
+		// 修复 final-review finding 1：原实现直接 Next(i) 确定性取候选，导致同
+		// 优先级里权重最高的渠道吃掉全部流量，权重语义形同虚设。
+		var candidate contract.ChannelCandidate
+		if pinned && i == 0 {
+			candidate = ordered[0]
+		} else {
+			target := priorities[min(i, len(priorities)-1)]
+			candidate = SelectWithinPriority(candidatesAtPriority(ordered, target), selectionUint64N)
 		}
 		attempts++
 		WithRoute(rc, effective, i, nil)
@@ -472,8 +485,12 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	return nil, &AttemptsError{Attempts: attempts, Last: lastErr}
 }
 
-// Route 执行一次**非流式**中继：ExecuteAttempts → ParseResponse → 构造 UsageFact
+// Route 执行一次**非流式**中继：ExecuteAttempts → ParseResponse → usage.ExtractUsage
 // → Terminate(fact)。
+//
+// 用量事实统一由 usage.ExtractUsage 产出（R-05 三源优先级：原生 usage > 注入 >
+// `x-model-response-usage` 头），本函数是它在**非流式路径**的生产调用方；
+// 流式路径的跨块累计与头部兜底由端点层的 bridgeStream 负责（Task 7/8）。
 //
 // R-P7：Route 明确拒绝 rc.Streaming。流式调用方必须使用 ExecuteAttempts 拿到
 // 原始 2xx *http.Response，再交给 relay/stream 的事件桥接（流式 usage 提取归
@@ -494,37 +511,52 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	// ExecuteAttempts 成功时把响应体所有权交给调用方；Route 解析完即关闭。
 	defer func() { _ = result.Response.Body.Close() }()
 
-	response, usage, parseErr := result.Adapter.ParseResponse(rc, result.Response)
-	if parseErr != nil {
-		// 上游 2xx 但响应不可用：会话已开启，必须释放预算（GC-7）。
-		// 这里不把解析失败标成 FastFailError：它不是 4xx 判定（契约 §4），
-		// 用安全包装保留适配器错误链供端点层读取分类（§9.3）。
-		if deps.Billing != nil {
-			_ = deps.Billing.Terminate(contract.UsageFact{})
+	// GC-7 panic 安全（final-review finding 10）：PreConsume 之后会话已开启，
+	// 任何退出路径（含 ParseResponse/事实构建里的 panic）都必须恰好释放一次
+	// 预留。用与 httpapi.bridgeStream 相同的 terminated 幂等标志 + defer 兜底：
+	// 延迟调用默认用零值 UsageFact（失败/panic 的释放语义），成功路径在返回前
+	// 把最终事实写入 finalFact，defer 读到后按真实用量结算。
+	var (
+		terminated bool
+		finalFact  contract.UsageFact
+	)
+	terminate := func(fact contract.UsageFact) {
+		if terminated || deps.Billing == nil {
+			return
 		}
-		return nil, safeWrapf(parseErr, "relay: 解析上游响应失败（渠道 %d）", rc.ChannelID)
-	}
-
-	// 计费按**客户端请求模型**取价（billing-02 §「OriginModelName 为起点」）；
-	// 上游声明的模型名保留在 Response.Model 供对账（契约 §2.3），不进计费键。
-	model := rc.OriginModel
-	if model == "" && response != nil {
-		model = response.Model
-	}
-	fact := contract.UsageFact{
-		Model:     model,
-		Usage:     usage,
-		LatencyMS: int(time.Since(start).Milliseconds()),
-		Stream:    false,
-		Attempts:  rc.AttemptIndex + 1,
-		// FirstTokenMS 恒 nil：非流式没有首 token 时刻（契约 §6.1 · 决议 B6）。
-	}
-
-	if deps.Billing != nil {
+		terminated = true
 		// relay-01 §2 阶段 14：结算失败记日志、不阻断响应。本层没有 logger，
 		// 故丢弃错误；响应已完整解析，客户端不应因结算失败拿不到内容。
 		_ = deps.Billing.Terminate(fact)
 	}
+	defer func() { terminate(finalFact) }()
+
+	response, _, parseErr := result.Adapter.ParseResponse(rc, result.Response)
+	if parseErr != nil {
+		// 上游 2xx 但响应不可用：会话已开启，defer 以零值事实释放预算（GC-7）。
+		// 这里不把解析失败标成 FastFailError：它不是 4xx 判定（契约 §4），
+		// 用安全包装保留适配器错误链供端点层读取分类（§9.3）。
+		return nil, safeWrapf(parseErr, "relay: 解析上游响应失败（渠道 %d）", rc.ChannelID)
+	}
+
+	// 用量提取统一走 usage.ExtractUsage 的三源优先级（R-05）：原生 usage >
+	// 注入（本路径无 include_usage 注入，传 nil）> `x-model-response-usage` 头。
+	// 适配器 ParseResponse 的返回值只作为原生来源的载体（其 Raw 由适配器写入），
+	// 这里不再直接信任适配器的 Usage——否则响应头兜底来源永远没有生产调用方
+	// （final-review finding 2，R-05 接线）。
+	fact := usage.ExtractUsage(response, result.Response.Header, nil)
+	// 计费按**客户端请求模型**取价（billing-02 §「OriginModelName 为起点」）；
+	// 上游声明的模型名保留在 Response.Model 供对账（契约 §2.3），不进计费键。
+	if rc.OriginModel != "" {
+		fact.Model = rc.OriginModel
+	} else if response != nil && fact.Model == "" {
+		fact.Model = response.Model
+	}
+	fact.LatencyMS = int(time.Since(start).Milliseconds())
+	fact.Stream = false
+	fact.Attempts = rc.AttemptIndex + 1
+	// FirstTokenMS 保持 nil：非流式没有首 token 时刻（契约 §6.1 · 决议 B6）。
+	finalFact = *fact
 	return response, nil
 }
 
@@ -534,9 +566,13 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 // 根本不存在，返回 ErrChannelNotFound 快失败（HTTP-404 语义）。绝不在这里按
 // pin 去数据库另取渠道，否则会绕过 relay-01 §5.4 D 步的过滤兜底。
 //
+// 返回的 pinned 表示候选中确实带 pin 约束（ordered[0] 即 pin 候选）；执行层的
+// 首轮据此跳过加权随机，直接命中 pin（§5.4 A 步）。singleAttempt 是
+// RetryMode == single_attempt（§6.2）。
+//
 // 返回的切片要么是输入本身（无 pin 或 pin 已在首位），要么是新副本：
 // 输入常来自路由索引缓存，原地交换会污染其他并发请求（不修改输入切片）。
-func preferPinned(candidates []contract.ChannelCandidate) ([]contract.ChannelCandidate, bool, error) {
+func preferPinned(candidates []contract.ChannelCandidate) (ordered []contract.ChannelCandidate, pinned bool, singleAttempt bool, err error) {
 	pinID := 0
 	for _, candidate := range candidates {
 		if candidate.Constraints.PinChannelID != 0 {
@@ -545,7 +581,7 @@ func preferPinned(candidates []contract.ChannelCandidate) ([]contract.ChannelCan
 		}
 	}
 	if pinID == 0 {
-		return candidates, false, nil
+		return candidates, false, false, nil
 	}
 
 	index := -1
@@ -556,18 +592,18 @@ func preferPinned(candidates []contract.ChannelCandidate) ([]contract.ChannelCan
 		}
 	}
 	if index < 0 {
-		return nil, false, &FastFailError{Err: fmt.Errorf("%w: channel %d", ErrChannelNotFound, pinID)}
+		return nil, false, false, &FastFailError{Err: fmt.Errorf("%w: channel %d", ErrChannelNotFound, pinID)}
 	}
 
-	singleAttempt := candidates[index].Constraints.RetryMode == contract.PinRetrySingleAttempt
+	singleAttempt = candidates[index].Constraints.RetryMode == contract.PinRetrySingleAttempt
 	if index == 0 {
-		return candidates, singleAttempt, nil
+		return candidates, true, singleAttempt, nil
 	}
-	ordered := make([]contract.ChannelCandidate, 0, len(candidates))
+	ordered = make([]contract.ChannelCandidate, 0, len(candidates))
 	ordered = append(ordered, candidates[index])
 	ordered = append(ordered, candidates[:index]...)
 	ordered = append(ordered, candidates[index+1:]...)
-	return ordered, singleAttempt, nil
+	return ordered, true, singleAttempt, nil
 }
 
 // retryableStatus 实现 relay-01 §6.3 的三态判定（第 3–5 步）并把 R-P13 的

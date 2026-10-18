@@ -35,12 +35,13 @@ type routeCallLog struct {
 // ClassifyError 按 R-P13 的常见状态给出分类，但路由层的重试决策**只依据状态码**，
 // 因此分类只用于断言错误链上的 RelayError，不影响是否重试。
 type routeTestAdapter struct {
-	log      *routeCallLog
-	buildErr error
-	parsed   *contract.Response
-	usage    contract.Usage
-	parseErr error
-	class    contract.ErrorClass
+	log          *routeCallLog
+	buildErr     error
+	parsed       *contract.Response
+	usage        contract.Usage
+	parseErr     error
+	panicOnParse bool
+	class        contract.ErrorClass
 }
 
 func (a *routeTestAdapter) Type() contract.ChannelType { return contract.ChannelTypeOpenAI }
@@ -63,6 +64,11 @@ func (a *routeTestAdapter) BuildRequest(rc *contract.RelayContext, _ *contract.R
 }
 
 func (a *routeTestAdapter) ParseResponse(*contract.RelayContext, *http.Response) (*contract.Response, contract.Usage, error) {
+	if a.panicOnParse {
+		// 模拟 ParseResponse 内部 panic（finding 10：Route 的预算释放必须
+		// 由 defer 兜底，不能依赖正常返回路径）。
+		panic("route test: parse panic")
+	}
 	if a.parseErr != nil {
 		return nil, contract.Usage{}, a.parseErr
 	}
@@ -184,10 +190,16 @@ func routeTestSingleCandidate(id int) []contract.ChannelCandidate {
 }
 
 // TestRouteSingleSuccess：单一渠道成功——一次构造、一次传输、渠道组整组写入，
-// Route 负责 ParseResponse + 正常 Terminate（ExecuteAttempts 在成功时不终结）。
+// Route 负责 ParseResponse + usage.ExtractUsage + 正常 Terminate（ExecuteAttempts
+// 在成功时不终结）。
 func TestRouteSingleSuccess(t *testing.T) {
 	log := &routeCallLog{}
-	adapter := &routeTestAdapter{log: log, usage: contract.Usage{Prompt: 10, Completion: 5, Total: 15}}
+	// 用量必须存在于 Response.Raw（原生来源）：Route 走 usage.ExtractUsage 的
+	// R-05 三源优先级，不再直接信任适配器返回值（final-review finding 2）。
+	adapter := &routeTestAdapter{log: log, parsed: &contract.Response{
+		ID:  "route-test-response",
+		Raw: []byte(`{"id":"route-test-response","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+	}}
 	billing := &recordingBilling{Stub: billingseam.NewStub()}
 	deps := routeTestDeps(
 		routeTestSingleCandidate(7),
@@ -1147,5 +1159,198 @@ func TestRouteFixedNoRetryWinsOverChannelErrorClass(t *testing.T) {
 	}
 	if !billing.Terminated() {
 		t.Fatal("快失败后未 Terminate（GC-7）")
+	}
+}
+
+// ============================================================================
+// final-review finding 1：同优先级加权随机接线
+// ============================================================================
+
+// withSelectionUint64N 临时替换包级随机源，测试结束自动还原。
+// 不做 t.Parallel：替换的是进程级变量，并行测试会互相干扰。
+func withSelectionUint64N(t *testing.T, fn func(uint64) uint64) {
+	t.Helper()
+	previous := selectionUint64N
+	selectionUint64N = fn
+	t.Cleanup(func() { selectionUint64N = previous })
+}
+
+// TestRouteSelectionUsesWeightedRandom 冻结「执行层真的按权重采样」：
+// 两个候选同优先级，ch1 weight=100 排在 ch2 weight=1 之前（R-P3 权重降序）；
+// 固定随机源返回 total-1，加权算法应落在最后一个正权重候选（ch2），而旧的
+// 确定性 Next(0) 会选 ch1。渠道 2 返回 200，因此成功候选就是判定依据。
+func TestRouteSelectionUsesWeightedRandom(t *testing.T) {
+	withSelectionUint64N(t, func(total uint64) uint64 {
+		if total == 0 {
+			t.Fatal("加权选择不得以 0 作为总权重调用随机源")
+		}
+		return total - 1 // 落在最后一个权重区间
+	})
+
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log}
+	deps := routeTestDeps(
+		[]contract.ChannelCandidate{
+			{ChannelID: 1, Priority: 10, Weight: 100},
+			{ChannelID: 2, Priority: 10, Weight: 1},
+		},
+		map[int]ChannelAssignment{1: routeTestAssignment(1), 2: routeTestAssignment(2)},
+		log,
+		func(channelID int) (*http.Response, error) {
+			if channelID == 2 {
+				return routeResponse(http.StatusOK, `{}`), nil
+			}
+			return routeResponse(http.StatusInternalServerError, "boom"), nil
+		},
+		adapter,
+		nil,
+		1,
+	)
+
+	result, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+	if err != nil {
+		t.Fatalf("ExecuteAttempts() error = %v", err)
+	}
+	defer result.Response.Body.Close()
+	if result.Candidate.ChannelID != 2 {
+		t.Fatalf("选中渠道 = %d，期望 2（按权重采样；确定性 Next(0) 会选权重 100 的渠道 1）", result.Candidate.ChannelID)
+	}
+	if got := fmt.Sprint(log.httpCalls); got != "[2]" {
+		t.Fatalf("尝试序列 = %v，期望 [2]", log.httpCalls)
+	}
+}
+
+// TestRoutePinBypassesWeightedRandom 冻结 pin 的首轮语义（relay-01 §5.4 A 步）：
+// 即使 pin 候选权重为 0、同优先级另一候选权重 100，首轮也必须命中 pin。
+func TestRoutePinBypassesWeightedRandom(t *testing.T) {
+	withSelectionUint64N(t, func(uint64) uint64 { return 0 })
+
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log}
+	rc := routeTestContext(false)
+	rc.AttemptPlan = &contract.AttemptPlan{Candidates: []contract.ChannelCandidate{
+		{ChannelID: 1, Priority: 10, Weight: 100},
+		{ChannelID: 2, Priority: 10, Weight: 0, Constraints: contract.ChannelConstraints{PinChannelID: 2}},
+	}}
+	deps := routeTestDeps(
+		nil,
+		map[int]ChannelAssignment{1: routeTestAssignment(1), 2: routeTestAssignment(2)},
+		log,
+		func(channelID int) (*http.Response, error) {
+			if channelID == 2 {
+				return routeResponse(http.StatusOK, `{}`), nil
+			}
+			return routeResponse(http.StatusInternalServerError, "wrong channel"), nil
+		},
+		adapter,
+		nil,
+		1,
+	)
+
+	result, err := ExecuteAttempts(context.Background(), rc, deps)
+	if err != nil {
+		t.Fatalf("ExecuteAttempts() error = %v", err)
+	}
+	defer result.Response.Body.Close()
+	if result.Candidate.ChannelID != 2 {
+		t.Fatalf("pin 首轮选中 %d，期望 2（pin 不受加权随机影响）", result.Candidate.ChannelID)
+	}
+}
+
+// ============================================================================
+// final-review finding 2：usage.ExtractUsage 的生产接线
+// ============================================================================
+
+// TestRouteUsesHeaderUsageWhenNativeAbsent 冻结 R-05 的第三来源：
+// 上游 200 响应体没有 usage，但带 `x-model-response-usage` 头时，UsageFact
+// 必须携带头部数值且 Source=UsageUpstreamExact。用真实 OpenAI 适配器，
+// 确保响应头从 *http.Response 一路传到 usage.ExtractUsage。
+func TestRouteUsesHeaderUsageWhenNativeAbsent(t *testing.T) {
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := RouteDeps{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return routeTestSingleCandidate(7), nil
+		},
+		ResolveChannel: func(context.Context, int) (ChannelAssignment, error) {
+			return routeTestAssignment(7), nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  billing,
+		Client: &http.Client{Transport: routeRoundTripper(func(*http.Request) (*http.Response, error) {
+			resp := routeResponse(http.StatusOK,
+				`{"id":"chatcmpl-x","model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+			resp.Header.Set("X-Model-Response-Usage", `{"prompt_tokens":42,"completion_tokens":8}`)
+			return resp, nil
+		})},
+		MaxRetries: 1,
+	}
+	rc := routeTestContext(false)
+	rc.QuotaEstimate = routeTestEstimate(100)
+
+	_, err := Route(context.Background(), rc, deps)
+	if err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+	if len(billing.terminateFacts) != 1 {
+		t.Fatalf("Terminate 调用 %d 次，期望 1", len(billing.terminateFacts))
+	}
+	fact := billing.terminateFacts[0]
+	if fact.Model != "client-model" {
+		t.Fatalf("fact.Model = %q，期望客户端模型 client-model（计费键）", fact.Model)
+	}
+	if fact.Usage.Prompt != 42 || fact.Usage.Completion != 8 || fact.Usage.Total != 50 {
+		t.Fatalf("头部来源用量 = %+v，期望 prompt=42 completion=8 total=50", fact.Usage)
+	}
+	if fact.Usage.Source != contract.UsageUpstreamExact {
+		t.Fatalf("Usage.Source = %v，期望 UsageUpstreamExact（头部来自上游报告）", fact.Usage.Source)
+	}
+	if fact.Attempts != 1 || fact.Stream || fact.FirstTokenMS != nil {
+		t.Fatalf("fact 元数据 = attempts:%d stream:%v firstToken:%v，期望 1/false/nil",
+			fact.Attempts, fact.Stream, fact.FirstTokenMS)
+	}
+}
+
+// ============================================================================
+// final-review finding 10：Route 的 Terminate panic 安全
+// ============================================================================
+
+// TestRoutePanicReleasesBudgetOnce 冻结「PreConsume 之后任何 panic 出口也必须
+// 恰好 Terminate 一次」：ParseResponse panic 时 defer 兜底以零值事实释放预算。
+func TestRoutePanicReleasesBudgetOnce(t *testing.T) {
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log, panicOnParse: true}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := routeTestDeps(
+		routeTestSingleCandidate(7),
+		map[int]ChannelAssignment{7: routeTestAssignment(7)},
+		log,
+		func(int) (*http.Response, error) { return routeResponse(http.StatusOK, `{}`), nil },
+		adapter,
+		billing,
+		1,
+	)
+	rc := routeTestContext(false)
+	rc.QuotaEstimate = routeTestEstimate(100)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("ParseResponse panic 应向上传播（Route 不得吞掉）")
+			}
+		}()
+		_, _ = Route(context.Background(), rc, deps)
+	}()
+
+	if !billing.Terminated() {
+		t.Fatal("panic 后未释放预算（Terminate 未被 defer 兜底）")
+	}
+	if billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("panic 终止后 sessions=%d reserved=%d，期望 0/0", billing.Sessions(), billing.Reserved())
+	}
+	if len(billing.terminateFacts) != 1 {
+		t.Fatalf("Terminate 调用 %d 次，期望恰好 1 次（幂等标志）", len(billing.terminateFacts))
+	}
+	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
+		t.Fatalf("panic 出口的事实 = %#v，期望零值 UsageFact（释放语义）", fact)
 	}
 }
