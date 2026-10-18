@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import { useI18n } from '@/app/providers/i18n'
+import { useI18n } from '@/shared/lib/i18n-context'
 
 /**
  * Toast queue (modules-00 §4.8, web-00 §6.4).

@@ -1,8 +1,17 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Dialog } from './dialog'
+
+beforeEach(() => {
+  // jsdom performs no layout, so `getClientRects()` is empty for every element
+  // and the dialog's visibility filter would reject all focus-trap candidates.
+  // Give each element one rect so the test exercises browser behaviour.
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(
+    () => ({ length: 1 }) as unknown as DOMRectList,
+  )
+})
 
 afterEach(cleanup)
 

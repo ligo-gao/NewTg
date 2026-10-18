@@ -25,7 +25,13 @@ function focusableInside(panel: HTMLElement): HTMLElement[] {
     panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
   ).filter(
     (element) =>
-      element.tabIndex !== -1 && element.getAttribute('aria-hidden') !== 'true',
+      element.tabIndex !== -1 &&
+      element.getAttribute('aria-hidden') !== 'true' &&
+      // `display:none` / `visibility:hidden` elements are not tabbable in a
+      // browser; without this filter a hidden first/last candidate would
+      // receive the wrap-around focus and freeze keyboard navigation.
+      // (`getClientRects()` is empty when no box is generated.)
+      element.getClientRects().length > 0,
   )
 }
 

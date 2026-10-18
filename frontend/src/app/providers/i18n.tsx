@@ -1,11 +1,22 @@
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+  I18nContextProvider,
+  type I18nContextValue,
+  type Locale,
+  type TranslateValues,
+} from '@/shared/lib/i18n-context'
+
+// The context/hook live in shared/lib so shared components (e.g. the toast
+// viewport) can consume them without importing app/ (web-00 §2.2). Re-exported
+// here to keep the existing `app/providers/i18n` import path stable.
+export { useI18n } from '@/shared/lib/i18n-context'
+export type {
+  I18nContextValue,
+  Locale,
+  TranslateFn,
+  TranslateValues,
+} from '@/shared/lib/i18n-context'
 
 /**
  * i18n runtime skeleton (web-00 §7).
@@ -18,9 +29,11 @@ import {
  *
  * Loading is per domain, not per app: web-00 §7.2 requires a dynamic `import()`
  * of the domain dictionary on route/domain entry so the public first paint
- * (JS ≤150KB, §3.4) never pulls console dictionaries. The loader map below is
- * therefore the source of truth for both the available locales and the
- * available domains; the bundler emits one async chunk per entry.
+ * (JS ≤150KB, §3.4) never pulls console dictionaries. `common` is the one
+ * always-loaded baseline (app-wide toast/error copy); every other domain is
+ * fetched only when a caller asks for it. The loader map below is therefore the
+ * source of truth for both the available locales and the available domains;
+ * the bundler emits one async chunk per entry.
  */
 
 /** Shape of a JSON module after a dynamic `import()`. */
@@ -40,17 +53,15 @@ const DICTIONARY_LOADERS = {
     common: () => import('@/locales/en/common.json'),
     public: () => import('@/locales/en/public.json'),
   },
-} satisfies Record<string, Record<string, () => Promise<JsonDictionary>>>
+} satisfies Record<Locale, Record<string, () => Promise<JsonDictionary>>>
 
-export type Locale = keyof typeof DICTIONARY_LOADERS
 /** Domain names are the `<module>` segment of `{module}.{feature}.{element}`. */
 export type DictionaryModule = keyof (typeof DICTIONARY_LOADERS)[Locale]
 
 export const SUPPORTED_LOCALES = Object.keys(DICTIONARY_LOADERS) as Locale[]
 export const DEFAULT_LOCALE: Locale = 'en'
 
-export type TranslateValues = Record<string, string | number>
-export type TranslateFn = (key: string, values?: TranslateValues) => string
+const MISSING_KEY_WARNING = import.meta.env.DEV
 
 function flatten(
   prefix: string,
@@ -123,9 +134,6 @@ export async function loadDictionary(
   return promise
 }
 
-const MISSING_KEY_WARNING =
-  typeof process !== 'undefined' && process.env.NODE_ENV !== 'production'
-
 function interpolate(template: string, values?: TranslateValues): string {
   if (values === undefined) return template
   return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name: string) => {
@@ -175,23 +183,22 @@ export function translate(
   return interpolate(template, values)
 }
 
-export interface I18nContextValue {
-  locale: Locale
-  t: TranslateFn
-}
-
-const I18nContext = createContext<I18nContextValue | null>(null)
-
-/** App-wide strings (toast, errors) live in `common` and load by default. */
+/**
+ * App-wide strings (toast, errors) live in `common`, so it is the always-loaded
+ * baseline. Console domains stay on-demand and must never enter the public
+ * first-paint path (web-00 §7.2, §3.4).
+ */
 const DEFAULT_MODULES: readonly DictionaryModule[] = ['common']
 
 export interface I18nProviderProps {
   children: ReactNode
   locale?: Locale
   /**
-   * Domains to fetch for this subtree. Route code that needs another domain
-   * passes its own stable list (or calls `loadDictionary`) so the public page
-   * only ever downloads `public` (web-00 §7.2).
+   * Domains to fetch for this subtree. `common` is the always-loaded baseline;
+   * route code that needs another dictionary passes its own stable list or
+   * calls `loadDictionary`, so the public page does not download console
+   * domains it never renders (web-00 §7.2). This is a per-subtree baseline, not
+   * a promise that only `public` loads on the public site.
    */
   modules?: readonly DictionaryModule[]
 }
@@ -248,13 +255,5 @@ export function I18nProvider({
     [locale, readyRevision],
   )
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
-}
-
-export function useI18n(): I18nContextValue {
-  const context = useContext(I18nContext)
-  if (context === null) {
-    throw new Error('useI18n must be used within an I18nProvider')
-  }
-  return context
+  return <I18nContextProvider value={value}>{children}</I18nContextProvider>
 }
