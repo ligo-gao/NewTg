@@ -2,11 +2,15 @@ package platform
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/version"
@@ -52,12 +56,12 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		}
 	}()
 
-	// HTTP 主服务：路由由 Task 5 填实，M0 仅挂 /healthz。
+	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）。
+	checker := checkerFromResources(db, redisRes, m0MigrationExpected, log)
+	checker.node = cfg.NodeName
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
+	mux.HandleFunc("/healthz", checker.HandlerHealthz)
+	mux.HandleFunc("/readyz", checker.HandlerReadyz)
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -68,6 +72,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		db.Close()
 		return fmt.Errorf("gateway: listen %s: %w", cfg.HTTPAddr, err)
 	}
+	// R4：装配完成（监听就绪）即置位。
+	checker.MarkConfigLoaded()
 	serveErr := make(chan error, 1)
 	go func() {
 		err := srv.Serve(ln)
@@ -76,6 +82,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		}
 		serveErr <- err
 	}()
+	// R5：HTTP server 开始服务后置位。
+	checker.MarkStartupDone()
 	log.Info("gateway ready", "http_addr", ln.Addr().String())
 
 	select {
@@ -106,6 +114,20 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	log.Info("gateway stopped")
 	return nil
+}
+
+// m0MigrationExpected 是 M0 阶段 schema_migrations 的冻结期望值（RunMigrate 由 Task 6 填实）。
+const m0MigrationExpected = 1
+
+// checkerFromResources 从装配好的 Resource 还原具体类型构造 Checker（生产路径）。
+// 非生产实现（测试 stub）无法还原时降级为 nil 依赖的恒失败 Checker，不 panic。
+func checkerFromResources(db, rds Resource, migrationExpected int, log *slog.Logger) *Checker {
+	sqldb, _ := db.(*sql.DB)
+	var client *redis.Client
+	if rr, ok := rds.(redisResource); ok {
+		client = rr.client
+	}
+	return NewChecker(sqldb, client, migrationExpected, log)
 }
 
 // RunWorker 以 worker 角色运行：M0 装配到连上 DB/Redis 并打一条
