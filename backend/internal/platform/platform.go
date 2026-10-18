@@ -15,11 +15,16 @@ type Resource interface {
 	Close() error
 }
 
-// connectors 抽象 DB/Redis 建连步骤；生产路径由 prodConnectors 从 cfg 真实建连，
-// 测试注入 stubConnectors（见 server_test.go）。
+// connectors 抽象 DB/Redis 建连与启动期迁移步骤；生产路径由 prodConnectors 从
+// cfg 真实建连/迁移，测试注入 stubConnectors（见 server_test.go）。
+//
+// runMigrate 作为接口方法而非直接调用包级 RunMigrate，是为了让 runGateway 的
+// 「DB_MIGRATE_ON_START 是否触发迁移」可在不触真 PG 的前提下单测（M0 评审 Task 6）：
+// 生产实现只做一次转发，行为与直接调用完全一致。
 type connectors interface {
 	openDB(ctx context.Context, cfg *config.Config) (Resource, error)
 	openRedis(cfg *config.Config) (Resource, error)
+	runMigrate(ctx context.Context, cfg *config.Config) error
 }
 
 // prodConnectors 生产实现：OpenDB / OpenRedis 从 cfg 真实建连并验证连通性。
@@ -31,6 +36,11 @@ func (prodConnectors) openDB(ctx context.Context, cfg *config.Config) (Resource,
 
 func (prodConnectors) openRedis(cfg *config.Config) (Resource, error) {
 	return OpenRedis(context.Background(), cfg)
+}
+
+// runMigrate 生产实现直接复用 RunMigrate（含 pg_advisory_lock 串行化）。
+func (prodConnectors) runMigrate(ctx context.Context, cfg *config.Config) error {
+	return RunMigrate(ctx, cfg)
 }
 
 // RunMigrate 由 migrate.go 实现（含 pg_advisory_lock 串行化）。

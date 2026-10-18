@@ -5,6 +5,8 @@ import (
 	"embed"
 	"errors"
 	"io/fs"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,22 +62,69 @@ func TestExpectedSchemaVersionErrors(t *testing.T) {
 	}
 }
 
+// embeddedUpVersionPattern 按 platform-04 §2.3 V1 的文件名口径匹配：
+// {14 位 UTC 时间戳}_{name}.up.sql。测试用它与实现解耦地推导期望版本，
+// 新增迁移时无需再手改断言（M0 评审 Task 6）。
+var embeddedUpVersionPattern = regexp.MustCompile(`^(\d{14})_.*\.up\.sql$`)
+
+// highestEmbeddedUpVersion 独立于 ExpectedSchemaVersion，从 FS 文件名推导最高
+// up 版本。故意复用「正则 + ParseUint」而非被测实现的分割逻辑，避免测试与实现
+// 共享同一处错误时仍然通过。
+func highestEmbeddedUpVersion(t *testing.T, fsys fs.FS) uint {
+	t.Helper()
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	var (
+		highest uint
+		found   bool
+	)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matches := embeddedUpVersionPattern.FindStringSubmatch(entry.Name())
+		if matches == nil {
+			continue
+		}
+		version, err := strconv.ParseUint(matches[1], 10, 64)
+		if err != nil {
+			t.Fatalf("parse version from %q: %v", entry.Name(), err)
+		}
+		if !found || uint(version) > highest {
+			highest = uint(version)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("embedded FS contains no *.up.sql files")
+	}
+	return highest
+}
+
 // TestExpectedSchemaVersionEmbedded 验证公共签名对真实嵌入目录的版本解析：
-// M0 两个迁移流各有一个 14 位时间戳 init up。
+// 期望值从嵌入 FS 的 up 文件名推导，而不是硬编码时间戳——否则每新增一条
+// 迁移都会误报失败（M0 评审 Task 6 的加固点）。
 func TestExpectedSchemaVersionEmbedded(t *testing.T) {
-	mainVer, err := ExpectedSchemaVersion(migrations.FS)
-	if err != nil {
-		t.Fatalf("ExpectedSchemaVersion(main): %v", err)
+	cases := []struct {
+		name string
+		fs   embed.FS
+	}{
+		{name: "main", fs: migrations.FS},
+		{name: "logs", fs: migrationslogs.FS},
 	}
-	if mainVer != 20261018053301 {
-		t.Fatalf("main expected version = %d, want 20261018053301", mainVer)
-	}
-	logsVer, err := ExpectedSchemaVersion(migrationslogs.FS)
-	if err != nil {
-		t.Fatalf("ExpectedSchemaVersion(logs): %v", err)
-	}
-	if logsVer != 20261018061805 {
-		t.Fatalf("logs expected version = %d, want 20261018061805", logsVer)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExpectedSchemaVersion(tc.fs)
+			if err != nil {
+				t.Fatalf("ExpectedSchemaVersion(%s): %v", tc.name, err)
+			}
+			if want := highestEmbeddedUpVersion(t, tc.fs); got != want {
+				t.Fatalf("ExpectedSchemaVersion(%s) = %d, want %d (derived from embedded FS)",
+					tc.name, got, want)
+			}
+		})
 	}
 }
 
@@ -83,6 +132,14 @@ func TestExpectedSchemaVersionEmbedded(t *testing.T) {
 func TestMigrateAdvisoryLockKey(t *testing.T) {
 	if migrateAdvisoryLockKey != 727272 {
 		t.Fatalf("migrateAdvisoryLockKey = %d, want 727272", migrateAdvisoryLockKey)
+	}
+}
+
+// TestMigrateLockRetryInterval 冻结锁重试间隔（platform-04 迁移串行化契约：
+// 拿不到咨询锁时每 2s 重试；改动必须显式同步测试与文档）。
+func TestMigrateLockRetryInterval(t *testing.T) {
+	if migrateLockRetryInterval != 2*time.Second {
+		t.Fatalf("migrateLockRetryInterval = %v, want 2s", migrateLockRetryInterval)
 	}
 }
 
@@ -185,19 +242,25 @@ func TestRunMigrateOrdering(t *testing.T) {
 	}
 }
 
-// TestRunMigrateSkipsUnsetLogsDSN：DB_LOGS_DSN 为空时（config 允许）只迁移主库。
-func TestRunMigrateSkipsUnsetLogsDSN(t *testing.T) {
+// TestRunMigrateRejectsEmptyLogsDSN：DB_LOGS_DSN 为空时 fail-fast，绝不静默跳过
+// 日志库迁移（platform-03 §3.1 #22 必填；M0 控制器裁决）。取锁前返回——空 DSN
+// 不是需要串行化的迁移，避免无意义的数据库往返。
+func TestRunMigrateRejectsEmptyLogsDSN(t *testing.T) {
 	cfg := &config.Config{DatabaseURL: "postgres://main/db"}
 	exec := &recordingExecutor{}
 
-	if err := runMigrate(context.Background(), cfg, exec); err != nil {
-		t.Fatalf("runMigrate: %v", err)
+	err := runMigrate(context.Background(), cfg, exec)
+	if err == nil {
+		t.Fatal("runMigrate with empty DB_LOGS_DSN: expected error, got nil")
 	}
-	if len(exec.applies) != 1 || exec.applies[0].kind != "main" {
-		t.Fatalf("applies = %+v, want main only", exec.applies)
+	if !strings.Contains(err.Error(), "DB_LOGS_DSN") {
+		t.Fatalf("runMigrate error = %q, want it to mention DB_LOGS_DSN", err)
 	}
-	if exec.releases != 1 {
-		t.Fatalf("lock releases = %d, want 1", exec.releases)
+	if len(exec.applies) != 0 {
+		t.Fatalf("applies = %+v, want none", exec.applies)
+	}
+	if exec.lockDSN != "" || exec.releases != 0 {
+		t.Fatalf("lock touched on empty DSN: lockDSN=%q releases=%d", exec.lockDSN, exec.releases)
 	}
 }
 

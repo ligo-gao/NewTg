@@ -63,6 +63,14 @@ func runMigrate(ctx context.Context, cfg *config.Config, exec migrationExecutor)
 		return ctxErr
 	}
 
+	// DB_LOGS_DSN 是必填项（platform-03 §3.1 #22；config.Load 已 fail-fast）。
+	// 这里再做一次防御性校验：迁移入口也可能被直接构造 Config 的调用方命中，
+	// 而日志库迁移流**不可静默跳过**——跳过意味着 usage_logs / audit_logs 永远
+	// 建不出来，运行期才以更难定位的方式失败。取锁前返回，避免无意义的锁往返。
+	if cfg.DBLogsDSN == "" {
+		return errors.New("migrate: DB_LOGS_DSN is empty; logs database migration must not be skipped")
+	}
+
 	lock, err := exec.AcquireLock(ctx, cfg.MainDSN())
 	if err != nil {
 		return fmt.Errorf("migrate: acquire advisory lock on main database: %w", err)
@@ -81,10 +89,7 @@ func runMigrate(ctx context.Context, cfg *config.Config, exec migrationExecutor)
 		return fmt.Errorf("migrate: main database: %w", err)
 	}
 
-	// DB_LOGS_DSN 在 config 中允许为空（Task 3 口径）；为空时**有意跳过**日志库迁移。
-	if cfg.DBLogsDSN == "" {
-		return nil
-	}
+	// 日志库在后：其逻辑外键引用主库对象（platform-03 §3.4）。
 	if err := exec.Up(ctx, cfg.DBLogsDSN, migrationslogs.FS); err != nil {
 		return fmt.Errorf("migrate: logs database: %w", err)
 	}

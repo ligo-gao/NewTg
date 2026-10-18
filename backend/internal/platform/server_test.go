@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,25 +30,51 @@ func (s *stubResource) Close() error {
 }
 
 // stubConnectors 注入内存 stub，禁止单测触真 PG/Redis。
+// runMigrate 记录调用次数并可注入错误，使 runGateway 的启动迁移分支可单测
+// （M0 评审 Task 6）：仅用 stub 即可覆盖「按开关调用 / 不调用」。
 type stubConnectors struct {
 	db     *stubResource
 	redis  *stubResource
 	dbErr  error
 	rdsErr error
+
+	migrateErr   error
+	migrateCalls atomic.Int32
 }
 
-func (sc stubConnectors) openDB(ctx context.Context, cfg *config.Config) (Resource, error) {
+func (sc *stubConnectors) openDB(ctx context.Context, cfg *config.Config) (Resource, error) {
 	if sc.dbErr != nil {
 		return nil, sc.dbErr
 	}
 	return sc.db, nil
 }
 
-func (sc stubConnectors) openRedis(cfg *config.Config) (Resource, error) {
+func (sc *stubConnectors) openRedis(cfg *config.Config) (Resource, error) {
 	if sc.rdsErr != nil {
 		return nil, sc.rdsErr
 	}
 	return sc.redis, nil
+}
+
+func (sc *stubConnectors) runMigrate(ctx context.Context, cfg *config.Config) error {
+	sc.migrateCalls.Add(1)
+	return sc.migrateErr
+}
+
+// gatewayTestConfig 返回可在随机端口完成装配的最小配置：metrics 关闭、
+// 启动迁移默认关闭，各用例按需覆盖单个字段。
+func gatewayTestConfig(addr string) *config.Config {
+	return &config.Config{
+		AppEnv:               "production",
+		LogLevel:             "info",
+		LogFormat:            "json",
+		HTTPAddr:             addr,
+		MetricsAddr:          "0",
+		ShutdownGraceSeconds: 5,
+		DBMaxOpenConns:       5,
+		DBMaxIdleConns:       5,
+		RedisPoolSize:        5,
+	}
 }
 
 // freeAddr 取一个随即释放的本机地址（测试监听端口用）。
@@ -63,36 +90,10 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// TestShutdownGrace：装配后的 gateway 跑在随机端口，ctx cancel（等价 SIGTERM 路径）后
-// 在 SHUTDOWN_GRACE_SECONDS 窗口内退出且返回 nil；HTTP 监听已关、DB/Redis 已按序关闭。
-func TestShutdownGrace(t *testing.T) {
-	addr := freeAddr(t)
-	var events []string
-	db := &stubResource{name: "db", events: &events}
-	rds := &stubResource{name: "redis", events: &events}
-
-	cfg := &config.Config{
-		AppEnv:               "production",
-		LogLevel:             "info",
-		LogFormat:            "json",
-		HTTPAddr:             addr,
-		MetricsAddr:          "0", // 不启动 metrics 侧车
-		DBMigrateOnStart:     false,
-		ShutdownGraceSeconds: 5,
-		DBMaxOpenConns:       5,
-		DBMaxIdleConns:       5,
-		RedisPoolSize:        5,
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runGateway(ctx, cfg, stubConnectors{db: db, redis: rds})
-	}()
-
-	// 等 HTTP 服务就绪。
+// waitHealthy 轮询 /healthz 直至 200：以服务真实就绪代替固定 sleep，
+// 避免慢机器上的偶然超时。
+func waitHealthy(t *testing.T, addr string) {
+	t.Helper()
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -101,7 +102,7 @@ func TestShutdownGrace(t *testing.T) {
 			// 测试客户端只关心状态码；关闭错误不影响断言。
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				break
+				return
 			}
 		}
 		if time.Now().After(deadline) {
@@ -109,6 +110,28 @@ func TestShutdownGrace(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// TestShutdownGrace：装配后的 gateway 跑在随机端口，ctx cancel（等价 SIGTERM 路径）后
+// 在 SHUTDOWN_GRACE_SECONDS 窗口内退出且返回 nil；HTTP 监听已关、DB/Redis 已按序关闭。
+func TestShutdownGrace(t *testing.T) {
+	addr := freeAddr(t)
+	var events []string
+	db := &stubResource{name: "db", events: &events}
+	rds := &stubResource{name: "redis", events: &events}
+
+	cfg := gatewayTestConfig(addr)
+	cfg.DBMigrateOnStart = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runGateway(ctx, cfg, &stubConnectors{db: db, redis: rds})
+	}()
+
+	waitHealthy(t, addr)
 
 	start := time.Now()
 	cancel()
@@ -159,11 +182,82 @@ func TestRunGatewayOpenDBError(t *testing.T) {
 	dbErr := errors.New("db down")
 	rds := &stubResource{name: "redis"}
 
-	err := runGateway(context.Background(), cfg, stubConnectors{dbErr: dbErr, redis: rds})
+	err := runGateway(context.Background(), cfg, &stubConnectors{dbErr: dbErr, redis: rds})
 	if !errors.Is(err, dbErr) {
 		t.Fatalf("err = %v, want wrap %v", err, dbErr)
 	}
 	if rds.closed {
 		t.Fatal("redis must not be closed when db open failed (never opened)")
+	}
+}
+
+// TestRunGatewayMigrateOnStartFlag 验证 DB_MIGRATE_ON_START 是启动迁移的唯一开关：
+// 开启时迁移钩子恰好调用一次，关闭时一次也不调用。用 stub 钩子即可覆盖，
+// 无需真 PG（M0 评审 Task 6）。
+func TestRunGatewayMigrateOnStartFlag(t *testing.T) {
+	cases := []struct {
+		name      string
+		migrateOn bool
+		wantCalls int32
+	}{
+		{name: "开启时调用迁移", migrateOn: true, wantCalls: 1},
+		{name: "关闭时不调用迁移", migrateOn: false, wantCalls: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := freeAddr(t)
+			conn := &stubConnectors{
+				db:    &stubResource{name: "db"},
+				redis: &stubResource{name: "redis"},
+			}
+			cfg := gatewayTestConfig(addr)
+			cfg.DBMigrateOnStart = tc.migrateOn
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- runGateway(ctx, cfg, conn) }()
+
+			// /healthz 就绪时 runGateway 已越过迁移分支，计数已稳定。
+			waitHealthy(t, addr)
+			if got := conn.migrateCalls.Load(); got != tc.wantCalls {
+				cancel()
+				// 等待 runGateway 退出，避免失败路径遗留监听 goroutine。
+				runErr := <-done
+				t.Fatalf("runMigrate calls = %d, want %d (DB_MIGRATE_ON_START=%v); runGateway err = %v",
+					got, tc.wantCalls, tc.migrateOn, runErr)
+			}
+
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("runGateway returned error: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("runGateway did not exit after ctx cancel")
+			}
+		})
+	}
+}
+
+// TestRunGatewayMigrateOnStartError：启动迁移失败时 gateway 不得上线；
+// 返回包装错误，并释放已建立的 DB / Redis 资源，避免连接泄漏。
+func TestRunGatewayMigrateOnStartError(t *testing.T) {
+	db := &stubResource{name: "db"}
+	rds := &stubResource{name: "redis"}
+	boom := errors.New("migration exploded")
+	conn := &stubConnectors{db: db, redis: rds, migrateErr: boom}
+	cfg := gatewayTestConfig(freeAddr(t))
+	cfg.DBMigrateOnStart = true
+
+	err := runGateway(context.Background(), cfg, conn)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want wrap %v", err, boom)
+	}
+	if got := conn.migrateCalls.Load(); got != 1 {
+		t.Fatalf("runMigrate calls = %d, want 1", got)
+	}
+	if !db.closed || !rds.closed {
+		t.Fatalf("resources not closed after migrate failure: db=%v redis=%v", db.closed, rds.closed)
 	}
 }
