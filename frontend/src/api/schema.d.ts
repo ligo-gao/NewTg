@@ -2430,7 +2430,23 @@ export interface operations {
                     "application/json": components["schemas"]["AuthSessionResponse"];
                 };
             };
-            400: components["responses"]["Error400"];
+            /**
+             * @description 两种语义由 problem type 区分：
+             *     · type = `https://newtg.dev/problems/two_factor_ticket_invalid`：
+             *       ticket 格式非法、已过期或已被消费——必须重新走登录拿新 ticket，
+             *       重试本端点不会成功。
+             *     · 其它 `bad_request`（不含该 type）：ticket 有效但 TOTP/备用码错误，
+             *       或请求体校验失败；码错误时 ticket 仍可继续使用（TOTP 连续 5 次
+             *       错误才作废，备用码核销即失效）。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             401: components["responses"]["Error401"];
             429: components["responses"]["Error429"];
             503: components["responses"]["Error503"];
