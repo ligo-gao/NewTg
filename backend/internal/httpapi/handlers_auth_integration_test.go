@@ -256,6 +256,15 @@ func TestIntegrationAuthFlow(t *testing.T) {
 	}
 	code := sender.last(t).Code
 
+	// 验证码只存哈希：必须在注册消费掉键之前断言，否则 GET 落空会让断言空转。
+	raw, err := rdb.Get(context.Background(), "email_code:register:"+email).Result()
+	if err != nil {
+		t.Fatalf("读取验证码键: %v", err)
+	}
+	if raw == code || len(raw) != 64 {
+		t.Fatalf("Redis 验证码值 = %q，期望 64 位哈希且不等于明文", raw)
+	}
+
 	registered := do(http.MethodPost, "/api/auth/register",
 		registerPayload(username, email, password, code), nil)
 	if registered.Code != http.StatusCreated {
@@ -319,11 +328,5 @@ func TestIntegrationAuthFlow(t *testing.T) {
 	}
 	if cookieByName(login, auth.SessionCookieName) == nil {
 		t.Fatal("重新登录未下发会话 Cookie")
-	}
-
-	// 验证码只存哈希：Redis 中不得出现明文码。
-	raw, err := rdb.Get(context.Background(), "email_code:register:"+email).Result()
-	if err == nil && raw == code {
-		t.Fatal("Redis 中存了验证码明文")
 	}
 }

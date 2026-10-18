@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 )
@@ -208,11 +210,13 @@ func (s staticPermissions) Load(_ context.Context, _ int64) ([]string, error) {
 }
 
 type authTestOptions struct {
-	repo          *fakeAuthRepo
-	sender        *fakeEmailSender
-	permissions   rbac.PermissionLoader
-	authz         *rbac.AuthzMiddleware
-	publicBaseURL string
+	repo             *fakeAuthRepo
+	sender           *fakeEmailSender
+	permissions      rbac.PermissionLoader
+	authz            *rbac.AuthzMiddleware
+	publicBaseURL    string
+	audit            *audit.Logger
+	signupGrantAlert func(ctx context.Context, userID int64, ip string)
 }
 
 type authTestEnv struct {
@@ -246,15 +250,17 @@ func newAuthTestEnv(t *testing.T, cfg mapConfig, opts authTestOptions) *authTest
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 
 	rt, err := NewRouter(RouterConfig{
-		Redis:         rdb,
-		Sessions:      sessions,
-		Repo:          repo,
-		Config:        cfg,
-		SessionSecret: []byte(testSessionSecret),
-		PublicBaseURL: opts.publicBaseURL,
-		EmailSender:   sender,
-		Permissions:   opts.permissions,
-		Authz:         opts.authz,
+		Redis:            rdb,
+		Sessions:         sessions,
+		Repo:             repo,
+		Config:           cfg,
+		SessionSecret:    []byte(testSessionSecret),
+		PublicBaseURL:    opts.publicBaseURL,
+		EmailSender:      sender,
+		Permissions:      opts.permissions,
+		Authz:            opts.authz,
+		Audit:            opts.audit,
+		SignupGrantAlert: opts.signupGrantAlert,
 	})
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
@@ -690,6 +696,13 @@ func TestAuthEmailCodeRateLimits(t *testing.T) {
 		}
 		if ttl := env.mr.TTL("email_code:register:hash@example.com"); ttl <= 0 || ttl > 10*time.Minute {
 			t.Errorf("验证码 TTL = %v，期望 (0, 10m]", ttl)
+		}
+		// 冷却键必须对邮箱做哈希，避免把 PII 写进 Redis 键。
+		if env.mr.Exists("email_code:cooldown:hash@example.com") {
+			t.Fatal("冷却键不得包含邮箱明文")
+		}
+		if !env.mr.Exists("email_code:cooldown:" + sha256Hex("hash@example.com")) {
+			t.Fatal("冷却键应为 sha256(email) 形态")
 		}
 	})
 
@@ -1226,5 +1239,279 @@ func TestPermissionsLoaderRestrictedAdmin(t *testing.T) {
 	})
 	if userRR.Code != http.StatusForbidden {
 		t.Fatalf("user 越权 status = %d，期望 403", userRR.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复：注册失败语义 / 赠送反滥用 / 邮箱域名白名单 / 登录审计
+// ---------------------------------------------------------------------------
+
+// fakeAuditExec 捕获 audit.Logger 的 INSERT 参数（不依赖日志库）。
+type fakeAuditExec struct {
+	mu    sync.Mutex
+	calls [][]any
+	err   error
+}
+
+type fakeSQLResult struct{}
+
+func (fakeSQLResult) LastInsertId() (int64, error) { return 0, nil }
+func (fakeSQLResult) RowsAffected() (int64, error) { return 1, nil }
+
+func (f *fakeAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.calls = append(f.calls, append([]any(nil), args...))
+	return fakeSQLResult{}, nil
+}
+
+func (f *fakeAuditExec) snapshot() [][]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]any, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+// TestAuthRegisterSessionFailureReturns503：用户已提交后建会话失败必须映射为
+// 503 + Retry-After，并提示「账号可能已创建，请尝试登录」，不能返回 500。
+func TestAuthRegisterSessionFailureReturns503(t *testing.T) {
+	env := newAuthTestEnv(t, nil, authTestOptions{})
+	env.mr.Close() // 会话创建（Redis）失败；用户创建（fake repo）仍会成功
+
+	rr := env.request(http.MethodPost, "/api/auth/register",
+		registerPayload("alice", "alice@example.com", "N7x!qPz2wR", ""), nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Error("注册后建会话失败必须携带 Retry-After")
+	}
+	var problem struct {
+		Type   string `json:"type"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("problem JSON 非法: %v", err)
+	}
+	if problem.Type != authProblemServiceUnavailable {
+		t.Errorf("problem.type = %q，期望 %q", problem.Type, authProblemServiceUnavailable)
+	}
+	if !strings.Contains(problem.Detail, "may have been created") || !strings.Contains(problem.Detail, "logging in") {
+		t.Errorf("detail = %q，期望提示账号可能已创建并引导登录", problem.Detail)
+	}
+	if len(env.repo.created) != 1 {
+		t.Fatalf("CreateUser 调用次数 = %d，期望 1（账号确实已提交）", len(env.repo.created))
+	}
+}
+
+// TestAuthRegisterSignupGrantAntiAbuse：同 IP 24h 至多 3 次实际领赠；
+// 超限时注册成功但不发放并触发告警；计数不可用时跳过发放。
+func TestAuthRegisterSignupGrantAntiAbuse(t *testing.T) {
+	cfg := mapConfig{"billing.signup_grant_credits": configInt(100)}
+	var mu sync.Mutex
+	var alerts []int64
+	env := newAuthTestEnv(t, cfg, authTestOptions{
+		signupGrantAlert: func(_ context.Context, userID int64, _ string) {
+			mu.Lock()
+			alerts = append(alerts, userID)
+			mu.Unlock()
+		},
+	})
+
+	for i := 0; i < 4; i++ {
+		rr := env.request(http.MethodPost, "/api/auth/register",
+			registerPayload("grant"+strconv.Itoa(i), "grant"+strconv.Itoa(i)+"@example.com", "N7x!qPz2wR", ""), nil)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("第 %d 个注册 status = %d，期望 201（body=%q）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if len(env.repo.created) != 4 {
+		t.Fatalf("CreateUser 次数 = %d，期望 4", len(env.repo.created))
+	}
+	for i := 0; i < 3; i++ {
+		if env.repo.created[i].SignupBonus != 100 {
+			t.Errorf("第 %d 个用户 bonus = %d，期望 100", i+1, env.repo.created[i].SignupBonus)
+		}
+	}
+	if env.repo.created[3].SignupBonus != 0 {
+		t.Errorf("第 4 个用户 bonus = %d，期望 0（IP 上限 3）", env.repo.created[3].SignupBonus)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(alerts) != 1 || alerts[0] != 4 {
+		t.Fatalf("告警钩子 = %v，期望恰好 1 次且 userID=4", alerts)
+	}
+
+	// 计数不可用 → 跳过发放但不阻塞注册。
+	errEnv := newAuthTestEnv(t, cfg, authTestOptions{})
+	errEnv.router.handlers.reserveSignupGrant = func(context.Context, string) (bool, error) {
+		return false, errors.New("redis down")
+	}
+	rr := errEnv.request(http.MethodPost, "/api/auth/register",
+		registerPayload("granterr", "granterr@example.com", "N7x!qPz2wR", ""), nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("计数故障时注册 status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	if len(errEnv.repo.created) != 1 || errEnv.repo.created[0].SignupBonus != 0 {
+		t.Fatalf("计数故障时应跳过赠送，实际 %+v", errEnv.repo.created)
+	}
+}
+
+// TestAuthRegisterSignupGrantSlotReleasedOnCreateFailure：预留名额后 CreateUser
+// 失败（并发重复）必须归还槽位，不能消耗他人的领赠额度。
+func TestAuthRegisterSignupGrantSlotReleasedOnCreateFailure(t *testing.T) {
+	cfg := mapConfig{"billing.signup_grant_credits": configInt(100)}
+	repo := newFakeAuthRepo()
+	repo.forceCreateEr = ErrDuplicateUser
+	env := newAuthTestEnv(t, cfg, authTestOptions{repo: repo})
+
+	rr := env.request(http.MethodPost, "/api/auth/register",
+		registerPayload("racer", "racer@example.com", "N7x!qPz2wR", ""), nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
+	}
+	key := "signup_grant:ip:" + sha256Hex("192.0.2.1")
+	got, _ := env.mr.Get(key)
+	if got != "0" {
+		t.Fatalf("槽位计数 = %q，期望归还后为 0", got)
+	}
+}
+
+// TestAuthRegisterEmailDomainAllowlist：F-01-01 域名白名单（精确 + 子域通配）。
+func TestAuthRegisterEmailDomainAllowlist(t *testing.T) {
+	cfg := mapConfig{
+		"auth.email_domain_restrict_enabled": configBool(true),
+		"auth.email_domain_allowlist":        json.RawMessage(`["example.com","*.corp.example"]`),
+	}
+	cases := []struct {
+		name  string
+		email string
+		want  int
+	}{
+		{"精确域名", "alice@example.com", http.StatusCreated},
+		{"子域通配", "bob@team.corp.example", http.StatusCreated},
+		{"非白名单域名", "eve@evil.example", http.StatusUnprocessableEntity},
+		{"通配不匹配裸域", "eve@corp.example", http.StatusUnprocessableEntity},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newAuthTestEnv(t, cfg, authTestOptions{})
+			rr := env.request(http.MethodPost, "/api/auth/register",
+				registerPayload("domain"+strconv.Itoa(i), tc.email, "N7x!qPz2wR", ""), nil)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d，期望 %d（body=%q）", rr.Code, tc.want, rr.Body.String())
+			}
+			if tc.want == http.StatusUnprocessableEntity {
+				if p := decodeProblem(t, rr); p.Type != authProblemEmailDomainDenied {
+					t.Errorf("problem.type = %q，期望 %q", p.Type, authProblemEmailDomainDenied)
+				}
+			}
+		})
+	}
+
+	t.Run("未启用时放行", func(t *testing.T) {
+		env := newAuthTestEnv(t, nil, authTestOptions{})
+		rr := env.request(http.MethodPost, "/api/auth/register",
+			registerPayload("opendomain", "eve@evil.example", "N7x!qPz2wR", ""), nil)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("启用但清单为空 fail-closed", func(t *testing.T) {
+		empty := mapConfig{
+			"auth.email_domain_restrict_enabled": configBool(true),
+			"auth.email_domain_allowlist":        json.RawMessage(`[]`),
+		}
+		env := newAuthTestEnv(t, empty, authTestOptions{})
+		rr := env.request(http.MethodPost, "/api/auth/register",
+			registerPayload("emptylist", "alice@example.com", "N7x!qPz2wR", ""), nil)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestAuthEmailCodePurposeRequiresAuth：verify/bind 匿名请求必须 401，
+// register/reset 保持匿名可用（F-01-02 权限）。
+func TestAuthEmailCodePurposeRequiresAuth(t *testing.T) {
+	env := newAuthTestEnv(t, nil, authTestOptions{})
+	for _, purpose := range []string{"verify", "bind"} {
+		rr := env.request(http.MethodPost, "/api/auth/email-code",
+			map[string]any{"email": "alice@example.com", "purpose": purpose}, nil)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("匿名 purpose=%s status = %d，期望 401", purpose, rr.Code)
+		}
+	}
+	for _, purpose := range []string{"register", "reset"} {
+		rr := env.request(http.MethodPost, "/api/auth/email-code",
+			map[string]any{"email": purpose + "@example.com", "purpose": purpose}, nil)
+		if rr.Code != http.StatusNoContent {
+			t.Errorf("匿名 purpose=%s status = %d，期望 204", purpose, rr.Code)
+		}
+	}
+
+	sid := env.mustSessionFor(1, rbac.RoleUser)
+	authed := env.request(http.MethodPost, "/api/auth/email-code",
+		map[string]any{"email": "alice@example.com", "purpose": "verify"}, func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+		})
+	if authed.Code != http.StatusNoContent {
+		t.Errorf("已登录 verify status = %d，期望 204（body=%q）", authed.Code, authed.Body.String())
+	}
+}
+
+// TestAuthLoginWritesAudit：成功/失败都写 auth.login，含 IP/UA，不含凭据；
+// 审计写失败不得影响登录。
+func TestAuthLoginWritesAudit(t *testing.T) {
+	exec := &fakeAuditExec{}
+	env := newAuthTestEnv(t, nil, authTestOptions{audit: audit.New(exec)})
+	alice := env.repo.add(UserRecord{Username: "alice", PasswordHash: authTestPasswordHash()})
+
+	if rr := env.login("alice", "WrongPassword1!"); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("失败登录 status = %d，期望 401", rr.Code)
+	}
+	if rr := env.login("alice", authTestPassword); rr.Code != http.StatusOK {
+		t.Fatalf("成功登录 status = %d，期望 200", rr.Code)
+	}
+
+	calls := exec.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("审计写入次数 = %d，期望 2", len(calls))
+	}
+	failure, success := calls[0], calls[1]
+	if failure[0] != alice.ID || success[0] != alice.ID {
+		t.Errorf("审计 actor = %v/%v，期望 %d", failure[0], success[0], alice.ID)
+	}
+	if failure[8] != "failed" || success[8] != "success" {
+		t.Errorf("审计 result = %v/%v，期望 failed/success", failure[8], success[8])
+	}
+	if failure[3] != "192.0.2.1" || success[3] != "192.0.2.1" {
+		t.Errorf("审计 IP = %v/%v，期望 192.0.2.1", failure[3], success[3])
+	}
+	if detail, ok := failure[9].(string); !ok || !strings.Contains(detail, "invalid_credentials") {
+		t.Errorf("失败审计 detail = %v，期望包含 invalid_credentials", failure[9])
+	}
+	if detail, ok := success[9].(string); !ok || !strings.Contains(detail, "success") {
+		t.Errorf("成功审计 detail = %v，期望包含 success", success[9])
+	}
+	for _, call := range calls {
+		for _, arg := range call {
+			if text, ok := arg.(string); ok && strings.Contains(text, authTestPassword) {
+				t.Fatalf("审计参数包含口令明文: %q", text)
+			}
+		}
+	}
+
+	// 审计写失败旁路：登录仍成功。
+	exec.mu.Lock()
+	exec.err = errors.New("audit db down")
+	exec.mu.Unlock()
+	if rr := env.login("alice", authTestPassword); rr.Code != http.StatusOK {
+		t.Fatalf("审计故障时登录 status = %d，期望 200", rr.Code)
 	}
 }

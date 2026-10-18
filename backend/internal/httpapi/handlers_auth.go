@@ -34,6 +34,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/api/dto"
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 )
 
@@ -54,6 +56,12 @@ const (
 	maxAuthBodyBytes   = 1 << 20
 	maxIdentifierRunes = 254
 	maxAffRunes        = 64
+
+	// 注册赠送反滥用（modules-08 F-08-16 / security-07 R-07-10）：
+	// 同 IP 24h 内至多 3 个账号实际领赠；超出时注册照常成功但不发放。
+	// 设备维度（签名 Cookie nkt_did）尚未落地，留 seam 见 reserveSignupGrantSlot。
+	signupGrantIPLimit  = 3
+	signupGrantIPWindow = 24 * time.Hour
 )
 
 // RFC 7807 type URI 沿用全库 https://newtg.dev/problems/<slug> 约定。
@@ -65,6 +73,7 @@ const (
 	authProblemTooManyRequests    = "https://newtg.dev/problems/too_many_requests"
 	authProblemServiceUnavailable = "https://newtg.dev/problems/service_unavailable"
 	authProblemEmailSendFailed    = "https://newtg.dev/problems/email_send_failed"
+	authProblemEmailDomainDenied  = "https://newtg.dev/problems/email_domain_not_allowed"
 	authProblemInternal           = "https://newtg.dev/problems/internal_error"
 )
 
@@ -349,9 +358,18 @@ func (l *LoginLimiter) Check(ctx context.Context, ip, identifier string) error {
 		if err != nil {
 			return fmt.Errorf("httpapi: login limiter ttl: %w", err)
 		}
-		if ttl <= 0 || ttl > LoginLockDuration {
-			// 无 TTL（异常数据）按完整锁定窗口处理，避免永久锁定也避免提前放行。
+		switch ttl {
+		case -2:
+			// 键在 MGET 与 PTTL 之间过期/被删除：计数已不存在，视为未锁定
+			// （不能用一个刚消失的桶把人锁 15 分钟）。
+			continue
+		case -1:
+			// 键存在但无 TTL（异常数据）：按完整锁定窗口兜底，避免永久锁定。
 			ttl = LoginLockDuration
+		default:
+			if ttl <= 0 || ttl > LoginLockDuration {
+				ttl = LoginLockDuration
+			}
 		}
 		if ttl > retry {
 			retry = ttl
@@ -537,6 +555,12 @@ type authHandlers struct {
 	log            *slog.Logger
 	verifyPassword func(hash, plain string) bool
 	hashPassword   func(plain string) (string, error)
+	// audit 为 nil 时不写审计（未装配日志库的测试/开发环境）。
+	audit *audit.Logger
+	// signupGrantAlert 是赠送被反滥用上限抑制时的告警钩子；nil 时仅落 Warn 日志。
+	signupGrantAlert func(ctx context.Context, userID int64, ip string)
+	// reserveSignupGrant 是 Redis 槽位预留的可替换接缝（测试注入故障）。
+	reserveSignupGrant func(ctx context.Context, ip string) (bool, error)
 }
 
 func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Client,
@@ -545,7 +569,7 @@ func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Cl
 	if log == nil {
 		log = slog.Default()
 	}
-	return &authHandlers{
+	h := &authHandlers{
 		repo:           repo,
 		sessions:       sessions,
 		rdb:            rdb,
@@ -558,6 +582,8 @@ func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Cl
 		verifyPassword: auth.VerifyPassword,
 		hashPassword:   auth.HashPassword,
 	}
+	h.reserveSignupGrant = h.reserveSignupGrantSlot
+	return h
 }
 
 // statusResponse 是 GET /api/status 的公开投影（modules-08 §1.4.1）。
@@ -625,9 +651,25 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ip := clientIP(r)
 
-	// 同邮箱 1 次/60s（modules-08 F-08-16）。先占用冷却键：即使后续 IP 桶
-	// 拒绝或 SMTP 失败，也保持 60s 冷却，防止重试风暴。
-	cooldownKey := "email_code:cooldown:" + email
+	// F-01-02 权限：register/reset 面向 anonymous；verify/bind 必须是已登录用户。
+	// 本端点挂在公开路由上（不经过 SessionAuth），因此在这里显式校验会话。
+	if req.Purpose == "verify" || req.Purpose == "bind" {
+		sid, ok := sessionID(r)
+		if !ok {
+			writeUnauthorized(w)
+			return
+		}
+		if _, err := h.sessions.Get(ctx, sid); err != nil {
+			// 含 Redis 故障：无法确认身份时 fail-closed。
+			writeUnauthorized(w)
+			return
+		}
+	}
+
+	// 同邮箱 1 次/60s（modules-08 F-08-16）。冷却键对邮箱做哈希，避免把 PII
+	// 写进 Redis 键；先占用冷却键：即使后续 IP 桶拒绝或 SMTP 失败，也保持
+	// 60s 冷却，防止重试风暴。
+	cooldownKey := "email_code:cooldown:" + sha256Hex(email)
 	acquired, err := h.rdb.SetNX(ctx, cooldownKey, "1", emailCodeResendAfter).Result()
 	if err != nil {
 		h.writeServiceUnavailable(w, "Email verification is temporarily unavailable")
@@ -714,6 +756,12 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid email address")
 		return
 	}
+	// F-01-01 邮箱域名白名单（默认关闭）：开启时不在清单内的域名 422；
+	// 清单为空/畸形按 fail-closed 拒绝（未启用时完全放行）。
+	if !h.emailDomainAllowed(email) {
+		writeProblem(w, http.StatusUnprocessableEntity, authProblemEmailDomainDenied, "Email domain is not allowed")
+		return
+	}
 	aff := strings.TrimSpace(req.Aff)
 	if utf8.RuneCountInString(aff) > maxAffRunes {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid affiliate code")
@@ -763,14 +811,39 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 注册赠送反滥用（R-07-10）：先原子预留 IP 槽位；超限/计数不可用时
+	// 注册照常成功但 bonus=0。预留失败（CreateUser 返回重复等）要归还槽位，
+	// 避免攻击者用重复注册消耗他人的领赠额度。
+	bonus := h.signupBonus(emailVerified)
+	grantReserved := false
+	grantSuppressed := false
+	if bonus > 0 {
+		allowed, err := h.reserveSignupGrant(r.Context(), clientIP(r))
+		switch {
+		case err != nil:
+			// 反滥用计数不可用时跳过发放，但绝不阻塞注册（可用性优先于赠送）。
+			h.log.Warn("signup grant limiter unavailable; skipping signup bonus", "error", err)
+			bonus = 0
+		case !allowed:
+			bonus = 0
+			grantSuppressed = true
+		default:
+			grantReserved = true
+		}
+	}
+
 	created, err := h.repo.CreateUser(r.Context(), CreateUserInput{
 		Username:      username,
 		Email:         email,
 		PasswordHash:  passwordHash,
 		Aff:           aff,
 		EmailVerified: emailVerified,
-		SignupBonus:   h.signupBonus(emailVerified),
+		SignupBonus:   bonus,
 	})
+	if err != nil && grantReserved {
+		// 用户行没有创建成功 → 赠送不会发生 → 归还预占的 IP 槽位。
+		h.releaseSignupGrantSlot(context.WithoutCancel(r.Context()), clientIP(r))
+	}
 	if errors.Is(err, ErrDuplicateUser) {
 		h.writeDuplicateUser(w)
 		return
@@ -785,6 +858,9 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Account is not available")
 		return
 	}
+	if grantSuppressed {
+		h.alertSignupGrantSuppressed(r.Context(), created.ID, clientIP(r))
+	}
 
 	user := &UserRecord{
 		ID:            created.ID,
@@ -795,8 +871,13 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		EmailVerified: emailVerified,
 	}
 	if err := h.startSession(r.Context(), w, r, user); err != nil {
-		h.log.Error("create session failed", "error", err)
-		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Registration failed")
+		h.log.Error("create session after registration failed", "user_id", created.ID, "error", err)
+		// 账号已提交而会话失败：不能返回 500（重试会因重复注册 409）。
+		// 映射为可重试的 503，并明确提示「账号可能已创建，请尝试登录」。
+		w.Header().Set("Retry-After", "5")
+		writeAuthProblemDetail(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Registration succeeded but session creation failed",
+			"The account may have been created. Please try logging in.")
 		return
 	}
 	writeJSON(w, http.StatusCreated, authSessionResponse{User: userView(user)})
@@ -814,6 +895,102 @@ func (h *authHandlers) signupBonus(emailVerified bool) int64 {
 	}
 	return bonus
 }
+
+// emailDomainAllowed 实施 F-01-01 的邮箱域名白名单。规则支持精确域名
+// （example.com）与子域通配（*.example.com，不匹配裸域）。未启用时一律放行；
+// 启用但清单为空/无法解析时 fail-closed（拒绝），避免「配置写坏=全放行」。
+func (h *authHandlers) emailDomainAllowed(email string) bool {
+	if !h.boolConfig("auth.email_domain_restrict_enabled", false) {
+		return true
+	}
+	entries, ok := h.stringListConfig("auth.email_domain_allowlist")
+	if !ok {
+		return false
+	}
+	_, domain, found := strings.Cut(email, "@")
+	if !found || domain == "" {
+		return false
+	}
+	domain = strings.ToLower(domain)
+	for _, raw := range entries {
+		rule := strings.ToLower(strings.TrimSpace(raw))
+		if rule == "" {
+			continue
+		}
+		if suffix, wildcard := strings.CutPrefix(rule, "*."); wildcard {
+			// "*.example.com" 只匹配子域，不匹配 example.com 本身。
+			if suffix != "" && strings.HasSuffix(domain, "."+suffix) {
+				return true
+			}
+			continue
+		}
+		if domain == rule {
+			return true
+		}
+	}
+	return false
+}
+
+// stringListConfig 读取 jsonb 字符串数组配置。非数组/含非字符串元素视为不可用。
+func (h *authHandlers) stringListConfig(key string) ([]string, bool) {
+	raw, ok := h.readConfig(key)
+	if !ok {
+		return nil, false
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// reserveSignupGrantSlot 原子预留一个「同 IP 24h 内第 N 个实际领赠」名额。
+// 返回 false 表示已达上限（调用方仍应完成注册，只是不发放）。
+//
+// 设备维度（同设备 24h ≤2，签名 Cookie nkt_did）尚未落地：待设备标识任务
+// 提供可信 device id 后，在同一脚本里增加第二个桶即可；接口保持不变。
+func (h *authHandlers) reserveSignupGrantSlot(ctx context.Context, ip string) (bool, error) {
+	key := "signup_grant:ip:" + sha256Hex(ip)
+	n, err := reserveSignupGrantScript.Run(ctx, h.rdb, []string{key},
+		strconv.Itoa(signupGrantIPLimit),
+		strconv.Itoa(int(signupGrantIPWindow.Seconds()))).Int64()
+	if err != nil {
+		return false, fmt.Errorf("httpapi: reserve signup grant slot: %w", err)
+	}
+	return n == 1, nil
+}
+
+// releaseSignupGrantSlot 归还预占名额（用户行最终未创建时）。
+func (h *authHandlers) releaseSignupGrantSlot(ctx context.Context, ip string) {
+	key := "signup_grant:ip:" + sha256Hex(ip)
+	if err := h.rdb.Decr(ctx, key).Err(); err != nil {
+		h.log.Warn("release signup grant slot failed", "error", err)
+	}
+}
+
+// alertSignupGrantSuppressed 在赠送因反滥用上限被抑制时触发告警钩子。
+// 钩子为空时落 Warn 日志（审计/告警侧仍能发现异常注册模式）。
+func (h *authHandlers) alertSignupGrantSuppressed(ctx context.Context, userID int64, ip string) {
+	if h.signupGrantAlert != nil {
+		h.signupGrantAlert(ctx, userID, ip)
+		return
+	}
+	h.log.Warn("signup grant suppressed by anti-abuse cap", "user_id", userID)
+}
+
+// reserveSignupGrantScript：GET→比较→INCR 在同一 Lua 事务内完成，避免并发
+// 注册同时看到 count<3 而超额发放。返回 1=预留成功，0=已达上限。
+var reserveSignupGrantScript = redis.NewScript(`
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n >= tonumber(ARGV[1]) then
+  return 0
+end
+n = redis.call('INCR', KEYS[1])
+if n == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 1
+`)
 
 type loginRequest struct {
 	Identifier string `json:"identifier"`
@@ -840,6 +1017,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 锁定预检查：已知 identifier 的双桶在此拦截，避免锁定期间仍消耗 DB/argon2。
 	if err := h.limiter.Check(ctx, ip, identifier); err != nil {
+		h.auditLogin(r, nil, "failed", limiterReason(err))
 		h.writeLimiterFailure(w, err)
 		return
 	}
@@ -853,15 +1031,18 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		// 未知 identifier 只按 IP 计分：否则攻击者可用他人用户名把账号锁死。
 		if err := h.limiter.Check(ctx, ip, ""); err != nil {
+			h.auditLogin(r, nil, "failed", limiterReason(err))
 			h.writeLimiterFailure(w, err)
 			return
 		}
 		// dummy verify：与真实用户同等的 argon2 成本，消除「查无此人」的时序特征。
 		_ = h.verifyPassword(dummyPasswordHash(), req.Password)
 		if err := h.limiter.Record(ctx, ip, "", false); err != nil {
+			h.auditLogin(r, nil, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
+		h.auditLogin(r, nil, "failed", "invalid_credentials")
 		writeUnauthorized(w) // 与错误口令逐字相同
 		return
 	}
@@ -870,23 +1051,28 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if user.PasswordHash == "" {
 		_ = h.verifyPassword(dummyPasswordHash(), req.Password)
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
+			h.auditLogin(r, user, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
+		h.auditLogin(r, user, "failed", "invalid_credentials")
 		writeUnauthorized(w)
 		return
 	}
 	if !h.verifyPassword(user.PasswordHash, req.Password) {
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
+			h.auditLogin(r, user, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
+		h.auditLogin(r, user, "failed", "invalid_credentials")
 		writeUnauthorized(w)
 		return
 	}
 
 	// 口令正确后才检查封禁：错误口令不得成为账号状态探测信道。
 	if user.Status != "enabled" {
+		h.auditLogin(r, user, "failed", "account_disabled")
 		writeProblem(w, http.StatusUnauthorized, authProblemAccountDisabled, "This account has been disabled")
 		return
 	}
@@ -899,18 +1085,22 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ticket, err := h.createPending2FA(ctx, user.ID)
 		if err != nil {
 			h.log.Error("create pending 2fa ticket failed", "error", err)
+			h.auditLogin(r, user, "failed", "session_unavailable")
 			h.writeServiceUnavailable(w, "Login is temporarily unavailable")
 			return
 		}
+		h.auditLogin(r, user, "success", "mfa_pending")
 		writeJSON(w, http.StatusOK, pending2FAResponse{Status: "pending_2fa", Ticket: ticket})
 		return
 	}
 
 	if err := h.startSession(ctx, w, r, user); err != nil {
 		h.log.Error("create session failed", "error", err)
+		h.auditLogin(r, user, "failed", "session_unavailable")
 		h.writeServiceUnavailable(w, "Login is temporarily unavailable")
 		return
 	}
+	h.auditLogin(r, user, "success", "")
 	writeJSON(w, http.StatusOK, authSessionResponse{User: userView(user)})
 }
 
@@ -1044,6 +1234,61 @@ var dummyPasswordHash = sync.OnceValue(func() string {
 func (h *authHandlers) writeDuplicateUser(w http.ResponseWriter) {
 	// 重名与重邮箱必须同一个响应：任何字段级差异都会变成注册枚举接口。
 	writeProblem(w, http.StatusConflict, authProblemConflict, "Username or email is already in use")
+}
+
+// writeAuthProblemDetail 输出带 detail 的 RFC 7807 Problem（writeProblem 无 detail 参数）。
+func writeAuthProblemDetail(w http.ResponseWriter, status int, problemType, title, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(dto.Problem{
+		Type:   problemType,
+		Title:  title,
+		Status: status,
+		Detail: &detail,
+	})
+}
+
+// limiterReason 把限流器错误归类为审计原因（不记录任何凭据材料）。
+func limiterReason(err error) string {
+	var locked *LockedError
+	if errors.As(err, &locked) {
+		return "locked"
+	}
+	return "limiter_unavailable"
+}
+
+// auditLogin 写入 auth.login 审计（success/failed）。审计是旁路：写失败只落
+// 日志，绝不影响登录结果。detail 只含结果/原因，IP/UA 走专用列；绝不含口令、
+// 验证码或 identifier 原文（避免把枚举输入落成 PII）。
+func (h *authHandlers) auditLogin(r *http.Request, user *UserRecord, result, reason string) {
+	if h.audit == nil {
+		return
+	}
+	var actor int64
+	var username string
+	if user != nil {
+		actor = user.ID
+		username = user.Username
+	}
+	detail, err := json.Marshal(map[string]string{"result": result, "reason": reason})
+	if err != nil {
+		h.log.Error("marshal login audit detail failed", "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:    audit.ActionAuthLogin,
+		Actor:     actor,
+		Username:  username,
+		Result:    result,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     "/api/auth/login",
+		Detail:    detail,
+	}
+	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+		h.log.Error("write login audit failed", "error", err)
+	}
 }
 
 func (h *authHandlers) writeLimiterFailure(w http.ResponseWriter, err error) {

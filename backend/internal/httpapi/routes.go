@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 )
@@ -40,7 +42,11 @@ type RouterConfig struct {
 	PasswordChecker auth.CompromisedPasswordChecker
 	// TokenStore 是 Bearer 令牌查询接缝（Task 12 实现；nil 时 Bearer 一律 401）。
 	TokenStore TokenLookup
-	Logger     *slog.Logger
+	// Audit 是登录审计写入器（nil 时不写审计）。写失败不影响登录结果。
+	Audit *audit.Logger
+	// SignupGrantAlert 在注册赠送被反滥用上限抑制时触发（nil 时仅 Warn 日志）。
+	SignupGrantAlert func(ctx context.Context, userID int64, ip string)
+	Logger           *slog.Logger
 }
 
 // Router 是管理面根路由：公开认证端点直接注册，其余 /api/* 走
@@ -99,6 +105,8 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 
 	h := newAuthHandlers(repo, cfg.Sessions, cfg.Redis, cfg.Config,
 		cfg.SessionSecret, cfg.EmailSender, withSiteTitle(cfg.Config, cfg.PasswordChecker), cfg.Logger)
+	h.audit = cfg.Audit
+	h.signupGrantAlert = cfg.SignupGrantAlert
 
 	rt := &Router{
 		mux:       http.NewServeMux(),
