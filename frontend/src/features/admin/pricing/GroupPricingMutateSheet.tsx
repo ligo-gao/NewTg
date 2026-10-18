@@ -261,30 +261,40 @@ export function GroupPricingMutateSheet({
     (candidate) => candidate.status === 1 || candidate.name === group,
   )
 
+  /**
+   * 确认对话框是栈顶模态。Dialog 与 Sheet 都在 document 上监听 Escape，
+   * 若不在 Sheet 侧拦截，一次 Escape 会同时关掉两个模态并丢掉已填输入
+   * （N1）。确认框打开期间只忽略「关闭」请求，正常打开不受影响。
+   */
+  function handleSheetOpenChange(nextOpen: boolean): void {
+    if (!nextOpen && pendingZero !== null) return
+    onOpenChange(nextOpen)
+  }
+
   return (
     <>
       <Sheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title={
-        mode === 'create'
-          ? t('admin.pricing.override_create_title')
-          : t('admin.pricing.override_edit_title', {
-              group: override?.group ?? '',
-              model: override?.model ?? '',
-            })
-      }
-      footer={
-        <>
-          <Button variant="secondary" onClick={() => onOpenChange(false)}>
-            {t('common.action.cancel')}
-          </Button>
-          <Button type="submit" form="group-pricing-form" disabled={submitting}>
-            {submitting ? t('admin.pricing.saving') : t('admin.pricing.save')}
-          </Button>
-        </>
-      }
-    >
+        open={open}
+        onOpenChange={handleSheetOpenChange}
+        title={
+          mode === 'create'
+            ? t('admin.pricing.override_create_title')
+            : t('admin.pricing.override_edit_title', {
+                group: override?.group ?? '',
+                model: override?.model ?? '',
+              })
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => handleSheetOpenChange(false)}>
+              {t('common.action.cancel')}
+            </Button>
+            <Button type="submit" form="group-pricing-form" disabled={submitting}>
+              {submitting ? t('admin.pricing.saving') : t('admin.pricing.save')}
+            </Button>
+          </>
+        }
+      >
       <form
         id="group-pricing-form"
         className="flex flex-col gap-4"
@@ -392,7 +402,7 @@ export function GroupPricingMutateSheet({
             <option value="2">{t('admin.pricing.status_disabled')}</option>
           </select>
         </div>
-      </form>
+        </form>
       </Sheet>
 
       <Dialog

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
@@ -67,6 +68,23 @@ async function renderSheet() {
       onSaved={() => undefined}
     />,
     ['common', 'admin'],
+  )
+}
+
+/**
+ * 受控外壳：Escape 关闭后真正卸载，用于验证「只关栈顶模态」。测试里若
+ * open 恒为 true，onOpenChange 不会生效，就无法断言 Sheet 是否被关闭。
+ */
+function ControlledSheet() {
+  const [open, setOpen] = useState(true)
+  return (
+    <GroupPricingMutateSheet
+      open={open}
+      mode="create"
+      quotaPerUnit={100}
+      onOpenChange={setOpen}
+      onSaved={() => undefined}
+    />
   )
 }
 
@@ -192,6 +210,40 @@ describe('GroupPricingMutateSheet', () => {
       completion_price: 0,
       cache_read_price: 0,
       cache_write_price: 0,
+    })
+  })
+
+  it('Escape closes only the topmost confirmation and keeps the sheet input', async () => {
+    installHandlers()
+
+    const { findByRole, getByLabelText, getByRole, queryByRole } =
+      await renderWithProviders(<ControlledSheet />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    await findByRole('option', { name: 'vip' })
+    await user.selectOptions(getByLabelText('Group'), 'vip')
+    await findByRole('option', { name: 'gpt-5' })
+    await user.selectOptions(getByLabelText('Model'), 'gpt-5')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await findByRole('dialog', { name: 'All override prices are zero' })
+    await user.keyboard('{Escape}')
+
+    // 第一次 Escape 只关确认框；底层 Sheet 保留，未提交的输入不丢失。
+    await waitFor(() => {
+      expect(
+        queryByRole('dialog', { name: 'All override prices are zero' }),
+      ).toBeNull()
+    })
+    const sheet = getByRole('dialog', { name: 'New override' })
+    expect((within(sheet).getByLabelText('Group') as HTMLSelectElement).value).toBe(
+      'vip',
+    )
+
+    // 第二次 Escape 才关 Sheet。
+    await user.keyboard('{Escape}')
+    await waitFor(() => {
+      expect(queryByRole('dialog', { name: 'New override' })).toBeNull()
     })
   })
 })
