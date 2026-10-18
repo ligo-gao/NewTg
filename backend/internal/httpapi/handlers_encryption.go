@@ -160,14 +160,20 @@ func (s *SQLLoginKeyStore) RotateLoginKey(ctx context.Context, oldID int64, key 
 	return nil
 }
 
-// DeleteLoginKey 只允许删除非 active 槽，防止误删当前密钥。
-func (s *SQLLoginKeyStore) DeleteLoginKey(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx,
+// DeleteLoginKey 只允许删除非 active 槽，防止误删当前密钥。返回是否真的
+// 删除了行：RowsAffected=0（并发清理已删/槽仍是 active）是 no-op，清理计数
+// 不得把它算成删除。
+func (s *SQLLoginKeyStore) DeleteLoginKey(ctx context.Context, id int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM login_encryption_keys WHERE id = $1 AND NOT active`, id)
 	if err != nil {
-		return fmt.Errorf("httpapi: delete login key %d: %w", id, err)
+		return false, fmt.Errorf("httpapi: delete login key %d: %w", id, err)
 	}
-	return nil
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("httpapi: delete login key %d rows affected: %w", id, err)
+	}
+	return affected == 1, nil
 }
 
 // ---------------------------------------------------------------------------

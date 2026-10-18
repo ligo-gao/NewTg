@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -119,6 +120,50 @@ func TestSessionCreateGetRoundTrip(t *testing.T) {
 	}
 	if _, err := m.Get(ctx, "not-a-session-id"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Get(畸形 sid) = %v，期望 ErrSessionNotFound", err)
+	}
+}
+
+// TestSessionCreateTruncatesUA 覆盖 A2：攻击者可控的 UA 在写入 Redis 前按
+// UTF-8 边界截断到 512 字节；多字节字符不得被切成非法 UTF-8。
+func TestSessionCreateTruncatesUA(t *testing.T) {
+	ctx := context.Background()
+	m, _, _ := newTestSessionManager(t)
+
+	ascii := strings.Repeat("A", 4096)
+	sid, err := m.Create(ctx, 7, SessionOpts{UA: ascii, IP: "203.0.113.9", Role: "user"})
+	if err != nil {
+		t.Fatalf("Create(long ascii UA): %v", err)
+	}
+	if got := mustGetSession(t, m, sid).UA; got != strings.Repeat("A", maxSessionUABytes) {
+		t.Fatalf("ASCII UA 截断结果长度 = %d，期望 %d", len(got), maxSessionUABytes)
+	}
+
+	multi := strings.Repeat("用户", 300) // 1800 字节；512 落在第 171 个 rune 中间
+	sid, err = m.Create(ctx, 7, SessionOpts{UA: multi, IP: "203.0.113.9", Role: "user"})
+	if err != nil {
+		t.Fatalf("Create(multibyte UA): %v", err)
+	}
+	got := mustGetSession(t, m, sid).UA
+	if len(got) > maxSessionUABytes {
+		t.Fatalf("多字节 UA 长度 = %d，超过上限 %d", len(got), maxSessionUABytes)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("多字节 UA 截断后不是合法 UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(multi, got) {
+		t.Fatalf("截断必须保留原前缀：got=%q", got)
+	}
+	if len(got) != maxSessionUABytes-2 {
+		t.Fatalf("多字节截断应回退到 %d 字节（3 字节 rune 边界），实际 %d", maxSessionUABytes-2, len(got))
+	}
+
+	// obs-text（HTTP 头允许的非 UTF-8 字节）不得原样落库。
+	sid, err = m.Create(ctx, 7, SessionOpts{UA: "\xff\xfe" + strings.Repeat("B", 600), IP: "203.0.113.9", Role: "user"})
+	if err != nil {
+		t.Fatalf("Create(invalid UTF-8 UA): %v", err)
+	}
+	if got := mustGetSession(t, m, sid).UA; !utf8.ValidString(got) || strings.ContainsRune(got, '�') {
+		t.Fatalf("非法 UTF-8 输入清洗后仍不合法: %q", got)
 	}
 }
 
@@ -443,5 +488,37 @@ func TestSessionRedisDownFailsClosed(t *testing.T) {
 	}
 	if _, err := m.Create(ctx, 42, SessionOpts{Role: "user"}); err == nil {
 		t.Fatal("Redis 不可用时 Create 必须返回错误")
+	}
+}
+
+// deadlineRecorder 记录异步落库收到的 context deadline。
+type deadlineRecorder struct{ deadlines chan time.Time }
+
+func (r *deadlineRecorder) RecordSession(ctx context.Context, _ int64, _ string) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		r.deadlines <- deadline
+	}
+	return nil
+}
+
+// TestSessionRecorderHasTimeout 覆盖 A6：异步落库必须带有限 deadline，
+// 否则 DB 卡住时每次登录都会泄漏一个永久阻塞的 goroutine。
+func TestSessionRecorderHasTimeout(t *testing.T) {
+	m, _, _ := newTestSessionManager(t)
+	rec := &deadlineRecorder{deadlines: make(chan time.Time, 1)}
+	m.SetSessionRecorder(rec)
+
+	before := time.Now()
+	_ = mustCreateSession(t, m, 7, "user")
+	select {
+	case deadline := <-rec.deadlines:
+		if deadline.IsZero() {
+			t.Fatal("recordSession 的 context 没有 deadline")
+		}
+		if deadline.Before(before) || deadline.After(before.Add(sessionRecordTimeout+5*time.Second)) {
+			t.Fatalf("deadline = %v，期望约 %v 后（sessionRecordTimeout）", deadline, sessionRecordTimeout)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("recorder 未被调用")
 	}
 }

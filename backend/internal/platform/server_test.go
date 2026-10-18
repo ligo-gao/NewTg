@@ -176,6 +176,18 @@ func TestNewGatewayMuxWithoutAPI(t *testing.T) {
 	}
 }
 
+// TestNewGatewayHTTPServerHardening 覆盖 A2：server 构造必须带 32 KiB
+// MaxHeaderBytes（默认 1 MiB 对未认证客户端过于宽松）与头部读取超时。
+func TestNewGatewayHTTPServerHardening(t *testing.T) {
+	srv := newGatewayHTTPServer(http.NotFoundHandler())
+	if srv.MaxHeaderBytes != 32<<10 {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, 32<<10)
+	}
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 5s", srv.ReadHeaderTimeout)
+	}
+}
+
 // TestShutdownGrace：装配后的 gateway 跑在随机端口，ctx cancel（等价 SIGTERM 路径）后
 // 在 SHUTDOWN_GRACE_SECONDS 窗口内退出且返回 nil；HTTP 监听已关、DB/Redis 已按序关闭。
 func TestShutdownGrace(t *testing.T) {

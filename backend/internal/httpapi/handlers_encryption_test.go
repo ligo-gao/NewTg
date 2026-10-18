@@ -70,16 +70,16 @@ func (s *memLoginKeyStore) RotateLoginKey(_ context.Context, oldID int64, key au
 	return nil
 }
 
-func (s *memLoginKeyStore) DeleteLoginKey(_ context.Context, id int64) error {
+func (s *memLoginKeyStore) DeleteLoginKey(_ context.Context, id int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.rows {
 		if s.rows[i].ID == id {
 			s.rows = append(s.rows[:i], s.rows[i+1:]...)
-			return nil
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func newTestPasswordEncryption(t *testing.T, enabled bool) (*PasswordEncryption, *memLoginKeyStore) {

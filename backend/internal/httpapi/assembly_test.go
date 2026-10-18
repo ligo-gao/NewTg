@@ -46,7 +46,9 @@ func (s *fakeLoginKeyStore) RotateLoginKey(context.Context, int64, auth.StoredLo
 	return nil
 }
 
-func (s *fakeLoginKeyStore) DeleteLoginKey(context.Context, int64) error { return nil }
+func (s *fakeLoginKeyStore) DeleteLoginKey(context.Context, int64) (bool, error) {
+	return false, nil
+}
 
 // gatewayDepsForTest 构造一套可运行的内存装配。DB/LogDB 为 nil，全部 Repo
 // 缝隙由既有测试假实现提供。

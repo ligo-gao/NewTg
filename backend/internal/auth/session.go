@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -39,6 +41,17 @@ const (
 	// userSessionsKeyPrefix 是每用户活跃会话索引；成员为 sid，分数为最近活动时间。
 	// 该索引让「并发上限驱逐」与「吊销用户全部会话」无需 SCAN 全库。
 	userSessionsKeyPrefix = "sess:user:"
+
+	// maxSessionUABytes 是写入 Redis 会话记录（并由会话列表原样返回）的 UA
+	// 存储上限。User-Agent 没有协议层长度限制，且是攻击者完全可控的输入：
+	// 不截断会把任意大的字符串写进 Redis 与审计副本。512 字节足以识别任何
+	// 现实浏览器/设备；截断按 UTF-8 边界进行，绝不产出非法 UTF-8。
+	maxSessionUABytes = 512
+
+	// sessionRecordTimeout 限制异步 login_sessions 落库的时长。DB 卡死时
+	// 没有上限的 goroutine 会在每次登录后堆积（连接池耗尽 → 雪崩）；5 秒
+	// 足以覆盖正常写入，超时即放弃——该表只是审计副本，会话仍以 Redis 为准。
+	sessionRecordTimeout = 5 * time.Second
 
 	fieldUserID            = "user_id"
 	fieldUA                = "ua"
@@ -148,7 +161,7 @@ func (m *SessionManager) Create(ctx context.Context, userID int64, opts SessionO
 	_, err = createSessionScript.Run(ctx, m.rdb,
 		[]string{sessionKey(sid), userSessionsKey(userID)},
 		strconv.FormatInt(userID, 10),
-		opts.UA,
+		truncateUTF8Bytes(opts.UA, maxSessionUABytes),
 		opts.IP,
 		formatSessionTime(now),
 		formatSessionTime(now),
@@ -368,14 +381,17 @@ func HashSessionID(sid string) string {
 }
 
 // recordSession 异步落库。login_sessions 只是审计副本，失败不得让登录失败；
-// context.WithoutCancel 防止请求返回后 ctx 被取消而丢写入。
+// context.WithoutCancel 防止请求返回后 ctx 被取消而丢写入，短超时防止 DB
+// 卡住时每次登录泄漏一个 goroutine。
 func (m *SessionManager) recordSession(ctx context.Context, userID int64, sidHash string) {
 	rec := m.recorder
 	if rec == nil {
 		return
 	}
 	go func() {
-		_ = rec.RecordSession(context.WithoutCancel(ctx), userID, sidHash)
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionRecordTimeout)
+		defer cancel()
+		_ = rec.RecordSession(recordCtx, userID, sidHash)
 	}()
 }
 
@@ -470,6 +486,24 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// truncateUTF8Bytes 把 s 截断到至多 max 字节且保持合法 UTF-8。
+//
+// 先经 strings.ToValidUTF8 清洗头部/代理可能带入的 obs-text（HTTP 头允许
+// 非 UTF-8 的 0x80–0xFF 字节），再从 max 处向前回退到 rune 起点。直接按
+// 字节切会把多字节字符切成半个 rune，Redis 与 JSON 会话列表都会得到非法
+// UTF-8。
+func truncateUTF8Bytes(s string, max int) string {
+	s = strings.ToValidUTF8(s, "")
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // createSessionScript 在一个 Lua 事务里完成「写会话 + 登记索引 + 驱逐」。

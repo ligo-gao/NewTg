@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -332,4 +333,43 @@ type reauthErrorLimiter struct{ err error }
 func (l reauthErrorLimiter) Check(context.Context, int64) error { return l.err }
 func (l reauthErrorLimiter) Record(context.Context, int64, bool) error {
 	return l.err
+}
+
+// TestRedisReauthLimiterHealsMissingTTL 覆盖 A4：计数器存在但无 TTL（旧版本/
+// 人工写入的异常数据）时，Check 必须重写完整锁定窗口，而不是只返回锁定却
+// 让键永不过期（事实上的永久锁定）。
+func TestRedisReauthLimiterHealsMissingTTL(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	// 直接写入无过期时间的失败计数：PTTL 返回 -1。
+	key := reauthFailureKey(31)
+	if err := rdb.Set(ctx, key, strconv.Itoa(ReauthMaxFailures), 0).Err(); err != nil {
+		t.Fatalf("seed counter: %v", err)
+	}
+
+	limiter := NewRedisReauthLimiter(rdb)
+	err := limiter.Check(ctx, 31)
+	var locked *ReauthLockedError
+	if !errors.As(err, &locked) {
+		t.Fatalf("Check = %v，期望 *ReauthLockedError", err)
+	}
+	if locked.RetryAfter != ReauthLockDuration {
+		t.Fatalf("RetryAfter = %v，期望完整窗口 %v", locked.RetryAfter, ReauthLockDuration)
+	}
+	ttl, err := rdb.PTTL(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("PTTL after heal: %v", err)
+	}
+	if ttl <= 0 || ttl > ReauthLockDuration {
+		t.Fatalf("修复后的 TTL = %v，期望 (0, %v]", ttl, ReauthLockDuration)
+	}
+
+	// 自愈必须是真的：窗口过去后锁定解除。
+	mr.FastForward(ReauthLockDuration + time.Second)
+	if err := limiter.Check(ctx, 31); err != nil {
+		t.Fatalf("窗口过期后 Check = %v，期望 nil（不得永久锁定）", err)
+	}
 }

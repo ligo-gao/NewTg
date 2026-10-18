@@ -139,8 +139,18 @@ func (l *RedisReauthLimiter) Check(ctx context.Context, userID int64) error {
 	if err != nil {
 		return fmt.Errorf("auth: reauth limiter ttl: %w", err)
 	}
-	if ttl <= 0 || ttl > ReauthLockDuration {
-		// 无 TTL（异常数据）按完整锁定窗口处理：既不永久锁定也不提前放行。
+	switch {
+	case ttl == -2:
+		// 键在 GET 与 PTTL 之间自然过期：计数已不存在，不能用一个刚消失的
+		// 桶把用户再锁 15 分钟（与登录锁定桶对 -2 的口径一致）。
+		return nil
+	case ttl <= 0 || ttl > ReauthLockDuration:
+		// 异常数据来源：旧版本/人工写入的计数器没有 TTL，或 TTL 被外部改坏。
+		// 只返回锁定时长而不修复会让该键永不过期——用户被事实永久锁定。
+		// 这里用完整窗口重写键（自愈）：保护不中断，且 15 分钟后自然解除。
+		if err := l.rdb.Set(ctx, key, strconv.Itoa(n), ReauthLockDuration).Err(); err != nil {
+			return fmt.Errorf("auth: reauth limiter heal ttl: %w", err)
+		}
 		ttl = ReauthLockDuration
 	}
 	return &ReauthLockedError{RetryAfter: ttl}

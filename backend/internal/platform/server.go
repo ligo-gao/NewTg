@@ -93,12 +93,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	checker := checkerFromResources(db, redisRes, int(expectedVersion), log)
 	checker.node = cfg.NodeName
 	mux := newGatewayMux(checker, apiHandler)
-	srv := &http.Server{
-		// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：
-		// 404、探针、后续 API 与 SSE 都必须经过同一层，避免按路由漏配。
-		Handler:           SecurityHeaders(mux),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	srv := newGatewayHTTPServer(SecurityHeaders(mux))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		// 监听失败是主错误；资源清理失败不覆盖它。
@@ -154,6 +149,25 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	log.Info("gateway stopped")
 	return nil
+}
+
+// maxHeaderBytes 是 HTTP 请求头总大小上限（32 KiB）。
+//
+// net/http 的默认值是 1 MiB：一个未认证客户端就能让每次连接在 TLS/业务之前
+// 占用并解析近 1 MiB 头部（同时放大日志与代理内存）。32 KiB 覆盖最长现实
+// 场景（会话/CSRF Cookie + 常见转发头 + 超长 UA），是纵深防御而非业务上限。
+const maxHeaderBytes = 32 << 10
+
+// newGatewayHTTPServer 构造 gateway 的主 HTTP server。
+//
+// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：404、探针、后续
+// API 与 SSE 都必须经过同一层，避免按路由漏配。
+func newGatewayHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
 }
 
 // newGatewayMux 把探针与管理面挂到同一 mux：/api/ 子树交给 httpapi.Router

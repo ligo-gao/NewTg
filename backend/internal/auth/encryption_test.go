@@ -266,19 +266,19 @@ func (s *memLoginKeyStore) RotateLoginKey(_ context.Context, oldID int64, key St
 	return nil
 }
 
-func (s *memLoginKeyStore) DeleteLoginKey(_ context.Context, id int64) error {
+func (s *memLoginKeyStore) DeleteLoginKey(_ context.Context, id int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.rows {
 		if s.rows[i].ID == id {
 			if s.rows[i].Active {
-				return errors.New("memstore: 不得删除 active 槽")
+				return false, errors.New("memstore: 不得删除 active 槽")
 			}
 			s.rows = append(s.rows[:i], s.rows[i+1:]...)
-			return nil
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (s *memLoginKeyStore) snapshot() []StoredLoginKey {
@@ -368,6 +368,26 @@ func TestLoginKeyManagerBootstrapRotationAndPreviousSlot(t *testing.T) {
 	}
 	if rows := store.snapshot(); len(rows) != 1 || !rows[0].Active {
 		t.Fatalf("清理后应只剩 active 槽：%#v", rows)
+	}
+}
+
+// TestLoginKeyPruneIgnoresNoOpDelete 覆盖 A5：DeleteLoginKey 返回 false（并发
+// 清理已删掉该行）时，pruneRows 不得把它计为一次删除。
+func TestLoginKeyPruneIgnoresNoOpDelete(t *testing.T) {
+	store := &memLoginKeyStore{}
+	mgr := NewLoginKeyManager(store, mustTestCipher(t))
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	mgr.now = func() time.Time { return now }
+
+	active := StoredLoginKey{ID: 1, Active: true, CreatedAt: now.Add(-time.Hour)}
+	stale := StoredLoginKey{ID: 999, Active: false} // store 中并不存在：删除是 no-op
+	deleted, err := mgr.pruneRows(context.Background(),
+		[]StoredLoginKey{active, stale}, &active)
+	if err != nil {
+		t.Fatalf("pruneRows: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("pruneRows = %d，期望 0（no-op 不得计为删除）", deleted)
 	}
 }
 

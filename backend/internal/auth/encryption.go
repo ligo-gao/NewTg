@@ -403,7 +403,9 @@ type LoginKeyStore interface {
 	ListLoginKeys(ctx context.Context) ([]StoredLoginKey, error)
 	InsertLoginKey(ctx context.Context, key StoredLoginKey) (int64, error)
 	RotateLoginKey(ctx context.Context, oldID int64, key StoredLoginKey) error
-	DeleteLoginKey(ctx context.Context, id int64) error
+	// DeleteLoginKey 删除非 active 槽；返回是否实际删除了行。并发轮换/清理
+	// 可能让目标行已不存在——那是 no-op 而不是删除，清理计数不得把它算进去。
+	DeleteLoginKey(ctx context.Context, id int64) (bool, error)
 }
 
 // LoginKey 是已解密可用的密钥槽。
@@ -615,10 +617,15 @@ func (m *LoginKeyManager) pruneRows(ctx context.Context, rows []StoredLoginKey, 
 		if row.Active {
 			continue
 		}
-		if err := m.store.DeleteLoginKey(ctx, row.ID); err != nil {
+		removed, err := m.store.DeleteLoginKey(ctx, row.ID)
+		if err != nil {
 			return deleted, fmt.Errorf("auth: delete login key %d: %w", row.ID, err)
 		}
-		deleted++
+		if removed {
+			// 只有真正删除的行才计入返回值：并发清理已删掉的槽是 no-op，
+			// 把它计为「删除了 N 行」会让调用方误判清理成效。
+			deleted++
+		}
 	}
 	return deleted, nil
 }
