@@ -611,16 +611,17 @@ func (h *RelayHandler) bridgeStream(
 	model := rc.OriginModel
 
 	var (
-		accumulated  contract.Usage
-		sawUsage     bool
-		received     int
-		sent         int
-		contentSent  int // 仅内容帧（raw/delta）：OutcomePartial 的判据（契约 §7.2）
-		softErrors   int
-		firstTokenMS *int
-		finished     bool
-		upstreamFail bool
-		clientGone   bool
+		accumulated     contract.Usage
+		sawUsage        bool
+		usageFromHeader bool // accumulated 来自 x-model-response-usage 头（完整上游报告）
+		received        int
+		sent            int
+		contentSent     int // 仅内容帧（raw/delta）：OutcomePartial 的判据（契约 §7.2）
+		softErrors      int
+		firstTokenMS    *int
+		finished        bool
+		upstreamFail    bool
+		clientGone      bool
 	)
 	// 看门狗与 ping 协程会并发写这两个标志；事件循环只读。
 	var timedOut atomic.Bool
@@ -717,8 +718,10 @@ func (h *RelayHandler) bridgeStream(
 				SendCount: sent,
 			}, sent, received, firstTokenMS)
 			terminate(contract.UsageFact{
-				Model:        model,
-				Usage:        abnormalUsageFact(accumulated, sawUsage),
+				Model: model,
+				// panic 在头部兜底之前展开：此时头部用量尚未提取，只能按已累计
+				// 的事件用量定源（fromHeader=false）。
+				Usage:        abnormalUsageFact(accumulated, false),
 				LatencyMS:    int(time.Since(start).Milliseconds()),
 				FirstTokenMS: firstTokenMS,
 				Stream:       true,
@@ -855,11 +858,17 @@ func (h *RelayHandler) bridgeStream(
 	// EventUsage/finish usage 时，上游可能只在 `x-model-response-usage` 头里
 	// 报告用量。先尝试头部；只有头部也没有可用数字时才在下方标记 estimated，
 	// 绝不能把「头部给了精确值」的情况降级成本地估算。
-	if !sawUsage {
+	//
+	// 判定条件是**非零事实**而非「是否出现过 usage 事件」（re-review fix 1）：
+	// 上游发 `usage: {}` 或全零 usage 帧时 sawUsage 已为 true，但累计用量没有
+	// 任何数字——此时头部才是唯一的真实来源，不能被事件占位符挡住。反过来，
+	// 只要累计出任何非零维度，就绝不拿头部覆盖（三源互斥，R-05）。
+	if !sawUsage || !usageHasFact(accumulated) {
 		extracted := usage.ExtractUsage(&contract.Response{}, upstreamHeader, nil)
 		if extracted.Usage.Source == contract.UsageUpstreamExact {
 			accumulated = extracted.Usage
 			sawUsage = true
+			usageFromHeader = true
 		}
 	}
 
@@ -915,13 +924,16 @@ func (h *RelayHandler) bridgeStream(
 	}
 	switch {
 	case abnormal:
-		// finding 3：只有真实累计到上游用量时才标 upstream_partial；
-		// 断开/中断但从未见过 usage 时是 estimated（零用量不是「部分事实」）。
-		fact.Usage = abnormalUsageFact(accumulated, sawUsage)
-	case !sawUsage:
-		// 上游没有给出 usage：标记 estimated，绝不把零值谎报成 upstream_exact
-		// （零值 Source 的 iota 是 UsageUpstreamExact）。
-		fact.Usage.Source = contract.UsageEstimated
+		// finding 3 + re-review fix 4：只有真实累计到上游用量时才标
+		// upstream_partial；断开/中断但从未见过用量时是 estimated（零用量不是
+		// 「部分事实」）。但来自 x-model-response-usage 头的用量是**完整**上游
+		// 报告，即使流被客户端中断/超时/上游错误截断，也应保持 upstream_exact。
+		fact.Usage = abnormalUsageFact(accumulated, usageFromHeader)
+	case !usageHasFact(accumulated):
+		// 上游没有给出任何非零用量（包括空 `usage: {}` / 全零帧，且无头部）：
+		// 标记 estimated，绝不把零值谎报成 upstream_exact（零值 Source 的
+		// iota 是 UsageUpstreamExact）。关系布尔按 OpenAI 协议语义补齐。
+		fact.Usage = openAIEstimatedUsage(accumulated)
 	}
 	terminate(fact)
 }
@@ -931,12 +943,37 @@ func (h *RelayHandler) bridgeStream(
 // finding 3：UsageUpstreamPartial 的语义是「上游确实给过部分用量」。
 // 若从未观察到任何非零用量，正确来源是 UsageEstimated（交给 M3 兜底估算），
 // 而不是把零值谎报成「部分上游事实」。
-func abnormalUsageFact(accumulated contract.Usage, sawUsage bool) contract.Usage {
-	accumulated.Source = contract.UsageEstimated
-	if sawUsage && usageHasFact(accumulated) {
-		accumulated.Source = contract.UsageUpstreamPartial
+//
+// re-review fix 4：fromHeader 表示 accumulated 完全来自
+// `x-model-response-usage` 头。头部是上游给出的**完整**用量值，与流在何处
+// 中断无关（数字已在上游生成并随响应头送达），因此保持 UsageUpstreamExact，
+// 不得降级成 partial。
+func abnormalUsageFact(accumulated contract.Usage, fromHeader bool) contract.Usage {
+	if fromHeader && usageHasFact(accumulated) {
+		accumulated.Source = contract.UsageUpstreamExact
+		return accumulated
 	}
+	if !usageHasFact(accumulated) {
+		return openAIEstimatedUsage(accumulated)
+	}
+	accumulated.Source = contract.UsageUpstreamPartial
 	return accumulated
+}
+
+// openAIEstimatedUsage 为「无上游用量、需要本地估算」的事实补上 OpenAI 协议
+// 语义的关系布尔（re-review fix 3）。
+//
+// PromptIncludesCache/ReasoningIncludedInCompletion 是**协议属性**而非用量
+// 数字（relay-03 §6.2 row 1）：OpenAI 的 prompt_tokens 已含 cached_tokens、
+// completion_tokens 已含 reasoning_tokens。流式路径与 relay.Route 的非流式
+// 路径必须一致；否则「无 usage 的上游」会让计费侧把 CacheRead/Reasoning 当
+// 独立维度重复加价。适配器 normalize 时对空/非法 usage 也显式置 true
+// （ir.parseOpenAIUsage），这里补齐同样的语义。
+func openAIEstimatedUsage(u contract.Usage) contract.Usage {
+	u.Source = contract.UsageEstimated
+	u.PromptIncludesCache = true
+	u.ReasoningIncludedInCompletion = true
+	return u
 }
 
 // relaySSEWriter 是 SSE 帧的唯一写出口。

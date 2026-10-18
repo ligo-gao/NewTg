@@ -289,7 +289,10 @@ func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
 // {model} 的转义必须按占位符所在组件区分（final-review finding 6）：
 // url.PathEscape 不转义 `&`/`=`，若占位符位于 query 中，模型名
 // `a&admin=1` 会凭空注入一个 admin 参数。因此：
-//   - authority 中的占位符在解析前按 host 规则替换（见 substituteAuthorityPlaceholder）；
+//   - authority 中的占位符**一律拒绝**（security-04 §2.4：替换不得改变主机）：
+//     模型名来自客户端请求，若允许落进 authority，客户端就能选择 host/port
+//     （例如 `10.0.0.5:8080`），构成 SSRF / 上游凭据外泄原语，详见
+//     authorityHasModelPlaceholder；
 //   - path/fragment 中的占位符用 PathEscape（转义 ? / # / %，保留 &/=（路径里安全））；
 //   - query 中的占位符用 QueryEscape（转义 & / = / ? / #，杜绝参数注入）。
 //
@@ -300,14 +303,16 @@ func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
 // `%` 二次转义成 `%25`。错误不回显 URL（GC-6）。
 func customURL(baseURL, model string) (string, error) {
 	baseURL = strings.TrimSpace(baseURL)
-	// authority 的 {model} 必须在 url.Parse **之前**替换：net/url 对 host 中的
-	// `{` 直接报 invalid character，未替换的占位符会让一个本应合法的配置变成
-	// 渠道配置错误（回归：替换先于解析的旧语义）。
-	resolved, err := substituteAuthorityPlaceholder(baseURL, model)
-	if err != nil {
-		return "", err
+	// security-04 §2.4：{model} 替换不得改变主机。模型名由客户端请求控制
+	// （OriginModel/UpstreamModel），若允许它落进 authority，客户端就能选择
+	// host/port（例如模型名 `10.0.0.5:8080`），把网关变成访问内网的跳板或把
+	// 渠道凭据发往攻击者主机。authority 没有安全的转义机制（net/url 拒绝 host
+	// 中的 `{` 与 %XX），因此不做任何替换：模板在 authority 出现占位符就是
+	// 渠道配置错误（ErrChannelConfig，不重试），而不是逐请求拒绝模型名。
+	if authorityHasModelPlaceholder(baseURL) {
+		return "", classifiedf(contract.ErrChannelConfig, "adapters: model placeholder not allowed in custom base URL authority")
 	}
-	parsed, err := url.Parse(resolved)
+	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
 	}
@@ -355,41 +360,29 @@ func replaceModelPlaceholder(component, replacement string) string {
 	).Replace(component)
 }
 
-// substituteAuthorityPlaceholder 在 url.Parse 之前替换 authority 中的 {model}。
+// authorityHasModelPlaceholder 判断 base_url 的 authority（host[:port]）段是否
+// 含 {model} 占位符。
 //
-// 为什么不能等到解析后再替换：net/url 拒绝 host 中的 `{`（invalid character
-// "{" in host name），且同样拒绝 host 里的任何 %XX 转义（invalid URL escape），
-// 所以 authority 占位符无法像 path 那样先解析再回填。
+// security-04 §2.4 要求 {model} 替换不得改变主机：host 组件没有任何可用的
+// 转义机制，模型名只能原样落位；而模型名是客户端可控输入，允许替换就等于
+// 允许客户端选择主机与端口（`{model}` → `10.0.0.5:8080`）。与其尝试清洗
+// 模型名（黑名单永远追不上 URL 解析的边角），这里直接拒绝整个模板：
+// 该渠道配置不可用（ErrChannelConfig，不重试），运行期请求永远到不了这一步。
 //
-// 安全边界：host 组件没有可用的转义机制，模型名只能原样落位。任何能改写 URL
-// 结构的字符都必须拒绝（按渠道配置错误，不重试）：
-//   - `/` `?` `#` 会把模型名变成路径/query/fragment；
-//   - `@` 会注入 userinfo（`{model}@evil` 之类的主机替换）；
-//   - scheme 注入同样依赖 `/`（`https://evil.com` 需要斜杠），一并覆盖。
-//
-// 错误信息不回显 base_url/模型名（GC-6）。
-func substituteAuthorityPlaceholder(baseURL, model string) (string, error) {
+// scheme 缺失时返回 false：没有 authority 可供替换，后续 url.Parse 会按非法
+// URL 拒绝。检查在 url.Parse **之前**进行：net/url 对 host 中的 `{` 报
+// invalid character，若先解析就无法区分「占位符」与「损坏的 URL」。
+func authorityHasModelPlaceholder(baseURL string) bool {
 	schemeEnd := strings.Index(baseURL, "://")
 	if schemeEnd < 0 {
-		// 没有 scheme 分隔符：交给后续 url.Parse 统一按非法 URL 拒绝。
-		return baseURL, nil
+		return false
 	}
 	authorityStart := schemeEnd + len("://")
 	authorityEnd := len(baseURL)
 	if stop := strings.IndexAny(baseURL[authorityStart:], "/?#"); stop >= 0 {
 		authorityEnd = authorityStart + stop
 	}
-	authority := baseURL[authorityStart:authorityEnd]
-	if !hasModelPlaceholder(authority) {
-		return baseURL, nil
-	}
-	substituted := replaceModelPlaceholder(authority, model)
-	// 校验替换后的 authority 本身：模板自带的结构字符（如 userinfo 的 `@`）
-	// 也无法与占位符安全共存，一律按配置错误拒绝，宁严勿宽。
-	if strings.ContainsAny(substituted, "/?#@") {
-		return "", classifiedf(contract.ErrChannelConfig, "adapters: unsafe model name for custom base URL authority")
-	}
-	return baseURL[:authorityStart] + substituted + baseURL[authorityEnd:], nil
+	return hasModelPlaceholder(baseURL[authorityStart:authorityEnd])
 }
 
 // azureDeploymentName 实现 Azure 部署名的点号保留规则（relay-02 §7.4）。

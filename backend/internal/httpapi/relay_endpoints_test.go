@@ -551,6 +551,121 @@ func TestRelayStreamHeaderOnlyUsage(t *testing.T) {
 	}
 }
 
+// TestRelayStreamAllZeroUsageFallsBackToHeader 覆盖 re-review fix 1：
+// 上游发送了 usage 事件但全零（`usage: {}` 或全零帧）时，`sawUsage` 已置位，
+// 旧逻辑因此跳过头部的精确值，最终产出零值 upstream_exact。头部兜底必须以
+// 「累计到非零数字」为条件，而不是「是否出现过 usage 事件」。
+func TestRelayStreamAllZeroUsageFallsBackToHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-model-response-usage",
+			`{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`)
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		frames := []string{
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n",
+			// 全零 usage 帧：事件存在但没有任何用量事实。
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}` + "\n\n",
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+			"data: [DONE]\n\n",
+		}
+		for _, frame := range frames {
+			_, _ = io.WriteString(w, frame)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// include_usage 默认开启：合成末块必须使用头部数值，不能是全零。
+	out := w.Body.String()
+	if !strings.Contains(out, `"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`) {
+		t.Fatalf("全零 usage 帧后的合成用量块未使用 x-model-response-usage 头: %s", out)
+	}
+
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	}
+	fact := env.billing.lastFact()
+	if fact.Usage.Prompt != 7 || fact.Usage.Completion != 5 || fact.Usage.Total != 12 {
+		t.Fatalf("UsageFact.Usage = %+v，期望头部用量 7/5/12（全零事件不得覆盖头部）", fact.Usage)
+	}
+	if fact.Usage.Source != contract.UsageUpstreamExact {
+		t.Fatalf("UsageFact.Usage.Source = %v, want UsageUpstreamExact", fact.Usage.Source)
+	}
+}
+
+// TestRelayStreamClientAbortHeaderUsageStaysExact 覆盖 re-review fix 4：
+// x-model-response-usage 头是上游生成的**完整**用量值，与流在何处中断无关。
+// 客户端断开属于异常结束，但头部来源不得降级为 upstream_partial。
+func TestRelayStreamClientAbortHeaderUsageStaysExact(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-model-response-usage",
+			`{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`)
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"part"},"finish_reason":null}]}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 保持流打开，直到客户端断开级联取消上游请求 context。
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	gateway := httptest.NewServer(env.handler.Handler())
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+relayTestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	buf := make([]byte, 256)
+	if n, readErr := resp.Body.Read(buf); readErr != nil && n == 0 {
+		t.Fatalf("read first frame: %v", readErr)
+	}
+	cancel()
+	_ = resp.Body.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for env.billing.terminateCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("billing session was not terminated after client disconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1 after disconnect", got)
+	}
+	fact := env.billing.lastFact()
+	if fact.Usage.Source != contract.UsageUpstreamExact {
+		t.Fatalf("abort + 头部用量 Source = %v, want UsageUpstreamExact（头部是完整上游报告）", fact.Usage.Source)
+	}
+	if fact.Usage.Prompt != 7 || fact.Usage.Completion != 5 || fact.Usage.Total != 12 {
+		t.Fatalf("abort + 头部用量 = %+v, want 7/5/12", fact.Usage)
+	}
+}
+
 // ---------- (c) 缺失/非法令牌 → 401 OpenAI 信封，无 URL 泄漏 ----------
 
 func TestRelayAuthErrorsUseOpenAIEnvelope(t *testing.T) {
@@ -827,6 +942,13 @@ func TestRelayStreamingDisconnectWithoutUsageIsEstimated(t *testing.T) {
 	fact := env.billing.lastFact()
 	if fact.Usage.Source != contract.UsageEstimated {
 		t.Fatalf("no-usage disconnect Source = %d, want UsageEstimated（零用量不是 partial）", fact.Usage.Source)
+	}
+	// re-review fix 3：estimated 只影响来源，不改变协议语义。OpenAI 的
+	// prompt 已含 CacheRead、completion 已含 Reasoning，必须与 relay.Route
+	// 非流式路径一致，否则计费侧会按独立维度重复加价。
+	if !fact.Usage.PromptIncludesCache || !fact.Usage.ReasoningIncludedInCompletion {
+		t.Fatalf("estimated OpenAI fact 关系布尔未补齐: PromptIncludesCache=%v ReasoningIncludedInCompletion=%v",
+			fact.Usage.PromptIncludesCache, fact.Usage.ReasoningIncludedInCompletion)
 	}
 }
 
