@@ -257,6 +257,55 @@ func (l *Ledger) AdjustToken(ctx context.Context, userID, tokenID, delta int64) 
 	})
 }
 
+// AdjustTokenQuota 只调整令牌额度，不写钱包流水（R-88 的 worker 兜底路径）。
+//
+// 与会话内的 AdjustToken 区别：这是**best-effort** 恢复，额度不足时向下
+// floor 到 0 而不是返回错误（worker 面对的是已崩溃的请求，不能让一次令牌
+// 补扣失败阻断钱包退款）。
+//   - delta > 0：回补（崩溃兜底退回 hold 金额）；
+//   - delta < 0：扣减，`GREATEST(remain_quota - n, 0)` 保证不越下界；
+//   - tokenID <= 0 / NULL 无限额 / 令牌不存在（含已删除）/ 归属不匹配 → no-op。
+func (l *Ledger) AdjustTokenQuota(ctx context.Context, userID, tokenID, delta int64) error {
+	if tokenID <= 0 || delta == 0 {
+		return nil
+	}
+	if delta == math.MinInt64 {
+		return errors.New("billing: token adjustment out of int64 range")
+	}
+	var res *gorm.DB
+	if delta > 0 {
+		res = l.db.WithContext(ctx).Exec(
+			`UPDATE api_tokens SET remain_quota = remain_quota + ?, updated_at = now()
+			 WHERE id = ? AND user_id = ? AND remain_quota IS NOT NULL`,
+			delta, tokenID, userID)
+	} else {
+		res = l.db.WithContext(ctx).Exec(
+			`UPDATE api_tokens SET remain_quota = GREATEST(remain_quota - ?, 0), updated_at = now()
+			 WHERE id = ? AND user_id = ? AND remain_quota IS NOT NULL`,
+			-delta, tokenID, userID)
+	}
+	if res.Error != nil {
+		return fmt.Errorf("billing: adjust token quota: %w", res.Error)
+	}
+	return nil
+}
+
+// holdOwner 返回该 requestID 预扣行所属用户（R-88 恢复时校验令牌归属）。
+// found=false 表示没有 consume_pre 行。
+func (l *Ledger) holdOwner(ctx context.Context, requestID string) (userID int64, found bool, err error) {
+	err = l.db.WithContext(ctx).Raw(
+		`SELECT user_id FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ? AND type = 'consume_pre'
+		 ORDER BY id LIMIT 1`, requestID).Row().Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("billing: read hold owner for %s: %w", requestID, err)
+	}
+	return userID, true, nil
+}
+
 // requestTerminal 判断该 requestID 是否已经结案（Important-1）。
 //
 // 判定面：存在 billing:* 结案标记（结算/退款/兜底），或存在已关闭的

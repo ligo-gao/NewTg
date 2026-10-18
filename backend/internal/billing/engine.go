@@ -44,8 +44,13 @@ type ConfigReader interface {
 // 生产实现见 Task 5 的 Redis registry；单测/未接线时允许为 nil（跳过副作用）。
 // 租约参数由会话（本包）拥有：InflightLeaseTTLSeconds 是写入时的 TTL，
 // InflightHeartbeatSeconds 是续约间隔。
+//
+// 【tokenID · R-88】Register 必须携带令牌身份：worker 的崩溃兜底
+// （RecoverAbandonedByID）在退回钱包 hold 的同时要把同一金额回补到
+// api_tokens.remain_quota；worker 只有 requestID，因此租约里必须存 tokenID。
+// 0 表示该请求未绑定令牌（跳过令牌回补）。
 type Registry interface {
-	Register(ctx context.Context, requestID string, userID int64, lease time.Duration) error
+	Register(ctx context.Context, requestID string, userID, tokenID int64, lease time.Duration) error
 	Heartbeat(ctx context.Context, requestID string) error
 	Remove(ctx context.Context, requestID string) error
 }

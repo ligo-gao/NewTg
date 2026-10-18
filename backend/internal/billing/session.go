@@ -1041,7 +1041,7 @@ func (s *Session) registerLeaseLocked(ctx context.Context) error {
 	if s.engine.registry == nil || s.leaseRegistered {
 		return nil
 	}
-	if err := s.engine.registry.Register(ctx, s.requestID, s.userID,
+	if err := s.engine.registry.Register(ctx, s.requestID, s.userID, s.tokenID,
 		time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		var rbErr error
 		if s.consumed > 0 {

@@ -394,13 +394,15 @@ type fakeRegistry struct {
 	events     []string
 	lease      time.Duration
 	heartbeats int
+	tokenID    int64 // R-88：最近一次 Register 携带的令牌身份
 }
 
-func (f *fakeRegistry) Register(_ context.Context, _ string, _ int64, lease time.Duration) error {
+func (f *fakeRegistry) Register(_ context.Context, _ string, _, tokenID int64, lease time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "register")
 	f.lease = lease
+	f.tokenID = tokenID
 	return nil
 }
 
@@ -425,16 +427,23 @@ func (f *fakeRegistry) snapshot() (events []string, lease time.Duration, heartbe
 	return append([]string(nil), f.events...), f.lease, f.heartbeats
 }
 
+func (f *fakeRegistry) registeredTokenID() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenID
+}
+
 // TestSessionLeaseLifecycle 验证租约调用序：预扣成功 Register（TTL=300s）、
 // 在飞期心跳、Terminate 后 Remove。
 func TestSessionLeaseLifecycle(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
 	reg := &fakeRegistry{}
 	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, reg, nil)
 	e.heartbeat = 10 * time.Millisecond
 	req := testRequestID("lease")
-	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+	s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
 
 	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
 		t.Fatalf("PreConsume: %v", err)
@@ -445,6 +454,10 @@ func TestSessionLeaseLifecycle(t *testing.T) {
 	}
 	if lease != time.Duration(contract.InflightLeaseTTLSeconds)*time.Second {
 		t.Fatalf("lease = %v, want %ds", lease, contract.InflightLeaseTTLSeconds)
+	}
+	// R-88：租约必须携带 tokenID，worker 才能回补令牌额度。
+	if got := reg.registeredTokenID(); got != tokenID {
+		t.Fatalf("register tokenID = %d, want %d", got, tokenID)
 	}
 
 	waitHeartbeats(t, reg, 2)
@@ -2082,4 +2095,82 @@ func TestSessionPreConsumeRejectsExistingClamp(t *testing.T) {
 	if s.Reserved() != 0 {
 		t.Fatalf("Reserved = %d, want 0", s.Reserved())
 	}
+}
+
+// TestEngineRecoverAbandonedRestoresTokenQuota 是 R-88 的回归：worker 入口
+// 在退回钱包 hold 的同时，必须把同一 hold 金额回补到令牌额度。
+func TestEngineRecoverAbandonedRestoresTokenQuota(t *testing.T) {
+	t.Run("有限令牌：回补 hold 金额", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, int64(500))
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		req := testRequestID("r88-limited")
+		s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 400 {
+			t.Fatalf("token remain before recovery = %+v, want 400", got)
+		}
+		// 模拟崩溃：不调用 Terminate/Refund，直接走 worker 入口。
+		if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err != nil {
+			t.Fatalf("RecoverAbandonedByID: %v", err)
+		}
+		if got := userBalance(t, db, userID); got != 500 {
+			t.Fatalf("balance = %d, want 500（hold 已退回）", got)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+			t.Fatalf("token remain = %+v, want 500（hold 金额已回补）", got)
+		}
+		rows := readWalletRows(t, db, req)
+		if len(rows) != 2 || rows[0].Status != "expired" || rows[1].Amount != 100 {
+			t.Fatalf("rows = %+v, want expired + release 100", rows)
+		}
+	})
+
+	t.Run("NULL 无限额：no-op", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, nil)
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		req := testRequestID("r88-unlimited")
+		s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err != nil {
+			t.Fatalf("RecoverAbandonedByID: %v", err)
+		}
+		if got := userBalance(t, db, userID); got != 500 {
+			t.Fatalf("balance = %d, want 500", got)
+		}
+		if got := tokenRemain(t, db, tokenID); got.Valid {
+			t.Fatalf("token remain = %+v, want NULL", got)
+		}
+	})
+
+	t.Run("令牌已删除：no-op", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, int64(500))
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		req := testRequestID("r88-deleted")
+		s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if _, err := db.Exec(`DELETE FROM api_tokens WHERE id = $1`, tokenID); err != nil {
+			t.Fatalf("delete token: %v", err)
+		}
+		if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err != nil {
+			t.Fatalf("RecoverAbandonedByID = %v, want nil（令牌删除应 no-op）", err)
+		}
+		if got := userBalance(t, db, userID); got != 500 {
+			t.Fatalf("balance = %d, want 500", got)
+		}
+	})
 }
