@@ -248,7 +248,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: open redis: %w", err)
 	}
 	rr, ok := redisRes.(redisResource)
-	if !ok {
+	if !ok || rr.client == nil {
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()

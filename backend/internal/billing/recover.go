@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"newtg/gateway/internal/contract"
 )
 
 // RecoverAbandonedByID 是崩溃兜底的引擎入口（worker/T9 调用）。
@@ -12,12 +14,14 @@ import (
 // 后无法复原；因此这里不重建 Session，而是按 billing-00 §6.2 冻结的持久化
 // 状态面从数据库行复原：
 //
-//   - 钱包路径（M3 唯一实现）：wallet_transactions 中
+//   - 钱包路径（M3 唯一资金来源）：wallet_transactions 中
 //     type='consume_pre' AND status='hold' AND reference_id=requestID。
 //     金额与 userID 都来自这些行，不信任任何内存值。
 //   - 订阅预扣记录：属 M5（billing-08），M3 只留接缝、不实现（R-14）。
-//   - usage_logs 占位：M3 没有日志库写入器（Task 6 的 DBLogger 尚未落地）；
-//     该状态面是辅助判据，不影响钱包退款正确性（R-14）。
+//   - 用量日志占位：在钱包退款后经 Saturator（Task 6 的 DBLogger）写
+//     status=refunded 的占位/收敛行。必须走 Saturate 而不是直接 SQL：
+//     它用 request_id 事务级咨询锁串行化与 Terminate 的并发写，并保证
+//     R-25 的单向收敛（已有 success 行只能收敛为 refunded，绝不反向覆盖）。
 //
 // 【R-39】只退剩余 hold。ChargeIncrement 写入的 consume 行对应已经交付给
 // 用户的用量，不随崩溃退款；releaseAbandoned 只关闭 status='hold' 的
@@ -29,8 +33,9 @@ import (
 // 一律视为幂等命中，直接返回 nil。
 //
 // 【失败语义】DB 错误原样上抛，worker 记日志并在下一轮重试；绝不把
-// 「数据库暂不可用」当成「已退款」。退款成功后才 Remove 租约项；Remove
-// 失败也返回错误，允许下一轮重扫（退款本身幂等，不会重复退钱）。
+// 「数据库暂不可用」当成「已退款」。退款成功后才写日志占位、再 Remove
+// 租约；日志/Redis 失败也返回错误，允许下一轮重扫（退款本身幂等，不会
+// 重复退钱；日志占位按 request_id 幂等，也不会产生第二行）。
 func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string) error {
 	if requestID == "" {
 		return ErrMissingRequestID
@@ -45,7 +50,8 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string) err
 	switch {
 	case errors.Is(err, errHoldClosed):
 		// 预扣行已处于 settled/released/expired：正常结算或此前的兜底已经
-		// 处理过。不得再退，也不得改写已关闭的状态。
+		// 处理过。不得再退，也不得改写已关闭的状态；下面的日志收敛只对
+		// 「expired（兜底回收）」事实生效。
 		err = nil
 	case errors.Is(err, errNoOpenHold):
 		// 完全没有 consume_pre 行（信任旁路/零预算/从未预扣）：没有可退的
@@ -55,12 +61,86 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string) err
 		return fmt.Errorf("billing: recover abandoned request %s: %w", requestID, err)
 	}
 
+	// 日志占位必须在 Remove 之前：写失败时保留租约索引，下一轮重试；
+	// 若先 Remove，日志库瞬断会让退款事实永久缺行。
+	// 仅有 expired 预扣行时才写（正常 settled/released 不是兜底退款）。
+	if e.saturator != nil {
+		if lerr := e.writeAbandonedRefundLog(opCtx, requestID); lerr != nil {
+			return lerr
+		}
+	}
+
 	// 退款成功（或确认无需退款）后清理租约索引。失败时保留索引项，下一轮
 	// 扫描会再次命中本函数；重复调用是幂等的，不会二次退款。
 	if e.registry != nil {
 		if rerr := e.registry.Remove(opCtx, requestID); rerr != nil {
 			return fmt.Errorf("billing: remove abandoned lease %s: %w", requestID, rerr)
 		}
+	}
+	return nil
+}
+
+// writeAbandonedRefundLog 把「已被兜底回收」的事实写成 usage_logs.refunded。
+//
+// 数据来源固定为主库持久化状态：status='expired' 的预扣行（releaseAbandoned
+// 的产物）。这同时覆盖重试路径：首轮钱已退但日志库失败时，expired 行仍在，
+// 下一轮会重新调用 Saturate；Saturate 按 request_id 幂等（已有行则收敛）。
+//
+// 若不存在 expired 预扣行（正常结算 settled、同步退款 released、或本来
+// 没有 hold），本函数不写任何日志——worker 不得把一次正常结算改写成退款。
+func (e *Engine) writeAbandonedRefundLog(ctx context.Context, requestID string) error {
+	rows, err := e.db.WithContext(ctx).Raw(
+		`SELECT user_id, COALESCE(SUM(-amount), 0)
+		   FROM wallet_transactions
+		  WHERE reference_type = 'usage_log' AND reference_id = ?
+		    AND type = 'consume_pre' AND status = 'expired'
+		  GROUP BY user_id`, requestID).Rows()
+	if err != nil {
+		return fmt.Errorf("billing: read abandoned refund rows for %s: %w", requestID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var (
+		userID   int64
+		refunded int64
+		found    int
+	)
+	for rows.Next() {
+		var uid, amount int64
+		if err := rows.Scan(&uid, &amount); err != nil {
+			return fmt.Errorf("billing: scan abandoned refund rows for %s: %w", requestID, err)
+		}
+		userID, refunded = uid, amount
+		found++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("billing: iterate abandoned refund rows for %s: %w", requestID, err)
+	}
+	if found == 0 {
+		return nil
+	}
+	if found > 1 {
+		// 同一 requestID 的预扣行跨用户是数据损坏；继续写日志会把用户归属
+		// 记错，必须暴露而不是任选一行。
+		return fmt.Errorf("billing: expired hold rows for %s span multiple users", requestID)
+	}
+
+	// worker 没有原始 RelayContext：requestID 与 userID 是持久化状态面里
+	// 可靠的部分，模型/渠道/令牌等列写 NULL（DBLogger 对零值即 NULL）。
+	rc := &contract.RelayContext{
+		RequestID: requestID,
+		UserID:    int(userID),
+	}
+	outcome := SettlementOutcome{
+		Cost:         0, // refunded 状态的 cost 恒为 0（DBLogger 也会强制归零）
+		PreDeducted:  refunded,
+		Refunded:     refunded,
+		Status:       UsageLogStatusRefunded,
+		ErrorClass:   "abandoned",
+		ErrorMessage: "request abandoned; hold refunded by worker",
+	}
+	if err := e.saturator.Saturate(ctx, nil, rc, outcome); err != nil {
+		return fmt.Errorf("billing: write abandoned refund log for %s: %w", requestID, err)
 	}
 	return nil
 }

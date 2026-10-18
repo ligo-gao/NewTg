@@ -2,7 +2,11 @@ package billing
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"fmt"
+	"net/url"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -280,4 +284,186 @@ func countReleaseRows(t *testing.T, db *sql.DB, requestID string) int {
 		t.Fatalf("count release rows: %v", err)
 	}
 	return n
+}
+
+// openTask5LogsDB 连接日志库（NEWTG_TEST_DB_DSN 的 dbname 换成 newtg_logs），
+// 用于验证 worker 退款占位行。未配置测试库时跳过。
+//
+// 不使用 T6 的 openLogsTestDB（它带 integration 构建标签），这样本文件的
+// 集成用例在普通构建下也能编译并按环境变量决定是否跳过。
+func openTask5LogsDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过计费集成测试")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		t.Fatalf("parse NEWTG_TEST_DB_DSN: %v", err)
+	}
+	u.Path = "/newtg_logs"
+	db, err := sql.Open("pgx", u.String())
+	if err != nil {
+		t.Fatalf("open logs db: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		t.Fatalf("ping logs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var reg sql.NullString
+	if err := db.QueryRow(`SELECT to_regclass('usage_logs')::text`).Scan(&reg); err != nil || !reg.Valid {
+		t.Fatalf("logs db missing usage_logs (err=%v)", err)
+	}
+	return db
+}
+
+// newTask5UUID 生成 v4 UUID：usage_logs.request_id 是 uuid 列，
+// wallet_transactions.reference_id 是 varchar(64)，两者共用同一字符串。
+func newTask5UUID(t *testing.T) string {
+	t.Helper()
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// TestRecoverAbandonedWritesRefundedLog 验证 worker 退款占位经 DBLogger.Saturate
+// 写入：status=refunded、cost=0、refunded/pre_deducted 为 hold 金额；重复
+// 回收收敛到同一行（不产生第二行）。
+func TestRecoverAbandonedWritesRefundedLog(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openTask5LogsDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	req := newTask5UUID(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE request_id = $1::uuid`, req) })
+
+	if _, err := NewLedger(gormDB).ApplyDelta(ctx, userID, -120,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
+	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+
+	var (
+		status                 int16
+		cost, refunded, preDed int64
+		logUser                int64
+		errorClass             string
+	)
+	if err := logsDB.QueryRow(
+		`SELECT status, cost, refunded, pre_deducted, user_id, COALESCE(error_class, '')
+		   FROM usage_logs WHERE request_id = $1::uuid`, req).
+		Scan(&status, &cost, &refunded, &preDed, &logUser, &errorClass); err != nil {
+		t.Fatalf("read usage_logs: %v", err)
+	}
+	if status != int16(UsageLogStatusRefunded) || cost != 0 {
+		t.Fatalf("status/cost = %d/%d, want %d/0", status, cost, UsageLogStatusRefunded)
+	}
+	if refunded != 120 || preDed != 120 {
+		t.Fatalf("refunded/pre_deducted = %d/%d, want 120/120", refunded, preDed)
+	}
+	if logUser != userID {
+		t.Fatalf("user_id = %d, want %d", logUser, userID)
+	}
+	if errorClass != "abandoned" {
+		t.Fatalf("error_class = %q, want abandoned", errorClass)
+	}
+
+	// 重复回收：expired 预扣行仍在，Saturate 按 request_id 收敛而不是插新行。
+	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("second recover: %v", err)
+	}
+	var n int
+	if err := logsDB.QueryRow(
+		`SELECT count(*) FROM usage_logs WHERE request_id = $1::uuid`, req).Scan(&n); err != nil {
+		t.Fatalf("count usage_logs: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("usage_logs rows = %d, want 1", n)
+	}
+}
+
+// TestRecoverAbandonedLogFailureRetries 验证日志库不可用时返回错误保留租约，
+// 下一轮（新的 Saturator）能补写占位；资金不重复退。
+func TestRecoverAbandonedLogFailureRetries(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openTask5LogsDB(t)
+	userID := createBillingTestUser(t, db, 300)
+	req := newTask5UUID(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE request_id = $1::uuid`, req) })
+
+	if _, err := NewLedger(gormDB).ApplyDelta(ctx, userID, -90,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	// NewDBLogger(nil) 模拟日志库不可用：退款已完成，但占位写失败。
+	eBad := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(nil))
+	if err := eBad.RecoverAbandonedByID(ctx, req); err == nil {
+		t.Fatal("recover with broken logger = nil, want error")
+	}
+	if got := userBalance(t, db, userID); got != 300 {
+		t.Fatalf("balance = %d, want 300（退款已完成）", got)
+	}
+
+	// 下一轮：expired 行仍在 → 重新写占位；资金不重复退。
+	eGood := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
+	if err := eGood.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("retry recover: %v", err)
+	}
+	var status int16
+	if err := logsDB.QueryRow(
+		`SELECT status FROM usage_logs WHERE request_id = $1::uuid`, req).Scan(&status); err != nil {
+		t.Fatalf("read usage_logs: %v", err)
+	}
+	if status != int16(UsageLogStatusRefunded) {
+		t.Fatalf("status = %d, want refunded", status)
+	}
+	if got := userBalance(t, db, userID); got != 300 {
+		t.Fatalf("balance after retry = %d, want 300（不得二次退款）", got)
+	}
+	if n := countReleaseRows(t, db, req); n != 1 {
+		t.Fatalf("release rows = %d, want 1", n)
+	}
+}
+
+// TestRecoverAbandonedSettledDoesNotWriteRefundedLog 验证正常结算过的请求
+// 不会被 worker 改写成 refunded（R-25 的单向收敛只对 expired 事实生效）。
+func TestRecoverAbandonedSettledDoesNotWriteRefundedLog(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openTask5LogsDB(t)
+	userID := createBillingTestUser(t, db, 300)
+	req := newTask5UUID(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE request_id = $1::uuid`, req) })
+
+	ledger := NewLedger(gormDB)
+	if _, err := ledger.ApplyDelta(ctx, userID, -100, "consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if _, _, err := ledger.settleHolds(ctx, userID, req, 0, 0); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
+	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+	var n int
+	if err := logsDB.QueryRow(
+		`SELECT count(*) FROM usage_logs WHERE request_id = $1::uuid`, req).Scan(&n); err != nil {
+		t.Fatalf("count usage_logs: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("usage_logs rows = %d, want 0（settled 不是兜底退款）", n)
+	}
 }
