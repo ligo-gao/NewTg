@@ -4,5 +4,10 @@
   "error.title": "Something went wrong",
   "error.retry": "Try again",
   "not_found.title": "Page not found",
-  "not_found.action": "Back to home"
+  "not_found.action": "Back to home",
+  "toast.success": "Success",
+  "toast.info": "Information",
+  "toast.error": "Something went wrong",
+  "toast.dismiss": "Dismiss notification",
+  "toast.request_id": "request_id: {requestId}"
 }
