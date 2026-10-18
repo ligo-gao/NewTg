@@ -1,7 +1,751 @@
-# 用户域 DTO（M0 占位；完整字段随 M1–M5 补齐）
+# 用户自助域 DTO（modules-01 账户/认证、modules-02 API 令牌）。
+# 敏感字段红线（GC-6/GC-9）：任何响应都不得出现口令、口令哈希、TOTP 种子、
+# 备用码哈希、令牌 key_hash 或完整 key——完整 key 只在创建/重置响应出现一次。
 schemas:
+  # ---------------------------------------------------------------------------
+  # 账户 / 会话
+  # ---------------------------------------------------------------------------
+
+  MeView:
+    type: object
+    additionalProperties: false
+    required: [username, role, status]
+    description: |
+      GET /api/me 的冻结投影：只有这六个字段。email/avatar_url/display_name
+      未设置时字段缺席（响应中为 null 或省略由 Go omitempty 决定，客户端按可空处理）。
+    properties:
+      username:
+        type: string
+      email:
+        type: string
+        format: email
+        nullable: true
+      role:
+        $ref: './public.yaml#/schemas/UserRole'
+      status:
+        $ref: './public.yaml#/schemas/UserStatus'
+      avatar_url:
+        type: string
+        format: uri
+        nullable: true
+      display_name:
+        type: string
+        maxLength: 32
+        nullable: true
+
+  PatchMeRequest:
+    type: object
+    additionalProperties: false
+    # display_name 必须出现（可为 null）：handler 对缺失字段返回 400，契约不能
+    # 把它写成"可选"——否则前端会以为空请求体等价于"不改"。
+    required: [display_name]
+    description: |
+      仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
+      403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
+    properties:
+      display_name:
+        # 3.1 标准写法是 type [string, "null"]，但 kin-openapi v0.131.0（仓内
+        # validate 门禁）不接受 "null" 类型；nullable 是仓内既有可空写法。
+        # 注意 null 与空串在本接口语义相同（都清除显示名），故 DTO 的 string
+        # 表示不会丢失行为差异。
+        type: string
+        maxLength: 32
+        nullable: true
+        description: null 或空白字符串清除显示名。
+
+  SelfSettings:
+    type: object
+    additionalProperties: false
+    required: [language, sidebar_modules, record_ip_log, updated_at]
+    description: |
+      GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
+      必须携带的乐观锁令牌——同一行的资料变更也会推进它。
+    properties:
+      language:
+        $ref: './public.yaml#/schemas/Language'
+      sidebar_modules:
+        type: object
+        additionalProperties: true
+        nullable: true
+        description: 侧栏模块的稀疏覆盖；null 表示无覆盖（使用站点默认）。
+      record_ip_log:
+        type: boolean
+        description: 是否记录登录/操作 IP。
+      updated_at:
+        type: string
+        format: date-time
+
+  UpdateSelfSettingsRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    description: |
+      PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
+      等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
+      7 语内返回 400。
+    properties:
+      language:
+        $ref: './public.yaml#/schemas/Language'
+      sidebar_modules:
+        type: object
+        additionalProperties: true
+        nullable: true
+      record_ip_log:
+        type: boolean
+      updated_at:
+        type: string
+        format: date-time
+
+  SessionList:
+    type: object
+    additionalProperties: false
+    required: [sessions]
+    description: |
+      不是 Page 信封：列表固定 ≤50 条、无翻页语义（按 last_seen 倒序）。
+      过期会话不列出；current=true 的条目是当前请求所用会话。
+    properties:
+      sessions:
+        type: array
+        maxItems: 50
+        items:
+          $ref: '#/schemas/SessionView'
+
+  SessionView:
+    type: object
+    additionalProperties: false
+    required: [id, user_agent, ip, created_at, last_seen_at, current]
+    properties:
+      id:
+        type: string
+        description: 会话 id（不透明）；DELETE /api/sessions/{sid} 的原值。
+      user_agent:
+        type: string
+      ip:
+        type: string
+        description: 建立会话时的客户端 IP。
+      created_at:
+        type: string
+        format: date-time
+      last_seen_at:
+        type: string
+        format: date-time
+      current:
+        type: boolean
+
+  VerifyEmailRequest:
+    type: object
+    additionalProperties: false
+    required: [email_code]
+    properties:
+      email_code:
+        type: string
+        pattern: '^[0-9]{6}$'
+        description: 由 POST /api/auth/email-code（purpose=verify）下发的一次性验证码。
+
+  VerifyEmailResponse:
+    type: object
+    additionalProperties: false
+    required: [email_verified]
+    properties:
+      email_verified:
+        type: boolean
+        enum: [true]
+      email_verified_at:
+        type: string
+        format: date-time
+        description: 首次验证时间；重复验证保留首次时间。
+
+  ChangePasswordRequest:
+    type: object
+    additionalProperties: false
+    required: [current_password, new_password]
+    properties:
+      current_password:
+        type: string
+      new_password:
+        type: string
+        minLength: 8
+        maxLength: 128
+    description: |
+      成功 204：更新哈希、吊销除当前外全部会话并轮换当前会话 CSRF 令牌。
+      限流 5 次/10 分钟/IP+用户；失败返回 400/409/429/503。
+
+  DeleteAccountRequest:
+    type: object
+    additionalProperties: false
+    required: [confirm_username, password]
+    properties:
+      confirm_username:
+        type: string
+        description: 必须与当前用户名逐字一致。
+      password:
+        type: string
+        description: 当前口令；即使再认证窗口仍有效也必须现场提供。
+      totp_code:
+        type: string
+        description: 已启用 2FA 时必填。
+    description: |
+      DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
+      再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+      额外副作用，但不是 204 成功态）。
+
+  ChangeEmailRequest:
+    type: object
+    additionalProperties: false
+    required: [new_email, code, current_password]
+    properties:
+      new_email:
+        type: string
+        format: email
+      code:
+        type: string
+        pattern: '^[0-9]{6}$'
+        description: 发往 new_email、purpose=bind 的一次性验证码。
+      current_password:
+        type: string
+      totp_code:
+        type: string
+    description: |
+      全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
+      不写库。新邮箱被占用 409；域名白名单外 422。
+
+  ChangeEmailResponse:
+    type: object
+    additionalProperties: false
+    required: [email, email_verified, email_verified_at]
+    properties:
+      email:
+        type: string
+        format: email
+      email_verified:
+        type: boolean
+        enum: [true]
+      email_verified_at:
+        type: string
+        format: date-time
+
+  # ---------------------------------------------------------------------------
+  # 通知偏好（modules-01 F-01-21..24）
+  # ---------------------------------------------------------------------------
+
+  NotificationChannel:
+    type: string
+    enum: [email, webhook, bark, gotify]
+
+  NotificationPreferences:
+    type: object
+    additionalProperties: false
+    description: |
+      稀疏偏好对象：只持久化用户显式设置过的键；GET 对 NULL 归一为 {}。
+      站点级默认值由客户端合并。security_alert.enabled 不允许为 false
+      （安全通知不可关闭，400）。
+    properties:
+      balance_warning:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            type: boolean
+          threshold:
+            type: integer
+            minimum: 0
+            description: 余额告警阈值（credits，非负整数）。
+          channels:
+            type: array
+            minItems: 1
+            items:
+              $ref: '#/schemas/NotificationChannel'
+          custom_email:
+            type: string
+            nullable: true
+            description: 自定义收件邮箱；null 或空串清除（空串是服务端兼容的清除写法）。
+      usage_digest:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            type: boolean
+          channels:
+            type: array
+            minItems: 1
+            items:
+              $ref: '#/schemas/NotificationChannel'
+      security_alert:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            type: boolean
+            enum: [true]
+      webhook_url:
+        type: string
+        format: uri
+        nullable: true
+        description: 清除时传 null 或空串（稀疏合并下唯一的删除方式）。
+      bark_url:
+        type: string
+        format: uri
+        nullable: true
+      gotify_url:
+        type: string
+        format: uri
+        nullable: true
+      gotify_token:
+        type: string
+        nullable: true
+        description: 清除时传 null 或空串。
+      gotify_priority:
+        type: integer
+        nullable: true
+        description: 清除时传 null。
+
+  NotificationTestRequest:
+    type: object
+    additionalProperties: false
+    required: [channel]
+    properties:
+      channel:
+        $ref: '#/schemas/NotificationChannel'
+      target:
+        type: string
+        description: 测试目标地址；与 target_address 同义，target 优先。
+      target_address:
+        type: string
+        description: 兼容字段；两者都缺时按渠道默认目标。
+    description: |
+      M1 未配置真实通知通道时返回 503；偏好读写端点不受影响。
+      发送成功 200 {channel,sent:true}。
+
+  NotificationTestResponse:
+    type: object
+    additionalProperties: false
+    required: [channel, sent]
+    properties:
+      channel:
+        $ref: '#/schemas/NotificationChannel'
+      sent:
+        type: boolean
+        enum: [true]
+
+  # ---------------------------------------------------------------------------
+  # 2FA（modules-01 F-01-08..12）
+  # ---------------------------------------------------------------------------
+
+  TwoFASetupResponse:
+    type: object
+    additionalProperties: false
+    required: [secret, otpauth_url]
+    properties:
+      secret:
+        type: string
+        description: base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。
+      otpauth_url:
+        type: string
+        format: uri
+        description: otpauth:// URI，供前端渲染二维码。
+
+  TwoFAEnableRequest:
+    type: object
+    additionalProperties: false
+    required: [secret, code]
+    properties:
+      secret:
+        type: string
+        description: 上一步 setup 返回的 secret（服务端校验 32 位 base32 / 20 字节）。
+      code:
+        type: string
+        pattern: '^[0-9]{6}$'
+
+  TwoFABackupCodesResponse:
+    type: object
+    additionalProperties: false
+    required: [totp_enabled, backup_codes]
+    properties:
+      totp_enabled:
+        type: boolean
+        enum: [true]
+      backup_codes:
+        type: array
+        minItems: 8
+        maxItems: 8
+        items:
+          type: string
+          pattern: '^[A-Z0-9]{4}-[A-Z0-9]{4}$'
+        description: 明文备用码，仅本次响应出现；重生成后旧码立即失效。
+
+  TwoFAPasswordRequest:
+    type: object
+    additionalProperties: false
+    required: [password]
+    properties:
+      password:
+        type: string
+        description: 当前口令确认；与登录共用失败锁定桶。
+
+  TwoFADisableResponse:
+    type: object
+    additionalProperties: false
+    required: [totp_enabled]
+    properties:
+      totp_enabled:
+        type: boolean
+        enum: [false]
+
+  # ---------------------------------------------------------------------------
+  # API 令牌（modules-02）
+  # ---------------------------------------------------------------------------
+
   Token:
     type: object
-    additionalProperties: true
-    description: API 令牌 DTO 占位（敏感字段仅创建时返回一次；schema 待 M1+ 细化）
-    x-newtg-pending: true
+    additionalProperties: false
+    required:
+      - id
+      - name
+      - status
+      - key_masked
+      - unlimited_quota
+      - group
+      - cross_group_retry
+      - created_at
+      - updated_at
+    description: |
+      管理面令牌响应。永不包含 key 明文或 key_hash；完整 key 只在创建
+      （POST /api/tokens）与重置（POST /api/tokens/{id}:reset-key）响应中出现一次。
+    properties:
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+        maxLength: 64
+      status:
+        $ref: '#/schemas/TokenStatus'
+      key_masked:
+        type: string
+        description: 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+      remain_quota:
+        type: integer
+        format: int64
+        nullable: true
+        description: null 表示不限额度（等价 unlimited_quota=true）。
+      unlimited_quota:
+        type: boolean
+      quota_percent:
+        type: integer
+        nullable: true
+        description: M1 由 remain_quota 派生（0 或 100）；后续接入用量日志后细化。
+      group:
+        type: string
+        description: 令牌绑定分组；auto 表示按 auto_groups 顺序自动选择。
+      model_limits:
+        type: array
+        items:
+          type: string
+        nullable: true
+        description: null/空表示不限制模型。
+      allow_ips:
+        type: array
+        items:
+          type: string
+        nullable: true
+        description: null/空表示不限制来源 IP。
+      auto_groups:
+        type: array
+        items:
+          type: string
+        description: 有序自动分组候选；仅 group=auto 时非空，最多 20 项（可配置）。
+      cross_group_retry:
+        type: boolean
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+        description: 乐观锁版本；PATCH 必须原样回传，否则 409。
+      last_used_at:
+        type: string
+        format: date-time
+        nullable: true
+      expires_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null 表示永不过期。
+
+  TokenStatus:
+    type: string
+    enum: [enabled, disabled, expired, exhausted]
+    description: |
+      读时派生，优先级 disabled > expired > exhausted > enabled。
+      disabled 是唯一可写的人工位；其余为时间/额度派生态。
+
+  CreatedToken:
+    allOf:
+      - $ref: '#/schemas/Token'
+      - type: object
+        required: [key]
+        properties:
+          key:
+            type: string
+            description: 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+    description: 创建响应中的条目 = Token + 一次性明文 key。
+
+  CreateTokenRequest:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        minLength: 1
+        maxLength: 64
+      group:
+        type: string
+        description: 缺省使用用户当前分组；auto 时 auto_groups 必须非空（I-20）。
+      expires_at:
+        oneOf:
+          - type: integer
+            format: int64
+            description: epoch 秒（modules-02 线格式）。
+          - type: string
+            format: date-time
+        nullable: true
+        description: null 表示永不过期。
+      quantity:
+        type: integer
+        minimum: 1
+        maximum: 100
+        description: 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。
+      unlimited_quota:
+        type: boolean
+        description: 缺省 true（不限额度）。
+      remain_quota:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 1000000000000000
+        description: |
+          可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+          remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+          时忽略本字段。
+      model_limits:
+        type: array
+        items:
+          type: string
+      allow_ips:
+        type: array
+        items:
+          type: string
+      auto_groups:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+        description: group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
+      cross_group_retry:
+        type: boolean
+        description: 缺省 false。
+    description: |
+      POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
+      不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
+
+  CreateTokenResponse:
+    type: object
+    additionalProperties: false
+    required: [created]
+    properties:
+      created:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items:
+          $ref: '#/schemas/CreatedToken'
+
+  UpdateTokenRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    description: |
+      部分更新：未出现的字段不变。updated_at 必须等于当前行的版本，
+      否则 409（乐观锁）。expires_at 显式 null 表示改为永不过期。
+    properties:
+      name:
+        type: string
+        minLength: 1
+        maxLength: 64
+      group:
+        type: string
+      expires_at:
+        oneOf:
+          - type: integer
+            format: int64
+          - type: string
+            format: date-time
+        nullable: true
+      unlimited_quota:
+        type: boolean
+      remain_quota:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 1000000000000000
+      model_limits:
+        type: array
+        items:
+          type: string
+      allow_ips:
+        type: array
+        items:
+          type: string
+      auto_groups:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+      cross_group_retry:
+        type: boolean
+      updated_at:
+        type: string
+        format: date-time
+
+  TokenList:
+    allOf:
+      - $ref: '../components/pagination.yaml#/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/schemas/Token'
+    description: GET /api/tokens 的 offset 分页信封；items 为 Token 投影。
+
+  BatchTokenRequest:
+    type: object
+    additionalProperties: false
+    required: [ids]
+    properties:
+      ids:
+        type: array
+        minItems: 1
+        maxItems: 100
+        uniqueItems: true
+        items:
+          type: integer
+          format: int64
+
+  TokenBatchFailure:
+    type: object
+    additionalProperties: false
+    required: [id, name, detail]
+    properties:
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+        description: 仅当令牌属于当前用户且仍存在时填写；他人/不存在留空（不泄露存在性）。
+      detail:
+        type: string
+
+  TokenBatchResponse:
+    type: object
+    additionalProperties: false
+    required: [succeeded, failed]
+    description: |
+      逐条结果：succeeded 为成功条数，failed 为明细。批量端点上限 100，
+      部分失败仍返回 200（不是整体回滚）。
+    properties:
+      succeeded:
+        type: integer
+        minimum: 0
+      failed:
+        type: array
+        items:
+          $ref: '#/schemas/TokenBatchFailure'
+
+  ResetTokenKeyResponse:
+    type: object
+    additionalProperties: false
+    required: [key, key_masked]
+    description: |
+      新 key 只在本响应出现一次；旧 key 立即失效。响应带
+      Cache-Control: no-store。
+    properties:
+      key:
+        type: string
+      key_masked:
+        type: string
+
+  TokenAutoGroupsResponse:
+    type: object
+    additionalProperties: false
+    required: [groups, max_count]
+    properties:
+      groups:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name:
+              type: string
+            ratio:
+              type: number
+              description: 分组倍率（DB 150 → 1.5）；缺省字段表示无显式倍率。
+      max_count:
+        type: integer
+        minimum: 1
+        description: 单令牌 auto_groups 条目上限（站点配置，默认 20）。
+
+  TokenUsage:
+    type: object
+    additionalProperties: false
+    required:
+      - object
+      - name
+      - total_used
+      - unlimited_quota
+      - model_limits_enabled
+    description: |
+      GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+      unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+      耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+      鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+      `token_disabled`，非法 key `invalid_token`）。
+    properties:
+      object:
+        type: string
+        enum: [token_usage]
+      name:
+        type: string
+      total_granted:
+        type: integer
+        format: int64
+        nullable: true
+        description: M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
+      total_used:
+        type: integer
+        format: int64
+        description: |
+          M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+          与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
+      total_available:
+        type: integer
+        format: int64
+        nullable: true
+        description: 剩余额度；不限额度时为 null。
+      unlimited_quota:
+        type: boolean
+      model_limits:
+        type: array
+        items:
+          type: string
+        nullable: true
+      model_limits_enabled:
+        type: boolean
+      expires_at:
+        type: string
+        format: date-time
+        nullable: true

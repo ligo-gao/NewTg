@@ -103,8 +103,8 @@ var wantIdentityPKTables = []string{
 // 自然唯一键（§16/§17）。
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
-// （runIDLedNaturalPKs）。合起来：16 表 = 10 张单列 id identity + 4 张自然键
-// + 2 张 run_id 领头自然键；**非 identity PK 的表恰 6 张**，由
+// （runIDLedNaturalPKs）。合起来：22 表（M0 16 + M1 6）= 16 张单列 id identity
+// + 4 张自然键 + 2 张 run_id 领头自然键；**非 identity PK 的表恰 6 张**，由
 // TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},

@@ -4,6 +4,16 @@ import createClient, {
   type Middleware,
 } from 'openapi-fetch'
 
+import {
+  CSRF_COOKIE,
+  CSRF_HEADER,
+  CSRF_REFRESH_PATH,
+  REQUEST_ID_HEADER,
+  WRITE_METHODS,
+  getCsrfToken,
+  isWriteMethod,
+} from '@/lib/csrf'
+
 import { ApiError, parseProblem } from './errors'
 import type { paths } from './schema'
 
@@ -17,31 +27,12 @@ import type { paths } from './schema'
  */
 export type ContractClient = Client<paths>
 
-/** Methods that mutate server state and therefore carry both safety headers. */
-export const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-
-/** Frozen by security-01/security-08 §3.2. */
-export const CSRF_COOKIE = '__Host-nkt_csrf'
-export const CSRF_HEADER = 'X-CSRF-Token'
-export const REQUEST_ID_HEADER = 'X-Request-ID'
-export const CSRF_REFRESH_PATH = '/api/me'
-
-/** Reads the non-HttpOnly CSRF cookie. Returns undefined outside the browser. */
-export function getCsrfToken(): string | undefined {
-  if (typeof document === 'undefined') return undefined
-  const prefix = `${CSRF_COOKIE}=`
-  const entry = document.cookie
-    .split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))
-  if (entry === undefined) return undefined
-  const raw = entry.slice(prefix.length)
-  try {
-    return decodeURIComponent(raw)
-  } catch {
-    return raw
-  }
-}
+/**
+ * The CSRF constants and cookie reader live in `lib/csrf` so non-client fetch
+ * paths share the exact same names; re-exported here to keep the M0 import
+ * path (`@/api/client`) stable.
+ */
+export { CSRF_COOKIE, CSRF_HEADER, REQUEST_ID_HEADER, CSRF_REFRESH_PATH, WRITE_METHODS, getCsrfToken }
 
 async function readProblemBody(response: Response): Promise<unknown> {
   try {
@@ -57,6 +48,7 @@ export async function toApiError(response: Response): Promise<ApiError> {
     status: response.status,
     body: await readProblemBody(response),
     requestId: response.headers.get(REQUEST_ID_HEADER) ?? undefined,
+    retryAfter: response.headers.get('Retry-After') ?? undefined,
   })
 }
 
@@ -75,7 +67,7 @@ export async function isCsrfFailure(response: Response): Promise<boolean> {
 }
 
 function isWrite(method: string): boolean {
-  return WRITE_METHODS.has(method.toUpperCase())
+  return isWriteMethod(method)
 }
 
 function newIdempotencyKey(): string {
@@ -217,10 +209,20 @@ export function createApiClient(options: ClientOptions = {}): ContractClient {
   const api = createClient<paths>({
     baseUrl: '',
     credentials: 'same-origin',
+    // Late-bind the global fetch through a wrapper: openapi-fetch otherwise
+    // captures whatever `fetch` exists at client-construction time, which in
+    // tests is the unpatched Node fetch (MSW installs its interceptor later).
+    // A wrapper keeps the same browser behaviour and lets test interception
+    // apply to the application singleton.
+    fetch: (input: Request) => globalThis.fetch(input),
     ...options,
   })
   api.use(contractMiddleware)
   return api
 }
 
-export const apiClient = createApiClient()
+export const apiClient = createApiClient({
+  // Absolute same-origin base: browsers resolve it identically to '', while
+  // jsdom's Node-backed fetch (used by tests) rejects relative URLs.
+  baseUrl: typeof location !== 'undefined' ? location.origin : '',
+})

@@ -239,15 +239,18 @@ func TestVerifyRejectsBelowBaselineParams(t *testing.T) {
 	saltB64 := base64.RawStdEncoding.EncodeToString(salt)
 
 	encode := func(rounds, memory uint32, keyLen uint32) string {
-		key := argon2.IDKey([]byte(plain), salt, rounds, memory, argon2Threads, keyLen)
-		return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
-			memory, rounds, argon2Threads, saltB64, base64.RawStdEncoding.EncodeToString(key))
+		key := argon2.IDKey([]byte(plain), salt, rounds, memory, 1, keyLen)
+		return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=1$%s$%s",
+			memory, rounds, saltB64, base64.RawStdEncoding.EncodeToString(key))
 	}
 
+	// 下限用字面量而不是生成常量：若未来调高 argon2Time/argon2MemoryKiB，
+	// 「低于生成常量」的旧哈希仍是合法历史数据，必须继续可校验。这里钉死
+	// 真正冻结的基线 19456/2/32。
 	cases := map[string]string{
-		"rounds below baseline": encode(argon2Time-1, argon2MemoryKiB, argon2KeyLen),
-		"memory below baseline": encode(argon2Time, argon2MemoryKiB-1, argon2KeyLen),
-		"key below baseline":    encode(argon2Time, argon2MemoryKiB, argon2KeyLen/2),
+		"rounds below baseline": encode(2-1, 19456, 32),
+		"memory below baseline": encode(2, 19456-1, 32),
+		"key below baseline":    encode(2, 19456, 32/2),
 	}
 	for name, hash := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -255,6 +258,21 @@ func TestVerifyRejectsBelowBaselineParams(t *testing.T) {
 				t.Fatalf("VerifyPassword accepted below-baseline hash %q", hash)
 			}
 		})
+	}
+}
+
+// TestVerifyAcceptsHigherCostHash 证明下限冻结的动机：PHC 自描述允许未来
+// 调高生成成本后，旧实现（本函数）仍按哈希记录的参数完成校验，而不是把
+// 全部旧哈希当成伪造拒绝。
+func TestVerifyAcceptsHigherCostHash(t *testing.T) {
+	const plain = "valid password 456"
+	salt := make([]byte, 16)
+	key := argon2.IDKey([]byte(plain), salt, 3, 19456*2, 2, 32)
+	hash := fmt.Sprintf("$argon2id$v=19$m=%d,t=3,p=2$%s$%s",
+		19456*2, base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(key))
+	if !VerifyPassword(hash, plain) {
+		t.Fatal("VerifyPassword rejected a higher-cost PHC hash within the verify window")
 	}
 }
 

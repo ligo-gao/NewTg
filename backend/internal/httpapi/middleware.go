@@ -23,6 +23,9 @@ type TokenLookup = auth.TokenLookup
 const (
 	problemTypeUnauthorized = "https://newtg.dev/problems/unauthorized"
 	problemTypeCSRFFailed   = "https://newtg.dev/problems/csrf_failed"
+	// password_change_required：临时口令（must_change_password=true）登录后的
+	// 受限会话访问白名单外端点。前端据此强制跳转改密页（modules-01 F-01-03）。
+	problemTypePasswordChangeRequired = "https://newtg.dev/problems/password_change_required"
 )
 
 // SessionAuth 是 Cookie 会话 / Bearer 令牌双路径鉴权中间件。
@@ -38,6 +41,13 @@ const (
 // 信任边界（Role）：会话记录里的 auth_level 来自登录时写入的 SessionOpts.Role，
 // 该值必须由 Task 6 从 users 表（可信 DB 行）读取；SessionOpts.Role 绝不可取自
 // 请求体/请求头。本中间件只消费已签发的服务端会话，不重新信任任何客户端角色声明。
+//
+// 强制改密（must_change_password）：受限状态按用户记录在 Redis
+// （auth.SessionManager.PasswordChangeRequired），而不是写进会话 hash。原因是
+// 2FA challenge 等其它会话签发路径无需各自接线即可继承限制。Cookie 与 Bearer
+// 两条路径都会检查（管理员重置口令只吊销会话、不吊销 nkt- 令牌），受限身份仅
+// 放行登出/自读/改密/2FA 端点，其余一律 403 password_change_required；标记读取
+// 失败时 fail-closed（401，与 Get/Touch 的 Redis 故障口径一致）。
 func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +58,17 @@ func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handl
 				sess, err := m.Get(r.Context(), sid)
 				if err != nil {
 					writeUnauthorized(w)
+					return
+				}
+				restricted, err := m.PasswordChangeRequired(r.Context(), sess.UserID)
+				if err != nil {
+					// 无法确认受限状态时绝不放行（GC-7）。
+					writeUnauthorized(w)
+					return
+				}
+				if restricted && !passwordChangeAllowed(r) {
+					// 在 Touch 之前拒绝：被拦截的请求不应延长会话寿命。
+					writePasswordChangeRequired(w)
 					return
 				}
 				// 滑动超时依赖每次活跃请求刷新 last_seen_at；不刷新则 7 天滑动窗
@@ -73,6 +94,18 @@ func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handl
 			meta, err := tokenStore.Resolve(r.Context(), auth.HashTokenKey(raw))
 			if err != nil || !tokenUsable(meta, time.Now()) {
 				writeUnauthorized(w)
+				return
+			}
+			// 强制改密同样约束 Bearer 路径：管理员重置口令只吊销会话、不吊销
+			// nkt- 令牌；若此处不检查，旧令牌仍可访问全部管理端点，违背
+			// 「改密完成前不得访问其他受保护接口」（modules-01 F-01-03）。
+			restricted, err := m.PasswordChangeRequired(r.Context(), meta.UserID)
+			if err != nil {
+				writeUnauthorized(w)
+				return
+			}
+			if restricted && !passwordChangeAllowed(r) {
+				writePasswordChangeRequired(w)
 				return
 			}
 			// Role/Permissions 不从令牌推导：令牌没有角色语义，管理权限必须由
@@ -185,6 +218,39 @@ func sessionID(r *http.Request) (string, bool) {
 	return c.Value, true
 }
 
+// passwordChangeAllowed 是受限会话（must_change_password=true）的端点白名单。
+//
+// 只保留用户完成改密所必需的最小集合（modules-01 F-01-03「改密完成前不得访问
+// 其他受保护页面/接口」）：
+//   - POST /api/logout   退出账号（public-safe，正常不会经过本中间件，仍显式放行）；
+//   - GET  /api/me       读取当前身份（账户页自读；改密状态由登录响应驱动）；
+//   - GET/PUT /api/self* 账户自读与语言等设置；
+//   - POST /api/password 改密本身；
+//   - POST /api/2fa/{setup,enable,disable,backup-codes/regenerate}
+//     改密前后管理二次验证因子（显式枚举，避免未来新增子路由被自动放行）。
+//
+// 方法也参与判定：例如 POST /api/me 不在白名单内，防止未来给同名路径加写操作
+// 时被顺带放行。
+func passwordChangeAllowed(r *http.Request) bool {
+	path := r.URL.Path
+	switch {
+	case path == "/api/logout":
+		return r.Method == http.MethodPost
+	case path == "/api/me":
+		return r.Method == http.MethodGet
+	case path == "/api/self" || strings.HasPrefix(path, "/api/self/"):
+		return r.Method == http.MethodGet || r.Method == http.MethodPut
+	case path == "/api/password":
+		return r.Method == http.MethodPost
+	case r.Method == http.MethodPost &&
+		(path == "/api/2fa/setup" || path == "/api/2fa/enable" ||
+			path == "/api/2fa/disable" || path == "/api/2fa/backup-codes/regenerate"):
+		return true
+	default:
+		return false
+	}
+}
+
 func hasSessionCookie(r *http.Request) bool {
 	_, ok := sessionID(r)
 	return ok
@@ -230,16 +296,46 @@ func writeCSRFFailed(w http.ResponseWriter) {
 	writeProblem(w, http.StatusForbidden, problemTypeCSRFFailed, "CSRF validation failed")
 }
 
-// writeProblem 输出 RFC 7807 Problem（GC-6）。
+// writePasswordChangeRequired 是受限会话的唯一拒绝出口：前端据此强制跳转
+// /security 改密页，而不是把用户当成未登录或权限不足。
+func writePasswordChangeRequired(w http.ResponseWriter) {
+	writeProblem(w, http.StatusForbidden, problemTypePasswordChangeRequired, "Password change required")
+}
+
+// noStoreAPI 是 /api/ 前缀的统一缓存策略（security-09 §2.4 / ASVS 14.3.2）：
+// 缺省 Cache-Control: no-store + Pragma: no-cache，覆盖登录、注册、2FA setup
+// （一次性 secret/备用码）、/api/me、/api/sessions 等所有 T2/T3 响应。
+//
+// 为什么在 handler 之前写头：http.Header 只在首次 WriteHeader 时落线，handler
+// 可以用 Set 覆盖默认值——例如 /api/geoip 的 private, max-age=300、登录公钥的
+// 客户端 5 分钟缓存语义。只作用于 /api/ 前缀，探针与未来的静态资源不在此列。
+func noStoreAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h := w.Header()
+			h.Set("Cache-Control", "no-store")
+			h.Set("Pragma", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// writeProblem 输出无 detail 的 RFC 7807 Problem（GC-6）。
 func writeProblem(w http.ResponseWriter, status int, problemType, title string) {
+	writeProblemDetail(w, status, problemType, title, "")
+}
+
+// writeProblemDetail 输出带可选 detail 的 RFC 7807 Problem。字段校验类错误
+// 需要 detail 说明具体规则；共享同一出口保证 Content-Type 与状态码口径一致。
+func writeProblemDetail(w http.ResponseWriter, status int, problemType, title, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
+	problem := dto.Problem{Type: problemType, Title: title, Status: status}
+	if detail != "" {
+		problem.Detail = &detail
+	}
 	// 响应已开始写出；编码失败（如客户端断开）无法再改状态码，忽略即可。
-	_ = json.NewEncoder(w).Encode(dto.Problem{
-		Type:   problemType,
-		Title:  title,
-		Status: status,
-	})
+	_ = json.NewEncoder(w).Encode(problem)
 }
 
 // normalizeOrigin 把 Origin/Referer/允许清单归一化为 scheme://host。

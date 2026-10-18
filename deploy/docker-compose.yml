@@ -23,6 +23,10 @@ x-app-env: &app-env
   TZ: "${TZ:-UTC}"
   # 空 = 不信任 X-Forwarded-*；生产须显式填 edge 所在网段（禁止 0.0.0.0/0）。
   TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+  # 公开基址（可逗号分隔多个 origin）。空时回退到 setup 向导写入的
+  # site.server_address；两者都空表示邮件相关功能禁用（不是启动失败）。
+  # 同时作为 Origin/Referer 白名单来源；生产建议显式填写。
+  PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
   PERF_METRICS_ENABLED: "${PERF_METRICS_ENABLED:-true}"
   PERF_METRICS_FLUSH_INTERVAL: "${PERF_METRICS_FLUSH_INTERVAL:-5m}"
   PERF_METRICS_RETENTION_DAYS: "${PERF_METRICS_RETENTION_DAYS:-400}"

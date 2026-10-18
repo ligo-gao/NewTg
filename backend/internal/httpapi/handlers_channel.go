@@ -506,7 +506,7 @@ func (h *ChannelHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Items = append(out.Items, resp)
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeChannelJSON(w, http.StatusOK, out)
 }
 
 func (h *ChannelHandler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +528,7 @@ func (h *ChannelHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, internalAPIError())
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeChannelJSON(w, http.StatusOK, resp)
 }
 
 // ---------- 创建 ----------
@@ -626,18 +626,18 @@ func (h *ChannelHandler) channelFromCreate(v *validator, req *createChannelReque
 		autoBan = *req.AutoBan
 	}
 
-	testModel := normalizeOptionalText(req.TestModel)
+	testModel := normalizeOptionalChannelText(req.TestModel)
 	if testModel != nil {
 		if len(models) == 0 || !slices.Contains(models, *testModel) {
 			// DB 的 channels_test_model_in_models_chk 兜底；这里提前给字段级错误。
 			v.add("test_model", "test_model must be one of supported_models")
 		}
 	}
-	remark := normalizeOptionalText(req.Remark)
+	remark := normalizeOptionalChannelText(req.Remark)
 	if remark != nil && utf8.RuneCountInString(*remark) > 255 {
 		v.add("remark", "remark must be at most 255 characters")
 	}
-	tag := normalizeOptionalText(req.Tag)
+	tag := normalizeOptionalChannelText(req.Tag)
 	if tag != nil && utf8.RuneCountInString(*tag) > 32 {
 		v.add("tag", "tag must be at most 32 characters")
 	}
@@ -724,7 +724,7 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, internalAPIError())
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeChannelJSON(w, http.StatusOK, resp)
 }
 
 // buildPatch 把 PATCH 载荷（含 null/缺省区分）转成 store.ChannelPatch，
@@ -1068,7 +1068,7 @@ func (h *ChannelHandler) handleBatchStatus(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, internalAPIError())
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	writeChannelJSON(w, http.StatusOK, res)
 }
 
 func (h *ChannelHandler) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
@@ -1151,7 +1151,7 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 		// modules-06 F-06-06：连通性失败是**业务结果**而不是 HTTP 故障，
 		// 返回 200 {success:false, error_class}，便于前端展示失败原因。
 		// GC-6：只给泛化枚举 + 固定字段，原始错误（可能含 URL/key）整体丢弃。
-		writeJSON(w, http.StatusOK, channelTestResponse{
+		writeChannelJSON(w, http.StatusOK, channelTestResponse{
 			Success:    false,
 			LatencyMS:  latency,
 			Model:      model,
@@ -1163,7 +1163,7 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, storeErrorResponse(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, channelTestResponse{Success: true, LatencyMS: latency, Model: model})
+	writeChannelJSON(w, http.StatusOK, channelTestResponse{Success: true, LatencyMS: latency, Model: model})
 }
 
 // ---------- 列表筛选解析 ----------
@@ -1521,7 +1521,7 @@ func parseOptionalStringRaw(raw json.RawMessage) (*string, bool) {
 	return &s, true
 }
 
-func normalizeOptionalText(p *string) *string {
+func normalizeOptionalChannelText(p *string) *string {
 	if p == nil {
 		return nil
 	}
@@ -1628,7 +1628,7 @@ func writeAPIError(w http.ResponseWriter, e *apiError) {
 	_, _ = w.Write(e.marshal())
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeChannelJSON(w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		writeAPIError(w, internalAPIError())
@@ -1650,9 +1650,10 @@ func writeJSONBytes(w http.ResponseWriter, status int, body []byte) {
 }
 
 // 错误 type URI 采用 modules-03/09 的 https://newtg.dev/problems/<slug> 约定。
+// problemTypeInvalidRequest 复用 handlers_token.go 的既有常量（值相同），
+// 避免同名常量重复声明。
 const (
 	problemTypeValidationFailed       = "https://newtg.dev/problems/validation_failed"
-	problemTypeInvalidRequest         = "https://newtg.dev/problems/invalid_request"
 	problemTypeInternal               = "https://newtg.dev/problems/internal_error"
 	problemTypeChannelNotFound        = "https://newtg.dev/problems/channel_not_found"
 	problemTypeChannelNameConflict    = "https://newtg.dev/problems/channel_name_conflict"

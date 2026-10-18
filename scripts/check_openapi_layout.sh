@@ -4,8 +4,14 @@
 # 安全动机：bundle 会无条件内联 $ref 目标——放开 http(s)/../../ 等于把任意本地文件或远端内容
 # 注入单体产物与下游 codegen（供应链/路径穿越）。Spectral 在求值 given 前已解析 $ref，
 # 规则层观察不到原始引用值，因此边界校验必须在本脚本强制执行。
+# 权限门禁（2026-10-18 终审 area4 Minor 15）：
+#   · 每个 x-required-permission 的取值必须属于 backend/internal/rbac/catalog.go 的 20 键目录；
+#   · tags 含 admin 的 operation 必须声明 x-required-permission（当前 15/15，防未来漂移）。
+#   第三条「spec 路径 ⊆ 已注册路由」需要解析 Go 路由表，正则黑名单既脆弱又容易误报，
+#   故不在本脚本实现（报告登记为后续项）。
 # 失败即非零退出；供 CI 与本地 `make api-check` 调用。
-# 自检：`bash scripts/check_openapi_layout.sh --self-test`（注入越界 $ref，必须被拒绝）。
+# 自检：`bash scripts/check_openapi_layout.sh --self-test`（注入越界 $ref / 非法权限，
+# 必须被拒绝）。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -171,6 +177,125 @@ scan_refs() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------------------
+# 权限门禁静态断言（area4 Minor 15）
+# ---------------------------------------------------------------------------
+
+# 从 rbac 单一真源提取权限键。只取 `PermXxx = "..."` 形式的字符串常量；
+# 目录是安全边界，解析失败必须 fail-closed（调用方断言数量 == 20）。
+catalog_permissions() { # catalog_permissions <catalog.go>
+  sed -nE 's/^[[:space:]]*Perm[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' "$1"
+}
+
+# 断言 1：spec 中每个 x-required-permission 取值都必须在 20 键目录内。
+# 为什么比对 Go 常量而不是 handoff 文档：catalog.go 是运行时鉴权的唯一真源，
+# 文档表格只是它的镜像；契约 enum（PermissionKey）与真源漂移时，只有这里能发现。
+check_permission_catalog() { # check_permission_catalog <openapi_root> <catalog.go>
+  local root="$1" catalog="$2" rc=0 perms n key
+  perms="$(catalog_permissions "$catalog")"
+  n="$(printf '%s\n' "$perms" | grep -c . || true)"
+  if [ "$n" -ne 20 ]; then
+    echo "FAIL: RBAC 权限目录解析得到 ${n} 个键（期望 20）：$catalog" >&2
+    return 1
+  fi
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if ! printf '%s\n' "$perms" | grep -qxF -- "$key"; then
+      echo "FAIL: x-required-permission 取值不在 RBAC 20 键目录内：$key" >&2
+      rc=1
+    fi
+  done < <(grep -hE '^[[:space:]]+x-required-permission:' "$root"/paths/*.yaml \
+    | sed -E 's/^[[:space:]]*x-required-permission:[[:space:]]*//; s/[[:space:]]+#.*$//')
+  return "$rc"
+}
+
+# 扫描每个 operation 的 tags，输出两类行：
+#   COUNT <n>           —— 本文件 admin operation 数
+#   MISSING <file:line>: … —— 该 admin operation 缺少 x-required-permission
+# 为什么不能固定匹配 `tags: [admin]`：复合 flow 列表、块式列表、引号元素、
+# 行尾注释与跨行 flow 序列都是合法 YAML；任何固定字符串或单行匹配都会让未来的
+# 复合 tag operation 逃过权限门禁。因此这里按「admin 是 tags 列表中的一个
+# 元素」判定：block 元素先剥行尾注释，flow 序列持续解析到闭合 `]`。
+# operation 边界仍按 4 空格缩进的 HTTP 方法行识别；解析不到任何 admin
+# operation 时调用方以计数 0 fail-closed，排版漂移不会把断言变成永远 PASS。
+scan_admin_operations() { # scan_admin_operations <openapi_root>
+  local root="$1" f
+  for f in "$root"/paths/*.yaml; do
+    [ -f "$f" ] || continue
+    awk -v file="$f" '
+      function reset() { in_op=0; is_admin=0; has_perm=0; in_tags=0; in_flow=0; start=0 }
+      function finish() {
+        if (in_op && is_admin) {
+          admin_count++
+          if (!has_perm)
+            printf "MISSING %s:%d: admin operation 缺少 x-required-permission\n", file, start
+        }
+      }
+      # 元素归一化：剥行尾注释（YAML 注释要求 # 前有空白）、首尾空白与引号。
+      function elem_is_admin(v) {
+        sub(/[ \t]+#.*$/, "", v)
+        sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+        gsub(/^["\047]+/, "", v); gsub(/["\047]+$/, "", v)
+        return v == "admin"
+      }
+      function chunk_has_admin(s,   a, n, i) {
+        n = split(s, a, ",")
+        for (i = 1; i <= n; i++) if (elem_is_admin(a[i])) return 1
+        return 0
+      }
+      /^    (get|put|post|patch|delete|head|options|trace):[[:space:]]*$/ {
+        finish(); reset(); in_op=1; start=NR; next
+      }
+      !in_op { next }
+      # 跨行 flow 序列的续行：元素可能分布在多行，直到出现闭合 `]`。
+      in_flow {
+        s = $0
+        if (s ~ /\]/) { sub(/\].*$/, "", s); in_flow=0 }
+        if (chunk_has_admin(s)) is_admin=1
+        next
+      }
+      # flow 起始：`tags: [ …`；单行含 `]` 时一次解析完，否则进入跨行模式。
+      /^[ \t]*tags:[ \t]*\[/ {
+        s = $0; sub(/^[^[]*\[/, "", s)
+        if (s ~ /\]/) { sub(/\].*$/, "", s); in_flow=0 } else { in_flow=1 }
+        if (chunk_has_admin(s)) is_admin=1
+        in_tags=0; next
+      }
+      # block 序列：`tags:` 后每行 `- element`（元素允许行尾注释）。
+      /^[ \t]*tags:[ \t]*(#.*)?$/ { in_tags=1; next }
+      in_tags && /^[ \t]*(#.*)?$/ { next }
+      in_tags && /^[ \t]*-[ \t]*/ {
+        v = $0; sub(/^[ \t]*-[ \t]*/, "", v)
+        if (elem_is_admin(v)) is_admin=1
+        next
+      }
+      in_tags { in_tags=0 }
+      /^[ \t]*x-required-permission:/ { has_perm=1 }
+      END { finish(); printf "COUNT %d\n", admin_count }
+    ' "$f"
+  done
+}
+
+# 断言 2：每个 admin operation 必须声明 x-required-permission。
+check_admin_permission_required() { # check_admin_permission_required <openapi_root>
+  local root="$1" line count=0 missing=""
+  while IFS= read -r line; do
+    case "$line" in
+      'COUNT '*) count=$((count + ${line#COUNT })) ;;
+      'MISSING '*) missing+="${line#MISSING }"$'\n' ;;
+    esac
+  done < <(scan_admin_operations "$root")
+  if [ "$count" -eq 0 ]; then
+    echo "FAIL: 未解析到任何 admin operation（YAML 排版变化？断言 fail-closed）" >&2
+    return 1
+  fi
+  if [ -n "$missing" ]; then
+    printf '%s' "$missing" >&2
+    return 1
+  fi
+  echo "PASS: ${count} 个 admin operation 均声明 x-required-permission"
+}
+
 # 失败先行自检：临时副本中逐条注入越界 $ref，必须被 scan_refs 以预期原因拒绝。
 # 为什么要注入用例：只验证“当前源树通过”无法区分“守卫有效”与“规则退化成永远 PASS”；
 # 用临时副本注入可重复证明每条拒绝路径真的生效，且不污染真实源树。
@@ -285,7 +410,86 @@ self_test() {
   fi
   rm -f "$tmp/api/openapi/selftest-source-link.yaml"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）注入均已被拒绝"
+  # 权限断言自检：只验证真实源树通过，无法区分「守卫有效」与「规则退化成永远
+  # PASS」。逐条注入后必须按预期原因失败，且随后从真实源恢复副本。
+  # 用例 A：删除一条 x-required-permission → 管理面断言必须失败。
+  cp api/openapi/paths/admin.yaml "$tmp/api/openapi/paths/admin.yaml"
+  perl -0pi -e 's/^[ \t]+x-required-permission:[^\n]*\n//m' "$tmp/api/openapi/paths/admin.yaml"
+  if out=$(check_admin_permission_required "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [admin-permission-missing] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '缺少 x-required-permission'; then
+    echo "FAIL: 自检 [admin-permission-missing] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [admin-permission-missing] 已被拒绝"
+  fi
+
+  # 用例 B：把权限值改成目录外的拼写 → 目录断言必须失败。
+  cp api/openapi/paths/admin.yaml "$tmp/api/openapi/paths/admin.yaml"
+  sed -i 's/users:read/users:root/' "$tmp/api/openapi/paths/admin.yaml"
+  if out=$(check_permission_catalog "$tmp/api/openapi" backend/internal/rbac/catalog.go 2>&1); then
+    echo "FAIL: 自检 [permission-not-in-catalog] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '不在 RBAC 20 键目录内'; then
+    echo "FAIL: 自检 [permission-not-in-catalog] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [permission-not-in-catalog] 已被拒绝"
+  fi
+  # 恢复真实副本，避免影响后续用例与最终状态。
+  cp api/openapi/paths/admin.yaml "$tmp/api/openapi/paths/admin.yaml"
+
+  # 用例 C：admin 不是 tags 唯一元素、块元素带行尾注释、flow 序列跨行——
+  # 都是合法 YAML，都必须被识别为管理面 operation 并因缺少
+  # x-required-permission 被拒绝。固定匹配 `tags: [admin]` 或单行 flow 的
+  # 实现会漏掉这些写法，本用例专门证明不会。
+  cat >"$tmp/api/openapi/paths/selftest-admin-tags.yaml" <<'YAML'
+paths:
+  /selftest-admin-flow:
+    get:
+      tags: [admin, channels]
+      operationId: selftestAdminFlow
+      responses:
+        '200': {description: OK}
+  /selftest-admin-block:
+    post:
+      tags:
+        - channels
+        - admin
+      operationId: selftestAdminBlock
+      responses:
+        '200': {description: OK}
+  /selftest-admin-block-comment:
+    get:
+      tags:
+        - channels
+        - admin  # 行尾注释不影响元素判定
+      operationId: selftestAdminBlockComment
+      responses:
+        '200': {description: OK}
+  /selftest-admin-flow-multiline:
+    post:
+      tags: [
+        channels,
+        admin
+      ]
+      operationId: selftestAdminFlowMultiline
+      responses:
+        '200': {description: OK}
+YAML
+  if out=$(check_admin_permission_required "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [admin-tag-list-element] 未被拒绝" >&2
+    rc=1
+  elif [ "$(printf '%s\n' "$out" | grep -c '缺少 x-required-permission' || true)" -ne 4 ]; then
+    echo "FAIL: 自检 [admin-tag-list-element] 应识别 4 个复合/跨行 tag operation：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [admin-tag-list-element] flow/block/行尾注释/跨行 flow 的 admin tag 均被识别并拒绝"
+  fi
+  rm -f "$tmp/api/openapi/paths/selftest-admin-tags.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）、权限（缺失声明、目录外取值、复合/注释/跨行 tag）注入均已被拒绝"
   return "$rc"
 }
 
@@ -347,7 +551,16 @@ done
 # 6) $ref 边界：不得跨出 api/openapi/，目标文件必须存在
 scan_refs api/openapi || fail "\$ref 边界校验失败（只允许引用 api/openapi/ 内已存在的文件）"
 
-# 7) relay schema 源文件存在但不承载协议 schema（§9.3：真源在 contract/adapter）
+# 7) 权限门禁：x-required-permission 取值 ⊆ rbac 20 键目录；admin operation 必须声明。
+#    目录文件缺失即失败——无目录可比对时放行会让断言退化成永远 PASS。
+RBAC_CATALOG=backend/internal/rbac/catalog.go
+[ -f "$RBAC_CATALOG" ] || fail "缺少 RBAC 权限目录 $RBAC_CATALOG（权限断言 fail-closed）"
+check_permission_catalog api/openapi "$RBAC_CATALOG" \
+  || fail "x-required-permission 取值与 RBAC 20 键目录不一致"
+check_admin_permission_required api/openapi \
+  || fail "管理面 operation 缺少 x-required-permission 声明"
+
+# 8) relay schema 源文件存在但不承载协议 schema（§9.3：真源在 contract/adapter）
 grep -q 'x-codegen: false' api/openapi/paths/relay.yaml || fail "relay paths 必须打 x-codegen: false"
 
-echo "PASS: OpenAPI layout 校验通过（仓根 api/openapi/，入口 paths 全为 \$ref，\$ref 未越界）"
+echo "PASS: OpenAPI layout 校验通过（仓根 api/openapi/，入口 paths 全为 \$ref，\$ref 未越界，权限声明与 RBAC 目录一致）"

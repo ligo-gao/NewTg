@@ -442,7 +442,7 @@ func newChannelTestEnv(t *testing.T, opts ChannelHandlerOptions) *channelTestEnv
 	return &channelTestEnv{handler: h, store: cs, access: ua, sealer: sealer, mux: mux, idem: opts.Idempotency}
 }
 
-func adminPrincipal(perms ...string) *auth.Principal {
+func channelAdminPrincipal(perms ...string) *auth.Principal {
 	return &auth.Principal{UserID: testAdminID, Role: "admin", Permissions: perms}
 }
 
@@ -575,7 +575,7 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/channels?p=2&page_size=10&keyword=GPT&status=1&type=openai&type=anthropic&group=vip&model=gpt-4o&sort=name", nil)
-	rr := serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -648,7 +648,7 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 // TestChannelListDefaults 验证缺省分页（1/20）。
 func TestChannelListDefaults(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
-	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -709,7 +709,7 @@ func TestChannelCreateValidationAndMasking(t *testing.T) {
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newChannelTestEnv(t, ChannelHandlerOptions{})
-			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", tc.body), adminPrincipal())
+			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", tc.body), channelAdminPrincipal())
 			if rr.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 			}
@@ -720,7 +720,7 @@ func TestChannelCreateValidationAndMasking(t *testing.T) {
 	}
 
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
-	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", valid), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", valid), channelAdminPrincipal())
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -791,7 +791,7 @@ func TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels(t *testing.T)
 		env := newChannelTestEnv(t, ChannelHandlerOptions{})
 		rr := serveWithPrincipal(t, env.mux,
 			jsonReq(t, http.MethodPost, "/api/channels", base(map[string]any{"gpt-5": "gpt-4o"})),
-			adminPrincipal())
+			channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -807,7 +807,7 @@ func TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels(t *testing.T)
 		env := newChannelTestEnv(t, ChannelHandlerOptions{})
 		rr := serveWithPrincipal(t, env.mux,
 			jsonReq(t, http.MethodPost, "/api/channels", base(map[string]any{"gpt-4o": "upstream-gpt-4o"})),
-			adminPrincipal())
+			channelAdminPrincipal())
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -828,7 +828,7 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"model_mapping":    map[string]any{"gpt-5": "gpt-4o"},
 		}
-		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -847,7 +847,7 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"supported_models": []string{"gpt-4o"},
 		}
-		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -872,7 +872,7 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 			"supported_models": []string{"gpt-4o"},
 			"model_mapping":    map[string]string{"gpt-5": "upstream-5"},
 		}
-		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d，期望 200（未变化的不一致行不应阻断无关字段；body=%s）", rr.Code, rr.Body.String())
 		}
@@ -892,7 +892,7 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 			// 真实变更：支持列表变了，但 mapping 的 gpt-5 仍不在列表里。
 			"supported_models": []string{"gpt-4o", "gpt-4"},
 		}
-		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d，期望 422（真实变更仍须满足覆盖约束；body=%s）", rr.Code, rr.Body.String())
 		}
@@ -913,7 +913,7 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"model_mapping":    map[string]any{"gpt-3.5": "upstream-35"},
 		}
-		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -936,7 +936,7 @@ func TestChannelCreateIdempotentReplay(t *testing.T) {
 	do := func() *httptest.ResponseRecorder {
 		req := jsonReq(t, http.MethodPost, "/api/channels", body)
 		req.Header.Set("Idempotency-Key", "test-idem-key-1")
-		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+		return serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	}
 	first := do()
 	if first.Code != http.StatusCreated {
@@ -978,7 +978,7 @@ func TestChannelPatchBlankCredentialsKeepsValue(t *testing.T) {
 			for k, v := range tc.body {
 				body[k] = v
 			}
-			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 			}
@@ -1009,7 +1009,7 @@ func TestChannelPatchStaleVersionConflict(t *testing.T) {
 		"expected_version": seeded.UpdatedAt.Add(-2 * time.Second).UTC().Format(time.RFC3339Nano),
 		"remark":           "stale",
 	}
-	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1023,7 +1023,7 @@ func TestChannelPatchStaleVersionConflict(t *testing.T) {
 func TestChannelPatchMissingExpectedVersion(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
 	seedChannel(t, env, nil)
-	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{"remark": "x"}), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{"remark": "x"}), channelAdminPrincipal())
 	if rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1039,7 +1039,7 @@ func TestChannelCreateNameConflict(t *testing.T) {
 		"credentials":      map[string]any{"api_key": "sk-1234567890"},
 		"supported_models": []string{"gpt-4o"},
 	}
-	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), channelAdminPrincipal())
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1057,38 +1057,38 @@ func TestChannelPermissionMatrix(t *testing.T) {
 
 	// admin 仅有 channels:read：读通过，写/删拒绝。
 	env.access.set(testAdminID, "admin", []string{"channels:read"}, "enabled")
-	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), adminPrincipal()); rr.Code != http.StatusOK {
+	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), channelAdminPrincipal()); rr.Code != http.StatusOK {
 		t.Fatalf("read-only admin 列表 = %d，期望 200", rr.Code)
 	}
 	createBody := map[string]any{
 		"name": "denied", "type": "openai",
 		"credentials": map[string]any{"api_key": "sk-1234567890"}, "supported_models": []string{"gpt-4o"},
 	}
-	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", createBody), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", createBody), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("缺 channels:manage 创建 = %d，期望 403", rr.Code)
 	}
-	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodDelete, "/api/channels/1", nil), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodDelete, "/api/channels/1", nil), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("缺 channels:manage_sensitive 删除 = %d，期望 403", rr.Code)
 	}
-	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/batch-delete", map[string]any{"ids": []int64{1}}), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/batch-delete", map[string]any{"ids": []int64{1}}), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("缺 channels:manage_sensitive 批量删除 = %d，期望 403", rr.Code)
 	}
-	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/batch", map[string]any{"action": "enable", "ids": []int64{1}}), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/batch", map[string]any{"action": "enable", "ids": []int64{1}}), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("缺 channels:manage 批量启停 = %d，期望 403", rr.Code)
 	}
 
 	// 加 channels:manage：写与启停通过，删除仍拒绝（敏感位分离）。
 	env.access.set(testAdminID, "admin", []string{"channels:read", "channels:manage"}, "enabled")
-	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/batch", map[string]any{"action": "enable", "ids": []int64{1}}), adminPrincipal()); rr.Code != http.StatusOK {
+	if rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/batch", map[string]any{"action": "enable", "ids": []int64{1}}), channelAdminPrincipal()); rr.Code != http.StatusOK {
 		t.Fatalf("有 channels:manage 批量启停 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
-	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodDelete, "/api/channels/1", nil), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodDelete, "/api/channels/1", nil), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("缺敏感位删除 = %d，期望 403", rr.Code)
 	}
 
 	// role=user 即使权限数组含键也必须 403（modules-07 F-07-08）。
 	env.access.set(testAdminID, "user", []string{"channels:read", "channels:manage", "channels:manage_sensitive"}, "enabled")
-	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), adminPrincipal()); rr.Code != http.StatusForbidden {
+	if rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), channelAdminPrincipal()); rr.Code != http.StatusForbidden {
 		t.Fatalf("role=user 列表 = %d，期望 403", rr.Code)
 	}
 
@@ -1120,7 +1120,7 @@ func TestChannelBatchEnableSkipsAlreadyEnabled(t *testing.T) {
 
 	rr := serveWithPrincipal(t, env.mux,
 		jsonReq(t, http.MethodPatch, "/api/channels/batch", map[string]any{"action": "enable", "ids": []int64{1, 2, 999}}),
-		adminPrincipal())
+		channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1152,7 +1152,7 @@ func TestChannelTestFailureRedactsError(t *testing.T) {
 	tester := &fakeChannelTester{err: errors.New("dial https://upstream.internal:8443/v1?api_key=sk-supersecret failed")}
 	env.handler.tester = tester.test
 
-	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1185,7 +1185,7 @@ func TestChannelTestFailureRedactsError(t *testing.T) {
 
 	// 成功路径：200 + latency + model，last_test_result=true。
 	env.handler.tester = (&fakeChannelTester{latency: 42}).test
-	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}), adminPrincipal())
+	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("成功测试 status = %d（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1219,7 +1219,7 @@ func TestChannelDetailMaskedCredentials(t *testing.T) {
 		})
 	})
 
-	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels/1", nil), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels/1", nil), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1251,7 +1251,7 @@ func TestChannelBatchDeleteIdempotent(t *testing.T) {
 	do := func() *httptest.ResponseRecorder {
 		req := jsonReq(t, http.MethodPost, "/api/channels/batch-delete", map[string]any{"ids": []int64{1, 2}})
 		req.Header.Set("Idempotency-Key", "batch-del-1")
-		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+		return serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	}
 	first := do()
 	if first.Code != http.StatusOK {
@@ -1329,7 +1329,7 @@ func TestChannelMaskAPIKeyShort(t *testing.T) {
 func TestChannelListAcceptsResponseTimeSort(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
 	rr := serveWithPrincipal(t, env.mux,
-		httptest.NewRequest(http.MethodGet, "/api/channels?sort=response_time", nil), adminPrincipal())
+		httptest.NewRequest(http.MethodGet, "/api/channels?sort=response_time", nil), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1352,13 +1352,13 @@ func TestChannelIdempotencyKeyScopedByOperation(t *testing.T) {
 		"supported_models": []string{"gpt-4o"},
 	})
 	createReq.Header.Set("Idempotency-Key", "same-key-across-endpoints")
-	if rr := serveWithPrincipal(t, env.mux, createReq, adminPrincipal()); rr.Code != http.StatusCreated {
+	if rr := serveWithPrincipal(t, env.mux, createReq, channelAdminPrincipal()); rr.Code != http.StatusCreated {
 		t.Fatalf("create status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 	}
 
 	deleteReq := jsonReq(t, http.MethodPost, "/api/channels/batch-delete", map[string]any{"ids": []int64{seeded.ID}})
 	deleteReq.Header.Set("Idempotency-Key", "same-key-across-endpoints")
-	rr := serveWithPrincipal(t, env.mux, deleteReq, adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, deleteReq, channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("batch-delete status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
@@ -1388,7 +1388,7 @@ func TestChannelIdempotencyKeyScopedByUser(t *testing.T) {
 		"supported_models": []string{"gpt-4o"},
 	})
 	first.Header.Set("Idempotency-Key", "shared-across-users")
-	if rr := serveWithPrincipal(t, env.mux, first, adminPrincipal()); rr.Code != http.StatusCreated {
+	if rr := serveWithPrincipal(t, env.mux, first, channelAdminPrincipal()); rr.Code != http.StatusCreated {
 		t.Fatalf("user A create status = %d（body=%s）", rr.Code, rr.Body.String())
 	}
 
@@ -1440,7 +1440,7 @@ func TestChannelIdempotencySerializesConcurrentSameKey(t *testing.T) {
 	do := func() *httptest.ResponseRecorder {
 		req := jsonReq(t, http.MethodPost, "/api/channels", body)
 		req.Header.Set("Idempotency-Key", "concurrent-race-key")
-		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+		return serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	}
 
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
@@ -1500,7 +1500,7 @@ func TestChannelIdempotencyNon2xxReleasesKey(t *testing.T) {
 			"credentials": map[string]any{"api_key": "short"}, "supported_models": []string{"gpt-4o"},
 		})
 		req.Header.Set("Idempotency-Key", "retry-after-422")
-		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+		return serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	}
 	if rr := do(); rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("first status = %d, want 422; body=%s", rr.Code, rr.Body.String())
@@ -1511,7 +1511,7 @@ func TestChannelIdempotencyNon2xxReleasesKey(t *testing.T) {
 		"credentials": map[string]any{"api_key": "sk-fixed-1234"}, "supported_models": []string{"gpt-4o"},
 	})
 	req.Header.Set("Idempotency-Key", "retry-after-422")
-	rr := serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("retry status = %d, want 201（非 2xx 必须释放幂等键）; body=%s", rr.Code, rr.Body.String())
 	}
@@ -1595,7 +1595,7 @@ func TestIdempotencyPendingMarkerUsesShortTTL(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder})
 	req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
 	req.Header.Set("Idempotency-Key", "ttl-split")
-	if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+	if rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal()); rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 	}
 
@@ -1646,7 +1646,7 @@ func TestIdempotencyFinalizeUsesDetachedContext(t *testing.T) {
 		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
 		req.Header.Set("Idempotency-Key", "detached-complete")
 		req = req.WithContext(ctx)
-		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+		if rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal()); rr.Code != http.StatusCreated {
 			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 		}
 
@@ -1674,7 +1674,7 @@ func TestIdempotencyFinalizeUsesDetachedContext(t *testing.T) {
 		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
 		req.Header.Set("Idempotency-Key", "detached-release")
 		req = req.WithContext(ctx)
-		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusInternalServerError {
+		if rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal()); rr.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d，期望 500（body=%s）", rr.Code, rr.Body.String())
 		}
 
@@ -1703,7 +1703,7 @@ func TestIdempotencyFinalizeFailuresAreLogged(t *testing.T) {
 		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder, Logger: logger})
 		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
 		req.Header.Set("Idempotency-Key", "log-complete")
-		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+		if rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal()); rr.Code != http.StatusCreated {
 			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
 		}
 		out := buf.String()
@@ -1720,7 +1720,7 @@ func TestIdempotencyFinalizeFailuresAreLogged(t *testing.T) {
 		env.store.createErr = errors.New("db down")
 		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
 		req.Header.Set("Idempotency-Key", "log-release")
-		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusInternalServerError {
+		if rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal()); rr.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d，期望 500（body=%s）", rr.Code, rr.Body.String())
 		}
 		out := buf.String()
@@ -1747,7 +1747,7 @@ func TestIdempotencyPanicReleasesMarker(t *testing.T) {
 				t.Fatal("build panic 应继续向上传播（由 net/http 兜底）")
 			}
 		}()
-		serveWithPrincipal(t, env.mux, req, adminPrincipal())
+		serveWithPrincipal(t, env.mux, req, channelAdminPrincipal())
 	}()
 
 	recorder.mu.Lock()
@@ -1772,7 +1772,7 @@ func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"type":             "azure_openai",
 			"base_url":         azureBase,
-		}), adminPrincipal())
+		}), channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
 		}
@@ -1789,7 +1789,7 @@ func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
 			"type":             "azure_openai",
 			"base_url":         azureBase,
 			"credentials":      map[string]any{"api_key": "sk-new-azure-1234"},
-		}), adminPrincipal())
+		}), channelAdminPrincipal())
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d, want 422（azure 缺 deployment/api_version）; body=%s", rr.Code, rr.Body.String())
 		}
@@ -1812,7 +1812,7 @@ func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
 				"deployment":  "dep-1",
 				"api_version": "2025-04-01",
 			},
-		}), adminPrincipal())
+		}), channelAdminPrincipal())
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 		}
@@ -1840,7 +1840,7 @@ func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"type":             "anthropic",
 			"credentials":      map[string]any{"api_key": "sk-ant-new-1234"},
-		}), adminPrincipal())
+		}), channelAdminPrincipal())
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 		}
@@ -1858,7 +1858,7 @@ func TestChannelDeletedUserMapsTo401(t *testing.T) {
 	env.access.err = store.ErrUserNotFound
 	env.access.mu.Unlock()
 
-	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), adminPrincipal())
+	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), channelAdminPrincipal())
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
 	}
@@ -1879,7 +1879,7 @@ func TestChannelPatchAzureOnlyAPIKeyKeepsDeployment(t *testing.T) {
 	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
 		"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		"credentials":      map[string]any{"api_key": "sk-new-azure-5678"},
-	}), adminPrincipal())
+	}), channelAdminPrincipal())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}

@@ -5,10 +5,19 @@ paths:
       tags: [public]
       operationId: getPublicStatus
       summary: 公共站点状态
+      description: |
+        登录/注册页的引导数据：注册与口令登录开关、邮箱验证要求、Turnstile
+        site key、登录加密开关与 canonical 7 语清单。响应 Cache-Control:
+        no-store——开关变更必须立即生效。
       security: []
       responses:
         '200':
-          description: OK（字段随 M1+ 细化）
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store（站点开关变更必须即时可见）
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -17,6 +26,21 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: |
+            初始化状态存储不可用（IsInitialized 查询失败）。实现禁止猜测
+            system_initialized（猜 false 会把已初始化站点导回安装向导，猜 true
+            会把新站锁死在登录页），因此 fail-closed 返回 503。
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
 
   /api/geoip:
     get:
@@ -43,3 +67,321 @@ paths:
                 $ref: '../schemas/public.yaml#/schemas/GeoIPResponse'
         '429':
           $ref: '../components/responses.yaml#/responses/Error429'
+
+  /api/auth/login/encryption-key:
+    get:
+      tags: [public]
+      operationId: getLoginEncryptionKey
+      summary: 登录口令加密公钥（关闭时 {enabled:false}）
+      description: |
+        前端缓存 5 分钟（DisableCache 语义是响应头禁止中间层缓存，不是禁止
+        客户端短缓存）。开启时返回 {kid, public_key}；关闭时固定
+        {enabled:false}。取公钥失败返回 503，绝不回落到明文登录。
+      security: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/LoginEncryptionKeyResponse'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/email-code:
+    post:
+      tags: [public]
+      operationId: requestEmailCode
+      summary: 发送 6 位一次性邮箱验证码
+      description: |
+        TTL 10 分钟、一次性。同邮箱 1 次/60 秒、同 IP 10 次/小时；超限 429
+        + Retry-After。成功恒 204，响应不回显验证码。purpose=verify|bind
+        要求有效会话（本端点不经过 SessionAuth，实现内显式校验），缺失 401。
+        SMTP 发送失败返回 502（验证码同时作废，避免留下收不到的有效码）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/EmailCodeRequest'
+      responses:
+        '204':
+          description: 已受理（验证码已生成；配置 SMTP 时已投递）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/register:
+    post:
+      tags: [public]
+      operationId: register
+      summary: 注册并自动登录
+      description: |
+        成功 201 + 会话 Cookie。重复 username/email 统一 409（文案不区分字段
+        级差异，防账号枚举）。注册关闭 403；邮箱域名白名单外 422。成功后可
+        按配置发放注册赠送流水。
+      # 注册入口不挂 CSRF/Origin：此时还没有会话可保护（security-01 §2.2）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: 注册成功并已建立会话
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/AuthSessionResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/login:
+    post:
+      tags: [public]
+      operationId: login
+      summary: 口令登录（可选前端加密与 2FA 挑战）
+      description: |
+        口令通过后：未启用 2FA 直接建立会话（200 AuthSessionResponse）；
+        已启用返回 200 Pending2FAResponse（ticket 5 分钟），需再调用
+        POST /api/auth/2fa/challenge。连续 5 次失败锁定 15 分钟（双桶
+        Redis 计数）；封禁账号 401。所有失败（含解密失败）响应一致，防 oracle。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 已建立会话，或返回 pending_2fa ticket
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/LoginResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/2fa/challenge:
+    post:
+      tags: [public]
+      operationId: submitTwoFAChallenge
+      summary: 用一次性 ticket + TOTP/备用码换取正式会话
+      description: |
+        只信任 ticket（Redis pending_2fa:{ticket} → user_id），不接受客户端
+        声明的用户身份。TOTP 连续 5 次错误作废 ticket；备用码原子核销（同一
+        码并发提交只有一次成功）。成功 200 + 会话 Cookie。
+      # 该端点的凭据是 ticket 而非会话，因此不要求 SessionAuth。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/TwoFAChallengeRequest'
+      responses:
+        '200':
+          description: 挑战通过并已建立会话
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/AuthSessionResponse'
+        '400':
+          description: |
+            两种语义由 problem type 区分：
+            · type = `https://newtg.dev/problems/two_factor_ticket_invalid`：
+              ticket 格式非法、已过期或已被消费——必须重新走登录拿新 ticket，
+              重试本端点不会成功。
+            · 其它 `bad_request`（不含该 type）：ticket 有效但 TOTP/备用码错误，
+              或请求体校验失败；码错误时 ticket 仍可继续使用（TOTP 连续 5 次
+              错误才作废，备用码核销即失效）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '429':
+          description: |
+            连续第 5 次 TOTP/备用码错误：ticket 已被作废（必须重新登录获取
+            新 ticket，不能在本页重试）；账号已处于锁定窗口时也会直接返回
+            429。Retry-After 指示建议重试秒数。
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（第 5 次失败场景实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/password-reset/request:
+    post:
+      tags: [public]
+      operationId: requestPasswordReset
+      summary: 请求口令重置邮件（统一成功态）
+      description: |
+        邮箱存在与否响应完全一致（恒 204，防枚举）；存在时投递 256-bit
+        token（30 分钟）。同邮箱 60 秒冷却、同 IP 5 次/分钟，超限 429。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/PasswordResetRequest'
+      responses:
+        '204':
+          description: 已受理（不透露邮箱是否注册）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/password-reset/validate:
+    post:
+      tags: [public]
+      operationId: validatePasswordResetToken
+      summary: 校验重置链接（不消费 token）
+      description: 有效返回 200 {"valid":true}；无效/过期一律 400 invalid_reset_token。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/PasswordResetValidateRequest'
+      responses:
+        '200':
+          description: token 有效
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PasswordResetValidateResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/password-reset/confirm:
+    post:
+      tags: [public]
+      operationId: confirmPasswordReset
+      summary: 消费重置 token 并设置新口令
+      description: |
+        原子消费 token → 改密 → 吊销该用户全部会话，成功 204。token 复用/
+        过期 400；并发提交同一 token 只有一个成功。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/PasswordResetConfirmRequest'
+      responses:
+        '204':
+          description: 口令已重置，全部旧会话已失效
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/logout:
+    post:
+      tags: [public]
+      operationId: logout
+      summary: 登出当前会话
+      description: |
+        public-safe：无会话或重复登出也恒 204。不挂 CSRF 校验（登出不构成
+        状态提升，且清 Cookie 必须在会话已失效后仍可用）。Redis 故障时 503。
+      security: []
+      responses:
+        '204':
+          description: 已登出（幂等）
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/setup:
+    post:
+      tags: [public]
+      operationId: completeSetup
+      summary: 首次安装向导（建管理员 + 写初始化锚）
+      description: |
+        仅未初始化时可调用：三步字段建 admin 并写 system.install.completed_at
+        （同事务），成功 201 + 自动登录会话。幂等锚是 system_settings 该键：
+        重复/并发提交返回 409 + initialized=true，前端据此导流到登录页。
+        已初始化后调用同样 409；用户名/邮箱冲突 409。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/SetupRequest'
+      responses:
+        '201':
+          description: 初始化完成并已建立管理员会话
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/SetupResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '409':
+          description: 已初始化（initialized=true）或用户名/邮箱冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/SetupCompletedProblem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'

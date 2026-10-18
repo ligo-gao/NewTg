@@ -1,8 +1,10 @@
 // Package store 承载主库 GORM 模型与「DB CHECK ↔ Go 常量」对照表。
 //
 // DDL/DML 纪律（platform-04 §3.7 V8）：保留字列 "group"（users/api_tokens/
-// group_pricing）与 "key"（system_settings）在一切 SQL 与 GORM 映射中必须
-// 双引号引用；GORM 模型填充（含 column tag）随 M1+ 各里程碑，M0 只有空壳。
+// group_pricing）与 "key"（system_settings）在 SQL 文本中必须双引号引用；
+// GORM 的 column tag 只写裸列名（如 gorm:"column:group"），标识符引用由
+// dialector 负责——tag 里写引号会变成列名的一部分，扫描时按裸列名取不到。
+// GORM 模型字段随里程碑填充（M0 空壳，M1 起逐步落地）。
 package store
 
 // EnumChecks 是 Tier-1 枚举列的「DB CHECK ↔ 期望值」对照表（platform-04 §6 V6）：
@@ -77,7 +79,8 @@ var EnumChecks = map[string][]string{
 // 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
-// 主库的 EnumChecks 只覆盖主库 16 表，二者互不包含。日志库唯一的枚举型 CHECK
+// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 = 22 表），
+// 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
 	// usage_logs（platform-01 §12；smallint：0=refused / 1=success / 2=error / 3=refunded）

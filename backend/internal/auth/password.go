@@ -41,15 +41,18 @@ const (
 	// 必须拒绝越界参数：m=4294967295 会触发数 TiB 分配，t=0/p=0 会让
 	// x/crypto/argon2 直接 panic（伪造哈希不得变成 DoS）。
 	//
-	// 下限直接冻结为基线：M1 没有历史哈希，低于基线的合法哈希不存在，只可能
-	// 是伪造/降级；上限留出余量，允许未来按 security-03「随算力调升」后仍能
-	// 按旧哈希记录的参数完成校验。
+	// 下限必须**冻结为字面量**，不能复用 argon2MemoryKiB/argon2Time/argon2Threads：
+	// PHC 是自描述格式，未来按 security-03 调高生成成本时旧哈希仍应按其记录的
+	// 参数校验；若下限跟随生成常量上移，调参当刻所有旧哈希都会被判为伪造而
+	// 拒绝，等于全站强制重置口令。M1 之前没有更低成本的合法哈希，因此下限
+	// 就是当时的基线：m=19456, t=2, p=1。
 	maxVerifyMemoryKiB = 256 << 10 // 256 MiB
 	maxVerifyTime      = 10
 	maxVerifyThreads   = 16
-	minVerifyKeyLen    = argon2KeyLen // R-05 冻结 32B；更短的摘要只可能是伪造
-	maxVerifyKeyLen    = 1024
-	maxVerifySaltLen   = 1024
+	// R-05 冻结 32B；更短的摘要只可能是伪造，同样用字面量避免随生成参数漂移。
+	minVerifyKeyLen  = 32
+	maxVerifyKeyLen  = 1024
+	maxVerifySaltLen = 1024
 )
 
 // HashPassword 用 argon2id 计算口令哈希，输出 PHC 字符串
@@ -168,12 +171,12 @@ func parseArgon2idParams(s string) (memory, rounds uint32, threads uint8, ok boo
 	if !seenM || !seenT || !seenP {
 		return 0, 0, 0, false
 	}
-	// 下限 = 冻结基线（m=19456, t=2, p=1）：M1 没有历史哈希，任何低于基线的
-	// 参数只可能来自伪造/降级，必须拒绝。t≥1、p≥1 同时满足 argon2.IDKey 的
-	// 前置条件（否则会 panic）。
-	if rounds < argon2Time || rounds > maxVerifyTime ||
-		threads < argon2Threads || threads > maxVerifyThreads ||
-		memory < argon2MemoryKiB || memory > maxVerifyMemoryKiB {
+	// 下限 = 冻结基线（m=19456, t=2, p=1，字面量而非生成常量，理由见上方
+	// minVerifyKeyLen 注释）：任何低于基线的参数只可能来自伪造/降级，必须
+	// 拒绝。t≥1、p≥1 同时满足 argon2.IDKey 的前置条件（否则会 panic）。
+	if rounds < 2 || rounds > maxVerifyTime ||
+		threads < 1 || threads > maxVerifyThreads ||
+		memory < 19456 || memory > maxVerifyMemoryKiB {
 		return 0, 0, 0, false
 	}
 	return memory, rounds, threads, true

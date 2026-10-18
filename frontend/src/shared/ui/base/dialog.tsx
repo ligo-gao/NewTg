@@ -9,6 +9,11 @@ export interface DialogProps {
   children?: ReactNode
   footer?: ReactNode
   /**
+   * When false, Escape and backdrop clicks are ignored (e.g. a step that must
+   * not be dismissed before the user saves one-time material). Defaults true.
+   */
+  dismissible?: boolean
+  /**
    * `sheet` renders the same modal semantics as a right-side panel (used by the
    * wide channel form, modules-06 §3.1). Focus trapping, Escape handling and
    * background inertness are identical; only the frame changes.
@@ -58,6 +63,7 @@ export function Dialog({
   description,
   children,
   footer,
+  dismissible = true,
   variant = 'center',
   panelClassName,
 }: DialogProps) {
@@ -73,6 +79,11 @@ export function Dialog({
   useEffect(() => {
     onOpenChangeRef.current = onOpenChange
   }, [onOpenChange])
+
+  const dismissibleRef = useRef(dismissible)
+  useEffect(() => {
+    dismissibleRef.current = dismissible
+  }, [dismissible])
 
   // One effect owns the whole focus lifecycle so capture, inertness and
   // restoration happen in a safe order:
@@ -113,7 +124,7 @@ export function Dialog({
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onOpenChangeRef.current(false)
+        if (dismissibleRef.current) onOpenChangeRef.current(false)
         return
       }
       if (event.key !== 'Tab') return
@@ -181,7 +192,7 @@ export function Dialog({
         className="absolute inset-0 bg-overlay"
         aria-hidden="true"
         onClick={() => {
-          onOpenChange(false)
+          if (dismissible) onOpenChange(false)
         }}
       />
       <div

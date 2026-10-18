@@ -1,12 +1,14 @@
 openapi: 3.1.0
 info:
   title: NewTG API
-  version: 0.1.0-m0
+  version: 0.2.0-m1
   description: |
-    NewTG 网关 API 契约骨架（M0）。
+    NewTG 网关 API 契约（M1：账户/认证/令牌/用户/分组）。
     管理 API 统一使用 RFC 7807 `application/problem+json` 错误体与 offset 分页信封
     `Page{items,total,page,page_size}`（`p` 1 基，`page_size` 默认 20、上限 100）。
     中继 `/v1/*` 仅登记路径与公共面，不重定义上游协议 schema（真源见 externalDocs）。
+    M1 的会话性端点同时声明 `sessionCookie` 与 `bearerToken`；管理端点只接受
+    会话 Cookie（Bearer 没有角色/权限语义）。
 servers:
   - url: /
     description: 同源部署（边缘反代 → 网关）
@@ -28,12 +30,110 @@ paths:
     $ref: './paths/ops.yaml#/paths/~1healthz'
   /readyz:
     $ref: './paths/ops.yaml#/paths/~1readyz'
+
+  # 公开域（security: []）。
   /api/status:
     $ref: './paths/public.yaml#/paths/~1api~1status'
   /api/geoip:
     $ref: './paths/public.yaml#/paths/~1api~1geoip'
+  /api/auth/login/encryption-key:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1login~1encryption-key'
+  /api/auth/email-code:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1email-code'
+  /api/auth/register:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1register'
+  /api/auth/login:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1login'
+  /api/auth/2fa/challenge:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~12fa~1challenge'
+  /api/auth/password-reset/request:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1password-reset~1request'
+  /api/auth/password-reset/validate:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1password-reset~1validate'
+  /api/auth/password-reset/confirm:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~1password-reset~1confirm'
+  /api/logout:
+    $ref: './paths/public.yaml#/paths/~1api~1logout'
+  /api/setup:
+    $ref: './paths/public.yaml#/paths/~1api~1setup'
+
+  # 用户自助域。
+  /api/me:
+    $ref: './paths/user.yaml#/paths/~1api~1me'
+  /api/self:
+    $ref: './paths/user.yaml#/paths/~1api~1self'
+  /api/self/setting:
+    $ref: './paths/user.yaml#/paths/~1api~1self~1setting'
+  /api/sessions:
+    $ref: './paths/user.yaml#/paths/~1api~1sessions'
+  /api/sessions/{sid}:
+    $ref: './paths/user.yaml#/paths/~1api~1sessions~1{sid}'
+  /api/sessions/revoke-others:
+    $ref: './paths/user.yaml#/paths/~1api~1sessions~1revoke-others'
+  /api/verify-email:
+    $ref: './paths/user.yaml#/paths/~1api~1verify-email'
+  /api/password:
+    $ref: './paths/user.yaml#/paths/~1api~1password'
+  /api/account:
+    $ref: './paths/user.yaml#/paths/~1api~1account'
+  /api/email:
+    $ref: './paths/user.yaml#/paths/~1api~1email'
+  /api/notification-preferences:
+    $ref: './paths/user.yaml#/paths/~1api~1notification-preferences'
+  /api/notification-preferences/test:
+    $ref: './paths/user.yaml#/paths/~1api~1notification-preferences~1test'
+  /api/2fa/setup:
+    $ref: './paths/user.yaml#/paths/~1api~12fa~1setup'
+  /api/2fa/enable:
+    $ref: './paths/user.yaml#/paths/~1api~12fa~1enable'
+  /api/2fa/disable:
+    $ref: './paths/user.yaml#/paths/~1api~12fa~1disable'
+  /api/2fa/backup-codes/regenerate:
+    $ref: './paths/user.yaml#/paths/~1api~12fa~1backup-codes~1regenerate'
+
+  # API 令牌。
   /api/tokens:
     $ref: './paths/user.yaml#/paths/~1api~1tokens'
+  /api/tokens/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens~1{id}'
+  /api/tokens:batch-enable:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens:batch-enable'
+  /api/tokens:batch-disable:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens:batch-disable'
+  /api/tokens:batch-delete:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens:batch-delete'
+  /api/tokens/{id}:enable:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens~1{id}:enable'
+  /api/tokens/{id}:disable:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens~1{id}:disable'
+  /api/tokens/{id}:reset-key:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens~1{id}:reset-key'
+  /api/token/auto-groups:
+    $ref: './paths/user.yaml#/paths/~1api~1token~1auto-groups'
+  /api/usage/token:
+    $ref: './paths/user.yaml#/paths/~1api~1usage~1token'
+
+  # 管理域（仅会话 Cookie）。
+  /api/users:
+    $ref: './paths/admin.yaml#/paths/~1api~1users'
+  /api/users/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}'
+  /api/users/{id}/status:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1status'
+  /api/users/{id}/quota-adjustment:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1quota-adjustment'
+  /api/users/{id}/reset-2fa:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1reset-2fa'
+  /api/users/{id}/reset-password:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1reset-password'
+  /api/users/{id}/permissions:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1permissions'
+  /api/groups:
+    $ref: './paths/admin.yaml#/paths/~1api~1groups'
+  /api/groups/{name}:
+    $ref: './paths/admin.yaml#/paths/~1api~1groups~1{name}'
+
+  # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
   /v1/chat/completions:
@@ -55,6 +155,14 @@ components:
       $ref: './components/params.yaml#/parameters/IdempotencyKey'
     CSRFToken:
       $ref: './components/params.yaml#/parameters/CSRFToken'
+    PathUserID:
+      $ref: './components/params.yaml#/parameters/PathUserID'
+    PathTokenID:
+      $ref: './components/params.yaml#/parameters/PathTokenID'
+    PathSessionID:
+      $ref: './components/params.yaml#/parameters/PathSessionID'
+    PathGroupName:
+      $ref: './components/params.yaml#/parameters/PathGroupName'
 
   schemas:
     Problem:
@@ -85,9 +193,13 @@ components:
       $ref: './components/responses.yaml#/responses/Error404'
     Error409:
       $ref: './components/responses.yaml#/responses/Error409'
+    Error422:
+      $ref: './components/responses.yaml#/responses/Error422'
     Error429:
       $ref: './components/responses.yaml#/responses/Error429'
     Error500:
       $ref: './components/responses.yaml#/responses/Error500'
+    Error502:
+      $ref: './components/responses.yaml#/responses/Error502'
     Error503:
       $ref: './components/responses.yaml#/responses/Error503'

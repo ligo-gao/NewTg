@@ -10,7 +10,9 @@
 #   b. 每条 `uses:` 均固定到 40 位 commit SHA（GC-13；禁 @v1/@main/@latest 等浮动标签）；
 #   c. 两个 workflow 零 `postgres:15`（GC-4 / C-2③ / D4：统一 PG16）；
 #   d. ci.yml 的 env 固定声明 MIGRATE_VERSION / KIN_OPENAPI_VERSION（GC-13，禁 @latest）；
-#   e. ci.yml 八个阻断 job 齐全，release.yml 具备 tag 触发、packages: write、双架构与 SBOM/provenance。
+#   e. ci.yml 八个阻断 job 齐全，release.yml 具备 tag 触发、packages: write、双架构与 SBOM/provenance；
+#   f. 镜像构建上下文为仓库根（仓根 .dockerignore 裁剪），notices 随镜像与 release 附件分发
+#      （MIT/ISC 许可文本保留要求；backend/.dockerignore 已迁至仓根）。
 #
 # 退出码：0 全部通过；1 存在断言失败。本脚本不改任何文件，可安全在 CI 与本机运行。
 set -uo pipefail
@@ -145,6 +147,42 @@ grep -qE '^[[:space:]]+sbom: true' "$REL"       && ok "release.yml sbom"       |
 grep -q 'GITHUB_SHA' "$REL"                && ok "release.yml 计算 sha 短标签"  || bad "release.yml 缺少 sha-<短哈希> 标签计算"
 grep -q ':latest' "$REL"                   && ok "release.yml latest 标签"      || bad "release.yml 缺少 latest 标签"
 grep -qE 'IMAGE_REGISTRY|IMAGE_NAME' "$REL" && ok "release.yml 使用 IMAGE_REGISTRY/IMAGE_NAME" || bad "release.yml 缺少 IMAGE_REGISTRY/IMAGE_NAME"
+
+# --- f. 镜像构建上下文与第三方许可分发（area4 Important 3） -----------------
+# 构建上下文必须是仓库根：notices 在仓根，backend 上下文无法 COPY 到运行镜像。
+if grep -qE '^[[:space:]]+context: backend$' "$CI" "$REL"; then
+  bad "workflow 仍以 backend/ 为构建上下文（notices 无法随镜像分发）"
+else
+  ok "workflow 不再使用 backend/ 构建上下文"
+fi
+for f in "$CI" "$REL"; do
+  if grep -qE '^[[:space:]]+context: \.$' "$f"; then
+    ok "${f#"$ROOT"/} 构建上下文为仓库根"
+  else
+    bad "${f#"$ROOT"/} 缺少 context: .（仓库根）"
+  fi
+done
+if grep -qF -- 'docker build -f backend/Dockerfile -t newtg/gateway:ci .' "$CI"; then
+  ok "ci.yml security-headers 以仓根为上下文构建镜像"
+else
+  bad "ci.yml security-headers 的 docker build 未使用仓根上下文"
+fi
+grep -q 'THIRD_PARTY_NOTICES.md' "$REL" && grep -q 'gh release' "$REL" \
+  && ok "release.yml 把 THIRD_PARTY_NOTICES.md 挂到 release 附件" \
+  || bad "release.yml 缺少 notices release 附件（gh release ...）"
+grep -qF -- 'COPY THIRD_PARTY_NOTICES.md /usr/share/licenses/newtg/THIRD_PARTY_NOTICES.md' "$ROOT/backend/Dockerfile" \
+  && ok "Dockerfile 把 notices 复制进运行镜像" \
+  || bad "Dockerfile 未 COPY THIRD_PARTY_NOTICES.md 到运行镜像"
+# 上下文裁剪：仓根 .dockerignore 存在，旧的 backend/.dockerignore 已迁走
+# （子目录 .dockerignore 在仓根上下文下不生效，留着会误导）。
+[ -f "$ROOT/.dockerignore" ] && ok "存在仓根 .dockerignore" || bad "缺少仓根 .dockerignore（构建上下文未裁剪）"
+[ ! -f "$ROOT/backend/.dockerignore" ] && ok "backend/.dockerignore 已迁移" || bad "backend/.dockerignore 仍存在（仓根上下文下不生效）"
+grep -qF -- 'Dockerfile -t $(IMAGE) .' "$ROOT/Makefile" \
+  && ok "Makefile image 目标使用仓根上下文" \
+  || bad "Makefile image 目标未使用仓根上下文"
+grep -qF -- 'Dockerfile -t $(IMAGE) --push .' "$ROOT/Makefile" \
+  && ok "Makefile image-multiarch 目标使用仓根上下文" \
+  || bad "Makefile image-multiarch 目标未使用仓根上下文"
 
 echo
 if [ "$fail" -gt 0 ]; then

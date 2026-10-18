@@ -8,8 +8,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -38,6 +41,17 @@ const (
 	// userSessionsKeyPrefix 是每用户活跃会话索引；成员为 sid，分数为最近活动时间。
 	// 该索引让「并发上限驱逐」与「吊销用户全部会话」无需 SCAN 全库。
 	userSessionsKeyPrefix = "sess:user:"
+
+	// maxSessionUABytes 是写入 Redis 会话记录（并由会话列表原样返回）的 UA
+	// 存储上限。User-Agent 没有协议层长度限制，且是攻击者完全可控的输入：
+	// 不截断会把任意大的字符串写进 Redis 与审计副本。512 字节足以识别任何
+	// 现实浏览器/设备；截断按 UTF-8 边界进行，绝不产出非法 UTF-8。
+	maxSessionUABytes = 512
+
+	// sessionRecordTimeout 限制异步 login_sessions 落库的时长。DB 卡死时
+	// 没有上限的 goroutine 会在每次登录后堆积（连接池耗尽 → 雪崩）；5 秒
+	// 足以覆盖正常写入，超时即放弃——该表只是审计副本，会话仍以 Redis 为准。
+	sessionRecordTimeout = 5 * time.Second
 
 	fieldUserID            = "user_id"
 	fieldUA                = "ua"
@@ -147,7 +161,7 @@ func (m *SessionManager) Create(ctx context.Context, userID int64, opts SessionO
 	_, err = createSessionScript.Run(ctx, m.rdb,
 		[]string{sessionKey(sid), userSessionsKey(userID)},
 		strconv.FormatInt(userID, 10),
-		opts.UA,
+		truncateUTF8Bytes(opts.UA, maxSessionUABytes),
 		opts.IP,
 		formatSessionTime(now),
 		formatSessionTime(now),
@@ -270,6 +284,95 @@ func (m *SessionManager) RevokeUser(ctx context.Context, userID int64, keepCurre
 	return nil
 }
 
+// SessionInfo 是会话列表的只读投影（F-01-13 / F-01-27）。它刻意不含
+// CSRFHash：列表是发给客户端的，任何令牌材料都不应出现在响应里。
+//
+// SID 是列表行与 DELETE /api/sessions/{sid} 之间的句柄。会话端点只向
+// 已认证的本人返回该值，并始终以「sid 属于当前用户」为吊销前提（I-12）。
+type SessionInfo struct {
+	SID               string
+	UA                string
+	IP                string
+	CreatedAt         time.Time
+	LastSeenAt        time.Time
+	AbsoluteExpiresAt time.Time
+}
+
+const (
+	// maxListedSessions 是 F-01-13 冻结的列表上限。
+	maxListedSessions = 50
+	// sessionListScanLimit 限制单次列表读取的索引成员数。每用户活跃会话
+	// 有并发上限（20/5），残留的过期成员按 last_seen 排序必然落在存活会话
+	// 之后；扫 200 条足以保证「≤50 条存活会话」不会因残留被截断，同时避免
+	// 一个长期高频登录的账号把无界 ZSET 全量拉进内存。
+	sessionListScanLimit = 200
+)
+
+// ListSessions 返回 userID 当前有效（未滑动/绝对过期）的会话，按 last_seen_at
+// 倒序，最多 maxListedSessions 条。
+//
+// 只读：不刷新 last_seen、不清理索引。Redis 错误原样上抛（调用方 fail-closed）；
+// 键已按 TTL 回收的索引成员被跳过——这正是「过期会话不出现」的判定点。
+// 归属校验是纵深防御：即使索引被写脏，也不会把他人会话列进本用户列表。
+func (m *SessionManager) ListSessions(ctx context.Context, userID int64) ([]SessionInfo, error) {
+	members, err := m.rdb.ZRevRangeWithScores(ctx, userSessionsKey(userID), 0, sessionListScanLimit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("auth: list sessions: %w", err)
+	}
+
+	out := make([]SessionInfo, 0, min(len(members), maxListedSessions))
+	now := m.now()
+
+	// 一次 pipeline 取回全部会话 hash：列表端点可能要看 20 个活跃会话 + 若干
+	// 残留成员，逐条 HGETALL 会把延迟累加成可感知的慢查询。
+	pipe := m.rdb.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(members))
+	for i, member := range members {
+		sid, ok := member.Member.(string)
+		if !ok {
+			continue // ZSET 成员总是字符串；类型异常按损坏记录跳过
+		}
+		cmds[i] = pipe.HGetAll(ctx, sessionKey(sid))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("auth: list sessions: %w", err)
+	}
+
+	for i, member := range members {
+		if cmds[i] == nil {
+			continue
+		}
+		sid := member.Member.(string)
+		raw := cmds[i].Val()
+		if len(raw) == 0 {
+			continue // Redis TTL 已回收：索引成员残留，跳过（TC-F-01-13-02）
+		}
+		s, err := sessionFromHash(raw)
+		if err != nil {
+			return nil, fmt.Errorf("auth: list sessions: %w", err)
+		}
+		if s.UserID != userID || s.expiredAt(now) {
+			continue
+		}
+		out = append(out, SessionInfo{
+			SID:               sid,
+			UA:                s.UA,
+			IP:                s.IP,
+			CreatedAt:         s.CreatedAt,
+			LastSeenAt:        s.LastSeenAt,
+			AbsoluteExpiresAt: s.AbsoluteExpiresAt,
+		})
+	}
+
+	// 索引分数与 last_seen_at 由同一个 Lua 脚本原子写入，理论上已有序；
+	// 显式再排序让「按 last_seen 倒序」不依赖分数编码细节。
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeenAt.After(out[j].LastSeenAt) })
+	if len(out) > maxListedSessions {
+		out = out[:maxListedSessions]
+	}
+	return out, nil
+}
+
 // HashSessionID 返回写 login_sessions.session_id_hash 的 SHA-256 十六进制。
 // 单独导出是为了让 DB 侧（Task 4/6）与 Redis 侧使用同一编码，避免哈希口径漂移。
 func HashSessionID(sid string) string {
@@ -278,14 +381,17 @@ func HashSessionID(sid string) string {
 }
 
 // recordSession 异步落库。login_sessions 只是审计副本，失败不得让登录失败；
-// context.WithoutCancel 防止请求返回后 ctx 被取消而丢写入。
+// context.WithoutCancel 防止请求返回后 ctx 被取消而丢写入，短超时防止 DB
+// 卡住时每次登录泄漏一个 goroutine。
 func (m *SessionManager) recordSession(ctx context.Context, userID int64, sidHash string) {
 	rec := m.recorder
 	if rec == nil {
 		return
 	}
 	go func() {
-		_ = rec.RecordSession(context.WithoutCancel(ctx), userID, sidHash)
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionRecordTimeout)
+		defer cancel()
+		_ = rec.RecordSession(recordCtx, userID, sidHash)
 	}()
 }
 
@@ -380,6 +486,24 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// truncateUTF8Bytes 把 s 截断到至多 max 字节且保持合法 UTF-8。
+//
+// 先经 strings.ToValidUTF8 清洗头部/代理可能带入的 obs-text（HTTP 头允许
+// 非 UTF-8 的 0x80–0xFF 字节），再从 max 处向前回退到 rune 起点。直接按
+// 字节切会把多字节字符切成半个 rune，Redis 与 JSON 会话列表都会得到非法
+// UTF-8。
+func truncateUTF8Bytes(s string, max int) string {
+	s = strings.ToValidUTF8(s, "")
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // createSessionScript 在一个 Lua 事务里完成「写会话 + 登记索引 + 驱逐」。
