@@ -11,9 +11,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -708,6 +710,9 @@ func TestRelayChannelConnectivityTester(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error for non-2xx upstream")
 		}
+		if got := channelTestErrorClass(err); got != "auth" {
+			t.Fatalf("error_class = %q, want auth (401 upstream)", got)
+		}
 		msg := err.Error()
 		if strings.Contains(msg, badURL) || strings.Contains(msg, upstreamCredential) || strings.Contains(msg, "sk-xyz") {
 			t.Fatalf("tester error leaks sensitive data: %q", msg)
@@ -1014,5 +1019,56 @@ func TestRelayMergeUsageNeverErases(t *testing.T) {
 	mergeUsage(&dst, contract.Usage{Total: 9, CacheRead: 0})
 	if dst.Total != 9 || dst.CacheRead != 4 {
 		t.Fatalf("non-zero merge failed: %+v", dst)
+	}
+}
+
+// ---------- F-06-06 error_class 五值枚举 ----------
+
+func TestChannelTestErrorClassEnum(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"upstream 401", &channelTestUpstreamError{StatusCode: 401, Class: contract.ErrUpstreamAuth}, "auth"},
+		{"upstream 403", &channelTestUpstreamError{StatusCode: 403, Class: contract.ErrUpstreamAuth}, "auth"},
+		{"param", &channelTestUpstreamError{StatusCode: 400, Class: contract.ErrParamInvalid}, "param"},
+		{"content filter", &channelTestUpstreamError{StatusCode: 400, Class: contract.ErrContentFilter}, "param"},
+		{"upstream 5xx", &channelTestUpstreamError{StatusCode: 500, Class: contract.ErrUpstreamServer}, "server"},
+		{"rate limit", &channelTestUpstreamError{StatusCode: 429, Class: contract.ErrUpstreamRateLimit}, "server"},
+		{"unknown status", &channelTestUpstreamError{StatusCode: 418, Class: contract.ErrUnknown}, "server"},
+		{"plain error", errors.New("boom"), "server"},
+		{"timeout transport", &channelTestTransportError{Class: channelTestClassTimeout}, "timeout"},
+		{"network transport", &channelTestTransportError{Class: channelTestClassNetwork}, "network"},
+	}
+	allowed := map[string]bool{"auth": true, "timeout": true, "server": true, "network": true, "param": true}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := channelTestErrorClass(tc.err)
+			if got != tc.want {
+				t.Fatalf("channelTestErrorClass = %q, want %q", got, tc.want)
+			}
+			if !allowed[got] {
+				t.Fatalf("error_class %q is outside the modules-06 F-06-06 enum", got)
+			}
+		})
+	}
+}
+
+func TestChannelTestTransportClass(t *testing.T) {
+	if got := channelTestTransportClass(context.DeadlineExceeded); got != "timeout" {
+		t.Fatalf("deadline => %q, want timeout", got)
+	}
+	if got := channelTestTransportClass(fmt.Errorf("wrapped: %w", context.DeadlineExceeded)); got != "timeout" {
+		t.Fatalf("wrapped deadline => %q, want timeout", got)
+	}
+	if got := channelTestTransportClass(&net.DNSError{Err: "i/o timeout", IsTimeout: true}); got != "timeout" {
+		t.Fatalf("net timeout => %q, want timeout", got)
+	}
+	if got := channelTestTransportClass(&net.DNSError{Err: "no such host"}); got != "network" {
+		t.Fatalf("dns failure => %q, want network", got)
+	}
+	if got := channelTestTransportClass(errors.New("connection refused")); got != "network" {
+		t.Fatalf("connection failure => %q, want network", got)
 	}
 }

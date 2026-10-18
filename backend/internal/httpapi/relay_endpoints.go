@@ -1124,33 +1124,74 @@ func (e *channelTestUpstreamError) Error() string {
 		e.StatusCode, int(e.Class))
 }
 
-// channelTestErrorClass 把连通性测试错误归一为**泛化枚举**（modules-06 F-06-06）。
+// modules-06 F-06-06 冻结的连通性失败类别：只允许这五个字面量。
+// 前端按该枚举做文案/引导，任何新词都会落到未定义分支，故不得扩展。
+const (
+	channelTestClassAuth    = "auth"    // 上游鉴权失败（401/403）
+	channelTestClassTimeout = "timeout" // 请求超时（context deadline / net timeout）
+	channelTestClassServer  = "server"  // 上游 5xx 或其它非 auth/param 状态；不可分类错误也归此档
+	channelTestClassNetwork = "network" // 连接/DNS 失败
+	channelTestClassParam   = "param"   // 请求参数非法（含内容审核）
+)
+
+// channelTestTransportError 是连通性测试的传输层失败摘要。
+// Class 只由 channelTestTransportClass 写入（timeout/network），
+// Error() 不含 URL/凭据（GC-6）；handler 最终仍整体丢弃该错误文本。
+type channelTestTransportError struct{ Class string }
+
+func (e *channelTestTransportError) Error() string {
+	return "httpapi: channel test: upstream request failed (" + e.Class + ")"
+}
+
+// channelTestTransportClass 区分超时与一般网络失败：
+//   - context deadline 或 net.Error.Timeout() → timeout；
+//   - 其余（连接拒绝、DNS、TLS 握手失败、客户端取消）→ network。
+func channelTestTransportClass(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return channelTestClassTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return channelTestClassTimeout
+	}
+	return channelTestClassNetwork
+}
+
+// channelTestErrorClass 把连通性测试错误归一为 modules-06 F-06-06 的
+// **五值枚举**：auth | timeout | server | network | param。
 //
-// 返回值只用于前端展示失败类别，不含状态码之外的任何上游事实；未分类的
-// 错误（DNS/连接失败等）一律 "unknown"，绝不回显底层错误文本（GC-6）。
+// 映射口径：
+//   - auth：上游 401/403（契约 ErrUpstreamAuth）；
+//   - param：请求/内容校验类（ErrParamInvalid、ErrContentFilter）；
+//   - timeout / network：由 channelTestTransportClass 在传输层写入；
+//   - server：上游 5xx、限流、渠道配置等其余状态。
+//
+// 【不可分类 → server】选择保守档：server 不会把「上游不可用」误报成客户端
+// 需要改参数的 param 或重新配置凭据的 auth，避免把排障方向指向错误一侧。
+// 返回值本身不含状态码/URL/凭据，绝不回显底层错误文本（GC-6）。
 func channelTestErrorClass(err error) string {
+	var transport *channelTestTransportError
+	if errors.As(err, &transport) {
+		switch transport.Class {
+		case channelTestClassTimeout, channelTestClassNetwork:
+			return transport.Class
+		default:
+			return channelTestClassServer
+		}
+	}
 	var upstream *channelTestUpstreamError
-	if !errors.As(err, &upstream) {
-		return "unknown"
+	if errors.As(err, &upstream) {
+		switch upstream.Class {
+		case contract.ErrUpstreamAuth:
+			return channelTestClassAuth
+		case contract.ErrParamInvalid, contract.ErrContentFilter:
+			return channelTestClassParam
+		default:
+			// 5xx / 限流 / 渠道配置 / 未知状态：server。
+			return channelTestClassServer
+		}
 	}
-	switch upstream.Class {
-	case contract.ErrParamInvalid:
-		return "invalid_request"
-	case contract.ErrUpstreamAuth:
-		return "upstream_auth"
-	case contract.ErrUpstreamRateLimit:
-		return "rate_limit"
-	case contract.ErrUpstreamServer:
-		return "upstream_server"
-	case contract.ErrChannelConfig:
-		return "channel_config"
-	case contract.ErrContentFilter:
-		return "content_filter"
-	case contract.ErrRetryable:
-		return "connection_error"
-	default:
-		return "unknown"
-	}
+	return channelTestClassServer
 }
 
 // NewChannelConnectivityTester 构造 modules-06 F-06-06 的真实连通性测试：
@@ -1223,8 +1264,9 @@ func NewChannelConnectivityTester(sealer *SecretSealer, client *http.Client) Cha
 		start := time.Now()
 		resp, err := client.Do(httpReq.WithContext(testCtx))
 		if err != nil {
-			// *url.Error 的文本含完整 URL → 绝不透出（GC-6）。
-			return 0, errors.New("httpapi: channel test: upstream request failed")
+			// *url.Error 的文本含完整 URL → 绝不透出（GC-6）；只保留
+			// timeout/network 这一层泛化归因，供 F-06-06 的 error_class 使用。
+			return 0, &channelTestTransportError{Class: channelTestTransportClass(err)}
 		}
 		latency := int(time.Since(start).Milliseconds())
 		defer func() { _ = resp.Body.Close() }()
