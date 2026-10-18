@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -1028,5 +1029,370 @@ func TestSessionConcurrentPreConsume(t *testing.T) {
 	}
 	if holdRows != 1 {
 		t.Fatalf("hold rows = %d, want 1", holdRows)
+	}
+}
+
+// TestSessionTieredEmptyUsageBillsUsageIndependentTerms 是 C1 的核心回归：
+// Usage 为空不等于「无计费用量」。表达式里的 image_count、固定价、常量项
+// 仍必须求值；会话层不得用提前返回把整笔费用退掉。
+func TestSessionTieredEmptyUsageBillsUsageIndependentTerms(t *testing.T) {
+	t.Run("image_count 表达式在空 usage 下按采信张数计费", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		req := testRequestID("tiered-image-empty")
+		sat := &recordingSaturator{db: db, requestID: req}
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+		snap := &contract.PriceSnapshot{
+			Mode:                 contract.BillingModeTieredExpr,
+			ExprString:           "image_count * 10000",
+			GroupRatio:           1,
+			PreConsumeMultiplier: 1,
+		}
+		s := newBillingTestSession(e, userID, req, snap)
+
+		// 请求域声明 2 张：预扣 = 20000/1e6 × QPU(100) = 2。
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "img", ImageCount: 2}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if s.Reserved() != 2 {
+			t.Fatalf("Reserved = %d, want 2", s.Reserved())
+		}
+		// 结算事实的 Usage 为空，但张数采信为 2：仍应计 2。
+		fact := contract.UsageFact{
+			Usage:      contract.Usage{PromptIncludesCache: true, Source: contract.UsageUpstreamExact},
+			ImageCount: 2,
+		}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		if sat.outcome.Cost != 2 {
+			t.Fatalf("outcome.Cost = %d, want 2（空 usage 不得吞掉 image_count 项）", sat.outcome.Cost)
+		}
+		if got := userBalance(t, db, userID); got != 498 {
+			t.Fatalf("balance = %d, want 498", got)
+		}
+	})
+
+	t.Run("常量表达式在空 usage 下正常结算", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		req := testRequestID("tiered-const-empty")
+		sat := &recordingSaturator{db: db, requestID: req}
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+		snap := &contract.PriceSnapshot{
+			Mode:                 contract.BillingModeTieredExpr,
+			ExprString:           "10000",
+			GroupRatio:           1,
+			PreConsumeMultiplier: 1,
+		}
+		s := newBillingTestSession(e, userID, req, snap)
+
+		// 10000/1e6 × 100 = 1（正成本取整为 0 时由定价层保底 1）。
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "const"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if s.Reserved() != 1 {
+			t.Fatalf("Reserved = %d, want 1", s.Reserved())
+		}
+		fact := contract.UsageFact{Usage: contract.Usage{PromptIncludesCache: true}}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		if sat.outcome.Cost != 1 {
+			t.Fatalf("outcome.Cost = %d, want 1", sat.outcome.Cost)
+		}
+		if got := userBalance(t, db, userID); got != 499 {
+			t.Fatalf("balance = %d, want 499", got)
+		}
+	})
+}
+
+// TestSessionTrustedBypassRequiresBudgetCoverage 是 C2 的回归：
+// 余额超阈但覆盖不了本次估算预留时不得旁路，必须走正常预扣返回 402。
+func TestSessionTrustedBypassRequiresBudgetCoverage(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1500) // > 阈值 1000，但 < 估算 2000
+	cfg := mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	req := testRequestID("trust-budget")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(2000))
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("PreConsume = %v, want ErrInsufficientQuota（不得旁路）", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0", s.Reserved())
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+	if got := userBalance(t, db, userID); got != 1500 {
+		t.Fatalf("balance = %d, want 1500", got)
+	}
+}
+
+// TestSessionTrustForcedPreConsume 覆盖条件①：任务/固定价路径强制预扣，
+// 即使余额与令牌都满足其余条件也不得旁路。
+func TestSessionTrustForcedPreConsume(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100_000)
+	cfg := mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	req := testRequestID("trust-forced")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	est := contract.QuotaEstimate{Model: "task", TaskDuration: 60}
+	if err := s.PreConsume(est); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 100 {
+		t.Fatalf("Reserved = %d, want 100（任务路径必须预扣）", s.Reserved())
+	}
+}
+
+// TestSessionRefundIncludesChargeIncrement 是 I1 的回归：
+// Refund 必须连 ChargeIncrement 的实际消耗一起全额退回，且只退一次。
+func TestSessionRefundIncludesChargeIncrement(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("refund-increment")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := s.ChargeIncrement(30, contract.UsageFact{}); err != nil {
+		t.Fatalf("ChargeIncrement: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 370 {
+		t.Fatalf("balance = %d, want 370", got)
+	}
+	if !s.NeedsRefund() {
+		t.Fatal("NeedsRefund = false, want true（存在 hold + 增量）")
+	}
+	if err := s.Refund(); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（hold 100 + 增量 30 全额退回）", got)
+	}
+	if s.NeedsRefund() {
+		t.Fatal("NeedsRefund = true after Refund, want false")
+	}
+	rows := readWalletRows(t, db, req)
+	want := []walletRow{
+		{Type: "consume_pre", Amount: -100, BalanceAfter: 400, Status: "released"},
+		{Type: "consume", Amount: -30, BalanceAfter: 370, Status: "confirmed"},
+		{Type: "release", Amount: 130, BalanceAfter: 500, Status: "confirmed"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("row[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+	// 重复退款不得再回补。
+	if err := s.Refund(); err != nil {
+		t.Fatalf("second Refund: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（不得重复退款）", got)
+	}
+}
+
+// TestSessionSettlementExactZeroImageCount 是 I2 的结算域有效 0 张回归：
+// 采信 ImageCount=0 时 image_count 表达式计 0，hold 全额释放。
+func TestSessionSettlementExactZeroImageCount(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	req := testRequestID("settle-zero-image")
+	sat := &recordingSaturator{db: db, requestID: req}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	snap := &contract.PriceSnapshot{
+		Mode:                 contract.BillingModeTieredExpr,
+		ExprString:           "image_count * 10000",
+		GroupRatio:           1,
+		PreConsumeMultiplier: 1,
+	}
+	s := newBillingTestSession(e, userID, req, snap)
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "img", ImageCount: 2}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 2 {
+		t.Fatalf("Reserved = %d, want 2", s.Reserved())
+	}
+	// 上游确认 0 张：结算域有效 0 → 计 0。
+	fact := contract.UsageFact{
+		Usage:      contract.Usage{PromptIncludesCache: true, Source: contract.UsageUpstreamExact},
+		ImageCount: 0,
+	}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if sat.outcome.Cost != 0 {
+		t.Fatalf("outcome.Cost = %d, want 0（有效 0 张计 0）", sat.outcome.Cost)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 || rows[0].Status != "settled" || rows[1].Amount != 2 {
+		t.Fatalf("rows = %+v, want settled + release 2", rows)
+	}
+}
+
+// TestSessionNoHoldSettlementNeedsFundsBeforeLog 是 I3 的回归：
+// 无 hold 且需要补扣时，扣款失败不得写 success 日志（无 worker 回收锚点）。
+func TestSessionNoHoldSettlementNeedsFundsBeforeLog(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 50)
+	req := testRequestID("no-hold-insufficient")
+	sat := &recordingSaturator{db: db, requestID: req}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	// 故意不 PreConsume：无 hold，结算需要补扣 100。
+	fact := contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}}
+	err := s.Terminate(fact)
+	if !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("Terminate = %v, want ErrInsufficientQuota", err)
+	}
+	if sat.called != 0 {
+		t.Fatalf("Saturate called %d times, want 0（扣款失败不得写成功日志）", sat.called)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+	if got := userBalance(t, db, userID); got != 50 {
+		t.Fatalf("balance = %d, want 50", got)
+	}
+}
+
+// TestSessionConcurrentTerminateRefund 验证 Terminate 与 Refund 互斥：
+// 只允许一个资金动作生效，另一个幂等 no-op。
+func TestSessionConcurrentTerminateRefund(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("concurrent-close")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[0] = s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[1] = s.Refund()
+	}()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("op %d: %v", i, err)
+		}
+	}
+	balance := userBalance(t, db, userID)
+	rows := readWalletRows(t, db, req)
+	switch balance {
+	case 400: // Terminate 赢：hold settled，按次扣 100。
+		if len(rows) != 1 || rows[0].Status != "settled" {
+			t.Fatalf("balance 400 but rows = %+v", rows)
+		}
+	case 500: // Refund 赢：hold released + release 100。
+		if len(rows) != 2 || rows[0].Status != "released" || rows[1].Amount != 100 {
+			t.Fatalf("balance 500 but rows = %+v", rows)
+		}
+	default:
+		t.Fatalf("balance = %d, want 400（结算赢）或 500（退款赢）", balance)
+	}
+	if s.NeedsRefund() {
+		t.Fatal("NeedsRefund = true after close, want false")
+	}
+}
+
+// TestSessionChargeIncrementBounds 验证增量扣减的边界：非正增量 no-op，
+// 超出余额的增量返回额度不足且不落流水。
+func TestSessionChargeIncrementBounds(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("increment-bounds")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	for _, delta := range []int64{0, -5} {
+		if err := s.ChargeIncrement(delta, contract.UsageFact{}); err != nil {
+			t.Fatalf("ChargeIncrement(%d) = %v, want nil", delta, err)
+		}
+	}
+	if err := s.ChargeIncrement(math.MaxInt64, contract.UsageFact{}); !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("ChargeIncrement(MaxInt64) = %v, want ErrInsufficientQuota", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（非正/超额增量不得扣款）", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1（只有预扣行）", len(rows))
+	}
+}
+
+// TestSessionTieredPreConsumeAndSettleNormalizes 验证 tiered 模式下预扣与
+// 结算都经过 NormalizeTokens：预扣 C=0，结算按 usedVars 扣除 cr。
+func TestSessionTieredPreConsumeAndSettleNormalizes(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("tiered-normalize")
+	snap := &contract.PriceSnapshot{
+		Mode:                 contract.BillingModeTieredExpr,
+		ExprString:           "p * 1 + cr * 2",
+		GroupRatio:           1,
+		PreConsumeMultiplier: 1,
+	}
+	s := newBillingTestSession(e, userID, req, snap)
+
+	// 估算 P=1M → 1M/1e6 × QPU(100) = 100。
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 1_000_000}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 100 {
+		t.Fatalf("Reserved = %d, want 100", s.Reserved())
+	}
+	// 真实用量：prompt 1M 含 cache 400k → P=600k、CR=400k；
+	// out = 600k + 800k = 1.4M → 140 积分，少补 40。
+	fact := contract.UsageFact{Usage: contract.Usage{
+		Prompt: 1_000_000, PromptIncludesCache: true,
+		CacheRead: 400_000, Source: contract.UsageUpstreamExact,
+	}}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 360 {
+		t.Fatalf("balance = %d, want 360（100 预扣 + 40 少补）", got)
 	}
 }

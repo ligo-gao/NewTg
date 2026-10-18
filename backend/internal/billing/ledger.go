@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"gorm.io/gorm"
 
@@ -98,6 +99,12 @@ func (l *Ledger) ApplyDelta(ctx context.Context, userID, delta int64,
 		// 数据库 CHECK amount <> 0；应用层提前拒绝，避免把「零变动」伪装成流水。
 		return 0, errors.New("billing: ledger delta must not be zero")
 	}
+	if delta == math.MinInt64 {
+		// -MinInt64 在 int64 中回绕为自身（仍是负数），会让出账方向反转、
+		// 甚至绕过 `balance >= amount` 谓词。极端值没有任何合法计费含义，
+		// 必须显式拒绝而不是交给溢出后的算术。
+		return 0, errors.New("billing: ledger delta out of int64 range")
+	}
 	if !validWalletTxType[txType] {
 		return 0, fmt.Errorf("billing: invalid wallet transaction type %q", txType)
 	}
@@ -187,10 +194,11 @@ func classifyBalanceMiss(ctx context.Context, tx *gorm.DB, userID, delta int64) 
 
 // holdState 是某 requestID 的预扣行快照（只读预检，不参与事务判定）。
 type holdState struct {
-	Held   int64 // 仍处于 hold 的金额（正数）
-	UserID int64
-	Closed bool // 已存在 settled/released/expired 的预扣行
-	Rows   int  // consume_pre 行数（任意状态）
+	Held         int64 // 仍处于 hold 的金额（正数）
+	UserID       int64
+	Closed       bool   // 已存在 settled/released/expired 的预扣行
+	ClosedStatus string // 首个已关闭预扣行的状态（settled/released/expired）
+	Rows         int    // consume_pre 行数（任意状态）
 }
 
 // openHoldState 读取 requestID 的预扣行状态。
@@ -231,6 +239,9 @@ func (l *Ledger) openHoldState(ctx context.Context, requestID string) (holdState
 			st.Held += -amount
 		case "settled", "released", "expired":
 			st.Closed = true
+			if st.ClosedStatus == "" {
+				st.ClosedStatus = status
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -299,6 +310,79 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 		return txErr
 	})
 	return held, balanceAfter, err
+}
+
+// refundSession 全额退回一个会话：关闭全部 hold 行（released），并退回
+// ChargeIncrement 已实际扣减的 consumed。
+//
+// billing-00 §6.2 的「Refund 全额退款」包含两部分：
+//   - 预扣 hold（未消耗的冻结额）；
+//   - ChargeIncrement 的增量扣减（连接级实际扣费，失败路径同样要退）。
+//
+// 两者合并为**一行** release：一次余额变动对应一行流水（GC-3）。
+// 幂等锚点：hold 行 CAS；无 hold 的信任旁路会话以「同 requestID 已有
+// release 行」为锚（releaseExists），重复 Refund 返回 errHoldClosed。
+func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID string, consumed int64) (
+	refunded, balanceAfter int64, err error) {
+
+	if consumed < 0 {
+		consumed = 0
+	}
+	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		held, _, txErr := closeHoldRows(ctx, tx, userID, requestID, "released")
+		if txErr != nil {
+			return txErr
+		}
+		if held == 0 {
+			exists, eerr := releaseExists(ctx, tx, requestID)
+			if eerr != nil {
+				return eerr
+			}
+			if exists {
+				return errHoldClosed
+			}
+		}
+		total := held + consumed
+		if total <= 0 {
+			return errNoOpenHold
+		}
+		balanceAfter, txErr = applyDeltaTx(ctx, tx, userID, total, "release", "confirmed", "usage_log", requestID)
+		refunded = total
+		return txErr
+	})
+	return refunded, balanceAfter, err
+}
+
+// releaseExists 判断该 requestID 是否已有 release 流水。
+func releaseExists(ctx context.Context, tx *gorm.DB, requestID string) (bool, error) {
+	var n int64
+	err := tx.WithContext(ctx).Raw(
+		`SELECT count(*) FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ? AND type = 'release'`,
+		requestID).Row().Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("billing: check release rows for %s: %w", requestID, err)
+	}
+	return n > 0, nil
+}
+
+// closedHoldStatus 返回该 requestID 已关闭预扣行的状态（settled/released/expired）。
+// 用于 Terminate 撞上 errHoldClosed 时区分「被并发结算」与「被兜底退款」，
+// 避免把 settled 误标成 refunded（或反之）。
+func (l *Ledger) closedHoldStatus(ctx context.Context, requestID string) (string, error) {
+	var status string
+	err := l.db.WithContext(ctx).Raw(
+		`SELECT status FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ?
+		   AND type = 'consume_pre' AND status IN ('settled', 'released', 'expired')
+		 ORDER BY id LIMIT 1`, requestID).Row().Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("billing: read closed hold status for %s: %w", requestID, err)
+	}
+	return status, nil
 }
 
 // releaseAbandoned 是崩溃兜底的退款入口：从数据库行复原用户与金额，

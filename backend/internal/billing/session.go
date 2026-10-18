@@ -119,7 +119,7 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		s.group = s.rc.UsingGroup
 	}
 	s.imageRequest = est.ImageCount > 0 || est.AttemptImageCount > 0
-	s.reservedImages = reservedImageCount(est)
+	s.reservedImages = estimateImageCount(est)
 
 	ctx, cancel := opCtx()
 	defer cancel()
@@ -195,7 +195,7 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 
 	// 信任旁路在余额扣减之前判定：命中后 effectiveQuota=0，不写 hold 流水。
 	// 若命中，结算仍按真实用量扣费（信任只是免预扣，不是免费）。
-	trusted, err := s.engine.shouldTrust(ctx, s.rc, est)
+	trusted, err := s.engine.shouldTrust(ctx, s.rc, est, budget)
 	if err != nil {
 		return err
 	}
@@ -325,6 +325,11 @@ func (s *Session) preConsumeFreeModelLocked(ctx context.Context, est contract.Qu
 // consume_pre+hold），否则图片两段预扣的「不允许欠费后继续提交」形同虚设
 // （billing-03 §3.6 / billing-05 §2.4）。
 //
+// 【无预算上限（裁决）】会话不设 Reserve 总预算 ceiling：C-10/D12 的
+// 「第二段 n 越界 = 整请求 400」是**中继侧**对 AttemptImageCount 的校验
+// （QuotaEstimate.AttemptImageCount 的上界），会话只拿到换算后的 quota 增量，
+// 无法反推 n。越界必须在 relay 归一化层拒绝，不能在此按金额猜测。
+//
 // trusted 会话普通请求 no-op；图片请求例外：清 trusted 并真正预留
 // （billing-00 §6.4）。
 func (s *Session) Reserve(delta int64) error {
@@ -341,15 +346,16 @@ func (s *Session) Reserve(delta int64) error {
 	if s.freeModel {
 		return nil
 	}
+	if delta <= 0 {
+		// 仅上浮：零/负增量不改变预留，也不应清 trusted（没有真实预留发生）。
+		return nil
+	}
 	if s.trusted {
 		if !s.imageRequest {
 			return nil
 		}
 		// 图片请求必须先冻结资金再出站：清 trusted 后走真实预留。
 		s.trusted = false
-	}
-	if delta <= 0 {
-		return nil
 	}
 
 	ctx, cancel := opCtx()
@@ -437,8 +443,9 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	}
 	if st.Held == 0 && st.Closed {
 		// 其它执行者（worker 兜底/并发终结）已经关闭 hold；不再写结算日志，
-		// 避免把 refunded 事实覆盖成 success。
-		s.finishLocked(ctx, true)
+		// 避免把 refunded 事实覆盖成 success。按关闭状态区分「已结算」与
+		// 「已退款」，不要一律标成 refunded。
+		s.finishLocked(ctx, st.ClosedStatus == "released" || st.ClosedStatus == "expired")
 		return nil
 	}
 
@@ -466,6 +473,34 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 		Refunded:    refunded,
 		Status:      UsageLogStatusSuccess,
 	}
+
+	// I3：无 hold 且需要补扣时，这笔钱没有任何 worker 可回收的 hold 锚点。
+	// 必须**先扣款、后写成功日志**：扣款失败（余额不足/DB 错误）时不得落
+	// success 日志，否则日志会声称一笔从未收上来的费用已结算。
+	// 有 hold 的路径保持裁决顺序（先 Saturate、后主库结算）。
+	noHoldCharge := st.Held == 0 && !st.Closed && cost > s.consumed
+	if noHoldCharge {
+		if _, _, err := s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost); err != nil {
+			if errors.Is(err, errHoldClosed) {
+				status, _ := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+				s.finishLocked(ctx, status == "released" || status == "expired")
+				return nil
+			}
+			return fmt.Errorf("billing: charge without hold: %w", err)
+		}
+		s.consumed = cost
+		if s.engine.saturator != nil {
+			if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
+				// 钱已扣且无 hold 可退：保持 settled（重试会二次扣款），
+				// 返回日志错误供上层记录/补写。绝不把已收的钱静默退回。
+				s.finishLocked(ctx, false)
+				return fmt.Errorf("billing: write usage log after charging: %w", err)
+			}
+		}
+		s.finishLocked(ctx, false)
+		return nil
+	}
+
 	if s.engine.saturator != nil {
 		if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
 			// 日志写失败：不结算；hold 留着由 worker 兜底退款。
@@ -476,7 +511,8 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 
 	_, _, err = s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost)
 	if errors.Is(err, errHoldClosed) {
-		s.finishLocked(ctx, true)
+		status, _ := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+		s.finishLocked(ctx, status == "released" || status == "expired")
 		return nil
 	}
 	if err != nil {
@@ -489,12 +525,15 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	return nil
 }
 
-// Refund 全额退回当前仍处于 hold 的预扣（幂等）。
+// Refund 全额退回当前会话的预扣与增量扣减（幂等）。
 //
-// 已结算 / 已退款 / 无需退款 → nil（早返回表）。退款额来自数据库 hold 行，
-// 不信任内存值：重复调用时 CAS 已无 hold 行，返回 errHoldClosed 后按幂等
-// 命中处理。ChargeIncrement 已实际扣减的增量**不退**：那是真实消耗，
-// 失败路径按中继的部分计费语义处理（billing-00 §9.3）。
+// 「全额」包括两部分（billing-00 §6.2）：
+//   - 仍处于 hold 的预扣；
+//   - ChargeIncrement 已实际扣减的增量（连接级真实扣费）。
+//
+// 已结算 / 已退款 / 无需退款 → nil（早返回表）。退款额来自数据库 hold 行
+// 加会话累计的 consumed，合并为一行 release；重复调用时 CAS 已无 hold 行，
+// 返回 errHoldClosed 后按幂等命中处理。
 func (s *Session) Refund() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -509,11 +548,12 @@ func (s *Session) Refund() error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	_, _, err := s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released")
+	_, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 已被其它执行者关闭：幂等命中，不再写第二行 release。
 		s.refunded = true
 		s.preConsumed = 0
+		s.consumed = 0
 		s.stopHeartbeatLocked()
 		s.removeLeaseLocked(ctx)
 		return nil
@@ -524,6 +564,7 @@ func (s *Session) Refund() error {
 
 	s.refunded = true
 	s.preConsumed = 0
+	s.consumed = 0
 	s.stopHeartbeatLocked()
 	s.removeLeaseLocked(ctx)
 	return nil
@@ -539,8 +580,9 @@ func (s *Session) Reserved() int64 {
 // NeedsRefund 判断调用方是否应走退款路径。
 //
 // fundingSettled 后必须为 false：资金已经按真实用量提交，再退会重复返还
-// （billing-03 §2.3）。订阅在 tokenConsumed==0 但 preConsumed>0 时仍需退款，
-// 该分支属 M5；钱包路径以 preConsumed>0 为准。
+// （billing-03 §2.3）。需要退款的情形是「仍有 hold」或「有增量扣减」
+// （ChargeIncrement 的实际消耗；Refund 会连同 hold 一起全额退回）。
+// 订阅在 tokenConsumed==0 但 preConsumed>0 时仍需退款，该分支属 M5。
 func (s *Session) NeedsRefund() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -548,7 +590,8 @@ func (s *Session) NeedsRefund() bool {
 }
 
 func (s *Session) needsRefundLocked() bool {
-	return !s.settled && !s.refunded && !s.fundingSettled && s.preConsumed > 0
+	return !s.settled && !s.refunded && !s.fundingSettled &&
+		(s.preConsumed > 0 || s.consumed > 0)
 }
 
 // RecoverAbandoned 是崩溃兜底的会话入口（billing-00 §6.2 / billing-03 §2.6）。
@@ -629,13 +672,10 @@ func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.U
 	if err != nil {
 		return s.keepPreConsumedCostLocked()
 	}
-	if usageIsEmpty(fact.Usage) && !snap.Price.UsePrice && snap.Mode != contract.BillingModePerCall {
-		// 无任何计费用量 → 配额 0（billing-00 §7.5）。但 ChargeIncrement 的
-		// 增量是**实际消耗**：若终止事实为空而存在增量，不能把它们退掉，
-		// 否则实时路径可「先增量扣、再空事实终结」套取退款。无增量时才为 0。
-		return s.consumed
-	}
-
+	// 即使 Usage 为空也必须走表达式求值（C1）：`image_count * 10000`、常量
+	// 表达式、按次价等「与 usage 无关」的计费项仍可能产生费用。空 usage 的
+	// 零价判定由 ComputeQuota 自己完成（billing-00 §7.5 的「无计费用量→0」
+	// 是它的职责），会话层不得用提前返回绕过定价。
 	params := NormalizeTokens(fact.Usage, *snap, usedVars)
 	if s.imageRequest {
 		params.ImageCount = s.adoptImageCount(fact)
@@ -905,14 +945,18 @@ func estimateUsage(est contract.QuotaEstimate) contract.Usage {
 	return u
 }
 
-// reservedImageCount 返回请求域图像张数（默认 1；第二段 n 作为回退）。
-func reservedImageCount(est contract.QuotaEstimate) int {
+// estimateImageCount 返回请求域图像张数：
+//   - 已声明（ImageCount/AttemptImageCount > 0）→ 精确值（≤ MaxImageN）；
+//   - 未声明 → imageCountUnset（-1），由定价层按模式缺省（请求域 1）。
+//
+// 估值不再无条件补 1：-1 与会话结算域的「有效 0 张」必须可区分（R-24/I2）。
+func estimateImageCount(est contract.QuotaEstimate) int {
 	n := est.ImageCount
 	if n <= 0 {
 		n = est.AttemptImageCount
 	}
 	if n <= 0 {
-		n = 1
+		return imageCountUnset
 	}
 	return min(n, maxImageN)
 }
@@ -936,16 +980,4 @@ func preConsumeMultiplierApplies(snap *contract.PriceSnapshot, usedVars map[stri
 		}
 	}
 	return false
-}
-
-// usageIsEmpty 判断是否完全没有计费用量（billing-00 §7.5：配额置 0）。
-func usageIsEmpty(u contract.Usage) bool {
-	return u.Prompt == 0 &&
-		u.Completion == 0 &&
-		u.CacheRead == 0 &&
-		u.CacheWrite == 0 &&
-		u.Reasoning == 0 &&
-		u.AudioSeconds == 0 &&
-		u.PromptDetail == (contract.UsageDetail{}) &&
-		u.CompletionDetail == (contract.UsageDetail{})
 }

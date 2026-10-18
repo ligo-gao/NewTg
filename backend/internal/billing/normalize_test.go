@@ -35,7 +35,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cr"),
 			want: contract.TokenParams{
-				P: 70, C: 10, Len: 100, CR: 30, ImageCount: 1,
+				P: 70, C: 10, Len: 100, CR: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -46,7 +46,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: nil,
 			want: contract.TokenParams{
-				P: 100, C: 10, Len: 100, CR: 30, ImageCount: 1,
+				P: 100, C: 10, Len: 100, CR: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -57,7 +57,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: nil,
 			want: contract.TokenParams{
-				P: 100, C: 5, Len: 100, CR: 30, ImageCount: 1,
+				P: 100, C: 5, Len: 100, CR: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -68,7 +68,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cr"),
 			want: contract.TokenParams{
-				P: 70, C: 5, Len: 100, CR: 30, ImageCount: 1,
+				P: 70, C: 5, Len: 100, CR: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -84,7 +84,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cc", "cc1h"),
 			want: contract.TokenParams{
-				P: 170, Len: 220, CC5m: 20, CC1h: 30, ImageCount: 1,
+				P: 170, Len: 220, CC5m: 20, CC1h: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -95,7 +95,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cc"),
 			want: contract.TokenParams{
-				P: 150, Len: 200, CC5m: 50, ImageCount: 1,
+				P: 150, Len: 200, CC5m: 50, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -108,7 +108,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cr", "img", "img_cr"),
 			want: contract.TokenParams{
-				P: 40, Len: 100, CR: 30, Img: 20, ImgCR: 10, ImageCount: 1,
+				P: 40, Len: 100, CR: 30, Img: 20, ImgCR: 10, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("img_cr"),
 			want: contract.TokenParams{
-				P: 100, Len: 100, CR: 5, Img: 30, ImageCount: 1,
+				P: 100, Len: 100, CR: 5, Img: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -130,7 +130,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("img_cr"),
 			want: contract.TokenParams{
-				P: 140, Len: 140, CR: 40, Img: 30, ImageCount: 1,
+				P: 140, Len: 140, CR: 40, Img: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -141,7 +141,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("img_o", "ao"),
 			want: contract.TokenParams{
-				P: 10, C: 70, Len: 10, ImgO: 20, AO: 10, ImageCount: 1,
+				P: 10, C: 70, Len: 10, ImgO: 20, AO: 10, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -151,7 +151,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: vars("cr"),
 			want: contract.TokenParams{
-				P: 0, Len: 10, CR: 30, ImageCount: 1,
+				P: 0, Len: 10, CR: 30, ImageCount: imageCountUnset,
 			},
 		},
 		{
@@ -163,7 +163,7 @@ func TestNormalizeTokens(t *testing.T) {
 			},
 			usedVars: nil,
 			want: contract.TokenParams{
-				P: 10, C: 20, Len: 10, ImageCount: 1,
+				P: 10, C: 20, Len: 10, ImageCount: imageCountUnset,
 			},
 		},
 	}
@@ -190,6 +190,57 @@ func TestNormalizeTokensLenUnaffectedByDeduction(t *testing.T) {
 	}
 	if got.P != 100_000 {
 		t.Fatalf("P = %d, want 100000", got.P)
+	}
+}
+
+// TestNormalizeTokensClaudeCacheWriteRemainder 验证 5m/1h 拆分的守恒：
+// cc5m + cc1h 必须等于归一后的 cc（剩余部分归 5m/通用档），len 不得漏 token。
+func TestNormalizeTokensClaudeCacheWriteRemainder(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      map[string]any
+		wantCC5m int64
+		wantCC1h int64
+	}{
+		{
+			name:     "只给 5m 明细：全部缓存写归 5m",
+			raw:      map[string]any{"cache_creation": map[string]any{"ephemeral_5m_input_tokens": 20}},
+			wantCC5m: 50,
+			wantCC1h: 0,
+		},
+		{
+			name:     "只给 1h 明细：剩余归 5m",
+			raw:      map[string]any{"cache_creation": map[string]any{"ephemeral_1h_input_tokens": 30}},
+			wantCC5m: 20,
+			wantCC1h: 30,
+		},
+		{
+			name: "两档与总量不一致：以总量为准，剩余归 5m",
+			raw: map[string]any{"cache_creation": map[string]any{
+				"ephemeral_5m_input_tokens": 20,
+				"ephemeral_1h_input_tokens": 10,
+			}},
+			wantCC5m: 40,
+			wantCC1h: 10,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u := contract.Usage{
+				Prompt: 170, PromptIncludesCache: false, CacheWrite: 50, Raw: tc.raw,
+			}
+			got := NormalizeTokens(u, contract.PriceSnapshot{}, nil)
+			if got.CC5m != tc.wantCC5m || got.CC1h != tc.wantCC1h {
+				t.Fatalf("CC5m/CC1h = %d/%d, want %d/%d",
+					got.CC5m, got.CC1h, tc.wantCC5m, tc.wantCC1h)
+			}
+			if got.CC5m+got.CC1h != 50 {
+				t.Fatalf("CC5m+CC1h = %d, want 50（拆分必须守恒）", got.CC5m+got.CC1h)
+			}
+			if got.Len != 220 { // 170 + cr 0 + cc 50
+				t.Fatalf("Len = %d, want 220", got.Len)
+			}
+		})
 	}
 }
 

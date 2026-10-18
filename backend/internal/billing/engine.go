@@ -502,11 +502,15 @@ func (e *Engine) preConsumeMultiplier(snap *contract.PriceSnapshot) (float64, er
 // 全部满足才命中：① 非强制预扣；② 阈值是正有限值；③ 令牌无限额或余额超阈；
 // ④ 钱包余额超阈；⑤ 订阅侧不得旁路（M3 只有钱包资金源，订阅实现属 M5）。
 //
+// budget 是本次预扣的估算额：钱包还必须**先覆盖这笔预留**才考虑旁路
+// （billing-03 §3.3「钱包仍需先覆盖估算预留才会考虑旁路」）。否则信任放行
+// 会把「余额不足」推迟到结算，违背 402 前置拦截。
+//
 // 契约 QuotaEstimate 没有 ForcePreConsume 字段（M2 冻结时遗漏），这里以
 // 「任务时长 / 固定价键」作为任务路径的判据：异步任务必须预扣，禁用旁路。
 // 该替代判据在报告中登记为接口缺口。
 func (e *Engine) shouldTrust(ctx context.Context, rc *contract.RelayContext,
-	est contract.QuotaEstimate) (bool, error) {
+	est contract.QuotaEstimate, budget int64) (bool, error) {
 
 	if e.db == nil || rc == nil {
 		return false, nil
@@ -552,6 +556,11 @@ func (e *Engine) shouldTrust(ctx context.Context, rc *contract.RelayContext,
 		return false, err
 	}
 	if balance <= threshold {
+		return false, nil
+	}
+	if budget > 0 && balance < budget {
+		// 余额超阈但覆盖不了本次估算预留：不得旁路。正常预扣路径会以
+		// *QuotaError 返回 402（billing-03 §3.3、§3.4）。
 		return false, nil
 	}
 

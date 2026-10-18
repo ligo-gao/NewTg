@@ -117,8 +117,10 @@ func NormalizeTokens(usage contract.Usage, snap contract.PriceSnapshot, usedVars
 	p = max(p, 0)
 	c = max(c, 0)
 
-	// ImageCount 的默认值 1 属于「变量契约」而非上游用量（契约 TokenParams
-	// 注释）：会话在结算时若为图像请求，会用 UsageFact.ImageCount 覆盖它。
+	// ImageCount 的缺省值约定（与 pricing.ImageCountUnset 一致）：-1 = 未设置，
+	// 由定价层按模式缺省（请求域 1）；>= 0 = 精确张数（0 合法且计 0）。
+	// 归一化不知道本次请求的图像张数：预扣估算由会话传入「已声明则精确、
+	// 未声明则 -1」，结算由 UsageFact.ImageCount 采信后覆盖。
 	return contract.TokenParams{
 		P:          p,
 		C:          c,
@@ -131,9 +133,14 @@ func NormalizeTokens(usage contract.Usage, snap contract.PriceSnapshot, usedVars
 		AI:         ai,
 		ImgO:       imgO,
 		AO:         ao,
-		ImageCount: 1,
+		ImageCount: imageCountUnset,
 	}
 }
+
+// imageCountUnset 必须与 pricing.ImageCountUnset 保持一致（-1 = 未设置）。
+// 这里保留本包常量以避免 normalize.go 依赖定价子包；定价层的常量注释是
+// 该约定的唯一真源，任何变更需同时改两处（跨任务约定，见 T3/T2 协调）。
+const imageCountUnset = -1
 
 // normalizedCacheWrite 返回归一后的缓存写 token 数：
 // max(Usage.CacheWrite, Raw["cache_write_tokens"], Raw["cached_creation_tokens"])，
@@ -149,30 +156,25 @@ func normalizedCacheWrite(usage contract.Usage) int64 {
 }
 
 // splitClaudeCacheCreation 把 Claude 的缓存写拆成 5m/通用与 1h 两档
-// （billing-03 §4.5，取自 Raw 的 cache_creation.ephemeral_* 或扁平键）。
+// （billing-03 §4.5，取自 Raw 的 cache_creation.ephemeral_1h_input_tokens
+// 或扁平键 ephemeral_1h_input_tokens）。
 //
-// 归一后的总量 cc 是上界：拆分结果必须落在 cc 内，否则说明上游明细与
-// 总量不一致，按总量钳制（不把不一致放大成超计费）。
+// 守恒规则：cc5m + cc1h 必须等于归一后的总量 cc。1h 是唯一被单独拆出的档；
+// 剩余（含未分类/明细不一致的部分）一律归 5m/通用档——既保证 len 不漏 token，
+// 也避免「只给了部分明细」时把差额静默丢弃。归一后的总量 cc 是上界，
+// 1h 超过总量时按总量钳制。
+//
+// 5m 明细键不参与减法：若上游只给 5m 不给 1h，则 cc1h=0、全部 cc 归 5m，
+// 结果相同；若两档都给了但与总量不一致，以总量为准（上游明细不可全信）。
 func splitClaudeCacheCreation(cc int64, raw map[string]any) (cc5m, cc1h int64) {
-	v5, ok5 := rawInt64Any(raw,
-		"cache_creation.ephemeral_5m_input_tokens",
-		"ephemeral_5m_input_tokens")
 	v1, ok1 := rawInt64Any(raw,
 		"cache_creation.ephemeral_1h_input_tokens",
 		"ephemeral_1h_input_tokens")
-	if !ok5 && !ok1 {
+	if !ok1 {
 		return cc, 0
 	}
-
-	cc1h = max(v1, 0)
-	cc1h = min(cc1h, cc)
-	if ok5 {
-		cc5m = min(max(v5, 0), cc-cc1h)
-	} else {
-		// 只给了 1h 明细：剩余部分按 5m/通用档处理（与「缺失按 0 参与」一致）。
-		cc5m = cc - cc1h
-	}
-	return cc5m, cc1h
+	cc1h = min(max(v1, 0), cc)
+	return cc - cc1h, cc1h
 }
 
 // validImageCacheSplit 实现 img_cr 的三段式有效性校验（billing-00 §5.4 五项）：

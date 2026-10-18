@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -247,5 +248,69 @@ func TestLedgerUserNotFound(t *testing.T) {
 	_, err := ledger.ApplyDelta(context.Background(), -12345, -1, "consume", "confirmed", "", "")
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("err = %v, want ErrUserNotFound", err)
+	}
+}
+
+// TestLedgerRejectsMinInt64 验证极端负增量被显式拒绝：-MinInt64 在 int64
+// 中回绕为自身，会让出账方向反转并绕过余额谓词。
+func TestLedgerRejectsMinInt64(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	ledger := NewLedger(gormDB)
+	_, err := ledger.ApplyDelta(context.Background(), userID, math.MinInt64,
+		"consume", "confirmed", "usage_log", "minint64")
+	if err == nil {
+		t.Fatal("ApplyDelta(MinInt64) = nil, want error")
+	}
+	if got := userBalance(t, db, userID); got != 100 {
+		t.Fatalf("balance = %d, want 100", got)
+	}
+	if rows := readWalletRows(t, db, "minint64"); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+}
+
+// TestLedgerCancelledContext 验证 ctx 取消时返回错误而不是挂起/半写。
+func TestLedgerCancelledContext(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	ledger := NewLedger(gormDB)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ledger.ApplyDelta(ctx, userID, -10, "consume_pre", "hold", "usage_log", "ctx-cancel")
+	if err == nil {
+		t.Fatal("ApplyDelta with cancelled ctx = nil, want error")
+	}
+	if got := userBalance(t, db, userID); got != 100 {
+		t.Fatalf("balance = %d, want 100", got)
+	}
+}
+
+// TestLedgerClosedDBReturnsError 验证底层连接不可用时返回错误而不是 panic。
+func TestLedgerClosedDBReturnsError(t *testing.T) {
+	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过计费集成测试")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: raw}), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		// gorm 在初始化阶段探测连接并报错，也是可接受的失败面：
+		// 关键是「返回 error、不 panic」。
+		return
+	}
+	_, err = NewLedger(gormDB).ApplyDelta(context.Background(), 1, -1,
+		"consume", "confirmed", "", "")
+	if err == nil {
+		t.Fatal("ApplyDelta on closed db = nil, want error")
 	}
 }

@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -133,6 +134,55 @@ func TestEnginePreConsumeMultiplierScope(t *testing.T) {
 			t.Fatalf("Reserved = %d, want 100（按次不乘上浮系数）", got)
 		}
 	})
+}
+
+// TestEngineTokenAboveThreshold 覆盖信任旁路条件③的令牌侧判定：
+// remain_quota NULL = 无限额（满足）；有值须 > 阈值；令牌不存在 fail-closed。
+func TestEngineTokenAboveThreshold(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	ctx := context.Background()
+
+	insertToken := func(remain any) int64 {
+		t.Helper()
+		var id int64
+		err := db.QueryRow(
+			`INSERT INTO api_tokens (user_id, name, key_hash, "group", remain_quota)
+			 VALUES ($1, 'tok', $2, 'default', $3) RETURNING id`,
+			userID, testRequestID("keyhash"), remain).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert token: %v", err)
+		}
+		return id
+	}
+
+	unlimited := insertToken(nil)
+	high := insertToken(int64(2000))
+	low := insertToken(int64(500))
+
+	tests := []struct {
+		name    string
+		tokenID int64
+		want    bool
+	}{
+		{"无限额（NULL）满足", unlimited, true},
+		{"余额 2000 > 阈值 1000", high, true},
+		{"余额 500 <= 阈值 1000", low, false},
+		{"未绑定令牌视为无限额", 0, true},
+		{"令牌不存在 fail-closed", 9_999_999, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, err := e.tokenAboveThreshold(ctx, tc.tokenID, 1000)
+			if err != nil {
+				t.Fatalf("tokenAboveThreshold: %v", err)
+			}
+			if ok != tc.want {
+				t.Fatalf("tokenAboveThreshold = %v, want %v", ok, tc.want)
+			}
+		})
+	}
 }
 
 // TestEnginePreConsumeMultiplierDefault 验证旧快照的零值按默认 1 处理。
