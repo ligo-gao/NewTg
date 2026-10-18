@@ -169,6 +169,9 @@
   },
   "pricing": {
     "title": "Model Pricing",
+    "nav_section": "Pricing",
+    "nav_model_pricing": "Model pricing",
+    "nav_group_pricing": "Group pricing",
     "keyword": "Model prefix",
     "all": "All",
     "search": "Search",

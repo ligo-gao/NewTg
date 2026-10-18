@@ -34,7 +34,9 @@ export function usePricingCapabilities(): PricingCapabilities {
 
   const actorQuery = useQuery({
     queryKey: ['admin-users', 'actor', username],
-    enabled: username !== undefined,
+    // 非管理员没有权限矩阵可读，调用 /api/users 只会得到 403；控制台导航
+    // 对每个页面都会挂载本 hook，因此必须在这里就短路。
+    enabled: username !== undefined && meQuery.data?.role === 'admin',
     staleTime: 0,
     queryFn: async () => {
       const data = requireData(
