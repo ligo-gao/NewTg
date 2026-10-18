@@ -1,5 +1,507 @@
-# 管理域路径（仅管理员会话）
+# 管理域路径（仅管理员会话）。
+# 这些 operation 只声明 sessionCookie：Bearer 令牌没有角色/权限语义，
+# RBAC 判定必然 fail-closed（auth.SessionAuth 对令牌只注入 UserID+TokenID）。
 paths:
+  /api/users:
+    get:
+      tags: [admin]
+      operationId: listUsers
+      summary: 用户列表（分页 + 筛选 + 排序）
+      description: |
+        keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
+        为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
+        前缀 - 表示降序，默认 -created_at。非法枚举/排序列 400（不静默忽略）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '../schemas/public.yaml#/schemas/UserStatus'
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '../schemas/public.yaml#/schemas/UserRole'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 32
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^-?(id|username|balance|created_at|updated_at)$'
+            default: '-created_at'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUserList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createUser
+      summary: 创建用户（管理员创建无邮箱）
+      description: |
+        应携带 Idempotency-Key：同键重放只创建一条；同键不同请求体 422；
+        缺失时直接执行（无重放保护）。
+        请求体没有 email 字段——管理员创建的用户 email 为 NULL。role 缺省
+        user；创建 admin 需要 users:manage-roles 且默认权限集是执行者权限的
+        子集（防提权）。用户名冲突 409。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AdminCreateUserRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUser'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/users/{id}:
+    get:
+      tags: [admin]
+      operationId: getUser
+      summary: 读取用户详情
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUser'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    patch:
+      tags: [admin]
+      operationId: updateUser
+      summary: 部分更新用户（乐观锁）
+      description: |
+        必须原样回传 updated_at（缺失 400、不匹配 409）。不含口令字段：
+        提交 password 返回 400（改用 reset-password）。未知字段 403
+        field_not_writable。不能修改自己的角色（400，防自降权/自提权）；
+        role 变更会吊销该用户全部会话。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AdminUpdateUserRequest'
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUser'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+    delete:
+      tags: [admin]
+      operationId: deleteUser
+      summary: 删除用户（前置条件：已封禁）
+      description: |
+        目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
+        deleted_{id}）。不能删除自己（400）。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除并匿名化
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/users/{id}/status:
+    post:
+      tags: [admin]
+      operationId: setUserStatus
+      summary: 封禁 / 解禁用户
+      description: |
+        封禁在同一事务内吊销全部会话并把该用户令牌置 disabled；解禁不自动
+        恢复令牌。不能封禁自己（400）。成功 200 {id,status}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AdminUserStatusRequest'
+      responses:
+        '200':
+          description: 新状态
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUserStatusResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/users/{id}/quota-adjustment:
+    post:
+      tags: [admin]
+      operationId: adjustUserQuota
+      summary: 管理员额度调整（原子写流水）
+      description: |
+        原子 UPDATE（GC-5）：subtract 超过余额 400，绝不产生负余额；override
+        与当前余额相同 400。idempotency_key 是业务幂等键（写入交易流水）。
+        成功 200 {user_id,new_balance,transaction_id}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/QuotaAdjustmentRequest'
+      responses:
+        '200':
+          description: 调整后的余额与流水 ID
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/QuotaAdjustmentResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/users/{id}/reset-2fa:
+    post:
+      tags: [admin]
+      operationId: resetUserTwoFA
+      summary: 重置用户 2FA（清除种子与备用码）
+      description: 目标未启用 2FA 时 400。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已重置
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/users/{id}/reset-password:
+    post:
+      tags: [admin]
+      operationId: resetUserPassword
+      summary: 重置用户口令（返回一次性临时口令）
+      description: |
+        生成 16 位临时口令（TEMP_PWD_TTL=24h，must_change_password=true），
+        只在本次响应出现；响应 Cache-Control: no-store。审计只记录"发生了
+        重置"，绝不含口令材料。成功 200。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 临时口令（一次性）
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ResetPasswordResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/users/{id}/permissions:
+    patch:
+      tags: [admin]
+      operationId: setUserPermissions
+      summary: 设置管理员权限矩阵（超集校验）
+      description: |
+        授予集合必须是调用者自身权限的子集，否则 403 且不写库；未知键与
+        非 FULL 调用者授予 "*" 同样 403。显式 null 被拒绝（NULL=FULL 会绕过
+        超集校验，授予全权必须显式 ["*"]）。只对 admin 目标有效（400）；
+        不能修改自己（400）。成功 200 返回更新后的用户。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathUserID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SetPermissionsRequest'
+      responses:
+        '200':
+          description: 更新后的用户（含新 admin_permissions）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminUser'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/groups:
+    get:
+      tags: [admin]
+      operationId: listGroups
+      summary: 分组列表（分页）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminGroupList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createGroup
+      summary: 创建分组
+      description: 名称必须匹配 ^[a-z0-9_-]{2,32}$ 且唯一；冲突 409。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AdminCreateGroupRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminGroup'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/groups/{name}:
+    patch:
+      tags: [admin]
+      operationId: updateGroup
+      summary: 更新分组（改名 / 描述）
+      description: |
+        至少提供一个字段，否则 400。系统组不可改名（400，描述仍可编辑）；
+        新名称冲突 409；目标不存在 404。成功 200。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupName'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AdminUpdateGroupRequest'
+      responses:
+        '200':
+          description: 更新后的分组
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminGroup'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteGroup
+      summary: 删除分组
+      description: |
+        系统组（default/auto 等）不可删除（400）；仍被用户/令牌/定价/渠道
+        引用时 409；不存在 404。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupName'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M0 占位：渠道管理在模块 06 实现；此处保留既有路径，避免已生成的前端
+  # 类型回退（M6 会以具体 schema 替换 Channel 占位）。
   /api/channels:
     get:
       tags: [admin]
@@ -12,7 +514,7 @@ paths:
         - $ref: '../components/pagination.yaml#/parameters/PageSize'
       responses:
         '200':
-          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          description: OK（offset 分页信封；items 的 DTO 随 M6 细化）
           content:
             application/json:
               schema:

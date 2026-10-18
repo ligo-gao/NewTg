@@ -1,10 +1,61 @@
-# 公开域 DTO（platform-03 §9.5 / §10.1）
+# 公开域 DTO（platform-03 §9.5 / §10.1；M1 账户与认证契约）。
+# 所有 DTO 均 additionalProperties:false：M1 handler 对未知字段 fail-closed
+# （注册/登录等认证入口 reject，管理面写侧 403 field_not_writable）。契约与实现
+# 保持同一收紧方向，避免前端误以为"多传字段会被忽略"。
 schemas:
   PublicStatus:
     type: object
-    additionalProperties: true
-    description: 公共站点状态占位（字段随 M1+ 细化；schema 待补齐）
-    x-newtg-pending: true
+    additionalProperties: false
+    required: [auth, password_login_encryption_enabled, languages, default_language]
+    description: |
+      公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
+      变更必须立即反映到登录/注册页，禁止任何中间层缓存。
+    properties:
+      auth:
+        type: object
+        additionalProperties: false
+        required: [signup_enabled, password_login_enabled, email_verification_required, turnstile]
+        properties:
+          signup_enabled:
+            type: boolean
+            description: false 时 POST /api/auth/register 返回 403（关闭注册）。
+          password_login_enabled:
+            type: boolean
+            description: false 时 POST /api/auth/login 返回 403（仅保留 OAuth 等其它入口）。
+          email_verification_required:
+            type: boolean
+            description: 注册后是否必须先验证邮箱才能使用完整功能。
+          turnstile:
+            type: object
+            additionalProperties: false
+            required: [enabled, site_key]
+            properties:
+              enabled:
+                type: boolean
+              site_key:
+                type: string
+                description: Turnstile 公开 site key；未启用时为空串。站点 secret 永不下发。
+      password_login_encryption_enabled:
+        type: boolean
+        description: |
+          与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
+          true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
+          （reason=encryption_required，对外响应与口令错误不可区分）。
+      languages:
+        type: array
+        minItems: 7
+        maxItems: 7
+        uniqueItems: true
+        description: canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
+        items:
+          $ref: '#/schemas/Language'
+      default_language:
+        $ref: '#/schemas/Language'
+
+  Language:
+    type: string
+    enum: [en, zh-CN, zh-TW, fr, ru, ja, vi]
+    description: 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 
   GeoIPResponse:
     type: object
@@ -30,3 +81,300 @@ schemas:
         type: string
         enum: [local_db, unknown]
         description: local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配
+
+  LoginEncryptionKeyResponse:
+    type: object
+    additionalProperties: false
+    description: |
+      关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
+      前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
+      （模块-01 §3.14 DisableCache；该端点是加密登录的唯一引导）。
+    properties:
+      enabled:
+        type: boolean
+      kid:
+        type: string
+        description: sha256(SPKI DER) 的前 16 个 hex 字符；用于选择解密私钥槽（active/previous）。
+      public_key:
+        type: string
+        description: RSA ≥ 2048 公钥（PKCS#8 SPKI PEM）。仅公开材料；私钥永不出库外。
+
+  EmailCodeRequest:
+    type: object
+    additionalProperties: false
+    required: [email, purpose]
+    properties:
+      email:
+        type: string
+        format: email
+        maxLength: 254
+      purpose:
+        type: string
+        enum: [register, reset, verify, bind]
+        description: |
+          register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
+          公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+    description: |
+      发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
+      10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
+
+  RegisterRequest:
+    type: object
+    additionalProperties: false
+    required: [username, email, password, confirmPassword, email_code, agree_terms]
+    properties:
+      username:
+        type: string
+        pattern: '^[a-zA-Z0-9_-]{3,32}$'
+      email:
+        type: string
+        format: email
+      password:
+        type: string
+        minLength: 8
+        maxLength: 128
+        description: 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。
+      confirmPassword:
+        type: string
+        description: 必须与 password 逐字一致，否则 400。
+      email_code:
+        type: string
+        pattern: '^[0-9]{6}$'
+      agree_terms:
+        type: boolean
+        description: 必须为 true；false 返回 400。
+      aff:
+        type: string
+        maxLength: 64
+        description: 可选推广码（非必填）；超长 400。
+    description: |
+      注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
+      文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
+
+  AuthUser:
+    type: object
+    additionalProperties: false
+    required: [id, username, role, email_verified, must_change_password]
+    description: 会话建立响应中的用户投影；绝不含口令/TOTP/备用码/权限列。
+    properties:
+      id:
+        type: integer
+        format: int64
+      username:
+        type: string
+      email:
+        type: string
+        description: 未绑定邮箱时字段缺席（omitempty）。
+      role:
+        $ref: '#/schemas/UserRole'
+      email_verified:
+        type: boolean
+      must_change_password:
+        type: boolean
+        description: 管理员重置口令后为 true；前端应强制跳转改密页。
+
+  UserRole:
+    type: string
+    enum: [user, admin]
+
+  UserStatus:
+    type: string
+    enum: [enabled, disabled]
+    description: 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+
+  AuthSessionResponse:
+    type: object
+    additionalProperties: false
+    required: [user]
+    properties:
+      user:
+        $ref: '#/schemas/AuthUser'
+    description: 口令（+ 可选 2FA）通过后建立会话的响应；同时下发会话 Cookie 与 CSRF Cookie。
+
+  Pending2FAResponse:
+    type: object
+    additionalProperties: false
+    required: [status, ticket]
+    properties:
+      status:
+        type: string
+        enum: [pending_2fa]
+        description: 判别字段；客户端据此跳转 2FA challenge 页。
+      ticket:
+        type: string
+        description: 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。
+
+  LoginResponse:
+    oneOf:
+      - $ref: '#/schemas/AuthSessionResponse'
+      - $ref: '#/schemas/Pending2FAResponse'
+    description: |
+      口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
+      返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+      用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
+
+  LoginRequest:
+    type: object
+    additionalProperties: false
+    required: [identifier]
+    description: |
+      identifier 可为用户名或邮箱。开启登录加密时请求体只接受密文：
+      password_encrypted（v2 信封 `v2.<wrappedKey>.<nonce>.<ct>` 或旧版裸
+      RSA-OAEP）+ encryption_key_id；出现明文 password 会被拒绝且响应与
+      口令错误完全一致（反 oracle）。
+    properties:
+      identifier:
+        type: string
+        maxLength: 254
+      password:
+        type: string
+        description: 明文口令；仅在登录加密关闭时接受。
+      password_encrypted:
+        type: string
+        description: 前端加密载荷；开启加密时必填。
+      encryption_key_id:
+        type: string
+        description: GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。
+
+  TwoFAChallengeRequest:
+    type: object
+    additionalProperties: false
+    required: [ticket, code]
+    properties:
+      ticket:
+        type: string
+        description: 登录响应中的一次性 ticket。
+      code:
+        type: string
+        description: type=totp 时为 6 位 TOTP；type=backup 时为 XXXX-XXXX 备用码。
+      type:
+        type: string
+        enum: [totp, backup]
+        default: totp
+        description: 缺省按 totp（兼容早期 {ticket,code} 契约）。
+    description: |
+      用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，
+      同一码并发提交只有一次成功。
+
+  PasswordResetRequest:
+    type: object
+    additionalProperties: false
+    required: [email]
+    properties:
+      email:
+        type: string
+        format: email
+        maxLength: 254
+    description: |
+      恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
+      token（30 分钟）。限流与格式错误是仅有的差异化响应。
+
+  PasswordResetValidateRequest:
+    type: object
+    additionalProperties: false
+    required: [token]
+    properties:
+      token:
+        type: string
+        description: 重置链接中的一次性 token；本端点只校验不消费。
+
+  PasswordResetValidateResponse:
+    type: object
+    additionalProperties: false
+    required: [valid]
+    properties:
+      valid:
+        type: boolean
+        enum: [true]
+        description: 有效时为 true；无效/过期不以 200 返回，而是 400 invalid_reset_token。
+
+  PasswordResetConfirmRequest:
+    type: object
+    additionalProperties: false
+    required: [token, new_password, confirm]
+    properties:
+      token:
+        type: string
+      new_password:
+        type: string
+        minLength: 8
+        maxLength: 128
+      confirm:
+        type: string
+        description: 必须与 new_password 一致。
+    description: |
+      原子消费 token → 改密 → 吊销该用户全部会话。成功 204；token 复用/过期
+      400（并发提交只有一个能成功）。
+
+  SetupRequest:
+    type: object
+    additionalProperties: false
+    # confirmPassword / confirm_password 二选一（服务端优先前者，缺省回落到后者），
+    # 因此不放进 required；两者都缺时 400。
+    required: [site_title, server_address, username, email, password]
+    properties:
+      site_title:
+        type: string
+        minLength: 1
+        maxLength: 64
+      server_address:
+        type: string
+        format: uri
+        description: 站点公开地址（用于生成邮件链接等）；必须是 http(s) URL。
+      username:
+        type: string
+        pattern: '^[a-zA-Z0-9_-]{3,32}$'
+      email:
+        type: string
+        format: email
+      password:
+        type: string
+        minLength: 8
+        maxLength: 128
+      confirmPassword:
+        type: string
+        x-accepted-alias: confirm_password
+        description: |
+          必须与 password 一致。服务端为兼容历史客户端也接受下划线别名
+          confirm_password（前者优先）；契约只登记 camelCase。
+    description: |
+      仅未初始化时可调用；三步字段建 admin 并写 system.install.completed_at
+      （同事务）。幂等锚是 system_settings 该键，重复调用 409 + initialized=true。
+
+  SetupResponse:
+    type: object
+    additionalProperties: false
+    required: [user]
+    properties:
+      user:
+        type: object
+        additionalProperties: false
+        required: [id, username, email, role, status, email_verified]
+        properties:
+          id:
+            type: integer
+            format: int64
+          username:
+            type: string
+          email:
+            type: string
+          role:
+            $ref: '#/schemas/UserRole'
+          status:
+            type: string
+            enum: [enabled, disabled]
+          email_verified:
+            type: boolean
+    description: 201 公开投影；绝不包含口令、哈希或任何密钥材料。
+
+  SetupCompletedProblem:
+    allOf:
+      - $ref: '../components/problem.yaml#/schemas/Problem'
+      - type: object
+        properties:
+          initialized:
+            type: boolean
+    description: |
+      409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
+      直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
+      冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。

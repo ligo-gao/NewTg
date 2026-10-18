@@ -1,12 +1,14 @@
 openapi: 3.1.0
 info:
   title: NewTG API
-  version: 0.1.0-m0
+  version: 0.2.0-m1
   description: |
-    NewTG 网关 API 契约骨架（M0）。
+    NewTG 网关 API 契约（M1：账户/认证/令牌/用户/分组）。
     管理 API 统一使用 RFC 7807 `application/problem+json` 错误体与 offset 分页信封
     `Page{items,total,page,page_size}`（`p` 1 基，`page_size` 默认 20、上限 100）。
     中继 `/v1/*` 仅登记路径与公共面，不重定义上游协议 schema（真源见 externalDocs）。
+    M1 的会话性端点同时声明 `sessionCookie` 与 `bearerToken`；管理端点只接受
+    会话 Cookie（Bearer 没有角色/权限语义）。
 servers:
   - url: /
     description: 同源部署（边缘反代 → 网关）
@@ -183,10 +185,19 @@ paths:
         - public
       operationId: getPublicStatus
       summary: 公共站点状态
+      description: |
+        登录/注册页的引导数据：注册与口令登录开关、邮箱验证要求、Turnstile
+        site key、登录加密开关与 canonical 7 语清单。响应 Cache-Control:
+        no-store——开关变更必须立即生效。
       security: []
       responses:
         '200':
-          description: OK（字段随 M1+ 细化）
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store（站点开关变更必须即时可见）
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -220,29 +231,1832 @@ paths:
                 $ref: '#/components/schemas/GeoIPResponse'
         '429':
           $ref: '#/components/responses/Error429'
+  /api/auth/login/encryption-key:
+    get:
+      tags:
+        - public
+      operationId: getLoginEncryptionKey
+      summary: 登录口令加密公钥（关闭时 {enabled:false}）
+      description: |
+        前端缓存 5 分钟（DisableCache 语义是响应头禁止中间层缓存，不是禁止
+        客户端短缓存）。开启时返回 {kid, public_key}；关闭时固定
+        {enabled:false}。取公钥失败返回 503，绝不回落到明文登录。
+      security: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginEncryptionKeyResponse'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/email-code:
+    post:
+      tags:
+        - public
+      operationId: requestEmailCode
+      summary: 发送 6 位一次性邮箱验证码
+      description: |
+        TTL 10 分钟、一次性。同邮箱 1 次/60 秒、同 IP 10 次/小时；超限 429
+        + Retry-After。成功恒 204，响应不回显验证码。purpose=verify|bind
+        要求有效会话（本端点不经过 SessionAuth，实现内显式校验），缺失 401。
+        SMTP 发送失败返回 502（验证码同时作废，避免留下收不到的有效码）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailCodeRequest'
+      responses:
+        '204':
+          description: 已受理（验证码已生成；配置 SMTP 时已投递）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '502':
+          $ref: '#/components/responses/Error502'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/register:
+    post:
+      tags:
+        - public
+      operationId: register
+      summary: 注册并自动登录
+      description: |
+        成功 201 + 会话 Cookie。重复 username/email 统一 409（文案不区分字段
+        级差异，防账号枚举）。注册关闭 403；邮箱域名白名单外 422。成功后可
+        按配置发放注册赠送流水。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: 注册成功并已建立会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/login:
+    post:
+      tags:
+        - public
+      operationId: login
+      summary: 口令登录（可选前端加密与 2FA 挑战）
+      description: |
+        口令通过后：未启用 2FA 直接建立会话（200 AuthSessionResponse）；
+        已启用返回 200 Pending2FAResponse（ticket 5 分钟），需再调用
+        POST /api/auth/2fa/challenge。连续 5 次失败锁定 15 分钟（双桶
+        Redis 计数）；封禁账号 401。所有失败（含解密失败）响应一致，防 oracle。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 已建立会话，或返回 pending_2fa ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/2fa/challenge:
+    post:
+      tags:
+        - public
+      operationId: submitTwoFAChallenge
+      summary: 用一次性 ticket + TOTP/备用码换取正式会话
+      description: |
+        只信任 ticket（Redis pending_2fa:{ticket} → user_id），不接受客户端
+        声明的用户身份。TOTP 连续 5 次错误作废 ticket；备用码原子核销（同一
+        码并发提交只有一次成功）。成功 200 + 会话 Cookie。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoFAChallengeRequest'
+      responses:
+        '200':
+          description: 挑战通过并已建立会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/password-reset/request:
+    post:
+      tags:
+        - public
+      operationId: requestPasswordReset
+      summary: 请求口令重置邮件（统一成功态）
+      description: |
+        邮箱存在与否响应完全一致（恒 204，防枚举）；存在时投递 256-bit
+        token（30 分钟）。同邮箱 60 秒冷却、同 IP 5 次/分钟，超限 429。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '204':
+          description: 已受理（不透露邮箱是否注册）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/password-reset/validate:
+    post:
+      tags:
+        - public
+      operationId: validatePasswordResetToken
+      summary: 校验重置链接（不消费 token）
+      description: 有效返回 200 {"valid":true}；无效/过期一律 400 invalid_reset_token。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetValidateRequest'
+      responses:
+        '200':
+          description: token 有效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetValidateResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/auth/password-reset/confirm:
+    post:
+      tags:
+        - public
+      operationId: confirmPasswordReset
+      summary: 消费重置 token 并设置新口令
+      description: |
+        原子消费 token → 改密 → 吊销该用户全部会话，成功 204。token 复用/
+        过期 400；并发提交同一 token 只有一个成功。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+      responses:
+        '204':
+          description: 口令已重置，全部旧会话已失效
+        '400':
+          $ref: '#/components/responses/Error400'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/logout:
+    post:
+      tags:
+        - public
+      operationId: logout
+      summary: 登出当前会话
+      description: |
+        public-safe：无会话或重复登出也恒 204。不挂 CSRF 校验（登出不构成
+        状态提升，且清 Cookie 必须在会话已失效后仍可用）。Redis 故障时 503。
+      security: []
+      responses:
+        '204':
+          description: 已登出（幂等）
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/setup:
+    post:
+      tags:
+        - public
+      operationId: completeSetup
+      summary: 首次安装向导（建管理员 + 写初始化锚）
+      description: |
+        仅未初始化时可调用：三步字段建 admin 并写 system.install.completed_at
+        （同事务），成功 201 + 自动登录会话。幂等锚是 system_settings 该键：
+        重复/并发提交返回 409 + initialized=true，前端据此导流到登录页。
+        已初始化后调用同样 409；用户名/邮箱冲突 409。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupRequest'
+      responses:
+        '201':
+          description: 初始化完成并已建立管理员会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetupResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '409':
+          description: 已初始化（initialized=true）或用户名/邮箱冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/SetupCompletedProblem'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/me:
+    get:
+      tags:
+        - user
+      operationId: getMe
+      summary: 当前用户身份投影
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK（六字段冻结投影，零敏感字段）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeView'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+    patch:
+      tags:
+        - user
+      operationId: patchMe
+      summary: 修改显示名（仅 display_name）
+      description: |
+        仅 display_name 可写；提交未知字段返回 403 field_not_writable。
+        null 或空白字符串清除显示名。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchMeRequest'
+      responses:
+        '200':
+          description: 更新后的用户投影
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeView'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/self:
+    get:
+      tags:
+        - user
+      operationId: getSelfSettings
+      summary: 语言 / 侧栏覆盖 / IP 记录开关
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfSettings'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/self/setting:
+    put:
+      tags:
+        - user
+      operationId: updateSelfSettings
+      summary: 更新个人设置（乐观锁）
+      description: |
+        部分更新：未出现的键保持原值。必须原样回传 GET /api/self 的
+        updated_at，不匹配返回 409。语言必须是 canonical 7 语之一，否则 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSelfSettingsRequest'
+      responses:
+        '200':
+          description: 更新后的设置（含新的 updated_at）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfSettings'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/sessions:
+    get:
+      tags:
+        - user
+      operationId: listSessions
+      summary: 当前用户的活跃会话（≤50，非分页）
+      description: |
+        仅接受浏览器会话（API 令牌没有会话列表语义；令牌请求返回 403）。
+        过期会话不列出，按 last_seen 倒序。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/sessions/{sid}:
+    delete:
+      tags:
+        - user
+      operationId: revokeSession
+      summary: 吊销指定会话（不能踢当前会话）
+      description: |
+        吊销他人/不存在会话统一 404（不泄露存在性）；吊销当前会话 400
+        （当前会话必须走 POST /api/logout 以清 Cookie）。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathSessionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已吊销
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/sessions/revoke-others:
+    post:
+      tags:
+        - user
+      operationId: revokeOtherSessions
+      summary: 吊销除当前外的全部会话
+      description: 成功 204；当前会话及其 CSRF 令牌保持有效。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已吊销其他会话
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/verify-email:
+    post:
+      tags:
+        - user
+      operationId: verifyEmail
+      summary: 用邮箱验证码置 email_verified_at
+      description: |
+        幂等：已验证账号重复调用直接 200（保留首次验证时间，不再消费验证码）。
+        无邮箱的账号 400；验证码错误/过期 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '200':
+          description: 邮箱已验证（幂等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyEmailResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/password:
+    post:
+      tags:
+        - user
+      operationId: changePassword
+      summary: 修改口令（吊销其他会话）
+      description: |
+        校验当前口令后更新哈希、吊销除当前外全部会话、轮换当前会话的 CSRF
+        令牌（Cookie 路径）。限流 5 次/10 分钟/IP+用户；新口令必须与旧口令
+        不同并通过泄露筛查。成功 204。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: 口令已更新
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/account:
+    delete:
+      tags:
+        - user
+      operationId: deleteAccount
+      summary: 硬删除账号并匿名化 PII（无宽限）
+      description: |
+        全量再认证通过后：吊销全部会话 → PII 匿名化（历史记录改
+        deleted_{id}）→ 硬删除 users/api_tokens 行 → 失效令牌缓存。成功 204。
+        管理员账号必须先被降权（403）；再认证失败 403 reauth_required。
+        账号行已不存在时 404（PRD 的「幂等」指重复删除不产生额外副作用）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '204':
+          description: 账号已删除并匿名化
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/email:
+    put:
+      tags:
+        - user
+      operationId: changeEmail
+      summary: 换绑邮箱（全量再认证）
+      description: |
+        先再认证（当前口令 + 已启用 MFA 时的 TOTP），再消费新邮箱验证码
+        （purpose=bind），最后落库。未过再认证 403 且不消费验证码。新邮箱
+        被占用 409；域名白名单外 422。成功 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeEmailRequest'
+      responses:
+        '200':
+          description: 邮箱已换绑并标记已验证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeEmailResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/notification-preferences:
+    get:
+      tags:
+        - user
+      operationId: getNotificationPreferences
+      summary: 读取通知偏好（稀疏对象）
+      description: 存储为 NULL 时归一为 {}；站点默认值由客户端合并。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      tags:
+        - user
+      operationId: updateNotificationPreferences
+      summary: 稀疏合并通知偏好
+      description: |
+        请求中出现的键覆盖/合并已有值，未出现的保持不动。未知键与非法值
+        一律 400（拼写错误必须可见）。null/空串清除 URL/token 类键；
+        security_alert.enabled=false 被拒绝（安全通知不可关闭）。成功 200
+        返回合并后的完整对象。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferences'
+      responses:
+        '200':
+          description: 合并后的偏好对象
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/notification-preferences/test:
+    post:
+      tags:
+        - user
+      operationId: testNotification
+      summary: 发送一条测试通知
+      description: |
+        渠道实现由模块 08 注入；M1 未配置通道时返回 503，偏好读写不受影响。
+        成功 200 {channel,sent:true}。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationTestRequest'
+      responses:
+        '200':
+          description: 已投递测试消息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTestResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/2fa/setup:
+    post:
+      tags:
+        - user
+      operationId: setupTwoFA
+      summary: 生成 TOTP secret 与 otpauth URI（不落库）
+      description: |
+        已启用时返回 409（避免展示一个永远无法保存的二维码）。secret 只在
+        本次响应出现。成功 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFASetupResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/2fa/enable:
+    post:
+      tags:
+        - user
+      operationId: enableTwoFA
+      summary: 验证 TOTP 后启用 2FA 并返回备用码
+      description: |
+        验证 {secret,code} 通过后一次性写入密文种子、8 组备用码哈希与
+        totp_enabled=true，并把明文备用码返回给客户端（唯一一次）。验证
+        失败不产生任何写入。已启用 409；无口令的 OAuth 用户 403。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoFAEnableRequest'
+      responses:
+        '200':
+          description: 已启用，返回一次性备用码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFABackupCodesResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/2fa/disable:
+    post:
+      tags:
+        - user
+      operationId: disableTwoFA
+      summary: 用当前口令关闭 2FA
+      description: |
+        需要当前口令确认；错误口令与登录共用失败锁定桶（429）。未启用时
+        409。成功 200 {totp_enabled:false}。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoFAPasswordRequest'
+      responses:
+        '200':
+          description: 已关闭
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFADisableResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/2fa/backup-codes/regenerate:
+    post:
+      tags:
+        - user
+      operationId: regenerateTwoFABackupCodes
+      summary: 重生成备用码（旧码立即失效）
+      description: |
+        需要当前口令确认；整体替换哈希数组，旧码在 UPDATE 提交瞬间全部失效。
+        未启用 409。成功 200 返回 8 组新明文备用码（唯一一次）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoFAPasswordRequest'
+      responses:
+        '200':
+          description: 新备用码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFABackupCodesResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/tokens:
     get:
       tags:
         - user
       operationId: listTokens
       summary: 列出当前用户的 API 令牌（分页）
+      description: |
+        仅按 name 关键字搜索（R-08：key 后缀搜索不命中）。status 为读时
+        派生值；quota 过滤 normal|low|exhausted|unlimited。
       security:
         - sessionCookie: []
         - bearerToken: []
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          description: 按令牌名称模糊搜索（不搜索 key/key_hash）。
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TokenStatus'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: quota
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - normal
+              - low
+              - exhausted
+              - unlimited
       responses:
         '200':
-          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          description: OK
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Page'
+                $ref: '#/components/schemas/TokenList'
+        '400':
+          $ref: '#/components/responses/Error400'
         '401':
           $ref: '#/components/responses/Error401'
-        '429':
-          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      tags:
+        - user
+      operationId: createTokens
+      summary: 创建 API 令牌（可批量，key 仅此一次）
+      description: |
+        应携带 Idempotency-Key（UUID）：同键重放返回首次结果；同键不同
+        请求体返回 422。缺省时服务端直接执行，不提供重放保护。quantity 一次最多 100 枚。group=auto 时 auto_groups
+        必须非空且不超过站点上限（默认 20）。响应 200 + {created:[...]}，
+        每项的 key 是完整明文、仅此一次出现（服务端只存 SHA-256）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '200':
+          description: 已创建（含一次性明文 key）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/tokens/{id}:
+    get:
+      tags:
+        - user
+      operationId: getToken
+      summary: 读取单个令牌
+      description: 他人令牌与不存在令牌统一 404（不泄露存在性）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    patch:
+      tags:
+        - user
+      operationId: updateToken
+      summary: 部分更新令牌（乐观锁）
+      description: |
+        必须原样回传 updated_at，否则 400（缺失）或 409（版本不匹配）。
+        expires_at 显式 null 表示改为永不过期。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTokenRequest'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - user
+      operationId: deleteToken
+      summary: 删除令牌（可选乐观锁）
+      description: |
+        可选 query updated_at（RFC 3339）：提供时必须匹配当前版本，否则 409。
+        未提供时直接删除。成功 204。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+        - name: updated_at
+          in: query
+          required: false
+          description: 乐观锁版本（RFC 3339）；缺省跳过版本校验。
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens:batch-enable:
+    post:
+      tags:
+        - user
+      operationId: batchEnableTokens
+      summary: 批量启用令牌（≤100）
+      description: |
+        应携带 Idempotency-Key；缺失时直接执行（无重放保护）。部分失败仍返回 200：succeeded 计数 +
+        failed 明细（他人/不存在令牌的 name 留空，不泄露存在性）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenBatchResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens:batch-disable:
+    post:
+      tags:
+        - user
+      operationId: batchDisableTokens
+      summary: 批量禁用令牌（≤100）
+      description: 语义与 batch-enable 相同；禁用后 token:changed 广播使缓存立即失效。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenBatchResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens:batch-delete:
+    post:
+      tags:
+        - user
+      operationId: batchDeleteTokens
+      summary: 批量删除令牌（≤100）
+      description: 语义与 batch-enable 相同；部分失败仍 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenBatchResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens/{id}:enable:
+    post:
+      tags:
+        - user
+      operationId: enableToken
+      summary: 启用单个令牌
+      description: 幂等（已启用仍 200）。他人/不存在令牌 404。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens/{id}:disable:
+    post:
+      tags:
+        - user
+      operationId: disableToken
+      summary: 禁用单个令牌
+      description: 幂等（已禁用仍 200）。禁用后 Redis 缓存经 token:changed 失效。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/tokens/{id}:reset-key:
+    post:
+      tags:
+        - user
+      operationId: resetTokenKey
+      summary: 重置令牌密钥（新 key 仅此一次）
+      description: |
+        每次调用都会生成新 key（非幂等语义），但端点用 Idempotency-Key 包裹：
+        同键重放返回首次的新 key，避免网络重试导致"key 已换但客户端没拿到"。
+        旧 key 立即失效。成功 200 + {key,key_masked}，响应 Cache-Control:
+        no-store。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/PathTokenID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 新 key（一次性）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResetTokenKeyResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/token/auto-groups:
+    get:
+      tags:
+        - user
+      operationId: listTokenAutoGroups
+      summary: 自动分组候选与单令牌上限
+      description: 供令牌创建表单展示有序候选；max_count 默认 20。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenAutoGroupsResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/usage/token:
+    get:
+      tags:
+        - user
+      operationId: getTokenUsage
+      summary: 令牌自读用量（Bearer 自身 key）
+      description: |
+        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。令牌额度
+        耗尽/过期仍返回 200（前端要能显示耗尽状态，modules-02 §2.13）；
+        禁用令牌 401 token_disabled；非法 key 401 invalid_token。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenUsage'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/users:
+    get:
+      tags:
+        - admin
+      operationId: listUsers
+      summary: 用户列表（分页 + 筛选 + 排序）
+      description: |
+        keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
+        为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
+        前缀 - 表示降序，默认 -created_at。非法枚举/排序列 400（不静默忽略）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserStatus'
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserRole'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 32
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: ^-?(id|username|balance|created_at|updated_at)$
+            default: -created_at
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createUser
+      summary: 创建用户（管理员创建无邮箱）
+      description: |
+        应携带 Idempotency-Key：同键重放只创建一条；同键不同请求体 422；
+        缺失时直接执行（无重放保护）。
+        请求体没有 email 字段——管理员创建的用户 email 为 NULL。role 缺省
+        user；创建 admin 需要 users:manage-roles 且默认权限集是执行者权限的
+        子集（防提权）。用户名冲突 409。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateUserRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}:
+    get:
+      tags:
+        - admin
+      operationId: getUser
+      summary: 读取用户详情
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    patch:
+      tags:
+        - admin
+      operationId: updateUser
+      summary: 部分更新用户（乐观锁）
+      description: |
+        必须原样回传 updated_at（缺失 400、不匹配 409）。不含口令字段：
+        提交 password 返回 400（改用 reset-password）。未知字段 403
+        field_not_writable。不能修改自己的角色（400，防自降权/自提权）；
+        role 变更会吊销该用户全部会话。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateUserRequest'
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      tags:
+        - admin
+      operationId: deleteUser
+      summary: 删除用户（前置条件：已封禁）
+      description: |
+        目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
+        deleted_{id}）。不能删除自己（400）。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除并匿名化
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/users/{id}/status:
+    post:
+      tags:
+        - admin
+      operationId: setUserStatus
+      summary: 封禁 / 解禁用户
+      description: |
+        封禁在同一事务内吊销全部会话并把该用户令牌置 disabled；解禁不自动
+        恢复令牌。不能封禁自己（400）。成功 200 {id,status}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserStatusRequest'
+      responses:
+        '200':
+          description: 新状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserStatusResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/users/{id}/quota-adjustment:
+    post:
+      tags:
+        - admin
+      operationId: adjustUserQuota
+      summary: 管理员额度调整（原子写流水）
+      description: |
+        原子 UPDATE（GC-5）：subtract 超过余额 400，绝不产生负余额；override
+        与当前余额相同 400。idempotency_key 是业务幂等键（写入交易流水）。
+        成功 200 {user_id,new_balance,transaction_id}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuotaAdjustmentRequest'
+      responses:
+        '200':
+          description: 调整后的余额与流水 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaAdjustmentResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/reset-2fa:
+    post:
+      tags:
+        - admin
+      operationId: resetUserTwoFA
+      summary: 重置用户 2FA（清除种子与备用码）
+      description: 目标未启用 2FA 时 400。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已重置
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/reset-password:
+    post:
+      tags:
+        - admin
+      operationId: resetUserPassword
+      summary: 重置用户口令（返回一次性临时口令）
+      description: |
+        生成 16 位临时口令（TEMP_PWD_TTL=24h，must_change_password=true），
+        只在本次响应出现；响应 Cache-Control: no-store。审计只记录"发生了
+        重置"，绝不含口令材料。成功 200。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 临时口令（一次性）
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResetPasswordResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/permissions:
+    patch:
+      tags:
+        - admin
+      operationId: setUserPermissions
+      summary: 设置管理员权限矩阵（超集校验）
+      description: |
+        授予集合必须是调用者自身权限的子集，否则 403 且不写库；未知键与
+        非 FULL 调用者授予 "*" 同样 403。显式 null 被拒绝（NULL=FULL 会绕过
+        超集校验，授予全权必须显式 ["*"]）。只对 admin 目标有效（400）；
+        不能修改自己（400）。成功 200 返回更新后的用户。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPermissionsRequest'
+      responses:
+        '200':
+          description: 更新后的用户（含新 admin_permissions）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/groups:
+    get:
+      tags:
+        - admin
+      operationId: listGroups
+      summary: 分组列表（分页）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroupList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createGroup
+      summary: 创建分组
+      description: 名称必须匹配 ^[a-z0-9_-]{2,32}$ 且唯一；冲突 409。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateGroupRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroup'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/groups/{name}:
+    patch:
+      tags:
+        - admin
+      operationId: updateGroup
+      summary: 更新分组（改名 / 描述）
+      description: |
+        至少提供一个字段，否则 400。系统组不可改名（400，描述仍可编辑）；
+        新名称冲突 409；目标不存在 404。成功 200。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateGroupRequest'
+      responses:
+        '200':
+          description: 更新后的分组
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroup'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteGroup
+      summary: 删除分组
+      description: |
+        系统组（default/auto 等）不可删除（400）；仍被用户/令牌/定价/渠道
+        引用时 409；不存在 404。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/channels:
     get:
       tags:
@@ -256,7 +2070,7 @@ paths:
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
-          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          description: OK（offset 分页信封；items 的 DTO 随 M6 细化）
           content:
             application/json:
               schema:
@@ -352,6 +2166,40 @@ components:
       schema:
         type: string
         minLength: 1
+    PathUserID:
+      name: id
+      in: path
+      required: true
+      description: 用户 ID（正整数）；解析失败与不存在统一 404。
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    PathTokenID:
+      name: id
+      in: path
+      required: true
+      description: 令牌 ID（正整数）；他人令牌与不存在统一 404。
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    PathSessionID:
+      name: sid
+      in: path
+      required: true
+      description: 会话 id（不透明字符串，取自 GET /api/sessions）。
+      schema:
+        type: string
+        minLength: 1
+    PathGroupName:
+      name: name
+      in: path
+      required: true
+      description: 分组名（^[a-z0-9_-]{2,32}$）。
+      schema:
+        type: string
+        pattern: ^[a-z0-9_-]{2,32}$
   schemas:
     Problem:
       type: object
@@ -429,9 +2277,62 @@ components:
           description: 每页条数（默认 20，上限 100）
     PublicStatus:
       type: object
-      additionalProperties: true
-      description: 公共站点状态占位（字段随 M1+ 细化；schema 待补齐）
-      x-newtg-pending: true
+      additionalProperties: false
+      required:
+        - auth
+        - password_login_encryption_enabled
+        - languages
+        - default_language
+      description: |
+        公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
+        变更必须立即反映到登录/注册页，禁止任何中间层缓存。
+      properties:
+        auth:
+          type: object
+          additionalProperties: false
+          required:
+            - signup_enabled
+            - password_login_enabled
+            - email_verification_required
+            - turnstile
+          properties:
+            signup_enabled:
+              type: boolean
+              description: false 时 POST /api/auth/register 返回 403（关闭注册）。
+            password_login_enabled:
+              type: boolean
+              description: false 时 POST /api/auth/login 返回 403（仅保留 OAuth 等其它入口）。
+            email_verification_required:
+              type: boolean
+              description: 注册后是否必须先验证邮箱才能使用完整功能。
+            turnstile:
+              type: object
+              additionalProperties: false
+              required:
+                - enabled
+                - site_key
+              properties:
+                enabled:
+                  type: boolean
+                site_key:
+                  type: string
+                  description: Turnstile 公开 site key；未启用时为空串。站点 secret 永不下发。
+        password_login_encryption_enabled:
+          type: boolean
+          description: |
+            与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
+            true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
+            （reason=encryption_required，对外响应与口令错误不可区分）。
+        languages:
+          type: array
+          minItems: 7
+          maxItems: 7
+          uniqueItems: true
+          description: canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
+          items:
+            $ref: '#/components/schemas/Language'
+        default_language:
+          $ref: '#/components/schemas/Language'
     GeoIPResponse:
       type: object
       additionalProperties: false
@@ -465,14 +2366,1454 @@ components:
           description: local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配
     Token:
       type: object
-      additionalProperties: true
-      description: API 令牌 DTO 占位（敏感字段仅创建时返回一次；schema 待 M1+ 细化）
-      x-newtg-pending: true
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - status
+        - key_masked
+        - unlimited_quota
+        - group
+        - cross_group_retry
+        - created_at
+        - updated_at
+      description: |
+        管理面令牌响应。永不包含 key 明文或 key_hash；完整 key 只在创建
+        （POST /api/tokens）与重置（POST /api/tokens/{id}:reset-key）响应中出现一次。
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        status:
+          $ref: '#/components/schemas/TokenStatus'
+        key_masked:
+          type: string
+          description: 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+        remain_quota:
+          type: integer
+          format: int64
+          nullable: true
+          description: null 表示不限额度（等价 unlimited_quota=true）。
+        unlimited_quota:
+          type: boolean
+        quota_percent:
+          type: integer
+          nullable: true
+          description: M1 由 remain_quota 派生（0 或 100）；后续接入用量日志后细化。
+        group:
+          type: string
+          description: 令牌绑定分组；auto 表示按 auto_groups 顺序自动选择。
+        model_limits:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: null/空表示不限制模型。
+        allow_ips:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: null/空表示不限制来源 IP。
+        auto_groups:
+          type: array
+          items:
+            type: string
+          description: 有序自动分组候选；仅 group=auto 时非空，最多 20 项（可配置）。
+        cross_group_retry:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: 乐观锁版本；PATCH 必须原样回传，否则 409。
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: null 表示永不过期。
     Channel:
       type: object
       additionalProperties: true
-      description: 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M1+ 细化）
+      description: 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M6 细化）
       x-newtg-pending: true
+    Language:
+      type: string
+      enum:
+        - en
+        - zh-CN
+        - zh-TW
+        - fr
+        - ru
+        - ja
+        - vi
+      description: 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+    LoginEncryptionKeyResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
+        前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
+        （模块-01 §3.14 DisableCache；该端点是加密登录的唯一引导）。
+      properties:
+        enabled:
+          type: boolean
+        kid:
+          type: string
+          description: sha256(SPKI DER) 的前 16 个 hex 字符；用于选择解密私钥槽（active/previous）。
+        public_key:
+          type: string
+          description: RSA ≥ 2048 公钥（PKCS#8 SPKI PEM）。仅公开材料；私钥永不出库外。
+    EmailCodeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - purpose
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        purpose:
+          type: string
+          enum:
+            - register
+            - reset
+            - verify
+            - bind
+          description: |
+            register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
+            公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+      description: |
+        发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
+        10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - username
+        - email
+        - password
+        - confirmPassword
+        - email_code
+        - agree_terms
+      properties:
+        username:
+          type: string
+          pattern: ^[a-zA-Z0-9_-]{3,32}$
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。
+        confirmPassword:
+          type: string
+          description: 必须与 password 逐字一致，否则 400。
+        email_code:
+          type: string
+          pattern: ^[0-9]{6}$
+        agree_terms:
+          type: boolean
+          description: 必须为 true；false 返回 400。
+        aff:
+          type: string
+          maxLength: 64
+          description: 可选推广码（非必填）；超长 400。
+      description: |
+        注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
+        文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
+    UserRole:
+      type: string
+      enum:
+        - user
+        - admin
+    AuthUser:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - username
+        - role
+        - email_verified
+        - must_change_password
+      description: 会话建立响应中的用户投影；绝不含口令/TOTP/备用码/权限列。
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        email:
+          type: string
+          description: 未绑定邮箱时字段缺席（omitempty）。
+        role:
+          $ref: '#/components/schemas/UserRole'
+        email_verified:
+          type: boolean
+        must_change_password:
+          type: boolean
+          description: 管理员重置口令后为 true；前端应强制跳转改密页。
+    AuthSessionResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user
+      properties:
+        user:
+          $ref: '#/components/schemas/AuthUser'
+      description: 口令（+ 可选 2FA）通过后建立会话的响应；同时下发会话 Cookie 与 CSRF Cookie。
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+      description: |
+        identifier 可为用户名或邮箱。开启登录加密时请求体只接受密文：
+        password_encrypted（v2 信封 `v2.<wrappedKey>.<nonce>.<ct>` 或旧版裸
+        RSA-OAEP）+ encryption_key_id；出现明文 password 会被拒绝且响应与
+        口令错误完全一致（反 oracle）。
+      properties:
+        identifier:
+          type: string
+          maxLength: 254
+        password:
+          type: string
+          description: 明文口令；仅在登录加密关闭时接受。
+        password_encrypted:
+          type: string
+          description: 前端加密载荷；开启加密时必填。
+        encryption_key_id:
+          type: string
+          description: GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。
+    Pending2FAResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - ticket
+      properties:
+        status:
+          type: string
+          enum:
+            - pending_2fa
+          description: 判别字段；客户端据此跳转 2FA challenge 页。
+        ticket:
+          type: string
+          description: 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。
+    LoginResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AuthSessionResponse'
+        - $ref: '#/components/schemas/Pending2FAResponse'
+      description: |
+        口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
+        返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+        用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
+    TwoFAChallengeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - ticket
+        - code
+      properties:
+        ticket:
+          type: string
+          description: 登录响应中的一次性 ticket。
+        code:
+          type: string
+          description: type=totp 时为 6 位 TOTP；type=backup 时为 XXXX-XXXX 备用码。
+        type:
+          type: string
+          enum:
+            - totp
+            - backup
+          default: totp
+          description: 缺省按 totp（兼容早期 {ticket,code} 契约）。
+      description: |
+        用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，
+        同一码并发提交只有一次成功。
+    PasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+      description: |
+        恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
+        token（30 分钟）。限流与格式错误是仅有的差异化响应。
+    PasswordResetValidateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: 重置链接中的一次性 token；本端点只校验不消费。
+    PasswordResetValidateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - valid
+      properties:
+        valid:
+          type: boolean
+          enum:
+            - true
+          description: 有效时为 true；无效/过期不以 200 返回，而是 400 invalid_reset_token。
+    PasswordResetConfirmRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+        - new_password
+        - confirm
+      properties:
+        token:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        confirm:
+          type: string
+          description: 必须与 new_password 一致。
+      description: |
+        原子消费 token → 改密 → 吊销该用户全部会话。成功 204；token 复用/过期
+        400（并发提交只有一个能成功）。
+    SetupRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - site_title
+        - server_address
+        - username
+        - email
+        - password
+      properties:
+        site_title:
+          type: string
+          minLength: 1
+          maxLength: 64
+        server_address:
+          type: string
+          format: uri
+          description: 站点公开地址（用于生成邮件链接等）；必须是 http(s) URL。
+        username:
+          type: string
+          pattern: ^[a-zA-Z0-9_-]{3,32}$
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        confirmPassword:
+          type: string
+          x-accepted-alias: confirm_password
+          description: |
+            必须与 password 一致。服务端为兼容历史客户端也接受下划线别名
+            confirm_password（前者优先）；契约只登记 camelCase。
+      description: |
+        仅未初始化时可调用；三步字段建 admin 并写 system.install.completed_at
+        （同事务）。幂等锚是 system_settings 该键，重复调用 409 + initialized=true。
+    SetupResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user
+      properties:
+        user:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - username
+            - email
+            - role
+            - status
+            - email_verified
+          properties:
+            id:
+              type: integer
+              format: int64
+            username:
+              type: string
+            email:
+              type: string
+            role:
+              $ref: '#/components/schemas/UserRole'
+            status:
+              type: string
+              enum:
+                - enabled
+                - disabled
+            email_verified:
+              type: boolean
+      description: 201 公开投影；绝不包含口令、哈希或任何密钥材料。
+    SetupCompletedProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            initialized:
+              type: boolean
+      description: |
+        409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
+        直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
+        冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。
+    UserStatus:
+      type: string
+      enum:
+        - enabled
+        - disabled
+      description: 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+    MeView:
+      type: object
+      additionalProperties: false
+      required:
+        - username
+        - role
+        - status
+      description: |
+        GET /api/me 的冻结投影：只有这六个字段。email/avatar_url/display_name
+        未设置时字段缺席（响应中为 null 或省略由 Go omitempty 决定，客户端按可空处理）。
+      properties:
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        display_name:
+          type: string
+          maxLength: 32
+          nullable: true
+    PatchMeRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
+        403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
+      properties:
+        display_name:
+          type: string
+          maxLength: 32
+          nullable: true
+          description: null 或空白字符串清除显示名。
+    SelfSettings:
+      type: object
+      additionalProperties: false
+      required:
+        - language
+        - sidebar_modules
+        - record_ip_log
+        - updated_at
+      description: |
+        GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
+        必须携带的乐观锁令牌——同一行的资料变更也会推进它。
+      properties:
+        language:
+          $ref: '#/components/schemas/Language'
+        sidebar_modules:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 侧栏模块的稀疏覆盖；null 表示无覆盖（使用站点默认）。
+        record_ip_log:
+          type: boolean
+          description: 是否记录登录/操作 IP。
+        updated_at:
+          type: string
+          format: date-time
+    UpdateSelfSettingsRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      description: |
+        PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
+        等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
+        7 语内返回 400。
+      properties:
+        language:
+          $ref: '#/components/schemas/Language'
+        sidebar_modules:
+          type: object
+          additionalProperties: true
+          nullable: true
+        record_ip_log:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+    SessionView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - user_agent
+        - ip
+        - created_at
+        - last_seen_at
+        - current
+      properties:
+        id:
+          type: string
+          description: 会话 id（不透明）；DELETE /api/sessions/{sid} 的原值。
+        user_agent:
+          type: string
+        ip:
+          type: string
+          description: 建立会话时的客户端 IP。
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+    SessionList:
+      type: object
+      additionalProperties: false
+      required:
+        - sessions
+      description: |
+        不是 Page 信封：列表固定 ≤50 条、无翻页语义（按 last_seen 倒序）。
+        过期会话不列出；current=true 的条目是当前请求所用会话。
+      properties:
+        sessions:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/SessionView'
+    VerifyEmailRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email_code
+      properties:
+        email_code:
+          type: string
+          pattern: ^[0-9]{6}$
+          description: 由 POST /api/auth/email-code（purpose=verify）下发的一次性验证码。
+    VerifyEmailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - email_verified
+      properties:
+        email_verified:
+          type: boolean
+          enum:
+            - true
+        email_verified_at:
+          type: string
+          format: date-time
+          description: 首次验证时间；重复验证保留首次时间。
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - current_password
+        - new_password
+      properties:
+        current_password:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
+      description: |
+        成功 204：更新哈希、吊销除当前外全部会话并轮换当前会话 CSRF 令牌。
+        限流 5 次/10 分钟/IP+用户；失败返回 400/409/429/503。
+    DeleteAccountRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - confirm_username
+        - password
+      properties:
+        confirm_username:
+          type: string
+          description: 必须与当前用户名逐字一致。
+        password:
+          type: string
+          description: 当前口令；即使再认证窗口仍有效也必须现场提供。
+        totp_code:
+          type: string
+          description: 已启用 2FA 时必填。
+      description: |
+        DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
+        再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+    ChangeEmailRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - new_email
+        - code
+        - current_password
+      properties:
+        new_email:
+          type: string
+          format: email
+        code:
+          type: string
+          pattern: ^[0-9]{6}$
+          description: 发往 new_email、purpose=bind 的一次性验证码。
+        current_password:
+          type: string
+        totp_code:
+          type: string
+      description: |
+        全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
+        不写库。新邮箱被占用 409；域名白名单外 422。
+    ChangeEmailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - email_verified
+        - email_verified_at
+      properties:
+        email:
+          type: string
+          format: email
+        email_verified:
+          type: boolean
+          enum:
+            - true
+        email_verified_at:
+          type: string
+          format: date-time
+    NotificationChannel:
+      type: string
+      enum:
+        - email
+        - webhook
+        - bark
+        - gotify
+    NotificationPreferences:
+      type: object
+      additionalProperties: false
+      description: |
+        稀疏偏好对象：只持久化用户显式设置过的键；GET 对 NULL 归一为 {}。
+        站点级默认值由客户端合并。security_alert.enabled 不允许为 false
+        （安全通知不可关闭，400）。
+      properties:
+        balance_warning:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+            threshold:
+              type: integer
+              minimum: 0
+              description: 余额告警阈值（credits，非负整数）。
+            channels:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/NotificationChannel'
+            custom_email:
+              type: string
+              nullable: true
+              description: 自定义收件邮箱；null 或空串清除（空串是服务端兼容的清除写法）。
+        usage_digest:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+            channels:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/NotificationChannel'
+        security_alert:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+              enum:
+                - true
+        webhook_url:
+          type: string
+          format: uri
+          nullable: true
+          description: 清除时传 null 或空串（稀疏合并下唯一的删除方式）。
+        bark_url:
+          type: string
+          format: uri
+          nullable: true
+        gotify_url:
+          type: string
+          format: uri
+          nullable: true
+        gotify_token:
+          type: string
+          nullable: true
+          description: 清除时传 null 或空串。
+        gotify_priority:
+          type: integer
+          nullable: true
+          description: 清除时传 null。
+    NotificationTestRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - channel
+      properties:
+        channel:
+          $ref: '#/components/schemas/NotificationChannel'
+        target:
+          type: string
+          description: 测试目标地址；与 target_address 同义，target 优先。
+        target_address:
+          type: string
+          description: 兼容字段；两者都缺时按渠道默认目标。
+      description: |
+        M1 未配置真实通知通道时返回 503；偏好读写端点不受影响。
+        发送成功 200 {channel,sent:true}。
+    NotificationTestResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - channel
+        - sent
+      properties:
+        channel:
+          $ref: '#/components/schemas/NotificationChannel'
+        sent:
+          type: boolean
+          enum:
+            - true
+    TwoFASetupResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - secret
+        - otpauth_url
+      properties:
+        secret:
+          type: string
+          description: base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。
+        otpauth_url:
+          type: string
+          format: uri
+          description: otpauth:// URI，供前端渲染二维码。
+    TwoFAEnableRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - secret
+        - code
+      properties:
+        secret:
+          type: string
+          description: 上一步 setup 返回的 secret（服务端校验 32 位 base32 / 20 字节）。
+        code:
+          type: string
+          pattern: ^[0-9]{6}$
+    TwoFABackupCodesResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - totp_enabled
+        - backup_codes
+      properties:
+        totp_enabled:
+          type: boolean
+          enum:
+            - true
+        backup_codes:
+          type: array
+          minItems: 8
+          maxItems: 8
+          items:
+            type: string
+            pattern: ^[A-Z0-9]{4}-[A-Z0-9]{4}$
+          description: 明文备用码，仅本次响应出现；重生成后旧码立即失效。
+    TwoFAPasswordRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - password
+      properties:
+        password:
+          type: string
+          description: 当前口令确认；与登录共用失败锁定桶。
+    TwoFADisableResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - totp_enabled
+      properties:
+        totp_enabled:
+          type: boolean
+          enum:
+            - false
+    TokenStatus:
+      type: string
+      enum:
+        - enabled
+        - disabled
+        - expired
+        - exhausted
+      description: |
+        读时派生，优先级 disabled > expired > exhausted > enabled。
+        disabled 是唯一可写的人工位；其余为时间/额度派生态。
+    TokenList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Token'
+      description: GET /api/tokens 的 offset 分页信封；items 为 Token 投影。
+    CreateTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        group:
+          type: string
+          description: 缺省使用用户当前分组；auto 时 auto_groups 必须非空（I-20）。
+        expires_at:
+          oneOf:
+            - type: integer
+              format: int64
+              description: epoch 秒（modules-02 线格式）。
+            - type: string
+              format: date-time
+          nullable: true
+          description: null 表示永不过期。
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          description: 一次创建的令牌数量；上限 100（与批量操作同额）。
+        unlimited_quota:
+          type: boolean
+          default: true
+        remain_quota:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000000000000000
+          description: unlimited_quota=false 时必须提供；0 表示立即耗尽。
+        model_limits:
+          type: array
+          items:
+            type: string
+        allow_ips:
+          type: array
+          items:
+            type: string
+        auto_groups:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
+        cross_group_retry:
+          type: boolean
+          default: false
+      description: |
+        POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+        不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
+    CreatedToken:
+      allOf:
+        - $ref: '#/components/schemas/Token'
+        - type: object
+          required:
+            - key
+          properties:
+            key:
+              type: string
+              description: 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+      description: 创建响应中的条目 = Token + 一次性明文 key。
+    CreateTokenResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - created
+      properties:
+        created:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CreatedToken'
+    UpdateTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      description: |
+        部分更新：未出现的字段不变。updated_at 必须等于当前行的版本，
+        否则 409（乐观锁）。expires_at 显式 null 表示改为永不过期。
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        group:
+          type: string
+        expires_at:
+          oneOf:
+            - type: integer
+              format: int64
+            - type: string
+              format: date-time
+          nullable: true
+        unlimited_quota:
+          type: boolean
+        remain_quota:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000000000000000
+        model_limits:
+          type: array
+          items:
+            type: string
+        allow_ips:
+          type: array
+          items:
+            type: string
+        auto_groups:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+        cross_group_retry:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+    BatchTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+    TokenBatchFailure:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - detail
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          description: 仅当令牌属于当前用户且仍存在时填写；他人/不存在留空（不泄露存在性）。
+        detail:
+          type: string
+    TokenBatchResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - succeeded
+        - failed
+      description: |
+        逐条结果：succeeded 为成功条数，failed 为明细。批量端点上限 100，
+        部分失败仍返回 200（不是整体回滚）。
+      properties:
+        succeeded:
+          type: integer
+          minimum: 0
+        failed:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenBatchFailure'
+    ResetTokenKeyResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - key_masked
+      description: |
+        新 key 只在本响应出现一次；旧 key 立即失效。响应带
+        Cache-Control: no-store。
+      properties:
+        key:
+          type: string
+        key_masked:
+          type: string
+    TokenAutoGroupsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - groups
+        - max_count
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - name
+            properties:
+              name:
+                type: string
+              ratio:
+                type: number
+                description: 分组倍率（DB 150 → 1.5）；缺省字段表示无显式倍率。
+        max_count:
+          type: integer
+          minimum: 1
+          description: 单令牌 auto_groups 条目上限（站点配置，默认 20）。
+    TokenUsage:
+      type: object
+      additionalProperties: false
+      required:
+        - object
+        - name
+        - total_used
+        - unlimited_quota
+        - model_limits_enabled
+      description: |
+        GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
+        （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
+        返回 401 token_disabled。
+      properties:
+        object:
+          type: string
+          enum:
+            - token_usage
+        name:
+          type: string
+        total_granted:
+          type: integer
+          format: int64
+          nullable: true
+          description: M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
+        total_used:
+          type: integer
+          format: int64
+        total_available:
+          type: integer
+          format: int64
+          nullable: true
+          description: 剩余额度；不限额度时为 null。
+        unlimited_quota:
+          type: boolean
+        model_limits:
+          type: array
+          items:
+            type: string
+          nullable: true
+        model_limits_enabled:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    PermissionKey:
+      type: string
+      enum:
+        - users:read
+        - users:create
+        - users:update
+        - users:disable
+        - users:delete
+        - users:adjust-quota
+        - users:manage-roles
+        - users:reset-security
+        - groups:manage
+        - channels:read
+        - channels:manage
+        - channels:manage_sensitive
+        - pricing:read
+        - pricing:manage
+        - redemption:manage
+        - orders:read
+        - orders:manage
+        - logs:read
+        - log.prompt.view
+        - settings:manage
+      description: |
+        modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
+        通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
+    AdminUser:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - username
+        - role
+        - status
+        - balance
+        - group
+        - admin_permissions
+        - totp_enabled
+        - must_change_password
+        - token_count
+        - created_at
+        - updated_at
+      description: |
+        管理面用户投影。永不含口令哈希、TOTP 种子或备用码。admin_permissions
+        为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
+        不同，客户端不得把 [] 当 null。
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        display_name:
+          type: string
+          maxLength: 32
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: 管理员创建的用户可为 null（不绑定邮箱）。
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        balance:
+          type: integer
+          format: int64
+          description: 当前余额（credits 最小单位）。
+        group:
+          type: string
+        admin_permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionKey'
+          nullable: true
+        totp_enabled:
+          type: boolean
+        must_change_password:
+          type: boolean
+        remark:
+          type: string
+          maxLength: 255
+          nullable: true
+        token_count:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: 乐观锁版本；PATCH 必须原样回传。
+    AdminUserList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminUser'
+      description: GET /api/users 的 offset 分页信封。
+    AdminCreateUserRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          pattern: ^[a-zA-Z0-9_-]{3,32}$
+        display_name:
+          type: string
+          maxLength: 32
+          nullable: true
+        role:
+          $ref: '#/components/schemas/UserRole'
+          description: 缺省 user。创建 admin 需要执行者同时持有 users:manage-roles 与默认权限集的超集。
+        group:
+          type: string
+          description: 缺省 default。
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        remark:
+          type: string
+          maxLength: 255
+          nullable: true
+      description: |
+        必须携带 Idempotency-Key；同键重放只创建一条。请求体没有 email 字段：
+        管理员创建的用户 email 为 NULL。用户名冲突 409。
+    AdminUpdateUserRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      description: |
+        部分更新。不含口令字段：提交 password 返回 400（用
+        POST /api/users/{id}/reset-password）。未知字段 403 field_not_writable。
+        role 变更会吊销该用户全部会话；不能修改自己的角色/状态/权限（400）。
+      properties:
+        display_name:
+          type: string
+          maxLength: 32
+          nullable: true
+        group:
+          type: string
+        remark:
+          type: string
+          maxLength: 255
+          nullable: true
+        role:
+          $ref: '#/components/schemas/UserRole'
+        updated_at:
+          type: string
+          format: date-time
+    AdminUserStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          $ref: '#/components/schemas/UserStatus'
+      description: |
+        封禁在同一事务内吊销全部会话并把令牌置 disabled；解禁不自动恢复令牌。
+        不能封禁自己（400）。
+    AdminUserStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/UserStatus'
+    QuotaAdjustmentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - mode
+        - amount
+        - idempotency_key
+      properties:
+        mode:
+          type: string
+          enum:
+            - add
+            - subtract
+            - override
+        amount:
+          type: integer
+          format: int64
+          description: add/subtract 为增量（≥0），override 为目标余额（≥0）。
+        idempotency_key:
+          type: string
+          minLength: 1
+          description: 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。
+      description: |
+        原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
+        override 与当前余额相同返回 400（无变化）。成功后写
+        type=admin_adjustment 流水。
+    QuotaAdjustmentResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - new_balance
+        - transaction_id
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        new_balance:
+          type: integer
+          format: int64
+        transaction_id:
+          type: integer
+          format: int64
+    ResetPasswordResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - temp_password
+      properties:
+        temp_password:
+          type: string
+          description: |
+            16 位一次性临时口令，仅本次响应出现（Cache-Control: no-store）。
+            TEMP_PWD_TTL=24h 且 must_change_password=true；24 小时内不改密
+            则临时口令失效。
+      description: 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
+    PermissionGrant:
+      oneOf:
+        - $ref: '#/components/schemas/PermissionKey'
+        - type: string
+          enum:
+            - '*'
+      description: 权限矩阵成员：20 键之一或全权通配符 "*"。
+    SetPermissionsRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - admin_permissions
+      properties:
+        admin_permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/PermissionGrant'
+          description: |
+            授予集合必须是调用者自身权限的子集，否则 403 且不写库。
+            显式 null 被拒绝——NULL 在 RBAC 语义里是 FULL，匿名 null→FULL
+            会绕过超集校验；授予全权必须显式提交 ["*"]。
+      description: |
+        PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
+        （400）。成功 200 返回更新后的 AdminUser。
+    AdminGroup:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - ratio
+        - user_selectable
+        - is_system
+        - status
+        - users_count
+        - pricing_overrides_count
+        - channels_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          pattern: ^[a-z0-9_-]{2,32}$
+        description:
+          type: string
+          maxLength: 128
+          nullable: true
+        ratio:
+          type: integer
+          format: int32
+          description: 分组倍率（DB 150 表示 1.5）。
+        user_selectable:
+          type: boolean
+        is_system:
+          type: boolean
+          description: 系统分组（如 default）不可删除。
+        status:
+          type: integer
+          format: int16
+        users_count:
+          type: integer
+          format: int64
+        pricing_overrides_count:
+          type: integer
+          format: int64
+        channels_count:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminGroupList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminGroup'
+      description: GET /api/groups 的 offset 分页信封。
+    AdminCreateGroupRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          pattern: ^[a-z0-9_-]{2,32}$
+        description:
+          type: string
+          maxLength: 128
+          nullable: true
+      description: 名称唯一；冲突 409（不区分大小写归一后比较）。
+    AdminUpdateGroupRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          pattern: ^[a-z0-9_-]{2,32}$
+        description:
+          type: string
+          maxLength: 128
+          nullable: true
+      description: |
+        至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
+        （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）
@@ -510,6 +3851,12 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    Error422:
+      description: 语义不可处理（邮箱域名白名单拒绝；幂等键被不同请求体复用）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Error429:
       description: 触发限流
       headers:
@@ -524,6 +3871,12 @@ components:
             $ref: '#/components/schemas/Problem'
     Error500:
       description: 服务端内部错误
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error502:
+      description: 上游依赖失败（如验证码邮件投递失败）
       content:
         application/problem+json:
           schema:

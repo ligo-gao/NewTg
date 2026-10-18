@@ -1,24 +1,1029 @@
-# 用户自助域路径（会话 Cookie 或 API 令牌）
+# 用户自助域路径（会话 Cookie 或 API 令牌）。
+# 会话 Cookie 路径上的非安全方法必须携带 X-CSRF-Token（Bearer 路径豁免）；
+# 因此所有可能走 Cookie 的写操作都登记了 CSRFToken 参数。
 paths:
+  /api/me:
+    get:
+      tags: [user]
+      operationId: getMe
+      summary: 当前用户身份投影
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK（六字段冻结投影，零敏感字段）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/MeView'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    patch:
+      tags: [user]
+      operationId: patchMe
+      summary: 修改显示名（仅 display_name）
+      description: |
+        仅 display_name 可写；提交未知字段返回 403 field_not_writable。
+        null 或空白字符串清除显示名。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/PatchMeRequest'
+      responses:
+        '200':
+          description: 更新后的用户投影
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/MeView'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/self:
+    get:
+      tags: [user]
+      operationId: getSelfSettings
+      summary: 语言 / 侧栏覆盖 / IP 记录开关
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/SelfSettings'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/self/setting:
+    put:
+      tags: [user]
+      operationId: updateSelfSettings
+      summary: 更新个人设置（乐观锁）
+      description: |
+        部分更新：未出现的键保持原值。必须原样回传 GET /api/self 的
+        updated_at，不匹配返回 409。语言必须是 canonical 7 语之一，否则 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/UpdateSelfSettingsRequest'
+      responses:
+        '200':
+          description: 更新后的设置（含新的 updated_at）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/SelfSettings'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/sessions:
+    get:
+      tags: [user]
+      operationId: listSessions
+      summary: 当前用户的活跃会话（≤50，非分页）
+      description: |
+        仅接受浏览器会话（API 令牌没有会话列表语义；令牌请求返回 403）。
+        过期会话不列出，按 last_seen 倒序。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/SessionList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/sessions/{sid}:
+    delete:
+      tags: [user]
+      operationId: revokeSession
+      summary: 吊销指定会话（不能踢当前会话）
+      description: |
+        吊销他人/不存在会话统一 404（不泄露存在性）；吊销当前会话 400
+        （当前会话必须走 POST /api/logout 以清 Cookie）。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathSessionID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已吊销
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/sessions/revoke-others:
+    post:
+      tags: [user]
+      operationId: revokeOtherSessions
+      summary: 吊销除当前外的全部会话
+      description: 成功 204；当前会话及其 CSRF 令牌保持有效。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已吊销其他会话
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/verify-email:
+    post:
+      tags: [user]
+      operationId: verifyEmail
+      summary: 用邮箱验证码置 email_verified_at
+      description: |
+        幂等：已验证账号重复调用直接 200（保留首次验证时间，不再消费验证码）。
+        无邮箱的账号 400；验证码错误/过期 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/VerifyEmailRequest'
+      responses:
+        '200':
+          description: 邮箱已验证（幂等）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/VerifyEmailResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/password:
+    post:
+      tags: [user]
+      operationId: changePassword
+      summary: 修改口令（吊销其他会话）
+      description: |
+        校验当前口令后更新哈希、吊销除当前外全部会话、轮换当前会话的 CSRF
+        令牌（Cookie 路径）。限流 5 次/10 分钟/IP+用户；新口令必须与旧口令
+        不同并通过泄露筛查。成功 204。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: 口令已更新
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/account:
+    delete:
+      tags: [user]
+      operationId: deleteAccount
+      summary: 硬删除账号并匿名化 PII（无宽限）
+      description: |
+        全量再认证通过后：吊销全部会话 → PII 匿名化（历史记录改
+        deleted_{id}）→ 硬删除 users/api_tokens 行 → 失效令牌缓存。成功 204。
+        管理员账号必须先被降权（403）；再认证失败 403 reauth_required。
+        账号行已不存在时 404（PRD 的「幂等」指重复删除不产生额外副作用）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/DeleteAccountRequest'
+      responses:
+        '204':
+          description: 账号已删除并匿名化
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/email:
+    put:
+      tags: [user]
+      operationId: changeEmail
+      summary: 换绑邮箱（全量再认证）
+      description: |
+        先再认证（当前口令 + 已启用 MFA 时的 TOTP），再消费新邮箱验证码
+        （purpose=bind），最后落库。未过再认证 403 且不消费验证码。新邮箱
+        被占用 409；域名白名单外 422。成功 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/ChangeEmailRequest'
+      responses:
+        '200':
+          description: 邮箱已换绑并标记已验证
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/ChangeEmailResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/notification-preferences:
+    get:
+      tags: [user]
+      operationId: getNotificationPreferences
+      summary: 读取通知偏好（稀疏对象）
+      description: 存储为 NULL 时归一为 {}；站点默认值由客户端合并。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/NotificationPreferences'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+    put:
+      tags: [user]
+      operationId: updateNotificationPreferences
+      summary: 稀疏合并通知偏好
+      description: |
+        请求中出现的键覆盖/合并已有值，未出现的保持不动。未知键与非法值
+        一律 400（拼写错误必须可见）。null/空串清除 URL/token 类键；
+        security_alert.enabled=false 被拒绝（安全通知不可关闭）。成功 200
+        返回合并后的完整对象。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/NotificationPreferences'
+      responses:
+        '200':
+          description: 合并后的偏好对象
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/NotificationPreferences'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/notification-preferences/test:
+    post:
+      tags: [user]
+      operationId: testNotification
+      summary: 发送一条测试通知
+      description: |
+        渠道实现由模块 08 注入；M1 未配置通道时返回 503，偏好读写不受影响。
+        成功 200 {channel,sent:true}。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/NotificationTestRequest'
+      responses:
+        '200':
+          description: 已投递测试消息
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/NotificationTestResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/2fa/setup:
+    post:
+      tags: [user]
+      operationId: setupTwoFA
+      summary: 生成 TOTP secret 与 otpauth URI（不落库）
+      description: |
+        已启用时返回 409（避免展示一个永远无法保存的二维码）。secret 只在
+        本次响应出现。成功 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TwoFASetupResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/2fa/enable:
+    post:
+      tags: [user]
+      operationId: enableTwoFA
+      summary: 验证 TOTP 后启用 2FA 并返回备用码
+      description: |
+        验证 {secret,code} 通过后一次性写入密文种子、8 组备用码哈希与
+        totp_enabled=true，并把明文备用码返回给客户端（唯一一次）。验证
+        失败不产生任何写入。已启用 409；无口令的 OAuth 用户 403。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/TwoFAEnableRequest'
+      responses:
+        '200':
+          description: 已启用，返回一次性备用码
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TwoFABackupCodesResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/2fa/disable:
+    post:
+      tags: [user]
+      operationId: disableTwoFA
+      summary: 用当前口令关闭 2FA
+      description: |
+        需要当前口令确认；错误口令与登录共用失败锁定桶（429）。未启用时
+        409。成功 200 {totp_enabled:false}。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/TwoFAPasswordRequest'
+      responses:
+        '200':
+          description: 已关闭
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TwoFADisableResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/2fa/backup-codes/regenerate:
+    post:
+      tags: [user]
+      operationId: regenerateTwoFABackupCodes
+      summary: 重生成备用码（旧码立即失效）
+      description: |
+        需要当前口令确认；整体替换哈希数组，旧码在 UPDATE 提交瞬间全部失效。
+        未启用 409。成功 200 返回 8 组新明文备用码（唯一一次）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/TwoFAPasswordRequest'
+      responses:
+        '200':
+          description: 新备用码
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TwoFABackupCodesResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  # ---------------------------------------------------------------------------
+  # API 令牌（modules-02）
+  # ---------------------------------------------------------------------------
+
   /api/tokens:
     get:
       tags: [user]
       operationId: listTokens
       summary: 列出当前用户的 API 令牌（分页）
+      description: |
+        仅按 name 关键字搜索（R-08：key 后缀搜索不命中）。status 为读时
+        派生值；quota 过滤 normal|low|exhausted|unlimited。
       security:
         - sessionCookie: []
         - bearerToken: []
       parameters:
         - $ref: '../components/pagination.yaml#/parameters/Page'
         - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          description: 按令牌名称模糊搜索（不搜索 key/key_hash）。
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '../schemas/user.yaml#/schemas/TokenStatus'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: quota
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [normal, low, exhausted, unlimited]
       responses:
         '200':
-          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          description: OK
           content:
             application/json:
               schema:
-                $ref: '../components/pagination.yaml#/schemas/Page'
+                $ref: '../schemas/user.yaml#/schemas/TokenList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
-        '429':
-          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+    post:
+      tags: [user]
+      operationId: createTokens
+      summary: 创建 API 令牌（可批量，key 仅此一次）
+      description: |
+        应携带 Idempotency-Key（UUID）：同键重放返回首次结果；同键不同
+        请求体返回 422。缺省时服务端直接执行，不提供重放保护。quantity 一次最多 100 枚。group=auto 时 auto_groups
+        必须非空且不超过站点上限（默认 20）。响应 200 + {created:[...]}，
+        每项的 key 是完整明文、仅此一次出现（服务端只存 SHA-256）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/CreateTokenRequest'
+      responses:
+        '200':
+          description: 已创建（含一次性明文 key）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/CreateTokenResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/tokens/{id}:
+    get:
+      tags: [user]
+      operationId: getToken
+      summary: 读取单个令牌
+      description: 他人令牌与不存在令牌统一 404（不泄露存在性）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/Token'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    patch:
+      tags: [user]
+      operationId: updateToken
+      summary: 部分更新令牌（乐观锁）
+      description: |
+        必须原样回传 updated_at，否则 400（缺失）或 409（版本不匹配）。
+        expires_at 显式 null 表示改为永不过期。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/UpdateTokenRequest'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/Token'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [user]
+      operationId: deleteToken
+      summary: 删除令牌（可选乐观锁）
+      description: |
+        可选 query updated_at（RFC 3339）：提供时必须匹配当前版本，否则 409。
+        未提供时直接删除。成功 204。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+        - name: updated_at
+          in: query
+          required: false
+          description: 乐观锁版本（RFC 3339）；缺省跳过版本校验。
+          schema:
+            type: string
+            format: date-time
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens:batch-enable:
+    post:
+      tags: [user]
+      operationId: batchEnableTokens
+      summary: 批量启用令牌（≤100）
+      description: |
+        应携带 Idempotency-Key；缺失时直接执行（无重放保护）。部分失败仍返回 200：succeeded 计数 +
+        failed 明细（他人/不存在令牌的 name 留空，不泄露存在性）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TokenBatchResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens:batch-disable:
+    post:
+      tags: [user]
+      operationId: batchDisableTokens
+      summary: 批量禁用令牌（≤100）
+      description: 语义与 batch-enable 相同；禁用后 token:changed 广播使缓存立即失效。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TokenBatchResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens:batch-delete:
+    post:
+      tags: [user]
+      operationId: batchDeleteTokens
+      summary: 批量删除令牌（≤100）
+      description: 语义与 batch-enable 相同；部分失败仍 200。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/BatchTokenRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TokenBatchResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens/{id}:enable:
+    post:
+      tags: [user]
+      operationId: enableToken
+      summary: 启用单个令牌
+      description: 幂等（已启用仍 200）。他人/不存在令牌 404。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/Token'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens/{id}:disable:
+    post:
+      tags: [user]
+      operationId: disableToken
+      summary: 禁用单个令牌
+      description: 幂等（已禁用仍 200）。禁用后 Redis 缓存经 token:changed 失效。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的令牌
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/Token'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/tokens/{id}:reset-key:
+    post:
+      tags: [user]
+      operationId: resetTokenKey
+      summary: 重置令牌密钥（新 key 仅此一次）
+      description: |
+        每次调用都会生成新 key（非幂等语义），但端点用 Idempotency-Key 包裹：
+        同键重放返回首次的新 key，避免网络重试导致"key 已换但客户端没拿到"。
+        旧 key 立即失效。成功 200 + {key,key_masked}，响应 Cache-Control:
+        no-store。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathTokenID'
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 新 key（一次性）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/ResetTokenKeyResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/token/auto-groups:
+    get:
+      tags: [user]
+      operationId: listTokenAutoGroups
+      summary: 自动分组候选与单令牌上限
+      description: 供令牌创建表单展示有序候选；max_count 默认 20。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TokenAutoGroupsResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage/token:
+    get:
+      tags: [user]
+      operationId: getTokenUsage
+      summary: 令牌自读用量（Bearer 自身 key）
+      description: |
+        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。令牌额度
+        耗尽/过期仍返回 200（前端要能显示耗尽状态，modules-02 §2.13）；
+        禁用令牌 401 token_disabled；非法 key 401 invalid_token。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TokenUsage'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'

@@ -6,9 +6,50 @@ package dto
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
+
+// Defines values for ChangeEmailResponseEmailVerified.
+const (
+	ChangeEmailResponseEmailVerifiedTrue ChangeEmailResponseEmailVerified = true
+)
+
+// Valid indicates whether the value is a known member of the ChangeEmailResponseEmailVerified enum.
+func (e ChangeEmailResponseEmailVerified) Valid() bool {
+	switch e {
+	case ChangeEmailResponseEmailVerifiedTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EmailCodeRequestPurpose.
+const (
+	Bind     EmailCodeRequestPurpose = "bind"
+	Register EmailCodeRequestPurpose = "register"
+	Reset    EmailCodeRequestPurpose = "reset"
+	Verify   EmailCodeRequestPurpose = "verify"
+)
+
+// Valid indicates whether the value is a known member of the EmailCodeRequestPurpose enum.
+func (e EmailCodeRequestPurpose) Valid() bool {
+	switch e {
+	case Bind:
+		return true
+	case Register:
+		return true
+	case Reset:
+		return true
+	case Verify:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for GeoIPResponseSource.
 const (
@@ -28,6 +69,210 @@ func (e GeoIPResponseSource) Valid() bool {
 	}
 }
 
+// Defines values for Language.
+const (
+	En   Language = "en"
+	Fr   Language = "fr"
+	Ja   Language = "ja"
+	Ru   Language = "ru"
+	Vi   Language = "vi"
+	ZhCN Language = "zh-CN"
+	ZhTW Language = "zh-TW"
+)
+
+// Valid indicates whether the value is a known member of the Language enum.
+func (e Language) Valid() bool {
+	switch e {
+	case En:
+		return true
+	case Fr:
+		return true
+	case Ja:
+		return true
+	case Ru:
+		return true
+	case Vi:
+		return true
+	case ZhCN:
+		return true
+	case ZhTW:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationChannel.
+const (
+	Bark    NotificationChannel = "bark"
+	Email   NotificationChannel = "email"
+	Gotify  NotificationChannel = "gotify"
+	Webhook NotificationChannel = "webhook"
+)
+
+// Valid indicates whether the value is a known member of the NotificationChannel enum.
+func (e NotificationChannel) Valid() bool {
+	switch e {
+	case Bark:
+		return true
+	case Email:
+		return true
+	case Gotify:
+		return true
+	case Webhook:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationPreferencesSecurityAlertEnabled.
+const (
+	NotificationPreferencesSecurityAlertEnabledTrue NotificationPreferencesSecurityAlertEnabled = true
+)
+
+// Valid indicates whether the value is a known member of the NotificationPreferencesSecurityAlertEnabled enum.
+func (e NotificationPreferencesSecurityAlertEnabled) Valid() bool {
+	switch e {
+	case NotificationPreferencesSecurityAlertEnabledTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationTestResponseSent.
+const (
+	NotificationTestResponseSentTrue NotificationTestResponseSent = true
+)
+
+// Valid indicates whether the value is a known member of the NotificationTestResponseSent enum.
+func (e NotificationTestResponseSent) Valid() bool {
+	switch e {
+	case NotificationTestResponseSentTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PasswordResetValidateResponseValid.
+const (
+	PasswordResetValidateResponseValidTrue PasswordResetValidateResponseValid = true
+)
+
+// Valid indicates whether the value is a known member of the PasswordResetValidateResponseValid enum.
+func (e PasswordResetValidateResponseValid) Valid() bool {
+	switch e {
+	case PasswordResetValidateResponseValidTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for Pending2FAResponseStatus.
+const (
+	Pending2fa Pending2FAResponseStatus = "pending_2fa"
+)
+
+// Valid indicates whether the value is a known member of the Pending2FAResponseStatus enum.
+func (e Pending2FAResponseStatus) Valid() bool {
+	switch e {
+	case Pending2fa:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PermissionGrant1.
+const (
+	Asterisk PermissionGrant1 = "*"
+)
+
+// Valid indicates whether the value is a known member of the PermissionGrant1 enum.
+func (e PermissionGrant1) Valid() bool {
+	switch e {
+	case Asterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PermissionKey.
+const (
+	ChannelsManage          PermissionKey = "channels:manage"
+	ChannelsManageSensitive PermissionKey = "channels:manage_sensitive"
+	ChannelsRead            PermissionKey = "channels:read"
+	GroupsManage            PermissionKey = "groups:manage"
+	LogPromptView           PermissionKey = "log.prompt.view"
+	LogsRead                PermissionKey = "logs:read"
+	OrdersManage            PermissionKey = "orders:manage"
+	OrdersRead              PermissionKey = "orders:read"
+	PricingManage           PermissionKey = "pricing:manage"
+	PricingRead             PermissionKey = "pricing:read"
+	RedemptionManage        PermissionKey = "redemption:manage"
+	SettingsManage          PermissionKey = "settings:manage"
+	UsersAdjustQuota        PermissionKey = "users:adjust-quota"
+	UsersCreate             PermissionKey = "users:create"
+	UsersDelete             PermissionKey = "users:delete"
+	UsersDisable            PermissionKey = "users:disable"
+	UsersManageRoles        PermissionKey = "users:manage-roles"
+	UsersRead               PermissionKey = "users:read"
+	UsersResetSecurity      PermissionKey = "users:reset-security"
+	UsersUpdate             PermissionKey = "users:update"
+)
+
+// Valid indicates whether the value is a known member of the PermissionKey enum.
+func (e PermissionKey) Valid() bool {
+	switch e {
+	case ChannelsManage:
+		return true
+	case ChannelsManageSensitive:
+		return true
+	case ChannelsRead:
+		return true
+	case GroupsManage:
+		return true
+	case LogPromptView:
+		return true
+	case LogsRead:
+		return true
+	case OrdersManage:
+		return true
+	case OrdersRead:
+		return true
+	case PricingManage:
+		return true
+	case PricingRead:
+		return true
+	case RedemptionManage:
+		return true
+	case SettingsManage:
+		return true
+	case UsersAdjustQuota:
+		return true
+	case UsersCreate:
+		return true
+	case UsersDelete:
+		return true
+	case UsersDisable:
+		return true
+	case UsersManageRoles:
+		return true
+	case UsersRead:
+		return true
+	case UsersResetSecurity:
+		return true
+	case UsersUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Problem402Currency.
 const (
 	Credits Problem402Currency = "credits"
@@ -37,6 +282,207 @@ const (
 func (e Problem402Currency) Valid() bool {
 	switch e {
 	case Credits:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for QuotaAdjustmentRequestMode.
+const (
+	Add      QuotaAdjustmentRequestMode = "add"
+	Override QuotaAdjustmentRequestMode = "override"
+	Subtract QuotaAdjustmentRequestMode = "subtract"
+)
+
+// Valid indicates whether the value is a known member of the QuotaAdjustmentRequestMode enum.
+func (e QuotaAdjustmentRequestMode) Valid() bool {
+	switch e {
+	case Add:
+		return true
+	case Override:
+		return true
+	case Subtract:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SetupResponseUserStatus.
+const (
+	SetupResponseUserStatusDisabled SetupResponseUserStatus = "disabled"
+	SetupResponseUserStatusEnabled  SetupResponseUserStatus = "enabled"
+)
+
+// Valid indicates whether the value is a known member of the SetupResponseUserStatus enum.
+func (e SetupResponseUserStatus) Valid() bool {
+	switch e {
+	case SetupResponseUserStatusDisabled:
+		return true
+	case SetupResponseUserStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TokenStatus.
+const (
+	TokenStatusDisabled  TokenStatus = "disabled"
+	TokenStatusEnabled   TokenStatus = "enabled"
+	TokenStatusExhausted TokenStatus = "exhausted"
+	TokenStatusExpired   TokenStatus = "expired"
+)
+
+// Valid indicates whether the value is a known member of the TokenStatus enum.
+func (e TokenStatus) Valid() bool {
+	switch e {
+	case TokenStatusDisabled:
+		return true
+	case TokenStatusEnabled:
+		return true
+	case TokenStatusExhausted:
+		return true
+	case TokenStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TokenUsageObject.
+const (
+	TokenUsageObjectTokenUsage TokenUsageObject = "token_usage"
+)
+
+// Valid indicates whether the value is a known member of the TokenUsageObject enum.
+func (e TokenUsageObject) Valid() bool {
+	switch e {
+	case TokenUsageObjectTokenUsage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TwoFABackupCodesResponseTotpEnabled.
+const (
+	TwoFABackupCodesResponseTotpEnabledTrue TwoFABackupCodesResponseTotpEnabled = true
+)
+
+// Valid indicates whether the value is a known member of the TwoFABackupCodesResponseTotpEnabled enum.
+func (e TwoFABackupCodesResponseTotpEnabled) Valid() bool {
+	switch e {
+	case TwoFABackupCodesResponseTotpEnabledTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TwoFAChallengeRequestType.
+const (
+	Backup TwoFAChallengeRequestType = "backup"
+	Totp   TwoFAChallengeRequestType = "totp"
+)
+
+// Valid indicates whether the value is a known member of the TwoFAChallengeRequestType enum.
+func (e TwoFAChallengeRequestType) Valid() bool {
+	switch e {
+	case Backup:
+		return true
+	case Totp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TwoFADisableResponseTotpEnabled.
+const (
+	False TwoFADisableResponseTotpEnabled = false
+)
+
+// Valid indicates whether the value is a known member of the TwoFADisableResponseTotpEnabled enum.
+func (e TwoFADisableResponseTotpEnabled) Valid() bool {
+	switch e {
+	case False:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserRole.
+const (
+	Admin UserRole = "admin"
+	User  UserRole = "user"
+)
+
+// Valid indicates whether the value is a known member of the UserRole enum.
+func (e UserRole) Valid() bool {
+	switch e {
+	case Admin:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserStatus.
+const (
+	UserStatusDisabled UserStatus = "disabled"
+	UserStatusEnabled  UserStatus = "enabled"
+)
+
+// Valid indicates whether the value is a known member of the UserStatus enum.
+func (e UserStatus) Valid() bool {
+	switch e {
+	case UserStatusDisabled:
+		return true
+	case UserStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VerifyEmailResponseEmailVerified.
+const (
+	VerifyEmailResponseEmailVerifiedTrue VerifyEmailResponseEmailVerified = true
+)
+
+// Valid indicates whether the value is a known member of the VerifyEmailResponseEmailVerified enum.
+func (e VerifyEmailResponseEmailVerified) Valid() bool {
+	switch e {
+	case VerifyEmailResponseEmailVerifiedTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListTokensParamsQuota.
+const (
+	ListTokensParamsQuotaExhausted ListTokensParamsQuota = "exhausted"
+	ListTokensParamsQuotaLow       ListTokensParamsQuota = "low"
+	ListTokensParamsQuotaNormal    ListTokensParamsQuota = "normal"
+	ListTokensParamsQuotaUnlimited ListTokensParamsQuota = "unlimited"
+)
+
+// Valid indicates whether the value is a known member of the ListTokensParamsQuota enum.
+func (e ListTokensParamsQuota) Valid() bool {
+	switch e {
+	case ListTokensParamsQuotaExhausted:
+		return true
+	case ListTokensParamsQuotaLow:
+		return true
+	case ListTokensParamsQuotaNormal:
+		return true
+	case ListTokensParamsQuotaUnlimited:
 		return true
 	default:
 		return false
@@ -274,6 +720,299 @@ func (e GetReadyz503JSONResponseBodyStatus) Valid() bool {
 	}
 }
 
+// AdminCreateGroupRequest 名称唯一；冲突 409（不区分大小写归一后比较）。
+type AdminCreateGroupRequest struct {
+	Description *string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+}
+
+// AdminCreateUserRequest 必须携带 Idempotency-Key；同键重放只创建一条。请求体没有 email 字段：
+// 管理员创建的用户 email 为 NULL。用户名冲突 409。
+type AdminCreateUserRequest struct {
+	DisplayName *string `json:"display_name,omitempty"`
+
+	// Group 缺省 default。
+	Group    *string `json:"group,omitempty"`
+	Password string  `json:"password"`
+	Remark   *string `json:"remark,omitempty"`
+
+	// Role 缺省 user。创建 admin 需要执行者同时持有 users:manage-roles 与默认权限集的超集。
+	Role     *UserRole `json:"role,omitempty"`
+	Username string    `json:"username"`
+}
+
+// AdminGroup defines model for AdminGroup.
+type AdminGroup struct {
+	ChannelsCount int64     `json:"channels_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	Description   *string   `json:"description,omitempty"`
+	Id            int64     `json:"id"`
+
+	// IsSystem 系统分组（如 default）不可删除。
+	IsSystem              bool   `json:"is_system"`
+	Name                  string `json:"name"`
+	PricingOverridesCount int64  `json:"pricing_overrides_count"`
+
+	// Ratio 分组倍率（DB 150 表示 1.5）。
+	Ratio          int32     `json:"ratio"`
+	Status         int16     `json:"status"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	UserSelectable bool      `json:"user_selectable"`
+	UsersCount     int64     `json:"users_count"`
+}
+
+// AdminGroupList GET /api/groups 的 offset 分页信封。
+type AdminGroupList struct {
+	Items []AdminGroup `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// AdminUpdateGroupRequest 至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
+// （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
+type AdminUpdateGroupRequest struct {
+	Description *string `json:"description,omitempty"`
+	Name        *string `json:"name,omitempty"`
+}
+
+// AdminUpdateUserRequest 部分更新。不含口令字段：提交 password 返回 400（用
+// POST /api/users/{id}/reset-password）。未知字段 403 field_not_writable。
+// role 变更会吊销该用户全部会话；不能修改自己的角色/状态/权限（400）。
+type AdminUpdateUserRequest struct {
+	DisplayName *string   `json:"display_name,omitempty"`
+	Group       *string   `json:"group,omitempty"`
+	Remark      *string   `json:"remark,omitempty"`
+	Role        *UserRole `json:"role,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// AdminUser 管理面用户投影。永不含口令哈希、TOTP 种子或备用码。admin_permissions
+// 为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
+// 不同，客户端不得把 [] 当 null。
+type AdminUser struct {
+	AdminPermissions []PermissionKey `json:"admin_permissions"`
+
+	// Balance 当前余额（credits 最小单位）。
+	Balance     int64     `json:"balance"`
+	CreatedAt   time.Time `json:"created_at"`
+	DisplayName *string   `json:"display_name,omitempty"`
+
+	// Email 管理员创建的用户可为 null（不绑定邮箱）。
+	Email              *openapi_types.Email `json:"email,omitempty"`
+	Group              string               `json:"group"`
+	Id                 int64                `json:"id"`
+	MustChangePassword bool                 `json:"must_change_password"`
+	Remark             *string              `json:"remark,omitempty"`
+	Role               UserRole             `json:"role"`
+
+	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+	Status      UserStatus `json:"status"`
+	TokenCount  int64      `json:"token_count"`
+	TotpEnabled bool       `json:"totp_enabled"`
+
+	// UpdatedAt 乐观锁版本；PATCH 必须原样回传。
+	UpdatedAt time.Time `json:"updated_at"`
+	Username  string    `json:"username"`
+}
+
+// AdminUserList GET /api/users 的 offset 分页信封。
+type AdminUserList struct {
+	Items []AdminUser `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// AdminUserStatusRequest 封禁在同一事务内吊销全部会话并把令牌置 disabled；解禁不自动恢复令牌。
+// 不能封禁自己（400）。
+type AdminUserStatusRequest struct {
+	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+	Status UserStatus `json:"status"`
+}
+
+// AdminUserStatusResponse defines model for AdminUserStatusResponse.
+type AdminUserStatusResponse struct {
+	Id int64 `json:"id"`
+
+	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+	Status UserStatus `json:"status"`
+}
+
+// AuthSessionResponse 口令（+ 可选 2FA）通过后建立会话的响应；同时下发会话 Cookie 与 CSRF Cookie。
+type AuthSessionResponse struct {
+	// User 会话建立响应中的用户投影；绝不含口令/TOTP/备用码/权限列。
+	User AuthUser `json:"user"`
+}
+
+// AuthUser 会话建立响应中的用户投影；绝不含口令/TOTP/备用码/权限列。
+type AuthUser struct {
+	// Email 未绑定邮箱时字段缺席（omitempty）。
+	Email         *string `json:"email,omitempty"`
+	EmailVerified bool    `json:"email_verified"`
+	Id            int64   `json:"id"`
+
+	// MustChangePassword 管理员重置口令后为 true；前端应强制跳转改密页。
+	MustChangePassword bool     `json:"must_change_password"`
+	Role               UserRole `json:"role"`
+	Username           string   `json:"username"`
+}
+
+// BatchTokenRequest defines model for BatchTokenRequest.
+type BatchTokenRequest struct {
+	Ids []int64 `json:"ids"`
+}
+
+// ChangeEmailRequest 全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
+// 不写库。新邮箱被占用 409；域名白名单外 422。
+type ChangeEmailRequest struct {
+	// Code 发往 new_email、purpose=bind 的一次性验证码。
+	Code            string              `json:"code"`
+	CurrentPassword string              `json:"current_password"`
+	NewEmail        openapi_types.Email `json:"new_email"`
+	TotpCode        *string             `json:"totp_code,omitempty"`
+}
+
+// ChangeEmailResponse defines model for ChangeEmailResponse.
+type ChangeEmailResponse struct {
+	Email           openapi_types.Email              `json:"email"`
+	EmailVerified   ChangeEmailResponseEmailVerified `json:"email_verified"`
+	EmailVerifiedAt time.Time                        `json:"email_verified_at"`
+}
+
+// ChangeEmailResponseEmailVerified defines model for ChangeEmailResponse.EmailVerified.
+type ChangeEmailResponseEmailVerified bool
+
+// ChangePasswordRequest 成功 204：更新哈希、吊销除当前外全部会话并轮换当前会话 CSRF 令牌。
+// 限流 5 次/10 分钟/IP+用户；失败返回 400/409/429/503。
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// CreateTokenRequest POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+// 不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
+type CreateTokenRequest struct {
+	AllowIps *[]string `json:"allow_ips,omitempty"`
+
+	// AutoGroups group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
+	AutoGroups      *[]string `json:"auto_groups,omitempty"`
+	CrossGroupRetry *bool     `json:"cross_group_retry,omitempty"`
+
+	// ExpiresAt null 表示永不过期。
+	ExpiresAt *CreateTokenRequest_ExpiresAt `json:"expires_at,omitempty"`
+
+	// Group 缺省使用用户当前分组；auto 时 auto_groups 必须非空（I-20）。
+	Group       *string   `json:"group,omitempty"`
+	ModelLimits *[]string `json:"model_limits,omitempty"`
+	Name        string    `json:"name"`
+
+	// Quantity 一次创建的令牌数量；上限 100（与批量操作同额）。
+	Quantity *int `json:"quantity,omitempty"`
+
+	// RemainQuota unlimited_quota=false 时必须提供；0 表示立即耗尽。
+	RemainQuota    *int64 `json:"remain_quota,omitempty"`
+	UnlimitedQuota *bool  `json:"unlimited_quota,omitempty"`
+}
+
+// CreateTokenRequestExpiresAt0 epoch 秒（modules-02 线格式）。
+type CreateTokenRequestExpiresAt0 = int64
+
+// CreateTokenRequestExpiresAt1 defines model for CreateTokenRequest.ExpiresAt.1.
+type CreateTokenRequestExpiresAt1 = time.Time
+
+// CreateTokenRequest_ExpiresAt null 表示永不过期。
+type CreateTokenRequest_ExpiresAt struct {
+	union json.RawMessage
+}
+
+// CreateTokenResponse defines model for CreateTokenResponse.
+type CreateTokenResponse struct {
+	Created []CreatedToken `json:"created"`
+}
+
+// CreatedToken 创建响应中的条目 = Token + 一次性明文 key。
+type CreatedToken struct {
+	// AllowIps null/空表示不限制来源 IP。
+	AllowIps *[]string `json:"allow_ips,omitempty"`
+
+	// AutoGroups 有序自动分组候选；仅 group=auto 时非空，最多 20 项（可配置）。
+	AutoGroups      *[]string `json:"auto_groups,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	CrossGroupRetry bool      `json:"cross_group_retry"`
+
+	// ExpiresAt null 表示永不过期。
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Group 令牌绑定分组；auto 表示按 auto_groups 顺序自动选择。
+	Group string `json:"group"`
+	Id    int64  `json:"id"`
+
+	// Key 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+	Key string `json:"key"`
+
+	// KeyMasked 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+	KeyMasked  string     `json:"key_masked"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+
+	// ModelLimits null/空表示不限制模型。
+	ModelLimits *[]string `json:"model_limits,omitempty"`
+	Name        string    `json:"name"`
+
+	// QuotaPercent M1 由 remain_quota 派生（0 或 100）；后续接入用量日志后细化。
+	QuotaPercent *int `json:"quota_percent,omitempty"`
+
+	// RemainQuota null 表示不限额度（等价 unlimited_quota=true）。
+	RemainQuota *int64 `json:"remain_quota,omitempty"`
+
+	// Status 读时派生，优先级 disabled > expired > exhausted > enabled。
+	// disabled 是唯一可写的人工位；其余为时间/额度派生态。
+	Status         TokenStatus `json:"status"`
+	UnlimitedQuota bool        `json:"unlimited_quota"`
+
+	// UpdatedAt 乐观锁版本；PATCH 必须原样回传，否则 409。
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DeleteAccountRequest DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
+// 再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+type DeleteAccountRequest struct {
+	// ConfirmUsername 必须与当前用户名逐字一致。
+	ConfirmUsername string `json:"confirm_username"`
+
+	// Password 当前口令；即使再认证窗口仍有效也必须现场提供。
+	Password string `json:"password"`
+
+	// TotpCode 已启用 2FA 时必填。
+	TotpCode *string `json:"totp_code,omitempty"`
+}
+
+// EmailCodeRequest 发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
+// 10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
+type EmailCodeRequest struct {
+	Email openapi_types.Email `json:"email"`
+
+	// Purpose register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
+	// 公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+	Purpose EmailCodeRequestPurpose `json:"purpose"`
+}
+
+// EmailCodeRequestPurpose register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
+// 公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+type EmailCodeRequestPurpose string
+
 // GeoIPResponse 客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
 // 响应缓存策略：Cache-Control: private, max-age=300。
 type GeoIPResponse struct {
@@ -312,6 +1051,119 @@ type GeoIPResponse_Region struct {
 // GeoIPResponseSource local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配
 type GeoIPResponseSource string
 
+// Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+type Language string
+
+// LoginEncryptionKeyResponse 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
+// 前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
+// （模块-01 §3.14 DisableCache；该端点是加密登录的唯一引导）。
+type LoginEncryptionKeyResponse struct {
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Kid sha256(SPKI DER) 的前 16 个 hex 字符；用于选择解密私钥槽（active/previous）。
+	Kid *string `json:"kid,omitempty"`
+
+	// PublicKey RSA ≥ 2048 公钥（PKCS#8 SPKI PEM）。仅公开材料；私钥永不出库外。
+	PublicKey *string `json:"public_key,omitempty"`
+}
+
+// LoginRequest identifier 可为用户名或邮箱。开启登录加密时请求体只接受密文：
+// password_encrypted（v2 信封 `v2.<wrappedKey>.<nonce>.<ct>` 或旧版裸
+// RSA-OAEP）+ encryption_key_id；出现明文 password 会被拒绝且响应与
+// 口令错误完全一致（反 oracle）。
+type LoginRequest struct {
+	// EncryptionKeyId GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。
+	EncryptionKeyId *string `json:"encryption_key_id,omitempty"`
+	Identifier      string  `json:"identifier"`
+
+	// Password 明文口令；仅在登录加密关闭时接受。
+	Password *string `json:"password,omitempty"`
+
+	// PasswordEncrypted 前端加密载荷；开启加密时必填。
+	PasswordEncrypted *string `json:"password_encrypted,omitempty"`
+}
+
+// LoginResponse 口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
+// 返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+// 用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
+type LoginResponse struct {
+	union json.RawMessage
+}
+
+// MeView GET /api/me 的冻结投影：只有这六个字段。email/avatar_url/display_name
+// 未设置时字段缺席（响应中为 null 或省略由 Go omitempty 决定，客户端按可空处理）。
+type MeView struct {
+	AvatarUrl   *string              `json:"avatar_url,omitempty"`
+	DisplayName *string              `json:"display_name,omitempty"`
+	Email       *openapi_types.Email `json:"email,omitempty"`
+	Role        UserRole             `json:"role"`
+
+	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+	Status   UserStatus `json:"status"`
+	Username string     `json:"username"`
+}
+
+// NotificationChannel defines model for NotificationChannel.
+type NotificationChannel string
+
+// NotificationPreferences 稀疏偏好对象：只持久化用户显式设置过的键；GET 对 NULL 归一为 {}。
+// 站点级默认值由客户端合并。security_alert.enabled 不允许为 false
+// （安全通知不可关闭，400）。
+type NotificationPreferences struct {
+	BalanceWarning *struct {
+		Channels *[]NotificationChannel `json:"channels,omitempty"`
+
+		// CustomEmail 自定义收件邮箱；null 或空串清除（空串是服务端兼容的清除写法）。
+		CustomEmail *string `json:"custom_email,omitempty"`
+		Enabled     *bool   `json:"enabled,omitempty"`
+
+		// Threshold 余额告警阈值（credits，非负整数）。
+		Threshold *int `json:"threshold,omitempty"`
+	} `json:"balance_warning,omitempty"`
+	BarkUrl *string `json:"bark_url,omitempty"`
+
+	// GotifyPriority 清除时传 null。
+	GotifyPriority *int `json:"gotify_priority,omitempty"`
+
+	// GotifyToken 清除时传 null 或空串。
+	GotifyToken   *string `json:"gotify_token,omitempty"`
+	GotifyUrl     *string `json:"gotify_url,omitempty"`
+	SecurityAlert *struct {
+		Enabled *NotificationPreferencesSecurityAlertEnabled `json:"enabled,omitempty"`
+	} `json:"security_alert,omitempty"`
+	UsageDigest *struct {
+		Channels *[]NotificationChannel `json:"channels,omitempty"`
+		Enabled  *bool                  `json:"enabled,omitempty"`
+	} `json:"usage_digest,omitempty"`
+
+	// WebhookUrl 清除时传 null 或空串（稀疏合并下唯一的删除方式）。
+	WebhookUrl *string `json:"webhook_url,omitempty"`
+}
+
+// NotificationPreferencesSecurityAlertEnabled defines model for NotificationPreferences.SecurityAlert.Enabled.
+type NotificationPreferencesSecurityAlertEnabled bool
+
+// NotificationTestRequest M1 未配置真实通知通道时返回 503；偏好读写端点不受影响。
+// 发送成功 200 {channel,sent:true}。
+type NotificationTestRequest struct {
+	Channel NotificationChannel `json:"channel"`
+
+	// Target 测试目标地址；与 target_address 同义，target 优先。
+	Target *string `json:"target,omitempty"`
+
+	// TargetAddress 兼容字段；两者都缺时按渠道默认目标。
+	TargetAddress *string `json:"target_address,omitempty"`
+}
+
+// NotificationTestResponse defines model for NotificationTestResponse.
+type NotificationTestResponse struct {
+	Channel NotificationChannel          `json:"channel"`
+	Sent    NotificationTestResponseSent `json:"sent"`
+}
+
+// NotificationTestResponseSent defines model for NotificationTestResponse.Sent.
+type NotificationTestResponseSent bool
+
 // Page offset 分页信封；各域 items 的 DTO 随里程碑细化。
 type Page struct {
 	Items []interface{} `json:"items"`
@@ -325,6 +1177,67 @@ type Page struct {
 	// Total 满足条件的总条数
 	Total int `json:"total"`
 }
+
+// PasswordResetConfirmRequest 原子消费 token → 改密 → 吊销该用户全部会话。成功 204；token 复用/过期
+// 400（并发提交只有一个能成功）。
+type PasswordResetConfirmRequest struct {
+	// Confirm 必须与 new_password 一致。
+	Confirm     string `json:"confirm"`
+	NewPassword string `json:"new_password"`
+	Token       string `json:"token"`
+}
+
+// PasswordResetRequest 恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
+// token（30 分钟）。限流与格式错误是仅有的差异化响应。
+type PasswordResetRequest struct {
+	Email openapi_types.Email `json:"email"`
+}
+
+// PasswordResetValidateRequest defines model for PasswordResetValidateRequest.
+type PasswordResetValidateRequest struct {
+	// Token 重置链接中的一次性 token；本端点只校验不消费。
+	Token string `json:"token"`
+}
+
+// PasswordResetValidateResponse defines model for PasswordResetValidateResponse.
+type PasswordResetValidateResponse struct {
+	// Valid 有效时为 true；无效/过期不以 200 返回，而是 400 invalid_reset_token。
+	Valid PasswordResetValidateResponseValid `json:"valid"`
+}
+
+// PasswordResetValidateResponseValid 有效时为 true；无效/过期不以 200 返回，而是 400 invalid_reset_token。
+type PasswordResetValidateResponseValid bool
+
+// PatchMeRequest 仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
+// 403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
+type PatchMeRequest struct {
+	// DisplayName null 或空白字符串清除显示名。
+	DisplayName *string `json:"display_name,omitempty"`
+}
+
+// Pending2FAResponse defines model for Pending2FAResponse.
+type Pending2FAResponse struct {
+	// Status 判别字段；客户端据此跳转 2FA challenge 页。
+	Status Pending2FAResponseStatus `json:"status"`
+
+	// Ticket 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。
+	Ticket string `json:"ticket"`
+}
+
+// Pending2FAResponseStatus 判别字段；客户端据此跳转 2FA challenge 页。
+type Pending2FAResponseStatus string
+
+// PermissionGrant 权限矩阵成员：20 键之一或全权通配符 "*"。
+type PermissionGrant struct {
+	union json.RawMessage
+}
+
+// PermissionGrant1 defines model for PermissionGrant.1.
+type PermissionGrant1 string
+
+// PermissionKey modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
+// 通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
+type PermissionKey string
 
 // Problem RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Problem struct {
@@ -377,14 +1290,439 @@ type Problem402 struct {
 // Problem402Currency defines model for Problem402.Currency.
 type Problem402Currency string
 
-// PublicStatus 公共站点状态占位（字段随 M1+ 细化；schema 待补齐）
-type PublicStatus map[string]interface{}
+// PublicStatus 公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
+// 变更必须立即反映到登录/注册页，禁止任何中间层缓存。
+type PublicStatus struct {
+	Auth struct {
+		// EmailVerificationRequired 注册后是否必须先验证邮箱才能使用完整功能。
+		EmailVerificationRequired bool `json:"email_verification_required"`
+
+		// PasswordLoginEnabled false 时 POST /api/auth/login 返回 403（仅保留 OAuth 等其它入口）。
+		PasswordLoginEnabled bool `json:"password_login_enabled"`
+
+		// SignupEnabled false 时 POST /api/auth/register 返回 403（关闭注册）。
+		SignupEnabled bool `json:"signup_enabled"`
+		Turnstile     struct {
+			Enabled bool `json:"enabled"`
+
+			// SiteKey Turnstile 公开 site key；未启用时为空串。站点 secret 永不下发。
+			SiteKey string `json:"site_key"`
+		} `json:"turnstile"`
+	} `json:"auth"`
+
+	// DefaultLanguage 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+	DefaultLanguage Language `json:"default_language"`
+
+	// Languages canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
+	Languages []Language `json:"languages"`
+
+	// PasswordLoginEncryptionEnabled 与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
+	// true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
+	// （reason=encryption_required，对外响应与口令错误不可区分）。
+	PasswordLoginEncryptionEnabled bool `json:"password_login_encryption_enabled"`
+}
+
+// QuotaAdjustmentRequest 原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
+// override 与当前余额相同返回 400（无变化）。成功后写
+// type=admin_adjustment 流水。
+type QuotaAdjustmentRequest struct {
+	// Amount add/subtract 为增量（≥0），override 为目标余额（≥0）。
+	Amount int64 `json:"amount"`
+
+	// IdempotencyKey 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。
+	IdempotencyKey string                     `json:"idempotency_key"`
+	Mode           QuotaAdjustmentRequestMode `json:"mode"`
+}
+
+// QuotaAdjustmentRequestMode defines model for QuotaAdjustmentRequest.Mode.
+type QuotaAdjustmentRequestMode string
+
+// QuotaAdjustmentResponse defines model for QuotaAdjustmentResponse.
+type QuotaAdjustmentResponse struct {
+	NewBalance    int64 `json:"new_balance"`
+	TransactionId int64 `json:"transaction_id"`
+	UserId        int64 `json:"user_id"`
+}
+
+// RegisterRequest 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
+// 文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
+type RegisterRequest struct {
+	// Aff 可选推广码（非必填）；超长 400。
+	Aff *string `json:"aff,omitempty"`
+
+	// AgreeTerms 必须为 true；false 返回 400。
+	AgreeTerms bool `json:"agree_terms"`
+
+	// ConfirmPassword 必须与 password 逐字一致，否则 400。
+	ConfirmPassword string              `json:"confirmPassword"`
+	Email           openapi_types.Email `json:"email"`
+	EmailCode       string              `json:"email_code"`
+
+	// Password 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。
+	Password string `json:"password"`
+	Username string `json:"username"`
+}
+
+// ResetPasswordResponse 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
+type ResetPasswordResponse struct {
+	// TempPassword 16 位一次性临时口令，仅本次响应出现（Cache-Control: no-store）。
+	// TEMP_PWD_TTL=24h 且 must_change_password=true；24 小时内不改密
+	// 则临时口令失效。
+	TempPassword string `json:"temp_password"`
+}
+
+// ResetTokenKeyResponse 新 key 只在本响应出现一次；旧 key 立即失效。响应带
+// Cache-Control: no-store。
+type ResetTokenKeyResponse struct {
+	Key       string `json:"key"`
+	KeyMasked string `json:"key_masked"`
+}
+
+// SelfSettings GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
+// 必须携带的乐观锁令牌——同一行的资料变更也会推进它。
+type SelfSettings struct {
+	// Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+	Language Language `json:"language"`
+
+	// RecordIpLog 是否记录登录/操作 IP。
+	RecordIpLog bool `json:"record_ip_log"`
+
+	// SidebarModules 侧栏模块的稀疏覆盖；null 表示无覆盖（使用站点默认）。
+	SidebarModules map[string]interface{} `json:"sidebar_modules"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+}
+
+// SessionList 不是 Page 信封：列表固定 ≤50 条、无翻页语义（按 last_seen 倒序）。
+// 过期会话不列出；current=true 的条目是当前请求所用会话。
+type SessionList struct {
+	Sessions []SessionView `json:"sessions"`
+}
+
+// SessionView defines model for SessionView.
+type SessionView struct {
+	CreatedAt time.Time `json:"created_at"`
+	Current   bool      `json:"current"`
+
+	// Id 会话 id（不透明）；DELETE /api/sessions/{sid} 的原值。
+	Id string `json:"id"`
+
+	// Ip 建立会话时的客户端 IP。
+	Ip         string    `json:"ip"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+	UserAgent  string    `json:"user_agent"`
+}
+
+// SetPermissionsRequest PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
+// （400）。成功 200 返回更新后的 AdminUser。
+type SetPermissionsRequest struct {
+	// AdminPermissions 授予集合必须是调用者自身权限的子集，否则 403 且不写库。
+	// 显式 null 被拒绝——NULL 在 RBAC 语义里是 FULL，匿名 null→FULL
+	// 会绕过超集校验；授予全权必须显式提交 ["*"]。
+	AdminPermissions []PermissionGrant `json:"admin_permissions"`
+}
+
+// SetupCompletedProblem 409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
+// 直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
+// 冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。
+type SetupCompletedProblem struct {
+	// Detail 针对本次问题的说明
+	Detail      *string `json:"detail,omitempty"`
+	Initialized *bool   `json:"initialized,omitempty"`
+
+	// Instance 问题实例 URI（通常为请求路径）
+	Instance *string `json:"instance,omitempty"`
+
+	// Status HTTP 状态码（与响应状态行一致）
+	Status int `json:"status"`
+
+	// Title 简短的人类可读摘要
+	Title string `json:"title"`
+
+	// Type 问题类型 URI（稳定机器可读标识）
+	Type                 string                 `json:"type"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// SetupRequest 仅未初始化时可调用；三步字段建 admin 并写 system.install.completed_at
+// （同事务）。幂等锚是 system_settings 该键，重复调用 409 + initialized=true。
+type SetupRequest struct {
+	// ConfirmPassword 必须与 password 一致。服务端为兼容历史客户端也接受下划线别名
+	// confirm_password（前者优先）；契约只登记 camelCase。
+	ConfirmPassword *string             `json:"confirmPassword,omitempty"`
+	Email           openapi_types.Email `json:"email"`
+	Password        string              `json:"password"`
+
+	// ServerAddress 站点公开地址（用于生成邮件链接等）；必须是 http(s) URL。
+	ServerAddress string `json:"server_address"`
+	SiteTitle     string `json:"site_title"`
+	Username      string `json:"username"`
+}
+
+// SetupResponse 201 公开投影；绝不包含口令、哈希或任何密钥材料。
+type SetupResponse struct {
+	User struct {
+		Email         string                  `json:"email"`
+		EmailVerified bool                    `json:"email_verified"`
+		Id            int64                   `json:"id"`
+		Role          UserRole                `json:"role"`
+		Status        SetupResponseUserStatus `json:"status"`
+		Username      string                  `json:"username"`
+	} `json:"user"`
+}
+
+// SetupResponseUserStatus defines model for SetupResponse.User.Status.
+type SetupResponseUserStatus string
+
+// Token 管理面令牌响应。永不包含 key 明文或 key_hash；完整 key 只在创建
+// （POST /api/tokens）与重置（POST /api/tokens/{id}:reset-key）响应中出现一次。
+type Token struct {
+	// AllowIps null/空表示不限制来源 IP。
+	AllowIps *[]string `json:"allow_ips,omitempty"`
+
+	// AutoGroups 有序自动分组候选；仅 group=auto 时非空，最多 20 项（可配置）。
+	AutoGroups      *[]string `json:"auto_groups,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	CrossGroupRetry bool      `json:"cross_group_retry"`
+
+	// ExpiresAt null 表示永不过期。
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Group 令牌绑定分组；auto 表示按 auto_groups 顺序自动选择。
+	Group string `json:"group"`
+	Id    int64  `json:"id"`
+
+	// KeyMasked 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+	KeyMasked  string     `json:"key_masked"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+
+	// ModelLimits null/空表示不限制模型。
+	ModelLimits *[]string `json:"model_limits,omitempty"`
+	Name        string    `json:"name"`
+
+	// QuotaPercent M1 由 remain_quota 派生（0 或 100）；后续接入用量日志后细化。
+	QuotaPercent *int `json:"quota_percent,omitempty"`
+
+	// RemainQuota null 表示不限额度（等价 unlimited_quota=true）。
+	RemainQuota *int64 `json:"remain_quota,omitempty"`
+
+	// Status 读时派生，优先级 disabled > expired > exhausted > enabled。
+	// disabled 是唯一可写的人工位；其余为时间/额度派生态。
+	Status         TokenStatus `json:"status"`
+	UnlimitedQuota bool        `json:"unlimited_quota"`
+
+	// UpdatedAt 乐观锁版本；PATCH 必须原样回传，否则 409。
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TokenAutoGroupsResponse defines model for TokenAutoGroupsResponse.
+type TokenAutoGroupsResponse struct {
+	Groups []struct {
+		Name string `json:"name"`
+
+		// Ratio 分组倍率（DB 150 → 1.5）；缺省字段表示无显式倍率。
+		Ratio *float32 `json:"ratio,omitempty"`
+	} `json:"groups"`
+
+	// MaxCount 单令牌 auto_groups 条目上限（站点配置，默认 20）。
+	MaxCount int `json:"max_count"`
+}
+
+// TokenBatchFailure defines model for TokenBatchFailure.
+type TokenBatchFailure struct {
+	Detail string `json:"detail"`
+	Id     int64  `json:"id"`
+
+	// Name 仅当令牌属于当前用户且仍存在时填写；他人/不存在留空（不泄露存在性）。
+	Name string `json:"name"`
+}
+
+// TokenBatchResponse 逐条结果：succeeded 为成功条数，failed 为明细。批量端点上限 100，
+// 部分失败仍返回 200（不是整体回滚）。
+type TokenBatchResponse struct {
+	Failed    []TokenBatchFailure `json:"failed"`
+	Succeeded int                 `json:"succeeded"`
+}
+
+// TokenList GET /api/tokens 的 offset 分页信封；items 为 Token 投影。
+type TokenList struct {
+	Items []Token `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// TokenStatus 读时派生，优先级 disabled > expired > exhausted > enabled。
+// disabled 是唯一可写的人工位；其余为时间/额度派生态。
+type TokenStatus string
+
+// TokenUsage GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
+// （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
+// 返回 401 token_disabled。
+type TokenUsage struct {
+	ExpiresAt          *time.Time       `json:"expires_at,omitempty"`
+	ModelLimits        *[]string        `json:"model_limits,omitempty"`
+	ModelLimitsEnabled bool             `json:"model_limits_enabled"`
+	Name               string           `json:"name"`
+	Object             TokenUsageObject `json:"object"`
+
+	// TotalAvailable 剩余额度；不限额度时为 null。
+	TotalAvailable *int64 `json:"total_available,omitempty"`
+
+	// TotalGranted M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
+	TotalGranted   *int64 `json:"total_granted,omitempty"`
+	TotalUsed      int64  `json:"total_used"`
+	UnlimitedQuota bool   `json:"unlimited_quota"`
+}
+
+// TokenUsageObject defines model for TokenUsage.Object.
+type TokenUsageObject string
+
+// TwoFABackupCodesResponse defines model for TwoFABackupCodesResponse.
+type TwoFABackupCodesResponse struct {
+	// BackupCodes 明文备用码，仅本次响应出现；重生成后旧码立即失效。
+	BackupCodes []string                            `json:"backup_codes"`
+	TotpEnabled TwoFABackupCodesResponseTotpEnabled `json:"totp_enabled"`
+}
+
+// TwoFABackupCodesResponseTotpEnabled defines model for TwoFABackupCodesResponse.TotpEnabled.
+type TwoFABackupCodesResponseTotpEnabled bool
+
+// TwoFAChallengeRequest 用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，
+// 同一码并发提交只有一次成功。
+type TwoFAChallengeRequest struct {
+	// Code type=totp 时为 6 位 TOTP；type=backup 时为 XXXX-XXXX 备用码。
+	Code string `json:"code"`
+
+	// Ticket 登录响应中的一次性 ticket。
+	Ticket string `json:"ticket"`
+
+	// Type 缺省按 totp（兼容早期 {ticket,code} 契约）。
+	Type *TwoFAChallengeRequestType `json:"type,omitempty"`
+}
+
+// TwoFAChallengeRequestType 缺省按 totp（兼容早期 {ticket,code} 契约）。
+type TwoFAChallengeRequestType string
+
+// TwoFADisableResponse defines model for TwoFADisableResponse.
+type TwoFADisableResponse struct {
+	TotpEnabled TwoFADisableResponseTotpEnabled `json:"totp_enabled"`
+}
+
+// TwoFADisableResponseTotpEnabled defines model for TwoFADisableResponse.TotpEnabled.
+type TwoFADisableResponseTotpEnabled bool
+
+// TwoFAEnableRequest defines model for TwoFAEnableRequest.
+type TwoFAEnableRequest struct {
+	Code string `json:"code"`
+
+	// Secret 上一步 setup 返回的 secret（服务端校验 32 位 base32 / 20 字节）。
+	Secret string `json:"secret"`
+}
+
+// TwoFAPasswordRequest defines model for TwoFAPasswordRequest.
+type TwoFAPasswordRequest struct {
+	// Password 当前口令确认；与登录共用失败锁定桶。
+	Password string `json:"password"`
+}
+
+// TwoFASetupResponse defines model for TwoFASetupResponse.
+type TwoFASetupResponse struct {
+	// OtpauthUrl otpauth:// URI，供前端渲染二维码。
+	OtpauthUrl string `json:"otpauth_url"`
+
+	// Secret base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。
+	Secret string `json:"secret"`
+}
+
+// UpdateSelfSettingsRequest PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
+// 等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
+// 7 语内返回 400。
+type UpdateSelfSettingsRequest struct {
+	// Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+	Language       *Language               `json:"language,omitempty"`
+	RecordIpLog    *bool                   `json:"record_ip_log,omitempty"`
+	SidebarModules *map[string]interface{} `json:"sidebar_modules,omitempty"`
+	UpdatedAt      time.Time               `json:"updated_at"`
+}
+
+// UpdateTokenRequest 部分更新：未出现的字段不变。updated_at 必须等于当前行的版本，
+// 否则 409（乐观锁）。expires_at 显式 null 表示改为永不过期。
+type UpdateTokenRequest struct {
+	AllowIps        *[]string                     `json:"allow_ips,omitempty"`
+	AutoGroups      *[]string                     `json:"auto_groups,omitempty"`
+	CrossGroupRetry *bool                         `json:"cross_group_retry,omitempty"`
+	ExpiresAt       *UpdateTokenRequest_ExpiresAt `json:"expires_at,omitempty"`
+	Group           *string                       `json:"group,omitempty"`
+	ModelLimits     *[]string                     `json:"model_limits,omitempty"`
+	Name            *string                       `json:"name,omitempty"`
+	RemainQuota     *int64                        `json:"remain_quota,omitempty"`
+	UnlimitedQuota  *bool                         `json:"unlimited_quota,omitempty"`
+	UpdatedAt       time.Time                     `json:"updated_at"`
+}
+
+// UpdateTokenRequestExpiresAt0 defines model for UpdateTokenRequest.ExpiresAt.0.
+type UpdateTokenRequestExpiresAt0 = int64
+
+// UpdateTokenRequestExpiresAt1 defines model for UpdateTokenRequest.ExpiresAt.1.
+type UpdateTokenRequestExpiresAt1 = time.Time
+
+// UpdateTokenRequest_ExpiresAt defines model for UpdateTokenRequest.ExpiresAt.
+type UpdateTokenRequest_ExpiresAt struct {
+	union json.RawMessage
+}
+
+// UserRole defines model for UserRole.
+type UserRole string
+
+// UserStatus 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+type UserStatus string
+
+// VerifyEmailRequest defines model for VerifyEmailRequest.
+type VerifyEmailRequest struct {
+	// EmailCode 由 POST /api/auth/email-code（purpose=verify）下发的一次性验证码。
+	EmailCode string `json:"email_code"`
+}
+
+// VerifyEmailResponse defines model for VerifyEmailResponse.
+type VerifyEmailResponse struct {
+	EmailVerified VerifyEmailResponseEmailVerified `json:"email_verified"`
+
+	// EmailVerifiedAt 首次验证时间；重复验证保留首次时间。
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+}
+
+// VerifyEmailResponseEmailVerified defines model for VerifyEmailResponse.EmailVerified.
+type VerifyEmailResponseEmailVerified bool
+
+// CSRFToken defines model for CSRFToken.
+type CSRFToken = string
+
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = openapi_types.UUID
 
 // PageQuery defines model for Page.
 type PageQuery = int
 
 // PageSize defines model for PageSize.
 type PageSize = int
+
+// PathGroupName defines model for PathGroupName.
+type PathGroupName = string
+
+// PathSessionID defines model for PathSessionID.
+type PathSessionID = string
+
+// PathTokenID defines model for PathTokenID.
+type PathTokenID = int64
+
+// PathUserID defines model for PathUserID.
+type PathUserID = int64
 
 // Error400 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error400 = Problem
@@ -398,14 +1736,61 @@ type Error402 = Problem402
 // Error403 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error403 = Problem
 
+// Error404 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error404 = Problem
+
+// Error409 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error409 = Problem
+
+// Error422 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error422 = Problem
+
 // Error429 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error429 = Problem
 
 // Error500 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error500 = Problem
 
+// Error502 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error502 = Problem
+
 // Error503 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error503 = Problem
+
+// RegenerateTwoFABackupCodesParams defines parameters for RegenerateTwoFABackupCodes.
+type RegenerateTwoFABackupCodesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DisableTwoFAParams defines parameters for DisableTwoFA.
+type DisableTwoFAParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// EnableTwoFAParams defines parameters for EnableTwoFA.
+type EnableTwoFAParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// SetupTwoFAParams defines parameters for SetupTwoFA.
+type SetupTwoFAParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteAccountParams defines parameters for DeleteAccount.
+type DeleteAccountParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
 
 // ListChannelsParams defines parameters for ListChannels.
 type ListChannelsParams struct {
@@ -416,6 +1801,92 @@ type ListChannelsParams struct {
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
+// ChangeEmailParams defines parameters for ChangeEmail.
+type ChangeEmailParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListGroupsParams defines parameters for ListGroups.
+type ListGroupsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// CreateGroupParams defines parameters for CreateGroup.
+type CreateGroupParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteGroupParams defines parameters for DeleteGroup.
+type DeleteGroupParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateGroupParams defines parameters for UpdateGroup.
+type UpdateGroupParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PatchMeParams defines parameters for PatchMe.
+type PatchMeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateNotificationPreferencesParams defines parameters for UpdateNotificationPreferences.
+type UpdateNotificationPreferencesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// TestNotificationParams defines parameters for TestNotification.
+type TestNotificationParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ChangePasswordParams defines parameters for ChangePassword.
+type ChangePasswordParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateSelfSettingsParams defines parameters for UpdateSelfSettings.
+type UpdateSelfSettingsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RevokeOtherSessionsParams defines parameters for RevokeOtherSessions.
+type RevokeOtherSessionsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RevokeSessionParams defines parameters for RevokeSession.
+type RevokeSessionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -423,6 +1894,179 @@ type ListTokensParams struct {
 
 	// PageSize 每页条数（默认 20，上限 100）
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Keyword 按令牌名称模糊搜索（不搜索 key/key_hash）。
+	Keyword *string                `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status  *TokenStatus           `form:"status,omitempty" json:"status,omitempty"`
+	Group   *string                `form:"group,omitempty" json:"group,omitempty"`
+	Quota   *ListTokensParamsQuota `form:"quota,omitempty" json:"quota,omitempty"`
+}
+
+// ListTokensParamsQuota defines parameters for ListTokens.
+type ListTokensParamsQuota string
+
+// CreateTokensParams defines parameters for CreateTokens.
+type CreateTokensParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteTokenParams defines parameters for DeleteToken.
+type DeleteTokenParams struct {
+	// UpdatedAt 乐观锁版本（RFC 3339）；缺省跳过版本校验。
+	UpdatedAt *time.Time `form:"updated_at,omitempty" json:"updated_at,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateTokenParams defines parameters for UpdateToken.
+type UpdateTokenParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DisableTokenParams defines parameters for DisableToken.
+type DisableTokenParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// EnableTokenParams defines parameters for EnableToken.
+type EnableTokenParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ResetTokenKeyParams defines parameters for ResetTokenKey.
+type ResetTokenKeyParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchDeleteTokensParams defines parameters for BatchDeleteTokens.
+type BatchDeleteTokensParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchDisableTokensParams defines parameters for BatchDisableTokens.
+type BatchDisableTokensParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchEnableTokensParams defines parameters for BatchEnableTokens.
+type BatchEnableTokensParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListUsersParams defines parameters for ListUsers.
+type ListUsersParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize   `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Keyword  *string     `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status   *UserStatus `form:"status,omitempty" json:"status,omitempty"`
+	Role     *UserRole   `form:"role,omitempty" json:"role,omitempty"`
+	Group    *string     `form:"group,omitempty" json:"group,omitempty"`
+	Sort     *string     `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// CreateUserParams defines parameters for CreateUser.
+type CreateUserParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteUserParams defines parameters for DeleteUser.
+type DeleteUserParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateUserParams defines parameters for UpdateUser.
+type UpdateUserParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// SetUserPermissionsParams defines parameters for SetUserPermissions.
+type SetUserPermissionsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// AdjustUserQuotaParams defines parameters for AdjustUserQuota.
+type AdjustUserQuotaParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ResetUserTwoFAParams defines parameters for ResetUserTwoFA.
+type ResetUserTwoFAParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ResetUserPasswordParams defines parameters for ResetUserPassword.
+type ResetUserPasswordParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// SetUserStatusParams defines parameters for SetUserStatus.
+type SetUserStatusParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// VerifyEmailParams defines parameters for VerifyEmail.
+type VerifyEmailParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
@@ -463,6 +2107,99 @@ type GetReadyz503JSONResponseBodyChecksStartup string
 
 // GetReadyz503JSONResponseBodyStatus defines parameters for GetReadyz.
 type GetReadyz503JSONResponseBodyStatus string
+
+// RegenerateTwoFABackupCodesJSONRequestBody defines body for RegenerateTwoFABackupCodes for application/json ContentType.
+type RegenerateTwoFABackupCodesJSONRequestBody = TwoFAPasswordRequest
+
+// DisableTwoFAJSONRequestBody defines body for DisableTwoFA for application/json ContentType.
+type DisableTwoFAJSONRequestBody = TwoFAPasswordRequest
+
+// EnableTwoFAJSONRequestBody defines body for EnableTwoFA for application/json ContentType.
+type EnableTwoFAJSONRequestBody = TwoFAEnableRequest
+
+// DeleteAccountJSONRequestBody defines body for DeleteAccount for application/json ContentType.
+type DeleteAccountJSONRequestBody = DeleteAccountRequest
+
+// SubmitTwoFAChallengeJSONRequestBody defines body for SubmitTwoFAChallenge for application/json ContentType.
+type SubmitTwoFAChallengeJSONRequestBody = TwoFAChallengeRequest
+
+// RequestEmailCodeJSONRequestBody defines body for RequestEmailCode for application/json ContentType.
+type RequestEmailCodeJSONRequestBody = EmailCodeRequest
+
+// LoginJSONRequestBody defines body for Login for application/json ContentType.
+type LoginJSONRequestBody = LoginRequest
+
+// ConfirmPasswordResetJSONRequestBody defines body for ConfirmPasswordReset for application/json ContentType.
+type ConfirmPasswordResetJSONRequestBody = PasswordResetConfirmRequest
+
+// RequestPasswordResetJSONRequestBody defines body for RequestPasswordReset for application/json ContentType.
+type RequestPasswordResetJSONRequestBody = PasswordResetRequest
+
+// ValidatePasswordResetTokenJSONRequestBody defines body for ValidatePasswordResetToken for application/json ContentType.
+type ValidatePasswordResetTokenJSONRequestBody = PasswordResetValidateRequest
+
+// RegisterJSONRequestBody defines body for Register for application/json ContentType.
+type RegisterJSONRequestBody = RegisterRequest
+
+// ChangeEmailJSONRequestBody defines body for ChangeEmail for application/json ContentType.
+type ChangeEmailJSONRequestBody = ChangeEmailRequest
+
+// CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
+type CreateGroupJSONRequestBody = AdminCreateGroupRequest
+
+// UpdateGroupJSONRequestBody defines body for UpdateGroup for application/json ContentType.
+type UpdateGroupJSONRequestBody = AdminUpdateGroupRequest
+
+// PatchMeJSONRequestBody defines body for PatchMe for application/json ContentType.
+type PatchMeJSONRequestBody = PatchMeRequest
+
+// UpdateNotificationPreferencesJSONRequestBody defines body for UpdateNotificationPreferences for application/json ContentType.
+type UpdateNotificationPreferencesJSONRequestBody = NotificationPreferences
+
+// TestNotificationJSONRequestBody defines body for TestNotification for application/json ContentType.
+type TestNotificationJSONRequestBody = NotificationTestRequest
+
+// ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
+type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
+type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest
+
+// CompleteSetupJSONRequestBody defines body for CompleteSetup for application/json ContentType.
+type CompleteSetupJSONRequestBody = SetupRequest
+
+// CreateTokensJSONRequestBody defines body for CreateTokens for application/json ContentType.
+type CreateTokensJSONRequestBody = CreateTokenRequest
+
+// UpdateTokenJSONRequestBody defines body for UpdateToken for application/json ContentType.
+type UpdateTokenJSONRequestBody = UpdateTokenRequest
+
+// BatchDeleteTokensJSONRequestBody defines body for BatchDeleteTokens for application/json ContentType.
+type BatchDeleteTokensJSONRequestBody = BatchTokenRequest
+
+// BatchDisableTokensJSONRequestBody defines body for BatchDisableTokens for application/json ContentType.
+type BatchDisableTokensJSONRequestBody = BatchTokenRequest
+
+// BatchEnableTokensJSONRequestBody defines body for BatchEnableTokens for application/json ContentType.
+type BatchEnableTokensJSONRequestBody = BatchTokenRequest
+
+// CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
+type CreateUserJSONRequestBody = AdminCreateUserRequest
+
+// UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
+type UpdateUserJSONRequestBody = AdminUpdateUserRequest
+
+// SetUserPermissionsJSONRequestBody defines body for SetUserPermissions for application/json ContentType.
+type SetUserPermissionsJSONRequestBody = SetPermissionsRequest
+
+// AdjustUserQuotaJSONRequestBody defines body for AdjustUserQuota for application/json ContentType.
+type AdjustUserQuotaJSONRequestBody = QuotaAdjustmentRequest
+
+// SetUserStatusJSONRequestBody defines body for SetUserStatus for application/json ContentType.
+type SetUserStatusJSONRequestBody = AdminUserStatusRequest
+
+// VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
+type VerifyEmailJSONRequestBody = VerifyEmailRequest
 
 // Getter for additional properties for Problem. Returns the specified
 // element and whether it was found
@@ -768,6 +2505,205 @@ func (a Problem402) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
+// Getter for additional properties for SetupCompletedProblem. Returns the specified
+// element and whether it was found
+func (a SetupCompletedProblem) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for SetupCompletedProblem
+func (a *SetupCompletedProblem) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for SetupCompletedProblem to handle AdditionalProperties
+func (a *SetupCompletedProblem) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["detail"]; found {
+		err = json.Unmarshal(raw, &a.Detail)
+		if err != nil {
+			return fmt.Errorf("error reading 'detail': %w", err)
+		}
+		delete(object, "detail")
+	}
+
+	if raw, found := object["initialized"]; found {
+		err = json.Unmarshal(raw, &a.Initialized)
+		if err != nil {
+			return fmt.Errorf("error reading 'initialized': %w", err)
+		}
+		delete(object, "initialized")
+	}
+
+	if raw, found := object["instance"]; found {
+		err = json.Unmarshal(raw, &a.Instance)
+		if err != nil {
+			return fmt.Errorf("error reading 'instance': %w", err)
+		}
+		delete(object, "instance")
+	}
+
+	if raw, found := object["status"]; found {
+		err = json.Unmarshal(raw, &a.Status)
+		if err != nil {
+			return fmt.Errorf("error reading 'status': %w", err)
+		}
+		delete(object, "status")
+	}
+
+	if raw, found := object["title"]; found {
+		err = json.Unmarshal(raw, &a.Title)
+		if err != nil {
+			return fmt.Errorf("error reading 'title': %w", err)
+		}
+		delete(object, "title")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for SetupCompletedProblem to handle AdditionalProperties
+func (a SetupCompletedProblem) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Detail != nil {
+		object["detail"], err = json.Marshal(a.Detail)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'detail': %w", err)
+		}
+	}
+
+	if a.Initialized != nil {
+		object["initialized"], err = json.Marshal(a.Initialized)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'initialized': %w", err)
+		}
+	}
+
+	if a.Instance != nil {
+		object["instance"], err = json.Marshal(a.Instance)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'instance': %w", err)
+		}
+	}
+
+	object["status"], err = json.Marshal(a.Status)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'status': %w", err)
+	}
+
+	object["title"], err = json.Marshal(a.Title)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'title': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// AsCreateTokenRequestExpiresAt0 returns the union data inside the CreateTokenRequest_ExpiresAt as a CreateTokenRequestExpiresAt0
+func (t CreateTokenRequest_ExpiresAt) AsCreateTokenRequestExpiresAt0() (CreateTokenRequestExpiresAt0, error) {
+	var body CreateTokenRequestExpiresAt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateTokenRequestExpiresAt0 overwrites any union data inside the CreateTokenRequest_ExpiresAt as the provided CreateTokenRequestExpiresAt0
+func (t *CreateTokenRequest_ExpiresAt) FromCreateTokenRequestExpiresAt0(v CreateTokenRequestExpiresAt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateTokenRequestExpiresAt0 performs a merge with any union data inside the CreateTokenRequest_ExpiresAt, using the provided CreateTokenRequestExpiresAt0
+func (t *CreateTokenRequest_ExpiresAt) MergeCreateTokenRequestExpiresAt0(v CreateTokenRequestExpiresAt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCreateTokenRequestExpiresAt1 returns the union data inside the CreateTokenRequest_ExpiresAt as a CreateTokenRequestExpiresAt1
+func (t CreateTokenRequest_ExpiresAt) AsCreateTokenRequestExpiresAt1() (CreateTokenRequestExpiresAt1, error) {
+	var body CreateTokenRequestExpiresAt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateTokenRequestExpiresAt1 overwrites any union data inside the CreateTokenRequest_ExpiresAt as the provided CreateTokenRequestExpiresAt1
+func (t *CreateTokenRequest_ExpiresAt) FromCreateTokenRequestExpiresAt1(v CreateTokenRequestExpiresAt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateTokenRequestExpiresAt1 performs a merge with any union data inside the CreateTokenRequest_ExpiresAt, using the provided CreateTokenRequestExpiresAt1
+func (t *CreateTokenRequest_ExpiresAt) MergeCreateTokenRequestExpiresAt1(v CreateTokenRequestExpiresAt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t CreateTokenRequest_ExpiresAt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *CreateTokenRequest_ExpiresAt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsGeoIPResponseCountry0 returns the union data inside the GeoIPResponse_Country as a GeoIPResponseCountry0
 func (t GeoIPResponse_Country) AsGeoIPResponseCountry0() (GeoIPResponseCountry0, error) {
 	var body GeoIPResponseCountry0
@@ -888,6 +2824,192 @@ func (t GeoIPResponse_Region) MarshalJSON() ([]byte, error) {
 }
 
 func (t *GeoIPResponse_Region) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsAuthSessionResponse returns the union data inside the LoginResponse as a AuthSessionResponse
+func (t LoginResponse) AsAuthSessionResponse() (AuthSessionResponse, error) {
+	var body AuthSessionResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAuthSessionResponse overwrites any union data inside the LoginResponse as the provided AuthSessionResponse
+func (t *LoginResponse) FromAuthSessionResponse(v AuthSessionResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAuthSessionResponse performs a merge with any union data inside the LoginResponse, using the provided AuthSessionResponse
+func (t *LoginResponse) MergeAuthSessionResponse(v AuthSessionResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPending2FAResponse returns the union data inside the LoginResponse as a Pending2FAResponse
+func (t LoginResponse) AsPending2FAResponse() (Pending2FAResponse, error) {
+	var body Pending2FAResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPending2FAResponse overwrites any union data inside the LoginResponse as the provided Pending2FAResponse
+func (t *LoginResponse) FromPending2FAResponse(v Pending2FAResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePending2FAResponse performs a merge with any union data inside the LoginResponse, using the provided Pending2FAResponse
+func (t *LoginResponse) MergePending2FAResponse(v Pending2FAResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t LoginResponse) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *LoginResponse) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPermissionKey returns the union data inside the PermissionGrant as a PermissionKey
+func (t PermissionGrant) AsPermissionKey() (PermissionKey, error) {
+	var body PermissionKey
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPermissionKey overwrites any union data inside the PermissionGrant as the provided PermissionKey
+func (t *PermissionGrant) FromPermissionKey(v PermissionKey) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePermissionKey performs a merge with any union data inside the PermissionGrant, using the provided PermissionKey
+func (t *PermissionGrant) MergePermissionKey(v PermissionKey) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPermissionGrant1 returns the union data inside the PermissionGrant as a PermissionGrant1
+func (t PermissionGrant) AsPermissionGrant1() (PermissionGrant1, error) {
+	var body PermissionGrant1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPermissionGrant1 overwrites any union data inside the PermissionGrant as the provided PermissionGrant1
+func (t *PermissionGrant) FromPermissionGrant1(v PermissionGrant1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePermissionGrant1 performs a merge with any union data inside the PermissionGrant, using the provided PermissionGrant1
+func (t *PermissionGrant) MergePermissionGrant1(v PermissionGrant1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PermissionGrant) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PermissionGrant) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsUpdateTokenRequestExpiresAt0 returns the union data inside the UpdateTokenRequest_ExpiresAt as a UpdateTokenRequestExpiresAt0
+func (t UpdateTokenRequest_ExpiresAt) AsUpdateTokenRequestExpiresAt0() (UpdateTokenRequestExpiresAt0, error) {
+	var body UpdateTokenRequestExpiresAt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUpdateTokenRequestExpiresAt0 overwrites any union data inside the UpdateTokenRequest_ExpiresAt as the provided UpdateTokenRequestExpiresAt0
+func (t *UpdateTokenRequest_ExpiresAt) FromUpdateTokenRequestExpiresAt0(v UpdateTokenRequestExpiresAt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUpdateTokenRequestExpiresAt0 performs a merge with any union data inside the UpdateTokenRequest_ExpiresAt, using the provided UpdateTokenRequestExpiresAt0
+func (t *UpdateTokenRequest_ExpiresAt) MergeUpdateTokenRequestExpiresAt0(v UpdateTokenRequestExpiresAt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUpdateTokenRequestExpiresAt1 returns the union data inside the UpdateTokenRequest_ExpiresAt as a UpdateTokenRequestExpiresAt1
+func (t UpdateTokenRequest_ExpiresAt) AsUpdateTokenRequestExpiresAt1() (UpdateTokenRequestExpiresAt1, error) {
+	var body UpdateTokenRequestExpiresAt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUpdateTokenRequestExpiresAt1 overwrites any union data inside the UpdateTokenRequest_ExpiresAt as the provided UpdateTokenRequestExpiresAt1
+func (t *UpdateTokenRequest_ExpiresAt) FromUpdateTokenRequestExpiresAt1(v UpdateTokenRequestExpiresAt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUpdateTokenRequestExpiresAt1 performs a merge with any union data inside the UpdateTokenRequest_ExpiresAt, using the provided UpdateTokenRequestExpiresAt1
+func (t *UpdateTokenRequest_ExpiresAt) MergeUpdateTokenRequestExpiresAt1(v UpdateTokenRequestExpiresAt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t UpdateTokenRequest_ExpiresAt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *UpdateTokenRequest_ExpiresAt) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
