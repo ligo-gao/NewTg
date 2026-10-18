@@ -1270,3 +1270,84 @@ func Test2FAChallengeMalformedFloodBounded(t *testing.T) {
 		t.Fatalf("限流拒绝审计 = %d 条，期望 <= 1（SETNX 每窗口限一条）", limited)
 	}
 }
+
+// Test2FAChallengeInvalidTicketFloodBounded 覆盖 D2 终验 Important 2：畸形/
+// 未知 ticket 探测保持 400，但审计按 IP 限频（每窗口至多一条）。
+func Test2FAChallengeInvalidTicketFloodBounded(t *testing.T) {
+	const flood = 20
+	t.Run("畸形 ticket", func(t *testing.T) {
+		env := newTwoFATestEnv(t)
+		body := map[string]any{"ticket": "not-a-ticket", "code": "000000", "type": "totp"}
+		for i := 0; i < flood; i++ {
+			if rr := env.request(http.MethodPost, "/api/auth/2fa/challenge", body); rr.Code != http.StatusBadRequest {
+				t.Fatalf("第 %d 次 status = %d，期望 400（body=%q）", i+1, rr.Code, rr.Body.String())
+			}
+		}
+		if rows := env.auditExec.snapshot(); len(rows) > 1 {
+			t.Fatalf("畸形 ticket 审计行 = %d，期望 <= 1（SETNX 限频）", len(rows))
+		}
+	})
+
+	t.Run("未知 ticket", func(t *testing.T) {
+		env := newTwoFATestEnv(t)
+		user := env.repo.add(TwoFAUser{Username: "tina", PasswordHash: twoFATestPasswordHash()})
+		env.enableUser(user)
+		ticket := env.issueTicket(user.ID)
+		env.mr.Del(twoFATicketKeyPrefix + ticket) // 合法格式但不存在/已过期
+
+		for i := 0; i < flood; i++ {
+			rr := env.challenge(ticket, twoFATestCode, "totp")
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("第 %d 次 status = %d，期望 400（body=%q）", i+1, rr.Code, rr.Body.String())
+			}
+			if p := decodeProblem(t, rr); p.Type != problemTypeTwoFATicketInvalid {
+				t.Fatalf("第 %d 次 problem.type = %q", i+1, p.Type)
+			}
+		}
+		rows := env.auditExec.snapshot()
+		// enableUser 自身写一条 2fa_enable；过滤 auth.login 后应 <= 1。
+		challengeRows := 0
+		for _, call := range rows {
+			if detail := decodeTwoFAAuditDetail(t, call[9]); detail["action"] == audit.ActionAuthLogin {
+				challengeRows++
+			}
+		}
+		if challengeRows > 1 {
+			t.Fatalf("未知 ticket challenge 审计行 = %d，期望 <= 1", challengeRows)
+		}
+	})
+}
+
+// Test2FAChallengeSecondCheckRejectAuditBounded：用户维度锁定后的拒绝同样按
+// IP 限频审计，401/429 洪水不产生每请求审计。
+func Test2FAChallengeSecondCheckRejectAuditBounded(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "tina", PasswordHash: twoFATestPasswordHash()})
+	env.enableUser(user)
+	ctx := context.Background()
+	const ip = "192.0.2.1" // httptest.NewRequest 的默认 RemoteAddr 主机
+	for i := 0; i < LoginMaxFailures; i++ {
+		if err := env.handlers.limiter.Record(ctx, ip, user.Username, false); err != nil {
+			t.Fatalf("seed lock: %v", err)
+		}
+	}
+	ticket := env.issueTicket(user.ID)
+	got429 := false
+	for i := 0; i < 20; i++ {
+		if rr := env.challenge(ticket, twoFATestCode, "totp"); rr.Code == http.StatusTooManyRequests {
+			got429 = true
+		}
+	}
+	if !got429 {
+		t.Fatal("用户维度锁定后必须返回 429")
+	}
+	audited := 0
+	for _, call := range env.auditExec.snapshot() {
+		if detail := decodeTwoFAAuditDetail(t, call[9]); detail["action"] == audit.ActionAuthLogin {
+			audited++
+		}
+	}
+	if audited > 1 {
+		t.Fatalf("第二次限流检查拒绝审计 = %d 条，期望 <= 1", audited)
+	}
+}

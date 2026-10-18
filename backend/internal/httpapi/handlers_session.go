@@ -849,7 +849,7 @@ func (h *SessionHandlers) handleVerifyEmail(w http.ResponseWriter, r *http.Reque
 	verifiedAt, granted, err := h.repo.MarkEmailVerified(ctx, p.UserID, bonus)
 	if err != nil {
 		if grantReserved {
-			if relErr := releaseSignupGrantForIP(ctx, h.rdb, ip); relErr != nil {
+			if relErr := releaseSignupGrantSlotDetached(ctx, h.rdb, ip); relErr != nil {
 				h.log.Warn("release signup grant slot after verification failure failed", "error", relErr)
 			}
 		}
@@ -857,7 +857,7 @@ func (h *SessionHandlers) handleVerifyEmail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if grantReserved && !granted {
-		if relErr := releaseSignupGrantForIP(ctx, h.rdb, ip); relErr != nil {
+		if relErr := releaseSignupGrantSlotDetached(ctx, h.rdb, ip); relErr != nil {
 			h.log.Warn("release signup grant slot after already-granted failed", "error", relErr)
 		}
 	}

@@ -1788,3 +1788,23 @@ func TestAuthRegisterRateLimitedAuditBounded(t *testing.T) {
 		t.Fatalf("rate_limited 审计 = %d 条，期望 1（SETNX 每窗口限一条）", rateLimited)
 	}
 }
+
+// TestAuthLoginRateLimitedAuditBounded 覆盖 D2 终验 Important 2：登录 429 洪水
+// 每 IP+identifier 每窗口只写一条 rate_limited 审计。
+func TestAuthLoginRateLimitedAuditBounded(t *testing.T) {
+	capture := &captureExec{}
+	env := newAuthTestEnv(t, nil, authTestOptions{audit: audit.New(capture)})
+	for i := 0; i < 20; i++ {
+		_ = env.login("nobody", "wrong-password")
+	}
+	rateLimited := 0
+	for _, args := range capture.snapshot() {
+		detail, _ := args[9].(string)
+		if strings.Contains(detail, `"reason":"rate_limited"`) {
+			rateLimited++
+		}
+	}
+	if rateLimited != 1 {
+		t.Fatalf("rate_limited 审计 = %d 条，期望 1（SETNX 每窗口限一条）", rateLimited)
+	}
+}

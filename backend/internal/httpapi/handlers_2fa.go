@@ -605,7 +605,8 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	ticket := strings.TrimSpace(req.Ticket)
 	if !validTwoFATicket(ticket) {
 		// 畸形 ticket 与过期 ticket 同一响应：不给探测 ticket 存在性的信道。
-		h.auditChallenge(r, nil, "failed", "invalid_ticket")
+		// 审计按 IP 限频：ticket 探测是未认证流量，不能每请求写一条。
+		h.auditChallengeLimited(r, ip, "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
 			"Invalid or expired verification ticket")
 		return
@@ -613,7 +614,8 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 
 	rawUserID, err := h.rdb.Get(ctx, twoFATicketKeyPrefix+ticket).Result()
 	if errors.Is(err, redis.Nil) {
-		h.auditChallenge(r, nil, "failed", "invalid_ticket")
+		// 未知/过期 ticket 同样按 IP 限频审计（见上）。
+		h.auditChallengeLimited(r, ip, "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
 			"Invalid or expired verification ticket")
 		return
@@ -648,8 +650,9 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 与登录相同的双桶（IP+identifier / identifier）：验证前拦截已锁定账号。
+	// 拒绝审计同样按 IP 限频（锁定可被未认证流量无限重放）。
 	if err := h.limiter.Check(ctx, ip, user.Username); err != nil {
-		h.auditChallenge(r, user, "failed", limiterReason(err))
+		h.auditChallengeLimited(r, ip, limiterReason(err))
 		h.writeLimiterFailure(w, err)
 		return
 	}

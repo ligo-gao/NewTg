@@ -1137,3 +1137,36 @@ func TestVerifyEmailSignupGrantCounterUnavailable(t *testing.T) {
 		t.Fatal("计数不可用时仍必须置 email_verified_at")
 	}
 }
+
+// TestReleaseSignupGrantSlotDetached 覆盖 D2 终验 Minor 2/3：客户端断连
+// （ctx 已取消）仍必须归还名额；键不存在时裸 DECR 不得创建 -1。
+func TestReleaseSignupGrantSlotDetached(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+
+	// (1) 已取消的请求 ctx：detached 包装仍能 DECR。
+	ip := "203.0.113.5"
+	if err := rdb.Set(ctx, signupGrantSlotKey(ip), "1", time.Hour).Err(); err != nil {
+		t.Fatalf("seed slot: %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := releaseSignupGrantSlotDetached(canceled, rdb, ip); err != nil {
+		t.Fatalf("detached release: %v", err)
+	}
+	if got := rdb.Get(ctx, signupGrantSlotKey(ip)).Val(); got != "0" {
+		t.Fatalf("取消 ctx 后名额 = %q，期望 0（仍已归还）", got)
+	}
+
+	// (2) 键不存在：不得创建 -1。
+	missing := "203.0.113.6"
+	if err := releaseSignupGrantForIP(ctx, rdb, missing); err != nil {
+		t.Fatalf("release missing key: %v", err)
+	}
+	if mr.Exists(signupGrantSlotKey(missing)) {
+		t.Fatalf("缺失键被 DECR 创建为 %q，期望不存在",
+			rdb.Get(ctx, signupGrantSlotKey(missing)).Val())
+	}
+}

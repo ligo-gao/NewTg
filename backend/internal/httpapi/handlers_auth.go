@@ -1080,12 +1080,32 @@ func reserveSignupGrantForIP(ctx context.Context, rdb *redis.Client, ip string) 
 }
 
 // releaseSignupGrantForIP 归还预占名额（最终没有写出发放流水时）。
+// 用 Lua 把计数下限钉在 0：键已过期/TTL 被 Redis 重启清掉时，裸 DECR 会
+// 创建 -1 且没有 TTL 的永久负计数器，反而让后续发放永远通过。
 func releaseSignupGrantForIP(ctx context.Context, rdb *redis.Client, ip string) error {
 	if rdb == nil {
 		return errors.New("httpapi: redis is required for signup grant slots")
 	}
-	return rdb.Decr(ctx, signupGrantSlotKey(ip)).Err()
+	return releaseSignupGrantScript.Run(ctx, rdb, []string{signupGrantSlotKey(ip)}).Err()
 }
+
+// releaseSignupGrantSlotDetached 在剥离取消信号的短超时上下文里归还名额：
+// 验证事务已成功/失败后的清理不能被客户端断连取消，否则名额要等到 24h
+// TTL 才释放（与注册路径的 context.WithoutCancel 口径一致）。
+func releaseSignupGrantSlotDetached(ctx context.Context, rdb *redis.Client, ip string) error {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	return releaseSignupGrantForIP(releaseCtx, rdb, ip)
+}
+
+// releaseSignupGrantScript：仅当键存在且值 > 0 时 DECR；返回原值（测试可读）。
+var releaseSignupGrantScript = redis.NewScript(`
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n > 0 then
+  redis.call('DECR', KEYS[1])
+end
+return n
+`)
 
 // reserveSignupGrantSlot 原子预留一个「同 IP 24h 内第 N 个实际领赠」名额。
 // 返回 false 表示已达上限（调用方仍应完成注册，只是不发放）。
@@ -1161,12 +1181,12 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		LoginRateLimitKey(ip, identifier), LoginRateLimit, LoginRateWindow)
 	if err != nil {
 		h.log.Error("login request rate limiter unavailable", "error", err)
-		h.auditLogin(r, nil, "failed", "limiter_unavailable")
+		h.auditLoginLimited(r, ip, identifier, nil, "limiter_unavailable")
 		h.writeServiceUnavailable(w, "Login is temporarily unavailable")
 		return
 	}
 	if over {
-		h.auditLogin(r, nil, "failed", "rate_limited")
+		h.auditLoginLimited(r, ip, identifier, nil, "rate_limited")
 		writeRateLimited(w, retry, "Too many login requests")
 		return
 	}
@@ -1194,7 +1214,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 锁定预检查：已知 identifier 的双桶在此拦截，避免锁定期间仍消耗 DB/argon2。
 	if err := h.limiter.Check(ctx, ip, identifier); err != nil {
-		h.auditLogin(r, nil, "failed", limiterReason(err))
+		h.auditLoginLimited(r, ip, identifier, nil, limiterReason(err))
 		h.writeLimiterFailure(w, err)
 		return
 	}
@@ -1208,14 +1228,14 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		// 未知 identifier 只按 IP 计分：否则攻击者可用他人用户名把账号锁死。
 		if err := h.limiter.Check(ctx, ip, ""); err != nil {
-			h.auditLogin(r, nil, "failed", limiterReason(err))
+			h.auditLoginLimited(r, ip, identifier, nil, limiterReason(err))
 			h.writeLimiterFailure(w, err)
 			return
 		}
 		// dummy verify：与真实用户同等的 argon2 成本，消除「查无此人」的时序特征。
 		_ = h.verifyPassword(dummyPasswordHash(), password)
 		if err := h.limiter.Record(ctx, ip, "", false); err != nil {
-			h.auditLogin(r, nil, "failed", "limiter_unavailable")
+			h.auditLoginLimited(r, ip, identifier, nil, "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
@@ -1228,7 +1248,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if user.PasswordHash == "" {
 		_ = h.verifyPassword(dummyPasswordHash(), password)
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
-			h.auditLogin(r, user, "failed", "limiter_unavailable")
+			h.auditLoginLimited(r, ip, identifier, user, "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
@@ -1238,7 +1258,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.verifyPassword(user.PasswordHash, password) {
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
-			h.auditLogin(r, user, "failed", "limiter_unavailable")
+			h.auditLoginLimited(r, ip, identifier, user, "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
@@ -1545,6 +1565,26 @@ func (h *authHandlers) auditLogin(r *http.Request, user *UserRecord, result, rea
 // auditRegister 写 auth.register 审计（成功/失败）。成功时 Actor 是新用户 id；
 // 失败时 actor=0（writer 回退 user#0）。detail 只含结果与原因，绝不含口令、
 // 验证码、Turnstile token 或邮箱原文（PII 最小化）。
+// loginAuditLimitedKeyPrefix 限制登录「限流拒绝」审计的写入频率：/api/auth/login
+// 是未认证端点，429/锁定可被无限重放；每 IP+identifier 每窗口至多一条。
+const loginAuditLimitedKeyPrefix = "login:audit:limited:"
+
+// auditLoginLimited 是登录限流拒绝审计的有界版本（rate_limited / locked /
+// limiter_unavailable）。SETNX 失败或窗口内已记过 → 跳过：审计可少记，
+// 绝不能成为未认证流量的日志放大面。user 可空（未解析到用户时 actor=0）。
+func (h *authHandlers) auditLoginLimited(r *http.Request, ip, identifier string, user *UserRecord, reason string) {
+	if h.audit == nil || h.rdb == nil {
+		return
+	}
+	key := loginAuditLimitedKeyPrefix +
+		sha256Hex(ip+"\x00"+strings.ToLower(strings.TrimSpace(identifier)))
+	accepted, err := h.rdb.SetNX(r.Context(), key, "1", LoginRateWindow).Result()
+	if err != nil || !accepted {
+		return
+	}
+	h.auditLogin(r, user, "failed", reason)
+}
+
 func (h *authHandlers) auditRegister(r *http.Request, actor int64, result, reason string) {
 	if h.audit == nil {
 		return
