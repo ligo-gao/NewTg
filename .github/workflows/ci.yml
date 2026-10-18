@@ -27,7 +27,7 @@ permissions:
 env:
   # GC-13：工具版本必须固定具体值（禁 @latest）。这两个变量被执行步骤直接引用，
   # 也是 check_ci.sh 的静态断言对象。
-  MIGRATE_VERSION: v4.18.2
+  MIGRATE_VERSION: v4.18.1
   KIN_OPENAPI_VERSION: v0.131.0
   # oasdiff 同样是供应链输入；固定在 env 便于升级时一处改动。
   OASDIFF_VERSION: v1.33.0

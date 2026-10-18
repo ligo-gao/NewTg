@@ -71,7 +71,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	mux.HandleFunc("/healthz", checker.HandlerHealthz)
 	mux.HandleFunc("/readyz", checker.HandlerReadyz)
 	srv := &http.Server{
-		Handler:           mux,
+		// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：
+		// 404、探针、后续 API 与 SSE 都必须经过同一层，避免按路由漏配。
+		Handler:           SecurityHeaders(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
