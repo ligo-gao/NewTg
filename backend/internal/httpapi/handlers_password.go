@@ -312,7 +312,8 @@ func writeReauthFailure(w http.ResponseWriter, err error) {
 // ---------------------------------------------------------------------------
 
 type passwordResetRequestBody struct {
-	Email string `json:"email"`
+	Email          string `json:"email"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 // handleResetRequest 生成一次性重置链接并发信。无论邮箱是否注册，成功态
@@ -360,6 +361,12 @@ func (h *passwordHandlers) handleResetRequest(w http.ResponseWriter, r *http.Req
 		w.Header().Set("Retry-After", retrySeconds(retry))
 		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests,
 			"Too many reset requests")
+		return
+	}
+
+	// 人机校验位于冷却桶与 IP 桶之后（限流外层 → Turnstile 内层）。它不能
+	// 成为绕过本地限流的旁路：无效令牌同样已经消耗了本次请求名额。
+	if !h.base.checkTurnstile(w, r, auth.TurnstileEndpointResetPassword, req.TurnstileToken) {
 		return
 	}
 

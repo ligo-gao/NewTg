@@ -569,6 +569,12 @@ type authHandlers struct {
 	hashPassword   func(plain string) (string, error)
 	// audit 为 nil 时不写审计（未装配日志库的测试/开发环境）。
 	audit *audit.Logger
+	// passwordEncryption 是登录前端加密（F-01-25）的解密接缝；nil 表示
+	// 开关关闭且不接受加密载荷（装配方未提供时为 M1 的明文登录状态）。
+	passwordEncryption *PasswordEncryption
+	// turnstile 是按接入点区分的 handler 内人机校验；nil 表示未配置。
+	// 它必须在速率桶之后调用（限流外层 → Turnstile 内层，modules-01 §3.15）。
+	turnstile *turnstileGates
 	// signupGrantAlert 是赠送被反滥用上限抑制时的告警钩子；nil 时仅落 Warn 日志。
 	signupGrantAlert func(ctx context.Context, userID int64, ip string)
 	// reserveSignupGrant 是 Redis 槽位预留的可替换接缝（测试注入故障）。
@@ -654,8 +660,9 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type emailCodeRequest struct {
-	Email   string `json:"email"`
-	Purpose string `json:"purpose"`
+	Email          string `json:"email"`
+	Purpose        string `json:"purpose"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
@@ -722,6 +729,12 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 限流（同邮箱冷却 + 同 IP 桶）之后才做人机校验：Turnstile 始终是限流
+	// 的内层，服务不可达时也不能绕过本地速率桶（modules-01 §3.15 I-10）。
+	if !h.checkTurnstile(w, r, auth.TurnstileEndpointVerification, req.TurnstileToken) {
+		return
+	}
+
 	code, err := h.codes.issue(ctx, email, req.Purpose)
 	if err != nil {
 		h.log.Error("issue email code failed", "error", err)
@@ -748,6 +761,7 @@ type registerRequest struct {
 	EmailCode       string `json:"email_code"`
 	AgreeTerms      bool   `json:"agree_terms"`
 	Aff             string `json:"aff"`
+	TurnstileToken  string `json:"turnstile_token"`
 }
 
 func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -774,6 +788,12 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if err := readAuthJSON(r, &req); err != nil {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
+		return
+	}
+
+	// 顺序冻结：注册速率桶（B3）→ 匿名请求体限制（readAuthJSON）→ Turnstile
+	// → 业务校验（modules-01 §3.15）。人机校验绝不先于限流执行。
+	if !h.checkTurnstile(w, r, auth.TurnstileEndpointRegister, req.TurnstileToken) {
 		return
 	}
 
@@ -1034,8 +1054,11 @@ return 1
 `)
 
 type loginRequest struct {
-	Identifier string `json:"identifier"`
-	Password   string `json:"password"`
+	Identifier        string `json:"identifier"`
+	Password          string `json:"password"`
+	PasswordEncrypted string `json:"password_encrypted"`
+	EncryptionKeyID   string `json:"encryption_key_id"`
+	TurnstileToken    string `json:"turnstile_token"`
 }
 
 func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -1074,6 +1097,27 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 登录速率桶（B1）之后才做人机校验：Turnstile 必须始终是限流的内层，
+	// 否则无效令牌会绕过本地桶直接消耗 Cloudflare 校验配额（modules-01 §3.15）。
+	if !h.checkTurnstile(w, r, auth.TurnstileEndpointLogin, req.TurnstileToken) {
+		return
+	}
+
+	// 登录前端加密（F-01-25）：解密置于速率桶/人机校验之后，避免未限流的
+	// RSA 解封装消耗。解密失败/防降级拒绝不得提前返回——那会把「解密失败」
+	// 与「口令错误」在限流计次与 argon2 时序上区分开（反 oracle）。置空
+	// 口令继续正常失败路径：空串永不匹配任何 PHC 哈希。
+	password := req.Password
+	if h.passwordEncryption != nil {
+		decoded, err := h.passwordEncryption.DecodeLoginPassword(
+			r.Context(), req.Password, req.PasswordEncrypted, req.EncryptionKeyID)
+		if err != nil {
+			password = ""
+		} else {
+			password = decoded
+		}
+	}
+
 	// 锁定预检查：已知 identifier 的双桶在此拦截，避免锁定期间仍消耗 DB/argon2。
 	if err := h.limiter.Check(ctx, ip, identifier); err != nil {
 		h.auditLogin(r, nil, "failed", limiterReason(err))
@@ -1095,7 +1139,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// dummy verify：与真实用户同等的 argon2 成本，消除「查无此人」的时序特征。
-		_ = h.verifyPassword(dummyPasswordHash(), req.Password)
+		_ = h.verifyPassword(dummyPasswordHash(), password)
 		if err := h.limiter.Record(ctx, ip, "", false); err != nil {
 			h.auditLogin(r, nil, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
@@ -1108,7 +1152,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// OAuth 即时注册用户没有口令：仍执行 dummy verify 保持时序，再按失败计数。
 	if user.PasswordHash == "" {
-		_ = h.verifyPassword(dummyPasswordHash(), req.Password)
+		_ = h.verifyPassword(dummyPasswordHash(), password)
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
 			h.auditLogin(r, user, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
@@ -1118,7 +1162,7 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeUnauthorized(w)
 		return
 	}
-	if !h.verifyPassword(user.PasswordHash, req.Password) {
+	if !h.verifyPassword(user.PasswordHash, password) {
 		if err := h.limiter.Record(ctx, ip, identifier, false); err != nil {
 			h.auditLogin(r, user, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)

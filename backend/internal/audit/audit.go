@@ -167,6 +167,11 @@ func New(exec Execer) *Logger {
 	return &Logger{exec: exec}
 }
 
+// Configured 报告 Logger 是否已绑定写库。装配层据此 fail-fast：一个非 nil
+// 但未绑定 exec 的 Logger 会让每一次审计都返回 ErrNotConfigured，等价于
+// 静默无审计，必须在启动期拒绝而不是上线后才发现。
+func (l *Logger) Configured() bool { return l != nil && l.exec != nil }
+
 // insertSQL 是唯一写路径：append-only（modules-05 §7、platform-01 §5）。
 // jsonb 参数显式 ::jsonb 转型，避免驱动把 []byte 当成 bytea。
 const insertSQL = `INSERT INTO audit_logs

@@ -1,0 +1,299 @@
+package httpapi
+
+// M1 管理面路由的完整装配（gateway 角色）。
+//
+// NewRouter 只负责认证主链与令牌端点；密码、2FA、会话/自助、setup、账号、
+// 登录加密、用户/分组等任务各自导出 Register*Routes，由本文件统一接线。
+// 这样 routes.go 保持「路由核心」、本文件是「组合根」，单测可以注入 Repo
+// 缝隙（与各 handler 的「Repo 与 DB 二选一」约定一致）而不触真 PG。
+//
+// 装配失败必须阻止进程上线（GC-7 / security-02 IS-B-6）：
+//   - 缺权限装载器会让 Principal.Permissions=nil 被 RBAC 解释成 FULL；
+//   - 缺审计写库会静默丢失登录/管理事件；
+//   - 缺 PUBLIC_BASE_URL 会悄悄生成无法投递/指向错误域名的重置链接。
+// 上述任一情况都返回 error，绝不降级为「带病运行」。
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/rbac"
+)
+
+// GatewayDeps 是 gateway 角色装配管理面所需的完整依赖。
+//
+// 生产路径只填基础设施（DB/Redis/Session/Config/Audit/Authz/TokenService），
+// 各 Repo 留 nil 由 SQL 实现兜底；单测则可以填 Repo 缝隙与 LoginEncryption，
+// 从而在没有 PostgreSQL 的情况下验证路由挂载与鉴权链。
+type GatewayDeps struct {
+	// 基础设施（必填）。
+	DB       *sql.DB
+	LogDB    *sql.DB // audit_logs 所在日志库
+	Redis    *redis.Client
+	Sessions *auth.SessionManager
+	Config   ConfigReader
+	// Sealer 解封配置中心的密钥类键（auth.turnstile.secret_key）。生产为
+	// CREDENTIAL_ENCRYPTION_KEY 派生的 auth.SecretCipher。
+	Sealer       configcenter.SecretSealer
+	Audit        *audit.Logger
+	Authz        *rbac.AuthzMiddleware
+	TokenService TokenService
+
+	SessionSecret           []byte
+	CredentialEncryptionKey string
+	PublicBaseURL           string
+	EmailSender             EmailCodeSender
+	PasswordChecker         auth.CompromisedPasswordChecker
+	SignupGrantAlert        func(ctx context.Context, userID int64, ip string)
+	Logger                  *slog.Logger
+
+	// 可选覆盖/测试缝隙。nil 时由 DB 构造 SQL 实现。
+	Repo               AuthRepo
+	Permissions        rbac.PermissionLoader
+	SetupStore         SetupStore
+	SelfRepo           SelfRepo
+	AccountRepo        AccountRepo
+	AccountAnonymizer  PIIAnonymizer
+	AccountReauth      *auth.ReauthGate
+	VerifyTOTP         auth.TOTPVerifier
+	TwoFARepo          TwoFARepo
+	AdminUserRepo      AdminUserRepo
+	AdminGroupRepo     AdminGroupRepo
+	NotificationSender NotificationTestSender
+	LoginEncryption    *PasswordEncryption
+
+	// Turnstile siteverify 测试接缝（生产留零值）。
+	TurnstileVerifyURL  string
+	TurnstileHTTPClient *http.Client
+	// TurnstileSettings 覆盖由配置中心派生的设置读取（测试接缝）。nil 时
+	// 使用 TurnstileSettingsProvider(Config, Sealer)；非 nil 时完全以它为准，
+	// 便于单测注入「开启 + 固定密钥」而无需真实 sealer。
+	TurnstileSettings func() auth.TurnstileSettings
+}
+
+// BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
+//
+//	公开：status/email-code/register/login/logout、setup、密码重置三端点、
+//	      登录加密公钥、2FA challenge、GET /api/usage/token；
+//	受保护：SessionAuth → CSRF → OriginRefererCheck 之后的全部 /api/*。
+func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
+	if err := deps.validate(); err != nil {
+		return nil, err
+	}
+
+	// Turnstile 配置读取：启动期已开启但缺 SecretSealer 属于装配错误。
+	settings := deps.TurnstileSettings
+	if settings == nil {
+		var err error
+		settings, err = TurnstileSettingsProvider(deps.Config, deps.Sealer, deps.Logger)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	loginEncryption := deps.LoginEncryption
+	if loginEncryption == nil {
+		created, err := NewPasswordEncryption(PasswordEncryptionConfig{
+			DB:            deps.DB,
+			Config:        deps.Config,
+			EncryptionKey: deps.CredentialEncryptionKey,
+			Logger:        deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		loginEncryption = created
+	}
+
+	// 登录失败锁定桶只构造一次，登录与 2FA 复用以保证同阈值/同键形。
+	limiter := NewLoginLimiter(deps.Redis)
+
+	rt, err := NewRouter(RouterConfig{
+		DB:                  deps.DB,
+		Repo:                deps.Repo,
+		Redis:               deps.Redis,
+		Sessions:            deps.Sessions,
+		Permissions:         deps.Permissions,
+		Config:              deps.Config,
+		SessionSecret:       deps.SessionSecret,
+		PublicBaseURL:       deps.PublicBaseURL,
+		EmailSender:         deps.EmailSender,
+		Authz:               deps.Authz,
+		PasswordChecker:     deps.PasswordChecker,
+		TokenService:        deps.TokenService,
+		LoginLimiter:        limiter,
+		LoginEncryption:     loginEncryption,
+		TurnstileSettings:   settings,
+		TurnstileVerifyURL:  deps.TurnstileVerifyURL,
+		TurnstileHTTPClient: deps.TurnstileHTTPClient,
+		Audit:               deps.Audit,
+		SignupGrantAlert:    deps.SignupGrantAlert,
+		Logger:              deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	checker := withSiteTitle(deps.Config, deps.PasswordChecker)
+
+	setupStore := deps.SetupStore
+	if setupStore == nil {
+		setupStore = NewSQLSetupStore(deps.DB)
+	}
+	setup, err := NewSetupHandlers(SetupConfig{
+		Store:    setupStore,
+		Sessions: deps.Sessions,
+		Checker:  checker,
+		Redis:    deps.Redis,
+		Audit:    deps.Audit.Log,
+		Logger:   deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	setup.RegisterSetupRoutes(rt.mux)
+
+	selfRepo := deps.SelfRepo
+	if selfRepo == nil {
+		selfRepo = NewSQLSelfRepo(deps.DB)
+	}
+	sessions, err := NewSessionHandlers(SessionHandlerConfig{
+		Repo:          selfRepo,
+		Sessions:      deps.Sessions,
+		Authz:         deps.Authz,
+		Redis:         deps.Redis,
+		SessionSecret: deps.SessionSecret,
+		Logger:        deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sessions.RegisterSessionRoutes(rt.protected, nil)
+
+	account, err := NewAccountHandlers(AccountHandlerConfig{
+		DB:                 deps.DB,
+		Repo:               deps.AccountRepo,
+		LogDB:              deps.LogDB,
+		Redis:              deps.Redis,
+		Sessions:           deps.Sessions,
+		Audit:              deps.Audit,
+		Anonymizer:         deps.AccountAnonymizer,
+		Config:             deps.Config,
+		EncryptionKey:      deps.CredentialEncryptionKey,
+		SessionSecret:      deps.SessionSecret,
+		Reauth:             deps.AccountReauth,
+		VerifyTOTP:         deps.VerifyTOTP,
+		NotificationSender: deps.NotificationSender,
+		Logger:             deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	account.RegisterAccountRoutes(rt.protected, nil)
+
+	twoFA, err := NewTwoFAHandlers(TwoFAConfig{
+		DB:            deps.DB,
+		Repo:          deps.TwoFARepo,
+		Redis:         deps.Redis,
+		Sessions:      deps.Sessions,
+		EncryptionKey: deps.CredentialEncryptionKey,
+		Issuer:        readConfigString(deps.Config, "site.title"),
+		Limiter:       limiter,
+		Audit:         deps.Audit,
+		Logger:        deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	Register2FARoutes(rt.mux, rt.protected, twoFA)
+
+	users, err := NewUserHandlers(UserHandlerConfig{
+		DB:              deps.DB,
+		Repo:            deps.AdminUserRepo,
+		Sessions:        deps.Sessions,
+		Redis:           deps.Redis,
+		Authz:           deps.Authz,
+		Audit:           deps.Audit,
+		PasswordChecker: checker,
+		Logger:          deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	users.RegisterUserRoutes(rt.protected, nil)
+
+	groups, err := NewGroupHandlers(GroupHandlerConfig{
+		DB:     deps.DB,
+		Repo:   deps.AdminGroupRepo,
+		Authz:  deps.Authz,
+		Audit:  deps.Audit,
+		Logger: deps.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	groups.RegisterGroupRoutes(rt.protected, nil)
+
+	// 密码端点最后挂载：它要求认证仓储同时实现 PasswordRepo，并在装配期
+	// 校验 PUBLIC_BASE_URL 与 EmailSender 的契约。
+	if err := rt.RegisterPasswordRoutes(deps.PublicBaseURL, deps.Audit); err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+// validate 集中声明装配期的必填项。消息列出全部缺失项，便于一次修完。
+func (d GatewayDeps) validate() error {
+	var missing []string
+	add := func(cond bool, name string) {
+		if cond {
+			missing = append(missing, name)
+		}
+	}
+
+	add(d.Redis == nil, "Redis")
+	add(d.Sessions == nil, "Sessions")
+	add(len(d.SessionSecret) == 0, "SessionSecret")
+	add(d.Config == nil, "Config")
+	add(d.Authz == nil, "Authz (RBAC middleware)")
+	add(d.Audit == nil || !d.Audit.Configured(), "Audit logger bound to the logs database")
+	add(d.TokenService == nil, "TokenService")
+	add(strings.TrimSpace(d.PublicBaseURL) == "", "PublicBaseURL")
+	add(strings.TrimSpace(d.CredentialEncryptionKey) == "", "CredentialEncryptionKey")
+
+	// Repo 缝隙与 DB 二选一：认证主链、密码重置、令牌 store 都以 DB 为
+	// 生产真源；单测可注入完整的 Repo 集合。
+	if d.DB == nil {
+		add(d.Repo == nil, "Repo or DB")
+		add(d.SetupStore == nil, "SetupStore or DB")
+		add(d.SelfRepo == nil, "SelfRepo or DB")
+		add(d.AccountRepo == nil, "AccountRepo or DB")
+		add(d.TwoFARepo == nil, "TwoFARepo or DB")
+		add(d.AdminUserRepo == nil, "AdminUserRepo or DB")
+		add(d.AdminGroupRepo == nil, "AdminGroupRepo or DB")
+		add(d.AccountReauth == nil, "AccountReauth or DB")
+	}
+	add(d.AccountAnonymizer == nil && d.LogDB == nil, "LogDB or AccountAnonymizer")
+
+	// 权限装载器：Authz 存在时必须有权威来源，否则 nil Permissions 会被
+	// 解释成 DB NULL=FULL。NewRouter 也会校验，这里提前给出装配错误。
+	if d.Permissions == nil && d.DB == nil {
+		if _, ok := d.Repo.(rbac.PermissionLoader); !ok {
+			missing = append(missing, "Permissions or an AuthRepo implementing Load")
+		}
+	}
+
+	if len(missing) > 0 {
+		return errors.New("httpapi: incomplete gateway assembly: missing " + strings.Join(missing, ", "))
+	}
+	return nil
+}

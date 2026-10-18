@@ -4,6 +4,8 @@ package platform
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
 
 	"newtg/gateway/internal/config"
 )
@@ -23,8 +25,15 @@ type Resource interface {
 // 生产实现只做一次转发，行为与直接调用完全一致。
 type connectors interface {
 	openDB(ctx context.Context, cfg *config.Config) (Resource, error)
+	// openLogsDB 打开日志库（audit_logs/usage_logs）；gateway 角色的审计与
+	// PII 匿名化依赖它，缺失属启动错误。
+	openLogsDB(ctx context.Context, cfg *config.Config) (Resource, error)
 	openRedis(cfg *config.Config) (Resource, error)
 	runMigrate(ctx context.Context, cfg *config.Config) error
+	// newAPIHandler 构造 /api/* 路由。nil handler 表示该角色/测试装配只跑
+	// 探针端点（生产实现恒返回完整 M1 路由）。
+	newAPIHandler(ctx context.Context, cfg *config.Config,
+		db, logsDB, rds Resource, log *slog.Logger) (http.Handler, error)
 }
 
 // prodConnectors 生产实现：OpenDB / OpenRedis 从 cfg 真实建连并验证连通性。
@@ -32,6 +41,10 @@ type prodConnectors struct{}
 
 func (prodConnectors) openDB(ctx context.Context, cfg *config.Config) (Resource, error) {
 	return OpenDB(ctx, cfg)
+}
+
+func (prodConnectors) openLogsDB(ctx context.Context, cfg *config.Config) (Resource, error) {
+	return OpenLogsDB(ctx, cfg)
 }
 
 func (prodConnectors) openRedis(cfg *config.Config) (Resource, error) {

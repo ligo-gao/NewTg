@@ -382,6 +382,14 @@ func (c *SecretCipher) Decrypt(encoded string) (string, error) {
 	return string(plaintext), nil
 }
 
+// Seal 实现 configcenter.SecretSealer：密钥类配置值（如 Turnstile secret）
+// 落库前用同一套 AES-256-GCM envelope 密封。接口定义在 configcenter，
+// 加密实现只有这一处，因此由 SecretCipher 直接满足结构化契约。
+func (c *SecretCipher) Seal(plain string) (string, error) { return c.Encrypt(plain) }
+
+// Open 实现 configcenter.SecretSealer，与 Seal 对称。
+func (c *SecretCipher) Open(sealed string) (string, error) { return c.Decrypt(sealed) }
+
 func newGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

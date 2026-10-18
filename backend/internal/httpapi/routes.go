@@ -46,6 +46,24 @@ type RouterConfig struct {
 	// 管理面 CRUD 进受保护子树，GET /api/usage/token 走 HandlePublic 绕过
 	// SessionAuth（自读用量对耗尽令牌仍须 200，modules-02 §2.13）。
 	TokenHandlers *TokenHandlers
+	// TokenService 是令牌 CRUD 服务（生产 *tokenstore.Store）。提供且未显式
+	// 给出 TokenHandlers/TokenStore 时，NewRouter 自动构造并接线两者。
+	TokenService TokenService
+	// LoginLimiter 是登录失败锁定桶；nil 时按 Redis 构造。与 2FA 共享同一
+	// 实例可保证「同 Redis 键、同一阈值」，装配方应在 BuildGatewayRouter 中
+	// 构造一次复用。
+	LoginLimiter *LoginLimiter
+	// LoginEncryption 是登录前端加密的解密接缝（F-01-25）。非 nil 时
+	// NewRouter 挂载公开的 GET /api/auth/login/encryption-key 并把
+	// password_encrypted/encryption_key_id 接入登录路径。
+	LoginEncryption *PasswordEncryption
+	// TurnstileSettings 返回人机校验配置快照。非 nil 时 NewRouter 为 login/
+	// register/verification/reset_password 四个已存在的接入点构造 **handler
+	// 内层** 校验（限流外层 → Turnstile 内层）。nil 表示未配置 Turnstile。
+	TurnstileSettings func() auth.TurnstileSettings
+	// TurnstileVerifyURL / TurnstileHTTPClient 是 siteverify 的测试接缝。
+	TurnstileVerifyURL  string
+	TurnstileHTTPClient *http.Client
 	// Audit 是登录审计写入器（nil 时不写审计）。写失败不影响登录结果。
 	Audit *audit.Logger
 	// SignupGrantAlert 在注册赠送被反滥用上限抑制时触发（nil 时仅 Warn 日志）。
@@ -111,11 +129,39 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.SessionSecret, cfg.EmailSender, withSiteTitle(cfg.Config, cfg.PasswordChecker), cfg.Logger)
 	h.audit = cfg.Audit
 	h.signupGrantAlert = cfg.SignupGrantAlert
+	if cfg.LoginLimiter != nil {
+		// 与 2FA 共享同一失败锁定桶：阈值/键形只有一处实现。
+		h.limiter = cfg.LoginLimiter
+	}
+	if cfg.LoginEncryption != nil {
+		// 登录解密接缝必须与公钥端点使用同一实例（同一双槽密钥管理器）。
+		h.passwordEncryption = cfg.LoginEncryption
+	}
+	if cfg.TurnstileSettings != nil {
+		h.turnstile = newTurnstileGates(cfg.TurnstileSettings, cfg.Redis,
+			cfg.TurnstileVerifyURL, cfg.TurnstileHTTPClient, cfg.Logger)
+	}
+
+	// 令牌服务的便利接线：生产只需提供 TokenService，路由层负责构造
+	// TokenHandlers 并让 Bearer 鉴权使用同一 Store。
+	if cfg.TokenService != nil {
+		if cfg.TokenHandlers == nil {
+			cfg.TokenHandlers = NewTokenHandlers(cfg.TokenService, cfg.Audit, cfg.Redis)
+		}
+		if cfg.TokenStore == nil {
+			cfg.TokenStore = cfg.TokenService
+		}
+	}
 
 	rt := &Router{
 		mux:       http.NewServeMux(),
 		protected: http.NewServeMux(),
 		handlers:  h,
+	}
+
+	// 登录加密公钥端点是公开的（登录前取公钥），精确模式优先于 /api/ 子树。
+	if cfg.LoginEncryption != nil {
+		RegisterLoginEncryptionRoutes(rt.mux, cfg.LoginEncryption)
 	}
 
 	// 令牌端点（Task 12）：CRUD 走受保护链，自读用量走根 mux 的精确模式。
