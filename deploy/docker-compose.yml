@@ -134,6 +134,10 @@ services:
       start_period: 20s
     networks:
       - backend
+      # R-23：worker 不是纯内网进程——渠道测试（A1）、余额刷新（B8）、凭据刷新（B11）、
+      # GeoIP 下载（B14）、Webhook 投递（N8）都要求出站（security-08 §2.11
+      # 「worker 出站的归属」）。backend 是 internal，专供 DB/Redis；出站单独走 egress。
+      - egress
 
   # 可选：静态前端。M0 默认不开 profile，"/" 由 gateway 托管静态产物。
   web:
@@ -226,3 +230,8 @@ networks:
   backend:
     driver: bridge
     internal: true
+  # 出站面（R-23）：只挂 worker。非 internal，用于渠道测试/Webhook/GeoIP 等对外调用
+  # （security-08 §2.11 覆盖 13.2.4/13.2.5）。把出站与数据面拆成两张网，backend
+  # 继续 internal: true，postgres/redis 不接此网，DB/缓存仍无外网可达路径。
+  egress:
+    driver: bridge

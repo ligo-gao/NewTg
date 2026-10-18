@@ -8,13 +8,15 @@ import (
 	"time"
 )
 
-// setRequired 设置 4 个必填项为合法值，供默认值/非法值用例使用。
+// setRequired 设置 5 个必填项为合法值，供默认值/非法值用例使用。
+// DB_LOGS_DSN 是 platform-03 §3.1 #22 的必填项（M0 控制器裁决）。
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://app:secret@db:5432/newtg?sslmode=disable")
 	t.Setenv("REDIS_URL", "redis://:secret@redis:6379/0")
 	t.Setenv("SESSION_SECRET", "test-session-secret")
 	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "test-encryption-key")
+	t.Setenv("DB_LOGS_DSN", "postgres://app:secret@db:5432/newtg_logs?sslmode=disable")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -36,6 +38,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.CredentialEncryptionKey != "test-encryption-key" {
 		t.Errorf("CredentialEncryptionKey = %q", c.CredentialEncryptionKey)
+	}
+	if c.DBLogsDSN != "postgres://app:secret@db:5432/newtg_logs?sslmode=disable" {
+		t.Errorf("DBLogsDSN = %q", c.DBLogsDSN)
 	}
 	if c.RunMode != "gateway" {
 		t.Errorf("RunMode = %q, want gateway", c.RunMode)
@@ -93,9 +98,6 @@ func TestLoadDefaults(t *testing.T) {
 	if c.OpenAPIValidate != "warn" {
 		t.Errorf("OpenAPIValidate = %q, want warn", c.OpenAPIValidate)
 	}
-	if c.DBLogsDSN != "" {
-		t.Errorf("DBLogsDSN = %q, want empty", c.DBLogsDSN)
-	}
 	if c.PerfMetricsEnabled != true {
 		t.Errorf("PerfMetricsEnabled = %v, want true", c.PerfMetricsEnabled)
 	}
@@ -119,6 +121,7 @@ func TestLoadRequiredMissing(t *testing.T) {
 		{"REDIS_URL", "REDIS_URL"},
 		{"SESSION_SECRET", "SESSION_SECRET"},
 		{"CREDENTIAL_ENCRYPTION_KEY", "CREDENTIAL_ENCRYPTION_KEY"},
+		{"DB_LOGS_DSN", "DB_LOGS_DSN"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

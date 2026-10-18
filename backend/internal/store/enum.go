@@ -14,7 +14,7 @@ package store
 //
 // 成员口径：text 枚举为字面量；smallint 枚举为十进制数字文本（如 "1"），
 // 与 CHECK 文本 IN (1, 2) 的解析结果同形。usage_logs/audit_logs 属日志库
-// （Task 8 的 migrations-logs），不在主库对照范围。
+// （migrations-logs），由 EnumChecksLogs 单独对账，不在本表范围。
 var EnumChecks = map[string][]string{
 	// users（platform-01 §1）
 	"users.role":     {"user", "admin"},
@@ -67,4 +67,19 @@ var EnumChecks = map[string][]string{
 
 	// request_registry（§18 / platform-04 V9）
 	"request_registry.state": {"in_flight", "settled", "refunded", "failed"},
+}
+
+// EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
+// 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
+//
+// 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
+// 主库的 EnumChecks 只覆盖主库 16 表，二者互不包含。日志库唯一的枚举型 CHECK
+// 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
+var EnumChecksLogs = map[string][]string{
+	// usage_logs（platform-01 §12；smallint：0=refused / 1=success / 2=error / 3=refunded）
+	"usage_logs.status": {"0", "1", "2", "3"},
+
+	// audit_logs（§5；R3 冻结的四类事件分类）
+	"audit_logs.category": {"login", "security", "operation", "access_token"},
+	"audit_logs.result":   {"success", "failed"},
 }

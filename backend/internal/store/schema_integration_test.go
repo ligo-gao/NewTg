@@ -461,6 +461,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 }
 
 // documentedChecks：platform-01 明列、易被遗漏的非枚举 CHECK（评审补充覆盖）。
+// R-24 的 6 条 §6/§10 约束一并登记：后续迁移若静默删除或放宽其中任一条，
+// 这里按「约束存在 + 定义片段」双断言直接变红。
 var documentedChecks = []struct {
 	Table     string
 	Name      string
@@ -478,6 +480,32 @@ var documentedChecks = []struct {
 		Table: "channels", Name: "channels_group_tags_chk",
 		Fragments: []string{"group_tags", "jsonb_typeof", "jsonb_array_length", ">= 1"},
 	},
+	// R-24 / platform-01 §6
+	{
+		Table: "channels", Name: "channels_name_len_chk",
+		Fragments: []string{"char_length", "btrim", "64"},
+	},
+	{
+		Table: "channels", Name: "channels_test_model_in_models_chk",
+		Fragments: []string{"test_model", "supported_models", "?"},
+	},
+	{
+		Table: "channels", Name: "channels_tag_chk",
+		Fragments: []string{"char_length", "btrim", "[[:alnum:]"},
+	},
+	// R-24 / platform-01 §10
+	{
+		Table: "orders", Name: "orders_currency_chk",
+		Fragments: []string{"currency", "A-Z"},
+	},
+	{
+		Table: "orders", Name: "orders_provider_currency_chk",
+		Fragments: []string{"provider_currency IS NULL", "A-Z"},
+	},
+	{
+		Table: "orders", Name: "orders_fx_rate_pair_chk",
+		Fragments: []string{"fx_rate_num IS NULL", "fx_rate_den IS NULL"},
+	},
 }
 
 func expectExecError(t *testing.T, db *sql.DB, stmt string) {
@@ -487,8 +515,8 @@ func expectExecError(t *testing.T, db *sql.DB, stmt string) {
 	}
 }
 
-// TestMainSchemaDocumentedConstraints：platform-01 §6 / §11 的文档语义必须由 DB 兜底
-// （约束存在 + 负向 INSERT 被拒），防止「只声明未落 DDL」的遗漏再次发生。
+// TestMainSchemaDocumentedConstraints：platform-01 §6 / §10 / §11 的文档语义必须由
+// DB 兜底（约束存在 + 负向 INSERT 被拒），防止「只声明未落 DDL」的遗漏再次发生。
 func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	db := openTestDB(t)
 	checks := loadChecks(t, db)
@@ -521,6 +549,58 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	t.Run("group_tags 空数组被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, group_tags)
 			VALUES ('chk_probe', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '[]'::jsonb)`)
+	})
+
+	// R-24 负向覆盖：§6 / §10 的约束必须实际拒绝违法数据，而不只是存在于 catalog。
+	t.Run("纯空白 name 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models)
+			VALUES (E' \t\n', 'openai', decode('00', 'hex'), '["m"]'::jsonb)`)
+	})
+	t.Run("test_model 非 supported_models 成员被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, test_model)
+			VALUES ('chk_tm', 'openai', decode('00', 'hex'), '["m"]'::jsonb, 'not-a-model')`)
+	})
+	t.Run("空字符串 tag 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_empty', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '')`)
+	})
+	t.Run("纯空白 tag 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_space', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '   ')`)
+	})
+	// 白名单字符集分支：长度/btrim 都合法，但 `/` 不在允许集合内；不测这一条时
+	// 约束被放宽成「只查长度与空白」也会保持绿色。
+	t.Run("tag 非法字符被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_charset', 'openai', decode('00', 'hex'), '["m"]'::jsonb, 'bad/tag')`)
+	})
+	// 白名单约束是双向的：拒绝非法字符的同时必须接收集合内字符。CJK 与连字符走
+	// 显式 Unicode 区段（不依赖 DB locale），用回滚事务验证正向分支，避免在多包共享
+	// 的库中留下数据（channels.name 全局唯一，重复跑会撞唯一键）。
+	t.Run("CJK 与连字符 tag 被接受", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_cjk', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '中文-渠道_1')`); err != nil {
+			t.Fatalf("合法 tag 被误拒：%v", err)
+		}
+	})
+	t.Run("小写 currency 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key)
+			VALUES (1, 'stripe', 1, 'usd', 'chk_currency_lower')`)
+	})
+	// provider_currency 是独立的字符集分支（NULL 与非 NULL 两态），只测 currency
+	// 无法证明渠道结算币种也被约束；小写三字母必须在非 NULL 分支被拒。
+	t.Run("小写 provider_currency 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, provider_currency)
+			VALUES (1, 'stripe', 1, 'USD', 'chk_provider_currency_lower', 'usd')`)
+	})
+	t.Run("fx_rate 半对被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, fx_rate_num)
+			VALUES (1, 'stripe', 1, 'USD', 'chk_fx_half', 710)`)
 	})
 }
 
@@ -604,6 +684,13 @@ type dbCheck struct {
 
 // loadChecks 读取主库 16 表上的全部 CHECK 约束。
 func loadChecks(t *testing.T, db *sql.DB) map[string][]dbCheck {
+	return loadChecksOn(t, db, wantColumns)
+}
+
+// loadChecksOn 读取 tables 所列表上的全部 CHECK 约束。tables 同时充当「本库
+// 有哪些表」的白名单：主库传 wantColumns，日志库传 logsWantColumns（R-13）。
+// 解析与容差口径（pg_get_constraintdef 的 ANY/ARRAY 规范化）对两库共用。
+func loadChecksOn(t *testing.T, db *sql.DB, tables map[string]int) map[string][]dbCheck {
 	t.Helper()
 	rows, err := db.Query(`SELECT rel.relname, con.conname, pg_get_constraintdef(con.oid)
 		FROM pg_constraint con
@@ -622,7 +709,7 @@ func loadChecks(t *testing.T, db *sql.DB) map[string][]dbCheck {
 		if err := rows.Scan(&table, &c.Name, &c.Def); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if _, ok := wantColumns[table]; !ok {
+		if _, ok := tables[table]; !ok {
 			continue
 		}
 		c.Members, c.IsEnum = parseEnumMembers(c.Def)

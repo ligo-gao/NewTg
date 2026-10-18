@@ -33,6 +33,12 @@ describe('formatTokenAmount', () => {
     expect(formatTokenAmount(999999)).toBe('999,999')
   })
 
+  it('applies the abbreviation threshold to the rounded value', () => {
+    // 999,999.6 would otherwise print as the grouped "1,000,000".
+    expect(formatTokenAmount(999999.6)).toBe('1.0M')
+    expect(formatTokenAmount(999999.4)).toBe('999,999')
+  })
+
   it('keeps one decimal for an exact million', () => {
     expect(formatTokenAmount(1000000)).toBe('1.0M')
   })

@@ -16,12 +16,15 @@ import (
 
 // Config 覆盖 platform-03 §3.1 全部 26 项应用侧环境变量。
 type Config struct {
-	// 必填（#1-#4）。
+	// 必填（#1-#4、#22）。DB_LOGS_DSN 在平台设计表 #22 标「✅ 必填」；
+	// 计划 GC-7 曾按 4 项枚举，M0 收尾按设计表改为第 5 项（控制器裁决）：
+	// 日志库迁移不可被静默跳过，否则 usage_logs / audit_logs 永远不会建出来。
 	DatabaseURL             string // DATABASE_URL
 	SessionSecret           string // SESSION_SECRET
 	CredentialEncryptionKey string // CREDENTIAL_ENCRYPTION_KEY
+	DBLogsDSN               string // DB_LOGS_DSN
 
-	// 可选（#5-#26）；REDIS_URL 因与同名的 RedisURL() 方法冲突，以非导出字段存储。
+	// 可选（#5-#21、#23-#26）；REDIS_URL 因与同名的 RedisURL() 方法冲突，以非导出字段存储。
 	redisURL                 string        // REDIS_URL
 	RunMode                  string        // RUN_MODE
 	HTTPAddr                 string        // HTTP_ADDR
@@ -40,7 +43,6 @@ type Config struct {
 	MetricsToken             string        // METRICS_TOKEN
 	PublicBaseURL            string        // PUBLIC_BASE_URL
 	OpenAPIValidate          string        // OPENAPI_VALIDATE
-	DBLogsDSN                string        // DB_LOGS_DSN
 	PerfMetricsEnabled       bool          // PERF_METRICS_ENABLED
 	PerfMetricsFlushInterval time.Duration // PERF_METRICS_FLUSH_INTERVAL
 	PerfMetricsRetentionDays int           // PERF_METRICS_RETENTION_DAYS
@@ -66,7 +68,6 @@ var defaults = map[string]string{
 	"METRICS_TOKEN":               "",
 	"PUBLIC_BASE_URL":             "",
 	"OPENAPI_VALIDATE":            "warn",
-	"DB_LOGS_DSN":                 "",
 	"PERF_METRICS_ENABLED":        "true",
 	"PERF_METRICS_FLUSH_INTERVAL": "5m",
 	"PERF_METRICS_RETENTION_DAYS": "400",
@@ -81,12 +82,14 @@ func lookup(key string) string {
 	return defaults[key]
 }
 
-// required 四项必填环境变量（platform-03 §3.1 #1-#4）。
+// required 五项必填环境变量（platform-03 §3.1 #1-#4、#22）。
+// DB_LOGS_DSN 按设计表 #22 的「必填 ✅」执行（M0 控制器裁决，覆盖计划 GC-7 的 4 项枚举）。
 var required = []string{
 	"DATABASE_URL",
 	"REDIS_URL",
 	"SESSION_SECRET",
 	"CREDENTIAL_ENCRYPTION_KEY",
+	"DB_LOGS_DSN",
 }
 
 // Load 解析 26 项环境变量并校验；必填缺失或非法值返回 error（信息含变量名）。
@@ -102,6 +105,7 @@ func Load() (*Config, error) {
 		redisURL:                os.Getenv("REDIS_URL"),
 		SessionSecret:           os.Getenv("SESSION_SECRET"),
 		CredentialEncryptionKey: os.Getenv("CREDENTIAL_ENCRYPTION_KEY"),
+		DBLogsDSN:               os.Getenv("DB_LOGS_DSN"),
 		RunMode:                 lookup("RUN_MODE"),
 		HTTPAddr:                lookup("HTTP_ADDR"),
 		AppEnv:                  lookup("APP_ENV"),
@@ -113,7 +117,6 @@ func Load() (*Config, error) {
 		MetricsToken:            lookup("METRICS_TOKEN"),
 		PublicBaseURL:           lookup("PUBLIC_BASE_URL"),
 		OpenAPIValidate:         lookup("OPENAPI_VALIDATE"),
-		DBLogsDSN:               lookup("DB_LOGS_DSN"),
 		TLSDMinVersion:          lookup("TLS_MIN_VERSION"),
 	}
 

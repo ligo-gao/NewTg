@@ -1,4 +1,6 @@
 interface ImportMetaEnv {
+  /** Rsbuild/Vite built-in: true outside production builds (dev-only warnings). */
+  readonly DEV: boolean
   readonly PUBLIC_BASE_PATH?: string
   readonly PUBLIC_APP_VERSION?: string
   readonly PUBLIC_ENABLE_MSW?: string

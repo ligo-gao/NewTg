@@ -51,7 +51,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 
 	if cfg.DBMigrateOnStart {
-		if err := RunMigrate(ctx, cfg); err != nil {
+		// 经 connectors 钩子调用：生产即 RunMigrate，测试可注入 stub 断言调用与否。
+		if err := conn.runMigrate(ctx, cfg); err != nil {
 			// 主错误优先：迁移失败时尽力释放两个资源，关闭错误不再上报。
 			_ = redisRes.Close()
 			_ = db.Close()

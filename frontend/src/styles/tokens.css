@@ -62,7 +62,11 @@
   --accent-admin: #7c3aed;
   --accent-reversal: #b45309;
 
-  /* Chart category palette — §4.6.5, fixed order, never cycled */
+  /* Chart category palette — §4.6.5, fixed order, never cycled.
+     The values below were validated with the dataviz checker against the light
+     card surface. Re-run that validator before the first chart ships (and after
+     any palette edit): the checks cover CVD separation, adjacent-pair ΔE and
+     ≥3:1 non-text contrast, which a colour picker cannot confirm by eye. */
   --chart-cat-1: #2a78d6;
   --chart-cat-2: #eb6834;
   --chart-cat-3: #1baf7a;
@@ -74,6 +78,10 @@
 
   /* Chart sequential scale — §4.6.5. Anchors 100/250/450/650/700 are frozen
      by modules-00; intermediate 50-step stops are interpolated between them.
+     650 used to repeat the 700 endpoint's value (#0D366B), collapsing the two
+     darkest steps and making the last threshold bucket indistinguishable from
+     the maximum. The endpoint stays #0D366B (modules-00 §4.6.5 range ends at
+     700); 650 is the midpoint between the 600 stop (#184A87) and that endpoint.
      Dark values intentionally absent: web-00 §13.12 L-3 defers them to P1. */
   --chart-seq-100: #cde2fb;
   --chart-seq-150: #b5d3f7;
@@ -86,7 +94,7 @@
   --chart-seq-500: #2f72be;
   --chart-seq-550: #245ea2;
   --chart-seq-600: #184a87;
-  --chart-seq-650: #0d366b;
+  --chart-seq-650: #134079;
   --chart-seq-700: #0d366b;
 
   /* Chart diverging scale — §4.6.5: blue ↔ neutral midpoint ↔ red */
@@ -183,5 +191,9 @@
   --code-number: #fbbf24;
   --code-comment: #8a93a1;
 
-  --on-brand: #ffffff;
+  /* White on the dark brand (#3B82F6) measures 3.68:1 — below the 4.5:1 AA
+     text minimum (modules-00 §4.4, §4.6.1). Use the page's near-black ink
+     instead: #0C111D on #3B82F6 measures 5.13:1. The light theme keeps white
+     (5.17:1 on #2563EB), so only the dark value changes. */
+  --on-brand: #0c111d;
 }
