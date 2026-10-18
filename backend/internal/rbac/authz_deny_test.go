@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // wantDeny 是各拒绝分支期望的审计事件形状。
@@ -22,11 +23,13 @@ type wantDeny struct {
 // TestWritePolicyCheckPrecedesBodyPresence 覆盖 D1-2：未登记字段策略的动作，
 // 即使写请求没有 body（DELETE/Content-Length: 0），也必须 403 且不调用下游；
 // 登记过的动作则允许空 body（没有字段可写）通过。
+//
+// 每个子用例使用独立的中间件实例与不同的动作键：共享实例时，"未登记" 子用例
+// 的正确性会隐式依赖它先于注册执行（顺序/并行化一变化语义就翻转）。
 func TestWritePolicyCheckPrecedesBodyPresence(t *testing.T) {
-	m := NewAuthzMiddleware()
-	unregistered := AuthzAction{ResourceKind: "user", ActionName: "delete"}
-
 	t.Run("DELETE 无 body + 未登记策略 → 403", func(t *testing.T) {
+		m := NewAuthzMiddleware()
+		unregistered := AuthzAction{ResourceKind: "user", ActionName: "delete"}
 		req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/9", nil)
 		rr, called := serve(t, m, ptr(admin(1)), PermUsersDelete, unregistered, req)
 		if called {
@@ -40,10 +43,10 @@ func TestWritePolicyCheckPrecedesBodyPresence(t *testing.T) {
 		}
 	})
 
-	registered := AuthzAction{ResourceKind: "user", ActionName: "delete"}
-	m.SetWritePolicy(registered, &FieldPolicy{Fields: map[string]*FieldPolicy{"name": nil}})
-
 	t.Run("DELETE 无 body + 已登记策略 → 放行", func(t *testing.T) {
+		m := NewAuthzMiddleware()
+		registered := AuthzAction{ResourceKind: "user", ActionName: "remove"}
+		m.SetWritePolicy(registered, &FieldPolicy{Fields: map[string]*FieldPolicy{"name": nil}})
 		req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/9", nil)
 		rr, called := serve(t, m, ptr(admin(1)), PermUsersDelete, registered, req)
 		if !called || rr.Code != http.StatusNoContent {
@@ -52,6 +55,9 @@ func TestWritePolicyCheckPrecedesBodyPresence(t *testing.T) {
 	})
 
 	t.Run("空 JSON 对象 + 已登记策略 → 放行", func(t *testing.T) {
+		m := NewAuthzMiddleware()
+		registered := AuthzAction{ResourceKind: "user", ActionName: "purge"}
+		m.SetWritePolicy(registered, &FieldPolicy{Fields: map[string]*FieldPolicy{"name": nil}})
 		req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/9", strings.NewReader(`{}`))
 		rr, called := serve(t, m, ptr(admin(1)), PermUsersDelete, registered, req)
 		if !called || rr.Code != http.StatusNoContent {
@@ -128,16 +134,39 @@ func TestDenyAuditorReportsEveryDenyBranch(t *testing.T) {
 		}, http.MethodGet, "/api/admin/users")
 	})
 
-	t.Run("数据级拒绝", func(t *testing.T) {
+	t.Run("数据级拒绝（Route 用路由模板）", func(t *testing.T) {
 		m := NewAuthzMiddleware()
 		events := collect(t, m)
 		action := AuthzAction{ResourceKind: "order", TargetOwnerUserID: 42}
 		p := user(7)
-		rr, called := serve(t, m, &p, "", action,
-			httptest.NewRequest(http.MethodGet, "/api/orders/42", nil))
+		req := httptest.NewRequest(http.MethodGet, "/api/orders/42", nil)
+		// ServeMux 匹配成功后 Pattern 是模板；审计必须记录模板而不是含 ID 的路径。
+		req.Pattern = "GET /api/orders/{id}"
+		rr, called := serve(t, m, &p, "", action, req)
 		assertDeny(t, rr, called, *events, wantDeny{
 			reason: DenyReasonDataScope, userID: 7, perm: "", wantCode: http.StatusNotFound,
-		}, http.MethodGet, "/api/orders/42")
+		}, http.MethodGet, "GET /api/orders/{id}")
+	})
+
+	t.Run("Route 回退原始路径并按 UTF-8 边界截断", func(t *testing.T) {
+		m := NewAuthzMiddleware()
+		events := collect(t, m)
+		// 模板缺失时回退 URL.Path；路径超长必须定界到 256 字节，且不得把
+		// é（2 字节）切成非法序列：255 ASCII + é = 257 字节 → 截到 255。
+		req := httptest.NewRequest(http.MethodGet, "/api/orders/", nil)
+		req.URL.Path = "/api/orders/" + strings.Repeat("a", 243) + "é"
+		if got := len(req.URL.Path); got != 257 {
+			t.Fatalf("测试路径长度 = %d，期望 257", got)
+		}
+		rr, called := serve(t, m, ptr(user(7)), "",
+			AuthzAction{ResourceKind: "order", TargetOwnerUserID: 42}, req)
+		wantRoute := "/api/orders/" + strings.Repeat("a", 243)
+		assertDeny(t, rr, called, *events, wantDeny{
+			reason: DenyReasonDataScope, userID: 7, wantCode: http.StatusNotFound,
+		}, http.MethodGet, wantRoute)
+		if !utf8.ValidString((*events)[0].Route) {
+			t.Fatal("Route 被截断成非法 UTF-8")
+		}
 	})
 
 	t.Run("字段策略未登记", func(t *testing.T) {

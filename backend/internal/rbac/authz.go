@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"unicode/utf8"
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/auth"
@@ -180,6 +181,35 @@ func (m *AuthzMiddleware) auditDeny(r *http.Request, e DenyEvent) {
 	}
 	defer func() { _ = recover() }()
 	m.denyAuditor(r, e)
+}
+
+// maxDenyRouteBytes 限制 DenyEvent.Route 的长度：路由模板/原始路径都可能被
+// 客户端用超长 URL 放大，而审计保留 12 个月，必须在写入前定界。
+const maxDenyRouteBytes = 256
+
+// denyRoute 返回审计用的路由标识：优先 r.Pattern（ServeMux 匹配到的路由模板，
+// 如 "GET /api/orders/{id}"）。security-09 §2.7 设计 B 要求记录 route 模板；
+// 原始 URL.Path 完全由客户端控制，直接落库既能把任意未匹配路径写进审计
+// （日志注入/放大），也无法按路由聚合。未经过 ServeMux（测试/中间件直调）或
+// 未匹配时 Pattern 为空，回退 URL.Path，并统一截断到 256 字节。
+func denyRoute(r *http.Request) string {
+	route := r.Pattern
+	if route == "" {
+		route = r.URL.Path
+	}
+	return truncateUTF8(route, maxDenyRouteBytes)
+}
+
+// truncateUTF8 按 UTF-8 边界截断，避免把多字节字符切成非法序列。
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // SetWritePolicy 登记（或传 nil 注销）某个动作的写字段白名单。
@@ -376,12 +406,14 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 			// 归属按请求解析；ResourceKind/ActionName 保持不变，因此字段策略
 			// 登记键不受影响。action 在本次请求内只读，可安全共享。
 			action := actionFor(r)
+			// 审计记录路由模板而不是客户端可控的原始路径（见 denyRoute）。
+			route := denyRoute(r)
 			p, ok := auth.PrincipalFrom(r.Context())
 			if !ok || p == nil {
 				// 认证中间件缺失或顺序装配错误：失败关闭，绝不把零值身份当匿名。
 				m.auditDeny(r, DenyEvent{
 					Permission: required,
-					Route:      r.URL.Path,
+					Route:      route,
 					Method:     r.Method,
 					Reason:     DenyReasonUnauthenticated,
 				})
@@ -397,7 +429,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 				m.auditDeny(r, DenyEvent{
 					UserID:     p.UserID,
 					Permission: required,
-					Route:      r.URL.Path,
+					Route:      route,
 					Method:     r.Method,
 					Reason:     DenyReasonPermissionLoadFailed,
 				})
@@ -420,7 +452,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 				m.auditDeny(r, DenyEvent{
 					UserID:     resolved.UserID,
 					Permission: required,
-					Route:      r.URL.Path,
+					Route:      route,
 					Method:     r.Method,
 					Reason:     reason,
 				})
@@ -435,7 +467,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 					m.auditDeny(r, DenyEvent{
 						UserID:     resolved.UserID,
 						Permission: required,
-						Route:      r.URL.Path,
+						Route:      route,
 						Method:     r.Method,
 						Reason:     DenyReasonInvalidBody,
 					})
@@ -451,7 +483,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 					m.auditDeny(r, DenyEvent{
 						UserID:     resolved.UserID,
 						Permission: required,
-						Route:      r.URL.Path,
+						Route:      route,
 						Method:     r.Method,
 						Reason:     DenyReasonPolicyMissing,
 					})
@@ -466,7 +498,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 						m.auditDeny(r, DenyEvent{
 							UserID:     resolved.UserID,
 							Permission: required,
-							Route:      r.URL.Path,
+							Route:      route,
 							Method:     r.Method,
 							Reason:     DenyReasonField,
 							// 复制一份：审计回调若误改切片，不得污染写出的响应体。

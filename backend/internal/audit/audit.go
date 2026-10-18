@@ -189,7 +189,8 @@ const insertSQL = `INSERT INTO audit_logs
 	(user_id, username, category, ip, user_agent, method, route, status_code, result, detail, before, after)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb)`
 
-// Log 写入一条简单审计事件（冻结签名）。detail 为 nil 时写 NULL。
+// Log 写入一条简单审计事件（冻结签名）。detail 为空时不会写 NULL：writer
+// 统一注入 {"action": action}（裁决 R-43），保证每条审计都可按动作检索。
 func (l *Logger) Log(ctx context.Context, action string, actor int64, detail json.RawMessage) error {
 	return l.LogEvent(ctx, Event{Action: action, Actor: actor, Detail: detail})
 }
