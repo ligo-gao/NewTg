@@ -24,6 +24,9 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/expr"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
@@ -151,13 +154,15 @@ func (f *fakeRelayChannelStore) EnabledModels(_ context.Context) ([]string, erro
 
 // ---------- 记录计费会话 ----------
 
-// recordingBilling 包装 billingseam.Stub 并记录 Terminate 的事实，
-// 用于断言「客户端断开只终结一次」与 partial UsageFact 的字段。
+// recordingBilling 包装 billingseam.Stub 并记录 Terminate/Refund 的事实。
+// 成功出口走 Terminate（可断言最终 UsageFact）；失败/取消/panic 出口走
+// Refund（R-85），只记录次数。
 type recordingBilling struct {
 	mu          sync.Mutex
 	stub        *billingseam.Stub
 	terminated  []contract.UsageFact
 	preConsumed []contract.QuotaEstimate
+	refunds     int
 }
 
 func newRecordingBilling() *recordingBilling {
@@ -180,7 +185,12 @@ func (b *recordingBilling) Terminate(fact contract.UsageFact) error {
 	b.mu.Unlock()
 	return b.stub.Terminate(fact)
 }
-func (b *recordingBilling) Refund() error                 { return b.stub.Refund() }
+func (b *recordingBilling) Refund() error {
+	b.mu.Lock()
+	b.refunds++
+	b.mu.Unlock()
+	return b.stub.Refund()
+}
 func (b *recordingBilling) Reserved() int64               { return b.stub.Reserved() }
 func (b *recordingBilling) NeedsRefund() bool             { return b.stub.NeedsRefund() }
 func (b *recordingBilling) RecoverAbandoned(string) error { return b.stub.RecoverAbandoned("") }
@@ -189,6 +199,12 @@ func (b *recordingBilling) terminateCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.terminated)
+}
+
+func (b *recordingBilling) refundCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.refunds
 }
 
 func (b *recordingBilling) lastFact() contract.UsageFact {
@@ -325,7 +341,7 @@ func newRelayTestEnv(t *testing.T, upstream *httptest.Server, channels *fakeRela
 		Access:   access,
 		Sealer:   sealer,
 		Client:   upstream.Client(),
-		Billing:  func() contract.BillingSession { return billing },
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
 	})
 	return &relayTestEnv{handler: h, channels: channels, tokens: tokenStore, access: access, billing: billing, sealer: sealer}
 }
@@ -352,6 +368,155 @@ func (e *relayTestEnv) do(t *testing.T, method, path, body string, headers map[s
 func (e *relayTestEnv) doAuthed(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	return e.do(t, method, path, body, map[string]string{"Authorization": "Bearer " + relayTestToken})
+}
+
+// fakeRelayModelStatus 是 RelayModelStatusStore 的内存 fake（R-84 测试）。
+type fakeRelayModelStatus struct {
+	mu     sync.Mutex
+	status map[string]int16
+	err    error
+	calls  []string
+}
+
+func (f *fakeRelayModelStatus) ModelPricingStatus(_ context.Context, model string) (int16, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, model)
+	if f.err != nil {
+		return 0, false, f.err
+	}
+	status, ok := f.status[model]
+	return status, ok, nil
+}
+
+func (f *fakeRelayModelStatus) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// ---------- 禁用模型（R-84 / TC-F-06-13-01） ----------
+
+// TestRelayDisabledModelReturns404：model_pricing.status=2 的模型必须在派发
+// 与预扣之前返回 404 model_not_found，绝不触达上游。
+func TestRelayDisabledModelReturns404(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called for a disabled model")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	modelStatus := &fakeRelayModelStatus{status: map[string]int16{"gpt-test": modelPricingStatusDisabled}}
+	env.handler.modelStatus = modelStatus
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
+		t.Fatalf("body = %s, want model_not_found", w.Body.String())
+	}
+	if env.billing.preConsumeCalls() != 0 {
+		t.Fatalf("PreConsume calls = %d, want 0（停用检查必须在预扣之前）", env.billing.preConsumeCalls())
+	}
+	if env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatal("disabled model must not open a billing session")
+	}
+	if modelStatus.callCount() != 1 {
+		t.Fatalf("status lookup calls = %d, want 1", modelStatus.callCount())
+	}
+}
+
+// TestRelayModelWithoutPricingRowUsesDefault：无定价行的模型按默认价兜底，
+// 停用检查必须放行（found=false），请求照常完成。
+func TestRelayModelWithoutPricingRowUsesDefault(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.modelStatus = &fakeRelayModelStatus{status: map[string]int16{}}
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（未定价模型按默认价放行）; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRelayModelStatusLookupFailureReturns500：状态查询失败是服务端故障，
+// 固定 500 database_error，不泄露 SQL/DSN（GC-6）。
+func TestRelayModelStatusLookupFailureReturns500(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called when the status lookup fails")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.modelStatus = &fakeRelayModelStatus{err: errors.New("pq: dsn postgres://secret@host/db")}
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"database_error"`) {
+		t.Fatalf("body = %s, want database_error", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "postgres://") {
+		t.Fatalf("error body leaks storage details: %s", w.Body.String())
+	}
+	if env.billing.preConsumeCalls() != 0 {
+		t.Fatal("status lookup failure must not open a billing session")
+	}
+}
+
+// TestRelayBillingFactoryReceivesRelayContext 冻结 T9 的工厂签名语义：
+// 工厂必须拿到本请求的 RelayContext（真实引擎靠它绑定 RequestID/UserID/
+// TokenID/UsingGroup），且每请求只构造一次。
+func TestRelayBillingFactoryReceivesRelayContext(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	var (
+		mu     sync.Mutex
+		seenRC []*contract.RelayContext
+	)
+	env.handler.billing = func(rc *contract.RelayContext) contract.BillingSession {
+		mu.Lock()
+		seenRC = append(seenRC, rc)
+		mu.Unlock()
+		return billingseam.NewStub()
+	}
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenRC) != 1 {
+		t.Fatalf("billing factory calls = %d, want 1", len(seenRC))
+	}
+	rc := seenRC[0]
+	if rc == nil || rc.RequestID == "" {
+		t.Fatalf("factory rc = %+v, want the request's RelayContext with RequestID", rc)
+	}
+	if rc.UserID != int(relayTestUserID) || rc.TokenID != int(relayTestTokenID) {
+		t.Fatalf("factory rc identity = user %d/token %d, want %d/%d",
+			rc.UserID, rc.TokenID, relayTestUserID, relayTestTokenID)
+	}
+	if rc.OriginModel != "gpt-test" {
+		t.Fatalf("factory rc OriginModel = %q, want gpt-test", rc.OriginModel)
+	}
 }
 
 // ---------- (a) 非流式 ----------
@@ -603,10 +768,9 @@ func TestRelayStreamAllZeroUsageFallsBackToHeader(t *testing.T) {
 	}
 }
 
-// TestRelayStreamClientAbortHeaderUsageStaysExact 覆盖 re-review fix 4：
-// x-model-response-usage 头是上游生成的**完整**用量值，与流在何处中断无关。
-// 客户端断开属于异常结束，但头部来源不得降级为 upstream_partial。
-func TestRelayStreamClientAbortHeaderUsageStaysExact(t *testing.T) {
+// TestRelayStreamClientAbortRefunds 覆盖 R-85：客户端断开是失败出口，必须
+// 恰好一次 Refund（不得 Terminate——真实引擎会把零值事实按按次价结算）。
+func TestRelayStreamClientAbortRefunds(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("x-model-response-usage",
@@ -647,22 +811,18 @@ func TestRelayStreamClientAbortHeaderUsageStaysExact(t *testing.T) {
 	_ = resp.Body.Close()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for env.billing.terminateCount() == 0 {
+	for env.billing.refundCount() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("billing session was not terminated after client disconnect")
+			t.Fatal("billing session was not refunded after client disconnect")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1 after disconnect", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1 after disconnect", got)
 	}
-	fact := env.billing.lastFact()
-	if fact.Usage.Source != contract.UsageUpstreamExact {
-		t.Fatalf("abort + 头部用量 Source = %v, want UsageUpstreamExact（头部是完整上游报告）", fact.Usage.Source)
-	}
-	if fact.Usage.Prompt != 7 || fact.Usage.Completion != 5 || fact.Usage.Total != 12 {
-		t.Fatalf("abort + 头部用量 = %+v, want 7/5/12", fact.Usage)
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（失败出口必须退款而不是结算）", got)
 	}
 }
 
@@ -808,9 +968,9 @@ func TestRelayModelsList(t *testing.T) {
 	}
 }
 
-// ---------- (f) 客户端断开：partial UsageFact 且只终结一次 ----------
+// ---------- (f) 客户端断开：失败退款且只终结一次 ----------
 
-func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
+func TestRelayStreamingClientDisconnectRefundsOnce(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -860,38 +1020,30 @@ func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
 		t.Fatal("usage event was not observed before disconnect")
 	}
 
-	// 客户端断开：网关必须停止转发、关闭上游 body，并以 partial fact 终结会话。
+	// 客户端断开：网关必须停止转发、关闭上游 body，并全额退款（R-85）。
 	cancel()
 	_ = resp.Body.Close()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for env.billing.terminateCount() == 0 {
+	for env.billing.refundCount() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("billing session was not terminated after client disconnect")
+			t.Fatal("billing session was not refunded after client disconnect")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	// 给潜在的双重终结留出观察窗口。
 	time.Sleep(100 * time.Millisecond)
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1 after disconnect", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1 after disconnect", got)
 	}
-	fact := env.billing.lastFact()
-	if !fact.Stream {
-		t.Fatal("disconnect UsageFact.Stream = false, want true")
-	}
-	if fact.Usage.Source != contract.UsageUpstreamPartial {
-		t.Fatalf("disconnect UsageFact.Source = %d, want UsageUpstreamPartial（上游已给出部分用量）", fact.Usage.Source)
-	}
-	if fact.Usage.Total != 4 {
-		t.Fatalf("disconnect UsageFact.Usage.Total = %d, want 4", fact.Usage.Total)
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（断开必须退款）", got)
 	}
 }
 
-// TestRelayStreamingDisconnectWithoutUsageIsEstimated 覆盖 finding 3：
-// 客户端断开但从未观察到上游用量时，来源必须是 estimated 而不是
-// upstream_partial（零用量不是「部分事实」）。
-func TestRelayStreamingDisconnectWithoutUsageIsEstimated(t *testing.T) {
+// TestRelayStreamingDisconnectWithoutUsageRefunds 覆盖断开且从未观察到上游
+// 用量的情形：仍是失败出口 → Refund（不再构造 estimated fact 去结算）。
+func TestRelayStreamingDisconnectWithoutUsageRefunds(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -929,32 +1081,24 @@ func TestRelayStreamingDisconnectWithoutUsageIsEstimated(t *testing.T) {
 	_ = resp.Body.Close()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for env.billing.terminateCount() == 0 {
+	for env.billing.refundCount() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("billing session was not terminated after client disconnect")
+			t.Fatal("billing session was not refunded after client disconnect")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1 after disconnect", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1 after disconnect", got)
 	}
-	fact := env.billing.lastFact()
-	if fact.Usage.Source != contract.UsageEstimated {
-		t.Fatalf("no-usage disconnect Source = %d, want UsageEstimated（零用量不是 partial）", fact.Usage.Source)
-	}
-	// re-review fix 3：estimated 只影响来源，不改变协议语义。OpenAI 的
-	// prompt 已含 CacheRead、completion 已含 Reasoning，必须与 relay.Route
-	// 非流式路径一致，否则计费侧会按独立维度重复加价。
-	if !fact.Usage.PromptIncludesCache || !fact.Usage.ReasoningIncludedInCompletion {
-		t.Fatalf("estimated OpenAI fact 关系布尔未补齐: PromptIncludesCache=%v ReasoningIncludedInCompletion=%v",
-			fact.Usage.PromptIncludesCache, fact.Usage.ReasoningIncludedInCompletion)
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（无用量断开也必须退款）", got)
 	}
 }
 
-// TestRelayStreamWatchdogTimeoutTerminatesOnce 覆盖 finding 4：
-// 上游静默超过看门狗阈值 → EndReason=timeout、恰好一次 Terminate、不写 [DONE]。
-func TestRelayStreamWatchdogTimeoutTerminatesOnce(t *testing.T) {
+// TestRelayStreamWatchdogTimeoutRefundsOnce 覆盖 finding 4 + R-85：
+// 上游静默超过看门狗阈值 → EndReason=timeout、恰好一次 Refund、不写 [DONE]。
+func TestRelayStreamWatchdogTimeoutRefundsOnce(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -990,11 +1134,11 @@ func TestRelayStreamWatchdogTimeoutTerminatesOnce(t *testing.T) {
 	if strings.Contains(w.Body.String(), "data: [DONE]") {
 		t.Fatalf("超时是异常结束，不得伪造 [DONE]; body=%s", w.Body.String())
 	}
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
 	}
-	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageEstimated {
-		t.Fatalf("timeout UsageFact.Source = %d, want UsageEstimated（无上游用量）", fact.Usage.Source)
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（超时必须退款）", got)
 	}
 	if observing.rc == nil || observing.rc.StreamStatus == nil {
 		t.Fatal("StreamStatus was not recorded")
@@ -1005,7 +1149,7 @@ func TestRelayStreamWatchdogTimeoutTerminatesOnce(t *testing.T) {
 }
 
 // TestRelayStreamPanicRecovery 覆盖 finding 4 的 panic 恢复：进程不崩、
-// EndReason=EndPanic、恰好一次 Terminate、不写 [DONE]。
+// EndReason=EndPanic、恰好一次 Refund、不写 [DONE]。
 func TestRelayStreamPanicRecovery(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1028,8 +1172,11 @@ func TestRelayStreamPanicRecovery(t *testing.T) {
 	if strings.Contains(w.Body.String(), "data: [DONE]") {
 		t.Fatalf("panic 是异常结束，不得伪造 [DONE]; body=%s", w.Body.String())
 	}
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（panic 必须退款）", got)
 	}
 	if adapter.rc == nil || adapter.rc.StreamStatus == nil {
 		t.Fatal("StreamStatus was not recorded after panic")
@@ -1287,12 +1434,11 @@ func TestRelayStreamHardErrorStopsWithoutErrorFrame(t *testing.T) {
 	if strings.Contains(out, "data: [DONE]") {
 		t.Fatalf("hard stream error must not forge a normal [DONE]; body=%s", out)
 	}
-	if got := env.billing.terminateCount(); got != 1 {
-		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
 	}
-	// finding 3：硬流错误但从未观察到上游 usage → estimated（不是 partial）。
-	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageEstimated {
-		t.Fatalf("hard error UsageFact.Source = %d, want UsageEstimated", fact.Usage.Source)
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（硬错误必须退款）", got)
 	}
 }
 
@@ -1312,6 +1458,110 @@ func TestRelayErrorStatusMapping(t *testing.T) {
 	if !strings.Contains(message, "4 attempt") {
 		t.Fatalf("AttemptsError message = %q, want attempt count", message)
 	}
+}
+
+// TestRelayBillingErrorMapping 覆盖 T9 的计费错误映射（R-45/R-86）：
+//   - *billing.QuotaError 与 M2 桩的额度错误 → 402 insufficient_quota；
+//   - 定价/钳制/表达式/配置错误 → 400 model_price_error（绝不落 502）；
+//   - ErrRequestClosed / ErrSettlementInProgress → 409（不重试），后者带 Retry-After。
+//
+// 错误都经 relay.FastFailError 包装，与真实执行路径（预扣失败 → safeWrapf →
+// FastFailError）保持同一错误链形状。
+func TestRelayBillingErrorMapping(t *testing.T) {
+	wrap := func(err error) error {
+		return &relay.FastFailError{Err: fmt.Errorf("relay: 预扣费失败: %w", err)}
+	}
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{
+			name:   "wallet quota error",
+			err:    wrap(&billing.QuotaError{Class: contract.ErrInsufficientQuota, Required: 150, Available: 100}),
+			status: http.StatusPaymentRequired,
+			code:   "insufficient_quota",
+		},
+		{
+			name:   "token quota sentinel",
+			err:    wrap(billing.ErrInsufficientQuota),
+			status: http.StatusPaymentRequired,
+			code:   "insufficient_quota",
+		},
+		{
+			name:   "stub quota error keeps 402",
+			err:    wrap(&billingseam.InsufficientQuotaError{Class: contract.ErrInsufficientQuota, Limit: 10}),
+			status: http.StatusPaymentRequired,
+			code:   "insufficient_quota",
+		},
+		{
+			name:   "price error",
+			err:    wrap(fmt.Errorf("billing: estimate quota: %w", billing.ErrPriceError)),
+			status: http.StatusBadRequest,
+			code:   "model_price_error",
+		},
+		{
+			name:   "clamp error",
+			err:    wrap(&pricing.ClampError{Clamp: &contract.QuotaClamp{Op: "QuotaFromFloatStrict", Clamped: 100}}),
+			status: http.StatusBadRequest,
+			code:   "model_price_error",
+		},
+		{
+			name:   "expression error",
+			err:    wrap(&expr.EvalError{Kind: expr.EvalSyntax, Message: "unexpected token"}),
+			status: http.StatusBadRequest,
+			code:   "model_price_error",
+		},
+		{
+			name:   "invalid config",
+			err:    wrap(fmt.Errorf("%w: billing.pre_consume_ratio must be > 0", billing.ErrInvalidConfig)),
+			status: http.StatusBadRequest,
+			code:   "model_price_error",
+		},
+		{
+			name:   "request closed",
+			err:    wrap(fmt.Errorf("%w: req-1", billing.ErrRequestClosed)),
+			status: http.StatusConflict,
+			code:   "request_closed",
+		},
+		{
+			name:   "settlement in progress",
+			err:    wrap(fmt.Errorf("%w: req-1", billing.ErrSettlementInProgress)),
+			status: http.StatusConflict,
+			code:   "settlement_in_progress",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, code, _ := mapRelayError(tc.err)
+			if status != tc.status || code != tc.code {
+				t.Fatalf("mapRelayError = (%d,%q), want (%d,%q)", status, code, tc.status, tc.code)
+			}
+		})
+	}
+
+	// Retry-After 只在结算并发冲突时出现（409 + 退避建议）。
+	t.Run("settlement in progress sets Retry-After", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		writeRelayMappedError(rr, "req-1", wrap(fmt.Errorf("%w: req-1", billing.ErrSettlementInProgress)))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", rr.Code)
+		}
+		if got := rr.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("Retry-After = %q, want 1", got)
+		}
+	})
+	t.Run("request closed has no Retry-After", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		writeRelayMappedError(rr, "req-1", wrap(fmt.Errorf("%w: req-1", billing.ErrRequestClosed)))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", rr.Code)
+		}
+		if got := rr.Header().Get("Retry-After"); got != "" {
+			t.Fatalf("Retry-After = %q, want empty", got)
+		}
+	})
 }
 
 // ---------- 令牌状态 / pin 403 / x-api-key ----------
@@ -1493,7 +1743,7 @@ func TestRelayTokenModelLimitsEnforced(t *testing.T) {
 
 	env := newRelayTestEnv(t, upstream, nil)
 	// 每个请求使用独立计费桩（Stub 是单会话实例）。
-	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+	env.handler.billing = func(*contract.RelayContext) contract.BillingSession { return billingseam.NewStub() }
 
 	env.tokens.mu.Lock()
 	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].ModelLimits = []string{"other-model"}
@@ -1543,7 +1793,7 @@ func TestRelayTokenIPAllowlist(t *testing.T) {
 	defer upstream.Close()
 
 	env := newRelayTestEnv(t, upstream, nil)
-	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+	env.handler.billing = func(*contract.RelayContext) contract.BillingSession { return billingseam.NewStub() }
 	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`
 
 	env.tokens.mu.Lock()
@@ -1589,7 +1839,7 @@ func TestRelayTrustedProxyPolicyForAllowIPs(t *testing.T) {
 	defer upstream.Close()
 
 	env := newRelayTestEnv(t, upstream, nil)
-	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+	env.handler.billing = func(*contract.RelayContext) contract.BillingSession { return billingseam.NewStub() }
 	env.tokens.mu.Lock()
 	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].AllowIPs = []string{"203.0.113.0/24"}
 	env.tokens.mu.Unlock()

@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"newtg/gateway/internal/billing/pricing"
 )
 
 // 定价仓储的哨兵错误，供 httpapi 映射 404/409/422。
@@ -311,6 +313,60 @@ func (r *SQLPricingRepo) GetModelPricing(ctx context.Context, model string) (Mod
 		return ModelPricingRecord{}, fmt.Errorf("store: get model_pricing(%s): %w", model, err)
 	}
 	return rec, nil
+}
+
+// ModelPricingStatus 是只读的模型定价状态查询（中继派发前的停用检查，
+// R-84 / modules-06 TC-F-06-13-01）。
+//
+// 候选顺序与 pricing.DBSource.Resolve 一致（精确名 → 规范名 → 基名）：
+// 管理员停用的若是别名/版本行，按该别名请求同样必须 404；只看精确名会让
+// 停用形同虚设。found=false 表示没有任何候选行——按默认价兜底，视为启用。
+//
+// 【一次查询】候选集最多几个名字，用 `IN (...)` 一次取回后按候选顺序取首个
+// 命中：中继每个请求都会走这里，逐候选查询会把一次请求放大成最多 6 次
+// DB 往返。占位符由固定数量的 `$n` 拼接，不接受任何调用方字符串。
+//
+// 该方法**不**加入 PricingRepo 接口：管理面不需要它，塞进接口会迫使所有
+// 测试假实现增加一个无意义的方法。中继只依赖 httpapi 的窄接口。
+func (r *SQLPricingRepo) ModelPricingStatus(ctx context.Context, model string) (int16, bool, error) {
+	candidates := pricing.ResolveBillingModelCandidates(model)
+	if len(candidates) == 0 {
+		return 0, false, nil
+	}
+	placeholders := make([]string, len(candidates))
+	args := make([]any, len(candidates))
+	for i, candidate := range candidates {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = candidate
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT model, status FROM model_pricing WHERE model IN (`+
+			strings.Join(placeholders, ", ")+`)`, args...)
+	if err != nil {
+		return 0, false, fmt.Errorf("store: read model_pricing status(%s): %w", model, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	statuses := make(map[string]int16, len(candidates))
+	for rows.Next() {
+		var (
+			name   string
+			status int16
+		)
+		if err := rows.Scan(&name, &status); err != nil {
+			return 0, false, fmt.Errorf("store: scan model_pricing status(%s): %w", model, err)
+		}
+		statuses[name] = status
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("store: iterate model_pricing status(%s): %w", model, err)
+	}
+	for _, candidate := range candidates {
+		if status, ok := statuses[candidate]; ok {
+			return status, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // CreateModelPricing 插入一行并返回数据库生成的 id/时间戳。

@@ -18,6 +18,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/version"
@@ -80,12 +81,16 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 
 	// 管理面路由必须在监听之前装配完成：配置中心/令牌缓存订阅失败、
 	// 权限装载器或审计缺失都必须阻止进程上线（GC-7）。
-	apiHandler, err := conn.newAPIHandler(ctx, cfg, db, logsDB, redisRes, log)
+	assembly, err := conn.newAPIHandler(ctx, cfg, db, logsDB, redisRes, log)
 	if err != nil {
 		_ = redisRes.Close()
 		_ = logsDB.Close()
 		_ = db.Close()
 		return fmt.Errorf("gateway: assemble http api: %w", err)
+	}
+	var apiHandler http.Handler
+	if assembly != nil {
+		apiHandler = assembly.Handler
 	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
@@ -104,8 +109,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	mux := newGatewayMux(checker, apiHandler)
 	// /v1/*（中继面）只在资源是生产具体类型时挂载；platform 单测注入的 stub
 	// Resource 无法还原 *sql.DB / *redis.Client，此时保持 health-only mux
-	// （既有测试不触真 PG/Redis）。
-	mountRelayRoutes(mux, cfg, db, redisRes)
+	// （既有测试不触真 PG/Redis）。assembly 携带真实计费引擎工厂；nil 时中继
+	// 回退 M2 桩（测试装配）。
+	mountRelayRoutes(mux, cfg, db, redisRes, assembly)
 	srv := newGatewayHTTPServer(SecurityHeaders(mux))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
@@ -171,10 +177,13 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 // （含 M2 渠道端点）由 newAPIHandler 在 httpapi 组合根中装配，newGatewayMux
 // 负责把整个管理面挂到 /api/；本函数只处理需要 db/redis 具体类型的 /v1。
 //
+// assembly 提供 T9 的真实计费会话工厂与模型停用检查；nil（测试装配）时
+// 中继回退 billingseam.NewStub（M2 行为），模型停用检查跳过。
+//
 // 只有生产资源（OpenDB 的 *sql.DB、OpenRedis 的 redisResource）才能构造仓储与
 // 密钥封装；测试 path 的 stubResource 无法还原具体类型，此时静默跳过——
 // 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
-func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) {
+func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, assembly *gatewayAssembly) {
 	sqlDB, ok := db.(*sql.DB)
 	if !ok || sqlDB == nil {
 		return
@@ -189,6 +198,13 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) 
 	channelRepo := store.NewChannelRepo(sqlDB)
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
 
+	var billingFactory func(*contract.RelayContext) contract.BillingSession
+	var modelStatus httpapi.RelayModelStatusStore
+	if assembly != nil {
+		billingFactory = assembly.Billing
+		modelStatus = assembly.ModelStatus
+	}
+
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
 	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
@@ -196,6 +212,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) 
 		Tokens:         tokenRepo,
 		Access:         tokenRepo,
 		Sealer:         sealer,
+		Billing:        billingFactory,
+		ModelStatus:    modelStatus,
 		TrustedProxies: cfg.TrustedProxies,
 	})
 	relayHandler.Register(mux)

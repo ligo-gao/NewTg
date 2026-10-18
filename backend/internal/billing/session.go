@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -429,6 +430,12 @@ func (s *Session) Reserve(delta int64) error {
 		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
 	}
 
+	// N3：跨组重试后必须按**当前分组**冻结快照；旧分组的倍率不得用于
+	// 新增预留（否则 Reserve 冻结的金额与最终结算价不同源）。
+	if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
+		return err
+	}
+
 	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -delta,
 		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
 		return err
@@ -477,6 +484,11 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 	if terminal {
 		s.markTerminalLocked(ctx)
 		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+	}
+
+	// N3：实时增量按当前分组的快照累计（跨组后旧快照不得继续使用）。
+	if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
+		return err
 	}
 
 	// R-73：增量扣减同样是「令牌额度 + 钱包」同一事务。
@@ -535,10 +547,20 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 		userID = st.UserID
 	}
 
+	// N3：结算必须使用最终选中分组的快照。跨组重试（relay.WithUsingGroup）
+	// 会改写 rc.UsingGroup；若与预扣时冻结快照的分组不同，这里重新解析并
+	// 覆盖 s.snap 与 rc.PriceSnapshot，旧组倍率绝不参与最终金额。
+	if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
+		return err
+	}
+
 	snap, err := s.currentSnapshotLocked(ctx, fact.Model)
 	if err != nil {
 		return err
 	}
+	// 上游格式事实（只读派生元信息）：Claude 语义 = 缓存读是独立维度。
+	// usage_logs.other.usage_semantic 的生产写者（R-63 相邻的 T9 项）。
+	s.noteUsageSemanticFromFactLocked(snap, fact.Usage)
 	cost := s.actualCostLocked(snap, fact)
 
 	preDeducted := s.preConsumed
@@ -930,11 +952,16 @@ func (s *Session) adoptImageCount(fact contract.UsageFact) int {
 // resolveSnapshotLocked 返回本次请求的定价快照。
 //
 // 优先使用 rc.PriceSnapshot（M2 已冻结/透传）；没有时调定价源 Resolve。
+// 两条路径都把快照记到 s.snap，并在快照上补写上游格式事实
+// （IsClaudeUsageSemantic，见 inheritUsageSemanticLocked）。
 func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaEstimate) (*contract.PriceSnapshot, error) {
 	if s.rc != nil && s.rc.PriceSnapshot != nil {
-		return s.rc.PriceSnapshot, nil
+		s.snap = s.rc.PriceSnapshot
+		s.inheritUsageSemanticLocked(s.snap)
+		return s.snap, nil
 	}
 	if s.snap != nil {
+		s.inheritUsageSemanticLocked(s.snap)
 		return s.snap, nil
 	}
 	if s.engine.source == nil {
@@ -953,6 +980,7 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
 	s.snap = &snap
+	s.inheritUsageSemanticLocked(s.snap)
 	s.adoptSnapshotLocked(s.snap)
 	return s.snap, nil
 }
@@ -960,12 +988,17 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 // currentSnapshotLocked 在结算时取最终快照。
 //
 // 跨组重试期间 relay 会刷新 rc.PriceSnapshot（新分组的倍率）；结算必须使用
-// 最终选中分组的快照，而不是 PreConsume 时的旧快照。
+// 最终选中分组的快照，而不是 PreConsume 时的旧快照。分组切换由
+// refreshSnapshotForGroupLocked 在调用本函数**之前**处理；这里只负责读取
+// 并补写上游格式事实。
 func (s *Session) currentSnapshotLocked(ctx context.Context, fallbackModel string) (*contract.PriceSnapshot, error) {
 	if s.rc != nil && s.rc.PriceSnapshot != nil {
-		return s.rc.PriceSnapshot, nil
+		s.snap = s.rc.PriceSnapshot
+		s.inheritUsageSemanticLocked(s.snap)
+		return s.snap, nil
 	}
 	if s.snap != nil {
+		s.inheritUsageSemanticLocked(s.snap)
 		return s.snap, nil
 	}
 	if s.engine.source == nil {
@@ -975,13 +1008,112 @@ func (s *Session) currentSnapshotLocked(ctx context.Context, fallbackModel strin
 	if model == "" {
 		model = fallbackModel
 	}
-	snap, err := s.engine.source.Resolve(ctx, model, s.group)
+	// 分组以 RelayContext 的当前值为准（跨组重试的唯一写入点是
+	// relay.WithUsingGroup）；s.group 只是 PreConsume 时的历史值。
+	group := s.group
+	if s.rc != nil && strings.TrimSpace(s.rc.UsingGroup) != "" {
+		group = strings.TrimSpace(s.rc.UsingGroup)
+	}
+	snap, err := s.engine.source.Resolve(ctx, model, group)
 	if err != nil {
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
 	s.snap = &snap
+	s.inheritUsageSemanticLocked(s.snap)
 	s.adoptSnapshotLocked(s.snap)
 	return s.snap, nil
+}
+
+// refreshSnapshotForGroupLocked 在 Reserve/ChargeIncrement/Terminate 前检查
+// 分组是否已切换（N3）：RelayContext.UsingGroup 与当前快照的分组不同时，
+// 通过定价源重新解析并覆盖 s.snap 与 rc.PriceSnapshot。
+//
+// 为什么必须刷新：auto 跨组重试会用新分组重新选路并结算；若沿用 PreConsume
+// 时冻结的旧分组快照（GroupRatio/覆盖价/表达式都不同），最终金额与选中分组
+// 不符——这是 N3 复现的「跨组重试按预扣快照结算」。刷新失败按 fail-closed
+// 上抛（保守方向：宁可不结算让 worker 退款，也不能按错误分组收钱）。
+//
+// 没有任何已冻结快照时无需刷新：PreConsume 会按当前分组首次解析。
+func (s *Session) refreshSnapshotForGroupLocked(ctx context.Context) error {
+	if s.engine.source == nil || s.rc == nil {
+		return nil
+	}
+	group := strings.TrimSpace(s.rc.UsingGroup)
+	if group == "" {
+		return nil
+	}
+	current := s.snap
+	if current == nil {
+		current = s.rc.PriceSnapshot
+	}
+	if current == nil {
+		return nil
+	}
+	if current.Price.GroupRatioInfo.Group == group {
+		return nil
+	}
+	model := s.model
+	if model == "" {
+		model = s.rc.OriginModel
+	}
+	snap, err := s.engine.source.Resolve(ctx, model, group)
+	if err != nil {
+		return fmt.Errorf("billing: refresh pricing for group %q: %w", group, err)
+	}
+	s.snap = &snap
+	s.group = group
+	s.inheritUsageSemanticLocked(s.snap)
+	// 这里是**覆盖**而不是 adoptSnapshotLocked 的「只补空」：调用方要的
+	// 就是让 rc 从旧组快照切到新组快照。
+	s.rc.PriceSnapshot = s.snap
+	return nil
+}
+
+// claudeRawFormat 是 relay.FormatClaude 的字面量。
+//
+// 为什么在计费包内重复字面量：billing 不得 import internal/relay
+// （.golangci.yml 的 billing-boundary），而契约的 RelayFormat 只承诺
+// 「协议标识」没有导出常量。字面量 "claude" 与 relay.FormatClaude 一致。
+const claudeRawFormat = "claude"
+
+// inheritUsageSemanticLocked 按**入站协议事实**标注快照的 Claude 语义。
+//
+// IsClaudeUsageSemantic 是契约冻结的只读派生元信息（契约 §3.3 / B0 §3）；
+// Saturator 据此写 usage_logs.other.usage_semantic=anthropic。M2 之前没有
+// 任何写入方（N3），这里在快照进入会话时补齐：Claude 入站（/v1/messages）
+// 的 input_tokens 不含缓存读，缓存读是独立计费维度。
+func (s *Session) inheritUsageSemanticLocked(snap *contract.PriceSnapshot) {
+	if snap == nil || snap.IsClaudeUsageSemantic || s.rc == nil {
+		return
+	}
+	if string(s.rc.RawFormat) == claudeRawFormat {
+		snap.IsClaudeUsageSemantic = true
+	}
+}
+
+// noteUsageSemanticFromFactLocked 用**结算用量事实**补写 Claude 语义。
+//
+// 上游事实优先于协议路径：PromptIncludesCache=false 表示 prompt 不含缓存读
+// （Claude/Gemini 语义）。零值 Usage 的该布尔也是 false，因此必须同时确认
+// 至少有一个非零用量维度，避免把「没有用量」误标成 anthropic。
+// 已有 true 不覆盖（首个事实胜出）。
+func (s *Session) noteUsageSemanticFromFactLocked(snap *contract.PriceSnapshot, u contract.Usage) {
+	if snap == nil || snap.IsClaudeUsageSemantic {
+		return
+	}
+	if u.PromptIncludesCache || !usageHasAnyFact(u) {
+		return
+	}
+	snap.IsClaudeUsageSemantic = true
+}
+
+// usageHasAnyFact 判断用量中是否存在任一非零计费维度。
+func usageHasAnyFact(u contract.Usage) bool {
+	return u.Prompt != 0 || u.Completion != 0 || u.Total != 0 ||
+		u.CacheRead != 0 || u.CacheWrite != 0 || u.Reasoning != 0 ||
+		u.AudioSeconds != 0 || u.Reserved != 0 ||
+		u.PromptDetail != (contract.UsageDetail{}) ||
+		u.CompletionDetail != (contract.UsageDetail{})
 }
 
 // adoptSnapshotLocked 把解析出的快照回填到 rc.PriceSnapshot（Minor-2）。

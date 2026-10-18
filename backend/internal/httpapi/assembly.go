@@ -81,7 +81,10 @@ type GatewayDeps struct {
 	// PricingRepo 是定价管理仓储的可选测试接缝；nil 且 DB 非 nil 时由
 	// store.NewPricingRepo(DB) 构造。DB 与 PricingRepo 都为空时不挂定价端点
 	// （M1 的纯 Repo 单测装配没有定价库表）。
-	PricingRepo        store.PricingRepo
+	PricingRepo store.PricingRepo
+	// PricingOnChange 在定价写成功后触发（R-63）：生产接 pricing.DBSource.Invalidate，
+	// 让新价立即生效，而不是等 sourceCacheTTL=30s 的兜底。nil 表示只靠 TTL。
+	PricingOnChange    func()
 	NotificationSender NotificationTestSender
 	LoginEncryption    *PasswordEncryption
 
@@ -158,10 +161,11 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			pricingRepo = store.NewPricingRepo(deps.DB)
 		}
 		handlers, err := NewPricingHandlers(PricingHandlerConfig{
-			Repo:   pricingRepo,
-			Redis:  deps.Redis,
-			Authz:  deps.Authz,
-			Logger: deps.Logger,
+			Repo:     pricingRepo,
+			Redis:    deps.Redis,
+			Authz:    deps.Authz,
+			Logger:   deps.Logger,
+			OnChange: deps.PricingOnChange,
 		})
 		if err != nil {
 			return nil, err

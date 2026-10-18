@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,6 +172,7 @@ type recordingBilling struct {
 	*billingseam.Stub
 	preConsumeCalls int
 	terminateFacts  []contract.UsageFact
+	refundCalls     int
 }
 
 func (b *recordingBilling) PreConsume(est contract.QuotaEstimate) error {
@@ -183,6 +183,11 @@ func (b *recordingBilling) PreConsume(est contract.QuotaEstimate) error {
 func (b *recordingBilling) Terminate(fact contract.UsageFact) error {
 	b.terminateFacts = append(b.terminateFacts, fact)
 	return b.Stub.Terminate(fact)
+}
+
+func (b *recordingBilling) Refund() error {
+	b.refundCalls++
+	return b.Stub.Refund()
 }
 
 func routeTestSingleCandidate(id int) []contract.ChannelCandidate {
@@ -327,9 +332,9 @@ func TestRouteFastFail400(t *testing.T) {
 	if len(log.httpCalls) != 1 {
 		t.Fatalf("尝试次数 = %d，期望 1（400 不重试）", len(log.httpCalls))
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
-		t.Fatalf("快速失败后应释放预算：terminated=%v sessions=%d reserved=%d",
-			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("快速失败后应退款释放预算：refunded=%v sessions=%d reserved=%d",
+			billing.Refunded(), billing.Sessions(), billing.Reserved())
 	}
 }
 
@@ -365,9 +370,9 @@ func TestRouteRetryBudgetExhausted(t *testing.T) {
 	if !strings.Contains(err.Error(), "2") {
 		t.Fatalf("错误文本 %q 未包含尝试次数", err.Error())
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
-		t.Fatalf("耗尽后应释放预算：terminated=%v sessions=%d reserved=%d",
-			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("耗尽后应退款释放预算：refunded=%v sessions=%d reserved=%d",
+			billing.Refunded(), billing.Sessions(), billing.Reserved())
 	}
 }
 
@@ -521,8 +526,8 @@ func TestRouteNoRetryStatuses(t *testing.T) {
 			if len(log.httpCalls) != 1 {
 				t.Fatalf("状态 %d 尝试 %d 次，期望 1（不重试）", status, len(log.httpCalls))
 			}
-			if !billing.Terminated() {
-				t.Fatalf("状态 %d 快速失败后未 Terminate（GC-7）", status)
+			if !billing.Refunded() {
+				t.Fatalf("状态 %d 快速失败后未 Refund（GC-7/R-85）", status)
 			}
 		})
 	}
@@ -593,8 +598,8 @@ func TestRouteTransportTimeoutReleasesBudget(t *testing.T) {
 	if !errors.As(err, &retryable) {
 		t.Fatalf("错误链上应有 *RetryableError，实际 %v", err)
 	}
-	if !billing.Terminated() {
-		t.Fatal("传输失败耗尽后未 Terminate（GC-7）")
+	if !billing.Refunded() {
+		t.Fatal("传输失败耗尽后未 Refund（GC-7/R-85）")
 	}
 	if billing.Sessions() != 0 || billing.Reserved() != 0 {
 		t.Fatalf("终止后 sessions=%d reserved=%d，期望 0/0", billing.Sessions(), billing.Reserved())
@@ -641,9 +646,9 @@ func TestRouteContextCancellation(t *testing.T) {
 	if len(log.httpCalls) != 1 {
 		t.Fatalf("取消后尝试 %d 次，期望 1（立即停止）", len(log.httpCalls))
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
-		t.Fatalf("取消后应释放预算：terminated=%v sessions=%d reserved=%d",
-			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("取消后应退款释放预算：refunded=%v sessions=%d reserved=%d",
+			billing.Refunded(), billing.Sessions(), billing.Reserved())
 	}
 }
 
@@ -804,9 +809,9 @@ func TestRoutePreConsumeFailure(t *testing.T) {
 	}
 }
 
-// TestRouteParseFailureReleasesBudget：上游 2xx 但响应解析失败时，Route 必须用
-// 空 UsageFact 终结会话（GC-7：ExecuteAttempts 成功后由 Route 承担终结责任）。
-func TestRouteParseFailureReleasesBudget(t *testing.T) {
+// TestRouteParseFailureRefunds：上游 2xx 但响应解析失败时，Route 必须
+// Refund（R-85：失败整笔不收费；零值 Terminate 会让按次模型照常扣费）。
+func TestRouteParseFailureRefunds(t *testing.T) {
 	log := &routeCallLog{}
 	adapter := &routeTestAdapter{log: log, parseErr: errors.New("invalid JSON")}
 	billing := &recordingBilling{Stub: billingseam.NewStub()}
@@ -826,15 +831,15 @@ func TestRouteParseFailureReleasesBudget(t *testing.T) {
 	if err == nil {
 		t.Fatal("解析失败应返回错误")
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
-		t.Fatalf("解析失败后应释放预算：terminated=%v sessions=%d reserved=%d",
-			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("解析失败后应退款释放预算：refunded=%v sessions=%d reserved=%d",
+			billing.Refunded(), billing.Sessions(), billing.Reserved())
 	}
-	if len(billing.terminateFacts) != 1 {
-		t.Fatalf("Terminate 调用 %d 次，期望 1", len(billing.terminateFacts))
+	if billing.refundCalls != 1 {
+		t.Fatalf("Refund 调用 %d 次，期望 1", billing.refundCalls)
 	}
-	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
-		t.Fatalf("失败终结的事实 = %#v，期望空 UsageFact（GC-7）", fact)
+	if len(billing.terminateFacts) != 0 {
+		t.Fatalf("失败出口不得 Terminate（会按按次价扣费），实际 %d 次", len(billing.terminateFacts))
 	}
 }
 
@@ -914,9 +919,9 @@ func TestRouteDispatchFailureFastFails(t *testing.T) {
 	if len(log.httpCalls) != 0 {
 		t.Fatalf("分派失败后发出了 %d 次上游请求", len(log.httpCalls))
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
-		t.Fatalf("分派失败后应释放预算：terminated=%v sessions=%d reserved=%d",
-			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("分派失败后应退款释放预算：refunded=%v sessions=%d reserved=%d",
+			billing.Refunded(), billing.Sessions(), billing.Reserved())
 	}
 }
 
@@ -952,8 +957,8 @@ func TestRouteBuildRequestClassification(t *testing.T) {
 		if !errors.As(err, &retryable) {
 			t.Fatalf("错误链上应有 *RetryableError：%v", err)
 		}
-		if !billing.Terminated() {
-			t.Fatal("重试耗尽后未 Terminate（GC-7）")
+		if !billing.Refunded() {
+			t.Fatal("重试耗尽后未 Refund（GC-7/R-85）")
 		}
 	})
 
@@ -984,8 +989,8 @@ func TestRouteBuildRequestClassification(t *testing.T) {
 		if len(log.buildCalls) != 1 {
 			t.Fatalf("参数错误尝试 %d 次，期望 1（不重试）", len(log.buildCalls))
 		}
-		if !billing.Terminated() {
-			t.Fatal("快失败后未 Terminate（GC-7）")
+		if !billing.Refunded() {
+			t.Fatal("快失败后未 Refund（GC-7/R-85）")
 		}
 	})
 
@@ -1075,8 +1080,8 @@ func TestRouteResolveChannelFailure(t *testing.T) {
 			rc.ChannelType != contract.ChannelTypeUnknown {
 			t.Fatalf("失败轮残留了上一轮的渠道组：%#v", rc)
 		}
-		if !billing.Terminated() {
-			t.Fatal("解析失败耗尽后未 Terminate（GC-7）")
+		if !billing.Refunded() {
+			t.Fatal("解析失败耗尽后未 Refund（GC-7/R-85）")
 		}
 	})
 }
@@ -1122,8 +1127,8 @@ func TestRoutePinSingleAttempt(t *testing.T) {
 	if got := fmt.Sprint(log.httpCalls); got != "[2]" {
 		t.Fatalf("尝试序列 = %v，期望 [2]", log.httpCalls)
 	}
-	if !billing.Terminated() || billing.Sessions() != 0 {
-		t.Fatalf("单次尝试失败后应释放预算：terminated=%v sessions=%d", billing.Terminated(), billing.Sessions())
+	if !billing.Refunded() || billing.Sessions() != 0 {
+		t.Fatalf("单次尝试失败后应退款释放预算：refunded=%v sessions=%d", billing.Refunded(), billing.Sessions())
 	}
 }
 
@@ -1157,8 +1162,8 @@ func TestRouteFixedNoRetryWinsOverChannelErrorClass(t *testing.T) {
 	if rc.LastError == nil || !rc.LastError.IsChannelErr || !rc.LastError.SkipRetry {
 		t.Fatalf("rc.LastError = %#v，期望 IsChannelErr=true 且 SkipRetry=true", rc.LastError)
 	}
-	if !billing.Terminated() {
-		t.Fatal("快失败后未 Terminate（GC-7）")
+	if !billing.Refunded() {
+		t.Fatal("快失败后未 Refund（GC-7/R-85）")
 	}
 }
 
@@ -1359,9 +1364,9 @@ func TestRouteEstimatedUsageKeepsOpenAIRelationBooleans(t *testing.T) {
 // final-review finding 10：Route 的 Terminate panic 安全
 // ============================================================================
 
-// TestRoutePanicReleasesBudgetOnce 冻结「PreConsume 之后任何 panic 出口也必须
-// 恰好 Terminate 一次」：ParseResponse panic 时 defer 兜底以零值事实释放预算。
-func TestRoutePanicReleasesBudgetOnce(t *testing.T) {
+// TestRoutePanicRefundsOnce 冻结「PreConsume 之后任何 panic 出口也必须
+// 恰好 Refund 一次」：ParseResponse panic 时 defer 兜底退款（R-85）。
+func TestRoutePanicRefundsOnce(t *testing.T) {
 	log := &routeCallLog{}
 	adapter := &routeTestAdapter{log: log, panicOnParse: true}
 	billing := &recordingBilling{Stub: billingseam.NewStub()}
@@ -1386,17 +1391,17 @@ func TestRoutePanicReleasesBudgetOnce(t *testing.T) {
 		_, _ = Route(context.Background(), rc, deps)
 	}()
 
-	if !billing.Terminated() {
-		t.Fatal("panic 后未释放预算（Terminate 未被 defer 兜底）")
+	if !billing.Refunded() {
+		t.Fatal("panic 后未退款（Refund 未被 defer 兜底）")
 	}
 	if billing.Sessions() != 0 || billing.Reserved() != 0 {
 		t.Fatalf("panic 终止后 sessions=%d reserved=%d，期望 0/0", billing.Sessions(), billing.Reserved())
 	}
-	if len(billing.terminateFacts) != 1 {
-		t.Fatalf("Terminate 调用 %d 次，期望恰好 1 次（幂等标志）", len(billing.terminateFacts))
+	if billing.refundCalls != 1 {
+		t.Fatalf("Refund 调用 %d 次，期望恰好 1 次（幂等标志）", billing.refundCalls)
 	}
-	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
-		t.Fatalf("panic 出口的事实 = %#v，期望零值 UsageFact（释放语义）", fact)
+	if len(billing.terminateFacts) != 0 {
+		t.Fatalf("panic 出口不得 Terminate，实际 %d 次", len(billing.terminateFacts))
 	}
 }
 
@@ -1427,14 +1432,14 @@ func TestExecuteAttemptsPanicReleasesBudgetOnce(t *testing.T) {
 		_, _ = ExecuteAttempts(context.Background(), rc, deps)
 	}()
 
-	if !billing.Terminated() {
-		t.Fatal("panic 后未释放预算（Terminate 未被 defer 兜底）")
+	if !billing.Refunded() {
+		t.Fatal("panic 后未退款（Refund 未被 defer 兜底）")
 	}
-	if len(billing.terminateFacts) != 1 {
-		t.Fatalf("Terminate 调用 %d 次，期望恰好 1 次（panic 兜底 + 幂等标志）", len(billing.terminateFacts))
+	if billing.refundCalls != 1 {
+		t.Fatalf("Refund 调用 %d 次，期望恰好 1 次（panic 兜底 + 幂等标志）", billing.refundCalls)
 	}
-	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
-		t.Fatalf("panic 出口的事实 = %#v，期望零值 UsageFact（释放语义）", fact)
+	if len(billing.terminateFacts) != 0 {
+		t.Fatalf("panic 出口不得 Terminate，实际 %d 次", len(billing.terminateFacts))
 	}
 	if billing.Sessions() != 0 || billing.Reserved() != 0 {
 		t.Fatalf("panic 终止后 sessions=%d reserved=%d，期望 0/0", billing.Sessions(), billing.Reserved())

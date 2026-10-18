@@ -214,18 +214,27 @@ func (s *Stub) Terminate(fact contract.UsageFact) error {
 }
 
 // Refund 全额退款。遵循契约的早返回矩阵（billing-00 §6.2）：
-// 已终结（settled）/ 已退款 / 无需退款时 no-op；否则置 refunded 并把 reserved 清零。
+// 已终结（settled）/ 已退款时 no-op；否则置 refunded 并把 reserved 清零。
 // 幂等：重复调用返回 nil。注意 settled 分支：Terminate 已释放 hold（reserved=0），
 // 此后再 Refund 只返回 nil，不会把 Refunded() 置真、也不会改动状态。
+//
+// 【T9 / R-85：Refund 也是失败出口的会话终结】中继的失败/取消/panic 路径
+// 改走 Refund（Terminate(零事实) 会让真实引擎按按次价扣费）。因此即使名义
+// 预留为 0（PreConsume 未传 MaxTokens），Refund 也必须把存活会话计数归零：
+// 否则桩会把「已退款」的请求显示成仍然存活，路由测试无法断言恰好一次终结。
+// 未 PreConsume（started=false）的桩仍然 no-op。
 func (s *Stub) Refund() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.refunded || !s.needsRefundLocked() {
+	if s.terminated || s.refunded || !s.started {
 		return nil
 	}
 	s.refunded = true
 	s.reserved = 0
+	if s.sessions > 0 {
+		s.sessions--
+	}
 	return nil
 }
 

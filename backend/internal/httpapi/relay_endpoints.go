@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/expr"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
@@ -103,6 +106,22 @@ type RelayChannelStore interface {
 
 var _ RelayChannelStore = (*store.ChannelRepo)(nil)
 
+// RelayModelStatusStore 是派发前的模型定价状态只读查询面（R-84 /
+// modules-06 TC-F-06-13-01）。生产实现是 *store.SQLPricingRepo。
+//
+// 返回 (status, found, err)：found=false 表示 model_pricing 无该模型的行，
+// 按默认价兜底、视为启用；status=2 表示管理员已停用该模型，用户请求必须
+// 在进入上游之前返回 404。
+type RelayModelStatusStore interface {
+	ModelPricingStatus(ctx context.Context, model string) (status int16, found bool, err error)
+}
+
+var _ RelayModelStatusStore = (*store.SQLPricingRepo)(nil)
+
+// modelPricingStatusDisabled 是 model_pricing.status 的停用值（modules-06
+// §3.7 状态机：1 启用 / 2 停用；迁移的 CHECK 约束只允许这两个值）。
+const modelPricingStatusDisabled int16 = 2
+
 // RelayHandlerOptions 是 platform 装配与测试的注入点。
 type RelayHandlerOptions struct {
 	// Channels 是候选/渠道/模型列表的数据源（必填）。
@@ -114,8 +133,14 @@ type RelayHandlerOptions struct {
 	// Sealer 解开 channels.credentials 的 AES-GCM 密文（GC-8，必填）。
 	Sealer *SecretSealer
 	// Billing 为每个请求构造计费会话；nil 时使用 billingseam.NewStub（M2 桩，GC-3）。
-	// 每请求新建是契约要求（billingseam.Stub 是单会话实例）。
-	Billing func() contract.BillingSession
+	// 每请求新建是契约要求（真实 Session 与 billingseam.Stub 都是单会话实例）。
+	//
+	// 【T9 签名】入参是该请求的 RelayContext：真实引擎的 NewSession 需要它把
+	// RequestID/UserID/TokenID/UsingGroup/PriceSnapshot 绑定到会话（契约 §6.1）。
+	Billing func(*contract.RelayContext) contract.BillingSession
+	// ModelStatus 是派发前的模型停用检查（R-84）；nil 时跳过（测试/降级）。
+	// 生产由 platform 注入 store.NewPricingRepo(DB)。
+	ModelStatus RelayModelStatusStore
 	// Client 是上游 HTTP 客户端；nil 时按 relay-01 §11.1 超时构造。
 	// 测试用 httptest.Server.Client() 注入，以复用其 TLS/连接配置。
 	Client *http.Client
@@ -136,7 +161,8 @@ type RelayHandler struct {
 	tokens           auth.TokenLookup
 	access           UserAccessStore
 	sealer           *SecretSealer
-	billing          func() contract.BillingSession
+	billing          func(*contract.RelayContext) contract.BillingSession
+	modelStatus      RelayModelStatusStore
 	client           *http.Client
 	dispatch         func(contract.ChannelType) (contract.Adapter, error)
 	trustedProxies   []netip.Prefix
@@ -160,7 +186,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	}
 	billing := opts.Billing
 	if billing == nil {
-		billing = func() contract.BillingSession { return billingseam.NewStub() }
+		billing = func(*contract.RelayContext) contract.BillingSession { return billingseam.NewStub() }
 	}
 	dispatch := opts.Dispatch
 	if dispatch == nil {
@@ -176,6 +202,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		access:           opts.Access,
 		sealer:           opts.Sealer,
 		billing:          billing,
+		modelStatus:      opts.ModelStatus,
 		client:           client,
 		dispatch:         dispatch,
 		trustedProxies:   parseTrustedProxies(opts.TrustedProxies),
@@ -258,6 +285,27 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
+	}
+
+	// R-84 / modules-06 TC-F-06-13-01：管理员停用（status=2）的定价模型不得
+	// 被用户请求命中，必须在派发（含 PreConsume）之前 404。无定价行的模型
+	// 按默认价兜底，仍视为启用（found=false 放行）。
+	//
+	// 为什么不交给 pricing.DBSource：它对停用行刻意回退默认价（保留管理员
+	// 事后重新启用的能力），不会拒绝请求；「停用即不可调用」是路由层语义。
+	if h.modelStatus != nil {
+		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
+		if statusErr != nil {
+			// GC-6：存储错误可能含 DSN/SQL，只回固定文案。
+			writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
+				"failed to check model availability")
+			return
+		}
+		if found && status == modelPricingStatusDisabled {
+			writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+				"the requested model is not available")
+			return
+		}
 	}
 
 	// finding 13：预扣估算必须进入 RelayContext，否则 PreConsume 只能看到
@@ -400,7 +448,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 			return h.resolveChannel(ctx, rc, channelID)
 		},
 		Dispatch:   h.dispatch,
-		Billing:    h.billing(),
+		Billing:    h.billing(rc),
 		Client:     h.client,
 		MaxRetries: relayMaxRetries,
 	}
@@ -468,8 +516,7 @@ func modelMappingTarget(raw []byte, model string) string {
 func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
-		status, code, message := mapRelayError(err)
-		writeRelayError(w, status, rc.RequestID, code, message)
+		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
 
@@ -536,21 +583,17 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	start := time.Now()
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
-		status, code, message := mapRelayError(err)
-		writeRelayError(w, status, rc.RequestID, code, message)
+		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
 	defer func() { _ = result.Response.Body.Close() }()
 
 	streamAdapter, ok := result.Adapter.(contract.StreamAdapter)
 	if !ok {
-		// 预扣已成功（ExecuteAttempts 返回 2xx），必须释放预算再拒绝（GC-7）。
+		// 预扣已成功（ExecuteAttempts 返回 2xx），必须释放预算再拒绝。
+		// R-85：这是失败出口，走 Refund（Terminate(零事实) 会让按次模型扣费）。
 		if deps.Billing != nil {
-			_ = deps.Billing.Terminate(contract.UsageFact{
-				Model:    rc.OriginModel,
-				Stream:   true,
-				Attempts: rc.AttemptIndex + 1,
-			})
+			_ = deps.Billing.Refund()
 		}
 		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "stream_unsupported",
 			"upstream adapter does not support streaming")
@@ -587,8 +630,9 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 //   - 心跳：每 10s 写 `: PING\n\n` 注释帧（等待期与传输期共用），写失败按客户端
 //     断开处理并关闭上游；
 //   - panic 恢复：EndReason=EndPanic，进程不崩；
-//   - 计费（GC-7）：2xx 之后会话已开启；正常/超时/panic/断开所有出口都保证
-//     **恰好一次** Terminate（terminate 闭包的 terminated 守卫）。
+//   - 计费（GC-7/R-85）：2xx 之后会话已开启；正常出口 Terminate(final fact)，
+//     任何异常出口（断开/上游错误/超时/panic）一律 Refund；terminated 守卫
+//     保证恰好一次。
 //
 // 异常结束（客户端断开/上游错误/超时/panic）不写收尾 usage 块与 [DONE]：
 // relay-03 §5.2/§10.3 要求由连接终止表达异常，伪造正常结束标记会误导客户端。
@@ -611,17 +655,16 @@ func (h *RelayHandler) bridgeStream(
 	model := rc.OriginModel
 
 	var (
-		accumulated     contract.Usage
-		sawUsage        bool
-		usageFromHeader bool // accumulated 来自 x-model-response-usage 头（完整上游报告）
-		received        int
-		sent            int
-		contentSent     int // 仅内容帧（raw/delta）：OutcomePartial 的判据（契约 §7.2）
-		softErrors      int
-		firstTokenMS    *int
-		finished        bool
-		upstreamFail    bool
-		clientGone      bool
+		accumulated  contract.Usage
+		sawUsage     bool
+		received     int
+		sent         int
+		contentSent  int // 仅内容帧（raw/delta）：OutcomePartial 的判据（契约 §7.2）
+		softErrors   int
+		firstTokenMS *int
+		finished     bool
+		upstreamFail bool
+		clientGone   bool
 	)
 	// 看门狗与 ping 协程会并发写这两个标志；事件循环只读。
 	var timedOut atomic.Bool
@@ -633,24 +676,25 @@ func (h *RelayHandler) bridgeStream(
 	closeUpstream := func() { closeUpstreamOnce.Do(func() { _ = upstream.Close() }) }
 
 	terminated := false
-	terminate := func(fact contract.UsageFact) {
+	finalize := func(terminate func() error) {
 		if terminated || billing == nil {
 			return
 		}
 		terminated = true
-		_ = billing.Terminate(fact)
+		_ = terminate()
+	}
+	terminate := func(fact contract.UsageFact) {
+		finalize(func() error { return billing.Terminate(fact) })
+	}
+	// R-85：失败/取消/panic 是整笔不收费语义。真实引擎的 Refund 会全额退回
+	// hold 与增量，并把 usage_logs 收敛为 refunded；Terminate(零事实) 会让
+	// 按次/常量表达式模型对失败流照常扣费并记 success。
+	refund := func() {
+		finalize(func() error { return billing.Refund() })
 	}
 	// GC-7 兜底：任何未走显式终结的出口（含 panic）也必须释放预留。
-	defer func() {
-		if terminated {
-			return
-		}
-		terminate(contract.UsageFact{
-			Model:    model,
-			Stream:   true,
-			Attempts: rc.AttemptIndex + 1,
-		})
-	}()
+	// 失败语义优先（R-85）：兜底一律退款，不结算。
+	defer refund()
 
 	// —— 看门狗（块间不活动超时）——
 	inactivity := h.streamInactivity
@@ -704,8 +748,8 @@ func (h *RelayHandler) bridgeStream(
 	defer stopPing()
 
 	// —— panic 恢复 ——
-	// 注册在兜底 Terminate 之后（LIFO：本 defer 先执行），显式写入 EndPanic
-	// 与带用量的 fact；兜底 Terminate 随后因 terminated 守卫成为 no-op。
+	// 注册在兜底 refund 之后（LIFO：本 defer 先执行），显式写入 EndPanic
+	// 并退款；兜底 refund 随后因 terminated 守卫成为 no-op。
 	defer func() {
 		if rec := recover(); rec != nil {
 			stopPing()
@@ -717,16 +761,9 @@ func (h *RelayHandler) bridgeStream(
 				RecvCount: received,
 				SendCount: sent,
 			}, sent, received, firstTokenMS)
-			terminate(contract.UsageFact{
-				Model: model,
-				// panic 在头部兜底之前展开：此时头部用量尚未提取，只能按已累计
-				// 的事件用量定源（fromHeader=false）。
-				Usage:        abnormalUsageFact(accumulated, false),
-				LatencyMS:    int(time.Since(start).Milliseconds()),
-				FirstTokenMS: firstTokenMS,
-				Stream:       true,
-				Attempts:     rc.AttemptIndex + 1,
-			})
+			// R-85：panic 是失败出口，整笔退款；不构造/上报用量事实
+			// （abnormal 的「部分用量」不再参与计费）。
+			refund()
 		}
 	}()
 
@@ -868,7 +905,6 @@ func (h *RelayHandler) bridgeStream(
 		if extracted.Usage.Source == contract.UsageUpstreamExact {
 			accumulated = extracted.Usage
 			sawUsage = true
-			usageFromHeader = true
 		}
 	}
 
@@ -914,6 +950,14 @@ func (h *RelayHandler) bridgeStream(
 		SendCount: sent,
 	}, sent, received, firstTokenMS)
 
+	// R-85：异常结束（客户端断开、上游错误、看门狗超时、panic）整笔退款。
+	// 不再为失败流构造/上报用量事实——契约的 Refund() 没有事实入参，
+	// 而把零值/部分事实交给 Terminate 会让按次模型照常扣费并记 success。
+	if abnormal {
+		refund()
+		return
+	}
+
 	fact := contract.UsageFact{
 		Model:        model,
 		Usage:        accumulated,
@@ -922,42 +966,13 @@ func (h *RelayHandler) bridgeStream(
 		Stream:       true,
 		Attempts:     rc.AttemptIndex + 1,
 	}
-	switch {
-	case abnormal:
-		// finding 3 + re-review fix 4：只有真实累计到上游用量时才标
-		// upstream_partial；断开/中断但从未见过用量时是 estimated（零用量不是
-		// 「部分事实」）。但来自 x-model-response-usage 头的用量是**完整**上游
-		// 报告，即使流被客户端中断/超时/上游错误截断，也应保持 upstream_exact。
-		fact.Usage = abnormalUsageFact(accumulated, usageFromHeader)
-	case !usageHasFact(accumulated):
+	if !usageHasFact(accumulated) {
 		// 上游没有给出任何非零用量（包括空 `usage: {}` / 全零帧，且无头部）：
 		// 标记 estimated，绝不把零值谎报成 upstream_exact（零值 Source 的
 		// iota 是 UsageUpstreamExact）。关系布尔按 OpenAI 协议语义补齐。
 		fact.Usage = openAIEstimatedUsage(accumulated)
 	}
 	terminate(fact)
-}
-
-// abnormalUsageFact 给异常结束（断开/上游错误/超时/panic）的用量事实定源。
-//
-// finding 3：UsageUpstreamPartial 的语义是「上游确实给过部分用量」。
-// 若从未观察到任何非零用量，正确来源是 UsageEstimated（交给 M3 兜底估算），
-// 而不是把零值谎报成「部分上游事实」。
-//
-// re-review fix 4：fromHeader 表示 accumulated 完全来自
-// `x-model-response-usage` 头。头部是上游给出的**完整**用量值，与流在何处
-// 中断无关（数字已在上游生成并随响应头送达），因此保持 UsageUpstreamExact，
-// 不得降级成 partial。
-func abnormalUsageFact(accumulated contract.Usage, fromHeader bool) contract.Usage {
-	if fromHeader && usageHasFact(accumulated) {
-		accumulated.Source = contract.UsageUpstreamExact
-		return accumulated
-	}
-	if !usageHasFact(accumulated) {
-		return openAIEstimatedUsage(accumulated)
-	}
-	accumulated.Source = contract.UsageUpstreamPartial
-	return accumulated
 }
 
 // openAIEstimatedUsage 为「无上游用量、需要本地估算」的事实补上 OpenAI 协议
@@ -1112,15 +1127,54 @@ func mapRelayContextError(err error) (int, string, string) {
 	}
 }
 
+// writeRelayMappedError 映射错误并写 /v1 响应。
+//
+// ErrSettlementInProgress 额外带 Retry-After（R-45/R-86）：同一 requestID 的
+// 结算被另一执行者持锁是**可短暂重试**的并发冲突，状态码 409 + 退避提示
+// 比把它伪装成 502 上游故障更准确。值为 1 秒：结算锁 TTL 30s、锁内只有
+// 一个有界 DB 事务（10s），1s 足以跨过一次正常冲突窗口。
+func writeRelayMappedError(w http.ResponseWriter, requestID string, err error) {
+	status, code, message := mapRelayError(err)
+	if status == http.StatusConflict && errors.Is(err, billing.ErrSettlementInProgress) {
+		w.Header().Set("Retry-After", "1")
+	}
+	writeRelayError(w, status, requestID, code, message)
+}
+
 // mapRelayError 把路由/执行错误映射为客户端状态码（relay-01 §9.3）。
 //
-// 顺序即语义：402 先于 FastFail（预扣错误被 FastFail 包装，但契约 §4.4 的
-// Payment Required 必须保留）；FastFail 与 AttemptsError 的区分决定「一次失败」
-// 与「重试耗尽」的展示。所有消息只含固定文案/次数/状态码，绝不含上游 URL/凭据。
+// 顺序即语义：计费类错误（402/400/409）先于 FastFail 判定——预扣/结算错误
+// 被 FastFailError/safeError 包装，但契约语义必须保留（R-86：定价/钳制类
+// 不得落 502；R-45：结算冲突 409）。FastFail 与 AttemptsError 的区分决定
+// 「一次失败」与「重试耗尽」的展示。所有消息只含固定文案/次数/状态码，
+// 绝不含上游 URL/凭据。
 func mapRelayError(err error) (int, string, string) {
-	var insufficient *billingseam.InsufficientQuotaError
-	if errors.As(err, &insufficient) || errors.Is(err, billingseam.ErrInsufficientQuota) {
+	// 额度不足（钱包或令牌额度）：真实引擎返回 *billing.QuotaError（Unwrap 到
+	// billing.ErrInsufficientQuota）；M2 桩返回 *billingseam.InsufficientQuotaError。
+	// 两者都在此统一为 402 Payment Required（契约 §4.4；N7 的令牌/钱包文案统一）。
+	var quota *billing.QuotaError
+	var stubQuota *billingseam.InsufficientQuotaError
+	if errors.As(err, &quota) || errors.As(err, &stubQuota) ||
+		errors.Is(err, billing.ErrInsufficientQuota) || errors.Is(err, billingseam.ErrInsufficientQuota) {
 		return http.StatusPaymentRequired, "insufficient_quota", "insufficient quota"
+	}
+
+	// 定价/配置/表达式失败：400 model_price_error（relay-01 §2 阶段 6；N6）。
+	if isModelPriceError(err) {
+		return http.StatusBadRequest, "model_price_error", "pricing configuration rejected the request"
+	}
+
+	// 请求已在别处结案（结算/退款/worker 兜底）：fail-closed 的 409，不重试。
+	if errors.Is(err, billing.ErrRequestClosed) {
+		return http.StatusConflict, "request_closed", "the request has already been settled"
+	}
+	// 并发结算冲突：409 + Retry-After（R-45/R-86），不重试。
+	if errors.Is(err, billing.ErrSettlementInProgress) {
+		return http.StatusConflict, "settlement_in_progress", "settlement for this request is in progress"
+	}
+	// 重复预扣超出预算（C-10/D12）：请求级 400，不重试。
+	if errors.Is(err, billing.ErrBudgetExceeded) {
+		return http.StatusBadRequest, "invalid_request", "reservation exceeds the estimated budget"
 	}
 
 	var fastFail *relay.FastFailError
@@ -1155,6 +1209,46 @@ func mapRelayError(err error) (int, string, string) {
 	}
 
 	return http.StatusBadGateway, "upstream_error", "upstream request failed"
+}
+
+// isModelPriceError 判定「定价配置/表达式错误」族（N6：400 model_price_error）。
+//
+// 覆盖三类来源：
+//   - 会话层：billing.ErrPriceError（预扣前已有 QuotaClamp）、billing.ErrInvalidConfig；
+//   - 定价数学：pricing 的 spec/price/参数/表达式哨兵与 *pricing.ClampError；
+//   - 表达式求值：*expr.EvalError（语法/未知变量/除零/溢出/未知函数）。
+//
+// 这些错误都表示「本次请求的定价配置不可用」，属于请求侧 400，不是上游
+// 故障；落 502 会误导运维去查上游与网络。
+func isModelPriceError(err error) bool {
+	if errors.Is(err, billing.ErrPriceError) || errors.Is(err, billing.ErrInvalidConfig) {
+		return true
+	}
+	var clamp *pricing.ClampError
+	if errors.As(err, &clamp) {
+		return true
+	}
+	var evalErr *expr.EvalError
+	if errors.As(err, &evalErr) {
+		return true
+	}
+	for _, sentinel := range []error{
+		pricing.ErrInvalidSpec,
+		pricing.ErrNilPrice,
+		pricing.ErrMissingExpression,
+		pricing.ErrUnexpectedExpression,
+		pricing.ErrInvalidMode,
+		pricing.ErrInvalidPrice,
+		pricing.ErrInvalidParams,
+		pricing.ErrInvalidGroupRatio,
+		pricing.ErrNegativeExpression,
+		pricing.ErrNoExpression,
+	} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
 }
 
 // relayUpstreamStatus 实现 §9.3 的 ErrorClass → 客户端状态码映射。

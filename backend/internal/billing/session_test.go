@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -19,6 +20,26 @@ import (
 // newBillingTestSession 构造绑定到固定 requestID 的会话（无令牌）。
 func newBillingTestSession(e *Engine, userID int64, requestID string, snap *contract.PriceSnapshot) *Session {
 	return newBillingTestSessionWithToken(e, userID, 0, requestID, snap)
+}
+
+// groupSource 是按分组返回快照的定价源 fake（N3 跨组结算测试）。
+// 每次 Resolve 计数，用来证明会话确实走了刷新而不是复用旧快照。
+type groupSource struct {
+	snapshots map[string]contract.PriceSnapshot
+	resolves  []string
+}
+
+func (s *groupSource) Resolve(_ context.Context, model, group string) (contract.PriceSnapshot, error) {
+	s.resolves = append(s.resolves, group)
+	snap, ok := s.snapshots[group]
+	if !ok {
+		return contract.PriceSnapshot{}, fmt.Errorf("test: no pricing for group %q", group)
+	}
+	snap.Price.GroupRatioInfo.Group = group
+	if snap.Price.GroupRatioInfo.GroupRatio == 0 {
+		snap.Price.GroupRatioInfo.GroupRatio = 1
+	}
+	return snap, nil
 }
 
 // newBillingTestSessionWithToken 构造绑定 API 令牌的会话（R-73）。
@@ -2334,5 +2355,58 @@ func TestEngineRecoverAbandonedTokenRestoreAtomic(t *testing.T) {
 	rows = readWalletRows(t, db, req)
 	if len(rows) != 2 || rows[0].Status != "expired" || rows[1].Amount != 100 {
 		t.Fatalf("rows = %+v, want expired + release 100", rows)
+	}
+}
+
+// TestSessionCrossGroupSettlementUsesRefreshedSnapshot 覆盖 N3 的跨组余项：
+// 预扣时冻结的是 default 组快照；auto 重试切到 vip 组后，Reserve/
+// ChargeIncrement/Terminate 必须用 vip 快照重新解析，旧组倍率不得参与结算。
+func TestSessionCrossGroupSettlementUsesRefreshedSnapshot(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1000)
+
+	source := &groupSource{snapshots: map[string]contract.PriceSnapshot{
+		"default": *perCallSnapshot(100),
+		"vip":     *perCallSnapshot(250),
+	}}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), source, nil, nil)
+	req := testRequestID("crossgroup")
+	// rc 初始没有冻结快照：PreConsume 会按 UsingGroup=default 从 source 解析。
+	s := newBillingTestSession(e, userID, req, nil)
+	s.rc.UsingGroup = "default"
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 900 {
+		t.Fatalf("balance after default pre-consume = %d, want 900（default 100/次）", got)
+	}
+	if snap := s.rc.PriceSnapshot; snap == nil || snap.Price.GroupRatioInfo.Group != "default" {
+		t.Fatalf("pre-consume snapshot = %+v, want group default", snap)
+	}
+
+	// 模拟 relay 的跨组重试：WithUsingGroup 改写当前分组，但预扣快照仍是 default。
+	s.rc.UsingGroup = "vip"
+
+	fact := contract.UsageFact{Model: "test-model"}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	// vip 每次 250：hold 100 + 结算差额 150，净扣 250。
+	if got := userBalance(t, db, userID); got != 750 {
+		t.Fatalf("balance = %d, want 750（vip 250/次，旧 default 价不得用于结算）", got)
+	}
+	snap := s.rc.PriceSnapshot
+	if snap == nil || snap.Price.GroupRatioInfo.Group != "vip" {
+		t.Fatalf("settlement snapshot = %+v, want group vip", snap)
+	}
+	if len(source.resolves) != 2 || source.resolves[0] != "default" || source.resolves[1] != "vip" {
+		t.Fatalf("Resolve calls = %v, want [default vip]", source.resolves)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 ||
+		rows[0].Type != "consume_pre" || rows[0].Amount != -100 || rows[0].Status != "settled" ||
+		rows[1].Type != "consume" || rows[1].Amount != -150 || rows[1].Status != "confirmed" {
+		t.Fatalf("wallet rows = %+v, want -100 settled + -150 confirmed", rows)
 	}
 }

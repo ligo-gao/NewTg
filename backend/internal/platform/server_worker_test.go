@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -36,7 +35,7 @@ func (c workerGuardConnectors) openRedis(*config.Config) (Resource, error) {
 func (c workerGuardConnectors) runMigrate(context.Context, *config.Config) error { return nil }
 
 func (c workerGuardConnectors) newAPIHandler(context.Context, *config.Config,
-	Resource, Resource, Resource, *slog.Logger) (http.Handler, error) {
+	Resource, Resource, Resource, *slog.Logger) (*gatewayAssembly, error) {
 	return nil, nil
 }
 

@@ -1643,3 +1643,63 @@ func TestPricingGroupPriceNullRejected(t *testing.T) {
 	}
 	assertProblemFields(t, rr, "cache_read_price")
 }
+
+// TestPricingOnChangeFiresAfterSuccessfulWrite 覆盖 R-63 的装配接缝：
+// PricingHandlerConfig.OnChange 必须在成功的定价写之后触发（生产接
+// pricing.DBSource.Invalidate，让新价立即生效），且失败写不得触发。
+//
+// 平台侧把 OnChange 接到 source.Invalidate 的接线由 platform.newGatewayAPI
+// 完成；本用例冻结「写成功后调用」这一 handler 侧契约。
+func TestPricingOnChangeFiresAfterSuccessfulWrite(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	var changes int
+	repo := newFakePricingRepo()
+	handlers, err := NewPricingHandlers(PricingHandlerConfig{
+		Repo:     repo,
+		Redis:    rdb,
+		Authz:    rbac.NewAuthzMiddleware(),
+		Logger:   testLogger(),
+		OnChange: func() { changes++ },
+	})
+	if err != nil {
+		t.Fatalf("NewPricingHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.RegisterPricingRoutes(mux, nil)
+	env := &pricingTestEnv{t: t, repo: repo, handlers: handlers, router: mux}
+
+	// 失败写（非法表达式）不得触发失效：缓存无需清空。
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "gpt-onchange-bad", "billing_expr": "p * "}, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if changes != 0 {
+		t.Fatalf("OnChange calls after failed write = %d, want 0", changes)
+	}
+
+	// 成功写触发一次。
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "gpt-onchange-ok", "billing_expr": "p * 0.001"}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, 期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	if changes != 1 {
+		t.Fatalf("OnChange calls after successful write = %d, want 1", changes)
+	}
+
+	// 启停切换同样必须失效（否则停用/启用要等 30s 缓存 TTL）。
+	view := decodeModelPricingView(t, rr)
+	body := map[string]any{"updated_at": view.UpdatedAt.Format(time.RFC3339Nano)}
+	rr = env.request(fullPricingAdmin(), http.MethodPost,
+		"/api/model-pricing/gpt-onchange-ok:disable", body, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable status = %d, 期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if changes != 2 {
+		t.Fatalf("OnChange calls after status toggle = %d, want 2", changes)
+	}
+}
