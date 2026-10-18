@@ -214,7 +214,10 @@ func (l *Logger) LogEvent(ctx context.Context, e Event) error {
 	}
 
 	username := strings.TrimSpace(e.Username)
-	if username == "" && l.UsernameResolver != nil {
+	// Actor<=0 是未认证事件（登录失败等）。此时解析器必然查不到用户，却会为
+	// 每一条匿名审计行打一次主库查询——把失败/匿名流量放大成 DB 负载。
+	// 直接走 user#<id> 兜底，不触发 UsernameResolver。
+	if username == "" && e.Actor > 0 && l.UsernameResolver != nil {
 		if resolved, err := l.UsernameResolver(ctx, e.Actor); err == nil && strings.TrimSpace(resolved) != "" {
 			username = strings.TrimSpace(resolved)
 		}

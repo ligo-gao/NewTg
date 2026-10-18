@@ -214,6 +214,39 @@ func TestAuditPackageLogFrozenSignature(t *testing.T) {
 	}
 }
 
+// TestUsernameResolverSkippedForAnonymousActors 覆盖匿名审计的放大路径：
+// Actor<=0 的未认证事件不得触发主库用户名查询（每行一次 SELECT users）；
+// Actor>0 仍按原逻辑解析。
+func TestUsernameResolverSkippedForAnonymousActors(t *testing.T) {
+	exec := &fakeExec{}
+	l := New(exec)
+	var calls []int64
+	l.UsernameResolver = func(_ context.Context, userID int64) (string, error) {
+		calls = append(calls, userID)
+		return "alice", nil
+	}
+
+	if err := l.LogEvent(context.Background(), Event{Action: ActionAuthLogin, Actor: 0, Result: "failed"}); err != nil {
+		t.Fatalf("Actor=0 LogEvent: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("Actor=0 触发了用户名查询：%v（匿名审计放大）", calls)
+	}
+	if got := exec.calls[0].args[1]; got != "user#0" {
+		t.Errorf("Actor=0 username = %v，期望 user#0 兜底", got)
+	}
+
+	if err := l.LogEvent(context.Background(), Event{Action: ActionAuthLogin, Actor: 42}); err != nil {
+		t.Fatalf("Actor=42 LogEvent: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != 42 {
+		t.Fatalf("Actor=42 resolver calls = %v，期望 [42]", calls)
+	}
+	if got := exec.calls[1].args[1]; got != "alice" {
+		t.Errorf("Actor=42 username = %v，期望解析器返回值 alice", got)
+	}
+}
+
 // TestAuditPackageLogUnconfigured：未安装默认 logger 时明确报错，不静默丢弃审计。
 func TestAuditPackageLogUnconfigured(t *testing.T) {
 	SetDefault(nil)
