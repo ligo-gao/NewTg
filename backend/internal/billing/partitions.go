@@ -55,13 +55,17 @@ func (e *PartitionDDLUnavailableError) Error() string {
 //
 // 由 T5 的 worker 在启动时与每 24h 调用一次；本任务只导出函数与类型。
 //
-// 【执行身份（R-56）】本函数先探测 DDL 权限（schema CREATE + 父表属主）：
-//   - 无权 → 返回 *PartitionDDLUnavailableError，**不尝试任何 DDL**；
-//   - 有权 → 才执行 CREATE TABLE IF NOT EXISTS ... PARTITION OF ...。
+// 【执行顺序（R-56 运维友好）】
+//  1. 只读解析父表 schema 并检查**当月 + 下月**是否都已存在；
+//  2. 两者都存在 → 直接返回 nil：分区已由迁移预建，不需要 DDL，也**不应**
+//     产生「DDL 权限不可用」告警；
+//  3. 缺任一分区 → 才探测 DDL 权限（schema CREATE + 父表属主）：
+//     - 无权 → *PartitionDDLUnavailableError（worker 记 warn）；
+//     - 有权 → 执行 CREATE TABLE IF NOT EXISTS ... PARTITION OF ...。
 //
-// 因此生产 worker（newtg_app）的调用会稳定得到可识别的 warn 路径，而不是
-// 每轮 permission denied 的假故障；真正的分区供给由日志迁移的 12 个月预建
-// 承担（见 migrations-logs/20261019000000_usage_logs_app_update.up.sql）。
+// 因此生产 worker（newtg_app）在迁移预建窗口内是**静默 no-op**，只有窗口
+// 真正耗尽时才得到可识别的 warn；真正的分区供给由日志迁移的 12 个月预建
+// 承担（见 migrations-logs/20261019000001_usage_logs_app_update_v2.up.sql）。
 //
 // 其余语义：
 //   - 分区名 usage_logs_YYYYMM，区间左闭右开 [月初, 次月初)，一律按 UTC
@@ -72,13 +76,37 @@ func (e *PartitionDDLUnavailableError) Error() string {
 //
 // 幂等的并发面：PostgreSQL 的 CREATE TABLE IF NOT EXISTS 在并发创建同名表
 // 时可能抛 duplicate key 而不是安静返回。这里在错误后复核分区是否已真实
-// 存在（to_regclass），存在即视为本轮成功——只有「确认存在」才吞掉错误。
+// 存在（按 schema+name 查 pg_class），存在即视为本轮成功。
 func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) error {
 	if logsDB == nil {
 		return errors.New("billing: EnsureUsagePartitions requires a logs database")
 	}
 
-	schema, schemaCreate, ownsParent, err := usagePartitionDDLPrivileges(ctx, logsDB)
+	// 只读解析父表 schema：后续存在性检查与 DDL 都必须落在同一个 schema
+	// （N3），避免执行期 search_path 与探测结果不一致。
+	schema, err := usageLogParentSchema(ctx, logsDB)
+	if err != nil {
+		return fmt.Errorf("billing: resolve usage_logs schema: %w", err)
+	}
+
+	start := usageMonthStart(now)
+	missing := false
+	for i := 0; i < usagePartitionMonths; i++ {
+		name := usagePartitionName(start.AddDate(0, i, 0))
+		exists, err := usagePartitionExists(ctx, logsDB, schema, name)
+		if err != nil {
+			return fmt.Errorf("billing: check usage partition %s.%s: %w", schema, name, err)
+		}
+		if !exists {
+			missing = true
+		}
+	}
+	if !missing {
+		// 迁移预建窗口覆盖当前月：无 DDL 需求，静默返回。
+		return nil
+	}
+
+	schemaCreate, ownsParent, err := usagePartitionDDLPrivileges(ctx, logsDB, schema)
 	if err != nil {
 		return fmt.Errorf("billing: probe usage_logs partition privileges: %w", err)
 	}
@@ -90,10 +118,8 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 		}
 	}
 
-	start := usageMonthStart(now)
-	// N3：DDL 必须与权限探测使用**同一个 schema**。探测解析出父表实际所在
-	// schema（to_regclass 走 search_path 的结果），这里把父表与分区名都显式
-	// schema 限定，避免执行期 search_path 变化把 DDL 指向别的 schema。
+	// DDL 必须与权限探测使用**同一个 schema**。父表与分区名都显式 schema
+	// 限定，避免执行期 search_path 变化把 DDL 指向别的 schema（N3）。
 	parent := quoteSQLIdent(schema) + "." + quoteSQLIdent(usageLogParentTable)
 	for i := 0; i < usagePartitionMonths; i++ {
 		from := start.AddDate(0, i, 0)
@@ -119,35 +145,51 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 	return nil
 }
 
-// usagePartitionDDLPrivileges 探测当前连接能否创建 usage_logs 的分区。
+// usageLogParentSchema 只读解析 usage_logs 父表所在 schema。
+//
+// 走 to_regclass 的 search_path 解析，与未限定表名的调用方视角一致；随后
+// 所有存在性检查与 DDL 都用该 schema 显式限定（N3）。父表不存在时返回
+// 明确错误（schema 未迁移），而不是伪装成权限问题。
+func usageLogParentSchema(ctx context.Context, logsDB *sql.DB) (string, error) {
+	var schema string
+	err := logsDB.QueryRowContext(ctx, `
+		SELECT n.nspname
+		  FROM pg_class c
+		  JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.oid = to_regclass('usage_logs')`).Scan(&schema)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errors.New("usage_logs parent table not found; run the logs migrations first")
+	}
+	if err != nil {
+		return "", err
+	}
+	return schema, nil
+}
+
+// usagePartitionDDLPrivileges 探测当前连接能否在指定 schema 创建分区。
 //
 // 判据与 PostgreSQL 的 DDL 权限检查一致：
 //   - 在父表所在 schema 上有 CREATE（创建新表/分区）；
 //   - 对父表有属主权限（pg_has_role(..., 'USAGE') 覆盖直接属主与继承属主）。
-//
-// 父表不存在时返回明确错误（schema 未迁移），而不是把它伪装成权限问题。
-func usagePartitionDDLPrivileges(ctx context.Context, logsDB *sql.DB) (string, bool, bool, error) {
+func usagePartitionDDLPrivileges(ctx context.Context, logsDB *sql.DB, schema string) (bool, bool, error) {
 	var (
-		schema       string
 		schemaCreate bool
 		ownsParent   bool
 	)
 	err := logsDB.QueryRowContext(ctx, `
-		SELECT n.nspname,
-		       has_schema_privilege(current_user, n.nspname, 'CREATE'),
+		SELECT has_schema_privilege(current_user, $1, 'CREATE'),
 		       pg_has_role(current_user, c.relowner, 'USAGE')
 		  FROM pg_class c
 		  JOIN pg_namespace n ON n.oid = c.relnamespace
-		 WHERE c.oid = to_regclass('usage_logs')`).
-		Scan(&schema, &schemaCreate, &ownsParent)
+		 WHERE n.nspname = $1 AND c.relname = $2`, schema, usageLogParentTable).
+		Scan(&schemaCreate, &ownsParent)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, false, errors.New(
-			"usage_logs parent table not found; run the logs migrations first")
+		return false, false, errors.New("usage_logs parent table not found; run the logs migrations first")
 	}
 	if err != nil {
-		return "", false, false, err
+		return false, false, err
 	}
-	return schema, schemaCreate, ownsParent, nil
+	return schemaCreate, ownsParent, nil
 }
 
 // usageMonthStart 返回 now 所在 UTC 月的月初（与 date_trunc('month', ...)

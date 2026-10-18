@@ -3,12 +3,14 @@
 package billing
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -544,6 +546,97 @@ func TestSaturateIntegrationAppRoleConvergence(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
 		t.Fatalf("三列授权下的错误应包含 permission denied: %v", err)
+	}
+}
+
+// cancelOnList 是「第一次扫描即请求停机」的 lister，用于让 worker 启动序
+// （ensure → scanOnce）跑完一轮后立即退出。
+type cancelOnList struct{ cancel context.CancelFunc }
+
+func (c *cancelOnList) ListAbandoned(context.Context, time.Time) ([]string, error) {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return nil, nil
+}
+
+// TestPartitionIntegrationExistingWindowNoDDL 验证 R-56 的运维友好路径：
+// 当月+下月分区已由迁移预建时，即使连接没有 DDL 权限，
+// EnsureUsagePartitions 也返回 nil；worker 启动序不产生 WARN/ERROR。
+func TestPartitionIntegrationExistingWindowNoDDL(t *testing.T) {
+	admin := openLogsTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// 以属主身份确保当前窗口存在（正常环境由迁移预建）。
+	if err := EnsureUsagePartitions(ctx, admin, now); err != nil {
+		t.Fatalf("owner EnsureUsagePartitions: %v", err)
+	}
+
+	role := fmt.Sprintf("t6_noddl_%d", time.Now().UnixNano())
+	dsn := logsDSNForUser(t, role, "t6probe")
+	if _, err := admin.Exec(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD 't6probe'", role)); err != nil {
+		t.Skipf("无法创建临时角色（需要 CREATEROLE）: %v", err)
+	}
+	var db *sql.DB
+	t.Cleanup(func() {
+		if db != nil {
+			_ = db.Close()
+		}
+		if _, err := admin.Exec("DROP OWNED BY " + role + " CASCADE"); err != nil {
+			t.Errorf("DROP OWNED BY %s: %v", role, err)
+		}
+		if _, err := admin.Exec("DROP ROLE " + role); err != nil {
+			t.Errorf("DROP ROLE %s: %v", role, err)
+		}
+	})
+	for _, stmt := range []string{
+		"GRANT CONNECT ON DATABASE newtg_logs TO " + role,
+		"GRANT USAGE ON SCHEMA public TO " + role,
+		"GRANT SELECT ON usage_logs TO " + role,
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("grant to temp role: %v (%s)", err, stmt)
+		}
+	}
+
+	var err error
+	db, err = sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open no-DDL db: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping no-DDL db: %v", err)
+	}
+
+	// (a) 窗口已存在：只做存在性检查，直接 nil（不进入权限探测）。
+	if err := EnsureUsagePartitions(ctx, db, now); err != nil {
+		t.Fatalf("EnsureUsagePartitions(existing window, no DDL) = %v, want nil", err)
+	}
+
+	// (b) worker 启动序：真实 EnsureUsagePartitions + 无 DDL 连接不得告警。
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWorkerLoop(runCtx, WorkerDeps{
+			Abandoned: &cancelOnList{cancel: cancel},
+			Recoverer: &workerTestRecoverer{},
+			LogsDB:    db,
+			Logger:    logger,
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWorkerLoop = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunWorkerLoop did not exit")
+	}
+	if out := logs.String(); strings.Contains(out, "level=WARN") || strings.Contains(out, "level=ERROR") {
+		t.Fatalf("已存在窗口不应产生告警: %s", out)
 	}
 }
 
