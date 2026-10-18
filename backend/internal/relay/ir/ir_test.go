@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"newtg/gateway/internal/contract"
@@ -516,5 +517,168 @@ func TestIRBuildOpenAIRequestBodySkipsRawWhenFormatUnknown(t *testing.T) {
 func TestIRFromIRRejectsNil(t *testing.T) {
 	if _, err := FromIR(nil); err == nil {
 		t.Fatal("nil response 必须返回错误")
+	}
+}
+
+// ============================================================================
+// final-review finding 4：tools/response_format 的原始子对象保留
+// ============================================================================
+
+// TestIRBuildOpenAIRequestBodyPreservesToolStrict 冻结「IR 无法表达的字段
+// 从 Raw 原样保留」：function.strict 与 json_schema.name/strict 必须在
+// 重新编码后仍然存在，否则 strict 约束会在中继时被静默丢弃。
+func TestIRBuildOpenAIRequestBodyPreservesToolStrict(t *testing.T) {
+	const raw = `{
+	  "model": "gpt-4o",
+	  "messages": [{"role":"user","content":"hi"}],
+	  "tools": [{"type":"function","function":{
+	    "name":"lookup","description":"d","strict":true,
+	    "parameters":{"type":"object","properties":{"q":{"type":"string"}}}
+	  }}],
+	  "response_format": {"type":"json_schema","json_schema":{
+	    "name":"my_schema","strict":true,"description":"schema-desc",
+	    "schema":{"type":"object","properties":{"answer":{"type":"string"}}}
+	  }}
+	}`
+	req, err := ParseOpenAIRequest([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseOpenAIRequest: %v", err)
+	}
+	body, err := BuildOpenAIRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildOpenAIRequestBody: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("unmarshal body: %v（body=%s）", err, body)
+	}
+
+	tools, _ := obj["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %v", obj["tools"])
+	}
+	function, _ := tools[0].(map[string]any)["function"].(map[string]any)
+	if function["strict"] != true {
+		t.Fatalf("function.strict = %v，期望 true（body=%s）", function["strict"], body)
+	}
+	if function["name"] != "lookup" || function["description"] != "d" {
+		t.Fatalf("归一化字段被破坏：%v", function)
+	}
+	params, _ := function["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Fatalf("parameters = %v", function["parameters"])
+	}
+
+	format, _ := obj["response_format"].(map[string]any)
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format.type = %v", format["type"])
+	}
+	jsonSchema, _ := format["json_schema"].(map[string]any)
+	if jsonSchema["name"] != "my_schema" {
+		t.Fatalf("json_schema.name = %v，期望保留客户端 my_schema", jsonSchema["name"])
+	}
+	if jsonSchema["strict"] != true {
+		t.Fatalf("json_schema.strict = %v，期望 true", jsonSchema["strict"])
+	}
+	if jsonSchema["description"] != "schema-desc" {
+		t.Fatalf("json_schema.description = %v，期望保留", jsonSchema["description"])
+	}
+	schema, _ := jsonSchema["schema"].(map[string]any)
+	if schema["type"] != "object" {
+		t.Fatalf("json_schema.schema = %v", jsonSchema["schema"])
+	}
+
+	// 二次 round-trip：保留字段不得在再解析/再编码后退化。
+	second, err := ParseOpenAIRequest(body)
+	if err != nil {
+		t.Fatalf("re-parse built body: %v", err)
+	}
+	again, err := BuildOpenAIRequestBody(second)
+	if err != nil {
+		t.Fatalf("rebuild body: %v", err)
+	}
+	if !strings.Contains(string(again), `"strict":true`) || !strings.Contains(string(again), `"name":"my_schema"`) {
+		t.Fatalf("二次 round-trip 丢失 strict/name：%s", again)
+	}
+}
+
+// TestIRBuildOpenAIRequestBodyPreservesMaxCompletionTokens 冻结 finding 7：
+// 客户端只发 max_completion_tokens 时不得改写为 max_tokens（新模型会 400）。
+func TestIRBuildOpenAIRequestBodyPreservesMaxCompletionTokens(t *testing.T) {
+	const raw = `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":128}`
+	req, err := ParseOpenAIRequest([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseOpenAIRequest: %v", err)
+	}
+	if req.MaxTokens == nil || *req.MaxTokens != 128 {
+		t.Fatalf("MaxTokens = %v，期望 128", req.MaxTokens)
+	}
+	body, err := BuildOpenAIRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildOpenAIRequestBody: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if got, ok := obj["max_completion_tokens"]; !ok || got != float64(128) {
+		t.Fatalf("max_completion_tokens = %v，期望 128（body=%s）", obj["max_completion_tokens"], body)
+	}
+	if _, ok := obj["max_tokens"]; ok {
+		t.Fatalf("不得同时下发 max_tokens（body=%s）", body)
+	}
+
+	// 客户端用 max_tokens 时保持旧行为（max_tokens，删除 max_completion_tokens）。
+	req, err = ParseOpenAIRequest([]byte(`{"model":"m","messages":[],"max_tokens":64,"max_completion_tokens":32}`))
+	if err != nil {
+		t.Fatalf("ParseOpenAIRequest: %v", err)
+	}
+	body, err = BuildOpenAIRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildOpenAIRequestBody: %v", err)
+	}
+	obj = map[string]any{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if obj["max_tokens"] != float64(64) {
+		t.Fatalf("max_tokens = %v，期望 64（max_tokens 优先）", obj["max_tokens"])
+	}
+	if _, ok := obj["max_completion_tokens"]; ok {
+		t.Fatalf("max_tokens 已归一化时不得保留 max_completion_tokens（body=%s）", body)
+	}
+}
+
+// TestIRParseOpenAIRequestRejectsUnencodableToolMessages 冻结 finding 8：
+// 解析期必须拒绝编码器无法编码的形态，避免客户端参数错误变成上游构造失败（502）。
+func TestIRParseOpenAIRequestRejectsUnencodableToolMessages(t *testing.T) {
+	cases := map[string]string{
+		"tool message missing tool_call_id": `{"model":"m","messages":[{"role":"tool","content":"result"}]}`,
+		"tool call missing function name":   `{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"arguments":"{}"}}]}]}`,
+		"function call missing name":        `{"model":"m","messages":[{"role":"assistant","content":null,"function_call":{"arguments":"{}"}}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseOpenAIRequest([]byte(body))
+			if err == nil {
+				t.Fatal("want ErrParamInvalid, got nil")
+			}
+			if !errors.Is(err, ErrParamInvalid) {
+				t.Fatalf("error = %v，期望 ErrParamInvalid-class", err)
+			}
+		})
+	}
+
+	// 合法形态仍必须解析+编码成功（校验不得误伤）。
+	valid := `{"model":"m","messages":[
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":"ok"}
+	]}`
+	req, err := ParseOpenAIRequest([]byte(valid))
+	if err != nil {
+		t.Fatalf("合法 tool 消息解析失败：%v", err)
+	}
+	if _, err := BuildOpenAIRequestBody(req); err != nil {
+		t.Fatalf("合法 tool 消息编码失败：%v", err)
 	}
 }

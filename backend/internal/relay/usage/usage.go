@@ -35,6 +35,10 @@ const headerModelResponseUsage = "x-model-response-usage"
 
 // ExtractUsage 从三个来源中提取一份用量事实（三源优先级见包注释 R-05）。
 //
+// 生产调用方：relay.Route（非流式路径，在 ParseResponse 之后以 response.Raw +
+// 上游响应头调用）。流式路径的跨块累计由端点层 bridgeStream 复用同一套
+// ir.ParseOpenAIUsage 语义（Task 7/8）；本包因此不是「仅测试使用」的死代码。
+//
 // 参数：
 //   - resp：上游非流式响应；本函数从 resp.Raw 的 `usage` 对象读取原生用量。
 //     resp 为 nil 或 Raw 为空/不含有效 usage 时视为「原生来源缺席」，不 panic。

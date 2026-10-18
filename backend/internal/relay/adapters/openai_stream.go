@@ -68,6 +68,12 @@ type openAIStreamChunk struct {
 // 读取错误以 EventError 交付（不 panic）；错误细节不携带 URL/凭据（GC-6）。
 // 迭代器一次性消费同一 reader（relay-02 §4.2）。
 func (o *OpenAI) StreamEvents(_ *contract.RelayContext, rw io.ReadWriter) iter.Seq[contract.StreamEvent] {
+	return openAIStreamEvents(rw, sseMaxEventBytes)
+}
+
+// openAIStreamEvents 是 StreamEvents 的实现体，事件字节上限参数化以便测试
+// 用小上限验证硬错误形状（生产恒为 sseMaxEventBytes）。
+func openAIStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contract.StreamEvent] {
 	return func(yield func(contract.StreamEvent) bool) {
 		if rw == nil {
 			yield(contract.StreamEvent{Kind: contract.EventError})
@@ -215,8 +221,12 @@ func (o *OpenAI) StreamEvents(_ *contract.RelayContext, rw io.ReadWriter) iter.S
 					// 累计字节上限针对「一个事件」而非整条流（64MB，relay-03 §4.1），
 					// 事件边界（空行）在 dispatch 中重置。
 					eventBytes += len(line) + 1
-					if eventBytes > sseMaxEventBytes {
-						yield(contract.StreamEvent{Kind: contract.EventError, Raw: []byte(strings.Join(rawLines, "\n"))})
+					if eventBytes > maxEventBytes {
+						// 硬错误形状（final-review finding 5）：EventError 且 Raw == nil。
+						// 端点层 bridgeStream 依据 Raw 区分软/硬错误——带 Raw 的只计入
+						// 软错误上限后继续，Raw 为空才终止流且不伪造 [DONE]。事件超限
+						// 是协议级不可恢复错误，绝不能携带 Raw 被当成软错误。
+						yield(contract.StreamEvent{Kind: contract.EventError})
 						return
 					}
 					rawLines = append(rawLines, line)
