@@ -32,7 +32,8 @@ var (
 )
 
 // ChannelFilter 是列表查询的筛选条件（modules-06 F-06-01）。
-// Page 为 1 基；PageSize 上限 100；Sort 只支持 priority（默认）/name。
+// Page 为 1 基；PageSize 上限 100；Sort 支持 priority（默认）/name；
+// response_time 由 handler 接受后落回默认 priority 顺序（M2 尚无 24h 聚合数据源）。
 // Types 走 type = ANY(text[])，Group/Model 用 jsonb 存在运算符 `?`，
 // 与 DDL 上 channels_group_tags_gin / channels_supported_models_gin 的
 // jsonb_path_ops 索引匹配（platform-04 §3.3.3）。

@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/api/dto"
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
@@ -304,9 +305,10 @@ type channelTestRequest struct {
 }
 
 type channelTestResponse struct {
-	Success   bool   `json:"success"`
-	LatencyMS int    `json:"latency_ms"`
-	Model     string `json:"model"`
+	Success    bool   `json:"success"`
+	LatencyMS  int    `json:"latency_ms"`
+	Model      string `json:"model"`
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 // ---------- Handler ----------
@@ -737,13 +739,12 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 		} else {
 			if remark != nil {
 				trimmed := strings.TrimSpace(*remark)
-				if trimmed == "" {
-					remark = nil
-				} else if utf8.RuneCountInString(trimmed) > 255 {
+				switch {
+				case trimmed == "":
+					remark = nil // 空白串 = 清空（与 null 等价）
+				case utf8.RuneCountInString(trimmed) > 255:
 					v.add("remark", "remark must be at most 255 characters")
-					trimmed = trimmed[:0]
-				}
-				if trimmed != "" {
+				default:
 					remark = &trimmed
 				}
 			}
@@ -780,6 +781,17 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 			if err := json.Unmarshal(req.Credentials, &creds); err != nil {
 				v.add("credentials", "credentials must be an object or null")
 			} else if creds.APIKey != "" {
+				// azure 只改 api_key 时，请求体通常不带 deployment/api_version；
+				// 它们仍是有效配置（在旧密文里）。先与已解密的凭据合并，再校验，
+				// 否则「只轮换密钥」会被误判成 422（F-06-03）。
+				if existingCreds, ok := h.existingCredentials(existing); ok {
+					if creds.Deployment == "" {
+						creds.Deployment = existingCreds.Deployment
+					}
+					if creds.APIVersion == "" {
+						creds.APIVersion = existingCreds.APIVersion
+					}
+				}
 				v.addFields(validateCredentials(ct, creds))
 				if len(v.fields) == 0 {
 					patch.Credentials = h.sealCredentials(v, ct, creds)
@@ -789,6 +801,24 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 	}
 
 	return patch
+}
+
+// existingCredentials 解出渠道当前的凭据明文，用于 PATCH 的字段级合并。
+// 解封失败返回 ok=false：调用方按「没有可合并的旧值」处理，校验仍然会
+// 要求 azure 的 deployment/api_version 齐全（fail-closed）。
+func (h *ChannelHandler) existingCredentials(ch *store.Channel) (ChannelCredentials, bool) {
+	if ch == nil || len(ch.Credentials) == 0 {
+		return ChannelCredentials{}, false
+	}
+	plaintext, err := h.sealer.Open(ch.Credentials)
+	if err != nil {
+		return ChannelCredentials{}, false
+	}
+	var creds ChannelCredentials
+	if err := json.Unmarshal(plaintext, &creds); err != nil {
+		return ChannelCredentials{}, false
+	}
+	return creds, true
 }
 
 // ---------- 删除 / 批量 ----------
@@ -917,12 +947,14 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 	if testErr != nil {
 		// 仍回写失败结果（F-06-06 主流程 3）；回写失败不覆盖测试错误。
 		_ = h.channels.UpdateTestResult(r.Context(), id, now, false)
-		// GC-6：错误体不得包含上游 URL/密钥/适配器原始错误文本，故整体丢弃 testErr。
-		writeAPIError(w, &apiError{
-			Status: http.StatusBadGateway,
-			Type:   problemTypeChannelTestFailed,
-			Title:  "Channel test failed",
-			Detail: "the upstream request failed",
+		// modules-06 F-06-06：连通性失败是**业务结果**而不是 HTTP 故障，
+		// 返回 200 {success:false, error_class}，便于前端展示失败原因。
+		// GC-6：只给泛化枚举 + 固定字段，原始错误（可能含 URL/key）整体丢弃。
+		writeJSON(w, http.StatusOK, channelTestResponse{
+			Success:    false,
+			LatencyMS:  latency,
+			Model:      model,
+			ErrorClass: channelTestErrorClass(testErr),
 		})
 		return
 	}
@@ -970,10 +1002,11 @@ func parseChannelFilter(r *http.Request) (store.ChannelFilter, *apiError) {
 		v := int16(n)
 		f.Status = &v
 	}
-	if rawSort := q.Get("sort"); rawSort != "" && rawSort != "priority" && rawSort != "name" {
-		// response_time 排序依赖 24h 聚合指标，M2 尚无可排序数据源；
-		// 明确拒绝而不是静默回退，避免前端以为排序生效。
-		return f, validationError("sort", `sort must be "priority" or "name"`)
+	if rawSort := q.Get("sort"); rawSort != "" && rawSort != "priority" && rawSort != "name" && rawSort != "response_time" {
+		// response_time 是 F-06-01 前端会发送的第三种排序；M2 尚无 24h 聚合
+		// 数据源，接受该值并落回默认 priority 顺序（不是静默拒绝，也不是
+		// 假装按响应时间排序——store 只对 name 特判）。
+		return f, validationError("sort", `sort must be "priority", "name" or "response_time"`)
 	}
 
 	typeValues := append([]string{}, q["type"]...)
@@ -1422,7 +1455,6 @@ const (
 	problemTypeChannelNotFound        = "https://newtg.dev/problems/channel_not_found"
 	problemTypeChannelNameConflict    = "https://newtg.dev/problems/channel_name_conflict"
 	problemTypeChannelVersionConflict = "https://newtg.dev/problems/channel_version_conflict"
-	problemTypeChannelTestFailed      = "https://newtg.dev/problems/channel_test_failed"
 )
 
 func validationError(field, message string) *apiError {
@@ -1518,13 +1550,20 @@ func validateBatchIDs(ids []int64) *apiError {
 // 只缓存 2xx：4xx/5xx 不应被固化 24h（客户端修正参数后应能重试）。
 // 缓存故障 fail-open：幂等层不可用不阻断业务；多副本场景的重复写由
 // channels_name_uq 等约束兜底。这是有意的可用性权衡，phase 8B 应注入 Redis 实现。
+//
+// 幂等键作用域（安全边界）：客户端提供的 Idempotency-Key 只是**命名空间内的名字**，
+// 存储键必须再绑定「用户 + 操作（方法/路径）」。否则：
+//   - 同一个 key 用在 POST /api/channels 与 POST /api/channels/batch-delete 时，
+//     第二个请求会重放第一个的响应并跳过删除；
+//   - 另一个管理员获知 key 后可以读到他无权发起的首次响应。
 func (h *ChannelHandler) serveIdempotent(w http.ResponseWriter, r *http.Request, build func() (int, []byte, bool)) {
-	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if key == "" {
+	headerKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if headerKey == "" {
 		status, body, _ := build()
 		writeJSONBytes(w, status, body)
 		return
 	}
+	key := idempotencyScopeKey(r, headerKey)
 	if cached, found, err := h.idem.Get(r.Context(), key); err == nil && found {
 		w.Header().Set("Idempotent-Replayed", "true")
 		writeJSONBytes(w, cached.Status, cached.Body)
@@ -1541,6 +1580,18 @@ func (h *ChannelHandler) serveIdempotent(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	writeJSONBytes(w, status, body)
+}
+
+// idempotencyScopeKey 返回存储层使用的幂等键：`<userID>:<method> <path>:<headerKey>`。
+//
+// userID 取自已认证 Principal（authorize 已保证存在）；匿名（理论上不可达）用 0，
+// 仍然按操作隔离。路径区分操作，方法冗余但便于运维直读 Redis 键时排障。
+func idempotencyScopeKey(r *http.Request, headerKey string) string {
+	userID := int64(0)
+	if p, ok := auth.PrincipalFrom(r.Context()); ok && p != nil {
+		userID = p.UserID
+	}
+	return fmt.Sprintf("%d:%s %s:%s", userID, r.Method, r.URL.Path, headerKey)
 }
 
 // authorize 把 CheckPermission 的三种结果映射为 HTTP：

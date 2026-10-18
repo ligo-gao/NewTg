@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"newtg/gateway/internal/auth"
@@ -63,6 +64,11 @@ const (
 	// channelTestMaxErrorBodyBytes 限制连通性测试读取响应体的上限；只为让
 	// adapter.ClassifyError 有界读取，绝不回显（GC-6）。
 	channelTestMaxErrorBodyBytes = 64 << 10
+
+	// maxSoftStreamErrors 是软流错误的记录上限（relay-03 §4.3/§10.1：上限 20 条）。
+	// 第 21 条软错误按硬错误处理：继续吞错会让一个持续损坏的上游把连接
+	// 拖成永不结束的「成功」流。
+	maxSoftStreamErrors = 20
 )
 
 var (
@@ -100,6 +106,9 @@ type RelayHandlerOptions struct {
 	// Client 是上游 HTTP 客户端；nil 时按 relay-01 §11.1 超时构造。
 	// 测试用 httptest.Server.Client() 注入，以复用其 TLS/连接配置。
 	Client *http.Client
+	// Dispatch 是渠道类型 → 适配器分派；nil 时使用 adapters.Dispatch。
+	// 测试注入 fake StreamAdapter 以覆盖 soft/hard 流错误等上游难以复现的路径。
+	Dispatch func(contract.ChannelType) (contract.Adapter, error)
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
@@ -110,6 +119,7 @@ type RelayHandler struct {
 	sealer   *SecretSealer
 	billing  func() contract.BillingSession
 	client   *http.Client
+	dispatch func(contract.ChannelType) (contract.Adapter, error)
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -131,6 +141,10 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if billing == nil {
 		billing = func() contract.BillingSession { return billingseam.NewStub() }
 	}
+	dispatch := opts.Dispatch
+	if dispatch == nil {
+		dispatch = adapters.Dispatch
+	}
 	return &RelayHandler{
 		channels: opts.Channels,
 		tokens:   opts.Tokens,
@@ -138,6 +152,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		sealer:   opts.Sealer,
 		billing:  billing,
 		client:   client,
+		dispatch: dispatch,
 	}
 }
 
@@ -230,7 +245,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext) relay.RouteDeps {
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
 		},
-		Dispatch:   adapters.Dispatch,
+		Dispatch:   h.dispatch,
 		Billing:    h.billing(),
 		Client:     h.client,
 		MaxRetries: relayMaxRetries,
@@ -319,19 +334,45 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 
 // ---------- 流式 ----------
 
+// includeUsageRequested 判定是否向上游索要并向下游合成 include_usage（relay-03 §2.3）：
+//   - stream_options.include_usage 缺省 → true（OpenAI Chat 的默认语义）；
+//   - 显式 true/false → 尊重客户端选择（客户端显式 false 优先于默认值）。
+//
+// 只看归一化请求的 Raw：ir.ParseOpenAIRequest 已把它保存为完整原始体。
+func includeUsageRequested(req *contract.Request) bool {
+	if req == nil || len(req.Raw) == 0 {
+		return true
+	}
+	var payload struct {
+		StreamOptions *struct {
+			IncludeUsage *bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(req.Raw, &payload); err != nil {
+		return true
+	}
+	if payload.StreamOptions == nil || payload.StreamOptions.IncludeUsage == nil {
+		return true
+	}
+	return *payload.StreamOptions.IncludeUsage
+}
+
 // serveStream 执行流式中继（relay-01 §2 阶段 7–14；relay-03 §3–§5）。
 //
 // 与 Route 的分工（R-P7）：流式路径先 ExecuteAttempts 拿原始 2xx 响应，再交给
 // 适配器的 StreamEvents 事件流；ExecuteAttempts 在失败出口已 Terminate（GC-7），
 // 因此本函数只在**拿到 2xx 之后**负责终结计费会话，且恰好一次。
 func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
-	// R-P14 / R-02：流式路径强制 stream=true，并把 stream_options.include_usage=true
-	// 合并进 Raw（保留其它未建模字段）。非流式不注入顶层 usage。
-	injected := usage.InjectIncludeUsage(rc.Request, true)
+	// relay-03 §2.3：include_usage 默认 true，但客户端显式 false 优先。
+	// 仅当需要时才注入 stream_options.include_usage=true（Raw 的其它字段保留）；
+	// 客户端显式 false 时原样透传，不注入、也不合成末块 usage。
+	includeUsage := includeUsageRequested(rc.Request)
+	injected := usage.InjectIncludeUsage(rc.Request, includeUsage)
 	if injected == nil {
 		writeRelayError(w, http.StatusBadRequest, rc.RequestID, "invalid_request", "invalid request body")
 		return
 	}
+	// R-P14：流式路径强制 stream=true（即使上游请求体里残留 stream=false）。
 	injected.Stream = true
 	rc.Request = injected
 	rc.Streaming = true
@@ -373,7 +414,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 		flusher.Flush()
 	}
 
-	h.bridgeStream(w, r, rc, result.Response.Body, streamAdapter, deps.Billing, flusher, start)
+	h.bridgeStream(w, r, rc, result.Response.Body, streamAdapter, deps.Billing, flusher, start, includeUsage)
 }
 
 // bridgeStream 消费适配器的 StreamEvent 序列并写入客户端。
@@ -397,6 +438,7 @@ func (h *RelayHandler) bridgeStream(
 	billing contract.BillingSession,
 	flusher http.Flusher,
 	start time.Time,
+	includeUsage bool,
 ) {
 	chunkID := "chatcmpl-newtg"
 	if rc.RequestID != "" {
@@ -410,6 +452,8 @@ func (h *RelayHandler) bridgeStream(
 		sawUsage     bool
 		received     int
 		sent         int
+		contentSent  int // 仅内容帧（raw/delta）：OutcomePartial 的判据（契约 §7.2）
+		softErrors   int
 		firstTokenMS *int
 		finished     bool
 		upstreamFail bool
@@ -478,6 +522,7 @@ func (h *RelayHandler) bridgeStream(
 				return false
 			}
 			sent++
+			contentSent++
 			return true
 
 		case contract.EventDelta:
@@ -487,7 +532,11 @@ func (h *RelayHandler) bridgeStream(
 				upstreamFail = true
 				return false
 			}
-			return writeData(payload)
+			if !writeData(payload) {
+				return false
+			}
+			contentSent++
+			return true
 
 		case contract.EventUsage:
 			if ev.Usage != nil {
@@ -497,20 +546,38 @@ func (h *RelayHandler) bridgeStream(
 			return true
 
 		case contract.EventFinish:
-			// 只记状态：同一上游块可能在 finish 之后仍带 usage（include_usage
-			// 末块），立即写 [DONE] 会把它丢掉。统一在迭代结束后收尾。
+			// finish_reason 是客户端可见语义（stop/length/tool_calls），不能只记布尔：
+			// 从原始帧解析后写一个 delta 为空、finish_reason 非空的 chunk。
+			// ev.Raw 可能是 [DONE] 哨兵帧（适配器在未见 finish_reason 时补发），
+			// 因此必须解析而不是盲目转发。
 			finished = true
+			reason, finishUsage := parseRelayFinishEvent(ev.Raw)
+			if finishUsage != nil {
+				mergeUsage(&accumulated, *finishUsage)
+				sawUsage = true
+			}
+			if reason != "" {
+				payload, err := marshalRelayFinishChunk(chunkID, created, model, reason)
+				if err != nil {
+					upstreamFail = true
+					return false
+				}
+				if !writeData(payload) {
+					return false
+				}
+			}
 			return true
 
 		case contract.EventError:
+			// relay-03 §4.3/§10.1：EventError 是**软错误**（坏 JSON 块/上游 error
+			// 事件），记录后继续；上限 20 条，第 21 条按硬错误处理。
+			// relay-03 §5.2/§10.3：异常结束不得向客户端注入错误对象——因此硬错误
+			// （Raw 为空：读取失败/事件超限/空 reader）只终止流，不写错误帧。
+			if len(ev.Raw) > 0 && softErrors < maxSoftStreamErrors {
+				softErrors++
+				return true
+			}
 			upstreamFail = true
-			// GC-6：不转发上游错误帧（可能含内部主机名/凭据提示），只给固定信封。
-			payload, _ := json.Marshal(relayErrorEnvelope{Error: relayErrorBody{
-				Message: "upstream stream error",
-				Type:    relayErrorType,
-				Code:    "upstream_stream_error",
-			}})
-			_ = writeData(payload)
 			return false
 
 		case contract.EventPing:
@@ -522,10 +589,11 @@ func (h *RelayHandler) bridgeStream(
 		}
 	})
 
-	// 收尾帧（客户端已断开时不写：连接已不可用）。
-	// include_usage 是我们强制注入的（R-P14），因此正常/EOF 路径都发末块 usage。
-	if !clientGone {
-		if !upstreamFail {
+	// 收尾帧只在正常/EOF 路径写；硬流错误不注入任何收尾帧（relay-03 §5.2/§10.3：
+	// 异常结束由连接终止表达，不伪造 [DONE]），客户端断开时连接已不可用。
+	if !clientGone && !upstreamFail {
+		// 仅当 include_usage 开启时合成末块 usage（客户端显式 false 时不伪造）。
+		if includeUsage {
 			if payload, err := marshalRelayUsageChunk(chunkID, created, model, accumulated); err == nil {
 				if writeRelaySSEData(w, flusher, payload) {
 					sent++
@@ -543,13 +611,13 @@ func (h *RelayHandler) bridgeStream(
 	switch {
 	case clientGone:
 		endReason = contract.EndClientAbort
-		outcome = relayStreamOutcome(sent)
+		outcome = relayStreamOutcome(contentSent)
 	case upstreamFail:
 		endReason = contract.EndUpstreamError
-		outcome = relayStreamOutcome(sent)
+		outcome = relayStreamOutcome(contentSent)
 	case !finished:
 		endReason = contract.EndUpstreamEOF
-		outcome = relayStreamOutcome(sent)
+		outcome = relayStreamOutcome(contentSent)
 	}
 	relay.WithStream(rc, &contract.StreamStatus{
 		Phase:     contract.PhaseTerminated,
@@ -579,9 +647,11 @@ func (h *RelayHandler) bridgeStream(
 	terminate(fact)
 }
 
-// relayStreamOutcome 按已发送帧数判定非正常结束的结果：有内容 = partial。
-func relayStreamOutcome(sent int) contract.ResponseOutcome {
-	if sent > 0 {
+// relayStreamOutcome 按**内容帧**数判定非正常结束的结果（契约 §7.2：
+// OutcomePartial = 「有部分内容但未正常终结」）。合成帧（usage/[DONE]）
+// 不算内容，否则空流 EOF 会被误报为 partial。
+func relayStreamOutcome(contentSent int) contract.ResponseOutcome {
+	if contentSent > 0 {
 		return contract.OutcomePartial
 	}
 	return contract.OutcomeFailed
@@ -869,6 +939,73 @@ func marshalRelayUsageChunk(id string, created int64, model string, u contract.U
 	})
 }
 
+// marshalRelayFinishChunk 编码带 finish_reason 的终止 chunk（delta 为空）。
+// OpenAI 客户端据此判断 stop / length / tool_calls；缺失会让上层误以为流被截断。
+func marshalRelayFinishChunk(id string, created int64, model, reason string) ([]byte, error) {
+	finish := reason
+	return json.Marshal(openAIChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   model,
+		Choices: []openAIChunkChoice{{
+			Index:        0,
+			Delta:        openAIChunkDelta{},
+			FinishReason: &finish,
+		}},
+	})
+}
+
+// parseRelayFinishEvent 从 EventFinish 的原始 SSE 帧中提取 finish_reason 与 usage。
+//
+// EventFinish 的 Raw 有两种来源（见 adapters/openai_stream.go）：
+//   - 上游 finish_reason 块的原文（可能同一块还带 usage）；
+//   - 上游只发 [DONE] 时，适配器补发的 EventFinish（Raw = "data: [DONE]"）。
+//
+// 后者必须识别并忽略，绝不能当 JSON 解析或原样转发。返回空 reason 表示
+// 「没有可用的 finish_reason」；usage 仅在帧内确有 usage 对象时非 nil。
+func parseRelayFinishEvent(raw []byte) (string, *contract.Usage) {
+	payload := sseDataPayload(raw)
+	if payload == "" || payload == "[DONE]" {
+		return "", nil
+	}
+	var chunk struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return "", nil
+	}
+	reason := ""
+	if len(chunk.Choices) > 0 {
+		reason = chunk.Choices[0].FinishReason
+	}
+	var usage *contract.Usage
+	usageRaw := bytes.TrimSpace(chunk.Usage)
+	if len(usageRaw) > 0 && string(usageRaw) != "null" {
+		parsed := ir.ParseOpenAIUsage(chunk.Usage)
+		usage = &parsed
+	}
+	return reason, usage
+}
+
+// sseDataPayload 合并一个 SSE 事件块内的多条 data: 行（\n 连接）。
+func sseDataPayload(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, 2)
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "data:") {
+			lines = append(lines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 // mergeUsage 把流式分块用量累计到 dst：**非零才覆盖，绝不擦除已有维度**
 // （多块/多候选上游可能只在前几块给出非零值；relay-03 §6）。
 func mergeUsage(dst *contract.Usage, src contract.Usage) {
@@ -985,6 +1122,35 @@ func (e *channelTestUpstreamError) Error() string {
 	// 同时避免字段只写不读（handler 仍整体丢弃错误文本，GC-6）。
 	return fmt.Sprintf("httpapi: channel test: upstream returned status %d (class %d)",
 		e.StatusCode, int(e.Class))
+}
+
+// channelTestErrorClass 把连通性测试错误归一为**泛化枚举**（modules-06 F-06-06）。
+//
+// 返回值只用于前端展示失败类别，不含状态码之外的任何上游事实；未分类的
+// 错误（DNS/连接失败等）一律 "unknown"，绝不回显底层错误文本（GC-6）。
+func channelTestErrorClass(err error) string {
+	var upstream *channelTestUpstreamError
+	if !errors.As(err, &upstream) {
+		return "unknown"
+	}
+	switch upstream.Class {
+	case contract.ErrParamInvalid:
+		return "invalid_request"
+	case contract.ErrUpstreamAuth:
+		return "upstream_auth"
+	case contract.ErrUpstreamRateLimit:
+		return "rate_limit"
+	case contract.ErrUpstreamServer:
+		return "upstream_server"
+	case contract.ErrChannelConfig:
+		return "channel_config"
+	case contract.ErrContentFilter:
+		return "content_filter"
+	case contract.ErrRetryable:
+		return "connection_error"
+	default:
+		return "unknown"
+	}
 }
 
 // NewChannelConnectivityTester 构造 modules-06 F-06-06 的真实连通性测试：

@@ -982,8 +982,9 @@ func TestChannelBatchEnableSkipsAlreadyEnabled(t *testing.T) {
 	}
 }
 
-// TestChannelTestFailureRedactsError 覆盖 brief (g)：测试失败返回非敏感 RFC7807，
-// 不包含 base_url / api_key；成功时回写 last_test_*。
+// TestChannelTestFailureRedactsError 覆盖 modules-06 F-06-06：连通性失败是
+// **业务结果**，返回 200 {success:false, error_class}（不是 502 RFC7807），
+// 且不包含 base_url / api_key；成功时回写 last_test_*。
 func TestChannelTestFailureRedactsError(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
 	seedChannel(t, env, nil)
@@ -992,12 +993,26 @@ func TestChannelTestFailureRedactsError(t *testing.T) {
 	env.handler.tester = tester.test
 
 	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}), adminPrincipal())
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d，期望 502（body=%s）", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
-	problem := decodeProblemBody(t, rr)
-	if problem["type"] != "https://newtg.dev/problems/channel_test_failed" {
-		t.Fatalf("problem.type = %v", problem["type"])
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q，期望 application/json", ct)
+	}
+	var failure struct {
+		Success    bool   `json:"success"`
+		LatencyMS  int    `json:"latency_ms"`
+		Model      string `json:"model"`
+		ErrorClass string `json:"error_class"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("test failure response: %v（body=%s）", err, rr.Body.String())
+	}
+	if failure.Success {
+		t.Fatalf("success = true，期望 false")
+	}
+	if failure.ErrorClass != "unknown" {
+		t.Fatalf("error_class = %q，期望泛化枚举 unknown", failure.ErrorClass)
 	}
 	for _, secret := range []string{"upstream.internal", "sk-supersecret", "api_key", "8443"} {
 		if strings.Contains(rr.Body.String(), secret) {
@@ -1146,5 +1161,138 @@ func TestChannelMaskAPIKeyShort(t *testing.T) {
 	}
 	if _, err := s2.Open(sealed); err == nil {
 		t.Fatalf("不同主密钥不应能解密")
+	}
+}
+
+// TestChannelListAcceptsResponseTimeSort 覆盖 F-06-01 的第三种排序值：
+// response_time 必须被接受（M2 无 24h 聚合数据源，store 落回默认 priority 顺序）。
+func TestChannelListAcceptsResponseTimeSort(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	rr := serveWithPrincipal(t, env.mux,
+		httptest.NewRequest(http.MethodGet, "/api/channels?sort=response_time", nil), adminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.store.lastFilter.Sort != "response_time" {
+		t.Fatalf("sort = %q，期望 response_time 透传到 store（由 store 落回默认顺序）", env.store.lastFilter.Sort)
+	}
+}
+
+// TestChannelIdempotencyKeyScopedByOperation 冻结幂等键的**操作作用域**：
+// 同一个 Idempotency-Key 用在创建与批量删除两个端点时，第二个请求不得
+// 重放第一个的响应（否则删除被静默跳过）。
+func TestChannelIdempotencyKeyScopedByOperation(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	seeded := seedChannel(t, env, nil)
+
+	createReq := jsonReq(t, http.MethodPost, "/api/channels", map[string]any{
+		"name":             "scoped-create",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-scoped-1234"},
+		"supported_models": []string{"gpt-4o"},
+	})
+	createReq.Header.Set("Idempotency-Key", "same-key-across-endpoints")
+	if rr := serveWithPrincipal(t, env.mux, createReq, adminPrincipal()); rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	deleteReq := jsonReq(t, http.MethodPost, "/api/channels/batch-delete", map[string]any{"ids": []int64{seeded.ID}})
+	deleteReq.Header.Set("Idempotency-Key", "same-key-across-endpoints")
+	rr := serveWithPrincipal(t, env.mux, deleteReq, adminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("batch-delete status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Idempotent-Replayed") == "true" {
+		t.Fatal("跨端点复用同一 Idempotency-Key 不得重放首次响应")
+	}
+	if env.store.batchDeleteCalls != 1 {
+		t.Fatalf("batchDeleteCalls = %d，期望 1（删除必须真正执行）", env.store.batchDeleteCalls)
+	}
+	if _, err := env.store.Get(context.Background(), seeded.ID); !errors.Is(err, store.ErrChannelNotFound) {
+		t.Fatalf("seed 渠道未被删除，Get err = %v", err)
+	}
+}
+
+// TestChannelIdempotencyKeyScopedByUser 冻结幂等键的**用户作用域**：
+// 两个管理员使用同一个 key 时不得共享首次响应（否则会读到别人的结果）。
+func TestChannelIdempotencyKeyScopedByUser(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	const otherAdminID int64 = 3
+	env.access.set(otherAdminID, "admin", nil, "enabled")
+	otherAdmin := &auth.Principal{UserID: otherAdminID, Role: "admin"}
+
+	first := jsonReq(t, http.MethodPost, "/api/channels", map[string]any{
+		"name":             "user-a-channel",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-user-a-1234"},
+		"supported_models": []string{"gpt-4o"},
+	})
+	first.Header.Set("Idempotency-Key", "shared-across-users")
+	if rr := serveWithPrincipal(t, env.mux, first, adminPrincipal()); rr.Code != http.StatusCreated {
+		t.Fatalf("user A create status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	second := jsonReq(t, http.MethodPost, "/api/channels", map[string]any{
+		"name":             "user-b-channel",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-user-b-1234"},
+		"supported_models": []string{"gpt-4o"},
+	})
+	second.Header.Set("Idempotency-Key", "shared-across-users")
+	rr := serveWithPrincipal(t, env.mux, second, otherAdmin)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("user B create status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Idempotent-Replayed") == "true" {
+		t.Fatal("跨用户复用同一 Idempotency-Key 不得重放他人响应")
+	}
+	var resp ChannelResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	if resp.Name != "user-b-channel" {
+		t.Fatalf("user B 收到 name = %q，期望 user-b-channel（不是 user A 的重放）", resp.Name)
+	}
+	if env.store.createCalls != 2 {
+		t.Fatalf("createCalls = %d，期望 2", env.store.createCalls)
+	}
+}
+
+// TestChannelPatchAzureOnlyAPIKeyKeepsDeployment 覆盖 F-06-03：
+// azure 渠道只轮换 api_key 时，deployment/api_version 从旧密文合并，
+// 不得因请求体缺字段而 422。
+func TestChannelPatchAzureOnlyAPIKeyKeepsDeployment(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	baseURL := "https://azure.example.com"
+	seeded := seedChannel(t, env, func(c *store.Channel) {
+		c.Type = string(contract.ChannelTypeAzure)
+		c.BaseURL = &baseURL
+		c.Credentials = mustSealCredentials(t, env.sealer, ChannelCredentials{
+			APIKey:     "sk-old-azure-1234",
+			Deployment: "my-deployment",
+			APIVersion: "2025-04-01",
+		})
+	})
+
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+		"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"credentials":      map[string]any{"api_key": "sk-new-azure-5678"},
+	}), adminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	plaintext, err := env.sealer.Open(env.store.items[1].Credentials)
+	if err != nil {
+		t.Fatalf("open updated credentials: %v", err)
+	}
+	var creds ChannelCredentials
+	if err := json.Unmarshal(plaintext, &creds); err != nil {
+		t.Fatalf("decode updated credentials: %v", err)
+	}
+	if creds.APIKey != "sk-new-azure-5678" {
+		t.Fatalf("api_key = %q，期望新密钥", creds.APIKey)
+	}
+	if creds.Deployment != "my-deployment" || creds.APIVersion != "2025-04-01" {
+		t.Fatalf("deployment/api_version 未从旧密文保留: %+v", creds)
 	}
 }

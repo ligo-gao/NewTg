@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/store"
 )
@@ -422,6 +424,11 @@ func TestRelayChatCompletionsStream(t *testing.T) {
 	if !strings.Contains(out, `"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}`) {
 		t.Fatalf("final usage chunk missing accumulated usage; body=%s", out)
 	}
+	// finish_reason 必须到达客户端（stop/length/tool_calls），且只出现一次：
+	// delta chunk 的 finish_reason 是 null，不能把 EventFinish 只记成布尔。
+	if got := strings.Count(out, `"finish_reason":"stop"`); got != 1 {
+		t.Fatalf("finish_reason stop count = %d, want exactly 1; body=%s", got, out)
+	}
 
 	if got := env.billing.terminateCount(); got != 1 {
 		t.Fatalf("Terminate calls = %d, want exactly 1", got)
@@ -513,12 +520,15 @@ func TestRelayNoCandidatesReturnsEnvelope(t *testing.T) {
 	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
 
-	if w.Code != http.StatusBadGateway && w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 502 or 503; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (relay-01 §2 阶段 3 的 get_channel_failed); body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, `"type":"new_api_error"`) {
 		t.Fatalf("body = %s, want new_api_error envelope", body)
+	}
+	if !strings.Contains(body, `"code":"model_not_found"`) {
+		t.Fatalf("body = %s, want code model_not_found", body)
 	}
 	requestID := w.Header().Get("X-Request-ID")
 	if requestID == "" {
@@ -722,5 +732,287 @@ func TestRelayRejectsOversizedBody(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"type":"new_api_error"`) {
 		t.Fatalf("body = %s, want OpenAI error envelope", w.Body.String())
+	}
+}
+
+// ---------- include_usage：客户端显式 false 优先 ----------
+
+func TestRelayStreamRespectsExplicitIncludeUsageFalse(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		_ = json.NewDecoder(r.Body).Decode(&upstreamBody)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		// 即使上游仍返回 usage，客户端显式 false 时也不得合成/转发 usage 块。
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	mu.Lock()
+	options, _ := upstreamBody["stream_options"].(map[string]any)
+	includeUsage, present := options["include_usage"].(bool)
+	mu.Unlock()
+	if !present || includeUsage {
+		t.Fatalf("upstream include_usage = %v (present=%v), want explicit false preserved", includeUsage, present)
+	}
+
+	out := w.Body.String()
+	if strings.Contains(out, `"usage":`) {
+		t.Fatalf("explicit include_usage=false must not synthesize a usage chunk; body=%s", out)
+	}
+	if got := strings.Count(out, "data: [DONE]"); got != 1 {
+		t.Fatalf("[DONE] count = %d, want exactly 1; body=%s", got, out)
+	}
+	if got := strings.Count(out, `"finish_reason":"stop"`); got != 1 {
+		t.Fatalf("finish_reason count = %d, want 1; body=%s", got, out)
+	}
+}
+
+// ---------- 软/硬流错误（relay-03 §4.3/§5.2/§10.1/§10.3） ----------
+
+// scriptedStreamAdapter 直接产出预设事件，用于覆盖真实上游难以复现的
+// soft（坏块）/hard（读取失败）流错误路径。
+type scriptedStreamAdapter struct {
+	url    string
+	events []contract.StreamEvent
+}
+
+func (a *scriptedStreamAdapter) Type() contract.ChannelType  { return contract.ChannelTypeOpenAI }
+func (a *scriptedStreamAdapter) Caps() contract.Capabilities { return contract.Capabilities{} }
+func (a *scriptedStreamAdapter) BuildRequest(*contract.RelayContext, *contract.Request) (*http.Request, error) {
+	return http.NewRequest(http.MethodPost, a.url, nil)
+}
+func (a *scriptedStreamAdapter) ParseResponse(*contract.RelayContext, *http.Response) (*contract.Response, contract.Usage, error) {
+	return nil, contract.Usage{}, fmt.Errorf("scripted adapter: ParseResponse not used")
+}
+func (a *scriptedStreamAdapter) ClassifyError(int, []byte) contract.ErrorClass {
+	return contract.ErrUnknown
+}
+func (a *scriptedStreamAdapter) StreamEvents(*contract.RelayContext, io.ReadWriter) iter.Seq[contract.StreamEvent] {
+	return func(yield func(contract.StreamEvent) bool) {
+		for _, ev := range a.events {
+			if !yield(ev) {
+				return
+			}
+		}
+	}
+}
+
+func newScriptedStreamEnv(t *testing.T, adapter contract.Adapter) (*relayTestEnv, *httptest.Server) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+	return env, upstream
+}
+
+func TestRelayStreamSoftErrorContinues(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &scriptedStreamAdapter{
+		url: upstream.URL + "/v1/chat/completions",
+		events: []contract.StreamEvent{
+			{Kind: contract.EventDelta, Delta: "ok"},
+			// 软错误：Raw 非空（坏 JSON 块/上游 error 事件）→ 记录后继续。
+			{Kind: contract.EventError, Raw: []byte(`data: {bad json}`)},
+			{Kind: contract.EventFinish, Raw: []byte(`data: {"choices":[{"finish_reason":"stop"}]}`)},
+		},
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"content":"ok"`) {
+		t.Fatalf("soft error must not abort the stream; body=%s", out)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("soft errors must not inject an error frame; body=%s", out)
+	}
+	if got := strings.Count(out, "data: [DONE]"); got != 1 {
+		t.Fatalf("[DONE] count = %d, want 1; body=%s", got, out)
+	}
+	if env.billing.terminateCount() != 1 {
+		t.Fatalf("Terminate calls = %d, want 1", env.billing.terminateCount())
+	}
+}
+
+func TestRelayStreamHardErrorStopsWithoutErrorFrame(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &scriptedStreamAdapter{
+		url: upstream.URL + "/v1/chat/completions",
+		events: []contract.StreamEvent{
+			{Kind: contract.EventDelta, Delta: "part"},
+			// 硬错误：Raw 为空（读取失败/事件超限）→ 终止，不注入错误对象/[DONE]。
+			{Kind: contract.EventError},
+		},
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (headers already sent); body=%s", w.Code, w.Body.String())
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"content":"part"`) {
+		t.Fatalf("partial content must be forwarded; body=%s", out)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("hard stream error must not inject an error frame; body=%s", out)
+	}
+	if strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("hard stream error must not forge a normal [DONE]; body=%s", out)
+	}
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageUpstreamPartial {
+		t.Fatalf("hard error UsageFact.Source = %d, want partial", fact.Usage.Source)
+	}
+}
+
+// ---------- 错误映射（429 / AttemptsError） ----------
+
+func TestRelayErrorStatusMapping(t *testing.T) {
+	upstream := &relay.UpstreamStatusError{StatusCode: http.StatusTooManyRequests, Class: contract.ErrUpstreamRateLimit}
+	if status, code, _ := mapRelayError(&relay.FastFailError{Err: upstream}); status != http.StatusTooManyRequests || code != "rate_limit_exceeded" {
+		t.Fatalf("FastFail 429 => (%d,%q), want (429, rate_limit_exceeded)", status, code)
+	}
+
+	attempts := &relay.AttemptsError{Attempts: 4, Last: &relay.RetryableError{Err: upstream}}
+	status, code, message := mapRelayError(attempts)
+	if status != http.StatusBadGateway || code != "upstream_error" {
+		t.Fatalf("AttemptsError => (%d,%q), want (502, upstream_error)", status, code)
+	}
+	if !strings.Contains(message, "4 attempt") {
+		t.Fatalf("AttemptsError message = %q, want attempt count", message)
+	}
+}
+
+// ---------- 令牌状态 / pin 403 / x-api-key ----------
+
+func TestRelayTokenStateRejections(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called for rejected tokens")
+	}))
+	defer upstream.Close()
+
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`
+	cases := []struct {
+		name   string
+		mutate func(*auth.TokenMeta)
+	}{
+		{"expired", func(m *auth.TokenMeta) {
+			past := time.Now().Add(-time.Minute)
+			m.ExpiresAt = &past
+		}},
+		{"zero quota", func(m *auth.TokenMeta) {
+			m.UnlimitedQuota = false
+			m.RemainQuota = 0
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRelayTestEnv(t, upstream, nil)
+			env.tokens.mu.Lock()
+			meta := env.tokens.byHash[auth.HashTokenKey(relayTestToken)]
+			tc.mutate(meta)
+			env.tokens.mu.Unlock()
+
+			w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401; body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), `"type":"new_api_error"`) {
+				t.Fatalf("body = %s, want OpenAI envelope", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestRelayPinForbiddenForNonAdmin(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called when pin is forbidden")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	// legacy pin 载体：查询 key 是 sk-pintest，末段 1 是渠道 id。
+	env.handler.tokens = newFakeRelayTokenStore("sk-pintest", &auth.TokenMeta{
+		ID:             9,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		UnlimitedQuota: true,
+	})
+	env.handler.access = &fakeRelayAccess{role: "user", status: "enabled"}
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`,
+		map[string]string{"Authorization": "Bearer sk-pintest-1"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"channel_pin_forbidden"`) {
+		t.Fatalf("body = %s, want channel_pin_forbidden", w.Body.String())
+	}
+}
+
+func TestRelayModelsAcceptsXAPIKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model list must not hit upstream")
+	}))
+	defer upstream.Close()
+
+	channels := &fakeRelayChannelStore{models: []string{"alpha"}}
+	env := newRelayTestEnv(t, upstream, channels)
+	w := env.do(t, http.MethodGet, "/v1/models", "",
+		map[string]string{"x-api-key": relayTestToken})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (x-api-key carrier); body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"id":"alpha"`) {
+		t.Fatalf("body = %s, want model list", w.Body.String())
+	}
+}
+
+// ---------- usage 合并：非零覆盖、零值不擦除 ----------
+
+func TestRelayMergeUsageNeverErases(t *testing.T) {
+	dst := contract.Usage{Prompt: 5, Completion: 2, Total: 7, CacheRead: 4, Reasoning: 1}
+	mergeUsage(&dst, contract.Usage{Completion: 3})
+	if dst.Prompt != 5 || dst.Completion != 3 || dst.Total != 7 || dst.CacheRead != 4 || dst.Reasoning != 1 {
+		t.Fatalf("merge erased existing dimensions: %+v", dst)
+	}
+	mergeUsage(&dst, contract.Usage{Total: 9, CacheRead: 0})
+	if dst.Total != 9 || dst.CacheRead != 4 {
+		t.Fatalf("non-zero merge failed: %+v", dst)
 	}
 }
