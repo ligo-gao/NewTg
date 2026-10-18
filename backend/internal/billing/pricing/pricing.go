@@ -495,6 +495,30 @@ func ParsePricingSpec(spec string) (*ParsedSpec, error) {
 	}
 
 	if mode == contract.BillingModeTieredExpr {
+		// 表达式是唯一价格配置（billing-02 §3.1）：表达式模式下混入数值
+		// 价格字段属于配置歧义——静默丢弃会让管理员以为价列仍生效。
+		// 按 fail-closed 方向直接拒绝（review M11）。
+		for name, v := range map[string]*float64{
+			"model_ratio":             raw.ModelRatio,
+			"completion_ratio":        raw.CompletionRatio,
+			"cache_ratio":             raw.CacheRatio,
+			"create_cache_ratio":      raw.CreateCacheRatio,
+			"prompt_price":            raw.PromptPrice,
+			"completion_price":        raw.CompletionPrice,
+			"cache_read_price":        raw.CacheReadPrice,
+			"cache_write_price":       raw.CacheWritePrice,
+			"cache_creation_5m_ratio": raw.CacheCreation5mRatio,
+			"cache_creation_1h_ratio": raw.CacheCreation1hRatio,
+			"image_ratio":             raw.ImageRatio,
+			"audio_ratio":             raw.AudioRatio,
+			"audio_completion_ratio":  raw.AudioCompletionRatio,
+			"model_price":             raw.ModelPrice,
+		} {
+			if v != nil {
+				return nil, invalidf("tiered_expr 模式不得混入数值价格字段 %s", name)
+			}
+		}
+
 		e := strings.TrimSpace(raw.Expr)
 		if e == "" {
 			return nil, ErrMissingExpression
@@ -823,7 +847,10 @@ func ResolveExpression(price *contract.PriceData, model string, mode contract.Bi
 		p.UsePrice = true
 	}
 
-	groupRatio := groupRatioFromInfo(p.GroupRatioInfo)
+	groupRatio, err := groupRatioFromInfo(p.GroupRatioInfo)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
 
 	return contract.PriceSnapshot{
 		Mode:       effective,
@@ -890,16 +917,30 @@ func applyRatioDefaults(p *contract.PriceData, model string) {
 	// 因此 0 在此处按显式零保留（不再二次兜底）。
 }
 
-// groupRatioFromInfo 取生效的分组倍率：组间覆盖（Special）优先，其次分组倍率，
-// 缺省 1（billing-02 §4.7：未命中记日志返回 1）。
-func groupRatioFromInfo(info contract.GroupRatioInfo) float64 {
-	if info.HasSpecialRatio && info.GroupSpecialRatio > 0 {
-		return info.GroupSpecialRatio
+// groupRatioFromInfo 取生效的分组倍率：组间覆盖（Special）优先，其次分组倍率。
+//
+// 缺省值 1 只用于「GroupRatioInfo 为零值」（调用方未提供分组信息）：
+// billing-02 §4.7 规定分组倍率未命中按 1 计。但显式传入的 NaN/±Inf/负值
+// 是配置错误，必须报错而不是静默归一为 1（否则错误倍率会静默按 1 计费）；
+// 组间覆盖标记为 true 时其 Special 值同样必须是有限正数（review M7）。
+func groupRatioFromInfo(info contract.GroupRatioInfo) (float64, error) {
+	if info.HasSpecialRatio {
+		special := info.GroupSpecialRatio
+		if math.IsNaN(special) || math.IsInf(special, 0) || special <= 0 {
+			return 0, fmt.Errorf("%w: 组间覆盖倍率 %v", ErrInvalidGroupRatio, special)
+		}
+		return special, nil
 	}
-	if info.GroupRatio > 0 {
-		return info.GroupRatio
+	ratio := info.GroupRatio
+	switch {
+	case ratio == 0:
+		// 零值 = 调用方未提供分组信息 → 按 billing-02 §4.7 的缺省 1。
+		return 1, nil
+	case math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0:
+		return 0, fmt.Errorf("%w: 分组倍率 %v", ErrInvalidGroupRatio, ratio)
+	default:
+		return ratio, nil
 	}
-	return 1
 }
 
 // deriveCacheWriteMode 由模型名与缓存写配置派生只读元信息（billing-02 §6.3）。

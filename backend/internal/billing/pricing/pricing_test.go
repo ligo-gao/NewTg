@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"math"
 	"reflect"
 	"strconv"
 	"testing"
@@ -120,6 +121,9 @@ func TestParsePricingRejectsInvalid(t *testing.T) {
 		{"未知模式", `{"mode":"magic"}`, ErrInvalidMode},
 		{"per_call 缺价", `{"mode":"per_call"}`, ErrInvalidSpec},
 		{"非表达式带 expr", `{"mode":"ratio","expr":"p*2"}`, ErrUnexpectedExpression},
+		{"表达式混入绝对价", `{"mode":"tiered_expr","expr":"p*2","prompt_price":100}`, ErrInvalidSpec},
+		{"表达式混入旧倍率", `{"mode":"tiered_expr","expr":"p*2","model_ratio":1}`, ErrInvalidSpec},
+		{"表达式混入按次价", `{"mode":"tiered_expr","expr":"p*2","model_price":1}`, ErrInvalidSpec},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -293,6 +297,34 @@ func TestResolveGroupRatio(t *testing.T) {
 	snap, _ = Resolve(&p, "m", contract.BillingModeRatio)
 	if snap.GroupRatio != 1 {
 		t.Fatalf("缺省分组倍率应为 1，got %v", snap.GroupRatio)
+	}
+}
+
+func TestResolveGroupRatioRejectsInvalid(t *testing.T) {
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		info contract.GroupRatioInfo
+	}{
+		{"NaN 分组倍率", contract.GroupRatioInfo{GroupRatio: nan}},
+		{"负分组倍率", contract.GroupRatioInfo{GroupRatio: -1}},
+		{"+Inf 分组倍率", contract.GroupRatioInfo{GroupRatio: math.Inf(1)}},
+		{"组间覆盖为零", contract.GroupRatioInfo{HasSpecialRatio: true, GroupSpecialRatio: 0}},
+		{"组间覆盖为 NaN", contract.GroupRatioInfo{HasSpecialRatio: true, GroupSpecialRatio: nan}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := contract.PriceData{ModelRatio: 1, GroupRatioInfo: c.info}
+			if _, err := Resolve(&p, "m", contract.BillingModeRatio); !errors.Is(err, ErrInvalidGroupRatio) {
+				t.Fatalf("应拒绝非法分组倍率，got %v", err)
+			}
+		})
+	}
+	// 零值信息仍按缺省 1（Source 未提供分组信息的合法场景）。
+	p := contract.PriceData{ModelRatio: 1}
+	snap, err := Resolve(&p, "m", contract.BillingModeRatio)
+	if err != nil || snap.GroupRatio != 1 {
+		t.Fatalf("零值分组信息应默认 1，got %v err=%v", snap.GroupRatio, err)
 	}
 }
 
