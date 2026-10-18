@@ -5,8 +5,9 @@
 //
 // 审计行是合规追溯面：本包只做 INSERT（无 UPDATE/DELETE），并且在落库前
 // 对 detail/before/after 做递归脱敏——口令、API key、key_hash、TOTP secret、
-// 备用码等材料绝不允许进入审计表。动作名（action）落 detail.action 之外，
-// 同时用于推导 category（modules-05 §7.1 的四类）。
+// 备用码等材料绝不允许进入审计表。动作名（action）用于推导 category
+// （modules-05 §7.1 的四类），并由 writer 统一注入 detail.action（裁决 R-43：
+// 调用侧不得自行定义动作名，避免同一事件出现两个动作名真源）。
 package audit
 
 import (
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 // redacted 是敏感字段的替换值。测试依赖该常量。
@@ -73,6 +75,13 @@ const (
 	// 它不属于某个用户的日常操作，但在审计面上必须可查（验收：初始化动作
 	// 在审计日志可查），故归于 operation 类。
 	ActionSystemInitialized = "system_initialized"
+
+	// ActionAuthzDenied 是 RBAC 授权拒绝事件（security-09 §2.7 设计 B /
+	// security-02 TC-B-17）：并入既有 security 类，不新增第 5 个 category
+	// （platform-01 §5 的 CHECK 变更成本高）。detail 由装配层写成固定形状
+	// {event:"authz_denied", required_permission, route}；detail.action 仍由
+	// writer 统一注入为本常量值（裁决 R-43）。
+	ActionAuthzDenied = "authz.denied"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -122,6 +131,8 @@ var actionCategories = map[string]string{
 	ActionGroupDelete: categoryOperation,
 
 	ActionSystemInitialized: categoryOperation,
+
+	ActionAuthzDenied: categorySecurity,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。
@@ -212,7 +223,7 @@ func (l *Logger) LogEvent(ctx context.Context, e Event) error {
 		username = fmt.Sprintf("user#%d", e.Actor)
 	}
 
-	detail, err := sanitizeJSON(e.Detail)
+	detail, err := sanitizeDetailJSON(e.Detail, e.Action)
 	if err != nil {
 		return err
 	}
@@ -225,12 +236,16 @@ func (l *Logger) LogEvent(ctx context.Context, e Event) error {
 		return err
 	}
 
+	// UA 无 Envoy/代理侧上限时可能长达数 KB，而审计保留 12 个月；在入库前
+	// 截断到 512 字节，既够区分客户端，又不让日志库承担无限输入。
+	userAgent := truncateUTF8(e.UserAgent, maxUserAgentBytes)
+
 	args := []any{
 		e.Actor,
 		username,
 		category,
 		nullableText(e.IP),
-		nullableText(e.UserAgent),
+		nullableText(userAgent),
 		nullableText(e.Method),
 		nullableText(e.Route),
 		nullableStatus(e.StatusCode),
@@ -272,8 +287,71 @@ func nullableStatus(code int) any {
 	return int16(code)
 }
 
+// maxUserAgentBytes 是 audit_logs.user_agent 的写入侧上限：UA 是客户端完全
+// 可控的字符串，不设上限会让 12 个月保留期的日志库承受无限输入。
+const maxUserAgentBytes = 512
+
+// truncateUTF8 按 UTF-8 边界把 s 截断到至多 max 字节。直接切 s[:max] 可能
+// 把多字节字符切成半个 rune，产生非法 UTF-8（PostgreSQL text 会拒绝或留下
+// 乱码）；这里回退到最后一个 rune 的起始字节。
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// injectDetailAction 落实裁决 R-43：detail.action 恒等于冻结动作枚举。
+//   - Detail 为空（含 JSON null）→ 生成仅含 action 的对象；
+//   - Detail 是 JSON 对象 → 覆盖 action，保留其余键；
+//   - 其他 JSON 形态 → 原样保留（现有契约允许任意 JSON，不做破坏性变更）。
+func injectDetailAction(detail any, action string) any {
+	if detail == nil {
+		return map[string]any{"action": action}
+	}
+	if obj, ok := detail.(map[string]any); ok {
+		obj["action"] = action
+	}
+	return detail
+}
+
+// sanitizeDetailJSON 是 detail 的专用入口：在通用的校验+脱敏之后，由 writer
+// 统一注入 detail.action（裁决 R-43：调用侧不得自行定义动作名，避免同一个
+// 事件出现两个动作名真源）。注入发生在解码后的对象上、重新编码之前，因此
+// 空详情会得到 {action} 对象，而非 NULL。
+func sanitizeDetailJSON(raw json.RawMessage, action string) (any, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		out, err := json.Marshal(map[string]any{"action": action})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+		}
+		return string(out), nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+	value = injectDetailAction(redactValue(value), action)
+	out, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+	return string(out), nil
+}
+
 // secretKeyNormalized 是脱敏键的归一化集合（小写、去掉 _ 与 -）。
 // 「key」「token」等通用词也在清单内：审计宁可少记，也不能漏记。
+//
+// 复合凭据键（access_token/refresh_token/id_token/bearer_token/token_hash 等）
+// 归一化后是独立的组合词，不会被「token」命中，必须逐项登记——审计保留 12
+// 个月，一次 OAuth 凭据误入 detail 就是长期泄露。`backupcodes` 继续保留：
+// 既有的 backup_codes 详情必须强制脱敏；计数类调用侧改用
+// `backup_codes_count`（归一化后不在集合内，自然保留数值，modules-05 §7.4）。
 var secretKeyNormalized = map[string]struct{}{
 	"password":        {},
 	"newpassword":     {},
@@ -288,6 +366,11 @@ var secretKeyNormalized = map[string]struct{}{
 	"plain":           {},
 	"plaintext":       {},
 	"token":           {},
+	"accesstoken":     {},
+	"refreshtoken":    {},
+	"idtoken":         {},
+	"bearertoken":     {},
+	"tokenhash":       {},
 	"secret":          {},
 	"totpsecret":      {},
 	"backupcodes":     {},
@@ -299,6 +382,9 @@ var secretKeyNormalized = map[string]struct{}{
 }
 
 func normalizeSecretKey(key string) string {
+	// 键名来自调用侧手工构造的 map，可能带空白（如 " access_token "）；
+	// 先裁剪再归一化，避免空白让敏感键绕过匹配原样落库。
+	key = strings.TrimSpace(key)
 	key = strings.ToLower(key)
 	key = strings.ReplaceAll(key, "_", "")
 	key = strings.ReplaceAll(key, "-", "")

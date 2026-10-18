@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // execCall 捕获一次 INSERT 的实参，便于逐列断言。
@@ -165,6 +166,8 @@ func TestAuditActionCategories(t *testing.T) {
 		ActionUserCreate:                   "operation",
 		ActionUserQuotaAdjust:              "operation",
 		ActionSystemInitialized:            "operation",
+		// RBAC 拒绝并入既有 security 类（security-09 §2.7 设计 B），不新增类别。
+		ActionAuthzDenied: "security",
 	}
 	for action, want := range cases {
 		got, ok := Category(action)
@@ -216,5 +219,145 @@ func TestAuditPackageLogUnconfigured(t *testing.T) {
 	SetDefault(nil)
 	if err := Log(context.Background(), ActionTokenCreate, 1, nil); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("err = %v，期望 ErrNotConfigured", err)
+	}
+}
+
+// TestAuditRedactsCompoundCredentialKeys 覆盖 D1-5：复合凭据键（access_token、
+// refresh_token、id_token、bearer_token、token_hash 等）归一化后是独立组合词，
+// 不会被通用 "token" 命中；带空白的键名也必须脱敏，否则空白就能绕过匹配。
+// 计数键 backup_codes_count 归一化后不在集合内，必须保留数值（modules-05 §7.4）。
+func TestAuditRedactsCompoundCredentialKeys(t *testing.T) {
+	exec := &fakeExec{}
+	l := New(exec)
+	detail := json.RawMessage(`{
+		"access_token":"oauth-secret","refresh_token":"refresh-secret","id_token":"id-secret",
+		"bearer_token":"bearer-secret","token_hash":"hash-secret",
+		"client_secret":"client-secret","private_key":"pem-secret",
+		" Access_Token ":"padded-secret",
+		"backup_codes_count":7,"backup_codes":["one","two"]
+	}`)
+	if err := l.LogEvent(context.Background(), Event{Action: ActionAuth2FAEnable, Actor: 1, Detail: detail}); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+	got := decodeArg(t, exec.calls[0].args[9])
+
+	for _, key := range []string{
+		"access_token", "refresh_token", "id_token", "bearer_token",
+		"token_hash", "client_secret", "private_key", " Access_Token ",
+	} {
+		if got[key] != redacted {
+			t.Errorf("%q = %#v，期望 %q", key, got[key], redacted)
+		}
+	}
+	if got["backup_codes"] != redacted {
+		t.Errorf("backup_codes = %#v，期望仍强制脱敏", got["backup_codes"])
+	}
+	if got["backup_codes_count"] != float64(7) {
+		t.Errorf("backup_codes_count = %#v，期望保留数值 7（计数不是凭据）", got["backup_codes_count"])
+	}
+	raw, _ := json.Marshal(got)
+	for _, secret := range []string{
+		"oauth-secret", "refresh-secret", "id-secret", "bearer-secret",
+		"hash-secret", "client-secret", "pem-secret", "padded-secret",
+	} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("detail 泄露了复合凭据 %q: %s", secret, raw)
+		}
+	}
+}
+
+// TestAuditWriterInjectsDetailAction 覆盖裁决 R-43：detail.action 恒等于冻结
+// 动作枚举，由 writer 注入；调用侧手写的动作名必须被覆盖而不是并存。
+func TestAuditWriterInjectsDetailAction(t *testing.T) {
+	t.Run("对象详情覆盖调用侧 action", func(t *testing.T) {
+		exec := &fakeExec{}
+		l := New(exec)
+		if err := l.LogEvent(context.Background(), Event{
+			Action: ActionTokenBatchEnable,
+			Actor:  1,
+			Detail: json.RawMessage(`{"action":"enable","token_id":7}`),
+		}); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+		got := decodeArg(t, exec.calls[0].args[9])
+		if got["action"] != ActionTokenBatchEnable {
+			t.Errorf("detail.action = %v，期望冻结动作 %q", got["action"], ActionTokenBatchEnable)
+		}
+		if got["token_id"] != float64(7) {
+			t.Errorf("其余键未保留: %#v", got)
+		}
+	})
+
+	t.Run("无详情生成仅含 action 的对象", func(t *testing.T) {
+		exec := &fakeExec{}
+		l := New(exec)
+		if err := l.LogEvent(context.Background(), Event{Action: ActionTokenCreate, Actor: 1}); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+		got := decodeArg(t, exec.calls[0].args[9])
+		if len(got) != 1 || got["action"] != ActionTokenCreate {
+			t.Errorf("detail = %#v，期望仅含 action=%q", got, ActionTokenCreate)
+		}
+	})
+
+	t.Run("非对象详情原样保留", func(t *testing.T) {
+		exec := &fakeExec{}
+		l := New(exec)
+		if err := l.LogEvent(context.Background(), Event{
+			Action: ActionTokenCreate,
+			Actor:  1,
+			Detail: json.RawMessage(`["a","b"]`),
+		}); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+		raw, ok := exec.calls[0].args[9].(string)
+		if !ok {
+			t.Fatalf("detail 参数类型 = %T，期望 string", exec.calls[0].args[9])
+		}
+		if raw != `["a","b"]` {
+			t.Errorf("非对象 detail 被改写: %s", raw)
+		}
+	})
+}
+
+// TestAuditTruncatesUserAgentAtUTF8Boundary 覆盖 D1-11：UA 在写入侧按
+// 512 字节上限截断，且不得把多字节字符切成非法 UTF-8。
+func TestAuditTruncatesUserAgentAtUTF8Boundary(t *testing.T) {
+	write := func(t *testing.T, ua string) string {
+		t.Helper()
+		exec := &fakeExec{}
+		l := New(exec)
+		if err := l.LogEvent(context.Background(), Event{Action: ActionTokenCreate, Actor: 1, UserAgent: ua}); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+		got, ok := exec.calls[0].args[4].(string)
+		if !ok {
+			t.Fatalf("user_agent 参数类型 = %T，期望 string", exec.calls[0].args[4])
+		}
+		if len(got) > 512 {
+			t.Fatalf("user_agent 长度 = %d，期望 ≤512", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("user_agent 被截断成非法 UTF-8：%q", got)
+		}
+		return got
+	}
+
+	// 511 ASCII + 4 字节 emoji：第 512 字节落在 emoji 内部，必须回退到 511。
+	long := strings.Repeat("a", 511) + "👍" + strings.Repeat("b", 10)
+	if got := write(t, long); got != strings.Repeat("a", 511) {
+		t.Fatalf("跨 rune 边界截断 = %q，期望 511 个 a", got)
+	}
+
+	// 恰好 512 字节且以完整多字节字符结尾：原样保留。
+	exact := strings.Repeat("a", 510) + "é"
+	if got := write(t, exact); got != exact {
+		t.Fatalf("恰好 512 字节的 UA 被改写（len=%d）", len(got))
+	}
+
+	// 纯 ASCII 超限：截到 512。
+	ascii := strings.Repeat("x", 600)
+	if got := write(t, ascii); got != strings.Repeat("x", 512) {
+		t.Fatalf("ASCII UA 截断长度 = %d，期望 512", len(got))
 	}
 }
