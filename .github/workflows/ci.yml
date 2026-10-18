@@ -50,12 +50,16 @@ jobs:
       - name: go vet
         run: cd backend && go vet ./...
       - name: golangci-lint（含 depguard 包边界）
+        # 唯一 Go 模块根是 backend/：必须在该目录内运行，否则包解析失败或空跑。
+        # 配置路径相对 backend/ 指回仓库根；depguard files glob 用 **/internal/...
+        # 形式（depguard 对绝对路径匹配，详见 .golangci.yml 注释）。
         # 配置为 v2 schema（根 .golangci.yml 首行 version: "2"），因此钉 v2 系列；
         # action v8.0.0 的 tag 是 annotated tag，这里用其指向的 commit SHA。
         uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8.0.0
         with:
           version: v2.15.0
-          args: --config .golangci.yml ./backend/...
+          working-directory: backend
+          args: --config ../.golangci.yml ./...
       - name: Makefile 冻结值断言
         run: bash backend/scripts/check_makefile.sh
       - name: Dockerfile 冻结值断言（多阶段/非 root/内置健康检查）
@@ -194,7 +198,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
             if git diff --name-only FETCH_HEAD HEAD \
-                 | grep -qE '^(backend/migrations/|backend/migrations-logs/|backend/internal/store/)'; then
+                 | grep -qE '^(backend/migrations/|backend/migrations-logs/|backend/internal/store/|backend/scripts/migrate_verify\.sh$|backend/go\.mod$|backend/go\.sum$)'; then
               run=true
             else
               run=false
@@ -202,7 +206,7 @@ jobs:
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           if [ "$run" = false ]; then
-            echo "::notice::migrate-verify 跳过：本 PR 未改动 backend/migrations/、backend/migrations-logs/ 或 backend/internal/store/"
+            echo "::notice::migrate-verify 跳过：本 PR 未改动 backend/migrations/、backend/migrations-logs/、backend/internal/store/、backend/scripts/migrate_verify.sh 或 backend/go.{mod,sum}"
           fi
       - name: 建日志库 newtg_logs
         if: steps.filter.outputs.run == 'true'
@@ -277,8 +281,15 @@ jobs:
             if [ -z "$base_rev" ] || printf '%s' "$base_rev" | grep -qE '^0+$'; then
               base_rev=""
             else
-              git fetch --no-tags --depth=1 origin "$base_rev" || base_rev=""
+              # fetch 失败不直接清空：完整克隆可能已含该提交，交给下面的 cat-file 判定。
+              git fetch --no-tags --depth=1 origin "$base_rev" >/dev/null 2>&1 || true
             fi
+          fi
+
+          # 基线提交必须真实存在于本地对象库；否则「取不到基线」会伪装成首 PR 豁免。
+          if [ -n "$base_rev" ] && ! git cat-file -e "${base_rev}^{commit}" 2>/dev/null; then
+            echo "::warning::基线提交 ${base_rev} 本地不可用（fetch 失败且对象不存在），按无基线处理"
+            base_rev=""
           fi
 
           base_file="$(mktemp)"
@@ -381,44 +392,53 @@ jobs:
           ok()  { echo "ok   $*"; }
           bad() { echo "FAIL $*" >&2; fail=1; }
 
-          # 采样 /healthz：安全头必须由中间件对「每个响应」统一注入，而不是只给
-          # HTML 特判；探针/错误路径正是最容易漏头的分支。
+          # 安全头必须由中间件对「每个响应」统一注入，而不是只给 HTML 特判；
+          # 探针/错误路径正是最容易漏头的分支，所以 /healthz 与 /debug 404 都要采样。
+          check_headers() { # $1=label  $2=raw headers
+            local label="$1" raw="$2"
+            if grep -qiE '^x-content-type-options:[[:space:]]*nosniff' <<<"$raw"; then
+              ok "$label X-Content-Type-Options: nosniff"
+            else
+              bad "$label 缺少 X-Content-Type-Options: nosniff（MIME 嗅探会放大 XSS）"
+            fi
+
+            if grep -qiE '^referrer-policy:[[:space:]]*[^[:space:]]+' <<<"$raw"; then
+              ok "$label Referrer-Policy 已下发"
+            else
+              bad "$label 缺少 Referrer-Policy（跨源导航会泄露完整 URL）"
+            fi
+
+            if grep -qiE "^content-security-policy:.*frame-ancestors[[:space:]]+'none'" <<<"$raw" \
+               || grep -qiE '^x-frame-options:[[:space:]]*(DENY|SAMEORIGIN)' <<<"$raw"; then
+              ok "$label 禁止被嵌入（CSP frame-ancestors 'none' 或 X-Frame-Options）"
+            else
+              bad "$label 缺少 frame-ancestors 'none' / X-Frame-Options（点击劫持防护）"
+            fi
+          }
+
           headers="$(curl -sS -D - -o /dev/null http://localhost:8080/healthz || true)"
           code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/healthz || true)"
           [ "$code" = 200 ] && ok "/healthz 200" || bad "/healthz 状态码 ${code}，期望 200"
+          check_headers "/healthz" "$headers"
 
-          if grep -qiE '^x-content-type-options:[[:space:]]*nosniff' <<<"$headers"; then
-            ok "X-Content-Type-Options: nosniff"
-          else
-            bad "缺少 X-Content-Type-Options: nosniff（MIME 嗅探会放大 XSS）"
-          fi
-
-          if grep -qiE '^referrer-policy:[[:space:]]*[^[:space:]]+' <<<"$headers"; then
-            ok "Referrer-Policy 已下发"
-          else
-            bad "缺少 Referrer-Policy（跨源导航会泄露完整 URL）"
-          fi
-
-          if grep -qiE "^content-security-policy:.*frame-ancestors[[:space:]]+'none'" <<<"$headers" \
-             || grep -qiE '^x-frame-options:[[:space:]]*(DENY|SAMEORIGIN)' <<<"$headers"; then
-            ok "禁止被嵌入（CSP frame-ancestors 'none' 或 X-Frame-Options）"
-          else
-            bad "缺少 frame-ancestors 'none' / X-Frame-Options（点击劫持防护）"
-          fi
-
-          debug_code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/debug/pprof/ || true)"
+          # 同一次 curl 同时取 404 的状态码与响应头：错误响应也必须带安全头。
+          debug_resp="$(curl -sS -D - -o /dev/null -w 'STATUS:%{http_code}' http://localhost:8080/debug/pprof/ || true)"
+          debug_code="$(printf '%s\n' "$debug_resp" | grep -oE 'STATUS:[0-9]{3}' | cut -d: -f2 || true)"
           if [ "$debug_code" = 404 ]; then
             ok "/debug/* 404"
           else
-            bad "/debug/pprof/ 状态码 ${debug_code}，期望 404（APP_ENV=production 不得暴露调试面）"
+            bad "/debug/pprof/ 状态码 ${debug_code:-<空>}，期望 404（APP_ENV=production 不得暴露调试面）"
           fi
+          check_headers "/debug/pprof" "$debug_resp"
 
           app_env="$(docker compose -f deploy/docker-compose.yml exec -T --index 1 gateway sh -c 'printf %s "$APP_ENV"' || true)"
           [ "$app_env" = production ] && ok "gateway APP_ENV=production" || bad "gateway APP_ENV=${app_env:-<空>}，期望 production"
 
           [ "$fail" -eq 0 ]
       - name: 清理
-        if: always() && steps.filter.outputs.run == 'true'
+        # 只要 job 跑到过清理这一步就尝试 down：即使前面的 filter 步骤失败，
+        # 也可能已经创建了部分容器/网络；对未启动的栈执行 down 是无害的。
+        if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
 
   # 流水线 G（platform-02 §7.9）：仅 PR；只构建 amd64（快、够验证），发布才多架构。

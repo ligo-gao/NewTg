@@ -84,19 +84,28 @@ else
   bad "ci.yml 未使用 postgres:16-alpine（集成与迁移验证均需要 PG16 service container）"
 fi
 
-# --- d. 工具版本固定（GC-13） ---------------------------------------------
-for pair in "MIGRATE_VERSION" "KIN_OPENAPI_VERSION"; do
-  if grep -qE "^[[:space:]]+${pair}:[[:space:]]*v[0-9]" "$CI"; then
-    ok "ci.yml env 固定 ${pair}"
+# --- d. 工具版本固定且与 Makefile 单一来源（GC-13） ------------------------
+# 为什么比对 Makefile：CI 与本地 make 用不同版本会制造「本地绿、CI 红」的不可复现
+# 差异；仓库只有一个构建入口，CI 的 env 必须与它逐字一致，且不得是浮动标签。
+make_var() { # make_var <NAME> —— 取 Makefile 中 `NAME ?= value`
+  sed -nE "s/^${1}[[:space:]]*\\?=[[:space:]]*([^[:space:]#]+).*/\\1/p" "$ROOT/Makefile" | head -n 1
+}
+ci_var() { # ci_var <NAME> —— 取 ci.yml env 中的 `NAME: value`
+  sed -nE "s/^[[:space:]]+${1}:[[:space:]]*([^[:space:]#]+).*/\\1/p" "$CI" | head -n 1
+}
+for pair in MIGRATE_VERSION KIN_OPENAPI_VERSION; do
+  make_v="$(make_var "$pair")"
+  ci_v="$(ci_var "$pair")"
+  if [ -z "$ci_v" ] || [ -z "$make_v" ]; then
+    bad "${pair} 缺失（Makefile='${make_v:-<空>}' ci.yml='${ci_v:-<空>}'）"
+  elif printf '%s' "$ci_v" | grep -qE '^(latest|main|master)$'; then
+    bad "${pair} 为浮动取值 '${ci_v}'（GC-13 禁 @latest）"
+  elif [ "$ci_v" != "$make_v" ]; then
+    bad "${pair} 与 Makefile 不一致（ci.yml='${ci_v}' Makefile='${make_v}'）"
   else
-    bad "ci.yml env 缺少具体版本的 ${pair}（禁 @latest，GC-13）"
+    ok "${pair}=${ci_v} 与 Makefile 一致（GC-13）"
   fi
 done
-if grep -qE '(MIGRATE_VERSION|KIN_OPENAPI_VERSION):[[:space:]]*.*(latest|main|master)' "$CI"; then
-  bad "工具版本变量出现浮动取值（latest/main/master）"
-else
-  ok "工具版本变量无浮动取值"
-fi
 if grep -q 'migrate/v4/cmd/migrate@${MIGRATE_VERSION}' "$CI"; then
   ok "migrate 安装引用 MIGRATE_VERSION"
 else

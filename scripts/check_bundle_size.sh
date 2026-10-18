@@ -28,8 +28,9 @@ if [ ! -f "$DIST/index.html" ]; then
 fi
 
 # 提取 index.html 中所有 <script src="...">（含 defer/async 属性）。
+# grep 无匹配时退出 1；在 `set -e` 下必须 `|| true`，否则「没有脚本」的报错分支不可达。
 scripts="$(grep -oE '<script[^>]*[[:space:]]src="[^"]+"' "$DIST/index.html" \
-  | sed -E 's/.*[[:space:]]src="([^"]+)".*/\1/')"
+  | sed -E 's/.*[[:space:]]src="([^"]+)".*/\1/' || true)"
 if [ -z "$scripts" ]; then
   echo "FAIL index.html 中未找到 <script src>，无法计算首屏体积" >&2
   exit 1

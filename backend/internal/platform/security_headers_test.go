@@ -12,7 +12,7 @@ import (
 // 一员，如果错误路径漏头，攻击者就能用不存在的路径探测未加固的分支。
 func TestSecurityHeaders(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := SecurityHeaders(mux)

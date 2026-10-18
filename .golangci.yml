@@ -19,12 +19,15 @@ linters:
     - unused
   settings:
     depguard:
+      # 注意：depguard 的 files 对「绝对文件路径」做 glob 匹配，因此模式必须以 ** 开头；
+      # 写成相对模块根的 internal/... 会静默不命中（门禁空转）。下面三个包边界规则
+      # 均按 backend/ 为工作目录运行（见 Makefile lint 与 ci.yml）。
       rules:
         # internal/contract：只允许标准库 + 自身包。
         # 禁止 import 任何第三方依赖或 newtg/gateway/internal/*。
         contract-purity:
           files:
-            - backend/internal/contract/**/*.go
+            - "**/internal/contract/**"
           allow:
             - $gostd
           deny:
@@ -35,7 +38,7 @@ linters:
         # internal/relay：协议层不得依赖持久化/配置/支付。
         relay-boundary:
           files:
-            - backend/internal/relay/**/*.go
+            - "**/internal/relay/**"
           deny:
             - pkg: newtg/gateway/internal/store
               desc: "协议层不得依赖持久化（platform-02 §6.3）"
@@ -48,7 +51,7 @@ linters:
         # internal/billing：计费不得反向依赖中继实现（只可依赖 internal/contract）。
         billing-boundary:
           files:
-            - backend/internal/billing/**/*.go
+            - "**/internal/billing/**"
           deny:
             - pkg: newtg/gateway/internal/relay
               desc: "计费不得反向依赖中继实现（platform-02 §6.3）"
