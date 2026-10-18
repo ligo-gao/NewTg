@@ -304,6 +304,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
 		billing.NewDBLogger(sqlLogs))
 
+	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
+	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
+	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
+	log.Info("worker started")
+
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned: registry,
 		Recoverer: engine,
