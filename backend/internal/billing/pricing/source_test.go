@@ -26,6 +26,7 @@ func TestReadQuotaPerUnit(t *testing.T) {
 		{"nil 配置用默认", nil, DefaultQuotaPerUnit, false},
 		{"缺键用默认", fakeConfig{}, DefaultQuotaPerUnit, false},
 		{"null 用默认", fakeConfig{quotaPerUnitKey: json.RawMessage(`null`)}, DefaultQuotaPerUnit, false},
+		{"带空白 null 用默认（N5）", fakeConfig{quotaPerUnitKey: json.RawMessage(" \n null \t ")}, DefaultQuotaPerUnit, false},
 		{"合法值", fakeConfig{quotaPerUnitKey: json.RawMessage(`250`)}, 250, false},
 		{"数值字符串（与 Engine 同口径）", fakeConfig{quotaPerUnitKey: json.RawMessage(`"250"`)}, 250, false},
 		{"零越界", fakeConfig{quotaPerUnitKey: json.RawMessage(`0`)}, 0, true},

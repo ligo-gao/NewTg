@@ -276,11 +276,14 @@ func ResolveBillingModelCandidates(name string) []string {
 
 	if mapped := canonicalBillingName(raw); mapped != "" {
 		add(mapped)
+		// 规范名自身也可能是版本别名（如映射到 xxx-latest），补一次基名。
+		add(BaseModelName(mapped))
 	}
 	add(raw)
 	bare := BaseModelName(raw)
 	if mapped := canonicalBillingName(bare); mapped != "" {
 		add(mapped)
+		add(BaseModelName(mapped))
 	}
 	add(bare)
 	return out
@@ -654,7 +657,16 @@ var (
 	}
 )
 
-// validateExpressionIdentifiers 拒绝白名单之外的数据变量/函数名。
+// validateExpressionIdentifiers 拒绝白名单之外的数据变量/函数名，并做一次
+// 保存期冒烟求值（N2）。
+//
+// 【为什么还要冒烟求值】UsedVars 只给出标识符集合，无法区分「函数调用」
+// 与「裸变量」：`u("seconds")` 与 `u*2` 都含标识符 u。前者在支持 u() 的
+// 引擎里合法，后者是拼写/写法错误，会在运行期以「变量未绑定」失败。
+// 冒烟求值把全部合法变量绑定为 0 后再 Eval：
+//   - 裸函数名（u*2/round*2/now+1）→ EvalUnknownVariable → 保存期拒绝；
+//   - 真正的函数调用由求值器处理，不会命中该错误；
+//   - 除零/溢出等运行期错误**不**据此拒绝（0 输入不代表真实输入）。
 func validateExpressionIdentifiers(ev *expr.Evaluator) error {
 	for name := range ev.UsedVars() {
 		if _, ok := allowedExpressionFuncs[name]; ok {
@@ -664,6 +676,18 @@ func validateExpressionIdentifiers(ev *expr.Evaluator) error {
 			continue
 		}
 		return fmt.Errorf("%w: 表达式引用了未知标识符 %q", ErrInvalidSpec, name)
+	}
+
+	vars := make(map[string]float64, len(allowedExpressionVars))
+	for name := range allowedExpressionVars {
+		vars[name] = 0
+	}
+	if _, err := ev.Eval(vars); err != nil {
+		var evalErr *expr.EvalError
+		if errors.As(err, &evalErr) && evalErr.Kind == expr.EvalUnknownVariable {
+			return fmt.Errorf("%w: 表达式含未绑定标识符（函数名不得当变量使用）: %v", ErrInvalidSpec, err)
+		}
+		// 其它求值错误（除零、溢出）不是保存期可判定的配置错误。
 	}
 	return nil
 }
@@ -756,6 +780,11 @@ func ResolveMode(price *contract.PriceData, model string, configured contract.Bi
 	if modeExplicit {
 		// 显式模式优先于「已配置旧价」与内置表达式（billing-02 §2.2(0)）。
 		if configured == contract.BillingModePerCall {
+			return contract.BillingModePerCall
+		}
+		// 显式 ratio 下，ModelPrice 命中仍派生按次（§2.2(2) 与冲突表行 3：
+		// 价先于率）。这一层不能被显式 ratio 短路，否则会按倍率计费（N1）。
+		if price != nil && price.UsePrice {
 			return contract.BillingModePerCall
 		}
 		return contract.BillingModeRatio

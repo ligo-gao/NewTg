@@ -377,7 +377,10 @@ func TestResolveDoesNotMutateInput(t *testing.T) {
 }
 
 func TestResolveBillingModelName(t *testing.T) {
-	SetCanonicalBillingModelNames(map[string]string{"alias-model": "canonical-model"})
+	SetCanonicalBillingModelNames(map[string]string{
+		"alias-model": "canonical-model",
+		"alias-v":     "canonical-model-latest",
+	})
 	t.Cleanup(func() { SetCanonicalBillingModelNames(nil) })
 
 	cases := map[string]string{
@@ -424,6 +427,18 @@ func TestResolveBillingModelName(t *testing.T) {
 	if len(cands) == 0 || cands[0] != "canonical-model" {
 		t.Fatalf("规范映射应优先，got %v", cands)
 	}
+
+	// N4：规范映射值本身是版本别名时，还要补映射值的基名候选。
+	cands = ResolveBillingModelCandidates("alias-v")
+	foundBase := false
+	for _, c := range cands {
+		if c == "canonical-model" {
+			foundBase = true
+		}
+	}
+	if !foundBase || cands[0] != "canonical-model-latest" {
+		t.Fatalf("映射值基名候选缺失: %v", cands)
+	}
 }
 
 func TestResolveModePriority(t *testing.T) {
@@ -449,6 +464,14 @@ func TestResolveModePriority(t *testing.T) {
 	// 按次。
 	if got := ResolveMode(&contract.PriceData{UsePrice: true, ModelPrice: 1}, "m", contract.BillingModeRatio, false); got != contract.BillingModePerCall {
 		t.Fatalf("UsePrice 应按次，got %v", got)
+	}
+	// N1：显式 ratio + 已配置 ModelPrice 仍派生按次（§2.2(0)+冲突表行 3）。
+	if got := ResolveMode(&contract.PriceData{UsePrice: true, ModelPrice: 1}, "m", contract.BillingModeRatio, true); got != contract.BillingModePerCall {
+		t.Fatalf("显式 ratio + UsePrice 应按次，got %v", got)
+	}
+	// 显式 ratio 且无 UsePrice → ratio。
+	if got := ResolveMode(&contract.PriceData{ModelRatio: 5}, "m", contract.BillingModeRatio, true); got != contract.BillingModeRatio {
+		t.Fatalf("显式 ratio 应为 ratio，got %v", got)
 	}
 	// nil price 不得 panic；无配置兜底 ratio。
 	if got := ResolveMode(nil, "m", contract.BillingModeRatio, false); got != contract.BillingModeRatio {
@@ -522,5 +545,27 @@ func TestParsePricingRejectsUnknownExpressionIdentifiers(t *testing.T) {
 	valid := "min(max(p,c),len) + cr + cc + cc1h + img + img_cr + img_o + ai + ao + image_count + round(1.5) + ceil(1.2) + floor(1.8)"
 	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":` + strconv.Quote(valid) + `}`); err != nil {
 		t.Fatalf("合法表达式被拒: %v", err)
+	}
+}
+
+func TestParsePricingRejectsBareFunctionIdentifiers(t *testing.T) {
+	// N2：UsedVars 含函数名，白名单集合本身无法区分调用与裸变量；
+	// 保存期冒烟求值必须把「函数名当变量用」的写法拒掉。
+	for _, expr := range []string{"u*2", "round*2", "now+1"} {
+		if _, err := ParsePricing(`{"mode":"tiered_expr","expr":` + strconv.Quote(expr) + `}`); !errors.Is(err, ErrInvalidSpec) {
+			t.Fatalf("裸函数名表达式 %q 应拒绝，got %v", expr, err)
+		}
+	}
+
+	// 真正的函数调用仍接受。
+	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":"min(p, c) + round(image_count)"}`); err != nil {
+		t.Fatalf("合法函数调用被拒: %v", err)
+	}
+
+	// u("seconds")：Task 1 当前表达式子集只实现数学函数，u() 在编译期即被
+	// 按未知函数拒绝（跨任务限制；表达式引擎扩展后，本校验的冒烟求值会
+	// 自动放行，因为调用节点不需要把 u 绑定为变量）。此处锁定「fail-closed」。
+	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":"u(\"seconds\")"}`); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("当前引擎下 u() 应 fail-closed，got %v", err)
 	}
 }

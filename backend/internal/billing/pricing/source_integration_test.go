@@ -168,7 +168,7 @@ func TestIntegrationSourceModelGroupOverrideLayers(t *testing.T) {
 	if snap.Price.ModelRatio != 500 || snap.Price.CompletionRatio != 1500 {
 		t.Fatalf("模型价映射错误: %+v", snap.Price)
 	}
-	q, err := ComputeQuota(snap, contract.TokenParams{P: 1000, C: 2000}, nil)
+	q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1000, C: 2000}, nil)
 	if err != nil || q != 4 {
 		t.Fatalf("默认分组 quota=%d err=%v，期望 4", q, err)
 	}
@@ -185,7 +185,7 @@ func TestIntegrationSourceModelGroupOverrideLayers(t *testing.T) {
 	if snap.Price.GroupRatioInfo.Group != group || snap.Price.GroupRatioInfo.GroupRatio != 1.2 {
 		t.Fatalf("GroupRatioInfo 错误: %+v", snap.Price.GroupRatioInfo)
 	}
-	q, err = ComputeQuota(snap, contract.TokenParams{P: 1_000_000, C: 1_000_000}, nil)
+	q, err = ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000, C: 1_000_000}, nil)
 	if err != nil || q != 2400 {
 		t.Fatalf("分组倍率 quota=%d err=%v，期望 2400", q, err)
 	}
@@ -208,7 +208,7 @@ func TestIntegrationSourceModelGroupOverrideLayers(t *testing.T) {
 		snap.Price.CacheRatio != 50 || snap.Price.CacheCreationRatio != 60 {
 		t.Fatalf("覆盖价映射错误: %+v", snap.Price)
 	}
-	q, err = ComputeQuota(snap, contract.TokenParams{P: 1_000_000, C: 1_000_000}, nil)
+	q, err = ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000, C: 1_000_000}, nil)
 	if err != nil || q != 300 {
 		t.Fatalf("覆盖价 quota=%d err=%v，期望 300", q, err)
 	}
@@ -239,7 +239,7 @@ func TestIntegrationSourceUnknownAndDisabled(t *testing.T) {
 	if snap.Price.CompletionRatio != wantPrompt {
 		t.Fatalf("未知模型补全应为默认族 1×输入价，got %v", snap.Price.CompletionRatio)
 	}
-	q, err := ComputeQuota(snap, contract.TokenParams{P: 1_000_000}, nil)
+	q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000}, nil)
 	if err != nil || q != int64(wantPrompt) {
 		t.Fatalf("默认价 quota=%d err=%v，期望 %d", q, err, int64(wantPrompt))
 	}
@@ -293,7 +293,7 @@ func TestIntegrationSourcePerCallAndExpression(t *testing.T) {
 	if len(snap.ExprHash) != 64 || strings.Trim(snap.ExprHash, "0123456789abcdef") != "" {
 		t.Fatalf("ExprHash 应为 sha256 hex，got %q", snap.ExprHash)
 	}
-	if q, err := ComputeQuota(snap, contract.TokenParams{P: 1_000_000}, nil); err != nil || q != 200 {
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000}, nil); err != nil || q != 200 {
 		t.Fatalf("表达式 quota=%d err=%v，期望 200", q, err)
 	}
 }
@@ -353,7 +353,7 @@ func TestIntegrationSourceExplicitZeroAndFreeInput(t *testing.T) {
 	if snap.Price.CacheCreation5mRatio != 0 || snap.Price.CacheCreation1hRatio != 0 {
 		t.Fatalf("显式零缓存写应保留: %+v", snap.Price)
 	}
-	q, err := ComputeQuota(snap, contract.TokenParams{P: 1_000_000, C: 1_000_000}, nil)
+	q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000, C: 1_000_000}, nil)
 	if err != nil || q != 500 {
 		t.Fatalf("免费输入 quota=%d err=%v，期望 500", q, err)
 	}
@@ -432,11 +432,11 @@ func TestIntegrationSourceGroupOverrideExplicitZeroCompletion(t *testing.T) {
 	if snap.GroupRatio != 1 {
 		t.Fatalf("覆盖价生效时倍率应为 1，got %v", snap.GroupRatio)
 	}
-	q, err := ComputeQuota(snap, contract.TokenParams{P: 1_000_000, C: 1_000_000}, nil)
+	q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: 1_000_000, C: 1_000_000}, nil)
 	if err != nil || q != 100 {
 		t.Fatalf("只应收输入费 100，got q=%d err=%v", q, err)
 	}
-	if q, err := ComputeQuota(snap, contract.TokenParams{C: 1_000_000}, nil); err != nil || q != 0 {
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, C: 1_000_000}, nil); err != nil || q != 0 {
 		t.Fatalf("只消耗输出（显式免费）应计 0，got q=%d err=%v", q, err)
 	}
 }

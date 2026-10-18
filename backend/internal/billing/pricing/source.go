@@ -179,7 +179,7 @@ func readQuotaPerUnit(cfg ConfigReader) (int64, error) {
 		return DefaultQuotaPerUnit, nil
 	}
 	raw, ok := cfg.Get(quotaPerUnitKey)
-	if !ok || len(raw) == 0 || string(raw) == "null" {
+	if !ok || len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		return DefaultQuotaPerUnit, nil
 	}
 	f, err := parseConfigNumber(raw)

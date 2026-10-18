@@ -30,8 +30,10 @@ var (
 //   - -1 = 未设置 → 请求域缺省 1（按次 max(1,n)、表达式 image_count=1）；
 //   - >= 0 = 精确张数 → 0 合法且**计 0**（billing-00 §9.1 有效 0 计 0）。
 //
-// 预扣估算传 -1，结算按上游实际张数传精确值（含 0）；Task 3 的会话层负责
-// 选择。
+// 【调用方必须显式传值】零值 0 现在表示「精确 0 张」，不是未设置。
+// T3（会话层）、T7（管理/预览）与 T9（中继装配）在「未设置」场景必须显式
+// 传 ImageCountUnset，不得依赖 Go 零值；否则纯文本按次请求会被计 0。
+// 契约文件的注释仍写 [1,MaxImageN]（冻结文件不改），以本约定为准。
 const ImageCountUnset = -1
 
 // oneMillion 是「每 1M tokens」的换算分母。
@@ -140,6 +142,14 @@ func hasBillableUsage(p contract.TokenParams) bool {
 //
 // 字段单位见包文档：Ratio 类字段一律是「积分 / 1M tokens」，媒体字段是
 // 相对输入价的乘数。所有乘法走 decimal，避免 float64 乘积在换算前溢出或丢精度。
+//
+// 图像张数（R-42）：billing-05 §2.7 的 token 计价路径把张数作为 `"n"` 乘数
+// （「图片额度基数（preConsumedTokens × modelRatio）× OtherRatios（含 "n"）」），
+// billing-00 §7.1 的传统公式也规定「再乘 OtherRatios」。故本函数在分组倍率
+// 之后乘有效张数：
+//   - -1（未设置）→ 请求域缺省 1；
+//   - 0（结算域有效 0）→ 直接 0（billing-00 §9.1「有效 0 计 0」）；
+//   - N（>=1）→ 整个 token 额度 × N（每个图各消耗一次 prompt/图片 token）。
 func computeRatioQuota(snap contract.PriceSnapshot, p contract.TokenParams, group float64) (int64, error) {
 	pr := snap.Price
 	prices := []struct {
@@ -160,6 +170,16 @@ func computeRatioQuota(snap contract.PriceSnapshot, p contract.TokenParams, grou
 		if err := validatePrice(x.name, x.v); err != nil {
 			return 0, err
 		}
+	}
+
+	imageCount := p.ImageCount
+	if imageCount == ImageCountUnset {
+		imageCount = 1
+	}
+	if imageCount == 0 {
+		// 结算域确认 0 张：有效 0 计 0（billing-00 §9.1），不是「取整为 0」，
+		// 因此也不触发最小计费。
+		return 0, nil
 	}
 	if !hasBillableUsage(p) {
 		return 0, nil
@@ -188,7 +208,9 @@ func computeRatioQuota(snap contract.PriceSnapshot, p contract.TokenParams, grou
 	sum = sum.Add(decimal.NewFromInt(p.AI).Mul(in).Mul(audioRatio))
 	sum = sum.Add(decimal.NewFromInt(p.AO).Mul(in).Mul(audioRatio).Mul(audioCompletion))
 
-	total := sum.Div(oneMillion).Mul(dec(group))
+	total := sum.Div(oneMillion).
+		Mul(dec(group)).
+		Mul(decimal.NewFromInt(int64(imageCount)))
 	quota, clamp := QuotaFromDecimalChecked(total)
 	if clamp != nil {
 		return quota, &ClampError{Clamp: clamp}
