@@ -343,6 +343,11 @@ func newAccountTestEnv(t *testing.T) *accountTestEnv {
 // 白名单与注册路径共用同一配置键）。
 func newAccountTestEnvWithConfig(t *testing.T, config mapConfig) *accountTestEnv {
 	t.Helper()
+	if config == nil {
+		// 构造器要求显式 Config（nil 会静默关闭域名白名单）；空 map 表示
+		// 全部取设计默认值（白名单未启用）。
+		config = mapConfig{}
+	}
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -575,9 +580,12 @@ func TestAccountDeleteHardDeleteTerminalState(t *testing.T) {
 	if category := details[0][2]; category != "operation" {
 		t.Fatalf("category = %v，期望 operation（user.delete）", category)
 	}
+	if status, ok := details[0][7].(int16); !ok || status != http.StatusNoContent {
+		t.Fatalf("审计 status_code = %v（%T），期望 204", details[0][7], details[0][7])
+	}
 	detail := env.lastAuditDetail(t)
-	if detail["event"] != "account_deleted" {
-		t.Fatalf("detail.event = %v，期望 account_deleted", detail["event"])
+	if detail["action"] != "account_deleted" {
+		t.Fatalf("detail.action = %v，期望 account_deleted", detail["action"])
 	}
 }
 
@@ -802,8 +810,15 @@ func TestAccountEmailChangeRequiresReauth(t *testing.T) {
 	}
 
 	detail := env.lastAuditDetail(t)
-	if detail["event"] != "email_changed" {
-		t.Fatalf("审计 detail.event = %v，期望 email_changed", detail["event"])
+	if detail["action"] != "email_changed" {
+		t.Fatalf("审计 detail.action = %v，期望 email_changed", detail["action"])
+	}
+	if detail["field"] != "email" || detail["result"] != "success" {
+		t.Fatalf("email 事件缺少 field/result: %v", detail)
+	}
+	calls := env.auditEx.snapshot()
+	if status, ok := calls[len(calls)-1][7].(int16); !ok || status != http.StatusOK {
+		t.Fatalf("审计 status_code = %v（%T），期望 200", calls[len(calls)-1][7], calls[len(calls)-1][7])
 	}
 	for _, call := range env.auditEx.snapshot() {
 		serialized := fmt.Sprint(call...)
@@ -958,6 +973,14 @@ func TestAccountNotificationPreferencesSparseMerge(t *testing.T) {
 		t.Fatalf("默认通知偏好 = %v，期望空对象", prefs)
 	}
 
+	// 库内 JSON null（历史数据/手工写入）必须归一为 {}，而不是把 null 回传给前端。
+	env.repo.mu.Lock()
+	env.repo.prefs[user.ID] = json.RawMessage("null")
+	env.repo.mu.Unlock()
+	if prefs := getPrefs(t, env, sid, csrf); len(prefs) != 0 {
+		t.Fatalf("JSON null 应归一为 {}，实际 %v", prefs)
+	}
+
 	rr := env.authedRequest(http.MethodPut, "/api/notification-preferences", map[string]any{
 		"balance_warning": map[string]any{
 			"enabled": true, "threshold": 100, "channels": []string{"email"},
@@ -1012,9 +1035,35 @@ func TestAccountNotificationPreferencesSparseMerge(t *testing.T) {
 		t.Fatalf("发送器调用 = %+v，期望 email → alice@example.com", calls)
 	}
 
+	// 渠道 URL 可以显式清除：null 与空串都要生效（否则含密钥的旧 URL 永远删不掉）。
+	rr = env.authedRequest(http.MethodPut, "/api/notification-preferences", map[string]any{
+		"webhook_url": "https://hooks.example.com/alice",
+		"bark_url":    "https://bark.example.com/alice",
+	}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("写入 URL status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if prefs := getPrefs(t, env, sid, csrf); prefs["webhook_url"] == nil || prefs["bark_url"] == nil {
+		t.Fatalf("URL 未写入: %v", prefs)
+	}
+	rr = env.authedRequest(http.MethodPut, "/api/notification-preferences", map[string]any{
+		"webhook_url": nil,
+		"bark_url":    "",
+	}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("清除 URL status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	prefs = getPrefs(t, env, sid, csrf)
+	if _, present := prefs["webhook_url"]; present {
+		t.Fatalf("webhook_url 应被 null 清除: %v", prefs)
+	}
+	if _, present := prefs["bark_url"]; present {
+		t.Fatalf("bark_url 应被空串清除: %v", prefs)
+	}
+
 	detail := env.lastAuditDetail(t)
-	if detail["event"] != "notification_pref_updated" {
-		t.Fatalf("审计 detail.event = %v，期望 notification_pref_updated", detail["event"])
+	if detail["action"] != "notification_pref_updated" {
+		t.Fatalf("审计 detail.action = %v，期望 notification_pref_updated", detail["action"])
 	}
 }
 
@@ -1092,6 +1141,78 @@ func TestAccountNotificationTestDeliveryFailure(t *testing.T) {
 	}
 }
 
+// TestAccountNotificationTestTargetValidation：显式 email 目标也必须过邮箱
+// 格式校验（阻止 CR/LF 头注入与多收件人写法进入 SMTP 实现）；URL 型渠道的
+// 目标必须是合法 http(s) URL。
+func TestAccountNotificationTestTargetValidation(t *testing.T) {
+	env := newAccountTestEnv(t)
+	user := env.addUser("alice", "alice@example.com", false)
+	sid, csrf := env.sessionWithCSRF(user.ID)
+
+	for name, body := range map[string]map[string]any{
+		"邮箱含换行":     {"channel": "email", "target": "victim@example.com\r\nBcc: attacker@example.com"},
+		"非邮箱目标":     {"channel": "email", "target": "not-an-email"},
+		"多收件人":      {"channel": "email", "target": "a@example.com,b@example.com"},
+		"空 webhook": {"channel": "webhook"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test", body, sid, csrf)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+			}
+		})
+	}
+
+	// 非法目标不消耗 3 次/分钟配额：先打 4 次 400，随后仍应有完整配额。
+	for i := 0; i < 4; i++ {
+		rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+			map[string]any{"channel": "email", "target": "not-an-email"}, sid, csrf)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("非法目标第 %d 次 status = %d，期望 400", i+1, rr.Code)
+		}
+	}
+
+	// 合法显式邮箱目标：规范化后交给发送器。
+	rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+		map[string]any{"channel": "email", "target": "  Custom@Example.COM "}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("合法目标 status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	calls := env.sender.snapshot()
+	if len(calls) != 1 || calls[0].Target != "custom@example.com" {
+		t.Fatalf("发送器目标 = %+v，期望规范化后的 custom@example.com", calls)
+	}
+
+	// 配额仍是 3 次/分钟：已成功 1 次，再成功 2 次后第 4 次才 429。
+	for i := 0; i < 2; i++ {
+		if rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+			map[string]any{"channel": "email"}, sid, csrf); rr.Code != http.StatusOK {
+			t.Fatalf("合法请求第 %d 次 status = %d，期望 200（body=%q）", i+2, rr.Code, rr.Body.String())
+		}
+	}
+	if rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+		map[string]any{"channel": "email"}, sid, csrf); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("配额应只计合法请求：第 4 次 status = %d，期望 429（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestAccountNotificationTestSenderNotConfigured：渠道未配置时 503，且不消耗
+// 测试消息配额（先查 sender 再 INCR）。
+func TestAccountNotificationTestSenderNotConfigured(t *testing.T) {
+	env := newAccountTestEnv(t)
+	user := env.addUser("alice", "alice@example.com", false)
+	sid, csrf := env.sessionWithCSRF(user.ID)
+	env.handler.sender = nil
+
+	for i := 0; i < 5; i++ {
+		rr := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+			map[string]any{"channel": "email"}, sid, csrf)
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("第 %d 次 status = %d，期望 503（body=%q）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 // TestAccountEndpointsRequireAuth：五个端点都必须先过 SessionAuth。
 func TestAccountEndpointsRequireAuth(t *testing.T) {
 	env := newAccountTestEnv(t)
@@ -1120,10 +1241,12 @@ func TestNewAccountHandlersRequiresDependencies(t *testing.T) {
 	sessRDB := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = rdb.Close(); _ = sessRDB.Close() })
 	base := AccountHandlerConfig{
-		Repo:       newAccountTestRepo(),
-		Redis:      rdb,
-		Sessions:   auth.NewSessionManager(sessRDB, []byte(testSessionSecret)),
-		Anonymizer: &accountTestAnonymizer{},
+		Repo:          newAccountTestRepo(),
+		Redis:         rdb,
+		Sessions:      auth.NewSessionManager(sessRDB, []byte(testSessionSecret)),
+		Anonymizer:    &accountTestAnonymizer{},
+		SessionSecret: []byte(testSessionSecret),
+		Config:        mapConfig{},
 		ReauthUsers: &accountTestReauthSource{
 			repo: newAccountTestRepo(), materials: map[int64]*auth.ReauthMaterial{},
 		},
@@ -1138,6 +1261,8 @@ func TestNewAccountHandlersRequiresDependencies(t *testing.T) {
 		{"缺仓储", func(c *AccountHandlerConfig) { c.Repo = nil }},
 		{"缺再认证源", func(c *AccountHandlerConfig) { c.ReauthUsers = nil }},
 		{"缺 PII 匿名化", func(c *AccountHandlerConfig) { c.Anonymizer = nil }},
+		{"缺 SessionSecret", func(c *AccountHandlerConfig) { c.SessionSecret = nil }},
+		{"缺 Config", func(c *AccountHandlerConfig) { c.Config = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

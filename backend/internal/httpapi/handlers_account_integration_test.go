@@ -130,6 +130,7 @@ func newAccountIntegrationEnv(t *testing.T) *accountIntegrationEnv {
 		Audit:         audit.New(logs),
 		EncryptionKey: accountIntegrationKey,
 		SessionSecret: []byte(testSessionSecret),
+		Config:        mapConfig{},
 		VerifyTOTP: func(_, code string, _ time.Time) bool {
 			return code == accountIntegrationMFA
 		},
@@ -270,7 +271,7 @@ func TestAccountIntegrationDeleteHardDeleteAndAnonymize(t *testing.T) {
 		t.Fatalf("insert wallet_transactions: %v", err)
 	}
 	if _, err := env.logs.Exec(`INSERT INTO audit_logs (user_id, username, category, result, detail)
-		VALUES ($1, $2, 'login', 'success', '{"event":"login"}'::jsonb)`, created.ID, username); err != nil {
+		VALUES ($1, $2, 'login', 'success', '{"action":"login"}'::jsonb)`, created.ID, username); err != nil {
 		t.Fatalf("insert audit_logs: %v", err)
 	}
 
@@ -324,7 +325,7 @@ func TestAccountIntegrationDeleteHardDeleteAndAnonymize(t *testing.T) {
 	anonymized := "deleted_" + accountItoa(created.ID)
 	var oldAuditUser string
 	if err := env.logs.QueryRow(`SELECT username FROM audit_logs
-		WHERE user_id = $1 AND detail->>'event' = 'login'`, created.ID).Scan(&oldAuditUser); err != nil {
+		WHERE user_id = $1 AND detail->>'action' = 'login'`, created.ID).Scan(&oldAuditUser); err != nil {
 		t.Fatalf("query anonymized audit row: %v", err)
 	}
 	if oldAuditUser != anonymized {
@@ -337,8 +338,8 @@ func TestAccountIntegrationDeleteHardDeleteAndAnonymize(t *testing.T) {
 		delUA   sql.NullString
 		delEvt  string
 	)
-	if err := env.logs.QueryRow(`SELECT username, ip, user_agent, detail->>'event'
-		FROM audit_logs WHERE user_id = $1 AND detail->>'event' = 'account_deleted'`, created.ID).
+	if err := env.logs.QueryRow(`SELECT username, ip, user_agent, detail->>'action'
+		FROM audit_logs WHERE user_id = $1 AND detail->>'action' = 'account_deleted'`, created.ID).
 		Scan(&delUser, &delIP, &delUA, &delEvt); err != nil {
 		t.Fatalf("query account_deleted audit row: %v", err)
 	}

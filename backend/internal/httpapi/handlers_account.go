@@ -408,6 +408,17 @@ func NewAccountHandlers(cfg AccountHandlerConfig) (*AccountHandlers, error) {
 	if cfg.Sessions == nil {
 		return nil, errors.New("httpapi: AccountHandlerConfig.Sessions is required (account deletion revokes sessions)")
 	}
+	// SESSION_SECRET 必须显式提供：newEmailCodeStore 在空密钥时会退化为
+	// 进程内随机 HMAC，跨副本/重启后验证码全部失效——这是装配错误而不是
+	// 可用降级，必须在启动期拒绝。
+	if len(cfg.SessionSecret) == 0 {
+		return nil, errors.New("httpapi: AccountHandlerConfig.SessionSecret is required (email code HMAC)")
+	}
+	// Config 为 nil 会让换绑邮箱的域名白名单静默失效（fail-open）。白名单是
+	// 安全配置，缺读取面属于装配错误。
+	if cfg.Config == nil {
+		return nil, errors.New("httpapi: AccountHandlerConfig.Config is required (email domain allowlist fail-closed)")
+	}
 	repo := cfg.Repo
 	if repo == nil {
 		if cfg.DB == nil {
@@ -495,8 +506,10 @@ type accountDeleteRequest struct {
 // handleDeleteAccount 实现 F-01-17：全量再认证 → 吊销全部会话 → PII 匿名化 →
 // 硬删除（users/api_tokens/认证族附属行）→ 失效令牌缓存 → 审计。
 //
-// 顺序理由：先吊销会话再匿名化/删除，任何 204 都保证旧会话已经不可用；匿名化
-// 失败则整体拒绝（返回 503），不产生「用户没了但历史审计还带真名」的半状态。
+// 顺序理由：跨 Redis/主库/日志库没有分布式事务，任何一步失败都不会返回成功，
+// 已完成的步骤按 fail-closed 方向保留（例如会话已吊销但匿名化失败时账号仍在，
+// 用户可重新登录后重试）；但绝不会出现「账号已消失、历史审计仍带真名」的终态，
+// 因为匿名化先于 users 行删除。
 func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.principal(w, r)
 	if !ok {
@@ -551,12 +564,12 @@ func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := h.sessions.RevokeUser(ctx, p.UserID, ""); err != nil {
-		h.writeUnavailable(w, "Revoke sessions before account deletion")
+		h.writeUnavailable(w, "Revoke sessions before account deletion", err)
 		return
 	}
 	anonymized := fmt.Sprintf("deleted_%d", p.UserID)
 	if err := h.anonymizer.AnonymizeUser(ctx, p.UserID, anonymized); err != nil {
-		h.writeUnavailable(w, "Anonymize retained records before account deletion")
+		h.writeUnavailable(w, "Anonymize retained records before account deletion", err)
 		return
 	}
 	tokenIDs, err := h.repo.DeleteAccount(ctx, p.UserID)
@@ -577,10 +590,10 @@ func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Req
 	// 删除事件是唯一保留真实用户名的审计行（who/when/ip 供合规追溯）；历史行
 	// 已在上一步改写为 deleted_{id}。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, rec.Username, map[string]any{
-		"event":           "account_deleted",
+		"action":          "account_deleted",
 		"tokens_deleted":  len(tokenIDs),
 		"anonymized_name": anonymized,
-	})
+	}, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -657,7 +670,7 @@ func (h *AccountHandlers) handleChangeEmail(w http.ResponseWriter, r *http.Reque
 	// purpose=bind 与 POST /api/auth/email-code 的绑定语义一致。
 	okCode, err := h.codes.consume(ctx, newEmail, "bind", strings.TrimSpace(req.Code))
 	if err != nil {
-		h.writeUnavailable(w, "Verify new email address")
+		h.writeUnavailable(w, "Verify new email address", err)
 		return
 	}
 	if !okCode {
@@ -680,10 +693,14 @@ func (h *AccountHandlers) handleChangeEmail(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.auditEvent(r, audit.ActionUserUpdate, p.UserID, rec.Username, map[string]any{
-		"event":  "email_changed",
+		// 动作名写 detail.action（modules-05 §7 冻结）；email 事件额外带
+		// field/result（security-01 §7.5.1）。
+		"action": "email_changed",
+		"field":  "email",
+		"result": "success",
 		"reauth": "passed",
 		// 不记录 new_email：审计保留 12 个月，地址属于 PII，安全事件不需要它。
-	})
+	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, emailChangeResponse{
 		Email:           newEmail,
 		EmailVerified:   true,
@@ -694,6 +711,10 @@ func (h *AccountHandlers) handleChangeEmail(w http.ResponseWriter, r *http.Reque
 // ---------------------------------------------------------------------------
 // 通知偏好
 // ---------------------------------------------------------------------------
+
+// 注意：security_alert 的**实际投递**（邮件/Webhook 等）依赖模块 08 的通知
+// 通道，M1 未实现，登记为延后项；本任务只保证偏好读写、测试通道接缝，以及
+// 「安全通知不可关闭」的服务端约束。
 
 // handleGetNotificationPreferences 返回存储的稀疏偏好对象；NULL 归一为 {}。
 // 站点级默认值（security_alert 默认开等）由客户端合并，服务端只持久化用户
@@ -712,7 +733,7 @@ func (h *AccountHandlers) handleGetNotificationPreferences(w http.ResponseWriter
 		h.writeInternal(w, "get notification preferences", err)
 		return
 	}
-	if len(prefs) == 0 {
+	if len(prefs) == 0 || strings.TrimSpace(string(prefs)) == "null" {
 		prefs = json.RawMessage("{}")
 	}
 	writeJSON(w, http.StatusOK, prefs)
@@ -764,8 +785,8 @@ func (h *AccountHandlers) handlePutNotificationPreferences(w http.ResponseWriter
 		username = rec.Username
 	}
 	h.auditEvent(r, audit.ActionUserUpdate, p.UserID, username, map[string]any{
-		"event": "notification_pref_updated",
-	})
+		"action": "notification_pref_updated",
+	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, merged)
 }
 
@@ -807,27 +828,40 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Notification target is too long")
 		return
 	}
-	if channel == "email" && target == "" {
-		// 未指定目标时回落到账号邮箱（设计：Email 渠道地址显示账号邮箱）。
-		rec, err := h.repo.GetAccount(r.Context(), p.UserID)
-		if err != nil {
-			h.writeInternal(w, "load account for notification test", err)
+	if channel == "email" {
+		if target == "" {
+			// 未指定目标时回落到账号邮箱（设计：Email 渠道地址显示账号邮箱）。
+			rec, err := h.repo.GetAccount(r.Context(), p.UserID)
+			if err != nil {
+				h.writeInternal(w, "load account for notification test", err)
+				return
+			}
+			if rec == nil {
+				writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+				return
+			}
+			if rec.Email == nil || strings.TrimSpace(*rec.Email) == "" {
+				writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "This account has no email address")
+				return
+			}
+			target = *rec.Email
+		}
+		// 显式目标同样必须过邮箱格式校验：否则 CR/LF 或多收件人写法会直接
+		// 进入 SMTP 实现（头注入/滥发面）。
+		target = normalizeEmail(target)
+		if !validEmail(target) {
+			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid email address")
 			return
 		}
-		if rec == nil {
-			writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
-			return
-		}
-		if rec.Email == nil || strings.TrimSpace(*rec.Email) == "" {
-			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "This account has no email address")
-			return
-		}
-		target = *rec.Email
-	} else if channel != "email" {
-		if target == "" || !validNotificationTargetURL(target) {
-			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "A valid target URL is required for this channel")
-			return
-		}
+	} else if target == "" || !validNotificationTargetURL(target) {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "A valid target URL is required for this channel")
+		return
+	}
+
+	// 发送器未配置时直接 503，不消耗用户的测试配额。
+	if h.sender == nil {
+		h.writeUnavailable(w, "Send test notification", errors.New("notification test sender is not configured"))
+		return
 	}
 
 	// 3 次/分钟/用户（F-01-22）；与邮箱验证码共用 INCR+PEXPIRE 脚本。
@@ -836,7 +870,7 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 	n, err := emailIPLimitScript.Run(r.Context(), h.rdb, []string{limitKey},
 		strconv.Itoa(int(notificationTestWindow.Seconds()))).Int64()
 	if err != nil {
-		h.writeUnavailable(w, "Send test notification")
+		h.writeUnavailable(w, "Send test notification", err)
 		return
 	}
 	if n > notificationTestLimit {
@@ -846,10 +880,6 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if h.sender == nil {
-		h.writeUnavailable(w, "Send test notification")
-		return
-	}
 	if err := h.sender.SendTestNotification(r.Context(), channel, target); err != nil {
 		// 渠道错误（如 Webhook 404）返回给本人用于行内提示；不回显内部堆栈。
 		h.log.Warn("send test notification failed", "channel", channel, "user_id", p.UserID, "error", err)
@@ -932,17 +962,31 @@ func mergeNotificationPreferences(existing json.RawMessage, patch map[string]jso
 		}
 		switch key {
 		case "webhook_url", "bark_url", "gotify_url":
+			// null 或空串 = 清除该渠道配置。否则用户存过（可能含密钥的）URL 后
+			// 在稀疏合并下永远删不掉。
+			if notificationClearsValue(raw) {
+				delete(doc, key)
+				continue
+			}
 			value, err := notificationString(raw)
 			if err != nil || !validNotificationTargetURL(value) {
 				return nil, notificationErr("Notification URL must be a valid http(s) URL")
 			}
 			doc[key] = raw
 		case "gotify_token":
+			if notificationClearsValue(raw) {
+				delete(doc, key)
+				continue
+			}
 			if _, err := notificationString(raw); err != nil {
 				return nil, notificationErr("gotify_token must be a string")
 			}
 			doc[key] = raw
 		case "gotify_priority":
+			if strings.TrimSpace(string(raw)) == "null" {
+				delete(doc, key)
+				continue
+			}
 			if _, err := notificationInt(raw); err != nil {
 				return nil, notificationErr("gotify_priority must be an integer")
 			}
@@ -960,6 +1004,13 @@ func mergeNotificationPreferences(existing json.RawMessage, patch map[string]jso
 		return nil, fmt.Errorf("httpapi: marshal notification preferences: %w", err)
 	}
 	return merged, nil
+}
+
+// notificationClearsValue 判断标量是否是「清除」意图：JSON null 或空字符串。
+// 与 custom_email 的 null 语义一致。
+func notificationClearsValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed == "null" || trimmed == `""`
 }
 
 // mergeNotificationCategory 逐子键合并一个类别对象。
@@ -1182,27 +1233,13 @@ func (h *AccountHandlers) principal(w http.ResponseWriter, r *http.Request) (*au
 	return p, true
 }
 
-// writeReauthError 把 ReauthGate 的失败映射为 HTTP 语义：因子不通过 → 403
-// reauth_required；连续失败锁定 → 429 + Retry-After；基础设施故障 → 503
-// （fail-closed，绝不放行）。
+// writeReauthError 复用共享的 writeReauthFailure（403/429/503 口径与改密等
+// 其它再认证端点保持一致），只额外记录非预期的基础设施错误。
 func (h *AccountHandlers) writeReauthError(w http.ResponseWriter, op string, err error) {
-	switch {
-	case errors.Is(err, auth.ErrReauthRequired):
-		writeReauthRequired(w)
-		return
-	case errors.Is(err, auth.ErrReauthLocked):
-		var locked *auth.ReauthLockedError
-		if errors.As(err, &locked) {
-			w.Header().Set("Retry-After", retrySeconds(locked.RetryAfter))
-		} else {
-			w.Header().Set("Retry-After", "900")
-		}
-		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests,
-			"Too many reauthentication attempts; try again later")
-		return
+	if !errors.Is(err, auth.ErrReauthRequired) && !errors.Is(err, auth.ErrReauthLocked) {
+		h.log.Error("reauthentication unavailable", "operation", op, "error", err)
 	}
-	h.log.Error("reauthentication unavailable", "operation", op, "error", err)
-	h.writeUnavailable(w, "Reauthentication is temporarily unavailable")
+	writeReauthFailure(w, err)
 }
 
 // writeInternal 记录并返回通用 500；绝不把 SQL/内部错误回显给客户端。
@@ -1212,7 +1249,9 @@ func (h *AccountHandlers) writeInternal(w http.ResponseWriter, op string, err er
 }
 
 // writeUnavailable 用于 Redis/DB 故障：fail-closed + 有界 Retry-After。
-func (h *AccountHandlers) writeUnavailable(w http.ResponseWriter, title string) {
+// err 只进日志，绝不回显给客户端。
+func (h *AccountHandlers) writeUnavailable(w http.ResponseWriter, title string, err error) {
+	h.log.Error(title, "error", err)
 	w.Header().Set("Retry-After", "5")
 	writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable, title)
 }
@@ -1229,8 +1268,9 @@ func (h *AccountHandlers) invalidateTokens(ctx context.Context, tokenIDs []int64
 }
 
 // auditEvent 写审计（best-effort：日志库独立且无跨库事务，失败只记日志）。
-// username 为空时由 audit.Logger 的回退规则处理（user#<id>）。
-func (h *AccountHandlers) auditEvent(r *http.Request, action string, actor int64, username string, detail map[string]any) {
+// username 为空时由 audit.Logger 的回退规则处理（user#<id>）；status 是本次
+// 请求实际返回的 HTTP 状态码（204/200），供消费方按结果过滤。
+func (h *AccountHandlers) auditEvent(r *http.Request, action string, actor int64, username string, detail map[string]any, status int) {
 	if h.audit == nil {
 		return
 	}
@@ -1247,7 +1287,7 @@ func (h *AccountHandlers) auditEvent(r *http.Request, action string, actor int64
 		UserAgent:  r.UserAgent(),
 		Method:     r.Method,
 		Route:      r.Pattern,
-		StatusCode: 0, // 由调用点决定；这里只记录事件语义
+		StatusCode: status,
 		Detail:     raw,
 	}
 	if err := h.audit.LogEvent(r.Context(), event); err != nil {
