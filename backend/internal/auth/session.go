@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -268,6 +269,95 @@ func (m *SessionManager) RevokeUser(ctx context.Context, userID int64, keepCurre
 		return fmt.Errorf("auth: revoke user sessions: %w", err)
 	}
 	return nil
+}
+
+// SessionInfo 是会话列表的只读投影（F-01-13 / F-01-27）。它刻意不含
+// CSRFHash：列表是发给客户端的，任何令牌材料都不应出现在响应里。
+//
+// SID 是列表行与 DELETE /api/sessions/{sid} 之间的句柄。会话端点只向
+// 已认证的本人返回该值，并始终以「sid 属于当前用户」为吊销前提（I-12）。
+type SessionInfo struct {
+	SID               string
+	UA                string
+	IP                string
+	CreatedAt         time.Time
+	LastSeenAt        time.Time
+	AbsoluteExpiresAt time.Time
+}
+
+const (
+	// maxListedSessions 是 F-01-13 冻结的列表上限。
+	maxListedSessions = 50
+	// sessionListScanLimit 限制单次列表读取的索引成员数。每用户活跃会话
+	// 有并发上限（20/5），残留的过期成员按 last_seen 排序必然落在存活会话
+	// 之后；扫 200 条足以保证「≤50 条存活会话」不会因残留被截断，同时避免
+	// 一个长期高频登录的账号把无界 ZSET 全量拉进内存。
+	sessionListScanLimit = 200
+)
+
+// ListSessions 返回 userID 当前有效（未滑动/绝对过期）的会话，按 last_seen_at
+// 倒序，最多 maxListedSessions 条。
+//
+// 只读：不刷新 last_seen、不清理索引。Redis 错误原样上抛（调用方 fail-closed）；
+// 键已按 TTL 回收的索引成员被跳过——这正是「过期会话不出现」的判定点。
+// 归属校验是纵深防御：即使索引被写脏，也不会把他人会话列进本用户列表。
+func (m *SessionManager) ListSessions(ctx context.Context, userID int64) ([]SessionInfo, error) {
+	members, err := m.rdb.ZRevRangeWithScores(ctx, userSessionsKey(userID), 0, sessionListScanLimit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("auth: list sessions: %w", err)
+	}
+
+	out := make([]SessionInfo, 0, min(len(members), maxListedSessions))
+	now := m.now()
+
+	// 一次 pipeline 取回全部会话 hash：列表端点可能要看 20 个活跃会话 + 若干
+	// 残留成员，逐条 HGETALL 会把延迟累加成可感知的慢查询。
+	pipe := m.rdb.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(members))
+	for i, member := range members {
+		sid, ok := member.Member.(string)
+		if !ok {
+			continue // ZSET 成员总是字符串；类型异常按损坏记录跳过
+		}
+		cmds[i] = pipe.HGetAll(ctx, sessionKey(sid))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("auth: list sessions: %w", err)
+	}
+
+	for i, member := range members {
+		if cmds[i] == nil {
+			continue
+		}
+		sid := member.Member.(string)
+		raw := cmds[i].Val()
+		if len(raw) == 0 {
+			continue // Redis TTL 已回收：索引成员残留，跳过（TC-F-01-13-02）
+		}
+		s, err := sessionFromHash(raw)
+		if err != nil {
+			return nil, fmt.Errorf("auth: list sessions: %w", err)
+		}
+		if s.UserID != userID || s.expiredAt(now) {
+			continue
+		}
+		out = append(out, SessionInfo{
+			SID:               sid,
+			UA:                s.UA,
+			IP:                s.IP,
+			CreatedAt:         s.CreatedAt,
+			LastSeenAt:        s.LastSeenAt,
+			AbsoluteExpiresAt: s.AbsoluteExpiresAt,
+		})
+	}
+
+	// 索引分数与 last_seen_at 由同一个 Lua 脚本原子写入，理论上已有序；
+	// 显式再排序让「按 last_seen 倒序」不依赖分数编码细节。
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeenAt.After(out[j].LastSeenAt) })
+	if len(out) > maxListedSessions {
+		out = out[:maxListedSessions]
+	}
+	return out, nil
 }
 
 // HashSessionID 返回写 login_sessions.session_id_hash 的 SHA-256 十六进制。
