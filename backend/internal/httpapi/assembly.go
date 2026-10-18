@@ -32,6 +32,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // GatewayDeps 是 gateway 角色装配管理面所需的完整依赖。
@@ -71,12 +72,16 @@ type GatewayDeps struct {
 	// UserAnonymizer 是管理端删除的 PII 匿名化测试接缝；生产留 nil 由 LogDB
 	// 构造 SQLPIIAnonymizer。与 AccountAnonymizer 分开命名，避免把自助删除的
 	// 依赖误当作管理端删除已接线。
-	UserAnonymizer     PIIAnonymizer
-	AccountReauth      *auth.ReauthGate
-	VerifyTOTP         auth.TOTPVerifier
-	TwoFARepo          TwoFARepo
-	AdminUserRepo      AdminUserRepo
-	AdminGroupRepo     AdminGroupRepo
+	UserAnonymizer PIIAnonymizer
+	AccountReauth  *auth.ReauthGate
+	VerifyTOTP     auth.TOTPVerifier
+	TwoFARepo      TwoFARepo
+	AdminUserRepo  AdminUserRepo
+	AdminGroupRepo AdminGroupRepo
+	// PricingRepo 是定价管理仓储的可选测试接缝；nil 且 DB 非 nil 时由
+	// store.NewPricingRepo(DB) 构造。DB 与 PricingRepo 都为空时不挂定价端点
+	// （M1 的纯 Repo 单测装配没有定价库表）。
+	PricingRepo        store.PricingRepo
 	NotificationSender NotificationTestSender
 	LoginEncryption    *PasswordEncryption
 
@@ -138,6 +143,27 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		setupStore = NewSQLSetupStore(deps.DB)
 	}
 
+	// 定价管理端点（M3 Task 7）。生产走 DB；单测可注入 PricingRepo。
+	// 两者都为空时跳过——M1 的内存 Repo 装配没有 model_pricing 表，强行构造
+	// 只会在第一个请求上失败。
+	var pricingHandlers *PricingHandlers
+	if deps.PricingRepo != nil || deps.DB != nil {
+		pricingRepo := deps.PricingRepo
+		if pricingRepo == nil {
+			pricingRepo = store.NewPricingRepo(deps.DB)
+		}
+		handlers, err := NewPricingHandlers(PricingHandlerConfig{
+			Repo:   pricingRepo,
+			Redis:  deps.Redis,
+			Authz:  deps.Authz,
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		pricingHandlers = handlers
+	}
+
 	rt, err := NewRouter(RouterConfig{
 		DB:                  deps.DB,
 		Repo:                deps.Repo,
@@ -153,6 +179,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Authz:               deps.Authz,
 		PasswordChecker:     deps.PasswordChecker,
 		TokenService:        deps.TokenService,
+		PricingHandlers:     pricingHandlers,
 		LoginLimiter:        limiter,
 		LoginEncryption:     loginEncryption,
 		TurnstileSettings:   settings,

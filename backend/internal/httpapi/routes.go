@@ -50,6 +50,11 @@ type RouterConfig struct {
 	// TokenService 是令牌 CRUD 服务（生产 *tokenstore.Store）。提供且未显式
 	// 给出 TokenHandlers/TokenStore 时，NewRouter 自动构造并接线两者。
 	TokenService TokenService
+	// PricingHandlers 是 M3 定价管理端点（modules-06 F-06-13/14/16）。
+	// 非 nil 时挂到受保护管理子树；装配方负责构造 Repo 与字段策略。
+	// 定价端点的路径族是 /api/model-pricing 与 /api/group-pricing——不得复用
+	// 公开目录 /api/pricing（modules-06 G-5 命名空间裁决）。
+	PricingHandlers *PricingHandlers
 	// Sealer 密封令牌幂等缓存体（含一次性明文 key）。nil 时令牌端点跳过
 	// 幂等缓存（绝不回落明文）；生产由 CREDENTIAL_ENCRYPTION_KEY 派生。
 	Sealer configcenter.SecretSealer
@@ -184,6 +189,12 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	if cfg.TokenHandlers != nil {
 		cfg.TokenHandlers.RegisterTokenCRUDRoutes(rt.protected, nil)
 		rt.HandlePublic("GET /api/usage/token", http.HandlerFunc(cfg.TokenHandlers.tokenUsage))
+	}
+
+	// 定价管理端点（M3 Task 7）：只挂受保护子树；RBAC 与写字段策略在
+	// PricingHandlers 构造时登记（未登记动作由 authz 失败关闭）。
+	if cfg.PricingHandlers != nil {
+		cfg.PricingHandlers.RegisterPricingRoutes(rt.protected, nil)
 	}
 
 	// 公开端点：精确注册，先于 /api/ 子树（ServeMux 按特异性择路，顺序无关，

@@ -388,3 +388,509 @@ schemas:
       至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
       （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
       ErrGroupSystem → 400），被引用的分组删除返回 409。
+
+  # ---------------------------------------------------------------------------
+  # 定价管理（M3 Task 7 / modules-06 F-06-13/14/16）
+  #
+  # 价格列是整数积分（R9）：nullable=true 表示 NULL=未设置（按 billing-02
+  # §3.2 兜底），0=显式免费。客户端不得把 null 当 0——两者计费语义不同。
+  # ---------------------------------------------------------------------------
+  PricingMode:
+    type: string
+    enum: [per_token, per_request, tiered_expr]
+    description: |
+      per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+      tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+
+  PricingStatus:
+    type: integer
+    enum: [1, 2]
+    description: 1=启用，2=停用（软状态，不删行）。
+
+  ModelPricing:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - model
+      - mode
+      - author
+      - status
+      - free
+      - created_at
+      - updated_at
+    properties:
+      id:
+        type: integer
+        format: int64
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      mode:
+        $ref: '#/schemas/PricingMode'
+      billing_expr:
+        type: string
+        nullable: true
+        description: 非 null 即表达式模式；与四个价列互斥。
+      prompt_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        description: 输入价（积分/1M tokens）；per_request 模式下是每次请求价。
+      completion_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      author:
+        type: string
+        maxLength: 64
+      vendor:
+        type: string
+        nullable: true
+        maxLength: 64
+      status:
+        $ref: '#/schemas/PricingStatus'
+      free:
+        type: boolean
+        description: 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+        description: 乐观锁版本；PATCH/启停必须原样回传。
+
+  ModelPricingList:
+    allOf:
+      - $ref: '../components/pagination.yaml#/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/schemas/ModelPricing'
+          quota_per_unit:
+            type: integer
+            format: int64
+            description: 展示换算的每货币单位积分（默认 100）。
+    description: GET /api/model-pricing 的 offset 分页信封。
+
+  ModelPricingCreateRequest:
+    type: object
+    additionalProperties: false
+    required: [model]
+    properties:
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      mode:
+        $ref: '#/schemas/PricingMode'
+      billing_expr:
+        type: string
+        nullable: true
+        description: 非空即表达式模式；与数值价列互斥（混用 400）。
+      prompt_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      completion_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      author:
+        type: string
+        maxLength: 64
+        description: 缺省 Unknown。
+      vendor:
+        type: string
+        nullable: true
+        maxLength: 64
+      status:
+        $ref: '#/schemas/PricingStatus'
+    description: |
+      价格单位是整数积分；展示层按 quota_per_unit 换算为元。
+      表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
+      422；模型重复 409。
+
+  ModelPricingUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    properties:
+      updated_at:
+        type: string
+        format: date-time
+      mode:
+        $ref: '#/schemas/PricingMode'
+      billing_expr:
+        type: string
+        nullable: true
+        description: |
+          null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。
+      prompt_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      completion_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        nullable: true
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      author:
+        type: string
+        maxLength: 64
+      vendor:
+        type: string
+        nullable: true
+        maxLength: 64
+      status:
+        $ref: '#/schemas/PricingStatus'
+    description: |
+      部分更新；model 不可改（提交 model 由字段策略 403）。
+      updated_at 缺失 400、不匹配 409。空对象/无字段 400。
+
+  ModelPricingStatusRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    properties:
+      updated_at:
+        type: string
+        format: date-time
+
+  PricingModelOption:
+    type: object
+    additionalProperties: false
+    required: [model, mode, status]
+    properties:
+      model:
+        type: string
+      mode:
+        $ref: '#/schemas/PricingMode'
+      status:
+        $ref: '#/schemas/PricingStatus'
+
+  PricingModelList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/PricingModelOption'
+
+  PricingPreviewParams:
+    type: object
+    additionalProperties: false
+    properties:
+      p:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 输入 token（未单独定价的部分）。
+      c:
+        type: integer
+        format: int64
+        minimum: 0
+      len:
+        type: integer
+        format: int64
+        minimum: 0
+      cr:
+        type: integer
+        format: int64
+        minimum: 0
+      cc5m:
+        type: integer
+        format: int64
+        minimum: 0
+      cc1h:
+        type: integer
+        format: int64
+        minimum: 0
+      img:
+        type: integer
+        format: int64
+        minimum: 0
+      img_cr:
+        type: integer
+        format: int64
+        minimum: 0
+      img_o:
+        type: integer
+        format: int64
+        minimum: 0
+      ai:
+        type: integer
+        format: int64
+        minimum: 0
+      ao:
+        type: integer
+        format: int64
+        minimum: 0
+      image_count:
+        type: integer
+        minimum: -1
+        default: -1
+        description: '-1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。'
+
+  ModelPricingPreviewRequest:
+    type: object
+    additionalProperties: false
+    required: [spec]
+    properties:
+      spec:
+        type: object
+        additionalProperties: true
+        description: |
+          pricing.ParsePricing 接受的 spec 对象：mode/expr 或
+          prompt_price/completion_price/cache_read_price/cache_write_price
+          （也接受旧倍率风格 model_ratio 等）。求值与保存使用同一解析器。
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        description: 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
+      group_ratio:
+        type: number
+        format: double
+        minimum: 0
+        exclusiveMinimum: true
+        default: 1
+        description: 预览用的分组倍率（默认 1）。
+      params:
+        $ref: '#/schemas/PricingPreviewParams'
+
+  ModelPricingPreviewResponse:
+    type: object
+    additionalProperties: false
+    required: [quota, quota_per_unit, amount_yuan, mode, free_model, clamped, clamp]
+    properties:
+      quota:
+        type: integer
+        format: int64
+        description: 整数积分。
+      quota_per_unit:
+        type: integer
+        format: int64
+      amount_yuan:
+        type: string
+        pattern: '^-?[0-9]+\.[0-9]{2}$'
+        description: 元，HALF_UP 到分。
+      mode:
+        $ref: '#/schemas/PricingMode'
+      free_model:
+        type: boolean
+      clamped:
+        type: boolean
+        description: 命中配额饱和（quota 已是钳制后的值，同时返回 clamp 审计）。
+      clamp:
+        type: object
+        additionalProperties: true
+        nullable: true
+        description: 饱和审计标记（op/kind/original/clamped）；未饱和时为 null。
+
+  GroupPricing:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - group
+      - model
+      - mode
+      - prompt_price
+      - completion_price
+      - cache_read_price
+      - cache_write_price
+      - status
+      - source_status
+      - created_at
+      - updated_at
+    properties:
+      id:
+        type: integer
+        format: int64
+      group:
+        type: string
+        pattern: '^[a-z0-9_-]{2,32}$'
+      model:
+        type: string
+      mode:
+        $ref: '#/schemas/PricingMode'
+        description: 随源 model_pricing 只读展示；源行缺失时为空串。
+      prompt_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      completion_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      status:
+        $ref: '#/schemas/PricingStatus'
+      source_status:
+        type: integer
+        enum: [0, 1, 2]
+        description: 源 model_pricing 状态；0=源行缺失。
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+
+  GroupPricingList:
+    allOf:
+      - $ref: '../components/pagination.yaml#/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/schemas/GroupPricing'
+          quota_per_unit:
+            type: integer
+            format: int64
+    description: GET /api/group-pricing 的 offset 分页信封。
+
+  GroupPricingCreateRequest:
+    type: object
+    additionalProperties: false
+    required: [group, model]
+    properties:
+      group:
+        type: string
+        pattern: '^[a-z0-9_-]{2,32}$'
+        description: 必须存在且启用（否则 422）。
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        description: 必须已在 model_pricing 定价（否则 422）。
+      prompt_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+      completion_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+      cache_read_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+      cache_write_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+      status:
+        $ref: '#/schemas/PricingStatus'
+    description: 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。
+
+  GroupPricingUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    properties:
+      updated_at:
+        type: string
+        format: date-time
+      prompt_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      completion_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      status:
+        $ref: '#/schemas/PricingStatus'
+    description: 部分更新；group/model 不可改（字段策略 403）。
+
+  GroupPricingStatusRequest:
+    type: object
+    additionalProperties: false
+    required: [updated_at]
+    properties:
+      updated_at:
+        type: string
+        format: date-time
