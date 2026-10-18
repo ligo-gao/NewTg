@@ -675,55 +675,61 @@ func TestOpenAIBuildRequestCustomPathModelEscaped(t *testing.T) {
 	}
 }
 
-// TestOpenAIBuildRequestCustomAuthorityPlaceholder 冻结 authority 占位符语义：
-// net/url 拒绝 host 中的 `{`（invalid character in host name），因此 {model}
-// 必须在解析前替换；替换结果作为完整 URL 的 host，不得再拼接路径。
-func TestOpenAIBuildRequestCustomAuthorityPlaceholder(t *testing.T) {
+// TestOpenAIBuildRequestCustomAuthorityPlaceholderRejected 冻结 security-04 §2.4：
+// `{model}` 替换不得改变主机。authority 没有安全的转义机制，而模型名是客户端
+// 可控输入，允许替换就等于允许客户端选择 host/port（例如 `10.0.0.5:8080`）。
+// 因此只要模板的 authority 出现占位符，整个渠道配置即 ErrChannelConfig——
+// 即使当前模型名本身「安全」也不放行（否则安全性取决于请求内容）。
+func TestOpenAIBuildRequestCustomAuthorityPlaceholderRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		model   string
+	}{
+		{"subdomain template", "https://{model}.example.com/v1/chat/completions", "gpt-4o"},
+		{"host template", "https://{model}/v1/chat/completions", "gpt-4o"},
+		{"encoded placeholder", "https://%7Bmodel%7D.example.com/v1/chat/completions", "gpt-4o"},
+		{"client-selected host:port", "https://{model}/v1/chat/completions", "10.0.0.5:8080"},
+		{"userinfo template", "https://user@{model}/v1/chat/completions", "evil.example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := &contract.RelayContext{
+				ChannelType:   contract.ChannelTypeCustom,
+				APIBase:       tc.baseURL,
+				Credential:    "k",
+				UpstreamModel: tc.model,
+			}
+			_, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+			if err == nil {
+				t.Fatal("authority 占位符必须返回 ErrChannelConfig")
+			}
+			if class, ok := ClassOf(err); !ok || class != contract.ErrChannelConfig {
+				t.Fatalf("error class = %v/%v，期望 ErrChannelConfig", class, ok)
+			}
+			if strings.Contains(err.Error(), tc.baseURL) || strings.Contains(err.Error(), tc.model) {
+				t.Fatalf("错误信息泄露 base_url/模型名（GC-6）：%v", err)
+			}
+		})
+	}
+
+	// 固定主机时 path/query 占位符仍然可用：拒绝范围仅限 authority。
 	rc := &contract.RelayContext{
 		ChannelType:   contract.ChannelTypeCustom,
-		APIBase:       "https://{model}.example.com/v1/chat/completions",
+		APIBase:       "https://custom.example/v1/{model}?alias={model}",
 		Credential:    "k",
 		UpstreamModel: "gpt-4o",
 	}
 	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
 	if err != nil {
-		t.Fatalf("BuildRequest: %v", err)
+		t.Fatalf("固定主机的 path/query 占位符不应被拒绝：%v", err)
 	}
-	want := "https://gpt-4o.example.com/v1/chat/completions"
-	if got := httpReq.URL.String(); got != want {
-		t.Fatalf("URL = %q，期望 %q", got, want)
+	if httpReq.URL.Host != "custom.example" {
+		t.Fatalf("host = %q，期望 custom.example", httpReq.URL.Host)
 	}
-	if httpReq.URL.Host != "gpt-4o.example.com" {
-		t.Fatalf("host = %q，期望 gpt-4o.example.com", httpReq.URL.Host)
-	}
-}
-
-// TestOpenAIBuildRequestCustomAuthorityRejectsUnsafeModel 冻结 authority 的
-// 安全边界：host 组件无法用百分号转义，模型名中的 URL 结构字符必须在替换前
-// 拒绝（ErrChannelConfig），不得让 {model} 改写主机/路径/query/userinfo。
-func TestOpenAIBuildRequestCustomAuthorityRejectsUnsafeModel(t *testing.T) {
-	for _, model := range []string{
-		"evil.com/x",       // 路径注入
-		"evil?x=1",         // query 注入
-		"evil#frag",        // fragment 注入
-		"user@evil.com",    // userinfo 注入
-		"https://evil.com", // scheme 注入（依赖 '/'）
-	} {
-		t.Run(model, func(t *testing.T) {
-			rc := &contract.RelayContext{
-				ChannelType:   contract.ChannelTypeCustom,
-				APIBase:       "https://{model}.example.com/v1/chat/completions",
-				Credential:    "k",
-				UpstreamModel: model,
-			}
-			_, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
-			if err == nil {
-				t.Fatal("不安全模型名必须返回 ErrChannelConfig")
-			}
-			if class, ok := ClassOf(err); !ok || class != contract.ErrChannelConfig {
-				t.Fatalf("error class = %v/%v，期望 ErrChannelConfig", class, ok)
-			}
-		})
+	if !strings.Contains(httpReq.URL.EscapedPath(), "gpt-4o") ||
+		httpReq.URL.Query().Get("alias") != "gpt-4o" {
+		t.Fatalf("path/query 占位符未被替换：%s", httpReq.URL.String())
 	}
 }
 

@@ -103,6 +103,10 @@ export function ChannelMutateSheet({
         key={detailQuery.data.id}
         mode="edit"
         channel={detailQuery.data}
+        // A failed background refetch keeps the cached detail, so the form must
+        // stay mounted; the banner reports that its data may be stale. The 409
+        // reload path reports its own inline error instead.
+        detailRefetchFailed={detailQuery.isError}
         reloadChannel={async () => {
           const result = await detailQuery.refetch()
           // `refetch()` resolves (it does not throw) with status 'error' on a
@@ -305,6 +309,11 @@ interface ChannelFormProps {
   channel?: Channel
   /** Edit mode only: re-fetches the detail after a 409 version conflict. */
   reloadChannel?: () => Promise<Channel>
+  /**
+   * Edit mode only: the cached detail is still usable, but its latest refetch
+   * failed. Show a non-fatal banner instead of unmounting the form.
+   */
+  detailRefetchFailed?: boolean
   onCancel: () => void
   onSaved: () => void
 }
@@ -313,6 +322,7 @@ function ChannelForm({
   mode,
   channel,
   reloadChannel,
+  detailRefetchFailed,
   onCancel,
   onSaved,
 }: ChannelFormProps) {
@@ -408,7 +418,13 @@ function ChannelForm({
 
   function removeModel(model: string): void {
     createIntent.current = null
-    markTouched('models', 'testModel')
+    markTouched('models')
+    // Only mark testModel as administratively edited when removing this model
+    // actually clears it. Marking it unconditionally would pin an untouched
+    // test model and stop a later 409 reload from reconciling it.
+    if (form.testModel === model) {
+      markTouched('testModel')
+    }
     setForm((current) => ({
       ...current,
       models: current.models.filter((entry) => entry !== model),
@@ -706,6 +722,14 @@ function ChannelForm({
           {formError}
         </p>
       )}
+
+      {detailRefetchFailed === true && versionConflict === null ? (
+        // Non-fatal: the form stays mounted with the cached detail, but a
+        // silent failure would let the administrator edit stale data.
+        <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
+          {t('common.channels.error.refresh')}
+        </p>
+      ) : null}
 
       {versionConflict === null ? null : (
         <div

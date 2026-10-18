@@ -65,6 +65,7 @@
     },
     "error": {
       "load": "Failed to load channels.",
+      "refresh": "Could not refresh channel details. Showing the last loaded data.",
       "retry": "Retry"
     },
     "pagination": {

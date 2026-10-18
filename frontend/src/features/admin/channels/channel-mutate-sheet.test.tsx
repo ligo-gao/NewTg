@@ -664,6 +664,203 @@ describe('ChannelMutateSheet', () => {
     expect(priorityInput.value).toBe('42')
   })
 
+  it('shows a non-fatal banner when a detail refetch fails outside a 409', async () => {
+    const detail = makeChannel({
+      id: 11,
+      name: 'stale',
+      version: '2026-10-04T00:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    let detailCalls = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/11') {
+        detailCalls += 1
+        if (detailCalls === 1) return jsonResponse(detail)
+        return problemResponse(500, {
+          type: 'https://newtg.dev/problems/internal_error',
+          title: 'Internal Server Error',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    const { queryClient } = renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={11}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const nameInput = (await within(dialog).findByLabelText(
+      'Name',
+    )) as HTMLInputElement
+    expect(nameInput.value).toBe('stale')
+
+    // A background refresh (not the 409 reload path) fails: React Query keeps
+    // the cached detail. The failure must not be silent, but it must not
+    // unmount the form or block saving either.
+    await queryClient.refetchQueries({
+      queryKey: ['admin', 'channels', 'detail', 11],
+    })
+
+    expect(
+      await within(dialog).findByText(
+        'Could not refresh channel details. Showing the last loaded data.',
+      ),
+    ).toBeTruthy()
+    expect(detailCalls).toBe(2)
+    expect(within(dialog).getByLabelText('Name')).toBe(nameInput)
+    expect(nameInput.value).toBe('stale')
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    expect(save.disabled).toBe(false)
+  })
+
+  it('does not pin testModel when removing a different model before a 409 reload', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 12,
+      name: 'model-list',
+      supported_models: ['gpt-4', 'gpt-4o'],
+      test_model: 'gpt-4o',
+      version: '2026-10-04T00:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    // Another administrator cleared the test model while this form was open.
+    const latest = {
+      ...detail,
+      test_model: null,
+      version: '2026-10-05T12:00:00.000Z',
+    }
+    let detailCalls = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/12') {
+        detailCalls += 1
+        return jsonResponse(detailCalls === 1 ? detail : latest)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/12') {
+        return problemResponse(409, {
+          type: 'https://newtg.dev/problems/channel_version_conflict',
+          title: 'Channel version conflict',
+          detail: 'the channel was modified by someone else; refresh and retry',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={12}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('Name')
+
+    // Removing gpt-4 does not touch the selected test model (gpt-4o), so the
+    // reload must still reconcile it from the authoritative detail.
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove gpt-4' }),
+    )
+
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    await user.click(save)
+    await screen.findByRole('alert')
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Reload latest' }),
+    )
+    await waitFor(() => {
+      expect(save.disabled).toBe(false)
+    })
+
+    const testModel = within(dialog).getByLabelText(
+      'Test model',
+    ) as HTMLSelectElement
+    expect(testModel.value).toBe('')
+  })
+
+  it('keeps the locally cleared test model when the removed model was selected', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 13,
+      name: 'model-list-2',
+      supported_models: ['gpt-4', 'gpt-4o'],
+      test_model: 'gpt-4o',
+      version: '2026-10-04T00:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    const latest = {
+      ...detail,
+      version: '2026-10-05T12:00:00.000Z',
+    }
+    let detailCalls = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/13') {
+        detailCalls += 1
+        return jsonResponse(detailCalls === 1 ? detail : latest)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/13') {
+        return problemResponse(409, {
+          type: 'https://newtg.dev/problems/channel_version_conflict',
+          title: 'Channel version conflict',
+          detail: 'the channel was modified by someone else; refresh and retry',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={13}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('Name')
+
+    // Removing the selected test model is a real testModel edit: the reload
+    // must not resurrect it.
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove gpt-4o' }),
+    )
+
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    await user.click(save)
+    await screen.findByRole('alert')
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Reload latest' }),
+    )
+    await waitFor(() => {
+      expect(save.disabled).toBe(false)
+    })
+
+    const testModel = within(dialog).getByLabelText(
+      'Test model',
+    ) as HTMLSelectElement
+    expect(testModel.value).toBe('')
+    expect(detailCalls).toBe(2)
+  })
+
   it('recovers from a 409 version conflict by reloading the baseline version', async () => {
     const user = userEvent.setup()
     const detail = makeChannel({

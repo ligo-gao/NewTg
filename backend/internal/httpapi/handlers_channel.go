@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -935,8 +936,16 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 	// 两种情况都要拒绝：
 	//   - 新 model_mapping 的键不在（新的或既有的）supported_models 里；
 	//   - 修改 supported_models 时删掉了仍被既有 mapping 当作键的模型。
-	// 只在相关字段出现时校验：历史遗留的不一致数据不应阻断无关字段的 PATCH。
-	if req.SupportedModels != nil || req.ModelMapping != nil {
+	//
+	// re-review fix 5：只在相关字段**实际变化**时校验。控制台每次编辑都会
+	// 重发未改动的 supported_models；若只看「字段出现」，历史遗留的不一致行
+	// （mapping 键不在 supported_models）连改备注都会 422，永远无法从控制台
+	// 保存。真实变更仍必须保持一致——校验的是「本次修改是否引入/保留不一致」。
+	supportedModelsChanged := req.SupportedModels != nil &&
+		!slices.Equal(models, decodeStringSlice(existing.SupportedModels))
+	mappingChanged := req.ModelMapping != nil &&
+		!jsonRawEqual(patch.ModelMapping, existing.ModelMapping)
+	if supportedModelsChanged || mappingChanged {
 		effectiveMapping := existing.ModelMapping
 		if req.ModelMapping != nil {
 			effectiveMapping = patch.ModelMapping
@@ -945,6 +954,21 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 	}
 
 	return patch
+}
+
+// jsonRawEqual 语义比较两份 JSON 文档（键顺序与空白不敏感），用于判断
+// PATCH 是否真的修改了 model_mapping。nil 与 `{}` 都解码为 nil
+// map[string]any，视为相同——store 会把缺失的映射规范化为 `{}`。
+// 任一侧无法解码时返回 false（按「有变化」处理，宁严勿宽）。
+func jsonRawEqual(a, b []byte) bool {
+	var left, right any
+	if err := json.Unmarshal(a, &left); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &right); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // validateModelMappingCoverage 实现 modules-06 F-06-10：model_mapping 的每个键

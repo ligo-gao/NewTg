@@ -856,6 +856,54 @@ func TestChannelPatchModelMappingCoverage(t *testing.T) {
 		}
 	})
 
+	// re-review fix 5：历史遗留的不一致行（mapping 键不在 supported_models）
+	// 在字段未变化时必须可保存——控制台每次都会重发 supported_models，
+	// 不能因为「字段出现」就把改备注的 PATCH 判成 422。
+	t.Run("legacy inconsistent row with unchanged models/mapping → 200", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, func(ch *store.Channel) {
+			ch.SupportedModels = mustJSONBytes(t, []string{"gpt-4o"})
+			ch.ModelMapping = mustJSONBytes(t, map[string]string{"gpt-5": "upstream-5"})
+		})
+		body := map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"remark":           "only the remark changed",
+			// 控制台的固定负载：未改动的模型与映射也必须原样重发。
+			"supported_models": []string{"gpt-4o"},
+			"model_mapping":    map[string]string{"gpt-5": "upstream-5"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d，期望 200（未变化的不一致行不应阻断无关字段；body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 1 {
+			t.Fatalf("updateCalls = %d，期望 1", env.store.updateCalls)
+		}
+	})
+
+	t.Run("changing models to a still-inconsistent state → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, func(ch *store.Channel) {
+			ch.SupportedModels = mustJSONBytes(t, []string{"gpt-4o"})
+			ch.ModelMapping = mustJSONBytes(t, map[string]string{"gpt-5": "upstream-5"})
+		})
+		body := map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			// 真实变更：支持列表变了，但 mapping 的 gpt-5 仍不在列表里。
+			"supported_models": []string{"gpt-4o", "gpt-4"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（真实变更仍须满足覆盖约束；body=%s）", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"field":"model_mapping"`) {
+			t.Fatalf("422 未指向 model_mapping 字段: %s", rr.Body.String())
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("校验失败仍写库（updateCalls=%d）", env.store.updateCalls)
+		}
+	})
+
 	t.Run("mapping key inside effective models → 200", func(t *testing.T) {
 		env := newChannelTestEnv(t, ChannelHandlerOptions{})
 		seeded := seedChannel(t, env, func(ch *store.Channel) {
