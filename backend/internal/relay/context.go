@@ -102,6 +102,17 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 	rc.RequestPath = path
 	rc.RawFormat = detectRawFormat(path)
 
+	// 凭据只解析一次：Bearer 路径用它查令牌分组，会话路径只用它判定 pin。
+	// ParseChannelPin 是路径无关的导出函数，路由层会独立消费 pin；因此
+	// 「会话身份 + Authorization 头里的 pin 后缀」也必须在组装阶段拒绝，
+	// 否则非管理员可以借一个本应被忽略的头把 pin 带进路由（R-P2a、relay-01 §3.5）。
+	raw, hasCredential := credentialFromRequest(req)
+	var key string
+	var hasPin bool
+	if hasCredential {
+		key, _, hasPin = normalizeTokenCredential(raw)
+	}
+
 	if principal.TokenID != nil {
 		tokenID, err := idToInt(*principal.TokenID)
 		if err != nil {
@@ -110,19 +121,27 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 
 		// Bearer 路径必须能从请求重新取回凭据：Principal 只带 TokenID，
 		// 而分组在 TokenMeta 里。取不到说明身份与请求不一致，fail-closed。
-		raw, ok := credentialFromRequest(req)
-		if !ok {
+		if !hasCredential {
 			return nil, ErrTokenInvalid
 		}
-		key, _, hasPin := normalizeTokenCredential(raw)
 
 		if tokenStore == nil {
 			return nil, ErrTokenInvalid
 		}
 		meta, err := tokenStore.Resolve(ctx, auth.HashTokenKey(key))
-		if err != nil || meta == nil {
-			// 存储故障与令牌无效对外同形（401）：区分二者会把 Redis/DB 故障
-			// 变成状态探测信道（relay-01 §3.6、security-01 I12 的 fail-closed 姿势）。
+		if err != nil {
+			// 对外仍是 401（不区分存储故障与坏令牌：区分二者会变成状态探测信道，
+			// relay-01 §3.6、security-01 I12 的 fail-closed 姿势），
+			// 但保留 cause 供日志区分「Redis/DB 故障」与「令牌不存在」两种排障场景。
+			return nil, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
+		}
+		if meta == nil {
+			return nil, ErrTokenInvalid
+		}
+		// 身份一致性：TokenID/UserID 来自 Principal，分组来自本次 Resolve。
+		// 两次解析必须是同一令牌/同一用户；不一致说明凭据在鉴权后被替换或存储
+		// 返回了错误行——混用会让分组（进而倍率/定价）落到别人名下，必须 fail-closed。
+		if meta.ID != *principal.TokenID || meta.UserID != principal.UserID {
 			return nil, ErrTokenInvalid
 		}
 		// 判定顺序遵循 relay-01 §3.3 → §3.4：令牌状态先于附加校验。
@@ -133,10 +152,16 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 
 		rc.TokenID = tokenID
 		// 控制器裁决：Bearer 路径从 TokenMeta.Group 同时填 UsingGroup 与 UserGroup。
-		// TokenMeta 只提供令牌分组；「令牌分组须 ∈ 用户可用分组」等附加校验与
-		// auto 轮换的后续语义归鉴权层/路由层（relay-01 §3.4、§7.1）。
+		// UserGroup 在此只是占位：TokenMeta 是令牌投影而非用户行，真正的用户分组
+		// 必须由 Task 8 在加载用户后覆盖再进入定价（relay-01 §7.1 定义 UserGroup 为用户分组）。
+		// 「令牌分组须 ∈ 用户可用分组」等附加校验与 auto 轮换的后续语义归鉴权层/路由层
+		// （relay-01 §3.4、§7.1）。
 		rc.UsingGroup = meta.Group
 		rc.UserGroup = meta.Group
+	} else if hasPin && !isAdmin(principal.Role) {
+		// 会话路径不做令牌查询；但 pin 仍要在这里拒绝：路由层的 ParseChannelPin
+		// 只看请求头、不看身份来源，放行等于让非管理员会话用户绕过 §3.5。
+		return nil, ErrPinForbidden
 	}
 
 	// 尽力而为的预读：失败不影响组装，权威值由归一化层从完整请求体重新解析。
@@ -152,6 +177,10 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 // 控制器裁决 R-P2a：pin 不写进 RelayContext（它属于路由约束而非身份状态），
 // 由路由层作为 ChannelConstraints.PinChannelID 的输入消费；非管理员使用 pin 的
 // 403 语义在 BuildRelayContext 中体现为 ErrPinForbidden，HTTP 映射归 Task 8。
+//
+// 本函数只看凭据、不看身份：它无法判断调用者是管理员还是会话用户。因此路由层
+// 必须在 BuildRelayContext 通过之后消费 pin——后者已在 Bearer 与 Cookie 两条
+// 身份路径上统一执行了非管理员拒绝（R-P2a、relay-01 §3.5）。
 func ParseChannelPin(req *http.Request) (channelID int, ok bool) {
 	if req == nil {
 		return 0, false
@@ -173,15 +202,17 @@ func ParseChannelPin(req *http.Request) (channelID int, ok bool) {
 func credentialFromRequest(r *http.Request) (string, bool) {
 	if v := strings.TrimSpace(r.Header.Get("Authorization")); v != "" {
 		if i := strings.IndexByte(v, ' '); i >= 0 {
-			if !strings.EqualFold(v[:i], "Bearer") {
-				return "", false
+			// 只认 Bearer 前缀；带空格却不是 Bearer 的形态（Basic/自定义方案）
+			// 不构成令牌凭据，继续尝试 x-api-key 兼容载体，而不是直接判定无凭据。
+			if strings.EqualFold(v[:i], "Bearer") {
+				if raw := strings.TrimSpace(v[i+1:]); raw != "" {
+					return raw, true
+				}
 			}
-			v = strings.TrimSpace(v[i+1:])
+		} else {
+			// §3.1：裸 key 直用。
+			return v, true
 		}
-		if v == "" {
-			return "", false
-		}
-		return v, true
 	}
 
 	path := ""
@@ -285,6 +316,10 @@ func detectRawFormat(path string) contract.RelayFormat {
 		return FormatClaude
 	case strings.HasPrefix(path, "/v1/responses"):
 		return FormatOpenAIResponses
+	case strings.HasPrefix(path, "/v1beta/openai/"):
+		// Gemini 网关的 OpenAI 兼容路由：入站是 OpenAI 协议，不是 Gemini 原生
+		// （relay-04 的 /v1beta/openai/models* 载体）。
+		return FormatOpenAI
 	case strings.HasPrefix(path, "/v1beta/"),
 		strings.HasPrefix(path, "/v1/engines/"),
 		strings.HasPrefix(path, "/v1/models/") && strings.ContainsRune(path, ':'):

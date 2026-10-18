@@ -159,8 +159,67 @@ func TestBuildRelayContext(t *testing.T) {
 		if !errors.Is(err, ErrTokenInvalid) {
 			t.Fatalf("error = %v，期望 ErrTokenInvalid", err)
 		}
+		// 对外语义不变（errors.Is 命中哨兵），但 cause 必须保留：
+		// 日志要能区分「存储故障」与「令牌不存在」，否则排障只能看到笼统 401。
+		if !strings.Contains(err.Error(), "store unavailable") {
+			t.Errorf("error = %v，期望保留存储故障 cause", err)
+		}
 		if rc != nil {
 			t.Fatal("令牌解析失败时仍返回了 RelayContext")
+		}
+	})
+
+	t.Run("Bearer 身份但请求无凭据", func(t *testing.T) {
+		store := &stubTokenStore{}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+		// 非模型路径下 x-api-key 不生效（§3.1），因此等价于完全没有凭据。
+		req.Header.Set("x-api-key", testNKT)
+
+		rc, err := BuildRelayContext(context.Background(), bearerPrincipal, req, store)
+		if !errors.Is(err, ErrTokenInvalid) {
+			t.Fatalf("error = %v，期望 ErrTokenInvalid", err)
+		}
+		if rc != nil {
+			t.Fatal("缺少凭据时仍返回了 RelayContext")
+		}
+		if len(store.calls) != 0 {
+			t.Errorf("Resolve 被调用 %d 次，期望 0 次", len(store.calls))
+		}
+	})
+
+	t.Run("缺少请求早退", func(t *testing.T) {
+		rc, err := BuildRelayContext(context.Background(), bearerPrincipal, nil, &stubTokenStore{})
+		if !errors.Is(err, ErrRequestMissing) {
+			t.Fatalf("error = %v，期望 ErrRequestMissing", err)
+		}
+		if rc != nil {
+			t.Fatal("缺少请求时仍返回了 RelayContext")
+		}
+	})
+
+	t.Run("令牌解析结果与身份不一致时拒绝", func(t *testing.T) {
+		// 两次解析（鉴权中间件与本函数）必须看到同一令牌/同一用户。
+		// 任一侧不一致都意味着凭据被替换或存储返回错误行，分组不得混入。
+		cases := map[string]*auth.TokenMeta{
+			"令牌 id 不一致": {ID: 10, UserID: 42, Group: "vip"},
+			"用户 id 不一致": {ID: 9, UserID: 43, Group: "vip"},
+		}
+		for name, meta := range cases {
+			t.Run(name, func(t *testing.T) {
+				store := &stubTokenStore{metas: map[string]*auth.TokenMeta{
+					auth.HashTokenKey(testNKT): meta,
+				}}
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+				req.Header.Set("Authorization", "Bearer "+testNKT)
+
+				rc, err := BuildRelayContext(context.Background(), bearerPrincipal, req, store)
+				if !errors.Is(err, ErrTokenInvalid) {
+					t.Fatalf("error = %v，期望 ErrTokenInvalid", err)
+				}
+				if rc != nil {
+					t.Fatal("身份不一致时仍返回了 RelayContext")
+				}
+			})
 		}
 	})
 
@@ -204,6 +263,44 @@ func TestBuildRelayContext(t *testing.T) {
 		}
 		if rc.TokenID != 9 || rc.UsingGroup != "vip" {
 			t.Errorf("TokenID/UsingGroup = %d/%q，期望 9/vip", rc.TokenID, rc.UsingGroup)
+		}
+	})
+
+	t.Run("非管理员会话携带 pin 后缀也被拒", func(t *testing.T) {
+		store := &stubTokenStore{} // 会话路径不需要令牌查询
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+		// 路由层的 ParseChannelPin 只看请求头、不看身份来源：即使本请求按
+		// Cookie 会话鉴权，这个头也必须在这里拒绝，否则 pin 会绕过 §3.5。
+		req.Header.Set("Authorization", "Bearer "+testLegacy+"-5")
+
+		sessionPrincipal := &auth.Principal{UserID: 42, Role: "user"} // TokenID == nil
+		rc, err := BuildRelayContext(context.Background(), sessionPrincipal, req, store)
+		if !errors.Is(err, ErrPinForbidden) {
+			t.Fatalf("error = %v，期望 ErrPinForbidden（会话路径同样受 §3.5 约束）", err)
+		}
+		if rc != nil {
+			t.Fatal("会话越权 pin 时仍返回了 RelayContext")
+		}
+		if len(store.calls) != 0 {
+			t.Errorf("Resolve 被调用 %d 次，期望 0 次", len(store.calls))
+		}
+	})
+
+	t.Run("管理员会话携带 pin 后缀放行", func(t *testing.T) {
+		store := &stubTokenStore{}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+testLegacy+"-5")
+
+		admin := &auth.Principal{UserID: 42, Role: "admin"} // TokenID == nil
+		rc, err := BuildRelayContext(context.Background(), admin, req, store)
+		if err != nil {
+			t.Fatalf("BuildRelayContext() error = %v，期望 nil（管理员可用 pin）", err)
+		}
+		if rc.TokenID != 0 || rc.UsingGroup != "" {
+			t.Errorf("TokenID/UsingGroup = %d/%q，期望 0/空（会话路径）", rc.TokenID, rc.UsingGroup)
+		}
+		if len(store.calls) != 0 {
+			t.Errorf("Resolve 被调用 %d 次，期望 0 次", len(store.calls))
 		}
 	})
 
@@ -298,6 +395,10 @@ func TestParseChannelPin(t *testing.T) {
 		{name: "无凭据", wantOK: false},
 		{name: "x-api-key 载体（模型路径）", path: "/v1/models/gemini-pro:generateContent", apiKey: "sk-abc-12", wantID: 12, wantOK: true},
 		{name: "x-api-key 非模型路径不生效", path: "/v1/chat/completions", apiKey: "sk-abc-12", wantOK: false},
+		// Authorization 存在但不是 Bearer 形态时不得吞掉 x-api-key 回退（§3.1 载体表）。
+		{name: "非 Bearer Authorization 回退 x-api-key", path: "/v1/models/gemini-pro:generateContent", header: "Basic abc", apiKey: "sk-abc-12", wantID: 12, wantOK: true},
+		// Bearer 是规范载体：与 x-api-key 并存时优先。
+		{name: "Bearer 优先于 x-api-key", path: "/v1/models/gemini-pro:generateContent", header: "Bearer sk-xyz-9", apiKey: "sk-abc-12", wantID: 9, wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -317,6 +418,31 @@ func TestParseChannelPin(t *testing.T) {
 				t.Errorf("ParseChannelPin() = (%d, %v)，期望 (%d, %v)", id, ok, tc.wantID, tc.wantOK)
 			}
 		})
+	}
+}
+
+// TestDetectRawFormat 冻结归一化前的路径判定顺序：
+// /v1beta/openai/* 是 Gemini 网关上的 OpenAI 兼容路由，必须按 OpenAI 而非 Gemini。
+func TestDetectRawFormat(t *testing.T) {
+	cases := []struct {
+		path string
+		want contract.RelayFormat
+	}{
+		{"/v1/chat/completions", FormatOpenAI},
+		{"/v1/completions", FormatOpenAI},
+		{"/v1/embeddings", FormatOpenAI},
+		{"/v1/models", FormatOpenAI},
+		{"/v1/messages", FormatClaude},
+		{"/v1/responses", FormatOpenAIResponses},
+		{"/v1beta/openai/chat/completions", FormatOpenAI},
+		{"/v1beta/models/gemini-pro:generateContent", FormatGemini},
+		{"/v1/models/gemini-pro:embedContent", FormatGemini},
+		{"/v1/engines/gemini/embeddings", FormatGemini},
+	}
+	for _, tc := range cases {
+		if got := detectRawFormat(tc.path); got != tc.want {
+			t.Errorf("detectRawFormat(%q) = %q，期望 %q", tc.path, got, tc.want)
+		}
 	}
 }
 
