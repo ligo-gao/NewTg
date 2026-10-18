@@ -1674,3 +1674,117 @@ func TestGeoIPPublicEndpoint(t *testing.T) {
 		t.Fatalf("库命中响应 = %v，期望 US/US-CA/local_db", body)
 	}
 }
+
+// TestAuthRegisterAudited 覆盖 B8：注册成功/失败都写 auth.register（login 类），
+// 失败附机器可读 reason，detail 不含凭据。
+func TestAuthRegisterAudited(t *testing.T) {
+	capture := &captureExec{}
+	env := newAuthTestEnv(t, nil, authTestOptions{audit: audit.New(capture)})
+
+	rr := env.request(http.MethodPost, "/api/auth/register",
+		registerPayload("alice", "alice@example.com", "N7x!qPz2wR", ""), nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("register status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rows := capture.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("注册审计行 = %d，期望 1", len(rows))
+	}
+	detail, _ := rows[0][9].(string)
+	if rows[0][2] != "login" || rows[0][8] != "success" {
+		t.Fatalf("审计 category/result = %v/%v，期望 login/success", rows[0][2], rows[0][8])
+	}
+	if !strings.Contains(detail, `"action":"auth.register"`) {
+		t.Fatalf("detail 缺少冻结动作名: %s", detail)
+	}
+	if strings.Contains(detail, "N7x!qPz2wR") {
+		t.Fatalf("注册审计泄露口令: %s", detail)
+	}
+
+	// 重复注册（同用户名/邮箱）→ 409，失败审计 reason=email_taken。
+	rr = env.request(http.MethodPost, "/api/auth/register",
+		registerPayload("alice", "alice@example.com", "N7x!qPz2wR", ""), nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("duplicate register status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rows = capture.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("注册审计行 = %d，期望 2", len(rows))
+	}
+	detail, _ = rows[1][9].(string)
+	if rows[1][8] != "failed" || !strings.Contains(detail, `"reason":"email_taken"`) {
+		t.Fatalf("失败审计 = result %v detail %s，期望 failed/email_taken", rows[1][8], detail)
+	}
+}
+
+// TestAuthLogoutAudited 覆盖 B8：登出在吊销会话前取身份并写 auth.logout。
+func TestAuthLogoutAudited(t *testing.T) {
+	capture := &captureExec{}
+	env := newAuthTestEnv(t, nil, authTestOptions{audit: audit.New(capture)})
+	env.repo.add(UserRecord{Username: "alice", PasswordHash: authTestPasswordHash()})
+	login := env.login("alice", authTestPassword)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status = %d", login.Code)
+	}
+	sess := cookieByName(login, auth.SessionCookieName)
+	if sess == nil {
+		t.Fatal("login 未下发会话 Cookie")
+	}
+	rr := env.request(http.MethodPost, "/api/logout", nil, func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sess.Value})
+	})
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("logout status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	found := false
+	for _, args := range capture.snapshot() {
+		detail, _ := args[9].(string)
+		if strings.Contains(detail, `"action":"auth.logout"`) {
+			if args[2] != "login" || args[8] != "success" {
+				t.Fatalf("logout 审计 category/result = %v/%v", args[2], args[8])
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("登出未写 auth.logout 审计")
+	}
+}
+
+// TestAuthRegisterRateLimitedAuditBounded 覆盖 D2 复审：关闭注册时的失败审计
+// 被 B3 桶约束；429 洪水每窗口只写一条 rate_limited 审计。
+func TestAuthRegisterRateLimitedAuditBounded(t *testing.T) {
+	capture := &captureExec{}
+	env := newAuthTestEnv(t, mapConfig{"auth.signup_enabled": configBool(false)},
+		authTestOptions{audit: audit.New(capture)})
+
+	statuses := make(map[int]int)
+	for i := 0; i < 10; i++ {
+		rr := env.request(http.MethodPost, "/api/auth/register",
+			registerPayload("alice", "alice@example.com", "N7x!qPz2wR", ""), nil)
+		statuses[rr.Code]++
+	}
+	if statuses[http.StatusForbidden] != RegisterRateLimit {
+		t.Fatalf("关闭注册 403 次数 = %d，期望 %d（桶先于开关）",
+			statuses[http.StatusForbidden], RegisterRateLimit)
+	}
+	if statuses[http.StatusTooManyRequests] != 10-RegisterRateLimit {
+		t.Fatalf("429 次数 = %d，期望 %d", statuses[http.StatusTooManyRequests], 10-RegisterRateLimit)
+	}
+
+	rows := capture.snapshot()
+	if len(rows) != RegisterRateLimit+1 {
+		t.Fatalf("审计行 = %d，期望 %d（3 条 signup_disabled + 1 条 rate_limited）",
+			len(rows), RegisterRateLimit+1)
+	}
+	rateLimited := 0
+	for _, args := range rows {
+		detail, _ := args[9].(string)
+		if strings.Contains(detail, `"reason":"rate_limited"`) {
+			rateLimited++
+		}
+	}
+	if rateLimited != 1 {
+		t.Fatalf("rate_limited 审计 = %d 条，期望 1（SETNX 每窗口限一条）", rateLimited)
+	}
+}
