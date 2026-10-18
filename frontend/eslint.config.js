@@ -45,8 +45,21 @@ export default tseslint.config(
           message:
             'Use a CSS token from styles/tokens.css instead of a raw hex colour.',
         },
+        // CJK hardcoding enters the source through the same three node shapes
+        // as a bare hex colour. Matching only `Literal` let a Chinese string in
+        // a template literal or in JSX text bypass the i18n gate silently.
         {
           selector: 'Literal[value=/[\\u4e00-\\u9fff]/]',
+          message:
+            'Use an i18n key from src/locales instead of a CJK string literal.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/[\\u4e00-\\u9fff]/]',
+          message:
+            'Use an i18n key from src/locales instead of a CJK string literal.',
+        },
+        {
+          selector: 'JSXText[value=/[\\u4e00-\\u9fff]/]',
           message:
             'Use an i18n key from src/locales instead of a CJK string literal.',
         },

@@ -568,9 +568,35 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
 			VALUES ('chk_tag_space', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '   ')`)
 	})
+	// 白名单字符集分支：长度/btrim 都合法，但 `/` 不在允许集合内；不测这一条时
+	// 约束被放宽成「只查长度与空白」也会保持绿色。
+	t.Run("tag 非法字符被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_charset', 'openai', decode('00', 'hex'), '["m"]'::jsonb, 'bad/tag')`)
+	})
+	// 白名单约束是双向的：拒绝非法字符的同时必须接收集合内字符。CJK 与连字符走
+	// 显式 Unicode 区段（不依赖 DB locale），用回滚事务验证正向分支，避免在多包共享
+	// 的库中留下数据（channels.name 全局唯一，重复跑会撞唯一键）。
+	t.Run("CJK 与连字符 tag 被接受", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_cjk', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '中文-渠道_1')`); err != nil {
+			t.Fatalf("合法 tag 被误拒：%v", err)
+		}
+	})
 	t.Run("小写 currency 被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key)
 			VALUES (1, 'stripe', 1, 'usd', 'chk_currency_lower')`)
+	})
+	// provider_currency 是独立的字符集分支（NULL 与非 NULL 两态），只测 currency
+	// 无法证明渠道结算币种也被约束；小写三字母必须在非 NULL 分支被拒。
+	t.Run("小写 provider_currency 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, provider_currency)
+			VALUES (1, 'stripe', 1, 'USD', 'chk_provider_currency_lower', 'usd')`)
 	})
 	t.Run("fx_rate 半对被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, fx_rate_num)

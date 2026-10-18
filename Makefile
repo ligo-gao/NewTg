@@ -100,7 +100,7 @@ web-install: ## 冻结锁文件安装前端依赖
 web-dev: ## 前端开发服务器（Rsbuild，代理到 localhost:3000）
 	cd frontend && bun run dev
 
-web-typecheck: ## tsc --noEmit 类型检查
+web-typecheck: ## tsc -b 类型检查（项目引用构建）
 	cd frontend && bun run typecheck
 
 web-lint: ## ESLint

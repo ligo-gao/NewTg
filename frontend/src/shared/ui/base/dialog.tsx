@@ -27,10 +27,12 @@ function focusableInside(panel: HTMLElement): HTMLElement[] {
     (element) =>
       element.tabIndex !== -1 &&
       element.getAttribute('aria-hidden') !== 'true' &&
-      // `display:none` / `visibility:hidden` elements are not tabbable in a
-      // browser; without this filter a hidden first/last candidate would
-      // receive the wrap-around focus and freeze keyboard navigation.
-      // (`getClientRects()` is empty when no box is generated.)
+      // `display:none` generates no box at all, so `getClientRects()` is empty
+      // and the element never accepts focus; without this filter a hidden
+      // first/last candidate would receive the wrap-around focus and freeze
+      // keyboard navigation. Note this is not a general "hidden" test:
+      // `visibility:hidden` still generates boxes (non-empty rects) even
+      // though browsers do not focus such elements.
       element.getClientRects().length > 0,
   )
 }

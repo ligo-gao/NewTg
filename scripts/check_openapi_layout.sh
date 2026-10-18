@@ -26,12 +26,20 @@ command -v perl >/dev/null 2>&1 \
 # 值的两种合法形态都要覆盖：与键同行，以及下一行的缩进标量（`$ref:` 换行后缩进）。
 extract_refs() {
   # 1) 键与值同行。
+  #    YAML 中冒号后以 `#` 开头的 token 是行尾注释而不是值（`$ref: # 注释` 的值在
+  #    下一行）。同行 grep 会把它捕获成裸 `#`；若留到 scan_refs，就会因 `#*` 被当成
+  #    文档内片段而跳过，真正的下一行值于是完全不经路径校验（PyYAML/redocly 却会
+  #    读取它）。因此丢弃以 `#` 开头的捕获值，交给下面的状态机取下一行。
+  #    （带引号的 `'#/X'` 也是文档内片段，scan_refs 本就跳过，丢弃不改变语义。）
   grep -oE "[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*[^[:space:]]+" "$1" 2>/dev/null \
-    | sed -E "s/^[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*//; s/^[\"']//; s/[\"']?[,}]?\$//" || true
+    | sed -E "s/^[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*//; s/^[\"']//; s/[\"']?[,}]?\$//" \
+    | grep -v '^#' || true
   # 2) 值在下一行：
-  #      $ref:
+  #      $ref:              $ref: # 行尾注释（YAML 合法）
   #        ../outside.yaml#/X
   #    逐行状态机，只取键行后的第一个非空非注释行；不处理折叠标量（$ref 路径是单行）。
+  #    键行必须允许行尾注释：`\s*(#.*)?$` 才是 YAML 的完整语义。只认「冒号后直接
+  #    换行」会让带注释的多行引用整条绕过边界校验（同行 grep 只看到注释）。
   perl -ne '
     if ($want) {
       next if /^\s*(#.*)?$/;
@@ -44,7 +52,7 @@ extract_refs() {
       $want = 0;
       next;
     }
-    $want = 1 if !/^\s*#/ && /["\x27]?\$ref["\x27]?\s*:\s*$/;
+    $want = 1 if !/^\s*#/ && /["\x27]?\$ref["\x27]?\s*:\s*(#.*)?$/;
   ' "$1" 2>/dev/null || true
 }
 
@@ -76,13 +84,21 @@ realpath_portable() {
   perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); defined $p or exit 1; print $p' -- "$1"
 }
 
-# 扫描 root 下全部 YAML：$ref 只能指向 root 内已存在的普通文件（#/... 纯片段引用跳过）。
+# 扫描 root 下全部 YAML/JSON 源：$ref 只能指向 root 内已存在的普通文件（#/... 纯片段引用跳过）。
 # 返回 0=全部合法；1=存在违规（逐条打印原因）。
 scan_refs() {
   local root="$1" root_abs f dir_abs ref target resolved rc=0 original physical_dir physical
   # root 必须真实存在，用 cd+pwd -P 取物理绝对路径（跨平台，不依赖 realpath -m）。
   root_abs=$(cd "$root" && pwd -P) || return 1
   while IFS= read -r -d '' f; do
+    # 源文件本体是符号链接：`find -type f` 不会返回链接（它不是普通文件），于是
+    # 链接指向的树外 payload 既不参与任何 $ref 扫描，入口文档本身又会被 redocly
+    # 跟随——整份源文件就此绕过本脚本。策略与 $ref 目标一致：一律拒绝，不解引用。
+    if [ -L "$f" ]; then
+      echo "FAIL: $f: OpenAPI 源文件是符号链接（禁止跟随）：$f" >&2
+      rc=1
+      continue
+    fi
     dir_abs=$(cd "$(dirname "$f")" && pwd -P) || continue
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
@@ -150,7 +166,8 @@ scan_refs() {
         rc=1
       fi
     done < <(extract_refs "$f")
-  done < <(find "$root" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
+  done < <(find "$root" \( -type f -o -type l \) \
+    \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print0)
   return "$rc"
 }
 
@@ -198,6 +215,9 @@ self_test() {
   run_case missing 目标不存在 "\$ref: './paths/does-not-exist.yaml#/X'"
   # 值在键的下一行（YAML 合法）：按行提取会看不到，必须由多行状态机覆盖。
   run_case multiline 逃出 $'$ref:\n    ../outside.yaml#/X'
+  # 键行带行尾注释同样是合法 YAML（PyYAML 解析出的值在下一行）。只认「冒号后直接
+  # 换行」会让整条引用逃过校验；同行 grep 捕获的裸 `#` 也不能被当作片段放行。
+  run_case multiline-comment 逃出 $'$ref: # 注释\n    ../outside.yaml#/X'
 
   # 文件符号链接：词法/目录物理检查都能过，但链接本体指向树外，必须拒绝。
   printf 'x-outside: 1\n' >"$tmp/outside-file.yaml"
@@ -250,7 +270,22 @@ self_test() {
   fi
   rm -f "$tmp/api/openapi/selftest-linkdot" "$tmp/api/openapi/selftest-symlink-dotdot.yaml"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值）、网络、绝对路径、缺失目标、符号链接（含链接+..）注入均已被拒绝"
+  # 源文件符号链接：旧 find 用 -type f，链接本体不会被枚举，链接指向的树外文档
+  # 因而从未进入 $ref 扫描（redocly 却会跟随）。与 $ref 目标同策略：直接拒绝。
+  printf 'x-outside: 1\n' >"$tmp/outside-source.yaml"
+  ln -s "$tmp/outside-source.yaml" "$tmp/api/openapi/selftest-source-link.yaml"
+  if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [symlink-source] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '符号链接'; then
+    echo "FAIL: 自检 [symlink-source] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [symlink-source] 已被拒绝（符号链接）"
+  fi
+  rm -f "$tmp/api/openapi/selftest-source-link.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）注入均已被拒绝"
   return "$rc"
 }
 

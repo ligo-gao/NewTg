@@ -127,10 +127,14 @@ fi
 #     ——DEFAULT 位于语句尾部（可能换行，中间还可能有 FOR VALUES 之外的列定义）。
 #     只 grep 历史写法 'DEFAULT PARTITION' 会漏掉它，因此先去注释、压平换行并按 ;
 #     断句，再整句匹配；DEFAULT 后要求是语句结尾，避免把列 DEFAULT 误判为默认分区。
+#     但语法允许 DEFAULT 后继续出现 PARTITION BY / USING / WITH / TABLESPACE / ON …
+#     等尾随子句（例如 `DEFAULT TABLESPACE fast`）。若坚持 DEFAULT 后紧跟 ;/EOL，
+#     这些完全合法的写法会整条放行默认分区，故在 DEFAULT 与语句结尾之间允许上述
+#     子句继续到 ;。列级 DEFAULT 位于括号内且语句不含 PARTITION OF，不会被该分支命中。
 default_partition=0
 for f in "${all[@]}"; do
   if sql_body "$f" | tr '\n' ' ' | sed -E 's/;[[:space:]]*/;\n/g' \
-     | grep -Eqi 'DEFAULT[[:space:]]+PARTITION|PARTITION[[:space:]]+OF[^;]*[[:space:]]DEFAULT[[:space:]]*(;|$)'; then
+     | grep -Eqi 'DEFAULT[[:space:]]+PARTITION|PARTITION[[:space:]]+OF[^;]*[[:space:]]DEFAULT([[:space:]]+(TABLESPACE|WITH|USING|PARTITION|ON)[^;]*)?[[:space:]]*(;|$)'; then
     violation "禁止默认分区（DEFAULT PARTITION / PARTITION OF ... DEFAULT）：$(basename "$f")"
     default_partition=$((default_partition + 1))
   fi
