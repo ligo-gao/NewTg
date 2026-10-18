@@ -30,7 +30,6 @@ describe('ChannelMutateSheet', () => {
     const listed = makeChannel({
       id: 7,
       name: 'new-channel',
-      credentials_set: true,
     })
     let createdFlag = false
     const requests = installFetch((request) => {
@@ -84,7 +83,13 @@ describe('ChannelMutateSheet', () => {
     await user.click(
       screen.getByRole('button', { name: 'Expand details for new-channel' }),
     )
-    expect(await screen.findByText('Set')).toBeTruthy()
+    const detail = await screen.findByTestId('channel-detail-7')
+    // The list DTO carries neither credentials_masked nor credentials_set
+    // (GC-6): the expanded row must render no credentials cell at all. The mask
+    // is exercised through the POST/detail response above and in the edit
+    // placeholder test below.
+    expect(within(detail).queryByText('API key')).toBeNull()
+    expect(within(detail).queryByText('Set')).toBeNull()
     expect(screen.queryByText(plaintext)).toBeNull()
   })
 
@@ -345,7 +350,11 @@ describe('ChannelMutateSheet', () => {
     )
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
 
-    expect(await within(dialog).findByText('API key is required.')).toBeTruthy()
+    expect(
+      await within(dialog).findByText(
+        'Enter a new API key for the selected channel type.',
+      ),
+    ).toBeTruthy()
     expect(
       await within(dialog).findByText('Deployment is required for Azure OpenAI.'),
     ).toBeTruthy()
@@ -379,6 +388,280 @@ describe('ChannelMutateSheet', () => {
         api_version: '2024-10-21',
       },
     })
+  })
+
+  it('requires a new key when switching between non-azure types', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 23,
+      name: 'proto-switch',
+      type: 'openai',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/23') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/23') {
+        return jsonResponse({ ...detail, type: 'anthropic' })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={23}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('API key')
+    await user.selectOptions(
+      within(dialog).getByLabelText('Type'),
+      'anthropic',
+    )
+
+    // The backend rejects any type change without fresh credentials (422):
+    // openai→anthropic needs a new key just like a switch to azure.
+    expect(
+      within(dialog).getByText(
+        'Changing the type requires a new API key for that type.',
+      ),
+    ).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(dialog).findByText(
+        'Enter a new API key for the selected channel type.',
+      ),
+    ).toBeTruthy()
+    expect(findRequest(requests, 'PATCH', '/api/channels/23')).toBeUndefined()
+
+    await user.type(within(dialog).getByLabelText('API key'), 'sk-anthropic-123')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(findRequest(requests, 'PATCH', '/api/channels/23')).toBeDefined()
+    })
+    expect(findRequest(requests, 'PATCH', '/api/channels/23')?.body).toMatchObject({
+      type: 'anthropic',
+      credentials: { api_key: 'sk-anthropic-123' },
+    })
+  })
+
+  it('requires a new key when switching from azure back to openai', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 24,
+      name: 'azure-out',
+      type: 'azure_openai',
+      credentials_masked: {
+        api_key: 'sk-…wxyz',
+        deployment: 'dep-1',
+        api_version: '2024-10-21',
+      },
+      credentials_set: true,
+    })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/24') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/24') {
+        return jsonResponse({ ...detail, type: 'openai' })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={24}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('API key')
+    await user.selectOptions(within(dialog).getByLabelText('Type'), 'openai')
+
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect(
+      await within(dialog).findByText(
+        'Enter a new API key for the selected channel type.',
+      ),
+    ).toBeTruthy()
+    expect(findRequest(requests, 'PATCH', '/api/channels/24')).toBeUndefined()
+
+    await user.type(within(dialog).getByLabelText('API key'), 'sk-openai-456')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(findRequest(requests, 'PATCH', '/api/channels/24')).toBeDefined()
+    })
+    const body = findRequest(requests, 'PATCH', '/api/channels/24')?.body as {
+      type: string
+      credentials: Record<string, string>
+    }
+    expect(body.type).toBe('openai')
+    // The azure-only fields were reset by the type switch and must not leak
+    // into the new type's credential payload.
+    expect(body.credentials).toEqual({ api_key: 'sk-openai-456' })
+  })
+
+  it('keeps the form and unsaved edits when the 409 reload request fails', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 9,
+      name: 'stuck',
+      version: '2026-10-04T00:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    let detailCalls = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/9') {
+        detailCalls += 1
+        if (detailCalls === 1) return jsonResponse(detail)
+        return problemResponse(500, {
+          type: 'https://newtg.dev/problems/internal_error',
+          title: 'Internal Server Error',
+        })
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/9') {
+        return problemResponse(409, {
+          type: 'https://newtg.dev/problems/channel_version_conflict',
+          title: 'Channel version conflict',
+          detail: 'the channel was modified by someone else; refresh and retry',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={9}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const nameInput = (await within(dialog).findByLabelText(
+      'Name',
+    )) as HTMLInputElement
+    await user.clear(nameInput)
+    await user.type(nameInput, 'local-edit')
+
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    await user.click(save)
+    await screen.findByRole('alert')
+    expect(save.disabled).toBe(true)
+
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Reload latest' }),
+    )
+
+    // A failed refetch resolves with status 'error' while React Query keeps
+    // the cached detail; the reload must surface the failure inline instead of
+    // treating the stale data as fresh.
+    expect(
+      await within(dialog).findByText('Failed to load channels.'),
+    ).toBeTruthy()
+    expect(detailCalls).toBe(2)
+
+    // The form is not unmounted by `detailQuery.isError`, and the unsaved edit
+    // survives because this was a refetch failure, not a load with no data.
+    expect(within(dialog).getByLabelText('Name')).toBe(nameInput)
+    expect(nameInput.value).toBe('local-edit')
+    expect(save.disabled).toBe(true)
+  })
+
+  it('applies fresh detail to untouched fields only when reloading after a 409', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 10,
+      name: 'before',
+      priority: 10,
+      version: '2026-10-04T00:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    // Another administrator renamed the channel and changed its priority while
+    // this form was open.
+    const latest = makeChannel({
+      id: 10,
+      name: 'other-admin-name',
+      priority: 42,
+      version: '2026-10-05T12:00:00.000Z',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    let detailCalls = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/10') {
+        detailCalls += 1
+        return jsonResponse(detailCalls === 1 ? detail : latest)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/10') {
+        return problemResponse(409, {
+          type: 'https://newtg.dev/problems/channel_version_conflict',
+          title: 'Channel version conflict',
+          detail: 'the channel was modified by someone else; refresh and retry',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={10}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const nameInput = (await within(dialog).findByLabelText(
+      'Name',
+    )) as HTMLInputElement
+    await user.clear(nameInput)
+    await user.type(nameInput, 'my-edit')
+    // Priority is left untouched at its loaded value.
+    const priorityInput = within(dialog).getByLabelText(
+      'Priority',
+    ) as HTMLInputElement
+    expect(priorityInput.value).toBe('10')
+
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    await user.click(save)
+    await screen.findByRole('alert')
+
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Reload latest' }),
+    )
+    await waitFor(() => {
+      expect(save.disabled).toBe(false)
+    })
+
+    // Touched field: keep the administrator's edit, not the other admin's name.
+    expect(nameInput.value).toBe('my-edit')
+    // Untouched field: take the fresh authoritative value.
+    expect(priorityInput.value).toBe('42')
   })
 
   it('recovers from a 409 version conflict by reloading the baseline version', async () => {

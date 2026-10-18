@@ -83,7 +83,12 @@ export function ChannelMutateSheet({
         <div className="h-9 w-1/2 animate-pulse rounded-lg bg-surface-subtle" />
       </div>
     )
-  } else if (detailQuery.isError || detailQuery.data === undefined) {
+  } else if (detailQuery.data === undefined) {
+    // Only a load that produced no data is a fatal load error. A failed
+    // refetch keeps the cached detail (`data` stays defined while `isError`
+    // flips true), so keying this branch on `isError` would unmount an open
+    // form — and the administrator's unsaved edits — because "Reload latest"
+    // failed. The reload path reports its own error inline instead.
     body = (
       <div role="alert" className="flex flex-col gap-2 text-sm text-danger">
         <p>{t('common.channels.error.load')}</p>
@@ -100,7 +105,11 @@ export function ChannelMutateSheet({
         channel={detailQuery.data}
         reloadChannel={async () => {
           const result = await detailQuery.refetch()
-          if (result.data === undefined) {
+          // `refetch()` resolves (it does not throw) with status 'error' on a
+          // failed refetch, and React Query retains the previous `data`; a
+          // data-only check would pass stale detail off as fresh. Inspect the
+          // result status so the caller can surface the failure.
+          if (result.isError || result.data === undefined) {
             throw result.error ?? new Error('channel reload failed')
           }
           return result.data
@@ -151,10 +160,12 @@ type FieldKey =
   | 'deployment'
   | 'apiVersion'
   | 'models'
+  | 'allGroups'
   | 'groups'
   | 'priority'
   | 'weight'
   | 'rateLimit'
+  | 'autoBan'
   | 'testModel'
   | 'remark'
   | 'tag'
@@ -323,10 +334,19 @@ function ChannelForm({
   // One Idempotency-Key per create intent: retrying the same payload replays
   // it, and any edit changes the signature so the next submit mints a new key.
   const createIntent = useRef<{ signature: string; key: string } | null>(null)
+  // Fields the administrator has edited in this sheet instance. A 409 reload
+  // replaces the baseline; untouched fields are refreshed from the authoritative
+  // detail while touched fields keep the local edit (see `reloadLatest`).
+  const touchedFields = useRef<Set<FieldKey>>(new Set())
 
   const originalType = baseline?.type
+  const typeChanged = mode === 'edit' && form.type !== originalType
   const idFor = (field: FieldKey): string => `${formId}-${field}`
   const errorFor = (field: FieldKey): string | undefined => fieldErrors[field]
+
+  function markTouched(...fields: FieldKey[]): void {
+    for (const field of fields) touchedFields.current.add(field)
+  }
 
   function patch<K extends keyof ChannelFormState>(
     key: K,
@@ -335,12 +355,17 @@ function ChannelForm({
     // Editing the payload ends the current create intent: the next submit
     // must mint a fresh key rather than replay a different request.
     createIntent.current = null
+    markTouched(key)
     setForm((current) => ({ ...current, [key]: value }))
   }
 
   function handleTypeChange(nextType: string): void {
     if (!isChannelType(nextType)) return
     createIntent.current = null
+    // The type switch resets the credential fields, so the reset itself is the
+    // administrator's current input: a later reload must not pull the previous
+    // type's deployment/api_version back into the form.
+    markTouched('type', 'apiKey', 'deployment', 'apiVersion')
     // modules-06 §3.2: switching type resets credential fields but keeps
     // name/base_url. The notice is announced politely for screen readers.
     setForm((current) => ({
@@ -367,6 +392,7 @@ function ChannelForm({
       .filter((part) => part !== '')
     if (additions.length === 0) return
     createIntent.current = null
+    markTouched('models')
     setForm((current) => {
       const seen = new Set(current.models)
       const models = [...current.models]
@@ -382,6 +408,7 @@ function ChannelForm({
 
   function removeModel(model: string): void {
     createIntent.current = null
+    markTouched('models', 'testModel')
     setForm((current) => ({
       ...current,
       models: current.models.filter((entry) => entry !== model),
@@ -403,7 +430,6 @@ function ChannelForm({
     }
 
     const baseUrl = form.baseUrl.trim()
-    const typeChanged = mode === 'edit' && form.type !== originalType
     const baseUrlRequired =
       REQUIRED_BASE_URL_TYPES.has(form.type) && (mode === 'create' || typeChanged)
     if (baseUrl !== '') {
@@ -427,10 +453,12 @@ function ChannelForm({
 
     if (mode === 'create' && apiKey === '') {
       errors.apiKey = t('common.channels.form.apiKeyRequired')
-    } else if (mode === 'edit' && azure && typeChanged && apiKey === '') {
-      // Switching a non-azure channel to azure needs a complete credential
-      // set; the stored non-azure key cannot fill deployment/api_version.
-      errors.apiKey = t('common.channels.form.apiKeyRequired')
+    } else if (mode === 'edit' && typeChanged && apiKey === '') {
+      // The backend rejects a type change without fresh credentials (422):
+      // stored credentials belong to the old type and are never reused, so a
+      // new key is required for every type change — including different
+      // non-azure protocols such as openai→anthropic or azure→openai.
+      errors.apiKey = t('common.channels.form.apiKeyRequiredForTypeChange')
     } else if (azureFieldsChanged && apiKey === '') {
       errors.apiKey = t('common.channels.form.apiKeyRequiredForAzureChange')
     } else if (apiKey !== '' && apiKey.length < 8) {
@@ -558,21 +586,35 @@ function ChannelForm({
    */
   async function reloadLatest(): Promise<void> {
     if (reloadChannel === undefined) return
-    const stale = baseline
     setReloading(true)
     setReloadError(null)
     try {
       const fresh = await reloadChannel()
+      const freshForm = initialForm(fresh)
+      const touched = touchedFields.current
       setBaseline(fresh)
       setVersionConflict(null)
       setForm((current) => {
         const next = { ...current }
-        if (current.deployment === (stale?.credentials_masked?.deployment ?? '')) {
-          next.deployment = fresh.credentials_masked?.deployment ?? ''
-        }
-        if (current.apiVersion === (stale?.credentials_masked?.api_version ?? '')) {
-          next.apiVersion = fresh.credentials_masked?.api_version ?? ''
-        }
+        // Only fields the administrator has not edited are reconciled from the
+        // authoritative detail. Touched fields keep the local edit so the
+        // reload cannot silently discard unsaved work. `baseUrl` and `apiKey`
+        // are write-only and never present in the detail response, so they are
+        // never refreshed.
+        if (!touched.has('name')) next.name = freshForm.name
+        if (!touched.has('type')) next.type = freshForm.type
+        if (!touched.has('deployment')) next.deployment = freshForm.deployment
+        if (!touched.has('apiVersion')) next.apiVersion = freshForm.apiVersion
+        if (!touched.has('models')) next.models = freshForm.models
+        if (!touched.has('allGroups')) next.allGroups = freshForm.allGroups
+        if (!touched.has('groups')) next.groups = freshForm.groups
+        if (!touched.has('priority')) next.priority = freshForm.priority
+        if (!touched.has('weight')) next.weight = freshForm.weight
+        if (!touched.has('rateLimit')) next.rateLimit = freshForm.rateLimit
+        if (!touched.has('autoBan')) next.autoBan = freshForm.autoBan
+        if (!touched.has('testModel')) next.testModel = freshForm.testModel
+        if (!touched.has('remark')) next.remark = freshForm.remark
+        if (!touched.has('tag')) next.tag = freshForm.tag
         return next
       })
     } catch {
@@ -749,7 +791,16 @@ function ChannelForm({
           />
         </Field>
 
-        <Field id={idFor('apiKey')} label={t('common.channels.form.apiKey')} error={errorFor('apiKey')}>
+        <Field
+          id={idFor('apiKey')}
+          label={t('common.channels.form.apiKey')}
+          error={errorFor('apiKey')}
+          hint={
+            mode === 'edit' && typeChanged
+              ? t('common.channels.form.apiKeyTypeChangeHint')
+              : undefined
+          }
+        >
           <div className="flex items-center gap-2">
             <input
               id={idFor('apiKey')}

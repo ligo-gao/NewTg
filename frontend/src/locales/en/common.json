@@ -166,6 +166,8 @@
       "groupsRequired": "Select at least one group.",
       "apiKeyRequired": "API key is required.",
       "apiKeyMin": "API key must be at least 8 characters.",
+      "apiKeyRequiredForTypeChange": "Enter a new API key for the selected channel type.",
+      "apiKeyTypeChangeHint": "Changing the type requires a new API key for that type.",
       "apiKeyRequiredForAzureChange": "Enter a new API key to change the deployment or API version.",
       "deploymentRequired": "Deployment is required for Azure OpenAI.",
       "apiVersionRequired": "API version is required for Azure OpenAI.",

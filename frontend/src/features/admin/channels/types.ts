@@ -38,6 +38,10 @@ export interface Channel {
   updated_at: string
   /** Optimistic-concurrency token derived from `updated_at` (R-P8). */
   version: string
+  /**
+   * Detail/POST/PATCH responses only (GC-6 detail exception). List rows carry
+   * neither field, so list fixtures must not invent them.
+   */
   credentials_masked?: ChannelCredentialsMasked
   credentials_set?: boolean
 }
