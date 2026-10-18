@@ -665,8 +665,10 @@ func TestSessionTrustedImageReserve(t *testing.T) {
 	}
 }
 
-// TestSessionFreeModel 验证免费模型：不预扣、结算不收费。
-func TestSessionFreeModel(t *testing.T) {
+// TestSessionFreeModelNoMaxTokens 验证免费模型在 MaxTokens 缺失时的路径：
+// 无从估算放大面 → 不写 hold、结算不收费（有 MaxTokens 的 F-08-12 预扣见
+// TestSessionFreeModelPreconsumeEnabled）。
+func TestSessionFreeModelNoMaxTokens(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 500)
 	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
@@ -714,6 +716,263 @@ func TestSessionDoublePreConsume(t *testing.T) {
 		t.Fatalf("balance = %d, want 400（第二次不得扣款）", got)
 	}
 }
+
+// TestSessionFreeModelPreconsumeEnabled 覆盖 F-08-12 默认开启的免费模型预扣：
+// hold = ceil(MaxTokens × multiplier)，结算 0 价全额退回。
+//
+// 该用例同时把 billing-00 §6.4 的信任阈值设为 10 USD 且用户余额充足：
+// 若两套策略被错误合并，§6.4 旁路会跳过预扣；断言 hold 存在即证明两者独立。
+func TestSessionFreeModelPreconsumeEnabled(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100_000)
+	cfg := mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	req := testRequestID("free-enabled")
+	snap := perCallSnapshot(100)
+	snap.Price.FreeModel = true
+	s := newBillingTestSession(e, userID, req, snap)
+
+	est := contract.QuotaEstimate{Model: "free-model", MaxTokens: intPtr(200)}
+	if err := s.PreConsume(est); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 200 {
+		t.Fatalf("Reserved = %d, want 200（ceil(200 × 1.00)）", got)
+	}
+	if got := userBalance(t, db, userID); got != 99_800 {
+		t.Fatalf("balance = %d, want 99800（免费模型也要 hold）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 1 || rows[0].Type != "consume_pre" || rows[0].Amount != -200 || rows[0].Status != "hold" {
+		t.Fatalf("rows = %+v, want 单行 consume_pre -200 hold", rows)
+	}
+
+	// 免费模型结算价 0 → 全额退回。
+	if err := s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 50_000, PromptIncludesCache: true}}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 100_000 {
+		t.Fatalf("balance = %d, want 100000（免费模型全额退回）", got)
+	}
+	rows = readWalletRows(t, db, req)
+	want := []walletRow{
+		{Type: "consume_pre", Amount: -200, BalanceAfter: 99_800, Status: "settled"},
+		{Type: "release", Amount: 200, BalanceAfter: 100_000, Status: "confirmed"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("row[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+}
+
+// TestSessionFreeModelZeroPricedNotFlagged 覆盖「计算配额 == 0」的免费模型判定：
+// PerCall 单价 0（FreeModel 标志未设）同样走免费模型预扣策略。
+func TestSessionFreeModelZeroPricedNotFlagged(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("free-zero-price")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(0))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "zero", MaxTokens: intPtr(50)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 50 {
+		t.Fatalf("Reserved = %d, want 50（零价模型按 max_tokens 预扣）", got)
+	}
+	if err := s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+}
+
+// TestSessionFreeModelTrustSkip 覆盖可信用户阈值：
+// Σ type='consume' ≥ trust_credits 时跳过免费模型预扣。
+func TestSessionFreeModelTrustSkip(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	cfg := mapConfig{
+		ConfigPreConsumeRatio:                 json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:                   json.RawMessage("0"),
+		ConfigFreeModelPreconsumeTrustCredits: json.RawMessage("100"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+
+	// 历史累计消费恰好等于阈值（100）。
+	if _, err := e.ledger.ApplyDelta(context.Background(), userID, -100,
+		"consume", "confirmed", "usage_log", testRequestID("seed")); err != nil {
+		t.Fatalf("seed consume: %v", err)
+	}
+
+	req := testRequestID("free-trust")
+	snap := perCallSnapshot(0)
+	snap.Price.FreeModel = true
+	s := newBillingTestSession(e, userID, req, snap)
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "free", MaxTokens: intPtr(200)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 0 {
+		t.Fatalf("Reserved = %d, want 0（可信用户跳过预扣）", got)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（仅种子消费）", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+	if err := s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（免费模型结算 0）", got)
+	}
+}
+
+// TestSessionFreeModelDisabled 覆盖开关关闭：不产生 hold。
+func TestSessionFreeModelDisabled(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	cfg := mapConfig{
+		ConfigPreConsumeRatio:            json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:              json.RawMessage("0"),
+		ConfigFreeModelPreconsumeEnabled: json.RawMessage("false"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	req := testRequestID("free-disabled")
+	snap := perCallSnapshot(0)
+	snap.Price.FreeModel = true
+	s := newBillingTestSession(e, userID, req, snap)
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "free", MaxTokens: intPtr(200)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0（开关关闭）", s.Reserved())
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+}
+
+// TestSessionFreeModelMultiplier 覆盖上浮系数的 decimal 取整（ceil）与非法值拒绝。
+func TestSessionFreeModelMultiplier(t *testing.T) {
+	t.Run("1.5 × 101 = ceil(151.5) = 152", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		cfg := mapConfig{
+			ConfigPreConsumeRatio:               json.RawMessage("1.0"),
+			ConfigTrustQuotaUSD:                 json.RawMessage("0"),
+			ConfigFreeModelPreconsumeMultiplier: json.RawMessage("1.5"),
+		}
+		e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+		req := testRequestID("free-mult")
+		snap := perCallSnapshot(0)
+		snap.Price.FreeModel = true
+		s := newBillingTestSession(e, userID, req, snap)
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "free", MaxTokens: intPtr(101)}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if got := s.Reserved(); got != 152 {
+			t.Fatalf("Reserved = %d, want 152", got)
+		}
+	})
+
+	for _, bad := range []string{"0", "-1", `"NaN"`} {
+		t.Run("非法系数 "+bad, func(t *testing.T) {
+			gormDB, db := openBillingTestDB(t)
+			userID := createBillingTestUser(t, db, 500)
+			cfg := mapConfig{
+				ConfigPreConsumeRatio:               json.RawMessage("1.0"),
+				ConfigTrustQuotaUSD:                 json.RawMessage("0"),
+				ConfigFreeModelPreconsumeMultiplier: json.RawMessage(bad),
+			}
+			e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+			snap := perCallSnapshot(0)
+			snap.Price.FreeModel = true
+			s := newBillingTestSession(e, userID, testRequestID("free-bad-mult"), snap)
+			err := s.PreConsume(contract.QuotaEstimate{Model: "free", MaxTokens: intPtr(100)})
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("PreConsume = %v, want ErrInvalidConfig", err)
+			}
+			if rows := readWalletRows(t, db, s.requestID); len(rows) != 0 {
+				t.Fatalf("rows = %d, want 0", len(rows))
+			}
+		})
+	}
+}
+
+// TestSessionFreeModelWorkerRecovery 覆盖残留 hold 的 worker 兜底退款：
+// 免费模型 hold 在请求崩溃后由 RecoverAbandoned 全额退回（hold→expired）。
+func TestSessionFreeModelWorkerRecovery(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("free-recover")
+	snap := perCallSnapshot(0)
+	snap.Price.FreeModel = true
+	s := newBillingTestSession(e, userID, req, snap)
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "free", MaxTokens: intPtr(200)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	worker := newBillingTestSession(e, userID, testRequestID("free-worker"), perCallSnapshot(1))
+	if err := worker.RecoverAbandoned(req); err != nil {
+		t.Fatalf("RecoverAbandoned: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 || rows[0].Status != "expired" || rows[1].Type != "release" {
+		t.Fatalf("rows = %+v, want expired + release", rows)
+	}
+}
+
+// TestSessionTieredZeroEstimateIsNotFree 是 R-24「计算配额为 0」的安全边界：
+// tiered 表达式的估算 P=0 只说明本次估算为 0，不说明模型免费；否则真实用量
+// 会在结算时被按 0 收费。
+func TestSessionTieredZeroEstimateIsNotFree(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("tiered-zero")
+	snap := &contract.PriceSnapshot{
+		Mode:                 contract.BillingModeTieredExpr,
+		ExprString:           "p * 1",
+		GroupRatio:           1,
+		PreConsumeMultiplier: 1,
+	}
+	s := newBillingTestSession(e, userID, req, snap)
+
+	// 估算 P=0 → 预算 0，不写 hold；但请求不是免费模型。
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "tiered", MaxTokens: intPtr(100)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0", s.Reserved())
+	}
+	// 真实用量 1M tokens：表达式 p*1 → 1M/1e6 × QPU(100) = 100 积分。
+	fact := contract.UsageFact{Usage: contract.Usage{
+		Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+	}}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（真实用量必须收费）", got)
+	}
+}
+
+func intPtr(n int) *int { return &n }
 
 // TestSessionConcurrentPreConsume 是 Review Focus 第 1 项：同一用户两个会话
 // 并发预扣，只能有一个成功（或两者总和不超过余额），绝不产生负余额。

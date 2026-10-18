@@ -129,16 +129,6 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		return err
 	}
 
-	// FreeModel：billing-03 §3.5 规定免费模型不建会话、直接放行。会话对象
-	// 已由 relay 工厂创建，这里用「零预扣 + 结算不收费」表达同一语义；
-	// trusted 置位让普通 Reserve 也保持 no-op。
-	if snap.Price.FreeModel {
-		s.freeModel = true
-		s.trusted = true
-		succeeded = true
-		return nil
-	}
-
 	multiplier, err := s.engine.preConsumeMultiplier(snap)
 	if err != nil {
 		return err
@@ -152,6 +142,18 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		return err
 	}
 
+	// PriceData.FreeModel 是模型级零价事实，无需再求值/估算：直接进入
+	// F-08-12 的 max_tokens 预扣策略（同时避免零价模型上残留的表达式配置
+	// 让请求因求值错误而失败）。
+	if snap.Price.FreeModel {
+		s.freeModel = true
+		if err := s.preConsumeFreeModelLocked(ctx, est); err != nil {
+			return err
+		}
+		succeeded = true
+		return nil
+	}
+
 	params := NormalizeTokens(estimateUsage(est), *snap, usedVars)
 	params.ImageCount = s.reservedImages
 	base, err := pricing.ComputeQuota(*snap, params, usedVars)
@@ -163,6 +165,18 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		return fmt.Errorf("%w: negative estimated quota %d", ErrInvalidConfig, base)
 	}
 	s.estimatedQuota = base
+
+	// F-08-12 免费模型预扣策略：零价模型不做「按估算价预扣」（估算价就是 0），
+	// 而是预扣 max_tokens 上界，防止恶意 max_tokens 放大造成上游滥用。
+	// 与 billing-00 §6.4 的余额信任旁路是两套独立策略：免费模型只走本策略。
+	if staticallyZeroPriced(snap, usedVars, base) {
+		s.freeModel = true
+		if err := s.preConsumeFreeModelLocked(ctx, est); err != nil {
+			return err
+		}
+		succeeded = true
+		return nil
+	}
 
 	factor := ratio
 	if preConsumeMultiplierApplies(snap, usedVars) {
@@ -205,27 +219,103 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 	s.preConsumed = budget
 
 	// 预扣成功后写租约（billing-03 §2.6）：只有真实 hold 才需要崩溃兜底。
-	if s.engine.registry != nil {
-		if err := s.engine.registry.Register(ctx, s.requestID, s.userID,
-			time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
-			// 租约写失败而保留 hold，会留下「无心跳、worker 无法判定」的冻结资金。
-			// fail-closed：回滚预扣并让请求失败。
-			if _, _, rbErr := s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released"); rbErr != nil &&
-				!errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
-				return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
-			}
-			s.preConsumed = 0
-			// 会话就此终结：rollback 已写入一行 release（reference_id=requestID），
-			// 若允许重试并再次结算，同一 reference_id 的第二次 release 会撞上
-			// wallet_release_refid_uq 部分唯一索引。fail-closed 比留下半个会话安全。
-			s.refunded = true
-			return fmt.Errorf("billing: register inflight lease: %w", err)
-		}
-		s.leaseRegistered = true
-		s.startHeartbeatLocked()
+	if err := s.registerLeaseLocked(ctx); err != nil {
+		return err
 	}
 	succeeded = true
 	return nil
+}
+
+// staticallyZeroPriced 判定本次请求是否属于「免费模型」。
+//
+// 判定（R-24）：PriceData.FreeModel，或估算配额为 0。
+//
+// tiered 表达式需要额外约束：预扣估算的 P 可能为 0（CountToken 关闭、实时
+// 格式等），表达式 `p * 1` 的估算结果也是 0，但这**不说明模型免费**。
+// 若据此把请求判为免费，结算会把真实用量按 0 收费（白送）。因此对表达式
+// 模式，只有「不引用任何 token 用量变量」时，0 才与用量无关、可判定为零价
+// （例如 fixed(0)）。Ratio/PerCall 的 0 来自价格字段本身，无需该约束。
+func staticallyZeroPriced(snap *contract.PriceSnapshot, usedVars map[string]bool, base int64) bool {
+	if snap == nil {
+		return false
+	}
+	if snap.Price.FreeModel {
+		return true
+	}
+	if base != 0 {
+		return false
+	}
+	if snap.Mode != contract.BillingModeTieredExpr {
+		return true
+	}
+	for _, key := range tokenExprVars {
+		if usedVars[key] {
+			return false
+		}
+	}
+	return true
+}
+
+// preConsumeFreeModelLocked 实现 F-08-12 免费模型预扣策略（调用方持有 s.mu）。
+//
+// 免费模型的估算价是 0，直接按价预扣没有意义；这里按 max_tokens 上界预扣：
+//
+//	hold = ceil(MaxTokens × free_model_preconsume_multiplier)
+//
+// MaxTokens 缺失/≤0 → hold 0（不写流水）。结算价格为 0，Terminate 全额
+// 退回 hold；进程崩溃时 hold 由租约超时后的 worker 兜底退（判定窗口
+// AbandonedWindowSeconds=600s，即规格的 10 分钟）。
+//
+// 可信用户（历史累计消费 Σ type='consume' ≥ 阈值）跳过预扣。该判定与
+// billing-00 §6.4 的余额信任旁路（billing.trust_quota_usd）是分开的两套策略。
+func (s *Session) preConsumeFreeModelLocked(ctx context.Context, est contract.QuotaEstimate) error {
+	enabled, err := s.engine.freeModelPreconsumeEnabled()
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		s.trusted = true
+		return nil
+	}
+
+	multiplier, err := s.engine.freeModelPreconsumeMultiplier()
+	if err != nil {
+		return err
+	}
+	trustCredits, err := s.engine.freeModelPreconsumeTrustCredits()
+	if err != nil {
+		return err
+	}
+	if trustCredits > 0 {
+		consumed, err := s.engine.cumulativeConsumption(ctx, s.userID)
+		if err != nil {
+			return err
+		}
+		if consumed >= trustCredits {
+			s.trusted = true
+			return nil
+		}
+	}
+
+	maxTokens := 0
+	if est.MaxTokens != nil && *est.MaxTokens > 0 {
+		maxTokens = *est.MaxTokens
+	}
+	hold, err := freeModelHold(maxTokens, multiplier)
+	if err != nil {
+		return err
+	}
+	if hold <= 0 {
+		s.trusted = true
+		return nil
+	}
+
+	if _, err := s.engine.ledger.ApplyDelta(ctx, s.userID, -hold,
+		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
+		return err // 余额不足 → *QuotaError（402）
+	}
+	s.preConsumed = hold
+	return s.registerLeaseLocked(ctx)
 }
 
 // Reserve 仅上浮预留，不产生消耗（billing-00 §6.2 补遗 3）。
@@ -273,19 +363,8 @@ func (s *Session) Reserve(delta int64) error {
 
 	// 预扣预算为 0 / 信任旁路时首次 Reserve 才产生 hold，此时需要补建租约，
 	// 否则崩溃后这笔冻结无人兜底。
-	if s.engine.registry != nil && !s.leaseRegistered {
-		if err := s.engine.registry.Register(ctx, s.requestID, s.userID,
-			time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
-			if _, _, rbErr := s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released"); rbErr != nil &&
-				!errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
-				return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
-			}
-			s.preConsumed = 0
-			s.refunded = true
-			return fmt.Errorf("billing: register inflight lease: %w", err)
-		}
-		s.leaseRegistered = true
-		s.startHeartbeatLocked()
+	if err := s.registerLeaseLocked(ctx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -538,7 +617,12 @@ func (s *Session) finishLocked(ctx context.Context, refundedByOther bool) {
 //     防止「表达式写错 → 免费白送」），不是退款；
 //   - 完全无计费用量 → 配额 0，由多退少补释放 hold。
 func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.UsageFact) int64 {
-	if snap == nil || snap.Price.FreeModel {
+	if snap == nil {
+		return 0
+	}
+	// 免费模型（PriceData.FreeModel 或 F-08-12 判定的零价模型）结算价为 0：
+	// Terminate 全额退回按 max_tokens 预扣的 hold。
+	if s.freeModel || snap.Price.FreeModel {
 		return 0
 	}
 	usedVars, err := s.usedVarsForLocked(snap)
@@ -708,6 +792,30 @@ var ratioPricedVars = map[string]bool{
 	"ai":     true,
 	"img_o":  true,
 	"ao":     true,
+}
+
+// registerLeaseLocked 在真实 hold 写入后建立在飞租约（调用方持有 s.mu）。
+//
+// 失败时回滚全部 hold 并终结会话（fail-closed）：留下无心跳的冻结资金会让
+// worker 无法判定；而回滚会写入一行 release，若允许同 requestID 重试再结算，
+// 第二次 release 会撞 wallet_release_refid_uq 部分唯一索引。
+func (s *Session) registerLeaseLocked(ctx context.Context) error {
+	if s.engine.registry == nil || s.leaseRegistered {
+		return nil
+	}
+	if err := s.engine.registry.Register(ctx, s.requestID, s.userID,
+		time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+		if _, _, rbErr := s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released"); rbErr != nil &&
+			!errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
+			return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
+		}
+		s.preConsumed = 0
+		s.refunded = true
+		return fmt.Errorf("billing: register inflight lease: %w", err)
+	}
+	s.leaseRegistered = true
+	s.startHeartbeatLocked()
+	return nil
 }
 
 // startHeartbeatLocked 启动租约续约循环（调用方必须持有 s.mu）。

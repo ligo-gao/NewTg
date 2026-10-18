@@ -19,9 +19,12 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/billing/pricing"
@@ -143,12 +146,37 @@ const (
 	// ConfigTrustQuotaUSD 是信任旁路阈值（USD）；G7-R51 冻结默认 10 USD，
 	// 0 = 禁用旁路。
 	ConfigTrustQuotaUSD = "billing.trust_quota_usd"
+
+	// ConfigFreeModelPreconsumeEnabled 是免费模型预扣开关（modules-08 F-08-12，
+	// 默认 true）。它与 billing-00 §6.4 的信任旁路是**两套独立策略**：
+	// 前者防「零价模型被 max_tokens 放大滥用」，后者是余额充足用户的免预扣。
+	ConfigFreeModelPreconsumeEnabled = "billing.free_model_preconsume_enabled"
+
+	// ConfigFreeModelPreconsumeMultiplier 是免费模型预扣上浮系数（decimal，
+	// 默认 1.00；有限且 > 0，≤0/非有限按 G7-R05 拒绝）。
+	ConfigFreeModelPreconsumeMultiplier = "billing.free_model_preconsume_multiplier"
+
+	// ConfigFreeModelPreconsumeTrustCredits 是免费模型的可信用户阈值（历史累计
+	// 消费积分，默认 0 = 一律预扣）。
+	ConfigFreeModelPreconsumeTrustCredits = "billing.free_model_preconsume_trust_credits"
 )
 
 const (
 	defaultQuotaPerUnit    = 100.0
 	defaultPreConsumeRatio = 1.0
 	defaultTrustQuotaUSD   = 10.0
+
+	defaultFreeModelPreconsumeEnabled    = true
+	defaultFreeModelPreconsumeMultiplier = "1.00"
+	defaultFreeModelPreconsumeTrust      = int64(0)
+
+	// historyConsumptionTTL 是「历史累计消费」的缓存时长。
+	//
+	// 为什么缓存：该值只用于免费模型的**跳过预扣**判定（安全方向：多查一次
+	// 只会多预扣一笔最终会全额退回的 hold），而 SUM 会随钱包流水增长。
+	// 30s 的新鲜度意味着刚跨过阈值的用户最多再被预扣 30s；反向（消费被冲正
+	// 后短时间仍被跳过）只会少冻结一小笔零价模型的 hold，不产生少收费。
+	historyConsumptionTTL = 30 * time.Second
 )
 
 // Engine 装配计费引擎的依赖。所有字段在构造后只读，可被并发使用。
@@ -163,6 +191,17 @@ type Engine struct {
 	saturator Saturator
 	ledger    *Ledger
 	heartbeat time.Duration // 单测可缩短；零值按契约默认 30s
+
+	// historyCache 是免费模型可信阈值用的「历史累计消费」短 TTL 缓存。
+	historyMu    sync.Mutex
+	historyCache map[int64]historyEntry
+	historyTTL   time.Duration // 零值用 historyConsumptionTTL；测试可置 0 关闭缓存
+}
+
+// historyEntry 是累计消费缓存项。
+type historyEntry struct {
+	credits int64
+	expires time.Time
 }
 
 // NewEngine 构造计费引擎。
@@ -172,14 +211,15 @@ type Engine struct {
 func NewEngine(db *gorm.DB, logsDB *sql.DB, rdb *redis.Client, cfg ConfigReader,
 	source pricing.Source, registry Registry, saturator Saturator) *Engine {
 	return &Engine{
-		db:        db,
-		logsDB:    logsDB,
-		rdb:       rdb,
-		cfg:       cfg,
-		source:    source,
-		registry:  registry,
-		saturator: saturator,
-		ledger:    NewLedger(db),
+		db:           db,
+		logsDB:       logsDB,
+		rdb:          rdb,
+		cfg:          cfg,
+		source:       source,
+		registry:     registry,
+		saturator:    saturator,
+		ledger:       NewLedger(db),
+		historyCache: make(map[int64]historyEntry),
 	}
 }
 
@@ -231,6 +271,171 @@ func (e *Engine) configFloat(key string, def float64) (float64, error) {
 		return 0, fmt.Errorf("%w: %s must be finite", ErrInvalidConfig, key)
 	}
 	return f, nil
+}
+
+// configBool 读取布尔配置；未设置时返回 def。
+func (e *Engine) configBool(key string, def bool) (bool, error) {
+	if e.cfg == nil {
+		return def, nil
+	}
+	raw, ok := e.cfg.Get(key)
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return def, nil
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("%w: %s is not a boolean", ErrInvalidConfig, key)
+}
+
+// configInt64 读取整数配置；未设置时返回 def。
+func (e *Engine) configInt64(key string, def int64) (int64, error) {
+	if e.cfg == nil {
+		return def, nil
+	}
+	raw, ok := e.cfg.Get(key)
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return def, nil
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		parsed, err2 := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err2 == nil {
+			return parsed, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: %s is not an integer", ErrInvalidConfig, key)
+}
+
+// configDecimal 读取十进制定点配置；未设置时返回 def。
+//
+// 免费模型上浮系数必须是 decimal：ceil(max_tokens × multiplier) 若用
+// float64，1.1 × 1000 可能得到 1100.0000000000002，ceil 后多预扣 1 积分。
+// 从配置原文（JSON number/string）构造 decimal 可保持管理员写入的精度。
+func (e *Engine) configDecimal(key, def string) (decimal.Decimal, error) {
+	defVal, err := decimal.NewFromString(def)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("%w: bad default for %s", ErrInvalidConfig, key)
+	}
+	if e.cfg == nil {
+		return defVal, nil
+	}
+	raw, ok := e.cfg.Get(key)
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return defVal, nil
+	}
+	text := strings.TrimSpace(string(raw))
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		text = strings.TrimSpace(s)
+	}
+	d, err := decimal.NewFromString(text)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("%w: %s is not a decimal", ErrInvalidConfig, key)
+	}
+	return d, nil
+}
+
+// freeModelPreconsumeEnabled 返回免费模型预扣开关（默认 true）。
+func (e *Engine) freeModelPreconsumeEnabled() (bool, error) {
+	return e.configBool(ConfigFreeModelPreconsumeEnabled, defaultFreeModelPreconsumeEnabled)
+}
+
+// freeModelPreconsumeMultiplier 返回免费模型上浮系数（默认 1.00；>0 且有限）。
+//
+// 非正或非有限按 G7-R05 拒绝：配置错误不得静默取 0（会把滥用保护关掉），
+// 也不得静默取 1（掩盖管理员写错的值）。
+func (e *Engine) freeModelPreconsumeMultiplier() (decimal.Decimal, error) {
+	d, err := e.configDecimal(ConfigFreeModelPreconsumeMultiplier, defaultFreeModelPreconsumeMultiplier)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if !d.IsPositive() {
+		return decimal.Zero, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig, ConfigFreeModelPreconsumeMultiplier)
+	}
+	return d, nil
+}
+
+// freeModelPreconsumeTrustCredits 返回可信用户阈值（默认 0 = 一律预扣）。
+func (e *Engine) freeModelPreconsumeTrustCredits() (int64, error) {
+	n, err := e.configInt64(ConfigFreeModelPreconsumeTrustCredits, defaultFreeModelPreconsumeTrust)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigFreeModelPreconsumeTrustCredits)
+	}
+	return n, nil
+}
+
+// freeModelHold 计算免费模型预扣额：ceil(maxTokens × multiplier)。
+//
+// 用 decimal 乘法 + 取整，再走 QuotaFromDecimalStrict：越界（int32 上界）
+// 返回错误而不是静默饱和——饱和的超大预扣会变成「额度不足/价格错误」的
+// 阻断路径（billing-07 §2.3），绝不静默回绕。
+func freeModelHold(maxTokens int, multiplier decimal.Decimal) (int64, error) {
+	if maxTokens <= 0 {
+		return 0, nil
+	}
+	ceil := decimal.NewFromInt(int64(maxTokens)).Mul(multiplier).Ceil()
+	hold, err := pricing.QuotaFromDecimalStrict(ceil)
+	if err != nil {
+		return 0, fmt.Errorf("billing: free model pre-consume: %w", err)
+	}
+	return hold, nil
+}
+
+// cumulativeConsumption 返回用户历史累计消费积分（Σ consume 流水的绝对值）。
+//
+// 只统计 type='consume'：预扣 hold 不是消费；release/reversal 是退回/冲正，
+// 不应计入「历史累计消费」阈值。SUM(-amount) 直接得到正数消耗额。
+//
+// 使用 historyConsumptionTTL 的短 TTL 缓存（见常量注释）；查询失败不缓存，
+// 按错误上抛（免费模型请求宁可失败也不误判可信）。
+func (e *Engine) cumulativeConsumption(ctx context.Context, userID int64) (int64, error) {
+	ttl := e.historyTTL
+	if ttl == 0 {
+		ttl = historyConsumptionTTL
+	}
+	now := time.Now()
+
+	e.historyMu.Lock()
+	if ttl > 0 {
+		if entry, ok := e.historyCache[userID]; ok && now.Before(entry.expires) {
+			e.historyMu.Unlock()
+			return entry.credits, nil
+		}
+	}
+	e.historyMu.Unlock()
+
+	var credits int64
+	err := e.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(SUM(-amount), 0) FROM wallet_transactions
+		 WHERE user_id = ? AND type = 'consume'`, userID).Row().Scan(&credits)
+	if err != nil {
+		return 0, fmt.Errorf("billing: sum historical consumption for user %d: %w", userID, err)
+	}
+
+	if ttl > 0 {
+		e.historyMu.Lock()
+		e.historyCache[userID] = historyEntry{credits: credits, expires: now.Add(ttl)}
+		e.historyMu.Unlock()
+	}
+	return credits, nil
 }
 
 // quotaPerUnit 返回积分换算基准（默认 100）。
