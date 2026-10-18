@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ type Session struct {
 
 	requestID string
 	userID    int64
+	tokenID   int64 // rc.TokenID；0 表示无绑定令牌（跳过令牌额度）
 
 	snap        *contract.PriceSnapshot
 	model       string
@@ -52,6 +54,7 @@ type Session struct {
 
 	preConsumed    int64 // 当前仍处于 hold 的金额（数据库行是权威，内存用于早返回）
 	consumed       int64 // ChargeIncrement 已实际扣减的累计
+	tokenDeducted  int64 // 本会话已从 api_tokens.remain_quota 扣减的累计（R-73）
 	estimatedQuota int64 // 预扣预算（求值失败时的保守回退值）
 	reservedImages int   // 请求域图像张数（结算回退用）
 	imageRequest   bool
@@ -94,6 +97,11 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 	}
 	if s.settled || s.refunded {
 		return fmt.Errorf("%w: request %s", ErrSessionClosed, s.requestID)
+	}
+	// Minor-8（billing-03 §5.5）：预扣前已存在配额钳制 → 价格错误 400，
+	// 不得继续用饱和后的估算值预扣（SkipRetry 由 T9 映射）。
+	if s.rc != nil && s.rc.QuotaClamp != nil {
+		return fmt.Errorf("%w: pre-existing quota clamp (op=%s)", ErrPriceError, s.rc.QuotaClamp.Op)
 	}
 	if s.preConsumeCalled {
 		// 二次预扣超出预算：C-10/D12 裁决要求整请求 400，不得静默钳制到
@@ -212,11 +220,13 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		return nil
 	}
 
-	if _, err := s.engine.ledger.ApplyDelta(ctx, s.userID, -budget,
+	// R-73：先令牌额度、再钱包，同一主库事务；任一步失败整体回滚。
+	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -budget,
 		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
-		return err // 余额不足时是 *QuotaError
+		return err // 余额/令牌额度不足时是 *QuotaError
 	}
 	s.preConsumed = budget
+	s.tokenDeducted = budget
 
 	// 预扣成功后写租约（billing-03 §2.6）：只有真实 hold 才需要崩溃兜底。
 	if err := s.registerLeaseLocked(ctx); err != nil {
@@ -339,11 +349,13 @@ func (s *Session) preConsumeFreeModelLocked(ctx context.Context, est contract.Qu
 		return nil
 	}
 
-	if _, err := s.engine.ledger.ApplyDelta(ctx, s.userID, -hold,
+	// R-73：免费模型的 max_tokens 预扣同样走「令牌额度 + 钱包」同一事务。
+	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -hold,
 		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
-		return err // 余额不足 → *QuotaError（402）
+		return err // 余额/令牌额度不足 → *QuotaError（402）
 	}
 	s.preConsumed = hold
+	s.tokenDeducted = hold
 	return s.registerLeaseLocked(ctx)
 }
 
@@ -390,11 +402,24 @@ func (s *Session) Reserve(delta int64) error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	if _, err := s.engine.ledger.ApplyDelta(ctx, s.userID, -delta,
+	// Important-1：已结案（含 worker 已兜底退款）的请求绝不能再产生新 hold。
+	// 新 hold 之后无法再写 release（wallet_release_refid_uq），会把 Refund
+	// 永久卡在 23505。发现结案即把会话置终结并 fail closed。
+	terminal, err := s.engine.ledger.requestTerminal(ctx, s.requestID)
+	if err != nil {
+		return fmt.Errorf("billing: check request terminal state: %w", err)
+	}
+	if terminal {
+		s.markTerminalLocked(ctx)
+		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+	}
+
+	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -delta,
 		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
 		return err
 	}
 	s.preConsumed += delta
+	s.tokenDeducted += delta
 
 	// 预扣预算为 0 / 信任旁路时首次 Reserve 才产生 hold，此时需要补建租约，
 	// 否则崩溃后这笔冻结无人兜底。
@@ -429,11 +454,23 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	if _, err := s.engine.ledger.ApplyDelta(ctx, s.userID, -delta,
+	// Important-1：结案后不得再增量扣减（否则产生无法归属到 hold 的消费行）。
+	terminal, err := s.engine.ledger.requestTerminal(ctx, s.requestID)
+	if err != nil {
+		return fmt.Errorf("billing: check request terminal state: %w", err)
+	}
+	if terminal {
+		s.markTerminalLocked(ctx)
+		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+	}
+
+	// R-73：增量扣减同样是「令牌额度 + 钱包」同一事务。
+	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -delta,
 		"consume", "confirmed", "usage_log", s.requestID); err != nil {
 		return err
 	}
 	s.consumed += delta
+	s.tokenDeducted += delta
 	return nil
 }
 
@@ -522,13 +559,19 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	if noHoldCharge {
 		if _, _, err := s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost); err != nil {
 			if errors.Is(err, errHoldClosed) {
-				status, _ := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+				status, statErr := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+				if statErr != nil {
+					// Minor-7：无法确认结案状态时不得假定 settled（会掩盖退款事实）。
+					return fmt.Errorf("billing: read closed hold status: %w", statErr)
+				}
 				s.finishLocked(ctx, status == "released" || status == "expired")
 				return nil
 			}
 			return fmt.Errorf("billing: charge without hold: %w", err)
 		}
 		s.consumed = cost
+		// R-73：钱包已提交，随后把令牌额度调整到最终成本（失败只记日志）。
+		s.adjustTokenToCostLocked(ctx, cost)
 		if s.engine.saturator != nil {
 			if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
 				// 钱已扣且无 hold 可退：保持 settled（重试会二次扣款），
@@ -551,7 +594,11 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 
 	_, _, err = s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost)
 	if errors.Is(err, errHoldClosed) {
-		status, _ := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+		status, statErr := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+		if statErr != nil {
+			// Minor-7：无法确认结案状态时不得假定 settled（会掩盖退款事实）。
+			return fmt.Errorf("billing: read closed hold status: %w", statErr)
+		}
 		s.finishLocked(ctx, status == "released" || status == "expired")
 		return nil
 	}
@@ -561,6 +608,8 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 		return fmt.Errorf("billing: settle holds: %w", err)
 	}
 
+	// R-73：资金先提交，再调整令牌额度（billing-03 §2.5/§5.7）。
+	s.adjustTokenToCostLocked(ctx, cost)
 	s.finishLocked(ctx, false)
 	return nil
 }
@@ -600,18 +649,50 @@ func (s *Session) Refund() error {
 		defer releaseLock()
 	}
 
-	_, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
+	refundedAmount, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 已被其它执行者关闭：幂等命中，不再写第二行 release。
+		// 也不回补令牌/写退款日志：结案方已经按它自己的路径处理过。
 		s.refunded = true
 		s.preConsumed = 0
 		s.consumed = 0
+		s.tokenDeducted = 0
 		s.stopHeartbeatLocked()
 		s.removeLeaseLocked(ctx)
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("billing: refund: %w", err)
+	}
+
+	// R-73：钱包已全额退回，随后回补令牌额度（失败只记日志，不回滚资金）。
+	if s.tokenDeducted > 0 {
+		if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
+			slog.Warn("billing: token quota restore failed after wallet refund",
+				"request_id", s.requestID, "token_id", s.tokenID,
+				"amount", s.tokenDeducted, "error", tokenErr)
+		}
+		s.tokenDeducted = 0
+	}
+
+	// Minor-3：Refund 必须把已写出的终态 usage_logs 行收敛为 refunded
+	// （T6 的 Saturator 按 request_id 幂等更新）。钱已经退回；日志失败
+	// 返回错误供上层告警，但会话仍标记 refunded（重试不会重复退款）。
+	if s.engine.saturator != nil {
+		outcome := SettlementOutcome{
+			Cost:        0,
+			PreDeducted: refundedAmount,
+			Refunded:    refundedAmount,
+			Status:      UsageLogStatusRefunded,
+		}
+		if logErr := s.engine.saturator.Saturate(ctx, &contract.UsageFact{}, s.rc, outcome); logErr != nil {
+			s.refunded = true
+			s.preConsumed = 0
+			s.consumed = 0
+			s.stopHeartbeatLocked()
+			s.removeLeaseLocked(ctx)
+			return fmt.Errorf("billing: write refund log: %w", logErr)
+		}
 	}
 
 	s.refunded = true
@@ -669,12 +750,13 @@ func (s *Session) RecoverAbandoned(requestID string) error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	_, _, err := s.engine.ledger.releaseAbandoned(ctx, requestID)
+	held, _, err := s.engine.ledger.releaseAbandoned(ctx, requestID)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 无 hold 或已被处理：无预扣可退，直接返回 nil。
 		if requestID == s.requestID {
 			s.refunded = true
 			s.preConsumed = 0
+			s.tokenDeducted = 0
 			s.stopHeartbeatLocked()
 			s.removeLeaseLocked(ctx)
 		}
@@ -685,6 +767,17 @@ func (s *Session) RecoverAbandoned(requestID string) error {
 	}
 
 	if requestID == s.requestID {
+		// R-73：兜底只退 hold（增量是已交付用量），令牌额度也只回补 hold 部分。
+		// 返回 held=0 表示「已有 release，仅收敛状态」，没有钱被回补，故不补令牌。
+		if held > 0 && s.tokenDeducted > 0 {
+			credit := min(held, s.tokenDeducted)
+			if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, credit); tokenErr != nil {
+				slog.Warn("billing: token quota restore failed after abandoned recovery",
+					"request_id", requestID, "token_id", s.tokenID,
+					"amount", credit, "error", tokenErr)
+			}
+			s.tokenDeducted -= credit
+		}
 		s.refunded = true
 		s.preConsumed = 0
 		s.stopHeartbeatLocked()
@@ -703,6 +796,39 @@ func (s *Session) finishLocked(ctx context.Context, refundedByOther bool) {
 	}
 	s.stopHeartbeatLocked()
 	s.removeLeaseLocked(ctx)
+}
+
+// markTerminalLocked 把会话置为「请求已在他处结案」的终结态（Important-1）。
+//
+// 不置 refunded：结案可能是结算而非退款，错误标记会让日志/审计误判。
+// settled+fundingSettled 已足以让 Terminate/Refund/NeedsRefund 全部早返回。
+func (s *Session) markTerminalLocked(ctx context.Context) {
+	s.settled = true
+	s.fundingSettled = true
+	s.preConsumed = 0
+	s.tokenDeducted = 0
+	s.stopHeartbeatLocked()
+	s.removeLeaseLocked(ctx)
+}
+
+// adjustTokenToCostLocked 把令牌额度调整到最终结算成本（R-73）。
+//
+// 顺序契约（billing-03 §2.5/§5.7）：钱包资金已提交后才调整令牌；令牌调整
+// 失败**只记日志**，不回滚资金，也不改变会话已 settled 的事实。
+// adjustment = cost − tokenDeducted：>0 表示少补（再扣令牌），<0 表示多退
+// （回补令牌）；符号与 AdjustToken 的约定一致。
+func (s *Session) adjustTokenToCostLocked(ctx context.Context, cost int64) {
+	adjustment := cost - s.tokenDeducted
+	if adjustment == 0 {
+		return
+	}
+	if err := s.engine.ledger.AdjustToken(ctx, s.userID, s.tokenID, adjustment); err != nil {
+		slog.Warn("billing: token quota adjustment failed after wallet settlement",
+			"request_id", s.requestID, "token_id", s.tokenID,
+			"adjustment", adjustment, "error", err)
+		return
+	}
+	s.tokenDeducted = cost
 }
 
 // actualCostLocked 按真实用量计算最终应扣总额。
@@ -810,6 +936,7 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
 	s.snap = &snap
+	s.adoptSnapshotLocked(s.snap)
 	return s.snap, nil
 }
 
@@ -836,7 +963,19 @@ func (s *Session) currentSnapshotLocked(ctx context.Context, fallbackModel strin
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
 	s.snap = &snap
+	s.adoptSnapshotLocked(s.snap)
 	return s.snap, nil
+}
+
+// adoptSnapshotLocked 把解析出的快照回填到 rc.PriceSnapshot（Minor-2）。
+//
+// Saturator 需要通过 rc 读取 billing_mode/表达式等元信息落日志；中继在
+// PreConsume 前没有设置快照时，由会话回填同一个冻结对象。只补元信息，
+// 不改变任何定价结果；已有快照（中继冻结）时不覆盖。
+func (s *Session) adoptSnapshotLocked(snap *contract.PriceSnapshot) {
+	if s.rc != nil && snap != nil && s.rc.PriceSnapshot == nil {
+		s.rc.PriceSnapshot = snap
+	}
 }
 
 // usedVarsForLocked 返回「已单独定价的子类变量」集合（contract.UsedVars 语义）。
@@ -913,8 +1052,17 @@ func (s *Session) registerLeaseLocked(ctx context.Context) error {
 		if rbErr != nil && !errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
 			return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
 		}
+		// R-73：钱包已回滚，令牌额度也要回到预扣前（失败只记日志）。
+		if s.tokenDeducted > 0 {
+			if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
+				slog.Warn("billing: token quota restore failed after lease rollback",
+					"request_id", s.requestID, "token_id", s.tokenID,
+					"amount", s.tokenDeducted, "error", tokenErr)
+			}
+		}
 		s.preConsumed = 0
 		s.consumed = 0
+		s.tokenDeducted = 0
 		s.refunded = true
 		return fmt.Errorf("billing: register inflight lease: %w", err)
 	}

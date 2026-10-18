@@ -136,6 +136,147 @@ func (l *Ledger) ApplyDelta(ctx context.Context, userID, delta int64,
 	return balanceAfter, nil
 }
 
+// ApplyDeltaWithToken 在**同一主库事务**内先扣令牌额度、再变更钱包
+// （R-73；billing-03 §2.5「先令牌额度，后资金来源」）。
+//
+// 为什么必须同事务：钱包预扣失败时令牌额度必须回滚；分开两个事务会留下
+// 「令牌已扣、钱包没扣」的悬空扣减。tokenID <= 0 或 remain_quota IS NULL
+// （无限额）时只变更钱包。delta 为负表示出账；本方法只支持出账方向的
+// 令牌扣减（预扣/上浮/增量），正数 delta 不做令牌回补（回补走 CreditToken/
+// AdjustToken，由结算/退款路径在正确顺序调用）。
+func (l *Ledger) ApplyDeltaWithToken(ctx context.Context, userID, tokenID, delta int64,
+	txType, status, refType, refID string) (balanceAfter int64, err error) {
+
+	if delta == 0 {
+		return 0, errors.New("billing: ledger delta must not be zero")
+	}
+	if delta == math.MinInt64 {
+		return 0, errors.New("billing: ledger delta out of int64 range")
+	}
+	if !validWalletTxType[txType] {
+		return 0, fmt.Errorf("billing: invalid wallet transaction type %q", txType)
+	}
+	if !validWalletTxStatus[status] {
+		return 0, fmt.Errorf("billing: invalid wallet transaction status %q", status)
+	}
+	if !validWalletRefType[refType] {
+		return 0, fmt.Errorf("billing: invalid wallet reference type %q", refType)
+	}
+
+	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if delta < 0 {
+			if tokenErr := debitTokenTx(ctx, tx, userID, tokenID, -delta); tokenErr != nil {
+				return tokenErr
+			}
+		}
+		var txErr error
+		balanceAfter, txErr = applyDeltaTx(ctx, tx, userID, delta,
+			txType, status, refType, refID)
+		return txErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	return balanceAfter, nil
+}
+
+// debitTokenTx 在事务内扣减令牌额度（tokenID<=0 / NULL 无限额时 no-op）。
+// 令牌必须属于 userID：防止 rc.TokenID 与 rc.UserID 不一致时跨用户扣额。
+//
+// FOR UPDATE 先锁行再判余额：并发的多次预扣在令牌侧串行化，绝不把
+// remain_quota 扣成负数（列上还有 remain_quota >= 0 的 CHECK）。
+// 额度不足返回 *QuotaError（billing-03 §3.4：令牌额度不足也是 402）。
+func debitTokenTx(ctx context.Context, tx *gorm.DB, userID, tokenID, amount int64) error {
+	if tokenID <= 0 || amount <= 0 {
+		return nil
+	}
+	var remain sql.NullInt64
+	err := tx.WithContext(ctx).Raw(
+		`SELECT remain_quota FROM api_tokens WHERE id = ? AND user_id = ? FOR UPDATE`, tokenID, userID).
+		Row().Scan(&remain)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 请求已通过鉴权却查不到令牌：数据不一致，fail closed。
+		return fmt.Errorf("%w: token %d", ErrTokenNotFound, tokenID)
+	}
+	if err != nil {
+		return fmt.Errorf("billing: read token quota: %w", err)
+	}
+	if !remain.Valid {
+		return nil // NULL = 无限额
+	}
+	if remain.Int64 < amount {
+		return &QuotaError{
+			Class:     contract.ErrInsufficientQuota,
+			Required:  amount,
+			Available: remain.Int64,
+		}
+	}
+	if res := tx.WithContext(ctx).Exec(
+		`UPDATE api_tokens SET remain_quota = remain_quota - ?, updated_at = now()
+		 WHERE id = ?`, amount, tokenID); res.Error != nil {
+		return fmt.Errorf("billing: deduct token quota: %w", res.Error)
+	}
+	return nil
+}
+
+// CreditToken 回补令牌额度（tokenID<=0 或 NULL 无限额时 no-op）；
+// 同样限定 user_id，避免把额度加回他人的令牌。
+//
+// 用于退款/结算差额退回/租约回滚；与钱包回补分开调用（billing-03 §2.5：
+// Terminate 先资金、后令牌；令牌调整失败只记日志，不回滚已提交的资金）。
+func (l *Ledger) CreditToken(ctx context.Context, userID, tokenID, amount int64) error {
+	if tokenID <= 0 || amount <= 0 {
+		return nil
+	}
+	if res := l.db.WithContext(ctx).Exec(
+		`UPDATE api_tokens SET remain_quota = remain_quota + ?, updated_at = now()
+		 WHERE id = ? AND user_id = ? AND remain_quota IS NOT NULL`, amount, tokenID, userID); res.Error != nil {
+		return fmt.Errorf("billing: credit token quota: %w", res.Error)
+	}
+	return nil
+}
+
+// AdjustToken 按结算差额调整令牌额度：delta > 0 补扣，delta < 0 回补。
+// userID 用于校验令牌归属。
+//
+// delta 的符号与钱包结算差额一致：`delta = cost − tokenDeducted`。
+// 补扣在事务内走 debitTokenTx（条件锁定）；额度不足时返回 *QuotaError，
+// 调用方（Terminate）按 billing-03 §5.7 只记日志，不回滚已提交的钱包资金。
+func (l *Ledger) AdjustToken(ctx context.Context, userID, tokenID, delta int64) error {
+	if tokenID <= 0 || delta == 0 {
+		return nil
+	}
+	if delta == math.MinInt64 {
+		return errors.New("billing: token adjustment out of int64 range")
+	}
+	if delta < 0 {
+		return l.CreditToken(ctx, userID, tokenID, -delta)
+	}
+	return l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return debitTokenTx(ctx, tx, userID, tokenID, delta)
+	})
+}
+
+// requestTerminal 判断该 requestID 是否已经结案（Important-1）。
+//
+// 判定面：存在 billing:* 结案标记（结算/退款/兜底），或存在已关闭的
+// consume_pre 行（settled/released/expired）。Reserve/ChargeIncrement 在
+// 写任何新资金前必须复核它：已退款请求再产生新 hold 会撞
+// wallet_release_refid_uq，永远无法再退（wedge）。
+func (l *Ledger) requestTerminal(ctx context.Context, requestID string) (bool, error) {
+	var n int64
+	err := l.db.WithContext(ctx).Raw(
+		`SELECT count(*) FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ?
+		   AND (note LIKE 'billing:%'
+		        OR (type = 'consume_pre' AND status IN ('settled', 'released', 'expired')))`,
+		requestID).Row().Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("billing: check terminal state for %s: %w", requestID, err)
+	}
+	return n > 0, nil
+}
+
 // applyDeltaTx 是 ApplyDelta 的事务内核；也供持有同一事务的结算/退款路径复用。
 func applyDeltaTx(ctx context.Context, tx *gorm.DB, userID, delta int64,
 	txType, status, refType, refID string) (int64, error) {
@@ -434,6 +575,24 @@ func settlementExists(ctx context.Context, tx *gorm.DB, requestID string) (bool,
 	return n > 0, nil
 }
 
+// releaseExists 判断该 requestID 是否已有 release 流水（任意 note）。
+//
+// 用于兜底退款的收敛（Important-1）：release 行的部分唯一索引是
+// `(reference_id) WHERE type='release'`，同一 requestID 只允许一行。若已有
+// release（可能来自更早的结算/退款，且没有 billing:* 标记），releaseAbandoned
+// 只能收敛 hold 状态，不能再插第二行。
+func releaseExists(ctx context.Context, tx *gorm.DB, requestID string) (bool, error) {
+	var n int64
+	err := tx.WithContext(ctx).Raw(
+		`SELECT count(*) FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ? AND type = 'release'`,
+		requestID).Row().Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("billing: check release rows for %s: %w", requestID, err)
+	}
+	return n > 0, nil
+}
+
 // closedHoldStatus 返回该 requestID 已关闭预扣行的状态（settled/released/expired）。
 // 用于 Terminate 撞上 errHoldClosed 时区分「被并发结算」与「被兜底退款」，
 // 避免把 settled 误标成 refunded（或反之）。
@@ -511,6 +670,19 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 			return errNoOpenHold
 		}
 
+		// Important-1 收敛：该 requestID 已有结案标记或 release 行时，说明
+		// 之前已经结算/退款/兜底过。此时只把残留 hold 置为 expired（收敛
+		// 状态），**不再插入第二行 release**——wallet_release_refid_uq 会以
+		// 23505 拒绝它，且资金已被前一执行者回补。返回 held=0 让调用方不要
+		// 再补令牌额度（钱没有第二次回补）。
+		settledBefore, serr := settlementExists(ctx, tx, requestID)
+		if serr != nil {
+			return serr
+		}
+		releaseBefore, rerr := releaseExists(ctx, tx, requestID)
+		if rerr != nil {
+			return rerr
+		}
 		held, balanceAfter, qerr = closeHoldRows(ctx, tx, userID, requestID, "expired")
 		if qerr != nil {
 			return qerr
@@ -519,9 +691,20 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 			// 理论上不可能：上面已数到 count>0 的 hold 行。
 			return errNoOpenHold
 		}
+		if settledBefore || releaseBefore {
+			held = 0
+			balanceAfter = 0
+			return nil
+		}
 		// 兜底退款同样是入账。
 		balanceAfter, qerr = applyDeltaTxNote(ctx, tx, userID, held, "release",
 			"confirmed", "usage_log", requestID, recoverNote)
+		if qerr != nil && isUniqueViolation(qerr) {
+			// 竞态：另一执行者在复核与 INSERT 之间写入了 release。回滚本次
+			// 余额变更（事务失败即回滚），按幂等命中收敛；残留 hold 下一轮
+			// 会被上面的 settledBefore/releaseBefore 分支收敛。
+			return errHoldClosed
+		}
 		return qerr
 	})
 	return held, balanceAfter, err

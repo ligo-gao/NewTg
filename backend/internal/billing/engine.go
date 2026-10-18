@@ -120,6 +120,18 @@ var (
 	// （Redis requestID 锁未获取到）。调用方应视为并发冲突并稍后重试/记录，
 	// 绝不能退化成「再结算一次」。
 	ErrSettlementInProgress = errors.New("billing: settlement already in progress")
+
+	// ErrRequestClosed 表示该 requestID 已被结算/退款/兜底关闭（存在结案标记
+	// 或已关闭的预扣行）。会话不得再创建/扩展 hold，也不得再增量扣减。
+	// 这是 Important-1 的 fail-closed 出口：避免「已退款请求又产生新 hold」。
+	ErrRequestClosed = errors.New("billing: request already closed")
+
+	// ErrPriceError 表示定价/配额钳制类错误（HTTP 400，不是 402）。
+	// 当前触发点：PreConsume 前 rc 上已存在 QuotaClamp（billing-03 §5.5）。
+	ErrPriceError = errors.New("billing: price error")
+
+	// ErrTokenNotFound 表示请求绑定的 API 令牌在库中不存在（数据不一致）。
+	ErrTokenNotFound = errors.New("billing: token not found")
 )
 
 // QuotaError 承载一次额度不足的结构化信息（Required/Available 供响应体使用）。
@@ -205,7 +217,9 @@ type Engine struct {
 	// historyCache 是免费模型可信阈值用的「历史累计消费」短 TTL 缓存。
 	historyMu    sync.Mutex
 	historyCache map[int64]historyEntry
-	historyTTL   time.Duration // 零值用 historyConsumptionTTL；测试可置 0 关闭缓存
+	// historyTTL：零值用 historyConsumptionTTL（30s）；**负值关闭缓存**
+	// （historyTTL > 0 才读写缓存），供需要严格实时的测试/部署使用。
+	historyTTL time.Duration
 }
 
 // historyEntry 是累计消费缓存项。
@@ -239,6 +253,7 @@ func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
 	if rc != nil {
 		s.requestID = rc.RequestID
 		s.userID = int64(rc.UserID)
+		s.tokenID = int64(rc.TokenID)
 	}
 	return s
 }

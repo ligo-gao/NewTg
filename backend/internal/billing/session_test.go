@@ -16,16 +16,58 @@ import (
 	"newtg/gateway/internal/contract"
 )
 
-// newBillingTestSession 构造绑定到固定 requestID 的会话。
+// newBillingTestSession 构造绑定到固定 requestID 的会话（无令牌）。
 func newBillingTestSession(e *Engine, userID int64, requestID string, snap *contract.PriceSnapshot) *Session {
+	return newBillingTestSessionWithToken(e, userID, 0, requestID, snap)
+}
+
+// newBillingTestSessionWithToken 构造绑定 API 令牌的会话（R-73）。
+func newBillingTestSessionWithToken(e *Engine, userID, tokenID int64,
+	requestID string, snap *contract.PriceSnapshot) *Session {
 	rc := &contract.RelayContext{
 		RequestID:     requestID,
 		UserID:        int(userID),
+		TokenID:       int(tokenID),
 		OriginModel:   "test-model",
 		UsingGroup:    "default",
 		PriceSnapshot: snap,
 	}
 	return e.NewSession(rc).(*Session)
+}
+
+// createBillingTestToken 创建 API 令牌；remain 为 nil 表示不限额度。
+func createBillingTestToken(t *testing.T, db *sql.DB, userID int64, remain any) int64 {
+	t.Helper()
+	var id int64
+	err := db.QueryRow(
+		`INSERT INTO api_tokens (user_id, name, key_hash, "group", remain_quota)
+		 VALUES ($1, 'tok', $2, 'default', $3) RETURNING id`,
+		userID, testRequestID("keyhash"), remain).Scan(&id)
+	if err != nil {
+		t.Fatalf("create test token: %v", err)
+	}
+	return id
+}
+
+// tokenRemain 读取令牌剩余额度（NULL 表示无限额）。
+func tokenRemain(t *testing.T, db *sql.DB, tokenID int64) sql.NullInt64 {
+	t.Helper()
+	var remain sql.NullInt64
+	if err := db.QueryRow(`SELECT remain_quota FROM api_tokens WHERE id = $1`, tokenID).
+		Scan(&remain); err != nil {
+		t.Fatalf("read token remain: %v", err)
+	}
+	return remain
+}
+
+// staticPricingSource 是 pricing.Source 的固定快照实现（Minor-2 用）。
+type staticPricingSource struct {
+	snap contract.PriceSnapshot
+	err  error
+}
+
+func (s staticPricingSource) Resolve(context.Context, string, string) (contract.PriceSnapshot, error) {
+	return s.snap, s.err
 }
 
 // TestSessionPreConsumeBudgetEnough 覆盖预扣成功路径：预算=快照价、余额扣减、
@@ -439,20 +481,28 @@ type recordingSaturator struct {
 	rowsAtCall int
 	called     int
 	outcome    SettlementOutcome
+	outcomes   []SettlementOutcome
 	err        error
+	// failFirst > 0 时只让前 failFirst 次调用返回 err，之后成功；
+	// 0 表示 err 永远生效（用于「日志库持续不可用」的用例）。
+	failFirst int
 }
 
 func (r *recordingSaturator) Saturate(_ context.Context, _ *contract.UsageFact,
 	_ *contract.RelayContext, outcome SettlementOutcome) error {
 	r.called++
 	r.outcome = outcome
+	r.outcomes = append(r.outcomes, outcome)
 	var n int
 	if err := r.db.QueryRow(
 		`SELECT count(*) FROM wallet_transactions WHERE reference_type='usage_log' AND reference_id=$1`,
 		r.requestID).Scan(&n); err == nil {
 		r.rowsAtCall = n
 	}
-	return r.err
+	if r.err != nil && (r.failFirst <= 0 || r.called <= r.failFirst) {
+		return r.err
+	}
+	return nil
 }
 
 // TestSessionSaturateBeforeLedgerCommit 验证裁决的顺序：Saturator 被调用时
@@ -492,12 +542,15 @@ func TestSessionSaturateBeforeLedgerCommit(t *testing.T) {
 }
 
 // TestSessionSaturateFailureKeepsHold 验证日志失败不结算：Terminate 返回
-// error，hold 原样保留（供 worker 兜底退款），随后 Refund 仍能全额退回。
+// error，hold 原样保留（供 worker 兜底退款），随后 Refund 仍能全额退回，
+// 并把已写出的终态日志通过 Saturator 收敛为 refunded（Minor-3）。
 func TestSessionSaturateFailureKeepsHold(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 500)
 	req := testRequestID("saturate-fail")
-	sat := &recordingSaturator{db: db, requestID: req, err: errors.New("logs db down")}
+	sat := &recordingSaturator{
+		db: db, requestID: req, err: errors.New("logs db down"), failFirst: 1,
+	}
 	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
 	s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
 
@@ -520,6 +573,15 @@ func TestSessionSaturateFailureKeepsHold(t *testing.T) {
 	}
 	if got := userBalance(t, db, userID); got != 500 {
 		t.Fatalf("balance = %d, want 500", got)
+	}
+	if len(sat.outcomes) != 2 {
+		t.Fatalf("Saturate calls = %d, want 2（Terminate + Refund 收敛）", len(sat.outcomes))
+	}
+	if sat.outcomes[1].Status != UsageLogStatusRefunded {
+		t.Fatalf("refund log status = %d, want %d", sat.outcomes[1].Status, UsageLogStatusRefunded)
+	}
+	if sat.outcomes[1].Refunded != 100 {
+		t.Fatalf("refund log refunded = %d, want 100", sat.outcomes[1].Refunded)
 	}
 }
 
@@ -1653,5 +1715,371 @@ func TestSessionConcurrentNoHoldSettleWithRedisLock(t *testing.T) {
 	}
 	if settles != 1 {
 		t.Fatalf("settlement rows = %d, want 1", settles)
+	}
+}
+
+// TestSessionOutOfBandRecoveryThenReserveFailsClosed 是 Important-1 的回归：
+// 请求被 out-of-band 兜底退款后，仍存活的会话不得再创建/扩展 hold 或增量
+// 扣减；否则新 hold 永远无法再退（wallet_release_refid_uq 23505 wedge）。
+func TestSessionOutOfBandRecoveryThenReserveFailsClosed(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("oob-recover")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	// 图片请求：使 Reserve 的第二段上浮是合法路径。
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", ImageCount: 1}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	worker := newBillingTestSession(e, userID, testRequestID("worker"), perCallSnapshot(1))
+	if err := worker.RecoverAbandoned(req); err != nil {
+		t.Fatalf("RecoverAbandoned: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（兜底已退款）", got)
+	}
+
+	if err := s.Reserve(50); !errors.Is(err, ErrRequestClosed) {
+		t.Fatalf("Reserve after recovery = %v, want ErrRequestClosed", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0（不得创建新 hold）", s.Reserved())
+	}
+	if err := s.Refund(); err != nil {
+		t.Fatalf("Refund after terminal = %v, want nil", err)
+	}
+
+	// 另一个同 requestID 的会话也不得再增量扣减。
+	s2 := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+	if err := s2.ChargeIncrement(10, contract.UsageFact{}); !errors.Is(err, ErrRequestClosed) {
+		t.Fatalf("ChargeIncrement after recovery = %v, want ErrRequestClosed", err)
+	}
+
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 2 {
+		t.Fatalf("rows = %+v, want 2（hold expired + release，无新行）", rows)
+	}
+}
+
+// TestLedgerReleaseAbandonedConvergesOnExistingRelease 验证兜底退款在已有
+// release 行时的收敛：只关闭 hold 状态，不插入第二行 release（避免 23505）。
+func TestLedgerReleaseAbandonedConvergesOnExistingRelease(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	ledger := NewLedger(gormDB)
+	ctx := context.Background()
+	req := testRequestID("converge")
+
+	// 构造异常历史状态：先有 release，后又出现新的 hold。
+	if _, err := ledger.ApplyDelta(ctx, userID, -100,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("create hold: %v", err)
+	}
+	if _, err := ledger.ApplyDelta(ctx, userID, 10,
+		"release", "confirmed", "usage_log", req); err != nil {
+		t.Fatalf("create pre-existing release: %v", err)
+	}
+
+	held, _, err := ledger.releaseAbandoned(ctx, req)
+	if err != nil {
+		t.Fatalf("releaseAbandoned = %v, want nil（23505 收敛）", err)
+	}
+	if held != 0 {
+		t.Fatalf("held = %d, want 0（没有第二次资金回补）", held)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("balance = %d, want 410（不重复退款）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want 2（hold expired + 既有 release）", rows)
+	}
+	if rows[0].Status != "expired" {
+		t.Fatalf("hold status = %q, want expired", rows[0].Status)
+	}
+}
+
+// TestSessionTokenQuotaLifecycle 覆盖 R-73：令牌额度在预扣/增量/结算/退款
+// 全链路上的扣减与回补。
+func TestSessionTokenQuotaLifecycle(t *testing.T) {
+	t.Run("结算多退：令牌额度回补", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, int64(500))
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		s := newBillingTestSessionWithToken(e, userID, tokenID,
+			testRequestID("token-refund"), ratioSnapshot(100, 100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 1_000_000}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 400 {
+			t.Fatalf("token remain = %+v, want 400", got)
+		}
+		fact := contract.UsageFact{Usage: contract.Usage{Prompt: 800_000, PromptIncludesCache: true}}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		// 实耗 80 < 预扣 100 → 令牌回补 20。
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 420 {
+			t.Fatalf("token remain = %+v, want 420", got)
+		}
+		if got := userBalance(t, db, userID); got != 420 {
+			t.Fatalf("balance = %d, want 420", got)
+		}
+	})
+
+	t.Run("结算少补：令牌额度补扣", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, int64(500))
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		s := newBillingTestSessionWithToken(e, userID, tokenID,
+			testRequestID("token-supplement"), ratioSnapshot(100, 100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 1_000_000}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		fact := contract.UsageFact{Usage: contract.Usage{Prompt: 1_500_000, PromptIncludesCache: true}}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 350 {
+			t.Fatalf("token remain = %+v, want 350", got)
+		}
+		if got := userBalance(t, db, userID); got != 350 {
+			t.Fatalf("balance = %d, want 350", got)
+		}
+	})
+
+	t.Run("退款：令牌额度全额回补（含增量）", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		tokenID := createBillingTestToken(t, db, userID, int64(500))
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		s := newBillingTestSessionWithToken(e, userID, tokenID,
+			testRequestID("token-refund-all"), perCallSnapshot(100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if err := s.ChargeIncrement(30, contract.UsageFact{}); err != nil {
+			t.Fatalf("ChargeIncrement: %v", err)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 370 {
+			t.Fatalf("token remain = %+v, want 370", got)
+		}
+		if err := s.Refund(); err != nil {
+			t.Fatalf("Refund: %v", err)
+		}
+		if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+			t.Fatalf("token remain = %+v, want 500", got)
+		}
+		if got := userBalance(t, db, userID); got != 500 {
+			t.Fatalf("balance = %d, want 500", got)
+		}
+	})
+}
+
+// TestSessionTokenQuotaInsufficient 验证令牌额度不足 → 402 类错误，
+// 钱包与令牌都不变动、不写流水。
+func TestSessionTokenQuotaInsufficient(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(50))
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("token-insufficient")
+	s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("PreConsume = %v, want ErrInsufficientQuota", err)
+	}
+	var qe *QuotaError
+	if !errors.As(err, &qe) || qe.Required != 100 || qe.Available != 50 {
+		t.Fatalf("QuotaError = %+v", qe)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 50 {
+		t.Fatalf("token remain = %+v, want 50", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+}
+
+// TestSessionTokenQuotaWalletRollback 验证钱包失败时令牌扣减整体回滚。
+func TestSessionTokenQuotaWalletRollback(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 50) // 钱包不足
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("token-wallet-rollback")
+	s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("PreConsume = %v, want ErrInsufficientQuota", err)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+		t.Fatalf("token remain = %+v, want 500（令牌扣减必须回滚）", got)
+	}
+	if got := userBalance(t, db, userID); got != 50 {
+		t.Fatalf("balance = %d, want 50", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+}
+
+// TestSessionTokenQuotaUnlimited 验证 NULL remain_quota = 无限额：
+// 预扣/结算/退款都不改该列。
+func TestSessionTokenQuotaUnlimited(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, nil)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	s := newBillingTestSessionWithToken(e, userID, tokenID,
+		testRequestID("token-unlimited"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := s.Refund(); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if got := tokenRemain(t, db, tokenID); got.Valid {
+		t.Fatalf("token remain = %+v, want NULL（无限额不落值）", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+}
+
+// TestSessionTokenQuotaTrustBypass 验证信任旁路/零预算不扣令牌额度。
+func TestSessionTokenQuotaTrustBypass(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100_000)
+	tokenID := createBillingTestToken(t, db, userID, int64(5000)) // > 信任阈值 1000
+	cfg := mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	s := newBillingTestSessionWithToken(e, userID, tokenID,
+		testRequestID("token-trusted"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0（信任旁路）", s.Reserved())
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 5000 {
+		t.Fatalf("token remain = %+v, want 5000（旁路不扣令牌）", got)
+	}
+}
+
+// TestSessionTokenQuotaConcurrent 验证令牌额度的并发扣减串行化：
+// 令牌 100、两会话各 60 → 只一个成功，令牌剩 40，钱包也只扣一笔。
+func TestSessionTokenQuotaConcurrent(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(100))
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	sA := newBillingTestSessionWithToken(e, userID, tokenID,
+		testRequestID("token-concurrent-a"), perCallSnapshot(60))
+	sB := newBillingTestSessionWithToken(e, userID, tokenID,
+		testRequestID("token-concurrent-b"), perCallSnapshot(60))
+
+	start := make(chan struct{})
+	results := make([]error, 2)
+	var wg sync.WaitGroup
+	for i, s := range []*Session{sA, sB} {
+		wg.Add(1)
+		go func(i int, s *Session) {
+			defer wg.Done()
+			<-start
+			results[i] = s.PreConsume(contract.QuotaEstimate{Model: "m"})
+		}(i, s)
+	}
+	close(start)
+	wg.Wait()
+
+	successes, quotaFailures := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrInsufficientQuota):
+			quotaFailures++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if successes != 1 || quotaFailures != 1 {
+		t.Fatalf("successes=%d failures=%d, want 1/1", successes, quotaFailures)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 40 {
+		t.Fatalf("token remain = %+v, want 40", got)
+	}
+	if got := userBalance(t, db, userID); got != 440 {
+		t.Fatalf("balance = %d, want 440", got)
+	}
+}
+
+// TestSessionAdoptsResolvedSnapshot 验证 Minor-2：引擎自行解析快照时回填
+// rc.PriceSnapshot，供 Saturator 读取 billing_mode/表达式元信息。
+func TestSessionAdoptsResolvedSnapshot(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	rc := &contract.RelayContext{
+		RequestID:   testRequestID("adopt"),
+		UserID:      int(userID),
+		OriginModel: "m",
+		UsingGroup:  "default",
+	}
+	src := staticPricingSource{snap: *perCallSnapshot(100)}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), src, nil, nil)
+	s := e.NewSession(rc).(*Session)
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if rc.PriceSnapshot == nil {
+		t.Fatal("rc.PriceSnapshot = nil, want adopted snapshot")
+	}
+	if rc.PriceSnapshot.Price.ModelPrice != 100 {
+		t.Fatalf("adopted ModelPrice = %v, want 100", rc.PriceSnapshot.Price.ModelPrice)
+	}
+	if s.Reserved() != 100 {
+		t.Fatalf("Reserved = %d, want 100", s.Reserved())
+	}
+}
+
+// TestSessionPreConsumeRejectsExistingClamp 验证 Minor-8：预扣前已有
+// QuotaClamp → 价格错误（400 语义），不得继续预扣。
+func TestSessionPreConsumeRejectsExistingClamp(t *testing.T) {
+	e := NewEngine(nil, nil, nil, billingTestConfig(), nil, nil, nil)
+	rc := &contract.RelayContext{RequestID: testRequestID("clamp"), UserID: 1}
+	rc.QuotaClamp = &contract.QuotaClamp{
+		Op:       "QuotaFromFloatChecked",
+		Kind:     contract.ClampOverflow,
+		Original: 1e20,
+		Clamped:  contract.MaxQuota,
+	}
+	s := e.NewSession(rc).(*Session)
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 10})
+	if !errors.Is(err, ErrPriceError) {
+		t.Fatalf("PreConsume = %v, want ErrPriceError", err)
+	}
+	if s.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0", s.Reserved())
 	}
 }
