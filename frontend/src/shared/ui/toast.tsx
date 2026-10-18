@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+import { useI18n } from '@/app/providers/i18n'
+
 /**
  * Toast queue (modules-00 §4.8, web-00 §6.4).
  *
@@ -136,6 +138,7 @@ const DOT_CLASSES: Record<ToastTone, string> = {
  * non-auto-dismissing `danger-consequence` tone.
  */
 export function ToastViewport() {
+  const { t } = useI18n()
   const toasts = useToastStore((state) => state.toasts)
   const dismiss = useToastStore((state) => state.dismiss)
 
@@ -172,13 +175,13 @@ export function ToastViewport() {
                 data-testid="toast-request-id"
                 className="mt-1 font-mono text-[11px] leading-4 text-ink-3"
               >
-                request_id: {toast.requestId}
+                {t('common.toast.request_id', { requestId: toast.requestId })}
               </p>
             ) : null}
           </div>
           <button
             type="button"
-            aria-label="Dismiss notification"
+            aria-label={t('common.toast.dismiss')}
             className="rounded p-0.5 text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             onClick={() => dismiss(toast.id)}
           >

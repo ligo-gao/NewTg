@@ -42,13 +42,19 @@ export function formatTokenAmount(value: number, locale: string = DEFAULT_LOCALE
   if (value < 0) {
     throw new RangeError('formatTokenAmount does not accept negative values')
   }
-  if (value < 1_000_000) {
+  // Decide the format on the same integer the formatter would print. Checking
+  // the raw value first made 999,999.6 fall through to the grouped branch,
+  // whose maximumFractionDigits: 0 then rendered "1,000,000" — a value that
+  // reads as at least a million but is not abbreviated. Rounding first keeps
+  // the threshold and the rendered number consistent (modules-00 §4.7).
+  const rounded = Math.round(value)
+  if (rounded < 1_000_000) {
     return new Intl.NumberFormat(locale, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
-    }).format(value)
+    }).format(rounded)
   }
-  const millions = value / 1_000_000
+  const millions = rounded / 1_000_000
   const formatted = new Intl.NumberFormat(locale, {
     minimumFractionDigits: 1,
     maximumFractionDigits: 1,

@@ -14,7 +14,10 @@ export function createQueryClient(): QueryClient {
         retry: 1,
         refetchOnWindowFocus: false,
         staleTime: 30_000,
-        gcTime: 300_000,
+        // `gcTime` is deliberately not set: TanStack Query's 5-minute default
+        // already matches the `list` tier in web-00 §5.4. (The M0 draft kept an
+        // explicit 300_000 with a comment claiming it was carried over from a
+        // prior task — it was simply the library default, so the noise is gone.)
       },
       mutations: {
         // Writes are never retried automatically (idempotency safety).

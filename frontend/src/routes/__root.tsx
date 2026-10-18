@@ -1,6 +1,7 @@
-import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
+import { createRootRoute, Outlet } from '@tanstack/react-router'
 
 import { ErrorFallback } from '@/app/error-boundary'
+import { NotFoundPage } from '@/app/not-found-page'
 
 function RootLayout() {
   return (
@@ -16,28 +17,12 @@ function RootLayout() {
   )
 }
 
-function NotFound() {
-  return (
-    <main
-      id="main"
-      className="flex min-h-screen flex-col items-center justify-center gap-3 bg-surface-page p-6 text-center text-ink-1"
-    >
-      <h1 className="text-3xl font-bold">404</h1>
-      <p className="text-sm text-ink-2">Page not found</p>
-      <Link
-        to="/"
-        className="text-sm font-medium text-brand underline-offset-2 hover:text-brand-hover hover:underline"
-      >
-        Back to home
-      </Link>
-    </main>
-  )
-}
-
 export const Route = createRootRoute({
   component: RootLayout,
   errorComponent: ({ error, reset }) => (
     <ErrorFallback error={error} reset={reset} />
   ),
-  notFoundComponent: NotFound,
+  // Same body as the `/404` route: render the shared page instead of keeping a
+  // second inline copy that could drift from `_errors/404.tsx`.
+  notFoundComponent: NotFoundPage,
 })

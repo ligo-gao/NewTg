@@ -22,9 +22,26 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'warn',
       'no-restricted-syntax': [
         'error',
+        // A bare hex colour can enter the source through three syntax nodes;
+        // the M0 rule only covered the first (string literal), so `#fff` in a
+        // template string or directly in JSX silently bypassed GC-12.
         {
           selector:
             "Literal[value=/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/]",
+          message:
+            'Use a CSS token from styles/tokens.css instead of a raw hex colour.',
+        },
+        {
+          selector:
+            "TemplateElement[value.raw=/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/]",
+          message:
+            'Use a CSS token from styles/tokens.css instead of a raw hex colour.',
+        },
+        {
+          // JSXText keeps the literal (and indentation) verbatim, hence the
+          // optional surrounding whitespace.
+          selector:
+            "JSXText[value=/^\\s*#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\\s*$/]",
           message:
             'Use a CSS token from styles/tokens.css instead of a raw hex colour.',
         },
