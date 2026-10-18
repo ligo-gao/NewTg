@@ -1011,8 +1011,8 @@ func TestChannelTestFailureRedactsError(t *testing.T) {
 	if failure.Success {
 		t.Fatalf("success = true，期望 false")
 	}
-	if failure.ErrorClass != "unknown" {
-		t.Fatalf("error_class = %q，期望泛化枚举 unknown", failure.ErrorClass)
+	if failure.ErrorClass != "server" {
+		t.Fatalf("error_class = %q，期望不可分类错误归入 modules-06 的 server 档", failure.ErrorClass)
 	}
 	for _, secret := range []string{"upstream.internal", "sk-supersecret", "api_key", "8443"} {
 		if strings.Contains(rr.Body.String(), secret) {
