@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -166,6 +167,15 @@ func (r *fakeAdminRepo) userStatus(id int64) string {
 	defer r.mu.Unlock()
 	if rec, ok := r.users[id]; ok {
 		return rec.Status
+	}
+	return ""
+}
+
+func (r *fakeAdminRepo) userRole(id int64) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.users[id]; ok {
+		return rec.Role
 	}
 	return ""
 }
@@ -378,6 +388,7 @@ func (r *fakeAdminRepo) DeleteUser(_ context.Context, id int64) (DeletedUser, er
 	for _, token := range r.tokens {
 		if token.UserID == id {
 			deleted.TokensDeleted++
+			deleted.TokenIDs = append(deleted.TokenIDs, token.ID)
 			continue
 		}
 		kept = append(kept, token)
@@ -405,6 +416,9 @@ func (r *fakeAdminRepo) AdjustQuota(_ context.Context, id int64, mode string, am
 	newBalance := rec.Balance
 	switch mode {
 	case "add":
+		if amount > math.MaxInt64-rec.Balance {
+			return QuotaAdjustment{}, ErrAdminOverflow
+		}
 		newBalance += amount
 	case "subtract":
 		if rec.Balance < amount {
@@ -558,7 +572,7 @@ func (r *fakeAdminRepo) UpdateGroup(_ context.Context, currentName string, newNa
 			return AdminGroupRecord{}, ErrGroupSystem
 		}
 		if r.groupRef[currentName] > 0 {
-			return AdminGroupRecord{}, ErrGroupReferenced
+			return AdminGroupRecord{}, &GroupReferencedError{Count: r.groupRef[currentName]}
 		}
 		if _, exists := r.groups[*newName]; exists {
 			return AdminGroupRecord{}, ErrGroupConflict
@@ -588,7 +602,7 @@ func (r *fakeAdminRepo) DeleteGroup(_ context.Context, name string) error {
 		return ErrGroupSystem
 	}
 	if r.groupRef[name] > 0 {
-		return ErrGroupReferenced
+		return &GroupReferencedError{Count: r.groupRef[name]}
 	}
 	delete(r.groups, name)
 	return nil
@@ -685,7 +699,9 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
 	}
-	groups, err := NewGroupHandlers(GroupHandlerConfig{Repo: repo, Authz: authz, Logger: logger})
+	groups, err := NewGroupHandlers(GroupHandlerConfig{
+		Repo: repo, Authz: authz, Audit: audit.New(capture), Logger: logger,
+	})
 	if err != nil {
 		t.Fatalf("NewGroupHandlers: %v", err)
 	}
@@ -833,6 +849,7 @@ func TestUsersListFiltersAndEnvelope(t *testing.T) {
 		"/api/users?sort=password_hash",
 		"/api/users?page_size=101",
 		"/api/users?p=0",
+		"/api/users?p=1000001",
 		"/api/users?status=deleted",
 		"/api/users?role=root",
 	} {
@@ -1157,8 +1174,8 @@ func TestUsersSelfDemotionRejected(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("对自己降权 status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
 	}
-	if got := env.repo.userStatus(actor.ID); got != "enabled" {
-		t.Fatalf("自我降权失败后角色被改动")
+	if got := env.repo.userRole(actor.ID); got != rbac.RoleAdmin {
+		t.Fatalf("自我降权失败后角色 = %q，期望保持 admin", got)
 	}
 
 	rr = env.request(principal, http.MethodPatch, fmt.Sprintf("/api/users/%d/permissions", actor.ID),
@@ -1497,3 +1514,193 @@ func TestUsersRequirePrincipal(t *testing.T) {
 }
 
 func strPtrAdmin(value string) *string { return &value }
+
+// ---------------------------------------------------------------------------
+// Critical 1：角色变更吊销会话 + 陈旧 admin 会话不得借 NULL=FULL 继续
+// ---------------------------------------------------------------------------
+
+func TestUsersRoleChangeRevokesSessions(t *testing.T) {
+	env := newAdminTestEnv(t)
+	ctx := context.Background()
+
+	// 降权他人：目标现有会话必须立即失效（SessionAuth 的 Role 是登录时快照）。
+	target := env.repo.addUser(AdminUserRecord{Username: "admin2", Role: rbac.RoleAdmin})
+	sid, err := env.sessions.Create(ctx, target.ID, auth.SessionOpts{
+		UA: "Test/1.0", IP: "203.0.113.9", Role: rbac.RoleAdmin,
+	})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	rr := env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", target.ID),
+		map[string]any{"role": "user", "updated_at": target.UpdatedAt})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("降权 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.userRole(target.ID); got != rbac.RoleUser {
+		t.Fatalf("降权后角色 = %q，期望 user", got)
+	}
+	if _, err := env.sessions.Get(ctx, sid); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("降权后目标会话仍存在：err=%v", err)
+	}
+
+	// 提权同样吊销：旧 user 会话不能继续代表旧角色，必须重新登录。
+	user := env.repo.addUser(AdminUserRecord{Username: "bob"})
+	sid2, err := env.sessions.Create(ctx, user.ID, auth.SessionOpts{
+		UA: "Test/1.0", IP: "203.0.113.9", Role: rbac.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	rr = env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"role": "admin", "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("提权 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.userRole(user.ID); got != rbac.RoleAdmin {
+		t.Fatalf("提权后角色 = %q，期望 admin", got)
+	}
+	if _, err := env.sessions.Get(ctx, sid2); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("提权后旧会话仍存在：err=%v", err)
+	}
+}
+
+// adminStubLoader 模拟 SQLAuthRepo.Load 在「已降权」行上的返回值：
+// 非 admin 行一律显式空集（绝不是 nil=FULL）。
+type adminStubLoader struct{ perms []string }
+
+func (l adminStubLoader) Load(context.Context, int64) ([]string, error) { return l.perms, nil }
+
+func TestUsersStaleAdminSessionDeniedAfterDemotion(t *testing.T) {
+	env := newAdminTestEnv(t)
+	demoted := env.repo.addUser(AdminUserRecord{Username: "demoted", Role: rbac.RoleUser})
+
+	// 旧会话仍带 Role=admin、Permissions=nil；Loader 按 DB 角色返回空集。
+	env.authz.SetPermissionLoader(adminStubLoader{perms: []string{}})
+	defer env.authz.SetPermissionLoader(nil)
+	stale := &auth.Principal{UserID: demoted.ID, Role: rbac.RoleAdmin}
+	rr := env.request(stale, http.MethodGet, "/api/users", nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("陈旧 admin 会话 status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	// 真正的 admin 行（NULL=FULL）仍由 Loader 返回 nil，管理端点保持可用。
+	env.authz.SetPermissionLoader(adminStubLoader{perms: nil})
+	rr = env.request(&auth.Principal{UserID: 999, Role: rbac.RoleAdmin}, http.MethodGet, "/api/users", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("FULL admin status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestUsersRolePromotionRequiresGrantSubset：提权写入默认权限集，执行者必须
+// 持有该集合的超集（否则 users:update 就能造出超出自身范围的 admin）。
+func TestUsersRolePromotionRequiresGrantSubset(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "bob"})
+
+	limited := limitedAdmin(rbac.PermUsersUpdate, rbac.PermUsersManageRoles)
+	rr := env.request(limited, http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"role": "admin", "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺默认权限子集时提权 status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.userRole(user.ID); got != rbac.RoleUser {
+		t.Fatalf("403 后角色 = %q，期望保持 user", got)
+	}
+
+	allowed := limitedAdmin(rbac.PermUsersUpdate, rbac.PermUsersManageRoles,
+		rbac.PermUsersRead, rbac.PermLogsRead)
+	rr = env.request(allowed, http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"role": "admin", "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("持默认权限子集时提权 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Important 1：封禁/删除必须广播 token:changed:<id>
+// ---------------------------------------------------------------------------
+
+func (e *adminTestEnv) subscribeToken(t *testing.T, tokenID int64) (*redis.PubSub, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	sub := e.rdb.Subscribe(ctx, fmt.Sprintf("token:changed:%d", tokenID))
+	if _, err := sub.Receive(ctx); err != nil {
+		cancel()
+		_ = sub.Close()
+		t.Fatalf("subscribe token:changed: %v", err)
+	}
+	return sub, cancel
+}
+
+func TestUsersStatusInvalidatesTokenCache(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+	tokenID := env.repo.addToken(user.ID, "enabled")
+
+	sub, cancel := env.subscribeToken(t, tokenID)
+	defer cancel()
+	defer func() { _ = sub.Close() }()
+
+	rr := env.request(fullAdmin(), http.MethodPost, fmt.Sprintf("/api/users/%d/status", user.ID),
+		map[string]any{"status": "disabled"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	msg, err := sub.ReceiveMessage(context.Background())
+	if err != nil {
+		t.Fatalf("未收到封禁的 token:changed 广播: %v", err)
+	}
+	if want := fmt.Sprintf("token:changed:%d", tokenID); msg.Channel != want {
+		t.Fatalf("广播频道 = %q，期望 %q", msg.Channel, want)
+	}
+}
+
+func TestUsersDeleteInvalidatesTokenCache(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+	tokenID := env.repo.addToken(user.ID, "disabled")
+
+	// 先封禁（会广播 enabled 令牌，但该令牌已 disabled，不会广播），再订阅，
+	// 把删除本身的广播隔离出来。
+	rr := env.request(fullAdmin(), http.MethodPost, fmt.Sprintf("/api/users/%d/status", user.ID),
+		map[string]any{"status": "disabled"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable status = %d", rr.Code)
+	}
+	sub, cancel := env.subscribeToken(t, tokenID)
+	defer cancel()
+	defer func() { _ = sub.Close() }()
+
+	rr = env.request(fullAdmin(), http.MethodDelete, fmt.Sprintf("/api/users/%d", user.ID), nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if _, err := sub.ReceiveMessage(context.Background()); err != nil {
+		t.Fatalf("未收到删除的 token:changed 广播: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Minor：溢出 / 分页上限
+// ---------------------------------------------------------------------------
+
+func TestUsersQuotaOverflowRejected(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+	env.repo.mu.Lock()
+	env.repo.users[user.ID].Balance = math.MaxInt64
+	env.repo.mu.Unlock()
+
+	rr := env.request(fullAdmin(), http.MethodPost, fmt.Sprintf("/api/users/%d/quota-adjustment", user.ID),
+		map[string]any{"mode": "add", "amount": 1, "idempotency_key": "overflow"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("溢出加额 status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+	}
+	stored, _ := env.repo.GetUser(context.Background(), user.ID)
+	if stored.Balance != math.MaxInt64 {
+		t.Fatalf("溢出不变量：余额 = %d，期望不变", stored.Balance)
+	}
+	if len(env.repo.txs) != 0 {
+		t.Fatal("溢出不变量：不应写流水")
+	}
+}

@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -54,6 +55,16 @@ var (
 	ErrGroupSystem     = errors.New("httpapi: system groups cannot be renamed or deleted")
 	ErrGroupReferenced = errors.New("httpapi: group is still referenced")
 )
+
+// GroupReferencedError 在 ErrGroupReferenced 之外携带引用计数，供 409 的
+// detail 告诉调用方「还差多少引用没处理」。errors.Is 仍匹配哨兵。
+type GroupReferencedError struct{ Count int64 }
+
+func (e *GroupReferencedError) Error() string {
+	return fmt.Sprintf("httpapi: group is still referenced by %d rows", e.Count)
+}
+
+func (e *GroupReferencedError) Is(target error) bool { return target == ErrGroupReferenced }
 
 // AdminGroupRecord 是 user_groups 行的投影，附带三类引用计数。
 type AdminGroupRecord struct {
@@ -82,13 +93,12 @@ type AdminGroupRepo interface {
 }
 
 // GroupHandlerConfig 是分组端点的装配输入。Repo 与 DB 二选一。
-//
-// 说明：audit 包的冻结动作枚举没有 group.*，而未知动作会被审计层拒绝；
-// 因此分组端点在 M1 不写审计（用户/权限变更仍写 user.*）。扩充枚举后再接线。
+// Audit 为 nil 时不写审计（未装配日志库的测试/开发环境）。
 type GroupHandlerConfig struct {
 	DB     *sql.DB
 	Repo   AdminGroupRepo
 	Authz  *rbac.AuthzMiddleware
+	Audit  *audit.Logger
 	Logger *slog.Logger
 }
 
@@ -96,6 +106,7 @@ type GroupHandlerConfig struct {
 type GroupHandlers struct {
 	repo  AdminGroupRepo
 	authz *rbac.AuthzMiddleware
+	audit *audit.Logger
 	log   *slog.Logger
 }
 
@@ -123,7 +134,7 @@ func NewGroupHandlers(cfg GroupHandlerConfig) (*GroupHandlers, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := &GroupHandlers{repo: repo, authz: authz, log: log}
+	h := &GroupHandlers{repo: repo, authz: authz, audit: cfg.Audit, log: log}
 	h.registerPolicies()
 	return h, nil
 }
@@ -210,8 +221,9 @@ func (h *GroupHandlers) handleListGroups(w http.ResponseWriter, r *http.Request)
 	page, pageSize := 1, adminPageSizeDefault
 	if raw := strings.TrimSpace(r.URL.Query().Get("p")); raw != "" {
 		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 {
-			writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", "p must be a positive integer")
+		if err != nil || value < 1 || value > adminPageMax {
+			writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				fmt.Sprintf("p must be between 1 and %d", adminPageMax))
 			return
 		}
 		page = value
@@ -243,6 +255,10 @@ type adminCreateGroupRequest struct {
 }
 
 func (h *GroupHandlers) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
 	var req adminCreateGroupRequest
 	if err := readAuthJSON(r, &req); err != nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", "request body must be a JSON object")
@@ -265,10 +281,17 @@ func (h *GroupHandlers) handleCreateGroup(w http.ResponseWriter, r *http.Request
 		h.writeGroupRepoError(w, "create group", err)
 		return
 	}
+	h.auditEvent(r, audit.ActionGroupCreate, p.UserID,
+		map[string]any{"action": audit.ActionGroupCreate, "name": rec.Name},
+		nil, adminGroupSnapshot(rec), http.StatusCreated)
 	writeJSON(w, http.StatusCreated, newAdminGroupView(rec))
 }
 
 func (h *GroupHandlers) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
 	currentName := strings.TrimSpace(r.PathValue("name"))
 	if currentName == "" {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
@@ -320,25 +343,86 @@ func (h *GroupHandlers) handleUpdateGroup(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	before, err := h.repo.GetGroup(r.Context(), currentName)
+	if err != nil {
+		h.writeGroupRepoError(w, "read group before update", err)
+		return
+	}
 	rec, err := h.repo.UpdateGroup(r.Context(), currentName, newName, description, descriptionSet)
 	if err != nil {
 		h.writeGroupRepoError(w, "update group", err)
 		return
 	}
+	changed := make([]string, 0, 2)
+	if before.Name != rec.Name {
+		changed = append(changed, "name")
+	}
+	if !adminJSONEqual(before.Description, rec.Description) {
+		changed = append(changed, "description")
+	}
+	h.auditEvent(r, audit.ActionGroupUpdate, p.UserID, map[string]any{
+		"action": audit.ActionGroupUpdate, "name": rec.Name, "changed_fields": changed,
+	}, adminGroupSnapshot(before), adminGroupSnapshot(rec), http.StatusOK)
 	writeJSON(w, http.StatusOK, newAdminGroupView(rec))
 }
 
 func (h *GroupHandlers) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
 	name := strings.TrimSpace(r.PathValue("name"))
 	if name == "" {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	before, err := h.repo.GetGroup(r.Context(), name)
+	if err != nil {
+		h.writeGroupRepoError(w, "read group before delete", err)
 		return
 	}
 	if err := h.repo.DeleteGroup(r.Context(), name); err != nil {
 		h.writeGroupRepoError(w, "delete group", err)
 		return
 	}
+	h.auditEvent(r, audit.ActionGroupDelete, p.UserID,
+		map[string]any{"action": audit.ActionGroupDelete, "name": name},
+		adminGroupSnapshot(before), nil, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminGroupSnapshot 是分组审计 before/after 的投影；不含任何凭证。
+func adminGroupSnapshot(rec AdminGroupRecord) map[string]any {
+	return map[string]any{
+		"name":            rec.Name,
+		"description":     rec.Description,
+		"ratio":           rec.Ratio,
+		"user_selectable": rec.UserSelectable,
+		"is_system":       rec.IsSystem,
+		"status":          rec.Status,
+	}
+}
+
+// auditEvent 写分组审计（best-effort：日志库独立，失败只记日志）。
+func (h *GroupHandlers) auditEvent(r *http.Request, action string, actor int64, detail, before, after map[string]any, status int) {
+	if h.audit == nil {
+		return
+	}
+	event := audit.Event{
+		Action:     action,
+		Actor:      actor,
+		IP:         tokenRemoteIP(r),
+		UserAgent:  r.UserAgent(),
+		Method:     r.Method,
+		Route:      r.Pattern,
+		StatusCode: status,
+		Detail:     adminMarshalRaw(detail),
+		Before:     adminMarshalRaw(before),
+		After:      adminMarshalRaw(after),
+	}
+	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+		h.log.Warn("admin group audit write failed", "action", action, "actor", actor, "error", err)
+	}
 }
 
 func (h *GroupHandlers) writeGroupRepoError(w http.ResponseWriter, op string, err error) {
@@ -351,8 +435,12 @@ func (h *GroupHandlers) writeGroupRepoError(w http.ResponseWriter, op string, er
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"system groups cannot be renamed or deleted")
 	case errors.Is(err, ErrGroupReferenced):
-		writeAdminProblem(w, http.StatusConflict, authProblemConflict, "Conflict",
-			"the group is still referenced by users, tokens, pricing entries or channels")
+		detail := "the group is still referenced by users, tokens, pricing entries or channels"
+		var referenced *GroupReferencedError
+		if errors.As(err, &referenced) {
+			detail = fmt.Sprintf("the group is still referenced by %d users/tokens/pricing entries/channels", referenced.Count)
+		}
+		writeAdminProblem(w, http.StatusConflict, authProblemConflict, "Conflict", detail)
 	default:
 		h.log.Error(op+" failed", "error", err)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
@@ -481,7 +569,7 @@ func (r *SQLAdminGroupRepo) UpdateGroup(ctx context.Context, currentName string,
 			return AdminGroupRecord{}, err
 		}
 		if referenced > 0 {
-			return AdminGroupRecord{}, ErrGroupReferenced
+			return AdminGroupRecord{}, &GroupReferencedError{Count: referenced}
 		}
 	}
 
@@ -543,7 +631,7 @@ func (r *SQLAdminGroupRepo) DeleteGroup(ctx context.Context, name string) error 
 		return err
 	}
 	if referenced > 0 {
-		return ErrGroupReferenced
+		return &GroupReferencedError{Count: referenced}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE id = $1`, groupID); err != nil {
 		return fmt.Errorf("httpapi: delete group: %w", err)
@@ -557,6 +645,11 @@ func (r *SQLAdminGroupRepo) DeleteGroup(ctx context.Context, name string) error 
 // groupReferenceCount 汇总四类引用。users/api_tokens/group_pricing 是真实
 // FK（ON DELETE RESTRICT）；channels.group_tags 是 jsonb 数组，无 FK，
 // 必须显式检查，否则删除后渠道会引用一个不存在的组名。
+//
+// 已知竞争：channels.group_tags 的检查与删除不在同一把锁下（渠道端点属于
+// 模块 06，M1 尚未实现写路径）。并发「删除分组 + 渠道写入该 tag」可能留下
+// 一个指向不存在分组的 tag；读取侧必须按「分组不存在」降级展示。真实 FK
+// 的三张表由 RESTRICT 兜底，不存在该窗口。
 func groupReferenceCount(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
 	var count int64
 	err := tx.QueryRowContext(ctx, `

@@ -593,6 +593,8 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Password reset failed")
 		return
 	}
+	// 用户已自选新口令：临时口令的 24h 有效期标记随之作废（F-07-12）。
+	h.clearTempPasswordMarker(ctx, user.ID)
 	// 凭证已变更：旧凭证换来的再认证窗口不得继续授权敏感操作（best-effort）。
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after reset failed", "error", err)
@@ -719,12 +721,23 @@ func (h *passwordHandlers) handleChangePassword(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Password change failed")
 		return
 	}
+	// 用户已自选新口令：临时口令的有效期标记不再有意义（F-07-12）。
+	h.clearTempPasswordMarker(ctx, user.ID)
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after password change failed", "error", err)
 	}
 	h.auditEvent(r, audit.ActionAuthPasswordChange, user.ID,
 		map[string]string{"action": "password_change", "field": "password"})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// clearTempPasswordMarker 删除管理员临时口令的 24h 有效期标记（F-07-12）。
+// 用户自选新口令后 must_change_password 已清除，登录路径不再检查该标记；
+// 删除失败只记日志（标记自身有 TTL，不会永久残留）。
+func (h *passwordHandlers) clearTempPasswordMarker(ctx context.Context, userID int64) {
+	if err := h.rdb.Del(ctx, tempPasswordKeyPrefix+strconv.FormatInt(userID, 10)).Err(); err != nil {
+		h.log.Warn("clear temp password marker failed", "user_id", userID, "error", err)
+	}
 }
 
 // auditEvent 写一条口令变更审计（F-01-06/F-01-16 的事件）。detail 只含

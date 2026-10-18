@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -73,6 +74,8 @@ const (
 	adminMaxGroupRunes   = 32
 	adminPageSizeDefault = 20
 	adminPageSizeMax     = 100
+	// adminPageMax 防止 p 取超大值导致 OFFSET 溢出/全表扫描放大。
+	adminPageMax = 1_000_000
 
 	// adminIdempotencyKeyMax：wallet_transactions.reference_id 是 varchar(64)。
 	adminIdempotencyKeyMax    = 64
@@ -84,13 +87,14 @@ const (
 	// 只有 enabled/disabled 两态，没有列记录「是谁禁用的」；解禁时若把所有
 	// 令牌重新置 enabled，会违背 TC-F-07-05-02（封禁前已 disabled 的令牌
 	// 必须保持 disabled）。因此封禁时把原 enabled 集写入 Redis，解禁时只恢复
-	// 这一集合；键丢失时保守地保持全部 disabled。
+	// 这一集合。它只是「恢复提示」而非第二真源：键丢失/TTL 到期时保守地保持
+	// 全部 disabled（需管理员手工重新启用），绝不猜测性恢复。
 	userBanTokenKeyPrefix = "newtg:user_ban_tokens:"
 	userBanTokenTTL       = 30 * 24 * time.Hour
 
-	// tempPasswordKeyPrefix 记录临时口令的有效期标记（24h）。当前 M1 的登录
-	// 路径（Task 6）尚未消费该标记——该守卫属于登录侧；本端点先按设计写入，
-	// 便于登录侧接线后立即生效。
+	// tempPasswordKeyPrefix 是临时口令的 24h 有效期标记：reset-password 写入，
+	// 登录路径（handlers_auth.go）在 must_change_password=true 时读取并校验，
+	// 用户自选新口令成功后删除。缺失即视为过期。
 	tempPasswordKeyPrefix = "newtg:temp_password:"
 )
 
@@ -101,6 +105,7 @@ var (
 	ErrAdminConflict        = errors.New("httpapi: admin user was modified concurrently")
 	ErrAdminNotDisabled     = errors.New("httpapi: admin user must be disabled first")
 	ErrAdminInsufficient    = errors.New("httpapi: adjustment exceeds current balance")
+	ErrAdminOverflow        = errors.New("httpapi: adjustment would overflow the balance")
 	ErrAdminNoChange        = errors.New("httpapi: adjustment would not change the balance")
 	ErrAdminInvalidGroup    = errors.New("httpapi: group does not exist")
 	ErrAdminTwoFANotEnabled = errors.New("httpapi: two-factor authentication is not enabled")
@@ -174,11 +179,13 @@ type QuotaAdjustment struct {
 	Replayed      bool
 }
 
-// DeletedUser 是硬删除前留存的审计摘要。
+// DeletedUser 是硬删除前留存的审计摘要。TokenIDs 用于删除后广播
+// token:changed:<id>，让中继侧缓存 ≤1s 失效（GC-11）。
 type DeletedUser struct {
 	ID            int64
 	Username      string
 	TokensDeleted int64
+	TokenIDs      []int64
 }
 
 // AdminUserRepo 是用户管理端点的存储接缝。单测注入内存假实现；生产实现是
@@ -219,7 +226,6 @@ type UserHandlers struct {
 	audit    *audit.Logger
 	checker  auth.CompromisedPasswordChecker
 	log      *slog.Logger
-	now      func() time.Time
 }
 
 // 字段级（BOPLA）动作登记。ActionName 是「控制器/动作」维度的稳定标识，
@@ -269,7 +275,6 @@ func NewUserHandlers(cfg UserHandlerConfig) (*UserHandlers, error) {
 		audit:    cfg.Audit,
 		checker:  cfg.PasswordChecker,
 		log:      log,
-		now:      time.Now,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -461,8 +466,8 @@ func parseUserListFilter(r *http.Request) (UserListFilter, error) {
 
 	if raw := strings.TrimSpace(q.Get("p")); raw != "" {
 		page, err := strconv.Atoi(raw)
-		if err != nil || page < 1 {
-			return UserListFilter{}, errors.New("p must be a positive integer")
+		if err != nil || page < 1 || page > adminPageMax {
+			return UserListFilter{}, fmt.Errorf("p must be between 1 and %d", adminPageMax)
 		}
 		filter.Page = page
 	}
@@ -584,14 +589,16 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 			"password is too weak or has appeared in a breach")
 		return
 	}
-	// 创建 admin 等于授予角色；仅有 users:create 的管理员不得绕过
-	// users:manage-roles 的授权边界（security-02 字段分区口径）。
-	if role == rbac.RoleAdmin && !rbac.HasPermission(*p, rbac.PermUsersManageRoles) {
-		writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
-			"creating an admin requires users:manage-roles")
-		return
+	// 创建 admin 等于授予角色 + 一组默认权限。必须走 AuthorizeGrant：
+	// 执行者既要持有 users:manage-roles，也要持有默认权限集的超集；否则只持
+	// users:create 的管理员可以创建自己知道口令的 admin 账号完成提权。
+	if role == rbac.RoleAdmin {
+		if decision := h.authz.AuthorizeGrant(*p, defaultAdminPermissions()); decision.Effect != rbac.EffectAllow {
+			writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
+				"creating an admin requires users:manage-roles and a superset of the default permissions")
+			return
+		}
 	}
-
 	passwordHash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		h.log.Error("hash admin-created password failed", "error", err)
@@ -602,7 +609,7 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 	if role == rbac.RoleAdmin {
 		// 新 admin 只读起步（F-07-08 矩阵默认值）。绝不能留 NULL——NULL 在
 		// RBAC 语义里是 FULL，等于 users:create 直接造出一个全权管理员。
-		permissions = []string{rbac.PermUsersRead, rbac.PermLogsRead}
+		permissions = defaultAdminPermissions()
 	}
 
 	rec, err := h.repo.CreateUser(r.Context(), AdminCreateUserInput{
@@ -620,7 +627,7 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 	h.auditEvent(r, audit.ActionUserCreate, p.UserID, map[string]any{
 		"user_id": rec.ID, "username": rec.Username, "role": rec.Role, "group": rec.Group,
-	}, nil, adminUserSnapshot(rec))
+	}, nil, adminUserSnapshot(rec), http.StatusCreated)
 	writeJSON(w, http.StatusCreated, newAdminUserView(rec))
 }
 
@@ -747,6 +754,25 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		h.writeUserRepoError(w, "read user before update", err)
 		return
 	}
+	if patch.Role != nil {
+		// 角色是会话里固定的事实（SessionAuth 从登录时写入的 auth_level 读取），
+		// 降权后旧会话仍带 Role=admin；即使权限装载层立即生效，脏会话也不应
+		// 继续存在（F-07-06 / IS-B-5）。升降双向都先吊销：失败即 503 且不改角色。
+		if err := h.sessions.RevokeUser(r.Context(), id, ""); err != nil {
+			h.writeServiceUnavailable(w, "revoke sessions for role change", err)
+			return
+		}
+		// 提权会写入默认权限集：执行者必须能授予该集合（AuthorizeGrant 同时
+		// 校验 users:manage-roles 与超集），否则 users:update 就能造出超出
+		// 自身范围的 admin。
+		if *patch.Role == rbac.RoleAdmin && before.Role != rbac.RoleAdmin {
+			if decision := h.authz.AuthorizeGrant(*p, defaultAdminPermissions()); decision.Effect != rbac.EffectAllow {
+				writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
+					"promoting an admin requires users:manage-roles and a superset of the default permissions")
+				return
+			}
+		}
+	}
 	updated, err := h.repo.UpdateUser(r.Context(), id, patch, expectUpdatedAt)
 	if err != nil {
 		h.writeUserRepoError(w, "update user", err)
@@ -804,6 +830,9 @@ func (h *UserHandlers) handleUserStatus(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if changed && len(enabledTokenIDs) > 0 {
+			// 令牌已从 enabled → disabled：广播即时失效（GC-11）。广播失败只
+			// 记日志，缓存 60s TTL 兜底。
+			h.invalidateTokenCache(r.Context(), enabledTokenIDs)
 			// 记录解禁时需要恢复的令牌集合。写失败只记日志：用户已经封禁、
 			// 令牌已禁用；丢失恢复信息的结果是解禁后令牌保持 disabled（保守）。
 			if err := h.storeBanRestoreSet(r.Context(), id, enabledTokenIDs); err != nil {
@@ -832,10 +861,13 @@ func (h *UserHandlers) handleUserStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if changed {
+		// 恢复的令牌从 disabled → enabled：同样广播，避免缓存里残留失效态
+		// 导致解禁后最长 60s 仍被拒绝（GC-11）。
+		h.invalidateTokenCache(r.Context(), restore)
 		_ = h.rdb.Del(r.Context(), userBanTokenKeyPrefix+strconv.FormatInt(id, 10)).Err()
 		h.auditEvent(r, audit.ActionUserEnable, p.UserID, map[string]any{
 			"user_id": id, "tokens_restored": len(restore),
-		}, nil, nil)
+		}, nil, nil, http.StatusOK)
 	}
 	writeJSON(w, http.StatusOK, adminUserStatusResponse{ID: id, Status: status})
 }
@@ -904,14 +936,28 @@ func (h *UserHandlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		h.writeUserRepoError(w, "delete user", err)
 		return
 	}
+	// 令牌行已删除；广播让中继侧缓存立即失效（GC-11），与自助删除同口径。
+	h.invalidateTokenCache(r.Context(), deleted.TokenIDs)
 	// 流水/订单/日志按 GC-4 保留；它们只存 user_id，不含用户名/邮箱。审计里
 	// 记录匿名化后的 handle，让删除事件仍可追溯而不复述 PII。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, map[string]any{
 		"deleted_user_id":     deleted.ID,
 		"anonymized_username": fmt.Sprintf("deleted_%d", deleted.ID),
 		"tokens_deleted":      deleted.TokensDeleted,
-	}, nil, nil)
+	}, nil, nil, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// invalidateTokenCache 通过 token:changed:<id> 广播即时失效（GC-11）。
+// pub/sub 失败只记日志：缓存 60s TTL 是兜底，不能因此回滚已经完成的写操作。
+func (h *UserHandlers) invalidateTokenCache(ctx context.Context, tokenIDs []int64) {
+	for _, tokenID := range tokenIDs {
+		if err := h.rdb.Publish(ctx,
+			fmt.Sprintf("token:changed:%d", tokenID),
+			strconv.FormatInt(tokenID, 10)).Err(); err != nil {
+			h.log.Warn("publish token invalidation failed", "token_id", tokenID, "error", err)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,7 +1067,7 @@ func (h *UserHandlers) handleReset2FA(w http.ResponseWriter, r *http.Request) {
 		h.writeUserRepoError(w, "reset 2fa", err)
 		return
 	}
-	h.auditEvent(r, audit.ActionUserReset2FA, p.UserID, map[string]any{"user_id": id}, nil, nil)
+	h.auditEvent(r, audit.ActionUserReset2FA, p.UserID, map[string]any{"user_id": id}, nil, nil, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1052,7 +1098,7 @@ func (h *UserHandlers) handleResetPassword(w http.ResponseWriter, r *http.Reques
 		h.writeServiceUnavailable(w, "revoke sessions for reset-password", err)
 		return
 	}
-	tempPassword, err := generateTempPassword()
+	tempPassword, err := h.generateTempPassword()
 	if err != nil {
 		h.log.Error("generate temp password failed", "error", err)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
@@ -1078,14 +1124,16 @@ func (h *UserHandlers) handleResetPassword(w http.ResponseWriter, r *http.Reques
 	// 审计只记录「发生了重置」，绝不包含临时口令、哈希或任何口令材料。
 	h.auditEvent(r, audit.ActionUserResetPassword, p.UserID, map[string]any{
 		"user_id": id, "must_change_password": true, "temp_password_ttl_seconds": int64(tempPasswordTTL.Seconds()),
-	}, nil, nil)
+	}, nil, nil, http.StatusOK)
+	// 临时口令只应出现在本次响应：禁止任何中间层缓存。
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, adminResetPasswordResponse{TempPassword: tempPassword})
 }
 
 // generateTempPassword 用 CSPRNG 生成 16 位临时口令。字母表去掉易混淆字符；
 // 若（极小概率）命中弱口令词表则重试，保证临时口令同样满足 F-07-12 的
-// 「仍遵循口令策略」要求。
-func generateTempPassword() (string, error) {
+// 「仍遵循口令策略」要求。复用端点配置的 checker（含站点上下文词）。
+func (h *UserHandlers) generateTempPassword() (string, error) {
 	for attempt := 0; attempt < 5; attempt++ {
 		out := make([]byte, tempPasswordLength)
 		for i := range out {
@@ -1096,8 +1144,7 @@ func generateTempPassword() (string, error) {
 			out[i] = tempPasswordAlphabet[n.Int64()]
 		}
 		candidate := string(out)
-		checker := auth.NewCompromisedPasswordChecker()
-		if !checker.Check(candidate) {
+		if !h.checker.Check(candidate) {
 			return candidate, nil
 		}
 	}
@@ -1107,10 +1154,6 @@ func generateTempPassword() (string, error) {
 // ---------------------------------------------------------------------------
 // 权限矩阵
 // ---------------------------------------------------------------------------
-
-type adminPermissionsRequest struct {
-	AdminPermissions []string `json:"admin_permissions"`
-}
 
 func (h *UserHandlers) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
 	p, ok := adminPrincipal(w, r)
@@ -1235,6 +1278,9 @@ func (h *UserHandlers) writeUserRepoError(w http.ResponseWriter, op string, err 
 	case errors.Is(err, ErrAdminInsufficient):
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"the amount exceeds the current balance")
+	case errors.Is(err, ErrAdminOverflow):
+		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"the adjustment would overflow the balance")
 	case errors.Is(err, ErrAdminNoChange):
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"the adjustment would not change the balance")
@@ -1326,10 +1372,15 @@ func adminJSONEqual(a, b any) bool {
 }
 
 // auditEvent 写入管理面审计。审计失败不阻断业务（日志库独立且无跨库事务），
-// 由运维告警接手；detail/before/after 必须只含安全字段。
-func (h *UserHandlers) auditEvent(r *http.Request, action string, actor int64, detail, before, after map[string]any) {
+// 由运维告警接手；detail/before/after 必须只含安全字段。status 是本次请求
+// 实际写出的 HTTP 状态码（201/204 等），缺省按 200。
+func (h *UserHandlers) auditEvent(r *http.Request, action string, actor int64, detail, before, after map[string]any, status ...int) {
 	if h.audit == nil {
 		return
+	}
+	statusCode := http.StatusOK
+	if len(status) > 0 && status[0] > 0 {
+		statusCode = status[0]
 	}
 	event := audit.Event{
 		Action:     action,
@@ -1338,7 +1389,7 @@ func (h *UserHandlers) auditEvent(r *http.Request, action string, actor int64, d
 		UserAgent:  r.UserAgent(),
 		Method:     r.Method,
 		Route:      r.Pattern,
-		StatusCode: http.StatusOK,
+		StatusCode: statusCode,
 		Detail:     adminMarshalRaw(detail),
 		Before:     adminMarshalRaw(before),
 		After:      adminMarshalRaw(after),
@@ -1520,6 +1571,12 @@ func (b *adminBufferedResponse) copyTo(w http.ResponseWriter) {
 // ---------------------------------------------------------------------------
 // SQL 实现
 // ---------------------------------------------------------------------------
+
+// defaultAdminPermissions 是新 admin 的只读起步权限（F-07-08 矩阵默认值）。
+// 返回副本：调用方可以安全地把它交给 AuthorizeGrant 或写库。
+func defaultAdminPermissions() []string {
+	return []string{rbac.PermUsersRead, rbac.PermLogsRead}
+}
 
 // adminUserColumns 是 AdminUserRecord 的基础列序；token_count 由查询单独
 // 追加一列（列表/详情用相关子查询，写入路径用 0 占位）。
@@ -1784,12 +1841,35 @@ func (r *SQLAdminUserRepo) DeleteUser(ctx context.Context, id int64) (DeletedUse
 	if status != "disabled" {
 		return DeletedUser{}, ErrAdminNotDisabled
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = $1`, id)
+	rows, err := tx.QueryContext(ctx, `DELETE FROM api_tokens WHERE user_id = $1 RETURNING id`, id)
 	if err != nil {
 		return DeletedUser{}, fmt.Errorf("httpapi: delete user tokens: %w", err)
 	}
-	if deleted.TokensDeleted, err = res.RowsAffected(); err != nil {
-		return DeletedUser{}, fmt.Errorf("httpapi: count deleted tokens: %w", err)
+	for rows.Next() {
+		var tokenID int64
+		if err := rows.Scan(&tokenID); err != nil {
+			_ = rows.Close()
+			return DeletedUser{}, fmt.Errorf("httpapi: scan deleted token id: %w", err)
+		}
+		deleted.TokenIDs = append(deleted.TokenIDs, tokenID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return DeletedUser{}, fmt.Errorf("httpapi: iterate deleted token ids: %w", err)
+	}
+	_ = rows.Close()
+	deleted.TokensDeleted = int64(len(deleted.TokenIDs))
+	// 与自助删除（SQLAccountRepo.DeleteAccount）保持同一依赖清单：这些表都是
+	// 逻辑引用 users.id（无 FK），不清理会留下孤儿行。
+	for _, statement := range []string{
+		`DELETE FROM login_sessions WHERE user_id = $1`,
+		`DELETE FROM user_oauth_bindings WHERE user_id = $1`,
+		`DELETE FROM user_passkeys WHERE user_id = $1`,
+		`DELETE FROM checkins WHERE user_id = $1`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
+			return DeletedUser{}, fmt.Errorf("httpapi: delete user dependents: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id); err != nil {
 		return DeletedUser{}, fmt.Errorf("httpapi: delete user row: %w", err)
@@ -1847,6 +1927,11 @@ func (r *SQLAdminUserRepo) AdjustQuota(ctx context.Context, id int64, mode strin
 	var newBalance int64
 	switch mode {
 	case "add":
+		// int64 加法溢出会让 PostgreSQL 报 22003（500）；在进入 SQL 前给出
+		// 可修复的 400，并避免依赖驱动错误文本。
+		if amount > math.MaxInt64-current {
+			return QuotaAdjustment{}, ErrAdminOverflow
+		}
 		err = tx.QueryRowContext(ctx, `
 			UPDATE users SET balance = balance + $1, updated_at = now()
 			WHERE id = $2 RETURNING balance`, amount, id).Scan(&newBalance)

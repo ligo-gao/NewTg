@@ -305,10 +305,14 @@ func (m *AuthzMiddleware) Handler(required string, action AuthzAction) func(http
 // action 的 ResourceKind/ActionName 登记，动态归属不产生额外登记项。
 func (m *AuthzMiddleware) HandlerWithTarget(required string, action AuthzAction, target func(*http.Request) int64) func(http.Handler) http.Handler {
 	return m.handler(required, func(r *http.Request) AuthzAction {
+		// 闭包按引用捕获外层参数 action；直接写 action.TargetOwnerUserID 会让
+		// 并发请求互相覆盖目标归属（数据竞争，且可能把 A 的 ID 用到 B 的判定上）。
+		// 每次请求先复制再改，保持登记项只读。
+		a := action
 		if target != nil {
-			action.TargetOwnerUserID = target(r)
+			a.TargetOwnerUserID = target(r)
 		}
-		return action
+		return a
 	})
 }
 

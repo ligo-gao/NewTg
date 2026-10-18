@@ -37,6 +37,7 @@ import (
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/rbac"
 )
 
 // 认证端点的冻结常量。验证码 TTL/限流阈值来自 modules-01 F-01-02 与
@@ -66,15 +67,16 @@ const (
 
 // RFC 7807 type URI 沿用全库 https://newtg.dev/problems/<slug> 约定。
 const (
-	authProblemBadRequest         = "https://newtg.dev/problems/bad_request"
-	authProblemConflict           = "https://newtg.dev/problems/conflict"
-	authProblemForbidden          = "https://newtg.dev/problems/forbidden"
-	authProblemAccountDisabled    = "https://newtg.dev/problems/account_disabled"
-	authProblemTooManyRequests    = "https://newtg.dev/problems/too_many_requests"
-	authProblemServiceUnavailable = "https://newtg.dev/problems/service_unavailable"
-	authProblemEmailSendFailed    = "https://newtg.dev/problems/email_send_failed"
-	authProblemEmailDomainDenied  = "https://newtg.dev/problems/email_domain_not_allowed"
-	authProblemInternal           = "https://newtg.dev/problems/internal_error"
+	authProblemBadRequest          = "https://newtg.dev/problems/bad_request"
+	authProblemConflict            = "https://newtg.dev/problems/conflict"
+	authProblemForbidden           = "https://newtg.dev/problems/forbidden"
+	authProblemAccountDisabled     = "https://newtg.dev/problems/account_disabled"
+	authProblemTooManyRequests     = "https://newtg.dev/problems/too_many_requests"
+	authProblemServiceUnavailable  = "https://newtg.dev/problems/service_unavailable"
+	authProblemEmailSendFailed     = "https://newtg.dev/problems/email_send_failed"
+	authProblemEmailDomainDenied   = "https://newtg.dev/problems/email_domain_not_allowed"
+	authProblemTempPasswordExpired = "https://newtg.dev/problems/temp_password_expired"
+	authProblemInternal            = "https://newtg.dev/problems/internal_error"
 )
 
 // canonicalLanguages 是 canonical 7 语（modules-01 F-01-19 / platform-01 users.language）。
@@ -248,19 +250,30 @@ func (r *SQLAuthRepo) CreateUser(ctx context.Context, in CreateUserInput) (Creat
 
 // Load 实现 rbac.PermissionLoader。语义必须与数据库一致：
 //
-//	(nil, nil)      ← admin_permissions IS NULL（FULL）
-//	([]string{}, nil) ← 显式空数组（没有任何权限）
+//	(nil, nil)      ← role=admin 且 admin_permissions IS NULL（FULL）
+//	([]string{}, nil) ← 显式空数组，或 role=user（无论列里残留什么）
 //	error           ← 读取/解析失败，调用方必须 fail-closed
+//
+// role 与权限列在同一行读取：降权后旧会话里的 Role=admin 仍是登录时的快照，
+// 若只按 admin_permissions 判定，NULL 会被映射成 FULL，被降权的管理员可以
+// 靠旧会话继续拥有全部权限（F-07-06 / IS-B-5）。users.role 是权限真源的一部分。
 func (r *SQLAuthRepo) Load(ctx context.Context, userID int64) ([]string, error) {
-	var raw []byte
+	var (
+		raw  []byte
+		role string
+	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT admin_permissions FROM users WHERE id = $1`, userID).Scan(&raw)
+		`SELECT admin_permissions, role FROM users WHERE id = $1`, userID).Scan(&raw, &role)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 用户已被删除：权限无法确认，必须拒绝而不是退回 FULL。
 		return nil, fmt.Errorf("httpapi: load permissions: user %d not found", userID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: load permissions for user %d: %w", userID, err)
+	}
+	if role != rbac.RoleAdmin {
+		// 非 admin 行永远不是 FULL：显式空集让残留会话无法借 NULL 取得权限。
+		return []string{}, nil
 	}
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -1075,6 +1088,26 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		h.auditLogin(r, user, "failed", "account_disabled")
 		writeProblem(w, http.StatusUnauthorized, authProblemAccountDisabled, "This account has been disabled")
 		return
+	}
+
+	// 管理员下发的临时口令带 24h 有效期（F-07-12/TEMP_PWD_TTL）：有效标记由
+	// POST /api/users/{id}/reset-password 写入，用户自选新口令成功后删除。
+	// 标记缺失（过期/被清理/Redis 换库）即视为过期——绝不能因为读不到截止
+	// 时间就无限期放行临时口令。Redis 故障 fail-closed（503）。
+	if user.MustChangePassword {
+		exists, err := h.rdb.Exists(ctx, tempPasswordKeyPrefix+strconv.FormatInt(user.ID, 10)).Result()
+		if err != nil {
+			h.log.Error("check temp password ttl failed", "error", err)
+			h.auditLogin(r, user, "failed", "session_unavailable")
+			h.writeServiceUnavailable(w, "Login is temporarily unavailable")
+			return
+		}
+		if exists == 0 {
+			h.auditLogin(r, user, "failed", "temp_password_expired")
+			writeProblem(w, http.StatusUnauthorized, authProblemTempPasswordExpired,
+				"The temporary password has expired; ask an administrator to reset it")
+			return
+		}
 	}
 
 	// 连续失败计数清零。Reset 失败时保持保守：下一次失败可能提前锁定，

@@ -127,6 +127,10 @@ func cleanupAdminIntegrationUser(t *testing.T, db *sql.DB, id int64) {
 	t.Helper()
 	for _, statement := range []string{
 		`DELETE FROM wallet_transactions WHERE user_id = $1`,
+		`DELETE FROM login_sessions WHERE user_id = $1`,
+		`DELETE FROM user_oauth_bindings WHERE user_id = $1`,
+		`DELETE FROM user_passkeys WHERE user_id = $1`,
+		`DELETE FROM checkins WHERE user_id = $1`,
 		`DELETE FROM api_tokens WHERE user_id = $1`,
 		`DELETE FROM users WHERE id = $1`,
 	} {
@@ -439,5 +443,109 @@ func TestIntegrationAdminUserListAndPermissions(t *testing.T) {
 	}
 	if _, err := env.repo.SetPermissions(context.Background(), user.ID, []string{rbac.PermUsersRead}); !errors.Is(err, ErrAdminNotAdmin) {
 		t.Fatalf("SetPermissions on user err = %v, want ErrAdminNotAdmin", err)
+	}
+}
+
+// TestIntegrationAdminLoadRespectsRole 是 Critical 1 的数据库侧断言：
+// Load 必须把 users.role 与 admin_permissions 一起读取，非 admin 行的 NULL
+// 绝不映射为 FULL；陈旧 admin 会话（Role=admin）经中间件判定为 403。
+func TestIntegrationAdminLoadRespectsRole(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	authRepo := NewSQLAuthRepo(env.db)
+	var id int64
+	username := "itadm" + uniqueAuthSuffix()
+	if err := env.db.QueryRow(`INSERT INTO users (username, role) VALUES ($1, 'admin') RETURNING id`,
+		username).Scan(&id); err != nil {
+		t.Fatalf("insert admin: %v", err)
+	}
+	t.Cleanup(func() { cleanupAdminIntegrationUser(t, env.db, id) })
+
+	perms, err := authRepo.Load(context.Background(), id)
+	if err != nil || perms != nil {
+		t.Fatalf("admin NULL perms = %v (err=%v), want nil=FULL", perms, err)
+	}
+
+	// 降权后同一行的 NULL 权限必须变成显式空集，而不是 FULL。
+	if _, err := env.db.Exec(`UPDATE users SET role = 'user' WHERE id = $1`, id); err != nil {
+		t.Fatalf("demote: %v", err)
+	}
+	perms, err = authRepo.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load after demote: %v", err)
+	}
+	if perms == nil {
+		t.Fatal("非 admin 行的 NULL 权限被映射为 FULL")
+	}
+	if len(perms) != 0 {
+		t.Fatalf("非 admin 行权限 = %v, want empty", perms)
+	}
+
+	// 陈旧 admin 会话（Role=admin + Permissions=nil）经中间件解析后 403。
+	authz := rbac.NewAuthzMiddleware()
+	authz.SetPermissionLoader(authRepo)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	handler := authz.Handler(rbac.PermUsersRead, rbac.AuthzAction{ResourceKind: "user", ActionName: "read"})(next)
+	stale := &auth.Principal{UserID: id, Role: rbac.RoleAdmin}
+	req := httptest.NewRequest(http.MethodGet, "/api/users", nil).
+		WithContext(auth.WithPrincipal(context.Background(), stale))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("降权后的陈旧会话 status = %d, want 403", rr.Code)
+	}
+
+	// 重新提权后（NULL=FULL）同一会话判定恢复放行。
+	if _, err := env.db.Exec(`UPDATE users SET role = 'admin' WHERE id = $1`, id); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/users", nil).
+		WithContext(auth.WithPrincipal(context.Background(), stale))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("重新提权后 status = %d, want 204", rr.Code)
+	}
+}
+
+// TestIntegrationAdminDeleteCascadesDependents 证明管理员硬删除与自助删除
+// （SQLAccountRepo.DeleteAccount）清理同一组逻辑引用表。
+func TestIntegrationAdminDeleteCascadesDependents(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	user := createIntegrationUser(t, env.repo, "default")
+
+	suffix := uniqueAuthSuffix()
+	if _, err := env.db.Exec(`INSERT INTO login_sessions (session_id_hash, user_id) VALUES ($1, $2)`,
+		"itsess"+suffix, user.ID); err != nil {
+		t.Fatalf("insert login_session: %v", err)
+	}
+	if _, err := env.db.Exec(`INSERT INTO user_oauth_bindings (user_id, provider, provider_user_id)
+		VALUES ($1, 'github', $2)`, user.ID, "itgh"+suffix); err != nil {
+		t.Fatalf("insert oauth binding: %v", err)
+	}
+	if _, err := env.db.Exec(`INSERT INTO user_passkeys (user_id, name, credential_id, public_key)
+		VALUES ($1, 'key', $2, $3)`, user.ID, []byte("cred"+suffix), []byte("pk"+suffix)); err != nil {
+		t.Fatalf("insert passkey: %v", err)
+	}
+	if _, err := env.db.Exec(`INSERT INTO checkins (user_id, checkin_date, quota_awarded)
+		VALUES ($1, CURRENT_DATE, 0)`, user.ID); err != nil {
+		t.Fatalf("insert checkin: %v", err)
+	}
+
+	if _, _, err := env.repo.SetStatus(context.Background(), user.ID, "disabled", nil); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := env.repo.DeleteUser(context.Background(), user.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	for _, table := range []string{
+		"login_sessions", "user_oauth_bindings", "user_passkeys", "checkins",
+	} {
+		var count int64
+		if err := env.db.QueryRow(`SELECT count(*) FROM `+table+` WHERE user_id = $1`, user.ID).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s 仍有 %d 行孤儿记录", table, count)
+		}
 	}
 }

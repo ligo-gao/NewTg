@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"newtg/gateway/internal/api/dto"
@@ -767,5 +769,53 @@ func TestHandlerWithTargetResolvesOwnershipPerRequest(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent || !nextCalled {
 		t.Fatalf("非法 ID status = %d（next=%v），期望交下游处理", rr.Code, nextCalled)
+	}
+}
+
+// HandlerWithTarget 的归属解析必须是每请求独立的：闭包若直接修改捕获的
+// action 变量，并发请求会互相覆盖 TargetOwnerUserID（数据竞争 + 跨用户
+// 归属污染）。这里让本人/他人请求交错执行，断言状态码始终与各自路径一致。
+func TestHandlerWithTargetConcurrentOwnership(t *testing.T) {
+	m := NewAuthzMiddleware()
+	action := AuthzAction{ResourceKind: "user", ActionName: "read"}
+	target := func(r *http.Request) int64 {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id <= 0 {
+			return 0
+		}
+		return id
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := m.HandlerWithTarget("", action, target)(next)
+	p := user(7)
+
+	const workers = 64
+	var wg sync.WaitGroup
+	problems := make(chan string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := strconv.Itoa(7 + i%2) // 偶数=本人(7)，奇数=他人(8)
+			req := httptest.NewRequest(http.MethodGet, "/api/users/"+id, nil)
+			req.SetPathValue("id", id)
+			req = req.WithContext(auth.WithPrincipal(context.Background(), &p))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			want := http.StatusNotFound
+			if id == "7" {
+				want = http.StatusNoContent
+			}
+			if rr.Code != want {
+				problems <- fmt.Sprintf("id=%s status=%d want=%d", id, rr.Code, want)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(problems)
+	for problem := range problems {
+		t.Error(problem)
 	}
 }

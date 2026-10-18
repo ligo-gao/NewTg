@@ -64,6 +64,11 @@ const (
 	ActionUserReset2FA      = "user.reset_2fa"
 	ActionUserResetPassword = "user.reset_password"
 
+	// ActionGroup* 是 modules-07 F-07-10 的用户分组管理事件（operation 类）。
+	ActionGroupCreate = "group.create"
+	ActionGroupUpdate = "group.update"
+	ActionGroupDelete = "group.delete"
+
 	// ActionSystemInitialized 是 modules-01 F-01-20 冻结的首次初始化事件。
 	// 它不属于某个用户的日常操作，但在审计面上必须可查（验收：初始化动作
 	// 在审计日志可查），故归于 operation 类。
@@ -111,6 +116,10 @@ var actionCategories = map[string]string{
 	ActionUserQuotaAdjust:   categoryOperation,
 	ActionUserReset2FA:      categoryOperation,
 	ActionUserResetPassword: categoryOperation,
+
+	ActionGroupCreate: categoryOperation,
+	ActionGroupUpdate: categoryOperation,
+	ActionGroupDelete: categoryOperation,
 
 	ActionSystemInitialized: categoryOperation,
 }

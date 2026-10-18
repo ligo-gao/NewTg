@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"newtg/gateway/internal/rbac"
@@ -128,6 +129,9 @@ func TestGroupsSystemAndReferenceRules(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("删除被引用分组 status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
 	}
+	if !strings.Contains(rr.Body.String(), "by 3") {
+		t.Fatalf("409 detail 未带引用计数：%q", rr.Body.String())
+	}
 	rr = env.request(admin, http.MethodPatch, "/api/groups/vip", map[string]any{"name": "vip2"})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("改名被引用分组 status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
@@ -178,10 +182,42 @@ func TestGroupsPagination(t *testing.T) {
 	if list.Page != 2 || list.PageSize != 1 || list.Total != 2 || len(list.Items) != 1 {
 		t.Fatalf("分页 = %+v，期望 page=2 size=1 total=2 items=1", list)
 	}
-	for _, path := range []string{"/api/groups?p=0", "/api/groups?page_size=101"} {
+	for _, path := range []string{"/api/groups?p=0", "/api/groups?p=1000001", "/api/groups?page_size=101"} {
 		rr = env.request(fullAdmin(), http.MethodGet, path, nil)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("%s status = %d，期望 400", path, rr.Code)
 		}
+	}
+}
+
+// TestGroupsAuditActions：分组三类变更必须落审计，动作名随 detail.action
+// 记录（audit_logs 没有独立 action 列），且 before/after 不含敏感材料。
+func TestGroupsAuditActions(t *testing.T) {
+	env := newAdminTestEnv(t)
+	admin := fullAdmin()
+
+	rr := env.request(admin, http.MethodPost, "/api/groups",
+		map[string]any{"name": "auditgrp", "description": "first"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(admin, http.MethodPatch, "/api/groups/auditgrp",
+		map[string]any{"description": "second"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(admin, http.MethodDelete, "/api/groups/auditgrp", nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	captured := env.audit.concatenatedArgs()
+	for _, want := range []string{"group.create", "group.update", "group.delete"} {
+		if !strings.Contains(captured, want) {
+			t.Fatalf("审计缺少 %s：%q", want, captured)
+		}
+	}
+	if strings.Contains(captured, "password") {
+		t.Fatalf("分组审计不应包含口令字段：%q", captured)
 	}
 }
