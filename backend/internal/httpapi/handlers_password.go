@@ -595,6 +595,12 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 	}
 	// 用户已自选新口令：临时口令的 24h 有效期标记随之作废（F-07-12）。
 	h.clearTempPasswordMarker(ctx, user.ID)
+	// must_change_password 已由 UpdatePasswordHash 清除，同步解除受限标记。
+	// 删除失败不把已完成的改密回报为失败：下一次成功登录会自愈清理
+	// （handlers_auth.go 的 else 分支）。
+	if err := h.sessions.ClearPasswordChangeRequired(ctx, user.ID); err != nil {
+		h.log.Error("clear password change restriction after reset failed", "user_id", user.ID, "error", err)
+	}
 	// 凭证已变更：旧凭证换来的再认证窗口不得继续授权敏感操作（best-effort）。
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after reset failed", "error", err)
@@ -723,6 +729,12 @@ func (h *passwordHandlers) handleChangePassword(w http.ResponseWriter, r *http.R
 	}
 	// 用户已自选新口令：临时口令的有效期标记不再有意义（F-07-12）。
 	h.clearTempPasswordMarker(ctx, user.ID)
+	// must_change_password 已由 UpdatePasswordHash 清除；删除按用户的受限标记，
+	// 让当前会话立即恢复完整权限。删除失败不把已完成的改密回报为失败：
+	// 下一次成功登录会自愈清理（handlers_auth.go 的 else 分支）。
+	if err := h.sessions.ClearPasswordChangeRequired(ctx, user.ID); err != nil {
+		h.log.Error("clear password change restriction failed", "user_id", user.ID, "error", err)
+	}
 	if err := auth.ClearReauthWindow(ctx, h.rdb, user.ID); err != nil {
 		h.log.Error("clear reauth window after password change failed", "error", err)
 	}

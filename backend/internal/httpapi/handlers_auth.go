@@ -22,7 +22,6 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -620,7 +619,20 @@ type statusTurnstile struct {
 	SiteKey string `json:"site_key"`
 }
 
-func (h *authHandlers) handleStatus(w http.ResponseWriter, _ *http.Request) {
+func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// B8 公开只读面 60 次/分钟/IP+path（security-07 §2.1，冻结值）。
+	// 公开面按 §2.3 fail-open：Redis 故障时放行并告警，绝不因限流器故障
+	// 让登录/注册页的 status 探测整体不可用。
+	ip := clientIP(r)
+	over, retry, err := h.allowRequestRate(r.Context(),
+		PublicReadRateLimitKey(ip, r.URL.Path), PublicReadRateLimit, PublicReadRateWindow)
+	if err != nil {
+		h.log.Warn("status request rate limiter unavailable; failing open", "error", err)
+	} else if over {
+		writeRateLimited(w, retry, "Too many requests")
+		return
+	}
+
 	langs := make([]string, len(canonicalLanguages))
 	copy(langs, canonicalLanguages)
 	// 站点开关变更要求即时反映到登录/注册页，禁止中间层缓存公开状态。
@@ -743,6 +755,22 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Registration is disabled")
 		return
 	}
+	// B3 注册请求速率桶 3 次/分钟/IP（security-07 §2.1，modules-08 F-08-16）。
+	// 放在 body 解析之前：畸形/垃圾请求同样计数，先于任何解析与 KDF 成本。
+	// 认证面 Redis 故障 fail-closed（§2.3：503 + 有界 Retry-After）。
+	ip := clientIP(r)
+	over, retry, err := h.allowRequestRate(r.Context(),
+		RegisterRateLimitKey(ip), RegisterRateLimit, RegisterRateWindow)
+	if err != nil {
+		h.log.Error("registration request rate limiter unavailable", "error", err)
+		h.writeServiceUnavailable(w, "Registration is temporarily unavailable")
+		return
+	}
+	if over {
+		writeRateLimited(w, retry, "Too many registration requests")
+		return
+	}
+
 	var req registerRequest
 	if err := readAuthJSON(r, &req); err != nil {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
@@ -831,7 +859,7 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	grantReserved := false
 	grantSuppressed := false
 	if bonus > 0 {
-		allowed, err := h.reserveSignupGrant(r.Context(), clientIP(r))
+		allowed, err := h.reserveSignupGrant(r.Context(), ip)
 		switch {
 		case err != nil:
 			// 反滥用计数不可用时跳过发放，但绝不阻塞注册（可用性优先于赠送）。
@@ -855,7 +883,7 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil && grantReserved {
 		// 用户行没有创建成功 → 赠送不会发生 → 归还预占的 IP 槽位。
-		h.releaseSignupGrantSlot(context.WithoutCancel(r.Context()), clientIP(r))
+		h.releaseSignupGrantSlot(context.WithoutCancel(r.Context()), ip)
 	}
 	if errors.Is(err, ErrDuplicateUser) {
 		h.writeDuplicateUser(w)
@@ -872,7 +900,7 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if grantSuppressed {
-		h.alertSignupGrantSuppressed(r.Context(), created.ID, clientIP(r))
+		h.alertSignupGrantSuppressed(r.Context(), created.ID, ip)
 	}
 
 	user := &UserRecord{
@@ -1028,6 +1056,24 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ip := clientIP(r)
 
+	// B1 登录请求速率桶 5 次/分钟/IP+identifier（security-07 §2.1，modules-08
+	// F-08-16）。它在失败锁定 B2 之前计数，覆盖「低频但持续」的凭据填充：
+	// B2 只在连续 5 次失败后锁 15 分钟，B1 则限制任意 1 分钟内的请求总量。
+	// 认证面 Redis 故障 fail-closed（§2.3：503 + 有界 Retry-After）。
+	over, retry, err := h.allowRequestRate(ctx,
+		LoginRateLimitKey(ip, identifier), LoginRateLimit, LoginRateWindow)
+	if err != nil {
+		h.log.Error("login request rate limiter unavailable", "error", err)
+		h.auditLogin(r, nil, "failed", "limiter_unavailable")
+		h.writeServiceUnavailable(w, "Login is temporarily unavailable")
+		return
+	}
+	if over {
+		h.auditLogin(r, nil, "failed", "rate_limited")
+		writeRateLimited(w, retry, "Too many login requests")
+		return
+	}
+
 	// 锁定预检查：已知 identifier 的双桶在此拦截，避免锁定期间仍消耗 DB/argon2。
 	if err := h.limiter.Check(ctx, ip, identifier); err != nil {
 		h.auditLogin(r, nil, "failed", limiterReason(err))
@@ -1107,6 +1153,24 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, http.StatusUnauthorized, authProblemTempPasswordExpired,
 				"The temporary password has expired; ask an administrator to reset it")
 			return
+		}
+	}
+
+	// 强制改密状态（modules-01 F-01-03 / F-07-12）：按用户写入 Redis 受限标记，
+	// SessionAuth 据此只放行登出/自读/改密/2FA 端点。写入失败 fail-closed——否则
+	// 临时口令会换来一个不受限的完整会话。
+	if user.MustChangePassword {
+		if err := h.sessions.MarkPasswordChangeRequired(ctx, user.ID); err != nil {
+			h.log.Error("mark password change required failed", "user_id", user.ID, "error", err)
+			h.auditLogin(r, user, "failed", "session_unavailable")
+			h.writeServiceUnavailable(w, "Login is temporarily unavailable")
+			return
+		}
+	} else {
+		// 自愈：历史改密若在删除标记时遇到 Redis 故障，残留标记会让用户被
+		// 永久卡在受限态。DB 真源已声明 flag=false，下次成功登录时清除。
+		if err := h.sessions.ClearPasswordChangeRequired(ctx, user.ID); err != nil {
+			h.log.Warn("clear stale password change restriction failed", "user_id", user.ID, "error", err)
 		}
 	}
 
@@ -1384,16 +1448,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// clientIP 只取连接地址：X-Forwarded-For 在未配置可信代理时可由客户端伪造，
-// 用它做登录限流等于把攻击者可控值放进风控键（security-07）。
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil {
-		return host
-	}
-	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func normalizeEmail(email string) string {

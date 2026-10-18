@@ -800,7 +800,20 @@ func (h *TwoFAHandlers) confirmPassword(w http.ResponseWriter, r *http.Request, 
 // startTwoFASession 建 Redis 会话并签发 CSRF 令牌，写两个 Cookie。
 // 与 handlers_auth.go 的 startSession 同口径；独立实现是因为 2FA 处理器
 // 不持有 authHandlers（路由拥有者可以单独装配本文件）。
+//
+// must_change_password：登录路径在口令通过后就会写受限标记，但存在
+// 「ticket 在管理员重置口令之前签发」的竞态（重置只吊销会话，不清理
+// pending ticket）。这里用 challenge 时重新读取的 users 行再确认一次，
+// 保证 2FA 路径签发的会话同样受限（auth/restriction.go）。
 func (h *TwoFAHandlers) startTwoFASession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *TwoFAUser) error {
+	if user.MustChangePassword {
+		if err := h.sessions.MarkPasswordChangeRequired(ctx, user.ID); err != nil {
+			return err
+		}
+	} else if err := h.sessions.ClearPasswordChangeRequired(ctx, user.ID); err != nil {
+		// 自愈清理失败只记日志：DB 真源声明无需改密，不因残留标记阻断 2FA。
+		h.log.Warn("clear stale password change restriction failed", "user_id", user.ID, "error", err)
+	}
 	sid, err := h.sessions.Create(ctx, user.ID, auth.SessionOpts{
 		UA:   r.UserAgent(),
 		IP:   clientIP(r),

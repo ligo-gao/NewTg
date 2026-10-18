@@ -1,0 +1,208 @@
+// 本文件实现 security-07 §2.4 的客户端标识信任边界（TRUSTED_PROXIES）。
+//
+// 唯一取值路径：所有 IP 维限流桶（B1/B3/B4/B5/B8/B9/B17）与审计字段都经
+// clientIP 取得客户端地址。解析规则：
+//   - 仅当直连 peer（RemoteAddr）属于 TRUSTED_PROXIES 时才采信
+//     X-Forwarded-For；否则一律使用 RemoteAddr（空清单 = 永不信任头）。
+//   - 采信时从右向左遍历 XFF（右侧是最近的代理），跳过可信代理，第一个
+//     不可信地址即客户端。伪造在左侧的条目不生效。
+//   - XFF 中出现任何无法解析的条目时整体回退直连 peer（fail-closed）：
+//     半信半疑地挑一个「合法」条目会让攻击者用垃圾前缀影响结果。
+//   - 信任清单里的畸形条目被忽略（不因单条写错而信任全部）；生产要求填
+//     edge 网段，禁止 0.0.0.0/0（security-07 §2.4 / R-07-8）。
+//
+// 配置来源：config.Config.TrustedProxies（底层环境变量 TRUSTED_PROXIES）。
+// 路由装配方应在开始服务前调用 ConfigureTrustedProxies(cfg.TrustedProxies)；
+// 未接线时包初始化会直接读取同一环境变量，保证两种装配方式语义一致。
+package httpapi
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"strings"
+	"sync/atomic"
+)
+
+// trustedProxiesEnv 与 config.Config 的 TRUSTED_PROXIES 保持同一来源。
+const trustedProxiesEnv = "TRUSTED_PROXIES"
+
+// trustedProxySet 是不可变解析结果；通过 atomic.Pointer 整体替换，
+// 允许装配期/测试并发读取而不加锁。
+type trustedProxySet struct {
+	prefixes []netip.Prefix
+}
+
+var configuredTrustedProxies atomic.Pointer[trustedProxySet]
+
+func init() {
+	// 与 config.load 相同：逗号分隔的 CIDR/IP。畸形条目被忽略（fail-closed）。
+	set, _ := parseTrustedProxies(os.Getenv(trustedProxiesEnv))
+	configuredTrustedProxies.Store(set)
+}
+
+// ConfigureTrustedProxies 解析并安装 TRUSTED_PROXIES 列表。合法条目立即生效；
+// 畸形条目被忽略并通过返回错误报告（装配方决定记录还是拒绝启动）。空串表示
+// 「永不信任 X-Forwarded-For」。
+func ConfigureTrustedProxies(raw string) error {
+	set, invalid := parseTrustedProxies(raw)
+	configuredTrustedProxies.Store(set)
+	if len(invalid) > 0 {
+		return fmt.Errorf("httpapi: %s contains invalid entries (ignored): %s",
+			trustedProxiesEnv, strings.Join(invalid, ", "))
+	}
+	return nil
+}
+
+// parseTrustedProxies 把逗号分隔的 CIDR/IP 解析为前缀集合。
+// 单个 IP 按 /32（IPv4）或 /128（IPv6）处理；IPv4-mapped IPv6 前缀统一
+// 归一化为 IPv4 语义，避免同一网段因书写形式不同而失配。
+func parseTrustedProxies(raw string) (*trustedProxySet, []string) {
+	set := &trustedProxySet{}
+	var invalid []string
+	for _, part := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		var prefix netip.Prefix
+		if strings.Contains(entry, "/") {
+			p, err := netip.ParsePrefix(entry)
+			if err != nil {
+				invalid = append(invalid, entry)
+				continue
+			}
+			prefix = p
+		} else {
+			addr, err := netip.ParseAddr(entry)
+			if err != nil {
+				invalid = append(invalid, entry)
+				continue
+			}
+			addr = addr.Unmap()
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		normalized, ok := normalizeTrustedPrefix(prefix)
+		if !ok {
+			invalid = append(invalid, entry)
+			continue
+		}
+		set.prefixes = append(set.prefixes, normalized)
+	}
+	return set, invalid
+}
+
+// normalizeTrustedPrefix 归一化前缀并拒绝不可用形态。
+// IPv4-mapped IPv6 前缀（::ffff:a.b.c.d/N）转换为 IPv4 前缀；N<96 的映射
+// 前缀覆盖范围无法用 IPv4 语义表达，按畸形条目拒绝（fail-closed）。
+func normalizeTrustedPrefix(p netip.Prefix) (netip.Prefix, bool) {
+	if !p.IsValid() {
+		return netip.Prefix{}, false
+	}
+	if p.Addr().Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, false
+		}
+		return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96).Masked(), true
+	}
+	return p.Masked(), true
+}
+
+// clientIP 是包内共享入口：使用进程级 TRUSTED_PROXIES 配置解析客户端地址。
+func clientIP(r *http.Request) string {
+	set := configuredTrustedProxies.Load()
+	if set == nil {
+		return remoteHost(r.RemoteAddr)
+	}
+	return resolveClientIP(r, set.prefixes)
+}
+
+// resolveClientIP 实现 §2.4 的解析算法。它接受显式信任列表（测试与
+// 未来按请求覆盖使用），空列表 = 永不信任 XFF。
+func resolveClientIP(r *http.Request, trustedProxies []netip.Prefix) string {
+	rawPeer := remoteHost(r.RemoteAddr)
+	peer, ok := parseClientAddr(rawPeer)
+	if !ok || !addrInPrefixes(peer, trustedProxies) {
+		// 直连 peer 不可解析或不可信：XFF 完全不可采信。
+		return rawPeer
+	}
+
+	forwarded, ok := forwardedChain(r.Header.Values("X-Forwarded-For"))
+	if !ok {
+		return peer.String()
+	}
+	if len(forwarded) == 0 {
+		return peer.String()
+	}
+
+	client := peer
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		if !addrInPrefixes(forwarded[i], trustedProxies) {
+			return forwarded[i].String()
+		}
+		client = forwarded[i]
+	}
+	// 全部条目都属可信网段：最左侧就是链的起点。
+	return client.String()
+}
+
+// remoteHost 从 RemoteAddr 提取主机部分。非标准值（集成测试用 "it-xxx:1234"
+// 之类的占位符）原样返回，保证与旧行为一致。
+func remoteHost(remoteAddr string) string {
+	raw := strings.TrimSpace(remoteAddr)
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.TrimSpace(host)
+	}
+	return raw
+}
+
+func parseClientAddr(raw string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+// forwardedChain 解析全部 X-Forwarded-For 行（多行按出现顺序拼接）。
+// 任一非空条目无法解析即整体判为不可信（ok=false）。
+func forwardedChain(values []string) ([]netip.Addr, bool) {
+	var out []netip.Addr
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			addr, ok := parseClientAddr(part)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, addr)
+		}
+	}
+	return out, true
+}
+
+func addrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() {
+			continue
+		}
+		// 调用方可能直接传入未归一化的 IPv4-mapped 前缀（resolveClientIP 是
+		// 可注入列表的测试/覆盖入口）；此处再做一次廉价归一化，保证与
+		// parseTrustedProxies 的语义一致。
+		if prefix.Addr().Is4In6() {
+			if prefix.Bits() < 96 {
+				continue
+			}
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
+		}
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}

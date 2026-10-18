@@ -926,6 +926,9 @@ func TestAuthLoginLocksAfterFiveFailures(t *testing.T) {
 	if rr := env2.login("bob", authTestPassword); rr.Code != http.StatusOK {
 		t.Fatalf("4 次失败后正确登录 status = %d，期望 200", rr.Code)
 	}
+	// B1 请求速率桶（5/分钟/IP+identifier）与失败锁定 B2 是独立计数：上面
+	// 5 次请求已用满当前一分钟窗口，推进窗口后再验证「成功清零失败计数」。
+	env2.mr.FastForward(LoginRateWindow + time.Second)
 	for i := 0; i < LoginMaxFailures-1; i++ {
 		env2.login("bob", "WrongPassword1!")
 	}
@@ -1280,7 +1283,14 @@ func (f *fakeAuditExec) snapshot() [][]any {
 // 503 + Retry-After，并提示「账号可能已创建，请尝试登录」，不能返回 500。
 func TestAuthRegisterSessionFailureReturns503(t *testing.T) {
 	env := newAuthTestEnv(t, nil, authTestOptions{})
-	env.mr.Close() // 会话创建（Redis）失败；用户创建（fake repo）仍会成功
+	// 只让「会话创建」失败，保留 h.rdb 供 B3 注册请求速率桶使用；否则 B3
+	// fail-closed 会在用户创建之前返回 503，覆盖不到本用例的「账号已提交、
+	// 建会话失败」路径。
+	deadMR := miniredis.RunT(t)
+	deadRDB := redis.NewClient(&redis.Options{Addr: deadMR.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = deadRDB.Close() })
+	deadMR.Close()
+	env.router.handlers.sessions = auth.NewSessionManager(deadRDB, []byte(testSessionSecret))
 
 	rr := env.request(http.MethodPost, "/api/auth/register",
 		registerPayload("alice", "alice@example.com", "N7x!qPz2wR", ""), nil)
@@ -1323,8 +1333,19 @@ func TestAuthRegisterSignupGrantAntiAbuse(t *testing.T) {
 	})
 
 	for i := 0; i < 4; i++ {
+		mutate := func(*http.Request) {}
+		if i == 3 {
+			// B3 注册桶（3/分钟/IP）会先拦住第 4 次注册；本用例验证的是
+			// 「赠送反滥用上限」而非请求速率，因此第 4 次换一个客户端 IP，
+			// 并把该 IP 的赠送槽位预置为 3，继续命中「超限不发放」分支。
+			const fourthIP = "192.0.2.2"
+			if err := env.mr.Set("signup_grant:ip:"+sha256Hex(fourthIP), "3"); err != nil {
+				t.Fatalf("预置赠送槽位: %v", err)
+			}
+			mutate = func(r *http.Request) { r.RemoteAddr = fourthIP + ":1234" }
+		}
 		rr := env.request(http.MethodPost, "/api/auth/register",
-			registerPayload("grant"+strconv.Itoa(i), "grant"+strconv.Itoa(i)+"@example.com", "N7x!qPz2wR", ""), nil)
+			registerPayload("grant"+strconv.Itoa(i), "grant"+strconv.Itoa(i)+"@example.com", "N7x!qPz2wR", ""), mutate)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("第 %d 个注册 status = %d，期望 201（body=%q）", i+1, rr.Code, rr.Body.String())
 		}
