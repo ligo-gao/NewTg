@@ -12,6 +12,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/clientip"
 )
 
 // 本文件是 Task 13 的 Turnstile 单元验收（F-01-26）。校验服务用 httptest
@@ -301,6 +303,35 @@ func TestTurnstileBodyPreservedAndRemoteIPForwarded(t *testing.T) {
 	}
 	if form.Get("secret") != "secret-key" {
 		t.Fatalf("siteverify secret = %q", form.Get("secret"))
+	}
+}
+
+// TestTurnstileRemoteIPHonorsTrustedProxies：边缘部署（TRUSTED_PROXIES 已配置）
+// 时 remoteip 必须与限流/审计使用同一解析器，取真实客户端而非 edge IP。
+func TestTurnstileRemoteIPHonorsTrustedProxies(t *testing.T) {
+	t.Cleanup(func() { _ = clientip.Configure("") })
+	if err := clientip.Configure("10.0.0.0/8"); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	stub, srv := newTurnstileStub(t)
+	_, rdb := newTurnstileTestRedis(t)
+
+	settings := TurnstileSettings{Enabled: true, SiteKey: "site-key", SecretKey: "secret-key"}
+	h := TurnstileMiddleware(turnstileConfig(TurnstileEndpointLogin, srv.URL, settings, rdb))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	raw := `{"identifier":"alice","password":"x","turnstile_token":"token-edge"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+	req.RemoteAddr = "10.0.0.2:4321"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("合法令牌状态码 = %d，期望放行（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := stub.form().Get("remoteip"); got != "198.51.100.7" {
+		t.Fatalf("remoteip = %q，期望可信代理解析后的客户端 198.51.100.7", got)
 	}
 }
 

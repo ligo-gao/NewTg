@@ -19,6 +19,7 @@ import (
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/clientip"
 )
 
 // wantCatalog 是 brief 与 modules-07 F-07-08 逐字冻结的 20 键目录。
@@ -497,6 +498,23 @@ func TestAuthzContextUsesServerObservedValues(t *testing.T) {
 	}
 	if got.SessionID != "sess-abc" {
 		t.Fatalf("SessionID = %q，期望会话 Cookie 值", got.SessionID)
+	}
+}
+
+// TestAuthzContextHonorsTrustedProxies：边缘部署（TRUSTED_PROXIES 已配置）时
+// 风控上下文必须与限流/审计使用同一解析器，拿到真实客户端地址而不是 edge IP。
+func TestAuthzContextHonorsTrustedProxies(t *testing.T) {
+	t.Cleanup(func() { _ = clientip.Configure("") })
+	if err := clientip.Configure("10.0.0.0/8"); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	req.RemoteAddr = "10.0.0.2:41234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	if got := ContextFromRequest(req).ClientIP; got != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q，期望可信代理解析后的客户端 203.0.113.7", got)
 	}
 }
 

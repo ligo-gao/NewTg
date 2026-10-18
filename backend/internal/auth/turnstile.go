@@ -7,7 +7,8 @@ package auth
 //     一律拒绝，绝不因为「拿不准」放行（I-10）；
 //   - 令牌一次性且绑定接入点：成功校验后把 sha256(token) 以 SET NX 写入 Redis，
 //     同一 token 在任何接入点再次出现都拒绝（I-11）；
-//   - siteverify 必须携带 remoteip，且只取连接地址（不信任 X-Forwarded-For）；
+//   - siteverify 必须携带 remoteip，经内部 clientip 解析器取值（TRUSTED_PROXIES
+//     为空时只取连接地址，不信任 X-Forwarded-For；配置 edge 网段时取真实客户端）；
 //   - 5 个接入点名称冻结为常量，中间件顺序由装配方保证：限流在外、Turnstile 在内。
 //
 // 本中间件只依赖 net/http 与 Redis，不依赖 httpapi（避免 import cycle），
@@ -23,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,6 +32,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/api/dto"
+	"newtg/gateway/internal/clientip"
 )
 
 const (
@@ -222,14 +223,11 @@ func turnstileTokenFromRequest(r *http.Request, maxBody int64) (string, error) {
 	return strings.TrimSpace(payload.TurnstileToken), nil
 }
 
-// turnstileRemoteIP 只取连接地址。X-Forwarded-For 在未配置可信代理时可由
-// 客户端伪造，放进 siteverify 的 remoteip 等于让攻击者自选绑定值。
+// turnstileRemoteIP 经 internal/clientip 解析（与限流/风控同一信任边界）。
+// TRUSTED_PROXIES 为空时只取连接地址；X-Forwarded-For 只有在直连 peer 属于
+// 可信代理时才被采信，避免攻击者自选 siteverify 的 remoteip 绑定值。
 func turnstileRemoteIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil {
-		return host
-	}
-	return strings.TrimSpace(r.RemoteAddr)
+	return clientip.ClientIP(r)
 }
 
 // verifyTurnstileToken 调用 siteverify。任何非 200/网络错误/解析失败都

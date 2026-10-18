@@ -9,13 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/clientip"
 )
 
 // RFC 7807 type URI 沿用全库 https://newtg.dev/problems/<slug> 约定。
@@ -563,14 +563,13 @@ func isWriteMethod(method string) bool {
 
 // ContextFromRequest 采集服务端可信上下文，供 Authorize/Handler 使用。
 //
-// ClientIP 只取 RemoteAddr：X-Forwarded-For 等头在未配置可信代理时可由客户端
-// 任意伪造，用它做风控信号等于把攻击者可控值送进风险带。UA 只存 SHA-256，
-// 与 security-01 的会话元数据口径一致，避免把设备指纹原文落库/落日志。
+// ClientIP 经 internal/clientip 解析（TRUSTED_PROXIES 感知）：空配置时只取
+// RemoteAddr、不信任 X-Forwarded-For；配置了 edge 网段时取真实客户端地址。
+// 与限流/审计/Turnstile 共用同一解析器，避免边缘部署下风控信号退化为 edge IP。
+// UA 只存 SHA-256，与 security-01 的会话元数据口径一致，避免把设备指纹原文
+// 落库/落日志。
 func ContextFromRequest(r *http.Request) AuthzCtx {
-	ip := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
+	ip := clientip.ClientIP(r)
 	sum := sha256.Sum256([]byte(r.UserAgent()))
 	sid := ""
 	if c, err := r.Cookie(auth.SessionCookieName); err == nil {

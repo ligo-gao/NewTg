@@ -350,6 +350,8 @@ func TestLoginMustChangePasswordRestrictedSession(t *testing.T) {
 		"PUT /api/self/setting",
 		"POST /api/password",
 		"POST /api/2fa/setup",
+		"GET /api/2fa/setup",
+		"POST /api/2fa/future",
 		"POST /api/tokens",
 	} {
 		env.router.HandleProtected(pattern, captureHandler(&seen))
@@ -394,6 +396,14 @@ func TestLoginMustChangePasswordRestrictedSession(t *testing.T) {
 
 	if rr := do(http.MethodPost, "/api/tokens"); rr.Code != http.StatusForbidden {
 		t.Errorf("非白名单 POST /api/tokens status = %d，期望 403", rr.Code)
+	}
+	// 2FA 白名单只放行 4 个明确的 POST 路由：方法不匹配或未来新增的子路由
+	// 不得被自动放行。
+	if rr := do(http.MethodGet, "/api/2fa/setup"); rr.Code != http.StatusForbidden {
+		t.Errorf("GET /api/2fa/setup status = %d，期望 403（白名单仅 POST）", rr.Code)
+	}
+	if rr := do(http.MethodPost, "/api/2fa/future"); rr.Code != http.StatusForbidden {
+		t.Errorf("POST /api/2fa/future status = %d，期望 403（未登记子路由）", rr.Code)
 	}
 
 	// 清除标记（等价于改密成功）：受限解除。
@@ -512,5 +522,59 @@ func TestTwoFAChallengeMarksPasswordChangeRestriction(t *testing.T) {
 	}
 	if !restricted {
 		t.Fatal("must_change_password 用户在 2FA challenge 后必须处于受限态")
+	}
+}
+
+// TestBearerTokenRestrictedByPasswordChange：受限状态也约束 Bearer 路径。
+// 管理员重置口令只吊销会话、不吊销 nkt- 令牌；若 Bearer 分支不检查，
+// 旧令牌仍能访问全部管理端点，违背「改密前不得访问」。
+func TestBearerTokenRestrictedByPasswordChange(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newTestSessions(t)
+	if err := m.MarkPasswordChangeRequired(ctx, 7); err != nil {
+		t.Fatalf("MarkPasswordChangeRequired: %v", err)
+	}
+
+	token := "nkt-" + strings.Repeat("a", 32)
+	lookup := &fakeTokenLookup{metas: map[string]*auth.TokenMeta{
+		auth.HashTokenKey(token): {ID: 9, UserID: 7, Status: "enabled", UnlimitedQuota: true},
+	}}
+	var seen *auth.Principal
+	h := SessionAuth(m, lookup)(captureHandler(&seen))
+	do := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		return serve(h, req)
+	}
+
+	blocked := do(http.MethodGet, "/api/whoami")
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("受限用户旧令牌访问受保护端点 status = %d，期望 403（body=%q）",
+			blocked.Code, blocked.Body.String())
+	}
+	if p := decodeProblem(t, blocked); p.Type != problemTypePasswordChangeRequired {
+		t.Errorf("problem.type = %q，期望 %q", p.Type, problemTypePasswordChangeRequired)
+	}
+	if seen != nil {
+		t.Fatal("受限 Bearer 请求不得到达业务 handler")
+	}
+
+	// 白名单端点对 Bearer 路径同样放行（改密/自读/2FA）。
+	if rr := do(http.MethodGet, "/api/me"); rr.Code != http.StatusNoContent {
+		t.Errorf("Bearer GET /api/me status = %d，期望 204", rr.Code)
+	}
+	if rr := do(http.MethodPost, "/api/password"); rr.Code != http.StatusNoContent {
+		t.Errorf("Bearer POST /api/password status = %d，期望 204", rr.Code)
+	}
+	if rr := do(http.MethodPost, "/api/2fa/disable"); rr.Code != http.StatusNoContent {
+		t.Errorf("Bearer POST /api/2fa/disable status = %d，期望 204", rr.Code)
+	}
+
+	// 解除限制后旧令牌恢复完整权限。
+	if err := m.ClearPasswordChangeRequired(ctx, 7); err != nil {
+		t.Fatalf("ClearPasswordChangeRequired: %v", err)
+	}
+	if rr := do(http.MethodGet, "/api/whoami"); rr.Code != http.StatusNoContent {
+		t.Fatalf("解除限制后 Bearer 访问 status = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
 	}
 }

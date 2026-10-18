@@ -811,8 +811,9 @@ func (h *TwoFAHandlers) startTwoFASession(ctx context.Context, w http.ResponseWr
 			return err
 		}
 	} else if err := h.sessions.ClearPasswordChangeRequired(ctx, user.ID); err != nil {
-		// 自愈清理失败只记日志：DB 真源声明无需改密，不因残留标记阻断 2FA。
-		h.log.Warn("clear stale password change restriction failed", "user_id", user.ID, "error", err)
+		// 清理失败必须让挑战失败（503）：残留标记会让新会话被 SessionAuth 拦截，
+		// 用户完成了 2FA 却无法访问任何受保护端点。返回错误让客户端重试。
+		return fmt.Errorf("httpapi: clear stale password change restriction: %w", err)
 	}
 	sid, err := h.sessions.Create(ctx, user.ID, auth.SessionOpts{
 		UA:   r.UserAgent(),

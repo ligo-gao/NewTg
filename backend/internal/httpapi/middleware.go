@@ -44,8 +44,9 @@ const (
 //
 // 强制改密（must_change_password）：受限状态按用户记录在 Redis
 // （auth.SessionManager.PasswordChangeRequired），而不是写进会话 hash。原因是
-// 2FA challenge 等其它会话签发路径无需各自接线即可继承限制。受限会话仅放行
-// 登出/自读/改密/2FA 端点，其余一律 403 password_change_required；标记读取
+// 2FA challenge 等其它会话签发路径无需各自接线即可继承限制。Cookie 与 Bearer
+// 两条路径都会检查（管理员重置口令只吊销会话、不吊销 nkt- 令牌），受限身份仅
+// 放行登出/自读/改密/2FA 端点，其余一律 403 password_change_required；标记读取
 // 失败时 fail-closed（401，与 Get/Touch 的 Redis 故障口径一致）。
 func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -93,6 +94,18 @@ func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handl
 			meta, err := tokenStore.Resolve(r.Context(), auth.HashTokenKey(raw))
 			if err != nil || !tokenUsable(meta, time.Now()) {
 				writeUnauthorized(w)
+				return
+			}
+			// 强制改密同样约束 Bearer 路径：管理员重置口令只吊销会话、不吊销
+			// nkt- 令牌；若此处不检查，旧令牌仍可访问全部管理端点，违背
+			// 「改密完成前不得访问其他受保护接口」（modules-01 F-01-03）。
+			restricted, err := m.PasswordChangeRequired(r.Context(), meta.UserID)
+			if err != nil {
+				writeUnauthorized(w)
+				return
+			}
+			if restricted && !passwordChangeAllowed(r) {
+				writePasswordChangeRequired(w)
 				return
 			}
 			// Role/Permissions 不从令牌推导：令牌没有角色语义，管理权限必须由
@@ -210,10 +223,11 @@ func sessionID(r *http.Request) (string, bool) {
 // 只保留用户完成改密所必需的最小集合（modules-01 F-01-03「改密完成前不得访问
 // 其他受保护页面/接口」）：
 //   - POST /api/logout   退出账号（public-safe，正常不会经过本中间件，仍显式放行）；
-//   - GET  /api/me       读取当前身份/must_change_password 驱动前端跳转；
+//   - GET  /api/me       读取当前身份（账户页自读；改密状态由登录响应驱动）；
 //   - GET/PUT /api/self* 账户自读与语言等设置；
 //   - POST /api/password 改密本身；
-//   - /api/2fa/*         改密前后管理二次验证因子（避免把用户锁死在受限态）。
+//   - POST /api/2fa/{setup,enable,disable,backup-codes/regenerate}
+//     改密前后管理二次验证因子（显式枚举，避免未来新增子路由被自动放行）。
 //
 // 方法也参与判定：例如 POST /api/me 不在白名单内，防止未来给同名路径加写操作
 // 时被顺带放行。
@@ -228,7 +242,9 @@ func passwordChangeAllowed(r *http.Request) bool {
 		return r.Method == http.MethodGet || r.Method == http.MethodPut
 	case path == "/api/password":
 		return r.Method == http.MethodPost
-	case strings.HasPrefix(path, "/api/2fa/"):
+	case r.Method == http.MethodPost &&
+		(path == "/api/2fa/setup" || path == "/api/2fa/enable" ||
+			path == "/api/2fa/disable" || path == "/api/2fa/backup-codes/regenerate"):
 		return true
 	default:
 		return false
