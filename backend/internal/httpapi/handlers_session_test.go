@@ -167,6 +167,14 @@ func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64) (time.
 	return *rec.EmailVerifiedAt, nil
 }
 
+// unverifyEmail 把账号退回未验证状态，用于断言「验证码一次性」：如果第二次
+// 请求仍命中「已验证」短路，复用码的断言就是空转。
+func (r *fakeSelfRepo) unverifyEmail(userID int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users[userID].EmailVerifiedAt = nil
+}
+
 // sessionTestEnv 直接装配「Protect 保护链 + 本任务注册钩子」，不经过
 // NewRouter：Task 9 只拥有 handlers_session.go，路由装配由并行任务完成。
 type sessionTestEnv struct {
@@ -710,6 +718,7 @@ func TestSelfSettingValidationAndSparseSidebar(t *testing.T) {
 	token = updated.UpdatedAt.Format(time.RFC3339Nano)
 	for _, badSidebar := range []any{
 		map[string]any{"billing": "no"},
+		map[string]any{"billing": nil}, // null 不得静默变成 false
 		[]string{"billing"},
 		"billing",
 		42,
@@ -800,10 +809,12 @@ func TestVerifyEmail(t *testing.T) {
 		t.Fatal("email_verified_at 未写入")
 	}
 
-	// 验证码一次性：同一码再次使用失败。
+	// 验证码一次性：把账号退回未验证状态，让第二次请求真正走「消费验证码」
+	// 分支（否则会命中上面的已验证短路，断言空转），同一码必须 400。
+	env.repo.unverifyEmail(sessionTestUserID)
 	reuse := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
-	if reuse.Code != http.StatusOK && reuse.Code != http.StatusBadRequest {
-		t.Fatalf("重复使用验证码 status = %d，期望 200（已验）或 400", reuse.Code)
+	if reuse.Code != http.StatusBadRequest {
+		t.Fatalf("复用已验证验证码 status = %d，期望 400（body=%q）", reuse.Code, reuse.Body.String())
 	}
 }
 

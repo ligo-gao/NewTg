@@ -657,19 +657,24 @@ func normalizeSidebarModules(raw json.RawMessage) (json.RawMessage, bool) {
 	if string(raw) == "null" {
 		return json.RawMessage("null"), true
 	}
-	var modules map[string]bool
+	// 用 *bool 而不是 bool：JSON null 解码进 bool 是无操作（静默变成 false），
+	// 会让 {"billing":null} 被当成「隐藏 billing」写入。显式拒绝 null 项，
+	// 只接受 true/false（BOPLA 的失败关闭原则）。
+	var modules map[string]*bool
 	if err := json.Unmarshal(raw, &modules); err != nil {
 		return nil, false
 	}
 	if len(modules) > maxSidebarModuleEntries {
 		return nil, false
 	}
-	for key := range modules {
-		if key == "" || utf8.RuneCountInString(key) > maxSidebarKeyRunes {
+	normalized := make(map[string]bool, len(modules))
+	for key, value := range modules {
+		if key == "" || utf8.RuneCountInString(key) > maxSidebarKeyRunes || value == nil {
 			return nil, false
 		}
+		normalized[key] = *value
 	}
-	compact, err := json.Marshal(modules)
+	compact, err := json.Marshal(normalized)
 	if err != nil {
 		return nil, false
 	}
