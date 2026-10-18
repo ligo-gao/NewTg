@@ -655,3 +655,154 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestIntegrationExpiredTokenRenameSucceeds 覆盖评审 Important 1：
+// 已过期令牌只改 name 时不得因为「expires_at 在过去」而 400。
+func TestIntegrationExpiredTokenRenameSucceeds(t *testing.T) {
+	db, rdb := openIntegration(t)
+	suffix := uniqueSuffix()
+	group := "tg_" + suffix
+	seedGroup(t, db, group, true, 1, 100)
+	owner := seedUser(t, db, group)
+	st := New(db, rdb, nil)
+	ctx := context.Background()
+
+	created, err := st.Create(ctx, owner, CreateInput{Name: "old-name", Group: group, Quantity: 1, UnlimitedQuota: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	id := created[0].Token.ID
+	// 制造一条已过期令牌（created_at 提前，满足 expires_at > created_at 的 CHECK）。
+	if err := db.Exec(`UPDATE api_tokens SET created_at = now() - interval '2 hours',
+		expires_at = now() - interval '1 hour' WHERE id = ?`, id).Error; err != nil {
+		t.Fatalf("age token: %v", err)
+	}
+
+	fresh := New(db, rdb, nil) // 空缓存，读取真实过期状态
+	tok, err := fresh.Get(ctx, owner, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := DeriveStatus(tok, time.Now()); got != StatusExpired {
+		t.Fatalf("派生状态 = %q，期望 expired", got)
+	}
+	updated, err := fresh.Update(ctx, owner, id, UpdateInput{
+		UpdatedAt: &tok.UpdatedAt,
+		Name:      strPtr("renamed"),
+	})
+	if err != nil {
+		t.Fatalf("过期令牌改名应成功，实际 %v", err)
+	}
+	if updated.Name != "renamed" {
+		t.Fatalf("name = %q", updated.Name)
+	}
+
+	// 显式延长过期时间 → 立即恢复可用（仍是一次合法写入）。
+	future := time.Now().Add(24 * time.Hour).UTC()
+	revived, err := fresh.Update(ctx, owner, id, UpdateInput{
+		UpdatedAt:    &updated.UpdatedAt,
+		ExpiresAtSet: true,
+		ExpiresAt:    &future,
+	})
+	if err != nil {
+		t.Fatalf("延长过期时间: %v", err)
+	}
+	if DeriveStatus(revived, time.Now()) != StatusEnabled {
+		t.Fatalf("延长后派生状态 = %q，期望 enabled", DeriveStatus(revived, time.Now()))
+	}
+}
+
+// TestIntegrationBatchCreateNumbering 覆盖评审 Important 8：
+// quantity>1 时名称按数量宽度编号（12 → name-01…name-12）。
+func TestIntegrationBatchCreateNumbering(t *testing.T) {
+	db, rdb := openIntegration(t)
+	suffix := uniqueSuffix()
+	group := "tg_" + suffix
+	seedGroup(t, db, group, true, 1, 100)
+	owner := seedUser(t, db, group)
+	st := New(db, rdb, nil)
+
+	created, err := st.Create(context.Background(), owner, CreateInput{
+		Name: "bulk", Group: group, Quantity: 12, UnlimitedQuota: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(created) != 12 {
+		t.Fatalf("created = %d，期望 12", len(created))
+	}
+	for i, item := range created {
+		want := fmt.Sprintf("bulk-%02d", i+1)
+		if item.Token.Name != want {
+			t.Fatalf("第 %d 枚名称 = %q，期望 %q", i+1, item.Token.Name, want)
+		}
+	}
+}
+
+// TestIntegrationRedisCacheTTLAndInvalidation 覆盖评审 Important 2：
+// GC-11 缓存必须真的落在 Redis（60s TTL），并在禁用时被 DEL。
+func TestIntegrationRedisCacheTTLAndInvalidation(t *testing.T) {
+	db, rdb := openIntegration(t)
+	suffix := uniqueSuffix()
+	group := "tg_" + suffix
+	seedGroup(t, db, group, true, 1, 100)
+	owner := seedUser(t, db, group)
+	st := New(db, rdb, nil)
+	ctx := context.Background()
+
+	created, err := st.Create(ctx, owner, CreateInput{Name: "cached", Group: group, Quantity: 1, UnlimitedQuota: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	id := created[0].Token.ID
+	hash := auth.HashTokenKey(created[0].Key)
+
+	if _, err := st.Resolve(ctx, hash); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	metaKey := cacheMetaKey(hash)
+	ttl, err := rdb.TTL(ctx, metaKey).Result()
+	if err != nil || ttl <= 0 || ttl > CacheTTL {
+		t.Fatalf("token:meta TTL = %v (err=%v)，期望 (0, %v]", ttl, err, CacheTTL)
+	}
+	if got, err := rdb.Get(ctx, cacheIDHashKey(id)).Result(); err != nil || got != hash {
+		t.Fatalf("token:idhash = %q (err=%v)，期望 %q", got, err, hash)
+	}
+
+	if _, err := st.Get(ctx, owner, id); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if ttl := rdb.TTL(ctx, cacheViewKey(id)).Val(); ttl <= 0 || ttl > CacheTTL {
+		t.Fatalf("token:view TTL = %v，期望 (0, %v]", ttl, CacheTTL)
+	}
+
+	if _, err := st.Disable(ctx, owner, id); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	for _, key := range []string{metaKey, cacheViewKey(id), cacheIDHashKey(id)} {
+		if n, _ := rdb.Exists(ctx, key).Result(); n != 0 {
+			t.Fatalf("禁用后缓存键 %q 仍存在", key)
+		}
+	}
+	if _, err := st.Resolve(ctx, hash); !errors.Is(err, ErrTokenDisabled) {
+		t.Fatalf("禁用后 Resolve err = %v，期望 ErrTokenDisabled", err)
+	}
+}
+
+// TestIntegrationRemainQuotaUpperBound：10^15 上限（评审 Minor）。
+func TestIntegrationRemainQuotaUpperBound(t *testing.T) {
+	db, rdb := openIntegration(t)
+	suffix := uniqueSuffix()
+	group := "tg_" + suffix
+	seedGroup(t, db, group, true, 1, 100)
+	owner := seedUser(t, db, group)
+	st := New(db, rdb, nil)
+
+	_, err := st.Create(context.Background(), owner, CreateInput{
+		Name: "too-much", Group: group, Quantity: 1, UnlimitedQuota: false, RemainQuota: maxRemainQuota + 1,
+	})
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != "remain_quota" {
+		t.Fatalf("err = %v，期望 remain_quota 字段错误", err)
+	}
+}

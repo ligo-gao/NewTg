@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,9 +43,10 @@ const (
 )
 
 const (
-	tokenIdempotencyTTL   = 24 * time.Hour
+	tokenIdempotencyTTL   = 10 * time.Minute
 	tokenIdempotencyLease = 10 * time.Second
 	tokenMaxRequestBody   = 1 << 20 // 1 MiB
+	tokenAuditTimeout     = 3 * time.Second
 )
 
 // TokenService 是 HTTP 层所需的令牌能力。*tokenstore.Store 满足；单测用 fake，
@@ -67,6 +67,9 @@ type TokenService interface {
 	Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, error)
 	CrossGroupRetryMaxGroups() int
 }
+
+// 编译期钉死具体实现与 HTTP 接缝：Store 签名漂移在这里失败，而不是装配期。
+var _ TokenService = (*tokenstore.Store)(nil)
 
 // TokenHandlers 持有令牌端点依赖。可并发使用。
 type TokenHandlers struct {
@@ -138,30 +141,61 @@ func (h *TokenHandlers) RegisterTokenUsageRoute(mux *http.ServeMux) {
 // DTO
 // ---------------------------------------------------------------------------
 
+// tokenExpiresAt 同时接受 epoch 秒（modules-02 的线格式）与 RFC 3339 字符串；
+// 响应统一输出 time.Time 的 ISO 8601。Present 区分「未提交」与「显式 null」。
+type tokenExpiresAt struct {
+	Present bool
+	Time    *time.Time
+}
+
+func (t *tokenExpiresAt) UnmarshalJSON(data []byte) error {
+	t.Present = true
+	raw := strings.TrimSpace(string(data))
+	if raw == "null" {
+		t.Time = nil
+		return nil
+	}
+	if strings.HasPrefix(raw, `"`) {
+		var parsed time.Time
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return err
+		}
+		t.Time = &parsed
+		return nil
+	}
+	var epoch int64
+	if err := json.Unmarshal(data, &epoch); err != nil {
+		return err
+	}
+	parsed := time.Unix(epoch, 0).UTC()
+	t.Time = &parsed
+	return nil
+}
+
 type createTokenRequest struct {
-	Name            string     `json:"name"`
-	Group           string     `json:"group"`
-	ExpiresAt       *time.Time `json:"expires_at"`
-	Quantity        *int       `json:"quantity"`
-	UnlimitedQuota  *bool      `json:"unlimited_quota"`
-	RemainQuota     *int64     `json:"remain_quota"`
-	ModelLimits     []string   `json:"model_limits"`
-	AllowIPs        []string   `json:"allow_ips"`
-	AutoGroups      []string   `json:"auto_groups"`
-	CrossGroupRetry bool       `json:"cross_group_retry"`
+	Name            string         `json:"name"`
+	Group           string         `json:"group"`
+	ExpiresAt       tokenExpiresAt `json:"expires_at"`
+	Quantity        *int           `json:"quantity"`
+	UnlimitedQuota  *bool          `json:"unlimited_quota"`
+	RemainQuota     *int64         `json:"remain_quota"`
+	ModelLimits     []string       `json:"model_limits"`
+	AllowIPs        []string       `json:"allow_ips"`
+	AutoGroups      []string       `json:"auto_groups"`
+	CrossGroupRetry bool           `json:"cross_group_retry"`
 }
 
 type updateTokenRequest struct {
-	Name            *string         `json:"name"`
-	Group           *string         `json:"group"`
-	ExpiresAt       json.RawMessage `json:"expires_at"` // 缺省=nil；null=清空
-	UnlimitedQuota  *bool           `json:"unlimited_quota"`
-	RemainQuota     *int64          `json:"remain_quota"`
-	ModelLimits     *[]string       `json:"model_limits"`
-	AllowIPs        *[]string       `json:"allow_ips"`
-	AutoGroups      *[]string       `json:"auto_groups"`
-	CrossGroupRetry *bool           `json:"cross_group_retry"`
-	UpdatedAt       *time.Time      `json:"updated_at"`
+	Name            *string        `json:"name"`
+	Group           *string        `json:"group"`
+	ExpiresAt       tokenExpiresAt `json:"expires_at"`
+	UnlimitedQuota  *bool          `json:"unlimited_quota"`
+	RemainQuota     *int64         `json:"remain_quota"`
+	ModelLimits     *[]string      `json:"model_limits"`
+	AllowIPs        *[]string      `json:"allow_ips"`
+	AutoGroups      *[]string      `json:"auto_groups"`
+	CrossGroupRetry *bool          `json:"cross_group_retry"`
+	UpdatedAt       *time.Time     `json:"updated_at"`
 }
 
 type batchTokenRequest struct {
@@ -183,6 +217,7 @@ type tokenView struct {
 	AutoGroups      []string   `json:"auto_groups"`
 	CrossGroupRetry bool       `json:"cross_group_retry"`
 	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 	LastUsedAt      *time.Time `json:"last_used_at"`
 	ExpiresAt       *time.Time `json:"expires_at"`
 }
@@ -268,7 +303,7 @@ func (h *TokenHandlers) createTokens(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.Create(r.Context(), userID, tokenstore.CreateInput{
 		Name:            req.Name,
 		Group:           req.Group,
-		ExpiresAt:       req.ExpiresAt,
+		ExpiresAt:       req.ExpiresAt.Time,
 		Quantity:        quantity,
 		UnlimitedQuota:  unlimited,
 		RemainQuota:     remain,
@@ -393,18 +428,10 @@ func (h *TokenHandlers) updateToken(w http.ResponseWriter, r *http.Request) {
 	if req.AutoGroups != nil {
 		in.AutoGroups = *req.AutoGroups
 	}
-	if req.ExpiresAt != nil {
+	if req.ExpiresAt.Present {
+		// 显式 null 表示「永不过期」；数字按 epoch 秒、字符串按 RFC 3339 解析。
 		in.ExpiresAtSet = true
-		// 未提交该字段时 RawMessage 为 nil；显式 null 表示「永不过期」。
-		if trimmed := strings.TrimSpace(string(req.ExpiresAt)); trimmed != "null" {
-			var expires time.Time
-			if err := json.Unmarshal(req.ExpiresAt, &expires); err != nil {
-				writeTokenProblem(w, http.StatusBadRequest, problemTypeInvalidRequest, "Invalid request",
-					"expires_at 必须是 RFC 3339 时间或 null", "expires_at")
-				return
-			}
-			in.ExpiresAt = &expires
-		}
+		in.ExpiresAt = req.ExpiresAt.Time
 	}
 
 	// before 快照仅供审计；404 时保持统一的不存在语义。
@@ -562,22 +589,30 @@ func (h *TokenHandlers) tokenAction(w http.ResponseWriter, r *http.Request) {
 			tokenSnapshot(before), tokenSnapshot(updated))
 		writeTokenJSON(w, http.StatusOK, h.view(updated))
 	case "reset-key":
-		if _, err := h.store.Get(r.Context(), userID, id); err != nil {
-			writeTokenServiceError(w, err)
-			return
-		}
-		plain, masked, _, err := h.store.ResetKey(r.Context(), userID, id)
-		if err != nil {
-			writeTokenServiceError(w, err)
-			return
-		}
-		// 审计只记「发生了重置」，绝不记录新旧密钥材料。
-		h.auditEvent(r, audit.ActionTokenResetKey, userID,
-			map[string]any{"token_id": id}, nil, nil)
-		writeTokenJSON(w, http.StatusOK, map[string]any{"key": plain, "key_masked": masked})
+		// 重置密钥是非幂等写操作（每次都会生成新 key）：用 Idempotency-Key
+		// 包裹，缓存键含请求路径（即 token id），重放返回首次的新 key。
+		h.idempotent("reset-key", func(w http.ResponseWriter, r *http.Request) {
+			h.resetKeyAction(w, r, userID, id)
+		})(w, r)
 	default:
 		writeTokenProblem(w, http.StatusNotFound, problemTypeNotFoundToken, "Not found", "", "")
 	}
+}
+
+func (h *TokenHandlers) resetKeyAction(w http.ResponseWriter, r *http.Request, userID, id int64) {
+	if _, err := h.store.Get(r.Context(), userID, id); err != nil {
+		writeTokenServiceError(w, err)
+		return
+	}
+	plain, masked, _, err := h.store.ResetKey(r.Context(), userID, id)
+	if err != nil {
+		writeTokenServiceError(w, err)
+		return
+	}
+	// 审计只记「发生了重置」，绝不记录新旧密钥材料。
+	h.auditEvent(r, audit.ActionTokenResetKey, userID,
+		map[string]any{"token_id": id}, nil, nil)
+	writeTokenJSON(w, http.StatusOK, map[string]any{"key": plain, "key_masked": masked})
 }
 
 func (h *TokenHandlers) autoGroups(w http.ResponseWriter, r *http.Request) {
@@ -642,9 +677,9 @@ func (h *TokenHandlers) tokenUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if token.RemainQuota != nil {
 		available := *token.RemainQuota
-		granted := available // M1 无 used_quota 列：已用恒 0，授予=剩余。
-		resp.TotalGranted = &granted
 		resp.TotalAvailable = &available
+		// total_granted 在 M3 接入 usage_logs 之前无法可靠计算（令牌表没有
+		// used_quota 列），按评审结论返回 null 而不是伪造“授予=剩余”。
 	}
 	writeTokenJSON(w, http.StatusOK, resp)
 }
@@ -665,6 +700,7 @@ func (h *TokenHandlers) view(token *tokenstore.Token) tokenView {
 		AutoGroups:      token.AutoGroups,
 		CrossGroupRetry: token.CrossGroupRetry,
 		CreatedAt:       token.CreatedAt,
+		UpdatedAt:       token.UpdatedAt,
 		LastUsedAt:      token.LastUsedAt,
 		ExpiresAt:       token.ExpiresAt,
 	}
@@ -730,6 +766,9 @@ func decodeTokenJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func writeTokenJSON(w http.ResponseWriter, status int, payload any) {
+	// 令牌响应可能含一次性明文 key（创建/重置）：禁止任何中间层缓存。
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
@@ -744,6 +783,8 @@ type tokenProblem struct {
 }
 
 func writeTokenProblem(w http.ResponseWriter, status int, problemType, title, detail, field string) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(tokenProblem{Type: problemType, Title: title, Status: status, Detail: detail, Field: field})
@@ -828,7 +869,10 @@ func (h *TokenHandlers) auditEvent(r *http.Request, action string, userID int64,
 	event.Before = tokenMarshalRaw(before)
 	event.After = tokenMarshalRaw(after)
 	// 审计失败不阻断业务（日志库独立且无跨库事务）；由运维告警接手。
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	// 加短超时：日志库故障不得把令牌请求拖到连接超时。
+	auditCtx, cancel := context.WithTimeout(r.Context(), tokenAuditTimeout)
+	defer cancel()
+	if err := h.audit.LogEvent(auditCtx, event); err != nil {
 		slog.Warn("token audit write failed", "action", action, "actor", userID, "error", err)
 	}
 }
@@ -845,11 +889,8 @@ func tokenMarshalRaw(value any) json.RawMessage {
 }
 
 func tokenRemoteIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	// 与 handlers_auth.go 的 clientIP 同口径：不信任可伪造的 X-Forwarded-For。
+	return clientIP(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -892,7 +933,9 @@ func (h *TokenHandlers) idempotent(scope string, next http.HandlerFunc) http.Han
 		fingerprint := tokenBodyFingerprint(body)
 
 		ctx := r.Context()
-		cacheKey := fmt.Sprintf("newtg:idem:token:%d:%s:%s", userID, scope, key)
+		// 缓存键含请求路径：同一幂等键用于不同令牌（如 reset-key /api/tokens/1
+		// vs /2）时不得互相命中。
+		cacheKey := fmt.Sprintf("newtg:idem:token:%d:%s:%s:%s", userID, scope, r.URL.Path, key)
 		if cached, ok := h.loadIdempotent(ctx, cacheKey); ok {
 			replayTokenIdempotent(w, cached, fingerprint)
 			return
@@ -947,6 +990,8 @@ func replayTokenIdempotent(w http.ResponseWriter, cached tokenCachedHTTPResponse
 	if cached.ContentType != "" {
 		w.Header().Set("Content-Type", cached.ContentType)
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(cached.Status)
 	_, _ = io.WriteString(w, cached.Body)
 }

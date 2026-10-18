@@ -42,6 +42,10 @@ type RouterConfig struct {
 	PasswordChecker auth.CompromisedPasswordChecker
 	// TokenStore 是 Bearer 令牌查询接缝（Task 12 实现；nil 时 Bearer 一律 401）。
 	TokenStore TokenLookup
+	// TokenHandlers 是 Task 12 的令牌端点集合。非 nil 时 NewRouter 自动挂载：
+	// 管理面 CRUD 进受保护子树，GET /api/usage/token 走 HandlePublic 绕过
+	// SessionAuth（自读用量对耗尽令牌仍须 200，modules-02 §2.13）。
+	TokenHandlers *TokenHandlers
 	// Audit 是登录审计写入器（nil 时不写审计）。写失败不影响登录结果。
 	Audit *audit.Logger
 	// SignupGrantAlert 在注册赠送被反滥用上限抑制时触发（nil 时仅 Warn 日志）。
@@ -114,6 +118,12 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		handlers:  h,
 	}
 
+	// 令牌端点（Task 12）：CRUD 走受保护链，自读用量走根 mux 的精确模式。
+	if cfg.TokenHandlers != nil {
+		cfg.TokenHandlers.RegisterTokenCRUDRoutes(rt.protected, nil)
+		rt.HandlePublic("GET /api/usage/token", http.HandlerFunc(cfg.TokenHandlers.tokenUsage))
+	}
+
 	// 公开端点：精确注册，先于 /api/ 子树（ServeMux 按特异性择路，顺序无关，
 	// 这里仍先注册以免读者误判）。
 	rt.mux.HandleFunc("GET /api/status", h.handleStatus)
@@ -143,6 +153,16 @@ func Protect(sessions *auth.SessionManager, tokenStore TokenLookup, publicBaseUR
 // 管理端点）经此挂载，无需重复装配鉴权链。
 func (rt *Router) HandleProtected(pattern string, h http.Handler) {
 	rt.protected.Handle(pattern, h)
+}
+
+// HandlePublic 把 handler 挂到根 mux。精确模式比 `/api/` 子树更具体，
+// 因此会绕过 SessionAuth 链——只允许自带凭据语义的端点使用。
+//
+// 当前唯一使用者是 GET /api/usage/token：令牌自读用量必须对「额度耗尽」
+// 的令牌返回 200（modules-02 §2.13），而 SessionAuth 的 tokenUsable 会拒绝
+// 耗尽令牌；它还需要返回 token_disabled/token_expired 的精确错误码。
+func (rt *Router) HandlePublic(pattern string, h http.Handler) {
+	rt.mux.Handle(pattern, h)
 }
 
 // ServeHTTP 实现 http.Handler。

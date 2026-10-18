@@ -628,6 +628,10 @@ func TestTokenUsageSelfRead(t *testing.T) {
 			if resp["name"] != "prod" {
 				t.Fatalf("name = %v", resp["name"])
 			}
+			// 评审结论：M3 接入 usage_logs 之前 total_granted 返回 null。
+			if resp["total_granted"] != nil {
+				t.Fatalf("total_granted = %v，期望 null", resp["total_granted"])
+			}
 		})
 	}
 
@@ -672,5 +676,229 @@ func TestTokenRouteRegistrationPatterns(t *testing.T) {
 		if rr := env.do(route.method, route.path, body, nil); rr.Code != route.want {
 			t.Fatalf("%s %s status = %d，期望 %d（body=%q）", route.method, route.path, rr.Code, route.want, rr.Body.String())
 		}
+	}
+}
+
+// TestTokenResponseIncludesUpdatedAtAndPatchRoundTrips 覆盖评审 Critical：
+// 创建/列表/详情必须下发 updated_at，客户端才能拿它做乐观锁 PATCH。
+func TestTokenResponseIncludesUpdatedAtAndPatchRoundTrips(t *testing.T) {
+	env := newTokenTestEnv(t)
+	lockedAt := time.Date(2026, 10, 18, 10, 30, 0, 123000000, time.UTC)
+	tok := sampleToken()
+	tok.UpdatedAt = lockedAt
+
+	env.svc.createFn = func(context.Context, int64, tokenstore.CreateInput) ([]tokenstore.Created, error) {
+		return []tokenstore.Created{{Token: tok, Key: "nkt-" + strings.Repeat("A", 48)}}, nil
+	}
+	env.svc.listFn = func(context.Context, int64, tokenstore.ListFilter) ([]*tokenstore.Token, int64, error) {
+		return []*tokenstore.Token{tok}, 1, nil
+	}
+	env.svc.getFn = func(context.Context, int64, int64) (*tokenstore.Token, error) {
+		return tok, nil
+	}
+	env.svc.updateFn = func(_ context.Context, _, _ int64, in tokenstore.UpdateInput) (*tokenstore.Token, error) {
+		if in.UpdatedAt == nil || !in.UpdatedAt.Equal(lockedAt) {
+			return nil, tokenstore.ErrConflict
+		}
+		updated := *tok
+		if in.Name != nil {
+			updated.Name = *in.Name
+		}
+		updated.UpdatedAt = lockedAt.Add(time.Minute)
+		return &updated, nil
+	}
+
+	// 创建响应带 updated_at。
+	createdRR := env.do(http.MethodPost, "/api/tokens", `{"name":"prod"}`, nil)
+	if createdRR.Code != http.StatusOK {
+		t.Fatalf("create status = %d（body=%q）", createdRR.Code, createdRR.Body.String())
+	}
+	var created struct {
+		Created []struct {
+			UpdatedAt time.Time `json:"updated_at"`
+		} `json:"created"`
+	}
+	decodeJSON(t, createdRR, &created)
+	if len(created.Created) != 1 || !created.Created[0].UpdatedAt.Equal(lockedAt) {
+		t.Fatalf("创建响应 updated_at = %+v，期望 %v", created.Created, lockedAt)
+	}
+
+	// 列表响应带 updated_at。
+	listRR := env.do(http.MethodGet, "/api/tokens", "", nil)
+	var list listTokensResponse
+	decodeJSON(t, listRR, &list)
+	if len(list.Items) != 1 || !list.Items[0].UpdatedAt.Equal(lockedAt) {
+		t.Fatalf("列表响应 updated_at 缺失/错误: %+v", list.Items)
+	}
+
+	// 用创建响应里的 updated_at 做 PATCH → 成功。
+	patchBody := `{"name":"prod-v2","updated_at":"` + lockedAt.Format(time.RFC3339Nano) + `"}`
+	if rr := env.do(http.MethodPatch, "/api/tokens/7", patchBody, nil); rr.Code != http.StatusOK {
+		t.Fatalf("正确版本 PATCH status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	// 陈旧的 updated_at → 409。
+	stale := `{"name":"stale","updated_at":"2026-10-18T09:00:00Z"}`
+	if rr := env.do(http.MethodPatch, "/api/tokens/7", stale, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("陈旧版本 PATCH status = %d，期望 409", rr.Code)
+	}
+}
+
+// TestTokenResponsesSetNoStoreHeaders 覆盖评审 Important 4：
+// 令牌响应（尤其创建/重置密钥）必须禁止中间层缓存。
+func TestTokenResponsesSetNoStoreHeaders(t *testing.T) {
+	env := newTokenTestEnv(t)
+	tok := sampleToken()
+	env.svc.createFn = func(context.Context, int64, tokenstore.CreateInput) ([]tokenstore.Created, error) {
+		return []tokenstore.Created{{Token: tok, Key: "nkt-" + strings.Repeat("A", 48)}}, nil
+	}
+	assertNoStore := func(label string, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s Cache-Control = %q，期望 no-store", label, got)
+		}
+		if got := rr.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("%s Pragma = %q，期望 no-cache", label, got)
+		}
+	}
+	assertNoStore("创建", env.do(http.MethodPost, "/api/tokens", `{"name":"prod"}`, nil))
+	assertNoStore("列表", env.do(http.MethodGet, "/api/tokens", "", nil))
+
+	// 错误响应同样 no-store。
+	env.svc.createFn = func(context.Context, int64, tokenstore.CreateInput) ([]tokenstore.Created, error) {
+		return nil, &tokenstore.ValidationError{Field: "name", Message: "bad"}
+	}
+	assertNoStore("校验错误", env.do(http.MethodPost, "/api/tokens", `{"name":""}`, nil))
+}
+
+// TestTokenResetKeyIsIdempotent 覆盖评审 Important 6：
+// 同一 Idempotency-Key 重放 reset-key 只重置一次；不同 token id 不互相命中。
+func TestTokenResetKeyIsIdempotent(t *testing.T) {
+	env := newTokenTestEnv(t)
+	tok := sampleToken()
+	env.svc.getFn = func(context.Context, int64, int64) (*tokenstore.Token, error) { return tok, nil }
+	calls := 0
+	env.svc.resetFn = func(context.Context, int64, int64) (string, string, *tokenstore.Token, error) {
+		calls++
+		return "nkt-" + strings.Repeat("Z", 48), "nkt-" + strings.Repeat("•", 24), tok, nil
+	}
+
+	headers := map[string]string{"Idempotency-Key": "reset-once"}
+	first := env.do(http.MethodPost, "/api/tokens/7:reset-key", "", headers)
+	second := env.do(http.MethodPost, "/api/tokens/7:reset-key", "", headers)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("status = %d/%d（body=%q / %q）", first.Code, second.Code, first.Body.String(), second.Body.String())
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("幂等重放响应不一致：%q vs %q", first.Body.String(), second.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("ResetKey 调用 = %d，期望 1", calls)
+	}
+
+	// 另一个 token id 使用同一幂等键必须独立执行。
+	if rr := env.do(http.MethodPost, "/api/tokens/8:reset-key", "", headers); rr.Code != http.StatusOK {
+		t.Fatalf("token 8 reset status = %d", rr.Code)
+	}
+	if calls != 2 {
+		t.Fatalf("不同 token 的 ResetKey 调用 = %d，期望 2（缓存键必须含路径/id）", calls)
+	}
+}
+
+// TestTokenCreateAcceptsEpochAndRFC3339ExpiresAt 覆盖评审 Important 7：
+// expires_at 入参同时接受 epoch 秒与 RFC 3339 字符串。
+func TestTokenCreateAcceptsEpochAndRFC3339ExpiresAt(t *testing.T) {
+	env := newTokenTestEnv(t)
+	var got *time.Time
+	env.svc.createFn = func(_ context.Context, _ int64, in tokenstore.CreateInput) ([]tokenstore.Created, error) {
+		got = in.ExpiresAt
+		return []tokenstore.Created{}, nil
+	}
+
+	epoch := int64(1893456000) // 2030-01-01T00:00:00Z
+	if rr := env.do(http.MethodPost, "/api/tokens", `{"name":"x","expires_at":1893456000}`, nil); rr.Code != http.StatusOK {
+		t.Fatalf("epoch 输入 status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got == nil || !got.Equal(time.Unix(epoch, 0).UTC()) {
+		t.Fatalf("epoch 解析 = %v，期望 %v", got, time.Unix(epoch, 0).UTC())
+	}
+
+	if rr := env.do(http.MethodPost, "/api/tokens", `{"name":"x","expires_at":"2030-01-01T00:00:00Z"}`, nil); rr.Code != http.StatusOK {
+		t.Fatalf("RFC3339 输入 status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got == nil || !got.Equal(time.Unix(epoch, 0).UTC()) {
+		t.Fatalf("RFC3339 解析 = %v", got)
+	}
+
+	// 非法格式 → 400。
+	if rr := env.do(http.MethodPost, "/api/tokens", `{"name":"x","expires_at":"tomorrow"}`, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 expires_at status = %d，期望 400", rr.Code)
+	}
+}
+
+// TestRouterHandlePublicBypassesProtectedSubtree 覆盖评审 Important 5：
+// usage 的公共挂载必须优先于 /api/ 受保护子树。
+func TestRouterHandlePublicBypassesProtectedSubtree(t *testing.T) {
+	rt := &Router{mux: http.NewServeMux(), protected: http.NewServeMux()}
+	rt.mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	rt.HandlePublic("GET /api/usage/token", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	rt.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/usage/token", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("usage status = %d，期望 200（公共挂载未生效）", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	rt.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/tokens", nil))
+	if rr.Code != http.StatusTeapot {
+		t.Fatalf("其他 /api 路径 status = %d，期望走受保护子树", rr.Code)
+	}
+}
+
+// TestRouterMountsTokenHandlers 覆盖评审 Important 5 的自动接线：
+// CRUD 走 SessionAuth（未认证 → unauthorized），usage 走公共精确路由
+// （未带 Bearer 时由 handler 自己返回 invalid_token）。
+func TestRouterMountsTokenHandlers(t *testing.T) {
+	env := newTokenTestEnv(t)
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
+
+	rt, err := NewRouter(RouterConfig{
+		Redis:         rdb,
+		Sessions:      sessions,
+		Repo:          newFakeAuthRepo(),
+		Config:        mapConfig{},
+		SessionSecret: []byte(testSessionSecret),
+		EmailSender:   &fakeEmailSender{},
+		TokenHandlers: env.handlers,
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	rt.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/usage/token", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("usage status = %d，期望 401", rr.Code)
+	}
+	var p map[string]any
+	decodeJSON(t, rr, &p)
+	if p["type"] != problemTypeInvalidToken {
+		t.Fatalf("usage problem.type = %v，期望 %s（说明未经 SessionAuth）", p["type"], problemTypeInvalidToken)
+	}
+
+	rr = httptest.NewRecorder()
+	rt.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/tokens", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("tokens status = %d，期望 401", rr.Code)
+	}
+	decodeJSON(t, rr, &p)
+	if p["type"] != problemTypeUnauthorized {
+		t.Fatalf("tokens problem.type = %v，期望 %s（受保护链）", p["type"], problemTypeUnauthorized)
 	}
 }

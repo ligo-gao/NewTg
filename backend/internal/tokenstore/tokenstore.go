@@ -23,7 +23,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -56,6 +55,9 @@ const (
 
 	// MaxBatchIDs 是批量端点单次上限（modules-02 §2.2）。
 	MaxBatchIDs = 100
+
+	// maxRemainQuota 是令牌额度上限（10^15 积分）；防止异常大数进入账本口径。
+	maxRemainQuota = int64(1_000_000_000_000_000)
 )
 
 // api_tokens.status 的人工位（派生状态不入库，见 modules-02 §2.8）。
@@ -176,45 +178,33 @@ type AutoGroup struct {
 }
 
 // Store 是令牌 CRUD + 缓存 + 自动分组规则的实现。
+//
+// 缓存放在 Redis（GC-11）：token:meta:<hash> 与 token:view:<id> 均为 60s TTL，
+// 变更时 DEL + INCR token:gen + PUBLISH token:changed:<id>。用 Redis 而不是
+// 进程内 map 的原因：多副本共享同一份失效状态，避免「A 禁用、B 仍缓存启用」
+// 只能靠 TTL 兜底。token:gen 是全局代际计数，用于消除 read-add 竞争：
+// 缓存回填前 WATCH 它，若期间发生过任何变更就放弃回填，防止把陈旧行写回缓存。
 type Store struct {
 	db       *gorm.DB
 	rdb      *redis.Client
 	settings Settings
 	ttl      time.Duration
 	now      func() time.Time
-
-	mu           sync.RWMutex
-	getCache     map[int64]cachedToken
-	resolveCache map[string]cachedMeta
-	hashByID     map[int64]string
-}
-
-type cachedToken struct {
-	token     *Token
-	expiresAt time.Time
-}
-
-type cachedMeta struct {
-	meta      *auth.TokenMeta
-	expiresAt time.Time
 }
 
 // 编译期钉死 Task 4 的鉴权接缝：Store 必须能直接作为 auth.TokenLookup 交给
 // SessionAuth。签名漂移会在这里编译失败，而不是等到装配期才发现。
 var _ auth.TokenLookup = (*Store)(nil)
 
-// New 构造令牌存储。settings 可为 nil（全部走默认值）；rdb 可为 nil（无缓存/
-// 无幂等能力，仅测试装配会这么做）。
+// New 构造令牌存储。settings 可为 nil（全部走默认值）；rdb 可为 nil（无缓存，
+// 仅测试装配会这么做）。
 func New(db *gorm.DB, rdb *redis.Client, settings Settings) *Store {
 	return &Store{
-		db:           db,
-		rdb:          rdb,
-		settings:     settings,
-		ttl:          CacheTTL,
-		now:          time.Now,
-		getCache:     make(map[int64]cachedToken),
-		resolveCache: make(map[string]cachedMeta),
-		hashByID:     make(map[int64]string),
+		db:       db,
+		rdb:      rdb,
+		settings: settings,
+		ttl:      CacheTTL,
+		now:      time.Now,
 	}
 }
 
@@ -261,7 +251,26 @@ func MaskedKey() string { return KeyPrefix + strings.Repeat("•", 24) }
 // 校验/派生（纯函数，单测覆盖）
 // ---------------------------------------------------------------------------
 
+// normalizeAutoList 只做裁剪与去空，**不去重**：重复项必须在
+// validateAutoGroups 里显式拒绝（TC-F-02-13-03），不能静默吞掉。
+func normalizeAutoList(list []string) []string {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, raw := range list {
+		if value := strings.TrimSpace(raw); value != "" {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func validateAutoGroups(list []string, allowed map[string]struct{}, max int) *ValidationError {
+	list = normalizeAutoList(list)
 	if len(list) == 0 {
 		return &ValidationError{Field: "auto_groups", Message: "自动分组至少需要一个分组"}
 	}
@@ -585,6 +594,11 @@ func (s *Store) userScope(ctx context.Context, userID int64) (*userScope, error)
 
 	candidates := make(map[string]struct{})
 	for _, name := range siteAutoGroups(s.settings) {
+		// auto 是哨兵而不是真实分组；即使它被误配置进白名单或成为用户分组，
+		// 也绝不能出现在自动分组候选集里（modules-02 §2.9）。
+		if name == GroupAuto {
+			continue
+		}
 		if _, ok := usable[name]; ok {
 			candidates[name] = struct{}{}
 		}
@@ -630,7 +644,7 @@ func (scope *userScope) validateGroup(group string, auto []string, retry bool) (
 		if err := validateAutoGroups(auto, scope.candidates, scope.maxAuto); err != nil {
 			return nil, false, err
 		}
-		normalized, retry := normalizeGroupCoupling(group, normalizeStringList(auto), retry)
+		normalized, retry := normalizeGroupCoupling(group, normalizeAutoList(auto), retry)
 		return normalized, retry, nil
 	}
 	if _, ok := scope.usable[group]; !ok {
@@ -666,8 +680,22 @@ func (s *Store) Create(ctx context.Context, userID int64, in CreateInput) ([]Cre
 	if in.ExpiresAt != nil && !in.ExpiresAt.After(now) {
 		return nil, &ValidationError{Field: "expires_at", Message: "过期时间必须晚于当前时间"}
 	}
-	if !in.UnlimitedQuota && in.RemainQuota < 0 {
-		return nil, &ValidationError{Field: "remain_quota", Message: "剩余额度不能为负数"}
+	if !in.UnlimitedQuota && (in.RemainQuota < 0 || in.RemainQuota > maxRemainQuota) {
+		return nil, &ValidationError{Field: "remain_quota", Message: "剩余额度必须在 0..10^15 之间"}
+	}
+	// 批量创建按数量宽度编号（quantity=12 → name-01…name-12），单枚保持原名。
+	names := make([]string, quantity)
+	if quantity == 1 {
+		names[0] = name
+	} else {
+		width := len(strconv.Itoa(quantity))
+		for i := 1; i <= quantity; i++ {
+			itemName := fmt.Sprintf("%s-%0*d", name, width, i)
+			if utf8.RuneCountInString(itemName) > 64 {
+				return nil, &ValidationError{Field: "name", Message: "批量创建时名称过长（含序号需 ≤64 字符）"}
+			}
+			names[i-1] = itemName
+		}
 	}
 
 	scope, err := s.userScope(ctx, userID)
@@ -701,7 +729,7 @@ func (s *Store) Create(ctx context.Context, userID int64, in CreateInput) ([]Cre
 			}
 			row := tokenRow{
 				UserID:          userID,
-				Name:            name,
+				Name:            names[i],
 				KeyHash:         keyHash,
 				Status:          StatusEnabled,
 				ExpiresAt:       in.ExpiresAt,
@@ -792,28 +820,26 @@ func (s *Store) List(ctx context.Context, userID int64, filter ListFilter) ([]*T
 	return items, total, nil
 }
 
-// Get 读取单个令牌（进程内缓存 60s；token:changed 即时失效）。
+// Get 读取单个令牌（Redis 缓存 60s；token:changed 即时失效，GC-11）。
 // 非本人令牌返回 ErrNotFound（不泄露存在性）。
 func (s *Store) Get(ctx context.Context, userID, id int64) (*Token, error) {
-	now := s.now()
-	s.mu.RLock()
-	entry, ok := s.getCache[id]
-	s.mu.RUnlock()
-	if ok && now.Before(entry.expiresAt) {
-		if entry.token.UserID != userID {
+	if cached, ok := s.loadCachedToken(ctx, id); ok {
+		if cached.UserID != userID {
 			return nil, ErrNotFound
 		}
-		return cloneToken(entry.token), nil
+		return cached, nil
 	}
 
+	// 代际在读 DB 之前取：任何并发变更都会让 WATCH 失败并放弃回填。
+	gen, cacheable := s.cacheGeneration(ctx)
 	row, err := s.loadRow(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	token := row.toToken()
-	s.mu.Lock()
-	s.getCache[id] = cachedToken{token: cloneToken(token), expiresAt: now.Add(s.ttl)}
-	s.mu.Unlock()
+	if cacheable {
+		s.storeCachedToken(ctx, gen, token, row.KeyHash)
+	}
 	if token.UserID != userID {
 		return nil, ErrNotFound
 	}
@@ -866,8 +892,8 @@ func (s *Store) Update(ctx context.Context, userID, id int64, in UpdateInput) (*
 		quota := *in.RemainQuota
 		next.RemainQuota = &quota
 	}
-	if next.RemainQuota != nil && *next.RemainQuota < 0 {
-		return nil, &ValidationError{Field: "remain_quota", Message: "剩余额度不能为负数"}
+	if next.RemainQuota != nil && (*next.RemainQuota < 0 || *next.RemainQuota > maxRemainQuota) {
+		return nil, &ValidationError{Field: "remain_quota", Message: "剩余额度必须在 0..10^15 之间"}
 	}
 	if in.ModelLimitsSet {
 		next.ModelLimits = normalizeStringList(in.ModelLimits)
@@ -887,7 +913,9 @@ func (s *Store) Update(ctx context.Context, userID, id int64, in UpdateInput) (*
 	}
 
 	nowTime := s.now().UTC().Truncate(time.Microsecond)
-	if next.ExpiresAt != nil && !next.ExpiresAt.After(nowTime) {
+	// 只有显式提交了**新的** expires_at 才校验未来时间：已过期令牌的改名/
+	// 改额度等 PATCH 必须继续可用（延长过期时间本来就是为了让 token 复活）。
+	if in.ExpiresAtSet && next.ExpiresAt != nil && !next.ExpiresAt.After(nowTime) {
 		return nil, &ValidationError{Field: "expires_at", Message: "过期时间必须晚于当前时间"}
 	}
 
@@ -939,8 +967,7 @@ func (s *Store) Update(ctx context.Context, userID, id int64, in UpdateInput) (*
 		}
 		return nil, ErrConflict
 	}
-	s.invalidate(id)
-	s.publishChange(ctx, id)
+	s.invalidateToken(ctx, id, row.KeyHash)
 
 	return s.loadToken(ctx, id)
 }
@@ -948,6 +975,14 @@ func (s *Store) Update(ctx context.Context, userID, id int64, in UpdateInput) (*
 // Delete 物理删除（R14：无软删除、无撤销窗口）。
 // expectedUpdatedAt 非 nil 时执行乐观锁（陈旧 → ErrConflict）。
 func (s *Store) Delete(ctx context.Context, userID, id int64, expectedUpdatedAt *time.Time) error {
+	// 先读 key_hash：删除后无法再查，而 token:meta:<hash> 必须在同一轮失效。
+	row, err := s.loadRow(ctx, id)
+	if err != nil {
+		return err
+	}
+	if row.UserID != userID {
+		return ErrNotFound
+	}
 	query := s.dbWith(ctx).Where("id = ? AND user_id = ?", id, userID)
 	if expectedUpdatedAt != nil {
 		query = query.Where("updated_at = ?", expectedUpdatedAt.UTC().Truncate(time.Microsecond))
@@ -966,8 +1001,7 @@ func (s *Store) Delete(ctx context.Context, userID, id int64, expectedUpdatedAt 
 		}
 		return ErrConflict
 	}
-	s.invalidate(id)
-	s.publishChange(ctx, id)
+	s.invalidateToken(ctx, id, row.KeyHash)
 	return nil
 }
 
@@ -982,6 +1016,13 @@ func (s *Store) Disable(ctx context.Context, userID, id int64) (*Token, error) {
 }
 
 func (s *Store) setStatus(ctx context.Context, userID, id int64, status string) (*Token, error) {
+	row, err := s.loadRow(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if row.UserID != userID {
+		return nil, ErrNotFound
+	}
 	result := s.dbWith(ctx).Model(&tokenRow{}).
 		Where("id = ? AND user_id = ?", id, userID).
 		Updates(map[string]any{"status": status, "updated_at": s.now().UTC().Truncate(time.Microsecond)})
@@ -991,13 +1032,20 @@ func (s *Store) setStatus(ctx context.Context, userID, id int64, status string) 
 	if result.RowsAffected == 0 {
 		return nil, ErrNotFound
 	}
-	s.invalidate(id)
-	s.publishChange(ctx, id)
+	s.invalidateToken(ctx, id, row.KeyHash)
 	return s.loadToken(ctx, id)
 }
 
 // ResetKey 生成新密钥并立即废弃旧 key。明文只在此返回值出现一次。
 func (s *Store) ResetKey(ctx context.Context, userID, id int64) (plain, masked string, token *Token, err error) {
+	row, err := s.loadRow(ctx, id)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if row.UserID != userID {
+		return "", "", nil, ErrNotFound
+	}
+	oldHash := row.KeyHash
 	plain, keyHash, masked, err := GenerateKey()
 	if err != nil {
 		return "", "", nil, err
@@ -1011,8 +1059,7 @@ func (s *Store) ResetKey(ctx context.Context, userID, id int64) (plain, masked s
 	if result.RowsAffected == 0 {
 		return "", "", nil, ErrNotFound
 	}
-	s.invalidate(id)
-	s.publishChange(ctx, id)
+	s.invalidateToken(ctx, id, oldHash)
 	token, err = s.loadToken(ctx, id)
 	if err != nil {
 		return "", "", nil, err
@@ -1109,10 +1156,12 @@ func (s *Store) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, e
 		return nil, ErrInvalidToken
 	}
 	now := s.now()
-	if meta, ok := s.cachedResolve(keyHash, now); ok {
+	if meta, ok := s.loadCachedMeta(ctx, keyHash); ok {
 		return checkResolved(meta, now)
 	}
 
+	// 代际在读 DB 之前取：并发变更会让回填的 WATCH 失败（防 read-add 竞争）。
+	gen, cacheable := s.cacheGeneration(ctx)
 	var row resolveRow
 	err := s.dbWith(ctx).Table("api_tokens").
 		Select(`id, user_id, status, "group", expires_at, remain_quota`).
@@ -1137,7 +1186,9 @@ func (s *Store) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, e
 	if row.RemainQuota != nil {
 		meta.RemainQuota = *row.RemainQuota
 	}
-	s.cacheResolve(keyHash, row.ID, meta, now)
+	if cacheable {
+		s.storeCachedMeta(ctx, gen, keyHash, meta)
+	}
 	return checkResolved(meta, now)
 }
 
@@ -1151,28 +1202,137 @@ func checkResolved(meta *auth.TokenMeta, now time.Time) (*auth.TokenMeta, error)
 	return cloneMeta(meta), nil
 }
 
-func (s *Store) cachedResolve(keyHash string, now time.Time) (*auth.TokenMeta, bool) {
-	s.mu.RLock()
-	entry, ok := s.resolveCache[keyHash]
-	s.mu.RUnlock()
-	if !ok || !now.Before(entry.expiresAt) {
+// ---------------------------------------------------------------------------
+// Redis 缓存（GC-11）
+// ---------------------------------------------------------------------------
+
+const (
+	cacheMetaPrefix    = "token:meta:"
+	cacheViewPrefix    = "token:view:"
+	cacheIDHashPrefix  = "token:idhash:"
+	cacheGenerationKey = "token:gen"
+	errCacheGeneration = "tokenstore: cache generation changed"
+)
+
+var errCacheGenerationChanged = errors.New(errCacheGeneration)
+
+func cacheMetaKey(hash string) string { return cacheMetaPrefix + hash }
+
+func cacheViewKey(id int64) string {
+	return cacheViewPrefix + strconv.FormatInt(id, 10)
+}
+
+func cacheIDHashKey(id int64) string {
+	return cacheIDHashPrefix + strconv.FormatInt(id, 10)
+}
+
+// cacheGeneration 读取全局代际计数。ok=false 表示 Redis 不可用（跳过缓存，
+// 直接以 DB 为准），绝不影响鉴权结论。
+func (s *Store) cacheGeneration(ctx context.Context) (string, bool) {
+	if s.rdb == nil {
+		return "", false
+	}
+	value, err := s.rdb.Get(ctx, cacheGenerationKey).Result()
+	if errors.Is(err, redis.Nil) {
+		return "0", true
+	}
+	if err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func (s *Store) loadCachedMeta(ctx context.Context, keyHash string) (*auth.TokenMeta, bool) {
+	if s.rdb == nil {
 		return nil, false
 	}
-	return entry.meta, true
+	raw, err := s.rdb.Get(ctx, cacheMetaKey(keyHash)).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var meta auth.TokenMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil, false
+	}
+	return &meta, true
 }
 
-func (s *Store) cacheResolve(keyHash string, id int64, meta *auth.TokenMeta, now time.Time) {
-	s.mu.Lock()
-	s.resolveCache[keyHash] = cachedMeta{meta: cloneMeta(meta), expiresAt: now.Add(s.ttl)}
-	s.hashByID[id] = keyHash
-	s.mu.Unlock()
+func (s *Store) storeCachedMeta(ctx context.Context, gen, keyHash string, meta *auth.TokenMeta) {
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return
+	}
+	s.writeCacheGuarded(ctx, gen, map[string]any{
+		cacheMetaKey(keyHash):   raw,
+		cacheIDHashKey(meta.ID): keyHash,
+	})
+}
+
+func (s *Store) loadCachedToken(ctx context.Context, id int64) (*Token, bool) {
+	if s.rdb == nil {
+		return nil, false
+	}
+	raw, err := s.rdb.Get(ctx, cacheViewKey(id)).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var token Token
+	if err := json.Unmarshal(raw, &token); err != nil {
+		return nil, false
+	}
+	return cloneToken(&token), true
+}
+
+func (s *Store) storeCachedToken(ctx context.Context, gen string, token *Token, keyHash string) {
+	raw, err := json.Marshal(token)
+	if err != nil {
+		return
+	}
+	s.writeCacheGuarded(ctx, gen, map[string]any{
+		cacheViewKey(token.ID):   raw,
+		cacheIDHashKey(token.ID): keyHash,
+	})
+}
+
+// writeCacheGuarded 用 WATCH token:gen 实现「代际不变的才回填」：
+// 读取 DB 期间只要发生任何令牌变更，缓存写入就放弃，避免把并发删除/禁用的
+// 旧行重新写回并存活 60s。
+func (s *Store) writeCacheGuarded(ctx context.Context, gen string, entries map[string]any) {
+	if s.rdb == nil || gen == "" {
+		return
+	}
+	err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+		current, err := tx.Get(ctx, cacheGenerationKey).Result()
+		switch {
+		case errors.Is(err, redis.Nil):
+			current = "0"
+		case err != nil:
+			return err
+		}
+		if current != gen {
+			return errCacheGenerationChanged
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			for key, value := range entries {
+				pipe.Set(ctx, key, value, s.ttl)
+			}
+			return nil
+		})
+		return err
+	}, cacheGenerationKey)
+	if err != nil && !errors.Is(err, errCacheGenerationChanged) {
+		// 回填失败只影响性能；下一请求会再读 DB。
+		slog.Debug("tokenstore: cache fill failed", "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
-// 失效：本地立即 + pub/sub 跨副本（GC-11）
+// 失效：DEL + 代际自增 + pub/sub（GC-11）
 // ---------------------------------------------------------------------------
 
-// Subscribe 订阅 token:changed:* 并启动本地缓存失效监听；ctx 结束即停止。
+// Subscribe 订阅 token:changed:* 并清理 Redis 缓存键；ctx 结束即停止。
+// 由于缓存本身在 Redis 里，写路径的 DEL 已全局生效；订阅是 GC-11 要求的
+// 第二道失效通道（兼容外部只发广播/写路径 DEL 失败的情形）。
 func (s *Store) Subscribe(ctx context.Context) error {
 	if s.rdb == nil {
 		return nil
@@ -1207,19 +1367,48 @@ func (s *Store) watch(ctx context.Context, pubsub *redis.PubSub) {
 					continue
 				}
 			}
-			s.invalidate(id)
+			s.invalidateOnChange(ctx, id)
 		}
 	}
 }
 
-func (s *Store) invalidate(id int64) {
-	s.mu.Lock()
-	delete(s.getCache, id)
-	if hash, ok := s.hashByID[id]; ok {
-		delete(s.resolveCache, hash)
-		delete(s.hashByID, id)
+// invalidateOnChange 清理某令牌的全部缓存键（view/idhash/meta）。
+func (s *Store) invalidateOnChange(ctx context.Context, id int64) {
+	if s.rdb == nil {
+		return
 	}
-	s.mu.Unlock()
+	idHashKey := cacheIDHashKey(id)
+	keys := []string{cacheViewKey(id), idHashKey}
+	if hash, err := s.rdb.Get(ctx, idHashKey).Result(); err == nil && hash != "" {
+		keys = append(keys, cacheMetaKey(hash))
+	}
+	_ = s.rdb.Del(ctx, keys...).Err()
+}
+
+// invalidateToken 是写路径的统一失效入口：代际自增（阻断在途回填）→
+// DEL 已知键（含旧 hash 的 meta）→ 广播 token:changed:<id>。
+func (s *Store) invalidateToken(ctx context.Context, id int64, keyHashes ...string) {
+	if s.rdb == nil {
+		return
+	}
+	if err := s.rdb.Incr(ctx, cacheGenerationKey).Err(); err != nil {
+		slog.Warn("tokenstore: bump cache generation failed", "token_id", id, "error", err)
+	}
+	keys := []string{cacheViewKey(id), cacheIDHashKey(id)}
+	// 反向索引可能记录着比调用方 row.KeyHash 更新的密钥（并发 reset 后刚被
+	// Resolve 缓存），一并删除，避免旧响应留下可鉴权的 meta。
+	if hash, err := s.rdb.Get(ctx, cacheIDHashKey(id)).Result(); err == nil && hash != "" {
+		keys = append(keys, cacheMetaKey(hash))
+	}
+	for _, hash := range keyHashes {
+		if hash != "" {
+			keys = append(keys, cacheMetaKey(hash))
+		}
+	}
+	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+		slog.Warn("tokenstore: cache invalidation failed", "token_id", id, "error", err)
+	}
+	s.publishChange(ctx, id)
 }
 
 // publishChange 广播 token:changed:<id>。pub/sub 失败不影响写操作：

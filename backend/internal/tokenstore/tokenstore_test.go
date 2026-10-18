@@ -254,3 +254,25 @@ func (m mapSettings) Get(key string) (json.RawMessage, bool) {
 	v, ok := m[key]
 	return v, ok
 }
+
+// TestNormalizeAutoListTrimsButKeepsDuplicates：先 normalize 再校验，但去重
+// 必须留给校验器显式拒绝（不能静默吞掉重复项）。
+func TestNormalizeAutoListTrimsButKeepsDuplicates(t *testing.T) {
+	got := normalizeAutoList([]string{" g1 ", "", "g1", " g2"})
+	want := []string{"g1", "g1", "g2"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeAutoList = %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("normalizeAutoList = %v，期望 %v", got, want)
+		}
+	}
+	allowed := map[string]struct{}{"g1": {}, "g2": {}}
+	if err := validateAutoGroups([]string{" g1 ", " g1 "}, allowed, 20); err == nil || !strings.Contains(err.Message, "重复") {
+		t.Fatalf("带空白的重复项应被拒绝，实际 %v", err)
+	}
+	if err := validateAutoGroups([]string{" g1 "}, allowed, 20); err != nil {
+		t.Fatalf("带空白但合法的单项应接受: %v", err)
+	}
+}
