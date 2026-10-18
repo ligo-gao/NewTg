@@ -1,0 +1,441 @@
+# NewTG CI 门禁（PR + push main）
+#
+# 设计真源：docs/platform-02-仓库构建与CI-设计.md §7（流水线 A–G、I）
+#           docs/platform-03-部署骨架与OpenAPI-设计.md §11.4（openapi 作业）
+#           docs/security-08-前端与传输加固-设计.md §5.2（security-headers 断言）
+#
+# 供应链纪律（GC-13）：所有第三方 action 固定到 40 位 commit SHA；行尾 `# vX.Y.Z`
+# 只是给人看的可读标签，升级时必须同时换 SHA。禁止 @v1/@main/@latest 浮动标签。
+# 数据库纪律（GC-4 / C-2③ / D4）：所有 service container 统一 postgres:16-alpine，
+# 与 deploy/docker-compose.yml 和迁移验证保持同一大版本，避免 CI 绿、部署红。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同一 workflow+ref 只保留最新一轮：PR 连续推送时取消上一轮，红绿灯始终对应最新代码。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI 只需要读仓库；写权限只出现在 release.yml 的 packages。
+permissions:
+  contents: read
+
+env:
+  # GC-13：工具版本必须固定具体值（禁 @latest）。这两个变量被执行步骤直接引用，
+  # 也是 check_ci.sh 的静态断言对象。
+  MIGRATE_VERSION: v4.18.2
+  KIN_OPENAPI_VERSION: v0.131.0
+  # oasdiff 同样是供应链输入；固定在 env 便于升级时一处改动。
+  OASDIFF_VERSION: v1.33.0
+  # GitHub 托管 runner 直连官方模块代理；仓库默认的 goproxy.cn 是给受限网络用的。
+  NEWTG_GOPROXY: https://proxy.golang.org,direct
+
+jobs:
+  # 流水线 A（platform-02 §7.3）：格式 / vet / 依赖边界 / 前端 lint+类型。
+  # 任何一项红都阻断合并——这些都是零成本的确定性检查，放过只会把问题推给 review。
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: gofmt（输出非空即失败）
+        run: test -z "$(cd backend && gofmt -l .)"
+      - name: go vet
+        run: cd backend && go vet ./...
+      - name: golangci-lint（含 depguard 包边界）
+        # 配置为 v2 schema（根 .golangci.yml 首行 version: "2"），因此钉 v2 系列；
+        # action v8.0.0 的 tag 是 annotated tag，这里用其指向的 commit SHA。
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8.0.0
+        with:
+          version: v2.15.0
+          args: --config .golangci.yml ./backend/...
+      - name: Makefile 冻结值断言
+        run: bash backend/scripts/check_makefile.sh
+      - name: Dockerfile 冻结值断言（多阶段/非 root/内置健康检查）
+        run: bash backend/scripts/check_dockerfile.sh
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          # 与锁文件生成版本一致：bun.lock 是文本格式，跨大版本解析行为可能变化。
+          bun-version: 1.4.3
+      - name: 前端依赖（冻结锁文件）
+        run: cd frontend && bun install --frozen-lockfile
+      - name: 前端 ESLint
+        run: cd frontend && bun run lint
+      - name: 前端类型检查
+        run: cd frontend && bun run typecheck
+
+  # 流水线 B（platform-02 §7.4）：契约是冻结面，独立成 job 以便分支保护单独要求红灯。
+  # go build 能暴露「被引用却未定义」的契约类型，是最便宜的契约自洽检查。
+  contract-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: 契约包独立可编译
+        run: cd backend && go build ./...
+      - name: 契约包 vet
+        run: cd backend && go vet ./internal/contract/...
+      - name: 契约包 gofmt
+        run: test -z "$(cd backend && gofmt -l ./internal/contract)"
+
+  # 流水线 C（platform-02 §7.5、§8.1）：单测不得依赖 PG/Redis，因此没有 service container。
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Go 单元测试
+        run: cd backend && go test ./...
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.4.3
+      - name: 前端依赖（冻结锁文件）
+        run: cd frontend && bun install --frozen-lockfile
+      - name: 前端 Vitest
+        run: cd frontend && bun run test
+
+  # 流水线 D（platform-02 §7.6、§8.2）：真实 PG + Redis。
+  # 用 GitHub service container 而不是 Docker-in-Docker：启动确定、可缓存、无需特权。
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: newtg
+          POSTGRES_PASSWORD: newtg
+          POSTGRES_DB: newtg_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U newtg -d newtg_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NEWTG_TEST_DB_DSN: postgres://newtg:newtg@localhost:5432/newtg_test?sslmode=disable
+      NEWTG_TEST_REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: 建日志库 newtg_logs
+        # 日志库 schema 用例会按 DSN 换库名连 newtg_logs；service container 只自动建一个库。
+        # ubuntu-latest 自带 PostgreSQL 客户端（psql）。
+        run: PGPASSWORD=newtg psql -h 127.0.0.1 -U newtg -d newtg_test -c 'CREATE DATABASE newtg_logs'
+      - name: 安装固定版本 migrate
+        # 集成用例断言的是「迁移后的 schema」，所以先应用迁移；版本与 migrate-verify 同源。
+        run: |
+          set -euo pipefail
+          go install -tags 'postgres' "github.com/golang-migrate/migrate/v4/cmd/migrate@${MIGRATE_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: 应用主库与日志库迁移
+        run: |
+          set -euo pipefail
+          migrate -path backend/migrations -database "$NEWTG_TEST_DB_DSN" up
+          migrate -path backend/migrations-logs -database "postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable" up
+      - name: 集成测试
+        run: cd backend && go test -tags=integration ./...
+
+  # 流水线 E（platform-02 §7.7、§8.3）：迁移必须可前进、可回退、幂等。
+  # schema 变更是最难回滚的风险面，因此独立 PG16 实例只跑迁移全序列。
+  migrate-verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: newtg
+          POSTGRES_PASSWORD: newtg
+          POSTGRES_DB: newtg
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U newtg -d newtg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: 判定 paths 过滤
+        # 迁移/存储层变更必须跑全序列；无关 PR 省略重型步骤（push main 始终跑）。
+        # 用步骤输出而非 job 级 paths：workflow 级 paths 会把整个 CI 一起跳过，
+        # 那会让前端/文档 PR 失去 lint 等基本门禁。
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            if git diff --name-only FETCH_HEAD HEAD \
+                 | grep -qE '^(backend/migrations/|backend/migrations-logs/|backend/internal/store/)'; then
+              run=true
+            else
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "::notice::migrate-verify 跳过：本 PR 未改动 backend/migrations/、backend/migrations-logs/ 或 backend/internal/store/"
+          fi
+      - name: 建日志库 newtg_logs
+        if: steps.filter.outputs.run == 'true'
+        run: PGPASSWORD=newtg psql -h 127.0.0.1 -U newtg -d newtg -c 'CREATE DATABASE newtg_logs'
+      - name: 安装固定版本 migrate
+        if: steps.filter.outputs.run == 'true'
+        # GC-13：版本来自 env 的 MIGRATE_VERSION，禁止 @latest。
+        run: |
+          set -euo pipefail
+          go install -tags 'postgres' "github.com/golang-migrate/migrate/v4/cmd/migrate@${MIGRATE_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: 迁移全序列验证（up/幂等/往返/全退/schema 快照）
+        if: steps.filter.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          bash backend/scripts/migrate_verify.sh \
+            "postgres://newtg:newtg@localhost:5432/newtg?sslmode=disable" \
+            "postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable"
+
+  # 流水线（platform-03 §11.4）：契约源是 TS/Go 生成物的唯一真源。
+  # 生成物入库后必须「重生成零 diff」，否则 review 看到的类型与 spec 实际脱节。
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # oasdiff 需要读取基线提交（main 或上一个 commit）里的 bundle。
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: 契约源目录树（仓根 api/，入口 paths 全 $ref）
+        run: bash scripts/check_openapi_layout.sh
+      - name: spectral lint（.spectral.yaml 最小规则集）
+        run: |
+          set -euo pipefail
+          . scripts/openapi.env
+          npx --yes "@stoplight/spectral-cli@${SPECTRAL_VERSION}" lint api/openapi/openapi.yaml
+      - name: bundle（redocly）
+        run: |
+          set -euo pipefail
+          . scripts/openapi.env
+          npx --yes "@redocly/cli@${REDOCLY_VERSION}" bundle api/openapi/openapi.yaml -o api/dist/openapi.bundle.yaml
+      - name: 生成 TS + Go DTO
+        run: |
+          set -euo pipefail
+          . scripts/openapi.env
+          npx --yes "openapi-typescript@${OPENAPI_TS_VERSION}" api/dist/openapi.bundle.yaml -o frontend/src/api/schema.d.ts
+          cd backend
+          go run "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@${OAPI_CODEGEN_VERSION}" \
+            -generate types -package dto \
+            -o internal/api/dto/models.gen.go \
+            ../api/dist/openapi.bundle.yaml
+      - name: 漂移检查（生成物已入库，重生成必须逐字一致）
+        run: bash scripts/check_openapi_drift.sh
+      - name: kin-openapi 运行时校验
+        run: |
+          set -euo pipefail
+          cd backend
+          go run "github.com/getkin/kin-openapi/cmd/validate@${KIN_OPENAPI_VERSION}" ../api/dist/openapi.bundle.yaml
+      - name: oasdiff 破坏性变更（基线 = PR base / push 上一提交）
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_rev=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            base_rev="$(git rev-parse FETCH_HEAD)"
+          else
+            base_rev="${{ github.event.before }}"
+            if [ -z "$base_rev" ] || printf '%s' "$base_rev" | grep -qE '^0+$'; then
+              base_rev=""
+            else
+              git fetch --no-tags --depth=1 origin "$base_rev" || base_rev=""
+            fi
+          fi
+
+          base_file="$(mktemp)"
+          trap 'rm -f "$base_file"' EXIT
+
+          # 首 PR 豁免（本计划冻结，U8）：main 尚无 api/dist/openapi.bundle.yaml 时
+          # 不存在可比基线；写 notice 而不是静默跳过，让审计者知道门禁未执行。
+          if [ -z "$base_rev" ] || ! git show "${base_rev}:api/dist/openapi.bundle.yaml" > "$base_file" 2>/dev/null; then
+            echo "::notice::oasdiff breaking 跳过：基线尚无 api/dist/openapi.bundle.yaml（首 PR 豁免，U8）"
+            exit 0
+          fi
+
+          go install "github.com/oasdiff/oasdiff@${OASDIFF_VERSION}"
+          "$(go env GOPATH)/bin/oasdiff" breaking "$base_file" api/dist/openapi.bundle.yaml
+
+  # 流水线 F（platform-02 §7.8）：生产构建必须可产出；首屏体积必须可控。
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.4.3
+      - name: 生产构建
+        run: cd frontend && bun install --frozen-lockfile && bun run build
+      - name: 首屏 gzip 体积门禁（≤150 KiB）
+        # 阈值来源见 scripts/check_bundle_size.sh 头部注释：M0 实测约 104 KiB，
+        # 预留余量后冻结 150 KiB；超限说明新增依赖未分割，必须在合并前处理。
+        run: bash scripts/check_bundle_size.sh
+
+  # 流水线 I（platform-02 §7.10.1，断言真源 security-08 §5.2）。
+  # 为什么用 compose 起真实栈：安全头由 gateway 中间件下发、经 edge 反代后才算最终
+  # 客户端可见行为；只测 handler 会漏掉代理层覆盖/剥离。生产 debug 面可达会泄露内部状态。
+  security-headers:
+    runs-on: ubuntu-latest
+    env:
+      # compose 的 ${VAR:?} 守卫要求这些键存在；此处仅一次性哑值，不是真实口令。
+      POSTGRES_PASSWORD: ci-postgres-password
+      POSTGRES_APP_PASSWORD: ci-app-password
+      POSTGRES_MIGRATE_PASSWORD: ci-migrate-password
+      POSTGRES_BACKUP_PASSWORD: ci-backup-password
+      REDIS_PASSWORD: ci-redis-password
+      SESSION_SECRET: ci-session-secret
+      CREDENTIAL_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      NEWTG_IMAGE: newtg/gateway:ci
+      APP_ENV: production
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: 判定 paths 过滤
+        # backend/internal/**（中间件）、deploy/**、frontend/** 变更必跑；其余 PR 跳过重栈。
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            if git diff --name-only FETCH_HEAD HEAD | grep -qE '^(backend/internal/|deploy/|frontend/)'; then
+              run=true
+            else
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "::notice::security-headers 跳过：本 PR 未改动 backend/internal/、deploy/ 或 frontend/"
+          fi
+      - name: compose 骨架静态断言
+        if: steps.filter.outputs.run == 'true'
+        # 先静态确认 compose 的 PG16/网络/密钥守卫，再花时间起栈；失败点更清晰。
+        run: bash deploy/scripts/check_compose.sh
+      - name: 构建待测镜像
+        if: steps.filter.outputs.run == 'true'
+        run: docker build -f backend/Dockerfile -t newtg/gateway:ci backend
+      - name: 起 compose 栈
+        if: steps.filter.outputs.run == 'true'
+        run: docker compose -f deploy/docker-compose.yml up -d
+      - name: 等待 /readyz
+        if: steps.filter.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            if curl -fsS http://localhost:8080/readyz >/dev/null 2>&1; then
+              echo "readyz: OK"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f deploy/docker-compose.yml ps
+          docker compose -f deploy/docker-compose.yml logs --tail=100
+          echo "FAIL /readyz 在 180s 内未返回 200" >&2
+          exit 1
+      - name: 断言安全响应头、生产 debug 面与 APP_ENV
+        if: steps.filter.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          ok()  { echo "ok   $*"; }
+          bad() { echo "FAIL $*" >&2; fail=1; }
+
+          # 采样 /healthz：安全头必须由中间件对「每个响应」统一注入，而不是只给
+          # HTML 特判；探针/错误路径正是最容易漏头的分支。
+          headers="$(curl -sS -D - -o /dev/null http://localhost:8080/healthz || true)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/healthz || true)"
+          [ "$code" = 200 ] && ok "/healthz 200" || bad "/healthz 状态码 ${code}，期望 200"
+
+          if grep -qiE '^x-content-type-options:[[:space:]]*nosniff' <<<"$headers"; then
+            ok "X-Content-Type-Options: nosniff"
+          else
+            bad "缺少 X-Content-Type-Options: nosniff（MIME 嗅探会放大 XSS）"
+          fi
+
+          if grep -qiE '^referrer-policy:[[:space:]]*[^[:space:]]+' <<<"$headers"; then
+            ok "Referrer-Policy 已下发"
+          else
+            bad "缺少 Referrer-Policy（跨源导航会泄露完整 URL）"
+          fi
+
+          if grep -qiE "^content-security-policy:.*frame-ancestors[[:space:]]+'none'" <<<"$headers" \
+             || grep -qiE '^x-frame-options:[[:space:]]*(DENY|SAMEORIGIN)' <<<"$headers"; then
+            ok "禁止被嵌入（CSP frame-ancestors 'none' 或 X-Frame-Options）"
+          else
+            bad "缺少 frame-ancestors 'none' / X-Frame-Options（点击劫持防护）"
+          fi
+
+          debug_code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/debug/pprof/ || true)"
+          if [ "$debug_code" = 404 ]; then
+            ok "/debug/* 404"
+          else
+            bad "/debug/pprof/ 状态码 ${debug_code}，期望 404（APP_ENV=production 不得暴露调试面）"
+          fi
+
+          app_env="$(docker compose -f deploy/docker-compose.yml exec -T --index 1 gateway sh -c 'printf %s "$APP_ENV"' || true)"
+          [ "$app_env" = production ] && ok "gateway APP_ENV=production" || bad "gateway APP_ENV=${app_env:-<空>}，期望 production"
+
+          [ "$fail" -eq 0 ]
+      - name: 清理
+        if: always() && steps.filter.outputs.run == 'true'
+        run: docker compose -f deploy/docker-compose.yml down -v
+
+  # 流水线 G（platform-02 §7.9）：仅 PR；只构建 amd64（快、够验证），发布才多架构。
+  # 不推送镜像：PR 的职责是证明 Dockerfile 可构建，不是产出制品。
+  image-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: 构建 amd64 镜像（不推送，gha 缓存）
+        uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6.13.0
+        with:
+          context: backend
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          tags: newtg/gateway:ci
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
