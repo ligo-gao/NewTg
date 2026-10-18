@@ -45,14 +45,16 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	redisRes, err := conn.openRedis(cfg)
 	if err != nil {
-		db.Close()
+		// 正在返回打开 Redis 的主错误；清理 DB 的失败不覆盖它。
+		_ = db.Close()
 		return fmt.Errorf("gateway: open redis: %w", err)
 	}
 
 	if cfg.DBMigrateOnStart {
 		if err := RunMigrate(ctx, cfg); err != nil {
-			redisRes.Close()
-			db.Close()
+			// 主错误优先：迁移失败时尽力释放两个资源，关闭错误不再上报。
+			_ = redisRes.Close()
+			_ = db.Close()
 			return fmt.Errorf("gateway: migrate on start: %w", err)
 		}
 	}
@@ -78,8 +80,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
-		redisRes.Close()
-		db.Close()
+		// 监听失败是主错误；资源清理失败不覆盖它。
+		_ = redisRes.Close()
+		_ = db.Close()
 		return fmt.Errorf("gateway: listen %s: %w", cfg.HTTPAddr, err)
 	}
 	// R4：装配完成（监听就绪）即置位。
@@ -100,8 +103,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	case <-ctx.Done():
 	case err := <-serveErr:
 		// 监听异常退出（端口被抢、进程内关闭等）：清理资源后上报。
-		redisRes.Close()
-		db.Close()
+		_ = redisRes.Close()
+		_ = db.Close()
 		if err != nil {
 			return fmt.Errorf("gateway: http serve: %w", err)
 		}
@@ -114,7 +117,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown exceeded grace window; forcing close", "error", err)
-		srv.Close()
+		// Shutdown 已失败并记录；Close 仅兜底释放监听，错误无需再次上报。
+		_ = srv.Close()
 	}
 	if err := db.Close(); err != nil {
 		log.Warn("close db failed", "error", err)
@@ -157,7 +161,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	}
 	redisRes, err := conn.openRedis(cfg)
 	if err != nil {
-		db.Close()
+		// 正在返回打开 Redis 的主错误；清理 DB 的失败不覆盖它。
+		_ = db.Close()
 		return fmt.Errorf("worker: open redis: %w", err)
 	}
 

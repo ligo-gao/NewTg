@@ -35,7 +35,8 @@ func runHealthcheck(url string) int {
 		fmt.Printf("healthcheck %s: connection failed: %v\n", url, err)
 		return 1
 	}
-	defer resp.Body.Close()
+	// 健康检查是只读 GET；响应体关闭失败不影响探测结论。
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		fmt.Printf("healthcheck %s: status %s\n", url, resp.Status)
 		return 1
@@ -51,7 +52,8 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
 		url := fs.String("url", "http://localhost:8080/healthz", "health check URL")
-		fs.Parse(os.Args[2:])
+		// flag.ExitOnError 模式下解析失败已直接退出进程，返回值无需再处理。
+		_ = fs.Parse(os.Args[2:])
 		os.Exit(runHealthcheck(*url))
 	}
 

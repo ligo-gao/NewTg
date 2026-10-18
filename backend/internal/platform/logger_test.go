@@ -20,12 +20,13 @@ func captureStdout(t *testing.T) func() string {
 	os.Stdout = w
 	return func() string {
 		os.Stdout = old
-		w.Close()
+		// 测试用管道句柄；关闭错误不影响对捕获内容的断言。
+		_ = w.Close()
 		b, err := io.ReadAll(r)
 		if err != nil {
 			t.Fatalf("read captured stdout: %v", err)
 		}
-		r.Close()
+		_ = r.Close()
 		return string(b)
 	}
 }

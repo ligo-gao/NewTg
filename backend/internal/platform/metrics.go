@@ -71,6 +71,7 @@ func newMetricsHandler(token string) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		fmt.Fprint(w, metricsStubBody)
+		// 常量响应体；写失败通常是对端已断开，此时 HTTP server 无法再补救。
+		_, _ = fmt.Fprint(w, metricsStubBody)
 	})
 }

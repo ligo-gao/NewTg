@@ -158,7 +158,8 @@ func (prodMigrationExecutor) AcquireLock(ctx context.Context, dsn string) (migra
 	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		db.Close()
+		// 正在返回打开连接的主错误；关闭连接池失败是次要信息。
+		_ = db.Close()
 		return nil, fmt.Errorf("open database connection: %w", err)
 	}
 	lock := &pgAdvisoryLock{db: db, conn: conn}
@@ -167,7 +168,8 @@ func (prodMigrationExecutor) AcquireLock(ctx context.Context, dsn string) (migra
 		var acquired bool
 		if err := conn.QueryRowContext(ctx,
 			"SELECT pg_try_advisory_lock($1)", migrateAdvisoryLockKey).Scan(&acquired); err != nil {
-			lock.close()
+			// 错误路径：锁获取失败的主错误优先，关闭连接的失败不覆盖它。
+			_ = lock.close()
 			return nil, fmt.Errorf("try advisory lock: %w", err)
 		}
 		if acquired {
@@ -177,7 +179,7 @@ func (prodMigrationExecutor) AcquireLock(ctx context.Context, dsn string) (migra
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			lock.close()
+			_ = lock.close()
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
@@ -217,17 +219,18 @@ func (prodMigrationExecutor) Up(ctx context.Context, dsn string, srcFS embed.FS)
 		return fmt.Errorf("open database: %w", err)
 	}
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		// 正在返回 Ping 的主错误；关闭连接池失败是次要信息。
+		_ = db.Close()
 		return fmt.Errorf("ping database: %w", err)
 	}
 	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create migrate driver: %w", err)
 	}
 	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
 	if err != nil {
-		driver.Close()
+		_ = driver.Close()
 		return fmt.Errorf("create migrate instance: %w", err)
 	}
 	// m.Close 同时关闭 source 与 database driver（含底层 *sql.DB）。

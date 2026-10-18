@@ -58,7 +58,8 @@ func freeAddr(t *testing.T) string {
 		t.Fatalf("reserve addr: %v", err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	// 测试辅助：立即释放预留端口，关闭错误不影响后续监听断言。
+	_ = ln.Close()
 	return addr
 }
 
@@ -97,7 +98,8 @@ func TestShutdownGrace(t *testing.T) {
 	for {
 		resp, err := client.Get("http://" + addr + "/healthz")
 		if err == nil {
-			resp.Body.Close()
+			// 测试客户端只关心状态码；关闭错误不影响断言。
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				break
 			}
@@ -127,7 +129,8 @@ func TestShutdownGrace(t *testing.T) {
 	// HTTP 监听必须已关闭。
 	conn, err := net.DialTimeout("tcp", addr, time.Second)
 	if err == nil {
-		conn.Close()
+		// 连接已建立本身就说明监听未关闭；关闭错误无关断言。
+		_ = conn.Close()
 		t.Fatal("http listener still open after shutdown")
 	}
 

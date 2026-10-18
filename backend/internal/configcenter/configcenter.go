@@ -109,7 +109,8 @@ func (c *Center) Load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("configcenter: load snapshot: %w", err)
 	}
-	defer rows.Close()
+	// 只读查询；关闭失败不影响已读取的快照，主错误优先。
+	defer func() { _ = rows.Close() }()
 
 	values := make(map[string]json.RawMessage)
 	versions := make(map[string]time.Time)
@@ -242,7 +243,8 @@ func (c *Center) Subscribe(ctx context.Context) error {
 }
 
 func (c *Center) watch(ctx context.Context, pubsub *redis.PubSub) {
-	defer pubsub.Close()
+	// watch 退出路径；关闭 pubsub 的错误已无补救动作。
+	defer func() { _ = pubsub.Close() }()
 
 	messages := pubsub.Channel()
 	ticker := time.NewTicker(snapshotTTL)

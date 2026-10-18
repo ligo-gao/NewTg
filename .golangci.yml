@@ -8,13 +8,16 @@ formatters:
     - goimports
 
 linters:
+  # 计划冻结集（Task 1 / platform-02 §6.3）：formatters 的 gofmt/goimports + govet/staticcheck/depguard。
+  # errcheck/unused/ineffassign 能抓真实缺陷，保留；misspell 保留（当前 0 条）。
+  # 不启用 revive：它不在冻结集内，且现存 86 条几乎全是 internal/contract 冻结包的导出注释
+  # 风格告警——为风格去改冻结契约面收益低、风险高（业主裁决 2026-10-18）。
   enable:
     - depguard
     - errcheck
     - govet
     - ineffassign
     - misspell
-    - revive
     - staticcheck
     - unused
   settings:

@@ -204,10 +204,6 @@ type PriceData struct {
 	AudioRatioSet         bool
 
 	GroupRatioInfo GroupRatioInfo
-
-	// otherRatios 私有（契约 §12 不变量 10）：
-	// 只能经守卫写入，拒绝非正、NaN、+Inf。此处不导出字段。
-	otherRatios map[string]float64
 }
 
 // GroupRatioInfo 是分组倍率信息。

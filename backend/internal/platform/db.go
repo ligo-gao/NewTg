@@ -24,7 +24,8 @@ func OpenDB(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
+		// 正在返回 Ping 的主错误；清理连接池的失败是次要信息。
+		_ = db.Close()
 		return nil, fmt.Errorf("platform: ping db: %w", err)
 	}
 	return db, nil

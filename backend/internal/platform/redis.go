@@ -30,7 +30,8 @@ func OpenRedis(ctx context.Context, cfg *config.Config) (Resource, error) {
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
-		client.Close()
+		// 正在返回 Ping 的主错误；关闭客户端的失败是次要信息。
+		_ = client.Close()
 		return nil, fmt.Errorf("platform: ping redis: %w", err)
 	}
 	return redisResource{client}, nil
