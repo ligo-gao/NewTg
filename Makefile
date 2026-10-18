@@ -133,11 +133,11 @@ api-validate: api-bundle ## kin-openapi 运行时校验单体产物
 api-check: check-openapi-layout api-gen api-lint api-validate ## OpenAPI 全链路门禁（布局+生成+lint+校验+漂移）
 	bash scripts/check_openapi_drift.sh
 
-image: ## 构建本机架构镜像（PLATFORM 默认 linux/amd64）
-	docker build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) --build-arg GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} -f $(BACKEND)/Dockerfile -t $(IMAGE) $(BACKEND)
+image: ## 构建本机架构镜像（PLATFORM 默认 linux/amd64；上下文=仓根）
+	docker build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) --build-arg GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} -f $(BACKEND)/Dockerfile -t $(IMAGE) .
 
-image-multiarch: ## 多架构构建并推送（发布用）
-	docker buildx build --platform linux/amd64,linux/arm64 -f $(BACKEND)/Dockerfile -t $(IMAGE) --push $(BACKEND)
+image-multiarch: ## 多架构构建并推送（发布用；上下文=仓根）
+	docker buildx build --platform linux/amd64,linux/arm64 -f $(BACKEND)/Dockerfile -t $(IMAGE) --push .
 
 compose-up: ## 起 PG + Redis + gateway + worker
 	docker compose -f deploy/docker-compose.yml up -d --build

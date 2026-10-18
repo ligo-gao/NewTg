@@ -52,7 +52,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 公共站点状态 */
+        /**
+         * 公共站点状态
+         * @description 登录/注册页的引导数据：注册与口令登录开关、邮箱验证要求、Turnstile
+         *     site key、登录加密开关与 canonical 7 语清单。响应 Cache-Control:
+         *     no-store——开关变更必须立即生效。
+         */
         get: operations["getPublicStatus"];
         put?: never;
         post?: never;
@@ -83,6 +88,567 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/login/encryption-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 登录口令加密公钥（关闭时 {enabled:false}）
+         * @description 前端缓存 5 分钟（DisableCache 语义是响应头禁止中间层缓存，不是禁止
+         *     客户端短缓存）。开启时返回 {kid, public_key}；关闭时固定
+         *     {enabled:false}。取公钥失败返回 503，绝不回落到明文登录。
+         */
+        get: operations["getLoginEncryptionKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/email-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发送 6 位一次性邮箱验证码
+         * @description TTL 10 分钟、一次性。同邮箱 1 次/60 秒、同 IP 10 次/小时；超限 429
+         *     + Retry-After。成功恒 204，响应不回显验证码。purpose=verify|bind
+         *     要求有效会话（本端点不经过 SessionAuth，实现内显式校验），缺失 401。
+         *     SMTP 发送失败返回 502（验证码同时作废，避免留下收不到的有效码）。
+         */
+        post: operations["requestEmailCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 注册并自动登录
+         * @description 成功 201 + 会话 Cookie。重复 username/email 统一 409（文案不区分字段
+         *     级差异，防账号枚举）。注册关闭 403；邮箱域名白名单外 422。成功后可
+         *     按配置发放注册赠送流水。
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 口令登录（可选前端加密与 2FA 挑战）
+         * @description 口令通过后：未启用 2FA 直接建立会话（200 AuthSessionResponse）；
+         *     已启用返回 200 Pending2FAResponse（ticket 5 分钟），需再调用
+         *     POST /api/auth/2fa/challenge。连续 5 次失败锁定 15 分钟（双桶
+         *     Redis 计数）；封禁账号 401。所有失败（含解密失败）响应一致，防 oracle。
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/2fa/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用一次性 ticket + TOTP/备用码换取正式会话
+         * @description 只信任 ticket（Redis pending_2fa:{ticket} → user_id），不接受客户端
+         *     声明的用户身份。TOTP 连续 5 次错误作废 ticket；备用码原子核销（同一
+         *     码并发提交只有一次成功）。成功 200 + 会话 Cookie。
+         */
+        post: operations["submitTwoFAChallenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password-reset/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 请求口令重置邮件（统一成功态）
+         * @description 邮箱存在与否响应完全一致（恒 204，防枚举）；存在时投递 256-bit
+         *     token（30 分钟）。同邮箱 60 秒冷却、同 IP 5 次/分钟，超限 429。
+         */
+        post: operations["requestPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password-reset/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 校验重置链接（不消费 token）
+         * @description 有效返回 200 {"valid":true}；无效/过期一律 400 invalid_reset_token。
+         */
+        post: operations["validatePasswordResetToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 消费重置 token 并设置新口令
+         * @description 原子消费 token → 改密 → 吊销该用户全部会话，成功 204。token 复用/
+         *     过期 400；并发提交同一 token 只有一个成功。
+         */
+        post: operations["confirmPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 登出当前会话
+         * @description public-safe：无会话或重复登出也恒 204。不挂 CSRF 校验（登出不构成
+         *     状态提升，且清 Cookie 必须在会话已失效后仍可用）。Redis 故障时 503。
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 首次安装向导（建管理员 + 写初始化锚）
+         * @description 仅未初始化时可调用：三步字段建 admin 并写 system.install.completed_at
+         *     （同事务），成功 201 + 自动登录会话。幂等锚是 system_settings 该键：
+         *     重复/并发提交返回 409 + initialized=true，前端据此导流到登录页。
+         *     已初始化后调用同样 409；用户名/邮箱冲突 409。
+         */
+        post: operations["completeSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 当前用户身份投影 */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改显示名（仅 display_name）
+         * @description 仅 display_name 可写；提交未知字段返回 403 field_not_writable。
+         *     null 或空白字符串清除显示名。
+         */
+        patch: operations["patchMe"];
+        trace?: never;
+    };
+    "/api/self": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 语言 / 侧栏覆盖 / IP 记录开关 */
+        get: operations["getSelfSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/self/setting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 更新个人设置（乐观锁）
+         * @description 部分更新：未出现的键保持原值。必须原样回传 GET /api/self 的
+         *     updated_at，不匹配返回 409。语言必须是 canonical 7 语之一，否则 400。
+         */
+        put: operations["updateSelfSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前用户的活跃会话（≤50，非分页）
+         * @description 仅接受浏览器会话（API 令牌没有会话列表语义；令牌请求返回 403）。
+         *     过期会话不列出，按 last_seen 倒序。
+         */
+        get: operations["listSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{sid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 吊销指定会话（不能踢当前会话）
+         * @description 吊销他人/不存在会话统一 404（不泄露存在性）；吊销当前会话 400
+         *     （当前会话必须走 POST /api/logout 以清 Cookie）。成功 204。
+         */
+        delete: operations["revokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/revoke-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 吊销除当前外的全部会话
+         * @description 成功 204；当前会话及其 CSRF 令牌保持有效。
+         */
+        post: operations["revokeOtherSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/verify-email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用邮箱验证码置 email_verified_at
+         * @description 幂等：已验证账号重复调用直接 200（保留首次验证时间，不再消费验证码）。
+         *     无邮箱的账号 400；验证码错误/过期 400。
+         */
+        post: operations["verifyEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 修改口令（吊销其他会话）
+         * @description 校验当前口令后更新哈希、吊销除当前外全部会话、轮换当前会话的 CSRF
+         *     令牌（Cookie 路径）。限流 5 次/10 分钟/IP+用户；新口令必须与旧口令
+         *     不同并通过泄露筛查。成功 204。
+         */
+        post: operations["changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 硬删除账号并匿名化 PII（无宽限）
+         * @description 全量再认证通过后：吊销全部会话 → PII 匿名化（历史记录改
+         *     deleted_{id}）→ 硬删除 users/api_tokens 行 → 失效令牌缓存。成功 204。
+         *     管理员账号必须先被降权（403）；再认证失败 403 reauth_required。
+         *     账号行已不存在时 404（PRD 的「幂等」指重复删除不产生额外副作用）。
+         */
+        delete: operations["deleteAccount"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 换绑邮箱（全量再认证）
+         * @description 先再认证（当前口令 + 已启用 MFA 时的 TOTP），再消费新邮箱验证码
+         *     （purpose=bind），最后落库。未过再认证 403 且不消费验证码。新邮箱
+         *     被占用 409；域名白名单外 422。成功 200。
+         */
+        put: operations["changeEmail"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notification-preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取通知偏好（稀疏对象）
+         * @description 存储为 NULL 时归一为 {}；站点默认值由客户端合并。
+         */
+        get: operations["getNotificationPreferences"];
+        /**
+         * 稀疏合并通知偏好
+         * @description 请求中出现的键覆盖/合并已有值，未出现的保持不动。未知键与非法值
+         *     一律 400（拼写错误必须可见）。null/空串清除 URL/token 类键；
+         *     security_alert.enabled=false 被拒绝（安全通知不可关闭）。成功 200
+         *     返回合并后的完整对象。
+         */
+        put: operations["updateNotificationPreferences"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notification-preferences/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发送一条测试通知
+         * @description 渠道实现由模块 08 注入；M1 未配置通道时返回 503，偏好读写不受影响。
+         *     成功 200 {channel,sent:true}。
+         */
+        post: operations["testNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/2fa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 生成 TOTP secret 与 otpauth URI（不落库）
+         * @description 已启用时返回 409（避免展示一个永远无法保存的二维码）。secret 只在
+         *     本次响应出现。成功 200。
+         */
+        post: operations["setupTwoFA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/2fa/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 验证 TOTP 后启用 2FA 并返回备用码
+         * @description 验证 {secret,code} 通过后一次性写入密文种子、8 组备用码哈希与
+         *     totp_enabled=true，并把明文备用码返回给客户端（唯一一次）。验证
+         *     失败不产生任何写入。已启用 409；无口令的 OAuth 用户 403。
+         */
+        post: operations["enableTwoFA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/2fa/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用当前口令关闭 2FA
+         * @description 需要当前口令确认；错误口令与登录共用失败锁定桶（429）。未启用时
+         *     409。成功 200 {totp_enabled:false}。
+         */
+        post: operations["disableTwoFA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/2fa/backup-codes/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重生成备用码（旧码立即失效）
+         * @description 需要当前口令确认；整体替换哈希数组，旧码在 UPDATE 提交瞬间全部失效。
+         *     未启用 409。成功 200 返回 8 组新明文备用码（唯一一次）。
+         */
+        post: operations["regenerateTwoFABackupCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tokens": {
         parameters: {
             query?: never;
@@ -90,14 +656,436 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 列出当前用户的 API 令牌（分页） */
+        /**
+         * 列出当前用户的 API 令牌（分页）
+         * @description 仅按 name 关键字搜索（R-08：key 后缀搜索不命中）。status 为读时
+         *     派生值；quota 过滤 normal|low|exhausted|unlimited。
+         */
         get: operations["listTokens"];
+        put?: never;
+        /**
+         * 创建 API 令牌（可批量，key 仅此一次）
+         * @description 应携带 Idempotency-Key（UUID）：同键重放返回首次结果；同键不同
+         *     请求体返回 422。缺省时服务端直接执行，不提供重放保护。quantity 一次最多 100 枚。group=auto 时 auto_groups
+         *     必须非空且不超过站点上限（默认 20）。响应 200 + {created:[...]}，
+         *     每项的 key 是完整明文、仅此一次出现（服务端只存 SHA-256）。
+         */
+        post: operations["createTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取单个令牌
+         * @description 他人令牌与不存在令牌统一 404（不泄露存在性）。
+         */
+        get: operations["getToken"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除令牌（可选乐观锁）
+         * @description 可选 query updated_at（RFC 3339）：提供时必须匹配当前版本，否则 409。
+         *     未提供时直接删除。成功 204。
+         */
+        delete: operations["deleteToken"];
+        options?: never;
+        head?: never;
+        /**
+         * 部分更新令牌（乐观锁）
+         * @description 必须原样回传 updated_at，否则 400（缺失）或 409（版本不匹配）。
+         *     expires_at 显式 null 表示改为永不过期。
+         */
+        patch: operations["updateToken"];
+        trace?: never;
+    };
+    "/api/tokens:batch-enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量启用令牌（≤100）
+         * @description 应携带 Idempotency-Key；缺失时直接执行（无重放保护）。部分失败仍返回 200：succeeded 计数 +
+         *     failed 明细（他人/不存在令牌的 name 留空，不泄露存在性）。
+         */
+        post: operations["batchEnableTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens:batch-disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量禁用令牌（≤100）
+         * @description 语义与 batch-enable 相同；禁用后 token:changed 广播使缓存立即失效。
+         */
+        post: operations["batchDisableTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens:batch-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除令牌（≤100）
+         * @description 语义与 batch-enable 相同；部分失败仍 200。
+         */
+        post: operations["batchDeleteTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens/{id}:enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用单个令牌
+         * @description 幂等（已启用仍 200）。他人/不存在令牌 404。
+         */
+        post: operations["enableToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens/{id}:disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 禁用单个令牌
+         * @description 幂等（已禁用仍 200）。禁用后 Redis 缓存经 token:changed 失效。
+         */
+        post: operations["disableToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tokens/{id}:reset-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重置令牌密钥（新 key 仅此一次）
+         * @description 每次调用都会生成新 key（非幂等语义），但端点用 Idempotency-Key 包裹：
+         *     同键重放返回首次的新 key，避免网络重试导致"key 已换但客户端没拿到"。
+         *     旧 key 立即失效。成功 200 + {key,key_masked}，响应 Cache-Control:
+         *     no-store。
+         */
+        post: operations["resetTokenKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/token/auto-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 自动分组候选与单令牌上限
+         * @description 供令牌创建表单展示有序候选；max_count 默认 20。
+         */
+        get: operations["listTokenAutoGroups"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/usage/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 令牌自读用量（Bearer 自身 key）
+         * @description 只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。额度耗尽的
+         *     令牌仍返回 200 且 total_available=0（前端要能显示耗尽状态，
+         *     modules-02 §2.13）；已过期令牌 401 + problem type token_expired；
+         *     禁用令牌 401 token_disabled；非法 key 401 invalid_token。
+         */
+        get: operations["getTokenUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用户列表（分页 + 筛选 + 排序）
+         * @description keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
+         *     为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
+         *     前缀 - 表示降序，默认 -created_at。非法枚举/排序列 400（不静默忽略）。
+         */
+        get: operations["listUsers"];
+        put?: never;
+        /**
+         * 创建用户（管理员创建无邮箱）
+         * @description 应携带 Idempotency-Key：同键重放只创建一条；同键不同请求体 422；
+         *     缺失时直接执行（无重放保护）。
+         *     请求体没有 email 字段——管理员创建的用户 email 为 NULL。role 缺省
+         *     user；创建 admin 需要 users:manage-roles 且默认权限集是执行者权限的
+         *     子集（防提权）。用户名冲突 409。成功 201。
+         */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取用户详情 */
+        get: operations["getUser"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除用户（前置条件：已封禁）
+         * @description 目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
+         *     deleted_{id}）。不能删除自己（400）。成功 204。
+         */
+        delete: operations["deleteUser"];
+        options?: never;
+        head?: never;
+        /**
+         * 部分更新用户（乐观锁）
+         * @description 必须原样回传 updated_at（缺失 400、不匹配 409）。不含口令字段：
+         *     提交 password 返回 400（改用 reset-password）。未知字段 403
+         *     field_not_writable。不能修改自己的角色（400，防自降权/自提权）；
+         *     role 变更会吊销该用户全部会话。
+         */
+        patch: operations["updateUser"];
+        trace?: never;
+    };
+    "/api/users/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 封禁 / 解禁用户
+         * @description 封禁在同一事务内吊销全部会话并把该用户令牌置 disabled；解禁不自动
+         *     恢复令牌。不能封禁自己（400）。成功 200 {id,status}。
+         */
+        post: operations["setUserStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/quota-adjustment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 管理员额度调整（原子写流水）
+         * @description 原子 UPDATE（GC-5）：subtract 超过余额 400，绝不产生负余额；override
+         *     与当前余额相同 400。idempotency_key 是业务幂等键（写入交易流水）。
+         *     成功 200 {user_id,new_balance,transaction_id}。
+         */
+        post: operations["adjustUserQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/reset-2fa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重置用户 2FA（清除种子与备用码）
+         * @description 目标未启用 2FA 时 400。成功 204。
+         */
+        post: operations["resetUserTwoFA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重置用户口令（返回一次性临时口令）
+         * @description 生成 16 位临时口令（TEMP_PWD_TTL=24h，must_change_password=true），
+         *     只在本次响应出现；响应 Cache-Control: no-store。审计只记录"发生了
+         *     重置"，绝不含口令材料。成功 200。
+         */
+        post: operations["resetUserPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 设置管理员权限矩阵（超集校验）
+         * @description 授予集合必须是调用者自身权限的子集，否则 403 且不写库；未知键与
+         *     非 FULL 调用者授予 "*" 同样 403。显式 null 被拒绝（NULL=FULL 会绕过
+         *     超集校验，授予全权必须显式 ["*"]）。只对 admin 目标有效（400）；
+         *     不能修改自己（400）。成功 200 返回更新后的用户。
+         */
+        patch: operations["setUserPermissions"];
+        trace?: never;
+    };
+    "/api/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 分组列表（分页） */
+        get: operations["listGroups"];
+        put?: never;
+        /**
+         * 创建分组
+         * @description 名称必须匹配 ^[a-z0-9_-]{2,32}$ 且唯一；冲突 409。成功 201。
+         */
+        post: operations["createGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除分组
+         * @description 系统组（default/auto 等）不可删除（400）；仍被用户/令牌/定价/渠道
+         *     引用时 409；不存在 404。成功 204。
+         */
+        delete: operations["deleteGroup"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新分组（改名 / 描述）
+         * @description 至少提供一个字段，否则 400。系统组不可改名（400，描述仍可编辑）；
+         *     新名称冲突 409；目标不存在 404。成功 200。
+         */
+        patch: operations["updateGroup"];
         trace?: never;
     };
     "/api/channels": {
@@ -188,9 +1176,39 @@ export interface components {
              */
             page_size: number;
         };
-        /** @description 公共站点状态占位（字段随 M1+ 细化；schema 待补齐） */
+        /**
+         * @description 公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
+         *     变更必须立即反映到登录/注册页，禁止任何中间层缓存。
+         */
         PublicStatus: {
-            [key: string]: unknown;
+            /**
+             * @description 站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
+             *     实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
+             *     向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
+             */
+            system_initialized: boolean;
+            auth: {
+                /** @description false 时 POST /api/auth/register 返回 403（关闭注册）。 */
+                signup_enabled: boolean;
+                /** @description false 时 POST /api/auth/login 返回 403（仅保留 OAuth 等其它入口）。 */
+                password_login_enabled: boolean;
+                /** @description 注册后是否必须先验证邮箱才能使用完整功能。 */
+                email_verification_required: boolean;
+                turnstile: {
+                    enabled: boolean;
+                    /** @description Turnstile 公开 site key；未启用时为空串。站点 secret 永不下发。 */
+                    site_key: string;
+                };
+            };
+            /**
+             * @description 与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
+             *     true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
+             *     （reason=encryption_required，对外响应与口令错误不可区分）。
+             */
+            password_login_encryption_enabled: boolean;
+            /** @description canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。 */
+            languages: components["schemas"]["Language"][];
+            default_language: components["schemas"]["Language"];
         };
         /**
          * @description 客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
@@ -207,13 +1225,788 @@ export interface components {
              */
             source: "local_db" | "unknown";
         };
-        /** @description API 令牌 DTO 占位（敏感字段仅创建时返回一次；schema 待 M1+ 细化） */
+        /**
+         * @description 管理面令牌响应。永不包含 key 明文或 key_hash；完整 key 只在创建
+         *     （POST /api/tokens）与重置（POST /api/tokens/{id}:reset-key）响应中出现一次。
+         */
         Token: {
-            [key: string]: unknown;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            status: components["schemas"]["TokenStatus"];
+            /** @description 形如 nkt-••••••••••••••••••••••••，用于列表展示。 */
+            key_masked: string;
+            /**
+             * Format: int64
+             * @description null 表示不限额度（等价 unlimited_quota=true）。
+             */
+            remain_quota?: number | null;
+            unlimited_quota: boolean;
+            /** @description M1 由 remain_quota 派生（0 或 100）；后续接入用量日志后细化。 */
+            quota_percent?: number | null;
+            /** @description 令牌绑定分组；auto 表示按 auto_groups 顺序自动选择。 */
+            group: string;
+            /** @description null/空表示不限制模型。 */
+            model_limits?: string[] | null;
+            /** @description null/空表示不限制来源 IP。 */
+            allow_ips?: string[] | null;
+            /** @description 有序自动分组候选；仅 group=auto 时非空，最多 20 项（可配置）。 */
+            auto_groups?: string[];
+            cross_group_retry: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PATCH 必须原样回传，否则 409。
+             */
+            updated_at: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            /**
+             * Format: date-time
+             * @description null 表示永不过期。
+             */
+            expires_at?: string | null;
         };
-        /** @description 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M1+ 细化） */
+        /** @description 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M6 细化） */
         Channel: {
             [key: string]: unknown;
+        };
+        /**
+         * @description 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+         * @enum {string}
+         */
+        Language: "en" | "zh-CN" | "zh-TW" | "fr" | "ru" | "ja" | "vi";
+        /**
+         * @description 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
+         *     前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
+         *     （模块-01 §3.14 DisableCache；该端点是加密登录的唯一引导）。
+         */
+        LoginEncryptionKeyResponse: {
+            enabled?: boolean;
+            /** @description sha256(SPKI DER) 的前 16 个 hex 字符；用于选择解密私钥槽（active/previous）。 */
+            kid?: string;
+            /** @description RSA ≥ 2048 公钥（PKCS#8 SPKI PEM）。仅公开材料；私钥永不出库外。 */
+            public_key?: string;
+        };
+        /**
+         * @description 发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
+         *     10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
+         */
+        EmailCodeRequest: {
+            /** Format: email */
+            email: string;
+            /**
+             * @description register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
+             *     公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+             * @enum {string}
+             */
+            purpose: "register" | "reset" | "verify" | "bind";
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
+        };
+        /**
+         * @description 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
+         *     文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
+         */
+        RegisterRequest: {
+            username: string;
+            /** Format: email */
+            email: string;
+            /** @description 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。 */
+            password: string;
+            /** @description 必须与 password 逐字一致，否则 400。 */
+            confirmPassword: string;
+            /** @description 条件字段：仅当 auth.email_verification_required=true 时必填并校验。 */
+            email_code?: string;
+            /** @description 必须为 true；false 返回 400。 */
+            agree_terms: boolean;
+            /** @description 可选推广码（非必填）；超长 400。 */
+            aff?: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
+        };
+        /** @enum {string} */
+        UserRole: "user" | "admin";
+        /** @description 会话建立响应中的用户投影；绝不含口令/TOTP/备用码/权限列。 */
+        AuthUser: {
+            /** Format: int64 */
+            id: number;
+            username: string;
+            /** @description 未绑定邮箱时字段缺席（omitempty）。 */
+            email?: string;
+            role: components["schemas"]["UserRole"];
+            email_verified: boolean;
+            /** @description 管理员重置口令后为 true；前端应强制跳转改密页。 */
+            must_change_password: boolean;
+        };
+        /** @description 口令（+ 可选 2FA）通过后建立会话的响应；同时下发会话 Cookie 与 CSRF Cookie。 */
+        AuthSessionResponse: {
+            user: components["schemas"]["AuthUser"];
+        };
+        /**
+         * @description identifier 可为用户名或邮箱。开启登录加密时请求体只接受密文：
+         *     password_encrypted（v2 信封 `v2.<wrappedKey>.<nonce>.<ct>` 或旧版裸
+         *     RSA-OAEP）+ encryption_key_id；出现明文 password 会被拒绝且响应与
+         *     口令错误完全一致（反 oracle）。
+         */
+        LoginRequest: {
+            identifier: string;
+            /** @description 明文口令；仅在登录加密关闭时接受。 */
+            password?: string;
+            /** @description 前端加密载荷；开启加密时必填。 */
+            password_encrypted?: string;
+            /** @description GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。 */
+            encryption_key_id?: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略。支持两种提交形态：请求体字段，或
+             *     `?turnstile_token=` 查询参数；两者同时出现时请求体优先（查询形态是
+             *     中间件/handler 分支兼容，不是独立契约面）。
+             */
+            turnstile_token?: string;
+        };
+        Pending2FAResponse: {
+            /**
+             * @description 判别字段；客户端据此跳转 2FA challenge 页。
+             * @enum {string}
+             */
+            status: "pending_2fa";
+            /** @description 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。 */
+            ticket: string;
+        };
+        /**
+         * @description 口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
+         *     返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+         *     用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
+         */
+        LoginResponse: components["schemas"]["AuthSessionResponse"] | components["schemas"]["Pending2FAResponse"];
+        /**
+         * @description 用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，
+         *     同一码并发提交只有一次成功。
+         */
+        TwoFAChallengeRequest: {
+            /** @description 登录响应中的一次性 ticket。 */
+            ticket: string;
+            /** @description type=totp 时为 6 位 TOTP；type=backup 时为 XXXX-XXXX 备用码。 */
+            code: string;
+            /**
+             * @description 缺省按 totp（兼容早期 {ticket,code} 契约）。
+             * @enum {string}
+             */
+            type?: "totp" | "backup";
+        };
+        /**
+         * @description 恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
+         *     token（30 分钟）。限流与格式错误是仅有的差异化响应。
+         */
+        PasswordResetRequest: {
+            /** Format: email */
+            email: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
+        };
+        PasswordResetValidateRequest: {
+            /** @description 重置链接中的一次性 token；本端点只校验不消费。 */
+            token: string;
+        };
+        PasswordResetValidateResponse: {
+            /**
+             * @description 有效时为 true；无效/过期不以 200 返回，而是 400 invalid_reset_token。
+             * @enum {boolean}
+             */
+            valid: true;
+        };
+        /**
+         * @description 原子消费 token → 改密 → 吊销该用户全部会话。成功 204；token 复用/过期
+         *     400（并发提交只有一个能成功）。
+         */
+        PasswordResetConfirmRequest: {
+            token: string;
+            new_password: string;
+            /** @description 必须与 new_password 一致。 */
+            confirm: string;
+        };
+        /**
+         * @description 仅未初始化时可调用；三步字段建 admin 并写 system.install.completed_at
+         *     （同事务）。幂等锚是 system_settings 该键，重复调用 409 + initialized=true。
+         */
+        SetupRequest: {
+            site_title: string;
+            /**
+             * Format: uri
+             * @description 站点公开地址（用于生成邮件链接等）；必须是 http(s) URL。
+             */
+            server_address: string;
+            username: string;
+            /** Format: email */
+            email: string;
+            password: string;
+            /**
+             * @description 必须与 password 一致。服务端为兼容历史客户端也接受下划线别名
+             *     confirm_password（前者优先）；契约只登记 camelCase。
+             */
+            confirmPassword?: string;
+        };
+        /** @description 201 公开投影；绝不包含口令、哈希或任何密钥材料。 */
+        SetupResponse: {
+            user: {
+                /** Format: int64 */
+                id: number;
+                username: string;
+                email: string;
+                role: components["schemas"]["UserRole"];
+                /** @enum {string} */
+                status: "enabled" | "disabled";
+                email_verified: boolean;
+            };
+        };
+        /**
+         * @description 409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
+         *     直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
+         *     冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。
+         */
+        SetupCompletedProblem: components["schemas"]["Problem"] & {
+            initialized?: boolean;
+        };
+        /**
+         * @description 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
+         * @enum {string}
+         */
+        UserStatus: "enabled" | "disabled";
+        /**
+         * @description GET /api/me 的冻结投影：只有这六个字段。email/avatar_url/display_name
+         *     未设置时字段缺席（响应中为 null 或省略由 Go omitempty 决定，客户端按可空处理）。
+         */
+        MeView: {
+            username: string;
+            /** Format: email */
+            email?: string | null;
+            role: components["schemas"]["UserRole"];
+            status: components["schemas"]["UserStatus"];
+            /** Format: uri */
+            avatar_url?: string | null;
+            display_name?: string | null;
+        };
+        /**
+         * @description 仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
+         *     403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
+         */
+        PatchMeRequest: {
+            /** @description null 或空白字符串清除显示名。 */
+            display_name: string | null;
+        };
+        /**
+         * @description GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
+         *     必须携带的乐观锁令牌——同一行的资料变更也会推进它。
+         */
+        SelfSettings: {
+            language: components["schemas"]["Language"];
+            /** @description 侧栏模块的稀疏覆盖；null 表示无覆盖（使用站点默认）。 */
+            sidebar_modules: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 是否记录登录/操作 IP。 */
+            record_ip_log: boolean;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
+         *     等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
+         *     7 语内返回 400。
+         */
+        UpdateSelfSettingsRequest: {
+            language?: components["schemas"]["Language"];
+            sidebar_modules?: {
+                [key: string]: unknown;
+            } | null;
+            record_ip_log?: boolean;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        SessionView: {
+            /** @description 会话 id（不透明）；DELETE /api/sessions/{sid} 的原值。 */
+            id: string;
+            user_agent: string;
+            /** @description 建立会话时的客户端 IP。 */
+            ip: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            current: boolean;
+        };
+        /**
+         * @description 不是 Page 信封：列表固定 ≤50 条、无翻页语义（按 last_seen 倒序）。
+         *     过期会话不列出；current=true 的条目是当前请求所用会话。
+         */
+        SessionList: {
+            sessions: components["schemas"]["SessionView"][];
+        };
+        VerifyEmailRequest: {
+            /** @description 由 POST /api/auth/email-code（purpose=verify）下发的一次性验证码。 */
+            email_code: string;
+        };
+        VerifyEmailResponse: {
+            /** @enum {boolean} */
+            email_verified: true;
+            /**
+             * Format: date-time
+             * @description 首次验证时间；重复验证保留首次时间。
+             */
+            email_verified_at?: string;
+        };
+        /**
+         * @description 成功 204：更新哈希、吊销除当前外全部会话并轮换当前会话 CSRF 令牌。
+         *     限流 5 次/10 分钟/IP+用户；失败返回 400/409/429/503。
+         */
+        ChangePasswordRequest: {
+            current_password: string;
+            new_password: string;
+        };
+        /**
+         * @description DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
+         *     再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+         *     额外副作用，但不是 204 成功态）。
+         */
+        DeleteAccountRequest: {
+            /** @description 必须与当前用户名逐字一致。 */
+            confirm_username: string;
+            /** @description 当前口令；即使再认证窗口仍有效也必须现场提供。 */
+            password: string;
+            /** @description 已启用 2FA 时必填。 */
+            totp_code?: string;
+        };
+        /**
+         * @description 全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
+         *     不写库。新邮箱被占用 409；域名白名单外 422。
+         */
+        ChangeEmailRequest: {
+            /** Format: email */
+            new_email: string;
+            /** @description 发往 new_email、purpose=bind 的一次性验证码。 */
+            code: string;
+            current_password: string;
+            totp_code?: string;
+        };
+        ChangeEmailResponse: {
+            /** Format: email */
+            email: string;
+            /** @enum {boolean} */
+            email_verified: true;
+            /** Format: date-time */
+            email_verified_at: string;
+        };
+        /** @enum {string} */
+        NotificationChannel: "email" | "webhook" | "bark" | "gotify";
+        /**
+         * @description 稀疏偏好对象：只持久化用户显式设置过的键；GET 对 NULL 归一为 {}。
+         *     站点级默认值由客户端合并。security_alert.enabled 不允许为 false
+         *     （安全通知不可关闭，400）。
+         */
+        NotificationPreferences: {
+            balance_warning?: {
+                enabled?: boolean;
+                /** @description 余额告警阈值（credits，非负整数）。 */
+                threshold?: number;
+                channels?: components["schemas"]["NotificationChannel"][];
+                /** @description 自定义收件邮箱；null 或空串清除（空串是服务端兼容的清除写法）。 */
+                custom_email?: string | null;
+            };
+            usage_digest?: {
+                enabled?: boolean;
+                channels?: components["schemas"]["NotificationChannel"][];
+            };
+            security_alert?: {
+                /** @enum {boolean} */
+                enabled?: true;
+            };
+            /**
+             * Format: uri
+             * @description 清除时传 null 或空串（稀疏合并下唯一的删除方式）。
+             */
+            webhook_url?: string | null;
+            /** Format: uri */
+            bark_url?: string | null;
+            /** Format: uri */
+            gotify_url?: string | null;
+            /** @description 清除时传 null 或空串。 */
+            gotify_token?: string | null;
+            /** @description 清除时传 null。 */
+            gotify_priority?: number | null;
+        };
+        /**
+         * @description M1 未配置真实通知通道时返回 503；偏好读写端点不受影响。
+         *     发送成功 200 {channel,sent:true}。
+         */
+        NotificationTestRequest: {
+            channel: components["schemas"]["NotificationChannel"];
+            /** @description 测试目标地址；与 target_address 同义，target 优先。 */
+            target?: string;
+            /** @description 兼容字段；两者都缺时按渠道默认目标。 */
+            target_address?: string;
+        };
+        NotificationTestResponse: {
+            channel: components["schemas"]["NotificationChannel"];
+            /** @enum {boolean} */
+            sent: true;
+        };
+        TwoFASetupResponse: {
+            /** @description base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。 */
+            secret: string;
+            /**
+             * Format: uri
+             * @description otpauth:// URI，供前端渲染二维码。
+             */
+            otpauth_url: string;
+        };
+        TwoFAEnableRequest: {
+            /** @description 上一步 setup 返回的 secret（服务端校验 32 位 base32 / 20 字节）。 */
+            secret: string;
+            code: string;
+        };
+        TwoFABackupCodesResponse: {
+            /** @enum {boolean} */
+            totp_enabled: true;
+            /** @description 明文备用码，仅本次响应出现；重生成后旧码立即失效。 */
+            backup_codes: string[];
+        };
+        TwoFAPasswordRequest: {
+            /** @description 当前口令确认；与登录共用失败锁定桶。 */
+            password: string;
+        };
+        TwoFADisableResponse: {
+            /** @enum {boolean} */
+            totp_enabled: false;
+        };
+        /**
+         * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
+         *     disabled 是唯一可写的人工位；其余为时间/额度派生态。
+         * @enum {string}
+         */
+        TokenStatus: "enabled" | "disabled" | "expired" | "exhausted";
+        /** @description GET /api/tokens 的 offset 分页信封；items 为 Token 投影。 */
+        TokenList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["Token"][];
+        };
+        /**
+         * @description POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
+         *     不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
+         */
+        CreateTokenRequest: {
+            name: string;
+            /** @description 缺省使用用户当前分组；auto 时 auto_groups 必须非空（I-20）。 */
+            group?: string;
+            /** @description null 表示永不过期。 */
+            expires_at?: (number | string) | null;
+            /** @description 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。 */
+            quantity?: number;
+            /** @description 缺省 true（不限额度）。 */
+            unlimited_quota?: boolean;
+            /**
+             * Format: int64
+             * @description 可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+             *     remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+             *     时忽略本字段。
+             */
+            remain_quota?: number;
+            model_limits?: string[];
+            allow_ips?: string[];
+            /** @description group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。 */
+            auto_groups?: string[];
+            /** @description 缺省 false。 */
+            cross_group_retry?: boolean;
+        };
+        /** @description 创建响应中的条目 = Token + 一次性明文 key。 */
+        CreatedToken: components["schemas"]["Token"] & {
+            /** @description 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。 */
+            key: string;
+        };
+        CreateTokenResponse: {
+            created: components["schemas"]["CreatedToken"][];
+        };
+        /**
+         * @description 部分更新：未出现的字段不变。updated_at 必须等于当前行的版本，
+         *     否则 409（乐观锁）。expires_at 显式 null 表示改为永不过期。
+         */
+        UpdateTokenRequest: {
+            name?: string;
+            group?: string;
+            expires_at?: (number | string) | null;
+            unlimited_quota?: boolean;
+            /** Format: int64 */
+            remain_quota?: number;
+            model_limits?: string[];
+            allow_ips?: string[];
+            auto_groups?: string[];
+            cross_group_retry?: boolean;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        BatchTokenRequest: {
+            ids: number[];
+        };
+        TokenBatchFailure: {
+            /** Format: int64 */
+            id: number;
+            /** @description 仅当令牌属于当前用户且仍存在时填写；他人/不存在留空（不泄露存在性）。 */
+            name: string;
+            detail: string;
+        };
+        /**
+         * @description 逐条结果：succeeded 为成功条数，failed 为明细。批量端点上限 100，
+         *     部分失败仍返回 200（不是整体回滚）。
+         */
+        TokenBatchResponse: {
+            succeeded: number;
+            failed: components["schemas"]["TokenBatchFailure"][];
+        };
+        /**
+         * @description 新 key 只在本响应出现一次；旧 key 立即失效。响应带
+         *     Cache-Control: no-store。
+         */
+        ResetTokenKeyResponse: {
+            key: string;
+            key_masked: string;
+        };
+        TokenAutoGroupsResponse: {
+            groups: {
+                name: string;
+                /** @description 分组倍率（DB 150 → 1.5）；缺省字段表示无显式倍率。 */
+                ratio?: number;
+            }[];
+            /** @description 单令牌 auto_groups 条目上限（站点配置，默认 20）。 */
+            max_count: number;
+        };
+        /**
+         * @description GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+         *     unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+         *     耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+         *     鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+         *     `token_disabled`，非法 key `invalid_token`）。
+         */
+        TokenUsage: {
+            /** @enum {string} */
+            object: "token_usage";
+            name: string;
+            /**
+             * Format: int64
+             * @description M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
+             */
+            total_granted?: number | null;
+            /**
+             * Format: int64
+             * @description M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+             *     与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
+             */
+            total_used: number;
+            /**
+             * Format: int64
+             * @description 剩余额度；不限额度时为 null。
+             */
+            total_available?: number | null;
+            unlimited_quota: boolean;
+            model_limits?: string[] | null;
+            model_limits_enabled: boolean;
+            /** Format: date-time */
+            expires_at?: string | null;
+        };
+        /**
+         * @description modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
+         *     通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
+         * @enum {string}
+         */
+        PermissionKey: "users:read" | "users:create" | "users:update" | "users:disable" | "users:delete" | "users:adjust-quota" | "users:manage-roles" | "users:reset-security" | "groups:manage" | "channels:read" | "channels:manage" | "channels:manage_sensitive" | "pricing:read" | "pricing:manage" | "redemption:manage" | "orders:read" | "orders:manage" | "logs:read" | "log.prompt.view" | "settings:manage";
+        /** @description 权限矩阵成员：20 键之一或全权通配符 "*"。 */
+        PermissionGrant: components["schemas"]["PermissionKey"] | "*";
+        /**
+         * @description 管理面用户投影。永不含口令哈希、TOTP 种子或备用码。admin_permissions
+         *     为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
+         *     不同，客户端不得把 [] 当 null。
+         */
+        AdminUser: {
+            /** Format: int64 */
+            id: number;
+            username: string;
+            display_name?: string | null;
+            /**
+             * Format: email
+             * @description 管理员创建的用户可为 null（不绑定邮箱）。
+             */
+            email?: string | null;
+            role: components["schemas"]["UserRole"];
+            status: components["schemas"]["UserStatus"];
+            /**
+             * Format: int64
+             * @description 当前余额（credits 最小单位）。
+             */
+            balance: number;
+            group: string;
+            /**
+             * @description 权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
+             *     空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
+             */
+            admin_permissions: components["schemas"]["PermissionGrant"][] | null;
+            totp_enabled: boolean;
+            must_change_password: boolean;
+            remark?: string | null;
+            /** Format: int64 */
+            token_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PATCH 必须原样回传。
+             */
+            updated_at: string;
+        };
+        /** @description GET /api/users 的 offset 分页信封。 */
+        AdminUserList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["AdminUser"][];
+        };
+        /**
+         * @description 必须携带 Idempotency-Key；同键重放只创建一条。请求体没有 email 字段：
+         *     管理员创建的用户 email 为 NULL。用户名冲突 409。
+         */
+        AdminCreateUserRequest: {
+            username: string;
+            display_name?: string | null;
+            /** @description 缺省 user。创建 admin 需要执行者同时持有 users:manage-roles 与默认权限集的超集。 */
+            role?: components["schemas"]["UserRole"];
+            /** @description 缺省 default。 */
+            group?: string;
+            password: string;
+            remark?: string | null;
+        };
+        /**
+         * @description 部分更新。不含口令字段：提交 password 返回 400（用
+         *     POST /api/users/{id}/reset-password）。未知字段 403 field_not_writable。
+         *     role 变更会吊销该用户全部会话；不能修改自己的角色/状态/权限（400）。
+         */
+        AdminUpdateUserRequest: {
+            display_name?: string | null;
+            group?: string;
+            remark?: string | null;
+            role?: components["schemas"]["UserRole"];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description 封禁在同一事务内吊销全部会话并把令牌置 disabled；解禁不自动恢复令牌。
+         *     不能封禁自己（400）。
+         */
+        AdminUserStatusRequest: {
+            status: components["schemas"]["UserStatus"];
+        };
+        AdminUserStatusResponse: {
+            /** Format: int64 */
+            id: number;
+            status: components["schemas"]["UserStatus"];
+        };
+        /**
+         * @description 原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
+         *     override 与当前余额相同返回 400（无变化）。成功后写
+         *     type=admin_adjustment 流水。
+         */
+        QuotaAdjustmentRequest: {
+            /** @enum {string} */
+            mode: "add" | "subtract" | "override";
+            /**
+             * Format: int64
+             * @description add/subtract 为增量，必须 ≥1（handler 对 0 返回 400：零增量没有业务
+             *     意义，且会污染流水）；override 为目标余额，允许 0。三种 mode 共用本
+             *     schema，条件下限写在 schema 级 not/anyOf 中，而不是给 amount 加
+             *     无条件 minimum（否则合法的 override=0 会被误判非法）。
+             */
+            amount: number;
+            /** @description 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。 */
+            idempotency_key: string;
+        };
+        QuotaAdjustmentResponse: {
+            /** Format: int64 */
+            user_id: number;
+            /** Format: int64 */
+            new_balance: number;
+            /** Format: int64 */
+            transaction_id: number;
+        };
+        /** @description 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。 */
+        ResetPasswordResponse: {
+            /**
+             * @description 16 位一次性临时口令，仅本次响应出现（Cache-Control: no-store）。
+             *     TEMP_PWD_TTL=24h 且 must_change_password=true；24 小时内不改密
+             *     则临时口令失效。
+             */
+            temp_password: string;
+        };
+        /**
+         * @description PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
+         *     （400）。成功 200 返回更新后的 AdminUser。
+         */
+        SetPermissionsRequest: {
+            /**
+             * @description 授予集合必须是调用者自身权限的子集，否则 403 且不写库。
+             *     显式 null 被拒绝——NULL 在 RBAC 语义里是 FULL，匿名 null→FULL
+             *     会绕过超集校验；授予全权必须显式提交 ["*"]。
+             */
+            admin_permissions: components["schemas"]["PermissionGrant"][];
+        };
+        AdminGroup: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            description?: string | null;
+            /**
+             * Format: int32
+             * @description 分组倍率（DB 150 表示 1.5）。
+             */
+            ratio: number;
+            user_selectable: boolean;
+            /** @description 系统分组（如 default）不可删除。 */
+            is_system: boolean;
+            /** Format: int16 */
+            status: number;
+            /** Format: int64 */
+            users_count: number;
+            /** Format: int64 */
+            pricing_overrides_count: number;
+            /** Format: int64 */
+            channels_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description GET /api/groups 的 offset 分页信封。 */
+        AdminGroupList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["AdminGroup"][];
+        };
+        /** @description 名称唯一；冲突 409（不区分大小写归一后比较）。 */
+        AdminCreateGroupRequest: {
+            name: string;
+            description?: string | null;
+        };
+        /**
+         * @description 至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
+         *     （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
+         *     ErrGroupSystem → 400），被引用的分组删除返回 409。
+         */
+        AdminUpdateGroupRequest: {
+            name?: string;
+            description?: string | null;
         };
     };
     responses: {
@@ -271,6 +2064,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description 语义不可处理（邮箱域名白名单拒绝；幂等键被不同请求体复用） */
+        Error422: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description 触发限流 */
         Error429: {
             headers: {
@@ -284,6 +2086,15 @@ export interface components {
         };
         /** @description 服务端内部错误 */
         Error500: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description 上游依赖失败（如验证码邮件投递失败） */
+        Error502: {
             headers: {
                 [name: string]: unknown;
             };
@@ -313,6 +2124,14 @@ export interface components {
          *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
          */
         CSRFToken: string;
+        /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+        PathUserID: number;
+        /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+        PathTokenID: number;
+        /** @description 会话 id（不透明字符串，取自 GET /api/sessions）。 */
+        PathSessionID: string;
+        /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+        PathGroupName: string;
     };
     requestBodies: never;
     headers: never;
@@ -425,9 +2244,11 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK（字段随 M1+ 细化） */
+            /** @description OK */
             200: {
                 headers: {
+                    /** @description no-store（站点开关变更必须即时可见） */
+                    "Cache-Control"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -436,6 +2257,21 @@ export interface operations {
             };
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+            /**
+             * @description 初始化状态存储不可用（IsInitialized 查询失败）。实现禁止猜测
+             *     system_initialized（猜 false 会把已初始化站点导回安装向导，猜 true
+             *     会把新站锁死在登录页），因此 fail-closed 返回 503。
+             */
+            503: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getClientGeo: {
@@ -461,7 +2297,1700 @@ export interface operations {
             429: components["responses"]["Error429"];
         };
     };
+    getLoginEncryptionKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginEncryptionKeyResponse"];
+                };
+            };
+            503: components["responses"]["Error503"];
+        };
+    };
+    requestEmailCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description 已受理（验证码已生成；配置 SMTP 时已投递） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description 注册成功并已建立会话 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSessionResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description 已建立会话，或返回 pending_2fa ticket */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    submitTwoFAChallenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFAChallengeRequest"];
+            };
+        };
+        responses: {
+            /** @description 挑战通过并已建立会话 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSessionResponse"];
+                };
+            };
+            /**
+             * @description 两种语义由 problem type 区分：
+             *     · type = `https://newtg.dev/problems/two_factor_ticket_invalid`：
+             *       ticket 格式非法、已过期或已被消费——必须重新走登录拿新 ticket，
+             *       重试本端点不会成功。
+             *     · 其它 `bad_request`（不含该 type）：ticket 有效但 TOTP/备用码错误，
+             *       或请求体校验失败；码错误时 ticket 仍可继续使用（TOTP 连续 5 次
+             *       错误才作废，备用码核销即失效）。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            /**
+             * @description 连续第 5 次 TOTP/备用码错误：ticket 已被作废（必须重新登录获取
+             *     新 ticket，不能在本页重试）；账号已处于锁定窗口时也会直接返回
+             *     429。Retry-After 指示建议重试秒数。
+             */
+            429: {
+                headers: {
+                    /** @description 建议重试等待秒数（第 5 次失败场景实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: components["responses"]["Error503"];
+        };
+    };
+    requestPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description 已受理（不透露邮箱是否注册） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    validatePasswordResetToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetValidateRequest"];
+            };
+        };
+        responses: {
+            /** @description token 有效 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordResetValidateResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    confirmPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description 口令已重置，全部旧会话已失效 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已登出（幂等） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["Error503"];
+        };
+    };
+    completeSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            /** @description 初始化完成并已建立管理员会话 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            /** @description 已初始化（initialized=true）或用户名/邮箱冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["SetupCompletedProblem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（六字段冻结投影，零敏感字段） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeView"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    patchMe: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchMeRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的用户投影 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeView"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getSelfSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfSettings"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateSelfSettings: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSelfSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的设置（含新的 updated_at） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfSettings"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    revokeSession: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 会话 id（不透明字符串，取自 GET /api/sessions）。 */
+                sid: components["parameters"]["PathSessionID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已吊销 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    revokeOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已吊销其他会话 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    verifyEmail: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description 邮箱已验证（幂等） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyEmailResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    changePassword: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description 口令已更新 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    deleteAccount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description 账号已删除并匿名化 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    changeEmail: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description 邮箱已换绑并标记已验证 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeEmailResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    getNotificationPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPreferences"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    updateNotificationPreferences: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationPreferences"];
+            };
+        };
+        responses: {
+            /** @description 合并后的偏好对象 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPreferences"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    testNotification: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 已投递测试消息 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationTestResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    setupTwoFA: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFASetupResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    enableTwoFA: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFAEnableRequest"];
+            };
+        };
+        responses: {
+            /** @description 已启用，返回一次性备用码 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFABackupCodesResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    disableTwoFA: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFAPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description 已关闭 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFADisableResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    regenerateTwoFABackupCodes: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFAPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description 新备用码 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFABackupCodesResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
     listTokens: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 按令牌名称模糊搜索（不搜索 key/key_hash）。 */
+                keyword?: string;
+                status?: components["schemas"]["TokenStatus"];
+                group?: string;
+                quota?: "normal" | "low" | "exhausted" | "unlimited";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createTokens: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建（含一次性明文 key） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateTokenResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 相同 Idempotency-Key 的并发请求仍在处理中（含等待期间请求被取消） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteToken: {
+        parameters: {
+            query?: {
+                /** @description 乐观锁版本（RFC 3339）；缺省跳过版本校验。 */
+                updated_at?: string;
+            };
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateToken: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的令牌 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    batchEnableTokens: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 逐条结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenBatchResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    batchDisableTokens: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 逐条结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenBatchResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    batchDeleteTokens: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 逐条结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenBatchResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    enableToken: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的令牌 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    disableToken: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的令牌 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    resetTokenKey: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 令牌 ID（正整数）；他人令牌与不存在统一 404。 */
+                id: components["parameters"]["PathTokenID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 新 key（一次性） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetTokenKeyResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listTokenAutoGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenAutoGroupsResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getTokenUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenUsage"];
+                };
+            };
+            /**
+             * @description 令牌不可用。problem type 区分原因：`token_expired`（已过期）、
+             *     `token_disabled`（已禁用）、`invalid_token`（key 非法/不存在）；
+             *     detail 不泄露令牌存在性与归属。
+             */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: components["responses"]["Error503"];
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                keyword?: string;
+                status?: components["schemas"]["UserStatus"];
+                role?: components["schemas"]["UserRole"];
+                group?: string;
+                sort?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除并匿名化 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    updateUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUpdateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的用户 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    setUserStatus: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 新状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    adjustUserQuota: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuotaAdjustmentRequest"];
+            };
+        };
+        responses: {
+            /** @description 调整后的余额与流水 ID */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaAdjustmentResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    resetUserTwoFA: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已重置 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    resetUserPassword: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 临时口令（一次性） */
+            200: {
+                headers: {
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    setUserPermissions: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPermissionsRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的用户（含新 admin_permissions） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listGroups: {
         parameters: {
             query?: {
                 /** @description 页码，1 基（默认 1） */
@@ -475,17 +4004,126 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK（offset 分页信封；items 的 DTO 随 M1+ 细化） */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page"];
+                    "application/json": components["schemas"]["AdminGroupList"];
                 };
             };
+            400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
-            429: components["responses"]["Error429"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateGroupRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGroup"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUpdateGroupRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的分组 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGroup"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
         };
     };
     listChannels: {
@@ -502,7 +4140,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK（offset 分页信封；items 的 DTO 随 M1+ 细化） */
+            /** @description OK（offset 分页信封；items 的 DTO 随 M6 细化） */
             200: {
                 headers: {
                     [name: string]: unknown;

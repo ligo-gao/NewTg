@@ -16,14 +16,17 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// 本文件是主库 init 迁移（platform-01 §0.1 正册 18 表减 usage_logs/audit_logs = 16 表）
-// 的 schema 集成验收。权威：docs/platform-01-数据库字段汇总.md 各 § + platform-04 DDL 规范。
+// 本文件是主库 schema 集成验收：M0 init 迁移（platform-01 §0.1 正册 18 表减
+// usage_logs/audit_logs = 16 表）+ M1 认证族 6 表（R-07）。
+// 权威：docs/platform-01-数据库字段汇总.md 各 § + platform-04 DDL 规范。
 // 运行：NEWTG_TEST_DB_DSN=postgres://... go test -tags=integration ./internal/store/ -v
 
 // wantColumns 逐表列数（platform-01 §0.1 计数，硬约束）。
+// M0 = 16 表；M1 追加认证族 6 表（R-07）并给 users/api_tokens 各补列（R-02/R-01），
+// 故 users 23→24、api_tokens 13→15，表数 16→22。
 var wantColumns = map[string]int{
-	"users":                   23,
-	"api_tokens":              13,
+	"users":                   24,
+	"api_tokens":              15,
 	"user_groups":             9,
 	"system_settings":         5,
 	"channels":                22,
@@ -38,6 +41,13 @@ var wantColumns = map[string]int{
 	"rankings_timeseries":     4,
 	"rankings_entities":       3,
 	"request_registry":        9,
+	// M1 认证族（modules-01 §3.5/§3.6/§3.13/§3.14/§3.19 + platform-01 §22.10）
+	"login_sessions":         4,
+	"login_encryption_keys":  6,
+	"user_oauth_bindings":    7,
+	"user_passkeys":          9,
+	"custom_oauth_providers": 25,
+	"checkins":               5,
 }
 
 // 三个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -66,7 +76,8 @@ var wantNoFKTables = []string{
 	"redemption_codes",
 }
 
-// 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的 10 张表（platform-04 §3.1）。
+// 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
+// M0 10 张 + M1 认证族 6 张（含新增的 checkins）。
 var wantIdentityPKTables = []string{
 	"users",
 	"api_tokens",
@@ -78,6 +89,12 @@ var wantIdentityPKTables = []string{
 	"orders",
 	"wallet_transactions",
 	"rankings_snapshot_runs",
+	"login_sessions",
+	"login_encryption_keys",
+	"user_oauth_bindings",
+	"user_passkeys",
+	"custom_oauth_providers",
+	"checkins",
 }
 
 // identityPKExceptions：4 张「自然键例外」表的 PK（均非 identity）：
@@ -86,8 +103,8 @@ var wantIdentityPKTables = []string{
 // 自然唯一键（§16/§17）。
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
-// （runIDLedNaturalPKs）。合起来：16 表 = 10 张单列 id identity + 4 张自然键
-// + 2 张 run_id 领头自然键；**非 identity PK 的表恰 6 张**，由
+// （runIDLedNaturalPKs）。合起来：22 表（M0 16 + M1 6）= 16 张单列 id identity
+// + 4 张自然键 + 2 张 run_id 领头自然键；**非 identity PK 的表恰 6 张**，由
 // TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},
@@ -139,7 +156,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 16 张（除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 22 张（M0 16 + M1 认证族 6，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -168,7 +185,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == platform-01 §0.1 计数（16 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（M0 16 表 + M1 6 表，共 22 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -358,7 +375,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 	db := openTestDB(t)
 
-	// (e.1) 10 张代理主键表：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 16 张代理主键表（M0 10 + M1 6）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -426,7 +443,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 
 // TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 6 张 =
 // 4 张自然键例外（identityPKExceptions）+ 2 张 run_id 领头的复合自然键
-// （runIDLedNaturalPKs）；其余 10 张均为单列 id + GENERATED ALWAYS AS IDENTITY。
+// （runIDLedNaturalPKs）；其余（M0 10 + M1 6）均为单列 id + GENERATED ALWAYS AS IDENTITY。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	db := openTestDB(t)
 	wantNonIdentity := map[string]bool{}
@@ -682,7 +699,7 @@ type dbCheck struct {
 	IsEnum  bool
 }
 
-// loadChecks 读取主库 16 表上的全部 CHECK 约束。
+// loadChecks 读取主库 wantColumns 表集上的全部 CHECK 约束。
 func loadChecks(t *testing.T, db *sql.DB) map[string][]dbCheck {
 	return loadChecksOn(t, db, wantColumns)
 }
@@ -744,7 +761,7 @@ func TestEnumChecksMatchDB(t *testing.T) {
 			t.Fatalf("EnumChecks 键 %q 须为 <table>.<column>", key)
 		}
 		if _, ok := wantColumns[table]; !ok {
-			t.Fatalf("EnumChecks 键 %q 指向主库 16 表之外的表", key)
+			t.Fatalf("EnumChecks 键 %q 指向 wantColumns 之外的表", key)
 		}
 		want := EnumChecks[key]
 		conname := table + "_" + column + "_chk"
@@ -791,11 +808,12 @@ func TestEnumChecksMatchDB(t *testing.T) {
 // TestEnumChecksValuesSanity：smallint 枚举成员必须是数字文本（与 CHECK 解析口径一致）。
 func TestEnumChecksValuesSanity(t *testing.T) {
 	intKeys := map[string]bool{
-		"user_groups.status":   true,
-		"channels.status":      true,
-		"model_pricing.mode":   true,
-		"model_pricing.status": true,
-		"group_pricing.status": true,
+		"user_groups.status":                true,
+		"custom_oauth_providers.auth_style": true,
+		"channels.status":                   true,
+		"model_pricing.mode":                true,
+		"model_pricing.status":              true,
+		"group_pricing.status":              true,
 	}
 	for key, members := range EnumChecks {
 		for _, m := range members {

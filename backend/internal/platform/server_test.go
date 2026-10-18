@@ -3,8 +3,10 @@ package platform
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,8 +37,14 @@ func (s *stubResource) Close() error {
 type stubConnectors struct {
 	db     *stubResource
 	redis  *stubResource
+	logs   *stubResource
 	dbErr  error
 	rdsErr error
+	logErr error
+
+	// apiHandler/apiErr 控制 runGateway 的 /api/* 装配（nil = 只跑探针）。
+	apiHandler http.Handler
+	apiErr     error
 
 	migrateErr   error
 	migrateCalls atomic.Int32
@@ -47,6 +55,21 @@ func (sc *stubConnectors) openDB(ctx context.Context, cfg *config.Config) (Resou
 		return nil, sc.dbErr
 	}
 	return sc.db, nil
+}
+
+func (sc *stubConnectors) openLogsDB(ctx context.Context, cfg *config.Config) (Resource, error) {
+	if sc.logErr != nil {
+		return nil, sc.logErr
+	}
+	if sc.logs != nil {
+		return sc.logs, nil
+	}
+	return &stubResource{name: "logs"}, nil
+}
+
+func (sc *stubConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
+	db, logsDB, rds Resource, log *slog.Logger) (http.Handler, error) {
+	return sc.apiHandler, sc.apiErr
 }
 
 func (sc *stubConnectors) openRedis(cfg *config.Config) (Resource, error) {
@@ -109,6 +132,59 @@ func waitHealthy(t *testing.T, addr string) {
 			t.Fatal("gateway http server not ready in 5s")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestNewGatewayMuxKeepsProbesAndMountsAPI：/healthz 与 /readyz 保持在
+// 根路径，/api/* 交给管理面 handler（同一 server/mux）。
+func TestNewGatewayMuxKeepsProbesAndMountsAPI(t *testing.T) {
+	checker := NewChecker(nil, nil, 0, nil) // 依赖未配置：/readyz 恒 503，但必须可达
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Api-Path", r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	})
+	mux := newGatewayMux(checker, api)
+
+	serve := func(path string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		return rr
+	}
+
+	if rr := serve("/healthz"); rr.Code != http.StatusOK {
+		t.Fatalf("/healthz = %d, want 200", rr.Code)
+	}
+	if rr := serve("/readyz"); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d, want 503（依赖未配置；端点必须已注册）", rr.Code)
+	}
+	rr := serve("/api/status")
+	if rr.Code != http.StatusTeapot {
+		t.Fatalf("/api/status = %d, want 418（应进入管理面 handler）", rr.Code)
+	}
+	if got := rr.Header().Get("X-Api-Path"); got != "/api/status" {
+		t.Fatalf("api handler saw path %q, want /api/status（Handle 不裁剪前缀）", got)
+	}
+}
+
+// TestNewGatewayMuxWithoutAPI：api 为 nil 时只暴露探针端点。
+func TestNewGatewayMuxWithoutAPI(t *testing.T) {
+	mux := newGatewayMux(NewChecker(nil, nil, 0, nil), nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("/api/status without api = %d, want 404", rr.Code)
+	}
+}
+
+// TestNewGatewayHTTPServerHardening 覆盖 A2：server 构造必须带 32 KiB
+// MaxHeaderBytes（默认 1 MiB 对未认证客户端过于宽松）与头部读取超时。
+func TestNewGatewayHTTPServerHardening(t *testing.T) {
+	srv := newGatewayHTTPServer(http.NotFoundHandler())
+	if srv.MaxHeaderBytes != 32<<10 {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, 32<<10)
+	}
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 5s", srv.ReadHeaderTimeout)
 	}
 }
 

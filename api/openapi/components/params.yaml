@@ -1,4 +1,4 @@
-# 公共请求头参数（platform-03 §9.4）
+# 公共请求头参数（platform-03 §9.4）与路径参数。
 parameters:
   IdempotencyKey:
     name: Idempotency-Key
@@ -18,3 +18,39 @@ parameters:
     schema:
       type: string
       minLength: 1
+
+  # 路径参数集中定义，避免各域重复、漂移。
+  PathUserID:
+    name: id
+    in: path
+    required: true
+    description: 用户 ID（正整数）；解析失败与不存在统一 404。
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  PathTokenID:
+    name: id
+    in: path
+    required: true
+    description: 令牌 ID（正整数）；他人令牌与不存在统一 404。
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  PathSessionID:
+    name: sid
+    in: path
+    required: true
+    description: 会话 id（不透明字符串，取自 GET /api/sessions）。
+    schema:
+      type: string
+      minLength: 1
+  PathGroupName:
+    name: name
+    in: path
+    required: true
+    description: 分组名（^[a-z0-9_-]{2,32}$）。
+    schema:
+      type: string
+      pattern: '^[a-z0-9_-]{2,32}$'

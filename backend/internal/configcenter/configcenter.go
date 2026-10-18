@@ -41,8 +41,12 @@ type SecretSealer interface {
 	Open(sealed string) (string, error)
 }
 
-// secretKeys 是密钥类键清单；M0 为空表（登记 R-09），M1 按 security-03 填充。
-var secretKeys = map[string]struct{}{}
+// secretKeys 是密钥类键清单（security-03 §2.4：写入前 AES-256-GCM 密封）。
+// R-09 的 M1 落地：Turnstile 私钥必须密封落库（modules-08 F-08-07）；
+// site_key / enabled 是公开下发字段，不登记。
+var secretKeys = map[string]struct{}{
+	"auth.turnstile.secret_key": {},
+}
 
 // rowScanner 抽象 *sql.Row 的 Scan，便于单测以缝隙替代真实数据库（GC-8）。
 type rowScanner interface {

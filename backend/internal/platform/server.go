@@ -18,8 +18,10 @@ import (
 )
 
 // RunGateway 以 gateway 角色运行。装配序（platform-03）：logger → OpenDB →
-// OpenRedis →（DBMigrateOnStart 时）RunMigrate → metrics goroutine → HTTP server →
-// 阻塞至 ctx done → 优雅停机（SHUTDOWN_GRACE_SECONDS 窗口内先停 HTTP 监听，再关 DB/Redis）。
+// OpenLogsDB → OpenRedis →（DBMigrateOnStart 时）RunMigrate → 配置中心与令牌
+// 缓存订阅 + 管理面路由装配（newAPIHandler）→ metrics goroutine → HTTP server
+// → 阻塞至 ctx done → 优雅停机（SHUTDOWN_GRACE_SECONDS 窗口内先停 HTTP 监听，
+// 再按日志库/主库/Redis 顺序关闭）。
 func RunGateway(ctx context.Context, cfg *config.Config) error {
 	return runGateway(ctx, cfg, prodConnectors{})
 }
@@ -43,9 +45,17 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	if err != nil {
 		return fmt.Errorf("gateway: open db: %w", err)
 	}
+	// 日志库与主库分开建连：审计/PII 匿名化在日志库，不与业务事务抢连接。
+	logsDB, err := conn.openLogsDB(ctx, cfg)
+	if err != nil {
+		// 正在返回打开日志库的主错误；清理主库的失败不覆盖它。
+		_ = db.Close()
+		return fmt.Errorf("gateway: open logs db: %w", err)
+	}
 	redisRes, err := conn.openRedis(cfg)
 	if err != nil {
-		// 正在返回打开 Redis 的主错误；清理 DB 的失败不覆盖它。
+		// 正在返回打开 Redis 的主错误；清理数据库的失败不覆盖它。
+		_ = logsDB.Close()
 		_ = db.Close()
 		return fmt.Errorf("gateway: open redis: %w", err)
 	}
@@ -53,11 +63,22 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	if cfg.DBMigrateOnStart {
 		// 经 connectors 钩子调用：生产即 RunMigrate，测试可注入 stub 断言调用与否。
 		if err := conn.runMigrate(ctx, cfg); err != nil {
-			// 主错误优先：迁移失败时尽力释放两个资源，关闭错误不再上报。
+			// 主错误优先：迁移失败时尽力释放资源，关闭错误不再上报。
 			_ = redisRes.Close()
+			_ = logsDB.Close()
 			_ = db.Close()
 			return fmt.Errorf("gateway: migrate on start: %w", err)
 		}
+	}
+
+	// 管理面路由必须在监听之前装配完成：配置中心/令牌缓存订阅失败、
+	// 权限装载器或审计缺失都必须阻止进程上线（GC-7）。
+	apiHandler, err := conn.newAPIHandler(ctx, cfg, db, logsDB, redisRes, log)
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsDB.Close()
+		_ = db.Close()
+		return fmt.Errorf("gateway: assemble http api: %w", err)
 	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
@@ -67,22 +88,17 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		}
 	}()
 
-	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）。
+	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）与同一
+	// server 上的 /api/* 管理面（apiHandler 为 nil 时仅探针）。
 	checker := checkerFromResources(db, redisRes, int(expectedVersion), log)
 	checker.node = cfg.NodeName
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", checker.HandlerHealthz)
-	mux.HandleFunc("/readyz", checker.HandlerReadyz)
-	srv := &http.Server{
-		// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：
-		// 404、探针、后续 API 与 SSE 都必须经过同一层，避免按路由漏配。
-		Handler:           SecurityHeaders(mux),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	mux := newGatewayMux(checker, apiHandler)
+	srv := newGatewayHTTPServer(SecurityHeaders(mux))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		// 监听失败是主错误；资源清理失败不覆盖它。
 		_ = redisRes.Close()
+		_ = logsDB.Close()
 		_ = db.Close()
 		return fmt.Errorf("gateway: listen %s: %w", cfg.HTTPAddr, err)
 	}
@@ -105,6 +121,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	case err := <-serveErr:
 		// 监听异常退出（端口被抢、进程内关闭等）：清理资源后上报。
 		_ = redisRes.Close()
+		_ = logsDB.Close()
 		_ = db.Close()
 		if err != nil {
 			return fmt.Errorf("gateway: http serve: %w", err)
@@ -121,6 +138,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		// Shutdown 已失败并记录；Close 仅兜底释放监听，错误无需再次上报。
 		_ = srv.Close()
 	}
+	if err := logsDB.Close(); err != nil {
+		log.Warn("close logs db failed", "error", err)
+	}
 	if err := db.Close(); err != nil {
 		log.Warn("close db failed", "error", err)
 	}
@@ -129,6 +149,39 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	log.Info("gateway stopped")
 	return nil
+}
+
+// maxHeaderBytes 是 HTTP 请求头总大小上限（32 KiB）。
+//
+// net/http 的默认值是 1 MiB：一个未认证客户端就能让每次连接在 TLS/业务之前
+// 占用并解析近 1 MiB 头部（同时放大日志与代理内存）。32 KiB 覆盖最长现实
+// 场景（会话/CSRF Cookie + 常见转发头 + 超长 UA），是纵深防御而非业务上限。
+const maxHeaderBytes = 32 << 10
+
+// newGatewayHTTPServer 构造 gateway 的主 HTTP server。
+//
+// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：404、探针、后续
+// API 与 SSE 都必须经过同一层，避免按路由漏配。
+func newGatewayHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+}
+
+// newGatewayMux 把探针与管理面挂到同一 mux：/api/ 子树交给 httpapi.Router
+// （其内部已包含公开/受保护两条链），/healthz 与 /readyz 保持在根路径。
+// api 为 nil 时只暴露探针端点（worker/测试装配）。
+func newGatewayMux(checker *Checker, api http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", checker.HandlerHealthz)
+	mux.HandleFunc("/readyz", checker.HandlerReadyz)
+	if api != nil {
+		// Handle 不裁剪前缀：Router 的模式本身就是 /api/...。
+		mux.Handle("/api/", api)
+	}
+	return mux
 }
 
 // checkerFromResources 从装配好的 Resource 还原具体类型构造 Checker（生产路径）。

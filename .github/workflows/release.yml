@@ -14,9 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# 读仓库 + 写 GHCR 包；这是全仓唯一需要 packages: write 的 workflow。
+# 读仓库 + 写 GHCR 包；contents: write 只用于把第三方许可文本挂到 release 附件
+# （MIT/ISC 要求许可随分发物保留）。这是全仓唯一需要写权限的 workflow。
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -62,7 +63,8 @@ jobs:
       - name: 多架构构建并推送
         uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6.13.0
         with:
-          context: backend
+          # 上下文=仓根：运行镜像与 release 附件都需要仓根 THIRD_PARTY_NOTICES.md。
+          context: .
           file: backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
@@ -76,3 +78,18 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
+      - name: 发布附件：第三方许可文本
+        # 镜像内已有 /usr/share/licenses/newtg/THIRD_PARTY_NOTICES.md；release 附件
+        # 再提供一份可独立下载的副本，覆盖"只取 release 制品、不拉镜像"的消费者。
+        # tag 重跑时 release 可能已存在：先 upload --clobber，避免 create 因重复失败。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" THIRD_PARTY_NOTICES.md --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" THIRD_PARTY_NOTICES.md \
+              --title "$GITHUB_REF_NAME" --notes "NewTG $GITHUB_REF_NAME"
+          fi
