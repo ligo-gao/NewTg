@@ -1,10 +1,9 @@
 // Package platform 是单二进制 newtg 的三种运行角色入口（M0 运行时装配：
-// logger / PG / Redis / metrics / 优雅停机）。RunMigrate 由 Task 6 填实。
+// logger / PG / Redis / metrics / 优雅停机 / 迁移执行器）。
 package platform
 
 import (
 	"context"
-	"errors"
 
 	"newtg/gateway/internal/config"
 )
@@ -34,7 +33,4 @@ func (prodConnectors) openRedis(cfg *config.Config) (Resource, error) {
 	return OpenRedis(context.Background(), cfg)
 }
 
-// RunMigrate 以 migrate 角色运行：数据库迁移，成功后退出。Task 6 填实（含 advisory lock）。
-func RunMigrate(ctx context.Context, cfg *config.Config) error {
-	return errors.New("not implemented: RunMigrate is filled by Task 6")
-}
+// RunMigrate 由 migrate.go 实现（含 pg_advisory_lock 串行化）。
