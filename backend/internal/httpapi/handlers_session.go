@@ -572,7 +572,8 @@ func (h *SessionHandlers) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	// （浏览器清理/跨设备恢复）时，GET /api/me 补发一次；已有则绝不轮换，
 	// 否则每个页面加载都会让进行中的写请求拿到旧令牌而 403。
 	if sid != "" {
-		if _, err := r.Cookie(auth.CSRFCookieName); errors.Is(err, http.ErrNoCookie) {
+		if cookie, err := r.Cookie(auth.CSRFCookieName); errors.Is(err, http.ErrNoCookie) ||
+			(err == nil && strings.TrimSpace(cookie.Value) == "") {
 			token := auth.NewCSRFToken()
 			if err := h.sessions.IssueCSRF(r.Context(), sid, token); err != nil {
 				// 会话可能在身份校验与签发之间被吊销；补发失败不应把一次自读

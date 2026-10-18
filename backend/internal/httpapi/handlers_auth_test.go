@@ -457,6 +457,32 @@ func TestAuthStatusSystemInitializedAndTurnstileKey(t *testing.T) {
 		}
 	})
 
+	t.Run("setup 后从未初始化变为已初始化", func(t *testing.T) {
+		env := newAuthTestEnv(t, nil, authTestOptions{})
+		store := newFakeSetupStore()
+		env.router.handlers.initialized = store.IsInitialized
+
+		rr := env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if decodeStatus(t, rr.Body.Bytes()).SystemInitialized {
+			t.Fatal("setup 前 system_initialized 必须为 false")
+		}
+		if _, err := store.CompleteSetup(context.Background(), SetupInput{
+			Username: "admin", Email: "admin@example.com", PasswordHash: "hash",
+		}); err != nil {
+			t.Fatalf("CompleteSetup: %v", err)
+		}
+		rr = env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if !decodeStatus(t, rr.Body.Bytes()).SystemInitialized {
+			t.Fatal("setup 后 system_initialized 必须为 true")
+		}
+	})
+
 	t.Run("查询失败返回 503", func(t *testing.T) {
 		env := newAuthTestEnv(t, nil, authTestOptions{})
 		env.router.handlers.initialized = func(context.Context) (bool, error) {
