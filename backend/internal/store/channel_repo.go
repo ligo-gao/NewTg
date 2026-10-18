@@ -601,19 +601,33 @@ func (r *ChannelRepo) EnabledModels(ctx context.Context) ([]string, error) {
 
 // candidatesQuery 构造路由候选查询（relay-01 §5、relay-02 §7.1）：
 //   - 仅 status=1（自动/手动禁用均不选，modules-06 §1.2）；
-//   - supported_models 含请求模型；
+//   - supported_models 含请求模型，**或** model_mapping 有同名键（客户端别名）；
 //   - group_tags 为 NULL（全部分组）或含请求分组；
 //   - priority 降序；组内加权随机由路由层消费 Weight。
 //
 // 成员判断用 jsonb 包含（`@> jsonb_build_array($n)`）而不是 `?`：
 // channels_*_gin 是 jsonb_path_ops 索引，只支持 `@>`/`@?`/`@@`（finding 5）。
-// group != "" 时参数依次为 model、group；group_tags IS NULL 分支不可索引。
+// $1::text 不可省略：pgx v5 stdlib 不推断 jsonb_build_array 参数类型，缺省会
+// 报 SQLSTATE 42P18（finding 1 —— Candidates 处于 relay 热路径）。
+//
+// 别名分支（finding 3）与索引：
+//   - jsonb_exists(model_mapping, $1) 是 `?` 的函数形式，语义为「对象含该键」；
+//   - M2 DDL 没有 model_mapping 的 GIN 索引，且 jsonb_path_ops **不支持** `?`
+//     谓词（它只覆盖 @>/@?/@@）。OR 两侧类型不同，规划器通常无法合并成一次
+//     索引扫描，可能退化为顺序扫描；channels 在 M2 规模很小（个位数～百级），
+//     这是可接受的正确性优先取舍。若后续量级上来，应新增
+//     `USING gin (model_mapping jsonb_ops)`（注意不是 jsonb_path_ops），
+//     `jsonb_exists` 才能走索引。
+//   - group_tags IS NULL 分支同样不可索引（NULL = 全部分组）。
+//
+// group != "" 时参数依次为 model、group。
 func candidatesQuery(model, group string) (string, []any) {
 	query := `SELECT id, priority, weight FROM channels
-		WHERE status = 1 AND supported_models @> jsonb_build_array($1)`
+		WHERE status = 1 AND (supported_models @> jsonb_build_array($1::text)
+			OR jsonb_exists(model_mapping, $1))`
 	args := []any{model}
 	if group != "" {
-		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($2))`
+		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($2::text))`
 		args = append(args, group)
 	}
 	query += ` ORDER BY priority DESC, id ASC`
@@ -690,11 +704,12 @@ func buildChannelWhere(f ChannelFilter) (string, []any) {
 		args = append(args, f.Group)
 		// NULL = 全部分组：按任意分组筛选时都必须保留（TC-F-06-01-03）。
 		// 包含谓词命中 jsonb_path_ops GIN；IS NULL 分支不可索引（见类型注释）。
-		clauses = append(clauses, "(group_tags IS NULL OR group_tags @> jsonb_build_array("+placeholder()+"))")
+		// ::text 原因同 candidatesQuery（pgx stdlib 不推断参数类型 → 42P18）。
+		clauses = append(clauses, "(group_tags IS NULL OR group_tags @> jsonb_build_array("+placeholder()+"::text))")
 	}
 	if f.Model != "" {
 		args = append(args, f.Model)
-		clauses = append(clauses, "supported_models @> jsonb_build_array("+placeholder()+")")
+		clauses = append(clauses, "supported_models @> jsonb_build_array("+placeholder()+"::text)")
 	}
 	if keyword := strings.TrimSpace(f.Keyword); keyword != "" {
 		args = append(args, "%"+escapeLike(keyword)+"%")

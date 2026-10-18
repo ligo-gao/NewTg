@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -772,6 +773,108 @@ func TestChannelCreateValidationAndMasking(t *testing.T) {
 	}
 }
 
+// TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels 覆盖 F-06-10：
+// model_mapping 的每个键都是客户端可见别名，必须同时出现在 supported_models
+// 中；否则 /v1/models 会宣告一个永远无法路由的模型（finding 3 的服务端闸门）。
+func TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels(t *testing.T) {
+	base := func(mapping map[string]any) map[string]any {
+		return map[string]any{
+			"name":             "alias-create",
+			"type":             "openai",
+			"credentials":      map[string]any{"api_key": "sk-alias-1234"},
+			"supported_models": []string{"gpt-4o"},
+			"model_mapping":    mapping,
+		}
+	}
+
+	t.Run("mapping key outside supported_models → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		rr := serveWithPrincipal(t, env.mux,
+			jsonReq(t, http.MethodPost, "/api/channels", base(map[string]any{"gpt-5": "gpt-4o"})),
+			adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.createCalls != 0 {
+			t.Fatalf("校验失败仍写库（createCalls=%d）", env.store.createCalls)
+		}
+		if !strings.Contains(rr.Body.String(), `"field":"model_mapping"`) {
+			t.Fatalf("422 未指向 model_mapping 字段: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("mapping key is a supported model → 201", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		rr := serveWithPrincipal(t, env.mux,
+			jsonReq(t, http.MethodPost, "/api/channels", base(map[string]any{"gpt-4o": "upstream-gpt-4o"})),
+			adminPrincipal())
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.createCalls != 1 {
+			t.Fatalf("createCalls = %d，期望 1", env.store.createCalls)
+		}
+	})
+}
+
+// TestChannelPatchModelMappingCoverage 覆盖 PATCH 的 F-06-10 兜底：
+// 校验的是**合并后**的有效状态——既拒绝新 mapping 键不在模型列表，
+// 也拒绝通过改 supported_models 把仍被 mapping 使用的模型删掉。
+func TestChannelPatchModelMappingCoverage(t *testing.T) {
+	t.Run("new mapping key outside supported_models → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, nil) // supported_models = [gpt-4o]
+		body := map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"model_mapping":    map[string]any{"gpt-5": "gpt-4o"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("校验失败仍写库（updateCalls=%d）", env.store.updateCalls)
+		}
+	})
+
+	t.Run("removing a model still used as a mapping key → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, func(ch *store.Channel) {
+			ch.SupportedModels = mustJSONBytes(t, []string{"gpt-4o", "gpt-3.5"})
+			ch.ModelMapping = mustJSONBytes(t, map[string]string{"gpt-3.5": "upstream-35"})
+		})
+		body := map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"supported_models": []string{"gpt-4o"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("校验失败仍写库（updateCalls=%d）", env.store.updateCalls)
+		}
+	})
+
+	t.Run("mapping key inside effective models → 200", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, func(ch *store.Channel) {
+			ch.SupportedModels = mustJSONBytes(t, []string{"gpt-4o", "gpt-3.5"})
+		})
+		body := map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"model_mapping":    map[string]any{"gpt-3.5": "upstream-35"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), adminPrincipal())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 1 {
+			t.Fatalf("updateCalls = %d，期望 1", env.store.updateCalls)
+		}
+	})
+}
+
 // TestChannelCreateIdempotentReplay 覆盖：同 Idempotency-Key 第二次提交直接重放
 // 首次响应，不再写库（modules-06 F-06-02 TC-F-06-02-03；本任务要求 POST 创建也支持）。
 func TestChannelCreateIdempotentReplay(t *testing.T) {
@@ -1366,6 +1469,246 @@ func TestChannelIdempotencyNon2xxReleasesKey(t *testing.T) {
 	}
 	if env.store.createCalls != 1 {
 		t.Fatalf("createCalls = %d, want 1", env.store.createCalls)
+	}
+}
+
+// ---------- 幂等 pending 标记的生命周期（二轮复审 finding 2） ----------
+
+// recordingIdempotencyStore 记录 Claim/Complete/Release 收到的 TTL 与 context
+// 状态，并可注入错误；用于断言「pending 短 TTL + 完成响应 24h」以及
+// 「finalize 使用与请求取消无关的 detached context」。
+type recordingIdempotencyStore struct {
+	mu sync.Mutex
+
+	claimTTL    time.Duration
+	completeTTL time.Duration
+
+	claimCalls    int
+	completeCalls int
+	releaseCalls  int
+
+	claimCtxErr    error
+	completeCtxErr error
+	releaseCtxErr  error
+
+	completeHasDeadline bool
+	releaseHasDeadline  bool
+
+	releaseTokens []string
+
+	completeErr error
+	releaseErr  error
+}
+
+func (s *recordingIdempotencyStore) Claim(ctx context.Context, _ string, ttl time.Duration) (IdempotencyClaim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claimCalls++
+	s.claimTTL = ttl
+	s.claimCtxErr = ctx.Err()
+	return IdempotencyClaim{Status: IdempotencyClaimAcquired, Token: "recorded-token"}, nil
+}
+
+func (s *recordingIdempotencyStore) Complete(ctx context.Context, _, _ string, _ IdempotentResponse, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCalls++
+	s.completeTTL = ttl
+	s.completeCtxErr = ctx.Err()
+	_, s.completeHasDeadline = ctx.Deadline()
+	return s.completeErr
+}
+
+func (s *recordingIdempotencyStore) Release(ctx context.Context, _, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseCalls++
+	s.releaseCtxErr = ctx.Err()
+	_, s.releaseHasDeadline = ctx.Deadline()
+	s.releaseTokens = append(s.releaseTokens, token)
+	return s.releaseErr
+}
+
+func idempotentCreateBody() map[string]any {
+	return map[string]any{
+		"name":             "idem-lifecycle",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-idem-1234"},
+		"supported_models": []string{"gpt-4o"},
+	}
+}
+
+// TestIdempotencyPendingMarkerUsesShortTTL 冻结两个 TTL 的分工：
+// pending 标记必须短（默认 60s），完成响应才保留 24h。旧实现把 24h 也用在
+// pending 上：一个进程崩溃/panic 留下的标记会让同一 Idempotency-Key 被
+// 409 卡住整整 24h。
+func TestIdempotencyPendingMarkerUsesShortTTL(t *testing.T) {
+	recorder := &recordingIdempotencyStore{}
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder})
+	req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+	req.Header.Set("Idempotency-Key", "ttl-split")
+	if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if IdempotencyPendingTTL != 60*time.Second {
+		t.Fatalf("IdempotencyPendingTTL = %v，期望 60s", IdempotencyPendingTTL)
+	}
+	if recorder.claimTTL != IdempotencyPendingTTL {
+		t.Fatalf("Claim ttl = %v，期望 pending TTL %v", recorder.claimTTL, IdempotencyPendingTTL)
+	}
+	if recorder.completeTTL != IdempotencyTTL {
+		t.Fatalf("Complete ttl = %v，期望完成响应 TTL %v", recorder.completeTTL, IdempotencyTTL)
+	}
+}
+
+// TestMemoryIdempotencyPendingExpires 验证短 TTL 确实让标记过期后可重新认领
+// （不是被永久锁住）。用很短的 TTL 直接驱动 Memory 实现。
+func TestMemoryIdempotencyPendingExpires(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+	const ttl = 20 * time.Millisecond
+
+	first, err := store.Claim(ctx, "expiring-key", ttl)
+	if err != nil || first.Status != IdempotencyClaimAcquired {
+		t.Fatalf("first claim = %+v, err=%v，期望 Acquired", first, err)
+	}
+	if second, _ := store.Claim(ctx, "expiring-key", ttl); second.Status != IdempotencyClaimInFlight {
+		t.Fatalf("second claim = %+v，期望 InFlight", second)
+	}
+	time.Sleep(2 * ttl)
+	if third, err := store.Claim(ctx, "expiring-key", ttl); err != nil || third.Status != IdempotencyClaimAcquired {
+		t.Fatalf("claim after expiry = %+v, err=%v，期望 Acquired（标记必须可过期）", third, err)
+	}
+}
+
+// TestIdempotencyFinalizeUsesDetachedContext 覆盖 finalize 的 context：
+// 请求被取消（客户端断开）不应阻止 Complete/Release——否则 pending 标记
+// 只能等短 TTL 自然过期，客户端重试窗口被无谓拉长。
+func TestIdempotencyFinalizeUsesDetachedContext(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
+		recorder := &recordingIdempotencyStore{}
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		env.store.createHook = cancel // build 执行期间客户端断开
+
+		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+		req.Header.Set("Idempotency-Key", "detached-complete")
+		req = req.WithContext(ctx)
+		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+		if recorder.completeCalls != 1 {
+			t.Fatalf("Complete calls = %d，期望 1", recorder.completeCalls)
+		}
+		if recorder.completeCtxErr != nil {
+			t.Fatalf("Complete context = %v，期望 detached（不受请求取消影响）", recorder.completeCtxErr)
+		}
+		if !recorder.completeHasDeadline {
+			t.Fatal("Complete context 缺少超时 deadline（应被 5s 上限约束）")
+		}
+	})
+
+	t.Run("release", func(t *testing.T) {
+		recorder := &recordingIdempotencyStore{}
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder})
+		env.store.createErr = errors.New("db down")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		env.store.createHook = cancel
+
+		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+		req.Header.Set("Idempotency-Key", "detached-release")
+		req = req.WithContext(ctx)
+		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d，期望 500（body=%s）", rr.Code, rr.Body.String())
+		}
+
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+		if recorder.releaseCalls != 1 {
+			t.Fatalf("Release calls = %d，期望 1", recorder.releaseCalls)
+		}
+		if recorder.releaseCtxErr != nil {
+			t.Fatalf("Release context = %v，期望 detached", recorder.releaseCtxErr)
+		}
+		if !recorder.releaseHasDeadline {
+			t.Fatal("Release context 缺少超时 deadline")
+		}
+	})
+}
+
+// TestIdempotencyFinalizeFailuresAreLogged 覆盖「日志而不是丢弃」：
+// Complete/Release 失败时必须有可观测记录，否则 Redis 故障会静默退化成
+// 「每次重试都重新执行」。
+func TestIdempotencyFinalizeFailuresAreLogged(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+		recorder := &recordingIdempotencyStore{completeErr: errors.New("redis down")}
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder, Logger: logger})
+		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+		req.Header.Set("Idempotency-Key", "log-complete")
+		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		out := buf.String()
+		if !strings.Contains(out, "idempotency") || !strings.Contains(out, "redis down") {
+			t.Fatalf("Complete 失败未记录日志: %q", out)
+		}
+	})
+
+	t.Run("release", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+		recorder := &recordingIdempotencyStore{releaseErr: errors.New("redis down")}
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder, Logger: logger})
+		env.store.createErr = errors.New("db down")
+		req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+		req.Header.Set("Idempotency-Key", "log-release")
+		if rr := serveWithPrincipal(t, env.mux, req, adminPrincipal()); rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d，期望 500（body=%s）", rr.Code, rr.Body.String())
+		}
+		out := buf.String()
+		if !strings.Contains(out, "idempotency") || !strings.Contains(out, "redis down") {
+			t.Fatalf("Release 失败未记录日志: %q", out)
+		}
+	})
+}
+
+// TestIdempotencyPanicReleasesMarker 覆盖 panic 出口：build 崩溃时 deferred
+// 释放必须删除 pending 标记，不能让同键客户端等 TTL。panic 本身仍向上传播
+// （由 net/http 兜底），这里只断言标记被释放。
+func TestIdempotencyPanicReleasesMarker(t *testing.T) {
+	recorder := &recordingIdempotencyStore{}
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: recorder})
+	env.store.createHook = func() { panic("boom during create") }
+
+	req := jsonReq(t, http.MethodPost, "/api/channels", idempotentCreateBody())
+	req.Header.Set("Idempotency-Key", "panic-release")
+
+	func() {
+		defer func() {
+			if rec := recover(); rec == nil {
+				t.Fatal("build panic 应继续向上传播（由 net/http 兜底）")
+			}
+		}()
+		serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	}()
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.releaseCalls != 1 {
+		t.Fatalf("panic 后 Release calls = %d，期望 1", recorder.releaseCalls)
+	}
+	if len(recorder.releaseTokens) != 1 || recorder.releaseTokens[0] != "recorded-token" {
+		t.Fatalf("Release tokens = %v，期望 [recorded-token]", recorder.releaseTokens)
 	}
 }
 

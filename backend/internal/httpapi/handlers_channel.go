@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,21 +96,37 @@ type IdempotencyClaim struct {
 
 // IdempotencyStore 是幂等执行接缝（POST /api/channels、POST /api/channels/batch-delete）。
 //
-// 生命周期（M2 final review finding 2）：
-//  1. Claim：SET NX 写入 pending 标记。抢到 → Acquired（带 token）；
-//     同键已有完成响应 → Replay；同键 pending → InFlight。
+// 生命周期（M2 final review finding 2 / 二轮复审 finding 2）：
+//  1. Claim：SET NX 写入 pending 标记（短 TTL IdempotencyPendingTTL）。
+//     抢到 → Acquired（带 token）；同键已有完成响应 → Replay；同键 pending → InFlight。
 //  2. Acquired 的请求执行 build()；2xx 时 Complete 用响应替换 pending（24h TTL），
 //     非 2xx/错误时 Release 删除标记，让客户端修正参数后可以重试。
 //  3. 另一个并发同键请求在 1 就已返回 InFlight，**不会**执行 build——这正是修复
 //     「先执行后 SetIfAbsent 导致双方都执行」的关键。
+//  4. 进程崩溃/panic 留下的 pending 标记最多存活 60s，不会把键锁 24h。
 type IdempotencyStore interface {
 	Claim(ctx context.Context, key string, ttl time.Duration) (IdempotencyClaim, error)
 	Complete(ctx context.Context, key, token string, resp IdempotentResponse, ttl time.Duration) error
 	Release(ctx context.Context, key, token string) error
 }
 
-// IdempotencyTTL 冻结 24h：与参照侧幂等窗口同量级；过期后同键可再次执行。
+// IdempotencyTTL 冻结 24h：**完成响应**的保留时长（重放窗口）。
+// 过期后同键可再次执行。
 const IdempotencyTTL = 24 * time.Hour
+
+// IdempotencyPendingTTL 是 pending 标记的短 TTL（60s）。
+//
+// pending 只表示「某个请求正在执行」，不需要覆盖整个 24h 重放窗口。旧实现
+// 用 IdempotencyTTL 写 pending：进程崩溃、panic（修复前无释放兜底）或
+// finalize 失败留下的标记会把同一 Idempotency-Key 持续 409 卡住 24h。
+// 60s 覆盖一次管理面写操作（建渠道/批量删除）的正常执行时间；真正开始执行
+// 的请求在完成时立即用 Complete 替换标记，不会等满这个 TTL。
+const IdempotencyPendingTTL = 60 * time.Second
+
+// idempotencyFinalizeTimeout 是 Complete/Release 的独立超时。
+// finalize 用 context.WithoutCancel(r.Context()) + 本上限：客户端断开
+// 不应阻止标记清理或响应固化，但也不能让 Redis 故障无限阻塞请求返回。
+const idempotencyFinalizeTimeout = 5 * time.Second
 
 const idempotencyKeyPrefix = "newtg:idem:"
 
@@ -196,7 +214,8 @@ func cloneIdempotentResponse(r IdempotentResponse) IdempotentResponse {
 	return IdempotentResponse{Status: r.Status, Body: append([]byte(nil), r.Body...)}
 }
 
-// RedisIdempotencyStore 是生产实现：pending/响应值共用 24h TTL。
+// RedisIdempotencyStore 是生产实现：pending 标记用短 TTL
+// （IdempotencyPendingTTL），完成响应用 IdempotencyTTL（24h）。
 //
 // Claim 用 SET NX 抢占；Complete/Release 用 Lua 比较 token 后原子替换/删除，
 // 避免 TTL 过期后另一个请求已重新认领时被旧请求覆盖（CAS 语义）。
@@ -401,6 +420,9 @@ type channelTestResponse struct {
 type ChannelHandlerOptions struct {
 	Tester      ChannelTester
 	Idempotency IdempotencyStore
+	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
+	// nil 时使用 slog.Default()（不得静默丢弃错误）。
+	Logger *slog.Logger
 }
 
 // ChannelHandler 持有渠道端点依赖。字段不导出，phase 8B 通过构造函数注入。
@@ -410,6 +432,7 @@ type ChannelHandler struct {
 	sealer   *SecretSealer
 	tester   ChannelTester
 	idem     IdempotencyStore
+	log      *slog.Logger
 }
 
 // NewChannelHandler 构造 handler。
@@ -425,12 +448,17 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 	if idem == nil {
 		idem = NewMemoryIdempotencyStore()
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &ChannelHandler{
 		channels: channels,
 		access:   access,
 		sealer:   sealer,
 		tester:   opts.Tester,
 		idem:     idem,
+		log:      logger,
 	}
 }
 
@@ -574,6 +602,9 @@ func (h *ChannelHandler) channelFromCreate(v *validator, req *createChannelReque
 	models, modelsJSON := validateSupportedModels(v, req.SupportedModels)
 	groupTags, _ := parseGroupTags(v, req.GroupTags)
 	mapping, _ := parseModelMappingCreate(v, req.ModelMapping)
+	// F-06-10：映射键是客户端可见别名，必须在 supported_models 里；否则
+	// /v1/models 宣告的模型在路由层永远不会被 Candidates 命中（finding 3）。
+	validateModelMappingCoverage(v, mapping, models)
 	weight := int16(1)
 	if req.Weight != nil {
 		weight = *req.Weight
@@ -900,7 +931,53 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 		v.add("credentials", "credentials are required when changing channel type")
 	}
 
+	// F-06-10 的 PATCH 兜底：校验合并后的**有效状态**，而不是只看本请求。
+	// 两种情况都要拒绝：
+	//   - 新 model_mapping 的键不在（新的或既有的）supported_models 里；
+	//   - 修改 supported_models 时删掉了仍被既有 mapping 当作键的模型。
+	// 只在相关字段出现时校验：历史遗留的不一致数据不应阻断无关字段的 PATCH。
+	if req.SupportedModels != nil || req.ModelMapping != nil {
+		effectiveMapping := existing.ModelMapping
+		if req.ModelMapping != nil {
+			effectiveMapping = patch.ModelMapping
+		}
+		validateModelMappingCoverage(v, effectiveMapping, models)
+	}
+
 	return patch
+}
+
+// validateModelMappingCoverage 实现 modules-06 F-06-10：model_mapping 的每个键
+// （客户端可见别名）必须出现在 supported_models 中。两层原因：
+//   - /v1/models 会宣告映射键（enabledModelsQuery）；
+//   - Candidates 以别名路由到该渠道（jsonb_exists(model_mapping, $1)）。
+//
+// 若键不在 supported_models，创建/更新会制造一个「列表里有、请求 503」的模型。
+//
+// 错误按字典序报告，保证同一请求的错误顺序稳定（map 迭代顺序随机）。
+func validateModelMappingCoverage(v *validator, mapping []byte, models []string) {
+	if len(mapping) == 0 {
+		return
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(mapping, &keys); err != nil {
+		// parseModelMappingCreate/Patch 已校验对象形状；这里不重复报错。
+		return
+	}
+	supported := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		supported[m] = struct{}{}
+	}
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	for _, key := range sorted {
+		if _, ok := supported[key]; !ok {
+			v.add("model_mapping", fmt.Sprintf("model_mapping key %q must be one of supported_models", key))
+		}
+	}
 }
 
 // existingCredentials 解出渠道当前的凭据明文，用于 PATCH 的字段级合并。
@@ -1362,7 +1439,8 @@ func parseModelMappingCreate(v *validator, raw json.RawMessage) ([]byte, bool) {
 	if err := validateJSONObject(raw, "model_mapping", v); err != nil {
 		return nil, false
 	}
-	// 映射键覆盖校验（F-06-10）属后续任务；此处只保证 JSON 对象形状。
+	// 对象形状在此校验；键 ⊆ supported_models 的覆盖校验由调用方
+	// validateModelMappingCoverage 完成（F-06-10）。
 	return raw, true
 }
 
@@ -1672,7 +1750,8 @@ func (h *ChannelHandler) serveIdempotent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	key := idempotencyScopeKey(r, headerKey)
-	claim, err := h.idem.Claim(r.Context(), key, IdempotencyTTL)
+	// pending 用短 TTL（finding 2）：崩溃/panic 留下的标记最多锁 60s。
+	claim, err := h.idem.Claim(r.Context(), key, IdempotencyPendingTTL)
 	if err != nil {
 		// fail-open：幂等存储不可用不阻断业务。
 		status, body, _ := build()
@@ -1698,15 +1777,49 @@ func (h *ChannelHandler) serveIdempotent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	status, body, _ := h.executeClaimed(r, key, claim.Token, build)
+	writeJSONBytes(w, status, body)
+}
+
+// executeClaimed 在持有 pending 标记时执行 build，并保证每个出口都 finalize：
+//   - 2xx → Complete（响应保留 IdempotencyTTL=24h）；
+//   - 非 2xx → Release（允许修正参数后用同一个 key 重试）；
+//   - build panic 或任何未显式 finalize 的出口 → defer Release 兜底；
+//   - finalize 一律使用 context.WithoutCancel(r.Context()) + 5s 超时：
+//     客户端断开不应阻止标记清理/响应固化，否则同键客户端只能干等 TTL；
+//   - finalize 失败写日志（不丢弃），让 Redis 故障可观测。
+func (h *ChannelHandler) executeClaimed(r *http.Request, key, token string, build func() (int, []byte, bool)) (int, []byte, bool) {
+	finalized := false
+	// panic 兜底：显式 finalize 之前的所有出口（含 panic）都释放标记。
+	defer func() {
+		if finalized {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), idempotencyFinalizeTimeout)
+		defer cancel()
+		if err := h.idem.Release(ctx, key, token); err != nil {
+			h.log.Error("httpapi: idempotency release after panic failed", "err", err)
+		}
+	}()
+
 	status, body, cacheable := build()
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), idempotencyFinalizeTimeout)
+	defer cancel()
 	if cacheable && status >= http.StatusOK && status < http.StatusMultipleChoices {
 		// 完成：用响应替换 pending 标记并续 24h TTL（失败不影响已生成的响应）。
-		_ = h.idem.Complete(r.Context(), key, claim.Token, IdempotentResponse{Status: status, Body: body}, IdempotencyTTL)
+		if err := h.idem.Complete(ctx, key, token,
+			IdempotentResponse{Status: status, Body: body}, IdempotencyTTL); err != nil {
+			h.log.Error("httpapi: idempotency complete failed", "err", err)
+		}
 	} else {
 		// 非 2xx 不固化：释放标记，允许客户端修正参数后用同一个 key 重试。
-		_ = h.idem.Release(r.Context(), key, claim.Token)
+		if err := h.idem.Release(ctx, key, token); err != nil {
+			h.log.Error("httpapi: idempotency release failed", "err", err)
+		}
 	}
-	writeJSONBytes(w, status, body)
+	finalized = true
+	return status, body, cacheable
 }
 
 // idempotencyScopeKey 返回存储层使用的幂等键：`<userID>:<method> <path>:<headerKey>`。

@@ -17,11 +17,13 @@ import (
 func TestCandidatesQueryUsesJSONBContainment(t *testing.T) {
 	// finding 5：`supported_models ? $1` / `group_tags ? $2` 无法使用
 	// jsonb_path_ops GIN；必须改写为 `@> jsonb_build_array(...)`。
+	// 占位符必须显式 ::text：pgx v5 stdlib 不会给 jsonb_build_array 的参数
+	// 推断类型，缺省时报 SQLSTATE 42P18（could not determine data type）。
 	query, args := candidatesQuery("gpt-4o", "vip")
-	if !strings.Contains(query, "supported_models @> jsonb_build_array($1)") {
+	if !strings.Contains(query, "supported_models @> jsonb_build_array($1::text)") {
 		t.Fatalf("候选查询未使用 supported_models 包含谓词: %s", query)
 	}
-	if !strings.Contains(query, "(group_tags IS NULL OR group_tags @> jsonb_build_array($2))") {
+	if !strings.Contains(query, "(group_tags IS NULL OR group_tags @> jsonb_build_array($2::text))") {
 		t.Fatalf("候选查询未使用 group_tags 包含谓词（并保留 NULL 分支）: %s", query)
 	}
 	if strings.Contains(query, "supported_models ?") || strings.Contains(query, "group_tags ?") {
@@ -41,13 +43,27 @@ func TestCandidatesQueryUsesJSONBContainment(t *testing.T) {
 	}
 }
 
+func TestCandidatesQueryMatchesModelMappingKeys(t *testing.T) {
+	// finding 3：/v1/models 宣告 model_mapping 的键，路由候选必须同样接受别名，
+	// 否则「列表里有、请求 503」。jsonb_exists 是 `?` 的函数形式（语义相同）。
+	query, args := candidatesQuery("alias-model", "vip")
+	if !strings.Contains(query, "supported_models @> jsonb_build_array($1::text)") ||
+		!strings.Contains(query, "OR jsonb_exists(model_mapping, $1)") {
+		t.Fatalf("候选查询必须同时匹配 supported_models 与 model_mapping 键: %s", query)
+	}
+	if len(args) != 2 || args[0] != "alias-model" || args[1] != "vip" {
+		t.Fatalf("候选查询参数 = %v，期望 [alias-model vip]", args)
+	}
+}
+
 func TestBuildChannelWhereUsesJSONBContainment(t *testing.T) {
-	// 列表筛选与路由候选共享同一索引前提（finding 5）。
+	// 列表筛选与路由候选共享同一索引前提（finding 5）；::text 同 Candidates：
+	// 防止 pgx stdlib 在 jsonb_build_array 上推断不出参数类型（42P18）。
 	where, args := buildChannelWhere(ChannelFilter{Group: "vip", Model: "gpt-4o"})
-	if !strings.Contains(where, "group_tags @> jsonb_build_array($1)") {
+	if !strings.Contains(where, "group_tags @> jsonb_build_array($1::text)") {
 		t.Fatalf("列表筛选缺少 group_tags 包含谓词: %s", where)
 	}
-	if !strings.Contains(where, "supported_models @> jsonb_build_array($2)") {
+	if !strings.Contains(where, "supported_models @> jsonb_build_array($2::text)") {
 		t.Fatalf("列表筛选缺少 supported_models 包含谓词: %s", where)
 	}
 	if strings.Contains(where, "group_tags ?") || strings.Contains(where, "supported_models ?") {

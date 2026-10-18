@@ -501,6 +501,56 @@ func TestRelayChatCompletionsStream(t *testing.T) {
 	}
 }
 
+// TestRelayStreamHeaderOnlyUsage 覆盖 finding 5：上游流内没有任何 usage 块时，
+// bridgeStream 必须尝试 `x-model-response-usage` 响应头（relay-03 R-05 的
+// 优先级 3），而不是直接把零值标记为 estimated。否则上游精确报告的用量被丢弃，
+// 计费退化成（尚未实现的）本地估算。
+func TestRelayStreamHeaderOnlyUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-model-response-usage",
+			`{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`)
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		frames := []string{
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+			"data: [DONE]\n\n",
+		}
+		for _, frame := range frames {
+			_, _ = io.WriteString(w, frame)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// include_usage 默认开启：合成末块应带头部用量，而不是全零。
+	out := w.Body.String()
+	if !strings.Contains(out, `"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`) {
+		t.Fatalf("合成 usage 块未使用 x-model-response-usage 头: %s", out)
+	}
+
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	}
+	fact := env.billing.lastFact()
+	if fact.Usage.Prompt != 7 || fact.Usage.Completion != 5 || fact.Usage.Total != 12 {
+		t.Fatalf("UsageFact.Usage = %+v, want header usage 7/5/12", fact.Usage)
+	}
+	if fact.Usage.Source != contract.UsageUpstreamExact {
+		t.Fatalf("UsageFact.Usage.Source = %v, want UsageUpstreamExact", fact.Usage.Source)
+	}
+}
+
 // ---------- (c) 缺失/非法令牌 → 401 OpenAI 信封，无 URL 泄漏 ----------
 
 func TestRelayAuthErrorsUseOpenAIEnvelope(t *testing.T) {
@@ -1519,23 +1569,40 @@ func TestRelayQuotaEstimateReachesBilling(t *testing.T) {
 
 // TestRelayRejectsStreamWithNMultiple 覆盖 finding 14：stream=true + n>1
 // 必须在入口 400（SSE 桥接无法保留 choice 身份）。
+//
+// finding 4（二轮复审）：n 必须按 JSON 数值解码，而不是 *int。`2.0`/`2e0`
+// 是合法的 JSON 数字且语义等于 2；用 *int 解码会失败并静默回落到 1，
+// 从而绕过拒绝、把 n>1 的请求送进只保留 index=0 的流式桥。
 func TestRelayRejectsStreamWithNMultiple(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("upstream must not be called for unsupported stream+n")
-	}))
-	defer upstream.Close()
+	cases := []struct {
+		name string
+		n    string
+	}{
+		{"integer", `"n":2`},
+		{"decimal", `"n":2.0`},
+		{"exponent", `"n":2e0`},
+		{"fractional greater than one", `"n":1.5`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("upstream must not be called for unsupported stream+n")
+			}))
+			defer upstream.Close()
 
-	env := newRelayTestEnv(t, upstream, nil)
-	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
-		`{"model":"gpt-test","stream":true,"n":2,"messages":[{"role":"user","content":"hi"}]}`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) {
-		t.Fatalf("body = %s, want invalid_request", w.Body.String())
-	}
-	if env.billing.preConsumeCalls() != 0 {
-		t.Fatal("stream+n>1 must be rejected before PreConsume")
+			env := newRelayTestEnv(t, upstream, nil)
+			w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gpt-test","stream":true,`+tc.n+`,"messages":[{"role":"user","content":"hi"}]}`)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) {
+				t.Fatalf("body = %s, want invalid_request", w.Body.String())
+			}
+			if env.billing.preConsumeCalls() != 0 {
+				t.Fatal("stream+n>1 must be rejected before PreConsume")
+			}
+		})
 	}
 }
 
