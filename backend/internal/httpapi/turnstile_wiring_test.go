@@ -119,3 +119,72 @@ func TestTurnstileMissingTokenRejectedAfterRateLimit(t *testing.T) {
 		t.Fatalf("缺令牌时 siteverify calls = %d, want 0", got)
 	}
 }
+
+// TestTurnstileQueryOnlyTokenIsPreserved：客户端只通过查询参数提交
+// ?turnstile_token=… 时，gate 不得用请求体里的空 token 覆盖它。
+func TestTurnstileQueryOnlyTokenIsPreserved(t *testing.T) {
+	srv, calls := countingTurnstile(t)
+	rt, err := BuildGatewayRouter(depsWithTurnstile(t, srv.URL))
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+	rr := doRawRequest(rt, http.MethodPost,
+		"/api/auth/login?turnstile_token=query-only", `{"identifier":"nobody"}`, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("仅查询参数登录 = %d, want 401（人机校验应通过）body=%q",
+			rr.Code, rr.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("siteverify calls = %d, want 1（查询参数令牌被覆盖）", got)
+	}
+}
+
+// TestTurnstileRunsAfterEmailCodeRateLimit：发码端点的同邮箱冷却桶先于
+// Turnstile；冷却中的第二次请求 429 且不再调用 siteverify。
+func TestTurnstileRunsAfterEmailCodeRateLimit(t *testing.T) {
+	srv, calls := countingTurnstile(t)
+	rt, err := BuildGatewayRouter(depsWithTurnstile(t, srv.URL))
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+	body := `{"email":"rate@example.com","purpose":"register","turnstile_token":"ec-1"}`
+	if rr := doRawRequest(rt, http.MethodPost, "/api/auth/email-code", body, nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("首次发码 = %d, want 204 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("siteverify calls = %d, want 1", got)
+	}
+
+	body = `{"email":"rate@example.com","purpose":"register","turnstile_token":"ec-2"}`
+	if rr := doRawRequest(rt, http.MethodPost, "/api/auth/email-code", body, nil); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("冷却期发码 = %d, want 429 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("被限流后 siteverify calls = %d, want 1（Turnstile 先于限流执行）", got)
+	}
+}
+
+// TestTurnstileRunsAfterPasswordResetRateLimit：找回密码的同邮箱冷却桶先于
+// Turnstile；冷却中的第二次请求 429 且不再调用 siteverify。
+func TestTurnstileRunsAfterPasswordResetRateLimit(t *testing.T) {
+	srv, calls := countingTurnstile(t)
+	rt, err := BuildGatewayRouter(depsWithTurnstile(t, srv.URL))
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+	body := `{"email":"reset-rate@example.com","turnstile_token":"pr-1"}`
+	if rr := doRawRequest(rt, http.MethodPost, "/api/auth/password-reset/request", body, nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("首次重置请求 = %d, want 204 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("siteverify calls = %d, want 1", got)
+	}
+
+	body = `{"email":"reset-rate@example.com","turnstile_token":"pr-2"}`
+	if rr := doRawRequest(rt, http.MethodPost, "/api/auth/password-reset/request", body, nil); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("冷却期重置请求 = %d, want 429 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("被限流后 siteverify calls = %d, want 1（Turnstile 先于限流执行）", got)
+	}
+}

@@ -25,6 +25,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 
@@ -35,6 +36,7 @@ import (
 // 快照通过 Settings 函数按请求读取，保证开关与密钥轮换即时生效。
 type turnstileGates struct {
 	byEndpoint map[string]*turnstileGate
+	log        *slog.Logger
 }
 
 type turnstileGate struct {
@@ -52,7 +54,7 @@ func newTurnstileGates(settings func() auth.TurnstileSettings, rdb *redis.Client
 		auth.TurnstileEndpointVerification,
 		auth.TurnstileEndpointResetPassword,
 	}
-	gates := &turnstileGates{byEndpoint: make(map[string]*turnstileGate, len(endpoints))}
+	gates := &turnstileGates{byEndpoint: make(map[string]*turnstileGate, len(endpoints)), log: log}
 	for _, endpoint := range endpoints {
 		gates.byEndpoint[endpoint] = &turnstileGate{middleware: auth.TurnstileMiddleware(
 			auth.TurnstileMiddlewareConfig{
@@ -77,11 +79,22 @@ func (g *turnstileGates) check(endpoint string, w http.ResponseWriter,
 	}
 	gate := g.byEndpoint[endpoint]
 	if gate == nil {
-		return true
+		// 未知接入点属于装配/调用错误：绝不能静默放行（否则新增接入点会
+		// 以为已受保护）。返回 false 让请求 fail-closed，并留下告警。
+		logger := g.log
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("turnstile check requested for an unwired endpoint; rejecting", "endpoint", endpoint)
+		return false
 	}
 	clone := r.Clone(r.Context())
 	query := clone.URL.Query()
-	query.Set(auth.TurnstileTokenParam, token)
+	// 只有请求体/调用方显式提供了令牌时才覆盖查询参数：客户端仅用
+	// ?turnstile_token=… 时 token 为空，覆盖会抹掉合法值导致误 403。
+	if strings.TrimSpace(token) != "" {
+		query.Set(auth.TurnstileTokenParam, token)
+	}
 	clone.URL.RawQuery = query.Encode()
 	// handler 已消费 Body；重放一个空 Body，避免 gate 二次读取造成阻塞。
 	clone.Body = http.NoBody

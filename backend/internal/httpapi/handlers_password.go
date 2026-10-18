@@ -237,12 +237,14 @@ func newPasswordHandlers(base *authHandlers, repo PasswordRepo, publicBaseURL st
 // RegisterPasswordRoutes 注册 Task 8 的全部端点。装配方在 NewRouter 之后调用
 // 一次；返回装配错误而不是带病运行：
 //
-//   - publicBaseURL 必须至少包含一个合法的 http(s) origin（可逗号分隔多个，
-//     与 RouterConfig.PublicBaseURL 同格式；重置链接取第一个合法项）。
 //   - 非 nil 的 EmailSender 必须同时实现 PasswordResetSender；否则重置邮件
 //     永远不会发出，而端点仍回 204，属于「静默成功」——装配期直接拒绝。
-//   - nil EmailSender 是 M1「未配置 SMTP」的显式状态：启动时告警一次，
-//     重置链接不投递但响应保持统一成功态。
+//   - 有 EmailSender 时 publicBaseURL 必须至少包含一个合法的 http(s) origin
+//     （可逗号分隔多个，与 RouterConfig.PublicBaseURL 同格式；重置链接取第一
+//     个合法项），否则启动失败：一个确定投递不出去的重置链接是装配错误。
+//   - nil EmailSender 是 M1「未配置 SMTP」的显式状态：此时没有可投递的通道，
+//     publicBaseURL 缺失/非法只表示「重置投递功能禁用」（platform-03 §3.1 #20），
+//     不作为启动错误；端点保持统一 204，仅告警一次。
 func (rt *Router) RegisterPasswordRoutes(publicBaseURL string, auditLog *audit.Logger) error {
 	if rt == nil || rt.handlers == nil {
 		return errors.New("httpapi: router is not initialized")
@@ -251,15 +253,22 @@ func (rt *Router) RegisterPasswordRoutes(publicBaseURL string, auditLog *audit.L
 	if !ok {
 		return errors.New("httpapi: password routes require a PasswordRepo (FindUserByEmail/FindUserByID/UpdatePasswordHash)")
 	}
-	base, err := passwordResetBaseURL(publicBaseURL)
-	if err != nil {
-		return err
-	}
-	if rt.handlers.sender != nil {
+	hasSender := rt.handlers.sender != nil
+	if hasSender {
 		if _, ok := rt.handlers.sender.(PasswordResetSender); !ok {
 			return errors.New("httpapi: configured EmailSender must implement PasswordResetSender for password reset links")
 		}
-	} else {
+	}
+	base, err := passwordResetBaseURL(publicBaseURL)
+	if err != nil {
+		if hasSender {
+			return err
+		}
+		// 无发信器时重置投递本就不可用：base URL 缺失不应阻止 gateway 上线。
+		// resetLink 在 base 为空时返回 ok=false，端点仍保持统一 204。
+		rt.handlers.log.Warn("no email sender and no valid PUBLIC_BASE_URL; password reset delivery is disabled")
+		base = ""
+	} else if !hasSender {
 		rt.handlers.log.Warn("no email sender configured; password reset links will not be delivered (M1 explicit state)")
 	}
 	h := newPasswordHandlers(rt.handlers, repo, base, auditLog)

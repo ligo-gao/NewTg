@@ -203,7 +203,11 @@ func TestBuildGatewayRouterFailsFast(t *testing.T) {
 			d.Repo = &authRepoWithoutLoader{}
 			d.Permissions = nil
 		}, "Permissions"},
-		{"缺 PUBLIC_BASE_URL", func(d *GatewayDeps) { d.PublicBaseURL = "" }, "PublicBaseURL"},
+		{"有发信器但无基址", func(d *GatewayDeps) {
+			d.PublicBaseURL = ""
+			d.Config = mapConfig{}
+			d.EmailSender = &resetTestSender{}
+		}, "PUBLIC_BASE_URL"},
 		{"缺令牌服务", func(d *GatewayDeps) { d.TokenService = nil }, "TokenService"},
 		{"缺日志库与匿名化器", func(d *GatewayDeps) { d.AccountAnonymizer = nil; d.LogDB = nil }, "LogDB"},
 		{"缺自助 Repo", func(d *GatewayDeps) { d.SelfRepo = nil }, "SelfRepo"},
@@ -235,6 +239,62 @@ func (authRepoWithoutLoader) UsernameOrEmailTaken(context.Context, string, strin
 }
 func (authRepoWithoutLoader) CreateUser(context.Context, CreateUserInput) (CreatedUser, error) {
 	return CreatedUser{}, nil
+}
+
+// TestGatewayBaseURLFallback 覆盖 platform-03 §3.1 #20 的生效基址回退：
+// PUBLIC_BASE_URL → site.server_address → 「相关功能禁用」（不是启动失败）。
+func TestGatewayBaseURLFallback(t *testing.T) {
+	t.Run("无 env 且 DB 无值：启动成功但重置投递禁用", func(t *testing.T) {
+		deps, _ := gatewayDepsForTest(t)
+		deps.PublicBaseURL = ""
+		deps.EmailSender = nil // M1 无 SMTP：投递通道本身不存在
+		rt, err := BuildGatewayRouter(deps)
+		if err != nil {
+			t.Fatalf("无基址且无发信器时 gateway 必须能启动: %v", err)
+		}
+
+		rr := doRawRequest(rt, http.MethodPost, "/api/auth/password-reset/request",
+			`{"email":"nobody@example.com"}`, nil)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("reset request = %d, want 204（统一成功态，不投递）body=%q", rr.Code, rr.Body.String())
+		}
+		// 改密端点仍挂载：无会话应为 401，而不是 404。
+		rr = doRawRequest(rt, http.MethodPost, "/api/password", `{}`, nil)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("POST /api/password = %d, want 401（端点必须存在）", rr.Code)
+		}
+	})
+
+	t.Run("env 为空时回退到 site.server_address", func(t *testing.T) {
+		deps, _ := gatewayDepsForTest(t)
+		deps.PublicBaseURL = ""
+		sender := &resetTestSender{}
+		deps.EmailSender = sender
+		deps.Config = mapConfig{setupServerAddressKey: configString("https://gateway.example.com")}
+		repo := deps.Repo.(*pwdTestRepo)
+		repo.add(UserRecord{Username: "resetuser", Email: "reset@example.com", PasswordHash: "unused"})
+
+		rt, err := BuildGatewayRouter(deps)
+		if err != nil {
+			t.Fatalf("BuildGatewayRouter: %v", err)
+		}
+		rr := doRawRequest(rt, http.MethodPost, "/api/auth/password-reset/request",
+			`{"email":"reset@example.com"}`, nil)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("reset request = %d, want 204 (body=%q)", rr.Code, rr.Body.String())
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for sender.count() < 1 {
+			if !time.Now().Before(deadline) {
+				t.Fatal("2s 内未投递重置邮件")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if link := sender.last(t).ResetURL; !strings.HasPrefix(link, "https://gateway.example.com/reset-password?token=") {
+			t.Fatalf("重置链接 = %q, want 使用 site.server_address", link)
+		}
+	})
 }
 
 // TestLoginEncryptionFieldsDecode 覆盖 F-01-25 的登录字段接线：

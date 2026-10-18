@@ -117,6 +117,11 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 登录失败锁定桶只构造一次，登录与 2FA 复用以保证同阈值/同键形。
 	limiter := NewLoginLimiter(deps.Redis)
 
+	// 生效基址（platform-03 §3.1 #20）：PUBLIC_BASE_URL 优先；为空时回退到
+	// 初始化向导写入 system_settings 的 site.server_address；仍为空表示
+	// 「相关功能禁用」，而不是启动失败（M1 无 SMTP，重置投递本就不可用）。
+	baseURL := effectivePublicBaseURL(deps.PublicBaseURL, deps.Config)
+
 	rt, err := NewRouter(RouterConfig{
 		DB:                  deps.DB,
 		Repo:                deps.Repo,
@@ -125,7 +130,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Permissions:         deps.Permissions,
 		Config:              deps.Config,
 		SessionSecret:       deps.SessionSecret,
-		PublicBaseURL:       deps.PublicBaseURL,
+		PublicBaseURL:       baseURL,
 		EmailSender:         deps.EmailSender,
 		Authz:               deps.Authz,
 		PasswordChecker:     deps.PasswordChecker,
@@ -243,12 +248,26 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	}
 	groups.RegisterGroupRoutes(rt.protected, nil)
 
-	// 密码端点最后挂载：它要求认证仓储同时实现 PasswordRepo，并在装配期
-	// 校验 PUBLIC_BASE_URL 与 EmailSender 的契约。
-	if err := rt.RegisterPasswordRoutes(deps.PublicBaseURL, deps.Audit); err != nil {
+	// 密码端点最后挂载：它要求认证仓储同时实现 PasswordRepo，并在有发信器
+	// 时校验 PUBLIC_BASE_URL 的契约。
+	if err := rt.RegisterPasswordRoutes(baseURL, deps.Audit); err != nil {
 		return nil, err
 	}
 	return rt, nil
+}
+
+// effectivePublicBaseURL 实施 platform-03 §3.1 #20 的回退链：
+//
+//	PUBLIC_BASE_URL（env，可逗号分隔多个）→ site.server_address（setup 向导
+//	写入 system_settings）→ ""（相关功能禁用）。
+//
+// 返回值原样交给 NewRouter（Origin/Referer 白名单）与密码重置链接拼接；
+// 合法性由各自的消费点判定（空值不再作为启动错误）。
+func effectivePublicBaseURL(envValue string, config ConfigReader) string {
+	if value := strings.TrimSpace(envValue); value != "" {
+		return value
+	}
+	return strings.TrimSpace(readConfigString(config, setupServerAddressKey))
 }
 
 // validate 集中声明装配期的必填项。消息列出全部缺失项，便于一次修完。
@@ -267,7 +286,6 @@ func (d GatewayDeps) validate() error {
 	add(d.Authz == nil, "Authz (RBAC middleware)")
 	add(d.Audit == nil || !d.Audit.Configured(), "Audit logger bound to the logs database")
 	add(d.TokenService == nil, "TokenService")
-	add(strings.TrimSpace(d.PublicBaseURL) == "", "PublicBaseURL")
 	add(strings.TrimSpace(d.CredentialEncryptionKey) == "", "CredentialEncryptionKey")
 
 	// Repo 缝隙与 DB 二选一：认证主链、密码重置、令牌 store 都以 DB 为

@@ -18,8 +18,10 @@ import (
 )
 
 // RunGateway 以 gateway 角色运行。装配序（platform-03）：logger → OpenDB →
-// OpenRedis →（DBMigrateOnStart 时）RunMigrate → metrics goroutine → HTTP server →
-// 阻塞至 ctx done → 优雅停机（SHUTDOWN_GRACE_SECONDS 窗口内先停 HTTP 监听，再关 DB/Redis）。
+// OpenLogsDB → OpenRedis →（DBMigrateOnStart 时）RunMigrate → 配置中心与令牌
+// 缓存订阅 + 管理面路由装配（newAPIHandler）→ metrics goroutine → HTTP server
+// → 阻塞至 ctx done → 优雅停机（SHUTDOWN_GRACE_SECONDS 窗口内先停 HTTP 监听，
+// 再按日志库/主库/Redis 顺序关闭）。
 func RunGateway(ctx context.Context, cfg *config.Config) error {
 	return runGateway(ctx, cfg, prodConnectors{})
 }
