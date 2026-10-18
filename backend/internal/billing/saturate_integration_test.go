@@ -469,7 +469,14 @@ func TestSaturateIntegrationAppRoleConvergence(t *testing.T) {
 		if db != nil {
 			_ = db.Close()
 		}
-		_, _ = admin.Exec("DROP ROLE " + role)
+		// 先清掉该角色在当前库的授权/属主依赖，再删角色。两个错误都必须
+		// 暴露：静默吞掉 DROP 失败会让共享测试库持续泄漏 login role。
+		if _, err := admin.Exec("DROP OWNED BY " + role + " CASCADE"); err != nil {
+			t.Errorf("DROP OWNED BY %s: %v", role, err)
+		}
+		if _, err := admin.Exec("DROP ROLE " + role); err != nil {
+			t.Errorf("DROP ROLE %s: %v", role, err)
+		}
 	})
 	// 精确复刻应用角色在日志库的授权：CONNECT/USAGE/SELECT + 五列 UPDATE。
 	// 故意不授 INSERT/其它列 UPDATE，验证最小权限。
@@ -557,7 +564,13 @@ func TestPartitionIntegrationDDLUnavailable(t *testing.T) {
 		if db != nil {
 			_ = db.Close()
 		}
-		_, _ = admin.Exec("DROP ROLE " + role)
+		// 与 app-role 测试同口径：DROP OWNED 清授权，再 DROP ROLE；错误不吞。
+		if _, err := admin.Exec("DROP OWNED BY " + role + " CASCADE"); err != nil {
+			t.Errorf("DROP OWNED BY %s: %v", role, err)
+		}
+		if _, err := admin.Exec("DROP ROLE " + role); err != nil {
+			t.Errorf("DROP ROLE %s: %v", role, err)
+		}
 	})
 	for _, stmt := range []string{
 		"GRANT CONNECT ON DATABASE newtg_logs TO " + role,

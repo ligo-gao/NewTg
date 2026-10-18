@@ -158,6 +158,7 @@ func TestLogsSchema(t *testing.T) {
 		defer rows.Close()
 
 		months := make(map[string]bool)
+		var earliest time.Time
 		for rows.Next() {
 			var name, bound string
 			if err := rows.Scan(&name, &bound); err != nil {
@@ -169,6 +170,9 @@ func TestLogsSchema(t *testing.T) {
 				t.Fatalf("分区名 %q 与边界月份不符（want %q）", name, wantName)
 			}
 			months[from.Format("200601")] = true
+			if earliest.IsZero() || from.Before(earliest) {
+				earliest = from
+			}
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
@@ -176,12 +180,18 @@ func TestLogsSchema(t *testing.T) {
 
 		now := time.Now().UTC()
 		cur := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		next := cur.AddDate(0, 1, 0)
+		if !months[cur.Format("200601")] || !months[next.Format("200601")] {
+			t.Fatalf("当前月与下月分区必须存在（init 迁移保证）：cur=%s next=%s",
+				cur.Format("200601"), next.Format("200601"))
+		}
+		// 12 个月窗口固定在**迁移执行时刻**，不能从 time.Now() 起算（持久
+		// 测试库跨月后会假失败）。从最早既有分区起要求连续 lookahead 个月。
 		for i := 0; i < logsPartitionLookaheadMonths; i++ {
-			want := cur.AddDate(0, i, 0)
-			key := want.Format("200601")
+			key := earliest.AddDate(0, i, 0).Format("200601")
 			if !months[key] {
-				t.Fatalf("缺少分区 usage_logs_%s（R-56 lookahead=%d 个月，从当前月起连续）",
-					key, logsPartitionLookaheadMonths)
+				t.Fatalf("从最早分区 %s 起缺第 %d 个月 usage_logs_%s（R-56 连续性）",
+					earliest.Format("200601"), i, key)
 			}
 		}
 	})
