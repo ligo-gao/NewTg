@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor } from '@testing-library/react'
+import { waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import type { components } from '@/api/schema'
@@ -54,7 +54,7 @@ describe('SessionsCard', () => {
       }),
     )
 
-    const { getByText, getByRole, queryByText, findByText } =
+    const { getByText, getByRole, queryByText, findByText, findByRole } =
       await renderWithProviders(<SessionsCard />, ['common', 'account'])
     const user = userEvent.setup()
 
@@ -62,6 +62,10 @@ describe('SessionsCard', () => {
     expect(getByText('Current device')).toBeTruthy()
 
     await user.click(getByRole('button', { name: 'Sign out' }))
+
+    // Single-session revocation is confirmed before the request is sent.
+    const dialog = await findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Sign out' }))
 
     await waitFor(() => {
       expect(queryByText(/192\.168\.1\.20/)).toBeNull()

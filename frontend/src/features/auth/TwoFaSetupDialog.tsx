@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
@@ -115,6 +116,9 @@ export function TwoFaSetupDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={title}
+      // The backup codes are one-time material: this step must not vanish on
+      // an accidental Escape/backdrop click before the user saves them.
+      dismissible={step !== 'codes'}
       footer={
         alreadyEnabled ? (
           <Button onClick={() => onOpenChange(false)}>{t('common.action.close')}</Button>
@@ -164,6 +168,20 @@ export function TwoFaSetupDialog({
             <p className="text-[13px] text-ink-2">
               {t('auth.two_fa_setup.scan_description')}
             </p>
+            <div className="flex items-center gap-4">
+              <div className="shrink-0 rounded-lg border border-border-hairline bg-surface-card p-2">
+                <QRCodeSVG
+                  value={otpauthUrl}
+                  size={160}
+                  level="M"
+                  marginSize={2}
+                  title={t('auth.two_fa_setup.scan_title')}
+                />
+              </div>
+              <p className="text-[13px] text-ink-2">
+                {t('auth.two_fa_setup.scan_manual_hint')}
+              </p>
+            </div>
             <label className="text-[13px] font-medium text-ink-1" htmlFor="twofa-secret">
               {t('auth.two_fa_setup.secret')}
             </label>

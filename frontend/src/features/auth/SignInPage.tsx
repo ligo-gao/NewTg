@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useQuery } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
@@ -9,6 +10,7 @@ import {
   LoginEncryptionUnavailableError,
 } from '@/lib/password-encryption'
 import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
+import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
@@ -66,6 +68,26 @@ export function SignInPage({
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
+  const countdown = useCountdown()
+
+  const statusQuery = useQuery({
+    queryKey: ['public-status'],
+    queryFn: async () => requireData(await apiClient.GET('/api/status')),
+  })
+
+  // An authenticated visitor must never see the sign-in form again.
+  const meQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: async () => requireData(await apiClient.GET('/api/me')),
+    retry: false,
+  })
+  const alreadyNavigated = useRef(false)
+  useEffect(() => {
+    if (meQuery.data !== undefined && !alreadyNavigated.current) {
+      alreadyNavigated.current = true
+      onNavigate('/dashboard')
+    }
+  }, [meQuery.data, onNavigate])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
@@ -95,6 +117,11 @@ export function SignInPage({
 
       onNavigate(sanitizeAuthRedirect(redirect))
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 429) {
+        // Server-driven lockout: the button stays disabled for exactly the
+        // advertised retry window instead of a hardcoded guess.
+        countdown.start(caught.retry_after ?? 60)
+      }
       setError(signInErrorMessage(caught, t))
     } finally {
       setSubmitting(false)
@@ -102,63 +129,84 @@ export function SignInPage({
   }
 
   const site = siteTitle ?? t('auth.shell.brand')
+  const passwordLoginEnabled =
+    statusQuery.data?.auth.password_login_enabled ?? true
 
   return (
     <AuthPageShell title={t('auth.sign_in.title', { site })}>
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => void handleSubmit(event)}
-        noValidate
-      >
-        {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
-
-        <TextField
-          label={t('auth.sign_in.identifier')}
-          autoComplete="username"
-          autoFocus
-          value={identifier}
-          onChange={(event) => {
-            setIdentifier(event.target.value)
-          }}
-          required
-        />
-
-        <PasswordField
-          label={t('auth.sign_in.password')}
-          showLabel={t('auth.sign_in.show_password')}
-          hideLabel={t('auth.sign_in.hide_password')}
-          autoComplete="current-password"
-          value={password}
-          onChange={(event) => {
-            setPassword(event.target.value)
-          }}
-          required
-        />
-
-        <div className="-mt-2 flex justify-end">
-          <a
-            href="/forgot-password"
-            className="text-[13px] font-medium text-brand hover:underline"
-          >
-            {t('auth.sign_in.forgot')}
-          </a>
+      {statusQuery.isPending ? (
+        <div className="space-y-3" aria-busy="true">
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-11 rounded-lg bg-surface-subtle" />
         </div>
-
-        <Button
-          type="submit"
-          className="h-11 w-full"
-          disabled={submitting || identifier.trim() === '' || password === ''}
+      ) : !passwordLoginEnabled ? (
+        <FormAlert tone="warning">{t('auth.sign_in.password_disabled')}</FormAlert>
+      ) : (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(event) => void handleSubmit(event)}
+          noValidate
         >
-          {submitting ? t('auth.sign_in.submitting') : t('auth.sign_in.submit')}
-        </Button>
+          {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
 
-        <p className="text-center text-[13px] text-ink-2">
-          {t('auth.sign_in.no_account')}{' '}
-          <a className="font-medium text-brand hover:underline" href="/sign-up">
-            {t('auth.sign_in.sign_up')}
-          </a>
-        </p>
-      </form>
+          <TextField
+            label={t('auth.sign_in.identifier')}
+            autoComplete="username"
+            autoFocus
+            value={identifier}
+            onChange={(event) => {
+              setIdentifier(event.target.value)
+            }}
+            required
+          />
+
+          <PasswordField
+            label={t('auth.sign_in.password')}
+            showLabel={t('auth.sign_in.show_password')}
+            hideLabel={t('auth.sign_in.hide_password')}
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => {
+              setPassword(event.target.value)
+            }}
+            required
+          />
+
+          <div className="-mt-2 flex justify-end">
+            <a
+              href="/forgot-password"
+              className="text-[13px] font-medium text-brand hover:underline"
+            >
+              {t('auth.sign_in.forgot')}
+            </a>
+          </div>
+
+          <Button
+            type="submit"
+            className="h-11 w-full"
+            disabled={
+              submitting ||
+              countdown.running ||
+              identifier.trim() === '' ||
+              password === ''
+            }
+          >
+            {submitting
+              ? t('auth.sign_in.submitting')
+              : countdown.running
+                ? t('auth.sign_in.retry_in', { seconds: countdown.seconds })
+                : t('auth.sign_in.submit')}
+          </Button>
+
+          <p className="text-center text-[13px] text-ink-2">
+            {t('auth.sign_in.no_account')}{' '}
+            <a className="font-medium text-brand hover:underline" href="/sign-up">
+              {t('auth.sign_in.sign_up')}
+            </a>
+          </p>
+        </form>
+      )}
     </AuthPageShell>
   )
 }

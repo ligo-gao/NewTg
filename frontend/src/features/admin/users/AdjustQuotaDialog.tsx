@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
@@ -40,6 +41,7 @@ export function AdjustQuotaDialog({
   onAdjusted,
 }: AdjustQuotaDialogProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const [mode, setMode] = useState<QuotaMode>('add')
   const [amount, setAmount] = useState('')
@@ -55,17 +57,33 @@ export function AdjustQuotaDialog({
     setError(undefined)
   }, [open])
 
+  // Balance changes made elsewhere (another admin, a relay settlement) must
+  // not be overwritten from a stale list row: refetch the authoritative user
+  // when the dialog opens.
+  const detailQuery = useQuery({
+    queryKey: ['admin-user', user.id],
+    queryFn: async () =>
+      requireData(
+        await apiClient.GET('/api/users/{id}', { params: { path: { id: user.id } } }),
+      ),
+    enabled: open,
+    staleTime: 0,
+  })
+  const currentBalance = detailQuery.data?.balance ?? user.balance
+
   const parsed = parseAmount(amount)
-  const exceeds = mode === 'subtract' && parsed !== undefined && parsed > user.balance
-  const noChange = mode === 'override' && parsed !== undefined && parsed === user.balance
-  const valid = parsed !== undefined && !exceeds && !noChange
+  const exceeds = mode === 'subtract' && parsed !== undefined && parsed > currentBalance
+  const noChange = mode === 'override' && parsed !== undefined && parsed === currentBalance
+  // Add/subtract move the balance by at least one credit; override may set 0.
+  const belowMinimum = mode !== 'override' && parsed !== undefined && parsed < 1
+  const valid = parsed !== undefined && !exceeds && !noChange && !belowMinimum
   const result =
     parsed === undefined
       ? undefined
       : mode === 'add'
-        ? user.balance + parsed
+        ? currentBalance + parsed
         : mode === 'subtract'
-          ? user.balance - parsed
+          ? currentBalance - parsed
           : parsed
 
   async function submit(): Promise<void> {
@@ -87,6 +105,8 @@ export function AdjustQuotaDialog({
       )
       push({ tone: 'success', message: t('admin.quota.success') })
       onAdjusted?.(data.new_balance)
+      await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      await queryClient.invalidateQueries({ queryKey: ['admin-user', user.id] })
       onOpenChange(false)
     } catch {
       setError(t('admin.quota.error'))
@@ -153,7 +173,7 @@ export function AdjustQuotaDialog({
           {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
           <p className="font-mono text-[13px] tabular-nums text-ink-2">
             {t('admin.quota.current', {
-              balance: formatCredits(user.balance),
+              balance: formatCredits(currentBalance),
             })}
           </p>
 
@@ -195,7 +215,9 @@ export function AdjustQuotaDialog({
                 ? t('admin.quota.exceeds')
                 : noChange
                   ? t('admin.quota.unchanged')
-                  : undefined
+                  : belowMinimum
+                    ? t('admin.quota.minimum')
+                    : undefined
             }
           />
 
@@ -204,13 +226,13 @@ export function AdjustQuotaDialog({
               ? t('admin.quota.preview_placeholder')
               : mode === 'add'
                 ? t('admin.quota.preview_add', {
-                    current: formatCredits(user.balance),
+                    current: formatCredits(currentBalance),
                     amount: formatCredits(parsed ?? 0),
                     result: formatCredits(result),
                   })
                 : mode === 'subtract'
                   ? t('admin.quota.preview_subtract', {
-                      current: formatCredits(user.balance),
+                      current: formatCredits(currentBalance),
                       amount: formatCredits(parsed ?? 0),
                       result: formatCredits(Math.max(result, 0)),
                     })

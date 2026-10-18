@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 
 import { apiClient } from '@/api/client'
+import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
@@ -48,8 +49,12 @@ export function ForgotPasswordPage({
       })
       setSent(true)
       countdown.start(RESEND_SECONDS)
-    } catch {
-      setFormError(t('auth.forgot.error'))
+    } catch (caught) {
+      setFormError(
+        caught instanceof ApiError && caught.status === 429
+          ? t('auth.forgot.rate_limited')
+          : t('auth.forgot.error'),
+      )
     } finally {
       setSubmitting(false)
     }
@@ -64,6 +69,7 @@ export function ForgotPasswordPage({
     <AuthPageShell title={t('auth.forgot.title')}>
       {sent ? (
         <div className="flex flex-col gap-4" aria-live="polite">
+          {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
           <p className="text-sm font-medium text-success">
             {t('auth.forgot.sent_title')}
           </p>

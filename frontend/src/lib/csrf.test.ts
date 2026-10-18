@@ -73,6 +73,37 @@ describe('csrfFetch', () => {
     expect(readHeader).toBeNull()
   })
 
+  it('preserves method, body, headers and credentials from a Request input', async () => {
+    let seenMethod: string | undefined
+    let seenBody: string | undefined
+    let seenCustom: string | null = null
+    let seenCsrf: string | null = null
+
+    server.use(
+      http.post(`${ORIGIN}/api/echo`, async ({ request }) => {
+        seenMethod = request.method
+        seenBody = await request.text()
+        seenCustom = request.headers.get('X-Custom')
+        seenCsrf = request.headers.get(CSRF_HEADER)
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+
+    const request = new Request(`${ORIGIN}/api/echo`, {
+      method: 'POST',
+      body: 'payload',
+      headers: { 'Content-Type': 'text/plain', 'X-Custom': 'kept' },
+    })
+
+    const response = await csrfFetch(request)
+
+    expect(response.status).toBe(200)
+    expect(seenMethod).toBe('POST')
+    expect(seenBody).toBe('payload')
+    expect(seenCustom).toBe('kept')
+    expect(seenCsrf).toBe('token-abc')
+  })
+
   it('refreshes the session via GET /api/me and replays a 401 exactly once', async () => {
     let writeCalls = 0
     let refreshCalls = 0

@@ -25,21 +25,44 @@ const LOGIN_URL = `${ORIGIN}/api/auth/login`
 
 const server = setupServer()
 
+const PUBLIC_STATUS = {
+  auth: {
+    signup_enabled: true,
+    password_login_enabled: true,
+    email_verification_required: false,
+    turnstile: { enabled: false, site_key: '' },
+  },
+  password_login_encryption_enabled: false,
+  languages: ['en'],
+  default_language: 'en',
+}
+
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-beforeEach(() => clearLoginEncryptionKeyCache())
+beforeEach(() => {
+  clearLoginEncryptionKeyCache()
+  server.use(
+    http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+    // The page probes for an existing session; logged-out tests receive 401.
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({ type: 'unauthorized', title: 'Unauthorized' }, { status: 401 }),
+    ),
+  )
+})
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
 async function submitSignIn(redirect: string, onNavigate: (to: string) => void) {
-  const { getByLabelText, getByRole } = await renderWithProviders(
+  const result = await renderWithProviders(
     <SignInPage redirect={redirect} onNavigate={onNavigate} />,
     ['common', 'auth'],
   )
   const user = userEvent.setup()
-  await user.type(getByLabelText('Username or email'), 'alice')
-  await user.type(getByLabelText('Password'), 'correct horse')
-  await user.click(getByRole('button', { name: 'Sign in' }))
-  return { user, getByLabelText, getByRole }
+  // The page holds the form behind the public-status query; wait for it.
+  const identifierInput = await result.findByLabelText('Username or email')
+  await user.type(identifierInput, 'alice')
+  await user.type(result.getByLabelText('Password'), 'correct horse')
+  await user.click(result.getByRole('button', { name: 'Sign in' }))
+  return { ...result, user }
 }
 
 describe('SignInPage submit path', () => {
@@ -161,17 +184,55 @@ describe('SignInPage submit path', () => {
       }),
     )
 
-    const { getByLabelText, getByRole, findByRole } = await renderWithProviders(
-      <SignInPage onNavigate={() => {}} />,
-      ['common', 'auth'],
-    )
+    const { getByLabelText, getByRole, findByRole, findByLabelText } =
+      await renderWithProviders(<SignInPage onNavigate={() => {}} />, [
+        'common',
+        'auth',
+      ])
     const user = userEvent.setup()
-    await user.type(getByLabelText('Username or email'), 'alice')
+    await user.type(await findByLabelText('Username or email'), 'alice')
     await user.type(getByLabelText('Password'), 'correct horse')
     await user.click(getByRole('button', { name: 'Sign in' }))
 
     const alert = await findByRole('alert')
     expect(alert.textContent).toContain('temporarily unavailable')
     expect(loginCalls).toBe(0)
+  })
+
+  it('disables the submit button for the server Retry-After window', async () => {
+    server.use(
+      http.get(KEY_URL, () => HttpResponse.json({ enabled: false })),
+      http.post(LOGIN_URL, () =>
+        HttpResponse.json(
+          { type: 'rate_limited', title: 'Too many requests' },
+          { status: 429, headers: { 'Retry-After': '30' } },
+        ),
+      ),
+    )
+
+    const { getByRole, findByRole } = await submitSignIn('/dashboard', vi.fn())
+
+    const button = await getByRole('button', { name: 'Try again in 30s' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    const alert = await findByRole('alert')
+    expect(alert.textContent).toContain('Too many attempts')
+  })
+
+  it('redirects an already-authenticated visitor to the dashboard', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ username: 'alice', role: 'user', status: 'enabled' }),
+      ),
+    )
+
+    const onNavigate = vi.fn()
+    await renderWithProviders(<SignInPage onNavigate={onNavigate} />, [
+      'common',
+      'auth',
+    ])
+
+    await waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledWith('/dashboard')
+    })
   })
 })

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
@@ -28,6 +29,7 @@ export function AccountRecoveryDialogs({
   onClose,
 }: AccountRecoveryDialogsProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const [stage, setStage] = useState<Stage>('menu')
   const [tempPassword, setTempPassword] = useState('')
@@ -43,6 +45,8 @@ export function AccountRecoveryDialogs({
         params: { path: { id: user.id } },
       })
       push({ tone: 'success', message: t('admin.recovery.reset_2fa_success') })
+      // totp_enabled (and the recovery menu guards) changed on the server.
+      await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       onClose()
     } catch {
       setError(t('admin.recovery.error'))
@@ -62,6 +66,12 @@ export function AccountRecoveryDialogs({
       )
       setTempPassword(data.temp_password)
       setStage('result')
+      push({
+        tone: 'success',
+        message: t('admin.recovery.reset_password_success'),
+      })
+      // must_change_password is now true for the target row.
+      await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
     } catch {
       setError(t('admin.recovery.error'))
     } finally {

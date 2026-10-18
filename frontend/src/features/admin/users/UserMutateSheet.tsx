@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import type { components } from '@/api/schema'
@@ -34,6 +35,7 @@ export function UserMutateSheet({
   onSaved,
 }: UserMutateSheetProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -110,6 +112,8 @@ export function UserMutateSheet({
         }
         push({ tone: 'success', message: t('admin.user_form.saved') })
       }
+      // The list row (and any count/filter result) is stale after create/edit.
+      await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       onSaved()
       onOpenChange(false)
     } catch {

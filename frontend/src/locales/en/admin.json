@@ -10,7 +10,6 @@
     "reset": "Reset",
     "add": "Add User",
     "total": "{count} users",
-    "loading": "Loading users...",
     "empty": "No users found",
     "error": "Could not load users.",
     "column_id": "ID",
@@ -34,14 +33,10 @@
     "enable": "Enable",
     "adjust_quota": "Adjust quota",
     "account_recovery": "Account recovery",
-    "delete": "Delete",
     "disable_title": "Disable user",
     "disable_body": "Disable {username}? Their tokens stop working immediately.",
-    "delete_title": "Delete user",
-    "delete_body": "Permanently delete {username}? This cannot be undone.",
     "disable_success": "User disabled",
     "enable_success": "User enabled",
-    "delete_success": "User deleted",
     "action_error": "The action failed. Please try again."
   },
   "user_form": {
@@ -49,12 +44,10 @@
     "edit_title": "Edit user",
     "username": "Username",
     "display_name": "Display name",
-    "email": "Email",
     "role": "Role",
     "group": "Group",
     "password": "Password",
     "remark": "Remark",
-    "section_basic": "Basic information",
     "section_permissions": "Role & Permissions",
     "save": "Save",
     "creating": "Creating...",
@@ -63,7 +56,6 @@
     "error": "Could not save the user. Please try again."
   },
   "permissions": {
-    "title": "Role & Permissions",
     "full_access": "Full access (all permissions)",
     "hint": "You can only grant permissions you hold yourself.",
     "sensitive": "Highly sensitive",
@@ -118,7 +110,8 @@
     "confirm_override": "Confirm setting {username}'s balance to {amount} credits? This is recorded in the transaction ledger.",
     "submit": "Confirm Adjustment",
     "success": "Quota adjusted",
-    "error": "Could not adjust the quota. Please try again."
+    "error": "Could not adjust the quota. Please try again.",
+    "minimum": "Amount must be at least 1 credit"
   },
   "groups": {
     "title": "User Groups",
@@ -132,7 +125,6 @@
     "actions": "Row actions",
     "edit": "Edit",
     "delete": "Delete",
-    "loading": "Loading groups...",
     "empty": "No groups yet",
     "error": "Could not load groups.",
     "create_title": "Add Group",
@@ -146,7 +138,9 @@
     "delete_title": "Delete group",
     "delete_body": "Delete {name}? Users in this group move to the default group.",
     "delete_error": "Could not delete the group. It may still be referenced.",
-    "error_save": "Could not save the group. Please try again."
+    "error_save": "Could not save the group. Please try again.",
+    "name_invalid": "Use 2-32 lowercase letters, numbers, dashes or underscores",
+    "system_guard": "The system group cannot be deleted"
   },
   "recovery": {
     "menu": "Account Recovery",
@@ -160,9 +154,10 @@
     "reset_password_body": "Generate a new temporary password for {username}? The old password stops working immediately.",
     "reset_password_confirm": "Reset Password",
     "result_title": "New temporary password",
-    "result_body": "The password for {username} has been reset. Share it via a secure channel.",
+    "result_body": "The password for {username} has been reset. The old password no longer works; the temporary password is valid for 24 hours and must be changed at first sign-in.",
     "only_once": "This password is shown only once and cannot be retrieved after closing.",
     "saved_close": "I've saved it, close",
-    "error": "The action failed. Please try again."
+    "error": "The action failed. Please try again.",
+    "reset_password_success": "Password reset"
   }
 }

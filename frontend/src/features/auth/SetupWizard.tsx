@@ -33,6 +33,13 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/** `alice@example.com` → `a***@example.com` (review step shows no full address). */
+function maskEmail(value: string): string {
+  const [local, domain] = value.split('@')
+  if (local === undefined || domain === undefined || local === '') return value
+  return `${local.slice(0, 1)}***@${domain}`
+}
+
 /**
  * F-01-20 first-run wizard. The frozen request body is flat:
  * `site_title/server_address/username/email/password/confirmPassword`
@@ -67,6 +74,9 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
     const errors: Record<string, string> = {}
     if (step === 'site') {
       if (siteTitle.trim() === '') errors.siteTitle = t('auth.validation.required')
+      else if (siteTitle.trim().length > 64) {
+        errors.siteTitle = t('auth.validation.site_title_length')
+      }
       if (!isHttpUrl(serverAddress)) {
         errors.serverAddress = t('auth.validation.server_address')
       }
@@ -105,8 +115,10 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
     } catch (caught) {
       if (
         caught instanceof ApiError &&
-        (caught.status === 409 || caught.type.endsWith('setup_already_completed'))
+        caught.type.endsWith('setup_already_completed')
       ) {
+        // Only the idempotency-anchor problem means "already initialized"; a
+        // username/email conflict is also a 409 and must stay on the form.
         setAlreadyInitialized(true)
       } else {
         setFormError(t('auth.setup.error'))
@@ -178,6 +190,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
         <div className="flex flex-col gap-4">
           <TextField
             label={t('auth.setup.site_title')}
+            maxLength={64}
             value={siteTitle}
             onChange={(event) => {
               setSiteTitle(event.target.value)
@@ -263,6 +276,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             <p>{t('auth.setup.review_site', { value: siteTitle.trim() })}</p>
             <p>{t('auth.setup.review_server', { value: serverAddress.trim() })}</p>
             <p>{t('auth.setup.review_admin', { value: username.trim() })}</p>
+            <p>{t('auth.setup.review_email', { value: maskEmail(email.trim()) })}</p>
           </div>
           <div className="flex gap-2">
             <Button variant="secondary" className="h-11 flex-1" onClick={() => setStep('admin')}>

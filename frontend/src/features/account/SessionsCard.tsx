@@ -1,14 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
+import type { components } from '@/api/schema'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { useToastStore } from '@/shared/ui/toast'
 import { Button } from '@/shared/ui/button'
+import { Dialog } from '@/shared/ui/base/dialog'
 import { StatusBadge } from '@/shared/ui/status-badge'
 
 import { SignOutOthersDialog } from './SignOutOthersDialog'
+
+type SessionView = components['schemas']['SessionView']
 
 const SESSIONS_KEY = ['sessions'] as const
 
@@ -24,6 +29,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
   const { t, locale } = useI18n()
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
+  const [revokeTarget, setRevokeTarget] = useState<SessionView | null>(null)
   const sessionsQuery = useQuery({
     queryKey: SESSIONS_KEY,
     queryFn: async () => requireData(await apiClient.GET('/api/sessions')),
@@ -35,6 +41,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
     },
     onSuccess: async () => {
       push({ tone: 'success', message: t('account.sessions.revoked') })
+      setRevokeTarget(null)
       await queryClient.invalidateQueries({ queryKey: SESSIONS_KEY })
     },
     onError: () => {
@@ -46,6 +53,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
   const others = sessions.filter((session) => !session.current)
 
   return (
+    <>
     <section
       className={[
         'rounded-xl border border-border-hairline bg-surface-card p-5',
@@ -92,7 +100,16 @@ export function SessionsCard({ className }: SessionsCardProps) {
           </Button>
         </div>
       ) : sessions.length === 0 ? (
-        <p className="mt-4 text-sm text-ink-2">{t('account.sessions.empty')}</p>
+        <div className="mt-4 flex flex-col items-start gap-3">
+          <p className="text-sm text-ink-2">{t('account.sessions.empty')}</p>
+          <Button
+            onClick={() => {
+              window.location.assign('/sign-in')
+            }}
+          >
+            {t('account.sessions.sign_in')}
+          </Button>
+        </div>
       ) : (
         <ul role="list" className="mt-4 divide-y divide-border-hairline">
           {sessions.map((session) => (
@@ -128,7 +145,9 @@ export function SessionsCard({ className }: SessionsCardProps) {
                   className="self-end text-danger hover:bg-danger-bg sm:self-auto"
                   disabled={revoke.isPending && revoke.variables === session.id}
                   onClick={() => {
-                    revoke.mutate(session.id)
+                    // Revoking a device is irreversible for that session, so
+                    // ask before dropping it (matches the batch dialog).
+                    setRevokeTarget(session)
                   }}
                 >
                   {t('account.sessions.sign_out')}
@@ -139,5 +158,31 @@ export function SessionsCard({ className }: SessionsCardProps) {
         </ul>
       )}
     </section>
+
+    <Dialog
+      open={revokeTarget !== null}
+      onOpenChange={(open) => {
+        if (!open) setRevokeTarget(null)
+      }}
+      title={t('account.sessions.revoke_title')}
+      description={t('account.sessions.revoke_body')}
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => setRevokeTarget(null)}>
+            {t('common.action.cancel')}
+          </Button>
+          <Button
+            variant="danger"
+            disabled={revoke.isPending}
+            onClick={() => {
+              if (revokeTarget !== null) revoke.mutate(revokeTarget.id)
+            }}
+          >
+            {t('account.sessions.revoke_confirm')}
+          </Button>
+        </>
+      }
+    />
+    </>
   )
 }

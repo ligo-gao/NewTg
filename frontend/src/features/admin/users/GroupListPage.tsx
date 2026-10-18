@@ -17,6 +17,9 @@ type AdminGroup = components['schemas']['AdminGroup']
 
 const GROUPS_KEY = ['admin-groups'] as const
 
+// Frozen by the group contract: ^[a-z0-9_-]{2,32}$.
+const GROUP_NAME_PATTERN = /^[a-z0-9_-]{2,32}$/
+
 /** F-07-10 user groups list. Delete is guarded by the server's reference 409. */
 export function GroupListPage() {
   const { t } = useI18n()
@@ -137,7 +140,7 @@ export function GroupListPage() {
                           disabled={group.is_system}
                           title={
                             group.is_system
-                              ? t('admin.groups.delete_body', { name: group.name })
+                              ? t('admin.groups.system_guard')
                               : undefined
                           }
                           onClick={() => setDeleting(group)}
@@ -231,6 +234,7 @@ function GroupMutateDialog({ open, group, onOpenChange }: GroupMutateDialogProps
   const push = useToastStore((state) => state.push)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
 
@@ -238,11 +242,19 @@ function GroupMutateDialog({ open, group, onOpenChange }: GroupMutateDialogProps
     if (!open) return
     setName(group?.name ?? '')
     setDescription(group?.description ?? '')
+    setNameError(undefined)
     setError(undefined)
   }, [open, group])
 
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
+    // Client-side mirror of the contract so the field error appears instantly;
+    // the server remains authoritative.
+    if (!GROUP_NAME_PATTERN.test(name.trim())) {
+      setNameError(t('admin.groups.name_invalid'))
+      return
+    }
+    setNameError(undefined)
     setError(undefined)
     setSubmitting(true)
     try {
@@ -303,7 +315,9 @@ function GroupMutateDialog({ open, group, onOpenChange }: GroupMutateDialogProps
           disabled={group?.is_system ?? false}
           onChange={(event) => {
             setName(event.target.value)
+            setNameError(undefined)
           }}
+          error={nameError}
           required
         />
         <TextField

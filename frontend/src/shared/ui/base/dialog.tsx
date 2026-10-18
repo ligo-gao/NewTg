@@ -8,6 +8,11 @@ export interface DialogProps {
   description?: string
   children?: ReactNode
   footer?: ReactNode
+  /**
+   * When false, Escape and backdrop clicks are ignored (e.g. a step that must
+   * not be dismissed before the user saves one-time material). Defaults true.
+   */
+  dismissible?: boolean
 }
 
 /** Keyboard-focusable descendants, in document order (WAI-ARIA dialog pattern). */
@@ -50,6 +55,7 @@ export function Dialog({
   description,
   children,
   footer,
+  dismissible = true,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -63,6 +69,11 @@ export function Dialog({
   useEffect(() => {
     onOpenChangeRef.current = onOpenChange
   }, [onOpenChange])
+
+  const dismissibleRef = useRef(dismissible)
+  useEffect(() => {
+    dismissibleRef.current = dismissible
+  }, [dismissible])
 
   // One effect owns the whole focus lifecycle so capture, inertness and
   // restoration happen in a safe order:
@@ -103,7 +114,7 @@ export function Dialog({
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onOpenChangeRef.current(false)
+        if (dismissibleRef.current) onOpenChangeRef.current(false)
         return
       }
       if (event.key !== 'Tab') return
@@ -166,7 +177,7 @@ export function Dialog({
         className="absolute inset-0 bg-overlay"
         aria-hidden="true"
         onClick={() => {
-          onOpenChange(false)
+          if (dismissible) onOpenChange(false)
         }}
       />
       <div

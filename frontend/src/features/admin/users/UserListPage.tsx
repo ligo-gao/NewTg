@@ -8,6 +8,7 @@ import { formatCredits } from '@/shared/lib/format'
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
+import { Dialog } from '@/shared/ui/base/dialog'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { Tag } from '@/shared/ui/tag'
 import { TextField } from '@/shared/ui/form'
@@ -49,6 +50,7 @@ export function UserListPage() {
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
   const [quotaUser, setQuotaUser] = useState<AdminUser | null>(null)
   const [recoveryUser, setRecoveryUser] = useState<AdminUser | null>(null)
+  const [disableUser, setDisableUser] = useState<AdminUser | null>(null)
 
   const usersQuery = useQuery({
     queryKey: ['admin-users', applied, page, pageSize],
@@ -114,6 +116,7 @@ export function UserListPage() {
 
   return (
     <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+      <h1 className="text-xl font-semibold text-ink-1">{t('admin.users.title')}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <TextField
@@ -310,12 +313,15 @@ export function UserListPage() {
                           variant="ghost"
                           className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
                           disabled={setStatus.isPending}
-                          onClick={() =>
-                            setStatus.mutate({
-                              id: user.id,
-                              status: user.status === 'enabled' ? 'disabled' : 'enabled',
-                            })
-                          }
+                          onClick={() => {
+                            // F-07-04: disabling revokes sessions and tokens, so
+                            // it is confirmed; enabling is safe and immediate.
+                            if (user.status === 'enabled') {
+                              setDisableUser(user)
+                              return
+                            }
+                            setStatus.mutate({ id: user.id, status: 'enabled' })
+                          }}
                         >
                           {user.status === 'enabled'
                             ? t('admin.users.disable')
@@ -398,6 +404,38 @@ export function UserListPage() {
           onClose={() => setRecoveryUser(null)}
         />
       ) : null}
+
+      <Dialog
+        open={disableUser !== null}
+        onOpenChange={(open) => {
+          if (!open) setDisableUser(null)
+        }}
+        title={t('admin.users.disable_title')}
+        description={
+          disableUser === null
+            ? undefined
+            : t('admin.users.disable_body', { username: disableUser.username })
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDisableUser(null)}>
+              {t('common.action.cancel')}
+            </Button>
+            <Button
+              disabled={setStatus.isPending}
+              onClick={() => {
+                if (disableUser === null) return
+                setStatus.mutate(
+                  { id: disableUser.id, status: 'disabled' },
+                  { onSuccess: () => setDisableUser(null) },
+                )
+              }}
+            >
+              {t('admin.users.disable')}
+            </Button>
+          </>
+        }
+      />
     </div>
   )
 }

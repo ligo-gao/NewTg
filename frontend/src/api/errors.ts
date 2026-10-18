@@ -122,7 +122,8 @@ function readNumber(
 
 function readProblem402(
   body: Record<string, unknown> | undefined,
-): Problem402 | undefined {  const nested = asRecord(body?.problem402)
+): Problem402 | undefined {
+  const nested = asRecord(body?.problem402)
   const source = nested ?? body
   const balance = readNumber(source, 'balance')
   if (balance === undefined) return undefined

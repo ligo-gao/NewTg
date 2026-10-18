@@ -50,10 +50,24 @@ function currentOrigin(): string {
   return typeof location !== 'undefined' ? location.origin : 'http://localhost'
 }
 
-function absoluteUrl(input: RequestInfo | URL): string {
+function absoluteUrl(input: string | URL): string {
   if (typeof input === 'string') return new URL(input, currentOrigin()).toString()
-  if (input instanceof URL) return input.toString()
-  return input.url
+  return input.toString()
+}
+
+/**
+ * Builds the one template Request all attempts clone from.
+ *
+ * A `Request` input must keep its method, headers, body, credentials and
+ * signal: reducing it to `input.url` (the previous behaviour) silently turned
+ * a POST into a bodyless GET. `new Request(input, init)` performs that copy,
+ * with `init` able to override individual fields.
+ */
+function buildTemplate(input: RequestInfo | URL, init: RequestInit): Request {
+  if (input instanceof Request) {
+    return new Request(input, init)
+  }
+  return new Request(absoluteUrl(input), init)
 }
 
 async function isCsrfFailure(response: Response): Promise<boolean> {
@@ -110,7 +124,7 @@ export async function csrfFetch(
 ): Promise<Response> {
   // The template is never dispatched: each attempt clones it so a body is
   // available again for the replay (`Request` bodies are single-use).
-  const template = new Request(absoluteUrl(input), init)
+  const template = buildTemplate(input, init)
 
   const first = await send(template.clone())
   const retryable = first.status === 401 || (await isCsrfFailure(first))

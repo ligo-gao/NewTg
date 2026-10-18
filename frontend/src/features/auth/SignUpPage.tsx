@@ -15,6 +15,7 @@ import { AuthPageShell } from './AuthPageShell'
 import { EmailCodeField } from './EmailCodeField'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const USERNAME_PATTERN = /^[a-zA-Z0-9_-]{3,32}$/
 
 export interface SignUpPageProps {
   redirect?: string
@@ -74,7 +75,9 @@ export function SignUpPage({
 
   function validate(): boolean {
     const next: FieldErrors = {}
-    if (username.trim() === '') next.username = t('auth.validation.required')
+    if (!USERNAME_PATTERN.test(username.trim())) {
+      next.username = t('auth.validation.username')
+    }
     if (!EMAIL_PATTERN.test(email)) next.email = t('auth.validation.email')
     const problem = passwordPolicyProblem(password)
     if (problem !== undefined) next.password = t('auth.validation.password_length')
@@ -170,17 +173,21 @@ export function SignUpPage({
           required
         />
 
-        <EmailCodeField
-          purpose="register"
-          email={email}
-          value={emailCode}
-          onChange={(next) => {
-            setEmailCode(next)
-            setErrors((current) => ({ ...current, emailCode: undefined }))
-          }}
-        />
-        {errors.emailCode !== undefined ? (
-          <p className="-mt-2 text-xs text-danger">{errors.emailCode}</p>
+        {verificationRequired ? (
+          <>
+            <EmailCodeField
+              purpose="register"
+              email={email}
+              value={emailCode}
+              onChange={(next) => {
+                setEmailCode(next)
+                setErrors((current) => ({ ...current, emailCode: undefined }))
+              }}
+            />
+            {errors.emailCode !== undefined ? (
+              <p className="-mt-2 text-xs text-danger">{errors.emailCode}</p>
+            ) : null}
+          </>
         ) : null}
 
         <PasswordField

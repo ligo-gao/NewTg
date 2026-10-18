@@ -31,13 +31,11 @@
     "password_error": "Could not change the password. Please try again.",
     "force_title": "Set a new password",
     "force_description": "Your account is using a temporary password. Set a new password to continue.",
-    "force_submit": "Save new password",
-    "force_success": "Password updated"
+    "force_submit": "Save new password"
   },
   "sessions": {
     "title": "Login sessions",
     "description": "Devices currently signed in to your account.",
-    "loading": "Loading sessions...",
     "error": "Could not load sessions.",
     "empty": "Your session has expired. Please sign in again.",
     "current": "Current device",
@@ -50,6 +48,10 @@
     "revoke_error": "Could not revoke the session. Please try again.",
     "others_title": "Sign out other sessions",
     "others_body": "Sign out of all other sessions? The current session stays active.",
-    "others_confirm": "Sign out others"
+    "others_confirm": "Sign out others",
+    "revoke_title": "Sign out this session",
+    "revoke_body": "Sign out this session? The device will need to sign in again.",
+    "revoke_confirm": "Sign out",
+    "sign_in": "Sign in"
   }
 }
