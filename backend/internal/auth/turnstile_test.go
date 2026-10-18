@@ -208,20 +208,35 @@ func TestTurnstileVerifyFailureRejected(t *testing.T) {
 }
 
 // TestTurnstileDisabledPassesThrough 覆盖 TC-F-01-26-05 的开关关闭面：
-// 关闭时 5 处接入点都直接放行，且不触碰校验服务。
+// 5 处接入点在关闭时全部直接放行，且不触碰校验服务（防刷由外层限流兜底）。
 func TestTurnstileDisabledPassesThrough(t *testing.T) {
 	stub, srv := newTurnstileStub(t)
 	_, rdb := newTurnstileTestRedis(t)
-	next := &countingHandler{}
 	settings := TurnstileSettings{Enabled: false}
-	h := TurnstileMiddleware(turnstileConfig(TurnstileEndpointVerification, srv.URL, settings, rdb))(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/verification", nil)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
+	cases := []struct {
+		endpoint string
+		method   string
+		path     string
+	}{
+		{TurnstileEndpointVerification, http.MethodGet, "/api/verification"},
+		{TurnstileEndpointResetPassword, http.MethodGet, "/api/reset_password"},
+		{TurnstileEndpointRegister, http.MethodPost, "/api/auth/register"},
+		{TurnstileEndpointLogin, http.MethodPost, "/api/auth/login"},
+		{TurnstileEndpointCheckin, http.MethodPost, "/api/checkin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			next := &countingHandler{}
+			h := TurnstileMiddleware(turnstileConfig(tc.endpoint, srv.URL, settings, rdb))(next)
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusNoContent || next.calls != 1 {
-		t.Fatalf("关闭时应直接放行，实际 status=%d calls=%d", rr.Code, next.calls)
+			if rr.Code != http.StatusNoContent || next.calls != 1 {
+				t.Fatalf("关闭时应直接放行，实际 status=%d calls=%d", rr.Code, next.calls)
+			}
+		})
 	}
 	if stub.hitCount() != 0 {
 		t.Fatal("关闭时不得调用 siteverify")

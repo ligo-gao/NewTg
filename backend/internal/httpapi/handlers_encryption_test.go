@@ -119,16 +119,19 @@ func getEncryptionKey(t *testing.T, pe *PasswordEncryption) (*httptest.ResponseR
 }
 
 // TestLoginEncryptionKeyEndpointDisabled：关闭时只返回 {enabled:false}，
-// 且不得为了下发公钥而生成密钥（禁用态不产生任何密钥材料）。
+// 且必须逐字节命中冻结 JSON——Task 15 客户端按 `enabled` 字段判断加密是否
+// 关闭，`{}` 会被误判为「未禁用」而继续走加密登录。
 func TestLoginEncryptionKeyEndpointDisabled(t *testing.T) {
 	pe, store := newTestPasswordEncryption(t, false)
-	rr, body := getEncryptionKey(t, pe)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/login/encryption-key", nil)
+	rr := httptest.NewRecorder()
+	pe.HandleKey(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d，期望 200", rr.Code)
 	}
-	if body.Enabled || body.Kid != "" || body.PublicKey != "" {
-		t.Fatalf("关闭时应只返回 {enabled:false}，实际 %#v", body)
+	if got, want := rr.Body.String(), "{\"enabled\":false}\n"; got != want {
+		t.Fatalf("关闭响应体必须逐字节为 %q，实际 %q", want, got)
 	}
 	if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control = %q，期望 no-store（DisableCache）", cc)
@@ -150,6 +153,9 @@ func TestLoginEncryptionKeyEndpointBootstraps(t *testing.T) {
 	}
 	if body.Enabled {
 		t.Fatal("启用态响应不应带 enabled 字段（约定为 {kid, public_key}）")
+	}
+	if strings.Contains(rr.Body.String(), "\"enabled\"") {
+		t.Fatalf("启用态响应不得出现 enabled 字段：%s", rr.Body.String())
 	}
 	if len(body.Kid) != 32 {
 		t.Fatalf("kid = %q，期望 32 位十六进制", body.Kid)
@@ -294,7 +300,7 @@ func TestLoginPayloadFailuresAreIndistinguishable(t *testing.T) {
 
 // TestTurnstileSettingsProvider 验证 configcenter 读取面 + SecretSealer：
 // secret 必须经 Open 解封；解封失败时返回空串（fail-closed），绝不把
-// 密文当明文 secret 使用。
+// 密文当明文 secret 使用；已开启但未装配 Sealer 属启动期装配错误。
 func TestTurnstileSettingsProvider(t *testing.T) {
 	cfg := mapConfig{
 		"auth.turnstile.enabled":    configBool(true),
@@ -302,15 +308,40 @@ func TestTurnstileSettingsProvider(t *testing.T) {
 		"auth.turnstile.secret_key": configString("sealed:secret-key"),
 	}
 	sealer := fakeSealer{prefix: "sealed:"}
-	read := TurnstileSettingsProvider(cfg, sealer, nil)
+	read, err := TurnstileSettingsProvider(cfg, sealer, nil)
+	if err != nil {
+		t.Fatalf("TurnstileSettingsProvider: %v", err)
+	}
 	got := read()
 	if !got.Enabled || got.SiteKey != "site-key" || got.SecretKey != "secret-key" {
 		t.Fatalf("设置读取 = %#v", got)
 	}
 
-	broken := TurnstileSettingsProvider(cfg, fakeSealer{prefix: "other:"}, nil)
+	// 解封失败：返回空 secret（中间件会判为配置错误并拒绝）。
+	broken, err := TurnstileSettingsProvider(cfg, fakeSealer{prefix: "other:"}, nil)
+	if err != nil {
+		t.Fatalf("TurnstileSettingsProvider(broken sealer): %v", err)
+	}
 	if got := broken(); got.SecretKey != "" {
 		t.Fatalf("解封失败必须返回空 secret（fail-closed），实际 %q", got.SecretKey)
+	}
+
+	// 已开启但 sealer 为 nil：启动失败，绝不带病运行。
+	if _, err := TurnstileSettingsProvider(cfg, nil, nil); err == nil {
+		t.Fatal("已开启 Turnstile 且 sealer 为 nil 时必须返回装配错误")
+	}
+
+	// 未开启时允许没有 sealer；后续运行期开启会由设置函数 fail-closed。
+	offCfg := mapConfig{
+		"auth.turnstile.enabled":    configBool(false),
+		"auth.turnstile.secret_key": configString("sealed:secret-key"),
+	}
+	offRead, err := TurnstileSettingsProvider(offCfg, nil, nil)
+	if err != nil {
+		t.Fatalf("未开启时不应要求 Sealer：%v", err)
+	}
+	if off := offRead(); off.Enabled || off.SecretKey != "" {
+		t.Fatalf("未开启且无 Sealer 时不得解出 secret：%#v", off)
 	}
 }
 

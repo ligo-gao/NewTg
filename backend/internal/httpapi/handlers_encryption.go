@@ -28,7 +28,13 @@ package httpapi
 //
 //  4. 路由注册（公开 mux）：
 //       RegisterLoginEncryptionRoutes(rt.mux, passwordEncryption)
-//     并把 TurnstileSettingsProvider 的结果交给 auth.TurnstileMiddleware(...)，
+//     并把 Turnstile 设置交给中间件：
+//       settings, err := TurnstileSettingsProvider(cfg.Config, sealer, cfg.Logger)
+//       if err != nil { return nil, err } // 已开启但缺 SecretSealer = 装配错误
+//       turnstile := auth.TurnstileMiddleware(auth.TurnstileMiddlewareConfig{
+//           Endpoint: auth.TurnstileEndpointLogin, Settings: settings,
+//           Redis: cfg.Redis, Logger: cfg.Logger,
+//       })
 //     中间件顺序必须是「限流（外层）→ Turnstile（内层）→ 业务 handler」。
 //
 // 授权依据：modules-01 §3.14 / §3.15；I-7 双槽、I-9 双向防降级、反 oracle。
@@ -38,10 +44,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
@@ -231,7 +239,10 @@ func (p *PasswordEncryption) HandleKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 
 	if !p.Enabled() {
-		writeJSON(w, http.StatusOK, loginEncryptionKeyResponse{Enabled: false})
+		// 关闭态必须序列化出 enabled:false（不能用 omitempty 省略成 {}）：
+		// Task 15 客户端以该字段判定是否走加密登录，缺失字段会被误判。
+		disabled := false
+		writeJSON(w, http.StatusOK, loginEncryptionKeyResponse{Enabled: &disabled})
 		return
 	}
 	kid, publicKey, err := p.manager.PublicKey(r.Context())
@@ -251,8 +262,9 @@ func (p *PasswordEncryption) HandleKey(w http.ResponseWriter, r *http.Request) {
 
 // loginEncryptionKeyResponse 的字段按 modules-01 §3.14 冻结：
 // 启用 = {kid, public_key}；关闭 = {enabled:false}。
+// Enabled 用指针 + omitempty：启用时字段整体缺席，关闭时显式输出 false。
 type loginEncryptionKeyResponse struct {
-	Enabled   bool   `json:"enabled,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 	Kid       string `json:"kid,omitempty"`
 	PublicKey string `json:"public_key,omitempty"`
 }
@@ -276,34 +288,75 @@ func RegisterLoginEncryptionRoutes(public LoginEncryptionRouteRegistrar, h *Pass
 // ---------------------------------------------------------------------------
 
 // TurnstileSettingsProvider 把 configcenter 的读取面适配为 Turnstile
-// 中间件的按请求设置函数。secret_key 是密钥类：sealer 非 nil 时必须经
-// Open 解封，解封失败返回空串（fail-closed），绝不把密文当明文使用。
-// sealer 为 nil 时按明文读取，仅用于尚未装配 SecretSealer 的本地/测试环境。
+// 中间件的按请求设置函数。
+//
+// 密钥治理（security-03 §2.4 / modules-08 F-08-07）：
+//   - auth.turnstile.secret_key 已在 configcenter 的 secretKeys 清单注册，
+//     Center.Save 会先 AES-256-GCM 密封再落库；
+//   - 若启动时配置为「已开启」却没有 SecretSealer，构造直接失败（返回 error），
+//     不允许带着无法解封的密钥启动；
+//   - 运行期才打开开关且 sealer 仍为 nil 时，按「解封失败」处理并返回空
+//     secret，由中间件 fail-closed 拒绝，绝不把密文当明文 secret 使用；
+//   - 解封失败日志按状态变化限频（进入失败态记一次，恢复后重置），避免
+//     每个请求刷一条 Error。
 func TurnstileSettingsProvider(config ConfigReader, sealer configcenter.SecretSealer,
-	log *slog.Logger) func() auth.TurnstileSettings {
+	log *slog.Logger) (func() auth.TurnstileSettings, error) {
 
 	if log == nil {
 		log = slog.Default()
 	}
+	if sealer == nil && readConfigBool(config, turnstileEnabledKey, false) {
+		return nil, errors.New("httpapi: auth.turnstile.enabled requires a SecretSealer " +
+			"(auth.turnstile.secret_key must be sealed)")
+	}
+
+	var (
+		logMu   sync.Mutex
+		failing bool
+	)
+	reportFailure := func(reason string, err error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		if failing {
+			return
+		}
+		failing = true
+		log.Error("turnstile secret_key unavailable", "reason", reason, "error", err)
+	}
+	reportOK := func() {
+		logMu.Lock()
+		failing = false
+		logMu.Unlock()
+	}
+
 	return func() auth.TurnstileSettings {
 		settings := auth.TurnstileSettings{
 			Enabled: readConfigBool(config, turnstileEnabledKey, false),
 			SiteKey: readConfigString(config, turnstileSiteKeyKey),
 		}
 		secret := readConfigString(config, turnstileSecretKeyKey)
-		if secret != "" && sealer != nil {
-			plain, err := sealer.Open(secret)
-			if err != nil {
-				log.Error("turnstile secret_key unseal failed",
-					"reason", "secret_unseal_failed", "error", err)
-				secret = ""
-			} else {
-				secret = plain
-			}
+		if secret == "" {
+			reportOK()
+			return settings
 		}
-		settings.SecretKey = secret
+		if sealer == nil {
+			if settings.Enabled {
+				reportFailure("secret_sealer_missing",
+					errors.New("auth.turnstile.secret_key is sealed but no SecretSealer is configured"))
+			}
+			return settings
+		}
+		plain, err := sealer.Open(secret)
+		if err != nil {
+			if settings.Enabled {
+				reportFailure("secret_unseal_failed", err)
+			}
+			return settings
+		}
+		reportOK()
+		settings.SecretKey = plain
 		return settings
-	}
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

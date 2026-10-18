@@ -506,6 +506,10 @@ func (m *LoginKeyManager) EnsureActive(ctx context.Context) (*LoginKey, error) {
 // Lookup 实现 PasswordKeyLookup：active 槽始终可用；previous 槽只在
 // 「新 active 创建时间 + 15 分钟」窗口内可用（I-7）。
 func (m *LoginKeyManager) Lookup(ctx context.Context, kid string) (*rsa.PrivateKey, error) {
+	if m == nil || m.store == nil || m.cipher == nil {
+		// 装配缺失必须返回错误而不是解引用 nil（调用方会 fail-closed）。
+		return nil, errors.New("auth: login key manager is not configured")
+	}
 	if kid == "" {
 		return nil, ErrUnknownLoginKey
 	}
@@ -558,7 +562,9 @@ func (m *LoginKeyManager) Rotate(ctx context.Context) (string, error) {
 	if active == nil {
 		return "", errors.New("auth: no active login key to rotate")
 	}
-	// 已过窗口的旧槽先清理，保证库里最多只留一个 previous。
+	// 已过窗口的旧槽先清理。窗口内的旧槽保留：正常运维轮换间隔远大于
+	// 15 分钟，库里通常只有 active+previous 两槽；连续快速轮换会短暂保留
+	// 多个 previous，它们与唯一 previous 一样按最新 active 的窗口统一失效。
 	if _, err := m.pruneRows(ctx, rows, active); err != nil {
 		return "", err
 	}

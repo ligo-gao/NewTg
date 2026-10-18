@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/api/dto"
 )
 
 const (
@@ -102,6 +104,11 @@ func TurnstileMiddleware(cfg TurnstileMiddlewareConfig) func(http.Handler) http.
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
+	}
+	if cfg.Settings == nil {
+		// 与 nil Redis 的 fail-closed 不同，缺少设置函数只能视为「未开启」；
+		// 但这属于装配疏漏，构造时告警一次，避免静默失去人机校验。
+		log.Warn("turnstile middleware constructed without settings provider; middleware disabled")
 	}
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
@@ -281,17 +288,14 @@ func claimTurnstileToken(ctx context.Context, rdb *redis.Client,
 }
 
 // writeTurnstileProblem 输出全库统一的 RFC 7807 Problem（GC-6）。
+// 复用 dto.Problem，避免与 httpapi.writeProblem 的字段形状各自漂移。
 func writeTurnstileProblem(w http.ResponseWriter, status int, problemType, title, retryAfter string) {
 	if retryAfter != "" {
 		w.Header().Set("Retry-After", retryAfter)
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(struct {
-		Type   string `json:"type"`
-		Title  string `json:"title"`
-		Status int    `json:"status"`
-	}{
+	_ = json.NewEncoder(w).Encode(dto.Problem{
 		Type:   problemType,
 		Title:  title,
 		Status: status,

@@ -114,7 +114,7 @@ func TestEncryptionAADTamperFailsGenerically(t *testing.T) {
 	}
 
 	// 翻转密文最后一个字节，错误串必须与 AAD 篡改逐字相同。
-	tampered := tamperLastByte(t, payload)
+	tampered := tamperCiphertextMiddle(t, payload)
 	_, errCT := DecryptPasswordPayload(tampered, kid, priv)
 	if !errors.Is(errCT, ErrPasswordPayload) {
 		t.Fatalf("密文篡改必须返回 ErrPasswordPayload，实际 %v", errCT)
@@ -406,19 +406,37 @@ func TestLoginKeyManagerConcurrentBootstrap(t *testing.T) {
 	}
 }
 
-// tamperLastByte 只改 base64 密文段的最后一个字符，保持格式合法，
-// 以证明失败来自 GCM 认证而不是解析提前拒绝。
-func tamperLastByte(t *testing.T, payload string) string {
+// TestLoginKeyManagerLookupNilStoreFailsClosed：装配缺失（nil manager/store）
+// 必须返回错误而不是解引用 nil panic——登录路径会把错误映射为统一失败。
+func TestLoginKeyManagerLookupNilStoreFailsClosed(t *testing.T) {
+	cases := map[string]*LoginKeyManager{
+		"nil manager": nil,
+		"nil store":   NewLoginKeyManager(nil, nil),
+	}
+	for name, mgr := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := mgr.Lookup(context.Background(), "00112233445566778899aabbccddeeff"); err == nil {
+				t.Fatal("未装配的管理器必须返回错误")
+			}
+		})
+	}
+}
+
+// tamperCiphertextMiddle 只改 base64 密文段中间的一个字符，保持格式合法，
+// 以证明失败来自 GCM 认证而不是解析提前拒绝。取中间位置而不是末尾，
+// 避免改动落在 base64 填充位导致「解码失败」而非「认证失败」。
+func tamperCiphertextMiddle(t *testing.T, payload string) string {
 	t.Helper()
 	parts := strings.Split(payload, ".")
 	if len(parts) != 4 {
 		t.Fatalf("载荷格式异常：%q", payload)
 	}
 	ct := []byte(parts[3])
-	if ct[len(ct)-1] == 'A' {
-		ct[len(ct)-1] = 'B'
+	idx := len(ct) / 2
+	if ct[idx] == 'A' {
+		ct[idx] = 'B'
 	} else {
-		ct[len(ct)-1] = 'A'
+		ct[idx] = 'A'
 	}
 	parts[3] = string(ct)
 	return strings.Join(parts, ".")
