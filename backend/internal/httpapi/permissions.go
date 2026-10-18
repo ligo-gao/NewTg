@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/store"
 )
 
 // 本文件实现 R-P9 的最小权限检查：
@@ -46,6 +47,10 @@ var (
 	// ErrAccessStore 包装回源存储故障：调用方应映射为 500 而不是 403，
 	// 以免把数据库故障伪装成「没有权限」。对外仍不返回内部错误文本。
 	ErrAccessStore = errors.New("httpapi: user access store failed")
+	// ErrUserDeleted 表示已认证身份对应的 users 行已不存在（会话/令牌指向
+	// 已删除用户）。与 ErrNoPrincipal 一样映射 401：这不是权限不足，
+	// 而是身份已失效（M2 final review finding 9，避免塌缩成 500）。
+	ErrUserDeleted = errors.New("httpapi: authenticated user no longer exists")
 )
 
 // CheckPermission 判定当前请求是否持有 required 权限键。
@@ -77,6 +82,10 @@ func CheckPermission(ctx context.Context, access UserAccessStore, required strin
 	}
 	role, permissions, status, err := access.UserAccess(ctx, p.UserID)
 	if err != nil {
+		// 用户已被删除：身份失效 → 401（finding 9），不再塌缩成 500。
+		if errors.Is(err, store.ErrUserNotFound) {
+			return ErrUserDeleted
+		}
 		return fmt.Errorf("%w: %v", ErrAccessStore, err)
 	}
 	if role != "admin" || status != "enabled" {
@@ -99,7 +108,7 @@ func RequirePermission(access UserAccessStore, required string) func(http.Handle
 			switch {
 			case err == nil:
 				next.ServeHTTP(w, r)
-			case errors.Is(err, ErrNoPrincipal):
+			case errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
 				writeUnauthorized(w)
 			case errors.Is(err, ErrAccessStore):
 				// 不向客户端泄漏存储错误；fail-closed。

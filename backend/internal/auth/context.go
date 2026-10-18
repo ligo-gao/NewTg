@@ -31,6 +31,11 @@ type Principal struct {
 	Role        string
 	Permissions []string
 	TokenID     *int64
+
+	// ModelLimits 是令牌的模型白名单投影（api_tokens.model_limits）。
+	// 由 RelayAuth 从 TokenMeta 复制；空/nil 表示不限模型。
+	// 管理面会话路径不填（会话没有令牌白名单语义）。
+	ModelLimits []string
 }
 
 // principalContextKey 是私有空结构：避免与其他包的 context key 碰撞，
@@ -66,6 +71,12 @@ type TokenMeta struct {
 	ExpiresAt      *time.Time
 	RemainQuota    int64
 	UnlimitedQuota bool
+	// ModelLimits / AllowIPs 是 relay-01 §3.4 的附加校验输入：
+	// model_limits 是模型白名单（nil/空 = 不限），allow_ips 是客户端 IP
+	// 白名单（nil/空 = 不限，元素可为 IP 或 CIDR）。两者都来自 api_tokens
+	// 的 jsonb 列，SQL NULL 与 jsonb [] 均表示「不限」。
+	ModelLimits []string
+	AllowIPs    []string
 }
 
 // TokenLookup 由 Task 12 的令牌存储实现：入参是 Bearer 明文的 SHA-256 哈希

@@ -181,11 +181,13 @@ func mountGatewayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource
 	mux.Handle("/api/", apiHandler)
 
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
+	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
-		Channels: channelRepo,
-		Tokens:   tokenRepo,
-		Access:   tokenRepo,
-		Sealer:   sealer,
+		Channels:       channelRepo,
+		Tokens:         tokenRepo,
+		Access:         tokenRepo,
+		Sealer:         sealer,
+		TrustedProxies: cfg.TrustedProxies,
 	})
 	relayHandler.Register(mux)
 }

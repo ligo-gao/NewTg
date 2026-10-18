@@ -73,20 +73,48 @@ type IdempotentResponse struct {
 	Body   []byte `json:"body"`
 }
 
-// IdempotencyStore 是幂等重放接缝（POST /api/channels、POST /api/channels/batch-delete）。
+// IdempotencyClaimStatus 是 Claim 的三种结果。
+type IdempotencyClaimStatus int
+
+const (
+	// IdempotencyClaimAcquired 表示本请求抢到了执行权（已写入 pending 标记）。
+	IdempotencyClaimAcquired IdempotencyClaimStatus = iota
+	// IdempotencyClaimReplay 表示同键已有完成响应，直接重放。
+	IdempotencyClaimReplay
+	// IdempotencyClaimInFlight 表示同键的另一个请求正在执行（pending 标记）。
+	IdempotencyClaimInFlight
+)
+
+// IdempotencyClaim 是 Claim 的返回值。
+type IdempotencyClaim struct {
+	Status   IdempotencyClaimStatus
+	Response IdempotentResponse // 仅 Replay 时有意义
+	Token    string             // 仅 Acquired 时非空；Complete/Release 用它校验所有权
+}
+
+// IdempotencyStore 是幂等执行接缝（POST /api/channels、POST /api/channels/batch-delete）。
 //
-//	Get：命中返回首次响应；
-//	SetIfAbsent：SET NX 语义；replayed=true 表示键已被别的请求抢占，
-//	调用方应返回 stored 而不是自己的响应。
+// 生命周期（M2 final review finding 2）：
+//  1. Claim：SET NX 写入 pending 标记。抢到 → Acquired（带 token）；
+//     同键已有完成响应 → Replay；同键 pending → InFlight。
+//  2. Acquired 的请求执行 build()；2xx 时 Complete 用响应替换 pending（24h TTL），
+//     非 2xx/错误时 Release 删除标记，让客户端修正参数后可以重试。
+//  3. 另一个并发同键请求在 1 就已返回 InFlight，**不会**执行 build——这正是修复
+//     「先执行后 SetIfAbsent 导致双方都执行」的关键。
 type IdempotencyStore interface {
-	Get(ctx context.Context, key string) (IdempotentResponse, bool, error)
-	SetIfAbsent(ctx context.Context, key string, resp IdempotentResponse, ttl time.Duration) (IdempotentResponse, bool, error)
+	Claim(ctx context.Context, key string, ttl time.Duration) (IdempotencyClaim, error)
+	Complete(ctx context.Context, key, token string, resp IdempotentResponse, ttl time.Duration) error
+	Release(ctx context.Context, key, token string) error
 }
 
 // IdempotencyTTL 冻结 24h：与参照侧幂等窗口同量级；过期后同键可再次执行。
 const IdempotencyTTL = 24 * time.Hour
 
 const idempotencyKeyPrefix = "newtg:idem:"
+
+// idempotencyPendingPrefix 是 pending 标记的值前缀（后接随机 token）。
+// 完成后的响应是 JSON 对象（以 '{' 开头），因此前缀判断不会与响应混淆。
+const idempotencyPendingPrefix = "pending:"
 
 // MemoryIdempotencyStore 是进程内实现：单测与文档用。
 //
@@ -100,6 +128,8 @@ type MemoryIdempotencyStore struct {
 
 type memoryIdempotencyEntry struct {
 	response  IdempotentResponse
+	pending   bool
+	token     string
 	expiresAt time.Time
 }
 
@@ -108,21 +138,7 @@ func NewMemoryIdempotencyStore() *MemoryIdempotencyStore {
 	return &MemoryIdempotencyStore{entries: map[string]memoryIdempotencyEntry{}}
 }
 
-func (s *MemoryIdempotencyStore) Get(_ context.Context, key string) (IdempotentResponse, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entries[key]
-	if !ok {
-		return IdempotentResponse{}, false, nil
-	}
-	if !e.expiresAt.IsZero() && time.Now().After(e.expiresAt) {
-		delete(s.entries, key)
-		return IdempotentResponse{}, false, nil
-	}
-	return cloneIdempotentResponse(e.response), true, nil
-}
-
-func (s *MemoryIdempotencyStore) SetIfAbsent(_ context.Context, key string, resp IdempotentResponse, ttl time.Duration) (IdempotentResponse, bool, error) {
+func (s *MemoryIdempotencyStore) Claim(_ context.Context, key string, ttl time.Duration) (IdempotencyClaim, error) {
 	if ttl <= 0 {
 		ttl = IdempotencyTTL
 	}
@@ -130,23 +146,61 @@ func (s *MemoryIdempotencyStore) SetIfAbsent(_ context.Context, key string, resp
 	defer s.mu.Unlock()
 	if e, ok := s.entries[key]; ok {
 		if e.expiresAt.IsZero() || time.Now().Before(e.expiresAt) {
-			return cloneIdempotentResponse(e.response), true, nil
+			if e.pending {
+				return IdempotencyClaim{Status: IdempotencyClaimInFlight}, nil
+			}
+			return IdempotencyClaim{Status: IdempotencyClaimReplay, Response: cloneIdempotentResponse(e.response)}, nil
 		}
 		delete(s.entries, key)
+	}
+	token := newRelayRequestID()
+	if token == "" {
+		return IdempotencyClaim{}, errors.New("httpapi: cannot generate idempotency claim token")
+	}
+	s.entries[key] = memoryIdempotencyEntry{
+		pending:   true,
+		token:     token,
+		expiresAt: time.Now().Add(ttl),
+	}
+	return IdempotencyClaim{Status: IdempotencyClaimAcquired, Token: token}, nil
+}
+
+func (s *MemoryIdempotencyStore) Complete(_ context.Context, key, token string, resp IdempotentResponse, ttl time.Duration) error {
+	if ttl <= 0 {
+		ttl = IdempotencyTTL
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[key]
+	// token 不匹配说明标记已过期并被另一个请求重新认领：不得覆盖别人的会话。
+	if !ok || !e.pending || e.token != token {
+		return nil
 	}
 	s.entries[key] = memoryIdempotencyEntry{
 		response:  cloneIdempotentResponse(resp),
 		expiresAt: time.Now().Add(ttl),
 	}
-	return cloneIdempotentResponse(resp), false, nil
+	return nil
+}
+
+func (s *MemoryIdempotencyStore) Release(_ context.Context, key, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[key]; ok && e.pending && e.token == token {
+		delete(s.entries, key)
+	}
+	return nil
 }
 
 func cloneIdempotentResponse(r IdempotentResponse) IdempotentResponse {
 	return IdempotentResponse{Status: r.Status, Body: append([]byte(nil), r.Body...)}
 }
 
-// RedisIdempotencyStore 是生产实现：SET NX + 24h TTL，值 = JSON{status, body}。
-// Redis 故障时 SetIfAbsent 返回错误；handler 选择 fail-open（见 serveIdempotent），
+// RedisIdempotencyStore 是生产实现：pending/响应值共用 24h TTL。
+//
+// Claim 用 SET NX 抢占；Complete/Release 用 Lua 比较 token 后原子替换/删除，
+// 避免 TTL 过期后另一个请求已重新认领时被旧请求覆盖（CAS 语义）。
+// Redis 故障时返回错误；handler 选择 fail-open（见 serveIdempotent），
 // 因为幂等存储不可用不应阻断创建/删除，重复风险由 channels_name_uq 等约束兜底。
 type RedisIdempotencyStore struct {
 	client *redis.Client
@@ -157,63 +211,93 @@ func NewRedisIdempotencyStore(client *redis.Client) *RedisIdempotencyStore {
 	return &RedisIdempotencyStore{client: client}
 }
 
-func (s *RedisIdempotencyStore) Get(ctx context.Context, key string) (IdempotentResponse, bool, error) {
+// completeIdempotencyScript：仅当当前值仍是自己写入的 pending 标记时才替换。
+var completeIdempotencyScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+	return 1
+end
+return 0`)
+
+// releaseIdempotencyScript：仅删除自己持有的 pending 标记。
+var releaseIdempotencyScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	redis.call('DEL', KEYS[1])
+	return 1
+end
+return 0`)
+
+func (s *RedisIdempotencyStore) Claim(ctx context.Context, key string, ttl time.Duration) (IdempotencyClaim, error) {
 	if s == nil || s.client == nil {
-		return IdempotentResponse{}, false, errors.New("httpapi: redis idempotency store is not configured")
+		return IdempotencyClaim{}, errors.New("httpapi: redis idempotency store is not configured")
 	}
-	raw, err := s.client.Get(ctx, idempotencyKeyPrefix+key).Bytes()
+	if ttl <= 0 {
+		ttl = IdempotencyTTL
+	}
+	token := newRelayRequestID()
+	if token == "" {
+		return IdempotencyClaim{}, errors.New("httpapi: cannot generate idempotency claim token")
+	}
+	redisKey := idempotencyKeyPrefix + key
+	pendingValue := idempotencyPendingPrefix + token
+
+	claimed, err := s.client.SetNX(ctx, redisKey, pendingValue, ttl).Result()
+	if err != nil {
+		return IdempotencyClaim{}, err
+	}
+	if claimed {
+		return IdempotencyClaim{Status: IdempotencyClaimAcquired, Token: token}, nil
+	}
+
+	raw, err := s.client.Get(ctx, redisKey).Bytes()
 	if errors.Is(err, redis.Nil) {
-		return IdempotentResponse{}, false, nil
+		// 两次命令之间过期：再抢一次，仍失败就返回错误而不是伪造结果。
+		claimed, err = s.client.SetNX(ctx, redisKey, pendingValue, ttl).Result()
+		if err != nil {
+			return IdempotencyClaim{}, err
+		}
+		if claimed {
+			return IdempotencyClaim{Status: IdempotencyClaimAcquired, Token: token}, nil
+		}
+		return IdempotencyClaim{}, errors.New("httpapi: idempotency key vanished during claim")
 	}
 	if err != nil {
-		return IdempotentResponse{}, false, err
+		return IdempotencyClaim{}, err
+	}
+	if strings.HasPrefix(string(raw), idempotencyPendingPrefix) {
+		return IdempotencyClaim{Status: IdempotencyClaimInFlight}, nil
 	}
 	var resp IdempotentResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return IdempotentResponse{}, false, err
+		return IdempotencyClaim{}, err
 	}
-	return resp, true, nil
+	return IdempotencyClaim{Status: IdempotencyClaimReplay, Response: resp}, nil
 }
 
-func (s *RedisIdempotencyStore) SetIfAbsent(ctx context.Context, key string, resp IdempotentResponse, ttl time.Duration) (IdempotentResponse, bool, error) {
+func (s *RedisIdempotencyStore) Complete(ctx context.Context, key, token string, resp IdempotentResponse, ttl time.Duration) error {
 	if s == nil || s.client == nil {
-		return IdempotentResponse{}, false, errors.New("httpapi: redis idempotency store is not configured")
+		return errors.New("httpapi: redis idempotency store is not configured")
 	}
 	if ttl <= 0 {
 		ttl = IdempotencyTTL
 	}
 	payload, err := json.Marshal(resp)
 	if err != nil {
-		return IdempotentResponse{}, false, err
+		return err
 	}
-	ok, err := s.client.SetNX(ctx, idempotencyKeyPrefix+key, payload, ttl).Result()
-	if err != nil {
-		return IdempotentResponse{}, false, err
+	_, err = completeIdempotencyScript.Run(ctx, s.client,
+		[]string{idempotencyKeyPrefix + key},
+		idempotencyPendingPrefix+token, payload, ttl.Milliseconds()).Result()
+	return err
+}
+
+func (s *RedisIdempotencyStore) Release(ctx context.Context, key, token string) error {
+	if s == nil || s.client == nil {
+		return errors.New("httpapi: redis idempotency store is not configured")
 	}
-	if ok {
-		return resp, false, nil
-	}
-	// 键已存在：返回先写者的响应。极端情况下键在两次命令之间过期，
-	// 再做一次 SET NX，仍抢不到就返回错误而不是伪造响应。
-	existing, found, err := s.Get(ctx, key)
-	if err != nil {
-		return IdempotentResponse{}, false, err
-	}
-	if found {
-		return existing, true, nil
-	}
-	ok, err = s.client.SetNX(ctx, idempotencyKeyPrefix+key, payload, ttl).Result()
-	if err != nil {
-		return IdempotentResponse{}, false, err
-	}
-	if ok {
-		return resp, false, nil
-	}
-	existing, found, err = s.Get(ctx, key)
-	if err != nil || !found {
-		return IdempotentResponse{}, false, errors.New("httpapi: idempotency key vanished during replay")
-	}
-	return existing, true, nil
+	_, err := releaseIdempotencyScript.Run(ctx, s.client,
+		[]string{idempotencyKeyPrefix + key}, idempotencyPendingPrefix+token).Result()
+	return err
 }
 
 // ---------- HTTP DTO ----------
@@ -626,11 +710,13 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 	}
 
 	ct := contract.ChannelType(existing.Type)
+	typeChanged := false
 	if req.Type != nil {
 		next := contract.ChannelType(*req.Type)
 		if !next.Valid() {
 			v.add("type", "unknown channel type")
 		}
+		typeChanged = string(next) != existing.Type
 		ct = next
 		typeStr := string(next)
 		patch.Type = &typeStr
@@ -773,6 +859,7 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 		}
 	}
 
+	credentialsProvided := false
 	if req.Credentials != nil {
 		// F-06-03：null / 缺省 / 空 api_key → 保持原值，不重新加密。
 		// 只有非空 api_key 才触发校验与封装。
@@ -781,15 +868,22 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 			if err := json.Unmarshal(req.Credentials, &creds); err != nil {
 				v.add("credentials", "credentials must be an object or null")
 			} else if creds.APIKey != "" {
+				credentialsProvided = true
 				// azure 只改 api_key 时，请求体通常不带 deployment/api_version；
 				// 它们仍是有效配置（在旧密文里）。先与已解密的凭据合并，再校验，
 				// 否则「只轮换密钥」会被误判成 422（F-06-03）。
-				if existingCreds, ok := h.existingCredentials(existing); ok {
-					if creds.Deployment == "" {
-						creds.Deployment = existingCreds.Deployment
-					}
-					if creds.APIVersion == "" {
-						creds.APIVersion = existingCreds.APIVersion
+				//
+				// finding 10：类型变更时**绝不**合并旧密文——旧字段属于旧类型，
+				// 例如 openai→azure 时旧 api_key 不是 azure 凭据，合并出的
+				// deployment/api_version 会缺失或语义错误。新类型必须显式给全。
+				if !typeChanged {
+					if existingCreds, ok := h.existingCredentials(existing); ok {
+						if creds.Deployment == "" {
+							creds.Deployment = existingCreds.Deployment
+						}
+						if creds.APIVersion == "" {
+							creds.APIVersion = existingCreds.APIVersion
+						}
 					}
 				}
 				v.addFields(validateCredentials(ct, creds))
@@ -798,6 +892,12 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 				}
 			}
 		}
+	}
+	// finding 10：改 type 却沿用旧密文会让新类型带着旧类型的凭据运行，
+	// 且绕过新类型的字段校验（例如 azure 的 deployment/api_version）。
+	// 要求在同一 PATCH 里重新提交新类型凭据；否则 422 要求重新录入。
+	if typeChanged && !credentialsProvided {
+		v.add("credentials", "credentials are required when changing channel type")
 	}
 
 	return patch
@@ -1455,6 +1555,7 @@ const (
 	problemTypeChannelNotFound        = "https://newtg.dev/problems/channel_not_found"
 	problemTypeChannelNameConflict    = "https://newtg.dev/problems/channel_name_conflict"
 	problemTypeChannelVersionConflict = "https://newtg.dev/problems/channel_version_conflict"
+	problemTypeIdempotencyInProgress  = "https://newtg.dev/problems/idempotency_in_progress"
 )
 
 func validationError(field, message string) *apiError {
@@ -1545,7 +1646,14 @@ func validateBatchIDs(ids []int64) *apiError {
 	return nil
 }
 
-// serveIdempotent 把「查重放 → 执行 → 写回」封装为统一流程。
+// serveIdempotent 把「抢占 → 执行 → 写回/释放」封装为统一流程。
+//
+// finding 2（幂等竞态）：旧实现先 build() 再 SetIfAbsent，两个并发同键请求
+// 都会执行副作用。现在先 Claim（SET NX pending 标记）：
+//   - Acquired → 执行 build；2xx 用 Complete 把 pending 替换为响应（24h TTL），
+//     非 2xx/error 用 Release 删除标记，客户端修正参数后可以重试；
+//   - Replay   → 直接返回首次响应（Idempotent-Replayed: true）；
+//   - InFlight → 409 + Retry-After，且**不执行** build（副作用只有一次）。
 //
 // 只缓存 2xx：4xx/5xx 不应被固化 24h（客户端修正参数后应能重试）。
 // 缓存故障 fail-open：幂等层不可用不阻断业务；多副本场景的重复写由
@@ -1564,20 +1672,39 @@ func (h *ChannelHandler) serveIdempotent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	key := idempotencyScopeKey(r, headerKey)
-	if cached, found, err := h.idem.Get(r.Context(), key); err == nil && found {
+	claim, err := h.idem.Claim(r.Context(), key, IdempotencyTTL)
+	if err != nil {
+		// fail-open：幂等存储不可用不阻断业务。
+		status, body, _ := build()
+		writeJSONBytes(w, status, body)
+		return
+	}
+
+	switch claim.Status {
+	case IdempotencyClaimReplay:
 		w.Header().Set("Idempotent-Replayed", "true")
-		writeJSONBytes(w, cached.Status, cached.Body)
+		writeJSONBytes(w, claim.Response.Status, claim.Response.Body)
+		return
+	case IdempotencyClaimInFlight:
+		// 同键请求仍在执行：绝不能并发执行 build（副作用翻倍）。
+		// 409 + Retry-After 提示客户端稍后用**同一个 key** 重试，届时会命中重放。
+		w.Header().Set("Retry-After", "1")
+		writeAPIError(w, &apiError{
+			Status: http.StatusConflict,
+			Type:   problemTypeIdempotencyInProgress,
+			Title:  "Idempotency key is in progress",
+			Detail: "another request with this Idempotency-Key is still being processed; retry shortly",
+		})
 		return
 	}
 
 	status, body, cacheable := build()
-	if cacheable {
-		if stored, replayed, err := h.idem.SetIfAbsent(r.Context(), key,
-			IdempotentResponse{Status: status, Body: body}, IdempotencyTTL); err == nil && replayed {
-			w.Header().Set("Idempotent-Replayed", "true")
-			writeJSONBytes(w, stored.Status, stored.Body)
-			return
-		}
+	if cacheable && status >= http.StatusOK && status < http.StatusMultipleChoices {
+		// 完成：用响应替换 pending 标记并续 24h TTL（失败不影响已生成的响应）。
+		_ = h.idem.Complete(r.Context(), key, claim.Token, IdempotentResponse{Status: status, Body: body}, IdempotencyTTL)
+	} else {
+		// 非 2xx 不固化：释放标记，允许客户端修正参数后用同一个 key 重试。
+		_ = h.idem.Release(r.Context(), key, claim.Token)
 	}
 	writeJSONBytes(w, status, body)
 }
@@ -1601,7 +1728,7 @@ func (h *ChannelHandler) authorize(w http.ResponseWriter, r *http.Request, requi
 	switch {
 	case err == nil:
 		return true
-	case errors.Is(err, ErrNoPrincipal):
+	case errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
 		writeUnauthorized(w)
 	case errors.Is(err, ErrAccessStore):
 		writeProblem(w, http.StatusInternalServerError, problemTypeInternal, "Internal Server Error")

@@ -26,6 +26,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
+	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/store"
 )
@@ -153,9 +154,10 @@ func (f *fakeRelayChannelStore) EnabledModels(_ context.Context) ([]string, erro
 // recordingBilling 包装 billingseam.Stub 并记录 Terminate 的事实，
 // 用于断言「客户端断开只终结一次」与 partial UsageFact 的字段。
 type recordingBilling struct {
-	mu         sync.Mutex
-	stub       *billingseam.Stub
-	terminated []contract.UsageFact
+	mu          sync.Mutex
+	stub        *billingseam.Stub
+	terminated  []contract.UsageFact
+	preConsumed []contract.QuotaEstimate
 }
 
 func newRecordingBilling() *recordingBilling {
@@ -163,6 +165,9 @@ func newRecordingBilling() *recordingBilling {
 }
 
 func (b *recordingBilling) PreConsume(est contract.QuotaEstimate) error {
+	b.mu.Lock()
+	b.preConsumed = append(b.preConsumed, est)
+	b.mu.Unlock()
 	return b.stub.PreConsume(est)
 }
 func (b *recordingBilling) Reserve(delta int64) error { return b.stub.Reserve(delta) }
@@ -193,6 +198,55 @@ func (b *recordingBilling) lastFact() contract.UsageFact {
 		return contract.UsageFact{}
 	}
 	return b.terminated[len(b.terminated)-1]
+}
+
+func (b *recordingBilling) preConsumeCalls() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.preConsumed)
+}
+
+func (b *recordingBilling) lastEstimate() (contract.QuotaEstimate, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.preConsumed) == 0 {
+		return contract.QuotaEstimate{}, false
+	}
+	return b.preConsumed[len(b.preConsumed)-1], true
+}
+
+// observingStreamAdapter 包装真实适配器，用于：
+//   - usageSeen：在 EventUsage 真正通过桥接时关闭，让测试能确定「上游已给出
+//     部分用量」后再断开客户端，消除时序竞态；
+//   - rc：记录执行层写入的 RelayContext，供测试断言 StreamStatus.EndReason。
+type observingStreamAdapter struct {
+	inner     contract.StreamAdapter
+	usageSeen chan struct{}
+	once      sync.Once
+	rc        *contract.RelayContext
+}
+
+func (a *observingStreamAdapter) Type() contract.ChannelType  { return a.inner.Type() }
+func (a *observingStreamAdapter) Caps() contract.Capabilities { return a.inner.Caps() }
+func (a *observingStreamAdapter) BuildRequest(rc *contract.RelayContext, req *contract.Request) (*http.Request, error) {
+	return a.inner.BuildRequest(rc, req)
+}
+func (a *observingStreamAdapter) ParseResponse(rc *contract.RelayContext, resp *http.Response) (*contract.Response, contract.Usage, error) {
+	return a.inner.ParseResponse(rc, resp)
+}
+func (a *observingStreamAdapter) ClassifyError(status int, body []byte) contract.ErrorClass {
+	return a.inner.ClassifyError(status, body)
+}
+func (a *observingStreamAdapter) StreamEvents(rc *contract.RelayContext, rw io.ReadWriter) iter.Seq[contract.StreamEvent] {
+	a.rc = rc
+	return func(yield func(contract.StreamEvent) bool) {
+		a.inner.StreamEvents(rc, rw)(func(ev contract.StreamEvent) bool {
+			if ev.Kind == contract.EventUsage && a.usageSeen != nil {
+				a.once.Do(func() { close(a.usageSeen) })
+			}
+			return yield(ev)
+		})
+	}
 }
 
 // ---------- 装配 helper ----------
@@ -597,6 +651,8 @@ func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"par"},"finish_reason":null}]}`+"\n\n")
+		// 上游确实给出了部分用量（finding 3：只有这种情况才是 upstream_partial）。
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`+"\n\n")
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -606,6 +662,8 @@ func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
 	defer upstream.Close()
 
 	env := newRelayTestEnv(t, upstream, nil)
+	observing := &observingStreamAdapter{inner: adapters.NewOpenAI(), usageSeen: make(chan struct{})}
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return observing, nil }
 	gateway := httptest.NewServer(env.handler.Handler())
 	defer gateway.Close()
 
@@ -630,6 +688,12 @@ func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
 	if !strings.Contains(string(buf[:n]), "par") {
 		t.Fatalf("first frame = %q, want forwarded token content", buf[:n])
 	}
+	// 等上游用量真正被桥接消费后再断开：否则 partial/estimated 的判定依赖时序。
+	select {
+	case <-observing.usageSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage event was not observed before disconnect")
+	}
 
 	// 客户端断开：网关必须停止转发、关闭上游 body，并以 partial fact 终结会话。
 	cancel()
@@ -652,7 +716,154 @@ func TestRelayStreamingClientDisconnectTerminatesOnce(t *testing.T) {
 		t.Fatal("disconnect UsageFact.Stream = false, want true")
 	}
 	if fact.Usage.Source != contract.UsageUpstreamPartial {
-		t.Fatalf("disconnect UsageFact.Source = %d, want UsageUpstreamPartial", fact.Usage.Source)
+		t.Fatalf("disconnect UsageFact.Source = %d, want UsageUpstreamPartial（上游已给出部分用量）", fact.Usage.Source)
+	}
+	if fact.Usage.Total != 4 {
+		t.Fatalf("disconnect UsageFact.Usage.Total = %d, want 4", fact.Usage.Total)
+	}
+}
+
+// TestRelayStreamingDisconnectWithoutUsageIsEstimated 覆盖 finding 3：
+// 客户端断开但从未观察到上游用量时，来源必须是 estimated 而不是
+// upstream_partial（零用量不是「部分事实」）。
+func TestRelayStreamingDisconnectWithoutUsageIsEstimated(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"part"},"finish_reason":null}]}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	gateway := httptest.NewServer(env.handler.Handler())
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+relayTestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	buf := make([]byte, 256)
+	if n, readErr := resp.Body.Read(buf); readErr != nil && n == 0 {
+		t.Fatalf("read first frame: %v", readErr)
+	}
+	cancel()
+	_ = resp.Body.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for env.billing.terminateCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("billing session was not terminated after client disconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1 after disconnect", got)
+	}
+	fact := env.billing.lastFact()
+	if fact.Usage.Source != contract.UsageEstimated {
+		t.Fatalf("no-usage disconnect Source = %d, want UsageEstimated（零用量不是 partial）", fact.Usage.Source)
+	}
+}
+
+// TestRelayStreamWatchdogTimeoutTerminatesOnce 覆盖 finding 4：
+// 上游静默超过看门狗阈值 → EndReason=timeout、恰好一次 Terminate、不写 [DONE]。
+func TestRelayStreamWatchdogTimeoutTerminatesOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"stalled"},"finish_reason":null}]}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 永远不再发送任何字节，直到网关关闭 body 级联取消上游请求。
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.streamInactivity = 100 * time.Millisecond
+	observing := &observingStreamAdapter{inner: adapters.NewOpenAI()}
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return observing, nil }
+
+	start := time.Now()
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（响应头已发送）; body=%s", w.Code, w.Body.String())
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("handler returned after %v，早于看门狗阈值（未真正等待超时）", elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("watchdog did not fire in time: %v", elapsed)
+	}
+	if strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("超时是异常结束，不得伪造 [DONE]; body=%s", w.Body.String())
+	}
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageEstimated {
+		t.Fatalf("timeout UsageFact.Source = %d, want UsageEstimated（无上游用量）", fact.Usage.Source)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if observing.rc.StreamStatus.EndReason != contract.EndStreamTimeout {
+		t.Fatalf("EndReason = %d, want EndStreamTimeout", observing.rc.StreamStatus.EndReason)
+	}
+}
+
+// TestRelayStreamPanicRecovery 覆盖 finding 4 的 panic 恢复：进程不崩、
+// EndReason=EndPanic、恰好一次 Terminate、不写 [DONE]。
+func TestRelayStreamPanicRecovery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &scriptedStreamAdapter{
+		url:        upstream.URL + "/v1/chat/completions",
+		events:     []contract.StreamEvent{{Kind: contract.EventDelta, Delta: "before-panic"}},
+		panicAfter: 1,
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（响应头已发送）; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("panic 是异常结束，不得伪造 [DONE]; body=%s", w.Body.String())
+	}
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want exactly 1", got)
+	}
+	if adapter.rc == nil || adapter.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded after panic")
+	}
+	if adapter.rc.StreamStatus.EndReason != contract.EndPanic {
+		t.Fatalf("EndReason = %d, want EndPanic", adapter.rc.StreamStatus.EndReason)
 	}
 }
 
@@ -789,10 +1000,14 @@ func TestRelayStreamRespectsExplicitIncludeUsageFalse(t *testing.T) {
 // ---------- 软/硬流错误（relay-03 §4.3/§5.2/§10.1/§10.3） ----------
 
 // scriptedStreamAdapter 直接产出预设事件，用于覆盖真实上游难以复现的
-// soft（坏块）/hard（读取失败）流错误路径。
+// soft（坏块）/hard（读取失败）/panic 流错误路径。
 type scriptedStreamAdapter struct {
 	url    string
 	events []contract.StreamEvent
+	// panicAfter > 0 时，在产出第 panicAfter 个事件后 panic（finding 4 的恢复测试）。
+	panicAfter int
+	// rc 记录执行层传入的中继上下文（测试断言 StreamStatus）。
+	rc *contract.RelayContext
 }
 
 func (a *scriptedStreamAdapter) Type() contract.ChannelType  { return contract.ChannelTypeOpenAI }
@@ -806,11 +1021,15 @@ func (a *scriptedStreamAdapter) ParseResponse(*contract.RelayContext, *http.Resp
 func (a *scriptedStreamAdapter) ClassifyError(int, []byte) contract.ErrorClass {
 	return contract.ErrUnknown
 }
-func (a *scriptedStreamAdapter) StreamEvents(*contract.RelayContext, io.ReadWriter) iter.Seq[contract.StreamEvent] {
+func (a *scriptedStreamAdapter) StreamEvents(rc *contract.RelayContext, _ io.ReadWriter) iter.Seq[contract.StreamEvent] {
+	a.rc = rc
 	return func(yield func(contract.StreamEvent) bool) {
-		for _, ev := range a.events {
+		for i, ev := range a.events {
 			if !yield(ev) {
 				return
+			}
+			if a.panicAfter > 0 && i+1 == a.panicAfter {
+				panic("scripted adapter: intentional panic")
 			}
 		}
 	}
@@ -899,8 +1118,9 @@ func TestRelayStreamHardErrorStopsWithoutErrorFrame(t *testing.T) {
 	if got := env.billing.terminateCount(); got != 1 {
 		t.Fatalf("Terminate calls = %d, want exactly 1", got)
 	}
-	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageUpstreamPartial {
-		t.Fatalf("hard error UsageFact.Source = %d, want partial", fact.Usage.Source)
+	// finding 3：硬流错误但从未观察到上游 usage → estimated（不是 partial）。
+	if fact := env.billing.lastFact(); fact.Usage.Source != contract.UsageEstimated {
+		t.Fatalf("hard error UsageFact.Source = %d, want UsageEstimated", fact.Usage.Source)
 	}
 }
 
@@ -987,6 +1207,365 @@ func TestRelayPinForbiddenForNonAdmin(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"code":"channel_pin_forbidden"`) {
 		t.Fatalf("body = %s, want channel_pin_forbidden", w.Body.String())
+	}
+}
+
+// useLegacyPinToken 把 env 的令牌存储替换为 legacy sk-<key>[-<channelId>] 形态。
+func useLegacyPinToken(env *relayTestEnv, meta auth.TokenMeta) {
+	env.handler.tokens = newFakeRelayTokenStore("sk-pintest", &meta)
+}
+
+// TestRelayAdminPinRoutesToPinnedChannel 覆盖 finding 1（relay-01 §3.5/§5.4-A）：
+// 管理员 pin → 只调用 pinned 渠道，即使其它候选优先级更高。
+func TestRelayAdminPinRoutesToPinnedChannel(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	handler := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits[name]++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}
+	upstream1 := httptest.NewServer(handler("pinned"))
+	defer upstream1.Close()
+	upstream2 := httptest.NewServer(handler("other"))
+	defer upstream2.Close()
+
+	env := newRelayTestEnv(t, upstream1, nil)
+	base2 := upstream2.URL
+	env.channels.channels[2] = &store.Channel{
+		ID:              2,
+		Name:            "other-openai",
+		Type:            string(contract.ChannelTypeOpenAI),
+		BaseURL:         &base2,
+		Credentials:     sealedTestCredentials(t, env.sealer),
+		SupportedModels: []byte(`["gpt-test"]`),
+		ModelMapping:    []byte(`{}`),
+		Status:          1,
+		CreatedAt:       time.Now().UTC(),
+	}
+	// 候选 2 的 priority 更高：没有 pin 时它会被优先选中。
+	env.channels.candidates = []contract.ChannelCandidate{
+		{ChannelID: 1, Priority: 10, Weight: 1},
+		{ChannelID: 2, Priority: 20, Weight: 1},
+	}
+	useLegacyPinToken(env, auth.TokenMeta{
+		ID: 9, UserID: relayTestUserID, Status: "enabled", UnlimitedQuota: true,
+	})
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`,
+		map[string]string{"Authorization": "Bearer sk-pintest-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["pinned"] != 1 {
+		t.Fatalf("pinned channel hits = %d, want 1", hits["pinned"])
+	}
+	if hits["other"] != 0 {
+		t.Fatalf("non-pinned channel hits = %d, want 0（pin 必须固定渠道）", hits["other"])
+	}
+	if got := env.billing.terminateCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want 1", got)
+	}
+}
+
+// TestRelayAdminPinAbsentChannelReturns404 覆盖 finding 1：pin 目标不在
+// 候选集时，必须在 PreConsume 之前返回 404 channel_not_found。
+func TestRelayAdminPinAbsentChannelReturns404(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called when the pinned channel is absent")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	useLegacyPinToken(env, auth.TokenMeta{
+		ID: 9, UserID: relayTestUserID, Status: "enabled", UnlimitedQuota: true,
+	})
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`,
+		map[string]string{"Authorization": "Bearer sk-pintest-99"})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"channel_not_found"`) {
+		t.Fatalf("body = %s, want channel_not_found", w.Body.String())
+	}
+	if env.billing.preConsumeCalls() != 0 {
+		t.Fatalf("PreConsume calls = %d, want 0（404 必须在预扣之前）", env.billing.preConsumeCalls())
+	}
+	if env.billing.terminateCount() != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（会话未开启）", env.billing.terminateCount())
+	}
+}
+
+// TestRelayTokenModelLimitsEnforced 覆盖 finding 6（relay-01 §3.4）：
+// model_limits 非空时拒绝白名单外模型；命中时放行；管理员 pin 跳过白名单。
+func TestRelayTokenModelLimitsEnforced(t *testing.T) {
+	var mu sync.Mutex
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		upstreamCalls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	// 每个请求使用独立计费桩（Stub 是单会话实例）。
+	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+
+	env.tokens.mu.Lock()
+	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].ModelLimits = []string{"other-model"}
+	env.tokens.mu.Unlock()
+
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("restricted model status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"distributor_token_model_forbidden"`) {
+		t.Fatalf("body = %s, want distributor_token_model_forbidden", w.Body.String())
+	}
+	mu.Lock()
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0（模型白名单在路由前拒绝）", upstreamCalls)
+	}
+	mu.Unlock()
+
+	env.tokens.mu.Lock()
+	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].ModelLimits = []string{"gpt-test"}
+	env.tokens.mu.Unlock()
+	w = env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("allowed model status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// 管理员 pin 跳过白名单（§3.4 注：pin 优先级高于白名单）。
+	useLegacyPinToken(env, auth.TokenMeta{
+		ID: 9, UserID: relayTestUserID, Status: "enabled", UnlimitedQuota: true,
+		ModelLimits: []string{"other-model"},
+	})
+	w = env.do(t, http.MethodPost, "/v1/chat/completions", body,
+		map[string]string{"Authorization": "Bearer sk-pintest-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin pin status = %d, want 200（pin 跳过模型白名单）; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRelayTokenIPAllowlist 覆盖 finding 6（relay-01 §3.4）：allow_ips 非空时
+// 客户端 IP 必须在列表中；无法解析客户端地址同样 403 access_denied。
+func TestRelayTokenIPAllowlist(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`
+
+	env.tokens.mu.Lock()
+	meta := env.tokens.byHash[auth.HashTokenKey(relayTestToken)]
+	meta.AllowIPs = []string{"10.0.0.0/8"}
+	env.tokens.mu.Unlock()
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("disallowed IP status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"access_denied"`) {
+		t.Fatalf("body = %s, want access_denied", w.Body.String())
+	}
+
+	// httptest.NewRequest 的默认 RemoteAddr 是 192.0.2.1:1234。
+	env.tokens.mu.Lock()
+	meta.AllowIPs = []string{"192.0.2.1"}
+	env.tokens.mu.Unlock()
+	w = env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("allowed IP status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// 客户端地址无法解析 → 403（fail-closed）。
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+relayTestToken)
+	req.RemoteAddr = ""
+	rec := httptest.NewRecorder()
+	env.handler.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unparsable client address status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRelayTrustedProxyPolicyForAllowIPs 冻结 M2 的 X-Forwarded-For 信任策略：
+// 未配置 TRUSTED_PROXIES 时忽略 XFF；直连对端受信时才采信。
+func TestRelayTrustedProxyPolicyForAllowIPs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.billing = func() contract.BillingSession { return billingseam.NewStub() }
+	env.tokens.mu.Lock()
+	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].AllowIPs = []string{"203.0.113.0/24"}
+	env.tokens.mu.Unlock()
+
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+relayTestToken)
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+		req.RemoteAddr = "10.1.1.1:1234"
+		rec := httptest.NewRecorder()
+		env.handler.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 未配置 trusted proxies：XFF 完全忽略，客户端是直连的 10.1.1.1 → 403。
+	if rec := do(); rec.Code != http.StatusForbidden {
+		t.Fatalf("untrusted XFF status = %d, want 403（未配置时不得采信 XFF）", rec.Code)
+	}
+	// 直连对端 10.1.1.1 属于受信代理 → 取 XFF 的 203.0.113.9 → 200。
+	env.handler.trustedProxies = parseTrustedProxies("10.0.0.0/8")
+	if rec := do(); rec.Code != http.StatusOK {
+		t.Fatalf("trusted proxy status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRelayModelsAcceptsQueryKey 覆盖 finding 12（relay-01 §3.1）：/v1/models
+// 支持 ?key=<token> 兼容载体（鉴权中间件会把它归一化进 Authorization）。
+func TestRelayModelsAcceptsQueryKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model list must not hit upstream")
+	}))
+	defer upstream.Close()
+
+	channels := &fakeRelayChannelStore{models: []string{"alpha"}}
+	env := newRelayTestEnv(t, upstream, channels)
+	w := env.do(t, http.MethodGet, "/v1/models?key="+relayTestToken, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（?key= 载体）; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"id":"alpha"`) {
+		t.Fatalf("body = %s, want model list", w.Body.String())
+	}
+}
+
+// TestRelayModelsAcceptsXGoogAPIKey 覆盖 finding 12：x-goog-api-key 兼容载体。
+func TestRelayModelsAcceptsXGoogAPIKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model list must not hit upstream")
+	}))
+	defer upstream.Close()
+
+	channels := &fakeRelayChannelStore{models: []string{"alpha"}}
+	env := newRelayTestEnv(t, upstream, channels)
+	w := env.do(t, http.MethodGet, "/v1/models", "",
+		map[string]string{"x-goog-api-key": relayTestToken})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（x-goog-api-key 载体）; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRelayQuotaEstimateReachesBilling 覆盖 finding 13：RelayContext 必须携带
+// QuotaEstimate（Model/Group/MaxTokens），否则 PreConsume 永远看到零值。
+func TestRelayQuotaEstimateReachesBilling(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.tokens.mu.Lock()
+	env.tokens.byHash[auth.HashTokenKey(relayTestToken)].Group = "vip"
+	env.tokens.mu.Unlock()
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	est, ok := env.billing.lastEstimate()
+	if !ok {
+		t.Fatal("billing PreConsume was not called")
+	}
+	if est.Model != "gpt-test" {
+		t.Fatalf("QuotaEstimate.Model = %q, want gpt-test", est.Model)
+	}
+	if est.Group != "vip" {
+		t.Fatalf("QuotaEstimate.Group = %q, want vip（令牌分组）", est.Group)
+	}
+	if est.MaxTokens == nil || *est.MaxTokens != 64 {
+		t.Fatalf("QuotaEstimate.MaxTokens = %v, want 64", est.MaxTokens)
+	}
+	if est.PromptTokens != 0 {
+		t.Fatalf("QuotaEstimate.PromptTokens = %d, want 0（估算器未落地）", est.PromptTokens)
+	}
+}
+
+// TestRelayRejectsStreamWithNMultiple 覆盖 finding 14：stream=true + n>1
+// 必须在入口 400（SSE 桥接无法保留 choice 身份）。
+func TestRelayRejectsStreamWithNMultiple(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called for unsupported stream+n")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"n":2,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("body = %s, want invalid_request", w.Body.String())
+	}
+	if env.billing.preConsumeCalls() != 0 {
+		t.Fatal("stream+n>1 must be rejected before PreConsume")
+	}
+}
+
+// TestRelayNonStreamStripsStreamOptions 覆盖 finding 11（relay-03 §2.3）：
+// 非流式请求不得把 stream_options/include_usage 发给上游。
+func TestRelayNonStreamStripsStreamOptions(t *testing.T) {
+	var mu sync.Mutex
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if _, present := gotBody["stream_options"]; present {
+		t.Fatalf("upstream body still has stream_options: %v", gotBody)
+	}
+	if stream, _ := gotBody["stream"].(bool); stream {
+		t.Fatalf("upstream body stream = true, want false: %v", gotBody)
 	}
 }
 

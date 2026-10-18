@@ -63,6 +63,8 @@ type fakeChannelStore struct {
 	lastBatchIDs []int64
 	lastBatchTo  int16
 	lastDelIDs   []int64
+	// createHook 在 Create 写库前调用（并发幂等测试用它把首个请求卡在执行中）。
+	createHook func()
 	// batchTransitions 记录批量启停真正发生状态迁移的 id（已处于目标态的不计）。
 	batchTransitions []int64
 	lastTestAt       time.Time
@@ -161,6 +163,13 @@ func (f *fakeChannelStore) Get(_ context.Context, id int64) (*store.Channel, err
 }
 
 func (f *fakeChannelStore) Create(_ context.Context, ch *store.Channel) (*store.Channel, error) {
+	// hook 不持锁执行：测试需要在「已进入 build、尚未写库」的窗口内发起第二个请求。
+	f.mu.Lock()
+	hook := f.createHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCalls++
@@ -1258,9 +1267,211 @@ func TestChannelIdempotencyKeyScopedByUser(t *testing.T) {
 	}
 }
 
-// TestChannelPatchAzureOnlyAPIKeyKeepsDeployment 覆盖 F-06-03：
-// azure 渠道只轮换 api_key 时，deployment/api_version 从旧密文合并，
-// 不得因请求体缺字段而 422。
+// TestChannelIdempotencySerializesConcurrentSameKey 覆盖 finding 2：
+// 同一幂等键的并发请求只允许一个执行 build（副作用恰好一次），
+// 另一个在抢占阶段就收到 409 + Retry-After。
+func TestChannelIdempotencySerializesConcurrentSameKey(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	env.store.createHook = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+
+	body := map[string]any{
+		"name":             "race-channel",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-race-1234"},
+		"supported_models": []string{"gpt-4o"},
+	}
+	do := func() *httptest.ResponseRecorder {
+		req := jsonReq(t, http.MethodPost, "/api/channels", body)
+		req.Header.Set("Idempotency-Key", "concurrent-race-key")
+		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	}
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { firstDone <- do() }()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first request never reached Create")
+	}
+
+	// 首个请求仍在执行：第二个同键请求必须立刻 409，且不得进入 build。
+	second := do()
+	if second.Code != http.StatusConflict {
+		t.Fatalf("concurrent second status = %d, want 409; body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("Retry-After"); got == "" {
+		t.Fatal("409 must carry a Retry-After hint")
+	}
+	problem := decodeProblemBody(t, second)
+	if problem["type"] != problemTypeIdempotencyInProgress {
+		t.Fatalf("problem.type = %v, want %s", problem["type"], problemTypeIdempotencyInProgress)
+	}
+
+	close(release)
+	first := <-firstDone
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201; body=%s", first.Code, first.Body.String())
+	}
+	if env.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want exactly 1（并发同键不得重复执行）", env.store.createCalls)
+	}
+
+	// 执行完成后同一个 key 再请求 → 重放首次响应，不再写库。
+	third := do()
+	if third.Code != http.StatusCreated {
+		t.Fatalf("replay status = %d, want 201; body=%s", third.Code, third.Body.String())
+	}
+	if third.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatal("third request must be marked Idempotent-Replayed")
+	}
+	if third.Body.String() != first.Body.String() {
+		t.Fatalf("replay body differs\n first=%s\n third=%s", first.Body.String(), third.Body.String())
+	}
+	if env.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d after replay, want 1", env.store.createCalls)
+	}
+}
+
+// TestChannelIdempotencyNon2xxReleasesKey 覆盖 finding 2 的释放路径：
+// 非 2xx 不固化 24h，释放 pending 标记后同一 key 可以真正重试。
+func TestChannelIdempotencyNon2xxReleasesKey(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	do := func() *httptest.ResponseRecorder {
+		req := jsonReq(t, http.MethodPost, "/api/channels", map[string]any{
+			"name": "bad", "type": "openai",
+			"credentials": map[string]any{"api_key": "short"}, "supported_models": []string{"gpt-4o"},
+		})
+		req.Header.Set("Idempotency-Key", "retry-after-422")
+		return serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	}
+	if rr := do(); rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("first status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+	// 修正后的同名请求复用同一个 key：必须真正执行（不是重放 422）。
+	req := jsonReq(t, http.MethodPost, "/api/channels", map[string]any{
+		"name": "good", "type": "openai",
+		"credentials": map[string]any{"api_key": "sk-fixed-1234"}, "supported_models": []string{"gpt-4o"},
+	})
+	req.Header.Set("Idempotency-Key", "retry-after-422")
+	rr := serveWithPrincipal(t, env.mux, req, adminPrincipal())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("retry status = %d, want 201（非 2xx 必须释放幂等键）; body=%s", rr.Code, rr.Body.String())
+	}
+	if env.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", env.store.createCalls)
+	}
+}
+
+// TestChannelPatchTypeChangeRequiresNewCredentials 覆盖 finding 10：
+// 改 type 必须同时提交新类型的凭据；azure 还要求 deployment/api_version。
+func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
+	azureBase := "https://azure.example.com"
+
+	t.Run("改 type 但不带凭据 → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, nil)
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":             "azure_openai",
+			"base_url":         azureBase,
+		}), adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("updateCalls = %d, want 0（校验失败不得写库）", env.store.updateCalls)
+		}
+	})
+
+	t.Run("改 type=azure 但缺 deployment/api_version → 422", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, nil)
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":             "azure_openai",
+			"base_url":         azureBase,
+			"credentials":      map[string]any{"api_key": "sk-new-azure-1234"},
+		}), adminPrincipal())
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422（azure 缺 deployment/api_version）; body=%s", rr.Code, rr.Body.String())
+		}
+		problem := decodeProblemBody(t, rr)
+		fields, _ := problem["errors"].([]any)
+		if len(fields) == 0 {
+			t.Fatalf("problem = %v, want field-level credential errors", problem)
+		}
+	})
+
+	t.Run("完整 azure 凭据 → 200 且密文更新", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, nil)
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":             "azure_openai",
+			"base_url":         azureBase,
+			"credentials": map[string]any{
+				"api_key":     "sk-new-azure-5678",
+				"deployment":  "dep-1",
+				"api_version": "2025-04-01",
+			},
+		}), adminPrincipal())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		stored := env.store.items[1]
+		if stored.Type != string(contract.ChannelTypeAzure) {
+			t.Fatalf("stored type = %q, want azure_openai", stored.Type)
+		}
+		plaintext, err := env.sealer.Open(stored.Credentials)
+		if err != nil {
+			t.Fatalf("open updated credentials: %v", err)
+		}
+		var creds ChannelCredentials
+		if err := json.Unmarshal(plaintext, &creds); err != nil {
+			t.Fatalf("decode credentials: %v", err)
+		}
+		if creds.APIKey != "sk-new-azure-5678" || creds.Deployment != "dep-1" || creds.APIVersion != "2025-04-01" {
+			t.Fatalf("stored credentials = %+v, want the newly submitted azure set", creds)
+		}
+	})
+
+	t.Run("openai → anthropic 只需 api_key", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		seeded := seedChannel(t, env, nil)
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":             "anthropic",
+			"credentials":      map[string]any{"api_key": "sk-ant-new-1234"},
+		}), adminPrincipal())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		if got := env.store.items[1].Type; got != string(contract.ChannelTypeAnthropic) {
+			t.Fatalf("stored type = %q, want anthropic", got)
+		}
+	})
+}
+
+// TestChannelDeletedUserMapsTo401 覆盖 finding 9：已删除用户（users 行不存在）
+// 在管理面也必须 401，而不是塌缩成 500。
+func TestChannelDeletedUserMapsTo401(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	env.access.mu.Lock()
+	env.access.err = store.ErrUserNotFound
+	env.access.mu.Unlock()
+
+	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), adminPrincipal())
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
 func TestChannelPatchAzureOnlyAPIKeyKeepsDeployment(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{})
 	baseURL := "https://azure.example.com"
