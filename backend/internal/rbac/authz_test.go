@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -709,5 +710,62 @@ func TestHandlerLoadsPermissionsAndPropagatesToDownstream(t *testing.T) {
 	}
 	if len(loader.calls) != before {
 		t.Fatalf("user 角色触发了权限查询：%v", loader.calls)
+	}
+}
+
+// HandlerWithTarget 必须在路由匹配之后按请求解析数据级归属。用 required=""
+// （自服务动作）隔离出数据级判定：本人放行，ID 指向他人一律 404（而非 403，
+// 后者会确认资源存在）。
+func TestHandlerWithTargetResolvesOwnershipPerRequest(t *testing.T) {
+	m := NewAuthzMiddleware()
+	action := AuthzAction{ResourceKind: "user", ActionName: "read"}
+	target := func(r *http.Request) int64 {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id <= 0 {
+			return 0
+		}
+		return id
+	}
+
+	p := user(7)
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := m.HandlerWithTarget("", action, target)(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/7", nil)
+	req.SetPathValue("id", "7")
+	req = req.WithContext(auth.WithPrincipal(context.Background(), &p))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("本人访问 status = %d（next=%v），期望 204", rr.Code, nextCalled)
+	}
+
+	nextCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/api/users/8", nil)
+	req.SetPathValue("id", "8")
+	req = req.WithContext(auth.WithPrincipal(context.Background(), &p))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("他人访问 status = %d，期望 404", rr.Code)
+	}
+	if nextCalled {
+		t.Fatal("数据级拒绝后仍进入下游 handler")
+	}
+
+	// 不可解析的 ID 视为无归属（target=0），交业务 handler 统一 404；
+	// 鉴权层不得因解析失败而放行或误判为他人的资源。
+	nextCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/api/users/not-a-number", nil)
+	req.SetPathValue("id", "not-a-number")
+	req = req.WithContext(auth.WithPrincipal(context.Background(), &p))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("非法 ID status = %d（next=%v），期望交下游处理", rr.Code, nextCalled)
 	}
 }

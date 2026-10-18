@@ -293,8 +293,31 @@ func (m *AuthzMiddleware) AuthorizeGrant(p auth.Principal, requested []string) A
 // 配置了 PermissionLoader 时，Handler 会先按 UserID 解析权威权限（失败即 403），
 // 再执行三层判定，避免把会话路径未加载的 nil 误当 FULL。
 func (m *AuthzMiddleware) Handler(required string, action AuthzAction) func(http.Handler) http.Handler {
+	return m.handler(required, func(*http.Request) AuthzAction { return action })
+}
+
+// HandlerWithTarget 是 Handler 的动态归属版本，用于 /api/{resource}/{id} 形态：
+// 目标归属只能从请求（通常是 PathValue("id")）在路由匹配之后取得，无法在登记
+// 路由时静态给出。target 返回 0 表示「无归属/ID 不可解析」，与静态
+// TargetOwnerUserID=0 的语义一致；不可解析的 ID 由业务 handler 统一映射为 404。
+//
+// 其余判定顺序与 Handler 完全相同：功能级 → 数据级 → 字段级。字段策略仍按
+// action 的 ResourceKind/ActionName 登记，动态归属不产生额外登记项。
+func (m *AuthzMiddleware) HandlerWithTarget(required string, action AuthzAction, target func(*http.Request) int64) func(http.Handler) http.Handler {
+	return m.handler(required, func(r *http.Request) AuthzAction {
+		if target != nil {
+			action.TargetOwnerUserID = target(r)
+		}
+		return action
+	})
+}
+
+func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request) AuthzAction) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 归属按请求解析；ResourceKind/ActionName 保持不变，因此字段策略
+			// 登记键不受影响。action 在本次请求内只读，可安全共享。
+			action := actionFor(r)
 			p, ok := auth.PrincipalFrom(r.Context())
 			if !ok || p == nil {
 				// 认证中间件缺失或顺序装配错误：失败关闭，绝不把零值身份当匿名。
