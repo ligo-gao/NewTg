@@ -1,0 +1,4 @@
+# 构建上下文裁剪：镜像只需要 Go 源码、go.mod/go.sum 与迁移 SQL。
+bin/
+coverage.out
+*_test.go

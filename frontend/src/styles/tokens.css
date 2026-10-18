@@ -1,0 +1,187 @@
+/* ==========================================================================
+   NEW TG design tokens — the only place raw colour values may appear.
+   Authority: docs/modules-00-总览与设计原则.md §4.6 (light + dark columns).
+   Components reference tokens only; `data-theme` switches the values in place.
+   MVP delivers light only. Dark values are fully transcribed below but no
+   theme-switching UI or `dark:` variant exists until P1.
+   ========================================================================== */
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* Brand — modules-00 §4.6.1 */
+  --brand: #2563eb;
+  --brand-hover: #1d4ed8;
+  --brand-active: #1e40af;
+  --brand-subtle: #eff6ff;
+  --brand-line: #bfdbfe;
+
+  /* Surfaces — §4.6.1 */
+  --surface-page: #f7f8fa;
+  --surface-card: #ffffff;
+  --surface-subtle: #f0f2f5;
+  --surface-hover: #f8f9fb;
+
+  /* Borders — §4.6.1 */
+  --border-hairline: #e5e7eb;
+  --border-default: #d0d5dd;
+
+  /* Ink — §4.6.1 (ink-4 is for non-text use only) */
+  --ink-1: #171a1f;
+  --ink-2: #5a6270;
+  --ink-3: #6b7280;
+  --ink-4: #8a93a1; /* 非文本专用：骨架屏色块、禁用图标、分隔点 */
+
+  /* Focus ring — §4.6.1 (double solid ring; adapts via the tokens above) */
+  --focus-ring: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--brand);
+
+  /* Status semantics — §4.6.2: foreground / background / line */
+  --success-fg: #15803d;
+  --success-bg: #ecfdf3;
+  --success-line: #abefc6;
+  --warning-fg: #b45309;
+  --warning-bg: #fffaeb;
+  --warning-line: #fedf89;
+  --danger-fg: #b42318;
+  --danger-bg: #fef3f2;
+  --danger-line: #fecdca;
+  --info-fg: #026aa2;
+  --info-bg: #f0f9ff;
+  --info-line: #b9e6fe;
+  --neutral-fg: #5a6270;
+  --neutral-bg: #f1f2f4;
+  --neutral-line: #dde1e8;
+
+  /* Amount semantics — §4.6.3 */
+  --amount-out: #dc2626;
+  --amount-in: #15803d;
+  --amount-zero: #6b7280;
+  --text-held: #5a6270;
+  --surface-held: #f3f4f6;
+  --accent-admin: #7c3aed;
+  --accent-reversal: #b45309;
+
+  /* Chart category palette — §4.6.5, fixed order, never cycled */
+  --chart-cat-1: #2a78d6;
+  --chart-cat-2: #eb6834;
+  --chart-cat-3: #1baf7a;
+  --chart-cat-4: #eda100;
+  --chart-cat-5: #e87ba4;
+  --chart-cat-6: #008300;
+  --chart-cat-7: #6250d6;
+  --chart-cat-8: #e34948;
+
+  /* Chart sequential scale — §4.6.5. Anchors 100/250/450/650/700 are frozen
+     by modules-00; intermediate 50-step stops are interpolated between them.
+     Dark values intentionally absent: web-00 §13.12 L-3 defers them to P1. */
+  --chart-seq-100: #cde2fb;
+  --chart-seq-150: #b5d3f7;
+  --chart-seq-200: #9ec5f3;
+  --chart-seq-250: #86b6ef;
+  --chart-seq-300: #73aaea;
+  --chart-seq-350: #609ee4;
+  --chart-seq-400: #4d92df;
+  --chart-seq-450: #3a86da;
+  --chart-seq-500: #2f72be;
+  --chart-seq-550: #245ea2;
+  --chart-seq-600: #184a87;
+  --chart-seq-650: #0d366b;
+  --chart-seq-700: #0d366b;
+
+  /* Chart diverging scale — §4.6.5: blue ↔ neutral midpoint ↔ red */
+  --chart-div-pos: #2a78d6;
+  --chart-div-mid: #f0efec;
+  --chart-div-neg: #e34948;
+
+  /* Overlay — §4.6.6 */
+  --overlay: rgba(16, 18, 24, 0.32);
+
+  /* Code highlighting — §4.6.6 */
+  --code-keyword: #7c3aed;
+  --code-string: #15803d;
+  --code-number: #b45309;
+  --code-comment: #6b7280;
+
+  /* Primitive extension required by the Button shell: text on --brand.
+     White on --brand is the documented 5.17:1 pairing (§4.6.1). */
+  --on-brand: #ffffff;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Brand — §4.6.1 dark column */
+  --brand: #3b82f6;
+  --brand-hover: #60a5fa;
+  --brand-active: #93c5fd;
+  --brand-subtle: #172554;
+  --brand-line: #1e40af;
+
+  --surface-page: #0c111d;
+  --surface-card: #161b26;
+  --surface-subtle: #1d2128;
+  --surface-hover: #1f242e;
+
+  --border-hairline: #2a2f37;
+  --border-default: #3a4150;
+
+  --ink-1: #e8eaed;
+  --ink-2: #9aa3af;
+  --ink-3: #8a93a1;
+  --ink-4: #6b7280; /* 非文本专用 */
+
+  /* Focus ring is inherited: its var() references re-resolve in dark. */
+
+  /* Status semantics — §4.6.2 dark column */
+  --success-fg: #4ade80;
+  --success-bg: #10281a;
+  --success-line: #1f5133;
+  --warning-fg: #fbbf24;
+  --warning-bg: #2e2413;
+  --warning-line: #5a4317;
+  --danger-fg: #f87171;
+  --danger-bg: #331416;
+  --danger-line: #5c2225;
+  --info-fg: #7dd3fc;
+  --info-bg: #0b2534;
+  --info-line: #164a63;
+  --neutral-fg: #9aa3af;
+  --neutral-bg: #23282f;
+  --neutral-line: #3a4150;
+
+  /* Amount semantics — §4.6.3 dark column */
+  --amount-out: #f87171;
+  --amount-in: #4ade80;
+  --amount-zero: #8a93a1;
+  --text-held: #9aa3af;
+  --surface-held: #1f2937;
+  --accent-admin: #a78bfa;
+  --accent-reversal: #b45309;
+
+  /* Chart category palette — §4.6.5 dark column (slot order unchanged) */
+  --chart-cat-1: #3987e5;
+  --chart-cat-2: #d95926;
+  --chart-cat-3: #199e70;
+  --chart-cat-4: #c98500;
+  --chart-cat-5: #d55181;
+  --chart-cat-6: #008300;
+  --chart-cat-7: #9085e9;
+  --chart-cat-8: #e66767;
+
+  /* --chart-seq-* stays on the light scale until modules-00 supplies the
+     validated dark column (web-00 §13.12 L-3). */
+
+  --chart-div-pos: #3987e5;
+  --chart-div-mid: #383835;
+  --chart-div-neg: #e66767;
+
+  --overlay: rgba(0, 0, 0, 0.56);
+
+  --code-keyword: #a78bfa;
+  --code-string: #4ade80;
+  --code-number: #fbbf24;
+  --code-comment: #8a93a1;
+
+  --on-brand: #ffffff;
+}

@@ -1,0 +1,15 @@
+# 认证方案（platform-03 §10.1-2）
+securitySchemes:
+  sessionCookie:
+    type: apiKey
+    in: cookie
+    name: __Host-nkt_sess
+    description: |
+      控制台会话 Cookie（HttpOnly; Secure; SameSite=Lax; Path=/）。
+      Cookie 会话路径上的非安全方法（POST/PUT/PATCH/DELETE）必须同时发送 X-CSRF-Token；Bearer 路径豁免（security-01 §2.2）。
+  bearerToken:
+    type: http
+    scheme: bearer
+    bearerFormat: "nkt-<token>"
+    description: |
+      API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer nkt-…

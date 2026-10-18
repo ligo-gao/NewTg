@@ -1,0 +1,88 @@
+/* Tailwind CSS 4 entry point.
+   Colours are mapped one-for-one from styles/tokens.css into Tailwind's colour
+   namespace. `@theme inline` keeps the runtime `var()` reference, so
+   `[data-theme='dark']` re-resolves every utility without `dark:` variants. */
+
+@import "tailwindcss";
+
+@source "../";
+
+@theme inline {
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-active: var(--brand-active);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-line: var(--brand-line);
+
+  --color-surface-page: var(--surface-page);
+  --color-surface-card: var(--surface-card);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-hover: var(--surface-hover);
+
+  --color-border-hairline: var(--border-hairline);
+  --color-border-default: var(--border-default);
+
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+
+  --color-success: var(--success-fg);
+  --color-success-bg: var(--success-bg);
+  --color-success-line: var(--success-line);
+  --color-warning: var(--warning-fg);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-line: var(--warning-line);
+  --color-danger: var(--danger-fg);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-line: var(--danger-line);
+  --color-info: var(--info-fg);
+  --color-info-bg: var(--info-bg);
+  --color-info-line: var(--info-line);
+  --color-neutral: var(--neutral-fg);
+  --color-neutral-bg: var(--neutral-bg);
+  --color-neutral-line: var(--neutral-line);
+
+  --color-amount-out: var(--amount-out);
+  --color-amount-in: var(--amount-in);
+  --color-amount-zero: var(--amount-zero);
+  --color-text-held: var(--text-held);
+  --color-surface-held: var(--surface-held);
+  --color-accent-admin: var(--accent-admin);
+  --color-accent-reversal: var(--accent-reversal);
+  --color-on-brand: var(--on-brand);
+
+  --color-overlay: var(--overlay);
+
+  --color-chart-cat-1: var(--chart-cat-1);
+  --color-chart-cat-2: var(--chart-cat-2);
+  --color-chart-cat-3: var(--chart-cat-3);
+  --color-chart-cat-4: var(--chart-cat-4);
+  --color-chart-cat-5: var(--chart-cat-5);
+  --color-chart-cat-6: var(--chart-cat-6);
+  --color-chart-cat-7: var(--chart-cat-7);
+  --color-chart-cat-8: var(--chart-cat-8);
+
+  --color-chart-seq-100: var(--chart-seq-100);
+  --color-chart-seq-150: var(--chart-seq-150);
+  --color-chart-seq-200: var(--chart-seq-200);
+  --color-chart-seq-250: var(--chart-seq-250);
+  --color-chart-seq-300: var(--chart-seq-300);
+  --color-chart-seq-350: var(--chart-seq-350);
+  --color-chart-seq-400: var(--chart-seq-400);
+  --color-chart-seq-450: var(--chart-seq-450);
+  --color-chart-seq-500: var(--chart-seq-500);
+  --color-chart-seq-550: var(--chart-seq-550);
+  --color-chart-seq-600: var(--chart-seq-600);
+  --color-chart-seq-650: var(--chart-seq-650);
+  --color-chart-seq-700: var(--chart-seq-700);
+
+  --color-chart-div-pos: var(--chart-div-pos);
+  --color-chart-div-mid: var(--chart-div-mid);
+  --color-chart-div-neg: var(--chart-div-neg);
+
+  --color-code-keyword: var(--code-keyword);
+  --color-code-string: var(--code-string);
+  --color-code-number: var(--code-number);
+  --color-code-comment: var(--code-comment);
+}

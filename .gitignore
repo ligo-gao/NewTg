@@ -5,6 +5,7 @@ bin/
 
 # Go
 backend/bin/
+backend/coverage.out
 
 # Node
 frontend/node_modules/
@@ -14,6 +15,9 @@ frontend/dist/
 .env
 *.pem
 *.key
+
+# DB dumps from the pg-backup bind mount (deploy/backups)
+deploy/backups/
 
 # OS / editor
 .DS_Store

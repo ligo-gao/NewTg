@@ -1,0 +1,73 @@
+# 运维探针（platform-03 §4）：/healthz 恒 200；/readyz 五项实时判定
+x-shared:
+  probeStatus: &probeStatus
+    type: string
+    enum: [ok, fail]
+  readyzResponse: &readyzResponse
+    type: object
+    additionalProperties: false
+    required: [status, checks, version, node]
+    properties:
+      status:
+        type: string
+        enum: [ok, degraded]
+        description: 全部通过为 ok；任一失败为 degraded
+      checks:
+        type: object
+        additionalProperties: false
+        required: [postgres, redis, migration, config, startup]
+        properties:
+          postgres: *probeStatus
+          redis: *probeStatus
+          migration: *probeStatus
+          config: *probeStatus
+          startup: *probeStatus
+      version:
+        type: string
+        description: 构建版本（VERSION 注入）
+      node:
+        type: string
+        description: 节点标识
+
+paths:
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: getHealthz
+      summary: 进程存活探针
+      description: 不触碰 PostgreSQL/Redis，恒返回 200。
+      security: []
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /readyz:
+    get:
+      tags: [ops]
+      operationId: getReadyz
+      summary: 就绪探针（五项实时判定）
+      description: |
+        R1 PostgreSQL SELECT 1；R2 Redis PING；R3 schema_migrations 版本与 dirty；
+        R4 配置装配完成；R5 startup 完成。任一失败返回 503 + status=degraded。
+      security: []
+      responses:
+        '200':
+          description: 五项判定全部通过
+          content:
+            application/json:
+              schema: *readyzResponse
+        '503':
+          description: 任一判定失败（status=degraded，失败项值为 fail）
+          content:
+            application/json:
+              schema: *readyzResponse

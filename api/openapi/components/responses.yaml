@@ -1,0 +1,62 @@
+# 公共错误响应目录（platform-03 §10.1-6）：一律 application/problem+json（RFC 7807）
+responses:
+  Error400:
+    description: 请求不符合契约（参数/请求体校验失败）
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error401:
+    description: 未认证或凭据失效
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error402:
+    description: 额度/余额不足
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem402'
+  Error403:
+    description: 已认证但无权访问
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error404:
+    description: 资源不存在
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error409:
+    description: 冲突（含乐观并发 updated_at 不匹配）
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error429:
+    description: 触发限流
+    headers:
+      Retry-After:
+        description: 建议重试等待秒数
+        schema:
+          type: integer
+          minimum: 0
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error500:
+    description: 服务端内部错误
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
+  Error503:
+    description: 服务不可用（依赖未就绪或过载）
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'

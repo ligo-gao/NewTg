@@ -1,0 +1,9 @@
+{
+  "home.tagline": "One gateway for every model",
+  "nav.pricing": "Pricing",
+  "nav.docs": "Documentation",
+  "pricing.title": "Model pricing",
+  "pricing.empty": "No models match these filters",
+  "status.operational": "All systems operational",
+  "status.degraded": "Partial degradation"
+}

@@ -1,0 +1,78 @@
+# NewTG 发布流水线（platform-02 §7.10 流水线 H）
+#
+# 只在推送 v* tag 时执行：发布是供应链出口，PR/主干永远不推送镜像。
+# 供应链纪律（GC-13）：所有第三方 action 固定到 40 位 commit SHA；行尾 `# vX.Y.Z`
+# 只是可读标签。镜像元数据（provenance + SBOM）随镜像一起产出，便于事后审计。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# 发布不可取消：tag 已经推出去，半途取消会留下「tag 存在但镜像缺失」的状态。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# 读仓库 + 写 GHCR 包；这是全仓唯一需要 packages: write 的 workflow。
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # 镜像仓库未闭合前以 GHCR 占位（platform-02 §7.10 未闭合项 1）：
+  # 仓库变量 IMAGE_REGISTRY/IMAGE_NAME 可覆盖，默认 ghcr.io/<owner>/<repo>。
+  IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY || 'ghcr.io' }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || github.repository }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: 启用 QEMU（arm64 模拟）
+        # 只在发布时构建 arm64；PR/主干只构建 amd64 以缩短反馈时间。
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: 登录 GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 计算镜像标签
+        # 三个标签各有用途：latest 给跟随最新稳定版的用户；semver（去掉 v 前缀）
+        # 可被不可变引用；sha-<短哈希> 提供与提交一一对应的可追溯 tag。
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(printf '%s/%s' "$IMAGE_REGISTRY" "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')"
+          version="${GITHUB_REF_NAME#v}"
+          short="${GITHUB_SHA::12}"
+          {
+            echo "tags<<TAGS"
+            echo "${image}:latest"
+            echo "${image}:${version}"
+            echo "${image}:sha-${short}"
+            echo "TAGS"
+          } >> "$GITHUB_OUTPUT"
+      - name: 多架构构建并推送
+        uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6.13.0
+        with:
+          context: backend
+          file: backend/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # 供应链元数据：provenance 记录构建来源，SBOM 记录镜像内组件清单。
+          provenance: true
+          sbom: true
+          # gha 缓存跨 workflow 复用依赖层与 Go 编译层；mode=max 保留中间层。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}

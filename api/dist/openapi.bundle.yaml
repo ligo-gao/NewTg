@@ -1,0 +1,536 @@
+openapi: 3.1.0
+info:
+  title: NewTG API
+  version: 0.1.0-m0
+  description: |
+    NewTG 网关 API 契约骨架（M0）。
+    管理 API 统一使用 RFC 7807 `application/problem+json` 错误体与 offset 分页信封
+    `Page{items,total,page,page_size}`（`p` 1 基，`page_size` 默认 20、上限 100）。
+    中继 `/v1/*` 仅登记路径与公共面，不重定义上游协议 schema（真源见 externalDocs）。
+servers:
+  - url: /
+    description: 同源部署（边缘反代 → 网关）
+security: []
+tags:
+  - name: ops
+    description: 运维探针（/healthz、/readyz）
+  - name: public
+    description: 公开接口（无需认证）
+  - name: user
+    description: 用户自助接口（会话 Cookie 或 API 令牌）
+  - name: admin
+    description: 管理接口（仅管理员会话）
+  - name: relay
+    description: 中继协议面（API 令牌；schema 遵循上游公开规范）
+paths:
+  /healthz:
+    get:
+      tags:
+        - ops
+      operationId: getHealthz
+      summary: 进程存活探针
+      description: 不触碰 PostgreSQL/Redis，恒返回 200。
+      security: []
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+  /readyz:
+    get:
+      tags:
+        - ops
+      operationId: getReadyz
+      summary: 就绪探针（五项实时判定）
+      description: |
+        R1 PostgreSQL SELECT 1；R2 Redis PING；R3 schema_migrations 版本与 dirty；
+        R4 配置装配完成；R5 startup 完成。任一失败返回 503 + status=degraded。
+      security: []
+      responses:
+        '200':
+          description: 五项判定全部通过
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                  - checks
+                  - version
+                  - node
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - degraded
+                    description: 全部通过为 ok；任一失败为 degraded
+                  checks:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - postgres
+                      - redis
+                      - migration
+                      - config
+                      - startup
+                    properties:
+                      postgres:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      redis:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      migration:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      config:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      startup:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                  version:
+                    type: string
+                    description: 构建版本（VERSION 注入）
+                  node:
+                    type: string
+                    description: 节点标识
+        '503':
+          description: 任一判定失败（status=degraded，失败项值为 fail）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                  - checks
+                  - version
+                  - node
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - degraded
+                    description: 全部通过为 ok；任一失败为 degraded
+                  checks:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - postgres
+                      - redis
+                      - migration
+                      - config
+                      - startup
+                    properties:
+                      postgres:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      redis:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      migration:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      config:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                      startup:
+                        type: string
+                        enum:
+                          - ok
+                          - fail
+                  version:
+                    type: string
+                    description: 构建版本（VERSION 注入）
+                  node:
+                    type: string
+                    description: 节点标识
+  /api/status:
+    get:
+      tags:
+        - public
+      operationId: getPublicStatus
+      summary: 公共站点状态
+      security: []
+      responses:
+        '200':
+          description: OK（字段随 M1+ 细化）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicStatus'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/geoip:
+    get:
+      tags:
+        - public
+      operationId: getClientGeo
+      x-codegen: true
+      summary: 客户端粗粒度地理区域（只读；不返回坐标与 IP）
+      description: |
+        客户端 IP 只从连接或经 TRUSTED_PROXIES 校验的代理头取得；响应仅 country/region/source。
+        本地 GeoIP 库缺失或损坏时仍返回 200 且 source=unknown（不返回 5xx）。
+      security: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: private, max-age=300（按客户端缓存）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPResponse'
+        '429':
+          $ref: '#/components/responses/Error429'
+  /api/tokens:
+    get:
+      tags:
+        - user
+      operationId: listTokens
+      summary: 列出当前用户的 API 令牌（分页）
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '429':
+          $ref: '#/components/responses/Error429'
+  /api/channels:
+    get:
+      tags:
+        - admin
+      operationId: listChannels
+      summary: 列出上游渠道（分页）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '429':
+          $ref: '#/components/responses/Error429'
+  /v1/chat/completions:
+    post:
+      tags:
+        - relay
+      operationId: createChatCompletion
+      x-codegen: false
+      x-openai-compatible: true
+      summary: OpenAI-compatible chat completions
+      description: |
+        请求/响应体遵循 OpenAI Chat Completions 公开规范（含 SSE 流式）。
+        额度不足返回 402 + Problem402 扩展。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: OpenAI Chat Completions API reference
+        url: https://platform.openai.com/docs/api-reference/chat
+      responses:
+        '200':
+          description: ChatCompletion 对象或 SSE 流（schema 见上游公开规范）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '402':
+          $ref: '#/components/responses/Error402'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-nkt_sess
+      description: |
+        控制台会话 Cookie（HttpOnly; Secure; SameSite=Lax; Path=/）。
+        Cookie 会话路径上的非安全方法（POST/PUT/PATCH/DELETE）必须同时发送 X-CSRF-Token；Bearer 路径豁免（security-01 §2.2）。
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: nkt-<token>
+      description: |
+        API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer nkt-…
+  parameters:
+    Page:
+      x-go-name: PageQuery
+      name: p
+      in: query
+      required: false
+      description: 页码，1 基（默认 1）
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: 每页条数（默认 20，上限 100）
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+      schema:
+        type: string
+        format: uuid
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: |
+        条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+        Authorization: Bearer 路径豁免（无 CSRF 风险）。
+      schema:
+        type: string
+        minLength: 1
+  schemas:
+    Problem:
+      type: object
+      description: RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+      required:
+        - type
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+          description: 问题类型 URI（稳定机器可读标识）
+        title:
+          type: string
+          description: 简短的人类可读摘要
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+          description: HTTP 状态码（与响应状态行一致）
+        detail:
+          type: string
+          description: 针对本次问题的说明
+        instance:
+          type: string
+          description: 问题实例 URI（通常为请求路径）
+      additionalProperties: true
+    Problem402:
+      description: 额度/余额不足（Problem 的 402 扩展；计费 §6.2、relay §4.4）
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            balance:
+              type: integer
+              description: 当前可用余额（credits 最小单位）
+            required:
+              type: integer
+              description: 本次请求所需额度
+            currency:
+              type: string
+              enum:
+                - credits
+            topup_url:
+              type: string
+              format: uri
+              description: 充值页地址
+    Page:
+      type: object
+      description: offset 分页信封；各域 items 的 DTO 随里程碑细化。
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items: {}
+        total:
+          type: integer
+          minimum: 0
+          description: 满足条件的总条数
+        page:
+          type: integer
+          minimum: 1
+          description: 当前页码（1 基）
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: 每页条数（默认 20，上限 100）
+    PublicStatus:
+      type: object
+      additionalProperties: true
+      description: 公共站点状态占位（字段随 M1+ 细化；schema 待补齐）
+      x-newtg-pending: true
+    GeoIPResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - country
+        - region
+        - source
+      description: |
+        客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
+        响应缓存策略：Cache-Control: private, max-age=300。
+      properties:
+        country:
+          anyOf:
+            - type: string
+              pattern: ^[A-Z]{2}$
+            - enum:
+                - null
+          description: ISO 3166-1 alpha-2（大写）；无法判定为 null
+        region:
+          anyOf:
+            - type: string
+              maxLength: 64
+            - enum:
+                - null
+          description: ISO 3166-2 子分区码；无法判定为 null
+        source:
+          type: string
+          enum:
+            - local_db
+            - unknown
+          description: local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配
+    Token:
+      type: object
+      additionalProperties: true
+      description: API 令牌 DTO 占位（敏感字段仅创建时返回一次；schema 待 M1+ 细化）
+      x-newtg-pending: true
+    Channel:
+      type: object
+      additionalProperties: true
+      description: 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M1+ 细化）
+      x-newtg-pending: true
+  responses:
+    Error400:
+      description: 请求不符合契约（参数/请求体校验失败）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error401:
+      description: 未认证或凭据失效
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error402:
+      description: 额度/余额不足
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem402'
+    Error403:
+      description: 已认证但无权访问
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error404:
+      description: 资源不存在
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error409:
+      description: 冲突（含乐观并发 updated_at 不匹配）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error429:
+      description: 触发限流
+      headers:
+        Retry-After:
+          description: 建议重试等待秒数
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error500:
+      description: 服务端内部错误
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error503:
+      description: 服务不可用（依赖未就绪或过载）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

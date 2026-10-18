@@ -1,0 +1,48 @@
+{
+  "name": "newtg-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "rsbuild dev",
+    "build": "rsbuild build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "routes:generate": "tsr generate"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.104.4",
+    "@tanstack/react-router": "^1.170.45",
+    "hugeicons-react": "^0.4.0",
+    "openapi-fetch": "^0.17.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-hook-form": "^7.90.0",
+    "zod": "^3.25.76",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@rsbuild/core": "^2.2.13",
+    "@rsbuild/plugin-react": "^2.1.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tanstack/router-cli": "^1.167.45",
+    "@tanstack/router-plugin": "^1.168.47",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.5.0",
+    "jsdom": "^26.1.0",
+    "msw": "^2.15.0",
+    "openapi-typescript": "^7.13.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^3.2.7"
+  }
+}
