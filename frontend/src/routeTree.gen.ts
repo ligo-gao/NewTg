@@ -11,8 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
-import { Route as ConsoleDashboardRouteImport } from './routes/_console/dashboard'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
+import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -23,40 +23,40 @@ const ConsoleRoute = ConsoleRouteImport.update({
   id: '/_console',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ConsoleDashboardRoute = ConsoleDashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
-  getParentRoute: () => ConsoleRoute,
-} as any)
 const Errors404Route = Errors404RouteImport.update({
   id: '/_errors/404',
   path: '/404',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
+  id: '/dashboard/',
+  path: '/dashboard/',
+  getParentRoute: () => ConsoleRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/dashboard': typeof ConsoleDashboardRoute
   '/404': typeof Errors404Route
+  '/dashboard/': typeof ConsoleDashboardIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/dashboard': typeof ConsoleDashboardRoute
   '/404': typeof Errors404Route
+  '/dashboard': typeof ConsoleDashboardIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
-  '/_console/dashboard': typeof ConsoleDashboardRoute
   '/_errors/404': typeof Errors404Route
+  '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/dashboard' | '/404'
+  fullPaths: '/' | '/404' | '/dashboard/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/dashboard' | '/404'
-  id: '__root__' | '/' | '/_console' | '/_console/dashboard' | '/_errors/404'
+  to: '/' | '/404' | '/dashboard'
+  id: '__root__' | '/' | '/_console' | '/_errors/404' | '/_console/dashboard/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -81,13 +81,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_console/dashboard': {
-      id: '/_console/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof ConsoleDashboardRouteImport
-      parentRoute: typeof ConsoleRoute
-    }
     '/_errors/404': {
       id: '/_errors/404'
       path: '/404'
@@ -95,15 +88,22 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof Errors404RouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_console/dashboard/': {
+      id: '/_console/dashboard/'
+      path: '/dashboard'
+      fullPath: '/dashboard/'
+      preLoaderRoute: typeof ConsoleDashboardIndexRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
   }
 }
 
 interface ConsoleRouteChildren {
-  ConsoleDashboardRoute: typeof ConsoleDashboardRoute
+  ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
 }
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
-  ConsoleDashboardRoute: ConsoleDashboardRoute,
+  ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
 }
 
 const ConsoleRouteWithChildren =

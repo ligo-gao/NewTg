@@ -9,6 +9,6 @@ function DashboardPage() {
   )
 }
 
-export const Route = createFileRoute('/_console/dashboard')({
+export const Route = createFileRoute('/_console/dashboard/')({
   component: DashboardPage,
 })
