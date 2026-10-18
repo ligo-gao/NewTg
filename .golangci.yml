@@ -1,0 +1,54 @@
+# .golangci.yml —— Go lint + 导入边界（docs/platform-02-仓库构建与CI-设计.md §6.3）
+# 用 depguard 机械强制包边界（对标现有 relaykit 独立性纪律，粒度到包、无 workspace 成本）。
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  enable:
+    - depguard
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        # internal/contract：只允许标准库 + 自身包。
+        # 禁止 import 任何第三方依赖或 newtg/gateway/internal/*。
+        contract-purity:
+          files:
+            - backend/internal/contract/**/*.go
+          allow:
+            - $gostd
+          deny:
+            - pkg: newtg/gateway/internal/**
+              desc: "contract 禁止依赖 newtg/gateway/internal/*（platform-02 §6.3）"
+            - pkg: '**'
+              desc: "contract 禁止引入任何第三方依赖（platform-02 §6.3）"
+        # internal/relay：协议层不得依赖持久化/配置/支付。
+        relay-boundary:
+          files:
+            - backend/internal/relay/**/*.go
+          deny:
+            - pkg: newtg/gateway/internal/store
+              desc: "协议层不得依赖持久化（platform-02 §6.3）"
+            - pkg: newtg/gateway/internal/pay
+              desc: "协议层不得依赖支付（platform-02 §6.3）"
+            - pkg: newtg/gateway/internal/config
+              desc: "协议层不得依赖配置（platform-02 §6.3）"
+            - pkg: newtg/gateway/internal/auth
+              desc: "协议层不得依赖认证（platform-02 §6.3）"
+        # internal/billing：计费不得反向依赖中继实现（只可依赖 internal/contract）。
+        billing-boundary:
+          files:
+            - backend/internal/billing/**/*.go
+          deny:
+            - pkg: newtg/gateway/internal/relay
+              desc: "计费不得反向依赖中继实现（platform-02 §6.3）"

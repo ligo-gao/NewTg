@@ -5,6 +5,7 @@ bin/
 
 # Go
 backend/bin/
+backend/coverage.out
 
 # Node
 frontend/node_modules/
