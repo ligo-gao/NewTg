@@ -754,14 +754,15 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		h.writeUserRepoError(w, "read user before update", err)
 		return
 	}
+	// 乐观锁预检先行：陈旧 updated_at 直接 409，绝不先产生「吊销会话」副作用。
+	// 否则任何持有 role 权限但版本过期的请求都能借此强制登出目标。
+	if !before.UpdatedAt.Equal(expectUpdatedAt) {
+		writeAdminProblem(w, http.StatusConflict, authProblemConflict, "Conflict",
+			"the user was modified by someone else; refresh and retry")
+		return
+	}
 	if patch.Role != nil {
-		// 角色是会话里固定的事实（SessionAuth 从登录时写入的 auth_level 读取），
-		// 降权后旧会话仍带 Role=admin；即使权限装载层立即生效，脏会话也不应
-		// 继续存在（F-07-06 / IS-B-5）。升降双向都先吊销：失败即 503 且不改角色。
-		if err := h.sessions.RevokeUser(r.Context(), id, ""); err != nil {
-			h.writeServiceUnavailable(w, "revoke sessions for role change", err)
-			return
-		}
+		// 纯授权检查必须先于任何副作用（先 403、后登出是错误的顺序）。
 		// 提权会写入默认权限集：执行者必须能授予该集合（AuthorizeGrant 同时
 		// 校验 users:manage-roles 与超集），否则 users:update 就能造出超出
 		// 自身范围的 admin。
@@ -771,6 +772,15 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 					"promoting an admin requires users:manage-roles and a superset of the default permissions")
 				return
 			}
+		}
+		// 角色是会话里固定的事实（SessionAuth 从登录时写入的 auth_level 读取），
+		// 降权后旧会话仍带 Role=admin；即使权限装载层立即生效，脏会话也不应
+		// 继续存在（F-07-06 / IS-B-5）。升降双向都在写库前吊销：失败即 503 且
+		// 不改角色。预检之后仍有极窄的并发窗口（他人先提交）会以 409 结束，
+		// 此时会话已被吊销——安全方向。
+		if err := h.sessions.RevokeUser(r.Context(), id, ""); err != nil {
+			h.writeServiceUnavailable(w, "revoke sessions for role change", err)
+			return
 		}
 	}
 	updated, err := h.repo.UpdateUser(r.Context(), id, patch, expectUpdatedAt)
@@ -1110,16 +1120,19 @@ func (h *UserHandlers) handleResetPassword(w http.ResponseWriter, r *http.Reques
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
 		return
 	}
-	if err := h.repo.ResetPassword(r.Context(), id, hash); err != nil {
-		h.writeUserRepoError(w, "reset password", err)
+	// 临时口令只有在 24h 标记存在时才可登录（handlers_auth.go 会校验）。
+	// fail-closed：先写标记再改口令——写失败返回 503 且口令不变，绝不返回一个
+	// 登录必失败的临时密码。若随后的落库失败，best-effort 删除刚写的标记，
+	// 避免意外延长上一次临时口令的有效期。
+	markerKey := tempPasswordKeyPrefix + strconv.FormatInt(id, 10)
+	if err := h.rdb.Set(r.Context(), markerKey, "1", tempPasswordTTL).Err(); err != nil {
+		h.writeServiceUnavailable(w, "record temp password ttl", err)
 		return
 	}
-	// 24h 有效期标记。登录侧（Task 6）目前尚未消费该键；写入它是为了让
-	// 登录侧接线后无需改本端点。标记写失败不影响本次重置：口令已更换，
-	// 用户仍需在首登时改密（must_change_password）。
-	if err := h.rdb.Set(r.Context(), tempPasswordKeyPrefix+strconv.FormatInt(id, 10),
-		"1", tempPasswordTTL).Err(); err != nil {
-		h.log.Error("record temp password TTL failed", "user_id", id, "error", err)
+	if err := h.repo.ResetPassword(r.Context(), id, hash); err != nil {
+		_ = h.rdb.Del(r.Context(), markerKey).Err()
+		h.writeUserRepoError(w, "reset password", err)
+		return
 	}
 	// 审计只记录「发生了重置」，绝不包含临时口令、哈希或任何口令材料。
 	h.auditEvent(r, audit.ActionUserResetPassword, p.UserID, map[string]any{

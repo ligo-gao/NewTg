@@ -1596,6 +1596,13 @@ func TestUsersStaleAdminSessionDeniedAfterDemotion(t *testing.T) {
 func TestUsersRolePromotionRequiresGrantSubset(t *testing.T) {
 	env := newAdminTestEnv(t)
 	user := env.repo.addUser(AdminUserRecord{Username: "bob"})
+	ctx := context.Background()
+	sid, err := env.sessions.Create(ctx, user.ID, auth.SessionOpts{
+		UA: "Test/1.0", IP: "203.0.113.9", Role: rbac.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
 
 	limited := limitedAdmin(rbac.PermUsersUpdate, rbac.PermUsersManageRoles)
 	rr := env.request(limited, http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
@@ -1606,6 +1613,10 @@ func TestUsersRolePromotionRequiresGrantSubset(t *testing.T) {
 	if got := env.repo.userRole(user.ID); got != rbac.RoleUser {
 		t.Fatalf("403 后角色 = %q，期望保持 user", got)
 	}
+	// 授权检查在副作用之前：403 不得吊销目标会话。
+	if _, err := env.sessions.Get(ctx, sid); err != nil {
+		t.Fatalf("403 路径不应吊销目标会话：err=%v", err)
+	}
 
 	allowed := limitedAdmin(rbac.PermUsersUpdate, rbac.PermUsersManageRoles,
 		rbac.PermUsersRead, rbac.PermLogsRead)
@@ -1613,6 +1624,75 @@ func TestUsersRolePromotionRequiresGrantSubset(t *testing.T) {
 		map[string]any{"role": "admin", "updated_at": user.UpdatedAt})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("持默认权限子集时提权 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestUsersRoleChangeStaleVersionDoesNotRevoke：陈旧 updated_at 的 409 路径
+// 不得产生「先登出再失败」的副作用。
+func TestUsersRoleChangeStaleVersionDoesNotRevoke(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "bob"})
+	ctx := context.Background()
+	sid, err := env.sessions.Create(ctx, user.ID, auth.SessionOpts{
+		UA: "Test/1.0", IP: "203.0.113.9", Role: rbac.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+
+	rr := env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"role": "admin", "updated_at": user.UpdatedAt.Add(-time.Hour)})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("陈旧版本改角色 status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
+	}
+	if _, err := env.sessions.Get(ctx, sid); err != nil {
+		t.Fatalf("409 路径不应吊销目标会话：err=%v", err)
+	}
+	if got := env.repo.userRole(user.ID); got != rbac.RoleUser {
+		t.Fatalf("409 后角色 = %q，期望保持 user", got)
+	}
+}
+
+// TestUsersResetPasswordFailsClosedWhenMarkerUnavailable：临时口令标记写失败
+// 时不得改口令/返回密码——否则返回的密码在登录侧必然 401。
+func TestUsersResetPasswordFailsClosedWhenMarkerUnavailable(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	// 会话管理器可用（miniredis），但端点自己的 Redis 客户端不可用：
+	// 吊销会话成功，随后写 24h 标记失败 → 必须 503 且不落库。
+	broken := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = broken.Close() })
+
+	repo := newFakeAdminRepo()
+	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
+	h, err := NewUserHandlers(UserHandlerConfig{
+		Repo: repo, Sessions: sessions, Redis: broken, Authz: rbac.NewAuthzMiddleware(),
+	})
+	if err != nil {
+		t.Fatalf("NewUserHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.RegisterUserRoutes(mux, nil)
+	user := repo.addUser(AdminUserRecord{Username: "alice"})
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/users/%d/reset-password", user.ID), http.NoBody)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), fullAdmin()))
+	rr := serve(mux, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("标记不可用时 reset-password status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+	}
+	if repo.passwordHash != "" {
+		t.Fatal("标记写失败后仍写入了口令哈希")
+	}
+	stored, _ := repo.GetUser(context.Background(), user.ID)
+	if stored.MustChangePassword {
+		t.Fatal("标记写失败后仍置了 must_change_password")
+	}
+	if strings.Contains(rr.Body.String(), "temp_password") {
+		t.Fatalf("失败响应泄漏临时口令：%q", rr.Body.String())
 	}
 }
 

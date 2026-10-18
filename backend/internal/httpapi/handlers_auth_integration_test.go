@@ -159,9 +159,25 @@ func TestIntegrationAuthSQLRepo(t *testing.T) {
 		t.Fatalf("未知 identifier 应返回 nil,nil；实际 %+v/%v", missing, err)
 	}
 
-	// admin_permissions：NULL=nil(FULL)、[]=空集合、数组=显式集合。
+	// admin_permissions 语义与 users.role 绑定（Task 14 评审裁决）：
+	//   role=admin + NULL       -> nil（FULL）
+	//   role=admin + []         -> 非 nil 空集（无任何权限）
+	//   role=admin + 数组       -> 显式集合
+	//   role=user  + 任何值     -> 非 nil 空集（降权后的陈旧会话不得借 NULL=FULL）
+	if _, err := db.Exec(`UPDATE users SET role = 'admin' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("promote test user to admin: %v", err)
+	}
 	if perms, err := repo.Load(ctx, created.ID); err != nil || perms != nil {
-		t.Fatalf("NULL 权限 Load = %#v/%v，期望 nil,nil", perms, err)
+		t.Fatalf("admin + NULL 权限 Load = %#v/%v，期望 nil,nil", perms, err)
+	}
+	if _, err := db.Exec(`UPDATE users SET role = 'user' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("demote test user: %v", err)
+	}
+	if perms, err := repo.Load(ctx, created.ID); err != nil || perms == nil || len(perms) != 0 {
+		t.Fatalf("role=user + NULL 权限 Load = %#v/%v，期望非 nil 空集", perms, err)
+	}
+	if _, err := db.Exec(`UPDATE users SET role = 'admin' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("re-promote test user: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE users SET admin_permissions = '["users:read"]'::jsonb WHERE id = $1`, created.ID); err != nil {
 		t.Fatalf("set permissions: %v", err)
