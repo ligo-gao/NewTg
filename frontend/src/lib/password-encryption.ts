@@ -88,7 +88,9 @@ function pemBodyToBytes(pem: string): Uint8Array<ArrayBuffer> {
 /**
  * Fetches and caches the login public key for five minutes. The server's
  * `Cache-Control: no-store` disallows intermediary caching, not this short
- * client-side cache the rotation design (I-7) explicitly budgeted for.
+ * client-side cache the rotation design (I-7) explicitly budgeted for. The
+ * disabled state is deliberately *not* cached (see below): enabling encryption
+ * must take effect on the next login attempt.
  */
 export async function fetchLoginEncryptionKey(
   options: KeyOptions = {},
@@ -133,7 +135,13 @@ export async function fetchLoginEncryptionKey(
     value = { enabled: true, kid, publicKey }
   }
 
-  cachedKey = { expiresAt: now + KEY_CACHE_TTL_MS, value }
+  // Only the enabled state is cached. Caching `{enabled:false}` would make an
+  // operator flipping encryption on leave already-loaded clients sending
+  // plaintext for up to five minutes, rejected as indistinguishable
+  // password errors; re-probing on every plaintext login is one cheap GET.
+  if (value.enabled) {
+    cachedKey = { expiresAt: now + KEY_CACHE_TTL_MS, value }
+  }
   return value
 }
 

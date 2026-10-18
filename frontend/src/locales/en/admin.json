@@ -50,10 +50,16 @@
     "remark": "Remark",
     "section_permissions": "Role & Permissions",
     "save": "Save",
+    "saving": "Saving...",
     "creating": "Creating...",
     "create_success": "User created",
     "saved": "Saved",
-    "error": "Could not save the user. Please try again."
+    "error": "Could not save the user. Please try again.",
+    "partially_saved": "Partially saved. Close this sheet and reopen it to continue.",
+    "role_locked_self": "You cannot change your own role",
+    "role_locked_permission": "You do not have permission to manage roles",
+    "permissions_locked": "You cannot edit this permission matrix",
+    "permission_superset": "You cannot grant permissions beyond your own"
   },
   "permissions": {
     "full_access": "Full access (all permissions)",
@@ -136,8 +142,9 @@
     "saved_toast": "Saved",
     "deleted": "Group deleted",
     "delete_title": "Delete group",
-    "delete_body": "Delete {name}? Users in this group move to the default group.",
-    "delete_error": "Could not delete the group. It may still be referenced.",
+    "delete_body": "Delete {name}? Groups referenced by users, tokens or pricing cannot be deleted.",
+    "delete_error": "This group is referenced by users, tokens or pricing and cannot be deleted.",
+    "referenced_guard": "Groups referenced by users, tokens or pricing cannot be deleted",
     "error_save": "Could not save the group. Please try again.",
     "name_invalid": "Use 2-32 lowercase letters, numbers, dashes or underscores",
     "system_guard": "The system group cannot be deleted"

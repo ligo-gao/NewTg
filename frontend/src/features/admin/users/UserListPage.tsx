@@ -226,18 +226,18 @@ export function UserListPage() {
             <table className="w-full min-w-[960px] text-sm">
               <thead>
                 <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
-                  <th className="px-4 py-2 font-medium">{t('admin.users.column_id')}</th>
-                  <th className="px-4 py-2 font-medium">
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_id')}</th>
+                  <th scope="col" className="px-4 py-2 font-medium">
                     {t('admin.users.column_username')}
                   </th>
-                  <th className="px-4 py-2 font-medium">{t('admin.users.column_status')}</th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_status')}</th>
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t('admin.users.column_balance')}
                   </th>
-                  <th className="px-4 py-2 font-medium">{t('admin.users.column_group')}</th>
-                  <th className="px-4 py-2 font-medium">{t('admin.users.column_role')}</th>
-                  <th className="px-4 py-2 font-medium">{t('admin.users.column_created')}</th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_group')}</th>
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_role')}</th>
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_created')}</th>
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t('admin.users.actions')}
                   </th>
                 </tr>

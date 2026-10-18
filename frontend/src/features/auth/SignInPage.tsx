@@ -9,6 +9,7 @@ import {
   buildLoginCredentials,
   LoginEncryptionUnavailableError,
 } from '@/lib/password-encryption'
+import { meQueryOptions } from '@/lib/session'
 import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
@@ -71,16 +72,15 @@ export function SignInPage({
   const countdown = useCountdown()
 
   const statusQuery = useQuery({
-    queryKey: ['public-status'],
+    // Shared public-status cache key (web-00 §5.3); the upstream response is
+    // `no-store`, so toggles must be re-read, not served from a 30s window.
+    queryKey: ['public', 'status'],
     queryFn: async () => requireData(await apiClient.GET('/api/status')),
+    staleTime: 0,
   })
 
   // An authenticated visitor must never see the sign-in form again.
-  const meQuery = useQuery({
-    queryKey: ['me'],
-    queryFn: async () => requireData(await apiClient.GET('/api/me')),
-    retry: false,
-  })
+  const meQuery = useQuery(meQueryOptions())
   const alreadyNavigated = useRef(false)
   useEffect(() => {
     if (meQuery.data !== undefined && !alreadyNavigated.current) {

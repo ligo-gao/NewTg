@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
@@ -32,7 +32,12 @@ function parseAmount(value: string): number | undefined {
 /**
  * F-07-11 quota adjustment. Subtract and override always pass through a
  * second confirmation (override=0 included, since it can wipe the balance);
- * add skips it. The business idempotency key is generated per submission.
+ * add skips it.
+ *
+ * The business idempotency key belongs to one *intent*, not one HTTP attempt:
+ * both the body key and the `Idempotency-Key` header are reused across retries
+ * of the same mode+amount, so a lost response cannot double-book credits. It
+ * is replaced only when the intent changes or after a successful write.
  */
 export function AdjustQuotaDialog({
   user,
@@ -48,6 +53,8 @@ export function AdjustQuotaDialog({
   const [stage, setStage] = useState<'form' | 'confirm'>('form')
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
+  const idempotencyKeyRef = useRef<string | undefined>(undefined)
+  const radioRefs = useRef<Partial<Record<QuotaMode, HTMLButtonElement | null>>>({})
 
   useEffect(() => {
     if (!open) return
@@ -55,7 +62,19 @@ export function AdjustQuotaDialog({
     setAmount('')
     setStage('form')
     setError(undefined)
+    // A fresh dialog is a fresh intent.
+    idempotencyKeyRef.current = undefined
   }, [open])
+
+  /** Any edit to mode/amount starts a new intent and therefore a new key. */
+  function resetIdempotencyKey(): void {
+    idempotencyKeyRef.current = undefined
+  }
+
+  function idempotencyKey(): string {
+    idempotencyKeyRef.current ??= crypto.randomUUID()
+    return idempotencyKeyRef.current
+  }
 
   // Balance changes made elsewhere (another admin, a relay settlement) must
   // not be overwritten from a stale list row: refetch the authoritative user
@@ -90,25 +109,31 @@ export function AdjustQuotaDialog({
     if (parsed === undefined) return
     setError(undefined)
     setSubmitting(true)
+    const key = idempotencyKey()
     try {
       const data = requireData(
         await apiClient.POST('/api/users/{id}/quota-adjustment', {
           params: { path: { id: user.id } },
+          headers: { 'Idempotency-Key': key },
           body: {
             mode,
             amount: parsed,
             // Distinct from the HTTP Idempotency-Key: this one is persisted in
             // the transaction ledger (contract freeze).
-            idempotency_key: crypto.randomUUID(),
+            idempotency_key: key,
           },
         }),
       )
+      // The intent completed; the next adjustment must never collide with it.
+      idempotencyKeyRef.current = undefined
       push({ tone: 'success', message: t('admin.quota.success') })
       onAdjusted?.(data.new_balance)
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-user', user.id] })
       onOpenChange(false)
     } catch {
+      // Keep the key: the user may retry the same intent, and the ledger must
+      // recognize the replay.
       setError(t('admin.quota.error'))
     } finally {
       setSubmitting(false)
@@ -123,6 +148,22 @@ export function AdjustQuotaDialog({
       return
     }
     setStage('confirm')
+  }
+
+  function handleRadioKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ): void {
+    const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown'
+    const backward = event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+    if (!forward && !backward) return
+    event.preventDefault()
+    const delta = forward ? 1 : -1
+    const next = MODES[(index + delta + MODES.length) % MODES.length]
+    if (next === undefined) return
+    setMode(next)
+    resetIdempotencyKey()
+    radioRefs.current[next]?.focus()
   }
 
   const confirmBody =
@@ -178,12 +219,18 @@ export function AdjustQuotaDialog({
           </p>
 
           <div role="radiogroup" aria-label={t('admin.quota.mode')} className="grid grid-cols-3 gap-1">
-            {MODES.map((value) => (
+            {MODES.map((value, index) => (
               <button
                 key={value}
+                ref={(element) => {
+                  radioRefs.current[value] = element
+                }}
                 type="button"
                 role="radio"
                 aria-checked={mode === value}
+                // Roving tabindex: one stop for the group, arrows move inside
+                // (WAI-ARIA radio-group pattern).
+                tabIndex={mode === value ? 0 : -1}
                 className={[
                   'h-9 rounded-lg border text-[13px] font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                   mode === value
@@ -192,7 +239,9 @@ export function AdjustQuotaDialog({
                 ].join(' ')}
                 onClick={() => {
                   setMode(value)
+                  resetIdempotencyKey()
                 }}
+                onKeyDown={(event) => handleRadioKeyDown(event, index)}
               >
                 {value === 'add'
                   ? t('admin.quota.mode_add')
@@ -209,6 +258,7 @@ export function AdjustQuotaDialog({
             value={amount}
             onChange={(event) => {
               setAmount(event.target.value.replace(/\D/g, ''))
+              resetIdempotencyKey()
             }}
             error={
               exceeds
@@ -245,7 +295,10 @@ export function AdjustQuotaDialog({
           ) : null}
         </form>
       ) : (
-        <p className="text-sm text-ink-2">{confirmBody}</p>
+        <div className="flex flex-col gap-3">
+          {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
+          <p className="text-sm text-ink-2">{confirmBody}</p>
+        </div>
       )}
     </Dialog>
   )

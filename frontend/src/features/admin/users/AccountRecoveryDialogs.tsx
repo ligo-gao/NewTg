@@ -113,6 +113,11 @@ export function AccountRecoveryDialogs({
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
+      // The temporary password exists only in this component's state and the
+      // server will never return it again. On the result step Escape/backdrop
+      // must not discard it; the footer's "I've saved it, close" is the only
+      // exit (`TwoFaSetupDialog` uses the same guard for backup codes).
+      dismissible={stage !== 'result'}
       title={title}
       description={description}
       footer={

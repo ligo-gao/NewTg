@@ -29,7 +29,7 @@ describe('EmailCodeField countdown', () => {
     expect((resend as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('uses the reset default of 30s', async () => {
+  it('uses the provided cooldown override instead of the purpose default', async () => {
     server.use(
       http.post(`${ORIGIN}/api/auth/email-code`, () => new HttpResponse(null, { status: 204 })),
     )
@@ -38,6 +38,28 @@ describe('EmailCodeField countdown', () => {
     await user.click(getByRole('button', { name: 'Send code' }))
 
     const resend = await getByRole('button', { name: 'Resend in 30s' })
+    expect((resend as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('defaults every purpose to the 60s server cooldown', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/auth/email-code`, () => new HttpResponse(null, { status: 204 })),
+    )
+
+    // No explicit override: the reset purpose must use the server's 60s.
+    const result = await renderWithProviders(
+      <EmailCodeField
+        purpose="reset"
+        email="alice@example.com"
+        value=""
+        onChange={() => {}}
+      />,
+      ['common', 'auth'],
+    )
+    const user = userEvent.setup()
+    await user.click(result.getByRole('button', { name: 'Send code' }))
+
+    const resend = await result.getByRole('button', { name: 'Resend in 60s' })
     expect((resend as HTMLButtonElement).disabled).toBe(true)
   })
 

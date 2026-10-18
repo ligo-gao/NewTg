@@ -65,6 +65,18 @@ export function GroupListPage() {
   const total = groupsQuery.data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
+  // The server refuses to delete any referenced group with 409 (R-38 keeps
+  // the backend semantics). Mirror the three exposed reference counters in the
+  // UI so the operator gets the reason before confirming; token references
+  // are not exposed, which is why the 409 copy still exists as a fallback.
+  function isReferenced(group: AdminGroup): boolean {
+    return (
+      group.users_count > 0 ||
+      group.pricing_overrides_count > 0 ||
+      group.channels_count > 0
+    )
+  }
+
   return (
     <div className="mx-auto flex max-w-[1200px] flex-col gap-3">
       <section className="rounded-xl border border-border-hairline bg-surface-card">
@@ -93,15 +105,15 @@ export function GroupListPage() {
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
-                  <th className="px-4 py-2 font-medium">{t('admin.groups.name')}</th>
-                  <th className="px-4 py-2 font-medium">{t('admin.groups.description')}</th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.groups.name')}</th>
+                  <th scope="col" className="px-4 py-2 font-medium">{t('admin.groups.description')}</th>
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t('admin.groups.users')}
                   </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t('admin.groups.pricing_overrides')}
                   </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
                     {t('admin.groups.actions')}
                   </th>
                 </tr>
@@ -137,11 +149,13 @@ export function GroupListPage() {
                         <Button
                           variant="ghost"
                           className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
-                          disabled={group.is_system}
+                          disabled={group.is_system || isReferenced(group)}
                           title={
                             group.is_system
                               ? t('admin.groups.system_guard')
-                              : undefined
+                              : isReferenced(group)
+                                ? t('admin.groups.referenced_guard')
+                                : undefined
                           }
                           onClick={() => setDeleting(group)}
                         >
@@ -257,6 +271,7 @@ function GroupMutateDialog({ open, group, onOpenChange }: GroupMutateDialogProps
     setNameError(undefined)
     setError(undefined)
     setSubmitting(true)
+    const renamed = group !== null && name.trim() !== group.name
     try {
       if (group === null) {
         await apiClient.POST('/api/groups', {
@@ -277,6 +292,11 @@ function GroupMutateDialog({ open, group, onOpenChange }: GroupMutateDialogProps
         push({ tone: 'success', message: t('admin.groups.saved_toast') })
       }
       await queryClient.invalidateQueries({ queryKey: GROUPS_KEY })
+      if (renamed) {
+        // A rename is reflected on the affected users' rows (the server writes
+        // the new group name through), so those list caches are stale too.
+        await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      }
       onOpenChange(false)
     } catch {
       setError(t('admin.groups.error_save'))

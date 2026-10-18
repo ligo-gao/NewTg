@@ -20,7 +20,9 @@ export function TwoFaCard() {
         {t('auth.two_fa_setup.title')}
       </h2>
       <p className="mt-1 text-[13px] text-ink-2">
-        {t('auth.two_factor.description')}
+        {/* Card copy, not the login-challenge instruction: the two contexts
+            differ ("enable" vs "enter a code"). */}
+        {t('auth.two_fa_setup.card_description')}
       </p>
       <Button variant="secondary" className="mt-4" onClick={() => setOpen(true)}>
         {t('auth.two_fa_setup.enable')}

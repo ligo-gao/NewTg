@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 
 import { apiClient } from '@/api/client'
+import { ApiError } from '@/api/errors'
 import { passwordPolicyProblem } from '@/lib/password-policy'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
@@ -10,7 +11,7 @@ import { AuthPageShell } from './AuthPageShell'
 
 const REDIRECT_DELAY_MS = 3000
 
-type Phase = 'validating' | 'invalid' | 'form' | 'success'
+type Phase = 'validating' | 'invalid' | 'unavailable' | 'form' | 'success'
 
 export interface ResetPasswordPageProps {
   /** Token from the emailed `?token=` query parameter. */
@@ -40,6 +41,7 @@ export function ResetPasswordPage({
   }>({})
   const [formError, setFormError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
+  const [validateAttempt, setValidateAttempt] = useState(0)
 
   useEffect(() => {
     if (token === undefined || token === '') return
@@ -50,14 +52,26 @@ export function ResetPasswordPage({
           body: { token },
         })
         if (!cancelled) setPhase('form')
-      } catch {
-        if (!cancelled) setPhase('invalid')
+      } catch (caught) {
+        if (cancelled) return
+        // Only a definitive rejection means the link is dead. Offline, 429 and
+        // 5xx are transient; calling those "invalid" tells the user to request
+        // a new link for no reason.
+        const retryable =
+          caught instanceof ApiError &&
+          (caught.kind === 'offline' || caught.status === 429 || caught.status >= 500)
+        setPhase(retryable ? 'unavailable' : 'invalid')
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [token])
+  }, [token, validateAttempt])
+
+  function retryValidation(): void {
+    setPhase('validating')
+    setValidateAttempt((attempt) => attempt + 1)
+  }
 
   // Successful resets land on the sign-in page automatically; the button lets
   // the user skip the wait.
@@ -116,6 +130,24 @@ export function ResetPasswordPage({
       <AuthPageShell title={t('auth.reset.invalid_title')}>
         <p className="text-sm text-ink-2">{t('auth.reset.invalid_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
+          {t('auth.reset.back')}
+        </Button>
+      </AuthPageShell>
+    )
+  }
+
+  if (phase === 'unavailable') {
+    return (
+      <AuthPageShell title={t('auth.reset.unavailable_title')}>
+        <p className="text-sm text-ink-2">{t('auth.reset.unavailable_body')}</p>
+        <Button className="mt-4 h-11 w-full" onClick={retryValidation}>
+          {t('auth.reset.retry')}
+        </Button>
+        <Button
+          variant="ghost"
+          className="mt-2 h-10 w-full"
+          onClick={() => onNavigate('/sign-in')}
+        >
           {t('auth.reset.back')}
         </Button>
       </AuthPageShell>

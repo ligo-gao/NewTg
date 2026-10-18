@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { passwordPolicyProblem } from '@/lib/password-policy'
@@ -30,6 +31,7 @@ export function SecurityPage({
   onNavigate = defaultNavigate,
 }: SecurityPageProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -63,6 +65,11 @@ export function SecurityPage({
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
+      // The server revoked every other session, so the mounted sessions list
+      // is now wrong. Without this it keeps showing the killed devices for a
+      // staleTime window while the toast says they were signed out.
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      await queryClient.invalidateQueries({ queryKey: ['me'] })
       if (forcePasswordChange) {
         onNavigate('/dashboard')
       }

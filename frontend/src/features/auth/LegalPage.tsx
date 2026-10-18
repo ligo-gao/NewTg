@@ -1,5 +1,7 @@
 import { useI18n } from '@/shared/lib/i18n-context'
 
+import { LEGAL_LAST_UPDATED } from './legal-meta'
+
 export interface LegalPageProps {
   doc: 'terms' | 'privacy'
 }
@@ -73,7 +75,7 @@ export function LegalPage({ doc }: LegalPageProps) {
         <article className="max-w-[720px] flex-1">
           <h1 className="text-[28px] font-semibold leading-9">{title}</h1>
           <p className="mt-1 font-mono text-xs text-ink-3">
-            {t('auth.legal.last_updated', { date: '2026-10-18' })}
+            {t('auth.legal.last_updated', { date: LEGAL_LAST_UPDATED })}
           </p>
           <div className="mt-8 flex flex-col gap-6">
             {sections.map((section) => (

@@ -10,13 +10,14 @@ import { TextField } from '@/shared/ui/form'
 export type EmailCodePurpose = 'register' | 'reset' | 'verify' | 'bind'
 
 /**
- * Documented fallback cooldowns (modules-01 F-01-02): registration 60s and
- * password reset 30s. A server `Retry-After` always wins — the durations are
- * intentionally not hardcoded into the countdown itself.
+ * Documented fallback cooldowns (modules-01 F-01-02). Every email-code purpose
+ * shares the same 60s server cooldown (`handlers_auth.go:46`); a server
+ * `Retry-After` always wins — the durations are intentionally not hardcoded
+ * into the countdown itself.
  */
 export const EMAIL_CODE_DEFAULT_COOLDOWN: Record<EmailCodePurpose, number> = {
   register: 60,
-  reset: 30,
+  reset: 60,
   verify: 60,
   bind: 60,
 }
@@ -110,7 +111,11 @@ export function EmailCodeField({
       {!emailValid ? (
         <p className="text-xs text-ink-3">{t('auth.email_code.invalid_email')}</p>
       ) : null}
-      {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+      {error !== undefined ? (
+        <p role="alert" className="text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
     </div>
   )
 }

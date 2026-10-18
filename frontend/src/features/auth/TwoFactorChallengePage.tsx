@@ -5,6 +5,7 @@ import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import { sanitizeAuthRedirect } from '@/lib/auth-redirect'
 import { useI18n } from '@/shared/lib/i18n-context'
+import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, TextField } from '@/shared/ui/form'
 
@@ -45,8 +46,13 @@ export function TwoFactorChallengePage({
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
+  // A 400 from the challenge endpoint means the ticket is unknown (typically
+  // the 5-minute ticket expired). That is terminal, unlike a wrong code, so a
+  // retry form would only trap the user on a page that can never succeed.
+  const [expired, setExpired] = useState(false)
+  const countdown = useCountdown()
 
-  if (ticket === undefined || ticket === '') {
+  if (expired || ticket === undefined || ticket === '') {
     return (
       <AuthPageShell title={t('auth.two_factor.expired_title')}>
         <p className="text-sm text-ink-2">{t('auth.two_factor.expired_body')}</p>
@@ -59,6 +65,7 @@ export function TwoFactorChallengePage({
 
   const submitDisabled =
     submitting ||
+    countdown.running ||
     (mode === 'totp' ? code.length !== 6 : !BACKUP_PATTERN.test(code))
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -80,10 +87,15 @@ export function TwoFactorChallengePage({
       onNavigate(sanitizeAuthRedirect(redirect))
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 429) {
+        // Server-driven retry window: the ticket stays valid, so wait exactly
+        // as long as the gateway says instead of letting the user hammer it.
+        countdown.start(caught.retry_after ?? 60)
         setError(t('auth.sign_in.error.rate_limited'))
       } else if (caught instanceof ApiError && caught.status === 401) {
         setError(t('auth.two_factor.error'))
         setCode('')
+      } else if (caught instanceof ApiError && caught.status === 400) {
+        setExpired(true)
       } else {
         setError(t('auth.sign_in.error.unavailable'))
       }
@@ -108,9 +120,12 @@ export function TwoFactorChallengePage({
           {(['totp', 'backup'] as const).map((value) => (
             <button
               key={value}
+              id={`two-factor-tab-${value}`}
               type="button"
               role="tab"
               aria-selected={mode === value}
+              aria-controls="two-factor-panel"
+              tabIndex={mode === value ? 0 : -1}
               className={[
                 '-mb-px border-b-2 px-1 pb-2 text-[13px] font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 mode === value
@@ -130,7 +145,7 @@ export function TwoFactorChallengePage({
           ))}
         </div>
 
-        <div role="tabpanel">
+        <div role="tabpanel" id="two-factor-panel" aria-labelledby={`two-factor-tab-${mode}`}>
           {mode === 'totp' ? (
             <OtpInput
               value={code}
@@ -153,7 +168,11 @@ export function TwoFactorChallengePage({
         </div>
 
         <Button type="submit" className="h-11 w-full" disabled={submitDisabled}>
-          {submitting ? t('auth.two_factor.submitting') : t('auth.two_factor.submit')}
+          {submitting
+            ? t('auth.two_factor.submitting')
+            : countdown.running
+              ? t('auth.two_factor.retry_in', { seconds: countdown.seconds })
+              : t('auth.two_factor.submit')}
         </Button>
       </form>
     </AuthPageShell>

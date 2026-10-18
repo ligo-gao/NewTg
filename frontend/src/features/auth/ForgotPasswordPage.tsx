@@ -10,7 +10,10 @@ import { FormAlert, TextField } from '@/shared/ui/form'
 import { AuthPageShell } from './AuthPageShell'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const RESEND_SECONDS = 30
+// Server cooldown is 60s (`passwordResetResendAfter`, handlers_password.go:58)
+// even though the UI copy historically said 30s; a shorter local timer lets the
+// user press a button that is guaranteed to 429.
+const RESEND_SECONDS = 60
 
 export interface ForgotPasswordPageProps {
   onNavigate?: (destination: string) => void
@@ -50,11 +53,14 @@ export function ForgotPasswordPage({
       setSent(true)
       countdown.start(RESEND_SECONDS)
     } catch (caught) {
-      setFormError(
-        caught instanceof ApiError && caught.status === 429
-          ? t('auth.forgot.rate_limited')
-          : t('auth.forgot.error'),
-      )
+      if (caught instanceof ApiError && caught.status === 429) {
+        // The 429 carries the remaining cooldown; without starting the timer
+        // the resend button would be immediately clickable again.
+        countdown.start(caught.retry_after ?? RESEND_SECONDS)
+        setFormError(t('auth.forgot.rate_limited'))
+      } else {
+        setFormError(t('auth.forgot.error'))
+      }
     } finally {
       setSubmitting(false)
     }

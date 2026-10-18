@@ -54,17 +54,51 @@ export function SignUpPage({
   const [submitting, setSubmitting] = useState(false)
 
   const status = useQuery({
-    queryKey: ['public-status'],
+    // Shared public-status cache key (web-00 §5.3); `no-store` upstream means
+    // the toggles must be live, hence staleTime 0.
+    queryKey: ['public', 'status'],
     queryFn: async () => requireData(await apiClient.GET('/api/status')),
+    staleTime: 0,
   })
-  const verificationRequired = status.data?.auth.email_verification_required ?? false
 
-  if (status.data !== undefined && !status.data.auth.signup_enabled) {
+  if (status.isError) {
+    return (
+      <AuthPageShell title={t('auth.sign_up.title')}>
+        <FormAlert>{t('auth.sign_up.status_error')}</FormAlert>
+        <Button
+          variant="secondary"
+          className="mt-4 h-10"
+          onClick={() => void status.refetch()}
+        >
+          {t('common.action.retry')}
+        </Button>
+      </AuthPageShell>
+    )
+  }
+
+  if (status.isPending || status.data === undefined) {
+    // Do not render the form before `email_verification_required` is known: a
+    // fast submit would omit `email_code` and get a guaranteed 400.
+    return (
+      <AuthPageShell title={t('auth.sign_up.title')}>
+        <div className="space-y-3" aria-busy="true">
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-11 rounded-lg bg-surface-subtle" />
+        </div>
+      </AuthPageShell>
+    )
+  }
+
+  const verificationRequired = status.data.auth.email_verification_required
+
+  if (!status.data.auth.signup_enabled) {
     return (
       <AuthPageShell title={t('auth.sign_up.title')}>
         <FormAlert tone="warning">{t('auth.sign_up.disabled')}</FormAlert>
         <a
-          href="/"
+          href="/sign-in"
           className="mt-4 inline-block text-[13px] font-medium text-brand hover:underline"
         >
           {t('auth.sign_in.title', { site: t('auth.shell.brand') })}

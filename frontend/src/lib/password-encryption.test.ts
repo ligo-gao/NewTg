@@ -121,6 +121,27 @@ describe('fetchLoginEncryptionKey', () => {
     await expect(fetchLoginEncryptionKey()).resolves.toEqual({ enabled: false })
   })
 
+  it('does not cache the disabled state, so enabling applies on the next probe', async () => {
+    const key = await generateLoginKey('kid-enabled-later')
+    let calls = 0
+    server.use(
+      http.get(KEY_URL, () => {
+        calls += 1
+        return calls === 1
+          ? HttpResponse.json({ enabled: false })
+          : HttpResponse.json({ kid: key.kid, public_key: key.publicKeyPEM })
+      }),
+    )
+
+    await expect(fetchLoginEncryptionKey()).resolves.toEqual({ enabled: false })
+    await expect(fetchLoginEncryptionKey()).resolves.toEqual({
+      enabled: true,
+      kid: key.kid,
+      publicKey: key.publicKeyPEM,
+    })
+    expect(calls).toBe(2)
+  })
+
   it('rejects a response that lacks key material instead of downgrading', async () => {
     server.use(http.get(KEY_URL, () => HttpResponse.json({ enabled: true })))
 
