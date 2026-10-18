@@ -24,6 +24,7 @@ import { Route as Errors401RouteImport } from './routes/_errors/401'
 import { Route as Errors403RouteImport } from './routes/_errors/403'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
+import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
 import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
@@ -102,6 +103,11 @@ const LegalDocRoute = LegalDocRouteImport.update({
   path: '/legal/$doc',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConsoleAdminIndexRoute = ConsoleAdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ConsoleAdminRoute,
+} as any)
 const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   id: '/dashboard/',
   path: '/dashboard/',
@@ -133,6 +139,7 @@ export interface FileRoutesByFullPath {
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/admin/': typeof ConsoleAdminIndexRoute
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/users/': typeof ConsoleAdminUsersIndexRoute
@@ -145,13 +152,13 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
-  '/admin': typeof ConsoleAdminRouteWithChildren
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/admin': typeof ConsoleAdminIndexRoute
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/users': typeof ConsoleAdminUsersIndexRoute
@@ -173,6 +180,7 @@ export interface FileRoutesById {
   '/_errors/403': typeof Errors403Route
   '/_errors/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/_console/admin/': typeof ConsoleAdminIndexRoute
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
@@ -194,6 +202,7 @@ export interface FileRouteTypes {
     | '/403'
     | '/404'
     | '/legal/$doc'
+    | '/admin/'
     | '/dashboard/'
     | '/admin/users/groups'
     | '/admin/users/'
@@ -206,13 +215,13 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/two-factor-challenge'
-    | '/admin'
     | '/profile'
     | '/security'
     | '/401'
     | '/403'
     | '/404'
     | '/legal/$doc'
+    | '/admin'
     | '/dashboard'
     | '/admin/users/groups'
     | '/admin/users'
@@ -233,6 +242,7 @@ export interface FileRouteTypes {
     | '/_errors/403'
     | '/_errors/404'
     | '/legal/$doc'
+    | '/_console/admin/'
     | '/_console/dashboard/'
     | '/_console/admin/users/groups'
     | '/_console/admin/users/'
@@ -360,6 +370,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LegalDocRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_console/admin/': {
+      id: '/_console/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof ConsoleAdminIndexRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/dashboard/': {
       id: '/_console/dashboard/'
       path: '/dashboard'
@@ -385,11 +402,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface ConsoleAdminRouteChildren {
+  ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
   ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
 }
 
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
+  ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
   ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
 }

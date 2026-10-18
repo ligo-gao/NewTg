@@ -118,4 +118,25 @@ describe('route guard chain (web-00 §9.3)', () => {
       expect(router.state.location.pathname).toBe('/sign-in')
     })
   })
+
+  it('redirects the bare /admin path to the user list', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ username: 'root', role: 'admin', status: 'enabled' }),
+      ),
+      http.get(`${ORIGIN}/api/users`, () =>
+        HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
+      ),
+      http.get(`${ORIGIN}/api/groups`, () =>
+        HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+      ),
+    )
+
+    const { router } = renderAt('/admin')
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/admin/users')
+    })
+  })
 })

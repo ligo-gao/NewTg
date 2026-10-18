@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor } from '@testing-library/react'
+import { act, waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { resetTurnstileLoader, type TurnstileRenderOptions } from '@/lib/turnstile'
@@ -11,6 +11,7 @@ import { EmailCodeField } from './EmailCodeField'
 import { ForgotPasswordPage } from './ForgotPasswordPage'
 import { SignInPage } from './SignInPage'
 import { SignUpPage } from './SignUpPage'
+import { TurnstileWidget } from './TurnstileWidget'
 
 const ORIGIN = 'http://localhost:3000'
 const KEY_URL = `${ORIGIN}/api/auth/login/encryption-key`
@@ -23,6 +24,9 @@ afterEach(() => {
   server.resetHandlers()
   delete window.turnstile
   resetTurnstileLoader()
+  document
+    .querySelectorAll('script[src*="challenges.cloudflare.com"]')
+    .forEach((script) => script.remove())
 })
 afterAll(() => server.close())
 
@@ -255,7 +259,7 @@ describe('Turnstile enabled', () => {
     )
 
     const mock = installTurnstileMock()
-    const { getByLabelText, getByRole, user } = {
+    const { findByLabelText, getByRole, user } = {
       ...(await renderWithProviders(<ForgotPasswordPage onNavigate={() => {}} />, [
         'common',
         'auth',
@@ -263,7 +267,8 @@ describe('Turnstile enabled', () => {
       user: userEvent.setup(),
     }
 
-    await user.type(getByLabelText('Email'), 'alice@example.com')
+    // The page now waits for /api/status before rendering its form.
+    await user.type(await findByLabelText('Email'), 'alice@example.com')
     await waitForWidget(mock)
     await user.click(getByRole('button', { name: 'Send reset email' }))
 
@@ -303,5 +308,57 @@ describe('Turnstile enabled', () => {
     const alert = await findByRole('alert')
     expect(alert.textContent).toContain('Please complete the verification challenge')
     expect(loginCalls).toBe(0)
+  })
+})
+
+describe('Turnstile widget failures (N6/N8)', () => {
+  it('reports a script load failure and clears the token', async () => {
+    const onToken = vi.fn()
+    const { findByText } = await renderWithProviders(
+      <TurnstileWidget siteKey="site-key-test" onToken={onToken} />,
+      ['common', 'auth'],
+    )
+
+    const script = document.querySelector(
+      'script[src*="challenges.cloudflare.com"]',
+    )
+    expect(script).not.toBeNull()
+    script?.dispatchEvent(new Event('error'))
+
+    expect(
+      await findByText(
+        'The verification challenge could not be loaded. Refresh the page and try again.',
+      ),
+    ).toBeTruthy()
+    expect(onToken).toHaveBeenCalledWith(undefined)
+  })
+
+  it('reports a challenge error instead of silently clearing the token', async () => {
+    let options: TurnstileRenderOptions | undefined
+    window.turnstile = {
+      render: vi.fn((_container: HTMLElement, renderOptions: TurnstileRenderOptions) => {
+        options = renderOptions
+        return 'widget-1'
+      }),
+      reset: vi.fn(),
+      remove: vi.fn(),
+    }
+    const onToken = vi.fn()
+    const { findByText } = await renderWithProviders(
+      <TurnstileWidget siteKey="site-key-test" onToken={onToken} />,
+      ['common', 'auth'],
+    )
+
+    await waitFor(() => {
+      expect(options).toBeDefined()
+    })
+    act(() => {
+      options?.['error-callback']?.()
+    })
+
+    expect(
+      await findByText('Verification failed. Please try again.'),
+    ).toBeTruthy()
+    expect(onToken).toHaveBeenCalledWith(undefined)
   })
 })

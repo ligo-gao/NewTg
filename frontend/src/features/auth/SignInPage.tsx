@@ -150,7 +150,21 @@ export function SignInPage({
 
   return (
     <AuthPageShell title={t('auth.sign_in.title', { site })}>
-      {statusQuery.isPending ? (
+      {statusQuery.isError ? (
+        // Without status we cannot know whether Turnstile is required; the
+        // form would submit a guaranteed-403 request in the enabled case, so
+        // fail visibly instead of guessing "disabled".
+        <div className="flex flex-col gap-3">
+          <FormAlert>{t('auth.sign_in.status_error')}</FormAlert>
+          <Button
+            variant="secondary"
+            className="h-10"
+            onClick={() => void statusQuery.refetch()}
+          >
+            {t('common.action.retry')}
+          </Button>
+        </div>
+      ) : statusQuery.isPending ? (
         <div className="space-y-3" aria-busy="true">
           <div className="h-10 rounded-lg bg-surface-subtle" />
           <div className="h-10 rounded-lg bg-surface-subtle" />

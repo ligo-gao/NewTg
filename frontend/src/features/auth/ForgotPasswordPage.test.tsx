@@ -42,7 +42,7 @@ describe('ForgotPasswordPage resend cooldown (I11)', () => {
       ),
     )
 
-    const { getByLabelText, getByRole, findByRole, user } = {
+    const { findByLabelText, getByRole, findByRole, user } = {
       ...(await renderWithProviders(<ForgotPasswordPage onNavigate={() => {}} />, [
         'common',
         'auth',
@@ -50,7 +50,7 @@ describe('ForgotPasswordPage resend cooldown (I11)', () => {
       user: userEvent.setup(),
     }
 
-    await user.type(getByLabelText('Email'), 'alice@example.com')
+    await user.type(await findByLabelText('Email'), 'alice@example.com')
     await user.click(getByRole('button', { name: 'Send reset email' }))
 
     const resend = await findByRole('button', { name: 'Resend in 60s' })

@@ -30,7 +30,9 @@ export function TurnstileWidget({
   const containerRef = useRef<HTMLDivElement>(null)
   const widgetIdRef = useRef<string | undefined>(undefined)
   const onTokenRef = useRef(onToken)
-  const [unavailable, setUnavailable] = useState(false)
+  // Distinguish "script never loaded" from "the challenge itself failed": the
+  // user-facing advice differs (refresh vs retry the challenge).
+  const [failure, setFailure] = useState<'load' | 'challenge' | undefined>(undefined)
 
   // Parent callbacks are inline arrows; route them through a ref so the
   // render/reset lifecycle is keyed on the key and signal only.
@@ -48,11 +50,13 @@ export function TurnstileWidget({
         widgetId = api.render(containerRef.current, {
           sitekey: siteKey,
           callback: (token) => {
-            setUnavailable(false)
+            setFailure(undefined)
             onTokenRef.current(token)
           },
           'error-callback': () => {
-            // A challenge error must never leave a stale token looking valid.
+            // Tell the user the challenge failed instead of silently leaving a
+            // submit button that looks ready but cannot work.
+            setFailure('challenge')
             onTokenRef.current(undefined)
           },
           'expired-callback': () => {
@@ -64,7 +68,7 @@ export function TurnstileWidget({
       })
       .catch(() => {
         if (!cancelled) {
-          setUnavailable(true)
+          setFailure('load')
           onTokenRef.current(undefined)
         }
       })
@@ -85,9 +89,11 @@ export function TurnstileWidget({
   return (
     <div className="flex flex-col gap-1.5">
       <div ref={containerRef} />
-      {unavailable ? (
+      {failure !== undefined ? (
         <p role="alert" className="text-xs text-danger">
-          {t('auth.turnstile.unavailable')}
+          {failure === 'load'
+            ? t('auth.turnstile.unavailable')
+            : t('auth.turnstile.failed')}
         </p>
       ) : null}
     </div>

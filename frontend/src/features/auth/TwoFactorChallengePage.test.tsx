@@ -29,12 +29,15 @@ async function renderChallenge() {
   return { ...result, user: userEvent.setup(), onNavigate }
 }
 
-describe('TwoFactorChallengePage expiry (I10)', () => {
-  it('renders the expired state and a way back to sign-in on a 400', async () => {
+describe('TwoFactorChallengePage expiry (I10/N1)', () => {
+  it('renders the expired state and a way back to sign-in on the ticket-invalid problem type', async () => {
     server.use(
       http.post(CHALLENGE_URL, () =>
         HttpResponse.json(
-          { type: 'validation', title: 'unknown or expired ticket' },
+          {
+            type: 'https://newtg.dev/problems/two_factor_ticket_invalid',
+            title: 'unknown or expired ticket',
+          },
           { status: 400 },
         ),
       ),
@@ -49,6 +52,42 @@ describe('TwoFactorChallengePage expiry (I10)', () => {
     expect(await findByText('Verification expired')).toBeTruthy()
     await user.click(getByRole('button', { name: 'Back to sign in' }))
     expect(onNavigate).toHaveBeenCalledWith('/sign-in')
+  })
+
+  it('keeps the form on a wrong-code 400 (bad_request)', async () => {
+    server.use(
+      http.post(CHALLENGE_URL, () =>
+        HttpResponse.json(
+          { type: 'https://newtg.dev/problems/bad_request', title: 'bad request' },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    const { getByRole, findByRole, getByText, queryByText, user } =
+      await renderChallenge()
+
+    await user.click(getByRole('tab', { name: 'Backup code' }))
+    await user.type(getByRole('textbox', { name: 'Backup code' }), 'abcdefgh')
+    await user.click(getByRole('button', { name: 'Verify' }))
+
+    expect(await findByRole('alert')).toBeTruthy()
+    expect(getByText('Incorrect code')).toBeTruthy()
+    // Not the terminal expired screen: the visitor can immediately retry.
+    expect(queryByText('Verification expired')).toBeNull()
+    expect(getByRole('button', { name: 'Verify' })).toBeTruthy()
+  })
+
+  it('moves between tabs with the arrow keys', async () => {
+    const { getByRole, user } = await renderChallenge()
+
+    const totpTab = getByRole('tab', { name: 'Code' })
+    totpTab.focus()
+    await user.keyboard('{ArrowRight}')
+
+    const backupTab = getByRole('tab', { name: 'Backup code' })
+    expect(backupTab.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(backupTab)
   })
 
   it('starts a Retry-After countdown on 429 and disables submission', async () => {

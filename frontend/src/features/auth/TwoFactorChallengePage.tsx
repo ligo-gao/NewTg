@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
@@ -33,6 +33,14 @@ function formatBackupCode(raw: string): string {
 const BACKUP_PATTERN = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/
 
 /**
+ * Problem type D2 emits for a malformed/expired/consumed ticket. A wrong TOTP
+ * or backup code is a plain 400 (`bad_request`), so the page must branch on
+ * this type instead of treating every 400 as a dead ticket — otherwise the
+ * first typo replaces the form with the terminal expired screen.
+ */
+const TICKET_INVALID_TYPE = 'two_factor_ticket_invalid'
+
+/**
  * F-01-08/F-01-09 challenge. Only the ticket identifies the user — the page
  * never sends a user id or username, matching the server contract.
  */
@@ -51,6 +59,27 @@ export function TwoFactorChallengePage({
   // retry form would only trap the user on a page that can never succeed.
   const [expired, setExpired] = useState(false)
   const countdown = useCountdown()
+  const tabRefs = useRef<Record<ChallengeMode, HTMLButtonElement | null>>({
+    totp: null,
+    backup: null,
+  })
+
+  function selectMode(next: ChallengeMode): void {
+    setMode(next)
+    setCode('')
+    setError(undefined)
+  }
+
+  function handleTabKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: ChallengeMode,
+  ): void {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const next: ChallengeMode = current === 'totp' ? 'backup' : 'totp'
+    selectMode(next)
+    tabRefs.current[next]?.focus()
+  }
 
   if (expired || ticket === undefined || ticket === '') {
     return (
@@ -95,7 +124,13 @@ export function TwoFactorChallengePage({
         setError(t('auth.two_factor.error'))
         setCode('')
       } else if (caught instanceof ApiError && caught.status === 400) {
-        setExpired(true)
+        if (caught.type.endsWith(TICKET_INVALID_TYPE)) {
+          setExpired(true)
+        } else {
+          // Wrong TOTP/backup code: stay on the form so the visitor can retry.
+          setError(t('auth.two_factor.error'))
+          setCode('')
+        }
       } else {
         setError(t('auth.sign_in.error.unavailable'))
       }
@@ -121,6 +156,9 @@ export function TwoFactorChallengePage({
             <button
               key={value}
               id={`two-factor-tab-${value}`}
+              ref={(element) => {
+                tabRefs.current[value] = element
+              }}
               type="button"
               role="tab"
               aria-selected={mode === value}
@@ -133,9 +171,10 @@ export function TwoFactorChallengePage({
                   : 'border-transparent text-ink-3 hover:text-ink-1',
               ].join(' ')}
               onClick={() => {
-                setMode(value)
-                setCode('')
-                setError(undefined)
+                selectMode(value)
+              }}
+              onKeyDown={(event) => {
+                handleTabKeyDown(event, value)
               }}
             >
               {value === 'totp'

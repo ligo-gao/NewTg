@@ -91,6 +91,34 @@ export function ForgotPasswordPage({
     void send()
   }
 
+  if (statusQuery.isError) {
+    return (
+      <AuthPageShell title={t('auth.forgot.title')}>
+        <FormAlert>{t('auth.forgot.status_error')}</FormAlert>
+        <Button
+          variant="secondary"
+          className="mt-4 h-10"
+          onClick={() => void statusQuery.refetch()}
+        >
+          {t('common.action.retry')}
+        </Button>
+      </AuthPageShell>
+    )
+  }
+
+  if (statusQuery.isPending || statusQuery.data === undefined) {
+    // The request path needs the Turnstile switch; rendering early would let
+    // the visitor submit without the token the server now requires.
+    return (
+      <AuthPageShell title={t('auth.forgot.title')}>
+        <div className="space-y-3" aria-busy="true">
+          <div className="h-10 rounded-lg bg-surface-subtle" />
+          <div className="h-11 rounded-lg bg-surface-subtle" />
+        </div>
+      </AuthPageShell>
+    )
+  }
+
   return (
     <AuthPageShell title={t('auth.forgot.title')}>
       {sent ? (
@@ -150,7 +178,7 @@ export function ForgotPasswordPage({
               resetSignal={turnstileReset}
             />
           ) : null}
-          <Button type="submit" className="h-11 w-full" disabled={submitting}>
+          <Button type="submit" className="h-11 w-full" disabled={submitting || countdown.running}>
             {submitting
               ? t('auth.forgot.submitting')
               : t('auth.forgot.submit')}
