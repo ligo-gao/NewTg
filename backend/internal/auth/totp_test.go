@@ -374,3 +374,56 @@ func TestNewSecretCipherKeyEncodings(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateTOTPSecretShape 冻结 enable 端点的种子形状检查：只接受服务端
+// 生成的 32 字符 / 20 字节 base32。
+func TestValidateTOTPSecretShape(t *testing.T) {
+	secret, err := GenerateTOTPSecret()
+	if err != nil {
+		t.Fatalf("GenerateTOTPSecret: %v", err)
+	}
+	if !ValidateTOTPSecret(secret) {
+		t.Fatal("服务端生成的 secret 必须通过形状校验")
+	}
+	if !ValidateTOTPSecret(strings.ToLower(secret)) {
+		t.Fatal("小写 base32 应被接受（解码口径大小写不敏感）")
+	}
+	for _, bad := range []string{
+		"",
+		"   ",
+		"short",
+		strings.Repeat("A", 31),
+		strings.Repeat("A", 33),
+		strings.Repeat("A", 30) + "!!",
+		strings.Repeat("1", 32), // '1' 不在 RFC 4648 base32 字母表中
+	} {
+		if ValidateTOTPSecret(bad) {
+			t.Errorf("畸形 secret %q 不应通过形状校验", bad)
+		}
+	}
+}
+
+// TestSecretCipherSizeBoundary 保证「可加密」与「可解密」的上限自洽：
+// 最长允许的明文封装后不得超过解密侧上限。
+func TestSecretCipherSizeBoundary(t *testing.T) {
+	c := mustCipher(t, testCredentialKey)
+	maxPlain := strings.Repeat("a", maxPlaintextBytes)
+
+	enc, err := c.Encrypt(maxPlain)
+	if err != nil {
+		t.Fatalf("Encrypt(maxPlaintextBytes) 应成功: %v", err)
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(enc)
+	if err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(raw) > maxEnvelopeBytes {
+		t.Fatalf("envelope 长度 = %d，超过解密上限 %d", len(raw), maxEnvelopeBytes)
+	}
+	if got, err := c.Decrypt(enc); err != nil || got != maxPlain {
+		t.Fatalf("边界明文往返失败：err=%v len=%d", err, len(got))
+	}
+	if _, err := c.Encrypt(maxPlain + "a"); err == nil {
+		t.Fatal("超过 maxPlaintextBytes 的明文必须被拒绝")
+	}
+}

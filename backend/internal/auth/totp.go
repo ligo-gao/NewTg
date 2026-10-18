@@ -61,6 +61,21 @@ var sixDigitCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
 // backupCodePattern 是 modules-01 F-01-09 冻结的字段正则。
 var backupCodePattern = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
 
+// ValidateTOTPSecret 只接受服务端 GenerateTOTPSecret 冻结的形状：32 个 base32
+// 字符（大小写不敏感，无填充），解码后恰为 20 字节。
+//
+// enable 端点必须在验证/落库前调用它：否则客户端可以提交任意自选字节串
+// （甚至畸形 base32）当种子。只接受固定形状并不降低安全性——secret 由服务端
+// setup 生成，客户端没有理由提交其它长度的种子。
+func ValidateTOTPSecret(secret string) bool {
+	s := strings.TrimSpace(secret)
+	if len(s) != 32 {
+		return false
+	}
+	key, ok := decodeTOTPSecret(s)
+	return ok && len(key) == totpSecretBytes
+}
+
 // GenerateTOTPSecret 生成 base32（无填充）的 TOTP 共享密钥。
 // 熵源是 crypto/rand（OS CSPRNG）；失败即返回错误，绝不退化为弱随机。
 func GenerateTOTPSecret() (string, error) {
@@ -239,6 +254,11 @@ const (
 	wrappedDEKBytes = gcmNonceBytes + gcmKeyBytes + gcmTagBytes
 	// 上限防御：本系统只加密短 TOTP 种子，超出即为伪造/损坏输入。
 	maxEnvelopeBytes = 4 << 10
+	// envelopeOverheadBytes 是固定开销：头部 + DEK 包裹体 + 主 nonce + tag。
+	envelopeOverheadBytes = envelopeHeaderBytes + wrappedDEKBytes + gcmNonceBytes + gcmTagBytes
+	// maxPlaintextBytes 与解密侧上限自洽：Encrypt 接受的最长明文封装后恰好
+	// 不超过 maxEnvelopeBytes，不会出现「能加密但解不开」的边界。
+	maxPlaintextBytes = maxEnvelopeBytes - envelopeOverheadBytes
 )
 
 // ErrSecretDecrypt 是解密失败的统一哨兵（security-03 §2.5）：调用方只能
@@ -286,7 +306,7 @@ func decodeInto(dst []byte, encoded string, decode func(string) ([]byte, error))
 // Encrypt 把明文封装成 base64（无填充）的 envelope 文本。
 // 每次调用生成新的 DEK 与两个独立 nonce；任何 CSPRNG 失败都返回错误。
 func (c *SecretCipher) Encrypt(plaintext string) (string, error) {
-	if len(plaintext) > maxEnvelopeBytes {
+	if len(plaintext) > maxPlaintextBytes {
 		return "", fmt.Errorf("auth: plaintext too large for envelope (%d bytes)", len(plaintext))
 	}
 	dek := make([]byte, gcmKeyBytes)

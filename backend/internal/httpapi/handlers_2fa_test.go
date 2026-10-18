@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +22,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 )
 
@@ -159,26 +163,52 @@ func (r *fakeTwoFARepo) ReplaceBackupCodes(_ context.Context, userID int64, hash
 	return true, nil
 }
 
-func (r *fakeTwoFARepo) ConsumeBackupCode(_ context.Context, userID int64, matchedHash string, remaining []string) (bool, error) {
+func (r *fakeTwoFARepo) ConsumeBackupCode(_ context.Context, userID int64, matchedHash string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	u := r.users[userID]
 	if u == nil || !u.TOTPEnabled {
 		return false, nil
 	}
+	// 模拟 SQL 的 `backup_codes - matchedHash`：对**当前值**增量删除，
+	// 不是用调用方预读快照覆盖（那会复现已修复的丢失更新）。
 	found := false
+	next := make([]string, 0, len(u.BackupCodes))
 	for _, h := range u.BackupCodes {
 		if h == matchedHash {
 			found = true
-			break
+			continue
 		}
+		next = append(next, h)
 	}
 	if !found {
 		// 条件 UPDATE 的 WHERE 不成立：并发已被消费或码已重生成。
 		return false, nil
 	}
-	u.BackupCodes = append([]string(nil), remaining...)
+	u.BackupCodes = next
 	return true, nil
+}
+
+// fakeTwoFAAuditExec 捕获 audit.Logger 的 INSERT 实参；实参顺序与
+// audit.insertSQL 的列顺序一致（审计包测试文件冻结同一契约）。
+type fakeTwoFAAuditExec struct {
+	mu    sync.Mutex
+	calls [][]any
+}
+
+func (f *fakeTwoFAAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, append([]any(nil), args...))
+	return nil, nil
+}
+
+func (f *fakeTwoFAAuditExec) snapshot() [][]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]any, len(f.calls))
+	copy(out, f.calls)
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -186,13 +216,14 @@ func (r *fakeTwoFARepo) ConsumeBackupCode(_ context.Context, userID int64, match
 // ---------------------------------------------------------------------------
 
 type twoFATestEnv struct {
-	t        *testing.T
-	router   http.Handler
-	repo     *fakeTwoFARepo
-	rdb      *redis.Client
-	mr       *miniredis.Miniredis
-	sessions *auth.SessionManager
-	handlers *TwoFAHandlers
+	t         *testing.T
+	router    http.Handler
+	repo      *fakeTwoFARepo
+	rdb       *redis.Client
+	mr        *miniredis.Miniredis
+	sessions  *auth.SessionManager
+	handlers  *TwoFAHandlers
+	auditExec *fakeTwoFAAuditExec
 }
 
 // newTwoFATestEnv 按 routes.go 的结构装配：challenge 挂在公开 mux，
@@ -204,12 +235,14 @@ func newTwoFATestEnv(t *testing.T) *twoFATestEnv {
 	t.Cleanup(func() { _ = rdb.Close() })
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	repo := newFakeTwoFARepo()
+	auditExec := &fakeTwoFAAuditExec{}
 
 	h, err := NewTwoFAHandlers(TwoFAConfig{
 		Repo:          repo,
 		Redis:         rdb,
 		Sessions:      sessions,
 		EncryptionKey: twoFATestEncryptionKey,
+		Audit:         audit.New(auditExec),
 		Now:           func() time.Time { return twoFATestNow },
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -224,13 +257,14 @@ func newTwoFATestEnv(t *testing.T) *twoFATestEnv {
 	root.Handle("/api/", Protect(sessions, nil, "")(protected))
 
 	return &twoFATestEnv{
-		t:        t,
-		router:   root,
-		repo:     repo,
-		rdb:      rdb,
-		mr:       mr,
-		sessions: sessions,
-		handlers: h,
+		t:         t,
+		router:    root,
+		repo:      repo,
+		rdb:       rdb,
+		mr:        mr,
+		sessions:  sessions,
+		handlers:  h,
+		auditExec: auditExec,
 	}
 }
 
@@ -251,8 +285,8 @@ func (e *twoFATestEnv) request(method, path string, body any) *httptest.Response
 	return serve(e.router, req)
 }
 
-// authedRequest 建一个带会话 Cookie、CSRF 头与同源 Origin 的请求。
-func (e *twoFATestEnv) authedRequest(userID int64, method, path string, body any) *httptest.ResponseRecorder {
+// newSession 建一个正式会话并签发 CSRF 令牌，返回两个凭据供 requestAs 使用。
+func (e *twoFATestEnv) newSession(userID int64) (sid, csrf string) {
 	e.t.Helper()
 	sid, err := e.sessions.Create(context.Background(), userID, auth.SessionOpts{
 		UA: "TwoFATest/1.0", IP: "192.0.2.20", Role: "user",
@@ -260,11 +294,16 @@ func (e *twoFATestEnv) authedRequest(userID int64, method, path string, body any
 	if err != nil {
 		e.t.Fatalf("Create session: %v", err)
 	}
-	csrf := auth.NewCSRFToken()
+	csrf = auth.NewCSRFToken()
 	if err := e.sessions.IssueCSRF(context.Background(), sid, csrf); err != nil {
 		e.t.Fatalf("IssueCSRF: %v", err)
 	}
+	return sid, csrf
+}
 
+// requestAs 用给定的会话/CSRF 凭据发起受保护请求。
+func (e *twoFATestEnv) requestAs(method, path string, body any, sid, csrf string) *httptest.ResponseRecorder {
+	e.t.Helper()
 	var reader io.Reader = bytes.NewReader(nil)
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -279,6 +318,12 @@ func (e *twoFATestEnv) authedRequest(userID int64, method, path string, body any
 	req.Header.Set("Origin", "http://"+req.Host)
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
 	return serve(e.router, req)
+}
+
+// authedRequest 建一个带会话 Cookie、CSRF 头与同源 Origin 的请求。
+func (e *twoFATestEnv) authedRequest(userID int64, method, path string, body any) *httptest.ResponseRecorder {
+	sid, csrf := e.newSession(userID)
+	return e.requestAs(method, path, body, sid, csrf)
 }
 
 // issueTicket 复刻 handlers_auth.go 的 createPending2FA 键格式（该函数私有于
@@ -608,13 +653,15 @@ func Test2FARegenerateInvalidatesAllOldCodes(t *testing.T) {
 		}
 	}
 
-	// 旧码必须全部失效。
+	// 旧码必须全部失效。8 次错误会同时把登录失败桶打到锁定（5 次即锁），
+	// 这本身是预期行为；解锁后再验证新码。
 	for _, old := range oldCodes {
 		ticket := env.issueTicket(user.ID)
 		if rr := env.challenge(ticket, old, "backup"); rr.Code == http.StatusOK {
 			t.Fatalf("旧备用码 %q 在重生成后仍然可用", old)
 		}
 	}
+	env.mr.FastForward(LoginLockDuration + time.Second)
 
 	// 新码必须可用（只验证第一组，避免把 8 组全部核销）。
 	ticket := env.issueTicket(user.ID)
@@ -787,5 +834,317 @@ func TestRegister2FARoutesChallengeIsPublic(t *testing.T) {
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("公开 challenge status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 评审追加：状态守卫、限流、会话吊销/CSRF 轮换、审计、真实 ticket
+// ---------------------------------------------------------------------------
+
+// Test2FASetupRejectsEnabledAndDisabledAccounts：已启用 409；禁用账号即使
+// 会话有效也不得调用任何 2FA 端点（四个端点共用 principalUser）。
+func Test2FASetupRejectsEnabledAndDisabledAccounts(t *testing.T) {
+	env := newTwoFATestEnv(t)
+
+	enabled := env.repo.add(TwoFAUser{
+		Username: "olga", PasswordHash: twoFATestPasswordHash(), TOTPEnabled: true,
+	})
+	if rr := env.authedRequest(enabled.ID, http.MethodPost, "/api/2fa/setup", map[string]any{}); rr.Code != http.StatusConflict {
+		t.Fatalf("已启用 setup status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	disabled := env.repo.add(TwoFAUser{
+		Username: "paul", PasswordHash: twoFATestPasswordHash(), Status: "disabled",
+	})
+	for name, path := range map[string]string{
+		"setup":   "/api/2fa/setup",
+		"disable": "/api/2fa/disable",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := env.authedRequest(disabled.ID, http.MethodPost, path, map[string]any{"password": twoFATestPassword})
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("禁用账号 status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// Test2FAEnableRejectsInvalidSecretShapesAndOAuthOnly 覆盖评审 Important 5：
+// enable 只接受服务端冻结形状（32 个 base32 字符 / 20 字节），且 OAuth-only
+// 用户不得启用（否则无法用口令确认来关闭）。
+func Test2FAEnableRejectsInvalidSecretShapesAndOAuthOnly(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "quinn", PasswordHash: twoFATestPasswordHash()})
+
+	for _, secret := range []string{
+		"",
+		"short",
+		strings.Repeat("A", 31),
+		strings.Repeat("A", 33),
+		strings.Repeat("A", 30) + "!!",
+		strings.Repeat("1", 32), // '1' 不是 RFC 4648 base32 字母表
+	} {
+		rr := env.authedRequest(user.ID, http.MethodPost, "/api/2fa/enable",
+			map[string]any{"secret": secret, "code": twoFATestCode})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("secret=%q status = %d，期望 400（body=%q）", secret, rr.Code, rr.Body.String())
+		}
+	}
+	if env.repo.enableAttempts != 0 {
+		t.Fatalf("非法 secret 仍触发落库（%d 次）", env.repo.enableAttempts)
+	}
+
+	oauth := env.repo.add(TwoFAUser{Username: "rita"}) // password_hash 为空
+	rr := env.authedRequest(oauth.ID, http.MethodPost, "/api/2fa/enable",
+		map[string]any{"secret": twoFATestSecret, "code": twoFATestCode})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("OAuth-only enable status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.get(oauth.ID); got.TOTPEnabled {
+		t.Fatal("OAuth-only 用户不得启用 2FA")
+	}
+}
+
+// Test2FAChallengeRateLimitedAfterFailures 覆盖评审 Important 1：挑战与登录
+// 共用失败锁定桶；连续错码后即使提交正确码也返回 429，解锁后恢复。
+func Test2FAChallengeRateLimitedAfterFailures(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "sam", PasswordHash: twoFATestPasswordHash()})
+	env.enableUser(user)
+
+	for i := 0; i < LoginMaxFailures; i++ {
+		// 每次用新 ticket，把失败计数限定在登录桶（ticket 计数每次为 1）。
+		if rr := env.challenge(env.issueTicket(user.ID), "000000", "totp"); rr.Code != http.StatusBadRequest {
+			t.Fatalf("第 %d 次错码 status = %d，期望 400（body=%q）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if rr := env.challenge(env.issueTicket(user.ID), twoFATestCode, "totp"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("锁定后正确码 status = %d，期望 429（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	env.mr.FastForward(LoginLockDuration + time.Second)
+	if rr := env.challenge(env.issueTicket(user.ID), twoFATestCode, "totp"); rr.Code != http.StatusOK {
+		t.Fatalf("解锁后正确码 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// Test2FADisablePasswordConfirmRateLimited：disable/regenerate 的口令确认
+// 同样走登录桶，5 次错误口令后正确口令也被拒绝（429），且状态未被修改。
+func Test2FADisablePasswordConfirmRateLimited(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "uma", PasswordHash: twoFATestPasswordHash()})
+	env.enableUser(user)
+
+	for i := 0; i < LoginMaxFailures; i++ {
+		rr := env.authedRequest(user.ID, http.MethodPost, "/api/2fa/disable",
+			map[string]any{"password": "wrong-password"})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("第 %d 次错误口令 status = %d，期望 400（body=%q）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := env.authedRequest(user.ID, http.MethodPost, "/api/2fa/disable",
+		map[string]any{"password": twoFATestPassword})
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("锁定后正确口令 status = %d，期望 429（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.get(user.ID); !got.TOTPEnabled {
+		t.Fatal("锁定期间不得禁用 2FA")
+	}
+}
+
+// Test2FAStateChangeRevokesOtherSessionsAndRotatesCSRF 覆盖 I13 与 TC-A-04：
+// enable/disable/regenerate 成功后吊销该用户其它会话、保留当前会话，并轮换
+// CSRF 令牌（旧令牌立即失效）。
+func Test2FAStateChangeRevokesOtherSessionsAndRotatesCSRF(t *testing.T) {
+	ctx := context.Background()
+
+	assertRevokedAndRotated := func(t *testing.T, env *twoFATestEnv, rr *httptest.ResponseRecorder, curSID, oldCSRF string) {
+		t.Helper()
+		newCSRF := ""
+		if c := twoFACookie(rr, auth.CSRFCookieName); c != nil {
+			newCSRF = c.Value
+		}
+		if newCSRF == "" || newCSRF == oldCSRF {
+			t.Fatalf("2FA 变更后 CSRF 未轮换（cookie=%q）", newCSRF)
+		}
+		if env.sessions.VerifyCSRF(ctx, curSID, oldCSRF) {
+			t.Fatal("旧 CSRF 令牌在轮换后仍然有效")
+		}
+		if !env.sessions.VerifyCSRF(ctx, curSID, newCSRF) {
+			t.Fatal("新 CSRF 令牌无效")
+		}
+	}
+
+	t.Run("enable", func(t *testing.T) {
+		env := newTwoFATestEnv(t)
+		user := env.repo.add(TwoFAUser{Username: "vera", PasswordHash: twoFATestPasswordHash()})
+		curSID, curCSRF := env.newSession(user.ID)
+		otherSID, _ := env.newSession(user.ID)
+
+		rr := env.requestAs(http.MethodPost, "/api/2fa/enable", map[string]any{
+			"secret": twoFATestSecret, "code": twoFATestCode,
+		}, curSID, curCSRF)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("enable status = %d（body=%q）", rr.Code, rr.Body.String())
+		}
+		if _, err := env.sessions.Get(ctx, otherSID); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("其它会话未被吊销：err=%v", err)
+		}
+		if _, err := env.sessions.Get(ctx, curSID); err != nil {
+			t.Fatalf("当前会话被误吊销：%v", err)
+		}
+		assertRevokedAndRotated(t, env, rr, curSID, curCSRF)
+	})
+
+	t.Run("disable", func(t *testing.T) {
+		env := newTwoFATestEnv(t)
+		user := env.repo.add(TwoFAUser{Username: "wendy", PasswordHash: twoFATestPasswordHash()})
+		env.enableUser(user)
+		curSID, curCSRF := env.newSession(user.ID)
+		otherSID, _ := env.newSession(user.ID)
+
+		rr := env.requestAs(http.MethodPost, "/api/2fa/disable",
+			map[string]any{"password": twoFATestPassword}, curSID, curCSRF)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("disable status = %d（body=%q）", rr.Code, rr.Body.String())
+		}
+		if _, err := env.sessions.Get(ctx, otherSID); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("其它会话未被吊销：err=%v", err)
+		}
+		if _, err := env.sessions.Get(ctx, curSID); err != nil {
+			t.Fatalf("当前会话被误吊销：%v", err)
+		}
+		assertRevokedAndRotated(t, env, rr, curSID, curCSRF)
+	})
+
+	t.Run("regenerate", func(t *testing.T) {
+		env := newTwoFATestEnv(t)
+		user := env.repo.add(TwoFAUser{Username: "xena", PasswordHash: twoFATestPasswordHash()})
+		env.enableUser(user)
+		curSID, curCSRF := env.newSession(user.ID)
+		otherSID, _ := env.newSession(user.ID)
+
+		rr := env.requestAs(http.MethodPost, "/api/2fa/backup-codes/regenerate",
+			map[string]any{"password": twoFATestPassword}, curSID, curCSRF)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("regenerate status = %d（body=%q）", rr.Code, rr.Body.String())
+		}
+		if _, err := env.sessions.Get(ctx, otherSID); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("其它会话未被吊销：err=%v", err)
+		}
+		if _, err := env.sessions.Get(ctx, curSID); err != nil {
+			t.Fatalf("当前会话被误吊销：%v", err)
+		}
+		assertRevokedAndRotated(t, env, rr, curSID, curCSRF)
+	})
+}
+
+func decodeTwoFAAuditDetail(t *testing.T, arg any) map[string]any {
+	t.Helper()
+	var raw []byte
+	switch v := arg.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		t.Fatalf("审计 detail 参数类型 = %T，期望 string/[]byte", arg)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("审计 detail 不是合法 JSON: %v（%q）", err, raw)
+	}
+	return m
+}
+
+// Test2FAAuditEvents 覆盖评审 Important 4：三种状态变更各写一条 security 审计。
+func Test2FAAuditEvents(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "tina", PasswordHash: twoFATestPasswordHash()})
+
+	env.enableUser(user)
+	if rr := env.authedRequest(user.ID, http.MethodPost, "/api/2fa/disable",
+		map[string]any{"password": twoFATestPassword}); rr.Code != http.StatusOK {
+		t.Fatalf("disable status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	env.enableUser(user)
+	if rr := env.authedRequest(user.ID, http.MethodPost, "/api/2fa/backup-codes/regenerate",
+		map[string]any{"password": twoFATestPassword}); rr.Code != http.StatusOK {
+		t.Fatalf("regenerate status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	calls := env.auditExec.snapshot()
+	want := []string{"2fa_enabled", "2fa_disabled", "2fa_enabled", "backup_codes_regenerated"}
+	if len(calls) != len(want) {
+		t.Fatalf("审计行数 = %d，期望 %d", len(calls), len(want))
+	}
+	for i, call := range calls {
+		// 列序：user_id, username, category, ..., detail(索引 9)...
+		if got := call[1]; got != "tina" {
+			t.Errorf("第 %d 行 username = %v，期望 tina", i, got)
+		}
+		if got := call[2]; got != "security" {
+			t.Errorf("第 %d 行 category = %v，期望 security", i, got)
+		}
+		detail := decodeTwoFAAuditDetail(t, call[9])
+		if detail["action"] != want[i] {
+			t.Errorf("第 %d 行 detail.action = %v，期望 %s", i, detail["action"], want[i])
+		}
+	}
+}
+
+// Test2FAChallengeWithRealPendingTicket 用 handlers_auth.go 的真实
+// createPending2FA（而不是测试自建键）签发 ticket，再走 challenge：
+// 验证两个任务之间的键格式/值类型契约没有漂移。
+func Test2FAChallengeWithRealPendingTicket(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "yara", PasswordHash: twoFATestPasswordHash()})
+	env.enableUser(user)
+
+	ah := newAuthHandlers(nil, env.sessions, env.rdb, nil, []byte(testSessionSecret),
+		nil, auth.CompromisedPasswordChecker{}, nil)
+	ticket, err := ah.createPending2FA(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("createPending2FA: %v", err)
+	}
+	if rr := env.challenge(ticket, twoFATestCode, "totp"); rr.Code != http.StatusOK {
+		t.Fatalf("真实 ticket challenge status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if env.ticketExists(ticket) {
+		t.Fatal("真实 ticket 在成功后应被消费")
+	}
+}
+
+// Test2FAChallengeConsumesTicketOnce 覆盖 Minor：同一 ticket 的并发提交
+// 只能派生一个会话（Lua 原子消费）。两个码不同，验证阶段都会成功。
+func Test2FAChallengeConsumesTicketOnce(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "zoe", PasswordHash: twoFATestPasswordHash()})
+	codes := env.enableUser(user)
+	ticket := env.issueTicket(user.ID)
+
+	statuses := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			statuses[i] = env.challenge(ticket, codes[i], "backup").Code
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	for _, status := range statuses {
+		switch status {
+		case http.StatusOK:
+			successes++
+		case http.StatusBadRequest:
+		default:
+			t.Fatalf("并发 ticket status = %d，期望 200 或 400", status)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("同一 ticket 并发提交成功次数 = %d，期望恰 1（statuses=%v）", successes, statuses)
 	}
 }

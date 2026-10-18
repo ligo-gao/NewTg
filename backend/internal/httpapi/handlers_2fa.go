@@ -35,6 +35,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 )
 
@@ -51,8 +52,7 @@ const (
 	// 就无法通过 ±0 校验，60s 已足够。
 	twoFATOTPReplayTTL = 2 * auth.TOTPStepSeconds * time.Second
 
-	twoFAMaxSecretBytes = 128
-	twoFAMaxCodeRunes   = 32
+	twoFAMaxCodeRunes = 32
 )
 
 // TwoFAUser 是 2FA 流程需要的 users 行投影。TOTPSecretEnc 是 envelope 密文的
@@ -84,9 +84,11 @@ type TwoFARepo interface {
 	// ReplaceBackupCodes 整体替换备用码数组（旧码立即失效）。
 	// applied=false 表示用户当前未启用 2FA。
 	ReplaceBackupCodes(ctx context.Context, userID int64, hashes []string) (applied bool, err error)
-	// ConsumeBackupCode 条件核销：仅当 users.backup_codes 仍包含 matchedHash
-	// 时把它替换为 remaining。applied=false 表示并发已被消费/码已重生成。
-	ConsumeBackupCode(ctx context.Context, userID int64, matchedHash string, remaining []string) (applied bool, err error)
+	// ConsumeBackupCode 原子核销单个备用码：SQL 内直接从数组删除 matchedHash
+	// （backup_codes - $3::text）。绝不能把预读快照算出的 remaining 整体覆盖——
+	// 两个并发登录使用不同码时，后写会把先写已删除的码写回（丢失更新）。
+	// applied=false 表示并发已被消费/码已重生成。
+	ConsumeBackupCode(ctx context.Context, userID int64, matchedHash string) (applied bool, err error)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,26 +180,29 @@ func (r *SQLTwoFARepo) ReplaceBackupCodes(ctx context.Context, userID int64, has
 	return rowsApplied(res)
 }
 
-// ConsumeBackupCode 实现 brief 冻结的条件 UPDATE：
+// ConsumeBackupCode 实现 brief 冻结的条件 UPDATE，且在 SQL 内完成元素删除：
 //
-//	UPDATE users SET backup_codes = <去掉该码后的数组>
-//	WHERE id = ? AND backup_codes @> <该码哈希>
+//	UPDATE users
+//	SET backup_codes = backup_codes - $3::text
+//	WHERE id = ? AND totp_enabled AND backup_codes @> jsonb_build_array($3::text)
+//
+// 为什么必须 SQL 内删除而不是「预读快照 → 写回剩余数组」：两个并发登录若各用
+// 一个不同码，双方都基于同一快照计算 remaining，后提交者会把先提交者已删除的
+// 码写回（丢失更新），使已用码复活。`jsonb - text` 在数据库内对当前值做增量
+// 修改，只删除命中元素，天然与并发写互不覆盖。
 //
 // 并发语义（READ COMMITTED）：第二个事务在第一个提交后重新求值 WHERE，
-// 此时数组已不含该哈希，UPDATE 影响 0 行 → 恰有一个调用返回 true。
+// 此时数组已不含该哈希，UPDATE 影响 0 行 → 同一码恰有一个调用返回 true。
 // totp_enabled 条件让「禁用 2FA 后旧码」无法再被核销。
-func (r *SQLTwoFARepo) ConsumeBackupCode(ctx context.Context, userID int64, matchedHash string, remaining []string) (bool, error) {
-	payload, err := marshalBackupCodes(remaining)
-	if err != nil {
-		return false, err
-	}
+func (r *SQLTwoFARepo) ConsumeBackupCode(ctx context.Context, userID int64, matchedHash string) (bool, error) {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE users
-		SET backup_codes = $2::jsonb, updated_at = now()
+		SET backup_codes = COALESCE(backup_codes, '[]'::jsonb) - $2::text,
+		    updated_at = now()
 		WHERE id = $1
 		  AND totp_enabled = true
-		  AND COALESCE(backup_codes, '[]'::jsonb) @> jsonb_build_array($3::text)`,
-		userID, payload, matchedHash)
+		  AND COALESCE(backup_codes, '[]'::jsonb) @> jsonb_build_array($2::text)`,
+		userID, matchedHash)
 	if err != nil {
 		return false, fmt.Errorf("httpapi: consume backup code for user %d: %w", userID, err)
 	}
@@ -240,6 +245,11 @@ type TwoFAConfig struct {
 	EncryptionKey string
 	// Issuer 是 otpauth URI 的发行方标签；空时取 "NewTG"。
 	Issuer string
+	// Limiter 是登录失败锁定桶；nil 时按 Redis 构造。2FA 挑战与
+	// disable/regenerate 的口令确认复用同一桶（modules-01:308「限流同登录桶」）。
+	Limiter *LoginLimiter
+	// Audit 为 nil 时不写审计（未装配日志库的测试/开发环境）。
+	Audit *audit.Logger
 
 	// 以下为测试接缝；生产留 nil 即使用 auth 的默认实现。
 	VerifyPassword func(hash, plain string) bool
@@ -253,6 +263,8 @@ type TwoFAHandlers struct {
 	rdb            *redis.Client
 	sessions       *auth.SessionManager
 	cipher         *auth.SecretCipher
+	limiter        *LoginLimiter
+	audit          *audit.Logger
 	verifyPassword func(hash, plain string) bool
 	now            func() time.Time
 	issuer         string
@@ -295,11 +307,17 @@ func NewTwoFAHandlers(cfg TwoFAConfig) (*TwoFAHandlers, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	limiter := cfg.Limiter
+	if limiter == nil {
+		limiter = NewLoginLimiter(cfg.Redis)
+	}
 	return &TwoFAHandlers{
 		repo:           repo,
 		rdb:            cfg.Redis,
 		sessions:       cfg.Sessions,
 		cipher:         cipher,
+		limiter:        limiter,
+		audit:          cfg.Audit,
 		verifyPassword: verify,
 		now:            now,
 		issuer:         issuer,
@@ -370,6 +388,12 @@ func (h *TwoFAHandlers) HandleSetup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 已启用时再生成 secret 只会在 enable 处被 409 拒绝，属于死路径；
+	// 明确返回 409 让前端刷新卡片状态（而不是展示一个永远无法保存的二维码）。
+	if user.TOTPEnabled {
+		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is already enabled")
+		return
+	}
 	secret, err := auth.GenerateTOTPSecret()
 	if err != nil {
 		h.log.Error("generate totp secret failed", "user_id", user.ID, "error", err)
@@ -395,14 +419,23 @@ func (h *TwoFAHandlers) HandleEnable(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
 		return
 	}
-	secret := strings.TrimSpace(req.Secret)
+	// 归一化后用服务端冻结形状校验：32 个 base32 字符、解码 20 字节。
+	// 拒绝客户端自选任意字节串当种子（ValidateTOTPSecret）。
+	secret := strings.ToUpper(strings.TrimSpace(req.Secret))
 	code := strings.TrimSpace(req.Code)
-	if secret == "" || len(secret) > twoFAMaxSecretBytes || len([]rune(code)) > twoFAMaxCodeRunes {
+	if !auth.ValidateTOTPSecret(secret) || len([]rune(code)) > twoFAMaxCodeRunes {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid two-factor parameters")
 		return
 	}
 	if user.TOTPEnabled {
 		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is already enabled")
+		return
+	}
+	// OAuth 即时注册用户没有口令，无法在 disable/regenerate 时做口令确认。
+	// 允许启用 2FA 会制造一个「开得掉、关不了」的状态，故在源头拒绝。
+	if user.PasswordHash == "" {
+		writeProblem(w, http.StatusForbidden, authProblemForbidden,
+			"Set a password before enabling two-factor authentication")
 		return
 	}
 	// 先验证再落库：错误码不得形成任何写入（含备用码生成）。
@@ -434,6 +467,10 @@ func (h *TwoFAHandlers) HandleEnable(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is already enabled")
 		return
 	}
+	h.afterTwoFAChange(w, r, user.ID)
+	h.auditEvent(r, audit.ActionAuth2FAEnable, user, map[string]any{
+		"action": "2fa_enabled", "factor": "totp", "change": "add", "backup_codes": len(plain),
+	})
 	writeJSON(w, http.StatusOK, twoFABackupCodesResponse{TOTPEnabled: true, BackupCodes: plain})
 }
 
@@ -455,13 +492,10 @@ func (h *TwoFAHandlers) HandleDisable(w http.ResponseWriter, r *http.Request) {
 		h.writeUnavailable(w)
 		return
 	}
-	// 因子变更后吊销其它会话（security-01 §2.1 生命周期），保留当前会话：
-	// 失败只记录——禁用 2FA 已生效，把成功操作改报 503 只会诱导无意义重试。
-	if sid, ok := sessionID(r); ok {
-		if err := h.sessions.RevokeUser(r.Context(), user.ID, sid); err != nil {
-			h.log.Error("revoke sessions after 2fa disable failed", "user_id", user.ID, "error", err)
-		}
-	}
+	h.afterTwoFAChange(w, r, user.ID)
+	h.auditEvent(r, audit.ActionAuth2FADisable, user, map[string]any{
+		"action": "2fa_disabled", "factor": "totp", "change": "remove",
+	})
 	writeJSON(w, http.StatusOK, twoFADisableResponse{TOTPEnabled: false})
 }
 
@@ -496,6 +530,11 @@ func (h *TwoFAHandlers) HandleRegenerateBackupCodes(w http.ResponseWriter, r *ht
 		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is not enabled")
 		return
 	}
+	h.afterTwoFAChange(w, r, user.ID)
+	h.auditEvent(r, audit.ActionAuth2FABackupCodesRegenerate, user, map[string]any{
+		"action": "backup_codes_regenerated", "factor": "backup_code",
+		"change": "reset", "backup_codes": len(plain),
+	})
 	writeJSON(w, http.StatusOK, twoFABackupCodesResponse{TOTPEnabled: true, BackupCodes: plain})
 }
 
@@ -533,6 +572,14 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := r.Context()
+	ip := clientIP(r)
+
+	// 登录桶（IP-only）先行：无效/伪造 ticket 的高频探测在触达 Redis GET 与
+	// 数据库之前就被拒绝，与登录路径的「未知 identifier 只按 IP 计分」同口径。
+	if err := h.limiter.Check(ctx, ip, ""); err != nil {
+		h.writeLimiterFailure(w, err)
+		return
+	}
 
 	rawUserID, err := h.rdb.Get(ctx, twoFATicketKeyPrefix+ticket).Result()
 	if errors.Is(err, redis.Nil) {
@@ -564,6 +611,12 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 与登录相同的双桶（IP+identifier / identifier）：验证前拦截已锁定账号。
+	if err := h.limiter.Check(ctx, ip, user.Username); err != nil {
+		h.writeLimiterFailure(w, err)
+		return
+	}
+
 	var verified bool
 	switch challengeType {
 	case "totp":
@@ -577,6 +630,12 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !verified {
+		// 错码计入登录桶（失败侧 fail-closed：Redis 不可用时拒绝而不是放行）。
+		if err := h.limiter.Record(ctx, ip, user.Username, false); err != nil {
+			h.log.Error("record 2fa limiter failure failed", "user_id", user.ID, "error", err)
+			h.writeLimiterFailure(w, err)
+			return
+		}
 		title := "Incorrect verification code"
 		if challengeType == "backup" {
 			title = "Incorrect or already-used backup code"
@@ -585,8 +644,25 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 成功：先消费 ticket（即使随后建会话失败也不得重复使用），再建正式会话。
-	h.discardTicket(ctx, ticket)
+	// 成功：清零连续失败计数。失败则按认证面故障 fail-closed（ticket 尚未消费，
+	// 但码已被核销/重放防护记录，用户需重新登录）。
+	if err := h.limiter.Record(ctx, ip, user.Username, true); err != nil {
+		h.log.Error("reset 2fa limiter failed", "user_id", user.ID, "error", err)
+		h.writeLimiterFailure(w, err)
+		return
+	}
+	// ticket 原子单次消费：GET+DEL 在 Lua 内比对 user_id。并发提交同一 ticket 的
+	// 另一个请求会得到 consumed=false，绝不产生第二个会话。
+	consumed, err := h.consumeTicket(ctx, ticket, rawUserID)
+	if err != nil {
+		h.log.Error("consume 2fa ticket failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	if !consumed {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
+		return
+	}
 	if err := h.startTwoFASession(ctx, w, r, user); err != nil {
 		h.log.Error("create session after 2fa challenge failed", "user_id", user.ID, "error", err)
 		h.writeUnavailable(w)
@@ -626,8 +702,8 @@ func (h *TwoFAHandlers) verifyBackupChallenge(ctx context.Context, user *TwoFAUs
 	if !ok {
 		return false, nil
 	}
-	remaining := removeBackupHash(user.BackupCodes, matched)
-	return h.repo.ConsumeBackupCode(ctx, user.ID, matched, remaining)
+	// 核销只传命中哈希：剩余数组由 SQL 对当前值增量计算，避免丢失更新。
+	return h.repo.ConsumeBackupCode(ctx, user.ID, matched)
 }
 
 // rejectChallenge 记录一次失败；第 5 次失败删除 ticket 并返回 429。
@@ -673,11 +749,20 @@ func (h *TwoFAHandlers) principalUser(w http.ResponseWriter, r *http.Request) (*
 		writeUnauthorized(w)
 		return nil, false
 	}
+	// 会话有效不等于账号可用：禁用账号即使 Cookie 未过期也不得调用 2FA 端点。
+	if user.Status != "enabled" {
+		writeProblem(w, http.StatusForbidden, authProblemAccountDisabled, "This account has been disabled")
+		return nil, false
+	}
 	return user, true
 }
 
 // confirmPassword 实施 F-01-10 的「禁用/重生成需当前口令」。口令为空或用户
 // 没有口令（OAuth 即时注册）时拒绝；失败不触发任何写入。
+//
+// 与登录共用失败锁定桶（modules-01:308「限流同登录桶」）：错误口令会累计到
+// 该用户名/IP 的连续失败计数，成功则清零。这防止已劫持会话的攻击者在线爆破
+// 当前口令来关闭 2FA。
 func (h *TwoFAHandlers) confirmPassword(w http.ResponseWriter, r *http.Request, user *TwoFAUser) bool {
 	var req twoFAPasswordRequest
 	if err := readAuthJSON(r, &req); err != nil {
@@ -689,8 +774,24 @@ func (h *TwoFAHandlers) confirmPassword(w http.ResponseWriter, r *http.Request, 
 			"Password confirmation is not available for this account")
 		return false
 	}
+	ctx := r.Context()
+	ip := clientIP(r)
+	if err := h.limiter.Check(ctx, ip, user.Username); err != nil {
+		h.writeLimiterFailure(w, err)
+		return false
+	}
 	if !h.verifyPassword(user.PasswordHash, req.Password) {
+		if err := h.limiter.Record(ctx, ip, user.Username, false); err != nil {
+			h.log.Error("record 2fa reauth failure failed", "user_id", user.ID, "error", err)
+			h.writeLimiterFailure(w, err)
+			return false
+		}
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid password")
+		return false
+	}
+	if err := h.limiter.Record(ctx, ip, user.Username, true); err != nil {
+		h.log.Error("reset 2fa reauth limiter failed", "user_id", user.ID, "error", err)
+		h.writeLimiterFailure(w, err)
 		return false
 	}
 	return true
@@ -725,6 +826,87 @@ func (h *TwoFAHandlers) discardTicket(ctx context.Context, ticket string) {
 	}
 }
 
+// consumeTicket 在成功路径上原子单次消费 ticket：Lua 内比对 user_id 后删除
+// ticket 与失败计数。两个并发请求同时通过验证时，只有一个能把 ticket 换成
+// 会话（另一个拿到 consumed=false），不会从同一 ticket 派生两个会话。
+func (h *TwoFAHandlers) consumeTicket(ctx context.Context, ticket, rawUserID string) (bool, error) {
+	n, err := twoFAConsumeTicketScript.Run(ctx, h.rdb,
+		[]string{twoFATicketKeyPrefix + ticket, twoFAFailKeyPrefix + ticket},
+		rawUserID,
+	).Int64()
+	if err != nil {
+		return false, fmt.Errorf("httpapi: consume 2fa ticket: %w", err)
+	}
+	return n == 1, nil
+}
+
+// afterTwoFAChange 实施 I13（MFA 因子新增/移除/重置后吊销该用户除当前会话外的
+// 全部会话）与 TC-A-04（2FA 状态变更后轮换 CSRF 令牌）。
+//
+// keepSID 取当前请求的会话 Cookie；Bearer 路径（无 Cookie）时 keepSID 为空，
+// RevokeUser 会吊销该用户全部会话——这正是 I13 对「非会话路径」的要求。
+// 吊销/轮换失败只记录日志：因子变更已经提交，改报 503 只会诱导无意义重试；
+// 且 Redis 故障期间 SessionAuth 本身 fail-closed，旧会话无法被使用。
+func (h *TwoFAHandlers) afterTwoFAChange(w http.ResponseWriter, r *http.Request, userID int64) {
+	ctx := r.Context()
+	keepSID := ""
+	if sid, ok := sessionID(r); ok {
+		keepSID = sid
+	}
+	if err := h.sessions.RevokeUser(ctx, userID, keepSID); err != nil {
+		h.log.Error("revoke sessions after 2fa change failed", "user_id", userID, "error", err)
+	}
+	if keepSID == "" {
+		return // Bearer 路径没有 CSRF Cookie
+	}
+	token := auth.NewCSRFToken()
+	if err := h.sessions.IssueCSRF(ctx, keepSID, token); err != nil {
+		h.log.Error("rotate csrf after 2fa change failed", "user_id", userID, "error", err)
+		return
+	}
+	setSessionCookies(w, keepSID, token)
+}
+
+// auditEvent 写 2FA 审计（best-effort：日志库独立且无跨库事务，失败只记日志）。
+// detail 只放状态与计数，绝不含 secret / 备用码明文。
+func (h *TwoFAHandlers) auditEvent(r *http.Request, action string, user *TwoFAUser, detail map[string]any) {
+	if h.audit == nil {
+		return
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		h.log.Warn("marshal 2fa audit detail failed", "action", action, "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:    action,
+		Actor:     user.ID,
+		Username:  user.Username,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     r.Pattern,
+		Detail:    raw,
+	}
+	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+		h.log.Warn("2fa audit write failed", "action", action, "actor", user.ID, "error", err)
+	}
+}
+
+// writeLimiterFailure 与登录路径同口径：锁定 → 429 + Retry-After；
+// 其它 Redis 故障 → 503 fail-closed（security-07 §2.3）。
+func (h *TwoFAHandlers) writeLimiterFailure(w http.ResponseWriter, err error) {
+	var locked *LockedError
+	if errors.As(err, &locked) {
+		w.Header().Set("Retry-After", retrySeconds(locked.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests,
+			"Too many failed verification attempts")
+		return
+	}
+	h.log.Error("2fa limiter unavailable", "error", err)
+	h.writeUnavailable(w)
+}
+
 func (h *TwoFAHandlers) writeUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
@@ -752,18 +934,6 @@ func validTwoFATicket(ticket string) bool {
 	return err == nil && len(raw) == 32
 }
 
-// removeBackupHash 返回去掉 matchedHash 全部出现后的新数组。
-// 复制而非原地修改，保证调用方传入的快照不被改变。
-func removeBackupHash(hashes []string, matchedHash string) []string {
-	out := make([]string, 0, len(hashes))
-	for _, h := range hashes {
-		if h != matchedHash {
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
 // twoFAProvisioningURL 构造 otpauth://totp/... URI 供前端渲染二维码。
 func twoFAProvisioningURL(issuer, account, secret string) string {
 	u := url.URL{
@@ -788,4 +958,16 @@ if n == 1 then
   redis.call('PEXPIRE', KEYS[1], ARGV[1])
 end
 return n
+`)
+
+// twoFAConsumeTicketScript 原子单次消费 ticket：仅当键值与签发时的 user_id
+// 一致才删除。GET+DEL 分开执行会留下「两个请求都读到 ticket」的窗口。
+var twoFAConsumeTicketScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  redis.call('DEL', KEYS[2])
+  return 1
+end
+return 0
 `)

@@ -48,9 +48,9 @@ func twoFAIntegrationFixture(t *testing.T) (int64, *SQLTwoFARepo, *redis.Client)
 	return userID, NewSQLTwoFARepo(db), rdb
 }
 
-// TestIntegrationTwoFARepoLifecycle 覆盖 Enable（原子三写）→ Find（密文往返、
+// TestIntegration2FARepoLifecycle 覆盖 Enable（原子三写）→ Find（密文往返、
 // 哈希数组）→ Consume（条件 UPDATE）→ Replace（旧码失效）→ Disable（清空）。
-func TestIntegrationTwoFARepoLifecycle(t *testing.T) {
+func TestIntegration2FARepoLifecycle(t *testing.T) {
 	userID, repo, _ := twoFAIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -98,11 +98,10 @@ func TestIntegrationTwoFARepoLifecycle(t *testing.T) {
 	}
 
 	// 条件核销：第一次成功，第二次（同一哈希）失败。
-	remaining := removeBackupHash(user.BackupCodes, hashes[0])
-	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[0], remaining); err != nil || !applied {
+	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[0]); err != nil || !applied {
 		t.Fatalf("首次 Consume = (%v, %v)，期望 true", applied, err)
 	}
-	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[0], remaining); err != nil || applied {
+	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[0]); err != nil || applied {
 		t.Fatalf("二次 Consume = (%v, %v)，期望 false", applied, err)
 	}
 
@@ -114,7 +113,7 @@ func TestIntegrationTwoFARepoLifecycle(t *testing.T) {
 	if applied, err := repo.ReplaceBackupCodes(ctx, userID, newHashes); err != nil || !applied {
 		t.Fatalf("ReplaceBackupCodes = (%v, %v)，期望 true", applied, err)
 	}
-	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[1], removeBackupHash(newHashes, hashes[1])); err != nil || applied {
+	if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[1]); err != nil || applied {
 		t.Fatalf("旧码在重生成后仍被核销 = (%v, %v)", applied, err)
 	}
 
@@ -129,14 +128,84 @@ func TestIntegrationTwoFARepoLifecycle(t *testing.T) {
 	if user.TOTPEnabled || user.TOTPSecretEnc != "" || len(user.BackupCodes) != 0 {
 		t.Fatalf("禁用后状态 = %+v，期望清空", user)
 	}
-	if applied, err := repo.ConsumeBackupCode(ctx, userID, newHashes[0], nil); err != nil || applied {
+	if applied, err := repo.ConsumeBackupCode(ctx, userID, newHashes[0]); err != nil || applied {
 		t.Fatalf("禁用后 Consume = (%v, %v)，期望 false", applied, err)
 	}
 }
 
-// TestIntegrationTwoFABackupCodeConcurrentConsume 是 brief (b) 的核心断言：
+// TestIntegration2FACrossCodeConcurrentConsume 是评审 Critical 的回归测试：
+// 两个并发登录使用**不同**备用码；旧实现用预读快照整体覆盖，后写会把先删
+// 的码写回（丢失更新）。修复后两个不同码都能核销，但任一码都不得复活。
+func TestIntegration2FACrossCodeConcurrentConsume(t *testing.T) {
+	userID, repo, _ := twoFAIntegrationFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cipher, err := auth.NewSecretCipher("integration-credential-key")
+	if err != nil {
+		t.Fatalf("NewSecretCipher: %v", err)
+	}
+	secretEnc, err := cipher.Encrypt("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	_, hashes, err := auth.GenerateBackupCodes(4)
+	if err != nil {
+		t.Fatalf("GenerateBackupCodes: %v", err)
+	}
+	if applied, err := repo.EnableTwoFA(ctx, userID, secretEnc, hashes); err != nil || !applied {
+		t.Fatalf("EnableTwoFA = (%v, %v)", applied, err)
+	}
+
+	// 两个并发请求各自用不同码；两者都必须成功（不同码不是同一码的竞争）。
+	results := make([]bool, 2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = repo.ConsumeBackupCode(ctx, userID, hashes[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i := range results {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		if !results[i] {
+			t.Fatalf("不同备用码 %d 的并发核销应成功", i)
+		}
+	}
+
+	// 关键断言：两个已核销的码都不得被另一个请求的快照写回。
+	for i := 0; i < 2; i++ {
+		if applied, err := repo.ConsumeBackupCode(ctx, userID, hashes[i]); err != nil || applied {
+			t.Fatalf("已核销的备用码 %d 复活 = (%v, %v)", i, applied, err)
+		}
+	}
+	user, err := repo.FindUserByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("FindUserByID: %v", err)
+	}
+	if len(user.BackupCodes) != len(hashes)-2 {
+		t.Fatalf("剩余备用码 = %d，期望 %d", len(user.BackupCodes), len(hashes)-2)
+	}
+	for i := 0; i < 2; i++ {
+		for _, h := range user.BackupCodes {
+			if h == hashes[i] {
+				t.Fatalf("已核销的备用码 %d 仍在库中", i)
+			}
+		}
+	}
+}
+
+// TestIntegration2FABackupCodeConcurrentConsume 是 brief (b) 的核心断言：
 // 多个请求并发提交同一个备用码时，条件 UPDATE 必须只让一个成功。
-func TestIntegrationTwoFABackupCodeConcurrentConsume(t *testing.T) {
+func TestIntegration2FABackupCodeConcurrentConsume(t *testing.T) {
 	userID, repo, _ := twoFAIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -160,7 +229,6 @@ func TestIntegrationTwoFABackupCodeConcurrentConsume(t *testing.T) {
 	if err != nil || user == nil {
 		t.Fatalf("FindUserByID: %v", err)
 	}
-	remaining := removeBackupHash(user.BackupCodes, hashes[0])
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -172,7 +240,7 @@ func TestIntegrationTwoFABackupCodeConcurrentConsume(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // 尽量同时发出，放大竞态窗口
-			results[i], errs[i] = repo.ConsumeBackupCode(ctx, userID, hashes[0], remaining)
+			results[i], errs[i] = repo.ConsumeBackupCode(ctx, userID, hashes[0])
 		}(i)
 	}
 	close(start)
@@ -205,9 +273,9 @@ func TestIntegrationTwoFABackupCodeConcurrentConsume(t *testing.T) {
 	}
 }
 
-// TestIntegrationTwoFAChallengeFlow 在真实 PG + Redis 上跑通
+// TestIntegration2FAChallengeFlow 在真实 PG + Redis 上跑通
 // enable → ticket → challenge（TOTP）→ 会话，并验证 ticket 被消费与重放被拒。
-func TestIntegrationTwoFAChallengeFlow(t *testing.T) {
+func TestIntegration2FAChallengeFlow(t *testing.T) {
 	userID, repo, rdb := twoFAIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
