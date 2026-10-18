@@ -54,9 +54,9 @@ export function TwoFactorChallengePage({
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
-  // A 400 from the challenge endpoint means the ticket is unknown (typically
-  // the 5-minute ticket expired). That is terminal, unlike a wrong code, so a
-  // retry form would only trap the user on a page that can never succeed.
+  // Only a 400 whose problem type is `two_factor_ticket_invalid` is terminal
+  // (malformed/expired/consumed ticket). Any other 400 is a code mistake and
+  // keeps the retry form on screen.
   const [expired, setExpired] = useState(false)
   const countdown = useCountdown()
   const tabRefs = useRef<Record<ChallengeMode, HTMLButtonElement | null>>({

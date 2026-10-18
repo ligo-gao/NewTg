@@ -235,4 +235,30 @@ describe('SignInPage submit path', () => {
       expect(onNavigate).toHaveBeenCalledWith('/dashboard')
     })
   })
+
+  it('shows a retryable panel when public status is unavailable', async () => {
+    let failing = true
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        failing
+          ? HttpResponse.json({ title: 'unavailable' }, { status: 500 })
+          : HttpResponse.json(PUBLIC_STATUS),
+      ),
+    )
+
+    const result = await renderWithProviders(
+      <SignInPage onNavigate={() => {}} />,
+      ['common', 'auth'],
+    )
+    const user = userEvent.setup()
+
+    // Without status the page cannot know whether Turnstile is required; it
+    // must not render a form whose submit is a guaranteed 403.
+    expect(await result.findByText('Could not load sign-in settings.')).toBeTruthy()
+    expect(result.queryByLabelText('Username or email')).toBeNull()
+
+    failing = false
+    await user.click(result.getByRole('button', { name: 'Retry' }))
+    expect(await result.findByLabelText('Username or email')).toBeTruthy()
+  })
 })

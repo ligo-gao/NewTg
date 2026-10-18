@@ -4,11 +4,18 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render } from '@testing-library/react'
-import { waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 import { I18nProvider } from '@/app/providers/i18n'
 import { createQueryClient } from '@/app/providers/query'
@@ -137,6 +144,37 @@ describe('route guard chain (web-00 §9.3)', () => {
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/admin/users')
+    })
+  })
+
+  it('skips the setup gate when the status probe stalls past the timeout', async () => {
+    // A half-open status request must not leave every route in beforeLoad.
+    // After the 3s probe timeout the gate is skipped; the session guard then
+    // walks an unauthenticated visitor to sign-in (never to /setup, which
+    // would be a redirect loop while uninitialized is unknown).
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => new Promise<never>(() => {})),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json(
+          { type: 'unauthorized', title: 'Unauthorized' },
+          { status: 401 },
+        ),
+      ),
+    )
+
+    vi.useFakeTimers()
+    const { router } = renderAt('/profile')
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3100)
+      })
+      expect(router.state.location.pathname).not.toBe('/setup')
+    } finally {
+      vi.useRealTimers()
+    }
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/sign-in')
     })
   })
 })
