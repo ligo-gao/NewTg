@@ -80,6 +80,12 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err := center.Load(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: load config center: %w", err)
 	}
+	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
+	// 元↔积分换算基准），并接入钳制审计日志。必须在 Load 之后、任何
+	// handler 读取 CurrentQuotaPerUnit 之前；非法 QPU 让启动失败。
+	if _, err := initBillingAssembly(gormDB, center, cfg, log, "gateway"); err != nil {
+		return nil, fmt.Errorf("gateway: billing assembly: %w", err)
+	}
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
 	}

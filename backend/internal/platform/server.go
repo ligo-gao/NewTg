@@ -16,7 +16,6 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"newtg/gateway/internal/billing"
-	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/version"
@@ -282,19 +281,21 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		_ = dbRes.Close()
 		return fmt.Errorf("worker: load config center: %w", err)
 	}
+	// 计费进程级装配（与 gateway 共用）：定价源构造写入进程级 QPU，
+	// 并把钳制审计接到 slog（billing-07 §4.5）。必须在 configcenter.Load
+	// 之后；非法 QPU 让 worker 启动失败，而不是带着错误汇率运行。
+	source, err := initBillingAssembly(gormDB, center, cfg, log, "worker")
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: billing assembly: %w", err)
+	}
 	if err := center.Subscribe(ctx); err != nil {
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
 		return fmt.Errorf("worker: subscribe config center: %w", err)
-	}
-
-	source, err := pricing.NewSource(gormDB, center)
-	if err != nil {
-		_ = redisRes.Close()
-		_ = logsRes.Close()
-		_ = dbRes.Close()
-		return fmt.Errorf("worker: build pricing source: %w", err)
 	}
 
 	registry := billing.NewRegistry(rr.client)
