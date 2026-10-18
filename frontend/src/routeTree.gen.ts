@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
+import { Route as ConsoleAdminChannelsIndexRouteImport } from './routes/_console/admin/channels/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -33,16 +34,24 @@ const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleAdminChannelsIndexRoute =
+  ConsoleAdminChannelsIndexRouteImport.update({
+    id: '/admin/channels/',
+    path: '/admin/channels/',
+    getParentRoute: () => ConsoleRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/404': typeof Errors404Route
   '/dashboard/': typeof ConsoleDashboardIndexRoute
+  '/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/404': typeof Errors404Route
   '/dashboard': typeof ConsoleDashboardIndexRoute
+  '/admin/channels': typeof ConsoleAdminChannelsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -50,13 +59,20 @@ export interface FileRoutesById {
   '/_console': typeof ConsoleRouteWithChildren
   '/_errors/404': typeof Errors404Route
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
+  '/_console/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/404' | '/dashboard/'
+  fullPaths: '/' | '/404' | '/dashboard/' | '/admin/channels/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/404' | '/dashboard'
-  id: '__root__' | '/' | '/_console' | '/_errors/404' | '/_console/dashboard/'
+  to: '/' | '/404' | '/dashboard' | '/admin/channels'
+  id:
+    | '__root__'
+    | '/'
+    | '/_console'
+    | '/_errors/404'
+    | '/_console/dashboard/'
+    | '/_console/admin/channels/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -95,15 +111,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleDashboardIndexRouteImport
       parentRoute: typeof ConsoleRoute
     }
+    '/_console/admin/channels/': {
+      id: '/_console/admin/channels/'
+      path: '/admin/channels'
+      fullPath: '/admin/channels/'
+      preLoaderRoute: typeof ConsoleAdminChannelsIndexRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
   }
 }
 
 interface ConsoleRouteChildren {
   ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
+  ConsoleAdminChannelsIndexRoute: typeof ConsoleAdminChannelsIndexRoute
 }
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
+  ConsoleAdminChannelsIndexRoute: ConsoleAdminChannelsIndexRoute,
 }
 
 const ConsoleRouteWithChildren =
