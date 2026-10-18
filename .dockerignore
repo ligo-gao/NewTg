@@ -1,0 +1,19 @@
+# 镜像构建上下文 = 仓库根（backend/Dockerfile 需要 THIRD_PARTY_NOTICES.md）。
+# 为什么在仓根裁剪：上下文越大，daemon 收到的数据越多，且 deploy/.env（本地
+# 密钥）等敏感文件会进入构建会话。Dockerfile 只 COPY backend/ 与 notices，
+# 这里再把无关目录排除，保证构建输入可复现且不携带秘密。
+.git
+.github
+.claude
+.superpowers
+ASVS
+api
+demos
+deploy
+docs
+frontend
+new-api-deploy
+# Go 构建产物与测试文件：测试不参与镜像构建，排除后层缓存也不随测试改动失效。
+backend/bin
+backend/coverage.out
+**/*_test.go

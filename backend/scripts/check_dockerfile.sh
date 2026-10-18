@@ -42,7 +42,10 @@ fi
 check "builder 使用 golang:1.26-alpine"       grep -qE '^FROM golang:1\.26-alpine' "$DOCKERFILE"
 check "runtime 使用 alpine:3.21"             grep -qE '^FROM alpine:3\.21' "$DOCKERFILE"
 check "CGO_ENABLED=0"                        grep -q 'CGO_ENABLED=0' "$DOCKERFILE"
-check "先 COPY go.mod go.sum 做依赖层缓存"    grep -qE '^COPY go\.mod go\.sum' "$DOCKERFILE"
+# 构建上下文为仓库根：notices 在仓根，Dockerfile 只 COPY backend/ 与 notices。
+check "构建上下文声明为仓库根"                grep -q '构建上下文 = 仓库根' "$DOCKERFILE"
+check "先 COPY backend/go.mod backend/go.sum 做依赖层缓存" \
+  grep -qE '^COPY backend/go\.mod backend/go\.sum' "$DOCKERFILE"
 check "go mod download"                      grep -q 'go mod download' "$DOCKERFILE"
 check "定义 ARG VERSION"                     grep -qE '^ARG VERSION' "$DOCKERFILE"
 check "版本注入 internal/version.Version"     grep -q 'internal/version\.Version=' "$DOCKERFILE"
@@ -55,8 +58,11 @@ check "apk add --no-cache ca-certificates tzdata" grep -qF -- 'apk add --no-cach
 check "非 root 用户 newtg uid 65532"          grep -qE 'adduser .*(-u 65532|--uid 65532)' "$DOCKERFILE"
 check "含 USER 指令切到非 root"               grep -qE '^USER newtg' "$DOCKERFILE"
 check "COPY 二进制到 /newtg"                  grep -qF -- 'COPY --from=builder /out/newtg /newtg' "$DOCKERFILE"
-check "COPY 迁移到 /migrations"               grep -qF -- 'COPY migrations /migrations' "$DOCKERFILE"
-check "COPY 日志库迁移到 /migrations-logs"     grep -qF -- 'COPY migrations-logs /migrations-logs' "$DOCKERFILE"
+check "COPY 迁移到 /migrations"               grep -qF -- 'COPY backend/migrations /migrations' "$DOCKERFILE"
+check "COPY 日志库迁移到 /migrations-logs"     grep -qF -- 'COPY backend/migrations-logs /migrations-logs' "$DOCKERFILE"
+# MIT 要求许可文本随二进制副本分发（SecLists 前 3000 行已编译进 /newtg）。
+check "COPY THIRD_PARTY_NOTICES.md 到 /usr/share/licenses/newtg/" \
+  grep -qF -- 'COPY THIRD_PARTY_NOTICES.md /usr/share/licenses/newtg/THIRD_PARTY_NOTICES.md' "$DOCKERFILE"
 check "EXPOSE 3000"                          grep -qE '^EXPOSE 3000$' "$DOCKERFILE"
 check "WORKDIR /data"                        grep -qE '^WORKDIR /data$' "$DOCKERFILE"
 check "HEALTHCHECK 走内置 /newtg healthcheck" \

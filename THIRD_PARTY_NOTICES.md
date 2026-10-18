@@ -1,14 +1,17 @@
 # Third-Party Notices
 
 NEW TG 的源代码为自研代码。本文件收录随源码/二进制分发的第三方**数据**及其
-许可文本，以满足许可证的署名与许可文本保留要求。
+许可文本，以满足许可证的署名与许可文本保留要求。运行镜像内同一文件位于
+`/usr/share/licenses/newtg/THIRD_PARTY_NOTICES.md`（`backend/Dockerfile` 的
+`COPY` 步骤），release 页面另附一份可独立下载的副本。
 
 ## SecLists — `Passwords/Common-Credentials/10k-most-common.txt`
 
 `backend/internal/auth/password.go` 内嵌了 SecLists 仓库中
 `Passwords/Common-Credentials/10k-most-common.txt` 按发布顺序的前 3000 行，
-用作离线高频口令表（ASVS 6.2.4 / security-01 §2.3）。该数据仅随源码发布、
-仅用于口令强度筛查，不构成对 NEW TG 源代码的许可约束。
+用作离线高频口令表（ASVS 6.2.4 / security-01 §2.3）。该数据随源码与二进制/镜像
+分发（这 3000 行已编译进 `/newtg`），仅用于口令强度筛查，不构成对 NEW TG 源代码
+的许可约束。
 
 来源仓库：<https://github.com/danielmiessler/SecLists>
 

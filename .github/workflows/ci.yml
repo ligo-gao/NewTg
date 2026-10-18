@@ -370,7 +370,8 @@ jobs:
         run: bash deploy/scripts/check_compose.sh
       - name: 构建待测镜像
         if: steps.filter.outputs.run == 'true'
-        run: docker build -f backend/Dockerfile -t newtg/gateway:ci backend
+        # 上下文=仓根：运行镜像随附 THIRD_PARTY_NOTICES.md（构建上下文不再是 backend/）。
+        run: docker build -f backend/Dockerfile -t newtg/gateway:ci .
       - name: 起 compose 栈
         if: steps.filter.outputs.run == 'true'
         run: docker compose -f deploy/docker-compose.yml up -d
@@ -470,7 +471,8 @@ jobs:
       - name: 构建 amd64 镜像（不推送，gha 缓存）
         uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6.13.0
         with:
-          context: backend
+          # 上下文=仓根（notices 随镜像分发）；Dockerfile 仍位于 backend/。
+          context: .
           file: backend/Dockerfile
           platforms: linux/amd64
           tags: newtg/gateway:ci

@@ -1,7 +1,13 @@
 # backend/Dockerfile —— NewTG 单二进制镜像（docs/platform-02 §5）
 #
-# 构建上下文 = backend/；一个镜像内含单个多角色二进制 newtg，
-# 运行期由 RUN_MODE=gateway|worker|migrate 分派，不需要为角色单独构建镜像。
+# 构建上下文 = 仓库根（不是 backend/）：运行镜像必须随附 THIRD_PARTY_NOTICES.md
+# （SecLists 前 3000 行编译进二进制，MIT 要求许可文本随副本分发）。把上下文
+# 上提到仓根后 notices 有唯一真源，Dockerfile / Makefile / 两个 workflow 不再
+# 各自维护一份拷贝。构建上下文由仓根 .dockerignore 裁剪，frontend/node_modules、
+# deploy/.env 等不会被送进 daemon。
+#
+# 一个镜像内含单个多角色二进制 newtg，运行期由 RUN_MODE=gateway|worker|migrate
+# 分派，不需要为角色单独构建镜像。
 
 # ---- 阶段 1：构建 ----
 FROM golang:1.26-alpine AS builder
@@ -20,11 +26,12 @@ ENV CGO_ENABLED=0
 
 WORKDIR /src
 
-# 依赖层缓存：源码变化时无需重新下载模块。
-COPY go.mod go.sum ./
+# 依赖层缓存：源码变化时无需重新下载模块（路径相对仓库根上下文）。
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
-COPY . .
+# 只拷 Go 模块目录（cmd/internal 与 go.mod 都在其中）；仓根其它目录不进构建层。
+COPY backend/ ./
 RUN go build -trimpath \
       -ldflags "-s -w \
         -X newtg/gateway/internal/version.Version=${VERSION} \
@@ -45,9 +52,14 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=builder /out/newtg /newtg
 
 # 迁移 SQL：RUN_MODE=migrate 经内嵌文件系统执行。
-COPY migrations /migrations
+COPY backend/migrations /migrations
 # 日志库迁移单独成目录（Task 8）。
-COPY migrations-logs /migrations-logs
+COPY backend/migrations-logs /migrations-logs
+
+# 第三方许可文本随镜像分发：MIT/ISC 要求许可与版权声明随软件副本保留，
+# 而内嵌口令表已经编译进 /newtg——源码仓库里的 notices 对镜像使用者不可见。
+# 固定路径 /usr/share/licenses/newtg/ 是发行版惯例位置，root 可读、非 root 可读。
+COPY THIRD_PARTY_NOTICES.md /usr/share/licenses/newtg/THIRD_PARTY_NOTICES.md
 
 EXPOSE 3000
 WORKDIR /data
