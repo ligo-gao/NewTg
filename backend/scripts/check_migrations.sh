@@ -31,6 +31,12 @@ if [ ! -d "$DIR" ]; then
   echo "check_migrations: 断言失败" >&2
   exit 1
 fi
+# SQL 清洗依赖 perl（块注释 / 字面量一次处理）；缺失时不能降级成只 grep 行注释，
+# 那会让 /* ... */ 里的 DDL 重新变成绕过面。
+command -v perl >/dev/null 2>&1 || {
+  echo "FAIL  check_migrations.sh 需要 perl 做 SQL 注释/字面量清洗（required for this check）" >&2
+  exit 1
+}
 DIR="${DIR%/}"
 echo "check_migrations: 检查目录 $DIR"
 
@@ -39,10 +45,16 @@ ups=("$DIR"/*.up.sql)
 downs=("$DIR"/*.down.sql)
 all=("$DIR"/*.sql)
 
-# 去掉 `--` 行注释后再做结构匹配。为什么必须去注释：注释里写一句
-# `-- CREATE TABLE request_registry (...)` 或 `-- PARTITION OF ... DEFAULT`
-# 不能算数；反之，被注释掉的真实建表也不能被误认为已定义（fail-closed 的前提）。
-sql_body() { sed -E 's/--.*$//' "$1"; }
+# 结构匹配前的 SQL 清洗（perl 一次完成，避免多趟 sed 在注释/字面量交界处误伤）：
+#   1. 去掉 /* */ 块注释与 -- 行注释——注释里的 DDL 不能算数；旧实现只处理行注释，
+#      `/* CREATE TABLE request_registry (... PRIMARY KEY (request_id)) */` 能满足 (f)；
+#   2. 把单引号字符串字面量替换为空串——字面量里的 `;`/`DEFAULT` 不是 SQL 结构；
+#      否则 `PARTITION OF ... (note text DEFAULT 'a;b') DEFAULT;` 会因按 ; 断句而漏检。
+# 局限（如实声明）：DO/EXECUTE 以字符串拼出的动态 SQL 不参与结构匹配；本仓库的
+# 分区 DDL 是静态语句，评审时动态建分区也不得使用 DEFAULT。
+sql_body() {
+  perl -0777 -pe "s{/\*.*?\*/}{}gs; s/'(?:[^']|'')*'/''/gs; s/--[^\\n]*//g" "$1"
+}
 
 # CREATE TABLE [IF NOT EXISTS] —— 主库迁移可能用幂等写法，标记匹配必须同时覆盖两种。
 create_table_re='CREATE TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?'

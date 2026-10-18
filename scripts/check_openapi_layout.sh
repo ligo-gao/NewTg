@@ -16,16 +16,16 @@ fail() {
 }
 
 # 提取文件中所有 $ref 值（块式/列表式/流式；去掉引号、尾逗号与尾花括号）。
-# 键允许带双引号（`"$ref":`）且冒号前可有空格——YAML 合法写法，漏掉等于放行
-# 未校验的引用（extract 不到 = scan_refs 看不到 = 永远 PASS）。
+# 键允许单/双引号（`"$ref":`、`'$ref' :`）且冒号前可有空格——这些都是合法 YAML，
+# 漏掉等于放行未校验的引用（extract 不到 = scan_refs 看不到 = 永远 PASS）。
 extract_refs() {
-  grep -oE '"?\$ref"?[[:space:]]*:[[:space:]]*[^[:space:]]+' "$1" 2>/dev/null \
-    | sed -E "s/^\"?\\\$ref\"?[[:space:]]*:[[:space:]]*//; s/^['\"]//; s/['\"]?[,}]?$//" || true
+  grep -oE "[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*[^[:space:]]+" "$1" 2>/dev/null \
+    | sed -E "s/^[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*//; s/^[\"']//; s/[\"']?[,}]?\$//" || true
 }
 
-# 纯词法路径规范化，等价 `realpath -m`：目标允许不存在，也不依赖 GNU coreutils
-# （macOS/BSD 的 realpath 没有 -m；CI 与本机必须同一行为）。相对路径以当前 $PWD 为基准。
-# `..` 越过根时停在根，与 realpath -m 一致。
+# 纯词法路径规范化（realpath -m 的词法部分）：目标允许不存在，也不依赖 GNU coreutils
+# （macOS/BSD 的 realpath 没有 -m）。相对路径以当前 $PWD 为基准；`..` 越过根时停在根。
+# 注意：它不解析符号链接，因此 scan_refs 还会物理解析父目录并拒绝链接本体。
 normalize_path() {
   local path="$1" out="" part
   local -a parts
@@ -45,10 +45,10 @@ normalize_path() {
   printf '%s\n' "${out:-/}"
 }
 
-# 扫描 root 下全部 YAML：$ref 只能指向 root 内已存在的文件（#/... 纯片段引用跳过）。
+# 扫描 root 下全部 YAML：$ref 只能指向 root 内已存在的普通文件（#/... 纯片段引用跳过）。
 # 返回 0=全部合法；1=存在违规（逐条打印原因）。
 scan_refs() {
-  local root="$1" root_abs f dir_abs ref target resolved rc=0
+  local root="$1" root_abs f dir_abs ref target resolved rc=0 physical_dir physical
   # root 必须真实存在，用 cd+pwd -P 取物理绝对路径（跨平台，不依赖 realpath -m）。
   root_abs=$(cd "$root" && pwd -P) || return 1
   while IFS= read -r -d '' f; do
@@ -73,7 +73,7 @@ scan_refs() {
           continue
           ;;
       esac
-      # 词法解析后做前缀包含判断：目标即使不存在，也能判定是否逃出 root。
+      # 第一道：词法解析后做前缀包含判断（目标即使不存在也能判定是否逃出 root）。
       resolved=$(normalize_path "$dir_abs/$target")
       case "$resolved" in
         "$root_abs"/*) ;;
@@ -83,8 +83,37 @@ scan_refs() {
           continue
           ;;
       esac
-      if [ ! -f "$resolved" ]; then
+      # 第二道：物理解析父目录，挡住「路径中的目录本身是指向树外的符号链接」——
+      # 纯词法前缀检查看不到链接目标，只有 cd+pwd -P 才会暴露真实位置。
+      if [ ! -d "$(dirname "$resolved")" ]; then
         echo "FAIL: $f: \$ref 目标不存在：$ref → $resolved" >&2
+        rc=1
+        continue
+      fi
+      physical_dir=$(cd "$(dirname "$resolved")" && pwd -P) || physical_dir=""
+      if [ -z "$physical_dir" ]; then
+        echo "FAIL: $f: \$ref 目标目录不可解析：$ref → $resolved" >&2
+        rc=1
+        continue
+      fi
+      physical="$physical_dir/$(basename "$resolved")"
+      case "$physical" in
+        "$root_abs"/*) ;;
+        *)
+          echo "FAIL: $f: \$ref 经符号链接逃出 $root（物理路径 $physical）：$ref" >&2
+          rc=1
+          continue
+          ;;
+      esac
+      # 第三道：目标必须是普通文件本体。符号链接一律拒绝——bundle 会跟随链接读取
+      # 树外内容，而目录级检查拦不住「文件本身是链接」这一形态。
+      if [ -L "$physical" ]; then
+        echo "FAIL: $f: \$ref 目标是符号链接（禁止跟随）：$ref → $physical" >&2
+        rc=1
+        continue
+      fi
+      if [ ! -f "$physical" ]; then
+        echo "FAIL: $f: \$ref 目标不存在：$ref → $physical" >&2
         rc=1
       fi
     done < <(extract_refs "$f")
@@ -124,6 +153,8 @@ self_test() {
 
   # 引号键 + 冒号前空格：extract_refs 必须仍能提取，否则该用例会因「未检出」而 FAIL。
   run_case escape-quoted 逃出 "\"\$ref\" : '../outside.yaml#/schemas/Escape'"
+  # 单引号键同样是合法 YAML；只匹配双引号会让 `'$ref' :` 静默绕过整道边界检查。
+  run_case escape-single 逃出 "'\$ref' : '../outside.yaml#/schemas/Escape'"
   # 普通写法的一级越界（../ 从 api/openapi 到 api/，已在 root 外）。
   run_case escape-plain 逃出 "\$ref: '../outside.yaml#/schemas/Escape'"
   # http(s) 引用会把远端内容注入 bundle 与下游 codegen（供应链面）。
@@ -133,7 +164,40 @@ self_test() {
   # 路径在树内但目标不存在：bundle 会在解析阶段才失败，必须提前拦住。
   run_case missing 目标不存在 "\$ref: './paths/does-not-exist.yaml#/X'"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界/网络/绝对路径/缺失目标注入均已被拒绝"
+  # 文件符号链接：词法/目录物理检查都能过，但链接本体指向树外，必须拒绝。
+  printf 'x-outside: 1\n' >"$tmp/outside-file.yaml"
+  ln -s "$tmp/outside-file.yaml" "$tmp/api/openapi/selftest-link.yaml"
+  printf 'x-selftest:\n  $ref: '\''./selftest-link.yaml#/X'\''\n' \
+    >"$tmp/api/openapi/selftest-symlink-file.yaml"
+  if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [symlink-file] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '符号链接'; then
+    echo "FAIL: 自检 [symlink-file] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [symlink-file] 已被拒绝（符号链接）"
+  fi
+  rm -f "$tmp/api/openapi/selftest-link.yaml" "$tmp/api/openapi/selftest-symlink-file.yaml"
+
+  # 目录符号链接：链接本体不是 -L 目标，只有物理解析父目录才能发现已出树。
+  mkdir -p "$tmp/outside-dir"
+  printf 'x-outside: 1\n' >"$tmp/outside-dir/target.yaml"
+  ln -s "$tmp/outside-dir" "$tmp/api/openapi/selftest-linkdir"
+  printf 'x-selftest:\n  $ref: '\''./selftest-linkdir/target.yaml#/X'\''\n' \
+    >"$tmp/api/openapi/selftest-symlink-dir.yaml"
+  if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [symlink-dir] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '逃出'; then
+    echo "FAIL: 自检 [symlink-dir] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [symlink-dir] 已被拒绝（逃出）"
+  fi
+  rm -f "$tmp/api/openapi/selftest-linkdir" "$tmp/api/openapi/selftest-symlink-dir.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../）、网络、绝对路径、缺失目标、符号链接注入均已被拒绝"
   return "$rc"
 }
 

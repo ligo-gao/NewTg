@@ -90,7 +90,9 @@ migrate-create: ## 新建成对迁移（14 位 UTC 时间戳；name= 传入）
 migrate-verify: ## 静态断言 + 幂等/往返/全退/schema 快照比对（§8.3，CI 门禁）
 	bash backend/scripts/check_migrations.sh $(MIGRATIONS)
 	bash backend/scripts/check_migrations.sh $(BACKEND)/migrations-logs
-	bash backend/scripts/migrate_verify.sh "$(TEST_DB_DSN)" "$(TEST_LOGS_DB_DSN)"
+# `?=` 只在变量未定义时生效：环境里显式给空值会绕过默认值。recipe 里用
+# $(if $(strip ...)) 兜底，保证空值仍回落到本地日志库 DSN。
+	bash backend/scripts/migrate_verify.sh "$(TEST_DB_DSN)" "$(if $(strip $(TEST_LOGS_DB_DSN)),$(TEST_LOGS_DB_DSN),postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable)"
 
 web-install: ## 冻结锁文件安装前端依赖
 	cd frontend && bun install --frozen-lockfile
