@@ -17,8 +17,8 @@ import (
 	migrationslogs "newtg/gateway/migrations-logs"
 )
 
-// TestExpectedSchemaVersion 用 fixture FS 验证「up 文件计数」口径：
-// 3 个 up + 2 个 down → 3；down 文件与目录不参与计数。
+// TestExpectedSchemaVersion 用 fixture FS 验证「最高 14 位时间戳版本」口径：
+// 取最大的 up 版本（20260103000003），down 文件与子目录不参与。
 func TestExpectedSchemaVersion(t *testing.T) {
 	fixture := fstest.MapFS{
 		"20260101000001_init.up.sql":     {Data: []byte("-- up 1")},
@@ -33,27 +33,49 @@ func TestExpectedSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expectedSchemaVersionFS: %v", err)
 	}
-	if got != 3 {
-		t.Fatalf("expectedSchemaVersionFS = %d, want 3", got)
+	if got != 20260103000003 {
+		t.Fatalf("expectedSchemaVersionFS = %d, want 20260103000003", got)
 	}
 }
 
-// TestExpectedSchemaVersionEmbedded 验证公共签名对真实嵌入目录的计数：
-// M0 两个迁移流各有一个 init up。
+// TestExpectedSchemaVersionErrors：无 up 文件或版本前缀非 14 位数字 → error。
+func TestExpectedSchemaVersionErrors(t *testing.T) {
+	cases := map[string]fstest.MapFS{
+		"no up files": {
+			"20260101000001_init.down.sql": {Data: []byte("-- down")},
+		},
+		"short prefix": {
+			"123_init.up.sql": {Data: []byte("-- up")},
+		},
+		"non-digit prefix": {
+			"2026010100000x_init.up.sql": {Data: []byte("-- up")},
+		},
+	}
+	for name, fsys := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := expectedSchemaVersionFS(fsys); err == nil {
+				t.Fatalf("expectedSchemaVersionFS(%s) = nil error, want error", name)
+			}
+		})
+	}
+}
+
+// TestExpectedSchemaVersionEmbedded 验证公共签名对真实嵌入目录的版本解析：
+// M0 两个迁移流各有一个 14 位时间戳 init up。
 func TestExpectedSchemaVersionEmbedded(t *testing.T) {
 	mainVer, err := ExpectedSchemaVersion(migrations.FS)
 	if err != nil {
 		t.Fatalf("ExpectedSchemaVersion(main): %v", err)
 	}
-	if mainVer != 1 {
-		t.Fatalf("main expected version = %d, want 1", mainVer)
+	if mainVer != 20261018053301 {
+		t.Fatalf("main expected version = %d, want 20261018053301", mainVer)
 	}
 	logsVer, err := ExpectedSchemaVersion(migrationslogs.FS)
 	if err != nil {
 		t.Fatalf("ExpectedSchemaVersion(logs): %v", err)
 	}
-	if logsVer != 1 {
-		t.Fatalf("logs expected version = %d, want 1", logsVer)
+	if logsVer != 20261018061805 {
+		t.Fatalf("logs expected version = %d, want 20261018061805", logsVer)
 	}
 }
 

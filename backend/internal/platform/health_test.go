@@ -49,7 +49,7 @@ func newTestChecker(db dbProbe, rdb redisProbe) *Checker {
 	c := &Checker{
 		db:                db,
 		rdb:               rdb,
-		migrationExpected: 1, // M0 冻结期望值
+		migrationExpected: 1, // 单测夹具：与 stubDBProbe.version 对齐
 		node:              "test-node",
 	}
 	c.MarkConfigLoaded()

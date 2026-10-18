@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ const (
 	migrateLockRetryInterval = 2 * time.Second
 	// migrateUnlockTimeout：释放锁用独立短超时，不受启动 ctx 取消影响。
 	migrateUnlockTimeout = 5 * time.Second
+	// migrateVersionDigits：文件名版本前缀长度（platform-04 §2.3 V1）。
+	migrateVersionDigits = 14
 )
 
 // RunMigrate 以 migrate 角色运行：主库 → 日志库，成功后返回（调用方 exit 0）。
@@ -78,7 +81,7 @@ func runMigrate(ctx context.Context, cfg *config.Config, exec migrationExecutor)
 		return fmt.Errorf("migrate: main database: %w", err)
 	}
 
-	// DB_LOGS_DSN 在 config 中允许为空（Task 3 口径）；为空时跳过日志库迁移。
+	// DB_LOGS_DSN 在 config 中允许为空（Task 3 口径）；为空时**有意跳过**日志库迁移。
 	if cfg.DBLogsDSN == "" {
 		return nil
 	}
@@ -88,8 +91,10 @@ func runMigrate(ctx context.Context, cfg *config.Config, exec migrationExecutor)
 	return nil
 }
 
-// ExpectedSchemaVersion 返回嵌入目录中 *.up.sql 的个数（平铺目录，不递归）。
-// 供 /readyz R3 与测试共用；dirty 状态由 DB 的 schema_migrations 判定，此处不涉及。
+// ExpectedSchemaVersion 返回嵌入目录中 *.up.sql 的最高 14 位时间戳版本号
+// （platform-04 §2.3 V1：文件名 {ts}_name.up.sql，ts 为 14 位 UTC 时间戳）。
+// 该值与 schema_migrations.version 同口径，供 /readyz R3 与测试共用；
+// dirty 状态由 DB 判定，此处不涉及。无 up 文件或前缀非 14 位数字时返回错误。
 func ExpectedSchemaVersion(dir embed.FS) (uint, error) {
 	return expectedSchemaVersionFS(dir)
 }
@@ -101,16 +106,43 @@ func expectedSchemaVersionFS(fsys fs.FS) (uint, error) {
 	if err != nil {
 		return 0, fmt.Errorf("migrate: read embedded migrations: %w", err)
 	}
-	var count uint
+	var (
+		highest uint
+		found   bool
+	)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), ".up.sql") {
-			count++
+		prefix, _, ok := strings.Cut(entry.Name(), "_")
+		if !ok || len(prefix) != migrateVersionDigits || !isDigits(prefix) {
+			return 0, fmt.Errorf(
+				"migrate: migration file %q has no %d-digit timestamp version prefix",
+				entry.Name(), migrateVersionDigits)
+		}
+		version, err := strconv.ParseUint(prefix, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("migrate: parse version from %q: %w", entry.Name(), err)
+		}
+		if !found || uint(version) > highest {
+			highest = uint(version)
+			found = true
 		}
 	}
-	return count, nil
+	if !found {
+		return 0, errors.New("migrate: embedded migrations contain no *.up.sql files")
+	}
+	return highest, nil
+}
+
+// isDigits 判断字符串是否全为 ASCII 数字（ParseUint 也接受正负号等，此处收紧）。
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // prodMigrationExecutor 是生产实现：咨询锁走独立 *sql.Conn（会话级锁），

@@ -14,6 +14,7 @@ import (
 
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/version"
+	"newtg/gateway/migrations"
 )
 
 // RunGateway 以 gateway 角色运行。装配序（platform-03）：logger → OpenDB →
@@ -30,6 +31,13 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		"commit", version.Commit,
 		"node", cfg.NodeName,
 	)
+
+	// R3 期望版本与 schema_migrations.version 同口径（14 位时间戳）。
+	// 嵌入迁移不可用时 fail-fast，避免以错误期望值对外提供服务。
+	expectedVersion, err := ExpectedSchemaVersion(migrations.FS)
+	if err != nil {
+		return fmt.Errorf("gateway: expected schema version: %w", err)
+	}
 
 	db, err := conn.openDB(ctx, cfg)
 	if err != nil {
@@ -57,7 +65,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}()
 
 	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）。
-	checker := checkerFromResources(db, redisRes, m0MigrationExpected, log)
+	checker := checkerFromResources(db, redisRes, int(expectedVersion), log)
 	checker.node = cfg.NodeName
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", checker.HandlerHealthz)
@@ -115,9 +123,6 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	log.Info("gateway stopped")
 	return nil
 }
-
-// m0MigrationExpected 是 M0 阶段 schema_migrations 的冻结期望值（RunMigrate 由 Task 6 填实）。
-const m0MigrationExpected = 1
 
 // checkerFromResources 从装配好的 Resource 还原具体类型构造 Checker（生产路径）。
 // 非生产实现（测试 stub）无法还原时降级为 nil 依赖的恒失败 Checker，不 panic。

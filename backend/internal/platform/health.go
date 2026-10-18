@@ -39,7 +39,7 @@ type redisProbe interface {
 type Checker struct {
 	db                dbProbe
 	rdb               redisProbe
-	migrationExpected int // M0 冻结期望值=1
+	migrationExpected int // 期望的 schema_migrations 版本（装配时由 ExpectedSchemaVersion 注入）
 	log               *slog.Logger
 	node              string // cfg.NodeName（装配时由 RunGateway 写入）
 
