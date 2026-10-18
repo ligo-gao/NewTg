@@ -130,6 +130,63 @@ describe('403 csrf_failed recovery', () => {
     expect(idempotencyKeys[1]).toBe(idempotencyKeys[0])
   })
 
+  it('invokes the configured fetch unbound for dispatch, refresh and replay', async () => {
+    const observedThis: unknown[] = []
+    let writeCalls = 0
+    let meCalls = 0
+    const csrfHeaders: Array<string | null> = []
+
+    async function observedFetch(this: unknown, input: Request): Promise<Response> {
+      observedThis.push(this)
+
+      if (input.url === `${BASE_URL}/api/me` && input.method === 'GET') {
+        meCalls += 1
+        csrfCookie = 'fresh-token'
+        return new Response(JSON.stringify({ id: 'me' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (input.url === `${BASE_URL}/api/tokens` && input.method === 'POST') {
+        writeCalls += 1
+        csrfHeaders.push(input.headers.get(CSRF_HEADER))
+        if (writeCalls === 1) {
+          return new Response(
+            JSON.stringify({ type: 'csrf_failed', title: 'CSRF validation failed' }),
+            {
+              status: 403,
+              headers: { 'Content-Type': 'application/problem+json' },
+            },
+          )
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`unexpected request: ${input.method} ${input.url}`)
+    }
+
+    const client = createApiClient({
+      baseUrl: BASE_URL,
+      fetch: observedFetch,
+    }) as unknown as LooseClient
+
+    await client.POST('/api/tokens', { body: { name: 'ci' } })
+
+    expect(writeCalls).toBe(2)
+    expect(meCalls).toBe(1)
+    expect(csrfHeaders).toEqual(['stale-token', 'fresh-token'])
+
+    // Native browser fetch brand-checks its receiver: `options.fetch(...)`
+    // passes the frozen options object as `this` and throws "Illegal
+    // invocation". Node/undici ignores `this`, so assert it directly here.
+    expect(observedThis).toHaveLength(3)
+    expect(observedThis.every((thisArg) => thisArg === undefined)).toBe(true)
+  })
+
   it('surfaces a second csrf failure as kind="forbidden"', async () => {
     let writeCalls = 0
     let meCalls = 0

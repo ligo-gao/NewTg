@@ -98,11 +98,15 @@ const retrySources = new WeakMap<Request, Request>()
  * replay decides the outcome and a second failure surfaces as `forbidden`.
  */
 async function refreshCsrfCookie(options: MergedOptions): Promise<void> {
+  // `options` is a frozen plain object; browsers brand-check native `fetch`
+  // and reject `options.fetch(...)` with "Illegal invocation". Capture the
+  // function and invoke it unbound.
+  const doFetch = options.fetch ?? globalThis.fetch
   const fallbackOrigin =
     typeof location !== 'undefined' ? location.origin : 'http://localhost'
   try {
     const url = new URL(CSRF_REFRESH_PATH, options.baseUrl || fallbackOrigin)
-    await options.fetch(
+    await doFetch(
       new Request(url, {
         method: 'GET',
         credentials: 'same-origin',
@@ -172,10 +176,13 @@ export const contractMiddleware: Middleware = {
 
       let retried: Response
       try {
-        // The client's configured fetch keeps tests/MSW and future custom
-        // transports in the loop. A direct call (not `client.fetch`) means the
-        // middleware is not re-entered, so this is structurally one retry.
-        retried = await options.fetch(retryRequest)
+        // Capture the configured fetch as a bare function: calling
+        // `options.fetch(...)` passes the frozen options object as `this`,
+        // which native browser fetch rejects with "Illegal invocation".
+        const doFetch = options.fetch ?? globalThis.fetch
+        // A direct call (not `client.fetch`) means the middleware is not
+        // re-entered, so this is structurally one retry.
+        retried = await doFetch(retryRequest)
       } catch (error) {
         if (error instanceof TypeError) throw parseProblem({ status: 0 })
         throw error
