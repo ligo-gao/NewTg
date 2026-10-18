@@ -23,7 +23,12 @@ import (
 //
 //	newtg:billing:inflight:<requestID>  Hash：user_id / started_at_ms /
 //	                                    heartbeat_at_ms；TTL = 租约 TTL（300s）
-//	newtg:billing:inflight:index        ZSET：member=requestID，score=started_at_ms
+//	newtg:billing:inflight-index        ZSET：member=requestID，score=started_at_ms
+//
+// 索引键刻意**不带** `inflight:` 前缀（用连字符分隔）：租约键是
+// `inflight:` + requestID，若索引命名为 `inflight:index`，一个字面量为
+// "index" 的 requestID 会与索引 ZSET 撞键（Hash/ZSET 类型冲突，读写报
+// WRONGTYPE）。`inflight-index` 不属于任何 leaseKey 的值域，二者永不重叠。
 //
 // 为什么需要 ZSET 索引：Hash 的 TTL 是**存活租约**（心跳超时 300s），而未
 // 续约的会话在 300s 后 Hash 就被 Redis 删除；但「悬挂」判定窗口是 600s
@@ -36,7 +41,7 @@ import (
 // RecoverAbandoned 按 hold 流水 CAS 幂等，重复扫描不产生第二笔退款。
 const (
 	registryKeyPrefix = "newtg:billing:inflight:"
-	registryIndexKey  = "newtg:billing:inflight:index"
+	registryIndexKey  = "newtg:billing:inflight-index"
 
 	registryFieldUserID      = "user_id"
 	registryFieldStartedAt   = "started_at_ms"

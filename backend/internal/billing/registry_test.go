@@ -251,6 +251,41 @@ func TestRegistryRemove(t *testing.T) {
 	}
 }
 
+// TestRegistryIndexKeyDoesNotCollideWithRequestID 钉死索引键与租约键的值域
+// 不相交：requestID 字面量为 "index" 时，旧布局 `inflight:index` 会与索引
+// ZSET 撞键（WRONGTYPE）。索引键改为 `inflight-index` 后两者独立。
+func TestRegistryIndexKeyDoesNotCollideWithRequestID(t *testing.T) {
+	if registryIndexKey == leaseKey("index") {
+		t.Fatalf("index key %q collides with lease key for requestID \"index\"", registryIndexKey)
+	}
+	reg, mr, now := newTestRegistry(t)
+	ctx := context.Background()
+	if err := reg.Register(ctx, "index", 5, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if !mr.Exists(leaseKey("index")) {
+		t.Fatal("lease hash for requestID \"index\" missing")
+	}
+	members, err := mr.ZMembers(registryIndexKey)
+	if err != nil || len(members) != 1 || members[0] != "index" {
+		t.Fatalf("index members = %v, err = %v, want [index]", members, err)
+	}
+	// 心跳/删除同样不得触发 WRONGTYPE。
+	if err := reg.Heartbeat(ctx, "index"); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	ids, err := reg.ListAbandoned(ctx, now.Add(601*time.Second))
+	if err != nil {
+		t.Fatalf("ListAbandoned: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "index" {
+		t.Fatalf("ids = %v, want [index]", ids)
+	}
+	if err := reg.Remove(ctx, "index"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
 // TestRegistryRedisFailure 验证 Redis 故障时所有方法返回 error：
 // worker 必须把 ListAbandoned 失败当成「本轮失败」而不是「无悬挂」。
 func TestRegistryRedisFailure(t *testing.T) {

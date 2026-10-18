@@ -391,6 +391,71 @@ func TestRecoverAbandonedWritesRefundedLog(t *testing.T) {
 	}
 }
 
+// TestRecoverAbandonedLogRecordsRetainedIncrement 覆盖 R-55/R-59：兜底退款
+// 保留 ChargeIncrement 已扣的消耗（R-39），refunded 日志的 cost 必须记录
+// 保留额而不是 0，否则日志与钱包对不上（钱包净扣 50，日志 cost 也必须是 50）。
+func TestRecoverAbandonedLogRecordsRetainedIncrement(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openTask5LogsDB(t)
+	userID := createBillingTestUser(t, db, 1000)
+	req := newTask5UUID(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE request_id = $1::uuid`, req) })
+
+	ledger := NewLedger(gormDB)
+	if _, err := ledger.ApplyDelta(ctx, userID, -300, "consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if _, err := ledger.ApplyDelta(ctx, userID, -50, "consume", "confirmed", "usage_log", req); err != nil {
+		t.Fatalf("consume increment: %v", err)
+	}
+
+	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
+	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+
+	// 钱包：1000 − 300 − 50 + 300 = 950，净保留 50。
+	if got := userBalance(t, db, userID); got != 950 {
+		t.Fatalf("balance = %d, want 950（只退 hold 300）", got)
+	}
+	var (
+		status                 int16
+		cost, refunded, preDed int64
+	)
+	if err := logsDB.QueryRow(
+		`SELECT status, cost, refunded, pre_deducted
+		   FROM usage_logs WHERE request_id = $1::uuid`, req).
+		Scan(&status, &cost, &refunded, &preDed); err != nil {
+		t.Fatalf("read usage_logs: %v", err)
+	}
+	if status != int16(UsageLogStatusRefunded) {
+		t.Fatalf("status = %d, want refunded", status)
+	}
+	if cost != 50 {
+		t.Fatalf("cost = %d, want 50（保留的 ChargeIncrement 消耗）", cost)
+	}
+	if refunded != 300 || preDed != 300 {
+		t.Fatalf("refunded/pre_deducted = %d/%d, want 300/300", refunded, preDed)
+	}
+
+	// 重复回收走「已有行 → 收敛」分支（R-25/R-55）：必须保留 cost=50，
+	// 不能把已记录的保留消耗清零，也不能插第二行。
+	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+		t.Fatalf("second recover: %v", err)
+	}
+	var n int
+	if err := logsDB.QueryRow(
+		`SELECT count(*), COALESCE(MAX(cost), 0)
+		   FROM usage_logs WHERE request_id = $1::uuid`, req).
+		Scan(&n, &cost); err != nil {
+		t.Fatalf("re-read usage_logs: %v", err)
+	}
+	if n != 1 || cost != 50 {
+		t.Fatalf("after converge: rows=%d cost=%d, want 1/50", n, cost)
+	}
+}
+
 // TestRecoverAbandonedLogFailureRetries 验证日志库不可用时返回错误保留租约，
 // 下一轮（新的 Saturator）能补写占位；资金不重复退。
 func TestRecoverAbandonedLogFailureRetries(t *testing.T) {

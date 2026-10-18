@@ -125,6 +125,23 @@ func (e *Engine) writeAbandonedRefundLog(ctx context.Context, requestID string) 
 		return fmt.Errorf("billing: expired hold rows for %s span multiple users", requestID)
 	}
 
+	// R-55/R-59：兜底只退剩余 hold（R-39），ChargeIncrement 已扣的增量
+	// 保留不退。日志必须与钱包一致——status=refunded 时 cost 记录**保留的
+	// 消耗**、refunded 记录退回的 hold；cost=0 只适用于纯全额退款。
+	// 增量行是 type='consume' 的 confirmed 流水（结算少补行在崩溃兜底场景
+	// 不会同时存在：worker 先回收时 Terminate 看到已关闭的 hold 不再结算）。
+	var retained int64
+	if err := e.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(SUM(-amount), 0) FROM wallet_transactions
+		  WHERE reference_type = 'usage_log' AND reference_id = ?
+		    AND type = 'consume'`, requestID).Row().Scan(&retained); err != nil {
+		return fmt.Errorf("billing: read retained consumption for %s: %w", requestID, err)
+	}
+	if retained < 0 {
+		// 数据损坏（consume 行金额为正）；DBLogger 也会拒绝负金额。
+		return fmt.Errorf("billing: negative retained consumption %d for %s", retained, requestID)
+	}
+
 	// worker 没有原始 RelayContext：requestID 与 userID 是持久化状态面里
 	// 可靠的部分，模型/渠道/令牌等列写 NULL（DBLogger 对零值即 NULL）。
 	rc := &contract.RelayContext{
@@ -132,9 +149,10 @@ func (e *Engine) writeAbandonedRefundLog(ctx context.Context, requestID string) 
 		UserID:    int(userID),
 	}
 	outcome := SettlementOutcome{
-		Cost:         0, // refunded 状态的 cost 恒为 0（DBLogger 也会强制归零）
+		Cost:         retained,
 		PreDeducted:  refunded,
 		Refunded:     refunded,
+		RetainedCost: retained,
 		Status:       UsageLogStatusRefunded,
 		ErrorClass:   "abandoned",
 		ErrorMessage: "request abandoned; hold refunded by worker",

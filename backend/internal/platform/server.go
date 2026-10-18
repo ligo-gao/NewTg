@@ -248,11 +248,18 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: open redis: %w", err)
 	}
 	rr, ok := redisRes.(redisResource)
-	if !ok || rr.client == nil {
+	if !ok {
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
 		return errors.New("worker: redis resource has unexpected type")
+	}
+	if rr.client == nil {
+		// redisResource.Close 会解引用 client；nil 客户端说明装配被错误
+		// 调用，直接失败（R-41：引擎与注册表都必须拿到非 nil 客户端）。
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: redis client is nil")
 	}
 
 	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
