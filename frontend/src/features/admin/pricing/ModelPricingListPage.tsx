@@ -178,12 +178,13 @@ export function ModelPricingListPage() {
   const quotaPerUnit = data?.quota_per_unit ?? DEFAULT_QUOTA_PER_UNIT
 
   // 删除后 offset 分页可能越过末尾；契约要求回退到最后一页
-  // （web-00 §5.5）。
+  // （web-00 §5.5）。total 归零时同样回第 1 页，否则会显示
+  // 「Page N of 1」并停在越界页。
   useEffect(() => {
-    if (!listQuery.isFetching && total > 0 && page > pages) {
+    if (!listQuery.isFetching && page > pages) {
       setPage(pages)
     }
-  }, [listQuery.isFetching, total, page, pages])
+  }, [listQuery.isFetching, page, pages])
 
   function applyFilters(): void {
     setApplied(draft)

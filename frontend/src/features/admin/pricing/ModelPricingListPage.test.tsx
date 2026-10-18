@@ -314,6 +314,46 @@ describe('ModelPricingListPage', () => {
     expect(getByRole('table')).toBeTruthy()
   })
 
+  it('refreshes and reports a gone record when a delete races another delete', async () => {
+    let listCalls = 0
+    installBaseHandlers({
+      permissions: null,
+      record: () => {
+        listCalls += 1
+      },
+    })
+    server.use(
+      http.delete(`${ORIGIN}/api/model-pricing/gpt-5`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Not Found' },
+          { status: 404 },
+        ),
+      ),
+    )
+
+    const { findByRole, findByText } = await renderWithProviders(
+      <ModelPricingListPage />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    expect(await findByText('gpt-5')).toBeTruthy()
+    await user.click(await findByRole('button', { name: 'Delete' }))
+    const dialog = await findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => {
+      const messages = useToastStore.getState().toasts.map((toast) => toast.message)
+      expect(messages).toContain(
+        'This record no longer exists. The list has been refreshed.',
+      )
+    })
+    // 404 与 409 一样失效列表，避免幽灵行与重复 404。
+    await waitFor(() => {
+      expect(listCalls).toBeGreaterThanOrEqual(2)
+    })
+  })
+
   it('shows a free tag only for the server-marked free row and renders single zeros', async () => {
     installBaseHandlers({
       items: [
