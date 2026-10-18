@@ -126,7 +126,7 @@ func parseMessages(raws []json.RawMessage) ([]contract.Message, error) {
 	}
 	out := make([]contract.Message, 0, len(raws))
 	for i, raw := range raws {
-		msg, err := parseMessage(raw, "")
+		msg, err := parseMessage(raw, "", parseModeRequest)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", i, err)
 		}
@@ -135,9 +135,28 @@ func parseMessages(raws []json.RawMessage) ([]contract.Message, error) {
 	return out, nil
 }
 
+// parseMode 区分入站请求与上游响应的校验强度。
+//
+// 请求解析必须在归一化期拒绝编码器无法编码的形态（tool 消息缺 tool_call_id、
+// tool_call 缺 function.name）：否则客户端参数错误会穿过归一化层变成
+// BuildOpenAIRequestBody 失败，端点层映射为 502，错误归因完全错位
+// （final-review finding 8）。
+//
+// 上游响应是既成事实：稀疏/降级的响应可能合法地缺少这些可选字段，同一组
+// 校验不得把 ParseOpenAIResponse 打成 ErrParamInvalid，否则一个字段缺失的
+// 上游响应会变成 502（load-bearing finding）。因此响应模式只保留「形状无法
+// 解析」的错误，对缺失字段做宽容归一。
+type parseMode int
+
+const (
+	parseModeRequest  parseMode = iota // 入站请求：执行完整校验
+	parseModeResponse                  // 上游响应：不因缺失可选字段拒绝
+)
+
 // parseMessage 解析一条 OpenAI 消息。defaultRole 非空时用于「上游响应未写 role」
 // 的兼容场景（响应的消息默认 assistant）；请求路径传空串，role 缺失即报错。
-func parseMessage(raw json.RawMessage, defaultRole contract.Role) (contract.Message, error) {
+// mode 决定缺失 tool 字段时是按参数非法拒绝（请求）还是宽容归一（响应）。
+func parseMessage(raw json.RawMessage, defaultRole contract.Role, mode parseMode) (contract.Message, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return contract.Message{}, paramErrf("message 必须是 JSON 对象")
@@ -162,7 +181,7 @@ func parseMessage(raw json.RawMessage, defaultRole contract.Role) (contract.Mess
 	}
 
 	if toolCalls, ok := obj["tool_calls"]; ok && toolCalls != nil {
-		parts, err := parseToolCalls(toolCalls)
+		parts, err := parseToolCalls(toolCalls, mode)
 		if err != nil {
 			return contract.Message{}, err
 		}
@@ -170,7 +189,7 @@ func parseMessage(raw json.RawMessage, defaultRole contract.Role) (contract.Mess
 	}
 	// 遗留 function_call：映射为单条 tool_call（契约没有独立函数调用构件）。
 	if functionCall, ok := obj["function_call"]; ok && functionCall != nil {
-		part, err := parseFunctionCall(functionCall)
+		part, err := parseFunctionCall(functionCall, mode)
 		if err != nil {
 			return contract.Message{}, err
 		}
@@ -178,19 +197,24 @@ func parseMessage(raw json.RawMessage, defaultRole contract.Role) (contract.Mess
 	}
 
 	// tool 角色的内容语义是「工具结果」，整条消息归一为一个 tool_result 部件。
-	// tool_call_id 必须在**解析期**校验（final-review finding 8）：BuildOpenAIRequestBody
-	// 的编码器拒绝缺少 tool_call_id 的 tool 消息，若解析放行，客户端参数错误会
-	// 穿过归一化层变成上游构造失败（端点层映射为 502），错误归因完全错位。
+	// tool_call_id 必须在**请求解析期**校验（final-review finding 8）：
+	// BuildOpenAIRequestBody 的编码器拒绝缺少 tool_call_id 的 tool 消息，若解析
+	// 放行，客户端参数错误会穿过归一化层变成上游构造失败（端点层映射为 502），
+	// 错误归因完全错位。响应模式不做该校验：稀疏上游响应缺 tool_call_id 时
+	// 保留已解析的文本内容，不得把上游响应当成客户端参数错误。
 	if role == contract.RoleTool {
 		callID, _ := obj["tool_call_id"].(string)
 		if callID == "" {
-			return contract.Message{}, paramErrf("tool 消息缺少 tool_call_id")
+			if mode == parseModeRequest {
+				return contract.Message{}, paramErrf("tool 消息缺少 tool_call_id")
+			}
+		} else {
+			msg.Content = []contract.ContentPart{{
+				Kind: contract.PartToolResult,
+				Text: joinTextParts(msg.Content),
+				Meta: map[string]any{"tool_call_id": callID},
+			}}
 		}
-		msg.Content = []contract.ContentPart{{
-			Kind: contract.PartToolResult,
-			Text: joinTextParts(msg.Content),
-			Meta: map[string]any{"tool_call_id": callID},
-		}}
 	}
 
 	// 协议特有但需保留的消息级字段 → Extensions（契约 ir.go 的字段注释）。
@@ -311,7 +335,7 @@ func parseImagePart(rawURL string, meta map[string]any) (contract.ContentPart, e
 	return contract.ContentPart{Kind: contract.PartImageURL, URL: rawURL, Meta: meta}, nil
 }
 
-func parseToolCalls(value any) ([]contract.ContentPart, error) {
+func parseToolCalls(value any, mode parseMode) ([]contract.ContentPart, error) {
 	items, ok := value.([]any)
 	if !ok {
 		return nil, paramErrf("tool_calls 必须是数组")
@@ -328,12 +352,19 @@ func parseToolCalls(value any) ([]contract.ContentPart, error) {
 		}
 		function, ok := obj["function"].(map[string]any)
 		if !ok {
-			return nil, paramErrf("tool_calls[%d] 缺少 function 对象", i)
+			// 请求路径：编码器要求 function 对象，归一化期拒绝（finding 8）。
+			// 响应路径：稀疏上游响应是既成事实，按空 function 归一（保留 id），
+			// 不得因此把整条响应当成参数非法拒绝。
+			if mode == parseModeRequest {
+				return nil, paramErrf("tool_calls[%d] 缺少 function 对象", i)
+			}
+			function = map[string]any{}
 		}
 		name, _ := function["name"].(string)
-		// function.name 在解析期即校验（final-review finding 8）：编码器
+		// function.name 在请求解析期即校验（final-review finding 8）：编码器
 		// encodeToolCall 拒绝匿名调用，解析放行会把客户端错误拖到 502。
-		if name == "" {
+		// 响应模式只做宽容归一：上游响应缺 name 不是调用方的参数错误。
+		if name == "" && mode == parseModeRequest {
 			return nil, paramErrf("tool_calls[%d] 缺少 function.name", i)
 		}
 		arguments := argumentsString(function["arguments"])
@@ -347,14 +378,15 @@ func parseToolCalls(value any) ([]contract.ContentPart, error) {
 	return parts, nil
 }
 
-func parseFunctionCall(value any) (contract.ContentPart, error) {
+func parseFunctionCall(value any, mode parseMode) (contract.ContentPart, error) {
 	obj, ok := value.(map[string]any)
 	if !ok {
 		return contract.ContentPart{}, paramErrf("function_call 必须是 JSON 对象")
 	}
 	name, _ := obj["name"].(string)
-	// 与 tool_calls 同口径：编码器要求 name，解析期就拒绝（finding 8）。
-	if name == "" {
+	// 与 tool_calls 同口径：请求路径编码器要求 name，解析期就拒绝（finding 8）；
+	// 响应路径允许稀疏上游响应缺 name。
+	if name == "" && mode == parseModeRequest {
 		return contract.ContentPart{}, paramErrf("function_call 缺少 name")
 	}
 	return contract.ContentPart{
@@ -937,7 +969,9 @@ func ParseOpenAIResponse(body []byte) (*contract.Response, contract.Usage, error
 	for _, choice := range payload.Choices {
 		message := contract.Message{Role: contract.RoleAssistant}
 		if len(choice.Message) > 0 {
-			parsed, err := parseMessage(choice.Message, contract.RoleAssistant)
+			// 响应模式：上游响应是既成事实，请求侧的 tool 字段校验不得在这里
+			// 生效（否则稀疏响应会变成 ErrParamInvalid → 502）。
+			parsed, err := parseMessage(choice.Message, contract.RoleAssistant, parseModeResponse)
 			if err != nil {
 				return nil, contract.Usage{}, fmt.Errorf("choices[%d].message: %w", choice.Index, err)
 			}

@@ -391,6 +391,54 @@ func TestIRParseOpenAIResponseToolCalls(t *testing.T) {
 	}
 }
 
+// TestIRParseOpenAIResponseToleratesSparseToolFields 冻结请求/响应校验的分离：
+// 上游响应是既成事实，缺 function.name / tool_call_id 时不得按「请求参数非法」
+// 拒绝（那会把稀疏响应变成 502）。同一形态在请求解析中仍必须 ErrParamInvalid
+// （见 TestIRParseOpenAIRequestRejectsUnencodableToolMessages）。
+func TestIRParseOpenAIResponseToleratesSparseToolFields(t *testing.T) {
+	body := `{"id":"c","model":"m","choices":[{"index":0,"message":{
+	  "role":"assistant","content":null,
+	  "tool_calls":[{"id":"call_1","type":"function","function":{"arguments":"{}"}}]
+	},"finish_reason":"tool_calls"}]}`
+	resp, _, err := ParseOpenAIResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse 不应因上游缺 function.name 失败: %v", err)
+	}
+	parts := resp.Choices[0].Message.Content
+	if len(parts) != 1 || parts[0].Kind != contract.PartToolCall {
+		t.Fatalf("tool call parts = %+v", parts)
+	}
+	if parts[0].Meta["id"] != "call_1" || parts[0].Meta["name"] != "" || parts[0].Text != "{}" {
+		t.Fatalf("稀疏 tool call = %+v，期望保留 id/arguments、name 为空", parts[0])
+	}
+}
+
+func TestIRParseOpenAIResponseToleratesToolMessageWithoutCallID(t *testing.T) {
+	body := `{"id":"c","model":"m","choices":[{"index":0,"message":{"role":"tool","content":"raw result"}}]}`
+	resp, _, err := ParseOpenAIResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse 不应因上游 tool 消息缺 tool_call_id 失败: %v", err)
+	}
+	parts := resp.Choices[0].Message.Content
+	if len(parts) != 1 || parts[0].Kind != contract.PartText || parts[0].Text != "raw result" {
+		t.Fatalf("稀疏 tool 消息 parts = %+v，期望保留文本内容", parts)
+	}
+}
+
+func TestIRParseOpenAIResponseToleratesFunctionCallWithoutName(t *testing.T) {
+	body := `{"id":"c","model":"m","choices":[{"index":0,"message":{
+	  "role":"assistant","content":null,"function_call":{"arguments":"{}"}
+	}}]}`
+	resp, _, err := ParseOpenAIResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse 不应因上游 function_call 缺 name 失败: %v", err)
+	}
+	parts := resp.Choices[0].Message.Content
+	if len(parts) != 1 || parts[0].Kind != contract.PartToolCall || parts[0].Meta["name"] != "" {
+		t.Fatalf("稀疏 function_call parts = %+v，期望 name 为空的 tool_call", parts)
+	}
+}
+
 func TestIRToIRReturnsCopyAndValidates(t *testing.T) {
 	original := &contract.Request{
 		Model: "gpt-4o",

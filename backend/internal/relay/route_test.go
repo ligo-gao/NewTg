@@ -1310,6 +1310,51 @@ func TestRouteUsesHeaderUsageWhenNativeAbsent(t *testing.T) {
 	}
 }
 
+// TestRouteEstimatedUsageKeepsOpenAIRelationBooleans 冻结 load-bearing finding：
+// 三源全部缺席时 fact 必须保持 estimated，但 OpenAI 协议的关系布尔（prompt 已含
+// 缓存、completion 已含推理）必须从适配器归一结果保留为 true；否则「无 usage 的
+// 上游」会让计费侧把 CacheRead/Reasoning 当独立维度重复加价。
+func TestRouteEstimatedUsageKeepsOpenAIRelationBooleans(t *testing.T) {
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := RouteDeps{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return routeTestSingleCandidate(7), nil
+		},
+		ResolveChannel: func(context.Context, int) (ChannelAssignment, error) {
+			return routeTestAssignment(7), nil
+		},
+		Dispatch: adapters.Dispatch, // 真实 OpenAI 适配器：关系布尔由 ParseResponse 归一
+		Billing:  billing,
+		Client: &http.Client{Transport: routeRoundTripper(func(*http.Request) (*http.Response, error) {
+			// 200 响应体完全没有 usage 字段，也没有 x-model-response-usage 头。
+			return routeResponse(http.StatusOK,
+				`{"id":"chatcmpl-x","model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`), nil
+		})},
+		MaxRetries: 1,
+	}
+	rc := routeTestContext(false)
+	rc.QuotaEstimate = routeTestEstimate(100)
+
+	_, err := Route(context.Background(), rc, deps)
+	if err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+	if len(billing.terminateFacts) != 1 {
+		t.Fatalf("Terminate 调用 %d 次，期望 1", len(billing.terminateFacts))
+	}
+	fact := billing.terminateFacts[0]
+	if fact.Usage.Source != contract.UsageEstimated {
+		t.Fatalf("Usage.Source = %v，期望 UsageEstimated（无任何上游来源）", fact.Usage.Source)
+	}
+	if !fact.Usage.PromptIncludesCache || !fact.Usage.ReasoningIncludedInCompletion {
+		t.Fatalf("关系布尔 = %v/%v，期望 true/true（OpenAI 协议属性，与 usage 是否出现无关）",
+			fact.Usage.PromptIncludesCache, fact.Usage.ReasoningIncludedInCompletion)
+	}
+	if fact.Usage.Prompt != 0 || fact.Usage.Completion != 0 || fact.Usage.Total != 0 {
+		t.Fatalf("estimated 事实不得臆造用量数字：%+v", fact.Usage)
+	}
+}
+
 // ============================================================================
 // final-review finding 10：Route 的 Terminate panic 安全
 // ============================================================================
@@ -1352,5 +1397,46 @@ func TestRoutePanicReleasesBudgetOnce(t *testing.T) {
 	}
 	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
 		t.Fatalf("panic 出口的事实 = %#v，期望零值 UsageFact（释放语义）", fact)
+	}
+}
+
+// TestExecuteAttemptsPanicReleasesBudgetOnce 冻结 ExecuteAttempts 自身的 GC-7
+// panic 安全：PreConsume 成功后会话已开启，任何环节 panic（此处为 Deps 钩子
+// ResolveChannel）都必须由 defer 恰好释放一次预算，且 panic 向上传播。
+func TestExecuteAttemptsPanicReleasesBudgetOnce(t *testing.T) {
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := RouteDeps{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return routeTestSingleCandidate(7), nil
+		},
+		ResolveChannel: func(context.Context, int) (ChannelAssignment, error) {
+			panic("route test: resolve panic")
+		},
+		Billing:    billing,
+		MaxRetries: 1,
+	}
+	rc := routeTestContext(false)
+	rc.QuotaEstimate = routeTestEstimate(100)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("ResolveChannel panic 应向上传播（ExecuteAttempts 不得吞掉）")
+			}
+		}()
+		_, _ = ExecuteAttempts(context.Background(), rc, deps)
+	}()
+
+	if !billing.Terminated() {
+		t.Fatal("panic 后未释放预算（Terminate 未被 defer 兜底）")
+	}
+	if len(billing.terminateFacts) != 1 {
+		t.Fatalf("Terminate 调用 %d 次，期望恰好 1 次（panic 兜底 + 幂等标志）", len(billing.terminateFacts))
+	}
+	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
+		t.Fatalf("panic 出口的事实 = %#v，期望零值 UsageFact（释放语义）", fact)
+	}
+	if billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("panic 终止后 sessions=%d reserved=%d，期望 0/0", billing.Sessions(), billing.Reserved())
 	}
 }
