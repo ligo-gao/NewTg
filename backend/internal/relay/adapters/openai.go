@@ -129,7 +129,17 @@ func (o *OpenAI) Type() contract.ChannelType { return o.channelType }
 // openrouter 是 https://openrouter.ai/api、zhipu_v4 是 https://open.bigmodel.cn
 // 等，而不是统一回落到 https://api.openai.com。必填/默认空类型返回 ""，
 // 由渠道表单要求用户填写（§7.1）。
+//
+// BaseURLMode 必须与 DefaultBaseURL 一致（契约 context.go 的 BaseURLMode 注释）：
+// 没有默认基址的必填类型（azure/custom/volcengine）与 xinference 返回
+// BaseURLRequired，否则渠道表单会把「必填」误当成「有可覆盖的默认值」；
+// 有默认值的类型保持 BaseURLDefault。
 func (o *OpenAI) Caps() contract.Capabilities {
+	defaultBase := o.defaultBaseURL()
+	mode := contract.BaseURLDefault
+	if defaultBase == "" {
+		mode = contract.BaseURLRequired
+	}
 	return contract.Capabilities{
 		Endpoints: contract.Set[contract.Endpoint]{
 			contract.EndpointChat:   {},
@@ -139,10 +149,10 @@ func (o *OpenAI) Caps() contract.Capabilities {
 		StreamUsage:    true, // 下发 stream_options.include_usage
 		ModelList:      true, // GET /v1/models
 		CreditShape:    contract.CreditSingleKey,
-		DefaultBaseURL: o.defaultBaseURL(),
+		DefaultBaseURL: defaultBase,
 		Roles:          []contract.ChannelRole{contract.RoleChat},
 		// BaseURLDefault：有默认基址、渠道可覆盖（relay-02 §7.1）。
-		BaseURLMode: contract.BaseURLDefault,
+		BaseURLMode: mode,
 	}
 }
 
@@ -279,6 +289,7 @@ func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
 // {model} 的转义必须按占位符所在组件区分（final-review finding 6）：
 // url.PathEscape 不转义 `&`/`=`，若占位符位于 query 中，模型名
 // `a&admin=1` 会凭空注入一个 admin 参数。因此：
+//   - authority 中的占位符在解析前按 host 规则替换（见 substituteAuthorityPlaceholder）；
 //   - path/fragment 中的占位符用 PathEscape（转义 ? / # / %，保留 &/=（路径里安全））；
 //   - query 中的占位符用 QueryEscape（转义 & / = / ? / #，杜绝参数注入）。
 //
@@ -288,25 +299,21 @@ func requiresExplicitBaseURL(channelType contract.ChannelType) bool {
 // Path/RawPath：RawPath 保留转义形态，URL.String 才不会把 PathEscape 的
 // `%` 二次转义成 `%25`。错误不回显 URL（GC-6）。
 func customURL(baseURL, model string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	baseURL = strings.TrimSpace(baseURL)
+	// authority 的 {model} 必须在 url.Parse **之前**替换：net/url 对 host 中的
+	// `{` 直接报 invalid character，未替换的占位符会让一个本应合法的配置变成
+	// 渠道配置错误（回归：替换先于解析的旧语义）。
+	resolved, err := substituteAuthorityPlaceholder(baseURL, model)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(resolved)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
 	}
 
-	pathPlaceholder := func(component string) bool {
-		return strings.Contains(component, "{model}") || strings.Contains(component, "%7Bmodel%7D") ||
-			strings.Contains(component, "%7bmodel%7d")
-	}
-	replacePlaceholder := func(component, escapedModel string) string {
-		return strings.NewReplacer(
-			"%7Bmodel%7D", escapedModel,
-			"%7bmodel%7d", escapedModel,
-			"{model}", escapedModel,
-		).Replace(component)
-	}
-
-	if pathPlaceholder(parsed.Path) {
-		escapedPath := replacePlaceholder(parsed.EscapedPath(), url.PathEscape(model))
+	if hasModelPlaceholder(parsed.Path) {
+		escapedPath := replaceModelPlaceholder(parsed.EscapedPath(), url.PathEscape(model))
 		decodedPath, unescapeErr := url.PathUnescape(escapedPath)
 		if unescapeErr != nil {
 			return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid custom base URL")
@@ -314,16 +321,75 @@ func customURL(baseURL, model string) (string, error) {
 		parsed.Path = decodedPath
 		parsed.RawPath = escapedPath
 	}
-	if pathPlaceholder(parsed.RawQuery) {
+	if hasModelPlaceholder(parsed.RawQuery) {
 		// QueryEscape 把空格转成 `+`（query 规范形态），& / = / # 全部转义。
-		parsed.RawQuery = replacePlaceholder(parsed.RawQuery, url.QueryEscape(model))
+		parsed.RawQuery = replaceModelPlaceholder(parsed.RawQuery, url.QueryEscape(model))
 	}
-	if pathPlaceholder(parsed.Fragment) {
+	if hasModelPlaceholder(parsed.Fragment) {
 		// Fragment 不发送给上游，但仍按路径规则转义，避免残留占位符。
-		parsed.Fragment = replacePlaceholder(parsed.Fragment, url.PathEscape(model))
+		// 修复 double-escape：url.PathEscape 的输出若直接赋给 Fragment，
+		// URL.String 会再按 fragment 规则把 `%` 转义成 `%25`（%20 → %2520）。
+		// RawFragment 保存已转义形态且其解码值等于 Fragment，String 便原样使用。
+		original := parsed.Fragment
+		parsed.Fragment = replaceModelPlaceholder(original, model)
+		parsed.RawFragment = replaceModelPlaceholder(original, url.PathEscape(model))
 	}
 
 	return parsed.String(), nil
+}
+
+// hasModelPlaceholder 判断组件是否含 {model} 占位符。
+// url.Parse 会解码 path/fragment，raw query 保持原样，因此两种写法都要匹配
+// （调用方也可能手写已编码的占位符）。
+func hasModelPlaceholder(component string) bool {
+	return strings.Contains(component, "{model}") || strings.Contains(component, "%7Bmodel%7D") ||
+		strings.Contains(component, "%7bmodel%7d")
+}
+
+// replaceModelPlaceholder 把组件中的 {model} 占位符替换为 replacement。
+func replaceModelPlaceholder(component, replacement string) string {
+	return strings.NewReplacer(
+		"%7Bmodel%7D", replacement,
+		"%7bmodel%7d", replacement,
+		"{model}", replacement,
+	).Replace(component)
+}
+
+// substituteAuthorityPlaceholder 在 url.Parse 之前替换 authority 中的 {model}。
+//
+// 为什么不能等到解析后再替换：net/url 拒绝 host 中的 `{`（invalid character
+// "{" in host name），且同样拒绝 host 里的任何 %XX 转义（invalid URL escape），
+// 所以 authority 占位符无法像 path 那样先解析再回填。
+//
+// 安全边界：host 组件没有可用的转义机制，模型名只能原样落位。任何能改写 URL
+// 结构的字符都必须拒绝（按渠道配置错误，不重试）：
+//   - `/` `?` `#` 会把模型名变成路径/query/fragment；
+//   - `@` 会注入 userinfo（`{model}@evil` 之类的主机替换）；
+//   - scheme 注入同样依赖 `/`（`https://evil.com` 需要斜杠），一并覆盖。
+//
+// 错误信息不回显 base_url/模型名（GC-6）。
+func substituteAuthorityPlaceholder(baseURL, model string) (string, error) {
+	schemeEnd := strings.Index(baseURL, "://")
+	if schemeEnd < 0 {
+		// 没有 scheme 分隔符：交给后续 url.Parse 统一按非法 URL 拒绝。
+		return baseURL, nil
+	}
+	authorityStart := schemeEnd + len("://")
+	authorityEnd := len(baseURL)
+	if stop := strings.IndexAny(baseURL[authorityStart:], "/?#"); stop >= 0 {
+		authorityEnd = authorityStart + stop
+	}
+	authority := baseURL[authorityStart:authorityEnd]
+	if !hasModelPlaceholder(authority) {
+		return baseURL, nil
+	}
+	substituted := replaceModelPlaceholder(authority, model)
+	// 校验替换后的 authority 本身：模板自带的结构字符（如 userinfo 的 `@`）
+	// 也无法与占位符安全共存，一律按配置错误拒绝，宁严勿宽。
+	if strings.ContainsAny(substituted, "/?#@") {
+		return "", classifiedf(contract.ErrChannelConfig, "adapters: unsafe model name for custom base URL authority")
+	}
+	return baseURL[:authorityStart] + substituted + baseURL[authorityEnd:], nil
 }
 
 // azureDeploymentName 实现 Azure 部署名的点号保留规则（relay-02 §7.4）。

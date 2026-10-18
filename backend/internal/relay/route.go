@@ -303,13 +303,27 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		}
 	}
 
-	// GC-7：预扣之后的所有失败出口都必须释放预算。Terminate 幂等（契约 §6.1），
-	// 但本函数保证只调用一次；成功路径不经过这里。
+	// GC-7：预扣之后的所有失败出口都必须释放预算。Terminate 自身幂等（契约 §6.1），
+	// 但本函数仍用本地标志保证恰好一次：显式失败出口立即释放；defer 只兜底
+	// 「没有走显式释放且没有成功」的出口——panic 不经过任何 return，只能靠 defer。
+	// 修复 load-bearing finding：此前 releaseBudget 只挂在显式 error return 上，
+	// PreConsume 之后任意环节 panic 会永久泄漏预留。
+	released := false
 	releaseBudget := func() {
-		if deps.Billing != nil {
-			_ = deps.Billing.Terminate(contract.UsageFact{})
+		if released || deps.Billing == nil {
+			return
 		}
+		released = true
+		_ = deps.Billing.Terminate(contract.UsageFact{})
 	}
+	// succeeded 在唯一成功出口（2xx）返回前置位：成功时预算由调用方结算
+	// （Route / 流式端点），defer 不得释放。
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			releaseBudget()
+		}
+	}()
 
 	dispatch := deps.Dispatch
 	if dispatch == nil {
@@ -443,6 +457,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		}
 
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			succeeded = true // 交由调用方结算；defer 不得释放
 			return &AttemptResult{
 				Response:  resp,
 				Adapter:   adapter,
@@ -490,7 +505,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 //
 // 用量事实统一由 usage.ExtractUsage 产出（R-05 三源优先级：原生 usage > 注入 >
 // `x-model-response-usage` 头），本函数是它在**非流式路径**的生产调用方；
-// 流式路径的跨块累计与头部兜底由端点层的 bridgeStream 负责（Task 7/8）。
+// 流式路径的跨块累计与头部兜底属于**端点层**职责（流式路径不经过 Route）。
 //
 // R-P7：Route 明确拒绝 rc.Streaming。流式调用方必须使用 ExecuteAttempts 拿到
 // 原始 2xx *http.Response，再交给 relay/stream 的事件桥接（流式 usage 提取归
@@ -531,7 +546,7 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	}
 	defer func() { terminate(finalFact) }()
 
-	response, _, parseErr := result.Adapter.ParseResponse(rc, result.Response)
+	response, adapterUsage, parseErr := result.Adapter.ParseResponse(rc, result.Response)
 	if parseErr != nil {
 		// 上游 2xx 但响应不可用：会话已开启，defer 以零值事实释放预算（GC-7）。
 		// 这里不把解析失败标成 FastFailError：它不是 4xx 判定（契约 §4），
@@ -545,6 +560,15 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	// 这里不再直接信任适配器的 Usage——否则响应头兜底来源永远没有生产调用方
 	// （final-review finding 2，R-05 接线）。
 	fact := usage.ExtractUsage(response, result.Response.Header, nil)
+	if fact.Usage.Source == contract.UsageEstimated {
+		// 三源全部缺席时 ExtractUsage 只给出零值 + estimated；但关系布尔是
+		// **协议属性**而非用量数字（relay-03 §6.2 row 1）：OpenAI 格式的 prompt
+		// 已含缓存读、completion 已含推理 token，必须从适配器归一结果保留为
+		// true。否则「无 usage 的上游」会让计费侧把 CacheRead/Reasoning 当独立
+		// 维度重复加价——这是对适配器原行为的回归。
+		fact.Usage.PromptIncludesCache = adapterUsage.PromptIncludesCache
+		fact.Usage.ReasoningIncludedInCompletion = adapterUsage.ReasoningIncludedInCompletion
+	}
 	// 计费按**客户端请求模型**取价（billing-02 §「OriginModelName 为起点」）；
 	// 上游声明的模型名保留在 Response.Model 供对账（契约 §2.3），不进计费键。
 	if rc.OriginModel != "" {

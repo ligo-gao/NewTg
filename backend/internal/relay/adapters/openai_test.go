@@ -33,6 +33,9 @@ func TestOpenAICaps(t *testing.T) {
 	if len(caps.Roles) != 1 || caps.Roles[0] != contract.RoleChat {
 		t.Fatalf("Roles = %v, want [RoleChat]", caps.Roles)
 	}
+	if caps.BaseURLMode != contract.BaseURLDefault {
+		t.Fatalf("BaseURLMode = %v, want BaseURLDefault（openai 有默认基址）", caps.BaseURLMode)
+	}
 }
 
 func TestOpenAIBuildRequestOpenAI(t *testing.T) {
@@ -569,21 +572,32 @@ func TestOpenAIDefaultBaseURLPerType(t *testing.T) {
 }
 
 // TestOpenAICapsDefaultBaseURLPerType 断言能力声明与 BuildRequest 使用同一张表：
-// 渠道表单据此展示默认基址。
+// 渠道表单据此展示默认基址；BaseURLMode 必须与 DefaultBaseURL 一致
+// （空默认 = BaseURLRequired，有默认 = BaseURLDefault）。
 func TestOpenAICapsDefaultBaseURLPerType(t *testing.T) {
-	cases := map[contract.ChannelType]string{
-		contract.ChannelTypeOpenAI:     "https://api.openai.com",
-		contract.ChannelTypeOpenRouter: "https://openrouter.ai/api",
-		contract.ChannelTypeZhipuV4:    "https://open.bigmodel.cn",
-		contract.ChannelTypeDeepSeek:   "https://api.deepseek.com",
-		contract.ChannelTypeXinference: "", // 默认空：必须由渠道配置
-		contract.ChannelTypeAzure:      "", // 必填
-		contract.ChannelTypeCustom:     "", // 必填整 URL
+	cases := []struct {
+		channelType contract.ChannelType
+		wantBaseURL string
+		wantMode    contract.BaseURLMode
+	}{
+		{contract.ChannelTypeOpenAI, "https://api.openai.com", contract.BaseURLDefault},
+		{contract.ChannelTypeOpenRouter, "https://openrouter.ai/api", contract.BaseURLDefault},
+		{contract.ChannelTypeZhipuV4, "https://open.bigmodel.cn", contract.BaseURLDefault},
+		{contract.ChannelTypeDeepSeek, "https://api.deepseek.com", contract.BaseURLDefault},
+		{contract.ChannelTypeXinference, "", contract.BaseURLRequired}, // 默认空：必须由渠道配置
+		{contract.ChannelTypeAzure, "", contract.BaseURLRequired},      // 必填
+		{contract.ChannelTypeCustom, "", contract.BaseURLRequired},     // 必填整 URL
+		{contract.ChannelTypeVolcEngine, "", contract.BaseURLRequired}, // 必填
 	}
-	for channelType, want := range cases {
-		adapter := &OpenAI{channelType: channelType}
-		if got := adapter.Caps().DefaultBaseURL; got != want {
-			t.Errorf("%q Caps().DefaultBaseURL = %q，期望 %q", channelType, got, want)
+	for _, tc := range cases {
+		adapter := &OpenAI{channelType: tc.channelType}
+		caps := adapter.Caps()
+		if caps.DefaultBaseURL != tc.wantBaseURL {
+			t.Errorf("%q Caps().DefaultBaseURL = %q，期望 %q", tc.channelType, caps.DefaultBaseURL, tc.wantBaseURL)
+		}
+		if caps.BaseURLMode != tc.wantMode {
+			t.Errorf("%q Caps().BaseURLMode = %v，期望 %v（空默认基址必须声明 BaseURLRequired）",
+				tc.channelType, caps.BaseURLMode, tc.wantMode)
 		}
 	}
 }
@@ -658,6 +672,83 @@ func TestOpenAIBuildRequestCustomPathModelEscaped(t *testing.T) {
 	}
 	if !strings.Contains(httpReq.URL.EscapedPath(), "a&admin=1") {
 		t.Fatalf("路径模型名 = %q，期望保留 a&admin=1", httpReq.URL.EscapedPath())
+	}
+}
+
+// TestOpenAIBuildRequestCustomAuthorityPlaceholder 冻结 authority 占位符语义：
+// net/url 拒绝 host 中的 `{`（invalid character in host name），因此 {model}
+// 必须在解析前替换；替换结果作为完整 URL 的 host，不得再拼接路径。
+func TestOpenAIBuildRequestCustomAuthorityPlaceholder(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://{model}.example.com/v1/chat/completions",
+		Credential:    "k",
+		UpstreamModel: "gpt-4o",
+	}
+	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	want := "https://gpt-4o.example.com/v1/chat/completions"
+	if got := httpReq.URL.String(); got != want {
+		t.Fatalf("URL = %q，期望 %q", got, want)
+	}
+	if httpReq.URL.Host != "gpt-4o.example.com" {
+		t.Fatalf("host = %q，期望 gpt-4o.example.com", httpReq.URL.Host)
+	}
+}
+
+// TestOpenAIBuildRequestCustomAuthorityRejectsUnsafeModel 冻结 authority 的
+// 安全边界：host 组件无法用百分号转义，模型名中的 URL 结构字符必须在替换前
+// 拒绝（ErrChannelConfig），不得让 {model} 改写主机/路径/query/userinfo。
+func TestOpenAIBuildRequestCustomAuthorityRejectsUnsafeModel(t *testing.T) {
+	for _, model := range []string{
+		"evil.com/x",       // 路径注入
+		"evil?x=1",         // query 注入
+		"evil#frag",        // fragment 注入
+		"user@evil.com",    // userinfo 注入
+		"https://evil.com", // scheme 注入（依赖 '/'）
+	} {
+		t.Run(model, func(t *testing.T) {
+			rc := &contract.RelayContext{
+				ChannelType:   contract.ChannelTypeCustom,
+				APIBase:       "https://{model}.example.com/v1/chat/completions",
+				Credential:    "k",
+				UpstreamModel: model,
+			}
+			_, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+			if err == nil {
+				t.Fatal("不安全模型名必须返回 ErrChannelConfig")
+			}
+			if class, ok := ClassOf(err); !ok || class != contract.ErrChannelConfig {
+				t.Fatalf("error class = %v/%v，期望 ErrChannelConfig", class, ok)
+			}
+		})
+	}
+}
+
+// TestOpenAIBuildRequestCustomFragmentPlaceholder 冻结 fragment 占位符的
+// 单次转义：PathEscape 的结果必须写入 RawFragment，否则 URL.String 会按
+// fragment 规则把 `%` 再转义一次（%20 → %2520），模型名被双重编码。
+func TestOpenAIBuildRequestCustomFragmentPlaceholder(t *testing.T) {
+	rc := &contract.RelayContext{
+		ChannelType:   contract.ChannelTypeCustom,
+		APIBase:       "https://custom.example/v1/generate#frag={model}",
+		Credential:    "k",
+		UpstreamModel: "a b#c%",
+	}
+	httpReq, err := NewOpenAI().BuildRequest(rc, &contract.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if got := httpReq.URL.EscapedFragment(); got != "frag=a%20b%23c%25" {
+		t.Fatalf("EscapedFragment = %q，期望单次转义 frag=a%%20b%%23c%%25（double-escape 会得到 %%2520）", got)
+	}
+	if got := httpReq.URL.Fragment; got != "frag=a b#c%" {
+		t.Fatalf("Fragment = %q，期望解码回 frag=a b#c%%", got)
+	}
+	if got := httpReq.URL.String(); strings.Contains(got, "%2520") || strings.Contains(got, "%2523") {
+		t.Fatalf("fragment 被二次转义：%s", got)
 	}
 }
 
