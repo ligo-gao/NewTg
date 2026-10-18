@@ -1,0 +1,219 @@
+# NewTG compose 骨架（M0）——拓扑依据 platform-03 §2，按计划总册 §5 裁决修订：
+#   · 单二进制 newtg，三角色由 RUN_MODE 切换（无 NEWTG_ROLE）；
+#   · M0 只暴露 edge :80（宿主 8080），TLS / :443 形态推迟到 M7（platform-07）；
+#   · 一次性 migrate 服务先于 gateway/worker 完成（service_completed_successfully）。
+#
+# 净室声明：本文件全新编写，不复制、不翻译任何既有网关仓库的配置或文案。
+# 密钥一律 ${VAR:?...}：deploy/.env 缺项时 docker compose 直接报错退出，绝不落默认口令。
+
+name: newtg
+
+# 应用侧公共环境。DSN 由 compose 从 deploy/.env 的插值变量拼装，
+# 应用二进制只消费拼好的 DATABASE_URL / DB_LOGS_DSN / REDIS_URL。
+x-app-env: &app-env
+  DATABASE_URL: "postgres://newtg_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-newtg}?sslmode=${DATABASE_TLS:-disable}"
+  DB_LOGS_DSN: "postgres://newtg_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
+  REDIS_URL: "redis${REDIS_TLS:+s}://:${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}@redis:6379/0"
+  SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET in deploy/.env}"
+  CREDENTIAL_ENCRYPTION_KEY: "${CREDENTIAL_ENCRYPTION_KEY:?set CREDENTIAL_ENCRYPTION_KEY in deploy/.env}"
+  APP_ENV: "${APP_ENV:-production}"
+  LOG_LEVEL: "${LOG_LEVEL:-info}"
+  LOG_FORMAT: "${LOG_FORMAT:-json}"
+  TZ: "${TZ:-UTC}"
+  # 空 = 不信任 X-Forwarded-*；生产须显式填 edge 所在网段（禁止 0.0.0.0/0）。
+  TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+  PERF_METRICS_ENABLED: "${PERF_METRICS_ENABLED:-true}"
+  PERF_METRICS_FLUSH_INTERVAL: "${PERF_METRICS_FLUSH_INTERVAL:-5m}"
+  PERF_METRICS_RETENTION_DAYS: "${PERF_METRICS_RETENTION_DAYS:-400}"
+
+services:
+  # 唯一对外入口：反向代理 + 轮询负载均衡 + 对副本做 /readyz 主动健康检查。
+  # M0 不挂 443/TLS（cert_source=off 等价物），仅 :80。
+  edge:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      TLS_MIN_VERSION: "${TLS_MIN_VERSION:-1.2}"
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - "./edge/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "caddy_data:/data"
+      - "caddy_config:/config"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - frontend
+
+  # 管理 API + 中继；2 副本用于验证无状态（不设 container_name，避免与副本数冲突）。
+  gateway:
+    image: newtg/gateway:local
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    environment:
+      <<: *app-env
+      RUN_MODE: gateway
+      # 迁移由一次性 migrate 服务以 newtg_migrate 执行；运行时账号无 DDL。
+      DB_MIGRATE_ON_START: "false"
+      METRICS_ADDR: ":8006"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # GC-6：健康 = 真正可服务（/readyz 五项）；运行镜像无 wget，走内置子命令。
+      test: ["CMD", "/newtg", "healthcheck", "--url", "http://127.0.0.1:3000/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    networks:
+      - frontend
+      - backend
+
+  # 一次性迁移：唯一 DDL 账号 newtg_migrate；跑完即退出（成功退出码 0）。
+  migrate:
+    image: newtg/gateway:local
+    restart: "no"
+    environment:
+      <<: *app-env
+      RUN_MODE: migrate
+      DATABASE_URL: "postgres://newtg_migrate:${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-newtg}?sslmode=${DATABASE_TLS:-disable}"
+      DB_LOGS_DSN: "postgres://newtg_migrate:${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  # 后台任务；单副本，允许固定名。M0 无对外 HTTP，探活为进程存活（R-07）。
+  worker:
+    image: newtg/gateway:local
+    restart: unless-stopped
+    container_name: newtg-worker
+    deploy:
+      replicas: 1
+    environment:
+      <<: *app-env
+      RUN_MODE: worker
+      DB_MIGRATE_ON_START: "false"
+      NODE_NAME: "${NODE_NAME:-newtg}-worker"
+      METRICS_ADDR: ":8006"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # R-07：M0 worker 不起 HTTP（METRICS_ADDR 监听在 M3 接入），先以 PID 1
+      # 的进程存活判活；worker 上线 /healthz 后改为
+      # ["CMD","/newtg","healthcheck","--url","http://127.0.0.1:8006/healthz"]。
+      test: ["CMD-SHELL", "ps | grep -q '[n]ewtg'"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend
+
+  # 可选：静态前端。M0 默认不开 profile，"/" 由 gateway 托管静态产物。
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    profiles: ["web"]
+    volumes:
+      - "../frontend/dist:/usr/share/nginx/html:ro"
+    networks:
+      - frontend
+
+  # 唯一持久化：主库 newtg + 日志库 newtg_logs（G7-R36）。不发布宿主端口。
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-newtg}"      # 引导超级用户：仅 initdb 建库/建角色
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}"
+      POSTGRES_DB: "${POSTGRES_DB:-newtg}"
+      # 以下三项只被 postgres-init/10-roles.sql 读取（psql \getenv），与引导口令无派生关系。
+      POSTGRES_APP_PASSWORD: "${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}"
+      POSTGRES_MIGRATE_PASSWORD: "${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}"
+      POSTGRES_BACKUP_PASSWORD: "${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}"
+      # 日志库名由 20-databases.sql 读取，与 DB_LOGS_DSN 保持同一插值变量。
+      POSTGRES_LOGS_DB: "${POSTGRES_LOGS_DB:-newtg_logs}"
+    volumes:
+      - "pg_data:/var/lib/postgresql/data"
+      # initdb 只跑一次（空数据卷时）：建三角色 + 日志库 + 默认权限。
+      - "./postgres-init:/docker-entrypoint-initdb.d:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backend
+
+  # 会话 / 限流 / 缓存 / 分布式锁 / pub-sub。AOF 保证重启不丢会话。
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      # 供 healthcheck 的 redis-cli 取用（command 里的口令由 compose 插值注入）。
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}"
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}", "--appendonly", "yes"]
+    volumes:
+      - "redis_data:/data"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backend
+
+  # 按需备份（只读角色 newtg_backup）：
+  #   docker compose --profile ops run --rm pg-backup
+  pg-backup:
+    image: postgres:16-alpine
+    profiles: ["ops"]
+    environment:
+      PGPASSWORD: "${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}"
+    volumes:
+      - "./backups:/backups"
+    command:
+      - "sh"
+      - "-c"
+      - "pg_dump -h postgres -U newtg_backup -d ${POSTGRES_DB:-newtg} -Fc -f /backups/newtg-$$(date +%Y%m%d%H%M%S).dump"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  pg_data:
+    name: newtg_pg_data
+  redis_data:
+    name: newtg_redis_data
+  caddy_data:
+    name: newtg_caddy_data
+  caddy_config:
+    name: newtg_caddy_config
+
+networks:
+  # 对外入口面：edge ↔ gateway / web。
+  frontend:
+    driver: bridge
+  # 数据面：gateway / worker / migrate ↔ postgres / redis；internal 禁外网出站。
+  backend:
+    driver: bridge
+    internal: true

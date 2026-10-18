@@ -1,0 +1,57 @@
+# NewTG edge（Caddy）——M0 形态：仅 :80，无 TLS。
+# TLS（:443 / 证书来源 / HSTS）按 platform-07 在 M7 接入；本地预演宿主端口 8080。
+# 净室声明：本文件全新编写。
+
+{
+	# 无管理 API 暴露面。
+	admin off
+	# M0 不存在 https 站点，显式关闭自动 HTTPS 以免 308 跳转。
+	auto_https off
+}
+
+# gateway 上游组：轮询 + 主动健康检查（/readyz 是唯一「可服务」判据，GC-6）。
+(reverse_gateway) {
+	lb_policy round_robin
+	health_uri /readyz
+	health_interval 10s
+	health_timeout 3s
+	fail_duration 30s
+}
+
+:80 {
+	# 中继协议：含 SSE 与 WebSocket —— 一律不压缩（破坏流式/帧边界）。
+	handle /v1/* {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+
+	# 管理 API（JSON）：允许 gzip/zstd。
+	handle /api/* {
+		encode gzip zstd
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+
+	# 就绪/存活探针经 edge 可达（运维与验收断言用），不压缩。
+	handle /readyz {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+	handle /healthz {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+
+	# M0 冻结："/" 指 gateway（未启用 web profile 时由 gateway 托管静态产物；
+	# 启用 web profile 后再切 web:80）。SSE/WS 已由 /v1/* 路由排除，此处压缩仅及静态。
+	handle {
+		encode gzip zstd
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+}
