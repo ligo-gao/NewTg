@@ -27,6 +27,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing/pricing"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -310,8 +311,15 @@ func (r *fakePricingRepo) CreateGroupPricing(_ context.Context, in store.GroupPr
 	if !r.groupsExist[in.Group] {
 		return store.GroupPricingRecord{}, store.ErrPricingInvalidGroup
 	}
-	if _, ok := r.models[in.Model]; !ok {
+	source, ok := r.models[in.Model]
+	if !ok {
 		return store.GroupPricingRecord{}, store.ErrPricingInvalidModel
+	}
+	if source.BillingExpr != nil {
+		return store.GroupPricingRecord{}, store.ErrPricingSourceIsExpression
+	}
+	if source.Mode == 1 && (in.CompletionPrice != 0 || in.CacheReadPrice != 0 || in.CacheWritePrice != 0) {
+		return store.GroupPricingRecord{}, store.ErrPricingPerRequestFields
 	}
 	key := groupKey(in.Group, in.Model)
 	if _, exists := r.groups[key]; exists {
@@ -338,6 +346,22 @@ func (r *fakePricingRepo) UpdateGroupPricing(_ context.Context, group, model str
 	}
 	if !rec.UpdatedAt.Equal(expect) {
 		return store.GroupPricingRecord{}, store.ErrPricingConflict
+	}
+	if patch.PromptPrice != nil || patch.CompletionPrice != nil ||
+		patch.CacheReadPrice != nil || patch.CacheWritePrice != nil {
+		source, ok := r.models[model]
+		if !ok {
+			return store.GroupPricingRecord{}, store.ErrPricingInvalidModel
+		}
+		if source.BillingExpr != nil {
+			return store.GroupPricingRecord{}, store.ErrPricingSourceIsExpression
+		}
+		if source.Mode == 1 &&
+			((patch.CompletionPrice != nil && *patch.CompletionPrice != 0) ||
+				(patch.CacheReadPrice != nil && *patch.CacheReadPrice != 0) ||
+				(patch.CacheWritePrice != nil && *patch.CacheWritePrice != 0)) {
+			return store.GroupPricingRecord{}, store.ErrPricingPerRequestFields
+		}
 	}
 	if patch.PromptPrice != nil {
 		rec.PromptPrice = *patch.PromptPrice
@@ -1056,6 +1080,13 @@ func TestPricingGroupPricingCRUD(t *testing.T) {
 	if list.Total != 1 || len(list.Items) != 1 {
 		t.Fatalf("list = %+v", list)
 	}
+	// F7：sort=model 在白名单内；未知排序 400（不静默忽略）。
+	if rr := env.request(fullPricingAdmin(), http.MethodGet, "/api/group-pricing?sort=model", nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("sort=model = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if rr := env.request(fullPricingAdmin(), http.MethodGet, "/api/group-pricing?sort=password", nil, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("sort=password = %d，期望 400", rr.Code)
+	}
 
 	// PATCH 乐观锁。
 	stale := view.UpdatedAt.Add(-time.Second)
@@ -1139,5 +1170,372 @@ func TestPricingUnknownEndpoints(t *testing.T) {
 		if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s %s = %d，期望 404/405（body=%q）", tc.method, tc.path, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 复审补测（F1/F4/F6/F7）
+// ---------------------------------------------------------------------------
+
+func assertProblemFields(t *testing.T, rr *httptest.ResponseRecorder, want ...string) {
+	t.Helper()
+	problem := decodePricingProblem(t, rr)
+	raw, _ := problem["fields"].([]any)
+	got := make([]string, 0, len(raw))
+	for _, item := range raw {
+		got = append(got, fmt.Sprint(item))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("problem.fields = %v，期望 %v（body=%q）", got, want, rr.Body.String())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("problem.fields = %v，期望 %v", got, want)
+		}
+	}
+}
+
+// F1：价格取值错误（负值/超界/非整数/字符串）统一 422 + fields。
+func TestPricingPriceRangeValidation(t *testing.T) {
+	env := newPricingTestEnv(t)
+	cases := []struct {
+		name  string
+		body  map[string]any
+		field string
+	}{
+		{"negative", map[string]any{"model": "bad-1", "prompt_price": -1}, "prompt_price"},
+		{"overflow", map[string]any{"model": "bad-2", "prompt_price": 9007199254740992}, "prompt_price"},
+		{"string", map[string]any{"model": "bad-3", "prompt_price": "10"}, "prompt_price"},
+		{"fraction", map[string]any{"model": "bad-4", "prompt_price": 1.5}, "prompt_price"},
+		{"cache-negative", map[string]any{"model": "bad-5", "cache_write_price": -3}, "cache_write_price"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing", tc.body, nil)
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+			}
+			assertProblemFields(t, rr, tc.field)
+			problem := decodePricingProblem(t, rr)
+			if problem["type"] != problemTypeValidationFailed {
+				t.Fatalf("problem.type = %v，期望 %s", problem["type"], problemTypeValidationFailed)
+			}
+		})
+	}
+
+	// 更新路径同样 422。
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "bad-update", "prompt_price": 10}, nil)
+	view := decodeModelPricingView(t, rr)
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/bad-update", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": -5,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("update negative = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "prompt_price")
+
+	// 分组覆盖价的创建/更新同样 422。
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing", map[string]any{
+		"group": "vip", "model": "bad-update", "completion_price": -1,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("group create negative = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "completion_price")
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing", map[string]any{
+		"group": "vip", "model": "bad-update", "prompt_price": 5,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("group seed = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var override groupPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/group-pricing/vip/bad-update", map[string]any{
+		"updated_at": override.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": -2,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("group update negative = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "prompt_price")
+}
+
+// F7：author 是 NOT NULL 列，显式 null 拒绝；vendor null 允许清空。
+func TestPricingAuthorPatchSemantics(t *testing.T) {
+	env := newPricingTestEnv(t)
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "authors", "prompt_price": 1, "author": nil}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeModelPricingView(t, rr)
+	if view.Author != "Unknown" {
+		t.Fatalf("author = %q，期望默认 Unknown", view.Author)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/authors", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "author": nil,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("author null = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "author")
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/authors", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "author": "Unknown", "vendor": nil,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("author reset = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// F6：模型名允许 ':'，贯穿 create/PATCH/action/DELETE（含分组覆盖价）。
+func TestPricingColonModelLifecycle(t *testing.T) {
+	env := newPricingTestEnv(t)
+	model := "vendor:model"
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": model, "prompt_price": 10}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeModelPricingView(t, rr)
+	if view.Model != model {
+		t.Fatalf("model = %q，期望 %q", view.Model, model)
+	}
+
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/"+model, map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 20,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view = decodeModelPricingView(t, rr)
+
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing/"+model+":disable",
+		map[string]any{"updated_at": view.UpdatedAt.Format(time.RFC3339Nano)}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("action colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view = decodeModelPricingView(t, rr)
+	if view.Status != 2 {
+		t.Fatalf("status = %d，期望 2", view.Status)
+	}
+
+	// 分组覆盖价：PATCH/DELETE 把整段 tail 当模型名（不误当动作）。
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": model, "prompt_price": 5}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("group create colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var override groupPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/group-pricing/vip/"+model, map[string]any{
+		"updated_at": override.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 6,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("group patch colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing/vip/"+model+":disable",
+		map[string]any{"updated_at": override.UpdatedAt.Format(time.RFC3339Nano)}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("group action colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodDelete,
+		"/api/group-pricing/vip/"+model+"?updated_at="+url.QueryEscape(override.UpdatedAt.Format(time.RFC3339Nano)), nil, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("group delete colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodDelete,
+		"/api/model-pricing/"+model+"?updated_at="+url.QueryEscape(view.UpdatedAt.Format(time.RFC3339Nano)), nil, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete colon = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// F6：免费标记只在该模型全部有效价为零时为 true。
+func TestPricingFreeFlagRule(t *testing.T) {
+	env := newPricingTestEnv(t)
+	cases := []struct {
+		model string
+		body  map[string]any
+		free  bool
+	}{
+		{"free-token", map[string]any{"model": "free-token", "prompt_price": 0}, true},
+		{"paid-completion", map[string]any{"model": "paid-completion", "prompt_price": 0, "completion_price": 5}, false},
+		{"free-all", map[string]any{"model": "free-all", "prompt_price": 0, "completion_price": 0, "cache_read_price": 0, "cache_write_price": 0}, true},
+		{"free-percall", map[string]any{"model": "free-percall", "mode": "per_request", "prompt_price": 0}, true},
+		{"paid-percall", map[string]any{"model": "paid-percall", "mode": "per_request", "prompt_price": 7}, false},
+		{"unset-prompt", map[string]any{"model": "unset-prompt"}, false},
+		{"expression", map[string]any{"model": "expression", "billing_expr": "p"}, false},
+	}
+	for _, tc := range cases {
+		rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing", tc.body, nil)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("%s create = %d（body=%q）", tc.model, rr.Code, rr.Body.String())
+		}
+		view := decodeModelPricingView(t, rr)
+		if view.Free != tc.free {
+			t.Fatalf("%s free = %v，期望 %v（view=%+v）", tc.model, view.Free, tc.free, view)
+		}
+	}
+}
+
+// F6：预览的饱和/钳制标记（正向溢出 → clamped=true + clamp 审计）。
+func TestPricingPreviewClamp(t *testing.T) {
+	env := newPricingTestEnv(t)
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing:preview", map[string]any{
+		"spec":   map[string]any{"mode": "tiered_expr", "expr": "p * 1000000000"},
+		"params": map[string]any{"p": 1_000_000},
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clamp preview = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var preview pricingPreviewView
+	if err := json.Unmarshal(rr.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("preview JSON: %v", err)
+	}
+	if !preview.Clamped || preview.Quota != contract.MaxQuota || preview.Clamp == nil {
+		t.Fatalf("preview = %+v，期望 clamped + quota=%d", preview, contract.MaxQuota)
+	}
+	if preview.Clamp.Kind != "overflow" {
+		t.Fatalf("clamp.kind = %q，期望 overflow", preview.Clamp.Kind)
+	}
+}
+
+// F6：F4 的无效覆盖价（表达式源 / per_request 源的 completion+cache）。
+func TestPricingGroupOverrideRejectsNoOpSources(t *testing.T) {
+	env := newPricingTestEnv(t)
+	if rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "expr-src", "billing_expr": "p"}, nil); rr.Code != http.StatusCreated {
+		t.Fatalf("expr source = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": "expr-src", "prompt_price": 1}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expr override = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "model")
+
+	if rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": "percall-src", "mode": "per_request", "prompt_price": 10}, nil); rr.Code != http.StatusCreated {
+		t.Fatalf("percall source = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": "percall-src", "completion_price": 5}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("percall completion override = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "completion_price", "cache_read_price", "cache_write_price")
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": "percall-src", "prompt_price": 3}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("percall prompt-only override = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var override groupPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("group JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/group-pricing/vip/percall-src", map[string]any{
+		"updated_at": override.UpdatedAt.Format(time.RFC3339Nano), "cache_read_price": 5,
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("percall cache override = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// F6：RBAC 矩阵覆盖 preview / update / delete / action。
+func TestPricingRBACMatrix(t *testing.T) {
+	env := newPricingTestEnv(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	seed := func(model string) store.ModelPricingRecord {
+		rec := store.ModelPricingRecord{
+			ID: int64(len(env.repo.models) + 1), Model: model, Mode: 0, Author: "Unknown",
+			Status: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		env.repo.models[model] = &rec
+		return rec
+	}
+	previewBody := map[string]any{"spec": map[string]any{"prompt_price": 1}, "params": map[string]any{"p": 1_000_000}}
+	readOnly := pricingAdmin(rbac.PermPricingRead)
+	manageOnly := pricingAdmin(rbac.PermPricingManage)
+
+	if rr := env.request(readOnly, http.MethodPost, "/api/model-pricing:preview", previewBody, nil); rr.Code != http.StatusOK {
+		t.Fatalf("read preview = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if rr := env.request(manageOnly, http.MethodPost, "/api/model-pricing:preview", previewBody, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("manage preview = %d，期望 403", rr.Code)
+	}
+
+	readSeed := seed("rbac-read")
+	if rr := env.request(readOnly, http.MethodPatch, "/api/model-pricing/rbac-read", map[string]any{
+		"updated_at": readSeed.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 2,
+	}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("read patch = %d，期望 403", rr.Code)
+	}
+	if rr := env.request(readOnly, http.MethodDelete, "/api/model-pricing/rbac-read?updated_at="+
+		url.QueryEscape(readSeed.UpdatedAt.Format(time.RFC3339Nano)), nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("read delete = %d，期望 403", rr.Code)
+	}
+	if rr := env.request(readOnly, http.MethodPost, "/api/model-pricing/rbac-read:disable",
+		map[string]any{"updated_at": readSeed.UpdatedAt.Format(time.RFC3339Nano)}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("read action = %d，期望 403", rr.Code)
+	}
+
+	writeSeed := seed("rbac-write")
+	rr := env.request(manageOnly, http.MethodPatch, "/api/model-pricing/rbac-write", map[string]any{
+		"updated_at": writeSeed.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 3,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manage patch = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var view modelPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatalf("view JSON: %v", err)
+	}
+	rr = env.request(manageOnly, http.MethodPost, "/api/model-pricing/rbac-write:disable",
+		map[string]any{"updated_at": view.UpdatedAt.Format(time.RFC3339Nano)}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manage action = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatalf("view JSON: %v", err)
+	}
+	rr = env.request(manageOnly, http.MethodDelete, "/api/model-pricing/rbac-write?updated_at="+
+		url.QueryEscape(view.UpdatedAt.Format(time.RFC3339Nano)), nil, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("manage delete = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+// F6：GatewayDeps.PricingRepo 装配接缝把定价路由挂到受保护子树。
+func TestPricingAssemblySeam(t *testing.T) {
+	deps, _ := gatewayDepsForTest(t)
+	repo := newFakePricingRepo()
+	repo.models["seeded"] = &store.ModelPricingRecord{
+		ID: 1, Model: "seeded", Mode: 0, Author: "Unknown", Status: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	deps.PricingRepo = repo
+	rt, err := BuildGatewayRouter(deps)
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/model-pricing", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), fullPricingAdmin()))
+	rr := serve(rt.protected, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mounted route = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	list := decodeModelPricingList(t, rr)
+	if list.Total != 1 || list.Items[0].Model != "seeded" {
+		t.Fatalf("list = %+v", list)
 	}
 }

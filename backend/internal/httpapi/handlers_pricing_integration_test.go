@@ -321,3 +321,44 @@ func TestPricingIntegrationListPagination(t *testing.T) {
 		t.Fatalf("status 筛选 total = %d，期望 3", list.Total)
 	}
 }
+
+// TestPricingIntegrationGroupOverrideGuards 证明 R-69 的保存期拦截在真实 SQL
+// 上生效：表达式源与 per_request 源的无效覆盖价字段被 422 拒绝。
+func TestPricingIntegrationGroupOverrideGuards(t *testing.T) {
+	env := newPricingIntegrationEnv(t)
+	exprModel := pricingIntegrationModel(t) + "-expr"
+	perCallModel := pricingIntegrationModel(t) + "-call"
+	t.Cleanup(func() {
+		cleanupPricingIntegration(t, env.db, exprModel)
+		cleanupPricingIntegration(t, env.db, perCallModel)
+	})
+
+	rr := env.request(t, http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": exprModel, "billing_expr": "p * 0.001"}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expr model = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(t, http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "default", "model": exprModel, "prompt_price": 1}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expr override = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "model")
+
+	rr = env.request(t, http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": perCallModel, "mode": "per_request", "prompt_price": 10}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("percall model = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(t, http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "default", "model": perCallModel, "completion_price": 5}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("percall completion override = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "completion_price", "cache_read_price", "cache_write_price")
+	rr = env.request(t, http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "default", "model": perCallModel, "prompt_price": 3}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("percall prompt-only override = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}

@@ -2536,6 +2536,7 @@ paths:
             enum:
               - group
               - -group
+              - model
               - -model
               - updated_at
               - -updated_at
@@ -4819,8 +4820,7 @@ components:
         image_count:
           type: integer
           minimum: -1
-          default: -1
-          description: -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。
+          description: -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。
     ModelPricingPreviewRequest:
       type: object
       additionalProperties: false
@@ -4828,12 +4828,15 @@ components:
         - spec
       properties:
         spec:
-          type: object
-          additionalProperties: true
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
           description: |
-            pricing.ParsePricing 接受的 spec 对象：mode/expr 或
-            prompt_price/completion_price/cache_read_price/cache_write_price
-            （也接受旧倍率风格 model_ratio 等）。求值与保存使用同一解析器。
+            pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+            prompt_price/completion_price/cache_read_price/cache_write_price，
+            也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+            求值与保存使用同一解析器。
         model:
           type: string
           pattern: ^[A-Za-z0-9._:-]{1,128}$
@@ -4843,8 +4846,7 @@ components:
           format: double
           minimum: 0
           exclusiveMinimum: true
-          default: 1
-          description: 预览用的分组倍率（默认 1）。
+          description: 预览用的分组倍率；缺省 1（服务端默认，不写入 schema default）。
         params:
           $ref: '#/components/schemas/PricingPreviewParams'
     ModelPricingPreviewResponse:
@@ -4925,6 +4927,7 @@ components:
         author:
           type: string
           maxLength: 64
+          description: 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。
         vendor:
           type: string
           nullable: true
@@ -4943,6 +4946,13 @@ components:
         updated_at:
           type: string
           format: date-time
+    GroupPricingMode:
+      oneOf:
+        - $ref: '#/components/schemas/PricingMode'
+        - type: string
+          enum:
+            - ''
+      description: 随源模型只读展示；源 model_pricing 行缺失时为空串。
     GroupPricing:
       type: object
       additionalProperties: false
@@ -4969,8 +4979,7 @@ components:
         model:
           type: string
         mode:
-          $ref: '#/components/schemas/PricingMode'
-          description: 随源 model_pricing 只读展示；源行缺失时为空串。
+          $ref: '#/components/schemas/GroupPricingMode'
         prompt_price:
           type: integer
           format: int64
@@ -5039,25 +5048,25 @@ components:
           format: int64
           minimum: 0
           maximum: 9007199254740991
-          default: 0
+          description: 覆盖价（整数绝对价）；缺省 0。
         completion_price:
           type: integer
           format: int64
           minimum: 0
           maximum: 9007199254740991
-          default: 0
+          description: 覆盖价（整数绝对价）；缺省 0。
         cache_read_price:
           type: integer
           format: int64
           minimum: 0
           maximum: 9007199254740991
-          default: 0
+          description: 覆盖价（整数绝对价）；缺省 0。
         cache_write_price:
           type: integer
           format: int64
           minimum: 0
           maximum: 9007199254740991
-          default: 0
+          description: 覆盖价（整数绝对价）；缺省 0。
         status:
           $ref: '#/components/schemas/PricingStatus'
       description: 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。

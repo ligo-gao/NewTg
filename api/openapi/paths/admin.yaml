@@ -914,7 +914,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [group, -group, -model, updated_at, -updated_at]
+            enum: [group, -group, model, -model, updated_at, -updated_at]
             default: group
       responses:
         '200':

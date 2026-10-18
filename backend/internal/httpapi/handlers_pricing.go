@@ -76,9 +76,6 @@ const (
 // pricingModelPattern 与 modules-06 F-06-14 的模型名字符集一致。
 var pricingModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-// groupNamePattern 与 user_groups_name_chk 一致（模块 07 F-07-10）。
-var pricingGroupNamePattern = regexp.MustCompile(`^[a-z0-9_-]{2,32}$`)
-
 // PricingHandlerConfig 是定价端点的装配输入。Repo 必填（生产由
 // store.NewPricingRepo(DB) 构造）；Redis 用于创建幂等；Authz 缺省时构造空中间件
 // （字段策略仍是端点契约的一部分，不能因装配方未启用 RBAC 而失效）。
@@ -421,6 +418,7 @@ type modelPricingPayload struct {
 	CacheWritePriceSet bool
 
 	Author    *string
+	AuthorSet bool
 	Vendor    *string
 	VendorSet bool
 
@@ -513,12 +511,18 @@ func parseModelPricingPayload(body map[string]json.RawMessage) (modelPricingPayl
 		}
 		value, err := decodeNullableInt64(raw)
 		if err != nil {
-			return payload, fmt.Errorf("%s %w", field.name, err)
+			// 价格取值错误按 spec/OpenAPI 是 422 字段错误（不是 400）：
+			// pricingFieldError 让调用方输出 problem.fields=[<field>]。
+			return payload, &pricingFieldError{
+				message: fmt.Sprintf("%s %v", field.name, err),
+				fields:  []string{field.name},
+			}
 		}
 		*field.value = value
 		*field.set = true
 	}
 	if raw, ok := body["author"]; ok {
+		payload.AuthorSet = true
 		value, err := decodeNullablePricingText(raw, pricingTextMaxRunes)
 		if err != nil {
 			return payload, fmt.Errorf("author %w", err)
@@ -626,6 +630,22 @@ func writePricingProblemWithFields(w http.ResponseWriter, status int, problemTyp
 	_ = json.NewEncoder(w).Encode(problem)
 }
 
+// writePricingParseError 把请求体解析错误映射为 400/422。
+//
+// 价格列（负值/超界/非整数/字符串）按 spec 是字段校验错误 → 422 +
+// problem.fields；其余结构/枚举错误仍是 400。表达式校验在 create 上保持
+// 400（计划验收 (a)），PATCH 的模式歧义走 422。
+func writePricingParseError(w http.ResponseWriter, err error) {
+	var fieldErr *pricingFieldError
+	if errors.As(err, &fieldErr) {
+		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+			"Validation failed", fieldErr.message, fieldErr.fields)
+		return
+	}
+	writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest,
+		"Invalid request", err.Error(), nil)
+}
+
 func (h *PricingHandlers) writePricingRepoError(w http.ResponseWriter, op string, err error) {
 	switch {
 	case errors.Is(err, store.ErrPricingNotFound):
@@ -642,6 +662,16 @@ func (h *PricingHandlers) writePricingRepoError(w http.ResponseWriter, op string
 	case errors.Is(err, store.ErrPricingInvalidModel):
 		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
 			"Validation failed", "source model is not priced", []string{"model"})
+	case errors.Is(err, store.ErrPricingSourceIsExpression):
+		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+			"Validation failed",
+			"source model uses tiered_expr pricing; group overrides are not applied in expression mode",
+			[]string{"model"})
+	case errors.Is(err, store.ErrPricingPerRequestFields):
+		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+			"Validation failed",
+			"per_request source ignores completion/cache override prices",
+			[]string{"completion_price", "cache_read_price", "cache_write_price"})
 	default:
 		h.log.Error(op+" failed", "error", err)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
@@ -788,8 +818,7 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 	}
 	payload, err := parseModelPricingPayload(body)
 	if err != nil {
-		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest,
-			"Invalid request", err.Error(), nil)
+		writePricingParseError(w, err)
 		return
 	}
 	model := payload.Model
@@ -912,7 +941,7 @@ func (h *PricingHandlers) handleUpdateModelPricing(w http.ResponseWriter, r *htt
 	}
 	payload, err := parseModelPricingPayload(body)
 	if err != nil {
-		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error(), nil)
+		writePricingParseError(w, err)
 		return
 	}
 	if payload.Model != "" && payload.Model != model {
@@ -1073,7 +1102,15 @@ func buildModelPricingPatch(current store.ModelPricingRecord, payload modelPrici
 		patch.CacheWritePriceSet = true
 		hasChange = true
 	}
-	if payload.Author != nil {
+	if payload.AuthorSet {
+		// model_pricing.author 是 NOT NULL DEFAULT 'Unknown'：显式 null 没有
+		// 可落的语义。按 fail-closed 拒绝，管理员可用 "Unknown" 复位。
+		if payload.Author == nil {
+			return patch, &pricingFieldError{
+				message: `author cannot be null; submit "Unknown" to reset it`,
+				fields:  []string{"author"},
+			}
+		}
 		patch.Author = payload.Author
 		hasChange = true
 	}
@@ -1357,7 +1394,7 @@ func (h *PricingHandlers) handleListGroupPricing(w http.ResponseWriter, r *http.
 		filter.PageSize = size
 	}
 	filter.Group = strings.TrimSpace(q.Get("group"))
-	if filter.Group != "" && !pricingGroupNamePattern.MatchString(filter.Group) {
+	if filter.Group != "" && !groupNamePattern.MatchString(filter.Group) {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"group must match ^[a-z0-9_-]{2,32}$")
 		return
@@ -1374,11 +1411,11 @@ func (h *PricingHandlers) handleListGroupPricing(w http.ResponseWriter, r *http.
 	}
 	filter.Status = status
 	switch q.Get("sort") {
-	case "", "group", "-group", "-model", "updated_at", "-updated_at":
+	case "", "group", "-group", "model", "-model", "updated_at", "-updated_at":
 		filter.Sort = q.Get("sort")
 	default:
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"sort must be one of group, -group, -model, updated_at, -updated_at")
+			"sort must be one of group, -group, model, -model, updated_at, -updated_at")
 		return
 	}
 	items, total, err := h.repo.ListGroupPricing(r.Context(), filter)
@@ -1436,10 +1473,16 @@ func parseGroupPricingPayload(body map[string]json.RawMessage, create bool) (sto
 		}
 		var value int64
 		if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
-			return input, patch, fmt.Errorf("%s must be a non-negative integer", field.name)
+			return input, patch, &pricingFieldError{
+				message: fmt.Sprintf("%s must be a non-negative integer", field.name),
+				fields:  []string{field.name},
+			}
 		}
 		if value > maxPricingPrice {
-			return input, patch, fmt.Errorf("%s exceeds the precise upper bound %d", field.name, maxPricingPrice)
+			return input, patch, &pricingFieldError{
+				message: fmt.Sprintf("%s exceeds the precise upper bound %d", field.name, maxPricingPrice),
+				fields:  []string{field.name},
+			}
 		}
 		*field.dst = value
 		valueCopy := value
@@ -1475,10 +1518,10 @@ func (h *PricingHandlers) handleCreateGroupPricing(w http.ResponseWriter, r *htt
 	}
 	input, _, err := parseGroupPricingPayload(body, true)
 	if err != nil {
-		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error(), nil)
+		writePricingParseError(w, err)
 		return
 	}
-	if !pricingGroupNamePattern.MatchString(input.Group) {
+	if !groupNamePattern.MatchString(input.Group) {
 		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"group must match ^[a-z0-9_-]{2,32}$", []string{"group"})
 		return
@@ -1542,7 +1585,7 @@ func (h *PricingHandlers) handleUpdateGroupPricing(w http.ResponseWriter, r *htt
 	}
 	_, patch, err := parseGroupPricingPayload(body, false)
 	if err != nil {
-		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error(), nil)
+		writePricingParseError(w, err)
 		return
 	}
 	if patch.PromptPrice == nil && patch.CompletionPrice == nil && patch.CacheReadPrice == nil &&

@@ -2326,29 +2326,26 @@ export interface components {
             ai?: number;
             /** Format: int64 */
             ao?: number;
-            /**
-             * @description -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。
-             * @default -1
-             */
-            image_count: number;
+            /** @description -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。 */
+            image_count?: number;
         };
         ModelPricingPreviewRequest: {
             /**
-             * @description pricing.ParsePricing 接受的 spec 对象：mode/expr 或
-             *     prompt_price/completion_price/cache_read_price/cache_write_price
-             *     （也接受旧倍率风格 model_ratio 等）。求值与保存使用同一解析器。
+             * @description pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+             *     prompt_price/completion_price/cache_read_price/cache_write_price，
+             *     也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+             *     求值与保存使用同一解析器。
              */
             spec: {
                 [key: string]: unknown;
-            };
+            } | string;
             /** @description 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。 */
             model?: string;
             /**
              * Format: double
-             * @description 预览用的分组倍率（默认 1）。
-             * @default 1
+             * @description 预览用的分组倍率；缺省 1（服务端默认，不写入 schema default）。
              */
-            group_ratio: number;
+            group_ratio?: number;
             params?: components["schemas"]["PricingPreviewParams"];
         };
         ModelPricingPreviewResponse: {
@@ -2388,6 +2385,7 @@ export interface components {
             cache_read_price?: number | null;
             /** Format: int64 */
             cache_write_price?: number | null;
+            /** @description 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。 */
             author?: string;
             vendor?: string | null;
             status?: components["schemas"]["PricingStatus"];
@@ -2396,13 +2394,14 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description 随源模型只读展示；源 model_pricing 行缺失时为空串。 */
+        GroupPricingMode: components["schemas"]["PricingMode"] | "";
         GroupPricing: {
             /** Format: int64 */
             id: number;
             group: string;
             model: string;
-            /** @description 随源 model_pricing 只读展示；源行缺失时为空串。 */
-            mode: components["schemas"]["PricingMode"];
+            mode: components["schemas"]["GroupPricingMode"];
             /** Format: int64 */
             prompt_price: number;
             /** Format: int64 */
@@ -2436,24 +2435,24 @@ export interface components {
             model: string;
             /**
              * Format: int64
-             * @default 0
+             * @description 覆盖价（整数绝对价）；缺省 0。
              */
-            prompt_price: number;
+            prompt_price?: number;
             /**
              * Format: int64
-             * @default 0
+             * @description 覆盖价（整数绝对价）；缺省 0。
              */
-            completion_price: number;
+            completion_price?: number;
             /**
              * Format: int64
-             * @default 0
+             * @description 覆盖价（整数绝对价）；缺省 0。
              */
-            cache_read_price: number;
+            cache_read_price?: number;
             /**
              * Format: int64
-             * @default 0
+             * @description 覆盖价（整数绝对价）；缺省 0。
              */
-            cache_write_price: number;
+            cache_write_price?: number;
             status?: components["schemas"]["PricingStatus"];
         };
         /** @description 部分更新；group/model 不可改（字段策略 403）。 */
@@ -4903,7 +4902,7 @@ export interface operations {
                 /** @description 模型名前缀。 */
                 keyword?: string;
                 status?: "1" | "2" | "enabled" | "disabled";
-                sort?: "group" | "-group" | "-model" | "updated_at" | "-updated_at";
+                sort?: "group" | "-group" | "model" | "-model" | "updated_at" | "-updated_at";
             };
             header?: never;
             path?: never;

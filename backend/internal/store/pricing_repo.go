@@ -41,6 +41,12 @@ var (
 	ErrPricingInvalidGroup = errors.New("store: group does not exist or is disabled")
 	// ErrPricingInvalidModel：分组覆盖价引用的源模型未定价。
 	ErrPricingInvalidModel = errors.New("store: source model is not priced")
+	// ErrPricingSourceIsExpression：源模型使用 tiered_expr，表达式自包含全部
+	// 计价，覆盖价在该模式下不会被读取——写入它只会制造「看起来生效」的假象。
+	ErrPricingSourceIsExpression = errors.New("store: source model uses expression pricing; group overrides have no effect")
+	// ErrPricingPerRequestFields：per_request 源模型只读取 prompt_price（每次
+	// 请求价），completion/cache 覆盖价无意义。
+	ErrPricingPerRequestFields = errors.New("store: per_request source ignores completion/cache override prices")
 )
 
 // ModelPricingRecord 是 model_pricing 的完整读取投影（13 列）。
@@ -569,6 +575,8 @@ func groupPricingWhere(filter GroupPricingFilter) (string, []any) {
 
 func groupPricingOrder(sort string) string {
 	switch sort {
+	case "model":
+		return ` ORDER BY gp.model ASC, gp."group" ASC`
 	case "-model":
 		return ` ORDER BY gp.model DESC, gp."group" ASC`
 	case "-updated_at":
@@ -629,12 +637,17 @@ func (r *SQLPricingRepo) GetGroupPricing(ctx context.Context, group, model strin
 	return rec, nil
 }
 
-// CreateGroupPricing 写入覆盖价。分组必须存在且启用，源模型必须已定价。
+// CreateGroupPricing 写入覆盖价。分组必须存在且启用，源模型必须已定价；
+// 表达式源与 per_request 源的无效覆盖价字段在保存期拒绝（R-69）。
 func (r *SQLPricingRepo) CreateGroupPricing(ctx context.Context, in GroupPricingInput) (GroupPricingRecord, error) {
-	if err := r.validateGroupAndModel(ctx, in.Group, in.Model); err != nil {
+	sourceMode, err := r.validateGroupAndSource(ctx, in.Group, in.Model)
+	if err != nil {
 		return GroupPricingRecord{}, err
 	}
-	_, err := r.db.ExecContext(ctx, `
+	if sourceMode == 1 && (in.CompletionPrice != 0 || in.CacheReadPrice != 0 || in.CacheWritePrice != 0) {
+		return GroupPricingRecord{}, ErrPricingPerRequestFields
+	}
+	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO group_pricing
 			("group", model, prompt_price, completion_price,
 			 cache_read_price, cache_write_price, status)
@@ -655,6 +668,22 @@ func (r *SQLPricingRepo) CreateGroupPricing(ctx context.Context, in GroupPricing
 
 // UpdateGroupPricing 按 (group, model) + updated_at 更新。
 func (r *SQLPricingRepo) UpdateGroupPricing(ctx context.Context, group, model string, patch GroupPricingPatch, expectUpdatedAt time.Time) (GroupPricingRecord, error) {
+	// 覆盖价字段的语义取决于源模型模式：表达式源不读覆盖价，per_request 源
+	// 只读 prompt_price。保存期拒绝无效写入，避免管理员以为价格已生效。
+	if patch.PromptPrice != nil || patch.CompletionPrice != nil ||
+		patch.CacheReadPrice != nil || patch.CacheWritePrice != nil {
+		sourceMode, err := r.validateGroupAndSource(ctx, group, model)
+		if err != nil {
+			return GroupPricingRecord{}, err
+		}
+		if sourceMode == 1 &&
+			((patch.CompletionPrice != nil && *patch.CompletionPrice != 0) ||
+				(patch.CacheReadPrice != nil && *patch.CacheReadPrice != 0) ||
+				(patch.CacheWritePrice != nil && *patch.CacheWritePrice != 0)) {
+			return GroupPricingRecord{}, ErrPricingPerRequestFields
+		}
+	}
+
 	sets := make([]string, 0, 6)
 	args := make([]any, 0, 7)
 	add := func(column string, value any) {
@@ -743,24 +772,35 @@ func (r *SQLPricingRepo) SetGroupPricingStatus(ctx context.Context, group, model
 }
 
 // validateGroupAndModel 把 FK 与逻辑引用提前成可读错误。
-func (r *SQLPricingRepo) validateGroupAndModel(ctx context.Context, group, model string) error {
+// validateGroupAndSource 校验分组存在且启用、源模型已定价，并返回源模型模式。
+//
+// 表达式源直接拒绝：billing-02 §3.1 规定表达式是唯一价格配置，DBSource 在
+// tiered_expr 模式下跳过 group_pricing 查询——写入覆盖价不会生效。
+func (r *SQLPricingRepo) validateGroupAndSource(ctx context.Context, group, model string) (int16, error) {
 	var groupOK bool
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM user_groups WHERE name = $1 AND status = 1)`, group).Scan(&groupOK); err != nil {
-		return fmt.Errorf("store: check group %s: %w", group, err)
+		return 0, fmt.Errorf("store: check group %s: %w", group, err)
 	}
 	if !groupOK {
-		return ErrPricingInvalidGroup
+		return 0, ErrPricingInvalidGroup
 	}
-	var modelOK bool
-	if err := r.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM model_pricing WHERE model = $1)`, model).Scan(&modelOK); err != nil {
-		return fmt.Errorf("store: check source model %s: %w", model, err)
+	var (
+		mode        int16
+		billingExpr *string
+	)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT mode, billing_expr FROM model_pricing WHERE model = $1`, model).Scan(&mode, &billingExpr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrPricingInvalidModel
 	}
-	if !modelOK {
-		return ErrPricingInvalidModel
+	if err != nil {
+		return 0, fmt.Errorf("store: check source model %s: %w", model, err)
 	}
-	return nil
+	if billingExpr != nil {
+		return 0, ErrPricingSourceIsExpression
+	}
+	return mode, nil
 }
 
 func isUniqueViolation(err error) bool {

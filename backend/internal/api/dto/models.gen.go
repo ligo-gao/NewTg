@@ -90,6 +90,21 @@ func (e GroupPricingSourceStatus) Valid() bool {
 	}
 }
 
+// Defines values for GroupPricingMode1.
+const (
+	Empty GroupPricingMode1 = ""
+)
+
+// Valid indicates whether the value is a known member of the GroupPricingMode1 enum.
+func (e GroupPricingMode1) Valid() bool {
+	switch e {
+	case Empty:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Language.
 const (
 	En   Language = "en"
@@ -555,6 +570,7 @@ const (
 	ListGroupPricingParamsSortMinusGroup     ListGroupPricingParamsSort = "-group"
 	ListGroupPricingParamsSortMinusModel     ListGroupPricingParamsSort = "-model"
 	ListGroupPricingParamsSortMinusUpdatedAt ListGroupPricingParamsSort = "-updated_at"
+	ListGroupPricingParamsSortModel          ListGroupPricingParamsSort = "model"
 	ListGroupPricingParamsSortUpdatedAt      ListGroupPricingParamsSort = "updated_at"
 )
 
@@ -568,6 +584,8 @@ func (e ListGroupPricingParamsSort) Valid() bool {
 	case ListGroupPricingParamsSortMinusModel:
 		return true
 	case ListGroupPricingParamsSortMinusUpdatedAt:
+		return true
+	case ListGroupPricingParamsSortModel:
 		return true
 	case ListGroupPricingParamsSortUpdatedAt:
 		return true
@@ -1267,10 +1285,10 @@ type GroupPricing struct {
 	Group           string    `json:"group"`
 	Id              int64     `json:"id"`
 
-	// Mode 随源 model_pricing 只读展示；源行缺失时为空串。
-	Mode        PricingMode `json:"mode"`
-	Model       string      `json:"model"`
-	PromptPrice int64       `json:"prompt_price"`
+	// Mode 随源模型只读展示；源 model_pricing 行缺失时为空串。
+	Mode        GroupPricingMode `json:"mode"`
+	Model       string           `json:"model"`
+	PromptPrice int64            `json:"prompt_price"`
 
 	// SourceStatus 源 model_pricing 状态；0=源行缺失。
 	SourceStatus GroupPricingSourceStatus `json:"source_status"`
@@ -1285,15 +1303,22 @@ type GroupPricingSourceStatus int
 
 // GroupPricingCreateRequest 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。
 type GroupPricingCreateRequest struct {
-	CacheReadPrice  *int64 `json:"cache_read_price,omitempty"`
+	// CacheReadPrice 覆盖价（整数绝对价）；缺省 0。
+	CacheReadPrice *int64 `json:"cache_read_price,omitempty"`
+
+	// CacheWritePrice 覆盖价（整数绝对价）；缺省 0。
 	CacheWritePrice *int64 `json:"cache_write_price,omitempty"`
+
+	// CompletionPrice 覆盖价（整数绝对价）；缺省 0。
 	CompletionPrice *int64 `json:"completion_price,omitempty"`
 
 	// Group 必须存在且启用（否则 422）。
 	Group string `json:"group"`
 
 	// Model 必须已在 model_pricing 定价（否则 422）。
-	Model       string `json:"model"`
+	Model string `json:"model"`
+
+	// PromptPrice 覆盖价（整数绝对价）；缺省 0。
 	PromptPrice *int64 `json:"prompt_price,omitempty"`
 
 	// Status 1=启用，2=停用（软状态，不删行）。
@@ -1314,6 +1339,14 @@ type GroupPricingList struct {
 	// Total 满足条件的总条数
 	Total int `json:"total"`
 }
+
+// GroupPricingMode 随源模型只读展示；源 model_pricing 行缺失时为空串。
+type GroupPricingMode struct {
+	union json.RawMessage
+}
+
+// GroupPricingMode1 defines model for GroupPricingMode.1.
+type GroupPricingMode1 string
 
 // GroupPricingStatusRequest defines model for GroupPricingStatusRequest.
 type GroupPricingStatusRequest struct {
@@ -1464,17 +1497,32 @@ type ModelPricingList struct {
 
 // ModelPricingPreviewRequest defines model for ModelPricingPreviewRequest.
 type ModelPricingPreviewRequest struct {
-	// GroupRatio 预览用的分组倍率（默认 1）。
+	// GroupRatio 预览用的分组倍率；缺省 1（服务端默认，不写入 schema default）。
 	GroupRatio *float64 `json:"group_ratio,omitempty"`
 
 	// Model 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
 	Model  *string               `json:"model,omitempty"`
 	Params *PricingPreviewParams `json:"params,omitempty"`
 
-	// Spec pricing.ParsePricing 接受的 spec 对象：mode/expr 或
-	// prompt_price/completion_price/cache_read_price/cache_write_price
-	// （也接受旧倍率风格 model_ratio 等）。求值与保存使用同一解析器。
-	Spec map[string]interface{} `json:"spec"`
+	// Spec pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+	// prompt_price/completion_price/cache_read_price/cache_write_price，
+	// 也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+	// 求值与保存使用同一解析器。
+	Spec ModelPricingPreviewRequest_Spec `json:"spec"`
+}
+
+// ModelPricingPreviewRequestSpec0 defines model for ModelPricingPreviewRequest.Spec.0.
+type ModelPricingPreviewRequestSpec0 map[string]interface{}
+
+// ModelPricingPreviewRequestSpec1 defines model for ModelPricingPreviewRequest.Spec.1.
+type ModelPricingPreviewRequestSpec1 = string
+
+// ModelPricingPreviewRequest_Spec pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+// prompt_price/completion_price/cache_read_price/cache_write_price，
+// 也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+// 求值与保存使用同一解析器。
+type ModelPricingPreviewRequest_Spec struct {
+	union json.RawMessage
 }
 
 // ModelPricingPreviewResponse defines model for ModelPricingPreviewResponse.
@@ -1506,6 +1554,7 @@ type ModelPricingStatusRequest struct {
 // ModelPricingUpdateRequest 部分更新；model 不可改（提交 model 由字段策略 403）。
 // updated_at 缺失 400、不匹配 409。空对象/无字段 400。
 type ModelPricingUpdateRequest struct {
+	// Author 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。
 	Author *string `json:"author,omitempty"`
 
 	// BillingExpr null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。
@@ -1695,7 +1744,7 @@ type PricingPreviewParams struct {
 	Cc5m *int64 `json:"cc5m,omitempty"`
 	Cr   *int64 `json:"cr,omitempty"`
 
-	// ImageCount -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。
+	// ImageCount -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。
 	ImageCount *int   `json:"image_count,omitempty"`
 	Img        *int64 `json:"img,omitempty"`
 	ImgCr      *int64 `json:"img_cr,omitempty"`
@@ -3497,6 +3546,68 @@ func (t *GeoIPResponse_Region) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsPricingMode returns the union data inside the GroupPricingMode as a PricingMode
+func (t GroupPricingMode) AsPricingMode() (PricingMode, error) {
+	var body PricingMode
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingMode overwrites any union data inside the GroupPricingMode as the provided PricingMode
+func (t *GroupPricingMode) FromPricingMode(v PricingMode) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingMode performs a merge with any union data inside the GroupPricingMode, using the provided PricingMode
+func (t *GroupPricingMode) MergePricingMode(v PricingMode) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsGroupPricingMode1 returns the union data inside the GroupPricingMode as a GroupPricingMode1
+func (t GroupPricingMode) AsGroupPricingMode1() (GroupPricingMode1, error) {
+	var body GroupPricingMode1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromGroupPricingMode1 overwrites any union data inside the GroupPricingMode as the provided GroupPricingMode1
+func (t *GroupPricingMode) FromGroupPricingMode1(v GroupPricingMode1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeGroupPricingMode1 performs a merge with any union data inside the GroupPricingMode, using the provided GroupPricingMode1
+func (t *GroupPricingMode) MergeGroupPricingMode1(v GroupPricingMode1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GroupPricingMode) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GroupPricingMode) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsAuthSessionResponse returns the union data inside the LoginResponse as a AuthSessionResponse
 func (t LoginResponse) AsAuthSessionResponse() (AuthSessionResponse, error) {
 	var body AuthSessionResponse
@@ -3555,6 +3666,68 @@ func (t LoginResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (t *LoginResponse) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsModelPricingPreviewRequestSpec0 returns the union data inside the ModelPricingPreviewRequest_Spec as a ModelPricingPreviewRequestSpec0
+func (t ModelPricingPreviewRequest_Spec) AsModelPricingPreviewRequestSpec0() (ModelPricingPreviewRequestSpec0, error) {
+	var body ModelPricingPreviewRequestSpec0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingPreviewRequestSpec0 overwrites any union data inside the ModelPricingPreviewRequest_Spec as the provided ModelPricingPreviewRequestSpec0
+func (t *ModelPricingPreviewRequest_Spec) FromModelPricingPreviewRequestSpec0(v ModelPricingPreviewRequestSpec0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingPreviewRequestSpec0 performs a merge with any union data inside the ModelPricingPreviewRequest_Spec, using the provided ModelPricingPreviewRequestSpec0
+func (t *ModelPricingPreviewRequest_Spec) MergeModelPricingPreviewRequestSpec0(v ModelPricingPreviewRequestSpec0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingPreviewRequestSpec1 returns the union data inside the ModelPricingPreviewRequest_Spec as a ModelPricingPreviewRequestSpec1
+func (t ModelPricingPreviewRequest_Spec) AsModelPricingPreviewRequestSpec1() (ModelPricingPreviewRequestSpec1, error) {
+	var body ModelPricingPreviewRequestSpec1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingPreviewRequestSpec1 overwrites any union data inside the ModelPricingPreviewRequest_Spec as the provided ModelPricingPreviewRequestSpec1
+func (t *ModelPricingPreviewRequest_Spec) FromModelPricingPreviewRequestSpec1(v ModelPricingPreviewRequestSpec1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingPreviewRequestSpec1 performs a merge with any union data inside the ModelPricingPreviewRequest_Spec, using the provided ModelPricingPreviewRequestSpec1
+func (t *ModelPricingPreviewRequest_Spec) MergeModelPricingPreviewRequestSpec1(v ModelPricingPreviewRequestSpec1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingPreviewRequest_Spec) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingPreviewRequest_Spec) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
