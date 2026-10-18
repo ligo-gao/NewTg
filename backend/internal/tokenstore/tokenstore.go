@@ -76,6 +76,11 @@ var (
 	ErrInvalidToken  = errors.New("tokenstore: invalid token")
 	ErrTokenDisabled = errors.New("tokenstore: token disabled")
 	ErrTokenExpired  = errors.New("tokenstore: token expired")
+
+	// ErrBackend 标记批量操作中的基础设施故障（DB/Redis/驱动错误）。
+	// 批量端点必须把它与逐条业务失败区分开：HTTP 层映射为 503，绝不可把
+	// 底层错误文本（内网 host:port、SQL、约束名）写进 failed[].detail。
+	ErrBackend = errors.New("tokenstore: backend failure")
 )
 
 // Settings 是 configcenter.Center 的最小读接口（Get 返回 JSON 值）。
@@ -837,11 +842,14 @@ func (s *Store) Get(ctx context.Context, userID, id int64) (*Token, error) {
 		return nil, err
 	}
 	token := row.toToken()
-	if cacheable {
-		s.storeCachedToken(ctx, gen, token, row.KeyHash)
-	}
+	// 归属校验必须先于缓存回填：任何已认证用户都能猜/枚举他人 token ID，
+	// 若先写缓存，跨租户请求就会把他人令牌视图和 key_hash 反向索引塞进
+	// Redis（没有数据泄露，但造成无谓的跨租户缓存污染与缓存放大）。
 	if token.UserID != userID {
 		return nil, ErrNotFound
+	}
+	if cacheable {
+		s.storeCachedToken(ctx, gen, token, row.KeyHash)
 	}
 	return token, nil
 }
@@ -1104,6 +1112,12 @@ func (s *Store) batch(ctx context.Context, userID int64, ids []int64, action fun
 		}
 		seen[id] = struct{}{}
 		if err := action(id); err != nil {
+			// 基础设施故障（DB/Redis/驱动）不是「这一条失败」，而是整批无法
+			// 完成：继续逐条收集会把内部错误文本伪装成 200 的业务部分失败。
+			// 立即中止并保留错误链，由 HTTP 层映射 503。
+			if !isBatchDomainError(err) {
+				return succeeded, failed, fmt.Errorf("%w: %w", ErrBackend, err)
+			}
 			failure := BatchFailure{ID: id, Detail: batchFailureDetail(err)}
 			// 只有确认属于当前用户且仍存在的令牌才回填名称；他人/不存在保持空（不泄露）。
 			if !errors.Is(err, ErrNotFound) {
@@ -1119,6 +1133,13 @@ func (s *Store) batch(ctx context.Context, userID int64, ids []int64, action fun
 	return succeeded, failed, nil
 }
 
+// isBatchDomainError 报告错误是否属于可逐条报告的领域失败。
+// 只有这些错误允许进入 failed[]；其余一律按基础设施故障中止整批。
+func isBatchDomainError(err error) bool {
+	var verr *ValidationError
+	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) || errors.As(err, &verr)
+}
+
 func batchFailureDetail(err error) string {
 	var verr *ValidationError
 	switch {
@@ -1129,7 +1150,9 @@ func batchFailureDetail(err error) string {
 	case errors.As(err, &verr):
 		return verr.Message
 	default:
-		return err.Error()
+		// 纵深防御：基础设施错误在 batch 中已被 ErrBackend 中止，正常不可达。
+		// 绝不能让底层错误文本（host:port / SQL / 约束名）从这里漏给客户端。
+		return "internal error"
 	}
 }
 
@@ -1212,6 +1235,11 @@ const (
 	cacheIDHashPrefix  = "token:idhash:"
 	cacheGenerationKey = "token:gen"
 	errCacheGeneration = "tokenstore: cache generation changed"
+
+	// invalidateTimeout 是失效三步（INCR/DEL/PUBLISH）的独立上限。DB 已经
+	// 提交后，失效只是缓存清理；2s 足够覆盖 Redis 的瞬时抖动，又不会让
+	// 一个卡住的 Redis 把写请求拖到客户端超时。
+	invalidateTimeout = 2 * time.Second
 )
 
 var errCacheGenerationChanged = errors.New(errCacheGeneration)
@@ -1372,11 +1400,25 @@ func (s *Store) watch(ctx context.Context, pubsub *redis.PubSub) {
 	}
 }
 
-// invalidateOnChange 清理某令牌的全部缓存键（view/idhash/meta）。
+// invalidateOnChange 清理某令牌的全部缓存键（view/idhash/meta），供
+// token:changed 订阅路径使用（外部写路径只 PUBLISH，不经过 Store 的写方法）。
 func (s *Store) invalidateOnChange(ctx context.Context, id int64) {
 	if s.rdb == nil {
 		return
 	}
+	// 外部写路径（封禁/删用户/删账号）在别的模块完成 DB 提交后才广播；
+	// 这里同样不能被订阅者/请求 ctx 的取消打断（见 invalidateToken 注释）。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
+
+	// 代际必须先于 DEL。在途回填在读 DB 前捕获 gen，回填时 WATCH 比较该值：
+	// 若先 DEL 后 INCR，读者可能恰好落在两步之间，看到代际未变而把刚被删除/
+	// 禁用/重置的旧行写回缓存，并靠 60s TTL 继续通过 Bearer 鉴权（GC-11 的
+	// ≤1s 失效承诺被击穿）。先 INCR 让任何旧代际的回填都必然 WATCH 失败。
+	if err := s.rdb.Incr(ctx, cacheGenerationKey).Err(); err != nil {
+		slog.Warn("tokenstore: bump cache generation failed", "token_id", id, "error", err)
+	}
+
 	idHashKey := cacheIDHashKey(id)
 	keys := []string{cacheViewKey(id), idHashKey}
 	if hash, err := s.rdb.Get(ctx, idHashKey).Result(); err == nil && hash != "" {
@@ -1387,10 +1429,16 @@ func (s *Store) invalidateOnChange(ctx context.Context, id int64) {
 
 // invalidateToken 是写路径的统一失效入口：代际自增（阻断在途回填）→
 // DEL 已知键（含旧 hash 的 meta）→ 广播 token:changed:<id>。
+//
+// ctx 只用于取取消信号之外的上下文值。DB 已经提交，失效必须尽力完成：
+// 客户端在响应写出前断开会让请求 ctx 取消，若直接用它，INCR/DEL/PUBLISH
+// 会全部失败，被禁用/删除的令牌只能等 60s TTL 才失效。
 func (s *Store) invalidateToken(ctx context.Context, id int64, keyHashes ...string) {
 	if s.rdb == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
 	if err := s.rdb.Incr(ctx, cacheGenerationKey).Err(); err != nil {
 		slog.Warn("tokenstore: bump cache generation failed", "token_id", id, "error", err)
 	}
