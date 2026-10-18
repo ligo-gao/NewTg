@@ -495,17 +495,19 @@ type recordingSaturator struct {
 	called     int
 	outcome    SettlementOutcome
 	outcomes   []SettlementOutcome
+	facts      []*contract.UsageFact // 每次调用传入的 fact（N4 断言 nil）
 	err        error
 	// failFirst > 0 时只让前 failFirst 次调用返回 err，之后成功；
 	// 0 表示 err 永远生效（用于「日志库持续不可用」的用例）。
 	failFirst int
 }
 
-func (r *recordingSaturator) Saturate(_ context.Context, _ *contract.UsageFact,
+func (r *recordingSaturator) Saturate(_ context.Context, fact *contract.UsageFact,
 	_ *contract.RelayContext, outcome SettlementOutcome) error {
 	r.called++
 	r.outcome = outcome
 	r.outcomes = append(r.outcomes, outcome)
+	r.facts = append(r.facts, fact)
 	var n int
 	if err := r.db.QueryRow(
 		`SELECT count(*) FROM wallet_transactions WHERE reference_type='usage_log' AND reference_id=$1`,
@@ -595,6 +597,11 @@ func TestSessionSaturateFailureKeepsHold(t *testing.T) {
 	}
 	if sat.outcomes[1].Refunded != 100 {
 		t.Fatalf("refund log refunded = %d, want 100", sat.outcomes[1].Refunded)
+	}
+	// N4：退款日志传 nil fact（T6 用 rc.Streaming 回退），不得伪造
+	// stream=false 的空 UsageFact。
+	if sat.facts[1] != nil {
+		t.Fatalf("refund Saturate fact = %+v, want nil", sat.facts[1])
 	}
 }
 
@@ -1240,8 +1247,9 @@ func TestSessionTrustForcedPreConsume(t *testing.T) {
 func TestSessionRefundIncludesChargeIncrement(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 500)
-	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
 	req := testRequestID("refund-increment")
+	sat := &recordingSaturator{db: db, requestID: req}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
 	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
 
 	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
@@ -1278,6 +1286,17 @@ func TestSessionRefundIncludesChargeIncrement(t *testing.T) {
 		if rows[i] != want[i] {
 			t.Fatalf("row[%d] = %+v, want %+v", i, rows[i], want[i])
 		}
+	}
+	// ND1：退款日志的 pre_deducted 只记 hold（100），refunded 记实际退回
+	// （hold 100 + 增量 30 = 130），不得把增量算成预扣。
+	if sat.called != 1 {
+		t.Fatalf("Saturate calls = %d, want 1", sat.called)
+	}
+	if sat.outcome.Status != UsageLogStatusRefunded {
+		t.Fatalf("refund log status = %d, want %d", sat.outcome.Status, UsageLogStatusRefunded)
+	}
+	if sat.outcome.PreDeducted != 100 || sat.outcome.Refunded != 130 {
+		t.Fatalf("refund outcome = %+v, want pre_deducted 100 / refunded 130", sat.outcome)
 	}
 	// 重复退款不得再回补。
 	if err := s.Refund(); err != nil {
@@ -1796,7 +1815,7 @@ func TestLedgerReleaseAbandonedConvergesOnExistingRelease(t *testing.T) {
 		t.Fatalf("create pre-existing release: %v", err)
 	}
 
-	held, _, err := ledger.releaseAbandoned(ctx, req)
+	held, _, err := ledger.releaseAbandoned(ctx, req, 0)
 	if err != nil {
 		t.Fatalf("releaseAbandoned = %v, want nil（23505 收敛）", err)
 	}
@@ -2173,4 +2192,147 @@ func TestEngineRecoverAbandonedRestoresTokenQuota(t *testing.T) {
 			t.Fatalf("balance = %d, want 500", got)
 		}
 	})
+}
+
+// TestSessionPreConsumeAfterCloseFailsClosed 是 N1 的探针回归：新的 Session
+// 对已结案（worker 已兜底退款）的 requestID 再次 PreConsume 必须 fail closed，
+// 不得产生永远退不掉的新 hold（wallet_release_refid_uq wedge + 令牌静默损失）。
+func TestSessionPreConsumeAfterCloseFailsClosed(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("replay-closed")
+
+	s1 := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+	if err := s1.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("first PreConsume: %v", err)
+	}
+	// 模拟崩溃兜底：hold 变 expired + release 100。
+	if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+		t.Fatalf("token remain = %+v, want 500", got)
+	}
+
+	// 重复会话/中继重放：同一 requestID 新建会话再次 PreConsume。
+	s2 := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+	err := s2.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrRequestClosed) {
+		t.Fatalf("PreConsume after close = %v, want ErrRequestClosed", err)
+	}
+	if s2.Reserved() != 0 {
+		t.Fatalf("Reserved = %d, want 0（不得产生新 hold）", s2.Reserved())
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（不得再扣）", got)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+		t.Fatalf("token remain = %+v, want 500（不得再扣令牌）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 { // expired hold + release
+		t.Fatalf("rows = %+v, want 2（无新 hold）", rows)
+	}
+	// Refund 不得再撞 23505。
+	if err := s2.Refund(); err != nil {
+		t.Fatalf("Refund after terminal = %v, want nil", err)
+	}
+}
+
+// TestLedgerReleaseAbandonedRefundsWhenOnlySettleMarker 是 N3 的回归：
+// 只有 billing:settle 标记、没有 release 行时，残留 hold 必须正常退款
+// （delta==0 的结算不会写 release；不能把它的钱静默吞掉）。
+func TestLedgerReleaseAbandonedRefundsWhenOnlySettleMarker(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	ledger := NewLedger(gormDB)
+	ctx := context.Background()
+	req := testRequestID("settle-marker-only")
+
+	if _, err := ledger.ApplyDelta(ctx, userID, -100,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("create hold: %v", err)
+	}
+	// 模拟「delta==0 结算」留下的结案标记（没有 release 行）。
+	if _, err := db.Exec(
+		`UPDATE wallet_transactions SET note = 'billing:settle'
+		 WHERE reference_type = 'usage_log' AND reference_id = $1 AND type = 'consume_pre'`,
+		req); err != nil {
+		t.Fatalf("mark settle: %v", err)
+	}
+
+	held, _, err := ledger.releaseAbandoned(ctx, req, 0)
+	if err != nil {
+		t.Fatalf("releaseAbandoned: %v", err)
+	}
+	if held != 100 {
+		t.Fatalf("held = %d, want 100（必须退款）", held)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（hold 已退回）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 2 || rows[1].Type != "release" || rows[1].Amount != 100 {
+		t.Fatalf("rows = %+v, want expired hold + release 100", rows)
+	}
+}
+
+// TestEngineRecoverAbandonedTokenRestoreAtomic 是 ND2 的回归：钱包 hold 退回
+// 与令牌额度回补在同一事务内。第一次调用用令牌溢出强制事务失败，验证没有
+// 任何半提交（钱包未退、hold 仍为 hold、令牌未变）；复位后重试一次完成
+// 两件事且恰好一次。
+func TestEngineRecoverAbandonedTokenRestoreAtomic(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("nd2-atomic")
+	s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	// 令令牌回补溢出（MaxInt64 + 100 → PG bigint out of range），
+	// 强制 releaseAbandoned 的整个事务回滚。
+	if _, err := db.Exec(
+		`UPDATE api_tokens SET remain_quota = 9223372036854775807 WHERE id = $1`, tokenID); err != nil {
+		t.Fatalf("set token to max: %v", err)
+	}
+	if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err == nil {
+		t.Fatal("RecoverAbandonedByID = nil, want overflow error")
+	}
+	// 原子回滚：钱包、hold 状态、令牌都没有变化。
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（事务已回滚）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 1 || rows[0].Status != "hold" {
+		t.Fatalf("rows = %+v, want 单行 hold（回滚后仍开放）", rows)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 9223372036854775807 {
+		t.Fatalf("token remain = %+v, want unchanged MaxInt64", got)
+	}
+
+	// 复位后重试：钱包与令牌都恰好恢复一次。
+	if _, err := db.Exec(`UPDATE api_tokens SET remain_quota = 400 WHERE id = $1`, tokenID); err != nil {
+		t.Fatalf("reset token: %v", err)
+	}
+	if err := e.RecoverAbandonedByID(context.Background(), req, tokenID); err != nil {
+		t.Fatalf("retry RecoverAbandonedByID: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 500 {
+		t.Fatalf("token remain = %+v, want 500", got)
+	}
+	rows = readWalletRows(t, db, req)
+	if len(rows) != 2 || rows[0].Status != "expired" || rows[1].Amount != 100 {
+		t.Fatalf("rows = %+v, want expired + release 100", rows)
+	}
 }

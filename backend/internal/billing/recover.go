@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"newtg/gateway/internal/contract"
 )
@@ -33,9 +32,11 @@ import (
 // wallet_release_refid_uq 部分唯一索引兜底）。已 settled/refunded/无 hold
 // 一律视为幂等命中，直接返回 nil。
 //
-// 【R-88】由租约携带的 tokenID 回补令牌额度：钱包 hold 退回后，把**同一
-// hold 金额**加回 api_tokens.remain_quota（NULL 无限额/令牌已删除 → no-op）。
-// ChargeIncrement 的增量仍保持已扣（R-39），所以只回补 held，不回补 consumed。
+// 【R-88 / ND2】由租约携带的 tokenID 回补令牌额度：钱包 hold 退回与把
+// **同一 hold 金额**加回 api_tokens.remain_quota 在 releaseAbandoned 的
+// **同一事务**内完成（NULL 无限额/令牌已删除 → no-op）。ChargeIncrement 的
+// 增量仍保持已扣（R-39），所以只回补 held，不回补 consumed。
+// 同事务保证崩溃重试可以完整重放，不会出现「钱包已退、令牌永远补不上」。
 //
 // 【失败语义】DB 错误原样上抛，worker 记日志并在下一轮重试；绝不把
 // 「数据库暂不可用」当成「已退款」。退款成功后才写日志占位、再 Remove
@@ -51,7 +52,10 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string, tok
 	opCtx, cancel := context.WithTimeout(ctx, billingOpTimeout)
 	defer cancel()
 
-	held, _, err := e.ledger.releaseAbandoned(opCtx, requestID)
+	// ND2：钱包 hold 退回与令牌额度回补在 releaseAbandoned 的同一事务内
+	// 完成。进程在两者之间崩溃时整个事务回滚，重试会完整重放；不会出现
+	// 「钱包已退、令牌永远补不上」的半提交状态。
+	_, _, err := e.ledger.releaseAbandoned(opCtx, requestID, tokenID)
 	switch {
 	case errors.Is(err, errHoldClosed):
 		// 预扣行已处于 settled/released/expired：正常结算或此前的兜底已经
@@ -64,23 +68,6 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string, tok
 		err = nil
 	case err != nil:
 		return fmt.Errorf("billing: recover abandoned request %s: %w", requestID, err)
-	}
-
-	// R-88：钱包 hold 已退回；把同一 hold 金额回补到令牌额度。
-	// best-effort：令牌侧失败只记日志，不能让已经完成的钱包退款变成错误
-	// （否则 worker 会重扫，但钱包已幂等 no-op，令牌却永远补不上）。
-	if held > 0 && tokenID > 0 {
-		userID, found, ownerErr := e.ledger.holdOwner(opCtx, requestID)
-		switch {
-		case ownerErr != nil:
-			slog.Warn("billing: read hold owner for token restore failed",
-				"request_id", requestID, "token_id", tokenID, "error", ownerErr)
-		case found:
-			if tokenErr := e.ledger.AdjustTokenQuota(opCtx, userID, tokenID, held); tokenErr != nil {
-				slog.Warn("billing: token quota restore failed after abandoned recovery",
-					"request_id", requestID, "token_id", tokenID, "amount", held, "error", tokenErr)
-			}
-		}
 	}
 
 	// 日志占位必须在 Remove 之前：写失败时保留租约索引，下一轮重试；

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -164,6 +165,20 @@ func (l *Ledger) ApplyDeltaWithToken(ctx context.Context, userID, tokenID, delta
 	}
 
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// N2：终端判定必须在**写资金的同一事务内**复核。事务外预检与
+		// 写入之间，worker 可能已完成兜底退款；FOR UPDATE 锁住该 requestID
+		// 的流水行，与 worker 的 hold 行锁串行化，避免「退款后又被扣一次」。
+		// 已提交但未结算的 hold（status='hold'）不构成 terminal，正常
+		// Reserve/增量路径不受影响。
+		if refType == "usage_log" && refID != "" {
+			terminal, termErr := requestTerminalTx(ctx, tx, refID)
+			if termErr != nil {
+				return termErr
+			}
+			if terminal {
+				return fmt.Errorf("%w: %s", ErrRequestClosed, refID)
+			}
+		}
 		if delta < 0 {
 			if tokenErr := debitTokenTx(ctx, tx, userID, tokenID, -delta); tokenErr != nil {
 				return tokenErr
@@ -215,6 +230,22 @@ func debitTokenTx(ctx context.Context, tx *gorm.DB, userID, tokenID, amount int6
 		`UPDATE api_tokens SET remain_quota = remain_quota - ?, updated_at = now()
 		 WHERE id = ?`, amount, tokenID); res.Error != nil {
 		return fmt.Errorf("billing: deduct token quota: %w", res.Error)
+	}
+	return nil
+}
+
+// creditTokenTx 在事务内回补令牌额度（R-88/ND2 的原子组合用）。
+// NULL 无限额 / 令牌已删除 / 归属不匹配 → 0 行受影响（no-op，不是错误）。
+func creditTokenTx(ctx context.Context, tx *gorm.DB, userID, tokenID, amount int64) error {
+	if tokenID <= 0 || amount <= 0 {
+		return nil
+	}
+	res := tx.WithContext(ctx).Exec(
+		`UPDATE api_tokens SET remain_quota = remain_quota + ?, updated_at = now()
+		 WHERE id = ? AND user_id = ? AND remain_quota IS NOT NULL`,
+		amount, tokenID, userID)
+	if res.Error != nil {
+		return fmt.Errorf("billing: credit token quota: %w", res.Error)
 	}
 	return nil
 }
@@ -290,29 +321,18 @@ func (l *Ledger) AdjustTokenQuota(ctx context.Context, userID, tokenID, delta in
 	return nil
 }
 
-// holdOwner 返回该 requestID 预扣行所属用户（R-88 恢复时校验令牌归属）。
-// found=false 表示没有 consume_pre 行。
-func (l *Ledger) holdOwner(ctx context.Context, requestID string) (userID int64, found bool, err error) {
-	err = l.db.WithContext(ctx).Raw(
-		`SELECT user_id FROM wallet_transactions
-		 WHERE reference_type = 'usage_log' AND reference_id = ? AND type = 'consume_pre'
-		 ORDER BY id LIMIT 1`, requestID).Row().Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, fmt.Errorf("billing: read hold owner for %s: %w", requestID, err)
-	}
-	return userID, true, nil
-}
-
 // requestTerminal 判断该 requestID 是否已经结案（Important-1）。
 //
 // 判定面：存在 billing:* 结案标记（结算/退款/兜底），或存在已关闭的
-// consume_pre 行（settled/released/expired）。Reserve/ChargeIncrement 在
-// 写任何新资金前必须复核它：已退款请求再产生新 hold 会撞
+// consume_pre 行（settled/released/expired）。Reserve/ChargeIncrement/PreConsume
+// 在写任何新资金前必须复核它：已退款请求再产生新 hold 会撞
 // wallet_release_refid_uq，永远无法再退（wedge）。
+//
+// l.db 为 nil（纯配置单测）时视为未结案：生产/集成环境始终有主库。
 func (l *Ledger) requestTerminal(ctx context.Context, requestID string) (bool, error) {
+	if l.db == nil {
+		return false, nil
+	}
 	var n int64
 	err := l.db.WithContext(ctx).Raw(
 		`SELECT count(*) FROM wallet_transactions
@@ -324,6 +344,42 @@ func (l *Ledger) requestTerminal(ctx context.Context, requestID string) (bool, e
 		return false, fmt.Errorf("billing: check terminal state for %s: %w", requestID, err)
 	}
 	return n > 0, nil
+}
+
+// requestTerminalTx 是 requestTerminal 的**事务内**版本（N2）：
+// `FOR UPDATE` 锁住该 requestID 的全部流水行，与 worker 的 hold 行锁
+// 串行化。事务外预检与写入之间的窗口因此被关闭（READ COMMITTED 下
+// 普通 SELECT 看不到并发未提交的关闭，也无法阻止其后的插入）。
+func requestTerminalTx(ctx context.Context, tx *gorm.DB, requestID string) (bool, error) {
+	rows, err := tx.WithContext(ctx).Raw(
+		`SELECT type, status, COALESCE(note, '') FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ?
+		 FOR UPDATE`, requestID).Rows()
+	if err != nil {
+		return false, fmt.Errorf("billing: lock terminal rows for %s: %w", requestID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			txType string
+			status string
+			note   string
+		)
+		if err := rows.Scan(&txType, &status, &note); err != nil {
+			return false, fmt.Errorf("billing: scan terminal rows for %s: %w", requestID, err)
+		}
+		if strings.HasPrefix(note, "billing:") {
+			return true, nil
+		}
+		if txType == "consume_pre" &&
+			(status == "settled" || status == "released" || status == "expired") {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("billing: iterate terminal rows for %s: %w", requestID, err)
+	}
+	return false, nil
 }
 
 // applyDeltaTx 是 ApplyDelta 的事务内核；也供持有同一事务的结算/退款路径复用。
@@ -667,7 +723,7 @@ func (l *Ledger) closedHoldStatus(ctx context.Context, requestID string) (string
 // CAS 锚点：`status = 'hold'` 的条件 UPDATE。影响 0 行即代表已被其它执行者
 // 处理，返回 errHoldClosed / errNoOpenHold，重复扫描不产生第二行 release。
 // 退还行与 hold→expired 在同一事务内提交。
-func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
+func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string, tokenID int64) (
 	held, balanceAfter int64, err error) {
 
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -719,15 +775,14 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 			return errNoOpenHold
 		}
 
-		// Important-1 收敛：该 requestID 已有结案标记或 release 行时，说明
-		// 之前已经结算/退款/兜底过。此时只把残留 hold 置为 expired（收敛
-		// 状态），**不再插入第二行 release**——wallet_release_refid_uq 会以
-		// 23505 拒绝它，且资金已被前一执行者回补。返回 held=0 让调用方不要
-		// 再补令牌额度（钱没有第二次回补）。
-		settledBefore, serr := settlementExists(ctx, tx, requestID)
-		if serr != nil {
-			return serr
-		}
+		// Important-1 收敛：该 requestID 已有 **release 行**时，说明之前已经
+		// 退过款。此时只把残留 hold 置为 expired（收敛状态），不再插入第二行
+		// release——wallet_release_refid_uq 会以 23505 拒绝它，且资金已被前
+		// 一执行者回补。返回 held=0 让调用方不要再补令牌额度。
+		//
+		// N3：仅有 billing:settle 标记、没有 release 行时**不能**跳过退款：
+		// delta==0 的结算不会写差额行，若这里还有残留 hold，它的钱从未退回。
+		// release 行的唯一索引不冲突，应正常退款。
 		releaseBefore, rerr := releaseExists(ctx, tx, requestID)
 		if rerr != nil {
 			return rerr
@@ -740,7 +795,7 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 			// 理论上不可能：上面已数到 count>0 的 hold 行。
 			return errNoOpenHold
 		}
-		if settledBefore || releaseBefore {
+		if releaseBefore {
 			held = 0
 			balanceAfter = 0
 			return nil
@@ -751,10 +806,20 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 		if qerr != nil && isUniqueViolation(qerr) {
 			// 竞态：另一执行者在复核与 INSERT 之间写入了 release。回滚本次
 			// 余额变更（事务失败即回滚），按幂等命中收敛；残留 hold 下一轮
-			// 会被上面的 settledBefore/releaseBefore 分支收敛。
+			// 会被上面的 releaseBefore 分支收敛。
 			return errHoldClosed
 		}
-		return qerr
+		if qerr != nil {
+			return qerr
+		}
+		// ND2：钱包 hold 退回与令牌额度回补必须在**同一事务**内完成。
+		// 若分成两步（先 release 提交、再 AdjustTokenQuota），进程在两步
+		// 之间崩溃会让重试看到 errHoldClosed（held=0）而永远跳过令牌回补。
+		// 同事务保证「要么都退、要么都不退」，重试可完整重放。
+		if tokenErr := creditTokenTx(ctx, tx, userID, tokenID, held); tokenErr != nil {
+			return tokenErr
+		}
+		return nil
 	})
 	return held, balanceAfter, err
 }

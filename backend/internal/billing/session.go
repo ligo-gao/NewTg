@@ -98,6 +98,24 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 	if s.settled || s.refunded {
 		return fmt.Errorf("%w: request %s", ErrSessionClosed, s.requestID)
 	}
+
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	// N1：已结案的 requestID 绝不能再预扣。重复会话/中继重放/T9 跨组
+	// 「无会话→新建会话+PreConsume」都可能拿到已关闭的 requestID；若放行，
+	// 新 hold 之后无法再写 release（wallet_release_refid_uq），退款会静默
+	// 丢失。已提交但尚未结算的 hold 仍是 status='hold'，不是 terminal，
+	// 因此「提交结果未知后的重试」不受影响。
+	terminal, termErr := s.engine.ledger.requestTerminal(ctx, s.requestID)
+	if termErr != nil {
+		return fmt.Errorf("billing: check request terminal state: %w", termErr)
+	}
+	if terminal {
+		s.markTerminalLocked(ctx)
+		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+	}
+
 	// Minor-8（billing-03 §5.5）：预扣前已存在配额钳制 → 价格错误 400，
 	// 不得继续用饱和后的估算值预扣（SkipRetry 由 T9 映射）。
 	if s.rc != nil && s.rc.QuotaClamp != nil {
@@ -128,9 +146,6 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 	}
 	s.imageRequest = est.ImageCount > 0 || est.AttemptImageCount > 0
 	s.reservedImages = estimateImageCount(est)
-
-	ctx, cancel := opCtx()
-	defer cancel()
 
 	snap, err := s.resolveSnapshotLocked(ctx, est)
 	if err != nil {
@@ -649,6 +664,9 @@ func (s *Session) Refund() error {
 		defer releaseLock()
 	}
 
+	// ND1：日志里的 pre_deducted 只应记录**预扣 hold**，不能把
+	// ChargeIncrement 实耗算进去（trusted/无 hold 会话没有预扣）。
+	preDeductedForLog := s.preConsumed
 	refundedAmount, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 已被其它执行者关闭：幂等命中，不再写第二行 release。
@@ -681,11 +699,11 @@ func (s *Session) Refund() error {
 	if s.engine.saturator != nil {
 		outcome := SettlementOutcome{
 			Cost:        0,
-			PreDeducted: refundedAmount,
+			PreDeducted: preDeductedForLog,
 			Refunded:    refundedAmount,
 			Status:      UsageLogStatusRefunded,
 		}
-		if logErr := s.engine.saturator.Saturate(ctx, &contract.UsageFact{}, s.rc, outcome); logErr != nil {
+		if logErr := s.engine.saturator.Saturate(ctx, nil, s.rc, outcome); logErr != nil {
 			s.refunded = true
 			s.preConsumed = 0
 			s.consumed = 0
@@ -750,7 +768,14 @@ func (s *Session) RecoverAbandoned(requestID string) error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	held, _, err := s.engine.ledger.releaseAbandoned(ctx, requestID)
+	// 只有恢复**本会话**的请求时才带上本会话的令牌身份；恢复他人请求时
+	// tokenID=0，避免把额度补到错误的令牌上（worker 走 Engine 入口并携带
+	// 租约里的正确 tokenID）。
+	tokenID := int64(0)
+	if requestID == s.requestID {
+		tokenID = s.tokenID
+	}
+	_, _, err := s.engine.ledger.releaseAbandoned(ctx, requestID, tokenID)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 无 hold 或已被处理：无预扣可退，直接返回 nil。
 		if requestID == s.requestID {
@@ -767,19 +792,11 @@ func (s *Session) RecoverAbandoned(requestID string) error {
 	}
 
 	if requestID == s.requestID {
-		// R-73：兜底只退 hold（增量是已交付用量），令牌额度也只回补 hold 部分。
-		// 返回 held=0 表示「已有 release，仅收敛状态」，没有钱被回补，故不补令牌。
-		if held > 0 && s.tokenDeducted > 0 {
-			credit := min(held, s.tokenDeducted)
-			if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, credit); tokenErr != nil {
-				slog.Warn("billing: token quota restore failed after abandoned recovery",
-					"request_id", requestID, "token_id", s.tokenID,
-					"amount", credit, "error", tokenErr)
-			}
-			s.tokenDeducted -= credit
-		}
+		// ND2：hold 退回与令牌回补已在 releaseAbandoned 的同一事务内完成
+		// （只回补 hold 金额，增量保持已扣，R-39）。
 		s.refunded = true
 		s.preConsumed = 0
+		s.tokenDeducted = 0
 		s.stopHeartbeatLocked()
 		s.removeLeaseLocked(ctx)
 	}
@@ -1049,11 +1066,14 @@ func (s *Session) registerLeaseLocked(ctx context.Context) error {
 		} else {
 			_, _, rbErr = s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released")
 		}
+		rolledBack := rbErr == nil
 		if rbErr != nil && !errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
 			return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
 		}
-		// R-73：钱包已回滚，令牌额度也要回到预扣前（失败只记日志）。
-		if s.tokenDeducted > 0 {
+		// R-73/N5：只有钱包回滚**真的退回了钱**（rbErr==nil）才回补令牌。
+		// errHoldClosed / errNoOpenHold 表示 hold 已被其它路径关闭，资金由
+		// 那条路径负责（结算/退款各自会调整令牌）；此时再补会double-credit。
+		if rolledBack && s.tokenDeducted > 0 {
 			if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
 				slog.Warn("billing: token quota restore failed after lease rollback",
 					"request_id", s.requestID, "token_id", s.tokenID,
