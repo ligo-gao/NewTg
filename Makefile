@@ -84,8 +84,10 @@ migrate-version: ## 打印当前迁移版本
 migrate-create: ## 新建成对迁移（14 位 UTC 时间戳；name= 传入）
 	migrate create -ext sql -dir $(MIGRATIONS) -format 20060102150405 $(name)
 
-migrate-verify: ## 幂等 + up/down 往返验证（§8.3，CI 门禁）
-	$(MAKE) migrate-up && $(MAKE) migrate-up && $(MAKE) migrate-down && $(MAKE) migrate-up
+migrate-verify: ## 静态断言 + 幂等/往返/全退/schema 快照比对（§8.3，CI 门禁）
+	bash backend/scripts/check_migrations.sh $(MIGRATIONS)
+	bash backend/scripts/check_migrations.sh $(BACKEND)/migrations-logs
+	bash backend/scripts/migrate_verify.sh "$(TEST_DB_DSN)" "$(or $(TEST_LOGS_DB_DSN),postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable)"
 
 web-install: ## 冻结锁文件安装前端依赖
 	cd frontend && bun install --frozen-lockfile
