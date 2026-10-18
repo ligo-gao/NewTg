@@ -1,0 +1,7 @@
+# 管理域 DTO（M0 占位；完整字段随 M1–M5 补齐）
+schemas:
+  Channel:
+    type: object
+    additionalProperties: true
+    description: 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M1+ 细化）
+    x-newtg-pending: true

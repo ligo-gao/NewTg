@@ -1,0 +1,93 @@
+openapi: 3.1.0
+info:
+  title: NewTG API
+  version: 0.1.0-m0
+  description: |
+    NewTG 网关 API 契约骨架（M0）。
+    管理 API 统一使用 RFC 7807 `application/problem+json` 错误体与 offset 分页信封
+    `Page{items,total,page,page_size}`（`p` 1 基，`page_size` 默认 20、上限 100）。
+    中继 `/v1/*` 仅登记路径与公共面，不重定义上游协议 schema（真源见 externalDocs）。
+servers:
+  - url: /
+    description: 同源部署（边缘反代 → 网关）
+security: []
+tags:
+  - name: ops
+    description: 运维探针（/healthz、/readyz）
+  - name: public
+    description: 公开接口（无需认证）
+  - name: user
+    description: 用户自助接口（会话 Cookie 或 API 令牌）
+  - name: admin
+    description: 管理接口（仅管理员会话）
+  - name: relay
+    description: 中继协议面（API 令牌；schema 遵循上游公开规范）
+
+paths:
+  /healthz:
+    $ref: './paths/ops.yaml#/paths/~1healthz'
+  /readyz:
+    $ref: './paths/ops.yaml#/paths/~1readyz'
+  /api/status:
+    $ref: './paths/public.yaml#/paths/~1api~1status'
+  /api/geoip:
+    $ref: './paths/public.yaml#/paths/~1api~1geoip'
+  /api/tokens:
+    $ref: './paths/user.yaml#/paths/~1api~1tokens'
+  /api/channels:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels'
+  /v1/chat/completions:
+    $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
+
+components:
+  securitySchemes:
+    sessionCookie:
+      $ref: './components/security.yaml#/securitySchemes/sessionCookie'
+    bearerToken:
+      $ref: './components/security.yaml#/securitySchemes/bearerToken'
+
+  parameters:
+    Page:
+      $ref: './components/pagination.yaml#/parameters/Page'
+    PageSize:
+      $ref: './components/pagination.yaml#/parameters/PageSize'
+    IdempotencyKey:
+      $ref: './components/params.yaml#/parameters/IdempotencyKey'
+    CSRFToken:
+      $ref: './components/params.yaml#/parameters/CSRFToken'
+
+  schemas:
+    Problem:
+      $ref: './components/problem.yaml#/schemas/Problem'
+    Problem402:
+      $ref: './components/problem.yaml#/schemas/Problem402'
+    Page:
+      $ref: './components/pagination.yaml#/schemas/Page'
+    PublicStatus:
+      $ref: './schemas/public.yaml#/schemas/PublicStatus'
+    GeoIPResponse:
+      $ref: './schemas/public.yaml#/schemas/GeoIPResponse'
+    Token:
+      $ref: './schemas/user.yaml#/schemas/Token'
+    Channel:
+      $ref: './schemas/admin.yaml#/schemas/Channel'
+
+  responses:
+    Error400:
+      $ref: './components/responses.yaml#/responses/Error400'
+    Error401:
+      $ref: './components/responses.yaml#/responses/Error401'
+    Error402:
+      $ref: './components/responses.yaml#/responses/Error402'
+    Error403:
+      $ref: './components/responses.yaml#/responses/Error403'
+    Error404:
+      $ref: './components/responses.yaml#/responses/Error404'
+    Error409:
+      $ref: './components/responses.yaml#/responses/Error409'
+    Error429:
+      $ref: './components/responses.yaml#/responses/Error429'
+    Error500:
+      $ref: './components/responses.yaml#/responses/Error500'
+    Error503:
+      $ref: './components/responses.yaml#/responses/Error503'

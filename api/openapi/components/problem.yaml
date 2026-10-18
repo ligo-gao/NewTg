@@ -1,0 +1,47 @@
+# RFC 7807 错误体与 402 额度不足扩展（platform-03 §9.4）
+schemas:
+  Problem:
+    type: object
+    description: RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+    required: [type, title, status]
+    properties:
+      type:
+        type: string
+        format: uri
+        default: "about:blank"
+        description: 问题类型 URI（稳定机器可读标识）
+      title:
+        type: string
+        description: 简短的人类可读摘要
+      status:
+        type: integer
+        minimum: 100
+        maximum: 599
+        description: HTTP 状态码（与响应状态行一致）
+      detail:
+        type: string
+        description: 针对本次问题的说明
+      instance:
+        type: string
+        description: 问题实例 URI（通常为请求路径）
+    additionalProperties: true
+
+  Problem402:
+    description: 额度/余额不足（Problem 的 402 扩展；计费 §6.2、relay §4.4）
+    allOf:
+      - $ref: '#/schemas/Problem'
+      - type: object
+        properties:
+          balance:
+            type: integer
+            description: 当前可用余额（credits 最小单位）
+          required:
+            type: integer
+            description: 本次请求所需额度
+          currency:
+            type: string
+            enum: [credits]
+          topup_url:
+            type: string
+            format: uri
+            description: 充值页地址

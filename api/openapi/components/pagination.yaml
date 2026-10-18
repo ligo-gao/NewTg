@@ -1,0 +1,46 @@
+# 统一 offset 分页信封与查询参数（G7-R16、GC-14：p 1 基，page_size 默认 20、上限 100）
+schemas:
+  Page:
+    type: object
+    description: offset 分页信封；各域 items 的 DTO 随里程碑细化。
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {}
+      total:
+        type: integer
+        minimum: 0
+        description: 满足条件的总条数
+      page:
+        type: integer
+        minimum: 1
+        description: 当前页码（1 基）
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+        description: 每页条数（默认 20，上限 100）
+
+parameters:
+  Page:
+    x-go-name: PageQuery
+    name: p
+    in: query
+    required: false
+    description: 页码，1 基（默认 1）
+    schema:
+      type: integer
+      minimum: 1
+      default: 1
+  PageSize:
+    name: page_size
+    in: query
+    required: false
+    description: 每页条数（默认 20，上限 100）
+    schema:
+      type: integer
+      minimum: 1
+      maximum: 100
+      default: 20

@@ -1,0 +1,5 @@
+# 中继协议 schema 不在此重定义（platform-03 §9.3）：
+# 真源为 backend/internal/contract/*.go（IR）与各 adapter；对外以 externalDocs 指向
+# OpenAI/Anthropic/Gemini 公开规范。本文件保留域槽位，供 M1+ 需要时登记非协议面的
+# 网关自有枚举（如错误 code 表）使用。
+schemas: {}

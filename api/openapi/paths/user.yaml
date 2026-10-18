@@ -1,0 +1,24 @@
+# 用户自助域路径（会话 Cookie 或 API 令牌）
+paths:
+  /api/tokens:
+    get:
+      tags: [user]
+      operationId: listTokens
+      summary: 列出当前用户的 API 令牌（分页）
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          content:
+            application/json:
+              schema:
+                $ref: '../components/pagination.yaml#/schemas/Page'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'

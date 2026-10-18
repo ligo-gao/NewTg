@@ -22,12 +22,16 @@ PLATFORM       ?= linux/amd64
 # 仓库内单一取值，本地可用 `make MIGRATE_VERSION=...` 覆盖。
 MIGRATE_VERSION     ?= v4.18.1
 KIN_OPENAPI_VERSION ?= v0.131.0
+# OpenAPI 契约工具版本（redocly/spectral/openapi-typescript/oapi-codegen）：
+# 单一取值在 scripts/openapi.env，drift 脚本同源引用；显式覆盖可用 make REDOCLY_VERSION=...
+include scripts/openapi.env
 
 .PHONY: help version tidy fmt fmt-check vet lint build run-gateway run-worker \
         test test-cover test-integration \
         migrate-up migrate-down migrate-version migrate-create migrate-verify \
         web-install web-dev web-typecheck web-lint web-test web-build \
-        api-lint image image-multiarch compose-up compose-down dev clean
+        api-bundle api-gen api-lint api-validate api-check check-openapi-layout \
+        image image-multiarch compose-up compose-down dev clean
 
 help: ## 列出全部目标（默认目标）
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "%-22s %s\n",$$1,$$2}'
@@ -101,8 +105,24 @@ web-test: ## Vitest（jsdom）
 web-build: ## 生产静态构建 → frontend/dist/
 	cd frontend && bun run build
 
-api-lint: ## 校验 OpenAPI 骨架（M1+ 挂 codegen）；版本由 CI 变量 KIN_OPENAPI_VERSION 固定
-	cd $(BACKEND) && go run github.com/getkin/kin-openapi/cmd/validate@$(KIN_OPENAPI_VERSION) api/openapi.yaml
+check-openapi-layout: ## 校验 OpenAPI 源目录树与入口 paths 全为 $ref（仓根 api/openapi/）
+	bash scripts/check_openapi_layout.sh
+
+api-bundle: ## OpenAPI 分域源 → 单体产物 api/dist/openapi.bundle.yaml
+	npx --yes "@redocly/cli@$(REDOCLY_VERSION)" bundle api/openapi/openapi.yaml -o api/dist/openapi.bundle.yaml
+
+api-gen: api-bundle ## 由单体产物生成前端 TS 类型与后端 Go DTO（生成物入库、禁手改）
+	npx --yes "openapi-typescript@$(OPENAPI_TS_VERSION)" api/dist/openapi.bundle.yaml -o frontend/src/api/schema.d.ts
+	cd $(BACKEND) && GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types -package dto -o internal/api/dto/models.gen.go ../api/dist/openapi.bundle.yaml
+
+api-lint: ## spectral 校验契约源（.spectral.yaml 最小 3 条规则）
+	npx --yes "@stoplight/spectral-cli@$(SPECTRAL_VERSION)" lint api/openapi/openapi.yaml
+
+api-validate: api-bundle ## kin-openapi 运行时校验单体产物
+	cd $(BACKEND) && go run github.com/getkin/kin-openapi/cmd/validate@$(KIN_OPENAPI_VERSION) ../api/dist/openapi.bundle.yaml
+
+api-check: check-openapi-layout api-gen api-lint api-validate ## OpenAPI 全链路门禁（布局+生成+lint+校验+漂移）
+	bash scripts/check_openapi_drift.sh
 
 image: ## 构建本机架构镜像（PLATFORM 默认 linux/amd64）
 	docker build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) --build-arg GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} -f $(BACKEND)/Dockerfile -t $(IMAGE) $(BACKEND)

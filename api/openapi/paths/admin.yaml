@@ -1,0 +1,25 @@
+# 管理域路径（仅管理员会话）
+paths:
+  /api/channels:
+    get:
+      tags: [admin]
+      operationId: listChannels
+      summary: 列出上游渠道（分页）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封；items 的 DTO 随 M1+ 细化）
+          content:
+            application/json:
+              schema:
+                $ref: '../components/pagination.yaml#/schemas/Page'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'

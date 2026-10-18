@@ -1,0 +1,34 @@
+# Spectral 自定义规则集（platform-03 §10.1 / 本计划冻结最小 3 条）
+# 用法：spectral lint api/openapi/openapi.yaml
+extends: []
+formats:
+  - oas3_1
+rules:
+  newtg-no-external-ref:
+    description: $ref 不得跨出 api/openapi/（禁止 http(s)、绝对路径与 ../ 越界）
+    message: "{{path}}: $ref 必须留在 api/openapi/ 内（实际：{{value}}）"
+    severity: error
+    given: "$..['$ref']"
+    then:
+      function: pattern
+      functionOptions:
+        notMatch: "^(https?://|/|\\.\\./)"
+
+  newtg-problem-json-errors:
+    description: 4xx/5xx 响应必须使用 application/problem+json（RFC 7807）；唯一例外是 /readyz 的 503——其就绪信封 {status,checks,version,node} 已冻结（platform-03 §4）
+    message: "{{path}}: 4xx/5xx 响应缺少 application/problem+json"
+    severity: error
+    given: "$.paths[?(@property != '/readyz')][*].responses[?(@property.match(/^[45][0-9][0-9]$/))]"
+    then:
+      field: content.application/problem+json
+      function: truthy
+
+  newtg-valid-tags:
+    description: operation 的 tag 必须在冻结的五个域内（ops/public/user/admin/relay）
+    message: "{{path}}: tag 不在冻结集合内（实际：{{value}}）"
+    severity: error
+    given: "$.paths[*][*].tags[*]"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^(ops|public|user|admin|relay)$"

@@ -1,0 +1,7 @@
+# 用户域 DTO（M0 占位；完整字段随 M1–M5 补齐）
+schemas:
+  Token:
+    type: object
+    additionalProperties: true
+    description: API 令牌 DTO 占位（敏感字段仅创建时返回一次；schema 待 M1+ 细化）
+    x-newtg-pending: true

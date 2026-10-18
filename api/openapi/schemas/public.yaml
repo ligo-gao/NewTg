@@ -1,0 +1,32 @@
+# 公开域 DTO（platform-03 §9.5 / §10.1）
+schemas:
+  PublicStatus:
+    type: object
+    additionalProperties: true
+    description: 公共站点状态占位（字段随 M1+ 细化；schema 待补齐）
+    x-newtg-pending: true
+
+  GeoIPResponse:
+    type: object
+    additionalProperties: false
+    required: [country, region, source]
+    description: |
+      客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
+      响应缓存策略：Cache-Control: private, max-age=300。
+    properties:
+      country:
+        anyOf:
+          - type: string
+            pattern: '^[A-Z]{2}$'
+          - enum: [null]
+        description: ISO 3166-1 alpha-2（大写）；无法判定为 null
+      region:
+        anyOf:
+          - type: string
+            maxLength: 64
+          - enum: [null]
+        description: ISO 3166-2 子分区码；无法判定为 null
+      source:
+        type: string
+        enum: [local_db, unknown]
+        description: local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配

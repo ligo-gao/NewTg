@@ -1,0 +1,35 @@
+# 中继协议面（platform-03 §9.3）：只登记路径/方法/tag/security/公共错误，
+# 不重定义上游 schema；x-codegen:false 排除类型生成。
+# 不登记（路由不注册，返回标准 404）：/v1/files*、/v1/fine-tunes*、
+# /v1/images/variations、/v1/edits、DELETE /v1/models/{model}（决议 H）。
+paths:
+  /v1/chat/completions:
+    post:
+      tags: [relay]
+      operationId: createChatCompletion
+      x-codegen: false
+      x-openai-compatible: true
+      summary: OpenAI-compatible chat completions
+      description: |
+        请求/响应体遵循 OpenAI Chat Completions 公开规范（含 SSE 流式）。
+        额度不足返回 402 + Problem402 扩展。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: OpenAI Chat Completions API reference
+        url: https://platform.openai.com/docs/api-reference/chat
+      responses:
+        '200':
+          description: ChatCompletion 对象或 SSE 流（schema 见上游公开规范）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/Error402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
