@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
 )
 
@@ -822,5 +823,329 @@ func TestRouteParseFailureReleasesBudget(t *testing.T) {
 	}
 	if fact := billing.terminateFacts[0]; !reflect.DeepEqual(fact, contract.UsageFact{}) {
 		t.Fatalf("失败终结的事实 = %#v，期望空 UsageFact（GC-7）", fact)
+	}
+}
+
+// TestRouteMaxRetriesZeroMeansDefault 冻结控制器裁决（2026-10-18）：
+// deps.MaxRetries 的 Go 零值无法区分「未设置」与「显式 0」，故 0 一律解析为
+// GC-5 默认 3（总尝试 4 次）；想要最小预算的调用方显式传 1（总尝试 2 次）。
+// 同时覆盖钳制上界（6 → 5 次重试 → 6 次尝试）。
+func TestRouteMaxRetriesZeroMeansDefault(t *testing.T) {
+	cases := []struct {
+		retries  int
+		attempts int
+	}{
+		{retries: 0, attempts: 4}, // 未设置 → 默认 3 次重试 + 首试
+		{retries: 1, attempts: 2}, // 显式最小预算
+		{retries: 6, attempts: 6}, // 钳制到 5 次重试 + 首试
+	}
+	for _, tc := range cases {
+		t.Run(strconv.Itoa(tc.retries), func(t *testing.T) {
+			log := &routeCallLog{}
+			adapter := &routeTestAdapter{log: log}
+			deps := routeTestDeps(
+				routeTestSingleCandidate(7),
+				map[int]ChannelAssignment{7: routeTestAssignment(7)},
+				log,
+				func(int) (*http.Response, error) { return routeResponse(http.StatusInternalServerError, "boom"), nil },
+				adapter,
+				nil,
+				tc.retries,
+			)
+			_, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+			var attemptsErr *AttemptsError
+			if !errors.As(err, &attemptsErr) {
+				t.Fatalf("错误 = %T %v，期望 *AttemptsError", err, err)
+			}
+			if attemptsErr.Attempts != tc.attempts {
+				t.Fatalf("MaxRetries=%d → Attempts=%d，期望 %d", tc.retries, attemptsErr.Attempts, tc.attempts)
+			}
+			if len(log.httpCalls) != tc.attempts {
+				t.Fatalf("MaxRetries=%d → 上游调用 %d 次，期望 %d", tc.retries, len(log.httpCalls), tc.attempts)
+			}
+		})
+	}
+}
+
+// TestRouteDispatchFailureFastFails：分派失败按契约 §4 的 ErrEndpointUnsupported
+// 「不重试」快失败；safeError 必须保留 errors.Is 链，且不触达上游、释放预算。
+func TestRouteDispatchFailureFastFails(t *testing.T) {
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := routeTestDeps(
+		routeTestSingleCandidate(7),
+		map[int]ChannelAssignment{7: routeTestAssignment(7)},
+		log,
+		func(int) (*http.Response, error) {
+			t.Fatal("分派失败时不得发出上游请求")
+			return nil, errors.New("unreachable")
+		},
+		adapter,
+		billing,
+		3,
+	)
+	deps.Dispatch = func(contract.ChannelType) (contract.Adapter, error) {
+		return nil, adapters.ErrEndpointUnsupported
+	}
+	rc := routeTestContext(false)
+	rc.QuotaEstimate = routeTestEstimate(100)
+
+	_, err := ExecuteAttempts(context.Background(), rc, deps)
+	var fast *FastFailError
+	if !errors.As(err, &fast) {
+		t.Fatalf("错误 = %T %v，期望 *FastFailError", err, err)
+	}
+	if !errors.Is(err, adapters.ErrEndpointUnsupported) {
+		t.Fatalf("安全包装丢失了 errors.Is 链：%v", err)
+	}
+	if len(log.httpCalls) != 0 {
+		t.Fatalf("分派失败后发出了 %d 次上游请求", len(log.httpCalls))
+	}
+	if !billing.Terminated() || billing.Sessions() != 0 || billing.Reserved() != 0 {
+		t.Fatalf("分派失败后应释放预算：terminated=%v sessions=%d reserved=%d",
+			billing.Terminated(), billing.Sessions(), billing.Reserved())
+	}
+}
+
+// TestRouteBuildRequestClassification 冻结构造期错误的分类：
+// ErrRetryable 类可重试（耗尽后 AttemptsError），参数/配置类与无分类错误快失败。
+// 两类都不应触达上游传输。
+func TestRouteBuildRequestClassification(t *testing.T) {
+	t.Run("retryable class", func(t *testing.T) {
+		log := &routeCallLog{}
+		adapter := &routeTestAdapter{
+			log:      log,
+			buildErr: &adapters.Error{Class: contract.ErrRetryable, Err: errors.New("transient")},
+		}
+		billing := &recordingBilling{Stub: billingseam.NewStub()}
+		deps := routeTestDeps(
+			routeTestSingleCandidate(7),
+			map[int]ChannelAssignment{7: routeTestAssignment(7)},
+			log,
+			func(int) (*http.Response, error) {
+				t.Fatal("构造失败时不得发出上游请求")
+				return nil, errors.New("unreachable")
+			},
+			adapter,
+			billing,
+			1, // 2 次尝试
+		)
+		_, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+		var attemptsErr *AttemptsError
+		if !errors.As(err, &attemptsErr) || attemptsErr.Attempts != 2 {
+			t.Fatalf("错误 = %v，期望 AttemptsError{Attempts:2}", err)
+		}
+		var retryable *RetryableError
+		if !errors.As(err, &retryable) {
+			t.Fatalf("错误链上应有 *RetryableError：%v", err)
+		}
+		if !billing.Terminated() {
+			t.Fatal("重试耗尽后未 Terminate（GC-7）")
+		}
+	})
+
+	t.Run("fast-fail class", func(t *testing.T) {
+		log := &routeCallLog{}
+		adapter := &routeTestAdapter{
+			log:      log,
+			buildErr: &adapters.Error{Class: contract.ErrParamInvalid, Err: errors.New("bad param")},
+		}
+		billing := &recordingBilling{Stub: billingseam.NewStub()}
+		deps := routeTestDeps(
+			routeTestSingleCandidate(7),
+			map[int]ChannelAssignment{7: routeTestAssignment(7)},
+			log,
+			func(int) (*http.Response, error) {
+				t.Fatal("构造失败时不得发出上游请求")
+				return nil, errors.New("unreachable")
+			},
+			adapter,
+			billing,
+			3,
+		)
+		_, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+		var fast *FastFailError
+		if !errors.As(err, &fast) {
+			t.Fatalf("错误 = %T %v，期望 *FastFailError", err, err)
+		}
+		if len(log.buildCalls) != 1 {
+			t.Fatalf("参数错误尝试 %d 次，期望 1（不重试）", len(log.buildCalls))
+		}
+		if !billing.Terminated() {
+			t.Fatal("快失败后未 Terminate（GC-7）")
+		}
+	})
+
+	t.Run("unclassified", func(t *testing.T) {
+		log := &routeCallLog{}
+		adapter := &routeTestAdapter{log: log, buildErr: errors.New("boom")}
+		deps := routeTestDeps(
+			routeTestSingleCandidate(7),
+			map[int]ChannelAssignment{7: routeTestAssignment(7)},
+			log,
+			func(int) (*http.Response, error) {
+				t.Fatal("构造失败时不得发出上游请求")
+				return nil, errors.New("unreachable")
+			},
+			adapter,
+			nil,
+			3,
+		)
+		_, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+		var fast *FastFailError
+		if !errors.As(err, &fast) {
+			t.Fatalf("无分类构造错误 = %T %v，期望 *FastFailError", err, err)
+		}
+		if len(log.buildCalls) != 1 {
+			t.Fatalf("无分类构造错误尝试 %d 次，期望 1", len(log.buildCalls))
+		}
+	})
+}
+
+// TestRouteResolveChannelFailure 覆盖渠道解析失败的两条语义：
+//  1. 换下一个候选继续（解析失败消耗一轮预算）；
+//  2. 失败轮的渠道组必须清空，不能把上一轮的 APIBase/Credential 留在上下文里。
+func TestRouteResolveChannelFailure(t *testing.T) {
+	t.Run("fail over to next candidate", func(t *testing.T) {
+		log := &routeCallLog{}
+		adapter := &routeTestAdapter{log: log}
+		// 只解析渠道 2；渠道 1 的缺失由 routeTestDeps 的解析器报错。
+		deps := routeTestDeps(
+			[]contract.ChannelCandidate{{ChannelID: 1, Priority: 10}, {ChannelID: 2, Priority: 5}},
+			map[int]ChannelAssignment{2: routeTestAssignment(2)},
+			log,
+			func(int) (*http.Response, error) { return routeResponse(http.StatusOK, `{}`), nil },
+			adapter,
+			nil,
+			3,
+		)
+		result, err := ExecuteAttempts(context.Background(), routeTestContext(false), deps)
+		if err != nil {
+			t.Fatalf("解析失败应换下一个候选，实际错误 = %v", err)
+		}
+		defer result.Response.Body.Close()
+		if result.Candidate.ChannelID != 2 {
+			t.Fatalf("成功候选 = %d，期望 2", result.Candidate.ChannelID)
+		}
+		if got := fmt.Sprint(log.buildCalls); got != "[2]" {
+			t.Fatalf("BuildRequest 序列 = %v，期望 [2]（渠道 1 解析失败不应构造请求）", log.buildCalls)
+		}
+	})
+
+	t.Run("clears stale channel group", func(t *testing.T) {
+		log := &routeCallLog{}
+		adapter := &routeTestAdapter{log: log}
+		billing := &recordingBilling{Stub: billingseam.NewStub()}
+		// 第 1 轮：渠道 1 解析成功→500；第 2 轮：渠道 2 解析失败→清空渠道组。
+		deps := routeTestDeps(
+			[]contract.ChannelCandidate{{ChannelID: 1, Priority: 10}, {ChannelID: 2, Priority: 5}},
+			map[int]ChannelAssignment{1: routeTestAssignment(1)},
+			log,
+			func(int) (*http.Response, error) { return routeResponse(http.StatusInternalServerError, "boom"), nil },
+			adapter,
+			billing,
+			1, // 2 次尝试
+		)
+		rc := routeTestContext(false)
+		rc.QuotaEstimate = routeTestEstimate(100)
+
+		_, err := ExecuteAttempts(context.Background(), rc, deps)
+		var attemptsErr *AttemptsError
+		if !errors.As(err, &attemptsErr) || attemptsErr.Attempts != 2 {
+			t.Fatalf("错误 = %v，期望 AttemptsError{Attempts:2}", err)
+		}
+		if rc.ChannelID != 2 {
+			t.Fatalf("失败轮的 ChannelID = %d，期望 2（候选 ID 仍应保留）", rc.ChannelID)
+		}
+		if rc.APIBase != "" || rc.Credential != "" || rc.UpstreamModel != "" ||
+			rc.GroupRatio != 0 || rc.MultiKeyIndex != 0 || !rc.CreatedTime.IsZero() ||
+			rc.ChannelType != contract.ChannelTypeUnknown {
+			t.Fatalf("失败轮残留了上一轮的渠道组：%#v", rc)
+		}
+		if !billing.Terminated() {
+			t.Fatal("解析失败耗尽后未 Terminate（GC-7）")
+		}
+	})
+}
+
+// TestRoutePinSingleAttempt：relay-01 §6.2 的「固定渠道单次尝试」——pin 候选
+// 携带 PinRetrySingleAttempt 时，首轮失败即停止，不得换到其他候选。
+func TestRoutePinSingleAttempt(t *testing.T) {
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	rc := routeTestContext(false)
+	rc.AttemptPlan = &contract.AttemptPlan{Candidates: []contract.ChannelCandidate{
+		{ChannelID: 1, Priority: 1},
+		{ChannelID: 2, Priority: 10, Constraints: contract.ChannelConstraints{
+			PinChannelID: 2,
+			RetryMode:    contract.PinRetrySingleAttempt,
+		}},
+	}}
+	deps := routeTestDeps(
+		nil,
+		map[int]ChannelAssignment{1: routeTestAssignment(1), 2: routeTestAssignment(2)},
+		log,
+		func(channelID int) (*http.Response, error) {
+			if channelID == 2 {
+				return routeResponse(http.StatusInternalServerError, "boom"), nil
+			}
+			t.Fatal("pin single_attempt 不得换渠道重试")
+			return routeResponse(http.StatusOK, `{}`), nil
+		},
+		adapter,
+		billing,
+		3,
+	)
+
+	_, err := ExecuteAttempts(context.Background(), rc, deps)
+	var attemptsErr *AttemptsError
+	if !errors.As(err, &attemptsErr) {
+		t.Fatalf("错误 = %T %v，期望 *AttemptsError", err, err)
+	}
+	if attemptsErr.Attempts != 1 {
+		t.Fatalf("Attempts = %d，期望 1（pin single_attempt）", attemptsErr.Attempts)
+	}
+	if got := fmt.Sprint(log.httpCalls); got != "[2]" {
+		t.Fatalf("尝试序列 = %v，期望 [2]", log.httpCalls)
+	}
+	if !billing.Terminated() || billing.Sessions() != 0 {
+		t.Fatalf("单次尝试失败后应释放预算：terminated=%v sessions=%d", billing.Terminated(), billing.Sessions())
+	}
+}
+
+// TestRouteFixedNoRetryWinsOverChannelErrorClass 冻结控制器裁决（2026-10-18）：
+// M2 有意偏离 relay-01 §6.3 第 1 步——即便适配器把 400 归为 ErrChannelError
+// （§6.3 本应「最先判定 = 强制可重试」），R-P13 的固定不重试集合仍然优先。
+// 分类本身保留在 rc.LastError.IsChannelErr 里，供 M3 的自动禁用使用。
+func TestRouteFixedNoRetryWinsOverChannelErrorClass(t *testing.T) {
+	log := &routeCallLog{}
+	adapter := &routeTestAdapter{log: log, class: contract.ErrChannelError}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	deps := routeTestDeps(
+		[]contract.ChannelCandidate{{ChannelID: 1, Priority: 10}, {ChannelID: 2, Priority: 5}},
+		map[int]ChannelAssignment{1: routeTestAssignment(1), 2: routeTestAssignment(2)},
+		log,
+		func(int) (*http.Response, error) { return routeResponse(http.StatusBadRequest, "channel error"), nil },
+		adapter,
+		billing,
+		3,
+	)
+	rc := routeTestContext(false)
+
+	_, err := ExecuteAttempts(context.Background(), rc, deps)
+	var fast *FastFailError
+	if !errors.As(err, &fast) {
+		t.Fatalf("错误 = %T %v，期望 *FastFailError（固定集合优先）", err, err)
+	}
+	if len(log.httpCalls) != 1 {
+		t.Fatalf("400 被归为 ErrChannelError 时尝试 %d 次，期望 1（M2 固定集合优先）", len(log.httpCalls))
+	}
+	if rc.LastError == nil || !rc.LastError.IsChannelErr || !rc.LastError.SkipRetry {
+		t.Fatalf("rc.LastError = %#v，期望 IsChannelErr=true 且 SkipRetry=true", rc.LastError)
+	}
+	if !billing.Terminated() {
+		t.Fatal("快失败后未 Terminate（GC-7）")
 	}
 }

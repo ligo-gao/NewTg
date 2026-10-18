@@ -218,9 +218,13 @@ func newDefaultRouteClient() *http.Client {
 
 // ExecuteAttempts 按 AttemptPlan 逐轮执行上游请求，直到：
 //   - 拿到 2xx：返回原始响应 + 适配器（不解析、不终结计费会话）；
-//   - 命中快失败：返回 *FastFailError（已 Terminate 释放预算）；
-//   - 上下文取消：立即停止并返回包裹 context 错误的 *AttemptsError（已 Terminate）；
-//   - 预算耗尽：返回 *AttemptsError（已 Terminate）。
+//   - 命中快失败：返回 *FastFailError；
+//   - 上下文取消：立即停止并返回包裹 context 错误的 *AttemptsError；
+//   - 预算耗尽：返回 *AttemptsError。
+//
+// 计费生命周期：PreConsume 成功之后的所有失败/取消出口都会 Terminate 一次
+// （GC-7）；PreConsume 之前的失败（计划/pin/依赖校验，或请求在预扣前已取消）
+// 没有开启会话，因此**不调用** Terminate。
 //
 // 职责边界（控制器裁决 R-P4）：候选排序、每轮渠道组整组写入、BuildRequest + Do、
 // HTTP 错误分类、重试/快失败判定、循环前一次性 PreConsume、最终失败 Terminate
@@ -238,6 +242,16 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		return nil, &FastFailError{Err: fmt.Errorf("%w: ResolveChannel", errDependencyMissing)}
 	}
 
+	// 重试预算是**单一来源**：先解析「0 = 未设置 → GC-5 默认 3」，再钳制 [1,5]。
+	// 计划构建与执行循环共用同一个值，避免两处 default 分叉。
+	// 控制器裁决（2026-10-18）：Go 零值无法区分「未设置」与「显式 0」，故 deps 里的
+	// 0 一律视为未设置、落到默认 3；想要最小重试预算的调用方必须显式传 1。
+	retries := deps.MaxRetries
+	if retries == 0 {
+		retries = defaultRetries
+	}
+	maxAttempts := ClampRetries(retries) + 1
+
 	// —— 1. 取得计划（已有计划优先，代表上游路由层已完成选路）——
 	plan := rc.AttemptPlan
 	if plan == nil {
@@ -247,11 +261,8 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		candidates, err := deps.Candidates(ctx, rc)
 		if err != nil {
 			// 候选查询失败是选路失败（阶段 3，SkipRetry），不能当作上游瞬时故障重试。
-			return nil, &FastFailError{Err: fmt.Errorf("relay: 候选渠道查询失败: %w", err)}
-		}
-		retries := deps.MaxRetries
-		if retries == 0 {
-			retries = defaultRetries // 0 是「未配置」而非「0 次重试」（GC-5 默认 3）
+			// GC-6：store 类错误可能带 DSN/主机名/凭据，必须经 safeWrapf 只暴露固定描述。
+			return nil, &FastFailError{Err: safeWrapf(err, "relay: 候选渠道查询失败")}
 		}
 		plan = BuildAttemptPlanWithRetries(rc, candidates, retries)
 	}
@@ -259,20 +270,13 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		return nil, &FastFailError{Err: ErrNoAvailableChannel}
 	}
 
-	// 总尝试次数由注入的 MaxRetries 决定并钳制到 [1,5]+首试（R-P4）。
-	// 即使 rc.AttemptPlan 自带了 MaxAttempts，也不允许突破该上限：
-	// 配置的重试预算是运维边界，不能由上游计划放大。
-	retries := deps.MaxRetries
-	if retries == 0 {
-		retries = defaultRetries
-	}
-	maxAttempts := ClampRetries(retries) + 1
-
 	// —— 2. pin 优先（约束由上游路由层写入候选，本层不解析凭据）——
 	ordered, pinSingleAttempt, err := preferPinned(plan.Candidates)
 	if err != nil {
 		return nil, err
 	}
+	// 即使 rc.AttemptPlan 自带了 MaxAttempts，执行层也不采用：配置的重试预算
+	// 是运维边界，不能由上游计划放大（R-P4）。
 	effective := &contract.AttemptPlan{
 		Candidates:  ordered,
 		MaxAttempts: maxAttempts,
@@ -292,7 +296,9 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		if err := deps.Billing.PreConsume(estimate); err != nil {
 			// PreConsume 失败不开启会话（契约 §6.1），无需 Terminate；
 			// 快失败保留 errors.Is 链上的 402 语义（billingseam.ErrInsufficientQuota）。
-			return nil, &FastFailError{Err: fmt.Errorf("relay: 预扣费失败: %w", err)}
+			// GC-6：计费/存储错误可能带连接串等敏感信息，经 safeWrapf 只暴露固定描述
+			// （safeError 的 Unwrap 仍保留完整错误链，故 errors.Is 不受影响）。
+			return nil, &FastFailError{Err: safeWrapf(err, "relay: 预扣费失败")}
 		}
 	}
 
@@ -341,6 +347,10 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				lastErr = err
 				break
 			}
+			// 本轮解析失败时先把渠道组清空（只留候选 ID）：否则上一轮的
+			// APIBase/Credential/UpstreamModel 会滞留在上下文里，被审计或日志
+			// 误记到本轮（relay-01 §7.4 的「整组写入」语义要求不残留）。
+			WithChannel(rc, ChannelAssignment{ChannelID: candidate.ChannelID})
 			// 渠道解析失败（索引陈旧/渠道已删）是「这一轮不可用」：换下一个候选。
 			// 走重试预算而不是无限扫描，避免坏索引把单请求拖成线性放大。
 			lastErr = &RetryableError{Err: safeWrapf(resolveErr, "relay: 渠道 %d 解析失败", candidate.ChannelID)}
@@ -572,6 +582,12 @@ func preferPinned(candidates []contract.ChannelCandidate) ([]contract.ChannelCan
 // 注意 404 在基线的 401–407 区间内，属于可重试——这是照搬的乙类怪癖；
 // adapter.ClassifyError 可能把 404 归为 ErrParamInvalid，但 R-P13 冻结的重试
 // 决策以状态集合为准，分类只用于错误映射/自动禁用。
+//
+// 【M2 有意偏离 relay-01 §6.3 第 1 步（控制器裁决，2026-10-18，已记台账）】
+// §6.3 规定 ErrChannelError 是「最先判定」的可重试通道，即便状态在固定集合内
+// 也要重试。M2 明确让 R-P13 的固定集合**优先于 adapter 分类**：400/401/403/422/
+// 408/504/524 即使被适配器归为 ErrChannelError 也一律快失败。M3 若恢复 §6.3
+// 第 1 步，必须同步修改本函数与对应测试，不能只改分类分支。
 func retryableStatus(status int) bool {
 	switch status {
 	case http.StatusBadRequest, // 400
