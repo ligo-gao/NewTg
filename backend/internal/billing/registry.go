@@ -44,6 +44,7 @@ const (
 	registryIndexKey  = "newtg:billing:inflight-index"
 
 	registryFieldUserID      = "user_id"
+	registryFieldTokenID     = "token_id"
 	registryFieldStartedAt   = "started_at_ms"
 	registryFieldHeartbeatAt = "heartbeat_at_ms"
 
@@ -81,12 +82,17 @@ var _ Registry = (*RequestRegistry)(nil)
 // leaseKey 返回某个请求的租约 Hash 键。
 func leaseKey(requestID string) string { return registryKeyPrefix + requestID }
 
-// Register 写入在飞租约：userID + 开始时间 + 心跳，TTL 为会话传入的租约时长。
+// Register 写入在飞租约：userID + tokenID + 开始时间 + 心跳，TTL 为会话
+// 传入的租约时长。
+//
+// tokenID 是 R-88 崩溃恢复回补 api_tokens.remain_quota 的唯一身份来源：
+// 崩溃后 worker 没有原始 RelayContext，只能从租约读取（0 表示未绑定令牌，
+// 恢复时跳过令牌额度）。
 //
 // 三个命令放在 TxPipeline（MULTI/EXEC）中：Hash 与索引必须同时可见，
 // 否则 worker 可能看到「索引有、Hash 无」并立即按过期处理（虽然窗口
 // 600s 通常兜住，但不应依赖时序巧合）。
-func (r *RequestRegistry) Register(ctx context.Context, requestID string, userID int64, lease time.Duration) error {
+func (r *RequestRegistry) Register(ctx context.Context, requestID string, userID, tokenID int64, lease time.Duration) error {
 	if r.rdb == nil {
 		return errRegistryUnavailable
 	}
@@ -105,6 +111,7 @@ func (r *RequestRegistry) Register(ctx context.Context, requestID string, userID
 	pipe := r.rdb.TxPipeline()
 	pipe.HSet(ctx, leaseKey(requestID), map[string]any{
 		registryFieldUserID:      userID,
+		registryFieldTokenID:     tokenID,
 		registryFieldStartedAt:   nowMs,
 		registryFieldHeartbeatAt: nowMs,
 	})
@@ -160,7 +167,18 @@ func (r *RequestRegistry) Remove(ctx context.Context, requestID string) error {
 	return nil
 }
 
-// ListAbandoned 返回同时满足两个条件的 requestID：
+// AbandonedRequest 是一条可回收请求的持久化身份（R-88）。
+//
+// TokenID 来自租约 Hash 的 token_id 字段：worker 崩溃恢复时用它回补
+// api_tokens.remain_quota。旧版租约（字段缺失）或未绑定令牌时为 0，
+// 恢复路径把它当作「无令牌额度可回补」的 no-op。
+type AbandonedRequest struct {
+	RequestID string
+	UserID    int64
+	TokenID   int64
+}
+
+// ListAbandoned 返回同时满足两个条件的可回收请求：
 //
 //  1. 开始时间超过 AbandonedWindowSeconds（600s，扫描参数 —— worker 拥有）；
 //  2. 心跳超过 InflightLeaseTTLSeconds（300s，租约参数 —— 会话拥有）
@@ -170,9 +188,12 @@ func (r *RequestRegistry) Remove(ctx context.Context, requestID string) error {
 // 活跃长请求误退；用 TTL 当扫描窗口会让刚预扣的请求在 5 分钟内被扫。
 // 硬约束 AbandonedWindowSeconds > InflightLeaseTTLSeconds 在 contract 冻结。
 //
+// 每条结果同时带回 user_id/token_id（R-88）；身份字段缺失或损坏一律
+// 降级为 0，绝不因为旧租约/脏字段阻断退款。
+//
 // now 由调用方传入（worker 用 time.Now；测试注入），所有比较都在同一
 // 时间基准上完成，不依赖 Redis 服务器时间。
-func (r *RequestRegistry) ListAbandoned(ctx context.Context, now time.Time) ([]string, error) {
+func (r *RequestRegistry) ListAbandoned(ctx context.Context, now time.Time) ([]AbandonedRequest, error) {
 	if r.rdb == nil {
 		return nil, errRegistryUnavailable
 	}
@@ -184,7 +205,7 @@ func (r *RequestRegistry) ListAbandoned(ctx context.Context, now time.Time) ([]s
 	windowCutoffMs := now.Add(-window).UnixMilli() - 1
 	heartbeatCutoffMs := now.Add(-leaseTTL).UnixMilli()
 
-	out := make([]string, 0, registryScanBatch)
+	out := make([]AbandonedRequest, 0, registryScanBatch)
 	offset := 0
 	for len(out) < registryScanBatch {
 		ids, err := r.rdb.ZRangeByScore(ctx, registryIndexKey, &redis.ZRangeBy{
@@ -203,15 +224,12 @@ func (r *RequestRegistry) ListAbandoned(ctx context.Context, now time.Time) ([]s
 		offset += len(ids)
 
 		for _, id := range ids {
-			hbMs, err := r.rdb.HGet(ctx, leaseKey(id), registryFieldHeartbeatAt).Int64()
-			if errors.Is(err, redis.Nil) {
-				// Hash 不存在或字段缺失：心跳已停止至少一个 TTL（Hash 的 TTL
-				// 就是租约），按超时处理。窗口条件已由 ZSET score 满足。
-				out = append(out, id)
-			} else if err != nil {
-				return nil, fmt.Errorf("billing: read heartbeat for %s: %w", id, err)
-			} else if hbMs < heartbeatCutoffMs {
-				out = append(out, id)
+			entry, stale, err := r.abandonedEntry(ctx, id, heartbeatCutoffMs)
+			if err != nil {
+				return nil, err
+			}
+			if stale {
+				out = append(out, entry)
 			}
 			if len(out) >= registryScanBatch {
 				break
@@ -224,4 +242,56 @@ func (r *RequestRegistry) ListAbandoned(ctx context.Context, now time.Time) ([]s
 		}
 	}
 	return out, nil
+}
+
+// abandonedEntry 读取单个候选的心跳与身份字段，并判定是否可回收。
+//
+// 一次 HMGET 取回三列，避免每个候选三次往返。任何缺失/不可解析的心跳
+// 都按「无法证明存活」处理（窗口条件已由 ZSET score 满足）；身份字段
+// 缺失/损坏降级为 0，供 R-88 的令牌回补跳过。
+func (r *RequestRegistry) abandonedEntry(ctx context.Context, requestID string,
+	heartbeatCutoffMs int64) (AbandonedRequest, bool, error) {
+
+	vals, err := r.rdb.HMGet(ctx, leaseKey(requestID),
+		registryFieldHeartbeatAt, registryFieldUserID, registryFieldTokenID).Result()
+	if err != nil {
+		return AbandonedRequest{}, false, fmt.Errorf("billing: read lease fields for %s: %w", requestID, err)
+	}
+	entry := AbandonedRequest{
+		RequestID: requestID,
+		UserID:    registryInt(vals[1]),
+		TokenID:   registryInt(vals[2]),
+	}
+	if len(vals) < 3 || vals[0] == nil {
+		// Hash 不存在或心跳字段缺失：心跳已停止至少一个 TTL（Hash 的 TTL
+		// 就是租约），按超时处理。
+		return entry, true, nil
+	}
+	hb, ok := vals[0].(string)
+	if !ok {
+		return entry, true, nil
+	}
+	hbMs, perr := strconv.ParseInt(hb, 10, 64)
+	if perr != nil {
+		// 心跳字段损坏时无法证明会话存活；窗口已过的请求宁可回收。
+		return entry, true, nil
+	}
+	if hbMs < heartbeatCutoffMs {
+		return entry, true, nil
+	}
+	return entry, false, nil
+}
+
+// registryInt 解析租约 Hash 中的可选整数身份字段。
+// 缺失/nil/非法/负数一律返回 0（旧租约兼容，R-88）。
+func registryInt(v any) int64 {
+	s, ok := v.(string)
+	if !ok {
+		return 0
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }

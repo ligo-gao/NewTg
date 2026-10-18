@@ -553,7 +553,7 @@ func TestSaturateIntegrationAppRoleConvergence(t *testing.T) {
 // （ensure → scanOnce）跑完一轮后立即退出。
 type cancelOnList struct{ cancel context.CancelFunc }
 
-func (c *cancelOnList) ListAbandoned(context.Context, time.Time) ([]string, error) {
+func (c *cancelOnList) ListAbandoned(context.Context, time.Time) ([]AbandonedRequest, error) {
 	if c.cancel != nil {
 		c.cancel()
 	}

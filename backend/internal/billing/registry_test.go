@@ -35,7 +35,7 @@ func TestRegistryRegister(t *testing.T) {
 	reg, mr, now := newTestRegistry(t)
 	ctx := context.Background()
 
-	if err := reg.Register(ctx, "req-1", 42, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+	if err := reg.Register(ctx, "req-1", 42, 99, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	key := leaseKey("req-1")
@@ -44,6 +44,9 @@ func TestRegistryRegister(t *testing.T) {
 	}
 	if got := mr.HGet(key, registryFieldUserID); got != "42" {
 		t.Fatalf("user_id = %q, want 42", got)
+	}
+	if got := mr.HGet(key, registryFieldTokenID); got != "99" {
+		t.Fatalf("token_id = %q, want 99（R-88 崩溃恢复的令牌身份）", got)
 	}
 	wantMs := strconv.FormatInt(now.UnixMilli(), 10)
 	if got := mr.HGet(key, registryFieldStartedAt); got != wantMs {
@@ -65,7 +68,7 @@ func TestRegistryRegister(t *testing.T) {
 func TestRegistryHeartbeatRefreshesLease(t *testing.T) {
 	reg, mr, now := newTestRegistry(t)
 	ctx := context.Background()
-	if err := reg.Register(ctx, "req-hb", 7, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+	if err := reg.Register(ctx, "req-hb", 7, 77, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -95,7 +98,7 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 	t.Run("窗口未到不回收", func(t *testing.T) {
 		reg, _, now := newTestRegistry(t)
 		start := *now
-		if err := reg.Register(ctx, "req-young", 1, lease); err != nil {
+		if err := reg.Register(ctx, "req-young", 1, 0, lease); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		// 心跳已超 TTL，但会话开始才 300s：窗口保护优先。
@@ -111,7 +114,7 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 	t.Run("窗口边界严格超过", func(t *testing.T) {
 		reg, _, now := newTestRegistry(t)
 		start := *now
-		if err := reg.Register(ctx, "req-boundary", 1, lease); err != nil {
+		if err := reg.Register(ctx, "req-boundary", 1, 321, lease); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		ids, err := reg.ListAbandoned(ctx, start.Add(time.Duration(contract.AbandonedWindowSeconds)*time.Second))
@@ -125,15 +128,19 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListAbandoned: %v", err)
 		}
-		if len(ids) != 1 || ids[0] != "req-boundary" {
+		if len(ids) != 1 || ids[0].RequestID != "req-boundary" {
 			t.Fatalf("ids = %v, want [req-boundary]", ids)
+		}
+		// R-88：扫描结果必须带回租约里的令牌身份。
+		if ids[0].UserID != 1 || ids[0].TokenID != 321 {
+			t.Fatalf("entry = %+v, want user 1 / token 321", ids[0])
 		}
 	})
 
 	t.Run("心跳新鲜不回收", func(t *testing.T) {
 		reg, _, now := newTestRegistry(t)
 		start := *now
-		if err := reg.Register(ctx, "req-live", 1, lease); err != nil {
+		if err := reg.Register(ctx, "req-live", 1, 0, lease); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		// 开始 550s 时仍有心跳（长请求），扫描发生在 601s。
@@ -153,7 +160,7 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 	t.Run("心跳边界严格超过", func(t *testing.T) {
 		reg, _, now := newTestRegistry(t)
 		start := *now
-		if err := reg.Register(ctx, "req-hb-boundary", 1, lease); err != nil {
+		if err := reg.Register(ctx, "req-hb-boundary", 1, 0, lease); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		// 在 301s 时心跳一次；扫描时间 601s 时心跳恰好 300s 前 → 不算超过。
@@ -172,7 +179,7 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListAbandoned: %v", err)
 		}
-		if len(ids) != 1 || ids[0] != "req-hb-boundary" {
+		if len(ids) != 1 || ids[0].RequestID != "req-hb-boundary" {
 			t.Fatalf("ids = %v, want [req-hb-boundary]", ids)
 		}
 	})
@@ -180,7 +187,7 @@ func TestRegistryListAbandonedBoundaries(t *testing.T) {
 	t.Run("窗口短于TTL的边界场景", func(t *testing.T) {
 		reg, _, now := newTestRegistry(t)
 		start := *now
-		if err := reg.Register(ctx, "req-window-first", 1, lease); err != nil {
+		if err := reg.Register(ctx, "req-window-first", 1, 0, lease); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		// 开始 400s、心跳 350s 前：两个条件单独看都可能触发，但窗口未到，
@@ -201,7 +208,7 @@ func TestRegistryMissingHashIsAbandoned(t *testing.T) {
 	reg, mr, now := newTestRegistry(t)
 	ctx := context.Background()
 	start := *now
-	if err := reg.Register(ctx, "req-evicted", 9, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+	if err := reg.Register(ctx, "req-evicted", 9, 55, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -214,8 +221,44 @@ func TestRegistryMissingHashIsAbandoned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAbandoned: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != "req-evicted" {
+	if len(ids) != 1 || ids[0].RequestID != "req-evicted" {
 		t.Fatalf("ids = %v, want [req-evicted]", ids)
+	}
+	// Hash 已随租约消失 → 令牌身份不可用，降级为 0（不阻断退款）。
+	if ids[0].TokenID != 0 {
+		t.Fatalf("TokenID = %d, want 0 after lease hash expired", ids[0].TokenID)
+	}
+}
+
+// TestRegistryLegacyLeaseWithoutTokenID 验证旧版租约（Hash 无 token_id 字段）
+// 仍可被扫描回收，身份字段降级为 0（R-88 的向后兼容）。
+func TestRegistryLegacyLeaseWithoutTokenID(t *testing.T) {
+	reg, mr, now := newTestRegistry(t)
+	ctx := context.Background()
+	start := *now
+
+	// 模拟旧版 gateway 写入的租约：只有 user/started/heartbeat。
+	key := leaseKey("req-legacy")
+	mr.HSet(key,
+		registryFieldUserID, "8",
+		registryFieldStartedAt, strconv.FormatInt(start.UnixMilli(), 10),
+		registryFieldHeartbeatAt, strconv.FormatInt(start.UnixMilli(), 10))
+	if _, err := mr.ZAdd(registryIndexKey, float64(start.UnixMilli()), "req-legacy"); err != nil {
+		t.Fatalf("ZAdd: %v", err)
+	}
+
+	entries, err := reg.ListAbandoned(ctx, start.Add(601*time.Second))
+	if err != nil {
+		t.Fatalf("ListAbandoned: %v", err)
+	}
+	if len(entries) != 1 || entries[0].RequestID != "req-legacy" {
+		t.Fatalf("entries = %v, want [req-legacy]", entries)
+	}
+	if entries[0].UserID != 8 {
+		t.Fatalf("UserID = %d, want 8", entries[0].UserID)
+	}
+	if entries[0].TokenID != 0 {
+		t.Fatalf("TokenID = %d, want 0（旧租约无 token_id）", entries[0].TokenID)
 	}
 }
 
@@ -223,7 +266,7 @@ func TestRegistryMissingHashIsAbandoned(t *testing.T) {
 func TestRegistryRemove(t *testing.T) {
 	reg, mr, now := newTestRegistry(t)
 	ctx := context.Background()
-	if err := reg.Register(ctx, "req-rm", 1, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+	if err := reg.Register(ctx, "req-rm", 1, 0, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if err := reg.Remove(ctx, "req-rm"); err != nil {
@@ -260,7 +303,7 @@ func TestRegistryIndexKeyDoesNotCollideWithRequestID(t *testing.T) {
 	}
 	reg, mr, now := newTestRegistry(t)
 	ctx := context.Background()
-	if err := reg.Register(ctx, "index", 5, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
+	if err := reg.Register(ctx, "index", 5, 5, time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if !mr.Exists(leaseKey("index")) {
@@ -278,7 +321,7 @@ func TestRegistryIndexKeyDoesNotCollideWithRequestID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAbandoned: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != "index" {
+	if len(ids) != 1 || ids[0].RequestID != "index" {
 		t.Fatalf("ids = %v, want [index]", ids)
 	}
 	if err := reg.Remove(ctx, "index"); err != nil {
@@ -300,12 +343,12 @@ func TestRegistryRedisFailure(t *testing.T) {
 	t.Cleanup(func() { _ = rdb.Close() })
 	reg := NewRegistry(rdb)
 
-	if err := reg.Register(ctx, "req-down", 1, time.Minute); err != nil {
+	if err := reg.Register(ctx, "req-down", 1, 0, time.Minute); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.Close()
 
-	if err := reg.Register(ctx, "req-down-2", 1, time.Minute); err == nil {
+	if err := reg.Register(ctx, "req-down-2", 1, 0, time.Minute); err == nil {
 		t.Fatal("Register with redis down = nil, want error")
 	}
 	if err := reg.Heartbeat(ctx, "req-down"); err == nil {
@@ -327,7 +370,7 @@ func TestRegistryRedisFailure(t *testing.T) {
 func TestRegistryNilClient(t *testing.T) {
 	reg := NewRegistry(nil)
 	ctx := context.Background()
-	if err := reg.Register(ctx, "req", 1, time.Minute); err == nil {
+	if err := reg.Register(ctx, "req", 1, 0, time.Minute); err == nil {
 		t.Fatal("Register with nil client = nil, want error")
 	}
 	if _, err := reg.ListAbandoned(ctx, time.Now()); err == nil {
@@ -339,7 +382,7 @@ func TestRegistryNilClient(t *testing.T) {
 func TestRegistryEmptyRequestID(t *testing.T) {
 	reg, _, _ := newTestRegistry(t)
 	ctx := context.Background()
-	if err := reg.Register(ctx, "", 1, time.Minute); !errors.Is(err, ErrMissingRequestID) {
+	if err := reg.Register(ctx, "", 1, 0, time.Minute); !errors.Is(err, ErrMissingRequestID) {
 		t.Fatalf("Register empty = %v, want ErrMissingRequestID", err)
 	}
 	if err := reg.Heartbeat(ctx, ""); !errors.Is(err, ErrMissingRequestID) {

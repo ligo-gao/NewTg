@@ -31,7 +31,7 @@ import (
 // failingRegistry 让租约登记失败，用于覆盖 registerLeaseLocked 的回滚路径。
 type failingRegistry struct{}
 
-func (failingRegistry) Register(context.Context, string, int64, time.Duration) error {
+func (failingRegistry) Register(context.Context, string, int64, int64, time.Duration) error {
 	return errors.New("redis down")
 }
 func (failingRegistry) Heartbeat(context.Context, string) error { return nil }

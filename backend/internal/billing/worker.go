@@ -34,16 +34,18 @@ const (
 // 分区维护失败不代表本轮扫描失败，两者互不阻断。
 var ensureUsagePartitionsFn = EnsureUsagePartitions
 
-// AbandonedLister 列出满足「开始超窗口且心跳超 TTL」的 requestID。
+// AbandonedLister 列出满足「开始超窗口且心跳超 TTL」的可回收请求
+// （含 R-88 回补令牌额度所需的 user_id/token_id）。
 // *RequestRegistry 是其生产实现；单测用 fake。
 type AbandonedLister interface {
-	ListAbandoned(ctx context.Context, now time.Time) ([]string, error)
+	ListAbandoned(ctx context.Context, now time.Time) ([]AbandonedRequest, error)
 }
 
 // AbandonedRecoverer 按 requestID 回收一个悬挂请求。
+// tokenID 来自租约（0 = 旧租约/未绑定，回补令牌额度为 no-op）。
 // *Engine（RecoverAbandonedByID）是其生产实现；单测用 fake。
 type AbandonedRecoverer interface {
-	RecoverAbandonedByID(ctx context.Context, requestID string) error
+	RecoverAbandonedByID(ctx context.Context, requestID string, tokenID int64) error
 }
 
 // WorkerDeps 是兜底循环的依赖与可调参数。
@@ -160,29 +162,32 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 func scanOnce(ctx context.Context, lister AbandonedLister, recoverer AbandonedRecoverer,
 	log *slog.Logger, now func() time.Time) {
 
-	ids, err := lister.ListAbandoned(ctx, now())
+	entries, err := lister.ListAbandoned(ctx, now())
 	if err != nil {
 		// 【关键】扫描失败 ≠ 无悬挂：这里绝不更新任何「已处理」水位，
 		// 下一轮会从头再扫（Redis 的 ZSET 索引本身就是完整候选集）。
 		log.Error("abandoned request scan failed; retrying next round", "error", err)
 		return
 	}
-	if len(ids) == 0 {
+	if len(entries) == 0 {
 		return
 	}
 
-	log.Info("recovering abandoned requests", "count", len(ids))
-	for _, id := range ids {
+	log.Info("recovering abandoned requests", "count", len(entries))
+	for _, entry := range entries {
 		// 停机期间不再发起新的回收：每笔回收都是有界 DB 事务，但 500 条
 		// 逐个失败会拖慢优雅退出，且这些请求下一轮仍会被索引扫到。
 		if ctx.Err() != nil {
 			return
 		}
-		if err := recoverer.RecoverAbandonedByID(ctx, id); err != nil {
+		// tokenID 来自租约（R-88）：worker 没有原始 RelayContext，令牌额度
+		// 只能靠这条持久化身份回补；0（旧租约/未绑定）表示 no-op。
+		if err := recoverer.RecoverAbandonedByID(ctx, entry.RequestID, entry.TokenID); err != nil {
 			log.Error("recover abandoned request failed; retrying next round",
-				"request_id", id, "error", err)
+				"request_id", entry.RequestID, "token_id", entry.TokenID, "error", err)
 			continue
 		}
-		log.Info("recovered abandoned request", "request_id", id)
+		log.Info("recovered abandoned request",
+			"request_id", entry.RequestID, "token_id", entry.TokenID)
 	}
 }

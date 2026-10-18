@@ -38,7 +38,7 @@ func TestRecoverAbandonedOnlyRemainingHold(t *testing.T) {
 	}
 
 	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 
@@ -79,10 +79,10 @@ func TestRecoverAbandonedIdempotent(t *testing.T) {
 	}
 	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
 
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("first recover: %v", err)
 	}
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("second recover: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestRecoverAbandonedIdempotent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = e.RecoverAbandonedByID(ctx, req2)
+			errs[i] = e.RecoverAbandonedByID(ctx, req2, 0)
 		}(i)
 	}
 	wg.Wait()
@@ -135,12 +135,12 @@ func TestRecoverAbandonedRemovesRegistry(t *testing.T) {
 		"consume_pre", "hold", "usage_log", req); err != nil {
 		t.Fatalf("hold: %v", err)
 	}
-	if err := registry.Register(ctx, req, userID, time.Duration(5)*time.Minute); err != nil {
+	if err := registry.Register(ctx, req, userID, 0, time.Duration(5)*time.Minute); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	e := NewEngine(gormDB, nil, rdb, nil, nil, registry, nil)
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 	// 崩溃场景：注册租约后请求方再未 Terminate/Refund，兜底必须把钱退回。
@@ -155,7 +155,7 @@ func TestRecoverAbandonedRemovesRegistry(t *testing.T) {
 		t.Fatalf("index members = %v, want empty", members)
 	}
 	// 再跑一次：没有 hold 行，仍然返回 nil 且不产生第二行 release。
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("second recover: %v", err)
 	}
 	if n := countReleaseRows(t, db, req); n != 1 {
@@ -181,7 +181,7 @@ func TestRecoverAbandonedSettledReturnsNil(t *testing.T) {
 	}
 
 	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID on settled request: %v", err)
 	}
 	if got := userBalance(t, db, userID); got != 300 {
@@ -209,7 +209,7 @@ func TestRecoverAbandonedNoHold(t *testing.T) {
 		t.Fatalf("increment: %v", err)
 	}
 	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 	if got := userBalance(t, db, userID); got != 60 {
@@ -220,10 +220,10 @@ func TestRecoverAbandonedNoHold(t *testing.T) {
 	}
 
 	// 完全未知的 requestID 同样返回 nil（没有可退的持久化状态）。
-	if err := e.RecoverAbandonedByID(ctx, testRequestID("recover-unknown")); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, testRequestID("recover-unknown"), 0); err != nil {
 		t.Fatalf("unknown request recover: %v", err)
 	}
-	if err := e.RecoverAbandonedByID(ctx, ""); err == nil {
+	if err := e.RecoverAbandonedByID(ctx, "", 0); err == nil {
 		t.Fatal("empty requestID = nil, want error")
 	}
 }
@@ -249,13 +249,13 @@ func TestRecoverAbandonedRegistryFailure(t *testing.T) {
 		ReadTimeout: 100 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
-	if err := NewRegistry(rdb).Register(ctx, req, userID, time.Minute); err != nil {
+	if err := NewRegistry(rdb).Register(ctx, req, userID, 0, time.Minute); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.Close()
 
 	e := NewEngine(gormDB, nil, rdb, nil, nil, NewRegistry(rdb), nil)
-	if err := e.RecoverAbandonedByID(ctx, req); err == nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err == nil {
 		t.Fatal("recover with redis down = nil, want error（租约清理失败需下一轮重试）")
 	}
 	// 资金已经退还；重试只能命中断言幂等，不得再退。
@@ -265,7 +265,7 @@ func TestRecoverAbandonedRegistryFailure(t *testing.T) {
 	if n := countReleaseRows(t, db, req); n != 1 {
 		t.Fatalf("release rows = %d, want 1", n)
 	}
-	if err := e.RecoverAbandonedByID(ctx, req); err == nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err == nil {
 		t.Fatal("retry with redis down = nil, want error")
 	}
 	if n := countReleaseRows(t, db, req); n != 1 {
@@ -348,7 +348,7 @@ func TestRecoverAbandonedWritesRefundedLog(t *testing.T) {
 	}
 
 	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 
@@ -378,7 +378,7 @@ func TestRecoverAbandonedWritesRefundedLog(t *testing.T) {
 	}
 
 	// 重复回收：expired 预扣行仍在，Saturate 按 request_id 收敛而不是插新行。
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("second recover: %v", err)
 	}
 	var n int
@@ -388,6 +388,81 @@ func TestRecoverAbandonedWritesRefundedLog(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("usage_logs rows = %d, want 1", n)
+	}
+}
+
+// TestRecoverAbandonedRestoresTokenQuota 覆盖 R-88：租约携带的 token_id 让
+// worker 在崩溃恢复时把 hold 部分加回 api_tokens.remain_quota；ChargeIncrement
+// 的增量保持已扣（只回补 held），重复回收不重复回补。
+func TestRecoverAbandonedRestoresTokenQuota(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1000)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	req := testRequestID("recover-token")
+	ctx := context.Background()
+
+	ledger := NewLedger(gormDB)
+	// 预扣 300：钱包与令牌在同一事务内扣减（R-73）。
+	if _, err := ledger.ApplyDeltaWithToken(ctx, userID, tokenID, -300,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	// 增量 50：已交付用量，崩溃退款不退还（R-39）。
+	if _, err := ledger.ApplyDeltaWithToken(ctx, userID, tokenID, -50,
+		"consume", "confirmed", "usage_log", req); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 150 {
+		t.Fatalf("token remain before recovery = %v, want 150", got)
+	}
+
+	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
+	if err := e.RecoverAbandonedByID(ctx, req, tokenID); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 950 {
+		t.Fatalf("balance = %d, want 950（只退 hold 300）", got)
+	}
+	// 令牌：150 + 退回的 hold 300 = 450；增量 50 保留已扣。
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 450 {
+		t.Fatalf("token remain = %v, want 450（回补 hold，不补增量）", got)
+	}
+
+	// 重复回收：hold 已关闭，不得二次回补令牌额度。
+	if err := e.RecoverAbandonedByID(ctx, req, tokenID); err != nil {
+		t.Fatalf("second recover: %v", err)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 450 {
+		t.Fatalf("token remain after retry = %v, want 450", got)
+	}
+}
+
+// TestRecoverAbandonedTokenIDZeroIsNoop 覆盖旧版租约/未绑定令牌（tokenID=0）：
+// 钱包照常退款，令牌额度不回补（no-op），不影响恢复成功。
+func TestRecoverAbandonedTokenIDZeroIsNoop(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	req := testRequestID("recover-token-zero")
+	ctx := context.Background()
+
+	if _, err := NewLedger(gormDB).ApplyDeltaWithToken(ctx, userID, tokenID, -200,
+		"consume_pre", "hold", "usage_log", req); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 300 {
+		t.Fatalf("token remain before recovery = %v, want 300", got)
+	}
+
+	e := NewEngine(gormDB, nil, nil, nil, nil, nil, nil)
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
+		t.Fatalf("RecoverAbandonedByID: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（钱包退款不受令牌身份缺失影响）", got)
+	}
+	if got := tokenRemain(t, db, tokenID); !got.Valid || got.Int64 != 300 {
+		t.Fatalf("token remain = %v, want 300（tokenID=0 时 no-op）", got)
 	}
 }
 
@@ -411,7 +486,7 @@ func TestRecoverAbandonedLogRecordsRetainedIncrement(t *testing.T) {
 	}
 
 	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 
@@ -441,7 +516,7 @@ func TestRecoverAbandonedLogRecordsRetainedIncrement(t *testing.T) {
 
 	// 重复回收走「已有行 → 收敛」分支（R-25/R-55）：必须保留 cost=50，
 	// 不能把已记录的保留消耗清零，也不能插第二行。
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("second recover: %v", err)
 	}
 	var n int
@@ -473,7 +548,7 @@ func TestRecoverAbandonedLogFailureRetries(t *testing.T) {
 
 	// NewDBLogger(nil) 模拟日志库不可用：退款已完成，但占位写失败。
 	eBad := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(nil))
-	if err := eBad.RecoverAbandonedByID(ctx, req); err == nil {
+	if err := eBad.RecoverAbandonedByID(ctx, req, 0); err == nil {
 		t.Fatal("recover with broken logger = nil, want error")
 	}
 	if got := userBalance(t, db, userID); got != 300 {
@@ -482,7 +557,7 @@ func TestRecoverAbandonedLogFailureRetries(t *testing.T) {
 
 	// 下一轮：expired 行仍在 → 重新写占位；资金不重复退。
 	eGood := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
-	if err := eGood.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := eGood.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("retry recover: %v", err)
 	}
 	var status int16
@@ -520,7 +595,7 @@ func TestRecoverAbandonedSettledDoesNotWriteRefundedLog(t *testing.T) {
 	}
 
 	e := NewEngine(gormDB, logsDB, nil, nil, nil, nil, NewDBLogger(logsDB))
-	if err := e.RecoverAbandonedByID(ctx, req); err != nil {
+	if err := e.RecoverAbandonedByID(ctx, req, 0); err != nil {
 		t.Fatalf("RecoverAbandonedByID: %v", err)
 	}
 	var n int

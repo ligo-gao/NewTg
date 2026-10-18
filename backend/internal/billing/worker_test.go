@@ -20,11 +20,11 @@ import (
 type workerTestLister struct {
 	mu      sync.Mutex
 	calls   int
-	results [][]string
+	results [][]AbandonedRequest
 	errs    []error
 }
 
-func (l *workerTestLister) ListAbandoned(context.Context, time.Time) ([]string, error) {
+func (l *workerTestLister) ListAbandoned(context.Context, time.Time) ([]AbandonedRequest, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	i := l.calls
@@ -53,34 +53,44 @@ func (l *workerTestLister) callCount() int {
 }
 
 type workerTestRecoverer struct {
-	mu   sync.Mutex
-	ids  []string
-	errs map[string]error
+	mu      sync.Mutex
+	entries []AbandonedRequest
+	errs    map[string]error
 }
 
-func (r *workerTestRecoverer) RecoverAbandonedByID(_ context.Context, requestID string) error {
+func (r *workerTestRecoverer) RecoverAbandonedByID(_ context.Context, requestID string, tokenID int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ids = append(r.ids, requestID)
+	r.entries = append(r.entries, AbandonedRequest{RequestID: requestID, TokenID: tokenID})
 	if r.errs != nil {
 		return r.errs[requestID]
 	}
 	return nil
 }
 
-func (r *workerTestRecoverer) snapshot() []string {
+func (r *workerTestRecoverer) snapshot() []AbandonedRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.ids...)
+	return append([]AbandonedRequest(nil), r.entries...)
 }
 
 func (r *workerTestRecoverer) attempted(requestID string) bool {
-	for _, id := range r.snapshot() {
-		if id == requestID {
+	for _, entry := range r.snapshot() {
+		if entry.RequestID == requestID {
 			return true
 		}
 	}
 	return false
+}
+
+// tokenFor 返回 worker 传给回收器的 tokenID（未尝试过时返回 -1）。
+func (r *workerTestRecoverer) tokenFor(requestID string) int64 {
+	for _, entry := range r.snapshot() {
+		if entry.RequestID == requestID {
+			return entry.TokenID
+		}
+	}
+	return -1
 }
 
 func workerTestLogger() *slog.Logger {
@@ -102,7 +112,10 @@ func workerWaitFor(t *testing.T, cond func() bool, what string) {
 // TestWorkerLoopRecoversAbandonedAndStops 验证启动即扫一轮、周期扫描与
 // ctx 取消后的优雅退出（返回 nil）。
 func TestWorkerLoopRecoversAbandonedAndStops(t *testing.T) {
-	lister := &workerTestLister{results: [][]string{{"req-1", "req-2"}}}
+	lister := &workerTestLister{results: [][]AbandonedRequest{{
+		{RequestID: "req-1", UserID: 1, TokenID: 11},
+		{RequestID: "req-2", UserID: 2, TokenID: 0},
+	}}}
 	recoverer := &workerTestRecoverer{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,6 +132,13 @@ func TestWorkerLoopRecoversAbandonedAndStops(t *testing.T) {
 	workerWaitFor(t, func() bool {
 		return recoverer.attempted("req-1") && recoverer.attempted("req-2")
 	}, "startup scan to recover both requests")
+	// R-88：租约里的 tokenID 必须原样传给回收器（0 表示无令牌）。
+	if got := recoverer.tokenFor("req-1"); got != 11 {
+		t.Fatalf("tokenID for req-1 = %d, want 11", got)
+	}
+	if got := recoverer.tokenFor("req-2"); got != 0 {
+		t.Fatalf("tokenID for req-2 = %d, want 0", got)
+	}
 
 	cancel()
 	select {
@@ -135,7 +155,7 @@ func TestWorkerLoopRecoversAbandonedAndStops(t *testing.T) {
 // 记日志、继续循环、下一轮重试。
 func TestWorkerLoopScanFailureRetries(t *testing.T) {
 	lister := &workerTestLister{
-		results: [][]string{nil, {"req-retry"}},
+		results: [][]AbandonedRequest{nil, {{RequestID: "req-retry", TokenID: 7}}},
 		errs:    []error{errors.New("redis down"), nil},
 	}
 	recoverer := &workerTestRecoverer{}
@@ -162,7 +182,10 @@ func TestWorkerLoopScanFailureRetries(t *testing.T) {
 // TestWorkerLoopRecoverFailureIsolated 验证单个请求回收失败不打断同轮其它
 // 请求，也不终止循环。
 func TestWorkerLoopRecoverFailureIsolated(t *testing.T) {
-	lister := &workerTestLister{results: [][]string{{"req-bad", "req-good"}}}
+	lister := &workerTestLister{results: [][]AbandonedRequest{{
+		{RequestID: "req-bad"},
+		{RequestID: "req-good", TokenID: 3},
+	}}}
 	recoverer := &workerTestRecoverer{errs: map[string]error{"req-bad": errors.New("db down")}}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -293,7 +316,7 @@ func TestWorkerLoopRequiresDeps(t *testing.T) {
 func TestWorkerLoopCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	lister := &workerTestLister{results: [][]string{{"req-never"}}}
+	lister := &workerTestLister{results: [][]AbandonedRequest{{{RequestID: "req-never"}}}}
 	if err := RunWorkerLoop(ctx, WorkerDeps{
 		Abandoned: lister,
 		Recoverer: &workerTestRecoverer{},
