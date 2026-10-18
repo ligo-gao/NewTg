@@ -36,8 +36,11 @@ const maxWriteBodyBytes = 1 << 20
 //
 //   - ResourceKind：资源类型（如 "user"/"channel"/"order"），与 ActionName 一起
 //     标识字段策略登记项（security-02 §2.6.1 的「控制器/动作」粒度）；
-//   - ActionName：功能级动作名。管理动作直接使用 20 键目录中的权限键；
-//     自服务动作（如「查看本人订单」）留空，表示不要求管理权限键，仅要求已认证；
+//   - ActionName：动作名，用作字段策略登记键（如 "list"/"create"/"update"），
+//     **不是** 20 键权限目录中的权限键。功能级权限键由 Handler(required, action)
+//     的 required 参数单独传入；直接调用 Authorize 时 required 取 ActionName，
+//     因此那种用法要求 ActionName 是目录键。自服务动作留空，表示不要求管理
+//     权限键，仅要求已认证；
 //   - TargetOwnerUserID：ID 寻址资源的归属；列表类/无归属动作用 0（absent）。
 //
 // ActionName 留空与「未知键」必须区分：前者是显式的自服务动作，后者是拼写错误
@@ -47,6 +50,34 @@ type AuthzAction struct {
 	ActionName        string
 	TargetOwnerUserID int64
 }
+
+// DenyEvent 描述一次被拒绝的授权尝试，供审计钩子消费。
+//
+// 字段是跨模块契约（装配层据此写 audit_logs 的 security 行）：Permission 是
+// 路由声明的功能级权限键（required，自服务动作为空）；Route 是请求路径；
+// Reason 使用下方 DenyReason* 常量；Fields 只在字段级拒绝时非空，且已排序，
+// 与响应体 problem.fields 完全一致。
+type DenyEvent struct {
+	UserID     int64
+	Permission string
+	Route      string
+	Method     string
+	Reason     string
+	Fields     []string
+}
+
+// DenyEvent.Reason 的机器可读取值。区别于 AuthzDecision.Reason：后者是
+// 判定层的内部原因（permission_denied/not_found/field_not_writable），
+// 这里按「拒绝发生在哪一层」细分为审计可直接检索的类别。
+const (
+	DenyReasonUnauthenticated      = "unauthenticated"
+	DenyReasonPermissionLoadFailed = "permission_load_failed"
+	DenyReasonPermission           = "permission"
+	DenyReasonDataScope            = "data_scope"
+	DenyReasonField                = "field"
+	DenyReasonPolicyMissing        = "policy_missing"
+	DenyReasonInvalidBody          = "invalid_body"
+)
 
 // AuthzCtx 是服务端采集的请求上下文，禁止取自客户端可伪造的字段。
 // M1 只透传这些信号；风险带/step-up 判定属于 security-02 §2.5 的后续层，
@@ -94,12 +125,13 @@ type PermissionLoader interface {
 	Load(ctx context.Context, userID int64) ([]string, error)
 }
 
-// AuthzMiddleware 持有字段策略登记表与可选的权限装载器。零值可用；
-// 并发只读是安全的，但 SetWritePolicy / SetPermissionLoader 只在启动装配期
-// 调用，装配完成后不得再写入。
+// AuthzMiddleware 持有字段策略登记表、可选的权限装载器与拒绝审计回调。零值可用；
+// 并发只读是安全的，但 SetWritePolicy / SetPermissionLoader / SetDenyAuditor
+// 只在启动装配期调用，装配完成后不得再写入。
 type AuthzMiddleware struct {
 	writePolicies    map[string]*FieldPolicy
 	permissionLoader PermissionLoader
+	denyAuditor      func(r *http.Request, e DenyEvent)
 }
 
 // NewAuthzMiddleware 返回带空登记表的中间件。零值同样可用，提供构造函数只是
@@ -126,6 +158,28 @@ func (m *AuthzMiddleware) permissionLoaderFor() PermissionLoader {
 		return nil
 	}
 	return m.permissionLoader
+}
+
+// SetDenyAuditor 接线拒绝审计回调；nil 表示关闭（测试/未装配）。
+//
+// 回调在拒绝响应写出前同步调用，必须自行限时且不得 panic；rbac 不感知审计
+// 实现（包间不引入 audit 依赖）。装配完成后不得再修改，与
+// SetPermissionLoader/SetWritePolicy 相同，只在启动期调用。
+func (m *AuthzMiddleware) SetDenyAuditor(fn func(r *http.Request, e DenyEvent)) {
+	if m == nil {
+		return
+	}
+	m.denyAuditor = fn
+}
+
+// auditDeny 通知拒绝审计。回调为 nil 时直接返回（零开销）；panic 被 recover
+// 兜住——审计装配错误绝不能把一次 403/404 变成连接中断或错误的状态码。
+func (m *AuthzMiddleware) auditDeny(r *http.Request, e DenyEvent) {
+	if m == nil || m.denyAuditor == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.denyAuditor(r, e)
 }
 
 // SetWritePolicy 登记（或传 nil 注销）某个动作的写字段白名单。
@@ -325,6 +379,12 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 			p, ok := auth.PrincipalFrom(r.Context())
 			if !ok || p == nil {
 				// 认证中间件缺失或顺序装配错误：失败关闭，绝不把零值身份当匿名。
+				m.auditDeny(r, DenyEvent{
+					Permission: required,
+					Route:      r.URL.Path,
+					Method:     r.Method,
+					Reason:     DenyReasonUnauthenticated,
+				})
 				writeProblem(w, http.StatusForbidden, problemTypeForbidden, "Forbidden", "", nil)
 				return
 			}
@@ -334,6 +394,13 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 			// UserID 覆盖为权威值；装载失败即拒绝，绝不把「未加载」当 FULL。
 			resolved, err := m.ResolvePermissions(r.Context(), *p)
 			if err != nil {
+				m.auditDeny(r, DenyEvent{
+					UserID:     p.UserID,
+					Permission: required,
+					Route:      r.URL.Path,
+					Method:     r.Method,
+					Reason:     DenyReasonPermissionLoadFailed,
+				})
 				writeProblem(w, http.StatusForbidden, problemTypeForbidden, "Forbidden", "", nil)
 				return
 			}
@@ -344,6 +411,19 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 
 			// 顺序不可交换：功能级/数据级拒绝优先于字段级（§2.6.1 规则 4）。
 			if d := authorize(resolved, ContextFromRequest(r), required, action); d.Effect != EffectAllow {
+				// 数据级拒绝在决策层复用 not_found（避免 ID 枚举），审计侧
+				// 需要把它与功能级 403 区分开：两者的处置动作不同。
+				reason := DenyReasonPermission
+				if d.Reason == ReasonNotFound {
+					reason = DenyReasonDataScope
+				}
+				m.auditDeny(r, DenyEvent{
+					UserID:     resolved.UserID,
+					Permission: required,
+					Route:      r.URL.Path,
+					Method:     r.Method,
+					Reason:     reason,
+				})
 				writeDecision(w, d, nil)
 				return
 			}
@@ -352,21 +432,46 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 				body, present, err := readJSONObject(r)
 				if err != nil {
 					// 无法检查字段就无法证明请求体合法 → 失败关闭。
+					m.auditDeny(r, DenyEvent{
+						UserID:     resolved.UserID,
+						Permission: required,
+						Route:      r.URL.Path,
+						Method:     r.Method,
+						Reason:     DenyReasonInvalidBody,
+					})
 					writeProblem(w, http.StatusForbidden, problemTypeFieldNotWritable,
 						"Field not writable", err.Error(), nil)
 					return
 				}
+				// 登记检查必须先于 body 是否存在的判断：未登记字段策略的动作
+				// 对**任何**写请求都失败关闭（security-02 §2.6.1 规则 6）。
+				// 若放在 present 内，无 body 的 DELETE 会静默跳过字段层。
+				policy, registered := m.writePolicy(action)
+				if !registered {
+					m.auditDeny(r, DenyEvent{
+						UserID:     resolved.UserID,
+						Permission: required,
+						Route:      r.URL.Path,
+						Method:     r.Method,
+						Reason:     DenyReasonPolicyMissing,
+					})
+					writeProblem(w, http.StatusForbidden, problemTypeFieldNotWritable,
+						"Field not writable",
+						"no writable-field policy is registered for this action", nil)
+					return
+				}
 				if present {
-					policy, registered := m.writePolicy(action)
-					if !registered {
-						// 未登记可写字段的动作默认拒绝写请求（§2.6.1 规则 6）。
-						writeProblem(w, http.StatusForbidden, problemTypeFieldNotWritable,
-							"Field not writable",
-							"no writable-field policy is registered for this action", nil)
-						return
-					}
 					if bad := offendingFields(policy, body); len(bad) > 0 {
 						sort.Strings(bad)
+						m.auditDeny(r, DenyEvent{
+							UserID:     resolved.UserID,
+							Permission: required,
+							Route:      r.URL.Path,
+							Method:     r.Method,
+							Reason:     DenyReasonField,
+							// 复制一份：审计回调若误改切片，不得污染写出的响应体。
+							Fields: append([]string(nil), bad...),
+						})
 						writeProblem(w, http.StatusForbidden, problemTypeFieldNotWritable,
 							"Field not writable",
 							"request body contains fields that this action may not write", bad)
@@ -464,8 +569,15 @@ func readJSONObject(r *http.Request) (body map[string]any, present bool, err err
 	if len(raw) > maxWriteBodyBytes {
 		return nil, true, errors.New("request body exceeds the authorization inspection limit")
 	}
-	if len(bytes.TrimSpace(raw)) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
 		return nil, false, nil
+	}
+	// 字面量 null 会被 json.Unmarshal 解成 nil map 且不报错，与「不是 JSON
+	// 对象一律 403」的契约冲突：null 没有可校验的字段，无法证明写集合合法，
+	// 必须按失败关闭处理（而不是当成空对象放行）。
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, errors.New("request body is not a JSON object")
 	}
 	// 重复键必须在交给 map 之前拒绝：map 只保留后值，而下游 struct 解码会合并
 	// 重复父对象，两者对同一字节流产生不同视图（parser differential）。
