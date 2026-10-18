@@ -55,6 +55,12 @@ const (
 	twoFAMaxCodeRunes = 32
 )
 
+// problemTypeTwoFATicketInvalid 是 ticket 类失败的专用 type（控制器裁决）：
+// 前端必须能把「ticket 失效、需要重新登录」与「刚输错一位验证码、可就地重试」
+// 区分开；两者都用 bad_request 会把首次误输直接弹到过期页。错误码只描述
+// ticket 状态，不区分「不存在/过期/已消费」（避免 ticket 存在性探测）。
+const problemTypeTwoFATicketInvalid = "https://newtg.dev/problems/two_factor_ticket_invalid"
+
 // TwoFAUser 是 2FA 流程需要的 users 行投影。TOTPSecretEnc 是 envelope 密文的
 // base64 文本（DB 列为 text）；备用码是已解出的 argon2id PHC 哈希数组。
 type TwoFAUser struct {
@@ -571,7 +577,8 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	if !validTwoFATicket(ticket) {
 		// 畸形 ticket 与过期 ticket 同一响应：不给探测 ticket 存在性的信道。
 		h.auditChallenge(r, nil, "failed", "invalid_ticket")
-		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
+		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
+			"Invalid or expired verification ticket")
 		return
 	}
 	ctx := r.Context()
@@ -588,7 +595,8 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	rawUserID, err := h.rdb.Get(ctx, twoFATicketKeyPrefix+ticket).Result()
 	if errors.Is(err, redis.Nil) {
 		h.auditChallenge(r, nil, "failed", "invalid_ticket")
-		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
+		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
+			"Invalid or expired verification ticket")
 		return
 	}
 	if err != nil {
@@ -676,7 +684,8 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	}
 	if !consumed {
 		h.auditChallenge(r, user, "failed", "invalid_ticket")
-		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
+		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
+			"Invalid or expired verification ticket")
 		return
 	}
 	if err := h.startTwoFASession(ctx, w, r, user); err != nil {

@@ -772,13 +772,13 @@ func Test2FAChallengeInputValidation(t *testing.T) {
 	env.enableUser(user)
 
 	cases := []struct {
-		name string
-		body map[string]any
+		name     string
+		body     map[string]any
+		wantType string
 	}{
-		{"缺 ticket", map[string]any{"code": twoFATestCode, "type": "totp"}},
-		{"畸形 ticket", map[string]any{"ticket": "not-a-ticket", "code": twoFATestCode, "type": "totp"}},
-		{"未知 type", map[string]any{"ticket": env.issueTicket(user.ID), "code": twoFATestCode, "type": "sms"}},
-		{"空 body", nil},
+		{"缺 ticket", map[string]any{"code": twoFATestCode, "type": "totp"}, problemTypeTwoFATicketInvalid},
+		{"畸形 ticket", map[string]any{"ticket": "not-a-ticket", "code": twoFATestCode, "type": "totp"}, problemTypeTwoFATicketInvalid},
+		{"未知 type", map[string]any{"ticket": env.issueTicket(user.ID), "code": twoFATestCode, "type": "sms"}, authProblemBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -789,18 +789,57 @@ func Test2FAChallengeInputValidation(t *testing.T) {
 			if twoFACookie(rr, auth.SessionCookieName) != nil {
 				t.Fatal("非法输入不得建立会话")
 			}
+			if p := decodeProblem(t, rr); p.Type != tc.wantType {
+				t.Fatalf("problem.type = %q，期望 %q（body=%q）", p.Type, tc.wantType, rr.Body.String())
+			}
 		})
 	}
 
-	// 过期/不存在的 ticket 与畸形 ticket 同一文案（无存在性探测信道）。
+	// 真·空 body（http.NoBody）：请求体解析失败，与 ticket 状态无关。
+	emptyReq := httptest.NewRequest(http.MethodPost, "/api/auth/2fa/challenge", http.NoBody)
+	emptyRR := serve(env.router, emptyReq)
+	if emptyRR.Code != http.StatusBadRequest {
+		t.Fatalf("空 body status = %d，期望 400（body=%q）", emptyRR.Code, emptyRR.Body.String())
+	}
+	if p := decodeProblem(t, emptyRR); p.Type != authProblemBadRequest {
+		t.Fatalf("空 body problem.type = %q，期望 %q", p.Type, authProblemBadRequest)
+	}
+
+	// 过期/不存在的 ticket 与畸形 ticket 同一 type 与文案（无存在性探测信道）。
 	expired := env.issueTicket(user.ID)
 	env.mr.Del(twoFATicketKeyPrefix + expired)
 	rr := env.challenge(expired, twoFATestCode, "totp")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("过期 ticket status = %d，期望 400", rr.Code)
 	}
-	if title := decodeProblemTitle(t, rr); title != "Invalid or expired verification ticket" {
-		t.Errorf("problem title = %q", title)
+	if p := decodeProblem(t, rr); p.Type != problemTypeTwoFATicketInvalid ||
+		p.Title != "Invalid or expired verification ticket" {
+		t.Fatalf("过期 ticket problem = %+v", p)
+	}
+
+	// 已消费 ticket：同一 type（前端据此提示重新登录）。
+	consumed := env.issueTicket(user.ID)
+	ok, err := env.handlers.consumeTicket(context.Background(), consumed, strconv.FormatInt(user.ID, 10))
+	if err != nil || !ok {
+		t.Fatalf("consumeTicket = (%v, %v)，期望成功", ok, err)
+	}
+	rr = env.challenge(consumed, twoFATestCode, "totp")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("已消费 ticket status = %d，期望 400", rr.Code)
+	}
+	if p := decodeProblem(t, rr); p.Type != problemTypeTwoFATicketInvalid {
+		t.Fatalf("已消费 ticket problem.type = %q，期望 %q", p.Type, problemTypeTwoFATicketInvalid)
+	}
+
+	// 错误 TOTP / 备用码仍是 bad_request（可就地重试，不是 ticket 失效）。
+	for _, typ := range []string{"totp", "backup"} {
+		rr := env.challenge(env.issueTicket(user.ID), "000000", typ)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("错误 %s 码 status = %d，期望 400", typ, rr.Code)
+		}
+		if p := decodeProblem(t, rr); p.Type != authProblemBadRequest {
+			t.Fatalf("错误 %s 码 problem.type = %q，期望 %q", typ, p.Type, authProblemBadRequest)
+		}
 	}
 }
 
