@@ -123,8 +123,25 @@ type Order struct{}
 // TableName 返回 GORM 表名。
 func (Order) TableName() string { return "orders" }
 
-// WalletTransaction 对应 wallet_transactions（§11，11 列；有符号 bigint）。
-type WalletTransaction struct{}
+// WalletTransaction 对应 wallet_transactions（platform-01 §11，11 列；有符号 bigint）。
+//
+// 可空列用指针表达 DB 的三值语义（reference_type/reference_id/note），
+// 其余列 NOT NULL。金额列（amount/balance_after）写入后不可修改；
+// 这里同样不带任何 GORM `default:` 标签：显式 0 必须按 0 落库，
+// 数据库默认值只在 SQL 省略该列时生效。
+type WalletTransaction struct {
+	ID            int64     `gorm:"column:id;primaryKey"`
+	UserID        int64     `gorm:"column:user_id"`
+	Type          string    `gorm:"column:type"`          // 10 值枚举，见 platform-01 §11
+	Amount        int64     `gorm:"column:amount"`        // 有符号：收入正、支出负；不可为 0
+	BalanceAfter  int64     `gorm:"column:balance_after"` // 变动后余额（≥0）
+	Status        string    `gorm:"column:status"`        // hold/settled/released/expired/confirmed
+	ReferenceType *string   `gorm:"column:reference_type"`
+	ReferenceID   *string   `gorm:"column:reference_id"` // usage_log id / order_id / requestID
+	Note          *string   `gorm:"column:note"`
+	CreatedAt     time.Time `gorm:"column:created_at"`
+	UpdatedAt     time.Time `gorm:"column:updated_at"`
+}
 
 // TableName 返回 GORM 表名。
 func (WalletTransaction) TableName() string { return "wallet_transactions" }
