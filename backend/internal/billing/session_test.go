@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"newtg/gateway/internal/contract"
 )
 
@@ -1394,5 +1397,261 @@ func TestSessionTieredPreConsumeAndSettleNormalizes(t *testing.T) {
 	}
 	if got := userBalance(t, db, userID); got != 360 {
 		t.Fatalf("balance = %d, want 360（100 预扣 + 40 少补）", got)
+	}
+}
+
+// walletNotes 返回某 requestID 的流水 note（按 id 升序，NULL 归一为空串）。
+func walletNotes(t *testing.T, db *sql.DB, requestID string) []string {
+	t.Helper()
+	rows, err := db.Query(
+		`SELECT COALESCE(note, '') FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = $1 ORDER BY id`, requestID)
+	if err != nil {
+		t.Fatalf("read wallet notes: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var note string
+		if err := rows.Scan(&note); err != nil {
+			t.Fatalf("scan note: %v", err)
+		}
+		out = append(out, note)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate notes: %v", err)
+	}
+	return out
+}
+
+// TestSessionPaidRatioZeroEstimateNotFree 是 R-40 的核心回归：
+// 付费 Ratio 模型在估算 P=0（CountToken 关闭等）时不得被判为免费，
+// 结算必须按真实用量收费。
+func TestSessionPaidRatioZeroEstimateNotFree(t *testing.T) {
+	t.Run("无增量：结算少补 100", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		req := testRequestID("paid-zero-estimate")
+		sat := &recordingSaturator{db: db, requestID: req}
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+		s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+
+		// 估算 P=0：预算 0、不写 hold，但模型仍是付费模型。
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "paid"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if s.Reserved() != 0 {
+			t.Fatalf("Reserved = %d, want 0", s.Reserved())
+		}
+		if s.freeModel {
+			t.Fatal("session classified as free, want paid")
+		}
+		fact := contract.UsageFact{Usage: contract.Usage{
+			Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+		}}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		if sat.outcome.Cost != 100 {
+			t.Fatalf("outcome.Cost = %d, want 100（真实用量必须收费）", sat.outcome.Cost)
+		}
+		if got := userBalance(t, db, userID); got != 400 {
+			t.Fatalf("balance = %d, want 400", got)
+		}
+	})
+
+	t.Run("实时增量：先扣 30 再补 70", func(t *testing.T) {
+		gormDB, db := openBillingTestDB(t)
+		userID := createBillingTestUser(t, db, 500)
+		req := testRequestID("paid-zero-estimate-increment")
+		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+		s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+
+		if err := s.PreConsume(contract.QuotaEstimate{Model: "paid"}); err != nil {
+			t.Fatalf("PreConsume: %v", err)
+		}
+		if err := s.ChargeIncrement(30, contract.UsageFact{}); err != nil {
+			t.Fatalf("ChargeIncrement: %v", err)
+		}
+		fact := contract.UsageFact{Usage: contract.Usage{
+			Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+		}}
+		if err := s.Terminate(fact); err != nil {
+			t.Fatalf("Terminate: %v", err)
+		}
+		if got := userBalance(t, db, userID); got != 400 {
+			t.Fatalf("balance = %d, want 400（总扣 100）", got)
+		}
+		notes := walletNotes(t, db, req)
+		want := []string{"", "billing:settle"} // 增量行无标记；结算行带结案标记
+		if len(notes) != len(want) {
+			t.Fatalf("notes = %v, want %v", notes, want)
+		}
+		for i := range want {
+			if notes[i] != want[i] {
+				t.Fatalf("note[%d] = %q, want %q", i, notes[i], want[i])
+			}
+		}
+	})
+}
+
+// TestSessionZeroPricedRatioStillFree 确认 R-40 的分类器没有误伤真正的
+// 零价 Ratio 模型：全部绝对价格字段为 0 时仍走 F-08-12 预扣并全额退回。
+func TestSessionZeroPricedRatioStillFree(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("zero-price-ratio")
+	s := newBillingTestSession(e, userID, req, ratioSnapshot(0, 0))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "free-ratio", MaxTokens: intPtr(100)}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.Reserved() != 100 {
+		t.Fatalf("Reserved = %d, want 100（零价模型按 max_tokens 预扣）", s.Reserved())
+	}
+	if !s.freeModel {
+		t.Fatal("zero-priced Ratio model not classified as free")
+	}
+	fact := contract.UsageFact{Usage: contract.Usage{
+		Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+	}}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（零价模型全额退回）", got)
+	}
+}
+
+// TestSessionTwoSessionsSameRequestIDNoHoldSettleOnce 是 R-41 的顺序重放回归：
+// 两个 Session 对象对同一 requestID 依次做无 hold 结算，第二次被
+// settlementExists 拦截，不得双扣。
+func TestSessionTwoSessionsSameRequestIDNoHoldSettleOnce(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("same-req-no-hold")
+	sA := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+	sB := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+	fact := contract.UsageFact{Usage: contract.Usage{
+		Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+	}}
+
+	if err := sA.Terminate(fact); err != nil {
+		t.Fatalf("first Terminate: %v", err)
+	}
+	if err := sB.Terminate(fact); err != nil {
+		t.Fatalf("second Terminate: %v（幂等应返回 nil）", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（不得双扣）", got)
+	}
+	settles := 0
+	for _, note := range walletNotes(t, db, req) {
+		if note == "billing:settle" {
+			settles++
+		}
+	}
+	if settles != 1 {
+		t.Fatalf("settlement rows = %d, want 1", settles)
+	}
+}
+
+// TestSessionTwoSessionsSameRequestIDHoldSettleOnce 验证 hold 路径的 DB CAS
+// 锚点：两个 Session 对象并发终结同一 requestID，只结算一次。
+func TestSessionTwoSessionsSameRequestIDHoldSettleOnce(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("same-req-hold")
+	sA := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+	sB := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+	if err := sA.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	fact := contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}}
+
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[0] = sA.Terminate(fact)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[1] = sB.Terminate(fact)
+	}()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Terminate %d: %v", i, err)
+		}
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（只结算一次）", got)
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != 1 || rows[0].Status != "settled" {
+		t.Fatalf("rows = %+v, want 单行 settled", rows)
+	}
+}
+
+// TestSessionConcurrentNoHoldSettleWithRedisLock 验证 R-41 的并发窗口：
+// 两个 Session 对象同时做无 hold 结算，Redis requestID 锁只允许一个进入；
+// 另一个要么拿到 ErrSettlementInProgress，要么在锁释放后命中 DB 标记。
+func TestSessionConcurrentNoHoldSettleWithRedisLock(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	e := NewEngine(gormDB, nil, rdb, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("same-req-no-hold-lock")
+	sA := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+	sB := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+	fact := contract.UsageFact{Usage: contract.Usage{
+		Prompt: 1_000_000, PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
+	}}
+
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[0] = sA.Terminate(fact)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		errs[1] = sB.Terminate(fact)
+	}()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, ErrSettlementInProgress) {
+			t.Fatalf("Terminate %d = %v, want nil or ErrSettlementInProgress", i, err)
+		}
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（不得双扣）", got)
+	}
+	settles := 0
+	for _, note := range walletNotes(t, db, req) {
+		if note == "billing:settle" {
+			settles++
+		}
+	}
+	if settles != 1 {
+		t.Fatalf("settlement rows = %d, want 1", settles)
 	}
 }

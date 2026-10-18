@@ -36,6 +36,15 @@ var (
 	errNoOpenHold = errors.New("billing: no hold for request")
 )
 
+// 结案标记（wallet_transactions.note）。无 hold 结算的 DB 幂等锚点（R-41）：
+// 同一 requestID 的合法多行中，只有结算/退款路径写这些前缀；ChargeIncrement
+// 的增量行不带标记，故不会被误判为「已结案」。
+const (
+	settlementNote = "billing:settle"
+	refundNote     = "billing:refund"
+	recoverNote    = "billing:recover"
+)
+
 // validWalletTxType 是 wallet_transactions.type 的 M0 CHECK 枚举
 // （backend/migrations/20261018053301_init.up.sql §10）。
 var validWalletTxType = map[string]bool{
@@ -130,6 +139,17 @@ func (l *Ledger) ApplyDelta(ctx context.Context, userID, delta int64,
 // applyDeltaTx 是 ApplyDelta 的事务内核；也供持有同一事务的结算/退款路径复用。
 func applyDeltaTx(ctx context.Context, tx *gorm.DB, userID, delta int64,
 	txType, status, refType, refID string) (int64, error) {
+	return applyDeltaTxNote(ctx, tx, userID, delta, txType, status, refType, refID, "")
+}
+
+// applyDeltaTxNote 在 applyDeltaTx 基础上写入 note。
+//
+// 结案标记（note 以 "billing:" 开头）是无 hold 结算的 DB 幂等锚点（R-41）：
+// wallet_transactions 没有 requestID 唯一约束（同一请求合法多行），只能靠
+// 一行「结算/退款标记」证明该 requestID 已经结案。ChargeIncrement 的增量行
+// 不带标记，因此不会被误判为已结算。
+func applyDeltaTxNote(ctx context.Context, tx *gorm.DB, userID, delta int64,
+	txType, status, refType, refID, note string) (int64, error) {
 
 	var balanceAfter int64
 	var row *sql.Row
@@ -162,9 +182,9 @@ func applyDeltaTx(ctx context.Context, tx *gorm.DB, userID, delta int64,
 
 	if res := tx.WithContext(ctx).Exec(
 		`INSERT INTO wallet_transactions
-		   (user_id, type, amount, balance_after, status, reference_type, reference_id)
-		 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))`,
-		userID, txType, delta, balanceAfter, status, refType, refID); res.Error != nil {
+		   (user_id, type, amount, balance_after, status, reference_type, reference_id, note)
+		 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+		userID, txType, delta, balanceAfter, status, refType, refID, note); res.Error != nil {
 		return 0, fmt.Errorf("billing: insert wallet transaction for user %d: %w", userID, res.Error)
 	}
 	return balanceAfter, nil
@@ -271,6 +291,18 @@ func (l *Ledger) settleHolds(ctx context.Context, userID int64, requestID string
 		if txErr != nil {
 			return txErr
 		}
+		if held == 0 {
+			// R-41：无 hold 的补扣没有 CAS 锚点。事务内复核该 requestID 是否
+			// 已有结算/退款标记行（note = "billing:*"）——两个 Session 对同一
+			// requestID 重复结算时，后来者在主库层被拦截。
+			already, serr := settlementExists(ctx, tx, requestID)
+			if serr != nil {
+				return serr
+			}
+			if already {
+				return errHoldClosed
+			}
+		}
 		delta := cost - consumed - held
 		if delta == 0 {
 			return nil
@@ -282,7 +314,8 @@ func (l *Ledger) settleHolds(ctx context.Context, userID int64, requestID string
 		if delta < 0 {
 			txType = "release"
 		}
-		balanceAfter, txErr = applyDeltaTx(ctx, tx, userID, -delta, txType, "confirmed", "usage_log", requestID)
+		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, -delta, txType,
+			"confirmed", "usage_log", requestID, settlementNote)
 		return txErr
 	})
 	return held, balanceAfter, err
@@ -306,7 +339,8 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 			return errNoOpenHold
 		}
 		// 退款是入账：applyDeltaTx 正数表示 credit。
-		balanceAfter, txErr = applyDeltaTx(ctx, tx, userID, held, "release", "confirmed", "usage_log", requestID)
+		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, held, "release",
+			"confirmed", "usage_log", requestID, refundNote)
 		return txErr
 	})
 	return held, balanceAfter, err
@@ -346,11 +380,29 @@ func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID stri
 		if total <= 0 {
 			return errNoOpenHold
 		}
-		balanceAfter, txErr = applyDeltaTx(ctx, tx, userID, total, "release", "confirmed", "usage_log", requestID)
+		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, total, "release",
+			"confirmed", "usage_log", requestID, refundNote)
 		refunded = total
 		return txErr
 	})
 	return refunded, balanceAfter, err
+}
+
+// settlementExists 判断该 requestID 是否已有结算/退款结案标记行（R-41）。
+//
+// 无 hold 的会话没有 consume_pre 行可做 CAS 锚点；两个 Session 对象对同一
+// requestID 依次结算时，后来者通过本查询发现前者的 billing:* 标记行并 no-op。
+// 并发窗口由 Redis requestID 锁（Engine.acquireSettlementLock）进一步收窄。
+func settlementExists(ctx context.Context, tx *gorm.DB, requestID string) (bool, error) {
+	var n int64
+	err := tx.WithContext(ctx).Raw(
+		`SELECT count(*) FROM wallet_transactions
+		 WHERE reference_type = 'usage_log' AND reference_id = ?
+		   AND note LIKE 'billing:%'`, requestID).Row().Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("billing: check settlement markers for %s: %w", requestID, err)
+	}
+	return n > 0, nil
 }
 
 // releaseExists 判断该 requestID 是否已有 release 流水。
@@ -452,7 +504,8 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string) (
 			return errNoOpenHold
 		}
 		// 兜底退款同样是入账。
-		balanceAfter, qerr = applyDeltaTx(ctx, tx, userID, held, "release", "confirmed", "usage_log", requestID)
+		balanceAfter, qerr = applyDeltaTxNote(ctx, tx, userID, held, "release",
+			"confirmed", "usage_log", requestID, recoverNote)
 		return qerr
 	})
 	return held, balanceAfter, err

@@ -228,13 +228,19 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 
 // staticallyZeroPriced 判定本次请求是否属于「免费模型」。
 //
-// 判定（R-24）：PriceData.FreeModel，或估算配额为 0。
+// 【R-40 关键约束】免费判定只能来自**定价数据本身**，绝不能来自估算结果：
+// 估算 P=0（CountToken 关闭、实时格式等）会让任何付费 Ratio 模型的
+// ComputeQuota 返回 0；若据此判免费，结算会把真实用量按 0 收费（全站白送）。
 //
-// tiered 表达式需要额外约束：预扣估算的 P 可能为 0（CountToken 关闭、实时
-// 格式等），表达式 `p * 1` 的估算结果也是 0，但这**不说明模型免费**。
-// 若据此把请求判为免费，结算会把真实用量按 0 收费（白送）。因此对表达式
-// 模式，只有「不引用任何 token 用量变量」时，0 才与用量无关、可判定为零价
-// （例如 fixed(0)）。Ratio/PerCall 的 0 来自价格字段本身，无需该约束。
+// 分模式判定：
+//   - FreeModel 标志：模型级零价事实，直接免费；
+//   - 按次（UsePrice/PerCall）：单价 ModelPrice == 0 才免费；
+//   - 传统倍率：所有**绝对价格**字段为 0 才免费（ModelRatio/CompletionRatio/
+//     CacheRatio/CacheCreation*/5m/1h）。Image/Audio 是相对输入的乘数，
+//     输入价为 0 时它们不产生费用；输入价 > 0 时已由上述字段判定为付费。
+//   - tiered 表达式：只有「不引用任何 token 用量变量」且估算为 0 时，0 才与
+//     用量无关、可判定为零价（如 fixed(0)）。引用 token 变量的表达式，
+//     估算 0 只反映本次估算，不说明模型免费。
 func staticallyZeroPriced(snap *contract.PriceSnapshot, usedVars map[string]bool, base int64) bool {
 	if snap == nil {
 		return false
@@ -242,18 +248,41 @@ func staticallyZeroPriced(snap *contract.PriceSnapshot, usedVars map[string]bool
 	if snap.Price.FreeModel {
 		return true
 	}
-	if base != 0 {
-		return false
+	if snap.Price.UsePrice {
+		return snap.Price.ModelPrice == 0
 	}
-	if snap.Mode != contract.BillingModeTieredExpr {
-		return true
-	}
-	for _, key := range tokenExprVars {
-		if usedVars[key] {
+	switch snap.Mode {
+	case contract.BillingModePerCall:
+		return snap.Price.ModelPrice == 0
+	case contract.BillingModeRatio:
+		return !ratioHasPositivePrice(snap.Price)
+	case contract.BillingModeTieredExpr:
+		if base != 0 {
 			return false
 		}
+		for _, key := range tokenExprVars {
+			if usedVars[key] {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
-	return true
+}
+
+// ratioHasPositivePrice 判断传统倍率模式是否存在任何会产生费用的绝对价格。
+//
+// 与 pricing 的 pricePositive 同一口径（R9：Ratio 字段是「积分 / 1M tokens」
+// 的绝对价格）：六个绝对价格全 0 才是真正的零价模型。ImageRatio/AudioRatio
+// 是相对输入价的乘数，不作为独立的正价证据。
+func ratioHasPositivePrice(p contract.PriceData) bool {
+	return p.ModelRatio > 0 ||
+		p.CompletionRatio > 0 ||
+		p.CacheRatio > 0 ||
+		p.CacheCreationRatio > 0 ||
+		p.CacheCreation5mRatio > 0 ||
+		p.CacheCreation1hRatio > 0
 }
 
 // preConsumeFreeModelLocked 实现 F-08-12 免费模型预扣策略（调用方持有 s.mu）。
@@ -477,8 +506,19 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	// I3：无 hold 且需要补扣时，这笔钱没有任何 worker 可回收的 hold 锚点。
 	// 必须**先扣款、后写成功日志**：扣款失败（余额不足/DB 错误）时不得落
 	// success 日志，否则日志会声称一笔从未收上来的费用已结算。
-	// 有 hold 的路径保持裁决顺序（先 Saturate、后主库结算）。
-	noHoldCharge := st.Held == 0 && !st.Closed && cost > s.consumed
+	// R-41：无 hold 的结算同时用 requestID 作用域 Redis 锁 + 事务内
+	// settlementExists 复核，防止两个 Session 对象对同一请求双扣/双退。
+	// 有 hold 的路径保持裁决顺序（先 Saturate、后主库结算），CAS 即锚点。
+	noHoldSettlement := st.Held == 0 && !st.Closed
+	if noHoldSettlement {
+		releaseLock, lockErr := s.engine.acquireSettlementLock(ctx, s.requestID)
+		if lockErr != nil {
+			return lockErr
+		}
+		defer releaseLock()
+	}
+
+	noHoldCharge := noHoldSettlement && cost > s.consumed
 	if noHoldCharge {
 		if _, _, err := s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost); err != nil {
 			if errors.Is(err, errHoldClosed) {
@@ -547,6 +587,16 @@ func (s *Session) Refund() error {
 
 	ctx, cancel := opCtx()
 	defer cancel()
+
+	if s.preConsumed == 0 {
+		// 无 hold 锚点（如 trusted 会话只有 ChargeIncrement 增量）：
+		// refundSession 以 release 行复核，再用 requestID 锁收窄并发窗口（R-41）。
+		releaseLock, lockErr := s.engine.acquireSettlementLock(ctx, s.requestID)
+		if lockErr != nil {
+			return lockErr
+		}
+		defer releaseLock()
+	}
 
 	_, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
@@ -663,9 +713,11 @@ func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.U
 	if snap == nil {
 		return 0
 	}
-	// 免费模型（PriceData.FreeModel 或 F-08-12 判定的零价模型）结算价为 0：
-	// Terminate 全额退回按 max_tokens 预扣的 hold。
-	if s.freeModel || snap.Price.FreeModel {
+	// 只有模型级 FreeModel 事实在结算时直接短路为 0。**不信任预扣阶段的
+	// s.freeModel 分类**（R-40）：若估算为 0 导致误判，结算必须仍按真实
+	// 用量与真实价格求值；真正零价的模型 ComputeQuota 自身会返回 0
+	// （Ratio 全零价 / PerCall 单价 0 / 恒零表达式）。
+	if snap.Price.FreeModel {
 		return 0
 	}
 	usedVars, err := s.usedVarsForLocked(snap)

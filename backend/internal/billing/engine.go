@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -110,6 +111,11 @@ var (
 
 	// ErrSessionClosed 表示会话已结算/已退款，不允许继续扣减。
 	ErrSessionClosed = errors.New("billing: session already closed")
+
+	// ErrSettlementInProgress 表示同一 requestID 的结算已被另一个执行者持有
+	// （Redis requestID 锁未获取到）。调用方应视为并发冲突并稍后重试/记录，
+	// 绝不能退化成「再结算一次」。
+	ErrSettlementInProgress = errors.New("billing: settlement already in progress")
 )
 
 // QuotaError 承载一次额度不足的结构化信息（Required/Available 供响应体使用）。
@@ -239,6 +245,49 @@ func (e *Engine) heartbeatInterval() time.Duration {
 		return e.heartbeat
 	}
 	return time.Duration(contract.InflightHeartbeatSeconds) * time.Second
+}
+
+// settlementLockTTL 是 requestID 结算锁的存活时间：必须大于一次结算事务
+// （billingOpTimeout=10s）并留出时钟裕量；锁内只做 DB 事务，不做网络日志。
+const settlementLockTTL = 30 * time.Second
+
+// settlementLockSeq 保证同一纳秒内多个锁 token 唯一。
+var settlementLockSeq atomic.Uint64
+
+// acquireSettlementLock 获取 requestID 作用域的结算锁（R-41）。
+//
+// 为什么需要：无 hold 的会话没有 consume_pre 行可做 CAS 锚点，两个 Session
+// 对象对同一 requestID 结算时可能各自通过事务内复核（READ COMMITTED 下
+// 彼此看不到未提交的标记行），造成双扣。Redis SETNX 把并发收窄为串行；
+// 事务内的 settlementExists 再处理「顺序重放」。
+//
+// 失败语义（fail closed）：Redis 不可用或锁已被持有 → 返回错误，不结算。
+// 把「锁不可用」当成「可以结算」会直接打开双扣窗口。
+//
+// rdb 为 nil（单测/未接线）时返回 no-op 释放函数：此时只剩 DB 复核，
+// 并发双扣的残余窗口记入 task-3-report；生产装配必须传 rdb（T5/T9）。
+func (e *Engine) acquireSettlementLock(ctx context.Context, requestID string) (func(), error) {
+	if e.rdb == nil {
+		return func() {}, nil
+	}
+	key := "newtg:billing:settle:" + requestID
+	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), settlementLockSeq.Add(1))
+	ok, err := e.rdb.SetNX(ctx, key, token, settlementLockTTL).Result()
+	if err != nil {
+		return nil, fmt.Errorf("billing: acquire settlement lock for %s: %w", requestID, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: request %s", ErrSettlementInProgress, requestID)
+	}
+	return func() {
+		// compare-and-delete：锁 TTL 到期后键可能已被别的执行者重新持有，
+		// 盲删会破坏对方的锁。释放失败不影响资金一致性（TTL 兜底）。
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = e.rdb.Eval(releaseCtx,
+			`if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`,
+			[]string{key}, token).Err()
+	}, nil
 }
 
 // configFloat 读取一个数值配置；未设置时返回 def。

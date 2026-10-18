@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/contract"
 )
@@ -199,5 +203,48 @@ func TestEnginePreConsumeMultiplierDefault(t *testing.T) {
 	}
 	if got := s.Reserved(); got != 100 {
 		t.Fatalf("Reserved = %d, want 100（零值按默认 1）", got)
+	}
+}
+
+// TestEngineSettlementLock 验证 R-41 的 requestID 锁语义：
+// 同一键二次获取返回 ErrSettlementInProgress；释放后可重获；Redis 不可用
+// 时 fail closed。
+func TestEngineSettlementLock(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        mr.Addr(),
+		MaxRetries:  -1, // 关闭重试：Redis 不可用路径要快速返回
+		DialTimeout: 200 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	e := NewEngine(nil, nil, rdb, nil, nil, nil, nil)
+	ctx := context.Background()
+
+	release1, err := e.acquireSettlementLock(ctx, "req-lock")
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, err := e.acquireSettlementLock(ctx, "req-lock"); !errors.Is(err, ErrSettlementInProgress) {
+		t.Fatalf("second acquire = %v, want ErrSettlementInProgress", err)
+	}
+	release1()
+	release2, err := e.acquireSettlementLock(ctx, "req-lock")
+	if err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+	release2()
+
+	// Redis 不可用：fail closed（不得把锁故障当成可结算）。
+	mr.Close()
+	if _, err := e.acquireSettlementLock(ctx, "req-lock"); err == nil {
+		t.Fatal("acquire with redis down = nil, want error")
+	}
+
+	// rdb 为 nil（单测/未接线）：no-op 释放，不报错。
+	if release, err := NewEngine(nil, nil, nil, nil, nil, nil, nil).
+		acquireSettlementLock(ctx, "req-lock"); err != nil {
+		t.Fatalf("nil rdb acquire: %v", err)
+	} else {
+		release()
 	}
 }
