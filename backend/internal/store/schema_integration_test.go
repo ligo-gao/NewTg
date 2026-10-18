@@ -461,6 +461,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 }
 
 // documentedChecks：platform-01 明列、易被遗漏的非枚举 CHECK（评审补充覆盖）。
+// R-24 的 6 条 §6/§10 约束一并登记：后续迁移若静默删除或放宽其中任一条，
+// 这里按「约束存在 + 定义片段」双断言直接变红。
 var documentedChecks = []struct {
 	Table     string
 	Name      string
@@ -478,6 +480,32 @@ var documentedChecks = []struct {
 		Table: "channels", Name: "channels_group_tags_chk",
 		Fragments: []string{"group_tags", "jsonb_typeof", "jsonb_array_length", ">= 1"},
 	},
+	// R-24 / platform-01 §6
+	{
+		Table: "channels", Name: "channels_name_len_chk",
+		Fragments: []string{"char_length", "btrim", "64"},
+	},
+	{
+		Table: "channels", Name: "channels_test_model_in_models_chk",
+		Fragments: []string{"test_model", "supported_models", "?"},
+	},
+	{
+		Table: "channels", Name: "channels_tag_chk",
+		Fragments: []string{"char_length", "btrim", "[[:alnum:]"},
+	},
+	// R-24 / platform-01 §10
+	{
+		Table: "orders", Name: "orders_currency_chk",
+		Fragments: []string{"currency", "A-Z"},
+	},
+	{
+		Table: "orders", Name: "orders_provider_currency_chk",
+		Fragments: []string{"provider_currency IS NULL", "A-Z"},
+	},
+	{
+		Table: "orders", Name: "orders_fx_rate_pair_chk",
+		Fragments: []string{"fx_rate_num IS NULL", "fx_rate_den IS NULL"},
+	},
 }
 
 func expectExecError(t *testing.T, db *sql.DB, stmt string) {
@@ -487,8 +515,8 @@ func expectExecError(t *testing.T, db *sql.DB, stmt string) {
 	}
 }
 
-// TestMainSchemaDocumentedConstraints：platform-01 §6 / §11 的文档语义必须由 DB 兜底
-// （约束存在 + 负向 INSERT 被拒），防止「只声明未落 DDL」的遗漏再次发生。
+// TestMainSchemaDocumentedConstraints：platform-01 §6 / §10 / §11 的文档语义必须由
+// DB 兜底（约束存在 + 负向 INSERT 被拒），防止「只声明未落 DDL」的遗漏再次发生。
 func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	db := openTestDB(t)
 	checks := loadChecks(t, db)
@@ -521,6 +549,32 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	t.Run("group_tags 空数组被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, group_tags)
 			VALUES ('chk_probe', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '[]'::jsonb)`)
+	})
+
+	// R-24 负向覆盖：§6 / §10 的约束必须实际拒绝违法数据，而不只是存在于 catalog。
+	t.Run("纯空白 name 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models)
+			VALUES (E' \t\n', 'openai', decode('00', 'hex'), '["m"]'::jsonb)`)
+	})
+	t.Run("test_model 非 supported_models 成员被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, test_model)
+			VALUES ('chk_tm', 'openai', decode('00', 'hex'), '["m"]'::jsonb, 'not-a-model')`)
+	})
+	t.Run("空字符串 tag 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_empty', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '')`)
+	})
+	t.Run("纯空白 tag 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, tag)
+			VALUES ('chk_tag_space', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '   ')`)
+	})
+	t.Run("小写 currency 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key)
+			VALUES (1, 'stripe', 1, 'usd', 'chk_currency_lower')`)
+	})
+	t.Run("fx_rate 半对被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, fx_rate_num)
+			VALUES (1, 'stripe', 1, 'USD', 'chk_fx_half', 710)`)
 	})
 }
 

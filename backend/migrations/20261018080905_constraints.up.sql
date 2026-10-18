@@ -10,10 +10,11 @@
 -- ---- channels（platform-01 §6）----
 
 -- §6：name 是渠道的全局唯一标识（1–64 字符、首尾空白裁剪）。varchar(64) 已兜住
--- 上限；这里补下限——裁剪后为空的名字（"" / "   "）虽能过 UNIQUE，却无法被
--- 管理员按名定位，故必须在 DB 层拒绝。
+-- 上限；这里补下限——裁剪后为空的名字（"" / 纯空白）虽能过 UNIQUE，却无法被
+-- 管理员按名定位，故必须在 DB 层拒绝。btrim 的单参数形式只删 ASCII 空格，
+-- 显式给出空白集合才能让「仅 tab/换行」的名字同样被拒。
 ALTER TABLE channels ADD CONSTRAINT channels_name_len_chk
-    CHECK (char_length(btrim(name)) BETWEEN 1 AND 64);
+    CHECK (char_length(btrim(name, E' \t\r\n')) BETWEEN 1 AND 64);
 
 -- §6：test_model 是连通性测试实际下发的模型，只有 ∈ supported_models 时才有
 -- 意义；否则测试会向渠道发送它声明不支持的模型，得到误导性的「渠道不可用」。
@@ -24,8 +25,9 @@ ALTER TABLE channels ADD CONSTRAINT channels_test_model_in_models_chk
 -- §6 tag：管理员自由标签（单值），是按标签批量启停/编辑的分组键。规则为
 -- 1–32 字符；仅允许字母数字、._-: 与中日韩文字；禁止首尾空白。白名单本身已
 -- 排除一切空白（含首尾），btrim 一项使「禁首尾空白」在约束文本中显式可见，
--- 便于按 spec 逐条对读。字符集用 [[:alnum:]] 兜住 Unicode 字母数字，并显式
--- 列出中日韩文字区段，避免数据库 locale 为 C 时 CJK 被误拒。
+-- 便于按 spec 逐条对读。字符集的可移植性说明：[[:alnum:]] 在 C locale 下只匹配
+-- ASCII 字母数字（UTF-8 locale 下才覆盖 Unicode）；因此中日韩文字由显式区段
+-- （U+4E00–9FFF / U+3040–30FF / U+AC00–D7AF）保证，不依赖数据库 locale。
 ALTER TABLE channels ADD CONSTRAINT channels_tag_chk
     CHECK (tag IS NULL OR (
         char_length(tag) BETWEEN 1 AND 32
