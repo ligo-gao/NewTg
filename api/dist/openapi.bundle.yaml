@@ -200,6 +200,7 @@ paths:
       tags:
         - public
       operationId: getClientGeo
+      x-codegen: true
       summary: 客户端粗粒度地理区域（只读；不返回坐标与 IP）
       description: |
         客户端 IP 只从连接或经 TRUSTED_PROXIES 校验的代理头取得；响应仅 country/region/source。

@@ -120,8 +120,10 @@ api-gen: api-bundle ## 由单体产物生成前端 TS 类型与后端 Go DTO（�
 api-lint: ## spectral 校验契约源（.spectral.yaml 最小 3 条规则）
 	npx --yes "@stoplight/spectral-cli@$(SPECTRAL_VERSION)" lint api/openapi/openapi.yaml
 
+# GOPROXY 统一经 NEWTG_GOPROXY（默认 goproxy.cn）：本仓库所在环境不可达 proxy.golang.org
+# （2026-10-18 环境注记），与 image 目标保持同一覆盖约定。
 api-validate: api-bundle ## kin-openapi 运行时校验单体产物
-	cd $(BACKEND) && go run github.com/getkin/kin-openapi/cmd/validate@$(KIN_OPENAPI_VERSION) ../api/dist/openapi.bundle.yaml
+	cd $(BACKEND) && GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} go run github.com/getkin/kin-openapi/cmd/validate@$(KIN_OPENAPI_VERSION) ../api/dist/openapi.bundle.yaml
 
 api-check: check-openapi-layout api-gen api-lint api-validate ## OpenAPI 全链路门禁（布局+生成+lint+校验+漂移）
 	bash scripts/check_openapi_drift.sh

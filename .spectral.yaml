@@ -1,19 +1,10 @@
-# Spectral 自定义规则集（platform-03 §10.1 / 本计划冻结最小 3 条）
-# 用法：spectral lint api/openapi/openapi.yaml
+# Spectral 自定义规则集（platform-03 §10.1 / 本计划冻结最小 3 条规则）
+# 注：$ref 越界（http(s)/绝对路径/../ 逃出 api/openapi/）由 scripts/check_openapi_layout.sh
+# 强制校验——Spectral 在求值 given 前已解析 $ref，规则层无法观察原始引用值，故不在此重复实现。
 extends: []
 formats:
   - oas3_1
 rules:
-  newtg-no-external-ref:
-    description: $ref 不得跨出 api/openapi/（禁止 http(s)、绝对路径与 ../ 越界）
-    message: "{{path}}: $ref 必须留在 api/openapi/ 内（实际：{{value}}）"
-    severity: error
-    given: "$..['$ref']"
-    then:
-      function: pattern
-      functionOptions:
-        notMatch: "^(https?://|/|\\.\\./)"
-
   newtg-problem-json-errors:
     description: 4xx/5xx 响应必须使用 application/problem+json（RFC 7807）；唯一例外是 /readyz 的 503——其就绪信封 {status,checks,version,node} 已冻结（platform-03 §4）
     message: "{{path}}: 4xx/5xx 响应缺少 application/problem+json"
@@ -32,3 +23,12 @@ rules:
       function: pattern
       functionOptions:
         match: "^(ops|public|user|admin|relay)$"
+
+  newtg-operation-id:
+    description: 每个 operation 必须声明 operationId（唯一性与命名由 codegen/评审保证）
+    message: "{{path}}: 缺少 operationId"
+    severity: error
+    given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+    then:
+      field: operationId
+      function: truthy
