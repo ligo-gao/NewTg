@@ -311,6 +311,12 @@
     "override_model_invalid": "This source model is not priced or cannot be overridden.",
     "override_all_zero_title": "All override prices are zero",
     "override_all_zero_body": "All prices are 0. This makes the model free for this group. Save anyway?",
-    "override_all_zero_confirm": "Save as free"
+    "override_all_zero_confirm": "Save as free",
+    "override_disable_title": "Disable override",
+    "override_disable_body": "Disabling this override restores base price × group ratio. Continue?",
+    "override_deleted": "Override deleted",
+    "override_total": "{count} overrides",
+    "gone": "This record no longer exists. The list has been refreshed.",
+    "price_placeholder_group": "0 (free)"
   }
 }

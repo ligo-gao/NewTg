@@ -117,11 +117,17 @@ export function ModelPricingListPage() {
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
+      const gone = error instanceof ApiError && error.kind === 'not_found'
       push({
         tone: 'error',
-        message: conflict ? t('admin.pricing.conflict') : t('admin.pricing.action_error'),
+        message: conflict
+          ? t('admin.pricing.conflict')
+          : gone
+            ? t('admin.pricing.gone')
+            : t('admin.pricing.action_error'),
       })
-      if (conflict) {
+      // 并发删除的 404 与乐观锁 409 一样必须刷新，避免幽灵行与重复 404。
+      if (conflict || gone) {
         void queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
       }
     },
@@ -149,11 +155,17 @@ export function ModelPricingListPage() {
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
+      const gone = error instanceof ApiError && error.kind === 'not_found'
       push({
         tone: 'error',
-        message: conflict ? t('admin.pricing.conflict') : t('admin.pricing.action_error'),
+        message: conflict
+          ? t('admin.pricing.conflict')
+          : gone
+            ? t('admin.pricing.gone')
+            : t('admin.pricing.action_error'),
       })
-      if (conflict) {
+      // 并发删除的 404 与乐观锁 409 一样必须刷新，避免幽灵行与重复 404。
+      if (conflict || gone) {
         void queryClient.invalidateQueries({ queryKey: ['admin-model-pricing'] })
       }
     },

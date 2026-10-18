@@ -1,6 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
+import { waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import type { components } from '@/api/schema'
@@ -170,5 +171,44 @@ describe('GroupPricingListPage', () => {
     await user.click(await findByRole('button', { name: 'New override' }))
 
     expect(await findByRole('option', { name: 'gpt-5' })).toBeTruthy()
+  })
+
+  it('escapes the DELETE updated_at query parameter on an override', async () => {
+    installHandlers({
+      overrides: [overrideRow({ updated_at: '2026-10-01T10:00:00+08:00' })],
+    })
+    let deleteUrl = ''
+
+    server.use(
+      http.delete(`${ORIGIN}/api/group-pricing/vip/gpt-5`, ({ request }) => {
+        deleteUrl = request.url
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+
+    const { findByRole, getByRole } = await renderWithProviders(
+      <GroupPricingListPage />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    await user.click(await findByRole('tab', { name: 'Group price overrides' }))
+    await user.click(await findByRole('button', { name: 'Delete' }))
+    const dialog = await findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => {
+      expect(deleteUrl).not.toBe('')
+    })
+    // 与模型定价相同的转义要求：字面 + 会以空格到达服务端。
+    expect(deleteUrl).toContain('%2B08%3A00')
+    expect(new URL(deleteUrl).searchParams.get('updated_at')).toBe(
+      '2026-10-01T10:00:00+08:00',
+    )
+    await waitFor(() => {
+      const messages = useToastStore.getState().toasts.map((toast) => toast.message)
+      expect(messages).toContain('Override deleted')
+    })
+    expect(getByRole('tab', { name: 'Group price overrides' })).toBeTruthy()
   })
 })

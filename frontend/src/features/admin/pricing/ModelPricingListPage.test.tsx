@@ -1,5 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import { useQuery } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -48,6 +49,8 @@ interface InstallOptions {
   items?: ModelPricing[]
   total?: number
   usersStatus?: number
+  /** 模拟调用者自己的行不在返回页（F-A）。 */
+  noActorRow?: boolean
   record?: (params: URLSearchParams) => void
   recordActor?: () => void
 }
@@ -57,6 +60,7 @@ function installBaseHandlers({
   items = [pricingRow()],
   total = 1,
   usersStatus,
+  noActorRow = false,
   record,
   recordActor,
 }: InstallOptions = {}) {
@@ -73,27 +77,46 @@ function installBaseHandlers({
         )
       }
       return HttpResponse.json({
-        items: [
-          {
-            id: 1,
-            username: 'root',
-            display_name: null,
-            email: null,
-            role: 'admin',
-            status: 'enabled',
-            balance: 0,
-            group: 'default',
-            admin_permissions: permissions,
-            totp_enabled: false,
-            must_change_password: false,
-            token_count: 0,
-            created_at: '2026-10-01T10:00:00Z',
-            updated_at: '2026-10-01T10:00:00Z',
-          },
-        ],
+        items: noActorRow
+          ? [
+              {
+                id: 2,
+                username: 'another-admin',
+                display_name: null,
+                email: null,
+                role: 'admin',
+                status: 'enabled',
+                balance: 0,
+                group: 'default',
+                admin_permissions: permissions,
+                totp_enabled: false,
+                must_change_password: false,
+                token_count: 0,
+                created_at: '2026-10-01T10:00:00Z',
+                updated_at: '2026-10-01T10:00:00Z',
+              },
+            ]
+          : [
+              {
+                id: 1,
+                username: 'root',
+                display_name: null,
+                email: null,
+                role: 'admin',
+                status: 'enabled',
+                balance: 0,
+                group: 'default',
+                admin_permissions: permissions,
+                totp_enabled: false,
+                must_change_password: false,
+                token_count: 0,
+                created_at: '2026-10-01T10:00:00Z',
+                updated_at: '2026-10-01T10:00:00Z',
+              },
+            ],
         total: 1,
         page: 1,
-        page_size: 20,
+        page_size: 100,
       })
     }),
     http.get(`${ORIGIN}/api/model-pricing`, ({ request }) => {
@@ -351,5 +374,72 @@ describe('ModelPricingListPage', () => {
     // 能力无法判定：允许服务端裁决读权限（列表成功），写操作隐藏。
     expect(await findByText('gpt-5')).toBeTruthy()
     expect(queryByRole('button', { name: 'New pricing' })).toBeNull()
+  })
+
+  it('does not treat a missing actor row as an empty permission set (F-A)', async () => {
+    installBaseHandlers({ noActorRow: true, permissions: null })
+
+    const { findByText, queryByRole } = await renderWithProviders(
+      <ModelPricingListPage />,
+      ['common', 'admin'],
+    )
+
+    // 自己的行不在第一页：能力未知，允许读请求通过服务端裁决；写操作隐藏。
+    expect(await findByText('gpt-5')).toBeTruthy()
+    expect(queryByRole('button', { name: 'New pricing' })).toBeNull()
+  })
+
+  it('invalidates the model selector and group-override caches on delete (F5)', async () => {
+    installBaseHandlers({ permissions: null })
+    let modelProbeCalls = 0
+    let overrideProbeCalls = 0
+
+    function InvalidationProbe() {
+      useQuery({
+        queryKey: ['admin-pricing-models'],
+        queryFn: () => {
+          modelProbeCalls += 1
+          return null
+        },
+      })
+      useQuery({
+        queryKey: ['admin-group-pricing'],
+        queryFn: () => {
+          overrideProbeCalls += 1
+          return null
+        },
+      })
+      return null
+    }
+
+    server.use(
+      http.delete(`${ORIGIN}/api/model-pricing/gpt-5`, () =>
+        new HttpResponse(null, { status: 204 }),
+      ),
+    )
+
+    const { findByRole, findByText } = await renderWithProviders(
+      <>
+        <ModelPricingListPage />
+        <InvalidationProbe />
+      </>,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    expect(await findByText('gpt-5')).toBeTruthy()
+    await waitFor(() => {
+      expect(modelProbeCalls).toBe(1)
+      expect(overrideProbeCalls).toBe(1)
+    })
+
+    await user.click(await findByRole('button', { name: 'Delete' }))
+    const dialog = await findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => {
+      expect(modelProbeCalls).toBeGreaterThanOrEqual(2)
+      expect(overrideProbeCalls).toBeGreaterThanOrEqual(2)
+    })
   })
 })

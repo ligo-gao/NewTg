@@ -138,11 +138,17 @@ export function GroupPricingListPage() {
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
+      const gone = error instanceof ApiError && error.kind === 'not_found'
       push({
         tone: 'error',
-        message: conflict ? t('admin.pricing.conflict') : t('admin.pricing.action_error'),
+        message: conflict
+          ? t('admin.pricing.conflict')
+          : gone
+            ? t('admin.pricing.gone')
+            : t('admin.pricing.action_error'),
       })
-      if (conflict) {
+      // 并发删除的 404 与乐观锁 409 一样必须刷新，避免幽灵行与重复 404。
+      if (conflict || gone) {
         void queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
       }
     },
@@ -160,17 +166,22 @@ export function GroupPricingListPage() {
       })
     },
     onSuccess: async () => {
-      push({ tone: 'success', message: t('admin.pricing.deleted_success') })
+      push({ tone: 'success', message: t('admin.pricing.override_deleted') })
       setDeleteTarget(null)
       await queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
     },
     onError: (error) => {
       const conflict = error instanceof ApiError && error.kind === 'conflict'
+      const gone = error instanceof ApiError && error.kind === 'not_found'
       push({
         tone: 'error',
-        message: conflict ? t('admin.pricing.conflict') : t('admin.pricing.action_error'),
+        message: conflict
+          ? t('admin.pricing.conflict')
+          : gone
+            ? t('admin.pricing.gone')
+            : t('admin.pricing.action_error'),
       })
-      if (conflict) {
+      if (conflict || gone) {
         void queryClient.invalidateQueries({ queryKey: ['admin-group-pricing'] })
       }
     },
@@ -181,7 +192,9 @@ export function GroupPricingListPage() {
   const directoryTotal = directory?.total ?? 0
   const directoryPages = Math.max(1, Math.ceil(directoryTotal / directoryPageSize))
   const hasNoCustomGroups =
-    directoryItems.length > 0 && directoryItems.every((group) => group.is_system)
+    directoryTotal <= directoryPageSize &&
+    directoryItems.length > 0 &&
+    directoryItems.every((group) => group.is_system)
 
   const overrides = overridesQuery.data
   const items = overrides?.items ?? []
@@ -190,14 +203,15 @@ export function GroupPricingListPage() {
   const quotaPerUnit = overrides?.quota_per_unit ?? DEFAULT_QUOTA_PER_UNIT
 
   useEffect(() => {
-    if (!overridesQuery.isFetching && total > 0 && page > pages) setPage(pages)
-  }, [overridesQuery.isFetching, total, page, pages])
+    // total=0 也要回退到第 1 页（F-H）：否则删除最后一行后页码停在越界值。
+    if (!overridesQuery.isFetching && page > pages) setPage(pages)
+  }, [overridesQuery.isFetching, page, pages])
 
   useEffect(() => {
-    if (!directoryQuery.isFetching && directoryTotal > 0 && directoryPage > directoryPages) {
+    if (!directoryQuery.isFetching && directoryPage > directoryPages) {
       setDirectoryPage(directoryPages)
     }
-  }, [directoryQuery.isFetching, directoryTotal, directoryPage, directoryPages])
+  }, [directoryQuery.isFetching, directoryPage, directoryPages])
 
   const hasFilters =
     applied.group !== '' || applied.keyword.trim() !== '' || applied.status !== ''
@@ -237,7 +251,10 @@ export function GroupPricingListPage() {
           role="tab"
           aria-selected={tab === 'directory'}
           variant={tab === 'directory' ? 'secondary' : 'ghost'}
-          onClick={() => setTab('directory')}
+          onClick={() => {
+            setTab('directory')
+            setDirectoryPage(1)
+          }}
         >
           {t('admin.pricing.group_tab_directory')}
         </Button>
@@ -245,7 +262,10 @@ export function GroupPricingListPage() {
           role="tab"
           aria-selected={tab === 'overrides'}
           variant={tab === 'overrides' ? 'secondary' : 'ghost'}
-          onClick={() => setTab('overrides')}
+          onClick={() => {
+            setTab('overrides')
+            setPage(1)
+          }}
         >
           {t('admin.pricing.group_tab_overrides')}
         </Button>
@@ -466,7 +486,7 @@ export function GroupPricingListPage() {
                 <span />
               )}
               <span className="text-[13px] text-ink-2">
-                {t('admin.pricing.total', { count: total })}
+                {t('admin.pricing.override_total', { count: total })}
               </span>
             </div>
 
@@ -670,8 +690,8 @@ export function GroupPricingListPage() {
         onOpenChange={(open) => {
           if (!open) setDisableTarget(null)
         }}
-        title={t('admin.pricing.disable_title')}
-        description={t('admin.pricing.disable_body')}
+        title={t('admin.pricing.override_disable_title')}
+        description={t('admin.pricing.override_disable_body')}
         footer={
           <>
             <Button variant="secondary" onClick={() => setDisableTarget(null)}>

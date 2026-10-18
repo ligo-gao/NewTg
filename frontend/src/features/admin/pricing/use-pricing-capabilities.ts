@@ -44,7 +44,10 @@ export function usePricingCapabilities(): PricingCapabilities {
     queryFn: async () => {
       const data = requireData(
         await apiClient.GET('/api/users', {
-          params: { query: { keyword: username ?? '', p: 1, page_size: 20 } },
+          // 关键字是前缀模糊匹配且列表按创建时间倒序；取最大页长降低「自己
+          // 的行不在第一页」的概率。仍找不到时按 F-A 降级为未知能力，而不是
+          // 误判为无权限。
+          params: { query: { keyword: username ?? '', p: 1, page_size: 100 } },
         }),
       )
       return (
@@ -72,8 +75,9 @@ export function usePricingCapabilities(): PricingCapabilities {
     return { known: false, loading: false, canRead: true, canManage: false }
   }
   if (actorQuery.data === null) {
-    // 管理员自己的行都查不到：按无权限处理。
-    return { known: true, loading: false, canRead: false, canManage: false }
+    // 自己的行不在返回页（关键字是模糊匹配、排序按创建时间）：能力未知，
+    // 不能据此判定无权限。允许服务端裁决读请求，写操作保持隐藏（F-A）。
+    return { known: false, loading: false, canRead: true, canManage: false }
   }
 
   const permissions = actorQuery.data.admin_permissions

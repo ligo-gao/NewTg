@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import type { components } from '@/api/schema'
 import { renderWithProviders } from '@/test-support/providers'
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -63,6 +64,38 @@ async function renderSheet() {
     <GroupPricingMutateSheet
       open
       mode="create"
+      quotaPerUnit={100}
+      onOpenChange={() => undefined}
+      onSaved={() => undefined}
+    />,
+    ['common', 'admin'],
+  )
+}
+
+function overrideRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    group: 'vip',
+    model: 'gpt-5',
+    mode: 'per_token',
+    prompt_price: 400,
+    completion_price: 1200,
+    cache_read_price: 40,
+    cache_write_price: 120,
+    status: 1,
+    source_status: 1,
+    created_at: '2026-10-01T10:00:00Z',
+    updated_at: '2026-10-01T10:00:00Z',
+    ...overrides,
+  } as components['schemas']['GroupPricing']
+}
+
+async function renderEdit(override: components['schemas']['GroupPricing']) {
+  return renderWithProviders(
+    <GroupPricingMutateSheet
+      open
+      mode="edit"
+      override={override}
       quotaPerUnit={100}
       onOpenChange={() => undefined}
       onSaved={() => undefined}
@@ -245,5 +278,63 @@ describe('GroupPricingMutateSheet', () => {
     await waitFor(() => {
       expect(queryByRole('dialog', { name: 'New override' })).toBeNull()
     })
+  })
+
+  it('patches an override with its updated_at and status', async () => {
+    installHandlers()
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.patch(`${ORIGIN}/api/group-pricing/vip/gpt-5`, async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json(overrideRow({ prompt_price: 450 }))
+      }),
+    )
+
+    const { getByLabelText, getByRole } = await renderEdit(overrideRow())
+    const user = userEvent.setup()
+
+    const prompt = getByLabelText('Prompt price')
+    await user.clear(prompt)
+    await user.type(prompt, '450')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(bodies).toHaveLength(1)
+    })
+    expect(bodies[0]).toMatchObject({
+      updated_at: '2026-10-01T10:00:00Z',
+      prompt_price: 450,
+      completion_price: 1200,
+      cache_read_price: 40,
+      cache_write_price: 120,
+      status: 1,
+    })
+  })
+
+  it('keeps the input and shows the conflict copy when an edit hits 409', async () => {
+    installHandlers()
+    server.use(
+      http.patch(`${ORIGIN}/api/group-pricing/vip/gpt-5`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Conflict' },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    const { findByText, getByLabelText, getByRole } = await renderEdit(overrideRow())
+    const user = userEvent.setup()
+
+    const prompt = getByLabelText('Prompt price')
+    await user.clear(prompt)
+    await user.type(prompt, '450')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    expect(
+      await findByText(
+        'This pricing was changed by someone else. Reopen the sheet to continue from the latest version.',
+      ),
+    ).toBeTruthy()
+    expect((prompt as HTMLInputElement).value).toBe('450')
   })
 })

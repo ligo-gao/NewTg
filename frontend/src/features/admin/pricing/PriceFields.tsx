@@ -121,7 +121,11 @@ export function PriceFields({
                 label={t(field.labelKey)}
                 inputMode={unit === 'credits' ? 'numeric' : 'decimal'}
                 value={raw}
-                placeholder={t('admin.pricing.price_placeholder')}
+                placeholder={
+                  context === 'group'
+                    ? t('admin.pricing.price_placeholder_group')
+                    : t('admin.pricing.price_placeholder')
+                }
                 onChange={(event) => {
                   onChange(field.key, event.target.value)
                 }}
