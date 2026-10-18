@@ -615,9 +615,15 @@ func ParsePricingSpec(spec string) (*ParsedSpec, error) {
 		price.AudioCompletionRatio = *raw.AudioCompletionRatio
 	}
 
-	price.UsePrice = mode == contract.BillingModePerCall
+	// ModelPrice 存在即按次（billing-02 §2.2(2) + §2.4 行 3：价先于率）。
+	// 即使 spec 显式写了 mode=ratio，也不能让 ModelPrice 静默失效——
+	// 否则预览/ComputeQuota 会按倍率算（prompt_price 可能是 0 → 空 usage 计 0）。
+	price.UsePrice = mode == contract.BillingModePerCall || raw.ModelPrice != nil
 	if raw.ModelPrice != nil {
 		price.ModelPrice = *raw.ModelPrice
+	}
+	if price.UsePrice {
+		mode = contract.BillingModePerCall
 	}
 	if raw.FreeModel != nil {
 		price.FreeModel = *raw.FreeModel

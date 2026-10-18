@@ -171,6 +171,27 @@ func TestParsePricingPerCall(t *testing.T) {
 	if err != nil || !p.UsePrice || p.ModelPrice != 0 || !p.FreeModel {
 		t.Fatalf("按次显式 0 应为免费: %+v err=%v", p, err)
 	}
+
+	// N4（二轮）：显式 mode=ratio 但给了 model_price —— ModelPrice 必须
+	// 胜出（billing-02 §2.2(2)/§2.4 行 3），不能被静默忽略成倍率。
+	parsed, err = ParsePricingSpec(`{"mode":"ratio","model_price":500,"prompt_price":1000}`)
+	if err != nil {
+		t.Fatalf("解析矛盾 spec: %v", err)
+	}
+	if parsed.Mode != contract.BillingModePerCall || !parsed.Price.UsePrice || parsed.Price.ModelPrice != 500 {
+		t.Fatalf("ModelPrice 应派生按次: mode=%v price=%+v", parsed.Mode, parsed.Price)
+	}
+	snap, err := Resolve(&parsed.Price, "m", parsed.Mode)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if snap.Mode != contract.BillingModePerCall {
+		t.Fatalf("快照应为按次，got %v", snap.Mode)
+	}
+	// 按次固定价：空 usage 也应计 500（而不是倍率路径的 0）。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 500 {
+		t.Fatalf("按次 quota=%d err=%v，期望 500", q, err)
+	}
 }
 
 func TestResolveCompletionRatioTwoTier(t *testing.T) {
