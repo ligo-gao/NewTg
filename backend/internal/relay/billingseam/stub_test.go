@@ -2,6 +2,7 @@ package billingseam
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"testing"
 
@@ -30,47 +31,90 @@ func TestPreConsumeAllowsAndReserves(t *testing.T) {
 		t.Errorf("Sessions() = %d, want 1", got)
 	}
 
-	// MaxTokens 为 nil：桩没有定价能力，按文档默认预留 0，但仍算开启了一个会话。
-	if err := st.PreConsume(contract.QuotaEstimate{}); err != nil {
+	// MaxTokens 为 nil：桩没有定价能力，按文档默认预留 0（单会话模型：用独立桩）。
+	noMax := NewStub()
+	if err := noMax.PreConsume(contract.QuotaEstimate{}); err != nil {
 		t.Fatalf("PreConsume() without MaxTokens unexpected error: %v", err)
 	}
-	if got := st.Reserved(); got != 120 {
-		t.Errorf("Reserved() after nil MaxTokens = %d, want 120 (default reservation is 0)", got)
+	if got := noMax.Reserved(); got != 0 {
+		t.Errorf("Reserved() with nil MaxTokens = %d, want 0 (default reservation is 0)", got)
 	}
-	if got := st.Sessions(); got != 2 {
-		t.Errorf("Sessions() = %d, want 2", got)
+	if got := noMax.Sessions(); got != 1 {
+		t.Errorf("Sessions() = %d, want 1", got)
 	}
 }
 
 // TestPreConsumeLimitInsufficient 覆盖 GC-4 的 402 语义模拟：
-// reserved+名义预留 > limit 时返回可被 errors.Is 识别的额度不足错误，且状态不变。
+// 名义预留超过上限时返回可被 errors.Is / errors.As 识别的额度不足错误，且状态不变。
 func TestPreConsumeLimitInsufficient(t *testing.T) {
 	st := NewStubWithLimit(50)
 
-	if err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(30)}); err != nil {
-		t.Fatalf("PreConsume(30) under limit unexpected error: %v", err)
-	}
-
-	err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(21)}) // 30+21 > 50
+	err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(51)}) // 0+51 > 50
 	if err == nil {
 		t.Fatal("PreConsume() over limit = nil, want insufficient quota error")
 	}
 	if !errors.Is(err, ErrInsufficientQuota) {
 		t.Errorf("PreConsume() error = %v, want errors.Is(_, ErrInsufficientQuota)", err)
 	}
-	if got := st.Reserved(); got != 30 {
-		t.Errorf("Reserved() after failed PreConsume = %d, want 30 (unchanged)", got)
+	var quotaErr *InsufficientQuotaError
+	if !errors.As(err, &quotaErr) {
+		t.Fatalf("PreConsume() error = %T, want *InsufficientQuotaError", err)
 	}
-	if got := st.Sessions(); got != 1 {
-		t.Errorf("Sessions() after failed PreConsume = %d, want 1 (unchanged)", got)
+	if quotaErr.Class != contract.ErrInsufficientQuota {
+		t.Errorf("InsufficientQuotaError.Class = %d, want contract.ErrInsufficientQuota", quotaErr.Class)
+	}
+	if quotaErr.Reserved != 0 || quotaErr.Requested != 51 || quotaErr.Limit != 50 {
+		t.Errorf("InsufficientQuotaError fields = {%d, %d, %d}, want {0, 51, 50}",
+			quotaErr.Reserved, quotaErr.Requested, quotaErr.Limit)
+	}
+	if got := st.Reserved(); got != 0 {
+		t.Errorf("Reserved() after failed PreConsume = %d, want 0 (unchanged)", got)
+	}
+	if got := st.Sessions(); got != 0 {
+		t.Errorf("Sessions() after failed PreConsume = %d, want 0 (unchanged)", got)
+	}
+	if st.Terminated() {
+		t.Error("Terminated() = true after failed PreConsume, want false")
 	}
 
-	// 恰好达到上限是允许的（边界不越界）。
-	if err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(20)}); err != nil {
+	// 恰好达到上限是允许的（边界不越界）；失败的调用不占用单会话名额。
+	exact := NewStubWithLimit(50)
+	if err := exact.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(50)}); err != nil {
 		t.Fatalf("PreConsume() exactly at limit unexpected error: %v", err)
 	}
-	if got := st.Reserved(); got != 50 {
+	if got := exact.Reserved(); got != 50 {
 		t.Errorf("Reserved() = %d, want 50", got)
+	}
+}
+
+// TestPreConsumeSingleSession 覆盖单会话契约：一个 Stub 只接受一次 PreConsume，
+// 重复调用返回 ErrSessionAlreadyStarted，且不改变已建立的会话状态（Terminate 后亦然）。
+func TestPreConsumeSingleSession(t *testing.T) {
+	st := NewStub()
+	if err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(10)}); err != nil {
+		t.Fatalf("first PreConsume() unexpected error: %v", err)
+	}
+
+	err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(10)})
+	if err == nil {
+		t.Fatal("second PreConsume() = nil, want ErrSessionAlreadyStarted")
+	}
+	if !errors.Is(err, ErrSessionAlreadyStarted) {
+		t.Errorf("second PreConsume() error = %v, want errors.Is(_, ErrSessionAlreadyStarted)", err)
+	}
+	if got := st.Reserved(); got != 10 {
+		t.Errorf("Reserved() = %d, want 10 (unchanged)", got)
+	}
+	if got := st.Sessions(); got != 1 {
+		t.Errorf("Sessions() = %d, want 1 (unchanged)", got)
+	}
+
+	// Terminate 后实例仍视为已占用（单会话契约不因终结而复位）。
+	if err := st.Terminate(contract.UsageFact{}); err != nil {
+		t.Fatalf("Terminate() unexpected error: %v", err)
+	}
+	if err := st.PreConsume(contract.QuotaEstimate{}); !errors.Is(err, ErrSessionAlreadyStarted) {
+		t.Errorf("PreConsume() after Terminate error = %v, want ErrSessionAlreadyStarted", err)
 	}
 }
 
@@ -122,7 +166,7 @@ func TestReserveIncrementSemantics(t *testing.T) {
 	}
 }
 
-// TestReserveLimitInsufficient 覆盖 Reserve 同样受上限约束。
+// TestReserveLimitInsufficient 覆盖 Reserve 同样受上限约束（含 int64 溢出防护）。
 func TestReserveLimitInsufficient(t *testing.T) {
 	st := NewStubWithLimit(100)
 	if err := st.Reserve(60); err != nil {
@@ -135,28 +179,54 @@ func TestReserveLimitInsufficient(t *testing.T) {
 	if !errors.Is(err, ErrInsufficientQuota) {
 		t.Errorf("Reserve() error = %v, want errors.Is(_, ErrInsufficientQuota)", err)
 	}
+	var quotaErr *InsufficientQuotaError
+	if !errors.As(err, &quotaErr) {
+		t.Fatalf("Reserve() error = %T, want *InsufficientQuotaError", err)
+	}
+	if quotaErr.Class != contract.ErrInsufficientQuota || quotaErr.Reserved != 60 ||
+		quotaErr.Requested != 41 || quotaErr.Limit != 100 {
+		t.Errorf("InsufficientQuotaError = {Class:%d Reserved:%d Requested:%d Limit:%d}, want {ErrInsufficientQuota, 60, 41, 100}",
+			quotaErr.Class, quotaErr.Reserved, quotaErr.Requested, quotaErr.Limit)
+	}
 	if got := st.Reserved(); got != 60 {
 		t.Errorf("Reserved() after failed Reserve = %d, want 60", got)
 	}
+
+	// 溢出防护：用「剩余额度」比较，避免 reserved+delta 溢出成负数而绕过限额。
+	huge := NewStubWithLimit(math.MaxInt64)
+	if err := huge.Reserve(math.MaxInt64); err != nil {
+		t.Fatalf("Reserve(MaxInt64) unexpected error: %v", err)
+	}
+	if err := huge.Reserve(1); !errors.Is(err, ErrInsufficientQuota) {
+		t.Errorf("Reserve(1) at MaxInt64 limit error = %v, want ErrInsufficientQuota (overflow guard)", err)
+	}
+	if got := huge.Reserved(); got != math.MaxInt64 {
+		t.Errorf("Reserved() = %d, want MaxInt64", got)
+	}
 }
 
-// TestTerminateIdempotent 覆盖：终结把会话计数减一；重复终结返回 nil 且不会减成负数。
+// TestTerminateIdempotent 覆盖：单会话 PreConsume→Terminate 把 Sessions 和 Reserved
+// 都归零（GC-7 的预算释放可观察）；重复终结返回 nil 且不会减成负数。
 func TestTerminateIdempotent(t *testing.T) {
 	st := NewStub()
-	for i := 0; i < 2; i++ {
-		if err := st.PreConsume(contract.QuotaEstimate{}); err != nil {
-			t.Fatalf("PreConsume() #%d unexpected error: %v", i, err)
-		}
+	if err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(70)}); err != nil {
+		t.Fatalf("PreConsume() unexpected error: %v", err)
 	}
-	if got := st.Sessions(); got != 2 {
-		t.Fatalf("Sessions() = %d, want 2", got)
+	if got := st.Sessions(); got != 1 {
+		t.Fatalf("Sessions() = %d, want 1", got)
+	}
+	if got := st.Reserved(); got != 70 {
+		t.Fatalf("Reserved() = %d, want 70", got)
 	}
 
 	if err := st.Terminate(contract.UsageFact{Model: "m"}); err != nil {
 		t.Fatalf("Terminate() unexpected error: %v", err)
 	}
-	if got := st.Sessions(); got != 1 {
-		t.Errorf("Sessions() after Terminate = %d, want 1", got)
+	if got := st.Sessions(); got != 0 {
+		t.Errorf("Sessions() after Terminate = %d, want 0", got)
+	}
+	if got := st.Reserved(); got != 0 {
+		t.Errorf("Reserved() after Terminate = %d, want 0 (hold released)", got)
 	}
 	if !st.Terminated() {
 		t.Error("Terminated() = false, want true")
@@ -165,8 +235,11 @@ func TestTerminateIdempotent(t *testing.T) {
 	if err := st.Terminate(contract.UsageFact{Model: "m"}); err != nil {
 		t.Fatalf("second Terminate() unexpected error: %v", err)
 	}
-	if got := st.Sessions(); got != 1 {
-		t.Errorf("Sessions() after repeated Terminate = %d, want 1 (idempotent)", got)
+	if got := st.Sessions(); got != 0 {
+		t.Errorf("Sessions() after repeated Terminate = %d, want 0 (idempotent)", got)
+	}
+	if got := st.Reserved(); got != 0 {
+		t.Errorf("Reserved() after repeated Terminate = %d, want 0", got)
 	}
 
 	// 没有会话时终结也不能把计数减成负数。
@@ -245,6 +318,39 @@ func TestRefundIdempotent(t *testing.T) {
 	}
 }
 
+// TestRefundAfterTerminate 覆盖 settled 早返回分支：Terminate 已释放 hold，
+// 再 Refund 只返回 nil，不置 Refunded()、不改动会话状态（幂等、无状态污染）。
+func TestRefundAfterTerminate(t *testing.T) {
+	st := NewStub()
+	if err := st.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(100)}); err != nil {
+		t.Fatalf("PreConsume() unexpected error: %v", err)
+	}
+	if err := st.Terminate(contract.UsageFact{}); err != nil {
+		t.Fatalf("Terminate() unexpected error: %v", err)
+	}
+	if st.NeedsRefund() {
+		t.Fatal("NeedsRefund() = true after Terminate, want false (settled)")
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := st.Refund(); err != nil {
+			t.Fatalf("Refund() #%d after Terminate unexpected error: %v", i, err)
+		}
+	}
+	if st.Refunded() {
+		t.Error("Refunded() = true after settled Refund, want false (early-return branch)")
+	}
+	if got := st.Reserved(); got != 0 {
+		t.Errorf("Reserved() = %d, want 0", got)
+	}
+	if got := st.Sessions(); got != 0 {
+		t.Errorf("Sessions() = %d, want 0", got)
+	}
+	if !st.Terminated() {
+		t.Error("Terminated() = false, want true (state not corrupted)")
+	}
+}
+
 // TestNeedsRefund 覆盖需求判定：只有「存在未终结、未退款的正预留」才需要退款。
 func TestNeedsRefund(t *testing.T) {
 	noReservation := NewStub()
@@ -292,31 +398,35 @@ func TestRecoverAbandonedIdempotent(t *testing.T) {
 }
 
 // TestConcurrentUse 覆盖线程安全：路由测试可能跨 goroutine 复用同一个桩。
-// 用 -race 运行时该用例同时充当竞态检测。
+// 用 -race 运行时该用例同时充当竞态检测（单会话：先 PreConsume，再并发上浮/扣减）。
 func TestConcurrentUse(t *testing.T) {
 	st := NewStub()
-	const n = 100
+	if err := st.PreConsume(contract.QuotaEstimate{}); err != nil {
+		t.Fatalf("PreConsume() unexpected error: %v", err)
+	}
 
+	const n = 100
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			if err := st.PreConsume(contract.QuotaEstimate{}); err != nil {
-				t.Errorf("PreConsume() unexpected error: %v", err)
-			}
 			if err := st.Reserve(1); err != nil {
 				t.Errorf("Reserve() unexpected error: %v", err)
 			}
 			if err := st.ChargeIncrement(1, contract.UsageFact{Model: "m"}); err != nil {
 				t.Errorf("ChargeIncrement() unexpected error: %v", err)
 			}
+			// 并发读路径同样要经 mutex，顺带覆盖访问器。
+			_ = st.Reserved()
+			_ = st.NeedsRefund()
+			_ = st.ChargedFacts()
 		}()
 	}
 	wg.Wait()
 
-	if got := st.Sessions(); got != n {
-		t.Errorf("Sessions() = %d, want %d", got, n)
+	if got := st.Sessions(); got != 1 {
+		t.Errorf("Sessions() = %d, want 1 (single session)", got)
 	}
 	if got := st.Reserved(); got != n {
 		t.Errorf("Reserved() = %d, want %d", got, n)
