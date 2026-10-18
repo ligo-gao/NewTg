@@ -11,8 +11,14 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
+	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/config"
+	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/migrations"
 )
@@ -195,8 +201,8 @@ func checkerFromResources(db, rds Resource, migrationExpected int, log *slog.Log
 	return NewChecker(sqldb, client, migrationExpected, log)
 }
 
-// RunWorker 以 worker 角色运行：M0 装配到连上 DB/Redis 并打一条
-// worker started 日志后阻塞等 ctx；调度循环 M3 填。
+// RunWorker 以 worker 角色运行：装配计费引擎与在飞租约注册表，进入兜底
+// 扫描循环，阻塞至 ctx done 后按 Redis → 日志库 → 主库顺序关闭。
 func RunWorker(ctx context.Context, cfg *config.Config) error {
 	return runWorker(ctx, cfg, prodConnectors{})
 }
@@ -209,26 +215,106 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		"node", cfg.NodeName,
 	)
 
-	db, err := conn.openDB(ctx, cfg)
+	dbRes, err := conn.openDB(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("worker: open db: %w", err)
 	}
+	// worker 的计费引擎需要 GORM 句柄（复用同一个 database/sql 连接池，
+	// 不另开第二组连接，避免连接数与事务边界分裂）。
+	sqlDB, ok := dbRes.(*sql.DB)
+	if !ok {
+		_ = dbRes.Close()
+		return errors.New("worker: main database resource is not *sql.DB")
+	}
+
+	// 日志库与主库分开建连：usage_logs 的分区维护与日志写入都在日志库，
+	// 不能让它和钱包事务抢连接（platform-03 §3.4 的两库分治）。
+	logsRes, err := conn.openLogsDB(ctx, cfg)
+	if err != nil {
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: open logs db: %w", err)
+	}
+	sqlLogs, ok := logsRes.(*sql.DB)
+	if !ok {
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: logs database resource is not *sql.DB")
+	}
+
 	redisRes, err := conn.openRedis(cfg)
 	if err != nil {
-		// 正在返回打开 Redis 的主错误；清理 DB 的失败不覆盖它。
-		_ = db.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
 		return fmt.Errorf("worker: open redis: %w", err)
 	}
-
-	log.Info("worker started")
-	<-ctx.Done()
-
-	if err := db.Close(); err != nil {
-		log.Warn("close db failed", "error", err)
+	rr, ok := redisRes.(redisResource)
+	if !ok {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: redis resource has unexpected type")
 	}
+
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+	})
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: open gorm: %w", err)
+	}
+
+	// 配置中心必须在定价源之前装载：NewSource 从快照读取
+	// billing.quota_per_unit 并写入进程级 QPU。订阅是兜底刷新路径
+	// （5 分钟整表重载 + pub/sub），worker 与 gateway 同口径。
+	center := configcenter.New(sqlDB, rr.client)
+	if err := center.Load(ctx); err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: load config center: %w", err)
+	}
+	if err := center.Subscribe(ctx); err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: subscribe config center: %w", err)
+	}
+
+	source, err := pricing.NewSource(gormDB, center)
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: build pricing source: %w", err)
+	}
+
+	registry := billing.NewRegistry(rr.client)
+	// Saturator 是 usage_logs 的落库实现（Task 6 的 DBLogger）。worker 的
+	// 兜底退款只依赖钱包流水，日志是辅助状态面（R-14）；但装配真实的
+	// Saturator 让引擎在将来被 worker 复用时行为与 gateway 一致。
+	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
+		billing.NewDBLogger(sqlLogs))
+
+	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
+		Abandoned: registry,
+		Recoverer: engine,
+		LogsDB:    sqlLogs,
+		Logger:    log,
+	})
+
+	// 停机序与启动序相反：先断 Redis（循环已退出，不再有租约写入），
+	// 再关日志库与主库。
 	if err := redisRes.Close(); err != nil {
 		log.Warn("close redis failed", "error", err)
 	}
+	if err := logsRes.Close(); err != nil {
+		log.Warn("close logs db failed", "error", err)
+	}
+	if err := dbRes.Close(); err != nil {
+		log.Warn("close db failed", "error", err)
+	}
 	log.Info("worker stopped")
-	return nil
+	return runErr
 }
