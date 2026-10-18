@@ -90,6 +90,7 @@
       "disable": "Disable selected",
       "delete": "Delete selected",
       "deleteTitle": "Delete channels",
+      "singleDeleteTitle": "Delete channel",
       "deleteBody": "Delete {count} channels? This action cannot be undone.",
       "singleDeleteBody": "Delete this channel? This action cannot be undone.",
       "confirmDelete": "Delete",
@@ -115,6 +116,8 @@
       "conflict": "This channel was modified by someone else. Refresh and try again.",
       "statusConflict": "Channel status changed by someone else. Please refresh.",
       "nameExists": "A channel with this name already exists.",
+      "reloadLatest": "Reload latest",
+      "conflictReloadHint": "Reloading fetches the latest version and re-applies your unsaved edits on top of it. Fields changed elsewhere may be overwritten.",
       "generic": "Request failed."
     },
     "form": {

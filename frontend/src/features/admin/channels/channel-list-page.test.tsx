@@ -294,4 +294,205 @@ describe('ChannelListPage', () => {
       ),
     ).toBeTruthy()
   })
+
+  it('debounces the group filter and clears the selection when it applies', async () => {
+    const user = userEvent.setup({ delay: null })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({ id: 1, name: 'alpha', group_tags: ['vip'] }),
+          ]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+    await user.click(screen.getByLabelText('Select alpha'))
+    expect(screen.getByTestId('bulk-bar')).toBeTruthy()
+
+    await user.type(screen.getByLabelText('Group'), 'vip')
+
+    await waitFor(
+      () => {
+        expect(
+          findRequest(requests, 'GET', '/api/channels')?.url.searchParams.get(
+            'group',
+          ),
+        ).toBe('vip')
+      },
+      { timeout: 2000 },
+    )
+    // Changing the filter invalidates the page-scoped selection.
+    expect(screen.queryByTestId('bulk-bar')).toBeNull()
+    // The 300ms debounce collapsed every keystroke into a single request.
+    expect(
+      requests.filter((request) => request.url.searchParams.has('group')),
+    ).toHaveLength(1)
+  })
+
+  it('reuses the bulk-delete idempotency key when retrying the same selection', async () => {
+    const user = userEvent.setup()
+    const items = [
+      makeChannel({ id: 1, name: 'alpha' }),
+      makeChannel({ id: 2, name: 'beta' }),
+    ]
+    let deleteCalls = 0
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse(items))
+      }
+      if (
+        request.method === 'POST' &&
+        request.url.pathname === '/api/channels/batch-delete'
+      ) {
+        deleteCalls += 1
+        if (deleteCalls === 1) {
+          return problemResponse(500, {
+            type: 'https://newtg.dev/problems/internal_error',
+            title: 'Internal Server Error',
+          })
+        }
+        return jsonResponse({ succeeded: [1, 2], failed: [] })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+    await user.click(screen.getByLabelText('Select alpha'))
+    await user.click(screen.getByLabelText('Select beta'))
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Delete',
+    }) as HTMLButtonElement
+    await waitFor(() => {
+      expect(confirm.disabled).toBe(false)
+    })
+
+    // The first attempt fails; the dialog stays open for a retry.
+    await user.click(confirm)
+    await waitFor(() => {
+      expect(deleteCalls).toBe(1)
+    })
+    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    await user.click(confirm)
+    await waitFor(() => {
+      expect(deleteCalls).toBe(2)
+    })
+    const deletes = requests.filter(
+      (request) =>
+        request.method === 'POST' &&
+        request.url.pathname === '/api/channels/batch-delete',
+    )
+    expect(deletes[0]?.headers.get('Idempotency-Key')).not.toBeNull()
+    // Same intent, same key: the backend can replay instead of deleting twice.
+    expect(deletes[1]?.headers.get('Idempotency-Key')).toBe(
+      deletes[0]?.headers.get('Idempotency-Key'),
+    )
+    expect(deletes[1]?.body).toEqual({ ids: [1, 2] })
+  })
+
+  it('uses singular copy when deleting a single row', async () => {
+    const user = userEvent.setup()
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse([makeChannel({ id: 1, name: 'alpha' })]))
+      }
+      if (request.method === 'DELETE' && request.url.pathname === '/api/channels/1') {
+        return new Response(null, { status: 204 })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Delete channel')).toBeTruthy()
+    expect(within(dialog).queryByText('Delete channels')).toBeNull()
+    expect(
+      within(dialog).getByText('Delete this channel? This action cannot be undone.'),
+    ).toBeTruthy()
+
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Delete',
+    }) as HTMLButtonElement
+    await waitFor(() => {
+      expect(confirm.disabled).toBe(false)
+    })
+    await user.click(confirm)
+    await waitFor(() => {
+      expect(
+        findRequest(requests, 'DELETE', '/api/channels/1'),
+      ).toBeDefined()
+    })
+  })
+
+  it('disables all row and bulk actions and shows a spinner while a row mutation runs', async () => {
+    const user = userEvent.setup()
+    let release: ((response: Response) => void) | null = null
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({
+              id: 1,
+              name: 'alpha',
+              supported_models: ['gpt-4'],
+            }),
+          ]),
+        )
+      }
+      if (
+        request.method === 'POST' &&
+        request.url.pathname === '/api/channels/1/test'
+      ) {
+        return new Promise<Response>((resolve) => {
+          release = resolve
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+    // Selecting the row also lets us check that the bulk bar is locked while
+    // a selected row is mutating.
+    await user.click(screen.getByLabelText('Select alpha'))
+    await user.click(screen.getByRole('button', { name: 'Test connection' }))
+
+    expect(await screen.findByTestId('channel-row-busy-1')).toBeTruthy()
+
+    const disabled = (name: string): boolean =>
+      (screen.getByRole('button', { name }) as HTMLButtonElement).disabled
+    expect(
+      (screen.getByRole('switch', { name: 'Disable channel alpha' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+    expect(disabled('Batch test')).toBe(true)
+    expect(disabled('Edit')).toBe(true)
+    expect(disabled('Delete')).toBe(true)
+    expect(disabled('Enable selected')).toBe(true)
+    expect(disabled('Disable selected')).toBe(true)
+    expect(disabled('Delete selected')).toBe(true)
+
+    await waitFor(() => {
+      expect(release).not.toBeNull()
+    })
+    const resolve = release as ((response: Response) => void) | null
+    resolve?.(jsonResponse({ success: true, latency_ms: 3, model: 'gpt-4' }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('channel-row-busy-1')).toBeNull()
+    })
+    expect(disabled('Edit')).toBe(false)
+  })
 })

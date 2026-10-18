@@ -123,4 +123,76 @@ describe('ChannelTestDialog', () => {
       within(dialog).getByText('No models configured for this channel.'),
     ).toBeTruthy()
   })
+
+  it('maps an HTTP failure to an upstream reason while keeping the message and request id', async () => {
+    const user = userEvent.setup()
+    const channel = makeChannel({
+      id: 13,
+      name: 'http-failer',
+      supported_models: ['m1'],
+    })
+    installFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            type: 'https://newtg.dev/problems/upstream_error',
+            title: 'Upstream failure',
+            detail: 'provider exploded',
+          }),
+          {
+            status: 502,
+            headers: {
+              'Content-Type': 'application/problem+json',
+              'X-Request-ID': 'req-abc-123',
+            },
+          },
+        ),
+    )
+
+    renderWithProviders(
+      <ChannelTestDialog
+        open
+        channel={channel}
+        onOpenChange={() => {}}
+        onCompleted={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Start test' }))
+
+    expect(await within(dialog).findByText(/Upstream error/)).toBeTruthy()
+    // The RFC 7807 detail and the request id stay visible for support.
+    expect(within(dialog).getByText(/provider exploded/)).toBeTruthy()
+    expect(within(dialog).getByText(/req-abc-123/)).toBeTruthy()
+    // An HTTP response must not be relabelled as a transport failure.
+    expect(within(dialog).queryByText(/Network error/)).toBeNull()
+  })
+
+  it('keeps transport failures classified as network', async () => {
+    const user = userEvent.setup()
+    const channel = makeChannel({
+      id: 14,
+      name: 'offline',
+      supported_models: ['m1'],
+    })
+    installFetch(() => {
+      throw new TypeError('Failed to fetch')
+    })
+
+    renderWithProviders(
+      <ChannelTestDialog
+        open
+        channel={channel}
+        onOpenChange={() => {}}
+        onCompleted={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Start test' }))
+
+    expect(await within(dialog).findByText(/Network error/)).toBeTruthy()
+    expect(within(dialog).queryByText(/Upstream error/)).toBeNull()
+  })
 })

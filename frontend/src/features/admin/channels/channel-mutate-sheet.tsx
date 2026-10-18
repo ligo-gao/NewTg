@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -8,6 +8,7 @@ import { pushErrorToast, useToastStore } from '@/shared/ui/toast'
 
 import {
   createChannel,
+  createIdempotencyKey,
   fieldErrorsOf,
   getChannel,
   updateChannel,
@@ -97,6 +98,13 @@ export function ChannelMutateSheet({
         key={detailQuery.data.id}
         mode="edit"
         channel={detailQuery.data}
+        reloadChannel={async () => {
+          const result = await detailQuery.refetch()
+          if (result.data === undefined) {
+            throw result.error ?? new Error('channel reload failed')
+          }
+          return result.data
+        }}
         onCancel={() => {
           onOpenChange(false)
         }}
@@ -284,11 +292,19 @@ const INPUT_CLASSES =
 interface ChannelFormProps {
   mode: 'create' | 'edit'
   channel?: Channel
+  /** Edit mode only: re-fetches the detail after a 409 version conflict. */
+  reloadChannel?: () => Promise<Channel>
   onCancel: () => void
   onSaved: () => void
 }
 
-function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
+function ChannelForm({
+  mode,
+  channel,
+  reloadChannel,
+  onCancel,
+  onSaved,
+}: ChannelFormProps) {
   const { t } = useI18n()
   const formId = useId()
   const [form, setForm] = useState<ChannelFormState>(() => initialForm(channel))
@@ -298,8 +314,17 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
   const [modelInput, setModelInput] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // The optimistic-concurrency baseline. It starts as the loaded channel and
+  // is replaced by the fresh detail after the administrator reloads a 409.
+  const [baseline, setBaseline] = useState<Channel | undefined>(channel)
+  const [versionConflict, setVersionConflict] = useState<string | null>(null)
+  const [reloading, setReloading] = useState(false)
+  const [reloadError, setReloadError] = useState<string | null>(null)
+  // One Idempotency-Key per create intent: retrying the same payload replays
+  // it, and any edit changes the signature so the next submit mints a new key.
+  const createIntent = useRef<{ signature: string; key: string } | null>(null)
 
-  const originalType = channel?.type
+  const originalType = baseline?.type
   const idFor = (field: FieldKey): string => `${formId}-${field}`
   const errorFor = (field: FieldKey): string | undefined => fieldErrors[field]
 
@@ -307,11 +332,15 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
     key: K,
     value: ChannelFormState[K],
   ): void {
+    // Editing the payload ends the current create intent: the next submit
+    // must mint a fresh key rather than replay a different request.
+    createIntent.current = null
     setForm((current) => ({ ...current, [key]: value }))
   }
 
   function handleTypeChange(nextType: string): void {
     if (!isChannelType(nextType)) return
+    createIntent.current = null
     // modules-06 §3.2: switching type resets credential fields but keeps
     // name/base_url. The notice is announced politely for screen readers.
     setForm((current) => ({
@@ -337,6 +366,7 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
       .map((part) => part.trim())
       .filter((part) => part !== '')
     if (additions.length === 0) return
+    createIntent.current = null
     setForm((current) => {
       const seen = new Set(current.models)
       const models = [...current.models]
@@ -351,6 +381,7 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
   }
 
   function removeModel(model: string): void {
+    createIntent.current = null
     setForm((current) => ({
       ...current,
       models: current.models.filter((entry) => entry !== model),
@@ -390,9 +421,9 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
     const azureFieldsChanged =
       mode === 'edit' &&
       azure &&
-      (form.deployment.trim() !== (channel?.credentials_masked?.deployment ?? '').trim() ||
+      (form.deployment.trim() !== (baseline?.credentials_masked?.deployment ?? '').trim() ||
         form.apiVersion.trim() !==
-          (channel?.credentials_masked?.api_version ?? '').trim())
+          (baseline?.credentials_masked?.api_version ?? '').trim())
 
     if (mode === 'create' && apiKey === '') {
       errors.apiKey = t('common.channels.form.apiKeyRequired')
@@ -520,9 +551,41 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
     return input
   }
 
+  /**
+   * 409 recovery: reload the authoritative detail, then move the baseline (and
+   * thus `expected_version`) to it. The administrator's unsaved edits are kept
+   * and re-applied on top; fields they did not touch take the fresh values.
+   */
+  async function reloadLatest(): Promise<void> {
+    if (reloadChannel === undefined) return
+    const stale = baseline
+    setReloading(true)
+    setReloadError(null)
+    try {
+      const fresh = await reloadChannel()
+      setBaseline(fresh)
+      setVersionConflict(null)
+      setForm((current) => {
+        const next = { ...current }
+        if (current.deployment === (stale?.credentials_masked?.deployment ?? '')) {
+          next.deployment = fresh.credentials_masked?.deployment ?? ''
+        }
+        if (current.apiVersion === (stale?.credentials_masked?.api_version ?? '')) {
+          next.apiVersion = fresh.credentials_masked?.api_version ?? ''
+        }
+        return next
+      })
+    } catch {
+      setReloadError(t('common.channels.error.load'))
+    } finally {
+      setReloading(false)
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    if (submitting) return
+    // Enter inside a field must not bypass the disabled Save either.
+    if (submitting || versionConflict !== null) return
     const errors = validate()
     setFieldErrors(errors)
     setFormError(null)
@@ -534,13 +597,20 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
     setSubmitting(true)
     try {
       if (mode === 'create') {
-        await createChannel(buildCreateInput())
+        const input = buildCreateInput()
+        const signature = JSON.stringify(input)
+        if (createIntent.current?.signature !== signature) {
+          createIntent.current = { signature, key: createIdempotencyKey() }
+        }
+        await createChannel(input, createIntent.current.key)
+        // The intent succeeded: a later create in the same sheet is a new one.
+        createIntent.current = null
         useToastStore.getState().push({
           tone: 'success',
           message: t('common.channels.toast.created'),
         })
-      } else if (channel !== undefined) {
-        await updateChannel(channel.id, buildUpdateInput(channel))
+      } else if (baseline !== undefined) {
+        await updateChannel(baseline.id, buildUpdateInput(baseline))
         useToastStore.getState().push({
           tone: 'success',
           message: t('common.channels.toast.saved'),
@@ -553,7 +623,10 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
           setFieldErrors({ name: t('common.channels.errors.nameExists') })
           focusFirstError({ name: 'name' })
         } else if (isConflictType(error, 'channel_version_conflict')) {
-          setFormError(error.detail ?? t('common.channels.errors.conflict'))
+          // The PATCH carried a stale `expected_version`; until the baseline is
+          // reloaded every retry would fail identically, so Save is disabled
+          // and this alert offers the only way forward.
+          setVersionConflict(error.detail ?? t('common.channels.errors.conflict'))
         } else {
           const serverFields = fieldErrorsOf(error)
           if (serverFields.length > 0) {
@@ -590,6 +663,34 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
         <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
           {formError}
         </p>
+      )}
+
+      {versionConflict === null ? null : (
+        <div
+          role="alert"
+          className="flex flex-col gap-2 rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger"
+        >
+          <p>{versionConflict}</p>
+          <p className="text-xs text-ink-2">
+            {t('common.channels.errors.conflictReloadHint')}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              disabled={reloading}
+              onClick={() => {
+                void reloadLatest()
+              }}
+            >
+              {reloading
+                ? t('common.channels.form.loading')
+                : t('common.channels.errors.reloadLatest')}
+            </Button>
+            {reloadError === null ? null : (
+              <span className="text-xs text-danger">{reloadError}</span>
+            )}
+          </div>
+        </div>
       )}
 
       <section className="flex flex-col gap-4">
@@ -657,7 +758,7 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
               placeholder={
                 mode === 'edit'
                   ? t('common.channels.form.apiKeyKeep', {
-                      mask: channel?.credentials_masked?.api_key ?? '',
+                      mask: baseline?.credentials_masked?.api_key ?? '',
                     })
                   : t('common.channels.form.apiKeyPlaceholder')
               }
@@ -984,7 +1085,10 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
         <Button variant="secondary" onClick={onCancel}>
           {t('common.channels.form.cancel')}
         </Button>
-        <Button type="submit" disabled={submitting}>
+        <Button
+          type="submit"
+          disabled={submitting || reloading || versionConflict !== null}
+        >
           {submitting ? t('common.channels.form.saving') : t('common.channels.form.save')}
         </Button>
       </div>
