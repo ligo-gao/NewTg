@@ -80,11 +80,15 @@ var wantIdentityPKTables = []string{
 	"rankings_snapshot_runs",
 }
 
-// identityPKExceptions：非 identity 代理主键的例外清单（恰 4 项）：
+// identityPKExceptions：4 张「自然键例外」表的 PK（均非 identity）：
 // system_settings."key" text 自然键（platform-01 §4）、request_registry.request_id
 // uuid 自然键（§18 / platform-04 V9）、rankings_timeseries 与 rankings_entities 的
-// 自然唯一键（§16/§17）。rankings_model_stats / rankings_provider_stats 的复合自然键
-// 以 run_id（FK → rankings_snapshot_runs.id，V5）领头，其 PK 组成与 FK 单独断言。
+// 自然唯一键（§16/§17）。
+//
+// 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
+// （runIDLedNaturalPKs）。合起来：16 表 = 10 张单列 id identity + 4 张自然键
+// + 2 张 run_id 领头自然键；**非 identity PK 的表恰 6 张**，由
+// TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},
 	"rankings_timeseries": {"model", "granularity", "bucket_start"},
@@ -350,7 +354,7 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 // TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 4 项 + run_id 领头复合自然键。
 func TestMainSchemaIdentityPK(t *testing.T) {
 	if len(identityPKExceptions) != 4 {
-		t.Fatalf("identity PK 例外清单须恰 4 项，实际 %d 项", len(identityPKExceptions))
+		t.Fatalf("自然键例外清单须恰 4 项（另有 2 张 run_id 领头的复合自然键），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -418,6 +422,106 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 6 张 =
+// 4 张自然键例外（identityPKExceptions）+ 2 张 run_id 领头的复合自然键
+// （runIDLedNaturalPKs）；其余 10 张均为单列 id + GENERATED ALWAYS AS IDENTITY。
+func TestMainSchemaNonIdentityPKSet(t *testing.T) {
+	db := openTestDB(t)
+	wantNonIdentity := map[string]bool{}
+	for table := range identityPKExceptions {
+		wantNonIdentity[table] = true
+	}
+	for table := range runIDLedNaturalPKs {
+		wantNonIdentity[table] = true
+	}
+	if len(wantNonIdentity) != 6 {
+		t.Fatalf("非 identity PK 表须恰 6 张（4 自然键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	}
+
+	var gotNonIdentity, gotIdentity []string
+	for _, table := range sortedKeys(wantColumns) {
+		cols := pkColumns(t, db, table)
+		if len(cols) == 1 && cols[0].Name == "id" && cols[0].IsIdent == "YES" && cols[0].IdentGen == "ALWAYS" {
+			gotIdentity = append(gotIdentity, table)
+			continue
+		}
+		gotNonIdentity = append(gotNonIdentity, table)
+	}
+	wantIdentity := append([]string{}, wantIdentityPKTables...)
+	sort.Strings(wantIdentity)
+	if fmt.Sprint(gotIdentity) != fmt.Sprint(wantIdentity) {
+		t.Fatalf("identity PK 表集合不符\n got: %v\nwant: %v", gotIdentity, wantIdentity)
+	}
+	if fmt.Sprint(gotNonIdentity) != fmt.Sprint(sortedKeys(wantNonIdentity)) {
+		t.Fatalf("非 identity PK 表集合不符\n got: %v\nwant: %v",
+			gotNonIdentity, sortedKeys(wantNonIdentity))
+	}
+}
+
+// documentedChecks：platform-01 明列、易被遗漏的非枚举 CHECK（评审补充覆盖）。
+var documentedChecks = []struct {
+	Table     string
+	Name      string
+	Fragments []string
+}{
+	{
+		Table: "wallet_transactions", Name: "wallet_transactions_note_len_chk",
+		Fragments: []string{"note", "char_length", "200"},
+	},
+	{
+		Table: "wallet_transactions", Name: "wallet_transactions_admin_note_chk",
+		Fragments: []string{"admin_adjustment", "note IS NOT NULL"},
+	},
+	{
+		Table: "channels", Name: "channels_group_tags_chk",
+		Fragments: []string{"group_tags", "jsonb_typeof", "jsonb_array_length", ">= 1"},
+	},
+}
+
+func expectExecError(t *testing.T, db *sql.DB, stmt string) {
+	t.Helper()
+	if _, err := db.Exec(stmt); err == nil {
+		t.Fatalf("语句应被 CHECK 拒绝但成功执行：%s", stmt)
+	}
+}
+
+// TestMainSchemaDocumentedConstraints：platform-01 §6 / §11 的文档语义必须由 DB 兜底
+// （约束存在 + 负向 INSERT 被拒），防止「只声明未落 DDL」的遗漏再次发生。
+func TestMainSchemaDocumentedConstraints(t *testing.T) {
+	db := openTestDB(t)
+	checks := loadChecks(t, db)
+	for _, want := range documentedChecks {
+		found := false
+		for _, c := range checks[want.Table] {
+			if c.Name != want.Name {
+				continue
+			}
+			found = true
+			for _, frag := range want.Fragments {
+				if !strings.Contains(c.Def, frag) {
+					t.Fatalf("%s 定义缺少 %q：%s", want.Name, frag, c.Def)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s.%s 不存在", want.Table, want.Name)
+		}
+	}
+
+	t.Run("admin_adjustment 缺 note 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO wallet_transactions (user_id, type, amount, balance_after)
+			VALUES (1, 'admin_adjustment', 1, 1)`)
+	})
+	t.Run("空字符串 note 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, note)
+			VALUES (1, 'topup', 1, 1, '')`)
+	})
+	t.Run("group_tags 空数组被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO channels (name, type, credentials, supported_models, group_tags)
+			VALUES ('chk_probe', 'openai', decode('00', 'hex'), '["m"]'::jsonb, '[]'::jsonb)`)
+	})
 }
 
 var (

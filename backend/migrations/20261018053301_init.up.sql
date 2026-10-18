@@ -142,6 +142,9 @@ CREATE TABLE channels (
     CONSTRAINT channels_priority_chk CHECK (priority BETWEEN -1000 AND 1000),
     CONSTRAINT channels_rate_limit_chk CHECK (rate_limit BETWEEN 1 AND 100000),
     CONSTRAINT channels_status_chk CHECK (status IN (1, 2, 3)),
+    CONSTRAINT channels_group_tags_chk
+        CHECK (group_tags IS NULL
+               OR (jsonb_typeof(group_tags) = 'array' AND jsonb_array_length(group_tags) >= 1)),
     CONSTRAINT channels_fail_count_chk CHECK (fail_count >= 0)
 );
 CREATE INDEX channels_status_priority_idx ON channels (status, priority DESC);
@@ -299,7 +302,11 @@ CREATE TABLE wallet_transactions (
         CHECK (status IN ('hold', 'settled', 'released', 'expired', 'confirmed')),
     CONSTRAINT wallet_transactions_reference_type_chk CHECK (reference_type IN (
         'order', 'redemption', 'usage_log', 'admin_op', 'reversal',
-        'signup_grant', 'promo', 'checkin', 'affiliate_transfer') OR reference_type IS NULL)
+        'signup_grant', 'promo', 'checkin', 'affiliate_transfer') OR reference_type IS NULL),
+    CONSTRAINT wallet_transactions_note_len_chk
+        CHECK (note IS NULL OR char_length(note) BETWEEN 1 AND 200),
+    CONSTRAINT wallet_transactions_admin_note_chk
+        CHECK (type <> 'admin_adjustment' OR note IS NOT NULL)
 );
 CREATE INDEX wallet_transactions_user_created_idx ON wallet_transactions (user_id, created_at DESC);
 CREATE INDEX wallet_transactions_status_created_idx ON wallet_transactions (status, created_at);
