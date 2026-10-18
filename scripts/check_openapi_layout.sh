@@ -15,12 +15,37 @@ fail() {
   exit 1
 }
 
+# 多行 $ref 提取与物理路径解析依赖 perl（Cwd::realpath 是核心模块）。缺失即失败，
+# 不允许降级成「只扫同行引用」——那会重新打开多行值与符号链接的绕过面。
+command -v perl >/dev/null 2>&1 \
+  || fail "本脚本需要 perl（多行 \$ref 提取 + Cwd::realpath，required for this check）"
+
 # 提取文件中所有 $ref 值（块式/列表式/流式；去掉引号、尾逗号与尾花括号）。
 # 键允许单/双引号（`"$ref":`、`'$ref' :`）且冒号前可有空格——这些都是合法 YAML，
 # 漏掉等于放行未校验的引用（extract 不到 = scan_refs 看不到 = 永远 PASS）。
+# 值的两种合法形态都要覆盖：与键同行，以及下一行的缩进标量（`$ref:` 换行后缩进）。
 extract_refs() {
+  # 1) 键与值同行。
   grep -oE "[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*[^[:space:]]+" "$1" 2>/dev/null \
     | sed -E "s/^[\"']?\\\$ref[\"']?[[:space:]]*:[[:space:]]*//; s/^[\"']//; s/[\"']?[,}]?\$//" || true
+  # 2) 值在下一行：
+  #      $ref:
+  #        ../outside.yaml#/X
+  #    逐行状态机，只取键行后的第一个非空非注释行；不处理折叠标量（$ref 路径是单行）。
+  perl -ne '
+    if ($want) {
+      next if /^\s*(#.*)?$/;
+      my $v = $_;
+      $v =~ s/^\s+//;
+      $v =~ s/\s+$//;
+      $v =~ s/^[\x27"]//;
+      $v =~ s/[\x27"]?[,}]?$//;
+      print "$v\n";
+      $want = 0;
+      next;
+    }
+    $want = 1 if !/^\s*#/ && /["\x27]?\$ref["\x27]?\s*:\s*$/;
+  ' "$1" 2>/dev/null || true
 }
 
 # 纯词法路径规范化（realpath -m 的词法部分）：目标允许不存在，也不依赖 GNU coreutils
@@ -45,10 +70,16 @@ normalize_path() {
   printf '%s\n' "${out:-/}"
 }
 
+# 物理路径解析（跟随符号链接）。用 perl 核心模块 Cwd::realpath：跨平台一致，
+# 不用 `readlink -f`（旧版 macOS/BSD 不支持）。只对已存在的目录调用。
+realpath_portable() {
+  perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); defined $p or exit 1; print $p' -- "$1"
+}
+
 # 扫描 root 下全部 YAML：$ref 只能指向 root 内已存在的普通文件（#/... 纯片段引用跳过）。
 # 返回 0=全部合法；1=存在违规（逐条打印原因）。
 scan_refs() {
-  local root="$1" root_abs f dir_abs ref target resolved rc=0 physical_dir physical
+  local root="$1" root_abs f dir_abs ref target resolved rc=0 original physical_dir physical
   # root 必须真实存在，用 cd+pwd -P 取物理绝对路径（跨平台，不依赖 realpath -m）。
   root_abs=$(cd "$root" && pwd -P) || return 1
   while IFS= read -r -d '' f; do
@@ -83,20 +114,22 @@ scan_refs() {
           continue
           ;;
       esac
-      # 第二道：物理解析父目录，挡住「路径中的目录本身是指向树外的符号链接」——
-      # 纯词法前缀检查看不到链接目标，只有 cd+pwd -P 才会暴露真实位置。
-      if [ ! -d "$(dirname "$resolved")" ]; then
+      # 第二道：对「原始 join 路径」的父目录做物理解析，再校验前缀。
+      # 必须在词法归一化之外保留原始路径：`link/../X` 会先跟随 link 再回退，
+      # 词法归一化把 link 抹成 `..`，恰好掩盖「链接组件 + ..」的逃逸。
+      original="$dir_abs/$target"
+      if [ ! -d "$(dirname "$original")" ]; then
         echo "FAIL: $f: \$ref 目标不存在：$ref → $resolved" >&2
         rc=1
         continue
       fi
-      physical_dir=$(cd "$(dirname "$resolved")" && pwd -P) || physical_dir=""
+      physical_dir=$(realpath_portable "$(dirname "$original")") || physical_dir=""
       if [ -z "$physical_dir" ]; then
-        echo "FAIL: $f: \$ref 目标目录不可解析：$ref → $resolved" >&2
+        echo "FAIL: $f: \$ref 目标目录不可解析：$ref → $original" >&2
         rc=1
         continue
       fi
-      physical="$physical_dir/$(basename "$resolved")"
+      physical="$physical_dir/$(basename "$original")"
       case "$physical" in
         "$root_abs"/*) ;;
         *)
@@ -163,6 +196,8 @@ self_test() {
   run_case absolute 禁止绝对路径 "\$ref: '/etc/passwd#/X'"
   # 路径在树内但目标不存在：bundle 会在解析阶段才失败，必须提前拦住。
   run_case missing 目标不存在 "\$ref: './paths/does-not-exist.yaml#/X'"
+  # 值在键的下一行（YAML 合法）：按行提取会看不到，必须由多行状态机覆盖。
+  run_case multiline 逃出 $'$ref:\n    ../outside.yaml#/X'
 
   # 文件符号链接：词法/目录物理检查都能过，但链接本体指向树外，必须拒绝。
   printf 'x-outside: 1\n' >"$tmp/outside-file.yaml"
@@ -197,7 +232,25 @@ self_test() {
   fi
   rm -f "$tmp/api/openapi/selftest-linkdir" "$tmp/api/openapi/selftest-symlink-dir.yaml"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../）、网络、绝对路径、缺失目标、符号链接注入均已被拒绝"
+  # 链接组件 + `..`：词法归一化会把 `link/..` 抹成父目录，必须用原始路径的
+  # 父目录做物理解析，才能发现实际已跟随 link 出树。
+  mkdir -p "$tmp/outside-dir"
+  printf 'x-outside: 1\n' >"$tmp/victim.yaml"
+  ln -s "$tmp/outside-dir" "$tmp/api/openapi/selftest-linkdot"
+  printf 'x-selftest:\n  $ref: '\''./selftest-linkdot/../victim.yaml#/X'\''\n' \
+    >"$tmp/api/openapi/selftest-symlink-dotdot.yaml"
+  if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [symlink-dotdot] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '逃出'; then
+    echo "FAIL: 自检 [symlink-dotdot] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [symlink-dotdot] 已被拒绝（逃出）"
+  fi
+  rm -f "$tmp/api/openapi/selftest-linkdot" "$tmp/api/openapi/selftest-symlink-dotdot.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值）、网络、绝对路径、缺失目标、符号链接（含链接+..）注入均已被拒绝"
   return "$rc"
 }
 
@@ -235,11 +288,13 @@ done
 grep -qE '^openapi: 3\.1\.[0-9]+$' "$ENTRY" || fail "入口 openapi 版本必须为 3.1.x"
 
 # 4) 入口 paths 下每一项都必须是 $ref（不允许内联 path item）
+#    键匹配只认 `$ref` 子串而不写死 `$ref:`：单/双引号键（`"$ref":`、`'$ref' :`）
+#    同样是合法 YAML，写死冒号会把合规写法误判成内联 path（fail-closed 误报）。
 awk '
   /^paths:[[:space:]]*$/ { inpaths = 1; next }
   inpaths && /^[^[:space:]#]/ { inpaths = 0 }
   inpaths && /^  \// { paths++ }
-  inpaths && /\$ref:/ { refs++ }
+  inpaths && /\$ref/ { refs++ }
   END { if (paths == 0 || paths != refs) exit 1 }
 ' "$ENTRY" || fail "入口 paths 未全部使用 \$ref 汇总（每条 path 一个 \$ref）"
 
