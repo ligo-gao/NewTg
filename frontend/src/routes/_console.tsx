@@ -18,6 +18,8 @@ const NAV_ITEMS = [
   { href: '/dashboard', key: 'common.nav.dashboard' },
   { href: '/profile', key: 'common.nav.profile' },
   { href: '/security', key: 'common.nav.security' },
+  // M2 channel management; `/admin/channels` sits under the admin layout guard.
+  { href: '/admin/channels', key: 'common.nav.channels', admin: true },
   { href: '/admin/users', key: 'common.nav.users', admin: true },
   { href: '/admin/users/groups', key: 'common.nav.groups', admin: true },
 ] as const

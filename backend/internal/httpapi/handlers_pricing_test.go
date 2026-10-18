@@ -498,8 +498,6 @@ func decodeModelPricingList(t *testing.T, rr *httptest.ResponseRecorder) modelPr
 	return list
 }
 
-func int64Ptr(v int64) *int64 { return &v }
-
 // ---------------------------------------------------------------------------
 // (a) 表达式校验
 // ---------------------------------------------------------------------------

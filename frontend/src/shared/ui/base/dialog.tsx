@@ -13,6 +13,14 @@ export interface DialogProps {
    * not be dismissed before the user saves one-time material). Defaults true.
    */
   dismissible?: boolean
+  /**
+   * `sheet` renders the same modal semantics as a right-side panel (used by the
+   * wide channel form, modules-06 §3.1). Focus trapping, Escape handling and
+   * background inertness are identical; only the frame changes.
+   */
+  variant?: 'center' | 'sheet'
+  /** Extra classes for the panel; callers size sheets without owning the frame. */
+  panelClassName?: string
 }
 
 /** Keyboard-focusable descendants, in document order (WAI-ARIA dialog pattern). */
@@ -56,6 +64,8 @@ export function Dialog({
   children,
   footer,
   dismissible = true,
+  variant = 'center',
+  panelClassName,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -172,7 +182,12 @@ export function Dialog({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      className={[
+        'fixed inset-0 z-50 flex',
+        variant === 'sheet' ? 'justify-end' : 'items-center justify-center p-4',
+      ].join(' ')}
+    >
       <div
         className="absolute inset-0 bg-overlay"
         aria-hidden="true"
@@ -187,7 +202,15 @@ export function Dialog({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        className="relative w-full max-w-[440px] rounded-xl border border-border-hairline bg-surface-card p-5 text-ink-1 shadow-xl"
+        className={[
+          'relative w-full bg-surface-card text-ink-1 shadow-xl',
+          variant === 'sheet'
+            ? 'flex h-full max-w-[640px] flex-col overflow-y-auto border-l border-border-hairline p-6'
+            : 'max-w-[440px] rounded-xl border border-border-hairline p-5',
+          panelClassName,
+        ]
+          .filter(Boolean)
+          .join(' ')}
       >
         <h2 id={titleId} className="text-[15px] font-semibold leading-[22px]">
           {title}

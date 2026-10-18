@@ -69,8 +69,6 @@ const (
 	pricingTextMaxRunes  = 64
 	pricingModelLimitMax = 1000
 	pricingModelLimitDef = 200
-
-	problemTypeValidationFailed = "https://newtg.dev/problems/validation_failed"
 )
 
 // pricingModelPattern 与 modules-06 F-06-14 的模型名字符集一致。

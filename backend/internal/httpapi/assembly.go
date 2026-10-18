@@ -85,6 +85,11 @@ type GatewayDeps struct {
 	NotificationSender NotificationTestSender
 	LoginEncryption    *PasswordEncryption
 
+	// ChannelHandler 是 M2 渠道管理端点集合（GET/POST /api/channels 等）。
+	// 非 nil 时挂到受保护子树，与其余管理端点共用 SessionAuth → CSRF →
+	// OriginRefererCheck 链；handler 内部再按 channels:* 做功能级权限检查。
+	ChannelHandler *ChannelHandler
+
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
 	TurnstileHTTPClient *http.Client
@@ -191,6 +196,12 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// M2 渠道管理端点：注册到 rt.protected（模式本身就是完整 /api/channels*），
+	// 因此复用 NewRouter 已挂好的受保护链与 no-store 响应策略。
+	if deps.ChannelHandler != nil {
+		deps.ChannelHandler.Register(rt.protected)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

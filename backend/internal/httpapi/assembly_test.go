@@ -171,6 +171,40 @@ func TestBuildGatewayRouterMountsM1Routes(t *testing.T) {
 	}
 }
 
+// TestBuildGatewayRouterMountsChannelRoutes：M2 渠道端点必须挂在受保护子树，
+// 与 M1 管理端点共用同一条 SessionAuth → CSRF → OriginRefererCheck 链。
+// 直接查受保护 mux 的路由表，避免把「未认证 401」（保护链本身）误当成挂载证据。
+func TestBuildGatewayRouterMountsChannelRoutes(t *testing.T) {
+	deps, _ := gatewayDepsForTest(t)
+	deps.ChannelHandler = NewChannelHandler(
+		newFakeChannelStore(),
+		newFakeUserAccess(),
+		NewSecretSealer("assembly-test-credential-key"),
+		ChannelHandlerOptions{},
+	)
+	rt, err := BuildGatewayRouter(deps)
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+
+	cases := []struct{ method, path, want string }{
+		{http.MethodGet, "/api/channels", "GET /api/channels"},
+		{http.MethodPost, "/api/channels", "POST /api/channels"},
+		{http.MethodPatch, "/api/channels/batch", "PATCH /api/channels/batch"},
+		{http.MethodPost, "/api/channels/batch-delete", "POST /api/channels/batch-delete"},
+		{http.MethodGet, "/api/channels/1", "GET /api/channels/{id}"},
+		{http.MethodPatch, "/api/channels/1", "PATCH /api/channels/{id}"},
+		{http.MethodDelete, "/api/channels/1", "DELETE /api/channels/{id}"},
+		{http.MethodPost, "/api/channels/1/test", "POST /api/channels/{id}/test"},
+	}
+	for _, tc := range cases {
+		_, pattern := rt.protected.Handler(httptest.NewRequest(tc.method, tc.path, nil))
+		if pattern != tc.want {
+			t.Errorf("%s %s matched %q, want %q", tc.method, tc.path, pattern, tc.want)
+		}
+	}
+}
+
 // doRawRequest 发请求（可带 Cookie/Header 注入）。
 func doRawRequest(h http.Handler, method, path, body string, mutate func(*http.Request)) *httptest.ResponseRecorder {
 	var reader *strings.Reader

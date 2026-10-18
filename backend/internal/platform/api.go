@@ -26,6 +26,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
 )
 
@@ -121,6 +122,21 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 
 	authz := newAuthzMiddleware(auditor, log)
 
+	// M2 渠道管理端点：与 M1 管理面共用同一条受保护链（SessionAuth → CSRF →
+	// OriginRefererCheck）；渠道 handler 自身再按 channels:* 做功能级权限检查。
+	// 这里只构造 handler，由 BuildGatewayRouter 负责挂到受保护子树，避免在
+	// platform 层重复装配一条 /api/ 中间件链（两条 /api/ 挂载会冲突）。
+	channelSealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
+	channelHandler := httpapi.NewChannelHandler(
+		store.NewChannelRepo(db),
+		store.NewTokenRepo(db),
+		channelSealer,
+		httpapi.ChannelHandlerOptions{
+			Tester:      httpapi.NewChannelConnectivityTester(channelSealer, nil),
+			Idempotency: httpapi.NewRedisIdempotencyStore(rdb),
+		},
+	)
+
 	return httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -135,6 +151,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		CredentialEncryptionKey: cfg.CredentialEncryptionKey,
 		PublicBaseURL:           cfg.PublicBaseURL,
 		Logger:                  log,
+		ChannelHandler:          channelHandler,
 	})
 }
 

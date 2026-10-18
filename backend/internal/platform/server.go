@@ -18,6 +18,8 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/migrations"
 )
@@ -97,7 +99,13 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	// server 上的 /api/* 管理面（apiHandler 为 nil 时仅探针）。
 	checker := checkerFromResources(db, redisRes, int(expectedVersion), log)
 	checker.node = cfg.NodeName
+	// /api/* 管理面（M1 路由 + M2 渠道端点）由 newAPIHandler 在 httpapi 组合根
+	// 中装配，newGatewayMux 把它整体挂到 /api/。
 	mux := newGatewayMux(checker, apiHandler)
+	// /v1/*（中继面）只在资源是生产具体类型时挂载；platform 单测注入的 stub
+	// Resource 无法还原 *sql.DB / *redis.Client，此时保持 health-only mux
+	// （既有测试不触真 PG/Redis）。
+	mountRelayRoutes(mux, cfg, db, redisRes)
 	srv := newGatewayHTTPServer(SecurityHeaders(mux))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
@@ -154,6 +162,43 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	log.Info("gateway stopped")
 	return nil
+}
+
+// mountRelayRoutes 把 /v1 中继面挂到 gateway 主 mux。
+//
+// 中继 handler 自带 RelayAuth（令牌面，不使用 Cookie 会话），因此直接挂在
+// 根 mux，不经过管理面的 SessionAuth → CSRF → Origin/Referer 链。管理面
+// （含 M2 渠道端点）由 newAPIHandler 在 httpapi 组合根中装配，newGatewayMux
+// 负责把整个管理面挂到 /api/；本函数只处理需要 db/redis 具体类型的 /v1。
+//
+// 只有生产资源（OpenDB 的 *sql.DB、OpenRedis 的 redisResource）才能构造仓储与
+// 密钥封装；测试 path 的 stubResource 无法还原具体类型，此时静默跳过——
+// 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
+func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok || sqlDB == nil {
+		return
+	}
+	redisRes, ok := rds.(redisResource)
+	if !ok || redisRes.client == nil {
+		return
+	}
+
+	// 仓储与密钥封装（GC-8：凭据密文的唯一读写面）。
+	tokenRepo := store.NewTokenRepo(sqlDB)
+	channelRepo := store.NewChannelRepo(sqlDB)
+	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
+
+	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
+	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
+	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
+		Channels:       channelRepo,
+		Tokens:         tokenRepo,
+		Access:         tokenRepo,
+		Sealer:         sealer,
+		TrustedProxies: cfg.TrustedProxies,
+	})
+	relayHandler.Register(mux)
 }
 
 // maxHeaderBytes 是 HTTP 请求头总大小上限（32 KiB）。

@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/config"
 )
@@ -335,5 +338,51 @@ func TestRunGatewayMigrateOnStartError(t *testing.T) {
 	}
 	if !db.closed || !rds.closed {
 		t.Fatalf("resources not closed after migrate failure: db=%v redis=%v", db.closed, rds.closed)
+	}
+}
+
+// TestMountRelayRoutesConcreteResources 验证生产具体类型（*sql.DB / redisResource）
+// 会挂载 /v1/ 中继路由。sql.Open / redis.NewClient 都是惰性的，不建立连接
+// （GC-8：单测不触真 PG/Redis）。管理面（含 /api/channels）由 newAPIHandler
+// 在 httpapi 组合根中装配，其挂载由 httpapi 的装配测试覆盖。
+func TestMountRelayRoutesConcreteResources(t *testing.T) {
+	sqlDB, err := sql.Open("pgx", "postgres://user:pass@127.0.0.1:1/newtg?sslmode=disable")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = rdb.Close() }()
+
+	mux := http.NewServeMux()
+	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"), sqlDB, redisResource{client: rdb})
+
+	cases := []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{http.MethodGet, "/v1/models", "GET /v1/models"},
+		{http.MethodPost, "/v1/chat/completions", "POST /v1/chat/completions"},
+	}
+	for _, tc := range cases {
+		_, pattern := mux.Handler(httptest.NewRequest(tc.method, tc.path, nil))
+		if pattern != tc.want {
+			t.Errorf("%s %s matched %q, want %q", tc.method, tc.path, pattern, tc.want)
+		}
+	}
+}
+
+// TestMountRelayRoutesSkipsStubResources 冻结「非具体资源保持 health-only mux」：
+// platform 单测的 stubResource 无法还原 *sql.DB / *redis.Client，不得挂载业务路由。
+func TestMountRelayRoutesSkipsStubResources(t *testing.T) {
+	mux := http.NewServeMux()
+	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"),
+		&stubResource{name: "db"}, &stubResource{name: "redis"})
+
+	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/api/channels"} {
+		if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" {
+			t.Fatalf("%s unexpectedly mounted (pattern %q) for stub resources", path, pattern)
+		}
 	}
 }

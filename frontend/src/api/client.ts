@@ -1,7 +1,6 @@
 import createClient, {
   type Client,
   type ClientOptions,
-  type MergedOptions,
   type Middleware,
 } from 'openapi-fetch'
 
@@ -54,7 +53,7 @@ export async function toApiError(response: Response): Promise<ApiError> {
 }
 
 /** Detects the single retryable auth failure: `403 csrf_failed`. */
-async function isCsrfFailure(response: Response): Promise<boolean> {
+export async function isCsrfFailure(response: Response): Promise<boolean> {
   if (response.status !== 403) return false
   const body = await readProblemBody(response)
   if (typeof body !== 'object' || body === null) return false
@@ -88,17 +87,22 @@ const retrySources = new WeakMap<Request, Request>()
  * Frozen recovery procedure (security-01 §2.2, §3.5): re-issue the session
  * cookie with `GET /api/me` before replaying. The refresh is best-effort — the
  * replay decides the outcome and a second failure surfaces as `forbidden`.
+ *
+ * Exported so the feature-level raw-fetch client (channels `api.ts`) can reuse
+ * the exact same recovery instead of re-implementing it.
  */
-async function refreshCsrfCookie(options: MergedOptions): Promise<void> {
-  // `options` is a frozen plain object; browsers brand-check native `fetch`
-  // and reject `options.fetch(...)` with "Illegal invocation". Capture the
-  // function and invoke it unbound.
-  const doFetch = options.fetch ?? globalThis.fetch
+export async function refreshCsrfCookie(
+  fetchImpl: typeof fetch = globalThis.fetch,
+  baseUrl = '',
+): Promise<void> {
+  // Never call `fetchImpl(...)` as a method of an options object: browsers
+  // brand-check native `fetch` and reject an object receiver with "Illegal
+  // invocation". Passing the function as a value keeps the call unbound.
   const fallbackOrigin =
     typeof location !== 'undefined' ? location.origin : 'http://localhost'
   try {
-    const url = new URL(CSRF_REFRESH_PATH, options.baseUrl || fallbackOrigin)
-    await doFetch(
+    const url = new URL(CSRF_REFRESH_PATH, baseUrl || fallbackOrigin)
+    await fetchImpl(
       new Request(url, {
         method: 'GET',
         credentials: 'same-origin',
@@ -150,7 +154,7 @@ export const contractMiddleware: Middleware = {
       // original `forbidden` rather than misclassifying it as offline.
       if (retrySource === undefined) throw await toApiError(response)
 
-      await refreshCsrfCookie(options)
+      await refreshCsrfCookie(options.fetch ?? globalThis.fetch, options.baseUrl)
 
       const headers = new Headers(retrySource.headers)
       // Drop a stale token first: if the refresh did not produce a cookie the

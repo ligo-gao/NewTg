@@ -3,7 +3,8 @@ package store
 import "time"
 
 // M0 占位模型：16 个空壳 struct + TableName()。字段随里程碑逐步填充：
-// M1 只填 User / APIToken / UserGroup（含 M1 迁移新增列）。
+// M1 只填 User / APIToken / UserGroup（含 M1 迁移新增列）；M2 填 Channel
+// （渠道存储与中继路由所需列）。
 // 列定义唯一权威：platform-01 各 §；M1 补列裁决见实现计划 R-01/R-02/R-07。
 // 表序同 platform-01 §0.1（主库 16 表；usage_logs/audit_logs 属日志库 Task 8）。
 //
@@ -94,7 +95,41 @@ type SystemSetting struct{}
 func (SystemSetting) TableName() string { return "system_settings" }
 
 // Channel 对应 channels（§6，22 列；含 G-API-043 tag）。
-type Channel struct{}
+//
+// 字段口径（platform-01 §6、modules-06 §1.4/§1.5、GC-6/GC-8）：
+//   - Type 是 text slug，不做 DB CHECK（Tier-2）；白名单唯一真源是
+//     contract.ChannelTypes / ChannelType.Valid()（modules-06 §1.3）。
+//   - Credentials 落库即 AES-256-GCM 密文（GC-8），明文只在创建/更新请求里出现一次；
+//     任何读取路径都不得把它直接序列化给客户端（GC-6）。
+//   - GroupTags 为 NULL 表示「全部分组可用」，与空数组（DB CHECK 拒绝）语义不同，
+//     故用 []byte nil 承载 NULL。
+//   - Status 三态：1=enabled / 2=manual_disabled / 3=auto_disabled（modules-06 §1.4）；
+//     不存在 deleted 状态。
+//   - UpdatedAt 同时是乐观锁版本（R-P8：读取时派生，不落 version 列）。
+type Channel struct {
+	ID                 int64      `gorm:"column:id;primaryKey"`
+	Name               string     `gorm:"column:name"`
+	Type               string     `gorm:"column:type"`
+	BaseURL            *string    `gorm:"column:base_url"`
+	Credentials        []byte     `gorm:"column:credentials"`
+	SupportedModels    []byte     `gorm:"column:supported_models"`
+	GroupTags          []byte     `gorm:"column:group_tags"`
+	ModelMapping       []byte     `gorm:"column:model_mapping"`
+	Weight             int16      `gorm:"column:weight"`
+	Priority           int16      `gorm:"column:priority"`
+	RateLimit          *int32     `gorm:"column:rate_limit"`
+	Status             int16      `gorm:"column:status"`
+	AutoBan            bool       `gorm:"column:auto_ban"`
+	TestModel          *string    `gorm:"column:test_model"`
+	Remark             *string    `gorm:"column:remark"`
+	Tag                *string    `gorm:"column:tag"`
+	FailCount          int32      `gorm:"column:fail_count"`
+	AutoDisabledReason *string    `gorm:"column:auto_disabled_reason"`
+	LastTestAt         *time.Time `gorm:"column:last_test_at"`
+	LastTestResult     *bool      `gorm:"column:last_test_result"`
+	CreatedAt          time.Time  `gorm:"column:created_at"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at"`
+}
 
 // TableName 返回 GORM 表名。
 func (Channel) TableName() string { return "channels" }

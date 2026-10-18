@@ -26,6 +26,7 @@ import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
+import { Route as ConsoleAdminChannelsIndexRouteImport } from './routes/_console/admin/channels/index'
 import { Route as ConsoleAdminPricingIndexRouteImport } from './routes/_console/admin/pricing/index'
 import { Route as ConsoleAdminPricingGroupPricingRouteImport } from './routes/_console/admin/pricing/group-pricing'
 import { Route as ConsoleAdminPricingModelPricingRouteImport } from './routes/_console/admin/pricing/model-pricing'
@@ -116,6 +117,12 @@ const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleAdminChannelsIndexRoute =
+  ConsoleAdminChannelsIndexRouteImport.update({
+    id: '/channels/',
+    path: '/channels/',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminPricingIndexRoute =
   ConsoleAdminPricingIndexRouteImport.update({
     id: '/pricing/',
@@ -165,6 +172,7 @@ export interface FileRoutesByFullPath {
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
   '/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
   '/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
@@ -187,6 +195,7 @@ export interface FileRoutesByTo {
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/admin/channels': typeof ConsoleAdminChannelsIndexRoute
   '/admin/pricing': typeof ConsoleAdminPricingIndexRoute
   '/admin/users': typeof ConsoleAdminUsersIndexRoute
 }
@@ -212,6 +221,7 @@ export interface FileRoutesById {
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/_console/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
+  '/_console/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
   '/_console/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
   '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
@@ -237,6 +247,7 @@ export interface FileRouteTypes {
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
     | '/admin/users/groups'
+    | '/admin/channels/'
     | '/admin/pricing/'
     | '/admin/users/'
   fileRoutesByTo: FileRoutesByTo
@@ -259,6 +270,7 @@ export interface FileRouteTypes {
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
     | '/admin/users/groups'
+    | '/admin/channels'
     | '/admin/pricing'
     | '/admin/users'
   id:
@@ -283,6 +295,7 @@ export interface FileRouteTypes {
     | '/_console/admin/pricing/group-pricing'
     | '/_console/admin/pricing/model-pricing'
     | '/_console/admin/users/groups'
+    | '/_console/admin/channels/'
     | '/_console/admin/pricing/'
     | '/_console/admin/users/'
   fileRoutesById: FileRoutesById
@@ -423,6 +436,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleDashboardIndexRouteImport
       parentRoute: typeof ConsoleRoute
     }
+    '/_console/admin/channels/': {
+      id: '/_console/admin/channels/'
+      path: '/channels'
+      fullPath: '/admin/channels/'
+      preLoaderRoute: typeof ConsoleAdminChannelsIndexRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/pricing/': {
       id: '/_console/admin/pricing/'
       path: '/pricing'
@@ -466,6 +486,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
+  ConsoleAdminChannelsIndexRoute: typeof ConsoleAdminChannelsIndexRoute
   ConsoleAdminPricingIndexRoute: typeof ConsoleAdminPricingIndexRoute
   ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
 }
@@ -475,6 +496,7 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
+  ConsoleAdminChannelsIndexRoute: ConsoleAdminChannelsIndexRoute,
   ConsoleAdminPricingIndexRoute: ConsoleAdminPricingIndexRoute,
   ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
 }
