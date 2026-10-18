@@ -1,0 +1,8 @@
+{
+  "app.title": "NewTG",
+  "app.scaffold": "M0 scaffold",
+  "error.title": "Something went wrong",
+  "error.retry": "Try again",
+  "not_found.title": "Page not found",
+  "not_found.action": "Back to home"
+}
