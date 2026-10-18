@@ -230,16 +230,22 @@ func writeCSRFFailed(w http.ResponseWriter) {
 	writeProblem(w, http.StatusForbidden, problemTypeCSRFFailed, "CSRF validation failed")
 }
 
-// writeProblem 输出 RFC 7807 Problem（GC-6）。
+// writeProblem 输出无 detail 的 RFC 7807 Problem（GC-6）。
 func writeProblem(w http.ResponseWriter, status int, problemType, title string) {
+	writeProblemDetail(w, status, problemType, title, "")
+}
+
+// writeProblemDetail 输出带可选 detail 的 RFC 7807 Problem。字段校验类错误
+// 需要 detail 说明具体规则；共享同一出口保证 Content-Type 与状态码口径一致。
+func writeProblemDetail(w http.ResponseWriter, status int, problemType, title, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
+	problem := dto.Problem{Type: problemType, Title: title, Status: status}
+	if detail != "" {
+		problem.Detail = &detail
+	}
 	// 响应已开始写出；编码失败（如客户端断开）无法再改状态码，忽略即可。
-	_ = json.NewEncoder(w).Encode(dto.Problem{
-		Type:   problemType,
-		Title:  title,
-		Status: status,
-	})
+	_ = json.NewEncoder(w).Encode(problem)
 }
 
 // normalizeOrigin 把 Origin/Referer/允许清单归一化为 scheme://host。

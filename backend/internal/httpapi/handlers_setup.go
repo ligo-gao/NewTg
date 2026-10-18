@@ -29,7 +29,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"newtg/gateway/internal/api/dto"
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
 )
@@ -195,15 +195,25 @@ func upsertSetupSetting(ctx context.Context, tx *sql.Tx, key, value string, upda
 // HTTP handler
 // ---------------------------------------------------------------------------
 
-// SetupConfig 是装配输入。Store 必填；Sessions 为 nil 时跳过自动登录
-// （仅测试/受限装配）；Redis 为 nil 时不广播配置变更；Checker 零值即启用
-// 内置弱口令词表。
+// SetupAuditor 是初始化完成事件的审计接缝，签名与 audit.Logger.Log 一致：
+// (ctx, action, actor, detail)。审计失败不得回滚已提交的初始化（日志库独立，
+// 无跨库事务），只记录告警。
+type SetupAuditor func(ctx context.Context, action string, actor int64, detail json.RawMessage) error
+
+// SetupConfig 是装配输入。Store 必填；Sessions 用于 F-01-20 的自动登录，
+// 生产装配必须提供（测试/受限装配用 AllowNoSession 显式豁免）；Redis 为 nil
+// 时不广播配置变更；Audit 为 nil 时不写审计；Checker 零值即启用内置弱口令词表。
 type SetupConfig struct {
 	Store    SetupStore
 	Sessions *auth.SessionManager
 	Checker  auth.CompromisedPasswordChecker
 	Redis    *redis.Client
+	Audit    SetupAuditor
 	Logger   *slog.Logger
+
+	// AllowNoSession 显式允许 Sessions 为 nil（仅测试/受限装配）。生产路径
+	// 缺少 Sessions 会让「初始化后自动登录」静默失效，必须启动期报错。
+	AllowNoSession bool
 }
 
 // SetupHandlers 持有 setup 端点依赖。可并发使用。
@@ -212,13 +222,16 @@ type SetupHandlers struct {
 	sessions *auth.SessionManager
 	checker  auth.CompromisedPasswordChecker
 	rdb      *redis.Client
+	audit    SetupAuditor
 	log      *slog.Logger
 
 	// 测试接缝；生产恒为 auth.HashPassword。
 	hashPassword func(plain string) (string, error)
 }
 
-// NewSetupHandlers 构造 setup 端点。缺少 Store 属装配错误，应让进程启动失败。
+// NewSetupHandlers 构造 setup 端点。缺少 Store 属装配错误；缺少 Sessions 同样
+// 是装配错误——F-01-20 要求初始化完成即自动登录，静默跳过会让前端拿到 201
+// 却没有会话，直到跳转 /dashboard 才以 401 失败。
 func NewSetupHandlers(cfg SetupConfig) (*SetupHandlers, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("httpapi: SetupConfig.Store is required")
@@ -227,11 +240,18 @@ func NewSetupHandlers(cfg SetupConfig) (*SetupHandlers, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if cfg.Sessions == nil {
+		if !cfg.AllowNoSession {
+			return nil, errors.New("httpapi: SetupConfig.Sessions is required for auto-login (set AllowNoSession only for tests or restricted assembly)")
+		}
+		logger.Warn("setup: auto-login disabled because Sessions is nil (AllowNoSession)")
+	}
 	return &SetupHandlers{
 		store:        cfg.Store,
 		sessions:     cfg.Sessions,
 		checker:      cfg.Checker,
 		rdb:          cfg.Redis,
+		audit:        cfg.Audit,
 		log:          logger,
 		hashPassword: auth.HashPassword,
 	}, nil
@@ -313,7 +333,7 @@ func (h *SetupHandlers) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 	var req setupRequest
 	if err := readAuthJSON(r, &req); err != nil {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body", err.Error())
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body", err.Error())
 		return
 	}
 	if req.ConfirmPassword == "" {
@@ -325,38 +345,38 @@ func (h *SetupHandlers) handleSetup(w http.ResponseWriter, r *http.Request) {
 	siteTitle := strings.TrimSpace(req.SiteTitle)
 
 	if !usernamePattern.MatchString(username) {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid username",
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Invalid username",
 			"Username must be 3-32 characters of letters, digits, '_' or '-'")
 		return
 	}
 	if !validEmail(email) {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid email address", "")
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Invalid email address", "")
 		return
 	}
 	if !auth.ValidatePasswordLength(req.Password) {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest,
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
 			"Password must be between 8 and 128 characters", "")
 		return
 	}
 	if req.Password != req.ConfirmPassword {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Passwords do not match", "")
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Passwords do not match", "")
 		return
 	}
 	if n := utf8.RuneCountInString(siteTitle); n < 1 || n > maxSetupSiteTitleRunes {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid site title",
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Invalid site title",
 			"Site title must be between 1 and 64 characters")
 		return
 	}
 	serverAddress, ok := normalizeSetupServerAddress(req.ServerAddress)
 	if !ok {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid server address",
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest, "Invalid server address",
 			"Server address must be an absolute http(s) URL without query or fragment")
 		return
 	}
-	// 泄露/弱口令筛查（security-01 §2.3）：用户名作为每用户上下文传入，阻止
-	// 「admin + admin2026」这类可猜测组合。
-	if h.checker.CheckWithContext(req.Password, username) {
-		writeSetupProblem(w, http.StatusBadRequest, authProblemBadRequest,
+	// 泄露/弱口令筛查（security-01 §2.3）：用户名与站点名都作为每用户上下文
+	// 传入，阻止「admin + admin2026」「NewTG + newtg2026」这类可猜测组合。
+	if h.checker.CheckWithContext(req.Password, username, siteTitle) {
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
 			"Password is too weak or has been compromised", "")
 		return
 	}
@@ -364,7 +384,7 @@ func (h *SetupHandlers) handleSetup(w http.ResponseWriter, r *http.Request) {
 	passwordHash, err := h.hashPassword(req.Password)
 	if err != nil {
 		h.log.Error("setup: hash admin password failed", "error", err)
-		writeSetupProblem(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
+		writeProblemDetail(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
 		return
 	}
 
@@ -382,20 +402,25 @@ func (h *SetupHandlers) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, ErrDuplicateUser):
 		// 与注册路径同文案：不区分用户名/邮箱冲突，避免字段级枚举信道。
-		writeSetupProblem(w, http.StatusConflict, authProblemConflict,
+		writeProblemDetail(w, http.StatusConflict, authProblemConflict,
 			"Username or email is already in use", "")
 		return
 	case err != nil:
 		h.log.Error("setup: complete setup failed", "error", err)
-		writeSetupProblem(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
+		writeProblemDetail(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
 		return
 	}
 	if result.Role != "admin" || result.Status != "enabled" {
 		// DB 显式写入 admin/enabled；不一致说明数据被篡改或实现漂移，拒绝建会话。
 		h.log.Error("setup: unexpected admin projection", "role", result.Role, "status", result.Status)
-		writeSetupProblem(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
+		writeProblemDetail(w, http.StatusInternalServerError, authProblemInternal, "Setup failed", "")
 		return
 	}
+
+	// modules-01 F-01-20：初始化动作必须在审计日志可查。审计位于提交之后、
+	// 建会话之前：即使随后建会话失败，事件也已落库；审计失败只告警，绝不
+	// 回滚已完成的初始化（日志库独立，无跨库事务）。
+	h.auditSystemInitialized(ctx, result, username, siteTitle, serverAddress)
 
 	// setup 直接写表（为了事务），提交后必须主动广播，让各副本的 configcenter
 	// 快照按 DB 重载，而不是等 5 分钟兜底。
@@ -446,10 +471,16 @@ func (h *SetupHandlers) startSetupSession(ctx context.Context, w http.ResponseWr
 // publishConfigChanged 用 configcenter 冻结频道广播 setup 写入的键。载荷是
 // 纯 key（Task 16 约定）；各副本收到后按 DB 重载。广播失败只告警：setup
 // 已经提交，不能因为通知失败而回滚或报错。
+//
+// 使用剥离取消信号的短期上下文：客户端可能在收到响应前断开，但配置失效
+// 通知是已提交写入的一部分，不能因为请求 ctx 取消而三连失败（否则副本要等
+// 5 分钟兜底快照）。
 func (h *SetupHandlers) publishConfigChanged(ctx context.Context) {
 	if h.rdb == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
 	for _, key := range []string{SetupCompletedKey, setupSiteTitleKey, setupServerAddressKey} {
 		if err := h.rdb.Publish(ctx, configcenter.ChangedChannel, key).Err(); err != nil {
 			h.log.Warn("setup: publish config change failed", "key", key, "error", err)
@@ -457,25 +488,54 @@ func (h *SetupHandlers) publishConfigChanged(ctx context.Context) {
 	}
 }
 
+// auditSystemInitialized 写 modules-01 F-01-20 的 system_initialized 事件。
+// detail 同时携带 action（platform-01 §5 的审计分类口径）与首管身份；
+// 绝不包含口令/哈希。
+func (h *SetupHandlers) auditSystemInitialized(ctx context.Context, result SetupResult, username, siteTitle, serverAddress string) {
+	if h.audit == nil {
+		return
+	}
+	detail, err := json.Marshal(map[string]any{
+		"action":         audit.ActionSystemInitialized,
+		"user_id":        result.UserID,
+		"username":       username,
+		"site_title":     siteTitle,
+		"server_address": serverAddress,
+	})
+	if err != nil {
+		h.log.Warn("setup: encode system_initialized audit detail failed", "error", err)
+		return
+	}
+	if err := h.audit(ctx, audit.ActionSystemInitialized, result.UserID, detail); err != nil {
+		// 审计失败不得回滚初始化：账号/锚已经提交，日志库故障不应让部署者
+		// 看到一个失败但其实已初始化完成的系统。
+		h.log.Error("setup: write system_initialized audit failed", "error", err)
+	}
+}
+
 func (h *SetupHandlers) writeSetupUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
-	writeSetupProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+	writeProblemDetail(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
 		"Setup is temporarily unavailable", "")
 }
 
 // normalizeSetupServerAddress 校验并规范化 site.server_address：
 // http(s) 绝对 URL、无 userinfo/查询串/片段、无空白，末尾斜杠去掉
 // （modules-08 §1.4 的字段规则）。
+//
+// 除了 RawQuery/Fragment 非空，还要拒绝「空标记」：`https://host?` 会得到
+// ForceQuery=true 而 RawQuery=""，`https://host/#` 会得到 Fragment=""，
+// 只看字段值会把它们当成合法基址放行。
 func normalizeSetupServerAddress(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || utf8.RuneCountInString(raw) > maxSetupServerAddressRunes {
 		return "", false
 	}
-	if strings.ContainsAny(raw, " \t\r\n") {
+	if strings.ContainsAny(raw, " \t\r\n") || strings.Contains(raw, "#") {
 		return "", false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery {
 		return "", false
 	}
 	scheme := strings.ToLower(u.Scheme)
@@ -494,15 +554,4 @@ func writeSetupCompleted(w http.ResponseWriter) {
 		Status:      http.StatusConflict,
 		Initialized: true,
 	})
-}
-
-// writeSetupProblem 输出 RFC 7807 Problem（GC-6），detail 可选。
-func writeSetupProblem(w http.ResponseWriter, status int, problemType, title, detail string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	problem := dto.Problem{Type: problemType, Title: title, Status: status}
-	if detail != "" {
-		problem.Detail = &detail
-	}
-	_ = json.NewEncoder(w).Encode(problem)
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
 )
@@ -158,6 +160,7 @@ type setupTestOptions struct {
 	store        *fakeSetupStore
 	checker      auth.CompromisedPasswordChecker
 	withSessions bool
+	audit        SetupAuditor
 }
 
 type setupTestEnv struct {
@@ -188,10 +191,12 @@ func newSetupTestEnv(t *testing.T, opts setupTestOptions) *setupTestEnv {
 	}
 
 	handlers, err := NewSetupHandlers(SetupConfig{
-		Store:    store,
-		Sessions: sessions,
-		Checker:  opts.checker,
-		Redis:    rdb,
+		Store:          store,
+		Sessions:       sessions,
+		Checker:        opts.checker,
+		Redis:          rdb,
+		Audit:          opts.audit,
+		AllowNoSession: !opts.withSessions,
 	})
 	if err != nil {
 		t.Fatalf("NewSetupHandlers: %v", err)
@@ -462,6 +467,10 @@ func TestSetupValidation(t *testing.T) {
 		{"站点地址非 http", func(b map[string]any) { b["server_address"] = "ftp://example.com" }},
 		{"站点地址无主机", func(b map[string]any) { b["server_address"] = "https://" }},
 		{"站点地址带查询串", func(b map[string]any) { b["server_address"] = "https://example.com/?a=1" }},
+		{"站点地址带 userinfo", func(b map[string]any) { b["server_address"] = "https://user:pass@example.com" }},
+		{"站点地址带 fragment", func(b map[string]any) { b["server_address"] = "https://example.com/#frag" }},
+		{"站点地址带空 query", func(b map[string]any) { b["server_address"] = "https://example.com?" }},
+		{"站点地址带空 fragment", func(b map[string]any) { b["server_address"] = "https://example.com/#" }},
 		{"站点地址带空白", func(b map[string]any) { b["server_address"] = "https://example.com/a b" }},
 		{"站点地址超长", func(b map[string]any) { b["server_address"] = "https://example.com/" + strings.Repeat("a", 256) }},
 	}
@@ -495,6 +504,34 @@ func TestSetupRejectsCompromisedPassword(t *testing.T) {
 	}
 	if complete, _ := env.store.callCounts(); complete != 0 {
 		t.Fatal("弱口令不应进入写事务")
+	}
+}
+
+// 站点名与用户名都必须作为每用户上下文词传给 checker（security-01 §2.3）：
+// 「NewTG2026」「acme2026」这类可猜测口令不能被纯长度策略放过。
+func TestSetupRejectsSiteTitleInPassword(t *testing.T) {
+	env := newSetupTestEnv(t, setupTestOptions{})
+	body := setupPayload()
+	body["site_title"] = "Zebraworks"
+	body["password"] = "zebraworks9"
+	body["confirmPassword"] = "zebraworks9"
+	rr := env.post(body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("含站点名的口令 status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "compromised") {
+		t.Errorf("响应未说明口令弱/已泄露: %q", rr.Body.String())
+	}
+}
+
+func TestSetupRejectsUsernameInPassword(t *testing.T) {
+	env := newSetupTestEnv(t, setupTestOptions{})
+	body := setupPayloadFor("zebracorn")
+	body["password"] = "zebracorn123"
+	body["confirmPassword"] = "zebracorn123"
+	rr := env.post(body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("含用户名的口令 status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
 	}
 }
 
@@ -570,12 +607,176 @@ func TestSetupIsInitialized(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 审计事件 system_initialized（modules-01 F-01-20）
+// ---------------------------------------------------------------------------
+
+func TestSetupEmitsSystemInitializedAudit(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+		got   struct {
+			action string
+			actor  int64
+			detail json.RawMessage
+		}
+	)
+	env := newSetupTestEnv(t, setupTestOptions{
+		audit: func(_ context.Context, action string, actor int64, detail json.RawMessage) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			got.action = action
+			got.actor = actor
+			got.detail = detail
+			return nil
+		},
+	})
+
+	rr := env.post(setupPayload())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	user := decodeSetupUser(t, rr)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("审计回调调用 %d 次，期望 1", calls)
+	}
+	if got.action != audit.ActionSystemInitialized {
+		t.Errorf("audit action = %q，期望 %q", got.action, audit.ActionSystemInitialized)
+	}
+	if got.actor != user.ID {
+		t.Errorf("audit actor = %d，期望首管 id %d", got.actor, user.ID)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(got.detail, &detail); err != nil {
+		t.Fatalf("audit detail 非法: %v（raw=%q）", err, string(got.detail))
+	}
+	if detail["action"] != audit.ActionSystemInitialized {
+		t.Errorf("detail.action = %v，期望 %q", detail["action"], audit.ActionSystemInitialized)
+	}
+	if detail["user_id"] != float64(user.ID) || detail["username"] != "admin" {
+		t.Errorf("detail 身份字段不对: %v", detail)
+	}
+}
+
+// 审计失败不得回滚已提交的初始化（日志库独立，且无跨库事务）。
+func TestSetupAuditFailureDoesNotRollback(t *testing.T) {
+	env := newSetupTestEnv(t, setupTestOptions{
+		audit: func(context.Context, string, int64, json.RawMessage) error {
+			return errors.New("audit db down")
+		},
+	})
+	rr := env.post(setupPayload())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（审计失败不回滚，body=%q）", rr.Code, rr.Body.String())
+	}
+	if env.store.userCount() != 1 {
+		t.Fatal("审计失败后 admin 仍应存在")
+	}
+	if _, ok := env.store.setting(SetupCompletedKey); !ok {
+		t.Fatal("审计失败后幂等锚仍应存在")
+	}
+}
+
+// TestSetupAuditPersistsSystemInitialized 用真实 audit.Logger + fake Execer 证明
+// 新动作已被冻结枚举接受，并按 operation 类落库、detail 带 action。
+func TestSetupAuditPersistsSystemInitialized(t *testing.T) {
+	exec := &setupAuditExec{}
+	env := newSetupTestEnv(t, setupTestOptions{audit: audit.New(exec).Log})
+
+	rr := env.post(setupPayload())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.args) != 1 {
+		t.Fatalf("审计写入 %d 行，期望 1", len(exec.args))
+	}
+	args := exec.args[0]
+	// 列顺序：user_id, username, category, ip, user_agent, method, route,
+	// status_code, result, detail, before, after。
+	if args[2] != "operation" {
+		t.Errorf("category = %v，期望 operation", args[2])
+	}
+	detail, ok := args[9].(string)
+	if !ok {
+		t.Fatalf("detail 类型 = %T，期望 string", args[9])
+	}
+	if !strings.Contains(detail, `"action":"system_initialized"`) {
+		t.Errorf("detail 未记录 action: %s", detail)
+	}
+	if !strings.Contains(detail, `"username":"admin"`) {
+		t.Errorf("detail 未记录用户名: %s", detail)
+	}
+}
+
+// 建会话失败发生在提交与审计之后：初始化不能回滚，审计仍须落库。
+func TestSetupSessionFailureStillAudits(t *testing.T) {
+	auditCalled := false
+	env := newSetupTestEnv(t, setupTestOptions{
+		withSessions: true,
+		audit: func(context.Context, string, int64, json.RawMessage) error {
+			auditCalled = true
+			return nil
+		},
+	})
+	// 关掉 Redis：自动登录会话创建必然失败。
+	_ = env.rdb.Close()
+
+	rr := env.post(setupPayload())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+	}
+	if !auditCalled {
+		t.Fatal("建会话失败前必须已写 system_initialized 审计")
+	}
+	if env.store.userCount() != 1 {
+		t.Fatal("会话失败不得回滚已完成的初始化")
+	}
+}
+
+// setupAuditExec 捕获 audit.Logger 的 INSERT 参数。
+type setupAuditExec struct {
+	mu   sync.Mutex
+	args [][]any
+}
+
+func (e *setupAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.args = append(e.args, append([]any(nil), args...))
+	return setupAuditResult(1), nil
+}
+
+type setupAuditResult int64
+
+func (setupAuditResult) LastInsertId() (int64, error) { return 0, nil }
+
+func (r setupAuditResult) RowsAffected() (int64, error) { return int64(r), nil }
+
+// ---------------------------------------------------------------------------
 // 构造与路由
 // ---------------------------------------------------------------------------
 
 func TestSetupNewHandlersRequiresStore(t *testing.T) {
 	if _, err := NewSetupHandlers(SetupConfig{}); err == nil {
 		t.Fatal("缺少 Store 时 NewSetupHandlers 应返回错误")
+	}
+}
+
+// F-01-20 要求初始化后自动登录：生产装配缺少 Sessions 必须在启动期失败，
+// 而不是静默跳过自动登录。测试/受限装配可显式 AllowNoSession.
+func TestSetupNewHandlersRequiresSessions(t *testing.T) {
+	store := newFakeSetupStore()
+	if _, err := NewSetupHandlers(SetupConfig{Store: store}); err == nil {
+		t.Fatal("缺少 Sessions 时应返回错误（自动登录是 F-01-20 的验收项）")
+	}
+	if _, err := NewSetupHandlers(SetupConfig{Store: store, AllowNoSession: true}); err != nil {
+		t.Fatalf("显式 AllowNoSession 时应允许构造: %v", err)
 	}
 }
 

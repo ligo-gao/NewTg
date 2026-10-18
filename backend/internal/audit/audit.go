@@ -41,6 +41,9 @@ const (
 	ActionAuthPasswordReset  = "auth.password_reset"
 	ActionAuth2FAEnable      = "auth.2fa_enable"
 	ActionAuth2FADisable     = "auth.2fa_disable"
+	// ActionAuth2FABackupCodesRegenerate 是 modules-01 F-01-10 的
+	// backup_codes_regenerated 事件（备用码整体重置，旧码立即失效）。
+	ActionAuth2FABackupCodesRegenerate = "auth.2fa_backup_codes_regenerate"
 
 	ActionTokenCreate       = "token.create"
 	ActionTokenUpdate       = "token.update"
@@ -60,6 +63,11 @@ const (
 	ActionUserQuotaAdjust   = "user.quota_adjust"
 	ActionUserReset2FA      = "user.reset_2fa"
 	ActionUserResetPassword = "user.reset_password"
+
+	// ActionSystemInitialized 是 modules-01 F-01-20 冻结的首次初始化事件。
+	// 它不属于某个用户的日常操作，但在审计面上必须可查（验收：初始化动作
+	// 在审计日志可查），故归于 operation 类。
+	ActionSystemInitialized = "system_initialized"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -76,13 +84,14 @@ const (
 // 令牌与用户管理属 operation。access_token 类别留给未来的 PAT（模块 01 假设），
 // 本计划冻结的动作枚举里没有成员，故不映射。
 var actionCategories = map[string]string{
-	ActionAuthLogin:          categoryLogin,
-	ActionAuthLogout:         categoryLogin,
-	ActionAuthRegister:       categoryLogin,
-	ActionAuthPasswordChange: categorySecurity,
-	ActionAuthPasswordReset:  categorySecurity,
-	ActionAuth2FAEnable:      categorySecurity,
-	ActionAuth2FADisable:     categorySecurity,
+	ActionAuthLogin:                    categoryLogin,
+	ActionAuthLogout:                   categoryLogin,
+	ActionAuthRegister:                 categoryLogin,
+	ActionAuthPasswordChange:           categorySecurity,
+	ActionAuthPasswordReset:            categorySecurity,
+	ActionAuth2FAEnable:                categorySecurity,
+	ActionAuth2FADisable:               categorySecurity,
+	ActionAuth2FABackupCodesRegenerate: categorySecurity,
 
 	ActionTokenCreate:       categoryOperation,
 	ActionTokenUpdate:       categoryOperation,
@@ -102,6 +111,8 @@ var actionCategories = map[string]string{
 	ActionUserQuotaAdjust:   categoryOperation,
 	ActionUserReset2FA:      categoryOperation,
 	ActionUserResetPassword: categoryOperation,
+
+	ActionSystemInitialized: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。
