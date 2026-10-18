@@ -3,6 +3,7 @@ import {
   Fragment,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
 } from 'react'
@@ -19,6 +20,7 @@ import { pushErrorToast, useToastStore } from '@/shared/ui/toast'
 import {
   batchChannelStatus,
   batchDeleteChannels,
+  createIdempotencyKey,
   deleteChannel,
   listChannels,
   testChannel,
@@ -76,6 +78,7 @@ export function ChannelListPage() {
 
   const [keywordInput, setKeywordInput] = useState('')
   const [modelInput, setModelInput] = useState('')
+  const [groupInput, setGroupInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [model, setModel] = useState('')
   const [status, setStatus] = useState<ChannelStatus | null>(null)
@@ -93,6 +96,9 @@ export function ChannelListPage() {
   const [testTarget, setTestTarget] = useState<Channel | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  // One Idempotency-Key per delete intent: retrying the same id set after a
+  // failure replays the original request; a different selection mints a new one.
+  const deleteIntent = useRef<{ signature: string; key: string } | null>(null)
 
   // F-06-01: keyword/model filtering is debounced by 300ms; the other filters
   // apply immediately and always reset to page 1 (modules-06 §2.2). Selection
@@ -122,6 +128,22 @@ export function ChannelListPage() {
       clearTimeout(timer)
     }
   }, [modelInput, model])
+
+  // F-06-01 applies to every free-text filter: the group input must not fire a
+  // request per keystroke either, and a changed filter invalidates the
+  // page-scoped selection just like keyword/model do.
+  useEffect(() => {
+    const nextGroup = groupInput.trim()
+    if (nextGroup === group) return
+    const timer = setTimeout(() => {
+      setGroup(nextGroup)
+      setPage(1)
+      setSelected(new Set())
+    }, 300)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [groupInput, group])
 
   const params = useMemo<ChannelListParams>(
     () => ({
@@ -191,6 +213,7 @@ export function ChannelListPage() {
   function clearFilters(): void {
     setKeywordInput('')
     setModelInput('')
+    setGroupInput('')
     setKeyword('')
     setModel('')
     setStatus(null)
@@ -330,7 +353,14 @@ export function ChannelListPage() {
     setDeleteBusy(true)
     try {
       if (deleteTarget.kind === 'bulk') {
-        const result = await batchDeleteChannels(Array.from(selected))
+        const ids = Array.from(selected)
+        const signature = JSON.stringify(ids)
+        if (deleteIntent.current?.signature !== signature) {
+          deleteIntent.current = { signature, key: createIdempotencyKey() }
+        }
+        const result = await batchDeleteChannels(ids, deleteIntent.current.key)
+        // The intent completed; a later bulk delete is a new one.
+        deleteIntent.current = null
         if (result.failed.length === 0) {
           useToastStore.getState().push({
             tone: 'success',
@@ -398,6 +428,9 @@ export function ChannelListPage() {
     items.length > 0 && items.every((channel) => selected.has(channel.id))
   const deleteCount = deleteTarget?.kind === 'bulk' ? selected.size : 1
   const loading = channelsQuery.isPending
+  // A bulk write must not run while a selected row still has a mutation in
+  // flight (modules-06 §2: one write per row at a time).
+  const bulkDisabled = bulkBusy || (busyRow !== null && selected.has(busyRow))
 
   return (
     <section className="flex flex-col gap-4">
@@ -475,13 +508,11 @@ export function ChannelListPage() {
           </label>
           <input
             id="channel-filter-group"
-            value={group}
+            value={groupInput}
             placeholder={t('common.channels.filters.groupPlaceholder')}
             disabled={loading}
             onChange={(event) => {
-              setGroup(event.target.value)
-              setPage(1)
-              clearSelection()
+              setGroupInput(event.target.value)
             }}
             className="h-9 w-40 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
@@ -678,6 +709,7 @@ export function ChannelListPage() {
                             type="button"
                             role="switch"
                             aria-checked={channel.status === 1}
+                            aria-busy={busy}
                             aria-label={t(
                               channel.status === 1
                                 ? 'common.channels.actions.disableChannel'
@@ -693,13 +725,23 @@ export function ChannelListPage() {
                               channel.status === 1 ? 'bg-success' : 'bg-neutral-line',
                             ].join(' ')}
                           >
-                            <span
-                              aria-hidden="true"
-                              className={[
-                                'inline-block size-4 rounded-full bg-surface-card transition-transform',
-                                channel.status === 1 ? 'translate-x-4' : 'translate-x-0.5',
-                              ].join(' ')}
-                            />
+                            {busy ? (
+                              <span
+                                data-testid={`channel-row-busy-${channel.id}`}
+                                aria-hidden="true"
+                                className="absolute inset-0 flex items-center justify-center"
+                              >
+                                <span className="size-3 animate-spin rounded-full border-2 border-on-brand border-t-transparent" />
+                              </span>
+                            ) : (
+                              <span
+                                aria-hidden="true"
+                                className={[
+                                  'inline-block size-4 rounded-full bg-surface-card transition-transform',
+                                  channel.status === 1 ? 'translate-x-4' : 'translate-x-0.5',
+                                ].join(' ')}
+                              />
+                            )}
                           </button>
                           <Button
                             variant="ghost"
@@ -712,6 +754,7 @@ export function ChannelListPage() {
                           </Button>
                           <Button
                             variant="ghost"
+                            disabled={busy}
                             onClick={() => {
                               setTestTarget(channel)
                             }}
@@ -720,6 +763,7 @@ export function ChannelListPage() {
                           </Button>
                           <Button
                             variant="ghost"
+                            disabled={busy}
                             onClick={() => {
                               setSheet({
                                 open: true,
@@ -732,6 +776,7 @@ export function ChannelListPage() {
                           </Button>
                           <Button
                             variant="ghost"
+                            disabled={busy}
                             onClick={() => {
                               setDeleteTarget({ kind: 'single', channel })
                             }}
@@ -816,7 +861,7 @@ export function ChannelListPage() {
           </span>
           <Button
             variant="secondary"
-            disabled={bulkBusy}
+            disabled={bulkDisabled}
             onClick={() => {
               void handleBulkStatus('enable')
             }}
@@ -825,7 +870,7 @@ export function ChannelListPage() {
           </Button>
           <Button
             variant="secondary"
-            disabled={bulkBusy}
+            disabled={bulkDisabled}
             onClick={() => {
               void handleBulkStatus('disable')
             }}
@@ -834,7 +879,7 @@ export function ChannelListPage() {
           </Button>
           <Button
             variant="danger"
-            disabled={bulkBusy}
+            disabled={bulkDisabled}
             onClick={() => {
               setDeleteTarget({ kind: 'bulk' })
             }}
@@ -871,7 +916,11 @@ export function ChannelListPage() {
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null)
         }}
-        title={t('common.channels.bulk.deleteTitle')}
+        title={
+          deleteTarget?.kind === 'single'
+            ? t('common.channels.bulk.singleDeleteTitle')
+            : t('common.channels.bulk.deleteTitle')
+        }
         description={
           deleteTarget?.kind === 'single'
             ? t('common.channels.bulk.singleDeleteBody')

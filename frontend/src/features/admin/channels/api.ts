@@ -11,6 +11,8 @@ import {
   CSRF_HEADER,
   WRITE_METHODS,
   getCsrfToken,
+  isCsrfFailure,
+  refreshCsrfCookie,
   toApiError,
 } from '@/api/client'
 import { ApiError, parseProblem } from '@/api/errors'
@@ -59,7 +61,12 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
-function newIdempotencyKey(): string {
+/**
+ * Mints the key for one user intent. Callers that own the intent (the create
+ * sheet, the bulk-delete confirmation) generate it on first submit and pass
+ * the same value on retries so the backend can replay instead of duplicating.
+ */
+export function createIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }
@@ -96,6 +103,19 @@ async function normalizeError(response: Response): Promise<ChannelApiError> {
   return fields.length > 0 ? Object.assign(error, { fields }) : error
 }
 
+async function dispatch(
+  path: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(apiUrl(path), init)
+  } catch (error) {
+    // Aborts are caller-controlled cancellation, not transport failures.
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw parseProblem({ status: 0 })
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET'
   const headers = new Headers({ Accept: 'application/json' })
@@ -114,19 +134,25 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     body = JSON.stringify(options.body)
   }
 
-  let response: Response
-  try {
-    response = await fetch(apiUrl(path), {
-      method,
-      headers,
-      body,
-      credentials: 'same-origin',
-      signal: options.signal,
-    })
-  } catch (error) {
-    // Aborts are caller-controlled cancellation, not transport failures.
-    if (error instanceof DOMException && error.name === 'AbortError') throw error
-    throw parseProblem({ status: 0 })
+  const init: RequestInit = {
+    method,
+    headers,
+    body,
+    credentials: 'same-origin',
+    signal: options.signal,
+  }
+
+  let response = await dispatch(path, init)
+
+  // Mirror the frozen contract client's recovery (security-01 §2.2, §3.5):
+  // one `GET /api/me` refresh, then replay this write exactly once with the
+  // refreshed cookie. A second failure is surfaced as `forbidden` below.
+  if (!response.ok && WRITE_METHODS.has(method) && (await isCsrfFailure(response))) {
+    await refreshCsrfCookie()
+    headers.delete(CSRF_HEADER)
+    const refreshedToken = getCsrfToken()
+    if (refreshedToken !== undefined) headers.set(CSRF_HEADER, refreshedToken)
+    response = await dispatch(path, init)
   }
 
   if (!response.ok) throw await normalizeError(response)
@@ -155,13 +181,19 @@ export function getChannel(id: number): Promise<Channel> {
   return request<Channel>(`/api/channels/${id}`)
 }
 
-export function createChannel(input: CreateChannelInput): Promise<Channel> {
-  // POST /api/channels is idempotent (Task 8); the key is minted once per
-  // user intent, and the caller never retries writes automatically.
+/**
+ * POST /api/channels is idempotent (Task 8). The caller owns the key so a
+ * retry of the same intent (same payload) replays instead of creating a
+ * second channel; only callers without retry state fall back to a fresh key.
+ */
+export function createChannel(
+  input: CreateChannelInput,
+  idempotencyKey?: string,
+): Promise<Channel> {
   return request<Channel>('/api/channels', {
     method: 'POST',
     body: input,
-    idempotencyKey: newIdempotencyKey(),
+    idempotencyKey: idempotencyKey ?? createIdempotencyKey(),
   })
 }
 
@@ -189,11 +221,19 @@ export function batchChannelStatus(
   })
 }
 
-export function batchDeleteChannels(ids: number[]): Promise<BatchOperationResult> {
+/**
+ * POST /api/channels/batch-delete is idempotent (Task 8); like `createChannel`
+ * the key belongs to the confirmation intent so a retry with the same id set
+ * replays rather than deleting a second time.
+ */
+export function batchDeleteChannels(
+  ids: number[],
+  idempotencyKey?: string,
+): Promise<BatchOperationResult> {
   return request<BatchOperationResult>('/api/channels/batch-delete', {
     method: 'POST',
     body: { ids },
-    idempotencyKey: newIdempotencyKey(),
+    idempotencyKey: idempotencyKey ?? createIdempotencyKey(),
   })
 }
 

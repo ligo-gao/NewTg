@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -14,6 +15,35 @@ interface TestEntry {
   status: TestStatus
   latency?: number
   errorClass?: string
+  /** RFC 7807 message + request id for HTTP failures (never raw payloads). */
+  detail?: string
+}
+
+/**
+ * Classifies a failed test request for display.
+ *
+ * A transport failure (status 0 / `offline`) is the only case that maps to
+ * `network`; an HTTP 4xx/5xx response is a gateway/upstream failure and must
+ * keep its RFC 7807 message and request id instead of being relabelled
+ * "Network error". Anything else degrades to `unknown` (GC-6: no raw strings
+ * beyond the Problem members already allowlisted by `parseProblem`).
+ */
+function failedEntry(error: unknown): TestEntry {
+  if (error instanceof ApiError) {
+    if (error.kind === 'offline') {
+      return { status: 'failed', errorClass: 'network' }
+    }
+    const message = error.detail ?? error.title
+    return {
+      status: 'failed',
+      errorClass: 'server',
+      detail:
+        error.request_id === undefined
+          ? message
+          : `${message} (request ${error.request_id})`,
+    }
+  }
+  return { status: 'failed', errorClass: 'unknown' }
 }
 
 const CONCURRENCY = 3
@@ -108,10 +138,10 @@ export function ChannelTestDialog({
                   errorClass: result.error_class ?? 'unknown',
                 },
           }))
-        } catch {
+        } catch (error) {
           setResults((current) => ({
             ...current,
-            [model]: { status: 'failed', errorClass: 'network' },
+            [model]: failedEntry(error),
           }))
         } finally {
           finished += 1
@@ -261,6 +291,16 @@ function TestRowStatus({
     )
   }
   return (
-    <span className="text-xs text-danger">✗ {reasonFor(entry.errorClass)}</span>
+    <span className="text-xs text-danger">
+      ✗ {reasonFor(entry.errorClass)}
+      {entry.detail === undefined ? null : (
+        <span
+          data-testid="test-error-detail"
+          className="ml-1 font-normal text-ink-2"
+        >
+          · {entry.detail}
+        </span>
+      )}
+    </span>
   )
 }

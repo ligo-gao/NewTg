@@ -15,20 +15,27 @@ import {
 } from './test-utils'
 
 describe('ChannelMutateSheet', () => {
-  it('creates a channel, sends the api key once, and only ever shows the mask', async () => {
+  it('creates a channel, sends the api key once, and never re-displays the plaintext', async () => {
     const user = userEvent.setup()
     const plaintext = 'sk-secret-key-1234'
     const mask = 'sk-…1234'
+    // The POST/detail DTO carries the mask; the list DTO deliberately does not
+    // (GC-6), so the list fixture must stay mask-free.
     const created = makeChannel({
       id: 7,
       name: 'new-channel',
       credentials_masked: { api_key: mask },
       credentials_set: true,
     })
+    const listed = makeChannel({
+      id: 7,
+      name: 'new-channel',
+      credentials_set: true,
+    })
     let createdFlag = false
     const requests = installFetch((request) => {
       if (request.method === 'GET' && request.url.pathname === '/api/channels') {
-        return jsonResponse(makeListResponse(createdFlag ? [created] : []))
+        return jsonResponse(makeListResponse(createdFlag ? [listed] : []))
       }
       if (request.method === 'POST' && request.url.pathname === '/api/channels') {
         createdFlag = true
@@ -67,7 +74,8 @@ describe('ChannelMutateSheet', () => {
       /^[0-9a-f-]{36}$/,
     )
 
-    // The sheet closes and the refreshed list renders the masked value.
+    // The sheet closes and the refreshed list renders the masked state; the
+    // plaintext never comes back from the server.
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).toBeNull()
     })
@@ -76,8 +84,81 @@ describe('ChannelMutateSheet', () => {
     await user.click(
       screen.getByRole('button', { name: 'Expand details for new-channel' }),
     )
-    expect(await screen.findByText(mask)).toBeTruthy()
+    expect(await screen.findByText('Set')).toBeTruthy()
     expect(screen.queryByText(plaintext)).toBeNull()
+  })
+
+  it('reuses the create idempotency key on retry and mints a new one after an edit', async () => {
+    const user = userEvent.setup()
+    const requests = installFetch((request) => {
+      if (request.method === 'POST' && request.url.pathname === '/api/channels') {
+        return problemResponse(500, {
+          type: 'https://newtg.dev/problems/internal_error',
+          title: 'Internal Server Error',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    const onOpenChange = () => {}
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="create"
+        onOpenChange={onOpenChange}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('Name'), 'retry-me')
+    await user.type(within(dialog).getByLabelText('API key'), 'sk-12345678')
+    await user.type(within(dialog).getByLabelText('Supported models'), 'gpt-4{enter}')
+
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    await user.click(save)
+    await waitFor(() => {
+      expect(
+        requests.filter(
+          (request) =>
+            request.method === 'POST' &&
+            request.url.pathname === '/api/channels',
+        ),
+      ).toHaveLength(1)
+    })
+
+    // Retrying the same payload reuses the key: the backend replays instead
+    // of creating a second channel.
+    await user.click(save)
+    await waitFor(() => {
+      const posts = requests.filter(
+        (request) =>
+          request.method === 'POST' &&
+          request.url.pathname === '/api/channels',
+      )
+      expect(posts).toHaveLength(2)
+      expect(posts[0]?.headers.get('Idempotency-Key')).toBe(
+        posts[1]?.headers.get('Idempotency-Key'),
+      )
+    })
+
+    // Editing the payload changes the intent, so the next submit mints a new
+    // key rather than replaying the old (different) request.
+    const nameInput = within(dialog).getByLabelText('Name')
+    await user.clear(nameInput)
+    await user.type(nameInput, 'retry-me-2')
+    await user.click(save)
+    await waitFor(() => {
+      const posts = requests.filter(
+        (request) =>
+          request.method === 'POST' &&
+          request.url.pathname === '/api/channels',
+      )
+      expect(posts).toHaveLength(3)
+      expect(posts[2]?.headers.get('Idempotency-Key')).not.toBe(
+        posts[0]?.headers.get('Idempotency-Key'),
+      )
+    })
   })
 
   it('omits credentials when the edit form leaves the key blank', async () => {
@@ -300,7 +381,7 @@ describe('ChannelMutateSheet', () => {
     })
   })
 
-  it('shows the 409 version-conflict message inline', async () => {
+  it('recovers from a 409 version conflict by reloading the baseline version', async () => {
     const user = userEvent.setup()
     const detail = makeChannel({
       id: 6,
@@ -309,16 +390,27 @@ describe('ChannelMutateSheet', () => {
       credentials_masked: { api_key: 'sk-…wxyz' },
       credentials_set: true,
     })
-    installFetch((request) => {
+    const latest = {
+      ...detail,
+      version: '2026-10-05T12:00:00.000Z',
+    }
+    let detailCalls = 0
+    let patchCalls = 0
+    const requests = installFetch((request) => {
       if (request.method === 'GET' && request.url.pathname === '/api/channels/6') {
-        return jsonResponse(detail)
+        detailCalls += 1
+        return jsonResponse(detailCalls === 1 ? detail : latest)
       }
       if (request.method === 'PATCH' && request.url.pathname === '/api/channels/6') {
-        return problemResponse(409, {
-          type: 'https://newtg.dev/problems/channel_version_conflict',
-          title: 'Channel version conflict',
-          detail: 'the channel was modified by someone else; refresh and retry',
-        })
+        patchCalls += 1
+        if (patchCalls === 1) {
+          return problemResponse(409, {
+            type: 'https://newtg.dev/problems/channel_version_conflict',
+            title: 'Channel version conflict',
+            detail: 'the channel was modified by someone else; refresh and retry',
+          })
+        }
+        return jsonResponse(latest)
       }
       return problemResponse(404, { type: 'about:blank', title: 'not found' })
     })
@@ -335,12 +427,45 @@ describe('ChannelMutateSheet', () => {
 
     const dialog = await screen.findByRole('dialog')
     await within(dialog).findByLabelText('API key')
-    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    // Keep an unsaved edit so the reload can be checked for re-application.
+    const nameInput = within(dialog).getByLabelText('Name') as HTMLInputElement
+    await user.clear(nameInput)
+    await user.type(nameInput, 'conflicted-renamed')
+
+    const save = within(dialog).getByRole('button', {
+      name: 'Save',
+    }) as HTMLButtonElement
+    await user.click(save)
 
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain(
       'the channel was modified by someone else; refresh and retry',
     )
+    // The stale expected_version makes every retry fail: Save is locked until
+    // the baseline is reloaded on purpose.
+    expect(save.disabled).toBe(true)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Reload latest' }))
+
+    await waitFor(() => {
+      expect(detailCalls).toBe(2)
+    })
+    await waitFor(() => {
+      expect(save.disabled).toBe(false)
+    })
+    // The unsaved edit survives the reload.
+    expect(nameInput.value).toBe('conflicted-renamed')
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+
+    await user.click(save)
+    await waitFor(() => {
+      expect(patchCalls).toBe(2)
+    })
+    expect(findRequest(requests, 'PATCH', '/api/channels/6')?.body).toMatchObject({
+      expected_version: '2026-10-05T12:00:00.000Z',
+      name: 'conflicted-renamed',
+    })
   })
 
   it('maps a 409 name conflict to the name field', async () => {
@@ -380,6 +505,52 @@ describe('ChannelMutateSheet', () => {
 
     expect(
       await screen.findByText('A channel with this name already exists.'),
+    ).toBeTruthy()
+  })
+
+  it('maps 422 errors[] entries onto the matching form fields', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 31,
+      name: 'validated',
+      credentials_masked: { api_key: 'sk-…9876' },
+      credentials_set: true,
+    })
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/31') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/31') {
+        return problemResponse(422, {
+          type: 'https://newtg.dev/problems/validation_failed',
+          title: 'Validation failed',
+          detail: 'two fields are invalid',
+          errors: [
+            { field: 'name', message: 'Name is reserved by policy.' },
+            { field: 'supported_models', message: 'Model gpt-4 is not allowed.' },
+          ],
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={31}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('API key')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await within(dialog).findByText('Name is reserved by policy.')).toBeTruthy()
+    expect(
+      within(dialog).getByText('Model gpt-4 is not allowed.'),
     ).toBeTruthy()
   })
 })
