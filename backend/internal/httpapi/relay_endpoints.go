@@ -9,7 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"newtg/gateway/internal/auth"
@@ -69,6 +72,15 @@ const (
 	// 第 21 条软错误按硬错误处理：继续吞错会让一个持续损坏的上游把连接
 	// 拖成永不结束的「成功」流。
 	maxSoftStreamErrors = 20
+
+	// streamInactivityTimeout 是块间不活动看门狗的默认值（relay-03 §5.4/§10.1
+	// 冻结的 300s）。上游在等待期或传输期静默超过该值即中断流并按 timeout 结算。
+	// 测试通过 RelayHandlerOptions.StreamInactivityTimeout 注入短值。
+	streamInactivityTimeout = 300 * time.Second
+
+	// streamPingInterval 是 SSE 保活注释帧 `: PING\n\n` 的间隔（relay-03 §3.3：
+	// 契约 §10.1 冻结的唯一值 10s）。等待期与传输期共用同一个 ticker。
+	streamPingInterval = 10 * time.Second
 )
 
 var (
@@ -109,17 +121,25 @@ type RelayHandlerOptions struct {
 	// Dispatch 是渠道类型 → 适配器分派；nil 时使用 adapters.Dispatch。
 	// 测试注入 fake StreamAdapter 以覆盖 soft/hard 流错误等上游难以复现的路径。
 	Dispatch func(contract.ChannelType) (contract.Adapter, error)
+	// TrustedProxies 是 TRUSTED_PROXIES 原文（逗号分隔 IP/CIDR）。为空时
+	// RelayAuth 只信 RemoteAddr，忽略 X-Forwarded-For（M2 策略见 relay_auth.go）。
+	TrustedProxies string
+	// StreamInactivityTimeout 覆盖流式看门狗的默认 300s；<=0 使用默认值。
+	// 仅测试注入短值，生产不得调小（relay-03 §10.1 冻结值）。
+	StreamInactivityTimeout time.Duration
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
 type RelayHandler struct {
-	channels RelayChannelStore
-	tokens   auth.TokenLookup
-	access   UserAccessStore
-	sealer   *SecretSealer
-	billing  func() contract.BillingSession
-	client   *http.Client
-	dispatch func(contract.ChannelType) (contract.Adapter, error)
+	channels         RelayChannelStore
+	tokens           auth.TokenLookup
+	access           UserAccessStore
+	sealer           *SecretSealer
+	billing          func() contract.BillingSession
+	client           *http.Client
+	dispatch         func(contract.ChannelType) (contract.Adapter, error)
+	trustedProxies   []netip.Prefix
+	streamInactivity time.Duration
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -145,20 +165,26 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if dispatch == nil {
 		dispatch = adapters.Dispatch
 	}
+	inactivity := opts.StreamInactivityTimeout
+	if inactivity <= 0 {
+		inactivity = streamInactivityTimeout
+	}
 	return &RelayHandler{
-		channels: opts.Channels,
-		tokens:   opts.Tokens,
-		access:   opts.Access,
-		sealer:   opts.Sealer,
-		billing:  billing,
-		client:   client,
-		dispatch: dispatch,
+		channels:         opts.Channels,
+		tokens:           opts.Tokens,
+		access:           opts.Access,
+		sealer:           opts.Sealer,
+		billing:          billing,
+		client:           client,
+		dispatch:         dispatch,
+		trustedProxies:   parseTrustedProxies(opts.TrustedProxies),
+		streamInactivity: inactivity,
 	}
 }
 
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这两个端点（管理面不经过它）。
 func (h *RelayHandler) Register(mux *http.ServeMux) {
-	authMiddleware := RelayAuth(h.tokens, h.access)
+	authMiddleware := RelayAuth(h.tokens, h.access, h.trustedProxies)
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
 }
@@ -194,6 +220,14 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid OpenAI request body")
 		return
 	}
+	// finding 14（OpenAI stream bridge 丢弃 choice 身份）：stream=true 时
+	// 下游 SSE 桥接只编码 index=0 的增量，n>1 会静默丢失其余候选。
+	// 与其返回一个语义不完整的流，不如在入口 400 拒绝并明确说明。
+	if parsed.Stream && requestChoiceCount(body) > 1 {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request",
+			"stream=true with n>1 is not supported: the streaming bridge cannot preserve choice identity")
+		return
+	}
 
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok {
@@ -211,12 +245,97 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 必须在 BuildRelayContext 之后写：它会先用 peekStreaming 填一个尽力值。
 	relay.WithRequest(rc, parsed, ir.FormatOpenAIChat, r.URL.Path)
 
-	deps := h.routeDeps(rc)
+	// finding 1（relay-01 §3.5/§5.4-A）：pin 必须在 BuildRelayContext **之后**
+	// 解析——后者已经完成了「非管理员使用 pin → 403」的统一校验（R-P2a）。
+	// 提前解析会让会话路径的 pin 绕过那道校验。
+	pinID, hasPin := relay.ParseChannelPin(r)
+
+	// finding 6（relay-01 §3.4）：令牌模型白名单在路由阶段执行；pin 渠道
+	// 优先级高于白名单（§3.4 注：pin 命中时跳过白名单）。非管理员 pin
+	// 已在 BuildRelayContext 返回 403，因此这里 hasPin 等价于管理员 pin。
+	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
+			"this token is not allowed to access the requested model")
+		return
+	}
+
+	// finding 13：预扣估算必须进入 RelayContext，否则 PreConsume 只能看到
+	// 零值（MaxTokens=nil），402 判定与 Terminate 预算释放都成了空转。
+	// PromptTokens 暂为 0：本地 token 估算器（relay-03 §7）尚未落地，
+	// 调用方不得把 0 误读成「prompt 免费」——M3 估算器接入后在此填充。
+	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
+		Model:     parsed.Model,
+		Group:     rc.UsingGroup,
+		MaxTokens: parsed.MaxTokens,
+	})
+
+	deps := h.routeDeps(rc, pinID, hasPin)
 	if parsed.Stream {
 		h.serveStream(w, r, rc, deps)
 		return
 	}
+	// finding 11（relay-03 §2.3）：非流式请求不得向上游发送 stream_options /
+	// include_usage——OpenAI 会以未知参数拒绝，且该选项只对流式有意义。
+	// 归一化层保留原始 Raw 供透传，故在非流式出口显式剥离。
+	if cleaned := stripStreamOptions(rc.Request); cleaned != rc.Request {
+		rc.Request = cleaned
+	}
 	h.serveJSON(w, r, rc, deps)
+}
+
+// requestChoiceCount 读取 OpenAI 请求体的 n（缺省/非法为 1）。
+// 只用于 finding 14 的「stream + n>1」拒绝，不进入 IR（契约未建模 n）。
+func requestChoiceCount(body []byte) int {
+	var payload struct {
+		N *int `json:"n"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.N == nil {
+		return 1
+	}
+	if *payload.N < 1 {
+		return 1
+	}
+	return *payload.N
+}
+
+// stripStreamOptions 返回剥离顶层 stream_options 的请求副本。
+//
+// 非流式路径专用（relay-03 §2.3「不支持该选项时不流式时清空」）。
+// 入参不被修改：Raw 是透传基底，可能仍被其它路径引用。
+func stripStreamOptions(req *contract.Request) *contract.Request {
+	if req == nil || len(req.Raw) == 0 {
+		return req
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(req.Raw, &obj); err != nil || obj == nil {
+		return req
+	}
+	if _, ok := obj["stream_options"]; !ok {
+		return req
+	}
+	delete(obj, "stream_options")
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return req
+	}
+	out := *req
+	out.Stream = false
+	out.Raw = raw
+	return &out
+}
+
+// tokenModelAllowed 判定请求模型是否满足令牌模型白名单（relay-01 §3.4）。
+// 空白名单 = 不限；大小写精确匹配（模型名是协议标识符，不做归一化）。
+func tokenModelAllowed(modelLimits []string, model string) bool {
+	if len(modelLimits) == 0 {
+		return true
+	}
+	for _, allowed := range modelLimits {
+		if allowed == model {
+			return true
+		}
+	}
+	return false
 }
 
 // readRelayBody 读取并限幅请求体。多读 1 字节即可区分「恰好 32MiB」与「超限」。
@@ -235,12 +354,37 @@ func readRelayBody(r *http.Request) ([]byte, error) {
 }
 
 // routeDeps 组装 relay.RouteDeps（控制器裁决 R-P4：依赖全部显式注入）。
-func (h *RelayHandler) routeDeps(rc *contract.RelayContext) relay.RouteDeps {
+//
+// pinID/hasPin 来自 relay.ParseChannelPin（handleChatCompletions 在
+// BuildRelayContext 成功后解析，finding 1）。pin 只写进候选约束，不写进
+// RelayContext（R-P2a）；若 pin 目标不在候选集内，返回 relay.ErrChannelNotFound，
+// 由 ExecuteAttempts 在 PreConsume **之前**快失败（HTTP 404）。
+func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool) relay.RouteDeps {
 	return relay.RouteDeps{
 		Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
 			// 候选按**客户端请求模型**与令牌分组过滤（relay-01 §5；store 侧
 			// 只返回 status=1 且 supported_models 命中该模型的行）。
-			return h.channels.Candidates(ctx, rc.OriginModel, rc.UsingGroup)
+			candidates, err := h.channels.Candidates(ctx, rc.OriginModel, rc.UsingGroup)
+			if err != nil {
+				return nil, err
+			}
+			if !hasPin {
+				return candidates, nil
+			}
+			pinned := false
+			for i := range candidates {
+				candidates[i].Constraints.PinChannelID = pinID
+				candidates[i].Constraints.RetryMode = contract.PinRetrySingleAttempt
+				if candidates[i].ChannelID == pinID {
+					pinned = true
+				}
+			}
+			if !pinned {
+				// pin 不在候选集：被过滤（禁用/分组/模型）或根本不存在。
+				// 绝不在这里按 pin 另取渠道，否则会绕过 §5.4 D 步的过滤兜底。
+				return nil, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID)
+			}
+			return candidates, nil
 		},
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
@@ -408,13 +552,11 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	if rc.RequestID != "" {
 		w.Header().Set("X-Request-ID", rc.RequestID)
 	}
+	sse := newRelaySSEWriter(w)
 	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	if flusher != nil {
-		flusher.Flush()
-	}
+	sse.flush()
 
-	h.bridgeStream(w, r, rc, result.Response.Body, streamAdapter, deps.Billing, flusher, start, includeUsage)
+	h.bridgeStream(r, rc, result.Response.Body, streamAdapter, deps.Billing, sse, start, includeUsage)
 }
 
 // bridgeStream 消费适配器的 StreamEvent 序列并写入客户端。
@@ -425,18 +567,26 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 //   - EventUsage：非零合并累计（不擦除已有维度）；
 //   - EventFinish：[DONE] 之前写出 include_usage 末块；整个响应对客户端只写一次
 //     data: [DONE]；
-//   - EventError：写错误帧 + [DONE]（错误文本固定，不含上游原始 body，GC-6）。
+//   - EventError：软错误记录后继续；硬错误只终止流，绝不伪造 [DONE]（GC-6）。
 //
-// 计费（GC-7）：2xx 之后会话已开启。正常完成用累计 UsageFact 终结；客户端断开
-// 用 Source=UsageUpstreamPartial 的 partial fact 终结；两者都只调用一次。
+// 健壮性（relay-03 §5.4/§10.1，M2 final review finding 4）：
+//   - 看门狗：块间不活动超过 streamInactivity（默认 300s）→ EndReason=timeout，
+//     关闭上游 body 以解除阻塞读；
+//   - 心跳：每 10s 写 `: PING\n\n` 注释帧（等待期与传输期共用），写失败按客户端
+//     断开处理并关闭上游；
+//   - panic 恢复：EndReason=EndPanic，进程不崩；
+//   - 计费（GC-7）：2xx 之后会话已开启；正常/超时/panic/断开所有出口都保证
+//     **恰好一次** Terminate（terminate 闭包的 terminated 守卫）。
+//
+// 异常结束（客户端断开/上游错误/超时/panic）不写收尾 usage 块与 [DONE]：
+// relay-03 §5.2/§10.3 要求由连接终止表达异常，伪造正常结束标记会误导客户端。
 func (h *RelayHandler) bridgeStream(
-	w http.ResponseWriter,
 	r *http.Request,
 	rc *contract.RelayContext,
 	upstream io.ReadCloser,
 	adapter contract.StreamAdapter,
 	billing contract.BillingSession,
-	flusher http.Flusher,
+	sse *relaySSEWriter,
 	start time.Time,
 	includeUsage bool,
 ) {
@@ -459,6 +609,14 @@ func (h *RelayHandler) bridgeStream(
 		upstreamFail bool
 		clientGone   bool
 	)
+	// 看门狗与 ping 协程会并发写这两个标志；事件循环只读。
+	var timedOut atomic.Bool
+	var pingFailed atomic.Bool
+
+	// 上游 body 可能被看门狗、ping 失败与 serveStream 的 defer 多处关闭：
+	// 统一经 sync.Once 收敛，避免并发 Close 的竞争。
+	var closeUpstreamOnce sync.Once
+	closeUpstream := func() { closeUpstreamOnce.Do(func() { _ = upstream.Close() }) }
 
 	terminated := false
 	terminate := func(fact contract.UsageFact) {
@@ -480,8 +638,84 @@ func (h *RelayHandler) bridgeStream(
 		})
 	}()
 
+	// —— 看门狗（块间不活动超时）——
+	inactivity := h.streamInactivity
+	if inactivity <= 0 {
+		inactivity = streamInactivityTimeout
+	}
+	watchdog := time.AfterFunc(inactivity, func() {
+		timedOut.Store(true)
+		// 关闭 body 让阻塞中的上游 Read 立即返回错误，事件循环才能退出。
+		closeUpstream()
+	})
+	defer watchdog.Stop()
+	touch := func() {
+		// timedOut 已置位时不再续期：避免把已判超时的流又「救活」。
+		if !timedOut.Load() {
+			watchdog.Reset(inactivity)
+		}
+	}
+
+	// —— SSE 心跳（等待首字节与流式传输期都发送）——
+	// 写端与事件循环共享 relaySSEWriter 的互斥锁，帧不会交错。
+	pingStop := make(chan struct{})
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		ticker := time.NewTicker(streamPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if !sse.ping() {
+					// 写失败 = 客户端已断开；置位并关闭上游解除阻塞读。
+					pingFailed.Store(true)
+					closeUpstream()
+					return
+				}
+			}
+		}
+	}()
+	var stopPingOnce sync.Once
+	stopPing := func() {
+		stopPingOnce.Do(func() {
+			close(pingStop)
+			<-pingDone
+		})
+	}
+	defer stopPing()
+
+	// —— panic 恢复 ——
+	// 注册在兜底 Terminate 之后（LIFO：本 defer 先执行），显式写入 EndPanic
+	// 与带用量的 fact；兜底 Terminate 随后因 terminated 守卫成为 no-op。
+	defer func() {
+		if rec := recover(); rec != nil {
+			stopPing()
+			watchdog.Stop()
+			relay.WithStream(rc, &contract.StreamStatus{
+				Phase:     contract.PhaseTerminated,
+				EndReason: contract.EndPanic,
+				Outcome:   relayStreamOutcome(contentSent),
+				RecvCount: received,
+				SendCount: sent,
+			}, sent, received, firstTokenMS)
+			terminate(contract.UsageFact{
+				Model:        model,
+				Usage:        abnormalUsageFact(accumulated, sawUsage),
+				LatencyMS:    int(time.Since(start).Milliseconds()),
+				FirstTokenMS: firstTokenMS,
+				Stream:       true,
+				Attempts:     rc.AttemptIndex + 1,
+			})
+		}
+	}()
+
 	writeData := func(payload []byte) bool {
-		if !writeRelaySSEData(w, flusher, payload) {
+		if !sse.data(payload) {
 			clientGone = true
 			return false
 		}
@@ -504,12 +738,21 @@ func (h *RelayHandler) bridgeStream(
 	}{Reader: upstream, Writer: io.Discard}
 
 	adapter.StreamEvents(rc, rw)(func(ev contract.StreamEvent) bool {
-		// 客户端断开优先判定：即使适配器把取消包装成 EventError，也按
-		// EndClientAbort/partial 处理，而不是上游错误。
+		// 异常优先判定：客户端断开 / ping 写失败 / 看门狗超时。
+		// 即使适配器把取消包装成 EventError，也按对应异常处理，而不是上游错误。
 		if r.Context().Err() != nil {
 			clientGone = true
 			return false
 		}
+		if pingFailed.Load() {
+			clientGone = true
+			return false
+		}
+		if timedOut.Load() {
+			upstreamFail = true
+			return false
+		}
+		touch()
 		received++
 
 		switch ev.Kind {
@@ -517,7 +760,7 @@ func (h *RelayHandler) bridgeStream(
 			if len(ev.Raw) == 0 {
 				return true
 			}
-			if !writeRelaySSERaw(w, flusher, ev.Raw) {
+			if !sse.raw(ev.Raw) {
 				clientGone = true
 				return false
 			}
@@ -589,19 +832,26 @@ func (h *RelayHandler) bridgeStream(
 		}
 	})
 
-	// 收尾帧只在正常/EOF 路径写；硬流错误不注入任何收尾帧（relay-03 §5.2/§10.3：
-	// 异常结束由连接终止表达，不伪造 [DONE]），客户端断开时连接已不可用。
-	if !clientGone && !upstreamFail {
+	// 停止心跳后再写收尾帧，避免 [DONE] 之后仍出现 ping。
+	stopPing()
+	if pingFailed.Load() {
+		clientGone = true
+	}
+
+	// 收尾帧只在正常/EOF 路径写；异常结束（客户端断开、上游错误、看门狗超时、
+	// panic）不写 usage 块与 [DONE]（relay-03 §5.2/§10.3）。
+	abnormal := clientGone || upstreamFail || timedOut.Load()
+	if !abnormal {
 		// 仅当 include_usage 开启时合成末块 usage（客户端显式 false 时不伪造）。
 		if includeUsage {
 			if payload, err := marshalRelayUsageChunk(chunkID, created, model, accumulated); err == nil {
-				if writeRelaySSEData(w, flusher, payload) {
+				if sse.data(payload) {
 					sent++
 				}
 			}
 		}
 		// relay-03 §3.2：统一结束标记且整个响应只出现一次。
-		if writeRelaySSEDone(w, flusher) {
+		if sse.done() {
 			sent++
 		}
 	}
@@ -611,6 +861,9 @@ func (h *RelayHandler) bridgeStream(
 	switch {
 	case clientGone:
 		endReason = contract.EndClientAbort
+		outcome = relayStreamOutcome(contentSent)
+	case timedOut.Load():
+		endReason = contract.EndStreamTimeout
 		outcome = relayStreamOutcome(contentSent)
 	case upstreamFail:
 		endReason = contract.EndUpstreamError
@@ -636,15 +889,105 @@ func (h *RelayHandler) bridgeStream(
 		Attempts:     rc.AttemptIndex + 1,
 	}
 	switch {
-	case clientGone, upstreamFail:
-		// 客户端断开/上游中断：已收到的用量只是部分事实（relay-03 §11）。
-		fact.Usage.Source = contract.UsageUpstreamPartial
+	case abnormal:
+		// finding 3：只有真实累计到上游用量时才标 upstream_partial；
+		// 断开/中断但从未见过 usage 时是 estimated（零用量不是「部分事实」）。
+		fact.Usage = abnormalUsageFact(accumulated, sawUsage)
 	case !sawUsage:
 		// 上游没有给出 usage：标记 estimated，绝不把零值谎报成 upstream_exact
 		// （零值 Source 的 iota 是 UsageUpstreamExact）。
 		fact.Usage.Source = contract.UsageEstimated
 	}
 	terminate(fact)
+}
+
+// abnormalUsageFact 给异常结束（断开/上游错误/超时/panic）的用量事实定源。
+//
+// finding 3：UsageUpstreamPartial 的语义是「上游确实给过部分用量」。
+// 若从未观察到任何非零用量，正确来源是 UsageEstimated（交给 M3 兜底估算），
+// 而不是把零值谎报成「部分上游事实」。
+func abnormalUsageFact(accumulated contract.Usage, sawUsage bool) contract.Usage {
+	accumulated.Source = contract.UsageEstimated
+	if sawUsage && usageHasFact(accumulated) {
+		accumulated.Source = contract.UsageUpstreamPartial
+	}
+	return accumulated
+}
+
+// relaySSEWriter 是 SSE 帧的唯一写出口。
+//
+// 为什么需要互斥：流式事件循环（主协程）与 10s ping ticker（独立协程）都会
+// 写 http.ResponseWriter；net/http 不保证 ResponseWriter 并发写安全，帧必须
+// 串行化（relay-03 §3.4 的「单写者」要求）。failed 置位后所有后续写直接失败，
+// 避免客户端断开后反复写坏连接。
+type relaySSEWriter struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+	failed  bool
+}
+
+func newRelaySSEWriter(w http.ResponseWriter) *relaySSEWriter {
+	flusher, _ := w.(http.Flusher)
+	return &relaySSEWriter{w: w, flusher: flusher}
+}
+
+func (s *relaySSEWriter) flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// writeFrame 写一个完整帧并立即 Flush。
+func (s *relaySSEWriter) writeFrame(frame []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failed {
+		return false
+	}
+	if _, err := s.w.Write(frame); err != nil {
+		s.failed = true
+		return false
+	}
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+	return true
+}
+
+// data 写 `data: <payload>\n\n`（relay-03 §3.2 OpenAI 帧形态）。
+func (s *relaySSEWriter) data(payload []byte) bool {
+	frame := make([]byte, 0, len(payload)+8)
+	frame = append(frame, "data: "...)
+	frame = append(frame, payload...)
+	frame = append(frame, '\n', '\n')
+	return s.writeFrame(frame)
+}
+
+// raw 逐字节转发原始 SSE 事件（R-P2）。适配器的 Raw 是「事件块原文」
+// （行间 \n，无尾部空行），因此这里只补足帧结束空行，不改写内容。
+func (s *relaySSEWriter) raw(raw []byte) bool {
+	frame := append([]byte(nil), raw...)
+	switch {
+	case bytes.HasSuffix(frame, []byte("\n\n")):
+	case bytes.HasSuffix(frame, []byte("\n")):
+		frame = append(frame, '\n')
+	default:
+		frame = append(frame, '\n', '\n')
+	}
+	return s.writeFrame(frame)
+}
+
+// done 写唯一的统一终止标记（relay-03 §3.2）。
+func (s *relaySSEWriter) done() bool {
+	return s.writeFrame([]byte("data: [DONE]\n\n"))
+}
+
+// ping 写 SSE 注释帧 `: PING\n\n`（relay-03 §3.3，10s 间隔）。
+func (s *relaySSEWriter) ping() bool {
+	return s.writeFrame([]byte(": PING\n\n"))
 }
 
 // relayStreamOutcome 按**内容帧**数判定非正常结束的结果（契约 §7.2：
@@ -783,54 +1126,6 @@ func relayUpstreamStatus(upstream *relay.UpstreamStatusError) (int, string, stri
 		return http.StatusBadGateway, "upstream_error",
 			fmt.Sprintf("upstream returned status %d", upstream.StatusCode)
 	}
-}
-
-// ---------- SSE 写出 ----------
-
-// writeRelaySSEData 写一个 `data: <payload>\n\n` 帧并立即 Flush（relay-03 §3）。
-func writeRelaySSEData(w http.ResponseWriter, flusher http.Flusher, payload []byte) bool {
-	frame := make([]byte, 0, len(payload)+8)
-	frame = append(frame, "data: "...)
-	frame = append(frame, payload...)
-	frame = append(frame, '\n', '\n')
-	if _, err := w.Write(frame); err != nil {
-		return false
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return true
-}
-
-// writeRelaySSERaw 逐字节转发原始 SSE 事件（R-P2）。适配器的 Raw 是「事件块原文」
-// （行间 \n，无尾部空行），因此这里只补足帧结束空行，不改写内容。
-func writeRelaySSERaw(w http.ResponseWriter, flusher http.Flusher, raw []byte) bool {
-	frame := append([]byte(nil), raw...)
-	switch {
-	case bytes.HasSuffix(frame, []byte("\n\n")):
-	case bytes.HasSuffix(frame, []byte("\n")):
-		frame = append(frame, '\n')
-	default:
-		frame = append(frame, '\n', '\n')
-	}
-	if _, err := w.Write(frame); err != nil {
-		return false
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return true
-}
-
-// writeRelaySSEDone 写唯一的统一终止标记（relay-03 §3.2）。
-func writeRelaySSEDone(w http.ResponseWriter, flusher http.Flusher) bool {
-	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
-		return false
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return true
 }
 
 // ---------- OpenAI chunk 编码 ----------

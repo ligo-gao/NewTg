@@ -34,9 +34,12 @@ var (
 // ChannelFilter 是列表查询的筛选条件（modules-06 F-06-01）。
 // Page 为 1 基；PageSize 上限 100；Sort 支持 priority（默认）/name；
 // response_time 由 handler 接受后落回默认 priority 顺序（M2 尚无 24h 聚合数据源）。
-// Types 走 type = ANY(text[])，Group/Model 用 jsonb 存在运算符 `?`，
-// 与 DDL 上 channels_group_tags_gin / channels_supported_models_gin 的
-// jsonb_path_ops 索引匹配（platform-04 §3.3.3）。
+//
+// Group/Model 的 jsonb 成员判断用**包含**（`@> jsonb_build_array($n)`）而不是
+// 存在运算符 `?`：DDL 上的 channels_group_tags_gin / channels_supported_models_gin
+// 是 jsonb_path_ops GIN，`?` 谓词无法使用该类索引（M2 final review finding 5，
+// platform-04 §3.3.3）。group_tags IS NULL 分支语义上是「全部分组」，无法走索引，
+// 由低基数过滤兜底。
 type ChannelFilter struct {
 	Page     int
 	PageSize int
@@ -405,6 +408,13 @@ func (r *ChannelRepo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// batchStatusLockQuery 锁定批量的目标行。
+//
+// ORDER BY id 是**死锁防护**（M2 final review finding 8）：FOR UPDATE 按扫描顺序
+// 逐行加锁，两个批量请求若以不同顺序锁重叠 id 集合（如 [1,2] 与 [2,1]），
+// 会形成 A 等 B、B 等 A 的环。固定升序加锁让所有事务以同一顺序获取行锁。
+const batchStatusLockQuery = `SELECT id FROM channels WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`
+
 // BatchStatus 在单事务内批量切换状态（modules-06 F-06-02）：
 //   - 不存在的 id → failed(not_found)；
 //   - 已处于目标态 → succeeded，但不产生 UPDATE（TC-F-06-02-02）；
@@ -414,7 +424,7 @@ func (r *ChannelRepo) Delete(ctx context.Context, id int64) error {
 //     该端点不承担按标签禁用把 auto_disabled 升级为 manual 的 F-06-21 语义）。
 //
 // 先 SELECT ... FOR UPDATE 再 UPDATE：保证「哪些行存在」与「更新结果」一致，
-// 且串行化并发批量操作。
+// 且以 ORDER BY id 的固定顺序串行化并发批量操作（避免重叠 id 集合的死锁）。
 func (r *ChannelRepo) BatchStatus(ctx context.Context, ids []int64, status int16) (BatchResult, error) {
 	ids = dedupeIDs(ids)
 	result := BatchResult{Succeeded: []int64{}, Failed: []BatchFailure{}}
@@ -428,7 +438,7 @@ func (r *ChannelRepo) BatchStatus(ctx context.Context, ids []int64, status int16
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM channels WHERE id = ANY($1::bigint[]) FOR UPDATE`, ids)
+	rows, err := tx.QueryContext(ctx, batchStatusLockQuery, ids)
 	if err != nil {
 		return result, fmt.Errorf("store: batch status lock: %w", err)
 	}
@@ -549,14 +559,27 @@ func (r *ChannelRepo) UpdateTestResult(ctx context.Context, id int64, at time.Ti
 	return nil
 }
 
-// EnabledModels 返回所有启用渠道支持模型的去重并集（/v1/models 聚合的数据源）。
+// enabledModelsQuery 返回所有启用渠道对外的模型名并集。
+//
+// 两个来源（modules-06 F-06-10 验收标准「对外 /v1/models 返回映射键」）：
+//   - supported_models：渠道原生支持的模型；
+//   - model_mapping 的**键**：客户端可见的别名（映射到上游真实模型）。
+//
 // 只选 status=1：手动/自动禁用渠道不得对外宣告模型。
+const enabledModelsQuery = `
+	SELECT DISTINCT m
+	FROM (
+		SELECT jsonb_array_elements_text(supported_models) AS m
+		FROM channels WHERE status = 1
+		UNION
+		SELECT jsonb_object_keys(model_mapping) AS m
+		FROM channels WHERE status = 1
+	) AS t
+	ORDER BY m`
+
+// EnabledModels 返回所有启用渠道支持模型的去重并集（/v1/models 聚合的数据源）。
 func (r *ChannelRepo) EnabledModels(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT m
-		FROM channels, LATERAL jsonb_array_elements_text(supported_models) AS t(m)
-		WHERE status = 1
-		ORDER BY m`)
+	rows, err := r.db.QueryContext(ctx, enabledModelsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("store: enabled models: %w", err)
 	}
@@ -576,23 +599,31 @@ func (r *ChannelRepo) EnabledModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-// Candidates 是路由层的候选来源（relay-01 §5、relay-02 §7.1）：
+// candidatesQuery 构造路由候选查询（relay-01 §5、relay-02 §7.1）：
 //   - 仅 status=1（自动/手动禁用均不选，modules-06 §1.2）；
-//   - supported_models 含请求模型（jsonb `?`，命中 GIN jsonb_path_ops）；
+//   - supported_models 含请求模型；
 //   - group_tags 为 NULL（全部分组）或含请求分组；
 //   - priority 降序；组内加权随机由路由层消费 Weight。
 //
-// ChannelCandidate 的 Group 填本次查询的分组：NULL group_tags 的行对所有分组
-// 都等价可用，路由快照需要记录「本次以哪个分组命中」。
-func (r *ChannelRepo) Candidates(ctx context.Context, model, group string) ([]contract.ChannelCandidate, error) {
+// 成员判断用 jsonb 包含（`@> jsonb_build_array($n)`）而不是 `?`：
+// channels_*_gin 是 jsonb_path_ops 索引，只支持 `@>`/`@?`/`@@`（finding 5）。
+// group != "" 时参数依次为 model、group；group_tags IS NULL 分支不可索引。
+func candidatesQuery(model, group string) (string, []any) {
 	query := `SELECT id, priority, weight FROM channels
-		WHERE status = 1 AND supported_models ? $1`
+		WHERE status = 1 AND supported_models @> jsonb_build_array($1)`
 	args := []any{model}
 	if group != "" {
-		query += ` AND (group_tags IS NULL OR group_tags ? $2)`
+		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($2))`
 		args = append(args, group)
 	}
 	query += ` ORDER BY priority DESC, id ASC`
+	return query, args
+}
+
+// Candidates 是路由层的候选来源。ChannelCandidate 的 Group 填本次查询的分组：
+// NULL group_tags 的行对所有分组都等价可用，路由快照需要记录「本次以哪个分组命中」。
+func (r *ChannelRepo) Candidates(ctx context.Context, model, group string) ([]contract.ChannelCandidate, error) {
+	query, args := candidatesQuery(model, group)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -658,11 +689,12 @@ func buildChannelWhere(f ChannelFilter) (string, []any) {
 	if f.Group != "" {
 		args = append(args, f.Group)
 		// NULL = 全部分组：按任意分组筛选时都必须保留（TC-F-06-01-03）。
-		clauses = append(clauses, "(group_tags IS NULL OR group_tags ? "+placeholder()+")")
+		// 包含谓词命中 jsonb_path_ops GIN；IS NULL 分支不可索引（见类型注释）。
+		clauses = append(clauses, "(group_tags IS NULL OR group_tags @> jsonb_build_array("+placeholder()+"))")
 	}
 	if f.Model != "" {
 		args = append(args, f.Model)
-		clauses = append(clauses, "supported_models ? "+placeholder())
+		clauses = append(clauses, "supported_models @> jsonb_build_array("+placeholder()+")")
 	}
 	if keyword := strings.TrimSpace(f.Keyword); keyword != "" {
 		args = append(args, "%"+escapeLike(keyword)+"%")
