@@ -8,11 +8,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/config"
+	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/migrations"
 )
@@ -73,6 +77,10 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", checker.HandlerHealthz)
 	mux.HandleFunc("/readyz", checker.HandlerReadyz)
+	// /api/*（管理面）与 /v1/*（中继面）只在资源是生产具体类型时挂载；
+	// platform 单测注入的 stub Resource 无法还原 *sql.DB / *redis.Client，
+	// 此时保持 M0 的 health-only mux（既有测试不触真 PG/Redis）。
+	mountGatewayRoutes(mux, cfg, db, redisRes)
 	srv := &http.Server{
 		// 安全响应头在 mux 外层统一注入（security-08 §2.1/§5.2）：
 		// 404、探针、后续 API 与 SSE 都必须经过同一层，避免按路由漏配。
@@ -129,6 +137,74 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 	log.Info("gateway stopped")
 	return nil
+}
+
+// mountGatewayRoutes 挂载管理面与中继面路由。
+//
+// 只有生产资源（OpenDB 的 *sql.DB、OpenRedis 的 redisResource）才能构造仓储与
+// 会话管理器；测试 path 的 stubResource 无法还原具体类型，此时静默跳过——
+// 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
+//
+// 装配顺序（Task 8 phase 8B）：
+//   - /api/* ：渠道管理端点 → SessionAuth（Cookie/Bearer）→ CSRF → Origin/Referer；
+//   - /v1/*  ：中继 handler 自带 RelayAuth（令牌面，不使用 Cookie 会话）。
+func mountGatewayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok || sqlDB == nil {
+		return
+	}
+	redisRes, ok := rds.(redisResource)
+	if !ok || redisRes.client == nil {
+		return
+	}
+	client := redisRes.client
+
+	// 仓储与密钥封装（GC-8：凭据密文的唯一读写面）。
+	tokenRepo := store.NewTokenRepo(sqlDB)
+	channelRepo := store.NewChannelRepo(sqlDB)
+	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
+
+	// 管理面：渠道端点自带权限检查，但仍需 SessionAuth 先注入 Principal（R-P9）。
+	channelHandler := httpapi.NewChannelHandler(channelRepo, tokenRepo, sealer, httpapi.ChannelHandlerOptions{
+		Tester:      httpapi.NewChannelConnectivityTester(sealer, nil),
+		Idempotency: httpapi.NewRedisIdempotencyStore(client),
+	})
+	apiMux := http.NewServeMux()
+	channelHandler.Register(apiMux)
+
+	sessionMgr := auth.NewSessionManager(client, []byte(cfg.SessionSecret))
+	apiHandler := httpapi.SessionAuth(sessionMgr, tokenRepo)(
+		httpapi.CSRF(sessionMgr)(
+			httpapi.OriginRefererCheck(splitPublicOrigins(cfg.PublicBaseURL))(apiMux),
+		),
+	)
+	mux.Handle("/api/", apiHandler)
+
+	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
+	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
+		Channels: channelRepo,
+		Tokens:   tokenRepo,
+		Access:   tokenRepo,
+		Sealer:   sealer,
+	})
+	relayHandler.Register(mux)
+}
+
+// splitPublicOrigins 把 PUBLIC_BASE_URL 拆成 OriginRefererCheck 的允许清单。
+// 配置目前是单值，但按逗号拆分可兼容多主机名部署；空值返回 nil，
+// 让中间件退化为「与请求 Host 同源」（本地开发仍受保护）。
+func splitPublicOrigins(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // checkerFromResources 从装配好的 Resource 还原具体类型构造 Checker（生产路径）。
