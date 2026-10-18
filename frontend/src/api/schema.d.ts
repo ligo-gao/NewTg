@@ -2448,7 +2448,21 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error401"];
-            429: components["responses"]["Error429"];
+            /**
+             * @description 连续第 5 次 TOTP/备用码错误：ticket 已被作废（必须重新登录获取
+             *     新 ticket，不能在本页重试）；账号已处于锁定窗口时也会直接返回
+             *     429。Retry-After 指示建议重试秒数。
+             */
+            429: {
+                headers: {
+                    /** @description 建议重试等待秒数（第 5 次失败场景实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             503: components["responses"]["Error503"];
         };
     };
