@@ -327,7 +327,7 @@ jobs:
         # 预留余量后冻结 150 KiB；超限说明新增依赖未分割，必须在合并前处理。
         run: bash scripts/check_bundle_size.sh
 
-  # 流水线 I（platform-02 §7.10.1，断言真源 security-08 §5.2）。
+  # 流水线 I（platform-02 §7.10.1，断言真源 security-08 §2.1 冻结头矩阵 + §5.2 TC-H-06/07）。
   # 为什么用 compose 起真实栈：安全头由 gateway 中间件下发、经 edge 反代后才算最终
   # 客户端可见行为；只测 handler 会漏掉代理层覆盖/剥离。生产 debug 面可达会泄露内部状态。
   security-headers:
@@ -401,25 +401,36 @@ jobs:
 
           # 安全头必须由中间件对「每个响应」统一注入，而不是只给 HTML 特判；
           # 探针/错误路径正是最容易漏头的分支，所以 /healthz 与 /debug 404 都要采样。
+          # 断言集对齐 security-08 §2.1 冻结矩阵与 §5.2 TC-H-06/07：
+          #   · 每个响应（含探针/错误路径）带 X-Content-Type-Options: nosniff；
+          #   · API/运维响应 Referrer-Policy 恰为 no-referrer（TC-H-06）；
+          #   · 防嵌入只用 CSP frame-ancestors 'none'（TC-H-07）；
+          #   · X-Frame-Options 是 obsolete，矩阵明确「不发」，TC-H-07 要求断言其不存在——
+          #     若仍下发，说明中间件没有完成向 CSP 的迁移，必须红灯。
           check_headers() { # $1=label  $2=raw headers
             local label="$1" raw="$2"
-            if grep -qiE '^x-content-type-options:[[:space:]]*nosniff' <<<"$raw"; then
+            if grep -qiE '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' <<<"$raw"; then
               ok "$label X-Content-Type-Options: nosniff"
             else
               bad "$label 缺少 X-Content-Type-Options: nosniff（MIME 嗅探会放大 XSS）"
             fi
 
-            if grep -qiE '^referrer-policy:[[:space:]]*[^[:space:]]+' <<<"$raw"; then
-              ok "$label Referrer-Policy 已下发"
+            if grep -qiE '^referrer-policy:[[:space:]]*no-referrer[[:space:]]*$' <<<"$raw"; then
+              ok "$label Referrer-Policy: no-referrer"
             else
-              bad "$label 缺少 Referrer-Policy（跨源导航会泄露完整 URL）"
+              bad "$label Referrer-Policy 不是 no-referrer（TC-H-06：API/运维响应须为 no-referrer）"
             fi
 
-            if grep -qiE "^content-security-policy:.*frame-ancestors[[:space:]]+'none'" <<<"$raw" \
-               || grep -qiE '^x-frame-options:[[:space:]]*(DENY|SAMEORIGIN)' <<<"$raw"; then
-              ok "$label 禁止被嵌入（CSP frame-ancestors 'none' 或 X-Frame-Options）"
+            if grep -qiE "^content-security-policy:.*frame-ancestors[[:space:]]+'none'" <<<"$raw"; then
+              ok "$label CSP frame-ancestors 'none'"
             else
-              bad "$label 缺少 frame-ancestors 'none' / X-Frame-Options（点击劫持防护）"
+              bad "$label 缺少 CSP frame-ancestors 'none'（TC-H-07 点击劫持防护）"
+            fi
+
+            if grep -qiE '^x-frame-options:' <<<"$raw"; then
+              bad "$label 出现了 X-Frame-Options，但 security-08 §2.1 冻结矩阵规定不发（obsolete，改由 CSP frame-ancestors）"
+            else
+              ok "$label 未下发 X-Frame-Options"
             fi
           }
 

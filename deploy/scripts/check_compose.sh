@@ -9,7 +9,9 @@
 #   c. postgres 镜像为 postgres:16-alpine（GC-4，禁止 15）；
 #   d. backend 网络 internal: true；
 #   e. gateway 副本数 == 2、worker == 1；
-#   f. gateway healthcheck 走内置子命令 `/newtg healthcheck`（GC-6/R-07）。
+#   f. gateway healthcheck 走内置子命令 `/newtg healthcheck`（GC-6/R-07）；
+#   g. gateway/migrate/worker 的 stop_grace_period 均为 35s（终审修复回归守卫）；
+#   h. R-23：worker 挂非 internal 的 egress 网，postgres/redis 不挂。
 #
 # 渲染所需口令在脚本内以哑值兜底（shell 环境优先于 deploy/.env），因此本脚本
 # 不依赖、也不创建 deploy/.env，可直接在 CI 中运行。
@@ -46,7 +48,10 @@ export POSTGRES_PASSWORD REDIS_PASSWORD POSTGRES_APP_PASSWORD \
   SESSION_SECRET CREDENTIAL_ENCRYPTION_KEY
 
 command -v docker >/dev/null 2>&1 || die "docker 不可用"
-command -v jq >/dev/null 2>&1 || die "jq 不可用（用于解析 docker compose config --format json）"
+# jq 是本检查解析 `docker compose config --format json` 的唯一手段；缺失时
+# 不能降级成「只跑 grep」——那会把所有结构化断言静默变成永远通过。
+command -v jq >/dev/null 2>&1 \
+  || die "jq 缺失：本检查必须用 jq 解析 docker compose config --format json（required for this check），请先安装 jq"
 
 rendered=""
 if ! rendered="$(cd "$root/deploy" && docker compose -f "$compose" config --format json 2>&1)"; then
@@ -54,7 +59,21 @@ if ! rendered="$(cd "$root/deploy" && docker compose -f "$compose" config --form
   die "docker compose config 渲染失败"
 fi
 
-q() { jq -r "$1" <<<"$rendered"; }
+# 结构化取值。jq 解析失败时打印 FAIL 并以空值返回：调用方的断言分支会再次
+# 记录期望值，但至少不会因 set -e 在命令替换里直接中止而只留下空白输出。
+q() { # q <jq-filter>
+  local out
+  if ! out="$(jq -r "$1" <<<"$rendered" 2>&1)"; then
+    bad "jq 解析失败（filter: $1）：$out"
+    return 0
+  fi
+  printf '%s\n' "$out"
+}
+
+# set -e + pipefail 下，grep 无匹配（退出码 1）发生在命令替换里会直接终止脚本，
+# 连 FAIL 行都不会打印。这两个 helper 把「无匹配」降级为正常空值/0，交给断言分支报错。
+line_of()  { grep -nF -- "$1" "$2" | head -1 | cut -d: -f1 || true; }
+count_of() { grep -cF -- "$1" "$2" || true; }
 
 # --- a. RUN_MODE 与 NEWTG_ROLE -------------------------------------------
 for pair in "gateway gateway" "worker worker" "migrate migrate"; do
@@ -123,6 +142,44 @@ else
   ok "渲染配置不含 wget"
 fi
 
+# --- g. 优雅停机窗口（终审修复回归守卫） --------------------------------
+# Docker 默认只等 10s，短于应用 SHUTDOWN_GRACE_SECONDS（默认 30s）；gateway/worker
+# 会硬断在途请求，migrate 被 SIGKILL 会在 schema_migrations 留下 dirty=true。
+# 三处都必须显式为 35s（30s 窗口 + 5s 余量），任何一处回退都要在评审前红灯。
+for svc in gateway migrate worker; do
+  sg="$(q ".services.${svc}.stop_grace_period // \"\"")"
+  if [ "$sg" = "35s" ]; then
+    ok "services.$svc stop_grace_period=35s"
+  else
+    bad "services.$svc stop_grace_period=${sg:-<未设置>}，期望 35s（优雅停机 30s + 5s 余量）"
+  fi
+done
+
+# --- h. R-23 worker 出站面 ------------------------------------------------
+# worker 的渠道测试/Webhook/GeoIP 需要出站（security-08 §2.11），因此必须挂到
+# 非 internal 的 egress；同时 DB/Redis 所在的 backend 保持 internal，且数据面
+# 服务不得被顺手挂上 egress（否则 internal 的隔离意图被绕过）。
+egress_internal="$(q '.networks.egress.internal // false')"
+if [ "$egress_internal" = "false" ]; then
+  ok "networks.egress 非 internal（worker 可出站）"
+else
+  bad "networks.egress.internal=${egress_internal}，期望 false（R-23：worker 必须能出站）"
+fi
+worker_on_egress="$(q '.services.worker.networks // {} | has("egress")')"
+if [ "$worker_on_egress" = "true" ]; then
+  ok "worker 已挂 egress 网"
+else
+  bad "worker 未挂 egress 网（R-23：渠道测试/Webhook/GeoIP 将无法出站）"
+fi
+for svc in postgres redis; do
+  on_egress="$(q ".services.${svc}.networks // {} | has(\"egress\")")"
+  if [ "$on_egress" = "false" ]; then
+    ok "services.$svc 不挂 egress 网"
+  else
+    bad "services.$svc 不得挂 egress 网（数据面必须留在 internal 的 backend）"
+  fi
+done
+
 # --- 附加：服务表冻结值 ---------------------------------------------------
 [ "$(q '.services.worker.container_name // ""')" = "newtg-worker" ] \
   && ok "worker container_name=newtg-worker" \
@@ -138,7 +195,7 @@ fi
   || bad "redis 不应发布宿主端口"
 
 # 应用镜像统一走 NEWTG_IMAGE（默认与 Makefile 的 IMAGE ?= newtg/gateway:dev 对齐）。
-img_refs="$(grep -cF 'image: ${NEWTG_IMAGE:-newtg/gateway:dev}' "$compose")"
+img_refs="$(count_of 'image: ${NEWTG_IMAGE:-newtg/gateway:dev}' "$compose")"
 if [ "$img_refs" = "3" ]; then
   ok "gateway/worker/migrate 统一使用 \${NEWTG_IMAGE:-newtg/gateway:dev}"
 else
@@ -147,9 +204,9 @@ fi
 
 # Caddy：live_feed 是 SSE，须在 /api/* 的压缩路由之前声明（handle 先匹配先生效）。
 caddyfile="$root/deploy/edge/Caddyfile"
-sse_home="$(grep -nF 'handle /api/home/live-feed' "$caddyfile" | head -1 | cut -d: -f1)"
-sse_public="$(grep -nF 'handle /api/public/live-feed' "$caddyfile" | head -1 | cut -d: -f1)"
-api_block="$(grep -nF 'handle /api/*' "$caddyfile" | head -1 | cut -d: -f1)"
+sse_home="$(line_of 'handle /api/home/live-feed' "$caddyfile")"
+sse_public="$(line_of 'handle /api/public/live-feed' "$caddyfile")"
+api_block="$(line_of 'handle /api/*' "$caddyfile")"
 if [ -n "$sse_home" ] && [ -n "$sse_public" ] && [ -n "$api_block" ] \
    && [ "$sse_home" -lt "$api_block" ] && [ "$sse_public" -lt "$api_block" ]; then
   ok "Caddy SSE 路由先于 /api/*（不压缩）"

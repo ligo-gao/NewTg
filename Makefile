@@ -14,6 +14,9 @@ BIN        := $(BACKEND)/bin
 MIGRATIONS := $(BACKEND)/migrations
 # 集成测试用真实依赖；本地 dev 指向 compose 暴露的端口
 TEST_DB_DSN     ?= postgres://newtg:newtg@localhost:5432/newtg_test?sslmode=disable
+# 日志库独立迁移流（newtg_logs）的验证目标；与主库 DSN 分开声明，
+# 便于本机/CI 用环境变量覆盖，而不是把 DSN 埋进 recipe 里。
+TEST_LOGS_DB_DSN ?= postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable
 TEST_REDIS_ADDR ?= localhost:6379
 IMAGE          ?= newtg/gateway:dev
 # 本机架构镜像的目标平台：arm64 主机显式 `make image PLATFORM=linux/arm64`（2026-10-18 业主裁决 U-02-5）
@@ -87,7 +90,7 @@ migrate-create: ## 新建成对迁移（14 位 UTC 时间戳；name= 传入）
 migrate-verify: ## 静态断言 + 幂等/往返/全退/schema 快照比对（§8.3，CI 门禁）
 	bash backend/scripts/check_migrations.sh $(MIGRATIONS)
 	bash backend/scripts/check_migrations.sh $(BACKEND)/migrations-logs
-	bash backend/scripts/migrate_verify.sh "$(TEST_DB_DSN)" "$(or $(TEST_LOGS_DB_DSN),postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable)"
+	bash backend/scripts/migrate_verify.sh "$(TEST_DB_DSN)" "$(TEST_LOGS_DB_DSN)"
 
 web-install: ## 冻结锁文件安装前端依赖
 	cd frontend && bun install --frozen-lockfile

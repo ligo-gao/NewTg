@@ -6,8 +6,10 @@
 #   (b) 无孤儿 down
 #   (c) 命名合规：{14 位 UTC 时间戳}_{snake_case}.{up|down}.sql
 #   (d) 含 CONCURRENTLY 的 up 文件必须单语句（M0 应为零命中；命中即违规）
-#   (e) 无 DEFAULT PARTITION（裁决 V11：落入未建月份必须失败，不得静默落默认分区）
-#   (f) request_registry 的主键必须恰为 request_id（V9 幂等真源；仅主库迁移断言）
+#   (e) 禁止默认分区：既查历史写法 DEFAULT PARTITION，也查真实语法
+#       PARTITION OF <parent> ... DEFAULT（裁决 V11：落入未建月份必须失败）
+#   (f) request_registry 的主键必须恰为 request_id（V9 幂等真源）；主库迁移流
+#       必须定义该表，未识别为日志库流的目录一律 fail-closed（见该节注释）
 #
 # 用法：
 #   bash backend/scripts/check_migrations.sh [migrations_dir]
@@ -36,6 +38,14 @@ shopt -s nullglob
 ups=("$DIR"/*.up.sql)
 downs=("$DIR"/*.down.sql)
 all=("$DIR"/*.sql)
+
+# 去掉 `--` 行注释后再做结构匹配。为什么必须去注释：注释里写一句
+# `-- CREATE TABLE request_registry (...)` 或 `-- PARTITION OF ... DEFAULT`
+# 不能算数；反之，被注释掉的真实建表也不能被误认为已定义（fail-closed 的前提）。
+sql_body() { sed -E 's/--.*$//' "$1"; }
+
+# CREATE TABLE [IF NOT EXISTS] —— 主库迁移可能用幂等写法，标记匹配必须同时覆盖两种。
+create_table_re='CREATE TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?'
 
 if [ "${#all[@]}" -eq 0 ]; then
   violation "目录中没有任何 *.sql 迁移文件"
@@ -80,7 +90,7 @@ concurrent_bad=0
 for f in "${ups[@]}"; do
   if grep -qi 'CONCURRENTLY' "$f"; then
     concurrent_hits=$((concurrent_hits + 1))
-    n="$(sed -E 's/--.*$//' "$f" | grep -o ';' | wc -l | tr -d '[:space:]')"
+    n="$(sql_body "$f" | grep -o ';' | wc -l | tr -d '[:space:]')"
     if [ "$n" -gt 1 ]; then
       violation "CONCURRENTLY 必须单语句，实际 $n 条语句：$(basename "$f")"
       concurrent_bad=$((concurrent_bad + 1))
@@ -93,27 +103,55 @@ elif [ "$concurrent_bad" -eq 0 ]; then
   pass "(d) $concurrent_hits 个 CONCURRENTLY 文件均为单语句"
 fi
 
-# (e) 无 DEFAULT PARTITION（任何 .sql，含 down）
+# (e) 禁止默认分区（任何 .sql，含 down）
+#     PostgreSQL 的默认分区真实语法是 `CREATE TABLE ... PARTITION OF <parent> DEFAULT`
+#     ——DEFAULT 位于语句尾部（可能换行，中间还可能有 FOR VALUES 之外的列定义）。
+#     只 grep 历史写法 'DEFAULT PARTITION' 会漏掉它，因此先去注释、压平换行并按 ;
+#     断句，再整句匹配；DEFAULT 后要求是语句结尾，避免把列 DEFAULT 误判为默认分区。
 default_partition=0
 for f in "${all[@]}"; do
-  if grep -Eqi 'DEFAULT[[:space:]]+PARTITION' "$f"; then
-    violation "禁止 DEFAULT PARTITION：$(basename "$f")"
+  if sql_body "$f" | tr '\n' ' ' | sed -E 's/;[[:space:]]*/;\n/g' \
+     | grep -Eqi 'DEFAULT[[:space:]]+PARTITION|PARTITION[[:space:]]+OF[^;]*[[:space:]]DEFAULT[[:space:]]*(;|$)'; then
+    violation "禁止默认分区（DEFAULT PARTITION / PARTITION OF ... DEFAULT）：$(basename "$f")"
     default_partition=$((default_partition + 1))
   fi
 done
-[ "$default_partition" -eq 0 ] && pass "(e) 无 DEFAULT PARTITION"
+[ "$default_partition" -eq 0 ] && pass "(e) 无默认分区（含 PARTITION OF ... DEFAULT 语法）"
 
 # (f) request_registry 主键恰为 request_id
-#     主库迁移流必须定义该表；日志库迁移流（无 request_registry）跳过。
+#     主库迁移流必须定义该表。旧实现以「没有 users 标记」推断日志库并直接跳过，
+#     这是 fail-open：主库目录里 users/request_registry 的建表若被改写（例如加了
+#     IF NOT EXISTS 或整体被注释），(f) 会静默 PASS。现改为正向识别日志库流：
+#     目录名 migrations-logs，或（目录被复制/改名时）同时建出日志库锚表
+#     usage_logs 与 audit_logs；其余任何目录缺少 request_registry 都判违规。
+is_logs_stream() {
+  local f
+  case "$(basename "$DIR")" in
+    migrations-logs) return 0 ;;
+  esac
+  for f in "${ups[@]}"; do
+    if sql_body "$f" | grep -Eq "${create_table_re}usage_logs([[:space:]]|\\()" \
+       && sql_body "$f" | grep -Eq "${create_table_re}audit_logs([[:space:]]|\\()"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 has_registry=0
+has_table_ddl=0
 for f in "${ups[@]}"; do
-  if grep -Eq 'CREATE TABLE[[:space:]]+request_registry([[:space:]]|\()' "$f"; then
+  if sql_body "$f" | grep -Eq 'CREATE TABLE[[:space:]]'; then
+    has_table_ddl=1
+  fi
+  # 注释里的建表已在 sql_body 中剥离，不会让 (f) 误判为已定义。
+  if sql_body "$f" | grep -Eq "${create_table_re}request_registry([[:space:]]|\\()"; then
     has_registry=1
-    block="$(awk '
-      /CREATE TABLE[[:space:]]+request_registry([[:space:]]|\()/ { inblk = 1 }
+    block="$(sql_body "$f" | awk '
+      /CREATE TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?request_registry([[:space:]]|\()/ { inblk = 1 }
       inblk { print }
       inblk && /^[[:space:]]*\);/ { exit }
-    ' "$f")"
+    ')"
     if printf '%s\n' "$block" | grep -Eqi 'PRIMARY[[:space:]]+KEY[[:space:]]*\([[:space:]]*request_id[[:space:]]*\)'; then
       pass "(f) request_registry 主键为 request_id（$(basename "$f")）"
     else
@@ -122,15 +160,12 @@ for f in "${ups[@]}"; do
   fi
 done
 if [ "$has_registry" -eq 0 ]; then
-  # 主库迁移流以 users 表为标志；没有 users 也没有 request_registry 视为日志库迁移流。
-  main_marker=0
-  for f in "${ups[@]}"; do
-    grep -Eq 'CREATE TABLE[[:space:]]+users([[:space:]]|\()' "$f" && main_marker=1
-  done
-  if [ "$main_marker" -eq 1 ]; then
-    violation "主库迁移流缺少 request_registry 建表语句"
+  if is_logs_stream; then
+    pass "(f) 日志库迁移流（无 request_registry），跳过该断言"
+  elif [ "$has_table_ddl" -eq 1 ]; then
+    violation "(f) 目录含 CREATE TABLE 但未定义 request_registry（fail-closed：未识别为日志库流一律按主库校验）"
   else
-    pass "(f) 非主库迁移流，跳过 request_registry 断言"
+    violation "(f) 目录未识别为日志库迁移流，且缺少 request_registry 建表（fail-closed）"
   fi
 fi
 

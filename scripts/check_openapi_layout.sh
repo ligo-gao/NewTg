@@ -16,18 +16,43 @@ fail() {
 }
 
 # 提取文件中所有 $ref 值（块式/列表式/流式；去掉引号、尾逗号与尾花括号）。
+# 键允许带双引号（`"$ref":`）且冒号前可有空格——YAML 合法写法，漏掉等于放行
+# 未校验的引用（extract 不到 = scan_refs 看不到 = 永远 PASS）。
 extract_refs() {
-  grep -oE '\$ref:[[:space:]]*[^[:space:]]+' "$1" 2>/dev/null \
-    | sed -E "s/^\\\$ref:[[:space:]]*//; s/^['\"]//; s/['\"]?[,}]?$//" || true
+  grep -oE '"?\$ref"?[[:space:]]*:[[:space:]]*[^[:space:]]+' "$1" 2>/dev/null \
+    | sed -E "s/^\"?\\\$ref\"?[[:space:]]*:[[:space:]]*//; s/^['\"]//; s/['\"]?[,}]?$//" || true
+}
+
+# 纯词法路径规范化，等价 `realpath -m`：目标允许不存在，也不依赖 GNU coreutils
+# （macOS/BSD 的 realpath 没有 -m；CI 与本机必须同一行为）。相对路径以当前 $PWD 为基准。
+# `..` 越过根时停在根，与 realpath -m 一致。
+normalize_path() {
+  local path="$1" out="" part
+  local -a parts
+  case "$path" in
+    /*) ;;
+    *) path="$PWD/$path" ;;
+  esac
+  local IFS=/
+  read -r -a parts <<<"$path"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) ;;
+      ..) out="${out%/*}" ;;
+      *) out="$out/$part" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
 }
 
 # 扫描 root 下全部 YAML：$ref 只能指向 root 内已存在的文件（#/... 纯片段引用跳过）。
 # 返回 0=全部合法；1=存在违规（逐条打印原因）。
 scan_refs() {
-  local root="$1" root_abs f dir ref target resolved rc=0
-  root_abs=$(realpath -m "$root")
+  local root="$1" root_abs f dir_abs ref target resolved rc=0
+  # root 必须真实存在，用 cd+pwd -P 取物理绝对路径（跨平台，不依赖 realpath -m）。
+  root_abs=$(cd "$root" && pwd -P) || return 1
   while IFS= read -r -d '' f; do
-    dir=$(dirname "$f")
+    dir_abs=$(cd "$(dirname "$f")" && pwd -P) || continue
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
       # #/... 是当前文档内的纯片段引用：没有文件系统目标，无法越界，故不参与路径解析。
@@ -48,7 +73,8 @@ scan_refs() {
           continue
           ;;
       esac
-      resolved=$(realpath -m "$dir/$target")
+      # 词法解析后做前缀包含判断：目标即使不存在，也能判定是否逃出 root。
+      resolved=$(normalize_path "$dir_abs/$target")
       case "$resolved" in
         "$root_abs"/*) ;;
         *)
@@ -66,37 +92,49 @@ scan_refs() {
   return "$rc"
 }
 
-# 失败先行自检：临时副本中注入越界 $ref，必须被 scan_refs 拒绝。
+# 失败先行自检：临时副本中逐条注入越界 $ref，必须被 scan_refs 以预期原因拒绝。
 # 为什么要注入用例：只验证“当前源树通过”无法区分“守卫有效”与“规则退化成永远 PASS”；
-# 用临时副本注入可重复证明拒绝路径真的生效，且不污染真实源树。
+# 用临时副本注入可重复证明每条拒绝路径真的生效，且不污染真实源树。
+# 每个用例单独落一个 YAML 文件：一次只注入一条引用，拒绝原因才能精确归因。
 # SELFTEST_TMP 用全局变量：EXIT trap 触发时函数局部变量已出作用域（set -u 下会报 unbound）。
 SELFTEST_TMP=
 self_test() {
-  local tmp out
+  local tmp out rc=0
   tmp=$(mktemp -d)
   SELFTEST_TMP=$tmp
   trap 'rm -rf "${SELFTEST_TMP:-}"' EXIT
   mkdir -p "$tmp/api"
   cp -a api/openapi "$tmp/api/openapi"
-  cat >>"$tmp/api/openapi/openapi.yaml" <<'EOF'
 
-# self-test: 越界 $ref（必须被拒绝）
-x-selftest-escape:
-  $ref: '../../outside.yaml#/schemas/Escape'
-EOF
-  if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
-    echo "FAIL: 自检未拒绝越界 \$ref（注入未被检出）" >&2
-    return 1
-  fi
-  case "$out" in
-    *逃出*)
-      echo "PASS: 自检——越界 \$ref 注入已被拒绝（$out）"
-      ;;
-    *)
-      echo "FAIL: 自检拒绝原因不符合预期：$out" >&2
-      return 1
-      ;;
-  esac
+  run_case() { # run_case <名称> <期望关键字> <注入的 YAML 行>
+    local case_name="$1" expect="$2" yaml_line="$3"
+    local case_file="$tmp/api/openapi/selftest-${case_name}.yaml"
+    printf 'x-selftest:\n  %s\n' "$yaml_line" >"$case_file"
+    if out=$(scan_refs "$tmp/api/openapi" 2>&1); then
+      echo "FAIL: 自检 [$case_name] 未被拒绝：$yaml_line" >&2
+      rc=1
+    elif ! printf '%s' "$out" | grep -qF -- "$expect"; then
+      echo "FAIL: 自检 [$case_name] 拒绝原因不符（期望含「$expect」）：$out" >&2
+      rc=1
+    else
+      echo "PASS: 自检 [$case_name] 已被拒绝（$expect）"
+    fi
+    rm -f "$case_file"
+  }
+
+  # 引号键 + 冒号前空格：extract_refs 必须仍能提取，否则该用例会因「未检出」而 FAIL。
+  run_case escape-quoted 逃出 "\"\$ref\" : '../outside.yaml#/schemas/Escape'"
+  # 普通写法的一级越界（../ 从 api/openapi 到 api/，已在 root 外）。
+  run_case escape-plain 逃出 "\$ref: '../outside.yaml#/schemas/Escape'"
+  # http(s) 引用会把远端内容注入 bundle 与下游 codegen（供应链面）。
+  run_case network 禁止网络 "\$ref: 'https://evil.example/schemas.yaml#/X'"
+  # 绝对路径可读取宿主任意文件（文件泄露面）。
+  run_case absolute 禁止绝对路径 "\$ref: '/etc/passwd#/X'"
+  # 路径在树内但目标不存在：bundle 会在解析阶段才失败，必须提前拦住。
+  run_case missing 目标不存在 "\$ref: './paths/does-not-exist.yaml#/X'"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界/网络/绝对路径/缺失目标注入均已被拒绝"
+  return "$rc"
 }
 
 case "${1:-}" in
