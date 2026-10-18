@@ -9,7 +9,9 @@ package billing
 //   - 无 hold 会话（only ChargeIncrement）的退款锚点；
 //   - 跨会话「已结算」结案标记拦截退款（R-41 的 DB 锚点在退款侧的对称实现）；
 //   - 不超扣：会话内存 consumed 被钳制到数据库已实际扣减额；
-//   - 金额助手的负数/溢出钳制与跨用户损坏的 fail-closed。
+//   - 金额助手的负数/溢出钳制与跨用户损坏的 fail-closed；
+//   - 无 hold 退款的 release 唯一索引冲突（23505）按幂等收敛；
+//   - lease 登记失败的 hold-only 回滚分支（无增量时）。
 //
 // 集成测试需要 NEWTG_TEST_DB_DSN（未设置时由 openBillingTestDB 跳过）。
 
@@ -416,5 +418,101 @@ func TestSessionLeaseRegisterFailureRefundsAll(t *testing.T) {
 	rows := readRefundRows(t, db, req)
 	if len(rows) != 1 || rows[0].Amount != 80 {
 		t.Fatalf("refund rows = %+v, want single release 80", rows)
+	}
+}
+
+// TestRefundNoHoldUniqueViolationConvergesIdempotent 覆盖无 hold 退款路径上
+// release 唯一索引冲突（SQLSTATE 23505）的幂等收敛分支。
+//
+// 场景：并发退款的两个执行者都在 settlementExists 复核时看不到对方未提交的
+// release 行（READ COMMITTED），后提交者会在 INSERT 时撞
+// wallet_release_refid_uq。这里用「已落库但 note 为 NULL 的 release 行」确定
+// 性地复现同一状态：结案标记不可见（该行不参与 billing:* 判定），但唯一索引
+// 仍然阻止第二行 release。正确行为是按 errHoldClosed 幂等收敛，而不是把
+// SQL 冲突上抛给调用方。
+func TestRefundNoHoldUniqueViolationConvergesIdempotent(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("refund-unique-violation")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	// 会话只有增量扣减（无 hold），退款会走到无 hold 分支的 INSERT。
+	if err := s.ChargeIncrement(30, contract.UsageFact{}); err != nil {
+		t.Fatalf("ChargeIncrement: %v", err)
+	}
+	// 模拟并发赢家已经回补：+30 入账并写 release 行（无 billing:* 标记，
+	// 与「尚未提交、marker 复核不可见」的可观察状态一致）。
+	credited := userBalance(t, db, userID) + 30
+	if _, err := db.Exec(`UPDATE users SET balance = $1 WHERE id = $2`, credited, userID); err != nil {
+		t.Fatalf("simulate winner credit: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO wallet_transactions
+		   (user_id, type, amount, balance_after, status, reference_type, reference_id)
+		 VALUES ($1, 'release', 30, $2, 'confirmed', 'usage_log', $3)`,
+		userID, credited, req); err != nil {
+		t.Fatalf("pre-insert winning release row: %v", err)
+	}
+
+	if err := s.Refund(); err != nil {
+		t.Fatalf("Refund = %v, want nil（23505 应按幂等命中收敛）", err)
+	}
+	if got := userBalance(t, db, userID); got != credited {
+		t.Fatalf("balance = %d, want %d（只能由赢家回补一次）", got, credited)
+	}
+	if rows := readRefundRows(t, db, req); len(rows) != 1 {
+		t.Fatalf("refund rows = %d, want 1（不得产生第二行 release）", len(rows))
+	}
+	if s.NeedsRefund() {
+		t.Fatal("NeedsRefund = true after converged Refund, want false")
+	}
+}
+
+// TestSessionLeaseRegisterFailureHoldOnlyRollback 覆盖 registerLeaseLocked
+// 回滚的 consumed==0 分支（hold-only 轻路径）：预扣 100 后登记租约失败，
+// 只退 hold，随后会话已终结，Refund/Terminate 均为 no-op。
+func TestSessionLeaseRegisterFailureHoldOnlyRollback(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, failingRegistry{}, nil)
+	req := testRequestID("lease-fail-hold-only")
+	s := newBillingTestSession(e, userID, req, perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err == nil {
+		t.Fatal("PreConsume = nil, want lease registration error")
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（hold 100 必须全额退回）", got)
+	}
+	want := []walletRow{
+		{Type: "consume_pre", Amount: -100, BalanceAfter: 400, Status: "released"},
+		{Type: "release", Amount: 100, BalanceAfter: 500, Status: "confirmed"},
+	}
+	rows := readWalletRows(t, db, req)
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("row[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+	if s.NeedsRefund() {
+		t.Fatal("NeedsRefund = true after rollback, want false")
+	}
+
+	// 回滚已把会话置为 refunded：两个终结入口都不得再动资金。
+	if err := s.Refund(); err != nil {
+		t.Fatalf("Refund after rollback: %v", err)
+	}
+	if err := s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 1, PromptIncludesCache: true}}); err != nil {
+		t.Fatalf("Terminate after rollback: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500", got)
+	}
+	if got := readWalletRows(t, db, req); len(got) != 2 {
+		t.Fatalf("rows after no-op closes = %+v, want unchanged 2 rows", got)
 	}
 }
