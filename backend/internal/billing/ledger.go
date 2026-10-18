@@ -353,22 +353,33 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 //   - 预扣 hold（未消耗的冻结额）；
 //   - ChargeIncrement 的增量扣减（连接级实际扣费，失败路径同样要退）。
 //
-// 两者合并为**一行** release：一次余额变动对应一行流水（GC-3）。
-// 幂等锚点：hold 行 CAS；无 hold 的信任旁路会话以「同 requestID 已有
-// release 行」为锚（releaseExists），重复 Refund 返回 errHoldClosed。
+// 两者合并为**一行** release：wallet_release_refid_uq 是
+// `(reference_id) WHERE type='release'` 的部分唯一索引，同一 requestID
+// 只允许一行 release（每次余额变动恰一行流水，GC-3）。
+//
+// 幂等锚点（按到达顺序）：
+//   - hold 行 CAS：`status='hold' → 'released'` 的条件 UPDATE；
+//   - 无 hold 会话以「该 requestID 已有 billing:* 结案标记」为锚
+//     （settlementExists，与 R-41 的无 hold 结算共用同一套标记）。settled/
+//     refunded/recovered 之后不得再退——否则会把已结算请求的增量扣减从订单
+//     里退回，或把 R-39 明确不随崩溃退款的成功用量退掉；
+//   - 最后，release 唯一索引拒绝任何漏网的第二个释放行（并发窗口兜底）。
+//
+// 金额权威：held 来自数据库 hold 行；consumed 经 refundableConsumed 钳制到
+// 数据库 consume 行合计，会话内存只用于识别「本会话做过增量扣减」。
 func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID string, consumed int64) (
 	refunded, balanceAfter int64, err error) {
 
-	if consumed < 0 {
-		consumed = 0
-	}
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		held, _, txErr := closeHoldRows(ctx, tx, userID, requestID, "released")
 		if txErr != nil {
 			return txErr
 		}
 		if held == 0 {
-			exists, eerr := releaseExists(ctx, tx, requestID)
+			// 有 hold 时 CAS 就是锚点：settle/refund 标记不可能与仍开放的 hold
+			// 并存（结算与退款都在关闭 hold 的同一事务里写标记）。只有无 hold
+			// 的会话才需要复核结案标记。
+			exists, eerr := settlementExists(ctx, tx, requestID)
 			if eerr != nil {
 				return eerr
 			}
@@ -376,14 +387,32 @@ func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID stri
 				return errHoldClosed
 			}
 		}
-		total := held + consumed
+		consumed, txErr = refundableConsumed(ctx, tx, requestID, userID, consumed)
+		if txErr != nil {
+			return txErr
+		}
+		total, txErr := refundTotal(held, consumed)
+		if txErr != nil {
+			return txErr
+		}
 		if total <= 0 {
 			return errNoOpenHold
 		}
 		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, total, "release",
 			"confirmed", "usage_log", requestID, refundNote)
+		if txErr != nil {
+			// 无 hold 路径上唯一的 INSERT 撞 23505 只可能是
+			// wallet_release_refid_uq：另一个执行者已写入同一 requestID 的
+			// release 行，资金已被它回补。按幂等命中收敛（事务里没有其它
+			// 已发生的变更需要保留）。有 hold 路径的 23505 属于异常状态
+			// （如 recover 后又出现新 hold），原样上抛，不做静默容忍。
+			if held == 0 && isUniqueViolation(txErr) {
+				return errHoldClosed
+			}
+			return txErr
+		}
 		refunded = total
-		return txErr
+		return nil
 	})
 	return refunded, balanceAfter, err
 }
@@ -401,19 +430,6 @@ func settlementExists(ctx context.Context, tx *gorm.DB, requestID string) (bool,
 		   AND note LIKE 'billing:%'`, requestID).Row().Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("billing: check settlement markers for %s: %w", requestID, err)
-	}
-	return n > 0, nil
-}
-
-// releaseExists 判断该 requestID 是否已有 release 流水。
-func releaseExists(ctx context.Context, tx *gorm.DB, requestID string) (bool, error) {
-	var n int64
-	err := tx.WithContext(ctx).Raw(
-		`SELECT count(*) FROM wallet_transactions
-		 WHERE reference_type = 'usage_log' AND reference_id = ? AND type = 'release'`,
-		requestID).Row().Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("billing: check release rows for %s: %w", requestID, err)
 	}
 	return n > 0, nil
 }

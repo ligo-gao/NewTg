@@ -572,8 +572,10 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 //   - ChargeIncrement 已实际扣减的增量（连接级真实扣费）。
 //
 // 已结算 / 已退款 / 无需退款 → nil（早返回表）。退款额来自数据库 hold 行
-// 加会话累计的 consumed，合并为一行 release；重复调用时 CAS 已无 hold 行，
-// 返回 errHoldClosed 后按幂等命中处理。
+// 加会话累计的 consumed（后者在同事务内钳制到数据库已扣减额，见
+// refundableConsumed），合并为一行 release。重复调用时：有 hold → CAS 未
+// 命中；无 hold → 命中共用的 billing:* 结案标记（settlementExists）；
+// 最后 release 唯一索引兜底并发窗口。三者都按幂等命中处理。
 func (s *Session) Refund() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -590,7 +592,7 @@ func (s *Session) Refund() error {
 
 	if s.preConsumed == 0 {
 		// 无 hold 锚点（如 trusted 会话只有 ChargeIncrement 增量）：
-		// refundSession 以 release 行复核，再用 requestID 锁收窄并发窗口（R-41）。
+		// refundSession 以结案标记复核，再用 requestID 锁收窄并发窗口（R-41）。
 		releaseLock, lockErr := s.engine.acquireSettlementLock(ctx, s.requestID)
 		if lockErr != nil {
 			return lockErr
@@ -888,20 +890,31 @@ var ratioPricedVars = map[string]bool{
 
 // registerLeaseLocked 在真实 hold 写入后建立在飞租约（调用方持有 s.mu）。
 //
-// 失败时回滚全部 hold 并终结会话（fail-closed）：留下无心跳的冻结资金会让
+// 失败时回滚全部资金并终结会话（fail-closed）：留下无心跳的冻结资金会让
 // worker 无法判定；而回滚会写入一行 release，若允许同 requestID 重试再结算，
 // 第二次 release 会撞 wallet_release_refid_uq 部分唯一索引。
+//
+// 回滚必须是**全额**（R-30）：登记失败可能发生在 Reserve 之后，此时
+// ChargeIncrement 的增量扣减已经落账。只退 hold 会留下「会话已置 refunded
+// 但增量未回补」的空洞，因此有增量时走 refundSession（hold + consumed
+// 合并为一行 release）；没有增量时保持 hold-only 的轻量路径。
 func (s *Session) registerLeaseLocked(ctx context.Context) error {
 	if s.engine.registry == nil || s.leaseRegistered {
 		return nil
 	}
 	if err := s.engine.registry.Register(ctx, s.requestID, s.userID,
 		time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
-		if _, _, rbErr := s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released"); rbErr != nil &&
-			!errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
+		var rbErr error
+		if s.consumed > 0 {
+			_, _, rbErr = s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
+		} else {
+			_, _, rbErr = s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released")
+		}
+		if rbErr != nil && !errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
 			return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
 		}
 		s.preConsumed = 0
+		s.consumed = 0
 		s.refunded = true
 		return fmt.Errorf("billing: register inflight lease: %w", err)
 	}
