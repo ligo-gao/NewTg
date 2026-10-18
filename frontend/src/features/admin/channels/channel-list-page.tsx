@@ -8,7 +8,10 @@ import {
 } from 'react'
 
 import { ApiError } from '@/api/errors'
-import { useI18n } from '@/shared/lib/i18n-context'
+import {
+  useI18n,
+  type TranslateFn,
+} from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 import { Tag } from '@/shared/ui/tag'
 import { pushErrorToast, useToastStore } from '@/shared/ui/toast'
@@ -47,16 +50,16 @@ type DeleteTarget =
   | { kind: 'bulk' }
   | { kind: 'single'; channel: Channel }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, t: TranslateFn): string {
   const timestamp = Date.parse(iso)
   if (Number.isNaN(timestamp)) return '—'
   const seconds = Math.round((Date.now() - timestamp) / 1000)
-  if (seconds < 60) return 'just now'
+  if (seconds < 60) return t('common.channels.time.justNow')
   const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 60) return t('common.channels.time.minutesAgo', { count: minutes })
   const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
+  if (hours < 24) return t('common.channels.time.hoursAgo', { count: hours })
+  return t('common.channels.time.daysAgo', { count: Math.round(hours / 24) })
 }
 
 /**
@@ -92,26 +95,33 @@ export function ChannelListPage() {
   const [deleteBusy, setDeleteBusy] = useState(false)
 
   // F-06-01: keyword/model filtering is debounced by 300ms; the other filters
-  // apply immediately and always reset to page 1 (modules-06 §2.2).
+  // apply immediately and always reset to page 1 (modules-06 §2.2). Selection
+  // is page-scoped, so a filter change clears it as well.
   useEffect(() => {
+    const nextKeyword = keywordInput.trim()
+    if (nextKeyword === keyword) return
     const timer = setTimeout(() => {
-      setKeyword(keywordInput.trim())
+      setKeyword(nextKeyword)
       setPage(1)
+      setSelected(new Set())
     }, 300)
     return () => {
       clearTimeout(timer)
     }
-  }, [keywordInput])
+  }, [keywordInput, keyword])
 
   useEffect(() => {
+    const nextModel = modelInput.trim()
+    if (nextModel === model) return
     const timer = setTimeout(() => {
-      setModel(modelInput.trim())
+      setModel(nextModel)
       setPage(1)
+      setSelected(new Set())
     }, 300)
     return () => {
       clearTimeout(timer)
     }
-  }, [modelInput])
+  }, [modelInput, model])
 
   const params = useMemo<ChannelListParams>(
     () => ({
@@ -595,21 +605,13 @@ export function ChannelListPage() {
                       ? t('common.channels.empty.filtered')
                       : t('common.channels.empty.none')}
                   </p>
-                  <div className="mt-3 flex justify-center">
-                    {hasFilters ? (
+                  {hasFilters ? (
+                    <div className="mt-3 flex justify-center">
                       <Button variant="secondary" onClick={clearFilters}>
                         {t('common.channels.filters.clear')}
                       </Button>
-                    ) : (
-                      <Button
-                        onClick={() => {
-                          setSheet({ open: true, mode: 'create' })
-                        }}
-                      >
-                        {t('common.channels.new')}
-                      </Button>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
                 </td>
               </tr>
             ) : (
@@ -961,14 +963,14 @@ function GroupsCell({ groups }: { groups: string[] | null }) {
 }
 
 function LastTestCell({ channel }: { channel: Channel }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   if (channel.last_test_at === null) {
     return <span className="text-xs text-ink-3">{t('common.channels.table.neverTested')}</span>
   }
   const timestamp = Date.parse(channel.last_test_at)
   const absolute = Number.isNaN(timestamp)
     ? channel.last_test_at
-    : new Date(timestamp).toLocaleString('en')
+    : new Date(timestamp).toLocaleString(locale)
   const tone =
     channel.last_test_result === true
       ? 'text-success'
@@ -982,13 +984,13 @@ function LastTestCell({ channel }: { channel: Channel }) {
         : channel.last_test_result === false
           ? '✗'
           : ''}{' '}
-      {formatRelativeTime(channel.last_test_at)}
+      {formatRelativeTime(channel.last_test_at, t)}
     </span>
   )
 }
 
 function ChannelDetailPanel({ channel }: { channel: Channel }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const rows: Array<{ label: string; value: string }> = [
     { label: t('common.channels.detail.id'), value: String(channel.id) },
     {
@@ -1014,7 +1016,7 @@ function ChannelDetailPanel({ channel }: { channel: Channel }) {
     },
     {
       label: t('common.channels.detail.updated'),
-      value: new Date(channel.updated_at).toLocaleString('en'),
+      value: new Date(channel.updated_at).toLocaleString(locale),
     },
   ]
   if (channel.credentials_masked !== undefined) {

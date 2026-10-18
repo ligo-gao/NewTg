@@ -23,7 +23,7 @@ describe('ChannelStatusBadge', () => {
   it('renders status 2 as a neutral badge', () => {
     renderWithProviders(<ChannelStatusBadge status={2} />)
 
-    expect(screen.getByText('Manually disabled')).toBeTruthy()
+    expect(screen.getByText('Manually Disabled')).toBeTruthy()
     expect(screen.getByTestId('status-badge').getAttribute('data-variant')).toBe(
       'neutral',
     )
@@ -32,7 +32,7 @@ describe('ChannelStatusBadge', () => {
   it('renders status 3 as a warning badge', () => {
     renderWithProviders(<ChannelStatusBadge status={3} />)
 
-    expect(screen.getByText('Auto-disabled')).toBeTruthy()
+    expect(screen.getByText('Auto Disabled')).toBeTruthy()
     expect(screen.getByTestId('status-badge').getAttribute('data-variant')).toBe(
       'warning',
     )

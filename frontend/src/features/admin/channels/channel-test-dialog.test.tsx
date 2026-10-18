@@ -67,6 +67,43 @@ describe('ChannelTestDialog', () => {
     ).toBe('2')
   })
 
+  it('renders the mapped reason for a failed model', async () => {
+    const user = userEvent.setup()
+    const channel = makeChannel({
+      id: 11,
+      name: 'failer',
+      supported_models: ['m1'],
+    })
+    installFetch(() =>
+      jsonResponse({
+        success: false,
+        latency_ms: 0,
+        model: 'm1',
+        error_class: 'auth',
+      }),
+    )
+
+    renderWithProviders(
+      <ChannelTestDialog
+        open
+        channel={channel}
+        onOpenChange={() => {}}
+        onCompleted={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Start test' }))
+
+    expect(await within(dialog).findByText(/Authentication failed/)).toBeTruthy()
+    expect(within(dialog).queryByText(/Unknown error/)).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByTestId('test-summary').textContent).toContain(
+        '0 succeeded, 1 failed',
+      )
+    })
+  })
+
   it('shows the empty state when the channel has no models', async () => {
     installFetch(() =>
       problemResponse(404, { type: 'about:blank', title: 'not found' }),

@@ -40,9 +40,8 @@ describe('ChannelMutateSheet', () => {
     renderWithProviders(<ChannelListPage />)
     await screen.findByText('No channels yet')
 
-    const [newButton] = screen.getAllByRole('button', { name: 'New Channel' })
-    expect(newButton).toBeDefined()
-    await user.click(newButton as HTMLElement)
+    const newButton = screen.getByRole('button', { name: 'New Channel' })
+    await user.click(newButton)
 
     const dialog = await screen.findByRole('dialog')
     await user.type(within(dialog).getByLabelText('Name'), 'new-channel')
@@ -179,6 +178,126 @@ describe('ChannelMutateSheet', () => {
         'Base URL is required for this channel type.',
       ),
     ).toBeTruthy()
+  })
+
+  it('requires a new key when the azure deployment changes on edit', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 21,
+      name: 'azure-edit',
+      type: 'azure_openai',
+      credentials_masked: {
+        api_key: 'sk-…abcd',
+        deployment: 'dep-1',
+        api_version: '2024-10-21',
+      },
+      credentials_set: true,
+    })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/21') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/21') {
+        return jsonResponse(detail)
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={21}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const deployment = await within(dialog).findByLabelText('Deployment')
+    await user.clear(deployment)
+    await user.type(deployment, 'dep-2')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(dialog).findByText(
+        'Enter a new API key to change the deployment or API version.',
+      ),
+    ).toBeTruthy()
+    expect(findRequest(requests, 'PATCH', '/api/channels/21')).toBeUndefined()
+  })
+
+  it('requires full azure credentials when switching type on edit', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 22,
+      name: 'switcher',
+      type: 'openai',
+      credentials_masked: { api_key: 'sk-…wxyz' },
+      credentials_set: true,
+    })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/22') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/22') {
+        return jsonResponse({ ...detail, type: 'azure_openai' })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={22}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('API key')
+    await user.selectOptions(
+      within(dialog).getByLabelText('Type'),
+      'azure_openai',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await within(dialog).findByText('API key is required.')).toBeTruthy()
+    expect(
+      await within(dialog).findByText('Deployment is required for Azure OpenAI.'),
+    ).toBeTruthy()
+    expect(
+      await within(dialog).findByText('API version is required for Azure OpenAI.'),
+    ).toBeTruthy()
+    expect(findRequest(requests, 'PATCH', '/api/channels/22')).toBeUndefined()
+
+    // Supplying the complete set turns the same submission into a valid PATCH.
+    await user.type(within(dialog).getByLabelText('API key'), 'sk-azure-123')
+    await user.type(within(dialog).getByLabelText('Deployment'), 'dep-1')
+    await user.type(within(dialog).getByLabelText('API version'), '2024-10-21')
+    await user.type(
+      within(dialog).getByLabelText('Base URL'),
+      'https://example.openai.azure.com',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(
+        findRequest(requests, 'PATCH', '/api/channels/22'),
+      ).toBeDefined()
+    })
+    expect(
+      findRequest(requests, 'PATCH', '/api/channels/22')?.body,
+    ).toMatchObject({
+      type: 'azure_openai',
+      credentials: {
+        api_key: 'sk-azure-123',
+        deployment: 'dep-1',
+        api_version: '2024-10-21',
+      },
+    })
   })
 
   it('shows the 409 version-conflict message inline', async () => {

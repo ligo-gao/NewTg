@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 import { Button } from '@/shared/ui/base/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 
@@ -14,10 +16,14 @@ export interface ConfirmDialogProps {
   onConfirm: () => void
 }
 
+/** modules-00 §4.8: the confirm key must not react during the first 300ms. */
+const ARM_DELAY_MS = 300
+
 /**
  * Minimal destructive-confirmation dialog. `Dialog` moves focus to the panel
- * rather than the confirm button, so the first frame cannot be dismissed or
- * confirmed by an accidental Enter (modules-00 §4.8).
+ * rather than the confirm button, and the confirm action stays disabled for
+ * one frame-time so an accidental Enter at open cannot destroy anything
+ * (modules-00 §4.8).
  */
 export function ConfirmDialog({
   open,
@@ -30,6 +36,21 @@ export function ConfirmDialog({
   busy = false,
   onConfirm,
 }: ConfirmDialogProps) {
+  const [armed, setArmed] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setArmed(false)
+      return
+    }
+    const timer = setTimeout(() => {
+      setArmed(true)
+    }, ARM_DELAY_MS)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [open])
+
   return (
     <Dialog
       open={open}
@@ -51,8 +72,11 @@ export function ConfirmDialog({
           </Button>
           <Button
             variant={destructive ? 'danger' : 'primary'}
-            disabled={busy}
-            onClick={onConfirm}
+            disabled={busy || !armed}
+            onClick={() => {
+              if (!armed) return
+              onConfirm()
+            }}
           >
             {confirmLabel}
           </Button>

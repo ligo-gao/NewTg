@@ -382,13 +382,31 @@ function ChannelForm({ mode, channel, onCancel, onSaved }: ChannelFormProps) {
     }
 
     const apiKey = form.apiKey.trim()
+    const azure = form.type === 'azure_openai'
+    // The detail response only returns the non-secret azure fields, so the
+    // form can tell whether they were edited. Changing them without a new key
+    // would be silently discarded by the PATCH contract (credentials are only
+    // re-sealed when api_key is non-empty), so ask for the key up front.
+    const azureFieldsChanged =
+      mode === 'edit' &&
+      azure &&
+      (form.deployment.trim() !== (channel?.credentials_masked?.deployment ?? '').trim() ||
+        form.apiVersion.trim() !==
+          (channel?.credentials_masked?.api_version ?? '').trim())
+
     if (mode === 'create' && apiKey === '') {
       errors.apiKey = t('common.channels.form.apiKeyRequired')
+    } else if (mode === 'edit' && azure && typeChanged && apiKey === '') {
+      // Switching a non-azure channel to azure needs a complete credential
+      // set; the stored non-azure key cannot fill deployment/api_version.
+      errors.apiKey = t('common.channels.form.apiKeyRequired')
+    } else if (azureFieldsChanged && apiKey === '') {
+      errors.apiKey = t('common.channels.form.apiKeyRequiredForAzureChange')
     } else if (apiKey !== '' && apiKey.length < 8) {
       errors.apiKey = t('common.channels.form.apiKeyMin')
     }
 
-    if (form.type === 'azure_openai' && (mode === 'create' || apiKey !== '')) {
+    if (azure && (mode === 'create' || typeChanged || apiKey !== '')) {
       if (form.deployment.trim() === '') {
         errors.deployment = t('common.channels.form.deploymentRequired')
       }

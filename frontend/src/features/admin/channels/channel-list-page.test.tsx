@@ -39,7 +39,7 @@ describe('ChannelListPage', () => {
     expect(await screen.findByText('alpha')).toBeTruthy()
     expect(screen.getByText('beta')).toBeTruthy()
     const table = screen.getByTestId('channels-table')
-    expect(within(table).getByText('Manually disabled')).toBeTruthy()
+    expect(within(table).getByText('Manually Disabled')).toBeTruthy()
     expect(within(table).getByText('All groups')).toBeTruthy()
     expect(
       screen.getByRole('columnheader', { name: 'Priority' }).getAttribute('aria-sort'),
@@ -83,7 +83,7 @@ describe('ChannelListPage', () => {
     renderWithProviders(<ChannelListPage />)
 
     expect(await screen.findByText('No channels yet')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'New Channel' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'New Channel' })).toHaveLength(1)
   })
 
   it('shows an inline error state and retries the query', async () => {
@@ -173,12 +173,83 @@ describe('ChannelListPage', () => {
       findRequest(requests, 'POST', '/api/channels/batch-delete'),
     ).toBeUndefined()
 
-    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+    // modules-00 §4.8: the confirm key is armed after 300ms.
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Delete',
+    }) as HTMLButtonElement
+    await waitFor(() => {
+      expect(confirm.disabled).toBe(false)
+    })
+    await user.click(confirm)
     await waitFor(() => {
       expect(
         findRequest(requests, 'POST', '/api/channels/batch-delete')?.body,
       ).toEqual({ ids: [1, 2] })
     })
+    // batch-delete is idempotent: the write carries a UUID key.
+    expect(
+      findRequest(requests, 'POST', '/api/channels/batch-delete')?.headers.get(
+        'Idempotency-Key',
+      ),
+    ).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('clears the selection when the debounced keyword filter applies', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse([makeChannel({ id: 1, name: 'alpha' })]))
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('alpha')
+    await user.click(screen.getByLabelText('Select alpha'))
+    expect(screen.getByTestId('bulk-bar')).toBeTruthy()
+
+    await user.type(screen.getByLabelText('Keyword'), 'alpha')
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId('bulk-bar')).toBeNull()
+      },
+      { timeout: 2000 },
+    )
+  })
+
+  it('maps a failed single-channel test into the toast reason', async () => {
+    const user = userEvent.setup()
+    const channel = makeChannel({
+      id: 12,
+      name: 'toasty',
+      supported_models: ['gpt-4'],
+    })
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse([channel]))
+      }
+      if (
+        request.method === 'POST' &&
+        request.url.pathname === '/api/channels/12/test'
+      ) {
+        return jsonResponse({
+          success: false,
+          latency_ms: 5,
+          model: 'gpt-4',
+          error_class: 'auth',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('toasty')
+
+    await user.click(screen.getByRole('button', { name: 'Test connection' }))
+    expect(
+      await screen.findByText('Connection failed · gpt-4 · Authentication failed'),
+    ).toBeTruthy()
+    expect(screen.queryByText(/Unknown error/)).toBeNull()
   })
 
   it('sends expected_version on status toggles and reports a 409 conflict', async () => {
