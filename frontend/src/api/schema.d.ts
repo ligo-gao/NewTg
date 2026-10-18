@@ -2287,7 +2287,7 @@ export interface components {
             cache_read_price?: number | null;
             /** Format: int64 */
             cache_write_price?: number | null;
-            /** @description 缺省 Unknown。 */
+            /** @description 缺省 Unknown；null 与空串 422。 */
             author?: string;
             vendor?: string | null;
             status?: components["schemas"]["PricingStatus"];
@@ -2387,7 +2387,7 @@ export interface components {
             cache_read_price?: number | null;
             /** Format: int64 */
             cache_write_price?: number | null;
-            /** @description 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。 */
+            /** @description 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。 */
             author?: string;
             vendor?: string | null;
             status?: components["schemas"]["PricingStatus"];

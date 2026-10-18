@@ -1291,6 +1291,13 @@ func TestPricingAuthorPatchSemantics(t *testing.T) {
 	}
 	assertProblemFields(t, rr, "author")
 	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/authors", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "author": "   ",
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("author blank = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "author")
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/authors", map[string]any{
 		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "author": "Unknown", "vendor": nil,
 	}, nil)
 	if rr.Code != http.StatusOK {

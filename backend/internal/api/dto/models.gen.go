@@ -1458,7 +1458,7 @@ type ModelPricing struct {
 // 表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
 // 422；模型重复 409。
 type ModelPricingCreateRequest struct {
-	// Author 缺省 Unknown。
+	// Author 缺省 Unknown；null 与空串 422。
 	Author *string `json:"author,omitempty"`
 
 	// BillingExpr 非空即表达式模式；与数值价列互斥（混用 400）。
@@ -1558,7 +1558,7 @@ type ModelPricingStatusRequest struct {
 // ModelPricingUpdateRequest 部分更新；model 不可改（提交 model 由字段策略 403）。
 // updated_at 缺失 400、不匹配 409。空对象/无字段 400。
 type ModelPricingUpdateRequest struct {
-	// Author 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。
+	// Author 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。
 	Author *string `json:"author,omitempty"`
 
 	// BillingExpr null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。

@@ -4660,6 +4660,7 @@ components:
           maximum: 9007199254740991
         author:
           type: string
+          minLength: 1
           maxLength: 64
         vendor:
           type: string
@@ -4732,8 +4733,9 @@ components:
           maximum: 9007199254740991
         author:
           type: string
+          minLength: 1
           maxLength: 64
-          description: 缺省 Unknown。
+          description: 缺省 Unknown；null 与空串 422。
         vendor:
           type: string
           nullable: true
@@ -4928,8 +4930,9 @@ components:
           maximum: 9007199254740991
         author:
           type: string
+          minLength: 1
           maxLength: 64
-          description: 提交 null 422（NOT NULL 列）；复位请提交 "Unknown"。
+          description: 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。
         vendor:
           type: string
           nullable: true

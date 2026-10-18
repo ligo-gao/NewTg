@@ -599,16 +599,16 @@ func validatePricingModelParam(w http.ResponseWriter, model string) bool {
 	if pricingModelPattern.MatchString(model) {
 		return true
 	}
-	writePricingProblemWithFields(w, http.StatusBadRequest, problemTypeValidationFailed,
-		"Validation failed", "model path parameter must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
+	writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest,
+		"Invalid request", "model path parameter must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
 	return false
 }
 
 // validatePricingGroupModelParams 校验覆盖价路径中的分组名与模型名。
 func validatePricingGroupModelParams(w http.ResponseWriter, group, model string) bool {
 	if !groupNamePattern.MatchString(group) {
-		writePricingProblemWithFields(w, http.StatusBadRequest, problemTypeValidationFailed,
-			"Validation failed", "group path parameter must match ^[a-z0-9_-]{2,32}$", []string{"group"})
+		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest,
+			"Invalid request", "group path parameter must match ^[a-z0-9_-]{2,32}$", []string{"group"})
 		return false
 	}
 	return validatePricingModelParam(w, model)
@@ -853,7 +853,7 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 	// author 是 NOT NULL 列：创建时显式 null 与更新同样 422，而不是静默用默认值。
 	if payload.AuthorSet && payload.Author == nil {
 		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
-			"Validation failed", `author cannot be null; omit it for "Unknown" or submit "Unknown"`,
+			"Validation failed", `author must not be null or empty; omit it for "Unknown" or submit "Unknown"`,
 			[]string{"author"})
 		return
 	}
@@ -1152,7 +1152,7 @@ func buildModelPricingPatch(current store.ModelPricingRecord, payload modelPrici
 		// 可落的语义。按 fail-closed 拒绝，管理员可用 "Unknown" 复位。
 		if payload.Author == nil {
 			return patch, &pricingFieldError{
-				message: `author cannot be null; submit "Unknown" to reset it`,
+				message: `author must not be null or empty; submit "Unknown" to reset it`,
 				fields:  []string{"author"},
 			}
 		}
