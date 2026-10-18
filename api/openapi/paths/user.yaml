@@ -19,6 +19,8 @@ paths:
                 $ref: '../schemas/user.yaml#/schemas/MeView'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     patch:
@@ -52,6 +54,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
@@ -72,6 +76,8 @@ paths:
                 $ref: '../schemas/user.yaml#/schemas/SelfSettings'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
@@ -107,6 +113,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
         '409':
           $ref: '../components/responses.yaml#/responses/Error409'
         '500':
@@ -215,6 +223,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
         '503':
@@ -251,6 +261,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error403'
         '429':
           $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
@@ -286,6 +298,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error403'
         '404':
           $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
         '429':
           $ref: '../components/responses.yaml#/responses/Error429'
         '503':
@@ -332,6 +346,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error422'
         '429':
           $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
@@ -431,6 +447,12 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
@@ -631,8 +653,8 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
-        '503':
-          $ref: '../components/responses.yaml#/responses/Error503'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
     post:
       tags: [user]
       operationId: createTokens

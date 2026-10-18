@@ -1308,7 +1308,8 @@ export interface components {
             password: string;
             /** @description 必须与 password 逐字一致，否则 400。 */
             confirmPassword: string;
-            email_code: string;
+            /** @description 条件字段：仅当 auth.email_verification_required=true 时必填并校验。 */
+            email_code?: string;
             /** @description 必须为 true；false 返回 400。 */
             agree_terms: boolean;
             /** @description 可选推广码（非必填）；超长 400。 */
@@ -1373,10 +1374,9 @@ export interface components {
             code: string;
             /**
              * @description 缺省按 totp（兼容早期 {ticket,code} 契约）。
-             * @default totp
              * @enum {string}
              */
-            type: "totp" | "backup";
+            type?: "totp" | "backup";
         };
         /**
          * @description 恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
@@ -1547,7 +1547,8 @@ export interface components {
         };
         /**
          * @description DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-         *     再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+         *     再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+         *     额外副作用，但不是 204 成功态）。
          */
         DeleteAccountRequest: {
             /** @description 必须与当前用户名逐字一致。 */
@@ -1670,7 +1671,7 @@ export interface components {
             items?: components["schemas"]["Token"][];
         };
         /**
-         * @description POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+         * @description POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
          *     不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
          */
         CreateTokenRequest: {
@@ -1679,13 +1680,10 @@ export interface components {
             group?: string;
             /** @description null 表示永不过期。 */
             expires_at?: (number | string) | null;
-            /**
-             * @description 一次创建的令牌数量；上限 100（与批量操作同额）。
-             * @default 1
-             */
-            quantity: number;
-            /** @default true */
-            unlimited_quota: boolean;
+            /** @description 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。 */
+            quantity?: number;
+            /** @description 缺省 true（不限额度）。 */
+            unlimited_quota?: boolean;
             /**
              * Format: int64
              * @description unlimited_quota=false 时必须提供；0 表示立即耗尽。
@@ -1695,8 +1693,8 @@ export interface components {
             allow_ips?: string[];
             /** @description group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。 */
             auto_groups?: string[];
-            /** @default false */
-            cross_group_retry: boolean;
+            /** @description 缺省 false。 */
+            cross_group_retry?: boolean;
         };
         /** @description 创建响应中的条目 = Token + 一次性明文 key。 */
         CreatedToken: components["schemas"]["Token"] & {
@@ -1792,6 +1790,8 @@ export interface components {
          * @enum {string}
          */
         PermissionKey: "users:read" | "users:create" | "users:update" | "users:disable" | "users:delete" | "users:adjust-quota" | "users:manage-roles" | "users:reset-security" | "groups:manage" | "channels:read" | "channels:manage" | "channels:manage_sensitive" | "pricing:read" | "pricing:manage" | "redemption:manage" | "orders:read" | "orders:manage" | "logs:read" | "log.prompt.view" | "settings:manage";
+        /** @description 权限矩阵成员：20 键之一或全权通配符 "*"。 */
+        PermissionGrant: components["schemas"]["PermissionKey"] | "*";
         /**
          * @description 管理面用户投影。永不含口令哈希、TOTP 种子或备用码。admin_permissions
          *     为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
@@ -1815,7 +1815,11 @@ export interface components {
              */
             balance: number;
             group: string;
-            admin_permissions: components["schemas"]["PermissionKey"][] | null;
+            /**
+             * @description 权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
+             *     空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
+             */
+            admin_permissions: components["schemas"]["PermissionGrant"][] | null;
             totp_enabled: boolean;
             must_change_password: boolean;
             remark?: string | null;
@@ -1905,8 +1909,6 @@ export interface components {
              */
             temp_password: string;
         };
-        /** @description 权限矩阵成员：20 键之一或全权通配符 "*"。 */
-        PermissionGrant: components["schemas"]["PermissionKey"] | "*";
         /**
          * @description PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
          *     （400）。成功 200 返回更新后的 AdminUser。
@@ -2526,6 +2528,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -2560,6 +2563,7 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -2582,6 +2586,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -2616,6 +2621,7 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
             500: components["responses"]["Error500"];
         };
@@ -2733,6 +2739,7 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
@@ -2767,6 +2774,7 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
     };
@@ -2801,6 +2809,7 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
     };
@@ -2839,6 +2848,7 @@ export interface operations {
             409: components["responses"]["Error409"];
             422: components["responses"]["Error422"];
             429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
     };
@@ -2933,6 +2943,9 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
             503: components["responses"]["Error503"];
         };
     };
@@ -3103,7 +3116,7 @@ export interface operations {
             };
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
-            503: components["responses"]["Error503"];
+            500: components["responses"]["Error500"];
         };
     };
     createTokens: {
@@ -3790,6 +3803,7 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
         };
     };
     resetUserPassword: {
@@ -3826,6 +3840,7 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
         };
     };
     setUserPermissions: {

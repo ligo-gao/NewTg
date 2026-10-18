@@ -179,7 +179,8 @@ schemas:
         description: 已启用 2FA 时必填。
     description: |
       DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-      再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+      再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+      额外副作用，但不是 204 成功态）。
 
   ChangeEmailRequest:
     type: object
@@ -508,11 +509,10 @@ schemas:
         type: integer
         minimum: 1
         maximum: 100
-        default: 1
-        description: 一次创建的令牌数量；上限 100（与批量操作同额）。
+        description: 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。
       unlimited_quota:
         type: boolean
-        default: true
+        description: 缺省 true（不限额度）。
       remain_quota:
         type: integer
         format: int64
@@ -535,9 +535,9 @@ schemas:
         description: group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
       cross_group_retry:
         type: boolean
-        default: false
+        description: 缺省 false。
     description: |
-      POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+      POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
       不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
 
   CreateTokenResponse:

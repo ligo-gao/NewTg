@@ -1,7 +1,8 @@
 # 公开域 DTO（platform-03 §9.5 / §10.1；M1 账户与认证契约）。
-# 所有 DTO 均 additionalProperties:false：M1 handler 对未知字段 fail-closed
-# （注册/登录等认证入口 reject，管理面写侧 403 field_not_writable）。契约与实现
-# 保持同一收紧方向，避免前端误以为"多传字段会被忽略"。
+# 所有 DTO 均 additionalProperties:false：这是契约层的收紧方向，避免前端误以为
+# "多传字段会被忽略"。M1 运行期只有 token handler 用 DisallowUnknownFields 强制；
+# 其余入口的严格未知字段拒绝由后续校验中间件落地（登记为待实现项），
+# 因此本文件的 additionalProperties:false 描述的是契约而非当前全部实现。
 schemas:
   PublicStatus:
     type: object
@@ -121,7 +122,9 @@ schemas:
   RegisterRequest:
     type: object
     additionalProperties: false
-    required: [username, email, password, confirmPassword, email_code, agree_terms]
+    # email_code 仅当 GET /api/status 的 auth.email_verification_required=true
+    # 时必填（服务端在该开关开启时校验并消费；默认关闭时忽略该字段）。
+    required: [username, email, password, confirmPassword, agree_terms]
     properties:
       username:
         type: string
@@ -140,6 +143,7 @@ schemas:
       email_code:
         type: string
         pattern: '^[0-9]{6}$'
+        description: 条件字段：仅当 auth.email_verification_required=true 时必填并校验。
       agree_terms:
         type: boolean
         description: 必须为 true；false 返回 400。
@@ -250,7 +254,6 @@ schemas:
       type:
         type: string
         enum: [totp, backup]
-        default: totp
         description: 缺省按 totp（兼容早期 {ticket,code} 契约）。
     description: |
       用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，

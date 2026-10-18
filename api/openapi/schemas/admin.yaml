@@ -58,8 +58,11 @@ schemas:
       admin_permissions:
         type: array
         items:
-          $ref: '#/schemas/PermissionKey'
+          $ref: '#/schemas/PermissionGrant'
         nullable: true
+        description: |
+          权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
+          空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
       totp_enabled:
         type: boolean
       must_change_password:

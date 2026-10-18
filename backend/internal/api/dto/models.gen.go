@@ -797,7 +797,9 @@ type AdminUpdateUserRequest struct {
 // 为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
 // 不同，客户端不得把 [] 当 null。
 type AdminUser struct {
-	AdminPermissions []PermissionKey `json:"admin_permissions"`
+	// AdminPermissions 权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
+	// 空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
+	AdminPermissions []PermissionGrant `json:"admin_permissions"`
 
 	// Balance 当前余额（credits 最小单位）。
 	Balance     int64     `json:"balance"`
@@ -902,14 +904,16 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
-// CreateTokenRequest POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+// CreateTokenRequest POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
 // 不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
 type CreateTokenRequest struct {
 	AllowIps *[]string `json:"allow_ips,omitempty"`
 
 	// AutoGroups group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
-	AutoGroups      *[]string `json:"auto_groups,omitempty"`
-	CrossGroupRetry *bool     `json:"cross_group_retry,omitempty"`
+	AutoGroups *[]string `json:"auto_groups,omitempty"`
+
+	// CrossGroupRetry 缺省 false。
+	CrossGroupRetry *bool `json:"cross_group_retry,omitempty"`
 
 	// ExpiresAt null 表示永不过期。
 	ExpiresAt *CreateTokenRequest_ExpiresAt `json:"expires_at,omitempty"`
@@ -919,12 +923,14 @@ type CreateTokenRequest struct {
 	ModelLimits *[]string `json:"model_limits,omitempty"`
 	Name        string    `json:"name"`
 
-	// Quantity 一次创建的令牌数量；上限 100（与批量操作同额）。
+	// Quantity 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。
 	Quantity *int `json:"quantity,omitempty"`
 
 	// RemainQuota unlimited_quota=false 时必须提供；0 表示立即耗尽。
-	RemainQuota    *int64 `json:"remain_quota,omitempty"`
-	UnlimitedQuota *bool  `json:"unlimited_quota,omitempty"`
+	RemainQuota *int64 `json:"remain_quota,omitempty"`
+
+	// UnlimitedQuota 缺省 true（不限额度）。
+	UnlimitedQuota *bool `json:"unlimited_quota,omitempty"`
 }
 
 // CreateTokenRequestExpiresAt0 epoch 秒（modules-02 线格式）。
@@ -987,7 +993,8 @@ type CreatedToken struct {
 }
 
 // DeleteAccountRequest DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-// 再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+// 再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+// 额外副作用，但不是 204 成功态）。
 type DeleteAccountRequest struct {
 	// ConfirmUsername 必须与当前用户名逐字一致。
 	ConfirmUsername string `json:"confirm_username"`
@@ -1356,7 +1363,9 @@ type RegisterRequest struct {
 	// ConfirmPassword 必须与 password 逐字一致，否则 400。
 	ConfirmPassword string              `json:"confirmPassword"`
 	Email           openapi_types.Email `json:"email"`
-	EmailCode       string              `json:"email_code"`
+
+	// EmailCode 条件字段：仅当 auth.email_verification_required=true 时必填并校验。
+	EmailCode *string `json:"email_code,omitempty"`
 
 	// Password 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。
 	Password string `json:"password"`

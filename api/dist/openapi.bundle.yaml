@@ -541,6 +541,8 @@ paths:
                 $ref: '#/components/schemas/MeView'
         '401':
           $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
     patch:
@@ -575,6 +577,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
   /api/self:
@@ -595,6 +599,8 @@ paths:
                 $ref: '#/components/schemas/SelfSettings'
         '401':
           $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
   /api/self/setting:
@@ -630,6 +636,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '409':
           $ref: '#/components/responses/Error409'
         '500':
@@ -738,6 +746,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -774,6 +784,8 @@ paths:
           $ref: '#/components/responses/Error403'
         '429':
           $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
         '503':
           $ref: '#/components/responses/Error503'
   /api/account:
@@ -811,6 +823,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '429':
           $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
         '503':
           $ref: '#/components/responses/Error503'
   /api/email:
@@ -855,6 +869,8 @@ paths:
           $ref: '#/components/responses/Error422'
         '429':
           $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
         '503':
           $ref: '#/components/responses/Error503'
   /api/notification-preferences:
@@ -955,6 +971,12 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '502':
+          $ref: '#/components/responses/Error502'
         '503':
           $ref: '#/components/responses/Error503'
   /api/2fa/setup:
@@ -1155,8 +1177,8 @@ paths:
           $ref: '#/components/responses/Error400'
         '401':
           $ref: '#/components/responses/Error401'
-        '503':
-          $ref: '#/components/responses/Error503'
+        '500':
+          $ref: '#/components/responses/Error500'
     post:
       tags:
         - user
@@ -1559,6 +1581,7 @@ paths:
       tags:
         - admin
       operationId: listUsers
+      x-required-permission: users:read
       summary: 用户列表（分页 + 筛选 + 排序）
       description: |
         keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
@@ -1617,6 +1640,7 @@ paths:
       tags:
         - admin
       operationId: createUser
+      x-required-permission: users:create
       summary: 创建用户（管理员创建无邮箱）
       description: |
         应携带 Idempotency-Key：同键重放只创建一条；同键不同请求体 422；
@@ -1659,6 +1683,7 @@ paths:
       tags:
         - admin
       operationId: getUser
+      x-required-permission: users:read
       summary: 读取用户详情
       security:
         - sessionCookie: []
@@ -1683,6 +1708,7 @@ paths:
       tags:
         - admin
       operationId: updateUser
+      x-required-permission: users:update
       summary: 部分更新用户（乐观锁）
       description: |
         必须原样回传 updated_at（缺失 400、不匹配 409）。不含口令字段：
@@ -1725,6 +1751,7 @@ paths:
       tags:
         - admin
       operationId: deleteUser
+      x-required-permission: users:delete
       summary: 删除用户（前置条件：已封禁）
       description: |
         目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
@@ -1756,6 +1783,7 @@ paths:
       tags:
         - admin
       operationId: setUserStatus
+      x-required-permission: users:disable
       summary: 封禁 / 解禁用户
       description: |
         封禁在同一事务内吊销全部会话并把该用户令牌置 disabled；解禁不自动
@@ -1795,6 +1823,7 @@ paths:
       tags:
         - admin
       operationId: adjustUserQuota
+      x-required-permission: users:adjust-quota
       summary: 管理员额度调整（原子写流水）
       description: |
         原子 UPDATE（GC-5）：subtract 超过余额 400，绝不产生负余额；override
@@ -1835,6 +1864,7 @@ paths:
       tags:
         - admin
       operationId: resetUserTwoFA
+      x-required-permission: users:reset-security
       summary: 重置用户 2FA（清除种子与备用码）
       description: 目标未启用 2FA 时 400。成功 204。
       security:
@@ -1855,11 +1885,14 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/users/{id}/reset-password:
     post:
       tags:
         - admin
       operationId: resetUserPassword
+      x-required-permission: users:reset-security
       summary: 重置用户口令（返回一次性临时口令）
       description: |
         生成 16 位临时口令（TEMP_PWD_TTL=24h，must_change_password=true），
@@ -1892,11 +1925,14 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/users/{id}/permissions:
     patch:
       tags:
         - admin
       operationId: setUserPermissions
+      x-required-permission: users:manage-roles
       summary: 设置管理员权限矩阵（超集校验）
       description: |
         授予集合必须是调用者自身权限的子集，否则 403 且不写库；未知键与
@@ -1936,6 +1972,7 @@ paths:
       tags:
         - admin
       operationId: listGroups
+      x-required-permission: groups:manage
       summary: 分组列表（分页）
       security:
         - sessionCookie: []
@@ -1961,6 +1998,7 @@ paths:
       tags:
         - admin
       operationId: createGroup
+      x-required-permission: groups:manage
       summary: 创建分组
       description: 名称必须匹配 ^[a-z0-9_-]{2,32}$ 且唯一；冲突 409。成功 201。
       security:
@@ -1995,6 +2033,7 @@ paths:
       tags:
         - admin
       operationId: updateGroup
+      x-required-permission: groups:manage
       summary: 更新分组（改名 / 描述）
       description: |
         至少提供一个字段，否则 400。系统组不可改名（400，描述仍可编辑）；
@@ -2033,6 +2072,7 @@ paths:
       tags:
         - admin
       operationId: deleteGroup
+      x-required-permission: groups:manage
       summary: 删除分组
       description: |
         系统组（default/auto 等）不可删除（400）；仍被用户/令牌/定价/渠道
@@ -2062,6 +2102,7 @@ paths:
       tags:
         - admin
       operationId: listChannels
+      x-required-permission: channels:read
       summary: 列出上游渠道（分页）
       security:
         - sessionCookie: []
@@ -2505,7 +2546,6 @@ components:
         - email
         - password
         - confirmPassword
-        - email_code
         - agree_terms
       properties:
         username:
@@ -2525,6 +2565,7 @@ components:
         email_code:
           type: string
           pattern: ^[0-9]{6}$
+          description: 条件字段：仅当 auth.email_verification_required=true 时必填并校验。
         agree_terms:
           type: boolean
           description: 必须为 true；false 返回 400。
@@ -2639,7 +2680,6 @@ components:
           enum:
             - totp
             - backup
-          default: totp
           description: 缺省按 totp（兼容早期 {ticket,code} 契约）。
       description: |
         用 ticket 换正式会话。TOTP 连续 5 次错误作废 ticket；备用码原子核销，
@@ -2971,7 +3011,8 @@ components:
           description: 已启用 2FA 时必填。
       description: |
         DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-        再认证失败 403 reauth_required；账号已不存在时同样 204（幂等）。
+        再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
+        额外副作用，但不是 204 成功态）。
     ChangeEmailRequest:
       type: object
       additionalProperties: false
@@ -3227,11 +3268,10 @@ components:
           type: integer
           minimum: 1
           maximum: 100
-          default: 1
-          description: 一次创建的令牌数量；上限 100（与批量操作同额）。
+          description: 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。
         unlimited_quota:
           type: boolean
-          default: true
+          description: 缺省 true（不限额度）。
         remain_quota:
           type: integer
           format: int64
@@ -3254,9 +3294,9 @@ components:
           description: group=auto 时必填且非空；21 项拒绝（TC-F-02-13-08）。
         cross_group_retry:
           type: boolean
-          default: false
+          description: 缺省 false。
       description: |
-        POST /api/tokens 必须携带 Idempotency-Key：同键重放返回首次结果，
+        POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
         不同请求体复用同键返回 422。创建成功返回 200 + {created:[...]}。
     CreatedToken:
       allOf:
@@ -3485,6 +3525,13 @@ components:
       description: |
         modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
         通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
+    PermissionGrant:
+      oneOf:
+        - $ref: '#/components/schemas/PermissionKey'
+        - type: string
+          enum:
+            - '*'
+      description: 权限矩阵成员：20 键之一或全权通配符 "*"。
     AdminUser:
       type: object
       additionalProperties: false
@@ -3533,8 +3580,11 @@ components:
         admin_permissions:
           type: array
           items:
-            $ref: '#/components/schemas/PermissionKey'
+            $ref: '#/components/schemas/PermissionGrant'
           nullable: true
+          description: |
+            权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
+            空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
         totp_enabled:
           type: boolean
         must_change_password:
@@ -3698,13 +3748,6 @@ components:
             TEMP_PWD_TTL=24h 且 must_change_password=true；24 小时内不改密
             则临时口令失效。
       description: 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
-    PermissionGrant:
-      oneOf:
-        - $ref: '#/components/schemas/PermissionKey'
-        - type: string
-          enum:
-            - '*'
-      description: 权限矩阵成员：20 键之一或全权通配符 "*"。
     SetPermissionsRequest:
       type: object
       additionalProperties: false
