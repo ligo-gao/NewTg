@@ -1,0 +1,396 @@
+// Package billing 实现 NewTG 的计费引擎（M3）。
+//
+// 本包在请求生命周期中的位置：
+//
+//	中继 → PreConsume（按估算预算原子预扣，写 hold 流水）
+//	     → [Reserve 上浮 | ChargeIncrement 增量实扣]
+//	     → Terminate（按真实用量多退少补）或 Refund（失败全退）
+//
+// 设计权威：docs/billing-00-计费引擎接口契约.md §5–§9、
+// docs/billing-03-预扣结算退款与归一化-设计.md、docs/billing-05-计费量结算-设计.md。
+// 净室实现：仅依据规格与冻结契约编写，不复制参照实现源码。
+package billing
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+
+	"newtg/gateway/internal/billing/pricing"
+	"newtg/gateway/internal/contract"
+)
+
+// ConfigReader 是计费引擎读取配置中心快照的最小接口。
+//
+// configcenter.Center.Get 天然满足该形状；单测用内存 map 替代。
+type ConfigReader interface {
+	Get(key string) (json.RawMessage, bool)
+}
+
+// Registry 是在飞请求租约的写侧接口（M3 决议 A3）。
+//
+// 生产实现见 Task 5 的 Redis registry；单测/未接线时允许为 nil（跳过副作用）。
+// 租约参数由会话（本包）拥有：InflightLeaseTTLSeconds 是写入时的 TTL，
+// InflightHeartbeatSeconds 是续约间隔。
+type Registry interface {
+	Register(ctx context.Context, requestID string, userID int64, lease time.Duration) error
+	Heartbeat(ctx context.Context, requestID string) error
+	Remove(ctx context.Context, requestID string) error
+}
+
+// SettlementOutcome 是 Terminate 交给日志层（Saturator）的结算结果。
+//
+// Status 取 usage_logs.status 的整型枚举（0=refused / 1=success /
+// 2=error / 3=refunded）。Cost/PreDeducted/Refunded 均为整数积分。
+type SettlementOutcome struct {
+	Cost         int64 // 实际应扣（结算后）
+	PreDeducted  int64 // 预扣总量
+	Refunded     int64 // 退还量（≥0）
+	Status       int16 // usage_logs.status（0..3）
+	ErrorClass   string
+	ErrorMessage string
+}
+
+// usage_logs.status 的整型枚举（backend/migrations-logs/20261018061805_init.up.sql）。
+const (
+	UsageLogStatusRefused  int16 = 0
+	UsageLogStatusSuccess  int16 = 1
+	UsageLogStatusError    int16 = 2
+	UsageLogStatusRefunded int16 = 3
+)
+
+// Saturator 是 usage_logs 的落库接缝（Task 6 实现）。
+//
+// 为什么日志写在主库结算之前：usage_logs 在**独立日志库**，与主库余额不是
+// 同一个事务。跨库原子性不可用，所以固定顺序为「先日志（按 request_id
+// 幂等）、后主库结算」：
+//   - 日志失败 → 不结算，保留 hold，返回 error（请求方可重试/worker 兜底）；
+//   - 结算失败 → 已写的日志由 worker 兜底退款时置为 refunded。
+//
+// 绝不在代码或文档里声称两库有事务一致性。
+type Saturator interface {
+	Saturate(ctx context.Context, fact *contract.UsageFact, rc *contract.RelayContext, outcome SettlementOutcome) error
+}
+
+// 计费错误。
+var (
+	// ErrInsufficientQuota 是额度不足的哨兵错误；T9 的 relay 映射把它转成
+	// HTTP 402（不 import relay/billingseam，避免反向依赖）。
+	ErrInsufficientQuota = errors.New("billing: insufficient quota")
+
+	// ErrBudgetExceeded 表示二次预扣超出预算语义（C-10/D12：整请求 400，
+	// 不是 402）。当前触发点是「同一会话重复 PreConsume」。
+	ErrBudgetExceeded = errors.New("billing: reservation exceeds estimated budget")
+
+	// ErrNoPricing 表示既没有冻结快照，也没有可用的定价源。
+	ErrNoPricing = errors.New("billing: no price snapshot and no pricing source")
+
+	// ErrInvalidConfig 表示计费相关配置值非法（非正、NaN/Inf 等）。
+	ErrInvalidConfig = errors.New("billing: invalid config")
+
+	// ErrUserNotFound 表示账本操作的目标用户不存在。
+	ErrUserNotFound = errors.New("billing: user not found")
+
+	// ErrWalletLimit 表示余额变更会越过钱包安全整数上界（2^53−1）。
+	ErrWalletLimit = errors.New("billing: wallet balance limit exceeded")
+
+	// ErrMissingRequestID 表示会话没有绑定计费幂等键。
+	ErrMissingRequestID = errors.New("billing: missing request id")
+
+	// ErrSessionClosed 表示会话已结算/已退款，不允许继续扣减。
+	ErrSessionClosed = errors.New("billing: session already closed")
+)
+
+// QuotaError 承载一次额度不足的结构化信息（Required/Available 供响应体使用）。
+//
+// Unwrap 返回 ErrInsufficientQuota，使 errors.Is(err, ErrInsufficientQuota) 成立；
+// ErrorClass 供中继错误分类器读取（402 不重试）。
+type QuotaError struct {
+	Class     contract.ErrorClass
+	Required  int64
+	Available int64
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("billing: insufficient quota: required %d, available %d", e.Required, e.Available)
+}
+
+// Unwrap 让 QuotaError 命中 errors.Is(ErrInsufficientQuota)。
+func (e *QuotaError) Unwrap() error { return ErrInsufficientQuota }
+
+// ErrorClass 返回契约错误分类；零值按额度不足处理（本类型只表达该语义）。
+func (e *QuotaError) ErrorClass() contract.ErrorClass {
+	if e.Class == contract.ErrUnknown {
+		return contract.ErrInsufficientQuota
+	}
+	return e.Class
+}
+
+// 计费配置键（configcenter 快照）。
+const (
+	// ConfigQuotaPerUnit 是「1 元 = 多少积分」的唯一换算基准；GC-2 冻结默认 100。
+	ConfigQuotaPerUnit = "billing.quota_per_unit"
+	// ConfigPreConsumeRatio 是预扣比例（默认 1.0 = 全额预扣；≤0 拒绝）。
+	ConfigPreConsumeRatio = "billing.pre_consume_ratio"
+	// ConfigTrustQuotaUSD 是信任旁路阈值（USD）；G7-R51 冻结默认 10 USD，
+	// 0 = 禁用旁路。
+	ConfigTrustQuotaUSD = "billing.trust_quota_usd"
+)
+
+const (
+	defaultQuotaPerUnit    = 100.0
+	defaultPreConsumeRatio = 1.0
+	defaultTrustQuotaUSD   = 10.0
+)
+
+// Engine 装配计费引擎的依赖。所有字段在构造后只读，可被并发使用。
+type Engine struct {
+	db     *gorm.DB
+	logsDB *sql.DB
+	rdb    *redis.Client
+	cfg    ConfigReader
+
+	source    pricing.Source
+	registry  Registry
+	saturator Saturator
+	ledger    *Ledger
+	heartbeat time.Duration // 单测可缩短；零值按契约默认 30s
+}
+
+// NewEngine 构造计费引擎。
+//
+// registry / saturator 允许为 nil（单测或尚未接线时跳过对应副作用）；
+// source 在 rc.PriceSnapshot 为 nil 时使用。
+func NewEngine(db *gorm.DB, logsDB *sql.DB, rdb *redis.Client, cfg ConfigReader,
+	source pricing.Source, registry Registry, saturator Saturator) *Engine {
+	return &Engine{
+		db:        db,
+		logsDB:    logsDB,
+		rdb:       rdb,
+		cfg:       cfg,
+		source:    source,
+		registry:  registry,
+		saturator: saturator,
+		ledger:    NewLedger(db),
+	}
+}
+
+// NewSession 为一次请求绑定一个计费会话（relay 每请求调用工厂）。
+func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
+	s := &Session{engine: e, rc: rc}
+	if rc != nil {
+		s.requestID = rc.RequestID
+		s.userID = int64(rc.UserID)
+	}
+	return s
+}
+
+// heartbeatInterval 返回心跳间隔（测试可注入更短值）。
+func (e *Engine) heartbeatInterval() time.Duration {
+	if e.heartbeat > 0 {
+		return e.heartbeat
+	}
+	return time.Duration(contract.InflightHeartbeatSeconds) * time.Second
+}
+
+// configFloat 读取一个数值配置；未设置时返回 def。
+//
+// configcenter 的 jsonb 值既可能是 JSON number，也可能是 JSON string
+// （管理面保存时统一走字符串是基线行为），两种都要接受。NaN/Inf 一律
+// 视为配置错误：把 NaN 带进金额计算会产生不可对账的配额。
+func (e *Engine) configFloat(key string, def float64) (float64, error) {
+	if e.cfg == nil {
+		return def, nil
+	}
+	raw, ok := e.cfg.Get(key)
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return def, nil
+	}
+
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		var s string
+		if err2 := json.Unmarshal(raw, &s); err2 != nil {
+			return 0, fmt.Errorf("%w: %s is not numeric", ErrInvalidConfig, key)
+		}
+		parsed, err3 := strconv.ParseFloat(s, 64)
+		if err3 != nil {
+			return 0, fmt.Errorf("%w: %s is not numeric", ErrInvalidConfig, key)
+		}
+		f = parsed
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%w: %s must be finite", ErrInvalidConfig, key)
+	}
+	return f, nil
+}
+
+// quotaPerUnit 返回积分换算基准（默认 100）。
+func (e *Engine) quotaPerUnit() (int64, error) {
+	v, err := e.configFloat(ConfigQuotaPerUnit, defaultQuotaPerUnit)
+	if err != nil {
+		return 0, err
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig, ConfigQuotaPerUnit)
+	}
+	q, err := pricing.QuotaFromFloatStrict(v)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s: %v", ErrInvalidConfig, ConfigQuotaPerUnit, err)
+	}
+	return q, nil
+}
+
+// preConsumeRatio 返回预扣比例（默认 1.0；≤0 拒绝）。
+func (e *Engine) preConsumeRatio() (float64, error) {
+	v, err := e.configFloat(ConfigPreConsumeRatio, defaultPreConsumeRatio)
+	if err != nil {
+		return 0, err
+	}
+	if v <= 0 {
+		// 配置错误不得静默取 0：0 会把所有预扣变成 0，等价于关闭保护。
+		return 0, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig, ConfigPreConsumeRatio)
+	}
+	return v, nil
+}
+
+// trustQuotaUSD 返回信任旁路阈值（默认 10 USD；0 = 禁用；负值拒绝）。
+func (e *Engine) trustQuotaUSD() (float64, error) {
+	v, err := e.configFloat(ConfigTrustQuotaUSD, defaultTrustQuotaUSD)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigTrustQuotaUSD)
+	}
+	return v, nil
+}
+
+// preConsumeMultiplier 校验快照冻结的预扣上浮系数（billing-03 §3.2）。
+//
+// 旧快照没有该字段（零值）按默认 1 处理（G7-R05 改判，原 1.2 废止）；
+// 已配置的负值/非有限值属于配置错误，拒绝而不是静默取 1。
+func (e *Engine) preConsumeMultiplier(snap *contract.PriceSnapshot) (float64, error) {
+	if snap == nil {
+		return 1, nil
+	}
+	v := snap.PreConsumeMultiplier
+	if v == 0 {
+		return 1, nil
+	}
+	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("%w: pre_consume_multiplier must be a finite positive number", ErrInvalidConfig)
+	}
+	return v, nil
+}
+
+// shouldTrust 判定是否命中信任额度旁路（billing-00 §6.4 条件全集）。
+//
+// 全部满足才命中：① 非强制预扣；② 阈值是正有限值；③ 令牌无限额或余额超阈；
+// ④ 钱包余额超阈；⑤ 订阅侧不得旁路（M3 只有钱包资金源，订阅实现属 M5）。
+//
+// 契约 QuotaEstimate 没有 ForcePreConsume 字段（M2 冻结时遗漏），这里以
+// 「任务时长 / 固定价键」作为任务路径的判据：异步任务必须预扣，禁用旁路。
+// 该替代判据在报告中登记为接口缺口。
+func (e *Engine) shouldTrust(ctx context.Context, rc *contract.RelayContext,
+	est contract.QuotaEstimate) (bool, error) {
+
+	if e.db == nil || rc == nil {
+		return false, nil
+	}
+	// ① 强制预扣（任务路径）禁用旁路。
+	if est.TaskDuration > 0 || est.FixedPriceKey != "" {
+		return false, nil
+	}
+
+	usd, err := e.trustQuotaUSD()
+	if err != nil {
+		return false, err
+	}
+	if usd <= 0 {
+		return false, nil // 0 = 禁用旁路
+	}
+	perUnit, err := e.quotaPerUnit()
+	if err != nil {
+		return false, err
+	}
+	threshold, err := pricing.QuotaFromFloatStrict(usd * float64(perUnit))
+	if err != nil {
+		// 阈值越界不是请求的问题，但也不能静默按 0 处理；按配置错误上抛，
+		// 让装配期/首个请求暴露问题。
+		return false, fmt.Errorf("%w: trust threshold: %v", ErrInvalidConfig, err)
+	}
+	if threshold <= 0 {
+		return false, nil
+	}
+
+	// ③ 令牌侧：无限额（remain_quota IS NULL）或余额 > 阈值。
+	tokenOK, err := e.tokenAboveThreshold(ctx, int64(rc.TokenID), threshold)
+	if err != nil {
+		return false, err
+	}
+	if !tokenOK {
+		return false, nil
+	}
+
+	// ④ 钱包侧：余额 > 阈值。
+	balance, err := e.walletBalance(ctx, int64(rc.UserID))
+	if err != nil {
+		return false, err
+	}
+	if balance <= threshold {
+		return false, nil
+	}
+
+	// ⑤ 订阅侧一律 false（订阅永不旁路，billing-00 §6.4）：订阅预扣要求
+	// amount>0 并锁定订阅，旁路会与其内部账不一致（billing-03 §3.3）。
+	// M3 没有订阅资金源，该条件对钱包请求不构成否决；M5 接入订阅时必须在
+	// 此处为订阅资金源显式返回 false，不得默认放行。
+	return true, nil
+}
+
+// tokenAboveThreshold 判断令牌侧是否满足旁路条件。
+//
+// remain_quota 为 NULL 表示不限额度（满足）；令牌行不存在按 fail-closed
+// 处理（不旁路），因为无法证明其余额超阈。
+func (e *Engine) tokenAboveThreshold(ctx context.Context, tokenID, threshold int64) (bool, error) {
+	if tokenID <= 0 {
+		// 没有绑定 API 令牌（渠道测试/内部调用）：视为无限额。
+		return true, nil
+	}
+	var remain sql.NullInt64
+	err := e.db.WithContext(ctx).Raw(`SELECT remain_quota FROM api_tokens WHERE id = ?`, tokenID).
+		Row().Scan(&remain)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("billing: read token quota: %w", err)
+	}
+	if !remain.Valid {
+		return true, nil
+	}
+	return remain.Int64 > threshold, nil
+}
+
+// walletBalance 读取用户钱包余额。
+func (e *Engine) walletBalance(ctx context.Context, userID int64) (int64, error) {
+	var balance int64
+	err := e.db.WithContext(ctx).Raw(`SELECT balance FROM users WHERE id = ?`, userID).
+		Row().Scan(&balance)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("%w: user %d", ErrUserNotFound, userID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("billing: read wallet balance: %w", err)
+	}
+	return balance, nil
+}
