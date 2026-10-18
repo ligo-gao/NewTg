@@ -3,6 +3,7 @@ package expr
 import (
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -169,6 +170,26 @@ func TestEvalArithmetic(t *testing.T) {
 			src:  "  1 +\t2\n",
 			want: 3,
 		},
+		{
+			name: "减号左结合",
+			src:  "1-2-3",
+			want: -4, // (1-2)-3，而非 1-(2-3)
+		},
+		{
+			name: "除号左结合",
+			src:  "8/4/2",
+			want: 1, // (8/4)/2，而非 8/(4/2)
+		},
+		{
+			name: "加减混合左结合",
+			src:  "1-2+3",
+			want: 2,
+		},
+		{
+			name: "乘加优先级",
+			src:  "2*3+4",
+			want: 10,
+		},
 	}
 
 	for _, tc := range tests {
@@ -323,8 +344,17 @@ func TestCompileRejects(t *testing.T) {
 		{name: "round 零参", src: `round()`, want: EvalSyntax},
 		{name: "尾逗号", src: `min(a, b,)`, want: EvalSyntax},
 
-		// 字面量溢出
+		// 字面量溢出与不完整指数（指数不完整时回退，e 成为标识符）
 		{name: "字面量超 float64", src: `1e999`, want: EvalOverflow},
+		{name: "不完整指数 2e", src: `2e`, want: EvalSyntax},
+		{name: "不完整指数 1e+", src: `1e+`, want: EvalSyntax},
+		{name: "不完整指数 1e-", src: `1e-`, want: EvalSyntax},
+
+		// 非法 UTF-8 / Unicode 空白（白名单只认 ASCII）
+		{name: "非法 UTF-8 字节", src: "\xff\xfe", want: EvalSyntax},
+		{name: "非法 UTF-8 截断序列", src: "\xc3\x28", want: EvalSyntax},
+		{name: "Unicode 不换行空格", src: "  1", want: EvalSyntax},
+		{name: "全角空格", src: "　 1", want: EvalSyntax},
 
 		// 白名单外函数（含规格 §4.6 时间函数与完整引擎函数）
 		{name: "abs 不在 Task 1 白名单", src: `abs(-1)`, want: EvalUnknownFunction},
@@ -373,6 +403,151 @@ func TestCompileAcceptsWhitelistedLiterals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCompileResourceLimits 覆盖评审 C-1：不可信输入不得通过无界递归触发
+// fatal stack overflow。长度/深度两个上限都必须返回可恢复的 EvalSyntax。
+func TestCompileResourceLimits(t *testing.T) {
+	t.Run("超长源码被拒绝", func(t *testing.T) {
+		src := strings.Repeat("1+", maxSourceLen/2+1) + "1"
+		if len(src) <= maxSourceLen {
+			t.Fatalf("测试构造错误：源码长度 %d 未超过上限 %d", len(src), maxSourceLen)
+		}
+		e, err := Compile(src)
+		if e != nil {
+			t.Fatalf("Compile(超长源码) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+		var ee *EvalError
+		if !errors.As(err, &ee) || !strings.Contains(ee.Message, "too long") {
+			t.Fatalf("错误信息未提示超长: %v", err)
+		}
+	})
+
+	t.Run("百万层括号（原崩溃向量）被长度上限拦截", func(t *testing.T) {
+		src := strings.Repeat("(", 1_000_000) + "1" + strings.Repeat(")", 1_000_000)
+		e, err := Compile(src)
+		if e != nil {
+			t.Fatalf("Compile(百万层括号) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+	})
+
+	t.Run("括号嵌套超过深度上限", func(t *testing.T) {
+		src := strings.Repeat("(", 600) + "1" + strings.Repeat(")", 600)
+		if len(src) > maxSourceLen {
+			t.Fatalf("测试构造错误：深度用例不应触发长度上限")
+		}
+		e, err := Compile(src)
+		if e != nil {
+			t.Fatalf("Compile(600 层括号) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+		var ee *EvalError
+		if !errors.As(err, &ee) || !strings.Contains(ee.Message, "nesting") {
+			t.Fatalf("错误信息未提示嵌套过深: %v", err)
+		}
+	})
+
+	t.Run("一元负号超过深度上限", func(t *testing.T) {
+		src := strings.Repeat("-", 600) + "1"
+		e, err := Compile(src)
+		if e != nil {
+			t.Fatalf("Compile(600 个一元负号) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+	})
+
+	t.Run("函数调用嵌套超过深度上限", func(t *testing.T) {
+		src := strings.Repeat("min(", 600) + "1,1" + strings.Repeat(")", 600)
+		e, err := Compile(src)
+		if e != nil {
+			t.Fatalf("Compile(600 层函数嵌套) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+	})
+
+	t.Run("深度上限之下的括号仍可编译求值", func(t *testing.T) {
+		src := strings.Repeat("(", 500) + "1" + strings.Repeat(")", 500)
+		got, err := mustCompile(t, src).Eval(nil)
+		if err != nil {
+			t.Fatalf("500 层括号求值意外失败: %v", err)
+		}
+		if got != 1 {
+			t.Fatalf("500 层括号 = %v，期望 1", got)
+		}
+	})
+
+	t.Run("接近长度上限的合法加法链可求值", func(t *testing.T) {
+		// 60 KB 源码 → 约 3 万层左深二元树：验证长度上限同时把求值递归
+		// 深度约束在安全范围（动态栈可承载）。
+		src := strings.Repeat("1+", 30_000) + "1"
+		if len(src) > maxSourceLen {
+			t.Fatalf("测试构造错误：合法加法链不应超过长度上限")
+		}
+		got, err := mustCompile(t, src).Eval(nil)
+		if err != nil {
+			t.Fatalf("长加法链求值意外失败: %v", err)
+		}
+		if got != 30_001 {
+			t.Fatalf("长加法链 = %v，期望 30001", got)
+		}
+	})
+}
+
+// TestErrorMessagesBounded 覆盖评审 M-1：诊断信息中的字面量/标识符必须
+// 截断到有界前缀，不能把用户输入原样放大进 EvalError.Message。
+func TestErrorMessagesBounded(t *testing.T) {
+	assertBounded := func(t *testing.T, err error) {
+		t.Helper()
+		var ee *EvalError
+		if !errors.As(err, &ee) {
+			t.Fatalf("err 类型 = %T（%v），期望 *EvalError", err, err)
+		}
+		if len(ee.Message) > 200 {
+			t.Fatalf("错误信息长度 = %d，未被截断", len(ee.Message))
+		}
+		if !strings.Contains(ee.Message, "...") {
+			t.Fatalf("错误信息未包含截断标记: %q", ee.Message)
+		}
+	}
+
+	t.Run("1MB 数字字面量按长度上限拒绝", func(t *testing.T) {
+		e, err := Compile(strings.Repeat("9", 1<<20))
+		if e != nil {
+			t.Fatalf("Compile(1MB 字面量) 意外成功")
+		}
+		wantKind(t, err, EvalSyntax)
+		var ee *EvalError
+		if !errors.As(err, &ee) || len(ee.Message) > 200 {
+			t.Fatalf("1MB 字面量产生了未受限的错误信息: %v", err)
+		}
+	})
+
+	t.Run("超大字面量的溢出信息被截断", func(t *testing.T) {
+		e, err := Compile(strings.Repeat("9", 20_000))
+		if e != nil {
+			t.Fatalf("Compile(2 万位字面量) 意外成功")
+		}
+		wantKind(t, err, EvalOverflow)
+		assertBounded(t, err)
+	})
+
+	t.Run("超大标识符的未知变量信息被截断", func(t *testing.T) {
+		e := mustCompile(t, strings.Repeat("a", 20_000))
+		_, err := e.Eval(nil)
+		wantKind(t, err, EvalUnknownVariable)
+		assertBounded(t, err)
+	})
+
+	t.Run("超大函数名的未知函数信息被截断", func(t *testing.T) {
+		e, err := Compile(strings.Repeat("f", 20_000) + "(1)")
+		if e != nil {
+			t.Fatalf("Compile(超大函数名) 意外成功")
+		}
+		wantKind(t, err, EvalUnknownFunction)
+		assertBounded(t, err)
+	})
 }
 
 // TestUsedVars 覆盖计划 Step 1 补充项：内省必须含函数名，且返回副本。

@@ -21,13 +21,55 @@
 // `Eval(vars map[string]float64)` 没有该入参。为避免「静默改用 wall clock
 // 导致预扣与结算跨小时匹配到不同档位」的基线缺陷，这些名字一律按未知
 // 函数在编译期拒绝（EvalUnknownFunction），而不是求值。
+//
+// 资源边界：表达式是不可信输入，递归下降的每一层嵌套都会占栈帧。若不加
+// 限制，1M 层嵌套括号或 8M 个一元负号足以触发 Go 的 fatal stack overflow
+// （进程崩溃，recover 无法拦截）。因此 Compile 先按字节数拒绝超长源码
+// （maxSourceLen），解析器再按嵌套层数拒绝过深表达式（maxParseDepth）。
+// 两个上限都远高于任何真实定价表达式，同时把求值期的递归深度（左深二元
+// 树）约束在源码长度以内。诊断信息中的字面量/标识符按 maxMessageText
+// 截断，避免用户输入被原样放大进错误对象。
 package expr
 
 import (
 	"fmt"
 	"math"
 	"strconv"
+	"unicode/utf8"
 )
+
+const (
+	// maxSourceLen 是表达式源码的字节上限（64 KiB）。
+	//
+	// 为什么是 64 KiB：真实定价表达式是几十到几百字节；64 KiB 给出充足
+	// 余量，同时把左深二元树（如 3 万个 `1+`）的求值递归深度限制在数万
+	// 层以内 —— Go 的动态栈可以安全承载，不会触发 fatal stack overflow。
+	maxSourceLen = 64 << 10
+
+	// maxParseDepth 是递归下降的最大嵌套层数（括号、一元负号、函数调用
+	// 共用同一计数器）。512 层远低于栈溢出阈值，又远高于真实表达式深度。
+	maxParseDepth = 512
+
+	// maxMessageText 是错误信息中字面量/标识符保留的最大字节前缀。
+	// 否则一个 64 KiB 的数字字面量会让 EvalError.Message 同样膨胀 64 KiB，
+	// 污染日志与审计存储。
+	maxMessageText = 64
+)
+
+// truncateForMessage 把诊断信息里的用户输入截断到有界前缀。
+//
+// 白名单词法产出的字面量/标识符本应是 ASCII，但截断仍按 UTF-8 边界回退，
+// 保证任何错误路径都不会制造非法 UTF-8 文案。
+func truncateForMessage(s string) string {
+	if len(s) <= maxMessageText {
+		return s
+	}
+	cut := maxMessageText
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
 
 // EvalErrorKind 是表达式错误的语义种类。
 //
@@ -157,14 +199,6 @@ func (l *lexer) peek() byte {
 	return l.src[l.pos]
 }
 
-func (l *lexer) peekAt(off int) byte {
-	p := l.pos + off
-	if p >= len(l.src) {
-		return 0
-	}
-	return l.src[p]
-}
-
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 func isIdentStart(b byte) bool {
@@ -262,7 +296,7 @@ func (l *lexer) scanNumber() (token, error) {
 		// 在编译期就拒绝，避免把 Inf 带进求值。
 		return token{}, &EvalError{
 			Kind:    EvalOverflow,
-			Message: fmt.Sprintf("numeric literal %q is out of float64 range", text),
+			Message: fmt.Sprintf("numeric literal %q is out of float64 range", truncateForMessage(text)),
 		}
 	}
 	return token{kind: tokNumber, text: text, num: v, pos: start}, nil
@@ -298,7 +332,7 @@ func (n *varNode) eval(vars map[string]float64) (float64, error) {
 	if !ok {
 		return 0, &EvalError{
 			Kind:    EvalUnknownVariable,
-			Message: fmt.Sprintf("variable %q is not bound", n.name),
+			Message: fmt.Sprintf("variable %q is not bound", truncateForMessage(n.name)),
 		}
 	}
 	return v, nil
@@ -409,10 +443,27 @@ func finiteResult(v float64) (float64, error) {
 
 // parser 是递归下降解析器，同时收集 UsedVars（内省）。
 type parser struct {
-	lex  lexer
-	tok  token
-	used map[string]bool
+	lex   lexer
+	tok   token
+	used  map[string]bool
+	depth int // 当前递归嵌套层数，见 maxParseDepth
 }
+
+// enter/leave 维护解析嵌套层数。
+//
+// 【为什么按 parseUnary 计数】递归下降的每一条递归路径（括号、一元负号、
+// 函数实参）都必然经过 parseUnary：括号走 primary→additive→…→unary，
+// 调用走 call→additive→…→unary，一元负号则是 unary→unary 直接递归。
+// 因此在这一个位置计数即可无遗漏地封顶所有栈增长。
+func (p *parser) enter() error {
+	p.depth++
+	if p.depth > maxParseDepth {
+		return syntaxf("expression nesting exceeds %d levels", maxParseDepth)
+	}
+	return nil
+}
+
+func (p *parser) leave() { p.depth-- }
 
 func (p *parser) advance() error {
 	tok, err := p.lex.next()
@@ -462,6 +513,11 @@ func (p *parser) parseMultiplicative() (node, error) {
 }
 
 func (p *parser) parseUnary() (node, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
+
 	if p.tok.kind == tokMinus {
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -558,7 +614,7 @@ func (p *parser) parseCall(name string, pos int) (node, error) {
 	default:
 		return nil, &EvalError{
 			Kind:    EvalUnknownFunction,
-			Message: fmt.Sprintf("unknown function %q at offset %d", name, pos),
+			Message: fmt.Sprintf("unknown function %q at offset %d", truncateForMessage(name), pos),
 		}
 	}
 
@@ -583,10 +639,23 @@ type Evaluator struct {
 
 // Compile 解析并校验表达式，返回可复用的求值器。
 //
-// 失败种类：EvalSyntax（语法/元数/空表达式）、EvalUnknownFunction（白名单
-// 外函数）、EvalOverflow（字面量超出 float64 范围）。编译失败不产生
+// 资源边界（均为 EvalSyntax）：源码超过 maxSourceLen（64 KiB）直接拒绝；
+// 解析嵌套超过 maxParseDepth（512 层）拒绝。二者共同保证不可信输入无法
+// 通过深递归触发 fatal stack overflow。
+//
+// 失败种类：EvalSyntax（语法/元数/空表达式/超长/过深）、EvalUnknownFunction
+// （白名单外函数）、EvalOverflow（字面量超出 float64 范围）。编译失败不产生
 // Evaluator，调用方无需清理。
+//
+// 【标识符不受白名单约束】Compile 接受任意 `[a-zA-Z_][a-zA-Z0-9_]*`
+// 形式的变量名，绑定与否由 Eval 的 vars 决定（未绑定 → EvalUnknownVariable）。
+// 这是冻结接口的有意设计：引擎不认识业务变量表；定价/保存期入口（Task 2/7）
+// 必须用 UsedVars() 对照允许的变量集合做校验。
 func Compile(src string) (*Evaluator, error) {
+	if len(src) > maxSourceLen {
+		return nil, syntaxf("expression source is too long: %d bytes (limit %d)", len(src), maxSourceLen)
+	}
+
 	p := &parser{lex: lexer{src: src}, used: make(map[string]bool)}
 	if err := p.advance(); err != nil {
 		return nil, err
