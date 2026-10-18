@@ -36,11 +36,18 @@ schemas:
   PatchMeRequest:
     type: object
     additionalProperties: false
+    # display_name 必须出现（可为 null）：handler 对缺失字段返回 400，契约不能
+    # 把它写成"可选"——否则前端会以为空请求体等价于"不改"。
+    required: [display_name]
     description: |
       仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
       403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
     properties:
       display_name:
+        # 3.1 标准写法是 type [string, "null"]，但 kin-openapi v0.131.0（仓内
+        # validate 门禁）不接受 "null" 类型；nullable 是仓内既有可空写法。
+        # 注意 null 与空串在本接口语义相同（都清除显示名），故 DTO 的 string
+        # 表示不会丢失行为差异。
         type: string
         maxLength: 32
         nullable: true
@@ -518,7 +525,10 @@ schemas:
         format: int64
         minimum: 0
         maximum: 1000000000000000
-        description: unlimited_quota=false 时必须提供；0 表示立即耗尽。
+        description: |
+          可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+          remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+          时忽略本字段。
       model_limits:
         type: array
         items:
@@ -699,9 +709,11 @@ schemas:
       - unlimited_quota
       - model_limits_enabled
     description: |
-      GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
-      （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
-      返回 401 token_disabled。
+      GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+      unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+      耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+      鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+      `token_disabled`，非法 key `invalid_token`）。
     properties:
       object:
         type: string
@@ -716,6 +728,9 @@ schemas:
       total_used:
         type: integer
         format: int64
+        description: |
+          M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+          与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
       total_available:
         type: integer
         format: int64

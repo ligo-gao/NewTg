@@ -216,11 +216,33 @@ schemas:
       amount:
         type: integer
         format: int64
-        description: add/subtract 为增量（≥0），override 为目标余额（≥0）。
+        description: |
+          add/subtract 为增量，必须 ≥1（handler 对 0 返回 400：零增量没有业务
+          意义，且会污染流水）；override 为目标余额，允许 0。三种 mode 共用本
+          schema，条件下限写在 schema 级 not/anyOf 中，而不是给 amount 加
+          无条件 minimum（否则合法的 override=0 会被误判非法）。
       idempotency_key:
         type: string
         minLength: 1
         description: 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。
+    # 条件下限：add/subtract 禁止 amount≤0，override 禁止 amount<0。
+    # 用 not+anyOf 表达 if/then 的等价约束——kin-openapi v0.131.0（仓内
+    # validate 门禁）不接受 if/then/else 作为 schema 兄弟字段；这种写法不改变
+    # 生成的对象类型（oapi-codegen/openapi-typescript 均忽略 not）。
+    not:
+      anyOf:
+        - properties:
+            mode:
+              enum: [add, subtract]
+            amount:
+              maximum: 0
+          required: [mode, amount]
+        - properties:
+            mode:
+              enum: [override]
+            amount:
+              maximum: -1
+          required: [mode, amount]
     description: |
       原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
       override 与当前余额相同返回 400（无变化）。成功后写
@@ -364,4 +386,5 @@ schemas:
         nullable: true
     description: |
       至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
-      （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
+      （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
+      ErrGroupSystem → 400），被引用的分组删除返回 409。

@@ -860,8 +860,9 @@ export interface paths {
         };
         /**
          * 令牌自读用量（Bearer 自身 key）
-         * @description 只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。令牌额度
-         *     耗尽/过期仍返回 200（前端要能显示耗尽状态，modules-02 §2.13）；
+         * @description 只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。额度耗尽的
+         *     令牌仍返回 200 且 total_available=0（前端要能显示耗尽状态，
+         *     modules-02 §2.13）；已过期令牌 401 + problem type token_expired；
          *     禁用令牌 401 token_disabled；非法 key 401 invalid_token。
          */
         get: operations["getTokenUsage"];
@@ -1180,6 +1181,12 @@ export interface components {
          *     变更必须立即反映到登录/注册页，禁止任何中间层缓存。
          */
         PublicStatus: {
+            /**
+             * @description 站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
+             *     实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
+             *     向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
+             */
+            system_initialized: boolean;
             auth: {
                 /** @description false 时 POST /api/auth/register 返回 403（关闭注册）。 */
                 signup_enabled: boolean;
@@ -1295,6 +1302,12 @@ export interface components {
              * @enum {string}
              */
             purpose: "register" | "reset" | "verify" | "bind";
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
         };
         /**
          * @description 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
@@ -1314,6 +1327,12 @@ export interface components {
             agree_terms: boolean;
             /** @description 可选推广码（非必填）；超长 400。 */
             aff?: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
         };
         /** @enum {string} */
         UserRole: "user" | "admin";
@@ -1347,6 +1366,13 @@ export interface components {
             password_encrypted?: string;
             /** @description GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。 */
             encryption_key_id?: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略。支持两种提交形态：请求体字段，或
+             *     `?turnstile_token=` 查询参数；两者同时出现时请求体优先（查询形态是
+             *     中间件/handler 分支兼容，不是独立契约面）。
+             */
+            turnstile_token?: string;
         };
         Pending2FAResponse: {
             /**
@@ -1385,6 +1411,12 @@ export interface components {
         PasswordResetRequest: {
             /** Format: email */
             email: string;
+            /**
+             * @description Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+             *     403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+             *     请求体优先）。
+             */
+            turnstile_token?: string;
         };
         PasswordResetValidateRequest: {
             /** @description 重置链接中的一次性 token；本端点只校验不消费。 */
@@ -1474,7 +1506,7 @@ export interface components {
          */
         PatchMeRequest: {
             /** @description null 或空白字符串清除显示名。 */
-            display_name?: string | null;
+            display_name: string | null;
         };
         /**
          * @description GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
@@ -1686,7 +1718,9 @@ export interface components {
             unlimited_quota?: boolean;
             /**
              * Format: int64
-             * @description unlimited_quota=false 时必须提供；0 表示立即耗尽。
+             * @description 可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+             *     remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+             *     时忽略本字段。
              */
             remain_quota?: number;
             model_limits?: string[];
@@ -1758,9 +1792,11 @@ export interface components {
             max_count: number;
         };
         /**
-         * @description GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
-         *     （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
-         *     返回 401 token_disabled。
+         * @description GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+         *     unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+         *     耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+         *     鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+         *     `token_disabled`，非法 key `invalid_token`）。
          */
         TokenUsage: {
             /** @enum {string} */
@@ -1771,7 +1807,11 @@ export interface components {
              * @description M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
              */
             total_granted?: number | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+             *     与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
+             */
             total_used: number;
             /**
              * Format: int64
@@ -1886,7 +1926,10 @@ export interface components {
             mode: "add" | "subtract" | "override";
             /**
              * Format: int64
-             * @description add/subtract 为增量（≥0），override 为目标余额（≥0）。
+             * @description add/subtract 为增量，必须 ≥1（handler 对 0 返回 400：零增量没有业务
+             *     意义，且会污染流水）；override 为目标余额，允许 0。三种 mode 共用本
+             *     schema，条件下限写在 schema 级 not/anyOf 中，而不是给 amount 加
+             *     无条件 minimum（否则合法的 override=0 会被误判非法）。
              */
             amount: number;
             /** @description 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。 */
@@ -1958,7 +2001,8 @@ export interface components {
         };
         /**
          * @description 至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
-         *     （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
+         *     （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
+         *     ErrGroupSystem → 400），被引用的分组删除返回 409。
          */
         AdminUpdateGroupRequest: {
             name?: string;
@@ -3152,9 +3196,26 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            409: components["responses"]["Error409"];
+            /** @description 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["Error422"];
-            503: components["responses"]["Error503"];
+            500: components["responses"]["Error500"];
+            /** @description 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getToken: {
@@ -3518,7 +3579,19 @@ export interface operations {
                     "application/json": components["schemas"]["TokenUsage"];
                 };
             };
-            401: components["responses"]["Error401"];
+            /**
+             * @description 令牌不可用。problem type 区分原因：`token_expired`（已过期）、
+             *     `token_disabled`（已禁用）、`invalid_token`（key 非法/不存在）；
+             *     detail 不泄露令牌存在性与归属。
+             */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             503: components["responses"]["Error503"];
         };
     };

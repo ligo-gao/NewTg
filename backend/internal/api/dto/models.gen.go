@@ -776,7 +776,8 @@ type AdminGroupList struct {
 }
 
 // AdminUpdateGroupRequest 至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
-// （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
+// （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
+// ErrGroupSystem → 400），被引用的分组删除返回 409。
 type AdminUpdateGroupRequest struct {
 	Description *string `json:"description,omitempty"`
 	Name        *string `json:"name,omitempty"`
@@ -926,7 +927,9 @@ type CreateTokenRequest struct {
 	// Quantity 一次创建的令牌数量（缺省 1）；上限 100（与批量操作同额）。
 	Quantity *int `json:"quantity,omitempty"`
 
-	// RemainQuota unlimited_quota=false 时必须提供；0 表示立即耗尽。
+	// RemainQuota 可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+	// remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+	// 时忽略本字段。
 	RemainQuota *int64 `json:"remain_quota,omitempty"`
 
 	// UnlimitedQuota 缺省 true（不限额度）。
@@ -1014,6 +1017,11 @@ type EmailCodeRequest struct {
 	// Purpose register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
 	// 公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
 	Purpose EmailCodeRequestPurpose `json:"purpose"`
+
+	// TurnstileToken Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+	// 403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+	// 请求体优先）。
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
 }
 
 // EmailCodeRequestPurpose register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
@@ -1088,6 +1096,12 @@ type LoginRequest struct {
 
 	// PasswordEncrypted 前端加密载荷；开启加密时必填。
 	PasswordEncrypted *string `json:"password_encrypted,omitempty"`
+
+	// TurnstileToken Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+	// 403），关闭时忽略。支持两种提交形态：请求体字段，或
+	// `?turnstile_token=` 查询参数；两者同时出现时请求体优先（查询形态是
+	// 中间件/handler 分支兼容，不是独立契约面）。
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
 }
 
 // LoginResponse 口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
@@ -1198,6 +1212,11 @@ type PasswordResetConfirmRequest struct {
 // token（30 分钟）。限流与格式错误是仅有的差异化响应。
 type PasswordResetRequest struct {
 	Email openapi_types.Email `json:"email"`
+
+	// TurnstileToken Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+	// 403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+	// 请求体优先）。
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
 }
 
 // PasswordResetValidateRequest defines model for PasswordResetValidateRequest.
@@ -1219,7 +1238,7 @@ type PasswordResetValidateResponseValid bool
 // 403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
 type PatchMeRequest struct {
 	// DisplayName null 或空白字符串清除显示名。
-	DisplayName *string `json:"display_name,omitempty"`
+	DisplayName string `json:"display_name"`
 }
 
 // Pending2FAResponse defines model for Pending2FAResponse.
@@ -1327,13 +1346,21 @@ type PublicStatus struct {
 	// true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
 	// （reason=encryption_required，对外响应与口令错误不可区分）。
 	PasswordLoginEncryptionEnabled bool `json:"password_login_encryption_enabled"`
+
+	// SystemInitialized 站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
+	// 实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
+	// 向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
+	SystemInitialized bool `json:"system_initialized"`
 }
 
 // QuotaAdjustmentRequest 原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
 // override 与当前余额相同返回 400（无变化）。成功后写
 // type=admin_adjustment 流水。
 type QuotaAdjustmentRequest struct {
-	// Amount add/subtract 为增量（≥0），override 为目标余额（≥0）。
+	// Amount add/subtract 为增量，必须 ≥1（handler 对 0 返回 400：零增量没有业务
+	// 意义，且会污染流水）；override 为目标余额，允许 0。三种 mode 共用本
+	// schema，条件下限写在 schema 级 not/anyOf 中，而不是给 amount 加
+	// 无条件 minimum（否则合法的 override=0 会被误判非法）。
 	Amount int64 `json:"amount"`
 
 	// IdempotencyKey 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。
@@ -1369,7 +1396,12 @@ type RegisterRequest struct {
 
 	// Password 长度合格后仍会做泄露口令筛查；命中返回 400（不区分"弱"与"已泄露"）。
 	Password string `json:"password"`
-	Username string `json:"username"`
+
+	// TurnstileToken Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+	// 403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+	// 请求体优先）。
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
+	Username       string  `json:"username"`
 }
 
 // ResetPasswordResponse 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
@@ -1570,9 +1602,11 @@ type TokenList struct {
 // disabled 是唯一可写的人工位；其余为时间/额度派生态。
 type TokenStatus string
 
-// TokenUsage GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
-// （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
-// 返回 401 token_disabled。
+// TokenUsage GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+// unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+// 耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+// 鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+// `token_disabled`，非法 key `invalid_token`）。
 type TokenUsage struct {
 	ExpiresAt          *time.Time       `json:"expires_at,omitempty"`
 	ModelLimits        *[]string        `json:"model_limits,omitempty"`
@@ -1584,9 +1618,12 @@ type TokenUsage struct {
 	TotalAvailable *int64 `json:"total_available,omitempty"`
 
 	// TotalGranted M3 接入 usage_logs 前无法可靠计算，固定 null（不伪造"授予=剩余"）。
-	TotalGranted   *int64 `json:"total_granted,omitempty"`
-	TotalUsed      int64  `json:"total_used"`
-	UnlimitedQuota bool   `json:"unlimited_quota"`
+	TotalGranted *int64 `json:"total_granted,omitempty"`
+
+	// TotalUsed M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+	// 与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
+	TotalUsed      int64 `json:"total_used"`
+	UnlimitedQuota bool  `json:"unlimited_quota"`
 }
 
 // TokenUsageObject defines model for TokenUsage.Object.

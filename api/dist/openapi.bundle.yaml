@@ -1215,11 +1215,21 @@ paths:
         '403':
           $ref: '#/components/responses/Error403'
         '409':
-          $ref: '#/components/responses/Error409'
+          description: 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '422':
           $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
         '503':
-          $ref: '#/components/responses/Error503'
+          description: 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/tokens/{id}:
     get:
       tags:
@@ -1560,8 +1570,9 @@ paths:
       operationId: getTokenUsage
       summary: 令牌自读用量（Bearer 自身 key）
       description: |
-        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。令牌额度
-        耗尽/过期仍返回 200（前端要能显示耗尽状态，modules-02 §2.13）；
+        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。额度耗尽的
+        令牌仍返回 200 且 total_available=0（前端要能显示耗尽状态，
+        modules-02 §2.13）；已过期令牌 401 + problem type token_expired；
         禁用令牌 401 token_disabled；非法 key 401 invalid_token。
       security:
         - bearerToken: []
@@ -1573,7 +1584,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenUsage'
         '401':
-          $ref: '#/components/responses/Error401'
+          description: |
+            令牌不可用。problem type 区分原因：`token_expired`（已过期）、
+            `token_disabled`（已禁用）、`invalid_token`（key 非法/不存在）；
+            detail 不泄露令牌存在性与归属。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/Error503'
   /api/users:
@@ -2320,6 +2338,7 @@ components:
       type: object
       additionalProperties: false
       required:
+        - system_initialized
         - auth
         - password_login_encryption_enabled
         - languages
@@ -2328,6 +2347,12 @@ components:
         公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
         变更必须立即反映到登录/注册页，禁止任何中间层缓存。
       properties:
+        system_initialized:
+          type: boolean
+          description: |
+            站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
+            实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
+            向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
         auth:
           type: object
           additionalProperties: false
@@ -2535,6 +2560,12 @@ components:
           description: |
             register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
             公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+        turnstile_token:
+          type: string
+          description: |
+            Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+            403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+            请求体优先）。
       description: |
         发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
         10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
@@ -2573,6 +2604,12 @@ components:
           type: string
           maxLength: 64
           description: 可选推广码（非必填）；超长 400。
+        turnstile_token:
+          type: string
+          description: |
+            Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+            403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+            请求体优先）。
       description: |
         注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
         文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
@@ -2639,6 +2676,13 @@ components:
         encryption_key_id:
           type: string
           description: GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。
+        turnstile_token:
+          type: string
+          description: |
+            Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+            403），关闭时忽略。支持两种提交形态：请求体字段，或
+            `?turnstile_token=` 查询参数；两者同时出现时请求体优先（查询形态是
+            中间件/handler 分支兼容，不是独立契约面）。
     Pending2FAResponse:
       type: object
       additionalProperties: false
@@ -2694,6 +2738,12 @@ components:
           type: string
           format: email
           maxLength: 254
+        turnstile_token:
+          type: string
+          description: |
+            Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+            403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+            请求体优先）。
       description: |
         恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
         token（30 分钟）。限流与格式错误是仅有的差异化响应。
@@ -2857,6 +2907,8 @@ components:
     PatchMeRequest:
       type: object
       additionalProperties: false
+      required:
+        - display_name
       description: |
         仅 display_name 可写。提交任何未知字段（含 role/email/password）返回
         403 field_not_writable，绝不静默丢弃（BOPLA，security-02 §2.6.1）。
@@ -3277,7 +3329,10 @@ components:
           format: int64
           minimum: 0
           maximum: 1000000000000000
-          description: unlimited_quota=false 时必须提供；0 表示立即耗尽。
+          description: |
+            可选。缺省时取 DB 默认档 100000（modules-02:369，创建 handler 的
+            remain := 100000 与之一致）；0 表示立即耗尽；unlimited_quota=true
+            时忽略本字段。
         model_limits:
           type: array
           items:
@@ -3463,9 +3518,11 @@ components:
         - unlimited_quota
         - model_limits_enabled
       description: |
-        GET /api/usage/token 的 Bearer 自读投影。令牌额度耗尽/过期时仍返回 200
-        （modules-02 §2.13：前端要能显示耗尽状态而不是被 401 吞掉）；禁用令牌
-        返回 401 token_disabled。
+        GET /api/usage/token 的 Bearer 自读投影。额度耗尽（remain_quota=0 且
+        unlimited_quota=false）时仍返回 200 且 total_available=0——前端要能显示
+        耗尽状态而不是被 401 吞掉（modules-02 §2.13）。与耗尽相反，过期令牌在
+        鉴权层就被拒绝：401 + problem type `token_expired`（禁用令牌
+        `token_disabled`，非法 key `invalid_token`）。
       properties:
         object:
           type: string
@@ -3481,6 +3538,9 @@ components:
         total_used:
           type: integer
           format: int64
+          description: |
+            M1 尚未计量（usage_logs 未接入，令牌行也没有 used 列），恒为 0；
+            与 total_granted 的 null 同属 M3 前的占位口径，不得据此刻画真实用量。
         total_available:
           type: integer
           format: int64
@@ -3709,11 +3769,36 @@ components:
         amount:
           type: integer
           format: int64
-          description: add/subtract 为增量（≥0），override 为目标余额（≥0）。
+          description: |
+            add/subtract 为增量，必须 ≥1（handler 对 0 返回 400：零增量没有业务
+            意义，且会污染流水）；override 为目标余额，允许 0。三种 mode 共用本
+            schema，条件下限写在 schema 级 not/anyOf 中，而不是给 amount 加
+            无条件 minimum（否则合法的 override=0 会被误判非法）。
         idempotency_key:
           type: string
           minLength: 1
           description: 必填业务幂等键；与 HTTP Idempotency-Key 不同，写入交易流水。
+      not:
+        anyOf:
+          - properties:
+              mode:
+                enum:
+                  - add
+                  - subtract
+              amount:
+                maximum: 0
+            required:
+              - mode
+              - amount
+          - properties:
+              mode:
+                enum:
+                  - override
+              amount:
+                maximum: -1
+            required:
+              - mode
+              - amount
       description: |
         原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
         override 与当前余额相同返回 400（无变化）。成功后写
@@ -3856,7 +3941,8 @@ components:
           nullable: true
       description: |
         至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
-        （仓储事务）；default 不可删除（409），被引用的分组删除返回 409。
+        （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
+        ErrGroupSystem → 400），被引用的分组删除返回 409。
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）

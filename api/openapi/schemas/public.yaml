@@ -7,11 +7,17 @@ schemas:
   PublicStatus:
     type: object
     additionalProperties: false
-    required: [auth, password_login_encryption_enabled, languages, default_language]
+    required: [system_initialized, auth, password_login_encryption_enabled, languages, default_language]
     description: |
       公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
       变更必须立即反映到登录/注册页，禁止任何中间层缓存。
     properties:
+      system_initialized:
+        type: boolean
+        description: |
+          站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
+          实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
+          向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
       auth:
         type: object
         additionalProperties: false
@@ -115,6 +121,12 @@ schemas:
         description: |
           register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
           公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
+      turnstile_token:
+        type: string
+        description: |
+          Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+          403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+          请求体优先）。
     description: |
       发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
       10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
@@ -151,6 +163,12 @@ schemas:
         type: string
         maxLength: 64
         description: 可选推广码（非必填）；超长 400。
+      turnstile_token:
+        type: string
+        description: |
+          Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+          403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+          请求体优先）。
     description: |
       注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
       文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
@@ -239,6 +257,13 @@ schemas:
       encryption_key_id:
         type: string
         description: GET /api/auth/login/encryption-key 返回的 kid；与服务端槽位不匹配时按口令错误处理。
+      turnstile_token:
+        type: string
+        description: |
+          Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+          403），关闭时忽略。支持两种提交形态：请求体字段，或
+          `?turnstile_token=` 查询参数；两者同时出现时请求体优先（查询形态是
+          中间件/handler 分支兼容，不是独立契约面）。
 
   TwoFAChallengeRequest:
     type: object
@@ -268,6 +293,12 @@ schemas:
         type: string
         format: email
         maxLength: 254
+      turnstile_token:
+        type: string
+        description: |
+          Cloudflare Turnstile 一次性令牌。Turnstile 开启时必填（缺失或校验失败
+          403），关闭时忽略；也接受 ?turnstile_token= 查询形态（两者同时出现时
+          请求体优先）。
     description: |
       恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
       token（30 分钟）。限流与格式错误是仅有的差异化响应。

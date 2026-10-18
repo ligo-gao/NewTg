@@ -690,11 +690,21 @@ paths:
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
         '409':
-          $ref: '../components/responses.yaml#/responses/Error409'
+          description: 相同 Idempotency-Key 的并发请求仍在处理中，或存储层报告并发冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
         '422':
           $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
         '503':
-          $ref: '../components/responses.yaml#/responses/Error503'
+          description: 存储/基础设施不可用（数据库或 Redis 故障；ErrBackend 映射为 503）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
 
   /api/tokens/{id}:
     get:
@@ -1033,8 +1043,9 @@ paths:
       operationId: getTokenUsage
       summary: 令牌自读用量（Bearer 自身 key）
       description: |
-        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。令牌额度
-        耗尽/过期仍返回 200（前端要能显示耗尽状态，modules-02 §2.13）；
+        只接受 Bearer（不接受 Cookie）：凭据就是被查询的令牌本身。额度耗尽的
+        令牌仍返回 200 且 total_available=0（前端要能显示耗尽状态，
+        modules-02 §2.13）；已过期令牌 401 + problem type token_expired；
         禁用令牌 401 token_disabled；非法 key 401 invalid_token。
       security:
         - bearerToken: []
@@ -1046,6 +1057,13 @@ paths:
               schema:
                 $ref: '../schemas/user.yaml#/schemas/TokenUsage'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          description: |
+            令牌不可用。problem type 区分原因：`token_expired`（已过期）、
+            `token_disabled`（已禁用）、`invalid_token`（key 非法/不存在）；
+            detail 不泄露令牌存在性与归属。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
