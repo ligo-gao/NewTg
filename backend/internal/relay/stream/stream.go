@@ -11,6 +11,8 @@
 //
 // 【与 relay-03 的对应】
 //   - §3.1 响应头、§3.3 心跳载荷 → SetSSEHeaders / WriteSSE（EventPing）
+//   - §3.2 统一终止标记 → ParseSSE 把 data: [DONE] 转为 EventFinish，
+//     WriteSSE 再把 EventFinish 渲染为 data: [DONE]\n\n
 //   - §4.1 行扫描与 64KB/64MB 缓冲上限 → ParseSSE
 //   - §4.2 事件跨行聚合（甲类修正）→ ParseSSE 的 frame 聚合
 package stream
@@ -30,7 +32,8 @@ import (
 const (
 	// relay-03 §4.1 冻结值：初始 64KB、上限 64MB（可配项 StreamScannerMaxBufferMB
 	// 的默认口径）。签名 ParseSSE(r, evCh) 由 R-P2 冻结、不带配置参数，
-	// 故上限在本包取设计默认值；需要按配置覆盖时由调用方换用 parseSSE。
+	// 故上限目前是包级常量、固定取设计默认值；后续若需要按配置覆盖，
+	// 将由一个新增的导出选项来暴露可配置性（不改冻结签名）。
 	initialScanBufferBytes = 64 << 10
 	maxScanBufferBytes     = 64 << 20
 
@@ -41,6 +44,10 @@ const (
 	// pingFrame 是 relay-03 §3.3 冻结的 SSE 注释帧载荷（含末尾空行）。
 	// 注释帧不会触发客户端事件，只用于穿透中间层保活。
 	pingFrame = ": PING\n\n"
+
+	// doneFrame 是 relay-03 §3.2 冻结的统一结束标记：EventFinish 写回客户端
+	// 时渲染成这个字节序列（与 OpenAI 的流终止帧一致）。
+	doneFrame = "data: [DONE]\n\n"
 )
 
 var (
@@ -63,14 +70,19 @@ var (
 //     下游按行解析时会丢掉换行后的内容；按规范 join 各行 value 即得到合并载荷。
 //   - 保留 event:/id:/retry:，帧内统一按 event→id→retry→data 顺序渲染，
 //     保证输出确定性（SSE 规范中字段顺序无语义）。
-//   - 忽略注释行（以 ":" 开头）与空 keep-alive；无 data 行的事件块不派发
-//     （SSE 规范：data 缓冲为空不触发事件，也避免把 id/retry 元数据当事件解码）。
-//   - data: [DONE] 立即终止并返回 nil，不产出该事件，也不再读取其后字节。
+//   - 未知字段（如 Zhipu 的 meta:，relay-03 §6 行 12）原样保留在帧尾，不解释、
+//     不丢弃，由适配器做协议级解码。含任一字段行的事件块都会派发，不能只看 data:
+//     ——否则 meta-only 块会被静默吞掉。
+//   - 忽略注释行（以 ":" 开头）与空 keep-alive。
+//   - data: [DONE] 是统一终止标记（relay-03 §3.2）：立即投递
+//     contract.StreamEvent{Kind: EventFinish} 并返回 nil，不再读取其后字节；
+//     自然 EOF 则不投递 EventFinish。调用方据此区分 EndReason done / eof
+//     （relay-03 §4.1 / §10）。
 //   - EOF 时未以空行收尾的事件块不完整，直接丢弃。
 //
 // 通道纪律：本函数永不 close(evCh)，所有权归调用方；无 context 参数时
 // 对 evCh 的发送是阻塞式的，调用方必须持续排空（R-P2）。
-// 返回 nil 表示正常 EOF 或 [DONE]；扫描/读取错误按包装错误返回。
+// 返回 nil 表示正常（[DONE] 终止或自然 EOF）；扫描/读取错误按包装错误返回。
 func ParseSSE(r io.Reader, evCh chan<- contract.StreamEvent) error {
 	return parseSSE(r, evCh, initialScanBufferBytes, maxScanBufferBytes)
 }
@@ -90,8 +102,9 @@ func parseSSE(r io.Reader, evCh chan<- contract.StreamEvent, initialBuf, maxBuf 
 		line := sc.Text()
 
 		if line == "" {
-			// 空行 = 事件边界。只有累计到 data 行才派发（SSE 规范）。
-			if frame.hasData {
+			// 空行 = 事件边界。含任一字段行的块都要派发（含未知字段，
+			// 例如只有 meta: 的 Zhipu 块）；空块与纯注释块直接跳过。
+			if frame.hasFields() {
 				evCh <- contract.StreamEvent{Kind: contract.EventRaw, Raw: frame.bytes()}
 			}
 			frame.reset()
@@ -108,8 +121,11 @@ func parseSSE(r io.Reader, evCh chan<- contract.StreamEvent, initialBuf, maxBuf 
 		switch name {
 		case "data":
 			if strings.TrimSpace(value) == doneSentinel {
-				// [DONE] 是终止哨兵而非事件：不派发，立即停止读取。
-				// 若同一事件块此前还累积了半截 data，视为上游格式异常一并丢弃。
+				// [DONE] 是统一终止标记而非普通事件（relay-03 §3.2）：转成
+				// EventFinish 投递出去，调用方据此把 EndReason 记为 done；
+				// 自然 EOF 没有这个事件（eof）。若同一事件块此前还累积了
+				// 半截字段，视为上游格式异常，一并丢弃。
+				evCh <- contract.StreamEvent{Kind: contract.EventFinish}
 				return nil
 			}
 			frame.data = append(frame.data, value)
@@ -120,8 +136,12 @@ func parseSSE(r io.Reader, evCh chan<- contract.StreamEvent, initialBuf, maxBuf 
 			frame.id, frame.hasID = value, true
 		case "retry":
 			frame.retry, frame.hasRetry = value, true
+		default:
+			// 未知字段（如 Zhipu 的 meta:）原样保留：不解释、不丢弃，
+			// 由适配器按协议解码（relay-03 §6 行 12；§4.4 要求所有解析器
+			// 共用本扫描框架，不能因为字段不熟就吞掉）。
+			frame.extra = append(frame.extra, line)
 		}
-		// 其余字段按 SSE 规范忽略（本系统只透传上述四类）。
 	}
 
 	if err := sc.Err(); err != nil {
@@ -142,6 +162,9 @@ type sseFrame struct {
 	id    string
 	retry string
 	data  []string
+	// extra 保存未知字段的**原始行文本**（如 `meta: {...}`）。不做任何解释，
+	// 渲染时逐字写回，供适配器按协议识别（relay-03 §6 行 12 的 Zhipu 双通道）。
+	extra []string
 
 	hasEvent bool
 	hasID    bool
@@ -151,8 +174,16 @@ type sseFrame struct {
 
 func (f *sseFrame) reset() { *f = sseFrame{} }
 
-// bytes 渲染归一化帧：event→id→retry→逐行 data，最后补一个空行。
+// hasFields 判断事件块是否含任一字段行（含未知字段）。
+// 不能只看 data:：Zhipu 等协议会把 usage 放在 meta: 块里（relay-03 §6 行 12），
+// 只在 hasData 时派发会把这些块静默丢弃。
+func (f *sseFrame) hasFields() bool {
+	return f.hasEvent || f.hasID || f.hasRetry || f.hasData || len(f.extra) > 0
+}
+
+// bytes 渲染归一化帧：event→id→retry→逐行 data→未知字段原样，最后补一个空行。
 // 逐行保留 data: 而非合并进单个 data: 字段的原因见 ParseSSE 注释。
+// 未知字段放在已知字段之后：SSE 规范中字段顺序无语义，内容逐字保留即可。
 func (f *sseFrame) bytes() []byte {
 	var b bytes.Buffer
 	if f.hasEvent {
@@ -173,6 +204,10 @@ func (f *sseFrame) bytes() []byte {
 	for _, d := range f.data {
 		b.WriteString("data: ")
 		b.WriteString(d)
+		b.WriteByte('\n')
+	}
+	for _, line := range f.extra {
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
@@ -199,11 +234,14 @@ func SetSSEHeaders(h http.Header) {
 //
 // 透传语义（R-P2）：
 //   - EventRaw：原样写出 Raw 字节（归一化已由 ParseSSE 或适配器完成），
-//     因此上游的 event:/id:/retry: 与 data 内容逐字节到达客户端。
+//     因此上游的 event:/id:/retry: 与 data/未知字段内容逐字节到达客户端。
 //   - EventPing：写出 relay-03 §3.3 冻结的 ": PING\n\n" 注释帧。
+//   - EventFinish：写出 relay-03 §3.2 冻结的统一结束标记 "data: [DONE]\n\n"。
 //   - 其他 Kind：返回 ErrUnsupportedEventKind。适配器必须先把 Delta/Usage 等
 //     协议事件渲染成完整 SSE 帧再以 EventRaw 投递——否则本包就得理解每个协议
 //     的帧格式，破坏协议无关边界（见包注释）。
+//     【调用方注意】返回该错误时 evCh 中可能仍有生产者在阻塞发送（ParseSSE
+//     的投递是阻塞式的），调用方必须取消/关闭生产者，否则协程泄漏。
 //
 // 每帧写出后若 ResponseWriter 实现 http.Flusher 则立即 Flush：不刷新时
 // net/http 的缓冲会让事件攒批到达，破坏流式的逐事件语义（relay-03 §3.4 的
@@ -218,6 +256,8 @@ func WriteSSE(w http.ResponseWriter, evCh <-chan contract.StreamEvent) error {
 			frame = ev.Raw
 		case contract.EventPing:
 			frame = []byte(pingFrame)
+		case contract.EventFinish:
+			frame = []byte(doneFrame)
 		default:
 			return fmt.Errorf("%w: kind=%d", ErrUnsupportedEventKind, ev.Kind)
 		}

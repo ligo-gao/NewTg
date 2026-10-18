@@ -91,19 +91,30 @@ func TestParseSSE_DoneTerminatesStream(t *testing.T) {
 		"\n"
 
 	events := mustParseSSE(t, input)
-	frames := rawFrames(t, events)
-	if len(frames) != 1 {
-		t.Fatalf("事件数 = %d, want 1（[DONE] 之后的帧不得被读取）", len(frames))
+	if len(events) != 2 {
+		t.Fatalf("事件数 = %d, want 2（一个 Raw + 一个终止 EventFinish）", len(events))
 	}
-	if frames[0] != "data: {\"n\":1}\n\n" {
-		t.Fatalf("Raw = %q", frames[0])
+	if events[0].Kind != contract.EventRaw || string(events[0].Raw) != "data: {\"n\":1}\n\n" {
+		t.Fatalf("events[0] = %+v, want EventRaw {\"n\":1}", events[0])
+	}
+	if events[1].Kind != contract.EventFinish {
+		t.Fatalf("events[1].Kind = %v, want EventFinish（[DONE] 之后的帧不得被读取）", events[1].Kind)
 	}
 }
 
-func TestParseSSE_DoneFirstEmitsNothing(t *testing.T) {
+// [DONE] 必须与自然 EOF 可区分：前者产出 EventFinish，后者不产出
+// （调用方据此把 EndReason 记为 done / eof，relay-03 §4.1/§10）。
+func TestParseSSE_DoneFirstEmitsFinish(t *testing.T) {
 	events := mustParseSSE(t, "data: [DONE]\n\n")
-	if len(events) != 0 {
-		t.Fatalf("事件数 = %d, want 0（[DONE] 只终止、不产出事件）", len(events))
+	if len(events) != 1 || events[0].Kind != contract.EventFinish {
+		t.Fatalf("events = %+v, want 仅一个 EventFinish", events)
+	}
+}
+
+func TestParseSSE_NaturalEOFHasNoFinish(t *testing.T) {
+	events := mustParseSSE(t, "data: a\n\n")
+	if len(events) != 1 || events[0].Kind != contract.EventRaw {
+		t.Fatalf("events = %+v, want 仅一个 EventRaw（自然 EOF 不得伪造终止标记）", events)
 	}
 }
 
@@ -223,11 +234,27 @@ func TestParseSSE_EmptyInput(t *testing.T) {
 	}
 }
 
-// 事件块内没有 data 行时不派发（SSE 规范：data 缓冲为空则不触发事件），
-// 避免把只有 id/retry 的元数据当成可解析事件投给适配器。
-func TestParseSSE_FieldsWithoutDataNotDispatched(t *testing.T) {
-	if events := mustParseSSE(t, "id: 7\nretry: 100\n\n"); len(events) != 0 {
-		t.Fatalf("事件数 = %d, want 0", len(events))
+// 只要事件块含有字段行就派发（评审修正）：仅 id/retry 的元数据块也必须
+// 保留给适配器，不能因为缺少 data 行被当成 keep-alive 丢弃。
+func TestParseSSE_MetadataOnlyBlockDispatched(t *testing.T) {
+	frames := rawFrames(t, mustParseSSE(t, "id: 7\nretry: 100\n\n"))
+	if len(frames) != 1 || frames[0] != "id: 7\nretry: 100\n\n" {
+		t.Fatalf("frames = %q, want 保留仅含元数据字段的块", frames)
+	}
+}
+
+// Zhipu 的 usage 在 meta: 帧里（relay-03 §6 行 12）：未知字段必须原样保留，
+// 且 meta-only 块必须派发，不得被「只认 data:」的过滤静默吞掉。
+func TestParseSSE_UnknownFieldsPreserved(t *testing.T) {
+	frames := rawFrames(t, mustParseSSE(t, "meta: {\"usage\":{\"total_tokens\":9}}\n\n"))
+	if len(frames) != 1 || frames[0] != "meta: {\"usage\":{\"total_tokens\":9}}\n\n" {
+		t.Fatalf("frames = %q, want meta 行逐字保留", frames)
+	}
+
+	// 未知字段与 data 同一事件块时同样保留（原行文本追加在已知字段之后）。
+	frames = rawFrames(t, mustParseSSE(t, "data: x\nfoo:bar\n\n"))
+	if len(frames) != 1 || frames[0] != "data: x\nfoo:bar\n\n" {
+		t.Fatalf("frames = %q, want 未知字段原样保留", frames)
 	}
 }
 
@@ -292,18 +319,20 @@ func TestParseSSE_BlocksUntilReceiverDrains(t *testing.T) {
 	}
 }
 
-// WriteSSE 对 EventRaw 逐字节透传（保留 event/id），对 EventPing 写固定注释帧。
+// WriteSSE 对 EventRaw 逐字节透传（保留 event/id），EventFinish 渲染统一
+// 结束标记，EventPing 写固定注释帧。
 func TestWriteSSE_RawPassthroughAndPing(t *testing.T) {
 	rec := httptest.NewRecorder()
-	ch := make(chan contract.StreamEvent, 2)
+	ch := make(chan contract.StreamEvent, 3)
 	ch <- contract.StreamEvent{Kind: contract.EventRaw, Raw: []byte("event: message\nid: 7\ndata: {}\n\n")}
+	ch <- contract.StreamEvent{Kind: contract.EventFinish}
 	ch <- contract.StreamEvent{Kind: contract.EventPing}
 	close(ch)
 
 	if err := WriteSSE(rec, ch); err != nil {
 		t.Fatalf("WriteSSE() error = %v", err)
 	}
-	want := "event: message\nid: 7\ndata: {}\n\n: PING\n\n"
+	want := "event: message\nid: 7\ndata: {}\n\n" + "data: [DONE]\n\n" + ": PING\n\n"
 	if got := rec.Body.String(); got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
