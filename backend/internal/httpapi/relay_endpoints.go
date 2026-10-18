@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -285,17 +286,26 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 
 // requestChoiceCount 读取 OpenAI 请求体的 n（缺省/非法为 1）。
 // 只用于 finding 14 的「stream + n>1」拒绝，不进入 IR（契约未建模 n）。
-func requestChoiceCount(body []byte) int {
+//
+// 用 json.Number/float64 而不是 *int：`2.0`、`2e0` 是合法 JSON 数字且语义
+// 等于 2；解码到 int 会失败并静默回落成 1，从而绕过 stream+n>1 的入口拒绝
+// （二轮复审 finding 4）。超出 float64 范围的合法数字（如 1e999）按 +Inf
+// 处理——语义上必然 >1，同样拒绝。
+func requestChoiceCount(body []byte) float64 {
 	var payload struct {
-		N *int `json:"n"`
+		N *json.Number `json:"n"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil || payload.N == nil {
 		return 1
 	}
-	if *payload.N < 1 {
+	n, err := payload.N.Float64()
+	if err != nil {
+		return math.Inf(1)
+	}
+	if n < 1 {
 		return 1
 	}
-	return *payload.N
+	return n
 }
 
 // stripStreamOptions 返回剥离顶层 stream_options 的请求副本。
@@ -556,7 +566,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	w.WriteHeader(http.StatusOK)
 	sse.flush()
 
-	h.bridgeStream(r, rc, result.Response.Body, streamAdapter, deps.Billing, sse, start, includeUsage)
+	h.bridgeStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start, includeUsage)
 }
 
 // bridgeStream 消费适配器的 StreamEvent 序列并写入客户端。
@@ -565,6 +575,8 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 //   - EventRaw：原始 SSE 帧逐字节转发（补足帧结束空行，帧内容不改写）；
 //   - EventDelta/ToolDelta/Reasoning：重编码为 OpenAI chat.completion.chunk；
 //   - EventUsage：非零合并累计（不擦除已有维度）；
+//   - 若整个流都没有 EventUsage/finish usage，回落到上游 `x-model-response-usage`
+//     响应头（R-05 优先级 3，二轮复审 finding 5）；
 //   - EventFinish：[DONE] 之前写出 include_usage 末块；整个响应对客户端只写一次
 //     data: [DONE]；
 //   - EventError：软错误记录后继续；硬错误只终止流，绝不伪造 [DONE]（GC-6）。
@@ -584,6 +596,7 @@ func (h *RelayHandler) bridgeStream(
 	r *http.Request,
 	rc *contract.RelayContext,
 	upstream io.ReadCloser,
+	upstreamHeader http.Header,
 	adapter contract.StreamAdapter,
 	billing contract.BillingSession,
 	sse *relaySSEWriter,
@@ -836,6 +849,18 @@ func (h *RelayHandler) bridgeStream(
 	stopPing()
 	if pingFailed.Load() {
 		clientGone = true
+	}
+
+	// 头部兜底（R-05 优先级 3，二轮复审 finding 5）：整个流从未出现
+	// EventUsage/finish usage 时，上游可能只在 `x-model-response-usage` 头里
+	// 报告用量。先尝试头部；只有头部也没有可用数字时才在下方标记 estimated，
+	// 绝不能把「头部给了精确值」的情况降级成本地估算。
+	if !sawUsage {
+		extracted := usage.ExtractUsage(&contract.Response{}, upstreamHeader, nil)
+		if extracted.Usage.Source == contract.UsageUpstreamExact {
+			accumulated = extracted.Usage
+			sawUsage = true
+		}
 	}
 
 	// 收尾帧只在正常/EOF 路径写；异常结束（客户端断开、上游错误、看门狗超时、
