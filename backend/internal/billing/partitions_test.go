@@ -77,10 +77,17 @@ func TestPartitionDDLUnavailableError(t *testing.T) {
 	}
 }
 
-// TestPartitionIdentifierGuard 验证分区名只允许安全字符（DDL 是字符串拼接）。
+// TestPartitionIdentifierGuard 验证分区名只允许安全字符（DDL 是字符串拼接），
+// 且 schema 标识符会被完整引用（N3：DDL 必须与探测 schema 一致）。
 func TestPartitionIdentifierGuard(t *testing.T) {
 	if got := quoteUsagePartitionIdent("usage_logs_202607"); got != "usage_logs_202607" {
 		t.Fatalf("ident = %q", got)
+	}
+	if got := quoteSQLIdent("public"); got != `"public"` {
+		t.Fatalf("quoteSQLIdent(public) = %s", got)
+	}
+	if got := quoteSQLIdent(`weird"schema`); got != `"weird""schema"` {
+		t.Fatalf("quoteSQLIdent 未双写引号: %s", got)
 	}
 	defer func() {
 		if recover() == nil {

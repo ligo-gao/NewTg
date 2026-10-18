@@ -440,6 +440,106 @@ func mustLogsDSN(t *testing.T) string {
 	return u.String()
 }
 
+// TestSaturateIntegrationAppRoleConvergence 是 N1 的关键回归：非属主角色在
+// **应用角色授权**下执行真实的 refunded 收敛。此前授权只有三列，而收敛
+// UPDATE 还写 error_class/error_message —— 属主/超级用户测试发现不了，
+// 生产 newtg_app 会 permission denied。
+func TestSaturateIntegrationAppRoleConvergence(t *testing.T) {
+	admin := openLogsTestDB(t)
+	ctx := context.Background()
+	requestID := newTestUUID(t)
+	cleanupUsageLog(t, admin, requestID)
+
+	rc := testRelayContext()
+	rc.RequestID = requestID
+	// 属主先写一行 success，模拟「Terminate 已落日志、结算前被 worker 回收」。
+	if err := NewDBLogger(admin).Saturate(ctx, testUsageFact(), rc, SettlementOutcome{
+		Cost: 100, PreDeducted: 100, Status: UsageLogStatusSuccess,
+	}); err != nil {
+		t.Fatalf("owner Saturate(success): %v", err)
+	}
+
+	role := fmt.Sprintf("t6_app_%d", time.Now().UnixNano())
+	dsn := logsDSNForUser(t, role, "t6probe")
+	if _, err := admin.Exec(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD 't6probe'", role)); err != nil {
+		t.Skipf("无法创建临时角色（需要 CREATEROLE），跳过应用角色授权路径: %v", err)
+	}
+	var db *sql.DB
+	t.Cleanup(func() {
+		if db != nil {
+			_ = db.Close()
+		}
+		_, _ = admin.Exec("DROP ROLE " + role)
+	})
+	// 精确复刻应用角色在日志库的授权：CONNECT/USAGE/SELECT + 五列 UPDATE。
+	// 故意不授 INSERT/其它列 UPDATE，验证最小权限。
+	for _, stmt := range []string{
+		"GRANT CONNECT ON DATABASE newtg_logs TO " + role,
+		"GRANT USAGE ON SCHEMA public TO " + role,
+		"GRANT SELECT ON usage_logs TO " + role,
+		"GRANT UPDATE (status, cost, refunded, error_class, error_message) ON usage_logs TO " + role,
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("grant to temp role: %v (%s)", err, stmt)
+		}
+	}
+
+	var err error
+	db, err = sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open app-role db: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping app-role db: %v", err)
+	}
+
+	// 走完整 DBLogger 收敛路径（咨询锁 + 查重 + UPDATE），而不是裸 SQL。
+	if err := NewDBLogger(db).Saturate(ctx, nil, rc, SettlementOutcome{
+		PreDeducted: 100, Refunded: 100, RetainedCost: 30,
+		Status: UsageLogStatusRefunded, ErrorClass: "worker_refund", ErrorMessage: "abandoned",
+	}); err != nil {
+		t.Fatalf("app-role convergence = %v, want nil（R-60 授权必须覆盖全部被写列）", err)
+	}
+
+	var status int16
+	var cost, refunded int64
+	var errorClass string
+	if err := admin.QueryRow(
+		`SELECT status, cost, refunded, COALESCE(error_class, '') FROM usage_logs WHERE request_id = $1::uuid`,
+		requestID).Scan(&status, &cost, &refunded, &errorClass); err != nil {
+		t.Fatalf("read converged row: %v", err)
+	}
+	if status != UsageLogStatusRefunded || cost != 30 || refunded != 100 || errorClass != "worker_refund" {
+		t.Fatalf("converged row = status %d cost %d refunded %d error_class %q",
+			status, cost, refunded, errorClass)
+	}
+
+	// 最小权限：授权之外的列必须更新失败。
+	if _, err := db.Exec(`UPDATE usage_logs SET model = 'tampered' WHERE request_id = $1::uuid`,
+		requestID); err == nil {
+		t.Fatal("未授权的列更新应失败（五列授权之外不得可写）")
+	}
+
+	// 红/绿：把授权降回旧的三列，收敛必须失败（证明本测试能捕获 N1）。
+	if _, err := admin.Exec("REVOKE UPDATE ON usage_logs FROM " + role); err != nil {
+		t.Fatalf("revoke update: %v", err)
+	}
+	if _, err := admin.Exec(
+		"GRANT UPDATE (status, cost, refunded) ON usage_logs TO " + role); err != nil {
+		t.Fatalf("grant three columns: %v", err)
+	}
+	err = NewDBLogger(db).Saturate(ctx, nil, rc, SettlementOutcome{
+		PreDeducted: 100, Refunded: 100, RetainedCost: 30,
+		Status: UsageLogStatusRefunded, ErrorClass: "worker_refund", ErrorMessage: "abandoned",
+	})
+	if err == nil {
+		t.Fatal("三列授权下收敛应失败（error_class/error_message 不可写）")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Fatalf("三列授权下的错误应包含 permission denied: %v", err)
+	}
+}
+
 // TestPartitionIntegrationDDLUnavailable 验证 R-56 的「运行期身份无 DDL」路径：
 // 非属主且无 schema CREATE 的连接必须在尝试任何 DDL 之前得到可识别的
 // *PartitionDDLUnavailableError（worker 据此记 warn，而不是反复报错）。

@@ -1,11 +1,13 @@
 package billing
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -219,6 +221,59 @@ func TestWorkerLoopPartitionMaintenance(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("RunWorkerLoop = %v, want nil even when partition maintenance fails", err)
+	}
+}
+
+// TestWorkerLoopPartitionDDLWarn 验证 N4/R-56：分区维护返回
+// *PartitionDDLUnavailableError（运行期身份无 DDL）时，worker 记 **WARN**
+// 并给出「用 migrate 凭据扩窗」的 ops 信息，而不是 ERROR。
+func TestWorkerLoopPartitionDDLWarn(t *testing.T) {
+	sqlDB, err := sql.Open("pgx", "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable")
+	if err != nil {
+		t.Fatalf("open placeholder db: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWorkerLoop(ctx, WorkerDeps{
+			Abandoned: &workerTestLister{},
+			Recoverer: &workerTestRecoverer{},
+			LogsDB:    sqlDB,
+			Logger:    logger,
+			EnsurePartitions: func(context.Context, *sql.DB, time.Time) error {
+				// 让启动序的 ensure 在返回前请求停机，保证断言读取时日志已写完。
+				cancel()
+				return &PartitionDDLUnavailableError{Schema: "public"}
+			},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWorkerLoop = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunWorkerLoop did not exit")
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Fatalf("缺 WARN 日志: %s", out)
+	}
+	if !strings.Contains(out, "partition DDL unavailable") {
+		t.Fatalf("缺 ops 信息: %s", out)
+	}
+	if !strings.Contains(out, "migrate credentials") {
+		t.Fatalf("缺扩窗指引: %s", out)
+	}
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("DDL 权限缺失不得记 ERROR: %s", out)
 	}
 }
 

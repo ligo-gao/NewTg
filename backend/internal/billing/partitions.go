@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -90,25 +91,29 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 	}
 
 	start := usageMonthStart(now)
+	// N3：DDL 必须与权限探测使用**同一个 schema**。探测解析出父表实际所在
+	// schema（to_regclass 走 search_path 的结果），这里把父表与分区名都显式
+	// schema 限定，避免执行期 search_path 变化把 DDL 指向别的 schema。
+	parent := quoteSQLIdent(schema) + "." + quoteSQLIdent(usageLogParentTable)
 	for i := 0; i < usagePartitionMonths; i++ {
 		from := start.AddDate(0, i, 0)
 		to := from.AddDate(0, 1, 0)
 		name := usagePartitionName(from)
+		partition := quoteSQLIdent(schema) + "." + quoteUsagePartitionIdent(name)
 		stmt := fmt.Sprintf(
 			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s) TO (%s)`,
-			quoteUsagePartitionIdent(name), usageLogParentTable,
-			quoteTimestamptz(from), quoteTimestamptz(to))
+			partition, parent, quoteTimestamptz(from), quoteTimestamptz(to))
 
 		if _, err := logsDB.ExecContext(ctx, stmt); err != nil {
-			exists, checkErr := usagePartitionExists(ctx, logsDB, name)
+			exists, checkErr := usagePartitionExists(ctx, logsDB, schema, name)
 			if checkErr != nil {
-				return fmt.Errorf("billing: create usage partition %s: %w (existence check: %v)",
-					name, err, checkErr)
+				return fmt.Errorf("billing: create usage partition %s.%s: %w (existence check: %v)",
+					schema, name, err, checkErr)
 			}
 			if exists {
 				continue
 			}
-			return fmt.Errorf("billing: create usage partition %s: %w", name, err)
+			return fmt.Errorf("billing: create usage partition %s.%s: %w", schema, name, err)
 		}
 	}
 	return nil
@@ -171,6 +176,14 @@ func quoteUsagePartitionIdent(name string) string {
 	return name
 }
 
+// quoteSQLIdent 按 SQL 标准引用任意标识符（双引号内的 " 双写）。
+//
+// schema 名来自数据库元数据，可能包含大写/空格/引号；DDL 是字符串拼接，
+// 必须完整引用。分区名本身已由 quoteUsagePartitionIdent 限定字符集。
+func quoteSQLIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
 // quoteTimestamptz 把时间渲染成带 UTC 偏移的 SQL 字面量。
 //
 // 使用固定格式而不是 %v/默认 String()：DDL 是字符串拼接（分区边界不能走
@@ -179,11 +192,15 @@ func quoteTimestamptz(t time.Time) string {
 	return "'" + t.UTC().Format("2006-01-02 15:04:05+00") + "'"
 }
 
-// usagePartitionExists 判断分区表是否已存在（并发创建的复核）。
-func usagePartitionExists(ctx context.Context, logsDB *sql.DB, name string) (bool, error) {
+// usagePartitionExists 判断分区表是否已在指定 schema 中存在（并发创建的复核）。
+func usagePartitionExists(ctx context.Context, logsDB *sql.DB, schema, name string) (bool, error) {
 	var exists bool
-	if err := logsDB.QueryRowContext(ctx,
-		`SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
+	if err := logsDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM pg_class c
+			  JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = $1 AND c.relname = $2)`, schema, name).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
