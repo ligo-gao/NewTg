@@ -134,11 +134,14 @@ func TestIntegrationSelfSQLRepo(t *testing.T) {
 	}
 
 	// (7) MarkEmailVerified 幂等：两次返回同一时间戳。
-	first, err := repo.MarkEmailVerified(ctx, userID, 0)
+	first, granted, err := repo.MarkEmailVerified(ctx, userID, 0)
 	if err != nil {
 		t.Fatalf("MarkEmailVerified #1: %v", err)
 	}
-	second, err := repo.MarkEmailVerified(ctx, userID, 0)
+	if granted {
+		t.Fatal("signupBonus=0 时不得报告已发放赠送")
+	}
+	second, _, err := repo.MarkEmailVerified(ctx, userID, 0)
 	if err != nil {
 		t.Fatalf("MarkEmailVerified #2: %v", err)
 	}
@@ -158,7 +161,7 @@ func TestIntegrationSelfSQLRepo(t *testing.T) {
 		time.Now()); !errors.Is(err, ErrSelfNotFound) {
 		t.Errorf("UpdateSettings(missing) err = %v，期望 ErrSelfNotFound", err)
 	}
-	if _, err := repo.MarkEmailVerified(ctx, missing, 0); !errors.Is(err, ErrSelfNotFound) {
+	if _, _, err := repo.MarkEmailVerified(ctx, missing, 0); !errors.Is(err, ErrSelfNotFound) {
 		t.Errorf("MarkEmailVerified(missing) err = %v，期望 ErrSelfNotFound", err)
 	}
 }
@@ -185,20 +188,32 @@ func TestIntegrationMarkEmailVerifiedGrantsOnce(t *testing.T) {
 	const callers = 8
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
+	grantedCount := make(chan bool, callers)
 	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := repo.MarkEmailVerified(ctx, userID, bonus)
+			_, granted, err := repo.MarkEmailVerified(ctx, userID, bonus)
 			errs <- err
+			grantedCount <- granted
 		}()
 	}
 	wg.Wait()
 	close(errs)
+	close(grantedCount)
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("MarkEmailVerified: %v", err)
 		}
+	}
+	grantedTotal := 0
+	for granted := range grantedCount {
+		if granted {
+			grantedTotal++
+		}
+	}
+	if grantedTotal != 1 {
+		t.Fatalf("granted 次数 = %d，期望 1（并发唯一索引裁决）", grantedTotal)
 	}
 
 	var balance int64

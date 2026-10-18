@@ -580,33 +580,6 @@ func TestSetupDuplicateAdminConflict(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// IsInitialized
-// ---------------------------------------------------------------------------
-
-func TestSetupIsInitialized(t *testing.T) {
-	env := newSetupTestEnv(t, setupTestOptions{})
-	ctx := context.Background()
-	if env.handlers.IsInitialized(ctx) {
-		t.Fatal("全新系统不应被判为已初始化")
-	}
-	if rr := env.post(setupPayload()); rr.Code != http.StatusCreated {
-		t.Fatalf("初始化 status = %d（body=%q）", rr.Code, rr.Body.String())
-	}
-	if !env.handlers.IsInitialized(ctx) {
-		t.Fatal("初始化完成后 IsInitialized 仍为 false")
-	}
-
-	// 读失败时必须回落 false：写路径的原子锚仍是权威闸门，若这里返回 true，
-	// 一次短暂的 DB 抖动会让安装向导永久不可进入。
-	store := newFakeSetupStore()
-	store.isInitErr = errors.New("db down")
-	env2 := newSetupTestEnv(t, setupTestOptions{store: store})
-	if env2.handlers.IsInitialized(ctx) {
-		t.Fatal("读取失败时应回落 false")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 审计事件 system_initialized（modules-01 F-01-20）
 // ---------------------------------------------------------------------------
 
@@ -846,5 +819,34 @@ func TestSetupRateLimited(t *testing.T) {
 	}
 	if env.store.userCount() != 0 {
 		t.Fatalf("限流后不得创建用户，实际 %d", env.store.userCount())
+	}
+}
+
+// TestSetupRateLimiterUnavailableFailsClosed 覆盖 B13 的 Redis 故障分支：
+// 无法计数时拒绝初始化（503），不得放行到 argon2/写事务。
+func TestSetupRateLimiterUnavailableFailsClosed(t *testing.T) {
+	store := newFakeSetupStore()
+	broken := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = broken.Close() })
+	handlers, err := NewSetupHandlers(SetupConfig{
+		Store: store, Redis: broken, AllowNoSession: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSetupHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.RegisterSetupRoutes(mux)
+
+	raw, _ := json.Marshal(setupPayload())
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rr := serve(mux, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+	}
+	if store.userCount() != 0 {
+		t.Fatalf("限流器不可用时不得创建用户，实际 %d", store.userCount())
 	}
 }

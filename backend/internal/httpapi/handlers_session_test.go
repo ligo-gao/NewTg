@@ -53,6 +53,9 @@ type fakeSelfRepo struct {
 	err     error
 	// verifyBonuses 记录每次 MarkEmailVerified 收到的补发额（B6 断言）。
 	verifyBonuses []int64
+	// verifyGranted 覆盖「流水实际插入」结果（nil = signupBonus>0 即成功）；
+	// false 模拟「已发放过 → ON CONFLICT 0 行」，用于断言名额归还。
+	verifyGranted *bool
 }
 
 func newFakeSelfRepo() *fakeSelfRepo {
@@ -152,22 +155,26 @@ func (r *fakeSelfRepo) UpdateSettings(_ context.Context, userID int64, patch Sel
 	return *rec, nil
 }
 
-func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64, signupBonus int64) (time.Time, error) {
+func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64, signupBonus int64) (time.Time, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
-		return time.Time{}, r.err
+		return time.Time{}, false, r.err
 	}
 	rec, ok := r.users[userID]
 	if !ok {
-		return time.Time{}, ErrSelfNotFound
+		return time.Time{}, false, ErrSelfNotFound
 	}
 	r.verifyBonuses = append(r.verifyBonuses, signupBonus)
 	if rec.EmailVerifiedAt == nil {
 		now := r.tick()
 		rec.EmailVerifiedAt = &now
 	}
-	return *rec.EmailVerifiedAt, nil
+	granted := signupBonus > 0
+	if r.verifyGranted != nil {
+		granted = *r.verifyGranted && signupBonus > 0
+	}
+	return *rec.EmailVerifiedAt, granted, nil
 }
 
 // unverifyEmail 把账号退回未验证状态，用于断言「验证码一次性」：如果第二次
@@ -188,6 +195,7 @@ type sessionTestEnv struct {
 	repo     *fakeSelfRepo
 	tokens   *fakeTokenLookup
 	router   http.Handler
+	handlers *SessionHandlers
 }
 
 func newSessionTestEnv(t *testing.T) *sessionTestEnv {
@@ -231,6 +239,7 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 		repo:     repo,
 		tokens:   tokens,
 		router:   outer,
+		handlers: h,
 	}
 }
 
@@ -1015,5 +1024,116 @@ func TestMeGetReissuesMissingCSRFCookie(t *testing.T) {
 	}
 	if c := cookieByName(rr, auth.CSRFCookieName); c != nil {
 		t.Fatalf("已有 CSRF Cookie 时不得轮换，收到 %+v", c)
+	}
+}
+
+// verifyEmailGrantEnv 构造启用「验证后补发」的环境，并返回用户/会话/验证码。
+func verifyEmailGrantEnv(t *testing.T, repo *fakeSelfRepo) (*sessionTestEnv, string, string, string) {
+	t.Helper()
+	env := newSessionTestEnvWithConfig(t, mapConfig{
+		"billing.signup_grant_requires_verified_email": configBool(true),
+		"billing.signup_grant_credits":                 configInt(500),
+	})
+	if repo != nil {
+		env.repo = repo
+		// 重新装配 handler，使注入的 repo 生效（NewSessionHandlers 已持有旧指针）。
+		h, err := NewSessionHandlers(SessionHandlerConfig{
+			Repo: repo, Sessions: env.sessions, Redis: env.rdb,
+			SessionSecret: []byte(testSessionSecret),
+			Config:        env.handlers.config, Logger: testLogger(),
+		})
+		if err != nil {
+			t.Fatalf("NewSessionHandlers: %v", err)
+		}
+		sub := http.NewServeMux()
+		h.RegisterSessionRoutes(sub, nil)
+		outer := http.NewServeMux()
+		outer.Handle("/api/", Protect(env.sessions, env.tokens, "")(sub))
+		env.router = outer
+		env.handlers = h
+	}
+	env.repo.add(sessionTestUserID, SelfRecord{Username: "alice", Email: strPtr("alice@example.com")})
+	sid, csrf := env.createSession(sessionTestUserID, rbac.RoleUser, "Test/1.0", "203.0.113.1")
+	store := newEmailCodeStore(env.rdb, []byte(testSessionSecret))
+	code, err := store.issue(context.Background(), "alice@example.com", "verify")
+	if err != nil {
+		t.Fatalf("issue code: %v", err)
+	}
+	return env, sid, csrf, code
+}
+
+// TestVerifyEmailSignupGrantCapSkipsButVerifies：同 IP 名额已满 → 仍完成验证，
+// 不写流水，且不改变名额计数。
+func TestVerifyEmailSignupGrantCapSkipsButVerifies(t *testing.T) {
+	env, sid, csrf, code := verifyEmailGrantEnv(t, nil)
+	key := signupGrantSlotKey("192.0.2.1")
+	if err := env.rdb.Set(context.Background(), key, strconv.Itoa(signupGrantIPLimit), signupGrantIPWindow).Err(); err != nil {
+		t.Fatalf("seed cap: %v", err)
+	}
+
+	rr := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	env.repo.mu.Lock()
+	bonuses := append([]int64(nil), env.repo.verifyBonuses...)
+	env.repo.mu.Unlock()
+	if len(bonuses) != 1 || bonuses[0] != 0 {
+		t.Fatalf("补发额 = %v，期望 [0]（cap 命中跳过）", bonuses)
+	}
+	if got := env.rdb.Get(context.Background(), key).Val(); got != strconv.Itoa(signupGrantIPLimit) {
+		t.Fatalf("名额计数 = %q，期望保持 %d", got, signupGrantIPLimit)
+	}
+}
+
+// TestVerifyEmailSignupGrantReleasedWhenNotInserted：流水未实际插入（已发放）
+// 时必须归还名额，重复验证不得消耗额度。
+func TestVerifyEmailSignupGrantReleasedWhenNotInserted(t *testing.T) {
+	repo := newFakeSelfRepo()
+	notGranted := false
+	repo.verifyGranted = &notGranted
+	env, sid, csrf, code := verifyEmailGrantEnv(t, repo)
+	key := signupGrantSlotKey("192.0.2.1")
+
+	rr := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.rdb.Get(context.Background(), key).Val(); got != "0" {
+		t.Fatalf("名额计数 = %q，期望 0（预占后归还）", got)
+	}
+
+	// 已发放且已发布场景：再次验证命中「已验证」短路，不再预占名额。
+	replay := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("重复 verify status = %d，期望 200（body=%q）", replay.Code, replay.Body.String())
+	}
+	if got := env.rdb.Get(context.Background(), key).Val(); got != "0" {
+		t.Fatalf("重复验证后名额计数 = %q，期望 0", got)
+	}
+}
+
+// TestVerifyEmailSignupGrantCounterUnavailable：领赠计数不可用时跳过补发，
+// 但邮箱验证仍然成功（可用性优先于赠送）。
+func TestVerifyEmailSignupGrantCounterUnavailable(t *testing.T) {
+	env, sid, csrf, code := verifyEmailGrantEnv(t, nil)
+	broken := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = broken.Close() })
+	env.handlers.rdb = broken
+
+	rr := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	env.repo.mu.Lock()
+	bonuses := append([]int64(nil), env.repo.verifyBonuses...)
+	env.repo.mu.Unlock()
+	if len(bonuses) != 1 || bonuses[0] != 0 {
+		t.Fatalf("补发额 = %v，期望 [0]（计数不可用跳过）", bonuses)
+	}
+	if stored, _ := env.repo.GetSelf(context.Background(), sessionTestUserID); stored.EmailVerifiedAt == nil {
+		t.Fatal("计数不可用时仍必须置 email_verified_at")
 	}
 }

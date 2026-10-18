@@ -1195,3 +1195,78 @@ func Test2FAChallengeConsumesTicketOnce(t *testing.T) {
 		t.Fatalf("同一 ticket 并发提交成功次数 = %d，期望恰 1（statuses=%v）", successes, statuses)
 	}
 }
+
+// Test2FAChallengeAudited 覆盖 B8：challenge 成功/失败都写 auth.login，
+// login_method=totp；失败附 reason（R-40：TOTP 复用 login 动作）。
+func Test2FAChallengeAudited(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	user := env.repo.add(TwoFAUser{Username: "tina", PasswordHash: twoFATestPasswordHash()})
+	env.enableUser(user)
+
+	if rr := env.challenge(env.issueTicket(user.ID), twoFATestCode, "totp"); rr.Code != http.StatusOK {
+		t.Fatalf("challenge success status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if rr := env.challenge(env.issueTicket(user.ID), "000000", "totp"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("challenge failure status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	var success, failure bool
+	for _, call := range env.auditExec.snapshot() {
+		detail := decodeTwoFAAuditDetail(t, call[9])
+		if detail["action"] != audit.ActionAuthLogin {
+			continue
+		}
+		if detail["login_method"] != "totp" {
+			t.Fatalf("login_method = %v，期望 totp", detail["login_method"])
+		}
+		if call[2] != "login" {
+			t.Fatalf("category = %v，期望 login", call[2])
+		}
+		switch call[8] {
+		case "success":
+			success = true
+		case "failed":
+			if detail["reason"] != "invalid_code" {
+				t.Fatalf("失败 reason = %v，期望 invalid_code", detail["reason"])
+			}
+			failure = true
+		}
+	}
+	if !success || !failure {
+		t.Fatalf("challenge 审计 success=%v failure=%v，期望两者都有", success, failure)
+	}
+}
+
+// Test2FAChallengeMalformedFloodBounded 覆盖 D2 复审：畸形 body 洪水计入 IP
+// 失败桶并在 5 次后 429；审计行数有界（每 IP/窗口至多一条限流拒绝审计）。
+func Test2FAChallengeMalformedFloodBounded(t *testing.T) {
+	env := newTwoFATestEnv(t)
+	// ticket 为数字：JSON 反序列化进 string 失败 → readAuthJSON 错误。
+	body := map[string]any{"ticket": 12345, "code": "000000", "type": "totp"}
+
+	got429 := false
+	for i := 0; i < 20; i++ {
+		rr := env.request(http.MethodPost, "/api/auth/2fa/challenge", body)
+		if rr.Code == http.StatusTooManyRequests {
+			got429 = true
+		}
+	}
+	if !got429 {
+		t.Fatal("畸形 body 洪水最终必须返回 429")
+	}
+	rows := env.auditExec.snapshot()
+	// 前 5 次各 1 条 invalid_request；第 6 次起限流拒绝，标记键只放行 1 条。
+	if len(rows) > LoginMaxFailures+1 {
+		t.Fatalf("审计行 = %d，期望 <= %d（有界）", len(rows), LoginMaxFailures+1)
+	}
+	limited := 0
+	for _, call := range rows {
+		detail := decodeTwoFAAuditDetail(t, call[9])
+		if detail["reason"] == "locked" {
+			limited++
+		}
+	}
+	if limited > 1 {
+		t.Fatalf("限流拒绝审计 = %d 条，期望 <= 1（SETNX 每窗口限一条）", limited)
+	}
+}

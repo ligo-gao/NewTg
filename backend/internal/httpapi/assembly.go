@@ -20,6 +20,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -172,8 +173,14 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Sessions: deps.Sessions,
 		Checker:  checker,
 		Redis:    deps.Redis,
-		Audit:    deps.Audit.Log,
-		Logger:   deps.Logger,
+		// 统一走 writeAuditEvent：WithoutCancel + 3s 上限。setup 的审计发生在
+		// 提交之后，客户端断连或日志库变慢都不能丢事件/拖住响应。
+		Audit: func(ctx context.Context, action string, actor int64, detail json.RawMessage) error {
+			return writeAuditEvent(ctx, deps.Audit, audit.Event{
+				Action: action, Actor: actor, Detail: detail,
+			})
+		},
+		Logger: deps.Logger,
 	})
 	if err != nil {
 		return nil, err

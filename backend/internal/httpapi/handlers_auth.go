@@ -793,13 +793,9 @@ type registerRequest struct {
 }
 
 func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !h.boolConfig("auth.signup_enabled", true) {
-		h.auditRegister(r, 0, "failed", "signup_disabled")
-		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Registration is disabled")
-		return
-	}
 	// B3 注册请求速率桶 3 次/分钟/IP（security-07 §2.1，modules-08 F-08-16）。
-	// 放在 body 解析之前：畸形/垃圾请求同样计数，先于任何解析与 KDF 成本。
+	// 放在关闭注册开关与 body 解析之前：畸形请求、关闭态探测同样计数，既不
+	// 付出解析/KDF 成本，也让失败审计被桶约束（未认证流量不得放大审计写入）。
 	// 认证面 Redis 故障 fail-closed（§2.3：503 + 有界 Retry-After）。
 	ip := clientIP(r)
 	over, retry, err := h.allowRequestRate(r.Context(),
@@ -811,8 +807,14 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if over {
-		h.auditRegister(r, 0, "failed", "rate_limited")
+		// 429 洪水每 IP 每窗口只留一条审计（SETNX 标记）；标记失败即跳过。
+		h.auditRegisterRateLimited(r, ip)
 		writeRateLimited(w, retry, "Too many registration requests")
+		return
+	}
+	if !h.boolConfig("auth.signup_enabled", true) {
+		h.auditRegister(r, 0, "failed", "signup_disabled")
+		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Registration is disabled")
 		return
 	}
 
@@ -1057,14 +1059,18 @@ func (h *authHandlers) stringListConfig(key string) ([]string, bool) {
 	return out, true
 }
 
-// reserveSignupGrantSlot 原子预留一个「同 IP 24h 内第 N 个实际领赠」名额。
-// 返回 false 表示已达上限（调用方仍应完成注册，只是不发放）。
-//
-// 设备维度（同设备 24h ≤2，签名 Cookie nkt_did）尚未落地：待设备标识任务
-// 提供可信 device id 后，在同一脚本里增加第二个桶即可；接口保持不变。
-func (h *authHandlers) reserveSignupGrantSlot(ctx context.Context, ip string) (bool, error) {
-	key := "signup_grant:ip:" + sha256Hex(ip)
-	n, err := reserveSignupGrantScript.Run(ctx, h.rdb, []string{key},
+// signupGrantSlotKey 是「同 IP 24h 内实际领赠名额」的 Redis 键。邮箱路径的
+// 注册与首次邮箱验证补发共用同一键/脚本，保证两条发放路径共享同一反滥用上限。
+func signupGrantSlotKey(ip string) string {
+	return "signup_grant:ip:" + sha256Hex(ip)
+}
+
+// reserveSignupGrantForIP 原子预留一个领赠名额，返回 false 表示已达上限。
+func reserveSignupGrantForIP(ctx context.Context, rdb *redis.Client, ip string) (bool, error) {
+	if rdb == nil {
+		return false, errors.New("httpapi: redis is required for signup grant slots")
+	}
+	n, err := reserveSignupGrantScript.Run(ctx, rdb, []string{signupGrantSlotKey(ip)},
 		strconv.Itoa(signupGrantIPLimit),
 		strconv.Itoa(int(signupGrantIPWindow.Seconds()))).Int64()
 	if err != nil {
@@ -1073,10 +1079,26 @@ func (h *authHandlers) reserveSignupGrantSlot(ctx context.Context, ip string) (b
 	return n == 1, nil
 }
 
+// releaseSignupGrantForIP 归还预占名额（最终没有写出发放流水时）。
+func releaseSignupGrantForIP(ctx context.Context, rdb *redis.Client, ip string) error {
+	if rdb == nil {
+		return errors.New("httpapi: redis is required for signup grant slots")
+	}
+	return rdb.Decr(ctx, signupGrantSlotKey(ip)).Err()
+}
+
+// reserveSignupGrantSlot 原子预留一个「同 IP 24h 内第 N 个实际领赠」名额。
+// 返回 false 表示已达上限（调用方仍应完成注册，只是不发放）。
+//
+// 设备维度（同设备 24h ≤2，签名 Cookie nkt_did）尚未落地：待设备标识任务
+// 提供可信 device id 后，在同一脚本里增加第二个桶即可；接口保持不变。
+func (h *authHandlers) reserveSignupGrantSlot(ctx context.Context, ip string) (bool, error) {
+	return reserveSignupGrantForIP(ctx, h.rdb, ip)
+}
+
 // releaseSignupGrantSlot 归还预占名额（用户行最终未创建时）。
 func (h *authHandlers) releaseSignupGrantSlot(ctx context.Context, ip string) {
-	key := "signup_grant:ip:" + sha256Hex(ip)
-	if err := h.rdb.Decr(ctx, key).Err(); err != nil {
+	if err := releaseSignupGrantForIP(ctx, h.rdb, ip); err != nil {
 		h.log.Warn("release signup grant slot failed", "error", err)
 	}
 }
@@ -1545,6 +1567,24 @@ func (h *authHandlers) auditRegister(r *http.Request, actor int64, result, reaso
 	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Error("write register audit failed", "error", err)
 	}
+}
+
+// signupAuditRateLimitedKeyPrefix 限制「注册限流拒绝」审计的写入频率：
+// /api/auth/register 是未认证端点，429 可被无限重放；每 IP 每窗口至多一条。
+const signupAuditRateLimitedKeyPrefix = "signup:audit:rate_limited:"
+
+// auditRegisterRateLimited 在 SETNX 标记成功时写一次 rate_limited 审计。
+// 标记写入失败（Redis 故障）或窗口内已记过 → 跳过：审计可少记，不能放大。
+func (h *authHandlers) auditRegisterRateLimited(r *http.Request, ip string) {
+	if h.audit == nil || h.rdb == nil {
+		return
+	}
+	key := signupAuditRateLimitedKeyPrefix + sha256Hex(ip)
+	accepted, err := h.rdb.SetNX(r.Context(), key, "1", RegisterRateWindow).Result()
+	if err != nil || !accepted {
+		return
+	}
+	h.auditRegister(r, 0, "failed", "rate_limited")
 }
 
 func (h *authHandlers) writeLimiterFailure(w http.ResponseWriter, err error) {

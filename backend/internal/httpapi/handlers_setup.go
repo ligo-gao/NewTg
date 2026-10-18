@@ -264,20 +264,6 @@ func (h *SetupHandlers) RegisterSetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/setup", h.handleSetup)
 }
 
-// IsInitialized 读取锚的存在性，供装配层/状态接口复用。
-//
-// 读失败时回落 false：写路径的原子锚仍是权威闸门（DB 不可用时 POST 会 503，
-// 不会创建任何数据）；若这里返回 true，一次短暂的 DB 抖动就会让安装向导
-// 永久不可进入，且没有恢复入口。
-func (h *SetupHandlers) IsInitialized(ctx context.Context) bool {
-	initialized, err := h.store.IsInitialized(ctx)
-	if err != nil {
-		h.log.Warn("setup: read initialization anchor failed", "error", err)
-		return false
-	}
-	return initialized
-}
-
 // setupRequest 是三步向导的扁平提交体（第一步 site、第二步 admin）。
 //
 // confirmPassword 与注册端点同名（modules-01 F-01-01 的字段表）；同时接受

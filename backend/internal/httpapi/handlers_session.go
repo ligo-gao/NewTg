@@ -106,7 +106,8 @@ type SelfRepo interface {
 	UpdateSettings(ctx context.Context, userID int64, patch SelfPatch, expectUpdatedAt time.Time) (SelfRecord, error)
 	// MarkEmailVerified 置首次验证时间；signupBonus > 0 时在同一事务内幂等
 	// 补发注册赠送（reference_type=signup_grant），插入冲突即视为已发放。
-	MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, error)
+	// granted 报告本次是否真的插入了赠送流水（false = 已发放/无赠送）。
+	MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, bool, error)
 }
 
 // selfColumns 是 SelfRecord 的 SELECT/RETURNING 列序，供 scanSelfRecord 消费。
@@ -221,10 +222,10 @@ func (r *SQLSelfRepo) UpdateSettings(ctx context.Context, userID int64, patch Se
 // 「已验证短路」，若先查后写会各自看到 0 行并重复加余额。部分唯一索引
 // uq_wallet_tx_signup_grant 让恰有一个事务插入流水，其余得到 0 行且不加余额——
 // 幂等由数据库裁决。插入 0 行不代表验证失败：邮箱照常置为已验证。
-func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, error) {
+func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("httpapi: begin mark email verified: %w", err)
+		return time.Time{}, false, fmt.Errorf("httpapi: begin mark email verified: %w", err)
 	}
 	// 主错误优先：成功路径显式 Commit；失败路径 Rollback 的错误无需覆盖主错误。
 	defer func() { _ = tx.Rollback() }()
@@ -235,10 +236,10 @@ func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signu
 	err = tx.QueryRowContext(ctx, `SELECT balance FROM users WHERE id = $1 FOR UPDATE`, userID).
 		Scan(&balance)
 	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, ErrSelfNotFound
+		return time.Time{}, false, ErrSelfNotFound
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("httpapi: lock user for email verification: %w", err)
+		return time.Time{}, false, fmt.Errorf("httpapi: lock user for email verification: %w", err)
 	}
 
 	if signupBonus > 0 {
@@ -251,11 +252,11 @@ func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signu
 			ON CONFLICT (reference_id) WHERE reference_type = 'signup_grant' DO NOTHING`,
 			userID, signupBonus, balance+signupBonus, strconv.FormatInt(userID, 10))
 		if err != nil {
-			return time.Time{}, fmt.Errorf("httpapi: grant signup bonus on verification: %w", err)
+			return time.Time{}, false, fmt.Errorf("httpapi: grant signup bonus on verification: %w", err)
 		}
 		inserted, err := res.RowsAffected()
 		if err != nil {
-			return time.Time{}, fmt.Errorf("httpapi: signup bonus rows affected: %w", err)
+			return time.Time{}, false, fmt.Errorf("httpapi: signup bonus rows affected: %w", err)
 		}
 		if inserted == 1 {
 			var verifiedAt time.Time
@@ -265,12 +266,12 @@ func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signu
 				                 updated_at = now()
 				WHERE id = $1
 				RETURNING email_verified_at`, userID, signupBonus).Scan(&verifiedAt); err != nil {
-				return time.Time{}, fmt.Errorf("httpapi: apply signup bonus: %w", err)
+				return time.Time{}, false, fmt.Errorf("httpapi: apply signup bonus: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
-				return time.Time{}, fmt.Errorf("httpapi: commit email verification: %w", err)
+				return time.Time{}, false, fmt.Errorf("httpapi: commit email verification: %w", err)
 			}
-			return verifiedAt, nil
+			return verifiedAt, true, nil
 		}
 	}
 
@@ -280,12 +281,12 @@ func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signu
 		                 updated_at = now()
 		WHERE id = $1
 		RETURNING email_verified_at`, userID).Scan(&verifiedAt); err != nil {
-		return time.Time{}, fmt.Errorf("httpapi: mark email verified: %w", err)
+		return time.Time{}, false, fmt.Errorf("httpapi: mark email verified: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return time.Time{}, fmt.Errorf("httpapi: commit email verification: %w", err)
+		return time.Time{}, false, fmt.Errorf("httpapi: commit email verification: %w", err)
 	}
-	return verifiedAt, nil
+	return verifiedAt, false, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +313,7 @@ type SessionHandlers struct {
 	repo     SelfRepo
 	sessions *auth.SessionManager
 	authz    *rbac.AuthzMiddleware
+	rdb      *redis.Client
 	codes    *emailCodeStore
 	config   ConfigReader
 	log      *slog.Logger
@@ -360,6 +362,7 @@ func NewSessionHandlers(cfg SessionHandlerConfig) (*SessionHandlers, error) {
 		repo:     repo,
 		sessions: cfg.Sessions,
 		authz:    authz,
+		rdb:      cfg.Redis,
 		codes:    newEmailCodeStore(cfg.Redis, cfg.SessionSecret),
 		config:   cfg.Config,
 		log:      log,
@@ -784,7 +787,9 @@ func (h *SessionHandlers) handleVerifyEmail(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	rec, err := h.repo.GetSelf(r.Context(), p.UserID)
+	ctx := r.Context()
+	ip := clientIP(r)
+	rec, err := h.repo.GetSelf(ctx, p.UserID)
 	if err != nil {
 		h.writeSelfError(w, "get user for email verification", err)
 		return
@@ -820,10 +825,41 @@ func (h *SessionHandlers) handleVerifyEmail(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification code")
 		return
 	}
-	verifiedAt, err := h.repo.MarkEmailVerified(r.Context(), p.UserID, h.signupGrantOnVerify())
+	// 注册赠送的发放时点求值：先按冻结的同 IP 上限预留名额（与邮箱验证码
+	// 注册路径共享同一脚本/键），上限达成或计数不可用时跳过补发但仍完成
+	// 验证。名额只在真正写出发放流水时保留；已发放（插入 0 行）/事务失败
+	// 必须归还，否则重复验证会无谓消耗其他人的领赠额度。
+	bonus := h.signupGrantOnVerify()
+	grantReserved := false
+	if bonus > 0 {
+		allowed, err := reserveSignupGrantForIP(ctx, h.rdb, ip)
+		switch {
+		case err != nil:
+			h.log.Warn("signup grant on verification suppressed: counter_unavailable",
+				"user_id", p.UserID, "error", err)
+			bonus = 0
+		case !allowed:
+			h.log.Warn("signup grant on verification suppressed: cap", "user_id", p.UserID)
+			bonus = 0
+		default:
+			grantReserved = true
+		}
+	}
+
+	verifiedAt, granted, err := h.repo.MarkEmailVerified(ctx, p.UserID, bonus)
 	if err != nil {
+		if grantReserved {
+			if relErr := releaseSignupGrantForIP(ctx, h.rdb, ip); relErr != nil {
+				h.log.Warn("release signup grant slot after verification failure failed", "error", relErr)
+			}
+		}
 		h.writeSelfError(w, "mark email verified", err)
 		return
+	}
+	if grantReserved && !granted {
+		if relErr := releaseSignupGrantForIP(ctx, h.rdb, ip); relErr != nil {
+			h.log.Warn("release signup grant slot after already-granted failed", "error", relErr)
+		}
 	}
 	writeJSON(w, http.StatusOK, verifyEmailResponse{
 		EmailVerified:   true,

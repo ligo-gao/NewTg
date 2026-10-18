@@ -61,6 +61,14 @@ const (
 // ticket 状态，不区分「不存在/过期/已消费」（避免 ticket 存在性探测）。
 const problemTypeTwoFATicketInvalid = "https://newtg.dev/problems/two_factor_ticket_invalid"
 
+// twoFAAuditLimitedKeyPrefix 限制「认证面限流拒绝」审计的写入频率：challenge
+// 是未认证端点，攻击者可无限重放触发 429；若不限频，每条拒绝都写日志库就
+// 成了审计写入放大面（日志库保留 12 个月）。每 IP 每分钟至多一条。
+const (
+	twoFAAuditLimitedKeyPrefix = "2fa:audit:limited:"
+	twoFAAuditLimitedTTL       = time.Minute
+)
+
 // TwoFAUser 是 2FA 流程需要的 users 行投影。TOTPSecretEnc 是 envelope 密文的
 // base64 文本（DB 列为 text）；备用码是已解出的 argon2id PHC 哈希数组。
 type TwoFAUser struct {
@@ -558,8 +566,26 @@ type twoFAChallengeRequest struct {
 // 写入 Redis（pending_2fa:{ticket} → user_id，5 分钟）；本端点不信任任何客户端
 // 声明的用户身份。
 func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ip := clientIP(r)
+
+	// 限流预检查必须先于请求体解析：畸形 body 的洪水不应在付出 JSON 解析与
+	// 审计写入之前就绕过认证面的失败锁定（modules-01 §3.15 的「限流外层」）。
+	// 畸形请求随后也计入 IP 失败桶（见下），因此持续洪水会在 5 次后锁定。
+	if err := h.limiter.Check(ctx, ip, ""); err != nil {
+		// 拒绝审计按 IP 限频：未认证流量不能无限放大日志库写入。
+		h.auditChallengeLimited(r, ip, limiterReason(err))
+		h.writeLimiterFailure(w, err)
+		return
+	}
+
 	var req twoFAChallengeRequest
 	if err := readAuthJSON(r, &req); err != nil {
+		// 畸形请求不是「验证码错误」，但同样是未认证的失败尝试：计入 IP
+		// 失败桶，避免无限重放绕过锁定；记录失败本身失败只记日志。
+		if recordErr := h.limiter.Record(ctx, ip, "", false); recordErr != nil {
+			h.log.Warn("record malformed 2fa challenge failure failed", "error", recordErr)
+		}
 		h.auditChallenge(r, nil, "failed", "invalid_request")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
 		return
@@ -569,6 +595,9 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		challengeType = "totp"
 	}
 	if challengeType != "totp" && challengeType != "backup" {
+		if recordErr := h.limiter.Record(ctx, ip, "", false); recordErr != nil {
+			h.log.Warn("record invalid 2fa challenge type failure failed", "error", recordErr)
+		}
 		h.auditChallenge(r, nil, "failed", "invalid_challenge_type")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid challenge type")
 		return
@@ -579,16 +608,6 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		h.auditChallenge(r, nil, "failed", "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
 			"Invalid or expired verification ticket")
-		return
-	}
-	ctx := r.Context()
-	ip := clientIP(r)
-
-	// 登录桶（IP-only）先行：无效/伪造 ticket 的高频探测在触达 Redis GET 与
-	// 数据库之前就被拒绝，与登录路径的「未知 identifier 只按 IP 计分」同口径。
-	if err := h.limiter.Check(ctx, ip, ""); err != nil {
-		h.auditChallenge(r, nil, "failed", limiterReason(err))
-		h.writeLimiterFailure(w, err)
 		return
 	}
 
@@ -932,6 +951,20 @@ func (h *TwoFAHandlers) auditEvent(r *http.Request, action string, user *TwoFAUs
 	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("2fa audit write failed", "action", action, "actor", user.ID, "error", err)
 	}
+}
+
+// auditChallengeLimited 是「限流拒绝」审计的每 IP 限频版本。标记键写入失败
+// （Redis 故障）或窗口内已记过时直接跳过：审计可少记，绝不能成为放大面。
+func (h *TwoFAHandlers) auditChallengeLimited(r *http.Request, ip, reason string) {
+	if h.audit == nil || h.rdb == nil {
+		return
+	}
+	key := twoFAAuditLimitedKeyPrefix + sha256Hex(ip)
+	accepted, err := h.rdb.SetNX(r.Context(), key, "1", twoFAAuditLimitedTTL).Result()
+	if err != nil || !accepted {
+		return
+	}
+	h.auditChallenge(r, nil, "failed", reason)
 }
 
 // auditChallenge 写二次验证的登录审计。裁决 R-40：TOTP 验证复用 auth.login

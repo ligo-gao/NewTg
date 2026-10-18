@@ -1887,3 +1887,27 @@ func TestUsersGrantDenialAudited(t *testing.T) {
 		t.Fatal("未写入 authz.denied（grant_superset）审计行")
 	}
 }
+
+// TestUsersQuotaAdjustmentIdempotencyReuseMapsTo422 覆盖 C9 的 HTTP 映射：
+// 同 key 不同参数 → 422 idempotency_key_reuse。
+func TestUsersQuotaAdjustmentIdempotencyReuseMapsTo422(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+	env.repo.mu.Lock()
+	env.repo.forcedErr = ErrAdminIdempotencyReused
+	env.repo.mu.Unlock()
+
+	rr := env.request(fullAdmin(), http.MethodPost,
+		fmt.Sprintf("/api/users/%d/quota-adjustment", user.ID),
+		map[string]any{"mode": "add", "amount": 10, "idempotency_key": "k"})
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	var p map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+		t.Fatalf("problem JSON 非法: %v", err)
+	}
+	if p["type"] != problemTypeIdempotencyReused {
+		t.Fatalf("problem.type = %v，期望 %s", p["type"], problemTypeIdempotencyReused)
+	}
+}
