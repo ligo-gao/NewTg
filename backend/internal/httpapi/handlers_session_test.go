@@ -51,6 +51,8 @@ type fakeSelfRepo struct {
 	updates []SelfPatch
 	clock   time.Time
 	err     error
+	// verifyBonuses 记录每次 MarkEmailVerified 收到的补发额（B6 断言）。
+	verifyBonuses []int64
 }
 
 func newFakeSelfRepo() *fakeSelfRepo {
@@ -150,7 +152,7 @@ func (r *fakeSelfRepo) UpdateSettings(_ context.Context, userID int64, patch Sel
 	return *rec, nil
 }
 
-func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64) (time.Time, error) {
+func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64, signupBonus int64) (time.Time, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
@@ -160,6 +162,7 @@ func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64) (time.
 	if !ok {
 		return time.Time{}, ErrSelfNotFound
 	}
+	r.verifyBonuses = append(r.verifyBonuses, signupBonus)
 	if rec.EmailVerifiedAt == nil {
 		now := r.tick()
 		rec.EmailVerifiedAt = &now
@@ -188,6 +191,11 @@ type sessionTestEnv struct {
 }
 
 func newSessionTestEnv(t *testing.T) *sessionTestEnv {
+	return newSessionTestEnvWithConfig(t, nil)
+}
+
+// newSessionTestEnvWithConfig 允许用例注入配置中心快照（B6 的捐赠开关）。
+func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
@@ -202,6 +210,7 @@ func newSessionTestEnv(t *testing.T) *sessionTestEnv {
 		Sessions:      sessions,
 		Redis:         rdb,
 		SessionSecret: []byte(testSessionSecret),
+		Config:        cfg,
 	})
 	if err != nil {
 		t.Fatalf("NewSessionHandlers: %v", err)
@@ -261,6 +270,9 @@ func (e *sessionTestEnv) request(method, path string, body any, sid, csrf string
 		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
 	}
 	if csrf != "" {
+		// 浏览器同时携带 CSRF Cookie 与头；测试不做这一步会让 GET /api/me
+		// 把「Cookie 缺失」误判为需要补发并轮换令牌，后续写请求全部 403。
+		req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: csrf})
 		req.Header.Set(auth.CSRFHeaderName, csrf)
 	}
 	req.Header.Set("Origin", "http://example.com")
@@ -818,6 +830,55 @@ func TestVerifyEmail(t *testing.T) {
 	}
 }
 
+// TestVerifyEmailGrantsPendingSignupBonus 覆盖 B6：requires_verified_email
+// 开启时，首次验证把当期配置的赠送额交给仓储在同一事务内补发；开关关闭时
+// 不补发（注册路径已发放）。
+func TestVerifyEmailGrantsPendingSignupBonus(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, mapConfig{
+		"billing.signup_grant_requires_verified_email": configBool(true),
+		"billing.signup_grant_credits":                 configInt(750),
+	})
+	env.repo.add(sessionTestUserID, SelfRecord{Username: "alice", Email: strPtr("alice@example.com")})
+	sid, csrf := env.createSession(sessionTestUserID, rbac.RoleUser, "Test/1.0", "203.0.113.1")
+	store := newEmailCodeStore(env.rdb, []byte(testSessionSecret))
+	code, err := store.issue(context.Background(), "alice@example.com", "verify")
+	if err != nil {
+		t.Fatalf("issue code: %v", err)
+	}
+	rr := env.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": code}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	env.repo.mu.Lock()
+	bonuses := append([]int64(nil), env.repo.verifyBonuses...)
+	env.repo.mu.Unlock()
+	if len(bonuses) != 1 || bonuses[0] != 750 {
+		t.Fatalf("补发额调用 = %v，期望 [750]", bonuses)
+	}
+
+	// 开关关闭：注册路径已经发放过，验证不得再次发放。
+	off := newSessionTestEnvWithConfig(t, mapConfig{
+		"billing.signup_grant_requires_verified_email": configBool(false),
+		"billing.signup_grant_credits":                 configInt(750),
+	})
+	off.repo.add(sessionTestUserID, SelfRecord{Username: "bob", Email: strPtr("bob@example.com")})
+	offSID, offCSRF := off.createSession(sessionTestUserID, rbac.RoleUser, "Test/1.0", "203.0.113.2")
+	offStore := newEmailCodeStore(off.rdb, []byte(testSessionSecret))
+	offCode, err := offStore.issue(context.Background(), "bob@example.com", "verify")
+	if err != nil {
+		t.Fatalf("issue code: %v", err)
+	}
+	if rr := off.request(http.MethodPost, "/api/verify-email", map[string]any{"email_code": offCode}, offSID, offCSRF); rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	off.repo.mu.Lock()
+	offBonuses := append([]int64(nil), off.repo.verifyBonuses...)
+	off.repo.mu.Unlock()
+	if len(offBonuses) != 1 || offBonuses[0] != 0 {
+		t.Fatalf("开关关闭时补发额调用 = %v，期望 [0]", offBonuses)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 凭证平面：API 令牌不得访问会话端点（TC-F-01-27-05）
 // ---------------------------------------------------------------------------
@@ -917,4 +978,42 @@ func randomSessionID(t *testing.T) string {
 		t.Fatalf("crypto/rand: %v", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// TestMeGetReissuesMissingCSRFCookie 覆盖 B7：Cookie 会话仍在但 __Host-nkt_csrf
+// 丢失时，GET /api/me 补发令牌；已有 Cookie 时不得轮换（否则并发写请求会拿
+// 旧令牌 403）。
+func TestMeGetReissuesMissingCSRFCookie(t *testing.T) {
+	env := newSessionTestEnv(t)
+	env.repo.add(sessionTestUserID, SelfRecord{Username: "alice", Email: strPtr("alice@example.com")})
+	sid, _ := env.createSession(sessionTestUserID, rbac.RoleUser, "Test/1.0", "203.0.113.1")
+
+	rr := env.request(http.MethodGet, "/api/me", nil, sid, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/me status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	reissued := cookieByName(rr, auth.CSRFCookieName)
+	if reissued == nil || reissued.Value == "" {
+		t.Fatal("缺失 CSRF Cookie 时 GET /api/me 必须补发")
+	}
+	if reissued.Path != "/" || !reissued.Secure || reissued.HttpOnly {
+		t.Fatalf("补发的 CSRF Cookie 属性错误: %+v", reissued)
+	}
+	// 服务端必须真的接受新令牌（不是只写了个随机 Cookie）。
+	if !env.sessions.VerifyCSRF(context.Background(), sid, reissued.Value) {
+		t.Fatal("补发的 CSRF 令牌不可用")
+	}
+
+	// 已有 Cookie：不得轮换（响应不出现新的 Set-Cookie）。
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: reissued.Value})
+	req.Header.Set("Origin", "http://example.com")
+	rr = serve(env.router, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/me status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	if c := cookieByName(rr, auth.CSRFCookieName); c != nil {
+		t.Fatalf("已有 CSRF Cookie 时不得轮换，收到 %+v", c)
+	}
 }

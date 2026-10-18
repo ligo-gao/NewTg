@@ -555,6 +555,16 @@ func TestAccountDeleteHardDeleteTerminalState(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
 	}
+	// B4：删号成功响应必须清 Cookie 并要求浏览器清除缓存/存储。
+	if got := rr.Header().Get("Clear-Site-Data"); got != clearSiteDataHeader {
+		t.Fatalf("Clear-Site-Data = %q，期望 %q", got, clearSiteDataHeader)
+	}
+	for _, name := range []string{auth.SessionCookieName, auth.CSRFCookieName} {
+		c := cookieByName(rr, name)
+		if c == nil || c.Value != "" || c.MaxAge > 0 {
+			t.Fatalf("删号必须清除 Cookie %s（cookie=%+v）", name, c)
+		}
+	}
 
 	if env.repo.users[user.ID] != nil {
 		t.Fatal("users 行必须被硬删除")
@@ -584,8 +594,11 @@ func TestAccountDeleteHardDeleteTerminalState(t *testing.T) {
 		t.Fatalf("审计 status_code = %v（%T），期望 204", details[0][7], details[0][7])
 	}
 	detail := env.lastAuditDetail(t)
-	if detail["action"] != "account_deleted" {
-		t.Fatalf("detail.action = %v，期望 account_deleted", detail["action"])
+	if detail["action"] != audit.ActionUserDelete {
+		t.Fatalf("detail.action = %v，期望 %s（writer 注入的冻结动作）", detail["action"], audit.ActionUserDelete)
+	}
+	if detail["label"] != "account_deleted" {
+		t.Fatalf("detail.label = %v，期望 account_deleted", detail["label"])
 	}
 }
 
@@ -771,6 +784,7 @@ func TestAccountEmailChangeRequiresReauth(t *testing.T) {
 	env := newAccountTestEnv(t)
 	user := env.addUser("alice", "alice@example.com", false)
 	sid, csrf := env.sessionWithCSRF(user.ID)
+	otherSID := mustSession(t, env.sessions, user.ID, "user")
 	code := env.issueEmailCode("new@example.com", "bind")
 
 	// 当前口令错误：403 reauth_required，不落库。
@@ -804,14 +818,24 @@ func TestAccountEmailChangeRequiresReauth(t *testing.T) {
 	if !env.repo.users[user.ID].EmailVerified {
 		t.Fatal("换绑成功后 email_verified 必须为 true")
 	}
+	// B5：换绑必须吊销其它会话，保留当前会话（会话生命周期状态机）。
+	if _, err := env.sessions.Get(context.Background(), otherSID); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("换绑后其它会话 err = %v，期望 ErrSessionNotFound", err)
+	}
+	if _, err := env.sessions.Get(context.Background(), sid); err != nil {
+		t.Fatalf("换绑不得吊销当前会话: %v", err)
+	}
 	body := decodeAccountEmailResponse(t, rr)
 	if body["email"] != "new@example.com" || body["email_verified"] != true {
 		t.Fatalf("响应 = %v，期望 email/email_verified", body)
 	}
 
 	detail := env.lastAuditDetail(t)
-	if detail["action"] != "email_changed" {
-		t.Fatalf("审计 detail.action = %v，期望 email_changed", detail["action"])
+	if detail["action"] != audit.ActionUserUpdate {
+		t.Fatalf("审计 detail.action = %v，期望 %s", detail["action"], audit.ActionUserUpdate)
+	}
+	if detail["label"] != "email_changed" {
+		t.Fatalf("审计 detail.label = %v，期望 email_changed", detail["label"])
 	}
 	if detail["field"] != "email" || detail["result"] != "success" {
 		t.Fatalf("email 事件缺少 field/result: %v", detail)
@@ -1062,8 +1086,11 @@ func TestAccountNotificationPreferencesSparseMerge(t *testing.T) {
 	}
 
 	detail := env.lastAuditDetail(t)
-	if detail["action"] != "notification_pref_updated" {
-		t.Fatalf("审计 detail.action = %v，期望 notification_pref_updated", detail["action"])
+	if detail["action"] != audit.ActionUserUpdate {
+		t.Fatalf("审计 detail.action = %v，期望 %s", detail["action"], audit.ActionUserUpdate)
+	}
+	if detail["label"] != "notification_pref_updated" {
+		t.Fatalf("审计 detail.label = %v，期望 notification_pref_updated", detail["label"])
 	}
 }
 

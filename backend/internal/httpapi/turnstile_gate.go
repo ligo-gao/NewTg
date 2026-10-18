@@ -69,6 +69,10 @@ func newTurnstileGates(settings func() auth.TurnstileSettings, rdb *redis.Client
 	return gates
 }
 
+// problemTypeTurnstileFailed 与 auth.turnstile 的冻结 type URI 逐字一致
+// （auth 包的常量未导出，这里是同一 wire 契约的第二个引用点；改动必须同步）。
+const problemTypeTurnstileFailed = "https://newtg.dev/problems/turnstile_challenge_failed"
+
 // check 运行一次人机校验；返回 false 表示响应已由中间件写出（403/400/503），
 // 调用方必须立即 return。nil gate 视为未启用（M1 允许未配置 Turnstile）。
 func (g *turnstileGates) check(endpoint string, w http.ResponseWriter,
@@ -80,12 +84,16 @@ func (g *turnstileGates) check(endpoint string, w http.ResponseWriter,
 	gate := g.byEndpoint[endpoint]
 	if gate == nil {
 		// 未知接入点属于装配/调用错误：绝不能静默放行（否则新增接入点会
-		// 以为已受保护）。返回 false 让请求 fail-closed，并留下告警。
+		// 以为已受保护）。正确装配下本分支不可达（四个接入点都在
+		// newTurnstileGates 里构造），这里是纵深防御：显式写 fail-closed
+		// problem，而不是返回 false 让 handler 返回空 200。
 		logger := g.log
 		if logger == nil {
 			logger = slog.Default()
 		}
 		logger.Warn("turnstile check requested for an unwired endpoint; rejecting", "endpoint", endpoint)
+		writeProblem(w, http.StatusForbidden, problemTypeTurnstileFailed,
+			"Turnstile verification failed")
 		return false
 	}
 	clone := r.Clone(r.Context())

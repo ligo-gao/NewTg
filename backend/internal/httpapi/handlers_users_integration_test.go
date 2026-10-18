@@ -8,13 +8,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
@@ -37,6 +41,7 @@ import (
 
 type adminIntegrationEnv struct {
 	db       *sql.DB
+	logsDB   *sql.DB
 	repo     *SQLAdminUserRepo
 	groups   *SQLAdminGroupRepo
 	users    *UserHandlers
@@ -44,9 +49,86 @@ type adminIntegrationEnv struct {
 	router   http.Handler
 }
 
+// openAuditLogsIntegration 在独立 schema 上建 audit_logs 并返回专用连接池。
+//
+// 为什么不用主库 public schema：store 包的 schema 契约测试要求 public 恰好
+// 22 张主库表；日志表属独立日志库，混进 public 会破坏该断言（且跨包并行时
+// 结果不稳定）。search_path 通过 DSN 设置，连接池里每条连接都生效。
+func openAuditLogsIntegration(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过集成测试")
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open admin db: %v", err)
+	}
+	if _, err := admin.Exec(`CREATE SCHEMA IF NOT EXISTS newtg_audit_test`); err != nil {
+		_ = admin.Close()
+		t.Fatalf("create audit schema: %v", err)
+	}
+	_ = admin.Close()
+
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", "newtg_audit_test")
+	parsed.RawQuery = query.Encode()
+	logsDB, err := sql.Open("pgx", parsed.String())
+	if err != nil {
+		t.Fatalf("open logs db: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := logsDB.PingContext(ctx); err != nil {
+		_ = logsDB.Close()
+		t.Fatalf("ping logs db: %v", err)
+	}
+	t.Cleanup(func() { _ = logsDB.Close() })
+	ensureAuditLogsTable(t, logsDB)
+	return logsDB
+}
+
+// ensureAuditLogsTable 在给定日志库连接上补建 audit_logs（幂等），列定义与
+// migrations-logs 逐列一致。只用于集成测试。
+func ensureAuditLogsTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id          bigint      GENERATED ALWAYS AS IDENTITY,
+			user_id     bigint      NOT NULL,
+			username    text        NOT NULL,
+			category    text        NOT NULL,
+			ip          text,
+			user_agent  text,
+			method      text,
+			route       text,
+			status_code smallint,
+			result      text        NOT NULL,
+			detail      jsonb,
+			before      jsonb,
+			after       jsonb,
+			created_at  timestamptz NOT NULL DEFAULT now(),
+			CONSTRAINT audit_logs_pkey PRIMARY KEY (id),
+			CONSTRAINT audit_logs_category_chk CHECK (category IN ('login', 'security', 'operation', 'access_token')),
+			CONSTRAINT audit_logs_result_chk CHECK (result IN ('success', 'failed')))`,
+		`CREATE INDEX IF NOT EXISTS audit_logs_user_created_idx ON audit_logs (user_id, created_at DESC)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("ensure audit_logs: %v", err)
+		}
+	}
+}
+
 func newAdminIntegrationEnv(t *testing.T) *adminIntegrationEnv {
 	t.Helper()
 	db, rdb := openAuthIntegration(t)
+	// 日志表放独立 schema（见 openAuditLogsIntegration 的理由）。
+	logsDB := openAuditLogsIntegration(t)
 	// default/auto 是种子迁移写入的系统组；测试库可能尚未跑种子迁移。
 	for _, name := range []string{"default", "auto"} {
 		if _, err := db.Exec(`INSERT INTO user_groups (name, is_system, status)
@@ -63,6 +145,7 @@ func newAdminIntegrationEnv(t *testing.T) *adminIntegrationEnv {
 
 	users, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: rdb, Authz: authz, Logger: logger,
+		Anonymizer: NewSQLPIIAnonymizer(logsDB),
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
@@ -76,7 +159,7 @@ func newAdminIntegrationEnv(t *testing.T) *adminIntegrationEnv {
 	groups.RegisterGroupRoutes(mux, nil)
 
 	return &adminIntegrationEnv{
-		db: db, repo: repo, groups: groupRepo,
+		db: db, logsDB: logsDB, repo: repo, groups: groupRepo,
 		users: users, groupAPI: groups, router: mux,
 	}
 }
@@ -547,5 +630,83 @@ func TestIntegrationAdminDeleteCascadesDependents(t *testing.T) {
 		if count != 0 {
 			t.Fatalf("%s 仍有 %d 行孤儿记录", table, count)
 		}
+	}
+}
+
+// TestIntegrationAdminDeleteAnonymizesAuditLogs 覆盖 B1：管理端删除必须与自助
+// 删除一致，把日志库 audit_logs.username 快照改写为 deleted_{id}，再硬删 users。
+func TestIntegrationAdminDeleteAnonymizesAuditLogs(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	user := createIntegrationUser(t, env.repo, "default")
+	t.Cleanup(func() { _, _ = env.logsDB.Exec(`DELETE FROM audit_logs WHERE user_id = $1`, user.ID) })
+
+	// 模拟 12 个月保留期内的真实用户名快照。
+	if _, err := env.logsDB.Exec(`INSERT INTO audit_logs (user_id, username, category, result)
+		VALUES ($1, $2, 'operation', 'success')`, user.ID, user.Username); err != nil {
+		t.Fatalf("seed audit row: %v", err)
+	}
+	if _, _, err := env.repo.SetStatus(context.Background(), user.ID, "disabled", nil); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	rr := env.request(t, http.MethodDelete, fmt.Sprintf("/api/users/%d", user.ID), nil, "")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var stored string
+	if err := env.logsDB.QueryRow(`SELECT username FROM audit_logs WHERE user_id = $1 ORDER BY id DESC LIMIT 1`,
+		user.ID).Scan(&stored); err != nil {
+		t.Fatalf("read anonymized audit row: %v", err)
+	}
+	if want := fmt.Sprintf("deleted_%d", user.ID); stored != want {
+		t.Fatalf("audit_logs.username = %q，期望 %q", stored, want)
+	}
+}
+
+// TestIntegrationAdminQuotaAdjustmentBindsParams 覆盖 C9：调额幂等键必须绑定
+// 请求语义（mode+amount）。同 key 同参数重放首次结果；不同参数返回
+// ErrAdminIdempotencyReused（HTTP 422），绝不静默重放。
+func TestIntegrationAdminQuotaAdjustmentBindsParams(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	user := createIntegrationUser(t, env.repo, "default")
+	key := "qadj-" + uniqueAuthSuffix()
+	ctx := context.Background()
+
+	first, err := env.repo.AdjustQuota(ctx, user.ID, "add", 100, key)
+	if err != nil {
+		t.Fatalf("adjust add 100: %v", err)
+	}
+	if first.NewBalance != 100 || first.Replayed {
+		t.Fatalf("first = %+v，期望 NewBalance=100/Replayed=false", first)
+	}
+	replay, err := env.repo.AdjustQuota(ctx, user.ID, "add", 100, key)
+	if err != nil {
+		t.Fatalf("replay add 100: %v", err)
+	}
+	if !replay.Replayed || replay.TransactionID != first.TransactionID {
+		t.Fatalf("replay = %+v，期望重放首次流水 %d", replay, first.TransactionID)
+	}
+
+	if _, err := env.repo.AdjustQuota(ctx, user.ID, "add", 200, key); !errors.Is(err, ErrAdminIdempotencyReused) {
+		t.Fatalf("同 key 不同 amount err = %v，期望 ErrAdminIdempotencyReused", err)
+	}
+	if _, err := env.repo.AdjustQuota(ctx, user.ID, "subtract", 100, key); !errors.Is(err, ErrAdminIdempotencyReused) {
+		t.Fatalf("同 key 不同 mode err = %v，期望 ErrAdminIdempotencyReused", err)
+	}
+
+	var balance int64
+	if err := env.db.QueryRow(`SELECT balance FROM users WHERE id = $1`, user.ID).Scan(&balance); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if balance != 100 {
+		t.Fatalf("balance = %d，期望 100（被拒绝的复用不得改余额）", balance)
+	}
+	var rows int64
+	if err := env.db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE user_id = $1 AND type = 'admin_adjustment'`, user.ID).Scan(&rows); err != nil {
+		t.Fatalf("count admin_adjustment: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("admin_adjustment rows = %d，期望 1", rows)
 	}
 }

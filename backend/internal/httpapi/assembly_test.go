@@ -89,6 +89,7 @@ func gatewayDepsForTest(t *testing.T) (GatewayDeps, *redis.Client) {
 		SelfRepo:                newFakeSelfRepo(),
 		AccountRepo:             newAccountTestRepo(),
 		AccountAnonymizer:       &accountTestAnonymizer{},
+		UserAnonymizer:          &fakePIIAnonymizer{},
 		AccountReauth: auth.NewReauthGate(rdb, auth.ReauthMaterialFunc(
 			func(context.Context, int64) (*auth.ReauthMaterial, error) {
 				return nil, auth.ErrReauthRequired

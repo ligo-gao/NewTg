@@ -60,9 +60,37 @@ type fakeWalletTx struct {
 	ReferenceID  string
 }
 
-type fakeAdminRepo struct {
-	mu sync.Mutex
+// fakePIIAnonymizer 记录管理端删除时的匿名化调用（顺序与参数由用例断言）。
+type fakePIIAnonymizer struct {
+	mu    sync.Mutex
+	calls []struct {
+		UserID   int64
+		Username string
+	}
+	err error
+}
 
+func (f *fakePIIAnonymizer) AnonymizeUser(_ context.Context, userID int64, username string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, struct {
+		UserID   int64
+		Username string
+	}{userID, username})
+	return nil
+}
+
+func (f *fakePIIAnonymizer) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+type fakeAdminRepo struct {
+	mu         sync.Mutex
 	users      map[int64]*AdminUserRecord
 	tokens     []*fakeAdminToken
 	nextUserID int64
@@ -678,6 +706,8 @@ type adminTestEnv struct {
 	users    *UserHandlers
 	groups   *GroupHandlers
 	router   http.Handler
+	// anonymizer 记录管理端删除时的 PII 匿名化调用。
+	anonymizer *fakePIIAnonymizer
 }
 
 func newAdminTestEnv(t *testing.T) *adminTestEnv {
@@ -690,11 +720,12 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	repo := newFakeAdminRepo()
 	capture := &adminAuditCapture{}
 	authz := rbac.NewAuthzMiddleware()
+	anon := &fakePIIAnonymizer{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	users, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: rdb, Authz: authz,
-		Audit: audit.New(capture), Logger: logger,
+		Audit: audit.New(capture), Anonymizer: anon, Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
@@ -713,6 +744,7 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	return &adminTestEnv{
 		t: t, mr: mr, rdb: rdb, sessions: sessions, repo: repo,
 		audit: capture, authz: authz, users: users, groups: groups, router: mux,
+		anonymizer: anon,
 	}
 }
 
@@ -1156,6 +1188,37 @@ func TestUsersDeleteRules(t *testing.T) {
 	captured := env.audit.concatenatedArgs()
 	if !strings.Contains(captured, fmt.Sprintf("deleted_%d", user.ID)) {
 		t.Fatalf("审计缺少匿名化 handle：%q", captured)
+	}
+	// B1：删除必须先对日志库做 PII 匿名化（deleted_{id}），再硬删 users 行。
+	env.anonymizer.mu.Lock()
+	calls := append([]struct {
+		UserID   int64
+		Username string
+	}(nil), env.anonymizer.calls...)
+	env.anonymizer.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("PII 匿名化调用次数 = %d，期望 1", len(calls))
+	}
+	if calls[0].UserID != user.ID || calls[0].Username != fmt.Sprintf("deleted_%d", user.ID) {
+		t.Fatalf("PII 匿名化参数 = (%d, %q)，期望 (%d, deleted_%d)",
+			calls[0].UserID, calls[0].Username, user.ID, user.ID)
+	}
+}
+
+// TestUsersDeleteAnonymizerFailureFailsClosed 覆盖 B1 的失败语义：日志库匿名化
+// 失败必须 503 且保留 users 行（与自助删除同口径），绝不允许「账号已删除、
+// 历史审计仍带真名」的终态。
+func TestUsersDeleteAnonymizerFailureFailsClosed(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice", Status: "disabled"})
+	env.anonymizer.err = errors.New("logs db down")
+
+	rr := env.request(fullAdmin(), http.MethodDelete, fmt.Sprintf("/api/users/%d", user.ID), nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("匿名化失败 status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+	}
+	if _, err := env.repo.GetUser(context.Background(), user.ID); err != nil {
+		t.Fatalf("匿名化失败后用户不得被删除：err=%v", err)
 	}
 }
 
@@ -1670,6 +1733,7 @@ func TestUsersResetPasswordFailsClosedWhenMarkerUnavailable(t *testing.T) {
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	h, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: broken, Authz: rbac.NewAuthzMiddleware(),
+		Anonymizer: &fakePIIAnonymizer{},
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
@@ -1782,5 +1846,44 @@ func TestUsersQuotaOverflowRejected(t *testing.T) {
 	}
 	if len(env.repo.txs) != 0 {
 		t.Fatal("溢出不变量：不应写流水")
+	}
+}
+
+// TestUsersGrantDenialAudited 覆盖 D1 复核新增项：AuthorizeGrant 的 403 是
+// 提权尝试，必须以 authz.denied（security）留痕，而不是只返回 403。
+func TestUsersGrantDenialAudited(t *testing.T) {
+	env := newAdminTestEnv(t)
+	target := env.repo.addUser(AdminUserRecord{Username: "bob", Role: rbac.RoleAdmin})
+	// 持有 users:manage-roles 但没有 pricing:manage：授予超出自身范围。
+	limited := &auth.Principal{
+		UserID:      900001,
+		Role:        rbac.RoleAdmin,
+		Permissions: []string{rbac.PermUsersManageRoles},
+	}
+	rr := env.request(limited, http.MethodPatch,
+		fmt.Sprintf("/api/users/%d/permissions", target.ID),
+		map[string]any{"admin_permissions": []string{rbac.PermPricingManage}})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	var found bool
+	for _, call := range env.audit.allCalls() {
+		detail, ok := call.args[9].(string)
+		if !ok {
+			continue
+		}
+		if !strings.Contains(detail, `"event":"authz_denied"`) ||
+			!strings.Contains(detail, `"reason":"grant_superset"`) ||
+			!strings.Contains(detail, `"required_permission":"`+rbac.PermUsersManageRoles+`"`) {
+			continue
+		}
+		if call.args[2] != "security" || call.args[8] != "failed" {
+			t.Fatalf("拒绝审计 category/result = %v/%v，期望 security/failed", call.args[2], call.args[8])
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("未写入 authz.denied（grant_superset）审计行")
 	}
 }

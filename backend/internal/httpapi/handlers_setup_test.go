@@ -724,8 +724,13 @@ func TestSetupSessionFailureStillAudits(t *testing.T) {
 			return nil
 		},
 	})
-	// 关掉 Redis：自动登录会话创建必然失败。
-	_ = env.rdb.Close()
+	// 只破坏会话管理器的 Redis：限流桶仍可用（否则请求会在限流层 503，
+	// 测不到「提交+审计之后建会话失败」的路径）。
+	brokenRedis := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = brokenRedis.Close() })
+	env.handlers.sessions = auth.NewSessionManager(brokenRedis, []byte(testSessionSecret))
 
 	rr := env.post(setupPayload())
 	if rr.Code != http.StatusServiceUnavailable {
@@ -819,5 +824,27 @@ func TestSetupPublishesConfigChanges(t *testing.T) {
 		if !got[key] {
 			t.Errorf("缺少配置变更广播 %q（收到 %v）", key, got)
 		}
+	}
+}
+
+// TestSetupRateLimited 覆盖 B13：/api/setup 的匿名桶在 10 次/分钟后返回
+// 429 + Retry-After，避免未初始化窗口被自动化抢占与 argon2 成本轰炸。
+func TestSetupRateLimited(t *testing.T) {
+	env := newSetupTestEnv(t, setupTestOptions{withSessions: true})
+	// 空对象会在业务校验处 400，但仍消耗桶名额（限流先于解析/KDF）。
+	for i := 0; i < SetupRateLimit; i++ {
+		if rr := env.post(map[string]any{}); rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("第 %d 次请求提前触发限流", i+1)
+		}
+	}
+	rr := env.post(map[string]any{})
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 %d 次请求 status = %d，期望 429（body=%q）", SetupRateLimit+1, rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("429 必须带 Retry-After")
+	}
+	if env.store.userCount() != 0 {
+		t.Fatalf("限流后不得创建用户，实际 %d", env.store.userCount())
 	}
 }

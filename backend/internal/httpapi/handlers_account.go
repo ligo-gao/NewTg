@@ -590,10 +590,14 @@ func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Req
 	// 删除事件是唯一保留真实用户名的审计行（who/when/ip 供合规追溯）；历史行
 	// 已在上一步改写为 deleted_{id}。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, rec.Username, map[string]any{
-		"action":          "account_deleted",
+		"label":           "account_deleted",
 		"tokens_deleted":  len(tokenIDs),
 		"anonymized_name": anonymized,
 	}, http.StatusNoContent)
+	// 删号成功后浏览器侧的会话 Cookie 已无对应服务端会话，必须显式清除；
+	// Clear-Site-Data 同时清空前端存储（TC-I-06 固定三项）。
+	setClearSiteData(w)
+	clearSessionCookies(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -678,6 +682,16 @@ func (h *AccountHandlers) handleChangeEmail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// 换绑邮箱是 security-01 §2.1 会话生命周期状态机的失效触发（与改密/2FA
+	// 变更同档）：被盗会话不能在受害者换绑（本意是切断找回通道）后继续有效。
+	// 顺序与改密一致——先吊销、失败即 503，再落库；保留当前会话（凭据仍在
+	// 用户手里）。Bearer 路径没有 Cookie，keepSID 为空，吊销全部会话。
+	keepSID, _ := sessionID(r)
+	if err := h.sessions.RevokeUser(ctx, p.UserID, keepSID); err != nil {
+		h.writeUnavailable(w, "Revoke other sessions before email change", err)
+		return
+	}
+
 	verifiedAt, err := h.repo.ChangeEmail(ctx, p.UserID, newEmail)
 	switch {
 	case errors.Is(err, ErrAccountNotFound):
@@ -693,9 +707,9 @@ func (h *AccountHandlers) handleChangeEmail(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.auditEvent(r, audit.ActionUserUpdate, p.UserID, rec.Username, map[string]any{
-		// 动作名写 detail.action（modules-05 §7 冻结）；email 事件额外带
-		// field/result（security-01 §7.5.1）。
-		"action": "email_changed",
+		// 人读标签写 detail.label；detail.action 由审计 writer 统一注入为冻结
+		// 动作名（modules-05 §7 / 裁决 R-43）。
+		"label":  "email_changed",
 		"field":  "email",
 		"result": "success",
 		"reauth": "passed",
@@ -785,7 +799,7 @@ func (h *AccountHandlers) handlePutNotificationPreferences(w http.ResponseWriter
 		username = rec.Username
 	}
 	h.auditEvent(r, audit.ActionUserUpdate, p.UserID, username, map[string]any{
-		"action": "notification_pref_updated",
+		"label": "notification_pref_updated",
 	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, merged)
 }
@@ -1290,7 +1304,7 @@ func (h *AccountHandlers) auditEvent(r *http.Request, action string, actor int64
 		StatusCode: status,
 		Detail:     raw,
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("account audit write failed", "action", action, "actor", actor, "error", err)
 	}
 }

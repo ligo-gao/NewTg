@@ -469,7 +469,7 @@ func (h *TwoFAHandlers) HandleEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	h.afterTwoFAChange(w, r, user.ID)
 	h.auditEvent(r, audit.ActionAuth2FAEnable, user, map[string]any{
-		"action": "2fa_enabled", "factor": "totp", "change": "add", "backup_codes": len(plain),
+		"label": "2fa_enabled", "factor": "totp", "change": "add", "backup_codes_count": len(plain),
 	})
 	writeJSON(w, http.StatusOK, twoFABackupCodesResponse{TOTPEnabled: true, BackupCodes: plain})
 }
@@ -494,7 +494,7 @@ func (h *TwoFAHandlers) HandleDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	h.afterTwoFAChange(w, r, user.ID)
 	h.auditEvent(r, audit.ActionAuth2FADisable, user, map[string]any{
-		"action": "2fa_disabled", "factor": "totp", "change": "remove",
+		"label": "2fa_disabled", "factor": "totp", "change": "remove",
 	})
 	writeJSON(w, http.StatusOK, twoFADisableResponse{TOTPEnabled: false})
 }
@@ -532,8 +532,8 @@ func (h *TwoFAHandlers) HandleRegenerateBackupCodes(w http.ResponseWriter, r *ht
 	}
 	h.afterTwoFAChange(w, r, user.ID)
 	h.auditEvent(r, audit.ActionAuth2FABackupCodesRegenerate, user, map[string]any{
-		"action": "backup_codes_regenerated", "factor": "backup_code",
-		"change": "reset", "backup_codes": len(plain),
+		"label": "backup_codes_regenerated", "factor": "backup_code",
+		"change": "reset", "backup_codes_count": len(plain),
 	})
 	writeJSON(w, http.StatusOK, twoFABackupCodesResponse{TOTPEnabled: true, BackupCodes: plain})
 }
@@ -554,6 +554,7 @@ type twoFAChallengeRequest struct {
 func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 	var req twoFAChallengeRequest
 	if err := readAuthJSON(r, &req); err != nil {
+		h.auditChallenge(r, nil, "failed", "invalid_request")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
 		return
 	}
@@ -562,12 +563,14 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		challengeType = "totp"
 	}
 	if challengeType != "totp" && challengeType != "backup" {
+		h.auditChallenge(r, nil, "failed", "invalid_challenge_type")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid challenge type")
 		return
 	}
 	ticket := strings.TrimSpace(req.Ticket)
 	if !validTwoFATicket(ticket) {
 		// 畸形 ticket 与过期 ticket 同一响应：不给探测 ticket 存在性的信道。
+		h.auditChallenge(r, nil, "failed", "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
 		return
 	}
@@ -577,23 +580,27 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	// 登录桶（IP-only）先行：无效/伪造 ticket 的高频探测在触达 Redis GET 与
 	// 数据库之前就被拒绝，与登录路径的「未知 identifier 只按 IP 计分」同口径。
 	if err := h.limiter.Check(ctx, ip, ""); err != nil {
+		h.auditChallenge(r, nil, "failed", limiterReason(err))
 		h.writeLimiterFailure(w, err)
 		return
 	}
 
 	rawUserID, err := h.rdb.Get(ctx, twoFATicketKeyPrefix+ticket).Result()
 	if errors.Is(err, redis.Nil) {
+		h.auditChallenge(r, nil, "failed", "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
 		return
 	}
 	if err != nil {
 		h.log.Error("read 2fa ticket failed", "error", err)
+		h.auditChallenge(r, nil, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
 	userID, err := strconv.ParseInt(rawUserID, 10, 64)
 	if err != nil {
 		h.log.Error("corrupt 2fa ticket", "error", err)
+		h.auditChallenge(r, nil, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
@@ -601,18 +608,21 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	user, err := h.repo.FindUserByID(ctx, userID)
 	if err != nil {
 		h.log.Error("find user for 2fa challenge failed", "user_id", userID, "error", err)
+		h.auditChallenge(r, nil, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
 	if user == nil || user.Status != "enabled" {
 		// 账户在签发 ticket 后被禁用/删除：作废 ticket，统一 401，不泄露状态。
 		h.discardTicket(ctx, ticket)
+		h.auditChallenge(r, user, "failed", "account_disabled")
 		writeUnauthorized(w)
 		return
 	}
 
 	// 与登录相同的双桶（IP+identifier / identifier）：验证前拦截已锁定账号。
 	if err := h.limiter.Check(ctx, ip, user.Username); err != nil {
+		h.auditChallenge(r, user, "failed", limiterReason(err))
 		h.writeLimiterFailure(w, err)
 		return
 	}
@@ -626,6 +636,7 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	}
 	if err != nil {
 		h.log.Error("2fa challenge verification error", "user_id", user.ID, "type", challengeType, "error", err)
+		h.auditChallenge(r, user, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
@@ -633,9 +644,11 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 		// 错码计入登录桶（失败侧 fail-closed：Redis 不可用时拒绝而不是放行）。
 		if err := h.limiter.Record(ctx, ip, user.Username, false); err != nil {
 			h.log.Error("record 2fa limiter failure failed", "user_id", user.ID, "error", err)
+			h.auditChallenge(r, user, "failed", "limiter_unavailable")
 			h.writeLimiterFailure(w, err)
 			return
 		}
+		h.auditChallenge(r, user, "failed", "invalid_code")
 		title := "Incorrect verification code"
 		if challengeType == "backup" {
 			title = "Incorrect or already-used backup code"
@@ -648,6 +661,7 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	// 但码已被核销/重放防护记录，用户需重新登录）。
 	if err := h.limiter.Record(ctx, ip, user.Username, true); err != nil {
 		h.log.Error("reset 2fa limiter failed", "user_id", user.ID, "error", err)
+		h.auditChallenge(r, user, "failed", "limiter_unavailable")
 		h.writeLimiterFailure(w, err)
 		return
 	}
@@ -656,18 +670,22 @@ func (h *TwoFAHandlers) HandleChallenge(w http.ResponseWriter, r *http.Request) 
 	consumed, err := h.consumeTicket(ctx, ticket, rawUserID)
 	if err != nil {
 		h.log.Error("consume 2fa ticket failed", "user_id", user.ID, "error", err)
+		h.auditChallenge(r, user, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
 	if !consumed {
+		h.auditChallenge(r, user, "failed", "invalid_ticket")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification ticket")
 		return
 	}
 	if err := h.startTwoFASession(ctx, w, r, user); err != nil {
 		h.log.Error("create session after 2fa challenge failed", "user_id", user.ID, "error", err)
+		h.auditChallenge(r, user, "failed", "session_unavailable")
 		h.writeUnavailable(w)
 		return
 	}
+	h.auditChallenge(r, user, "success", "")
 	writeJSON(w, http.StatusOK, authSessionResponse{User: twoFAUserView(user)})
 }
 
@@ -902,8 +920,46 @@ func (h *TwoFAHandlers) auditEvent(r *http.Request, action string, user *TwoFAUs
 		Route:     r.Pattern,
 		Detail:    raw,
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("2fa audit write failed", "action", action, "actor", user.ID, "error", err)
+	}
+}
+
+// auditChallenge 写二次验证的登录审计。裁决 R-40：TOTP 验证复用 auth.login
+// 动作（modules-05 §7.1 把 TOTP 验证列在 login 类），不新增动作枚举。
+// detail 只含结果/原因/登录方式，绝不含 TOTP 码、备用码或 ticket 原文。
+func (h *TwoFAHandlers) auditChallenge(r *http.Request, user *TwoFAUser, result, reason string) {
+	if h.audit == nil {
+		return
+	}
+	var actor int64
+	var username string
+	if user != nil {
+		actor = user.ID
+		username = user.Username
+	}
+	detail, err := json.Marshal(map[string]string{
+		"result":       result,
+		"reason":       reason,
+		"login_method": "totp",
+	})
+	if err != nil {
+		h.log.Warn("marshal 2fa challenge audit detail failed", "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:    audit.ActionAuthLogin,
+		Actor:     actor,
+		Username:  username,
+		Result:    result,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     "/api/auth/2fa/challenge",
+		Detail:    detail,
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Warn("2fa challenge audit write failed", "actor", actor, "error", err)
 	}
 }
 

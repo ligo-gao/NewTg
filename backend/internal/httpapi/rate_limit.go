@@ -37,6 +37,7 @@ const (
 	LoginRateMark      = "LI"
 	RegisterRateMark   = "RG"
 	PublicReadRateMark = "PB"
+	SetupRateMark      = "ST"
 
 	// B1：登录请求速率（modules-08 F-08-16 唯一真源）。
 	LoginRateLimit  = 5
@@ -49,7 +50,18 @@ const (
 	// B8：公开只读面（status/pricing/rankings/live-feed）60 次/分钟/IP+path。
 	PublicReadRateLimit  = 60
 	PublicReadRateWindow = time.Minute
+
+	// B13：/api/setup 的保守匿名桶（控制端裁决）。设计未分配桶，但初始化前
+	// 每个请求都付一次 argon2 成本，且未初始化窗口允许任何人抢先建首管；
+	// 10 次/分钟/IP 只拦住自动化轰炸，不影响人工安装向导的正常重试。
+	SetupRateLimit  = 10
+	SetupRateWindow = time.Minute
 )
+
+// SetupRateLimitKey 构造 B13 桶键：rateLimit:v2:ip:ST:<ip>。
+func SetupRateLimitKey(ip string) string {
+	return RateLimitKeyPrefix + SetupRateMark + ":" + ip
+}
 
 // LoginRateLimitKey 构造 B1 桶键：rateLimit:v2:ip:LI:<ip>:<sha256(identifier)>。
 // identifier 先小写归一，使大小写变体共享同一桶。
@@ -88,8 +100,8 @@ return {n, ttl}
 // allowRequestRate 消耗固定窗口中的一个名额。
 // 返回 over=true 表示本次请求超限，retryAfter 为当前窗口剩余时间。
 // Redis 错误原样上抛，由调用方按各面的 fail 策略处理。
-func (h *authHandlers) allowRequestRate(ctx context.Context, key string, limit int, window time.Duration) (bool, time.Duration, error) {
-	values, err := fixedWindowScript.Run(ctx, h.rdb, []string{key},
+func allowRequestRate(ctx context.Context, rdb *redis.Client, key string, limit int, window time.Duration) (bool, time.Duration, error) {
+	values, err := fixedWindowScript.Run(ctx, rdb, []string{key},
 		strconv.FormatInt(window.Milliseconds(), 10)).Int64Slice()
 	if err != nil {
 		return false, 0, fmt.Errorf("httpapi: request rate limiter: %w", err)
@@ -105,6 +117,11 @@ func (h *authHandlers) allowRequestRate(ctx context.Context, key string, limit i
 		}
 	}
 	return values[0] > int64(limit), retry, nil
+}
+
+// allowRequestRate 是 authHandlers 的便捷形态（复用同一 Redis 客户端）。
+func (h *authHandlers) allowRequestRate(ctx context.Context, key string, limit int, window time.Duration) (bool, time.Duration, error) {
+	return allowRequestRate(ctx, h.rdb, key, limit, window)
 }
 
 // writeRateLimited 输出 429 + Retry-After（modules-00 §429 文案口径）。

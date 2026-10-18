@@ -622,7 +622,7 @@ func (h *passwordHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Req
 		h.log.Error("clear reauth window after reset failed", "error", err)
 	}
 	h.auditEvent(r, audit.ActionAuthPasswordReset, user.ID,
-		map[string]string{"action": "password_reset", "field": "password"})
+		map[string]string{"label": "password_reset", "field": "password"})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -755,7 +755,7 @@ func (h *passwordHandlers) handleChangePassword(w http.ResponseWriter, r *http.R
 		h.log.Error("clear reauth window after password change failed", "error", err)
 	}
 	h.auditEvent(r, audit.ActionAuthPasswordChange, user.ID,
-		map[string]string{"action": "password_change", "field": "password"})
+		map[string]string{"label": "password_change", "field": "password"})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -789,7 +789,7 @@ func (h *passwordHandlers) auditEvent(r *http.Request, action string, userID int
 		StatusCode: http.StatusNoContent,
 		Detail:     raw,
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("password audit write failed", "action", action, "actor", userID, "error", err)
 	}
 }

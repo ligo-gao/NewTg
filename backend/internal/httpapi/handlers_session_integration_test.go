@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,11 +134,11 @@ func TestIntegrationSelfSQLRepo(t *testing.T) {
 	}
 
 	// (7) MarkEmailVerified 幂等：两次返回同一时间戳。
-	first, err := repo.MarkEmailVerified(ctx, userID)
+	first, err := repo.MarkEmailVerified(ctx, userID, 0)
 	if err != nil {
 		t.Fatalf("MarkEmailVerified #1: %v", err)
 	}
-	second, err := repo.MarkEmailVerified(ctx, userID)
+	second, err := repo.MarkEmailVerified(ctx, userID, 0)
 	if err != nil {
 		t.Fatalf("MarkEmailVerified #2: %v", err)
 	}
@@ -157,7 +158,70 @@ func TestIntegrationSelfSQLRepo(t *testing.T) {
 		time.Now()); !errors.Is(err, ErrSelfNotFound) {
 		t.Errorf("UpdateSettings(missing) err = %v，期望 ErrSelfNotFound", err)
 	}
-	if _, err := repo.MarkEmailVerified(ctx, missing); !errors.Is(err, ErrSelfNotFound) {
+	if _, err := repo.MarkEmailVerified(ctx, missing, 0); !errors.Is(err, ErrSelfNotFound) {
 		t.Errorf("MarkEmailVerified(missing) err = %v，期望 ErrSelfNotFound", err)
+	}
+}
+
+// TestIntegrationMarkEmailVerifiedGrantsOnce 覆盖 B6 的真实事务语义：并发
+// 首次验证只有一个事务插入 signup_grant 流水并加余额，其余是 no-op。
+func TestIntegrationMarkEmailVerifiedGrantsOnce(t *testing.T) {
+	db, _ := openAuthIntegration(t)
+	ensureDefaultGroup(t, db)
+	repo := NewSQLSelfRepo(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	suffix := uniqueAuthSuffix()
+	username := "grant_" + suffix
+	var userID int64
+	if err := db.QueryRow(`INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id`,
+		username, username+"@example.com").Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	t.Cleanup(func() { cleanupAuthUser(t, db, userID) })
+
+	const bonus = int64(500)
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := repo.MarkEmailVerified(ctx, userID, bonus)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("MarkEmailVerified: %v", err)
+		}
+	}
+
+	var balance int64
+	if err := db.QueryRow(`SELECT balance FROM users WHERE id = $1`, userID).Scan(&balance); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if balance != bonus {
+		t.Fatalf("balance = %d，期望 %d（并发只加一次）", balance, bonus)
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE user_id = $1 AND reference_type = 'signup_grant'`, userID).Scan(&rows); err != nil {
+		t.Fatalf("count signup_grant rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("signup_grant 流水 = %d 行，期望 1（唯一索引幂等）", rows)
+	}
+	var amount, balanceAfter int64
+	if err := db.QueryRow(`SELECT amount, balance_after FROM wallet_transactions
+		WHERE user_id = $1 AND reference_type = 'signup_grant'`, userID).Scan(&amount, &balanceAfter); err != nil {
+		t.Fatalf("read signup_grant row: %v", err)
+	}
+	if amount != bonus || balanceAfter != bonus {
+		t.Fatalf("流水 amount/balance_after = %d/%d，期望 %d/%d", amount, balanceAfter, bonus, bonus)
 	}
 }

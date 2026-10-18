@@ -6,6 +6,7 @@ package httpapi
 // 配额。本测试用请求计数证明第 N+1 个请求被限流拦截时 siteverify 不再被调用。
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -186,5 +187,30 @@ func TestTurnstileRunsAfterPasswordResetRateLimit(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("被限流后 siteverify calls = %d, want 1（Turnstile 先于限流执行）", got)
+	}
+}
+
+// TestTurnstileUnknownEndpointFailsClosed 覆盖 C3：未知接入点必须写 403
+// problem，而不是返回 false 让 handler 落成空 200。正确装配下不可达，
+// 本测试钉死纵深防御行为。
+func TestTurnstileUnknownEndpointFailsClosed(t *testing.T) {
+	gates := newTurnstileGates(func() auth.TurnstileSettings {
+		return auth.TurnstileSettings{Enabled: true, SiteKey: "k", SecretKey: "s"}
+	}, nil, "", nil, nil)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/checkin", nil)
+	if gates.check("checkin", rr, req, "") {
+		t.Fatal("未知接入点不得放行")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+	var p map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+		t.Fatalf("problem JSON 非法: %v", err)
+	}
+	if p["type"] != problemTypeTurnstileFailed {
+		t.Fatalf("problem.type = %v，期望 %s", p["type"], problemTypeTurnstileFailed)
 	}
 }

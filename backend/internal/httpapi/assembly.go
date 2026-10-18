@@ -9,9 +9,13 @@ package httpapi
 //
 // 装配失败必须阻止进程上线（GC-7 / security-02 IS-B-6）：
 //   - 缺权限装载器会让 Principal.Permissions=nil 被 RBAC 解释成 FULL；
-//   - 缺审计写库会静默丢失登录/管理事件；
-//   - 缺 PUBLIC_BASE_URL 会悄悄生成无法投递/指向错误域名的重置链接。
+//   - 缺审计写库会静默丢失登录/管理事件。
 // 上述任一情况都返回 error，绝不降级为「带病运行」。
+//
+// PUBLIC_BASE_URL **不是**启动错误：生效基址走 env → site.server_address →
+// 空（相关功能禁用）的回退链（见 effectivePublicBaseURL）。M1 无 SMTP，空
+// 基址只表示重置链接与 Origin 白名单暂不可用，compose 在未设置该变量时
+// 仍必须能启动。
 
 import (
 	"context"
@@ -57,12 +61,16 @@ type GatewayDeps struct {
 	Logger                  *slog.Logger
 
 	// 可选覆盖/测试缝隙。nil 时由 DB 构造 SQL 实现。
-	Repo               AuthRepo
-	Permissions        rbac.PermissionLoader
-	SetupStore         SetupStore
-	SelfRepo           SelfRepo
-	AccountRepo        AccountRepo
-	AccountAnonymizer  PIIAnonymizer
+	Repo              AuthRepo
+	Permissions       rbac.PermissionLoader
+	SetupStore        SetupStore
+	SelfRepo          SelfRepo
+	AccountRepo       AccountRepo
+	AccountAnonymizer PIIAnonymizer
+	// UserAnonymizer 是管理端删除的 PII 匿名化测试接缝；生产留 nil 由 LogDB
+	// 构造 SQLPIIAnonymizer。与 AccountAnonymizer 分开命名，避免把自助删除的
+	// 依赖误当作管理端删除已接线。
+	UserAnonymizer     PIIAnonymizer
 	AccountReauth      *auth.ReauthGate
 	VerifyTOTP         auth.TOTPVerifier
 	TwoFARepo          TwoFARepo
@@ -122,6 +130,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 「相关功能禁用」，而不是启动失败（M1 无 SMTP，重置投递本就不可用）。
 	baseURL := effectivePublicBaseURL(deps.PublicBaseURL, deps.Config)
 
+	// SetupStore 同时服务安装端点与 GET /api/status 的 system_initialized
+	// （同一份 EXISTS 语义，避免状态端点与写路径各自解释「已初始化」）。
+	setupStore := deps.SetupStore
+	if setupStore == nil {
+		setupStore = NewSQLSetupStore(deps.DB)
+	}
+
 	rt, err := NewRouter(RouterConfig{
 		DB:                  deps.DB,
 		Repo:                deps.Repo,
@@ -129,6 +144,8 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Sessions:            deps.Sessions,
 		Permissions:         deps.Permissions,
 		Config:              deps.Config,
+		Sealer:              deps.Sealer,
+		Initialized:         setupStore.IsInitialized,
 		SessionSecret:       deps.SessionSecret,
 		PublicBaseURL:       baseURL,
 		EmailSender:         deps.EmailSender,
@@ -150,10 +167,6 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)
 
-	setupStore := deps.SetupStore
-	if setupStore == nil {
-		setupStore = NewSQLSetupStore(deps.DB)
-	}
 	setup, err := NewSetupHandlers(SetupConfig{
 		Store:    setupStore,
 		Sessions: deps.Sessions,
@@ -177,6 +190,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Authz:         deps.Authz,
 		Redis:         deps.Redis,
 		SessionSecret: deps.SessionSecret,
+		Config:        deps.Config,
 		Logger:        deps.Logger,
 	})
 	if err != nil {
@@ -224,6 +238,8 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	users, err := NewUserHandlers(UserHandlerConfig{
 		DB:              deps.DB,
 		Repo:            deps.AdminUserRepo,
+		LogDB:           deps.LogDB,
+		Anonymizer:      deps.UserAnonymizer,
 		Sessions:        deps.Sessions,
 		Redis:           deps.Redis,
 		Authz:           deps.Authz,

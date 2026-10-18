@@ -110,6 +110,9 @@ var (
 	ErrAdminInvalidGroup    = errors.New("httpapi: group does not exist")
 	ErrAdminTwoFANotEnabled = errors.New("httpapi: two-factor authentication is not enabled")
 	ErrAdminNotAdmin        = errors.New("httpapi: permissions can only be set for admin users")
+	// ErrAdminIdempotencyReused 表示同一 idempotency_key 被用于不同 mode/amount：
+	// 静默重放首次结果会让管理员以为第二次调额已生效（金额/方向都可能错）。
+	ErrAdminIdempotencyReused = errors.New("httpapi: idempotency key reused with different parameters")
 )
 
 // AdminUserRecord 是 users 行的安全投影（绝不含 password_hash/totp_secret/
@@ -205,6 +208,11 @@ type AdminUserRepo interface {
 
 // UserHandlerConfig 是用户端点的装配输入。Repo 与 DB 二选一（Repo 优先）；
 // Sessions/Redis 必填：封禁/重置必须在 Redis 不可用时 fail-closed。
+//
+// PII 匿名化：Anonymizer 与 LogDB 二选一；生产必须提供 LogDB（audit_logs 在
+// 日志库），单测注入假实现。二者都缺失属于装配错误——管理端删除与自助删除
+// 必须同样把 audit_logs.username 改写为 deleted_{id}，不能在删除成功后静默
+// 保留真实用户名。
 type UserHandlerConfig struct {
 	DB       *sql.DB
 	Repo     AdminUserRepo
@@ -212,6 +220,10 @@ type UserHandlerConfig struct {
 	Redis    *redis.Client
 	Authz    *rbac.AuthzMiddleware
 	Audit    *audit.Logger
+	// LogDB 是日志库连接（audit_logs 所在库），用于删除后的 PII 匿名化。
+	LogDB *sql.DB
+	// Anonymizer 覆盖默认的 SQLPIIAnonymizer（测试接缝）。
+	Anonymizer PIIAnonymizer
 	// PasswordChecker 用于创建用户时的弱口令/泄露筛查（零值即启用内置词表）。
 	PasswordChecker auth.CompromisedPasswordChecker
 	Logger          *slog.Logger
@@ -219,13 +231,14 @@ type UserHandlerConfig struct {
 
 // UserHandlers 持有用户管理端点依赖，可并发使用。
 type UserHandlers struct {
-	repo     AdminUserRepo
-	sessions *auth.SessionManager
-	rdb      *redis.Client
-	authz    *rbac.AuthzMiddleware
-	audit    *audit.Logger
-	checker  auth.CompromisedPasswordChecker
-	log      *slog.Logger
+	repo       AdminUserRepo
+	sessions   *auth.SessionManager
+	rdb        *redis.Client
+	authz      *rbac.AuthzMiddleware
+	audit      *audit.Logger
+	anonymizer PIIAnonymizer
+	checker    auth.CompromisedPasswordChecker
+	log        *slog.Logger
 }
 
 // 字段级（BOPLA）动作登记。ActionName 是「控制器/动作」维度的稳定标识，
@@ -263,18 +276,26 @@ func NewUserHandlers(cfg UserHandlerConfig) (*UserHandlers, error) {
 		// 字段层是端点契约的一部分，不能因为装配方没启用管理面 RBAC 而失效。
 		authz = rbac.NewAuthzMiddleware()
 	}
+	anonymizer := cfg.Anonymizer
+	if anonymizer == nil {
+		if cfg.LogDB == nil {
+			return nil, errors.New("httpapi: user deletion requires Anonymizer or LogDB for PII anonymization")
+		}
+		anonymizer = NewSQLPIIAnonymizer(cfg.LogDB)
+	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	h := &UserHandlers{
-		repo:     repo,
-		sessions: cfg.Sessions,
-		rdb:      cfg.Redis,
-		authz:    authz,
-		audit:    cfg.Audit,
-		checker:  cfg.PasswordChecker,
-		log:      log,
+		repo:       repo,
+		sessions:   cfg.Sessions,
+		rdb:        cfg.Redis,
+		authz:      authz,
+		audit:      cfg.Audit,
+		anonymizer: anonymizer,
+		checker:    cfg.PasswordChecker,
+		log:        log,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -594,6 +615,7 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 	// users:create 的管理员可以创建自己知道口令的 admin 账号完成提权。
 	if role == rbac.RoleAdmin {
 		if decision := h.authz.AuthorizeGrant(*p, defaultAdminPermissions()); decision.Effect != rbac.EffectAllow {
+			h.auditGrantDenied(r, p, rbac.PermUsersManageRoles, 0)
 			writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
 				"creating an admin requires users:manage-roles and a superset of the default permissions")
 			return
@@ -768,6 +790,7 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		// 自身范围的 admin。
 		if *patch.Role == rbac.RoleAdmin && before.Role != rbac.RoleAdmin {
 			if decision := h.authz.AuthorizeGrant(*p, defaultAdminPermissions()); decision.Effect != rbac.EffectAllow {
+				h.auditGrantDenied(r, p, rbac.PermUsersManageRoles, id)
 				writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
 					"promoting an admin requires users:manage-roles and a superset of the default permissions")
 				return
@@ -941,6 +964,16 @@ func (h *UserHandlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		h.writeServiceUnavailable(w, "revoke sessions for delete", err)
 		return
 	}
+	// 与自助删除（handlers_account.go 的 handleDeleteAccount）保持同一顺序与
+	// 语义：先匿名化日志库（audit_logs.username → deleted_{id}），再硬删 users
+	// 行。跨库没有分布式事务，匿名化失败必须 503 并保留账号——绝不能出现
+	// 「账号已消失、历史审计仍是真名」的终态。users.email 随 users 行物理删除，
+	// 保留面（wallet_transactions/orders）没有 email 列。
+	anonymized := fmt.Sprintf("deleted_%d", id)
+	if err := h.anonymizer.AnonymizeUser(r.Context(), id, anonymized); err != nil {
+		h.writeServiceUnavailable(w, "anonymize retained records for delete", err)
+		return
+	}
 	deleted, err := h.repo.DeleteUser(r.Context(), id)
 	if err != nil {
 		h.writeUserRepoError(w, "delete user", err)
@@ -952,7 +985,7 @@ func (h *UserHandlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) 
 	// 记录匿名化后的 handle，让删除事件仍可追溯而不复述 PII。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, map[string]any{
 		"deleted_user_id":     deleted.ID,
-		"anonymized_username": fmt.Sprintf("deleted_%d", deleted.ID),
+		"anonymized_username": anonymized,
 		"tokens_deleted":      deleted.TokensDeleted,
 	}, nil, nil, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
@@ -1206,6 +1239,7 @@ func (h *UserHandlers) handleSetPermissions(w http.ResponseWriter, r *http.Reque
 	// 超集校验（TC-B-04）：授予集合必须是调用者自身权限的子集；未知键、"*"
 	// 由非 FULL 调用者授予一律 403，且不写库。
 	if decision := h.authz.AuthorizeGrant(*p, requested); decision.Effect != rbac.EffectAllow {
+		h.auditGrantDenied(r, p, rbac.PermUsersManageRoles, id)
 		writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden",
 			"you cannot grant permissions beyond your own")
 		return
@@ -1306,6 +1340,11 @@ func (h *UserHandlers) writeUserRepoError(w http.ResponseWriter, op string, err 
 	case errors.Is(err, ErrAdminNotAdmin):
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"permissions can only be set for admin users")
+	case errors.Is(err, ErrAdminIdempotencyReused):
+		// 与令牌端点的 idempotency_key_reuse 同语义/同 type：同 key 不同请求体
+		// 不是「重放」，而是客户端错误。
+		writeAdminProblem(w, http.StatusUnprocessableEntity, problemTypeIdempotencyReused,
+			"Idempotency key reused", "the same idempotency_key cannot be used with different parameters")
 	default:
 		h.log.Error(op+" failed", "error", err)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
@@ -1407,7 +1446,7 @@ func (h *UserHandlers) auditEvent(r *http.Request, action string, actor int64, d
 		Before:     adminMarshalRaw(before),
 		After:      adminMarshalRaw(after),
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("admin user audit write failed", "action", action, "actor", actor, "error", err)
 	}
 }
@@ -1897,7 +1936,9 @@ func (r *SQLAdminUserRepo) DeleteUser(ctx context.Context, id int64) (DeletedUse
 //
 // 幂等：以 (user_id, idempotency_key) 为键先查既有 admin_adjustment 流水；
 // 并发的同键请求由 pg_advisory_xact_lock 串行化（DB 没有对应的唯一索引，
-// 不能靠唯一约束兜底）。
+// 不能靠唯一约束兜底）。重放还必须证明「同一请求体」：流水 note 里保存
+// mode+amount 的指纹，同 key 不同参数返回 ErrAdminIdempotencyReused（422），
+// 否则管理员会把另一次调额误以为已生效。
 func (r *SQLAdminUserRepo) AdjustQuota(ctx context.Context, id int64, mode string, amount int64, idempotencyKey string) (QuotaAdjustment, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1910,14 +1951,24 @@ func (r *SQLAdminUserRepo) AdjustQuota(ctx context.Context, id int64, mode strin
 		return QuotaAdjustment{}, fmt.Errorf("httpapi: lock quota adjustment: %w", err)
 	}
 
+	fingerprint := adminAdjustmentFingerprint(mode, amount)
 	var replay QuotaAdjustment
+	var replayNote string
 	err = tx.QueryRowContext(ctx, `
-		SELECT user_id, balance_after, id FROM wallet_transactions
+		SELECT user_id, balance_after, id, COALESCE(note, '')
+		FROM wallet_transactions
 		WHERE user_id = $1 AND type = 'admin_adjustment'
 		  AND reference_type = 'admin_op' AND reference_id = $2
 		ORDER BY id LIMIT 1`, id, idempotencyKey).
-		Scan(&replay.UserID, &replay.NewBalance, &replay.TransactionID)
+		Scan(&replay.UserID, &replay.NewBalance, &replay.TransactionID, &replayNote)
 	if err == nil {
+		// 旧行（无指纹后缀）按重放处理：这是唯一向后兼容的选择。新行一律
+		// 带指纹，不匹配即 422。
+		if marker := strings.LastIndex(replayNote, adminAdjustmentFingerprintMarker); marker >= 0 {
+			if replayNote[marker+len(adminAdjustmentFingerprintMarker):] != fingerprint {
+				return QuotaAdjustment{}, ErrAdminIdempotencyReused
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return QuotaAdjustment{}, fmt.Errorf("httpapi: commit replayed adjustment: %w", err)
 		}
@@ -1979,7 +2030,8 @@ func (r *SQLAdminUserRepo) AdjustQuota(ctx context.Context, id int64, mode strin
 			(user_id, type, amount, balance_after, status, reference_type, reference_id, note)
 		VALUES ($1, 'admin_adjustment', $2, $3, 'confirmed', 'admin_op', $4, $5)
 		RETURNING id`,
-		id, delta, newBalance, idempotencyKey, "admin adjustment: "+mode).Scan(&transactionID)
+		id, delta, newBalance, idempotencyKey,
+		"admin adjustment: "+mode+adminAdjustmentFingerprintMarker+fingerprint).Scan(&transactionID)
 	if err != nil {
 		return QuotaAdjustment{}, fmt.Errorf("httpapi: insert adjustment transaction: %w", err)
 	}
@@ -1992,6 +2044,49 @@ func (r *SQLAdminUserRepo) AdjustQuota(ctx context.Context, id int64, mode strin
 		NewBalance:    newBalance,
 		TransactionID: transactionID,
 	}, nil
+}
+
+// auditGrantDenied 写一次「提权授予被拒」的审计。AuthorizeGrant 的 403 不是
+// 普通路由级 RBAC 拒绝（那由 platform 的 deny auditor 覆盖），而是 handler
+// 内的越权授予意图（创建 admin/提权/设置超出自身范围的权限）；security-02
+// TC-B-17 要求这类尝试同样以 authz.denied 落 security 类审计。
+func (h *UserHandlers) auditGrantDenied(r *http.Request, p *auth.Principal, required string, targetUserID int64) {
+	if h.audit == nil || p == nil {
+		return
+	}
+	detail, err := json.Marshal(map[string]any{
+		"event":               "authz_denied",
+		"reason":              "grant_superset",
+		"required_permission": required,
+		"target_user_id":      targetUserID,
+	})
+	if err != nil {
+		h.log.Warn("marshal grant denial audit failed", "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:     audit.ActionAuthzDenied,
+		Actor:      p.UserID,
+		Result:     "failed",
+		StatusCode: http.StatusForbidden,
+		Method:     r.Method,
+		Route:      r.Pattern,
+		IP:         tokenRemoteIP(r),
+		UserAgent:  r.UserAgent(),
+		Detail:     detail,
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Warn("grant denial audit write failed", "actor", p.UserID, "error", err)
+	}
+}
+
+// adminAdjustmentFingerprintMarker 分隔人类可读 note 与请求体指纹。note 列// 上限 200 字符；"admin adjustment: <mode>" + 标记 + 64 hex 远低于上限。
+const adminAdjustmentFingerprintMarker = " idem:"
+
+// adminAdjustmentFingerprint 绑定 idempotency_key 与请求语义（mode+amount）：
+// 与令牌端点同口径用 SHA-256；指纹只用于比较，不承载任何凭据。
+func adminAdjustmentFingerprint(mode string, amount int64) string {
+	return tokenBodyFingerprint([]byte(mode + "\x00" + strconv.FormatInt(amount, 10)))
 }
 
 func (r *SQLAdminUserRepo) ResetTwoFA(ctx context.Context, id int64) error {

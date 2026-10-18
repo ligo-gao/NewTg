@@ -331,17 +331,24 @@ func TestAccountIntegrationDeleteHardDeleteAndAnonymize(t *testing.T) {
 	if oldAuditUser != anonymized {
 		t.Fatalf("审计 username = %q，期望 %q", oldAuditUser, anonymized)
 	}
-	// 删除事件保留 who/when/ip（真实用户名 + 请求 IP/UA）。
+	// 删除事件保留 who/when/ip（真实用户名 + 请求 IP/UA）。detail.action 由
+	// 审计 writer 注入冻结动作名 user.delete，人读标签在 detail.label。
 	var (
-		delUser string
-		delIP   sql.NullString
-		delUA   sql.NullString
-		delEvt  string
+		delUser   string
+		delIP     sql.NullString
+		delUA     sql.NullString
+		delAction string
+		delLabel  string
 	)
-	if err := env.logs.QueryRow(`SELECT username, ip, user_agent, detail->>'action'
-		FROM audit_logs WHERE user_id = $1 AND detail->>'action' = 'account_deleted'`, created.ID).
-		Scan(&delUser, &delIP, &delUA, &delEvt); err != nil {
+	if err := env.logs.QueryRow(`SELECT username, ip, user_agent,
+			detail->>'action', detail->>'label'
+		FROM audit_logs WHERE user_id = $1 AND detail->>'label' = 'account_deleted'`, created.ID).
+		Scan(&delUser, &delIP, &delUA, &delAction, &delLabel); err != nil {
 		t.Fatalf("query account_deleted audit row: %v", err)
+	}
+	if delAction != audit.ActionUserDelete || delLabel != "account_deleted" {
+		t.Fatalf("删除事件 detail.action/label = %q/%q，期望 %s/account_deleted",
+			delAction, delLabel, audit.ActionUserDelete)
 	}
 	if delUser != username {
 		t.Fatalf("删除事件 username = %q，期望真实用户名 %q（保留 who）", delUser, username)
@@ -466,6 +473,7 @@ func TestAccountIntegrationEmailChange(t *testing.T) {
 		t.Fatalf("issue code: %v", err)
 	}
 	sid, csrf := env.sessionWithCSRF(created.ID)
+	otherSID := mustSession(t, env.handler.sessions, created.ID, "user")
 
 	rr := env.authed(http.MethodPut, "/api/email", map[string]any{
 		"new_email": newEmail, "code": code, "current_password": "wrong-password",
@@ -494,6 +502,13 @@ func TestAccountIntegrationEmailChange(t *testing.T) {
 	}
 	if stored != newEmail || !verifiedAt.Valid {
 		t.Fatalf("email = %q, verified_at = %v，期望新地址已验证", stored, verifiedAt)
+	}
+	// B5：其它会话必须失效，当前会话保留。
+	if _, err := env.handler.sessions.Get(context.Background(), otherSID); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("换绑后其它会话 err = %v，期望 ErrSessionNotFound", err)
+	}
+	if _, err := env.handler.sessions.Get(context.Background(), sid); err != nil {
+		t.Fatalf("换绑不得吊销当前会话: %v", err)
 	}
 
 	// 邮箱占用：另一个账号持有目标地址 → 409，且本行不变。

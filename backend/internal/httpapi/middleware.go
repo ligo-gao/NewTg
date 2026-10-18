@@ -302,6 +302,24 @@ func writePasswordChangeRequired(w http.ResponseWriter) {
 	writeProblem(w, http.StatusForbidden, problemTypePasswordChangeRequired, "Password change required")
 }
 
+// noStoreAPI 是 /api/ 前缀的统一缓存策略（security-09 §2.4 / ASVS 14.3.2）：
+// 缺省 Cache-Control: no-store + Pragma: no-cache，覆盖登录、注册、2FA setup
+// （一次性 secret/备用码）、/api/me、/api/sessions 等所有 T2/T3 响应。
+//
+// 为什么在 handler 之前写头：http.Header 只在首次 WriteHeader 时落线，handler
+// 可以用 Set 覆盖默认值——例如 /api/geoip 的 private, max-age=300、登录公钥的
+// 客户端 5 分钟缓存语义。只作用于 /api/ 前缀，探针与未来的静态资源不在此列。
+func noStoreAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h := w.Header()
+			h.Set("Cache-Control", "no-store")
+			h.Set("Pragma", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // writeProblem 输出无 detail 的 RFC 7807 Problem（GC-6）。
 func writeProblem(w http.ResponseWriter, status int, problemType, title string) {
 	writeProblemDetail(w, status, problemType, title, "")

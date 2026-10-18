@@ -13,6 +13,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -49,6 +50,15 @@ type RouterConfig struct {
 	// TokenService 是令牌 CRUD 服务（生产 *tokenstore.Store）。提供且未显式
 	// 给出 TokenHandlers/TokenStore 时，NewRouter 自动构造并接线两者。
 	TokenService TokenService
+	// Sealer 密封令牌幂等缓存体（含一次性明文 key）。nil 时令牌端点跳过
+	// 幂等缓存（绝不回落明文）；生产由 CREDENTIAL_ENCRYPTION_KEY 派生。
+	Sealer configcenter.SecretSealer
+	// Initialized 查询安装向导是否完成（GET /api/status 的 system_initialized）。
+	// nil 时状态端点按未初始化处理；生产装配必须传入 SetupStore.IsInitialized。
+	Initialized func(ctx context.Context) (bool, error)
+	// GeoIP 是本地 GeoIP 库查询接缝（测试/未来里程碑）；nil 时 /api/geoip
+	// 返回 source=unknown。
+	GeoIP GeoIPLookup
 	// LoginLimiter 是登录失败锁定桶；nil 时按 Redis 构造。与 2FA 共享同一
 	// 实例可保证「同 Redis 键、同一阈值」，装配方应在 BuildGatewayRouter 中
 	// 构造一次复用。
@@ -81,6 +91,9 @@ type Router struct {
 	mux       *http.ServeMux
 	protected *http.ServeMux
 	handlers  *authHandlers
+	// handler 是 mux 外层的统一响应策略（/api/ 默认 no-store）。在 NewRouter
+	// 构造时包住 mux 指针：之后追加的路由仍会经过该层。
+	handler http.Handler
 }
 
 // NewRouter 组装路由。返回 error 而不是 panic：缺 Redis/仓储属于装配错误，
@@ -129,6 +142,8 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.SessionSecret, cfg.EmailSender, withSiteTitle(cfg.Config, cfg.PasswordChecker), cfg.Logger)
 	h.audit = cfg.Audit
 	h.signupGrantAlert = cfg.SignupGrantAlert
+	h.initialized = cfg.Initialized
+	h.geoIP = cfg.GeoIP
 	if cfg.LoginLimiter != nil {
 		// 与 2FA 共享同一失败锁定桶：阈值/键形只有一处实现。
 		h.limiter = cfg.LoginLimiter
@@ -146,7 +161,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// TokenHandlers 并让 Bearer 鉴权使用同一 Store。
 	if cfg.TokenService != nil {
 		if cfg.TokenHandlers == nil {
-			cfg.TokenHandlers = NewTokenHandlers(cfg.TokenService, cfg.Audit, cfg.Redis)
+			cfg.TokenHandlers = NewTokenHandlers(cfg.TokenService, cfg.Audit, cfg.Redis, cfg.Sealer)
 		}
 		if cfg.TokenStore == nil {
 			cfg.TokenStore = cfg.TokenService
@@ -158,6 +173,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		protected: http.NewServeMux(),
 		handlers:  h,
 	}
+	rt.handler = noStoreAPI(rt.mux)
 
 	// 登录加密公钥端点是公开的（登录前取公钥），精确模式优先于 /api/ 子树。
 	if cfg.LoginEncryption != nil {
@@ -173,6 +189,8 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 公开端点：精确注册，先于 /api/ 子树（ServeMux 按特异性择路，顺序无关，
 	// 这里仍先注册以免读者误判）。
 	rt.mux.HandleFunc("GET /api/status", h.handleStatus)
+	// 公开地理区域：精确模式挂根 mux，绕过 SessionAuth（匿名恒 200）。
+	rt.mux.HandleFunc("GET /api/geoip", h.handleGeoIP)
 	rt.mux.HandleFunc("POST /api/auth/email-code", h.handleEmailCode)
 	rt.mux.HandleFunc("POST /api/auth/register", h.handleRegister)
 	rt.mux.HandleFunc("POST /api/auth/login", h.handleLogin)
@@ -213,7 +231,13 @@ func (rt *Router) HandlePublic(pattern string, h http.Handler) {
 
 // ServeHTTP 实现 http.Handler。
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rt.mux.ServeHTTP(w, r)
+	handler := rt.handler
+	if handler == nil {
+		// 零值/手工字面量（仅测试）没有外层响应策略；生产路径恒由
+		// NewRouter 设置 handler（含 /api/ 默认 no-store）。
+		handler = rt.mux
+	}
+	handler.ServeHTTP(w, r)
 }
 
 func parseAllowedOrigins(raw string) []string {

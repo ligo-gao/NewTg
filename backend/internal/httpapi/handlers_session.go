@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -103,7 +104,9 @@ type SelfRepo interface {
 	GetSelf(ctx context.Context, userID int64) (SelfRecord, error)
 	UpdateDisplayName(ctx context.Context, userID int64, displayName *string) (SelfRecord, error)
 	UpdateSettings(ctx context.Context, userID int64, patch SelfPatch, expectUpdatedAt time.Time) (SelfRecord, error)
-	MarkEmailVerified(ctx context.Context, userID int64) (time.Time, error)
+	// MarkEmailVerified 置首次验证时间；signupBonus > 0 时在同一事务内幂等
+	// 补发注册赠送（reference_type=signup_grant），插入冲突即视为已发放。
+	MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, error)
 }
 
 // selfColumns 是 SelfRecord 的 SELECT/RETURNING 列序，供 scanSelfRecord 消费。
@@ -210,19 +213,77 @@ func (r *SQLSelfRepo) UpdateSettings(ctx context.Context, userID int64, patch Se
 	return rec, nil
 }
 
-// MarkEmailVerified 幂等置 email_verified_at（已存在则保持首次验证时间）。
-func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64) (time.Time, error) {
-	var verifiedAt time.Time
-	err := r.db.QueryRowContext(ctx, `
-		UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()),
-		                 updated_at = now()
-		WHERE id = $1
-		RETURNING email_verified_at`, userID).Scan(&verifiedAt)
+// MarkEmailVerified 幂等置 email_verified_at（已存在则保持首次验证时间），并在
+// signupBonus > 0 时于同一事务内补发注册赠送（modules-08 F-08-10 / modules-03
+// F-03-11：requires_verified_email 开启时注册不发放，首次验证补发一次）。
+//
+// 为什么用 INSERT … ON CONFLICT DO NOTHING：并发验证会同时通过 handler 的
+// 「已验证短路」，若先查后写会各自看到 0 行并重复加余额。部分唯一索引
+// uq_wallet_tx_signup_grant 让恰有一个事务插入流水，其余得到 0 行且不加余额——
+// 幂等由数据库裁决。插入 0 行不代表验证失败：邮箱照常置为已验证。
+func (r *SQLSelfRepo) MarkEmailVerified(ctx context.Context, userID int64, signupBonus int64) (time.Time, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("httpapi: begin mark email verified: %w", err)
+	}
+	// 主错误优先：成功路径显式 Commit；失败路径 Rollback 的错误无需覆盖主错误。
+	defer func() { _ = tx.Rollback() }()
+
+	// 行锁串行化同一用户的并发补发：第二个事务在第一个提交后看到已 +bonus
+	// 的余额与已存在的赠送流水。
+	var balance int64
+	err = tx.QueryRowContext(ctx, `SELECT balance FROM users WHERE id = $1 FOR UPDATE`, userID).
+		Scan(&balance)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, ErrSelfNotFound
 	}
 	if err != nil {
+		return time.Time{}, fmt.Errorf("httpapi: lock user for email verification: %w", err)
+	}
+
+	if signupBonus > 0 {
+		// reference_id 与注册发放同口径（用户 id 字符串），因此同一用户只会
+		// 有一行 signup_grant 流水；注册时已发放过的账号在这里是 no-op。
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO wallet_transactions
+				(user_id, type, amount, balance_after, status, reference_type, reference_id)
+			VALUES ($1, 'bonus', $2, $3, 'confirmed', 'signup_grant', $4)
+			ON CONFLICT (reference_id) WHERE reference_type = 'signup_grant' DO NOTHING`,
+			userID, signupBonus, balance+signupBonus, strconv.FormatInt(userID, 10))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("httpapi: grant signup bonus on verification: %w", err)
+		}
+		inserted, err := res.RowsAffected()
+		if err != nil {
+			return time.Time{}, fmt.Errorf("httpapi: signup bonus rows affected: %w", err)
+		}
+		if inserted == 1 {
+			var verifiedAt time.Time
+			if err := tx.QueryRowContext(ctx, `
+				UPDATE users SET balance = balance + $2,
+				                 email_verified_at = COALESCE(email_verified_at, now()),
+				                 updated_at = now()
+				WHERE id = $1
+				RETURNING email_verified_at`, userID, signupBonus).Scan(&verifiedAt); err != nil {
+				return time.Time{}, fmt.Errorf("httpapi: apply signup bonus: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return time.Time{}, fmt.Errorf("httpapi: commit email verification: %w", err)
+			}
+			return verifiedAt, nil
+		}
+	}
+
+	var verifiedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()),
+		                 updated_at = now()
+		WHERE id = $1
+		RETURNING email_verified_at`, userID).Scan(&verifiedAt); err != nil {
 		return time.Time{}, fmt.Errorf("httpapi: mark email verified: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("httpapi: commit email verification: %w", err)
 	}
 	return verifiedAt, nil
 }
@@ -240,7 +301,10 @@ type SessionHandlerConfig struct {
 	Authz         *rbac.AuthzMiddleware
 	Redis         *redis.Client
 	SessionSecret []byte
-	Logger        *slog.Logger
+	// Config 是配置中心读取面：首次邮箱验证时按当期配置决定是否补发注册
+	// 赠送（发放时点求值，不追溯注册时刻）。nil 时按默认值（不补发）。
+	Config ConfigReader
+	Logger *slog.Logger
 }
 
 // SessionHandlers 持有 Task 9 端点的依赖，可并发使用。
@@ -249,6 +313,7 @@ type SessionHandlers struct {
 	sessions *auth.SessionManager
 	authz    *rbac.AuthzMiddleware
 	codes    *emailCodeStore
+	config   ConfigReader
 	log      *slog.Logger
 }
 
@@ -296,6 +361,7 @@ func NewSessionHandlers(cfg SessionHandlerConfig) (*SessionHandlers, error) {
 		sessions: cfg.Sessions,
 		authz:    authz,
 		codes:    newEmailCodeStore(cfg.Redis, cfg.SessionSecret),
+		config:   cfg.Config,
 		log:      log,
 	}, nil
 }
@@ -498,9 +564,24 @@ func (h *SessionHandlers) handleRevokeOthers(w http.ResponseWriter, r *http.Requ
 // ---------------------------------------------------------------------------
 
 func (h *SessionHandlers) handleGetMe(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := h.requireSession(w, r, false)
+	p, sid, ok := h.requireSession(w, r, false)
 	if !ok {
 		return
+	}
+	// security-01 §2.2 冻结的恢复路径：Cookie 会话存在但 CSRF Cookie 丢失
+	// （浏览器清理/跨设备恢复）时，GET /api/me 补发一次；已有则绝不轮换，
+	// 否则每个页面加载都会让进行中的写请求拿到旧令牌而 403。
+	if sid != "" {
+		if _, err := r.Cookie(auth.CSRFCookieName); errors.Is(err, http.ErrNoCookie) {
+			token := auth.NewCSRFToken()
+			if err := h.sessions.IssueCSRF(r.Context(), sid, token); err != nil {
+				// 会话可能在身份校验与签发之间被吊销；补发失败不应把一次自读
+				// 变成 5xx——前端下一次写请求会按正常 401/403 流程处理。
+				h.log.Warn("reissue csrf token on me failed", "user_id", p.UserID, "error", err)
+			} else {
+				setCSRFCookie(w, token)
+			}
+		}
 	}
 	rec, err := h.repo.GetSelf(r.Context(), p.UserID)
 	if err != nil {
@@ -738,7 +819,7 @@ func (h *SessionHandlers) handleVerifyEmail(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification code")
 		return
 	}
-	verifiedAt, err := h.repo.MarkEmailVerified(r.Context(), p.UserID)
+	verifiedAt, err := h.repo.MarkEmailVerified(r.Context(), p.UserID, h.signupGrantOnVerify())
 	if err != nil {
 		h.writeSelfError(w, "mark email verified", err)
 		return
@@ -773,6 +854,34 @@ func isCanonicalLanguage(language string) bool {
 		}
 	}
 	return false
+}
+
+// signupGrantOnVerify 返回首次邮箱验证时应补发的赠送额（0 = 不补发）。
+//
+// 只在 billing.signup_grant_requires_verified_email=true 时补发：该开关关闭
+// 时注册路径已经发放（或被反滥用上限抑制），验证不应二次发放。金额与开关
+// 都读取「此刻」的配置快照（发放时点求值），不追溯注册时刻。
+func (h *SessionHandlers) signupGrantOnVerify() int64 {
+	if h.config == nil {
+		return 0
+	}
+	raw, ok := h.config.Get("billing.signup_grant_requires_verified_email")
+	if !ok {
+		return 0
+	}
+	var required bool
+	if err := json.Unmarshal(raw, &required); err != nil || !required {
+		return 0
+	}
+	raw, ok = h.config.Get("billing.signup_grant_credits")
+	if !ok {
+		return 0
+	}
+	var credits int64
+	if err := json.Unmarshal(raw, &credits); err != nil || credits <= 0 {
+		return 0
+	}
+	return credits
 }
 
 // writeSelfError 把仓储错误映射为 HTTP 语义：

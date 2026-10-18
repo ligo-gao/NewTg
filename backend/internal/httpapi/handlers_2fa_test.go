@@ -1074,9 +1074,13 @@ func Test2FAAuditEvents(t *testing.T) {
 	}
 
 	calls := env.auditExec.snapshot()
-	want := []string{"2fa_enabled", "2fa_disabled", "2fa_enabled", "backup_codes_regenerated"}
-	if len(calls) != len(want) {
-		t.Fatalf("审计行数 = %d，期望 %d", len(calls), len(want))
+	wantLabels := []string{"2fa_enabled", "2fa_disabled", "2fa_enabled", "backup_codes_regenerated"}
+	wantActions := []string{
+		audit.ActionAuth2FAEnable, audit.ActionAuth2FADisable,
+		audit.ActionAuth2FAEnable, audit.ActionAuth2FABackupCodesRegenerate,
+	}
+	if len(calls) != len(wantLabels) {
+		t.Fatalf("审计行数 = %d，期望 %d", len(calls), len(wantLabels))
 	}
 	for i, call := range calls {
 		// 列序：user_id, username, category, ..., detail(索引 9)...
@@ -1087,8 +1091,12 @@ func Test2FAAuditEvents(t *testing.T) {
 			t.Errorf("第 %d 行 category = %v，期望 security", i, got)
 		}
 		detail := decodeTwoFAAuditDetail(t, call[9])
-		if detail["action"] != want[i] {
-			t.Errorf("第 %d 行 detail.action = %v，期望 %s", i, detail["action"], want[i])
+		// detail.action 由 writer 统一注入冻结动作名；人读标签在 detail.label。
+		if detail["action"] != wantActions[i] {
+			t.Errorf("第 %d 行 detail.action = %v，期望 %s", i, detail["action"], wantActions[i])
+		}
+		if detail["label"] != wantLabels[i] {
+			t.Errorf("第 %d 行 detail.label = %v，期望 %s", i, detail["label"], wantLabels[i])
 		}
 	}
 }

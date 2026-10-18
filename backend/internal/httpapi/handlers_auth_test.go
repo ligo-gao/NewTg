@@ -421,6 +421,75 @@ func TestAuthStatusEndpoint(t *testing.T) {
 	})
 }
 
+// TestAuthStatusSystemInitializedAndTurnstileKey 覆盖 C1/C2：
+// system_initialized 来自主库锚（查询失败 503，不猜），Turnstile 关闭时
+// site_key 必须为空串（契约 schemas/public.yaml:38）。
+func TestAuthStatusSystemInitializedAndTurnstileKey(t *testing.T) {
+	decodeStatus := func(t *testing.T, body []byte) statusResponse {
+		t.Helper()
+		var got statusResponse
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("status JSON 非法: %v（body=%q）", err, body)
+		}
+		return got
+	}
+
+	t.Run("未接线视为未初始化", func(t *testing.T) {
+		env := newAuthTestEnv(t, nil, authTestOptions{})
+		rr := env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if got := decodeStatus(t, rr.Body.Bytes()); got.SystemInitialized {
+			t.Fatal("system_initialized 默认应为 false")
+		}
+	})
+
+	t.Run("已初始化", func(t *testing.T) {
+		env := newAuthTestEnv(t, nil, authTestOptions{})
+		env.router.handlers.initialized = func(context.Context) (bool, error) { return true, nil }
+		rr := env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if got := decodeStatus(t, rr.Body.Bytes()); !got.SystemInitialized {
+			t.Fatal("system_initialized 应为 true")
+		}
+	})
+
+	t.Run("查询失败返回 503", func(t *testing.T) {
+		env := newAuthTestEnv(t, nil, authTestOptions{})
+		env.router.handlers.initialized = func(context.Context) (bool, error) {
+			return false, errors.New("db down")
+		}
+		rr := env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
+		}
+		var p map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+			t.Fatalf("problem JSON 非法: %v", err)
+		}
+		if p["type"] != authProblemServiceUnavailable {
+			t.Fatalf("problem.type = %v，期望 %s", p["type"], authProblemServiceUnavailable)
+		}
+	})
+
+	t.Run("Turnstile 关闭时 site_key 为空", func(t *testing.T) {
+		env := newAuthTestEnv(t, mapConfig{
+			"auth.turnstile.enabled":  configBool(false),
+			"auth.turnstile.site_key": configString("must-not-leak"),
+		}, authTestOptions{})
+		rr := env.request(http.MethodGet, "/api/status", nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if got := decodeStatus(t, rr.Body.Bytes()); got.Auth.Turnstile.SiteKey != "" {
+			t.Fatalf("Turnstile 关闭时 site_key = %q，期望空串", got.Auth.Turnstile.SiteKey)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // 注册
 // ---------------------------------------------------------------------------
@@ -1066,6 +1135,10 @@ func TestAuthLogoutRevokesAndRepeatable(t *testing.T) {
 	if logout.Code != http.StatusNoContent {
 		t.Fatalf("登出 status = %d，期望 204（body=%q）", logout.Code, logout.Body.String())
 	}
+	// B4：登出必须要求浏览器清除缓存/存储/Cookie（固定三项，不含 executionContexts）。
+	if got := logout.Header().Get("Clear-Site-Data"); got != clearSiteDataHeader {
+		t.Fatalf("Clear-Site-Data = %q，期望 %q", got, clearSiteDataHeader)
+	}
 	for _, name := range []string{auth.SessionCookieName, auth.CSRFCookieName} {
 		c := cookieByName(logout, name)
 		if c == nil {
@@ -1534,5 +1607,44 @@ func TestAuthLoginWritesAudit(t *testing.T) {
 	exec.mu.Unlock()
 	if rr := env.login("alice", authTestPassword); rr.Code != http.StatusOK {
 		t.Fatalf("审计故障时登录 status = %d，期望 200", rr.Code)
+	}
+}
+
+// TestGeoIPPublicEndpoint 覆盖 C4：匿名 200、只含 country/region/source、
+// 不回显 IP、缓存头为 private,max-age=300；库缺失时 source=unknown。
+func TestGeoIPPublicEndpoint(t *testing.T) {
+	env := newAuthTestEnv(t, nil, authTestOptions{})
+	rr := env.request(http.MethodGet, "/api/geoip", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "private, max-age=300" {
+		t.Fatalf("Cache-Control = %q，期望 private, max-age=300", got)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("geoip JSON 非法: %v（body=%q）", err, rr.Body.String())
+	}
+	if len(body) != 3 {
+		t.Fatalf("响应字段 = %v，期望仅 country/region/source", body)
+	}
+	if body["country"] != nil || body["region"] != nil || body["source"] != "unknown" {
+		t.Fatalf("无库时响应 = %v，期望 null/null/unknown", body)
+	}
+	if strings.Contains(rr.Body.String(), "192.0.2.1") {
+		t.Fatal("geoip 响应不得回显客户端 IP")
+	}
+
+	// 接缝：未来本地库命中时返回粗粒度地区。
+	country, region := "US", "US-CA"
+	env.router.handlers.geoIP = func(string) (*string, *string, string) {
+		return &country, &region, "local_db"
+	}
+	rr = env.request(http.MethodGet, "/api/geoip", nil, nil)
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("geoip JSON 非法: %v", err)
+	}
+	if body["country"] != "US" || body["region"] != "US-CA" || body["source"] != "local_db" {
+		t.Fatalf("库命中响应 = %v，期望 US/US-CA/local_db", body)
 	}
 }

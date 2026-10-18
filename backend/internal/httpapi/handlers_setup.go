@@ -318,6 +318,25 @@ type setupCompletedProblem struct {
 func (h *SetupHandlers) handleSetup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// B13 裁决：/api/setup 加保守匿名桶（10 次/分钟/IP）。初始化前每个请求
+	// 都付 argon2 成本，且未初始化窗口允许任何人抢先建首管；桶先于一切
+	// 解析与 KDF 执行。认证面 Redis 故障 fail-closed（503）。
+	// rdb 为 nil 仅出现在受限测试装配；生产装配必须提供 Redis。
+	if h.rdb != nil {
+		over, retry, err := allowRequestRate(ctx, h.rdb, SetupRateLimitKey(clientIP(r)),
+			SetupRateLimit, SetupRateWindow)
+		if err != nil {
+			h.log.Error("setup request rate limiter unavailable", "error", err)
+			h.writeSetupUnavailable(w)
+			return
+		}
+		if over {
+			w.Header().Set("Retry-After", retrySeconds(retry))
+			writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests, "Too many setup requests")
+			return
+		}
+	}
+
 	// 已初始化时直接 409：不为必然失败的请求付出 argon2 成本。这只是优化，
 	// 并发窗口的最终裁决在 CompleteSetup 的事务里。
 	initialized, err := h.store.IsInitialized(ctx)

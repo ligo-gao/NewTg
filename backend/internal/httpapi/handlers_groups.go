@@ -420,7 +420,7 @@ func (h *GroupHandlers) auditEvent(r *http.Request, action string, actor int64, 
 		Before:     adminMarshalRaw(before),
 		After:      adminMarshalRaw(after),
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("admin group audit write failed", "action", action, "actor", actor, "error", err)
 	}
 }

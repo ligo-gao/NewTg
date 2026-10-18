@@ -7,10 +7,12 @@ package platform
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
@@ -19,6 +21,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/clientip"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/httpapi"
@@ -94,7 +97,23 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	}
 
 	auditor := audit.New(logsDB)
+	// 用户名快照解析器：审计行保留 12 个月，username 是 NOT NULL 的操作者
+	// 快照；调用侧不总携带用户名（令牌/管理事件只有 actor id）。失败不阻断
+	// 审计——writer 会回退 user#<id>，绝不能因为解析失败丢掉安全事件。
+	auditor.UsernameResolver = func(ctx context.Context, userID int64) (string, error) {
+		var username string
+		err := db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1`, userID).Scan(&username)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("gateway: resolve audit username for %d: %w", userID, err)
+		}
+		return username, nil
+	}
 	audit.SetDefault(auditor)
+
+	authz := newAuthzMiddleware(auditor, log)
 
 	return httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
@@ -104,11 +123,66 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Config:                  center,
 		Sealer:                  cipher,
 		Audit:                   auditor,
-		Authz:                   rbac.NewAuthzMiddleware(),
+		Authz:                   authz,
 		TokenService:            tokens,
 		SessionSecret:           []byte(cfg.SessionSecret),
 		CredentialEncryptionKey: cfg.CredentialEncryptionKey,
 		PublicBaseURL:           cfg.PublicBaseURL,
 		Logger:                  log,
 	})
+}
+
+// newAuthzMiddleware 构造 RBAC 中间件并接线拒绝审计（security-09 §2.7 设计 B /
+// security-02 TC-B-17）：所有 403/404 拒绝都落 audit_logs（category=security、
+// result=failed、status_code=403）。
+//
+// 回调必须自行限时且绝不 panicking 到拒绝路径之外：审计不可用时 403 仍要
+// 正常返回。因此这里用 2s 超时 + defer recover，失败只记日志。
+func newAuthzMiddleware(auditor *audit.Logger, log *slog.Logger) *rbac.AuthzMiddleware {
+	authz := rbac.NewAuthzMiddleware()
+	if auditor == nil || !auditor.Configured() {
+		return authz
+	}
+	authz.SetDenyAuditor(func(r *http.Request, e rbac.DenyEvent) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Error("rbac deny auditor panicked", "panic", recovered)
+			}
+		}()
+		// detail 键名冻结（security-09 §2.7）：event 必须是 "authz_denied"。
+		detail, err := json.Marshal(map[string]any{
+			"event":               "authz_denied",
+			"required_permission": e.Permission,
+			"reason":              e.Reason,
+			"fields":              e.Fields,
+		})
+		if err != nil {
+			log.Warn("marshal authz deny audit detail failed", "error", err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+		defer cancel()
+		// 数据级拒绝按契约返回 404（避免 ID 枚举），其余拒绝 403；审计
+		// status_code 必须与客户端实际收到的状态码一致。
+		statusCode := http.StatusForbidden
+		if e.Reason == rbac.DenyReasonDataScope {
+			statusCode = http.StatusNotFound
+		}
+		event := audit.Event{
+			Action:     audit.ActionAuthzDenied,
+			Actor:      e.UserID,
+			Result:     "failed",
+			StatusCode: statusCode,
+			Method:     e.Method,
+			Route:      e.Route,
+			IP:         clientip.ClientIP(r),
+			UserAgent:  r.UserAgent(),
+			Detail:     detail,
+		}
+		if err := auditor.LogEvent(ctx, event); err != nil {
+			log.Warn("authz deny audit write failed",
+				"user_id", e.UserID, "permission", e.Permission, "error", err)
+		}
+	})
+	return authz
 }

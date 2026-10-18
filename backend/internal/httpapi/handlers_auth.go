@@ -579,6 +579,12 @@ type authHandlers struct {
 	signupGrantAlert func(ctx context.Context, userID int64, ip string)
 	// reserveSignupGrant 是 Redis 槽位预留的可替换接缝（测试注入故障）。
 	reserveSignupGrant func(ctx context.Context, ip string) (bool, error)
+	// initialized 查询安装向导是否已完成。GET /api/status 用它暴露
+	// system_initialized（前端初始化闸门）；nil 表示未接线的单元装配
+	// （生产装配由 BuildGatewayRouter 传入 SetupStore.IsInitialized）。
+	initialized func(ctx context.Context) (bool, error)
+	// geoIP 是本地 GeoIP 库接缝；nil 表示库未配置，/api/geoip 返回 unknown。
+	geoIP GeoIPLookup
 }
 
 func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Client,
@@ -609,6 +615,7 @@ func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Cl
 type statusResponse struct {
 	Auth                           statusAuth `json:"auth"`
 	PasswordLoginEncryptionEnabled bool       `json:"password_login_encryption_enabled"`
+	SystemInitialized              bool       `json:"system_initialized"`
 	Languages                      []string   `json:"languages"`
 	DefaultLanguage                string     `json:"default_language"`
 }
@@ -641,6 +648,26 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	langs := make([]string, len(canonicalLanguages))
 	copy(langs, canonicalLanguages)
+	// 初始化状态是前端 /setup 全局守卫的唯一依据，查询失败必须 503 而不是
+	// 猜 false（猜 false 会把已初始化站点重新导向安装向导，猜 true 会把新站
+	// 锁死在登录页）。nil seam 只出现在未接线的单元装配，按未初始化处理。
+	initialized := false
+	if h.initialized != nil {
+		value, err := h.initialized(r.Context())
+		if err != nil {
+			h.log.Error("status: read initialization state failed", "error", err)
+			h.writeServiceUnavailable(w, "Status is temporarily unavailable")
+			return
+		}
+		initialized = value
+	}
+	// 关闭 Turnstile 时 site_key 必须为空串（契约 schemas/public.yaml）：
+	// 残留的 site_key 会让前端误渲染一个人机校验组件并提交无效令牌。
+	turnstileEnabled := h.boolConfig("auth.turnstile.enabled", false)
+	siteKey := ""
+	if turnstileEnabled {
+		siteKey = h.stringConfig("auth.turnstile.site_key", "")
+	}
 	// 站点开关变更要求即时反映到登录/注册页，禁止中间层缓存公开状态。
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, statusResponse{
@@ -649,11 +676,12 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PasswordLoginEnabled:      h.boolConfig("auth.password_login_enabled", true),
 			EmailVerificationRequired: h.boolConfig("auth.email_verification_required", false),
 			Turnstile: statusTurnstile{
-				Enabled: h.boolConfig("auth.turnstile.enabled", false),
-				SiteKey: h.stringConfig("auth.turnstile.site_key", ""),
+				Enabled: turnstileEnabled,
+				SiteKey: siteKey,
 			},
 		},
 		PasswordLoginEncryptionEnabled: h.boolConfig("auth.login_password_encryption.enabled", false),
+		SystemInitialized:              initialized,
 		Languages:                      langs,
 		DefaultLanguage:                "en",
 	})
@@ -766,6 +794,7 @@ type registerRequest struct {
 
 func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !h.boolConfig("auth.signup_enabled", true) {
+		h.auditRegister(r, 0, "failed", "signup_disabled")
 		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Registration is disabled")
 		return
 	}
@@ -777,16 +806,19 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		RegisterRateLimitKey(ip), RegisterRateLimit, RegisterRateWindow)
 	if err != nil {
 		h.log.Error("registration request rate limiter unavailable", "error", err)
+		h.auditRegister(r, 0, "failed", "limiter_unavailable")
 		h.writeServiceUnavailable(w, "Registration is temporarily unavailable")
 		return
 	}
 	if over {
+		h.auditRegister(r, 0, "failed", "rate_limited")
 		writeRateLimited(w, retry, "Too many registration requests")
 		return
 	}
 
 	var req registerRequest
 	if err := readAuthJSON(r, &req); err != nil {
+		h.auditRegister(r, 0, "failed", "invalid_request")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
 		return
 	}
@@ -794,43 +826,52 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 顺序冻结：注册速率桶（B3）→ 匿名请求体限制（readAuthJSON）→ Turnstile
 	// → 业务校验（modules-01 §3.15）。人机校验绝不先于限流执行。
 	if !h.checkTurnstile(w, r, auth.TurnstileEndpointRegister, req.TurnstileToken) {
+		h.auditRegister(r, 0, "failed", "turnstile_failed")
 		return
 	}
 
 	username := strings.TrimSpace(req.Username)
 	switch {
 	case !usernamePattern.MatchString(username):
+		h.auditRegister(r, 0, "failed", "invalid_username")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid username")
 		return
 	case !auth.ValidatePasswordLength(req.Password):
+		h.auditRegister(r, 0, "failed", "invalid_password")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Password must be between 8 and 128 characters")
 		return
 	case req.Password != req.ConfirmPassword:
+		h.auditRegister(r, 0, "failed", "password_mismatch")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Passwords do not match")
 		return
 	case !req.AgreeTerms:
+		h.auditRegister(r, 0, "failed", "terms_not_accepted")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Terms must be accepted")
 		return
 	}
 	email := normalizeEmail(req.Email)
 	if !validEmail(email) {
+		h.auditRegister(r, 0, "failed", "invalid_email")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid email address")
 		return
 	}
 	// F-01-01 邮箱域名白名单（默认关闭）：开启时不在清单内的域名 422；
 	// 清单为空/畸形按 fail-closed 拒绝（未启用时完全放行）。
 	if !h.emailDomainAllowed(email) {
+		h.auditRegister(r, 0, "failed", "email_domain_denied")
 		writeProblem(w, http.StatusUnprocessableEntity, authProblemEmailDomainDenied, "Email domain is not allowed")
 		return
 	}
 	aff := strings.TrimSpace(req.Aff)
 	if utf8.RuneCountInString(aff) > maxAffRunes {
+		h.auditRegister(r, 0, "failed", "invalid_aff")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid affiliate code")
 		return
 	}
 	// 泄露口令筛查（security-01 §2.3）：长度合格但已泄露/上下文可猜的口令
 	// 同样必须拒绝。用户名作为每用户上下文传入。
 	if h.checker.CheckWithContext(req.Password, username) {
+		h.auditRegister(r, 0, "failed", "weak_password")
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Password is too weak or has been compromised")
 		return
 	}
@@ -838,15 +879,18 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	emailVerified := false
 	if h.boolConfig("auth.email_verification_required", false) {
 		if !sixDigitPattern.MatchString(req.EmailCode) {
+			h.auditRegister(r, 0, "failed", "invalid_email_code")
 			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification code")
 			return
 		}
 		ok, err := h.codes.consume(r.Context(), email, "register", req.EmailCode)
 		if err != nil {
+			h.auditRegister(r, 0, "failed", "service_unavailable")
 			h.writeServiceUnavailable(w, "Registration is temporarily unavailable")
 			return
 		}
 		if !ok {
+			h.auditRegister(r, 0, "failed", "invalid_email_code")
 			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification code")
 			return
 		}
@@ -857,10 +901,12 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	taken, err := h.repo.UsernameOrEmailTaken(r.Context(), username, email)
 	if err != nil {
 		h.log.Error("check duplicate user failed", "error", err)
+		h.auditRegister(r, 0, "failed", "internal_error")
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Registration failed")
 		return
 	}
 	if taken {
+		h.auditRegister(r, 0, "failed", "email_taken")
 		h.writeDuplicateUser(w)
 		return
 	}
@@ -868,6 +914,7 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	passwordHash, err := h.hashPassword(req.Password)
 	if err != nil {
 		h.log.Error("hash password failed", "error", err)
+		h.auditRegister(r, 0, "failed", "internal_error")
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Registration failed")
 		return
 	}
@@ -906,16 +953,19 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.releaseSignupGrantSlot(context.WithoutCancel(r.Context()), ip)
 	}
 	if errors.Is(err, ErrDuplicateUser) {
+		h.auditRegister(r, 0, "failed", "email_taken")
 		h.writeDuplicateUser(w)
 		return
 	}
 	if err != nil {
 		h.log.Error("create user failed", "error", err)
+		h.auditRegister(r, 0, "failed", "internal_error")
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Registration failed")
 		return
 	}
 	if created.Status != "" && created.Status != "enabled" {
 		// DB 默认应为 enabled；非 enabled 说明站点策略/数据异常，拒绝建会话。
+		h.auditRegister(r, created.ID, "failed", "account_unavailable")
 		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Account is not available")
 		return
 	}
@@ -935,12 +985,14 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("create session after registration failed", "user_id", created.ID, "error", err)
 		// 账号已提交而会话失败：不能返回 500（重试会因重复注册 409）。
 		// 映射为可重试的 503，并明确提示「账号可能已创建，请尝试登录」。
+		h.auditRegister(r, created.ID, "failed", "session_unavailable")
 		w.Header().Set("Retry-After", "5")
 		writeAuthProblemDetail(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
 			"Registration succeeded but session creation failed",
 			"The account may have been created. Please try logging in.")
 		return
 	}
+	h.auditRegister(r, created.ID, "success", "")
 	writeJSON(w, http.StatusCreated, authSessionResponse{User: userView(user)})
 }
 
@@ -1245,18 +1297,54 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, authSessionResponse{User: userView(user)})
 }
 
+// clearSiteDataHeader 是 security-09 §2.5 / TC-I-06 冻结的三项，顺序与内容
+// 不得增删。刻意不含 executionContexts：它会让浏览器立即终止页面脚本，
+// 登出后前端连「已退出」的确认界面都无法渲染。
+const clearSiteDataHeader = `"cache", "storage", "cookies"`
+
+// setClearSiteData 要求浏览器清除本源的缓存、存储与 Cookie（登出/删号）。
+// 与 Set-Cookie 过期一起下发：前者清理前端存储，后者清理 HTTP Cookie。
+func setClearSiteData(w http.ResponseWriter) {
+	w.Header().Set("Clear-Site-Data", clearSiteDataHeader)
+}
+
 func (h *authHandlers) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// 登出是 public-safe 的：无会话/重复登出都必须 204；也不做 CSRF 校验
 	// （security-01 §2.2：登出不构成状态提升，且清 Cookie 必须在会话失效后仍可用）。
 	if sid, ok := sessionID(r); ok {
+		// 身份必须在吊销前读取：Revoke 之后会话记录已消失，审计将拿不到 actor。
+		sess, getErr := h.sessions.Get(r.Context(), sid)
 		if err := h.sessions.Revoke(r.Context(), sid); err != nil {
 			h.log.Error("revoke session failed", "error", err)
 			h.writeServiceUnavailable(w, "Logout is temporarily unavailable")
 			return
 		}
+		if getErr == nil && sess != nil {
+			h.auditLogout(r, sess.UserID)
+		}
 	}
+	setClearSiteData(w)
 	clearSessionCookies(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditLogout 写 auth.logout 审计。detail 只有结果；IP/UA 走专用列。
+func (h *authHandlers) auditLogout(r *http.Request, userID int64) {
+	if h.audit == nil {
+		return
+	}
+	event := audit.Event{
+		Action:    audit.ActionAuthLogout,
+		Actor:     userID,
+		Result:    "success",
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     "/api/logout",
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Error("write logout audit failed", "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,8 +1515,35 @@ func (h *authHandlers) auditLogin(r *http.Request, user *UserRecord, result, rea
 		Route:     "/api/auth/login",
 		Detail:    detail,
 	}
-	if err := h.audit.LogEvent(r.Context(), event); err != nil {
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Error("write login audit failed", "error", err)
+	}
+}
+
+// auditRegister 写 auth.register 审计（成功/失败）。成功时 Actor 是新用户 id；
+// 失败时 actor=0（writer 回退 user#0）。detail 只含结果与原因，绝不含口令、
+// 验证码、Turnstile token 或邮箱原文（PII 最小化）。
+func (h *authHandlers) auditRegister(r *http.Request, actor int64, result, reason string) {
+	if h.audit == nil {
+		return
+	}
+	detail, err := json.Marshal(map[string]string{"result": result, "reason": reason})
+	if err != nil {
+		h.log.Error("marshal register audit detail failed", "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:    audit.ActionAuthRegister,
+		Actor:     actor,
+		Result:    result,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     "/api/auth/register",
+		Detail:    detail,
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Error("write register audit failed", "error", err)
 	}
 }
 

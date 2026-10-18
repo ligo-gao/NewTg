@@ -27,6 +27,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/tokenstore"
 )
 
@@ -46,7 +47,21 @@ const (
 	tokenIdempotencyTTL   = 10 * time.Minute
 	tokenIdempotencyLease = 10 * time.Second
 	tokenMaxRequestBody   = 1 << 20 // 1 MiB
-	tokenAuditTimeout     = 3 * time.Second
+
+	// tokenPageMax 与管理员列表的 adminPageMax 同风格：防止 p 取超大值导致
+	// OFFSET 溢出（int 乘法变负）或全表扫描放大。用户令牌量远低于此值。
+	tokenPageMax = 100_000
+)
+
+// 令牌列表过滤参数的合法枚举（与 api/openapi/paths/user.yaml 的 enum 逐字一致）。
+// 非法值必须 400，不能静默忽略后返回全量——那会让前端过滤条件失效却无感知。
+var (
+	tokenListStatuses = map[string]struct{}{
+		"enabled": {}, "disabled": {}, "expired": {}, "exhausted": {},
+	}
+	tokenListQuotas = map[string]struct{}{
+		"normal": {}, "low": {}, "exhausted": {}, "unlimited": {},
+	}
 )
 
 // TokenService 是 HTTP 层所需的令牌能力。*tokenstore.Store 满足；单测用 fake，
@@ -73,16 +88,21 @@ var _ TokenService = (*tokenstore.Store)(nil)
 
 // TokenHandlers 持有令牌端点依赖。可并发使用。
 type TokenHandlers struct {
-	store TokenService
-	audit *audit.Logger
-	rdb   *redis.Client
-	now   func() time.Time
+	store  TokenService
+	audit  *audit.Logger
+	rdb    *redis.Client
+	sealer configcenter.SecretSealer
+	now    func() time.Time
 }
 
 // NewTokenHandlers 构造令牌端点。auditLog 可为 nil（禁用审计，仅测试）；
 // rdb 可为 nil（禁用幂等键去重，仅测试）。
-func NewTokenHandlers(store TokenService, auditLog *audit.Logger, rdb *redis.Client) *TokenHandlers {
-	return &TokenHandlers{store: store, audit: auditLog, rdb: rdb, now: time.Now}
+//
+// sealer 用于加密幂等缓存体（缓存里含一次性明文 key）：nil 时**完全跳过**
+// 幂等缓存，绝不允许回落到明文落 Redis。生产装配必须传 CREDENTIAL_ENCRYPTION_KEY
+// 派生的 auth.SecretCipher。
+func NewTokenHandlers(store TokenService, auditLog *audit.Logger, rdb *redis.Client, sealer configcenter.SecretSealer) *TokenHandlers {
+	return &TokenHandlers{store: store, audit: auditLog, rdb: rdb, sealer: sealer, now: time.Now}
 }
 
 // RegisterTokenRoutes 把令牌端点挂到 mux。
@@ -337,6 +357,11 @@ func (h *TokenHandlers) listTokens(w http.ResponseWriter, r *http.Request) {
 		writeTokenProblem(w, http.StatusBadRequest, problemTypeInvalidRequest, "Invalid request", err.Error(), "p")
 		return
 	}
+	if page > tokenPageMax {
+		writeTokenProblem(w, http.StatusBadRequest, problemTypeInvalidRequest, "Invalid request",
+			fmt.Sprintf("p 必须在 1..%d 之间", tokenPageMax), "p")
+		return
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -350,12 +375,28 @@ func (h *TokenHandlers) listTokens(w http.ResponseWriter, r *http.Request) {
 			"page_size 必须在 1..100 之间", "page_size")
 		return
 	}
+	status := r.URL.Query().Get("status")
+	if status != "" {
+		if _, ok := tokenListStatuses[status]; !ok {
+			writeTokenProblem(w, http.StatusBadRequest, problemTypeInvalidRequest, "Invalid request",
+				"status 必须是 enabled/disabled/expired/exhausted", "status")
+			return
+		}
+	}
+	quota := r.URL.Query().Get("quota")
+	if quota != "" {
+		if _, ok := tokenListQuotas[quota]; !ok {
+			writeTokenProblem(w, http.StatusBadRequest, problemTypeInvalidRequest, "Invalid request",
+				"quota 必须是 normal/low/exhausted/unlimited", "quota")
+			return
+		}
+	}
 
 	items, total, err := h.store.List(r.Context(), userID, tokenstore.ListFilter{
 		Keyword:  r.URL.Query().Get("keyword"),
-		Status:   r.URL.Query().Get("status"),
+		Status:   status,
 		Group:    r.URL.Query().Get("group"),
-		Quota:    r.URL.Query().Get("quota"),
+		Quota:    quota,
 		Page:     page,
 		PageSize: pageSize,
 	})
@@ -527,6 +568,20 @@ func (h *TokenHandlers) batch(
 
 	succeeded, failed, err := fn(r.Context(), userID, req.IDs)
 	if err != nil {
+		// 部分成功也可能伴随基础设施中止：tokenstore 先提交了 succeeded 条，
+		// 再在后续条目上遇到后端错误才返回 ErrBackend。已提交的变更必须留痕
+		// （否则一批删除/禁用可以完全不可审计），但审计只记计数，绝不写底层
+		// 错误文本。
+		status := http.StatusInternalServerError
+		if errors.Is(err, tokenstore.ErrBackend) {
+			status = http.StatusServiceUnavailable
+		}
+		h.auditEventResult(r, auditAction, userID, "failed", map[string]any{
+			"batch_action": action,
+			"ids":          req.IDs,
+			"succeeded":    succeeded,
+			"failed_count": len(failed),
+		}, nil, nil, status)
 		writeTokenServiceError(w, err)
 		return
 	}
@@ -535,7 +590,7 @@ func (h *TokenHandlers) batch(
 		views = append(views, tokenBatchFailureView{ID: failure.ID, Name: failure.Name, Detail: failure.Detail})
 	}
 	h.auditEvent(r, auditAction, userID, map[string]any{
-		"action":       action,
+		"batch_action": action,
 		"ids":          req.IDs,
 		"succeeded":    succeeded,
 		"failed_count": len(views),
@@ -803,6 +858,14 @@ func writeTokenServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, tokenstore.ErrConflict):
 		writeTokenProblem(w, http.StatusConflict, problemTypeConflictToken, "Conflict",
 			"该令牌已被其他操作修改，请刷新后重试", "")
+	case errors.Is(err, tokenstore.ErrBackend):
+		// 批量操作中的基础设施故障（DB/Redis/驱动）：tokenstore 已中止整个
+		// 批量并包上 ErrBackend。绝不能把它写进 200 的 failed[]（那会让系统
+		// 性故障看起来像业务部分失败），也不透传底层错误文本（可能含内网
+		// host:port/SQL 细节）。Retry-After 给自动化客户端有界退避提示。
+		w.Header().Set("Retry-After", "5")
+		writeTokenProblem(w, http.StatusServiceUnavailable, problemTypeUnavailable,
+			"Service unavailable", "", "")
 	default:
 		writeTokenProblem(w, http.StatusInternalServerError, "https://newtg.dev/problems/internal_error", "Internal Server Error", "", "")
 	}
@@ -849,6 +912,12 @@ func tokenJSONEqual(a, b any) bool {
 }
 
 func (h *TokenHandlers) auditEvent(r *http.Request, action string, userID int64, detail, before, after any, status ...int) {
+	h.auditEventResult(r, action, userID, "success", detail, before, after, status...)
+}
+
+// auditEventResult 是带显式 result 的审计写入（部分成功/失败的批量需要
+// result=failed 但请求本身可能返回 200 或 503）。
+func (h *TokenHandlers) auditEventResult(r *http.Request, action string, userID int64, result string, detail, before, after any, status ...int) {
 	if h.audit == nil {
 		return
 	}
@@ -859,6 +928,7 @@ func (h *TokenHandlers) auditEvent(r *http.Request, action string, userID int64,
 	event := audit.Event{
 		Action:     action,
 		Actor:      userID,
+		Result:     result,
 		IP:         tokenRemoteIP(r),
 		UserAgent:  r.UserAgent(),
 		Method:     r.Method,
@@ -869,10 +939,8 @@ func (h *TokenHandlers) auditEvent(r *http.Request, action string, userID int64,
 	event.Before = tokenMarshalRaw(before)
 	event.After = tokenMarshalRaw(after)
 	// 审计失败不阻断业务（日志库独立且无跨库事务）；由运维告警接手。
-	// 加短超时：日志库故障不得把令牌请求拖到连接超时。
-	auditCtx, cancel := context.WithTimeout(r.Context(), tokenAuditTimeout)
-	defer cancel()
-	if err := h.audit.LogEvent(auditCtx, event); err != nil {
+	// 统一走 writeAuditEvent 的 3 秒上限：日志库故障不得把令牌请求拖到连接超时。
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		slog.Warn("token audit write failed", "action", action, "actor", userID, "error", err)
 	}
 }
@@ -904,8 +972,12 @@ type tokenCachedHTTPResponse struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// idempotent 为写端点提供 24h 幂等重放（modules-02 §1：所有写接口支持）。
+// idempotent 为写端点提供幂等重放（窗口见 tokenIdempotencyTTL：10 分钟）。
 // 同一 key + 同一请求体返回首次响应（逐字节）；不同请求体复用 key → 422。
+//
+// 缓存体含创建/重置响应里的明文 key，必须以 sealer 密封后落 Redis；sealer
+// 为 nil（未装配加密）时直接执行、完全不缓存——「无缓存」是可接受的降级，
+// 「明文凭据进 Redis」不是。
 func (h *TokenHandlers) idempotent(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := tokenPrincipal(r)
@@ -914,7 +986,7 @@ func (h *TokenHandlers) idempotent(scope string, next http.HandlerFunc) http.Han
 			return
 		}
 		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-		if key == "" || h.rdb == nil {
+		if key == "" || h.rdb == nil || h.sealer == nil {
 			next(w, r)
 			return
 		}
@@ -1001,8 +1073,16 @@ func (h *TokenHandlers) loadIdempotent(ctx context.Context, key string) (tokenCa
 	if err != nil {
 		return tokenCachedHTTPResponse{}, false
 	}
+	opened, err := h.sealer.Open(string(raw))
+	if err != nil {
+		// 解密失败（密钥轮换/数据损坏/旧版本明文残留）按未命中处理并删除该键：
+		// 重放不可信的结果比重新执行更危险，而无 TTL 的脏键会持续失败。
+		_ = h.rdb.Del(ctx, key).Err()
+		return tokenCachedHTTPResponse{}, false
+	}
 	var cached tokenCachedHTTPResponse
-	if err := json.Unmarshal(raw, &cached); err != nil {
+	if err := json.Unmarshal([]byte(opened), &cached); err != nil {
+		_ = h.rdb.Del(ctx, key).Err()
 		return tokenCachedHTTPResponse{}, false
 	}
 	return cached, true
@@ -1013,8 +1093,13 @@ func (h *TokenHandlers) saveIdempotent(ctx context.Context, key string, cached t
 	if err != nil {
 		return
 	}
+	sealed, err := h.sealer.Seal(string(raw))
+	if err != nil {
+		// 加密失败同样不写：宁可失去重放保护，也不能明文落缓存。
+		return
+	}
 	// 幂等缓存是尽力而为：Redis 故障时请求已经成功，不能因此回滚业务。
-	_ = h.rdb.Set(ctx, key, raw, tokenIdempotencyTTL).Err()
+	_ = h.rdb.Set(ctx, key, sealed, tokenIdempotencyTTL).Err()
 }
 
 func tokenBodyFingerprint(data []byte) string {
