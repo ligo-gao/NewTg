@@ -103,6 +103,37 @@ func TestComputeRatioMinimumBillingAndNoUsage(t *testing.T) {
 	}
 }
 
+// TestComputeRatioMinimumBillingOnlyUsedDimension 覆盖 R-36：最小计费只对
+// 本次请求实际使用、且该维价格 >0 的维度生效。
+func TestComputeRatioMinimumBillingOnlyUsedDimension(t *testing.T) {
+	// 输入免费、输出收费：只消耗输入 → 0，不得因「模型有正价项」抬到 1。
+	freeInput := ratioSnapshot(0, 500, 0, 0)
+	if q, err := ComputeQuota(freeInput, contract.TokenParams{P: 1_000_000}, nil); err != nil || q != 0 {
+		t.Fatalf("只走免费输入维度 q=%d err=%v，期望 0", q, err)
+	}
+	// 同样的模型只消耗输出、且输出价 >0、取整为 0 → 最小计费 1。
+	if q, err := ComputeQuota(freeInput, contract.TokenParams{C: 1}, nil); err != nil || q != 1 {
+		t.Fatalf("付费输出维度取整为 0 q=%d err=%v，期望 1", q, err)
+	}
+
+	// 输入收费、输出免费：只消耗输出 → 0。
+	freeOutput := ratioSnapshot(500, 0, 0, 0)
+	if q, err := ComputeQuota(freeOutput, contract.TokenParams{C: 1_000_000}, nil); err != nil || q != 0 {
+		t.Fatalf("只走免费输出维度 q=%d err=%v，期望 0", q, err)
+	}
+	// 只消耗输入且输入付费、取整为 0 → 1。
+	if q, err := ComputeQuota(freeOutput, contract.TokenParams{P: 1}, nil); err != nil || q != 1 {
+		t.Fatalf("付费输入维度取整为 0 q=%d err=%v，期望 1", q, err)
+	}
+
+	// 图片维度：img 价格为「输入价 × 图片倍率」；输入价 0 时图片也免费。
+	imageFree := ratioSnapshot(0, 0, 0, 0)
+	imageFree.Price.ImageRatio = 2
+	if q, err := ComputeQuota(imageFree, contract.TokenParams{Img: 1_000_000}, nil); err != nil || q != 0 {
+		t.Fatalf("免费图片维度 q=%d err=%v，期望 0", q, err)
+	}
+}
+
 func TestComputeRatioGroupRatio(t *testing.T) {
 	snap := ratioSnapshot(2, 0, 0, 0)
 	snap.GroupRatio = 1.5
@@ -141,24 +172,65 @@ func TestComputePerCall(t *testing.T) {
 		Price:      contract.PriceData{UsePrice: true, ModelPrice: 150},
 		GroupRatio: 1,
 	}
-	if q, err := ComputeQuota(snap, contract.TokenParams{}, nil); err != nil || q != 150 {
-		t.Fatalf("按次 q=%d err=%v，期望 150（usage 不计）", q, err)
+	// ImageCount == -1 是「未设置」→ 请求域缺省 1（零值 0 现在是「精确 0 张」）。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 150 {
+		t.Fatalf("未设置张数 q=%d err=%v，期望 150", q, err)
 	}
 	// 图片按次乘 n。
 	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: 3}, nil); err != nil || q != 450 {
 		t.Fatalf("按次×3 q=%d err=%v，期望 450", q, err)
 	}
+	// 结算域有效 0 张 → 计 0（billing-00 §9.1），不得触发最小计费。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: 0}, nil); err != nil || q != 0 {
+		t.Fatalf("有效 0 张 q=%d err=%v，期望 0", q, err)
+	}
 	// 显式免费按次 → 0，不触发保底。
 	free := snap
 	free.Price.ModelPrice = 0
-	if q, err := ComputeQuota(free, contract.TokenParams{}, nil); err != nil || q != 0 {
+	if q, err := ComputeQuota(free, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 0 {
 		t.Fatalf("免费按次 q=%d err=%v，期望 0", q, err)
 	}
 	// 正价取整为 0 → 最小计费 1。
 	tiny := snap
 	tiny.Price.ModelPrice = 0.4
-	if q, err := ComputeQuota(tiny, contract.TokenParams{}, nil); err != nil || q != 1 {
+	if q, err := ComputeQuota(tiny, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 1 {
 		t.Fatalf("最小计费 q=%d err=%v，期望 1", q, err)
+	}
+}
+
+func TestComputePerCallRejectsInvalidImageCount(t *testing.T) {
+	snap := contract.PriceSnapshot{
+		Mode:       contract.BillingModePerCall,
+		Price:      contract.PriceData{UsePrice: true, ModelPrice: 150},
+		GroupRatio: 1,
+	}
+	if _, err := ComputeQuota(snap, contract.TokenParams{ImageCount: -2}, nil); !errors.Is(err, ErrInvalidParams) {
+		t.Fatalf("ImageCount=-2 应拒绝，got %v", err)
+	}
+}
+
+// TestComputeExpressionImageCountZero 覆盖 I2 约定在表达式路径的语义：
+// -1 = 未设置 → image_count 变量为 1；0 = 精确 0 张 → 变量为 0，表达式计 0。
+func TestComputeExpressionImageCountZero(t *testing.T) {
+	restore := setQPU(t, 100)
+	defer restore()
+
+	snap := contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: "image_count * 1000000",
+		GroupRatio: 1,
+	}
+	// 0 张 → exprOut=0 → 配额 0（有效 0 计 0）。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: 0}, nil); err != nil || q != 0 {
+		t.Fatalf("精确 0 张 q=%d err=%v，期望 0", q, err)
+	}
+	// -1（未设置）→ 变量 1 → 1e6/1e6×100 = 100。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 100 {
+		t.Fatalf("未设置张数 q=%d err=%v，期望 100", q, err)
+	}
+	// 精确 2 张 → 200。
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: 2}, nil); err != nil || q != 200 {
+		t.Fatalf("2 张 q=%d err=%v，期望 200", q, err)
 	}
 }
 

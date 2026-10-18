@@ -23,6 +23,17 @@ var (
 	ErrNoExpression = errors.New("pricing: 表达式模式快照缺少表达式")
 )
 
+// ImageCountUnset 是 TokenParams.ImageCount 的「未设置」约定值。
+//
+// contract.TokenParams.ImageCount 没有独立的 set 标记，无法区分「未设置」
+// 与「结算域有效 0 张」。M3 冻结约定：
+//   - -1 = 未设置 → 请求域缺省 1（按次 max(1,n)、表达式 image_count=1）；
+//   - >= 0 = 精确张数 → 0 合法且**计 0**（billing-00 §9.1 有效 0 计 0）。
+//
+// 预扣估算传 -1，结算按上游实际张数传精确值（含 0）；Task 3 的会话层负责
+// 选择。
+const ImageCountUnset = -1
+
 // oneMillion 是「每 1M tokens」的换算分母。
 var oneMillion = decimal.NewFromInt(1_000_000)
 
@@ -91,8 +102,8 @@ func validateParams(p contract.TokenParams) error {
 			return fmt.Errorf("%w: %s=%d", ErrInvalidParams, name, v)
 		}
 	}
-	if p.ImageCount < 0 {
-		return fmt.Errorf("%w: image_count=%d", ErrInvalidParams, p.ImageCount)
+	if p.ImageCount < ImageCountUnset {
+		return fmt.Errorf("%w: image_count=%d（-1=未设置，>=0=精确张数）", ErrInvalidParams, p.ImageCount)
 	}
 	return nil
 }
@@ -182,30 +193,70 @@ func computeRatioQuota(snap contract.PriceSnapshot, p contract.TokenParams, grou
 	if clamp != nil {
 		return quota, &ClampError{Clamp: clamp}
 	}
-	if quota == 0 && pricePositive(pr) {
-		return 1, nil // 最小计费（billing-00 §7.5）
+	if quota == 0 && usedDimensionPositive(p, pr) {
+		// 最小计费只对**实际使用的维度**生效（R-36）：若本请求只走了免费
+		// 维度（该维价格 0），结果必须保持 0；只有「用到的维度价格 >0、
+		// 但取整为 0」才抬到 1。
+		return 1, nil
 	}
 	return quota, nil
 }
 
-func pricePositive(p contract.PriceData) bool {
-	return p.ModelRatio > 0 || p.CompletionRatio > 0 ||
-		p.CacheRatio > 0 || p.CacheCreationRatio > 0 ||
-		p.CacheCreation5mRatio > 0 || p.CacheCreation1hRatio > 0
+// usedDimensionPositive 判断本次请求实际使用的维度是否有正价。
+//
+// 对应裁决 R-36：最小计费按「已使用维度」判定，而不是「模型任意一项价 >0」。
+// 否则「输入免费、输出收费」的模型在只消耗输入时会凭空收 1 积分。
+func usedDimensionPositive(p contract.TokenParams, pr contract.PriceData) bool {
+	if p.P > 0 && pr.ModelRatio > 0 {
+		return true
+	}
+	if p.C > 0 && pr.CompletionRatio > 0 {
+		return true
+	}
+	if p.CR > 0 && pr.CacheRatio > 0 {
+		return true
+	}
+	if p.CC5m > 0 && pr.CacheCreation5mRatio > 0 {
+		return true
+	}
+	if p.CC1h > 0 && pr.CacheCreation1hRatio > 0 {
+		return true
+	}
+	if p.Img > 0 && pr.ModelRatio*pr.ImageRatio > 0 {
+		return true
+	}
+	if p.ImgCR > 0 && pr.CacheRatio > 0 {
+		return true
+	}
+	if p.ImgO > 0 && pr.CompletionRatio > 0 {
+		return true
+	}
+	if p.AI > 0 && pr.ModelRatio*pr.AudioRatio > 0 {
+		return true
+	}
+	if p.AO > 0 && pr.ModelRatio*pr.AudioRatio*pr.AudioCompletionRatio > 0 {
+		return true
+	}
+	return false
 }
 
 // computePerCallQuota 实现按次模式：单次价 × 张数 × 分组倍率。
 //
-// 图片按次乘 n（billing-02 §3.3）；TokenParams.ImageCount 没有「未设置」标记，
-// 0 按请求域缺省 1 处理。结算域「有效 0 张」需要区分时由上层用表达式路径 /
-// 在 TokenParams 中显式传值解决（契约缺口，已记入报告）。
+// 图片按次乘 n（billing-02 §3.3）。ImageCount 采用包内冻结约定
+// （见 ImageCountUnset）：-1 = 未设置 → 请求域缺省 1；0 = 精确 0 张 →
+// **计 0**（billing-00 §9.1「有效 0 计 0」），不得触发最小计费保底。
 func computePerCallQuota(snap contract.PriceSnapshot, p contract.TokenParams, group float64) (int64, error) {
 	if err := validatePrice("model_price", snap.Price.ModelPrice); err != nil {
 		return 0, err
 	}
 	imageCount := p.ImageCount
-	if imageCount < 1 {
+	if imageCount == ImageCountUnset {
 		imageCount = 1
+	}
+	if imageCount == 0 {
+		// 结算域确认 0 张：按次金额为 0，且这是**有效 0**而不是「取整为 0」，
+		// 所以不能套用 §7.5 的最小计费 1。
+		return 0, nil
 	}
 	total := dec(snap.Price.ModelPrice).
 		Mul(decimal.NewFromInt(int64(imageCount))).
@@ -269,11 +320,11 @@ func computeExpressionQuota(snap contract.PriceSnapshot, p contract.TokenParams,
 // 表达式复用；usedVars 只用于任务语义判定，不用于裁剪入参。
 func tokenVars(p contract.TokenParams) map[string]float64 {
 	imageCount := p.ImageCount
-	if imageCount < 1 {
-		// 表达式请求域缺省 1（billing-01 §2.1）；结算域 0 张的承载缺口
-		// 见包文档与报告。
+	if imageCount == ImageCountUnset {
+		// 未设置 → 表达式请求域缺省 1（billing-01 §2.1）。
 		imageCount = 1
 	}
+	// 精确 0 张保持 0：表达式可据此计 0（billing-00 §9.1）。
 	return map[string]float64{
 		"p":           float64(p.P),
 		"c":           float64(p.C),

@@ -276,7 +276,7 @@ func TestIntegrationSourcePerCallAndExpression(t *testing.T) {
 	if snap.Mode != contract.BillingModePerCall || !snap.Price.UsePrice || snap.Price.ModelPrice != 150 {
 		t.Fatalf("按次快照错误: mode=%v price=%+v", snap.Mode, snap.Price)
 	}
-	if q, err := ComputeQuota(snap, contract.TokenParams{}, nil); err != nil || q != 150 {
+	if q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset}, nil); err != nil || q != 150 {
 		t.Fatalf("按次 quota=%d err=%v，期望 150", q, err)
 	}
 
@@ -404,6 +404,118 @@ func TestIntegrationSourceCacheAndInvalidate(t *testing.T) {
 	snap, err = src.Resolve(ctx, model, "default")
 	if err != nil || snap.Price.ModelRatio != 200 {
 		t.Fatalf("Invalidate 后应读新值: %v err=%v", snap.Price.ModelRatio, err)
+	}
+}
+
+// TestIntegrationSourceGroupOverrideExplicitZeroCompletion 覆盖 review C1：
+// group_pricing 的 completion_price=0 是显式免费，必须只收输入费，
+// 不得按模型族兜底成 1–5× 输入价。
+func TestIntegrationSourceGroupOverrideExplicitZeroCompletion(t *testing.T) {
+	db := openTestDB(t)
+	prefix := testPrefix(t)
+	cleanupPrefix(t, db, prefix)
+
+	model := prefix + "-ovzero"
+	group := prefix + "-g0"
+	insertModelRow(t, db, model, 0, nil, ptr(int64(1000)), ptr(int64(2000)), ptr(int64(0)), ptr(int64(0)))
+	insertGroup(t, db, group, 120)
+	insertGroupPricing(t, db, group, model, 100, 0, 0, 0)
+
+	src := newTestSource(t, db)
+	snap, err := src.Resolve(context.Background(), model, group)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if snap.Price.CompletionRatio != 0 {
+		t.Fatalf("覆盖价显式零输出被兜底覆盖为 %v，期望 0", snap.Price.CompletionRatio)
+	}
+	if snap.GroupRatio != 1 {
+		t.Fatalf("覆盖价生效时倍率应为 1，got %v", snap.GroupRatio)
+	}
+	q, err := ComputeQuota(snap, contract.TokenParams{P: 1_000_000, C: 1_000_000}, nil)
+	if err != nil || q != 100 {
+		t.Fatalf("只应收输入费 100，got q=%d err=%v", q, err)
+	}
+	if q, err := ComputeQuota(snap, contract.TokenParams{C: 1_000_000}, nil); err != nil || q != 0 {
+		t.Fatalf("只消耗输出（显式免费）应计 0，got q=%d err=%v", q, err)
+	}
+}
+
+// TestIntegrationSourceBaseNameAlias 覆盖 review M2：`-latest` 别名落到
+// 已登记基名的价目，而不是默认价。
+func TestIntegrationSourceBaseNameAlias(t *testing.T) {
+	db := openTestDB(t)
+	prefix := testPrefix(t)
+	cleanupPrefix(t, db, prefix)
+
+	base := prefix + "-alias"
+	insertModelRow(t, db, base, 0, nil, ptr(int64(500)), ptr(int64(1500)), ptr(int64(100)), ptr(int64(1250)))
+
+	src := newTestSource(t, db)
+	snap, err := src.Resolve(context.Background(), base+"-latest", "default")
+	if err != nil {
+		t.Fatalf("Resolve(alias): %v", err)
+	}
+	if snap.Price.ModelRatio != 500 || snap.Price.CompletionRatio != 1500 {
+		t.Fatalf("别名未命中基名价目: %+v", snap.Price)
+	}
+}
+
+// TestIntegrationSourceBlankExprFailsClosed 覆盖 review M8：空 billing_expr
+// 必须报错，不得静默回退 ratio/per_call。
+func TestIntegrationSourceBlankExprFailsClosed(t *testing.T) {
+	db := openTestDB(t)
+	prefix := testPrefix(t)
+	cleanupPrefix(t, db, prefix)
+
+	model := prefix + "-blankexpr"
+	insertModelRow(t, db, model, 0, ptr("   "), ptr(int64(500)), ptr(int64(1500)), nil, nil)
+
+	src := newTestSource(t, db)
+	if _, err := src.Resolve(context.Background(), model, "default"); err == nil {
+		t.Fatal("空 billing_expr 必须返回配置错误")
+	}
+}
+
+// TestIntegrationSourceInvalidateConcurrentResolve 覆盖 review I2：缓存字段
+// 的读写/整体替换在并发下不得 panic 或读到半状态（配合 -race 更严格）。
+func TestIntegrationSourceInvalidateConcurrentResolve(t *testing.T) {
+	db := openTestDB(t)
+	prefix := testPrefix(t)
+	cleanupPrefix(t, db, prefix)
+
+	model := prefix + "-invrace"
+	insertModelRow(t, db, model, 0, nil, ptr(int64(500)), ptr(int64(1500)), ptr(int64(100)), ptr(int64(1250)))
+	src := newTestSource(t, db)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+
+	// 一个 goroutine 持续清空缓存（与 Resolve 的字段读取/写入竞争）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			src.Invalidate()
+		}
+	}()
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if _, err := src.Resolve(context.Background(), model, "default"); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("并发 Resolve/Invalidate 失败: %v", err)
 	}
 }
 

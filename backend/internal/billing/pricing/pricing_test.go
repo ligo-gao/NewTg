@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"newtg/gateway/internal/contract"
@@ -358,6 +359,39 @@ func TestResolveBillingModelName(t *testing.T) {
 			t.Errorf("ResolveBillingModelName(%q)=%q，期望 %q", in, got, want)
 		}
 	}
+
+	// BaseModelName：-latest 与 Claude legacy -thinking 别名剥除；
+	// 日期版本与 "/" 命名空间保留。
+	baseCases := map[string]string{
+		"qwen3-max-latest":           "qwen3-max",
+		"claude-3-5-sonnet-thinking": "claude-3-5-sonnet",
+		"gpt-4o-2024-05-13":          "gpt-4o-2024-05-13",
+		"openai/gpt-4o-latest":       "openai/gpt-4o",
+		"gpt-5.1-codex-max":          "gpt-5.1-codex-max",
+	}
+	for in, want := range baseCases {
+		if got := BaseModelName(in); got != want {
+			t.Errorf("BaseModelName(%q)=%q，期望 %q", in, got, want)
+		}
+	}
+
+	// 候选顺序：原名 → 基名的规范名 → 基名。
+	cands := ResolveBillingModelCandidates("alias-model-latest")
+	want := []string{"alias-model-latest", "canonical-model", "alias-model"}
+	if len(cands) != len(want) {
+		t.Fatalf("候选数=%d，期望 %d: %v", len(cands), len(want), cands)
+	}
+	for i := range want {
+		if cands[i] != want[i] {
+			t.Fatalf("候选[%d]=%q，期望 %q（全部 %v）", i, cands[i], want[i], cands)
+		}
+	}
+
+	// 精确名本身有规范映射时，规范名优先。
+	cands = ResolveBillingModelCandidates("alias-model")
+	if len(cands) == 0 || cands[0] != "canonical-model" {
+		t.Fatalf("规范映射应优先，got %v", cands)
+	}
 }
 
 func TestResolveModePriority(t *testing.T) {
@@ -365,23 +399,34 @@ func TestResolveModePriority(t *testing.T) {
 	t.Cleanup(func() { SetBuiltinBillingExpressions(nil) })
 
 	// 显式表达式模式最高优先（即使配置了旧价）。
-	if got := ResolveMode(&contract.PriceData{ModelRatio: 5}, "m", contract.BillingModeTieredExpr); got != contract.BillingModeTieredExpr {
+	if got := ResolveMode(&contract.PriceData{ModelRatio: 5}, "m", contract.BillingModeTieredExpr, true); got != contract.BillingModeTieredExpr {
 		t.Fatalf("显式模式应胜出，got %v", got)
 	}
-	// 已配置旧价优先于内置表达式。
-	if got := ResolveMode(&contract.PriceData{ModelRatio: 5}, "builtin-x", contract.BillingModeRatio); got != contract.BillingModeRatio {
+	// 显式 ratio（R9 的 mode 列）不被内置表达式抢走。
+	if got := ResolveMode(&contract.PriceData{}, "builtin-x", contract.BillingModeRatio, true); got != contract.BillingModeRatio {
+		t.Fatalf("显式 ratio 应胜出内置表达式，got %v", got)
+	}
+	// 已配置旧价优先于内置表达式（未显式声明模式时）。
+	if got := ResolveMode(&contract.PriceData{ModelRatio: 5}, "builtin-x", contract.BillingModeRatio, false); got != contract.BillingModeRatio {
 		t.Fatalf("已配置旧价应优先于内置表达式，got %v", got)
 	}
 	// 无旧价 → 内置表达式。
-	if got := ResolveMode(&contract.PriceData{}, "builtin-x", contract.BillingModeRatio); got != contract.BillingModeTieredExpr {
+	if got := ResolveMode(&contract.PriceData{}, "builtin-x", contract.BillingModeRatio, false); got != contract.BillingModeTieredExpr {
 		t.Fatalf("应命中内置表达式，got %v", got)
 	}
 	// 按次。
-	if got := ResolveMode(&contract.PriceData{UsePrice: true, ModelPrice: 1}, "m", contract.BillingModeRatio); got != contract.BillingModePerCall {
+	if got := ResolveMode(&contract.PriceData{UsePrice: true, ModelPrice: 1}, "m", contract.BillingModeRatio, false); got != contract.BillingModePerCall {
 		t.Fatalf("UsePrice 应按次，got %v", got)
 	}
+	// nil price 不得 panic；无配置兜底 ratio。
+	if got := ResolveMode(nil, "m", contract.BillingModeRatio, false); got != contract.BillingModeRatio {
+		t.Fatalf("nil price 应兜底 ratio，got %v", got)
+	}
+	if got := ResolveMode(nil, "m", contract.BillingModePerCall, true); got != contract.BillingModePerCall {
+		t.Fatalf("nil price + 显式按次，got %v", got)
+	}
 	// 无任何配置 → 传统倍率兜底。
-	if got := ResolveMode(&contract.PriceData{}, "m", contract.BillingModeRatio); got != contract.BillingModeRatio {
+	if got := ResolveMode(&contract.PriceData{}, "m", contract.BillingModeRatio, false); got != contract.BillingModeRatio {
 		t.Fatalf("应兜底 ratio，got %v", got)
 	}
 }
@@ -419,5 +464,31 @@ func TestParsePricingFiniteCheck(t *testing.T) {
 	// JSON 不允许 NaN/Inf 字面量，1e999 会因超出 float64 被拒绝。
 	if _, err := ParsePricing(`{"prompt_price":1e999}`); err == nil {
 		t.Fatal("超出 float64 范围的数值应拒绝")
+	}
+
+	// 换算后的溢出（model_ratio 1e308 × 2 × QPU）必须拒绝，不得把 +Inf
+	// 带进 PriceData（review I3）。
+	if _, err := ParsePricing(`{"model_ratio":1e308}`); !errors.Is(err, ErrInvalidPrice) {
+		t.Fatalf("换算后 +Inf 应拒绝，got %v", err)
+	}
+}
+
+func TestParsePricingRejectsUnknownExpressionIdentifiers(t *testing.T) {
+	// 拼写错误（cch1）必须在保存期拒绝，而不是等到运行期「变量未绑定」。
+	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":"cch1*2"}`); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("未知标识符应拒绝，got %v", err)
+	}
+	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":"p + bogus"}`); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("未知变量应拒绝，got %v", err)
+	}
+	// ResolveExpression 同样校验（直接构造快照的入口）。
+	if _, err := ResolveExpression(&contract.PriceData{}, "m", contract.BillingModeTieredExpr, "cch1*2"); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("ResolveExpression 应拒绝未知标识符，got %v", err)
+	}
+
+	// 全部合法变量 + 函数名应接受。
+	valid := "min(max(p,c),len) + cr + cc + cc1h + img + img_cr + img_o + ai + ao + image_count + round(1.5) + ceil(1.2) + floor(1.8)"
+	if _, err := ParsePricing(`{"mode":"tiered_expr","expr":` + strconv.Quote(valid) + `}`); err != nil {
+		t.Fatalf("合法表达式被拒: %v", err)
 	}
 }

@@ -207,28 +207,92 @@ func SetCanonicalBillingModelNames(m map[string]string) {
 	canonicalMu.Unlock()
 }
 
-// ResolveBillingModelName 按 billing-02 §2.3 解析最终计费模型名：
-//  1. 去首尾空白，以请求原模型名为起点；
-//  2. 剥离 `@` 修饰符（如 model@channel → model）；
-//  3. 命中规范计费模型名映射则替换；
-//  4. 基名归一（见下）。
-//
-// 【基名归一的实现边界】设计文档要求「去版本/供应商前缀的基名」，但未给出
-// 可执行规则；平台侧已用 model_pricing 显式登记计费模型名（R10: model 唯一），
-// 臆造后缀裁剪反而会把合法模型名改成不存在的键。故本实现只做前三步；
-// 版本/供应商别名通过 SetCanonicalBillingModelNames 显式登记。
-func ResolveBillingModelName(name string) string {
+// stripModelModifiers 去首尾空白并剥离 `@` 修饰符（如 model@channel → model）。
+func stripModelModifiers(name string) string {
 	name = strings.TrimSpace(name)
 	if i := strings.IndexByte(name, '@'); i >= 0 {
 		name = strings.TrimSpace(name[:i])
 	}
-	canonicalMu.RLock()
-	mapped, ok := canonicalNames[name]
-	canonicalMu.RUnlock()
-	if ok && mapped != "" {
-		return mapped
+	return name
+}
+
+// BaseModelName 实现 billing-02 §2.3 第 4 步的「基名」归一（保守版）。
+//
+// 规则边界（净室，按可观察语义重写）：
+//   - `-latest` 别名后缀剥除（最常见的「版本别名」）；
+//   - Claude 旧版 `-thinking` 推理别名剥除；GPT/o 系列的 effort 后缀
+//     （-high/-low/...）**不**剥除：它们可能是真实模型 ID 的一部分，
+//     误裁会让合法模型落到默认价；
+//   - `vendor/model` 的命名空间保留（provider 前缀视为不透明；
+//     billing-02 §4.2 对含 `/` 的名字另有补全倍率语义）；
+//   - 日期版本（`-2024-05-13`）保留：locked 补全倍率族依赖全名匹配。
+//
+// 结果只作为**候选**参与 DB 查找（ResolveBillingModelCandidates），
+// 原名始终先试，不会因为基名归一覆盖精确登记的模型。
+func BaseModelName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, "-latest") {
+		name = name[:len(name)-len("-latest")]
+	}
+	lower = strings.ToLower(name)
+	if strings.HasPrefix(lower, "claude-") && strings.HasSuffix(lower, "-thinking") {
+		name = name[:len(name)-len("-thinking")]
 	}
 	return name
+}
+
+func canonicalBillingName(name string) string {
+	canonicalMu.RLock()
+	mapped := canonicalNames[name]
+	canonicalMu.RUnlock()
+	return mapped
+}
+
+// ResolveBillingModelCandidates 按 billing-02 §2.3 的顺序返回计费模型名候选：
+//
+//	规范名（若显式映射）→ 去修饰原名 → 基名 → 基名的规范名
+//
+// 【为什么返回候选而不是单名】候选让 Source 按序查 model_pricing：精确名
+// 优先，别名/基名只在前者未登记时兜底——既支持 `-latest`/`-thinking` 别名
+// 落到同一价目，又不会把精确登记的模型改写成另一个键。
+func ResolveBillingModelCandidates(name string) []string {
+	raw := stripModelModifiers(name)
+	var out []string
+	add := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == candidate {
+				return
+			}
+		}
+		out = append(out, candidate)
+	}
+
+	if mapped := canonicalBillingName(raw); mapped != "" {
+		add(mapped)
+	}
+	add(raw)
+	bare := BaseModelName(raw)
+	if mapped := canonicalBillingName(bare); mapped != "" {
+		add(mapped)
+	}
+	add(bare)
+	return out
+}
+
+// ResolveBillingModelName 返回首选的计费模型名（候选列表的第一项）。
+func ResolveBillingModelName(name string) string {
+	candidates := ResolveBillingModelCandidates(name)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 // ---------------------------------------------------------------------------
@@ -257,12 +321,16 @@ func SetBuiltinBillingExpressions(m map[string]string) {
 }
 
 // BuiltinBillingExpression 返回模型的内置表达式与命中标记。
+// 与 DB 查找一致，按候选顺序（规范名 → 原名 → 基名）匹配。
 func BuiltinBillingExpression(model string) (string, bool) {
-	m := ResolveBillingModelName(model)
 	builtinMu.RLock()
-	e, ok := builtinExprs[m]
-	builtinMu.RUnlock()
-	return e, ok && strings.TrimSpace(e) != ""
+	defer builtinMu.RUnlock()
+	for _, cand := range ResolveBillingModelCandidates(model) {
+		if e, ok := builtinExprs[cand]; ok && strings.TrimSpace(e) != "" {
+			return e, true
+		}
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
@@ -433,8 +501,12 @@ func ParsePricingSpec(spec string) (*ParsedSpec, error) {
 		}
 		// 保存期即编译校验（billing-01 §2.3 / §6.4）：非法表达式绝不能
 		// 进入快照，否则错误会推迟到预扣/结算热路径才暴露。
-		if _, err := expr.Compile(e); err != nil {
+		ev, err := expr.Compile(e)
+		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidSpec, err)
+		}
+		if err := validateExpressionIdentifiers(ev); err != nil {
+			return nil, err
 		}
 		price := contract.PriceData{FreeModel: raw.FreeModel != nil && *raw.FreeModel}
 		return &ParsedSpec{Mode: mode, Expr: e, Price: price}, nil
@@ -529,7 +601,80 @@ func ParsePricingSpec(spec string) (*ParsedSpec, error) {
 		price.FreeModel = price.ModelPrice == 0
 	}
 
+	if err := validatePriceData(&price); err != nil {
+		return nil, err
+	}
 	return &ParsedSpec{Mode: mode, Price: price}, nil
+}
+
+// 表达式标识符白名单（保存期校验，billing-01 §2.1/§2.2、billing-00 §4.1）。
+//
+// 【为什么必须白名单】表达式来自管理端配置；若允许任意标识符，拼写错误
+// （如把 cc1h 写成 cch1）会编译成「未绑定变量」而在运行期才失败，或更糟：
+// 未来的变量扩展让旧表达式静默改变语义。白名单含：
+//   - 数据变量：p/c/len/cr/cc/cc1h/img/img_cr/img_o/ai/ao/image_count；
+//   - 函数名：billing-00 §4.1 的语言全集（当前 Task 1 只编译数学子集，
+//     其余名字在编译期即被拒绝；此处列出是为未来扩展不误伤）。
+//
+// UsedVars 含函数名（billing-01 §4.1），所以先按函数名放行再按变量名判定。
+var (
+	allowedExpressionVars = map[string]struct{}{
+		"p": {}, "c": {}, "len": {}, "cr": {}, "cc": {}, "cc1h": {},
+		"img": {}, "img_cr": {}, "img_o": {}, "ai": {}, "ao": {}, "image_count": {},
+	}
+	allowedExpressionFuncs = map[string]struct{}{
+		"min": {}, "max": {}, "abs": {}, "ceil": {}, "floor": {}, "round": {},
+		"tier": {}, "fixed": {}, "param": {}, "header": {}, "has": {},
+		"hour": {}, "minute": {}, "weekday": {}, "month": {}, "day": {}, "now": {},
+		"u": {},
+	}
+)
+
+// validateExpressionIdentifiers 拒绝白名单之外的数据变量/函数名。
+func validateExpressionIdentifiers(ev *expr.Evaluator) error {
+	for name := range ev.UsedVars() {
+		if _, ok := allowedExpressionFuncs[name]; ok {
+			continue
+		}
+		if _, ok := allowedExpressionVars[name]; ok {
+			continue
+		}
+		return fmt.Errorf("%w: 表达式引用了未知标识符 %q", ErrInvalidSpec, name)
+	}
+	return nil
+}
+
+// validatePriceData 校验换算**之后**的价格字段有限非负。
+//
+// 入参校验只能保证原始值有限；`model_ratio × 2 × QPU` 等换算仍可能溢出
+// 为 +Inf（如 model_ratio=1e308），必须在进入快照前拒绝。
+// -1 只允许出现在两个「显式零哨兵」字段上（completion / 1h 缓存创建）。
+func validatePriceData(p *contract.PriceData) error {
+	fields := []struct {
+		name          string
+		v             float64
+		allowSentinel bool
+	}{
+		{"model_ratio", p.ModelRatio, false},
+		{"completion_ratio", p.CompletionRatio, true},
+		{"cache_ratio", p.CacheRatio, false},
+		{"cache_creation_ratio", p.CacheCreationRatio, false},
+		{"cache_creation_5m_ratio", p.CacheCreation5mRatio, false},
+		{"cache_creation_1h_ratio", p.CacheCreation1hRatio, true},
+		{"image_ratio", p.ImageRatio, false},
+		{"audio_ratio", p.AudioRatio, false},
+		{"audio_completion_ratio", p.AudioCompletionRatio, false},
+		{"model_price", p.ModelPrice, false},
+	}
+	for _, f := range fields {
+		if f.allowSentinel && f.v == explicitZeroRatio {
+			continue
+		}
+		if math.IsNaN(f.v) || math.IsInf(f.v, 0) || f.v < 0 {
+			return fmt.Errorf("%w: 换算后的 %s=%v", ErrInvalidPrice, f.name, f.v)
+		}
+	}
+	return nil
 }
 
 func parseSpecMode(s string) (contract.BillingMode, bool, error) {
@@ -570,16 +715,26 @@ func defaultPriceData() contract.PriceData {
 // ResolveMode 实现 billing-02 §2.2 的优先级判定（早返回）：
 //
 //  1. 显式 tiered_expr → 表达式（显式模式最高优先，§2.4 行 1）；
-//  2. 已配置传统价（ModelRatio/ModelPrice 等）→ 按次或传统倍率
+//  2. 显式 ratio / per_call → 尊重显式模式（R9 的 mode 列永远有值）：
+//     显式 ratio 不会被内置表达式抢走（§2.2(0)），显式 per_call 即按次；
+//  3. 未显式时：已配置传统价（ModelRatio/ModelPrice 等）→ 按次或传统倍率
 //     （「已配置旧价优先于内置表达式」，§2.4 行 2）；
-//  3. 命中内置表达式 → 表达式；
-//  4. 其余 → 按次（若调用方已声明）或传统倍率兜底。
+//  4. 命中内置表达式 → 表达式；
+//  5. 其余 → 传统倍率兜底。
 //
-// 调用方若要用「默认价」替代缺失配置，必须在调用本函数**之前**查内置表
-// （否则默认价会被误认为「已配置传统价」而挡住内置表达式）。
-func ResolveMode(price *contract.PriceData, model string, configured contract.BillingMode) contract.BillingMode {
+// modeExplicit 让调用方区分「显式写了 ratio」与「未配置（零值也是 ratio）」；
+// DB 的 model_pricing.mode 永远显式（NOT NULL），故 Source 传 true。
+// price 为 nil 表示没有任何已配置价（按未配置处理，不 panic）。
+func ResolveMode(price *contract.PriceData, model string, configured contract.BillingMode, modeExplicit bool) contract.BillingMode {
 	if configured == contract.BillingModeTieredExpr {
 		return contract.BillingModeTieredExpr
+	}
+	if modeExplicit {
+		// 显式模式优先于「已配置旧价」与内置表达式（billing-02 §2.2(0)）。
+		if configured == contract.BillingModePerCall {
+			return contract.BillingModePerCall
+		}
+		return contract.BillingModeRatio
 	}
 	if hasConfiguredLegacyPrice(price) {
 		if price.UsePrice {
@@ -590,7 +745,7 @@ func ResolveMode(price *contract.PriceData, model string, configured contract.Bi
 	if _, ok := BuiltinBillingExpression(model); ok {
 		return contract.BillingModeTieredExpr
 	}
-	if configured == contract.BillingModePerCall || price.UsePrice {
+	if configured == contract.BillingModePerCall || (price != nil && price.UsePrice) {
 		return contract.BillingModePerCall
 	}
 	return contract.BillingModeRatio
@@ -647,8 +802,12 @@ func ResolveExpression(price *contract.PriceData, model string, mode contract.Bi
 		if e == "" {
 			return contract.PriceSnapshot{}, ErrMissingExpression
 		}
-		if _, err := expr.Compile(e); err != nil {
+		ev, err := expr.Compile(e)
+		if err != nil {
 			return contract.PriceSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidSpec, err)
+		}
+		if err := validateExpressionIdentifiers(ev); err != nil {
+			return contract.PriceSnapshot{}, err
 		}
 		sum := sha256.Sum256([]byte(e))
 		hash = hex.EncodeToString(sum[:])

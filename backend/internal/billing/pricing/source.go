@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -128,8 +130,10 @@ type DBSource struct {
 // NewSource 构造数据库定价源。
 //
 // cfg 可为 nil（测试 / 未接配置中心时用默认兑换比）。配置里的
-// billing.quota_per_unit 必须是 JSON 整数且落在 1–1,000,000；非法值让
-// 构造失败而不是静默改用默认值——错误的兑换比会让全站金额错位。
+// billing.quota_per_unit 接受 JSON 数字或数值字符串（与 Engine 同口径），
+// 但必须是整数且落在 1–1,000,000；非法值让构造失败而不是静默改用默认值——
+// 错误的兑换比会让全站金额错位。构造成功时会把 QPU 写入 ComputeQuota 的
+// 进程级原子配置（见 readQuotaPerUnit）。
 func NewSource(db *gorm.DB, cfg ConfigReader) (*DBSource, error) {
 	if db == nil {
 		return nil, errors.New("pricing: NewSource 需要非 nil 的 *gorm.DB")
@@ -161,42 +165,84 @@ func (s *DBSource) Invalidate() {
 }
 
 // readQuotaPerUnit 读取并校验 billing.quota_per_unit（默认 100）。
+//
+// 【解析口径与 Engine 对齐】配置中心的值可能是 JSON 数字（`100`）或数值
+// 字符串（`"100"`）——Task 3 的 Engine.configFloat 两种都接受，本函数保持
+// 同一契约，避免同一配置键在两处得到不同结果。设计上该键是 bigint
+// （modules-08），故非整数值（100.5）一律拒绝。`null` 与缺键等价（默认 100）。
+//
+// 【进程级副作用】QPU 只有 ComputeQuota 需要，而它的冻结签名没有该入参；
+// 本函数在 NewSource 装配时调用 SetQuotaPerUnit 写入进程级原子值。装配方
+// 必须先构造 Source 再对外提供计费服务（T9 装配顺序）。
 func readQuotaPerUnit(cfg ConfigReader) (int64, error) {
 	if cfg == nil {
 		return DefaultQuotaPerUnit, nil
 	}
 	raw, ok := cfg.Get(quotaPerUnitKey)
-	if !ok || len(raw) == 0 {
+	if !ok || len(raw) == 0 || string(raw) == "null" {
 		return DefaultQuotaPerUnit, nil
 	}
-	var n int64
-	if err := json.Unmarshal(raw, &n); err != nil {
+	f, err := parseConfigNumber(raw)
+	if err != nil {
 		return 0, fmt.Errorf("pricing: 解析 %s: %w", quotaPerUnitKey, err)
 	}
-	if n < 1 || n > 1_000_000 {
-		return 0, fmt.Errorf("pricing: %s 越界（%d，允许 1–1000000）", quotaPerUnitKey, n)
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+		return 0, fmt.Errorf("pricing: %s 必须是整数（got %v）", quotaPerUnitKey, f)
 	}
-	return n, nil
+	if f < 1 || f > 1_000_000 {
+		return 0, fmt.Errorf("pricing: %s 越界（%v，允许 1–1000000）", quotaPerUnitKey, f)
+	}
+	return int64(f), nil
+}
+
+// parseConfigNumber 接受 JSON 数字或数值字符串（与 Engine.configFloat 同口径）。
+func parseConfigNumber(raw json.RawMessage) (float64, error) {
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return f, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, errors.New("不是数值或数值字符串")
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0, fmt.Errorf("数值字符串非法: %w", err)
+	}
+	return v, nil
 }
 
 // Resolve 实现 Source。
 func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
-	resolved := ResolveBillingModelName(model)
+	candidates := ResolveBillingModelCandidates(model)
 	group = strings.TrimSpace(group)
 	if group == "" {
 		// group 缺省用 default（brief 冻结；user_groups.default 由迁移保证存在）。
 		group = "default"
 	}
 
-	row, found, err := s.lookupModel(ctx, resolved)
-	if err != nil {
-		return contract.PriceSnapshot{}, err
+	// 按候选顺序查价：精确名优先，别名/基名只在前者未登记时兜底
+	// （billing-02 §2.3；见 ResolveBillingModelCandidates）。
+	var (
+		row     modelPricingRow
+		matched string
+		found   bool
+	)
+	for _, cand := range candidates {
+		r, ok, err := s.lookupModel(ctx, cand)
+		if err != nil {
+			return contract.PriceSnapshot{}, err
+		}
+		if ok {
+			row, matched, found = r, cand, true
+			break
+		}
 	}
 	if !found || row.Status != 1 {
-		return s.defaultSnapshot(ctx, resolved, group)
+		return s.defaultSnapshot(ctx, candidates, group)
 	}
 
-	price, mode, exprString, err := priceFromModelRow(row, resolved)
+	price, mode, exprString, err := priceFromModelRow(row, matched)
 	if err != nil {
 		return contract.PriceSnapshot{}, err
 	}
@@ -210,7 +256,7 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 	// 表达式自包含全部计价（billing-02 §3.1）：group_pricing 的绝对覆盖价
 	// 只覆盖价列，不覆盖表达式，故表达式模式跳过覆盖查询。
 	if mode != contract.BillingModeTieredExpr {
-		override, ok, err := s.lookupGroupPricing(ctx, group, resolved)
+		override, ok, err := s.lookupGroupPricing(ctx, group, matched)
 		if err != nil {
 			return contract.PriceSnapshot{}, err
 		}
@@ -227,21 +273,27 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 		}
 	}
 
-	return ResolveExpression(&price, resolved, mode, exprString)
+	return ResolveExpression(&price, matched, mode, exprString)
 }
 
 // defaultSnapshot 处理「无定价行 / 停用行」：内置表达式优先，其次默认价。
-func (s *DBSource) defaultSnapshot(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
+func (s *DBSource) defaultSnapshot(ctx context.Context, candidates []string, group string) (contract.PriceSnapshot, error) {
 	info, err := s.groupInfo(ctx, group)
 	if err != nil {
 		return contract.PriceSnapshot{}, err
 	}
 
-	if e, ok := BuiltinBillingExpression(model); ok {
-		price := contract.PriceData{GroupRatioInfo: info}
-		return ResolveExpression(&price, model, contract.BillingModeTieredExpr, e)
+	for _, cand := range candidates {
+		if e, ok := BuiltinBillingExpression(cand); ok {
+			price := contract.PriceData{GroupRatioInfo: info}
+			return ResolveExpression(&price, cand, contract.BillingModeTieredExpr, e)
+		}
 	}
 
+	model := ""
+	if len(candidates) > 0 {
+		model = candidates[0]
+	}
 	price := defaultPriceData()
 	price.GroupRatioInfo = info
 	return ResolveExpression(&price, model, contract.BillingModeRatio, "")
@@ -249,9 +301,17 @@ func (s *DBSource) defaultSnapshot(ctx context.Context, model, group string) (co
 
 // priceFromModelRow 把一行 model_pricing 映射为 PriceData / 模式 / 表达式。
 func priceFromModelRow(row modelPricingRow, model string) (contract.PriceData, contract.BillingMode, string, error) {
-	if row.BillingExpr != nil && strings.TrimSpace(*row.BillingExpr) != "" {
+	if row.BillingExpr != nil {
+		e := strings.TrimSpace(*row.BillingExpr)
+		if e == "" {
+			// R-37（fail-closed）：billing_expr 列存在但为空 → 配置错误。
+			// 静默回退 ratio/per_call 会让管理员以为表达式生效，实际按另一套
+			// 价格计费——这是比拒绝请求更危险的「静默错价」。
+			return contract.PriceData{}, 0, "",
+				fmt.Errorf("%w: model_pricing(%s).billing_expr 为空，拒绝回退 ratio/per_call", ErrInvalidSpec, row.Model)
+		}
 		// R9：billing_expr 非 NULL 即表达式模式（显式模式最高优先）。
-		return contract.PriceData{}, contract.BillingModeTieredExpr, strings.TrimSpace(*row.BillingExpr), nil
+		return contract.PriceData{}, contract.BillingModeTieredExpr, e, nil
 	}
 
 	switch row.Mode {
@@ -385,7 +445,14 @@ func applyGroupOverride(price *contract.PriceData, mode contract.BillingMode, ro
 			return err
 		}
 		price.ModelRatio = prompt
-		price.CompletionRatio = completion
+		// 覆盖价的 completion_price 是**绝对值**：0 表示该分组输出免费，
+		// 必须用 -1 哨兵承载，否则 applyRatioDefaults 会把 0 当「未设置」
+		// 并按模型族（1–5× 输入价）兜底——静默多收费（review C1）。
+		if completion == 0 {
+			price.CompletionRatio = explicitZeroRatio
+		} else {
+			price.CompletionRatio = completion
+		}
 		price.CacheRatio = cacheRead
 		price.CacheRatioSet = true
 		price.CacheCreationRatio = cacheWrite
@@ -415,7 +482,7 @@ func (s *DBSource) groupInfo(ctx context.Context, group string) (contract.GroupR
 // ---------------------------------------------------------------------------
 
 func (s *DBSource) lookupModel(ctx context.Context, model string) (modelPricingRow, bool, error) {
-	if v, ok := cacheGet(&s.mu, s.models, model, s.now()); ok {
+	if v, ok := s.getModelCache(model); ok {
 		return v, true, nil
 	}
 	var row modelPricingRow
@@ -426,13 +493,13 @@ func (s *DBSource) lookupModel(ctx context.Context, model string) (modelPricingR
 	if err != nil {
 		return modelPricingRow{}, false, fmt.Errorf("pricing: 查询 model_pricing(%s): %w", model, err)
 	}
-	cachePut(&s.mu, s.models, model, row, s.now().Add(s.ttl))
+	s.putModelCache(model, row)
 	return row, true, nil
 }
 
 func (s *DBSource) lookupGroupPricing(ctx context.Context, group, model string) (groupPricingRow, bool, error) {
 	key := group + "\x00" + model
-	if v, ok := cacheGet(&s.mu, s.groupPrices, key, s.now()); ok {
+	if v, ok := s.getGroupPriceCache(key); ok {
 		return v, true, nil
 	}
 	var row groupPricingRow
@@ -445,12 +512,12 @@ func (s *DBSource) lookupGroupPricing(ctx context.Context, group, model string) 
 	if err != nil {
 		return groupPricingRow{}, false, fmt.Errorf("pricing: 查询 group_pricing(%s,%s): %w", group, model, err)
 	}
-	cachePut(&s.mu, s.groupPrices, key, row, s.now().Add(s.ttl))
+	s.putGroupPriceCache(key, row)
 	return row, true, nil
 }
 
 func (s *DBSource) lookupGroupRatio(ctx context.Context, group string) (float64, error) {
-	if v, ok := cacheGet(&s.mu, s.groupRatios, group, s.now()); ok {
+	if v, ok := s.getGroupRatioCache(group); ok {
 		return v, nil
 	}
 	var row userGroupRow
@@ -460,7 +527,7 @@ func (s *DBSource) lookupGroupRatio(ctx context.Context, group string) (float64,
 		Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// billing-02 §4.7：未命中记日志返回 1（不是错误、不是 0）。
-		cachePut(&s.mu, s.groupRatios, group, 1.0, s.now().Add(s.ttl))
+		s.putGroupRatioCache(group, 1.0)
 		return 1.0, nil
 	}
 	if err != nil {
@@ -468,27 +535,65 @@ func (s *DBSource) lookupGroupRatio(ctx context.Context, group string) (float64,
 	}
 	// ratio 是整数百分比：120 → 1.20x（modules-06 F-06-15）。
 	ratio := float64(row.Ratio) / 100
-	cachePut(&s.mu, s.groupRatios, group, ratio, s.now().Add(s.ttl))
+	s.putGroupRatioCache(group, ratio)
 	return ratio, nil
 }
 
-// cacheGet / cachePut 是缓存表的泛型读写。
+// ---------------------------------------------------------------------------
+// 缓存读写
 //
-// 【为什么是自由函数而不是方法】Go 不支持带类型参数的方法；用自由函数
-// 让三类缓存共享同一份并发保护逻辑，避免三份复制出现「某一份忘了加锁」。
-func cacheGet[T any](mu *sync.RWMutex, m map[string]cacheEntry[T], key string, now time.Time) (T, bool) {
-	var zero T
-	mu.RLock()
-	e, ok := m[key]
-	mu.RUnlock()
-	if !ok || !now.Before(e.expires) {
-		return zero, false
+// 【为什么每类缓存有独立方法】缓存字段（s.models 等）会被 Invalidate 整体
+// 替换。若把字段本身作为参数传给泛型 helper，参数求值发生在加锁之前，会与
+// Invalidate 的赋值构成数据竞争（review I2）。因此字段访问必须发生在锁内：
+// 每个方法在持锁期间读取/写入字段并完成 map 操作，Invalidate 只在持锁时
+// 替换 map。旧 map 在被替换后不再有写入者（所有 put 都访问当前字段），
+// 因此读取旧 map 的副本也是安全的。
+// ---------------------------------------------------------------------------
+
+func (s *DBSource) getModelCache(key string) (modelPricingRow, bool) {
+	s.mu.RLock()
+	e, ok := s.models[key]
+	s.mu.RUnlock()
+	if !ok || !s.now().Before(e.expires) {
+		return modelPricingRow{}, false
 	}
 	return e.value, true
 }
 
-func cachePut[T any](mu *sync.RWMutex, m map[string]cacheEntry[T], key string, value T, expires time.Time) {
-	mu.Lock()
-	m[key] = cacheEntry[T]{value: value, expires: expires}
-	mu.Unlock()
+func (s *DBSource) putModelCache(key string, value modelPricingRow) {
+	s.mu.Lock()
+	s.models[key] = cacheEntry[modelPricingRow]{value: value, expires: s.now().Add(s.ttl)}
+	s.mu.Unlock()
+}
+
+func (s *DBSource) getGroupPriceCache(key string) (groupPricingRow, bool) {
+	s.mu.RLock()
+	e, ok := s.groupPrices[key]
+	s.mu.RUnlock()
+	if !ok || !s.now().Before(e.expires) {
+		return groupPricingRow{}, false
+	}
+	return e.value, true
+}
+
+func (s *DBSource) putGroupPriceCache(key string, value groupPricingRow) {
+	s.mu.Lock()
+	s.groupPrices[key] = cacheEntry[groupPricingRow]{value: value, expires: s.now().Add(s.ttl)}
+	s.mu.Unlock()
+}
+
+func (s *DBSource) getGroupRatioCache(key string) (float64, bool) {
+	s.mu.RLock()
+	e, ok := s.groupRatios[key]
+	s.mu.RUnlock()
+	if !ok || !s.now().Before(e.expires) {
+		return 0, false
+	}
+	return e.value, true
+}
+
+func (s *DBSource) putGroupRatioCache(key string, value float64) {
+	s.mu.Lock()
+	s.groupRatios[key] = cacheEntry[float64]{value: value, expires: s.now().Add(s.ttl)}
+	s.mu.Unlock()
 }

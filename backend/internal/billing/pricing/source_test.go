@@ -25,12 +25,16 @@ func TestReadQuotaPerUnit(t *testing.T) {
 	}{
 		{"nil 配置用默认", nil, DefaultQuotaPerUnit, false},
 		{"缺键用默认", fakeConfig{}, DefaultQuotaPerUnit, false},
+		{"null 用默认", fakeConfig{quotaPerUnitKey: json.RawMessage(`null`)}, DefaultQuotaPerUnit, false},
 		{"合法值", fakeConfig{quotaPerUnitKey: json.RawMessage(`250`)}, 250, false},
+		{"数值字符串（与 Engine 同口径）", fakeConfig{quotaPerUnitKey: json.RawMessage(`"250"`)}, 250, false},
 		{"零越界", fakeConfig{quotaPerUnitKey: json.RawMessage(`0`)}, 0, true},
 		{"负值越界", fakeConfig{quotaPerUnitKey: json.RawMessage(`-1`)}, 0, true},
 		{"超上界", fakeConfig{quotaPerUnitKey: json.RawMessage(`1000001`)}, 0, true},
 		{"非整数", fakeConfig{quotaPerUnitKey: json.RawMessage(`100.5`)}, 0, true},
-		{"字符串", fakeConfig{quotaPerUnitKey: json.RawMessage(`"100"`)}, 0, true},
+		{"字符串非整数", fakeConfig{quotaPerUnitKey: json.RawMessage(`"100.5"`)}, 0, true},
+		{"非数值字符串", fakeConfig{quotaPerUnitKey: json.RawMessage(`"abc"`)}, 0, true},
+		{"字符串指数形式可解析为整数", fakeConfig{quotaPerUnitKey: json.RawMessage(`"1e2"`)}, 100, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -137,6 +141,13 @@ func TestPriceFromModelRowPerCallAndExpr(t *testing.T) {
 		t.Fatalf("表达式行映射: mode=%v expr=%q err=%v", mode, expr, err)
 	}
 
+	// billing_expr 非 NULL 但为空 → fail-closed（R-37），不得回退 ratio/per_call。
+	blank := "   "
+	row = modelPricingRow{Model: "m", Mode: 0, BillingExpr: &blank}
+	if _, _, _, err := priceFromModelRow(row, "m"); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("空 billing_expr 应报配置错误，got %v", err)
+	}
+
 	// 非法 mode。
 	row = modelPricingRow{Model: "m", Mode: 7}
 	if _, _, _, err := priceFromModelRow(row, "m"); err == nil {
@@ -161,6 +172,23 @@ func TestApplyGroupOverride(t *testing.T) {
 		price.CacheRatio != 50 || price.CacheCreationRatio != 60 ||
 		!price.CacheRatioSet || !price.CacheCreationRatioSet {
 		t.Fatalf("覆盖价映射错误: %+v", price)
+	}
+
+	// C1：覆盖价 completion_price=0 是**显式免费**，必须用 -1 哨兵承载，
+	// Resolve 后保持 0，不能被模型族兜底覆盖成 1–5× 输入价。
+	zeroCompletion := groupPricingRow{PromptPrice: 100, CompletionPrice: 0, CacheReadPrice: 0, CacheWritePrice: 0}
+	if err := applyGroupOverride(&price, contract.BillingModeRatio, zeroCompletion); err != nil {
+		t.Fatal(err)
+	}
+	if price.CompletionRatio != explicitZeroRatio {
+		t.Fatalf("覆盖价显式零应为哨兵 %v，got %v", explicitZeroRatio, price.CompletionRatio)
+	}
+	snap, err := Resolve(&price, "claude-sonnet-4", contract.BillingModeRatio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Price.CompletionRatio != 0 {
+		t.Fatalf("覆盖价显式零输出必须保持 0，got %v", snap.Price.CompletionRatio)
 	}
 
 	perCall := contract.PriceData{UsePrice: true, ModelPrice: 150}

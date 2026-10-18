@@ -107,6 +107,11 @@ func clampKindName(k contract.ClampKind) string {
 
 // ClampAuditMap 把标记渲染为 admin_info.quota_saturation 的 4 键 map
 // （billing-07 §4.1）。key 集合固定为 op/kind/original/clamped。
+//
+// 【为什么 original 要做 JSON 安全化】QuotaClamp.Original 在 NaN/±Inf 场景
+// 就是 NaN/±Inf，而 encoding/json 无法序列化这些值——直接落库会让整条
+// usage_logs 写入失败，审计标记反而丢失。故按 JSON 的扩展字面量习惯输出
+// 字符串 "NaN"/"+Inf"/"-Inf"，有限值保持数字。
 func ClampAuditMap(c *contract.QuotaClamp) map[string]any {
 	if c == nil {
 		return nil
@@ -114,8 +119,22 @@ func ClampAuditMap(c *contract.QuotaClamp) map[string]any {
 	return map[string]any{
 		"op":       c.Op,
 		"kind":     clampKindName(c.Kind),
-		"original": c.Original,
+		"original": jsonSafeFloat(c.Original),
 		"clamped":  c.Clamped,
+	}
+}
+
+// jsonSafeFloat 把非有限 float64 转成可被 encoding/json 序列化的表示。
+func jsonSafeFloat(v float64) any {
+	switch {
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "+Inf"
+	case math.IsInf(v, -1):
+		return "-Inf"
+	default:
+		return v
 	}
 }
 

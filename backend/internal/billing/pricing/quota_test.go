@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"testing"
@@ -280,6 +281,25 @@ func TestClampErrorAndAuditMap(t *testing.T) {
 	var ce *ClampError
 	if !errors.As(err, &ce) || ce.Clamp != clamp {
 		t.Fatal("errors.As 应能取出 ClampError")
+	}
+
+	// NaN 的 original 必须 JSON 安全（review M10）：encoding/json 不能序列化
+	// NaN，否则 usage_logs 的 admin_info 写入会整条失败。
+	_, nanClamp := QuotaFromFloatChecked(math.NaN())
+	nanMap := ClampAuditMap(nanClamp)
+	if nanMap["original"] != "NaN" {
+		t.Fatalf("NaN original 应序列化为 \"NaN\"，got %#v", nanMap["original"])
+	}
+	if _, err := json.Marshal(nanMap); err != nil {
+		t.Fatalf("AuditMap 含 NaN 时必须可 JSON 序列化: %v", err)
+	}
+	_, infClamp := QuotaFromFloatChecked(math.Inf(1))
+	if got := ClampAuditMap(infClamp)["original"]; got != "+Inf" {
+		t.Fatalf("+Inf original 应为 \"+Inf\"，got %#v", got)
+	}
+	_, negInfClamp := QuotaFromFloatChecked(math.Inf(-1))
+	if got := ClampAuditMap(negInfClamp)["original"]; got != "-Inf" {
+		t.Fatalf("-Inf original 应为 \"-Inf\"，got %#v", got)
 	}
 }
 
