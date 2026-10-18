@@ -130,11 +130,13 @@ fi
 #     但语法允许 DEFAULT 后继续出现 PARTITION BY / USING / WITH / TABLESPACE / ON …
 #     等尾随子句（例如 `DEFAULT TABLESPACE fast`）。若坚持 DEFAULT 后紧跟 ;/EOL，
 #     这些完全合法的写法会整条放行默认分区，故在 DEFAULT 与语句结尾之间允许上述
-#     子句继续到 ;。列级 DEFAULT 位于括号内且语句不含 PARTITION OF，不会被该分支命中。
+#     子句继续到 ;。关键字后必须有边界（空白或 `(`）：列级默认值
+#     `(a WITH OPTIONS DEFAULT on_created())` 里的 `ON` 只是函数名前缀；没有边界时
+#     会被误判成 `ON COMMIT` 尾随子句（2026-10-18 复评实测误报）。
 default_partition=0
 for f in "${all[@]}"; do
   if sql_body "$f" | tr '\n' ' ' | sed -E 's/;[[:space:]]*/;\n/g' \
-     | grep -Eqi 'DEFAULT[[:space:]]+PARTITION|PARTITION[[:space:]]+OF[^;]*[[:space:]]DEFAULT([[:space:]]+(TABLESPACE|WITH|USING|PARTITION|ON)[^;]*)?[[:space:]]*(;|$)'; then
+     | grep -Eqi 'DEFAULT[[:space:]]+PARTITION|PARTITION[[:space:]]+OF[^;]*[[:space:]]DEFAULT([[:space:]]+(TABLESPACE|WITH|USING|PARTITION|ON)[[:space:](][^;]*)?[[:space:]]*(;|$)'; then
     violation "禁止默认分区（DEFAULT PARTITION / PARTITION OF ... DEFAULT）：$(basename "$f")"
     default_partition=$((default_partition + 1))
   fi
