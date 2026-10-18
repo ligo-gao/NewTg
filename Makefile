@@ -105,7 +105,7 @@ api-lint: ## 校验 OpenAPI 骨架（M1+ 挂 codegen）；版本由 CI 变量 KI
 	cd $(BACKEND) && go run github.com/getkin/kin-openapi/cmd/validate@$(KIN_OPENAPI_VERSION) api/openapi.yaml
 
 image: ## 构建本机架构镜像（PLATFORM 默认 linux/amd64）
-	docker buildx build --platform $(PLATFORM) -f $(BACKEND)/Dockerfile -t $(IMAGE) $(BACKEND)
+	docker build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) --build-arg GOPROXY=$${NEWTG_GOPROXY:-https://goproxy.cn,direct} -f $(BACKEND)/Dockerfile -t $(IMAGE) $(BACKEND)
 
 image-multiarch: ## 多架构构建并推送（发布用）
 	docker buildx build --platform linux/amd64,linux/arm64 -f $(BACKEND)/Dockerfile -t $(IMAGE) --push $(BACKEND)
