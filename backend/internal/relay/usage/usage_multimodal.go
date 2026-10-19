@@ -208,25 +208,52 @@ func parseUsageObject(raw json.RawMessage, family protocolFamily) *contract.Usag
 		return nil
 	}
 
-	if _, ok := object["promptTokenCount"]; ok {
-		return parseGeminiUsage(trimmed)
-	}
-	if _, ok := object["candidatesTokenCount"]; ok {
+	if hasAnyKey(object, "promptTokenCount", "candidatesTokenCount") {
 		return parseGeminiUsage(trimmed)
 	}
 	// OpenAI 形状优先于渠道族：Anthropic 兼容网关/跨协议转发可能把
 	// prompt_tokens 透传到 Claude 渠道，此时按 payload 而不是渠道名解释，
 	// 避免「渠道对、形状不对」被解析成零值。
-	if _, ok := object["prompt_tokens"]; ok {
-		return parseOpenAIUsageObject(trimmed)
+	if hasAnyKey(object, "prompt_tokens", "completion_tokens") {
+		return parseOpenAIUsageObject(trimmed, false)
 	}
-	if _, ok := object["completion_tokens"]; ok {
-		return parseOpenAIUsageObject(trimmed)
+
+	// input_tokens / output_tokens 是**歧义形状**：Responses 风格与 Claude
+	// 都用这两个键。判定顺序：
+	//  1. 出现 input_tokens_details / output_tokens_details → OpenAI Responses；
+	//  2. 出现 Claude 缓存键 → Claude（任何渠道族）；
+	//  3. 渠道族为 Claude → Claude；
+	//  4. 渠道族为 Gemini/Vertex 且只有 input/output（无 OpenAI 明细）→
+	//     Vertex 上的 Anthropic 模型（family 提示，relay-03 §6.2 row 6）；
+	//  5. 其余（OpenAI/未知）→ Responses 风格。
+	if hasAnyKey(object, "input_tokens", "output_tokens") {
+		if hasAnyKey(object, "input_tokens_details", "output_tokens_details") {
+			return parseResponsesUsage(trimmed)
+		}
+		if family == familyClaude || looksClaudeUsage(object) ||
+			(family == familyGemini && !hasAnyKey(object, "prompt_tokens", "completion_tokens")) {
+			return parseClaudeUsage(trimmed)
+		}
+		return parseResponsesUsage(trimmed)
 	}
+
 	if family == familyClaude || looksClaudeUsage(object) {
 		return parseClaudeUsage(trimmed)
 	}
-	return parseOpenAIUsageObject(trimmed)
+	// 只带 total_tokens 的重排/嵌入形状：允许 total → prompt 兜底；
+	// 其它未识别对象不应伪造用量（见 parseOpenAIUsageObject）。
+	return parseOpenAIUsageObject(trimmed, !hasAnyKey(object,
+		"prompt_tokens", "completion_tokens", "input_tokens", "output_tokens"))
+}
+
+// hasAnyKey 判断顶层对象是否含任一指定键（键存在即为协议事实，值可为 0）。
+func hasAnyKey(object map[string]json.RawMessage, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := object[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // looksClaudeUsage 识别 Anthropic 专有缓存键。
@@ -250,56 +277,20 @@ func looksClaudeUsage(object map[string]json.RawMessage) bool {
 
 // parseClaudeUsage 解析 Anthropic usage（relay-03 §6.2 row 4）。
 //
-// 归一化：
-//   - Prompt=input_tokens；Completion=output_tokens。
-//   - CacheRead=cache_read_input_tokens；CacheWrite=cache_creation_input_tokens。
-//   - PromptIncludesCache=false：Claude 的 input_tokens **不含**缓存读写，
-//     缓存是独立维度（方向搞反会成倍错算，契约 §2.3）。
-//   - ReasoningIncludedInCompletion=true：Claude 无独立 reasoning 字段，
-//     thinking token 计入 output（relay-03 §6.2 row 4 备注）。
-//   - Total 由各维度相加：Claude 不返回 total_tokens，而 Total 的用途是
-//     日志/对账，取「全部计费 token」比忽略缓存段更接近真实上下文长度。
-//   - Raw 保留 Claude 原键（含 0 值），供 M3 usage_semantic 正向判定与对账。
+// 【F7 · 委托 ir.ParseAnthropicUsage】Claude 口径已在 T2 的 `ir` 包实现
+// （含 `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`
+// 的拆分回填、Total=prompt+completion、Raw 原键保留）。usage 层再写一份会
+// 与适配器漂移——缓存写少算的后果是真实少计费，故这里只做「是否存在」
+// 判定并原样复用 ir 的结果。
+//
+// 返回 nil 表示上游没有可采信的 Claude 事实（空对象/非法形状），让三源
+// 优先级的后续来源继续参与；Source=UsageEstimated 是 ir 的「无事实」哨兵。
 func parseClaudeUsage(raw json.RawMessage) *contract.Usage {
-	var payload struct {
-		InputTokens              *int64 `json:"input_tokens"`
-		OutputTokens             *int64 `json:"output_tokens"`
-		CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
-		CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	parsed := ir.ParseAnthropicUsage(raw)
+	if parsed.Source == contract.UsageEstimated {
 		return nil
 	}
-	if payload.InputTokens == nil && payload.OutputTokens == nil &&
-		payload.CacheCreationInputTokens == nil && payload.CacheReadInputTokens == nil {
-		return nil
-	}
-
-	prompt := nonNeg(derefInt64(payload.InputTokens))
-	completion := nonNeg(derefInt64(payload.OutputTokens))
-	cacheWrite := nonNeg(derefInt64(payload.CacheCreationInputTokens))
-	cacheRead := nonNeg(derefInt64(payload.CacheReadInputTokens))
-
-	var rawMap map[string]any
-	_ = json.Unmarshal(raw, &rawMap)
-
-	return &contract.Usage{
-		Prompt:                        prompt,
-		Completion:                    completion,
-		Total:                         prompt + completion + cacheRead + cacheWrite,
-		PromptIncludesCache:           false,
-		ReasoningIncludedInCompletion: true,
-		CacheRead:                     cacheRead,
-		CacheWrite:                    cacheWrite,
-		PromptDetail: contract.UsageDetail{
-			Text:       prompt,
-			CacheRead:  cacheRead,
-			CacheWrite: cacheWrite,
-		},
-		CompletionDetail: contract.UsageDetail{Text: completion},
-		Source:           contract.UsageUpstreamExact,
-		Raw:              rawMap,
-	}
+	return &parsed
 }
 
 // geminiModalityDetail 是 Gemini `*TokensDetails[]` 的元素。
@@ -321,6 +312,11 @@ type geminiModalityDetail struct {
 //
 // 子类明细来自 promptTokensDetails / cacheTokensDetails / candidatesTokensDetails：
 // 图像/音频 token 是 prompt/completion 的**子集**，只做拆分不改总量。
+//
+// 【F10 登记】`CompletionDetail.Image` 与 `PromptDetail.CacheReadImage` 是
+// 本入口比 ir.ParseGeminiUsage 更细的只读拆分（后者目前只带 Audio/Text）。
+// 二者不进入总量、只服务表达式子类变量；若后续把 Gemini 解析统一到 ir，
+// 需先在 ir 侧补这两个字段再删除本实现，避免静默丢失明细。
 func parseGeminiUsage(raw json.RawMessage) *contract.Usage {
 	var payload struct {
 		PromptTokenCount        *int64 `json:"promptTokenCount"`
@@ -400,24 +396,118 @@ func modalityTokens(details []geminiModalityDetail) (image, audio int64) {
 	return image, audio
 }
 
-// parseOpenAIUsageObject 解析 OpenAI 形状的 usage。
+// parseOpenAIUsageObject 解析 OpenAI Chat/Completions 形状的 usage。
 //
 // 复用 ir.ParseOpenAIUsage 保证与非流式整包、流式末块走同一套字段路径
-// （relay-03 §6.2 row 1），并补两处多模态端点特有的口径：
-//   - 嵌入/重排可能只给 total_tokens（relay-04 §8.3 的重排信任顺序：
-//     `usage.total_tokens` → 映射到 prompt_tokens）。仅在 prompt/completion
-//     都为 0 时映射，避免把文本对话的 total 误当成 prompt；
-//   - 上游只带图像/音频明细时，ir 已把它们填进 PromptDetail/CompletionDetail。
-func parseOpenAIUsageObject(raw json.RawMessage) *contract.Usage {
+// （relay-03 §6.2 row 1），并补多模态端点特有的口径：
+//   - 上游只带图像/音频明细时，ir 已把它们填进 PromptDetail/CompletionDetail；
+//   - totalTokens 不在此处当 prompt（见 allowTotalFallback）。
+//
+// allowTotalFallback 只在「对象没有任何 prompt/completion/input/output 键」
+// 时为 true（重排/嵌入的 `{"total_tokens":N}` 形状，relay-04 §8.3）。
+// 【F2】以前无条件把 total 当 prompt，会把 Responses/Claude 形状中真实存在的
+// 数字覆盖成 total，属于凭空造数；现在由调用方按键集合显式授权。
+//
+// 没有任何可识别 token 键时返回 nil：不生成「全零 upstream_exact」把
+// 注入/响应头来源挡掉（F3）。
+func parseOpenAIUsageObject(raw json.RawMessage, allowTotalFallback bool) *contract.Usage {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil
+	}
+	if !hasAnyKey(object, "prompt_tokens", "completion_tokens", "total_tokens") {
+		return nil
+	}
 	parsed := ir.ParseOpenAIUsage(raw)
 	if parsed.Source == contract.UsageEstimated {
 		return nil
 	}
-	if parsed.Prompt == 0 && parsed.Completion == 0 && parsed.Total > 0 {
+	if allowTotalFallback && parsed.Prompt == 0 && parsed.Completion == 0 && parsed.Total > 0 {
 		parsed.Prompt = parsed.Total
 		parsed.PromptDetail.Text = parsed.Total
 	}
 	return &parsed
+}
+
+// parseResponsesUsage 解析 OpenAI Responses 风格 usage（relay-03 §6.2 row 2）。
+//
+// Responses 的键与 Chat 不同：input_tokens / output_tokens / total_tokens，
+// 明细在 input_tokens_details.cached_tokens / cache_write_tokens 与
+// output_tokens_details.reasoning_tokens。ir.ParseOpenAIUsage 只认 Chat 的
+// prompt_tokens 系列，直接喂给它会在 input/output 形状上产出全零（F2/F3），
+// 因此在 usage 层按 row 2 的字段路径补齐。
+//
+// 关系布尔按 GPT 格式：input_tokens 已含缓存读（PromptIncludesCache=true），
+// output_tokens 已含 reasoning（ReasoningIncludedInCompletion=true）。
+func parseResponsesUsage(raw json.RawMessage) *contract.Usage {
+	var payload struct {
+		InputTokens  *int64 `json:"input_tokens"`
+		OutputTokens *int64 `json:"output_tokens"`
+		TotalTokens  *int64 `json:"total_tokens"`
+		InputDetails *struct {
+			CachedTokens     int64 `json:"cached_tokens"`
+			CacheWriteTokens int64 `json:"cache_write_tokens"`
+			ImageTokens      int64 `json:"image_tokens"`
+			AudioTokens      int64 `json:"audio_tokens"`
+		} `json:"input_tokens_details"`
+		OutputDetails *struct {
+			ReasoningTokens int64 `json:"reasoning_tokens"`
+			AudioTokens     int64 `json:"audio_tokens"`
+		} `json:"output_tokens_details"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	if payload.InputTokens == nil && payload.OutputTokens == nil && payload.TotalTokens == nil {
+		return nil
+	}
+
+	prompt := nonNeg(derefInt64(payload.InputTokens))
+	completion := nonNeg(derefInt64(payload.OutputTokens))
+	total := nonNeg(derefInt64(payload.TotalTokens))
+	if total == 0 && prompt+completion > 0 {
+		total = prompt + completion
+	}
+
+	var cacheRead, cacheWrite, promptImage, promptAudio int64
+	if details := payload.InputDetails; details != nil {
+		cacheRead = nonNeg(details.CachedTokens)
+		cacheWrite = nonNeg(details.CacheWriteTokens)
+		promptImage = nonNeg(details.ImageTokens)
+		promptAudio = nonNeg(details.AudioTokens)
+	}
+	var reasoning, completionAudio int64
+	if details := payload.OutputDetails; details != nil {
+		reasoning = nonNeg(details.ReasoningTokens)
+		completionAudio = nonNeg(details.AudioTokens)
+	}
+
+	var rawMap map[string]any
+	_ = json.Unmarshal(raw, &rawMap)
+
+	return &contract.Usage{
+		Prompt:                        prompt,
+		Completion:                    completion,
+		Total:                         total,
+		PromptIncludesCache:           true,
+		ReasoningIncludedInCompletion: true,
+		CacheRead:                     cacheRead,
+		CacheWrite:                    cacheWrite,
+		Reasoning:                     reasoning,
+		PromptDetail: contract.UsageDetail{
+			Image:      promptImage,
+			Audio:      promptAudio,
+			Text:       nonNeg(prompt - promptImage - promptAudio),
+			CacheRead:  cacheRead,
+			CacheWrite: cacheWrite,
+		},
+		CompletionDetail: contract.UsageDetail{
+			Audio: completionAudio,
+			Text:  nonNeg(completion - completionAudio),
+		},
+		Source: contract.UsageUpstreamExact,
+		Raw:    rawMap,
+	}
 }
 
 // parseCohereBilledUnits 解析 Cohere 的 `meta.billed_units`（relay-03 §6.2 row 9）。
@@ -459,6 +549,23 @@ func parseCohereBilledUnits(raw json.RawMessage) *contract.Usage {
 // 多模态折算（GC-4）
 // ============================================================================
 
+const (
+	// maxImageN 是单次图片请求的可计费张数上界。
+	//
+	// relay-04 §8.1.2 要求「超出 MaxImageN」按异常回退（保持预留量）；
+	// 128 与契约/会话层的 MaxImageN 同值。该常量在 M2 会话层、图片端点
+	// 校验与这里各有一份（跨包冻结值），改动时需三处同步——本任务不改契约，
+	// 故用本地只读副本并在此注明来源，避免在计费路径硬编码匿名数字。
+	maxImageN = 128
+
+	// maxAudioSeconds 是单条音频响应的时长上界（秒）。
+	//
+	// relay-04 §8.2.2 规定 duration_seconds 是用户/上游可控量，必须饱和
+	// 处理（超过 1 小时按 1 小时计），防止构造超长时长把 token 数放大到
+	// 溢出或异常高计费。换算前先在此钳制，再交给 pricing 的数学换算。
+	maxAudioSeconds = 3600
+)
+
 // applyImageCount 按 relay-04 §8.1 从响应 payload 推导图像张数。
 //
 // 只认 payload（url / b64_json），**绝不数数组长度或 `data.#`**。四形态：
@@ -485,7 +592,7 @@ func applyImageCount(fact *contract.UsageFact, resp *contract.Response) {
 		// 非 OpenAI 图片形态：Gemini 的图片在 candidates[].content.parts[].inlineData。
 		// 只有真正出现 inlineData 键才进入图片语义，普通文本对话不会被误标。
 		if count, present, ok := geminiInlineImageCount(resp.Raw); present {
-			if !ok {
+			if !ok || count > maxImageN {
 				fact.Usage.Source = contract.UsageReservedDefault
 				return
 			}
@@ -494,8 +601,8 @@ func applyImageCount(fact *contract.UsageFact, resp *contract.Response) {
 		return
 	}
 	count, ok := countImagePayload(trimmed)
-	if !ok {
-		// 解析异常/越界：保持请求预留量（relay-04 §8.1.2）。
+	if !ok || count > maxImageN {
+		// 解析异常/越界：保持请求预留量（relay-04 §8.1.2，F4）。
 		fact.Usage.Source = contract.UsageReservedDefault
 		return
 	}
@@ -643,6 +750,11 @@ func applyAudioConversion(usage *contract.Usage, resp *contract.Response) {
 	if duration, ok := responseAudioDuration(resp); ok && usage.AudioSeconds == 0 {
 		usage.AudioSeconds = pricing.AudioSecondsFromDuration(duration)
 	}
+	// relay-04 §8.2.2：duration_seconds 是用户/上游可控量，必须在换算前饱和
+	// 到 1 小时。超过上界按上界计（不是丢弃），并保留测量字段语义。
+	if usage.AudioSeconds > maxAudioSeconds {
+		usage.AudioSeconds = maxAudioSeconds
+	}
 	if usage.AudioSeconds <= 0 {
 		return
 	}
@@ -738,6 +850,11 @@ var (
 // 后续调用返回首次执行的错误。ctx 为 nil 或无可区分的生命周期
 // （Background/TODO）时直接执行一次——这类全局上下文不能当作共享键，
 // 否则不同流的终结器会互相吞掉。
+//
+// 【F8 登记 · 条件性 once】「只执行一次」的保证范围是**同一个 ctx 的关闭
+// 周期**（守卫保留窗口内，见 streamCloseGuardRetention）；窗口外再次调用
+// 会重新执行终结器。这是有意的取舍：无限保留 ctx 会让每个请求的上下文树
+// 无法回收；而 Refund/Terminate 在契约里本身幂等，窗口外重入不会重复扣费。
 func OnStreamClose(ctx context.Context, terminator func() error) error {
 	if terminator == nil {
 		return nil

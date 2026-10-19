@@ -14,9 +14,9 @@ const (
 	audioTokensPerMinute int64 = 1000
 	// secondsPerMinute 是分钟与秒的换算。
 	secondsPerMinute int64 = 60
-	// maxAudioSeconds 是 ceil 后仍可安全参与 int64 乘法的秒数上界。
+	// maxSafeAudioSeconds 是 ceil 后仍可安全参与 int64 乘法的秒数上界。
 	// 超过该值直接饱和，避免 `seconds * 1000` 回绕成负数（GC-9）。
-	maxAudioSeconds = math.MaxInt64 / audioTokensPerMinute * secondsPerMinute
+	maxSafeAudioSeconds = math.MaxInt64 / audioTokensPerMinute * secondsPerMinute
 )
 
 // AudioTokensPerMinute 导出换算系数供审计/测试引用，禁止调用方另写 1000。
@@ -27,13 +27,13 @@ func AudioTokensPerMinute() int64 { return audioTokensPerMinute }
 //
 // 为什么向上取整：relay-04 §8.2.1 的公式是 `ceil(duration_seconds)`，
 // 不足 1 秒的音频也要按 1 秒度量（基线-06 §3 照搬）。负值/NaN 钳 0；
-// +Inf 或超上界饱和到 maxAudioSeconds（不得回绕为负）。
+// +Inf 或超上界饱和到 maxSafeAudioSeconds（不得回绕为负）。
 func AudioSecondsFromDuration(seconds float64) int64 {
 	if math.IsNaN(seconds) || seconds <= 0 {
 		return 0
 	}
-	if math.IsInf(seconds, 1) || seconds > float64(maxAudioSeconds) {
-		return maxAudioSeconds
+	if math.IsInf(seconds, 1) || seconds > float64(maxSafeAudioSeconds) {
+		return maxSafeAudioSeconds
 	}
 	return int64(math.Ceil(seconds))
 }
@@ -47,7 +47,7 @@ func AudioSecondsFromDuration(seconds float64) int64 {
 // 引擎提供的唯一换算入口。
 func AudioTokensFromSeconds(seconds float64) int64 {
 	ceilSeconds := AudioSecondsFromDuration(seconds)
-	if ceilSeconds >= maxAudioSeconds {
+	if ceilSeconds >= maxSafeAudioSeconds {
 		return math.MaxInt64
 	}
 	return int64(math.Round(float64(ceilSeconds) / float64(secondsPerMinute) * float64(audioTokensPerMinute)))

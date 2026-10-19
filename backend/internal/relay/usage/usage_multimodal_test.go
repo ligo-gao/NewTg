@@ -45,8 +45,8 @@ func TestUsageMultimodalAnthropicNative(t *testing.T) {
 	if got.CacheRead != 30 || got.CacheWrite != 10 {
 		t.Fatalf("CacheRead/CacheWrite = %d/%d, want 30/10", got.CacheRead, got.CacheWrite)
 	}
-	if got.Total != 160 {
-		t.Fatalf("Total = %d, want 160（input+output+缓存读写）", got.Total)
+	if got.Total != 120 {
+		t.Fatalf("Total = %d, want 120（与 ir/adapter 一致：input+output）", got.Total)
 	}
 	// Claude 的 input_tokens 不含缓存 → 关系布尔必须为 false（方向错了会成倍错算）。
 	if got.PromptIncludesCache {
@@ -102,9 +102,88 @@ func TestUsageMultimodalAnthropicStreamEvents(t *testing.T) {
 	})
 }
 
-// ----------------------------------------------------------------------------
-// (b) Gemini 原生 usage（增量形状 + 明细拆分）
-// ----------------------------------------------------------------------------
+// F1：CacheWrite 的拆分形态（cache_creation.ephemeral_5m/1h）必须回填，
+// 否则缓存写整段漏计费。ir.ParseAnthropicUsage 是唯一实现，此处做接线探针。
+func TestUsageMultimodalAnthropicCacheCreationSplit(t *testing.T) {
+	resp := &contract.Response{
+		Model: "claude-sonnet-4-5",
+		Raw: []byte(`{"usage":{
+			"input_tokens":10,
+			"output_tokens":2,
+			"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":7}
+		}}`),
+	}
+	got := ExtractUsageMultimodal(resp, nil, nil, contract.ChannelTypeAnthropic).Usage
+	if got.CacheWrite != 12 {
+		t.Fatalf("CacheWrite = %d, want 12（5m+1h 拆分回填）", got.CacheWrite)
+	}
+	if got.Prompt != 10 || got.Completion != 2 || got.Total != 12 {
+		t.Fatalf("usage = %d/%d/%d, want 10/2/12", got.Prompt, got.Completion, got.Total)
+	}
+}
+
+// F2：Responses 风格（input/output + *_tokens_details）不能被 total→prompt
+// 启发式覆盖，也不能被当作全零 Claude。
+func TestUsageMultimodalResponsesShape(t *testing.T) {
+	resp := &contract.Response{
+		Model: "gpt-5",
+		Raw: []byte(`{"usage":{
+			"input_tokens":100,
+			"output_tokens":20,
+			"total_tokens":120,
+			"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":4},
+			"output_tokens_details":{"reasoning_tokens":7,"audio_tokens":2}
+		}}`),
+	}
+	got := ExtractUsageMultimodal(resp, nil, nil, contract.ChannelTypeOpenAI).Usage
+	if got.Prompt != 100 || got.Completion != 20 || got.Total != 120 {
+		t.Fatalf("usage = %d/%d/%d, want 100/20/120（total 不得覆盖 prompt）",
+			got.Prompt, got.Completion, got.Total)
+	}
+	if got.CacheRead != 30 || got.CacheWrite != 4 || got.Reasoning != 7 {
+		t.Fatalf("CR/CW/RZ = %d/%d/%d, want 30/4/7", got.CacheRead, got.CacheWrite, got.Reasoning)
+	}
+	if got.CompletionDetail.Audio != 2 {
+		t.Fatalf("CompletionDetail.Audio = %d, want 2", got.CompletionDetail.Audio)
+	}
+	if !got.PromptIncludesCache || !got.ReasoningIncludedInCompletion {
+		t.Fatalf("Responses 关系布尔 = %v/%v, want true/true",
+			got.PromptIncludesCache, got.ReasoningIncludedInCompletion)
+	}
+}
+
+// F3：Vertex/未知渠道上的 Claude 形状（无缓存键）必须被识别；
+// 无法识别的 usage 对象不得伪装成全零 upstream_exact 挡住注入来源。
+func TestUsageMultimodalShapeSniffAndFallthrough(t *testing.T) {
+	t.Run("Vertex Claude 无缓存键", func(t *testing.T) {
+		resp := &contract.Response{
+			Model: "claude-sonnet-4-5",
+			Raw:   []byte(`{"usage":{"input_tokens":10,"output_tokens":2}}`),
+		}
+		got := ExtractUsageMultimodal(resp, nil, nil, contract.ChannelTypeVertexAi).Usage
+		if got.Prompt != 10 || got.Completion != 2 {
+			t.Fatalf("usage = %d/%d, want Claude 10/2（形状嗅探）", got.Prompt, got.Completion)
+		}
+		if got.PromptIncludesCache {
+			t.Fatal("Vertex Claude 的 PromptIncludesCache = true, want false")
+		}
+	})
+
+	t.Run("无法识别的 usage 对象回退注入", func(t *testing.T) {
+		for _, kind := range []contract.ChannelType{contract.ChannelTypeVertexAi, contract.ChannelTypeOpenAI} {
+			resp := &contract.Response{Model: "m", Raw: []byte(`{"usage":{"mystery_field":1}}`)}
+			injected := &contract.Usage{Prompt: 9, Completion: 3, Source: contract.UsageUpstreamPartial}
+			got := ExtractUsageMultimodal(resp, nil, injected, kind).Usage
+			if got.Prompt != 9 || got.Completion != 3 {
+				t.Fatalf("kind=%s: usage = %d/%d, want injected 9/3（不得被全零 exact 挡住）",
+					kind, got.Prompt, got.Completion)
+			}
+			if got.Source != contract.UsageUpstreamPartial {
+				t.Fatalf("kind=%s: Source = %v, want upstream_partial", kind, got.Source)
+			}
+		}
+	})
+}
 
 func TestUsageMultimodalGeminiNative(t *testing.T) {
 	resp := &contract.Response{
@@ -322,9 +401,44 @@ func TestUsageMultimodalImageCountInvalidKeepsReservation(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// (d) 音频：时长 → token 经 pricing 系数（禁止硬编码）
-// ----------------------------------------------------------------------------
+// F4：MaxImageN=128 上界；129 张按异常回退保持预留量。
+func TestUsageMultimodalImageCountBound(t *testing.T) {
+	makeRaw := func(n int) string {
+		items := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			items = append(items, `{"url":"https://x/a.png"}`)
+		}
+		return `{"data":[` + strings.Join(items, ",") + `]}`
+	}
+
+	okResp := &contract.Response{Model: "gpt-image-2", Raw: []byte(makeRaw(maxImageN))}
+	if got := ExtractUsageMultimodal(okResp, nil, nil, contract.ChannelTypeOpenAI); got.ImageCount != maxImageN {
+		t.Fatalf("ImageCount = %d, want %d（上界内可计费）", got.ImageCount, maxImageN)
+	}
+
+	overResp := &contract.Response{Model: "gpt-image-2", Raw: []byte(makeRaw(maxImageN + 1))}
+	got := ExtractUsageMultimodal(overResp, nil, nil, contract.ChannelTypeOpenAI)
+	if got.ImageCount != 0 || got.Usage.Source != contract.UsageReservedDefault {
+		t.Fatalf("越界张数 = %d / Source=%v, want 0 / reserved_default（保持预留量）",
+			got.ImageCount, got.Usage.Source)
+	}
+}
+
+// F5：duration 超过 3600 秒按 1 小时饱和，不放大 token。
+func TestUsageMultimodalAudioDurationSaturates(t *testing.T) {
+	resp := &contract.Response{Model: "whisper-1", Raw: []byte(`{"text":"x","duration":100000}`)}
+	got := ExtractUsageMultimodal(resp, nil, nil, contract.ChannelTypeOpenAI).Usage
+	if got.AudioSeconds != maxAudioSeconds {
+		t.Fatalf("AudioSeconds = %d, want %d（饱和）", got.AudioSeconds, maxAudioSeconds)
+	}
+	want := pricing.AudioTokensFromSeconds(float64(maxAudioSeconds))
+	if got.PromptDetail.Audio != want {
+		t.Fatalf("PromptDetail.Audio = %d, want %d", got.PromptDetail.Audio, want)
+	}
+	if want != 60_000 {
+		t.Fatalf("3600s 音频 token = %d, want 60000", want)
+	}
+}
 
 func TestUsageMultimodalAudioConversion(t *testing.T) {
 	t.Run("转写 duration=90s", func(t *testing.T) {
