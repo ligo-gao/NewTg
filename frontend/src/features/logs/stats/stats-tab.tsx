@@ -69,6 +69,18 @@ function statsErrorText(
 export interface UsageStatsTabProps {
   search: UsageLogSearch
   canFilterByUsername: boolean
+  /**
+   * The stats panel stays mounted (WAI-ARIA keeps both tabpanels in the DOM),
+   * so queries are gated on the active tab: switching back to the list must
+   * not keep polling aggregates in the background.
+   */
+  active: boolean
+  /**
+   * Session capabilities are still loading. Waiting mirrors the list: an
+   * admin's `?username=` filter must be applied before the first aggregate
+   * request, otherwise the first paint briefly shows every user's totals.
+   */
+  ready: boolean
 }
 
 /**
@@ -79,13 +91,17 @@ export interface UsageStatsTabProps {
 export function UsageStatsTab({
   search,
   canFilterByUsername,
+  active,
+  ready,
 }: UsageStatsTabProps) {
   const { t, locale } = useI18n()
   const granularity = usageStatsGranularity(search)
   const query = buildStatsQuery(search, canFilterByUsername)
+  const enabled = active && ready
 
   const summaryQuery = useQuery({
     queryKey: ['usage-logs', 'stats', 'summary', query],
+    enabled,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-stats/summary', {
@@ -96,6 +112,7 @@ export function UsageStatsTab({
 
   const byModelQuery = useQuery({
     queryKey: ['usage-logs', 'stats', 'by-model', query],
+    enabled,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-stats/by-model', {
@@ -106,6 +123,7 @@ export function UsageStatsTab({
 
   const timeseriesQuery = useQuery({
     queryKey: ['usage-logs', 'stats', 'timeseries', query, granularity],
+    enabled,
     queryFn: async () => {
       const timeseriesQuery: TimeseriesQuery = { ...query, granularity }
       return requireData(
@@ -122,8 +140,7 @@ export function UsageStatsTab({
   // the cards instead of silently widening to all models.
   const ratesQuery = useQuery({
     queryKey: ['usage-logs', 'stats', 'rates', query],
-    enabled:
-      summaryQuery.data !== undefined && summaryQuery.data.request_count > 0,
+    enabled: enabled && summaryQuery.data !== undefined && summaryQuery.data.request_count > 0,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-stats/rates', {
@@ -392,6 +409,12 @@ function StatCard({
 
 function ModelDistributionTable({ items }: { items: UsageStatsByModelItem[] }) {
   const { t, locale } = useI18n()
+  // Locale-aware decimal separator; `toFixed` would print `50.0%` in fr/ru
+  // where the interface otherwise uses a comma.
+  const percentFormat = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })
   return (
     <table
       data-testid="stats-model-table"
@@ -446,7 +469,7 @@ function ModelDistributionTable({ items }: { items: UsageStatsByModelItem[] }) {
                 {formatTokenAmount(item.tokens, locale)}
               </td>
               <td className="px-2 py-2 text-right tabular-nums">
-                {percent.toFixed(1)}%
+                {percentFormat.format(percent)}%
               </td>
             </tr>
           )

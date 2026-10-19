@@ -32,6 +32,7 @@ import { UsageStatusBadge, USAGE_STATUSES } from './log-status-badge'
 import {
   DEFAULT_USAGE_LOG_SEARCH,
   isUuid,
+  normalizeRequestId,
   usageRangeParams,
   validateCustomRange,
   type CustomRangeError,
@@ -90,9 +91,11 @@ function buildQuery(
   if (search.group !== undefined) params.group = search.group
   if (search.token_id !== undefined) params.token_id = search.token_id
   // Malformed IDs stay out of the query; the page reports them from the URL
-  // (the backend would answer 422 for a non-UUID).
+  // (the backend would answer 422 for a non-UUID). Compact and hyphenated
+  // forms are both valid; sending the canonical compact form keeps a pasted
+  // 32-hex ID and a hyphenated one on the same server path.
   if (search.request_id !== undefined && isUuid(search.request_id)) {
-    params.request_id = search.request_id
+    params.request_id = normalizeRequestId(search.request_id)
   }
   if (search.status !== undefined) params.status = search.status
   // Admin-only parameter (sub-feature §3.8). A user must never send it even if
@@ -362,7 +365,10 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     }
     if (!listQuery.isSuccess) return
 
-    const match = items.find((row) => row.request_id === requestId)
+    const normalized = normalizeRequestId(requestId)
+    const match = items.find(
+      (row) => normalizeRequestId(row.request_id) === normalized,
+    )
     if (match === undefined) {
       deepLinkHandledRef.current = requestId
       push({ tone: 'info', message: t('logs.usage.detail.not_found') })
@@ -783,25 +789,16 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         ) : null}
       </div>
 
-      {tab === 'stats' ? (
-        <div
-          role="tabpanel"
-          id="usage-logs-panel-stats"
-          aria-labelledby="usage-logs-tab-stats"
-          className="flex flex-col gap-4"
-        >
-          <UsageStatsTab
-            search={search}
-            canFilterByUsername={capabilities.canFilterByUsername}
-          />
-        </div>
-      ) : (
-        <div
-          role="tabpanel"
-          id="usage-logs-panel-logs"
-          aria-labelledby="usage-logs-tab-logs"
-          className="flex flex-col gap-4"
-        >
+      {/* Both panels stay in the DOM and are toggled with `hidden`: WAI-ARIA
+          expects every tab's `aria-controls` target to exist, and the stats
+          component gates its own queries on the active tab. */}
+      <div
+        role="tabpanel"
+        id="usage-logs-panel-logs"
+        aria-labelledby="usage-logs-tab-logs"
+        hidden={tab !== 'logs'}
+        className="flex flex-col gap-4"
+      >
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
         {errorMessage === null ? (
           <span data-testid="logs-total">
@@ -1039,8 +1036,22 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           }}
         />
       ) : null}
-        </div>
-      )}
+      </div>
+
+      <div
+        role="tabpanel"
+        id="usage-logs-panel-stats"
+        aria-labelledby="usage-logs-tab-stats"
+        hidden={tab !== 'stats'}
+        className="flex flex-col gap-4"
+      >
+        <UsageStatsTab
+          search={search}
+          canFilterByUsername={capabilities.canFilterByUsername}
+          active={tab === 'stats'}
+          ready={!capabilities.loading}
+        />
+      </div>
 
       <LogDetailDrawer
         logId={selectedId}

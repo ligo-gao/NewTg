@@ -16,6 +16,12 @@ const RANGE_BUCKETS: Record<UsageLogRange, number> = {
   '30d': 30,
 }
 
+// Bounded clamp for server buckets outside the computed window (clock skew or
+// a partially-covered first bucket). A corrupt far-past/far-future timestamp
+// must not allocate a huge spine.
+const MAX_STRAY_HOURS = 168
+const MAX_STRAY_DAYS = 7
+
 function stepMs(granularity: StatsGranularity): number {
   return granularity === 'hour' ? HOUR_MS : DAY_MS
 }
@@ -36,6 +42,13 @@ function bucketStart(ms: number, step: number): number {
  * implementation would move a day bucket across month/year boundaries for
  * viewers outside UTC.
  *
+ * The window is computed from the same `range`/`start`/`end` the request was
+ * sent with, but the server's window edge is not bucket-aligned: for a 24h
+ * preset the first row can belong to the hour *before* `end - 23h`. Those real
+ * buckets are merged into the spine (clamped to a bounded stray distance, the
+ * same rule as the dashboard trend) so the chart's Σcost equals the summary
+ * card instead of dropping the partial first bucket.
+ *
  * An empty response stays empty (the caller renders the empty state) instead
  * of a flat zero line that looks like measured data.
  */
@@ -49,42 +62,70 @@ export function fillTimeseries(
 
   const step = stepMs(granularity)
   const range = usageRangeParams(search)
-  let startMs: number
-  let lastMs: number
+  let windowStart: number
+  let windowEnd: number
 
   if ('start' in range) {
-    startMs = bucketStart(Date.parse(range.start), step)
+    windowStart = bucketStart(Date.parse(range.start), step)
     // The backend window is [start, end): when `end` falls exactly on a
     // bucket boundary, the bucket starting at `end` holds no row.
-    lastMs = bucketStart(Date.parse(range.end) - 1, step)
+    windowEnd = bucketStart(Date.parse(range.end) - 1, step)
   } else {
     const count = RANGE_BUCKETS[range.range]
-    lastMs = bucketStart(now, step)
-    startMs = lastMs - (count - 1) * step
+    windowEnd = bucketStart(now, step)
+    windowStart = windowEnd - (count - 1) * step
   }
-  if (!Number.isFinite(startMs) || !Number.isFinite(lastMs) || lastMs < startMs) {
+  if (
+    !Number.isFinite(windowStart) ||
+    !Number.isFinite(windowEnd) ||
+    windowEnd < windowStart
+  ) {
     return []
   }
 
   const sums = new Map<number, { cost: number; requests: number }>()
-  let hasInWindow = false
+  let firstServerBucket: number | undefined
+  let lastServerBucket: number | undefined
   for (const item of items) {
     const ms = Date.parse(item.bucket)
     if (Number.isNaN(ms)) continue
     const bucket = bucketStart(ms, step)
-    if (bucket < startMs || bucket > lastMs) continue
-    hasInWindow = true
     const current = sums.get(bucket) ?? { cost: 0, requests: 0 }
     current.cost += Number.isFinite(item.cost) ? item.cost : 0
     current.requests += Number.isFinite(item.requests) ? item.requests : 0
     sums.set(bucket, current)
+    firstServerBucket =
+      firstServerBucket === undefined
+        ? bucket
+        : Math.min(firstServerBucket, bucket)
+    lastServerBucket =
+      lastServerBucket === undefined
+        ? bucket
+        : Math.max(lastServerBucket, bucket)
   }
-  // Clock skew between browser and server can put every row outside the
-  // computed window. The chart must show the empty state, not fabricated zeros.
-  if (!hasInWindow) return []
+
+  const strayBuckets = granularity === 'hour' ? MAX_STRAY_HOURS : MAX_STRAY_DAYS
+  const clamp = (value: number, low: number, high: number): number =>
+    Math.min(Math.max(value, low), high)
+  const start = Math.min(
+    windowStart,
+    clamp(
+      firstServerBucket ?? windowStart,
+      windowStart - strayBuckets * step,
+      windowEnd + strayBuckets * step,
+    ),
+  )
+  const finish = Math.max(
+    windowEnd,
+    clamp(
+      lastServerBucket ?? windowEnd,
+      windowStart - strayBuckets * step,
+      windowEnd + strayBuckets * step,
+    ),
+  )
 
   const rows: UsageStatsTimeseriesItem[] = []
-  for (let bucket = startMs; bucket <= lastMs; bucket += step) {
+  for (let bucket = start; bucket <= finish; bucket += step) {
     const sum = sums.get(bucket)
     rows.push({
       bucket: new Date(bucket).toISOString(),

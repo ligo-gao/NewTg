@@ -429,7 +429,7 @@ describe('usage logs list', () => {
           latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
             'request_id',
           ),
-        ).toBe('9f3a8d2e-1b2c-4d5e-8f90-112233445566')
+        ).toBe('9f3a8d2e1b2c4d5e8f90112233445566')
       },
       { timeout: 2500 },
     )
@@ -842,6 +842,55 @@ describe('usage logs tabs and request_id deep links', () => {
     await waitFor(() => {
       expect(changes.at(-1)?.request_id).toBeUndefined()
     })
+  })
+
+  it('opens the drawer for a compact 32-hex request_id (gateway format)', async () => {
+    const compact = '9f3a8d2e1b2c4d5e8f90112233445566'
+    const requests = installScenario({
+      // The row comes back hyphenated while the link is compact: matching is
+      // hyphen-insensitive, so both spellings address the same request.
+      list: () => jsonResponse(page([USER_ROW])),
+      detail: () => jsonResponse({ ...USER_ROW, other: {} }),
+    })
+    renderWithProviders(<PageHarness initial={{ request_id: compact }} />)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(
+      latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
+        'request_id',
+      ),
+    ).toBe(compact)
+  })
+
+  it('accepts a hyphenated ID without RFC version/variant bits', async () => {
+    const nonV4 = '9f3a8d2e-1b2c-0d5e-0f90-112233445566'
+    installScenario({
+      list: () => jsonResponse(page([{ ...USER_ROW, request_id: nonV4 }])),
+      detail: () => jsonResponse({ ...USER_ROW, request_id: nonV4, other: {} }),
+    })
+    renderWithProviders(<PageHarness initial={{ request_id: nonV4 }} />)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+  })
+
+  it('corrects a stale page number before resolving the deep link', async () => {
+    const changes: UsageLogSearch[] = []
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+      detail: () => jsonResponse({ ...USER_ROW, other: {} }),
+    })
+    renderWithProviders(
+      <PageHarness
+        initial={{ request_id: USER_ROW.request_id, p: 5 }}
+        onSearch={(next) => changes.push(next)}
+      />,
+    )
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(changes.some((next) => next.p === 1)).toBe(true)
+    expect(
+      latestRequest(requests, '/api/usage-logs')?.url.searchParams.get('p'),
+    ).toBe('1')
   })
 
   it('reports a malformed request_id without replacing the page', async () => {

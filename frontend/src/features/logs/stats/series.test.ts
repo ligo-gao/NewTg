@@ -38,6 +38,21 @@ describe('usage stats timeseries spine', () => {
     expect(rows.find((row) => row.bucket === hoursAgo(3))?.cost).toBe(10)
   })
 
+  it('keeps the partial first bucket that starts before the computed window', () => {
+    // Backend window is [now - 24h, now), which is not bucket-aligned: its
+    // first hourly bucket starts one hour before `end - 23h`. Dropping it
+    // would make the chart Σcost disagree with the summary card.
+    const rows = fillTimeseries(
+      [{ bucket: hoursAgo(24), cost: 107, requests: 1 }],
+      { ...DEFAULT_USAGE_LOG_SEARCH, range: '24h' },
+      'hour',
+      NOW,
+    )
+
+    expect(rows[0]?.bucket).toBe(hoursAgo(24))
+    expect(rows.reduce((sum, row) => sum + row.cost, 0)).toBe(107)
+  })
+
   it('uses the custom window and day buckets when asked', () => {
     const rows = fillTimeseries(
       [

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_USAGE_LOG_SEARCH,
   isUuid,
+  normalizeRequestId,
   validateUsageLogSearch,
   validateCustomRange,
 } from './search'
@@ -61,10 +62,25 @@ describe('usage log search validation', () => {
     })
   })
 
-  it('recognises UUIDs only', () => {
+  it('recognises compact and hyphenated hex IDs, without version bits', () => {
     expect(isUuid('9f3a8d2e-1b2c-4d5e-8f90-112233445566')).toBe(true)
+    // The gateway mints opaque 32-hex IDs (no RFC version/variant bits).
+    expect(isUuid('9f3a8d2e1b2c4d5e8f90112233445566')).toBe(true)
+    // 8-4-4-4-12 with arbitrary hex nibbles (version 0 / variant 0) is still
+    // a valid lookup key: the backend parses it with uuid.Parse.
+    expect(isUuid('9f3a8d2e-1b2c-0d5e-0f90-112233445566')).toBe(true)
     expect(isUuid('9f3a8d2e-1b2c-4d5e-8f90-11223344556')).toBe(false)
+    expect(isUuid('9f3a8d2e1b2c4d5e8f9011223344556')).toBe(false)
     expect(isUuid('hello')).toBe(false)
+  })
+
+  it('normalises request IDs for comparison', () => {
+    expect(
+      normalizeRequestId('9F3A8D2E-1B2C-4D5E-8F90-112233445566'),
+    ).toBe('9f3a8d2e1b2c4d5e8f90112233445566')
+    expect(normalizeRequestId('9f3a8d2e1b2c4d5e8f90112233445566')).toBe(
+      '9f3a8d2e1b2c4d5e8f90112233445566',
+    )
   })
 
   it('validates custom ranges', () => {

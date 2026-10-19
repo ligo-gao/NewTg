@@ -49,6 +49,8 @@ function renderTab(overrides: Partial<UsageLogSearch> = {}) {
     <UsageStatsTab
       search={{ ...DEFAULT_USAGE_LOG_SEARCH, ...overrides }}
       canFilterByUsername={false}
+      active
+      ready
     />,
   )
 }
@@ -151,6 +153,34 @@ describe('usage stats tab (F-05-03)', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(5)
     // The filled hour carries both a zero cost and zero requests.
     expect(within(table).getAllByText('0').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('keeps a real bucket just outside the computed window so chart and summary agree', async () => {
+    const user = userEvent.setup()
+    // A 24h preset spans exactly 24 hours but the server window starts at a
+    // non-aligned instant; the first hourly bucket begins one hour before
+    // `now - 23h`. Dropping it made the chart sum smaller than the card.
+    installStats({
+      summary: () =>
+        jsonResponse({
+          ...SUMMARY,
+          cost_total: 107,
+          request_count: 1,
+        }),
+      timeseries: () =>
+        jsonResponse([{ bucket: hourBucket(-24), cost: 107, requests: 1 }]),
+    })
+    renderTab()
+
+    await user.click(await screen.findByText('View data table'))
+    const table = await screen.findByTestId('stats-trend-table')
+    expect(within(table).getByText('107')).toBeTruthy()
+    const costs = within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => row.querySelectorAll('td')[1]?.textContent ?? '0')
+      .reduce((sum, value) => sum + Number(value.replace(/,/g, '')), 0)
+    expect(costs).toBe(107)
   })
 
   it('hides the rate strip when the window has no requests', async () => {
