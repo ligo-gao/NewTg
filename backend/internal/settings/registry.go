@@ -327,7 +327,7 @@ func buildRegistry() []Setting {
 		def("billing.display_unit", "billing", TypeEnum, "credits", public(), enum("credits", "cny")),
 		def("billing.currency_symbol", "billing", TypeString, "¥", public(), dangerousOn(), maxLen(8),
 			validate(nonEmptyTrimmed("billing.currency_symbol"))),
-		def("billing.signup_grant_credits", "billing", TypeInt, int64(0),
+		def("billing.signup_grant_credits", "billing", TypeInt, int64(0), public(),
 			minInt(0), maxInt(1000000000000)),
 		def("billing.signup_grant_requires_verified_email", "billing", TypeBool, false, public()),
 		def("billing.balance_alert_threshold_credits", "billing", TypeInt, int64(1000),
@@ -359,6 +359,8 @@ func buildRegistry() []Setting {
 		def("pay.stripe.enabled", "pay.stripe", TypeBool, false, public()),
 		def("pay.stripe.secret_key", "pay.stripe", TypeString, "", secret(), dangerousAny()),
 		def("pay.stripe.webhook_secret", "pay.stripe", TypeString, "", secret(), dangerousAny()),
+		// P-17 / G7-R46 冻结名：钱包页展示用，公开非密钥。
+		def("pay.stripe.publishable_key", "pay.stripe", TypeString, "", public(), maxLen(256)),
 		def("pay.stripe.min_topup_cny", "pay.stripe", TypeInt, int64(10), minInt(1), maxInt(100000)),
 
 		// ==== pay.alipay（F-08-14）====

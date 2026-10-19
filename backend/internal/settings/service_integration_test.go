@@ -422,6 +422,37 @@ func TestIntegrationSettingsPaymentSecretRequiresAnyConfirmation(t *testing.T) {
 	}
 }
 
+// R2：档位下限必须看到其它支付 section 的 min_topup（跨 section 视图）。
+func TestIntegrationSettingsPresetsSeeProviderMinimums(t *testing.T) {
+	db := openSettingsTestDB(t)
+	snapshotAndClean(t, db, "pay")
+	snapshotAndClean(t, db, "pay.stripe")
+	svc, _ := NewService(ServiceConfig{DB: db})
+	ctx := context.Background()
+
+	stripe, err := svc.Put(ctx, UpdateInput{Section: "pay.stripe", Values: map[string]json.RawMessage{
+		"pay.stripe.min_topup_cny": json.RawMessage(`100`),
+	}})
+	if err != nil {
+		t.Fatalf("设置 Stripe 最低充值: %v", err)
+	}
+	if stripe.UpdatedAt == nil {
+		t.Fatal("pay.stripe 写入后 updated_at 不应为 null")
+	}
+
+	var verr *ValidationError
+	if _, err := svc.Put(ctx, UpdateInput{Section: "pay", Values: map[string]json.RawMessage{
+		"pay.amount_presets_cny": json.RawMessage(`[10,30,50,100]`),
+	}}); !errors.As(err, &verr) {
+		t.Fatalf("低于 Stripe min_topup 的档位应被拒，实际 %v", err)
+	}
+	if _, err := svc.Put(ctx, UpdateInput{Section: "pay", Values: map[string]json.RawMessage{
+		"pay.amount_presets_cny": json.RawMessage(`[100,300,500]`),
+	}}); err != nil {
+		t.Fatalf("满足所有 provider 下限的档位应通过: %v", err)
+	}
+}
+
 // F14：并发同一 expect_updated_at 的两次 Put，恰好一个成功、一个 409。
 func TestIntegrationSettingsConcurrentPutConflict(t *testing.T) {
 	db := openSettingsTestDB(t)

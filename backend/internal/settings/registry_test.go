@@ -225,9 +225,11 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"auth.email_verification_required", "auth.passkey.enabled",
 		"auth.turnstile.enabled", "auth.turnstile.site_key",
 		"billing.quota_per_unit", "billing.display_unit", "billing.currency_symbol",
-		"billing.signup_grant_requires_verified_email", "billing.display_token_stat_enabled",
+		"billing.signup_grant_credits", "billing.signup_grant_requires_verified_email",
+		"billing.display_token_stat_enabled",
 		"pay.online_enabled", "pay.amount_presets_cny",
-		"pay.stripe.enabled", "pay.alipay.enabled", "pay.alipay.sandbox",
+		"pay.stripe.enabled", "pay.stripe.publishable_key",
+		"pay.alipay.enabled", "pay.alipay.sandbox",
 		"pay.epay.enabled", "pay.creem.enabled", "pay.waffo.enabled",
 		"pay.waffo_pancake.enabled",
 	}
@@ -264,8 +266,8 @@ func TestRegistryGoldenSets(t *testing.T) {
 	if strings.Join(secrets, ",") != strings.Join(wantSecrets, ",") {
 		t.Fatalf("密钥集合 = %v\n期望 = %v", secrets, wantSecrets)
 	}
-	if _, ok := Lookup("pay.stripe.publishable_key"); ok {
-		t.Fatal("pay.stripe.publishable_key 未在 spec 登记，不得进入注册表（F2）")
+	if _, ok := Lookup("pay.stripe.publishable_key"); !ok {
+		t.Fatal("pay.stripe.publishable_key 由 P-17/G7-R46 冻结，必须在注册表且公开")
 	}
 }
 

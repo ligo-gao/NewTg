@@ -279,6 +279,14 @@ func (s *Service) Put(ctx context.Context, in UpdateInput) (UpdateResult, error)
 			secretConfigured[key] = true
 		}
 	}
+	// R2：充值档位的下限是「所有支付方式最低充值取最大」，而各 provider 的
+	// min_topup 在各自 section。pay section 的 merged 视图默认看不到它们，
+	// 这里在同一事务内补齐（已存值优先，否则默认值）。
+	if in.Section == "pay" {
+		if err := s.loadProviderMinimums(ctx, tx, merged); err != nil {
+			return UpdateResult{}, err
+		}
+	}
 	if validator := sectionValidators[in.Section]; validator != nil {
 		if err := validator(merged, secretConfigured); err != nil {
 			return UpdateResult{}, err
@@ -486,6 +494,38 @@ func dangerousChange(setting Setting, key string,
 	return !reflect.DeepEqual(before, after), nil
 }
 
+// providerMinTopupKeys 是跨 section 参与档位下限计算的键。
+var providerMinTopupKeys = map[string]string{
+	"pay.stripe":        "pay.stripe.min_topup_cny",
+	"pay.waffo":         "pay.waffo.min_topup_cny",
+	"pay.waffo_pancake": "pay.waffo_pancake.min_topup_cny",
+}
+
+// loadProviderMinimums 把各支付 section 的最低充值并入 pay section 的校验视图。
+func (s *Service) loadProviderMinimums(ctx context.Context, q queryer, merged map[string]any) error {
+	for section, key := range providerMinTopupKeys {
+		rows, ok := Section(section)
+		if !ok {
+			continue
+		}
+		setting, ok := Lookup(key)
+		if !ok {
+			continue
+		}
+		merged[key] = DefaultValue(setting)
+		stored, err := s.readRows(ctx, q, rows)
+		if err != nil {
+			return err
+		}
+		if row, exists := stored[key]; exists {
+			if value := decodeStoredValue(row.raw); value != nil {
+				merged[key] = value
+			}
+		}
+	}
+	return nil
+}
+
 // PublicSnapshot 聚合注册表中 public:true 的键（§1.4.1）。DB 缺值回落默认值。
 func PublicSnapshot(reader ConfigReader) map[string]any {
 	out := make(map[string]any)
@@ -614,7 +654,9 @@ func decodeStoredValue(raw json.RawMessage) any {
 	if err != nil {
 		return nil
 	}
-	return value
+	// 与写入路径同型：数据库里的整数必须还原为 int64，否则 section 级
+	// int64 校验（档位/最低充值）会把已存值当成 json.Number 静默跳过。
+	return normalizeScalars(value)
 }
 
 // secretWriteValue 实现「密钥留空不更新」：空串与掩码视为不修改。
