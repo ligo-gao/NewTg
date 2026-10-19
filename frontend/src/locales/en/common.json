@@ -11,6 +11,8 @@
   "nav.security": "Security",
   "nav.wallet": "Wallet",
   "nav.orders": "Orders",
+  "nav.usage_logs": "Usage Logs",
+  "nav.audit_logs": "Audit Logs",
   "nav.users": "Users",
   "nav.groups": "Groups",
   "nav.pricing": "Pricing",

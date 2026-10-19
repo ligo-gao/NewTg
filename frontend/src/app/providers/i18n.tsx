@@ -55,6 +55,7 @@ const DICTIONARY_LOADERS = {
     auth: () => import('@/locales/en/auth.json'),
     account: () => import('@/locales/en/account.json'),
     admin: () => import('@/locales/en/admin.json'),
+    logs: () => import('@/locales/en/logs.json'),
   },
 } satisfies Record<Locale, Record<string, () => Promise<JsonDictionary>>>
 

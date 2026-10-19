@@ -18,10 +18,12 @@ import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as SignUpRouteImport } from './routes/sign-up'
 import { Route as TwoFactorChallengeRouteImport } from './routes/two-factor-challenge'
 import { Route as ConsoleAdminRouteImport } from './routes/_console/admin'
+import { Route as ConsoleAuditLogsRouteImport } from './routes/_console/audit-logs'
 import { Route as ConsoleOrdersRouteImport } from './routes/_console/orders'
 import { Route as ConsoleProfileRouteImport } from './routes/_console/profile'
 import { Route as ConsoleSecurityRouteImport } from './routes/_console/security'
 import { Route as ConsoleTokensRouteImport } from './routes/_console/tokens'
+import { Route as ConsoleUsageLogsRouteImport } from './routes/_console/usage-logs'
 import { Route as ConsoleWalletRouteImport } from './routes/_console/wallet'
 import { Route as Errors401RouteImport } from './routes/_errors/401'
 import { Route as Errors403RouteImport } from './routes/_errors/403'
@@ -80,6 +82,11 @@ const ConsoleAdminRoute = ConsoleAdminRouteImport.update({
   path: '/admin',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleAuditLogsRoute = ConsoleAuditLogsRouteImport.update({
+  id: '/audit-logs',
+  path: '/audit-logs',
+  getParentRoute: () => ConsoleRoute,
+} as any)
 const ConsoleOrdersRoute = ConsoleOrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
@@ -98,6 +105,11 @@ const ConsoleSecurityRoute = ConsoleSecurityRouteImport.update({
 const ConsoleTokensRoute = ConsoleTokensRouteImport.update({
   id: '/tokens',
   path: '/tokens',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleUsageLogsRoute = ConsoleUsageLogsRouteImport.update({
+  id: '/usage-logs',
+  path: '/usage-logs',
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsoleWalletRoute = ConsoleWalletRouteImport.update({
@@ -179,10 +191,12 @@ export interface FileRoutesByFullPath {
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
   '/admin': typeof ConsoleAdminRouteWithChildren
+  '/audit-logs': typeof ConsoleAuditLogsRoute
   '/orders': typeof ConsoleOrdersRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
+  '/usage-logs': typeof ConsoleUsageLogsRoute
   '/wallet': typeof ConsoleWalletRoute
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
@@ -205,10 +219,12 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/audit-logs': typeof ConsoleAuditLogsRoute
   '/orders': typeof ConsoleOrdersRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
+  '/usage-logs': typeof ConsoleUsageLogsRoute
   '/wallet': typeof ConsoleWalletRoute
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
@@ -234,10 +250,12 @@ export interface FileRoutesById {
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
   '/_console/admin': typeof ConsoleAdminRouteWithChildren
+  '/_console/audit-logs': typeof ConsoleAuditLogsRoute
   '/_console/orders': typeof ConsoleOrdersRoute
   '/_console/profile': typeof ConsoleProfileRoute
   '/_console/security': typeof ConsoleSecurityRoute
   '/_console/tokens': typeof ConsoleTokensRoute
+  '/_console/usage-logs': typeof ConsoleUsageLogsRoute
   '/_console/wallet': typeof ConsoleWalletRoute
   '/_errors/401': typeof Errors401Route
   '/_errors/403': typeof Errors403Route
@@ -263,10 +281,12 @@ export interface FileRouteTypes {
     | '/sign-up'
     | '/two-factor-challenge'
     | '/admin'
+    | '/audit-logs'
     | '/orders'
     | '/profile'
     | '/security'
     | '/tokens'
+    | '/usage-logs'
     | '/wallet'
     | '/401'
     | '/403'
@@ -289,10 +309,12 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/two-factor-challenge'
+    | '/audit-logs'
     | '/orders'
     | '/profile'
     | '/security'
     | '/tokens'
+    | '/usage-logs'
     | '/wallet'
     | '/401'
     | '/403'
@@ -317,10 +339,12 @@ export interface FileRouteTypes {
     | '/sign-up'
     | '/two-factor-challenge'
     | '/_console/admin'
+    | '/_console/audit-logs'
     | '/_console/orders'
     | '/_console/profile'
     | '/_console/security'
     | '/_console/tokens'
+    | '/_console/usage-logs'
     | '/_console/wallet'
     | '/_errors/401'
     | '/_errors/403'
@@ -416,6 +440,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminRouteImport
       parentRoute: typeof ConsoleRoute
     }
+    '/_console/audit-logs': {
+      id: '/_console/audit-logs'
+      path: '/audit-logs'
+      fullPath: '/audit-logs'
+      preLoaderRoute: typeof ConsoleAuditLogsRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
     '/_console/orders': {
       id: '/_console/orders'
       path: '/orders'
@@ -442,6 +473,13 @@ declare module '@tanstack/react-router' {
       path: '/tokens'
       fullPath: '/tokens'
       preLoaderRoute: typeof ConsoleTokensRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/usage-logs': {
+      id: '/_console/usage-logs'
+      path: '/usage-logs'
+      fullPath: '/usage-logs'
+      preLoaderRoute: typeof ConsoleUsageLogsRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/wallet': {
@@ -564,20 +602,24 @@ const ConsoleAdminRouteWithChildren = ConsoleAdminRoute._addFileChildren(
 
 interface ConsoleRouteChildren {
   ConsoleAdminRoute: typeof ConsoleAdminRouteWithChildren
+  ConsoleAuditLogsRoute: typeof ConsoleAuditLogsRoute
   ConsoleOrdersRoute: typeof ConsoleOrdersRoute
   ConsoleProfileRoute: typeof ConsoleProfileRoute
   ConsoleSecurityRoute: typeof ConsoleSecurityRoute
   ConsoleTokensRoute: typeof ConsoleTokensRoute
+  ConsoleUsageLogsRoute: typeof ConsoleUsageLogsRoute
   ConsoleWalletRoute: typeof ConsoleWalletRoute
   ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
 }
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleAdminRoute: ConsoleAdminRouteWithChildren,
+  ConsoleAuditLogsRoute: ConsoleAuditLogsRoute,
   ConsoleOrdersRoute: ConsoleOrdersRoute,
   ConsoleProfileRoute: ConsoleProfileRoute,
   ConsoleSecurityRoute: ConsoleSecurityRoute,
   ConsoleTokensRoute: ConsoleTokensRoute,
+  ConsoleUsageLogsRoute: ConsoleUsageLogsRoute,
   ConsoleWalletRoute: ConsoleWalletRoute,
   ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
 }
