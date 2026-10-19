@@ -110,7 +110,14 @@ export function AboutPage({
         <p className="text-sm text-ink-2">{t('public.about.tagline')}</p>
       </header>
 
-      {languageCount !== undefined ? (
+      {/* 六态表的加载态：统计条先占位，技术栈等静态正文随首屏直出。 */}
+      {status.isPending ? (
+        <div
+          aria-busy="true"
+          data-testid="about-stats-skeleton"
+          className="h-[76px] rounded-xl border border-border-hairline bg-surface-card"
+        />
+      ) : languageCount !== undefined ? (
         <dl className="flex flex-wrap gap-10 rounded-xl border border-border-hairline bg-surface-card px-5 py-4">
           <div className="flex flex-col gap-1">
             <dt className="text-xs leading-[18px] text-ink-2">

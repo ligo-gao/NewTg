@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { Button } from '@/shared/ui/base/button'
@@ -32,6 +32,9 @@ function noValue() {
 export function ModelPerfPage({ modelId }: ModelPerfPageProps) {
   const { t, locale } = useI18n()
   const [range, setRange] = useState<PerfRange>('24h')
+  // Two ModelPerfPage instances (e.g. side-by-side variants) must not share a
+  // radio name, or selecting a range in one would uncheck the other.
+  const rangeName = useId()
 
   const query = useQuery({
     queryKey: ['public', 'model-metrics', modelId, range],
@@ -63,7 +66,7 @@ export function ModelPerfPage({ modelId }: ModelPerfPageProps) {
             >
               <input
                 type="radio"
-                name="model-perf-range"
+                name={rangeName}
                 value={option}
                 checked={range === option}
                 onChange={() => setRange(option)}

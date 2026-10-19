@@ -176,6 +176,24 @@ describe('ModelPerfPage (F-09-25)', () => {
     expect(queryByText('Performance data unavailable')).toBeNull()
   })
 
+  it('treats an out-of-range metrics fixture as unavailable instead of rendering it', async () => {
+    server.use(
+      metricsHandler({
+        ...POPULATED,
+        summary: { ...POPULATED.summary, success_rate: 1.5 },
+      }),
+    )
+
+    const { findByText, queryByText } = await renderWithProviders(
+      <ModelPerfPage modelId="gpt-4o" />,
+      ['public'],
+    )
+
+    expect(await findByText('Performance data unavailable')).toBeTruthy()
+    // 非法比率绝不能进入统计块。
+    expect(queryByText('150%')).toBeNull()
+  })
+
   it('does not render rankings or the live feed (M7 boundary, R-03)', async () => {
     server.use(metricsHandler(POPULATED))
 

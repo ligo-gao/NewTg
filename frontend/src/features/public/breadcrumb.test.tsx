@@ -54,6 +54,12 @@ describe('Breadcrumb (F-09-36)', () => {
     const middle = getByText('Pricing')
     expect(middle.getAttribute('aria-disabled')).toBe('true')
     expect(middle.getAttribute('title')).toBe('This page is not open')
+    // 禁用原因不只是 title：aria-describedby 指向常驻的可访问文本。
+    const describedBy = middle.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy ?? '')?.textContent).toBe(
+      'This page is not open',
+    )
     expect(queryByRole('link', { name: 'Pricing' })).toBeNull()
   })
 

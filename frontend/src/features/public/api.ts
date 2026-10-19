@@ -56,35 +56,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function nullableNumber(value: unknown, field: string): number | null {
+interface NumberRange {
+  min?: number
+  max?: number
+}
+
+/**
+ * Enforces the F-09-25 data-field table at the network boundary. `null` is a
+ * legitimate "no data" value; anything non-numeric or outside the documented
+ * range throws, so one bad upstream row degrades the section to its error
+ * state instead of rendering a negative latency or a 150% success rate.
+ */
+function nullableNumber(
+  value: unknown,
+  field: string,
+  range: NumberRange = {},
+): number | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`invalid metrics field: ${field}`)
   }
+  if (range.min !== undefined && value < range.min) {
+    throw new Error(`metrics field out of range: ${field}`)
+  }
+  if (range.max !== undefined && value > range.max) {
+    throw new Error(`metrics field out of range: ${field}`)
+  }
   return value
 }
 
-/**
- * Validates at the network boundary rather than inside the component: one bad
- * upstream row must degrade the section to its error state, never render
- * `NaN` into a statistic.
- */
+/** Range rules transcribed from modules-09 F-09-25. */
+const NON_NEGATIVE: NumberRange = { min: 0 }
+const SUCCESS_RATE: NumberRange = { min: 0, max: 1 }
+
 export function normalizeModelMetrics(body: unknown): ModelMetrics {
   if (!isRecord(body) || !isRecord(body.summary) || !Array.isArray(body.per_group)) {
     throw new Error('invalid metrics response envelope')
   }
   const summary = body.summary
-  const sampleSize = summary.sample_size
-  if (typeof sampleSize !== 'number' || !Number.isFinite(sampleSize)) {
+  const sampleSize = nullableNumber(summary.sample_size, 'summary.sample_size', NON_NEGATIVE)
+  if (sampleSize === null) {
     throw new Error('invalid metrics field: summary.sample_size')
   }
 
   return {
     summary: {
-      avg_latency_ms: nullableNumber(summary.avg_latency_ms, 'summary.avg_latency_ms'),
-      success_rate: nullableNumber(summary.success_rate, 'summary.success_rate'),
-      tps: nullableNumber(summary.tps, 'summary.tps'),
-      failed_24h: nullableNumber(summary.failed_24h, 'summary.failed_24h'),
+      avg_latency_ms: nullableNumber(
+        summary.avg_latency_ms,
+        'summary.avg_latency_ms',
+        NON_NEGATIVE,
+      ),
+      success_rate: nullableNumber(summary.success_rate, 'summary.success_rate', SUCCESS_RATE),
+      tps: nullableNumber(summary.tps, 'summary.tps', NON_NEGATIVE),
+      failed_24h: nullableNumber(summary.failed_24h, 'summary.failed_24h', NON_NEGATIVE),
       sample_size: sampleSize,
     },
     per_group: body.per_group.map((entry, index) => {
@@ -93,12 +117,21 @@ export function normalizeModelMetrics(body: unknown): ModelMetrics {
       }
       return {
         group: entry.group,
-        avg_ttft_ms: nullableNumber(entry.avg_ttft_ms, `per_group[${index}].avg_ttft_ms`),
+        avg_ttft_ms: nullableNumber(
+          entry.avg_ttft_ms,
+          `per_group[${index}].avg_ttft_ms`,
+          NON_NEGATIVE,
+        ),
         avg_latency_ms: nullableNumber(
           entry.avg_latency_ms,
           `per_group[${index}].avg_latency_ms`,
+          NON_NEGATIVE,
         ),
-        success_rate: nullableNumber(entry.success_rate, `per_group[${index}].success_rate`),
+        success_rate: nullableNumber(
+          entry.success_rate,
+          `per_group[${index}].success_rate`,
+          SUCCESS_RATE,
+        ),
       }
     }),
   }

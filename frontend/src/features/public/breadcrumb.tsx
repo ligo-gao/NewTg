@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import { useI18n } from '@/shared/lib/i18n-context'
 
 export interface BreadcrumbItem {
@@ -18,6 +20,7 @@ export interface BreadcrumbProps {
 }
 
 function ItemContent({ item }: { item: BreadcrumbItem }) {
+  const hintId = useId()
   const isCurrent = item.current === true
   const className = isCurrent
     ? 'text-ink-2'
@@ -34,13 +37,22 @@ function ItemContent({ item }: { item: BreadcrumbItem }) {
   }
 
   return (
-    <span
-      aria-current={isCurrent ? 'page' : undefined}
-      aria-disabled={item.disabled === true ? true : undefined}
-      title={item.disabled === true ? item.disabledHint : undefined}
-      className={className}
-    >
-      {item.label}
+    <span className="inline-flex items-center gap-1">
+      <span
+        aria-current={isCurrent ? 'page' : undefined}
+        aria-disabled={item.disabled === true ? true : undefined}
+        aria-describedby={item.disabled === true && item.disabledHint ? hintId : undefined}
+        title={item.disabled === true ? item.disabledHint : undefined}
+        className={className}
+      >
+        {item.label}
+      </span>
+      {item.disabled === true && item.disabledHint ? (
+        // title 只在悬停/部分读屏器生效；把禁用原因作为可访问描述始终暴露。
+        <span id={hintId} className="sr-only">
+          {item.disabledHint}
+        </span>
+      ) : null}
     </span>
   )
 }
