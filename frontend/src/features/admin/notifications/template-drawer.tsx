@@ -117,6 +117,11 @@ export function TemplateDrawer({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [activeField, setActiveField] = useState<DraftField>('body')
 
+  // 打开抽屉时把焦点落到首个可编辑字段（email=Subject，inapp=Body）。
+  // Dialog 的通用行为是聚焦面板，这里只在「首次拿到详情」后接管一次，
+  // 保存/重新读取不会再次抢焦点。
+  const focusOnOpenRef = useRef(false)
+
   // Button primitive 不接受 ref；把焦点落点挂在包裹元素上，再取其内部按钮。
   const cancelDisableRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLTextAreaElement>(null)
@@ -153,6 +158,18 @@ export function TemplateDrawer({
 
   const data = detailQuery.data
   const baseline = useMemo(() => (data === undefined ? null : baselineOf(data)), [data])
+
+  useEffect(() => {
+    focusOnOpenRef.current = open
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !focusOnOpenRef.current || data === undefined) return
+    const target = channel === 'email' ? subjectRef.current : bodyRef.current
+    target?.focus()
+    // 字段已经拿到焦点；后续保存/重读不再重复接管。
+    focusOnOpenRef.current = false
+  }, [open, data, channel])
 
   // 权威行变化（保存后重读 / 语言切换）时丢起草稿：草稿是「相对基线」的，
   // 保留旧草稿会让新基线永远显示为 dirty，甚至把旧语言内容写回新语言。

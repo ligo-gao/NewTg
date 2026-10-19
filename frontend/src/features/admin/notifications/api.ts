@@ -200,6 +200,9 @@ export function fieldForProblem(error: { type?: string; detail?: string }): Temp
   }
   if (type.endsWith('invalid_template')) {
     const detail = error.detail ?? ''
+    // 注册表漂移时服务端会用 invalid_template 报“未知变量/非法构造”，
+    // detail 里带 `{{...}}`。这类错误属于变量面板，而不是正文或主题字段。
+    if (detail.includes('{{')) return 'variables'
     if (detail.includes('subject')) return 'subject'
     if (detail.includes('body')) return 'body'
     if (detail.includes('CTA')) return 'cta_text'

@@ -356,6 +356,85 @@ describe('NotificationTemplatesPage', () => {
     ).toBeTruthy()
   })
 
+  it('focuses the first editable field when the drawer opens', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByText(/8 rows/)
+
+    await user.click(
+      within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', { name: 'Edit' }),
+    )
+    const drawer = await screen.findByRole('dialog')
+    const subject = await within(drawer).findByLabelText('Subject')
+    await waitFor(() => expect(document.activeElement).toBe(subject))
+  })
+
+  it('focuses the body for in-app templates (no subject field)', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByText(/8 rows/)
+
+    await user.click(
+      within(rowOf('system.announcement', 'inapp', 'en')).getByRole('button', { name: 'Edit' }),
+    )
+    const drawer = await screen.findByRole('dialog')
+    const body = await within(drawer).findByLabelText('Body')
+    await waitFor(() => expect(document.activeElement).toBe(body))
+  })
+
+  it('routes invalid_template errors containing constructs to the variables panel', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByText(/8 rows/)
+    server.use(
+      http.put(`${ORIGIN}/api/notification-templates/:key`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/invalid_template',
+            title: 'Invalid template',
+            detail: 'notify: unknown variable {{.drifted}}',
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+
+    await user.click(
+      within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', { name: 'Edit' }),
+    )
+    const drawer = await screen.findByRole('dialog')
+    const body = within(drawer).getByLabelText('Body')
+    await user.clear(body)
+    await user.type(body, 'Changed body')
+    await user.click(within(drawer).getByRole('button', { name: 'Save changes' }))
+
+    expect(await within(drawer).findByText(/unknown variable \{\{\.drifted\}\}/)).toBeTruthy()
+  })
+
+  it('disables the row Test action when SMTP is not configured', async () => {
+    install()
+    server.use(
+      http.get(`${ORIGIN}/api/settings`, () =>
+        HttpResponse.json({
+          section: 'notify.smtp',
+          updated_at: '2026-10-19T10:00:00Z',
+          items: [
+            { key: 'notify.smtp.host', value: '', type: 'string', default: '', public: false, secret: false, dangerous: false },
+            { key: 'notify.smtp.from_email', value: '', type: 'string', default: '', public: false, secret: false, dangerous: false },
+          ],
+        }),
+      ),
+    )
+    await renderWithProviders(<Harness />, ['common', 'settings'])
+
+    await screen.findByText(/8 rows/)
+    const test = within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', {
+      name: 'Test',
+    })
+    await waitFor(() => expect((test as HTMLButtonElement).disabled).toBe(true))
+    expect(test.getAttribute('title')).toMatch(/SMTP is not configured/)
+  })
+
   it('confirms before disabling a template and focuses cancel', async () => {
     const user = userEvent.setup()
     await renderPage()
@@ -487,10 +566,13 @@ describe('NotificationTemplatesPage', () => {
       await screen.findByText(/your account lacks the settings:manage permission/i),
     ).toBeTruthy()
     await screen.findByText(/8 rows/)
+    // 写类操作不渲染（而非仅禁用）：Test 入口直接缺席，Edit/Preview 保留为只读。
     expect(
-      (within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', { name: 'Test' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true)
+      within(rowOf('billing.balance_low', 'email', 'en')).queryByRole('button', { name: 'Test' }),
+    ).toBeNull()
+    expect(
+      within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', { name: 'Edit' }),
+    ).toBeTruthy()
 
     await user.click(within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', { name: 'Edit' }))
     const dialog = await screen.findByRole('dialog')

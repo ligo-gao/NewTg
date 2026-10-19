@@ -501,19 +501,25 @@ export function NotificationTemplatesPage({
                                 >
                                   {t('settings.notification_templates.table.preview')}
                                 </Button>
-                                <Button
-                                  variant="ghost"
-                                  className="h-7 px-2 text-xs"
-                                  disabled={row.channel !== 'email' || !canManage}
-                                  title={
-                                    row.channel !== 'email'
-                                      ? t('settings.notification_templates.test.email_only')
-                                      : undefined
-                                  }
-                                  onClick={() => setTestTarget(row)}
-                                >
-                                  {t('settings.notification_templates.table.test')}
-                                </Button>
+                                {canManage ? (
+                                  <Button
+                                    variant="ghost"
+                                    className="h-7 px-2 text-xs"
+                                    disabled={
+                                      row.channel !== 'email' || smtpConfigured === false
+                                    }
+                                    title={
+                                      row.channel !== 'email'
+                                        ? t('settings.notification_templates.test.email_only')
+                                        : smtpConfigured === false
+                                          ? t('settings.notification_templates.test.smtp_missing')
+                                          : undefined
+                                    }
+                                    onClick={() => setTestTarget(row)}
+                                  >
+                                    {t('settings.notification_templates.table.test')}
+                                  </Button>
+                                ) : null}
                               </div>
                             </td>
                           </tr>
