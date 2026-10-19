@@ -3,6 +3,8 @@ import { Button } from '@/shared/ui/base/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { writeClipboard } from './clipboard'
+
 export interface RevealedKey {
   name: string
   key: string
@@ -27,10 +29,9 @@ export function KeyRevealDialog({ entries, onClose, onImport }: KeyRevealDialogP
   const push = useToastStore((state) => state.push)
 
   async function copy(text: string): Promise<void> {
-    try {
-      await navigator.clipboard?.writeText(text)
+    if (await writeClipboard(text)) {
       push({ tone: 'success', message: t('common.tokens.toast.copied') })
-    } catch {
+    } else {
       push({ tone: 'error', message: t('common.tokens.toast.copyFailed') })
     }
   }

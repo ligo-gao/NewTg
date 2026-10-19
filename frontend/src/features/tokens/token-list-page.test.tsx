@@ -57,6 +57,9 @@ describe('TokenListPage', () => {
     expect(screen.getAllByTestId('masked-key')[0]?.textContent).toBe(
       `nkt-${'•'.repeat(24)}`,
     )
+    // No raw i18n keys may reach the UI (an object-node key renders verbatim).
+    expect(document.body.textContent ?? '').not.toMatch(/common\.tokens\./)
+    expect(screen.getByRole('button', { name: 'API Addresses' })).toBeTruthy()
     // The projection can never contain a plaintext key: no `nkt-` followed by
     // the 48-character Base62 payload from the contract is present.
     expect(document.body.textContent ?? '').not.toMatch(/nkt-[A-Za-z0-9]{20,}/)
@@ -306,5 +309,38 @@ describe('TokenListPage', () => {
     expect(
       screen.getByText(/The full key is shown only once at creation/),
     ).toBeTruthy()
+  })
+
+  it('reports a failure when no clipboard path is available', async () => {
+    const user = userEvent.setup()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    })
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: () => false,
+    })
+    tokenRoute((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(makeListResponse([makeToken({ id: 1, name: 'alpha' })]))
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    await user.click(
+      screen.getByRole('button', { name: 'Copy connection info for alpha' }),
+    )
+
+    expect(
+      await screen.findByText(
+        'Copy failed. Please copy the selected text manually',
+      ),
+    ).toBeTruthy()
+    expect(
+      screen.queryByText('Connection info copied'),
+    ).toBeNull()
   })
 })

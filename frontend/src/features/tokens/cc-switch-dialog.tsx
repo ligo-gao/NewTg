@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
@@ -11,28 +11,29 @@ import { MASKED_KEY } from './api'
 const APPS = ['claude', 'codex', 'gemini'] as const
 type CcApp = (typeof APPS)[number]
 
-const DEFAULT_NAMES: Record<CcApp, string> = {
-  claude: 'My Claude',
-  codex: 'My Codex',
-  gemini: 'My Gemini',
+const DEFAULT_NAME_KEYS: Record<CcApp, string> = {
+  claude: 'common.tokens.ccSwitch.defaultClaude',
+  codex: 'common.tokens.ccSwitch.defaultCodex',
+  gemini: 'common.tokens.ccSwitch.defaultGemini',
 }
 
 export interface CcSwitchDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Full key, only available immediately after create/reset. */
-  plaintextKey?: string | undefined
+  /**
+   * Full key from the one-time reveal dialog. Existing tokens cannot supply
+   * one: the frozen contract has no re-authentication key endpoint, so this
+   * dialog is only reachable right after create/reset.
+   */
+  plaintextKey: string
 }
 
 /**
  * CC Switch deep-link import (modules-02 §2.13, F-02-15).
  *
  * The link embeds the full key, so it is assembled only inside the click
- * handler and never persisted. When the caller has no plaintext key (the
- * management API never returns one outside create/reset, and the re-auth
- * endpoint in the design is not part of the frozen contract), the dialog
- * explains why import is unavailable instead of fabricating a link from the
- * mask.
+ * handler and never persisted. State is reset on every open so a previous
+ * application/model mapping cannot leak into the next import.
  */
 export function CcSwitchDialog({
   open,
@@ -42,16 +43,31 @@ export function CcSwitchDialog({
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
   const [app, setApp] = useState<CcApp>('claude')
-  const [name, setName] = useState(DEFAULT_NAMES.claude)
+  const [name, setName] = useState('')
   const [primary, setPrimary] = useState('')
   const [haiku, setHaiku] = useState('')
   const [sonnet, setSonnet] = useState('')
   const [opus, setOpus] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  function defaultName(next: CcApp): string {
+    return t(DEFAULT_NAME_KEYS[next])
+  }
+
+  useEffect(() => {
+    if (!open) return
+    setApp('claude')
+    setName(t(DEFAULT_NAME_KEYS.claude))
+    setPrimary('')
+    setHaiku('')
+    setSonnet('')
+    setOpus('')
+    setError(null)
+  }, [open, t])
+
   function changeApp(next: CcApp): void {
     setApp(next)
-    setName(DEFAULT_NAMES[next])
+    setName(defaultName(next))
     setPrimary('')
     setHaiku('')
     setSonnet('')
@@ -86,10 +102,6 @@ export function CcSwitchDialog({
       setError(t('common.tokens.ccSwitch.primaryRequired'))
       return
     }
-    if (plaintextKey === undefined) {
-      setError(t('common.tokens.ccSwitch.keyUnavailable'))
-      return
-    }
     const link = buildDeepLink(plaintextKey)
     try {
       window.location.href = link
@@ -114,9 +126,7 @@ export function CcSwitchDialog({
           >
             {t('common.tokens.ccSwitch.cancel')}
           </Button>
-          <Button onClick={submit} disabled={plaintextKey === undefined}>
-            {t('common.tokens.ccSwitch.import')}
-          </Button>
+          <Button onClick={submit}>{t('common.tokens.ccSwitch.import')}</Button>
         </>
       }
     >
@@ -191,11 +201,6 @@ export function CcSwitchDialog({
           <p>{t('common.tokens.ccSwitch.warning')}</p>
           <p className="mt-1">{t('common.tokens.ccSwitch.notInstalled')}</p>
         </div>
-        {plaintextKey === undefined ? (
-          <p role="alert" className="text-xs text-danger">
-            {t('common.tokens.ccSwitch.keyUnavailable')}
-          </p>
-        ) : null}
       </div>
     </Dialog>
   )

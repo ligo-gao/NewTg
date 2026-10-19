@@ -25,7 +25,7 @@ import {
   type TokenStatus,
 } from './api'
 import { ApiAddressesDialog } from './api-addresses-dialog'
-import { CcSwitchDialog } from './cc-switch-dialog'
+import { writeClipboard } from './clipboard'
 import { TokenMutateSheet } from './token-mutate-sheet'
 import { TokenStatusBadge } from './token-status-badge'
 
@@ -78,7 +78,6 @@ export function TokenListPage() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [addressesOpen, setAddressesOpen] = useState(false)
-  const [ccSwitchToken, setCcSwitchToken] = useState<Token | null>(null)
   const [guidanceToken, setGuidanceToken] = useState<Token | null>(null)
 
   useEffect(() => {
@@ -210,10 +209,9 @@ export function TokenListPage() {
   }
 
   async function copyText(text: string, message: string): Promise<void> {
-    try {
-      await navigator.clipboard?.writeText(text)
+    if (await writeClipboard(text)) {
       push({ tone: 'success', message })
-    } catch {
+    } else {
       push({ tone: 'error', message: t('common.tokens.toast.copyFailed') })
     }
   }
@@ -387,7 +385,7 @@ export function TokenListPage() {
         <h1 className="text-xl font-semibold text-ink-1">{t('common.tokens.title')}</h1>
         <div className="flex items-center gap-2">
           <Button variant="secondary" onClick={() => setAddressesOpen(true)}>
-            {t('common.tokens.apiAddresses')}
+            {t('common.tokens.apiAddresses.title')}
           </Button>
           <Button onClick={() => setCreateOpen(true)}>{t('common.tokens.new')}</Button>
         </div>
@@ -826,16 +824,6 @@ export function TokenListPage() {
                         </button>
                         <button
                           type="button"
-                          aria-label={t('common.tokens.table.importCCSwitch', {
-                            name: token.name,
-                          })}
-                          className="px-1 text-ink-2 hover:text-ink-1"
-                          onClick={() => setCcSwitchToken(token)}
-                        >
-                          ↘
-                        </button>
-                        <button
-                          type="button"
                           aria-label={t('common.tokens.table.delete', { name: token.name })}
                           className="px-1 text-danger hover:text-danger"
                           onClick={() => setDeleteTarget({ kind: 'single', token })}
@@ -944,12 +932,6 @@ export function TokenListPage() {
       />
 
       <ApiAddressesDialog open={addressesOpen} onOpenChange={setAddressesOpen} />
-      <CcSwitchDialog
-        open={ccSwitchToken !== null}
-        onOpenChange={(open) => {
-          if (!open) setCcSwitchToken(null)
-        }}
-      />
     </section>
   )
 }

@@ -69,10 +69,12 @@ describe('token creation', () => {
       const create = findRequest(requests, 'POST', '/api/tokens')
       expect(create?.body).toMatchObject({
         name: 'my-token',
-        group: 'default',
         quantity: 1,
         unlimited_quota: true,
       })
+      // An untouched group must be omitted so the server picks the user's
+      // current group; the form never guesses "default".
+      expect(create?.body).not.toHaveProperty('group')
       expect(create?.headers.get('Idempotency-Key')).toBeTruthy()
     })
 
@@ -119,6 +121,103 @@ describe('token creation', () => {
     expect(within(reveal).getByText('3 total')).toBeTruthy()
     expect(within(reveal).getByText('nkt-key-1')).toBeTruthy()
     expect(within(reveal).getByText('nkt-key-3')).toBeTruthy()
+  })
+
+  it('omits the group when untouched and invents no default option', async () => {
+    const user = userEvent.setup()
+    const requests = installFetch((request) => {
+      if (request.url.pathname === '/api/token/auto-groups') {
+        return jsonResponse({ groups: [{ name: 'pro', ratio: 1.5 }], max_count: 5 })
+      }
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(makeListResponse([makeToken({ id: 1, name: 'alpha' })]))
+      }
+      if (request.method === 'POST' && request.url.pathname === '/api/tokens') {
+        return jsonResponse({
+          created: [{ ...makeToken({ id: 30, name: 'no-group' }), key: 'nkt-key' }],
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    const sheet = await openCreateSheet(user)
+
+    const group = within(sheet).getByLabelText('Group') as HTMLSelectElement
+    const values = Array.from(group.options).map((option) => option.value)
+    expect(values).toEqual(['', 'pro', 'auto'])
+    expect(values).not.toContain('default')
+
+    await user.type(within(sheet).getByLabelText('Name'), 'no-group')
+    await user.click(within(sheet).getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      const create = findRequest(requests, 'POST', '/api/tokens')
+      expect(create?.body).not.toHaveProperty('group')
+    })
+  })
+
+  it('hands the one-time key to CC Switch import', async () => {
+    const user = userEvent.setup()
+    baseRoutes((request) => {
+      if (request.method === 'POST' && request.url.pathname === '/api/tokens') {
+        return jsonResponse({
+          created: [
+            {
+              ...makeToken({ id: 40, name: 'cc-token' }),
+              key: `nkt-${'C'.repeat(48)}`,
+            },
+          ],
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    const sheet = await openCreateSheet(user)
+    await user.type(within(sheet).getByLabelText('Name'), 'cc-token')
+    await user.click(within(sheet).getByRole('button', { name: 'Create' }))
+
+    const reveal = await screen.findByRole('dialog', { name: 'Save your API key' })
+    await user.click(
+      within(reveal).getByRole('button', { name: 'Import to CC Switch' }),
+    )
+
+    const cc = await screen.findByRole('dialog', { name: 'Import to CC Switch' })
+    const importButton = within(cc).getByRole('button', { name: 'Import' })
+    expect((importButton as HTMLButtonElement).disabled).toBe(false)
+    expect(within(cc).getByText(`nkt-${'•'.repeat(24)}`)).toBeTruthy()
+  })
+
+  it('shows a retryable conflict on create without touching token detail', async () => {
+    const user = userEvent.setup()
+    const requests = baseRoutes((request) => {
+      if (request.method === 'POST' && request.url.pathname === '/api/tokens') {
+        return problemResponse(409, {
+          type: 'https://newtg.dev/problems/conflict_token',
+          title: 'Conflict',
+          detail: 'request in progress',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    const sheet = await openCreateSheet(user)
+    await user.type(within(sheet).getByLabelText('Name'), 'dup')
+    await user.click(within(sheet).getByRole('button', { name: 'Create' }))
+
+    const alert = await within(sheet).findByRole('alert')
+    expect(alert.textContent).toContain(
+      'A matching request is still in progress',
+    )
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy()
+    expect(
+      requests.some((request) => request.url.pathname === '/api/tokens/undefined'),
+    ).toBe(false)
   })
 
   it('validates the name and quantity before sending', async () => {
@@ -280,6 +379,59 @@ describe('token editing', () => {
       ).length
       expect(refreshAfter).toBeGreaterThan(refreshBefore)
     })
+  })
+
+  it('saves an already-expired token without changing its expiry', async () => {
+    const user = userEvent.setup()
+    const expired = makeToken({
+      id: 1,
+      name: 'alpha',
+      status: 'expired',
+      expires_at: '2020-01-01T00:00:00Z',
+      updated_at: '2026-10-06T08:00:00Z',
+    })
+    const requests = baseRoutes(
+      (request) => {
+        if (request.method === 'GET' && request.url.pathname === '/api/tokens/1') {
+          return jsonResponse(expired)
+        }
+        if (
+          request.method === 'PATCH' &&
+          request.url.pathname === '/api/tokens/1'
+        ) {
+          return jsonResponse({ ...expired, name: 'renamed' })
+        }
+        return problemResponse(404, { type: 'about:blank', title: 'not found' })
+      },
+      [expired],
+    )
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    await user.click(screen.getByRole('button', { name: 'Edit alpha' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit Token' })
+
+    await waitFor(() => {
+      expect(
+        (within(sheet).getByLabelText('Custom expiration') as HTMLInputElement)
+          .value,
+      ).not.toBe('')
+    })
+
+    await user.clear(within(sheet).getByLabelText('Name'))
+    await user.type(within(sheet).getByLabelText('Name'), 'renamed')
+    await user.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const patch = findRequest(requests, 'PATCH', '/api/tokens/1')
+      expect(patch?.body).toMatchObject({
+        name: 'renamed',
+        expires_at: '2020-01-01T00:00:00.000Z',
+      })
+    })
+    expect(
+      within(sheet).queryByText('Expiration time cannot be in the past'),
+    ).toBeNull()
   })
 
   it('resets the key after confirmation and reveals the new key', async () => {

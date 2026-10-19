@@ -3,6 +3,8 @@ import { Button } from '@/shared/ui/base/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { writeClipboard } from './clipboard'
+
 export interface ApiAddressesDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -28,10 +30,9 @@ export function ApiAddressesDialog({ open, onOpenChange }: ApiAddressesDialogPro
   ]
 
   async function copy(text: string): Promise<void> {
-    try {
-      await navigator.clipboard?.writeText(text)
+    if (await writeClipboard(text)) {
       push({ tone: 'success', message: t('common.tokens.apiAddresses.copied') })
-    } catch {
+    } else {
       push({ tone: 'error', message: t('common.tokens.toast.copyFailed') })
     }
   }

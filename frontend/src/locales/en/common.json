@@ -40,7 +40,6 @@
   "toast.error": "Something went wrong",
   "toast.dismiss": "Dismiss notification",
   "toast.request_id": "request_id: {requestId}",
-  "nav.dashboard": "Dashboard",
   "nav.channels": "Channels",
   "nav.tokens": "API Tokens",
   "channels": {
@@ -297,7 +296,21 @@
   "tokens": {
     "title": "API Tokens",
     "new": "Create Token",
-    "apiAddresses": "API Addresses",
+    "apiAddresses": {
+      "title": "API Addresses",
+      "openai": "OpenAI compatible",
+      "anthropic": "Anthropic",
+      "gemini": "Gemini",
+      "hint": "Authenticate with the Bearer scheme using your token's full key",
+      "notConfigured": "API address not configured. Contact support.",
+      "copyAddress": "Copy {protocol} address",
+      "copied": "Copied",
+      "baseUrl": "Base URL",
+      "apiKey": "API Key",
+      "authorization": "Authorization",
+      "bearerPlaceholder": "Bearer <your key>",
+      "connectionNote": "masked; the full key is visible only at creation"
+    },
     "filters": {
       "search": "Search by name or key",
       "searchPlaceholder": "Search by name or key…",
@@ -445,7 +458,9 @@
       "keyReadonly": "Key is masked. The full key is shown only at creation.",
       "resetKey": "Reset Key",
       "quotaOverride": "This overrides the current remaining quota",
-      "groupSwitchHint": "After switching, this token routes by the new group's channels and pricing immediately"
+      "groupSwitchHint": "After switching, this token routes by the new group's channels and pricing immediately",
+      "selectGroup": "Select group",
+      "createConflict": "A matching request is still in progress. Please retry."
     },
     "autoGroups": {
       "title": "Auto Group Order",
@@ -505,22 +520,10 @@
       "notInstalled": "If CC Switch is not installed, the link will not work",
       "import": "Import",
       "cancel": "Cancel",
-      "keyUnavailable": "The full key is not available. Reset the key to import."
-    },
-    "apiAddresses": {
-      "title": "API Addresses",
-      "openai": "OpenAI compatible",
-      "anthropic": "Anthropic",
-      "gemini": "Gemini",
-      "hint": "Authenticate with the Bearer scheme using your token's full key",
-      "notConfigured": "API address not configured. Contact support.",
-      "copyAddress": "Copy {protocol} address",
-      "copied": "Copied",
-      "baseUrl": "Base URL",
-      "apiKey": "API Key",
-      "authorization": "Authorization",
-      "bearerPlaceholder": "Bearer <your key>",
-      "connectionNote": "masked; the full key is visible only at creation"
+      "keyUnavailable": "The full key is not available. Reset the key to import.",
+      "defaultClaude": "My Claude",
+      "defaultCodex": "My Codex",
+      "defaultGemini": "My Gemini"
     },
     "conflict": {
       "body": "Token was modified elsewhere, please refresh",

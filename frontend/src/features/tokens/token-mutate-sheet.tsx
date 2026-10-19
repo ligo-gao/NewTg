@@ -23,6 +23,7 @@ import {
   type UpdateTokenRequest,
 } from './api'
 import { AutoGroupEditor } from './auto-group-editor'
+import { CcSwitchDialog } from './cc-switch-dialog'
 import { KeyRevealDialog, type RevealedKey } from './key-reveal-dialog'
 
 const EXPIRATIONS = ['never', 'hour', 'day', 'month', 'custom'] as const
@@ -45,7 +46,7 @@ interface FormValues {
 const DEFAULTS: FormValues = {
   name: '',
   quantity: '1',
-  group: 'default',
+  group: '',
   expiration: 'never',
   customExpiration: '',
   unlimited: true,
@@ -112,7 +113,9 @@ const formSchema = z
       .int()
       .min(1, 'common.tokens.form.quantityRange')
       .max(MAX_QUANTITY, 'common.tokens.form.quantityRange'),
-    group: z.string().min(1, 'common.tokens.form.groupRequired'),
+    // Empty means "server falls back to the user's current group" on create.
+    // Edit requires a concrete value (checked in submit).
+    group: z.string(),
     expiration: z.enum(EXPIRATIONS),
     customExpiration: z.string(),
     unlimited: z.boolean(),
@@ -123,16 +126,9 @@ const formSchema = z
     crossGroupRetry: z.boolean(),
   })
   .superRefine((values, ctx) => {
-    if (values.expiration === 'custom') {
-      const timestamp = Date.parse(values.customExpiration)
-      if (Number.isNaN(timestamp) || timestamp <= Date.now()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['customExpiration'],
-          message: 'common.tokens.form.expirationPast',
-        })
-      }
-    }
+    // Custom expiry is validated in `submit`, where the edit sheet can tell a
+    // newly chosen past value from an unchanged stored one (an expired token
+    // must still be editable — e.g. rename or quota change).
     if (!values.unlimited) {
       const raw = values.quota.trim()
       if (!/^\d+$/.test(raw)) {
@@ -252,9 +248,12 @@ export function TokenMutateSheet({
   const formId = useId()
   const idempotencyKey = useRef<string>('')
   const [submitting, setSubmitting] = useState(false)
-  const [conflict, setConflict] = useState(false)
+  // Create and edit have different 409 recovery: edit can refresh the row,
+  // create has no row (and its detail query is disabled), so it must retry.
+  const [conflict, setConflict] = useState<'create' | 'edit' | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
   const [revealed, setRevealed] = useState<RevealedKey[]>([])
+  const [ccSwitchKey, setCcSwitchKey] = useState<string | null>(null)
 
   const {
     register,
@@ -288,7 +287,8 @@ export function TokenMutateSheet({
   // idempotency key is minted once per sheet opening so retries replay.
   useEffect(() => {
     if (!open) return
-    setConflict(false)
+    setConflict(null)
+    setCcSwitchKey(null)
     idempotencyKey.current = crypto.randomUUID()
     if (mode === 'create') {
       reset(DEFAULTS)
@@ -305,7 +305,10 @@ export function TokenMutateSheet({
   const maxCount = autoQuery.data?.max_count ?? 20
 
   const groupOptions = useMemo(() => {
-    const names = ['default', ...candidates.map((candidate) => candidate.name)]
+    // Options come only from the server's auto-group candidates. The edit form
+    // also keeps the token's current group selectable even if the candidate
+    // set changed; nothing is invented client-side.
+    const names = candidates.map((candidate) => candidate.name)
     if (detailQuery.data !== undefined) names.push(detailQuery.data.group)
     return Array.from(new Set(names.filter((name) => name !== 'auto')))
   }, [candidates, detailQuery.data])
@@ -315,7 +318,7 @@ export function TokenMutateSheet({
   function handleApiError(error: unknown): void {
     if (error instanceof ApiError) {
       if (error.kind === 'conflict') {
-        setConflict(true)
+        setConflict(mode)
         return
       }
       const apiField = error.fields?.[0]
@@ -337,7 +340,7 @@ export function TokenMutateSheet({
 
   async function submit(values: FormValues): Promise<void> {
     clearErrors()
-    setConflict(false)
+    setConflict(null)
     const parsed = formSchema.safeParse(values)
     if (!parsed.success) {
       const seen = new Set<string>()
@@ -351,6 +354,25 @@ export function TokenMutateSheet({
     }
 
     const parsedValues = parsed.data
+    if (mode === 'edit' && parsedValues.group === '') {
+      setError('group', { message: t('common.tokens.form.groupRequired') })
+      return
+    }
+    if (parsedValues.expiration === 'custom') {
+      const timestamp = Date.parse(parsedValues.customExpiration)
+      // An expired token stays editable: an unchanged stored expiry is allowed,
+      // but choosing a new past time is still rejected.
+      const original = detailQuery.data?.expires_at ?? null
+      const unchanged =
+        original !== null &&
+        toLocalDateTimeInput(original) === parsedValues.customExpiration
+      if (Number.isNaN(timestamp) || (timestamp <= Date.now() && !unchanged)) {
+        setError('customExpiration', {
+          message: t('common.tokens.form.expirationPast'),
+        })
+        return
+      }
+    }
     const expiresAt = expirationToIso(parsedValues)
     const modelLimits = splitList(parsedValues.modelLimits)
     const allowIps = splitList(parsedValues.allowIps)
@@ -361,11 +383,13 @@ export function TokenMutateSheet({
       if (mode === 'create') {
         const body: CreateTokenRequest = {
           name: parsedValues.name.trim(),
-          group: parsedValues.group,
           quantity: parsedValues.quantity,
           unlimited_quota: parsedValues.unlimited,
           cross_group_retry: isAuto ? parsedValues.crossGroupRetry : false,
         }
+        // Only send a group the user explicitly picked; an omitted group makes
+        // the server fall back to the user's current group.
+        if (parsedValues.group !== '') body.group = parsedValues.group
         if (expiresAt !== null) body.expires_at = expiresAt
         if (!parsedValues.unlimited) body.remain_quota = Number(parsedValues.quota)
         if (modelLimits.length > 0) body.model_limits = modelLimits
@@ -473,21 +497,37 @@ export function TokenMutateSheet({
           }}
           className="flex flex-col gap-5"
         >
-          {conflict ? (
+          {conflict !== null ? (
             <div
               role="alert"
               className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2 text-xs text-danger"
             >
-              <span>{t('common.tokens.conflict.body')}</span>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setConflict(false)
-                  void detailQuery.refetch()
-                }}
-              >
-                {t('common.tokens.conflict.refresh')}
-              </Button>
+              <span>
+                {conflict === 'create'
+                  ? t('common.tokens.form.createConflict')
+                  : t('common.tokens.conflict.body')}
+              </span>
+              {conflict === 'create' ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setConflict(null)
+                    void handleSubmit(submit)()
+                  }}
+                >
+                  {t('common.error.retry')}
+                </Button>
+              ) : (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setConflict(null)
+                    void detailQuery.refetch()
+                  }}
+                >
+                  {t('common.tokens.conflict.refresh')}
+                </Button>
+              )}
             </div>
           ) : null}
 
@@ -555,6 +595,7 @@ export function TokenMutateSheet({
                 className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
                 {...register('group')}
               >
+                <option value="">{t('common.tokens.form.selectGroup')}</option>
                 {groupOptions.map((name) => (
                   <option key={name} value={name}>
                     {name}
@@ -697,9 +738,23 @@ export function TokenMutateSheet({
 
       <KeyRevealDialog
         entries={revealed}
+        onImport={(entry) => {
+          // Hand the plaintext straight from the one-time reveal to the import
+          // dialog; it never enters the list row path (no key is retrievable).
+          setRevealed([])
+          setCcSwitchKey(entry.key)
+        }}
         onClose={() => {
           setRevealed([])
           void queryClient.invalidateQueries({ queryKey: ['tokens'] })
+        }}
+      />
+
+      <CcSwitchDialog
+        open={ccSwitchKey !== null}
+        plaintextKey={ccSwitchKey ?? ''}
+        onOpenChange={(open) => {
+          if (!open) setCcSwitchKey(null)
         }}
       />
     </>
