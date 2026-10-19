@@ -92,6 +92,11 @@ const (
 	// §3.8 F-08-22：所有设置写都必须留下 before/after）。归 operation 类，
 	// 与用户/渠道/分组的配置变更同组。
 	ActionSettingsUpdate = "settings.update"
+
+	// ActionNotificationTemplateUpdate 是通知模板编辑的写审计
+	// （modules-08 §3.9 / F-08-25；brief 要求所有写操作审计）。模板行虽不在
+	// system_settings，但属于管理配置，归 operation 类。
+	ActionNotificationTemplateUpdate = "notification_template.update"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -147,6 +152,8 @@ var actionCategories = map[string]string{
 	ActionAuthzDenied: categorySecurity,
 
 	ActionSettingsUpdate: categoryOperation,
+
+	ActionNotificationTemplateUpdate: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

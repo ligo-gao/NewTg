@@ -32,6 +32,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
@@ -282,6 +283,40 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			StartedAt: deps.StartedAt,
 			Logger:    deps.Logger,
 		}).Register(rt.protected)
+
+		// 通知模板（M6c Task 4 / modules-08 §3.9）：模板表是独立表，不在
+		// system_settings 的 KV 里。启动期幂等补种内置行（ON CONFLICT DO
+		// NOTHING）——缺失行会让所有通知 fail-closed，属于配置性故障。
+		// 播种失败阻止上线，与设置/审计的 fail-fast 口径一致。
+		notifyStore, err := notify.NewStore(deps.DB)
+		if err != nil {
+			return nil, err
+		}
+		notifyService, err := notify.NewService(notify.ServiceConfig{
+			Store: notifyStore,
+			// SMTP 配置读同一配置中心快照；密钥类 password 经同一 Sealer 解封。
+			Sender: notify.NewSMTPSender(deps.Config, deps.Sealer),
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		seedCtx, cancelSeed := context.WithTimeout(context.Background(), 10*time.Second)
+		seedErr := notifyService.EnsureSeeded(seedCtx)
+		cancelSeed()
+		if seedErr != nil {
+			return nil, seedErr
+		}
+		notifyHandlers, err := NewNotificationTemplateHandlers(NotificationTemplateHandlerConfig{
+			Service: notifyService,
+			Authz:   deps.Authz,
+			Audit:   deps.Audit,
+			Logger:  deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		notifyHandlers.Register(rt.protected)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

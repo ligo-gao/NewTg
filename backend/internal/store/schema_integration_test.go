@@ -24,6 +24,7 @@ import (
 // wantColumns 逐表列数（platform-01 §0.1 计数，硬约束）。
 // M0 = 16 表；M1 追加认证族 6 表（R-07）并给 users/api_tokens 各补列（R-02/R-01），
 // 故 users 23→24、api_tokens 13→15，表数 16→22。
+// M6c Task 4 追加通知模板 2 表（modules-08 §3.9），表数 22→24。
 var wantColumns = map[string]int{
 	"users":                   24,
 	"api_tokens":              15,
@@ -48,6 +49,10 @@ var wantColumns = map[string]int{
 	"user_passkeys":          9,
 	"custom_oauth_providers": 25,
 	"checkins":               5,
+	// M6c Task 4 通知模板体系（modules-08 §3.9.2 / §3.9.5）：
+	// 模板 14 列、投递记录 15 列；两表都无 FK（逻辑引用 users.id）。
+	"notification_templates":  14,
+	"notification_deliveries": 15,
 }
 
 // 三个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -95,6 +100,9 @@ var wantIdentityPKTables = []string{
 	"user_passkeys",
 	"custom_oauth_providers",
 	"checkins",
+	// M6c Task 4：两张通知表都以 GENERATED ALWAYS AS IDENTITY 作 PK。
+	"notification_templates",
+	"notification_deliveries",
 }
 
 // identityPKExceptions：4 张「自然键例外」表的 PK（均非 identity）：
