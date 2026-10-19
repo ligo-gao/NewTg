@@ -1491,6 +1491,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/deployments/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取部署设置状态（不含密钥）
+         * @description 只返回 enabled/has_secret/can_connect/updated_at；api_key 永不回显。
+         *     can_connect = enabled && has_secret。
+         */
+        get: operations["getDeploySettings"];
+        /**
+         * 保存部署设置（section=deploy 的作用域化别名）
+         * @description enabled 必填（显式提交整段快照）；api_key 留空或 "******" = 不更新；
+         *     clear_api_key=true 删除已存密钥（与 api_key 同时出现时 400）。
+         *     updated_at 是乐观锁版本，陈旧值返回 409。
+         */
+        put: operations["updateDeploySettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/settings/test-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 只读探测 io.net 连接（候选密钥可用）
+         * @description 只读探测，不创建、不修改、不落库。body 可带候选 api_key（只在本次
+         *     请求内存中使用，不写日志/审计/响应）；缺省使用已存密钥。限流 5 次/
+         *     分钟/管理员。provider 401/403 → 422 deploy_secret_invalid；超时 → 504
+         *     deploy_provider_timeout；provider 429 → 429 deploy_rate_limited。
+         */
+        post: operations["testDeployConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wallet/summary": {
         parameters: {
             query?: never;
@@ -3487,6 +3537,41 @@ export interface components {
              * @description 入账后的钱包余额快照
              */
             balance_after: number;
+        };
+        /**
+         * @description 作用域化设置投影。永不含 api_key；has_secret 是密钥是否已配置的唯一
+         *     外部可见事实。updated_at 为 null 表示该 section 尚无任何落库行。
+         */
+        DeploySettings: {
+            enabled: boolean;
+            has_secret: boolean;
+            /** @description enabled && has_secret */
+            can_connect: boolean;
+            /** Format: date-time */
+            updated_at: string | null;
+        };
+        UpdateDeploySettingsRequest: {
+            enabled: boolean;
+            /** @description 留空或 "******" = 不更新已存密钥。 */
+            api_key?: string;
+            /** @description true 时删除已存密钥；与 api_key 同时出现返回 400。 */
+            clear_api_key?: boolean;
+            /**
+             * Format: date-time
+             * @description 读取时的乐观锁版本；陈旧值返回 409。
+             */
+            updated_at?: string | null;
+        };
+        DeployConnectionTestRequest: {
+            /** @description 可选的候选密钥；只在本次请求内存中使用。 */
+            api_key?: string;
+        };
+        DeployConnectionTestResult: {
+            ok: boolean;
+            hardware_count: number;
+            total_available: number;
+            /** Format: int64 */
+            latency_ms: number;
         };
         WalletSummary: {
             /**
@@ -6828,6 +6913,98 @@ export interface operations {
             410: components["responses"]["Error410"];
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+        };
+    };
+    getDeploySettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 设置投影 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploySettings"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateDeploySettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDeploySettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description 保存后的设置投影 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploySettings"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    testDeployConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeployConnectionTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 探测结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployConnectionTestResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时（只读探测，无副作用） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getWalletSummary: {

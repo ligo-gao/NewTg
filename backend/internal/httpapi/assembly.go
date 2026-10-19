@@ -32,6 +32,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
@@ -122,6 +123,9 @@ type GatewayDeps struct {
 	// SettingsBroadcaster 是设置写成功后的配置广播接缝（生产为 configcenter.Center）。
 	// nil 时只写库不广播——单测装配可接受，生产装配必须传入。
 	SettingsBroadcaster settings.Broadcaster
+	// DeployProvider 是部署控制面的测试接缝（按生效密钥构造 provider）。
+	// nil 时使用固定 host 的 ionet 客户端；生产不注入。
+	DeployProvider func(apiKey string) ionet.DeploymentProvider
 	// NodeName / StartedAt 供 GET /api/system/status 的实例信息使用。
 	NodeName  string
 	StartedAt time.Time
@@ -274,6 +278,24 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			return nil, err
 		}
 		settingsHandlers.Register(rt.protected)
+
+		// 模型部署控制面设置（M6d Task 2 / modules-08 §3.20）：作用域化
+		// 投影复用同一个 settings.Service 与 Sealer；provider host 固定，
+		// 管理端不可配置。部署管理端点（T4）会复用同一 provider 客户端。
+		deploySettingsHandlers, err := NewDeploySettingsHandlers(DeploySettingsHandlerConfig{
+			Settings: settingsService,
+			DB:       deps.DB,
+			Sealer:   deps.Sealer,
+			Provider: deps.DeployProvider,
+			Authz:    deps.Authz,
+			Audit:    deps.Audit,
+			Redis:    deps.Redis,
+			Logger:   deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deploySettingsHandlers.Register(rt.protected)
 
 		NewSystemStatusHandlers(SystemStatusConfig{
 			DB:        deps.DB,

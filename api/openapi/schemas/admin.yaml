@@ -1097,3 +1097,68 @@ schemas:
             detail:
               type: string
               enum: [used, not_found, invalid_id]
+
+  # ---------------------------------------------------------------------------
+  # 模型部署控制面 · 设置（M6d Task 2 / modules-08 §3.20）。
+  # ---------------------------------------------------------------------------
+  DeploySettings:
+    type: object
+    additionalProperties: false
+    required: [enabled, has_secret, can_connect, updated_at]
+    description: |
+      作用域化设置投影。永不含 api_key；has_secret 是密钥是否已配置的唯一
+      外部可见事实。updated_at 为 null 表示该 section 尚无任何落库行。
+    properties:
+      enabled:
+        type: boolean
+      has_secret:
+        type: boolean
+      can_connect:
+        type: boolean
+        description: enabled && has_secret
+      updated_at:
+        type: string
+        format: date-time
+        nullable: true
+
+  UpdateDeploySettingsRequest:
+    type: object
+    additionalProperties: false
+    required: [enabled]
+    properties:
+      enabled:
+        type: boolean
+      api_key:
+        type: string
+        description: 留空或 "******" = 不更新已存密钥。
+      clear_api_key:
+        type: boolean
+        description: true 时删除已存密钥；与 api_key 同时出现返回 400。
+      updated_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 读取时的乐观锁版本；陈旧值返回 409。
+
+  DeployConnectionTestRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      api_key:
+        type: string
+        description: 可选的候选密钥；只在本次请求内存中使用。
+
+  DeployConnectionTestResult:
+    type: object
+    additionalProperties: false
+    required: [ok, hardware_count, total_available, latency_ms]
+    properties:
+      ok:
+        type: boolean
+      hardware_count:
+        type: integer
+      total_available:
+        type: integer
+      latency_ms:
+        type: integer
+        format: int64

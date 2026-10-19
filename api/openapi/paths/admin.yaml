@@ -1298,3 +1298,115 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error403'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 模型部署控制面 · 设置（M6d Task 2 / modules-08 §3.20 / F-08-51）。
+  #
+  # 作用域化端点：写路径是 PUT /api/settings?section=deploy 的别名（同一注册表、
+  # 同一 Sealer、同一 updated_at 乐观锁）。响应永不包含密钥，只有 has_secret。
+  # ---------------------------------------------------------------------------
+  /api/deployments/settings:
+    get:
+      tags: [admin]
+      operationId: getDeploySettings
+      x-required-permission: settings:manage
+      summary: 读取部署设置状态（不含密钥）
+      description: |
+        只返回 enabled/has_secret/can_connect/updated_at；api_key 永不回显。
+        can_connect = enabled && has_secret。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 设置投影
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeploySettings'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: updateDeploySettings
+      x-required-permission: settings:manage
+      summary: 保存部署设置（section=deploy 的作用域化别名）
+      description: |
+        enabled 必填（显式提交整段快照）；api_key 留空或 "******" = 不更新；
+        clear_api_key=true 删除已存密钥（与 api_key 同时出现时 400）。
+        updated_at 是乐观锁版本，陈旧值返回 409。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/UpdateDeploySettingsRequest'
+      responses:
+        '200':
+          description: 保存后的设置投影
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeploySettings'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/deployments/settings/test-connection:
+    post:
+      tags: [admin]
+      operationId: testDeployConnection
+      x-required-permission: settings:manage
+      summary: 只读探测 io.net 连接（候选密钥可用）
+      description: |
+        只读探测，不创建、不修改、不落库。body 可带候选 api_key（只在本次
+        请求内存中使用，不写日志/审计/响应）；缺省使用已存密钥。限流 5 次/
+        分钟/管理员。provider 401/403 → 422 deploy_secret_invalid；超时 → 504
+        deploy_provider_timeout；provider 429 → 429 deploy_rate_limited。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/DeployConnectionTestRequest'
+      responses:
+        '200':
+          description: 探测结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployConnectionTestResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时（只读探测，无副作用）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'

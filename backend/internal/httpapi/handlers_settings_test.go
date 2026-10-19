@@ -20,8 +20,10 @@ import (
 // 真实事务/乐观锁在 settings 包的集成测试中覆盖。
 
 type fakeSettingsService struct {
-	mu        sync.Mutex
-	getView   settings.SectionView
+	mu      sync.Mutex
+	getView settings.SectionView
+	// getQueue 非空时按顺序返回（GET 前后快照不同的场景，如部署设置审计）。
+	getQueue  []settings.SectionView
 	getErr    error
 	putResult settings.UpdateResult
 	putErr    error
@@ -38,6 +40,10 @@ func (f *fakeSettingsService) Get(_ context.Context, section string) (settings.S
 		return settings.SectionView{}, f.getErr
 	}
 	view := f.getView
+	if len(f.getQueue) > 0 {
+		view = f.getQueue[0]
+		f.getQueue = f.getQueue[1:]
+	}
 	view.Section = section
 	return view, nil
 }

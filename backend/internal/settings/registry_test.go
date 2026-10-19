@@ -246,11 +246,15 @@ func TestRegistryGoldenSets(t *testing.T) {
 	wantDangerous := []string{
 		"auth.password_login_enabled:off", "auth.signup_enabled:off",
 		"billing.currency_symbol:on", "billing.quota_per_unit:on",
+		"deploy.ionet.api_key:any", "deploy.ionet.enabled:off",
 		"pay.alipay.private_key:any", "pay.alipay.public_key:any",
 		"pay.epay.merchant_id:on", "pay.force_complete_max_amount:on",
 		"pay.online_enabled:off", "pay.stripe.secret_key:any",
 		"pay.stripe.webhook_secret:any", "pay.waffo.merchant_id:on",
-		"pay.waffo_pancake.merchant_id:on", "rl.health.auto_disable_enabled:on",
+		"pay.waffo_pancake.merchant_id:on",
+		// 插件禁用清单：增删任意条目都会改变数据面能力（any）。
+		"plugin.disabled_factory_keys:any",
+		"rl.health.auto_disable_enabled:on",
 		"rl.health.disable_keywords:on", "sec.sensitive.words:on",
 		"sec.ssrf.allow_private_ip:on", "sec.ssrf.enabled:off",
 		"site.home_custom_html:on",
@@ -260,7 +264,8 @@ func TestRegistryGoldenSets(t *testing.T) {
 	}
 	sort.Strings(secrets)
 	wantSecrets := []string{
-		"auth.turnstile.secret_key", "notify.smtp.password",
+		"auth.turnstile.secret_key", "deploy.ionet.api_key",
+		"notify.smtp.password",
 		"pay.alipay.private_key", "pay.alipay.public_key",
 		"pay.stripe.secret_key", "pay.stripe.webhook_secret",
 	}

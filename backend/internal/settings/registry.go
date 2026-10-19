@@ -80,6 +80,9 @@ var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp",
+	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
+	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
+	"plugin", "deploy",
 }
 
 var (
@@ -446,7 +449,49 @@ func buildRegistry() []Setting {
 		def("notify.smtp.insecure_skip_verify", "notify.smtp", TypeBool, false),
 		def("notify.smtp.from_email", "notify.smtp", TypeString, "", maxLen(254),
 			validate(emailOrEmpty)),
+
+		// ==== plugin（M6d 任务插件平台，relay-06 / modules-08 §3.10）====
+		//
+		// 全部归 plugin section（R-M6D-10）：管理员一次提交主开关与策略，
+		// 插件管理面的写权限同样是 settings:manage，不存在第二个 section。
+		// plugin 键一律不进公开下发（§1.4.1 未登记），避免把平台策略暴露给匿名面。
+		def("plugin.enabled", "plugin", TypeBool, true),
+		// 出厂插件禁用清单：命中 key 的 factory 层不注册。any 方向——增删任意
+		// 条目都会改变数据面可用能力，按「任意变更即风险」保守处理。
+		def("plugin.disabled_factory_keys", "plugin", TypeList, []any{},
+			dangerousAny(), element(validatePluginKey),
+			validate(maxItems(100, "plugin.disabled_factory_keys"))),
+		def("plugin.marketplace.enabled", "plugin", TypeBool, true),
+		// 上传源码上限 2 MiB（R-M6D-07 默认值）。上限再取 64 MiB 作为注册表
+		// 硬边界：任何超出 provider/网关内存预算的值在保存期就拒绝。
+		def("plugin.upload.max_bytes", "plugin", TypeInt, int64(2097152),
+			minInt(1), maxInt(67108864)),
+
+		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
+		//
+		// 只有两个设置键；部署/容器/日志等 provider 实时资源不落库（§3.20.4）。
+		// enabled 是「关闭即能力失效」的关闭型风险；api_key 是长期凭据，
+		// 替换/清除都必须二次确认（direction=any）。
+		def("deploy.ionet.enabled", "deploy", TypeBool, false, dangerousOff()),
+		def("deploy.ionet.api_key", "deploy", TypeString, "", secret(), dangerousAny()),
 	}
+}
+
+// pluginKeyPattern 与 task_plugins.key 的 DB CHECK 同口径（R-M6D-01：≤30 字符，
+// 小写字母/数字开头，仅含小写字母、数字、下划线与连字符）。注册表先拒绝，
+// 避免把非法项写进设置后由激活路径才失败。
+var pluginKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,29}$`)
+
+// validatePluginKey 校验 plugin.disabled_factory_keys 的单个元素。
+func validatePluginKey(v any) error {
+	key, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("expected string")
+	}
+	if !pluginKeyPattern.MatchString(key) {
+		return fmt.Errorf("plugin key must match %s", pluginKeyPattern.String())
+	}
+	return nil
 }
 
 // cloneValue 深拷贝 JSON 形态的值，并保持整数精度。

@@ -2170,6 +2170,30 @@ type DeleteAccountRequest struct {
 	TotpCode *string `json:"totp_code,omitempty"`
 }
 
+// DeployConnectionTestRequest defines model for DeployConnectionTestRequest.
+type DeployConnectionTestRequest struct {
+	// ApiKey 可选的候选密钥；只在本次请求内存中使用。
+	ApiKey *string `json:"api_key,omitempty"`
+}
+
+// DeployConnectionTestResult defines model for DeployConnectionTestResult.
+type DeployConnectionTestResult struct {
+	HardwareCount  int   `json:"hardware_count"`
+	LatencyMs      int64 `json:"latency_ms"`
+	Ok             bool  `json:"ok"`
+	TotalAvailable int   `json:"total_available"`
+}
+
+// DeploySettings 作用域化设置投影。永不含 api_key；has_secret 是密钥是否已配置的唯一
+// 外部可见事实。updated_at 为 null 表示该 section 尚无任何落库行。
+type DeploySettings struct {
+	// CanConnect enabled && has_secret
+	CanConnect bool      `json:"can_connect"`
+	Enabled    bool      `json:"enabled"`
+	HasSecret  bool      `json:"has_secret"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 // EmailCodeRequest 发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
 // 10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
 type EmailCodeRequest struct {
@@ -3917,6 +3941,19 @@ type TwoFASetupResponse struct {
 	Secret string `json:"secret"`
 }
 
+// UpdateDeploySettingsRequest defines model for UpdateDeploySettingsRequest.
+type UpdateDeploySettingsRequest struct {
+	// ApiKey 留空或 "******" = 不更新已存密钥。
+	ApiKey *string `json:"api_key,omitempty"`
+
+	// ClearApiKey true 时删除已存密钥；与 api_key 同时出现返回 400。
+	ClearApiKey *bool `json:"clear_api_key,omitempty"`
+	Enabled     bool  `json:"enabled"`
+
+	// UpdatedAt 读取时的乐观锁版本；陈旧值返回 409。
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
 // UpdateSelfSettingsRequest PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
 // 等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
 // 7 语内返回 400。
@@ -5046,6 +5083,12 @@ type ValidatePasswordResetTokenJSONRequestBody = PasswordResetValidateRequest
 
 // RegisterJSONRequestBody defines body for Register for application/json ContentType.
 type RegisterJSONRequestBody = RegisterRequest
+
+// UpdateDeploySettingsJSONRequestBody defines body for UpdateDeploySettings for application/json ContentType.
+type UpdateDeploySettingsJSONRequestBody = UpdateDeploySettingsRequest
+
+// TestDeployConnectionJSONRequestBody defines body for TestDeployConnection for application/json ContentType.
+type TestDeployConnectionJSONRequestBody = DeployConnectionTestRequest
 
 // ChangeEmailJSONRequestBody defines body for ChangeEmail for application/json ContentType.
 type ChangeEmailJSONRequestBody = ChangeEmailRequest

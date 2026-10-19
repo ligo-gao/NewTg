@@ -57,6 +57,10 @@ var secretKeys = map[string]struct{}{
 	"pay.alipay.private_key":    {},
 	"pay.alipay.public_key":     {},
 	"notify.smtp.password":      {},
+	// M6d 部署控制面凭据（modules-08 §3.20.5）：io.net API Key 只经设置键
+	// 录入，任何走 Center.Save 的路径都必须先密封；部署侧读取依赖这份清单
+	// 与 settings 注册表一致，否则会出现「设置页加密、部署页读到密文」。
+	"deploy.ionet.api_key": {},
 }
 
 // rowScanner 抽象 *sql.Row 的 Scan，便于单测以缝隙替代真实数据库（GC-8）。

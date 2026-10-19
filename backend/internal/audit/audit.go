@@ -97,6 +97,13 @@ const (
 	// （modules-08 §3.9 / F-08-25；brief 要求所有写操作审计）。模板行虽不在
 	// system_settings，但属于管理配置，归 operation 类。
 	ActionNotificationTemplateUpdate = "notification_template.update"
+
+	// M6d 模型部署控制面（modules-08 §3.20.6）。两类事件都归 operation：
+	// 设置更新是管理配置，连接测试是对外部 provider 的探测（也是管理动作）。
+	// detail 只允许 enabled/has_secret 这类布尔事实，密钥值与其任何片段
+	// 绝不进入审计（§3.20.5）。
+	ActionDeploySettingsUpdate = "deploy.settings_update"
+	ActionDeployConnectionTest = "deploy.connection_test"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -154,6 +161,9 @@ var actionCategories = map[string]string{
 	ActionSettingsUpdate: categoryOperation,
 
 	ActionNotificationTemplateUpdate: categoryOperation,
+
+	ActionDeploySettingsUpdate: categoryOperation,
+	ActionDeployConnectionTest: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。
