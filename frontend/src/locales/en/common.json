@@ -9,6 +9,8 @@
   "nav.dashboard": "Dashboard",
   "nav.profile": "Profile",
   "nav.security": "Security",
+  "nav.wallet": "Wallet",
+  "nav.orders": "Orders",
   "nav.users": "Users",
   "nav.groups": "Groups",
   "nav.pricing": "Pricing",
