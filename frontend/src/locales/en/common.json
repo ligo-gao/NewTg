@@ -18,6 +18,25 @@
   "nav.pricing": "Pricing",
   "nav.model_pricing": "Model pricing",
   "nav.group_pricing": "Group pricing",
+  "command": {
+    "open": "Search or jump to…",
+    "shortcut_mac": "⌘K",
+    "shortcut_other": "Ctrl+K",
+    "title": "Command palette",
+    "placeholder": "Type a command or page…",
+    "list_label": "Commands",
+    "no_results": "No results",
+    "result_count": "{count} results",
+    "groups": {
+      "pages": "Pages",
+      "actions": "Actions"
+    },
+    "actions": {
+      "copy_url": "Copy current page URL",
+      "copied": "Page URL copied",
+      "copy_failed": "Copy failed. Please copy the URL manually."
+    }
+  },
   "error.title": "Something went wrong",
   "error.retry": "Try again",
   "error401.title": "Your session has expired",

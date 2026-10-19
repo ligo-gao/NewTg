@@ -3,10 +3,16 @@ import {
   createFileRoute,
   Outlet,
   redirect,
+  useNavigate,
   useRouterState,
 } from '@tanstack/react-router'
+import { useState } from 'react'
 
 import { usePricingCapabilities } from '@/features/admin/pricing/use-pricing-capabilities'
+import {
+  CommandPalette,
+  useCommandPaletteShortcut,
+} from '@/features/shell/command-palette'
 import { fetchMe, meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 
@@ -59,11 +65,32 @@ function isActive(pathname: string | undefined, href: string): boolean {
 export interface ConsoleHeaderProps {
   /** 当前路由；由 ConsoleLayout 注入，测试可省略。 */
   activePath?: string
+  /** 打开命令面板的可见入口（web-00 §15.1.1）。 */
+  onOpenCommandPalette?: () => void
+}
+
+/**
+ * macOS 用 ⌘K，其余平台用 Ctrl+K。`userAgentData.platform` 优先，浏览器
+ * 不支持时回退到已弃用但兼容面最广的 `navigator.platform`。
+ */
+function isApplePlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const uaData = navigator as Navigator & {
+    userAgentData?: { platform?: string }
+  }
+  const platform = uaData.userAgentData?.platform ?? navigator.platform
+  return /mac|iphone|ipad|ipod/i.test(platform)
 }
 
 /** Extracted so the layout header can be rendered in isolation by tests. */
-export function ConsoleHeader({ activePath }: ConsoleHeaderProps) {
+export function ConsoleHeader({
+  activePath,
+  onOpenCommandPalette,
+}: ConsoleHeaderProps) {
   const { t } = useI18n()
+  const shortcutHint = isApplePlatform()
+    ? t('common.command.shortcut_mac')
+    : t('common.command.shortcut_other')
   // The console guard has already seeded `['me']`; this read is served from
   // the cache (a direct `/dashboard` navigation still triggers one probe).
   const meQuery = useQuery(meQueryOptions())
@@ -113,6 +140,28 @@ export function ConsoleHeader({ activePath }: ConsoleHeaderProps) {
             </div>
           ) : null}
         </nav>
+        <button
+          type="button"
+          aria-keyshortcuts="Meta+K Control+K"
+          onClick={onOpenCommandPalette}
+          className="ml-auto inline-flex h-8 items-center gap-2 rounded-lg border border-border-default bg-surface-page px-2.5 text-[13px] text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="size-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="m10.5 10.5 3 3" strokeLinecap="round" />
+          </svg>
+          <span>{t('common.command.open')}</span>
+          <kbd className="rounded border border-border-hairline bg-surface-card px-1 font-mono text-[11px] text-ink-3">
+            {shortcutHint}
+          </kbd>
+        </button>
       </div>
     </header>
   )
@@ -123,13 +172,29 @@ export function ConsoleLayout() {
   const activePath = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const navigate = useNavigate()
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+
+  // 全局快捷键只在控制台壳挂载一次；ConsoleLayout 卸载时移除（web-00 §15.1.1）。
+  useCommandPaletteShortcut(() => setCommandPaletteOpen(true))
 
   return (
     <div className="min-h-screen bg-surface-page text-ink-1">
-      <ConsoleHeader activePath={activePath} />
+      <ConsoleHeader
+        activePath={activePath}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+      />
       <main id="main" className="p-6">
         <Outlet />
       </main>
+      <CommandPalette
+        open={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        onNavigate={(to) => {
+          // 客户端跳转，不产生任何请求（命令面板不是全局搜索）。
+          void navigate({ to })
+        }}
+      />
     </div>
   )
 }
