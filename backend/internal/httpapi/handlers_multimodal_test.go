@@ -713,3 +713,77 @@ func TestRelayNativeStreamFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// TestMultimodal_SpeechBounds（F6）：response_format 枚举、max_new_tokens、
+// metadata 字节上界必须在入口 400。
+func TestMultimodal_SpeechBounds(t *testing.T) {
+	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
+	cases := []string{
+		`{"model":"tts","input":"hi","response_format":"ogg"}`,
+		`{"model":"tts","input":"hi","max_new_tokens":5000}`,
+		`{"model":"tts","input":"hi","max_new_tokens":1.5}`,
+		`{"model":"tts","input":"hi","metadata":{"x":"` + strings.Repeat("a", MaxAudioMetadataBytes) + `"}}`,
+	}
+	for _, body := range cases {
+		resp := doMultimodal(t, handler, multimodalRequest{path: "/v1/audio/speech", body: []byte(body), contentType: "application/json"}, true)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want 400", body, resp.Code)
+		}
+	}
+}
+
+// TestMultimodal_AudioFormatCannotMeasure（F12）：ogg/aiff/aac 无法从文件头
+// 测得时长，转写/翻译必须显式 400，不得静默按 0 秒计费。
+func TestMultimodal_AudioFormatCannotMeasure(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("model", "whisper-1")
+	part, err := writer.CreateFormFile("file", "voice.ogg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("OggS\x00\x02\x00\x00"))
+	_ = writer.Close()
+	resp := doMultimodal(t, handler, multimodalRequest{path: "/v1/audio/transcriptions", body: buf.Bytes(), contentType: writer.FormDataContentType()}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// TestMultimodal_GeminiEmbeddingRoutes（F8/R-11）：三条 Gemini 语义嵌入
+// 路径归入 embeddings；其它动作后缀回到标准 404。
+func TestMultimodal_GeminiEmbeddingRoutes(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	cases := []struct {
+		path     string
+		model    string
+		body     string
+		wantCode int
+	}{
+		{"/v1/engines/text-embedding-004/embeddings", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK},
+		{"/v1/models/text-embedding-004:embedContent", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK},
+		{"/v1beta/models/text-embedding-004:batchEmbedContents", "text-embedding-004", `{"requests":[]}`, http.StatusOK},
+		{"/v1/models/text-embedding-004:countTokens", "", `{}`, http.StatusNotFound},
+		{"/v1beta/models/gemini-pro:generateContent", "", `{}`, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		resp := doMultimodal(t, handler, multimodalRequest{path: tc.path, body: []byte(tc.body), contentType: "application/json"}, true)
+		if resp.Code != tc.wantCode {
+			t.Fatalf("%s: status = %d, want %d; body=%s", tc.path, resp.Code, tc.wantCode, resp.Body.String())
+		}
+		if tc.wantCode == http.StatusOK {
+			dispatcher.mu.Lock()
+			model, endpoint := dispatcher.rc.OriginModel, dispatcher.endpoint
+			dispatcher.mu.Unlock()
+			if model != tc.model || endpoint != contract.EndpointEmbeddings {
+				t.Fatalf("%s: model=%q endpoint=%q, want %q/%q", tc.path, model, endpoint, tc.model, contract.EndpointEmbeddings)
+			}
+		}
+	}
+}

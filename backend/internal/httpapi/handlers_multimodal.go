@@ -75,6 +75,11 @@ const (
 	// MaxAudioFileBytes 是音频上传文件上界（relay-04 §9、security-04 §3.2 冻结 25 MiB）。
 	MaxAudioFileBytes = multimodal.MaxAudioFileBytes
 
+	// MaxAudioMetadataBytes / MaxSpeechNewTokens 是音频透传载荷的上界
+	// （relay-04 §9；常量来源在 multimodal 包，避免两处再造）。
+	MaxAudioMetadataBytes = multimodal.MaxAudioMetadataBytes
+	MaxSpeechNewTokens    = multimodal.MaxSpeechNewTokens
+
 	// MinTTSSpeed / MaxTTSSpeed 是 TTS speed 的合法闭区间（relay-04 §9 甲类修正）。
 	MinTTSSpeed = multimodal.MinTTSSpeed
 	MaxTTSSpeed = multimodal.MaxTTSSpeed
@@ -159,6 +164,12 @@ func RegisterMultimodalRoutes(mux *http.ServeMux, auth func(http.Handler) http.H
 	register(http.MethodPost, "/v1/audio/speech", contract.EndpointAudioSpeech)
 	register(http.MethodPost, "/v1/audio/transcriptions", contract.EndpointAudioTranscribe)
 	register(http.MethodPost, "/v1/audio/translations", contract.EndpointAudioTranslate)
+	// Gemini 专用嵌入路径（R-11）：语义路径由模型名 + 动作后缀承载。
+	// 通配只在 :embedContent / :batchEmbedContents 时归入嵌入族；其它
+	// 动作在 serve 中回标准 404（不注册 501 桩）。
+	register(http.MethodPost, "/v1/engines/{model}/embeddings", contract.EndpointEmbeddings)
+	register(http.MethodPost, "/v1/models/{path...}", contract.EndpointEmbeddings)
+	register(http.MethodPost, "/v1beta/models/{path...}", contract.EndpointEmbeddings)
 	// 实时骨架：WebSocket 握手是 GET（relay-07 G-06 冻结 `GET /v1/realtime`）。
 	// M4 计划草图写的 POST 已被该裁决取代；这里只注册 GET，避免留下一个
 	// 永远不会收到升级请求的 POST 半死路径。升级与双向桥接由 T4/T5 负责，
@@ -183,7 +194,16 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	// 请求体；与 handleChatCompletions 的复原姿势一致。
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	model, err := validateMultimodalEntry(endpoint, r.Header.Get("Content-Type"), body)
+	// Gemini 通配路径只接受嵌入动作后缀；其它动作回到标准 404（不把
+	// generateContent/countTokens 误当成本族）。
+	if endpoint == contract.EndpointEmbeddings && isGeminiWildcardPath(r.URL.Path) {
+		if _, ok := geminiEmbeddingModel(r.URL.Path); !ok {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	model, err := validateMultimodalEntry(endpoint, r.URL.Path, r.Header.Get("Content-Type"), body)
 	if err != nil {
 		writeMultimodalEntryError(w, requestID, err)
 		return
@@ -304,7 +324,7 @@ func writeMultimodalEntryError(w http.ResponseWriter, requestID string, err erro
 // 校验强度按 relay-04 §9 的「用户声明的量 → 400 拒绝」口径：图像 n/size/
 // quality/prompt、TTS speed/input、音频上传文件与 model 必填。音频时长等
 // 「上游测得的量」不在此拒绝（由适配器饱和并审计）。
-func validateMultimodalEntry(endpoint contract.Endpoint, contentType string, body []byte) (string, error) {
+func validateMultimodalEntry(endpoint contract.Endpoint, path string, contentType string, body []byte) (string, error) {
 	switch endpoint {
 	case contract.EndpointImageGenerate:
 		return validateImageJSON(body)
@@ -323,6 +343,9 @@ func validateMultimodalEntry(endpoint contract.Endpoint, contentType string, bod
 		// WebSocket 升级请求没有可解析的 JSON body；模型/协议由 Task 4/T5 处理。
 		return "", nil
 	case contract.EndpointEmbeddings:
+		if model, ok := geminiEmbeddingModel(path); ok {
+			return validateGeminiEmbeddingJSON(model, body)
+		}
 		return validateEmbeddingsJSON(body)
 	case contract.EndpointRerank:
 		return validateRerankJSON(body)
@@ -330,6 +353,64 @@ func validateMultimodalEntry(endpoint contract.Endpoint, contentType string, bod
 		// 未知端点（防御）：仍按 JSON 对象做最小校验。
 		return validateLooseJSON(body)
 	}
+}
+
+// isGeminiWildcardPath 判断路径是否落在 Gemini 语义通配路由的形态内。
+func isGeminiWildcardPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/engines/") ||
+		strings.HasPrefix(path, "/v1/models/") ||
+		strings.HasPrefix(path, "/v1beta/models/")
+}
+
+// geminiEmbeddingModel 从 Gemini 语义路径提取模型名。
+//
+// 支持形态（relay-04 §1.1）：
+//   - /v1/engines/{model}/embeddings
+//   - /v1/models/{model}:embedContent 或 :batchEmbedContents
+//   - /v1beta/models/{model}:embedContent 或 :batchEmbedContents
+func geminiEmbeddingModel(path string) (string, bool) {
+	if strings.HasPrefix(path, "/v1/engines/") {
+		rest := strings.TrimPrefix(path, "/v1/engines/")
+		if !strings.HasSuffix(rest, "/embeddings") {
+			return "", false
+		}
+		model := strings.TrimSuffix(rest, "/embeddings")
+		if model == "" || strings.Contains(model, "/") {
+			return "", false
+		}
+		return model, true
+	}
+	for _, prefix := range []string{"/v1/models/", "/v1beta/models/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(path, prefix)
+		for _, action := range []string{":embedContent", ":batchEmbedContents"} {
+			if strings.HasSuffix(rest, action) {
+				model := strings.TrimSuffix(rest, action)
+				if model == "" || strings.Contains(model, "/") {
+					return "", false
+				}
+				return model, true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// validateGeminiEmbeddingJSON 校验 Gemini 语义嵌入请求：body 必须是 JSON
+// 对象；内容文本总量沿用 MaxEmbeddingInputBytes 的逐段上界（批量上限按
+// 请求体 32 MiB 兜底）。模型来自路径而不是 body。
+func validateGeminiEmbeddingJSON(model string, body []byte) (string, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return "", invalidMultimodalEntry("request body must be a JSON object")
+	}
+	if err := json.Unmarshal(trimmed, &struct{}{}); err != nil {
+		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	return model, nil
 }
 
 // validateEmbeddingsJSON 实施 relay-04 §1.2/§9 的入口上界：
@@ -600,9 +681,12 @@ func validateImageQuality(quality string) error {
 // speed 闭区间（relay-04 §3.2/§9）。
 func validateSpeechJSON(body []byte) (string, error) {
 	var payload struct {
-		Model *string            `json:"model"`
-		Input *string            `json:"input"`
-		Speed optionalJSONNumber `json:"speed"`
+		Model          *string            `json:"model"`
+		Input          *string            `json:"input"`
+		Speed          optionalJSONNumber `json:"speed"`
+		ResponseFormat *string            `json:"response_format"`
+		MaxNewTokens   optionalJSONNumber `json:"max_new_tokens"`
+		Metadata       json.RawMessage    `json:"metadata"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", invalidMultimodalEntry("invalid JSON request body")
@@ -618,6 +702,26 @@ func validateSpeechJSON(body []byte) (string, error) {
 		if err != nil || math.IsNaN(speed) || speed < MinTTSSpeed || speed > MaxTTSSpeed {
 			return "", invalidMultimodalEntry("speed must be between 0.25 and 4.0")
 		}
+	}
+	// F6：response_format 是决定 TTS 时长解析口径的枚举；未知值会让响应
+	// 落到 body 大小兜底，必须在入口拒绝。
+	if payload.ResponseFormat != nil && *payload.ResponseFormat != "" {
+		switch strings.ToLower(strings.TrimSpace(*payload.ResponseFormat)) {
+		case "mp3", "opus", "aac", "flac", "wav", "pcm":
+		default:
+			return "", invalidMultimodalEntry("response_format must be one of mp3, opus, aac, flac, wav, pcm")
+		}
+	}
+	// max_new_tokens 是 vllm-omini 透传字段，属用户可控的计费乘数（§9）。
+	if payload.MaxNewTokens.Set {
+		value, ok := jsonNumberInt(payload.MaxNewTokens)
+		if !ok || value < 1 || value > multimodal.MaxSpeechNewTokens {
+			return "", invalidMultimodalEntry("max_new_tokens must be an integer in [1, 4096]")
+		}
+	}
+	// metadata 是透传载荷，按字节上界防御（§9：MaxAudioMetadataBytes）。
+	if len(bytes.TrimSpace(payload.Metadata)) > multimodal.MaxAudioMetadataBytes {
+		return "", invalidMultimodalEntry("metadata exceeds the 64 KiB limit")
 	}
 	return *payload.Model, nil
 }
@@ -1046,6 +1150,12 @@ func validateAudioMultipart(contentType string, body []byte) (string, error) {
 				// F5：扩展名 ↔ 声明 MIME ↔ 魔数三者一致（security-04 §3.2）。
 				if err := validateAudioUpload(filename, partType, prefix); err != nil {
 					return "", err
+				}
+				// F12 / relay-04 §8.2.3：转写/翻译的预扣依赖上传文件头时长。
+				// ogg/aiff/aac 等无法在不解码全文件时测得时长，必须显式
+				// 失败（可诊断），不得静默按 0 秒计费。
+				if !multimodal.SupportsAudioDuration(audioExtensionFamily(filename)) {
+					return "", invalidMultimodalEntry("audio format cannot be measured for billing; use mp3, wav, flac or m4a")
 				}
 			}
 			fileSeen = true

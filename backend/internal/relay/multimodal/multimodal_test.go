@@ -30,6 +30,8 @@ import (
 
 // ---------- fake billing ----------
 
+var testPNGBytes = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
+
 type fakeBilling struct {
 	mu         sync.Mutex
 	preCalls   int
@@ -232,21 +234,22 @@ func TestImageUnparseableCountKeepsReservation(t *testing.T) {
 func TestImageJSONConvertedToSSE(t *testing.T) {
 	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// 拆分形（url 条目 + b64 条目）同一张图只计一次（§8.1.1 max）。
 		_, _ = w.Write([]byte(`{"data":[{"url":"a"},{"revised_prompt":"skip"},{"b64_json":"b"}]}`))
 	})
 	recorder := httptest.NewRecorder()
 	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p","n":3,"stream":true}`), "application/json", recorder)
 
 	body := recorder.Body.String()
-	if got := strings.Count(body, `"type":"image_generation.completed"`); got != 2 {
-		t.Fatalf("completed events = %d, want 2; body=%s", got, body)
+	if got := strings.Count(body, `"type":"image_generation.completed"`); got != 1 {
+		t.Fatalf("completed events = %d, want 1 (split form counts once); body=%s", got, body)
 	}
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("missing [DONE]; body=%s", body)
 	}
 	_, _, facts, _ := env.billing.snapshot()
-	if len(facts) != 1 || facts[0].ImageCount != 2 || !facts[0].Stream {
-		t.Fatalf("settled fact = %+v, want ImageCount=2 Stream=true", facts)
+	if len(facts) != 1 || facts[0].ImageCount != 1 || !facts[0].Stream {
+		t.Fatalf("settled fact = %+v, want ImageCount=1 Stream=true", facts)
 	}
 }
 
@@ -279,6 +282,8 @@ func TestEmbeddingsPassThroughAndUsage(t *testing.T) {
 		if r.URL.Path != "/v1/embeddings" {
 			t.Errorf("upstream path = %q", r.URL.Path)
 		}
+		// F14：给上游加可观测延迟，断言 JSON 路径填充了 LatencyMS。
+		time.Sleep(15 * time.Millisecond)
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		if payload["model"] != "upstream-model" {
@@ -306,6 +311,9 @@ func TestEmbeddingsPassThroughAndUsage(t *testing.T) {
 	_, _, facts, _ := env.billing.snapshot()
 	if len(facts) != 1 || facts[0].Usage.Prompt != 7 {
 		t.Fatalf("settled fact = %+v, want Prompt=7", facts)
+	}
+	if facts[0].LatencyMS < 10 {
+		t.Fatalf("LatencyMS = %d, want >= 10 (F14)", facts[0].LatencyMS)
 	}
 }
 
@@ -644,5 +652,344 @@ func TestImageStreamBillingR15(t *testing.T) {
 				t.Fatalf("ImageCount = %d, want %d", facts[0].ImageCount, tc.want)
 			}
 		})
+	}
+}
+
+// ---------- 评审修复（F1–F15） ----------
+
+// errorAfterReader 先返回数据，随后返回非 EOF 错误（模拟上游连接重置）。
+type errorAfterReader struct {
+	data []byte
+	done bool
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if !r.done && len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		if len(r.data) == 0 {
+			r.done = true
+		}
+		return n, nil
+	}
+	return 0, errors.New("connection reset by peer")
+}
+
+// TestAudioDurationMP3UsesTotalSize（F1）：MP3 按字节率估算，流式直传只有
+// 64 KiB 前缀；必须使用总字节数，否则大文件系统性少计。
+func TestAudioDurationMP3UsesTotalSize(t *testing.T) {
+	prefix := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x64)
+	prefix = append(prefix, bytes.Repeat([]byte{0}, 64<<10)...)
+	total := int64(1 << 20)
+	seconds, ok := AudioDurationWithSize(prefix, total, "mp3")
+	if !ok {
+		t.Fatal("mp3 duration not detected")
+	}
+	want := float64(total-10) * 8 / 128000
+	if seconds < want-2 || seconds > want+2 {
+		t.Fatalf("mp3 duration = %v, want ≈%v (must use total size)", seconds, want)
+	}
+}
+
+// TestAudioSpeechMP3LargeFileDuration 是 F1 的端到端回归：1 MiB MP3 的
+// 结算时长必须按总字节数而非 64 KiB 前缀。
+func TestAudioSpeechMP3LargeFileDuration(t *testing.T) {
+	audio := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x64)
+	audio = append(audio, bytes.Repeat([]byte{0}, (1<<20)-len(audio))...)
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write(audio)
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointAudioSpeech, []byte(`{"model":"tts","input":"hi","response_format":"mp3"}`), "application/json", recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 {
+		t.Fatalf("Terminate calls = %d", len(facts))
+	}
+	want := int64((len(audio)-10)*8/128000) + 1 // ceil
+	if facts[0].Usage.AudioSeconds < want-1 || facts[0].Usage.AudioSeconds > want+1 {
+		t.Fatalf("AudioSeconds = %d, want ≈%d (total-size based)", facts[0].Usage.AudioSeconds, want)
+	}
+}
+
+// TestTranscriptionFallsBackToUploadDuration（F2）：上游省略 usage/duration
+// 时用预扣阶段测得的上传文件头时长（60s WAV）结算，不得按 0。
+func TestTranscriptionFallsBackToUploadDuration(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"hello"}`))
+	})
+	ct, body := multipartFixture(t, "file", "audio.wav", wavFixture(60), map[string]string{"model": "whisper-1"})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointAudioTranscribe, body, ct, recorder)
+	_, _, facts, estimates := env.billing.snapshot()
+	if len(facts) != 1 {
+		t.Fatalf("Terminate calls = %d", len(facts))
+	}
+	if len(estimates) != 1 || estimates[0].AudioSeconds != 60 {
+		t.Fatalf("pre-consume estimate = %+v, want AudioSeconds=60", estimates)
+	}
+	if facts[0].Usage.AudioSeconds != 60 || facts[0].Usage.PromptDetail.Audio != 1000 {
+		t.Fatalf("settled usage = %+v, want AudioSeconds=60 / 1000 audio tokens", facts[0].Usage)
+	}
+}
+
+// TestImageStreamReadErrorIsAbnormal（F3）：非 EOF 的读取错误必须按中断
+// 结算 max(completed, n)，且不得伪造 [DONE]。
+func TestImageStreamReadErrorIsAbnormal(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	})
+	frame := "data: {\"type\":\"image_generation.completed\"}\n\n"
+	body := io.MultiReader(strings.NewReader(frame), &errorAfterReader{})
+	result := &relay.AttemptResult{
+		Response: &http.Response{Body: io.NopCloser(body), Header: http.Header{"Content-Type": []string{"text/event-stream"}}},
+		Adapter:  &endpointAdapter{channelType: contract.ChannelTypeOpenAI, plan: &RequestPlan{endpoint: contract.EndpointImageGenerate}},
+	}
+	plan := &RequestPlan{endpoint: contract.EndpointImageGenerate, estimate: contract.QuotaEstimate{ImageCount: 3}, started: time.Now()}
+	rc := &contract.RelayContext{RequestID: "r", OriginModel: "m"}
+	settlement := &settlement{billing: env.billing}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	env.dispatcher.serveImageStream(recorder, request, rc, plan, result, settlement, true)
+
+	if strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("forged [DONE] on upstream read error: %s", recorder.Body.String())
+	}
+	_, refunds, facts, _ := env.billing.snapshot()
+	if refunds != 0 || len(facts) != 1 || facts[0].ImageCount != 3 {
+		t.Fatalf("refunds=%d facts=%+v, want ImageCount=3 (max(completed,n))", refunds, facts)
+	}
+}
+
+// TestImageStreamMalformedPayloadKeepsReservation（F5）：类型非法的 payload
+// 必须回退 reserved_default，不能按 0 张静默收费。
+func TestImageStreamMalformedPayloadKeepsReservation(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"url":123}]}`))
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p","n":2,"stream":true}`), "application/json", recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 || facts[0].Usage.Source != contract.UsageReservedDefault {
+		t.Fatalf("settled fact = %+v, want reserved_default", facts)
+	}
+}
+
+// TestImageStreamArrayURLCount（F4 补充）：数组形按 url 条目数计，拆分形
+// 只计一次（在 TestImageJSONConvertedToSSE 中固化）。
+func TestImageStreamArrayURLCount(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"url":"a"},{"url":"b"}]}`))
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p","n":5,"stream":true}`), "application/json", recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 || facts[0].ImageCount != 2 {
+		t.Fatalf("settled fact = %+v, want ImageCount=2", facts)
+	}
+}
+
+// TestUpstreamOmittedUsageUsesLocalEstimate（F7）：嵌入/重排无 usage 时按
+// 请求文本做本地估算（estimated），而不是 0。
+func TestUpstreamOmittedUsageUsesLocalEstimate(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointEmbeddings, []byte(`{"model":"m","input":["hello world"]}`), "application/json", recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 || facts[0].Usage.Prompt <= 0 || facts[0].Usage.Source != contract.UsageEstimated {
+		t.Fatalf("embedding fact = %+v, want estimated Prompt>0", facts)
+	}
+
+	env2 := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	})
+	recorder2 := httptest.NewRecorder()
+	env2.handle(t, contract.EndpointRerank, []byte(`{"model":"m","query":"q","documents":["doc one","doc two"]}`), "application/json", recorder2)
+	_, _, facts2, _ := env2.billing.snapshot()
+	if len(facts2) != 1 || facts2[0].Usage.Prompt <= 0 || facts2[0].Usage.Source != contract.UsageEstimated {
+		t.Fatalf("rerank fact = %+v, want estimated Prompt>0", facts2)
+	}
+}
+
+// TestAdapterRevalidatesImageBounds（F9）：适配器本地必须拒绝越界的 n
+// （防御性二次校验，CCR-9）。
+func TestAdapterRevalidatesImageBounds(t *testing.T) {
+	adapter := &endpointAdapter{
+		channelType: contract.ChannelTypeOpenAI,
+		defaultBase: "http://example.invalid",
+		base:        adapters.NewOpenAI(),
+		plan: &RequestPlan{
+			endpoint:    contract.EndpointImageGenerate,
+			contentType: "application/json",
+			rawBody:     []byte(`{"model":"m","prompt":"p","n":999}`),
+		},
+	}
+	_, err := adapter.BuildRequest(&contract.RelayContext{Credential: "k"}, &contract.Request{Model: "m", Raw: adapter.plan.rawBody})
+	class, ok := adapters.ClassOf(err)
+	if !ok || class != contract.ErrParamInvalid {
+		t.Fatalf("BuildRequest error = %v (class=%v), want ErrParamInvalid", err, class)
+	}
+}
+
+// TestMultipartModelMapping（F10）：multipart 的 model 字段必须映射为上游
+// 模型名。
+func TestMultipartModelMapping(t *testing.T) {
+	var seenModel string
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		seenModel = r.FormValue("model")
+		_, _ = w.Write([]byte(`{"data":[{"url":"a"}]}`))
+	})
+	ct, body := multipartFixture(t, "image", "image.png", append(append([]byte(nil), testPNGBytes...), []byte("x")...), map[string]string{"model": "client-model", "prompt": "p", "n": "1"})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointImageEdit, body, ct, recorder)
+	if seenModel != "upstream-model" {
+		t.Fatalf("upstream model = %q, want upstream-model", seenModel)
+	}
+}
+
+// TestAzureExcludedFromMultimodalMatrix（F11）：Azure 的部署名/api-version
+// 路径规则尚未对齐，必须显式拒绝而不是发出错误路径。
+func TestAzureExcludedFromMultimodalMatrix(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	defer server.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeAzure, APIBase: server.URL, Credential: "k"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   server.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadRequest, requestID, "endpoint_not_supported", "unsupported")
+		},
+	})
+	body := []byte(`{"model":"m","prompt":"p"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, &contract.RelayContext{RequestID: "r", OriginModel: "m", Request: &contract.Request{Model: "m", Raw: body}}, contract.EndpointImageGenerate)
+	if calls != 0 || recorder.Code != http.StatusBadRequest {
+		t.Fatalf("calls=%d status=%d, want 0/400", calls, recorder.Code)
+	}
+}
+
+// TestGeminiEmbeddingPath（F8/R-11）：Gemini 语义嵌入路径复用客户端路径，
+// 使用 x-goog-api-key 鉴权，响应原样回写。
+func TestGeminiEmbeddingPath(t *testing.T) {
+	var seenPath, seenKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenKey = r.Header.Get("x-goog-api-key")
+		_, _ = w.Write([]byte(`{"embedding":{"values":[0.1,0.2]}}`))
+	}))
+	defer server.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeGemini, APIBase: server.URL, Credential: "g-key"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   server.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"content":{"parts":[{"text":"hello"}]}}`)
+	path := "/v1beta/models/text-embedding-004:embedContent"
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "gem", OriginModel: "text-embedding-004", RequestPath: path, Request: &contract.Request{Model: "text-embedding-004", Raw: body}}
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, rc, contract.EndpointEmbeddings)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "embedding") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if seenPath != path || seenKey != "g-key" {
+		t.Fatalf("upstream path=%q key=%q", seenPath, seenKey)
+	}
+	_, _, facts, _ := billing.snapshot()
+	if len(facts) != 1 || facts[0].Usage.Prompt <= 0 {
+		t.Fatalf("gemini embedding fact = %+v, want estimated Prompt>0", facts)
+	}
+}
+
+// signalingWriter 在首次 Write 时关闭 first，用于断言二进制响应是分块
+// 直传而不是整段缓冲后再写（F13）。
+type signalingWriter struct {
+	inner http.ResponseWriter
+	once  sync.Once
+	first chan struct{}
+}
+
+func (w *signalingWriter) Header() http.Header    { return w.inner.Header() }
+func (w *signalingWriter) WriteHeader(status int) { w.inner.WriteHeader(status) }
+func (w *signalingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.first) })
+	return w.inner.Write(p)
+}
+
+func TestBinaryStreamIsCopiedInChunks(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(bytes.Repeat([]byte{1}, 32<<10))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+		_, _ = w.Write(bytes.Repeat([]byte{2}, 32<<10))
+	}))
+	defer upstream.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeOpenAI, APIBase: upstream.URL, Credential: "k"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   upstream.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"model":"tts","input":"hi","response_format":"wav"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "chunk", OriginModel: "tts", Request: &contract.Request{Model: "tts", Raw: body}}
+	recorder := httptest.NewRecorder()
+	first := make(chan struct{})
+	w := &signalingWriter{inner: recorder, first: first}
+	done := make(chan struct{})
+	go func() {
+		dispatcher.Handle(w, request, rc, contract.EndpointAudioSpeech)
+		close(done)
+	}()
+	select {
+	case <-first:
+		// 第一块已写出，而上游仍阻塞在 release：证明没有整段缓冲。
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("first chunk was not written before upstream completed (buffered)")
+	}
+	close(release)
+	<-done
+	if recorder.Body.Len() != 64<<10 {
+		t.Fatalf("response bytes = %d, want %d", recorder.Body.Len(), 64<<10)
 	}
 }

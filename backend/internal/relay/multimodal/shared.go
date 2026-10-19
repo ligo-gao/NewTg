@@ -20,9 +20,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
+	"time"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
@@ -72,6 +76,12 @@ type RequestPlan struct {
 	// responseFormat 是 TTS 的 response_format（pcm/mp3/wav...），决定时长
 	// 解析口径；也用于二进制响应的 Content-Type 兜底。
 	responseFormat string
+	// started 是请求进入 dispatcher 的时刻；JSON 路径的 LatencyMS 以它为
+	// 起点（F14：此前固定写 0，审计事实会丢失真实延迟）。
+	started time.Time
+	// geminiPath 表示请求走 Gemini 语义嵌入路径（:embedContent 等），
+	// 上游 URL 直接复用客户端路径，鉴权用 x-goog-api-key。
+	geminiPath bool
 }
 
 // endpointAdapter 实现 contract 冻结的全部多模态适配器接口。
@@ -138,13 +148,32 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 	if len(req.Raw) > 0 {
 		body = req.Raw
 	}
-	if !a.plan.multipart {
-		// 模型映射：上游模型名优先（relay-02 §8.1）。仅 JSON 路径可安全改写。
-		upstreamModel := rc.UpstreamModel
-		if upstreamModel == "" {
-			upstreamModel = req.Model
+	upstreamModel := rc.UpstreamModel
+	if upstreamModel == "" {
+		upstreamModel = req.Model
+	}
+	if a.plan.multipart {
+		// F10：multipart 也必须做模型映射（编辑/转写/翻译）。重新编码表单
+		// 时保持原 boundary 与 part 顺序，内容逐字节复制。
+		if upstreamModel != "" {
+			if rewritten, ok := rewriteMultipartModel(body, a.plan.contentType, upstreamModel); ok {
+				body = rewritten
+			}
 		}
-		body = rewriteJSONModel(body, upstreamModel)
+		// F9：适配器本地二次校验（CCR-9），只校验计费乘数。
+		if err := validatePayloadForUpstream(a.plan, body); err != nil {
+			return nil, err
+		}
+	} else {
+		// 模型映射：上游模型名优先（relay-02 §8.1）。仅 JSON 路径可安全改写。
+		// Gemini 语义路径的模型在 URL 中，body 没有 model 字段；写入顶层
+		// model 会被 Gemini 当作未知字段拒绝，故跳过。
+		if !a.plan.geminiPath {
+			body = rewriteJSONModel(body, upstreamModel)
+		}
+		if err := validatePayloadForUpstream(a.plan, body); err != nil {
+			return nil, err
+		}
 	}
 
 	path := a.plan.path
@@ -185,10 +214,74 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 	}
 	if channelType == contract.ChannelTypeAzure {
 		httpReq.Header.Set("api-key", rc.Credential)
+	} else if channelType == contract.ChannelTypeGemini || channelType == contract.ChannelTypeVertexAi {
+		// Gemini 原生鉴权头（查询参数 key 属兼容载体，优先用头避免进日志）。
+		httpReq.Header.Set("x-goog-api-key", rc.Credential)
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+rc.Credential)
 	}
 	return httpReq, nil
+}
+
+// validatePayloadForUpstream 按端点选择适配器本地校验（F9/CCR-9）。
+func validatePayloadForUpstream(plan *RequestPlan, body []byte) error {
+	switch plan.endpoint {
+	case contract.EndpointImageGenerate, contract.EndpointImageEdit:
+		return validateImagePayloadForUpstream(plan, body)
+	case contract.EndpointAudioSpeech:
+		return validateSpeechPayloadForUpstream(body)
+	default:
+		return nil
+	}
+}
+
+// rewriteMultipartModel 重新编码 multipart，仅把 model 字段替换为
+// upstreamModel，其余 part（含文件）按原顺序逐字节复制。
+//
+// 保持原 boundary：Content-Type 已由调用方透传，换 boundary 会让请求头与
+// body 不一致。失败时返回 ok=false，调用方保留原始 body（不静默破坏请求）。
+func rewriteMultipartModel(body []byte, contentType, upstreamModel string) ([]byte, bool) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+		return nil, false
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	var out bytes.Buffer
+	writer := multipart.NewWriter(&out)
+	if err := writer.SetBoundary(params["boundary"]); err != nil {
+		return nil, false
+	}
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
+		header := textproto.MIMEHeader{}
+		for key, values := range part.Header {
+			header[key] = append([]string(nil), values...)
+		}
+		dst, err := writer.CreatePart(header)
+		if err != nil {
+			_ = part.Close()
+			return nil, false
+		}
+		if part.FormName() == "model" {
+			_, err = io.WriteString(dst, upstreamModel)
+		} else {
+			_, err = io.Copy(dst, part)
+		}
+		_ = part.Close()
+		if err != nil {
+			return nil, false
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, false
+	}
+	return out.Bytes(), true
 }
 
 // ParseResponse 读取非流式响应体并保留原文（透传路径不重编码）。

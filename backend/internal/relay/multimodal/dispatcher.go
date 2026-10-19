@@ -211,7 +211,7 @@ func (d *Dispatcher) adapterFor(channelType contract.ChannelType, plan *RequestP
 	if err != nil {
 		return nil, err
 	}
-	if !d.supports(channelType, base) {
+	if !d.supports(channelType, base, plan) {
 		return nil, ErrUnsupportedChannel
 	}
 	return &endpointAdapter{
@@ -223,14 +223,59 @@ func (d *Dispatcher) adapterFor(channelType contract.ChannelType, plan *RequestP
 	}, nil
 }
 
-func (d *Dispatcher) supports(channelType contract.ChannelType, base contract.Adapter) bool {
+func (d *Dispatcher) supports(channelType contract.ChannelType, base contract.Adapter, plan *RequestPlan) bool {
 	if d.opts.Supports != nil {
 		return d.opts.Supports(channelType)
+	}
+	// Gemini 语义嵌入路径（:embedContent / :batchEmbedContents）只由 Gemini
+	// 原生渠道承载；OpenAI 兼容渠道无法解释该路径。
+	if plan.geminiPath {
+		return channelType == contract.ChannelTypeGemini
+	}
+	// F11：Azure 的图像/音频路径需要部署名 + api-version 特化，本包的
+	// 通用路径拼接会产生 `/openai/deployments/{d}/v1/...` 这种错误组合。
+	// 在路径规则对齐 M2 之前显式排除（ErrEndpointUnsupported），不发送
+	// 一个必然 404 的请求。
+	if channelType == contract.ChannelTypeAzure {
+		return false
 	}
 	// M4 的多模态端点以 OpenAI 兼容形态实现（relay-04 §1.4/§2.4/§3.4/§4.6
 	// 的 openai 行）。其它协议族没有本族实现，必须显式拒绝而不是发出空体。
 	_, ok := base.(*adapters.OpenAI)
 	return ok
+}
+
+// geminiPathModel 从 Gemini 语义嵌入路径提取模型名（与 httpapi 入口同一
+// 形态；跨包不共享实现以避免 httpapi 反向依赖）。
+func geminiPathModel(path string) (string, bool) {
+	if strings.HasPrefix(path, "/v1/engines/") {
+		rest := strings.TrimPrefix(path, "/v1/engines/")
+		if !strings.HasSuffix(rest, "/embeddings") {
+			return "", false
+		}
+		model := strings.TrimSuffix(rest, "/embeddings")
+		if model == "" || strings.Contains(model, "/") {
+			return "", false
+		}
+		return model, true
+	}
+	for _, prefix := range []string{"/v1/models/", "/v1beta/models/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(path, prefix)
+		for _, action := range []string{":embedContent", ":batchEmbedContents"} {
+			if strings.HasSuffix(rest, action) {
+				model := strings.TrimSuffix(rest, action)
+				if model == "" || strings.Contains(model, "/") {
+					return "", false
+				}
+				return model, true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // ============================================================================
@@ -267,6 +312,7 @@ func buildPlan(endpoint contract.Endpoint, r *http.Request, rc *contract.RelayCo
 		rawBody:     body,
 		multipart:   strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data"),
 		estimate:    contract.QuotaEstimate{Model: rc.OriginModel, Group: rc.UsingGroup},
+		started:     time.Now(),
 	}
 
 	switch endpoint {
@@ -290,6 +336,12 @@ func buildPlan(endpoint contract.Endpoint, r *http.Request, rc *contract.RelayCo
 	case contract.EndpointEmbeddings:
 		plan.contentType = "application/json"
 		plan.estimate.Model = rc.OriginModel
+		// R-11 Gemini 专用嵌入路径：直接复用客户端路径；模型取自路径。
+		if model, ok := geminiPathModel(rc.RequestPath); ok {
+			plan.geminiPath = true
+			plan.path = rc.RequestPath
+			plan.estimate.Model = model
+		}
 	case contract.EndpointRerank:
 		plan.contentType = "application/json"
 		plan.estimate.Model = rc.OriginModel
@@ -446,15 +498,162 @@ func (d *Dispatcher) serveJSON(w http.ResponseWriter, rc *contract.RelayContext,
 			})
 		}
 	}
+	// F2：上游没有给出 usage/duration 时，用**上传文件头已测得**的时长兜底
+	// （relay-04 §8.2.1：预扣与结算都有时长来源，不能因为上游省略 usage
+	// 就把整段音频按 0 token 计费）。该值在 buildPlan 时已饱和并审计。
+	if (plan.endpoint == contract.EndpointAudioTranscribe || plan.endpoint == contract.EndpointAudioTranslate) &&
+		!usageHasFact(fact.Usage) && plan.estimate.AudioSeconds > 0 {
+		fact.Usage = audioUsageFromSeconds(plan.estimate.AudioSeconds)
+	}
+	// F7：嵌入/重排上游省略 usage 时做本地估算（relay-04 §1.3/§2.3/§8.3/§8.4），
+	// 不再静默按 0 结算。估算口径为确定性字节数/4（中继侧没有分词器，M2
+	// chat 路径同样只报 estimated、由计费侧决定兜底）。
+	if !usageHasFact(fact.Usage) {
+		switch plan.endpoint {
+		case contract.EndpointEmbeddings:
+			if plan.geminiPath {
+				fact.Usage = estimatedTextUsage(estimateGeminiEmbeddingText(plan.rawBody))
+			} else {
+				fact.Usage = estimatedTextUsage(estimateEmbeddingText(plan.rawBody))
+			}
+		case contract.EndpointRerank:
+			fact.Usage = estimatedTextUsage(estimateRerankText(plan.rawBody))
+		}
+	}
 	if rc.OriginModel != "" {
 		fact.Model = rc.OriginModel
 	}
-	fact.LatencyMS = 0
+	fact.LatencyMS = int(time.Since(plan.started).Milliseconds())
 	fact.Stream = false
 	fact.Attempts = rc.AttemptIndex + 1
 	settlement.terminate(*fact)
 
 	writeUpstream(w, rc.RequestID, result.Response, body)
+}
+
+// audioUsageFromSeconds 把已知（已饱和并有审计标记的）时长转成用量事实。
+// 用于上游省略 usage 的转写/翻译结算（F2）。
+func audioUsageFromSeconds(seconds int64) contract.Usage {
+	if seconds <= 0 {
+		return contract.Usage{Source: contract.UsageEstimated}
+	}
+	return contract.Usage{
+		AudioSeconds: seconds,
+		PromptDetail: contract.UsageDetail{Audio: pricing.AudioTokensFromSeconds(float64(seconds))},
+		Source:       contract.UsageEstimated,
+	}
+}
+
+// estimatedTextUsage 把本地估算的字节数转成文本 token 事实（F7）。
+//
+// 口径：ceil(bytes/4)，至少 1 token（与 relay-04「缺失 usage → 本地估算」
+// 的兜底方向一致）。中继没有分词器，计费侧仍按 estimated 处理。
+func estimatedTextUsage(textBytes int) contract.Usage {
+	if textBytes <= 0 {
+		return contract.Usage{Source: contract.UsageEstimated}
+	}
+	tokens := int64((textBytes + 3) / 4)
+	return contract.Usage{
+		Prompt:       tokens,
+		Total:        tokens,
+		PromptDetail: contract.UsageDetail{Text: tokens},
+		Source:       contract.UsageEstimated,
+	}
+}
+
+// estimateEmbeddingText 汇总嵌入请求中所有字符串输入的字节数
+// （非字符串元素按基线忽略）。
+func estimateEmbeddingText(body []byte) int {
+	var payload struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0
+	}
+	return sumJSONStrings(payload.Input)
+}
+
+// estimateRerankText 汇总 query 与 documents 的文本字节数（文档对象按
+// JSON 序列化后的字节数计入，保持确定性）。
+func estimateRerankText(body []byte) int {
+	var payload struct {
+		Query     string            `json:"query"`
+		Documents []json.RawMessage `json:"documents"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0
+	}
+	total := len(payload.Query)
+	for _, document := range payload.Documents {
+		trimmed := bytes.TrimSpace(document)
+		if len(trimmed) >= 2 && trimmed[0] == '"' {
+			var text string
+			if json.Unmarshal(trimmed, &text) == nil {
+				total += len(text)
+				continue
+			}
+		}
+		total += len(trimmed)
+	}
+	return total
+}
+
+// estimateGeminiEmbeddingText 汇总 Gemini 嵌入请求的文本字节数：
+//   - embedContent: content.parts[].text
+//   - batchEmbedContents: requests[].content.parts[].text
+func estimateGeminiEmbeddingText(body []byte) int {
+	type part struct {
+		Text string `json:"text"`
+	}
+	type content struct {
+		Parts []part `json:"parts"`
+	}
+	var payload struct {
+		Content  content `json:"content"`
+		Requests []struct {
+			Content content `json:"content"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0
+	}
+	total := 0
+	for _, part := range payload.Content.Parts {
+		total += len(part.Text)
+	}
+	for _, request := range payload.Requests {
+		for _, part := range request.Content.Parts {
+			total += len(part.Text)
+		}
+	}
+	return total
+}
+
+// sumJSONStrings 递归统计 JSON 字符串的字节数（字符串或字符串数组）。
+func sumJSONStrings(raw json.RawMessage) int {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return 0
+	}
+	if trimmed[0] == '"' {
+		var text string
+		if json.Unmarshal(trimmed, &text) == nil {
+			return len(text)
+		}
+		return 0
+	}
+	if trimmed[0] == '[' {
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) != nil {
+			return 0
+		}
+		total := 0
+		for _, item := range items {
+			total += sumJSONStrings(item)
+		}
+		return total
+	}
+	return 0
 }
 
 // serveImage 处理图像生成/编辑：非流式原样回写（201 视为成功），流式转 SSE。
@@ -593,15 +792,33 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 		settlement.terminate(*fact)
 	}
 
+	finalizeReserved := func() {
+		// §8.1.2：payload 解析异常时保持请求预留量（reserved_default），
+		// 不按 0 张静默收费。
+		settlement.terminate(contract.UsageFact{
+			Model:        rc.OriginModel,
+			Usage:        contract.Usage{Source: contract.UsageReservedDefault},
+			LatencyMS:    int(time.Since(start).Milliseconds()),
+			FirstTokenMS: firstToken,
+			Stream:       true,
+			Attempts:     rc.AttemptIndex + 1,
+		})
+	}
+
 	if !upstreamSSE {
 		body, err := readBounded(result.Response.Body, maxResponseBodyBytes)
 		if err != nil {
 			settlement.refund()
 			return
 		}
-		items, valid := imagePayloadItems(body)
+		items, valid, malformed := imagePayloadItems(body)
 		if !valid {
 			settlement.refund()
+			return
+		}
+		if malformed {
+			// 类型非法的 payload（如 url 为数字）：不可信，保持预留量。
+			finalizeReserved()
 			return
 		}
 		for _, item := range items {
@@ -634,6 +851,7 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 	}
 
 	reader := bufio.NewReader(result.Response.Body)
+	readErrored := false
 	for {
 		if r.Context().Err() != nil {
 			clientGone = true
@@ -660,11 +878,18 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 			}
 		}
 		if readErr != nil {
+			// F3：只有 io.EOF 是「上游正常结束」；连接被重置/截断等其它
+			// 读取错误必须按异常处理——不能伪造 [DONE]，费用按中断口径
+			// max(completed, n) 结算。
+			if !errors.Is(readErr, io.EOF) {
+				readErrored = true
+			}
 			break
 		}
 	}
-	if clientGone {
-		// 客户端断开/写失败：图像流按 R-15/§8.1.3 结算，费用不低于请求 n。
+	if clientGone || readErrored {
+		// 客户端断开/写失败/上游读取错误：图像流按 R-15/§8.1.3 结算，
+		// 费用不低于请求 n；不写 [DONE]。
 		finalize(true, nil)
 		return
 	}
@@ -710,7 +935,7 @@ func (d *Dispatcher) serveAudioSpeech(w http.ResponseWriter, r *http.Request, rc
 			durationOK = true
 		}
 	} else {
-		seconds, durationOK = AudioDuration(captured.prefix.Bytes(), format)
+		seconds, durationOK = AudioDurationWithSize(captured.prefix.Bytes(), written, format)
 	}
 	if durationOK {
 		seconds = clampAudioSeconds(rc, seconds)

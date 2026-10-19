@@ -136,12 +136,34 @@ func fallbackAudioUsage(size int) contract.Usage {
 // 其它格式（ogg/opus/webm/aac 等）返回 ok=false，由调用方决定失败（转写）
 // 或按 body 大小兜底（TTS）。
 func AudioDuration(data []byte, formatHint string) (float64, bool) {
+	return AudioDurationWithSize(data, int64(len(data)), formatHint)
+}
+
+// SupportsAudioDuration 报告某格式是否能从文件头/尺寸可靠推导时长。
+// 转写/翻译的**预扣**依赖上传文件头时长；ogg/aiff/aac 等无法在不解码
+// 全文件的情况下测得时长，按 relay-04 §8.2.3 明确失败（400），不得
+// 静默按 0 秒计费。
+func SupportsAudioDuration(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "pcm", "wav", "flac", "mp3", "m4a", "mp4":
+		return true
+	default:
+		return false
+	}
+}
+
+// AudioDurationWithSize 用「文件头前缀 + 已知总字节数」推导时长。
+//
+// 流式直传只保留 prefix（不缓存整段响应），因此按字节率估算的格式
+// （mp3 等）必须使用 total，而不是 len(prefix)——否则 1 MiB 的音频会被
+// 按 64 KiB 计算，系统性少计（评审 F1）。
+func AudioDurationWithSize(data []byte, total int64, formatHint string) (float64, bool) {
 	switch strings.ToLower(strings.TrimSpace(formatHint)) {
 	case "pcm":
-		if len(data) == 0 {
+		if total == 0 {
 			return 0, false
 		}
-		return float64(len(data)) / float64(pcmSampleRate*pcmBytesPerSample), true
+		return float64(total) / float64(pcmSampleRate*pcmBytesPerSample), true
 	}
 	if len(data) < 12 {
 		return 0, false
@@ -152,9 +174,9 @@ func AudioDuration(data []byte, formatHint string) (float64, bool) {
 	case bytes.HasPrefix(data, []byte("fLaC")):
 		return flacDuration(data)
 	case bytes.HasPrefix(data, []byte("ID3")):
-		return mp3Duration(data, id3TagLength(data))
+		return mp3Duration(data, total, id3TagLength(data))
 	case len(data) >= 2 && data[0] == 0xFF && data[1]&0xE0 == 0xE0:
-		return mp3Duration(data, 0)
+		return mp3Duration(data, total, 0)
 	case len(data) >= 12 && string(data[4:8]) == "ftyp":
 		return mp4Duration(data)
 	}
@@ -216,7 +238,7 @@ func flacDuration(data []byte) (float64, bool) {
 
 // mp3Duration 用首帧比特率估算时长（字节数×8/比特率）。
 // 这是容器级估算，不依赖逐帧扫描；ID3v2 标签被跳过。
-func mp3Duration(data []byte, start int) (float64, bool) {
+func mp3Duration(data []byte, total int64, start int) (float64, bool) {
 	if start >= len(data) {
 		return 0, false
 	}
@@ -239,15 +261,16 @@ func mp3Duration(data []byte, start int) (float64, bool) {
 	if bitrateIndex <= 0 || bitrateIndex >= len(bitrates) || sampleRateIndex >= 3 {
 		return 0, false
 	}
-	sampleRates := [...]int{44100, 48000, 32000}
 	if bitrates[bitrateIndex] == 0 {
 		return 0, false
 	}
-	// 时长 = 字节数×8 / 比特率（bps）；用采样率参与校验，避免把伪同步当帧头。
-	if sampleRates[sampleRateIndex] <= 0 {
+	// 时长 = 字节数×8 / 比特率（bps）。用 total（已知总长）而不是 prefix
+	// 长度：流式直传只保留了文件头（评审 F1）。
+	audioBytes := total - int64(offset)
+	if audioBytes <= 0 {
 		return 0, false
 	}
-	return float64(len(data)-offset) * 8 / float64(bitrates[bitrateIndex]*1000), true
+	return float64(audioBytes) * 8 / float64(bitrates[bitrateIndex]*1000), true
 }
 
 // id3TagLength 返回 ID3v2 标签总长度（10 字节头 + syncsafe size）。
@@ -378,6 +401,41 @@ func clampAudioSeconds(rc *contract.RelayContext, seconds float64) float64 {
 		})
 	}
 	return MaxAudioSeconds
+}
+
+// validateSpeechPayloadForUpstream 是 TTS 适配器本地二次校验（F6/F9）：
+// response_format 枚举、max_new_tokens、metadata 与 speed。入口已做同强度
+// 校验；适配器不得因透传/本地改写而放宽（CCR-9）。
+func validateSpeechPayloadForUpstream(body []byte) error {
+	var payload struct {
+		Speed          *float64        `json:"speed"`
+		ResponseFormat string          `json:"response_format"`
+		MaxNewTokens   json.RawMessage `json:"max_new_tokens"`
+		Metadata       json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return classified(contract.ErrParamInvalid, "multimodal: invalid JSON speech request")
+	}
+	if payload.Speed != nil && (*payload.Speed < MinTTSSpeed || *payload.Speed > MaxTTSSpeed || math.IsNaN(*payload.Speed)) {
+		return classified(contract.ErrParamInvalid, "multimodal: speech speed out of bounds")
+	}
+	if payload.ResponseFormat != "" {
+		switch strings.ToLower(strings.TrimSpace(payload.ResponseFormat)) {
+		case "mp3", "opus", "aac", "flac", "wav", "pcm":
+		default:
+			return classified(contract.ErrParamInvalid, "multimodal: invalid speech response_format")
+		}
+	}
+	if trimmed := bytes.TrimSpace(payload.MaxNewTokens); len(trimmed) > 0 && string(trimmed) != "null" {
+		var value float64
+		if err := json.Unmarshal(trimmed, &value); err != nil || value < 1 || value > MaxSpeechNewTokens || value != float64(int64(value)) {
+			return classified(contract.ErrParamInvalid, "multimodal: max_new_tokens out of bounds")
+		}
+	}
+	if len(bytes.TrimSpace(payload.Metadata)) > MaxAudioMetadataBytes {
+		return classified(contract.ErrParamInvalid, "multimodal: metadata exceeds the limit")
+	}
+	return nil
 }
 
 // rawAudioDuration 读取转写/翻译响应顶层的原始 duration（秒），用于在
