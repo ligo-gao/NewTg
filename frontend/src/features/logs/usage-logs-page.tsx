@@ -11,9 +11,11 @@ import { useCountdown } from '@/shared/lib/use-countdown'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 import { TextField } from '@/shared/ui/form'
+import { Dialog } from '@/shared/ui/base/dialog'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { useLogsCapabilities } from './capabilities'
+import { ExportDialog } from './export-dialog'
 import { formatSeconds } from './format'
 import { LogDetailDrawer } from './log-detail-drawer'
 import { UsageStatusBadge, USAGE_STATUSES } from './log-status-badge'
@@ -36,7 +38,13 @@ import { PAGE_SIZE_OPTIONS } from './ui-constants'
 
 type UsageLogsQuery = NonNullable<
   operations['listUsageLogs']['parameters']['query']
->
+> & {
+  /**
+   * F-05-06 会话内敏感开关。OpenAPI 冻结稿尚未收录该参数，但后端已实现；
+   * 缺省即打码，只有显式 1 才会请求原文（服务端仍重校验 log.prompt.view）。
+   */
+  reveal_sensitive?: 0 | 1
+}
 
 const RANGE_OPTIONS: readonly { value: UsageLogRangeFilter; key: string }[] = [
   { value: '24h', key: 'range_24h' },
@@ -62,6 +70,7 @@ function toIso(value: string | undefined): string | undefined {
 function buildQuery(
   search: UsageLogSearch,
   canFilterByUsername: boolean,
+  revealSensitive: boolean,
 ): UsageLogsQuery {
   const params: UsageLogsQuery = {
     p: search.p,
@@ -89,6 +98,10 @@ function buildQuery(
   if (canFilterByUsername && search.username !== undefined) {
     params.username = search.username
   }
+
+  // Only send the flag when the user asked for it: the default request stays
+  // byte-for-byte the masked query the list has always made.
+  if (revealSensitive) params.reveal_sensitive = 1
 
   return params
 }
@@ -125,6 +138,11 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   const [customStart, setCustomStart] = useState(search.start ?? '')
   const [customEnd, setCustomEnd] = useState(search.end ?? '')
   const [customError, setCustomError] = useState<CustomRangeError>(null)
+  // F-05-06：敏感开关只存在于本次会话（不落 URL、不落库），关闭页面即恢复
+  // 默认隐藏。它不进入路由，避免把「显示原文」变成可分享链接。
+  const [revealSensitive, setRevealSensitive] = useState(false)
+  const [sensitiveConfirmOpen, setSensitiveConfirmOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   // `update` stays stable so debounce effects are not restarted by unrelated
   // parent renders; the latest applied search is read through a ref.
@@ -276,9 +294,19 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     }
   }, [customStart, customEnd, search.range, search.start, search.end, update])
 
-  const query = buildQuery(search, capabilities.canFilterByUsername)
+  const query = buildQuery(
+    search,
+    capabilities.canFilterByUsername,
+    revealSensitive,
+  )
   const listQuery = useQuery({
-    queryKey: ['usage-logs', 'list', query, capabilities.canFilterByUsername],
+    queryKey: [
+      'usage-logs',
+      'list',
+      query,
+      capabilities.canFilterByUsername,
+      revealSensitive,
+    ],
     enabled: !capabilities.loading,
     queryFn: async () =>
       requireData(
@@ -316,6 +344,21 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   useEffect(() => {
     if (countdownErrorRef.current !== null) setRetryRemaining(retrySeconds)
   }, [retrySeconds])
+
+  // 权限中途收回（例如管理员撤销 log.prompt.view）时立即回到打码态并告知，
+  // 而不是让界面继续假装开关有效。已下发内容保留，下一次请求重新打码。
+  useEffect(() => {
+    if (capabilities.loading || capabilities.canViewSensitive) return
+    if (!revealSensitive) return
+    setRevealSensitive(false)
+    push({ tone: 'info', message: t('logs.usage.sensitive.permission_changed') })
+  }, [
+    capabilities.loading,
+    capabilities.canViewSensitive,
+    revealSensitive,
+    push,
+    t,
+  ])
 
   // Page overflow fallback (sub-feature §3.2): a shrunken dataset can make the
   // requested offset page empty while `total` is still exact. Return to the
@@ -534,6 +577,20 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
               className="h-9 w-40"
             />
           ) : null}
+
+          <SensitiveSwitch
+            checked={revealSensitive}
+            disabled={capabilities.loading || !capabilities.canViewSensitive}
+            onChange={(next) => {
+              if (next) {
+                // 开启前确认：共享屏幕时把 Prompt 原文暴露给旁观者的风险
+                // 由用户显式承担（modules-05 §6.4）。
+                setSensitiveConfirmOpen(true)
+                return
+              }
+              setRevealSensitive(false)
+            }}
+          />
         </div>
 
         {search.range === 'custom' ? (
@@ -625,7 +682,22 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                   total: new Intl.NumberFormat(locale).format(total),
                 })}
           </span>
-        ) : null}
+        ) : (
+          <span />
+        )}
+        <button
+          type="button"
+          data-testid="logs-export-open"
+          // 空列表也允许打开：用户可能想导出「全部」，不能用当前页 0 条
+          // 推断整个可见范围为空（服务端 204 会给出准确答复）。
+          onClick={() => {
+            setExportOpen(true)
+          }}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          <span aria-hidden="true">↓</span>
+          {t('logs.usage.export.button')}
+        </button>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
@@ -845,6 +917,53 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           if (!open) setSelectedId(null)
         }}
         capabilities={capabilities}
+        revealSensitive={revealSensitive}
+      />
+
+      <Dialog
+        open={sensitiveConfirmOpen}
+        onOpenChange={setSensitiveConfirmOpen}
+        title={t('logs.usage.sensitive.toggle')}
+        description={t('logs.usage.sensitive.confirm')}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setSensitiveConfirmOpen(false)
+              }}
+              className="rounded-lg border border-border-default px-3 py-1.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              {t('common.action.cancel')}
+            </button>
+            <button
+              type="button"
+              data-testid="sensitive-confirm"
+              onClick={() => {
+                setRevealSensitive(true)
+                setSensitiveConfirmOpen(false)
+              }}
+              // 隐私边界用 warning 而非 brand/danger：不是破坏性操作，但
+              // 需要用户停下来确认（UI §6.7）。
+              className="rounded-lg bg-warning px-3 py-1.5 text-sm font-medium text-surface-card focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              {t('logs.usage.sensitive.confirm_action')}
+            </button>
+          </>
+        }
+      />
+
+      <ExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        search={search}
+        filteredTotal={total}
+        revealSensitive={revealSensitive}
+        canRevealSensitive={capabilities.canViewSensitive}
+        canFilterByUsername={capabilities.canFilterByUsername}
+        onExported={() => {
+          push({ tone: 'success', message: t('logs.usage.export.downloaded') })
+        }}
       />
     </section>
   )
@@ -911,5 +1030,66 @@ function FilterChip({
         ×
       </button>
     </span>
+  )
+}
+
+/**
+ * F-05-06 敏感内容开关（modules-05 §6.4 / §6.7 / §6.8）。
+ *
+ * 关闭是默认且安全的；开启需要确认。无 `log.prompt.view` 时保持可见但
+ * 禁用，并给出「没有查看权限」的原因——用户不会误以为开关坏了，也不会
+ * 在无权限时发出一份声称已解除打码的请求。
+ */
+function SensitiveSwitch({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean
+  disabled: boolean
+  onChange: (next: boolean) => void
+}) {
+  const { t } = useI18n()
+  const label = t('logs.usage.sensitive.toggle')
+  const hintId = 'logs-sensitive-hint'
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        aria-describedby={disabled ? hintId : undefined}
+        disabled={disabled}
+        data-testid="sensitive-toggle"
+        onClick={() => {
+          onChange(!checked)
+        }}
+        className="flex h-9 items-center gap-2 rounded-lg border border-border-default bg-surface-card px-2.5 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span>{label}</span>
+        <span
+          aria-hidden="true"
+          className={[
+            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors motion-reduce:transition-none',
+            checked ? 'bg-warning' : 'bg-surface-subtle',
+          ].join(' ')}
+        >
+          <span
+            aria-hidden="true"
+            className={[
+              'absolute size-4 rounded-full bg-surface-card shadow-sm transition-transform motion-reduce:transition-none',
+              checked ? 'translate-x-[18px]' : 'translate-x-0.5',
+            ].join(' ')}
+          />
+        </span>
+      </button>
+      {disabled ? (
+        <span id={hintId} className="text-xs text-ink-3">
+          {t('logs.usage.sensitive.no_permission')}
+        </span>
+      ) : null}
+    </div>
   )
 }

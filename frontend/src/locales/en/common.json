@@ -107,6 +107,85 @@
       "empty_action": "Make an API call",
       "filter_chip": "Model: {model}",
       "reset": "Reset model filter"
+    },
+    "performance": {
+      "title": "Model Performance",
+      "subtitle": "Runtime quality from the metrics pipeline; usage_logs remains the billing source of truth.",
+      "range_label": "Performance time range",
+      "model": "Model",
+      "model_all": "All models",
+      "sample_size": "Sample size: {count}",
+      "low_sample": "Low sample size",
+      "updated_at": "Updated {time}",
+      "stale": "Stale",
+      "error": "Performance data unavailable.",
+      "empty": "No performance data yet.",
+      "empty_action": "Make an API call",
+      "pipeline_disabled": "Performance metrics collection is disabled. Contact your administrator.",
+      "pipeline_hint": "Set PERF_METRICS_ENABLED=true and configure the metrics store on the deployment side. The console has no settings entry for this.",
+      "chart_empty": "No data in this window",
+      "view_data_table": "View data table",
+      "refused": "Refused {count}",
+      "cards": {
+        "ttft_p95": "TTFT P95",
+        "latency_p95": "Latency P95",
+        "success_rate": "Success rate",
+        "uptime": "Uptime",
+        "incidents": "Incidents",
+        "tps": "Throughput"
+      },
+      "units": {
+        "tps": "tokens/s"
+      },
+      "series": {
+        "ttft_p50": "TTFT P50",
+        "ttft_p95": "TTFT P95",
+        "latency_p95": "Latency P95",
+        "success_rate": "Success rate",
+        "uptime": "Uptime"
+      },
+      "charts": {
+        "ttft": "TTFT trend",
+        "latency": "Latency P95 trend",
+        "rates": "Success rate / Uptime"
+      },
+      "incidents": {
+        "title": "Incidents",
+        "none": "No incidents in this window",
+        "availability": "Availability below threshold"
+      },
+      "dimension": {
+        "label": "Breakdown",
+        "none": "Off",
+        "channel": "Channel",
+        "upstream": "Upstream",
+        "title": "{dimension} breakdown",
+        "key": "Key"
+      },
+      "models": {
+        "title": "Model comparison",
+        "model": "Model",
+        "ttft": "TTFT P50 / P95",
+        "badge": "Health"
+      },
+      "table": {
+        "series": "Series",
+        "time": "Time",
+        "value": "Value",
+        "requests": "Samples"
+      },
+      "comparison": {
+        "title": "Metric discrepancy",
+        "body": "Pipeline {pipeline} vs usage logs {usage} (Δ {delta})"
+      },
+      "badge": {
+        "fast": "Fast",
+        "healthy": "Healthy",
+        "slow": "Slow",
+        "degraded": "Degraded",
+        "incident": "Incident",
+        "no_data": "No data"
+      }
     }
   },
   "toast.success": "Success",

@@ -26,6 +26,43 @@
       "clear": "Clear filters",
       "reset": "Reset"
     },
+    "sensitive": {
+      "toggle": "Show Sensitive Content",
+      "confirm": "Sensitive content includes your prompt text. Avoid enabling on shared screens.",
+      "confirm_action": "Show",
+      "hidden": "Sensitive content hidden",
+      "enable_hint": "Sensitive content hidden, enable it in the filter bar",
+      "no_permission": "No permission to view prompt",
+      "permission_changed": "Permission changed, sensitive content hidden",
+      "recording_disabled": "Prompt recording is disabled by administrator"
+    },
+    "export": {
+      "button": "Export",
+      "title": "Export Logs",
+      "scope": "Scope",
+      "scope_filtered": "Current filter",
+      "scope_filtered_summary": "{total} logs in the current filter",
+      "scope_all": "All",
+      "scope_all_summary": "All logs visible to you",
+      "format": "Format",
+      "format_txt": "TXT (tab-separated)",
+      "format_markdown": "Markdown (table)",
+      "fields": "All standard columns are exported (column visibility does not apply)",
+      "sensitive": "Include sensitive content",
+      "sensitive_notice": "This export includes sensitive content",
+      "sensitive_off": "Error text is exported masked",
+      "sensitive_unavailable": "No permission to include sensitive content",
+      "download": "Download",
+      "downloaded": "Export download started",
+      "generating": "Generating…",
+      "cancel": "Cancel",
+      "row_limit": "Up to 10,000 rows per export. Narrow the range or export in batches.",
+      "empty": "No records to export",
+      "offline": "Network disconnected",
+      "rate_limited": "Too many requests, please retry shortly",
+      "failed": "Export failed. Please retry.",
+      "retry": "Retry"
+    },
     "invalid_uuid": "Invalid request ID",
     "invalid_range_order": "The start time must be before the end time",
     "invalid_range_long": "Range cannot exceed 90 days",
@@ -127,6 +164,7 @@
       "view_prompt": "View Prompt",
       "prompt_unavailable": "Prompt not available",
       "sensitive_hidden": "Sensitive content hidden",
+      "masked_prompt": "••••••",
       "retry_count_label": "Retries"
     },
     "credits": "credits"
@@ -187,6 +225,8 @@
       "group_update": "Group updated",
       "group_delete": "Group deleted",
       "system_initialized": "System initialized",
+      "log_export": "Logs exported",
+      "settings_update": "Settings updated",
       "authz_denied": "Permission denied"
     },
     "columns": {

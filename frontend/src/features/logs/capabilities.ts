@@ -12,9 +12,10 @@ export interface LogsCapabilities {
   /** Prompt plaintext gate: effective permission `log.prompt.view` or `*`. */
   canViewPrompt: boolean
   /**
-   * Sensitive payload gate for stored error text: admin with `logs:read` or
-   * `*`. Users see masked content. F-05-06 will make this a user-controlled
-   * switch; until then the controller ruling is mask-by-default for non-admins.
+   * Sensitive payload gate for F-05-06. The switch is only rendered with
+   * `log.prompt.view`; without it the UI never asks the server to reveal and
+   * stored error text stays masked. The server re-checks the same permission
+   * on every request, so this flag is a UX gate, not the authority.
    */
   canViewSensitive: boolean
 }
@@ -54,8 +55,8 @@ export function useLogsCapabilities(): LogsCapabilities {
     canFilterByUsername:
       me.role === 'admin' && (fullAccess || permissions.includes('logs:read')),
     canViewPrompt: fullAccess || permissions.includes('log.prompt.view'),
-    canViewSensitive:
-      me.role === 'admin' &&
-      (fullAccess || permissions.includes('logs:read')),
+    // Same key as the switch: reveal is exactly the prompt-view permission
+    // (backend `sensitiveRevealAllowed` re-checks `log.prompt.view`).
+    canViewSensitive: fullAccess || permissions.includes('log.prompt.view'),
   }
 }

@@ -191,6 +191,8 @@ describe('usage logs list', () => {
       expect(request).toBeDefined()
       expect(request?.url.searchParams.get('range')).toBe('24h')
       expect(request?.url.searchParams.has('username')).toBe(false)
+      // 敏感开关默认关闭：列表请求保持打码口径，绝不默认请求原文。
+      expect(request?.url.searchParams.has('reveal_sensitive')).toBe(false)
     })
     expect(requestsFor(requests, '/api/usage-logs').every((request) => !request.url.searchParams.has('username'))).toBe(true)
     expect(screen.queryByRole('columnheader', { name: 'User' })).toBeNull()
@@ -659,10 +661,10 @@ describe('usage logs list', () => {
     expect(dialog.textContent).not.toContain('upstream exploded')
   })
 
-  it('shows raw error messages to admins with logs:read', async () => {
+  it('masks error messages until an admin with log.prompt.view enables the switch', async () => {
     const user = userEvent.setup()
-    installScenario({
-      me: ME_ADMIN,
+    const requests = installScenario({
+      me: { ...ME_ADMIN, permissions: ['logs:read', 'log.prompt.view'] },
       list: () => jsonResponse(page([{ ...ERROR_ROW, username: 'alice' }])),
       detail: () =>
         jsonResponse({
@@ -673,10 +675,25 @@ describe('usage logs list', () => {
     renderWithProviders(<PageHarness />)
 
     await user.click(await screen.findByText('gpt-4o-mini'))
-    const dialog = await screen.findByRole('dialog')
+    let dialog = await screen.findByRole('dialog')
+    // F-05-06：默认打码，即使有权限也必须由用户显式开启。
+    expect(dialog.textContent).not.toContain('upstream exploded')
+    expect(within(dialog).getAllByText('****').length).toBeGreaterThan(0)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await user.click(screen.getByRole('switch', { name: 'Show Sensitive Content' }))
+    await user.click(screen.getByTestId('sensitive-confirm'))
+
+    await user.click(await screen.findByText('gpt-4o-mini'))
+    dialog = await screen.findByRole('dialog')
     expect(
       within(dialog).getByText('upstream exploded at host db.internal'),
     ).toBeTruthy()
+    expect(
+      latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
+        'reveal_sensitive',
+      ),
+    ).toBe('1')
   })
 
   it('hides View Prompt without log.prompt.view and masks prompt-like fields', async () => {
@@ -687,9 +704,21 @@ describe('usage logs list', () => {
     })
     renderWithProviders(<PageHarness />)
 
+    // 权限门在打开抽屉之前验证：对话框打开后背景被 aria-hidden，读屏与
+    // Testing Library 都不应再看到工具栏。
+    expect(
+      (await screen.findByRole('switch', {
+        name: 'Show Sensitive Content',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+    expect(
+      screen.getByText('No permission to view prompt'),
+    ).toBeTruthy()
+
     await user.click(await screen.findByText('gpt-4o'))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('****')).toBeTruthy()
+    expect(within(dialog).getByText('••••••')).toBeTruthy()
+    expect(within(dialog).queryByText('secret text')).toBeNull()
     expect(within(dialog).queryByRole('button', { name: 'View Prompt' })).toBeNull()
   })
 

@@ -15,6 +15,7 @@ import {
   formatTokensValue,
 } from './format'
 import { ModelDistributionDonut } from './model-distribution-donut'
+import { ModelPerformance } from './model-performance'
 import { RangeSelector } from './range-selector'
 import { StatCard } from './stat-card'
 import { useDashboardCapabilities } from './use-dashboard-capabilities'
@@ -268,6 +269,12 @@ export function DashboardPage() {
           />
         </div>
       </div>
+
+      {/* F-05-08 模型性能看板。看板不跟随概览的 24h/7d/14d/30d 选择，因为
+          采集管道只承诺 24h/7d 两个窗口；两者混用会让「口径偏差」提示失真。 */}
+      <ModelPerformance
+        canViewDimension={capabilities.canFilterByUsername}
+      />
     </section>
   )
 }

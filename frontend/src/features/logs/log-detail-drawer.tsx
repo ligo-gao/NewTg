@@ -101,6 +101,11 @@ export interface LogDetailDrawerProps {
   logId: number | null
   onOpenChange: (open: boolean) => void
   capabilities: LogsCapabilities
+  /**
+   * F-05-06 会话内开关。false 时请求缺省打码，并且 UI 再做一层客户端打码，
+   * 避免把「服务端应已打码」当成渲染前提。
+   */
+  revealSensitive: boolean
 }
 
 /**
@@ -114,18 +119,26 @@ export function LogDetailDrawer({
   logId,
   onOpenChange,
   capabilities,
+  revealSensitive,
 }: LogDetailDrawerProps) {
   const { t, locale } = useI18n()
   const push = useToastStore((state) => state.push)
   const [promptRequesting, setPromptRequesting] = useState(false)
 
   const detailQuery = useQuery({
-    queryKey: ['usage-logs', 'detail', logId],
+    queryKey: ['usage-logs', 'detail', logId, revealSensitive],
     enabled: logId !== null,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-logs/{id}', {
-          params: { path: { id: logId as number } },
+          params: {
+            path: { id: logId as number },
+            // OpenAPI 冻结稿尚未收录 reveal_sensitive；后端已实现并按
+            // log.prompt.view 重校验，因此这里显式带上会话开关。
+            ...(revealSensitive
+              ? { query: { reveal_sensitive: 1 } }
+              : {}),
+          } as never,
         }),
       ),
   })
@@ -438,10 +451,10 @@ export function LogDetailDrawer({
                   </span>
                   {detail.error_message !== null &&
                   detail.error_message !== undefined
-                    ? capabilities.canViewSensitive
+                    ? revealSensitive && capabilities.canViewSensitive
                       ? detail.error_message
-                      : // Mask by default for non-admins (controller ruling).
-                        // F-05-06 will turn this into a user-controlled switch.
+                      : // 关闭开关时客户端同样打码：即使某天服务端契约回归，
+                        // 也不会把原文渲染到屏幕上。
                         t('logs.usage.detail.masked')
                     : '—'}
                 </p>
@@ -494,7 +507,11 @@ export function LogDetailDrawer({
                         <span className="text-ink-3">{decision}</span>
                       ) : null}
                       <span className={ok ? 'text-success' : 'text-danger'}>
-                        {ok ? t('logs.usage.detail.success') : error}
+                        {ok
+                          ? t('logs.usage.detail.success')
+                          : revealSensitive
+                            ? error
+                            : t('logs.usage.detail.masked')}
                       </span>
                       {latency !== undefined ? (
                         <span className="text-ink-3">{formatSeconds(latency)}</span>
@@ -506,20 +523,36 @@ export function LogDetailDrawer({
             ) : null}
           </Section>
 
-          {/* Prompt is masked and never retrieved unless explicitly allowed. */}
-          {promptField !== undefined ? (
+          {/* Prompt 只在用户显式开启且持有 log.prompt.view 时渲染原文；
+              其余情况保持打码，绝不调用“先展示再隐藏”的路径。 */}
+          {promptField !== undefined || revealSensitive ? (
             <Section title={t('logs.usage.detail.prompt')}>
-              <p className="font-mono text-sm" data-testid="prompt-masked">
-                {t('logs.usage.detail.masked')}
-              </p>
-              <p className="mt-1 text-xs text-ink-3">
-                {t('logs.usage.detail.sensitive_hidden')}
-              </p>
+              {revealSensitive && promptField !== undefined ? (
+                <p
+                  data-testid="prompt-revealed"
+                  className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-surface-subtle p-3 font-mono text-sm"
+                >
+                  {promptField}
+                </p>
+              ) : promptField !== undefined ? (
+                <>
+                  <p className="font-mono text-sm" data-testid="prompt-masked">
+                    {t('logs.usage.detail.masked_prompt')}
+                  </p>
+                  <p className="mt-1 text-xs text-ink-3">
+                    {t('logs.usage.sensitive.enable_hint')}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-ink-2">
+                  {t('logs.usage.sensitive.recording_disabled')}
+                </p>
+              )}
               {capabilities.canViewPrompt ? (
                 <Button
                   variant="secondary"
                   className="mt-3"
-                  disabled={promptRequesting}
+                  disabled={promptRequesting || revealSensitive}
                   onClick={() => {
                     void openPrompt()
                   }}

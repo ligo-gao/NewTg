@@ -38,6 +38,10 @@ export type AuditAction =
   | 'group.create'
   | 'group.update'
   | 'group.delete'
+  // M6c：F-05-07 日志导出与 settings 写审计（后端枚举同步 +2；见
+  // backend/internal/audit/audit.go 的 ActionLogExport / ActionSettingsUpdate）。
+  | 'log.export'
+  | 'settings.update'
   | 'system_initialized'
   | 'authz.denied'
 
@@ -71,6 +75,8 @@ export const AUDIT_ACTION_KEYS = {
   'group.create': 'logs.audit.actions.group_create',
   'group.update': 'logs.audit.actions.group_update',
   'group.delete': 'logs.audit.actions.group_delete',
+  'log.export': 'logs.audit.actions.log_export',
+  'settings.update': 'logs.audit.actions.settings_update',
   system_initialized: 'logs.audit.actions.system_initialized',
   'authz.denied': 'logs.audit.actions.authz_denied',
 } satisfies Record<AuditAction, string>

@@ -59,6 +59,23 @@ interface Scenario {
   byModel?: () => Response
   timeseries?: () => Response
   rates?: () => Response
+  modelPerf?: () => Response
+}
+
+/**
+ * 管道未启用的闸门响应（F-05-08）。概览测试不关心性能看板，但返回一个
+ * 明确的闸门比让新section落到 404 错误态更接近真实部署。
+ */
+function disabledModelPerf() {
+  return {
+    window: { range: '24h', start: '', end: '', granularity: '1m' },
+    buckets: [],
+    summary: {},
+    incidents: [],
+    models: [],
+    pipeline: { enabled: false, updated_at: null, stale: true },
+    comparison: null,
+  }
 }
 
 function installScenario(scenario: Scenario): FetchRecord[] {
@@ -74,6 +91,8 @@ function installScenario(scenario: Scenario): FetchRecord[] {
         return scenario.timeseries?.() ?? jsonResponse([])
       case '/api/usage-stats/rates':
         return scenario.rates?.() ?? jsonResponse(emptyRates())
+      case '/api/model-perf':
+        return scenario.modelPerf?.() ?? jsonResponse(disabledModelPerf())
       default:
         return problemResponse(404, { type: 'about:blank', title: 'not found' })
     }
@@ -165,7 +184,8 @@ describe('DashboardPage', () => {
     expect(initialTimeseries?.url.searchParams.get('range')).toBe('24h')
     expect(initialTimeseries?.url.searchParams.get('granularity')).toBe('hour')
 
-    await user.click(screen.getByRole('radio', { name: '7d' }))
+    const rangeGroup = screen.getByRole('radiogroup', { name: 'Time range' })
+    await user.click(within(rangeGroup).getByRole('radio', { name: '7d' }))
 
     await waitFor(() => {
       for (const path of STAT_PATHS) {
