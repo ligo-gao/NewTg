@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"newtg/gateway/internal/billing/pricing"
@@ -50,9 +52,12 @@ type Options struct {
 	Client *http.Client
 	// MaxRetries 与 relay.RouteDeps 同语义（0 = 默认 3）。
 	MaxRetries int
-	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时仅接受 OpenAI
-	// 兼容适配器（M4 的端点实现范围）。测试可注入以覆盖矩阵。
+	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时使用 relay-04
+	// 的端点×渠道类型矩阵（F2）。测试可注入以覆盖矩阵。
 	Supports func(contract.ChannelType) bool
+	// StreamInactivityTimeout 覆盖流式/二进制块间不活动看门狗的默认 300s。
+	// 仅测试注入短值；生产使用冻结默认值（relay-03 §10.1）。
+	StreamInactivityTimeout time.Duration
 	// WriteError 把执行错误映射为客户端响应（生产注入 httpapi 的统一映射，
 	// 保持与 chat 端点完全相同的状态码/信封）。nil 时使用固定 502。
 	WriteError func(http.ResponseWriter, string, error)
@@ -232,17 +237,64 @@ func (d *Dispatcher) supports(channelType contract.ChannelType, base contract.Ad
 	if plan.geminiPath {
 		return channelType == contract.ChannelTypeGemini
 	}
-	// F11：Azure 的图像/音频路径需要部署名 + api-version 特化，本包的
-	// 通用路径拼接会产生 `/openai/deployments/{d}/v1/...` 这种错误组合。
-	// 在路径规则对齐 M2 之前显式排除（ErrEndpointUnsupported），不发送
-	// 一个必然 404 的请求。
+	// F2：按 relay-04 §1.4/§2.4/§3.4/§4.6 的端点×渠道类型表判定。
+	// 仅「表内声明支持」且「本包有 OpenAI 兼容实现」的渠道通过。
+	allowed := endpointChannelSupport[plan.endpoint]
+	if _, ok := allowed[channelType]; !ok {
+		return false
+	}
+	// M4 的多模态端点以 OpenAI 兼容形态实现；其它协议族没有本族实现，
+	// 必须显式拒绝而不是发出空体。Azure 的部署名/api-version 路径规则
+	// 尚未对齐，显式排除（F11）。
 	if channelType == contract.ChannelTypeAzure {
 		return false
 	}
-	// M4 的多模态端点以 OpenAI 兼容形态实现（relay-04 §1.4/§2.4/§3.4/§4.6
-	// 的 openai 行）。其它协议族没有本族实现，必须显式拒绝而不是发出空体。
 	_, ok := base.(*adapters.OpenAI)
 	return ok
+}
+
+// endpointChannelSupport 是 relay-04 端点×渠道类型支持矩阵的**显式白名单**。
+//
+// 只列「表内为是」且本包能正确编码的类型；relay-04 中标注为「否」的类型
+// （deepseek/mistral/openrouter…）即使共用 OpenAI 适配器也不得放行——
+// 能力声明缺省即不支持（契约 §4 · ErrEndpointUnsupported）。
+var endpointChannelSupport = map[contract.Endpoint]map[contract.ChannelType]struct{}{
+	contract.EndpointEmbeddings: {
+		contract.ChannelTypeOpenAI:      {},
+		contract.ChannelTypeAli:         {},
+		contract.ChannelTypeSiliconFlow: {},
+		contract.ChannelTypeVolcEngine:  {},
+		contract.ChannelTypeZhipuV4:     {},
+		contract.ChannelTypeNewAPI:      {},
+	},
+	contract.EndpointRerank: {
+		contract.ChannelTypeOpenAI:      {},
+		contract.ChannelTypeAli:         {},
+		contract.ChannelTypeSiliconFlow: {},
+	},
+	contract.EndpointAudioSpeech: {
+		contract.ChannelTypeOpenAI:      {},
+		contract.ChannelTypeSiliconFlow: {},
+		contract.ChannelTypeVolcEngine:  {},
+	},
+	contract.EndpointAudioTranscribe: {
+		contract.ChannelTypeOpenAI:      {},
+		contract.ChannelTypeSiliconFlow: {},
+	},
+	contract.EndpointAudioTranslate: {
+		contract.ChannelTypeOpenAI:      {},
+		contract.ChannelTypeSiliconFlow: {},
+	},
+	contract.EndpointImageGenerate: {
+		contract.ChannelTypeOpenAI: {},
+		contract.ChannelTypeAli:    {},
+		contract.ChannelTypeXai:    {},
+	},
+	contract.EndpointImageEdit: {
+		contract.ChannelTypeOpenAI: {},
+		contract.ChannelTypeAli:    {},
+		contract.ChannelTypeXai:    {},
+	},
 }
 
 // GeminiEmbeddingModel 从 Gemini 语义嵌入路径提取模型名（N6：httpapi 入口
@@ -462,21 +514,23 @@ func parseImageParameters(raw string) (int, bool, bool) {
 }
 
 // parseImageN 解析入口已校验的 n；返回 [1, MaxImageN] 的整数。
+//
+// F5：JSON 的 `2.0`/`2e0` 是合法整数语义（入口用 optionalJSONNumber 接受），
+// 这里必须同样按数值是否整判定，不能只认十进制字面量（否则入口 200、
+// 分派阶段 400）。
 func parseImageN(raw string) (int, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "null" {
 		return 0, false
 	}
-	for i := 0; i < len(trimmed); i++ {
-		if trimmed[i] < '0' || trimmed[i] > '9' {
-			return 0, false
-		}
-	}
-	value, err := strconv.Atoi(trimmed)
-	if err != nil || value < 1 || value > MaxImageN {
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value != math.Trunc(value) {
 		return 0, false
 	}
-	return value, true
+	if value < 1 || value > MaxImageN {
+		return 0, false
+	}
+	return int(value), true
 }
 
 // ============================================================================
@@ -660,6 +714,58 @@ func sumJSONStrings(raw json.RawMessage) int {
 	return 0
 }
 
+// applyImageTokenFloor 实施 relay-04 §4.7 的 token 维度兜底：
+// usage.TotalTokens / PromptTokens 为 0 时置 1（仅影响 token 维度，
+// 不改变张数）。上游 image usage 常只给张数，零 token 会让计费日志
+// 看起来像「免费」。
+func applyImageTokenFloor(u *contract.Usage) {
+	if u.Total == 0 {
+		u.Total = 1
+	}
+	if u.Prompt == 0 {
+		u.Prompt = 1
+	}
+}
+
+// streamInactivityTimeout 是流式/二进制块间不活动看门狗（relay-03 §10.1
+// 冻结 300s；测试可经 Options 覆盖）。
+const streamInactivityTimeout = 300 * time.Second
+
+func (d *Dispatcher) streamTimeout() time.Duration {
+	if d.opts.StreamInactivityTimeout > 0 {
+		return d.opts.StreamInactivityTimeout
+	}
+	return streamInactivityTimeout
+}
+
+// watchStream 返回一个在每块数据后重置的看门狗 reader：超过 timeout 没有
+// 新字节时关闭上游 body，让阻塞的 Read 立即返回错误，避免无限挂起（F7）。
+// 调用方必须 defer stop。
+func (d *Dispatcher) watchStream(body io.ReadCloser) (io.Reader, *atomic.Bool, func()) {
+	timeout := d.streamTimeout()
+	timedOut := &atomic.Bool{}
+	timer := time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		_ = body.Close()
+	})
+	reader := &watchdogReader{reader: body, timer: timer, timeout: timeout}
+	return reader, timedOut, func() { timer.Stop() }
+}
+
+type watchdogReader struct {
+	reader  io.Reader
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func (r *watchdogReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.timer.Reset(r.timeout)
+	}
+	return n, err
+}
+
 // serveImage 处理图像生成/编辑：非流式原样回写（201 视为成功），流式转 SSE。
 func (d *Dispatcher) serveImage(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, plan *RequestPlan, result *relay.AttemptResult, settlement *settlement) {
 	start := time.Now()
@@ -689,6 +795,7 @@ func (d *Dispatcher) serveImage(w http.ResponseWriter, r *http.Request, rc *cont
 	}
 	fact := usage.ExtractUsageMultimodal(&contract.Response{Raw: body, Model: rc.UpstreamModel}, result.Response.Header, nil, rc.ChannelType)
 	applyImageCount(fact, count, ok)
+	applyImageTokenFloor(&fact.Usage)
 	if rc.OriginModel != "" {
 		fact.Model = rc.OriginModel
 	}
@@ -785,6 +892,7 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 		if fact.Usage.Source == contract.UsageReservedDefault {
 			fact.Usage.Source = contract.UsageEstimated
 		}
+		applyImageTokenFloor(&fact.Usage)
 		if rc.OriginModel != "" {
 			fact.Model = rc.OriginModel
 		}
@@ -825,11 +933,21 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 			finalizeReserved()
 			return
 		}
+		// F1：按 relay-04 §8.1.4 把每张图**展平**成
+		// `image_generation.completed` 事件（created_at/url/b64_json/
+		// revised_prompt 与 usage 平铺在顶层），而不是塞进 `data` 子对象——
+		// OpenAI 客户端按顶层字段提取图片。
+		var meta struct {
+			Created int64           `json:"created"`
+			Usage   json.RawMessage `json:"usage"`
+		}
+		_ = json.Unmarshal(body, &meta)
+		createdAt := meta.Created
+		if createdAt == 0 {
+			createdAt = time.Now().Unix()
+		}
 		for _, item := range items {
-			event, err := json.Marshal(struct {
-				Type string          `json:"type"`
-				Data json.RawMessage `json:"data"`
-			}{Type: "image_generation.completed", Data: item})
+			event, err := imageCompletedEventPayload(item, createdAt, meta.Usage)
 			if err != nil {
 				clientGone = true
 				break
@@ -854,7 +972,9 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 		return
 	}
 
-	reader := bufio.NewReader(result.Response.Body)
+	watched, inactivityTimedOut, stopWatch := d.watchStream(result.Response.Body)
+	defer stopWatch()
+	reader := bufio.NewReader(watched)
 	readErrored := false
 	for {
 		if r.Context().Err() != nil {
@@ -882,19 +1002,23 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 			}
 		}
 		if readErr != nil {
-			// F3：只有 io.EOF 是「上游正常结束」；连接被重置/截断等其它
-			// 读取错误必须按异常处理——不能伪造 [DONE]，费用按中断口径
+			// F3：只有 io.EOF 是「上游正常结束」；连接被重置/截断或看门狗
+			// 超时都必须按异常处理——不能伪造 [DONE]，费用按中断口径
 			// max(completed, n) 结算。
-			if !errors.Is(readErr, io.EOF) {
+			if !errors.Is(readErr, io.EOF) || inactivityTimedOut.Load() {
 				readErrored = true
 			}
 			break
 		}
 	}
 	if clientGone || readErrored {
-		// 客户端断开/写失败/上游读取错误：图像流按 R-15/§8.1.3 结算，
-		// 费用不低于请求 n；不写 [DONE]。
-		finalize(true, nil)
+		// 客户端断开/写失败/上游读取错误/看门狗超时：图像流按 R-15/§8.1.3
+		// 结算 max(completed, n)，费用不低于请求 n；不写 [DONE]。经 T3 的
+		// 一次性关闭守卫收敛（同一 ctx 只执行一次）。
+		_ = usage.OnStreamClose(r.Context(), func() error {
+			finalize(true, nil)
+			return nil
+		})
 		return
 	}
 	if !wroteDone && !writer.done() {
@@ -917,11 +1041,18 @@ func (d *Dispatcher) serveAudioSpeech(w http.ResponseWriter, r *http.Request, rc
 	w.WriteHeader(result.Response.StatusCode)
 	writer := &flushWriter{w: w}
 
-	captured := newCaptureReader(result.Response.Body, audioDurationPrefixBytes)
+	watched, _, stopWatch := d.watchStream(result.Response.Body)
+	defer stopWatch()
+	captured := newCaptureReader(watched, audioDurationPrefixBytes)
 	written, copyErr := io.Copy(writer, captured)
 	if copyErr != nil || r.Context().Err() != nil {
-		// 客户端断开或写失败：不得漏释放预算（Review Focus 3 / R-85）。
-		settlement.refund()
+		// 客户端断开/写失败/看门狗超时：不得漏释放预算（R-85）。终结器
+		// 经 T3 的一次性关闭守卫执行（同一请求只退款一次），本包不再
+		// 另建一条并行路径（F11：usage.OnStreamClose 的生产调用方）。
+		_ = usage.OnStreamClose(r.Context(), func() error {
+			settlement.refund()
+			return nil
+		})
 		return
 	}
 	writer.flush()
@@ -976,12 +1107,28 @@ func (d *Dispatcher) serveRealtime(w http.ResponseWriter, r *http.Request, rc *c
 		d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w", relay.ErrNoAvailableChannel))
 		return
 	}
-	assignment, err := d.opts.ResolveChannel(r.Context(), rc, candidates[0].ChannelID)
+	chosen := candidates[0]
+	// F6：realtime 也要遵守管理员 pin；pin 不在候选集内按 404 语义快失败。
+	if pinID, hasPin := relay.ParseChannelPin(r); hasPin {
+		found := false
+		for _, candidate := range candidates {
+			if candidate.ChannelID == pinID {
+				chosen = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID))
+			return
+		}
+	}
+	assignment, err := d.opts.ResolveChannel(r.Context(), rc, chosen.ChannelID)
 	if err != nil {
 		d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w: %v", relay.ErrNoAvailableChannel, err))
 		return
 	}
-	assignment.ChannelID = candidates[0].ChannelID
+	assignment.ChannelID = chosen.ChannelID
 	relay.WithChannel(rc, assignment)
 
 	adapter, err := d.adapterFor(assignment.ChannelType, plan)

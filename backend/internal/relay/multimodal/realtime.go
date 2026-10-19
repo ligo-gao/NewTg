@@ -3,6 +3,7 @@ package multimodal
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -96,7 +97,20 @@ func (a *endpointAdapter) DialUpstream(rc *contract.RelayContext) (contract.Upst
 	key := base64.StdEncoding.EncodeToString(keyBytes)
 
 	path := parsed.Path
-	path = strings.TrimRight(path, "/") + realtimePath
+	// F6：复用 joinBaseURL 的版本去重（base 已是 /v1 时不再拼出
+	// /v1/v1/realtime）。
+	if joined, err := joinBaseURL(base, realtimePath, nil); err == nil {
+		if joinedURL, parseErr := url.Parse(joined); parseErr == nil {
+			path = joinedURL.Path
+			parsed.RawQuery = joinedURL.RawQuery
+		}
+	}
+	path = strings.TrimRight(path, "/")
+	// joinBaseURL 已拼接 realtimePath；若 base 自身无路径则 path 就是
+	// /v1/realtime；否则保留 base 前缀。
+	if !strings.HasSuffix(path, realtimePath) {
+		path = strings.TrimRight(path, "/") + realtimePath
+	}
 	if parsed.RawQuery != "" {
 		path += "?" + parsed.RawQuery
 	}
@@ -124,7 +138,18 @@ func (a *endpointAdapter) DialUpstream(rc *contract.RelayContext) (contract.Upst
 		class := a.ClassifyError(resp.StatusCode, nil)
 		return fail(&adapters.Error{Class: class, Err: fmt.Errorf("multimodal: realtime upstream returned status %d", resp.StatusCode)})
 	}
+	// F6：校验 RFC 6455 的 Sec-WebSocket-Accept，防止把普通 HTTP 101
+	// （或错误的代理响应）误当成可用的 WebSocket 连接。
+	if resp.Header.Get("Sec-WebSocket-Accept") != websocketAccept(key) {
+		return fail(classified(contract.ErrUpstreamServer, "multimodal: invalid websocket handshake"))
+	}
 	// 握手成功后清除 deadline：长连接不应被握手超时切断。
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+// websocketAccept 计算 RFC 6455 §4.2.2 的 accept 值。
+func websocketAccept(key string) string {
+	hash := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(hash[:])
 }

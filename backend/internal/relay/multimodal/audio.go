@@ -175,6 +175,10 @@ func AudioDurationWithSize(data []byte, total int64, formatHint string) (float64
 		return flacDuration(data)
 	case bytes.HasPrefix(data, []byte("ID3")):
 		return mp3Duration(data, total, id3TagLength(data))
+	case len(data) >= 2 && data[0] == 0xFF && (data[1]>>1)&0x03 == 0:
+		// ADTS AAC：layer 位为 00。不能按 MP3 帧头解析（会得到虚假比特率
+		// 与错误时长/计费）；返回不可测，交给每 KB 兜底（F3）。
+		return 0, false
 	case len(data) >= 2 && data[0] == 0xFF && data[1]&0xE0 == 0xE0:
 		return mp3Duration(data, total, 0)
 	case len(data) >= 12 && string(data[4:8]) == "ftyp":
