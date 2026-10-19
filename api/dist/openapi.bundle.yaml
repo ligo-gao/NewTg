@@ -2739,6 +2739,233 @@ paths:
           $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/redemption-codes:
+    get:
+      tags:
+        - admin
+      operationId: listRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 兑换码列表（offset 分页 + 状态/批次/面额筛选）
+      description: |
+        status 支持 unused|disabled|used|expired；expired 是虚拟态
+        （status='unused' AND expires_at <= now()），不落库。
+        列表永不返回码值，只返回固定掩码 `••••••`。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RedemptionCodeStatusFilter'
+        - name: batch_name
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 20
+        - name: min_credits
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: max_credits
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 批量生成兑换码（明文仅本响应返回一次）
+      description: |
+        count 1–100；credits > 0；expires_at 必须晚于 now 或为 null。
+        生成 26 位 Crockford Base32，库中只存 SHA-256 哈希；碰撞自动重试
+        至多 3 次。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeCreateRequest'
+      responses:
+        '201':
+          description: 创建成功（codes 仅此一次返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeCreateResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/{id}:
+    patch:
+      tags:
+        - admin
+      operationId: updateRedemptionCodeStatus
+      x-required-permission: redemption:manage
+      summary: 启用/禁用兑换码（unused ↔ disabled）
+      description: 已使用码返回 409；status=used 不可手工写入（400）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathRedemptionCodeID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeStatusRequest'
+      responses:
+        '200':
+          description: 更新后的 id 与状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeStatusResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteRedemptionCode
+      x-required-permission: redemption:manage
+      summary: 删除未使用/已禁用兑换码
+      description: 已使用码返回 409（保留审计）；不存在 404；成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathRedemptionCodeID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/batch-delete:
+    post:
+      tags:
+        - admin
+      operationId: batchDeleteRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 批量删除兑换码（≤100）
+      description: 逐条删除；已使用码进入 failed 明细，不中断其余删除。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeBatchDeleteRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeBatchDeleteResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/redeem:
+    post:
+      tags:
+        - user
+      operationId: redeemCode
+      summary: 核销兑换码并入账
+      description: |
+        服务端先归一化（trim → 大写 → I/L→1、O→0）再按 SHA-256 查码；
+        条件 UPDATE 与入账在同一事务内完成，并发兑换同一码仅一次成功。
+        独立限流桶 10 次/分钟/用户。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemCodeRequest'
+      responses:
+        '200':
+          description: 核销成功（credits 为本次到账积分）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedeemCodeResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '410':
+          $ref: '#/components/responses/Error410'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/channels:
     get:
       tags:
@@ -2909,6 +3136,15 @@ components:
       schema:
         type: string
         format: date-time
+    PathRedemptionCodeID:
+      name: id
+      in: path
+      required: true
+      description: redemption_codes.id
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
   schemas:
     Problem:
       type: object
@@ -5116,6 +5352,247 @@ components:
         updated_at:
           type: string
           format: date-time
+    RedemptionCodeStatusFilter:
+      type: string
+      enum:
+        - unused
+        - disabled
+        - used
+        - expired
+      description: expired 是虚拟态（不落库）
+    RedemptionCodeStatus:
+      type: string
+      enum:
+        - unused
+        - disabled
+        - used
+        - expired
+    RedemptionCode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - credits
+        - status
+        - code_mask
+        - created_by
+        - created_at
+        - updated_at
+      description: |
+        兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+        expired 是 SQL 按 expires_at 计算的虚拟状态。
+      properties:
+        id:
+          type: integer
+          format: int64
+        batch_name:
+          type: string
+          maxLength: 20
+          nullable: true
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/RedemptionCodeStatus'
+        code_mask:
+          type: string
+          enum:
+            - ••••••
+        created_by:
+          type: integer
+          format: int64
+        used_by:
+          type: integer
+          format: int64
+          nullable: true
+        used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RedemptionCodeList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RedemptionCode'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    RedemptionCodeCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_name
+        - credits
+        - count
+      properties:
+        batch_name:
+          type: string
+          minLength: 1
+          maxLength: 20
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 必须晚于当前时间；null = 永不过期
+    RedemptionCodeCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_name
+        - credits
+        - count
+        - codes
+      properties:
+        batch_name:
+          type: string
+          maxLength: 20
+        credits:
+          type: integer
+          format: int64
+        count:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        codes:
+          type: array
+          description: 明文码，仅本响应返回一次；库中只存 SHA-256 哈希
+          items:
+            type: string
+            minLength: 26
+            maxLength: 26
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          minItems: 1
+          maxItems: 100
+    RedemptionCodeStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - unused
+            - disabled
+    RedemptionCodeStatusResult:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum:
+            - unused
+            - disabled
+    RedemptionCodeBatchDeleteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          minItems: 1
+          maxItems: 100
+    RedemptionCodeBatchDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - succeeded
+        - failed
+      properties:
+        succeeded:
+          type: integer
+          minimum: 0
+        failed:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - detail
+            properties:
+              id:
+                type: integer
+                format: int64
+              detail:
+                type: string
+                enum:
+                  - used
+                  - not_found
+                  - invalid_id
+    RedeemCodeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 用户输入原样提交；服务端归一化后再哈希
+    RedeemCodeResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - credits
+        - balance_after
+      properties:
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 本次到账积分（已含 quota_per_unit 与分组倍率）
+        balance_after:
+          type: integer
+          format: int64
+          description: 入账后的钱包余额快照
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）
@@ -5185,6 +5662,12 @@ components:
             $ref: '#/components/schemas/Problem'
     Error503:
       description: 服务不可用（依赖未就绪或过载）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error410:
+      description: 资源已过期（兑换码虚拟过期态）
       content:
         application/problem+json:
           schema:

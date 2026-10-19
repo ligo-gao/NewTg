@@ -749,3 +749,29 @@ schemas:
         type: string
         format: date-time
         nullable: true
+
+  RedeemCodeRequest:
+    type: object
+    additionalProperties: false
+    required: [code]
+    properties:
+      code:
+        type: string
+        minLength: 1
+        maxLength: 64
+        description: 用户输入原样提交；服务端归一化后再哈希
+
+  RedeemCodeResponse:
+    type: object
+    additionalProperties: false
+    required: [credits, balance_after]
+    properties:
+      credits:
+        type: integer
+        format: int64
+        minimum: 1
+        description: 本次到账积分（已含 quota_per_unit 与分组倍率）
+      balance_after:
+        type: integer
+        format: int64
+        description: 入账后的钱包余额快照

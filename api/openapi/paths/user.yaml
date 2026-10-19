@@ -1061,3 +1061,44 @@ paths:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
+
+  # M5 兑换码核销（modules-04 F-04-14；任意已认证用户）。
+  /api/redemption-codes/redeem:
+    post:
+      tags: [user]
+      operationId: redeemCode
+      summary: 核销兑换码并入账
+      description: |
+        服务端先归一化（trim → 大写 → I/L→1、O→0）再按 SHA-256 查码；
+        条件 UPDATE 与入账在同一事务内完成，并发兑换同一码仅一次成功。
+        独立限流桶 10 次/分钟/用户。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/RedeemCodeRequest'
+      responses:
+        '200':
+          description: 核销成功（credits 为本次到账积分）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/RedeemCodeResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '410':
+          $ref: '../components/responses.yaml#/responses/Error410'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

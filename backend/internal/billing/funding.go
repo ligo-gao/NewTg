@@ -90,6 +90,13 @@ type Credit struct {
 // 的 funded_tx_id / 兑换审计关联；balanceAfter 是同事务内的余额快照。
 type FundingSource interface {
 	Apply(ctx context.Context, credit Credit) (balanceAfter int64, txID string, err error)
+	// ApplyTx 在调用方已开启的事务内完成入账（P-15）。
+	//
+	// 【为什么需要】兑换码核销必须把「条件 UPDATE 把码置为 used」与
+	// 「余额增加 + 恰一行流水」放进同一事务：任一步失败都整体回滚，
+	// 否则会出现「码已核销、钱没到」或「钱到了、码还能再兑」。订单回调
+	// 的幂等收口同理。Apply 只是本方法 + 自开事务的薄包装。
+	ApplyTx(ctx context.Context, tx *gorm.DB, credit Credit) (balanceAfter int64, txID string, err error)
 }
 
 // walletFunding 是基于 M3 账本的默认实现。
@@ -103,15 +110,40 @@ func NewWalletFunding(db *gorm.DB) FundingSource {
 	return &walletFunding{ledger: NewLedger(db)}
 }
 
-// Apply 在同一事务内完成「余额增加 + 恰一行流水」，委托 M3 ApplyDeltaID。
-//
-// 状态固定为 confirmed：充值/兑换是即时确认的入账，不经过 hold 生命周期
-// （hold 只属于 consume_pre，platform-01 §11）。
+// Apply 是 ApplyTx 的薄包装：自开一个事务，适用于不需要与其它写操作
+// 原子提交的调用点（如管理员调整台账的独立入账）。
 func (w *walletFunding) Apply(ctx context.Context, credit Credit) (int64, string, error) {
 	if err := credit.validate(); err != nil {
 		return 0, "", err
 	}
-	balanceAfter, txID, err := w.ledger.ApplyDeltaID(ctx, credit.UserID, credit.Amount,
+	var (
+		balanceAfter int64
+		txID         string
+	)
+	err := w.ledger.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var txErr error
+		balanceAfter, txID, txErr = w.ApplyTx(ctx, tx, credit)
+		return txErr
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	return balanceAfter, txID, nil
+}
+
+// ApplyTx 在调用方事务内完成「余额增加 + 恰一行流水」（P-15）。
+//
+// 状态固定为 confirmed：充值/兑换是即时确认的入账，不经过 hold 生命周期
+// （hold 只属于 consume_pre，platform-01 §11）。tx 为 nil 时 fail closed：
+// 调用方以为在事务里、实际落在自动提交，会破坏防双花与回滚语义。
+func (w *walletFunding) ApplyTx(ctx context.Context, tx *gorm.DB, credit Credit) (int64, string, error) {
+	if tx == nil {
+		return 0, "", fmt.Errorf("%w: transaction is required", ErrInvalidFundingCredit)
+	}
+	if err := credit.validate(); err != nil {
+		return 0, "", err
+	}
+	balanceAfter, txID, err := applyDeltaTxNote(ctx, tx, credit.UserID, credit.Amount,
 		credit.Type, "confirmed", credit.ReferenceType, credit.ReferenceID, credit.Note)
 	if err != nil {
 		return 0, "", err

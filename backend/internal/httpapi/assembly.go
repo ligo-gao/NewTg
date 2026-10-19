@@ -93,6 +93,11 @@ type GatewayDeps struct {
 	// OriginRefererCheck 链；handler 内部再按 channels:* 做功能级权限检查。
 	ChannelHandler *ChannelHandler
 
+	// RedemptionHandlers 是 M5 兑换码端点集合（Task 2）。非 nil 时挂到
+	// 受保护子树；管理端点内部按 redemption:manage 做 RBAC，用户兑换走
+	// 独立 Redis 限流桶。
+	RedemptionHandlers *RedemptionHandlers
+
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
 	TurnstileHTTPClient *http.Client
@@ -206,6 +211,12 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 因此复用 NewRouter 已挂好的受保护链与 no-store 响应策略。
 	if deps.ChannelHandler != nil {
 		deps.ChannelHandler.Register(rt.protected)
+	}
+
+	// M5 兑换码端点：与渠道/定价共用同一条受保护链。用户兑换端点也挂在
+	// 受保护子树（必须已认证），限流在 handler 内执行。
+	if deps.RedemptionHandlers != nil {
+		deps.RedemptionHandlers.RegisterRedemptionRoutes(rt.protected, nil)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

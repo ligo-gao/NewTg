@@ -207,6 +207,19 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 既注入 GatewayDeps，也让装配测试能验证「就是 source.Invalidate」。
 	pricingChanged := pricingOnChange(source)
 
+	// M5 兑换码端点（Task 2）：默认 FundingSource 复用主库 GORM 句柄；
+	// 配置读取走 configcenter，兑换限流用同一 Redis 客户端。
+	redemptionHandler, err := httpapi.NewRedemptionHandlers(httpapi.RedemptionHandlerConfig{
+		DB:     gormDB,
+		Redis:  rdb,
+		Config: center,
+		Authz:  authz,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: redemption handlers: %w", err)
+	}
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -223,6 +236,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Logger:                  log,
 		ChannelHandler:          channelHandler,
 		PricingRepo:             pricingRepo,
+		RedemptionHandlers:      redemptionHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
 	})

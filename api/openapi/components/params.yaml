@@ -80,3 +80,13 @@ parameters:
     schema:
       type: string
       format: date-time
+
+  PathRedemptionCodeID:
+    name: id
+    in: path
+    required: true
+    description: redemption_codes.id
+    schema:
+      type: integer
+      format: int64
+      minimum: 1

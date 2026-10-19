@@ -155,6 +155,16 @@ paths:
   /api/group-pricing/{group}/{model}:disable:
     $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}:disable'
 
+  # 兑换码（M5 Task 2；管理面 + 用户核销）。
+  /api/redemption-codes:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'
+  /api/redemption-codes/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes~1{id}'
+  /api/redemption-codes/batch-delete:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes~1batch-delete'
+  /api/redemption-codes/redeem:
+    $ref: './paths/user.yaml#/paths/~1api~1redemption-codes~1redeem'
+
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'

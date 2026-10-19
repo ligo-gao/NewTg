@@ -92,13 +92,13 @@ func (e GroupPricingSourceStatus) Valid() bool {
 
 // Defines values for GroupPricingMode1.
 const (
-	Empty GroupPricingMode1 = ""
+	GroupPricingMode1Empty GroupPricingMode1 = ""
 )
 
 // Valid indicates whether the value is a known member of the GroupPricingMode1 enum.
 func (e GroupPricingMode1) Valid() bool {
 	switch e {
-	case Empty:
+	case GroupPricingMode1Empty:
 		return true
 	default:
 		return false
@@ -378,6 +378,126 @@ func (e QuotaAdjustmentRequestMode) Valid() bool {
 	case Override:
 		return true
 	case Subtract:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeCodeMask.
+const (
+	RedemptionCodeCodeMaskEmpty RedemptionCodeCodeMask = "••••••"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeCodeMask enum.
+func (e RedemptionCodeCodeMask) Valid() bool {
+	switch e {
+	case RedemptionCodeCodeMaskEmpty:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeBatchDeleteResponseFailedDetail.
+const (
+	RedemptionCodeBatchDeleteResponseFailedDetailInvalidId RedemptionCodeBatchDeleteResponseFailedDetail = "invalid_id"
+	RedemptionCodeBatchDeleteResponseFailedDetailNotFound  RedemptionCodeBatchDeleteResponseFailedDetail = "not_found"
+	RedemptionCodeBatchDeleteResponseFailedDetailUsed      RedemptionCodeBatchDeleteResponseFailedDetail = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeBatchDeleteResponseFailedDetail enum.
+func (e RedemptionCodeBatchDeleteResponseFailedDetail) Valid() bool {
+	switch e {
+	case RedemptionCodeBatchDeleteResponseFailedDetailInvalidId:
+		return true
+	case RedemptionCodeBatchDeleteResponseFailedDetailNotFound:
+		return true
+	case RedemptionCodeBatchDeleteResponseFailedDetailUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatus.
+const (
+	RedemptionCodeStatusDisabled RedemptionCodeStatus = "disabled"
+	RedemptionCodeStatusExpired  RedemptionCodeStatus = "expired"
+	RedemptionCodeStatusUnused   RedemptionCodeStatus = "unused"
+	RedemptionCodeStatusUsed     RedemptionCodeStatus = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatus enum.
+func (e RedemptionCodeStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusDisabled:
+		return true
+	case RedemptionCodeStatusExpired:
+		return true
+	case RedemptionCodeStatusUnused:
+		return true
+	case RedemptionCodeStatusUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusFilter.
+const (
+	RedemptionCodeStatusFilterDisabled RedemptionCodeStatusFilter = "disabled"
+	RedemptionCodeStatusFilterExpired  RedemptionCodeStatusFilter = "expired"
+	RedemptionCodeStatusFilterUnused   RedemptionCodeStatusFilter = "unused"
+	RedemptionCodeStatusFilterUsed     RedemptionCodeStatusFilter = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusFilter enum.
+func (e RedemptionCodeStatusFilter) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusFilterDisabled:
+		return true
+	case RedemptionCodeStatusFilterExpired:
+		return true
+	case RedemptionCodeStatusFilterUnused:
+		return true
+	case RedemptionCodeStatusFilterUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusRequestStatus.
+const (
+	RedemptionCodeStatusRequestStatusDisabled RedemptionCodeStatusRequestStatus = "disabled"
+	RedemptionCodeStatusRequestStatusUnused   RedemptionCodeStatusRequestStatus = "unused"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusRequestStatus enum.
+func (e RedemptionCodeStatusRequestStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusRequestStatusDisabled:
+		return true
+	case RedemptionCodeStatusRequestStatusUnused:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusResultStatus.
+const (
+	RedemptionCodeStatusResultStatusDisabled RedemptionCodeStatusResultStatus = "disabled"
+	RedemptionCodeStatusResultStatusUnused   RedemptionCodeStatusResultStatus = "unused"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusResultStatus enum.
+func (e RedemptionCodeStatusResultStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusResultStatusDisabled:
+		return true
+	case RedemptionCodeStatusResultStatusUnused:
 		return true
 	default:
 		return false
@@ -1875,6 +1995,109 @@ type QuotaAdjustmentResponse struct {
 	UserId        int64 `json:"user_id"`
 }
 
+// RedeemCodeRequest defines model for RedeemCodeRequest.
+type RedeemCodeRequest struct {
+	// Code 用户输入原样提交；服务端归一化后再哈希
+	Code string `json:"code"`
+}
+
+// RedeemCodeResponse defines model for RedeemCodeResponse.
+type RedeemCodeResponse struct {
+	// BalanceAfter 入账后的钱包余额快照
+	BalanceAfter int64 `json:"balance_after"`
+
+	// Credits 本次到账积分（已含 quota_per_unit 与分组倍率）
+	Credits int64 `json:"credits"`
+}
+
+// RedemptionCode 兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+// expired 是 SQL 按 expires_at 计算的虚拟状态。
+type RedemptionCode struct {
+	BatchName *string                `json:"batch_name,omitempty"`
+	CodeMask  RedemptionCodeCodeMask `json:"code_mask"`
+	CreatedAt time.Time              `json:"created_at"`
+	CreatedBy int64                  `json:"created_by"`
+	Credits   int64                  `json:"credits"`
+	ExpiresAt *time.Time             `json:"expires_at,omitempty"`
+	Id        int64                  `json:"id"`
+	Status    RedemptionCodeStatus   `json:"status"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	UsedAt    *time.Time             `json:"used_at,omitempty"`
+	UsedBy    *int64                 `json:"used_by,omitempty"`
+}
+
+// RedemptionCodeCodeMask defines model for RedemptionCode.CodeMask.
+type RedemptionCodeCodeMask string
+
+// RedemptionCodeBatchDeleteRequest defines model for RedemptionCodeBatchDeleteRequest.
+type RedemptionCodeBatchDeleteRequest struct {
+	Ids []int64 `json:"ids"`
+}
+
+// RedemptionCodeBatchDeleteResponse defines model for RedemptionCodeBatchDeleteResponse.
+type RedemptionCodeBatchDeleteResponse struct {
+	Failed []struct {
+		Detail RedemptionCodeBatchDeleteResponseFailedDetail `json:"detail"`
+		Id     int64                                         `json:"id"`
+	} `json:"failed"`
+	Succeeded int `json:"succeeded"`
+}
+
+// RedemptionCodeBatchDeleteResponseFailedDetail defines model for RedemptionCodeBatchDeleteResponse.Failed.Detail.
+type RedemptionCodeBatchDeleteResponseFailedDetail string
+
+// RedemptionCodeCreateRequest defines model for RedemptionCodeCreateRequest.
+type RedemptionCodeCreateRequest struct {
+	BatchName string `json:"batch_name"`
+	Count     int    `json:"count"`
+	Credits   int64  `json:"credits"`
+
+	// ExpiresAt 必须晚于当前时间；null = 永不过期
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// RedemptionCodeCreateResponse defines model for RedemptionCodeCreateResponse.
+type RedemptionCodeCreateResponse struct {
+	BatchName string `json:"batch_name"`
+
+	// Codes 明文码，仅本响应返回一次；库中只存 SHA-256 哈希
+	Codes     []string   `json:"codes"`
+	Count     int        `json:"count"`
+	Credits   int64      `json:"credits"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// RedemptionCodeList defines model for RedemptionCodeList.
+type RedemptionCodeList struct {
+	Items    []RedemptionCode `json:"items"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+	Total    int              `json:"total"`
+}
+
+// RedemptionCodeStatus defines model for RedemptionCodeStatus.
+type RedemptionCodeStatus string
+
+// RedemptionCodeStatusFilter expired 是虚拟态（不落库）
+type RedemptionCodeStatusFilter string
+
+// RedemptionCodeStatusRequest defines model for RedemptionCodeStatusRequest.
+type RedemptionCodeStatusRequest struct {
+	Status RedemptionCodeStatusRequestStatus `json:"status"`
+}
+
+// RedemptionCodeStatusRequestStatus defines model for RedemptionCodeStatusRequest.Status.
+type RedemptionCodeStatusRequestStatus string
+
+// RedemptionCodeStatusResult defines model for RedemptionCodeStatusResult.
+type RedemptionCodeStatusResult struct {
+	Id     int64                            `json:"id"`
+	Status RedemptionCodeStatusResultStatus `json:"status"`
+}
+
+// RedemptionCodeStatusResultStatus defines model for RedemptionCodeStatusResult.Status.
+type RedemptionCodeStatusResultStatus string
+
 // RegisterRequest 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
 // 文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
 type RegisterRequest struct {
@@ -2264,6 +2487,9 @@ type PathGroupTag = string
 // PathPricingModel defines model for PathPricingModel.
 type PathPricingModel = string
 
+// PathRedemptionCodeID defines model for PathRedemptionCodeID.
+type PathRedemptionCodeID = int64
+
 // PathSessionID defines model for PathSessionID.
 type PathSessionID = string
 
@@ -2293,6 +2519,9 @@ type Error404 = Problem
 
 // Error409 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error409 = Problem
+
+// Error410 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error410 = Problem
 
 // Error422 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error422 = Problem
@@ -2556,6 +2785,54 @@ type TestNotificationParams struct {
 
 // ChangePasswordParams defines parameters for ChangePassword.
 type ChangePasswordParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListRedemptionCodesParams defines parameters for ListRedemptionCodes.
+type ListRedemptionCodesParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize   *PageSize                   `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Status     *RedemptionCodeStatusFilter `form:"status,omitempty" json:"status,omitempty"`
+	BatchName  *string                     `form:"batch_name,omitempty" json:"batch_name,omitempty"`
+	MinCredits *int64                      `form:"min_credits,omitempty" json:"min_credits,omitempty"`
+	MaxCredits *int64                      `form:"max_credits,omitempty" json:"max_credits,omitempty"`
+}
+
+// CreateRedemptionCodesParams defines parameters for CreateRedemptionCodes.
+type CreateRedemptionCodesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchDeleteRedemptionCodesParams defines parameters for BatchDeleteRedemptionCodes.
+type BatchDeleteRedemptionCodesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RedeemCodeParams defines parameters for RedeemCode.
+type RedeemCodeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteRedemptionCodeParams defines parameters for DeleteRedemptionCode.
+type DeleteRedemptionCodeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateRedemptionCodeStatusParams defines parameters for UpdateRedemptionCodeStatus.
+type UpdateRedemptionCodeStatusParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -2883,6 +3160,18 @@ type TestNotificationJSONRequestBody = NotificationTestRequest
 
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// CreateRedemptionCodesJSONRequestBody defines body for CreateRedemptionCodes for application/json ContentType.
+type CreateRedemptionCodesJSONRequestBody = RedemptionCodeCreateRequest
+
+// BatchDeleteRedemptionCodesJSONRequestBody defines body for BatchDeleteRedemptionCodes for application/json ContentType.
+type BatchDeleteRedemptionCodesJSONRequestBody = RedemptionCodeBatchDeleteRequest
+
+// RedeemCodeJSONRequestBody defines body for RedeemCode for application/json ContentType.
+type RedeemCodeJSONRequestBody = RedeemCodeRequest
+
+// UpdateRedemptionCodeStatusJSONRequestBody defines body for UpdateRedemptionCodeStatus for application/json ContentType.
+type UpdateRedemptionCodeStatusJSONRequestBody = RedemptionCodeStatusRequest
 
 // UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
 type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest

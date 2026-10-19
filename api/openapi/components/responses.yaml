@@ -36,6 +36,12 @@ responses:
       application/problem+json:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
+  Error410:
+    description: 资源已过期（兑换码虚拟过期态）
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
   Error422:
     description: 语义不可处理（邮箱域名白名单拒绝；幂等键被不同请求体复用）
     content:

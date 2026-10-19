@@ -1298,6 +1298,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/redemption-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 兑换码列表（offset 分页 + 状态/批次/面额筛选）
+         * @description status 支持 unused|disabled|used|expired；expired 是虚拟态
+         *     （status='unused' AND expires_at <= now()），不落库。
+         *     列表永不返回码值，只返回固定掩码 `••••••`。
+         */
+        get: operations["listRedemptionCodes"];
+        put?: never;
+        /**
+         * 批量生成兑换码（明文仅本响应返回一次）
+         * @description count 1–100；credits > 0；expires_at 必须晚于 now 或为 null。
+         *     生成 26 位 Crockford Base32，库中只存 SHA-256 哈希；碰撞自动重试
+         *     至多 3 次。成功 201。
+         */
+        post: operations["createRedemptionCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/redemption-codes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除未使用/已禁用兑换码
+         * @description 已使用码返回 409（保留审计）；不存在 404；成功 204。
+         */
+        delete: operations["deleteRedemptionCode"];
+        options?: never;
+        head?: never;
+        /**
+         * 启用/禁用兑换码（unused ↔ disabled）
+         * @description 已使用码返回 409；status=used 不可手工写入（400）。
+         */
+        patch: operations["updateRedemptionCodeStatus"];
+        trace?: never;
+    };
+    "/api/redemption-codes/batch-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除兑换码（≤100）
+         * @description 逐条删除；已使用码进入 failed 明细，不中断其余删除。
+         */
+        post: operations["batchDeleteRedemptionCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/redemption-codes/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 核销兑换码并入账
+         * @description 服务端先归一化（trim → 大写 → I/L→1、O→0）再按 SHA-256 查码；
+         *     条件 UPDATE 与入账在同一事务内完成，并发兑换同一码仅一次成功。
+         *     独立限流桶 10 次/分钟/用户。
+         */
+        post: operations["redeemCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/channels": {
         parameters: {
             query?: never;
@@ -2475,6 +2569,104 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /**
+         * @description expired 是虚拟态（不落库）
+         * @enum {string}
+         */
+        RedemptionCodeStatusFilter: "unused" | "disabled" | "used" | "expired";
+        /** @enum {string} */
+        RedemptionCodeStatus: "unused" | "disabled" | "used" | "expired";
+        /**
+         * @description 兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+         *     expired 是 SQL 按 expires_at 计算的虚拟状态。
+         */
+        RedemptionCode: {
+            /** Format: int64 */
+            id: number;
+            batch_name?: string | null;
+            /** Format: int64 */
+            credits: number;
+            status: components["schemas"]["RedemptionCodeStatus"];
+            /** @enum {string} */
+            code_mask: "••••••";
+            /** Format: int64 */
+            created_by: number;
+            /** Format: int64 */
+            used_by?: number | null;
+            /** Format: date-time */
+            used_at?: string | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        RedemptionCodeList: {
+            items: components["schemas"]["RedemptionCode"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        RedemptionCodeCreateRequest: {
+            batch_name: string;
+            /** Format: int64 */
+            credits: number;
+            count: number;
+            /**
+             * Format: date-time
+             * @description 必须晚于当前时间；null = 永不过期
+             */
+            expires_at?: string | null;
+        };
+        RedemptionCodeCreateResponse: {
+            batch_name: string;
+            /** Format: int64 */
+            credits: number;
+            count: number;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** @description 明文码，仅本响应返回一次；库中只存 SHA-256 哈希 */
+            codes: string[];
+        };
+        RedemptionCodeStatusRequest: {
+            /** @enum {string} */
+            status: "unused" | "disabled";
+        };
+        RedemptionCodeStatusResult: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            status: "unused" | "disabled";
+        };
+        RedemptionCodeBatchDeleteRequest: {
+            ids: number[];
+        };
+        RedemptionCodeBatchDeleteResponse: {
+            succeeded: number;
+            failed: {
+                /** Format: int64 */
+                id: number;
+                /** @enum {string} */
+                detail: "used" | "not_found" | "invalid_id";
+            }[];
+        };
+        RedeemCodeRequest: {
+            /** @description 用户输入原样提交；服务端归一化后再哈希 */
+            code: string;
+        };
+        RedeemCodeResponse: {
+            /**
+             * Format: int64
+             * @description 本次到账积分（已含 quota_per_unit 与分组倍率）
+             */
+            credits: number;
+            /**
+             * Format: int64
+             * @description 入账后的钱包余额快照
+             */
+            balance_after: number;
+        };
     };
     responses: {
         /** @description 请求不符合契约（参数/请求体校验失败） */
@@ -2578,6 +2770,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description 资源已过期（兑换码虚拟过期态） */
+        Error410: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
     };
     parameters: {
         /** @description 页码，1 基（默认 1） */
@@ -2608,6 +2809,8 @@ export interface components {
          *     故通过查询参数传递；不匹配返回 409。
          */
         UpdatedAtQuery: string;
+        /** @description redemption_codes.id */
+        PathRedemptionCodeID: number;
     };
     requestBodies: never;
     headers: never;
@@ -5127,6 +5330,214 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listRedemptionCodes: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                status?: components["schemas"]["RedemptionCodeStatusFilter"];
+                batch_name?: string;
+                min_credits?: number;
+                max_credits?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedemptionCodeList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createRedemptionCodes: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedemptionCodeCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 创建成功（codes 仅此一次返回） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedemptionCodeCreateResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteRedemptionCode: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description redemption_codes.id */
+                id: components["parameters"]["PathRedemptionCodeID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateRedemptionCodeStatus: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description redemption_codes.id */
+                id: components["parameters"]["PathRedemptionCodeID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedemptionCodeStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的 id 与状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedemptionCodeStatusResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    batchDeleteRedemptionCodes: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedemptionCodeBatchDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description 逐条结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedemptionCodeBatchDeleteResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    redeemCode: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedeemCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description 核销成功（credits 为本次到账积分） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedeemCodeResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            409: components["responses"]["Error409"];
+            410: components["responses"]["Error410"];
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
         };
     };
