@@ -643,10 +643,10 @@ var otherUserHiddenKeys = []string{
 	"channel_id", "channel_name", "channel_type", "reject_reason",
 }
 
-// otherAdminSensitiveKeys 是 admin 视图在敏感开关关闭时仍须打码的键。
-// 这些键可能承载上游错误原文或拒绝原因，属于 F-05-06 的「错误原文」面；
-// 分类字段（error_class 等）不在此列，因为它们不是原文。
-var otherAdminSensitiveKeys = []string{"reject_reason", "error_message", "error"}
+// otherSensitiveKeys 是敏感开关关闭时须打码的 error 原文键。两类角色都
+// 适用：user 视图可能保留上游错误文本，admin 视图的 reject_reason 也可能
+// 承载拒绝原因原文；分类字段（error_class 等）不在此列。
+var otherSensitiveKeys = []string{"reject_reason", "error_message", "error"}
 
 // projectOther 按角色做可见性投影（platform-01 §12.5）。任何解析失败都
 // 返回空对象而不是原始 jsonb：宁可丢字段也不能泄露内部映射。
@@ -664,23 +664,23 @@ func projectOther(raw []byte, admin, revealSensitive bool) json.RawMessage {
 		// 即使 audit_info 非空也不得下发给管理员。
 		delete(fields, "root_info")
 		delete(fields, "audit_info")
-		if !revealSensitive {
-			// 只替换字符串值：非字符串形态（对象/数组）原样保留更安全，
-			// 因为它们的结构本身不是可直接阅读的错误原文。
-			for _, key := range otherAdminSensitiveKeys {
-				value, ok := fields[key]
-				if !ok {
-					continue
-				}
-				var text string
-				if err := json.Unmarshal(value, &text); err == nil {
-					fields[key], _ = json.Marshal(maskedSensitive)
-				}
-			}
-		}
 	} else {
 		for _, key := range otherUserHiddenKeys {
 			delete(fields, key)
+		}
+	}
+	if !revealSensitive {
+		// 只替换字符串值：非字符串形态（对象/数组）原样保留更安全，
+		// 因为它们的结构本身不是可直接阅读的错误原文。
+		for _, key := range otherSensitiveKeys {
+			value, ok := fields[key]
+			if !ok {
+				continue
+			}
+			var text string
+			if err := json.Unmarshal(value, &text); err == nil {
+				fields[key], _ = json.Marshal(maskedSensitive)
+			}
 		}
 	}
 	out, err := json.Marshal(fields)
@@ -1004,6 +1004,9 @@ func parseExportFormat(q url.Values) (string, string) {
 func exportCell(raw, format string) string {
 	if format == "markdown" {
 		raw = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(raw)
+		// 先转义反斜杠再转义管道：否则输入中的 `\|` 会被拼成 `\\|`，
+		// 管道仍会结束单元格（Markdown 的转义只认一个反斜杠）。
+		raw = strings.ReplaceAll(raw, `\`, `\\`)
 		raw = strings.ReplaceAll(raw, "|", `\|`)
 	} else {
 		raw = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(raw)
@@ -1168,7 +1171,7 @@ func (h *UsageLogHandlers) handleUsageLogExport(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	writeErr := writeExportHeader(w, format, scope, dims, rowCount, viewer.admin, h.now().UTC())
+	writeErr := writeExportHeader(w, format, scope, exportFilterSummary(q, scope, format), rowCount, viewer.admin, h.now().UTC())
 	usernameCache := make(map[int64]string)
 	written := int64(0)
 	for writeErr == nil && rows.Next() {
@@ -1205,7 +1208,40 @@ func (h *UsageLogHandlers) handleUsageLogExport(w http.ResponseWriter, r *http.R
 		h.log.Warn("usage log export: stream aborted", "error", writeErr)
 		return
 	}
+	// 审计是响应之后的 best-effort 写（可能等待最多 3s）；先 flush 已
+	// 生成的字节，避免小文件在客户端侧被审计写入拖住。
+	if flusher != nil {
+		flusher.Flush()
+	}
 	h.writeExportAudit(r, viewer.userID, scope, format, rowCount, dims)
+}
+
+// exportFilterSummary 生成 TXT/Markdown 元信息里的筛选摘要。与审计不同，
+// 这里展示**值**（用户需要知道导出了哪个筛选结果），因此逐个值按格式
+// 转义；审计仍然只记录维度名。
+func exportFilterSummary(q url.Values, scope, format string) string {
+	if scope != "filtered" {
+		return "none"
+	}
+	parts := make([]string, 0, 8)
+	add := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			parts = append(parts, key+"="+exportCell(value, format))
+		}
+	}
+	if strings.TrimSpace(q.Get("start")) != "" || strings.TrimSpace(q.Get("end")) != "" {
+		add("start", q.Get("start"))
+		add("end", q.Get("end"))
+	} else {
+		add("range", q.Get("range"))
+	}
+	for _, key := range []string{"model", "group", "token_id", "status", "request_id", "username"} {
+		add(key, q.Get(key))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildUsageWhereAll 生成不带时间窗的 WHERE（scope=all 专用）。参数编号从
@@ -1344,11 +1380,11 @@ func nullStringValue(value sql.NullString) string {
 	return value.String
 }
 
-func writeExportHeader(w io.Writer, format, scope string, dims []string, rowCount int64, admin bool, now time.Time) error {
+func writeExportHeader(w io.Writer, format, scope, filterSummary string, rowCount int64, admin bool, now time.Time) error {
 	cols := exportColumns(admin)
-	filters := "none"
-	if len(dims) > 0 {
-		filters = strings.Join(dims, ", ")
+	filters := filterSummary
+	if filters == "" {
+		filters = "none"
 	}
 	var b strings.Builder
 	if format == "markdown" {

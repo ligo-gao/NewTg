@@ -51,6 +51,19 @@ var modelPerfBucketBoundsMS = [modelPerfHistogramBuckets]float64{
 // 实现必须返回「该窗口内」的桶快照（Gauge 语义，查询层只做求和，不对
 // 单调计数器求 rate），并给出最近一次桶更新时间用于停摆判定。model 为空
 // 表示全部模型。
+//
+// 直方图编码（固定 9 桶 + +Inf，查询层不得换桶）：
+//   - LatencyBuckets[i] / TTFTBuckets[i] 是**非累计**计数，第 i 桶为
+//     (bounds[i-1], bounds[i]]；i=0 为 [0, 50ms]；
+//   - bounds = 50/100/200/500/1000/2000/5000/10000/30000 ms；
+//   - **+Inf 桶（>30s）计数 = Count - ΣBuckets**，由查询层自行推导。
+//     落在 +Inf 的分位必须返回 over_30s 下界标记，不得当作 30000ms 的
+//     有限值；接口通过 *_over_30s 布尔字段表达。
+//   - TTFT 只统计 stream=true 的样本（非流式不进该系列）。
+//
+// M7 接线要求（platform-05 §3.5.5）：实现方必须由部署配置
+// PERF_METRICS_ENABLED 决定是否装配本 source（false → 闸门），并用
+// PERF_METRICS_FLUSH_INTERVAL 作为陈旧度判定基准（3×周期无更新 → 闸门）。
 type ModelPerfSource interface {
 	ModelPerfBuckets(ctx context.Context, start, end time.Time, granularity, model string) ([]ModelPerfBucket, time.Time, error)
 }
@@ -104,21 +117,27 @@ type modelPerfSummary struct {
 	Incidents      *int64   `json:"incidents"`
 	TPS            *float64 `json:"tps"`
 	SampleSize     *int64   `json:"sample_size"`
-	TTFTOver30s    bool     `json:"ttft_p95_over_30s"`
-	LatencyOver30s bool     `json:"latency_p95_over_30s"`
+	TTFTP50Over30s bool     `json:"ttft_p50_over_30s"`
+	TTFTP95Over30s bool     `json:"ttft_p95_over_30s"`
+	LatP50Over30s  bool     `json:"latency_p50_over_30s"`
+	LatP95Over30s  bool     `json:"latency_p95_over_30s"`
 }
 
 type modelPerfBucketPoint struct {
-	Start       time.Time `json:"start"`
-	Model       string    `json:"model"`
-	Requests    int64     `json:"requests"`
-	TTFTp50     *float64  `json:"ttft_p50_ms"`
-	TTFTp95     *float64  `json:"ttft_p95_ms"`
-	LatencyP50  *float64  `json:"latency_p50_ms"`
-	LatencyP95  *float64  `json:"latency_p95_ms"`
-	SuccessRate *float64  `json:"success_rate"`
-	Uptime      *float64  `json:"uptime"`
-	TPS         *float64  `json:"tps"`
+	Start          time.Time `json:"start"`
+	Model          string    `json:"model"`
+	Requests       int64     `json:"requests"`
+	TTFTp50        *float64  `json:"ttft_p50_ms"`
+	TTFTp95        *float64  `json:"ttft_p95_ms"`
+	LatencyP50     *float64  `json:"latency_p50_ms"`
+	LatencyP95     *float64  `json:"latency_p95_ms"`
+	SuccessRate    *float64  `json:"success_rate"`
+	Uptime         *float64  `json:"uptime"`
+	TPS            *float64  `json:"tps"`
+	TTFTP50Over30s bool      `json:"ttft_p50_over_30s"`
+	TTFTP95Over30s bool      `json:"ttft_p95_over_30s"`
+	LatP50Over30s  bool      `json:"latency_p50_over_30s"`
+	LatP95Over30s  bool      `json:"latency_p95_over_30s"`
 }
 
 type modelPerfIncident struct {
@@ -130,15 +149,20 @@ type modelPerfIncident struct {
 }
 
 type modelPerfModelRow struct {
-	Model       string   `json:"model"`
-	TTFTp50     *float64 `json:"ttft_p50_ms"`
-	TTFTp95     *float64 `json:"ttft_p95_ms"`
-	LatencyP95  *float64 `json:"latency_p95_ms"`
-	SuccessRate *float64 `json:"success_rate"`
-	Uptime      *float64 `json:"uptime"`
-	Incidents   int64    `json:"incidents"`
-	SampleSize  int64    `json:"sample_size"`
-	Badge       string   `json:"badge"`
+	Model          string   `json:"model"`
+	TTFTp50        *float64 `json:"ttft_p50_ms"`
+	TTFTp95        *float64 `json:"ttft_p95_ms"`
+	LatencyP50     *float64 `json:"latency_p50_ms"`
+	LatencyP95     *float64 `json:"latency_p95_ms"`
+	SuccessRate    *float64 `json:"success_rate"`
+	Uptime         *float64 `json:"uptime"`
+	Incidents      int64    `json:"incidents"`
+	SampleSize     int64    `json:"sample_size"`
+	Badge          string   `json:"badge"`
+	TTFTP50Over30s bool     `json:"ttft_p50_over_30s"`
+	TTFTP95Over30s bool     `json:"ttft_p95_over_30s"`
+	LatP50Over30s  bool     `json:"latency_p50_over_30s"`
+	LatP95Over30s  bool     `json:"latency_p95_over_30s"`
 }
 
 type modelPerfPipeline struct {
@@ -299,18 +323,19 @@ func (a *modelPerfAggregate) summary(incidentCount int64) modelPerfSummary {
 	out := modelPerfSummary{Refused: a.Refused}
 	if value, over, ok := quantileFromBuckets(a.TTFTCount, a.TTFT, 0.50); ok {
 		out.TTFTp50 = &value
-		_ = over
+		out.TTFTP50Over30s = over
 	}
 	if value, over, ok := quantileFromBuckets(a.TTFTCount, a.TTFT, 0.95); ok {
 		out.TTFTp95 = &value
-		out.TTFTOver30s = over
+		out.TTFTP95Over30s = over
 	}
-	if value, _, ok := quantileFromBuckets(a.LatencyCount, a.Latency, 0.50); ok {
+	if value, over, ok := quantileFromBuckets(a.LatencyCount, a.Latency, 0.50); ok {
 		out.LatencyP50 = &value
+		out.LatP50Over30s = over
 	}
 	if value, over, ok := quantileFromBuckets(a.LatencyCount, a.Latency, 0.95); ok {
 		out.LatencyP95 = &value
-		out.LatencyOver30s = over
+		out.LatP95Over30s = over
 	}
 	out.SuccessRate = a.successRate()
 	out.Uptime = a.uptime()
@@ -552,17 +577,21 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	for _, key := range keys {
 		agg := perBucket[key]
 		point := modelPerfBucketPoint{Start: key.start, Model: key.model, Requests: agg.sampleSize()}
-		if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.50); ok {
+		if value, over, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.50); ok {
 			point.TTFTp50 = &value
+			point.TTFTP50Over30s = over
 		}
-		if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
 			point.TTFTp95 = &value
+			point.TTFTP95Over30s = over
 		}
-		if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.50); ok {
+		if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.50); ok {
 			point.LatencyP50 = &value
+			point.LatP50Over30s = over
 		}
-		if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
 			point.LatencyP95 = &value
+			point.LatP95Over30s = over
 		}
 		point.SuccessRate = agg.successRate()
 		point.Uptime = agg.uptime()
@@ -581,15 +610,20 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 		modelIncidents := deriveIncidents(byModelBuckets[name], granularity)
 		summary := agg.summary(int64(len(modelIncidents)))
 		modelRows = append(modelRows, modelPerfModelRow{
-			Model:       name,
-			TTFTp50:     summary.TTFTp50,
-			TTFTp95:     summary.TTFTp95,
-			LatencyP95:  summary.LatencyP95,
-			SuccessRate: summary.SuccessRate,
-			Uptime:      summary.Uptime,
-			Incidents:   int64(len(modelIncidents)),
-			SampleSize:  agg.sampleSize(),
-			Badge:       modelPerfBadge(summary),
+			Model:          name,
+			TTFTp50:        summary.TTFTp50,
+			TTFTp95:        summary.TTFTp95,
+			LatencyP50:     summary.LatencyP50,
+			LatencyP95:     summary.LatencyP95,
+			SuccessRate:    summary.SuccessRate,
+			Uptime:         summary.Uptime,
+			Incidents:      int64(len(modelIncidents)),
+			SampleSize:     agg.sampleSize(),
+			Badge:          modelPerfBadge(summary, modelPerfIncidentOngoing(modelIncidents, end, granularity)),
+			TTFTP50Over30s: summary.TTFTP50Over30s,
+			TTFTP95Over30s: summary.TTFTP95Over30s,
+			LatP50Over30s:  summary.LatP50Over30s,
+			LatP95Over30s:  summary.LatP95Over30s,
 		})
 	}
 
@@ -608,21 +642,34 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, response)
 }
 
+// modelPerfIncidentOngoing 报告最后一段事故是否「仍在进行」：最后一段的
+// 结束时间落在窗口末端的最后一个桶内（没有观察到恢复）。UI §8.6 的
+// incident 徽章要求覆盖这一状态，避免把进行中的故障显示成 degraded。
+func modelPerfIncidentOngoing(incidents []modelPerfIncident, windowEnd time.Time, granularity string) bool {
+	if len(incidents) == 0 {
+		return false
+	}
+	last := incidents[len(incidents)-1]
+	return !last.End.Before(windowEnd.Add(-modelPerfBucketWidth(granularity)))
+}
+
 // modelPerfBadge 按 UI §8.6 的阈值分档。分档只用于当前窗口；样本 <20 或
 // 管道无数据时输出 no_data（前端据此不渲染徽章）。
-func modelPerfBadge(summary modelPerfSummary) string {
+func modelPerfBadge(summary modelPerfSummary, ongoing bool) string {
 	if summary.SampleSize == nil || *summary.SampleSize < modelPerfLowSampleSize || summary.SuccessRate == nil {
 		return "no_data"
 	}
 	success := *summary.SuccessRate
 	// success_rate 是 0–1 的比例；阈值按 UI §8.6 的百分比换算。
-	if success < 0.90 {
+	// Incident 优先级最高：成功率 <90% 或存在进行中事故。
+	if success < 0.90 || ongoing {
 		return "incident"
 	}
 	if success < 0.99 {
 		return "degraded"
 	}
-	if summary.Uptime != nil && *summary.Uptime < 0.99 {
+	// Degraded 的 Uptime 区间是 [99%, 99.5%)：到 99.5% 才算健康。
+	if summary.Uptime != nil && *summary.Uptime < 0.995 {
 		return "degraded"
 	}
 	if summary.TTFTp95 != nil {

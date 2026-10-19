@@ -29,12 +29,15 @@ func TestModelPerfQuantileInterpolation(t *testing.T) {
 		t.Fatalf("cross-bucket p50 = %v, want 50 at boundary", p50)
 	}
 
-	// +Inf：下界标记，不伪造有限值。
+	// +Inf：下界标记，不伪造有限值；P50 同样必须带标记。3 个样本中只有
+	// 1 个落在最后的有限桶，P50/P95 都进入 +Inf。
 	var inf [modelPerfHistogramBuckets]int64
 	inf[8] = 1
-	value, over, ok := quantileFromBuckets(2, inf, 0.95)
-	if !ok || !over || value != modelPerfInfinityMS {
-		t.Fatalf("+Inf quantile = (%v,%v,%v), want (30000,true,true)", value, over, ok)
+	for _, q := range []float64{0.50, 0.95} {
+		value, over, ok := quantileFromBuckets(3, inf, q)
+		if !ok || !over || value != modelPerfInfinityMS {
+			t.Fatalf("+Inf quantile q=%v = (%v,%v,%v), want (30000,true,true)", q, value, over, ok)
+		}
 	}
 
 	// 无样本。
@@ -138,24 +141,38 @@ func TestDeriveIncidents(t *testing.T) {
 	}
 }
 
+func TestModelPerfSummaryOver30sFlags(t *testing.T) {
+	// 样本全部落在 +Inf：P50/P95 都必须带 over_30s 标记，不能只标记 P95。
+	agg := modelPerfAggregate{TTFTCount: 10, LatencyCount: 10}
+	summary := agg.summary(0)
+	if !summary.TTFTP50Over30s || !summary.TTFTP95Over30s || !summary.LatP50Over30s || !summary.LatP95Over30s {
+		t.Fatalf("+Inf flags = %+v, want all four over_30s", summary)
+	}
+}
+
 func TestModelPerfBadge(t *testing.T) {
 	sample := int64(100)
 	rate := func(value float64) *float64 { return &value }
 	cases := []struct {
 		name    string
 		summary modelPerfSummary
+		ongoing bool
 		want    string
 	}{
-		{"no sample", modelPerfSummary{}, "no_data"},
-		{"low sample", modelPerfSummary{SampleSize: int64Ptr(19), SuccessRate: rate(1)}, "no_data"},
-		{"incident", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(0.8)}, "incident"},
-		{"degraded success", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(0.95)}, "degraded"},
-		{"slow", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), TTFTp95: rate(3500), Uptime: rate(1)}, "slow"},
-		{"fast", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), TTFTp95: rate(800), Uptime: rate(1)}, "fast"},
-		{"healthy", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(1)}, "healthy"},
+		{"no sample", modelPerfSummary{}, false, "no_data"},
+		{"low sample", modelPerfSummary{SampleSize: int64Ptr(19), SuccessRate: rate(1)}, false, "no_data"},
+		{"incident", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(0.8)}, false, "incident"},
+		{"ongoing incident", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(1)}, true, "incident"},
+		{"degraded success", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(0.95)}, false, "degraded"},
+		{"degraded uptime lower bound", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(0.99)}, false, "degraded"},
+		{"degraded uptime mid", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(0.9949)}, false, "degraded"},
+		{"healthy uptime boundary", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(0.995)}, false, "healthy"},
+		{"slow", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), TTFTp95: rate(3500), Uptime: rate(1)}, false, "slow"},
+		{"fast", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), TTFTp95: rate(800), Uptime: rate(1)}, false, "fast"},
+		{"healthy", modelPerfSummary{SampleSize: &sample, SuccessRate: rate(1), Uptime: rate(1)}, false, "healthy"},
 	}
 	for _, tc := range cases {
-		if got := modelPerfBadge(tc.summary); got != tc.want {
+		if got := modelPerfBadge(tc.summary, tc.ongoing); got != tc.want {
 			t.Fatalf("%s badge = %s, want %s", tc.name, got, tc.want)
 		}
 	}

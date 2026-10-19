@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -25,10 +26,23 @@ import (
 
 // --- F-05-07 导出 ---------------------------------------------------------
 
+// cleanupExportAudits 删除本用例产生的 log.export 审计行。导出成功会写
+// 审计，若不清理会污染后续 `TestIntegrationAuditLogsScoping` 的精确断言
+// （尤其是 admin 导出使用固定 user_id=1）。
+func cleanupExportAudits(t *testing.T, env *usageTestEnv, userIDs ...int64) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, id := range userIDs {
+			_, _ = env.logsDB.Exec(`DELETE FROM audit_logs WHERE user_id = $1 AND detail->>'action' = 'log.export'`, id)
+		}
+	})
+}
+
 func TestIntegrationExportFormatsAndMasking(t *testing.T) {
 	env := newUsageTestEnv(t)
 	userA, _ := ensureUsageTestUser(t, env, "ex")
 	userB, _ := ensureUsageTestUser(t, env, "ey")
+	cleanupExportAudits(t, env, userA)
 	first := 120
 	env.seed(t, usageSeed{
 		UserID: userA, Model: "gpt-export", TokenName: "tok-a", Upstream: "up-a",
@@ -44,8 +58,14 @@ func TestIntegrationExportFormatsAndMasking(t *testing.T) {
 		UserID: userB, Model: "gpt-foreign", Status: 1,
 		CreatedAt: time.Now().UTC().Add(-8 * time.Minute),
 	})
+	// 反斜杠 + 管道：Markdown 必须先转义反斜杠再转义管道，否则 `\|` 会
+	// 退化成 `\\|` 并结束单元格。
+	env.seed(t, usageSeed{
+		UserID: userA, Model: "gpt-export", TokenName: "a\\b|c", Status: 1,
+		CreatedAt: time.Now().UTC().Add(-7 * time.Minute),
+	})
 
-	rec := env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=txt&range=24h", userPrincipal(userA))
+	rec := env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=txt&range=24h&model=gpt-export", userPrincipal(userA))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("txt export status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -72,6 +92,12 @@ func TestIntegrationExportFormatsAndMasking(t *testing.T) {
 	if !strings.Contains(body, "time\tstatus\tmodel\ttoken_name") {
 		t.Fatalf("txt header missing: %s", body)
 	}
+	if !strings.Contains(body, "# Filters: range=24h, model=gpt-export") {
+		t.Fatalf("TXT filter summary missing values: %s", body)
+	}
+	if !strings.Contains(body, "a\\b|c") {
+		t.Fatalf("TXT must preserve backslash and pipe: %s", body)
+	}
 	if strings.Contains(body, "username") {
 		t.Fatalf("user export must not contain username column: %s", body)
 	}
@@ -95,7 +121,7 @@ func TestIntegrationExportFormatsAndMasking(t *testing.T) {
 		t.Fatalf("TXT must replace embedded TAB in text cells: %q", body)
 	}
 
-	rec = env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=markdown&range=24h", userPrincipal(userA))
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=markdown&range=24h&model=gpt-export", userPrincipal(userA))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("markdown export status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -105,6 +131,12 @@ func TestIntegrationExportFormatsAndMasking(t *testing.T) {
 	md := rec.Body.String()
 	if !strings.Contains(md, "| time | status | model | token_name |") {
 		t.Fatalf("markdown table header missing:\n%s", md)
+	}
+	if !strings.Contains(md, "- Filters: range=24h, model=gpt-export") {
+		t.Fatalf("markdown filter summary missing values: %s", md)
+	}
+	if !strings.Contains(md, "a\\\\b\\|c") {
+		t.Fatalf("markdown backslash/pipe escaping wrong: %s", md)
 	}
 	if !strings.Contains(md, `tok\|name with TAB`) {
 		t.Fatalf("markdown pipe not escaped: %s", md)
@@ -121,6 +153,9 @@ func TestIntegrationExportScopeFilteredVersusAll(t *testing.T) {
 	env := newUsageTestEnv(t)
 	userA, nameA := ensureUsageTestUser(t, env, "sa")
 	userB, _ := ensureUsageTestUser(t, env, "sb")
+	// admin 导出的审计行使用固定 principal id=1；必须清理，否则会污染
+	// TestIntegrationAuditLogsScoping 的精确计数。
+	cleanupExportAudits(t, env, userA, userB, 1)
 	env.seed(t, usageSeed{UserID: userA, Model: "gpt-recent", Status: 1, CreatedAt: time.Now().UTC().Add(-2 * time.Minute)})
 	env.seed(t, usageSeed{UserID: userA, Model: "gpt-old", Status: 1, CreatedAt: time.Now().UTC().Add(-3 * time.Hour)})
 	env.seed(t, usageSeed{UserID: userB, Model: "gpt-foreign", Status: 1, CreatedAt: time.Now().UTC().Add(-1 * time.Minute)})
@@ -175,6 +210,7 @@ func TestIntegrationExportRowLimit(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = env.logsDB.Exec(`DELETE FROM usage_logs WHERE user_id IN ($1, $2)`, overUser, exactUser)
 	})
+	cleanupExportAudits(t, env, overUser, exactUser)
 
 	bulkSeed := func(userID int64, count int) {
 		t.Helper()
@@ -224,6 +260,7 @@ func TestIntegrationSensitiveRevealMatrix(t *testing.T) {
 	id := env.seed(t, usageSeed{
 		UserID: userID, Model: "gpt-secret", Status: 2,
 		ErrorMessage: "secret-error", ErrorClass: "upstream_error",
+		Other: `{"public_key":"visible","error_message":"other-secret","error":"raw-secret"}`,
 	})
 	t.Cleanup(func() {
 		_, _ = env.logsDB.Exec(`DELETE FROM audit_logs WHERE detail->>'action' = 'log.export' AND user_id IN ($1, 1)`, userID)
@@ -279,6 +316,45 @@ func TestIntegrationSensitiveRevealMatrix(t *testing.T) {
 	rec = env.do(t, http.MethodGet, "/api/usage-logs?reveal_sensitive=2", userPrincipal(userID))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid reveal_sensitive status = %d, want 422", rec.Code)
+	}
+
+	// F-05-06：user 视图的 other 中 error_message/error 也必须打码；
+	// admin 有 prompt 权限时才返回原文。
+	for _, tc := range []struct {
+		principal *auth.Principal
+		reveal    string
+		wantRaw   bool
+	}{
+		{userPrincipal(userID), "", false},
+		{userPrincipal(userID), "1", false},
+		{usageAdminPrincipal(1, rbac.PermLogsRead), "1", false},
+		{usageAdminPrincipal(1, rbac.PermLogsRead, rbac.PermLogPromptView), "1", true},
+	} {
+		path := detailPath
+		if tc.reveal != "" {
+			path += "?reveal_sensitive=" + tc.reveal
+		}
+		rec := env.do(t, http.MethodGet, path, tc.principal)
+		detail := decodeUsageJSON[struct {
+			Other map[string]any `json:"other"`
+		}](t, rec)
+		raw := false
+		for _, key := range []string{"error_message", "error"} {
+			if value, ok := detail.Other[key]; ok {
+				if value == "other-secret" || value == "raw-secret" {
+					raw = true
+				}
+				if tc.wantRaw && value == maskedSensitive {
+					t.Fatalf("%s with permission still masked: %v", key, detail.Other)
+				}
+				if !tc.wantRaw && value != maskedSensitive {
+					t.Fatalf("%s not masked: %v", key, detail.Other)
+				}
+			}
+		}
+		if raw != tc.wantRaw {
+			t.Fatalf("other raw=%v, want %v (%v)", raw, tc.wantRaw, detail.Other)
+		}
 	}
 }
 
@@ -364,29 +440,41 @@ type modelPerfTestResponse struct {
 		Granularity string `json:"granularity"`
 	} `json:"window"`
 	Buckets []struct {
-		Start *time.Time `json:"start"`
-		Model string     `json:"model"`
+		Start          *time.Time `json:"start"`
+		Model          string     `json:"model"`
+		TTFTP50Over30s bool       `json:"ttft_p50_over_30s"`
+		TTFTP95Over30s bool       `json:"ttft_p95_over_30s"`
+		LatP50Over30s  bool       `json:"latency_p50_over_30s"`
+		LatP95Over30s  bool       `json:"latency_p95_over_30s"`
 	} `json:"buckets"`
 	Summary struct {
-		TTFTp50     *float64 `json:"ttft_p50_ms"`
-		TTFTp95     *float64 `json:"ttft_p95_ms"`
-		LatencyP50  *float64 `json:"latency_p50_ms"`
-		LatencyP95  *float64 `json:"latency_p95_ms"`
-		SuccessRate *float64 `json:"success_rate"`
-		Refused     int64    `json:"refused"`
-		Uptime      *float64 `json:"uptime"`
-		Incidents   *int64   `json:"incidents"`
-		TPS         *float64 `json:"tps"`
-		SampleSize  *int64   `json:"sample_size"`
+		TTFTp50        *float64 `json:"ttft_p50_ms"`
+		TTFTp95        *float64 `json:"ttft_p95_ms"`
+		LatencyP50     *float64 `json:"latency_p50_ms"`
+		LatencyP95     *float64 `json:"latency_p95_ms"`
+		SuccessRate    *float64 `json:"success_rate"`
+		Refused        int64    `json:"refused"`
+		Uptime         *float64 `json:"uptime"`
+		Incidents      *int64   `json:"incidents"`
+		TPS            *float64 `json:"tps"`
+		SampleSize     *int64   `json:"sample_size"`
+		TTFTP50Over30s bool     `json:"ttft_p50_over_30s"`
+		TTFTP95Over30s bool     `json:"ttft_p95_over_30s"`
+		LatP50Over30s  bool     `json:"latency_p50_over_30s"`
+		LatP95Over30s  bool     `json:"latency_p95_over_30s"`
 	} `json:"summary"`
 	Incidents []struct {
 		DurationSeconds int64  `json:"duration_seconds"`
 		Severity        string `json:"severity"`
 	} `json:"incidents"`
 	Models []struct {
-		Model     string `json:"model"`
-		Incidents int64  `json:"incidents"`
-		Badge     string `json:"badge"`
+		Model          string `json:"model"`
+		Incidents      int64  `json:"incidents"`
+		Badge          string `json:"badge"`
+		TTFTP50Over30s bool   `json:"ttft_p50_over_30s"`
+		TTFTP95Over30s bool   `json:"ttft_p95_over_30s"`
+		LatP50Over30s  bool   `json:"latency_p50_over_30s"`
+		LatP95Over30s  bool   `json:"latency_p95_over_30s"`
 	} `json:"models"`
 	Pipeline struct {
 		Enabled   bool       `json:"enabled"`
@@ -543,6 +631,68 @@ func TestIntegrationModelPerfIncidents(t *testing.T) {
 	}
 	if len(body.Models) != 1 || body.Models[0].Incidents != 1 || body.Models[0].Badge != "incident" {
 		t.Fatalf("model row = %+v", body.Models)
+	}
+}
+
+func TestIntegrationModelPerfInfinityAndOngoingIncident(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	// 模型 1：全部样本落在 +Inf（>30s），P50/P95 与序列/模型行都必须带
+	// over_30s 标记，不能只看 P95。
+	infModel := ModelPerfBucket{
+		Model: "inf-test", Start: now.Add(-10 * time.Minute),
+		Success: 10, ObservedSeconds: 60, UpSeconds: 60,
+		LatencyCount: 10, TTFTCount: 10,
+	}
+	// 模型 2：100 个正常分钟 + 末尾连续 6 个低成功分钟。聚合成功率仍
+	// >99%，但最后一段事故延续到窗口末端 → 徽章必须是 incident（进行中
+	// 事故优先于 uptime 降级）。
+	buckets := []ModelPerfBucket{infModel}
+	for i := 0; i < 100; i++ {
+		buckets = append(buckets, ModelPerfBucket{
+			Model: "ongoing", Start: now.Add(-180*time.Minute + time.Duration(i)*time.Minute),
+			Success: 100, ObservedSeconds: 60, UpSeconds: 60,
+			LatencyCount: 100,
+		})
+	}
+	for i := 0; i < 6; i++ {
+		buckets = append(buckets, ModelPerfBucket{
+			Model: "ongoing", Start: now.Add(-6*time.Minute + time.Duration(i)*time.Minute),
+			Success: 0, Error: 5, ObservedSeconds: 60, UpSeconds: 0,
+			LatencyCount: 5,
+		})
+	}
+	fake := &fakeModelPerfSource{updated: now.Add(-time.Minute), buckets: buckets}
+	env := newUsageTestEnvWith(t, usageTestOptions{Perf: fake, Now: func() time.Time { return now }})
+	userID, _ := ensureUsageTestUser(t, env, "pf")
+
+	rec := env.do(t, http.MethodGet, "/api/model-perf?range=24h&model=inf-test", userPrincipal(userID))
+	inf := decodeUsageJSON[modelPerfTestResponse](t, rec)
+	if !inf.Summary.TTFTP50Over30s || !inf.Summary.TTFTP95Over30s ||
+		!inf.Summary.LatP50Over30s || !inf.Summary.LatP95Over30s {
+		t.Fatalf("summary +Inf flags = %+v, want all true", inf.Summary)
+	}
+	if len(inf.Buckets) != 1 || !inf.Buckets[0].TTFTP50Over30s ||
+		!inf.Buckets[0].TTFTP95Over30s || !inf.Buckets[0].LatP50Over30s || !inf.Buckets[0].LatP95Over30s {
+		t.Fatalf("bucket +Inf flags = %+v", inf.Buckets)
+	}
+	if len(inf.Models) != 1 || !inf.Models[0].TTFTP50Over30s || !inf.Models[0].TTFTP95Over30s ||
+		!inf.Models[0].LatP50Over30s || !inf.Models[0].LatP95Over30s {
+		t.Fatalf("model +Inf flags = %+v", inf.Models)
+	}
+
+	rec = env.do(t, http.MethodGet, "/api/model-perf?range=24h&model=ongoing", userPrincipal(userID))
+	ongoing := decodeUsageJSON[modelPerfTestResponse](t, rec)
+	if ongoing.Summary.SuccessRate == nil || *ongoing.Summary.SuccessRate < 0.99 {
+		t.Fatalf("ongoing success rate = %v, want >= 0.99", ongoing.Summary.SuccessRate)
+	}
+	if len(ongoing.Models) != 1 {
+		t.Fatalf("ongoing model rows = %+v", ongoing.Models)
+	}
+	if ongoing.Models[0].Badge != "incident" {
+		t.Fatalf("ongoing incident badge = %s, want incident (summary=%+v)", ongoing.Models[0].Badge, ongoing.Summary)
+	}
+	if len(ongoing.Incidents) != 1 || ongoing.Incidents[0].DurationSeconds != 360 {
+		t.Fatalf("ongoing incidents = %+v", ongoing.Incidents)
 	}
 }
 
