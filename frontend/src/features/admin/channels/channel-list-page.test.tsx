@@ -593,4 +593,24 @@ describe('ChannelListPage', () => {
     // The non-credential fields still render.
     expect(within(detail).getByText('ID')).toBeTruthy()
   })
+
+  it('shows the cross-protocol forwarding note without an editable switch', async () => {
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse([]))
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('No channels yet')
+
+    const note = screen.getByRole('note')
+    expect(note.textContent).toContain('x-newtg-protocol')
+    expect(note.textContent).toContain('relay.cross_protocol_forward_enabled')
+    // M4 has no settings API: the panel must not offer a control that would
+    // silently do nothing.
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(within(note).queryByRole('button')).toBeNull()
+  })
 })

@@ -238,7 +238,7 @@
     },
     "typeGroup": {
       "openai": "OpenAI compatible",
-      "anthropic": "Anthropic native",
+      "anthropic": "Anthropic native (incl. Moonshot)",
       "gemini": "Gemini native",
       "palm": "Google PaLM legacy",
       "proprietary": "Proprietary protocols",
@@ -246,6 +246,39 @@
       "flexible": "Flexible integration",
       "gateway": "Gateway compatible",
       "legacy": "Legacy / unregistered"
+    },
+    "nativeType": {
+      "anthropic": {
+        "label": "Anthropic (native Messages API)",
+        "description": "The upstream speaks the Anthropic Messages protocol (/v1/messages)."
+      },
+      "moonshot": {
+        "label": "Moonshot (Anthropic-compatible)",
+        "description": "Moonshot exposes an Anthropic-compatible Messages endpoint, so it uses the native Anthropic adapter."
+      },
+      "gemini": {
+        "label": "Google Gemini (native generateContent)",
+        "description": "The upstream speaks the Gemini generateContent protocol (:generateContent)."
+      },
+      "vertex_ai": {
+        "label": "Vertex AI (Gemini native)",
+        "description": "Vertex AI uses the Gemini native protocol through a Vertex-specific adapter and credentials."
+      }
+    },
+    "crossProtocol": {
+      "title": "Cross-protocol forwarding",
+      "intro": "Add the {header}: {values} header to POST /v1/chat/completions to choose the upstream protocol, regardless of the channel's own protocol.",
+      "headerLabel": "Request header",
+      "switchLabel": "Switch (site settings)",
+      "statusLabel": "Switch status",
+      "status": {
+        "unknown": "Not readable from this console — maintained in site settings (module 08).",
+        "off": "Off — requests that carry the header are rejected with 403.",
+        "on": "On — requests that carry the header are forwarded to the selected upstream protocol."
+      },
+      "defaultOff": "The switch defaults to off. While it is off, a request that carries x-newtg-protocol fails with 403 instead of being relayed.",
+      "managedBy": "The switch is maintained by site settings (module 08). M4 ships no settings API, so this console cannot read or change it.",
+      "editableDeferred": "An editable switch and protocol mapping are deferred until module 08's settings API is available; no control is shown here until then."
     }
   }
 }

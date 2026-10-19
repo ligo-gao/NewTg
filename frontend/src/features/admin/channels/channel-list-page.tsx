@@ -29,6 +29,7 @@ import {
 import { ChannelMutateSheet } from './channel-mutate-sheet'
 import { ChannelStatusBadge } from './channel-status-badge'
 import { ChannelTestDialog } from './channel-test-dialog'
+import { CrossProtocolForwardInfo } from './cross-protocol-forward-info'
 import { ConfirmDialog } from './ui/confirm-dialog'
 import { testErrorKey } from './test-error'
 import {
@@ -450,6 +451,10 @@ export function ChannelListPage() {
 
   return (
     <section className="flex flex-col gap-4">
+      {/* Read-only by design: the switch lives in module 08 settings and M4 has
+          no API for it, so no `enabled` prop is passed here (status unknown). */}
+      <CrossProtocolForwardInfo />
+
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <label htmlFor="channel-filter-keyword" className="text-xs text-ink-2">

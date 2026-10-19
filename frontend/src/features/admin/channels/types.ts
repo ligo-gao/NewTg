@@ -249,6 +249,85 @@ export function isChannelType(value: string): boolean {
   return CHANNEL_TYPES.some((entry) => entry.value === value)
 }
 
+// ---------------------------------------------------------------------------
+// Native protocol channels (relay-02 §2.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Protocol a native channel speaks upstream. Only Anthropic and Gemini have a
+ * native adapter family in M4; everything else routes through the OpenAI-
+ * compatible path or a proprietary adapter (relay-02 §2.5).
+ */
+export type NativeProtocol = 'anthropic' | 'gemini'
+
+export interface NativeChannelTypeInfo {
+  protocol: NativeProtocol
+  /** i18n key for the human label shown inside the type selector. */
+  labelKey: string
+  /** i18n key for the one-line explanation shown under the selector. */
+  descriptionKey: string
+}
+
+/**
+ * The four channel types whose upstream uses a native Anthropic/Gemini
+ * protocol (relay-02 §2.5): `AKAnthropicNative` = types 14 (`anthropic`) and
+ * 25 (`moonshot`, an Anthropic-compatible `/v1/messages` upstream), and the
+ * Gemini family = type 24 (`gemini`) plus type 41 (`vertex_ai`, which reuses
+ * the Gemini encoding under its own adapter key). The selector groups already
+ * match this split; this table adds the user-facing labels the raw slugs lack.
+ */
+export const NATIVE_CHANNEL_TYPES: Readonly<
+  Record<string, NativeChannelTypeInfo>
+> = {
+  anthropic: {
+    protocol: 'anthropic',
+    labelKey: 'common.channels.nativeType.anthropic.label',
+    descriptionKey: 'common.channels.nativeType.anthropic.description',
+  },
+  moonshot: {
+    protocol: 'anthropic',
+    labelKey: 'common.channels.nativeType.moonshot.label',
+    descriptionKey: 'common.channels.nativeType.moonshot.description',
+  },
+  gemini: {
+    protocol: 'gemini',
+    labelKey: 'common.channels.nativeType.gemini.label',
+    descriptionKey: 'common.channels.nativeType.gemini.description',
+  },
+  vertex_ai: {
+    protocol: 'gemini',
+    labelKey: 'common.channels.nativeType.vertex_ai.label',
+    descriptionKey: 'common.channels.nativeType.vertex_ai.description',
+  },
+}
+
+export function nativeChannelTypeInfo(
+  type: string,
+): NativeChannelTypeInfo | undefined {
+  return Object.prototype.hasOwnProperty.call(NATIVE_CHANNEL_TYPES, type)
+    ? NATIVE_CHANNEL_TYPES[type]
+    : undefined
+}
+
+// ---------------------------------------------------------------------------
+// Cross-protocol forwarding (relay-02 §2.5 / M4 Task 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Header that selects the *upstream* protocol on `POST /v1/chat/completions`
+ * (M4 Task 5, `backend/internal/relay/crossproto`). Values are the native
+ * protocol names; an absent header keeps the channel's own protocol.
+ */
+export const CROSS_PROTOCOL_HEADER = 'x-newtg-protocol'
+
+export const CROSS_PROTOCOL_VALUES = ['openai', 'anthropic', 'gemini'] as const
+
+/**
+ * ConfigCenter key owned by module 08 (site settings). M4 has no settings API,
+ * so the console can only document it — never read or write it.
+ */
+export const CROSS_PROTOCOL_SWITCH_KEY = 'relay.cross_protocol_forward_enabled'
+
 /**
  * Types whose upstream endpoint cannot be derived (relay-02 §7.1 "必填" group;
  * mirrored by `requiredBaseURLTypes` in backend/internal/httpapi/
