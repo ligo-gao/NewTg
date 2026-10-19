@@ -201,6 +201,12 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
+  # Playground 会话中继（relay-01 §1.5）。入口必须显式引用：bundle 只内联
+  # openapi.yaml 可达的节点，片段文件里的孤儿 path 不会进入生成物。
+  /pg/chat/completions:
+    $ref: './paths/relay.yaml#/paths/~1pg~1chat~1completions'
+  /pg/models:
+    $ref: './paths/relay.yaml#/paths/~1pg~1models'
 
   # 用量日志 / 统计 / 审计只读端点（M6 Task 2 / modules-05）。
   /api/usage-logs:

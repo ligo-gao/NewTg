@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -386,9 +387,36 @@ func TestMountRelayRoutesSkipsStubResources(t *testing.T) {
 	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"),
 		&stubResource{name: "db"}, &stubResource{name: "redis"}, nil)
 
-	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/api/channels"} {
+	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/pg/chat/completions", "/api/channels"} {
 		if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" {
 			t.Fatalf("%s unexpectedly mounted (pattern %q) for stub resources", path, pattern)
+		}
+	}
+}
+
+// TestEffectivePublicBaseURL：/pg 的 Origin 白名单与管理面同口径——
+// 显式 PUBLIC_BASE_URL 优先，为空时回退 site.server_address，均不可用时
+// 返回空串（OriginRefererCheck 退化为同源 Host 比对，仍 fail-closed）。
+func TestEffectivePublicBaseURL(t *testing.T) {
+	config := billingAssemblyConfigReader{
+		"site.server_address": json.RawMessage(`"https://gw.example.com/"`),
+	}
+	cases := []struct {
+		name     string
+		explicit string
+		config   billingAssemblyConfigReader
+		want     string
+	}{
+		{"显式优先", "https://a.example.com", config, "https://a.example.com"},
+		{"回退站点地址", "", config, "https://gw.example.com/"},
+		{"两者都缺", "  ", nil, ""},
+		{"配置解析失败", "", billingAssemblyConfigReader{
+			"site.server_address": json.RawMessage(`123`),
+		}, ""},
+	}
+	for _, tc := range cases {
+		if got := effectivePublicBaseURL(tc.explicit, tc.config); got != tc.want {
+			t.Errorf("%s: effectivePublicBaseURL = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/store"
 )
 
@@ -66,34 +67,47 @@ type playgroundTestEnv struct {
 }
 
 func newPlaygroundTestEnv(t *testing.T, groups *playgroundGroupsFake) *playgroundTestEnv {
+	return newPlaygroundTestEnvWith(t, groups, nil, nil)
+}
+
+// newPlaygroundTestEnvWith 允许用例替换上游行为与适配器分派（429/5xx 分支）。
+func newPlaygroundTestEnvWith(
+	t *testing.T,
+	groups *playgroundGroupsFake,
+	dispatch func(contract.ChannelType) (contract.Adapter, error),
+	upstreamHandler http.HandlerFunc,
+) *playgroundTestEnv {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(body), `"stream":true`) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher, _ := w.(http.Flusher)
-			for _, frame := range []string{
-				`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n",
-				`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
-				`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}` + "\n\n",
-				"data: [DONE]\n\n",
-			} {
-				_, _ = io.WriteString(w, frame)
-				if flusher != nil {
-					flusher.Flush()
+	if upstreamHandler == nil {
+		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), `"stream":true`) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				for _, frame := range []string{
+					`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n",
+					`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+					`data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}` + "\n\n",
+					"data: [DONE]\n\n",
+				} {
+					_, _ = io.WriteString(w, frame)
+					if flusher != nil {
+						flusher.Flush()
+					}
 				}
+				return
 			}
-			return
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
-	}))
+	}
+	upstream := httptest.NewServer(upstreamHandler)
 	t.Cleanup(upstream.Close)
 
 	sealer := NewSecretSealer(relaySealerMaster)
@@ -133,6 +147,7 @@ func newPlaygroundTestEnv(t *testing.T, groups *playgroundGroupsFake) *playgroun
 			env.rc = rc
 			return billing
 		},
+		Dispatch: dispatch,
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux)
@@ -320,5 +335,98 @@ func TestPlaygroundDoesNotWeakenV1TokenPath(t *testing.T) {
 	env.mux.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("/v1 仅会话 status = %d, want 401", w.Code)
+	}
+}
+
+// rateLimitClassAdapter 把任意上游错误分类为限流类（用于覆盖 429 映射分支）。
+//
+// 为什么不用「上游直接返回 429」：relay 的重试策略把 429 视为可重试，
+// 连续 429 会在重试耗尽后聚合成 502（既有 /v1 语义）。这里让一个非重试
+// 状态（400）被分类为 ErrUpstreamRateLimit，走 FastFail → 429 的真实映射
+// 路径，验证 /pg 的 429 出口与 requestId，而不改变 /v1 的令牌管线。
+type rateLimitClassAdapter struct{ contract.Adapter }
+
+func (a rateLimitClassAdapter) ClassifyError(int, []byte) contract.ErrorClass {
+	return contract.ErrUpstreamRateLimit
+}
+
+func rateLimitDispatch() func(contract.ChannelType) (contract.Adapter, error) {
+	return func(kind contract.ChannelType) (contract.Adapter, error) {
+		adapter, err := adapters.Dispatch(kind)
+		if err != nil {
+			return nil, err
+		}
+		return rateLimitClassAdapter{Adapter: adapter}, nil
+	}
+}
+
+// TestPlaygroundUpstreamRateLimit429：上游限流类错误 → 429 且带 requestId。
+func TestPlaygroundUpstreamRateLimit429(t *testing.T) {
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"slow down"}}`, http.StatusBadRequest)
+	}
+	env := newPlaygroundTestEnvWith(t, newSessionOnlyGroups(), rateLimitDispatch(), upstream)
+	sid, csrf := env.session(t)
+
+	w := env.do(t, "/pg/chat/completions", chatBody, sid, csrf, nil)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429（body=%s）", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"rate_limit_exceeded"`) {
+		t.Fatalf("body = %s, want rate_limit_exceeded", w.Body.String())
+	}
+	if id := w.Header().Get("X-Request-ID"); id == "" {
+		t.Fatal("429 响应缺少 X-Request-ID")
+	}
+}
+
+// TestPlaygroundUpstream5xxHasRequestID：上游持续 5xx → 502 upstream_error，
+// 响应头与 message 都带 requestId（排障口径与 /v1 一致）。
+func TestPlaygroundUpstream5xxHasRequestID(t *testing.T) {
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}
+	env := newPlaygroundTestEnvWith(t, newSessionOnlyGroups(), nil, upstream)
+	sid, csrf := env.session(t)
+
+	w := env.do(t, "/pg/chat/completions", chatBody, sid, csrf, nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502（body=%s）", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"upstream_error"`) {
+		t.Fatalf("body = %s, want upstream_error", w.Body.String())
+	}
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("5xx 响应缺少 X-Request-ID")
+	}
+	if !strings.Contains(w.Body.String(), requestID) {
+		t.Fatalf("message 未附 requestId: %s", w.Body.String())
+	}
+	if env.billing.preConsumeCount() != 1 || env.billing.refundCount() == 0 {
+		t.Fatalf("预扣/退款次数 = %d/%d，失败上游必须退款",
+			env.billing.preConsumeCount(), env.billing.refundCount())
+	}
+}
+
+// TestPlaygroundBadOriginRejected：会话写路径的 Origin 纵深（与 /api/* 同口径）。
+func TestPlaygroundBadOriginRejected(t *testing.T) {
+	env := newPlaygroundTestEnv(t, newSessionOnlyGroups())
+	sid, csrf := env.session(t)
+
+	w := env.do(t, "/pg/chat/completions", chatBody, sid, csrf, func(r *http.Request) {
+		r.Header.Set("Origin", "http://evil.example")
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403（body=%s）", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+		t.Fatalf("content-type = %q, want application/problem+json", ct)
+	}
+	if !strings.Contains(w.Body.String(), "csrf_failed") {
+		t.Fatalf("body = %s, want csrf_failed", w.Body.String())
+	}
+	if env.billing.preConsumeCount() != 0 {
+		t.Fatal("Origin 校验失败不得进入计费")
 	}
 }

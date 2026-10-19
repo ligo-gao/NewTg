@@ -3,11 +3,13 @@ package platform
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,9 +228,37 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 	relayHandler.Register(mux)
 	// /pg/*（Playground 会话中继）：只接受会话 Cookie，重写到 /v1 后复用同一
 	// 管线。SessionManager 与 /api/* 使用同一 Redis 与 secret，登录态天然共享。
+	//
+	// Origin 白名单与管理面同口径：PUBLIC_BASE_URL 为空时回退到
+	// site.server_address（安装向导写入的站点地址）。只传裸 cfg.PublicBaseURL
+	// 会让「只配置了站点地址」的部署把同源写请求误判成跨站（/pg 的 CSRF 纵深）。
 	relayHandler.RegisterPlayground(mux,
 		auth.NewSessionManager(redisRes.client, []byte(cfg.SessionSecret)),
-		cfg.PublicBaseURL)
+		effectivePublicBaseURL(cfg.PublicBaseURL, settings))
+}
+
+// effectivePublicBaseURL 返回 Origin/Referer 白名单来源。
+//
+// 优先显式 PUBLIC_BASE_URL（可多值）；为空时回退 site.server_address。
+// 该键由安装向导写入、经配置中心下发，是部署方声明的规范站点地址。
+// 读取失败/为空时返回空串——OriginRefererCheck 会退化为「与请求 Host 同源」，
+// 仍保持 fail-closed，不会放开跨站。
+func effectivePublicBaseURL(explicit string, config httpapi.ConfigReader) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	if config == nil {
+		return ""
+	}
+	raw, ok := config.Get("site.server_address")
+	if !ok {
+		return ""
+	}
+	var address string
+	if err := json.Unmarshal(raw, &address); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(address)
 }
 
 // maxHeaderBytes 是 HTTP 请求头总大小上限（32 KiB）。

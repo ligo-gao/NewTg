@@ -276,6 +276,37 @@ scan_admin_operations() { # scan_admin_operations <openapi_root>
   done
 }
 
+# 断言 3（反向覆盖）：paths/*.yaml 中的每个 path 都必须被入口 openapi.yaml 显式 $ref 引用。
+#
+# 为什么需要反向覆盖：scan_refs 只证明「入口的每个 $ref 目标存在」，无法发现
+# 「片段里新增了 path 但入口漏引」。bundle 只内联入口可达节点，孤儿 path 会
+# 静默消失（bundle/DTO/schema.d.ts 都不含它），而 drift 检查重跑同一入口时
+# 同样看不到——形成假阴性（2026-10-19 T13 复核 MEDIUM-1 的成因）。
+# 片段 path 键是 2 空格缩进的 `/...` 行；JSON Pointer 片段 = `/paths/` +
+# 把键里的 `~`→`~0`、`/`→`~1`。
+check_all_path_fragments_referenced() { # check_all_path_fragments_referenced <root>
+  local root="$1" f path escaped target rc=0
+  for f in "$root"/paths/*.yaml; do
+    [ -f "$f" ] || continue
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      escaped=$(printf '%s' "$path" | sed 's/~/~0/g; s#/#~1#g')
+      target="./paths/$(basename "$f")#/paths/${escaped}"
+      if ! grep -qF -- "$target" "$root/openapi.yaml"; then
+        echo "FAIL: $(basename "$f") 的 path $path 未被入口 openapi.yaml 引用（期望 $target）" >&2
+        rc=1
+      fi
+    done < <(awk '
+      /^paths:[[:space:]]*$/ { inpaths = 1; next }
+      inpaths && /^[^[:space:]#]/ { inpaths = 0 }
+      inpaths && /^  \/[^[:space:]]*:[[:space:]]*$/ {
+        sub(/^  /, ""); sub(/:[[:space:]]*$/, ""); print
+      }
+    ' "$f")
+  done
+  return "$rc"
+}
+
 # 断言 2：每个 admin operation 必须声明 x-required-permission。
 check_admin_permission_required() { # check_admin_permission_required <openapi_root>
   local root="$1" line count=0 missing=""
@@ -295,6 +326,9 @@ check_admin_permission_required() { # check_admin_permission_required <openapi_r
   fi
   echo "PASS: ${count} 个 admin operation 均声明 x-required-permission"
 }
+
+# 注：断言 3（check_all_path_fragments_referenced）定义在上面，bash 函数只要在
+# 调用前完成定义即可，顺序不影响执行。
 
 # 失败先行自检：临时副本中逐条注入越界 $ref，必须被 scan_refs 以预期原因拒绝。
 # 为什么要注入用例：只验证“当前源树通过”无法区分“守卫有效”与“规则退化成永远 PASS”；
@@ -489,7 +523,26 @@ YAML
   fi
   rm -f "$tmp/api/openapi/paths/selftest-admin-tags.yaml"
 
-  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）、权限（缺失声明、目录外取值、复合/注释/跨行 tag）注入均已被拒绝"
+  # 反向覆盖自检：片段中新增 path 而入口漏引时，必须被拒绝。
+  cat >"$tmp/api/openapi/paths/selftest-orphan.yaml" <<'YAML'
+paths:
+  /selftest-orphan:
+    get:
+      responses:
+        '200': {description: OK}
+YAML
+  if out=$(check_all_path_fragments_referenced "$tmp/api/openapi" 2>&1); then
+    echo "FAIL: 自检 [orphan-path] 未被拒绝" >&2
+    rc=1
+  elif ! printf '%s' "$out" | grep -qF -- '未被入口 openapi.yaml 引用'; then
+    echo "FAIL: 自检 [orphan-path] 拒绝原因不符：$out" >&2
+    rc=1
+  else
+    echo "PASS: 自检 [orphan-path] 已被拒绝"
+  fi
+  rm -f "$tmp/api/openapi/paths/selftest-orphan.yaml"
+
+  [ "$rc" -eq 0 ] && echo "PASS: 自检——越界（单/双引号、../、多行值、多行值+键行注释）、网络、绝对路径、缺失目标、符号链接（源文件、\$ref 目标、目录、链接+..）、权限（缺失声明、目录外取值、复合/注释/跨行 tag）、孤儿 path 注入均已被拒绝"
   return "$rc"
 }
 
@@ -550,6 +603,11 @@ done
 
 # 6) $ref 边界：不得跨出 api/openapi/，目标文件必须存在
 scan_refs api/openapi || fail "\$ref 边界校验失败（只允许引用 api/openapi/ 内已存在的文件）"
+
+# 6b) 反向覆盖：片段文件里的每个 path 都必须被入口引用（防孤儿 path 静默
+#     不进入 bundle/DTO/schema.d.ts）。
+check_all_path_fragments_referenced api/openapi \
+  || fail "存在未被入口 openapi.yaml 引用的 path（孤儿路径不会进入 bundle/生成物）"
 
 # 7) 权限门禁：x-required-permission 取值 ⊆ rbac 20 键目录；admin operation 必须声明。
 #    目录文件缺失即失败——无目录可比对时放行会让断言退化成永远 PASS。

@@ -1754,6 +1754,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/pg/chat/completions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Playground 会话中继（OpenAI Chat Completions）
+         * @description Playground 的会话身份中继（relay-01 §1.5 / modules-02 §2.15）。只接受
+         *     浏览器会话 Cookie + CSRF；**任何 Authorization 头（含 Bearer）一律 403**，
+         *     即使同时携带有效会话。内部把 /pg 重写为 /v1 后走同一条中继管线：
+         *     跳过令牌额度与令牌模型白名单，但照常扣钱包/订阅、照常写 usage_logs
+         *     （token_id = NULL），违规费不豁免。
+         *
+         *     错误形状按来源分两类：
+         *     - 会话鉴权（`PlaygroundSessionAuth`：缺会话 401、携带 Authorization
+         *       的 403 session_required）用 OpenAI 错误信封；
+         *     - CSRF/Origin 校验失败（写路径与其它 /api/* 同口径）用 RFC 7807
+         *       problem+json（403 csrf_failed）；
+         *     - 402 余额不足、429 限流、上游 5xx 用 OpenAI 错误信封，均附
+         *       X-Request-ID。
+         */
+        post: operations["playgroundChatCompletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pg/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Playground 模型清单（会话身份）
+         * @description 启用渠道支持模型的去重并集（与 GET /v1/models 同源）。按模型/分组
+         *     展示可用性以 GET /api/status 的 usable_groups 为准。
+         */
+        get: operations["playgroundListModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage-logs": {
         parameters: {
             query?: never;
@@ -7288,6 +7341,87 @@ export interface operations {
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
+        };
+    };
+    playgroundChatCompletion: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ChatCompletion 对象或 SSE 流（schema 见上游公开规范） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            /** @description 缺少/失效的会话 Cookie（OpenAI 错误信封） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            402: components["responses"]["Error402"];
+            /**
+             * @description - 携带 Authorization（API 令牌不可用于 Playground）：OpenAI 错误信封
+             *       （code=session_required）；
+             *     - 模型不在用户当前分组的可用清单：OpenAI 错误信封
+             *       （code=model_not_available）；
+             *     - CSRF/同源校验失败：RFC 7807 problem+json（csrf_failed）。
+             */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 不支持的 /pg/* 子路径 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    playgroundListModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI ListModels 对象 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 缺少/失效的会话 Cookie */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listUsageLogs: {

@@ -48,9 +48,13 @@ paths:
         跳过令牌额度与令牌模型白名单，但照常扣钱包/订阅、照常写 usage_logs
         （token_id = NULL），违规费不豁免。
 
-        错误：402 余额不足（预扣前拒绝、无资金变动）；403 模型不在用户当前
-        分组的可用清单（不计费）；429 限流；5xx 上游失败（带 X-Request-ID）。
-        错误体遵循 OpenAI 信封（与 /v1 一致，不使用 RFC 7807）。
+        错误形状按来源分两类：
+        - 会话鉴权（`PlaygroundSessionAuth`：缺会话 401、携带 Authorization
+          的 403 session_required）用 OpenAI 错误信封；
+        - CSRF/Origin 校验失败（写路径与其它 /api/* 同口径）用 RFC 7807
+          problem+json（403 csrf_failed）；
+        - 402 余额不足、429 限流、上游 5xx 用 OpenAI 错误信封，均附
+          X-Request-ID。
       security:
         - sessionCookie: []
       parameters:
@@ -69,9 +73,11 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error402'
         '403':
           description: |
-            - 携带 Authorization（API 令牌不可用于 Playground）；
-            - 模型不在用户当前分组的可用清单；
-            - CSRF/同源校验失败（写路径与其它 /api/* 同口径）。
+            - 携带 Authorization（API 令牌不可用于 Playground）：OpenAI 错误信封
+              （code=session_required）；
+            - 模型不在用户当前分组的可用清单：OpenAI 错误信封
+              （code=model_not_available）；
+            - CSRF/同源校验失败：RFC 7807 problem+json（csrf_failed）。
         '404':
           description: 不支持的 /pg/* 子路径
         '429':

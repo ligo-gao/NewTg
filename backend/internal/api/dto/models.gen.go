@@ -4971,6 +4971,13 @@ type StripeWebhookJSONBody = map[string]interface{}
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// PlaygroundChatCompletionParams defines parameters for PlaygroundChatCompletion.
+type PlaygroundChatCompletionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // GetReadyz200JSONResponseBodyChecksConfig defines parameters for GetReadyz.
 type GetReadyz200JSONResponseBodyChecksConfig string
 
