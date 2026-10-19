@@ -86,3 +86,18 @@
   --color-code-number: var(--code-number);
   --color-code-comment: var(--code-comment);
 }
+
+/* UI-5：系统开启“减少动态效果”时，全局关闭非必要动画与平滑滚动。
+   应用本身没有 JS 驱动的动画，过渡全部来自 CSS utility，所以这一条媒体
+   查询就是唯一开关；保留 0.01ms 而非 0s，是为了继续触发 transitionend /
+   animationend 事件（若将来有依赖这些事件的逻辑，0s 会让事件不派发）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

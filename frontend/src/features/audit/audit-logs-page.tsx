@@ -15,6 +15,7 @@ import {
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { useI18n } from '@/shared/lib/i18n-context'
+import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 import { TextField } from '@/shared/ui/form'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { Tag } from '@/shared/ui/tag'
@@ -275,6 +276,8 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
           <div
             role="radiogroup"
             aria-label={t('logs.audit.filters.range')}
+            // UI-5：与用量日志页一致的单选组键盘行为（方向键移动+选中）。
+            onKeyDown={handleRadioGroupKeyDown}
             className="inline-flex rounded-lg border border-border-default bg-surface-card p-0.5"
           >
             {RANGES.map((option) => {
@@ -285,6 +288,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                   type="button"
                   role="radio"
                   aria-checked={active}
+                  tabIndex={active ? 0 : -1}
                   onClick={() => {
                     update({ range: option.value, p: 1 })
                   }}

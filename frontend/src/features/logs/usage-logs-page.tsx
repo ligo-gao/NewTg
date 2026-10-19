@@ -9,6 +9,7 @@ import { formatRelativeTime } from '@/shared/lib/datetime'
 import { formatCredits, formatTokenAmount } from '@/shared/lib/format'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { useI18n } from '@/shared/lib/i18n-context'
+import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 import { TextField } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -419,6 +420,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           <div
             role="radiogroup"
             aria-label={t('logs.usage.filters.range')}
+            // UI-5：范围组是单选组；键盘方向键移动焦点并直接切换范围，
+            // 组内只保留一个 tab stop（选中项）。
+            onKeyDown={handleRadioGroupKeyDown}
             className="inline-flex rounded-lg border border-border-default bg-surface-card p-0.5"
           >
             {RANGE_OPTIONS.map((option) => {
@@ -429,6 +433,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                   type="button"
                   role="radio"
                   aria-checked={active}
+                  tabIndex={active ? 0 : -1}
                   onClick={() => {
                     changeRange(option.value)
                   }}

@@ -1,4 +1,5 @@
 import { useI18n } from '@/shared/lib/i18n-context'
+import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 
 import type { UsageRange } from './api'
 
@@ -21,6 +22,9 @@ export function RangeSelector({ value, onChange }: RangeSelectorProps) {
     <div
       role="radiogroup"
       aria-label={t('common.dashboard.range.label')}
+      // UI-5：组内仅一个 tab stop（选中项 0，其余 -1），方向键/Home/End
+      // 由共享 roving-focus 处理器移动焦点并提交选择。
+      onKeyDown={handleRadioGroupKeyDown}
       className="inline-flex rounded-lg border border-border-default bg-surface-card p-0.5"
     >
       {RANGES.map((range) => {
@@ -31,6 +35,7 @@ export function RangeSelector({ value, onChange }: RangeSelectorProps) {
             type="button"
             role="radio"
             aria-checked={active}
+            tabIndex={active ? 0 : -1}
             data-testid={`range-${range}`}
             onClick={() => onChange(range)}
             className={[

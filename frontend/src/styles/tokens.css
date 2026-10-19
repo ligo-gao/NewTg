@@ -30,7 +30,11 @@
   /* Ink — §4.6.1 (ink-4 is for non-text use only) */
   --ink-1: #171a1f;
   --ink-2: #5a6270;
-  --ink-3: #6b7280;
+  /* UI-5 对比度修复：原值 #6b7280 在 --surface-subtle (#f0f2f5) 上只有
+     4.31:1、在 --brand-subtle 上只有 4.44:1，低于 WCAG AA 文本 4.5:1。
+     #626a78 在同一对底色上分别为 4.86:1 / 5.01:1，仍明显浅于 ink-2
+     (#5a6270)，三级文本层次不变。 */
+  --ink-3: #626a78;
   --ink-4: #8a93a1; /* 非文本专用：骨架屏色块、禁用图标、分隔点 */
 
   /* Focus ring — §4.6.1 (double solid ring; adapts via the tokens above) */

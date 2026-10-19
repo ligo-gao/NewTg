@@ -2,6 +2,7 @@ import { useId, useState } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { formatCredits } from '@/shared/lib/format'
+import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 
 import { formatYuan } from './money'
 
@@ -44,6 +45,9 @@ export function BalanceCard({ balance, quotaPerUnit = 100 }: BalanceCardProps) {
         <div
           role="radiogroup"
           aria-label={t('account.topup.balance_unit_label')}
+          // UI-5：单位切换是单选组，键盘用户用方向键即可切换，且组内
+          // 只有一个 tab stop（选中项 0、另一项 -1）。
+          onKeyDown={handleRadioGroupKeyDown}
           className="flex rounded-lg border border-border-default p-0.5"
         >
           {UNIT_OPTIONS.map((option) => {
@@ -54,6 +58,7 @@ export function BalanceCard({ balance, quotaPerUnit = 100 }: BalanceCardProps) {
                 type="button"
                 role="radio"
                 aria-checked={selected}
+                tabIndex={selected ? 0 : -1}
                 id={`${groupId}-${option}`}
                 onClick={() => {
                   setUnit(option)
