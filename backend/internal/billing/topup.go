@@ -1301,7 +1301,9 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 	providerAmount int64, providerCurrency string, raw []byte) error {
 
 	if order.Status == string(OrderSucceeded) {
-		return nil
+		// 幂等重放也要把内存结构对齐数据库：调用方（verify/complete）
+		// 可能在拿到订单后、入账前被并发请求抢先入账。
+		return s.refreshOrder(ctx, order)
 	}
 	if order.Status != string(OrderPending) {
 		s.log.Warn("payment callback for non-pending order",
@@ -1395,10 +1397,10 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		s.log.Info("payment credited",
 			"order_id", order.ID, "provider", order.Provider, "credits", credits,
 			"amount", order.Amount, "currency", order.Currency)
-		order.Status = string(OrderSucceeded)
-		order.CreditedCredits = credits
 	}
-	return nil
+	// 无论本次是否实际入账（并发落败路径 credited=false），都重读数据库：
+	// 条件 UPDATE 可能由另一请求完成，内存状态可能仍是 pending。
+	return s.refreshOrder(ctx, order)
 }
 
 // failMismatch 把订单置 failed 并写受控失败码；绝不入账。

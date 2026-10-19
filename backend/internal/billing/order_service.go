@@ -134,8 +134,27 @@ func (s *TopupService) CancelOrder(ctx context.Context, order *store.Order) erro
 		// 并发回调/取消已迁移：终态不可改写。
 		return fmt.Errorf("%w: order %d changed concurrently", ErrOrderStateConflict, order.ID)
 	}
-	order.Status = string(OrderCancelled)
+	// DB 已经写入 cancelled/updated_at；重新读取后再返回，避免 handler
+	// 序列化插入时的内存快照（created_at 与旧 updated_at）。
+	if err := s.refreshOrder(ctx, order); err != nil {
+		return err
+	}
 	s.closeProviderOrder(ctx, order)
+	return nil
+}
+
+// refreshOrder 用数据库行覆盖内存中的订单。
+//
+// 为什么入账/取消后必须重读：状态迁移由 SQL 完成（status/paid_at/
+// updated_at/credited_credits/raw_callback 等同事务写入），内存结构只有
+// 服务层显式赋值的少数字段。响应直接序列化内存值会返回「succeeded 但
+// paid_at=null」或并发落败路径的「paid=true 但 status=pending」。
+func (s *TopupService) refreshOrder(ctx context.Context, order *store.Order) error {
+	refreshed, err := s.GetOrder(ctx, order.ID)
+	if err != nil {
+		return fmt.Errorf("billing: refresh order %d: %w", order.ID, err)
+	}
+	*order = *refreshed
 	return nil
 }
 

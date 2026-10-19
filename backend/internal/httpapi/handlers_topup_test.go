@@ -624,6 +624,8 @@ type orderDetailPayload struct {
 	CreditedCredits int64           `json:"credited_credits"`
 	ManualCompleted bool            `json:"manual_completed"`
 	ManualReason    *string         `json:"manual_reason"`
+	PaidAt          *time.Time      `json:"paid_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 	ExpiresAt       *time.Time      `json:"expires_at"`
 	RawCallback     json.RawMessage `json:"raw_callback"`
 }
@@ -804,6 +806,15 @@ func TestOrderCancelStateMachine(t *testing.T) {
 	if view := decodeOrderDetail(t, cancelled); view.Status != "cancelled" {
 		t.Fatalf("cancelled order = %+v", view)
 	}
+	// 响应必须反映取消那一刻持久化的 updated_at（内存快照是插入时的旧值）。
+	var dbUpdated time.Time
+	if err := env.db.QueryRow(`SELECT updated_at FROM orders WHERE id = $1`, pending).Scan(&dbUpdated); err != nil {
+		t.Fatalf("read updated_at: %v", err)
+	}
+	cancelView := decodeOrderDetail(t, cancelled)
+	if !cancelView.UpdatedAt.Equal(dbUpdated) {
+		t.Fatalf("cancel response updated_at = %s, db = %s", cancelView.UpdatedAt, dbUpdated)
+	}
 	var dbStatus string
 	if err := env.db.QueryRow(`SELECT status FROM orders WHERE id = $1`, pending).Scan(&dbStatus); err != nil {
 		t.Fatalf("read order: %v", err)
@@ -874,6 +885,10 @@ func TestOrderVerifyCreditsOnce(t *testing.T) {
 	}
 	if !resp.Paid || resp.Order.Status != "succeeded" || resp.Order.CreditedCredits != 1000 {
 		t.Fatalf("verify response = %+v", resp)
+	}
+	// 响应视图必须来自入账后的数据库行，而不是入账前的内存快照。
+	if resp.Order.PaidAt == nil {
+		t.Fatal("verify response paid_at = null for a succeeded order (stale in-memory view)")
 	}
 	var walletRows int64
 	if err := env.db.QueryRow(`SELECT count(*) FROM wallet_transactions
@@ -1079,5 +1094,57 @@ func TestOrderCompleteRequiresPaidAndReason(t *testing.T) {
 		fmt.Sprintf("/api/orders/%d/complete", expired),
 		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusConflict {
 		t.Fatalf("expired complete = %d, want 409", rr.Code)
+	}
+}
+
+// TestOrderVerifyAdminScope 钉住 review round 1 的 P-18 裁决：verify 会触发
+// 入账（状态变更），所以只读管理员（orders:read）不能替他人核实；
+// orders:manage 才有跨用户范围。
+func TestOrderVerifyAdminScope(t *testing.T) {
+	stripe, state := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	adminID := env.createUser(0)
+	orderID := env.insertOrder(owner, "pending", 1000, "pi_scope")
+	state.set(func(s *orderStripeStubState) {
+		s.status = "succeeded"
+		s.amount = 1000
+		s.amountReceived = 1000
+	})
+
+	readOnly := &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersRead}}
+	if rr := env.requestAs(readOnly, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("read-only admin verify = %d, want 404 (body=%s)", rr.Code, rr.Body.String())
+	}
+	var status string
+	var credits int64
+	if err := env.db.QueryRow(`SELECT status, credited_credits FROM orders WHERE id = $1`, orderID).
+		Scan(&status, &credits); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	if status != "pending" || credits != 0 {
+		t.Fatalf("read-only admin changed order: %s/%d", status, credits)
+	}
+
+	manage := &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	rr := env.requestAs(manage, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("orders:manage admin verify = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	view := decodeOrderDetail(t, rr)
+	// verify 响应用 {paid, order} 包装，这里直接解码包装体。
+	var resp struct {
+		Paid  bool               `json:"paid"`
+		Order orderDetailPayload `json:"order"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	if !resp.Paid || resp.Order.Status != "succeeded" || resp.Order.PaidAt == nil {
+		t.Fatalf("manage admin verify response = %+v (view=%+v)", resp, view)
 	}
 }

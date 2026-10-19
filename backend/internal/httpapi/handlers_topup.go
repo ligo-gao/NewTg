@@ -8,7 +8,7 @@
 //	GET  /api/orders                 本人订单（管理员 orders:read 可看全部）
 //	GET  /api/orders/{id}            订单详情；他人订单 404（管理员 orders:read 例外）
 //	POST /api/orders/{id}/cancel     本人/orders:manage：pending → cancelled
-//	POST /api/orders/{id}/verify     本人：主动核实渠道并复用幂等入账
+//	POST /api/orders/{id}/verify     本人/orders:manage：主动核实渠道并复用幂等入账
 //	POST /api/orders/{id}/complete   管理员 orders:manage：人工完成（须渠道已收款）
 //	POST /api/webhooks/stripe        公网：Stripe-Signature 验签后入账
 //	POST /api/webhooks/alipay        公网：RSA2 验签后入账
@@ -473,6 +473,9 @@ func (h *TopupHandlers) handleListOrders(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if !rbac.HasPermission(*p, rbac.PermOrdersRead) && value != p.UserID {
+			// 控制台裁决（M5 Task 4 review round 1）：列表的 user_id 是筛选
+			// 参数而不是资源寻址，403 不会泄漏任何订单是否存在；此处刻意
+			// 不用 404（404 语义只用于 /api/orders/{id} 形态）。
 			writeProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden")
 			return
 		}
@@ -554,12 +557,12 @@ func (h *TopupHandlers) handleVerifyOrder(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if !orderVisible(p, order) {
+	// 主动核实会触发入账（状态变更），因此数据级范围比只读端点更严：
+	// 本人或 orders:manage。只有 orders:read 的管理员不能替他人核实。
+	if order.UserID != p.UserID && !rbac.HasPermission(*p, rbac.PermOrdersManage) {
 		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
 		return
 	}
-	// 限流在归属检查之后：不能让他人订单号消耗受害者订单的核实配额，
-	// 也不会因为未授权请求把 Redis 打成放大面。
 	if !h.allowOrderVerify(w, r, order.ID) {
 		return
 	}

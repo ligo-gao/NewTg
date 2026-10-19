@@ -1351,9 +1351,11 @@ paths:
     post:
       tags: [user]
       operationId: verifyOrder
-      summary: 主动核实渠道支付结果（回调丢失兜底）
+      summary: 主动核实渠道支付结果（回调丢失兜底；本人或 orders:manage）
       description: |
-        仅 `pending` 订单。服务端调用 Stripe retrieve / `alipay.trade.query`：
+        仅 `pending` 订单。本人或持有 `orders:manage` 的管理员；只有
+        `orders:read` 的管理员无法替他人核实（数据级 404）。服务端调用
+        Stripe retrieve / `alipay.trade.query`：
         已支付 → 复用 webhook 同一条幂等入账路径（条件 UPDATE + 入账同事务，
         重复核实不会重复入账）；未支付 → 200 `{paid:false}` 且不改变状态；
         渠道查询失败 → 502。限流每订单 5 次/分钟（Redis，故障时 fail closed）。
