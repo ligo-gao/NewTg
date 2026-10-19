@@ -44,7 +44,7 @@ export const Route = createFileRoute('/docs')({
   component: DocsRoute,
 })
 
-function DocsRoute() {
+export function DocsRoute() {
   const { t } = useI18n()
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
@@ -52,6 +52,9 @@ function DocsRoute() {
   const navigableHref = target.kind === 'unavailable' ? null : target.href
   const needsSignIn =
     status.data !== undefined && docsNeedsSignIn(status.data.nav, me.isSuccess)
+  // A status outage is not the same answer as "docs not configured": the
+  // former is retryable, the latter is a permanent disabled state.
+  const statusUnknown = status.isError && status.data === undefined
 
   useEffect(() => {
     if (needsSignIn) {
@@ -64,7 +67,21 @@ function DocsRoute() {
 
   return (
     <PublicLayout activePath="/docs">
-      {target.kind === 'unavailable' && !needsSignIn ? (
+      {statusUnknown ? (
+        <div className="flex flex-col items-start gap-3">
+          <h1 className="text-xl font-semibold text-ink-1">
+            {t('public.status.unavailable')}
+          </h1>
+          <p className="text-sm text-ink-2">{t('public.status.unavailable_hint')}</p>
+          <button
+            type="button"
+            onClick={() => void status.refetch()}
+            className="text-sm text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            {t('public.status.retry')}
+          </button>
+        </div>
+      ) : target.kind === 'unavailable' && !needsSignIn ? (
         <div className="flex flex-col items-start gap-3">
           <h1 className="text-xl font-semibold text-ink-1">
             {t('public.docs.unavailable')}

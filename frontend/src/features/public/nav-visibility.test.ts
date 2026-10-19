@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isNavEntryVisible,
+  isSafePublicHref,
   navEntryOf,
   publicRouteGuardRedirect,
   signInHref,
@@ -39,6 +40,22 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
     expect(isNavEntryVisible(FULL_NAV, 'docs', false, 'https://docs.example.com')).toBe(true)
     expect(isNavEntryVisible(FULL_NAV, 'docs', false, '')).toBe(false)
     expect(isNavEntryVisible(FULL_NAV, 'docs', false, '   ')).toBe(false)
+  })
+
+  it('rejects unsafe docs targets instead of rendering them as links', () => {
+    for (const unsafe of [
+      'javascript:alert(1)',
+      'data:text/html,hi',
+      '//evil.example',
+      '/\\evil.example',
+      'ftp://example.com',
+    ]) {
+      expect(isSafePublicHref(unsafe)).toBe(false)
+      expect(isNavEntryVisible(FULL_NAV, 'docs', true, unsafe)).toBe(false)
+    }
+    expect(isSafePublicHref('/guide')).toBe(true)
+    expect(isSafePublicHref('https://docs.example.com')).toBe(true)
+    expect(visibleNavItems(FULL_NAV, true, 'javascript:alert(1)').some((i) => i.key === 'docs')).toBe(false)
   })
 
   it('keeps render order and marks absolute docs targets external', () => {

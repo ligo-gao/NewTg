@@ -67,6 +67,18 @@ export function isExternalHref(href: string): boolean {
 }
 
 /**
+ * Client-side mirror of the server URL rule (F-09-38 数据字段表: reject
+ * `javascript:`/`data:` and protocol-relative targets). The server validates
+ * on write, but a stale or hand-edited row must never become an `<a href>` or
+ * `window.location` target in a visitor's browser.
+ */
+export function isSafePublicHref(href: string | undefined): boolean {
+  const value = (href ?? '').trim()
+  if (isExternalHref(value)) return true
+  return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\')
+}
+
+/**
  * `enabled && (!require_auth || isLoggedIn)` — the frozen derived rule from
  * F-09-34. `nav.docs` additionally requires a non-empty `site.docs_url`
  * (logical AND, F-09-38). A `require_auth` entry is silently *not rendered*
@@ -81,7 +93,7 @@ export function isNavEntryVisible(
   const entry = navEntryOf(nav, key)
   if (!entry.enabled) return false
   if (entry.require_auth && !isLoggedIn) return false
-  if (key === 'docs' && (docsUrl ?? '').trim() === '') return false
+  if (key === 'docs' && !isSafePublicHref(docsUrl)) return false
   return true
 }
 

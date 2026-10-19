@@ -1,9 +1,10 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { waitFor, within } from '@testing-library/react'
+import { fireEvent, waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
+import { useI18n } from '@/shared/lib/i18n-context'
 
 import { sanitizeHtmlFragment } from './custom-html'
 import { HomePage } from './home-page'
@@ -180,6 +181,61 @@ describe('homepage (F-09-01/03/04/05/06)', () => {
     expect(await findByText('This site is being configured.')).toBeTruthy()
   })
 
+
+  it('restores title and metadata when the homepage unmounts (client navigation)', async () => {
+    document.title = 'Provider default'
+    document.head
+      .querySelectorAll(
+        'meta[name="description"], meta[property^="og:"], meta[name^="twitter:"], link[rel="canonical"]',
+      )
+      .forEach((node) => node.remove())
+
+    useHandlers(status())
+    const { unmount } = await renderWithProviders(<HomePage />, ['public'])
+    await waitFor(() => expect(document.title).toBe('Acme Gateway'))
+    expect(document.head.querySelector('link[rel="canonical"]')).not.toBeNull()
+
+    unmount()
+
+    // Leaving `/` (about, dashboard, ...) must not leave homepage SEO behind.
+    expect(document.title).toBe('Provider default')
+    expect(document.head.querySelector('meta[name="description"]')).toBeNull()
+    expect(document.head.querySelector('meta[property="og:url"]')).toBeNull()
+    expect(document.head.querySelector('meta[property="og:image"]')).toBeNull()
+    expect(document.head.querySelector('link[rel="canonical"]')).toBeNull()
+  })
+
+  it('keeps page-level SEO when the i18n provider rewrites the title on locale switch', async () => {
+    function LocaleSwitcher() {
+      const { setLocale } = useI18n()
+      return (
+        <button type="button" onClick={() => setLocale?.('fr')}>
+          switch locale
+        </button>
+      )
+    }
+
+    useHandlers(status())
+    const { findByRole } = await renderWithProviders(
+      <>
+        <HomePage />
+        <LocaleSwitcher />
+      </>,
+      ['public'],
+    )
+    await waitFor(() => expect(document.title).toBe('Acme Gateway'))
+
+    fireEvent.click(await findByRole('button', { name: 'switch locale' }))
+    await waitFor(() => expect(document.documentElement.lang).toBe('fr'))
+
+    // The provider's own title effect (common.app.title) must lose to the
+    // page-level head; description also stays operator-authored.
+    await waitFor(() => expect(document.title).toBe('Acme Gateway'))
+    expect(
+      document.head.querySelector('meta[name="description"]')?.getAttribute('content'),
+    ).toBe('Acme gateway for teams')
+  })
+
   it('writes SEO tags from site configuration (F-09-06)', async () => {
     useHandlers(status())
     await renderWithProviders(<HomePage />, ['public'])
@@ -206,6 +262,56 @@ describe('homepage (F-09-01/03/04/05/06)', () => {
         .querySelector('meta[name="twitter:card"]')
         ?.getAttribute('content'),
     ).toBe('summary_large_image')
+  })
+})
+
+describe('homepage states (F-09-01/04/06)', () => {
+  it('falls back to the 24h cache when the stats request fails', async () => {
+    writeHomeStatsCache(STATS)
+    useHandlers(status(), () => HttpResponse.json({}, { status: 500 }))
+
+    const { findByText, queryByText } = await renderWithProviders(<HomePage />, ['public'])
+    // Cached values are the final values; nothing renders 0 as a stand-in.
+    expect(await findByText('1,234')).toBeTruthy()
+    expect(queryByText('0')).toBeNull()
+  })
+
+  it('hides the stats band when the request fails and no cache exists', async () => {
+    useHandlers(status(), () => HttpResponse.json({}, { status: 500 }))
+
+    const { findByText, queryByText } = await renderWithProviders(<HomePage />, ['public'])
+    await findByText('Core capabilities')
+    await waitFor(() => expect(queryByText('Upstreams connected')).toBeNull())
+    expect(queryByText('0')).toBeNull()
+    expect(queryByText('—')).toBeNull()
+  })
+
+  it('removes zero counters item by item', async () => {
+    useHandlers(status(), () =>
+      HttpResponse.json({ upstreams: 0, models: 10, endpoints: 0, routing_dims: 6 }),
+    )
+
+    const { findByText, queryByText } = await renderWithProviders(<HomePage />, ['public'])
+    expect(await findByText('10')).toBeTruthy()
+    expect(queryByText('Upstreams connected')).toBeNull()
+    expect(queryByText('Compatible endpoints')).toBeNull()
+    expect(queryByText('Models priced')).toBeTruthy()
+    expect(queryByText('Routing controls')).toBeTruthy()
+  })
+
+  it('skips the hero section when site.home_blocks.hero is false', async () => {
+    useHandlers(
+      status({
+        site: {
+          ...status().site,
+          home_blocks: { hero: false, live_feed: false, features: true, stats: true, onboarding: true },
+        },
+      }),
+    )
+
+    const { findByText, queryByRole } = await renderWithProviders(<HomePage />, ['public'])
+    await findByText('Core capabilities')
+    expect(queryByRole('heading', { level: 1 })).toBeNull()
   })
 })
 

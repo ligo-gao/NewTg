@@ -6,7 +6,7 @@ import { useI18n } from '@/shared/lib/i18n-context'
 
 import { htmlToPlainText, sanitizeHtmlFragment } from './home/custom-html'
 import { LanguageSwitch } from './language-switch'
-import { isNavEntryVisible } from './nav-visibility'
+import { isNavEntryVisible, isSafePublicHref } from './nav-visibility'
 import { SiteBrand } from './public-header'
 
 interface FooterLink {
@@ -43,7 +43,11 @@ export function PublicFooter() {
   // Same `enabled && (!require_auth || isLoggedIn) && docs_url` rule as the
   // header: a hidden nav entry must not reappear in the footer.
   const docsVisible =
-    isNavEntryVisible(status.data?.nav, 'docs', isLoggedIn, docsUrl) && docsUrl !== ''
+    isNavEntryVisible(status.data?.nav, 'docs', isLoggedIn, docsUrl) &&
+    isSafePublicHref(docsUrl)
+  // Status-page URLs never render as links unless they pass the same scheme
+  // rule (defence in depth; the server validates on write).
+  const safeStatusPageUrl = isSafePublicHref(statusPageUrl) ? statusPageUrl : ''
 
   const operatorLinks = sanitizeHtmlFragment(site?.footer_html)
 
@@ -51,12 +55,12 @@ export function PublicFooter() {
     ...(docsVisible
       ? [{ key: 'docs', label: t('public.footer.docs'), href: docsUrl, external: isExternal(docsUrl) }]
       : []),
-    ...(statusPageUrl !== ''
+    ...(safeStatusPageUrl !== ''
       ? [
           {
             key: 'status',
             label: t('public.footer.status'),
-            href: statusPageUrl,
+            href: safeStatusPageUrl,
             external: isExternal(statusPageUrl),
           },
         ]
@@ -80,12 +84,12 @@ export function PublicFooter() {
     ...(docsVisible
       ? [{ key: 'docs', label: t('public.footer.docs'), href: docsUrl, external: isExternal(docsUrl) }]
       : []),
-    ...(statusPageUrl !== ''
+    ...(safeStatusPageUrl !== ''
       ? [
           {
             key: 'status',
             label: t('public.footer.status'),
-            href: statusPageUrl,
+            href: safeStatusPageUrl,
             external: isExternal(statusPageUrl),
           },
         ]

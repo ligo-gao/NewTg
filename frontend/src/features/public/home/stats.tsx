@@ -3,14 +3,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { toApiError } from '@/api/client'
 import { parseProblem } from '@/api/errors'
+import type { components } from '@/api/schema'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-export interface HomeStats {
-  upstreams: number
-  models: number
-  endpoints: number
-  routing_dims: number
-}
+/**
+ * Generated contract for `GET /api/home/stats` (R-PUB-08). The local
+ * `normalizeHomeStats` validation below is still required: generated types are
+ * compile-time only, and a broken deploy must not render negative counts.
+ */
+export type HomeStats = components['schemas']['HomeStats']
 
 export const HOME_STATS_QUERY_KEY = ['public', 'home', 'stats'] as const
 

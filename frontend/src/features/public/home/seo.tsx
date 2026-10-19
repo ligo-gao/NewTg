@@ -64,6 +64,24 @@ export interface PublicSeoProps {
  *
  * Custom-HTML takeover does not change any of this (F-09-06 分支流程 2).
  */
+/**
+ * Every tag this component manages, in one list, so the cleanup can restore
+ * exactly what it overwrote (MEDIUM-1: SPA client navigation from `/` to
+ * `/about` or `/dashboard` must not leave homepage metadata behind).
+ */
+const MANAGED_META: readonly [attribute: 'name' | 'property', key: string][] = [
+  ['name', 'description'],
+  ['property', 'og:title'],
+  ['property', 'og:description'],
+  ['property', 'og:type'],
+  ['property', 'og:image'],
+  ['property', 'og:url'],
+  ['name', 'twitter:card'],
+  ['name', 'twitter:title'],
+  ['name', 'twitter:description'],
+  ['name', 'twitter:image'],
+]
+
 export function PublicSeo({ site }: PublicSeoProps) {
   const { t, locale } = useI18n()
   const title = site?.title?.trim() || DEFAULT_TITLE
@@ -75,6 +93,22 @@ export function PublicSeo({ site }: PublicSeoProps) {
   const canonical = origin === null ? null : `${origin.replace(/\/+$/, '')}/`
 
   useEffect(() => {
+    const head = document.head
+    // Snapshot before writing: the effect re-runs on locale changes too, so
+    // the snapshot must represent "what this component found", and the
+    // cleanup on a dependency change immediately re-applies the new values.
+    const previousTitle = document.title
+    const previousMeta = MANAGED_META.map(([attribute, key]) => ({
+      attribute,
+      key,
+      content: head
+        .querySelector<HTMLMetaElement>(`meta[${attribute}="${key}"]`)
+        ?.getAttribute('content') ?? null,
+    }))
+    const previousCanonical =
+      head.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.getAttribute('href') ??
+      null
+
     document.title = title
     upsertMeta('name', 'description', description)
     upsertMeta('property', 'og:title', title)
@@ -90,13 +124,29 @@ export function PublicSeo({ site }: PublicSeoProps) {
 
     // `document.title` lives on <head>; observe the title element directly so
     // unrelated head updates (meta writes above) do not re-trigger this.
-    const titleElement = document.head.querySelector('title')
-    if (titleElement === null) return
-    const observer = new MutationObserver(() => {
-      if (document.title !== title) document.title = title
+    const titleElement = head.querySelector('title')
+    const observer =
+      titleElement === null
+        ? null
+        : new MutationObserver(() => {
+            if (document.title !== title) document.title = title
+          })
+    observer?.observe(titleElement as Element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
     })
-    observer.observe(titleElement, { childList: true, characterData: true, subtree: true })
-    return () => observer.disconnect()
+
+    return () => {
+      observer?.disconnect()
+      // Leave the document exactly as this page found it; the next route (or
+      // the i18n provider's own title effect) owns the head from here.
+      document.title = previousTitle
+      for (const entry of previousMeta) {
+        upsertMeta(entry.attribute, entry.key, entry.content)
+      }
+      upsertCanonical(previousCanonical)
+    }
   }, [title, description, image, canonical, locale])
 
   return null

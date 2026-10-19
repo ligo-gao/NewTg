@@ -5,6 +5,7 @@ import { within } from '@testing-library/react'
 
 import { renderWithProviders } from '@/test-support/providers'
 
+import { PublicFooter } from './public-footer'
 import { PublicLayout } from './public-layout'
 
 const ORIGIN = 'http://localhost:3000'
@@ -102,5 +103,30 @@ describe('PublicLayout shell (F-09-34/37)', () => {
       expect(docs.getAttribute('target')).toBe('_blank')
       expect(docs.getAttribute('rel')).toBe('noopener noreferrer')
     }
+  })
+})
+
+describe('PublicFooter URL safety (F-09-37)', () => {
+  it('never renders javascript:/data:/protocol-relative targets from site config', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({
+          ...PUBLIC_STATUS,
+          site: {
+            ...PUBLIC_STATUS.site,
+            docs_url: 'javascript:alert(1)',
+            status_page_url: 'data:text/html,hi',
+          },
+        }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+    )
+
+    const { findByRole, container } = await renderWithProviders(<PublicFooter />, ['public'])
+    await findByRole('contentinfo')
+
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
+    expect(container.querySelector('a[href^="data:"]')).toBeNull()
+    expect(container.querySelector('a[href="//evil.example"]')).toBeNull()
   })
 })
