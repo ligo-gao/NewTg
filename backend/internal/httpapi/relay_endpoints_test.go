@@ -2090,3 +2090,21 @@ func TestChannelTestTransportClass(t *testing.T) {
 		t.Fatalf("connection failure => %q, want network", got)
 	}
 }
+
+// TestRelayHandlerNilBillingFallsBackToStub 冻结 nil 工厂的降级语义：
+// 未注入真实引擎时每请求构造一个新的 billingseam.Stub（M2 行为），
+// 而不是共享单会话实例或返回 nil。
+func TestRelayHandlerNilBillingFallsBackToStub(t *testing.T) {
+	h := NewRelayHandler(RelayHandlerOptions{
+		Channels: &fakeRelayChannelStore{},
+		Sealer:   NewSecretSealer(relaySealerMaster),
+	})
+	first := h.billing(&contract.RelayContext{RequestID: "req-1"})
+	if _, ok := first.(*billingseam.Stub); !ok {
+		t.Fatalf("default billing = %T, want *billingseam.Stub", first)
+	}
+	second := h.billing(&contract.RelayContext{RequestID: "req-2"})
+	if second == first {
+		t.Fatal("nil factory must create a fresh stub per request（Stub 是单会话实例）")
+	}
+}

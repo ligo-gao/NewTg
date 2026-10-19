@@ -22,6 +22,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/clientip"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
@@ -46,6 +47,32 @@ type gatewayAssembly struct {
 	Billing func(*contract.RelayContext) contract.BillingSession
 	// ModelStatus 是派发前的模型停用检查（R-84）。
 	ModelStatus httpapi.RelayModelStatusStore
+	// PricingSource 是引擎与管理面共用的定价源（装配验证/诊断用）。
+	PricingSource *pricing.DBSource
+	// PricingOnChange 就是注入管理面的缓存失效回调（R-63）；与
+	// PricingSource.Invalidate 同一个函数值，供装配测试验证接线。
+	PricingOnChange func()
+}
+
+// pricingCacheInvalidator 是定价源进程内缓存失效的最小缝。
+//
+// 生产实现是 *pricing.DBSource（NewSource 返回）；单测用计数 fake 证明
+// newGatewayAPI 把 **同一个** Invalidate 接给了管理面 OnChange（R-63）。
+type pricingCacheInvalidator interface {
+	Invalidate()
+}
+
+var _ pricingCacheInvalidator = (*pricing.DBSource)(nil)
+
+// pricingOnChange 把定价源适配成管理面的「写后失效」回调。
+//
+// nil 源返回 nil：管理面只靠 sourceCacheTTL=30s 兜底，而不是 panic 或静默
+// 接一个空实现（两种都难排查）。
+func pricingOnChange(source pricingCacheInvalidator) func() {
+	if source == nil {
+		return nil
+	}
+	return source.Invalidate
 }
 
 // newAPIHandler 是 connectors 的生产实现：把 Resource 还原为具体类型后
@@ -173,6 +200,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 定价仓储同时服务管理面与中继的停用模型检查（R-84）：同一实例、
 	// 同一套候选解析语义，避免两处对「这个模型是否被停用」得出不同答案。
 	pricingRepo := store.NewPricingRepo(db)
+	// R-63：定价写成功后立即清空 30s 缓存。这里把回调保存到 assembly，
+	// 既注入 GatewayDeps，也让装配测试能验证「就是 source.Invalidate」。
+	pricingChanged := pricingOnChange(source)
 
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
@@ -191,15 +221,17 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		ChannelHandler:          channelHandler,
 		PricingRepo:             pricingRepo,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
-		PricingOnChange: source.Invalidate,
+		PricingOnChange: pricingChanged,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &gatewayAssembly{
-		Handler:     router,
-		Billing:     engine.NewSession,
-		ModelStatus: pricingRepo,
+		Handler:         router,
+		Billing:         engine.NewSession,
+		ModelStatus:     pricingRepo,
+		PricingSource:   source,
+		PricingOnChange: pricingChanged,
 	}, nil
 }
 

@@ -1093,18 +1093,46 @@ func (s *Session) inheritUsageSemanticLocked(snap *contract.PriceSnapshot) {
 
 // noteUsageSemanticFromFactLocked 用**结算用量事实**补写 Claude 语义。
 //
-// 上游事实优先于协议路径：PromptIncludesCache=false 表示 prompt 不含缓存读
-// （Claude/Gemini 语义）。零值 Usage 的该布尔也是 false，因此必须同时确认
-// 至少有一个非零用量维度，避免把「没有用量」误标成 anthropic。
-// 已有 true 不覆盖（首个事实胜出）。
+// 【为什么不能只看 PromptIncludesCache=false】该布尔在「协议未声明」时就是
+// Go 零值 false：`x-model-response-usage` 头解析器在缺 `prompt_includes_cache`
+// 时默认 false，Gemini 语义同样使用 false。若据此判定 Claude，会把
+// header 派生/非 Claude 请求记成 usage_semantic="anthropic"（虚假审计值）。
+//
+// 因此事实路径要求一个**正向 Claude 指示**：上游原始 usage 携带 Claude 专有
+// 缓存键（`cache_read_input_tokens` / `cache_creation_input_tokens`），或
+// 协议路径（RawFormat=claude，见 inheritUsageSemanticLocked）已置位。仅有
+// false 布尔 + 非零用量不放行。
 func (s *Session) noteUsageSemanticFromFactLocked(snap *contract.PriceSnapshot, u contract.Usage) {
-	if snap == nil || snap.IsClaudeUsageSemantic {
+	if snap == nil || snap.IsClaudeUsageSemantic || u.PromptIncludesCache {
 		return
 	}
-	if u.PromptIncludesCache || !usageHasAnyFact(u) {
+	if !usageHasAnyFact(u) || !hasClaudeUsageKeys(u.Raw) {
 		return
 	}
 	snap.IsClaudeUsageSemantic = true
+}
+
+// claudeRawUsageKeys 是 Anthropic usage 的专有缓存维度键（relay-04 的
+// Claude 适配器原样保留在 Usage.Raw）。出现任一即证明上游说的是 Claude 语义。
+var claudeRawUsageKeys = []string{
+	"cache_read_input_tokens",
+	"cache_creation_input_tokens",
+}
+
+// hasClaudeUsageKeys 判断原始 usage 是否携带 Claude 专有键。
+//
+// 只做键存在性判定（值可为 0）：Claude 上游可能在无缓存命中时仍发送
+// `cache_read_input_tokens: 0`，键本身是协议事实。
+func hasClaudeUsageKeys(raw map[string]any) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	for _, key := range claudeRawUsageKeys {
+		if _, ok := raw[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // usageHasAnyFact 判断用量中是否存在任一非零计费维度。

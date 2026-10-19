@@ -501,22 +501,18 @@ func TestIntegrationRelayBillingDisabledModel404(t *testing.T) {
 	}
 }
 
-// TestIntegrationRelayBillingUsageSemantic 验证 usage_logs.other.usage_semantic
-// 有真实写者：会话在结算时按上游事实（PromptIncludesCache=false）写入
-// IsClaudeUsageSemantic，Saturator 落 anthropic。
+// TestIntegrationRelayBillingUsageSemanticAbsentForOpenAI 验证 OpenAI 请求的
+// usage_logs.other 不写 usage_semantic（Claude 语义只由协议路径或 Claude
+// 专有用量键触发；OpenAI 的 PromptIncludesCache=true 不满足任一条件）。
 //
-// 走非流式成功路径（上游返回 2xx + Claude 语义 usage），用真实的日志库落库。
-func TestIntegrationRelayBillingUsageSemantic(t *testing.T) {
+// Claude 语义的正向写入由 billing 包的
+// TestIntegrationSessionUsageSemanticClaude / ...FromFact 覆盖。
+func TestIntegrationRelayBillingUsageSemanticAbsentForOpenAI(t *testing.T) {
 	mainDB, logsDB, gormDB := relayBillingTestDBs(t)
 	rdb := relayBillingTestRedis(t)
 	model := fmt.Sprintf("t9-semantic-%d", time.Now().UnixNano())
 	relayBillingTestModel(t, mainDB, model, 100, 1)
 
-	// Claude 语义的用量（prompt_tokens 只含文本，缓存读独立），沿用 OpenAI
-	// 响应外壳以便走通现有适配器；关系布尔由 relay 的 estimated 补齐逻辑
-	// 不会触发（原生 usage 存在），但 OpenAI 解析会置 PromptIncludesCache=true。
-	// 因此这里直接验证中继格式事实路径不适用时，由**会话**按 Usage 事实补写的
-	// 分支由 billing 包的单测覆盖；本用例只断言 OpenAI 请求不写 anthropic。
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"`+model+`","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
@@ -540,5 +536,44 @@ func TestIntegrationRelayBillingUsageSemantic(t *testing.T) {
 	}
 	if _, ok := other["usage_semantic"]; ok {
 		t.Fatalf("OpenAI 请求不得写 usage_semantic=anthropic: %v", other)
+	}
+}
+
+// TestIntegrationRelayBillingHeaderUsageNotClaude 是 F1 的端到端回归：
+// 上游只在 `x-model-response-usage` 头里报告用量（OpenAI 语义）。该解析器在
+// 缺 `prompt_includes_cache` 时把关系布尔默认成 false；中继绝不能因此把
+// usage_logs.other.usage_semantic 写成 anthropic。
+func TestIntegrationRelayBillingHeaderUsageNotClaude(t *testing.T) {
+	mainDB, logsDB, gormDB := relayBillingTestDBs(t)
+	rdb := relayBillingTestRedis(t)
+	model := fmt.Sprintf("t9-header-openai-%d", time.Now().UnixNano())
+	relayBillingTestModel(t, mainDB, model, 100, 1)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 响应体没有任何 usage 对象；用量只在非标准头里。
+		w.Header().Set("x-model-response-usage",
+			`{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}`)
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"`+model+`","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	env := newRelayBillingTestEnv(t, model, 1000, mainDB, logsDB, gormDB, rdb, upstream)
+	env.cleanupLogs(t)
+
+	w := env.do(t, model)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	logs := env.usageLogs(t)
+	if len(logs) != 1 {
+		t.Fatalf("usage_logs rows = %d, want 1", len(logs))
+	}
+	var other map[string]any
+	if err := json.Unmarshal(logs[0].other, &other); err != nil {
+		t.Fatalf("decode other: %v", err)
+	}
+	if got, ok := other["usage_semantic"]; ok {
+		t.Fatalf("usage_semantic = %v, want absent（header 派生 OpenAI 不得标 anthropic）", got)
 	}
 }

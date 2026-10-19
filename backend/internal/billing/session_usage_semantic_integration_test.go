@@ -120,9 +120,9 @@ func TestIntegrationSessionUsageSemanticOpenAI(t *testing.T) {
 	}
 }
 
-// TestIntegrationSessionUsageSemanticFromFact 验证 Usage 关系布尔也可作为
-// Claude 语义来源：即使 RawFormat 未标注（如未来适配器路径），
-// PromptIncludesCache=false + 非零用量也必须写入 anthropic。
+// TestIntegrationSessionUsageSemanticFromFact 验证事实路径必须带**正向
+// Claude 指示**：RawFormat 未标注时，只有 Usage.Raw 携带 Claude 专有缓存键
+// 才写入 anthropic（PromptIncludesCache=false 单独不足以判定，见下一条回归）。
 func TestIntegrationSessionUsageSemanticFromFact(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	logsDB := openLogsTestDB(t)
@@ -150,8 +150,10 @@ func TestIntegrationSessionUsageSemanticFromFact(t *testing.T) {
 		Model: "fact-model",
 		Usage: contract.Usage{
 			Prompt:              1_000_000,
-			PromptIncludesCache: false, // 上游事实：缓存读为独立维度
+			PromptIncludesCache: false, // 缓存读为独立维度
 			Source:              contract.UsageUpstreamExact,
+			// Claude 专有键是事实路径的正向指示。
+			Raw: map[string]any{"cache_read_input_tokens": float64(200)},
 		},
 	}
 	if err := s.Terminate(fact); err != nil {
@@ -168,6 +170,61 @@ func TestIntegrationSessionUsageSemanticFromFact(t *testing.T) {
 		t.Fatalf("decode other: %v", err)
 	}
 	if got := other["usage_semantic"]; got != "anthropic" {
-		t.Fatalf("usage_semantic = %v, want anthropic（Usage 关系布尔）", got)
+		t.Fatalf("usage_semantic = %v, want anthropic（Claude 专有 Raw 键）", got)
+	}
+}
+
+// TestIntegrationSessionUsageSemanticHeaderOpenAINotClaude 是 F1 回归：
+// `x-model-response-usage` 头解析在缺 `prompt_includes_cache` 时默认 false，
+// 但该请求是 OpenAI 语义（Raw 无 Claude 专有键）。此时绝不能写
+// usage_semantic="anthropic"——false 布尔单独不是 Claude 证据。
+func TestIntegrationSessionUsageSemanticHeaderOpenAINotClaude(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openLogsTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+
+	req := newTestUUID(t)
+	cleanupUsageLog(t, logsDB, req)
+
+	e := NewEngine(gormDB, logsDB, nil, billingTestConfig(), nil, nil, NewDBLogger(logsDB))
+	rc := &contract.RelayContext{
+		RequestID:   req,
+		UserID:      int(userID),
+		OriginModel: "header-openai-model",
+		UsingGroup:  "default",
+		RawFormat:   contract.RelayFormat("openai"),
+	}
+	s := e.NewSession(rc).(*Session)
+	rc.PriceSnapshot = ratioSnapshot(100, 0)
+
+	est := contract.QuotaEstimate{Model: "header-openai-model", PromptTokens: 1_000_000}
+	if err := s.PreConsume(est); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	fact := contract.UsageFact{
+		Model: "header-openai-model",
+		Usage: contract.Usage{
+			Prompt: 1_000_000,
+			// 头部解析缺省值：false，但没有任何 Claude 专有键。
+			PromptIncludesCache: false,
+			Source:              contract.UsageUpstreamExact,
+			Raw:                 map[string]any{"prompt_tokens": float64(1_000_000)},
+		},
+	}
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+
+	var raw []byte
+	if err := logsDB.QueryRow(
+		`SELECT other::text FROM usage_logs WHERE request_id = $1::uuid`, req).Scan(&raw); err != nil {
+		t.Fatalf("read usage log other: %v", err)
+	}
+	var other map[string]any
+	if err := json.Unmarshal(raw, &other); err != nil {
+		t.Fatalf("decode other: %v", err)
+	}
+	if got, ok := other["usage_semantic"]; ok {
+		t.Fatalf("usage_semantic = %v, want absent（header 派生 OpenAI 不得标 anthropic）", got)
 	}
 }
