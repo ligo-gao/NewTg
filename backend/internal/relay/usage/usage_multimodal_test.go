@@ -183,6 +183,34 @@ func TestUsageMultimodalShapeSniffAndFallthrough(t *testing.T) {
 			}
 		}
 	})
+
+	// N1：Anthropic/Moonshot 形状也必须做键校验——ir 对非 Claude 对象会返回
+	// 全零 upstream_exact，直接采信会挡住注入/响应头。
+	t.Run("Anthropic 无法识别的 usage 回退注入", func(t *testing.T) {
+		cases := []string{
+			`{"mystery_field":1}`,
+			`{"input_tokens":null,"output_tokens":null}`,
+			`{"total_tokens":34}`,
+		}
+		for _, kind := range []contract.ChannelType{
+			contract.ChannelTypeAnthropic,
+			contract.ChannelTypeMoonshot,
+		} {
+			for _, usageRaw := range cases {
+				resp := &contract.Response{Model: "m", Raw: []byte(`{"usage":` + usageRaw + `}`)}
+				injected := &contract.Usage{Prompt: 9, Completion: 3, Source: contract.UsageUpstreamPartial}
+				got := ExtractUsageMultimodal(resp, nil, injected, kind).Usage
+				if got.Prompt != 9 || got.Completion != 3 {
+					t.Fatalf("kind=%s usage=%s: usage = %d/%d, want injected 9/3（不得被全零 exact 挡住）",
+						kind, usageRaw, got.Prompt, got.Completion)
+				}
+				if got.Source != contract.UsageUpstreamPartial {
+					t.Fatalf("kind=%s usage=%s: Source = %v, want upstream_partial",
+						kind, usageRaw, got.Source)
+				}
+			}
+		}
+	})
 }
 
 func TestUsageMultimodalGeminiNative(t *testing.T) {

@@ -283,14 +283,52 @@ func looksClaudeUsage(object map[string]json.RawMessage) bool {
 // 与适配器漂移——缓存写少算的后果是真实少计费，故这里只做「是否存在」
 // 判定并原样复用 ir 的结果。
 //
-// 返回 nil 表示上游没有可采信的 Claude 事实（空对象/非法形状），让三源
-// 优先级的后续来源继续参与；Source=UsageEstimated 是 ir 的「无事实」哨兵。
+// 【N1 · 委托前必须验键】ir 对「非空但不是 Claude」的对象（如
+// `{"total_tokens":34}`、`{"mystery_field":1}`）同样会返回
+// Source=upstream_exact 的全零 Usage；若直接采信，会把注入/响应头来源
+// 挡掉并谎报「上游精确用量 0」。因此只有出现**非 null**的 Claude 键
+// （input_tokens / output_tokens / cache_read_input_tokens /
+// cache_creation_input_tokens / cache_creation）才委托，否则返回 nil
+// 让三源优先级继续。
 func parseClaudeUsage(raw json.RawMessage) *contract.Usage {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || len(object) == 0 {
+		return nil
+	}
+	if !claudeUsageKeysPresent(object) {
+		return nil
+	}
 	parsed := ir.ParseAnthropicUsage(raw)
 	if parsed.Source == contract.UsageEstimated {
 		return nil
 	}
 	return &parsed
+}
+
+// claudeUsageKeysPresent 判断对象是否携带**有效**的 Claude usage 键。
+//
+// null 值不算协议事实（`{"input_tokens":null}` 与键缺失等价）：上游只在
+// 有值时发送数字。`cache_creation` 是嵌套对象，非 null 即视为存在——
+// ir 会对其子字段求和，空对象求和为 0 属于「上游明确给出 0」的可信事实。
+func claudeUsageKeysPresent(object map[string]json.RawMessage) bool {
+	for _, key := range []string{
+		"input_tokens",
+		"output_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"cache_creation",
+	} {
+		if value, ok := object[key]; ok && !isJSONNull(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// isJSONNull 判断原始 JSON 值是否为缺失/null（空白视为 null）。
+func isJSONNull(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || string(trimmed) == "null"
 }
 
 // geminiModalityDetail 是 Gemini `*TokensDetails[]` 的元素。
