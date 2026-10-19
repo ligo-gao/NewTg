@@ -21,7 +21,9 @@ import { Route as SignUpRouteImport } from './routes/sign-up'
 import { Route as TwoFactorChallengeRouteImport } from './routes/two-factor-challenge'
 import { Route as ConsoleAdminRouteImport } from './routes/_console/admin'
 import { Route as ConsoleAuditLogsRouteImport } from './routes/_console/audit-logs'
+import { Route as ConsoleModelConfigRouteImport } from './routes/_console/model-config'
 import { Route as ConsoleOrdersRouteImport } from './routes/_console/orders'
+import { Route as ConsolePlaygroundRouteImport } from './routes/_console/playground'
 import { Route as ConsoleProfileRouteImport } from './routes/_console/profile'
 import { Route as ConsoleSecurityRouteImport } from './routes/_console/security'
 import { Route as ConsoleTokensRouteImport } from './routes/_console/tokens'
@@ -109,9 +111,19 @@ const ConsoleAuditLogsRoute = ConsoleAuditLogsRouteImport.update({
   path: '/audit-logs',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleModelConfigRoute = ConsoleModelConfigRouteImport.update({
+  id: '/model-config',
+  path: '/model-config',
+  getParentRoute: () => ConsoleRoute,
+} as any)
 const ConsoleOrdersRoute = ConsoleOrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsolePlaygroundRoute = ConsolePlaygroundRouteImport.update({
+  id: '/playground',
+  path: '/playground',
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsoleProfileRoute = ConsoleProfileRouteImport.update({
@@ -272,7 +284,9 @@ export interface FileRoutesByFullPath {
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
   '/admin': typeof ConsoleAdminRouteWithChildren
   '/audit-logs': typeof ConsoleAuditLogsRoute
+  '/model-config': typeof ConsoleModelConfigRoute
   '/orders': typeof ConsoleOrdersRoute
+  '/playground': typeof ConsolePlaygroundRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
@@ -312,7 +326,9 @@ export interface FileRoutesByTo {
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
   '/audit-logs': typeof ConsoleAuditLogsRoute
+  '/model-config': typeof ConsoleModelConfigRoute
   '/orders': typeof ConsoleOrdersRoute
+  '/playground': typeof ConsolePlaygroundRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
@@ -355,7 +371,9 @@ export interface FileRoutesById {
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
   '/_console/admin': typeof ConsoleAdminRouteWithChildren
   '/_console/audit-logs': typeof ConsoleAuditLogsRoute
+  '/_console/model-config': typeof ConsoleModelConfigRoute
   '/_console/orders': typeof ConsoleOrdersRoute
+  '/_console/playground': typeof ConsolePlaygroundRoute
   '/_console/profile': typeof ConsoleProfileRoute
   '/_console/security': typeof ConsoleSecurityRoute
   '/_console/tokens': typeof ConsoleTokensRoute
@@ -398,7 +416,9 @@ export interface FileRouteTypes {
     | '/two-factor-challenge'
     | '/admin'
     | '/audit-logs'
+    | '/model-config'
     | '/orders'
+    | '/playground'
     | '/profile'
     | '/security'
     | '/tokens'
@@ -438,7 +458,9 @@ export interface FileRouteTypes {
     | '/sign-up'
     | '/two-factor-challenge'
     | '/audit-logs'
+    | '/model-config'
     | '/orders'
+    | '/playground'
     | '/profile'
     | '/security'
     | '/tokens'
@@ -480,7 +502,9 @@ export interface FileRouteTypes {
     | '/two-factor-challenge'
     | '/_console/admin'
     | '/_console/audit-logs'
+    | '/_console/model-config'
     | '/_console/orders'
+    | '/_console/playground'
     | '/_console/profile'
     | '/_console/security'
     | '/_console/tokens'
@@ -617,11 +641,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAuditLogsRouteImport
       parentRoute: typeof ConsoleRoute
     }
+    '/_console/model-config': {
+      id: '/_console/model-config'
+      path: '/model-config'
+      fullPath: '/model-config'
+      preLoaderRoute: typeof ConsoleModelConfigRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
     '/_console/orders': {
       id: '/_console/orders'
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof ConsoleOrdersRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/playground': {
+      id: '/_console/playground'
+      path: '/playground'
+      fullPath: '/playground'
+      preLoaderRoute: typeof ConsolePlaygroundRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/profile': {
@@ -852,7 +890,9 @@ const ConsoleAdminRouteWithChildren = ConsoleAdminRoute._addFileChildren(
 interface ConsoleRouteChildren {
   ConsoleAdminRoute: typeof ConsoleAdminRouteWithChildren
   ConsoleAuditLogsRoute: typeof ConsoleAuditLogsRoute
+  ConsoleModelConfigRoute: typeof ConsoleModelConfigRoute
   ConsoleOrdersRoute: typeof ConsoleOrdersRoute
+  ConsolePlaygroundRoute: typeof ConsolePlaygroundRoute
   ConsoleProfileRoute: typeof ConsoleProfileRoute
   ConsoleSecurityRoute: typeof ConsoleSecurityRoute
   ConsoleTokensRoute: typeof ConsoleTokensRoute
@@ -866,7 +906,9 @@ interface ConsoleRouteChildren {
 const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleAdminRoute: ConsoleAdminRouteWithChildren,
   ConsoleAuditLogsRoute: ConsoleAuditLogsRoute,
+  ConsoleModelConfigRoute: ConsoleModelConfigRoute,
   ConsoleOrdersRoute: ConsoleOrdersRoute,
+  ConsolePlaygroundRoute: ConsolePlaygroundRoute,
   ConsoleProfileRoute: ConsoleProfileRoute,
   ConsoleSecurityRoute: ConsoleSecurityRoute,
   ConsoleTokensRoute: ConsoleTokensRoute,

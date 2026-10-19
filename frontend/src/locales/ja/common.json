@@ -730,5 +730,7 @@
       "body": "トークンが別の場所で変更されました。更新してください",
       "refresh": "更新"
     }
-  }
+  },
+  "nav.chat": "チャット",
+  "nav.playground": "Playground"
 }

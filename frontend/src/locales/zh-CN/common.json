@@ -730,5 +730,7 @@
       "body": "令牌已在别处被修改，请刷新",
       "refresh": "刷新"
     }
-  }
+  },
+  "nav.chat": "对话",
+  "nav.playground": "Playground"
 }

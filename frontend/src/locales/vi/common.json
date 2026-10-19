@@ -730,5 +730,7 @@
       "body": "Token đã bị sửa ở nơi khác, vui lòng làm mới",
       "refresh": "Làm mới"
     }
-  }
+  },
+  "nav.chat": "Trò chuyện",
+  "nav.playground": "Playground"
 }

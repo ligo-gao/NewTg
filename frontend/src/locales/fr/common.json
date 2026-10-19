@@ -730,5 +730,7 @@
       "body": "Le jeton a été modifié ailleurs, veuillez actualiser",
       "refresh": "Actualiser"
     }
-  }
+  },
+  "nav.chat": "Chat",
+  "nav.playground": "Playground"
 }

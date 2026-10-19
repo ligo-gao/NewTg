@@ -9,6 +9,7 @@ import {
 import { useState } from 'react'
 
 import { usePricingCapabilities } from '@/features/admin/pricing/use-pricing-capabilities'
+import { usePlaygroundEnabled } from '@/features/playground/visibility'
 import {
   CommandPalette,
   useCommandPaletteShortcut,
@@ -105,6 +106,9 @@ export function ConsoleHeader({
   // the cache (a direct `/dashboard` navigation still triggers one probe).
   const meQuery = useQuery(meQueryOptions())
   const capabilities = usePricingCapabilities()
+  // 站点级侧栏开关（`nav.modules.chat.playground`，默认 true）。这里只读根
+  // 守卫已写入的 status 缓存，不额外发请求；关闭时 Chat 组整体不渲染。
+  const playgroundEnabled = usePlaygroundEnabled()
 
   // 能力未知时按 M1 的「先隐藏、确认后再显示」处理：不把入口闪给一个
   // 可能没有 pricing:read 的管理员。服务端仍会拒绝越权请求。
@@ -130,6 +134,24 @@ export function ConsoleHeader({
               {t(item.key)}
             </a>
           ))}
+          {playgroundEnabled ? (
+            <div
+              role="group"
+              aria-label={t('common.nav.chat')}
+              className="flex items-center gap-3 border-l border-border-hairline pl-4"
+            >
+              <span className="text-ink-3">{t('common.nav.chat')}</span>
+              <a
+                href="/playground"
+                aria-current={
+                  isActive(activePath, '/playground') ? 'page' : undefined
+                }
+                className={linkClass(isActive(activePath, '/playground'))}
+              >
+                {t('common.nav.playground')}
+              </a>
+            </div>
+          ) : null}
           {canSeePricing ? (
             <div
               role="group"

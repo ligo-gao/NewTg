@@ -730,5 +730,7 @@
       "body": "Token was modified elsewhere, please refresh",
       "refresh": "Refresh"
     }
-  }
+  },
+  "nav.chat": "Chat",
+  "nav.playground": "Playground"
 }

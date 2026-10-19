@@ -42,3 +42,22 @@ export async function updateLanguagePreference(
     }),
   )
 }
+
+/**
+ * 保存默认模型（F-02-18）。
+ *
+ * 与语言偏好共用同一条 PUT /api/self/setting：这是稀疏部分更新，未出现的键
+ * 保持原值，因此这里只提交 `default_model`，不会覆盖 language/sidebar_modules。
+ * 空串是契约规定的「清除」语义（服务端落 NULL），不是「无操作」。
+ * 乐观锁令牌同样来自 GET /api/self 的 `updated_at`，过期会 409。
+ */
+export async function updateDefaultModel(
+  defaultModel: string,
+  updatedAt: string,
+): Promise<SelfSettings> {
+  return requireData(
+    await apiClient.PUT('/api/self/setting', {
+      body: { default_model: defaultModel, updated_at: updatedAt },
+    }),
+  )
+}

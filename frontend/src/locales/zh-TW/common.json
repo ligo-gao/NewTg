@@ -730,5 +730,7 @@
       "body": "權杖已在別處被修改，請重新整理",
       "refresh": "重新整理"
     }
-  }
+  },
+  "nav.chat": "對話",
+  "nav.playground": "Playground"
 }
