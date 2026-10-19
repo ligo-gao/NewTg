@@ -294,8 +294,14 @@ func (h *RelayHandler) Handler() http.Handler {
 //
 // 与 Register 的区别只在鉴权链：/pg 只接受浏览器会话（PlaygroundSessionAuth），
 // 不接受 API 令牌；通过后把路径重写到 /v1/*，交给**同一批**转发函数
-// （handleChatCompletions / handleModels / 多模态路由）。本函数刻意不复制
-// 路由、计费、流式桥接逻辑：任何 /v1 侧的修复都会自动作用于 /pg。
+// （handleChatCompletions / handleModels）。本函数刻意不复制路由、计费、
+// 流式桥接逻辑：任何 /v1 侧的修复都会自动作用于 /pg。
+//
+// 挂载面按 relay-01 §1.5 收敛为**对话族**：只注册 `POST /pg/chat/completions`
+// 与 `GET /pg/models`，其余 `/pg/*`（含 /v1 的多模态族 images/edits/
+// embeddings/rerank/audio/engines/v1beta/realtime）一律 404 OpenAI 信封。
+// 不把多模态族一并暴露的理由：设计只承诺对话族，且 OpenAPI 只登记这两条；
+// 多挂的路径既无契约也无 UI 消费方，等于把未评审的计费面开给浏览器会话。
 //
 // 会话写路径沿用 /api/* 的 CSRF + OriginRefererCheck（Task 13 brief §3）：
 // Playground 的 POST 是浏览器写操作，必须与其它会话写请求同口径。
@@ -303,18 +309,12 @@ func (h *RelayHandler) RegisterPlayground(mux *http.ServeMux, sessions *auth.Ses
 	if mux == nil || sessions == nil {
 		panic("httpapi: RegisterPlayground requires a mux and a session manager")
 	}
-	// 内部转发表没有 RelayAuth「无鉴权透传」版本：多模态注册函数要求一个
-	// auth 包装器，这里传恒等函数（会话已在最外层完成）。
+	// 内部转发表只注册对话族两条路由；会话鉴权已在最外层完成，故这里直接
+	// 注册裸 handler，不再引入 RelayAuth 的令牌链。未注册的 /pg/* 由
+	// handlePlayground 的 pattern=="" 分支统一回 404。
 	inner := http.NewServeMux()
 	inner.Handle("POST /v1/chat/completions", http.HandlerFunc(h.handleChatCompletions))
 	inner.Handle("GET /v1/models", http.HandlerFunc(h.handleModels))
-	RegisterMultimodalRoutes(inner, func(next http.Handler) http.Handler { return next },
-		NewMultimodalHandler(MultimodalHandlerOptions{
-			Tokens:      h.tokens,
-			ModelStatus: h.modelStatus,
-			Dispatcher:  h.multimodal,
-			Groups:      h.userGroups,
-		}))
 	h.playground = inner
 
 	chain := PlaygroundSessionAuth(sessions)(

@@ -3704,7 +3704,6 @@ paths:
       tags:
         - relay
       operationId: createChatCompletion
-      x-codegen: false
       x-openai-compatible: true
       summary: OpenAI-compatible chat completions
       description: |
@@ -3735,7 +3734,6 @@ paths:
       tags:
         - relay
       operationId: playgroundChatCompletion
-      x-codegen: false
       x-openai-compatible: true
       summary: Playground 会话中继（OpenAI Chat Completions）
       description: |
@@ -3788,7 +3786,6 @@ paths:
       tags:
         - relay
       operationId: playgroundListModels
-      x-codegen: false
       summary: Playground 模型清单（会话身份）
       description: |
         启用渠道支持模型的去重并集（与 GET /v1/models 同源）。按模型/分组

@@ -292,20 +292,30 @@ func TestPlaygroundModelNotInGroupIs403BeforeBilling(t *testing.T) {
 }
 
 // TestPlaygroundUnknownPathIs404：未支持的 /pg/* 返回 OpenAI 信封 404。
+// 覆盖范围含 /v1 的多模态族——/pg 只承诺对话族（relay-01 §1.5），
+// images/embeddings 等不得因内部转发复用了 RegisterMultimodalRoutes 而漏开。
 func TestPlaygroundUnknownPathIs404(t *testing.T) {
 	env := newPlaygroundTestEnv(t, newSessionOnlyGroups())
 	sid, csrf := env.session(t)
 
-	w := env.do(t, "/pg/files", `{}`, sid, csrf, nil)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404（body=%s）", w.Code, w.Body.String())
-	}
-	var envelope relayErrorEnvelope
-	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("404 必须是 OpenAI 信封: %v（body=%s）", err, w.Body.String())
-	}
-	if envelope.Error.Code != "not_found" {
-		t.Fatalf("code = %q, want not_found", envelope.Error.Code)
+	for _, path := range []string{
+		"/pg/files",
+		"/pg/images/generations",
+		"/pg/images/edits",
+		"/pg/embeddings",
+		"/pg/rerank",
+	} {
+		w := env.do(t, path, `{}`, sid, csrf, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404（body=%s）", path, w.Code, w.Body.String())
+		}
+		var envelope relayErrorEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("%s 404 必须是 OpenAI 信封: %v（body=%s）", path, err, w.Body.String())
+		}
+		if envelope.Error.Code != "not_found" {
+			t.Fatalf("%s code = %q, want not_found", path, envelope.Error.Code)
+		}
 	}
 }
 

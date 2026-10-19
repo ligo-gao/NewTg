@@ -203,6 +203,26 @@ func TestIntegrationExportScopeFilteredVersusAll(t *testing.T) {
 	}
 }
 
+// TestIntegrationExportEmptyIs204：0 行导出必须以 204 明确结束，而不是
+// 生成一个只有表头的空文件（modules-05 §9.1；也避免把「没有数据」和
+// 「导出成功但内容为空」混为一谈）。204 不写审计——没有任何数据离开系统。
+func TestIntegrationExportEmptyIs204(t *testing.T) {
+	env := newUsageTestEnv(t)
+	// 新建用户且不播种任何 usage_logs，保证 filtered 范围命中 0 行。
+	user, _ := ensureUsageTestUser(t, env, "ez")
+	rec := env.do(t, http.MethodGet,
+		"/api/usage-logs/export?scope=filtered&format=txt&range=24h", userPrincipal(user))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("empty export status = %d, want 204（body=%s）", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("204 响应不得带 body，got %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "" {
+		t.Fatalf("204 不应声明附件，Content-Disposition = %q", got)
+	}
+}
+
 func TestIntegrationExportRowLimit(t *testing.T) {
 	env := newUsageTestEnv(t)
 	overUser, _ := ensureUsageTestUser(t, env, "ov")

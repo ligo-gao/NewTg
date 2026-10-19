@@ -1,5 +1,10 @@
 # 中继协议面（platform-03 §9.3）：只登记路径/方法/tag/security/公共错误，
-# 不重定义上游 schema；x-codegen:false 排除类型生成。
+# 不重定义上游 schema（本文件不出现 `schema:`，请求/响应体真源在
+# contract/adapter；`scripts/check_openapi_layout.sh` 断言这一点）。
+# path 条目会进入 bundle 与前端 path 类型（openapi-typescript 不认
+# x-codegen），因此登记的路径必须与后端实际注册面一致：
+#   - /v1 对话族 + 多模态族由 Register 注册；
+#   - /pg 只有对话族（POST /pg/chat/completions、GET /pg/models）。
 # 不登记（路由不注册，返回标准 404）：/v1/files*、/v1/fine-tunes*、
 # /v1/images/variations、/v1/edits、DELETE /v1/models/{model}（决议 H）。
 paths:
@@ -7,7 +12,6 @@ paths:
     post:
       tags: [relay]
       operationId: createChatCompletion
-      x-codegen: false
       x-openai-compatible: true
       summary: OpenAI-compatible chat completions
       description: |
@@ -38,7 +42,6 @@ paths:
     post:
       tags: [relay]
       operationId: playgroundChatCompletion
-      x-codegen: false
       x-openai-compatible: true
       summary: Playground 会话中继（OpenAI Chat Completions）
       description: |
@@ -91,7 +94,6 @@ paths:
     get:
       tags: [relay]
       operationId: playgroundListModels
-      x-codegen: false
       summary: Playground 模型清单（会话身份）
       description: |
         启用渠道支持模型的去重并集（与 GET /v1/models 同源）。按模型/分组

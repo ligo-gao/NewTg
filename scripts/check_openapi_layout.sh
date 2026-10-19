@@ -618,7 +618,11 @@ check_permission_catalog api/openapi "$RBAC_CATALOG" \
 check_admin_permission_required api/openapi \
   || fail "管理面 operation 缺少 x-required-permission 声明"
 
-# 8) relay schema 源文件存在但不承载协议 schema（§9.3：真源在 contract/adapter）
-grep -q 'x-codegen: false' api/openapi/paths/relay.yaml || fail "relay paths 必须打 x-codegen: false"
+# 8) relay 源文件存在但不承载协议 schema（§9.3：真源在 contract/adapter）。
+#    以「无 schema 节点」作为可执行断言：路径条目照常进入 bundle 与前端
+#    path 类型，不能再用「x-codegen:false 已排除生成」这类不成立的说明。
+if grep -qE '^[[:space:]]+schema:' api/openapi/paths/relay.yaml; then
+  fail "relay paths 不得内联协议 schema（真源在 contract/adapter）"
+fi
 
 echo "PASS: OpenAPI layout 校验通过（仓根 api/openapi/，入口 paths 全为 \$ref，\$ref 未越界，权限声明与 RBAC 目录一致）"
