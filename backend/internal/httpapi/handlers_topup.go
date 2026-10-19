@@ -174,6 +174,9 @@ func (h *TopupHandlers) RegisterWebhookRoutes(rt *Router) {
 
 type topupProviderView struct {
 	PublishableKey string `json:"publishable_key,omitempty"`
+	// MinTopup 是该渠道自己的最低充值（分）。有效下限 = max(全局, 渠道)
+	// 由前端计算；服务端下单时用同一 providerReady 结果复查（F-04-01）。
+	MinTopup int64 `json:"min_topup"`
 }
 
 type topupConfigResponse struct {
@@ -181,6 +184,7 @@ type topupConfigResponse struct {
 	MinTopup         int64                        `json:"min_topup"`
 	MaxTopup         int64                        `json:"max_topup"`
 	QuotaPerUnit     int64                        `json:"quota_per_unit"`
+	CreditsRatio     float64                      `json:"credits_ratio"`
 	EnabledProviders []string                     `json:"enabled_providers"`
 	Providers        map[string]topupProviderView `json:"providers"`
 }
@@ -276,10 +280,11 @@ type completeOrderRequest struct {
 // ---------------------------------------------------------------------------
 
 func (h *TopupHandlers) handleConfig(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.currentUser(w, r); !ok {
+	userID, ok := h.currentUser(w, r)
+	if !ok {
 		return
 	}
-	opts, err := h.svc.Options(r.Context())
+	opts, err := h.svc.Options(r.Context(), userID)
 	if err != nil {
 		// 配置错误属运营面问题：500 + 日志，绝不展示一份无法下单的档位。
 		h.log.Error("topup config unavailable", "error", err)
@@ -291,11 +296,12 @@ func (h *TopupHandlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 		MinTopup:         opts.MinTopup,
 		MaxTopup:         opts.MaxTopup,
 		QuotaPerUnit:     opts.QuotaPerUnit,
+		CreditsRatio:     opts.CreditsRatio,
 		EnabledProviders: opts.EnabledProviders,
 		Providers:        make(map[string]topupProviderView, len(opts.EnabledProviders)),
 	}
 	for _, provider := range opts.EnabledProviders {
-		view := topupProviderView{}
+		view := topupProviderView{MinTopup: opts.ProviderMinTopups[provider]}
 		// P-17：publishable_key 是公开值（前端 Stripe Elements 需要），
 		// 只随可用渠道下发；secret/webhook secret 永不进入任何响应。
 		if provider == billing.ProviderStripe {

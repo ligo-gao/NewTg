@@ -1426,9 +1426,11 @@ export interface paths {
         /**
          * 获取充值页配置
          * @description 档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
-         *     `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`
-         *     与「已启用且配置完整」的渠道集合。`pay.stripe.publishable_key` 是
-         *     公开值，随 `providers.stripe` 下发；任何 secret 都不进入响应。
+         *     `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`、
+         *     当前用户分组的有效倍率 `credits_ratio`，以及「已启用且配置完整」的
+         *     渠道集合。每个渠道条目带自己的 `min_topup`（有效下限由调用方取
+         *     max(全局, 渠道)）。`pay.stripe.publishable_key` 是公开值，随
+         *     `providers.stripe` 下发；任何 secret 都不进入响应。
          */
         get: operations["getTopupConfig"];
         put?: never;
@@ -2928,6 +2930,12 @@ export interface components {
         TopupProviderConfig: {
             /** @description Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`） */
             publishable_key?: string;
+            /**
+             * Format: int64
+             * @description 该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+             *     有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
+             */
+            min_topup: number;
         };
         TopupConfig: {
             /** @description 档位，最小货币单位（分）；来源 `pay.amount_presets_cny` */
@@ -2947,6 +2955,12 @@ export interface components {
              * @description 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
              */
             quota_per_unit: number;
+            /**
+             * Format: double
+             * @description 当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+             *     未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
+             */
+            credits_ratio: number;
             /** @description 已启用且配置完整的渠道（P-13） */
             enabled_providers: ("stripe" | "alipay")[];
             /** @description 只包含 enabled_providers 中的渠道 */

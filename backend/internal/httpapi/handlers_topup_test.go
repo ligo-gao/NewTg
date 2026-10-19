@@ -71,6 +71,15 @@ func topupHTTPTestConfig(stripeBaseURL string) topupConfigMap {
 
 func newTopupHTTPTestEnv(t *testing.T, stripeBaseURL string) *topupTestEnv {
 	t.Helper()
+	return newTopupHTTPTestEnvWithConfig(t, stripeBaseURL, nil)
+}
+
+// newTopupHTTPTestEnvWithConfig 允许用例在构造服务前改写站点配置
+// （渠道最低价、分组倍率等只读配置的快照）。
+func newTopupHTTPTestEnvWithConfig(t *testing.T, stripeBaseURL string,
+	mutate func(topupConfigMap)) *topupTestEnv {
+
+	t.Helper()
 	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
 	if dsn == "" {
 		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过充值端点集成测试")
@@ -94,10 +103,14 @@ func newTopupHTTPTestEnv(t *testing.T, stripeBaseURL string) *topupTestEnv {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 
+	cfg := topupHTTPTestConfig(stripeBaseURL)
+	if mutate != nil {
+		mutate(cfg)
+	}
 	h, err := NewTopupHandlers(TopupHandlerConfig{
 		DB:            gormDB,
 		Redis:         rdb,
-		Config:        topupHTTPTestConfig(stripeBaseURL),
+		Config:        cfg,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		StripeBaseURL: stripeBaseURL,
 	})
@@ -306,12 +319,16 @@ func TestTopupConfigEndpoint(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 	var resp struct {
-		AmountOptions    []int64                       `json:"amount_options"`
-		MinTopup         int64                         `json:"min_topup"`
-		MaxTopup         int64                         `json:"max_topup"`
-		QuotaPerUnit     int64                         `json:"quota_per_unit"`
-		EnabledProviders []string                      `json:"enabled_providers"`
-		Providers        map[string]map[string]*string `json:"providers"`
+		AmountOptions    []int64  `json:"amount_options"`
+		MinTopup         int64    `json:"min_topup"`
+		MaxTopup         int64    `json:"max_topup"`
+		QuotaPerUnit     int64    `json:"quota_per_unit"`
+		CreditsRatio     float64  `json:"credits_ratio"`
+		EnabledProviders []string `json:"enabled_providers"`
+		Providers        map[string]struct {
+			PublishableKey *string `json:"publishable_key"`
+			MinTopup       int64   `json:"min_topup"`
+		} `json:"providers"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode config: %v", err)
@@ -322,12 +339,23 @@ func TestTopupConfigEndpoint(t *testing.T) {
 	if resp.QuotaPerUnit != 100 {
 		t.Fatalf("quota_per_unit = %d", resp.QuotaPerUnit)
 	}
+	// 默认无分组倍率配置：回退 1.0，预览与服务端口径一致。
+	if resp.CreditsRatio != 1.0 {
+		t.Fatalf("credits_ratio = %v, want 1.0 fallback", resp.CreditsRatio)
+	}
 	if len(resp.EnabledProviders) != 1 || resp.EnabledProviders[0] != billing.ProviderStripe {
 		t.Fatalf("enabled providers = %v", resp.EnabledProviders)
 	}
-	pk := resp.Providers[billing.ProviderStripe]["publishable_key"]
-	if pk == nil || *pk != "pk_test_123" {
-		t.Fatalf("publishable_key = %v", pk)
+	provider, ok := resp.Providers[billing.ProviderStripe]
+	if !ok {
+		t.Fatalf("providers missing stripe: %+v", resp.Providers)
+	}
+	if provider.PublishableKey == nil || *provider.PublishableKey != "pk_test_123" {
+		t.Fatalf("publishable_key = %v", provider.PublishableKey)
+	}
+	// 未配置渠道最低价 → 冻结默认下限（F-04-01）。
+	if provider.MinTopup != billing.DefaultProviderMinTopupCents {
+		t.Fatalf("stripe min_topup = %d, want %d", provider.MinTopup, billing.DefaultProviderMinTopupCents)
 	}
 	// 响应体绝不能出现任何密钥。
 	if strings.Contains(rr.Body.String(), "sk_test_123") || strings.Contains(rr.Body.String(), "whsec_test_123") {
@@ -338,6 +366,38 @@ func TestTopupConfigEndpoint(t *testing.T) {
 	anon := env.request(0, http.MethodGet, "/api/topup/config", nil, nil)
 	if anon.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous status = %d, want 401", anon.Code)
+	}
+}
+
+// TestTopupConfigEndpointProviderMinAndCreditsRatio 钉死 UI 需要的两处
+// 服务端口径（modules-04 F-04-01）：渠道级最低价随 providers 下发；
+// credits_ratio 是当前用户分组的有效倍率（不是恒 1）。
+func TestTopupConfigEndpointProviderMinAndCreditsRatio(t *testing.T) {
+	stripe := newTopupStripeStub(t)
+	env := newTopupHTTPTestEnvWithConfig(t, stripe.URL, func(cfg topupConfigMap) {
+		cfg[billing.ConfigStripeMinTopupCents] = json.RawMessage("20") // 20 元
+		cfg[billing.ConfigTopupGroupRatio] = json.RawMessage(`{"default":0.8}`)
+	})
+	userID := env.createUser(0)
+
+	rr := env.request(userID, http.MethodGet, "/api/topup/config", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		CreditsRatio float64 `json:"credits_ratio"`
+		Providers    map[string]struct {
+			MinTopup int64 `json:"min_topup"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if resp.CreditsRatio != 0.8 {
+		t.Fatalf("credits_ratio = %v, want 0.8 (group default)", resp.CreditsRatio)
+	}
+	if got := resp.Providers[billing.ProviderStripe].MinTopup; got != 2_000 {
+		t.Fatalf("stripe min_topup = %d, want 2000", got)
 	}
 }
 

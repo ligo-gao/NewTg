@@ -783,16 +783,24 @@ schemas:
   TopupProviderConfig:
     type: object
     additionalProperties: false
+    required: [min_topup]
     description: 公开的渠道配置；secret 永不出现。
     properties:
       publishable_key:
         type: string
         description: Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
+      min_topup:
+        type: integer
+        format: int64
+        minimum: 0
+        description: |
+          该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+          有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
 
   TopupConfig:
     type: object
     additionalProperties: false
-    required: [amount_options, min_topup, max_topup, quota_per_unit, enabled_providers, providers]
+    required: [amount_options, min_topup, max_topup, quota_per_unit, credits_ratio, enabled_providers, providers]
     properties:
       amount_options:
         type: array
@@ -818,6 +826,13 @@ schemas:
         format: int64
         minimum: 1
         description: 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+      credits_ratio:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: |
+          当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+          未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
       enabled_providers:
         type: array
         items:

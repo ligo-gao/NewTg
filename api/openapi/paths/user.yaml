@@ -1138,9 +1138,11 @@ paths:
       summary: 获取充值页配置
       description: |
         档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
-        `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`
-        与「已启用且配置完整」的渠道集合。`pay.stripe.publishable_key` 是
-        公开值，随 `providers.stripe` 下发；任何 secret 都不进入响应。
+        `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`、
+        当前用户分组的有效倍率 `credits_ratio`，以及「已启用且配置完整」的
+        渠道集合。每个渠道条目带自己的 `min_topup`（有效下限由调用方取
+        max(全局, 渠道)）。`pay.stripe.publishable_key` 是公开值，随
+        `providers.stripe` 下发；任何 secret 都不进入响应。
       security:
         - sessionCookie: []
         - bearerToken: []

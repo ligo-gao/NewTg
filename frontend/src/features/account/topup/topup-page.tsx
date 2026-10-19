@@ -30,6 +30,19 @@ interface CheckoutState {
 }
 
 /**
+ * Effective minimum for a provider: `max(global, provider)` — the same rule
+ * the server applies in `ValidateTopupAmount` (modules-04 F-04-01). Without
+ * this, the UI can offer an amount the order endpoint must reject.
+ */
+function providerMinFor(
+  config: TopupConfig,
+  provider: TopupProvider | null,
+): number {
+  const providerMin = provider ? config.providers[provider]?.min_topup : undefined
+  return Math.max(config.min_topup, providerMin ?? 0)
+}
+
+/**
  * Recharge page (F-04-01/02/03/05, modules-04 §2).
  *
  * Selection state is local; the amount is always cents and the credits preview
@@ -63,19 +76,19 @@ export function TopupPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
 
-  // Seed selection from server config: first preset at/above the minimum, and
-  // the first enabled provider (modules-04 §2.4).
+  // Seed selection from server config: first preset at/above the effective
+  // minimum for the initially selected provider, and that provider itself
+  // (modules-04 §2.4). Never fall back to a preset below the minimum — the
+  // order endpoint would reject it; require an explicit custom amount instead.
   useEffect(() => {
     if (config === undefined) return
+    const seededProvider = config.enabled_providers[0] ?? null
+    const seededMin = providerMinFor(config, seededProvider)
     setAmountCents((current) => {
       if (current !== null) return current
-      return (
-        config.amount_options.find((option) => option >= config.min_topup) ??
-        config.amount_options[0] ??
-        null
-      )
+      return config.amount_options.find((option) => option >= seededMin) ?? null
     })
-    setProvider((current) => current ?? config.enabled_providers[0] ?? null)
+    setProvider((current) => current ?? seededProvider)
   }, [config])
 
   if (configQuery.isPending) {
@@ -96,16 +109,21 @@ export function TopupPage() {
   const selectedCents = customMode
     ? parseYuanToCents(customInput)
     : amountCents
+  // The provider can have a higher minimum than the site-wide one.
+  const effectiveMin = providerMinFor(config, provider)
 
   const amountError = (() => {
+    // Anything that is not a whole, positive number of yuan (e.g. `10.00`
+    // or `abc`) is rejected as typed — never silently rewritten.
+    if (customMode && customInput !== '' && selectedCents === null) {
+      return t('account.topup.amount_invalid')
+    }
     if (selectedCents === null) {
       // Empty custom input is not an error, just not payable yet.
-      return customMode && customInput !== ''
-        ? t('account.topup.min_error', { min: formatYuan(config.min_topup) })
-        : undefined
+      return undefined
     }
-    if (selectedCents < config.min_topup) {
-      return t('account.topup.min_error', { min: formatYuan(config.min_topup) })
+    if (selectedCents < effectiveMin) {
+      return t('account.topup.min_error', { min: formatYuan(effectiveMin) })
     }
     if (selectedCents > config.max_topup) {
       return t('account.topup.max_error', { max: formatYuan(config.max_topup) })
@@ -119,11 +137,18 @@ export function TopupPage() {
     selectedCents !== null &&
     amountError === undefined
   const credits =
-    selectedCents === null ? 0 : centsToCredits(selectedCents, config.quota_per_unit)
+    selectedCents === null
+      ? 0
+      : centsToCredits(
+          selectedCents,
+          config.quota_per_unit,
+          config.credits_ratio,
+        )
 
   function handleCustomChange(value: string): void {
-    // Positive integers only; non-digits never enter the controlled value.
-    setCustomInput(value.replace(/\D/g, ''))
+    // Keep the raw text. Stripping non-digits silently turns "10.00" into
+    // "1000" — a 10x overcharge — so validation rejects it instead.
+    setCustomInput(value)
   }
 
   function handleCreated(response: CreateOrderResponse, replayOrder?: OrderView): void {
@@ -244,7 +269,7 @@ export function TopupPage() {
                   <ProviderRadio
                     key={option}
                     provider={option}
-                    minTopup={config.min_topup}
+                    minTopup={providerMinFor(config, option)}
                     selected={provider === option}
                     onSelect={() => {
                       setProvider(option)
@@ -287,6 +312,7 @@ export function TopupPage() {
           amount={selectedCents}
           provider={provider}
           quotaPerUnit={config.quota_per_unit}
+          creditsRatio={config.credits_ratio}
           onOpenChange={setConfirmOpen}
           onCreated={handleCreated}
         />

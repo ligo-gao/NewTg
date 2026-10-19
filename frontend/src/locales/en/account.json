@@ -65,6 +65,7 @@
     "custom_placeholder": "Amount in yuan",
     "min_error": "Minimum top-up is {min}",
     "max_error": "Maximum top-up is {max}",
+    "amount_invalid": "Enter a whole amount in yuan (for example 10)",
     "you_pay": "You pay",
     "credits_received": "Credits you'll receive",
     "payment_method": "Payment Method",

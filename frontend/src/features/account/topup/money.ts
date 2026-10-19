@@ -20,12 +20,19 @@ export function formatYuan(cents: number, options: { decimals?: boolean } = {}):
 }
 
 /**
- * Converts a top-up amount (cents) to the credits the base rate grants.
- * The server may apply a group ratio on top; the returned estimate is only a
- * display helper and the server value always wins.
+ * Converts a top-up amount (cents) to the credits the server will credit:
+ * `floor(cents × quota_per_unit / 100 × credits_ratio)`.
+ *
+ * The group ratio can be below 1 (F-04-01), so assuming 1.0 would overstate
+ * the preview. It is still only a display helper: the server reprices every
+ * order and its value always wins.
  */
-export function centsToCredits(cents: number, quotaPerUnit: number): number {
-  return Math.floor((cents * quotaPerUnit) / 100)
+export function centsToCredits(
+  cents: number,
+  quotaPerUnit: number,
+  creditsRatio = 1,
+): number {
+  return Math.floor((cents * quotaPerUnit * creditsRatio) / 100)
 }
 
 /** Parses a positive integer yuan input into cents; non-numeric input yields null. */

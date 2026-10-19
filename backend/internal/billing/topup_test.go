@@ -293,7 +293,7 @@ func TestTopupOptionsDefaultsAndProviderGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTopupService: %v", err)
 	}
-	opts, err := svc.Options(context.Background())
+	opts, err := svc.Options(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("Options: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestTopupOptionsDefaultsAndProviderGating(t *testing.T) {
 	closed := stripeTestConfig()
 	closed[ConfigOnlineEnabled] = json.RawMessage("false")
 	svc, _ = NewTopupService(TopupServiceConfig{DB: gormDB, Config: closed})
-	opts, err = svc.Options(context.Background())
+	opts, err = svc.Options(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("Options(closed): %v", err)
 	}
@@ -327,7 +327,7 @@ func TestTopupOptionsDefaultsAndProviderGating(t *testing.T) {
 
 	// 配置齐全：stripe 可用并下发 publishable_key。
 	svc, _ = NewTopupService(TopupServiceConfig{DB: gormDB, Config: stripeTestConfig()})
-	opts, err = svc.Options(context.Background())
+	opts, err = svc.Options(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("Options(stripe): %v", err)
 	}
@@ -336,6 +336,62 @@ func TestTopupOptionsDefaultsAndProviderGating(t *testing.T) {
 	}
 	if opts.StripePublishableKey != "pk_test_123" {
 		t.Fatalf("publishable key = %q", opts.StripePublishableKey)
+	}
+}
+
+// TestTopupOptionsProviderMinAndCreditsRatio 钉死 modules-04 F-04-01 的
+// 两处 UI 口径：
+//   - 每个可用渠道暴露自己的最低充值（有效下限由前端取 max(global, provider)，
+//     与服务端 ValidateTopupAmount 同源，避免 UI 允许一个必然 400 的金额）；
+//   - credits_ratio 是当前用户分组的**有效**倍率（读 pay.topup_group_ratio
+//     [users.group]，未配置回退 1.0），预览不再假设倍率为 1。
+func TestTopupOptionsProviderMinAndCreditsRatio(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+
+	group := "vip-opt-" + uniqueFundingSuffix()
+	if _, err := db.Exec(`INSERT INTO user_groups (name, ratio, user_selectable, is_system, status)
+		VALUES ($1, 80, true, false, 1)`, group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM user_groups WHERE name = $1`, group) })
+	userID := createBillingTestUser(t, db, 0)
+	if _, err := db.Exec(`UPDATE users SET "group" = $1 WHERE id = $2`, group, userID); err != nil {
+		t.Fatalf("assign group: %v", err)
+	}
+
+	cfg := stripeTestConfig()
+	cfg[ConfigMinTopupCents] = json.RawMessage("15")       // 全局 15 元
+	cfg[ConfigStripeMinTopupCents] = json.RawMessage("20") // 渠道 20 元
+	cfg[ConfigTopupGroupRatio] = json.RawMessage(
+		fmt.Sprintf(`{"%s":0.8}`, group))
+	svc, err := NewTopupService(TopupServiceConfig{DB: gormDB, Config: cfg})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+
+	opts, err := svc.Options(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	if got := opts.ProviderMinTopups[ProviderStripe]; got != 2_000 {
+		t.Fatalf("stripe provider min = %d, want 2000 cents", got)
+	}
+	if opts.CreditsRatio != 0.8 {
+		t.Fatalf("credits ratio = %v, want 0.8", opts.CreditsRatio)
+	}
+
+	// 未配置分组倍率 → 1.0 回退（不阻断充值，F-04-01）。
+	fallback := stripeTestConfig()
+	fallbackSvc, err := NewTopupService(TopupServiceConfig{DB: gormDB, Config: fallback})
+	if err != nil {
+		t.Fatalf("NewTopupService(fallback): %v", err)
+	}
+	fallbackOpts, err := fallbackSvc.Options(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Options(fallback): %v", err)
+	}
+	if fallbackOpts.CreditsRatio != 1.0 {
+		t.Fatalf("fallback credits ratio = %v, want 1.0", fallbackOpts.CreditsRatio)
 	}
 }
 
@@ -863,7 +919,7 @@ func TestAlipaySandboxRefused(t *testing.T) {
 	sandboxSvc, _ := NewTopupService(TopupServiceConfig{DB: gormDB, Config: sandbox})
 
 	// (a) 沙箱渠道不得出现在 enabled_providers，也不能创建订单。
-	opts, err := sandboxSvc.Options(context.Background())
+	opts, err := sandboxSvc.Options(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("Options: %v", err)
 	}

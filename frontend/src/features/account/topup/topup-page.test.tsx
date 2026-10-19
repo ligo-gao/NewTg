@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -20,8 +20,12 @@ const CONFIG = {
   min_topup: 1000,
   max_topup: 500000,
   quota_per_unit: 100,
+  credits_ratio: 1,
   enabled_providers: ['stripe', 'alipay'],
-  providers: { stripe: { publishable_key: 'pk_test_123' }, alipay: {} },
+  providers: {
+    stripe: { publishable_key: 'pk_test_123', min_topup: 1000 },
+    alipay: { min_topup: 1000 },
+  },
 }
 
 function summary(balance: number) {
@@ -230,5 +234,89 @@ describe('TopupPage', () => {
       expect(summaryCalls).toBe(2)
       expect(screen.getByTestId('balance-value').textContent).toBe('128,450')
     })
+  })
+
+  it('previews credits with the group ratio in the card and confirm dialog', async () => {
+    const config = { ...CONFIG, credits_ratio: 0.8 }
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(config)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+    )
+    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('radio', { name: '¥100' }))
+    // ¥100 × 100 QPU / 100 × 0.8 = 8,000; a ratio of 1 would overstate it.
+    expect(screen.getByTestId('summary-credits').textContent).toBe('8,000')
+
+    await user.click(screen.getByRole('button', { name: /^Pay ¥100\.00/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('8,000')).toBeTruthy()
+  })
+
+  it('uses the selected provider min for validation and preview', async () => {
+    const config = {
+      ...CONFIG,
+      providers: {
+        stripe: { publishable_key: 'pk_test_123', min_topup: 2000 },
+        alipay: { min_topup: 1000 },
+      },
+    }
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(config)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+    )
+    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    // Seeding never picks a preset below the effective minimum: Stripe's
+    // ¥10 chip is below its ¥20 minimum, so the first valid preset is ¥50.
+    expect(await screen.findByRole('radio', { name: /^Stripe/ })).toBeTruthy()
+    expect(screen.getByTestId('summary-pay').textContent).toBe('¥50.00')
+    expect(screen.getByRole('radio', { name: 'Stripe' }).textContent).toContain(
+      'Minimum ¥20.00',
+    )
+
+    await user.click(screen.getByRole('radio', { name: '¥10' }))
+    expect(await screen.findByText('Minimum top-up is ¥20.00')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Pay/ }).hasAttribute('disabled')).toBe(
+      true,
+    )
+
+    // Switching to Alipay lowers the effective minimum back to ¥10.
+    await user.click(screen.getByRole('radio', { name: 'Alipay' }))
+    expect(screen.queryByText('Minimum top-up is ¥20.00')).toBeNull()
+    expect(screen.getByTestId('summary-credits').textContent).toBe('1,000')
+    expect(screen.getByRole('button', { name: /^Pay ¥10\.00/ }).hasAttribute('disabled')).toBe(
+      false,
+    )
+  })
+
+  it('does not rewrite decimal custom amounts into larger integers', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+    )
+    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('radio', { name: 'Custom Amount' }))
+    const input = screen.getByLabelText('Custom Amount') as HTMLInputElement
+
+    // Paste: "10.00" must stay "10.00" and be rejected, not become "1000".
+    await user.click(input)
+    await user.paste('10.00')
+    expect(input.value).toBe('10.00')
+    expect(await screen.findByText(/whole amount in yuan/)).toBeTruthy()
+    expect(screen.getByTestId('summary-pay').textContent).not.toBe('¥1,000.00')
+
+    // Typing the same decimal character by character has the same result.
+    await user.clear(input)
+    await user.type(input, '10.00')
+    expect(input.value).toBe('10.00')
+    expect(await screen.findByText(/whole amount in yuan/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Pay/ }).hasAttribute('disabled')).toBe(
+      true,
+    )
   })
 })

@@ -17,6 +17,8 @@ export interface PaymentConfirmDialogProps {
   amount: number
   provider: TopupProvider
   quotaPerUnit?: number
+  /** Effective group ratio; the server applies the same value when crediting. */
+  creditsRatio?: number
   onOpenChange: (open: boolean) => void
   onCreated: (response: CreateOrderResponse, replayOrder?: OrderView) => void
 }
@@ -38,6 +40,7 @@ export function PaymentConfirmDialog({
   amount,
   provider,
   quotaPerUnit = 100,
+  creditsRatio = 1,
   onOpenChange,
   onCreated,
 }: PaymentConfirmDialogProps) {
@@ -51,7 +54,7 @@ export function PaymentConfirmDialog({
     if (!open) setSubmitting(false)
   }, [open])
 
-  const credits = centsToCredits(amount, quotaPerUnit)
+  const credits = centsToCredits(amount, quotaPerUnit, creditsRatio)
   const providerLabel = t(
     provider === 'stripe'
       ? 'account.orders.provider_stripe'

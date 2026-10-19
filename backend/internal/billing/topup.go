@@ -125,13 +125,22 @@ type SecretOpener interface {
 // enabled_providers 的判定是「pay.online_enabled ∧ provider.enabled ∧
 // 配置完整（含密钥可解封）」——模块 08 F-04-01 的「已注册 ∧ 已启用 ∧
 // 配置完整」，本任务只实现两个渠道。
+// TopupOptions 是充值页的公开配置（P-9）。
+//
+// ProviderMinTopups 保存每个可用渠道自己的最低充值：有效下限 = max(全局
+// MinTopup, 渠道下限)（F-04-01），由前端用同一公式展示/校验，服务端下单
+// 时仍用 providerReady 复查（UI 不是信任边界）。
+// CreditsRatio 是当前用户分组的**有效**兑换倍率（未配置回退 1.0）；
+// 它只用于预览，最终到账仍由 settleOrder 按同一配置计算。
 type TopupOptions struct {
-	AmountOptions        []int64  `json:"amount_options"`
-	MinTopup             int64    `json:"min_topup"`
-	MaxTopup             int64    `json:"max_topup"`
-	QuotaPerUnit         int64    `json:"quota_per_unit"`
-	EnabledProviders     []string `json:"enabled_providers"`
-	StripePublishableKey string   `json:"-"`
+	AmountOptions        []int64          `json:"amount_options"`
+	MinTopup             int64            `json:"min_topup"`
+	MaxTopup             int64            `json:"max_topup"`
+	QuotaPerUnit         int64            `json:"quota_per_unit"`
+	CreditsRatio         float64          `json:"credits_ratio"`
+	EnabledProviders     []string         `json:"enabled_providers"`
+	ProviderMinTopups    map[string]int64 `json:"-"`
+	StripePublishableKey string           `json:"-"`
 }
 
 // TopupOrder 是一次创建订单的结果。
@@ -420,7 +429,11 @@ func (s *TopupService) providerReady(provider string) (int64, error) {
 
 // Options 返回充值页配置（P-9）。任何配置错误都向上抛：充值页宁可显示
 // 错误，也不能展示一份与下单校验不一致的金额档位。
-func (s *TopupService) Options(_ context.Context) (TopupOptions, error) {
+//
+// userID 用于读取当前用户分组的 `pay.topup_group_ratio`（I2：预览必须
+// 反映真实到账倍率；ratio<1 合法，恒按 1.0 预览会高估到账积分）。
+// userID<=0 仅用于无用户上下文的装配测试，按 1.0 处理。
+func (s *TopupService) Options(ctx context.Context, userID int64) (TopupOptions, error) {
 	presets, err := s.amountPresets()
 	if err != nil {
 		return TopupOptions{}, err
@@ -434,23 +447,42 @@ func (s *TopupService) Options(_ context.Context) (TopupOptions, error) {
 		return TopupOptions{}, err
 	}
 	opts := TopupOptions{
-		AmountOptions:    presets,
-		MinTopup:         globalMin,
-		MaxTopup:         MaxTopupCents,
-		QuotaPerUnit:     qpu,
-		EnabledProviders: []string{},
+		AmountOptions:     presets,
+		MinTopup:          globalMin,
+		MaxTopup:          MaxTopupCents,
+		QuotaPerUnit:      qpu,
+		CreditsRatio:      1.0,
+		EnabledProviders:  []string{},
+		ProviderMinTopups: map[string]int64{},
 	}
-	// 全局最低与渠道最低在下单时取 max（F-04-01 步骤 4）；P-9 冻结的响应
-	// 形状只有全局 min_topup，渠道级下限由服务端在 POST /api/orders 再次
-	// 校验，前端无需重复实现。
+	// 全局最低与渠道最低在下单时取 max（F-04-01 步骤 4）；响应把两者
+	// 分别下发，前端用同一公式计算有效下限，服务端在 POST /api/orders
+	// 再次校验（P-9：UI 展示与下单校验同源）。
 	for _, provider := range []string{ProviderStripe, ProviderAlipay} {
-		if _, err := s.providerReady(provider); err != nil {
+		providerMin, err := s.providerReady(provider)
+		if err != nil {
 			if errors.Is(err, ErrProviderDisabled) || errors.Is(err, ErrTopupDisabled) {
 				continue
 			}
 			return TopupOptions{}, err
 		}
 		opts.EnabledProviders = append(opts.EnabledProviders, provider)
+		opts.ProviderMinTopups[provider] = providerMin
+	}
+	if userID > 0 {
+		ratios, err := s.topupGroupRatios()
+		if err != nil {
+			return TopupOptions{}, err
+		}
+		group, err := s.userGroup(ctx, userID)
+		if err != nil {
+			return TopupOptions{}, err
+		}
+		ratio, err := GroupRatio(ratios, group)
+		if err != nil {
+			return TopupOptions{}, err
+		}
+		opts.CreditsRatio = ratio.InexactFloat64()
 	}
 	if containsString(opts.EnabledProviders, ProviderStripe) {
 		opts.StripePublishableKey = s.configString(ConfigStripePublishableKey)

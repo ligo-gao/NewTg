@@ -2710,6 +2710,10 @@ type TopupConfig struct {
 	// AmountOptions 档位，最小货币单位（分）；来源 `pay.amount_presets_cny`
 	AmountOptions []int64 `json:"amount_options"`
 
+	// CreditsRatio 当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+	// 未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
+	CreditsRatio float64 `json:"credits_ratio"`
+
 	// EnabledProviders 已启用且配置完整的渠道（P-13）
 	EnabledProviders []TopupConfigEnabledProviders `json:"enabled_providers"`
 
@@ -2756,6 +2760,10 @@ type TopupOrderViewStatus string
 
 // TopupProviderConfig 公开的渠道配置；secret 永不出现。
 type TopupProviderConfig struct {
+	// MinTopup 该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+	// 有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
+	MinTopup int64 `json:"min_topup"`
+
 	// PublishableKey Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
 	PublishableKey *string `json:"publishable_key,omitempty"`
 }
