@@ -33,6 +33,10 @@ export interface ExportDialogProps {
   /** `log.prompt.view` 门：无权限时不允许在导出里选择敏感内容。 */
   canRevealSensitive: boolean
   canFilterByUsername: boolean
+  /** 列表或其会话探测仍在加载：行数未知时不允许导出。 */
+  listLoading?: boolean
+  /** 403（角色越界）：关闭对话框后由页面走标准 403 路径。 */
+  onForbidden?: () => void
   onExported?: (filename: string) => void
 }
 
@@ -51,6 +55,8 @@ export function ExportDialog({
   revealSensitive,
   canRevealSensitive,
   canFilterByUsername,
+  listLoading = false,
+  onForbidden,
   onExported,
 }: ExportDialogProps) {
   const { t, locale } = useI18n()
@@ -59,18 +65,40 @@ export function ExportDialog({
   const [includeSensitive, setIncludeSensitive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<ExportErrorKind>(null)
+  const [offline, setOffline] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const wasOpenRef = useRef(false)
 
-  // 每次打开重置为「当前筛选 + 跟随开关」，不保留上一次的跨次选择——
-  // 导出是只读快照，用户不应被上一次的 scope/format 默默影响。
+  // 只在「打开」这一瞬间重置。父组件因无关原因重渲染（例如列表刷新导致
+  // revealSensitive 变化）不能把用户已经选好的范围/格式清掉。
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setScope('filtered')
+      setFormat('markdown')
+      setIncludeSensitive(canRevealSensitive && revealSensitive)
+      setError(null)
+      setSubmitting(false)
+    }
+    wasOpenRef.current = open
+  }, [open, canRevealSensitive, revealSensitive])
+
+  // 打开时先读一次连接状态，并持续跟随 online/offline 事件：离线时下载
+  // 按钮从第一帧就禁用，而不是等请求失败后才报错（UI §7.5）。
   useEffect(() => {
     if (!open) return
-    setScope('filtered')
-    setFormat('markdown')
-    setIncludeSensitive(canRevealSensitive && revealSensitive)
-    setError(null)
-    setSubmitting(false)
-  }, [open, canRevealSensitive, revealSensitive])
+    const sync = (): void => {
+      setOffline(
+        typeof navigator !== 'undefined' && navigator.onLine === false,
+      )
+    }
+    sync()
+    window.addEventListener('online', sync)
+    window.addEventListener('offline', sync)
+    return () => {
+      window.removeEventListener('online', sync)
+      window.removeEventListener('offline', sync)
+    }
+  }, [open])
 
   useEffect(() => {
     return () => {
@@ -79,7 +107,10 @@ export function ExportDialog({
   }, [])
 
   const downloadDisabled =
-    submitting || (scope === 'filtered' && filteredTotal === 0)
+    submitting ||
+    listLoading ||
+    offline ||
+    (scope === 'filtered' && filteredTotal === 0)
 
   function close(): void {
     abortRef.current?.abort()
@@ -121,6 +152,13 @@ export function ExportDialog({
           setError('rate_limited')
         } else if (caught.kind === 'offline') {
           setError('offline')
+        } else if (caught.kind === 'forbidden') {
+          // 角色越界：关闭对话框，交给页面的标准 403 路径，而不是留一个
+          // 无法重试的行内错误。
+          setSubmitting(false)
+          close()
+          onForbidden?.()
+          return
         } else {
           setError('failed')
         }
@@ -143,6 +181,9 @@ export function ExportDialog({
             : error === 'failed'
               ? t('logs.usage.export.failed')
               : null
+  // 离线提示优先于「暂无错误」：按钮已禁用，用户需要看到原因。
+  const statusMessage =
+    errorMessage ?? (offline ? t('logs.usage.export.offline') : null)
 
   return (
     <Dialog
@@ -304,13 +345,14 @@ export function ExportDialog({
       ) : null}
 
       <div aria-live="polite" role="status" className="mt-3 min-h-5">
-        {errorMessage !== null ? (          <p
+        {statusMessage !== null ? (
+          <p
             data-testid="export-error"
-            role="alert"
+            role={offline && error === null ? 'status' : 'alert'}
             className="text-sm text-danger"
           >
-            {errorMessage}
-            {error !== 'row_limit' && error !== 'empty' ? (
+            {statusMessage}
+            {error !== 'row_limit' && error !== 'empty' && !offline ? (
               <button
                 type="button"
                 data-testid="export-retry"

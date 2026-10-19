@@ -152,7 +152,13 @@
       "incidents": {
         "title": "Sự cố",
         "none": "Không có sự cố trong khoảng này",
-        "availability": "Thời gian hoạt động dưới ngưỡng"
+        "availability": "Thời gian hoạt động dưới ngưỡng",
+        "unknown_reason": "Lý do không xác định",
+        "unknown_severity": "Mức độ nghiêm trọng không xác định",
+        "severity": {
+          "major": "Nghiêm trọng",
+          "minor": "Nhẹ"
+        }
       },
       "dimension": {
         "label": "Phân tách",
@@ -185,7 +191,8 @@
         "degraded": "Suy giảm",
         "incident": "Sự cố",
         "no_data": "Không có dữ liệu"
-      }
+      },
+      "admin_required": "Cần quyền quản trị viên"
     }
   },
   "toast.success": "Thành công",

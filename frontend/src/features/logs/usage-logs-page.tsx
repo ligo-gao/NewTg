@@ -964,6 +964,11 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         revealSensitive={revealSensitive}
         canRevealSensitive={capabilities.canViewSensitive}
         canFilterByUsername={capabilities.canFilterByUsername}
+        listLoading={capabilities.loading || listQuery.isPending}
+        onForbidden={() => {
+          // 角色越界是会话级错误，走标准 403 页面而不是留在对话框里重试。
+          window.location.assign('/403')
+        }}
         onExported={() => {
           push({ tone: 'success', message: t('logs.usage.export.downloaded') })
         }}

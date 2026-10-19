@@ -5,9 +5,9 @@ import type { TranslateFn } from '@/shared/lib/i18n-context'
  *
  * 真源是 `backend/internal/audit/audit.go` 的冻结动作枚举：调用侧不得自造
  * 动作名（裁决 R-43），所以前端也把“枚举 → 文案键”集中在这张表里，列表与
- * 详情弹窗共用同一份，避免两处各写一套 switch 而漂移。用
- * `satisfies Record<AuditAction, string>` 让后端新增枚举时编译期就报错，
- * 强制同步词条；运行时仍按字符串查找，故未知动作不会抛错。
+ * 详情弹窗共用同一份，避免两处各写一套 switch 而漂移。`satisfies` 只能
+ * 保证前端「联合类型与映射表」彼此不漏项；后端新增动作不会被编译器发现，
+ * 需要同步本文件的联合类型 + 映射（并由词典奇偶校验兜住词条缺失）。
  */
 export type AuditAction =
   | 'auth.login'

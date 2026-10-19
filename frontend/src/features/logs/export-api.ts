@@ -1,5 +1,5 @@
 import { toApiError } from '@/api/client'
-import { ApiError, parseProblem } from '@/api/errors'
+import { parseProblem } from '@/api/errors'
 import type { operations } from '@/api/schema'
 
 import type { UsageLogSearch } from './search'
@@ -246,14 +246,4 @@ export async function downloadUsageLogs(
   const blob = await response.blob()
   triggerDownload(blob, filename)
   return { filename }
-}
-
-/** 供 UI 判断「是超限还是普通失败」；避免 instanceof 在打包后丢类名。 */
-export function isExportRowLimitError(error: unknown): boolean {
-  return (
-    error instanceof ExportRowLimitError ||
-    (error instanceof ApiError &&
-      (error.type === 'https://newtg.dev/problems/export_row_limit' ||
-        (error.detail?.includes('EXPORT_ROW_LIMIT') ?? false)))
-  )
 }

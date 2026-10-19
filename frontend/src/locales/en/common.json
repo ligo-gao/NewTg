@@ -152,8 +152,15 @@
       "incidents": {
         "title": "Incidents",
         "none": "No incidents in this window",
-        "availability": "Availability below threshold"
+        "availability": "Availability below threshold",
+        "unknown_reason": "Unknown reason",
+        "unknown_severity": "Unknown severity",
+        "severity": {
+          "major": "Major",
+          "minor": "Minor"
+        }
       },
+      "admin_required": "Administrator permission required",
       "dimension": {
         "label": "Breakdown",
         "none": "Off",

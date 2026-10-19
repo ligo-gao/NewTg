@@ -22,6 +22,12 @@ export type ChartSeries = {
 export type ChartConfig = {
   kind: 'line' | 'bar' | 'area'
   unit: string
+  /**
+   * 固定 Y 轴值域。百分比序列必须显式传 `[0, 100]`：数据本身是 0–1 的
+   * 比例，渲染层先换算成百分数再交给图表，避免坐标轴把 99% 画成 0.99。
+   * 不传时沿用数据自身的 min/max（耗时等无界量）。
+   */
+  domain?: readonly [number, number]
 }
 
 export type Granularity = 'hour' | 'day' | 'month'

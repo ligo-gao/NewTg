@@ -523,9 +523,10 @@ export function LogDetailDrawer({
             ) : null}
           </Section>
 
-          {/* Prompt 只在用户显式开启且持有 log.prompt.view 时渲染原文；
-              其余情况保持打码，绝不调用“先展示再隐藏”的路径。 */}
-          {promptField !== undefined || revealSensitive ? (
+          {/* §6.4/§8.2：无 log.prompt.view 时连打码占位与「去筛选栏开启」
+              引导都不渲染——入口本身不得暴露 Prompt 记录的存在性。 */}
+          {capabilities.canViewPrompt &&
+          (promptField !== undefined || revealSensitive) ? (
             <Section title={t('logs.usage.detail.prompt')}>
               {revealSensitive && promptField !== undefined ? (
                 <p

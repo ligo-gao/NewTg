@@ -159,7 +159,7 @@
       "attempt": "Attempt {index}",
       "success": "Success",
       "prompt": "Prompt",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "View Prompt",
       "prompt_unavailable": "Prompt not available",
       "sensitive_hidden": "Sensitive content hidden",

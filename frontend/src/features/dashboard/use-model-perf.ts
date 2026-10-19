@@ -10,6 +10,8 @@ export interface ModelPerfParams {
   range: ModelPerfRange
   model?: string
   dimension?: ModelPerfDimension
+  /** 维度查询只在用户选择分解时启用；默认看板查询始终启用。 */
+  enabled?: boolean
 }
 
 /**
@@ -31,6 +33,7 @@ export function useModelPerf(params: ModelPerfParams) {
         dimension: params.dimension,
         signal,
       }),
+    enabled: params.enabled ?? true,
     // 指标是分钟级聚合，窗口切换时保留上一份数据会误导「已刷新」的判断；
     // 旧数据只在离线恢复场景由 React Query 的 stale 语义保留。
     staleTime: 30_000,

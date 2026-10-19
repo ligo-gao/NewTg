@@ -258,8 +258,38 @@ describe('ModelPerformance (F-05-08)', () => {
     ).toBeNull()
   })
 
-  it('switches 24h/7d and re-queries the window', async () => {
-    const requests = servePerf(() => perf())
+  it('hides the dimension block on 403 without blanking the whole board', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/model-perf`, ({ request }) => {
+        const url = new URL(request.url)
+        if (url.searchParams.has('dimension')) {
+          return HttpResponse.json(
+            { type: 'about:blank', title: 'Forbidden' },
+            { status: 403 },
+          )
+        }
+        return HttpResponse.json(perf())
+      }),
+    )
+    const user = userEvent.setup()
+    await renderWithProviders(
+      <ModelPerformance canViewDimension />,
+      ['common'],
+    )
+
+    await screen.findByTestId('perf-card-ttft-value')
+    await user.click(screen.getByTestId('perf-dimension-channel'))
+
+    expect(
+      await screen.findByText('Administrator permission required'),
+    ).toBeTruthy()
+    // 主体仍然可用：KPI 与图表没有被维度请求的 403 一起打掉。
+    expect(screen.getByTestId('perf-card-ttft-value').textContent).toBe('900ms')
+    expect(screen.getByTestId('perf-chart-ttft')).toBeTruthy()
+    expect(screen.queryByTestId('perf-error')).toBeNull()
+  })
+
+  it('switches 24h/7d and re-queries the window', async () => {    const requests = servePerf(() => perf())
     const user = userEvent.setup()
     await renderWithProviders(
       <ModelPerformance canViewDimension={false} />,
@@ -357,5 +387,79 @@ describe('ModelPerformance (F-05-08)', () => {
     expect(within(table).getByText('claude-sonnet')).toBeTruthy()
     expect(within(table).getByText('Fast')).toBeTruthy()
     expect(within(table).getByText('Healthy')).toBeTruthy()
+  })
+
+  it('plots rates on a 0–100 percentage scale and the table matches the KPI', async () => {
+    servePerf(() => perf())
+    await renderWithProviders(
+      <ModelPerformance canViewDimension={false} />,
+      ['common'],
+    )
+
+    const chart = await screen.findByTestId('perf-chart-rates')
+    // 10:00 success = (0.99×25 + 0.98×15)/40 = 98.6%，uptime = 99.8%；
+    // 10:01 = 99% / 99.9%。轴与数据表都必须是百分数，而不是 0.99。
+    const values = within(chart)
+      .getAllByTestId('perf-point-value')
+      .map((cell) => cell.textContent)
+    expect(values).toEqual(['98.6', '99', '99.83', '99.9'])
+    // 固定值域 [0,100]：轴顶端恒为 100。
+    expect(within(chart).getByText('100')).toBeTruthy()
+    expect(within(chart).queryByText('0.99')).toBeNull()
+  })
+
+  it('renders >30s for +Inf buckets and model rows instead of 30.0s', async () => {
+    servePerf(() =>
+      perf({
+        buckets: [
+          {
+            start: '2026-10-19T10:00:00Z',
+            model: 'gpt-4o',
+            requests: 40,
+            ttft_p50_ms: 1200,
+            ttft_p95_ms: 30000,
+            latency_p50_ms: 1500,
+            latency_p95_ms: 30000,
+            success_rate: 0.99,
+            uptime: 0.999,
+            tps: 40,
+            ttft_p95_over_30s: true,
+            latency_p95_over_30s: true,
+          },
+        ],
+        summary: summary({
+          ttft_p95_ms: 30000,
+          latency_p95_ms: 30000,
+          ttft_p95_over_30s: true,
+          latency_p95_over_30s: true,
+        }),
+        models: [
+          modelRow({
+            ttft_p95_ms: 30000,
+            latency_p95_ms: 30000,
+            ttft_p95_over_30s: true,
+            latency_p95_over_30s: true,
+          }),
+        ],
+      }),
+    )
+    await renderWithProviders(
+      <ModelPerformance canViewDimension={false} />,
+      ['common'],
+    )
+
+    expect(
+      (await screen.findByTestId('perf-card-ttft-value')).textContent,
+    ).toBe('>30s')
+    expect(screen.getByTestId('perf-card-latency-value').textContent).toBe(
+      '>30s',
+    )
+    const ttftChart = screen.getByTestId('perf-chart-ttft')
+    const latencyChart = screen.getByTestId('perf-chart-latency')
+    expect(within(ttftChart).getAllByText('>30s').length).toBeGreaterThan(0)
+    expect(within(latencyChart).getAllByText('>30s').length).toBeGreaterThan(0)
+    expect(within(screen.getByTestId('perf-models')).getAllByText('>30s').length)
+      .toBeGreaterThan(0)
+    expect(screen.queryByText('30.0s')).toBeNull()
   })
 })

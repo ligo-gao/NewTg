@@ -65,7 +65,11 @@ interface ChartModel {
  * here (rather than throwing inside a component) so a bad upstream row cannot
  * crash a dashboard; `bucketSeries` still rejects them at the data boundary.
  */
-function buildModel(series: ChartSeries[], kind: ChartConfig['kind']): ChartModel {
+function buildModel(
+  series: ChartSeries[],
+  kind: ChartConfig['kind'],
+  domain?: readonly [number, number],
+): ChartModel {
   const seriesPoints = series.map((item) =>
     item.points
       .flatMap((point) => {
@@ -87,7 +91,13 @@ function buildModel(series: ChartSeries[], kind: ChartConfig['kind']): ChartMode
 
   let min = 0
   let max = 1
-  if (values.length > 0) {
+  if (domain !== undefined) {
+    // 固定值域（例如百分比 0–100）：轴不随数据缩放，0% 与 100% 始终在
+    // 同一位置，跨窗口/跨模型可比较。
+    min = domain[0]
+    max = domain[1]
+    if (max === min) max = min + 1
+  } else if (values.length > 0) {
     // Bars must have a zero baseline; lines and areas use their own range so a
     // narrow band of large credits values is still readable.
     min = kind === 'bar' ? Math.min(0, ...values) : Math.min(...values)
@@ -123,7 +133,10 @@ function formatTick(value: number, locale: string): string {
 
 export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
   const { t, locale } = useI18n()
-  const model = useMemo(() => buildModel(series, config.kind), [series, config.kind])
+  const model = useMemo(
+    () => buildModel(series, config.kind, config.domain),
+    [series, config.kind, config.domain],
+  )
 
   const ariaLabel = t('common.chart.aria', {
     kind: config.kind,

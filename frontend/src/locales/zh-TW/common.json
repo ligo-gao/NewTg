@@ -152,7 +152,13 @@
       "incidents": {
         "title": "故障",
         "none": "此時間範圍內沒有故障",
-        "availability": "可用率低於閾值"
+        "availability": "可用率低於閾值",
+        "unknown_reason": "未知原因",
+        "unknown_severity": "未知嚴重度",
+        "severity": {
+          "major": "嚴重",
+          "minor": "輕微"
+        }
       },
       "dimension": {
         "label": "細分維度",
@@ -185,7 +191,8 @@
         "degraded": "降級",
         "incident": "故障",
         "no_data": "無資料"
-      }
+      },
+      "admin_required": "需要管理員權限"
     }
   },
   "toast.success": "成功",

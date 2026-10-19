@@ -152,7 +152,13 @@
       "incidents": {
         "title": "インシデント",
         "none": "この期間にインシデントはありません",
-        "availability": "稼働率がしきい値を下回っています"
+        "availability": "稼働率がしきい値を下回っています",
+        "unknown_reason": "不明な理由",
+        "unknown_severity": "不明な重大度",
+        "severity": {
+          "major": "重大",
+          "minor": "軽微"
+        }
       },
       "dimension": {
         "label": "内訳",
@@ -185,7 +191,8 @@
         "degraded": "低下",
         "incident": "インシデント",
         "no_data": "データなし"
-      }
+      },
+      "admin_required": "管理者権限が必要です"
     }
   },
   "toast.success": "成功",

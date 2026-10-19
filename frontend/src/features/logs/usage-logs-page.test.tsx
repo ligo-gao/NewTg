@@ -657,7 +657,7 @@ describe('usage logs list', () => {
     await user.click(await screen.findByText('gpt-4o-mini'))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Failure Reason')).toBeTruthy()
-    expect(within(dialog).getAllByText('****').length).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('••••••').length).toBeGreaterThan(0)
     expect(dialog.textContent).not.toContain('upstream exploded')
   })
 
@@ -678,7 +678,7 @@ describe('usage logs list', () => {
     let dialog = await screen.findByRole('dialog')
     // F-05-06：默认打码，即使有权限也必须由用户显式开启。
     expect(dialog.textContent).not.toContain('upstream exploded')
-    expect(within(dialog).getAllByText('****').length).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('••••••').length).toBeGreaterThan(0)
 
     await user.click(within(dialog).getByRole('button', { name: 'Close' }))
     await user.click(screen.getByRole('switch', { name: 'Show Sensitive Content' }))
@@ -713,7 +713,10 @@ describe('usage logs list', () => {
 
     await user.click(await screen.findByText('gpt-4o'))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('••••••')).toBeTruthy()
+    // §8.2：无权限时连打码占位与引导文案都不渲染，避免暴露记录存在性。
+    expect(within(dialog).queryByText('Prompt')).toBeNull()
+    expect(within(dialog).queryByTestId('prompt-masked')).toBeNull()
+    expect(within(dialog).queryByText('••••••')).toBeNull()
     expect(within(dialog).queryByText('secret text')).toBeNull()
     expect(within(dialog).queryByRole('button', { name: 'View Prompt' })).toBeNull()
   })
@@ -726,6 +729,6 @@ describe('usage logs list', () => {
     await user.click(await screen.findByText('gpt-4o'))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).queryByRole('button', { name: 'View Prompt' })).toBeNull()
-    expect(within(dialog).queryByText('****')).toBeNull()
+    expect(within(dialog).queryByText('••••••')).toBeNull()
   })
 })

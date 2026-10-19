@@ -30,6 +30,10 @@ afterEach(() => {
   vi.restoreAllMocks()
   exportRequests = []
   downloaded = undefined
+  Object.defineProperty(navigator, 'onLine', {
+    configurable: true,
+    value: true,
+  })
 })
 afterAll(() => server.close())
 
@@ -229,5 +233,76 @@ describe('ExportDialog (F-05-07)', () => {
     await waitFor(() => {
       expect(attempts).toBe(2)
     })
+  })
+
+  it('disables Download from the first frame when opened offline', async () => {
+    Object.defineProperty(navigator, 'onLine', {
+      configurable: true,
+      value: false,
+    })
+    const { element } = dialog()
+    await renderWithProviders(element, ['common', 'logs'])
+
+    const download = screen.getByTestId('export-download') as HTMLButtonElement
+    expect(download.disabled).toBe(true)
+    expect(screen.getByText('Network disconnected')).toBeTruthy()
+    // 离线时不给「重试」：恢复连接后由用户手动重新发起（§7.5）。
+    expect(screen.queryByTestId('export-retry')).toBeNull()
+  })
+
+  it('disables Download while the list is still loading', async () => {
+    const { element } = dialog({ listLoading: true })
+    await renderWithProviders(element, ['common', 'logs'])
+    expect(
+      (screen.getByTestId('export-download') as HTMLButtonElement).disabled,
+    ).toBe(true)
+  })
+
+  it('sends reveal_sensitive=1 only when the sensitive option is checked', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/usage-logs/export`, ({ request }) => {
+        exportRequests.push(new URL(request.url))
+        return HttpResponse.text('data', {
+          headers: { 'Content-Disposition': 'attachment; filename="x.txt"' },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    const { element } = dialog({
+      canRevealSensitive: true,
+      revealSensitive: false,
+    })
+    await renderWithProviders(element, ['common', 'logs'])
+
+    const sensitive = screen.getByTestId('export-sensitive') as HTMLInputElement
+    expect(sensitive.checked).toBe(false)
+    await user.click(sensitive)
+    await user.click(screen.getByTestId('export-download'))
+
+    await waitFor(() => {
+      expect(exportRequests.length).toBe(1)
+    })
+    expect(exportRequests[0]?.searchParams.get('reveal_sensitive')).toBe('1')
+  })
+
+  it('closes the dialog and calls the standard forbidden path on 403', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/usage-logs/export`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Forbidden' },
+          { status: 403 },
+        ),
+      ),
+    )
+    const user = userEvent.setup()
+    const onForbidden = vi.fn()
+    const { element, onOpenChange } = dialog({ onForbidden })
+    await renderWithProviders(element, ['common', 'logs'])
+
+    await user.click(screen.getByTestId('export-download'))
+    await waitFor(() => {
+      expect(onForbidden).toHaveBeenCalledTimes(1)
+    })
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })

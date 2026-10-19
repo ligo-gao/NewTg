@@ -152,7 +152,13 @@
       "incidents": {
         "title": "Incidents",
         "none": "Aucun incident sur cette période",
-        "availability": "Disponibilité sous le seuil"
+        "availability": "Disponibilité sous le seuil",
+        "unknown_reason": "Raison inconnue",
+        "unknown_severity": "Gravité inconnue",
+        "severity": {
+          "major": "Majeur",
+          "minor": "Mineur"
+        }
       },
       "dimension": {
         "label": "Ventilation",
@@ -185,7 +191,8 @@
         "degraded": "Dégradé",
         "incident": "Incident",
         "no_data": "Aucune donnée"
-      }
+      },
+      "admin_required": "Autorisation administrateur requise"
     }
   },
   "toast.success": "Succès",

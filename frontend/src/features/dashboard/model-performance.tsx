@@ -7,8 +7,10 @@ import { AnalyticsChart } from '@/shared/ui/analytics-chart'
 import { Tag } from '@/shared/ui/tag'
 
 import {
+  isForbiddenDimensionError,
   type ModelPerfBucketPoint,
   type ModelPerfDimension,
+  type ModelPerfDimensionRow,
   type ModelPerfRange,
   type ModelPerfResponse,
 } from './model-perf-api'
@@ -30,6 +32,9 @@ interface AggregatedPoint {
   latency95: number | null
   success: number | null
   uptime: number | null
+  /** 任一贡献桶落在 +Inf 桶：图上仍画在下界 30s，读数必须显示 `>30s`。 */
+  ttft95Over30: boolean
+  latency95Over30: boolean
 }
 
 function weighted(
@@ -75,6 +80,14 @@ function aggregateBuckets(
       latency95: weighted(group, (bucket) => bucket.latency_p95_ms),
       success: weighted(group, (bucket) => bucket.success_rate),
       uptime: weighted(group, (bucket) => bucket.uptime),
+      // 汇聚后的下界语义取「任一桶越界」：只要有一个模型落在 >30s，
+      // 这条汇总读数就不能冒充有限的 30.0s。
+      ttft95Over30: group.some(
+        (bucket) => bucket.ttft_p95_over_30s === true,
+      ),
+      latency95Over30: group.some(
+        (bucket) => bucket.latency_p95_over_30s === true,
+      ),
     }))
 }
 
@@ -88,6 +101,23 @@ function seriesFrom(
     const ms = Date.parse(point.start)
     if (Number.isNaN(ms)) return []
     return [{ ts: new Date(ms).toISOString(), value }]
+  })
+}
+
+/**
+ * 百分比系列：契约里的成功率/可用率是 0–1 比例，图表与数据表统一换算成
+ * 0–100 的百分数（配 domain=[0,100]）。保留一位小数，保证「查看数据表」
+ * 的读数与 KPI 卡口径一致。
+ */
+function rateSeriesFrom(
+  points: AggregatedPoint[],
+  pick: (point: AggregatedPoint) => number | null,
+  digits = 1,
+): { ts: string; value: number }[] {
+  const factor = 10 ** digits
+  return seriesFrom(points, (point) => {
+    const value = pick(point)
+    return value === null ? null : Math.round(value * 100 * factor) / factor
   })
 }
 
@@ -143,6 +173,31 @@ function formatInstant(value: string, locale: string): string {
   }).format(new Date(ms))
 }
 
+/** 已知严重度用本地化文案；未知值原样显示，缺失才回退。 */
+function severityLabel(severity: string, t: (key: string) => string): string {
+  if (severity === 'major') {
+    return t('common.dashboard.performance.incidents.severity.major')
+  }
+  if (severity === 'minor') {
+    return t('common.dashboard.performance.incidents.severity.minor')
+  }
+  if (severity === '') {
+    return t('common.dashboard.performance.incidents.unknown_severity')
+  }
+  return severity
+}
+
+/** 已知 reason 用本地化文案；未知值原样显示，不覆盖后端语义。 */
+function incidentReasonLabel(
+  reason: string,
+  t: (key: string) => string,
+): string {
+  if (reason === 'availability_below_threshold') {
+    return t('common.dashboard.performance.incidents.availability')
+  }
+  return reason
+}
+
 export interface ModelPerformanceProps {
   /** Admin gate for the channel/upstream breakdown (UI §8.1 / §8.7). */
   canViewDimension: boolean
@@ -166,8 +221,17 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
   const dimension = canViewDimension && dimensionChoice !== 'none'
     ? dimensionChoice
     : undefined
-  const query = useModelPerf({ range, model, dimension })
+  // 看板主体永远用不含 dimension 的查询。分解是可选叠加层：它的 403
+  // 只应隐藏该区块，绝不能让整块看板掉进错误态（UI §8.7）。
+  const query = useModelPerf({ range, model })
+  const dimensionQuery = useModelPerf({
+    range,
+    model,
+    dimension,
+    enabled: dimension !== undefined,
+  })
   const data = query.data
+  const dimensionForbidden = isForbiddenDimensionError(dimensionQuery.error)
 
   const aggregated = useMemo(
     () => (data === undefined ? [] : aggregateBuckets(data.buckets)),
@@ -206,15 +270,37 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
       {
         id: 'success-rate',
         label: t('common.dashboard.performance.series.success_rate'),
-        points: seriesFrom(aggregated, (point) => point.success),
+        points: rateSeriesFrom(aggregated, (point) => point.success),
       },
       {
         id: 'uptime',
         label: t('common.dashboard.performance.series.uptime'),
-        points: seriesFrom(aggregated, (point) => point.uptime),
+        points: rateSeriesFrom(aggregated, (point) => point.uptime, 2),
       },
     ],
     [aggregated, t],
+  )
+
+  const ttftOverTimestamps = useMemo(
+    () =>
+      new Set(
+        seriesFrom(
+          aggregated.filter((point) => point.ttft95Over30),
+          () => 0,
+        ).map((point) => point.ts),
+      ),
+    [aggregated],
+  )
+
+  const latencyOverTimestamps = useMemo(
+    () =>
+      new Set(
+        seriesFrom(
+          aggregated.filter((point) => point.latency95Over30),
+          () => 0,
+        ).map((point) => point.ts),
+      ),
+    [aggregated],
   )
 
   const summary = data?.summary
@@ -495,12 +581,20 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
               title={t('common.dashboard.performance.charts.ttft')}
               series={ttftSeries}
               config={{ kind: 'line', unit: 'ms' }}
+              pointLabel={(seriesId, ts) =>
+                seriesId === 'ttft-p95' && ttftOverTimestamps.has(ts)
+                  ? '>30s'
+                  : undefined
+              }
             />
             <ChartPanel
               testId="perf-chart-latency"
               title={t('common.dashboard.performance.charts.latency')}
               series={latencySeries}
               config={{ kind: 'line', unit: 'ms' }}
+              pointLabel={(_seriesId, ts) =>
+                latencyOverTimestamps.has(ts) ? '>30s' : undefined
+              }
             />
           </div>
 
@@ -508,13 +602,29 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
             testId="perf-chart-rates"
             title={t('common.dashboard.performance.charts.rates')}
             series={rateSeries}
-            config={{ kind: 'line', unit: '%' }}
+            config={{ kind: 'line', unit: '%', domain: [0, 100] }}
           />
 
           <IncidentList incidents={data.incidents} />
 
           {canViewDimension && dimension !== undefined ? (
-            <DimensionTable data={data} locale={locale} />
+            dimensionForbidden ? (
+              <p
+                data-testid="perf-dimension-forbidden"
+                className="rounded-lg border border-border-hairline p-3 text-sm text-ink-2"
+              >
+                {t('common.dashboard.performance.admin_required')}
+              </p>
+            ) : (
+              <DimensionTable
+                dimension={dimension}
+                rows={dimensionQuery.data?.dimensions ?? []}
+                loading={dimensionQuery.isPending}
+                error={dimensionQuery.isError}
+                onRetry={() => void dimensionQuery.refetch()}
+                locale={locale}
+              />
+            )
           ) : null}
 
           {data.models.length > 0 ? (
@@ -557,11 +667,14 @@ function ChartPanel({
   title,
   series,
   config,
+  pointLabel,
 }: {
   testId: string
   title: string
   series: ChartSeries[]
   config: ChartConfig
+  /** 数据表的读数覆盖（例如 +Inf 桶显示 `>30s` 而不是 30000）。 */
+  pointLabel?: (seriesId: string, ts: string) => string | undefined
 }) {
   const { t } = useI18n()
   const hasData = series.some((item) => item.points.length > 0)
@@ -602,8 +715,11 @@ function ChartPanel({
                     <tr key={`${item.id}-${point.ts}`}>
                       <td className="py-0.5">{item.label}</td>
                       <td className="py-0.5">{point.ts}</td>
-                      <td className="py-0.5 text-right tabular-nums">
-                        {point.value}
+                      <td
+                        data-testid="perf-point-value"
+                        className="py-0.5 text-right tabular-nums"
+                      >
+                        {pointLabel?.(item.id, point.ts) ?? point.value}
                       </td>
                     </tr>
                   )),
@@ -663,8 +779,17 @@ function IncidentList({
               <span className="text-ink-2">
                 {formatDuration(incident.duration_seconds, locale)}
               </span>
+              {/* 后端 reason/severity 是派生结果的语义载体；未知值原样
+                  展示，只有字段缺失时才用兜底文案，绝不覆盖真实值。 */}
+              <Tag
+                variant={incident.severity === 'major' ? 'danger' : 'warning'}
+              >
+                {severityLabel(incident.severity, t)}
+              </Tag>
               <span className="text-ink-2">
-                {t('common.dashboard.performance.incidents.availability')}
+                {incident.reason === ''
+                  ? t('common.dashboard.performance.incidents.unknown_reason')
+                  : incidentReasonLabel(incident.reason, t)}
               </span>
             </li>
           ))}
@@ -675,15 +800,21 @@ function IncidentList({
 }
 
 function DimensionTable({
-  data,
+  dimension,
+  rows,
+  loading,
+  error,
+  onRetry,
   locale,
 }: {
-  data: ModelPerfResponse
+  dimension: ModelPerfDimension
+  rows: ModelPerfDimensionRow[]
+  loading: boolean
+  error: boolean
+  onRetry: () => void
   locale: string
 }) {
   const { t } = useI18n()
-  const rows = data.dimensions ?? []
-  const dimension = rows[0]?.dimension ?? 'channel'
 
   return (
     <section
@@ -701,7 +832,28 @@ function DimensionTable({
           ),
         })}
       </h3>
-      {rows.length === 0 ? (
+      {loading ? (
+        <div
+          data-testid="perf-dimensions-loading"
+          aria-busy="true"
+          className="mt-2 h-20 animate-pulse rounded-lg bg-surface-hover motion-reduce:animate-none"
+        />
+      ) : error ? (
+        <div
+          data-testid="perf-dimensions-error"
+          role="alert"
+          className="mt-2 text-sm text-danger"
+        >
+          {t('common.dashboard.performance.error')}{' '}
+          <button
+            type="button"
+            onClick={onRetry}
+            className="font-medium text-brand underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            {t('common.action.retry')}
+          </button>
+        </div>
+      ) : rows.length === 0 ? (
         <p className="mt-2 text-sm text-ink-3">
           {t('common.dashboard.performance.chart_empty')}
         </p>
@@ -833,10 +985,11 @@ function ModelTable({
                   </button>
                 </th>
                 <td className="py-2 text-right font-mono text-[13px] tabular-nums">
-                  {formatMs(row.ttft_p50_ms)} / {formatMs(row.ttft_p95_ms)}
+                  {formatMs(row.ttft_p50_ms)} /{' '}
+                  {formatMs(row.ttft_p95_ms, row.ttft_p95_over_30s)}
                 </td>
                 <td className="py-2 text-right tabular-nums">
-                  {formatMs(row.latency_p95_ms)}
+                  {formatMs(row.latency_p95_ms, row.latency_p95_over_30s)}
                 </td>
                 <td className="py-2 text-right tabular-nums">
                   {formatPercent(row.success_rate)}
