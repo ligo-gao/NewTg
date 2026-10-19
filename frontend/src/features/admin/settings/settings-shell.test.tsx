@@ -1,9 +1,9 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 import { ToastViewport, useToastStore } from '@/shared/ui/toast'
@@ -96,6 +96,40 @@ const TURNSTILE_STATE: SectionState = {
   ],
 }
 
+const BILLING_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [
+    item('billing.quota_per_unit', 100, { dangerous: true }),
+    item('billing.display_unit', 'credits'),
+  ],
+}
+
+const PAY_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [
+    item('pay.online_enabled', true, { dangerous: true }),
+    item('pay.amount_presets_cny', [10, 30]),
+  ],
+}
+
+const PAY_STRIPE_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [item('pay.stripe.enabled', false)],
+}
+
+const PAY_ALIPAY_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [item('pay.alipay.enabled', false)],
+}
+
+const POLICY_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [
+    item('rl.health.auto_disable_enabled', false, { dangerous: true }),
+    item('rl.health.disable_keywords', ['foo', 'bar'], { dangerous: true }),
+  ],
+}
+
 interface RequestLog {
   section: string
   body: Record<string, unknown> | undefined
@@ -157,6 +191,11 @@ async function renderShell(tab: SettingsTab = 'site') {
       nav: structuredClone(NAV_STATE),
       auth: structuredClone(AUTH_STATE),
       'auth.turnstile': structuredClone(TURNSTILE_STATE),
+      billing: structuredClone(BILLING_STATE),
+      pay: structuredClone(PAY_STATE),
+      'pay.stripe': structuredClone(PAY_STRIPE_STATE),
+      'pay.alipay': structuredClone(PAY_ALIPAY_STATE),
+      'rl.health': structuredClone(POLICY_STATE),
     },
     requests,
   )
@@ -202,6 +241,12 @@ describe('SettingsShell contract', () => {
     expect(requests[0]?.section).toBe('site')
     expect(requests[0]?.body?.values).toEqual({ 'site.title': 'Token Gateway' })
     expect(requests[0]?.body?.expect_updated_at).toBe('2026-10-19T10:00:00Z')
+    // Contract v2 body shape: no confirmed_by/session members.
+    expect(Object.keys(requests[0]?.body ?? {}).sort()).toEqual([
+      'expect_updated_at',
+      'section',
+      'values',
+    ])
     expect(await screen.findByText(/Basic information saved/)).toBeTruthy()
   })
 
@@ -324,7 +369,264 @@ describe('SettingsShell contract', () => {
     await user.click(screen.getByRole('tab', { name: 'Billing' }))
 
     expect(await screen.findByText('You have unsaved changes')).toBeTruthy()
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.queryByText('You have unsaved changes')).toBeNull()
+  })
+
+  it('does not validate a field that was edited and then reverted (F2)', async () => {
+    const user = userEvent.setup()
+    const requests = await renderShell('site')
+
+    const title = await screen.findByLabelText('Site title')
+    await user.type(title, 'Draft')
+    await user.clear(title)
+    await user.type(title, 'NewTG')
+    const footer = screen.getByLabelText('Footer HTML')
+    await user.type(footer, 'hello')
+
+    const card = screen.getByTestId('settings-section-site')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({ 'site.footer_html': 'hello' })
+    expect(screen.queryByText('This field is required.')).toBeNull()
+  })
+
+  it('keeps raw text for number lists until save (F3)', async () => {
+    const user = userEvent.setup()
+    const requests = await renderShell('payment')
+
+    const presets = await screen.findByLabelText('Top-up presets (CNY)')
+    await user.clear(presets)
+    await user.type(presets, '10,30,50')
+    // The comma must still be in the input after typing.
+    expect((presets as HTMLInputElement).value).toBe('10,30,50')
+
+    const card = screen.getByTestId('settings-section-pay')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({ 'pay.amount_presets_cny': [10, 30, 50] })
+  })
+
+  it('keeps newlines in line lists and asks for dangerous confirmation (F1/F3)', async () => {
+    const user = userEvent.setup()
+    const requests = await renderShell('policy')
+
+    const keywords = await screen.findByLabelText('Disable keywords (one per line)')
+    await user.clear(keywords)
+    await user.type(keywords, 'foo{enter}bar{enter}baz')
+    expect((keywords as HTMLTextAreaElement).value).toBe('foo\nbar\nbaz')
+
+    const card = screen.getByTestId('settings-section-rl.health')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({
+      'rl.health.disable_keywords': ['foo', 'bar', 'baz'],
+    })
+    expect(requests[0]?.body?.dangerous_confirmed).toBe(true)
+    expect(requests[0]?.body?.confirmed_by).toBeUndefined()
+    expect(Object.keys(requests[0]?.body ?? {}).sort()).toEqual([
+      'dangerous_confirmed',
+      'expect_updated_at',
+      'section',
+      'values',
+    ])
+  })
+
+  it('does not confirm the safe direction of a dangerous switch (F5)', async () => {
+    const user = userEvent.setup()
+    const stores = {
+      site: structuredClone(SITE_STATE),
+      nav: structuredClone(NAV_STATE),
+      sec: {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [
+          item('sec.ssrf.allow_private_ip', true, { dangerous: true }),
+        ],
+      } satisfies SectionState,
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="security" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const toggle = await screen.findByRole('switch', { name: 'Allow private addresses' })
+    await user.click(toggle)
+    const card = screen.getByTestId('settings-section-sec')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(requests[0]?.body?.dangerous_confirmed).toBeUndefined()
+  })
+
+  it('shows 429 as a toast without leaking into field errors', async () => {
+    const user = userEvent.setup()
+    await renderShell('site')
+    server.use(
+      http.put(`${ORIGIN}/api/settings`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'rate limited' },
+          { status: 429, headers: { 'Retry-After': '5' } },
+        ),
+      ),
+    )
+
+    const title = await screen.findByLabelText('Site title')
+    await user.clear(title)
+    await user.type(title, 'Changed')
+    const card = screen.getByTestId('settings-section-site')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByText('Too many requests. Please try again later.')).toBeTruthy()
+  })
+
+  it('retries a failed load', async () => {
+    const user = userEvent.setup()
+    let calls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json(ME_ADMIN)),
+      http.get(`${ORIGIN}/api/settings`, () => {
+        calls += 1
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Internal Server Error' },
+          { status: 500 },
+        )
+      }),
+    )
+    await renderWithProviders(<Harness initial="site" />, ['common', 'settings'])
+
+    expect((await screen.findAllByText(/Could not load this section/)).length).toBeGreaterThan(0)
+    const before = calls
+    await user.click(screen.getAllByRole('button', { name: 'Retry' })[0]!)
+    await waitFor(() => expect(calls).toBeGreaterThan(before))
+  })
+
+  it('renders unknown registry keys with a generic control', async () => {
+    const site = structuredClone(SITE_STATE)
+    site.items.push(item('site.mystery', 'surprise'))
+    installSettingsHandlers({
+      site,
+      nav: structuredClone(NAV_STATE),
+    })
+    await renderWithProviders(<Harness initial="site" />, ['common', 'settings'])
+
+    expect(await screen.findByText('site.mystery')).toBeTruthy()
+    expect(screen.getByDisplayValue('surprise')).toBeTruthy()
+  })
+
+  it('moves between tabs with arrow keys and only links the active panel', async () => {
+    await renderShell('site')
+
+    const siteTab = await screen.findByRole('tab', { name: 'Site' })
+    expect(siteTab.getAttribute('aria-controls')).toBe('settings-panel-site')
+    expect(
+      screen.getByRole('tab', { name: 'Billing' }).getAttribute('aria-controls'),
+    ).toBeNull()
+
+    siteTab.focus()
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' })
+    await waitFor(() => {
+      expect(
+        screen.getByRole('tab', { name: 'Authentication' }).getAttribute('aria-selected'),
+      ).toBe('true')
+    })
+  })
+
+  it('registers a beforeunload guard while dirty', async () => {
+    const user = userEvent.setup()
+    await renderShell('site')
+
+    const title = await screen.findByLabelText('Site title')
+    await user.type(title, '!')
+    const card = screen.getByTestId('settings-section-site')
+    await waitFor(() => {
+      expect(
+        (within(card).getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled,
+      ).toBe(false)
+    })
+
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('blocks turning off both sign-in methods (F5)', async () => {
+    const user = userEvent.setup()
+    const requests = await renderShell('auth')
+
+    await user.click(await screen.findByRole('switch', { name: 'Allow sign-up' }))
+    await user.click(screen.getByRole('switch', { name: 'Allow password sign-in' }))
+    const card = screen.getByTestId('settings-section-auth')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByText('Keep at least one sign-in method enabled.')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+  })
+
+  it('blocks enabling Turnstile without a secret (F5)', async () => {
+    const user = userEvent.setup()
+    const stores = {
+      auth: structuredClone(AUTH_STATE),
+      'auth.turnstile': {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [
+          item('auth.turnstile.enabled', false),
+          item('auth.turnstile.site_key', 'site-key'),
+          item('auth.turnstile.secret_key', null, { secret: true, default: null }),
+        ],
+      } satisfies SectionState,
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="auth" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Enable Turnstile' }))
+    const card = screen.getByTestId('settings-section-auth.turnstile')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    expect(
+      await screen.findByText('Secret key is required when Turnstile is enabled.'),
+    ).toBeTruthy()
+    expect(requests).toHaveLength(0)
+  })
+
+  it('clears a secret by sending null and refetches to Not configured (F4)', async () => {
+    const user = userEvent.setup()
+    const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
+    const requests = await renderShell('auth')
+
+    expect(await screen.findByText('Configured')).toBeTruthy()
+    // Turning Turnstile off first keeps the cross-field "enabled without a
+    // secret" rule satisfied while the secret itself is cleared.
+    await user.click(screen.getByRole('switch', { name: 'Enable Turnstile' }))
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(confirm).toHaveBeenCalled()
+
+    const card = screen.getByTestId('settings-section-auth.turnstile')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({
+      'auth.turnstile.enabled': false,
+      'auth.turnstile.secret_key': null,
+    })
+    expect(await screen.findByText('Not configured')).toBeTruthy()
   })
 })

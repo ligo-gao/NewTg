@@ -42,6 +42,8 @@
     "field_invalid_json": "Enter valid JSON.",
     "field_invalid": "Invalid value.",
     "field_locked": "Locked by the server.",
+    "cross_at_least_one_sign_in": "Keep at least one sign-in method enabled.",
+    "cross_turnstile_secret": "Secret key is required when Turnstile is enabled.",
     "rate_limited": "Too many requests. Please try again later.",
     "save_forbidden": "You do not have permission to save settings.",
     "module_dashboard": "Dashboard",
@@ -113,6 +115,9 @@
       "filing_no": "Filing number",
       "footer_html": "Footer HTML",
       "about_html": "About HTML",
+      "home_custom_enabled": "Use custom homepage HTML",
+      "home_custom_html": "Custom homepage HTML",
+      "home_blocks": "Default homepage blocks",
       "seo": {
         "description": "SEO description",
         "og_image_url": "Open Graph image URL"
@@ -243,7 +248,8 @@
       "title": "1–64 characters.",
       "server_address": "Used as the Base URL for token snippets and callback links.",
       "footer_html": "Allowed tags: a, p, br, strong, em.",
-      "about_html": "Allowed tags: a, p, br, strong, em."
+      "about_html": "Allowed tags: a, p, br, strong, em.",
+      "home_custom_html": "Custom HTML fully takes over the homepage render. Maximum 65,536 characters."
     },
     "nav": {
       "console": {

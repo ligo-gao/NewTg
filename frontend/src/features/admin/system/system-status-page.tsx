@@ -148,7 +148,9 @@ export function SystemStatusPage() {
 
   const data = query.data
   const dependencies = data?.dependencies ?? {}
-  const instances = (data?.instances ?? []).map(normalizeInstance)
+  // The endpoint is being built in a parallel backend task; never assume the
+  // collection shape (F10), otherwise a partial response blanks the page.
+  const instances = (Array.isArray(data?.instances) ? data.instances : []).map(normalizeInstance)
   const lastUpdated = query.dataUpdatedAt > 0 ? new Date(query.dataUpdatedAt).toLocaleTimeString() : null
 
   return (

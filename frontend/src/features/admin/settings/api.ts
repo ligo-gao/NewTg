@@ -35,12 +35,22 @@ export interface SettingsSectionResponse {
   items: SettingsItem[]
 }
 
+export interface SettingsValuesResponse {
+  section: string
+  updated_at: string | null
+  /** Masked values exactly as stored after the write. */
+  values: Record<string, unknown>
+}
+
 export interface SettingsSectionWrite {
   section: string
   values: Record<string, unknown>
   expect_updated_at: string | null
-  /** Set once the user confirmed the dangerous-change dialog. */
-  confirmed_by?: { confirmed_at: string; session: string }
+  /**
+   * Contract v2: set only after the dangerous-change dialog is accepted.
+   * The backend whitelists it and maps it to UpdateInput.DangerousConfirmed.
+   */
+  dangerous_confirmed?: true
 }
 
 export interface ProblemFieldError {
@@ -69,27 +79,34 @@ async function readFieldErrors(response: Response): Promise<ProblemFieldError[]>
     if (typeof body !== 'object' || body === null) return []
     const record = body as Record<string, unknown>
 
-    const errors = record.errors
-    if (Array.isArray(errors)) {
-      return errors.flatMap((entry) => {
-        if (typeof entry !== 'object' || entry === null) return []
-        const item = entry as Record<string, unknown>
-        if (typeof item.field !== 'string' || typeof item.message !== 'string') {
-          return []
-        }
-        return [{ field: item.field, message: item.message }]
-      })
+    const merged: ProblemFieldError[] = []
+    const push = (field: string, message: string): void => {
+      if (!merged.some((entry) => entry.field === field)) {
+        merged.push({ field, message })
+      }
     }
 
+    const errors = record.errors
+    if (Array.isArray(errors)) {
+      for (const entry of errors) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const item = entry as Record<string, unknown>
+        if (typeof item.field === 'string' && typeof item.message === 'string') {
+          push(item.field, item.message)
+        }
+      }
+    }
+
+    // Contract v2 keeps `fields: string[]` as the shared Problem extension;
+    // merge it even when `errors` exists (including an empty array) so a
+    // handler that sends only `fields` still produces inline errors.
     const fields = record.fields
     if (Array.isArray(fields)) {
-      return fields.flatMap((field) =>
-        typeof field === 'string' && field.length > 0
-          ? [{ field, message: '' }]
-          : [],
-      )
+      for (const field of fields) {
+        if (typeof field === 'string' && field.length > 0) push(field, '')
+      }
     }
-    return []
+    return merged
   } catch {
     return []
   }
@@ -132,7 +149,7 @@ export async function fetchSettingsSection(
 export async function saveSettingsSection(
   input: SettingsSectionWrite,
   idempotencyKey: string,
-): Promise<SettingsSectionResponse> {
+): Promise<SettingsValuesResponse> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
@@ -148,7 +165,7 @@ export async function saveSettingsSection(
     body: JSON.stringify(input),
   })
   if (!response.ok) throw await normalizeError(response)
-  return (await response.json()) as SettingsSectionResponse
+  return (await response.json()) as SettingsValuesResponse
 }
 
 /** Minted once per save intent so a retried request is replayed, not doubled. */

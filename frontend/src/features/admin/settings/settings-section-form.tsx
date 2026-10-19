@@ -92,6 +92,33 @@ function genericField(item: SettingsItem): FieldConfig {
   return { key: item.key, labelKey: '', control }
 }
 
+function parseLines(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+}
+
+function parseNumberList(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '')
+    .map((entry) => Number(entry))
+}
+
+/** Parses JSON text, returning the original string when it is invalid. */
+function parseJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return value
+  }
+}
+
 function valuesOf(item: SettingsItem, draft: Draft): unknown {
   if (Object.prototype.hasOwnProperty.call(draft, item.key)) return draft[item.key]
   // Secrets are never echoed back into the input: the server value is a mask,
@@ -146,22 +173,27 @@ function validate(
       return undefined
     }
     if (field.control === 'tags' || field.control === 'lines') {
-      if (value === undefined || value === null) return undefined
-      if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+      const candidate = field.control === 'lines' ? parseLines(value) : value
+      if (candidate === undefined || candidate === null) return undefined
+      if (!Array.isArray(candidate) || candidate.some((entry) => typeof entry !== 'string')) {
         return t('settings.shell.field_invalid_list')
       }
       if (field.control === 'tags' && field.maxLength !== undefined) {
         const max = field.maxLength
-        if (value.some((entry) => entry.length > max)) {
+        if (candidate.some((entry) => entry.length > max)) {
           return t('settings.shell.field_too_long', { max })
         }
       }
       return undefined
     }
     if (field.control === 'number_list') {
-      if (!Array.isArray(value)) return t('settings.shell.field_invalid_list')
+      // The control keeps raw text while the user types (`10,30`); parse the
+      // same way here and at save time so a missing blur cannot send the raw
+      // string to the server.
+      const candidate = parseNumberList(value)
+      if (!Array.isArray(candidate)) return t('settings.shell.field_invalid_list')
       if (
-        value.some(
+        candidate.some(
           (entry) => typeof entry !== 'number' || !Number.isFinite(entry) || !Number.isInteger(entry),
         )
       ) {
@@ -173,7 +205,8 @@ function validate(
       return isRecord(value) ? undefined : t('settings.shell.field_invalid_json')
     }
     if (field.control === 'json') {
-      return isRecord(value) || Array.isArray(value)
+      const candidate = parseJson(value)
+      return isRecord(candidate) || Array.isArray(candidate)
         ? undefined
         : t('settings.shell.field_invalid_json')
     }
@@ -318,8 +351,15 @@ export function SettingsSectionForm({
     for (const key of changedKeys) {
       const item = itemByKey.get(key)
       if (item === undefined) continue
-      const value = draft[key]
+      let value = draft[key]
       if (item.secret && (value === '' || value === undefined)) continue
+      // Parse raw text shadows at save time: a click on Save blurs the input
+      // first, but treating the parse as the request boundary makes the body
+      // independent of event ordering (F3).
+      const field = fields.find((entry) => entry.key === key)
+      if (field?.control === 'lines') value = parseLines(value)
+      if (field?.control === 'number_list') value = parseNumberList(value)
+      if (field?.control === 'json') value = parseJson(value)
       values[key] = value
     }
     return values
@@ -331,21 +371,72 @@ export function SettingsSectionForm({
     if (Object.keys(values).length === 0) return
 
     const validationErrors: FieldErrors = {}
-    for (const field of fields) {
-      if (!(field.key in values) && !draft[field.key]) continue
-      const item = itemByKey.get(field.key)
-      if (item === undefined) continue
-      const error = validate(field, values[field.key], t)
-      if (error !== undefined) validationErrors[field.key] = error
+    // Validate only keys that will actually be sent. A field the user edited
+    // and then reverted is absent from `values`; validating it would feed
+    // `undefined` into the checks and block an otherwise valid save (F2).
+    for (const [key, value] of Object.entries(values)) {
+      const field = fields.find((entry) => entry.key === key)
+      if (field === undefined) continue
+      const error = validate(field, value, t)
+      if (error !== undefined) validationErrors[key] = error
     }
+
+    // Cross-field pre-checks from UI design §6.2. The server keeps enforcing
+    // these; the client mirrors them so the error lands on the right field.
+    const effective = (key: string): unknown => {
+      if (Object.prototype.hasOwnProperty.call(values, key)) return values[key]
+      const item = itemByKey.get(key)
+      return item === undefined ? undefined : baselineValue(item)
+    }
+
+    if (config.id === 'auth') {
+      const signup = effective('auth.signup_enabled')
+      const password = effective('auth.password_login_enabled')
+      if (signup === false && password === false) {
+        validationErrors['auth.password_login_enabled'] ??= t(
+          'settings.shell.cross_at_least_one_sign_in',
+        )
+      }
+    }
+
+    if (config.id === 'auth.turnstile') {
+      const enabled = effective('auth.turnstile.enabled') === true
+      const secretItem = itemByKey.get('auth.turnstile.secret_key')
+      if (enabled && secretItem !== undefined) {
+        const candidate = values['auth.turnstile.secret_key']
+        const typed =
+          typeof candidate === 'string' && candidate !== ''
+        const configured =
+          isSecretConfigured(secretItem) && candidate !== null
+        if (!typed && !configured) {
+          validationErrors['auth.turnstile.secret_key'] ??= t(
+            'settings.shell.cross_turnstile_secret',
+          )
+        }
+      }
+    }
+
     if (Object.keys(validationErrors).length > 0) {
       setFieldErrors(validationErrors)
       const firstKey = Object.keys(validationErrors)[0]
-      document.getElementById(`setting-${config.id}-${firstKey}`)?.focus()
+      if (firstKey !== undefined) {
+        document.getElementById(`setting-${config.id}-${firstKey}`)?.focus()
+      }
       return
     }
 
-    const dangerous = changedKeys.some((key) => itemByKey.get(key)?.dangerous === true)
+    // Confirmation is required only in the risky direction (F5): turning a
+    // safety switch off, or enabling a switch that loosens protection.
+    const dangerous = Object.entries(values).some(([key, value]) => {
+      const item = itemByKey.get(key)
+      if (item === undefined || !item.dangerous) return false
+      const direction =
+        fields.find((entry) => entry.key === key)?.dangerDirection ?? 'change'
+      const baseline = baselineValue(item)
+      if (direction === 'off') return value === false && baseline !== false
+      if (direction === 'on') return value === true && baseline !== true
+      return !sameValue(value, baseline)
+    })
     if (dangerous) {
       setPendingSave(values)
       return
@@ -363,14 +454,7 @@ export function SettingsSectionForm({
           section: config.id,
           values,
           expect_updated_at: data.updated_at,
-          ...(confirmed
-            ? {
-                confirmed_by: {
-                  confirmed_at: new Date().toISOString(),
-                  session: 'console',
-                },
-              }
-            : {}),
+          ...(confirmed ? { dangerous_confirmed: true as const } : {}),
         },
         idempotencyRef.current,
       )
@@ -522,6 +606,7 @@ export function SettingsSectionForm({
         }}
         title={t('settings.shell.conflict_title')}
         description={t('settings.shell.conflict_body')}
+        role="alertdialog"
         footer={
           <Button onClick={refreshAfterConflict}>{t('settings.shell.conflict_refresh')}</Button>
         }
@@ -534,6 +619,7 @@ export function SettingsSectionForm({
         }}
         title={t('settings.shell.danger_title')}
         description={t('settings.shell.danger_body')}
+        role="alertdialog"
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setPendingSave(null)}>
@@ -586,6 +672,12 @@ function FieldRow({
         ? t(field.hintKey)
         : undefined
   const inputId = `setting-${sectionId}-${field.key}`
+  const hintId = `${inputId}-hint`
+  const errorId = `${inputId}-error`
+  const describedBy =
+    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
+      .filter(Boolean)
+      .join(' ') || undefined
 
   if (field.control === 'switch') {
     return (
@@ -600,6 +692,8 @@ function FieldRow({
             role="switch"
             aria-checked={value === true}
             aria-invalid={error !== undefined ? true : undefined}
+            aria-describedby={describedBy}
+            aria-errormessage={error !== undefined ? errorId : undefined}
             disabled={disabled}
             checked={value === true}
             onChange={(event) => onChange(event.target.checked)}
@@ -607,9 +701,11 @@ function FieldRow({
           />
         </div>
         {hint !== undefined && error === undefined ? (
-          <p className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}
-        {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
       </div>
     )
   }
@@ -625,6 +721,8 @@ function FieldRow({
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
           aria-invalid={error !== undefined ? true : undefined}
+          aria-describedby={describedBy}
+          aria-errormessage={error !== undefined ? errorId : undefined}
           onChange={(event) => onChange(event.target.value)}
           className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -641,9 +739,11 @@ function FieldRow({
           ) : null}
         </select>
         {hint !== undefined && error === undefined ? (
-          <p className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}
-        {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
       </div>
     )
   }
@@ -668,7 +768,12 @@ function FieldRow({
     const record = isRecord(value) ? value : {}
     const toggles = field.toggles ?? Object.keys(record).map((key) => ({ key, labelKey: '' }))
     return (
-      <fieldset className="flex flex-col gap-1.5" disabled={disabled}>
+      <fieldset
+        className="flex flex-col gap-1.5"
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-errormessage={error !== undefined ? errorId : undefined}
+      >
         <legend className="text-[13px] font-medium text-ink-1">{label}</legend>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           {toggles.map((entry) => {
@@ -688,9 +793,11 @@ function FieldRow({
           })}
         </div>
         {hint !== undefined && error === undefined ? (
-          <p className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}
-        {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
       </fieldset>
     )
   }
@@ -715,31 +822,31 @@ function FieldRow({
           disabled={disabled}
           rows={field.control === 'json' ? 5 : 4}
           aria-invalid={error !== undefined ? true : undefined}
-          onChange={(event) => {
-            if (field.control === 'json') {
-              try {
-                onChange(JSON.parse(event.target.value) as unknown)
-              } catch {
-                // Keep invalid JSON in a local shadow so the user does not
-                // lose keystrokes; validation blocks the save.
-                onChange(event.target.value)
-              }
-            } else {
-              onChange(event.target.value)
-            }
-          }}
+          aria-describedby={describedBy}
+          aria-errormessage={error !== undefined ? errorId : undefined}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={
+            field.control === 'json'
+              ? () => onChange(parseJson(text))
+              : undefined
+          }
           className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-[13px] text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
         {hint !== undefined && error === undefined ? (
-          <p className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}
-        {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
       </div>
     )
   }
 
   if (field.control === 'lines') {
-    const text = Array.isArray(value) ? value.map(String).join('\n') : ''
+    // Raw text is kept in the draft while typing; parsing happens on blur and
+    // again at save time. Parsing per keystroke swallowed Enter and merged
+    // words across lines (F3).
+    const text = typeof value === 'string' ? value : Array.isArray(value) ? value.map(String).join('\n') : ''
     return (
       <div className="flex flex-col gap-1.5">
         <label htmlFor={inputId} className="text-[13px] font-medium text-ink-1">
@@ -751,20 +858,18 @@ function FieldRow({
           disabled={disabled}
           rows={5}
           aria-invalid={error !== undefined ? true : undefined}
-          onChange={(event) =>
-            onChange(
-              event.target.value
-                .split('\n')
-                .map((line) => line.trim())
-                .filter((line) => line !== ''),
-            )
-          }
+          aria-describedby={describedBy}
+          aria-errormessage={error !== undefined ? errorId : undefined}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={() => onChange(parseLines(text))}
           className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
         {hint !== undefined && error === undefined ? (
-          <p className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}
-        {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
       </div>
     )
   }
@@ -785,7 +890,9 @@ function FieldRow({
   }
 
   if (field.control === 'number_list') {
-    const text = Array.isArray(value) ? value.map(String).join(', ') : ''
+    // Comma-separated raw text until blur/Enter/save; parsing per keystroke
+    // turned `10,30` into `1030` because the comma never stayed in the input.
+    const text = typeof value === 'string' ? value : Array.isArray(value) ? value.map(String).join(', ') : ''
     return (
       <TextField
         id={inputId}
@@ -796,15 +903,14 @@ function FieldRow({
         disabled={disabled}
         hint={hint}
         error={error}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-              .split(',')
-              .map((entry) => entry.trim())
-              .filter((entry) => entry !== '')
-              .map((entry) => Number(entry)),
-          )
-        }
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => onChange(parseNumberList(text))}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onChange(parseNumberList(text))
+          }
+        }}
       />
     )
   }
@@ -877,12 +983,20 @@ function SecretField({
   const [visible, setVisible] = useState(false)
   const text = typeof value === 'string' ? value : ''
   const clearRequested = value === null
+  const hintId = `${id}-hint`
+  const errorId = `${id}-error`
+  const describedBy =
+    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
+      .filter(Boolean)
+      .join(' ') || undefined
   const common = {
     id,
     value: text,
     disabled,
     autoComplete: 'off' as const,
     'aria-invalid': error !== undefined ? true : undefined,
+    'aria-describedby': describedBy,
+    'aria-errormessage': error !== undefined ? errorId : undefined,
     placeholder: configured && !clearRequested ? t('settings.shell.secret_placeholder') : undefined,
     onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       onChange(event.target.value),
@@ -942,9 +1056,11 @@ function SecretField({
         </button>
       </div>
       {error === undefined ? (
-        <p className="text-xs text-ink-3">{hint ?? t('settings.shell.secret_hint')}</p>
+        <p id={hintId} className="text-xs text-ink-3">{hint ?? t('settings.shell.secret_hint')}</p>
       ) : null}
-      {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+      {error !== undefined ? (
+        <p id={errorId} className="text-xs text-danger">{error}</p>
+      ) : null}
     </div>
   )
 }
@@ -961,6 +1077,12 @@ interface TagInputProps {
 
 function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInputProps) {
   const [pending, setPending] = useState('')
+  const hintId = `${id}-hint`
+  const errorId = `${id}-error`
+  const describedBy =
+    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
+      .filter(Boolean)
+      .join(' ') || undefined
 
   function commit(raw: string): void {
     const entries = raw
@@ -1003,6 +1125,8 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
         value={pending}
         disabled={disabled}
         aria-invalid={error !== undefined ? true : undefined}
+        aria-describedby={describedBy}
+        aria-errormessage={error !== undefined ? errorId : undefined}
         placeholder={hint}
         onChange={(event) => {
           const raw = event.target.value
@@ -1019,9 +1143,11 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
         className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
       {hint !== undefined && error === undefined ? (
-        <p className="text-xs text-ink-3">{hint}</p>
+        <p id={hintId} className="text-xs text-ink-3">{hint}</p>
       ) : null}
-      {error !== undefined ? <p className="text-xs text-danger">{error}</p> : null}
+      {error !== undefined ? (
+        <p id={errorId} className="text-xs text-danger">{error}</p>
+      ) : null}
     </div>
   )
 }

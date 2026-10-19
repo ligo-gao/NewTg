@@ -139,7 +139,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
               type="button"
               role="tab"
               aria-selected={selected}
-              aria-controls={`settings-panel-${entry.id}`}
+              aria-controls={selected ? `settings-panel-${entry.id}` : undefined}
               tabIndex={selected ? 0 : -1}
               onClick={() => requestTabChange(entry.id)}
               className={[
@@ -182,6 +182,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
         }}
         title={t('settings.shell.unsaved_title')}
         description={t('settings.shell.unsaved_body')}
+        role="alertdialog"
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setPendingTab(null)}>

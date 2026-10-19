@@ -21,6 +21,12 @@ export interface DialogProps {
   variant?: 'center' | 'sheet'
   /** Extra classes for the panel; callers size sheets without owning the frame. */
   panelClassName?: string
+  /**
+   * `alertdialog` is required when the dialog blocks an unsaved/destructive
+   * decision and demands an immediate response (WAI-ARIA). Defaults to the
+   * regular `dialog` role used by the rest of the console.
+   */
+  role?: 'dialog' | 'alertdialog'
 }
 
 /** Keyboard-focusable descendants, in document order (WAI-ARIA dialog pattern). */
@@ -66,6 +72,7 @@ export function Dialog({
   dismissible = true,
   variant = 'center',
   panelClassName,
+  role = 'dialog',
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -197,7 +204,7 @@ export function Dialog({
       />
       <div
         ref={panelRef}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}

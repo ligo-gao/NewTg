@@ -65,6 +65,12 @@ export interface FieldConfig {
   toggles?: readonly ToggleOption[]
   /** Server-enforced read-only field (e.g. `nav.console.require_auth`). */
   locked?: boolean
+  /**
+   * Risk direction for `dangerous` registry keys (UI design §4): only the
+   * direction that loosens safety asks for confirmation; turning a switch
+   * back to the safe side does not.
+   */
+  dangerDirection?: 'off' | 'on' | 'change'
 }
 
 export interface SectionConfig {
@@ -153,6 +159,15 @@ const SITE: SectionConfig = {
     }),
     text('site.seo.description', label('site.seo.description'), { maxLength: 160 }),
     text('site.seo.og_image_url', label('site.seo.og_image_url'), { maxLength: 512 }),
+    toggle('site.home_custom_enabled', label('site.home_custom_enabled'), {
+      dangerDirection: 'on',
+    }),
+    field('site.home_custom_html', label('site.home_custom_html'), 'textarea', {
+      maxLength: 65536,
+      hintKey: hint('site.home_custom_html'),
+      dangerDirection: 'change',
+    }),
+    field('site.home_blocks', label('site.home_blocks'), 'json'),
   ],
 }
 
@@ -199,6 +214,7 @@ const AUTH: SectionConfig = {
   fields: [
     toggle('auth.signup_enabled', label('auth.signup_enabled'), {
       hintKey: hint('auth.signup_enabled'),
+      dangerDirection: 'off',
     }),
     toggle('auth.password_login_enabled', label('auth.password_login_enabled'), {
       hintKey: hint('auth.password_login_enabled'),
@@ -240,6 +256,7 @@ const BILLING: SectionConfig = {
       min: 1,
       max: 1_000_000,
       hintKey: hint('billing.quota_per_unit'),
+      dangerDirection: 'change',
     }),
     field('billing.display_unit', label('billing.display_unit'), 'select', {
       options: [
@@ -304,6 +321,7 @@ const PAY: SectionConfig = {
   fields: [
     toggle('pay.online_enabled', label('pay.online_enabled'), {
       hintKey: hint('pay.online_enabled'),
+      dangerDirection: 'off',
     }),
     field('pay.amount_presets_cny', label('pay.amount_presets_cny'), 'number_list', {
       hintKey: hint('pay.amount_presets_cny'),
@@ -394,9 +412,11 @@ const SEC: SectionConfig = {
   fields: [
     toggle('sec.ssrf.enabled', label('sec.ssrf.enabled'), {
       hintKey: hint('sec.ssrf.enabled'),
+      dangerDirection: 'off',
     }),
     toggle('sec.ssrf.allow_private_ip', label('sec.ssrf.allow_private_ip'), {
       hintKey: hint('sec.ssrf.allow_private_ip'),
+      dangerDirection: 'on',
     }),
     field('sec.ssrf.allowed_ports', label('sec.ssrf.allowed_ports'), 'number_list', {
       hintKey: hint('sec.ssrf.allowed_ports'),
@@ -421,6 +441,7 @@ const SEC: SectionConfig = {
     }),
     field('sec.sensitive.words', label('sec.sensitive.words'), 'lines', {
       hintKey: hint('sec.sensitive.words'),
+      dangerDirection: 'change',
     }),
     field('sec.sensitive.action', label('sec.sensitive.action'), 'select', {
       options: [
@@ -472,6 +493,7 @@ const RL_HEALTH: SectionConfig = {
   fields: [
     toggle('rl.health.auto_disable_enabled', label('rl_health.auto_disable_enabled'), {
       hintKey: hint('rl_health.auto_disable_enabled'),
+      dangerDirection: 'on',
     }),
     number(
       'rl.health.response_time_threshold_seconds',
@@ -484,6 +506,7 @@ const RL_HEALTH: SectionConfig = {
     ),
     field('rl.health.disable_keywords', label('rl_health.disable_keywords'), 'lines', {
       hintKey: hint('rl_health.disable_keywords'),
+      dangerDirection: 'change',
     }),
     toggle('rl.health.auto_enable_enabled', label('rl_health.auto_enable_enabled'), {
       hintKey: hint('rl_health.auto_enable_enabled'),
