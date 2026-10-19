@@ -2008,6 +2008,15 @@ export interface components {
             usd_exchange_rate: number;
             /** @description 等于 billing.currency_symbol（展示用积分符号）。 */
             credit_display_symbol: string;
+            /**
+             * @description 当前会话用户的可用分组与分组模型清单（modules-02 §2.14 / F-02-18）。
+             *     仅当请求携带有效会话时非空；匿名、会话失效或 Redis/DB 查询失败时
+             *     一律为空数组（公开面不返回 401/5xx）。可用分组 =
+             *     user_groups.status=1 且（user_selectable=true 或 name = 用户当前分组）；
+             *     models = 该分组下启用渠道的 supported_models 之并集，且仅保留
+             *     model_pricing.status=1 的模型，去重排序。
+             */
+            usable_groups: components["schemas"]["UsableGroup"][];
         };
         /**
          * @description 客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
@@ -2180,6 +2189,16 @@ export interface components {
             waffo_pancake?: {
                 enabled?: boolean;
             };
+        };
+        UsableGroup: {
+            /** @description user_groups.name */
+            name: string;
+            /** @description 分组描述；未设置时为空串。 */
+            description: string;
+            /** @description 分组倍率（整数百分比，100 = 1.00x）。 */
+            ratio: number;
+            /** @description 该分组可调用的模型（去重、字典序）；无可用模型时为 []。 */
+            models: string[];
         };
         HomeStats: {
             /**
@@ -2562,6 +2581,12 @@ export interface components {
             } | null;
             /** @description 是否记录登录/操作 IP。 */
             record_ip_log: boolean;
+            /**
+             * @description 用户默认模型（modules-02 F-02-18）。null = 未设置（Playground 回落到
+             *     首个可用模型）。写入值必须属于用户可用分组的模型清单（见
+             *     GET /api/status 的 usable_groups），否则 422 user.default_model_invalid。
+             */
+            default_model: string | null;
             /** Format: date-time */
             updated_at: string;
         };
@@ -2576,6 +2601,11 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             record_ip_log?: boolean;
+            /**
+             * @description 设置默认模型。空串表示清除（落库 NULL）；非空值必须属于该用户可用
+             *     分组的模型清单，否则 422 user.default_model_invalid。
+             */
+            default_model?: string;
             /** Format: date-time */
             updated_at: string;
         };
@@ -4584,6 +4614,19 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
+            /**
+             * @description default_model 不属于该用户的可用分组（type=
+             *     https://newtg.dev/problems/default_model_invalid，
+             *     title=user.default_model_invalid）。不静默落空。
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             500: components["responses"]["Error500"];
         };
     };
