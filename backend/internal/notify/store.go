@@ -74,8 +74,11 @@ type TemplateFilter struct {
 	ModifiedOnly bool
 }
 
-// UpdateInput 是一次模板写入。ExpectUpdatedAt 为 nil 表示不启用乐观锁
-// （首次补种或前端明确不带版本）；非 nil 时必须与 DB 当前值一致（409）。
+// UpdateInput 是一次模板写入。乐观锁口径（F6 裁决）：
+//   - 行已存在 → ExpectUpdatedAt 必填，缺失返回 ErrExpectationRequired（400），
+//     与当前值不一致返回 ErrConflict（409）；
+//   - 行不存在（首次插入/补种）→ 允许省略 ExpectUpdatedAt；带了却对不上行
+//     视为 ErrConflict。
 type UpdateInput struct {
 	Key     string
 	Channel Channel
@@ -221,9 +224,9 @@ func (s *Store) Get(ctx context.Context, key string, channel Channel, locale Loc
 
 // Update 写入一行并实施乐观锁。
 //
-// 行不存在时插入（内置行可能尚未补种）；存在时要求 ExpectUpdatedAt 匹配。
-// 注意 expect 为 nil 表示「不校验版本」，用于补种/恢复默认等系统写入，
-// 普通管理端 PUT 会带上响应里的 updated_at。
+// 行不存在时插入（内置行可能尚未补种），此时 ExpectUpdatedAt 可省略；
+// 行已存在时 ExpectUpdatedAt **必填**（F6：缺版本号等于无条件覆盖），
+// 与当前 updated_at 不一致返回 ErrConflict。
 func (s *Store) Update(ctx context.Context, in UpdateInput) (TemplateRow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

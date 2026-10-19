@@ -204,3 +204,37 @@ func TestIntVariablesMustBeIntegers(t *testing.T) {
 		t.Fatalf("合法整数串不应失败：%v", err)
 	}
 }
+
+func TestIntVariablesRejectNonIntegralFloats(t *testing.T) {
+	spec := mustTemplate(t, "auth.verify_code", ChannelEmail)
+	// HTTP 层用 UseNumber，但进程内调用方可能直接传 float64（L4 纵深防御）。
+	err := ValidateVariables(spec, map[string]any{
+		"code":            "428173",
+		"expires_minutes": 1.5,
+		"purpose_label":   "注册验证",
+	})
+	var invalid *ErrInvalidValue
+	if !errors.As(err, &invalid) || invalid.Variable != "expires_minutes" {
+		t.Fatalf("非整数 float64 应返回 ErrInvalidValue，得到 %v", err)
+	}
+	// 整数值的 float64 合法，渲染为整数串而不是 "10.0"。
+	if err := ValidateVariables(spec, map[string]any{
+		"code":            "428173",
+		"expires_minutes": 10.0,
+		"purpose_label":   "注册验证",
+	}); err != nil {
+		t.Fatalf("整数值 float64 不应失败：%v", err)
+	}
+	content, _ := spec.DefaultContent(LocaleEN)
+	rendered, err := RenderContent(spec, content, LocaleEN, map[string]any{
+		"code":            "428173",
+		"expires_minutes": 10.0,
+		"purpose_label":   "Sign-up verification",
+	})
+	if err != nil {
+		t.Fatalf("RenderContent: %v", err)
+	}
+	if !strings.Contains(rendered.Body, "10 minutes") || strings.Contains(rendered.Body, "10.0") {
+		t.Fatalf("float64 整数应渲染为 \"10\"：%q", rendered.Body)
+	}
+}

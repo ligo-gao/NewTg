@@ -37,8 +37,11 @@ type fakeNotificationService struct {
 	updateErr  error
 	lastUpdate notify.UpdateInput
 
-	rendered   notify.Rendered
-	previewErr error
+	rendered           notify.Rendered
+	previewErr         error
+	lastPreviewKey     string
+	lastPreviewChannel notify.Channel
+	lastPreviewLocale  notify.Locale
 
 	delivery notify.Delivery
 	testErr  error
@@ -72,7 +75,12 @@ func (f *fakeNotificationService) Update(_ context.Context, in notify.UpdateInpu
 	return f.updateView, f.updateErr
 }
 
-func (f *fakeNotificationService) Preview(_ context.Context, _ string, _ notify.Channel, _ notify.Locale, _ map[string]any) (notify.Rendered, error) {
+func (f *fakeNotificationService) Preview(_ context.Context, key string, channel notify.Channel, locale notify.Locale, _ map[string]any) (notify.Rendered, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastPreviewKey = key
+	f.lastPreviewChannel = channel
+	f.lastPreviewLocale = locale
 	return f.rendered, f.previewErr
 }
 
@@ -434,5 +442,38 @@ func TestNotificationTemplateUpdateAudited(t *testing.T) {
 	}
 	if detail := fmt.Sprint(args[9]); !strings.Contains(detail, "auth.verify_code") {
 		t.Fatalf("审计 detail 未保留 template_key：%v", args[9])
+	}
+}
+
+func TestNotificationTemplatePreviewInfersInAppOnlyChannel(t *testing.T) {
+	service := &fakeNotificationService{rendered: notify.Rendered{Body: "**维护** 摘要"}}
+	mux := notificationTestMux(t, service)
+	admin := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin}
+
+	// L2：inapp-only 键省略 channel → 从注册表推断 inapp。
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/system.announcement:preview", `{"locale":"en"}`, admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("inapp-only 预览 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastPreviewChannel != notify.ChannelInApp {
+		t.Fatalf("system.announcement 预览应推断 inapp，得到 %s", service.lastPreviewChannel)
+	}
+
+	// 显式 inapp 同样 200。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/system.announcement:preview", `{"locale":"en","channel":"inapp"}`, admin, nil))
+	if rr.Code != http.StatusOK || service.lastPreviewChannel != notify.ChannelInApp {
+		t.Fatalf("显式 inapp 预览 = %d channel=%s，期望 200/inapp", rr.Code, service.lastPreviewChannel)
+	}
+
+	// 多渠道键省略 channel → 400（不得默认 email）。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/billing.balance_low:preview", `{"locale":"en"}`, admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("多渠道预览省略 channel = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
 	}
 }

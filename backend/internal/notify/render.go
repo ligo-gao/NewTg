@@ -245,6 +245,14 @@ func formatValue(spec Variable, raw any) (string, error) {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return "", &ErrInvalidValue{Variable: spec.Name, Detail: "non-finite number"}
 		}
+		if spec.Type == VarInt {
+			// 纵深防御（L4）：HTTP 层用 UseNumber 解码，但进程内调用方可能
+			// 直接传 float64。1.5 不能渲染成 "1.5" 冒充整数变量。
+			if value != math.Trunc(value) || math.Abs(value) >= 1e15 {
+				return "", &ErrInvalidValue{Variable: spec.Name, Detail: "expected an integer"}
+			}
+			return strconv.FormatInt(int64(value), 10), nil
+		}
 		if value == math.Trunc(value) && math.Abs(value) < 1e15 {
 			return strconv.FormatInt(int64(value), 10), nil
 		}

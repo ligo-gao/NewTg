@@ -395,3 +395,43 @@ func TestTestSendRecordsFailedStatus(t *testing.T) {
 		t.Fatalf("DB 状态 = %q，want failed", status)
 	}
 }
+
+func TestUpdateInsertsWhenRowMissingWithoutExpectation(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	// L3：行不存在时（首次补种/被删除后）允许不带 expect_updated_at 插入。
+	if _, err := db.Exec(`DELETE FROM notification_templates
+		WHERE "key" = 'billing.balance_low' AND channel = 'email' AND locale = 'en'`); err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+	if _, err := service.store.Get(ctx, "billing.balance_low", ChannelEmail, LocaleEN); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("删除后应无行，得到 %v", err)
+	}
+	updated, err := service.Update(ctx, UpdateInput{
+		Key:     "billing.balance_low",
+		Channel: ChannelEmail,
+		Locale:  LocaleEN,
+		Subject: "Recreated subject",
+		Body:    "Recreated body {{.balance}}",
+		// ExpectUpdatedAt 省略：新建行豁免（既有行则必须提供）。
+	})
+	if err != nil {
+		t.Fatalf("缺行时无 expect 应允许插入：%v", err)
+	}
+	if updated.Subject != "Recreated subject" || updated.Locale != LocaleEN {
+		t.Fatalf("插入结果 = %+v", updated)
+	}
+	if !updated.Enabled {
+		t.Fatal("新建行应默认 enabled=true")
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM notification_templates
+		WHERE "key" = 'billing.balance_low' AND channel = 'email' AND locale = 'en'`).Scan(&count); err != nil {
+		t.Fatalf("count row: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("重建行数 = %d，want 1", count)
+	}
+}
