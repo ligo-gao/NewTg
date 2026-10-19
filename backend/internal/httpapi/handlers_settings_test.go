@@ -153,6 +153,7 @@ func TestSettingsPutErrorMapping(t *testing.T) {
 		{"版本冲突", settings.ErrConflict, http.StatusConflict},
 		{"未知 section", settings.ErrUnknownSection, http.StatusBadRequest},
 		{"校验失败", &settings.ValidationError{Key: "site.title", Message: "must not be empty"}, http.StatusBadRequest},
+		{"锁定键", &settings.LockedError{Key: "nav.console.require_auth"}, http.StatusUnprocessableEntity},
 		{"内部错误", errors.New("db down"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {

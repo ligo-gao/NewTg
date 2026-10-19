@@ -626,6 +626,10 @@ type statusResponse struct {
 	SystemInitialized              bool           `json:"system_initialized"`
 	Languages                      []string       `json:"languages"`
 	DefaultLanguage                string         `json:"default_language"`
+	// 派生 / 常量字段（modules-08 §1.4.1 末行）：不写入 system_settings。
+	// usd_exchange_rate 的常量真源是 billing-02 §4.1（7.1 = 71/10）。
+	USDExchangeRate     float64 `json:"usd_exchange_rate"`
+	CreditDisplaySymbol string  `json:"credit_display_symbol"`
 }
 
 type statusAuth struct {
@@ -705,7 +709,21 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		SystemInitialized:              initialized,
 		Languages:                      langs,
 		DefaultLanguage:                "en",
+		USDExchangeRate:                usdExchangeRate,
+		CreditDisplaySymbol:            publicString(public, "billing.currency_symbol", "¥"),
 	})
+}
+
+// usdExchangeRate 是模块 09 双币种展示的汇率常量（billing-02 §4.1 的唯一真源，
+// 默认 71/10 = 7.1）。它不是设置键，不落 system_settings。
+const usdExchangeRate = 7.1
+
+// publicString 读取注册表投影中的字符串值；缺失时回落 fallback。
+func publicString(values map[string]any, key, fallback string) string {
+	if value, ok := values[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
 }
 
 // publicBool 读取注册表投影中的布尔值；缺失/类型不符时按 false

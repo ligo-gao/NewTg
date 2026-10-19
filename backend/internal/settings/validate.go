@@ -28,6 +28,14 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("settings: %s: %s", e.Key, e.Message)
 }
 
+// LockedError 表示尝试把服务端锁定键改成非默认值（API 映射 422，
+// modules-08 F-08-03 的 TC-F-08-03-04）。
+type LockedError struct{ Key string }
+
+func (e *LockedError) Error() string {
+	return fmt.Sprintf("settings: %s is locked by the server", e.Key)
+}
+
 func invalid(key, format string, args ...any) error {
 	return &ValidationError{Key: key, Message: fmt.Sprintf(format, args...)}
 }
@@ -122,6 +130,9 @@ func normalizeRaw(s Setting, raw json.RawMessage) (any, error) {
 		return nil, invalid(s.Key, "unsupported registry type %q", s.Type)
 	}
 
+	if s.SanitizeHTML {
+		value = sanitizeHTML(value.(string))
+	}
 	if s.Normalize != nil {
 		value, err = s.Normalize(value)
 		if err != nil {
@@ -343,6 +354,90 @@ func emailOrEmpty(v any) error {
 	return nil
 }
 
+// pemKey 校验 PEM 外观与密钥种类。空串允许（未配置）；非空必须是
+// 带正确 BEGIN/END 标记的 PEM（支付宝私钥/公钥的保存期校验，F-08-14）。
+func pemKey(kind string) func(any) error {
+	return func(v any) error {
+		raw := strings.TrimSpace(v.(string))
+		if raw == "" {
+			return nil
+		}
+		if !strings.HasPrefix(raw, "-----BEGIN ") || !strings.Contains(raw, "-----END ") {
+			return errors.New("invalid PEM format")
+		}
+		if !strings.Contains(raw, kind) {
+			return fmt.Errorf("PEM must contain %q", kind)
+		}
+		return nil
+	}
+}
+
+// numericValue 把归一化后的数字统一成 float64（int64/float64 均可）。
+func numericValue(v any) (float64, bool) {
+	switch typed := v.(type) {
+	case int64:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+// validateRatioMap 校验扁平倍率表 {group: ratio}：值必须是 >0 的有限数字。
+func validateRatioMap(v any) error {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return errors.New("expected object")
+	}
+	for key, raw := range obj {
+		number, ok := numericValue(raw)
+		if !ok {
+			return fmt.Errorf("%q must be a number", key)
+		}
+		if math.IsNaN(number) || math.IsInf(number, 0) || number <= 0 {
+			return fmt.Errorf("%q must be a finite number > 0", key)
+		}
+	}
+	return nil
+}
+
+// validateNestedRatioMap 校验 {src_group: {dst_group: ratio}}。
+func validateNestedRatioMap(v any) error {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return errors.New("expected object")
+	}
+	for src, nested := range obj {
+		inner, ok := nested.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%q must map to an object", src)
+		}
+		if err := validateRatioMap(inner); err != nil {
+			return fmt.Errorf("%q: %v", src, err)
+		}
+	}
+	return nil
+}
+
+// validateGroupOverrides 校验 {group: rpm}：0–100000 的整数（F-08-16）。
+func validateGroupOverrides(v any) error {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return errors.New("expected object")
+	}
+	for key, raw := range obj {
+		number, ok := raw.(int64)
+		if !ok {
+			return fmt.Errorf("%q must be an integer", key)
+		}
+		if number < 0 || number > 100000 {
+			return fmt.Errorf("%q must be between 0 and 100000", key)
+		}
+	}
+	return nil
+}
+
 func positiveFiniteNumber(v any) error {
 	f, ok := v.(float64)
 	if !ok {
@@ -439,12 +534,17 @@ func normalizeIntList(v any) (any, error) {
 type sectionValidator func(values map[string]any, secretConfigured map[string]bool) error
 
 var sectionValidators = map[string]sectionValidator{
-	"auth":           validateAuthSection,
-	"auth.turnstile": validateTurnstileSection,
-	"pay":            validatePaySection,
-	"notify.smtp":    validateSMTPSection,
-	"rl.health":      validateRLHealthSection,
-	"sec":            validateSecSection,
+	"auth":              validateAuthSection,
+	"auth.turnstile":    validateTurnstileSection,
+	"pay":               validatePaySection,
+	"pay.stripe":        validateStripeSection,
+	"pay.alipay":        validateAlipaySection,
+	"pay.epay":          validateEpaySection,
+	"pay.waffo":         validateWaffoSection,
+	"pay.waffo_pancake": validateWaffoPancakeSection,
+	"notify.smtp":       validateSMTPSection,
+	"rl.health":         validateRLHealthSection,
+	"sec":               validateSecSection,
 }
 
 func validateAuthSection(values map[string]any, _ map[string]bool) error {
@@ -471,7 +571,8 @@ func validateTurnstileSection(values map[string]any, secretConfigured map[string
 }
 
 func validatePaySection(values map[string]any, _ map[string]bool) error {
-	// 档位不得低于任一已启用支付方式的最低充值（F-08-15）。
+	// 档位不得低于任一最低充值（F-08-15）。F1 修复后默认值保持 int64，
+	// 因此这里对未落库的默认档位同样生效。
 	minTopup := int64(0)
 	for _, key := range []string{
 		"pay.min_topup_cny", "pay.stripe.min_topup_cny",
@@ -492,15 +593,65 @@ func validatePaySection(values map[string]any, _ map[string]bool) error {
 	return nil
 }
 
-func validateSMTPSection(values map[string]any, _ map[string]bool) error {
-	// from_email 留空回退 username（G7-R41）；两者皆空且已开启邮箱验证时仅警告，
-	// 不阻断保存（§3.6 F-08-19）。
+func validateSMTPSection(_ map[string]any, _ map[string]bool) error {
+	// from_email 留空回退 username（G7-R41）；两者皆空且已开启邮箱验证时
+	// 只给黄条警告、不阻断保存（§3.6 F-08-19）。
 	return nil
 }
 
-func validateRLHealthSection(values map[string]any, _ map[string]bool) error {
+func validateRLHealthSection(_ map[string]any, _ map[string]bool) error {
 	// 响应时间阈值 >0 已由键级校验覆盖；此处保留 section 钩子以便未来
 	// 「关键词表整行为空 → 忽略该行」一类约束集中落点。
+	return nil
+}
+
+// 支付方式 section：启用即要求凭据完整（modules-04 §F-04-18/19/20/21）。
+func validateStripeSection(values map[string]any, secretConfigured map[string]bool) error {
+	if values["pay.stripe.enabled"] == true && !secretConfigured["pay.stripe.secret_key"] {
+		return invalid("pay.stripe.secret_key", "required when Stripe is enabled")
+	}
+	return nil
+}
+
+func validateAlipaySection(values map[string]any, secretConfigured map[string]bool) error {
+	if values["pay.alipay.enabled"] != true {
+		return nil
+	}
+	if strings.TrimSpace(asString(values["pay.alipay.app_id"])) == "" {
+		return invalid("pay.alipay.app_id", "required when Alipay is enabled")
+	}
+	if !secretConfigured["pay.alipay.private_key"] || !secretConfigured["pay.alipay.public_key"] {
+		return invalid("pay.alipay.private_key", "Alipay private/public keys are required when enabled")
+	}
+	return nil
+}
+
+func validateEpaySection(values map[string]any, _ map[string]bool) error {
+	if values["pay.epay.enabled"] != true {
+		return nil
+	}
+	if strings.TrimSpace(asString(values["pay.epay.gateway_url"])) == "" {
+		return invalid("pay.epay.gateway_url", "required when Epay is enabled")
+	}
+	if strings.TrimSpace(asString(values["pay.epay.merchant_id"])) == "" {
+		return invalid("pay.epay.merchant_id", "required when Epay is enabled")
+	}
+	return nil
+}
+
+func validateWaffoSection(values map[string]any, _ map[string]bool) error {
+	if values["pay.waffo.enabled"] == true &&
+		strings.TrimSpace(asString(values["pay.waffo.merchant_id"])) == "" {
+		return invalid("pay.waffo.merchant_id", "required when Waffo is enabled")
+	}
+	return nil
+}
+
+func validateWaffoPancakeSection(values map[string]any, _ map[string]bool) error {
+	if values["pay.waffo_pancake.enabled"] == true &&
+		strings.TrimSpace(asString(values["pay.waffo_pancake.merchant_id"])) == "" {
+		return invalid("pay.waffo_pancake.merchant_id", "required when Waffo Pancake is enabled")
+	}
 	return nil
 }
 

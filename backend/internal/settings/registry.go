@@ -43,8 +43,13 @@ type Setting struct {
 	Public bool
 	// Secret 表示密钥类：落库前 AES-256-GCM 密封，响应一律掩码。
 	Secret bool
-	// Dangerous 表示危险项：前端保存前二次确认；接口本身只回传标记。
+	// Dangerous 表示危险项：保存前需二次确认（服务端按 DangerDirection
+	// 判定本次提交是否处于风险方向）。
 	Dangerous bool
+	// DangerDirection 是风险方向："off"（关闭型风险，如关闭注册/支付）或
+	// "on"（开启型风险，如允许私网/开启自动禁用）；非布尔危险项的任意
+	// 变更都视为风险方向。
+	DangerDirection string
 	// Locked 表示服务端强制值（如 nav.console.require_auth），只读不可改。
 	Locked bool
 
@@ -55,6 +60,9 @@ type Setting struct {
 	MaxFloat *float64
 	// MaxLen 是 string/enum 的最大字符数（rune）。
 	MaxLen int
+	// SanitizeHTML 表示该字段是 HTML 入站面，写入前按 {a,p,br,strong,em}
+	// 白名单消毒（R-04-9）。
+	SanitizeHTML bool
 	// Allowed 是 enum 的闭集。
 	Allowed []string
 	// Pattern 是可选的正则约束（字符串整串匹配）。
@@ -143,11 +151,43 @@ const MaskedValue = "******"
 // 注册表构造辅助
 // ---------------------------------------------------------------------------
 
+// 风险方向（modules-08 §1.5 / §3 各危险项的数据字段表）。
+const (
+	DangerDirectionOn  = "on"
+	DangerDirectionOff = "off"
+	// DangerDirectionAny：任意变更都需要确认（如支付密钥替换）。
+	DangerDirectionAny = "any"
+)
+
 type option func(*Setting)
 
-func public() option        { return func(s *Setting) { s.Public = true } }
-func secret() option        { return func(s *Setting) { s.Secret = true } }
-func dangerous() option     { return func(s *Setting) { s.Dangerous = true } }
+func public() option { return func(s *Setting) { s.Public = true } }
+func secret() option { return func(s *Setting) { s.Secret = true } }
+
+// dangerousOn / dangerousOff 同时声明危险位与风险方向；非布尔危险项的
+// 任何变更都按 on 方向保守处理（改值即风险）。
+func dangerousOn() option {
+	return func(s *Setting) {
+		s.Dangerous = true
+		s.DangerDirection = DangerDirectionOn
+	}
+}
+
+func dangerousOff() option {
+	return func(s *Setting) {
+		s.Dangerous = true
+		s.DangerDirection = DangerDirectionOff
+	}
+}
+
+// dangerousAny：任意变更即风险（支付密钥替换、危险运营参数）。
+func dangerousAny() option {
+	return func(s *Setting) {
+		s.Dangerous = true
+		s.DangerDirection = DangerDirectionAny
+	}
+}
+
 func locked() option        { return func(s *Setting) { s.Locked = true } }
 func maxLen(n int) option   { return func(s *Setting) { s.MaxLen = n } }
 func minInt(n int64) option { return func(s *Setting) { s.MinInt = &n } }
@@ -166,6 +206,10 @@ func enum(values ...string) option {
 func pattern(expr string) option {
 	re := regexp.MustCompile(expr)
 	return func(s *Setting) { s.Pattern = re }
+}
+
+func sanitizeHTMLOption() option {
+	return func(s *Setting) { s.SanitizeHTML = true }
 }
 
 func normalize(fn func(any) (any, error)) option {
@@ -213,8 +257,8 @@ func buildRegistry() []Setting {
 			normalize(trimTrailingSlash), validate(nonEmptyAbsoluteHTTPURL)),
 		def("site.timezone", "site", TypeString, "Asia/Shanghai", public(), maxLen(64),
 			validate(ianaTimezone)),
-		def("site.footer_html", "site", TypeString, "", public(), maxLen(4096)),
-		def("site.about_html", "site", TypeString, "", public(), maxLen(8192)),
+		def("site.footer_html", "site", TypeString, "", public(), sanitizeHTMLOption(), maxLen(4096)),
+		def("site.about_html", "site", TypeString, "", public(), sanitizeHTMLOption(), maxLen(8192)),
 		def("site.filing_no", "site", TypeString, "", public(), maxLen(64)),
 		def("site.docs_url", "site", TypeString, "", public(), maxLen(256),
 			validate(urlOrRelative)),
@@ -228,7 +272,7 @@ func buildRegistry() []Setting {
 		def("site.seo.og_image_url", "site", TypeString, "", public(), maxLen(512),
 			validate(absoluteHTTPURL)),
 		def("site.home_custom_enabled", "site", TypeBool, false, public()),
-		def("site.home_custom_html", "site", TypeString, "", public(), dangerous(), maxLen(65536)),
+		def("site.home_custom_html", "site", TypeString, "", public(), dangerousOn(), sanitizeHTMLOption(), maxLen(65536)),
 		def("site.home_blocks", "site", TypeObject, map[string]any{
 			"hero": true, "live_feed": true, "features": true, "stats": true, "onboarding": true,
 		}, public(), validate(boolObjectKeys("hero", "live_feed", "features", "stats", "onboarding"))),
@@ -256,8 +300,8 @@ func buildRegistry() []Setting {
 		def("nav.modules.chat.presets", "nav", TypeBool, true),
 
 		// ==== auth（F-08-05/06/08/23）====
-		def("auth.signup_enabled", "auth", TypeBool, true, public(), dangerous()),
-		def("auth.password_login_enabled", "auth", TypeBool, true, public()),
+		def("auth.signup_enabled", "auth", TypeBool, true, public(), dangerousOff()),
+		def("auth.password_login_enabled", "auth", TypeBool, true, public(), dangerousOff()),
 		def("auth.email_verification_required", "auth", TypeBool, false, public()),
 		def("auth.email_domain_restrict_enabled", "auth", TypeBool, false),
 		def("auth.email_domain_allowlist", "auth", TypeList, []any{},
@@ -278,10 +322,10 @@ func buildRegistry() []Setting {
 		def("auth.turnstile.secret_key", "auth.turnstile", TypeString, "", secret()),
 
 		// ==== billing（F-08-09…12，§3.3）====
-		def("billing.quota_per_unit", "billing", TypeInt, int64(100), public(), dangerous(),
+		def("billing.quota_per_unit", "billing", TypeInt, int64(100), public(), dangerousOn(),
 			minInt(1), maxInt(1000000)),
 		def("billing.display_unit", "billing", TypeEnum, "credits", public(), enum("credits", "cny")),
-		def("billing.currency_symbol", "billing", TypeString, "¥", public(), dangerous(), maxLen(8),
+		def("billing.currency_symbol", "billing", TypeString, "¥", public(), dangerousOn(), maxLen(8),
 			validate(nonEmptyTrimmed("billing.currency_symbol"))),
 		def("billing.signup_grant_credits", "billing", TypeInt, int64(0),
 			minInt(0), maxInt(1000000000000)),
@@ -298,31 +342,30 @@ func buildRegistry() []Setting {
 			minInt(0), maxInt(1000000000000)),
 		def("billing.display_token_stat_enabled", "billing", TypeBool, true, public()),
 		def("billing.expose_group_ratios", "billing", TypeBool, false),
-		def("billing.group_group_ratio", "billing", TypeObject, map[string]any{}),
+		def("billing.group_group_ratio", "billing", TypeObject, map[string]any{}, validate(validateNestedRatioMap)),
 
 		// ==== pay（F-08-13…15）====
-		def("pay.online_enabled", "pay", TypeBool, true, public(), dangerous()),
+		def("pay.online_enabled", "pay", TypeBool, true, public(), dangerousOff()),
 		def("pay.amount_presets_cny", "pay", TypeList, []any{
 			int64(10), int64(30), int64(50), int64(100), int64(300), int64(500),
 		}, public(), element(positiveIntElement), normalize(normalizeIntList)),
 		def("pay.min_topup_cny", "pay", TypeInt, int64(10), minInt(1), maxInt(100000)),
-		def("pay.force_complete_max_amount", "pay", TypeInt, int64(100000), dangerous(),
+		def("pay.force_complete_max_amount", "pay", TypeInt, int64(100000), dangerousOn(),
 			minInt(1)),
 		// 充值分组倍率：未配置的分组回退 1.0（modules-04 F-04-01）。
-		def("pay.topup_group_ratio", "pay", TypeObject, map[string]any{}),
+		def("pay.topup_group_ratio", "pay", TypeObject, map[string]any{}, validate(validateRatioMap)),
 
 		// ==== pay.stripe（F-08-13）====
 		def("pay.stripe.enabled", "pay.stripe", TypeBool, false, public()),
-		def("pay.stripe.secret_key", "pay.stripe", TypeString, "", secret()),
-		def("pay.stripe.webhook_secret", "pay.stripe", TypeString, "", secret()),
-		def("pay.stripe.publishable_key", "pay.stripe", TypeString, "", public(), maxLen(256)),
+		def("pay.stripe.secret_key", "pay.stripe", TypeString, "", secret(), dangerousAny()),
+		def("pay.stripe.webhook_secret", "pay.stripe", TypeString, "", secret(), dangerousAny()),
 		def("pay.stripe.min_topup_cny", "pay.stripe", TypeInt, int64(10), minInt(1), maxInt(100000)),
 
 		// ==== pay.alipay（F-08-14）====
 		def("pay.alipay.enabled", "pay.alipay", TypeBool, false, public()),
 		def("pay.alipay.app_id", "pay.alipay", TypeString, "", maxLen(32)),
-		def("pay.alipay.private_key", "pay.alipay", TypeString, "", secret()),
-		def("pay.alipay.public_key", "pay.alipay", TypeString, "", secret()),
+		def("pay.alipay.private_key", "pay.alipay", TypeString, "", secret(), dangerousAny(), validate(pemKey("PRIVATE KEY"))),
+		def("pay.alipay.public_key", "pay.alipay", TypeString, "", secret(), dangerousAny(), validate(pemKey("PUBLIC KEY"))),
 		def("pay.alipay.gateway_url", "pay.alipay", TypeEnum,
 			"https://openapi.alipay.com/gateway.do",
 			enum("https://openapi.alipay.com/gateway.do",
@@ -333,18 +376,18 @@ func buildRegistry() []Setting {
 		def("pay.epay.enabled", "pay.epay", TypeBool, false, public()),
 		def("pay.epay.gateway_url", "pay.epay", TypeString, "",
 			maxLen(512), validate(absoluteHTTPURL)),
-		def("pay.epay.merchant_id", "pay.epay", TypeString, "", maxLen(128), dangerous()),
+		def("pay.epay.merchant_id", "pay.epay", TypeString, "", maxLen(128), dangerousOn()),
 
 		def("pay.creem.enabled", "pay.creem", TypeBool, false, public()),
 		def("pay.creem.test_mode", "pay.creem", TypeBool, false),
 
 		def("pay.waffo.enabled", "pay.waffo", TypeBool, false, public()),
 		def("pay.waffo.sandbox", "pay.waffo", TypeBool, false),
-		def("pay.waffo.merchant_id", "pay.waffo", TypeString, "", maxLen(128), dangerous()),
+		def("pay.waffo.merchant_id", "pay.waffo", TypeString, "", maxLen(128), dangerousOn()),
 		def("pay.waffo.min_topup_cny", "pay.waffo", TypeInt, int64(10), minInt(1), maxInt(100000)),
 
 		def("pay.waffo_pancake.enabled", "pay.waffo_pancake", TypeBool, false, public()),
-		def("pay.waffo_pancake.merchant_id", "pay.waffo_pancake", TypeString, "", maxLen(128), dangerous()),
+		def("pay.waffo_pancake.merchant_id", "pay.waffo_pancake", TypeString, "", maxLen(128), dangerousOn()),
 		def("pay.waffo_pancake.min_topup_cny", "pay.waffo_pancake", TypeInt, int64(10), minInt(1), maxInt(100000)),
 		def("pay.waffo_pancake.store_id", "pay.waffo_pancake", TypeString, "", maxLen(128)),
 		def("pay.waffo_pancake.product_id", "pay.waffo_pancake", TypeString, "", maxLen(128)),
@@ -353,10 +396,10 @@ func buildRegistry() []Setting {
 		def("rl.user_model_rpm", "rl", TypeInt, int64(60), minInt(0), maxInt(100000)),
 		def("rl.token_rpm", "rl", TypeInt, int64(0), minInt(0), maxInt(100000)),
 		def("rl.user_global_rpm", "rl", TypeInt, int64(0), minInt(0), maxInt(100000)),
-		def("rl.group_overrides", "rl", TypeObject, map[string]any{}),
+		def("rl.group_overrides", "rl", TypeObject, map[string]any{}, validate(validateGroupOverrides)),
 
 		// ==== rl.health（§3.16 F-08-45，P0）====
-		def("rl.health.auto_disable_enabled", "rl.health", TypeBool, false, dangerous()),
+		def("rl.health.auto_disable_enabled", "rl.health", TypeBool, false, dangerousOn()),
 		def("rl.health.response_time_threshold_seconds", "rl.health", TypeNumber, 5.0,
 			validate(positiveFiniteNumber)),
 		def("rl.health.disable_keywords", "rl.health", TypeString,
@@ -364,14 +407,14 @@ func buildRegistry() []Setting {
 				"You exceeded your current quota\nPermission denied\n"+
 				"The security token included in the request is invalid\n"+
 				"Operation not allowed\nYour account is not authorized",
-			dangerous(), maxLen(8192)),
+			dangerousOn(), maxLen(8192)),
 		def("rl.health.auto_enable_enabled", "rl.health", TypeBool, false),
 		def("rl.health.test_interval_minutes", "rl.health", TypeInt, int64(10), minInt(1), maxInt(1440)),
 		def("rl.health.test_concurrency", "rl.health", TypeInt, int64(5), minInt(1), maxInt(50)),
 
 		// ==== sec（F-08-17/18，§3.5）====
-		def("sec.ssrf.enabled", "sec", TypeBool, true),
-		def("sec.ssrf.allow_private_ip", "sec", TypeBool, false),
+		def("sec.ssrf.enabled", "sec", TypeBool, true, dangerousOff()),
+		def("sec.ssrf.allow_private_ip", "sec", TypeBool, false, dangerousOn()),
 		def("sec.ssrf.allowed_ports", "sec", TypeList, []any{int64(443)},
 			element(portElement)),
 		def("sec.ssrf.domain_mode", "sec", TypeEnum, "allowlist",
@@ -382,7 +425,7 @@ func buildRegistry() []Setting {
 		def("sec.sensitive.scope", "sec", TypeObject, map[string]any{
 			"prompt": true, "system": false,
 		}, validate(boolObjectKeys("prompt", "system"))),
-		def("sec.sensitive.words", "sec", TypeList, []any{}, dangerous(),
+		def("sec.sensitive.words", "sec", TypeList, []any{}, dangerousOn(),
 			element(validateSensitiveWord), validate(maxItems(5000, "sec.sensitive.words"))),
 		def("sec.sensitive.action", "sec", TypeEnum, "block", enum("block", "log")),
 
@@ -400,7 +443,11 @@ func buildRegistry() []Setting {
 	}
 }
 
-// cloneValue 深拷贝 JSON 形态的值。
+// cloneValue 深拷贝 JSON 形态的值，并保持整数精度。
+//
+// 不能用 json.Unmarshal 到 any：那会把 int64 默认值变成 float64，
+// validatePaySection 的 int64 断言随即失效（F1）。这里复用写入路径的
+// UseNumber + normalizeScalars，保证默认值与落库值同型。
 func cloneValue(v any) any {
 	if v == nil {
 		return nil
@@ -409,11 +456,11 @@ func cloneValue(v any) any {
 	if err != nil {
 		return v
 	}
-	var out any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	decoded, err := decodeJSON(raw)
+	if err != nil {
 		return v
 	}
-	return out
+	return normalizeScalars(decoded)
 }
 
 // sortedKeys 供稳定输出（审计 diff 与测试）。

@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -149,4 +150,184 @@ func TestSensitiveWordLimit(t *testing.T) {
 	if _, err := normalizeRaw(setting, raw); err == nil {
 		t.Fatal("5001 个敏感词应被拒绝")
 	}
+}
+
+// F1：默认值深拷贝必须保持整数类型，否则 section 级 int64 校验会被静默跳过。
+func TestDefaultValuePreservesInt64(t *testing.T) {
+	for _, key := range []string{
+		"billing.quota_per_unit",
+		"pay.amount_presets_cny",
+		"site.rankings_min_samples",
+		"rl.user_model_rpm",
+	} {
+		setting, ok := Lookup(key)
+		if !ok {
+			t.Fatalf("%q 未登记", key)
+		}
+		value := DefaultValue(setting)
+		switch typed := value.(type) {
+		case int64:
+			// 单值默认。
+		case []any:
+			for _, item := range typed {
+				if _, ok := item.(int64); !ok {
+					t.Fatalf("%q 列表元素类型 = %T，期望 int64", key, item)
+				}
+			}
+		default:
+			t.Fatalf("%q 默认值类型 = %T，期望 int64/[]int64", key, value)
+		}
+	}
+}
+
+func TestDangerousDirectionsDeclared(t *testing.T) {
+	for _, setting := range All() {
+		if !setting.Dangerous {
+			if setting.DangerDirection != "" {
+				t.Fatalf("%q 非危险项却有 direction=%q", setting.Key, setting.DangerDirection)
+			}
+			continue
+		}
+		switch setting.DangerDirection {
+		case DangerDirectionOn, DangerDirectionOff, DangerDirectionAny:
+		default:
+			t.Fatalf("%q 危险项 direction=%q 非法", setting.Key, setting.DangerDirection)
+		}
+	}
+}
+
+// 公开 / 危险 / 密钥三份金集合：注册表扩张必须先改这里（契约审计点）。
+func TestRegistryGoldenSets(t *testing.T) {
+	public := map[string]bool{}
+	var dangerous, secrets []string
+	for _, setting := range All() {
+		if setting.Public {
+			public[setting.Key] = true
+		}
+		if setting.Dangerous {
+			dangerous = append(dangerous, setting.Key+":"+setting.DangerDirection)
+		}
+		if setting.Secret {
+			secrets = append(secrets, setting.Key)
+		}
+	}
+	wantPublic := []string{
+		"site.title", "site.logo_url", "site.server_address", "site.timezone",
+		"site.footer_html", "site.about_html", "site.filing_no", "site.docs_url",
+		"site.status_page_url", "site.rankings_min_samples", "site.oss_credits",
+		"site.seo.description", "site.seo.og_image_url", "site.home_custom_enabled",
+		"site.home_custom_html", "site.home_blocks", "site.demo.enabled",
+		"nav.home.enabled", "nav.home.require_auth", "nav.console.enabled",
+		"nav.console.require_auth", "nav.pricing.enabled", "nav.pricing.require_auth",
+		"nav.rankings.enabled", "nav.rankings.require_auth", "nav.docs.enabled",
+		"nav.about.enabled", "nav.modules.console", "nav.modules.chat.playground",
+		"auth.signup_enabled", "auth.password_login_enabled",
+		"auth.email_verification_required", "auth.passkey.enabled",
+		"auth.turnstile.enabled", "auth.turnstile.site_key",
+		"billing.quota_per_unit", "billing.display_unit", "billing.currency_symbol",
+		"billing.signup_grant_requires_verified_email", "billing.display_token_stat_enabled",
+		"pay.online_enabled", "pay.amount_presets_cny",
+		"pay.stripe.enabled", "pay.alipay.enabled", "pay.alipay.sandbox",
+		"pay.epay.enabled", "pay.creem.enabled", "pay.waffo.enabled",
+		"pay.waffo_pancake.enabled",
+	}
+	if len(public) != len(wantPublic) {
+		t.Fatalf("公开键数量 = %d，期望 %d", len(public), len(wantPublic))
+	}
+	for _, key := range wantPublic {
+		if !public[key] {
+			t.Fatalf("公开键 %q 缺失", key)
+		}
+	}
+	sort.Strings(dangerous)
+	wantDangerous := []string{
+		"auth.password_login_enabled:off", "auth.signup_enabled:off",
+		"billing.currency_symbol:on", "billing.quota_per_unit:on",
+		"pay.alipay.private_key:any", "pay.alipay.public_key:any",
+		"pay.epay.merchant_id:on", "pay.force_complete_max_amount:on",
+		"pay.online_enabled:off", "pay.stripe.secret_key:any",
+		"pay.stripe.webhook_secret:any", "pay.waffo.merchant_id:on",
+		"pay.waffo_pancake.merchant_id:on", "rl.health.auto_disable_enabled:on",
+		"rl.health.disable_keywords:on", "sec.sensitive.words:on",
+		"sec.ssrf.allow_private_ip:on", "sec.ssrf.enabled:off",
+		"site.home_custom_html:on",
+	}
+	if strings.Join(dangerous, ",") != strings.Join(wantDangerous, ",") {
+		t.Fatalf("危险键集合 = %v\n期望 = %v", dangerous, wantDangerous)
+	}
+	sort.Strings(secrets)
+	wantSecrets := []string{
+		"auth.turnstile.secret_key", "notify.smtp.password",
+		"pay.alipay.private_key", "pay.alipay.public_key",
+		"pay.stripe.secret_key", "pay.stripe.webhook_secret",
+	}
+	if strings.Join(secrets, ",") != strings.Join(wantSecrets, ",") {
+		t.Fatalf("密钥集合 = %v\n期望 = %v", secrets, wantSecrets)
+	}
+	if _, ok := Lookup("pay.stripe.publishable_key"); ok {
+		t.Fatal("pay.stripe.publishable_key 未在 spec 登记，不得进入注册表（F2）")
+	}
+}
+
+func TestSectionValidators(t *testing.T) {
+	merged := sectionDefaults("pay")
+	merged["pay.stripe.min_topup_cny"] = int64(100)
+	// 默认档位含 10/30/50，低于 100 必须被拒（F1 回归点）。
+	if err := validatePaySection(merged, nil); err == nil {
+		t.Fatal("默认档位低于 min_topup 时应被拒")
+	}
+
+	merged = sectionDefaults("pay.stripe")
+	merged["pay.stripe.enabled"] = true
+	if err := validateStripeSection(merged, nil); err == nil {
+		t.Fatal("启用 Stripe 但无 secret 应被拒")
+	}
+	merged = sectionDefaults("pay.alipay")
+	merged["pay.alipay.enabled"] = true
+	if err := validateAlipaySection(merged, nil); err == nil {
+		t.Fatal("启用支付宝但无 app_id/密钥应被拒")
+	}
+
+	if _, err := normalizeRaw(mustLookup(t, "pay.topup_group_ratio"),
+		json.RawMessage(`{"vip":"1.2"}`)); err == nil {
+		t.Fatal("倍率表字符串值应被拒")
+	}
+	if _, err := normalizeRaw(mustLookup(t, "pay.topup_group_ratio"),
+		json.RawMessage(`{"vip":-1}`)); err == nil {
+		t.Fatal("倍率表负值应被拒")
+	}
+	if _, err := normalizeRaw(mustLookup(t, "billing.group_group_ratio"),
+		json.RawMessage(`{"a":{"b":0}}`)); err == nil {
+		t.Fatal("嵌套倍率 0 应被拒")
+	}
+	if _, err := normalizeRaw(mustLookup(t, "rl.group_overrides"),
+		json.RawMessage(`{"vip":-1}`)); err == nil {
+		t.Fatal("分组限速负值应被拒")
+	}
+	if _, err := normalizeRaw(mustLookup(t, "pay.alipay.private_key"),
+		json.RawMessage(`"not-a-pem"`)); err == nil {
+		t.Fatal("非法 PEM 应被拒")
+	}
+	if _, err := normalizeRaw(mustLookup(t, "pay.alipay.private_key"),
+		json.RawMessage(`"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"`)); err != nil {
+		t.Fatalf("合法 PEM 被拒: %v", err)
+	}
+}
+
+func sectionDefaults(section string) map[string]any {
+	rows, _ := Section(section)
+	out := make(map[string]any, len(rows))
+	for _, setting := range rows {
+		out[setting.Key] = DefaultValue(setting)
+	}
+	return out
+}
+
+func mustLookup(t *testing.T, key string) Setting {
+	t.Helper()
+	setting, ok := Lookup(key)
+	if !ok {
+		t.Fatalf("%q 未登记", key)
+	}
+	return setting
 }

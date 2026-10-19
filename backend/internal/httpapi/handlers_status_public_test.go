@@ -58,6 +58,8 @@ func TestPublicStatusSettingsProjection(t *testing.T) {
 		Pay struct {
 			OnlineEnabled bool `json:"online_enabled"`
 		} `json:"pay"`
+		USDExchangeRate     float64 `json:"usd_exchange_rate"`
+		CreditDisplaySymbol string  `json:"credit_display_symbol"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("JSON 非法: %v", err)
@@ -76,6 +78,13 @@ func TestPublicStatusSettingsProjection(t *testing.T) {
 	}
 	if !body.Auth.Passkey.Enabled {
 		t.Fatal("auth.passkey.enabled 未按配置下发")
+	}
+	// §1.4.1 派生字段：汇率常量 7.1，显示符号恒等于 billing.currency_symbol。
+	if body.USDExchangeRate != 7.1 {
+		t.Fatalf("usd_exchange_rate = %v，期望 7.1", body.USDExchangeRate)
+	}
+	if body.CreditDisplaySymbol != "¥" {
+		t.Fatalf("credit_display_symbol = %q，期望 ¥", body.CreditDisplaySymbol)
 	}
 }
 

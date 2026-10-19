@@ -315,29 +315,157 @@ func TestIntegrationSettingsValidationAndAtomicity(t *testing.T) {
 		t.Fatalf("跨 section 键应被拒，实际 %v", err)
 	}
 
-	// 锁定键不可改为 false。
+	// 锁定键不可改为 false（422，F-08-03 TC-04）。
+	var locked *LockedError
 	if _, err := svc.Put(ctx, UpdateInput{Section: "nav", Values: map[string]json.RawMessage{
 		"nav.console.require_auth": json.RawMessage(`false`),
-	}}); !errors.As(err, &verr) {
-		t.Fatalf("锁定键置 false 应被拒，实际 %v", err)
+	}}); !errors.As(err, &locked) {
+		t.Fatalf("锁定键置 false 应返回 LockedError，实际 %v", err)
 	}
 }
 
-func TestIntegrationSettingsDangerousRequiresConfirmation(t *testing.T) {
+func TestIntegrationSettingsDangerousDirection(t *testing.T) {
 	db := openSettingsTestDB(t)
 	snapshotAndClean(t, db, "pay")
+	snapshotAndClean(t, db, "sec")
 	svc, _ := NewService(ServiceConfig{DB: db})
 	ctx := context.Background()
 
-	values := map[string]json.RawMessage{"pay.online_enabled": json.RawMessage(`false`)}
+	// 关闭型风险：默认 true → false 需要确认；true（安全方向）放行。
 	var verr *ValidationError
-	if _, err := svc.Put(ctx, UpdateInput{Section: "pay", Values: values}); !errors.As(err, &verr) {
-		t.Fatalf("危险项未确认应被拒，实际 %v", err)
+	if _, err := svc.Put(ctx, UpdateInput{Section: "pay", Values: map[string]json.RawMessage{
+		"pay.online_enabled": json.RawMessage(`false`),
+	}}); !errors.As(err, &verr) {
+		t.Fatalf("关闭支付未确认应被拒，实际 %v", err)
+	}
+	confirmed, err := svc.Put(ctx, UpdateInput{Section: "pay", Values: map[string]json.RawMessage{
+		"pay.online_enabled": json.RawMessage(`false`),
+	}, DangerousConfirmed: true})
+	if err != nil {
+		t.Fatalf("确认后应允许关闭支付: %v", err)
 	}
 	if _, err := svc.Put(ctx, UpdateInput{
-		Section: "pay", Values: values, DangerousConfirmed: true,
+		Section:         "pay",
+		Values:          map[string]json.RawMessage{"pay.online_enabled": json.RawMessage(`true`)},
+		ExpectUpdatedAt: confirmed.UpdatedAt,
 	}); err != nil {
-		t.Fatalf("确认后应允许保存: %v", err)
+		t.Fatalf("安全方向（重新开启支付）不应要求确认: %v", err)
+	}
+
+	// 开启型风险：allow_private_ip false（安全）放行，true 需要确认。
+	safe, err := svc.Put(ctx, UpdateInput{Section: "sec", Values: map[string]json.RawMessage{
+		"sec.ssrf.allow_private_ip": json.RawMessage(`false`),
+	}})
+	if err != nil {
+		t.Fatalf("安全方向（保持禁止私网）不应要求确认: %v", err)
+	}
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:         "sec",
+		Values:          map[string]json.RawMessage{"sec.ssrf.allow_private_ip": json.RawMessage(`true`)},
+		ExpectUpdatedAt: safe.UpdatedAt,
+	}); !errors.As(err, &verr) {
+		t.Fatalf("允许私网未确认应被拒，实际 %v", err)
+	}
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:            "sec",
+		Values:             map[string]json.RawMessage{"sec.ssrf.allow_private_ip": json.RawMessage(`true`)},
+		ExpectUpdatedAt:    safe.UpdatedAt,
+		DangerousConfirmed: true,
+	}); err != nil {
+		t.Fatalf("确认后应允许允许私网: %v", err)
+	}
+
+	// GET 必须暴露 danger_direction，供前端只对风险方向弹确认框。
+	view, err := svc.Get(ctx, "pay")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	found := false
+	for _, item := range view.Items {
+		if item.Key == "pay.online_enabled" {
+			found = true
+			if !item.Dangerous || item.DangerDirection != DangerDirectionOff {
+				t.Fatalf("pay.online_enabled danger=%v direction=%q", item.Dangerous, item.DangerDirection)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("pay.online_enabled 未返回")
+	}
+}
+
+// 支付密钥属 any 方向：任何替换/清除都要确认，没有「安全方向」。
+func TestIntegrationSettingsPaymentSecretRequiresAnyConfirmation(t *testing.T) {
+	db := openSettingsTestDB(t)
+	snapshotAndClean(t, db, "pay.stripe")
+	svc, _ := NewService(ServiceConfig{DB: db, Sealer: fakeSealer{prefix: "sealed:"}})
+	ctx := context.Background()
+
+	var verr *ValidationError
+	if _, err := svc.Put(ctx, UpdateInput{Section: "pay.stripe", Values: map[string]json.RawMessage{
+		"pay.stripe.secret_key": json.RawMessage(`"sk_test_123"`),
+	}}); !errors.As(err, &verr) {
+		t.Fatalf("支付密钥未确认应被拒，实际 %v", err)
+	}
+	if _, err := svc.Put(ctx, UpdateInput{Section: "pay.stripe", Values: map[string]json.RawMessage{
+		"pay.stripe.secret_key": json.RawMessage(`"sk_test_123"`),
+	}, DangerousConfirmed: true}); err != nil {
+		t.Fatalf("确认后应允许保存支付密钥: %v", err)
+	}
+	view, _ := svc.Get(ctx, "pay.stripe")
+	for _, item := range view.Items {
+		if item.Key == "pay.stripe.secret_key" {
+			if !item.Dangerous || item.DangerDirection != DangerDirectionAny {
+				t.Fatalf("secret danger=%v direction=%q", item.Dangerous, item.DangerDirection)
+			}
+		}
+	}
+}
+
+// F14：并发同一 expect_updated_at 的两次 Put，恰好一个成功、一个 409。
+func TestIntegrationSettingsConcurrentPutConflict(t *testing.T) {
+	db := openSettingsTestDB(t)
+	snapshotAndClean(t, db, "site")
+	svc, _ := NewService(ServiceConfig{DB: db})
+	ctx := context.Background()
+
+	initial, err := svc.Get(ctx, "site")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if initial.UpdatedAt != nil {
+		t.Fatalf("清理后 updated_at 应为 null，实际 %v", initial.UpdatedAt)
+	}
+
+	results := make(chan error, 2)
+	start := make(chan struct{})
+	for _, title := range []string{"A", "B"} {
+		title := title
+		go func() {
+			<-start
+			_, err := svc.Put(ctx, UpdateInput{
+				Section:         "site",
+				Values:          map[string]json.RawMessage{"site.title": json.RawMessage(`"` + title + `"`)},
+				ExpectUpdatedAt: initial.UpdatedAt,
+			})
+			results <- err
+		}()
+	}
+	close(start)
+
+	var success, conflict int
+	for i := 0; i < 2; i++ {
+		switch err := <-results; {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrConflict):
+			conflict++
+		default:
+			t.Fatalf("意外错误: %v", err)
+		}
+	}
+	if success != 1 || conflict != 1 {
+		t.Fatalf("success=%d conflict=%d，期望各 1", success, conflict)
 	}
 }
 

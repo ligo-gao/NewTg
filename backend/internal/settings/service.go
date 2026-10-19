@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -73,7 +74,9 @@ type Item struct {
 	Public    bool   `json:"public"`
 	Secret    bool   `json:"secret"`
 	Dangerous bool   `json:"dangerous"`
-	Locked    bool   `json:"locked"`
+	// DangerDirection 是危险项的风险方向（"on"/"off"）；非危险项为空。
+	DangerDirection string `json:"danger_direction"`
+	Locked          bool   `json:"locked"`
 }
 
 // SectionView 是 GET /api/settings 的响应体。UpdatedAt 为 section 内各键
@@ -115,13 +118,14 @@ func (s *Service) Get(ctx context.Context, section string) (SectionView, error) 
 	var latest time.Time
 	for _, setting := range rows {
 		item := Item{
-			Key:       setting.Key,
-			Type:      setting.Type,
-			Default:   DefaultValue(setting),
-			Public:    setting.Public,
-			Secret:    setting.Secret,
-			Dangerous: setting.Dangerous,
-			Locked:    setting.Locked,
+			Key:             setting.Key,
+			Type:            setting.Type,
+			Default:         DefaultValue(setting),
+			Public:          setting.Public,
+			Secret:          setting.Secret,
+			Dangerous:       setting.Dangerous,
+			DangerDirection: setting.DangerDirection,
+			Locked:          setting.Locked,
 		}
 		if row, exists := stored[setting.Key]; exists {
 			if setting.Secret {
@@ -196,16 +200,14 @@ func (s *Service) Put(ctx context.Context, in UpdateInput) (UpdateResult, error)
 				return UpdateResult{}, err
 			}
 			if decoded != setting.Default {
-				return UpdateResult{}, invalid(key, "key is locked by the server")
+				return UpdateResult{}, &LockedError{Key: key}
 			}
 			// 锁定键允许提交（前端只读也可整体回传），但始终以服务端值为准。
 			continue
 		}
-		// 危险项必须显式确认：静默保存会让「交换比/注册开关/词表」一类
-		// 影响全站的变更缺少二次确认证据（§1.5、F-08-09/F-08-18）。
-		if setting.Dangerous && !in.DangerousConfirmed {
-			return UpdateResult{}, invalid(key, "dangerous setting requires confirmation")
-		}
+		// 危险项按「风险方向」判断：只有关闭型风险被置为 false / 开启型风险
+		// 被置为 true（非布尔项：值发生变化）时才要求确认；安全方向放行。
+		// 具体判定在读到当前值之后进行，见 enforceDangerous。
 		if isClear {
 			clears[key] = struct{}{}
 			continue
@@ -249,6 +251,9 @@ func (s *Service) Put(ctx context.Context, in UpdateInput) (UpdateResult, error)
 	currentMax := maxUpdatedAt(current)
 	if !sameTimePointer(in.ExpectUpdatedAt, currentMax) {
 		return UpdateResult{}, ErrConflict
+	}
+	if err := enforceDangerous(in, byKey, provided, clears, current); err != nil {
+		return UpdateResult{}, err
 	}
 
 	// 3) 合并视图（默认值 → 已存值 → 本次新值）用于 section 级交叉校验。
@@ -390,6 +395,95 @@ func (s *Service) Put(ctx context.Context, in UpdateInput) (UpdateResult, error)
 		}
 	}
 	return result, nil
+}
+
+// enforceDangerous 只对「本次真正提交 + 处于风险方向」的危险键要求确认。
+//
+// 方向语义（contract v2 / modules-08 §1.5）：
+//   - bool + off：目标值为 false 才是风险（如关闭注册/支付）；
+//   - bool + on ：目标值为 true 才是风险（如允许私网/开启自动禁用）；
+//   - 非 bool   ：任意值变化都按风险处理（兑换比、词表、危险密钥）；
+//   - clear     ：回落默认值后再按上述规则判断；值未变化则不算风险。
+func enforceDangerous(in UpdateInput, byKey map[string]Setting,
+	provided map[string]any, clears map[string]struct{}, current map[string]storedRow) error {
+	if in.DangerousConfirmed {
+		return nil
+	}
+	for key := range in.Values {
+		setting, ok := byKey[key]
+		if !ok || !setting.Dangerous {
+			continue
+		}
+		risky, err := dangerousChange(setting, key, provided, clears, current)
+		if err != nil {
+			return err
+		}
+		if risky {
+			return invalid(key,
+				"dangerous setting requires dangerous_confirmed=true for the %s direction",
+				directionLabel(setting))
+		}
+	}
+	return nil
+}
+
+func directionLabel(setting Setting) string {
+	switch setting.DangerDirection {
+	case DangerDirectionOff:
+		return "off"
+	case DangerDirectionAny:
+		return "any"
+	default:
+		return "on"
+	}
+}
+
+func dangerousChange(setting Setting, key string,
+	provided map[string]any, clears map[string]struct{}, current map[string]storedRow) (bool, error) {
+	_, isProvided := provided[key]
+	_, isClear := clears[key]
+	if !isProvided && !isClear {
+		return false, nil // 空串/掩码的密钥写入 = 无变化
+	}
+	row, hasRow := current[key]
+
+	if setting.Secret {
+		// 密钥以密文落库，无法与明文比较；保守地认为「写入或清除已配置值」
+		// 都是变化，必须确认。clear 一个从未配置的密钥不算变化。
+		if isClear {
+			return hasRow, nil
+		}
+		return true, nil
+	}
+
+	before := DefaultValue(setting)
+	if hasRow {
+		if decoded := decodeStoredValue(row.raw); decoded != nil {
+			before = decoded
+		}
+	}
+	after := DefaultValue(setting)
+	if isProvided {
+		after = provided[key]
+	}
+
+	if setting.Type == TypeBool {
+		beforeBool, _ := before.(bool)
+		afterBool, _ := after.(bool)
+		if beforeBool == afterBool {
+			return false, nil
+		}
+		switch setting.DangerDirection {
+		case DangerDirectionOff:
+			return !afterBool, nil
+		case DangerDirectionAny:
+			return true, nil
+		default: // on
+			return afterBool, nil
+		}
+	}
+	// 非布尔危险项：值变化即风险（"on" 与 "any" 同义；off 不用于非布尔项）。
+	return !reflect.DeepEqual(before, after), nil
 }
 
 // PublicSnapshot 聚合注册表中 public:true 的键（§1.4.1）。DB 缺值回落默认值。

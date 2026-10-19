@@ -225,6 +225,11 @@ func settingsErrorFields(err error) (status int, title, detail string) {
 	case errors.Is(err, settings.ErrSecretSealerRequired):
 		return http.StatusInternalServerError, "Internal Server Error", ""
 	default:
+		var locked *settings.LockedError
+		if errors.As(err, &locked) {
+			// F-08-03 TC-04：锁定键（nav.console.require_auth）被改时 422。
+			return http.StatusUnprocessableEntity, "Setting is read-only", locked.Error()
+		}
 		var verr *settings.ValidationError
 		if errors.As(err, &verr) {
 			return http.StatusBadRequest, "Invalid settings", verr.Error()
@@ -239,6 +244,8 @@ func settingsProblemType(status int) string {
 		return authProblemBadRequest
 	case http.StatusConflict:
 		return authProblemConflict
+	case http.StatusUnprocessableEntity:
+		return problemTypeValidationFailed
 	default:
 		return authProblemInternal
 	}

@@ -249,17 +249,26 @@ func (c *Center) Save(ctx context.Context, key string, value any, expectUpdatedA
 // settings 服务在一个事务里写入多个键，无法逐键走 Save（那会在事务外重复写库）。
 // 提交成功后调用本方法：先从数据库重读每个键到本地快照，再逐键 PUBLISH
 // newtg:cfg:changed，保证其它副本走同一失效路径（≤1s 生效）。
-// 单键重载失败立即返回；已广播的键保持有效，其余键由 snapshotTTL 兜底。
+//
+// 失败策略（F6/F7）：使用 context.WithoutCancel——配置已在 DB 提交，客户端
+// 断开不能阻止其它副本失效；单个键失败继续处理其余键并聚合错误，避免一个
+// 坏键让后面的键永久停留在旧快照。Redis 未装配时只刷新本地快照，不 Publish。
 func (c *Center) Refresh(ctx context.Context, keys []string) error {
+	ctx = context.WithoutCancel(ctx)
+	var errs []error
 	for _, key := range keys {
 		if err := c.reloadKey(ctx, key); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
+		}
+		if c.rdb == nil {
+			continue
 		}
 		if err := c.rdb.Publish(ctx, ChangedChannel, key).Err(); err != nil {
-			return fmt.Errorf("configcenter: publish %q: %w", key, err)
+			errs = append(errs, fmt.Errorf("configcenter: publish %q: %w", key, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Subscribe 订阅冻结频道并启动后台监听；ctx 结束时停止并释放订阅。
