@@ -26,6 +26,7 @@ import (
 	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/relay/crossproto"
 	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/relay/multimodal"
 	"newtg/gateway/internal/relay/stream"
 	"newtg/gateway/internal/relay/usage"
 	"newtg/gateway/internal/store"
@@ -205,7 +206,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if inactivity <= 0 {
 		inactivity = streamInactivityTimeout
 	}
-	return &RelayHandler{
+	h := &RelayHandler{
 		channels:         opts.Channels,
 		tokens:           opts.Tokens,
 		access:           opts.Access,
@@ -219,6 +220,25 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		multimodal:       opts.Multimodal,
 		config:           opts.Config,
 	}
+	// M4 T4：生产装配默认注入真实多模态分派器（T1 复审 F2/F4/F5 与 R-02 的
+	// 落点）。显式传入的 Multimodal 优先（测试可替换）；nil 不再表示 501——
+	// 多模态端点与 chat 共用同一套候选/渠道/计费/客户端接缝。
+	if h.multimodal == nil {
+		h.multimodal = multimodal.NewDispatcher(multimodal.Options{
+			Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+				return h.channels.Candidates(ctx, rc.OriginModel, rc.UsingGroup)
+			},
+			ResolveChannel: func(ctx context.Context, rc *contract.RelayContext, channelID int) (relay.ChannelAssignment, error) {
+				return h.resolveChannel(ctx, rc, channelID)
+			},
+			Dispatch:   h.dispatch,
+			Billing:    h.billing,
+			Client:     h.client,
+			MaxRetries: relayMaxRetries,
+			WriteError: writeRelayMappedError,
+		})
+	}
+	return h
 }
 
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
@@ -234,8 +254,9 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
 	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
 	RegisterMultimodalRoutes(mux, authMiddleware, NewMultimodalHandler(MultimodalHandlerOptions{
-		Tokens:     h.tokens,
-		Dispatcher: h.multimodal,
+		Tokens:      h.tokens,
+		ModelStatus: h.modelStatus,
+		Dispatcher:  h.multimodal,
 	}))
 }
 
@@ -1000,7 +1021,7 @@ func (h *RelayHandler) bridgeStream(
 	// 任何数字——此时头部才是唯一的真实来源，不能被事件占位符挡住。反过来，
 	// 只要累计出任何非零维度，就绝不拿头部覆盖（三源互斥，R-05）。
 	if !sawUsage || !usageHasFact(accumulated) {
-		extracted := usage.ExtractUsage(&contract.Response{}, upstreamHeader, nil)
+		extracted := usage.ExtractUsageMultimodal(&contract.Response{}, upstreamHeader, nil, rc.ChannelType)
 		if extracted.Usage.Source == contract.UsageUpstreamExact {
 			accumulated = extracted.Usage
 			sawUsage = true
@@ -1068,26 +1089,23 @@ func (h *RelayHandler) bridgeStream(
 	if !usageHasFact(accumulated) {
 		// 上游没有给出任何非零用量（包括空 `usage: {}` / 全零帧，且无头部）：
 		// 标记 estimated，绝不把零值谎报成 upstream_exact（零值 Source 的
-		// iota 是 UsageUpstreamExact）。关系布尔按 OpenAI 协议语义补齐。
-		fact.Usage = openAIEstimatedUsage(accumulated)
+		// iota 是 UsageUpstreamExact）。关系布尔按**渠道协议族**补齐：
+		// OpenAI 的 prompt 已含缓存、completion 已含推理；Claude/Gemini 是
+		// 独立维度，不能沿用 OpenAI 的 true（否则缓存段被重复加价）。
+		fact.Usage = estimatedUsageFor(rc.ChannelType)
 	}
 	terminate(fact)
 }
 
-// openAIEstimatedUsage 为「无上游用量、需要本地估算」的事实补上 OpenAI 协议
-// 语义的关系布尔（re-review fix 3）。
+// estimatedUsageFor 为「无上游用量、需要本地估算」的事实补上**渠道协议族**
+// 语义的关系布尔。
 //
-// PromptIncludesCache/ReasoningIncludedInCompletion 是**协议属性**而非用量
-// 数字（relay-03 §6.2 row 1）：OpenAI 的 prompt_tokens 已含 cached_tokens、
-// completion_tokens 已含 reasoning_tokens。流式路径与 relay.Route 的非流式
-// 路径必须一致；否则「无 usage 的上游」会让计费侧把 CacheRead/Reasoning 当
-// 独立维度重复加价。适配器 normalize 时对空/非法 usage 也显式置 true
-// （ir.parseOpenAIUsage），这里补齐同样的语义。
-func openAIEstimatedUsage(u contract.Usage) contract.Usage {
-	u.Source = contract.UsageEstimated
-	u.PromptIncludesCache = true
-	u.ReasoningIncludedInCompletion = true
-	return u
+// 关系布尔是协议属性而非用量数字（relay-03 §6.2 row 1）：OpenAI 的
+// prompt_tokens 已含 cached_tokens、completion_tokens 已含 reasoning_tokens；
+// Claude/Gemini 的缓存与思考是独立维度。M4 接线后原生渠道也走本辅助函数，
+// 不能再无条件按 OpenAI 置 true（那会让计费侧把缓存段重复加价）。
+func estimatedUsageFor(kind contract.ChannelType) contract.Usage {
+	return usage.ExtractUsageMultimodal(&contract.Response{}, nil, nil, kind).Usage
 }
 
 // relaySSEWriter 是 SSE 帧的唯一写出口。
@@ -1528,7 +1546,8 @@ func parseRelayFinishEvent(raw []byte) (string, *contract.Usage) {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage json.RawMessage `json:"usage"`
+		Usage         json.RawMessage `json:"usage"`
+		UsageMetadata json.RawMessage `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return "", nil
@@ -1537,13 +1556,82 @@ func parseRelayFinishEvent(raw []byte) (string, *contract.Usage) {
 	if len(chunk.Choices) > 0 {
 		reason = chunk.Choices[0].FinishReason
 	}
+	if reason == "" {
+		// 原生协议（Anthropic/Gemini）的 EventFinish.Raw 是上游原始事件帧，
+		// 结束原因不在 OpenAI 的 choices[].finish_reason 里。不在此处归一，
+		// 原生流会「丢 finish_reason」，客户端据空值误判为被截断。
+		reason = nativeFinishReason([]byte(payload))
+	}
 	var usage *contract.Usage
 	usageRaw := bytes.TrimSpace(chunk.Usage)
 	if len(usageRaw) > 0 && string(usageRaw) != "null" {
-		parsed := ir.ParseOpenAIUsage(chunk.Usage)
+		// 原生 Anthropic message_delta 的 usage 形状是 input/output_tokens，
+		// 用 OpenAI 解析器会得到零值（或把 total 误映射成 prompt）。按键
+		// 形状选择解析器，与 T3 的「形状优先」口径一致。
+		var parsed contract.Usage
+		if bytes.Contains(usageRaw, []byte("input_tokens")) || bytes.Contains(usageRaw, []byte("output_tokens")) {
+			parsed = ir.ParseAnthropicUsage(chunk.Usage)
+		} else {
+			parsed = ir.ParseOpenAIUsage(chunk.Usage)
+		}
+		usage = &parsed
+	} else if meta := bytes.TrimSpace(chunk.UsageMetadata); len(meta) > 0 && string(meta) != "null" {
+		parsed := ir.ParseGeminiUsage(chunk.UsageMetadata)
 		usage = &parsed
 	}
 	return reason, usage
+}
+
+// nativeFinishReason 把 Anthropic / Gemini 的原始结束原因映射为 OpenAI 的
+// finish_reason 语义（relay-03 的客户端契约是 OpenAI 形态）。
+//
+// 无法映射的值返回空串而不是臆造：调用方（bridgeStream）在 reason 为空时
+// 不写 finish chunk——宁可让客户端按 EOF 处理，也不伪造 stop。
+func nativeFinishReason(payload []byte) string {
+	var anthropic struct {
+		Type  string `json:"type"`
+		Delta struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(payload, &anthropic); err == nil && anthropic.Delta.StopReason != "" {
+		switch anthropic.Delta.StopReason {
+		case "end_turn", "stop_sequence", "pause_turn":
+			return "stop"
+		case "max_tokens":
+			return "length"
+		case "tool_use":
+			return "tool_calls"
+		case "refusal":
+			return "content_filter"
+		default:
+			return ""
+		}
+	}
+	var gemini struct {
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(payload, &gemini); err == nil {
+		for _, candidate := range gemini.Candidates {
+			switch strings.ToUpper(strings.TrimSpace(candidate.FinishReason)) {
+			case "":
+				continue
+			case "STOP":
+				return "stop"
+			case "MAX_TOKENS":
+				return "length"
+			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+				return "content_filter"
+			case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
+				return "tool_calls"
+			default:
+				return ""
+			}
+		}
+	}
+	return ""
 }
 
 // sseDataPayload 合并一个 SSE 事件块内的多条 data: 行（\n 连接）。

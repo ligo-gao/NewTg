@@ -107,6 +107,28 @@ func buildMultipartBody(t *testing.T, fields map[string]string, files map[string
 }
 
 // buildMultipartOrdered 允许重复字段，用于固化「重复计费标量必须 400」。
+// multipart 测试文件的魔数与扩展名（T4 的 F4/F5：扩展名 ↔ MIME ↔ 魔数
+// 三者一致）。helper 自动为文件 part 注入真实魔数，避免测试数据本身
+// 触发安全校验；业务测试仍可显式构造非法文件覆盖拒绝路径。
+var (
+	testPNGMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
+	testMP3Magic = []byte("ID3\x04\x00\x00\x00\x00\x00\x00")
+)
+
+func testFileFor(name string, value []byte) (string, []byte) {
+	if len(value) == 0 {
+		return "upload.bin", value
+	}
+	switch name {
+	case "file":
+		return "upload.mp3", append(append([]byte(nil), testMP3Magic...), value...)
+	case "image", "mask":
+		return "upload.png", append(append([]byte(nil), testPNGMagic...), value...)
+	default:
+		return "upload.bin", value
+	}
+}
+
 func buildMultipartOrdered(t *testing.T, fields [][2]string, files map[string][]byte) (string, []byte) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -117,11 +139,12 @@ func buildMultipartOrdered(t *testing.T, fields [][2]string, files map[string][]
 		}
 	}
 	for name, value := range files {
-		part, err := writer.CreateFormFile(name, "upload.bin")
+		filename, content := testFileFor(name, value)
+		part, err := writer.CreateFormFile(name, filename)
 		if err != nil {
 			t.Fatalf("create file %s: %v", name, err)
 		}
-		if _, err := part.Write(value); err != nil {
+		if _, err := part.Write(content); err != nil {
 			t.Fatalf("write file %s: %v", name, err)
 		}
 	}
@@ -148,7 +171,7 @@ func TestMultimodal_RoutesAuthAndDispatch(t *testing.T) {
 	handler := newMultimodalTestHandler(t, dispatcher)
 
 	imageContentType, imageMultipartBody := buildMultipartBody(t,
-		map[string]string{"model": "img-model", "prompt": "a cat"}, nil)
+		map[string]string{"model": "img-model", "prompt": "a cat"}, map[string][]byte{"image": []byte("fake-image")})
 	audioContentType, audioBody := buildMultipartBody(t,
 		map[string]string{"model": "whisper-1"}, map[string][]byte{"file": []byte("audio-bytes")})
 
@@ -326,7 +349,7 @@ func TestMultimodal_ImageMultipartValidation(t *testing.T) {
 		{"parameters-non-json", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": "not-json"}, nil, nil, http.StatusBadRequest},
 		{"parameters-empty", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": ""}, nil, nil, http.StatusBadRequest},
 		{"parameters-file-non-json", base, nil, map[string][]byte{"parameters": []byte("not-json")}, http.StatusBadRequest},
-		{"parameters-valid", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":2}`}, nil, nil, http.StatusOK},
+		{"parameters-valid", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":2}`}, nil, map[string][]byte{"image": []byte("fake-image")}, http.StatusOK},
 		// 重复计费标量：本层 last-wins、标准库 first-wins，必须 fail-closed（F9）。
 		{"duplicate-n-out-of-bounds-first", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"n", "1000"}, {"n", "2"}}, nil, http.StatusBadRequest},
 		{"duplicate-n-valid-both", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"n", "2"}, {"n", "2"}}, nil, http.StatusBadRequest},
@@ -426,18 +449,20 @@ func (repeatByteReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestMultimodal_NoDispatcherReturns501 固化 T1 测试态：未注入分派器时，
-// 合法请求在校验与上下文组装之后返回 501（Task 4 装配后必须替换）。
-func TestMultimodal_NoDispatcherReturns501(t *testing.T) {
+// TestMultimodal_DefaultDispatcherWired 固化 Task 4 的装配要求：生产
+// NewRelayHandler 不再返回 501，而是注入真实分派器。测试的 fake 渠道库没有
+// 候选，因此合法请求在派发阶段得到 503（no available channel）——这证明
+// 请求确实进入了真实执行路径，而不是停在 T1 的 501 桩。
+func TestMultimodal_DefaultDispatcherWired(t *testing.T) {
 	handler := newMultimodalTestHandler(t, nil)
 	resp := doMultimodal(t, handler, multimodalRequest{
 		path: "/v1/images/generations", body: validImageJSON(), contentType: "application/json",
 	}, true)
-	if resp.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body=%s", resp.Code, resp.Body.String())
+	if resp.Code == http.StatusNotImplemented {
+		t.Fatalf("production wiring still returns 501: %s", resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "not_implemented") {
-		t.Fatalf("501 body missing not_implemented: %s", resp.Body.String())
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (no candidate channel); body=%s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -465,5 +490,226 @@ func TestMultimodal_RequestContextAndBodyRestored(t *testing.T) {
 	}
 	if dispatcher.rc.RequestID == "" || dispatcher.rc.TokenID != int(relayTestTokenID) {
 		t.Fatalf("RelayContext identity not populated: %+v", dispatcher.rc)
+	}
+}
+
+// ============================================================================
+// M4 Task 4 补充：入口一致性（F2/F4/F5）与原生渠道 chat usage/finish 接线
+// ============================================================================
+
+// newMultimodalEnv 允许定制令牌模型白名单与模型停用状态存储。
+func newMultimodalEnv(t *testing.T, dispatcher MultimodalDispatcher, modelLimits []string, modelStatus RelayModelStatusStore) http.Handler {
+	t.Helper()
+	tokenStore := newFakeRelayTokenStore(relayTestToken, &auth.TokenMeta{
+		ID:             relayTestTokenID,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		Group:          "default",
+		UnlimitedQuota: true,
+	})
+	if len(modelLimits) > 0 {
+		tokenStore.byHash[auth.HashTokenKey(relayTestToken)].ModelLimits = modelLimits
+	}
+	access := &fakeRelayAccess{role: "user", status: "enabled"}
+	channels := &fakeRelayChannelStore{models: []string{"gpt-test"}}
+	h := NewRelayHandler(RelayHandlerOptions{
+		Channels:    channels,
+		Tokens:      tokenStore,
+		Access:      access,
+		Sealer:      NewSecretSealer(relaySealerMaster),
+		ModelStatus: modelStatus,
+		Multimodal:  dispatcher,
+	})
+	return h.Handler()
+}
+
+// TestMultimodal_TokenModelWhitelistRejects 覆盖 T1 复审 F2：多模态端点不得
+// 绕过令牌模型白名单（与 chat 同一 403 语义）。
+func TestMultimodal_TokenModelWhitelistRejects(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalEnv(t, dispatcher, []string{"other-model"}, nil)
+	resp := doMultimodal(t, handler, multimodalRequest{
+		path: "/v1/images/generations", body: validImageJSON(), contentType: "application/json",
+	}, true)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", resp.Code, resp.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// TestMultimodal_DisabledModelReturns404 覆盖 F2：status=2 的模型必须在
+// 派发与预扣之前 404（R-84 同口径）。
+func TestMultimodal_DisabledModelReturns404(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	status := &fakeRelayModelStatus{status: map[string]int16{"img-model": modelPricingStatusDisabled}}
+	handler := newMultimodalEnv(t, dispatcher, nil, status)
+	resp := doMultimodal(t, handler, multimodalRequest{
+		path: "/v1/images/generations", body: validImageJSON(), contentType: "application/json",
+	}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", resp.Code, resp.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// TestMultimodal_EditsRequiresInputImage 覆盖 F4：multipart 编辑必须包含
+// 非空 image 文件。
+func TestMultimodal_EditsRequiresInputImage(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	contentType, body := buildMultipartBody(t, map[string]string{"model": "img-model", "prompt": "a cat"}, nil)
+	resp := doMultimodal(t, handler, multimodalRequest{path: "/v1/images/edits", body: body, contentType: contentType}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// TestMultimodal_AudioMIMEMagicMismatch 覆盖 F5：扩展名/声明 MIME/魔数三者
+// 必须一致（security-04 §3.2）。
+func TestMultimodal_AudioMIMEMagicMismatch(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("model", "whisper-1")
+	part, err := writer.CreateFormFile("file", "voice.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// .mp3 扩展名 + WAV 魔数：伪造类型必须 400。
+	_, _ = part.Write([]byte("RIFF\x00\x00\x00\x00WAVEfmt "))
+	_ = writer.Close()
+
+	resp := doMultimodal(t, handler, multimodalRequest{
+		path: "/v1/audio/transcriptions", body: buf.Bytes(), contentType: writer.FormDataContentType(),
+	}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// staticJSONAdapter 让 chat 非流式路径拿到可控的上游原始响应体。
+type staticJSONAdapter struct {
+	kind contract.ChannelType
+	url  string
+	body []byte
+}
+
+func (a *staticJSONAdapter) Type() contract.ChannelType  { return a.kind }
+func (a *staticJSONAdapter) Caps() contract.Capabilities { return contract.Capabilities{} }
+func (a *staticJSONAdapter) BuildRequest(*contract.RelayContext, *contract.Request) (*http.Request, error) {
+	return http.NewRequest(http.MethodPost, a.url, nil)
+}
+func (a *staticJSONAdapter) ParseResponse(*contract.RelayContext, *http.Response) (*contract.Response, contract.Usage, error) {
+	return &contract.Response{Raw: a.body}, contract.Usage{}, nil
+}
+func (a *staticJSONAdapter) ClassifyError(int, []byte) contract.ErrorClass {
+	return contract.ErrUnknown
+}
+
+// TestRelayNativeChatUsageNonStream 验证原生渠道（Anthropic/Gemini）的
+// 非流式 chat 走 T3 的 ExtractUsageMultimodal，而不是 OpenAI 形状解析。
+func TestRelayNativeChatUsageNonStream(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     contract.ChannelType
+		body     string
+		prompt   int64
+		complete int64
+		cache    int64
+		reason   int64
+	}{
+		{
+			name: "anthropic", kind: contract.ChannelTypeAnthropic,
+			body:   `{"id":"msg","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":3}}`,
+			prompt: 11, complete: 7, cache: 3,
+		},
+		{
+			name: "gemini", kind: contract.ChannelTypeGemini,
+			body:   `{"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":4,"thoughtsTokenCount":2,"cachedContentTokenCount":1}}`,
+			prompt: 9, complete: 6, cache: 1, reason: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+			env := newRelayTestEnv(t, upstream, nil)
+			env.channels.channels[relayTestChannelID].Type = string(tc.kind)
+			env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) {
+				return &staticJSONAdapter{kind: tc.kind, url: upstream.URL, body: []byte(tc.body)}, nil
+			}
+			resp := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("status = %d; body=%s", resp.Code, resp.Body.String())
+			}
+			fact := env.billing.lastFact()
+			if fact.Usage.Prompt != tc.prompt || fact.Usage.Completion != tc.complete ||
+				fact.Usage.CacheRead != tc.cache || fact.Usage.Reasoning != tc.reason {
+				t.Fatalf("native usage = %+v, want prompt=%d completion=%d cache=%d reasoning=%d",
+					fact.Usage, tc.prompt, tc.complete, tc.cache, tc.reason)
+			}
+			if fact.Usage.PromptIncludesCache {
+				t.Fatal("native channels must not report PromptIncludesCache=true")
+			}
+			if env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 {
+				t.Fatalf("billing: terminate=%d refund=%d, want 1/0", env.billing.terminateCount(), env.billing.refundCount())
+			}
+		})
+	}
+}
+
+// TestRelayNativeStreamFinishReason 验证 T2 交接：原生 EventFinish.Raw 里的
+// Anthropic stop_reason / Gemini finishReason 必须被归一为 OpenAI 的
+// finish_reason 并下发（而不是静默丢失）。
+func TestRelayNativeStreamFinishReason(t *testing.T) {
+	cases := []struct {
+		name string
+		kind contract.ChannelType
+		raw  string
+	}{
+		{"anthropic-max-tokens", contract.ChannelTypeAnthropic, `data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":2}}`},
+		{"gemini-max-tokens", contract.ChannelTypeGemini, `data: {"candidates":[{"finishReason":"MAX_TOKENS"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usageEvent := &contract.Usage{Prompt: 5, Completion: 2, Source: contract.UsageUpstreamExact}
+			adapter := &scriptedStreamAdapter{events: []contract.StreamEvent{
+				{Kind: contract.EventUsage, Usage: usageEvent},
+				{Kind: contract.EventFinish, Raw: []byte(tc.raw)},
+			}}
+			env, upstream := newScriptedStreamEnv(t, adapter)
+			adapter.url = upstream.URL
+			env.channels.channels[relayTestChannelID].Type = string(tc.kind)
+			resp := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("status = %d; body=%s", resp.Code, resp.Body.String())
+			}
+			if !strings.Contains(resp.Body.String(), `"finish_reason":"length"`) {
+				t.Fatalf("finish_reason not surfaced; body=%s", resp.Body.String())
+			}
+			if !strings.Contains(resp.Body.String(), "data: [DONE]") {
+				t.Fatalf("missing [DONE]; body=%s", resp.Body.String())
+			}
+			fact := env.billing.lastFact()
+			if fact.Usage.Prompt != 5 || fact.Usage.Completion != 2 {
+				t.Fatalf("stream usage = %+v, want prompt=5 completion=2", fact.Usage)
+			}
+		})
 	}
 }

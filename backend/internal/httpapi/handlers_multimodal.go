@@ -29,12 +29,14 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
+	"newtg/gateway/internal/relay/multimodal"
 )
 
 // ============================================================================
@@ -47,32 +49,35 @@ import (
 const (
 	// MaxImageN 是图像张数上界（契约 §10.1 冻结 128）。
 	// n 是直接的计费乘数，必须上界；0 也在入口拒绝（合法区间 [1, MaxImageN]）。
-	MaxImageN = 128
+	MaxImageN = multimodal.MaxImageN
 
 	// MaxImageSidePixels 是 size 单边像素上界（relay-04 §9 甲类修正：基线无上界）。
-	MaxImageSidePixels = 8192
+	MaxImageSidePixels = multimodal.MaxImageSidePixels
 
 	// MaxImagePixels 是 size 总像素上界（relay-04 §9，= 8192×8192）。
-	MaxImagePixels = 67_108_864
+	MaxImagePixels = multimodal.MaxImagePixels
 
 	// MaxImagePromptBytes 是图像 prompt 的字节上界。
 	// relay-04 §9 只冻结了常量名、未给出数值；取与 MaxTTSTextBytes /
 	// MaxAudioMetadataBytes 一致的 64 KiB，作为入口防御上界（非计费乘数）。
-	MaxImagePromptBytes = 64 << 10
+	MaxImagePromptBytes = multimodal.MaxImagePromptBytes
 
 	// MaxPartialImages 是 partial_images 上界（relay-04 §9 冻结 8）。
-	// 它决定流式图像的事件数，属于用户可控的间接乘数。
-	MaxPartialImages = 8
+	MaxPartialImages = multimodal.MaxPartialImages
+
+	// MaxImageEditInputBytes 是 images/edits 输入图片的字节上界
+	// （security-04 §3.2：25 MiB，与音频上传同量级）。
+	MaxImageEditInputBytes = multimodal.MaxImageEditInputBytes
 
 	// MaxTTSTextBytes 是 TTS 输入文本上界（relay-04 §9 冻结 64 KiB）。
-	MaxTTSTextBytes = 64 << 10
+	MaxTTSTextBytes = multimodal.MaxTTSTextBytes
 
 	// MaxAudioFileBytes 是音频上传文件上界（relay-04 §9、security-04 §3.2 冻结 25 MiB）。
-	MaxAudioFileBytes = 25 << 20
+	MaxAudioFileBytes = multimodal.MaxAudioFileBytes
 
 	// MinTTSSpeed / MaxTTSSpeed 是 TTS speed 的合法闭区间（relay-04 §9 甲类修正）。
-	MinTTSSpeed = 0.25
-	MaxTTSSpeed = 4.0
+	MinTTSSpeed = multimodal.MinTTSSpeed
+	MaxTTSSpeed = multimodal.MaxTTSSpeed
 )
 
 const (
@@ -101,21 +106,30 @@ type MultimodalDispatcher interface {
 type MultimodalHandlerOptions struct {
 	// Tokens 用于 BuildRelayContext 回源令牌分组（与 M2 /v1/chat/completions 同一接缝）。
 	Tokens auth.TokenLookup
-	// Dispatcher 为 nil 时端点返回 501（仅 Task 1 测试态；Task 4 必须注入真实实现）。
+	// ModelStatus 是派发前的模型停用检查（R-84/T1 复审 F2）：与 chat 路径同口径，
+	// status=2 的模型必须在进入上游之前 404。nil 时跳过（测试/降级）。
+	ModelStatus RelayModelStatusStore
+	// Dispatcher 为 nil 时端点返回 501（仅入口骨架的直接构造场景；生产装配
+	// 由 RelayHandler 注入真实实现，不会走到该分支）。
 	Dispatcher MultimodalDispatcher
 }
 
 // MultimodalHandler 持有入口校验之外的最小依赖。
 type MultimodalHandler struct {
-	tokens     auth.TokenLookup
-	dispatcher MultimodalDispatcher
+	tokens      auth.TokenLookup
+	modelStatus RelayModelStatusStore
+	dispatcher  MultimodalDispatcher
 }
 
 // NewMultimodalHandler 构造多模态端点 handler。
 // tokens 允许为 nil（鉴权中间件已独立校验令牌）；BuildRelayContext 会在
 // 需要分组回源时 fail-closed（ErrTokenInvalid → 401）。
 func NewMultimodalHandler(opts MultimodalHandlerOptions) *MultimodalHandler {
-	return &MultimodalHandler{tokens: opts.Tokens, dispatcher: opts.Dispatcher}
+	return &MultimodalHandler{
+		tokens:      opts.Tokens,
+		modelStatus: opts.ModelStatus,
+		dispatcher:  opts.Dispatcher,
+	}
 }
 
 // RegisterMultimodalRoutes 把多模态端点族挂到 mux。
@@ -181,6 +195,7 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
 		return
 	}
+
 	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
 	if err != nil {
 		status, code, message := mapRelayContextError(err)
@@ -193,6 +208,34 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 		Model: model,
 		Raw:   contract.ProtocolBody(body),
 	}, multimodalRawFormat, r.URL.Path)
+
+	// 鉴权/授权一致性（T1 复审 F2）：多模态端点必须复用 chat 路径的两道
+	// 派发前检查，否则它们会成为「绕过令牌模型白名单 / 调用已停用模型」的通道。
+	// 顺序与 chat 一致（先 BuildRelayContext 的 pin 403，再白名单/停用检查），
+	// 避免同一请求在两处得到不同语义的 403。
+	if model != "" {
+		_, hasPin := relay.ParseChannelPin(r)
+		if !hasPin && !tokenModelAllowed(principal.ModelLimits, model) {
+			writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
+				"this token is not allowed to access the requested model")
+			return
+		}
+		// R-84：管理员停用（status=2）的模型不得被命中，必须在派发（含
+		// PreConsume）之前 404；无定价行按默认价兜底、视为启用。
+		if h.modelStatus != nil {
+			status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), model)
+			if statusErr != nil {
+				writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
+					"failed to check model availability")
+				return
+			}
+			if found && status == modelPricingStatusDisabled {
+				writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+					"the requested model is not available")
+				return
+			}
+		}
+	}
 
 	if h.dispatcher == nil {
 		// Task 1 的测试态：路由与校验已完成，但没有真实分派器。
@@ -279,11 +322,140 @@ func validateMultimodalEntry(endpoint contract.Endpoint, contentType string, bod
 	case contract.EndpointRealtime:
 		// WebSocket 升级请求没有可解析的 JSON body；模型/协议由 Task 4/T5 处理。
 		return "", nil
+	case contract.EndpointEmbeddings:
+		return validateEmbeddingsJSON(body)
+	case contract.EndpointRerank:
+		return validateRerankJSON(body)
 	default:
-		// embeddings / rerank：T1 只做 JSON 结构校验与模型提取，字段级上界
-		// 由对应的归一化实现（Task 2/T4）继续执行。
+		// 未知端点（防御）：仍按 JSON 对象做最小校验。
 		return validateLooseJSON(body)
 	}
+}
+
+// validateEmbeddingsJSON 实施 relay-04 §1.2/§9 的入口上界：
+// input 必填、批量与单条字节上界、dimensions 上界均为**用户声明的乘数**，
+// 越界在归一化层 400 拒绝（billing.md 的上界前置原则）。
+//
+// 非字符串数组元素被忽略（照搬基线）；但必须至少有一个字符串输入，否则
+// 归一化层无法产出可计费用量。
+func validateEmbeddingsJSON(body []byte) (string, error) {
+	var payload struct {
+		Model      *string            `json:"model"`
+		Input      json.RawMessage    `json:"input"`
+		Dimensions optionalJSONNumber `json:"dimensions"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	input := bytes.TrimSpace(payload.Input)
+	if len(input) == 0 || string(input) == "null" {
+		return "", invalidMultimodalEntry("input is required")
+	}
+	switch input[0] {
+	case '"':
+		var text string
+		if err := json.Unmarshal(input, &text); err != nil || text == "" {
+			return "", invalidMultimodalEntry("input is required")
+		}
+		if len(text) > multimodal.MaxEmbeddingInputBytes {
+			return "", invalidMultimodalEntry("input exceeds the 1 MiB limit")
+		}
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(input, &items); err != nil || len(items) == 0 {
+			return "", invalidMultimodalEntry("input is required")
+		}
+		if len(items) > multimodal.MaxEmbeddingBatch {
+			return "", invalidMultimodalEntry("input batch exceeds 2048 items")
+		}
+		found := false
+		for _, item := range items {
+			trimmed := bytes.TrimSpace(item)
+			if len(trimmed) == 0 || trimmed[0] != '"' {
+				continue // 非字符串元素忽略（基线行为）
+			}
+			var text string
+			if err := json.Unmarshal(trimmed, &text); err != nil {
+				continue
+			}
+			found = true
+			if len(text) > multimodal.MaxEmbeddingInputBytes {
+				return "", invalidMultimodalEntry("input item exceeds the 1 MiB limit")
+			}
+		}
+		if !found {
+			return "", invalidMultimodalEntry("input is required")
+		}
+	default:
+		return "", invalidMultimodalEntry("input must be a string or an array of strings")
+	}
+	if payload.Dimensions.Set {
+		value, ok := jsonNumberInt(payload.Dimensions)
+		if !ok || value < 1 || value > multimodal.MaxEmbeddingDimensions {
+			return "", invalidMultimodalEntry("dimensions must be an integer in [1, 8192]")
+		}
+	}
+	if payload.Model != nil {
+		return *payload.Model, nil
+	}
+	return "", nil
+}
+
+// validateRerankJSON 实施 relay-04 §2.2/§9：query/documents 必填，文档批量、
+// 单文档字节、top_n/max_chunk_per_doc/overlap_tokens 均带上界（甲类修正）。
+func validateRerankJSON(body []byte) (string, error) {
+	var payload struct {
+		Model          *string            `json:"model"`
+		Query          *string            `json:"query"`
+		Documents      []json.RawMessage  `json:"documents"`
+		TopN           optionalJSONNumber `json:"top_n"`
+		MaxChunkPerDoc optionalJSONNumber `json:"max_chunk_per_doc"`
+		OverlapTokens  optionalJSONNumber `json:"overlap_tokens"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	if payload.Query == nil || strings.TrimSpace(*payload.Query) == "" {
+		return "", invalidMultimodalEntry("query is required")
+	}
+	if len(payload.Documents) == 0 {
+		return "", invalidMultimodalEntry("documents is required")
+	}
+	if len(payload.Documents) > multimodal.MaxRerankDocuments {
+		return "", invalidMultimodalEntry("documents exceeds 1000 items")
+	}
+	for _, document := range payload.Documents {
+		trimmed := bytes.TrimSpace(document)
+		if len(trimmed) > multimodal.MaxRerankDocBytes {
+			return "", invalidMultimodalEntry("a document exceeds the 1 MiB limit")
+		}
+	}
+	for _, item := range []struct {
+		name   string
+		number optionalJSONNumber
+		max    int64
+		label  string
+	}{
+		{"top_n", payload.TopN, multimodal.MaxRerankTopN, "top_n must be an integer in [1, 1000]"},
+		{"max_chunk_per_doc", payload.MaxChunkPerDoc, multimodal.MaxRerankChunkPerDoc, "max_chunk_per_doc must be an integer in [1, 512]"},
+		{"overlap_tokens", payload.OverlapTokens, multimodal.MaxRerankOverlapTokens, "overlap_tokens must be an integer in [0, 4096]"},
+	} {
+		if !item.number.Set {
+			continue
+		}
+		value, ok := jsonNumberInt(item.number)
+		minimum := int64(1)
+		if item.name == "overlap_tokens" {
+			minimum = 0
+		}
+		if !ok || value < minimum || value > item.max {
+			return "", invalidMultimodalEntry(item.label)
+		}
+	}
+	if payload.Model != nil {
+		return *payload.Model, nil
+	}
+	return "", nil
 }
 
 // imageJSONFields 只声明入口校验关心的字段；未知字段原样保留在 body 中，
@@ -513,6 +685,186 @@ func drainMultipartFile(part *multipart.Part, limit int64) (int64, error) {
 	return written, nil
 }
 
+// prefixCaptureWriter 统计总字节数并只保留前 limit 字节（魔数校验用）。
+// 之后的内容直接丢弃：入口校验不保留上传体（T4 会从复原后的 body 重新解析）。
+type prefixCaptureWriter struct {
+	prefix bytes.Buffer
+	limit  int
+	total  int64
+}
+
+func (w *prefixCaptureWriter) Write(p []byte) (int, error) {
+	w.total += int64(len(p))
+	if remaining := w.limit - w.prefix.Len(); remaining > 0 {
+		take := len(p)
+		if take > remaining {
+			take = remaining
+		}
+		_, _ = w.prefix.Write(p[:take])
+	}
+	return len(p), nil
+}
+
+// drainMultipartFileCapture 与 drainMultipartFile 同语义，但保留文件头
+// 用于「扩展名 ↔ MIME ↔ 魔数」一致性校验（security-04 §3.2 / ASVS 5.2.2）。
+func drainMultipartFileCapture(part *multipart.Part, limit int64) (int64, []byte, error) {
+	capture := &prefixCaptureWriter{limit: 512}
+	if _, err := io.Copy(capture, io.LimitReader(part, limit+1)); err != nil {
+		return 0, nil, invalidMultimodalEntry("invalid multipart form")
+	}
+	return capture.total, capture.prefix.Bytes(), nil
+}
+
+// imageFileFamily 返回图片文件所属格式族（png/jpeg/webp）；未知返回空串。
+func imageFileFamily(prefix []byte) string {
+	switch {
+	case bytes.HasPrefix(prefix, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}):
+		return "png"
+	case len(prefix) >= 3 && prefix[0] == 0xFF && prefix[1] == 0xD8 && prefix[2] == 0xFF:
+		return "jpeg"
+	case len(prefix) >= 12 && string(prefix[0:4]) == "RIFF" && string(prefix[8:12]) == "WEBP":
+		return "webp"
+	default:
+		return ""
+	}
+}
+
+// imageExtensionFamily 把文件扩展名映射到图片格式族。
+func imageExtensionFamily(filename string) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".png":
+		return "png"
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".webp":
+		return "webp"
+	default:
+		return ""
+	}
+}
+
+// imageMIMEFamily 把声明的 Content-Type 映射到图片格式族。
+// 空值 / application/octet-stream 视为「未声明」，由扩展名+魔数负责。
+func imageMIMEFamily(contentType string) string {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch mediaType {
+	case "image/png":
+		return "png"
+	case "image/jpeg", "image/jpg":
+		return "jpeg"
+	case "image/webp":
+		return "webp"
+	case "", "application/octet-stream":
+		return ""
+	default:
+		return "unsupported"
+	}
+}
+
+// validateImageUpload 校验输入图片的扩展名/MIME/魔数三者一致。
+func validateImageUpload(filename, contentType string, prefix []byte) error {
+	extFamily := imageExtensionFamily(filename)
+	if extFamily == "" {
+		return invalidMultimodalEntry("image must be a png, jpeg or webp file")
+	}
+	if mimeFamily := imageMIMEFamily(contentType); mimeFamily == "unsupported" || (mimeFamily != "" && mimeFamily != extFamily) {
+		return invalidMultimodalEntry("image content type does not match its extension")
+	}
+	if magicFamily := imageFileFamily(prefix); magicFamily == "" || magicFamily != extFamily {
+		return invalidMultimodalEntry("image content does not match its declared type")
+	}
+	return nil
+}
+
+// audioFileFamily 由魔数判定音频容器族（relay-04 §3.2 的格式清单）。
+func audioFileFamily(prefix []byte) string {
+	switch {
+	case bytes.HasPrefix(prefix, []byte("ID3")):
+		return "mp3"
+	case len(prefix) >= 2 && prefix[0] == 0xFF && prefix[1]&0xE0 == 0xE0 &&
+		len(prefix) >= 3 && (prefix[1]>>1)&0x03 == 0:
+		// ADTS AAC：layer 位必须为 00；MP3 的 layer 位非 0（否则会把
+		// 最常见的 0xFB 帧头误判成 AAC）。
+		return "aac"
+	case len(prefix) >= 2 && prefix[0] == 0xFF && prefix[1]&0xE0 == 0xE0:
+		return "mp3"
+	case len(prefix) >= 12 && string(prefix[0:4]) == "RIFF" && string(prefix[8:12]) == "WAVE":
+		return "wav"
+	case bytes.HasPrefix(prefix, []byte("fLaC")):
+		return "flac"
+	case len(prefix) >= 8 && string(prefix[4:8]) == "ftyp":
+		return "m4a"
+	case bytes.HasPrefix(prefix, []byte("OggS")):
+		return "ogg"
+	case len(prefix) >= 12 && string(prefix[0:4]) == "FORM" &&
+		(string(prefix[8:12]) == "AIFF" || string(prefix[8:12]) == "AIFC"):
+		return "aiff"
+	default:
+		return ""
+	}
+}
+
+func audioExtensionFamily(filename string) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mp3":
+		return "mp3"
+	case ".wav":
+		return "wav"
+	case ".flac":
+		return "flac"
+	case ".m4a", ".mp4":
+		return "m4a"
+	case ".ogg", ".oga", ".opus":
+		return "ogg"
+	case ".aiff", ".aif", ".aifc":
+		return "aiff"
+	case ".aac":
+		return "aac"
+	default:
+		return ""
+	}
+}
+
+func audioMIMEFamily(contentType string) string {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch mediaType {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return "wav"
+	case "audio/flac", "audio/x-flac":
+		return "flac"
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		return "m4a"
+	case "audio/ogg", "audio/opus", "application/ogg":
+		return "ogg"
+	case "audio/aiff", "audio/x-aiff":
+		return "aiff"
+	case "audio/aac":
+		return "aac"
+	case "", "application/octet-stream":
+		return ""
+	default:
+		return "unsupported"
+	}
+}
+
+// validateAudioUpload 校验音频上传的扩展名/MIME/魔数三者一致。
+// 三者不一致 → 400（security-04 §3.2：按魔数拒绝伪造类型）。
+func validateAudioUpload(filename, contentType string, prefix []byte) error {
+	extFamily := audioExtensionFamily(filename)
+	if extFamily == "" {
+		return invalidMultimodalEntry("audio file type is not supported")
+	}
+	if mimeFamily := audioMIMEFamily(contentType); mimeFamily == "unsupported" || (mimeFamily != "" && mimeFamily != extFamily) {
+		return invalidMultimodalEntry("audio content type does not match its extension")
+	}
+	if magicFamily := audioFileFamily(prefix); magicFamily == "" || magicFamily != extFamily {
+		return invalidMultimodalEntry("audio content does not match its declared type")
+	}
+	return nil
+}
+
 // validateImageMultipart 对 /v1/images/edits 的 multipart 做与 JSON 同强度的校验。
 // 缺省 n=1（relay-04 §4.2/基线怪癖），其余字段缺省不校验。
 func validateImageMultipart(contentType string, body []byte) (string, error) {
@@ -526,6 +878,8 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 		nRaw                         string
 		hasPrompt, hasN              bool
 		hasParameters                bool
+		hasInputImage                bool
+		inputImageBytes              int64
 	)
 	// seen 用于拒绝重复的计费相关标量字段（复审 F9）。
 	//
@@ -561,14 +915,29 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 			hasParameters = true
 			continue
 		}
-		// image / mask 等文件 part：只校验整体大小（已由 MaxBytesReader 限幅），
-		// 内容留给 Task 4 重新解析。
+		// image / mask 等文件 part：校验大小、扩展名/MIME/魔数（T1 复审 F4/F5）
+		// 与输入图片总字节上界。内容本身留给 Task 4 从复原后的 body 重新解析。
 		if part.FileName() != "" || name == "image" || name == "mask" {
-			if _, err := drainMultipartFile(part, maxRelayBodyBytes); err != nil {
-				_ = part.Close()
+			size, prefix, err := drainMultipartFileCapture(part, MaxImageEditInputBytes)
+			_ = part.Close()
+			if err != nil {
 				return "", err
 			}
-			_ = part.Close()
+			if size > MaxImageEditInputBytes {
+				return "", invalidMultimodalEntry("image exceeds the 25 MiB limit")
+			}
+			if size > 0 {
+				if err := validateImageUpload(part.FileName(), part.Header.Get("Content-Type"), prefix); err != nil {
+					return "", err
+				}
+			}
+			if name == "image" {
+				hasInputImage = true
+				inputImageBytes += size
+				if inputImageBytes > MaxImageEditInputBytes {
+					return "", invalidMultimodalEntry("input images exceed the 25 MiB limit")
+				}
+			}
 			continue
 		}
 		value, err := readMultipartField(part)
@@ -632,6 +1001,11 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 			return "", err
 		}
 	}
+	// F4：编辑端点必须携带输入图片。缺少 image（或空文件）无法执行编辑，
+	// 也意味着计费乘数（n）没有对应的输入——必须在派发前 400。
+	if !hasInputImage || inputImageBytes == 0 {
+		return "", invalidMultimodalEntry("image is required")
+	}
 	return model, nil
 }
 
@@ -658,13 +1032,21 @@ func validateAudioMultipart(contentType string, body []byte) (string, error) {
 		}
 		name := part.FormName()
 		if name == "file" {
-			size, drainErr := drainMultipartFile(part, MaxAudioFileBytes)
+			size, prefix, drainErr := drainMultipartFileCapture(part, MaxAudioFileBytes)
+			filename := part.FileName()
+			partType := part.Header.Get("Content-Type")
 			_ = part.Close()
 			if drainErr != nil {
 				return "", drainErr
 			}
 			if size > MaxAudioFileBytes {
 				return "", invalidMultimodalEntry("audio file exceeds the 25 MiB limit")
+			}
+			if size > 0 {
+				// F5：扩展名 ↔ 声明 MIME ↔ 魔数三者一致（security-04 §3.2）。
+				if err := validateAudioUpload(filename, partType, prefix); err != nil {
+					return "", err
+				}
 			}
 			fileSeen = true
 			fileBytes += size
