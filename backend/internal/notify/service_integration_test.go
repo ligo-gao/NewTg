@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -146,7 +147,6 @@ func TestUpdateOptimisticLockAndLockedTemplates(t *testing.T) {
 		Locale:          LocaleEN,
 		Subject:         "Custom subject",
 		Body:            "Custom body {{.balance}}",
-		Enabled:         true,
 		ExpectUpdatedAt: view.UpdatedAt,
 		Actor:           7,
 	})
@@ -157,6 +157,15 @@ func TestUpdateOptimisticLockAndLockedTemplates(t *testing.T) {
 		t.Fatalf("更新结果 = %+v，want customized=true 且新主题", updated)
 	}
 
+	// F6：已存在的行缺少 expect_updated_at → 400 语义错误（不允许无条件覆盖）。
+	_, err = service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelEmail, Locale: LocaleEN,
+		Subject: "No precondition", Body: "x",
+	})
+	if !errors.Is(err, ErrExpectationRequired) {
+		t.Fatalf("缺 expect_updated_at 应返回 ErrExpectationRequired，得到 %v", err)
+	}
+
 	// 旧版本的 expect 必须 409（乐观锁）。
 	_, err = service.Update(ctx, UpdateInput{
 		Key:             "billing.balance_low",
@@ -164,21 +173,46 @@ func TestUpdateOptimisticLockAndLockedTemplates(t *testing.T) {
 		Locale:          LocaleEN,
 		Subject:         "Stale",
 		Body:            "stale",
-		Enabled:         true,
 		ExpectUpdatedAt: view.UpdatedAt,
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("过期 expect_updated_at 应返回 ErrConflict，得到 %v", err)
 	}
 
+	// F5：PUT 省略 enabled 时保持当前值，不得把停用模板悄悄重新启用。
+	disabled := false
+	updated, err = service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelEmail, Locale: LocaleEN,
+		Subject: "Disabled", Body: "body {{.balance}}", Enabled: &disabled,
+		ExpectUpdatedAt: updated.UpdatedAt,
+	})
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if updated.Enabled {
+		t.Fatal("显式 enabled=false 应停用模板")
+	}
+	kept, err := service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelEmail, Locale: LocaleEN,
+		Subject: "Still disabled", Body: "body {{.balance}}",
+		ExpectUpdatedAt: updated.UpdatedAt,
+	})
+	if err != nil {
+		t.Fatalf("update without enabled: %v", err)
+	}
+	if kept.Enabled {
+		t.Fatal("省略 enabled 应保持 false，而不是默认重新启用（F5）")
+	}
+
 	// P4：锁定模板不可停用。
+	falseValue := false
 	_, err = service.Update(ctx, UpdateInput{
 		Key:     "auth.verify_code",
 		Channel: ChannelEmail,
 		Locale:  LocaleEN,
 		Subject: "code",
 		Body:    "{{.code}}",
-		Enabled: false,
+		Enabled: &falseValue,
 	})
 	if !errors.Is(err, ErrLockedTemplate) {
 		t.Fatalf("锁定模板停用应返回 ErrLockedTemplate，得到 %v", err)
@@ -191,7 +225,6 @@ func TestUpdateOptimisticLockAndLockedTemplates(t *testing.T) {
 		Locale:  LocaleEN,
 		Subject: "subject",
 		Body:    "{{.foo}}",
-		Enabled: true,
 	})
 	var unknown *ErrUnknownVariable
 	if !errors.As(err, &unknown) {
@@ -328,5 +361,37 @@ func TestDeliveryDedupeKeyIsIdempotent(t *testing.T) {
 	}
 	if first.ID == 0 {
 		t.Fatal("首次插入应返回 id")
+	}
+}
+
+func TestTestSendRecordsFailedStatus(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	sender := &fakeSender{configured: true, err: errors.New("connection refused")}
+	withSMTP, err := NewService(ServiceConfig{Store: service.store, Sender: sender})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	delivery, err := withSMTP.TestSend(ctx, TestInput{
+		Key: "system.smtp_test", Channel: ChannelEmail, Locale: LocaleEN,
+		Recipient: "admin@example.com", ActorID: 1,
+	})
+	if err != nil {
+		t.Fatalf("发送失败仍应返回投递记录：%v", err)
+	}
+	if delivery.Status != "failed" || delivery.LastError == nil {
+		t.Fatalf("SMTP 失败应记 failed + last_error，得到 %+v", delivery)
+	}
+	if !strings.Contains(*delivery.LastError, "connection refused") {
+		t.Fatalf("last_error 应保留失败原因，得到 %q", *delivery.LastError)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM notification_deliveries WHERE id = $1`, delivery.ID).Scan(&status); err != nil {
+		t.Fatalf("read delivery: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("DB 状态 = %q，want failed", status)
 	}
 }

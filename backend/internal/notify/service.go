@@ -199,7 +199,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (TemplateView, err
 	if err := ValidateContent(spec, in.Subject, in.Body, in.CTAText, in.CTAURL); err != nil {
 		return TemplateView{}, err
 	}
-	if !in.Enabled && spec.IsLocked() {
+	if in.Enabled != nil && !*in.Enabled && spec.IsLocked() {
 		return TemplateView{}, ErrLockedTemplate
 	}
 	in.IsModified = s.isModified(spec, in)

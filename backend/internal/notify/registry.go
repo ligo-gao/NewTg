@@ -167,6 +167,20 @@ func LookupCategory(key string) (Category, bool) {
 	return Category{}, false
 }
 
+// ChannelsForKey 返回该 key 注册的渠道（注册表声明顺序）。单渠道 key 在
+// 请求省略 channel 时可安全推断；多渠道 key（billing.balance_low /
+// billing.quota_exhausted）必须由调用方显式指定，否则同一个 key 会指向
+// 两行不同模板。
+func ChannelsForKey(key string) []Channel {
+	category, ok := LookupCategory(key)
+	if !ok {
+		return nil
+	}
+	out := make([]Channel, len(category.Channels))
+	copy(out, category.Channels)
+	return out
+}
+
 // IsRegisteredCategory 是「封闭集合」判据：未注册 category 的列表筛选/写入
 // 一律 400，不做模糊匹配。
 func IsRegisteredCategory(key string) bool {

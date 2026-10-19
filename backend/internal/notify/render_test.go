@@ -164,3 +164,43 @@ func TestMergeVariablesUsesSamples(t *testing.T) {
 		t.Fatalf("样例值应满足必填约束：%v", err)
 	}
 }
+
+func TestValidateContentRejectsExtraBraces(t *testing.T) {
+	spec := mustTemplate(t, "auth.verify_code", ChannelEmail)
+	for _, body := range []string{
+		"{{{.code}}}",
+		"{{.code}}}",
+		"{{{{.code}}}}",
+	} {
+		err := ValidateContent(spec, "code", body, "", "")
+		if err == nil {
+			t.Fatalf("额外花括号构造 %q 应被拒绝（F8）", body)
+		}
+		var construct *ErrInvalidConstruct
+		if !errors.As(err, &construct) {
+			t.Fatalf("%q 应返回 ErrInvalidConstruct，得到 %v", body, err)
+		}
+	}
+}
+
+func TestIntVariablesMustBeIntegers(t *testing.T) {
+	spec := mustTemplate(t, "auth.verify_code", ChannelEmail)
+	// 样例值以字符串保存，但输入必须真的是整数（F7）。
+	err := ValidateVariables(spec, map[string]any{
+		"code":            "428173",
+		"expires_minutes": "abc",
+		"purpose_label":   "注册验证",
+	})
+	var invalid *ErrInvalidValue
+	if !errors.As(err, &invalid) || invalid.Variable != "expires_minutes" {
+		t.Fatalf("非整数输入应返回 ErrInvalidValue，得到 %v", err)
+	}
+	// 合法整数串通过。
+	if err := ValidateVariables(spec, map[string]any{
+		"code":            "428173",
+		"expires_minutes": "10",
+		"purpose_label":   "注册验证",
+	}); err != nil {
+		t.Fatalf("合法整数串不应失败：%v", err)
+	}
+}

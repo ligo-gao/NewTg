@@ -221,14 +221,15 @@ type notificationTemplatePutRequest struct {
 
 func (h *NotificationTemplateHandlers) handlePut(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
+	if !templateKeyRegistered(w, key) {
+		return
+	}
 	var req notificationTemplatePutRequest
 	if !decodeNotificationBody(w, r, &req) {
 		return
 	}
-	channel, ok := notify.ParseChannel(req.Channel)
+	channel, ok := resolveTemplateChannel(w, key, req.Channel)
 	if !ok {
-		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
-			"Invalid request", "unknown channel")
 		return
 	}
 	locale, ok := notify.ParseLocale(req.Locale)
@@ -237,10 +238,8 @@ func (h *NotificationTemplateHandlers) handlePut(w http.ResponseWriter, r *http.
 			"Invalid request", "unknown locale")
 		return
 	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
+	// enabled 省略时传 nil：服务端保持该行当前值（F5），不能默认 true
+	// 把管理员停用过的模板悄悄重新启用。
 	// 审计 before 摘要：模板正文可能很长，审计只留可检索的身份与开关状态；
 	// 正文版本由 updated_at 唯一标识（§3.9.2 的 updated_at 即版本）。
 	var before *notify.TemplateView
@@ -255,7 +254,7 @@ func (h *NotificationTemplateHandlers) handlePut(w http.ResponseWriter, r *http.
 		Body:            req.Body,
 		CTAText:         req.CTAText,
 		CTAURL:          req.CTAURL,
-		Enabled:         enabled,
+		Enabled:         req.Enabled,
 		ExpectUpdatedAt: req.ExpectUpdatedAt,
 		Actor:           actorID(r),
 	})
@@ -275,18 +274,15 @@ type notificationTemplatePreviewRequest struct {
 
 func (h *NotificationTemplateHandlers) handlePreview(w http.ResponseWriter, r *http.Request) {
 	key, ok := stripActionSuffix(r.PathValue("key"), ":preview")
-	if !ok {
-		writeNotificationProblem(w, http.StatusNotFound, "not_found", "Not found", "unknown template action")
+	if !ok || !templateKeyRegistered(w, key) {
 		return
 	}
 	var req notificationTemplatePreviewRequest
 	if !decodeNotificationBody(w, r, &req) {
 		return
 	}
-	channel, ok := notify.ParseChannel(req.Channel)
+	channel, ok := resolveTemplateChannel(w, key, req.Channel)
 	if !ok {
-		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
-			"Invalid request", "unknown channel")
 		return
 	}
 	locale, ok := notify.ParseLocale(req.Locale)
@@ -316,18 +312,15 @@ type notificationTemplateTestRequest struct {
 
 func (h *NotificationTemplateHandlers) handleTestSend(w http.ResponseWriter, r *http.Request) {
 	key, ok := stripActionSuffix(r.PathValue("key"), ":test")
-	if !ok {
-		writeNotificationProblem(w, http.StatusNotFound, "not_found", "Not found", "unknown template action")
+	if !ok || !templateKeyRegistered(w, key) {
 		return
 	}
 	var req notificationTemplateTestRequest
 	if !decodeNotificationBody(w, r, &req) {
 		return
 	}
-	channel, ok := notify.ParseChannel(req.Channel)
+	channel, ok := resolveTemplateChannel(w, key, req.Channel)
 	if !ok {
-		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
-			"Invalid request", "unknown channel")
 		return
 	}
 	locale, ok := notify.ParseLocale(req.Locale)
@@ -405,27 +398,65 @@ func (h *NotificationTemplateHandlers) handleDeliveries(w http.ResponseWriter, r
 	})
 }
 
-// parseTemplateTarget 解析 GET /{key} 的 channel/locale。key 必须在注册表内
-// 由 service 裁决（404）；这里只处理参数形态，避免把 400/404 混淆。
+// parseTemplateTarget 解析 GET /{key} 的 channel/locale。
+// 单渠道 key 可省略 channel；多渠道 key（billing.balance_low /
+// billing.quota_exhausted）必须显式给出，否则无法确定是哪一行（F3）。
 func parseTemplateTarget(w http.ResponseWriter, r *http.Request, key string) (notify.Channel, notify.Locale, bool) {
-	query := r.URL.Query()
-	channel, ok := notify.ParseChannel(query.Get("channel"))
-	if !ok {
-		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
-			"Invalid request", "unknown channel")
+	if !templateKeyRegistered(w, key) {
 		return "", "", false
 	}
-	locale, ok := notify.ParseLocale(query.Get("locale"))
+	channel, ok := resolveTemplateChannel(w, key, r.URL.Query().Get("channel"))
+	if !ok {
+		return "", "", false
+	}
+	locale, ok := notify.ParseLocale(r.URL.Query().Get("locale"))
 	if !ok {
 		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
 			"Invalid request", "unknown locale")
 		return "", "", false
 	}
-	if strings.TrimSpace(key) == "" {
-		writeNotificationProblem(w, http.StatusNotFound, "not_found", "Not found", "template key is required")
-		return "", "", false
-	}
 	return channel, locale, true
+}
+
+// templateKeyRegistered 在读取 body 之前裁决 key 是否在 16 类封闭注册表内。
+func templateKeyRegistered(w http.ResponseWriter, key string) bool {
+	if notify.IsRegisteredCategory(key) {
+		return true
+	}
+	writeNotificationProblem(w, http.StatusNotFound, "not_found",
+		"Not found", "unknown notification template")
+	return false
+}
+
+// resolveTemplateChannel 实施 F3 的渠道推断规则：
+//   - key 不在注册表 → 404；
+//   - 省略 channel 且该 key 恰好只有一个渠道 → 推断（使 inapp-only 的
+//     system.announcement 等可达）；
+//   - 省略 channel 且 key 有多个渠道 → 400（绝不默认 email，那会让
+//     billing.balance_low 的 inapp 行永远不可编辑）；
+//   - 显式 channel 非法 → 400；合法但该 key 未注册该渠道 → 由 service 404。
+func resolveTemplateChannel(w http.ResponseWriter, key, raw string) (notify.Channel, bool) {
+	channels := notify.ChannelsForKey(key)
+	if len(channels) == 0 {
+		writeNotificationProblem(w, http.StatusNotFound, "not_found",
+			"Not found", "unknown notification template")
+		return "", false
+	}
+	if strings.TrimSpace(raw) == "" {
+		if len(channels) != 1 {
+			writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+				"Invalid request", "channel is required for this template")
+			return "", false
+		}
+		return channels[0], true
+	}
+	channel, ok := notify.ParseChannel(raw)
+	if !ok {
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "unknown channel")
+		return "", false
+	}
+	return channel, true
 }
 
 func stripActionSuffix(raw, suffix string) (string, bool) {
@@ -491,11 +522,13 @@ func (h *NotificationTemplateHandlers) auditUpdate(r *http.Request, before *noti
 	if h.audit == nil {
 		return
 	}
+	// 字段名用 template_key：审计脱敏器会把字面量 "key" 视为敏感字段并
+	// 替换为 [REDACTED]，用 "key" 会让审计 detail 失去检索价值。
 	detail, _ := json.Marshal(map[string]any{
-		"key":      after.Key,
-		"channel":  after.Channel,
-		"locale":   after.Locale,
-		"category": after.Category,
+		"template_key": after.Key,
+		"channel":      after.Channel,
+		"locale":       after.Locale,
+		"category":     after.Category,
 	})
 	summary := func(view *notify.TemplateView) json.RawMessage {
 		if view == nil {
@@ -539,6 +572,9 @@ func (h *NotificationTemplateHandlers) writeServiceError(w http.ResponseWriter, 
 	case errors.Is(err, notify.ErrConflict):
 		writeNotificationProblem(w, http.StatusConflict, "conflict",
 			"Conflict", "template was updated by someone else")
+	case errors.Is(err, notify.ErrExpectationRequired):
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "expect_updated_at is required when updating an existing template")
 	case errors.As(err, &unknownVariable):
 		writeNotificationProblem(w, http.StatusUnprocessableEntity, "invalid_template",
 			"Invalid template", err.Error())

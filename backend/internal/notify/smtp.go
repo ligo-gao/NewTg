@@ -58,8 +58,9 @@ type smtpSettings struct {
 	InsecureSkipVerify bool
 }
 
-// Configured 实现 Sender：host 与 from_email 是 SMTP 可用的最小依赖集
-// （端口/加密有默认值，用户名可按服务器要求留空）。
+// Configured 实现 Sender：host 与非空发件地址是 SMTP 可用的最小依赖集。
+// 发件地址按 G7-R41 回退：from_email 为空时用 username（很多 SMTP 服务要求
+// From 与登录账号一致）；因此「host + username」也必须视为已配置。
 func (s *SMTPSender) Configured(_ context.Context) bool {
 	settings, err := s.settings()
 	if err != nil {
@@ -96,6 +97,13 @@ func (s *SMTPSender) Send(ctx context.Context, to, subject, body string) (string
 	}
 	if err != nil {
 		return "", fmt.Errorf("notify: smtp dial: %w", err)
+	}
+	// F4 评审：整段 SMTP 会话必须有读写截止时间。smtp.Client 内部不设
+	// deadline，服务器接受连接却不再说话时，请求会一直挂到进程超时。
+	// 一个 deadline 覆盖 greeting/EHLO/AUTH/DATA/QUIT 全流程。
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		_ = conn.Close()
+		return "", fmt.Errorf("notify: smtp set deadline: %w", err)
 	}
 	// 交给 smtp.Client 后由它关闭；失败路径上也要保证不泄漏连接。
 	client, err := smtp.NewClient(conn, settings.Host)
@@ -151,7 +159,11 @@ func buildMessage(settings smtpSettings, to, subject, body, messageID string) st
 	if settings.FromName != "" {
 		from = mime.QEncoding.Encode("utf-8", settings.FromName) + " <" + settings.FromEmail + ">"
 	}
-	// 头注入防护：CR/LF 绝不允许进入主题或收件人（换行会让后续内容变成新头）。
+	// 头注入防护（评审 F11 裁决）：对 CR/LF 采用「脱敏/剥离」而不是
+	// 「拒绝并写安全日志」。模板正文来自已通过白名单校验的管理员内容，
+	// 主题/收件人里的换行更可能是粘贴事故；静默转成空格既阻止了注入，
+	// 又不会让测试发送因一个换行而失败。该选择与「拒绝+security log」
+	// 的偏差点已登记在报告与 SDD 台账。
 	subject = strings.ReplaceAll(strings.ReplaceAll(subject, "\r", " "), "\n", " ")
 	to = strings.ReplaceAll(strings.ReplaceAll(to, "\r", ""), "\n", "")
 	var builder strings.Builder
@@ -199,6 +211,14 @@ func (s *SMTPSender) settings() (smtpSettings, error) {
 	settings.Username = s.stringValue("notify.smtp.username")
 	settings.FromName = s.stringValue("notify.smtp.from_name")
 	settings.FromEmail = s.stringValue("notify.smtp.from_email")
+	// G7-R41：from_email 为空回退 username；from_name 为空回退 site.title。
+	// 这两条回退发生在读取层而不是配置写入层，管理端无需重复填写。
+	if settings.FromEmail == "" {
+		settings.FromEmail = settings.Username
+	}
+	if settings.FromName == "" {
+		settings.FromName = s.stringValue("site.title")
+	}
 	settings.ForceAuthLogin = s.boolValue("notify.smtp.force_auth_login")
 	settings.InsecureSkipVerify = s.boolValue("notify.smtp.insecure_skip_verify")
 

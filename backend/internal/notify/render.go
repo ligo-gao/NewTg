@@ -124,6 +124,11 @@ func validCTAURL(raw string) bool {
 // validateVariables 用一个文本字段做白名单校验。
 func validateVariables(t Template, text string) error {
 	for _, construct := range constructPattern.FindAllString(text, -1) {
+		// 整个 {{...}} 必须正好等于 {{.name}}：`{{{.code}}}` 这类额外花括号
+		// 形态若只用 FindStringSubmatch 会被内部子串蒙混过关（F8 评审）。
+		if fieldPattern.FindString(construct) != construct {
+			return &ErrInvalidConstruct{Construct: construct}
+		}
 		match := fieldPattern.FindStringSubmatch(construct)
 		if match == nil {
 			return &ErrInvalidConstruct{Construct: construct}
@@ -132,10 +137,10 @@ func validateVariables(t Template, text string) error {
 			return &ErrUnknownVariable{Variable: match[1]}
 		}
 	}
-	// 未闭合的 {{ 或孤立的 }} 同样是非字段访问构造。先移除合法字段，
-	// 避免把 `{{.code}}` 的结尾误判为孤立 `}}`。
+	// 剥离合法字段后，任何残留花括号都说明正文含未闭合/嵌套/额外括号构造。
+	// 模板只做字段访问，不允许把花括号当普通文本使用。
 	stripped := fieldPattern.ReplaceAllString(text, "")
-	if strings.Contains(stripped, "{{") || strings.Contains(stripped, "}}") {
+	if strings.ContainsAny(stripped, "{}") {
 		return &ErrInvalidConstruct{Construct: strings.TrimSpace(stripped)}
 	}
 	return nil
@@ -226,6 +231,13 @@ func substitute(t Template, text string, vars map[string]any) (string, error) {
 func formatValue(spec Variable, raw any) (string, error) {
 	switch value := raw.(type) {
 	case string:
+		// int 变量的样例值以字符串存储（便于文档展示），但调用方输入必须
+		// 真的是整数：`"abc"` 不能让渲染静默通过（F7 评审）。
+		if spec.Type == VarInt {
+			if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+				return "", &ErrInvalidValue{Variable: spec.Name, Detail: "expected an integer"}
+			}
+		}
 		return value, nil
 	case json.Number:
 		return formatNumber(spec, value.String())

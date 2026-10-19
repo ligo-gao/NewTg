@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
@@ -24,8 +27,11 @@ type fakeNotificationService struct {
 	listErr    error
 	lastFilter notify.TemplateFilter
 
-	getView notify.TemplateView
-	getErr  error
+	getView        notify.TemplateView
+	getErr         error
+	lastGetKey     string
+	lastGetChannel notify.Channel
+	lastGetLocale  notify.Locale
 
 	updateView notify.TemplateView
 	updateErr  error
@@ -50,7 +56,12 @@ func (f *fakeNotificationService) List(_ context.Context, filter notify.Template
 	return f.listItems, f.listErr
 }
 
-func (f *fakeNotificationService) Get(_ context.Context, _ string, _ notify.Channel, _ notify.Locale) (notify.TemplateView, error) {
+func (f *fakeNotificationService) Get(_ context.Context, key string, channel notify.Channel, locale notify.Locale) (notify.TemplateView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastGetKey = key
+	f.lastGetChannel = channel
+	f.lastGetLocale = locale
 	return f.getView, f.getErr
 }
 
@@ -173,6 +184,7 @@ func TestNotificationTemplatePutErrorMapping(t *testing.T) {
 		want int
 	}{
 		{"conflict", notify.ErrConflict, http.StatusConflict},
+		{"precondition required", notify.ErrExpectationRequired, http.StatusBadRequest},
 		{"unknown variable", &notify.ErrUnknownVariable{Variable: "foo"}, http.StatusUnprocessableEntity},
 		{"invalid construct", &notify.ErrInvalidConstruct{Construct: "{{.x | upper}}"}, http.StatusUnprocessableEntity},
 		{"missing variable", &notify.ErrMissingVariable{Variable: "code"}, http.StatusUnprocessableEntity},
@@ -283,5 +295,144 @@ func TestNotificationDeliveriesRequiresAdminPagination(t *testing.T) {
 	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-deliveries?page_size=101", "", admin, nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("超限 page_size = %d，期望 400", rr.Code)
+	}
+}
+
+func TestNotificationTemplateChannelInference(t *testing.T) {
+	service := &fakeNotificationService{
+		getView:    notify.TemplateView{Key: "system.announcement", Channel: notify.ChannelInApp},
+		updateView: notify.TemplateView{Key: "system.announcement", Channel: notify.ChannelInApp, Enabled: true},
+	}
+	mux := notificationTestMux(t, service)
+	admin := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+
+	// 单渠道 key 省略 channel → 从注册表推断（email-only）。
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-templates/auth.verify_code?locale=en", "", admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("单渠道 GET = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastGetChannel != notify.ChannelEmail {
+		t.Fatalf("auth.verify_code 应推断 email，得到 %s", service.lastGetChannel)
+	}
+
+	// inapp-only（含锁定的 system.announcement）必须无需 channel 即可达。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-templates/system.announcement?locale=en", "", admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("inapp-only GET = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastGetChannel != notify.ChannelInApp {
+		t.Fatalf("system.announcement 应推断 inapp，得到 %s", service.lastGetChannel)
+	}
+
+	// 多渠道 key 省略 channel → 400（不得默认 email）。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-templates/billing.balance_low?locale=en", "", admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("多渠道省略 channel = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 显式 inapp 可达。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-templates/billing.balance_low?locale=en&channel=inapp", "", admin, nil))
+	if rr.Code != http.StatusOK || service.lastGetChannel != notify.ChannelInApp {
+		t.Fatalf("显式 inapp GET = %d channel=%s，期望 200/inapp", rr.Code, service.lastGetChannel)
+	}
+
+	// PUT inapp-only 省略 channel：透传 inapp，且 enabled 省略必须是 nil（F5）。
+	body := `{"locale":"en","body":"**{{.title}}** {{.summary}}"}`
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/notification-templates/system.announcement", body, admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("inapp PUT = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastUpdate.Channel != notify.ChannelInApp {
+		t.Fatalf("PUT 应推断 inapp，得到 %s", service.lastUpdate.Channel)
+	}
+	if service.lastUpdate.Enabled != nil {
+		t.Fatalf("省略 enabled 应传 nil（保持当前值），得到 %v", *service.lastUpdate.Enabled)
+	}
+}
+
+func TestNotificationTemplateTestSendRateLimit(t *testing.T) {
+	service := &fakeNotificationService{delivery: notify.Delivery{ID: 1, Status: "sent"}}
+	mux := notificationTestMux(t, service)
+	manager := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+	body := `{"locale":"en","recipient":"admin@example.com"}`
+
+	for i := 0; i < 3; i++ {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+			"/api/notification-templates/system.smtp_test:test", body, manager, nil))
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("第 %d 次测试发送 = %d，期望 202（body=%s）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/system.smtp_test:test", body, manager, nil))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 4 次测试发送 = %d，期望 429（3 次/分钟）", rr.Code)
+	}
+}
+
+type recordingExec struct {
+	mu   sync.Mutex
+	args [][]any
+}
+
+func (r *recordingExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.args = append(r.args, args)
+	return fakeSQLResult{}, nil
+}
+
+func TestNotificationTemplateUpdateAudited(t *testing.T) {
+	exec := &recordingExec{}
+	logger := audit.New(exec)
+	service := &fakeNotificationService{
+		getView:    notify.TemplateView{Key: "auth.verify_code", Enabled: true},
+		updateView: notify.TemplateView{Key: "auth.verify_code", Enabled: true},
+	}
+	handlers, err := NewNotificationTemplateHandlers(NotificationTemplateHandlerConfig{
+		Service: service,
+		Authz:   rbac.NewAuthzMiddleware(),
+		Audit:   logger,
+	})
+	if err != nil {
+		t.Fatalf("NewNotificationTemplateHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	manager := &auth.Principal{UserID: 9, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+	body := `{"locale":"en","subject":"Your code","body":"code {{.code}}","expect_updated_at":null}`
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/notification-templates/auth.verify_code", body, manager, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.args) != 1 {
+		t.Fatalf("审计写入次数 = %d，期望 1", len(exec.args))
+	}
+	// $1=actor, $3=category, $10=detail（action 由 writer 注入）。
+	args := exec.args[0]
+	if len(args) < 10 {
+		t.Fatalf("审计参数不足：%v", args)
+	}
+	if args[0] != int64(9) {
+		t.Fatalf("审计 actor = %v，期望 9", args[0])
+	}
+	if args[2] != "operation" {
+		t.Fatalf("审计 category = %v，期望 operation", args[2])
+	}
+	if detail := fmt.Sprint(args[9]); !strings.Contains(detail, "notification_template.update") {
+		t.Fatalf("审计 detail 未包含动作名：%v", args[9])
+	}
+	if detail := fmt.Sprint(args[9]); !strings.Contains(detail, "auth.verify_code") {
+		t.Fatalf("审计 detail 未保留 template_key：%v", args[9])
 	}
 }

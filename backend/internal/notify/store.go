@@ -20,6 +20,10 @@ import (
 var (
 	// ErrConflict 表示 expect_updated_at 与行的当前版本不一致（HTTP 409）。
 	ErrConflict = errors.New("notify: template version conflict")
+	// ErrExpectationRequired 表示更新已存在的行却没有带 expect_updated_at
+	// （HTTP 400）。乐观锁是 PUT 的必要条件，缺版本号等于「无条件覆盖」，
+	// 会让并发编辑静默丢改动。
+	ErrExpectationRequired = errors.New("notify: expect_updated_at is required for an existing template")
 	// ErrUnknownTemplate 表示 key×channel 未注册（HTTP 404）。
 	ErrUnknownTemplate = errors.New("notify: unknown template")
 	// ErrTemplateMissing 表示语言回退链（语言 → en）全部缺行（P1 fail-closed）。
@@ -73,14 +77,16 @@ type TemplateFilter struct {
 // UpdateInput 是一次模板写入。ExpectUpdatedAt 为 nil 表示不启用乐观锁
 // （首次补种或前端明确不带版本）；非 nil 时必须与 DB 当前值一致（409）。
 type UpdateInput struct {
-	Key             string
-	Channel         Channel
-	Locale          Locale
-	Subject         string
-	Body            string
-	CTAText         string
-	CTAURL          string
-	Enabled         bool
+	Key     string
+	Channel Channel
+	Locale  Locale
+	Subject string
+	Body    string
+	CTAText string
+	CTAURL  string
+	// Enabled 为 nil 表示「保持当前值」：PUT 省略 enabled 不得把已停用的
+	// 模板悄悄重新启用（F5 评审裁决）。
+	Enabled         *bool
 	IsModified      bool
 	ExpectUpdatedAt *time.Time
 	Actor           int64
@@ -225,22 +231,36 @@ func (s *Store) Update(ctx context.Context, in UpdateInput) (TemplateRow, error)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var current time.Time
-	err = tx.QueryRowContext(ctx, `SELECT updated_at FROM notification_templates
+	var (
+		current        time.Time
+		currentEnabled = true
+	)
+	err = tx.QueryRowContext(ctx, `SELECT updated_at, enabled FROM notification_templates
 		WHERE "key" = $1 AND channel = $2 AND locale = $3 FOR UPDATE`,
-		in.Key, string(in.Channel), string(in.Locale)).Scan(&current)
+		in.Key, string(in.Channel), string(in.Locale)).Scan(&current, &currentEnabled)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if in.ExpectUpdatedAt != nil {
 			// 调用方认为行存在但实际不存在：这是版本冲突而不是「静默新建」。
 			return TemplateRow{}, ErrConflict
 		}
+		currentEnabled = true
 	case err != nil:
 		return TemplateRow{}, fmt.Errorf("notify: lock template: %w", err)
 	default:
-		if in.ExpectUpdatedAt != nil && !current.Equal(*in.ExpectUpdatedAt) {
+		// F6 裁决：已存在的行必须带版本号。缺版本 = 无条件覆盖，会让并发
+		// 编辑静默丢改动；首次插入（行不存在）不受此限。
+		if in.ExpectUpdatedAt == nil {
+			return TemplateRow{}, ErrExpectationRequired
+		}
+		if !current.Equal(*in.ExpectUpdatedAt) {
 			return TemplateRow{}, ErrConflict
 		}
+	}
+	// enabled 省略时保持原值（行不存在时默认 true）。
+	enabled := currentEnabled
+	if in.Enabled != nil {
+		enabled = *in.Enabled
 	}
 
 	var subject any
@@ -262,7 +282,7 @@ func (s *Store) Update(ctx context.Context, in UpdateInput) (TemplateRow, error)
 			updated_at = now()`,
 		in.Key, string(in.Channel), string(in.Locale), categoryForKey(in.Key),
 		subject, in.Body, nullableString(in.CTAText), nullableString(in.CTAURL),
-		in.IsModified, in.Enabled, nullableInt64(in.Actor))
+		in.IsModified, enabled, nullableInt64(in.Actor))
 
 	row := tx.QueryRowContext(ctx, `SELECT "key", category, channel, locale, subject, body_markdown,
 		cta_text, cta_url, is_modified, enabled, updated_by, created_at, updated_at
