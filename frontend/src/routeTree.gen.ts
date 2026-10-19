@@ -21,6 +21,7 @@ import { Route as ConsoleAdminRouteImport } from './routes/_console/admin'
 import { Route as ConsoleOrdersRouteImport } from './routes/_console/orders'
 import { Route as ConsoleProfileRouteImport } from './routes/_console/profile'
 import { Route as ConsoleSecurityRouteImport } from './routes/_console/security'
+import { Route as ConsoleTokensRouteImport } from './routes/_console/tokens'
 import { Route as ConsoleWalletRouteImport } from './routes/_console/wallet'
 import { Route as Errors401RouteImport } from './routes/_errors/401'
 import { Route as Errors403RouteImport } from './routes/_errors/403'
@@ -92,6 +93,11 @@ const ConsoleProfileRoute = ConsoleProfileRouteImport.update({
 const ConsoleSecurityRoute = ConsoleSecurityRouteImport.update({
   id: '/security',
   path: '/security',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleTokensRoute = ConsoleTokensRouteImport.update({
+  id: '/tokens',
+  path: '/tokens',
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsoleWalletRoute = ConsoleWalletRouteImport.update({
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/orders': typeof ConsoleOrdersRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
+  '/tokens': typeof ConsoleTokensRoute
   '/wallet': typeof ConsoleWalletRoute
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
@@ -201,6 +208,7 @@ export interface FileRoutesByTo {
   '/orders': typeof ConsoleOrdersRoute
   '/profile': typeof ConsoleProfileRoute
   '/security': typeof ConsoleSecurityRoute
+  '/tokens': typeof ConsoleTokensRoute
   '/wallet': typeof ConsoleWalletRoute
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
@@ -229,6 +237,7 @@ export interface FileRoutesById {
   '/_console/orders': typeof ConsoleOrdersRoute
   '/_console/profile': typeof ConsoleProfileRoute
   '/_console/security': typeof ConsoleSecurityRoute
+  '/_console/tokens': typeof ConsoleTokensRoute
   '/_console/wallet': typeof ConsoleWalletRoute
   '/_errors/401': typeof Errors401Route
   '/_errors/403': typeof Errors403Route
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/security'
+    | '/tokens'
     | '/wallet'
     | '/401'
     | '/403'
@@ -282,6 +292,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/security'
+    | '/tokens'
     | '/wallet'
     | '/401'
     | '/403'
@@ -309,6 +320,7 @@ export interface FileRouteTypes {
     | '/_console/orders'
     | '/_console/profile'
     | '/_console/security'
+    | '/_console/tokens'
     | '/_console/wallet'
     | '/_errors/401'
     | '/_errors/403'
@@ -423,6 +435,13 @@ declare module '@tanstack/react-router' {
       path: '/security'
       fullPath: '/security'
       preLoaderRoute: typeof ConsoleSecurityRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/tokens': {
+      id: '/_console/tokens'
+      path: '/tokens'
+      fullPath: '/tokens'
+      preLoaderRoute: typeof ConsoleTokensRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/wallet': {
@@ -548,6 +567,7 @@ interface ConsoleRouteChildren {
   ConsoleOrdersRoute: typeof ConsoleOrdersRoute
   ConsoleProfileRoute: typeof ConsoleProfileRoute
   ConsoleSecurityRoute: typeof ConsoleSecurityRoute
+  ConsoleTokensRoute: typeof ConsoleTokensRoute
   ConsoleWalletRoute: typeof ConsoleWalletRoute
   ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
 }
@@ -557,6 +577,7 @@ const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleOrdersRoute: ConsoleOrdersRoute,
   ConsoleProfileRoute: ConsoleProfileRoute,
   ConsoleSecurityRoute: ConsoleSecurityRoute,
+  ConsoleTokensRoute: ConsoleTokensRoute,
   ConsoleWalletRoute: ConsoleWalletRoute,
   ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
 }
