@@ -155,8 +155,26 @@ export function InstalledTab({
   }
 
   const total = data?.total ?? 0
-  const showRegistryEmpty = !filtered && total === 0
-  const showFilteredEmpty = filtered && total === 0
+
+  // 「注册表未加载」只能在内置层全员缺席时使用；只有探测到内置插件存在
+  // （但列表仍为空）才显示普通的「尚无已安装插件」。探测仅在必要时发起。
+  const registryProbe = useQuery({
+    queryKey: ['plugin-list', 'builtin-probe'],
+    queryFn: ({ signal }) =>
+      listTaskPlugins({ source: 'builtin', page: 1, pageSize: 1 }, signal),
+    enabled: data !== undefined && !filtered && total === 0,
+  })
+  const builtinMissing =
+    registryProbe.data !== undefined && registryProbe.data.total === 0
+  const showRegistryEmpty =
+    data !== undefined && !filtered && total === 0 && builtinMissing
+  const showInstalledEmpty =
+    data !== undefined &&
+    !filtered &&
+    total === 0 &&
+    registryProbe.data !== undefined &&
+    registryProbe.data.total > 0
+  const showFilteredEmpty = data !== undefined && filtered && total === 0
 
   return (
     <div className="space-y-3">
@@ -383,6 +401,27 @@ export function InstalledTab({
             </div>
           ) : null}
 
+          {data !== undefined &&
+          total === 0 &&
+          !filtered &&
+          registryProbe.isPending ? (
+            <SkeletonRows rows={5} />
+          ) : null}
+
+          {showInstalledEmpty ? (
+            <EmptyState
+              testId="plugin-empty-installed"
+              title={t('admin.task_plugins.installed.empty_installed')}
+              action={
+                canManage ? (
+                  <Button onClick={onGoUpload}>
+                    {t('admin.task_plugins.page.upload_shortcut')}
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : null}
+
           {showRegistryEmpty ? (
             <EmptyState
               testId="plugin-empty-registry"
@@ -539,6 +578,15 @@ function FactoryDisableDialog({
     },
   })
 
+  // 回退层是否存在的唯一可观察信号是运行时的 disabled_fallback 状态；
+  // 未激活过的新选择没有其它真源可查。
+  const hasFallback =
+    builtinQuery.data?.items.some(
+      (plugin) =>
+        selected.includes(plugin.key) &&
+        plugin.runtime_status === 'disabled_fallback',
+    ) ?? false
+
   function toggleKey(key: string): void {
     setSelected((current) =>
       current.includes(key)
@@ -614,7 +662,13 @@ function FactoryDisableDialog({
           onCancel={() => setConfirming(false)}
           onConfirm={() => saveMutation.mutate(selected)}
         >
-          <p>{t('admin.task_plugins.factory.confirm_body')}</p>
+          <p>
+            {t(
+              hasFallback
+                ? 'admin.task_plugins.factory.confirm_body'
+                : 'admin.task_plugins.factory.confirm_body_no_override',
+            )}
+          </p>
         </ConfirmDialog>
       </div>
     </Dialog>

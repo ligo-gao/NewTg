@@ -655,7 +655,8 @@
       "disable_bound_title": "禁用 {name}",
       "disable_bound_body": "该插件正被 {n} 个渠道绑定，禁用后这些渠道的任务提交将失败。",
       "disable_bound_confirm": "仍然禁用",
-      "factory_open": "全局内置插件"
+      "factory_open": "全局内置插件",
+      "empty_installed": "尚无已安装插件"
     },
     "factory": {
       "title": "全局禁用内置插件",
@@ -664,7 +665,8 @@
       "save": "保存更改",
       "confirm_title": "更改全局禁用的内置插件",
       "confirm_label": "保存并应用",
-      "confirm_body": "禁用后该插件在所有实例立即不可用；同 key 的上传插件将作为回退层继续可用。已提交的任务不受影响。"
+      "confirm_body": "禁用后该插件在所有实例立即不可用；同 key 的上传插件将作为回退层继续可用。已提交的任务不受影响。",
+      "confirm_body_no_override": "禁用后该插件在所有实例立即不可用；所选 key 没有上传回退层。已提交的任务不受影响。"
     },
     "upload": {
       "dropzone_label": "拖入插件源文件，或按回车选择文件",

@@ -655,7 +655,8 @@
       "disable_bound_title": "Tắt {name}",
       "disable_bound_body": "Plugin này đang được {n} kênh liên kết. Sau khi tắt, các yêu cầu từ các kênh đó sẽ thất bại.",
       "disable_bound_confirm": "Vẫn tắt",
-      "factory_open": "Plugin tích hợp toàn cục"
+      "factory_open": "Plugin tích hợp toàn cục",
+      "empty_installed": "Chưa có plugin nào được cài."
     },
     "factory": {
       "title": "Plugin tích hợp sẵn bị tắt toàn cục",
@@ -664,7 +665,8 @@
       "save": "Lưu thay đổi",
       "confirm_title": "Thay đổi plugin tích hợp sẵn bị tắt toàn cục",
       "confirm_label": "Lưu và áp dụng",
-      "confirm_body": "Tắt sẽ khiến plugin không khả dụng trên mọi phiên bản; plugin tải lên cùng key vẫn hoạt động như lớp dự phòng. Các tác vụ đã gửi không bị ảnh hưởng."
+      "confirm_body": "Tắt sẽ khiến plugin không khả dụng trên mọi phiên bản; plugin tải lên cùng key vẫn hoạt động như lớp dự phòng. Các tác vụ đã gửi không bị ảnh hưởng.",
+      "confirm_body_no_override": "Tắt sẽ khiến plugin không khả dụng trên mọi phiên bản; không có bản tải lên dự phòng cho các key đã chọn. Các tác vụ đã gửi không bị ảnh hưởng."
     },
     "upload": {
       "dropzone_label": "Kéo tệp nguồn plugin vào hoặc nhấn Enter để chọn tệp",

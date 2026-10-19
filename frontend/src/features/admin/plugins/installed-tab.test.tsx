@@ -186,6 +186,64 @@ describe('installed tab (F-08-28)', () => {
     expect(onGoRuntime).toHaveBeenCalledTimes(1)
   })
 
+  it('never mixes the empty state with the loading skeleton', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/plugin/task`, () => new Promise(() => undefined)),
+    )
+
+    await renderTab()
+
+    expect(await screen.findByTestId('plugin-skeleton')).toBeTruthy()
+    expect(screen.queryByTestId('plugin-empty-registry')).toBeNull()
+    expect(screen.queryByTestId('plugin-empty-installed')).toBeNull()
+    expect(screen.queryByText('No matching plugins.')).toBeNull()
+  })
+
+  it('never mixes the empty state with a load error', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/plugin/task`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/internal',
+            title: 'Internal Server Error',
+            status: 500,
+            detail: 'list failed',
+          },
+          { status: 500, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+      ),
+    )
+
+    await renderTab()
+
+    expect(await screen.findByText('list failed')).toBeTruthy()
+    expect(screen.queryByTestId('plugin-empty-registry')).toBeNull()
+    expect(screen.queryByTestId('plugin-empty-installed')).toBeNull()
+    expect(screen.queryByTestId('plugin-empty-filtered')).toBeNull()
+  })
+
+  it('shows the installed empty state when the registry is loaded', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/plugin/task`, ({ request }) => {
+        const url = new URL(request.url)
+        // 内置探测有行、全量列表为空：注册表已加载但没有可展示的插件。
+        return HttpResponse.json(
+          url.searchParams.get('source') === 'builtin'
+            ? { items: [], total: 3, page: 1, page_size: 1 }
+            : page([], 0),
+        )
+      }),
+    )
+    const onGoUpload = vi.fn()
+
+    await renderTab({ onGoUpload })
+
+    expect(await screen.findByText('No plugins installed yet.')).toBeTruthy()
+    expect(screen.queryByTestId('plugin-empty-registry')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Upload plugin' }))
+    expect(onGoUpload).toHaveBeenCalledTimes(1)
+  })
+
   it('toggles a plugin optimistically and rolls back on failure', async () => {
     let body: unknown = null
     server.use(

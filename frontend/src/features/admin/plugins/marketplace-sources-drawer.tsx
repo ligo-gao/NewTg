@@ -253,7 +253,7 @@ export function MarketplaceSourcesDrawer({
                 </div>
                 {expanded === source.id ? (
                   <p className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-surface-subtle px-2 py-1 font-mono text-xs text-danger">
-                    {source.last_error ?? source.error ?? t('admin.task_plugins.sources.no_error')}
+                    {(source.last_error ?? source.error ?? t('admin.task_plugins.sources.no_error')).slice(0, 512)}
                   </p>
                 ) : null}
               </li>

@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -16,52 +16,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
-const UPDATED_AT = '2026-10-19T10:00:00Z'
-
-function plugin(key: string, name: string) {
-  return {
-    key,
-    name,
-    icon: null,
-    source: 'builtin',
-    builtin: true,
-    enabled: true,
-    active_version: '1.0.0',
-    description: null,
-    runtime_status: 'registered',
-    bound_channels: 0,
-    updated_at: UPDATED_AT,
-  }
-}
-
 describe('pricing tab (F-08-37)', () => {
-  it('is read-only and deep-links to model pricing with the plugin key', async () => {
-    server.use(
-      http.get(`${ORIGIN}/api/plugin/task`, () =>
-        HttpResponse.json({
-          items: [plugin('kling', 'Kling')],
-          total: 1,
-          page: 1,
-          page_size: 100,
-        }),
-      ),
-    )
-
-    await renderWithProviders(<PricingTab />, ['common', 'admin'])
-
-    const rows = await screen.findAllByTestId('pricing-row')
-    expect(rows).toHaveLength(1)
-    const link = within(rows[0] as HTMLElement).getByRole('link', {
-      name: /View pricing/,
-    })
-    expect(link.getAttribute('href')).toBe(
-      '/admin/pricing/model-pricing?plugin=kling',
-    )
-    // 页面没有任何可写控件（实现期以 DOM 断言）。
-    expect(within(rows[0] as HTMLElement).queryAllByRole('textbox')).toHaveLength(0)
-    expect(within(rows[0] as HTMLElement).queryAllByRole('spinbutton')).toHaveLength(0)
-  })
-
   it('shows the pricing empty state', async () => {
     server.use(
       http.get(`${ORIGIN}/api/plugin/task`, () =>

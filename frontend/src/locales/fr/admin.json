@@ -655,7 +655,8 @@
       "disable_bound_title": "Désactiver {name}",
       "disable_bound_body": "Ce plugin est lié à {n} canal(aux). Leurs soumissions échoueront après la désactivation.",
       "disable_bound_confirm": "Désactiver quand même",
-      "factory_open": "Plugins intégrés globaux"
+      "factory_open": "Plugins intégrés globaux",
+      "empty_installed": "Aucun plugin installé."
     },
     "factory": {
       "title": "Plugins intégrés désactivés globalement",
@@ -664,7 +665,8 @@
       "save": "Enregistrer",
       "confirm_title": "Modifier les intégrés désactivés globalement",
       "confirm_label": "Enregistrer et appliquer",
-      "confirm_body": "La désactivation rend le plugin indisponible sur toutes les instances ; un plugin téléversé de même clé continue de servir de repli. Les tâches déjà soumises ne sont pas affectées."
+      "confirm_body": "La désactivation rend le plugin indisponible sur toutes les instances ; un plugin téléversé de même clé continue de servir de repli. Les tâches déjà soumises ne sont pas affectées.",
+      "confirm_body_no_override": "La désactivation rend le plugin indisponible sur toutes les instances ; aucune version téléversée ne sert de repli pour les clés sélectionnées. Les tâches déjà soumises ne sont pas affectées."
     },
     "upload": {
       "dropzone_label": "Déposez un fichier source de plugin ou appuyez sur Entrée pour en choisir un",

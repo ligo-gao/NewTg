@@ -655,7 +655,8 @@
       "disable_bound_title": "停用 {name}",
       "disable_bound_body": "此方式正被 {n} 個頻道綁定，停用後這些頻道的任務送出將失敗。",
       "disable_bound_confirm": "仍要停用",
-      "factory_open": "全域內建外掛"
+      "factory_open": "全域內建外掛",
+      "empty_installed": "尚無已安裝外掛"
     },
     "factory": {
       "title": "全域停用內建外掛",
@@ -664,7 +665,8 @@
       "save": "儲存變更",
       "confirm_title": "變更全域停用的內建外掛",
       "confirm_label": "儲存並套用",
-      "confirm_body": "停用後此方式在所有執行個體立即不可用；同 key 的上傳外掛將作為回退層繼續可用。已送出的任務不受影響。"
+      "confirm_body": "停用後此方式在所有執行個體立即不可用；同 key 的上傳外掛將作為回退層繼續可用。已送出的任務不受影響。",
+      "confirm_body_no_override": "停用後此外掛在所有執行個體立即不可用；所選 key 沒有上傳回退層。已送出的任務不受影響。"
     },
     "upload": {
       "dropzone_label": "拖入外掛原始碼檔案，或按 Enter 選擇檔案",

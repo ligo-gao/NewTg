@@ -54,13 +54,14 @@ const NAV_ITEMS = [
     admin: true,
     permission: 'settings:manage',
   },
-  // M6d 任务插件（modules-08 §6.10）：独立页、页内六 Tab。读取是 admin，
-  // 写操作才是 settings:manage，因此入口只按 admin 角色渲染（R-M6D-02）；
-  // 无 manage 的管理员进入后看到只读页面。
+  // M6d 任务插件（modules-08 §6.10）：独立页、页内六 Tab。后端 R-M6D-16
+  // 已把读端点统一为 settings:manage，入口与路由守卫因此同权限；缺权限时
+  // 入口不渲染、直链由路由 beforeLoad 送 403。
   {
     href: '/admin/system/task-plugins',
     key: 'common.nav.task_plugins',
     admin: true,
+    permission: 'settings:manage',
   },
 ] as const
 

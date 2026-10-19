@@ -1,8 +1,11 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+
+import { fetchMe } from '@/lib/session'
 
 import { loadRouteDictionary } from '@/app/providers/i18n'
 import { TaskPluginsPage } from '@/features/admin/plugins/task-plugins-page'
 import {
+  hasSettingsManage,
   normalizeTaskPluginsTab,
   type TaskPluginsTabId,
 } from '@/features/admin/plugins/tabs'
@@ -15,13 +18,22 @@ export interface TaskPluginsSearch {
  * 任务插件页（UI §6.10）。`?tab=installed|upload|marketplace|sandbox|pricing|
  * runtime`，默认 installed。
  *
- * 权限：读 admin（由 `_console/admin` 守卫），写 settings:manage 在页面内
- * 收窄（R-M6D-02）。非 admin 直链由角色守卫送 `/403`；服务端逐请求强制。
+ * 权限：后端 R-M6D-16 把读写统一到 settings:manage。缺少该权限时入口不
+ * 渲染，直链在 beforeLoad 落 `/403`；服务端仍逐请求强制。
  */
 export const Route = createFileRoute('/_console/admin/system/task-plugins/')({
   validateSearch: (search: Record<string, unknown>): TaskPluginsSearch => ({
     tab: normalizeTaskPluginsTab(search.tab),
   }),
+  beforeLoad: async ({ context, location }) => {
+    const me = await fetchMe(context.queryClient)
+    if (!hasSettingsManage(me?.permissions)) {
+      throw redirect({
+        to: '/403',
+        search: { redirect: `${location.pathname}${location.searchStr}` },
+      })
+    }
+  },
   loader: () => loadRouteDictionary('admin'),
   component: TaskPluginsRoute,
 })

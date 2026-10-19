@@ -209,6 +209,11 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
                 {t('admin.task_plugins.common.read_only')}
               </p>
             ) : null}
+            {!online ? (
+              <p className="mt-1 text-xs text-ink-3">
+                {t('admin.task_plugins.common.offline')}
+              </p>
+            ) : null}
           </div>
         </div>
       </SectionCard>

@@ -655,7 +655,8 @@
       "disable_bound_title": "Disable {name}",
       "disable_bound_body": "This plugin is bound to {n} channel(s). Submissions from them will fail after disabling.",
       "disable_bound_confirm": "Disable anyway",
-      "factory_open": "Global built-in plugins"
+      "factory_open": "Global built-in plugins",
+      "empty_installed": "No plugins installed yet."
     },
     "factory": {
       "title": "Globally disabled built-in plugins",
@@ -664,7 +665,8 @@
       "save": "Save changes",
       "confirm_title": "Change globally disabled built-ins",
       "confirm_label": "Save and apply",
-      "confirm_body": "Disabling makes the plugin unavailable on all instances; an uploaded plugin with the same key keeps working as a fallback. Already submitted tasks are unaffected."
+      "confirm_body": "Disabling makes the plugin unavailable on all instances; an uploaded plugin with the same key keeps working as a fallback. Already submitted tasks are unaffected.",
+      "confirm_body_no_override": "Disabling makes the plugin unavailable on all instances; no uploaded fallback exists for the selected keys. Already submitted tasks are unaffected."
     },
     "upload": {
       "dropzone_label": "Drop a plugin source file or press Enter to choose one",

@@ -26,13 +26,21 @@ function installActor(role: 'admin' | 'user', permissions: string[]) {
 }
 
 describe('task plugins console entry', () => {
-  it('renders the entry for every admin, even without settings:manage (read is admin)', async () => {
-    installActor('admin', [])
+  it('renders the entry with settings:manage (R-M6D-16)', async () => {
+    installActor('admin', ['settings:manage'])
     await renderWithProviders(<ConsoleHeader />, ['common'])
 
     await screen.findByRole('link', { name: 'Users' })
     const link = await screen.findByRole('link', { name: 'Task plugins' })
     expect(link.getAttribute('href')).toBe('/admin/system/task-plugins')
+  })
+
+  it('hides the entry from admins without settings:manage', async () => {
+    installActor('admin', [])
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    await screen.findByRole('link', { name: 'Users' })
+    expect(screen.queryByRole('link', { name: 'Task plugins' })).toBeNull()
   })
 
   it('hides the entry from non-admin sessions', async () => {
