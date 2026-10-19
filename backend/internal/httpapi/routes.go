@@ -118,9 +118,20 @@ type Router struct {
 	mux       *http.ServeMux
 	protected *http.ServeMux
 	handlers  *authHandlers
+	// tasks 是任务数据面 handler（M6d Task 6a）。非 nil 时 platform 的
+	// mountRelayRoutes 把它挂到 /v1 令牌链（与中继共用 RelayAuth）。
+	tasks *TasksHandler
 	// handler 是 mux 外层的统一响应策略（/api/ 默认 no-store）。在 NewRouter
 	// 构造时包住 mux 指针：之后追加的路由仍会经过该层。
 	handler http.Handler
+}
+
+// TasksHandler 返回任务数据面 handler；未装配（无 DB 的单测）时为 nil。
+func (r *Router) TasksHandler() *TasksHandler {
+	if r == nil {
+		return nil
+	}
+	return r.tasks
 }
 
 // NewRouter 组装路由。返回 error 而不是 panic：缺 Redis/仓储属于装配错误，

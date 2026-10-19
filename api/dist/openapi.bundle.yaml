@@ -5727,6 +5727,185 @@ paths:
           $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
+  /v1/tasks/{key}:
+    post:
+      tags:
+        - relay
+      operationId: submitTask
+      summary: 提交任务插件任务
+      description: |
+        `{key}` 是插件 key（即平台名）。提交成功后 202：
+        `{public_task_id, state, upstream_task_id?}`。
+        插件未注册 404；已禁用/编译失败 409；无可用渠道 404 model_not_found；
+        预扣失败 402（不落任务行、不调用上游）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/TaskPluginKey'
+      responses:
+        '202':
+          description: 已接受；任务已持久化（终态或待轮询）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '402':
+          $ref: '#/components/responses/Error402'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          description: 插件不可用（disabled / compile_failed）
+        '413':
+          description: 请求体超过 4 MiB
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          description: 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败）
+    get:
+      tags:
+        - relay
+      operationId: getTask
+      summary: 查询任务状态
+      description: |
+        归属过滤：不存在或不属于当前用户一律 404（不区分原因）。
+        `usage` 只包含插件声明字段的数量，绝不返回额度/价格。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/TaskPluginKey'
+        - $ref: '#/components/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: '{task_id,state,raw_state,progress_percent,usage?,artifacts?,fail_reason?}'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /v1/tasks/{key}/artifacts:
+    get:
+      tags:
+        - relay
+      operationId: listTaskArtifacts
+      summary: 列出任务产物
+      description: |
+        产物从持久化 task.data 投影，不建第二份真相。content 端点
+        （能力式签名 URL）属后续任务，本端点不返回 URL。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/TaskPluginKey'
+        - $ref: '#/components/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: '{items:[{key,type,mime_type?}]}'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/task/self:
+    get:
+      tags:
+        - user
+      operationId: listSelfTasks
+      summary: 本人任务台账（分页）
+      description: |
+        按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+        台账不返回 data / private_data（设计 §7.1 Omit）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: p
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 任务分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/task:
+    get:
+      tags:
+        - admin
+      operationId: listTasks
+      x-required-permission: logs:read
+      summary: 全站任务台账（分页 + 用户/状态筛选）
+      description: |
+        `user_id` 可选（正整数）；`state` 可逗号分隔筛选。台账不返回
+        data / private_data（设计 §7.1 Omit）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: p
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: 任务分页（含 user_id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
 components:
   securitySchemes:
     sessionCookie:
@@ -5850,6 +6029,21 @@ components:
         type: integer
         format: int64
         minimum: 1
+    TaskPluginKey:
+      name: key
+      in: path
+      required: true
+      description: 插件 key（1–30，^[a-z0-9][a-z0-9-]*$）
+      schema:
+        type: string
+        maxLength: 30
+    TaskIDQuery:
+      name: task_id
+      in: query
+      required: true
+      description: 对外任务 ID（task_<32 hex>）
+      schema:
+        type: string
   schemas:
     Problem:
       type: object
@@ -10848,6 +11042,125 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/AuditLogItem'
+    TaskListItem:
+      type: object
+      additionalProperties: false
+      required:
+        - task_id
+        - family
+        - action
+        - plugin_key
+        - state
+        - raw_state
+        - progress_percent
+      properties:
+        id:
+          type: integer
+          format: int64
+        task_id:
+          type: string
+          description: 对外任务 ID（task_<32 hex>）
+        upstream_task_id:
+          type: string
+        family:
+          type: string
+          enum:
+            - plugin
+        action:
+          type: string
+        plugin_key:
+          type: string
+          maxLength: 30
+        plugin_generation:
+          type: integer
+          format: int64
+        fetch_mode:
+          type: string
+          enum:
+            - poll
+            - callback
+            - inline
+        locked_channel_id:
+          type: integer
+          format: int64
+        origin_task_ids:
+          type: array
+          items:
+            type: string
+        state:
+          type: string
+          enum:
+            - not_start
+            - submitted
+            - queued
+            - in_progress
+            - success
+            - failure
+            - unknown
+        raw_state:
+          type: string
+        progress_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        retention_deadline:
+          type: string
+          format: date-time
+          nullable: true
+        user_id:
+          type: integer
+          format: int64
+          description: 仅管理员台账返回；self 台账省略
+        group:
+          type: string
+        channel_id:
+          type: integer
+          format: int64
+        quota:
+          type: integer
+          format: int64
+        fail_reason:
+          type: string
+        submit_time:
+          type: string
+          format: date-time
+          nullable: true
+        start_time:
+          type: string
+          format: date-time
+          nullable: true
+        finish_time:
+          type: string
+          format: date-time
+          nullable: true
+        properties:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    TaskListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskListItem'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）

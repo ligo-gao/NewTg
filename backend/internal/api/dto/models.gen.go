@@ -128,16 +128,16 @@ func (e EmailCodeRequestPurpose) Valid() bool {
 
 // Defines values for GeoIPResponseSource.
 const (
-	LocalDb GeoIPResponseSource = "local_db"
-	Unknown GeoIPResponseSource = "unknown"
+	GeoIPResponseSourceLocalDb GeoIPResponseSource = "local_db"
+	GeoIPResponseSourceUnknown GeoIPResponseSource = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the GeoIPResponseSource enum.
 func (e GeoIPResponseSource) Valid() bool {
 	switch e {
-	case LocalDb:
+	case GeoIPResponseSourceLocalDb:
 		return true
-	case Unknown:
+	case GeoIPResponseSourceUnknown:
 		return true
 	default:
 		return false
@@ -762,6 +762,75 @@ func (e SetupResponseUserStatus) Valid() bool {
 	case SetupResponseUserStatusDisabled:
 		return true
 	case SetupResponseUserStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskListItemFamily.
+const (
+	Plugin TaskListItemFamily = "plugin"
+)
+
+// Valid indicates whether the value is a known member of the TaskListItemFamily enum.
+func (e TaskListItemFamily) Valid() bool {
+	switch e {
+	case Plugin:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskListItemFetchMode.
+const (
+	Callback TaskListItemFetchMode = "callback"
+	Inline   TaskListItemFetchMode = "inline"
+	Poll     TaskListItemFetchMode = "poll"
+)
+
+// Valid indicates whether the value is a known member of the TaskListItemFetchMode enum.
+func (e TaskListItemFetchMode) Valid() bool {
+	switch e {
+	case Callback:
+		return true
+	case Inline:
+		return true
+	case Poll:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskListItemState.
+const (
+	TaskListItemStateFailure    TaskListItemState = "failure"
+	TaskListItemStateInProgress TaskListItemState = "in_progress"
+	TaskListItemStateNotStart   TaskListItemState = "not_start"
+	TaskListItemStateQueued     TaskListItemState = "queued"
+	TaskListItemStateSubmitted  TaskListItemState = "submitted"
+	TaskListItemStateSuccess    TaskListItemState = "success"
+	TaskListItemStateUnknown    TaskListItemState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the TaskListItemState enum.
+func (e TaskListItemState) Valid() bool {
+	switch e {
+	case TaskListItemStateFailure:
+		return true
+	case TaskListItemStateInProgress:
+		return true
+	case TaskListItemStateNotStart:
+		return true
+	case TaskListItemStateQueued:
+		return true
+	case TaskListItemStateSubmitted:
+		return true
+	case TaskListItemStateSuccess:
+		return true
+	case TaskListItemStateUnknown:
 		return true
 	default:
 		return false
@@ -4322,6 +4391,56 @@ type SetupResponse struct {
 // SetupResponseUserStatus defines model for SetupResponse.User.Status.
 type SetupResponseUserStatus string
 
+// TaskListItem defines model for TaskListItem.
+type TaskListItem struct {
+	Action            string                  `json:"action"`
+	ChannelId         *int64                  `json:"channel_id,omitempty"`
+	CreatedAt         *time.Time              `json:"created_at,omitempty"`
+	FailReason        *string                 `json:"fail_reason,omitempty"`
+	Family            TaskListItemFamily      `json:"family"`
+	FetchMode         *TaskListItemFetchMode  `json:"fetch_mode,omitempty"`
+	FinishTime        *time.Time              `json:"finish_time,omitempty"`
+	Group             *string                 `json:"group,omitempty"`
+	Id                *int64                  `json:"id,omitempty"`
+	LockedChannelId   *int64                  `json:"locked_channel_id,omitempty"`
+	OriginTaskIds     *[]string               `json:"origin_task_ids,omitempty"`
+	PluginGeneration  *int64                  `json:"plugin_generation,omitempty"`
+	PluginKey         string                  `json:"plugin_key"`
+	ProgressPercent   int                     `json:"progress_percent"`
+	Properties        *map[string]interface{} `json:"properties,omitempty"`
+	Quota             *int64                  `json:"quota,omitempty"`
+	RawState          string                  `json:"raw_state"`
+	RetentionDeadline *time.Time              `json:"retention_deadline,omitempty"`
+	StartTime         *time.Time              `json:"start_time,omitempty"`
+	State             TaskListItemState       `json:"state"`
+	SubmitTime        *time.Time              `json:"submit_time,omitempty"`
+
+	// TaskId 对外任务 ID（task_<32 hex>）
+	TaskId         string     `json:"task_id"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+	UpstreamTaskId *string    `json:"upstream_task_id,omitempty"`
+
+	// UserId 仅管理员台账返回；self 台账省略
+	UserId *int64 `json:"user_id,omitempty"`
+}
+
+// TaskListItemFamily defines model for TaskListItem.Family.
+type TaskListItemFamily string
+
+// TaskListItemFetchMode defines model for TaskListItem.FetchMode.
+type TaskListItemFetchMode string
+
+// TaskListItemState defines model for TaskListItem.State.
+type TaskListItemState string
+
+// TaskListResponse defines model for TaskListResponse.
+type TaskListResponse struct {
+	Items    []TaskListItem `json:"items"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+	Total    int            `json:"total"`
+}
+
 // TaskPlugin defines model for TaskPlugin.
 type TaskPlugin struct {
 	ActiveVersion *string `json:"active_version,omitempty"`
@@ -5000,6 +5119,12 @@ type PathTokenID = int64
 // PathUserID defines model for PathUserID.
 type PathUserID = int64
 
+// TaskIDQuery defines model for TaskIDQuery.
+type TaskIDQuery = string
+
+// TaskPluginKey defines model for TaskPluginKey.
+type TaskPluginKey = string
+
 // UpdatedAtQuery defines model for UpdatedAtQuery.
 type UpdatedAtQuery = time.Time
 
@@ -5574,6 +5699,21 @@ type RevokeSessionParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListTasksParams defines parameters for ListTasks.
+type ListTasksParams struct {
+	UserId   *int    `form:"user_id,omitempty" json:"user_id,omitempty"`
+	State    *string `form:"state,omitempty" json:"state,omitempty"`
+	P        *int    `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int    `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// ListSelfTasksParams defines parameters for ListSelfTasks.
+type ListSelfTasksParams struct {
+	P        *int    `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int    `form:"page_size,omitempty" json:"page_size,omitempty"`
+	State    *string `form:"state,omitempty" json:"state,omitempty"`
+}
+
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -5921,6 +6061,18 @@ type GetReadyz503JSONResponseBodyChecksStartup string
 
 // GetReadyz503JSONResponseBodyStatus defines parameters for GetReadyz.
 type GetReadyz503JSONResponseBodyStatus string
+
+// GetTaskParams defines parameters for GetTask.
+type GetTaskParams struct {
+	// TaskId 对外任务 ID（task_<32 hex>）
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+}
+
+// ListTaskArtifactsParams defines parameters for ListTaskArtifacts.
+type ListTaskArtifactsParams struct {
+	// TaskId 对外任务 ID（task_<32 hex>）
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+}
 
 // RegenerateTwoFABackupCodesJSONRequestBody defines body for RegenerateTwoFABackupCodes for application/json ContentType.
 type RegenerateTwoFABackupCodesJSONRequestBody = TwoFAPasswordRequest

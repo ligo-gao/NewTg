@@ -2491,3 +2491,46 @@ paths:
         '403': {$ref: '../components/responses.yaml#/responses/Error403'}
         '422': {$ref: '../components/responses.yaml#/responses/Error422'}
         '500': {$ref: '../components/responses.yaml#/responses/Error500'}
+
+  # ---------------------------------------------------------------------------
+  # 任务台账（M6d Task 6a / relay-06 §10.4）。管理员可见性沿用 logs:read
+  # （或 FULL 权限）口径；普通用户访问返回 403。
+  # ---------------------------------------------------------------------------
+  /api/task:
+    get:
+      tags: [admin]
+      operationId: listTasks
+      x-required-permission: logs:read
+      summary: 全站任务台账（分页 + 用户/状态筛选）
+      description: |
+        `user_id` 可选（正整数）；`state` 可逗号分隔筛选。台账不返回
+        data / private_data（设计 §7.1 Omit）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: user_id
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1}
+        - name: state
+          in: query
+          required: false
+          schema: {type: string}
+        - name: p
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1}
+        - name: page_size
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        '200':
+          description: 任务分页（含 user_id）
+          content:
+            application/json:
+              schema: {$ref: '../schemas/user.yaml#/schemas/TaskListResponse'}
+        '400': {$ref: '../components/responses.yaml#/responses/Error400'}
+        '401': {$ref: '../components/responses.yaml#/responses/Error401'}
+        '403': {$ref: '../components/responses.yaml#/responses/Error403'}
+        '500': {$ref: '../components/responses.yaml#/responses/Error500'}

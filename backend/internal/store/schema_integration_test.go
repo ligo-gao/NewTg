@@ -28,6 +28,7 @@ import (
 // M6c Task 13 给 users 追加 default_model（modules-02 §2.14），users 24→25。
 // M6d Task 1 追加任务插件三表（modules-08 §3.10.2），表数 24→27。
 // M6d Task 7a 给 channels 追加任务插件绑定 2 列（relay-06 §1.3），22→24。
+// M6d Task 6a 追加任务数据面主表 tasks（relay-06 §7），表数 27→28。
 var wantColumns = map[string]int{
 	"users":                   25,
 	"api_tokens":              15,
@@ -62,6 +63,9 @@ var wantColumns = map[string]int{
 	"task_plugins":               10,
 	"task_plugin_versions":       11,
 	"plugin_marketplace_sources": 7,
+	// M6d Task 6a 任务数据面主表（relay-06 §7）：契约 §2.5 统一列 13 + 插件
+	// 附加列 14 = 27 列。列数与设计表逐行对应，多一列少一列都视为漂移。
+	"tasks": 27,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -92,6 +96,9 @@ var wantNoFKTables = []string{
 	"wallet_transactions",
 	"orders",
 	"redemption_codes",
+	// 任务行是计费/审计事实：用户或渠道被硬删除后仍要保留历史任务，
+	// user_id / channel_id 只做逻辑引用（M6d Task 6a）。
+	"tasks",
 }
 
 // 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
@@ -116,6 +123,8 @@ var wantIdentityPKTables = []string{
 	// M6c Task 4：两张通知表都以 GENERATED ALWAYS AS IDENTITY 作 PK。
 	"notification_templates",
 	"notification_deliveries",
+	// M6d Task 6a：tasks 以 GENERATED ALWAYS AS IDENTITY 作 PK。
+	"tasks",
 }
 
 // identityPKExceptions：5 张「自然键/非 identity 例外」表的 PK（均非 identity）：
@@ -126,8 +135,8 @@ var wantIdentityPKTables = []string{
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及两张 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：27 表
-// （M0 16 + M1 6 + M6c 2 + M6d 3）= 18 张单列 id identity + 5 张自然键例外
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：28 表
+// （M0 16 + M1 6 + M6c 2 + M6d 4）= 19 张单列 id identity + 5 张自然键例外
 // + 2 张 uuid 代理键 + 2 张 run_id 领头自然键；**非 identity PK 的表恰 9 张**，
 // 由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
@@ -193,7 +202,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 27 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 3，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 28 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -222,7 +231,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（27 表，共 27 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（28 表，共 28 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -302,6 +311,49 @@ func TestMainSchemaRuntimeIndexes(t *testing.T) {
 			}
 			if partial != wantPartial {
 				t.Fatalf("%s partial=%v，want %v（定义：%s）", idx, partial, wantPartial, def)
+			}
+		})
+	}
+}
+
+// TestMainSchemaTaskIndexes：（c.1）tasks 的三条读取索引必须精确存在。
+//
+// 三条索引各有唯一用途，删掉任意一条都会让对应查询退化成全表扫描：
+//   - tasks_user_public_idx：能力式读取按 (user_id, public_task_id) 定位；
+//   - tasks_pending_idx：轮询器只扫未完成任务的**部分**索引；
+//   - tasks_user_created_idx：客户端台账按创建时间倒序分页。
+//
+// 这里不只断言「存在」，还断言列序与部分谓词，避免被同名但语义不同的
+// 索引顶替（那会让「索引存在」变成假阳性）。
+func TestMainSchemaTaskIndexes(t *testing.T) {
+	db := openTestDB(t)
+	cases := []struct {
+		name        string
+		wantColumns []string
+		wantPartial bool
+		wantPred    string
+	}{
+		{"tasks_user_public_idx", []string{"user_id", "public_task_id"}, false, ""},
+		{"tasks_pending_idx", []string{"state"}, true, "success"},
+		{"tasks_user_created_idx", []string{"user_id", "created_at"}, false, ""},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			def, _, partial, ok := indexInfo(t, db, c.name)
+			if !ok {
+				t.Fatalf("索引 %s 不存在", c.name)
+			}
+			if partial != c.wantPartial {
+				t.Fatalf("%s partial=%v，want %v（定义：%s）", c.name, partial, c.wantPartial, def)
+			}
+			for _, column := range c.wantColumns {
+				if !strings.Contains(def, column) {
+					t.Fatalf("%s 定义缺少列 %q：%s", c.name, column, def)
+				}
+			}
+			if c.wantPred != "" && !strings.Contains(def, c.wantPred) {
+				t.Fatalf("%s 部分谓词缺少 %q：%s", c.name, c.wantPred, def)
 			}
 		})
 	}
@@ -413,7 +465,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 	db := openTestDB(t)
 
-	// (e.1) 18 张代理主键表（M0 10 + M1 6 + M6c 2）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 19 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -516,7 +568,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 
 // TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 9 张 =
 // 5 张自然键例外（identityPKExceptions）+ 2 张 uuid 代理键（uuidPKTables）
-// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（18 张）均为
+// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（19 张）均为
 // 单列 id + GENERATED ALWAYS AS IDENTITY。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	db := openTestDB(t)
@@ -613,6 +665,12 @@ var documentedChecks = []struct {
 	{
 		Table: "plugin_marketplace_sources", Name: "plugin_marketplace_sources_url_len_chk",
 		Fragments: []string{"char_length", "url", "1024"},
+	},
+	// M6d Task 6a / relay-06 §7：进度必须落在 0–100，防止上游字符串进度
+	// 被误写为越界数值（进度参与轮询的「未完成」判定）。
+	{
+		Table: "tasks", Name: "tasks_progress_percent_chk",
+		Fragments: []string{"progress_percent", ">= 0", "<= 100"},
 	},
 }
 
@@ -719,6 +777,25 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	t.Run("市场源 URL 超长被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO plugin_marketplace_sources (name, url)
 			VALUES ('chk_url_len', 'https://' || repeat('a', 1024))`)
+	})
+
+	// M6d Task 6a：tasks 的三个取值域（state / family / progress）各一条负向
+	// 探针。枚举 CHECK 已由 EnumChecks 对账覆盖，这里额外证明**写入路径**
+	// 确实被 DB 拒绝（而不是约束只存在于目录里）。
+	t.Run("任务 state 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO tasks
+			(public_task_id, family, action, plugin_key, fetch_mode, state, user_id)
+			VALUES ('chk_task_state', 'plugin', 'generate', 'sample', 'poll', 'bogus', 1)`)
+	})
+	t.Run("任务 family 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO tasks
+			(public_task_id, family, action, plugin_key, fetch_mode, state, user_id)
+			VALUES ('chk_task_family', 'mj', 'generate', 'sample', 'poll', 'submitted', 1)`)
+	})
+	t.Run("任务 progress 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO tasks
+			(public_task_id, family, action, plugin_key, fetch_mode, state, progress_percent, user_id)
+			VALUES ('chk_task_progress', 'plugin', 'generate', 'sample', 'poll', 'submitted', 101, 1)`)
 	})
 }
 

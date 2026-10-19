@@ -93,13 +93,24 @@ var EnumChecks = map[string][]string{
 	"task_plugins.source":                          {"builtin", "upload"},
 	"task_plugin_versions.api_version":             {"v1"},
 	"plugin_marketplace_sources.last_check_status": {"pending", "ok", "failed"},
+
+	// 任务数据面主表（M6d Task 6a，relay-06 §7 / 契约 §2.5）。
+	// family 当前只有 plugin（本族判别键）；fetch_mode 是「本系统如何取回」，
+	// 与插件清单 meta.fetchMode（per_task/batch）同名不同义；state 是
+	// TaskState 的 7 态持久化字面量。
+	"tasks.family":     {"plugin"},
+	"tasks.fetch_mode": {"poll", "callback", "inline"},
+	"tasks.state": {
+		"not_start", "submitted", "queued", "in_progress",
+		"success", "failure", "unknown",
+	},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
 // 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
-// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 3 = 27 表），
+// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4 = 28 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{

@@ -2571,6 +2571,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/tasks/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查询任务状态
+         * @description 归属过滤：不存在或不属于当前用户一律 404（不区分原因）。
+         *     `usage` 只包含插件声明字段的数量，绝不返回额度/价格。
+         */
+        get: operations["getTask"];
+        put?: never;
+        /**
+         * 提交任务插件任务
+         * @description `{key}` 是插件 key（即平台名）。提交成功后 202：
+         *     `{public_task_id, state, upstream_task_id?}`。
+         *     插件未注册 404；已禁用/编译失败 409；无可用渠道 404 model_not_found；
+         *     预扣失败 402（不落任务行、不调用上游）。
+         */
+        post: operations["submitTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{key}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出任务产物
+         * @description 产物从持久化 task.data 投影，不建第二份真相。content 端点
+         *     （能力式签名 URL）属后续任务，本端点不返回 URL。
+         */
+        get: operations["listTaskArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/task/self": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本人任务台账（分页）
+         * @description 按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+         *     台账不返回 data / private_data（设计 §7.1 Omit）。
+         */
+        get: operations["listSelfTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/task": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 全站任务台账（分页 + 用户/状态筛选）
+         * @description `user_id` 可选（正整数）；`state` 可逗号分隔筛选。台账不返回
+         *     data / private_data（设计 §7.1 Omit）。
+         */
+        get: operations["listTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4921,6 +5012,60 @@ export interface components {
         AuditLogPage: components["schemas"]["Page"] & {
             items?: components["schemas"]["AuditLogItem"][];
         };
+        TaskListItem: {
+            /** Format: int64 */
+            id?: number;
+            /** @description 对外任务 ID（task_<32 hex>） */
+            task_id: string;
+            upstream_task_id?: string;
+            /** @enum {string} */
+            family: "plugin";
+            action: string;
+            plugin_key: string;
+            /** Format: int64 */
+            plugin_generation?: number;
+            /** @enum {string} */
+            fetch_mode?: "poll" | "callback" | "inline";
+            /** Format: int64 */
+            locked_channel_id?: number;
+            origin_task_ids?: string[];
+            /** @enum {string} */
+            state: "not_start" | "submitted" | "queued" | "in_progress" | "success" | "failure" | "unknown";
+            raw_state: string;
+            progress_percent: number;
+            /** Format: date-time */
+            retention_deadline?: string | null;
+            /**
+             * Format: int64
+             * @description 仅管理员台账返回；self 台账省略
+             */
+            user_id?: number;
+            group?: string;
+            /** Format: int64 */
+            channel_id?: number;
+            /** Format: int64 */
+            quota?: number;
+            fail_reason?: string;
+            /** Format: date-time */
+            submit_time?: string | null;
+            /** Format: date-time */
+            start_time?: string | null;
+            /** Format: date-time */
+            finish_time?: string | null;
+            properties?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        TaskListResponse: {
+            items: components["schemas"]["TaskListItem"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
     };
     responses: {
         /** @description 请求不符合契约（参数/请求体校验失败） */
@@ -5065,6 +5210,10 @@ export interface components {
         UpdatedAtQuery: string;
         /** @description redemption_codes.id */
         PathRedemptionCodeID: number;
+        /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+        TaskPluginKey: string;
+        /** @description 对外任务 ID（task_<32 hex>） */
+        TaskIDQuery: string;
     };
     requestBodies: never;
     headers: never;
@@ -9904,6 +10053,165 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getTask: {
+        parameters: {
+            query: {
+                /** @description 对外任务 ID（task_<32 hex>） */
+                task_id: components["parameters"]["TaskIDQuery"];
+            };
+            header?: never;
+            path: {
+                /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+                key: components["parameters"]["TaskPluginKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description {task_id,state,raw_state,progress_percent,usage?,artifacts?,fail_reason?} */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    submitTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+                key: components["parameters"]["TaskPluginKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已接受；任务已持久化（终态或待轮询） */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            402: components["responses"]["Error402"];
+            404: components["responses"]["Error404"];
+            /** @description 插件不可用（disabled / compile_failed） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求体超过 4 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+            /** @description 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTaskArtifacts: {
+        parameters: {
+            query: {
+                /** @description 对外任务 ID（task_<32 hex>） */
+                task_id: components["parameters"]["TaskIDQuery"];
+            };
+            header?: never;
+            path: {
+                /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+                key: components["parameters"]["TaskPluginKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description {items:[{key,type,mime_type?}]} */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listSelfTasks: {
+        parameters: {
+            query?: {
+                p?: number;
+                page_size?: number;
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskListResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listTasks: {
+        parameters: {
+            query?: {
+                user_id?: number;
+                state?: string;
+                p?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务分页（含 user_id） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskListResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
             500: components["responses"]["Error500"];
         };
     };

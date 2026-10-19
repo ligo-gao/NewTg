@@ -105,3 +105,89 @@ paths:
           description: OpenAI ListModels 对象
         '401':
           description: 缺少/失效的会话 Cookie
+
+  # ---------------------------------------------------------------------------
+  # 任务数据面（M6d Task 6a / relay-06 §10.2）。与 chat 共用 Bearer 令牌链；
+  # 响应体真源在 handlers_tasks.go（本文件不内联协议 schema）。
+  # ---------------------------------------------------------------------------
+  /v1/tasks/{key}:
+    post:
+      tags: [relay]
+      operationId: submitTask
+      summary: 提交任务插件任务
+      description: |
+        `{key}` 是插件 key（即平台名）。提交成功后 202：
+        `{public_task_id, state, upstream_task_id?}`。
+        插件未注册 404；已禁用/编译失败 409；无可用渠道 404 model_not_found；
+        预扣失败 402（不落任务行、不调用上游）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/TaskPluginKey'
+      responses:
+        '202':
+          description: 已接受；任务已持久化（终态或待轮询）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/Error402'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          description: 插件不可用（disabled / compile_failed）
+        '413':
+          description: 请求体超过 4 MiB
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '502':
+          description: 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败）
+    get:
+      tags: [relay]
+      operationId: getTask
+      summary: 查询任务状态
+      description: |
+        归属过滤：不存在或不属于当前用户一律 404（不区分原因）。
+        `usage` 只包含插件声明字段的数量，绝不返回额度/价格。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/TaskPluginKey'
+        - $ref: '../components/params.yaml#/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: '{task_id,state,raw_state,progress_percent,usage?,artifacts?,fail_reason?}'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /v1/tasks/{key}/artifacts:
+    get:
+      tags: [relay]
+      operationId: listTaskArtifacts
+      summary: 列出任务产物
+      description: |
+        产物从持久化 task.data 投影，不建第二份真相。content 端点
+        （能力式签名 URL）属后续任务，本端点不返回 URL。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/TaskPluginKey'
+        - $ref: '../components/params.yaml#/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: '{items:[{key,type,mime_type?}]}'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

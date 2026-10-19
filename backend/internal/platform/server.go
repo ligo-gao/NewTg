@@ -226,6 +226,12 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		UserGroups: store.NewUserGroupsRepo(sqlDB),
 	})
 	relayHandler.Register(mux)
+	// 任务数据面（M6d Task 6a）：/v1/tasks* 与中继共用同一 RelayAuth
+	// （令牌面），但不经过 chat 的 IR/适配器/计费管线——任务由插件描述符
+	// 驱动，计费只经 BillingSession 接缝。
+	if assembly != nil && assembly.Tasks != nil {
+		assembly.Tasks.RegisterRelay(mux, relayHandler.AuthMiddleware())
+	}
 	// /pg/*（Playground 会话中继）：只接受会话 Cookie，重写到 /v1 后复用同一
 	// 管线。SessionManager 与 /api/* 使用同一 Redis 与 secret，登录态天然共享。
 	//

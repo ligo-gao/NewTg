@@ -90,3 +90,21 @@ parameters:
       type: integer
       format: int64
       minimum: 1
+
+  # 任务数据面（M6d Task 6a）：路径 key 与查询 task_id 集中定义，
+  # relay 片段不得内联 schema（scripts/check_openapi_layout.sh 断言）。
+  TaskPluginKey:
+    name: key
+    in: path
+    required: true
+    description: 插件 key（1–30，^[a-z0-9][a-z0-9-]*$）
+    schema:
+      type: string
+      maxLength: 30
+  TaskIDQuery:
+    name: task_id
+    in: query
+    required: true
+    description: 对外任务 ID（task_<32 hex>）
+    schema:
+      type: string

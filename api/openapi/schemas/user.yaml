@@ -1266,3 +1266,72 @@ schemas:
             type: array
             items:
               $ref: '#/schemas/AuditLogItem'
+
+  # ---------------------------------------------------------------------------
+  # 任务台账（M6d Task 6a）。private_data / data 永不出现在台账投影中。
+  # ---------------------------------------------------------------------------
+  TaskArtifact:
+    type: object
+    additionalProperties: false
+    required: [key, type]
+    properties:
+      key:
+        type: string
+        description: 任务内稳定标识（content 端点定位用，本任务不签发 URL）
+      type:
+        type: string
+        description: video | audio | image | file
+      mime_type:
+        type: string
+
+  TaskListItem:
+    type: object
+    additionalProperties: false
+    required: [task_id, family, action, plugin_key, state, raw_state, progress_percent]
+    properties:
+      id: {type: integer, format: int64}
+      task_id:
+        type: string
+        description: 对外任务 ID（task_<32 hex>）
+      upstream_task_id: {type: string}
+      family: {type: string, enum: [plugin]}
+      action: {type: string}
+      plugin_key: {type: string, maxLength: 30}
+      plugin_generation: {type: integer, format: int64}
+      fetch_mode: {type: string, enum: [poll, callback, inline]}
+      locked_channel_id: {type: integer, format: int64}
+      origin_task_ids:
+        type: array
+        items: {type: string}
+      state:
+        type: string
+        enum: [not_start, submitted, queued, in_progress, success, failure, unknown]
+      raw_state: {type: string}
+      progress_percent: {type: integer, minimum: 0, maximum: 100}
+      retention_deadline: {type: string, format: date-time, nullable: true}
+      user_id:
+        type: integer
+        format: int64
+        description: 仅管理员台账返回；self 台账省略
+      group: {type: string}
+      channel_id: {type: integer, format: int64}
+      quota: {type: integer, format: int64}
+      fail_reason: {type: string}
+      submit_time: {type: string, format: date-time, nullable: true}
+      start_time: {type: string, format: date-time, nullable: true}
+      finish_time: {type: string, format: date-time, nullable: true}
+      properties: {type: object, additionalProperties: true}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+
+  TaskListResponse:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/TaskListItem'}
+      total: {type: integer}
+      page: {type: integer}
+      page_size: {type: integer}

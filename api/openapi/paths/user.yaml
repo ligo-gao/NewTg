@@ -1917,3 +1917,40 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error422'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 任务台账（M6d Task 6a / relay-06 §10.4）。普通用户只能看到本人任务。
+  # ---------------------------------------------------------------------------
+  /api/task/self:
+    get:
+      tags: [user]
+      operationId: listSelfTasks
+      summary: 本人任务台账（分页）
+      description: |
+        按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+        台账不返回 data / private_data（设计 §7.1 Omit）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: p
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1}
+        - name: page_size
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100}
+        - name: state
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: 任务分页
+          content:
+            application/json:
+              schema: {$ref: '../schemas/user.yaml#/schemas/TaskListResponse'}
+        '400': {$ref: '../components/responses.yaml#/responses/Error400'}
+        '401': {$ref: '../components/responses.yaml#/responses/Error401'}
+        '500': {$ref: '../components/responses.yaml#/responses/Error500'}

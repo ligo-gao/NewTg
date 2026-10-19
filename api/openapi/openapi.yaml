@@ -290,6 +290,16 @@ paths:
   /api/audit-logs:
     $ref: './paths/user.yaml#/paths/~1api~1audit-logs'
 
+  # 任务数据面（M6d Task 6a / relay-06 §10.2/§10.4）。
+  /v1/tasks/{key}:
+    $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}'
+  /v1/tasks/{key}/artifacts:
+    $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}~1artifacts'
+  /api/task/self:
+    $ref: './paths/user.yaml#/paths/~1api~1task~1self'
+  /api/task:
+    $ref: './paths/admin.yaml#/paths/~1api~1task'
+
 components:
   securitySchemes:
     sessionCookie:

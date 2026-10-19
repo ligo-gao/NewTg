@@ -261,13 +261,22 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	return h
 }
 
+// AuthMiddleware 返回 /v1 令牌鉴权中间件。
+//
+// 单独导出是为了让同一进程内的其它 /v1 端点族（M6d 的 /v1/tasks*）复用
+// **同一个** RelayAuth 实例与同一份 trustedProxies 解析结果：复制一份配置
+// 会让两条路径在代理信任策略上悄悄分叉。
+func (h *RelayHandler) AuthMiddleware() func(http.Handler) http.Handler {
+	return RelayAuth(h.tokens, h.access, h.trustedProxies)
+}
+
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
 //
 // 多模态端点族（M4 T1）复用同一个 RelayAuth 中间件：统一入口要求所有 /v1
 // 端点先鉴权再归一化（relay-04 §0.2）。GET /v1/models 只在此处注册一次
 // （R-09），多模态注册函数不得重复注册它。
 func (h *RelayHandler) Register(mux *http.ServeMux) {
-	authMiddleware := RelayAuth(h.tokens, h.access, h.trustedProxies)
+	authMiddleware := h.AuthMiddleware()
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
 

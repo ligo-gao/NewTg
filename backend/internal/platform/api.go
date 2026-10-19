@@ -56,6 +56,9 @@ type gatewayAssembly struct {
 	// PricingOnChange 就是注入管理面的缓存失效回调（R-63）；与
 	// PricingSource.Invalidate 同一个函数值，供装配测试验证接线。
 	PricingOnChange func()
+	// Tasks 是任务数据面 handler（M6d Task 6a）；由 mountRelayRoutes 挂到
+	// /v1 令牌链。nil 表示本次装配没有任务数据面（探针-only 测试）。
+	Tasks *httpapi.TasksHandler
 }
 
 // pricingCacheInvalidator 是定价源进程内缓存失效的最小缝。
@@ -289,6 +292,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		SettingsBroadcaster: center,
 		NodeName:            cfg.NodeName,
 		StartedAt:           time.Now(),
+		// 任务提交与中继共用同一个计费引擎会话工厂（M6d Task 6a）：
+		// 预扣/退款/结算语义只能有一套实现。
+		Billing: engine.NewSession,
 	})
 	if err != nil {
 		return nil, err
@@ -300,6 +306,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Config:          center,
 		PricingSource:   source,
 		PricingOnChange: pricingChanged,
+		Tasks:           router.TasksHandler(),
 	}, nil
 }
 

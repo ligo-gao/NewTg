@@ -34,12 +34,14 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tasks"
 	"newtg/gateway/plugins"
 )
 
@@ -143,6 +145,11 @@ type GatewayDeps struct {
 	// NodeName / StartedAt 供 GET /api/system/status 的实例信息使用。
 	NodeName  string
 	StartedAt time.Time
+
+	// Billing 为每次 /v1 任务提交构造计费会话（M6d Task 6a）。与中继共用
+	// 同一个 engine.NewSession；nil 时任务路径退回 billingseam.NewStub
+	// （纯内存单测），生产装配必须传入。
+	Billing func(*contract.RelayContext) contract.BillingSession
 }
 
 // BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
@@ -220,6 +227,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 管理面共用同一个 DB 版本加载器：写路径提交后调用 Reload，快照与 DB
 	// 立即一致；30s 轮询/pub-sub 属后续装配项（T3 遗留，已登记）。
 	var taskPluginHandlers *TaskPluginHandlers
+	// taskDataHandlers 是 M6d Task 6a 的任务数据面（/v1/tasks* 与
+	// /api/task*）。与插件运行时共用同一个 Manager 快照，避免管理面停用
+	// 插件后数据面仍从旧注册表接单。
+	var taskDataHandlers *TasksHandler
 	if deps.DB != nil {
 		var err error
 		pluginStore := deps.TaskPluginStore
@@ -316,6 +327,17 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// 任务数据面（M6d Task 6a）：渠道选择与任务行共用一个 tasks.Repo
+		// 连接面；凭据 Sealer 与渠道管理同源（CREDENTIAL_ENCRYPTION_KEY）。
+		taskDataHandlers = NewTasksHandler(TasksHandlerConfig{
+			Store:    tasks.NewRepo(deps.DB),
+			Channels: tasks.NewRepo(deps.DB),
+			Plugins:  manager,
+			Sealer:   NewSecretSealer(deps.CredentialEncryptionKey),
+			Tokens:   store.NewTokenRepo(deps.DB),
+			Billing:  deps.Billing,
+		})
 	}
 
 	rt, err := NewRouter(RouterConfig{
@@ -347,6 +369,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	rt.tasks = taskDataHandlers
+	if taskDataHandlers != nil {
+		// 台账端点复用管理面受保护链（SessionAuth → CSRF → Origin）。
+		// /v1 提交/查询在 platform.mountRelayRoutes 挂到令牌链上。
+		taskDataHandlers.RegisterAdmin(rt.protected)
 	}
 
 	// M2 渠道管理端点：注册到 rt.protected（模式本身就是完整 /api/channels*），
