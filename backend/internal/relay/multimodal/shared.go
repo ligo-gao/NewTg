@@ -82,6 +82,11 @@ type RequestPlan struct {
 	// geminiPath 表示请求走 Gemini 语义嵌入路径（:embedContent 等），
 	// 上游 URL 直接复用客户端路径，鉴权用 x-goog-api-key。
 	geminiPath bool
+	// geminiEngines 表示客户端走 `/v1/engines/{model}/embeddings`：该形态
+	// 使用 OpenAI 风格 body，需要翻译成 Gemini `:embedContent`（N2）。
+	geminiEngines bool
+	// geminiModel 是 Gemini 语义路径提取出的模型名（URL 中承载）。
+	geminiModel string
 }
 
 // endpointAdapter 实现 contract 冻结的全部多模态适配器接口。
@@ -170,6 +175,12 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 		// model 会被 Gemini 当作未知字段拒绝，故跳过。
 		if !a.plan.geminiPath {
 			body = rewriteJSONModel(body, upstreamModel)
+		} else if a.plan.geminiEngines {
+			// N2：`/v1/engines/{model}/embeddings` 的入站是 OpenAI 风格
+			// `input`，必须翻译成 Gemini `content.parts`。
+			if translated, ok := openAIInputToGeminiEmbedding(body); ok {
+				body = translated
+			}
 		}
 		if err := validatePayloadForUpstream(a.plan, body); err != nil {
 			return nil, err
@@ -389,16 +400,20 @@ func rewriteJSONModel(body []byte, model string) []byte {
 	return out
 }
 
-// joinBaseURL 拼接 base 与端点路径。与 M2 joinURL 同语义：base 以 /v1 结尾
-// 时去掉请求路径的 /v1 前缀，避免 /v1/v1/...（relay-02 §7.2）。
+// joinBaseURL 拼接 base 与端点路径。与 M2 joinURL 同语义：base 以 /v1 或
+// /v1beta 结尾时去掉请求路径中重复的版本段，避免 /v1/v1/... 或
+// /v1beta/v1beta/...（N3）。
 func joinBaseURL(baseURL, requestPath string, query url.Values) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", classified(contract.ErrChannelConfig, "multimodal: invalid API base URL")
 	}
 	basePath := strings.TrimRight(parsed.Path, "/")
-	if strings.HasSuffix(basePath, "/v1") && strings.HasPrefix(requestPath, "/v1/") {
-		requestPath = strings.TrimPrefix(requestPath, "/v1")
+	for _, version := range []string{"/v1beta", "/v1"} {
+		if strings.HasSuffix(basePath, version) && strings.HasPrefix(requestPath, version+"/") {
+			requestPath = strings.TrimPrefix(requestPath, version)
+			break
+		}
 	}
 	parsed.Path = basePath + requestPath
 	if query != nil {

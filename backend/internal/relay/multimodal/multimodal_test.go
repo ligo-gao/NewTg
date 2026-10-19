@@ -993,3 +993,105 @@ func TestBinaryStreamIsCopiedInChunks(t *testing.T) {
 		t.Fatalf("response bytes = %d, want %d", recorder.Body.Len(), 64<<10)
 	}
 }
+
+// ---------- 复审残余 N1–N6 ----------
+
+// TestTranscriptionPartialUsageAddsAudio（N1）：上游 usage 只有文本 token
+// 时，音频维度仍需用测得的上传时长补齐。
+func TestTranscriptionPartialUsageAddsAudio(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"hi","usage":{"prompt_tokens":5}}`))
+	})
+	ct, body := multipartFixture(t, "file", "audio.wav", wavFixture(60), map[string]string{"model": "whisper-1"})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointAudioTranscribe, body, ct, recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 {
+		t.Fatalf("Terminate calls = %d", len(facts))
+	}
+	usage := facts[0].Usage
+	if usage.Prompt != 5 || usage.AudioSeconds != 60 || usage.PromptDetail.Audio != 1000 {
+		t.Fatalf("usage = %+v, want Prompt=5 AudioSeconds=60 AudioTokens=1000", usage)
+	}
+	if usage.Source != contract.UsageEstimated {
+		t.Fatalf("Source = %v, want estimated (mixed upstream text + measured audio)", usage.Source)
+	}
+}
+
+// TestGeminiEnginesPathTranslates（N2）：/v1/engines/{model}/embeddings 的
+// OpenAI input 必须翻译为 Gemini :embedContent 的 content.parts。
+func TestGeminiEnginesPathTranslates(t *testing.T) {
+	var (
+		seenPath string
+		seenBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		_, _ = w.Write([]byte(`{"embedding":{"values":[0.1]}}`))
+	}))
+	defer server.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeGemini, APIBase: server.URL, Credential: "g"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   server.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"input":["one","two"]}`)
+	path := "/v1/engines/text-embedding-004/embeddings"
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "eng", OriginModel: "text-embedding-004", RequestPath: path, Request: &contract.Request{Model: "text-embedding-004", Raw: body}}
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, rc, contract.EndpointEmbeddings)
+
+	if seenPath != "/v1beta/models/text-embedding-004:embedContent" {
+		t.Fatalf("upstream path = %q", seenPath)
+	}
+	content, _ := seenBody["content"].(map[string]any)
+	parts, _ := content["parts"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("content.parts = %#v, want 2 text parts", content)
+	}
+	if _, exists := seenBody["model"]; exists {
+		t.Fatalf("translated body must not carry a top-level model: %#v", seenBody)
+	}
+}
+
+// TestJoinBaseURLDedupesVersion（N3）：base 已以 /v1beta 结尾时不得拼出
+// /v1beta/v1beta/...。
+func TestJoinBaseURLDedupesVersion(t *testing.T) {
+	got, err := joinBaseURL("https://generativelanguage.googleapis.com/v1beta", "/v1beta/models/m:embedContent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://generativelanguage.googleapis.com/v1beta/models/m:embedContent"
+	if got != want {
+		t.Fatalf("joinBaseURL = %q, want %q", got, want)
+	}
+}
+
+// TestParseMultipartLargeField（N4）：70 KiB 的 parameters 是入口允许的合法
+// 字段，dispatcher 二次解析不得截断或拒绝。
+func TestParseMultipartLargeField(t *testing.T) {
+	parameters := `{"n":2,"pad":"` + strings.Repeat("a", 70<<10) + `"}`
+	ct, body := multipartFixture(t, "image", "image.png", append(append([]byte(nil), testPNGBytes...), 'x'), map[string]string{
+		"model": "m", "prompt": "p", "parameters": parameters,
+	})
+	parsed, err := parseMultipart(body, ct, false)
+	if err != nil {
+		t.Fatalf("parseMultipart: %v", err)
+	}
+	if len(parsed.fields["parameters"]) != len(parameters) {
+		t.Fatalf("parameters length = %d, want %d (truncated)", len(parsed.fields["parameters"]), len(parameters))
+	}
+}

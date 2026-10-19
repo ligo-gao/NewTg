@@ -27,6 +27,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/multimodal"
 )
 
 // captureMultimodalDispatcher 记录分派参数并返回 200。
@@ -785,5 +786,37 @@ func TestMultimodal_GeminiEmbeddingRoutes(t *testing.T) {
 				t.Fatalf("%s: model=%q endpoint=%q, want %q/%q", tc.path, model, endpoint, tc.model, contract.EndpointEmbeddings)
 			}
 		}
+	}
+}
+
+// TestMultimodal_GeminiEmbeddingLimits（N5）：requests[] 批量与单段文本上界。
+func TestMultimodal_GeminiEmbeddingLimits(t *testing.T) {
+	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
+	requests := make([]map[string]any, multimodal.MaxEmbeddingBatch+1)
+	for i := range requests {
+		requests[i] = map[string]any{"content": map[string]any{"parts": []map[string]string{{"text": "x"}}}}
+	}
+	batchBody, _ := json.Marshal(map[string]any{"requests": requests})
+	largeBody, _ := json.Marshal(map[string]any{
+		"content": map[string]any{"parts": []map[string]string{{"text": strings.Repeat("a", multimodal.MaxEmbeddingInputBytes+1)}}},
+	})
+	cases := []struct {
+		name string
+		body []byte
+		want int
+	}{
+		{"batch-too-large", batchBody, http.StatusBadRequest},
+		{"text-too-large", largeBody, http.StatusBadRequest},
+		{"valid", []byte(`{"content":{"parts":[{"text":"hi"}]}}`), http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doMultimodal(t, handler, multimodalRequest{
+				path: "/v1beta/models/text-embedding-004:embedContent", body: tc.body, contentType: "application/json",
+			}, true)
+			if resp.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%s", resp.Code, tc.want, resp.Body.String())
+			}
+		})
 	}
 }

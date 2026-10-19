@@ -245,9 +245,9 @@ func (d *Dispatcher) supports(channelType contract.ChannelType, base contract.Ad
 	return ok
 }
 
-// geminiPathModel 从 Gemini 语义嵌入路径提取模型名（与 httpapi 入口同一
-// 形态；跨包不共享实现以避免 httpapi 反向依赖）。
-func geminiPathModel(path string) (string, bool) {
+// GeminiEmbeddingModel 从 Gemini 语义嵌入路径提取模型名（N6：httpapi 入口
+// 与 dispatcher 共用这一份实现，避免两处形态漂移）。
+func GeminiEmbeddingModel(path string) (string, bool) {
 	if strings.HasPrefix(path, "/v1/engines/") {
 		rest := strings.TrimPrefix(path, "/v1/engines/")
 		if !strings.HasSuffix(rest, "/embeddings") {
@@ -337,10 +337,18 @@ func buildPlan(endpoint contract.Endpoint, r *http.Request, rc *contract.RelayCo
 		plan.contentType = "application/json"
 		plan.estimate.Model = rc.OriginModel
 		// R-11 Gemini 专用嵌入路径：直接复用客户端路径；模型取自路径。
-		if model, ok := geminiPathModel(rc.RequestPath); ok {
+		if model, ok := GeminiEmbeddingModel(rc.RequestPath); ok {
 			plan.geminiPath = true
-			plan.path = rc.RequestPath
+			plan.geminiModel = model
 			plan.estimate.Model = model
+			if strings.HasPrefix(rc.RequestPath, "/v1/engines/") {
+				// N2：engines 形态的 OpenAI 风格 body 需要翻译，上游路径
+				// 固定为单体 :embedContent。
+				plan.geminiEngines = true
+				plan.path = "/v1beta/models/" + model + ":embedContent"
+			} else {
+				plan.path = rc.RequestPath
+			}
 		}
 	case contract.EndpointRerank:
 		plan.contentType = "application/json"
@@ -498,12 +506,18 @@ func (d *Dispatcher) serveJSON(w http.ResponseWriter, rc *contract.RelayContext,
 			})
 		}
 	}
-	// F2：上游没有给出 usage/duration 时，用**上传文件头已测得**的时长兜底
-	// （relay-04 §8.2.1：预扣与结算都有时长来源，不能因为上游省略 usage
-	// 就把整段音频按 0 token 计费）。该值在 buildPlan 时已饱和并审计。
+	// F2/N1：音频兜底只看**音频维度是否缺席**（PromptDetail.Audio 与
+	// AudioSeconds 都为 0），而不是看整份 usage 是否为空。上游给出纯文本
+	// usage（如 {"prompt_tokens":5}）时仍必须用上传文件头测得的时长补上
+	// 音频 token，并与文本 usage 合并。
 	if (plan.endpoint == contract.EndpointAudioTranscribe || plan.endpoint == contract.EndpointAudioTranslate) &&
-		!usageHasFact(fact.Usage) && plan.estimate.AudioSeconds > 0 {
-		fact.Usage = audioUsageFromSeconds(plan.estimate.AudioSeconds)
+		plan.estimate.AudioSeconds > 0 &&
+		fact.Usage.AudioSeconds == 0 && fact.Usage.PromptDetail.Audio == 0 && fact.Usage.CompletionDetail.Audio == 0 {
+		fact.Usage.AudioSeconds = plan.estimate.AudioSeconds
+		fact.Usage.PromptDetail.Audio = pricing.AudioTokensFromSeconds(float64(plan.estimate.AudioSeconds))
+		// 文本来自上游、音频来自本地测量：整份事实标记为 estimated（混合来源
+		// 不能谎报 upstream_exact）。
+		fact.Usage.Source = contract.UsageEstimated
 	}
 	// F7：嵌入/重排上游省略 usage 时做本地估算（relay-04 §1.3/§2.3/§8.3/§8.4），
 	// 不再静默按 0 结算。估算口径为确定性字节数/4（中继侧没有分词器，M2
@@ -529,19 +543,6 @@ func (d *Dispatcher) serveJSON(w http.ResponseWriter, rc *contract.RelayContext,
 	settlement.terminate(*fact)
 
 	writeUpstream(w, rc.RequestID, result.Response, body)
-}
-
-// audioUsageFromSeconds 把已知（已饱和并有审计标记的）时长转成用量事实。
-// 用于上游省略 usage 的转写/翻译结算（F2）。
-func audioUsageFromSeconds(seconds int64) contract.Usage {
-	if seconds <= 0 {
-		return contract.Usage{Source: contract.UsageEstimated}
-	}
-	return contract.Usage{
-		AudioSeconds: seconds,
-		PromptDetail: contract.UsageDetail{Audio: pricing.AudioTokensFromSeconds(float64(seconds))},
-		Source:       contract.UsageEstimated,
-	}
 }
 
 // estimatedTextUsage 把本地估算的字节数转成文本 token 事实（F7）。
@@ -1215,6 +1216,11 @@ type multipartFile struct {
 	data        []byte
 }
 
+// maxMultipartTextFieldBytes 与 httpapi 入口的单字段上界一致（1 MiB，
+// MaxExtraParamBytes 同量级）。N4：此前 dispatcher 只读 64 KiB 且不检查
+// 截断，会让入口已接受的合法 parameters 在二次解析时被悄悄砍掉。
+const maxMultipartTextFieldBytes = 1 << 20
+
 type multipartParsed struct {
 	fields map[string]string
 	files  map[string]multipartFile
@@ -1257,10 +1263,15 @@ func parseMultipart(body []byte, contentType string, captureFiles bool) (multipa
 			_ = part.Close()
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(part, 64<<10))
+		data, err := io.ReadAll(io.LimitReader(part, maxMultipartTextFieldBytes+1))
 		_ = part.Close()
 		if err != nil {
 			return parsed, &entryError{status: http.StatusBadRequest, code: "invalid_request", message: "invalid multipart form"}
+		}
+		if len(data) > maxMultipartTextFieldBytes {
+			// N4：与 httpapi 入口的 1 MiB 上界对齐；超限必须显式报错，
+			// 不能静默截断后把半截 JSON 交给下游。
+			return parsed, &entryError{status: http.StatusBadRequest, code: "invalid_request", message: "multipart field exceeds the 1 MiB limit"}
 		}
 		parsed.fields[name] = string(data)
 	}

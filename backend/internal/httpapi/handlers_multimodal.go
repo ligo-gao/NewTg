@@ -369,46 +369,53 @@ func isGeminiWildcardPath(path string) bool {
 //   - /v1/models/{model}:embedContent 或 :batchEmbedContents
 //   - /v1beta/models/{model}:embedContent 或 :batchEmbedContents
 func geminiEmbeddingModel(path string) (string, bool) {
-	if strings.HasPrefix(path, "/v1/engines/") {
-		rest := strings.TrimPrefix(path, "/v1/engines/")
-		if !strings.HasSuffix(rest, "/embeddings") {
-			return "", false
-		}
-		model := strings.TrimSuffix(rest, "/embeddings")
-		if model == "" || strings.Contains(model, "/") {
-			return "", false
-		}
-		return model, true
-	}
-	for _, prefix := range []string{"/v1/models/", "/v1beta/models/"} {
-		if !strings.HasPrefix(path, prefix) {
-			continue
-		}
-		rest := strings.TrimPrefix(path, prefix)
-		for _, action := range []string{":embedContent", ":batchEmbedContents"} {
-			if strings.HasSuffix(rest, action) {
-				model := strings.TrimSuffix(rest, action)
-				if model == "" || strings.Contains(model, "/") {
-					return "", false
-				}
-				return model, true
-			}
-		}
-		return "", false
-	}
-	return "", false
+	// N6：路径形态的唯一实现位于 multimodal 包，避免入口与 dispatcher
+	// 两处各写一份后漂移。
+	return multimodal.GeminiEmbeddingModel(path)
 }
 
-// validateGeminiEmbeddingJSON 校验 Gemini 语义嵌入请求：body 必须是 JSON
-// 对象；内容文本总量沿用 MaxEmbeddingInputBytes 的逐段上界（批量上限按
-// 请求体 32 MiB 兜底）。模型来自路径而不是 body。
+// validateGeminiEmbeddingJSON 校验 Gemini 语义嵌入请求。
+//
+// N5：`requests[]` 批量数 ≤ MaxEmbeddingBatch、每段 text ≤
+// MaxEmbeddingInputBytes；单请求形态校验 content.parts 的文本上界。
 func validateGeminiEmbeddingJSON(model string, body []byte) (string, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return "", invalidMultimodalEntry("request body must be a JSON object")
 	}
-	if err := json.Unmarshal(trimmed, &struct{}{}); err != nil {
+	type geminiPart struct {
+		Text string `json:"text"`
+	}
+	type geminiContent struct {
+		Parts []geminiPart `json:"parts"`
+	}
+	var payload struct {
+		Content  geminiContent `json:"content"`
+		Requests []struct {
+			Content geminiContent `json:"content"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
 		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	if len(payload.Requests) > multimodal.MaxEmbeddingBatch {
+		return "", invalidMultimodalEntry("requests batch exceeds 2048 items")
+	}
+	checkParts := func(parts []geminiPart) error {
+		for _, part := range parts {
+			if len(part.Text) > multimodal.MaxEmbeddingInputBytes {
+				return invalidMultimodalEntry("embedding text exceeds the 1 MiB limit")
+			}
+		}
+		return nil
+	}
+	if err := checkParts(payload.Content.Parts); err != nil {
+		return "", err
+	}
+	for _, request := range payload.Requests {
+		if err := checkParts(request.Content.Parts); err != nil {
+			return "", err
+		}
 	}
 	return model, nil
 }

@@ -1,6 +1,7 @@
 package multimodal
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"newtg/gateway/internal/contract"
@@ -29,6 +30,68 @@ const (
 	MaxRerankChunkPerDoc   = 512
 	MaxRerankOverlapTokens = 4096
 )
+
+// openAIInputToGeminiEmbedding 把 `/v1/engines/{model}/embeddings` 的
+// OpenAI 风格 `input`（string 或 string[]）翻译成 Gemini `:embedContent`
+// 的 `content.parts[].text`（N2）。非字符串数组元素按基线忽略；没有任何
+// 字符串输入时返回 ok=false（保留原 body，让上游给出明确的参数错误）。
+func openAIInputToGeminiEmbedding(body []byte) ([]byte, bool) {
+	var payload struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	texts := jsonStringList(payload.Input)
+	if len(texts) == 0 {
+		return nil, false
+	}
+	parts := make([]map[string]string, 0, len(texts))
+	for _, text := range texts {
+		parts = append(parts, map[string]string{"text": text})
+	}
+	translated, err := json.Marshal(map[string]any{
+		"content": map[string]any{"parts": parts},
+	})
+	if err != nil {
+		return nil, false
+	}
+	return translated, true
+}
+
+// jsonStringList 把 JSON string / string[] 归一为字符串列表（忽略非字符串
+// 元素，与 relay-04 §1.2 的 input 语义一致）。
+func jsonStringList(raw json.RawMessage) []string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var text string
+		if json.Unmarshal(trimmed, &text) == nil && text != "" {
+			return []string{text}
+		}
+	case '[':
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) != nil {
+			return nil
+		}
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			item = bytes.TrimSpace(item)
+			if len(item) == 0 || item[0] != '"' {
+				continue
+			}
+			var text string
+			if json.Unmarshal(item, &text) == nil && text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	}
+	return nil
+}
 
 // Embeddings 实现 contract.EmbeddingAdapter。
 //
