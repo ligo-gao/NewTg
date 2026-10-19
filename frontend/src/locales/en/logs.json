@@ -166,7 +166,46 @@
       "masked_prompt": "••••••",
       "retry_count_label": "Retries"
     },
-    "credits": "credits"
+    "credits": "credits",
+    "tabs": {
+      "label": "Usage views",
+      "logs": "Logs",
+      "stats": "Stats"
+    },
+    "stats": {
+      "cards_label": "Usage overview cards",
+      "total_spent": "Total spent",
+      "requests": "Requests",
+      "input_tokens": "Input tokens",
+      "output_tokens": "Output tokens",
+      "success_rate": "Success rate {value}%",
+      "spend_tooltip": "Pre-deducted {pre} / refunded {refunded}",
+      "by_model": "Model distribution",
+      "other": "Other",
+      "trend": "Consumption trend",
+      "trend_series": "Cost",
+      "view_table": "View data table",
+      "trend_table_caption": "Consumption trend data table",
+      "granularity_hour": "Hourly",
+      "granularity_day": "Daily",
+      "empty": "No statistics yet",
+      "empty_hint": "Make an API call and the aggregates will appear here",
+      "no_user_data": "No usage for this user",
+      "columns": {
+        "model": "Model",
+        "cost": "Cost",
+        "tokens": "Tokens",
+        "percent": "Share",
+        "time": "Time",
+        "requests": "Requests"
+      },
+      "rates": {
+        "title": "Rates",
+        "rpm_avg": "Avg RPM",
+        "rpm_peak": "Peak RPM",
+        "tpm_avg": "Avg TPM"
+      }
+    }
   },
   "audit": {
     "title": "Audit Logs",

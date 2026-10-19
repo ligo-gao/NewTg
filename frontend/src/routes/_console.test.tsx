@@ -182,4 +182,18 @@ describe('console layout i18n', () => {
     expect(modelLink.getAttribute('aria-current')).toBe('page')
     expect(groupLink.getAttribute('aria-current')).toBeNull()
   })
+
+  it('links the log pages under /dashboard (IA §4.3)', async () => {
+    installAdminActor()
+
+    const { findByRole, getByRole } = await renderWithProviders(
+      <ConsoleHeader />,
+      ['common'],
+    )
+
+    const usage = await findByRole('link', { name: 'Usage Logs' })
+    const audit = getByRole('link', { name: 'Audit Logs' })
+    expect(usage.getAttribute('href')).toBe('/dashboard/usage-logs')
+    expect(audit.getAttribute('href')).toBe('/dashboard/audit-logs')
+  })
 })

@@ -129,6 +129,20 @@ interface Scenario {
   me?: object
   list?: (request: FetchRecord) => Response
   detail?: (request: FetchRecord) => Response
+  summary?: (request: FetchRecord) => Response
+  byModel?: (request: FetchRecord) => Response
+  timeseries?: (request: FetchRecord) => Response
+  rates?: (request: FetchRecord) => Response
+}
+
+const EMPTY_SUMMARY = {
+  cost_total: 0,
+  request_count: 0,
+  success_rate: 0,
+  prompt_tokens_total: 0,
+  completion_tokens_total: 0,
+  pre_deducted_total: 0,
+  refunded_total: 0,
 }
 
 function installScenario(scenario: Scenario): FetchRecord[] {
@@ -140,6 +154,29 @@ function installScenario(scenario: Scenario): FetchRecord[] {
     if (path === '/api/usage-logs') {
       if (scenario.list !== undefined) return scenario.list(request)
       return jsonResponse(page([]))
+    }
+    if (path === '/api/usage-stats/summary') {
+      if (scenario.summary !== undefined) return scenario.summary(request)
+      return jsonResponse(EMPTY_SUMMARY)
+    }
+    if (path === '/api/usage-stats/by-model') {
+      if (scenario.byModel !== undefined) return scenario.byModel(request)
+      return jsonResponse([])
+    }
+    if (path === '/api/usage-stats/timeseries') {
+      if (scenario.timeseries !== undefined) return scenario.timeseries(request)
+      return jsonResponse([])
+    }
+    if (path === '/api/usage-stats/rates') {
+      if (scenario.rates !== undefined) return scenario.rates(request)
+      return jsonResponse({
+        rpm_avg: 0,
+        rpm_peak: 0,
+        tpm_avg: 0,
+        cost_total: 0,
+        pre_deducted_total: 0,
+        refunded_total: 0,
+      })
     }
     if (/^\/api\/usage-logs\/\d+$/.test(path)) {
       if (scenario.detail !== undefined) return scenario.detail(request)
@@ -730,5 +767,126 @@ describe('usage logs list', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).queryByRole('button', { name: 'View Prompt' })).toBeNull()
     expect(within(dialog).queryByText('••••••')).toBeNull()
+  })
+})
+
+describe('usage logs tabs and request_id deep links', () => {
+  it('switches to the stats tab without resetting the filters', async () => {
+    const user = userEvent.setup()
+    const changes: UsageLogSearch[] = []
+    const requests = installScenario({
+      summary: () =>
+        jsonResponse({
+          ...EMPTY_SUMMARY,
+          cost_total: 1234,
+          request_count: 3,
+          success_rate: 0.6667,
+          prompt_tokens_total: 1200,
+          completion_tokens_total: 300,
+        }),
+    })
+    renderWithProviders(
+      <PageHarness
+        initial={{ model: 'gpt-4o', range: '7d' }}
+        onSearch={(next) => changes.push(next)}
+      />,
+    )
+
+    await screen.findByRole('tab', { name: 'Logs' })
+    await user.click(screen.getByRole('tab', { name: 'Stats' }))
+
+    await waitFor(() => {
+      expect(changes.at(-1)?.tab).toBe('stats')
+      // The tag: filters are view state, not tab state.
+      expect(changes.at(-1)?.model).toBe('gpt-4o')
+      expect(changes.at(-1)?.range).toBe('7d')
+    })
+    expect(
+      await screen.findByRole('tab', { name: 'Stats', selected: true }),
+    ).toBeTruthy()
+    expect(screen.getByText('Total spent')).toBeTruthy()
+
+    const statsRequest = latestRequest(requests, '/api/usage-stats/summary')
+    expect(statsRequest?.url.searchParams.get('model')).toBe('gpt-4o')
+    expect(statsRequest?.url.searchParams.get('range')).toBe('7d')
+    // The list is not refetched while the stats view is active.
+    const listCalls = requestsFor(requests, '/api/usage-logs').filter(
+      (request) => request.url.searchParams.get('model') === 'gpt-4o',
+    )
+    expect(listCalls.length).toBeLessThanOrEqual(1)
+  })
+
+  it('opens the detail drawer from ?request_id= and strips it on close', async () => {
+    const user = userEvent.setup()
+    const changes: UsageLogSearch[] = []
+    const requestId = USER_ROW.request_id
+    installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+      detail: () => jsonResponse({ ...USER_ROW, other: {} }),
+    })
+    renderWithProviders(
+      <PageHarness
+        initial={{ request_id: requestId }}
+        onSearch={(next) => changes.push(next)}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      await within(dialog).findByText(
+        '9f3a8d2e-1b2c-4d5e-8f90-112233445566',
+      ),
+    ).toBeTruthy()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await waitFor(() => {
+      expect(changes.at(-1)?.request_id).toBeUndefined()
+    })
+  })
+
+  it('reports a malformed request_id without replacing the page', async () => {
+    const changes: UsageLogSearch[] = []
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(
+      <PageHarness initial={{ request_id: 'bad-id' }} onSearch={(next) => changes.push(next)} />,
+    )
+
+    await screen.findByText('gpt-4o')
+    await waitFor(() => {
+      expect(changes.length).toBeGreaterThan(0)
+      expect(changes.at(-1)?.request_id).toBeUndefined()
+    })
+    expect(
+      useToastStore.getState().toasts.some((toast) => toast.message === 'Invalid request ID'),
+    ).toBe(true)
+    expect(
+      requestsFor(requests, '/api/usage-logs').every(
+        (request) => !request.url.searchParams.has('request_id'),
+      ),
+    ).toBe(true)
+  })
+
+  it('reports an unknown request_id and returns to the list', async () => {
+    const changes: UsageLogSearch[] = []
+    installScenario({ list: () => jsonResponse(page([])) })
+    renderWithProviders(
+      <PageHarness
+        initial={{ request_id: USER_ROW.request_id }}
+        onSearch={(next) => changes.push(next)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(changes.length).toBeGreaterThan(0)
+      expect(changes.at(-1)?.request_id).toBeUndefined()
+    })
+    expect(
+      useToastStore.getState().toasts.some(
+        (toast) => toast.message === 'Log archived or not found',
+      ),
+    ).toBe(true)
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

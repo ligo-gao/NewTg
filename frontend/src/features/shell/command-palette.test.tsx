@@ -167,8 +167,9 @@ describe('command palette RBAC', () => {
 
     const input = await openPalette()
 
-    // /audit-logs is a session page: it shows the caller their own events, so
-    // ordinary users keep the command; logs:read only widens scope inside it.
+    // /dashboard/audit-logs is a session page: it shows the caller their own
+    // events, so ordinary users keep the command; logs:read only widens scope
+    // inside it.
     expect(
       await screen.findByRole('option', { name: /Audit Logs/ }),
     ).toBeTruthy()
@@ -278,7 +279,7 @@ describe('command palette matching and navigation', () => {
     expect(option.getAttribute('aria-selected')).toBe('true')
 
     await user.keyboard('{Enter}')
-    expect(onNavigate).toHaveBeenCalledWith('/usage-logs')
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard/usage-logs')
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 

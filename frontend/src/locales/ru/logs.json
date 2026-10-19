@@ -166,7 +166,46 @@
       "retry_count_label": "Повторы",
       "masked_prompt": "••••••"
     },
-    "credits": "кредитов"
+    "credits": "кредитов",
+    "tabs": {
+      "label": "Представления использования",
+      "logs": "Записи",
+      "stats": "Статистика"
+    },
+    "stats": {
+      "cards_label": "Карточки обзора использования",
+      "total_spent": "Всего потрачено",
+      "requests": "Запросы",
+      "input_tokens": "Входные токены",
+      "output_tokens": "Выходные токены",
+      "success_rate": "Доля успешных {value}%",
+      "spend_tooltip": "Предсписано {pre} / возвращено {refunded}",
+      "by_model": "Распределение по моделям",
+      "other": "Прочее",
+      "trend": "Динамика расходов",
+      "trend_series": "Расход",
+      "view_table": "Показать таблицу данных",
+      "trend_table_caption": "Таблица динамики расходов",
+      "granularity_hour": "По часам",
+      "granularity_day": "По дням",
+      "empty": "Статистики пока нет",
+      "empty_hint": "Сделайте вызов API, и здесь появится агрегированная статистика",
+      "no_user_data": "У этого пользователя нет использования",
+      "columns": {
+        "model": "Модель",
+        "cost": "Расход",
+        "tokens": "Токены",
+        "percent": "Доля",
+        "time": "Время",
+        "requests": "Запросы"
+      },
+      "rates": {
+        "title": "Интенсивность",
+        "rpm_avg": "Средний RPM",
+        "rpm_peak": "Пиковый RPM",
+        "tpm_avg": "Средний TPM"
+      }
+    }
   },
   "audit": {
     "title": "Журналы аудита",

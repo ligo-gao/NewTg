@@ -166,7 +166,46 @@
       "retry_count_label": "Số lần thử lại",
       "masked_prompt": "••••••"
     },
-    "credits": "điểm"
+    "credits": "điểm",
+    "tabs": {
+      "label": "Chế độ xem sử dụng",
+      "logs": "Nhật ký",
+      "stats": "Thống kê"
+    },
+    "stats": {
+      "cards_label": "Thẻ tổng quan sử dụng",
+      "total_spent": "Tổng chi tiêu",
+      "requests": "Yêu cầu",
+      "input_tokens": "Token đầu vào",
+      "output_tokens": "Token đầu ra",
+      "success_rate": "Tỷ lệ thành công {value}%",
+      "spend_tooltip": "Tạm trừ {pre} / hoàn trả {refunded}",
+      "by_model": "Phân bố theo mô hình",
+      "other": "Khác",
+      "trend": "Xu hướng chi tiêu",
+      "trend_series": "Chi phí",
+      "view_table": "Xem bảng dữ liệu",
+      "trend_table_caption": "Bảng dữ liệu xu hướng chi tiêu",
+      "granularity_hour": "Theo giờ",
+      "granularity_day": "Theo ngày",
+      "empty": "Chưa có thống kê",
+      "empty_hint": "Hãy gọi API và số liệu tổng hợp sẽ xuất hiện tại đây",
+      "no_user_data": "Người dùng này không có dữ liệu sử dụng",
+      "columns": {
+        "model": "Mô hình",
+        "cost": "Chi phí",
+        "tokens": "Token",
+        "percent": "Tỷ lệ",
+        "time": "Thời gian",
+        "requests": "Yêu cầu"
+      },
+      "rates": {
+        "title": "Tốc độ",
+        "rpm_avg": "RPM trung bình",
+        "rpm_peak": "RPM cao nhất",
+        "tpm_avg": "TPM trung bình"
+      }
+    }
   },
   "audit": {
     "title": "Nhật ký kiểm toán",

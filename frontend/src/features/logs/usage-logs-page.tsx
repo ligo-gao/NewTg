@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
@@ -9,7 +16,10 @@ import { formatRelativeTime } from '@/shared/lib/datetime'
 import { formatCredits, formatTokenAmount } from '@/shared/lib/format'
 import { useCountdown } from '@/shared/lib/use-countdown'
 import { useI18n } from '@/shared/lib/i18n-context'
-import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
+import {
+  handleRadioGroupKeyDown,
+  handleTabListKeyDown,
+} from '@/shared/lib/roving-focus'
 import { TextField } from '@/shared/ui/form'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { useToastStore } from '@/shared/ui/toast'
@@ -22,12 +32,15 @@ import { UsageStatusBadge, USAGE_STATUSES } from './log-status-badge'
 import {
   DEFAULT_USAGE_LOG_SEARCH,
   isUuid,
+  usageRangeParams,
   validateCustomRange,
   type CustomRangeError,
   type UsageLogRangeFilter,
   type UsageLogSearch,
   type UsageLogStatus,
+  type UsageLogTab,
 } from './search'
+import { UsageStatsTab } from './stats/stats-tab'
 import {
   EmptyState,
   InlineError,
@@ -60,38 +73,27 @@ export interface UsageLogsPageProps {
   onSearchChange: (next: UsageLogSearch) => void
 }
 
-function toIso(value: string | undefined): string | undefined {
-  if (value === undefined || value === '') return undefined
-  const timestamp = Date.parse(value)
-  if (Number.isNaN(timestamp)) return undefined
-  return new Date(timestamp).toISOString()
-}
-
 function buildQuery(
   search: UsageLogSearch,
   canFilterByUsername: boolean,
   revealSensitive: boolean,
 ): UsageLogsQuery {
   const params: UsageLogsQuery = {
-    p: search.p,
+    // A request_id is unique; keeping a stale `p` from a shared link would
+    // request an empty page and hide the row the deep link is looking for.
+    p: search.request_id !== undefined ? 1 : search.p,
     page_size: search.page_size,
-  }
-
-  if (search.range === 'custom') {
-    const start = toIso(search.start)
-    const end = toIso(search.end)
-    if (start !== undefined && end !== undefined) {
-      params.start = start
-      params.end = end
-    }
-  } else {
-    params.range = search.range
+    ...usageRangeParams(search),
   }
 
   if (search.model !== undefined) params.model = search.model
   if (search.group !== undefined) params.group = search.group
   if (search.token_id !== undefined) params.token_id = search.token_id
-  if (search.request_id !== undefined) params.request_id = search.request_id
+  // Malformed IDs stay out of the query; the page reports them from the URL
+  // (the backend would answer 422 for a non-UUID).
+  if (search.request_id !== undefined && isUuid(search.request_id)) {
+    params.request_id = search.request_id
+  }
   if (search.status !== undefined) params.status = search.status
   // Admin-only parameter (sub-feature §3.8). A user must never send it even if
   // a hand-crafted URL carries one; the server would answer 403.
@@ -112,13 +114,15 @@ function buildQuery(
  * The applied filter set lives in the route search string; typing edits local
  * drafts that only reach the URL after their debounce elapses (300ms, 500ms
  * for the exact request ID). Every query is a pure function of `search`, so a
- * refresh or a shared link reproduces the same page. Statistics stay on
- * `/dashboard` — this page is list + detail only.
+ * refresh or a shared link reproduces the same page. The page hosts both the
+ * detail list and the F-05-03 stats tab; the tab is part of the URL so a shared
+ * link opens the same view, while both tabs read the same filter state.
  */
 export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   const { t, locale } = useI18n()
   const capabilities = useLogsCapabilities()
   const push = useToastStore((state) => state.push)
+  const tab: UsageLogTab = search.tab === 'stats' ? 'stats' : 'logs'
   const {
     seconds: retrySeconds,
     start: startCountdown,
@@ -126,6 +130,12 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   } = useCountdown()
 
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  /**
+   * F-05-01 deep link: the request_id that has already been resolved. Closing
+   * the drawer removes the parameter, so this also stops a stale value from
+   * reopening the drawer while the URL update is still in flight.
+   */
+  const deepLinkHandledRef = useRef<string | undefined>(undefined)
   const [modelDraft, setModelDraft] = useState(search.model ?? '')
   const [groupDraft, setGroupDraft] = useState(search.group ?? '')
   const [tokenIdDraft, setTokenIdDraft] = useState(
@@ -307,7 +317,11 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
       capabilities.canFilterByUsername,
       revealSensitive,
     ],
-    enabled: !capabilities.loading,
+    // The stats tab does not need the list. It stays enabled when a request_id
+    // deep link is present because that link is resolved through the list.
+    enabled:
+      !capabilities.loading &&
+      (tab === 'logs' || search.request_id !== undefined),
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-logs', { params: { query } }),
@@ -316,7 +330,56 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
 
   const data = listQuery.data
   const total = data?.total ?? 0
-  const items = data?.items ?? []
+  // Stable identity keeps the deep-link effect from re-running on every render
+  // while the list is still pending (`data` is undefined).
+  const items = useMemo(() => data?.items ?? [], [data])
+
+  // F-05-01 / web-00 §4.1: `?request_id=` is a shareable deep link that opens
+  // the detail drawer for that row. The list request already carries the
+  // request_id filter, so this is a lookup of the id the drawer needs — no
+  // second endpoint. Malformed or unknown IDs are reported without replacing
+  // the page; the parameter is dropped so the user lands on the normal list.
+  useEffect(() => {
+    const requestId = search.request_id
+    if (requestId === undefined) {
+      deepLinkHandledRef.current = undefined
+      return
+    }
+    if (deepLinkHandledRef.current === requestId) return
+
+    if (!isUuid(requestId)) {
+      deepLinkHandledRef.current = requestId
+      push({ tone: 'error', message: t('logs.usage.invalid_uuid') })
+      update({ request_id: undefined, p: 1 })
+      return
+    }
+
+    // A shared link can carry a stale page number; a unique request_id always
+    // resolves to page 1. Let that corrected query land before resolving.
+    if (search.p !== 1) {
+      update({ p: 1 })
+      return
+    }
+    if (!listQuery.isSuccess) return
+
+    const match = items.find((row) => row.request_id === requestId)
+    if (match === undefined) {
+      deepLinkHandledRef.current = requestId
+      push({ tone: 'info', message: t('logs.usage.detail.not_found') })
+      update({ request_id: undefined, p: 1 })
+      return
+    }
+    deepLinkHandledRef.current = requestId
+    setSelectedId(match.id)
+  }, [
+    search.request_id,
+    search.p,
+    listQuery.isSuccess,
+    items,
+    push,
+    t,
+    update,
+  ])
 
   // 429 countdown: the duration is server-driven (`Retry-After`), never a
   // hardcoded constant. The value is mirrored once the countdown reaches zero
@@ -403,9 +466,11 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     setRequestIdError(false)
     // Replace, do not merge: a merge would keep `status`/`model`/… from the
     // previous applied search because the defaults do not spell them out.
+    // The active tab is a view, not a filter, so clearing filters keeps it.
     const next: UsageLogSearch = {
       ...DEFAULT_USAGE_LOG_SEARCH,
       page_size: searchRef.current.page_size,
+      ...(searchRef.current.tab === 'stats' ? { tab: 'stats' as const } : {}),
     }
     searchRef.current = next
     onSearchChangeRef.current(next)
@@ -457,6 +522,42 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         clearLabel={t('logs.usage.filters.reset')}
         showClear={hasActiveFilters}
       />
+
+      {/* F-05-03: the list and the stats board are two views of the same
+          filter set. The tab lives in the URL (`?tab=stats`) so a shared link
+          opens the same view, and switching it never touches the filters. */}
+      <div
+        role="tablist"
+        aria-label={t('logs.usage.tabs.label')}
+        onKeyDown={handleTabListKeyDown}
+        className="inline-flex w-fit rounded-lg border border-border-default bg-surface-card p-0.5"
+      >
+        {(['logs', 'stats'] as const).map((value) => {
+          const active = tab === value
+          return (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              id={`usage-logs-tab-${value}`}
+              aria-selected={active}
+              aria-controls={`usage-logs-panel-${value}`}
+              tabIndex={active ? 0 : -1}
+              onClick={() => {
+                update({ tab: value === 'stats' ? 'stats' : undefined })
+              }}
+              className={[
+                'rounded-md px-3 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                active
+                  ? 'bg-surface-hover font-medium text-ink-1'
+                  : 'text-ink-2 hover:text-ink-1',
+              ].join(' ')}
+            >
+              {t(`logs.usage.tabs.${value}`)}
+            </button>
+          )
+        })}
+      </div>
 
       <div className="rounded-xl border border-border-hairline bg-surface-card p-4">
         <div className="flex flex-wrap items-end gap-3">
@@ -527,19 +628,24 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             className="h-9 w-32"
           />
 
-          <TextField
-            id="logs-request-id"
-            label={t('logs.usage.filters.request_id')}
-            placeholder={t('logs.usage.filters.request_id_placeholder')}
-            value={requestIdDraft}
-            error={
-              requestIdError ? t('logs.usage.invalid_uuid') : undefined
-            }
-            onChange={(event) => {
-              setRequestIdDraft(event.target.value)
-            }}
-            className="h-9 w-64"
-          />
+          {/* `request_id` only filters rows; the aggregation endpoints do not
+              accept it. Keeping the input out of the stats tab avoids a
+              filter that would silently do nothing there. */}
+          {tab === 'logs' ? (
+            <TextField
+              id="logs-request-id"
+              label={t('logs.usage.filters.request_id')}
+              placeholder={t('logs.usage.filters.request_id_placeholder')}
+              value={requestIdDraft}
+              error={
+                requestIdError ? t('logs.usage.invalid_uuid') : undefined
+              }
+              onChange={(event) => {
+                setRequestIdDraft(event.target.value)
+              }}
+              className="h-9 w-64"
+            />
+          ) : null}
 
           <label className="flex flex-col gap-1.5 text-[13px] font-medium text-ink-1">
             {t('logs.usage.filters.status')}
@@ -579,8 +685,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           ) : null}
 
           {/* F-05-06 §6.4/§6.5 设计裁决：无 log.prompt.view 时静默隐藏，
-              不渲染「禁用 + 提示」——入口本身不暴露敏感面存在。 */}
-          {capabilities.canViewSensitive ? (
+              不渲染「禁用 + 提示」——入口本身不暴露敏感面存在。
+              统计 Tab 不含行级敏感字段，开关只在明细视图出现。 */}
+          {tab === 'logs' && capabilities.canViewSensitive ? (
             <SensitiveSwitch
               checked={revealSensitive}
               onChange={(next) => {
@@ -676,6 +783,25 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         ) : null}
       </div>
 
+      {tab === 'stats' ? (
+        <div
+          role="tabpanel"
+          id="usage-logs-panel-stats"
+          aria-labelledby="usage-logs-tab-stats"
+          className="flex flex-col gap-4"
+        >
+          <UsageStatsTab
+            search={search}
+            canFilterByUsername={capabilities.canFilterByUsername}
+          />
+        </div>
+      ) : (
+        <div
+          role="tabpanel"
+          id="usage-logs-panel-logs"
+          aria-labelledby="usage-logs-tab-logs"
+          className="flex flex-col gap-4"
+        >
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
         {errorMessage === null ? (
           <span data-testid="logs-total">
@@ -913,11 +1039,21 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           }}
         />
       ) : null}
+        </div>
+      )}
 
       <LogDetailDrawer
         logId={selectedId}
         onOpenChange={(open) => {
-          if (!open) setSelectedId(null)
+          if (!open) {
+            setSelectedId(null)
+            // F-05-01: closing a deep-linked drawer removes `request_id` with
+            // a `replace` (the route always replaces) so Back does not reopen
+            // the drawer and the URL stops claiming a filter the user closed.
+            if (searchRef.current.request_id !== undefined) {
+              update({ request_id: undefined, p: 1 })
+            }
+          }
         }}
         capabilities={capabilities}
         revealSensitive={revealSensitive}

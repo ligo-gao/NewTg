@@ -166,7 +166,46 @@
       "retry_count_label": "重试次数",
       "masked_prompt": "••••••"
     },
-    "credits": "积分"
+    "credits": "积分",
+    "tabs": {
+      "label": "用量视图",
+      "logs": "明细",
+      "stats": "统计"
+    },
+    "stats": {
+      "cards_label": "用量概览卡片",
+      "total_spent": "总消费",
+      "requests": "总请求",
+      "input_tokens": "输入 Tokens",
+      "output_tokens": "输出 Tokens",
+      "success_rate": "成功率 {value}%",
+      "spend_tooltip": "预扣 {pre} / 退回 {refunded}",
+      "by_model": "模型分布",
+      "other": "其他",
+      "trend": "消费趋势",
+      "trend_series": "消费",
+      "view_table": "查看数据表",
+      "trend_table_caption": "消费趋势数据表",
+      "granularity_hour": "按小时聚合",
+      "granularity_day": "按天聚合",
+      "empty": "暂无统计数据",
+      "empty_hint": "发起一次 API 调用后，这里会显示聚合数据",
+      "no_user_data": "该用户无用量记录",
+      "columns": {
+        "model": "模型",
+        "cost": "费用",
+        "tokens": "Tokens",
+        "percent": "占比",
+        "time": "时间",
+        "requests": "请求数"
+      },
+      "rates": {
+        "title": "速率",
+        "rpm_avg": "平均 RPM",
+        "rpm_peak": "峰值 RPM",
+        "tpm_avg": "平均 TPM"
+      }
+    }
   },
   "audit": {
     "title": "审计日志",

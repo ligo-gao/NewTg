@@ -166,7 +166,46 @@
       "retry_count_label": "再試行回数",
       "masked_prompt": "••••••"
     },
-    "credits": "クレジット"
+    "credits": "クレジット",
+    "tabs": {
+      "label": "利用ビュー",
+      "logs": "明細",
+      "stats": "統計"
+    },
+    "stats": {
+      "cards_label": "利用概要カード",
+      "total_spent": "合計消費",
+      "requests": "リクエスト",
+      "input_tokens": "入力トークン",
+      "output_tokens": "出力トークン",
+      "success_rate": "成功率 {value}%",
+      "spend_tooltip": "事前引き落とし {pre} / 返金 {refunded}",
+      "by_model": "モデル別分布",
+      "other": "その他",
+      "trend": "消費推移",
+      "trend_series": "消費",
+      "view_table": "データ表を表示",
+      "trend_table_caption": "消費推移のデータ表",
+      "granularity_hour": "1時間ごと",
+      "granularity_day": "1日ごと",
+      "empty": "統計データはまだありません",
+      "empty_hint": "API を呼び出すと集計データがここに表示されます",
+      "no_user_data": "このユーザーの利用はありません",
+      "columns": {
+        "model": "モデル",
+        "cost": "費用",
+        "tokens": "トークン",
+        "percent": "割合",
+        "time": "時間",
+        "requests": "リクエスト"
+      },
+      "rates": {
+        "title": "レート",
+        "rpm_avg": "平均 RPM",
+        "rpm_peak": "ピーク RPM",
+        "tpm_avg": "平均 TPM"
+      }
+    }
   },
   "audit": {
     "title": "監査ログ",

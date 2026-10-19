@@ -1,27 +1,21 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Navigate } from '@tanstack/react-router'
 
-import { loadRouteDictionary } from '@/app/providers/i18n'
-import { AuditLogsPage } from '@/features/audit/audit-logs-page'
-import {
-  validateAuditLogSearch,
-  type AuditLogSearch,
-} from '@/features/audit/search'
+import type { AuditLogSearch } from '@/features/audit/search'
 
+/**
+ * Legacy route (web-00 §4.3). Canonical path is `/dashboard/audit-logs`;
+ * `search` is inherited so filters survive the redirect.
+ */
 export const Route = createFileRoute('/_console/audit-logs')({
-  validateSearch: validateAuditLogSearch,
-  loader: () => loadRouteDictionary('logs'),
-  component: AuditLogsRoute,
+  component: LegacyAuditLogsRedirect,
 })
 
-function AuditLogsRoute() {
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
+function LegacyAuditLogsRedirect() {
   return (
-    <AuditLogsPage
-      search={search as AuditLogSearch}
-      onSearchChange={(next) => {
-        void navigate({ search: next, replace: true })
-      }}
+    <Navigate
+      to="/dashboard/audit-logs"
+      search={(previous) => previous as AuditLogSearch}
+      replace
     />
   )
 }

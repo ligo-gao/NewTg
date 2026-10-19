@@ -33,9 +33,12 @@ import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as Errors500RouteImport } from './routes/_errors/500'
 import { Route as Errors503RouteImport } from './routes/_errors/503'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
-import { Route as PricingModelIdRouteImport } from './routes/pricing.$modelId'
+import { Route as PricingIndexRouteImport } from './routes/pricing/index'
+import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
+import { Route as ConsoleDashboardAuditLogsRouteImport } from './routes/_console/dashboard/audit-logs'
+import { Route as ConsoleDashboardUsageLogsRouteImport } from './routes/_console/dashboard/usage-logs'
 import { Route as ConsoleAdminChannelsIndexRouteImport } from './routes/_console/admin/channels/index'
 import { Route as ConsoleAdminPricingIndexRouteImport } from './routes/_console/admin/pricing/index'
 import { Route as ConsoleAdminPricingGroupPricingRouteImport } from './routes/_console/admin/pricing/group-pricing'
@@ -166,6 +169,11 @@ const LegalDocRoute = LegalDocRouteImport.update({
   path: '/legal/$doc',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PricingIndexRoute = PricingIndexRouteImport.update({
+  id: '/pricing/',
+  path: '/pricing/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PricingModelIdRoute = PricingModelIdRouteImport.update({
   id: '/pricing/$modelId',
   path: '/pricing/$modelId',
@@ -181,6 +189,18 @@ const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => ConsoleRoute,
 } as any)
+const ConsoleDashboardAuditLogsRoute =
+  ConsoleDashboardAuditLogsRouteImport.update({
+    id: '/dashboard/audit-logs',
+    path: '/dashboard/audit-logs',
+    getParentRoute: () => ConsoleRoute,
+  } as any)
+const ConsoleDashboardUsageLogsRoute =
+  ConsoleDashboardUsageLogsRouteImport.update({
+    id: '/dashboard/usage-logs',
+    path: '/dashboard/usage-logs',
+    getParentRoute: () => ConsoleRoute,
+  } as any)
 const ConsoleAdminChannelsIndexRoute =
   ConsoleAdminChannelsIndexRouteImport.update({
     id: '/channels/',
@@ -265,6 +285,9 @@ export interface FileRoutesByFullPath {
   '/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/pricing/': typeof PricingIndexRoute
+  '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
+  '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin/': typeof ConsoleAdminIndexRoute
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -302,6 +325,9 @@ export interface FileRoutesByTo {
   '/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/pricing': typeof PricingIndexRoute
+  '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
+  '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin': typeof ConsoleAdminIndexRoute
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -342,6 +368,9 @@ export interface FileRoutesById {
   '/_errors/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/pricing/': typeof PricingIndexRoute
+  '/_console/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
+  '/_console/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -382,6 +411,9 @@ export interface FileRouteTypes {
     | '/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/pricing/'
+    | '/dashboard/audit-logs'
+    | '/dashboard/usage-logs'
     | '/admin/'
     | '/dashboard/'
     | '/admin/pricing/group-pricing'
@@ -419,6 +451,9 @@ export interface FileRouteTypes {
     | '/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/pricing'
+    | '/dashboard/audit-logs'
+    | '/dashboard/usage-logs'
     | '/admin'
     | '/dashboard'
     | '/admin/pricing/group-pricing'
@@ -458,6 +493,9 @@ export interface FileRouteTypes {
     | '/_errors/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/pricing/'
+    | '/_console/dashboard/audit-logs'
+    | '/_console/dashboard/usage-logs'
     | '/_console/admin/'
     | '/_console/dashboard/'
     | '/_console/admin/pricing/group-pricing'
@@ -490,6 +528,7 @@ export interface RootRouteChildren {
   Errors503Route: typeof Errors503Route
   LegalDocRoute: typeof LegalDocRoute
   PricingModelIdRoute: typeof PricingModelIdRoute
+  PricingIndexRoute: typeof PricingIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -662,6 +701,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LegalDocRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pricing/': {
+      id: '/pricing/'
+      path: '/pricing'
+      fullPath: '/pricing/'
+      preLoaderRoute: typeof PricingIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pricing/$modelId': {
       id: '/pricing/$modelId'
       path: '/pricing/$modelId'
@@ -681,6 +727,20 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard/'
       preLoaderRoute: typeof ConsoleDashboardIndexRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/dashboard/audit-logs': {
+      id: '/_console/dashboard/audit-logs'
+      path: '/dashboard/audit-logs'
+      fullPath: '/dashboard/audit-logs'
+      preLoaderRoute: typeof ConsoleDashboardAuditLogsRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/dashboard/usage-logs': {
+      id: '/_console/dashboard/usage-logs'
+      path: '/dashboard/usage-logs'
+      fullPath: '/dashboard/usage-logs'
+      preLoaderRoute: typeof ConsoleDashboardUsageLogsRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/admin/channels/': {
@@ -798,6 +858,8 @@ interface ConsoleRouteChildren {
   ConsoleTokensRoute: typeof ConsoleTokensRoute
   ConsoleUsageLogsRoute: typeof ConsoleUsageLogsRoute
   ConsoleWalletRoute: typeof ConsoleWalletRoute
+  ConsoleDashboardAuditLogsRoute: typeof ConsoleDashboardAuditLogsRoute
+  ConsoleDashboardUsageLogsRoute: typeof ConsoleDashboardUsageLogsRoute
   ConsoleDashboardIndexRoute: typeof ConsoleDashboardIndexRoute
 }
 
@@ -810,6 +872,8 @@ const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleTokensRoute: ConsoleTokensRoute,
   ConsoleUsageLogsRoute: ConsoleUsageLogsRoute,
   ConsoleWalletRoute: ConsoleWalletRoute,
+  ConsoleDashboardAuditLogsRoute: ConsoleDashboardAuditLogsRoute,
+  ConsoleDashboardUsageLogsRoute: ConsoleDashboardUsageLogsRoute,
   ConsoleDashboardIndexRoute: ConsoleDashboardIndexRoute,
 }
 
@@ -834,6 +898,7 @@ const rootRouteChildren: RootRouteChildren = {
   Errors503Route: Errors503Route,
   LegalDocRoute: LegalDocRoute,
   PricingModelIdRoute: PricingModelIdRoute,
+  PricingIndexRoute: PricingIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,29 +1,25 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Navigate } from '@tanstack/react-router'
 
-import { loadRouteDictionary } from '@/app/providers/i18n'
-import { UsageLogsPage } from '@/features/logs/usage-logs-page'
-import {
-  validateUsageLogSearch,
-  type UsageLogSearch,
-} from '@/features/logs/search'
+import type { UsageLogSearch } from '@/features/logs/search'
 
+/**
+ * Legacy route (web-00 §4.3). The canonical IA places both log pages under
+ * `/dashboard`; this path only exists so old bookmarks and external links keep
+ * working. `search` is inherited and `replace` keeps the redirect out of the
+ * history stack.
+ */
 export const Route = createFileRoute('/_console/usage-logs')({
-  validateSearch: validateUsageLogSearch,
-  loader: () => loadRouteDictionary('logs'),
-  component: UsageLogsRoute,
+  component: LegacyUsageLogsRedirect,
 })
 
-function UsageLogsRoute() {
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
+function LegacyUsageLogsRedirect() {
   return (
-    <UsageLogsPage
-      search={search as UsageLogSearch}
-      onSearchChange={(next) => {
-        // Replace keeps filter typing out of the browser's back stack while
-        // still making the current view refresh/share safe.
-        void navigate({ search: next, replace: true })
-      }}
+    <Navigate
+      to="/dashboard/usage-logs"
+      // The legacy route has no validator, so `previous` is the raw record the
+      // browser carried; the target route normalises it on arrival.
+      search={(previous) => previous as UsageLogSearch}
+      replace
     />
   )
 }

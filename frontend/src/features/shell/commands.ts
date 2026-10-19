@@ -20,8 +20,8 @@ export type CommandGroupId = 'pages' | 'actions'
 export type CommandRoutePath =
   | '/dashboard'
   | '/tokens'
-  | '/usage-logs'
-  | '/audit-logs'
+  | '/dashboard/usage-logs'
+  | '/dashboard/audit-logs'
   | '/wallet'
   | '/orders'
   | '/profile'
@@ -81,7 +81,7 @@ export const COMMANDS: readonly CommandDefinition[] = [
     labelKey: 'common.nav.usage_logs',
     keywords: ['logs', 'requests', 'history', 'usage'],
     analyticsId: 'nav.usage_logs',
-    to: '/usage-logs',
+    to: '/dashboard/usage-logs',
   },
   {
     id: 'audit-logs',
@@ -94,7 +94,7 @@ export const COMMANDS: readonly CommandDefinition[] = [
     // does not gate the entry point. Keeping the route ungated mirrors the
     // console header nav and controller ruling (2026-10-19).
     analyticsId: 'nav.audit_logs',
-    to: '/audit-logs',
+    to: '/dashboard/audit-logs',
   },
   {
     id: 'wallet',

@@ -27,8 +27,9 @@ const NAV_ITEMS = [
   { href: '/wallet', key: 'common.nav.wallet' },
   { href: '/orders', key: 'common.nav.orders' },
   // M6 logs (modules-05): both pages narrow to the caller's own rows server-side.
-  { href: '/usage-logs', key: 'common.nav.usage_logs' },
-  { href: '/audit-logs', key: 'common.nav.audit_logs' },
+  // IA §4.3 puts them under `/dashboard`; the old top-level paths redirect.
+  { href: '/dashboard/usage-logs', key: 'common.nav.usage_logs' },
+  { href: '/dashboard/audit-logs', key: 'common.nav.audit_logs' },
   { href: '/profile', key: 'common.nav.profile' },
   { href: '/security', key: 'common.nav.security' },
   // M2 channel management; `/admin/channels` sits under the admin layout guard.

@@ -166,7 +166,46 @@
       "retry_count_label": "Tentatives",
       "masked_prompt": "••••••"
     },
-    "credits": "crédits"
+    "credits": "crédits",
+    "tabs": {
+      "label": "Vues d'utilisation",
+      "logs": "Détails",
+      "stats": "Statistiques"
+    },
+    "stats": {
+      "cards_label": "Cartes de synthèse d'utilisation",
+      "total_spent": "Total dépensé",
+      "requests": "Requêtes",
+      "input_tokens": "Tokens d'entrée",
+      "output_tokens": "Tokens de sortie",
+      "success_rate": "Taux de réussite {value} %",
+      "spend_tooltip": "Pré-débité {pre} / remboursé {refunded}",
+      "by_model": "Répartition par modèle",
+      "other": "Autre",
+      "trend": "Évolution de la consommation",
+      "trend_series": "Coût",
+      "view_table": "Voir le tableau de données",
+      "trend_table_caption": "Tableau de données de l’évolution de la consommation",
+      "granularity_hour": "Par heure",
+      "granularity_day": "Par jour",
+      "empty": "Aucune statistique",
+      "empty_hint": "Effectuez un appel API et les agrégats apparaîtront ici",
+      "no_user_data": "Aucune utilisation pour cet utilisateur",
+      "columns": {
+        "model": "Modèle",
+        "cost": "Coût",
+        "tokens": "Tokens",
+        "percent": "Part",
+        "time": "Heure",
+        "requests": "Requêtes"
+      },
+      "rates": {
+        "title": "Débits",
+        "rpm_avg": "RPM moyen",
+        "rpm_peak": "RPM max",
+        "tpm_avg": "TPM moyen"
+      }
+    }
   },
   "audit": {
     "title": "Journaux d'audit",

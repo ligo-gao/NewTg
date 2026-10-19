@@ -15,10 +15,24 @@ describe('usage log search validation', () => {
         p: '-2',
         page_size: '999',
         status: 'maybe',
-        request_id: 'not-a-uuid',
         token_id: 'abc',
+        tab: 'performance',
       }),
     ).toEqual(DEFAULT_USAGE_LOG_SEARCH)
+  })
+
+  it('keeps a malformed request_id so the page can report it', () => {
+    // The URL wins over the default view: dropping the value silently would
+    // leave the user on an unfiltered list with no explanation (F-05-01).
+    expect(
+      validateUsageLogSearch({ request_id: 'not-a-uuid' }).request_id,
+    ).toBe('not-a-uuid')
+  })
+
+  it('serialises only the stats tab and normalises an explicit logs tab', () => {
+    expect(validateUsageLogSearch({ tab: 'stats' }).tab).toBe('stats')
+    expect(validateUsageLogSearch({ tab: 'logs' }).tab).toBeUndefined()
+    expect(validateUsageLogSearch({ tab: 'nope' }).tab).toBeUndefined()
   })
 
   it('keeps valid filter values, including the admin username', () => {

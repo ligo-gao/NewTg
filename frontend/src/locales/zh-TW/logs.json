@@ -166,7 +166,46 @@
       "retry_count_label": "重試次數",
       "masked_prompt": "••••••"
     },
-    "credits": "積分"
+    "credits": "積分",
+    "tabs": {
+      "label": "用量檢視",
+      "logs": "明細",
+      "stats": "統計"
+    },
+    "stats": {
+      "cards_label": "用量概覽卡片",
+      "total_spent": "總消費",
+      "requests": "總請求",
+      "input_tokens": "輸入 Tokens",
+      "output_tokens": "輸出 Tokens",
+      "success_rate": "成功率 {value}%",
+      "spend_tooltip": "預扣 {pre} / 退回 {refunded}",
+      "by_model": "模型分布",
+      "other": "其他",
+      "trend": "消費趨勢",
+      "trend_series": "消費",
+      "view_table": "檢視資料表",
+      "trend_table_caption": "消費趨勢資料表",
+      "granularity_hour": "按小時彙總",
+      "granularity_day": "按天彙總",
+      "empty": "暫無統計資料",
+      "empty_hint": "發起一次 API 呼叫後，這裡會顯示彙總資料",
+      "no_user_data": "該使用者無用量記錄",
+      "columns": {
+        "model": "模型",
+        "cost": "費用",
+        "tokens": "Tokens",
+        "percent": "佔比",
+        "time": "時間",
+        "requests": "請求數"
+      },
+      "rates": {
+        "title": "速率",
+        "rpm_avg": "平均 RPM",
+        "rpm_peak": "峰值 RPM",
+        "tpm_avg": "平均 TPM"
+      }
+    }
   },
   "audit": {
     "title": "稽核日誌",

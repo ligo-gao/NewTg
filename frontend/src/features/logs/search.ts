@@ -5,6 +5,8 @@ export type UsageLogDetail = components['schemas']['UsageLogDetail']
 export type UsageLogStatus = NonNullable<UsageLogItem['status']>
 export type UsageLogRange = '24h' | '7d' | '14d' | '30d'
 export type UsageLogRangeFilter = UsageLogRange | 'custom'
+/** `logs` stays absent from the URL so the default view keeps a clean link. */
+export type UsageLogTab = 'logs' | 'stats'
 
 const RANGE_VALUES: readonly UsageLogRange[] = ['24h', '7d', '14d', '30d']
 const STATUS_VALUES: readonly UsageLogStatus[] = [
@@ -35,6 +37,12 @@ export interface UsageLogSearch {
   request_id?: string
   status?: UsageLogStatus
   username?: string
+  /**
+   * F-05-03 in-page view switch. Only `stats` is serialised: an explicit
+   * `?tab=logs` is normalised away so the default view never grows a
+   * redundant parameter. Any other value falls back to the list view.
+   */
+  tab?: UsageLogTab
   p: number
   page_size: number
 }
@@ -107,8 +115,12 @@ export function validateUsageLogSearch(
   const tokenId = asPositiveInteger(search.token_id)
   if (tokenId !== undefined) result.token_id = tokenId
 
+  // The raw value is kept so a shared link with a malformed `request_id` can be
+  // reported to the user instead of silently rendering an unfiltered list.
+  // Callers must gate `isUuid` before putting it into a query (the backend
+  // answers 422 for malformed values, sub-feature §3.2).
   const requestId = asTrimmedString(search.request_id)
-  if (requestId !== undefined && isUuid(requestId)) result.request_id = requestId
+  if (requestId !== undefined) result.request_id = requestId
 
   const status = search.status
   if (
@@ -117,6 +129,10 @@ export function validateUsageLogSearch(
   ) {
     result.status = status as UsageLogStatus
   }
+
+  // `logs` is the default: keep it out of the canonical shape so switching
+  // back does not leave `?tab=logs` behind in the address bar.
+  if (search.tab === 'stats') result.tab = 'stats'
 
   const page = asPositiveInteger(search.p)
   if (page !== undefined) result.p = page
@@ -127,6 +143,57 @@ export function validateUsageLogSearch(
   }
 
   return result
+}
+
+/** ISO timestamps for a custom range; both ends are required to apply it. */
+function customRange(search: UsageLogSearch): { start: string; end: string } | undefined {
+  if (search.range !== 'custom') return undefined
+  const start = toIso(search.start)
+  const end = toIso(search.end)
+  if (start === undefined || end === undefined) return undefined
+  return { start, end }
+}
+
+function toIso(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return undefined
+  return new Date(timestamp).toISOString()
+}
+
+/**
+ * The range parameters shared by the list and every `/api/usage-stats/*`
+ * endpoint. Keeping this in one place is what guarantees the cards, the
+ * charts and the table describe the same window (F-05-03 §5.7).
+ */
+export function usageRangeParams(
+  search: UsageLogSearch,
+): { range: UsageLogRange } | { start: string; end: string } {
+  const custom = customRange(search)
+  if (search.range === 'custom') {
+    // An incomplete/invalid custom range would otherwise silently widen to the
+    // 24h default; falling back to the preset keeps the request valid.
+    return custom ?? { range: '24h' }
+  }
+  return { range: search.range }
+}
+
+/**
+ * Granularity is automatic (§5.1): 24h and short custom windows are hourly,
+ * everything wider is daily. A short custom window stays hourly so a
+ * sub-day range does not collapse into one bucket.
+ */
+export function usageStatsGranularity(
+  search: UsageLogSearch,
+): 'hour' | 'day' {
+  const custom = customRange(search)
+  if (custom !== undefined) {
+    const span = Date.parse(custom.end) - Date.parse(custom.start)
+    return span <= 48 * 60 * 60 * 1000 ? 'hour' : 'day'
+  }
+  // `custom` without both ends falls back to the 24h preset in
+  // `usageRangeParams`, so the granularity must follow that same fallback.
+  return search.range === 'custom' || search.range === '24h' ? 'hour' : 'day'
 }
 
 export type CustomRangeError = 'required' | 'invalid' | 'order' | 'too_long' | null
