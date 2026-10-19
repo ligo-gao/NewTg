@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import {
@@ -38,27 +38,35 @@ export function LanguageCard() {
       ? availableLocales
       : [locale]
 
-  const save = useMutation({
-    mutationFn: async (next: Locale) => {
-      const current = selfQuery.data
-      if (current === undefined) return null
-      const updated = await updateLanguagePreference(next, current.updated_at)
-      queryClient.setQueryData(SELF_SETTINGS_QUERY_KEY, updated)
-      return updated
-    },
-  })
-
   async function handleChange(next: Locale): Promise<void> {
     const previous = locale
     setLocale?.(next)
     setPending(true)
     try {
-      await save.mutateAsync(next)
+      // 保存前必须拿到 updated_at（乐观锁）。个人设置仍在加载时先补一次
+      // 读取；若确实拿不到（离线/接口故障），降级为仅本地并明确提示，
+      // 不能谎报“已更新”（评审 F3）。
+      let current = selfQuery.data
+      if (current === undefined) {
+        current = (await selfQuery.refetch()).data
+      }
+      if (current === undefined) {
+        push({ tone: 'info', message: t('account.language.saved_locally') })
+        return
+      }
+
+      const updated = await updateLanguagePreference(next, current.updated_at)
+      // 写回同一缓存：语言同步器随后读到的是新值，不会把刚切换的语言
+      // 当成旧偏好覆盖掉。
+      queryClient.setQueryData(SELF_SETTINGS_QUERY_KEY, updated)
       push({ tone: 'success', message: t('account.language.updated') })
     } catch {
-      // 服务端写入失败：回退显示原语言，避免本地与服务端长期分叉。
+      // 服务端写入失败：回退显示原语言，避免本地与服务端长期分叉；
+      // 同时失效个人设置缓存，让下一次重试拿到新的 updated_at 而不是
+      // 反复撞 409（评审 F4）。
       setLocale?.(previous)
       push({ tone: 'error', message: t('account.language.update_error') })
+      await queryClient.invalidateQueries({ queryKey: SELF_SETTINGS_QUERY_KEY })
     } finally {
       setPending(false)
     }

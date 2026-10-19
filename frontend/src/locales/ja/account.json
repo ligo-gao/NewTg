@@ -66,7 +66,8 @@
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt"
+    "name_vi": "Tiếng Việt",
+    "saved_locally": "言語をこのデバイスのみ変更しました。サーバー設定を保存できませんでした。"
   },
   "topup": {
     "title": "チャージ",

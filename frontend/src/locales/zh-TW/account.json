@@ -66,7 +66,8 @@
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt"
+    "name_vi": "Tiếng Việt",
+    "saved_locally": "語言已在此裝置切換，但未能儲存至伺服器偏好。"
   },
   "topup": {
     "title": "儲值",

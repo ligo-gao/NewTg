@@ -159,7 +159,7 @@
       "attempt": "Tentative {index}",
       "success": "Succès",
       "prompt": "Invite",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "Voir l'invite",
       "prompt_unavailable": "Invite indisponible",
       "sensitive_hidden": "Contenu sensible masqué",

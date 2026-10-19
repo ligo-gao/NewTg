@@ -159,7 +159,7 @@
       "attempt": "第 {index} 次尝试",
       "success": "成功",
       "prompt": "提示词",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "查看提示词",
       "prompt_unavailable": "提示词不可用",
       "sensitive_hidden": "敏感内容已隐藏",

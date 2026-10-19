@@ -66,7 +66,8 @@
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt"
+    "name_vi": "Tiếng Việt",
+    "saved_locally": "语言已在此设备切换，但未能保存到服务端偏好。"
   },
   "topup": {
     "title": "充值",

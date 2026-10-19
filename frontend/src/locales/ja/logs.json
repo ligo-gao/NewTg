@@ -159,7 +159,7 @@
       "attempt": "試行 {index}",
       "success": "成功",
       "prompt": "プロンプト",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "プロンプトを表示",
       "prompt_unavailable": "プロンプトを利用できません",
       "sensitive_hidden": "機密コンテンツは非表示です",

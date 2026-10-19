@@ -11,10 +11,11 @@ export interface AppProvidersProps {
 /**
  * Application-wide providers.
  *
- * The Query client owns all server state (web-00 §5); i18n is a minimal
- * English-only runtime for M0 (web-00 §7). MVP is permanently light, so there
- * is no theme provider or `dark:` variant yet. The toast viewport is mounted
- * once here so any layer can surface global feedback (modules-00 §4.8).
+ * The Query client owns all server state (web-00 §5); i18n is the seven-language
+ * runtime from §7 (dictionaries load per domain, preference follows §7.3).
+ * MVP is permanently light, so there is no theme provider or `dark:` variant
+ * yet. The toast viewport is mounted once here so any layer can surface global
+ * feedback (modules-00 §4.8).
  */
 export function AppProviders({ children }: AppProvidersProps) {
   return (

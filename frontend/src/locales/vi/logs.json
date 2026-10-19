@@ -159,7 +159,7 @@
       "attempt": "Lần thử {index}",
       "success": "Thành công",
       "prompt": "Lời nhắc",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "Xem lời nhắc",
       "prompt_unavailable": "Lời nhắc không khả dụng",
       "sensitive_hidden": "Đã ẩn nội dung nhạy cảm",

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
@@ -390,18 +397,73 @@ export function I18nProvider({
   // 词典是模块级可变状态，provider 需要显式信号在懒加载 chunk 到达后重渲染。
   const [readyRevision, setReadyRevision] = useState(0)
 
-  const setLocale = useCallback((next: Locale) => {
+  // 当前语言的同步镜像：回调里需要读到最新值，而不能依赖闭包里的旧 state。
+  const localeRef = useRef(locale)
+  const availableLocalesRef = useRef<readonly Locale[]>(BUNDLED_LOCALES)
+  /**
+   * 用户是否做过显式切换。服务端偏好是异步到达的：若用户在响应返回前已经
+   * 主动选了语言，初始偏好不得把它覆盖回去（评审 F1）。只在用户手势后置位，
+   * 服务端/状态归一化都不置位。
+   */
+  const userGestureRef = useRef(false)
+
+  const commitLocale = useCallback((next: Locale) => {
+    localeRef.current = next
     setActiveLocale(next)
     setLocaleState(next)
   }, [])
 
-  const setAvailableLocales = useCallback((next: readonly Locale[]) => {
-    setAvailableLocalesState(next)
-  }, [])
+  /** 用户手势入口（context.setLocale）；置位后服务端偏好不再回写。 */
+  const setLocale = useCallback(
+    (next: Locale) => {
+      userGestureRef.current = true
+      commitLocale(next)
+    },
+    [commitLocale],
+  )
+
+  /**
+   * 状态归一化（F5）：激活语言必须落在 status 下发的集合内；不在集合内时
+   * 优先回退 en，其次集合首项。这不是用户手势，因此不动 gesture 标记。
+   */
+  const applyAvailableLocales = useCallback(
+    (next: readonly Locale[]) => {
+      availableLocalesRef.current = next
+      setAvailableLocalesState(next)
+      if (next.length === 0) return
+      if (!next.includes(localeRef.current)) {
+        commitLocale(
+          next.includes(DEFAULT_LOCALE) ? DEFAULT_LOCALE : (next[0] ?? DEFAULT_LOCALE),
+        )
+      }
+    },
+    [commitLocale],
+  )
+
+  /** 服务端偏好入口：仅在用户尚未做显式切换时生效（§7.3 优先级 + F1）。 */
+  const applyServerLocale = useCallback(
+    (next: Locale) => {
+      if (userGestureRef.current) return
+      const available = availableLocalesRef.current
+      if (!available.includes(next)) {
+        applyAvailableLocales(available)
+        return
+      }
+      commitLocale(next)
+    },
+    [applyAvailableLocales, commitLocale],
+  )
 
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  // TC-C-02：语言切换必须同步更新 <html lang> 与 document.title。站点名在
+  // common 域；chunk 未到时沿用键名检查，避免把原始键写进标题栏。
+  useEffect(() => {
+    const title = translate(locale, 'common.app.title')
+    if (title !== 'common.app.title') document.title = title
+  }, [locale, readyRevision])
 
   // modules 可能是内联数组；用内容作为依赖，避免每次渲染都重跑加载 effect。
   const moduleKey = modules.join(',')
@@ -454,8 +516,8 @@ export function I18nProvider({
       {children}
       {syncPreference ? (
         <LocalePreferenceSync
-          onLocale={setLocale}
-          onAvailableLocales={setAvailableLocales}
+          onServerLocale={applyServerLocale}
+          onAvailableLocales={applyAvailableLocales}
         />
       ) : null}
     </I18nContextProvider>
@@ -463,7 +525,7 @@ export function I18nProvider({
 }
 
 interface LocalePreferenceSyncProps {
-  onLocale: (locale: Locale) => void
+  onServerLocale: (locale: Locale) => void
   onAvailableLocales: (locales: readonly Locale[]) => void
 }
 
@@ -474,8 +536,8 @@ interface LocalePreferenceSyncProps {
  *   3. navigator.language；
  *   4. en。
  *
- * 服务端偏好只能异步读取，因此挂载后一旦拿到就覆盖当前语言；这正是
- * §7.3 的优先级要求（登录用户跨设备一致）。
+ * 服务端偏好只能异步读取，因此挂载后一旦拿到就覆盖当前语言；但用户已经
+ * 主动切换过时不再覆盖（`onServerLocale` 内部判断手势）。
  *
  * 为什么用 `enabled: false` 的 me 查询：`/api/me` 已由控制台路由守卫写入
  * 同一 QueryClient 的缓存。关闭 fetch 的 observer 仍会订阅缓存更新，
@@ -483,10 +545,16 @@ interface LocalePreferenceSyncProps {
  * 401 请求。
  */
 function LocalePreferenceSync({
-  onLocale,
+  onServerLocale,
   onAvailableLocales,
 }: LocalePreferenceSyncProps) {
-  const status = useQuery(publicStatusQueryOptions())
+  // status 由公网页/守卫共享；这里给 5 分钟 staleTime，避免 i18n 观察者
+  // 挂载时对同一份 no-store 响应再发一次请求（评审 F9）。语言清单变化
+  // 频率远低于站点开关，下一次导航/刷新仍会重新校验。
+  const status = useQuery({
+    ...publicStatusQueryOptions(),
+    staleTime: 5 * 60_000,
+  })
   const me = useQuery({ ...meQueryOptions(), enabled: false, queryKey: ME_QUERY_KEY })
   const self = useQuery({
     ...selfSettingsQueryOptions(),
@@ -502,9 +570,9 @@ function LocalePreferenceSync({
 
   useEffect(() => {
     if (self.data !== undefined) {
-      onLocale(self.data.language)
+      onServerLocale(self.data.language)
     }
-  }, [self.data, onLocale])
+  }, [self.data, onServerLocale])
 
   return null
 }

@@ -159,7 +159,7 @@
       "attempt": "Попытка {index}",
       "success": "Успешно",
       "prompt": "Запрос",
-      "masked": "****",
+      "masked": "••••••",
       "view_prompt": "Показать запрос",
       "prompt_unavailable": "Запрос недоступен",
       "sensitive_hidden": "Конфиденциальное содержимое скрыто",

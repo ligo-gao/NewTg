@@ -69,6 +69,8 @@ describe('I18nProvider', () => {
     })
     expect(document.documentElement.lang).toBe('fr')
 
+    // TC-C-02：切换必须同步刷新 document.title；先用哨兵值证明它被重写。
+    document.title = 'stale-title'
     await user.click(screen.getByRole('button', { name: 'switch' }))
 
     await waitFor(() => {
@@ -78,6 +80,7 @@ describe('I18nProvider', () => {
       )
     })
     expect(document.documentElement.lang).toBe('ja')
+    expect(document.title).toBe('NewTG')
     // 切换写入本地记忆（web-00 §7.3），刷新后沿用。
     expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
   })

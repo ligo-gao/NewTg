@@ -66,7 +66,8 @@
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt"
+    "name_vi": "Tiếng Việt",
+    "saved_locally": "Язык изменён только на этом устройстве. Не удалось сохранить настройку на сервере."
   },
   "topup": {
     "title": "Пополнить",
