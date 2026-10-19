@@ -4,10 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 
 	"newtg/gateway/internal/plugin"
 )
+
+// PluginGeneration 返回插件**版本代际**（写 tasks.plugin_generation）。
+//
+// 不能用快照的全局 generation：那是节点本地的发布序号，任何插件的
+// reload 都会让它变化，会让所有历史任务的代际无意义地失效。这里用
+// version + source_hash 派生（版本或源码任一变化即换代），跨节点一致，
+// 也满足设计「插件版本变更时失效旧任务」的语义。
+func PluginGeneration(p *plugin.CompiledPlugin) int64 {
+	if p == nil {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(p.Version))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(p.SourceHash()))
+	return int64(h.Sum64())
+}
 
 // 本文件是提交管线的执行段：插件构建请求 → 宿主出站 → 插件解析响应。
 // 渠道选择、计费、持久化与 HTTP 映射都在 httpapi；本文件不知道身份/计费，

@@ -120,7 +120,6 @@ func TestProjectArtifacts(t *testing.T) {
 	want := []ArtifactView{
 		{Key: "v1", Type: "video", MIMEType: "video/mp4"},
 		{Key: "v2", Type: "image"},
-		{Key: "artifact_2", Type: "file", MIMEType: "audio/mpeg"},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("artifacts = %#v，want %#v", got, want)
@@ -156,6 +155,19 @@ func TestProjectUsageFiltersDeclaredFields(t *testing.T) {
 	}
 	if ProjectUsage(data, nil) != nil {
 		t.Fatalf("no schema must project no usage")
+	}
+}
+
+func TestPluginGenerationIsVersionDerived(t *testing.T) {
+	a := compileTestPlugin(t, testPluginSource)
+	b := compileTestPlugin(t, testPluginSource)
+	if PluginGeneration(a) == 0 || PluginGeneration(a) != PluginGeneration(b) {
+		t.Fatalf("generation must be stable for identical version+source")
+	}
+	changed := strings.Replace(testPluginSource, `version: "1.0.0"`, `version: "1.0.1"`, 1)
+	c := compileTestPlugin(t, changed)
+	if PluginGeneration(a) == PluginGeneration(c) {
+		t.Fatalf("version change must change the generation")
 	}
 }
 

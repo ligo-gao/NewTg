@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	billingpkg "newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/relay/billingseam"
@@ -112,13 +113,22 @@ func (fakeTaskAccess) UserAccess(context.Context, int64) (string, []string, stri
 	return "user", nil, "enabled", nil
 }
 
-// taskBillingRecorder 记录 PreConsume/Reserve/Refund 的调用顺序，底层复用
-// billingseam.Stub 的幂等/预留语义。
+// taskBillingRecorder 记录 PreConsume/Reserve/Terminate/Refund/Detach 的调用
+// 顺序，底层复用 billingseam.Stub 的幂等/预留语义。Detach 与两个 ByRequestID
+// 让假会话实现 contract.BillingHandoff，覆盖异步交接路径。
 type taskBillingRecorder struct {
 	*billingseam.Stub
-	mu         sync.Mutex
-	calls      []string
-	preConsume error
+	mu            sync.Mutex
+	calls         []string
+	preConsumeErr error
+	reserveErr    error
+	refundErr     error
+	terminateErr  error
+	// hold 模拟真实引擎的预扣金额（桩的 PreConsume 只按 MaxTokens 预留，
+	// 任务估算没有 MaxTokens 时会是 0）。测试用它断言 quota/退款行为。
+	hold           int64
+	detached       bool
+	detachRequests []string
 }
 
 func newTaskBillingRecorder() *taskBillingRecorder {
@@ -133,20 +143,59 @@ func (b *taskBillingRecorder) record(name string) {
 
 func (b *taskBillingRecorder) PreConsume(est contract.QuotaEstimate) error {
 	b.record("preconsume")
-	if b.preConsume != nil {
-		return b.preConsume
+	if b.preConsumeErr != nil {
+		return b.preConsumeErr
 	}
-	return b.Stub.PreConsume(est)
+	if err := b.Stub.PreConsume(est); err != nil {
+		return err
+	}
+	if b.hold > 0 {
+		return b.Stub.Reserve(b.hold)
+	}
+	return nil
 }
 
 func (b *taskBillingRecorder) Reserve(delta int64) error {
 	b.record("reserve")
+	if b.reserveErr != nil {
+		return b.reserveErr
+	}
 	return b.Stub.Reserve(delta)
+}
+
+func (b *taskBillingRecorder) Terminate(fact contract.UsageFact) error {
+	b.record("terminate")
+	if b.terminateErr != nil {
+		return b.terminateErr
+	}
+	return b.Stub.Terminate(fact)
 }
 
 func (b *taskBillingRecorder) Refund() error {
 	b.record("refund")
+	if b.refundErr != nil {
+		return b.refundErr
+	}
 	return b.Stub.Refund()
+}
+
+func (b *taskBillingRecorder) Detach(requestID string) error {
+	b.record("detach")
+	b.mu.Lock()
+	b.detached = true
+	b.detachRequests = append(b.detachRequests, requestID)
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *taskBillingRecorder) TerminateByRequestID(string, contract.UsageFact) error {
+	b.record("terminate_by_id")
+	return nil
+}
+
+func (b *taskBillingRecorder) RefundByRequestID(string) error {
+	b.record("refund_by_id")
+	return nil
 }
 
 func (b *taskBillingRecorder) ReserveCalls() []string {
@@ -281,10 +330,23 @@ func TestTaskSubmitSuccessAndBillingOrder(t *testing.T) {
 	if store.inserted != 1 {
 		t.Fatalf("inserted = %d, want 1", store.inserted)
 	}
-	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve" {
-		t.Fatalf("billing call order = %q, want preconsume,reserve", got)
-	}
 	row := store.rows[0]
+	// 非终态任务：预扣 → 预留差额 → 异步交接（Detach），不结算不退款。
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,detach" {
+		t.Fatalf("billing call order = %q, want preconsume,reserve,detach", got)
+	}
+	if !billing.detached {
+		t.Fatalf("task submission must detach the billing session")
+	}
+	if len(billing.detachRequests) != 1 || billing.detachRequests[0] != row.PrivateData["request_id"] {
+		t.Fatalf("detach request id mismatch: %v vs %v", billing.detachRequests, row.PrivateData["request_id"])
+	}
+	if row.PrivateData["request_id"] == nil || row.PrivateData["request_id"] == "" {
+		t.Fatalf("task row must persist request_id for T6b settlement: %#v", row.PrivateData)
+	}
+	if row.PluginGeneration == 0 || row.FetchMode != "poll" {
+		t.Fatalf("unexpected generation/fetch mode: %#v", row)
+	}
 	if row.UserID != 42 || row.ChannelID != 9 || row.PluginKey != "sample" {
 		t.Fatalf("unexpected task row: %#v", row)
 	}
@@ -344,7 +406,7 @@ func TestTaskSubmitPreConsumeFailure(t *testing.T) {
 	store := &fakeTaskStore{}
 	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
 	billing := newTaskBillingRecorder()
-	billing.preConsume = errors.New("billing: insufficient quota")
+	billing.preConsumeErr = billingpkg.ErrInsufficientQuota
 	handler, _ := newTaskTestHandler(t, store, channels, sampleTaskManager(t), func(*contract.RelayContext) contract.BillingSession { return billing })
 	mux := newTaskRelayMux(handler)
 
@@ -358,6 +420,27 @@ func TestTaskSubmitPreConsumeFailure(t *testing.T) {
 	}
 	if store.inserted != 0 {
 		t.Fatalf("402 must not persist a task row")
+	}
+}
+
+func TestTaskSubmitPricingErrorIsNot402(t *testing.T) {
+	store := &fakeTaskStore{}
+	billing := newTaskBillingRecorder()
+	billing.preConsumeErr = errors.New("billing: no pricing for plugin key")
+	handler, _ := newTaskTestHandler(t, store, &fakeTaskChannels{target: &tasks.ChannelTarget{
+		ID: 1, BaseURL: "https://api.example.com", Credentials: nil,
+	}}, sampleTaskManager(t),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	// 未配置定价 ≠ 余额不足：客户端不应被引导去充值。
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.inserted != 0 {
+		t.Fatalf("pricing error must not persist a task row")
 	}
 }
 
@@ -397,7 +480,9 @@ func TestTaskSubmitInlineTerminal(t *testing.T) {
 	sealer := NewSecretSealer("task-handler-test-key")
 	store := &fakeTaskStore{}
 	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
-	handler, _ := newTaskTestHandler(t, store, channels, sampleInlineManager(t), nil)
+	billing := newTaskBillingRecorder()
+	handler, _ := newTaskTestHandler(t, store, channels, sampleInlineManager(t),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
 	mux := newTaskRelayMux(handler)
 
 	rec := httptest.NewRecorder()
@@ -408,6 +493,138 @@ func TestTaskSubmitInlineTerminal(t *testing.T) {
 	row := store.rows[0]
 	if row.State != tasks.StateSuccess || row.ProgressPercent != 100 || row.FinishTime == nil {
 		t.Fatalf("inline terminal not persisted: %#v", row)
+	}
+	if row.FetchMode != "inline" {
+		t.Fatalf("immediate terminal fetch_mode = %q, want inline", row.FetchMode)
+	}
+	// SUCCESS 且已有 usage：立即 Terminate 结算，不做 Detach。
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,terminate" {
+		t.Fatalf("billing calls = %q, want preconsume,reserve,terminate", got)
+	}
+}
+
+func TestTaskSubmitInlineFailureRefunds(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	source := strings.Replace(inlinePluginSource,
+		`immediate: { status: "SUCCESS" }`, `immediate: { status: "FAILURE" }`, 1)
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
+	billing := newTaskBillingRecorder()
+	handler, _ := newTaskTestHandler(t, store, channels,
+		newTaskManager(t, map[string]string{"sample": source}),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	row := store.rows[0]
+	if row.State != tasks.StateFailure || row.Quota != 0 || row.FinishTime == nil {
+		t.Fatalf("inline failure must settle to zero: %#v", row)
+	}
+	// 即时 FAILURE：全额退款（settle 为 0），不 Terminate。
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,refund" {
+		t.Fatalf("billing calls = %q, want preconsume,reserve,refund", got)
+	}
+	if _, pending := row.PrivateData["refund_pending"]; pending {
+		t.Fatalf("refund succeeded but refund_pending was persisted")
+	}
+}
+
+func TestTaskSubmitInlineSuccessWithoutUsageDetaches(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	source := strings.Replace(inlinePluginSource,
+		`taskData: { usage: { seconds: 5, cost: 99 } }`, `taskData: {}`, 1)
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
+	billing := newTaskBillingRecorder()
+	handler, _ := newTaskTestHandler(t, store, channels,
+		newTaskManager(t, map[string]string{"sample": source}),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,detach" {
+		t.Fatalf("billing calls = %q, want preconsume,reserve,detach", got)
+	}
+}
+
+func TestTaskSubmitRefundFailureRecordsPending(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	source := strings.Replace(inlinePluginSource,
+		`immediate: { status: "SUCCESS" }`, `immediate: { status: "FAILURE" }`, 1)
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
+	billing := newTaskBillingRecorder()
+	billing.hold = 100
+	billing.refundErr = errors.New("refund backend unavailable")
+	handler, _ := newTaskTestHandler(t, store, channels,
+		newTaskManager(t, map[string]string{"sample": source}),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	row := store.rows[0]
+	if row.PrivateData["refund_pending"] != true {
+		t.Fatalf("failed refund must be persisted for compensation: %#v", row.PrivateData)
+	}
+	if row.Quota == 0 {
+		t.Fatalf("failed refund must keep the pre-consumed amount")
+	}
+}
+
+func TestTaskSubmitReserveFailureIsNotSwallowed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"up_1"}`))
+	}))
+	defer upstream.Close()
+
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
+	billing := newTaskBillingRecorder()
+	billing.reserveErr = errors.New("reserve backend unavailable")
+	handler, _ := newTaskTestHandler(t, store, channels, sampleTaskManager(t),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.inserted != 0 {
+		t.Fatalf("reserve failure must not persist a task row")
+	}
+	// 预扣已发生，失败后必须退款。
+	calls := strings.Join(billing.ReserveCalls(), ",")
+	if !strings.Contains(calls, "refund") {
+		t.Fatalf("reserve failure must refund: %q", calls)
 	}
 }
 

@@ -591,6 +591,26 @@ type SessionBilling interface {
 	BillingSession
 }
 
+// BillingHandoff 是「请求结束、任务继续」的异步交接面（M6d Task 6a）。
+//
+// 任务提交与普通中继的差别：提交请求返回后，任务仍在上游运行，预扣 hold
+// 必须保留到任务终态。若沿用普通会话，请求函数返回后心跳 goroutine 失去
+// 引用却继续运行，worker 也永远看不到「悬挂」；而重启后 worker 会把一个
+// 仍在成功的任务当成悬挂请求全额退款（免费服务）。因此需要显式交接：
+//
+//	Detach                 停止心跳、移除在飞租约，**保留 hold 不结算**；
+//	                       幂等；由提交路径在任务行落库成功后调用。
+//	TerminateByRequestID   T6b 轮询器在任务终态时按持久化 requestID 结算；
+//	RefundByRequestID      T6b 在失败/超时时按持久化 requestID 全额退款。
+//
+// 两个 ByRequestID 只依赖持久化账本行，不依赖进程内 Session；幂等语义与
+// BillingSession.Terminate/Refund 相同。
+type BillingHandoff interface {
+	Detach(requestID string) error
+	TerminateByRequestID(requestID string, fact UsageFact) error
+	RefundByRequestID(requestID string) error
+}
+
 // ============================================================================
 // §7.2 流式状态（v1.1 · 决议 E6，统一 01 CR#5 与 03 CR-C-04）
 // ============================================================================

@@ -66,6 +66,10 @@ type Session struct {
 	settled          bool
 	refunded         bool
 	fundingSettled   bool
+	// detached 标记会话已交接给任务轮询器：心跳/租约已停止，hold 保留。
+	// 它是幂等位而不是终态位——Detach 之后仍允许 Refund/Terminate 按
+	// requestID 结算（账本行是唯一权威）。
+	detached bool
 
 	leaseRegistered bool
 	leaseStop       chan struct{}
@@ -74,6 +78,10 @@ type Session struct {
 
 // 编译期断言：Session 必须完整实现冻结的计费会话接口。
 var _ contract.BillingSession = (*Session)(nil)
+
+// Session 也是任务平台的异步交接实现：Detach 停止本会话的心跳；两个
+// ByRequestID 转发给引擎（它们按持久化账本行重建，不需要原 Session）。
+var _ contract.BillingHandoff = (*Session)(nil)
 
 // opCtx 构造单次账本/定价操作的有界上下文（理由见 billingOpTimeout）。
 func opCtx() (context.Context, context.CancelFunc) {
@@ -546,6 +554,11 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	if userID == 0 {
 		userID = st.UserID
 	}
+	// ByRequestID 重建的会话没有原始 rc.UserID；日志行必须记录真实归属，
+	// 因此从账本行回填（rc 只承载 requestID 时 UserID 为 0）。
+	if s.rc != nil && s.rc.UserID == 0 && userID != 0 {
+		s.rc.UserID = int(userID)
+	}
 
 	// N3：结算必须使用最终选中分组的快照。跨组重试（relay.WithUsingGroup）
 	// 会改写 rc.UsingGroup；若与预扣时冻结快照的分组不同，这里重新解析并
@@ -748,6 +761,50 @@ func (s *Session) Reserved() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.preConsumed
+}
+
+// Detach 把会话交接给任务轮询器（contract.BillingHandoff）。
+//
+// 只做两件事：停止心跳、移除在飞租约索引。**保留 hold 不结算**——任务仍在
+// 上游运行，钱的冻结状态就是它的预算。之后由 T6b 用持久化的 requestID 调
+// TerminateByRequestID / RefundByRequestID 收敛。
+//
+// 为什么不删 hold：删了就相当于结算/退款；任务终态前任何收敛都是错的。
+// 为什么移除租约：租约是「请求进程是否还活着」的心跳，任务已交给轮询器，
+// 原进程不再是它的守护者；保留租约会让 worker 永远不回收真正的悬挂任务。
+//
+// 幂等：已 detach/结算/退款都返回 nil（调用方可以安全重试）。
+func (s *Session) Detach(requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.requestID == "" {
+		return ErrMissingRequestID
+	}
+	if requestID != "" && requestID != s.requestID {
+		// 交接错 ID 会停掉别的请求的心跳，直接拒绝而不是「尽力而为」。
+		return fmt.Errorf("%w: detach %s for session %s", ErrRequestClosed, requestID, s.requestID)
+	}
+	if s.detached || s.settled || s.refunded {
+		return nil
+	}
+	ctx, cancel := opCtx()
+	defer cancel()
+	s.stopHeartbeatLocked()
+	s.removeLeaseLocked(ctx)
+	s.detached = true
+	return nil
+}
+
+// TerminateByRequestID 按持久化 requestID 结算（T6b 轮询器入口）。
+// 转发给引擎：没有进程内 Session 时账本是唯一权威。
+func (s *Session) TerminateByRequestID(requestID string, fact contract.UsageFact) error {
+	return s.engine.TerminateByRequestID(requestID, fact)
+}
+
+// RefundByRequestID 按持久化 requestID 全额退款（T6b 失败/超时入口）。
+func (s *Session) RefundByRequestID(requestID string) error {
+	return s.engine.RefundByRequestID(requestID)
 }
 
 // NeedsRefund 判断调用方是否应走退款路径。

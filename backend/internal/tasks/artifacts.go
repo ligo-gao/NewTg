@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"fmt"
 	"strings"
 
 	"newtg/gateway/internal/plugin"
@@ -32,31 +31,42 @@ func ProjectArtifacts(data map[string]any) []ArtifactView {
 		if !ok {
 			continue
 		}
-		key := toString(obj["key"])
-		if key == "" {
-			key = toString(obj["id"])
-		}
-		if key == "" {
-			key = fmt.Sprintf("artifact_%d", i)
-		}
-		if _, dup := seen[key]; dup {
+		view, ok := projectArtifactItem(i, obj)
+		if !ok {
 			continue
 		}
-		seen[key] = struct{}{}
-		kind := toString(obj["type"])
-		if kind == "" {
-			kind = toString(obj["kind"])
+		if _, dup := seen[view.Key]; dup {
+			continue
 		}
-		if kind == "" {
-			kind = "file"
-		}
-		mime := toString(obj["mimeType"])
-		if mime == "" {
-			mime = toString(obj["mime_type"])
-		}
-		out = append(out, ArtifactView{Key: key, Type: kind, MIMEType: mime})
+		seen[view.Key] = struct{}{}
+		out = append(out, view)
 	}
 	return out
+}
+
+// projectArtifactItem 读取单项产物；缺 key 或 type 时返回 ok=false。
+//
+// 设计把产物 key 定为任务内稳定标识，content 端点靠它定位。猜一个
+// `artifact_<i>` 或默认 `file` 会把「插件写错字段」伪装成合法产物，
+// 用户点开只会得到错误内容；因此宁可跳过并在类型上留下空洞。
+// （诊断由调用方按 items 数量与 task.data 对比发现，T6b 补结构化诊断。）
+func projectArtifactItem(_ int, obj map[string]any) (ArtifactView, bool) {
+	key := toString(obj["key"])
+	if key == "" {
+		key = toString(obj["id"])
+	}
+	kind := toString(obj["type"])
+	if kind == "" {
+		kind = toString(obj["kind"])
+	}
+	if key == "" || kind == "" {
+		return ArtifactView{}, false
+	}
+	mime := toString(obj["mimeType"])
+	if mime == "" {
+		mime = toString(obj["mime_type"])
+	}
+	return ArtifactView{Key: key, Type: kind, MIMEType: mime}, true
 }
 
 // DeclaredUsageFields 返回插件 usageSchema 声明的字段名集合。

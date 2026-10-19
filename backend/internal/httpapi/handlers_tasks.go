@@ -17,12 +17,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
@@ -259,15 +261,29 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		session = billingseam.NewStub()
 	}
 	if err := session.PreConsume(*estimate); err != nil {
-		writeRelayError(w, http.StatusPaymentRequired, requestID, "insufficient_quota",
-			"insufficient quota for this task")
+		// M1：定价键缺失/表达式错误不是余额不足。只有计费引擎明确判定额度
+		// 不足才映射 402；其余价格/配置错误映射 400 model_price_error，避免
+		// 客户端把「管理员没配价」误读成「充值就能用」。
+		if errors.Is(err, billing.ErrInsufficientQuota) {
+			writeRelayError(w, http.StatusPaymentRequired, requestID, "insufficient_quota",
+				"insufficient quota for this task")
+			return
+		}
+		writeRelayError(w, http.StatusBadRequest, requestID, "model_price_error",
+			"task pricing is not available for the requested model")
 		return
 	}
 	committed := false
+	// settled 表示资金已按本请求的终态收敛（退款或结算成功）。它只用于
+	// defer 的「是否还需要退款」，与任务的 state 不是同一概念。
+	settled := false
 	defer func() {
-		if !committed {
+		if !committed && !settled {
 			// 预扣成功后的任何失败都必须全额退款；Refund 幂等（契约 §6.1）。
-			_ = session.Refund()
+			if err := session.Refund(); err != nil {
+				slog.Warn("tasks: refund after failed submit did not complete",
+					"request_id", rc.RequestID, "error", err)
+			}
 		}
 	}()
 
@@ -284,7 +300,7 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// 提交失败不落任务行（brief 步骤 8 的冻结选择）：没有 upstream_task_id
 		// 的行既不能轮询也不能结算，只会成为孤儿。失败事实由 usage_logs 与
-		// 退款流水承载（T6b）。
+		// 退款流水承载。
 		writeRelayError(w, http.StatusBadGateway, requestID, "upstream_error",
 			"task submission failed upstream")
 		return
@@ -297,21 +313,62 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 双屏障的「向上差额预留」（brief 步骤 5）：当前没有已定价的目标额度，
-	// 预留增量为 0（幂等 no-op），持久化的 quota 就是本次预扣量。带定价的
-	// 差额上浮与落库后的单次 Terminate 归 T6b（已登记）。
-	_ = session.Reserve(0)
+	// 双屏障的「向上差额预留」：当前没有已定价的目标额度，预留增量为 0
+	//（幂等 no-op），持久化的 quota 就是本次预扣量。带定价的差额上浮归
+	// T6b；**错误不能吞**：非零预留适配后这里的失败必须可见（M4）。
+	if err := session.Reserve(0); err != nil {
+		slog.Warn("tasks: reserve after submit failed", "request_id", rc.RequestID, "error", err)
+		writeRelayError(w, http.StatusInternalServerError, requestID, "billing_error",
+			"failed to reserve quota for the task")
+		return
+	}
 	quota := session.Reserved()
 
+	// 即时终态的资金收敛（HIGH-2）：
+	//   - FAILURE：设计 §9.5「即时失败 settle 为 0」→ 全额退款，quota 落 0；
+	//   - SUCCESS 且已有 usage：立即 Terminate 结算；
+	//   - SUCCESS 无 usage：差额不可信，保留预扣，由 T6b 终态结算。
+	refundPending := false
+	settlementPending := false
+	switch {
+	case result.State == tasks.StateFailure:
+		if err := session.Refund(); err != nil {
+			// 退款失败不能伪装成已退：持久化 refund_pending 供补偿扫描发现
+			//（M3），并保留预扣金额，避免账实不符。
+			refundPending = true
+			slog.Warn("tasks: refund for immediate failure did not complete",
+				"request_id", rc.RequestID, "error", err)
+		} else {
+			settled = true
+			quota = 0
+		}
+	case result.State == tasks.StateSuccess && hasTaskUsage(result.Data):
+		if err := session.Terminate(contract.UsageFact{
+			Model: model,
+			Usage: contract.Usage{Source: contract.UsageEstimated},
+		}); err != nil {
+			settlementPending = true
+			slog.Warn("tasks: terminate for immediate success did not complete",
+				"request_id", rc.RequestID, "error", err)
+		} else {
+			settled = true
+		}
+	}
+
 	now := time.Now().UTC()
+	fetchMode := "poll"
+	if result.Immediate {
+		// 即时终态不再需要轮询取回；fetch_mode 记录事实而不是默认值（LOW）。
+		fetchMode = "inline"
+	}
 	task := &tasks.Task{
 		PublicTaskID:     publicID,
 		UpstreamTaskID:   result.UpstreamTaskID,
 		Family:           "plugin",
 		Action:           action,
 		PluginKey:        key,
-		PluginGeneration: int64(snapshot.Generation()),
-		FetchMode:        "poll",
+		PluginGeneration: tasks.PluginGeneration(compiled),
+		FetchMode:        fetchMode,
 		LockedChannelID:  0,
 		OriginTaskIDs:    []string{},
 		State:            result.State,
@@ -329,22 +386,32 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			"Input":             body,
 		},
 		PrivateData: map[string]any{
-			// 凭据无关的执行溯源 + 资金来源；凭据/明文 key 绝不进入此列。
-			"BillingSource": "wallet",
-			"Plugin": map[string]any{
-				"Key":        key,
-				"Version":    entry.Version,
-				"Generation": snapshot.Generation(),
+			// 执行溯源（设计 §7）+ 资金来源。request_id 是 T6b 在进程外
+			// 结算/退款的唯一锚点；凭据/明文 key 绝不进入此列。
+			"request_id":     rc.RequestID,
+			"request_path":   rc.RequestPath,
+			"billing_source": "wallet",
+			"plugin": map[string]any{
+				"key":         key,
+				"name":        compiled.Manifest().Name,
+				"version":     entry.Version,
+				"api_version": compiled.Manifest().APIVersion,
+				"generation":  tasks.PluginGeneration(compiled),
 			},
 		},
 		Data: result.Data,
 	}
 	if principal.TokenID != nil {
-		task.PrivateData["TokenID"] = *principal.TokenID
+		task.PrivateData["token_id"] = *principal.TokenID
+	}
+	if refundPending {
+		task.PrivateData["refund_pending"] = true
+	}
+	if settlementPending {
+		task.PrivateData["settlement_pending"] = true
 	}
 	if result.Immediate {
-		// 即时终态：不再轮询。终态结算归 T6b；此处只定格终态与完成时间，
-		// 且不调用 Terminate（提交阶段终结会提前吞掉后续结算空间）。
+		// 即时终态：不再轮询，定格完成时间。
 		task.FinishTime = &now
 	}
 
@@ -354,6 +421,21 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
+
+	// 异步交接（HIGH-1）：任务行落库成功后，凡仍有预扣 hold 的路径都必须
+	// 停止心跳并移除在飞租约，否则 goroutine 泄漏、worker 永远看不到悬挂，
+	// 重启后还会被 RecoverAbandoned 当成废弃请求全额退款（免费服务）。
+	// 已 refund/terminate 的路径没有 hold，无需交接。
+	if !settled {
+		if handoff, ok := session.(contract.BillingHandoff); ok {
+			if err := handoff.Detach(rc.RequestID); err != nil {
+				// 任务行已落库，无法回滚；心跳未停会让 worker 延迟兜底（安全方向）。
+				// 记录告警供运维发现，任务行本身仍有 request_id 可人工收敛。
+				slog.Warn("tasks: billing detach failed after task insert",
+					"request_id", rc.RequestID, "error", err)
+			}
+		}
+	}
 
 	writeJSON(w, http.StatusAccepted, taskSubmitResponse{
 		PublicTaskID:   task.PublicTaskID,
@@ -546,6 +628,15 @@ func upstreamModelName(ch *tasks.ChannelTarget, model string) string {
 		}
 	}
 	return model
+}
+
+// hasTaskUsage 报告提交结果里是否已有可用量事实。
+//
+// 只有「即时 SUCCESS 且带 usage」才可安全地立即 Terminate；否则差额不可信，
+// 保留预扣交给 T6b（设计 §9.4 的保守分支）。
+func hasTaskUsage(data map[string]any) bool {
+	usage, ok := data["usage"].(map[string]any)
+	return ok && len(usage) > 0
 }
 
 // taskDurationSeconds 读取请求体里的 seconds（任务时长）。
