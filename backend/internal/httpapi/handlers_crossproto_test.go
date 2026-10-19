@@ -703,3 +703,73 @@ func TestDeferredSettlementRefundsBeforeCommit(t *testing.T) {
 		t.Fatalf("abort 后 commit 不得结算，terminate=%d", billing.terminateCount())
 	}
 }
+
+// N1：routeDeps 把 PinChannelID 写到所有候选上，不能据此把每个候选都当 pin。
+// pin #2 与目标协议匹配时，前面的非匹配兄弟候选只应被过滤，请求必须成功。
+func TestCrossProtoPinnedChannelMatchingProtocol(t *testing.T) {
+	rec, upstream := newRecordedUpstream()
+	defer upstream.Close()
+	sealer := NewSecretSealer(relaySealerMaster)
+	// #1 Anthropic，非匹配兄弟；#2 OpenAI，pin 目标。
+	channels := crossProtoChannels(t, sealer, upstream.URL,
+		contract.ChannelTypeAnthropic, contract.ChannelTypeOpenAI)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+	env.handler.tokens = newFakeRelayTokenStore("sk-pintest", &auth.TokenMeta{
+		ID:             9,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		UnlimitedQuota: true,
+	})
+	env.handler.access = &fakeRelayAccess{role: "admin", status: "enabled"}
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody,
+		map[string]string{
+			"Authorization":    "Bearer sk-pintest-2",
+			"x-newtg-protocol": "openai",
+			"Content-Type":     "application/json",
+		})
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（pin 渠道与目标协议匹配，body=%s）", w.Code, w.Body.String())
+	}
+	calls, path, _, _, _ := rec.snapshot()
+	if calls != 1 || !strings.Contains(path, "/chat/completions") {
+		t.Fatalf("上游调用 = calls:%d path:%q，期望命中 pin #2 的 OpenAI 路径", calls, path)
+	}
+}
+
+// N1（陈旧兄弟候选）：pin 匹配渠道前面有 Get 失败的候选时，非 pin 的陈旧
+// 候选应被跳过，请求仍由 pin 渠道成功服务（而不是 502/calls=0）。
+func TestCrossProtoPinnedChannelWithStaleSibling(t *testing.T) {
+	rec, upstream := newRecordedUpstream()
+	defer upstream.Close()
+	sealer := NewSecretSealer(relaySealerMaster)
+	channels := crossProtoChannels(t, sealer, upstream.URL,
+		contract.ChannelTypeAnthropic, contract.ChannelTypeOpenAI)
+	// 最前面放一个不存在的渠道 ID（fake store 返回 ErrChannelNotFound）。
+	channels.candidates = append([]contract.ChannelCandidate{{
+		ChannelID: 99,
+		Priority:  10,
+		Weight:    1,
+	}}, channels.candidates...)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+	env.handler.tokens = newFakeRelayTokenStore("sk-pintest", &auth.TokenMeta{
+		ID:             9,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		UnlimitedQuota: true,
+	})
+	env.handler.access = &fakeRelayAccess{role: "admin", status: "enabled"}
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody,
+		map[string]string{
+			"Authorization":    "Bearer sk-pintest-2",
+			"x-newtg-protocol": "openai",
+			"Content-Type":     "application/json",
+		})
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（陈旧兄弟候选应被跳过，body=%s）", w.Code, w.Body.String())
+	}
+	if calls, _, _, _, _ := rec.snapshot(); calls != 1 {
+		t.Fatalf("上游调用次数 = %d，期望 1（pin 渠道服务）", calls)
+	}
+}

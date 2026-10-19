@@ -541,11 +541,11 @@ func filterCandidatesByProtocol(
 	for _, candidate := range candidates {
 		ch, err := channels.Get(ctx, int64(candidate.ChannelID))
 		if err != nil {
-			// F4：非 pin 候选的解析失败（索引陈旧/渠道已删）不应拖垮整个
-			// 请求——与执行层「这一轮不可用就换下一个候选」同口径，跳过
-			// 即可。pin 候选是客户端的显式约束：解析失败必须上抛，否则
-			// 会静默丢掉 pin（后续会以「目标协议无渠道」伪装成 400）。
-			if candidate.Constraints.PinChannelID != 0 {
+			// F4/N1：非 pin 候选的解析失败（索引陈旧/渠道已删）不应拖垮
+			// 整个请求——与执行层「这一轮不可用就换下一个候选」同口径，
+			// 跳过即可。pin 候选是客户端的显式约束：解析失败必须上抛，
+			// 否则会静默丢掉 pin（后续会以「目标协议无渠道」伪装成 400）。
+			if isPinnedCandidate(candidate) {
 				return nil, err
 			}
 			continue
@@ -554,7 +554,7 @@ func filterCandidatesByProtocol(
 			filtered = append(filtered, candidate)
 			continue
 		}
-		if candidate.Constraints.PinChannelID != 0 {
+		if isPinnedCandidate(candidate) {
 			// pin 渠道本身不属于目标协议：这是「目标协议无可用渠道」的
 			// 特例。不能把带 pin 约束的候选集交给执行层——那时 pin 渠道
 			// 已被过滤掉，preferPinned 会报 404 channel_not_found，把
@@ -568,6 +568,18 @@ func filterCandidatesByProtocol(
 		return nil, crossproto.ErrUpstreamProtocolUnsupported
 	}
 	return filtered, nil
+}
+
+// isPinnedCandidate 判定候选是否就是 pin 指向的那一个渠道（N1）。
+//
+// routeDeps 在 pin 路径会把 PinChannelID 写到**所有**候选上（执行层据此
+// 知道「本轮计划带 pin 约束」），因此 `PinChannelID != 0` 对每个候选都成立，
+// 不能用作「这是 pin 候选」的判据。真正的 pin 候选必须同时满足
+// ChannelID == PinChannelID；其余候选只是同批次的普通候选，协议不匹配或
+// 解析失败时应按普通候选处理（过滤/跳过），而不是让整个请求 fail-fast。
+func isPinnedCandidate(candidate contract.ChannelCandidate) bool {
+	pinID := candidate.Constraints.PinChannelID
+	return pinID != 0 && candidate.ChannelID == pinID
 }
 
 // resolveChannel 把 store.Channel 投影为执行层需要的整组渠道字段（relay-01 §7.4）。
