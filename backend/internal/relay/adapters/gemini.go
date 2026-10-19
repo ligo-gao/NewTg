@@ -289,7 +289,13 @@ func geminiStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contract.S
 						}
 						if call, ok := part["functionCall"].(map[string]any); ok {
 							name, _ := call["name"].(string)
-							args, err := json.Marshal(call["args"])
+							// H4：args 缺失时 json.Marshal(nil) 会得到 "null"，
+							// 而非流式路径默认是 {}；两条路径必须同口径。
+							argsValue, ok := call["args"]
+							if !ok || argsValue == nil {
+								argsValue = map[string]any{}
+							}
+							args, err := json.Marshal(argsValue)
 							if err != nil {
 								args = []byte("{}")
 							}

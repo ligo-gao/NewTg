@@ -287,6 +287,11 @@ func openAIUsageFromNative(protocol Protocol, raw []byte) (map[string]any, bool)
 	default:
 		return nil, false
 	}
+	// M5：解析器对「非空但没有已识别用量键」的对象返回 estimated。这类
+	// 对象没有可采信的上游事实，绝不能合成一份全零 usage 让客户端当真。
+	if usage.Source != contract.UsageUpstreamExact {
+		return nil, false
+	}
 
 	// OpenAI 的 prompt_tokens 是**含缓存**的总输入量；Anthropic/Gemini 的
 	// Prompt 不含缓存（契约 §2.3 关系布尔）。客户端看到的 prompt_tokens

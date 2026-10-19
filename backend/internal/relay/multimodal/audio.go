@@ -158,7 +158,13 @@ func SupportsAudioDuration(format string) bool {
 // （mp3 等）必须使用 total，而不是 len(prefix)——否则 1 MiB 的音频会被
 // 按 64 KiB 计算，系统性少计（评审 F1）。
 func AudioDurationWithSize(data []byte, total int64, formatHint string) (float64, bool) {
-	switch strings.ToLower(strings.TrimSpace(formatHint)) {
+	hint := strings.ToLower(strings.TrimSpace(formatHint))
+	if hint == "aac" {
+		// N3：ADTS AAC 的帧头也是 0xFF Fx，且可能带 ID3 标签；在进入 MP3
+		// 分支前直接短路，避免按 MP3 比特率算出虚假时长。
+		return 0, false
+	}
+	switch hint {
 	case "pcm":
 		if total == 0 {
 			return 0, false
@@ -174,7 +180,16 @@ func AudioDurationWithSize(data []byte, total int64, formatHint string) (float64
 	case bytes.HasPrefix(data, []byte("fLaC")):
 		return flacDuration(data)
 	case bytes.HasPrefix(data, []byte("ID3")):
-		return mp3Duration(data, total, id3TagLength(data))
+		start := id3TagLength(data)
+		// ID3 之后仍可能是 ADTS AAC 帧（layer=00）：同样短路。
+		if start+2 <= len(data) && data[start] == 0xFF && (data[start+1]>>1)&0x03 == 0 {
+			return 0, false
+		}
+		return mp3Duration(data, total, start)
+	case len(data) >= 2 && data[0] == 0xFF && (data[1]>>1)&0x03 == 0:
+		// ADTS AAC：layer 位为 00。不能按 MP3 帧头解析（会得到虚假比特率
+		// 与错误时长/计费）；返回不可测，交给每 KB 兜底（F3）。
+		return 0, false
 	case len(data) >= 2 && data[0] == 0xFF && data[1]&0xE0 == 0xE0:
 		return mp3Duration(data, total, 0)
 	case len(data) >= 12 && string(data[4:8]) == "ftyp":

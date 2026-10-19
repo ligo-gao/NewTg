@@ -158,6 +158,15 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 		upstreamModel = req.Model
 	}
 	path := a.plan.path
+	// F4：Gemini 语义路径的模型在 URL 中，必须应用渠道 model_mapping
+	// （与其他路由一致）。
+	geminiModel := a.plan.geminiModel
+	if a.plan.geminiPath && upstreamModel != "" {
+		geminiModel = upstreamModel
+		if !a.plan.geminiEngines {
+			path = replaceGeminiPathModel(path, geminiModel)
+		}
+	}
 	if a.plan.multipart {
 		// F10：multipart 也必须做模型映射（编辑/转写/翻译）。重新编码表单
 		// 时保持原 boundary 与 part 顺序，内容逐字节复制。
@@ -179,13 +188,13 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 		} else if a.plan.geminiEngines {
 			// N2：`/v1/engines/{model}/embeddings` 的入站是 OpenAI 风格
 			// `input`，翻译成 Gemini `content.parts`；多输入 → 批量端点。
-			if translated, batch, ok := openAIInputToGeminiEmbedding(body, a.plan.geminiModel); ok {
+			if translated, batch, ok := openAIInputToGeminiEmbedding(body, geminiModel); ok {
 				body = translated
 				action := ":embedContent"
 				if batch {
 					action = ":batchEmbedContents"
 				}
-				path = "/v1beta/models/" + a.plan.geminiModel + action
+				path = "/v1beta/models/" + geminiModel + action
 			}
 		}
 		if err := validatePayloadForUpstream(a.plan, body); err != nil {
@@ -237,6 +246,21 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 		httpReq.Header.Set("Authorization", "Bearer "+rc.Credential)
 	}
 	return httpReq, nil
+}
+
+// replaceGeminiPathModel 替换 `/v1/models/{model}:action` 或
+// `/v1beta/models/{model}:action` 中的模型名，保留动作后缀。
+func replaceGeminiPathModel(path, model string) string {
+	for _, prefix := range []string{"/v1/models/", "/v1beta/models/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(path, prefix)
+		if index := strings.IndexByte(rest, ':'); index >= 0 {
+			return prefix + model + rest[index:]
+		}
+	}
+	return path
 }
 
 // validatePayloadForUpstream 按端点选择适配器本地校验（F9/CCR-9）。

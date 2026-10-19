@@ -235,14 +235,46 @@ func TestImageJSONConvertedToSSE(t *testing.T) {
 	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// 拆分形（url 条目 + b64 条目）同一张图只计一次（§8.1.1 max）。
-		_, _ = w.Write([]byte(`{"data":[{"url":"a"},{"revised_prompt":"skip"},{"b64_json":"b"}]}`))
+		_, _ = w.Write([]byte(`{"created":123,"usage":{"total_tokens":7},"data":[{"url":"a"},{"revised_prompt":"skip"},{"b64_json":"b"}]}`))
 	})
 	recorder := httptest.NewRecorder()
 	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p","n":3,"stream":true}`), "application/json", recorder)
 
 	body := recorder.Body.String()
-	if got := strings.Count(body, `"type":"image_generation.completed"`); got != 1 {
-		t.Fatalf("completed events = %d, want 1 (split form counts once); body=%s", got, body)
+	events := strings.Split(body, "\n\n")
+	var completed map[string]any
+	for _, frame := range events {
+		payload := strings.TrimPrefix(strings.TrimSpace(frame), "data: ")
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			t.Fatalf("invalid event %q: %v", payload, err)
+		}
+		if event["type"] == "image_generation.completed" {
+			if completed != nil {
+				t.Fatalf("split form must emit exactly one completed event: %s", body)
+			}
+			completed = event
+		}
+	}
+	if completed == nil {
+		t.Fatalf("missing completed event; body=%s", body)
+	}
+	// F1：字段必须平铺在顶层（url/created_at/usage），不能塞进 data。
+	if completed["url"] != "a" {
+		t.Fatalf("completed event url = %#v, want top-level \"a\" (flattened)", completed["url"])
+	}
+	if _, nested := completed["data"]; nested {
+		t.Fatalf("completed event must not nest payload under data: %#v", completed)
+	}
+	if completed["created_at"] != float64(123) {
+		t.Fatalf("created_at = %#v, want 123", completed["created_at"])
+	}
+	usage, _ := completed["usage"].(map[string]any)
+	if usage["total_tokens"] != float64(7) {
+		t.Fatalf("event usage = %#v, want total_tokens=7", completed["usage"])
 	}
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("missing [DONE]; body=%s", body)
@@ -500,6 +532,49 @@ func TestRealtimeDialUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	paths := make(chan string, 2)
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			buffer := make([]byte, 8192)
+			n, _ := conn.Read(buffer)
+			request := string(buffer[:n])
+			lines := strings.Split(request, "\r\n")
+			paths <- strings.TrimSpace(strings.Fields(lines[0])[1])
+			key := ""
+			for _, line := range lines {
+				if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
+					key = strings.TrimSpace(line[len("sec-websocket-key:"):])
+				}
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + websocketAccept(key) + "\r\n\r\n"))
+			_ = conn.Close()
+		}
+	}()
+
+	for _, baseSuffix := range []string{"", "/v1"} {
+		adapter := &endpointAdapter{channelType: contract.ChannelTypeOpenAI, defaultBase: "http://" + listener.Addr().String() + baseSuffix, plan: &RequestPlan{endpoint: contract.EndpointRealtime}}
+		conn, err := adapter.DialUpstream(&contract.RelayContext{Credential: "k"})
+		if err != nil {
+			t.Fatalf("DialUpstream(base%s): %v", baseSuffix, err)
+		}
+		_ = conn.Close()
+		if got := <-paths; got != "/v1/realtime" {
+			t.Fatalf("base%s handshake path = %q, want /v1/realtime (F6 version dedupe)", baseSuffix, got)
+		}
+	}
+}
+
+// TestRealtimeDialUpstreamRejectsBadAccept：101 但 Accept 错误必须失败。
+func TestRealtimeDialUpstreamRejectsBadAccept(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -508,15 +583,12 @@ func TestRealtimeDialUpstream(t *testing.T) {
 		defer conn.Close()
 		buffer := make([]byte, 4096)
 		_, _ = conn.Read(buffer)
-		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
-		time.Sleep(50 * time.Millisecond)
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: wrong\r\n\r\n"))
 	}()
 	adapter := &endpointAdapter{channelType: contract.ChannelTypeOpenAI, defaultBase: "http://" + listener.Addr().String(), plan: &RequestPlan{endpoint: contract.EndpointRealtime}}
-	conn, err := adapter.DialUpstream(&contract.RelayContext{Credential: "k"})
-	if err != nil {
-		t.Fatalf("DialUpstream: %v", err)
+	if _, err := adapter.DialUpstream(&contract.RelayContext{Credential: "k"}); err == nil {
+		t.Fatal("DialUpstream accepted a bad Sec-WebSocket-Accept")
 	}
-	_ = conn.Close()
 }
 
 func TestRealtimeRejectsNonUpgrade(t *testing.T) {
@@ -1155,5 +1227,265 @@ func TestParseMultipartLargeField(t *testing.T) {
 	}
 	if len(parsed.fields["parameters"]) != len(parameters) {
 		t.Fatalf("parameters length = %d, want %d (truncated)", len(parsed.fields["parameters"]), len(parameters))
+	}
+}
+
+// ---------- 整分支终审 F1–F9 ----------
+
+// TestEndpointChannelMatrix（F2）：端点×渠道类型白名单必须拒绝 relay-04
+// 中标注为「否」的 OpenAI 兼容类型（deepseek/mistral 等），并放行「是」组。
+func TestEndpointChannelMatrix(t *testing.T) {
+	type testCase struct {
+		name     string
+		channel  contract.ChannelType
+		endpoint contract.Endpoint
+		body     func() ([]byte, string)
+		support  bool
+	}
+	jsonBody := func(raw string) func() ([]byte, string) {
+		return func() ([]byte, string) { return []byte(raw), "application/json" }
+	}
+	cases := []testCase{
+		{"embeddings-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), false},
+		{"embeddings-mistral-no", contract.ChannelTypeMistral, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), false},
+		{"embeddings-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
+		{"embeddings-ali-yes", contract.ChannelTypeAli, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
+		{"embeddings-siliconflow-yes", contract.ChannelTypeSiliconFlow, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
+		{"rerank-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), false},
+		{"rerank-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
+		{"rerank-xinference-yes", contract.ChannelTypeXinference, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
+		{"image-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointImageGenerate, jsonBody(`{"model":"m","prompt":"p"}`), false},
+		{"image-xai-yes", contract.ChannelTypeXai, contract.EndpointImageGenerate, jsonBody(`{"model":"m","prompt":"p"}`), true},
+		{"speech-volcengine-yes", contract.ChannelTypeVolcEngine, contract.EndpointAudioSpeech, jsonBody(`{"model":"m","input":"x"}`), true},
+		{"speech-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointAudioSpeech, jsonBody(`{"model":"m","input":"x"}`), false},
+		{"transcribe-volcengine-no", contract.ChannelTypeVolcEngine, contract.EndpointAudioTranscribe, func() ([]byte, string) {
+			ct, body := multipartFixture(t, "file", "a.mp3", append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), bytes.Repeat([]byte("a"), 32)...), map[string]string{"model": "m"})
+			return body, ct
+		}, false},
+		{"transcribe-siliconflow-yes", contract.ChannelTypeSiliconFlow, contract.EndpointAudioTranscribe, func() ([]byte, string) {
+			ct, body := multipartFixture(t, "file", "a.mp3", append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), bytes.Repeat([]byte("a"), 32)...), map[string]string{"model": "m"})
+			return body, ct
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			env := newTestEnv(t, tc.channel, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				_, _ = w.Write([]byte(`{"data":[{"url":"a"}]}`))
+			})
+			body, ct := tc.body()
+			recorder := httptest.NewRecorder()
+			env.handle(t, tc.endpoint, body, ct, recorder)
+			_, refunds, facts, _ := env.billing.snapshot()
+			if tc.support {
+				if calls != 1 || len(facts) != 1 || refunds != 0 {
+					t.Fatalf("supported: calls=%d facts=%d refunds=%d, want 1/1/0", calls, len(facts), refunds)
+				}
+			} else {
+				if calls != 0 || len(facts) != 0 || refunds != 1 {
+					t.Fatalf("unsupported: calls=%d facts=%d refunds=%d, want 0/0/1", calls, len(facts), refunds)
+				}
+			}
+		})
+	}
+}
+
+// TestAACNotParsedAsMP3（F3）：ADTS AAC 帧头（layer=00）不得按 MP3 解析。
+func TestAACNotParsedAsMP3(t *testing.T) {
+	aac := []byte{0xFF, 0xF1, 0x50, 0x80, 0x00, 0x1F, 0xFC}
+	aac = append(aac, bytes.Repeat([]byte{0}, 100)...)
+	if seconds, ok := AudioDuration(aac, "aac"); ok {
+		t.Fatalf("AAC parsed as %v seconds, want ok=false (fallback path)", seconds)
+	}
+}
+
+// TestGeminiModelMapping（F4）：Gemini 语义路径上的模型必须应用渠道映射。
+func TestGeminiModelMapping(t *testing.T) {
+	var seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"embedding":{"values":[0.1]}}`))
+	}))
+	defer server.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeGemini, APIBase: server.URL, Credential: "g", UpstreamModel: "upstream-embed"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   server.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"content":{"parts":[{"text":"hi"}]}}`)
+	path := "/v1beta/models/client-embed:embedContent"
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "map", OriginModel: "client-embed", RequestPath: path, Request: &contract.Request{Model: "client-embed", Raw: body}}
+	dispatcher.Handle(httptest.NewRecorder(), request, rc, contract.EndpointEmbeddings)
+	if seenPath != "/v1beta/models/upstream-embed:embedContent" {
+		t.Fatalf("upstream path = %q, want mapped model", seenPath)
+	}
+}
+
+// TestImageNIntegralFloat（F5）：入口接受的 `n:2.0` 不得在分派阶段 400。
+func TestImageNIntegralFloat(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"url":"a"},{"url":"b"}]}`))
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p","n":2.0}`), "application/json", recorder)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	_, _, facts, estimates := env.billing.snapshot()
+	if len(estimates) != 1 || estimates[0].ImageCount != 2 {
+		t.Fatalf("estimate = %+v, want ImageCount=2", estimates)
+	}
+	if len(facts) != 1 || facts[0].ImageCount != 2 {
+		t.Fatalf("fact = %+v, want ImageCount=2", facts)
+	}
+}
+
+// TestImageTokenFloor（F9）：上游零 token 的图像 usage 需置 1。
+func TestImageTokenFloor(t *testing.T) {
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"url":"a"}]}`))
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointImageGenerate, []byte(`{"model":"m","prompt":"p"}`), "application/json", recorder)
+	_, _, facts, _ := env.billing.snapshot()
+	if len(facts) != 1 {
+		t.Fatalf("Terminate calls = %d", len(facts))
+	}
+	if facts[0].Usage.Prompt != 1 || facts[0].Usage.Total != 1 {
+		t.Fatalf("usage = %+v, want Prompt=Total=1 (token floor)", facts[0].Usage)
+	}
+}
+
+// TestStreamInactivityWatchdog（F7）：上游停滞时看门狗必须关闭连接并退款，
+// 不得无限挂起。
+func TestStreamInactivityWatchdog(t *testing.T) {
+	stalled := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stalled:
+		}
+	}))
+	defer upstream.Close()
+	defer close(stalled)
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeOpenAI, APIBase: upstream.URL, Credential: "k"}, nil
+		},
+		Dispatch:                adapters.Dispatch,
+		Billing:                 func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:                  upstream.Client(),
+		StreamInactivityTimeout: 50 * time.Millisecond,
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"model":"tts","input":"hi"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "watch", OriginModel: "tts", Request: &contract.Request{Model: "tts", Raw: body}}
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		dispatcher.Handle(httptest.NewRecorder(), request, rc, contract.EndpointAudioSpeech)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled upstream was not interrupted by the inactivity watchdog")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("watchdog took %v, want ~50ms", elapsed)
+	}
+	_, refunds, facts, _ := billing.snapshot()
+	if refunds != 1 || len(facts) != 0 {
+		t.Fatalf("refunds=%d facts=%d, want refund once", refunds, len(facts))
+	}
+}
+
+// TestRealtimeHandleReachesP0_501（N1）：可解析的升级请求必须穿过支持矩阵、
+// 完成上游握手，然后返回明确的 501（桥接未实现），而不是在握手前 400。
+func TestRealtimeHandleReachesP0_501(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buffer := make([]byte, 8192)
+		n, _ := conn.Read(buffer)
+		key := ""
+		for _, line := range strings.Split(string(buffer[:n]), "\r\n") {
+			if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
+				key = strings.TrimSpace(line[len("sec-websocket-key:"):])
+			}
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + websocketAccept(key) + "\r\n\r\n"))
+	}()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeOpenAI, APIBase: "http://" + listener.Addr().String(), Credential: "k"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   http.DefaultClient,
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	rc := &contract.RelayContext{RequestID: "rt", OriginModel: "rt-model", Request: &contract.Request{Model: "rt-model"}}
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, rc, contract.EndpointRealtime)
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 after successful handshake; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not_implemented") {
+		t.Fatalf("body = %s, want not_implemented", recorder.Body.String())
+	}
+}
+
+// TestID3PrefixedAAC（N3）：带 ID3 标签的 ADTS AAC 同样不得按 MP3 解析。
+func TestID3PrefixedAAC(t *testing.T) {
+	aac := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x80)
+	aac = append(aac, bytes.Repeat([]byte{0}, 200)...)
+	for _, hint := range []string{"", "aac"} {
+		if seconds, ok := AudioDurationWithSize(aac, int64(len(aac)), hint); ok {
+			t.Fatalf("hint %q: ID3-prefixed AAC parsed as %v seconds, want ok=false", hint, seconds)
+		}
 	}
 }

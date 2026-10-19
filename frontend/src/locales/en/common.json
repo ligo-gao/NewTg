@@ -324,7 +324,7 @@
     "typeGroup": {
       "openai": "OpenAI compatible",
       "anthropic": "Anthropic native (incl. Moonshot)",
-      "gemini": "Gemini native",
+      "gemini": "Gemini native (incl. Vertex)",
       "palm": "Google PaLM legacy",
       "proprietary": "Proprietary protocols",
       "task": "Task platforms",
@@ -347,18 +347,18 @@
       },
       "vertex_ai": {
         "label": "Vertex AI (Gemini/Claude native)",
-        "description": "Vertex AI serves Gemini and Claude models natively through a Vertex-specific adapter; it currently does not take part in cross-protocol forwarding."
+        "description": "Vertex AI uses its own adapter key and is grouped with Gemini here; its adapter is not implemented in this release, and it does not take part in cross-protocol forwarding."
       }
     },
     "crossProtocol": {
       "title": "Cross-protocol forwarding",
-      "intro": "Add the {header}: {values} header to POST /v1/chat/completions to choose the upstream protocol, regardless of the channel's own protocol.",
+      "intro": "Add the {header}: {values} header to POST /v1/chat/completions to choose which upstream protocol family the request must be routed to.",
       "selectionRules": "The header only selects among channels that support the requested protocol family, and only for native adapters that are implemented (Vertex is not one). If no candidate supports it, or a pinned channel does not match, the request fails with 400. An empty header value is ignored.",
       "headerLabel": "Request header",
       "switchLabel": "Switch (site settings)",
       "statusLabel": "Switch status",
       "status": {
-        "unknown": "Not shown here — this switch lives in site settings, which are not yet available in this release.",
+        "unknown": "Not available in this release.",
         "off": "Off — cross-protocol forwarding is disabled.",
         "on": "On — requests that carry the header are forwarded to the selected upstream protocol."
       },

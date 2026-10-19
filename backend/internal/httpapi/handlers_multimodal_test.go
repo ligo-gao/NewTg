@@ -688,7 +688,7 @@ func TestRelayNativeStreamFinishReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			usageEvent := &contract.Usage{Prompt: 5, Completion: 2, Source: contract.UsageUpstreamExact}
+			usageEvent := &contract.Usage{Prompt: 5, Completion: 2, CacheRead: 3, Total: 10, Source: contract.UsageUpstreamExact}
 			adapter := &scriptedStreamAdapter{events: []contract.StreamEvent{
 				{Kind: contract.EventUsage, Usage: usageEvent},
 				{Kind: contract.EventFinish, Raw: []byte(tc.raw)},
@@ -710,6 +710,19 @@ func TestRelayNativeStreamFinishReason(t *testing.T) {
 			fact := env.billing.lastFact()
 			if fact.Usage.Prompt != 5 || fact.Usage.Completion != 2 {
 				t.Fatalf("stream usage = %+v, want prompt=5 completion=2", fact.Usage)
+			}
+			// H2：客户端可见的 include_usage 末块必须是 OpenAI 语义——
+			// 原生 input(5) 不含缓存(3)，故 prompt_tokens=8，且
+			// cached_tokens(3) 不得大于 prompt_tokens。
+			body := resp.Body.String()
+			if !strings.Contains(body, `"prompt_tokens":8`) {
+				t.Fatalf("usage chunk did not add cache to prompt_tokens; body=%s", body)
+			}
+			if !strings.Contains(body, `"cached_tokens":3`) {
+				t.Fatalf("usage chunk missing cached_tokens; body=%s", body)
+			}
+			if !strings.Contains(body, `"total_tokens":10`) {
+				t.Fatalf("usage chunk total_tokens should be >= prompt+completion; body=%s", body)
 			}
 		})
 	}

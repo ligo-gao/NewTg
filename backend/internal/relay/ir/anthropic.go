@@ -898,6 +898,7 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 
 	message := contract.Message{Role: contract.RoleAssistant}
 	var unmapped []any
+	unparseable := 0
 	for i, raw := range payload.Content {
 		part, err := parseAnthropicBlock(raw)
 		if err != nil {
@@ -914,6 +915,9 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 			var opaque any
 			if json.Unmarshal(raw, &opaque) == nil {
 				unmapped = append(unmapped, opaque)
+			} else {
+				// 诊断标记：极端情况下无法原样保留时，让审计侧可见。
+				unparseable++
 			}
 			continue
 		}
@@ -924,6 +928,12 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 			message.Extensions = map[string]any{}
 		}
 		message.Extensions["unmapped_blocks"] = unmapped
+	}
+	if unparseable > 0 {
+		if message.Extensions == nil {
+			message.Extensions = map[string]any{}
+		}
+		message.Extensions["unmapped_blocks_unparseable"] = unparseable
 	}
 	finishReason := normalizeAnthropicStopReason(payload.StopReason)
 	if payload.StopReason != "" {
@@ -982,6 +992,12 @@ func ParseAnthropicUsage(raw json.RawMessage) contract.Usage {
 		// 空对象 / 非法形状没有任何上游事实，不谎报 upstream_exact。
 		return base
 	}
+	// M5：非空但没有任何 Anthropic 用量键的对象（如 {"foo":1}）不是上游
+	// 用量事实；若标成 upstream_exact，跨协议层会据此合成一份全零 usage。
+	if !hasAnyMapKey(rawMap, "input_tokens", "output_tokens",
+		"cache_creation_input_tokens", "cache_read_input_tokens", "cache_creation") {
+		return base
+	}
 
 	cacheWrite := payload.CacheCreationInputTokens
 	if cacheWrite == 0 {
@@ -1007,6 +1023,18 @@ func ParseAnthropicUsage(raw json.RawMessage) contract.Usage {
 	}
 	usage.CompletionDetail = contract.UsageDetail{Text: usage.Completion}
 	return usage
+}
+
+// hasAnyMapKey 判断 map 是否至少含一个给定键且取值为非 null。
+// null 键不算「已识别」：与 T3 的 claudeUsageKeysPresent 同口径——
+// `{"input_tokens":null}` 没有携带任何上游事实，不能标记 upstream_exact。
+func hasAnyMapKey(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // cacheCreationSum 对 cache_creation 子字段求和（非数值键忽略）。

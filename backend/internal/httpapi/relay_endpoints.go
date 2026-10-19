@@ -1636,10 +1636,25 @@ func marshalRelayDeltaChunk(id string, created int64, fallbackModel string, ev c
 
 // marshalRelayUsageChunk 编码 include_usage 末块：choices 为空数组、只带 usage。
 func marshalRelayUsageChunk(id string, created int64, model string, u contract.Usage) ([]byte, error) {
+	// H2：OpenAI 的 prompt_tokens 语义**包含**缓存读/写；原生渠道
+	// （Claude/Gemini）的 input_tokens/promptTokenCount 不含缓存（
+	// PromptIncludesCache=false）。客户端收到的 include_usage 末块必须是
+	// OpenAI 语义，否则会出现 cached_tokens > prompt_tokens 的自相矛盾
+	// （客户端/监控据此误判）。非流式路径已在 crossproto 做同样归一。
+	promptTokens := u.Prompt
+	if !u.PromptIncludesCache {
+		promptTokens += u.CacheRead + u.CacheWrite
+	}
+	totalTokens := u.Total
+	if totalTokens < promptTokens+u.Completion {
+		// Total 是日志维度；至少覆盖 prompt+completion，避免上游只给
+		// 部分维度时出现 total < prompt 的异常值。
+		totalTokens = promptTokens + u.Completion
+	}
 	usagePayload := &openAIChunkUsage{
-		PromptTokens:     u.Prompt,
+		PromptTokens:     promptTokens,
 		CompletionTokens: u.Completion,
-		TotalTokens:      u.Total,
+		TotalTokens:      totalTokens,
 	}
 	if u.CacheRead != 0 || u.CacheWrite != 0 {
 		usagePayload.PromptTokensDetails = &openAIPromptTokenDetails{
