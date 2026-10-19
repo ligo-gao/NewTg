@@ -56,6 +56,9 @@ const DICTIONARY_LOADERS = {
     account: () => import('@/locales/en/account.json'),
     admin: () => import('@/locales/en/admin.json'),
     logs: () => import('@/locales/en/logs.json'),
+    // M6c FE-08 keeps the settings domain separate from `admin` so the
+    // settings shell only downloads its own dictionary (web-00 §7.2).
+    settings: () => import('@/locales/en/settings.json'),
   },
 } satisfies Record<Locale, Record<string, () => Promise<JsonDictionary>>>
 

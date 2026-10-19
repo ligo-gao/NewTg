@@ -37,6 +37,9 @@ import { Route as ConsoleAdminChannelsIndexRouteImport } from './routes/_console
 import { Route as ConsoleAdminPricingIndexRouteImport } from './routes/_console/admin/pricing/index'
 import { Route as ConsoleAdminPricingGroupPricingRouteImport } from './routes/_console/admin/pricing/group-pricing'
 import { Route as ConsoleAdminPricingModelPricingRouteImport } from './routes/_console/admin/pricing/model-pricing'
+import { Route as ConsoleAdminSettingsIndexRouteImport } from './routes/_console/admin/settings/index'
+import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_console/admin/system/audit-logs'
+import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/admin/system/status'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
 import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
 
@@ -183,6 +186,24 @@ const ConsoleAdminPricingModelPricingRoute =
     path: '/pricing/model-pricing',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSettingsIndexRoute =
+  ConsoleAdminSettingsIndexRouteImport.update({
+    id: '/settings/',
+    path: '/settings/',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
+const ConsoleAdminSystemAuditLogsRoute =
+  ConsoleAdminSystemAuditLogsRouteImport.update({
+    id: '/system/audit-logs',
+    path: '/system/audit-logs',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
+const ConsoleAdminSystemStatusRoute =
+  ConsoleAdminSystemStatusRouteImport.update({
+    id: '/system/status',
+    path: '/system/status',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminUsersIndexRoute = ConsoleAdminUsersIndexRouteImport.update({
   id: '/users/',
   path: '/users/',
@@ -220,9 +241,12 @@ export interface FileRoutesByFullPath {
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
   '/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
+  '/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRoutesByTo {
@@ -250,9 +274,12 @@ export interface FileRoutesByTo {
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/channels': typeof ConsoleAdminChannelsIndexRoute
   '/admin/pricing': typeof ConsoleAdminPricingIndexRoute
+  '/admin/settings': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRoutesById {
@@ -283,9 +310,12 @@ export interface FileRoutesById {
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/_console/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/_console/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/_console/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/_console/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
   '/_console/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
+  '/_console/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
 }
 export interface FileRouteTypes {
@@ -316,9 +346,12 @@ export interface FileRouteTypes {
     | '/dashboard/'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/system/audit-logs'
+    | '/admin/system/status'
     | '/admin/users/groups'
     | '/admin/channels/'
     | '/admin/pricing/'
+    | '/admin/settings/'
     | '/admin/users/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -346,9 +379,12 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/system/audit-logs'
+    | '/admin/system/status'
     | '/admin/users/groups'
     | '/admin/channels'
     | '/admin/pricing'
+    | '/admin/settings'
     | '/admin/users'
   id:
     | '__root__'
@@ -378,9 +414,12 @@ export interface FileRouteTypes {
     | '/_console/dashboard/'
     | '/_console/admin/pricing/group-pricing'
     | '/_console/admin/pricing/model-pricing'
+    | '/_console/admin/system/audit-logs'
+    | '/_console/admin/system/status'
     | '/_console/admin/users/groups'
     | '/_console/admin/channels/'
     | '/_console/admin/pricing/'
+    | '/_console/admin/settings/'
     | '/_console/admin/users/'
   fileRoutesById: FileRoutesById
 }
@@ -599,6 +638,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminPricingModelPricingRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/settings/': {
+      id: '/_console/admin/settings/'
+      path: '/settings'
+      fullPath: '/admin/settings/'
+      preLoaderRoute: typeof ConsoleAdminSettingsIndexRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
+    '/_console/admin/system/audit-logs': {
+      id: '/_console/admin/system/audit-logs'
+      path: '/system/audit-logs'
+      fullPath: '/admin/system/audit-logs'
+      preLoaderRoute: typeof ConsoleAdminSystemAuditLogsRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
+    '/_console/admin/system/status': {
+      id: '/_console/admin/system/status'
+      path: '/system/status'
+      fullPath: '/admin/system/status'
+      preLoaderRoute: typeof ConsoleAdminSystemStatusRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/users/': {
       id: '/_console/admin/users/'
       path: '/users'
@@ -620,9 +680,12 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
+  ConsoleAdminSystemAuditLogsRoute: typeof ConsoleAdminSystemAuditLogsRoute
+  ConsoleAdminSystemStatusRoute: typeof ConsoleAdminSystemStatusRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
   ConsoleAdminChannelsIndexRoute: typeof ConsoleAdminChannelsIndexRoute
   ConsoleAdminPricingIndexRoute: typeof ConsoleAdminPricingIndexRoute
+  ConsoleAdminSettingsIndexRoute: typeof ConsoleAdminSettingsIndexRoute
   ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
 }
 
@@ -630,9 +693,12 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,
+  ConsoleAdminSystemAuditLogsRoute: ConsoleAdminSystemAuditLogsRoute,
+  ConsoleAdminSystemStatusRoute: ConsoleAdminSystemStatusRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
   ConsoleAdminChannelsIndexRoute: ConsoleAdminChannelsIndexRoute,
   ConsoleAdminPricingIndexRoute: ConsoleAdminPricingIndexRoute,
+  ConsoleAdminSettingsIndexRoute: ConsoleAdminSettingsIndexRoute,
   ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
 }
 

@@ -35,6 +35,15 @@ const NAV_ITEMS = [
   { href: '/admin/channels', key: 'common.nav.channels', admin: true },
   { href: '/admin/users', key: 'common.nav.users', admin: true },
   { href: '/admin/users/groups', key: 'common.nav.groups', admin: true },
+  // M6c FE-08: settings shell plus the two system pages that are reachable
+  // from the same admin area. All three inherit the `_console/admin` guard.
+  { href: '/admin/settings', key: 'common.nav.settings', admin: true },
+  { href: '/admin/system/status', key: 'common.nav.system_status', admin: true },
+  {
+    href: '/admin/system/audit-logs',
+    key: 'common.nav.operation_logs',
+    admin: true,
+  },
 ] as const
 
 /**

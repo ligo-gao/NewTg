@@ -1,0 +1,362 @@
+{
+  "shell": {
+    "title": "Settings",
+    "subtitle": "Configure this deployment. Saved sections apply to every instance instantly.",
+    "tabs_label": "Settings sections",
+    "read_only": "You can view these settings but not change them: your account lacks the settings:manage permission.",
+    "unsaved_title": "You have unsaved changes",
+    "unsaved_body": "Leave this tab and discard the unsaved changes?",
+    "unsaved_discard": "Discard and leave",
+    "unsaved_keep": "Keep editing",
+    "leave_prompt": "You have unsaved settings changes.",
+    "conflict_title": "Settings changed elsewhere",
+    "conflict_body": "Settings were modified by someone else. Please refresh to load the current values.",
+    "conflict_refresh": "Refresh",
+    "save": "Save changes",
+    "saving": "Saving…",
+    "discard": "Discard changes",
+    "saved": "{section} saved. All instances updated instantly.",
+    "load_error": "Could not load this section.",
+    "retry": "Retry",
+    "forbidden": "You do not have access to these settings.",
+    "dirty": "Unsaved changes",
+    "danger_title": "Confirm this change",
+    "danger_body": "Some of the changed settings affect live traffic. Save anyway?",
+    "danger_confirm": "Save anyway",
+    "danger_cancel": "Cancel",
+    "secret_configured": "Configured",
+    "secret_not_configured": "Not configured",
+    "secret_clear": "Clear",
+    "secret_placeholder": "••••••••",
+    "secret_show": "Show value",
+    "secret_hide": "Hide value",
+    "secret_hint": "Leave empty to keep the current value. A new value is sent only when you type one.",
+    "secret_clear_confirm": "Clearing this value disables the related feature immediately. Clear it?",
+    "field_required": "This field is required.",
+    "field_url": "Enter an absolute http(s) URL.",
+    "field_too_long": "At most {max} characters.",
+    "field_number_range": "Enter a value between {min} and {max}.",
+    "field_number_min": "Enter a value greater than {min}.",
+    "field_invalid_number": "Enter a valid number.",
+    "field_invalid_list": "Use comma-separated values.",
+    "field_invalid_json": "Enter valid JSON.",
+    "field_invalid": "Invalid value.",
+    "field_locked": "Locked by the server.",
+    "rate_limited": "Too many requests. Please try again later.",
+    "save_forbidden": "You do not have permission to save settings.",
+    "module_dashboard": "Dashboard",
+    "module_tokens": "API tokens",
+    "module_usage_logs": "Usage logs",
+    "module_wallet": "Wallet",
+    "module_profile": "Profile",
+    "module_security": "Security",
+    "module_prompt": "Prompt",
+    "module_system": "System prompt",
+    "module_banner": "Console banner",
+    "module_email": "Email",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "Site",
+    "auth": "Authentication",
+    "billing": "Billing",
+    "payment": "Payments",
+    "security": "Rate limits & security",
+    "notify": "Notifications",
+    "policy": "Request policies"
+  },
+  "tab_description": {
+    "site": "Branding, navigation, and site-wide module switches",
+    "auth": "Registration, sign-in, email verification, and human verification",
+    "billing": "Credits, sign-up grants, and free-model pre-consumption",
+    "payment": "Online payment methods and top-up presets",
+    "security": "Inbound rate limits and outbound SSRF protection",
+    "notify": "SMTP mail delivery",
+    "policy": "How failures are detected and channels are taken out of rotation"
+  },
+  "section": {
+    "site": "Basic information",
+    "nav": "Navigation & modules",
+    "auth": "Registration & sign-in",
+    "auth_turnstile": "Human verification (Turnstile)",
+    "billing": "Credits & pre-consumption",
+    "pay": "Payment overview",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "Alipay",
+    "rl": "Request rate limits",
+    "sec": "SSRF & sensitive words",
+    "notify_smtp": "SMTP",
+    "rl_health": "Channel health"
+  },
+  "section_description": {
+    "site": "Shown on every page and used as the base for callback links",
+    "nav": "Control which public navigation entries and console modules are visible",
+    "auth": "At least one sign-in method must stay enabled",
+    "auth_turnstile": "Protect registration and sign-in with Cloudflare Turnstile",
+    "billing": "Credits are the unit of account; pricing itself lives in Channels & Pricing",
+    "pay": "The master switch and the preset top-up amounts",
+    "pay_stripe": "Card payments through Stripe",
+    "pay_alipay": "Alipay face-to-face payments",
+    "rl": "Independent buckets protect upstream quota; 0 means unlimited",
+    "sec": "Outbound requests are checked before they leave the gateway",
+    "notify_smtp": "Required for email verification and email notifications",
+    "rl_health": "A response can take a channel out of rotation on the first match"
+  },
+  "field": {
+    "site": {
+      "title": "Site title",
+      "logo_url": "Logo URL",
+      "server_address": "Service address",
+      "timezone": "Timezone",
+      "docs_url": "Docs URL",
+      "status_page_url": "Status page URL",
+      "filing_no": "Filing number",
+      "footer_html": "Footer HTML",
+      "about_html": "About HTML",
+      "seo": {
+        "description": "SEO description",
+        "og_image_url": "Open Graph image URL"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "Home",
+        "require_auth": "Home requires sign-in"
+      },
+      "console": {
+        "enabled": "Console",
+        "require_auth": "Console requires sign-in"
+      },
+      "pricing": {
+        "enabled": "Pricing",
+        "require_auth": "Pricing requires sign-in"
+      },
+      "rankings": {
+        "enabled": "Rankings",
+        "require_auth": "Rankings requires sign-in"
+      },
+      "docs": {
+        "enabled": "Docs"
+      },
+      "about": {
+        "enabled": "About"
+      },
+      "modules": {
+        "console": "Console sidebar modules",
+        "chat": {
+          "playground": "Playground",
+          "presets": "Chat presets"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "Allow sign-up",
+      "password_login_enabled": "Allow password sign-in",
+      "mfa": {
+        "admin_required": "Require MFA for administrators",
+        "admin_hardware_required": "Require a passkey for administrators"
+      },
+      "email_verification_required": "Require email verification",
+      "email_domain_restrict_enabled": "Restrict registration email domains",
+      "email_domain_allowlist": "Allowed email domains",
+      "turnstile": {
+        "enabled": "Enable Turnstile",
+        "site_key": "Site key",
+        "secret_key": "Secret key"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Credits per unit of currency",
+      "display_unit": "Balance display unit",
+      "currency_symbol": "Currency symbol",
+      "signup_grant_credits": "Sign-up grant credits",
+      "signup_grant_requires_verified_email": "Only verified emails can claim the grant",
+      "balance_alert_threshold_credits": "Low-balance alert threshold (credits)",
+      "balance_alert_channels": "Low-balance alert channels",
+      "free_model_preconsume_enabled": "Pre-consume for free models",
+      "free_model_preconsume_multiplier": "Pre-consume multiplier",
+      "free_model_preconsume_trust_credits": "Trusted-user threshold (credits)"
+    },
+    "pay": {
+      "online_enabled": "Online payments",
+      "amount_presets_cny": "Top-up presets (CNY)",
+      "stripe": {
+        "enabled": "Enable Stripe",
+        "secret_key": "Secret key",
+        "webhook_secret": "Webhook signing secret",
+        "min_topup_cny": "Minimum top-up (CNY)"
+      },
+      "alipay": {
+        "enabled": "Enable Alipay",
+        "app_id": "App ID",
+        "private_key": "Application private key",
+        "public_key": "Alipay public key",
+        "gateway_url": "Gateway URL",
+        "sandbox": "Sandbox mode"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "Requests per minute per user per model",
+      "token_rpm": "Requests per minute per token",
+      "user_global_rpm": "Requests per minute per user (global)",
+      "group_overrides": "Group rate overrides"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "Enable SSRF protection",
+        "allow_private_ip": "Allow private addresses",
+        "allowed_ports": "Allowed ports",
+        "domain_mode": "Domain mode",
+        "domain_list": "Domain list"
+      },
+      "sensitive": {
+        "enabled": "Enable sensitive-word filtering",
+        "scope": "Detection scope",
+        "words": "Word list",
+        "action": "On match"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "SMTP server",
+        "port": "Port",
+        "encryption": "Encryption",
+        "username": "Sender account",
+        "from_email": "Sender address",
+        "from_name": "Sender name",
+        "password": "Password",
+        "force_auth_login": "Force AUTH LOGIN",
+        "insecure_skip_verify": "Skip TLS certificate verification"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "Automatic disable",
+      "response_time_threshold_seconds": "Response-time threshold (s)",
+      "disable_keywords": "Disable keywords (one per line)",
+      "auto_enable_enabled": "Automatic recovery",
+      "test_interval_minutes": "Health-check interval (minutes)",
+      "test_concurrency": "Health-check concurrency"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1–64 characters.",
+      "server_address": "Used as the Base URL for token snippets and callback links.",
+      "footer_html": "Allowed tags: a, p, br, strong, em.",
+      "about_html": "Allowed tags: a, p, br, strong, em."
+    },
+    "nav": {
+      "console": {
+        "require_auth": "Always on. The console requires sign-in."
+      },
+      "modules": {
+        "console": "Keys follow the console routes; tokens is the API-token module."
+      }
+    },
+    "auth": {
+      "signup_enabled": "New users cannot register themselves while this is off.",
+      "password_login_enabled": "At least one sign-in method must be enabled.",
+      "email_verification_required": "Requires SMTP to be configured, otherwise verification mail cannot be sent.",
+      "email_domain_allowlist": "Press Enter or separate entries with commas. Wildcards such as *.edu.cn are supported.",
+      "turnstile": {
+        "secret_key": "Leave empty to keep the current secret."
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Changing this affects top-ups and how balances are displayed.",
+      "signup_grant_credits": "0 disables the grant.",
+      "display_unit": "Consumption is always accounted in credits.",
+      "free_model_preconsume_multiplier": "Must be greater than 0 (values ≤ 0 are rejected; default 1).",
+      "free_model_preconsume_trust_credits": "Users above this lifetime spend skip pre-consumption; 0 pre-consumes for everyone.",
+      "balance_alert_channels": "JSON object: {banner, email, webhook}."
+    },
+    "pay": {
+      "online_enabled": "Turning this off hides every online payment method. Redemption codes are unaffected.",
+      "amount_presets_cny": "Comma-separated integers, e.g. 10, 30, 50.",
+      "stripe": {
+        "secret_key": "Starts with sk_. Leave empty to keep the current key.",
+        "webhook_secret": "Starts with whsec_. Leave empty to keep the current secret."
+      },
+      "alipay": {
+        "private_key": "PEM encoded. Leave empty to keep the current key.",
+        "public_key": "PEM encoded. Leave empty to keep the current key."
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 means unlimited.",
+      "token_rpm": "0 means unlimited.",
+      "user_global_rpm": "0 means unlimited.",
+      "group_overrides": "JSON object mapping group names to RPM, e.g. {\"vip\": 1200}."
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "Applies to all outbound requests: OAuth discovery, webhooks, payment callbacks, URL health checks, and upstream channel forwarding.",
+        "allow_private_ip": "Applies to outbound requests only.",
+        "allowed_ports": "Comma-separated integers between 1 and 65535.",
+        "domain_list": "One domain per line or comma-separated. In allowlist mode an empty list blocks every outbound request."
+      },
+      "sensitive": {
+        "scope": "Choose which prompt fields are inspected.",
+        "words": "One word per line. The wildcard * is supported.",
+        "action": "Block rejects the request; log forwards it and records the match."
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "Falls back to the sender account when empty.",
+        "from_name": "Falls back to the site title when empty.",
+        "insecure_skip_verify": "For debugging only. Never use this in production."
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "A channel is disabled on the first match; there is no failure-count threshold.",
+      "response_time_threshold_seconds": "This is a response-time threshold, not a failure count.",
+      "disable_keywords": "Response bodies containing any of these keywords disable the channel.",
+      "auto_enable_enabled": "Only the periodic health check can restore automatically disabled channels; manually disabled channels are never restored.",
+      "test_interval_minutes": "1–1440 minutes.",
+      "test_concurrency": "1–50 concurrent checks."
+    }
+  },
+  "option": {
+    "credits": "Credits",
+    "cny": "Converted currency",
+    "domain_all": "Allow all",
+    "domain_allowlist": "Allowlist only",
+    "domain_denylist": "Denylist",
+    "sensitive_block": "Block",
+    "sensitive_log": "Log and allow",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "None",
+    "alipay_gateway_production": "Production gateway",
+    "alipay_gateway_sandbox": "Sandbox gateway"
+  },
+  "status": {
+    "title": "System status",
+    "subtitle": "Version, dependencies, and instance heartbeats",
+    "refresh": "Refresh",
+    "last_updated": "Last updated {time}",
+    "version_title": "Version",
+    "version": "Version",
+    "uptime": "Uptime",
+    "uptime_value": "{days}d {hours}h {minutes}m",
+    "uptime_seconds": "{seconds}s",
+    "dependencies_title": "Dependencies",
+    "dependency_db": "Database",
+    "dependency_redis": "Redis",
+    "dependency_worker": "Worker",
+    "healthy": "Healthy",
+    "degraded": "Degraded",
+    "unknown": "Unknown",
+    "instances_title": "Instances",
+    "instance_name": "Instance",
+    "instance_role": "Role",
+    "instance_status": "Status",
+    "instance_version": "Version",
+    "instance_last_seen": "Last heartbeat",
+    "instances_empty": "No instance heartbeats. Check your deployment.",
+    "load_error": "Could not load system status.",
+    "retry": "Retry",
+    "loading": "Loading system status…"
+  }
+}

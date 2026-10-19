@@ -116,6 +116,9 @@
   "toast.request_id": "request_id: {requestId}",
   "nav.channels": "Channels",
   "nav.tokens": "API Tokens",
+  "nav.settings": "Settings",
+  "nav.system_status": "System status",
+  "nav.operation_logs": "Operation logs",
   "channels": {
     "title": "Channels",
     "new": "New Channel",

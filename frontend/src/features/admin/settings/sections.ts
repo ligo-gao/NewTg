@@ -1,0 +1,555 @@
+/**
+ * FE-08 section registry for the settings shell.
+ *
+ * Each entry maps one backend `section` (the GET/PUT `?section=` value) to a
+ * card. Field order here is the visual order; values, types and danger flags
+ * always come from the server response, so this file never becomes a second
+ * source of truth for defaults or validation bounds beyond UX pre-checks.
+ */
+
+export const SETTINGS_TABS = [
+  'site',
+  'auth',
+  'billing',
+  'payment',
+  'security',
+  'notify',
+  'policy',
+] as const
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number]
+
+export function isSettingsTab(value: unknown): value is SettingsTab {
+  return typeof value === 'string' && (SETTINGS_TABS as readonly string[]).includes(value)
+}
+
+export type FieldControl =
+  | 'text'
+  | 'textarea'
+  | 'secret'
+  | 'switch'
+  | 'select'
+  | 'number'
+  | 'tags'
+  | 'lines'
+  | 'number_list'
+  | 'module_toggles'
+  | 'json'
+
+export interface FieldOption {
+  value: string | number
+  labelKey: string
+}
+
+export interface ToggleOption {
+  key: string
+  labelKey: string
+}
+
+export interface FieldConfig {
+  key: string
+  labelKey: string
+  hintKey?: string
+  control: FieldControl
+  required?: boolean
+  maxLength?: number
+  min?: number
+  max?: number
+  /** Reject values below or equal to this bound (`> value`). */
+  greaterThan?: number
+  integer?: boolean
+  options?: readonly FieldOption[]
+  /** Render the secret as a multi-line textarea (PEM keys). */
+  multiline?: boolean
+  /** Object keys rendered as switches by the `module_toggles` control. */
+  toggles?: readonly ToggleOption[]
+  /** Server-enforced read-only field (e.g. `nav.console.require_auth`). */
+  locked?: boolean
+}
+
+export interface SectionConfig {
+  /** Backend section id, used verbatim in `?section=`. */
+  id: string
+  titleKey: string
+  descriptionKey?: string
+  fields: readonly FieldConfig[]
+}
+
+export interface TabConfig {
+  id: SettingsTab
+  labelKey: string
+  descriptionKey: string
+  sections: readonly SectionConfig[]
+}
+
+function field(
+  key: string,
+  labelKey: string,
+  control: FieldControl,
+  extra: Omit<FieldConfig, 'key' | 'labelKey' | 'control'> = {},
+): FieldConfig {
+  return { key, labelKey, control, ...extra }
+}
+
+function text(
+  key: string,
+  labelKey: string,
+  extra: Omit<FieldConfig, 'key' | 'labelKey' | 'control'> = {},
+): FieldConfig {
+  return field(key, labelKey, 'text', extra)
+}
+
+function toggle(
+  key: string,
+  labelKey: string,
+  extra: Omit<FieldConfig, 'key' | 'labelKey' | 'control'> = {},
+): FieldConfig {
+  return field(key, labelKey, 'switch', extra)
+}
+
+function number(
+  key: string,
+  labelKey: string,
+  extra: Omit<FieldConfig, 'key' | 'labelKey' | 'control'> = {},
+): FieldConfig {
+  return field(key, labelKey, 'number', { integer: true, ...extra })
+}
+
+function label(key: string): string {
+  return `settings.field.${key}`
+}
+
+function hint(key: string): string {
+  return `settings.hint.${key}`
+}
+
+const SITE: SectionConfig = {
+  id: 'site',
+  titleKey: 'settings.section.site',
+  descriptionKey: 'settings.section_description.site',
+  fields: [
+    text('site.title', label('site.title'), {
+      required: true,
+      maxLength: 64,
+      hintKey: hint('site.title'),
+    }),
+    text('site.logo_url', label('site.logo_url'), { maxLength: 512 }),
+    text('site.server_address', label('site.server_address'), {
+      required: true,
+      maxLength: 256,
+      hintKey: hint('site.server_address'),
+    }),
+    text('site.timezone', label('site.timezone'), { required: true, maxLength: 64 }),
+    text('site.docs_url', label('site.docs_url'), { maxLength: 256 }),
+    text('site.status_page_url', label('site.status_page_url'), { maxLength: 256 }),
+    text('site.filing_no', label('site.filing_no'), { maxLength: 64 }),
+    field('site.footer_html', label('site.footer_html'), 'textarea', {
+      maxLength: 4096,
+      hintKey: hint('site.footer_html'),
+    }),
+    field('site.about_html', label('site.about_html'), 'textarea', {
+      maxLength: 8192,
+      hintKey: hint('site.about_html'),
+    }),
+    text('site.seo.description', label('site.seo.description'), { maxLength: 160 }),
+    text('site.seo.og_image_url', label('site.seo.og_image_url'), { maxLength: 512 }),
+  ],
+}
+
+const NAV: SectionConfig = {
+  id: 'nav',
+  titleKey: 'settings.section.nav',
+  descriptionKey: 'settings.section_description.nav',
+  fields: [
+    toggle('nav.home.enabled', label('nav.home.enabled')),
+    toggle('nav.home.require_auth', label('nav.home.require_auth')),
+    toggle('nav.console.enabled', label('nav.console.enabled')),
+    // The server forces this to true; rendering it disabled keeps the UI
+    // honest instead of offering a switch whose change would be rejected.
+    toggle('nav.console.require_auth', label('nav.console.require_auth'), {
+      locked: true,
+      hintKey: hint('nav.console.require_auth'),
+    }),
+    toggle('nav.pricing.enabled', label('nav.pricing.enabled')),
+    toggle('nav.pricing.require_auth', label('nav.pricing.require_auth')),
+    toggle('nav.rankings.enabled', label('nav.rankings.enabled')),
+    toggle('nav.rankings.require_auth', label('nav.rankings.require_auth')),
+    toggle('nav.docs.enabled', label('nav.docs.enabled')),
+    toggle('nav.about.enabled', label('nav.about.enabled')),
+    field('nav.modules.console', label('nav.modules.console'), 'module_toggles', {
+      hintKey: hint('nav.modules.console'),
+      toggles: [
+        { key: 'dashboard', labelKey: 'settings.shell.module_dashboard' },
+        { key: 'tokens', labelKey: 'settings.shell.module_tokens' },
+        { key: 'usage_logs', labelKey: 'settings.shell.module_usage_logs' },
+        { key: 'wallet', labelKey: 'settings.shell.module_wallet' },
+        { key: 'profile', labelKey: 'settings.shell.module_profile' },
+        { key: 'security', labelKey: 'settings.shell.module_security' },
+      ],
+    }),
+    toggle('nav.modules.chat.playground', label('nav.modules.chat.playground')),
+    toggle('nav.modules.chat.presets', label('nav.modules.chat.presets')),
+  ],
+}
+
+const AUTH: SectionConfig = {
+  id: 'auth',
+  titleKey: 'settings.section.auth',
+  descriptionKey: 'settings.section_description.auth',
+  fields: [
+    toggle('auth.signup_enabled', label('auth.signup_enabled'), {
+      hintKey: hint('auth.signup_enabled'),
+    }),
+    toggle('auth.password_login_enabled', label('auth.password_login_enabled'), {
+      hintKey: hint('auth.password_login_enabled'),
+    }),
+    toggle('auth.mfa.admin_required', label('auth.mfa.admin_required')),
+    toggle('auth.mfa.admin_hardware_required', label('auth.mfa.admin_hardware_required')),
+    toggle('auth.email_verification_required', label('auth.email_verification_required'), {
+      hintKey: hint('auth.email_verification_required'),
+    }),
+    toggle(
+      'auth.email_domain_restrict_enabled',
+      label('auth.email_domain_restrict_enabled'),
+    ),
+    field('auth.email_domain_allowlist', label('auth.email_domain_allowlist'), 'tags', {
+      hintKey: hint('auth.email_domain_allowlist'),
+    }),
+  ],
+}
+
+const AUTH_TURNSTILE: SectionConfig = {
+  id: 'auth.turnstile',
+  titleKey: 'settings.section.auth_turnstile',
+  descriptionKey: 'settings.section_description.auth_turnstile',
+  fields: [
+    toggle('auth.turnstile.enabled', label('auth.turnstile.enabled')),
+    text('auth.turnstile.site_key', label('auth.turnstile.site_key'), { maxLength: 64 }),
+    field('auth.turnstile.secret_key', label('auth.turnstile.secret_key'), 'secret', {
+      hintKey: hint('auth.turnstile.secret_key'),
+    }),
+  ],
+}
+
+const BILLING: SectionConfig = {
+  id: 'billing',
+  titleKey: 'settings.section.billing',
+  descriptionKey: 'settings.section_description.billing',
+  fields: [
+    number('billing.quota_per_unit', label('billing.quota_per_unit'), {
+      min: 1,
+      max: 1_000_000,
+      hintKey: hint('billing.quota_per_unit'),
+    }),
+    field('billing.display_unit', label('billing.display_unit'), 'select', {
+      options: [
+        { value: 'credits', labelKey: 'settings.option.credits' },
+        { value: 'cny', labelKey: 'settings.option.cny' },
+      ],
+      hintKey: hint('billing.display_unit'),
+    }),
+    text('billing.currency_symbol', label('billing.currency_symbol'), { maxLength: 8 }),
+    number('billing.signup_grant_credits', label('billing.signup_grant_credits'), {
+      min: 0,
+      max: 1_000_000_000_000,
+      hintKey: hint('billing.signup_grant_credits'),
+    }),
+    toggle(
+      'billing.signup_grant_requires_verified_email',
+      label('billing.signup_grant_requires_verified_email'),
+    ),
+    number(
+      'billing.balance_alert_threshold_credits',
+      label('billing.balance_alert_threshold_credits'),
+      { min: 0 },
+    ),
+    field(
+      'billing.balance_alert_channels',
+      label('billing.balance_alert_channels'),
+      'module_toggles',
+      {
+        hintKey: hint('billing.balance_alert_channels'),
+        toggles: [
+          { key: 'banner', labelKey: 'settings.shell.module_banner' },
+          { key: 'email', labelKey: 'settings.shell.module_email' },
+          { key: 'webhook', labelKey: 'settings.shell.module_webhook' },
+        ],
+      },
+    ),
+    toggle(
+      'billing.free_model_preconsume_enabled',
+      label('billing.free_model_preconsume_enabled'),
+    ),
+    number(
+      'billing.free_model_preconsume_multiplier',
+      label('billing.free_model_preconsume_multiplier'),
+      {
+        integer: false,
+        greaterThan: 0,
+        hintKey: hint('billing.free_model_preconsume_multiplier'),
+      },
+    ),
+    number(
+      'billing.free_model_preconsume_trust_credits',
+      label('billing.free_model_preconsume_trust_credits'),
+      { min: 0, max: 1_000_000_000_000, hintKey: hint('billing.free_model_preconsume_trust_credits') },
+    ),
+  ],
+}
+
+const PAY: SectionConfig = {
+  id: 'pay',
+  titleKey: 'settings.section.pay',
+  descriptionKey: 'settings.section_description.pay',
+  fields: [
+    toggle('pay.online_enabled', label('pay.online_enabled'), {
+      hintKey: hint('pay.online_enabled'),
+    }),
+    field('pay.amount_presets_cny', label('pay.amount_presets_cny'), 'number_list', {
+      hintKey: hint('pay.amount_presets_cny'),
+    }),
+  ],
+}
+
+const PAY_STRIPE: SectionConfig = {
+  id: 'pay.stripe',
+  titleKey: 'settings.section.pay_stripe',
+  descriptionKey: 'settings.section_description.pay_stripe',
+  fields: [
+    toggle('pay.stripe.enabled', label('pay.stripe.enabled')),
+    field('pay.stripe.secret_key', label('pay.stripe.secret_key'), 'secret', {
+      hintKey: hint('pay.stripe.secret_key'),
+    }),
+    field('pay.stripe.webhook_secret', label('pay.stripe.webhook_secret'), 'secret', {
+      hintKey: hint('pay.stripe.webhook_secret'),
+    }),
+    number('pay.stripe.min_topup_cny', label('pay.stripe.min_topup_cny'), {
+      min: 1,
+      max: 100_000,
+    }),
+  ],
+}
+
+const PAY_ALIPAY: SectionConfig = {
+  id: 'pay.alipay',
+  titleKey: 'settings.section.pay_alipay',
+  descriptionKey: 'settings.section_description.pay_alipay',
+  fields: [
+    toggle('pay.alipay.enabled', label('pay.alipay.enabled')),
+    text('pay.alipay.app_id', label('pay.alipay.app_id'), { maxLength: 32 }),
+    field('pay.alipay.private_key', label('pay.alipay.private_key'), 'secret', {
+      multiline: true,
+      hintKey: hint('pay.alipay.private_key'),
+    }),
+    field('pay.alipay.public_key', label('pay.alipay.public_key'), 'secret', {
+      multiline: true,
+      hintKey: hint('pay.alipay.public_key'),
+    }),
+    field('pay.alipay.gateway_url', label('pay.alipay.gateway_url'), 'select', {
+      options: [
+        {
+          value: 'https://openapi.alipay.com/gateway.do',
+          labelKey: 'settings.option.alipay_gateway_production',
+        },
+        {
+          value: 'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
+          labelKey: 'settings.option.alipay_gateway_sandbox',
+        },
+      ],
+    }),
+    toggle('pay.alipay.sandbox', label('pay.alipay.sandbox')),
+  ],
+}
+
+const RL: SectionConfig = {
+  id: 'rl',
+  titleKey: 'settings.section.rl',
+  descriptionKey: 'settings.section_description.rl',
+  fields: [
+    number('rl.user_model_rpm', label('rl.user_model_rpm'), {
+      min: 0,
+      max: 100_000,
+      hintKey: hint('rl.user_model_rpm'),
+    }),
+    number('rl.token_rpm', label('rl.token_rpm'), {
+      min: 0,
+      max: 100_000,
+      hintKey: hint('rl.token_rpm'),
+    }),
+    number('rl.user_global_rpm', label('rl.user_global_rpm'), {
+      min: 0,
+      max: 100_000,
+      hintKey: hint('rl.user_global_rpm'),
+    }),
+    field('rl.group_overrides', label('rl.group_overrides'), 'json', {
+      hintKey: hint('rl.group_overrides'),
+    }),
+  ],
+}
+
+const SEC: SectionConfig = {
+  id: 'sec',
+  titleKey: 'settings.section.sec',
+  descriptionKey: 'settings.section_description.sec',
+  fields: [
+    toggle('sec.ssrf.enabled', label('sec.ssrf.enabled'), {
+      hintKey: hint('sec.ssrf.enabled'),
+    }),
+    toggle('sec.ssrf.allow_private_ip', label('sec.ssrf.allow_private_ip'), {
+      hintKey: hint('sec.ssrf.allow_private_ip'),
+    }),
+    field('sec.ssrf.allowed_ports', label('sec.ssrf.allowed_ports'), 'number_list', {
+      hintKey: hint('sec.ssrf.allowed_ports'),
+    }),
+    field('sec.ssrf.domain_mode', label('sec.ssrf.domain_mode'), 'select', {
+      options: [
+        { value: 'all', labelKey: 'settings.option.domain_all' },
+        { value: 'allowlist', labelKey: 'settings.option.domain_allowlist' },
+        { value: 'denylist', labelKey: 'settings.option.domain_denylist' },
+      ],
+    }),
+    field('sec.ssrf.domain_list', label('sec.ssrf.domain_list'), 'lines', {
+      hintKey: hint('sec.ssrf.domain_list'),
+    }),
+    toggle('sec.sensitive.enabled', label('sec.sensitive.enabled')),
+    field('sec.sensitive.scope', label('sec.sensitive.scope'), 'module_toggles', {
+      hintKey: hint('sec.sensitive.scope'),
+      toggles: [
+        { key: 'prompt', labelKey: 'settings.shell.module_prompt' },
+        { key: 'system', labelKey: 'settings.shell.module_system' },
+      ],
+    }),
+    field('sec.sensitive.words', label('sec.sensitive.words'), 'lines', {
+      hintKey: hint('sec.sensitive.words'),
+    }),
+    field('sec.sensitive.action', label('sec.sensitive.action'), 'select', {
+      options: [
+        { value: 'block', labelKey: 'settings.option.sensitive_block' },
+        { value: 'log', labelKey: 'settings.option.sensitive_log' },
+      ],
+      hintKey: hint('sec.sensitive.action'),
+    }),
+  ],
+}
+
+const NOTIFY_SMTP: SectionConfig = {
+  id: 'notify.smtp',
+  titleKey: 'settings.section.notify_smtp',
+  descriptionKey: 'settings.section_description.notify_smtp',
+  fields: [
+    text('notify.smtp.host', label('notify.smtp.host'), { maxLength: 256 }),
+    number('notify.smtp.port', label('notify.smtp.port'), { min: 1, max: 65_535 }),
+    field('notify.smtp.encryption', label('notify.smtp.encryption'), 'select', {
+      options: [
+        { value: 'ssl', labelKey: 'settings.option.ssl' },
+        { value: 'starttls', labelKey: 'settings.option.starttls' },
+        { value: 'none', labelKey: 'settings.option.none' },
+      ],
+    }),
+    text('notify.smtp.username', label('notify.smtp.username'), { maxLength: 256 }),
+    text('notify.smtp.from_email', label('notify.smtp.from_email'), {
+      maxLength: 254,
+      hintKey: hint('notify.smtp.from_email'),
+    }),
+    text('notify.smtp.from_name', label('notify.smtp.from_name'), {
+      maxLength: 128,
+      hintKey: hint('notify.smtp.from_name'),
+    }),
+    field('notify.smtp.password', label('notify.smtp.password'), 'secret'),
+    toggle('notify.smtp.force_auth_login', label('notify.smtp.force_auth_login')),
+    toggle('notify.smtp.insecure_skip_verify', label('notify.smtp.insecure_skip_verify'), {
+      hintKey: hint('notify.smtp.insecure_skip_verify'),
+    }),
+  ],
+}
+
+// Wave 1 only ships F-08-45 (channel health); affinity and retry budgets are
+// later waves, so no config entries exist for `rl.affinity` / `rl.retry`.
+const RL_HEALTH: SectionConfig = {
+  id: 'rl.health',
+  titleKey: 'settings.section.rl_health',
+  descriptionKey: 'settings.section_description.rl_health',
+  fields: [
+    toggle('rl.health.auto_disable_enabled', label('rl_health.auto_disable_enabled'), {
+      hintKey: hint('rl_health.auto_disable_enabled'),
+    }),
+    number(
+      'rl.health.response_time_threshold_seconds',
+      label('rl_health.response_time_threshold_seconds'),
+      {
+        integer: false,
+        greaterThan: 0,
+        hintKey: hint('rl_health.response_time_threshold_seconds'),
+      },
+    ),
+    field('rl.health.disable_keywords', label('rl_health.disable_keywords'), 'lines', {
+      hintKey: hint('rl_health.disable_keywords'),
+    }),
+    toggle('rl.health.auto_enable_enabled', label('rl_health.auto_enable_enabled'), {
+      hintKey: hint('rl_health.auto_enable_enabled'),
+    }),
+    number('rl.health.test_interval_minutes', label('rl_health.test_interval_minutes'), {
+      min: 1,
+      max: 1440,
+      hintKey: hint('rl_health.test_interval_minutes'),
+    }),
+    number('rl.health.test_concurrency', label('rl_health.test_concurrency'), {
+      min: 1,
+      max: 50,
+      hintKey: hint('rl_health.test_concurrency'),
+    }),
+  ],
+}
+
+export const SETTINGS_TABS_CONFIG: readonly TabConfig[] = [
+  {
+    id: 'site',
+    labelKey: 'settings.tab.site',
+    descriptionKey: 'settings.tab_description.site',
+    sections: [SITE, NAV],
+  },
+  {
+    id: 'auth',
+    labelKey: 'settings.tab.auth',
+    descriptionKey: 'settings.tab_description.auth',
+    sections: [AUTH, AUTH_TURNSTILE],
+  },
+  {
+    id: 'billing',
+    labelKey: 'settings.tab.billing',
+    descriptionKey: 'settings.tab_description.billing',
+    sections: [BILLING],
+  },
+  {
+    id: 'payment',
+    labelKey: 'settings.tab.payment',
+    descriptionKey: 'settings.tab_description.payment',
+    sections: [PAY, PAY_STRIPE, PAY_ALIPAY],
+  },
+  {
+    id: 'security',
+    labelKey: 'settings.tab.security',
+    descriptionKey: 'settings.tab_description.security',
+    sections: [RL, SEC],
+  },
+  {
+    id: 'notify',
+    labelKey: 'settings.tab.notify',
+    descriptionKey: 'settings.tab_description.notify',
+    sections: [NOTIFY_SMTP],
+  },
+  {
+    id: 'policy',
+    labelKey: 'settings.tab.policy',
+    descriptionKey: 'settings.tab_description.policy',
+    sections: [RL_HEALTH],
+  },
+]
+
+export function tabConfig(tab: SettingsTab): TabConfig {
+  const config = SETTINGS_TABS_CONFIG.find((entry) => entry.id === tab)
+  // The union above is exhaustively mapped; this guards a future tab added to
+  // SETTINGS_TABS without a config entry instead of rendering an empty shell.
+  if (config === undefined) throw new Error(`missing settings tab config: ${tab}`)
+  return config
+}
