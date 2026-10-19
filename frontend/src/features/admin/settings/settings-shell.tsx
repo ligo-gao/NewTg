@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
+import { NotifyEntryCard } from '@/features/admin/notifications/notify-entry-card'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
@@ -173,6 +174,12 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
             onDirtyChange={handleDirtyChange}
           />
         ))}
+        {/*
+         * 通知渠道内的「通知模板」入口卡（UI §6.9）：只做导航与覆盖概况，
+         * 不是 settings section，因此不参与 section 级保存/脏标记。
+         * 缺少 settings:manage 时卡片自身返回 null。
+         */}
+        {tab === 'notify' ? <NotifyEntryCard canManage={canManage} /> : null}
       </div>
 
       <Dialog
