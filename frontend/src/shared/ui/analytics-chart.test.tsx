@@ -62,6 +62,31 @@ describe('AnalyticsChart', () => {
     expect(container.querySelector(`svg ${selector}`)).not.toBeNull()
   })
 
+  it.each(['line', 'area'] as const)(
+    'renders a visible marker for a single-bucket %s chart',
+    async (kind) => {
+      const { container } = await renderWithProviders(
+        <AnalyticsChart
+          series={[
+            {
+              id: 'credits',
+              label: 'Credits',
+              points: [{ ts: '2026-01-01T00:00:00Z', value: 5 }],
+            },
+          ]}
+          config={{ ...config, kind }}
+        />,
+      )
+
+      expect(container.querySelector('svg circle[data-marker]')).not.toBeNull()
+      if (kind === 'area') {
+        expect(
+          container.querySelector('svg rect[data-area-min-height]'),
+        ).not.toBeNull()
+      }
+    },
+  )
+
   it('exposes an accessible summary label for the rendered chart', async () => {
     await renderWithProviders(<AnalyticsChart series={series} config={config} />)
 

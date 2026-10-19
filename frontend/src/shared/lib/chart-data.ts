@@ -113,15 +113,19 @@ export function bucketSeries(
 }
 
 /**
- * Locale-aware axis label (web-00 §10). `Intl` renders the timestamp in the
- * viewer's local timezone and language; the data itself stays UTC. Invalid
- * input is returned unchanged, mirroring `formatRelativeTime` and keeping a
- * malformed upstream value visible instead of blanking the axis.
+ * Locale-aware axis label (web-00 §10). `Intl` localises the wording and number
+ * formatting, but `timeZone: 'UTC'` is mandatory: the labels annotate UTC
+ * buckets, and rendering them in the host timezone would move a day bucket
+ * across month-end (e.g. `2026-01-01T00:00Z` → "Dec 31" at UTC-5) — the exact
+ * label-layer misalignment Review Focus 3 forbids. Invalid input is returned
+ * unchanged, mirroring `formatRelativeTime` and keeping a malformed upstream
+ * value visible instead of blanking the axis.
  */
 export function formatAxis(ts: string, locale: string): string {
   const ms = Date.parse(ts)
   if (Number.isNaN(ms)) return ts
   return new Intl.DateTimeFormat(locale, {
+    timeZone: 'UTC',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

@@ -217,4 +217,19 @@ describe('formatAxis', () => {
   it('returns the input unchanged for an invalid timestamp', () => {
     expect(formatAxis('not-a-date', 'en')).toBe('not-a-date')
   })
+
+  it('labels bucket boundaries in UTC regardless of the host timezone', () => {
+    // A local-timezone formatter would render the year-start bucket as Dec 31
+    // for viewers west of UTC and the year-end bucket as Jan 1 for viewers
+    // east of it, mislabelling the exact bucket the axis describes.
+    const yearStart = formatAxis('2026-01-01T00:00:00Z', 'en')
+    expect(yearStart).toContain('Jan')
+    expect(yearStart).not.toContain('Dec')
+
+    const yearEnd = formatAxis('2025-12-31T23:00:00Z', 'en')
+    expect(yearEnd).toContain('Dec')
+    expect(yearEnd).not.toContain('Jan')
+
+    expect(formatAxis('2025-12-01T00:00:00Z', 'en')).toContain('Dec')
+  })
 })

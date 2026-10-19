@@ -279,6 +279,38 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
             const first = coordinates[0]
             const last = coordinates[coordinates.length - 1]
             if (first === undefined || last === undefined) return null
+
+            // A single bucket has zero-width geometry: the polygon would be a
+            // vertical line with no area and no visible data mark. Draw a
+            // minimum-height band plus an 8px marker so the value is visible.
+            if (coordinates.length === 1) {
+              const height = Math.max(Math.abs(BASELINE_Y - first.y), 2)
+              const y =
+                first.y <= BASELINE_Y ? Math.min(BASELINE_Y - height, first.y) : first.y
+              return (
+                <g key={item.id} data-series-id={item.id}>
+                  <rect
+                    data-area-min-height="true"
+                    x={first.x - 4}
+                    y={y}
+                    width={8}
+                    height={height}
+                    fill={color}
+                    fillOpacity={0.18}
+                    stroke={color}
+                    strokeWidth={2}
+                  />
+                  <circle
+                    data-marker="true"
+                    cx={first.x}
+                    cy={first.y}
+                    r={4}
+                    fill={color}
+                  />
+                </g>
+              )
+            }
+
             const polygon = [
               ...coordinates.map((point) => `${point.x},${point.y}`),
               `${last.x},${BASELINE_Y}`,
@@ -294,6 +326,31 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
                 stroke={color}
                 strokeWidth={2}
               />
+            )
+          }
+
+          // Matches the one-bucket area case above: a one-coordinate polyline
+          // has no length and would leave the chart blank. The marker makes the
+          // point visible without changing the surrounding contract.
+          if (coordinates.length === 1) {
+            const only = coordinates[0]
+            if (only === undefined) return null
+            return (
+              <g key={item.id} data-series-id={item.id}>
+                <polyline
+                  points={`${only.x},${only.y}`}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={2}
+                />
+                <circle
+                  data-marker="true"
+                  cx={only.x}
+                  cy={only.y}
+                  r={4}
+                  fill={color}
+                />
+              </g>
             )
           }
 
