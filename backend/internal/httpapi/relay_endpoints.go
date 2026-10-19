@@ -24,6 +24,7 @@ import (
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
+	"newtg/gateway/internal/relay/crossproto"
 	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/relay/stream"
 	"newtg/gateway/internal/relay/usage"
@@ -156,6 +157,9 @@ type RelayHandlerOptions struct {
 	// Multimodal 是 M4 多模态端点族的分派器（Task 4 注入）。
 	// nil 时这些端点返回 501（仅 Task 1 骨架态）；T4 装配真实实现后不得再为 nil。
 	Multimodal MultimodalDispatcher
+	// Config 是跨协议转发开关的读取面（configcenter.Center 实现 ConfigReader）。
+	// nil 时按默认 false 处理（GC-8 / R-03）：功能必须显式启用，绝无隐式开启。
+	Config ConfigReader
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
@@ -171,6 +175,7 @@ type RelayHandler struct {
 	trustedProxies   []netip.Prefix
 	streamInactivity time.Duration
 	multimodal       MultimodalDispatcher
+	config           ConfigReader
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -212,6 +217,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		trustedProxies:   parseTrustedProxies(opts.TrustedProxies),
 		streamInactivity: inactivity,
 		multimodal:       opts.Multimodal,
+		config:           opts.Config,
 	}
 }
 
@@ -244,6 +250,25 @@ func (h *RelayHandler) Handler() http.Handler {
 
 func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
+
+	// 跨协议转发（M4 T5 / GC-8）：协议头只在这里解析一次，随后贯穿选路
+	// （targetProtocol）与响应回写。判定顺序是冻结口径：
+	//   1. 开关关闭且携带头 → 403（无论头值是否合法）：关闭状态不得静默
+	//      降级为 OpenAI（Review Focus 5），也不透露「只是拼错了」；
+	//   2. 开关开启但头值非法 → 400；
+	//   3. 未携带头 → targetProtocol 为空，后续选路与 M2 完全一致。
+	// 鉴权在中间件已完成，因此未认证请求永远先得到 401，不会被本分支抢答。
+	targetProtocol, hasProtocolHeader, protocolErr := crossproto.TargetFromHeader(r.Header.Get(crossproto.HeaderProtocol))
+	if hasProtocolHeader && !readConfigBool(h.config, crossproto.ConfigKeyEnabled, false) {
+		writeRelayError(w, http.StatusForbidden, requestID, "cross_protocol_forward_disabled",
+			"cross-protocol forwarding is not enabled")
+		return
+	}
+	if protocolErr != nil {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_protocol",
+			"unsupported target protocol (expected openai, anthropic, or gemini)")
+		return
+	}
 
 	body, err := readRelayBody(r)
 	if err != nil {
@@ -334,7 +359,7 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		MaxTokens: parsed.MaxTokens,
 	})
 
-	deps := h.routeDeps(rc, pinID, hasPin)
+	deps := h.routeDeps(rc, pinID, hasPin, targetProtocol)
 	if parsed.Stream {
 		h.serveStream(w, r, rc, deps)
 		return
@@ -433,7 +458,7 @@ func readRelayBody(r *http.Request) ([]byte, error) {
 // BuildRelayContext 成功后解析，finding 1）。pin 只写进候选约束，不写进
 // RelayContext（R-P2a）；若 pin 目标不在候选集内，返回 relay.ErrChannelNotFound，
 // 由 ExecuteAttempts 在 PreConsume **之前**快失败（HTTP 404）。
-func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool) relay.RouteDeps {
+func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool, targetProtocol crossproto.Protocol) relay.RouteDeps {
 	return relay.RouteDeps{
 		Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
 			// 候选按**客户端请求模型**与令牌分组过滤（relay-01 §5；store 侧
@@ -443,7 +468,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 				return nil, err
 			}
 			if !hasPin {
-				return candidates, nil
+				return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
 			}
 			pinned := false
 			for i := range candidates {
@@ -458,7 +483,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 				// 绝不在这里按 pin 另取渠道，否则会绕过 §5.4 D 步的过滤兜底。
 				return nil, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID)
 			}
-			return candidates, nil
+			return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
 		},
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
@@ -468,6 +493,45 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 		Client:     h.client,
 		MaxRetries: relayMaxRetries,
 	}
+}
+
+// filterCandidatesByProtocol 按目标上游协议过滤候选（跨协议转发）。
+//
+// targetProtocol 为空 = 未携带协议头：原样返回，保证 M2 选路行为逐字节不变
+// （只有候选切片本身，未排序、未改写）。
+//
+// 过滤必须在 PreConsume 之前完成（本函数位于 Candidates 回调内，执行层在
+// 预扣前调用）：目标协议没有可用渠道时直接显式失败，不产生任何计费副作用。
+//
+// 为什么逐个 Get 渠道类型而不是让 store 查询时过滤：Candidates 的存储面
+// （RelayChannelStore）是冻结的，且协议族映射的唯一真源在 adapters 分派表；
+// 在路由层做这一层过滤可以避免把「渠道类型 → 协议」的知识泄漏进 store。
+// 候选规模是单个模型 + 分组，通常个位数，额外点查询有界。
+func filterCandidatesByProtocol(
+	ctx context.Context,
+	channels RelayChannelStore,
+	candidates []contract.ChannelCandidate,
+	targetProtocol crossproto.Protocol,
+) ([]contract.ChannelCandidate, error) {
+	if targetProtocol == "" {
+		return candidates, nil
+	}
+	filtered := make([]contract.ChannelCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		ch, err := channels.Get(ctx, int64(candidate.ChannelID))
+		if err != nil {
+			return nil, err
+		}
+		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), targetProtocol) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		// 显式失败而不是回退到任意协议：客户端声明了目标协议，静默换协议
+		// 会让它按错误的响应语义解析（Review Focus 5 / GC-8）。
+		return nil, crossproto.ErrUpstreamProtocolUnsupported
+	}
+	return filtered, nil
 }
 
 // resolveChannel 把 store.Channel 投影为执行层需要的整组渠道字段（relay-01 §7.4）。
@@ -533,6 +597,25 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
 		writeRelayMappedError(w, rc.RequestID, err)
+		return
+	}
+
+	// 响应方向跨协议回写（GC-2）：上游是 Anthropic/Gemini 原生协议时，
+	// resp.Raw 是上游原始 JSON，绝不能直接透传给 OpenAI 兼容客户端。
+	// 目标协议取**实际命中渠道**的类型（而不是协议头）：重试可能换渠道，
+	// 头只约束协议族，最终响应格式由最后一个成功渠道决定；二者在正常路径
+	// 上一致（选路阶段已按头过滤），这里以执行结果为权威。
+	upstreamProtocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType)
+	if !known {
+		// 未实现的协议族不会走到这里（分派会先失败）；防御性按 OpenAI 透传。
+		upstreamProtocol = crossproto.ProtocolOpenAI
+	}
+	resp, err = crossproto.Forward(r.Context(), rc, string(upstreamProtocol), resp)
+	if err != nil {
+		// 计费已在 Route 内结算；这里只是编码失败（异常上游形状），
+		// 按上游错误映射，且不回显底层文本（GC-6）。
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+			"failed to encode the upstream response")
 		return
 	}
 
@@ -1205,6 +1288,11 @@ func mapRelayError(err error) (int, string, string) {
 			return http.StatusServiceUnavailable, "model_not_found", "no available channel for the requested model"
 		case errors.Is(err, relay.ErrChannelNotFound):
 			return http.StatusNotFound, "channel_not_found", "the pinned channel is not available"
+		case errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported):
+			// 跨协议转发：目标协议没有匹配渠道 = 上游能力不支持，非重试类
+			// 错误（mapRelayError 走的 FastFail 分支已保证不重试）。
+			return http.StatusBadRequest, "endpoint_not_supported",
+				"no available channel supports the requested upstream protocol"
 		}
 		var upstream *relay.UpstreamStatusError
 		if errors.As(err, &upstream) {
