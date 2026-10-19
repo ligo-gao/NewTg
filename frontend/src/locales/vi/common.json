@@ -47,6 +47,44 @@
   "error403.back": "Quay lại bảng điều khiển",
   "not_found.title": "Không tìm thấy trang",
   "not_found.action": "Về trang chủ",
+  "error_page": {
+    "home": "Về trang chủ",
+    "console": "Mở bảng điều khiển",
+    "go_back": "Quay lại",
+    "docs": "Xem tài liệu",
+    "pricing": "Xem bảng giá",
+    "feature_disabled": "Tính năng này có thể đang bị tắt",
+    "request_id_label": "ID yêu cầu",
+    "copy_request_id": "Sao chép ID yêu cầu",
+    "copy_failed": "Sao chép thất bại. Vui lòng chọn văn bản thủ công.",
+    "offline": {
+      "title": "Mất kết nối mạng",
+      "body": "Kết nối mạng đang ngoại tuyến. Chúng tôi sẽ thử lại khi có kết nối."
+    },
+    "401": {
+      "title": "Phiên đăng nhập đã hết hạn",
+      "body": "Vui lòng đăng nhập lại để tiếp tục.",
+      "sign_in": "Đăng nhập"
+    },
+    "403": {
+      "title": "Không có quyền truy cập",
+      "body": "Tài khoản của bạn không có quyền truy cập trang này."
+    },
+    "404": {
+      "title": "Không tìm thấy trang",
+      "body": "Trang bạn tìm có thể đã được di chuyển hoặc xóa."
+    },
+    "500": {
+      "title": "Đã xảy ra lỗi từ phía chúng tôi",
+      "body": "Vui lòng thử lại. Nếu lỗi tiếp diễn, hãy liên hệ hỗ trợ kèm ID yêu cầu bên dưới."
+    },
+    "503": {
+      "title": "Dịch vụ tạm thời không khả dụng",
+      "body": "Chúng tôi đang bảo trì hoặc khôi phục dịch vụ. Vui lòng quay lại sau.",
+      "status_page": "Xem trạng thái dịch vụ",
+      "recovered": "Dịch vụ đã phục hồi. Hãy thử lại."
+    }
+  },
   "chart": {
     "empty": "Chưa có thống kê",
     "aria": "Biểu đồ {kind} với {count} chuỗi: {series}. Đơn vị: {unit}.",

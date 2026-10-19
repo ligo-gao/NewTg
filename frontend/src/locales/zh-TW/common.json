@@ -47,6 +47,44 @@
   "error403.back": "返回儀表板",
   "not_found.title": "頁面不存在",
   "not_found.action": "返回首頁",
+  "error_page": {
+    "home": "返回首頁",
+    "console": "進入控制台",
+    "go_back": "返回上一頁",
+    "docs": "查看文件",
+    "pricing": "查看定價",
+    "feature_disabled": "該功能可能未開啟",
+    "request_id_label": "請求編號",
+    "copy_request_id": "複製請求編號",
+    "copy_failed": "複製失敗，請手動選取文字複製。",
+    "offline": {
+      "title": "網路連線已中斷",
+      "body": "網路連線已中斷，恢復後將自動重試"
+    },
+    "401": {
+      "title": "登入狀態已失效",
+      "body": "請重新登入以繼續",
+      "sign_in": "前往登入"
+    },
+    "403": {
+      "title": "沒有存取權限",
+      "body": "目前帳號無權存取此頁面"
+    },
+    "404": {
+      "title": "頁面不存在",
+      "body": "你存取的頁面可能已被移動或刪除"
+    },
+    "500": {
+      "title": "伺服器發生錯誤",
+      "body": "請稍後重試；若持續發生，請聯絡支援並附上下方的請求編號"
+    },
+    "503": {
+      "title": "服務暫時無法使用",
+      "body": "我們正在進行維護或正在恢復服務，請稍後再試",
+      "status_page": "查看服務狀態",
+      "recovered": "服務已恢復，可重試"
+    }
+  },
   "chart": {
     "empty": "尚無統計資料",
     "aria": "{kind} 圖表，共 {count} 個數列：{series}。單位：{unit}。",

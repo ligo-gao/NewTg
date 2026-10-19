@@ -47,6 +47,44 @@
   "error403.back": "Retour au tableau de bord",
   "not_found.title": "Page introuvable",
   "not_found.action": "Retour à l'accueil",
+  "error_page": {
+    "home": "Retour à l'accueil",
+    "console": "Ouvrir la console",
+    "go_back": "Retour",
+    "docs": "Lire la documentation",
+    "pricing": "Voir les tarifs",
+    "feature_disabled": "Cette fonctionnalité est peut-être désactivée",
+    "request_id_label": "ID de requête",
+    "copy_request_id": "Copier l'ID de requête",
+    "copy_failed": "La copie a échoué. Sélectionnez le texte manuellement.",
+    "offline": {
+      "title": "Réseau déconnecté",
+      "body": "La connexion réseau est coupée. Nous réessaierons dès son rétablissement."
+    },
+    "401": {
+      "title": "Votre session a expiré",
+      "body": "Veuillez vous reconnecter pour continuer.",
+      "sign_in": "Se connecter"
+    },
+    "403": {
+      "title": "Accès interdit",
+      "body": "Votre compte n'a pas accès à cette page."
+    },
+    "404": {
+      "title": "Page introuvable",
+      "body": "La page que vous recherchez a peut-être été déplacée ou supprimée."
+    },
+    "500": {
+      "title": "Une erreur s'est produite de notre côté",
+      "body": "Veuillez réessayer. Si le problème persiste, contactez le support en indiquant l'ID de requête ci-dessous."
+    },
+    "503": {
+      "title": "Service temporairement indisponible",
+      "body": "Nous effectuons une maintenance ou une reprise du service. Veuillez revenir dans un instant.",
+      "status_page": "Voir l'état du service",
+      "recovered": "Service rétabli. Réessayez."
+    }
+  },
   "chart": {
     "empty": "Aucune statistique pour l'instant",
     "aria": "Graphique {kind} avec {count} séries : {series}. Unité : {unit}.",

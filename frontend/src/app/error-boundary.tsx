@@ -1,33 +1,43 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
+import { ApiError } from '@/api/errors'
+
+import { ServerErrorPage } from './error-status-page'
+
 export interface ErrorFallbackProps {
   error: unknown
   reset?: () => void
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : 'Unexpected error'
+/**
+ * 从错误对象读取 `request_id`（web-00 §8.4）。只接受非空字符串，避免把
+ * 异常对象上的任意字段塞进 UI；取不到时模板不渲染 request_id 区块。
+ */
+function requestIdOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const value = (error as { request_id?: unknown }).request_id
+  return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-/** Shared visual fallback for render errors and route-level error components. */
+/**
+ * F-09-08 / F-09-12：渲染异常统一映射到 500 页，而不是显示原始错误消息
+ * （原始 detail 可能含上游/内部信息，GC-2 禁止外露）。`ApiError.kind ===
+ * 'offline'` 时由外壳换成离线文案，避免把断网误报成服务器故障。
+ *
+ * 该组件同时被全局 ErrorBoundary（位于 AppProviders 之外）与根路由的
+ * `errorComponent` 使用，因此它的文案走 `useErrorPageTranslate` 的
+ * provider 缺失降级路径。
+ */
 export function ErrorFallback({ error, reset }: ErrorFallbackProps) {
+  const networkFailure = error instanceof ApiError && error.kind === 'offline'
+
   return (
-    <main
-      role="alert"
-      className="flex min-h-screen flex-col items-center justify-center gap-3 bg-surface-page p-6 text-center text-ink-1"
-    >
-      <h1 className="text-xl font-semibold">Something went wrong</h1>
-      <p className="max-w-prose text-sm text-ink-2">{messageOf(error)}</p>
-      {reset ? (
-        <button
-          type="button"
-          onClick={reset}
-          className="mt-2 h-9 rounded-lg bg-brand px-3.5 text-sm font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-        >
-          Try again
-        </button>
-      ) : null}
-    </main>
+    <ServerErrorPage
+      requestId={requestIdOf(error)}
+      networkFailure={networkFailure}
+      retryable={reset !== undefined}
+      onRetry={reset}
+    />
   )
 }
 

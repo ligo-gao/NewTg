@@ -47,6 +47,44 @@
   "error403.back": "Back to dashboard",
   "not_found.title": "Page not found",
   "not_found.action": "Back to home",
+  "error_page": {
+    "home": "Back to home",
+    "console": "Open console",
+    "go_back": "Go back",
+    "docs": "Read the docs",
+    "pricing": "View pricing",
+    "feature_disabled": "This feature may be disabled",
+    "request_id_label": "Request ID",
+    "copy_request_id": "Copy request ID",
+    "copy_failed": "Copy failed. Please select the text manually.",
+    "offline": {
+      "title": "Network disconnected",
+      "body": "The network connection is offline. We'll retry when it's back."
+    },
+    "401": {
+      "title": "Your session has expired",
+      "body": "Please sign in again to continue.",
+      "sign_in": "Sign in"
+    },
+    "403": {
+      "title": "Access forbidden",
+      "body": "Your account doesn't have access to this page."
+    },
+    "404": {
+      "title": "Page not found",
+      "body": "The page you're looking for may have been moved or deleted."
+    },
+    "500": {
+      "title": "Something went wrong on our side",
+      "body": "Please try again. If this persists, contact support with the request ID"
+    },
+    "503": {
+      "title": "Service temporarily unavailable",
+      "body": "We're performing maintenance or recovering. Please check back shortly.",
+      "status_page": "View status page",
+      "recovered": "Service recovered. Try again."
+    }
+  },
   "chart": {
     "empty": "No statistics yet",
     "aria": "{kind} chart with {count} series: {series}. Unit: {unit}.",

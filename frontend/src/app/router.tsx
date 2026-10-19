@@ -1,6 +1,8 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { createRouter } from '@tanstack/react-router'
 
+import { ErrorFallback } from '@/app/error-boundary'
+import { NotFoundPage } from '@/app/not-found-page'
 import { setAuthFailureHandlers } from '@/app/providers/auth-failures'
 import { appQueryClient } from '@/app/providers/query'
 import { routeTree } from '@/routeTree.gen'
@@ -15,6 +17,16 @@ export const router = createRouter({
   context: { queryClient: appQueryClient },
   defaultPreload: 'intent',
   scrollRestoration: true,
+  /**
+   * web-00 §8.3 的统一映射：任何未自带 `errorComponent` 的路由抛错都落到
+   * 500 页（`ErrorFallback` 从错误对象携带 request_id），未匹配路由落到
+   * `/404` 的同一组件。`__root` 显式声明了同样的两个组件；这里兜住未来新增
+   * 的路由，避免它们悄悄退回 React Router 的默认英文错误屏。
+   */
+  defaultErrorComponent: ({ error, reset }) => (
+    <ErrorFallback error={error} reset={reset} />
+  ),
+  defaultNotFoundComponent: NotFoundPage,
 })
 
 /**

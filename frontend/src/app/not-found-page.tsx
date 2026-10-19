@@ -1,32 +1,63 @@
-import { Link } from '@tanstack/react-router'
+import { usePublicStatus } from '@/lib/public-status'
 
-import { useI18n } from '@/shared/lib/i18n-context'
+import { ErrorActionLink, ErrorPageShell, useErrorPageTranslate } from './error-page-shell'
+import { readOptionalSiteConfig } from './error-status-page'
+
+export interface NotFoundPageProps {
+  requestId?: string
+  /** 测试/静态注入；默认从 `GET /api/status` 的结构化可选字段读取。 */
+  docsUrl?: string
+  pricingEnabled?: boolean
+}
 
 /**
- * Shared 404 body (web-00 §8.3: the error pages share one public skeleton).
- * Both the `/404` route and the router's `notFoundComponent` render this, so
- * the two entry points cannot drift apart as the error shell gains the shared
- * graphic/request_id treatment in a later milestone.
+ * F-09-11 404。`/404` 路由与 router 的 `notFoundComponent` 渲染同一个组件，
+ * 两个入口不会漂移（web-00 §8.3）。
  *
- * Copy comes from `common.not_found.*` because both entry points render inside
- * `I18nProvider`. (ErrorFallback stays hardcoded: the global boundary sits
- * outside the providers, where no dictionary is guaranteed to be loaded.)
+ * 次按钮优先级（UI §11）：`site.docs_url` 非空 → 查看文档（新标签）；否则
+ * `nav.pricing.enabled` → 查看定价；两者都不可用 → 不渲染次按钮。后端当前
+ * 尚未下发这两个字段时必须隐藏，不能凭空指向不存在的页面。
+ *
+ * 路由入口刻意声明为**无参数**函数：TanStack Router 的 `notFoundComponent`
+ * 以空 props 调用它，而「全部字段可选」的 props 类型在 TS weak-type 规则下
+ * 与 `{}` 无共同属性、不可赋值。需要注入 props 的场景用
+ * `NotFoundPageContent`。
  */
 export function NotFoundPage() {
-  const { t } = useI18n()
+  return <NotFoundPageContent />
+}
+
+export function NotFoundPageContent({
+  requestId,
+  docsUrl,
+  pricingEnabled,
+}: NotFoundPageProps) {
+  const t = useErrorPageTranslate()
+  const status = usePublicStatus()
+  const config = readOptionalSiteConfig(status.data)
+  const docs = docsUrl ?? config.docsUrl
+  const pricing = pricingEnabled ?? config.pricingEnabled
+
   return (
-    <main
-      id="main"
-      className="flex min-h-screen flex-col items-center justify-center gap-3 bg-surface-page p-6 text-center text-ink-1"
-    >
-      <h1 className="text-3xl font-bold">404</h1>
-      <p className="text-sm text-ink-2">{t('common.not_found.title')}</p>
-      <Link
-        to="/"
-        className="text-sm font-medium text-brand underline-offset-2 hover:text-brand-hover hover:underline"
-      >
-        {t('common.not_found.action')}
-      </Link>
-    </main>
+    <ErrorPageShell
+      status={404}
+      title={t('common.error_page.404.title')}
+      body={t('common.error_page.404.body')}
+      requestId={requestId}
+      actions={
+        <>
+          <ErrorActionLink href="/">{t('common.error_page.home')}</ErrorActionLink>
+          {docs !== undefined ? (
+            <ErrorActionLink href={docs} variant="secondary" external>
+              {t('common.error_page.docs')}
+            </ErrorActionLink>
+          ) : pricing ? (
+            <ErrorActionLink href="/pricing" variant="secondary">
+              {t('common.error_page.pricing')}
+            </ErrorActionLink>
+          ) : null}
+        </>
+      }
+    />
   )
 }

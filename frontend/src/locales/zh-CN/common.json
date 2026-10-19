@@ -47,6 +47,44 @@
   "error403.back": "返回仪表盘",
   "not_found.title": "页面不存在",
   "not_found.action": "返回首页",
+  "error_page": {
+    "home": "返回首页",
+    "console": "进入控制台",
+    "go_back": "返回上一页",
+    "docs": "查看文档",
+    "pricing": "查看定价",
+    "feature_disabled": "该功能可能未开启",
+    "request_id_label": "请求编号",
+    "copy_request_id": "复制请求编号",
+    "copy_failed": "复制失败，请手动选择文本复制。",
+    "offline": {
+      "title": "网络连接已断开",
+      "body": "网络连接已断开，恢复后将自动重试"
+    },
+    "401": {
+      "title": "登录状态已失效",
+      "body": "请重新登录以继续",
+      "sign_in": "去登录"
+    },
+    "403": {
+      "title": "没有访问权限",
+      "body": "当前账号无权访问该页面"
+    },
+    "404": {
+      "title": "页面不存在",
+      "body": "你访问的页面可能已被移动或删除"
+    },
+    "500": {
+      "title": "服务器出错了",
+      "body": "请稍后重试；若持续出现，请联系支持并附上下方的请求编号"
+    },
+    "503": {
+      "title": "服务暂时不可用",
+      "body": "我们正在进行维护或正在恢复服务，请稍后再试",
+      "status_page": "查看服务状态",
+      "recovered": "服务已恢复，可重试"
+    }
+  },
   "chart": {
     "empty": "暂无统计数据",
     "aria": "{kind} 图表，共 {count} 个系列：{series}。单位：{unit}。",

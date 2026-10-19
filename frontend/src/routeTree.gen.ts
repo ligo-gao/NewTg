@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
 import { Route as AboutRouteImport } from './routes/about'
+import { Route as DocsRouteImport } from './routes/docs'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SetupRouteImport } from './routes/setup'
@@ -29,6 +30,8 @@ import { Route as ConsoleWalletRouteImport } from './routes/_console/wallet'
 import { Route as Errors401RouteImport } from './routes/_errors/401'
 import { Route as Errors403RouteImport } from './routes/_errors/403'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
+import { Route as Errors500RouteImport } from './routes/_errors/500'
+import { Route as Errors503RouteImport } from './routes/_errors/503'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as PricingModelIdRouteImport } from './routes/pricing.$modelId'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
@@ -38,6 +41,7 @@ import { Route as ConsoleAdminPricingIndexRouteImport } from './routes/_console/
 import { Route as ConsoleAdminPricingGroupPricingRouteImport } from './routes/_console/admin/pricing/group-pricing'
 import { Route as ConsoleAdminPricingModelPricingRouteImport } from './routes/_console/admin/pricing/model-pricing'
 import { Route as ConsoleAdminSettingsIndexRouteImport } from './routes/_console/admin/settings/index'
+import { Route as ConsoleAdminSettingsNotificationTemplatesRouteImport } from './routes/_console/admin/settings/notification-templates'
 import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_console/admin/system/audit-logs'
 import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/admin/system/status'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
@@ -55,6 +59,11 @@ const ConsoleRoute = ConsoleRouteImport.update({
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsRoute = DocsRouteImport.update({
+  id: '/docs',
+  path: '/docs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
@@ -142,6 +151,16 @@ const Errors404Route = Errors404RouteImport.update({
   path: '/404',
   getParentRoute: () => rootRouteImport,
 } as any)
+const Errors500Route = Errors500RouteImport.update({
+  id: '/_errors/500',
+  path: '/500',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const Errors503Route = Errors503RouteImport.update({
+  id: '/_errors/503',
+  path: '/503',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LegalDocRoute = LegalDocRouteImport.update({
   id: '/legal/$doc',
   path: '/legal/$doc',
@@ -192,6 +211,12 @@ const ConsoleAdminSettingsIndexRoute =
     path: '/settings/',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSettingsNotificationTemplatesRoute =
+  ConsoleAdminSettingsNotificationTemplatesRouteImport.update({
+    id: '/settings/notification-templates',
+    path: '/settings/notification-templates',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminSystemAuditLogsRoute =
   ConsoleAdminSystemAuditLogsRouteImport.update({
     id: '/system/audit-logs',
@@ -218,6 +243,7 @@ const ConsoleAdminUsersGroupsRoute = ConsoleAdminUsersGroupsRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/docs': typeof DocsRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -235,12 +261,15 @@ export interface FileRoutesByFullPath {
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
+  '/500': typeof Errors500Route
+  '/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/admin/': typeof ConsoleAdminIndexRoute
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -252,6 +281,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/docs': typeof DocsRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -268,12 +298,15 @@ export interface FileRoutesByTo {
   '/401': typeof Errors401Route
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
+  '/500': typeof Errors500Route
+  '/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/admin': typeof ConsoleAdminIndexRoute
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -287,6 +320,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
   '/about': typeof AboutRoute
+  '/docs': typeof DocsRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -304,12 +338,15 @@ export interface FileRoutesById {
   '/_errors/401': typeof Errors401Route
   '/_errors/403': typeof Errors403Route
   '/_errors/404': typeof Errors404Route
+  '/_errors/500': typeof Errors500Route
+  '/_errors/503': typeof Errors503Route
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/_console/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/_console/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/_console/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/_console/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -323,6 +360,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/docs'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -340,12 +378,15 @@ export interface FileRouteTypes {
     | '/401'
     | '/403'
     | '/404'
+    | '/500'
+    | '/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/admin/'
     | '/dashboard/'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
     | '/admin/system/status'
     | '/admin/users/groups'
@@ -357,6 +398,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/docs'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -373,12 +415,15 @@ export interface FileRouteTypes {
     | '/401'
     | '/403'
     | '/404'
+    | '/500'
+    | '/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/admin'
     | '/dashboard'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
     | '/admin/system/status'
     | '/admin/users/groups'
@@ -391,6 +436,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_console'
     | '/about'
+    | '/docs'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -408,12 +454,15 @@ export interface FileRouteTypes {
     | '/_errors/401'
     | '/_errors/403'
     | '/_errors/404'
+    | '/_errors/500'
+    | '/_errors/503'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/_console/admin/'
     | '/_console/dashboard/'
     | '/_console/admin/pricing/group-pricing'
     | '/_console/admin/pricing/model-pricing'
+    | '/_console/admin/settings/notification-templates'
     | '/_console/admin/system/audit-logs'
     | '/_console/admin/system/status'
     | '/_console/admin/users/groups'
@@ -427,6 +476,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ConsoleRoute: typeof ConsoleRouteWithChildren
   AboutRoute: typeof AboutRoute
+  DocsRoute: typeof DocsRoute
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SetupRoute: typeof SetupRoute
@@ -436,6 +486,8 @@ export interface RootRouteChildren {
   Errors401Route: typeof Errors401Route
   Errors403Route: typeof Errors403Route
   Errors404Route: typeof Errors404Route
+  Errors500Route: typeof Errors500Route
+  Errors503Route: typeof Errors503Route
   LegalDocRoute: typeof LegalDocRoute
   PricingModelIdRoute: typeof PricingModelIdRoute
 }
@@ -461,6 +513,13 @@ declare module '@tanstack/react-router' {
       path: '/about'
       fullPath: '/about'
       preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/docs': {
+      id: '/docs'
+      path: '/docs'
+      fullPath: '/docs'
+      preLoaderRoute: typeof DocsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/forgot-password': {
@@ -582,6 +641,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof Errors404RouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_errors/500': {
+      id: '/_errors/500'
+      path: '/500'
+      fullPath: '/500'
+      preLoaderRoute: typeof Errors500RouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_errors/503': {
+      id: '/_errors/503'
+      path: '/503'
+      fullPath: '/503'
+      preLoaderRoute: typeof Errors503RouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/legal/$doc': {
       id: '/legal/$doc'
       path: '/legal/$doc'
@@ -645,6 +718,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSettingsIndexRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/settings/notification-templates': {
+      id: '/_console/admin/settings/notification-templates'
+      path: '/settings/notification-templates'
+      fullPath: '/admin/settings/notification-templates'
+      preLoaderRoute: typeof ConsoleAdminSettingsNotificationTemplatesRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/system/audit-logs': {
       id: '/_console/admin/system/audit-logs'
       path: '/system/audit-logs'
@@ -680,6 +760,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
+  ConsoleAdminSettingsNotificationTemplatesRoute: typeof ConsoleAdminSettingsNotificationTemplatesRoute
   ConsoleAdminSystemAuditLogsRoute: typeof ConsoleAdminSystemAuditLogsRoute
   ConsoleAdminSystemStatusRoute: typeof ConsoleAdminSystemStatusRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
@@ -693,6 +774,8 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,
+  ConsoleAdminSettingsNotificationTemplatesRoute:
+    ConsoleAdminSettingsNotificationTemplatesRoute,
   ConsoleAdminSystemAuditLogsRoute: ConsoleAdminSystemAuditLogsRoute,
   ConsoleAdminSystemStatusRoute: ConsoleAdminSystemStatusRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
@@ -737,6 +820,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ConsoleRoute: ConsoleRouteWithChildren,
   AboutRoute: AboutRoute,
+  DocsRoute: DocsRoute,
   ForgotPasswordRoute: ForgotPasswordRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SetupRoute: SetupRoute,
@@ -746,6 +830,8 @@ const rootRouteChildren: RootRouteChildren = {
   Errors401Route: Errors401Route,
   Errors403Route: Errors403Route,
   Errors404Route: Errors404Route,
+  Errors500Route: Errors500Route,
+  Errors503Route: Errors503Route,
   LegalDocRoute: LegalDocRoute,
   PricingModelIdRoute: PricingModelIdRoute,
 }
