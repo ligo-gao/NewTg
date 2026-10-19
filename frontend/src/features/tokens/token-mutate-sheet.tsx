@@ -397,7 +397,13 @@ export function TokenMutateSheet({
         if (isAuto) body.auto_groups = parsedValues.autoGroups
 
         const created = await createTokens(body, idempotencyKey.current)
-        setRevealed(created.map((entry) => ({ name: entry.name, key: entry.key })))
+        setRevealed(
+          created.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            key: entry.key,
+          })),
+        )
         push({ tone: 'success', message: t('common.tokens.toast.created') })
       } else {
         const detail = detailQuery.data
@@ -432,7 +438,11 @@ export function TokenMutateSheet({
     try {
       const result = await resetTokenKey(tokenId)
       setRevealed([
-        { name: detailQuery.data?.name ?? String(tokenId), key: result.key },
+        {
+          id: tokenId,
+          name: detailQuery.data?.name ?? String(tokenId),
+          key: result.key,
+        },
       ])
       push({ tone: 'success', message: t('common.tokens.reset.done') })
       setResetOpen(false)
@@ -739,9 +749,12 @@ export function TokenMutateSheet({
       <KeyRevealDialog
         entries={revealed}
         onImport={(entry) => {
-          // Hand the plaintext straight from the one-time reveal to the import
-          // dialog; it never enters the list row path (no key is retrievable).
-          setRevealed([])
+          // Import removes ONLY this entry: a batch create's other plaintext
+          // keys are unrecoverable from the server, so discarding the list
+          // would lose them permanently.
+          setRevealed((current) =>
+            current.filter((item) => item.id !== entry.id),
+          )
           setCcSwitchKey(entry.key)
         }}
         onClose={() => {

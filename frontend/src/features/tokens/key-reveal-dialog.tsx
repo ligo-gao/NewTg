@@ -6,6 +6,8 @@ import { useToastStore } from '@/shared/ui/toast'
 import { writeClipboard } from './clipboard'
 
 export interface RevealedKey {
+  /** Token id, used to remove exactly one entry after a CC Switch import. */
+  id: number
   name: string
   key: string
 }

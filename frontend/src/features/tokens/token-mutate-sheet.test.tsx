@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { TokenListPage } from './token-list-page'
 import {
@@ -218,6 +218,57 @@ describe('token creation', () => {
     expect(
       requests.some((request) => request.url.pathname === '/api/tokens/undefined'),
     ).toBe(false)
+  })
+
+  it('keeps the other batch keys when importing one to CC Switch', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    baseRoutes((request) => {
+      if (request.method === 'POST' && request.url.pathname === '/api/tokens') {
+        return jsonResponse({
+          created: [1, 2, 3].map((index) => ({
+            ...makeToken({ id: 50 + index, name: `batch-${index}` }),
+            key: `nkt-key-${index}`,
+          })),
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<TokenListPage />)
+    await screen.findByText('alpha')
+    const sheet = await openCreateSheet(user)
+    await user.type(within(sheet).getByLabelText('Name'), 'batch')
+    const quantity = within(sheet).getByLabelText('Quantity')
+    await user.clear(quantity)
+    await user.type(quantity, '3')
+    await user.click(within(sheet).getByRole('button', { name: 'Create' }))
+
+    const reveal = await screen.findByRole('dialog', { name: 'Save your API key' })
+    const importButtons = within(reveal).getAllByRole('button', {
+      name: 'Import to CC Switch',
+    })
+    expect(importButtons).toHaveLength(3)
+    const middle = importButtons[1]
+    expect(middle).toBeDefined()
+    if (middle !== undefined) await user.click(middle)
+
+    const cc = await screen.findByRole('dialog', { name: 'Import to CC Switch' })
+    await user.click(within(cc).getByRole('button', { name: 'Cancel' }))
+
+    // Only the imported key left the list; the other two remain visible and
+    // copyable (they cannot be recovered from the server).
+    expect(within(reveal).getByText('nkt-key-1')).toBeTruthy()
+    expect(within(reveal).getByText('nkt-key-3')).toBeTruthy()
+    expect(within(reveal).queryByText('nkt-key-2')).toBeNull()
+    await user.click(
+      within(reveal).getByRole('button', { name: 'Copy key for batch-1' }),
+    )
+    expect(writeText).toHaveBeenCalledWith('nkt-key-1')
   })
 
   it('validates the name and quantity before sending', async () => {
