@@ -179,6 +179,12 @@ func newRelayBillingTestEnv(t *testing.T, model string, balance int64,
 
 	t.Helper()
 	userID, tokenID := relayBillingTestUser(t, mainDB, balance)
+	// usage_logs 落在共享日志库；清理必须登记到 t.Cleanup，而不能只在用例
+	// 开头调用 cleanupLogs——否则本用例写入的行会残留到后续用例，破坏
+	// TestIntegrationUsageLogsScoping 的「24h 内恰 5 条」断言，使套件不可重复运行。
+	t.Cleanup(func() {
+		_, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE user_id = $1`, userID)
+	})
 
 	// 定价源必须在插入定价行之后构造（DBSource 有 30s 缓存；先构造会缓存
 	// 「无行 → 默认价」，把测试变成与缓存时序相关）。

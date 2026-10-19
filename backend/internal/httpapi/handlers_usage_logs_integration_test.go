@@ -30,7 +30,7 @@ import (
 // 运行：
 //
 //	NEWTG_TEST_DB_DSN='postgres://newtg:newtg@localhost:55432/newtg_test?sslmode=disable' \
-//	NEWTG_TEST_LOGS_DSN='postgres://newtg:newtg@localhost:55432/newtg_test_logs?sslmode=disable' \
+//	NEWTG_TEST_LOGS_DSN='postgres://newtg:newtg@localhost:55432/newtg_logs?sslmode=disable' \
 //	go test -tags=integration ./internal/httpapi/ -run TestIntegrationUsage -v
 //
 // 与既有集成测试同一口径：未设置 DSN 时跳过。
@@ -94,11 +94,17 @@ func newUsageTestEnv(t *testing.T) *usageTestEnv {
 		_ = mainDB.Close()
 		_ = logsDB.Close()
 	})
+	// 后登记先执行：在连接关闭前清掉历史上误建在主库的 usage_logs 残留表。
+	dropMainUsageLogsArtifact(t, mainDB)
 	return env
 }
 
 // ensureUsageTestTables 幂等补建两张日志表与当前/相邻月份分区。测试库已跑过
 // migrations-logs 时是纯 no-op；空库时也能自举。
+//
+// 约束：usage_logs / audit_logs 的 DDL 只允许执行在 logsDB 上；主库
+// （mainDB）只用于补默认用户组，绝不在这里建日志表——主库 schema 契约
+// 由 internal/store.TestMainSchemaTableCount 守护。
 func ensureUsageTestTables(t *testing.T, mainDB, logsDB *sql.DB) {
 	t.Helper()
 	if _, err := mainDB.Exec(`INSERT INTO user_groups (name) VALUES ('default') ON CONFLICT (name) DO NOTHING`); err != nil {
