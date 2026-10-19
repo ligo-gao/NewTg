@@ -57,10 +57,12 @@ export interface ModelPerfBucketPoint {
   tps: number | null
   /**
    * +Inf 桶标记：值为 30000 时表示「下界 >30s」，不是伪造的 30.0s。
-   * 后端当前只在 summary 输出该标志；解析层兼容桶/模型行将来携带它。
+   * summary / bucket / model 行均可能下发（handlers_model_perf.go）。
    */
   ttft_p95_over_30s?: boolean
+  ttft_p50_over_30s?: boolean
   latency_p95_over_30s?: boolean
+  latency_p50_over_30s?: boolean
 }
 
 export interface ModelPerfIncident {
@@ -82,7 +84,9 @@ export interface ModelPerfModelRow {
   sample_size: number
   badge: ModelPerfBadge
   ttft_p95_over_30s?: boolean
+  ttft_p50_over_30s?: boolean
   latency_p95_over_30s?: boolean
+  latency_p50_over_30s?: boolean
 }
 
 export interface ModelPerfPipeline {
@@ -198,7 +202,9 @@ export function parseModelPerfResponse(raw: unknown): ModelPerfResponse {
             uptime: numberOrNull(bucket.uptime),
             tps: numberOrNull(bucket.tps),
             ttft_p95_over_30s: booleanOrFalse(bucket.ttft_p95_over_30s),
+            ttft_p50_over_30s: booleanOrFalse(bucket.ttft_p50_over_30s),
             latency_p95_over_30s: booleanOrFalse(bucket.latency_p95_over_30s),
+            latency_p50_over_30s: booleanOrFalse(bucket.latency_p50_over_30s),
           },
         ]
       })
@@ -222,7 +228,9 @@ export function parseModelPerfResponse(raw: unknown): ModelPerfResponse {
               ? (model.badge as ModelPerfBadge)
               : 'no_data',
             ttft_p95_over_30s: booleanOrFalse(model.ttft_p95_over_30s),
+            ttft_p50_over_30s: booleanOrFalse(model.ttft_p50_over_30s),
             latency_p95_over_30s: booleanOrFalse(model.latency_p95_over_30s),
+            latency_p50_over_30s: booleanOrFalse(model.latency_p50_over_30s),
           },
         ]
       })

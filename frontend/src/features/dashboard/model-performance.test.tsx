@@ -289,7 +289,8 @@ describe('ModelPerformance (F-05-08)', () => {
     expect(screen.queryByTestId('perf-error')).toBeNull()
   })
 
-  it('switches 24h/7d and re-queries the window', async () => {    const requests = servePerf(() => perf())
+  it('switches 24h/7d and re-queries the window', async () => {
+    const requests = servePerf(() => perf())
     const user = userEvent.setup()
     await renderWithProviders(
       <ModelPerformance canViewDimension={false} />,
@@ -416,13 +417,14 @@ describe('ModelPerformance (F-05-08)', () => {
             start: '2026-10-19T10:00:00Z',
             model: 'gpt-4o',
             requests: 40,
-            ttft_p50_ms: 1200,
+            ttft_p50_ms: 30000,
             ttft_p95_ms: 30000,
             latency_p50_ms: 1500,
             latency_p95_ms: 30000,
             success_rate: 0.99,
             uptime: 0.999,
             tps: 40,
+            ttft_p50_over_30s: true,
             ttft_p95_over_30s: true,
             latency_p95_over_30s: true,
           },
@@ -435,8 +437,10 @@ describe('ModelPerformance (F-05-08)', () => {
         }),
         models: [
           modelRow({
+            ttft_p50_ms: 30000,
             ttft_p95_ms: 30000,
             latency_p95_ms: 30000,
+            ttft_p50_over_30s: true,
             ttft_p95_over_30s: true,
             latency_p95_over_30s: true,
           }),
@@ -460,6 +464,10 @@ describe('ModelPerformance (F-05-08)', () => {
     expect(within(latencyChart).getAllByText('>30s').length).toBeGreaterThan(0)
     expect(within(screen.getByTestId('perf-models')).getAllByText('>30s').length)
       .toBeGreaterThan(0)
+    // LOW-4：模型行的 TTFT P50 也消费 *_over_30s，不能只修 P95。
+    expect(
+      screen.getByTestId('perf-model-row').textContent,
+    ).toContain('>30s / >30s')
     expect(screen.queryByText('30.0s')).toBeNull()
   })
 })

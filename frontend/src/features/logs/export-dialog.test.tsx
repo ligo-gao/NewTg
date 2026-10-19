@@ -1,8 +1,8 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ComponentProps } from 'react'
+import { useState, type ComponentProps } from 'react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -235,6 +235,65 @@ describe('ExportDialog (F-05-07)', () => {
     })
   })
 
+  it('keeps scope/format/error when external props change while open', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/usage-logs/export`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/export_row_limit',
+            title: 'Export row limit exceeded',
+            detail: 'EXPORT_ROW_LIMIT: export is limited to 10000 rows',
+          },
+          { status: 422 },
+        ),
+      ),
+    )
+    let updateProps: (
+      patch: Partial<ComponentProps<typeof ExportDialog>>,
+    ) => void = () => undefined
+    function Harness() {
+      const [props, setProps] = useState<Partial<ComponentProps<typeof ExportDialog>>>({
+        canRevealSensitive: true,
+        revealSensitive: false,
+      })
+      updateProps = setProps
+      return (
+        <ExportDialog
+          open
+          onOpenChange={() => undefined}
+          search={SEARCH}
+          filteredTotal={42}
+          canRevealSensitive={false}
+          revealSensitive={false}
+          canFilterByUsername={false}
+          {...props}
+        />
+      )
+    }
+
+    const user = userEvent.setup()
+    await renderWithProviders(<Harness />, ['common', 'logs'])
+
+    await user.click(screen.getByTestId('export-scope-all'))
+    await user.click(screen.getByTestId('export-format-txt'))
+    await user.click(screen.getByTestId('export-download'))
+    expect(await screen.findByTestId('export-error')).toBeTruthy()
+
+    // 父级因为无关状态（例如列表刷新/敏感开关）重渲染：已打开的对话框
+    // 不得把用户选好的范围、格式和错误提示重置掉（#12）。
+    await act(async () => {
+      updateProps({ revealSensitive: true, filteredTotal: 0 })
+    })
+
+    expect(
+      (screen.getByTestId('export-scope-all') as HTMLInputElement).checked,
+    ).toBe(true)
+    expect(
+      (screen.getByTestId('export-format-txt') as HTMLInputElement).checked,
+    ).toBe(true)
+    expect(screen.getByTestId('export-error')).toBeTruthy()
+  })
+
   it('disables Download from the first frame when opened offline', async () => {
     Object.defineProperty(navigator, 'onLine', {
       configurable: true,
@@ -244,6 +303,7 @@ describe('ExportDialog (F-05-07)', () => {
     await renderWithProviders(element, ['common', 'logs'])
 
     const download = screen.getByTestId('export-download') as HTMLButtonElement
+    // 首个 render（不是等待 effect 后）就必须禁用。
     expect(download.disabled).toBe(true)
     expect(screen.getByText('Network disconnected')).toBeTruthy()
     // 离线时不给「重试」：恢复连接后由用户手动重新发起（§7.5）。

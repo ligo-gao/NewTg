@@ -33,6 +33,7 @@ interface AggregatedPoint {
   success: number | null
   uptime: number | null
   /** 任一贡献桶落在 +Inf 桶：图上仍画在下界 30s，读数必须显示 `>30s`。 */
+  ttft50Over30: boolean
   ttft95Over30: boolean
   latency95Over30: boolean
 }
@@ -82,6 +83,9 @@ function aggregateBuckets(
       uptime: weighted(group, (bucket) => bucket.uptime),
       // 汇聚后的下界语义取「任一桶越界」：只要有一个模型落在 >30s，
       // 这条汇总读数就不能冒充有限的 30.0s。
+      ttft50Over30: group.some(
+        (bucket) => bucket.ttft_p50_over_30s === true,
+      ),
       ttft95Over30: group.some(
         (bucket) => bucket.ttft_p95_over_30s === true,
       ),
@@ -286,6 +290,17 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
       new Set(
         seriesFrom(
           aggregated.filter((point) => point.ttft95Over30),
+          () => 0,
+        ).map((point) => point.ts),
+      ),
+    [aggregated],
+  )
+
+  const ttftP50OverTimestamps = useMemo(
+    () =>
+      new Set(
+        seriesFrom(
+          aggregated.filter((point) => point.ttft50Over30),
           () => 0,
         ).map((point) => point.ts),
       ),
@@ -582,7 +597,8 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
               series={ttftSeries}
               config={{ kind: 'line', unit: 'ms' }}
               pointLabel={(seriesId, ts) =>
-                seriesId === 'ttft-p95' && ttftOverTimestamps.has(ts)
+                (seriesId === 'ttft-p50' && ttftP50OverTimestamps.has(ts)) ||
+                (seriesId === 'ttft-p95' && ttftOverTimestamps.has(ts))
                   ? '>30s'
                   : undefined
               }
@@ -985,7 +1001,7 @@ function ModelTable({
                   </button>
                 </th>
                 <td className="py-2 text-right font-mono text-[13px] tabular-nums">
-                  {formatMs(row.ttft_p50_ms)} /{' '}
+                  {formatMs(row.ttft_p50_ms, row.ttft_p50_over_30s)} /{' '}
                   {formatMs(row.ttft_p95_ms, row.ttft_p95_over_30s)}
                 </td>
                 <td className="py-2 text-right tabular-nums">

@@ -65,7 +65,11 @@ export function ExportDialog({
   const [includeSensitive, setIncludeSensitive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<ExportErrorKind>(null)
-  const [offline, setOffline] = useState(false)
+  // 惰性初始化：对话框可能一挂载就是 open（路由/状态恢复），此时首帧
+  // 必须已经知道离线，不能等 effect 跑完才禁用 Download。
+  const [offline, setOffline] = useState(
+    () => typeof navigator !== 'undefined' && navigator.onLine === false,
+  )
   const abortRef = useRef<AbortController | null>(null)
   const wasOpenRef = useRef(false)
 
