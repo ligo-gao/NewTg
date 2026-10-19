@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { ME_QUERY_KEY, type Me } from '@/lib/session'
 import { SELF_SETTINGS_QUERY_KEY } from '@/lib/self-settings'
 import { LanguageCard } from '@/features/account/LanguageCard'
+import { ToastViewport, useToastStore } from '@/shared/ui/toast'
 
 import { I18nProvider, useI18n } from './i18n'
 
@@ -19,6 +20,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
+  // toast store 是模块级状态；不清理会让 info/success 断言串到下个用例。
+  useToastStore.setState({ toasts: [] })
 })
 afterAll(() => server.close())
 
@@ -125,7 +128,7 @@ describe('LocalePreferenceSync', () => {
       }),
     )
 
-    const { getByTestId, getByRole } = renderSync()
+    const { getByTestId, getByRole, client } = renderSync()
     const user = userEvent.setup()
 
     await waitFor(() => {
@@ -137,11 +140,46 @@ describe('LocalePreferenceSync', () => {
     })
 
     release()
-    // 响应到达后不得回写 en/fr，也不得再覆盖 localStorage。
+    // 关键：必须等到响应真正写入缓存之后才能断言。仅同步检查当前语言会在
+    // 响应微任务落地前通过，导致删掉手势守卫时用例仍可能假绿（评审复现）。
     await waitFor(() => {
+      expect(client.getQueryData(SELF_SETTINGS_QUERY_KEY)).toBeDefined()
+    })
+    // 响应到达后不得回写 en/fr，也不得再覆盖 localStorage。
+    expect(getByTestId('locale').textContent).toBe('ja')
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
+  })
+
+  it('normalizes an out-of-set active locale to en when advertised (F5)', async () => {
+    globalThis.localStorage.setItem('newtg.language', 'fr')
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['ja', 'en'])),
+      ),
+    )
+
+    const { getByTestId } = renderSync(<Probe />, false)
+
+    await waitFor(() => {
+      expect(getByTestId('available').textContent).toBe('ja,en')
+      expect(getByTestId('locale').textContent).toBe('en')
+    })
+  })
+
+  it('normalizes to the first advertised locale when en is absent (F5)', async () => {
+    globalThis.localStorage.setItem('newtg.language', 'fr')
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['ja', 'ru'])),
+      ),
+    )
+
+    const { getByTestId } = renderSync(<Probe />, false)
+
+    await waitFor(() => {
+      expect(getByTestId('available').textContent).toBe('ja,ru')
       expect(getByTestId('locale').textContent).toBe('ja')
     })
-    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
   })
 
   it('does not request /api/self for anonymous visitors (F7)', async () => {
@@ -203,5 +241,108 @@ describe('LocalePreferenceSync', () => {
     expect(
       (getByLabelText(/interface/i) as HTMLSelectElement).value,
     ).toBe('fr')
+  })
+
+  it('degrades to local-only with an info hint when self settings stay unavailable (F3)', async () => {
+    let selfCalls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'ja'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => {
+        selfCalls += 1
+        return HttpResponse.json(
+          { type: 'server_error', title: 'Unavailable' },
+          { status: 503 },
+        )
+      }),
+    )
+
+    const { getByTestId, getByLabelText, findByTestId } = renderSync(
+      <>
+        <Probe />
+        <LanguageCard />
+        <ToastViewport />
+      </>,
+    )
+    const user = userEvent.setup()
+
+    await waitFor(() => {
+      expect(selfCalls).toBeGreaterThanOrEqual(1)
+    })
+    await user.selectOptions(getByLabelText('Interface language'), 'ja')
+
+    // 切换保留在本地；服务端偏好未保存，因此必须给出 local-only 提示，
+    // 不能显示“Language updated”成功文案。
+    await waitFor(() => {
+      expect(getByTestId('locale').textContent).toBe('ja')
+    })
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
+    const viewport = await findByTestId('toast-viewport')
+    expect(viewport.textContent).toContain('Language changed on this device only')
+    expect(viewport.textContent).not.toContain('Language updated')
+    // 未就绪时会补读一次，但不会发出 PUT。
+    expect(selfCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('invalidates self settings after a failed save so a retry uses the fresh updated_at (F4)', async () => {
+    let selfCalls = 0
+    const putBodies: Array<Record<string, unknown>> = []
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'ja'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => {
+        selfCalls += 1
+        // 第一次读取给出旧令牌；失效后的重新读取给出新令牌。
+        return HttpResponse.json(
+          self('en', selfCalls === 1 ? '2026-10-19T10:00:00Z' : '2026-10-19T12:00:00Z'),
+        )
+      }),
+      http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>
+        putBodies.push(body)
+        if (body.updated_at === '2026-10-19T10:00:00Z') {
+          return HttpResponse.json(
+            { type: 'conflict', title: 'Conflict' },
+            { status: 409 },
+          )
+        }
+        return HttpResponse.json(self('ja', '2026-10-19T13:00:00Z'))
+      }),
+    )
+
+    const { getByTestId, getByLabelText } = renderSync(
+      <>
+        <Probe />
+        <LanguageCard />
+      </>,
+    )
+    const user = userEvent.setup()
+
+    await waitFor(() => {
+      expect(getByTestId('locale').textContent).toBe('en')
+    })
+
+    // 第一次保存撞 409：回退 en，并触发个人设置失效/重读。
+    await user.selectOptions(getByLabelText('Interface language'), 'ja')
+    await waitFor(() => {
+      expect(getByTestId('locale').textContent).toBe('en')
+      expect(selfCalls).toBeGreaterThanOrEqual(2)
+    })
+
+    // 重试必须使用刷新后的 updated_at；旧令牌会让服务端持续 409。
+    await waitFor(() => {
+      expect(
+        (getByLabelText('Interface language') as HTMLSelectElement).disabled,
+      ).toBe(false)
+    })
+    await user.selectOptions(getByLabelText('Interface language'), 'ja')
+
+    await waitFor(() => {
+      expect(getByTestId('locale').textContent).toBe('ja')
+    })
+    expect(putBodies).toHaveLength(2)
+    expect(putBodies[1]?.updated_at).toBe('2026-10-19T12:00:00Z')
   })
 })
