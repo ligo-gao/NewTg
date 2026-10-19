@@ -85,13 +85,21 @@ var EnumChecks = map[string][]string{
 	"notification_deliveries.status": {
 		"queued", "sent", "failed", "bounced", "suppressed",
 	},
+
+	// 任务插件三表（M6d Task 1，modules-08 §3.10.2 B-11/B-12/B-13）。
+	// task_plugins.source 是「层」枚举（内置 factory / 上传覆盖层）；
+	// task_plugin_versions.api_version 当前只有 v1（relay-06 §2.2，清单
+	// 版本化预留多值）；市场源的 last_check_status 三态对应试拉结果。
+	"task_plugins.source":                          {"builtin", "upload"},
+	"task_plugin_versions.api_version":             {"v1"},
+	"plugin_marketplace_sources.last_check_status": {"pending", "ok", "failed"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
 // 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
-// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 = 24 表），
+// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 3 = 27 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{

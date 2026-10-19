@@ -273,3 +273,72 @@ type RequestRegistry struct{}
 
 // TableName 返回 GORM 表名。
 func (RequestRegistry) TableName() string { return "request_registry" }
+
+// TaskPlugin 对应 task_plugins（modules-08 §3.10.2 B-11，10 列）。
+//
+// 口径（M6d R-M6D-01/05）：
+//   - Key 是自然主键（text），不是代理 id；列名 "key" 在 SQL 中必须双引号，
+//     GORM tag 只写裸列名（引用由 dialector 负责，见包注释）。
+//   - Source 是 {builtin,upload} 层枚举，与版本行的 source_text 不同义
+//     （R-M6D-04）；Builtin 标记是否内置 factory 层。
+//   - ActiveVersion 是 active 版本的同事务镜像，**仅供展示**；active 的
+//     唯一真源是 task_plugin_versions.active 的部分唯一索引（R-M6D-05）。
+type TaskPlugin struct {
+	Key           string    `gorm:"column:key;primaryKey"`
+	Name          string    `gorm:"column:name"`
+	Icon          *string   `gorm:"column:icon"`
+	Source        string    `gorm:"column:source"`
+	Builtin       bool      `gorm:"column:builtin"`
+	Enabled       bool      `gorm:"column:enabled"`
+	ActiveVersion *string   `gorm:"column:active_version"`
+	Description   *string   `gorm:"column:description"`
+	CreatedAt     time.Time `gorm:"column:created_at"`
+	UpdatedAt     time.Time `gorm:"column:updated_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (TaskPlugin) TableName() string { return "task_plugins" }
+
+// TaskPluginVersion 对应 task_plugin_versions（B-12，11 列）。
+//
+// 口径（R-M6D-04/05/11）：
+//   - ID 是 uuid 字符串（PG uuid 列）；写入由 DB 的 gen_random_uuid() 生成，
+//     本模型不设 default 标签（包级「零值不被标签改写」纪律）。
+//   - SourceText 是插件源码正文；列名刻意不叫 source，避免与 B-11 的
+//     层枚举同名异义（R-M6D-04）。列表接口不得下发该字段（S5）。
+//   - SourceHash 是服务端计算的 SHA-256（64 hex），完整性校验依据（S3）。
+//   - Active 是 active 的唯一真源；UploadedBy 是 bigint 用户 id，
+//     逻辑引用 users.id，不设 FK（R-M6D-11）。
+type TaskPluginVersion struct {
+	ID         string    `gorm:"column:id;primaryKey"`
+	Key        string    `gorm:"column:key"`
+	Version    string    `gorm:"column:version"`
+	APIVersion string    `gorm:"column:api_version"`
+	SourceText string    `gorm:"column:source_text"`
+	SourceHash string    `gorm:"column:source_hash"`
+	Icon       *string   `gorm:"column:icon"`
+	Enabled    bool      `gorm:"column:enabled"`
+	Active     bool      `gorm:"column:active"`
+	UploadedBy int64     `gorm:"column:uploaded_by"`
+	CreatedAt  time.Time `gorm:"column:created_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (TaskPluginVersion) TableName() string { return "task_plugin_versions" }
+
+// PluginMarketplaceSource 对应 plugin_marketplace_sources（B-13，7 列）。
+//
+// URL 仅 https（R-M6D-03），出站另走 sec.ssrf.* 守卫；LastError 截断存储，
+// 不含远端响应体。
+type PluginMarketplaceSource struct {
+	ID              string     `gorm:"column:id;primaryKey"`
+	Name            string     `gorm:"column:name"`
+	URL             string     `gorm:"column:url"`
+	Enabled         bool       `gorm:"column:enabled"`
+	LastCheckStatus string     `gorm:"column:last_check_status"`
+	LastCheckAt     *time.Time `gorm:"column:last_check_at"`
+	LastError       *string    `gorm:"column:last_error"`
+}
+
+// TableName 返回 GORM 表名。
+func (PluginMarketplaceSource) TableName() string { return "plugin_marketplace_sources" }
