@@ -15,11 +15,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -497,10 +499,13 @@ func TestStripeWebhookCreditsExactlyOnce(t *testing.T) {
 		providerAmount   int64
 		providerCurrency string
 		rawCallback      []byte
+		currencyScale    int16
 	)
 	if err := db.QueryRow(`SELECT status, credited_credits, paid_at IS NOT NULL,
-		provider_amount, provider_currency, raw_callback FROM orders WHERE id = $1`, order.Order.ID).
-		Scan(&status, &credited, &paidAtValid, &providerAmount, &providerCurrency, &rawCallback); err != nil {
+		provider_amount, provider_currency, raw_callback, currency_scale
+		FROM orders WHERE id = $1`, order.Order.ID).
+		Scan(&status, &credited, &paidAtValid, &providerAmount, &providerCurrency,
+			&rawCallback, &currencyScale); err != nil {
 		t.Fatalf("read order: %v", err)
 	}
 	if status != "succeeded" || !paidAtValid {
@@ -512,6 +517,10 @@ func TestStripeWebhookCreditsExactlyOnce(t *testing.T) {
 	}
 	if providerAmount != 1000 || providerCurrency != "CNY" {
 		t.Fatalf("provider amount/currency = %d/%s", providerAmount, providerCurrency)
+	}
+	// CNY 是 2 位小数；非 CNY 订单在入口已被拒绝，不得出现其它 scale。
+	if currencyScale != 2 {
+		t.Fatalf("currency_scale = %d, want 2", currencyScale)
 	}
 	assertWalletCount(t, db, userID, 1)
 	assertWalletReference(t, db, userID, "order", strconv.FormatInt(order.Order.ID, 10))
@@ -686,6 +695,151 @@ func TestAlipayNotifyIgnoresNonSuccessStatus(t *testing.T) {
 	waiting := alipayNotify(t, privatePEM, appID, *order.Order.ProviderTxnID, "10.00", "WAIT_BUYER_PAY")
 	if err := svc.HandleAlipayNotify(context.Background(), waiting); err != nil {
 		t.Fatalf("WAIT_BUYER_PAY should be ignored without error: %v", err)
+	}
+	assertOrderStatus(t, db, order.Order.ID, "pending")
+	assertWalletCount(t, db, userID, 0)
+}
+
+func TestTopupCreateOrderRejectsNonCNY(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	// 记录 Stripe PaymentIntent 请求里的 currency，验证 CNY 以 cny 下发。
+	var (
+		mu           sync.Mutex
+		seenCurrency string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		seenCurrency = r.PostForm.Get("currency")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"pi_test_cny","client_secret":"pi_test_cny_secret"}`)
+	}))
+	t.Cleanup(server.Close)
+	svc := newStripeTopupService(t, gormDB, server.URL)
+
+	// M5 无汇率：任何非 CNY 都会让「分」口径失真，必须在入口 400。
+	for _, currency := range []string{"USD", "JPY", "TRY", "eur"} {
+		_, err := svc.CreateTopupOrder(context.Background(), userID, 1000, currency, ProviderStripe,
+			fmt.Sprintf("fx-%s-%d", currency, topupTestSeq.Add(1)))
+		if !errors.Is(err, ErrInvalidCurrency) {
+			t.Fatalf("currency %s err = %v, want ErrInvalidCurrency", currency, err)
+		}
+	}
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE user_id = $1`, userID).Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("non-CNY orders created = %d, want 0", count)
+	}
+
+	// CNY（大小写不敏感）成功，且渠道请求币种为 cny。
+	order, err := svc.CreateTopupOrder(context.Background(), userID, 1000, "cny", ProviderStripe,
+		fmt.Sprintf("cny-%d", topupTestSeq.Add(1)))
+	if err != nil {
+		t.Fatalf("CNY create: %v", err)
+	}
+	if order.Order.Currency != "CNY" {
+		t.Fatalf("stored currency = %q, want CNY", order.Order.Currency)
+	}
+	mu.Lock()
+	got := seenCurrency
+	mu.Unlock()
+	if got != "cny" {
+		t.Fatalf("provider currency = %q, want cny", got)
+	}
+}
+
+func TestTopupCreateOrderReplaySurvivesConfigChange(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("config-drift-%d", topupTestSeq.Add(1))
+	first, err := svc.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderStripe, key)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	// 运营在两次重试之间关闭渠道：重试仍须拿到首次订单（P-2 幂等优先）。
+	disabled := stripeTestConfig()
+	disabled[ConfigStripeEnabled] = json.RawMessage("false")
+	closedSvc, _ := NewTopupService(TopupServiceConfig{DB: gormDB, Config: disabled,
+		StripeBaseURL: stripe.URL})
+	replayed, err := closedSvc.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderStripe, key)
+	if err != nil {
+		t.Fatalf("replay after provider disabled: %v", err)
+	}
+	if !replayed.Replayed || replayed.Order.ID != first.Order.ID {
+		t.Fatalf("replay = %+v, want order %d", replayed, first.Order.ID)
+	}
+
+	// 运营抬高最低充值：同样返回首次订单而不是 400。
+	raised := stripeTestConfig()
+	raised[ConfigMinTopupCents] = json.RawMessage("100000")
+	raisedSvc, _ := NewTopupService(TopupServiceConfig{DB: gormDB, Config: raised,
+		StripeBaseURL: stripe.URL})
+	replayed, err = raisedSvc.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderStripe, key)
+	if err != nil {
+		t.Fatalf("replay after min raised: %v", err)
+	}
+	if !replayed.Replayed || replayed.Order.ID != first.Order.ID {
+		t.Fatalf("replay after min raised = %+v, want order %d", replayed, first.Order.ID)
+	}
+
+	// 跨用户仍然冲突。
+	other := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, other)
+	if _, err := closedSvc.CreateTopupOrder(context.Background(), other, 1000, "CNY", ProviderStripe, key); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("cross-user err = %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+func TestAlipaySandboxRefused(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	privatePEM, publicPEM := alipayTestKeys(t)
+	gateway := newAlipayTestServer(t, privatePEM, publicPEM)
+	appID := "2021000000000003"
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	sandbox := alipayTestConfig(gateway.URL, appID, privatePEM, publicPEM)
+	sandbox[ConfigAlipaySandbox] = json.RawMessage("true")
+	sandboxSvc, _ := NewTopupService(TopupServiceConfig{DB: gormDB, Config: sandbox})
+
+	// (a) 沙箱渠道不得出现在 enabled_providers，也不能创建订单。
+	opts, err := sandboxSvc.Options(context.Background())
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	for _, provider := range opts.EnabledProviders {
+		if provider == ProviderAlipay {
+			t.Fatal("alipay sandbox must not be an enabled provider")
+		}
+	}
+	if _, err := sandboxSvc.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderAlipay,
+		fmt.Sprintf("sandbox-create-%d", topupTestSeq.Add(1))); !errors.Is(err, ErrProviderDisabled) {
+		t.Fatalf("sandbox create err = %v, want ErrProviderDisabled", err)
+	}
+
+	// 用非沙箱服务创建真实订单，再用沙箱服务接收签名合法的通知：
+	// (b) 必须拒绝结算、返回错误且不入账。
+	live, _ := NewTopupService(TopupServiceConfig{DB: gormDB,
+		Config: alipayTestConfig(gateway.URL, appID, privatePEM, publicPEM)})
+	order, err := live.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderAlipay,
+		fmt.Sprintf("sandbox-notify-%d", topupTestSeq.Add(1)))
+	if err != nil {
+		t.Fatalf("live create: %v", err)
+	}
+	notify := alipayNotify(t, privatePEM, appID, *order.Order.ProviderTxnID, "10.00", "TRADE_SUCCESS")
+	if err := sandboxSvc.HandleAlipayNotify(context.Background(), notify); !errors.Is(err, ErrProviderDisabled) {
+		t.Fatalf("sandbox notify err = %v, want ErrProviderDisabled", err)
 	}
 	assertOrderStatus(t, db, order.Order.ID, "pending")
 	assertWalletCount(t, db, userID, 0)

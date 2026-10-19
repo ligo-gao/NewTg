@@ -1427,10 +1427,13 @@ export interface paths {
         /**
          * 幂等创建充值订单并初始化渠道支付
          * @description `Idempotency-Key` 必填（UUID v4）。同一 key 重复提交返回首次订单
-         *     （HTTP 200，不新建、不重新创建渠道支付单）；key 属于其他用户时
-         *     409 `order_state_conflict`。首次创建返回 201。
-         *     `provider=stripe` 返回 `client_secret`；`provider=alipay` 返回 `qr_code`。
-         *     渠道未启用/配置不完整返回 403；渠道 5xx 返回 502 且订单置 failed。
+         *     （HTTP 200，不新建、不重新创建渠道支付单；即使渠道被关闭或下限
+         *     被调整也照样返回首次订单）；key 属于其他用户时 409
+         *     `order_state_conflict`。首次创建返回 201。
+         *     **M5 无汇率：`currency` 只接受 CNY**（大小写不敏感），其它币种
+         *     400。`provider=stripe` 返回 `client_secret`；`provider=alipay`
+         *     返回 `qr_code`。渠道未启用/配置不完整（含支付宝沙箱模式）返回
+         *     403；渠道 5xx 返回 502 且订单置 failed。
          */
         post: operations["createOrder"];
         delete?: never;
@@ -2798,10 +2801,13 @@ export interface components {
              */
             amount: number;
             /**
-             * @description ISO-4217 三字母；服务端统一大写
+             * @description 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+             *     统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+             *     金额放大到账积分。
              * @default CNY
+             * @enum {string}
              */
-            currency: string;
+            currency: "CNY";
             /** @enum {string} */
             provider: "stripe" | "alipay";
         };

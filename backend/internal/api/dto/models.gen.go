@@ -27,6 +27,21 @@ func (e ChangeEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for CreateOrderRequestCurrency.
+const (
+	CNY CreateOrderRequestCurrency = "CNY"
+)
+
+// Valid indicates whether the value is a known member of the CreateOrderRequestCurrency enum.
+func (e CreateOrderRequestCurrency) Valid() bool {
+	switch e {
+	case CNY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateOrderRequestProvider.
 const (
 	CreateOrderRequestProviderAlipay CreateOrderRequestProvider = "alipay"
@@ -1360,10 +1375,17 @@ type CreateOrderRequest struct {
 	// Amount 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
 	Amount int64 `json:"amount"`
 
-	// Currency ISO-4217 三字母；服务端统一大写
-	Currency *string                    `json:"currency,omitempty"`
-	Provider CreateOrderRequestProvider `json:"provider"`
+	// Currency 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+	// 统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+	// 金额放大到账积分。
+	Currency *CreateOrderRequestCurrency `json:"currency,omitempty"`
+	Provider CreateOrderRequestProvider  `json:"provider"`
 }
+
+// CreateOrderRequestCurrency 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+// 统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+// 金额放大到账积分。
+type CreateOrderRequestCurrency string
 
 // CreateOrderRequestProvider defines model for CreateOrderRequest.Provider.
 type CreateOrderRequestProvider string

@@ -843,11 +843,12 @@ schemas:
         description: 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
       currency:
         type: string
-        minLength: 3
-        maxLength: 3
-        pattern: '^[A-Za-z]{3}$'
+        enum: [CNY]
         default: CNY
-        description: ISO-4217 三字母；服务端统一大写
+        description: |
+          站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+          统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+          金额放大到账积分。
       provider:
         type: string
         enum: [stripe, alipay]

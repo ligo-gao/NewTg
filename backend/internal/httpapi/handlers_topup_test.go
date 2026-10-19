@@ -365,6 +365,17 @@ func TestOrderCreateEndpointValidation(t *testing.T) {
 			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 		}
 	})
+	t.Run("non-CNY currency", func(t *testing.T) {
+		// M5 无汇率：USD/JPY/TRY 一律 400，且不得留下订单。
+		for _, currency := range []string{"USD", "JPY", "TRY"} {
+			rr := env.request(userID, http.MethodPost, "/api/orders",
+				map[string]any{"amount": 1000, "currency": currency, "provider": "stripe"},
+				map[string]string{"Idempotency-Key": fmt.Sprintf("fx-%s-%d", currency, time.Now().UnixNano())})
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("currency %s status = %d, body = %s", currency, rr.Code, rr.Body.String())
+			}
+		}
+	})
 	t.Run("disabled provider", func(t *testing.T) {
 		// 新环境只开 Stripe；支付宝请求 403（P-13 明确拒绝）。
 		rr := env.request(userID, http.MethodPost, "/api/orders",

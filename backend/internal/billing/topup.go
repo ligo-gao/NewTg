@@ -383,6 +383,12 @@ func (s *TopupService) providerReady(provider string) (int64, error) {
 		}
 		return s.configYuan(ConfigStripeMinTopupCents, DefaultProviderMinTopupCents)
 	case ProviderAlipay:
+		// 沙箱模式（modules-08 F-04-18：沙箱时用户钱包页隐藏支付宝）只用
+		// 于联调，渠道产生的是假支付；若允许下单/入账，沙箱通知会变成
+		// 真实积分。可用性判定与回调入口都拒绝（defense in depth）。
+		if s.configBool(ConfigAlipaySandbox, false) {
+			return 0, fmt.Errorf("%w: alipay sandbox mode", ErrProviderDisabled)
+		}
 		if !s.configBool(ConfigAlipayEnabled, false) {
 			return 0, ErrProviderDisabled
 		}
@@ -467,35 +473,45 @@ func containsString(items []string, target string) bool {
 
 // CreateTopupOrder 幂等创建订单并创建渠道支付单。
 //
-// P-2 的冲突处理：先按 idempotency_key 查已有订单——同用户直接返回；
+// 幂等优先（P-2）：先按 idempotency_key 查已有订单——同用户直接返回；
 // 不同用户返回 ErrIdempotencyConflict（全表唯一约束，不能因为 UUID 巧合
-// 把别人的订单内容回给当前用户）。插入撞唯一约束时重查一次，覆盖并发竞态。
+// 把别人的订单内容回给当前用户）。**查重必须早于渠道/金额/币种校验**：
+// 运营在两次重试之间关闭渠道或抬高下限时，重试仍须拿到首次订单，否则
+// 客户端会看到 403/400 而不知道订单已存在。插入撞唯一约束时重查一次，
+// 覆盖并发竞态。
+//
+// 币种（M5 无汇率）：只接受站点计价币种 CNY（大小写不敏感）。回调金额
+// 与积分公式都按「分 = 1/100 元」定义，任何非 CNY 订单都会被
+// ComputeCredits 当成人民币放大到账积分（例如 10 TRY 换 10 CNY 的额度），
+// 因此在入口显式拒绝，而不是交给渠道或结算层猜测。
 func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int64,
 	currency, provider, idempotencyKey string) (*TopupOrder, error) {
 
 	if userID <= 0 {
 		return nil, fmt.Errorf("%w: user id must be > 0", ErrInvalidFundingCredit)
 	}
-	if provider != ProviderStripe && provider != ProviderAlipay {
-		return nil, ErrInvalidProvider
-	}
 	key := strings.TrimSpace(idempotencyKey)
 	if key == "" || utf8.RuneCountInString(key) > maxIdempotencyKeyRunes || hasControlChars(key) {
 		return nil, ErrInvalidIdempotency
 	}
+
+	// 第一步：幂等查重（命中即返回，不再校验配置、不再调用渠道）。
+	// 这一步让重试对「配置在两次请求之间变化」免疫（P-2）。
+	if existing, err := s.findOrderByIdempotencyKey(ctx, key); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return s.replayOrder(existing, userID)
+	}
+
+	if provider != ProviderStripe && provider != ProviderAlipay {
+		return nil, ErrInvalidProvider
+	}
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if currency == "" {
-		// 站点计价币种默认 CNY（modules-04 的金额档位即人民币）；
-		// 显式传入时必须是 ISO-4217 三字母大写（orders_currency_chk）。
 		currency = AlipayCurrency
 	}
-	if !validCurrency(currency) {
-		return nil, ErrInvalidCurrency
-	}
-	// 支付宝只按人民币收款：在落订单之前拒绝，避免留下一个注定失败的
-	// failed 订单（渠道能力差异应在下单入口就暴露）。
-	if provider == ProviderAlipay && currency != AlipayCurrency {
-		return nil, ErrInvalidCurrency
+	if currency != AlipayCurrency {
+		return nil, fmt.Errorf("%w: only %s is supported (no FX in M5)", ErrInvalidCurrency, AlipayCurrency)
 	}
 
 	providerMin, err := s.providerReady(provider)
@@ -508,13 +524,6 @@ func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int6
 	}
 	if err := ValidateTopupAmount(amount, globalMin, providerMin, MaxTopupCents); err != nil {
 		return nil, err
-	}
-
-	// 第一步：幂等查重（命中即返回，不再调用渠道）。
-	if existing, err := s.findOrderByIdempotencyKey(ctx, key); err != nil {
-		return nil, err
-	} else if existing != nil {
-		return s.replayOrder(existing, userID)
 	}
 
 	order := &store.Order{
@@ -623,16 +632,16 @@ func (s *TopupService) markOrderFailed(ctx context.Context, orderID int64, code 
 	}
 }
 
-func validCurrency(v string) bool {
-	if len(v) != 3 {
-		return false
+// currencyScale 返回站点计价币种的小数位。
+//
+// M5 无汇率、只允许 CNY（见 CreateTopupOrder），CNY 是 2 位小数。
+// JPY/USD 等非 CNY 订单在创建入口已被拒绝，这里保留显式分支是为了
+// 让「非 CNY 不得按 2 位落库」成为可读的契约，而不是散落的魔法数字。
+func currencyScale(currency string) int16 {
+	if currency == AlipayCurrency {
+		return 2
 	}
-	for _, r := range v {
-		if r < 'A' || r > 'Z' {
-			return false
-		}
-	}
-	return true
+	return 0
 }
 
 func hasControlChars(v string) bool {
@@ -1070,6 +1079,11 @@ func (s *TopupService) CloseAlipayTrade(ctx context.Context, outTradeNo string) 
 // 只有 `TRADE_SUCCESS` 触发入账；`WAIT_BUYER_PAY` 等中间态返回 nil
 // （HTTP 层回 success），既不推进状态也不让支付宝重投。
 func (s *TopupService) HandleAlipayNotify(ctx context.Context, params url.Values) error {
+	// 沙箱通知即使签名合法也必须拒绝：沙箱交易没有真实资金，入账等于
+	// 凭空发积分。放在验签之前，确保不会进入任何结算路径。
+	if s.configBool(ConfigAlipaySandbox, false) {
+		return fmt.Errorf("%w: alipay sandbox mode refuses to settle", ErrProviderDisabled)
+	}
 	publicKey, err := s.configSecret(ConfigAlipayPublicKey)
 	if err != nil {
 		return err
@@ -1343,9 +1357,9 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 			UPDATE orders
 			SET status = 'succeeded', paid_at = now(), raw_callback = ?,
 			    credited_credits = ?, provider_amount = ?, provider_currency = ?,
-			    currency_scale = 2, updated_at = now()
+			    currency_scale = ?, updated_at = now()
 			WHERE id = ? AND status = 'pending'`,
-			raw, credits, providerAmount, providerCurrency, order.ID)
+			raw, credits, providerAmount, providerCurrency, currencyScale(order.Currency), order.ID)
 		if res.Error != nil {
 			return fmt.Errorf("billing: settle order %d: %w", order.ID, res.Error)
 		}
