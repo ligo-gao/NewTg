@@ -735,5 +735,6 @@
     }
   },
   "nav.chat": "对话",
-  "nav.playground": "Playground"
+  "nav.playground": "Playground",
+  "nav.task_plugins": "任务插件"
 }

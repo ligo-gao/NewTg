@@ -735,5 +735,6 @@
     }
   },
   "nav.chat": "對話",
-  "nav.playground": "Playground"
+  "nav.playground": "Playground",
+  "nav.task_plugins": "任務外掛"
 }

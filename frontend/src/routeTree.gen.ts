@@ -52,6 +52,7 @@ import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
 import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
 import { Route as ConsoleAdminSystemDeploymentsIndexRouteImport } from './routes/_console/admin/system/deployments/index'
+import { Route as ConsoleAdminSystemTaskPluginsIndexRouteImport } from './routes/_console/admin/system/task-plugins/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -278,6 +279,12 @@ const ConsoleAdminSystemDeploymentsIndexRoute =
     path: '/system/deployments/',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSystemTaskPluginsIndexRoute =
+  ConsoleAdminSystemTaskPluginsIndexRouteImport.update({
+    id: '/system/task-plugins/',
+    path: '/system/task-plugins/',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -322,6 +329,7 @@ export interface FileRoutesByFullPath {
   '/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users/': typeof ConsoleAdminUsersIndexRoute
   '/admin/system/deployments/': typeof ConsoleAdminSystemDeploymentsIndexRoute
+  '/admin/system/task-plugins/': typeof ConsoleAdminSystemTaskPluginsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -365,6 +373,7 @@ export interface FileRoutesByTo {
   '/admin/settings': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users': typeof ConsoleAdminUsersIndexRoute
   '/admin/system/deployments': typeof ConsoleAdminSystemDeploymentsIndexRoute
+  '/admin/system/task-plugins': typeof ConsoleAdminSystemTaskPluginsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -411,6 +420,7 @@ export interface FileRoutesById {
   '/_console/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
   '/_console/admin/system/deployments/': typeof ConsoleAdminSystemDeploymentsIndexRoute
+  '/_console/admin/system/task-plugins/': typeof ConsoleAdminSystemTaskPluginsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -457,6 +467,7 @@ export interface FileRouteTypes {
     | '/admin/settings/'
     | '/admin/users/'
     | '/admin/system/deployments/'
+    | '/admin/system/task-plugins/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -500,6 +511,7 @@ export interface FileRouteTypes {
     | '/admin/settings'
     | '/admin/users'
     | '/admin/system/deployments'
+    | '/admin/system/task-plugins'
   id:
     | '__root__'
     | '/'
@@ -545,6 +557,7 @@ export interface FileRouteTypes {
     | '/_console/admin/settings/'
     | '/_console/admin/users/'
     | '/_console/admin/system/deployments/'
+    | '/_console/admin/system/task-plugins/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -871,6 +884,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSystemDeploymentsIndexRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/system/task-plugins/': {
+      id: '/_console/admin/system/task-plugins/'
+      path: '/system/task-plugins'
+      fullPath: '/admin/system/task-plugins/'
+      preLoaderRoute: typeof ConsoleAdminSystemTaskPluginsIndexRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
   }
 }
 
@@ -887,6 +907,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminSettingsIndexRoute: typeof ConsoleAdminSettingsIndexRoute
   ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
   ConsoleAdminSystemDeploymentsIndexRoute: typeof ConsoleAdminSystemDeploymentsIndexRoute
+  ConsoleAdminSystemTaskPluginsIndexRoute: typeof ConsoleAdminSystemTaskPluginsIndexRoute
 }
 
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
@@ -904,6 +925,8 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
   ConsoleAdminSystemDeploymentsIndexRoute:
     ConsoleAdminSystemDeploymentsIndexRoute,
+  ConsoleAdminSystemTaskPluginsIndexRoute:
+    ConsoleAdminSystemTaskPluginsIndexRoute,
 }
 
 const ConsoleAdminRouteWithChildren = ConsoleAdminRoute._addFileChildren(

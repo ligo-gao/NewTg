@@ -735,5 +735,6 @@
     }
   },
   "nav.chat": "Trò chuyện",
-  "nav.playground": "Playground"
+  "nav.playground": "Playground",
+  "nav.task_plugins": "Plugin tác vụ"
 }

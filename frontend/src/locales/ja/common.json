@@ -735,5 +735,6 @@
     }
   },
   "nav.chat": "チャット",
-  "nav.playground": "Playground"
+  "nav.playground": "Playground",
+  "nav.task_plugins": "タスクプラグイン"
 }
