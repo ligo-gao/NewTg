@@ -33,6 +33,7 @@ import (
 //   - 条件 UPDATE 防双花（20 并发仅 1 成功、恰一行 topup 流水）；
 //   - 过期边界 expires_at == now 视为过期（虚拟态不落库）；
 //   - topup_group_ratio 应用与 ≤0 / 溢出拒绝（不得放大余额）；
+//   - 面额就是积分：QPU≠100 不得改变入账（GC-5）；
 //   - 入账失败时整个事务回滚，兑换码保持 unused。
 
 var redemptionTestSeq atomic.Int64
@@ -229,7 +230,7 @@ func TestRedeemCreditsAndRatio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Redeem: %v", err)
 	}
-	// floor(10000 × 100 / 100 × 1.2) = 12000。
+	// floor(10000 × 1.2) = 12000（面额已是积分，与 QPU 无关）。
 	if balanceAfter != 12_000 {
 		t.Fatalf("balanceAfter = %d, want 12000", balanceAfter)
 	}
@@ -256,6 +257,49 @@ func TestRedeemCreditsAndRatio(t *testing.T) {
 	}
 	if status != "used" || usedBy == nil || *usedBy != userID {
 		t.Fatalf("code = %s used_by=%v, want used/%d", status, usedBy, userID)
+	}
+}
+
+// TestRedeemCreditsUseFaceValueNotQuotaPerUnit 钉死 platform-01 §9 / GC-5：
+// redemption_codes.credits 已经是积分，入账 = floor(面额 × 分组倍率)，
+// 绝不能再乘 quota_per_unit/100。QPU=1000 时旧实现会把 10,000 面额
+// 错算成 120,000（10 倍多付）；默认 QPU=100 恰好掩盖了这个 bug。
+func TestRedeemCreditsUseFaceValueNotQuotaPerUnit(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	group := "vip-qpu-" + uniqueFundingSuffix()
+	if _, err := db.Exec(`INSERT INTO user_groups (name, ratio, user_selectable, is_system, status)
+		VALUES ($1, 120, true, false, 1)`, group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM user_groups WHERE name = $1`, group) })
+
+	userID := createBillingTestUser(t, db, 0)
+	if _, err := db.Exec(`UPDATE users SET "group" = $1 WHERE id = $2`, group, userID); err != nil {
+		t.Fatalf("assign group: %v", err)
+	}
+
+	// QPU 故意设为 1000：面额本身是积分，任何 QPU 都必须不影响到账。
+	svc := NewRedemptionService(gormDB, NewWalletFunding(gormDB), mapConfig{
+		ConfigQuotaPerUnit:    json.RawMessage("1000"),
+		ConfigTopupGroupRatio: json.RawMessage(fmt.Sprintf(`{"%s":1.2}`, group)),
+	})
+	plain := "QPU1" + strings.Repeat("M", 22)
+	codeID := insertRedemptionCode(t, gormDB, plain, 10_000, "unused", nil)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM redemption_codes WHERE id = $1`, codeID) })
+
+	credits, balanceAfter, err := svc.RedeemDetailed(context.Background(), userID, plain)
+	if err != nil {
+		t.Fatalf("RedeemDetailed: %v", err)
+	}
+	// floor(10000 × 1.2) = 12000，与 QPU 无关。
+	if credits != 12_000 || balanceAfter != 12_000 {
+		t.Fatalf("credits/balanceAfter = %d/%d, want 12000/12000", credits, balanceAfter)
+	}
+	if got := userBalance(t, db, userID); got != 12_000 {
+		t.Fatalf("users.balance = %d, want 12000", got)
+	}
+	if rows := readFundingRows(t, db, userID); len(rows) != 1 || rows[0].Amount != 12_000 {
+		t.Fatalf("wallet rows = %+v, want exactly one 12000 row", rows)
 	}
 }
 
@@ -393,12 +437,13 @@ func TestRedeemRatioRejected(t *testing.T) {
 		t.Fatalf("tiny ratio 后 code status = %s, want unused", tinyStatus)
 	}
 
-	// 溢出面额：QPU=1,000,000 时 credits × 10000 必须被拒绝（不静默钳制）。
+	// 溢出：倍率 2 + 面额 > MaxInt64/2 必须被拒绝（不静默钳制）。
+	// 面额本身是 int64 积分，只有倍率放大才可能溢出。
 	svc := NewRedemptionService(gormDB, NewWalletFunding(gormDB), mapConfig{
-		ConfigQuotaPerUnit: json.RawMessage("1000000"),
+		ConfigTopupGroupRatio: json.RawMessage(`{"default":2}`),
 	})
 	plain := "OVFL" + strings.Repeat("H", 22)
-	id := insertRedemptionCode(t, gormDB, plain, math.MaxInt64/10_000+1, "unused", nil)
+	id := insertRedemptionCode(t, gormDB, plain, math.MaxInt64/2+1, "unused", nil)
 	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM redemption_codes WHERE id = $1`, id) })
 	if _, err := svc.Redeem(ctx, userID, plain); !errors.Is(err, ErrCreditOverflow) {
 		t.Fatalf("overflow err = %v, want ErrCreditOverflow", err)

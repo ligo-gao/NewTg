@@ -6,9 +6,9 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -30,13 +30,16 @@ import (
 //     expires_at > now())`）与入账在**同一事务**内完成（P-15）。并发双花
 //     由 PostgreSQL 行锁 + 谓词重求值收敛为「恰一次成功」。
 //
-// 金额口径（P-6 / GC）：
+// 金额口径（P-6 / GC-5 / platform-01 §9）：
 //
-//	到账积分 = ComputeCredits(code.credits, quota_per_unit, ratio)
-//	         = floor(code.credits × quota_per_unit / 100 × ratio)
+//	到账积分 = floor(code.credits × ratio)
 //
-// ratio = GroupRatio(pay.topup_group_ratio, users.group)。全程整数/十进制，
-// 任何 ≤0 倍率、非法 QPU 与 int64 溢出都拒绝，绝不饱和钳制。
+// redemption_codes.credits **已经是积分面额**，不是「分」，因此绝不能走
+// 充值的 ComputeCredits（那会再乘 quota_per_unit/100；默认 QPU=100 时
+// 碰巧相等，QPU≠100 就会成倍错付）。
+//
+// ratio = GroupRatio(pay.topup_group_ratio, users.group)。全程十进制，
+// 任何 ≤0 倍率与 int64 溢出都拒绝，绝不饱和钳制。
 
 // 兑换码字符集与长度由 security-03 §2.6 冻结：26 位 Crockford Base32
 // （32^26 = 130 bit），去除易混淆的 I/L/O/U，不插入分隔符，统一大写。
@@ -90,7 +93,8 @@ type RedemptionService struct {
 }
 
 // NewRedemptionService 构造兑换码服务。cfg 可为 nil（测试/未接配置中心），
-// 此时 quota_per_unit=100、倍率表为空（所有分组 1.0）——P-6 的冻结默认值。
+// 此时倍率表为空（所有分组 1.0）——P-6 的冻结回退值。
+// 兑换不再读取 billing.quota_per_unit：面额本身就是积分（platform-01 §9）。
 func NewRedemptionService(db *gorm.DB, funding FundingSource, cfg ConfigReader) *RedemptionService {
 	return &RedemptionService{
 		db:           db,
@@ -246,12 +250,12 @@ func (s *RedemptionService) Redeem(ctx context.Context, userID int64, rawCode st
 }
 
 // RedeemDetailed 是 Redeem 的完整结果版本：credits 是本次实际入账的积分
-// （已含 quota_per_unit 与分组倍率），balanceAfter 是入账后的余额快照。
+// （面额 × 分组倍率），balanceAfter 是入账后的余额快照。
 //
 // 事务内顺序（不可交换）：
 //  1. 条件 UPDATE 抢码（status='unused' 且未过期），RETURNING id/credits；
 //     affected=0 时在同一事务内 SELECT 诊断具体原因；
-//  2. ComputeCredits 换算（失败整体回滚，码回到 unused）；
+//  2. redemptionCredits 换算（失败整体回滚，码回到 unused）；
 //  3. FundingSource.ApplyTx 加余额 + 恰一行 topup 流水。
 //
 // 比例/配置读取在事务外完成：它们只读配置与 users.group，不参与原子性；
@@ -266,10 +270,6 @@ func (s *RedemptionService) RedeemDetailed(ctx context.Context, userID int64, ra
 	}
 	hash := HashRedemptionCode(normalized)
 
-	quotaPerUnit, err := s.quotaPerUnit()
-	if err != nil {
-		return 0, 0, err
-	}
 	ratios, err := s.topupGroupRatios()
 	if err != nil {
 		return 0, 0, err
@@ -305,7 +305,7 @@ func (s *RedemptionService) RedeemDetailed(ctx context.Context, userID int64, ra
 			return diagnoseRedemption(tx, hash)
 		}
 
-		amount, err := ComputeCredits(row.Credits, quotaPerUnit, ratio)
+		amount, err := redemptionCredits(row.Credits, ratio)
 		if err != nil {
 			return err
 		}
@@ -313,8 +313,8 @@ func (s *RedemptionService) RedeemDetailed(ctx context.Context, userID int64, ra
 		// 拒绝而不是写入 0 积分流水——流水金额必须为正，且用户应看到
 		// 明确的配置错误而不是「兑换成功但没到账」。
 		if amount <= 0 {
-			return fmt.Errorf("%w: code %d credits %d floor to zero (qpu=%d ratio=%s)",
-				ErrInvalidFundingCredit, row.ID, row.Credits, quotaPerUnit, ratio)
+			return fmt.Errorf("%w: code %d credits %d floor to zero (ratio=%s)",
+				ErrInvalidFundingCredit, row.ID, row.Credits, ratio)
 		}
 		credited, _, err := s.funding.ApplyTx(ctx, tx, Credit{
 			UserID:        userID,
@@ -386,33 +386,27 @@ func (s *RedemptionService) userGroup(ctx context.Context, userID int64) (string
 	return group, nil
 }
 
-// quotaPerUnit 读取 billing.quota_per_unit（P-6 冻结默认 100）。
-// 接受 JSON 数字或数值字符串（与 Engine/pricing 同口径）；非整数或越界
-// 一律拒绝——错误汇率会直接放大或缩小到账积分。
-func (s *RedemptionService) quotaPerUnit() (int64, error) {
-	if s.cfg == nil {
-		return DefaultQuotaPerUnit, nil
+// redemptionCredits 把兑换码面额（已经是积分）乘以分组倍率：
+//
+//	credits = floor(faceValue × ratio)
+//
+// 为什么不能复用 ComputeCredits：后者把「分」换算为元再乘 QPU（P-6 的
+// 充值口径）。兑换面额是积分，不是分；默认 QPU=100 时两者数值偶然相等，
+// 掩盖了错误汇率（QPU=1000 会多付 10 倍）。用 decimal 而不用浮点：
+// 倍率来自管理员配置，边界面额上的 ±1 积分就是资损。
+func redemptionCredits(faceValue int64, ratio decimal.Decimal) (int64, error) {
+	if faceValue <= 0 {
+		return 0, fmt.Errorf("%w: redemption face value %d must be > 0",
+			ErrInvalidFundingCredit, faceValue)
 	}
-	raw, ok := s.cfg.Get(ConfigQuotaPerUnit)
-	if !ok {
-		return DefaultQuotaPerUnit, nil
+	if ratio.Sign() <= 0 {
+		return 0, fmt.Errorf("%w: ratio %s must be > 0", ErrInvalidTopupRatio, ratio)
 	}
-	text := strings.TrimSpace(string(raw))
-	if text == "" || text == "null" {
-		return DefaultQuotaPerUnit, nil
+	exact := decimal.NewFromInt(faceValue).Mul(ratio).Floor()
+	if exact.GreaterThan(decimal.NewFromInt(math.MaxInt64)) {
+		return 0, fmt.Errorf("%w: %s credits exceed int64", ErrCreditOverflow, exact)
 	}
-	if strings.HasPrefix(text, `"`) {
-		var str string
-		if err := json.Unmarshal(raw, &str); err != nil {
-			return 0, fmt.Errorf("%w: %v", ErrInvalidQuotaPerUnit, err)
-		}
-		text = strings.TrimSpace(str)
-	}
-	value, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || value < 1 || value > 1_000_000 {
-		return 0, fmt.Errorf("%w: %q must be an integer in 1-1000000", ErrInvalidQuotaPerUnit, text)
-	}
-	return value, nil
+	return exact.IntPart(), nil
 }
 
 // topupGroupRatios 读取 pay.topup_group_ratio；缺键/空值视为 {}（全 1.0）。
