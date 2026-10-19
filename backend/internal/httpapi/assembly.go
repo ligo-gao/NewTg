@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -32,6 +33,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
 )
 
@@ -115,6 +117,13 @@ type GatewayDeps struct {
 	// 使用 TurnstileSettingsProvider(Config, Sealer)；非 nil 时完全以它为准，
 	// 便于单测注入「开启 + 固定密钥」而无需真实 sealer。
 	TurnstileSettings func() auth.TurnstileSettings
+
+	// SettingsBroadcaster 是设置写成功后的配置广播接缝（生产为 configcenter.Center）。
+	// nil 时只写库不广播——单测装配可接受，生产装配必须传入。
+	SettingsBroadcaster settings.Broadcaster
+	// NodeName / StartedAt 供 GET /api/system/status 的实例信息使用。
+	NodeName  string
+	StartedAt time.Time
 }
 
 // BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
@@ -128,10 +137,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	}
 
 	// Turnstile 配置读取：启动期已开启但缺 SecretSealer 属于装配错误。
-	settings := deps.TurnstileSettings
-	if settings == nil {
+	turnstileSettings := deps.TurnstileSettings
+	if turnstileSettings == nil {
 		var err error
-		settings, err = TurnstileSettingsProvider(deps.Config, deps.Sealer, deps.Logger)
+		turnstileSettings, err = TurnstileSettingsProvider(deps.Config, deps.Sealer, deps.Logger)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +216,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		PricingHandlers:     pricingHandlers,
 		LoginLimiter:        limiter,
 		LoginEncryption:     loginEncryption,
-		TurnstileSettings:   settings,
+		TurnstileSettings:   turnstileSettings,
 		TurnstileVerifyURL:  deps.TurnstileVerifyURL,
 		TurnstileHTTPClient: deps.TurnstileHTTPClient,
 		Audit:               deps.Audit,
@@ -239,6 +248,40 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 
 	if deps.WalletHandlers != nil {
 		deps.WalletHandlers.RegisterWalletRoutes(rt.protected, nil)
+	}
+
+	// 系统设置读写（FE-08 基础设施）与系统状态。两者都依赖主库；纯 Repo 单测
+	// 装配没有 system_settings 表，缺 DB 时跳过而不是挂一个必然 500 的端点。
+	if deps.DB != nil {
+		settingsService, err := settings.NewService(settings.ServiceConfig{
+			DB:          deps.DB,
+			Broadcaster: deps.SettingsBroadcaster,
+			Sealer:      deps.Sealer,
+			Logger:      deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		settingsHandlers, err := NewSettingsHandlers(SettingsHandlerConfig{
+			Service: settingsService,
+			Authz:   deps.Authz,
+			Audit:   deps.Audit,
+			Idem:    NewRedisIdempotencyStore(deps.Redis),
+			Logger:  deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		settingsHandlers.Register(rt.protected)
+
+		NewSystemStatusHandlers(SystemStatusConfig{
+			DB:        deps.DB,
+			Redis:     deps.Redis,
+			NodeName:  deps.NodeName,
+			Role:      "gateway",
+			StartedAt: deps.StartedAt,
+			Logger:    deps.Logger,
+		}).Register(rt.protected)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

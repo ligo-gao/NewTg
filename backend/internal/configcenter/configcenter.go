@@ -56,6 +56,7 @@ var secretKeys = map[string]struct{}{
 	"pay.stripe.webhook_secret": {},
 	"pay.alipay.private_key":    {},
 	"pay.alipay.public_key":     {},
+	"notify.smtp.password":      {},
 }
 
 // rowScanner 抽象 *sql.Row 的 Scan，便于单测以缝隙替代真实数据库（GC-8）。
@@ -239,6 +240,24 @@ func (c *Center) Save(ctx context.Context, key string, value any, expectUpdatedA
 
 	if err := c.rdb.Publish(ctx, ChangedChannel, key).Err(); err != nil {
 		return fmt.Errorf("configcenter: publish %q: %w", key, err)
+	}
+	return nil
+}
+
+// Refresh 是批量写入（单事务）后的快照刷新与广播入口。
+//
+// settings 服务在一个事务里写入多个键，无法逐键走 Save（那会在事务外重复写库）。
+// 提交成功后调用本方法：先从数据库重读每个键到本地快照，再逐键 PUBLISH
+// newtg:cfg:changed，保证其它副本走同一失效路径（≤1s 生效）。
+// 单键重载失败立即返回；已广播的键保持有效，其余键由 snapshotTTL 兜底。
+func (c *Center) Refresh(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		if err := c.reloadKey(ctx, key); err != nil {
+			return err
+		}
+		if err := c.rdb.Publish(ctx, ChangedChannel, key).Err(); err != nil {
+			return fmt.Errorf("configcenter: publish %q: %w", key, err)
+		}
 	}
 	return nil
 }

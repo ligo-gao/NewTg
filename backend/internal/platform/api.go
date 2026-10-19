@@ -270,6 +270,11 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		WalletHandlers:          walletHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
+		// 设置写成功后的广播必须复用同一个配置中心实例：其它副本的
+		// pub/sub 失效路径与本地快照才会一致。
+		SettingsBroadcaster: center,
+		NodeName:            cfg.NodeName,
+		StartedAt:           time.Now(),
 	})
 	if err != nil {
 		return nil, err

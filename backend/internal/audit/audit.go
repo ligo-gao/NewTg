@@ -87,6 +87,11 @@ const (
 	// {event:"authz_denied", required_permission, route}；detail.action 仍由
 	// writer 统一注入为本常量值（裁决 R-43）。
 	ActionAuthzDenied = "authz.denied"
+
+	// ActionSettingsUpdate 是 PUT /api/settings 的写审计（modules-08 §1.3 /
+	// §3.8 F-08-22：所有设置写都必须留下 before/after）。归 operation 类，
+	// 与用户/渠道/分组的配置变更同组。
+	ActionSettingsUpdate = "settings.update"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -140,6 +145,8 @@ var actionCategories = map[string]string{
 	ActionLogExport: categoryOperation,
 
 	ActionAuthzDenied: categorySecurity,
+
+	ActionSettingsUpdate: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

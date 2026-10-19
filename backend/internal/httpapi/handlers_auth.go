@@ -37,6 +37,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/settings"
 )
 
 // 认证端点的冻结常量。验证码 TTL/限流阈值来自 modules-01 F-01-02 与
@@ -612,12 +613,19 @@ func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Cl
 
 // statusResponse 是 GET /api/status 的公开投影（modules-08 §1.4.1）。
 // 绝不包含任何密钥类字段（turnstile.secret_key / auth.login_password_encryption.*）。
+//
+// site/nav/billing/pay 由注册表中 public:true 的键自动投影（settings.PublicSnapshot），
+// 新增公开键只需改注册表，不会出现「注册了但没下发」的第二份清单。
 type statusResponse struct {
-	Auth                           statusAuth `json:"auth"`
-	PasswordLoginEncryptionEnabled bool       `json:"password_login_encryption_enabled"`
-	SystemInitialized              bool       `json:"system_initialized"`
-	Languages                      []string   `json:"languages"`
-	DefaultLanguage                string     `json:"default_language"`
+	Auth                           statusAuth     `json:"auth"`
+	Site                           map[string]any `json:"site"`
+	Nav                            map[string]any `json:"nav"`
+	Billing                        map[string]any `json:"billing"`
+	Pay                            map[string]any `json:"pay"`
+	PasswordLoginEncryptionEnabled bool           `json:"password_login_encryption_enabled"`
+	SystemInitialized              bool           `json:"system_initialized"`
+	Languages                      []string       `json:"languages"`
+	DefaultLanguage                string         `json:"default_language"`
 }
 
 type statusAuth struct {
@@ -625,11 +633,16 @@ type statusAuth struct {
 	PasswordLoginEnabled      bool            `json:"password_login_enabled"`
 	EmailVerificationRequired bool            `json:"email_verification_required"`
 	Turnstile                 statusTurnstile `json:"turnstile"`
+	Passkey                   statusPasskey   `json:"passkey"`
 }
 
 type statusTurnstile struct {
 	Enabled bool   `json:"enabled"`
 	SiteKey string `json:"site_key"`
+}
+
+type statusPasskey struct {
+	Enabled bool `json:"enabled"`
 }
 
 func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -668,6 +681,9 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if turnstileEnabled {
 		siteKey = h.stringConfig("auth.turnstile.site_key", "")
 	}
+	// 公开键全集来自注册表（§1.4.1 单一真源）：site/nav/billing/pay 按域投影，
+	// 缺值自动回落注册表默认值。auth 区保留既有窄结构以维持向后兼容。
+	public := settings.PublicSnapshot(h.config)
 	// 站点开关变更要求即时反映到登录/注册页，禁止中间层缓存公开状态。
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, statusResponse{
@@ -679,12 +695,24 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 				Enabled: turnstileEnabled,
 				SiteKey: siteKey,
 			},
+			Passkey: statusPasskey{Enabled: publicBool(public, "auth.passkey.enabled")},
 		},
+		Site:                           settings.DomainValues(public, "site"),
+		Nav:                            settings.DomainValues(public, "nav"),
+		Billing:                        settings.DomainValues(public, "billing"),
+		Pay:                            settings.DomainValues(public, "pay"),
 		PasswordLoginEncryptionEnabled: h.boolConfig("auth.login_password_encryption.enabled", false),
 		SystemInitialized:              initialized,
 		Languages:                      langs,
 		DefaultLanguage:                "en",
 	})
+}
+
+// publicBool 读取注册表投影中的布尔值；缺失/类型不符时按 false
+// （注册表已保证类型，这只防御装配期的零值 reader）。
+func publicBool(values map[string]any, key string) bool {
+	value, _ := values[key].(bool)
+	return value
 }
 
 type emailCodeRequest struct {
