@@ -147,13 +147,70 @@ type GroupPricing struct{}
 func (GroupPricing) TableName() string { return "group_pricing" }
 
 // RedemptionCode 对应 redemption_codes（§9，11 列；R11 不物化 expired_at）。
-type RedemptionCode struct{}
+//
+// 口径（裁决 P-4 / R11）：
+//   - 只存 code_hash（SHA-256 十六进制），明文码仅在生成响应中出现一次；
+//     因此这里**没有** code 列，任何按明文查询的 API 都必须先归一化哈希。
+//   - 过期是虚拟态：不落 expired_at 列，判定 = status='unused' AND
+//     expires_at <= now()；ExpiresAt=NULL 表示永不过期。
+//   - UsedBy/UsedAt 未使用时为 NULL（三值语义用指针表达）；核销靠条件
+//     UPDATE（status='unused'）保证同一码只入账一次。
+type RedemptionCode struct {
+	ID        int64      `gorm:"column:id;primaryKey"`
+	CodeHash  string     `gorm:"column:code_hash"`
+	Credits   int64      `gorm:"column:credits"` // 面额（积分），DB CHECK >0
+	Status    string     `gorm:"column:status"`  // unused/disabled/used（expired 为虚拟态）
+	BatchName *string    `gorm:"column:batch_name"`
+	CreatedBy int64      `gorm:"column:created_by"` // 逻辑引用 admin user id（不设 FK）
+	UsedBy    *int64     `gorm:"column:used_by"`    // 逻辑引用 users.id（不设 FK）
+	UsedAt    *time.Time `gorm:"column:used_at"`
+	ExpiresAt *time.Time `gorm:"column:expires_at"` // NULL=永不过期
+	CreatedAt time.Time  `gorm:"column:created_at"`
+	UpdatedAt time.Time  `gorm:"column:updated_at"`
+}
 
 // TableName 返回 GORM 表名。
 func (RedemptionCode) TableName() string { return "redemption_codes" }
 
 // Order 对应 orders（§10，23 列；含 G-1R P1/P2 新增 11 列）。
-type Order struct{}
+//
+// 口径（P-1 / P-6）：
+//   - Amount 是最小货币单位整数（分），不是积分；积分为入账快照
+//     CreditedCredits（入账时写入，供对账，非派生值——汇率与
+//     billing.quota_per_unit 都可能变化）。
+//   - Status 五态：pending → succeeded/failed/expired/cancelled；后四者
+//     终态。paid 是历史别名，落到 succeeded；refunded 预留不启用（MVP 不
+//     做订单级退款）。
+//   - IdempotencyKey / ProviderTxnID 各为 UNIQUE（双唯一是硬要求，
+//     ARCH §2.2-2）；ProviderTxnID 为 NULL 时不参与唯一性。
+//   - 过期时间不落列：派生为 created_at + 30min（F-04-07）。
+//   - ManualReason/ManualOperatorID 在 manual_completed=true 时由 DB CHECK
+//     强制非空。
+type Order struct {
+	ID               int64      `gorm:"column:id;primaryKey"`
+	UserID           int64      `gorm:"column:user_id"`         // 逻辑引用 users.id（不设 FK）
+	Provider         string     `gorm:"column:provider"`        // stripe/alipay/creem/waffo/waffo_pancake/epay，创建后不可改
+	Amount           int64      `gorm:"column:amount"`          // 最小货币单位（分），DB CHECK >=0
+	Currency         string     `gorm:"column:currency"`        // ISO-4217 三字母
+	Status           string     `gorm:"column:status"`          // 五态，见上
+	IdempotencyKey   string     `gorm:"column:idempotency_key"` // 创建订单防重
+	ProviderTxnID    *string    `gorm:"column:provider_txn_id"` // 上游流水号；人工旁路为 manual:{order_id}
+	PaidAt           *time.Time `gorm:"column:paid_at"`
+	RawCallback      []byte     `gorm:"column:raw_callback"`      // jsonb，仅管理员可见
+	ProviderCurrency *string    `gorm:"column:provider_currency"` // 渠道结算币种（与站点计价分离）
+	ProviderAmount   *int64     `gorm:"column:provider_amount"`
+	CurrencyScale    *int16     `gorm:"column:currency_scale"` // 渠道币种小数位（CNY/USD=2，JPY=0）
+	FxRateNum        *int32     `gorm:"column:fx_rate_num"`    // 渠道币种 → CNY 的汇率分子
+	FxRateDen        *int32     `gorm:"column:fx_rate_den"`    // 汇率分母（与 num 成对）
+	CreditedCredits  int64      `gorm:"column:credited_credits"`
+	FailureCode      *string    `gorm:"column:failure_code"`     // 统一失败码（不落渠道原始错误码）
+	ChannelMetadata  []byte     `gorm:"column:channel_metadata"` // jsonb，不含密钥
+	ManualCompleted  bool       `gorm:"column:manual_completed"`
+	ManualReason     *string    `gorm:"column:manual_reason"`
+	ManualOperatorID *int64     `gorm:"column:manual_operator_id"`
+	CreatedAt        time.Time  `gorm:"column:created_at"`
+	UpdatedAt        time.Time  `gorm:"column:updated_at"`
+}
 
 // TableName 返回 GORM 表名。
 func (Order) TableName() string { return "orders" }
