@@ -59,6 +59,18 @@ func (f *fakeTaskStore) GetByPublicID(_ context.Context, userID int64, publicID,
 	return nil, tasks.ErrTaskNotFound
 }
 
+func (f *fakeTaskStore) GetByPublicIDAny(_ context.Context, publicID string) (*tasks.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, row := range f.rows {
+		if row.PublicTaskID == publicID {
+			copied := *row
+			return &copied, nil
+		}
+	}
+	return nil, tasks.ErrTaskNotFound
+}
+
 func (f *fakeTaskStore) ListByUser(_ context.Context, userID int64, _ tasks.ListFilter) ([]tasks.Task, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -93,6 +105,17 @@ func (f *fakeTaskChannels) SelectChannel(context.Context, string, string, string
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
+	}
+	return f.target, nil
+}
+
+// GetChannel 返回同一个目标快照：单测的任务行只指向一个渠道。
+func (f *fakeTaskChannels) GetChannel(context.Context, int64) (*tasks.ChannelTarget, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.target == nil {
+		return nil, tasks.ErrChannelNotFound
 	}
 	return f.target, nil
 }
@@ -272,6 +295,7 @@ func newTaskTestHandler(t *testing.T, store TaskRepository, channels TaskChannel
 		Sealer:               sealer,
 		Tokens:               &fakeTaskTokens{meta: &auth.TokenMeta{ID: 1, UserID: 42, Status: "enabled", Group: "default", UnlimitedQuota: true}},
 		Billing:              billing,
+		ArtifactSigner:       tasks.NewArtifactSigner("task-handler-test-key", 0),
 		AllowPrivateUpstream: true,
 	}), sealer
 }

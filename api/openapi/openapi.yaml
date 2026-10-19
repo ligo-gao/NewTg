@@ -295,6 +295,8 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}'
   /v1/tasks/{key}/artifacts:
     $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}~1artifacts'
+  /v1/tasks/{key}/artifacts/{artifact_key}/content:
+    $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}~1artifacts~1{artifact_key}~1content'
   /api/task/self:
     $ref: './paths/user.yaml#/paths/~1api~1task~1self'
   /api/task:

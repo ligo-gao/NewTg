@@ -35,6 +35,11 @@ const (
 	// 超限必须报错而不是截断：截断会让 parseSubmitResponse 看到不完整 JSON
 	// 并可能把失败解析成成功。
 	MaxResponseBytes = 4 << 20
+
+	// MaxContentBytes 是**产物内容**代理的流式上限（brief 冻结 64MiB）。
+	// 与 MaxResponseBytes 分开：4MiB 是 JSON 控制面，产物是二进制数据面，
+	// 两者语义不同。内容路径不整块读入内存——超限时中止流而不是截断。
+	MaxContentBytes = 64 << 20
 )
 
 var (
@@ -281,6 +286,103 @@ func DoOutbound(ctx context.Context, client *http.Client, desc *RequestDescripto
 	return &ResponseSnapshot{StatusCode: resp.StatusCode, Headers: headers, Body: string(payload)}, nil
 }
 
+// StreamResponse 是流式出站响应：Body 由调用方负责关闭。
+type StreamResponse struct {
+	StatusCode int
+	Headers    map[string]string
+	Body       io.ReadCloser
+}
+
+// DoOutboundStream 校验描述符并**流式**返回上游响应（产物内容专用）。
+//
+// 与 DoOutbound 共用同一套守卫（scheme / 主机白名单 / 字面量私网 / 禁重定向
+// / 30s 客户端），只把「读满 4MiB 到内存」换成「按 MaxContentBytes 边读边
+// 转发」——产物可以远大于 JSON 控制面，整块读入会直接打爆进程内存。
+//
+// 超限语义：调用方已经写出响应头后无法改状态码，因此错误在 Read 时返回，
+// 由调用方关闭连接（宁可不完整的流也不能把截断内容伪装成完整产物）。
+func DoOutboundStream(ctx context.Context, client *http.Client, desc *RequestDescriptor, allowedHosts []string, allowPrivate bool) (*StreamResponse, error) {
+	if desc == nil {
+		return nil, fmt.Errorf("tasks: nil request descriptor")
+	}
+	var (
+		u   *url.URL
+		err error
+	)
+	if allowPrivate {
+		u, err = parseForTest(desc.URL, allowedHosts)
+	} else {
+		u, err = ValidateOutboundURL(desc.URL, allowedHosts)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, OutboundTimeout)
+	var body io.Reader
+	if len(desc.Body) > 0 {
+		body = bytes.NewReader(desc.Body)
+	}
+	req, err := http.NewRequestWithContext(reqCtx, desc.Method, u.String(), body)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("tasks: build outbound request: %w", err)
+	}
+	for k, v := range desc.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("tasks: outbound request failed: %w", err)
+	}
+	if resp.ContentLength > MaxContentBytes {
+		resp.Body.Close()
+		cancel()
+		return nil, ErrResponseTooLarge
+	}
+	headers := make(map[string]string, len(resp.Header))
+	for k, values := range resp.Header {
+		if len(values) > 0 {
+			headers[k] = values[0]
+		}
+	}
+	// cancel 由 body 的 Close 触发：流式响应必须在读取结束后释放 context。
+	return &StreamResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    headers,
+		Body:       &boundedReadCloser{rc: resp.Body, cancel: cancel, max: MaxContentBytes},
+	}, nil
+}
+
+// boundedReadCloser 给上游 body 套上字节上限，并在 Close 时取消请求 context。
+type boundedReadCloser struct {
+	rc     io.ReadCloser
+	cancel context.CancelFunc
+	max    int64
+	total  int64
+}
+
+func (b *boundedReadCloser) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	b.total += int64(n)
+	if b.total > b.max {
+		// 只交付上限内的字节；多读的部分丢弃并报错，绝不把超限内容当完整流。
+		over := int(b.total - b.max)
+		if over >= n {
+			return 0, ErrResponseTooLarge
+		}
+		return n - over, ErrResponseTooLarge
+	}
+	return n, err
+}
+
+func (b *boundedReadCloser) Close() error {
+	err := b.rc.Close()
+	b.cancel()
+	return err
+}
+
 // parseForTest 是 allowPrivate 分支的校验：保留 scheme/白名单/空主机检查，
 // 跳过字面量私网拒绝。与 ValidateOutboundURL 的结构保持一致，避免测试
 // 路径与生产路径出现两套「白名单」语义。
@@ -321,11 +423,14 @@ func toString(v any) string {
 	case json.Number:
 		return typed.String()
 	case float64:
-		// sobek 的数值导出是 float64；整数去掉小数点，避免 "5" 变成 "5e+00"。
+		// sobek 的数值导出可能是 float64 或 int64；整数去掉小数点，
+		// 避免 "5" 变成 "5e+00"。
 		if typed == float64(int64(typed)) {
 			return fmt.Sprintf("%d", int64(typed))
 		}
 		return fmt.Sprintf("%v", typed)
+	case int64:
+		return fmt.Sprintf("%d", typed)
 	case bool:
 		if typed {
 			return "true"

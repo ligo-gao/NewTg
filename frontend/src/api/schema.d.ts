@@ -2608,10 +2608,33 @@ export interface paths {
         };
         /**
          * 列出任务产物
-         * @description 产物从持久化 task.data 投影，不建第二份真相。content 端点
-         *     （能力式签名 URL）属后续任务，本端点不返回 URL。
+         * @description 产物从持久化 task.data 投影，不建第二份真相。每项包含宿主签发的
+         *     `content_url`（能力 URL，长期有效；`access` 参数在日志中脱敏）。
          */
         get: operations["listTaskArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{key}/artifacts/{artifact_key}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取任务产物内容（能力 URL）
+         * @description `access` 是宿主签发的 HMAC 票据，绑定插件 key、task_id 与
+         *     artifact_key；设计上长期有效（无过期），轮换服务端密钥即可整体撤销。
+         *     签名无效/过期 403；任务或产物不存在 404；上游失败 502。
+         *     响应为流式（上限 64 MiB），HEAD 只返回头部。
+         */
+        get: operations["getTaskArtifactContent"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5214,6 +5237,10 @@ export interface components {
         TaskPluginKey: string;
         /** @description 对外任务 ID（task_<32 hex>） */
         TaskIDQuery: string;
+        /** @description 任务内产物 key（由 task.data.artifacts[].key 投影） */
+        TaskArtifactKey: string;
+        /** @description 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403） */
+        TaskArtifactAccess: string;
     };
     requestBodies: never;
     headers: never;
@@ -10146,7 +10173,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description {items:[{key,type,mime_type?}]} */
+            /** @description {items:[{key,type,mime_type?,content_url}]} */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10157,6 +10184,57 @@ export interface operations {
             401: components["responses"]["Error401"];
             404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
+        };
+    };
+    getTaskArtifactContent: {
+        parameters: {
+            query: {
+                /** @description 对外任务 ID（task_<32 hex>） */
+                task_id: components["parameters"]["TaskIDQuery"];
+                /** @description 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403） */
+                access: components["parameters"]["TaskArtifactAccess"];
+            };
+            header?: never;
+            path: {
+                /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+                key: components["parameters"]["TaskPluginKey"];
+                /** @description 任务内产物 key（由 task.data.artifacts[].key 投影） */
+                artifact_key: components["parameters"]["TaskArtifactKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 产物二进制流（Content-Type 取上游或产物声明；响应体真源不在本文件内联） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            /** @description access 票据无效或已过期 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error404"];
+            /** @description 上游拒绝或取产物失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 插件当前不可用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listSelfTasks: {

@@ -108,3 +108,18 @@ parameters:
     description: 对外任务 ID（task_<32 hex>）
     schema:
       type: string
+  TaskArtifactKey:
+    name: artifact_key
+    in: path
+    required: true
+    description: 任务内产物 key（由 task.data.artifacts[].key 投影）
+    schema:
+      type: string
+      maxLength: 191
+  TaskArtifactAccess:
+    name: access
+    in: query
+    required: true
+    description: 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403）
+    schema:
+      type: string

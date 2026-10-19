@@ -173,8 +173,8 @@ paths:
       operationId: listTaskArtifacts
       summary: 列出任务产物
       description: |
-        产物从持久化 task.data 投影，不建第二份真相。content 端点
-        （能力式签名 URL）属后续任务，本端点不返回 URL。
+        产物从持久化 task.data 投影，不建第二份真相。每项包含宿主签发的
+        `content_url`（能力 URL，长期有效；`access` 参数在日志中脱敏）。
       security:
         - bearerToken: []
       parameters:
@@ -182,7 +182,7 @@ paths:
         - $ref: '../components/params.yaml#/parameters/TaskIDQuery'
       responses:
         '200':
-          description: '{items:[{key,type,mime_type?}]}'
+          description: '{items:[{key,type,mime_type?,content_url}]}'
         '400':
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':
@@ -191,3 +191,34 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # 产物内容（M6d T6b / relay-06 §10.5）：能力式鉴权，不挂 Bearer。
+  /v1/tasks/{key}/artifacts/{artifact_key}/content:
+    get:
+      tags: [relay]
+      operationId: getTaskArtifactContent
+      summary: 取任务产物内容（能力 URL）
+      description: |
+        `access` 是宿主签发的 HMAC 票据，绑定插件 key、task_id 与
+        artifact_key；设计上长期有效（无过期），轮换服务端密钥即可整体撤销。
+        签名无效/过期 403；任务或产物不存在 404；上游失败 502。
+        响应为流式（上限 64 MiB），HEAD 只返回头部。
+      security: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/TaskPluginKey'
+        - $ref: '../components/params.yaml#/parameters/TaskArtifactKey'
+        - $ref: '../components/params.yaml#/parameters/TaskIDQuery'
+        - $ref: '../components/params.yaml#/parameters/TaskArtifactAccess'
+      responses:
+        '200':
+          description: 产物二进制流（Content-Type 取上游或产物声明；响应体真源不在本文件内联）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '403':
+          description: access 票据无效或已过期
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '502':
+          description: 上游拒绝或取产物失败
+        '503':
+          description: 插件当前不可用

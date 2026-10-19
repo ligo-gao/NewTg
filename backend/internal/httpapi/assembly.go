@@ -337,6 +337,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Sealer:   NewSecretSealer(deps.CredentialEncryptionKey),
 			Tokens:   store.NewTokenRepo(deps.DB),
 			Billing:  deps.Billing,
+			// 产物能力 URL 的签名密钥从 CREDENTIAL_ENCRYPTION_KEY 派生
+			// （T6b brief：不新增明文配置）；轮换该键即撤销所有已签发 URL。
+			ArtifactSigner: tasks.NewArtifactSigner(deps.CredentialEncryptionKey, 0),
+			PublicBaseURL:  deps.PublicBaseURL,
 		})
 	}
 

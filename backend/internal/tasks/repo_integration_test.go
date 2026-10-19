@@ -123,6 +123,163 @@ func TestRepoListPaginationAndStateFilter(t *testing.T) {
 	}
 }
 
+// TestRepoPollingAndSettlement CAS 语义的集成验收（T6b）：
+// 未完成列表、终态 CAS、private_data 增量合并、quota 回写与补偿扫描。
+func TestRepoPollingAndSettlement(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	userID := time.Now().UnixNano() % 1_000_000
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+
+	publicID := fmt.Sprintf("task_%d_poll", userID)
+	now := time.Now().UTC()
+	task := &Task{
+		PublicTaskID:   publicID,
+		UpstreamTaskID: "up_poll",
+		Family:         "plugin",
+		Action:         "generate",
+		PluginKey:      "sample",
+		FetchMode:      "poll",
+		State:          StateSubmitted,
+		UserID:         userID,
+		ChannelID:      999,
+		Quota:          100,
+		SubmitTime:     &now,
+		PrivateData:    map[string]any{"request_id": "req_poll", "poll_failures": float64(2)},
+		Data:           map[string]any{"artifacts": []any{}},
+	}
+	if err := repo.Insert(ctx, task); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// ListPending 只返回未完成行。
+	pending, err := repo.ListPending(ctx, 1000)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if !containsTask(pending, task.ID) {
+		t.Fatalf("pending list missing the new task")
+	}
+
+	// 首次 CAS 赢，第二次同 from 输。
+	won, err := repo.ApplyPoll(ctx, task.ID, StateSubmitted, PollUpdate{
+		State: StateInProgress, RawState: "RUNNING", Progress: 40,
+		Data:    map[string]any{"progress_detail": "40%"},
+		Private: map[string]any{"poll_failures": 0},
+	})
+	if err != nil || !won {
+		t.Fatalf("first CAS won=%v err=%v", won, err)
+	}
+	won, err = repo.ApplyPoll(ctx, task.ID, StateSubmitted, PollUpdate{State: StateSuccess})
+	if err != nil || won {
+		t.Fatalf("stale CAS must lose (won=%v err=%v)", won, err)
+	}
+
+	got, err := repo.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.State != StateInProgress || got.ProgressPercent != 40 {
+		t.Fatalf("unexpected row after CAS: state=%s progress=%d", got.State, got.ProgressPercent)
+	}
+	if privateInt(got.PrivateData["poll_failures"]) != 0 {
+		t.Fatalf("private_data not merged: %#v", got.PrivateData)
+	}
+	if got.Data["progress_detail"] != "40%" || got.Data["artifacts"] == nil {
+		t.Fatalf("data increment must merge, not replace: %#v", got.Data)
+	}
+
+	// 终态 CAS + billing_pending 同语句落库。
+	finish := time.Now().UTC()
+	won, err = repo.ApplyPoll(ctx, task.ID, StateInProgress, PollUpdate{
+		State: StateFailure, RawState: "FAILED", Progress: 100,
+		Private:    map[string]any{"billing_pending": true},
+		FinishTime: &finish, FailReason: stringPtr("upstream_failed"),
+	})
+	if err != nil || !won {
+		t.Fatalf("terminal CAS won=%v err=%v", won, err)
+	}
+
+	// 补偿扫描按 private_data 标记命中；UpdateBilling 清标记并回写 quota。
+	reconcilable, err := repo.ListReconcilable(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListReconcilable: %v", err)
+	}
+	if !containsTask(reconcilable, task.ID) {
+		t.Fatalf("reconcilable list missing billing_pending task")
+	}
+	zero := int64(0)
+	if err := repo.UpdateBilling(ctx, task.ID, &zero, map[string]any{
+		"billing_pending": false, "refund_pending": false, "billing_final": true,
+	}); err != nil {
+		t.Fatalf("UpdateBilling: %v", err)
+	}
+	got, err = repo.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetByID after billing: %v", err)
+	}
+	if got.Quota != 0 || boolFlag(got.PrivateData["billing_pending"]) || !boolFlag(got.PrivateData["billing_final"]) {
+		t.Fatalf("billing update not applied: quota=%d private=%#v", got.Quota, got.PrivateData)
+	}
+	reconcilable, err = repo.ListReconcilable(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListReconcilable after finish: %v", err)
+	}
+	if containsTask(reconcilable, task.ID) {
+		t.Fatalf("finished task must leave the reconcilable set")
+	}
+
+	// 能力式读取不带 user_id；插件 key 事实仍在行上。
+	anyRow, err := repo.GetByPublicIDAny(ctx, publicID)
+	if err != nil {
+		t.Fatalf("GetByPublicIDAny: %v", err)
+	}
+	if anyRow.UserID != userID || anyRow.PluginKey != "sample" {
+		t.Fatalf("unexpected capability read: %#v", anyRow)
+	}
+}
+
+// TestRepoGetChannelIgnoresStatus 验证产物/轮询读取渠道时不因渠道被禁用而失效。
+func TestRepoGetChannelIgnoresStatus(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	name := fmt.Sprintf("t6b_ch_%d", time.Now().UnixNano())
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, name) })
+
+	var id int64
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO channels (name, type, base_url, credentials, supported_models,
+		                      model_mapping, priority, status, task_plugin_key, task_extend_plugin_keys)
+		VALUES ($1, 'task_plugin', 'https://up.example.com', decode('00','hex'), '["sample-model"]'::jsonb,
+		        '{}'::jsonb, 1, 2, 'sample', '[]'::jsonb)
+		RETURNING id`, name).Scan(&id); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	target, err := repo.GetChannel(ctx, id)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if target.BaseURL != "https://up.example.com" {
+		t.Fatalf("base url = %q", target.BaseURL)
+	}
+	if _, err := repo.GetChannel(ctx, id+1_000_000); err != ErrChannelNotFound {
+		t.Fatalf("missing channel err = %v, want ErrChannelNotFound", err)
+	}
+}
+
+func containsTask(items []*Task, id int64) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPtr(v string) *string { return &v }
+
 func TestRepoSelectChannelByBinding(t *testing.T) {
 	db := openTaskTestDB(t)
 	repo := NewRepo(db)

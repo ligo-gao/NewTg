@@ -427,6 +427,16 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
 		billing.NewDBLogger(sqlLogs))
 
+	// 任务轮询（M6d T6b）：装配插件运行时 + async_task_poll 循环。失败即
+	// 阻止 worker 上线——没有轮询器时任务会一直停在 submitted，预扣永久冻结。
+	stopTaskPoller, err := startTaskPoller(ctx, cfg, sqlDB, center, engine, log)
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: start task poller: %w", err)
+	}
+
 	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
 	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
@@ -468,10 +478,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		LogsDB:    sqlLogs,
 		Logger:    log,
 	})
-	// 先停 M5 循环再关连接池：否则过期扫描可能在下一次 DB 调用上拿到
-	// 「连接已关闭」错误，把正常停机噪声打进告警。
+	// 先停后台循环（过期扫描 + 任务轮询）再关连接池：否则下一次 DB 调用会
+	// 拿到「连接已关闭」错误，把正常停机噪声打进告警。
 	cancelExpiry()
 	expiryWG.Wait()
+	stopTaskPoller()
 	if runErr == nil {
 		runErr = expiryErr
 	}

@@ -131,9 +131,12 @@ type ListFilter struct {
 }
 
 // ArtifactView 是产物清单项（relay-06 §10.5：{key,type,mimeType?}）。
-// key 是任务内稳定标识，供 T6b 的 content 端点定位；本任务不签发 URL。
+// key 是任务内稳定标识，供 content 端点定位；ContentURL 由宿主在响应装配时
+// 注入（能力 URL），ProjectArtifacts 本身不签发 URL——数据投影与授权分离，
+// 同一份 task.data 可以被不同基址/密钥的宿主复用。
 type ArtifactView struct {
-	Key      string `json:"key"`
-	Type     string `json:"type"`
-	MIMEType string `json:"mime_type,omitempty"`
+	Key        string `json:"key"`
+	Type       string `json:"type"`
+	MIMEType   string `json:"mime_type,omitempty"`
+	ContentURL string `json:"content_url,omitempty"`
 }

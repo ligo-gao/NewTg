@@ -5,6 +5,8 @@
 //	POST /v1/tasks/{key}                    提交任务（Bearer 令牌）
 //	GET  /v1/tasks/{key}?task_id=           查询任务（Bearer 令牌）
 //	GET  /v1/tasks/{key}/artifacts?task_id= 列产物（Bearer 令牌）
+//	GET|HEAD /v1/tasks/{key}/artifacts/{artifact_key}/content?task_id=&access=
+//	                                        取产物内容（HMAC 能力 URL，无需 Bearer）
 //	GET  /api/task/self                     本人任务台账（会话）
 //	GET  /api/task                          管理员台账（logs:read）
 //
@@ -17,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -51,6 +54,8 @@ const (
 type TaskRepository interface {
 	Insert(ctx context.Context, t *tasks.Task) error
 	GetByPublicID(ctx context.Context, userID int64, publicID, pluginKey string) (*tasks.Task, error)
+	// GetByPublicIDAny 是能力式产物读取（global access ticket 即授权）。
+	GetByPublicIDAny(ctx context.Context, publicID string) (*tasks.Task, error)
 	ListByUser(ctx context.Context, userID int64, f tasks.ListFilter) ([]tasks.Task, int, error)
 	ListAdmin(ctx context.Context, f tasks.ListFilter) ([]tasks.Task, int, error)
 }
@@ -60,6 +65,8 @@ var _ TaskRepository = (*tasks.Repo)(nil)
 // TaskChannelSource 是按插件绑定选渠道的读取面（生产 *tasks.Repo）。
 type TaskChannelSource interface {
 	SelectChannel(ctx context.Context, pluginKey, model, group string) (*tasks.ChannelTarget, error)
+	// GetChannel 按 ID 读取（产物内容代理用；不按 status 过滤，见 Repo 注释）。
+	GetChannel(ctx context.Context, id int64) (*tasks.ChannelTarget, error)
 }
 
 var _ TaskChannelSource = (*tasks.Repo)(nil)
@@ -77,6 +84,11 @@ type TasksHandlerConfig struct {
 	Billing func(*contract.RelayContext) contract.BillingSession
 	// Client 是出站客户端；nil 时构造禁重定向的默认客户端。
 	Client *http.Client
+	// ArtifactSigner 签发/校验产物能力 URL（M6d T6b）。必填：没有它就无法
+	// 安全地授予「持票取产物」的能力，静默降级成无鉴权会直接泄露产物。
+	ArtifactSigner *tasks.ArtifactSigner
+	// PublicBaseURL 是能力 URL 的基址（可空 → 相对路径）。
+	PublicBaseURL string
 	// AllowPrivateUpstream 只允许测试注入 httptest（127.0.0.1）时置 true。
 	// 生产装配恒为 false；它只跳过字面量私网地址检查，不关闭白名单/重定向/大小限制。
 	AllowPrivateUpstream bool
@@ -91,14 +103,16 @@ type TasksHandler struct {
 	tokens       auth.TokenLookup
 	billing      func(*contract.RelayContext) contract.BillingSession
 	client       *http.Client
+	signer       *tasks.ArtifactSigner
+	publicBase   string
 	allowPrivate bool
 }
 
-// NewTasksHandler 构造 handler。Store/Channels/Plugins/Sealer 是硬依赖：
+// NewTasksHandler 构造 handler。Store/Channels/Plugins/Sealer/Signer 是硬依赖：
 // 缺任一都不存在「安全降级」，只会把配置错误伪装成用户可见的失败。
 func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
-	if cfg.Store == nil || cfg.Channels == nil || cfg.Plugins == nil || cfg.Sealer == nil {
-		panic("httpapi: NewTasksHandler requires store, channel source, plugin manager and sealer")
+	if cfg.Store == nil || cfg.Channels == nil || cfg.Plugins == nil || cfg.Sealer == nil || cfg.ArtifactSigner == nil {
+		panic("httpapi: NewTasksHandler requires store, channel source, plugin manager, sealer and artifact signer")
 	}
 	billing := cfg.Billing
 	if billing == nil {
@@ -116,15 +130,22 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 		tokens:       cfg.Tokens,
 		billing:      billing,
 		client:       client,
+		signer:       cfg.ArtifactSigner,
+		publicBase:   strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 		allowPrivate: cfg.AllowPrivateUpstream,
 	}
 }
 
 // RegisterRelay 把 /v1/tasks* 挂到 mux，复用中继的 Bearer 鉴权链。
+//
+// content 端点**刻意不挂 Bearer 中间件**：它设计为能力式 URL（relay-06
+// §10.5），客户端用它下载产物时通常没有令牌上下文（浏览器直链/播放器）。
+// 授权完全由 access 票据承担；票据绑定 pluginKey/taskID/artifactKey。
 func (h *TasksHandler) RegisterRelay(mux *http.ServeMux, authMiddleware func(http.Handler) http.Handler) {
 	mux.Handle("POST /v1/tasks/{key}", authMiddleware(http.HandlerFunc(h.handleSubmit)))
 	mux.Handle("GET /v1/tasks/{key}", authMiddleware(http.HandlerFunc(h.handleGet)))
 	mux.Handle("GET /v1/tasks/{key}/artifacts", authMiddleware(http.HandlerFunc(h.handleArtifacts)))
+	mux.HandleFunc("GET /v1/tasks/{key}/artifacts/{artifact_key}/content", h.handleContent)
 }
 
 // RegisterAdmin 把台账端点挂到管理面受保护链。
@@ -353,6 +374,12 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		} else {
 			settled = true
 		}
+	case result.State == tasks.StateSuccess:
+		// 即时成功但**没有 usage**：差额不可信（与 §9.4 表达式失败同一保守
+		// 方向），保留预扣并标记 settlement_pending，交给任务计价批次结算。
+		// 不标记的话，这笔 hold 既不会被轮询器看到（fetch_mode=inline 不轮询），
+		// 也不会进入补偿扫描——预扣会永久冻结。
+		settlementPending = true
 	}
 
 	now := time.Now().UTC()
@@ -473,7 +500,7 @@ func (h *TasksHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		State:           task.State,
 		RawState:        task.RawState,
 		ProgressPercent: task.ProgressPercent,
-		Artifacts:       tasks.ProjectArtifacts(task.Data),
+		Artifacts:       h.signArtifacts(r, key, task, tasks.ProjectArtifacts(task.Data)),
 		FailReason:      task.FailReason,
 	}
 	// usage 只投影插件声明字段；插件已被卸载时连 schema 都不可信，宁可不返回。
@@ -493,11 +520,192 @@ func (h *TasksHandler) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items := tasks.ProjectArtifacts(task.Data)
+	items := h.signArtifacts(r, r.PathValue("key"), task, tasks.ProjectArtifacts(task.Data))
 	if items == nil {
 		items = []tasks.ArtifactView{}
 	}
 	writeJSON(w, http.StatusOK, artifactsResponse{Items: items})
+}
+
+// signArtifacts 为产物清单注入宿主签发的 content_url。
+//
+// 数据投影（ProjectArtifacts）与授权（签名）分开：同一份 task.data 可以被
+// 不同基址/密钥的宿主复用，而签名只属于当前宿主实例。
+func (h *TasksHandler) signArtifacts(r *http.Request, pluginKey string, task *tasks.Task, items []tasks.ArtifactView) []tasks.ArtifactView {
+	if len(items) == 0 {
+		return items
+	}
+	base := h.contentBase(r)
+	now := time.Now()
+	for i := range items {
+		items[i].ContentURL = h.signer.ContentURL(base, pluginKey, task, items[i].Key, now)
+	}
+	return items
+}
+
+// contentBase 返回能力 URL 的基址。
+//
+// 优先显式 PUBLIC_BASE_URL（部署方声明的规范站点地址）；否则用本次请求的
+// scheme+Host。不读取 X-Forwarded-*：那需要可信代理配置，猜错会把能力 URL
+// 指向攻击者可控的主机。
+func (h *TasksHandler) contentBase(r *http.Request) string {
+	if h.publicBase != "" {
+		return h.publicBase
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+// handleContent 代理产物内容（能力式 URL，relay-06 §10.5）。
+//
+// 鉴权顺序刻意是「先验票、后查库」：签名无效直接 403，不消耗 DB 查询，
+// 也让 task_id 枚举在签名之外没有额外侧信道。签名覆盖 pluginKey/taskID/
+// artifactKey，票据不能跨任务或跨插件重放。
+func (h *TasksHandler) handleContent(w http.ResponseWriter, r *http.Request) {
+	requestID := newRelayRequestID()
+	key := strings.TrimSpace(r.PathValue("key"))
+	artifactKey := strings.TrimSpace(r.PathValue("artifact_key"))
+	publicID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	access := r.URL.Query().Get("access")
+	if key == "" || artifactKey == "" || publicID == "" || access == "" {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
+			"task_id and access are required")
+		return
+	}
+	if !h.signer.Verify(key, publicID, artifactKey, access, time.Now()) {
+		writeRelayError(w, http.StatusForbidden, requestID, "invalid_access",
+			"invalid or expired artifact access ticket")
+		return
+	}
+	task, err := h.store.GetByPublicIDAny(r.Context(), publicID)
+	if err != nil {
+		if errors.Is(err, tasks.ErrTaskNotFound) {
+			writeRelayError(w, http.StatusNotFound, requestID, "task_not_found", "task not found")
+			return
+		}
+		writeRelayError(w, http.StatusInternalServerError, requestID, "database_error", "failed to read the task")
+		return
+	}
+	// 票据绑定 pluginKey，但任务行才是「这个任务属于哪个插件」的事实；
+	// 两者不一致按不存在处理（不区分原因，避免跨插件探测）。
+	if task.PluginKey != key {
+		writeRelayError(w, http.StatusNotFound, requestID, "artifact_not_found", "artifact not found")
+		return
+	}
+	artifact, ok := findArtifact(tasks.ProjectArtifacts(task.Data), artifactKey)
+	if !ok {
+		writeRelayError(w, http.StatusNotFound, requestID, "artifact_not_found", "artifact not found")
+		return
+	}
+	compiled, ok := h.plugins.Snapshot().Plugin(key)
+	if !ok {
+		writeRelayError(w, http.StatusServiceUnavailable, requestID, "plugin_unavailable", "task plugin is not available")
+		return
+	}
+	channelID := task.LockedChannelID
+	if channelID == 0 {
+		channelID = task.ChannelID
+	}
+	channel, err := h.channels.GetChannel(r.Context(), channelID)
+	if err != nil {
+		writeRelayError(w, http.StatusBadGateway, requestID, "upstream_error", "task channel is not available")
+		return
+	}
+	apiKey, err := h.decryptChannelCredential(channel.Credentials)
+	if err != nil {
+		writeRelayError(w, http.StatusInternalServerError, requestID, "channel_credential_invalid",
+			"task channel credential is not usable")
+		return
+	}
+	if strings.TrimSpace(channel.BaseURL) == "" {
+		writeRelayError(w, http.StatusBadGateway, requestID, "channel_misconfigured",
+			"task channel base url is not configured")
+		return
+	}
+	model := toStringValue(task.Properties["OriginModelName"])
+	upstreamModel := toStringValue(task.Properties["UpstreamModelName"])
+	if upstreamModel == "" {
+		upstreamModel = model
+	}
+	stream, err := tasks.FetchContent(r.Context(), h.client, tasks.ContentInput{
+		Plugin:         compiled,
+		Channel:        *channel,
+		Model:          model,
+		UpstreamModel:  upstreamModel,
+		UpstreamTaskID: task.UpstreamTaskID,
+		ArtifactKey:    artifact.Key,
+		BaseURL:        channel.BaseURL,
+		APIKey:         apiKey,
+		Method:         r.Method,
+		AllowPrivate:   h.allowPrivate,
+	})
+	if err != nil {
+		// access 票据绝不能进日志：这里记录的入站 URL 必须脱敏。
+		slog.Warn("tasks: artifact content proxy failed",
+			"task_id", task.PublicTaskID, "artifact", artifactKey,
+			"url", tasks.RedactAccess(r.URL.String()), "error", err)
+		writeRelayError(w, http.StatusBadGateway, requestID, "upstream_error",
+			"failed to fetch artifact content")
+		return
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode < 200 || stream.StatusCode > 299 {
+		writeRelayError(w, http.StatusBadGateway, requestID, "upstream_error",
+			"upstream rejected the artifact content request")
+		return
+	}
+	contentType := sanitizeContentType(stream.Headers["Content-Type"])
+	if contentType == "" {
+		contentType = artifact.MIMEType
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	if length := stream.Headers["Content-Length"]; length != "" {
+		if n, err := strconv.ParseInt(length, 10, 64); err == nil && n >= 0 && n <= tasks.MaxContentBytes {
+			w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	buf := make([]byte, 32<<10)
+	if _, err := io.CopyBuffer(w, stream.Body, buf); err != nil {
+		// 头已发出：无法改状态码，只能中断连接（不完整的流不能被当成完整产物）。
+		slog.Warn("tasks: artifact content stream interrupted",
+			"task_id", task.PublicTaskID, "artifact", artifactKey, "error", err)
+	}
+}
+
+func findArtifact(items []tasks.ArtifactView, key string) (tasks.ArtifactView, bool) {
+	for _, item := range items {
+		if item.Key == key {
+			return item, true
+		}
+	}
+	return tasks.ArtifactView{}, false
+}
+
+// sanitizeContentType 只接受不含控制字符的 Content-Type。
+//
+// 响应头由上游提供；含 CR/LF 的值会被 Go 的写入器拒绝，但提前归一能给出
+// 确定的兜底类型，而不是让整个响应失败。
+func sanitizeContentType(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 128 {
+		return ""
+	}
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	return raw
 }
 
 // lookupOwnedTask 完成查询的公共前置：鉴权身份、task_id 参数、归属读取。
