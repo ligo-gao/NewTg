@@ -240,13 +240,17 @@ type anthropicStreamEvent struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Text string `json:"text"`
+		// redacted_thinking 的加密负载随 content_block_start 一次给出。
+		Data string `json:"data"`
 	} `json:"content_block"`
 	Delta struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		PartialJSON string `json:"partial_json"`
 		Thinking    string `json:"thinking"`
-		StopReason  string `json:"stop_reason"`
+		// signature_delta 携带思考块签名；它不是正文，不能用 Delta 通道。
+		Signature  string `json:"signature"`
+		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage json.RawMessage `json:"usage"`
 }
@@ -330,15 +334,23 @@ func anthropicStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contrac
 					}
 				}
 			case "content_block_start":
-				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
-					// 工具调用的 id/name 只在首片出现，必须单独交出。
-					delta := contract.ToolCallDelta{
-						Index: event.Index,
-						ID:    event.ContentBlock.ID,
-						Name:  event.ContentBlock.Name,
-					}
-					if !yield(contract.StreamEvent{Kind: contract.EventDelta, ToolDelta: &delta, Model: model, Raw: frame.raw}) {
-						return
+				if event.ContentBlock != nil {
+					if event.ContentBlock.Type == "tool_use" {
+						// 工具调用的 id/name 只在首片出现，必须单独交出。
+						delta := contract.ToolCallDelta{
+							Index: event.Index,
+							ID:    event.ContentBlock.ID,
+							Name:  event.ContentBlock.Name,
+						}
+						if !yield(contract.StreamEvent{Kind: contract.EventDelta, ToolDelta: &delta, Model: model, Raw: frame.raw}) {
+							return
+						}
+					} else if event.ContentBlock.Type != "text" && event.ContentBlock.Type != "thinking" {
+						// redacted_thinking（加密思考）与未来新增块没有正文增量可
+						// 表达；交出原始帧，绝不静默丢弃（复审 P1）。
+						if !yield(contract.StreamEvent{Kind: contract.EventRaw, Model: model, Raw: frame.raw}) {
+							return
+						}
 					}
 				}
 			case "content_block_delta":
@@ -365,7 +377,11 @@ func anthropicStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contrac
 						}
 					}
 				default:
-					// signature_delta / citations_delta 等：保留在 Raw，不产出语义事件。
+					// signature_delta / citations_delta / 未来新增的 delta 类型：
+					// 没有对应的语义通道，但原始帧必须保留（复审 P1）。
+					if !yield(contract.StreamEvent{Kind: contract.EventRaw, Model: model, Raw: frame.raw}) {
+						return
+					}
 				}
 			case "message_delta":
 				if len(event.Usage) > 0 && string(event.Usage) != "null" {
@@ -469,6 +485,8 @@ type sseFrame struct {
 //
 // 与 M2 openai_stream.go 的帧解析同口径（relay-03 §4.2 甲类修正），
 // 但参数化以复用：OpenAI 适配器保留自己的实现，本文件服务两个原生适配器。
+// 【复审 #9 登记】两份实现的完全合并留待后续任务；本轮不改 OpenAI（不动 M2），
+// 但两处对空行/多 data 行/超限的处理必须保持一致。
 func sseFrameSeq(rw io.ReadWriter, maxEventBytes int) iter.Seq[sseFrame] {
 	return func(yield func(sseFrame) bool) {
 		if rw == nil {
@@ -543,6 +561,9 @@ func sseFrameSeq(rw io.ReadWriter, maxEventBytes int) iter.Seq[sseFrame] {
 // classifyUpstreamStatus 是原生适配器共用的状态码分类。
 // 规则与 M2 OpenAI 适配器完全一致（brief：按 M2 errors.go 口径），
 // 保持为一个函数避免两处实现漂移。
+// 【复审 #8 登记】OpenAI 的 ClassifyError 目前仍是独立方法；本轮按裁决
+// 不重构 OpenAI，但 TestAnthropicClassifyMatchesOpenAI 会锁住两者的一致性，
+// 防止未来只改一侧造成分派差异。
 func classifyUpstreamStatus(status int) contract.ErrorClass {
 	switch {
 	case status < 100 || status > 599:

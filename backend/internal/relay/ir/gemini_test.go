@@ -285,6 +285,101 @@ func TestGeminiResponseBlockedPrompt(t *testing.T) {
 	}
 }
 
+// TestGeminiGenerationConfigPassthrough 覆盖复审 P1：generationConfig 中
+// 未建模字段（topK / candidateCount / presencePenalty / thinkingConfig /
+// responseModalities）必须原样存活。
+func TestGeminiGenerationConfigPassthrough(t *testing.T) {
+	body := `{
+	  "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+	  "generationConfig":{
+	    "maxOutputTokens":64,
+	    "temperature":0.4,
+	    "topK":40,
+	    "candidateCount":2,
+	    "presencePenalty":0.5,
+	    "frequencyPenalty":0.25,
+	    "thinkingConfig":{"thinkingBudget":1024,"includeThoughts":true},
+	    "responseModalities":["TEXT","IMAGE"]
+	  }
+	}`
+	req, err := ParseGeminiRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := BuildGeminiRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	config, _ := built["generationConfig"].(map[string]any)
+	for _, key := range []string{"topK", "candidateCount", "presencePenalty", "frequencyPenalty"} {
+		if _, ok := config[key]; !ok {
+			t.Fatalf("generationConfig.%s 必须透传：%v", key, config)
+		}
+	}
+	if _, ok := config["thinkingConfig"].(map[string]any); !ok {
+		t.Fatalf("thinkingConfig 必须透传：%v", config)
+	}
+	if modalities, _ := config["responseModalities"].([]any); len(modalities) != 2 {
+		t.Fatalf("responseModalities 必须透传：%v", config["responseModalities"])
+	}
+	if config["maxOutputTokens"] != float64(64) || config["temperature"] != 0.4 {
+		t.Fatalf("已建模字段被覆盖错误：%v", config)
+	}
+}
+
+// TestGeminiThoughtSignatureRoundTrip 覆盖复审 P2：functionCall /
+// functionResponse 上的 thoughtSignature 必须随 part 回写。
+func TestGeminiThoughtSignatureRoundTrip(t *testing.T) {
+	body := `{
+	  "contents":[
+	    {"role":"model","parts":[
+	      {"functionCall":{"name":"lookup","args":{"q":"x"}},"thoughtSignature":"sig-call"}
+	    ]},
+	    {"role":"user","parts":[
+	      {"functionResponse":{"name":"lookup","response":{"result":"ok"}},"thoughtSignature":"sig-resp"}
+	    ]}
+	  ]
+	}`
+	req, err := ParseGeminiRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metaString(req.Messages[0].Content[0].Meta, "thought_signature") != "sig-call" {
+		t.Fatalf("functionCall thoughtSignature 未保留：%+v", req.Messages[0].Content[0].Meta)
+	}
+	if metaString(req.Messages[1].Content[0].Meta, "thought_signature") != "sig-resp" {
+		t.Fatalf("functionResponse thoughtSignature 未保留：%+v", req.Messages[1].Content[0].Meta)
+	}
+	encoded, err := BuildGeminiRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	contents, _ := built["contents"].([]any)
+	first, _ := contents[0].(map[string]any)
+	firstParts, _ := first["parts"].([]any)
+	firstPart, _ := firstParts[0].(map[string]any)
+	if firstPart["thoughtSignature"] != "sig-call" {
+		t.Fatalf("functionCall thoughtSignature 回写丢失：%v", firstPart)
+	}
+	if _, ok := firstPart["functionCall"].(map[string]any); !ok {
+		t.Fatalf("functionCall 载荷丢失：%v", firstPart)
+	}
+	second, _ := contents[1].(map[string]any)
+	secondParts, _ := second["parts"].([]any)
+	secondPart, _ := secondParts[0].(map[string]any)
+	if secondPart["thoughtSignature"] != "sig-resp" {
+		t.Fatalf("functionResponse thoughtSignature 回写丢失：%v", secondPart)
+	}
+}
+
 func TestGeminiBuildFunctionCallArgsMustBeObject(t *testing.T) {
 	req := &contract.Request{
 		Model: "gemini",

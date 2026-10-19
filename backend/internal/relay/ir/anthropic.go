@@ -146,10 +146,10 @@ func parseAnthropicSystem(raw json.RawMessage) (*contract.Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("system[%d]: %w", i, err)
 		}
-		if part.Kind != contract.PartText {
-			// Anthropic 的 system 只接受文本块；图片/工具块出现在 system 是
-			// 调用方错误，显式拒绝而不是丢弃。
-			return nil, paramErrf("system[%d] 只允许 text 块，得到 %q", i, part.Kind)
+		if part.Kind != contract.PartText || isAnthropicThinkingPart(part) {
+			// Anthropic 的 system 只接受正文文本块；图片/工具/思考块出现在
+			// system 是调用方错误，显式拒绝而不是丢弃。
+			return nil, paramErrf("system[%d] 只允许正文 text 块", i)
 		}
 		parts = append(parts, part)
 	}
@@ -215,9 +215,11 @@ func parseAnthropicContent(raw json.RawMessage) ([]contract.ContentPart, error) 
 
 // parseAnthropicBlock 解析单个 content 块。
 //
-// R-04 冻结的四类显式映射：text / image / tool_use / tool_result。
-// 其他任何类型（document、thinking、redacted_thinking、server_tool_use …）
-// 都返回参数错误 —— 静默丢弃会让请求内容悄悄缺失，属于不可接受的语义漂移。
+// R-04 冻结的四类显式映射：text / image / tool_use / tool_result；
+// 扩展思考（thinking / redacted_thinking）是 Anthropic 的标准块，
+// 同样显式映射到 Meta 逃生舱（复审 ruling：对有效 200 响应不得返回 502）。
+// 其余任何类型（document、server_tool_use …）都返回参数错误 ——
+// 静默丢弃会让请求内容悄悄缺失，属于不可接受的语义漂移。
 func parseAnthropicBlock(raw json.RawMessage) (contract.ContentPart, error) {
 	var block map[string]any
 	if err := json.Unmarshal(raw, &block); err != nil {
@@ -229,6 +231,29 @@ func parseAnthropicBlock(raw json.RawMessage) (contract.ContentPart, error) {
 		text, _ := block["text"].(string)
 		meta := blockMeta(block, "cache_control")
 		return contract.ContentPart{Kind: contract.PartText, Text: text, Meta: meta}, nil
+	case "thinking":
+		// 扩展思考是 Anthropic 的标准块，不是「未知类型」。IR 没有独立的
+		// reasoning 部件，用 text + Meta{"thought":true} 作为逃生舱：
+		// 顺序与 signature 都能无损回写；下游若要区分正文与思考可读 Meta。
+		thinking, _ := block["thinking"].(string)
+		meta := blockMeta(block, "cache_control")
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["thought"] = true
+		if signature, _ := block["signature"].(string); signature != "" {
+			meta["signature"] = signature
+		}
+		return contract.ContentPart{Kind: contract.PartText, Text: thinking, Meta: meta}, nil
+	case "redacted_thinking":
+		// 加密思考块没有可读正文；data 原样保存在 Meta，回写时恢复原块。
+		data, _ := block["data"].(string)
+		meta := blockMeta(block, "cache_control")
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["redacted_thinking"] = data
+		return contract.ContentPart{Kind: contract.PartText, Meta: meta}, nil
 	case "image":
 		return parseAnthropicImageBlock(block)
 	case "tool_use":
@@ -422,6 +447,26 @@ func parseAnthropicStopSequences(raw json.RawMessage) ([]string, error) {
 	return stops, nil
 }
 
+// isAnthropicThinkingPart 判断 IR 部件是否由 thinking/redacted_thinking 映射而来。
+func isAnthropicThinkingPart(part contract.ContentPart) bool {
+	if thought, _ := part.Meta["thought"].(bool); thought {
+		return true
+	}
+	_, redacted := part.Meta["redacted_thinking"]
+	return redacted
+}
+
+// isKnownAnthropicBlockType 判断块类型是否已显式建模。
+// 用于响应解析区分「已知类型的字段错误」（拒绝）与「未来新增类型」（保留）。
+func isKnownAnthropicBlockType(blockType string) bool {
+	switch blockType {
+	case "text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking":
+		return true
+	default:
+		return false
+	}
+}
+
 // blockMeta 只抽取指定的块级扩展字段（目前是 cache_control）。
 // 返回 nil 而不是空 map：避免编码器把空的扩展字段写进上游请求。
 func blockMeta(block map[string]any, keys ...string) map[string]any {
@@ -486,24 +531,16 @@ func BuildAnthropicRequestBody(req *contract.Request) ([]byte, error) {
 	}
 	obj["messages"] = messages
 
+	// 原始 tools / tool_choice 子对象必须在覆盖前捕获（复审 P2）：
+	// contract.Tool 没有 type/cache_control，IR 也不建模
+	// disable_parallel_tool_use；以原始子对象为基底做增量合并才能保住它们。
+	rawTools, _ := obj["tools"].([]any)
+	rawToolChoice, _ := obj["tool_choice"].(map[string]any)
+
 	if len(req.Tools) > 0 {
-		tools := make([]any, 0, len(req.Tools))
-		for i, tool := range req.Tools {
-			if tool.Name == "" {
-				return nil, paramErrf("tools[%d] 缺少 name", i)
-			}
-			schema := tool.Schema
-			if schema == nil {
-				schema = map[string]any{"type": "object"}
-			}
-			item := map[string]any{
-				"name":         tool.Name,
-				"input_schema": schema,
-			}
-			if tool.Description != "" {
-				item["description"] = tool.Description
-			}
-			tools = append(tools, item)
+		tools, err := encodeAnthropicTools(req.Tools, rawTools)
+		if err != nil {
+			return nil, err
 		}
 		obj["tools"] = tools
 	} else {
@@ -511,7 +548,7 @@ func BuildAnthropicRequestBody(req *contract.Request) ([]byte, error) {
 	}
 
 	if req.ToolChoice.Mode != "" {
-		choice, err := encodeAnthropicToolChoice(req.ToolChoice)
+		choice, err := encodeAnthropicToolChoice(req.ToolChoice, rawToolChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -537,6 +574,8 @@ func BuildAnthropicRequestBody(req *contract.Request) ([]byte, error) {
 	}
 	// ResponseFormat / Seed 在 Anthropic 协议里没有对应字段：显式忽略。
 	// 不把它们塞进请求体（上游会 400），也不伪造语义。
+	// 【复审 #11 登记】Anthropic 结构化输出（output_format）尚未建模；
+	// 跨协议 JSON 模式目前是「尽力而为」而非强保证。
 
 	return json.Marshal(obj)
 }
@@ -565,8 +604,8 @@ func encodeAnthropicMessages(messages []contract.Message) (any, []any, error) {
 		switch message.Role {
 		case contract.RoleSystem, contract.RoleDeveloper:
 			for j, part := range message.Content {
-				if part.Kind != contract.PartText {
-					return nil, nil, paramErrf("messages[%d].content[%d]: system 消息只允许 text 部件", i, j)
+				if part.Kind != contract.PartText || isAnthropicThinkingPart(part) {
+					return nil, nil, paramErrf("messages[%d].content[%d]: system 消息只允许正文 text 部件", i, j)
 				}
 				systemParts = append(systemParts, part)
 			}
@@ -626,6 +665,21 @@ func encodeAnthropicBlocks(parts []contract.ContentPart) ([]any, error) {
 func encodeAnthropicBlock(part contract.ContentPart) (map[string]any, error) {
 	switch part.Kind {
 	case contract.PartText:
+		// 加密思考块与可读思考块在 IR 里都以 text + Meta 承载；
+		// 回写时必须恢复原块类型，不能当成正文 text 发回上游。
+		if data, ok := part.Meta["redacted_thinking"].(string); ok {
+			block := map[string]any{"type": "redacted_thinking", "data": data}
+			copyMetaField(block, part.Meta, "cache_control")
+			return block, nil
+		}
+		if thought, _ := part.Meta["thought"].(bool); thought {
+			block := map[string]any{"type": "thinking", "thinking": part.Text}
+			if signature := metaString(part.Meta, "signature"); signature != "" {
+				block["signature"] = signature
+			}
+			copyMetaField(block, part.Meta, "cache_control")
+			return block, nil
+		}
 		block := map[string]any{"type": "text", "text": part.Text}
 		copyMetaField(block, part.Meta, "cache_control")
 		return block, nil
@@ -716,19 +770,79 @@ func encodeAnthropicToolInput(text string) (any, error) {
 	return input, nil
 }
 
-func encodeAnthropicToolChoice(choice contract.ToolChoice) (map[string]any, error) {
+// encodeAnthropicTools 编码工具声明。rawTools 是原始请求中的 tools 数组，
+// 按名称匹配后作为基底，保留 type（custom）、cache_control 等未建模字段。
+func encodeAnthropicTools(tools []contract.Tool, rawTools []any) ([]any, error) {
+	out := make([]any, 0, len(tools))
+	for i, tool := range tools {
+		if tool.Name == "" {
+			return nil, paramErrf("tools[%d] 缺少 name", i)
+		}
+		item := map[string]any{}
+		if raw := matchAnthropicTool(rawTools, i, tool.Name); raw != nil {
+			item = cloneMap(raw) // 深拷贝：不得原地改写 Raw 解码结果
+		}
+		schema := tool.Schema
+		if schema == nil {
+			schema = map[string]any{"type": "object"}
+		}
+		item["name"] = tool.Name
+		item["input_schema"] = schema
+		if tool.Description != "" {
+			item["description"] = tool.Description
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// matchAnthropicTool 优先按下标、其次按名称匹配原始工具子对象。
+// 归一化层若过滤/重排工具，下标会错位；名称匹配避免把 A 工具的
+// cache_control 贴到 B 工具上。
+func matchAnthropicTool(rawTools []any, index int, name string) map[string]any {
+	if index < len(rawTools) {
+		if raw, ok := rawTools[index].(map[string]any); ok {
+			if rawName, _ := raw["name"].(string); rawName == name {
+				return raw
+			}
+		}
+	}
+	for _, candidate := range rawTools {
+		raw, ok := candidate.(map[string]any)
+		if !ok {
+			continue
+		}
+		if rawName, _ := raw["name"].(string); rawName == name {
+			return raw
+		}
+	}
+	return nil
+}
+
+func encodeAnthropicToolChoice(choice contract.ToolChoice, raw map[string]any) (map[string]any, error) {
+	// 以原始子对象为基底保留 disable_parallel_tool_use 等未建模字段。
+	item := map[string]any{}
+	if raw != nil {
+		item = cloneMap(raw)
+	}
+	delete(item, "name") // 先清掉旧名称；仅 specific 重新写入。
 	switch choice.Mode {
 	case contract.ToolChoiceAuto:
-		return map[string]any{"type": "auto"}, nil
+		item["type"] = "auto"
+		return item, nil
 	case contract.ToolChoiceNone:
-		return map[string]any{"type": "none"}, nil
+		item["type"] = "none"
+		return item, nil
 	case contract.ToolChoiceRequired:
-		return map[string]any{"type": "any"}, nil
+		item["type"] = "any"
+		return item, nil
 	case contract.ToolChoiceSpecific:
 		if choice.Name == "" {
 			return nil, paramErrf("tool_choice specific 缺少 name")
 		}
-		return map[string]any{"type": "tool", "name": choice.Name}, nil
+		item["type"] = "tool"
+		item["name"] = choice.Name
+		return item, nil
 	default:
 		return nil, paramErrf("tool_choice 模式 %q 不受支持", choice.Mode)
 	}
@@ -775,13 +889,33 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 	}
 
 	message := contract.Message{Role: contract.RoleAssistant}
+	var unmapped []any
 	for i, raw := range payload.Content {
 		part, err := parseAnthropicBlock(raw)
 		if err != nil {
-			// 响应中的未知块同样显式报错（R-04）；不得把整块内容丢掉。
-			return nil, contract.Usage{}, fmt.Errorf("content[%d]: %w", i, err)
+			// 复审 P1：有效 200 响应绝不能因为「未来新增的块类型」变成 502。
+			// 已建模类型（含 thinking）的字段错误仍然拒绝；真正未知的类型
+			// 原样存进 Extensions，绝不静默丢弃。
+			var probe struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(raw, &probe)
+			if isKnownAnthropicBlockType(probe.Type) {
+				return nil, contract.Usage{}, fmt.Errorf("content[%d]: %w", i, err)
+			}
+			var opaque any
+			if json.Unmarshal(raw, &opaque) == nil {
+				unmapped = append(unmapped, opaque)
+			}
+			continue
 		}
 		message.Content = append(message.Content, part)
+	}
+	if len(unmapped) > 0 {
+		if message.Extensions == nil {
+			message.Extensions = map[string]any{}
+		}
+		message.Extensions["unmapped_blocks"] = unmapped
 	}
 	finishReason := normalizeAnthropicStopReason(payload.StopReason)
 	if payload.StopReason != "" {

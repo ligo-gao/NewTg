@@ -138,6 +138,41 @@ func TestGeminiParseResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiURLEscapesModelOnce(t *testing.T) {
+	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
+	req := geminiRequest(false)
+	req.Model = "gemini 2.5-flash"
+	httpReq, err := adapter.BuildRequest(geminiContext("k"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := httpReq.URL.String()
+	if strings.Contains(got, "%2520") {
+		t.Fatalf("模型名被二次转义：%q", got)
+	}
+	if !strings.Contains(got, "gemini%202.5-flash:generateContent") {
+		t.Fatalf("模型名转义错误：%q", got)
+	}
+}
+
+func TestGeminiStreamPreservesThoughtSignature(t *testing.T) {
+	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
+	sse := `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}},"thoughtSignature":"sig-stream"}]},"finishReason":"STOP"}]}` + "\n\n"
+	events := collectStreamEvents(adapter.(contract.StreamAdapter).StreamEvents(geminiContext("k"), bytes.NewBufferString(sse)))
+	if len(events) == 0 {
+		t.Fatal("没有事件")
+	}
+	found := false
+	for _, event := range events {
+		if strings.Contains(string(event.Raw), "thoughtSignature") && strings.Contains(string(event.Raw), "sig-stream") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("流式 thoughtSignature 必须随原始帧保留：%+v", events)
+	}
+}
+
 func TestGeminiClassifyError(t *testing.T) {
 	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
 	cases := map[int]contract.ErrorClass{

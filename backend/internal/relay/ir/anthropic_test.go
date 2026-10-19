@@ -144,9 +144,9 @@ func TestAnthropicRequestFourBlockTypesRoundTrip(t *testing.T) {
 
 func TestAnthropicUnknownBlockTypeRejected(t *testing.T) {
 	cases := map[string]string{
-		"document": `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","data":"x"}}]}]}`,
-		"thinking": `{"model":"m","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"secret"}]}]}`,
-		"system图片": `{"model":"m","max_tokens":1,"system":[{"type":"image","source":{"type":"url","url":"https://x"}}],"messages":[]}`,
+		"document":        `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","data":"x"}}]}]}`,
+		"server_tool_use": `{"model":"m","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"server_tool_use","id":"s","name":"web"}]}]}`,
+		"system图片":        `{"model":"m","max_tokens":1,"system":[{"type":"image","source":{"type":"url","url":"https://x"}}],"messages":[]}`,
 	}
 	for name, body := range cases {
 		_, err := ParseAnthropicRequest([]byte(body))
@@ -294,12 +294,81 @@ func TestAnthropicResponseParse(t *testing.T) {
 	}
 }
 
-func TestAnthropicResponseUnknownBlockRejected(t *testing.T) {
-	body := []byte(`{"id":"m","content":[{"type":"redacted_thinking","data":"x"}],"stop_reason":"end_turn"}`)
-	if _, _, err := ParseAnthropicResponse(body); !errors.Is(err, ErrParamInvalid) {
-		t.Fatalf("响应未知块必须显式报错，得到 %v", err)
+// TestAnthropicExtendedThinkingResponse 是复审 P1 的回归：thinking /
+// redacted_thinking 是标准块，有效 200 响应绝不能变成 502。
+func TestAnthropicExtendedThinkingResponse(t *testing.T) {
+	body := []byte(`{
+	  "id":"m","model":"claude-sonnet-4-5",
+	  "content":[
+	    {"type":"thinking","thinking":"let me think","signature":"sig-1"},
+	    {"type":"redacted_thinking","data":"encrypted"},
+	    {"type":"text","text":"answer"}
+	  ],
+	  "stop_reason":"end_turn",
+	  "usage":{"input_tokens":1,"output_tokens":2}
+	}`)
+	resp, _, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("扩展思考响应不得报错：%v", err)
+	}
+	content := resp.Choices[0].Message.Content
+	if len(content) != 3 {
+		t.Fatalf("content = %+v", content)
+	}
+	if content[0].Kind != contract.PartText || content[0].Text != "let me think" ||
+		content[0].Meta["thought"] != true || content[0].Meta["signature"] != "sig-1" {
+		t.Fatalf("thinking 映射错误：%+v", content[0])
+	}
+	if content[1].Kind != contract.PartText || content[1].Meta["redacted_thinking"] != "encrypted" {
+		t.Fatalf("redacted_thinking 映射错误：%+v", content[1])
+	}
+	if content[2].Text != "answer" || content[2].Meta["thought"] == true {
+		t.Fatalf("正文映射错误：%+v", content[2])
+	}
+
+	// 同一 IR 编码回 Anthropic 时必须恢复原块类型，不能当成正文 text。
+	req := &contract.Request{Model: "m", MaxTokens: intPtr(16), Messages: []contract.Message{
+		{Role: contract.RoleAssistant, Content: content},
+	}}
+	encoded, err := BuildAnthropicRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildAnthropicRequestBody: %v", err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := built["messages"].([]any)
+	msg, _ := messages[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	first, _ := blocks[0].(map[string]any)
+	second, _ := blocks[1].(map[string]any)
+	if first["type"] != "thinking" || first["thinking"] != "let me think" || first["signature"] != "sig-1" {
+		t.Fatalf("thinking 回写错误：%v", first)
+	}
+	if second["type"] != "redacted_thinking" || second["data"] != "encrypted" {
+		t.Fatalf("redacted_thinking 回写错误：%v", second)
 	}
 }
+
+func TestAnthropicResponseUnknownBlockPreserved(t *testing.T) {
+	// 真正未知的（未来新增）块：响应解析不得 502，原始块进 Extensions。
+	body := []byte(`{"id":"m","content":[{"type":"future_block","payload":{"x":1}},{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
+	resp, _, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("未知响应块必须保留而不是报错：%v", err)
+	}
+	message := resp.Choices[0].Message
+	if len(message.Content) != 1 || message.Content[0].Text != "ok" {
+		t.Fatalf("已建模内容映射错误：%+v", message.Content)
+	}
+	unmapped, ok := message.Extensions["unmapped_blocks"].([]any)
+	if !ok || len(unmapped) != 1 {
+		t.Fatalf("未知块必须保留在 Extensions：%+v", message.Extensions)
+	}
+}
+
+func intPtr(value int) *int { return &value }
 
 func TestAnthropicBuildPassthroughKeepsUnmodelledFields(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8,"system":"s","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":1024},"top_k":5}`
@@ -347,6 +416,48 @@ func TestAnthropicSystemCacheControlPreserved(t *testing.T) {
 	}
 	if _, ok := block["cache_control"].(map[string]any); !ok {
 		t.Fatalf("system 的 cache_control 丢失：%v", block)
+	}
+}
+
+// TestAnthropicToolFieldsPreserved 覆盖复审 P2：工具定义的 type/cache_control
+// 与 tool_choice.disable_parallel_tool_use 必须经 IR 往返存活。
+func TestAnthropicToolFieldsPreserved(t *testing.T) {
+	body := `{
+	  "model":"m","max_tokens":8,
+	  "messages":[{"role":"user","content":"hi"}],
+	  "tools":[{"type":"custom","name":"f","description":"d","input_schema":{"type":"object"},
+	            "cache_control":{"type":"ephemeral"}}],
+	  "tool_choice":{"type":"auto","disable_parallel_tool_use":true}
+	}`
+	req, err := ParseAnthropicRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := BuildAnthropicRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := built["tools"].([]any)
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "custom" {
+		t.Fatalf("工具 type 丢失：%v", tool)
+	}
+	if _, ok := tool["cache_control"].(map[string]any); !ok {
+		t.Fatalf("工具 cache_control 丢失：%v", tool)
+	}
+	if tool["name"] != "f" || tool["input_schema"] == nil {
+		t.Fatalf("已建模工具字段错误：%v", tool)
+	}
+	choice, _ := built["tool_choice"].(map[string]any)
+	if choice["type"] != "auto" || choice["disable_parallel_tool_use"] != true {
+		t.Fatalf("tool_choice 扩展字段丢失：%v", choice)
+	}
+	if _, ok := choice["name"]; ok {
+		t.Fatalf("auto 模式不得残留 name：%v", choice)
 	}
 }
 

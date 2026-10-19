@@ -295,6 +295,54 @@ func TestAnthropicStreamErrorEvent(t *testing.T) {
 	}
 }
 
+// TestAnthropicStreamThinkingSignatureAndRedacted 覆盖复审 P1：signature_delta
+// 与 redacted_thinking 内容不得在流式解析中丢失。
+func TestAnthropicStreamThinkingSignatureAndRedacted(t *testing.T) {
+	adapter := NewAnthropicAdapter(contract.ChannelTypeAnthropic)
+	sse := strings.Join([]string{
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"enc-payload"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-value"}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+	events := collectStreamEvents(adapter.(contract.StreamAdapter).StreamEvents(anthropicContext("k"), bytes.NewBufferString(sse)))
+	var sawRedacted, sawSignature bool
+	for _, event := range events {
+		raw := string(event.Raw)
+		if event.Kind == contract.EventRaw && strings.Contains(raw, "redacted_thinking") && strings.Contains(raw, "enc-payload") {
+			sawRedacted = true
+		}
+		if event.Kind == contract.EventRaw && strings.Contains(raw, "signature_delta") && strings.Contains(raw, "sig-value") {
+			sawSignature = true
+		}
+	}
+	if !sawRedacted || !sawSignature {
+		t.Fatalf("流式思考签名/加密块必须保留（redacted=%v signature=%v）：%+v", sawRedacted, sawSignature, events)
+	}
+}
+
+// TestAnthropicClassifyMatchesOpenAI 锁定两份状态码分类实现的一致性
+// （复审 #8：不复用同一函数，但必须同口径）。
+func TestAnthropicClassifyMatchesOpenAI(t *testing.T) {
+	openAI := &OpenAI{}
+	anthropic := NewAnthropicAdapter(contract.ChannelTypeAnthropic)
+	gemini := NewGeminiAdapter(contract.ChannelTypeGemini)
+	for status := 0; status <= 600; status++ {
+		want := openAI.ClassifyError(status, nil)
+		if got := anthropic.ClassifyError(status, nil); got != want {
+			t.Fatalf("status %d: Anthropic 分类 %v != OpenAI %v", status, got, want)
+		}
+		if got := gemini.ClassifyError(status, nil); got != want {
+			t.Fatalf("status %d: Gemini 分类 %v != OpenAI %v", status, got, want)
+		}
+	}
+}
+
 func TestAnthropicRegistryDispatch(t *testing.T) {
 	for _, channelType := range []contract.ChannelType{contract.ChannelTypeAnthropic, contract.ChannelTypeMoonshot} {
 		adapter, err := Dispatch(channelType)

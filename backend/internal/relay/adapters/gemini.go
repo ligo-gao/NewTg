@@ -144,7 +144,15 @@ func geminiURL(baseURL, model string, stream bool) (string, error) {
 	if stream {
 		method = ":streamGenerateContent"
 	}
-	parsed.Path = basePath + "/models/" + url.PathEscape(model) + method
+	// 先构造已转义形态并同时写 Path/RawPath：只赋 Path 会让 URL.String
+	// 对已含 %XX 的模型名再次转义（%2F → %252F，复审 P3 #7）。
+	escapedPath := basePath + "/models/" + url.PathEscape(model) + method
+	decodedPath, unescapeErr := url.PathUnescape(escapedPath)
+	if unescapeErr != nil {
+		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid API base URL")
+	}
+	parsed.Path = decodedPath
+	parsed.RawPath = escapedPath
 	if stream {
 		query := parsed.Query()
 		query.Set("alt", "sse")

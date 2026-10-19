@@ -476,7 +476,14 @@ func BuildGeminiRequestBody(req *contract.Request) ([]byte, error) {
 		delete(obj, "toolConfig")
 	}
 
+	// generationConfig 必须从原始子对象起步再覆盖已建模字段（复审 P1）：
+	// topK / candidateCount / presencePenalty / thinkingConfig /
+	// responseModalities 等未建模字段必须原样存活，不能因为 IR 没有对应
+	// 字段就被整体丢弃。
 	config := map[string]any{}
+	if rawConfig, ok := obj["generationConfig"].(map[string]any); ok {
+		config = cloneMap(rawConfig)
+	}
 	if req.MaxTokens != nil {
 		config["maxOutputTokens"] = *req.MaxTokens
 	}
@@ -496,8 +503,10 @@ func BuildGeminiRequestBody(req *contract.Request) ([]byte, error) {
 		switch req.ResponseFormat.Kind {
 		case contract.ResponseFormatText:
 			config["responseMimeType"] = "text/plain"
+			delete(config, "responseSchema")
 		case contract.ResponseFormatJSONObject:
 			config["responseMimeType"] = "application/json"
+			delete(config, "responseSchema")
 		case contract.ResponseFormatJSONSchema:
 			config["responseMimeType"] = "application/json"
 			if req.ResponseFormat.Schema != nil {
@@ -674,7 +683,10 @@ func encodeGeminiPart(part contract.ContentPart, toolCallNames map[string]string
 		if id := metaString(part.Meta, "id"); id != "" {
 			call["id"] = id
 		}
-		return map[string]any{"functionCall": call}, nil
+		item := map[string]any{"functionCall": call}
+		// thoughtSignature 是 part 级兄弟字段，必须随 functionCall 回写（复审 P2）。
+		copyThoughtSignature(item, part.Meta)
+		return item, nil
 	case contract.PartToolResult:
 		name := metaString(part.Meta, "name")
 		if name == "" {
@@ -688,13 +700,22 @@ func encodeGeminiPart(part contract.ContentPart, toolCallNames map[string]string
 		if err != nil {
 			return nil, err
 		}
-		item := map[string]any{"name": name, "response": response}
+		inner := map[string]any{"name": name, "response": response}
 		if id := metaString(part.Meta, "tool_call_id"); id != "" {
-			item["id"] = id
+			inner["id"] = id
 		}
-		return map[string]any{"functionResponse": item}, nil
+		item := map[string]any{"functionResponse": inner}
+		copyThoughtSignature(item, part.Meta)
+		return item, nil
 	default:
 		return nil, paramErrf("不支持的部件类型 %q", part.Kind)
+	}
+}
+
+// copyThoughtSignature 把 Meta 中保存的 thoughtSignature 写回 part 层。
+func copyThoughtSignature(item map[string]any, meta map[string]any) {
+	if signature := metaString(meta, "thought_signature"); signature != "" {
+		item["thoughtSignature"] = signature
 	}
 }
 
