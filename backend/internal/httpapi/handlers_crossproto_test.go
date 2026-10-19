@@ -299,6 +299,11 @@ func TestCrossProtoOpenAIToAnthropicViaIR(t *testing.T) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("客户端响应不是 JSON: %v（%s）", err, w.Body.String())
@@ -306,6 +311,13 @@ func TestCrossProtoOpenAIToAnthropicViaIR(t *testing.T) {
 	if payload.Object != "chat.completion" || len(payload.Choices) != 1 ||
 		payload.Choices[0].Message.Content != "hi from claude" {
 		t.Fatalf("客户端响应 = %s", w.Body.String())
+	}
+	// F1：usage 必须是 OpenAI 形状（input_tokens/output_tokens 不得泄漏）。
+	if payload.Usage.PromptTokens != 4 || payload.Usage.CompletionTokens != 6 || payload.Usage.TotalTokens != 10 {
+		t.Fatalf("OpenAI usage 形状错误：%+v（body=%s）", payload.Usage, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "input_tokens") || strings.Contains(w.Body.String(), "output_tokens") {
+		t.Fatalf("原生 usage 键泄漏进 OpenAI 响应: %s", w.Body.String())
 	}
 
 	// 鉴权/计费不降级：成功请求仍走 PreConsume → Terminate。
@@ -356,6 +368,11 @@ func TestCrossProtoOpenAIToGeminiViaIR(t *testing.T) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("客户端响应不是 JSON: %v（%s）", err, w.Body.String())
@@ -363,6 +380,13 @@ func TestCrossProtoOpenAIToGeminiViaIR(t *testing.T) {
 	if payload.Object != "chat.completion" || len(payload.Choices) != 1 ||
 		payload.Choices[0].Message.Content != "hi from gemini" {
 		t.Fatalf("客户端响应 = %s", w.Body.String())
+	}
+	// F1：Gemini usageMetadata 必须合成为 OpenAI usage，而不是整段丢失。
+	if payload.Usage.PromptTokens != 3 || payload.Usage.CompletionTokens != 4 || payload.Usage.TotalTokens != 7 {
+		t.Fatalf("OpenAI usage 形状错误：%+v（body=%s）", payload.Usage, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "usageMetadata") || strings.Contains(w.Body.String(), "promptTokenCount") {
+		t.Fatalf("Gemini usage 键泄漏进 OpenAI 响应: %s", w.Body.String())
 	}
 	if env.billing.preConsumeCalls() != 1 || env.billing.terminateCount() != 1 {
 		t.Fatalf("计费调用 = preConsume:%d terminate:%d", env.billing.preConsumeCalls(), env.billing.terminateCount())
@@ -408,5 +432,274 @@ func TestCrossProtoRequiresAuth(t *testing.T) {
 	}
 	if env.billing.preConsumeCalls() != 0 {
 		t.Fatal("未认证请求不得进入计费路径")
+	}
+}
+
+// nativeRawStreamAdapter 模拟原生协议适配器：Type() 返回 Anthropic/Gemini，
+// 但沿用在 relay_endpoints_test.go 里定义的脚本化事件序列。
+type nativeRawStreamAdapter struct {
+	scriptedStreamAdapter
+	channelType contract.ChannelType
+}
+
+func (a *nativeRawStreamAdapter) Type() contract.ChannelType { return a.channelType }
+
+// N2（T2 复审交接）：原生适配器的 EventRaw 携带 Anthropic/Gemini 原始帧，
+// 不得逐字节写进 OpenAI 客户端 SSE 流；语义事件（delta/finish）照常输出。
+func TestCrossProtoNativeRawEventNotForwarded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &nativeRawStreamAdapter{
+		scriptedStreamAdapter: scriptedStreamAdapter{
+			url: upstream.URL + "/v1/messages",
+			events: []contract.StreamEvent{
+				// Anthropic 的 signature_delta 只对 Anthropic 客户端有意义。
+				{Kind: contract.EventRaw, Raw: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-value\"}}")},
+				{Kind: contract.EventDelta, Delta: "ok"},
+				{Kind: contract.EventFinish, Raw: []byte(`data: {"choices":[{"finish_reason":"stop"}]}`)},
+			},
+		},
+		channelType: contract.ChannelTypeAnthropic,
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"content":"ok"`) {
+		t.Fatalf("语义 delta 必须继续输出；body=%s", out)
+	}
+	if strings.Contains(out, "signature_delta") || strings.Contains(out, "sig-value") {
+		t.Fatalf("原生协议原始帧泄漏进 OpenAI 流；body=%s", out)
+	}
+}
+
+// 反向锁定：OpenAI 上游的 EventRaw 仍按 M2 行为逐字节转发（不得被 N2 的
+// 原生网关误伤）。
+func TestCrossProtoOpenAIRawEventStillForwarded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &scriptedStreamAdapter{
+		url: upstream.URL + "/v1/chat/completions",
+		events: []contract.StreamEvent{
+			{Kind: contract.EventRaw, Raw: []byte(`data: {"object":"chat.completion.chunk","provider_ext":true}`)},
+			{Kind: contract.EventDelta, Delta: "ok"},
+			{Kind: contract.EventFinish, Raw: []byte(`data: {"choices":[{"finish_reason":"stop"}]}`)},
+		},
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "provider_ext") {
+		t.Fatalf("OpenAI 上游 EventRaw 必须保持透传；body=%s", w.Body.String())
+	}
+}
+
+// N3（T2 复审交接）：Anthropic 未知块经 Extensions["unmapped_blocks"] 保真，
+// 但 OpenAI 客户端响应绝不能包含该扩展或原生块内容。
+func TestCrossProtoResponseStripsUnmappedNativeBlocks(t *testing.T) {
+	upstreamBody := `{
+	  "id": "msg_unknown",
+	  "type": "message",
+	  "role": "assistant",
+	  "model": "claude-sonnet-4-5",
+	  "content": [
+	    {"type": "text", "text": "ok"},
+	    {"type": "server_tool_use", "id": "srv_1", "name": "web_search"}
+	  ],
+	  "stop_reason": "end_turn",
+	  "usage": {"input_tokens": 1, "output_tokens": 2}
+	}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	sealer := NewSecretSealer(relaySealerMaster)
+	channels := crossProtoChannels(t, sealer, upstream.URL, contract.ChannelTypeAnthropic)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody, crossProtoHeaders("anthropic"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
+	}
+	out := w.Body.String()
+	if strings.Contains(out, "unmapped_blocks") || strings.Contains(out, "server_tool_use") || strings.Contains(out, "web_search") {
+		t.Fatalf("原生未知块泄漏进 OpenAI 客户端响应: %s", out)
+	}
+	var payload struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("客户端响应不是 JSON: %v（%s）", err, out)
+	}
+	if payload.Object != "chat.completion" || len(payload.Choices) != 1 ||
+		payload.Choices[0].Message.Content != "ok" {
+		t.Fatalf("客户端响应 = %s", out)
+	}
+}
+
+// F2：原生 EventRaw 若承载无法用 OpenAI SSE 表达的内容（加密思考块、
+// 未知块、Gemini inlineData），必须按连接级失败终止：不写 [DONE]、退款，
+// 绝不逐字节透传原生帧或静默丢内容。
+func TestCrossProtoNativeContentRawTerminatesStream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	adapter := &nativeRawStreamAdapter{
+		scriptedStreamAdapter: scriptedStreamAdapter{
+			url: upstream.URL + "/v1/messages",
+			events: []contract.StreamEvent{
+				{Kind: contract.EventDelta, Delta: "partial"},
+				{Kind: contract.EventRaw, Raw: []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"enc-payload\"}}")},
+				{Kind: contract.EventDelta, Delta: "must-not-arrive"},
+				{Kind: contract.EventFinish, Raw: []byte(`data: {"choices":[{"finish_reason":"stop"}]}`)},
+			},
+		},
+		channelType: contract.ChannelTypeAnthropic,
+	}
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	out := w.Body.String()
+	if strings.Contains(out, "redacted_thinking") || strings.Contains(out, "enc-payload") {
+		t.Fatalf("原生内容帧泄漏进 OpenAI 流；body=%s", out)
+	}
+	if strings.Contains(out, "[DONE]") || strings.Contains(out, "must-not-arrive") {
+		t.Fatalf("不可表达的载荷必须终止流（不写 [DONE]、不继续）；body=%s", out)
+	}
+	// 失败流不结算：Refund 恰好一次，Terminate 零次。
+	if env.billing.terminateCount() != 0 || env.billing.refundCount() != 1 {
+		t.Fatalf("计费 = terminate:%d refund:%d", env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// F6：header=openai 必须把候选过滤到 OpenAI 协议族（即使 Anthropic 候选
+// 优先级/权重相同也不能被选中），并保持 OpenAI 透传。
+func TestCrossProtoHeaderOpenAIFiltersNativeChannels(t *testing.T) {
+	rec, upstream := newRecordedUpstream()
+	defer upstream.Close()
+	sealer := NewSecretSealer(relaySealerMaster)
+	channels := crossProtoChannels(t, sealer, upstream.URL,
+		contract.ChannelTypeAnthropic, contract.ChannelTypeOpenAI)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody, crossProtoHeaders("openai"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
+	}
+	_, path, _, _, _ := rec.snapshot()
+	if strings.Contains(path, "/v1/messages") {
+		t.Fatalf("header=openai 不得命中 Anthropic 渠道；path=%q", path)
+	}
+	if !strings.Contains(path, "/chat/completions") {
+		t.Fatalf("上游路径 = %q，期望 OpenAI chat 路径", path)
+	}
+	if w.Body.String() != openAIUpstreamBody {
+		t.Fatalf("OpenAI→OpenAI 必须逐字节透传；body=%s", w.Body.String())
+	}
+}
+
+// F6：pin 指向的渠道协议与目标协议不匹配 → 显式 400，不得静默忽略 pin
+// 或改走其他协议（pin 是客户端的硬约束）。
+func TestCrossProtoPinProtocolMismatchReturns400(t *testing.T) {
+	_, upstream := newRecordedUpstream()
+	defer upstream.Close()
+	sealer := NewSecretSealer(relaySealerMaster)
+	channels := crossProtoChannels(t, sealer, upstream.URL,
+		contract.ChannelTypeOpenAI, contract.ChannelTypeAnthropic)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+	// legacy pin：查询 key 是 sk-pintest，末段 1 = OpenAI 渠道 ID。
+	env.handler.tokens = newFakeRelayTokenStore("sk-pintest", &auth.TokenMeta{
+		ID:             9,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		UnlimitedQuota: true,
+	})
+	env.handler.access = &fakeRelayAccess{role: "admin", status: "enabled"}
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody,
+		map[string]string{
+			"Authorization":    "Bearer sk-pintest-1",
+			"x-newtg-protocol": "anthropic",
+			"Content-Type":     "application/json",
+		})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400（body=%s）", w.Code, w.Body.String())
+	}
+	if got := decodeRelayError(t, w.Body.Bytes()).Error.Code; got != "endpoint_not_supported" {
+		t.Fatalf("错误码 = %q", got)
+	}
+}
+
+// F4：陈旧候选（channels.Get 失败）在非 pin 场景下跳过，不得拖垮整个请求。
+func TestCrossProtoStaleCandidateSkipped(t *testing.T) {
+	rec, upstream := newRecordedUpstream()
+	defer upstream.Close()
+	sealer := NewSecretSealer(relaySealerMaster)
+	channels := crossProtoChannels(t, sealer, upstream.URL, contract.ChannelTypeAnthropic)
+	// 候选顺序：先放一个不存在的渠道 ID（fake store 返回 ErrChannelNotFound）。
+	channels.candidates = append([]contract.ChannelCandidate{{
+		ChannelID: 99,
+		Priority:  10,
+		Weight:    1,
+	}}, channels.candidates...)
+	env := newCrossProtoEnv(t, upstream, channels, true)
+
+	w := env.do(t, http.MethodPost, "/v1/chat/completions", crossProtoChatBody, crossProtoHeaders("anthropic"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（陈旧候选应被跳过，body=%s）", w.Code, w.Body.String())
+	}
+	if calls, _, _, _, _ := rec.snapshot(); calls != 1 {
+		t.Fatalf("上游调用次数 = %d，期望 1（由有效候选服务）", calls)
+	}
+}
+
+// F3：deferredSettlement 在 commit 之前 abort 必须真正退款（不是 no-op）。
+func TestDeferredSettlementRefundsBeforeCommit(t *testing.T) {
+	billing := newRecordingBilling()
+	deferred := newDeferredSettlement(billing)
+	if err := deferred.PreConsume(contract.QuotaEstimate{Model: "gpt-test"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := deferred.Terminate(contract.UsageFact{Model: "gpt-test"}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	// 模拟响应编码失败：defer abort → 退款，内层从未 Terminate。
+	deferred.abort()
+	if billing.terminateCount() != 0 || billing.refundCount() != 1 {
+		t.Fatalf("计费 = terminate:%d refund:%d，期望 0/1", billing.terminateCount(), billing.refundCount())
+	}
+	// 再 commit 不得产生二次结算。
+	if err := deferred.commit(); err != nil {
+		t.Fatalf("commit after abort: %v", err)
+	}
+	if billing.terminateCount() != 0 {
+		t.Fatalf("abort 后 commit 不得结算，terminate=%d", billing.terminateCount())
 	}
 }

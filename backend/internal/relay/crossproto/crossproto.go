@@ -20,7 +20,9 @@
 package crossproto
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -175,9 +177,20 @@ func Forward(ctx context.Context, rc *contract.RelayContext, targetProtocol stri
 		return resp, nil
 	}
 
-	encoded, err := ir.FromIR(resp)
+	// F1：先剥离原生扩展，再**清空 Raw** 交给 ir.FromIR。
+	// FromIR 会把原始响应里的 created/system_fingerprint/usage/service_tier
+	// 原样复制进 OpenAI 负载；对原生上游来说 `usage` 是 input_tokens /
+	// output_tokens（Gemini 甚至是 usageMetadata），直接复制会把原生 usage
+	// 形状泄漏给 OpenAI 客户端（缺 prompt_tokens/completion_tokens/total_tokens）。
+	// 因此不让 FromIR 看到原生 Raw，随后用归一化用量合成 OpenAI 形状的 usage。
+	sanitized := sanitizeForOpenAIClient(resp)
+	sanitized.Raw = nil
+	encoded, err := ir.FromIR(sanitized)
 	if err != nil {
 		return nil, fmt.Errorf("crossproto: encode OpenAI response: %w", err)
+	}
+	if usage, ok := openAIUsageFromNative(protocol, resp.Raw); ok {
+		encoded.Raw = withOpenAIUsage(encoded.Raw, usage)
 	}
 	// 转换链是契约 §5 的追加式审计（relay-01 要求协议转换可追溯）。
 	// 只记录阶段与协议标识，不记录响应体，避免把上游内容写进审计。
@@ -190,6 +203,203 @@ func Forward(ctx context.Context, rc *contract.RelayContext, targetProtocol stri
 		})
 	}
 	return encoded, nil
+}
+
+// openAIResponseExtensionAllowlist 是允许进入 OpenAI 客户端响应的 message
+// Extensions 键（N3）。
+//
+// 为什么用 allow-list 而不是 deny-list：`unmapped_blocks`（Anthropic 未知块
+// 的保真载体）只是当前已知的泄漏点，未来原生解析器可能新增更多协议私有的
+// 扩展键。deny-list 会让新键默认泄漏；allow-list 让未知键默认被剥离
+// （fail-closed），只有明确属于 OpenAI Chat Completions message 的字段才保留。
+// `finish_reason` 不在其中：它由 mergeExtensions 跳过、由 Choice 层级写出。
+var openAIResponseExtensionAllowlist = map[string]struct{}{
+	"refusal":     {},
+	"annotations": {},
+	"audio":       {},
+}
+
+// sanitizeForOpenAIClient 返回一份剥离了非 OpenAI 协议扩展的响应副本，
+// 供 ir.FromIR 编码给 OpenAI 兼容客户端（N3）。
+//
+// 只复制被修改的消息切片/map，原始 IR 响应不被改动：同一次请求的
+// UsageFact/审计仍需要原生保真数据（对账与诊断），剥离只发生在客户端出口。
+func sanitizeForOpenAIClient(resp *contract.Response) *contract.Response {
+	out := *resp
+	out.Choices = make([]contract.Choice, len(resp.Choices))
+	for i, choice := range resp.Choices {
+		choice.Message = sanitizeMessageExtensions(choice.Message)
+		out.Choices[i] = choice
+	}
+	return &out
+}
+
+func sanitizeMessageExtensions(message contract.Message) contract.Message {
+	if len(message.Extensions) == 0 {
+		return message
+	}
+	filtered := make(map[string]any, len(message.Extensions))
+	for key, value := range message.Extensions {
+		if _, ok := openAIResponseExtensionAllowlist[key]; ok {
+			filtered[key] = value
+		}
+	}
+	message.Extensions = filtered
+	return message
+}
+
+// openAIUsageFromNative 从原生上游响应体合成 OpenAI 形状的 usage 对象（F1）。
+//
+// 为什么重新解析 Raw 而不是从 Response 取：契约 §2.3 的 Response 没有 Usage
+// 字段（用量由适配器 ParseResponse 的第二返回值单独给出，Forward 签名收不到），
+// 而原生 Raw 里恰好保留了协议原始用量。只在 Raw 确实带用量字段时返回 ok=true：
+// 上游没给 usage 时不伪造零值 usage（客户端会把零值当真）。
+func openAIUsageFromNative(protocol Protocol, raw []byte) (map[string]any, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, false
+	}
+	var usage contract.Usage
+	switch protocol {
+	case ProtocolAnthropic:
+		var payload struct {
+			Usage json.RawMessage `json:"usage"`
+		}
+		if json.Unmarshal(raw, &payload) != nil {
+			return nil, false
+		}
+		trimmed := bytes.TrimSpace(payload.Usage)
+		if len(trimmed) == 0 || string(trimmed) == "null" {
+			return nil, false
+		}
+		usage = ir.ParseAnthropicUsage(payload.Usage)
+	case ProtocolGemini:
+		var payload struct {
+			UsageMetadata json.RawMessage `json:"usageMetadata"`
+		}
+		if json.Unmarshal(raw, &payload) != nil {
+			return nil, false
+		}
+		trimmed := bytes.TrimSpace(payload.UsageMetadata)
+		if len(trimmed) == 0 || string(trimmed) == "null" {
+			return nil, false
+		}
+		usage = ir.ParseGeminiUsage(payload.UsageMetadata)
+	default:
+		return nil, false
+	}
+
+	// OpenAI 的 prompt_tokens 是**含缓存**的总输入量；Anthropic/Gemini 的
+	// Prompt 不含缓存（契约 §2.3 关系布尔）。客户端看到的 prompt_tokens
+	// 必须按 OpenAI 语义求和，否则订阅方会把缓存段漏算。
+	prompt := usage.Prompt + usage.CacheRead + usage.CacheWrite
+	completion := usage.Completion
+	object := map[string]any{
+		"prompt_tokens":     prompt,
+		"completion_tokens": completion,
+		"total_tokens":      prompt + completion,
+	}
+	if usage.CacheRead > 0 {
+		object["prompt_tokens_details"] = map[string]any{"cached_tokens": usage.CacheRead}
+	}
+	if usage.Reasoning > 0 {
+		// OpenAI 的 completion_tokens 已含 reasoning_tokens（同 Anthropic 的
+		// output_tokens 语义）；只补明细，不再加进 completion_tokens。
+		object["completion_tokens_details"] = map[string]any{"reasoning_tokens": usage.Reasoning}
+	}
+	return object, true
+}
+
+// withOpenAIUsage 把合成 usage 写入已编码的 OpenAI 响应 JSON。
+//
+// 解析失败时保留原响应：编码结果来自 ir.FromIR，正常情况下必为 JSON 对象；
+// 这里宁可少一个 usage 字段，也不能让客户端拿不到正文。
+func withOpenAIUsage(raw []byte, usage map[string]any) []byte {
+	var object map[string]any
+	if json.Unmarshal(raw, &object) != nil || object == nil {
+		return raw
+	}
+	object["usage"] = usage
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+// RawEventDisposition 是原生 EventRaw 在跨协议流中的处置方式。
+type RawEventDisposition int
+
+const (
+	// RawEventDrop：该帧只承载原生元数据（签名/引用），OpenAI 流没有对应
+	// 语义通道；丢弃是**有意省略**，正文/工具/用量仍由语义事件完整输出。
+	RawEventDrop RawEventDisposition = iota
+
+	// RawEventUnsupported：该帧承载无法用 OpenAI SSE 表达的内容载荷
+	// （加密思考块、未知块、Gemini inlineData 等）。调用方必须按连接级
+	// 失败终止流（不写 [DONE]、退款），绝不逐字节透传或静默丢内容。
+	RawEventUnsupported
+)
+
+// ClassifyNativeRawEvent 判定原生适配器交出的 EventRaw 能否在 OpenAI 客户端
+// 流中安全省略（F2 / N2）。
+//
+// 判定依据是原生帧的协议语义，而不是「能否解析」：
+//   - Anthropic：signature_delta / citations_delta / ping 是辅助元数据，
+//     OpenAI 无对应字段 → Drop；content_block_start（redacted_thinking 或
+//     未知块）与未知事件可能携带内容 → Unsupported。
+//   - Gemini：适配器只在 inlineData / functionResponse / 未知 part 时发
+//     EventRaw，全部是内容载荷 → Unsupported。
+//
+// fail-closed：无法解析或协议未知一律 Unsupported（宁可显式失败，也不把
+// 无法理解的载荷当成「可安全丢弃」）。
+func ClassifyNativeRawEvent(protocol Protocol, raw []byte) RawEventDisposition {
+	data := sseDataPayload(raw)
+	if len(data) == 0 {
+		return RawEventUnsupported
+	}
+	switch protocol {
+	case ProtocolAnthropic:
+		var event struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type string `json:"type"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal(data, &event) != nil {
+			return RawEventUnsupported
+		}
+		if event.Type == "content_block_delta" {
+			switch event.Delta.Type {
+			case "signature_delta", "citations_delta":
+				return RawEventDrop
+			}
+			return RawEventUnsupported
+		}
+		if event.Type == "ping" {
+			return RawEventDrop
+		}
+		return RawEventUnsupported
+	default:
+		return RawEventUnsupported
+	}
+}
+
+// sseDataPayload 从一个原始 SSE 帧中取出 data 行并合并（多行 data: 以 \n 连接）。
+//
+// 原生适配器交出的 Raw 是 `sseFrame.raw`（含 event:/data:/id: 行）；若上游
+// 直接给了裸 JSON（无 SSE 包装），则整体当作 data。
+func sseDataPayload(raw []byte) []byte {
+	var dataLines []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(dataLines) == 0 {
+		return bytes.TrimSpace(raw)
+	}
+	return []byte(strings.Join(dataLines, "\n"))
 }
 
 // relayFormatOf 把目标协议映射为审计用的 RelayFormat 字面量。

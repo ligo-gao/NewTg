@@ -541,10 +541,25 @@ func filterCandidatesByProtocol(
 	for _, candidate := range candidates {
 		ch, err := channels.Get(ctx, int64(candidate.ChannelID))
 		if err != nil {
-			return nil, err
+			// F4：非 pin 候选的解析失败（索引陈旧/渠道已删）不应拖垮整个
+			// 请求——与执行层「这一轮不可用就换下一个候选」同口径，跳过
+			// 即可。pin 候选是客户端的显式约束：解析失败必须上抛，否则
+			// 会静默丢掉 pin（后续会以「目标协议无渠道」伪装成 400）。
+			if candidate.Constraints.PinChannelID != 0 {
+				return nil, err
+			}
+			continue
 		}
 		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), targetProtocol) {
 			filtered = append(filtered, candidate)
+			continue
+		}
+		if candidate.Constraints.PinChannelID != 0 {
+			// pin 渠道本身不属于目标协议：这是「目标协议无可用渠道」的
+			// 特例。不能把带 pin 约束的候选集交给执行层——那时 pin 渠道
+			// 已被过滤掉，preferPinned 会报 404 channel_not_found，把
+			// 「协议不支持」误报成「渠道不存在」（F6）。
+			return nil, crossproto.ErrUpstreamProtocolUnsupported
 		}
 	}
 	if len(filtered) == 0 {
@@ -614,7 +629,91 @@ func modelMappingTarget(raw []byte, model string) string {
 
 // ---------- 非流式 ----------
 
+// deferredSettlement 把 Route 的成功结算延后到响应编码完成之后（F3）。
+//
+// 为什么需要：Route 在解析完上游响应后立即 Terminate；但跨协议转换
+// （ir.FromIR）发生在 Route 返回之后。如果转换失败，客户端收到 502 却已经
+// 被扣费——「没有交付服务却收费」是 fail-open 的计费漏洞。
+//
+// 该包装把 Terminate 的事实暂存，由端点层在 Forward 成功后 commit；
+// 转换失败/写响应前 panic 时由 defer abort 触发真正的 Refund（此时内层
+// 会话尚未 Terminate，退款有效——直接对已 Terminate 的会话调用 Refund
+// 在真实引擎里是 no-op）。失败路径（Route 内部 Refund）保持委托语义。
+type deferredSettlement struct {
+	inner contract.BillingSession
+
+	mu        sync.Mutex
+	fact      *contract.UsageFact
+	finalized bool
+}
+
+var _ contract.BillingSession = (*deferredSettlement)(nil)
+
+func newDeferredSettlement(inner contract.BillingSession) *deferredSettlement {
+	return &deferredSettlement{inner: inner}
+}
+
+func (d *deferredSettlement) PreConsume(est contract.QuotaEstimate) error {
+	return d.inner.PreConsume(est)
+}
+func (d *deferredSettlement) Reserve(delta int64) error { return d.inner.Reserve(delta) }
+func (d *deferredSettlement) ChargeIncrement(delta int64, fact contract.UsageFact) error {
+	return d.inner.ChargeIncrement(delta, fact)
+}
+func (d *deferredSettlement) Reserved() int64   { return d.inner.Reserved() }
+func (d *deferredSettlement) NeedsRefund() bool { return d.inner.NeedsRefund() }
+func (d *deferredSettlement) RecoverAbandoned(requestID string) error {
+	return d.inner.RecoverAbandoned(requestID)
+}
+
+func (d *deferredSettlement) Terminate(fact contract.UsageFact) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	copied := fact
+	d.fact = &copied
+	return nil
+}
+
+func (d *deferredSettlement) Refund() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	d.finalized = true
+	d.fact = nil
+	return d.inner.Refund()
+}
+
+// commit 在响应成功编码后落地结算。
+func (d *deferredSettlement) commit() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	d.finalized = true
+	if d.fact == nil {
+		// Route 成功却没有给出事实（不应发生）：退款而不是零值结算。
+		return d.inner.Refund()
+	}
+	return d.inner.Terminate(*d.fact)
+}
+
+// abort 是 defer 兜底：未 commit 的会话一律退款。
+func (d *deferredSettlement) abort() { _ = d.Refund() }
+
 func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	var settlement *deferredSettlement
+	if deps.Billing != nil {
+		settlement = newDeferredSettlement(deps.Billing)
+		deps.Billing = settlement
+		// 转换失败/编码 panic 都不得留下已扣费但未交付的请求（F3）。
+		defer settlement.abort()
+	}
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
 		writeRelayMappedError(w, rc.RequestID, err)
@@ -633,11 +732,15 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	}
 	resp, err = crossproto.Forward(r.Context(), rc, string(upstreamProtocol), resp)
 	if err != nil {
-		// 计费已在 Route 内结算；这里只是编码失败（异常上游形状），
-		// 按上游错误映射，且不回显底层文本（GC-6）。
+		// F3：客户端拿不到响应 → 不收费。defer 的 abort 会在内层会话尚未
+		// Terminate 时真正退款（提交前 finalized 仍为 false）。
 		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"failed to encode the upstream response")
 		return
+	}
+	if settlement != nil {
+		// 结算失败与 Route 同口径：不阻断已编码的响应。
+		_ = settlement.commit()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -730,6 +833,17 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	sse.flush()
 
 	h.bridgeStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start, includeUsage)
+}
+
+// forwardRawStreamEvent 判定适配器的原始 SSE 帧是否可以逐字节转发给客户端。
+//
+// 客户端入口固定 OpenAI 兼容，因此只有「上游协议族 = OpenAI」时原始帧才与
+// 客户端协议同形。Anthropic/Gemini 的 EventRaw 是原生帧，混入 OpenAI SSE
+// 会让客户端收到无法解析的 `event:`/原生 JSON（N2）。未知渠道类型按不可
+// 转发处理（fail-closed）：宁可少一帧诊断信息，也不泄漏异种协议载荷。
+func forwardRawStreamEvent(channelType contract.ChannelType) bool {
+	protocol, ok := crossproto.ProtocolOfChannelType(channelType)
+	return ok && protocol == crossproto.ProtocolOpenAI
 }
 
 // bridgeStream 消费适配器的 StreamEvent 序列并写入客户端。
@@ -931,6 +1045,28 @@ func (h *RelayHandler) bridgeStream(
 		switch ev.Kind {
 		case contract.EventRaw:
 			if len(ev.Raw) == 0 {
+				return true
+			}
+			// N2 / F2（T2 复审交接）：原生适配器用 EventRaw 承载无法语义化的
+			// 载荷（Anthropic signature_delta/redacted_thinking/未知块、
+			// Gemini inlineData 等）。当前客户端协议固定为 OpenAI：
+			//   - 纯元数据帧（签名/引用）OpenAI 无字段可放 → 丢弃；
+			//   - 内容载荷无法用 OpenAI SSE 表达 → 按连接级失败终止（不写
+			//     [DONE]、退款），绝不逐字节透传或静默丢内容。
+			if !forwardRawStreamEvent(adapter.Type()) {
+				upstreamProtocol, known := crossproto.ProtocolOfChannelType(adapter.Type())
+				if !known {
+					// 未知协议无法判定载荷语义：fail-closed。
+					upstreamProtocol = ""
+				}
+				if crossproto.ClassifyNativeRawEvent(upstreamProtocol, ev.Raw) == crossproto.RawEventUnsupported {
+					rc.Diagnostics = append(rc.Diagnostics, contract.DiagnosticEntry{
+						Stage:   "cross_protocol_stream",
+						Message: "native raw event cannot be represented in an OpenAI stream",
+					})
+					upstreamFail = true
+					return false
+				}
 				return true
 			}
 			if !sse.raw(ev.Raw) {

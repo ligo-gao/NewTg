@@ -151,6 +151,11 @@ func TestForwardAnthropicResponseToOpenAI(t *testing.T) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(out.Raw, &payload); err != nil {
 		t.Fatalf("回写结果不是合法 JSON: %v（%s）", err, out.Raw)
@@ -163,6 +168,13 @@ func TestForwardAnthropicResponseToOpenAI(t *testing.T) {
 	}
 	if payload.Choices[0].FinishReason != "stop" {
 		t.Fatalf("finish_reason = %q，期望归一化的 stop", payload.Choices[0].FinishReason)
+	}
+	// F1：usage 必须合成为 OpenAI 形状（input/output_tokens 不得出现）。
+	if payload.Usage.PromptTokens != 4 || payload.Usage.CompletionTokens != 6 || payload.Usage.TotalTokens != 10 {
+		t.Fatalf("OpenAI usage = %+v，期望 4/6/10", payload.Usage)
+	}
+	if strings.Contains(string(out.Raw), "input_tokens") || strings.Contains(string(out.Raw), "output_tokens") {
+		t.Fatalf("原生 usage 键泄漏: %s", out.Raw)
 	}
 	// 原始 Anthropic 形状不得混入客户端负载。
 	if strings.Contains(string(out.Raw), `"stop_reason"`) || strings.Contains(string(out.Raw), `"type":"message"`) {
@@ -212,6 +224,11 @@ func TestForwardGeminiResponseToOpenAI(t *testing.T) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(out.Raw, &payload); err != nil {
 		t.Fatalf("回写结果不是合法 JSON: %v（%s）", err, out.Raw)
@@ -222,6 +239,10 @@ func TestForwardGeminiResponseToOpenAI(t *testing.T) {
 	if len(payload.Choices) != 1 || payload.Choices[0].Message.Content != "hi from gemini" ||
 		payload.Choices[0].FinishReason != "stop" {
 		t.Fatalf("choices = %+v", payload.Choices)
+	}
+	// F1：Gemini usageMetadata 必须合成为 OpenAI usage。
+	if payload.Usage.PromptTokens != 3 || payload.Usage.CompletionTokens != 4 || payload.Usage.TotalTokens != 7 {
+		t.Fatalf("OpenAI usage = %+v，期望 3/4/7", payload.Usage)
 	}
 	if strings.Contains(string(out.Raw), `"candidates"`) || strings.Contains(string(out.Raw), `"usageMetadata"`) {
 		t.Fatalf("Gemini 原生字段泄漏进 OpenAI 响应: %s", out.Raw)
@@ -253,12 +274,122 @@ func TestForwardContextCancelled(t *testing.T) {
 	}
 }
 
+// N3（T2 复审交接）：原生解析器把未知块保真存进 Extensions["unmapped_blocks"]；
+// ir.FromIR 会把它合并进 OpenAI message。跨协议响应必须在客户端出口剥离
+// 所有非 OpenAI 协议扩展（allow-list，fail-closed）。
+func TestForwardStripsNativeExtensions(t *testing.T) {
+	resp := &contract.Response{
+		ID:    "msg_blocks",
+		Model: "claude-sonnet-4-5",
+		Choices: []contract.Choice{{
+			Index: 0,
+			Message: contract.Message{
+				Role:    contract.RoleAssistant,
+				Content: []contract.ContentPart{{Kind: contract.PartText, Text: "ok"}},
+				Extensions: map[string]any{
+					"unmapped_blocks": []any{map[string]any{"type": "server_tool_use", "id": "srv_1"}},
+					"finish_reason":   "end_turn",
+					"refusal":         nil,
+				},
+			},
+			FinishReason: "stop",
+		}},
+		Raw: []byte(`{"native":"body"}`),
+	}
+	rc := &contract.RelayContext{ChannelType: contract.ChannelTypeAnthropic}
+	out, err := Forward(context.Background(), rc, string(ProtocolAnthropic), resp)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if strings.Contains(string(out.Raw), "unmapped_blocks") || strings.Contains(string(out.Raw), "server_tool_use") {
+		t.Fatalf("原生未知块泄漏进 OpenAI 响应: %s", out.Raw)
+	}
+	// OpenAI 合法扩展仍应保留（allow-list 只删异种协议键）。
+	var payload struct {
+		Choices []struct {
+			Message map[string]any `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out.Raw, &payload); err != nil {
+		t.Fatalf("回写结果不是合法 JSON: %v（%s）", err, out.Raw)
+	}
+	if len(payload.Choices) != 1 {
+		t.Fatalf("choices = %+v", payload.Choices)
+	}
+	if _, ok := payload.Choices[0].Message["refusal"]; !ok {
+		t.Fatalf("OpenAI 合法扩展 refusal 被误删: %s", out.Raw)
+	}
+	// 原始 IR 响应不得被改写：计费/审计仍需原生保真数据。
+	if _, ok := resp.Choices[0].Message.Extensions["unmapped_blocks"]; !ok {
+		t.Fatal("sanitize 不得修改原始响应（计费/对账需要原生扩展）")
+	}
+}
+
 // assertNoCredentialLeak 断言 GC-6：上游凭据与 base URL 不得出现在客户端负载里。
 func assertNoCredentialLeak(t *testing.T, raw []byte) {
 	t.Helper()
 	for _, secret := range []string{testCredential, "api.anthropic.com", "generativelanguage.googleapis.com"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("客户端响应包含敏感值 %q: %s", secret, raw)
+		}
+	}
+}
+
+// F2/N2：原生 EventRaw 的处置分类——纯元数据帧可安全省略，内容载荷必须
+// 显式失败（fail-closed）。
+func TestClassifyNativeRawEvent(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol Protocol
+		raw      string
+		want     RawEventDisposition
+	}{
+		{
+			name:     "anthropic signature_delta",
+			protocol: ProtocolAnthropic,
+			raw:      `event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"s"}}`,
+			want:     RawEventDrop,
+		},
+		{
+			name:     "anthropic citations_delta",
+			protocol: ProtocolAnthropic,
+			raw:      `data: {"type":"content_block_delta","delta":{"type":"citations_delta"}}`,
+			want:     RawEventDrop,
+		},
+		{
+			name:     "anthropic ping",
+			protocol: ProtocolAnthropic,
+			raw:      `data: {"type":"ping"}`,
+			want:     RawEventDrop,
+		},
+		{
+			name:     "anthropic redacted thinking block",
+			protocol: ProtocolAnthropic,
+			raw:      `data: {"type":"content_block_start","content_block":{"type":"redacted_thinking","data":"x"}}`,
+			want:     RawEventUnsupported,
+		},
+		{
+			name:     "anthropic unknown delta",
+			protocol: ProtocolAnthropic,
+			raw:      `data: {"type":"content_block_delta","delta":{"type":"future_delta"}}`,
+			want:     RawEventUnsupported,
+		},
+		{
+			name:     "gemini inlineData",
+			protocol: ProtocolGemini,
+			raw:      `data: {"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"x"}}]}}]}`,
+			want:     RawEventUnsupported,
+		},
+		{
+			name:     "garbage",
+			protocol: ProtocolAnthropic,
+			raw:      `not-json`,
+			want:     RawEventUnsupported,
+		},
+	}
+	for _, tc := range cases {
+		if got := ClassifyNativeRawEvent(tc.protocol, []byte(tc.raw)); got != tc.want {
+			t.Fatalf("%s: ClassifyNativeRawEvent = %v，期望 %v", tc.name, got, tc.want)
 		}
 	}
 }
