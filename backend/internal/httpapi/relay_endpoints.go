@@ -24,7 +24,9 @@ import (
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
+	"newtg/gateway/internal/relay/crossproto"
 	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/relay/multimodal"
 	"newtg/gateway/internal/relay/stream"
 	"newtg/gateway/internal/relay/usage"
 	"newtg/gateway/internal/store"
@@ -153,6 +155,12 @@ type RelayHandlerOptions struct {
 	// StreamInactivityTimeout 覆盖流式看门狗的默认 300s；<=0 使用默认值。
 	// 仅测试注入短值，生产不得调小（relay-03 §10.1 冻结值）。
 	StreamInactivityTimeout time.Duration
+	// Multimodal 是 M4 多模态端点族的分派器（Task 4 注入）。
+	// nil 时这些端点返回 501（仅 Task 1 骨架态）；T4 装配真实实现后不得再为 nil。
+	Multimodal MultimodalDispatcher
+	// Config 是跨协议转发开关的读取面（configcenter.Center 实现 ConfigReader）。
+	// nil 时按默认 false 处理（GC-8 / R-03）：功能必须显式启用，绝无隐式开启。
+	Config ConfigReader
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
@@ -167,6 +175,8 @@ type RelayHandler struct {
 	dispatch         func(contract.ChannelType) (contract.Adapter, error)
 	trustedProxies   []netip.Prefix
 	streamInactivity time.Duration
+	multimodal       MultimodalDispatcher
+	config           ConfigReader
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -196,7 +206,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if inactivity <= 0 {
 		inactivity = streamInactivityTimeout
 	}
-	return &RelayHandler{
+	h := &RelayHandler{
 		channels:         opts.Channels,
 		tokens:           opts.Tokens,
 		access:           opts.Access,
@@ -207,14 +217,47 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		dispatch:         dispatch,
 		trustedProxies:   parseTrustedProxies(opts.TrustedProxies),
 		streamInactivity: inactivity,
+		multimodal:       opts.Multimodal,
+		config:           opts.Config,
 	}
+	// M4 T4：生产装配默认注入真实多模态分派器（T1 复审 F2/F4/F5 与 R-02 的
+	// 落点）。显式传入的 Multimodal 优先（测试可替换）；nil 不再表示 501——
+	// 多模态端点与 chat 共用同一套候选/渠道/计费/客户端接缝。
+	if h.multimodal == nil {
+		h.multimodal = multimodal.NewDispatcher(multimodal.Options{
+			Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+				return h.channels.Candidates(ctx, rc.OriginModel, rc.UsingGroup)
+			},
+			ResolveChannel: func(ctx context.Context, rc *contract.RelayContext, channelID int) (relay.ChannelAssignment, error) {
+				return h.resolveChannel(ctx, rc, channelID)
+			},
+			Dispatch:   h.dispatch,
+			Billing:    h.billing,
+			Client:     h.client,
+			MaxRetries: relayMaxRetries,
+			WriteError: writeRelayMappedError,
+		})
+	}
+	return h
 }
 
-// Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这两个端点（管理面不经过它）。
+// Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
+//
+// 多模态端点族（M4 T1）复用同一个 RelayAuth 中间件：统一入口要求所有 /v1
+// 端点先鉴权再归一化（relay-04 §0.2）。GET /v1/models 只在此处注册一次
+// （R-09），多模态注册函数不得重复注册它。
 func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := RelayAuth(h.tokens, h.access, h.trustedProxies)
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
+
+	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
+	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
+	RegisterMultimodalRoutes(mux, authMiddleware, NewMultimodalHandler(MultimodalHandlerOptions{
+		Tokens:      h.tokens,
+		ModelStatus: h.modelStatus,
+		Dispatcher:  h.multimodal,
+	}))
 }
 
 // Handler 返回挂好路由的独立 mux（测试与嵌入式装配用）。
@@ -228,6 +271,25 @@ func (h *RelayHandler) Handler() http.Handler {
 
 func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
+
+	// 跨协议转发（M4 T5 / GC-8）：协议头只在这里解析一次，随后贯穿选路
+	// （targetProtocol）与响应回写。判定顺序是冻结口径：
+	//   1. 开关关闭且携带头 → 403（无论头值是否合法）：关闭状态不得静默
+	//      降级为 OpenAI（Review Focus 5），也不透露「只是拼错了」；
+	//   2. 开关开启但头值非法 → 400；
+	//   3. 未携带头 → targetProtocol 为空，后续选路与 M2 完全一致。
+	// 鉴权在中间件已完成，因此未认证请求永远先得到 401，不会被本分支抢答。
+	targetProtocol, hasProtocolHeader, protocolErr := crossproto.TargetFromHeader(r.Header.Get(crossproto.HeaderProtocol))
+	if hasProtocolHeader && !readConfigBool(h.config, crossproto.ConfigKeyEnabled, false) {
+		writeRelayError(w, http.StatusForbidden, requestID, "cross_protocol_forward_disabled",
+			"cross-protocol forwarding is not enabled")
+		return
+	}
+	if protocolErr != nil {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_protocol",
+			"unsupported target protocol (expected openai, anthropic, or gemini)")
+		return
+	}
 
 	body, err := readRelayBody(r)
 	if err != nil {
@@ -318,7 +380,7 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		MaxTokens: parsed.MaxTokens,
 	})
 
-	deps := h.routeDeps(rc, pinID, hasPin)
+	deps := h.routeDeps(rc, pinID, hasPin, targetProtocol)
 	if parsed.Stream {
 		h.serveStream(w, r, rc, deps)
 		return
@@ -417,7 +479,7 @@ func readRelayBody(r *http.Request) ([]byte, error) {
 // BuildRelayContext 成功后解析，finding 1）。pin 只写进候选约束，不写进
 // RelayContext（R-P2a）；若 pin 目标不在候选集内，返回 relay.ErrChannelNotFound，
 // 由 ExecuteAttempts 在 PreConsume **之前**快失败（HTTP 404）。
-func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool) relay.RouteDeps {
+func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool, targetProtocol crossproto.Protocol) relay.RouteDeps {
 	return relay.RouteDeps{
 		Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
 			// 候选按**客户端请求模型**与令牌分组过滤（relay-01 §5；store 侧
@@ -427,7 +489,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 				return nil, err
 			}
 			if !hasPin {
-				return candidates, nil
+				return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
 			}
 			pinned := false
 			for i := range candidates {
@@ -442,7 +504,7 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 				// 绝不在这里按 pin 另取渠道，否则会绕过 §5.4 D 步的过滤兜底。
 				return nil, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID)
 			}
-			return candidates, nil
+			return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
 		},
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
@@ -452,6 +514,72 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 		Client:     h.client,
 		MaxRetries: relayMaxRetries,
 	}
+}
+
+// filterCandidatesByProtocol 按目标上游协议过滤候选（跨协议转发）。
+//
+// targetProtocol 为空 = 未携带协议头：原样返回，保证 M2 选路行为逐字节不变
+// （只有候选切片本身，未排序、未改写）。
+//
+// 过滤必须在 PreConsume 之前完成（本函数位于 Candidates 回调内，执行层在
+// 预扣前调用）：目标协议没有可用渠道时直接显式失败，不产生任何计费副作用。
+//
+// 为什么逐个 Get 渠道类型而不是让 store 查询时过滤：Candidates 的存储面
+// （RelayChannelStore）是冻结的，且协议族映射的唯一真源在 adapters 分派表；
+// 在路由层做这一层过滤可以避免把「渠道类型 → 协议」的知识泄漏进 store。
+// 候选规模是单个模型 + 分组，通常个位数，额外点查询有界。
+func filterCandidatesByProtocol(
+	ctx context.Context,
+	channels RelayChannelStore,
+	candidates []contract.ChannelCandidate,
+	targetProtocol crossproto.Protocol,
+) ([]contract.ChannelCandidate, error) {
+	if targetProtocol == "" {
+		return candidates, nil
+	}
+	filtered := make([]contract.ChannelCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		ch, err := channels.Get(ctx, int64(candidate.ChannelID))
+		if err != nil {
+			// F4/N1：非 pin 候选的解析失败（索引陈旧/渠道已删）不应拖垮
+			// 整个请求——与执行层「这一轮不可用就换下一个候选」同口径，
+			// 跳过即可。pin 候选是客户端的显式约束：解析失败必须上抛，
+			// 否则会静默丢掉 pin（后续会以「目标协议无渠道」伪装成 400）。
+			if isPinnedCandidate(candidate) {
+				return nil, err
+			}
+			continue
+		}
+		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), targetProtocol) {
+			filtered = append(filtered, candidate)
+			continue
+		}
+		if isPinnedCandidate(candidate) {
+			// pin 渠道本身不属于目标协议：这是「目标协议无可用渠道」的
+			// 特例。不能把带 pin 约束的候选集交给执行层——那时 pin 渠道
+			// 已被过滤掉，preferPinned 会报 404 channel_not_found，把
+			// 「协议不支持」误报成「渠道不存在」（F6）。
+			return nil, crossproto.ErrUpstreamProtocolUnsupported
+		}
+	}
+	if len(filtered) == 0 {
+		// 显式失败而不是回退到任意协议：客户端声明了目标协议，静默换协议
+		// 会让它按错误的响应语义解析（Review Focus 5 / GC-8）。
+		return nil, crossproto.ErrUpstreamProtocolUnsupported
+	}
+	return filtered, nil
+}
+
+// isPinnedCandidate 判定候选是否就是 pin 指向的那一个渠道（N1）。
+//
+// routeDeps 在 pin 路径会把 PinChannelID 写到**所有**候选上（执行层据此
+// 知道「本轮计划带 pin 约束」），因此 `PinChannelID != 0` 对每个候选都成立，
+// 不能用作「这是 pin 候选」的判据。真正的 pin 候选必须同时满足
+// ChannelID == PinChannelID；其余候选只是同批次的普通候选，协议不匹配或
+// 解析失败时应按普通候选处理（过滤/跳过），而不是让整个请求 fail-fast。
+func isPinnedCandidate(candidate contract.ChannelCandidate) bool {
+	pinID := candidate.Constraints.PinChannelID
+	return pinID != 0 && candidate.ChannelID == pinID
 }
 
 // resolveChannel 把 store.Channel 投影为执行层需要的整组渠道字段（relay-01 §7.4）。
@@ -513,11 +641,118 @@ func modelMappingTarget(raw []byte, model string) string {
 
 // ---------- 非流式 ----------
 
+// deferredSettlement 把 Route 的成功结算延后到响应编码完成之后（F3）。
+//
+// 为什么需要：Route 在解析完上游响应后立即 Terminate；但跨协议转换
+// （ir.FromIR）发生在 Route 返回之后。如果转换失败，客户端收到 502 却已经
+// 被扣费——「没有交付服务却收费」是 fail-open 的计费漏洞。
+//
+// 该包装把 Terminate 的事实暂存，由端点层在 Forward 成功后 commit；
+// 转换失败/写响应前 panic 时由 defer abort 触发真正的 Refund（此时内层
+// 会话尚未 Terminate，退款有效——直接对已 Terminate 的会话调用 Refund
+// 在真实引擎里是 no-op）。失败路径（Route 内部 Refund）保持委托语义。
+type deferredSettlement struct {
+	inner contract.BillingSession
+
+	mu        sync.Mutex
+	fact      *contract.UsageFact
+	finalized bool
+}
+
+var _ contract.BillingSession = (*deferredSettlement)(nil)
+
+func newDeferredSettlement(inner contract.BillingSession) *deferredSettlement {
+	return &deferredSettlement{inner: inner}
+}
+
+func (d *deferredSettlement) PreConsume(est contract.QuotaEstimate) error {
+	return d.inner.PreConsume(est)
+}
+func (d *deferredSettlement) Reserve(delta int64) error { return d.inner.Reserve(delta) }
+func (d *deferredSettlement) ChargeIncrement(delta int64, fact contract.UsageFact) error {
+	return d.inner.ChargeIncrement(delta, fact)
+}
+func (d *deferredSettlement) Reserved() int64   { return d.inner.Reserved() }
+func (d *deferredSettlement) NeedsRefund() bool { return d.inner.NeedsRefund() }
+func (d *deferredSettlement) RecoverAbandoned(requestID string) error {
+	return d.inner.RecoverAbandoned(requestID)
+}
+
+func (d *deferredSettlement) Terminate(fact contract.UsageFact) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	copied := fact
+	d.fact = &copied
+	return nil
+}
+
+func (d *deferredSettlement) Refund() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	d.finalized = true
+	d.fact = nil
+	return d.inner.Refund()
+}
+
+// commit 在响应成功编码后落地结算。
+func (d *deferredSettlement) commit() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized {
+		return nil
+	}
+	d.finalized = true
+	if d.fact == nil {
+		// Route 成功却没有给出事实（不应发生）：退款而不是零值结算。
+		return d.inner.Refund()
+	}
+	return d.inner.Terminate(*d.fact)
+}
+
+// abort 是 defer 兜底：未 commit 的会话一律退款。
+func (d *deferredSettlement) abort() { _ = d.Refund() }
+
 func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	var settlement *deferredSettlement
+	if deps.Billing != nil {
+		settlement = newDeferredSettlement(deps.Billing)
+		deps.Billing = settlement
+		// 转换失败/编码 panic 都不得留下已扣费但未交付的请求（F3）。
+		defer settlement.abort()
+	}
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
+	}
+
+	// 响应方向跨协议回写（GC-2）：上游是 Anthropic/Gemini 原生协议时，
+	// resp.Raw 是上游原始 JSON，绝不能直接透传给 OpenAI 兼容客户端。
+	// 目标协议取**实际命中渠道**的类型（而不是协议头）：重试可能换渠道，
+	// 头只约束协议族，最终响应格式由最后一个成功渠道决定；二者在正常路径
+	// 上一致（选路阶段已按头过滤），这里以执行结果为权威。
+	upstreamProtocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType)
+	if !known {
+		// 未实现的协议族不会走到这里（分派会先失败）；防御性按 OpenAI 透传。
+		upstreamProtocol = crossproto.ProtocolOpenAI
+	}
+	resp, err = crossproto.Forward(r.Context(), rc, string(upstreamProtocol), resp)
+	if err != nil {
+		// F3：客户端拿不到响应 → 不收费。defer 的 abort 会在内层会话尚未
+		// Terminate 时真正退款（提交前 finalized 仍为 false）。
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+			"failed to encode the upstream response")
+		return
+	}
+	if settlement != nil {
+		// 结算失败与 Route 同口径：不阻断已编码的响应。
+		_ = settlement.commit()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -610,6 +845,17 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	sse.flush()
 
 	h.bridgeStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start, includeUsage)
+}
+
+// forwardRawStreamEvent 判定适配器的原始 SSE 帧是否可以逐字节转发给客户端。
+//
+// 客户端入口固定 OpenAI 兼容，因此只有「上游协议族 = OpenAI」时原始帧才与
+// 客户端协议同形。Anthropic/Gemini 的 EventRaw 是原生帧，混入 OpenAI SSE
+// 会让客户端收到无法解析的 `event:`/原生 JSON（N2）。未知渠道类型按不可
+// 转发处理（fail-closed）：宁可少一帧诊断信息，也不泄漏异种协议载荷。
+func forwardRawStreamEvent(channelType contract.ChannelType) bool {
+	protocol, ok := crossproto.ProtocolOfChannelType(channelType)
+	return ok && protocol == crossproto.ProtocolOpenAI
 }
 
 // bridgeStream 消费适配器的 StreamEvent 序列并写入客户端。
@@ -813,6 +1059,28 @@ func (h *RelayHandler) bridgeStream(
 			if len(ev.Raw) == 0 {
 				return true
 			}
+			// N2 / F2（T2 复审交接）：原生适配器用 EventRaw 承载无法语义化的
+			// 载荷（Anthropic signature_delta/redacted_thinking/未知块、
+			// Gemini inlineData 等）。当前客户端协议固定为 OpenAI：
+			//   - 纯元数据帧（签名/引用）OpenAI 无字段可放 → 丢弃；
+			//   - 内容载荷无法用 OpenAI SSE 表达 → 按连接级失败终止（不写
+			//     [DONE]、退款），绝不逐字节透传或静默丢内容。
+			if !forwardRawStreamEvent(adapter.Type()) {
+				upstreamProtocol, known := crossproto.ProtocolOfChannelType(adapter.Type())
+				if !known {
+					// 未知协议无法判定载荷语义：fail-closed。
+					upstreamProtocol = ""
+				}
+				if crossproto.ClassifyNativeRawEvent(upstreamProtocol, ev.Raw) == crossproto.RawEventUnsupported {
+					rc.Diagnostics = append(rc.Diagnostics, contract.DiagnosticEntry{
+						Stage:   "cross_protocol_stream",
+						Message: "native raw event cannot be represented in an OpenAI stream",
+					})
+					upstreamFail = true
+					return false
+				}
+				return true
+			}
 			if !sse.raw(ev.Raw) {
 				clientGone = true
 				return false
@@ -901,7 +1169,7 @@ func (h *RelayHandler) bridgeStream(
 	// 任何数字——此时头部才是唯一的真实来源，不能被事件占位符挡住。反过来，
 	// 只要累计出任何非零维度，就绝不拿头部覆盖（三源互斥，R-05）。
 	if !sawUsage || !usageHasFact(accumulated) {
-		extracted := usage.ExtractUsage(&contract.Response{}, upstreamHeader, nil)
+		extracted := usage.ExtractUsageMultimodal(&contract.Response{}, upstreamHeader, nil, rc.ChannelType)
 		if extracted.Usage.Source == contract.UsageUpstreamExact {
 			accumulated = extracted.Usage
 			sawUsage = true
@@ -969,26 +1237,23 @@ func (h *RelayHandler) bridgeStream(
 	if !usageHasFact(accumulated) {
 		// 上游没有给出任何非零用量（包括空 `usage: {}` / 全零帧，且无头部）：
 		// 标记 estimated，绝不把零值谎报成 upstream_exact（零值 Source 的
-		// iota 是 UsageUpstreamExact）。关系布尔按 OpenAI 协议语义补齐。
-		fact.Usage = openAIEstimatedUsage(accumulated)
+		// iota 是 UsageUpstreamExact）。关系布尔按**渠道协议族**补齐：
+		// OpenAI 的 prompt 已含缓存、completion 已含推理；Claude/Gemini 是
+		// 独立维度，不能沿用 OpenAI 的 true（否则缓存段被重复加价）。
+		fact.Usage = estimatedUsageFor(rc.ChannelType)
 	}
 	terminate(fact)
 }
 
-// openAIEstimatedUsage 为「无上游用量、需要本地估算」的事实补上 OpenAI 协议
-// 语义的关系布尔（re-review fix 3）。
+// estimatedUsageFor 为「无上游用量、需要本地估算」的事实补上**渠道协议族**
+// 语义的关系布尔。
 //
-// PromptIncludesCache/ReasoningIncludedInCompletion 是**协议属性**而非用量
-// 数字（relay-03 §6.2 row 1）：OpenAI 的 prompt_tokens 已含 cached_tokens、
-// completion_tokens 已含 reasoning_tokens。流式路径与 relay.Route 的非流式
-// 路径必须一致；否则「无 usage 的上游」会让计费侧把 CacheRead/Reasoning 当
-// 独立维度重复加价。适配器 normalize 时对空/非法 usage 也显式置 true
-// （ir.parseOpenAIUsage），这里补齐同样的语义。
-func openAIEstimatedUsage(u contract.Usage) contract.Usage {
-	u.Source = contract.UsageEstimated
-	u.PromptIncludesCache = true
-	u.ReasoningIncludedInCompletion = true
-	return u
+// 关系布尔是协议属性而非用量数字（relay-03 §6.2 row 1）：OpenAI 的
+// prompt_tokens 已含 cached_tokens、completion_tokens 已含 reasoning_tokens；
+// Claude/Gemini 的缓存与思考是独立维度。M4 接线后原生渠道也走本辅助函数，
+// 不能再无条件按 OpenAI 置 true（那会让计费侧把缓存段重复加价）。
+func estimatedUsageFor(kind contract.ChannelType) contract.Usage {
+	return usage.ExtractUsageMultimodal(&contract.Response{}, nil, nil, kind).Usage
 }
 
 // relaySSEWriter 是 SSE 帧的唯一写出口。
@@ -1189,6 +1454,11 @@ func mapRelayError(err error) (int, string, string) {
 			return http.StatusServiceUnavailable, "model_not_found", "no available channel for the requested model"
 		case errors.Is(err, relay.ErrChannelNotFound):
 			return http.StatusNotFound, "channel_not_found", "the pinned channel is not available"
+		case errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported):
+			// 跨协议转发：目标协议没有匹配渠道 = 上游能力不支持，非重试类
+			// 错误（mapRelayError 走的 FastFail 分支已保证不重试）。
+			return http.StatusBadRequest, "endpoint_not_supported",
+				"no available channel supports the requested upstream protocol"
 		}
 		var upstream *relay.UpstreamStatusError
 		if errors.As(err, &upstream) {
@@ -1424,7 +1694,8 @@ func parseRelayFinishEvent(raw []byte) (string, *contract.Usage) {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage json.RawMessage `json:"usage"`
+		Usage         json.RawMessage `json:"usage"`
+		UsageMetadata json.RawMessage `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return "", nil
@@ -1433,13 +1704,82 @@ func parseRelayFinishEvent(raw []byte) (string, *contract.Usage) {
 	if len(chunk.Choices) > 0 {
 		reason = chunk.Choices[0].FinishReason
 	}
+	if reason == "" {
+		// 原生协议（Anthropic/Gemini）的 EventFinish.Raw 是上游原始事件帧，
+		// 结束原因不在 OpenAI 的 choices[].finish_reason 里。不在此处归一，
+		// 原生流会「丢 finish_reason」，客户端据空值误判为被截断。
+		reason = nativeFinishReason([]byte(payload))
+	}
 	var usage *contract.Usage
 	usageRaw := bytes.TrimSpace(chunk.Usage)
 	if len(usageRaw) > 0 && string(usageRaw) != "null" {
-		parsed := ir.ParseOpenAIUsage(chunk.Usage)
+		// 原生 Anthropic message_delta 的 usage 形状是 input/output_tokens，
+		// 用 OpenAI 解析器会得到零值（或把 total 误映射成 prompt）。按键
+		// 形状选择解析器，与 T3 的「形状优先」口径一致。
+		var parsed contract.Usage
+		if bytes.Contains(usageRaw, []byte("input_tokens")) || bytes.Contains(usageRaw, []byte("output_tokens")) {
+			parsed = ir.ParseAnthropicUsage(chunk.Usage)
+		} else {
+			parsed = ir.ParseOpenAIUsage(chunk.Usage)
+		}
+		usage = &parsed
+	} else if meta := bytes.TrimSpace(chunk.UsageMetadata); len(meta) > 0 && string(meta) != "null" {
+		parsed := ir.ParseGeminiUsage(chunk.UsageMetadata)
 		usage = &parsed
 	}
 	return reason, usage
+}
+
+// nativeFinishReason 把 Anthropic / Gemini 的原始结束原因映射为 OpenAI 的
+// finish_reason 语义（relay-03 的客户端契约是 OpenAI 形态）。
+//
+// 无法映射的值返回空串而不是臆造：调用方（bridgeStream）在 reason 为空时
+// 不写 finish chunk——宁可让客户端按 EOF 处理，也不伪造 stop。
+func nativeFinishReason(payload []byte) string {
+	var anthropic struct {
+		Type  string `json:"type"`
+		Delta struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(payload, &anthropic); err == nil && anthropic.Delta.StopReason != "" {
+		switch anthropic.Delta.StopReason {
+		case "end_turn", "stop_sequence", "pause_turn":
+			return "stop"
+		case "max_tokens":
+			return "length"
+		case "tool_use":
+			return "tool_calls"
+		case "refusal":
+			return "content_filter"
+		default:
+			return ""
+		}
+	}
+	var gemini struct {
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(payload, &gemini); err == nil {
+		for _, candidate := range gemini.Candidates {
+			switch strings.ToUpper(strings.TrimSpace(candidate.FinishReason)) {
+			case "":
+				continue
+			case "STOP":
+				return "stop"
+			case "MAX_TOKENS":
+				return "length"
+			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+				return "content_filter"
+			case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
+				return "tool_calls"
+			default:
+				return ""
+			}
+		}
+	}
+	return ""
 }
 
 // sseDataPayload 合并一个 SSE 事件块内的多条 data: 行（\n 连接）。

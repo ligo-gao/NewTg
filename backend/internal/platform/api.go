@@ -47,6 +47,9 @@ type gatewayAssembly struct {
 	Billing func(*contract.RelayContext) contract.BillingSession
 	// ModelStatus 是派发前的模型停用检查（R-84）。
 	ModelStatus httpapi.RelayModelStatusStore
+	// Config 是配置中心读取面（M4 跨协议转发开关等中继侧配置）。
+	// 与管理面 RouterConfig.Config 共用同一个 configcenter.Center 快照。
+	Config httpapi.ConfigReader
 	// PricingSource 是引擎与管理面共用的定价源（装配验证/诊断用）。
 	PricingSource *pricing.DBSource
 	// PricingOnChange 就是注入管理面的缓存失效回调（R-63）；与
@@ -230,6 +233,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Handler:         router,
 		Billing:         engine.NewSession,
 		ModelStatus:     pricingRepo,
+		Config:          center,
 		PricingSource:   source,
 		PricingOnChange: pricingChanged,
 	}, nil

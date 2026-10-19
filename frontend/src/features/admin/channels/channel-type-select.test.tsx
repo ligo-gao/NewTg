@@ -29,7 +29,7 @@ describe('ChannelTypeSelect', () => {
     expect(groups).toHaveLength(9)
     expect(groups.map((group) => group.getAttribute('label'))).toEqual([
       'OpenAI compatible',
-      'Anthropic native',
+      'Anthropic native (incl. Moonshot)',
       'Gemini native',
       'Google PaLM legacy',
       'Proprietary protocols',
@@ -43,6 +43,57 @@ describe('ChannelTypeSelect', () => {
       0,
     )
     expect(total).toBe(59)
+  })
+
+  it('labels native-protocol types and explains the selected one', () => {
+    renderWithProviders(<ChannelTypeSelect value="moonshot" onChange={() => {}} />)
+
+    // Raw slugs (`moonshot`, `vertex_ai`) hide the protocol they speak; the
+    // native family gets a human label while non-native types stay as-is.
+    expect(
+      screen.getByRole('option', { name: 'Moonshot (Anthropic-compatible)' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('option', { name: 'Anthropic (native Messages API)' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('option', { name: 'Vertex AI (Gemini/Claude native)' }),
+    ).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'openai' })).toBeTruthy()
+
+    const description = screen.getByText(
+      'Moonshot exposes an Anthropic-compatible Messages endpoint, so it uses the native Anthropic adapter.',
+    )
+    const combobox = screen.getByRole('combobox')
+    expect(combobox.getAttribute('aria-describedby')).toBe(description.id)
+  })
+
+  it('does not render a native description for non-native types', () => {
+    renderWithProviders(<ChannelTypeSelect value="openai" onChange={() => {}} />)
+
+    expect(screen.getByRole('combobox').getAttribute('aria-describedby')).toBeNull()
+    expect(
+      screen.queryByText(/The upstream speaks the .* protocol/),
+    ).toBeNull()
+  })
+
+  it('preserves a caller-supplied error reference next to the description', () => {
+    renderWithProviders(
+      <ChannelTypeSelect
+        value="gemini"
+        onChange={() => {}}
+        aria-describedby="channel-type-error"
+      />,
+    )
+
+    const description = screen.getByText(
+      'The upstream speaks the Gemini generateContent protocol (:generateContent).',
+    )
+    // Both ids must survive: dropping the error reference would hide the
+    // validation message from assistive technology while the user fixes it.
+    expect(screen.getByRole('combobox').getAttribute('aria-describedby')).toBe(
+      `channel-type-error ${description.id}`,
+    )
   })
 
   it('shows the selected type', () => {

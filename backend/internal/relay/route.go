@@ -567,12 +567,11 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 		return nil, safeWrapf(parseErr, "relay: 解析上游响应失败（渠道 %d）", rc.ChannelID)
 	}
 
-	// 用量提取统一走 usage.ExtractUsage 的三源优先级（R-05）：原生 usage >
-	// 注入（本路径无 include_usage 注入，传 nil）> `x-model-response-usage` 头。
-	// 适配器 ParseResponse 的返回值只作为原生来源的载体（其 Raw 由适配器写入），
-	// 这里不再直接信任适配器的 Usage——否则响应头兜底来源永远没有生产调用方
-	// （final-review finding 2，R-05 接线）。
-	fact := usage.ExtractUsage(response, result.Response.Header, nil)
+	// 用量提取按渠道族分派（M4 T4 接线）：OpenAI 形状与历史行为一致，
+	// Anthropic/Gemini 原生渠道走 T3 的 ExtractUsageMultimodal——否则
+	// `input_tokens`/`usageMetadata` 会被 OpenAI 解析器读成零值，且缓存/推理
+	// 的关系布尔方向可能被误判（成倍错算费用）。
+	fact := usage.ExtractUsageMultimodal(response, result.Response.Header, nil, rc.ChannelType)
 	if fact.Usage.Source == contract.UsageEstimated {
 		// 三源全部缺席时 ExtractUsage 只给出零值 + estimated；但关系布尔是
 		// **协议属性**而非用量数字（relay-03 §6.2 row 1）：OpenAI 格式的 prompt

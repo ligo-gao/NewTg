@@ -200,9 +200,11 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 
 	var billingFactory func(*contract.RelayContext) contract.BillingSession
 	var modelStatus httpapi.RelayModelStatusStore
+	var settings httpapi.ConfigReader
 	if assembly != nil {
 		billingFactory = assembly.Billing
 		modelStatus = assembly.ModelStatus
+		settings = assembly.Config
 	}
 
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
@@ -214,6 +216,7 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		Sealer:         sealer,
 		Billing:        billingFactory,
 		ModelStatus:    modelStatus,
+		Config:         settings,
 		TrustedProxies: cfg.TrustedProxies,
 	})
 	relayHandler.Register(mux)
