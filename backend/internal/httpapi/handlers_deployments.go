@@ -561,8 +561,9 @@ func (h *DeployManagementHandlers) handleList(w http.ResponseWriter, r *http.Req
 func scanDeployments(ctx context.Context, provider ionet.DeploymentProvider,
 	keyword string) ([]ionet.DeploymentSummary, int, bool, error) {
 	var (
-		raw   []ionet.DeploymentSummary
-		total int
+		raw      []ionet.DeploymentSummary
+		total    int
+		complete bool
 	)
 	for page := 1; page <= deployScanMaxPages; page++ {
 		result, err := provider.ListDeployments(ctx, ionet.DeploymentListOptions{
@@ -581,13 +582,20 @@ func scanDeployments(ctx context.Context, provider ionet.DeploymentProvider,
 			raw = raw[:deployScanMaxItems]
 			break
 		}
-		// 结束条件：不足一页或已覆盖 provider 声明的总量。
+		// 明确的结束条件（这两个才是「已取全」）：
+		//   1. 本页不足一页 → provider 已经没有下一页；
+		//   2. provider 声明了 total 且本次页已覆盖它。
+		// provider 不返回 total 时**不能**用本页条数推断总量（复核 HIGH-1），
+		// 只能靠「不足一页」或扫到冻结上限来终止。
 		if len(result.Items) < deployScanPageSize ||
 			(total > 0 && page*deployScanPageSize >= total) {
+			complete = true
 			break
 		}
 	}
 	if total == 0 {
+		// total 未知时对外仍要给出一个可用的 total：用实际扫描量，并由
+		// truncated 明确标记它是否只是窗口内计数。
 		total = len(raw)
 	}
 	// keyword 过滤在完整扫描之后：截断判定必须基于原始条数，否则「关键词
@@ -602,8 +610,11 @@ func scanDeployments(ctx context.Context, provider ionet.DeploymentProvider,
 		}
 		scanned = append(scanned, item)
 	}
-	// truncated：provider 声称的总量大于已扫描量（页数或条数上限）。
-	truncated := total > len(raw)
+	// truncated 口径：
+	//   - 扫描未走到明确终点（命中 10 页/1000 条上限，或 provider 既没给
+	//     total 又一直返回满页）→ true，因为无法确认已取全；
+	//   - provider 声明的 total 大于已扫描量 → true。
+	truncated := !complete || total > len(raw)
 	return scanned, total, truncated, nil
 }
 
@@ -815,6 +826,8 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		return status, body
 	}
 	if !available {
+		h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusConflict,
+			false, createAuditDetail(req, "", requestID, "deploy_name_taken"), nil, nil)
 		return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployNameTaken,
 			"Deployment name is already taken", "choose a different deployment name")
 	}
@@ -840,6 +853,8 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		return status, body
 	}
 	if !available {
+		h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusConflict,
+			false, createAuditDetail(req, "", requestID, "deploy_name_taken"), nil, nil)
 		return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployNameTaken,
 			"Deployment name is already taken", "choose a different deployment name")
 	}
@@ -853,6 +868,14 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		EnvVariables: req.EnvVariables, SecretEnvVariables: req.SecretEnvVariables,
 	})
 	if err != nil {
+		if providerConflict(err) {
+			// 创建阶段的 provider 409 只可能是名称已占用（状态冲突在创建时
+			// 不存在）；按名称冲突映射，管理员才知道该改名而不是重试。
+			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusConflict,
+				false, createAuditDetail(req, "", requestID, "deploy_name_taken"), nil, nil)
+			return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployNameTaken,
+				"Deployment name is already taken", "choose a different deployment name")
+		}
 		status, body := h.providerErrorBody(w, r, err)
 		_, code := deployErrorCode(err)
 		h.writeDeployAudit(r, actor, audit.ActionDeployCreate, status,
@@ -1341,6 +1364,10 @@ func (h *DeployManagementHandlers) renameDeployment(w http.ResponseWriter, r *ht
 		return status, body
 	}
 	if !available {
+		h.writeDeployAudit(r, actor, audit.ActionDeployRename, http.StatusConflict, false, map[string]any{
+			"deployment_id": deploymentID, "new_name": req.Name,
+			"request_id": requestID, "error_code": "deploy_name_taken",
+		}, nil, nil)
 		return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployNameTaken,
 			"Deployment name is already taken", "choose a different deployment name")
 	}
@@ -1348,6 +1375,16 @@ func (h *DeployManagementHandlers) renameDeployment(w http.ResponseWriter, r *ht
 	oldName := h.lookupDeploymentName(ctx, provider, deploymentID)
 	action, err := provider.RenameDeployment(ctx, deploymentID, req.Name)
 	if err != nil {
+		if providerConflict(err) {
+			// 改名的 409 语义是目标名称已被占用；其余冲突（状态不允许）
+			// 仍走 deploy_invalid_state。
+			h.writeDeployAudit(r, actor, audit.ActionDeployRename, http.StatusConflict, false, map[string]any{
+				"deployment_id": deploymentID, "old_name": oldName, "new_name": req.Name,
+				"request_id": requestID, "error_code": "deploy_name_taken",
+			}, nil, nil)
+			return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployNameTaken,
+				"Deployment name is already taken", "choose a different deployment name")
+		}
 		status, body := h.providerErrorBody(w, r, err)
 		_, code := deployErrorCode(err)
 		h.writeDeployAudit(r, actor, audit.ActionDeployRename, status, false, map[string]any{
@@ -1527,6 +1564,13 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 }
 
 // ---------- 小工具 ----------
+
+// providerConflict 判断 provider 是否返回 409。create/rename 的调用点把
+// 409 解释为「名称已占用」；其他写操作仍由 classify 映射为 invalid_state。
+func providerConflict(err error) bool {
+	var apiErr *ionet.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
+}
 
 // deployErrorCode 返回 (problemType, 业务码)，用于审计 error_code。
 func deployErrorCode(err error) (string, string) {

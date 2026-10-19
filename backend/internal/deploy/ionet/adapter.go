@@ -209,12 +209,14 @@ func decodeDeploymentPage(raw []byte) (DeploymentPage, error) {
 			name = item.DeploymentName
 		}
 		items = append(items, DeploymentSummary{
-			ID:                      item.ID,
-			Name:                    name,
-			Status:                  normalizeStatus(item.Status),
-			CompletedPercent:        item.CompletedPercent,
-			GPUCount:                item.HardwareQuantity,
+			ID:       item.ID,
+			Name:     name,
+			Status:   normalizeStatus(item.Status),
+			GPUCount: item.HardwareQuantity,
+			// ReplicaCount 与 GPUCount 都取 hardware_quantity：参照侧同样是
+			// 1:1 推导，但 provider 真实语义未实测（R-M6D-13 待实测清单）。
 			ReplicaCount:            item.HardwareQuantity,
+			CompletedPercent:        item.CompletedPercent,
 			HardwareName:            item.HardwareName,
 			BrandName:               item.BrandName,
 			ComputeMinutesServed:    item.ComputeMinutesServed,
@@ -222,11 +224,10 @@ func decodeDeploymentPage(raw []byte) (DeploymentPage, error) {
 			CreatedAt:               item.CreatedAt.Time,
 		})
 	}
-	total := wire.Total
-	if total == 0 {
-		total = len(items)
-	}
-	return DeploymentPage{Items: items, Total: total, Statuses: wire.Statuses}, nil
+	// Total 必须保留 provider 的原值：0 表示「provider 未返回总数」，不能
+	// 伪造成本页条数。handler 的全量扫描依赖这个区分——伪造会让「只扫了
+	// 第一页」被误判成「已经取全」（复核 HIGH-1）。
+	return DeploymentPage{Items: items, Total: wire.Total, Statuses: wire.Statuses}, nil
 }
 
 func decodeDeploymentDetail(raw []byte, id string) (DeploymentDetail, error) {

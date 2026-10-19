@@ -24,7 +24,10 @@ type FakeProvider struct {
 
 	Deployments      []DeploymentSummary
 	DeploymentsTotal int // >0 时覆盖 len(Deployments)，用于模拟跨页总量
-	DeploymentsErr   error
+	// OmitDeploymentsTotal 模拟 provider 不返回 total 的真实兼容场景：
+	// 扫描必须靠「本页不足一页」而不是伪造的总量来判断是否取全。
+	OmitDeploymentsTotal bool
+	DeploymentsErr       error
 
 	DeploymentDetail    DeploymentDetail
 	DeploymentDetailErr error
@@ -132,8 +135,11 @@ func (f *FakeProvider) ListDeployments(_ context.Context, opts DeploymentListOpt
 		return DeploymentPage{}, f.DeploymentsErr
 	}
 	total := f.DeploymentsTotal
-	if total == 0 {
+	if total == 0 && !f.OmitDeploymentsTotal {
 		total = len(f.Deployments)
+	}
+	if f.OmitDeploymentsTotal {
+		total = 0
 	}
 	page := opts.Page
 	if page < 1 {

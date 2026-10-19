@@ -1199,9 +1199,14 @@ schemas:
       status_counts:
         type: object
         additionalProperties: {type: integer, format: int64}
+        description: |
+          按已扫描窗口统计（keyword 过滤后、status 过滤前）。搜索被截断或
+          provider 未返回 total 时只代表窗口内计数，不是 provider 全量。
       search_truncated:
         type: boolean
-        description: provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。
+        description: |
+          provider 全量结果无法确认已取全时为 true：超过扫描上限（10 页 /
+          1000 条），或 provider 未返回 total 且扫描触达上限。
 
   DeployHardwareType:
     type: object
@@ -1322,6 +1327,15 @@ schemas:
     properties:
       deployment_id: {type: string}
       status: {type: string}
+
+  RenameDeploymentResponse:
+    type: object
+    additionalProperties: false
+    required: [deployment_id, status, name]
+    properties:
+      deployment_id: {type: string}
+      status: {type: string}
+      name: {type: string}
 
   DeployDeploymentDetail:
     type: object

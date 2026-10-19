@@ -370,7 +370,7 @@ func TestDeployCreateProviderErrorMapping(t *testing.T) {
 		wantType   string
 	}{
 		{"not found", &ionet.APIError{StatusCode: http.StatusNotFound}, http.StatusNotFound, problemTypeDeployNotFound},
-		{"invalid state", &ionet.APIError{StatusCode: http.StatusConflict}, http.StatusConflict, problemTypeDeployInvalidState},
+		{"name taken (create 409)", &ionet.APIError{StatusCode: http.StatusConflict}, http.StatusConflict, problemTypeDeployNameTaken},
 		{"secret invalid", &ionet.APIError{StatusCode: http.StatusUnauthorized}, http.StatusUnprocessableEntity, problemTypeDeploySecretInvalid},
 		{"rate limited", &ionet.APIError{StatusCode: http.StatusTooManyRequests, RetryAfter: 7 * time.Second}, http.StatusTooManyRequests, problemTypeDeployRateLimited},
 		{"provider error", &ionet.APIError{StatusCode: http.StatusInternalServerError}, http.StatusBadGateway, problemTypeDeployProviderError},
@@ -728,4 +728,241 @@ func stringifyAuditRow(row []any) string {
 		builder.WriteString(" | ")
 	}
 	return builder.String()
+}
+
+// ---------- 复核收口：无 total 的全量扫描（HIGH-1） ----------
+
+func TestDeployListKeywordScansPastFirstPageWithoutTotal(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	for i := 0; i < 300; i++ {
+		name := fmt.Sprintf("deploy-%03d", i)
+		if i == 250 {
+			name = "target-model"
+		}
+		env.provider.Deployments = append(env.provider.Deployments, ionet.DeploymentSummary{
+			ID: fmt.Sprintf("dep-%03d", i), Name: name, Status: "running",
+		})
+	}
+	// 模拟 provider 不返回 total：扫描只能靠「本页不足一页」终止。
+	env.provider.OmitDeploymentsTotal = true
+
+	rr := env.do(http.MethodGet, "/api/deployments?keyword=target", "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body deployListResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].ID != "dep-250" {
+		t.Fatalf("缺 total 时必须继续扫描到第 3 页: %+v", body)
+	}
+	if body.SearchTruncated {
+		t.Fatal("300 条可完整取全（第 4 页为空），不应标记截断")
+	}
+	if env.provider.DeploymentsCalls != 4 {
+		t.Fatalf("扫描调用 = %d，期望 4（3 满页 + 1 空页）", env.provider.DeploymentsCalls)
+	}
+}
+
+func TestDeployListWithoutTotalTruncatesAtScanLimit(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	for i := 0; i < 1500; i++ {
+		env.provider.Deployments = append(env.provider.Deployments, ionet.DeploymentSummary{
+			ID: fmt.Sprintf("dep-%04d", i), Name: fmt.Sprintf("deploy-%04d", i), Status: "running",
+		})
+	}
+	env.provider.OmitDeploymentsTotal = true
+
+	rr := env.do(http.MethodGet, "/api/deployments", "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var body deployListResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if !body.SearchTruncated {
+		t.Fatal("缺 total 且扫满上限时必须标记 search_truncated")
+	}
+	if body.Total != deployScanMaxItems {
+		t.Fatalf("total = %d，期望已扫描窗口 %d", body.Total, deployScanMaxItems)
+	}
+}
+
+// ---------- 复核收口：写操作幂等矩阵（LOW-3） ----------
+
+func TestDeployWriteIdempotencyMatrix(t *testing.T) {
+	type writeCase struct {
+		name   string
+		method string
+		target string
+		body   string
+		calls  func(*ionet.FakeProvider) int
+	}
+	cases := []writeCase{
+		{"update", http.MethodPatch, "/api/deployments/dep-1", `{"traffic_port":8080}`,
+			func(p *ionet.FakeProvider) int { return p.UpdateCalls }},
+		{"rename", http.MethodPatch, "/api/deployments/dep-1/name", `{"name":"new-name"}`,
+			func(p *ionet.FakeProvider) int { return p.RenameCalls }},
+		{"extend", http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`,
+			func(p *ionet.FakeProvider) int { return p.ExtendCalls }},
+		{"delete", http.MethodDelete, "/api/deployments/dep-1", ``,
+			func(p *ionet.FakeProvider) int { return p.DeleteCalls }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDeployMgmtEnv(t)
+			env.provider.DeploymentDetail = ionet.DeploymentDetail{
+				ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
+				Locations: []ionet.DeploymentLocation{{ID: 1}},
+			}
+			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 1, Currency: "USDC"}
+
+			missing := env.do(tc.method, tc.target, tc.body, nil)
+			if missing.Code != http.StatusBadRequest {
+				t.Fatalf("缺 key = %d，期望 400", missing.Code)
+			}
+			if got := tc.calls(env.provider); got != 0 {
+				t.Fatalf("缺 key 不得执行写: calls=%d", got)
+			}
+
+			first := env.do(tc.method, tc.target, tc.body, deployWriteHeaders())
+			if first.Code < 200 || first.Code >= 300 {
+				t.Fatalf("first status = %d（body=%s）", first.Code, first.Body.String())
+			}
+			second := env.do(tc.method, tc.target, tc.body, deployWriteHeaders())
+			if second.Code != first.Code {
+				t.Fatalf("replay status = %d，期望 %d", second.Code, first.Code)
+			}
+			if got := tc.calls(env.provider); got != 1 {
+				t.Fatalf("同 key 重放不得重复执行: calls=%d", got)
+			}
+			if second.Header().Get("Idempotent-Replayed") != "true" {
+				t.Fatal("重放必须标记 Idempotent-Replayed")
+			}
+		})
+	}
+}
+
+func TestDeployWriteInFlightMatrix(t *testing.T) {
+	for _, tc := range []struct{ method, target, body string }{
+		{http.MethodPatch, "/api/deployments/dep-1", `{"traffic_port":8080}`},
+		{http.MethodPatch, "/api/deployments/dep-1/name", `{"name":"x"}`},
+		{http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`},
+		{http.MethodDelete, "/api/deployments/dep-1", ``},
+	} {
+		env := newDeployMgmtEnvWithIdem(t, inFlightIdemStore{})
+		rr := env.do(tc.method, tc.target, tc.body, deployWriteHeaders())
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("%s %s = %d，期望 409", tc.method, tc.target, rr.Code)
+		}
+		if rr.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s 在途冲突缺少 Retry-After", tc.target)
+		}
+	}
+}
+
+// ---------- 复核收口：禁用门/权限覆盖全部端点（LOW-3） ----------
+
+func TestDeployAllEndpointsDisabledGate(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.service.getView = sampleDeployView(false, true)
+	endpoints := []struct{ method, target, body string }{
+		{http.MethodGet, "/api/deployments", ""},
+		{http.MethodGet, "/api/deployments/hardware-types", ""},
+		{http.MethodGet, "/api/deployments/locations", ""},
+		{http.MethodGet, "/api/deployments/available-replicas?hardware_id=1", ""},
+		{http.MethodPost, "/api/deployments/price-estimation",
+			`{"hardware_id":1,"location_ids":[1],"gpus_per_container":1,"replica_count":1,"duration_hours":1}`},
+		{http.MethodGet, "/api/deployments/check-name?name=x", ""},
+		{http.MethodPost, "/api/deployments", validCreateBody()},
+		{http.MethodGet, "/api/deployments/dep-1", ""},
+		{http.MethodGet, "/api/deployments/dep-1/containers", ""},
+		{http.MethodGet, "/api/deployments/dep-1/containers/ctr-1", ""},
+		{http.MethodGet, "/api/deployments/dep-1/logs?container_id=ctr-1", ""},
+		{http.MethodPatch, "/api/deployments/dep-1", `{"traffic_port":8080}`},
+		{http.MethodPatch, "/api/deployments/dep-1/name", `{"name":"x"}`},
+		{http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":1}`},
+		{http.MethodDelete, "/api/deployments/dep-1", ""},
+	}
+	for _, ep := range endpoints {
+		headers := map[string]string{}
+		if ep.method != http.MethodGet {
+			headers["Idempotency-Key"] = "k-" + ep.method + ep.target
+		}
+		rr := env.do(ep.method, ep.target, ep.body, headers)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("%s %s = %d，期望 409（body=%s）", ep.method, ep.target, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestDeployAllEndpointsRequireSettingsManage(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	noPerm := &auth.Principal{UserID: 2, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersRead}}
+	endpoints := []struct{ method, target, body string }{
+		{http.MethodGet, "/api/deployments", ""},
+		{http.MethodGet, "/api/deployments/hardware-types", ""},
+		{http.MethodGet, "/api/deployments/locations", ""},
+		{http.MethodGet, "/api/deployments/available-replicas?hardware_id=1", ""},
+		{http.MethodPost, "/api/deployments/price-estimation", `{}`},
+		{http.MethodGet, "/api/deployments/check-name?name=x", ""},
+		{http.MethodPost, "/api/deployments", `{}`},
+		{http.MethodGet, "/api/deployments/dep-1", ""},
+		{http.MethodGet, "/api/deployments/dep-1/containers", ""},
+		{http.MethodGet, "/api/deployments/dep-1/containers/ctr-1", ""},
+		{http.MethodGet, "/api/deployments/dep-1/logs?container_id=ctr-1", ""},
+		{http.MethodPatch, "/api/deployments/dep-1", `{}`},
+		{http.MethodPatch, "/api/deployments/dep-1/name", `{}`},
+		{http.MethodPost, "/api/deployments/dep-1/extend", `{}`},
+		{http.MethodDelete, "/api/deployments/dep-1", ""},
+	}
+	for _, ep := range endpoints {
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, settingsRequest(ep.method, ep.target, ep.body, noPerm, nil))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s %s = %d，期望 403", ep.method, ep.target, rr.Code)
+		}
+	}
+}
+
+// ---------- 复核收口：409 按操作区分（LOW-1）与失败审计（LOW-2） ----------
+
+func TestDeployNameConflictMapsToNameTaken(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 1, Currency: "USDC"}
+	env.provider.CreateErr = &ionet.APIError{StatusCode: http.StatusConflict}
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("create status = %d", rr.Code)
+	}
+	if got := decodeDeployProblem(t, rr)["type"]; got != problemTypeDeployNameTaken {
+		t.Fatalf("create 409 problem.type = %v，期望 name_taken", got)
+	}
+	if !strings.Contains(stringifyAuditRow(env.audit.snapshot()[0]), "deploy_name_taken") {
+		t.Fatal("名称冲突失败必须记审计 error_code")
+	}
+
+	env2 := newDeployMgmtEnv(t)
+	env2.provider.RenameErr = &ionet.APIError{StatusCode: http.StatusConflict}
+	rr = env2.do(http.MethodPatch, "/api/deployments/dep-1/name", `{"name":"taken"}`, deployWriteHeaders())
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("rename status = %d", rr.Code)
+	}
+	if got := decodeDeployProblem(t, rr)["type"]; got != problemTypeDeployNameTaken {
+		t.Fatalf("rename 409 problem.type = %v，期望 name_taken", got)
+	}
+}
+
+func TestDeployRenameNameTakenIsAudited(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.NameAvailable = false
+	rr := env.do(http.MethodPatch, "/api/deployments/dep-1/name", `{"name":"taken"}`, deployWriteHeaders())
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	rows := env.audit.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("审计行数 = %d", len(rows))
+	}
+	if !strings.Contains(stringifyAuditRow(rows[0]), "deploy_name_taken") {
+		t.Fatalf("名称占用失败必须审计: %s", stringifyAuditRow(rows[0]))
+	}
 }

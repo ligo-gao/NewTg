@@ -3308,7 +3308,8 @@ paths:
       description: |
         keyword 在**全结果集**上过滤（provider 无 keyword 参数时按页扫描，
         上限 10 页 / 1000 条；达到上限时 search_truncated=true）。
-        status_counts 按扫描到的全量口径统计，不受当前页影响。
+        status_counts 按扫描到的全量口径统计，不受当前页影响；扫描被截断或
+        provider 未返回 total 时，status_counts 与 total 只代表已扫描窗口。
         p 默认 1；page_size 默认 20、上限 100（超出截断并回显实际值）。
       security:
         - sessionCookie: []
@@ -3900,7 +3901,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeployAction'
+                $ref: '#/components/schemas/RenameDeploymentResponse'
         '400':
           $ref: '#/components/responses/Error400'
         '401':
@@ -8456,9 +8457,14 @@ components:
           additionalProperties:
             type: integer
             format: int64
+          description: |
+            按已扫描窗口统计（keyword 过滤后、status 过滤前）。搜索被截断或
+            provider 未返回 total 时只代表窗口内计数，不是 provider 全量。
         search_truncated:
           type: boolean
-          description: provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。
+          description: |
+            provider 全量结果无法确认已取全时为 true：超过扫描上限（10 页 /
+            1000 条），或 provider 未返回 total 且扫描触达上限。
     CreateDeploymentRequest:
       type: object
       additionalProperties: false
@@ -8896,6 +8902,20 @@ components:
         name:
           type: string
           minLength: 1
+    RenameDeploymentResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - deployment_id
+        - status
+        - name
+      properties:
+        deployment_id:
+          type: string
+        status:
+          type: string
+        name:
+          type: string
     ExtendDeploymentRequest:
       type: object
       additionalProperties: false

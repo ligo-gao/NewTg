@@ -210,3 +210,50 @@ func TestUpdateRequestSerializesClearFlags(t *testing.T) {
 		t.Fatal("显式清除必须发送 secret_env_variables 空对象")
 	}
 }
+
+func TestDecodeDeploymentPageKeepsUnknownTotal(t *testing.T) {
+	// provider 不返回 total 时必须保留 0：伪造成本页条数会让上层把「只扫了
+	// 第一页」误判成「已取全」（复核 HIGH-1）。
+	page, err := decodeDeploymentPage([]byte(`{"deployments":[{"id":"d1"},{"id":"d2"}]}`))
+	if err != nil {
+		t.Fatalf("decodeDeploymentPage: %v", err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("Total = %d，期望 0（未提供）", page.Total)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("items = %d", len(page.Items))
+	}
+
+	page, err = decodeDeploymentPage([]byte(`{"data":{"deployments":[{"id":"d1"}],"total":42}}`))
+	if err != nil {
+		t.Fatalf("decode wrapped: %v", err)
+	}
+	if page.Total != 42 {
+		t.Fatalf("Total = %d，期望 42", page.Total)
+	}
+}
+
+func TestDecodePriceNestedBreakdown(t *testing.T) {
+	response, err := decodePriceEstimation([]byte(`{
+		"estimated_cost": 12.5,
+		"currency": "usd",
+		"estimation_valid": true,
+		"price_breakdown": {"compute_cost": 10, "network_cost": 0, "total_cost": 12.5, "hourly_rate": 0.52}
+	}`), PriceEstimationRequest{Currency: "usdc"})
+	if err != nil {
+		t.Fatalf("decodePriceEstimation: %v", err)
+	}
+	if response.Currency != "USD" || response.EstimatedCost != 12.5 || !response.EstimationValid {
+		t.Fatalf("response = %+v", response)
+	}
+	if response.PriceBreakdown.ComputeCost == nil || *response.PriceBreakdown.ComputeCost != 10 {
+		t.Fatal("嵌套 price_breakdown 未映射")
+	}
+	if response.PriceBreakdown.NetworkCost == nil || *response.PriceBreakdown.NetworkCost != 0 {
+		t.Fatal("显式 0 的费用项必须保留（不能用 omitempty 误删）")
+	}
+	if response.PriceBreakdown.StorageCost != nil {
+		t.Fatal("缺失的费用项不得伪造")
+	}
+}

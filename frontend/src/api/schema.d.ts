@@ -1552,7 +1552,8 @@ export interface paths {
          * 部署列表与全量检索
          * @description keyword 在**全结果集**上过滤（provider 无 keyword 参数时按页扫描，
          *     上限 10 页 / 1000 条；达到上限时 search_truncated=true）。
-         *     status_counts 按扫描到的全量口径统计，不受当前页影响。
+         *     status_counts 按扫描到的全量口径统计，不受当前页影响；扫描被截断或
+         *     provider 未返回 total 时，status_counts 与 total 只代表已扫描窗口。
          *     p 默认 1；page_size 默认 20、上限 100（超出截断并回显实际值）。
          */
         get: operations["listDeployments"];
@@ -3842,10 +3843,17 @@ export interface components {
             total: number;
             page: number;
             page_size: number;
+            /**
+             * @description 按已扫描窗口统计（keyword 过滤后、status 过滤前）。搜索被截断或
+             *     provider 未返回 total 时只代表窗口内计数，不是 provider 全量。
+             */
             status_counts: {
                 [key: string]: number;
             };
-            /** @description provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。 */
+            /**
+             * @description provider 全量结果无法确认已取全时为 true：超过扫描上限（10 页 /
+             *     1000 条），或 provider 未返回 total 且扫描触达上限。
+             */
             search_truncated?: boolean;
         };
         CreateDeploymentRequest: {
@@ -4032,6 +4040,11 @@ export interface components {
             has_more: boolean;
         };
         RenameDeploymentRequest: {
+            name: string;
+        };
+        RenameDeploymentResponse: {
+            deployment_id: string;
+            status: string;
             name: string;
         };
         ExtendDeploymentRequest: {
@@ -7938,7 +7951,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeployAction"];
+                    "application/json": components["schemas"]["RenameDeploymentResponse"];
                 };
             };
             400: components["responses"]["Error400"];

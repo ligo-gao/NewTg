@@ -1429,7 +1429,8 @@ paths:
       description: |
         keyword 在**全结果集**上过滤（provider 无 keyword 参数时按页扫描，
         上限 10 页 / 1000 条；达到上限时 search_truncated=true）。
-        status_counts 按扫描到的全量口径统计，不受当前页影响。
+        status_counts 按扫描到的全量口径统计，不受当前页影响；扫描被截断或
+        provider 未返回 total 时，status_counts 与 total 只代表已扫描窗口。
         p 默认 1；page_size 默认 20、上限 100（超出截断并回显实际值）。
       security:
         - sessionCookie: []
@@ -1913,7 +1914,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+                $ref: '../schemas/admin.yaml#/schemas/RenameDeploymentResponse'
         '400':
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':

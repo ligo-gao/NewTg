@@ -2309,10 +2309,14 @@ type DeployDeploymentList struct {
 	Page     int                `json:"page"`
 	PageSize int                `json:"page_size"`
 
-	// SearchTruncated provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。
-	SearchTruncated *bool            `json:"search_truncated,omitempty"`
-	StatusCounts    map[string]int64 `json:"status_counts"`
-	Total           int              `json:"total"`
+	// SearchTruncated provider 全量结果无法确认已取全时为 true：超过扫描上限（10 页 /
+	// 1000 条），或 provider 未返回 total 且扫描触达上限。
+	SearchTruncated *bool `json:"search_truncated,omitempty"`
+
+	// StatusCounts 按已扫描窗口统计（keyword 过滤后、status 过滤前）。搜索被截断或
+	// provider 未返回 total 时只代表窗口内计数，不是 provider 全量。
+	StatusCounts map[string]int64 `json:"status_counts"`
+	Total        int              `json:"total"`
 }
 
 // DeployHardwareType defines model for DeployHardwareType.
@@ -3808,6 +3812,13 @@ type RegisterRequest struct {
 // RenameDeploymentRequest defines model for RenameDeploymentRequest.
 type RenameDeploymentRequest struct {
 	Name string `json:"name"`
+}
+
+// RenameDeploymentResponse defines model for RenameDeploymentResponse.
+type RenameDeploymentResponse struct {
+	DeploymentId string `json:"deployment_id"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
 }
 
 // ResetPasswordResponse 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
