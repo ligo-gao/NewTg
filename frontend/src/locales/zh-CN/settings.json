@@ -1,0 +1,368 @@
+{
+  "shell": {
+    "title": "设置",
+    "subtitle": "配置此部署。保存的分区会立即对所有实例生效。",
+    "tabs_label": "设置分区",
+    "read_only": "您可以查看这些设置，但无法修改：您的账号没有 settings:manage 权限。",
+    "unsaved_title": "有未保存的更改",
+    "unsaved_body": "离开此标签页并放弃未保存的更改？",
+    "unsaved_discard": "放弃并离开",
+    "unsaved_keep": "继续编辑",
+    "leave_prompt": "您有未保存的设置更改。",
+    "conflict_title": "设置在别处已被修改",
+    "conflict_body": "设置已被他人修改。请刷新以加载当前值。",
+    "conflict_refresh": "刷新",
+    "save": "保存更改",
+    "saving": "正在保存…",
+    "discard": "放弃更改",
+    "saved": "{section} 已保存，所有实例已立即更新。",
+    "load_error": "无法加载此分区。",
+    "retry": "重试",
+    "forbidden": "您无权访问这些设置。",
+    "dirty": "未保存的更改",
+    "danger_title": "确认此更改",
+    "danger_body": "部分更改的设置会影响线上流量，仍要保存吗？",
+    "danger_confirm": "仍然保存",
+    "danger_cancel": "取消",
+    "secret_configured": "已配置",
+    "secret_not_configured": "未配置",
+    "secret_clear": "清除",
+    "secret_placeholder": "••••••••",
+    "secret_show": "显示值",
+    "secret_hide": "隐藏值",
+    "secret_hint": "留空则保持当前值；仅在输入新值时才会提交。",
+    "secret_clear_confirm": "清除此值会立即停用相关功能，确定清除？",
+    "field_required": "此字段为必填项。",
+    "field_url": "请输入绝对的 http(s) URL。",
+    "field_too_long": "最多 {max} 个字符。",
+    "field_number_range": "请输入 {min} 到 {max} 之间的值。",
+    "field_number_min": "请输入大于 {min} 的值。",
+    "field_invalid_number": "请输入有效的数字。",
+    "field_invalid_list": "请使用逗号分隔的取值。",
+    "field_invalid_json": "请输入有效的 JSON。",
+    "field_invalid": "取值无效。",
+    "field_locked": "已被服务端锁定。",
+    "cross_at_least_one_sign_in": "请至少保留一种登录方式。",
+    "cross_turnstile_secret": "启用 Turnstile 时必须填写密钥。",
+    "rate_limited": "请求过于频繁，请稍后再试。",
+    "save_forbidden": "您无权保存设置。",
+    "module_dashboard": "仪表盘",
+    "module_tokens": "API 令牌",
+    "module_usage_logs": "用量日志",
+    "module_wallet": "钱包",
+    "module_profile": "个人资料",
+    "module_security": "安全",
+    "module_prompt": "提示词",
+    "module_system": "系统提示词",
+    "module_banner": "控制台横幅",
+    "module_email": "邮件",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "站点",
+    "auth": "认证",
+    "billing": "计费",
+    "payment": "支付",
+    "security": "限流与安全",
+    "notify": "通知",
+    "policy": "请求策略"
+  },
+  "tab_description": {
+    "site": "品牌、导航与站点级模块开关",
+    "auth": "注册、登录、邮箱验证与人机校验",
+    "billing": "积分、注册赠送与免费模型预扣",
+    "payment": "在线支付方式与充值预设",
+    "security": "入站限流与出站 SSRF 防护",
+    "notify": "SMTP 邮件发送",
+    "policy": "如何识别故障并将渠道移出轮转"
+  },
+  "section": {
+    "site": "基本信息",
+    "nav": "导航与模块",
+    "auth": "注册与登录",
+    "auth_turnstile": "人机校验（Turnstile）",
+    "billing": "积分与预扣",
+    "pay": "支付概览",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "支付宝",
+    "rl": "请求限流",
+    "sec": "SSRF 与敏感词",
+    "notify_smtp": "SMTP",
+    "rl_health": "渠道健康"
+  },
+  "section_description": {
+    "site": "显示在每个页面上，并作为回调链接的基础地址",
+    "nav": "控制哪些公开导航入口与控制台模块可见",
+    "auth": "至少必须保留一种登录方式",
+    "auth_turnstile": "使用 Cloudflare Turnstile 保护注册与登录",
+    "billing": "积分是记账单位；定价本身位于「渠道与定价」",
+    "pay": "总开关与充值金额预设",
+    "pay_stripe": "通过 Stripe 进行银行卡支付",
+    "pay_alipay": "支付宝当面付",
+    "rl": "独立令牌桶保护上游额度；0 表示不限",
+    "sec": "出站请求在离开网关前会接受检查",
+    "notify_smtp": "邮箱验证与邮件通知所必需",
+    "rl_health": "首次命中即可将渠道移出轮转"
+  },
+  "field": {
+    "site": {
+      "title": "站点名称",
+      "logo_url": "Logo URL",
+      "server_address": "服务地址",
+      "timezone": "时区",
+      "docs_url": "文档 URL",
+      "status_page_url": "状态页 URL",
+      "filing_no": "备案号",
+      "footer_html": "页脚 HTML",
+      "about_html": "关于页 HTML",
+      "home_custom_enabled": "使用自定义首页 HTML",
+      "home_custom_html": "自定义首页 HTML",
+      "home_blocks": "默认首页区块",
+      "seo": {
+        "description": "SEO 描述",
+        "og_image_url": "Open Graph 图片 URL"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "首页",
+        "require_auth": "首页需要登录"
+      },
+      "console": {
+        "enabled": "控制台",
+        "require_auth": "控制台需要登录"
+      },
+      "pricing": {
+        "enabled": "定价",
+        "require_auth": "定价页需要登录"
+      },
+      "rankings": {
+        "enabled": "排行榜",
+        "require_auth": "排行榜需要登录"
+      },
+      "docs": {
+        "enabled": "文档"
+      },
+      "about": {
+        "enabled": "关于"
+      },
+      "modules": {
+        "console": "控制台侧栏模块",
+        "chat": {
+          "playground": "演练场",
+          "presets": "对话预设"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "允许注册",
+      "password_login_enabled": "允许密码登录",
+      "mfa": {
+        "admin_required": "管理员必须启用 MFA",
+        "admin_hardware_required": "管理员必须使用通行密钥"
+      },
+      "email_verification_required": "要求邮箱验证",
+      "email_domain_restrict_enabled": "限制注册邮箱域名",
+      "email_domain_allowlist": "允许的邮箱域名",
+      "turnstile": {
+        "enabled": "启用 Turnstile",
+        "site_key": "站点密钥",
+        "secret_key": "私密密钥"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "每单位货币对应的积分",
+      "display_unit": "余额显示单位",
+      "currency_symbol": "货币符号",
+      "signup_grant_credits": "注册赠送积分",
+      "signup_grant_requires_verified_email": "仅已验证邮箱可领取赠送",
+      "balance_alert_threshold_credits": "低余额告警阈值（积分）",
+      "balance_alert_channels": "低余额告警渠道",
+      "free_model_preconsume_enabled": "免费模型预扣",
+      "free_model_preconsume_multiplier": "预扣倍率",
+      "free_model_preconsume_trust_credits": "可信用户阈值（积分）"
+    },
+    "pay": {
+      "online_enabled": "在线支付",
+      "amount_presets_cny": "充值预设（人民币）",
+      "stripe": {
+        "enabled": "启用 Stripe",
+        "secret_key": "私密密钥",
+        "webhook_secret": "Webhook 签名密钥",
+        "min_topup_cny": "最低充值金额（人民币）"
+      },
+      "alipay": {
+        "enabled": "启用支付宝",
+        "app_id": "应用 ID",
+        "private_key": "应用私钥",
+        "public_key": "支付宝公钥",
+        "gateway_url": "网关 URL",
+        "sandbox": "沙箱模式"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "每用户每模型每分钟请求数",
+      "token_rpm": "每令牌每分钟请求数",
+      "user_global_rpm": "每用户每分钟请求数（全局）",
+      "group_overrides": "分组限流覆盖"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "启用 SSRF 防护",
+        "allow_private_ip": "允许私有地址",
+        "allowed_ports": "允许的端口",
+        "domain_mode": "域名模式",
+        "domain_list": "域名列表"
+      },
+      "sensitive": {
+        "enabled": "启用敏感词过滤",
+        "scope": "检测范围",
+        "words": "词表",
+        "action": "命中时"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "SMTP 服务器",
+        "port": "端口",
+        "encryption": "加密方式",
+        "username": "发件账号",
+        "from_email": "发件地址",
+        "from_name": "发件人名称",
+        "password": "密码",
+        "force_auth_login": "强制使用 AUTH LOGIN",
+        "insecure_skip_verify": "跳过 TLS 证书校验"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "自动禁用",
+      "response_time_threshold_seconds": "响应时间阈值（秒）",
+      "disable_keywords": "禁用关键词（每行一个）",
+      "auto_enable_enabled": "自动恢复",
+      "test_interval_minutes": "健康检查间隔（分钟）",
+      "test_concurrency": "健康检查并发数"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1–64 个字符。",
+      "server_address": "用作令牌示例与回调链接的 Base URL。",
+      "footer_html": "允许的标签：a、p、br、strong、em。",
+      "about_html": "允许的标签：a、p、br、strong、em。",
+      "home_custom_html": "自定义 HTML 将完全接管首页渲染。最多 65,536 个字符。"
+    },
+    "nav": {
+      "console": {
+        "require_auth": "始终开启。控制台需要登录。"
+      },
+      "modules": {
+        "console": "键名对应控制台路由；tokens 即 API 令牌模块。"
+      }
+    },
+    "auth": {
+      "signup_enabled": "关闭时新用户无法自行注册。",
+      "password_login_enabled": "至少必须启用一种登录方式。",
+      "email_verification_required": "需要配置 SMTP，否则无法发送验证邮件。",
+      "email_domain_allowlist": "按回车添加，或用逗号分隔。支持 *.edu.cn 等通配符。",
+      "turnstile": {
+        "secret_key": "留空则保持当前密钥。"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "修改后会影响充值与余额显示。",
+      "signup_grant_credits": "0 表示关闭赠送。",
+      "display_unit": "消费始终以积分记账。",
+      "free_model_preconsume_multiplier": "必须大于 0（小于等于 0 的值会被拒绝；默认 1）。",
+      "free_model_preconsume_trust_credits": "累计消费超过此值的用户跳过预扣；0 表示对所有用户预扣。",
+      "balance_alert_channels": "JSON 对象：{banner, email, webhook}。"
+    },
+    "pay": {
+      "online_enabled": "关闭后会隐藏所有在线支付方式，不影响兑换码。",
+      "amount_presets_cny": "逗号分隔的整数，例如 10, 30, 50。",
+      "stripe": {
+        "secret_key": "以 sk_ 开头。留空则保持当前密钥。",
+        "webhook_secret": "以 whsec_ 开头。留空则保持当前密钥。"
+      },
+      "alipay": {
+        "private_key": "PEM 编码。留空则保持当前密钥。",
+        "public_key": "PEM 编码。留空则保持当前密钥。"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 表示不限。",
+      "token_rpm": "0 表示不限。",
+      "user_global_rpm": "0 表示不限。",
+      "group_overrides": "将分组名称映射到 RPM 的 JSON 对象，例如 {\"vip\": 1200}。"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "适用于所有出站请求：OAuth 发现、Webhook、支付回调、URL 健康检查与上游渠道转发。",
+        "allow_private_ip": "仅适用于出站请求。",
+        "allowed_ports": "1 到 65535 之间的逗号分隔整数。",
+        "domain_list": "每行一个域名或用逗号分隔。白名单模式下空列表会阻止所有出站请求。"
+      },
+      "sensitive": {
+        "scope": "选择要检查的提示词字段。",
+        "words": "每行一个词，支持通配符 *。",
+        "action": "拒绝会拦截请求；记录则放行并记录命中。"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "留空时回退到发件账号。",
+        "from_name": "留空时回退到站点名称。",
+        "insecure_skip_verify": "仅用于调试，切勿在生产环境使用。"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "首次命中即禁用渠道，没有失败次数阈值。",
+      "response_time_threshold_seconds": "这是响应时间阈值，不是失败次数。",
+      "disable_keywords": "响应体包含任一关键词即禁用该渠道。",
+      "auto_enable_enabled": "只有定时健康检查能恢复自动禁用的渠道；手动禁用的渠道不会恢复。",
+      "test_interval_minutes": "1–1440 分钟。",
+      "test_concurrency": "1–50 个并发检查。"
+    }
+  },
+  "option": {
+    "credits": "积分",
+    "cny": "折算货币",
+    "domain_all": "全部允许",
+    "domain_allowlist": "仅白名单",
+    "domain_denylist": "黑名单",
+    "sensitive_block": "拒绝",
+    "sensitive_log": "记录并放行",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "无",
+    "alipay_gateway_production": "生产网关",
+    "alipay_gateway_sandbox": "沙箱网关"
+  },
+  "status": {
+    "title": "系统状态",
+    "subtitle": "版本、依赖与实例心跳",
+    "refresh": "刷新",
+    "last_updated": "最后更新于 {time}",
+    "version_title": "版本",
+    "version": "版本",
+    "uptime": "运行时长",
+    "uptime_value": "{days} 天 {hours} 小时 {minutes} 分",
+    "uptime_seconds": "{seconds} 秒",
+    "dependencies_title": "依赖",
+    "dependency_db": "数据库",
+    "dependency_redis": "Redis",
+    "dependency_worker": "工作进程",
+    "healthy": "健康",
+    "degraded": "降级",
+    "unknown": "未知",
+    "instances_title": "实例",
+    "instance_name": "实例",
+    "instance_role": "角色",
+    "instance_status": "状态",
+    "instance_version": "版本",
+    "instance_last_seen": "最后心跳",
+    "instances_empty": "没有实例心跳，请检查部署。",
+    "load_error": "无法加载系统状态。",
+    "retry": "重试",
+    "loading": "正在加载系统状态…"
+  }
+}

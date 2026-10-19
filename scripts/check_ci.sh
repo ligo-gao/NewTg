@@ -136,6 +136,7 @@ grep -qE '^permissions:' "$CI"           && ok "ci.yml 声明 permissions"  || b
 grep -qE '^[[:space:]]+contents: read' "$CI" && ok "ci.yml contents: read" || bad "ci.yml 缺少 contents: read"
 grep -q 'go test -tags=integration ./...' "$CI" && ok "ci.yml 运行集成测试" || bad "ci.yml 未运行 go test -tags=integration ./..."
 grep -q 'check_bundle_size.sh' "$CI"     && ok "ci.yml 引用体积门禁脚本"  || bad "ci.yml 未引用 scripts/check_bundle_size.sh"
+grep -q 'check_locale_parity.sh' "$CI"   && ok "ci.yml 引用语种奇偶校验"  || bad "ci.yml 未引用 scripts/check_locale_parity.sh"
 grep -q 'oasdiff' "$CI"                  && ok "ci.yml 运行 oasdiff"      || bad "ci.yml 缺少 oasdiff 破坏性变更门禁"
 
 # release.yml：只有 tag 发布是供应链出口，权限/架构/元数据必须齐全。
@@ -183,6 +184,20 @@ grep -qF -- 'Dockerfile -t $(IMAGE) .' "$ROOT/Makefile" \
 grep -qF -- 'Dockerfile -t $(IMAGE) --push .' "$ROOT/Makefile" \
   && ok "Makefile image-multiarch 目标使用仓根上下文" \
   || bad "Makefile image-multiarch 目标未使用仓根上下文"
+
+# --- g. i18n 词典奇偶校验（web-00 §7.6 / TC-C-04） --------------------------
+# 为什么在这里直接运行而不是只断言 workflow 文本：缺键不会让 TypeScript 或
+# 构建失败，运行时只会静默回退英文；门禁必须在本地也能一键复现。
+if [ -f "$ROOT/scripts/check_locale_parity.sh" ]; then
+  if parity_out="$(bash "$ROOT/scripts/check_locale_parity.sh" 2>&1)"; then
+    ok "7 语种词典键集合一致（check_locale_parity.sh）"
+  else
+    bad "7 语种词典奇偶校验未通过"
+    printf '%s\n' "$parity_out" >&2
+  fi
+else
+  bad "缺少 scripts/check_locale_parity.sh"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then

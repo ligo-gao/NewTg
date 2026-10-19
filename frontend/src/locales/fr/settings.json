@@ -1,0 +1,368 @@
+{
+  "shell": {
+    "title": "Paramètres",
+    "subtitle": "Configurez ce déploiement. Les sections enregistrées s'appliquent immédiatement à toutes les instances.",
+    "tabs_label": "Sections de paramètres",
+    "read_only": "Vous pouvez consulter ces paramètres mais pas les modifier : votre compte n'a pas la permission settings:manage.",
+    "unsaved_title": "Vous avez des modifications non enregistrées",
+    "unsaved_body": "Quitter cet onglet et abandonner les modifications non enregistrées ?",
+    "unsaved_discard": "Abandonner et quitter",
+    "unsaved_keep": "Continuer la modification",
+    "leave_prompt": "Vous avez des modifications de paramètres non enregistrées.",
+    "conflict_title": "Paramètres modifiés ailleurs",
+    "conflict_body": "Les paramètres ont été modifiés par quelqu'un d'autre. Actualisez pour charger les valeurs actuelles.",
+    "conflict_refresh": "Actualiser",
+    "save": "Enregistrer les modifications",
+    "saving": "Enregistrement…",
+    "discard": "Abandonner les modifications",
+    "saved": "{section} enregistré. Toutes les instances ont été mises à jour immédiatement.",
+    "load_error": "Impossible de charger cette section.",
+    "retry": "Réessayer",
+    "forbidden": "Vous n'avez pas accès à ces paramètres.",
+    "dirty": "Modifications non enregistrées",
+    "danger_title": "Confirmer cette modification",
+    "danger_body": "Certains paramètres modifiés affectent le trafic en direct. Enregistrer quand même ?",
+    "danger_confirm": "Enregistrer quand même",
+    "danger_cancel": "Annuler",
+    "secret_configured": "Configuré",
+    "secret_not_configured": "Non configuré",
+    "secret_clear": "Effacer",
+    "secret_placeholder": "••••••••",
+    "secret_show": "Afficher la valeur",
+    "secret_hide": "Masquer la valeur",
+    "secret_hint": "Laissez vide pour conserver la valeur actuelle. Une nouvelle valeur n'est envoyée que si vous en saisissez une.",
+    "secret_clear_confirm": "Effacer cette valeur désactive immédiatement la fonction associée. L'effacer ?",
+    "field_required": "Ce champ est obligatoire.",
+    "field_url": "Saisissez une URL http(s) absolue.",
+    "field_too_long": "{max} caractères maximum.",
+    "field_number_range": "Saisissez une valeur entre {min} et {max}.",
+    "field_number_min": "Saisissez une valeur supérieure à {min}.",
+    "field_invalid_number": "Saisissez un nombre valide.",
+    "field_invalid_list": "Utilisez des valeurs séparées par des virgules.",
+    "field_invalid_json": "Saisissez un JSON valide.",
+    "field_invalid": "Valeur invalide.",
+    "field_locked": "Verrouillé par le serveur.",
+    "cross_at_least_one_sign_in": "Gardez au moins une méthode de connexion activée.",
+    "cross_turnstile_secret": "La clé secrète est requise lorsque Turnstile est activé.",
+    "rate_limited": "Trop de requêtes. Veuillez réessayer plus tard.",
+    "save_forbidden": "Vous n'avez pas la permission d'enregistrer les paramètres.",
+    "module_dashboard": "Tableau de bord",
+    "module_tokens": "Jetons d'API",
+    "module_usage_logs": "Journaux d'utilisation",
+    "module_wallet": "Portefeuille",
+    "module_profile": "Profil",
+    "module_security": "Sécurité",
+    "module_prompt": "Invite",
+    "module_system": "Invite système",
+    "module_banner": "Bandeau de la console",
+    "module_email": "E-mail",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "Site",
+    "auth": "Authentification",
+    "billing": "Facturation",
+    "payment": "Paiements",
+    "security": "Limites de débit et sécurité",
+    "notify": "Notifications",
+    "policy": "Politiques de requête"
+  },
+  "tab_description": {
+    "site": "Image de marque, navigation et modules du site",
+    "auth": "Inscription, connexion, vérification d'e-mail et vérification humaine",
+    "billing": "Crédits, dotation d'inscription et pré-consommation des modèles gratuits",
+    "payment": "Moyens de paiement en ligne et montants de recharge prédéfinis",
+    "security": "Limites de débit entrantes et protection SSRF sortante",
+    "notify": "Envoi d'e-mails SMTP",
+    "policy": "Détection des défaillances et retrait des canaux de la rotation"
+  },
+  "section": {
+    "site": "Informations de base",
+    "nav": "Navigation et modules",
+    "auth": "Inscription et connexion",
+    "auth_turnstile": "Vérification humaine (Turnstile)",
+    "billing": "Crédits et pré-consommation",
+    "pay": "Vue d'ensemble des paiements",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "Alipay",
+    "rl": "Limites de débit des requêtes",
+    "sec": "SSRF et mots sensibles",
+    "notify_smtp": "SMTP",
+    "rl_health": "Santé des canaux"
+  },
+  "section_description": {
+    "site": "Affiché sur chaque page et utilisé comme base pour les liens de rappel",
+    "nav": "Contrôlez quelles entrées de navigation publiques et quels modules de console sont visibles",
+    "auth": "Au moins une méthode de connexion doit rester activée",
+    "auth_turnstile": "Protégez l'inscription et la connexion avec Cloudflare Turnstile",
+    "billing": "Les crédits sont l'unité de compte ; la tarification se trouve dans Canaux et tarification",
+    "pay": "L'interrupteur principal et les montants de recharge prédéfinis",
+    "pay_stripe": "Paiements par carte via Stripe",
+    "pay_alipay": "Paiements Alipay en face à face",
+    "rl": "Des compartiments indépendants protègent le quota amont ; 0 signifie illimité",
+    "sec": "Les requêtes sortantes sont vérifiées avant de quitter la passerelle",
+    "notify_smtp": "Requis pour la vérification d'e-mail et les notifications par e-mail",
+    "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance"
+  },
+  "field": {
+    "site": {
+      "title": "Titre du site",
+      "logo_url": "URL du logo",
+      "server_address": "Adresse du service",
+      "timezone": "Fuseau horaire",
+      "docs_url": "URL de la documentation",
+      "status_page_url": "URL de la page d'état",
+      "filing_no": "Numéro d'enregistrement",
+      "footer_html": "HTML du pied de page",
+      "about_html": "HTML de la page À propos",
+      "home_custom_enabled": "Utiliser un HTML d'accueil personnalisé",
+      "home_custom_html": "HTML d'accueil personnalisé",
+      "home_blocks": "Blocs d'accueil par défaut",
+      "seo": {
+        "description": "Description SEO",
+        "og_image_url": "URL de l'image Open Graph"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "Accueil",
+        "require_auth": "L'accueil nécessite une connexion"
+      },
+      "console": {
+        "enabled": "Console",
+        "require_auth": "La console nécessite une connexion"
+      },
+      "pricing": {
+        "enabled": "Tarifs",
+        "require_auth": "Les tarifs nécessitent une connexion"
+      },
+      "rankings": {
+        "enabled": "Classements",
+        "require_auth": "Les classements nécessitent une connexion"
+      },
+      "docs": {
+        "enabled": "Documentation"
+      },
+      "about": {
+        "enabled": "À propos"
+      },
+      "modules": {
+        "console": "Modules de la barre latérale de la console",
+        "chat": {
+          "playground": "Bac à sable",
+          "presets": "Préréglages de conversation"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "Autoriser l'inscription",
+      "password_login_enabled": "Autoriser la connexion par mot de passe",
+      "mfa": {
+        "admin_required": "Exiger la MFA pour les administrateurs",
+        "admin_hardware_required": "Exiger une clé d'accès pour les administrateurs"
+      },
+      "email_verification_required": "Exiger la vérification de l'e-mail",
+      "email_domain_restrict_enabled": "Restreindre les domaines d'e-mail d'inscription",
+      "email_domain_allowlist": "Domaines d'e-mail autorisés",
+      "turnstile": {
+        "enabled": "Activer Turnstile",
+        "site_key": "Clé du site",
+        "secret_key": "Clé secrète"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Crédits par unité de devise",
+      "display_unit": "Unité d'affichage du solde",
+      "currency_symbol": "Symbole monétaire",
+      "signup_grant_credits": "Crédits offerts à l'inscription",
+      "signup_grant_requires_verified_email": "Seuls les e-mails vérifiés peuvent réclamer la dotation",
+      "balance_alert_threshold_credits": "Seuil d'alerte de solde faible (crédits)",
+      "balance_alert_channels": "Canaux d'alerte de solde faible",
+      "free_model_preconsume_enabled": "Pré-consommation pour les modèles gratuits",
+      "free_model_preconsume_multiplier": "Multiplicateur de pré-consommation",
+      "free_model_preconsume_trust_credits": "Seuil d'utilisateur de confiance (crédits)"
+    },
+    "pay": {
+      "online_enabled": "Paiements en ligne",
+      "amount_presets_cny": "Montants de recharge prédéfinis (CNY)",
+      "stripe": {
+        "enabled": "Activer Stripe",
+        "secret_key": "Clé secrète",
+        "webhook_secret": "Secret de signature du webhook",
+        "min_topup_cny": "Recharge minimale (CNY)"
+      },
+      "alipay": {
+        "enabled": "Activer Alipay",
+        "app_id": "ID de l'application",
+        "private_key": "Clé privée de l'application",
+        "public_key": "Clé publique Alipay",
+        "gateway_url": "URL de la passerelle",
+        "sandbox": "Mode bac à sable"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "Requêtes par minute par utilisateur et par modèle",
+      "token_rpm": "Requêtes par minute par jeton",
+      "user_global_rpm": "Requêtes par minute par utilisateur (global)",
+      "group_overrides": "Dérogations de débit par groupe"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "Activer la protection SSRF",
+        "allow_private_ip": "Autoriser les adresses privées",
+        "allowed_ports": "Ports autorisés",
+        "domain_mode": "Mode de domaine",
+        "domain_list": "Liste de domaines"
+      },
+      "sensitive": {
+        "enabled": "Activer le filtrage des mots sensibles",
+        "scope": "Portée de détection",
+        "words": "Liste de mots",
+        "action": "En cas de correspondance"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "Serveur SMTP",
+        "port": "Port",
+        "encryption": "Chiffrement",
+        "username": "Compte expéditeur",
+        "from_email": "Adresse d'expéditeur",
+        "from_name": "Nom de l'expéditeur",
+        "password": "Mot de passe",
+        "force_auth_login": "Forcer AUTH LOGIN",
+        "insecure_skip_verify": "Ignorer la vérification du certificat TLS"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "Désactivation automatique",
+      "response_time_threshold_seconds": "Seuil de temps de réponse (s)",
+      "disable_keywords": "Mots-clés de désactivation (un par ligne)",
+      "auto_enable_enabled": "Rétablissement automatique",
+      "test_interval_minutes": "Intervalle de vérification (minutes)",
+      "test_concurrency": "Concurrence des vérifications"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1 à 64 caractères.",
+      "server_address": "Utilisé comme URL de base pour les extraits de jeton et les liens de rappel.",
+      "footer_html": "Balises autorisées : a, p, br, strong, em.",
+      "about_html": "Balises autorisées : a, p, br, strong, em.",
+      "home_custom_html": "Le HTML personnalisé prend entièrement le contrôle du rendu de l'accueil. 65 536 caractères maximum."
+    },
+    "nav": {
+      "console": {
+        "require_auth": "Toujours activé. La console nécessite une connexion."
+      },
+      "modules": {
+        "console": "Les clés suivent les routes de la console ; tokens est le module des jetons d'API."
+      }
+    },
+    "auth": {
+      "signup_enabled": "Les nouveaux utilisateurs ne peuvent pas s'inscrire tant que ceci est désactivé.",
+      "password_login_enabled": "Au moins une méthode de connexion doit être activée.",
+      "email_verification_required": "Nécessite la configuration SMTP, sinon l'e-mail de vérification ne peut pas être envoyé.",
+      "email_domain_allowlist": "Appuyez sur Entrée ou séparez les entrées par des virgules. Les jokers comme *.edu.cn sont pris en charge.",
+      "turnstile": {
+        "secret_key": "Laissez vide pour conserver le secret actuel."
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Modifier ceci affecte les recharges et l'affichage des soldes.",
+      "signup_grant_credits": "0 désactive la dotation.",
+      "display_unit": "La consommation est toujours comptabilisée en crédits.",
+      "free_model_preconsume_multiplier": "Doit être supérieur à 0 (les valeurs ≤ 0 sont rejetées ; valeur par défaut 1).",
+      "free_model_preconsume_trust_credits": "Les utilisateurs au-dessus de ce cumul de dépenses évitent la pré-consommation ; 0 pré-consomme pour tout le monde.",
+      "balance_alert_channels": "Objet JSON : {banner, email, webhook}."
+    },
+    "pay": {
+      "online_enabled": "La désactivation masque tous les moyens de paiement en ligne. Les codes d'échange ne sont pas concernés.",
+      "amount_presets_cny": "Entiers séparés par des virgules, par exemple 10, 30, 50.",
+      "stripe": {
+        "secret_key": "Commence par sk_. Laissez vide pour conserver la clé actuelle.",
+        "webhook_secret": "Commence par whsec_. Laissez vide pour conserver le secret actuel."
+      },
+      "alipay": {
+        "private_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle.",
+        "public_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle."
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 signifie illimité.",
+      "token_rpm": "0 signifie illimité.",
+      "user_global_rpm": "0 signifie illimité.",
+      "group_overrides": "Objet JSON associant les noms de groupe à des RPM, par exemple {\"vip\": 1200}."
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "S'applique à toutes les requêtes sortantes : découverte OAuth, webhooks, rappels de paiement, vérifications d'URL et transfert vers les canaux amont.",
+        "allow_private_ip": "S'applique uniquement aux requêtes sortantes.",
+        "allowed_ports": "Entiers séparés par des virgules entre 1 et 65535.",
+        "domain_list": "Un domaine par ligne ou séparés par des virgules. En mode liste d'autorisation, une liste vide bloque toutes les requêtes sortantes."
+      },
+      "sensitive": {
+        "scope": "Choisissez les champs d'invite à inspecter.",
+        "words": "Un mot par ligne. Le joker * est pris en charge.",
+        "action": "Bloquer rejette la requête ; journaliser la laisse passer et enregistre la correspondance."
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "Revient au compte expéditeur si vide.",
+        "from_name": "Revient au titre du site si vide.",
+        "insecure_skip_verify": "Pour le débogage uniquement. Ne jamais utiliser en production."
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "Un canal est désactivé dès la première correspondance ; il n'y a pas de seuil de nombre d'échecs.",
+      "response_time_threshold_seconds": "Il s'agit d'un seuil de temps de réponse, pas d'un nombre d'échecs.",
+      "disable_keywords": "Un corps de réponse contenant l'un de ces mots-clés désactive le canal.",
+      "auto_enable_enabled": "Seule la vérification périodique peut rétablir les canaux désactivés automatiquement ; les canaux désactivés manuellement ne sont jamais rétablis.",
+      "test_interval_minutes": "1 à 1440 minutes.",
+      "test_concurrency": "1 à 50 vérifications simultanées."
+    }
+  },
+  "option": {
+    "credits": "Crédits",
+    "cny": "Devise convertie",
+    "domain_all": "Tout autoriser",
+    "domain_allowlist": "Liste d'autorisation uniquement",
+    "domain_denylist": "Liste de blocage",
+    "sensitive_block": "Bloquer",
+    "sensitive_log": "Journaliser et autoriser",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "Aucun",
+    "alipay_gateway_production": "Passerelle de production",
+    "alipay_gateway_sandbox": "Passerelle bac à sable"
+  },
+  "status": {
+    "title": "État du système",
+    "subtitle": "Version, dépendances et battements de cœur des instances",
+    "refresh": "Actualiser",
+    "last_updated": "Dernière mise à jour {time}",
+    "version_title": "Version",
+    "version": "Version",
+    "uptime": "Durée de fonctionnement",
+    "uptime_value": "{days} j {hours} h {minutes} min",
+    "uptime_seconds": "{seconds} s",
+    "dependencies_title": "Dépendances",
+    "dependency_db": "Base de données",
+    "dependency_redis": "Redis",
+    "dependency_worker": "Worker",
+    "healthy": "Sain",
+    "degraded": "Dégradé",
+    "unknown": "Inconnu",
+    "instances_title": "Instances",
+    "instance_name": "Instance",
+    "instance_role": "Rôle",
+    "instance_status": "Statut",
+    "instance_version": "Version",
+    "instance_last_seen": "Dernier battement",
+    "instances_empty": "Aucun battement d'instance. Vérifiez votre déploiement.",
+    "load_error": "Impossible de charger l'état du système.",
+    "retry": "Réessayer",
+    "loading": "Chargement de l'état du système…"
+  }
+}

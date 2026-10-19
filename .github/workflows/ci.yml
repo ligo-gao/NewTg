@@ -330,6 +330,9 @@ jobs:
         # 阈值来源见 scripts/check_bundle_size.sh 头部注释：M0 实测约 104 KiB，
         # 预留余量后冻结 150 KiB；超限说明新增依赖未分割，必须在合并前处理。
         run: bash scripts/check_bundle_size.sh
+      - name: 7 语种词典奇偶校验（web-00 §7.6）
+        # 缺键只会在运行时静默回退英文，构建不会失败，因此必须在 CI 机械断言。
+        run: bash scripts/check_locale_parity.sh
 
   # 流水线 I（platform-02 §7.10.1，断言真源 security-08 §2.1 冻结头矩阵 + §5.2 TC-H-06/07）。
   # 为什么用 compose 起真实栈：安全头由 gateway 中间件下发、经 edge 反代后才算最终

@@ -1,13 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { Breadcrumb } from '@/features/public/breadcrumb'
 import { ModelPerfPage } from '@/features/public/model-perf-page'
 import { PublicLayout } from '@/features/public/public-layout'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 export const Route = createFileRoute('/pricing/$modelId')({
-  loader: () => loadDictionary('en', 'public'),
+  loader: () => loadRouteDictionary('public'),
   component: ModelPerfRoute,
 })
 

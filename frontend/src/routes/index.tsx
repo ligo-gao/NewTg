@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { PublicLayout } from '@/features/public/public-layout'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 export const Route = createFileRoute('/')({
-  loader: () => loadDictionary('en', 'public'),
+  loader: () => loadRouteDictionary('public'),
   component: HomePage,
 })
 

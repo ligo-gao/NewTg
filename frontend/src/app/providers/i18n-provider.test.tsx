@@ -1,13 +1,31 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider, useI18n } from './i18n'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  globalThis.localStorage?.clear()
+})
 
 function Probe() {
-  const { t } = useI18n()
-  return <p>{t('common.app.title')}</p>
+  const { t, locale, setLocale } = useI18n()
+  return (
+    <div>
+      <p>{t('common.app.title')}</p>
+      <p data-testid="tagline">{t('public.home.tagline')}</p>
+      <p data-testid="locale">{locale}</p>
+      <button
+        type="button"
+        onClick={() => {
+          setLocale?.('ja')
+        }}
+      >
+        switch
+      </button>
+    </div>
+  )
 }
 
 describe('I18nProvider', () => {
@@ -18,9 +36,9 @@ describe('I18nProvider', () => {
       </I18nProvider>,
     )
 
-    // The loader is async, so the first paint falls back to the key itself;
-    // the provider's revision bump must then replace it with real copy.
-    expect(screen.getByText('common.app.title')).toBeTruthy()
+    // 加载器是异步的，首次绘制回退为键名；provider 的 revision bump 必须在
+    // chunk 到达后替换成真实文案。
+    expect(screen.getAllByText('common.app.title').length).toBeGreaterThan(0)
     await waitFor(() => {
       expect(screen.getByText('NewTG')).toBeTruthy()
     })
@@ -34,5 +52,33 @@ describe('I18nProvider', () => {
     )
 
     expect(document.documentElement.lang).toBe('en')
+  })
+
+  it('renders the selected language and switches it live (TC-C-02)', async () => {
+    const user = userEvent.setup()
+    render(
+      <I18nProvider locale="fr" modules={['common', 'public']}>
+        <Probe />
+      </I18nProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tagline').textContent).toBe(
+        'Une seule passerelle pour tous les modèles',
+      )
+    })
+    expect(document.documentElement.lang).toBe('fr')
+
+    await user.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('locale').textContent).toBe('ja')
+      expect(screen.getByTestId('tagline').textContent).toBe(
+        'すべてのモデルをひとつのゲートウェイで',
+      )
+    })
+    expect(document.documentElement.lang).toBe('ja')
+    // 切换写入本地记忆（web-00 §7.3），刷新后沿用。
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
   })
 })

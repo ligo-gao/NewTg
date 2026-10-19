@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { TwoFactorChallengePage } from '@/features/auth/TwoFactorChallengePage'
 
 function navigateTo(destination: string): void {
@@ -21,7 +21,7 @@ function validateChallengeSearch(search: Record<string, unknown>): ChallengeSear
 
 export const Route = createFileRoute('/two-factor-challenge')({
   validateSearch: validateChallengeSearch,
-  loader: () => loadDictionary('en', 'auth'),
+  loader: () => loadRouteDictionary('auth'),
   component: ChallengeRoute,
 })
 

@@ -1,0 +1,368 @@
+{
+  "shell": {
+    "title": "設定",
+    "subtitle": "設定此部署。儲存的分區會立即套用至所有執行個體。",
+    "tabs_label": "設定分區",
+    "read_only": "您可以檢視這些設定，但無法修改：您的帳號沒有 settings:manage 權限。",
+    "unsaved_title": "有未儲存的變更",
+    "unsaved_body": "離開此分頁並捨棄未儲存的變更？",
+    "unsaved_discard": "捨棄並離開",
+    "unsaved_keep": "繼續編輯",
+    "leave_prompt": "您有未儲存的設定變更。",
+    "conflict_title": "設定已在別處被修改",
+    "conflict_body": "設定已被他人修改。請重新整理以載入目前值。",
+    "conflict_refresh": "重新整理",
+    "save": "儲存變更",
+    "saving": "正在儲存…",
+    "discard": "捨棄變更",
+    "saved": "{section} 已儲存，所有執行個體已立即更新。",
+    "load_error": "無法載入此分區。",
+    "retry": "重試",
+    "forbidden": "您無權存取這些設定。",
+    "dirty": "未儲存的變更",
+    "danger_title": "確認此變更",
+    "danger_body": "部分變更的設定會影響線上流量，仍要儲存嗎？",
+    "danger_confirm": "仍然儲存",
+    "danger_cancel": "取消",
+    "secret_configured": "已設定",
+    "secret_not_configured": "未設定",
+    "secret_clear": "清除",
+    "secret_placeholder": "••••••••",
+    "secret_show": "顯示值",
+    "secret_hide": "隱藏值",
+    "secret_hint": "留空則維持目前值；僅在輸入新值時才會送出。",
+    "secret_clear_confirm": "清除此值會立即停用相關功能，確定清除？",
+    "field_required": "此欄位為必填。",
+    "field_url": "請輸入絕對的 http(s) URL。",
+    "field_too_long": "最多 {max} 個字元。",
+    "field_number_range": "請輸入 {min} 到 {max} 之間的值。",
+    "field_number_min": "請輸入大於 {min} 的值。",
+    "field_invalid_number": "請輸入有效的數字。",
+    "field_invalid_list": "請使用逗號分隔的取值。",
+    "field_invalid_json": "請輸入有效的 JSON。",
+    "field_invalid": "取值無效。",
+    "field_locked": "已由伺服器鎖定。",
+    "cross_at_least_one_sign_in": "請至少保留一種登入方式。",
+    "cross_turnstile_secret": "啟用 Turnstile 時必須填寫私密金鑰。",
+    "rate_limited": "請求過於頻繁，請稍後再試。",
+    "save_forbidden": "您無權儲存設定。",
+    "module_dashboard": "儀表板",
+    "module_tokens": "API 權杖",
+    "module_usage_logs": "用量日誌",
+    "module_wallet": "錢包",
+    "module_profile": "個人資料",
+    "module_security": "安全性",
+    "module_prompt": "提示詞",
+    "module_system": "系統提示詞",
+    "module_banner": "控制台橫幅",
+    "module_email": "郵件",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "網站",
+    "auth": "驗證",
+    "billing": "計費",
+    "payment": "付款",
+    "security": "限流與安全",
+    "notify": "通知",
+    "policy": "請求策略"
+  },
+  "tab_description": {
+    "site": "品牌、導覽與網站層級模組開關",
+    "auth": "註冊、登入、電子郵件驗證與人機驗證",
+    "billing": "積分、註冊贈送與免費模型預扣",
+    "payment": "線上付款方式與儲值預設",
+    "security": "入站限流與出站 SSRF 防護",
+    "notify": "SMTP 郵件傳送",
+    "policy": "如何偵測故障並將通道移出輪替"
+  },
+  "section": {
+    "site": "基本資訊",
+    "nav": "導覽與模組",
+    "auth": "註冊與登入",
+    "auth_turnstile": "人機驗證（Turnstile）",
+    "billing": "積分與預扣",
+    "pay": "付款概覽",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "支付寶",
+    "rl": "請求限流",
+    "sec": "SSRF 與敏感詞",
+    "notify_smtp": "SMTP",
+    "rl_health": "通道健康"
+  },
+  "section_description": {
+    "site": "顯示在每個頁面上，並作為回呼連結的基礎位址",
+    "nav": "控制哪些公開導覽入口與控制台模組可見",
+    "auth": "至少必須保留一種登入方式",
+    "auth_turnstile": "使用 Cloudflare Turnstile 保護註冊與登入",
+    "billing": "積分是記帳單位；定價本身位於「通道與定價」",
+    "pay": "總開關與儲值金額預設",
+    "pay_stripe": "透過 Stripe 進行信用卡付款",
+    "pay_alipay": "支付寶當面付",
+    "rl": "獨立權杖桶保護上游額度；0 表示不限",
+    "sec": "出站請求在離開閘道前會接受檢查",
+    "notify_smtp": "電子郵件驗證與郵件通知所必需",
+    "rl_health": "首次命中即可將通道移出輪替"
+  },
+  "field": {
+    "site": {
+      "title": "網站名稱",
+      "logo_url": "Logo URL",
+      "server_address": "服務位址",
+      "timezone": "時區",
+      "docs_url": "文件 URL",
+      "status_page_url": "狀態頁 URL",
+      "filing_no": "備案號",
+      "footer_html": "頁尾 HTML",
+      "about_html": "關於頁 HTML",
+      "home_custom_enabled": "使用自訂首頁 HTML",
+      "home_custom_html": "自訂首頁 HTML",
+      "home_blocks": "預設首頁區塊",
+      "seo": {
+        "description": "SEO 描述",
+        "og_image_url": "Open Graph 圖片 URL"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "首頁",
+        "require_auth": "首頁需要登入"
+      },
+      "console": {
+        "enabled": "控制台",
+        "require_auth": "控制台需要登入"
+      },
+      "pricing": {
+        "enabled": "定價",
+        "require_auth": "定價頁需要登入"
+      },
+      "rankings": {
+        "enabled": "排行榜",
+        "require_auth": "排行榜需要登入"
+      },
+      "docs": {
+        "enabled": "文件"
+      },
+      "about": {
+        "enabled": "關於"
+      },
+      "modules": {
+        "console": "控制台側欄模組",
+        "chat": {
+          "playground": "演練場",
+          "presets": "對話預設"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "允許註冊",
+      "password_login_enabled": "允許密碼登入",
+      "mfa": {
+        "admin_required": "管理員必須啟用 MFA",
+        "admin_hardware_required": "管理員必須使用通行金鑰"
+      },
+      "email_verification_required": "要求電子郵件驗證",
+      "email_domain_restrict_enabled": "限制註冊電子郵件網域",
+      "email_domain_allowlist": "允許的電子郵件網域",
+      "turnstile": {
+        "enabled": "啟用 Turnstile",
+        "site_key": "網站金鑰",
+        "secret_key": "私密金鑰"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "每單位貨幣對應的積分",
+      "display_unit": "餘額顯示單位",
+      "currency_symbol": "貨幣符號",
+      "signup_grant_credits": "註冊贈送積分",
+      "signup_grant_requires_verified_email": "僅已驗證電子郵件可領取贈送",
+      "balance_alert_threshold_credits": "低餘額告警閾值（積分）",
+      "balance_alert_channels": "低餘額告警管道",
+      "free_model_preconsume_enabled": "免費模型預扣",
+      "free_model_preconsume_multiplier": "預扣倍率",
+      "free_model_preconsume_trust_credits": "可信使用者閾值（積分）"
+    },
+    "pay": {
+      "online_enabled": "線上付款",
+      "amount_presets_cny": "儲值預設（人民幣）",
+      "stripe": {
+        "enabled": "啟用 Stripe",
+        "secret_key": "私密金鑰",
+        "webhook_secret": "Webhook 簽章金鑰",
+        "min_topup_cny": "最低儲值金額（人民幣）"
+      },
+      "alipay": {
+        "enabled": "啟用支付寶",
+        "app_id": "應用程式 ID",
+        "private_key": "應用程式私鑰",
+        "public_key": "支付寶公鑰",
+        "gateway_url": "閘道 URL",
+        "sandbox": "沙箱模式"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "每位使用者每個模型每分鐘請求數",
+      "token_rpm": "每個權杖每分鐘請求數",
+      "user_global_rpm": "每位使用者每分鐘請求數（全域）",
+      "group_overrides": "群組限流覆寫"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "啟用 SSRF 防護",
+        "allow_private_ip": "允許私人位址",
+        "allowed_ports": "允許的連接埠",
+        "domain_mode": "網域模式",
+        "domain_list": "網域清單"
+      },
+      "sensitive": {
+        "enabled": "啟用敏感詞過濾",
+        "scope": "偵測範圍",
+        "words": "詞表",
+        "action": "命中時"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "SMTP 伺服器",
+        "port": "連接埠",
+        "encryption": "加密方式",
+        "username": "寄件帳號",
+        "from_email": "寄件地址",
+        "from_name": "寄件人名稱",
+        "password": "密碼",
+        "force_auth_login": "強制使用 AUTH LOGIN",
+        "insecure_skip_verify": "略過 TLS 憑證驗證"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "自動停用",
+      "response_time_threshold_seconds": "回應時間閾值（秒）",
+      "disable_keywords": "停用關鍵詞（每行一個）",
+      "auto_enable_enabled": "自動復原",
+      "test_interval_minutes": "健康檢查間隔（分鐘）",
+      "test_concurrency": "健康檢查並行數"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1–64 個字元。",
+      "server_address": "用作權杖範例與回呼連結的 Base URL。",
+      "footer_html": "允許的標籤：a、p、br、strong、em。",
+      "about_html": "允許的標籤：a、p、br、strong、em。",
+      "home_custom_html": "自訂 HTML 將完全接管首頁渲染。最多 65,536 個字元。"
+    },
+    "nav": {
+      "console": {
+        "require_auth": "永遠開啟。控制台需要登入。"
+      },
+      "modules": {
+        "console": "鍵名對應控制台路由；tokens 即 API 權杖模組。"
+      }
+    },
+    "auth": {
+      "signup_enabled": "關閉時新使用者無法自行註冊。",
+      "password_login_enabled": "至少必須啟用一種登入方式。",
+      "email_verification_required": "需要設定 SMTP，否則無法寄送驗證郵件。",
+      "email_domain_allowlist": "按 Enter 新增，或以逗號分隔。支援 *.edu.cn 等萬用字元。",
+      "turnstile": {
+        "secret_key": "留空則維持目前金鑰。"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "修改後會影響儲值與餘額顯示。",
+      "signup_grant_credits": "0 表示關閉贈送。",
+      "display_unit": "消費始終以積分記帳。",
+      "free_model_preconsume_multiplier": "必須大於 0（小於等於 0 的值會被拒絕；預設 1）。",
+      "free_model_preconsume_trust_credits": "累計消費超過此值的使用者跳過預扣；0 表示對所有使用者預扣。",
+      "balance_alert_channels": "JSON 物件：{banner, email, webhook}。"
+    },
+    "pay": {
+      "online_enabled": "關閉後會隱藏所有線上付款方式，不影響兌換碼。",
+      "amount_presets_cny": "逗號分隔的整數，例如 10, 30, 50。",
+      "stripe": {
+        "secret_key": "以 sk_ 開頭。留空則維持目前金鑰。",
+        "webhook_secret": "以 whsec_ 開頭。留空則維持目前金鑰。"
+      },
+      "alipay": {
+        "private_key": "PEM 編碼。留空則維持目前金鑰。",
+        "public_key": "PEM 編碼。留空則維持目前金鑰。"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 表示不限。",
+      "token_rpm": "0 表示不限。",
+      "user_global_rpm": "0 表示不限。",
+      "group_overrides": "將群組名稱對應到 RPM 的 JSON 物件，例如 {\"vip\": 1200}。"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "適用於所有出站請求：OAuth 探索、Webhook、付款回呼、URL 健康檢查與上游通道轉送。",
+        "allow_private_ip": "僅適用於出站請求。",
+        "allowed_ports": "1 到 65535 之間的逗號分隔整數。",
+        "domain_list": "每行一個網域或以逗號分隔。白名單模式下空白清單會阻擋所有出站請求。"
+      },
+      "sensitive": {
+        "scope": "選擇要檢查的提示詞欄位。",
+        "words": "每行一個詞，支援萬用字元 *。",
+        "action": "拒絕會攔截請求；記錄則放行並記錄命中。"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "留空時回退到寄件帳號。",
+        "from_name": "留空時回退到網站名稱。",
+        "insecure_skip_verify": "僅供偵錯，切勿在正式環境使用。"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "首次命中即停用通道，沒有失敗次數閾值。",
+      "response_time_threshold_seconds": "這是回應時間閾值，不是失敗次數。",
+      "disable_keywords": "回應主體包含任一關鍵詞即停用該通道。",
+      "auto_enable_enabled": "只有定時健康檢查能復原自動停用的通道；手動停用的通道不會復原。",
+      "test_interval_minutes": "1–1440 分鐘。",
+      "test_concurrency": "1–50 個並行檢查。"
+    }
+  },
+  "option": {
+    "credits": "積分",
+    "cny": "折算貨幣",
+    "domain_all": "全部允許",
+    "domain_allowlist": "僅白名單",
+    "domain_denylist": "黑名單",
+    "sensitive_block": "拒絕",
+    "sensitive_log": "記錄並放行",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "無",
+    "alipay_gateway_production": "正式閘道",
+    "alipay_gateway_sandbox": "沙箱閘道"
+  },
+  "status": {
+    "title": "系統狀態",
+    "subtitle": "版本、相依性與執行個體心跳",
+    "refresh": "重新整理",
+    "last_updated": "最後更新於 {time}",
+    "version_title": "版本",
+    "version": "版本",
+    "uptime": "運作時間",
+    "uptime_value": "{days} 天 {hours} 小時 {minutes} 分",
+    "uptime_seconds": "{seconds} 秒",
+    "dependencies_title": "相依性",
+    "dependency_db": "資料庫",
+    "dependency_redis": "Redis",
+    "dependency_worker": "工作程序",
+    "healthy": "健康",
+    "degraded": "降級",
+    "unknown": "未知",
+    "instances_title": "執行個體",
+    "instance_name": "執行個體",
+    "instance_role": "角色",
+    "instance_status": "狀態",
+    "instance_version": "版本",
+    "instance_last_seen": "最後心跳",
+    "instances_empty": "沒有執行個體心跳，請檢查部署。",
+    "load_error": "無法載入系統狀態。",
+    "retry": "重試",
+    "loading": "正在載入系統狀態…"
+  }
+}

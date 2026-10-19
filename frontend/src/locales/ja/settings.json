@@ -1,0 +1,368 @@
+{
+  "shell": {
+    "title": "設定",
+    "subtitle": "このデプロイを設定します。保存したセクションはすべてのインスタンスに即時反映されます。",
+    "tabs_label": "設定セクション",
+    "read_only": "これらの設定は閲覧できますが変更できません。アカウントに settings:manage 権限がありません。",
+    "unsaved_title": "保存されていない変更があります",
+    "unsaved_body": "このタブを離れて未保存の変更を破棄しますか？",
+    "unsaved_discard": "破棄して離れる",
+    "unsaved_keep": "編集を続ける",
+    "leave_prompt": "保存されていない設定変更があります。",
+    "conflict_title": "設定が別の場所で変更されました",
+    "conflict_body": "設定が他の人によって変更されました。更新して現在の値を読み込んでください。",
+    "conflict_refresh": "更新",
+    "save": "変更を保存",
+    "saving": "保存しています…",
+    "discard": "変更を破棄",
+    "saved": "{section} を保存しました。すべてのインスタンスが即時更新されました。",
+    "load_error": "このセクションを読み込めませんでした。",
+    "retry": "再試行",
+    "forbidden": "これらの設定へのアクセス権がありません。",
+    "dirty": "未保存の変更",
+    "danger_title": "この変更を確認",
+    "danger_body": "変更された設定の一部は稼働中のトラフィックに影響します。それでも保存しますか？",
+    "danger_confirm": "それでも保存",
+    "danger_cancel": "キャンセル",
+    "secret_configured": "設定済み",
+    "secret_not_configured": "未設定",
+    "secret_clear": "クリア",
+    "secret_placeholder": "••••••••",
+    "secret_show": "値を表示",
+    "secret_hide": "値を隠す",
+    "secret_hint": "空欄のままにすると現在の値を維持します。新しい値は入力した場合にのみ送信されます。",
+    "secret_clear_confirm": "この値をクリアすると関連機能が即時に無効になります。クリアしますか？",
+    "field_required": "この項目は必須です。",
+    "field_url": "絶対 http(s) URL を入力してください。",
+    "field_too_long": "最大 {max} 文字です。",
+    "field_number_range": "{min} から {max} の間の値を入力してください。",
+    "field_number_min": "{min} より大きい値を入力してください。",
+    "field_invalid_number": "有効な数値を入力してください。",
+    "field_invalid_list": "カンマ区切りの値を使用してください。",
+    "field_invalid_json": "有効な JSON を入力してください。",
+    "field_invalid": "値が無効です。",
+    "field_locked": "サーバーによってロックされています。",
+    "cross_at_least_one_sign_in": "少なくとも 1 つのサインイン方法を有効にしてください。",
+    "cross_turnstile_secret": "Turnstile を有効にする場合はシークレットキーが必要です。",
+    "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください。",
+    "save_forbidden": "設定を保存する権限がありません。",
+    "module_dashboard": "ダッシュボード",
+    "module_tokens": "API トークン",
+    "module_usage_logs": "利用ログ",
+    "module_wallet": "ウォレット",
+    "module_profile": "プロフィール",
+    "module_security": "セキュリティ",
+    "module_prompt": "プロンプト",
+    "module_system": "システムプロンプト",
+    "module_banner": "コンソールバナー",
+    "module_email": "メール",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "サイト",
+    "auth": "認証",
+    "billing": "課金",
+    "payment": "支払い",
+    "security": "レート制限とセキュリティ",
+    "notify": "通知",
+    "policy": "リクエストポリシー"
+  },
+  "tab_description": {
+    "site": "ブランド、ナビゲーション、サイト全体のモジュールスイッチ",
+    "auth": "登録、サインイン、メール確認、人間による認証",
+    "billing": "クレジット、登録特典、無料モデルの事前消費",
+    "payment": "オンライン支払い方法とチャージのプリセット",
+    "security": "受信レート制限と送信 SSRF 保護",
+    "notify": "SMTP メール配信",
+    "policy": "障害の検出方法とチャネルのローテーション除外"
+  },
+  "section": {
+    "site": "基本情報",
+    "nav": "ナビゲーションとモジュール",
+    "auth": "登録とサインイン",
+    "auth_turnstile": "人間による認証（Turnstile）",
+    "billing": "クレジットと事前消費",
+    "pay": "支払いの概要",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "Alipay",
+    "rl": "リクエストレート制限",
+    "sec": "SSRF と機密ワード",
+    "notify_smtp": "SMTP",
+    "rl_health": "チャネルの健全性"
+  },
+  "section_description": {
+    "site": "すべてのページに表示され、コールバックリンクの基準になります",
+    "nav": "公開ナビゲーション項目とコンソールモジュールの表示を制御します",
+    "auth": "少なくとも 1 つのサインイン方法を有効にしておく必要があります",
+    "auth_turnstile": "Cloudflare Turnstile で登録とサインインを保護します",
+    "billing": "クレジットが課金単位です。料金設定自体は「チャネルと料金」にあります",
+    "pay": "マスタースイッチとチャージ金額のプリセット",
+    "pay_stripe": "Stripe によるカード支払い",
+    "pay_alipay": "Alipay の対面支払い",
+    "rl": "独立したバケットが上流のクォータを保護します。0 は無制限です",
+    "sec": "送信リクエストはゲートウェイを出る前に検査されます",
+    "notify_smtp": "メール確認とメール通知に必要です",
+    "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります"
+  },
+  "field": {
+    "site": {
+      "title": "サイト名",
+      "logo_url": "ロゴ URL",
+      "server_address": "サービスアドレス",
+      "timezone": "タイムゾーン",
+      "docs_url": "ドキュメント URL",
+      "status_page_url": "ステータスページ URL",
+      "filing_no": "登録番号",
+      "footer_html": "フッター HTML",
+      "about_html": "概要ページ HTML",
+      "home_custom_enabled": "カスタムホーム HTML を使用",
+      "home_custom_html": "カスタムホーム HTML",
+      "home_blocks": "既定のホームブロック",
+      "seo": {
+        "description": "SEO 説明",
+        "og_image_url": "Open Graph 画像 URL"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "ホーム",
+        "require_auth": "ホームにはサインインが必要"
+      },
+      "console": {
+        "enabled": "コンソール",
+        "require_auth": "コンソールにはサインインが必要"
+      },
+      "pricing": {
+        "enabled": "料金",
+        "require_auth": "料金にはサインインが必要"
+      },
+      "rankings": {
+        "enabled": "ランキング",
+        "require_auth": "ランキングにはサインインが必要"
+      },
+      "docs": {
+        "enabled": "ドキュメント"
+      },
+      "about": {
+        "enabled": "概要"
+      },
+      "modules": {
+        "console": "コンソールサイドバーのモジュール",
+        "chat": {
+          "playground": "プレイグラウンド",
+          "presets": "チャットプリセット"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "新規登録を許可",
+      "password_login_enabled": "パスワードサインインを許可",
+      "mfa": {
+        "admin_required": "管理者に MFA を必須にする",
+        "admin_hardware_required": "管理者にパスキーを必須にする"
+      },
+      "email_verification_required": "メール確認を必須にする",
+      "email_domain_restrict_enabled": "登録メールのドメインを制限",
+      "email_domain_allowlist": "許可するメールドメイン",
+      "turnstile": {
+        "enabled": "Turnstile を有効化",
+        "site_key": "サイトキー",
+        "secret_key": "シークレットキー"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "通貨 1 単位あたりのクレジット",
+      "display_unit": "残高の表示単位",
+      "currency_symbol": "通貨記号",
+      "signup_grant_credits": "登録特典クレジット",
+      "signup_grant_requires_verified_email": "確認済みメールのみ特典を受け取れます",
+      "balance_alert_threshold_credits": "残高不足アラートのしきい値（クレジット）",
+      "balance_alert_channels": "残高不足アラートのチャネル",
+      "free_model_preconsume_enabled": "無料モデルの事前消費",
+      "free_model_preconsume_multiplier": "事前消費の倍率",
+      "free_model_preconsume_trust_credits": "信頼ユーザーのしきい値（クレジット）"
+    },
+    "pay": {
+      "online_enabled": "オンライン支払い",
+      "amount_presets_cny": "チャージのプリセット（人民元）",
+      "stripe": {
+        "enabled": "Stripe を有効化",
+        "secret_key": "シークレットキー",
+        "webhook_secret": "Webhook 署名シークレット",
+        "min_topup_cny": "最低チャージ額（人民元）"
+      },
+      "alipay": {
+        "enabled": "Alipay を有効化",
+        "app_id": "アプリ ID",
+        "private_key": "アプリの秘密鍵",
+        "public_key": "Alipay 公開鍵",
+        "gateway_url": "ゲートウェイ URL",
+        "sandbox": "サンドボックスモード"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "ユーザーあたりモデルあたり毎分リクエスト数",
+      "token_rpm": "トークンあたり毎分リクエスト数",
+      "user_global_rpm": "ユーザーあたり毎分リクエスト数（グローバル）",
+      "group_overrides": "グループ別レート上書き"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "SSRF 保護を有効化",
+        "allow_private_ip": "プライベートアドレスを許可",
+        "allowed_ports": "許可ポート",
+        "domain_mode": "ドメインモード",
+        "domain_list": "ドメインリスト"
+      },
+      "sensitive": {
+        "enabled": "機密ワードフィルタを有効化",
+        "scope": "検出範囲",
+        "words": "ワードリスト",
+        "action": "一致時"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "SMTP サーバー",
+        "port": "ポート",
+        "encryption": "暗号化",
+        "username": "送信アカウント",
+        "from_email": "送信元アドレス",
+        "from_name": "送信者名",
+        "password": "パスワード",
+        "force_auth_login": "AUTH LOGIN を強制",
+        "insecure_skip_verify": "TLS 証明書の検証をスキップ"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "自動無効化",
+      "response_time_threshold_seconds": "レスポンス時間のしきい値（秒）",
+      "disable_keywords": "無効化キーワード（1 行に 1 つ）",
+      "auto_enable_enabled": "自動復旧",
+      "test_interval_minutes": "ヘルスチェック間隔（分）",
+      "test_concurrency": "ヘルスチェックの同時実行数"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1〜64 文字。",
+      "server_address": "トークンのサンプルとコールバックリンクのベース URL として使用されます。",
+      "footer_html": "使用可能なタグ：a、p、br、strong、em。",
+      "about_html": "使用可能なタグ：a、p、br、strong、em。",
+      "home_custom_html": "カスタム HTML がホームのレンダリングを完全に引き継ぎます。最大 65,536 文字。"
+    },
+    "nav": {
+      "console": {
+        "require_auth": "常に有効です。コンソールにはサインインが必要です。"
+      },
+      "modules": {
+        "console": "キーはコンソールのルートに対応します。tokens は API トークンモジュールです。"
+      }
+    },
+    "auth": {
+      "signup_enabled": "オフの間、新しいユーザーは自己登録できません。",
+      "password_login_enabled": "少なくとも 1 つのサインイン方法を有効にする必要があります。",
+      "email_verification_required": "SMTP の設定が必要です。設定しないと確認メールを送信できません。",
+      "email_domain_allowlist": "Enter で追加するか、カンマで区切ります。*.edu.cn などのワイルドカードに対応します。",
+      "turnstile": {
+        "secret_key": "空欄のままにすると現在のシークレットを維持します。"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "変更するとチャージと残高表示に影響します。",
+      "signup_grant_credits": "0 で特典を無効にします。",
+      "display_unit": "消費は常にクレジットで計上されます。",
+      "free_model_preconsume_multiplier": "0 より大きい必要があります（0 以下は拒否されます。既定値 1）。",
+      "free_model_preconsume_trust_credits": "累計支出がこの値を超えるユーザーは事前消費をスキップします。0 は全員に事前消費します。",
+      "balance_alert_channels": "JSON オブジェクト：{banner, email, webhook}。"
+    },
+    "pay": {
+      "online_enabled": "オフにするとすべてのオンライン支払い方法が非表示になります。交換コードには影響しません。",
+      "amount_presets_cny": "カンマ区切りの整数（例：10, 30, 50）。",
+      "stripe": {
+        "secret_key": "sk_ で始まります。空欄のままにすると現在のキーを維持します。",
+        "webhook_secret": "whsec_ で始まります。空欄のままにすると現在のシークレットを維持します。"
+      },
+      "alipay": {
+        "private_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。",
+        "public_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 は無制限を意味します。",
+      "token_rpm": "0 は無制限を意味します。",
+      "user_global_rpm": "0 は無制限を意味します。",
+      "group_overrides": "グループ名を RPM にマッピングする JSON オブジェクト（例：{\"vip\": 1200}）。"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "すべての送信リクエストに適用されます：OAuth ディスカバリ、Webhook、支払いコールバック、URL ヘルスチェック、上流チャネルへの転送。",
+        "allow_private_ip": "送信リクエストにのみ適用されます。",
+        "allowed_ports": "1〜65535 のカンマ区切りの整数。",
+        "domain_list": "1 行に 1 ドメイン、またはカンマ区切り。許可リストモードでは空のリストがすべての送信リクエストをブロックします。"
+      },
+      "sensitive": {
+        "scope": "検査するプロンプト項目を選択します。",
+        "words": "1 行に 1 語。ワイルドカード * に対応します。",
+        "action": "ブロックはリクエストを拒否します。記録は通過させて一致を記録します。"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "空の場合は送信アカウントにフォールバックします。",
+        "from_name": "空の場合はサイト名にフォールバックします。",
+        "insecure_skip_verify": "デバッグ専用です。本番環境では絶対に使用しないでください。"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "最初の一致でチャネルが無効になります。失敗回数のしきい値はありません。",
+      "response_time_threshold_seconds": "これはレスポンス時間のしきい値であり、失敗回数ではありません。",
+      "disable_keywords": "これらのキーワードのいずれかを含むレスポンス本文はチャネルを無効にします。",
+      "auto_enable_enabled": "自動無効化されたチャネルを復旧できるのは定期ヘルスチェックのみです。手動で無効化したチャネルは復旧されません。",
+      "test_interval_minutes": "1〜1440 分。",
+      "test_concurrency": "1〜50 の同時チェック。"
+    }
+  },
+  "option": {
+    "credits": "クレジット",
+    "cny": "換算通貨",
+    "domain_all": "すべて許可",
+    "domain_allowlist": "許可リストのみ",
+    "domain_denylist": "拒否リスト",
+    "sensitive_block": "ブロック",
+    "sensitive_log": "記録して許可",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "なし",
+    "alipay_gateway_production": "本番ゲートウェイ",
+    "alipay_gateway_sandbox": "サンドボックスゲートウェイ"
+  },
+  "status": {
+    "title": "システム状態",
+    "subtitle": "バージョン、依存関係、インスタンスのハートビート",
+    "refresh": "更新",
+    "last_updated": "最終更新 {time}",
+    "version_title": "バージョン",
+    "version": "バージョン",
+    "uptime": "稼働時間",
+    "uptime_value": "{days} 日 {hours} 時間 {minutes} 分",
+    "uptime_seconds": "{seconds} 秒",
+    "dependencies_title": "依存関係",
+    "dependency_db": "データベース",
+    "dependency_redis": "Redis",
+    "dependency_worker": "ワーカー",
+    "healthy": "正常",
+    "degraded": "低下",
+    "unknown": "不明",
+    "instances_title": "インスタンス",
+    "instance_name": "インスタンス",
+    "instance_role": "役割",
+    "instance_status": "状態",
+    "instance_version": "バージョン",
+    "instance_last_seen": "最終ハートビート",
+    "instances_empty": "インスタンスのハートビートがありません。デプロイを確認してください。",
+    "load_error": "システム状態を読み込めませんでした。",
+    "retry": "再試行",
+    "loading": "システム状態を読み込んでいます…"
+  }
+}

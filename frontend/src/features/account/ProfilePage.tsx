@@ -10,6 +10,8 @@ import { StatusBadge } from '@/shared/ui/status-badge'
 import { Tag } from '@/shared/ui/tag'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { LanguageCard } from './LanguageCard'
+
 const ME_KEY = ['me'] as const
 
 /** F-01-18 profile page. Only `display_name` is writable (BOPLA freeze). */
@@ -146,6 +148,9 @@ export function ProfilePage() {
           </Button>
         </form>
       </section>
+
+      {/* F-01-19：语言偏好即时保存（modules-01 §界面语言偏好）。 */}
+      <LanguageCard />
     </div>
   )
 }

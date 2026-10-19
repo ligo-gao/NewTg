@@ -1,0 +1,368 @@
+{
+  "shell": {
+    "title": "Cài đặt",
+    "subtitle": "Cấu hình triển khai này. Các mục đã lưu áp dụng ngay cho mọi phiên bản.",
+    "tabs_label": "Các mục cài đặt",
+    "read_only": "Bạn có thể xem nhưng không thể thay đổi các cài đặt này: tài khoản của bạn thiếu quyền settings:manage.",
+    "unsaved_title": "Bạn có thay đổi chưa lưu",
+    "unsaved_body": "Rời khỏi tab này và hủy các thay đổi chưa lưu?",
+    "unsaved_discard": "Hủy và rời đi",
+    "unsaved_keep": "Tiếp tục chỉnh sửa",
+    "leave_prompt": "Bạn có thay đổi cài đặt chưa lưu.",
+    "conflict_title": "Cài đặt đã bị thay đổi ở nơi khác",
+    "conflict_body": "Cài đặt đã bị người khác sửa đổi. Vui lòng làm mới để tải giá trị hiện tại.",
+    "conflict_refresh": "Làm mới",
+    "save": "Lưu thay đổi",
+    "saving": "Đang lưu…",
+    "discard": "Hủy thay đổi",
+    "saved": "{section} đã được lưu. Mọi phiên bản đã cập nhật ngay lập tức.",
+    "load_error": "Không thể tải mục này.",
+    "retry": "Thử lại",
+    "forbidden": "Bạn không có quyền truy cập các cài đặt này.",
+    "dirty": "Thay đổi chưa lưu",
+    "danger_title": "Xác nhận thay đổi này",
+    "danger_body": "Một số cài đặt đã thay đổi ảnh hưởng đến lưu lượng trực tiếp. Vẫn lưu?",
+    "danger_confirm": "Vẫn lưu",
+    "danger_cancel": "Hủy",
+    "secret_configured": "Đã cấu hình",
+    "secret_not_configured": "Chưa cấu hình",
+    "secret_clear": "Xóa",
+    "secret_placeholder": "••••••••",
+    "secret_show": "Hiện giá trị",
+    "secret_hide": "Ẩn giá trị",
+    "secret_hint": "Để trống để giữ giá trị hiện tại. Giá trị mới chỉ được gửi khi bạn nhập.",
+    "secret_clear_confirm": "Xóa giá trị này sẽ tắt ngay tính năng liên quan. Xóa?",
+    "field_required": "Trường này là bắt buộc.",
+    "field_url": "Nhập URL http(s) tuyệt đối.",
+    "field_too_long": "Tối đa {max} ký tự.",
+    "field_number_range": "Nhập giá trị từ {min} đến {max}.",
+    "field_number_min": "Nhập giá trị lớn hơn {min}.",
+    "field_invalid_number": "Nhập một số hợp lệ.",
+    "field_invalid_list": "Dùng các giá trị phân tách bằng dấu phẩy.",
+    "field_invalid_json": "Nhập JSON hợp lệ.",
+    "field_invalid": "Giá trị không hợp lệ.",
+    "field_locked": "Bị khóa bởi máy chủ.",
+    "cross_at_least_one_sign_in": "Giữ ít nhất một phương thức đăng nhập được bật.",
+    "cross_turnstile_secret": "Cần khóa bí mật khi bật Turnstile.",
+    "rate_limited": "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
+    "save_forbidden": "Bạn không có quyền lưu cài đặt.",
+    "module_dashboard": "Bảng điều khiển",
+    "module_tokens": "API token",
+    "module_usage_logs": "Nhật ký sử dụng",
+    "module_wallet": "Ví",
+    "module_profile": "Hồ sơ",
+    "module_security": "Bảo mật",
+    "module_prompt": "Lời nhắc",
+    "module_system": "Lời nhắc hệ thống",
+    "module_banner": "Biểu ngữ bảng điều khiển",
+    "module_email": "Email",
+    "module_webhook": "Webhook"
+  },
+  "tab": {
+    "site": "Trang",
+    "auth": "Xác thực",
+    "billing": "Tính phí",
+    "payment": "Thanh toán",
+    "security": "Giới hạn tốc độ và bảo mật",
+    "notify": "Thông báo",
+    "policy": "Chính sách yêu cầu"
+  },
+  "tab_description": {
+    "site": "Thương hiệu, điều hướng và công tắc mô-đun toàn trang",
+    "auth": "Đăng ký, đăng nhập, xác minh email và xác minh con người",
+    "billing": "Điểm, tặng khi đăng ký và trừ trước cho mô hình miễn phí",
+    "payment": "Phương thức thanh toán trực tuyến và mức nạp sẵn",
+    "security": "Giới hạn tốc độ đầu vào và bảo vệ SSRF đầu ra",
+    "notify": "Gửi thư SMTP",
+    "policy": "Cách phát hiện lỗi và loại kênh khỏi vòng xoay"
+  },
+  "section": {
+    "site": "Thông tin cơ bản",
+    "nav": "Điều hướng và mô-đun",
+    "auth": "Đăng ký và đăng nhập",
+    "auth_turnstile": "Xác minh con người (Turnstile)",
+    "billing": "Điểm và trừ trước",
+    "pay": "Tổng quan thanh toán",
+    "pay_stripe": "Stripe",
+    "pay_alipay": "Alipay",
+    "rl": "Giới hạn tốc độ yêu cầu",
+    "sec": "SSRF và từ nhạy cảm",
+    "notify_smtp": "SMTP",
+    "rl_health": "Sức khỏe kênh"
+  },
+  "section_description": {
+    "site": "Hiển thị trên mọi trang và dùng làm cơ sở cho liên kết gọi lại",
+    "nav": "Kiểm soát mục điều hướng công khai và mô-đun bảng điều khiển nào hiển thị",
+    "auth": "Phải giữ ít nhất một phương thức đăng nhập được bật",
+    "auth_turnstile": "Bảo vệ đăng ký và đăng nhập bằng Cloudflare Turnstile",
+    "billing": "Điểm là đơn vị tính toán; bảng giá nằm ở Kênh và bảng giá",
+    "pay": "Công tắc chính và mức nạp sẵn",
+    "pay_stripe": "Thanh toán bằng thẻ qua Stripe",
+    "pay_alipay": "Thanh toán trực tiếp qua Alipay",
+    "rl": "Các nhóm giới hạn độc lập bảo vệ hạn mức thượng nguồn; 0 nghĩa là không giới hạn",
+    "sec": "Yêu cầu đi ra được kiểm tra trước khi rời cổng",
+    "notify_smtp": "Cần thiết cho xác minh email và thông báo qua email",
+    "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên"
+  },
+  "field": {
+    "site": {
+      "title": "Tên trang",
+      "logo_url": "URL logo",
+      "server_address": "Địa chỉ dịch vụ",
+      "timezone": "Múi giờ",
+      "docs_url": "URL tài liệu",
+      "status_page_url": "URL trang trạng thái",
+      "filing_no": "Số đăng ký",
+      "footer_html": "HTML chân trang",
+      "about_html": "HTML trang giới thiệu",
+      "home_custom_enabled": "Dùng HTML trang chủ tùy chỉnh",
+      "home_custom_html": "HTML trang chủ tùy chỉnh",
+      "home_blocks": "Khối trang chủ mặc định",
+      "seo": {
+        "description": "Mô tả SEO",
+        "og_image_url": "URL hình Open Graph"
+      }
+    },
+    "nav": {
+      "home": {
+        "enabled": "Trang chủ",
+        "require_auth": "Trang chủ yêu cầu đăng nhập"
+      },
+      "console": {
+        "enabled": "Bảng điều khiển",
+        "require_auth": "Bảng điều khiển yêu cầu đăng nhập"
+      },
+      "pricing": {
+        "enabled": "Bảng giá",
+        "require_auth": "Bảng giá yêu cầu đăng nhập"
+      },
+      "rankings": {
+        "enabled": "Xếp hạng",
+        "require_auth": "Xếp hạng yêu cầu đăng nhập"
+      },
+      "docs": {
+        "enabled": "Tài liệu"
+      },
+      "about": {
+        "enabled": "Giới thiệu"
+      },
+      "modules": {
+        "console": "Mô-đun thanh bên bảng điều khiển",
+        "chat": {
+          "playground": "Sân thử nghiệm",
+          "presets": "Cài đặt sẵn hội thoại"
+        }
+      }
+    },
+    "auth": {
+      "signup_enabled": "Cho phép đăng ký",
+      "password_login_enabled": "Cho phép đăng nhập bằng mật khẩu",
+      "mfa": {
+        "admin_required": "Bắt buộc MFA với quản trị viên",
+        "admin_hardware_required": "Bắt buộc khóa truy cập với quản trị viên"
+      },
+      "email_verification_required": "Bắt buộc xác minh email",
+      "email_domain_restrict_enabled": "Giới hạn tên miền email đăng ký",
+      "email_domain_allowlist": "Tên miền email được phép",
+      "turnstile": {
+        "enabled": "Bật Turnstile",
+        "site_key": "Khóa trang",
+        "secret_key": "Khóa bí mật"
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Số điểm trên mỗi đơn vị tiền tệ",
+      "display_unit": "Đơn vị hiển thị số dư",
+      "currency_symbol": "Ký hiệu tiền tệ",
+      "signup_grant_credits": "Điểm tặng khi đăng ký",
+      "signup_grant_requires_verified_email": "Chỉ email đã xác minh mới nhận được tặng",
+      "balance_alert_threshold_credits": "Ngưỡng cảnh báo số dư thấp (điểm)",
+      "balance_alert_channels": "Kênh cảnh báo số dư thấp",
+      "free_model_preconsume_enabled": "Trừ trước cho mô hình miễn phí",
+      "free_model_preconsume_multiplier": "Hệ số trừ trước",
+      "free_model_preconsume_trust_credits": "Ngưỡng người dùng tin cậy (điểm)"
+    },
+    "pay": {
+      "online_enabled": "Thanh toán trực tuyến",
+      "amount_presets_cny": "Mức nạp sẵn (CNY)",
+      "stripe": {
+        "enabled": "Bật Stripe",
+        "secret_key": "Khóa bí mật",
+        "webhook_secret": "Bí mật ký webhook",
+        "min_topup_cny": "Nạp tối thiểu (CNY)"
+      },
+      "alipay": {
+        "enabled": "Bật Alipay",
+        "app_id": "ID ứng dụng",
+        "private_key": "Khóa riêng của ứng dụng",
+        "public_key": "Khóa công khai Alipay",
+        "gateway_url": "URL cổng",
+        "sandbox": "Chế độ hộp cát"
+      }
+    },
+    "rl": {
+      "user_model_rpm": "Số yêu cầu mỗi phút trên mỗi người dùng mỗi mô hình",
+      "token_rpm": "Số yêu cầu mỗi phút trên mỗi token",
+      "user_global_rpm": "Số yêu cầu mỗi phút trên mỗi người dùng (toàn cục)",
+      "group_overrides": "Ghi đè giới hạn theo nhóm"
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "Bật bảo vệ SSRF",
+        "allow_private_ip": "Cho phép địa chỉ riêng",
+        "allowed_ports": "Cổng được phép",
+        "domain_mode": "Chế độ tên miền",
+        "domain_list": "Danh sách tên miền"
+      },
+      "sensitive": {
+        "enabled": "Bật lọc từ nhạy cảm",
+        "scope": "Phạm vi phát hiện",
+        "words": "Danh sách từ",
+        "action": "Khi khớp"
+      }
+    },
+    "notify": {
+      "smtp": {
+        "host": "Máy chủ SMTP",
+        "port": "Cổng",
+        "encryption": "Mã hóa",
+        "username": "Tài khoản gửi",
+        "from_email": "Địa chỉ gửi",
+        "from_name": "Tên người gửi",
+        "password": "Mật khẩu",
+        "force_auth_login": "Buộc AUTH LOGIN",
+        "insecure_skip_verify": "Bỏ qua xác minh chứng chỉ TLS"
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "Tự động tắt",
+      "response_time_threshold_seconds": "Ngưỡng thời gian phản hồi (giây)",
+      "disable_keywords": "Từ khóa tắt kênh (mỗi dòng một từ)",
+      "auto_enable_enabled": "Tự động phục hồi",
+      "test_interval_minutes": "Khoảng kiểm tra sức khỏe (phút)",
+      "test_concurrency": "Số kiểm tra đồng thời"
+    }
+  },
+  "hint": {
+    "site": {
+      "title": "1–64 ký tự.",
+      "server_address": "Dùng làm Base URL cho đoạn mã token và liên kết gọi lại.",
+      "footer_html": "Thẻ được phép: a, p, br, strong, em.",
+      "about_html": "Thẻ được phép: a, p, br, strong, em.",
+      "home_custom_html": "HTML tùy chỉnh sẽ thay thế hoàn toàn việc hiển thị trang chủ. Tối đa 65.536 ký tự."
+    },
+    "nav": {
+      "console": {
+        "require_auth": "Luôn bật. Bảng điều khiển yêu cầu đăng nhập."
+      },
+      "modules": {
+        "console": "Khóa theo tuyến của bảng điều khiển; tokens là mô-đun API token."
+      }
+    },
+    "auth": {
+      "signup_enabled": "Khi tắt, người dùng mới không thể tự đăng ký.",
+      "password_login_enabled": "Phải bật ít nhất một phương thức đăng nhập.",
+      "email_verification_required": "Cần cấu hình SMTP, nếu không sẽ không gửi được thư xác minh.",
+      "email_domain_allowlist": "Nhấn Enter hoặc phân tách bằng dấu phẩy. Hỗ trợ ký tự đại diện như *.edu.cn.",
+      "turnstile": {
+        "secret_key": "Để trống để giữ bí mật hiện tại."
+      }
+    },
+    "billing": {
+      "quota_per_unit": "Thay đổi mục này ảnh hưởng đến nạp tiền và cách hiển thị số dư.",
+      "signup_grant_credits": "0 sẽ tắt tặng.",
+      "display_unit": "Mức tiêu thụ luôn được tính bằng điểm.",
+      "free_model_preconsume_multiplier": "Phải lớn hơn 0 (giá trị ≤ 0 bị từ chối; mặc định 1).",
+      "free_model_preconsume_trust_credits": "Người dùng có tổng chi tiêu trên mức này bỏ qua trừ trước; 0 trừ trước cho mọi người.",
+      "balance_alert_channels": "Đối tượng JSON: {banner, email, webhook}."
+    },
+    "pay": {
+      "online_enabled": "Tắt sẽ ẩn mọi phương thức thanh toán trực tuyến. Mã đổi thưởng không bị ảnh hưởng.",
+      "amount_presets_cny": "Số nguyên phân tách bằng dấu phẩy, ví dụ 10, 30, 50.",
+      "stripe": {
+        "secret_key": "Bắt đầu bằng sk_. Để trống để giữ khóa hiện tại.",
+        "webhook_secret": "Bắt đầu bằng whsec_. Để trống để giữ bí mật hiện tại."
+      },
+      "alipay": {
+        "private_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại.",
+        "public_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại."
+      }
+    },
+    "rl": {
+      "user_model_rpm": "0 nghĩa là không giới hạn.",
+      "token_rpm": "0 nghĩa là không giới hạn.",
+      "user_global_rpm": "0 nghĩa là không giới hạn.",
+      "group_overrides": "Đối tượng JSON ánh xạ tên nhóm sang RPM, ví dụ {\"vip\": 1200}."
+    },
+    "sec": {
+      "ssrf": {
+        "enabled": "Áp dụng cho mọi yêu cầu đi ra: khám phá OAuth, webhook, gọi lại thanh toán, kiểm tra URL và chuyển tiếp đến kênh thượng nguồn.",
+        "allow_private_ip": "Chỉ áp dụng cho yêu cầu đi ra.",
+        "allowed_ports": "Số nguyên từ 1 đến 65535 phân tách bằng dấu phẩy.",
+        "domain_list": "Mỗi dòng một tên miền hoặc phân tách bằng dấu phẩy. Ở chế độ danh sách cho phép, danh sách trống sẽ chặn mọi yêu cầu đi ra."
+      },
+      "sensitive": {
+        "scope": "Chọn trường lời nhắc nào được kiểm tra.",
+        "words": "Mỗi dòng một từ. Hỗ trợ ký tự đại diện *.",
+        "action": "Chặn sẽ từ chối yêu cầu; Ghi nhật ký sẽ cho qua và ghi lại lần khớp."
+      }
+    },
+    "notify": {
+      "smtp": {
+        "from_email": "Nếu trống sẽ dùng tài khoản gửi.",
+        "from_name": "Nếu trống sẽ dùng tên trang.",
+        "insecure_skip_verify": "Chỉ dùng để gỡ lỗi. Không bao giờ dùng trong sản xuất."
+      }
+    },
+    "rl_health": {
+      "auto_disable_enabled": "Kênh bị tắt ngay lần khớp đầu tiên; không có ngưỡng số lần thất bại.",
+      "response_time_threshold_seconds": "Đây là ngưỡng thời gian phản hồi, không phải số lần thất bại.",
+      "disable_keywords": "Nội dung phản hồi chứa bất kỳ từ khóa nào trong số này sẽ tắt kênh.",
+      "auto_enable_enabled": "Chỉ kiểm tra sức khỏe định kỳ mới khôi phục được kênh bị tắt tự động; kênh bị tắt thủ công sẽ không được khôi phục.",
+      "test_interval_minutes": "1–1440 phút.",
+      "test_concurrency": "1–50 kiểm tra đồng thời."
+    }
+  },
+  "option": {
+    "credits": "Điểm",
+    "cny": "Tiền tệ quy đổi",
+    "domain_all": "Cho phép tất cả",
+    "domain_allowlist": "Chỉ danh sách cho phép",
+    "domain_denylist": "Danh sách chặn",
+    "sensitive_block": "Chặn",
+    "sensitive_log": "Ghi nhật ký và cho qua",
+    "ssl": "SSL",
+    "starttls": "STARTTLS",
+    "none": "Không",
+    "alipay_gateway_production": "Cổng sản xuất",
+    "alipay_gateway_sandbox": "Cổng hộp cát"
+  },
+  "status": {
+    "title": "Trạng thái hệ thống",
+    "subtitle": "Phiên bản, phụ thuộc và nhịp tim của các phiên bản",
+    "refresh": "Làm mới",
+    "last_updated": "Cập nhật lần cuối {time}",
+    "version_title": "Phiên bản",
+    "version": "Phiên bản",
+    "uptime": "Thời gian hoạt động",
+    "uptime_value": "{days} ngày {hours} giờ {minutes} phút",
+    "uptime_seconds": "{seconds} giây",
+    "dependencies_title": "Phụ thuộc",
+    "dependency_db": "Cơ sở dữ liệu",
+    "dependency_redis": "Redis",
+    "dependency_worker": "Worker",
+    "healthy": "Khỏe mạnh",
+    "degraded": "Suy giảm",
+    "unknown": "Không rõ",
+    "instances_title": "Các phiên bản",
+    "instance_name": "Phiên bản",
+    "instance_role": "Vai trò",
+    "instance_status": "Trạng thái",
+    "instance_version": "Phiên bản",
+    "instance_last_seen": "Nhịp tim cuối",
+    "instances_empty": "Không có nhịp tim phiên bản. Hãy kiểm tra triển khai.",
+    "load_error": "Không thể tải trạng thái hệ thống.",
+    "retry": "Thử lại",
+    "loading": "Đang tải trạng thái hệ thống…"
+  }
+}

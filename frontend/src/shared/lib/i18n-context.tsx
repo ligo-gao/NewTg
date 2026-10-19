@@ -7,18 +7,26 @@ import { createContext, useContext, type ReactNode } from 'react'
  * modules — importing the provider module from a shared component would invert
  * the layering (the same reason `toast.tsx` avoids importing `api/`).
  *
- * `Locale` is the compile-time union. The runtime list of *advertised* locales
- * still comes from the dictionary loader map (later `GET /api/status`, §7.3);
- * M6 extends this union together with the locale files.
+ * `Locale` is the compile-time union of the canonical seven languages
+ * (web-00 §7.3, G7-R14). The runtime list of *advertised* locales still comes
+ * from `GET /api/status`; this union only fixes the set the bundle ships.
  */
 
-export type Locale = 'en'
+export type Locale = 'en' | 'zh-CN' | 'zh-TW' | 'fr' | 'ru' | 'ja' | 'vi'
 export type TranslateValues = Record<string, string | number>
 export type TranslateFn = (key: string, values?: TranslateValues) => string
 
 export interface I18nContextValue {
   locale: Locale
   t: TranslateFn
+  /**
+   * Locales the server advertises (`GET /api/status.languages`) intersected
+   * with the dictionaries bundled here. Optional so lightweight test doubles
+   * that only exercise `t` keep compiling; real consumers get the runtime list.
+   */
+  availableLocales?: readonly Locale[]
+  /** Switches the active locale immediately (web-00 §7.3). */
+  setLocale?: (locale: Locale) => void
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null)

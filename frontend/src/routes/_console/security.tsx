@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { SecurityPage } from '@/features/account/SecurityPage'
 
 function navigateTo(destination: string): void {
@@ -19,7 +19,7 @@ export const Route = createFileRoute('/_console/security')({
   validateSearch: validateSecuritySearch,
   // The page reuses auth copy for password fields and the 2FA dialog.
   loader: () =>
-    Promise.all([loadDictionary('en', 'account'), loadDictionary('en', 'auth')]),
+    Promise.all([loadRouteDictionary('account'), loadRouteDictionary('auth')]),
   component: SecurityRoute,
 })
 

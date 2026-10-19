@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { UserListPage } from '@/features/admin/users/UserListPage'
 
 export const Route = createFileRoute('/_console/admin/users/')({
-  loader: () => Promise.all([loadDictionary('en', 'admin'), loadDictionary('en', 'auth')]),
+  loader: () => Promise.all([loadRouteDictionary('admin'), loadRouteDictionary('auth')]),
   component: UserListPage,
 })

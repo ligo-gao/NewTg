@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { SignUpPage } from '@/features/auth/SignUpPage'
 
 function navigateTo(destination: string): void {
@@ -21,7 +21,7 @@ function validateSignUpSearch(search: Record<string, unknown>): SignUpSearch {
 
 export const Route = createFileRoute('/sign-up')({
   validateSearch: validateSignUpSearch,
-  loader: () => loadDictionary('en', 'auth'),
+  loader: () => loadRouteDictionary('auth'),
   component: SignUpRoute,
 })
 

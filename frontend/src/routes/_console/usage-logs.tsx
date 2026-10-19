@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { UsageLogsPage } from '@/features/logs/usage-logs-page'
 import {
   validateUsageLogSearch,
@@ -9,7 +9,7 @@ import {
 
 export const Route = createFileRoute('/_console/usage-logs')({
   validateSearch: validateUsageLogSearch,
-  loader: () => loadDictionary('en', 'logs'),
+  loader: () => loadRouteDictionary('logs'),
   component: UsageLogsRoute,
 })
 

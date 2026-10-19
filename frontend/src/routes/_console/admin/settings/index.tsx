@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { loadDictionary } from '@/app/providers/i18n'
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { SettingsShell } from '@/features/admin/settings/settings-shell'
 import { isSettingsTab, type SettingsTab } from '@/features/admin/settings/sections'
 
@@ -19,7 +19,7 @@ export const Route = createFileRoute('/_console/admin/settings/')({
       throw redirect({ to: '/admin/settings', search: { tab: 'site' }, replace: true })
     }
   },
-  loader: () => loadDictionary('en', 'settings'),
+  loader: () => loadRouteDictionary('settings'),
   component: SettingsRoute,
 })
 

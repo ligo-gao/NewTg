@@ -19,7 +19,12 @@ export interface AppProvidersProps {
 export function AppProviders({ children }: AppProvidersProps) {
   return (
     <QueryProvider>
-      <I18nProvider>
+      {/*
+        syncPreference：真实应用需要按 web-00 §7.3 的优先级同步服务端语言
+        偏好，并从 /api/status 读取语言集合。该同步器依赖 React Query，
+        因此只在 AppProviders 中启用；单独渲染 I18nProvider 的测试不会发请求。
+      */}
+      <I18nProvider syncPreference>
         {children}
         <ToastViewport />
       </I18nProvider>
