@@ -1655,6 +1655,165 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用量日志列表（offset 分页 + 筛选）
+         * @description user 仅见本人记录；admin 且持有 `logs:read` 可见全部并可用 `username`。
+         *     非管理员传 `username` 返回 403。时间范围最长 90 天。
+         */
+        get: operations["listUsageLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-logs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 用量日志详情（含 other 投影） */
+        get: operations["getUsageLog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-logs/{id}/prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prompt 原文（当前无落库载体）
+         * @description Prompt 无任何落库载体（platform-01 §21 U-12 / G7-R30）：无
+         *     `log.prompt.view` 返回 403；有权限且行可见仍返回 404
+         *     （`Cache-Control: no-store`）。前端据此隐藏/打码查看入口。
+         */
+        get: operations["getUsageLogPrompt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 用量概览聚合 */
+        get: operations["getUsageStatsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/by-model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型消费分布（top 8 + other）
+         * @description percent 以十进制基点分配，合计恰为 100；0 行返回空数组。
+         */
+        get: operations["getUsageStatsByModel"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 消费时间序列（UTC 桶）
+         * @description 只返回存在的桶；缺桶由前端零填充。bucket 为 UTC ISO 时间。
+         */
+        get: operations["getUsageStatsTimeseries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * RPM/TPM/消费统计条
+         * @description rpm_avg = 请求数/窗口分钟数；rpm_peak = 任一分钟最大请求数；
+         *     tpm_avg = (输入+输出) tokens/窗口分钟数。admin 可用 scope=all。
+         */
+        get: operations["getUsageStatsRates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 审计日志列表
+         * @description user 仅见本人事件且响应隐藏 username 列；admin+logs:read 可见全部
+         *     并可用 username 精确过滤。默认时间范围 30 天。
+         */
+        get: operations["listAuditLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3071,6 +3230,135 @@ export interface components {
         CompleteOrderRequest: {
             /** @description 人工完成原因（按 Unicode 字符计数） */
             manual_reason: string;
+        };
+        /** @description 用量日志列表项（user 视图不含 username）。 */
+        UsageLogItem: {
+            /** Format: int64 */
+            id: number;
+            /** Format: uuid */
+            request_id: string;
+            /** Format: int64 */
+            token_id?: number | null;
+            token_name?: string | null;
+            /** Format: int64 */
+            channel_id?: number | null;
+            upstream?: string | null;
+            model: string;
+            group?: string | null;
+            prompt_tokens: number;
+            completion_tokens: number;
+            cache_read_tokens: number;
+            cache_write_tokens: number;
+            /** Format: int64 */
+            pre_deducted?: number | null;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            refunded: number;
+            latency_ms?: number | null;
+            /** @description 首 token 耗时；非流式为 null */
+            first_token_ms?: number | null;
+            stream: boolean;
+            /** @enum {string} */
+            status: "success" | "error" | "refunded" | "refused";
+            error_class?: string | null;
+            error_message?: string | null;
+            /** @description user 视图仅 8 个可见键；admin 视图保留完整选路细节 */
+            retry_chain?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** @description 仅 admin+logs:read 视图返回 */
+            username?: string;
+        };
+        UsageLogPage: components["schemas"]["Page"] & {
+            items?: components["schemas"]["UsageLogItem"][];
+        };
+        UsageLogDetail: components["schemas"]["UsageLogItem"] & {
+            /** @description 按角色投影后的 other（user 仅 public 键；admin 含 admin_info/root_info） */
+            other: {
+                [key: string]: unknown;
+            };
+        };
+        UsageStatsSummary: {
+            /** Format: int64 */
+            cost_total: number;
+            /** Format: int64 */
+            request_count: number;
+            /** @description success / total；0 行时为 0（绝不 NaN） */
+            success_rate: number;
+            /** Format: int64 */
+            prompt_tokens_total: number;
+            /** Format: int64 */
+            completion_tokens_total: number;
+            /** Format: int64 */
+            pre_deducted_total: number;
+            /** Format: int64 */
+            refunded_total: number;
+        };
+        UsageStatsByModelItem: {
+            /** @description 第 9 名起聚合为 other */
+            model: string;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            tokens: number;
+            /** @description 十进制基点分配，各扇区合计恰为 100 */
+            percent: number;
+        };
+        UsageStatsTimeseriesItem: {
+            /** @description UTC ISO 时间桶（YYYY-MM-DDTHH:MM:SSZ） */
+            bucket: string;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            requests: number;
+        };
+        UsageStatsRates: {
+            /** @description 请求数 / 窗口分钟数 */
+            rpm_avg: number;
+            /**
+             * Format: int64
+             * @description 任一分钟最大请求数
+             */
+            rpm_peak: number;
+            /** @description (输入+输出) tokens / 窗口分钟数 */
+            tpm_avg: number;
+            /** Format: int64 */
+            cost_total: number;
+            /** Format: int64 */
+            pre_deducted_total: number;
+            /** Format: int64 */
+            refunded_total: number;
+        };
+        AuditLogItem: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            user_id: number;
+            /** @description 仅 admin+logs:read 视图返回（user 视图隐藏） */
+            username?: string;
+            /** @enum {string} */
+            category: "login" | "security" | "operation" | "access_token";
+            ip?: string | null;
+            user_agent?: string | null;
+            method?: string | null;
+            route?: string | null;
+            status_code?: number | null;
+            /** @enum {string} */
+            result: "success" | "failed";
+            /** @description 事件描述（已脱敏） */
+            detail?: unknown;
+            /** @description 变更前快照（已脱敏） */
+            before?: unknown;
+            /** @description 变更后快照（已脱敏） */
+            after?: unknown;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AuditLogPage: components["schemas"]["Page"] & {
+            items?: components["schemas"]["AuditLogItem"][];
         };
     };
     responses: {
@@ -6457,6 +6745,269 @@ export interface operations {
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
+        };
+    };
+    listUsageLogs: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 预设时间范围；与 start/end 互斥（显式区间优先） */
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                /** @description 模型前缀匹配（通配符按字面量转义） */
+                model?: string;
+                group?: string;
+                token_id?: number;
+                request_id?: string;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分页信封（total 为精确整数） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageLogPage"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageLog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情；他人行与不存在同为 404（不泄露存在性） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageLogDetail"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageLogPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 无 Prompt 载体，或行不可见/不存在 */
+            404: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsSummary: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 概览卡片；success_rate=success/total（0 行时为 0） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsSummary"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsByModel: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型分布数组 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsByModelItem"][];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsTimeseries: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+                granularity?: "hour" | "day";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 时间桶数组（按 bucket 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsTimeseriesItem"][];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsRates: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+                /** @description 仅 admin+logs:read；非管理员传参返回 403 */
+                scope?: "all";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 统计条 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsRates"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listAuditLogs: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                category?: "login" | "security" | "operation" | "access_token";
+                result?: "success" | "failed";
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                /** @description 仅 admin+logs:read */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分页信封 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogPage"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
         };
     };
 }

@@ -21,7 +21,11 @@ import (
 // 邮箱验证码都依赖它）与 Sessions（或 SessionSecret）；Repo 与 DB 二选一，
 // 单测注入内存 Repo，生产注入 *sql.DB 由 SQLAuthRepo 落地。
 type RouterConfig struct {
-	DB       *sql.DB
+	DB *sql.DB
+	// LogDB 是日志库（usage_logs / audit_logs）。与 DB 同时提供时
+	// NewRouter 挂载 M6 的只读日志/统计/审计端点；nil 时跳过
+	// （纯内存装配的单元测试没有日志表）。
+	LogDB    *sql.DB
 	Redis    *redis.Client
 	Sessions *auth.SessionManager
 
@@ -195,6 +199,21 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// PricingHandlers 构造时登记（未登记动作由 authz 失败关闭）。
 	if cfg.PricingHandlers != nil {
 		cfg.PricingHandlers.RegisterPricingRoutes(rt.protected, nil)
+	}
+
+	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限
+	// 回源。两者缺一时不挂载（部署配置缺失应在启动期由日志库健康检查暴露，
+	// 而不是让这里用空数据伪造 200）。
+	if cfg.LogDB != nil && cfg.DB != nil {
+		usageLogs, err := NewUsageLogHandlers(UsageLogHandlerConfig{
+			DB:     cfg.DB,
+			LogDB:  cfg.LogDB,
+			Logger: cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		usageLogs.RegisterUsageLogRoutes(rt.protected, nil)
 	}
 
 	// 公开端点：精确注册，先于 /api/ 子树（ServeMux 按特异性择路，顺序无关，

@@ -193,6 +193,24 @@ paths:
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
 
+  # 用量日志 / 统计 / 审计只读端点（M6 Task 2 / modules-05）。
+  /api/usage-logs:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-logs'
+  /api/usage-logs/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-logs~1{id}'
+  /api/usage-logs/{id}/prompt:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-logs~1{id}~1prompt'
+  /api/usage-stats/summary:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1summary'
+  /api/usage-stats/by-model:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1by-model'
+  /api/usage-stats/timeseries:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1timeseries'
+  /api/usage-stats/rates:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1rates'
+  /api/audit-logs:
+    $ref: './paths/user.yaml#/paths/~1api~1audit-logs'
+
 components:
   securitySchemes:
     sessionCookie:

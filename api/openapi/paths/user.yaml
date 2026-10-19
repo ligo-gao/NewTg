@@ -1497,3 +1497,414 @@ paths:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # 用量日志 / 统计 / 审计只读端点（M6 Task 2 / modules-05）。
+  # 普通用户硬过滤 user_id=本人；admin+logs:read 可见全部并使用管理参数。
+  /api/usage-logs:
+    get:
+      tags: [user]
+      operationId: listUsageLogs
+      summary: 用量日志列表（offset 分页 + 筛选）
+      description: |
+        user 仅见本人记录；admin 且持有 `logs:read` 可见全部并可用 `username`。
+        非管理员传 `username` 返回 403。时间范围最长 90 天。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+          description: 预设时间范围；与 start/end 互斥（显式区间优先）
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+          description: 模型前缀匹配（通配符按字面量转义）
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: request_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 分页信封（total 为精确整数）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageLogPage'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-logs/{id}:
+    get:
+      tags: [user]
+      operationId: getUsageLog
+      summary: 用量日志详情（含 other 投影）
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 详情；他人行与不存在同为 404（不泄露存在性）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageLogDetail'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-logs/{id}/prompt:
+    get:
+      tags: [user]
+      operationId: getUsageLogPrompt
+      summary: Prompt 原文（当前无落库载体）
+      description: |
+        Prompt 无任何落库载体（platform-01 §21 U-12 / G7-R30）：无
+        `log.prompt.view` 返回 403；有权限且行可见仍返回 404
+        （`Cache-Control: no-store`）。前端据此隐藏/打码查看入口。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          description: 无 Prompt 载体，或行不可见/不存在
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ['no-store'] }
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/summary:
+    get:
+      tags: [user]
+      operationId: getUsageStatsSummary
+      summary: 用量概览聚合
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 概览卡片；success_rate=success/total（0 行时为 0）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageStatsSummary'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/by-model:
+    get:
+      tags: [user]
+      operationId: getUsageStatsByModel
+      summary: 模型消费分布（top 8 + other）
+      description: percent 以十进制基点分配，合计恰为 100；0 行返回空数组。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 模型分布数组
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '../schemas/user.yaml#/schemas/UsageStatsByModelItem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/timeseries:
+    get:
+      tags: [user]
+      operationId: getUsageStatsTimeseries
+      summary: 消费时间序列（UTC 桶）
+      description: 只返回存在的桶；缺桶由前端零填充。bucket 为 UTC ISO 时间。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [hour, day]
+            default: hour
+      responses:
+        '200':
+          description: 时间桶数组（按 bucket 升序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '../schemas/user.yaml#/schemas/UsageStatsTimeseriesItem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/rates:
+    get:
+      tags: [user]
+      operationId: getUsageStatsRates
+      summary: RPM/TPM/消费统计条
+      description: |
+        rpm_avg = 请求数/窗口分钟数；rpm_peak = 任一分钟最大请求数；
+        tpm_avg = (输入+输出) tokens/窗口分钟数。admin 可用 scope=all。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [all]
+          description: 仅 admin+logs:read；非管理员传参返回 403
+      responses:
+        '200':
+          description: 统计条
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageStatsRates'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/audit-logs:
+    get:
+      tags: [user]
+      operationId: listAuditLogs
+      summary: 审计日志列表
+      description: |
+        user 仅见本人事件且响应隐藏 username 列；admin+logs:read 可见全部
+        并可用 username 精确过滤。默认时间范围 30 天。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [login, security, operation, access_token]
+        - name: result
+          in: query
+          schema:
+            type: string
+            enum: [success, failed]
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 30d
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read
+      responses:
+        '200':
+          description: 分页信封
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/AuditLogPage'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

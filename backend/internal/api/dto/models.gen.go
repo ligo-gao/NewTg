@@ -12,6 +12,48 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AuditLogItemCategory.
+const (
+	AuditLogItemCategoryAccessToken AuditLogItemCategory = "access_token"
+	AuditLogItemCategoryLogin       AuditLogItemCategory = "login"
+	AuditLogItemCategoryOperation   AuditLogItemCategory = "operation"
+	AuditLogItemCategorySecurity    AuditLogItemCategory = "security"
+)
+
+// Valid indicates whether the value is a known member of the AuditLogItemCategory enum.
+func (e AuditLogItemCategory) Valid() bool {
+	switch e {
+	case AuditLogItemCategoryAccessToken:
+		return true
+	case AuditLogItemCategoryLogin:
+		return true
+	case AuditLogItemCategoryOperation:
+		return true
+	case AuditLogItemCategorySecurity:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AuditLogItemResult.
+const (
+	AuditLogItemResultFailed  AuditLogItemResult = "failed"
+	AuditLogItemResultSuccess AuditLogItemResult = "success"
+)
+
+// Valid indicates whether the value is a known member of the AuditLogItemResult enum.
+func (e AuditLogItemResult) Valid() bool {
+	switch e {
+	case AuditLogItemResultFailed:
+		return true
+	case AuditLogItemResultSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChangeEmailResponseEmailVerified.
 const (
 	ChangeEmailResponseEmailVerifiedTrue ChangeEmailResponseEmailVerified = true
@@ -828,6 +870,54 @@ func (e TwoFADisableResponseTotpEnabled) Valid() bool {
 	}
 }
 
+// Defines values for UsageLogDetailStatus.
+const (
+	UsageLogDetailStatusError    UsageLogDetailStatus = "error"
+	UsageLogDetailStatusRefunded UsageLogDetailStatus = "refunded"
+	UsageLogDetailStatusRefused  UsageLogDetailStatus = "refused"
+	UsageLogDetailStatusSuccess  UsageLogDetailStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the UsageLogDetailStatus enum.
+func (e UsageLogDetailStatus) Valid() bool {
+	switch e {
+	case UsageLogDetailStatusError:
+		return true
+	case UsageLogDetailStatusRefunded:
+		return true
+	case UsageLogDetailStatusRefused:
+		return true
+	case UsageLogDetailStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UsageLogItemStatus.
+const (
+	UsageLogItemStatusError    UsageLogItemStatus = "error"
+	UsageLogItemStatusRefunded UsageLogItemStatus = "refunded"
+	UsageLogItemStatusRefused  UsageLogItemStatus = "refused"
+	UsageLogItemStatusSuccess  UsageLogItemStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the UsageLogItemStatus enum.
+func (e UsageLogItemStatus) Valid() bool {
+	switch e {
+	case UsageLogItemStatusError:
+		return true
+	case UsageLogItemStatusRefunded:
+		return true
+	case UsageLogItemStatusRefused:
+		return true
+	case UsageLogItemStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	Admin UserRole = "admin"
@@ -894,6 +984,72 @@ func (e WalletSummaryHealth) Valid() bool {
 	case WalletSummaryHealthHealthy:
 		return true
 	case WalletSummaryHealthLow:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListAuditLogsParamsCategory.
+const (
+	ListAuditLogsParamsCategoryAccessToken ListAuditLogsParamsCategory = "access_token"
+	ListAuditLogsParamsCategoryLogin       ListAuditLogsParamsCategory = "login"
+	ListAuditLogsParamsCategoryOperation   ListAuditLogsParamsCategory = "operation"
+	ListAuditLogsParamsCategorySecurity    ListAuditLogsParamsCategory = "security"
+)
+
+// Valid indicates whether the value is a known member of the ListAuditLogsParamsCategory enum.
+func (e ListAuditLogsParamsCategory) Valid() bool {
+	switch e {
+	case ListAuditLogsParamsCategoryAccessToken:
+		return true
+	case ListAuditLogsParamsCategoryLogin:
+		return true
+	case ListAuditLogsParamsCategoryOperation:
+		return true
+	case ListAuditLogsParamsCategorySecurity:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListAuditLogsParamsResult.
+const (
+	ListAuditLogsParamsResultFailed  ListAuditLogsParamsResult = "failed"
+	ListAuditLogsParamsResultSuccess ListAuditLogsParamsResult = "success"
+)
+
+// Valid indicates whether the value is a known member of the ListAuditLogsParamsResult enum.
+func (e ListAuditLogsParamsResult) Valid() bool {
+	switch e {
+	case ListAuditLogsParamsResultFailed:
+		return true
+	case ListAuditLogsParamsResultSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListAuditLogsParamsRange.
+const (
+	ListAuditLogsParamsRangeN14d ListAuditLogsParamsRange = "14d"
+	ListAuditLogsParamsRangeN24h ListAuditLogsParamsRange = "24h"
+	ListAuditLogsParamsRangeN30d ListAuditLogsParamsRange = "30d"
+	ListAuditLogsParamsRangeN7d  ListAuditLogsParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the ListAuditLogsParamsRange enum.
+func (e ListAuditLogsParamsRange) Valid() bool {
+	switch e {
+	case ListAuditLogsParamsRangeN14d:
+		return true
+	case ListAuditLogsParamsRangeN24h:
+		return true
+	case ListAuditLogsParamsRangeN30d:
+		return true
+	case ListAuditLogsParamsRangeN7d:
 		return true
 	default:
 		return false
@@ -1080,6 +1236,255 @@ func (e ListTokensParamsQuota) Valid() bool {
 	case ListTokensParamsQuotaNormal:
 		return true
 	case ListTokensParamsQuotaUnlimited:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListUsageLogsParamsRange.
+const (
+	ListUsageLogsParamsRangeN14d ListUsageLogsParamsRange = "14d"
+	ListUsageLogsParamsRangeN24h ListUsageLogsParamsRange = "24h"
+	ListUsageLogsParamsRangeN30d ListUsageLogsParamsRange = "30d"
+	ListUsageLogsParamsRangeN7d  ListUsageLogsParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the ListUsageLogsParamsRange enum.
+func (e ListUsageLogsParamsRange) Valid() bool {
+	switch e {
+	case ListUsageLogsParamsRangeN14d:
+		return true
+	case ListUsageLogsParamsRangeN24h:
+		return true
+	case ListUsageLogsParamsRangeN30d:
+		return true
+	case ListUsageLogsParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListUsageLogsParamsStatus.
+const (
+	ListUsageLogsParamsStatusError    ListUsageLogsParamsStatus = "error"
+	ListUsageLogsParamsStatusRefunded ListUsageLogsParamsStatus = "refunded"
+	ListUsageLogsParamsStatusRefused  ListUsageLogsParamsStatus = "refused"
+	ListUsageLogsParamsStatusSuccess  ListUsageLogsParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the ListUsageLogsParamsStatus enum.
+func (e ListUsageLogsParamsStatus) Valid() bool {
+	switch e {
+	case ListUsageLogsParamsStatusError:
+		return true
+	case ListUsageLogsParamsStatusRefunded:
+		return true
+	case ListUsageLogsParamsStatusRefused:
+		return true
+	case ListUsageLogsParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByModelParamsRange.
+const (
+	GetUsageStatsByModelParamsRangeN14d GetUsageStatsByModelParamsRange = "14d"
+	GetUsageStatsByModelParamsRangeN24h GetUsageStatsByModelParamsRange = "24h"
+	GetUsageStatsByModelParamsRangeN30d GetUsageStatsByModelParamsRange = "30d"
+	GetUsageStatsByModelParamsRangeN7d  GetUsageStatsByModelParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByModelParamsRange enum.
+func (e GetUsageStatsByModelParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsByModelParamsRangeN14d:
+		return true
+	case GetUsageStatsByModelParamsRangeN24h:
+		return true
+	case GetUsageStatsByModelParamsRangeN30d:
+		return true
+	case GetUsageStatsByModelParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByModelParamsStatus.
+const (
+	GetUsageStatsByModelParamsStatusError    GetUsageStatsByModelParamsStatus = "error"
+	GetUsageStatsByModelParamsStatusRefunded GetUsageStatsByModelParamsStatus = "refunded"
+	GetUsageStatsByModelParamsStatusRefused  GetUsageStatsByModelParamsStatus = "refused"
+	GetUsageStatsByModelParamsStatusSuccess  GetUsageStatsByModelParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByModelParamsStatus enum.
+func (e GetUsageStatsByModelParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsByModelParamsStatusError:
+		return true
+	case GetUsageStatsByModelParamsStatusRefunded:
+		return true
+	case GetUsageStatsByModelParamsStatusRefused:
+		return true
+	case GetUsageStatsByModelParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsRatesParamsRange.
+const (
+	GetUsageStatsRatesParamsRangeN14d GetUsageStatsRatesParamsRange = "14d"
+	GetUsageStatsRatesParamsRangeN24h GetUsageStatsRatesParamsRange = "24h"
+	GetUsageStatsRatesParamsRangeN30d GetUsageStatsRatesParamsRange = "30d"
+	GetUsageStatsRatesParamsRangeN7d  GetUsageStatsRatesParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsRatesParamsRange enum.
+func (e GetUsageStatsRatesParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsRatesParamsRangeN14d:
+		return true
+	case GetUsageStatsRatesParamsRangeN24h:
+		return true
+	case GetUsageStatsRatesParamsRangeN30d:
+		return true
+	case GetUsageStatsRatesParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsRatesParamsScope.
+const (
+	GetUsageStatsRatesParamsScopeAll GetUsageStatsRatesParamsScope = "all"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsRatesParamsScope enum.
+func (e GetUsageStatsRatesParamsScope) Valid() bool {
+	switch e {
+	case GetUsageStatsRatesParamsScopeAll:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsSummaryParamsRange.
+const (
+	GetUsageStatsSummaryParamsRangeN14d GetUsageStatsSummaryParamsRange = "14d"
+	GetUsageStatsSummaryParamsRangeN24h GetUsageStatsSummaryParamsRange = "24h"
+	GetUsageStatsSummaryParamsRangeN30d GetUsageStatsSummaryParamsRange = "30d"
+	GetUsageStatsSummaryParamsRangeN7d  GetUsageStatsSummaryParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsSummaryParamsRange enum.
+func (e GetUsageStatsSummaryParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsSummaryParamsRangeN14d:
+		return true
+	case GetUsageStatsSummaryParamsRangeN24h:
+		return true
+	case GetUsageStatsSummaryParamsRangeN30d:
+		return true
+	case GetUsageStatsSummaryParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsSummaryParamsStatus.
+const (
+	GetUsageStatsSummaryParamsStatusError    GetUsageStatsSummaryParamsStatus = "error"
+	GetUsageStatsSummaryParamsStatusRefunded GetUsageStatsSummaryParamsStatus = "refunded"
+	GetUsageStatsSummaryParamsStatusRefused  GetUsageStatsSummaryParamsStatus = "refused"
+	GetUsageStatsSummaryParamsStatusSuccess  GetUsageStatsSummaryParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsSummaryParamsStatus enum.
+func (e GetUsageStatsSummaryParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsSummaryParamsStatusError:
+		return true
+	case GetUsageStatsSummaryParamsStatusRefunded:
+		return true
+	case GetUsageStatsSummaryParamsStatusRefused:
+		return true
+	case GetUsageStatsSummaryParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsTimeseriesParamsRange.
+const (
+	GetUsageStatsTimeseriesParamsRangeN14d GetUsageStatsTimeseriesParamsRange = "14d"
+	GetUsageStatsTimeseriesParamsRangeN24h GetUsageStatsTimeseriesParamsRange = "24h"
+	GetUsageStatsTimeseriesParamsRangeN30d GetUsageStatsTimeseriesParamsRange = "30d"
+	GetUsageStatsTimeseriesParamsRangeN7d  GetUsageStatsTimeseriesParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsTimeseriesParamsRange enum.
+func (e GetUsageStatsTimeseriesParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsTimeseriesParamsRangeN14d:
+		return true
+	case GetUsageStatsTimeseriesParamsRangeN24h:
+		return true
+	case GetUsageStatsTimeseriesParamsRangeN30d:
+		return true
+	case GetUsageStatsTimeseriesParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsTimeseriesParamsStatus.
+const (
+	GetUsageStatsTimeseriesParamsStatusError    GetUsageStatsTimeseriesParamsStatus = "error"
+	GetUsageStatsTimeseriesParamsStatusRefunded GetUsageStatsTimeseriesParamsStatus = "refunded"
+	GetUsageStatsTimeseriesParamsStatusRefused  GetUsageStatsTimeseriesParamsStatus = "refused"
+	GetUsageStatsTimeseriesParamsStatusSuccess  GetUsageStatsTimeseriesParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsTimeseriesParamsStatus enum.
+func (e GetUsageStatsTimeseriesParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsTimeseriesParamsStatusError:
+		return true
+	case GetUsageStatsTimeseriesParamsStatusRefunded:
+		return true
+	case GetUsageStatsTimeseriesParamsStatusRefused:
+		return true
+	case GetUsageStatsTimeseriesParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsTimeseriesParamsGranularity.
+const (
+	Day  GetUsageStatsTimeseriesParamsGranularity = "day"
+	Hour GetUsageStatsTimeseriesParamsGranularity = "hour"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsTimeseriesParamsGranularity enum.
+func (e GetUsageStatsTimeseriesParamsGranularity) Valid() bool {
+	switch e {
+	case Day:
+		return true
+	case Hour:
 		return true
 	default:
 		return false
@@ -1449,6 +1854,51 @@ type AdminUserStatusResponse struct {
 
 	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 	Status UserStatus `json:"status"`
+}
+
+// AuditLogItem defines model for AuditLogItem.
+type AuditLogItem struct {
+	// After 变更后快照（已脱敏）
+	After interface{} `json:"after,omitempty"`
+
+	// Before 变更前快照（已脱敏）
+	Before    interface{}          `json:"before,omitempty"`
+	Category  AuditLogItemCategory `json:"category"`
+	CreatedAt time.Time            `json:"created_at"`
+
+	// Detail 事件描述（已脱敏）
+	Detail     interface{}        `json:"detail,omitempty"`
+	Id         int64              `json:"id"`
+	Ip         *string            `json:"ip,omitempty"`
+	Method     *string            `json:"method,omitempty"`
+	Result     AuditLogItemResult `json:"result"`
+	Route      *string            `json:"route,omitempty"`
+	StatusCode *int               `json:"status_code,omitempty"`
+	UserAgent  *string            `json:"user_agent,omitempty"`
+	UserId     int64              `json:"user_id"`
+
+	// Username 仅 admin+logs:read 视图返回（user 视图隐藏）
+	Username *string `json:"username,omitempty"`
+}
+
+// AuditLogItemCategory defines model for AuditLogItem.Category.
+type AuditLogItemCategory string
+
+// AuditLogItemResult defines model for AuditLogItem.Result.
+type AuditLogItemResult string
+
+// AuditLogPage defines model for AuditLogPage.
+type AuditLogPage struct {
+	Items []AuditLogItem `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
 }
 
 // AuthSessionResponse 口令（+ 可选 2FA）通过后建立会话的响应；同时下发会话 Cookie 与 CSRF Cookie。
@@ -2862,6 +3312,146 @@ type UpdateTokenRequest_ExpiresAt struct {
 	union json.RawMessage
 }
 
+// UsageLogDetail defines model for UsageLogDetail.
+type UsageLogDetail struct {
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	ChannelId        *int64    `json:"channel_id,omitempty"`
+	CompletionTokens int       `json:"completion_tokens"`
+	Cost             int64     `json:"cost"`
+	CreatedAt        time.Time `json:"created_at"`
+	ErrorClass       *string   `json:"error_class,omitempty"`
+	ErrorMessage     *string   `json:"error_message,omitempty"`
+
+	// FirstTokenMs 首 token 耗时；非流式为 null
+	FirstTokenMs *int    `json:"first_token_ms,omitempty"`
+	Group        *string `json:"group,omitempty"`
+	Id           int64   `json:"id"`
+	LatencyMs    *int    `json:"latency_ms,omitempty"`
+	Model        string  `json:"model"`
+
+	// Other 按角色投影后的 other（user 仅 public 键；admin 含 admin_info/root_info）
+	Other        map[string]interface{} `json:"other"`
+	PreDeducted  *int64                 `json:"pre_deducted,omitempty"`
+	PromptTokens int                    `json:"prompt_tokens"`
+	Refunded     int64                  `json:"refunded"`
+	RequestId    openapi_types.UUID     `json:"request_id"`
+
+	// RetryChain user 视图仅 8 个可见键；admin 视图保留完整选路细节
+	RetryChain *[]map[string]interface{} `json:"retry_chain,omitempty"`
+	Status     UsageLogDetailStatus      `json:"status"`
+	Stream     bool                      `json:"stream"`
+	TokenId    *int64                    `json:"token_id,omitempty"`
+	TokenName  *string                   `json:"token_name,omitempty"`
+	Upstream   *string                   `json:"upstream,omitempty"`
+
+	// Username 仅 admin+logs:read 视图返回
+	Username *string `json:"username,omitempty"`
+}
+
+// UsageLogDetailStatus defines model for UsageLogDetail.Status.
+type UsageLogDetailStatus string
+
+// UsageLogItem 用量日志列表项（user 视图不含 username）。
+type UsageLogItem struct {
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	ChannelId        *int64    `json:"channel_id,omitempty"`
+	CompletionTokens int       `json:"completion_tokens"`
+	Cost             int64     `json:"cost"`
+	CreatedAt        time.Time `json:"created_at"`
+	ErrorClass       *string   `json:"error_class,omitempty"`
+	ErrorMessage     *string   `json:"error_message,omitempty"`
+
+	// FirstTokenMs 首 token 耗时；非流式为 null
+	FirstTokenMs *int               `json:"first_token_ms,omitempty"`
+	Group        *string            `json:"group,omitempty"`
+	Id           int64              `json:"id"`
+	LatencyMs    *int               `json:"latency_ms,omitempty"`
+	Model        string             `json:"model"`
+	PreDeducted  *int64             `json:"pre_deducted,omitempty"`
+	PromptTokens int                `json:"prompt_tokens"`
+	Refunded     int64              `json:"refunded"`
+	RequestId    openapi_types.UUID `json:"request_id"`
+
+	// RetryChain user 视图仅 8 个可见键；admin 视图保留完整选路细节
+	RetryChain *[]map[string]interface{} `json:"retry_chain,omitempty"`
+	Status     UsageLogItemStatus        `json:"status"`
+	Stream     bool                      `json:"stream"`
+	TokenId    *int64                    `json:"token_id,omitempty"`
+	TokenName  *string                   `json:"token_name,omitempty"`
+	Upstream   *string                   `json:"upstream,omitempty"`
+
+	// Username 仅 admin+logs:read 视图返回
+	Username *string `json:"username,omitempty"`
+}
+
+// UsageLogItemStatus defines model for UsageLogItem.Status.
+type UsageLogItemStatus string
+
+// UsageLogPage defines model for UsageLogPage.
+type UsageLogPage struct {
+	Items []UsageLogItem `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// UsageStatsByModelItem defines model for UsageStatsByModelItem.
+type UsageStatsByModelItem struct {
+	Cost int64 `json:"cost"`
+
+	// Model 第 9 名起聚合为 other
+	Model string `json:"model"`
+
+	// Percent 十进制基点分配，各扇区合计恰为 100
+	Percent float32 `json:"percent"`
+	Tokens  int64   `json:"tokens"`
+}
+
+// UsageStatsRates defines model for UsageStatsRates.
+type UsageStatsRates struct {
+	CostTotal        int64 `json:"cost_total"`
+	PreDeductedTotal int64 `json:"pre_deducted_total"`
+	RefundedTotal    int64 `json:"refunded_total"`
+
+	// RpmAvg 请求数 / 窗口分钟数
+	RpmAvg float32 `json:"rpm_avg"`
+
+	// RpmPeak 任一分钟最大请求数
+	RpmPeak int64 `json:"rpm_peak"`
+
+	// TpmAvg (输入+输出) tokens / 窗口分钟数
+	TpmAvg float32 `json:"tpm_avg"`
+}
+
+// UsageStatsSummary defines model for UsageStatsSummary.
+type UsageStatsSummary struct {
+	CompletionTokensTotal int64 `json:"completion_tokens_total"`
+	CostTotal             int64 `json:"cost_total"`
+	PreDeductedTotal      int64 `json:"pre_deducted_total"`
+	PromptTokensTotal     int64 `json:"prompt_tokens_total"`
+	RefundedTotal         int64 `json:"refunded_total"`
+	RequestCount          int64 `json:"request_count"`
+
+	// SuccessRate success / total；0 行时为 0（绝不 NaN）
+	SuccessRate float32 `json:"success_rate"`
+}
+
+// UsageStatsTimeseriesItem defines model for UsageStatsTimeseriesItem.
+type UsageStatsTimeseriesItem struct {
+	// Bucket UTC ISO 时间桶（YYYY-MM-DDTHH:MM:SSZ）
+	Bucket   string `json:"bucket"`
+	Cost     int64  `json:"cost"`
+	Requests int64  `json:"requests"`
+}
+
 // UserRole defines model for UserRole.
 type UserRole string
 
@@ -3018,6 +3608,32 @@ type DeleteAccountParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
+
+// ListAuditLogsParams defines parameters for ListAuditLogs.
+type ListAuditLogsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize                    `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Category *ListAuditLogsParamsCategory `form:"category,omitempty" json:"category,omitempty"`
+	Result   *ListAuditLogsParamsResult   `form:"result,omitempty" json:"result,omitempty"`
+	Range    *ListAuditLogsParamsRange    `form:"range,omitempty" json:"range,omitempty"`
+	Start    *time.Time                   `form:"start,omitempty" json:"start,omitempty"`
+	End      *time.Time                   `form:"end,omitempty" json:"end,omitempty"`
+
+	// Username 仅 admin+logs:read
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// ListAuditLogsParamsCategory defines parameters for ListAuditLogs.
+type ListAuditLogsParamsCategory string
+
+// ListAuditLogsParamsResult defines parameters for ListAuditLogs.
+type ListAuditLogsParamsResult string
+
+// ListAuditLogsParamsRange defines parameters for ListAuditLogs.
+type ListAuditLogsParamsRange string
 
 // ListChannelsParams defines parameters for ListChannels.
 type ListChannelsParams struct {
@@ -3453,6 +4069,119 @@ type BatchEnableTokensParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
+
+// ListUsageLogsParams defines parameters for ListUsageLogs.
+type ListUsageLogsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Range 预设时间范围；与 start/end 互斥（显式区间优先）
+	Range *ListUsageLogsParamsRange `form:"range,omitempty" json:"range,omitempty"`
+	Start *time.Time                `form:"start,omitempty" json:"start,omitempty"`
+	End   *time.Time                `form:"end,omitempty" json:"end,omitempty"`
+
+	// Model 模型前缀匹配（通配符按字面量转义）
+	Model     *string                    `form:"model,omitempty" json:"model,omitempty"`
+	Group     *string                    `form:"group,omitempty" json:"group,omitempty"`
+	TokenId   *int64                     `form:"token_id,omitempty" json:"token_id,omitempty"`
+	RequestId *openapi_types.UUID        `form:"request_id,omitempty" json:"request_id,omitempty"`
+	Status    *ListUsageLogsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// ListUsageLogsParamsRange defines parameters for ListUsageLogs.
+type ListUsageLogsParamsRange string
+
+// ListUsageLogsParamsStatus defines parameters for ListUsageLogs.
+type ListUsageLogsParamsStatus string
+
+// GetUsageStatsByModelParams defines parameters for GetUsageStatsByModel.
+type GetUsageStatsByModelParams struct {
+	Range   *GetUsageStatsByModelParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                        `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                        `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                           `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                           `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                            `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsByModelParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// GetUsageStatsByModelParamsRange defines parameters for GetUsageStatsByModel.
+type GetUsageStatsByModelParamsRange string
+
+// GetUsageStatsByModelParamsStatus defines parameters for GetUsageStatsByModel.
+type GetUsageStatsByModelParamsStatus string
+
+// GetUsageStatsRatesParams defines parameters for GetUsageStatsRates.
+type GetUsageStatsRatesParams struct {
+	Range *GetUsageStatsRatesParamsRange `form:"range,omitempty" json:"range,omitempty"`
+	Start *time.Time                     `form:"start,omitempty" json:"start,omitempty"`
+	End   *time.Time                     `form:"end,omitempty" json:"end,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+
+	// Scope 仅 admin+logs:read；非管理员传参返回 403
+	Scope *GetUsageStatsRatesParamsScope `form:"scope,omitempty" json:"scope,omitempty"`
+}
+
+// GetUsageStatsRatesParamsRange defines parameters for GetUsageStatsRates.
+type GetUsageStatsRatesParamsRange string
+
+// GetUsageStatsRatesParamsScope defines parameters for GetUsageStatsRates.
+type GetUsageStatsRatesParamsScope string
+
+// GetUsageStatsSummaryParams defines parameters for GetUsageStatsSummary.
+type GetUsageStatsSummaryParams struct {
+	Range   *GetUsageStatsSummaryParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                        `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                        `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                           `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                           `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                            `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsSummaryParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// GetUsageStatsSummaryParamsRange defines parameters for GetUsageStatsSummary.
+type GetUsageStatsSummaryParamsRange string
+
+// GetUsageStatsSummaryParamsStatus defines parameters for GetUsageStatsSummary.
+type GetUsageStatsSummaryParamsStatus string
+
+// GetUsageStatsTimeseriesParams defines parameters for GetUsageStatsTimeseries.
+type GetUsageStatsTimeseriesParams struct {
+	Range   *GetUsageStatsTimeseriesParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                           `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                           `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                              `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                              `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                               `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsTimeseriesParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username    *string                                   `form:"username,omitempty" json:"username,omitempty"`
+	Granularity *GetUsageStatsTimeseriesParamsGranularity `form:"granularity,omitempty" json:"granularity,omitempty"`
+}
+
+// GetUsageStatsTimeseriesParamsRange defines parameters for GetUsageStatsTimeseries.
+type GetUsageStatsTimeseriesParamsRange string
+
+// GetUsageStatsTimeseriesParamsStatus defines parameters for GetUsageStatsTimeseries.
+type GetUsageStatsTimeseriesParamsStatus string
+
+// GetUsageStatsTimeseriesParamsGranularity defines parameters for GetUsageStatsTimeseries.
+type GetUsageStatsTimeseriesParamsGranularity string
 
 // ListUsersParams defines parameters for ListUsers.
 type ListUsersParams struct {

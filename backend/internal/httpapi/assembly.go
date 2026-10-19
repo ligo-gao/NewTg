@@ -190,6 +190,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 
 	rt, err := NewRouter(RouterConfig{
 		DB:                  deps.DB,
+		LogDB:               deps.LogDB,
 		Repo:                deps.Repo,
 		Redis:               deps.Redis,
 		Sessions:            deps.Sessions,
