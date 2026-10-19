@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,13 +73,19 @@ type deployTestEnv struct {
 
 func newDeployTestEnv(t *testing.T, rdb *redis.Client) *deployTestEnv {
 	t.Helper()
+	return newDeployTestEnvWithLogger(t, rdb, testLogger())
+}
+
+// newDeployTestEnvWithLogger 允许注入可捕获的 logger，用于「日志零回显」断言。
+func newDeployTestEnvWithLogger(t *testing.T, rdb *redis.Client, logger *slog.Logger) *deployTestEnv {
+	t.Helper()
 	service := &fakeSettingsService{getView: sampleDeployView(false, false)}
 	provider := &ionet.FakeProvider{}
 	secrets := &fakeDeploySecretStore{}
 	exec := &fakeAuditExec{}
-	logger := audit.New(exec)
+	auditLogger := audit.New(exec)
 	env := &deployTestEnv{
-		service: service, provider: provider, secrets: secrets, audit: exec, logger: logger,
+		service: service, provider: provider, secrets: secrets, audit: exec, logger: auditLogger,
 	}
 	handlers, err := NewDeploySettingsHandlers(DeploySettingsHandlerConfig{
 		Settings: service,
@@ -89,9 +97,9 @@ func newDeployTestEnv(t *testing.T, rdb *redis.Client) *deployTestEnv {
 			return provider
 		},
 		Authz:  rbac.NewAuthzMiddleware(),
-		Audit:  logger,
+		Audit:  auditLogger,
 		Redis:  rdb,
-		Logger: testLogger(),
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewDeploySettingsHandlers: %v", err)
@@ -440,5 +448,93 @@ func TestDeployConnectionTestUnknownFieldRejected(t *testing.T) {
 		`{"api_key":"k","endpoint":"https://evil.example"}`, deployManager(), nil))
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("未登记字段 = %d，期望 403（endpoint 不能被配置）", rr.Code)
+	}
+}
+
+// provider 429 必须映射为 deploy_rate_limited 并把 Retry-After 带回管理端
+// （§3.20.7：provider 429 → 429 + Retry-After）。
+func TestDeployConnectionTestProviderRateLimit(t *testing.T) {
+	env := newDeployTestEnv(t, nil)
+	env.provider.ConnectionErr = &ionet.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Detail:     "provider throttle",
+		RetryAfter: 2 * time.Second,
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/deployments/settings/test-connection",
+		`{"api_key":"sk-x"}`, deployManager(), nil))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d，期望 429（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "deploy_rate_limited") {
+		t.Fatalf("problem.type = %s", rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q，期望 provider 建议的 2", got)
+	}
+}
+
+// 日志零回显：候选密钥与已存密钥都不得出现在任何日志行（成功与失败路径）。
+func TestDeployConnectionTestNeverLogsSecrets(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// 失败路径：provider 返回已脱敏的 502（生产由 ionet 客户端完成脱敏）。
+	failEnv := newDeployTestEnvWithLogger(t, nil, logger)
+	failEnv.provider.ConnectionErr = &ionet.APIError{StatusCode: http.StatusBadGateway, Detail: "upstream failure"}
+	rr := httptest.NewRecorder()
+	failEnv.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/deployments/settings/test-connection",
+		`{"api_key":"sk-candidate-never-log"}`, deployManager(), nil))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("失败路径 status = %d", rr.Code)
+	}
+
+	// 成功路径：使用已存密钥。
+	okEnv := newDeployTestEnvWithLogger(t, nil, logger)
+	okEnv.secrets.key = "sk-stored-never-log"
+	okEnv.secrets.ok = true
+	okEnv.provider.Connection = ionet.ConnectionInfo{HardwareCount: 1, TotalAvailable: 1}
+	rr = httptest.NewRecorder()
+	okEnv.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/deployments/settings/test-connection",
+		`{}`, deployManager(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("成功路径 status = %d", rr.Code)
+	}
+
+	logs := buf.String()
+	for _, secret := range []string{"sk-candidate-never-log", "sk-stored-never-log"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("日志泄漏密钥 %q：%s", secret, logs)
+		}
+	}
+}
+
+// Redis 故障时连接测试 fail-open：只读探测放行，并留下 Warn（不是静默）。
+func TestDeployConnectionTestRateLimiterFailsOpen(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         mr.Addr(),
+		MaxRetries:   -1,
+		DialTimeout:  50 * time.Millisecond,
+		ReadTimeout:  50 * time.Millisecond,
+		WriteTimeout: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	mr.Close() // Redis 不可用
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	env := newDeployTestEnvWithLogger(t, rdb, logger)
+	env.provider.Connection = ionet.ConnectionInfo{HardwareCount: 1}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/deployments/settings/test-connection",
+		`{"api_key":"sk-x"}`, deployManager(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Redis 故障应 fail-open，实际 %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(buf.String(), "rate limiter unavailable") {
+		t.Fatalf("缺少限流降级 Warn: %s", buf.String())
 	}
 }

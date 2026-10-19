@@ -129,8 +129,9 @@ func (c *Client) HTTPClient() *http.Client { return c.http }
 // BaseURL 返回生效的 base URL（测试断言固定 host）。
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// DeploymentProvider 是部署控制面的能力接口。T2 只有连接测试所需的三个
-// 只读方法；T4 在此基础上增加部署管理方法。
+// DeploymentProvider 是部署控制面的能力接口。T2 只交付连接测试所需的三个
+// 只读方法；T4 将在此基础上增加部署管理（写）方法，已有实现只需补方法，
+// 不改变本接口的既有语义。
 //
 // 所有方法都只读 provider 状态，不写库、不产生副作用。
 type DeploymentProvider interface {

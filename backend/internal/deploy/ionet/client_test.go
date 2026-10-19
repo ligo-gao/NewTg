@@ -142,6 +142,34 @@ func TestClientRetriesReadsBoundedly(t *testing.T) {
 	}
 }
 
+func TestClientRespectsRetryAfter(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"detail":"slow down"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"hardware_types":[],"total":0,"total_available":0}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{APIKey: "k", BaseURL: srv.URL, Timeout: 5 * time.Second})
+	started := time.Now()
+	if _, err := client.ListHardware(context.Background()); err != nil {
+		t.Fatalf("Retry-After 后应重试成功: %v", err)
+	}
+	elapsed := time.Since(started)
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("尝试次数 = %d，期望 2", got)
+	}
+	// 退避必须至少等满 provider 建议的 1s（固定窗口交界抖动不计）。
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("退避耗时 = %v，未尊重 Retry-After=1", elapsed)
+	}
+}
+
 func TestClientDoesNotRetryAuthFailures(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
