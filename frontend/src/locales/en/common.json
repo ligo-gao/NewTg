@@ -35,6 +35,59 @@
       "value": "Value"
     }
   },
+  "dashboard": {
+    "title": "Overview",
+    "error": "Could not load statistics.",
+    "range": {
+      "label": "Time range",
+      "24h": "24h",
+      "7d": "7d",
+      "14d": "14d",
+      "30d": "30d"
+    },
+    "filter": {
+      "username": "Username",
+      "username_placeholder": "Filter by username",
+      "apply": "Apply",
+      "clear": "Clear",
+      "no_usage": "No usage for {username}"
+    },
+    "cards": {
+      "total_spent": "Total Spent",
+      "requests": "Requests",
+      "success_rate": "Success rate {rate}",
+      "input_tokens": "Input Tokens",
+      "output_tokens": "Output Tokens",
+      "spend_tooltip": "Pre-deducted Σ{pre} / Refunded Σ{refunded}"
+    },
+    "rates": {
+      "usage": "Usage",
+      "rpm": "RPM",
+      "tpm": "TPM",
+      "credits": "credits",
+      "req_per_min": "req/min",
+      "tokens_per_min": "tokens/min",
+      "peak": "Peak {value} req/min",
+      "peak_none": "Peak --",
+      "tpm_exact": "{value} tokens/min"
+    },
+    "donut": {
+      "title": "Model distribution",
+      "empty": "No statistics yet",
+      "other": "Other",
+      "aria": "Model cost distribution across {count} slices, total {total} credits.",
+      "legend_aria": "{model}: {cost} credits, {percent}%"
+    },
+    "trend": {
+      "title": "Consumption trend",
+      "series": "Credits",
+      "aggregated_hour": "Aggregated by hour",
+      "aggregated_day": "Aggregated by day",
+      "empty_action": "Make an API call",
+      "filter_chip": "Model: {model}",
+      "reset": "Reset model filter"
+    }
+  },
   "toast.success": "Success",
   "toast.info": "Information",
   "toast.error": "Something went wrong",
