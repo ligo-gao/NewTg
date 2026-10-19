@@ -580,3 +580,41 @@ func TestPublicPricingRepoErrorIs500(t *testing.T) {
 		t.Fatalf("DB 故障应 500，得到 %d", rr.Code)
 	}
 }
+
+// 未匹配的定价子路径必须由公开兜底返回 404 model-not-found，而不是落进
+// 受保护 /api/ 子树得到 401（复核 LOW-1）。
+func TestPublicPricingUnmatchedSubpathsAre404(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalog()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	for _, path := range []string{
+		"/api/pricing/openai/gpt-5", // 未编码的多段模型名
+		"/api/pricing/",             // 尾斜杠（空 rest）
+		"/api/pricing/nonexistent",  // 单段但不存在
+	} {
+		rr := env.request(http.MethodGet, path, nil, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d（期望 404，body=%s）", path, rr.Code, rr.Body.String())
+		}
+		if ct := rr.Header().Get("Content-Type"); ct != "application/problem+json" {
+			t.Fatalf("%s Content-Type = %q", path, ct)
+		}
+		var problem map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("%s 解码 problem 失败: %v", path, err)
+		}
+		if problem["type"] != problemTypeModelNotFound {
+			t.Fatalf("%s problem.type = %v，期望 %s", path, problem["type"], problemTypeModelNotFound)
+		}
+	}
+}
+
+// If-None-Match: * 按 RFC 9110 匹配任意当前表示。
+func TestPublicPricingETagStar(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalog()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+	rr := env.request(http.MethodGet, "/api/pricing", map[string]string{"If-None-Match": "*"}, nil)
+	if rr.Code != http.StatusNotModified || rr.Body.Len() != 0 {
+		t.Fatalf("If-None-Match:* = %d body=%q", rr.Code, rr.Body.String())
+	}
+}

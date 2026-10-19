@@ -124,6 +124,21 @@ func (h *PublicPricingHandlers) RegisterPublicPricingRoutes(rt *Router) {
 	rt.HandlePublic("GET /api/pricing", http.HandlerFunc(h.handlePublicPricingList))
 	rt.HandlePublic("GET /api/pricing/{model_id}", http.HandlerFunc(h.handlePublicPricingDetail))
 	rt.HandlePublic("GET /api/pricing/{model_id}/metrics", http.HandlerFunc(h.handlePublicPricingMetrics))
+	// 未匹配的定价子路径兜底（公开 404，而不是落进受保护 /api/ 子树）。
+	//
+	// 【为什么需要这条兜底】Go 1.22 的 `{model_id}` 只匹配单段：`/api/pricing/`
+	// 或未编码的 `/api/pricing/openai/gpt-5` 不匹配任何公开精确模式，会落到
+	// `/api/` 子树 → SessionAuth 401。对匿名访客来说这是错误语义：定价是公开
+	// 数据，「路径形态不对/模型不存在」应当是 404 model-not-found，而不是
+	// 「请先登录」。`{rest...}` 是尾部通配，优先级低于上述所有更具体的模式，
+	// 因此不会截获已编码的单段详情或 /metrics。
+	rt.HandlePublic("GET /api/pricing/{rest...}", http.HandlerFunc(h.handlePublicPricingFallback))
+}
+
+// handlePublicPricingFallback 统一返回 404 model-not-found（不区分「多段路径」
+// 与「不存在」：两者都不对应任何可公示模型）。
+func (h *PublicPricingHandlers) handlePublicPricingFallback(w http.ResponseWriter, r *http.Request) {
+	h.writeModelNotFound(w)
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +937,10 @@ func (h *PublicPricingHandlers) writeConditionalHeaders(w http.ResponseWriter,
 func etagMatches(headerValue, etag string) bool {
 	for _, raw := range strings.Split(headerValue, ",") {
 		candidate := strings.TrimSpace(raw)
+		// RFC 9110 §13.1.2：`*` 匹配任意当前表示（客户端只想确认资源存在）。
+		if candidate == "*" {
+			return true
+		}
 		// 弱比较：`W/"x"` 与 `"x"` 在 GET 语义下等价（RFC 9110 §8.8.3.2）。
 		candidate = strings.TrimPrefix(candidate, "W/")
 		if candidate == etag {
@@ -943,6 +962,14 @@ func publicPricingETag(version, modelID string) string {
 	return `"pricing-v` + version + `-` + hex.EncodeToString(sum[:])[:16] + `"`
 }
 
+// meta 构造展示元数据。
+//
+// 【契约观察项 O1（已知、未在本次修正）】ETag 只由定价域版本派生，不含筛选
+// 条件或请求身份；`generated_at` 是本次快照的生成时刻，因此同一 ETag 下不同
+// 请求的 body 可能只在 generated_at 上不同。304 响应没有 body，缓存语义仍然
+// 正确（版本未变即可复用本地表示）；若未来需要逐请求内容摘要，应把筛选参数
+// 纳入 ETag 派生，而不是依赖 generated_at。当前保留版本级 ETag 是为了让不同
+// 筛选条件共享同一个「定价是否变化」的缓存键（F-09-14 的版本语义）。
 func (h *PublicPricingHandlers) meta(catalog store.PublicPricingCatalog) PublicPricingMeta {
 	symbol := readConfigString(h.config, "billing.currency_symbol")
 	if symbol == "" {
