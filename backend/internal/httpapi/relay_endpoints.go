@@ -153,6 +153,9 @@ type RelayHandlerOptions struct {
 	// StreamInactivityTimeout 覆盖流式看门狗的默认 300s；<=0 使用默认值。
 	// 仅测试注入短值，生产不得调小（relay-03 §10.1 冻结值）。
 	StreamInactivityTimeout time.Duration
+	// Multimodal 是 M4 多模态端点族的分派器（Task 4 注入）。
+	// nil 时这些端点返回 501（仅 Task 1 骨架态）；T4 装配真实实现后不得再为 nil。
+	Multimodal MultimodalDispatcher
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
@@ -167,6 +170,7 @@ type RelayHandler struct {
 	dispatch         func(contract.ChannelType) (contract.Adapter, error)
 	trustedProxies   []netip.Prefix
 	streamInactivity time.Duration
+	multimodal       MultimodalDispatcher
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -207,14 +211,26 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		dispatch:         dispatch,
 		trustedProxies:   parseTrustedProxies(opts.TrustedProxies),
 		streamInactivity: inactivity,
+		multimodal:       opts.Multimodal,
 	}
 }
 
-// Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这两个端点（管理面不经过它）。
+// Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
+//
+// 多模态端点族（M4 T1）复用同一个 RelayAuth 中间件：统一入口要求所有 /v1
+// 端点先鉴权再归一化（relay-04 §0.2）。GET /v1/models 只在此处注册一次
+// （R-09），多模态注册函数不得重复注册它。
 func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := RelayAuth(h.tokens, h.access, h.trustedProxies)
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
+
+	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
+	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
+	RegisterMultimodalRoutes(mux, authMiddleware, NewMultimodalHandler(MultimodalHandlerOptions{
+		Tokens:     h.tokens,
+		Dispatcher: h.multimodal,
+	}))
 }
 
 // Handler 返回挂好路由的独立 mux（测试与嵌入式装配用）。
