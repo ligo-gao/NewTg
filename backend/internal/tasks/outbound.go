@@ -40,6 +40,17 @@ const (
 	// 与 MaxResponseBytes 分开：4MiB 是 JSON 控制面，产物是二进制数据面，
 	// 两者语义不同。内容路径不整块读入内存——超限时中止流而不是截断。
 	MaxContentBytes = 64 << 20
+
+	// ContentIdleTimeout 是内容流**单次读之间**的空闲上限。
+	//
+	// 与 JSON 控制面的 30s 总时限不同：64MiB 产物在慢链路上可能合法地
+	// 传输超过 30s，用总时限会静默截断大文件；空闲超时只惩罚真正卡死的
+	// 上游（连续 30s 一个字节都没有）。
+	ContentIdleTimeout = 30 * time.Second
+
+	// ContentTotalTimeout 是内容流的**总时长**上限。它防的是「持续滴流、
+	// 永不结束」的上游（空闲超时抓不到），同时给慢链路留出 10 分钟余量。
+	ContentTotalTimeout = 10 * time.Minute
 )
 
 var (
@@ -318,7 +329,7 @@ func DoOutboundStream(ctx context.Context, client *http.Client, desc *RequestDes
 		return nil, err
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, OutboundTimeout)
+	reqCtx, cancel := context.WithTimeout(ctx, ContentTotalTimeout)
 	var body io.Reader
 	if len(desc.Body) > 0 {
 		body = bytes.NewReader(desc.Body)
@@ -331,7 +342,12 @@ func DoOutboundStream(ctx context.Context, client *http.Client, desc *RequestDes
 	for k, v := range desc.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := client.Do(req)
+	// 客户端本身带 30s 总超时（JSON 控制面的冻结值）；内容流改用
+	// 空闲+总时长双限，因此复制一份客户端并清空 Timeout。Transport
+	// （连接池/代理配置）保持不变，不引入第二套出站策略。
+	streamClient := *client
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("tasks: outbound request failed: %w", err)
@@ -351,8 +367,49 @@ func DoOutboundStream(ctx context.Context, client *http.Client, desc *RequestDes
 	return &StreamResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    headers,
-		Body:       &boundedReadCloser{rc: resp.Body, cancel: cancel, max: MaxContentBytes},
+		Body:       &boundedReadCloser{rc: newIdleReadCloser(resp.Body, ContentIdleTimeout), cancel: cancel, max: MaxContentBytes},
 	}, nil
+}
+
+// idleReadCloser 在两次成功读取之间超过 idle 没有数据时关闭上游 body，
+// 让阻塞中的 Read 以错误返回。
+//
+// 为什么用「超时后 Close」而不是给每个 Read 加 context：net/http 的
+// Response.Body.Read 不接受 context，关闭连接是唯一能打断阻塞读的手段。
+type idleReadCloser struct {
+	rc    io.ReadCloser
+	idle  time.Duration
+	timer *time.Timer
+}
+
+func newIdleReadCloser(rc io.ReadCloser, idle time.Duration) *idleReadCloser {
+	r := &idleReadCloser{rc: rc, idle: idle}
+	r.reset()
+	return r
+}
+
+func (r *idleReadCloser) reset() {
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	if r.idle > 0 {
+		r.timer = time.AfterFunc(r.idle, func() { _ = r.rc.Close() })
+	}
+}
+
+func (r *idleReadCloser) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	if n > 0 {
+		r.reset()
+	}
+	return n, err
+}
+
+func (r *idleReadCloser) Close() error {
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	return r.rc.Close()
 }
 
 // boundedReadCloser 给上游 body 套上字节上限，并在 Close 时取消请求 context。

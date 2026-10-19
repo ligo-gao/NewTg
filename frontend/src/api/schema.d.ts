@@ -5237,7 +5237,7 @@ export interface components {
         TaskPluginKey: string;
         /** @description 对外任务 ID（task_<32 hex>） */
         TaskIDQuery: string;
-        /** @description 任务内产物 key（由 task.data.artifacts[].key 投影） */
+        /** @description 任务内产物 key（由 task.data.artifacts[].key 投影；T6b 冻结字符集） */
         TaskArtifactKey: string;
         /** @description 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403） */
         TaskArtifactAccess: string;
@@ -10198,7 +10198,7 @@ export interface operations {
             path: {
                 /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
                 key: components["parameters"]["TaskPluginKey"];
-                /** @description 任务内产物 key（由 task.data.artifacts[].key 投影） */
+                /** @description 任务内产物 key（由 task.data.artifacts[].key 投影；T6b 冻结字符集） */
                 artifact_key: components["parameters"]["TaskArtifactKey"];
             };
             cookie?: never;

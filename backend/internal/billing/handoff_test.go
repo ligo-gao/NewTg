@@ -92,6 +92,61 @@ func TestSessionDetachStopsHeartbeatAndKeepsHold(t *testing.T) {
 	}
 }
 
+// TestTerminateAtHeldWithoutPricing 验收 T6b 的成功任务默认结算路径：
+// 空 UsageFact = 按预扣额终结（差额 0），**不需要**重新解析定价。
+//
+// 这是「资金不冻结」的关键：重建会话没有冻结快照，若走按 token 重算的
+// Terminate，在 ratio/tiered 模式下空用量会算成 0 并全额退款（成功任务变
+// 免费服务）；而完全不结算会让 Detach 后的 hold 永久冻结。
+func TestTerminateAtHeldWithoutPricing(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	// source=nil：任何定价解析都会失败；at-held 路径必须完全不依赖它。
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+
+	requestID := testRequestID("handoff-held")
+	session := newBillingTestSession(engine, userID, requestID, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance after pre-consume = %d, want 400", got)
+	}
+	// 模拟 Detach 后的持久化交接：只有 requestID，没有会话对象。
+	if err := session.Detach(requestID); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	if err := engine.TerminateByRequestID(requestID, contract.UsageFact{}); err != nil {
+		t.Fatalf("TerminateByRequestID(empty): %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("at-held settlement changed balance: %d, want 400 (pre-consumed retained)", got)
+	}
+	st, err := engine.ledger.openHoldState(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("openHoldState: %v", err)
+	}
+	if st.Held != 0 || !st.Closed || st.ClosedStatus != "settled" {
+		t.Fatalf("hold not settled at held amount: %+v", st)
+	}
+
+	// 幂等：重复终结不改变余额，也不产生第二条结算行。
+	if err := engine.TerminateByRequestID(requestID, contract.UsageFact{}); err != nil {
+		t.Fatalf("idempotent TerminateByRequestID(empty): %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("idempotent at-held settlement changed balance: %d", got)
+	}
+	// 已结算的请求不再被 worker 兜底扫描退款。
+	if err := engine.RecoverAbandonedByID(context.Background(), requestID, 0); err != nil {
+		t.Fatalf("RecoverAbandonedByID on settled request: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("abandoned recovery touched a settled request: balance %d", got)
+	}
+}
+
 func TestEngineHandoffByRequestID(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 500)

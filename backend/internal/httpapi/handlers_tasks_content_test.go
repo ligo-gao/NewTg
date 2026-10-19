@@ -217,6 +217,25 @@ func TestContentRejectsBadOrMissingTicket(t *testing.T) {
 	}
 }
 
+func TestContentRejectsInvalidArtifactKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("invalid artifact_key must not hit upstream")
+	}))
+	defer upstream.Close()
+	handler, _, task := contentTestDeps(t, upstream.URL, contentPluginSource)
+	mux := newTaskRelayMux(handler)
+
+	signer := tasks.NewArtifactSigner("task-handler-test-key", 0)
+	access := signer.Sign("sample", task.PublicTaskID, "bad key", time.Now())
+	target := "/v1/tasks/sample/artifacts/bad%20key/content?task_id=" + task.PublicTaskID + "&access=" + access
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestContentUnknownArtifactIs404(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unknown artifact must not hit upstream")

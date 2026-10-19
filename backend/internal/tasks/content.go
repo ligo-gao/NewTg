@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,16 @@ const (
 	// 用途。
 	artifactAccessMessagePrefix = "newtg/task-artifact-content/v1\x00"
 )
+
+// artifactKeyPattern 是产物 key 的字符集（T6b 冻结）。
+//
+// 为什么限制：artifact_key 是 URL 路径段；含 `/`、`%`、控制字符的 key 会在
+// Go ServeMux 的路径解码（按解码后路径匹配）与 PathEscape 之间产生歧义，
+// 也可能被用来构造跨段路由。含 `/` 等非法字符直接 400，不再尝试转义。
+var artifactKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// ValidArtifactKey 报告 key 是否落在冻结字符集内。
+func ValidArtifactKey(key string) bool { return artifactKeyPattern.MatchString(key) }
 
 // ArtifactSigner 签发/校验产物能力 URL。
 //

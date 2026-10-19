@@ -363,23 +363,31 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			settled = true
 			quota = 0
 		}
-	case result.State == tasks.StateSuccess && hasTaskUsage(result.Data):
-		if err := session.Terminate(contract.UsageFact{
-			Model: model,
-			Usage: contract.Usage{Source: contract.UsageEstimated},
-		}); err != nil {
-			settlementPending = true
-			slog.Warn("tasks: terminate for immediate success did not complete",
-				"request_id", rc.RequestID, "error", err)
-		} else {
-			settled = true
-		}
 	case result.State == tasks.StateSuccess:
-		// 即时成功但**没有 usage**：差额不可信（与 §9.4 表达式失败同一保守
-		// 方向），保留预扣并标记 settlement_pending，交给任务计价批次结算。
-		// 不标记的话，这笔 hold 既不会被轮询器看到（fetch_mode=inline 不轮询），
-		// 也不会进入补偿扫描——预扣会永久冻结。
-		settlementPending = true
+		// 即时 SUCCESS 同口径「按预扣额终结」：先停心跳/租约，再以空 fact
+		// 结清 hold（差额 0）。不再按 usage 重算——没有任务计价表达式时
+		// 重算不可信，且 Detach 后不终结会让预扣永久冻结。
+		//
+		// 顺序必须是 Detach → Terminate：Terminate 走独立的 ByRequestID
+		// 会话，不会停掉本请求的心跳 goroutine。
+		if handoff, ok := session.(contract.BillingHandoff); ok {
+			if err := handoff.Detach(rc.RequestID); err != nil {
+				// 交接失败不阻断资金收敛；最坏情况是心跳延迟被 worker 兜底
+				//（安全方向），任务行仍有 request_id 可人工收敛。
+				slog.Warn("tasks: billing detach failed before inline settlement",
+					"request_id", rc.RequestID, "error", err)
+			}
+			if err := handoff.TerminateByRequestID(rc.RequestID, contract.UsageFact{}); err != nil {
+				settlementPending = true
+				slog.Warn("tasks: terminate-at-held for immediate success did not complete",
+					"request_id", rc.RequestID, "error", err)
+			} else {
+				settled = true
+			}
+		} else {
+			// 无交接面（测试桩/旧会话）：保留预扣并标 pending，由补偿扫描处理。
+			settlementPending = true
+		}
 	}
 
 	now := time.Now().UTC()
@@ -538,6 +546,11 @@ func (h *TasksHandler) signArtifacts(r *http.Request, pluginKey string, task *ta
 	base := h.contentBase(r)
 	now := time.Now()
 	for i := range items {
+		// 非法 key（含 `/` 等）不签发 URL：客户端拿到一个必然 400 的能力
+		// 地址比没有地址更糟。合法性由 content 端点同口径校验。
+		if !tasks.ValidArtifactKey(items[i].Key) {
+			continue
+		}
 		items[i].ContentURL = h.signer.ContentURL(base, pluginKey, task, items[i].Key, now)
 	}
 	return items
@@ -573,6 +586,13 @@ func (h *TasksHandler) handleContent(w http.ResponseWriter, r *http.Request) {
 	if key == "" || artifactKey == "" || publicID == "" || access == "" {
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
 			"task_id and access are required")
+		return
+	}
+	if !tasks.ValidArtifactKey(artifactKey) {
+		// 冻结字符集 [A-Za-z0-9._-]{1,128}：含 `/` 等直接 400，避免路径
+		// 解码歧义与跨段路由构造。
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
+			"invalid artifact_key")
 		return
 	}
 	if !h.signer.Verify(key, publicID, artifactKey, access, time.Now()) {
@@ -836,15 +856,6 @@ func upstreamModelName(ch *tasks.ChannelTarget, model string) string {
 		}
 	}
 	return model
-}
-
-// hasTaskUsage 报告提交结果里是否已有可用量事实。
-//
-// 只有「即时 SUCCESS 且带 usage」才可安全地立即 Terminate；否则差额不可信，
-// 保留预扣交给 T6b（设计 §9.4 的保守分支）。
-func hasTaskUsage(data map[string]any) bool {
-	usage, ok := data["usage"].(map[string]any)
-	return ok && len(usage) > 0
 }
 
 // taskDurationSeconds 读取请求体里的 seconds（任务时长）。

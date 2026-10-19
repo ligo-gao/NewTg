@@ -141,12 +141,13 @@ func (fakeTaskAccess) UserAccess(context.Context, int64) (string, []string, stri
 // 让假会话实现 contract.BillingHandoff，覆盖异步交接路径。
 type taskBillingRecorder struct {
 	*billingseam.Stub
-	mu            sync.Mutex
-	calls         []string
-	preConsumeErr error
-	reserveErr    error
-	refundErr     error
-	terminateErr  error
+	mu               sync.Mutex
+	calls            []string
+	preConsumeErr    error
+	reserveErr       error
+	refundErr        error
+	terminateErr     error
+	terminateByIDErr error
 	// hold 模拟真实引擎的预扣金额（桩的 PreConsume 只按 MaxTokens 预留，
 	// 任务估算没有 MaxTokens 时会是 0）。测试用它断言 quota/退款行为。
 	hold           int64
@@ -213,7 +214,9 @@ func (b *taskBillingRecorder) Detach(requestID string) error {
 
 func (b *taskBillingRecorder) TerminateByRequestID(string, contract.UsageFact) error {
 	b.record("terminate_by_id")
-	return nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.terminateByIDErr
 }
 
 func (b *taskBillingRecorder) RefundByRequestID(string) error {
@@ -521,9 +524,12 @@ func TestTaskSubmitInlineTerminal(t *testing.T) {
 	if row.FetchMode != "inline" {
 		t.Fatalf("immediate terminal fetch_mode = %q, want inline", row.FetchMode)
 	}
-	// SUCCESS 且已有 usage：立即 Terminate 结算，不做 Detach。
-	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,terminate" {
-		t.Fatalf("billing calls = %q, want preconsume,reserve,terminate", got)
+	// 即时 SUCCESS：Detach 停心跳后按预扣额终结（空 fact），不按 usage 重算。
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,detach,terminate_by_id" {
+		t.Fatalf("billing calls = %q, want preconsume,reserve,detach,terminate_by_id", got)
+	}
+	if row.PrivateData["settlement_pending"] == true {
+		t.Fatalf("successful inline settlement must not be left pending: %#v", row.PrivateData)
 	}
 }
 
@@ -562,7 +568,7 @@ func TestTaskSubmitInlineFailureRefunds(t *testing.T) {
 	}
 }
 
-func TestTaskSubmitInlineSuccessWithoutUsageDetaches(t *testing.T) {
+func TestTaskSubmitInlineSuccessWithoutUsageSettlesAtHeld(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -584,8 +590,42 @@ func TestTaskSubmitInlineSuccessWithoutUsageDetaches(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 	}
-	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,detach" {
-		t.Fatalf("billing calls = %q, want preconsume,reserve,detach", got)
+	// 无 usage 也必须终结 hold（不能只 Detach）：否则预扣永久冻结。
+	if got := strings.Join(billing.ReserveCalls(), ","); got != "preconsume,reserve,detach,terminate_by_id" {
+		t.Fatalf("billing calls = %q, want preconsume,reserve,detach,terminate_by_id", got)
+	}
+	if row := store.rows[0]; row.PrivateData["settlement_pending"] == true {
+		t.Fatalf("at-held settlement must not be left pending: %#v", row.PrivateData)
+	}
+}
+
+func TestTaskSubmitInlineSuccessSettlementFailureMarksPending(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk")}}
+	billing := newTaskBillingRecorder()
+	billing.terminateByIDErr = errors.New("ledger unavailable")
+	handler, _ := newTaskTestHandler(t, store, channels, sampleInlineManager(t),
+		func(*contract.RelayContext) contract.BillingSession { return billing })
+	mux := newTaskRelayMux(handler)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model"}`))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	row := store.rows[0]
+	// 结算失败：终态不回退，写 settlement_pending 供补偿重试，绝不退款。
+	if row.State != tasks.StateSuccess || row.PrivateData["settlement_pending"] != true {
+		t.Fatalf("failed settlement not marked pending: state=%s private=%#v", row.State, row.PrivateData)
+	}
+	if strings.Contains(strings.Join(billing.ReserveCalls(), ","), "refund") {
+		t.Fatalf("failed settlement must not refund: %v", billing.ReserveCalls())
 	}
 }
 

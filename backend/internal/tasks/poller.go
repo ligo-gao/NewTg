@@ -637,10 +637,9 @@ func usageFieldUnits(m *plugin.Manifest) map[string]string {
 	return out
 }
 
-// 任务用量上界。MaxImageN 的唯一所有者是 relay-04 的 multimodal 包（契约
-// §10.1 冻结 128）；tasks 包不 import 它（那会把整条 relay 适配器依赖带进
-// 数据面），此处以同值常量承接并在测试中断言与 relay/multimodal.MaxImageN
-// 一致的计划外风险登记在 T6b 报告。
+// 任务用量上界。maxTaskImageCount 与契约 §10.1 的 MaxImageN 同源（同值 128）；
+// 唯一所有者是 relay-04 的 multimodal 包，tasks 包不 import 它（那会把整条
+// relay 适配器依赖带进数据面），因此在此复写同值常量，并由钳制测试覆盖。
 const maxTaskImageCount = 128
 
 // clampUsageNumber 按单位钳制用量数量：

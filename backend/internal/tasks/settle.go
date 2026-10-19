@@ -3,7 +3,6 @@ package tasks
 import (
 	"context"
 	"strconv"
-	"time"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
@@ -16,20 +15,20 @@ import (
 // 在仓库中尚不存在，brief 明确禁止在 T6b 新建第二套。因此：
 //
 //   - FAILURE：全额退款（RefundByRequestID）。
-//   - SUCCESS：保留预扣（KeepReservation）——**不调用 TerminateByRequestID**。
+//   - SUCCESS：按预扣额终结——`TerminateByRequestID(requestID, UsageFact{})`
+//     以 hold 为最终成本（差额 0）释放预扣并写成功日志。
 //
-// 为什么成功也不 Terminate：Terminate 会用当前定价快照按「不完整的 usage」
-// 重算实际成本；任务用量事实（seconds/count）并不映射到 token 计费的入参，
-// 一旦快照是 token/倍率模式，重算会得到 0 并把一笔已成功的任务全额退掉
-// （免费服务）。差额不可信时保留预扣是设计 §9.4「表达式失败保留预扣」的
-// 同一保守方向。待 T6c 落地任务计价表达式后，由表达式求值产生可信的
-// 实际额度，再走差额结算并清除 settlement_pending。
+// 为什么用空 fact 而不是按 pricing 重算：任务提交已 Detach，hold 没有租约；
+// 若不终结，用户余额会被永久占用（账本 hold 永不释放）。而重算需要可信的
+// 任务用量→金额映射（任务计价表达式），本批没有；空 fact 语义由计费侧
+// 明确定义为「按预扣额结清」，不做任何 token 重算，绝不会把成功任务退成 0。
 //
-// 代价（明确登记）：成功任务的 hold 在 T6c 之前保持冻结；本批不释放它，
-// 也不把它写成消耗。补偿扫描会把这些任务计入 settlement_pending 计数。
+// `settlement_pending` 只保留给两种失败：① Terminate 调用失败（可重试）；
+// ② 未来表达式求值失败（设计 §9.4「表达式失败保留预扣」）。正常成功任务
+// 终结后写 `billing_final=true` 且 `settlement_pending=false`。
 
 // settleTerminal 是终态结算的唯一入口。调用方必须已经通过 CAS 赢得终态。
-func (p *Poller) settleTerminal(ctx context.Context, task *Task, compiled *plugin.CompiledPlugin) {
+func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.CompiledPlugin) {
 	if task == nil {
 		return
 	}
@@ -45,7 +44,7 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, compiled *plugi
 	case StateFailure:
 		p.refundTerminal(ctx, task, requestID)
 	case StateSuccess:
-		p.keepReservation(ctx, task, compiled)
+		p.settleSuccessAtHeld(ctx, task, requestID)
 	default:
 		// 非终态调用是编程错误：不静默推进，留给调用方修正。
 		p.log.Error("tasks: settleTerminal called for non-terminal task",
@@ -76,38 +75,31 @@ func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID strin
 	})
 }
 
-// keepReservation 记录「保留预扣」的结算结论。
+// settleSuccessAtHeld 以**预扣额**终结成功任务，释放 hold（差额 0）。
 //
-// 幂等：同一任务重复结算只刷新 settled_at，不改变金额；告警只在首次
-// （settlement_pending 从无到有）发出，避免 15s 一轮的补偿扫描刷屏。
-func (p *Poller) keepReservation(ctx context.Context, task *Task, compiled *plugin.CompiledPlugin) {
-	alreadyPending := boolFlag(task.PrivateData["settlement_pending"])
-	if err := p.repo.UpdateBilling(ctx, task.ID, nil, map[string]any{
+// 空 UsageFact 是计费侧冻结的「按预扣额结清」语义（billing/handoff.go）：
+// 不解析定价、不按 token 重算——因此不会把成功任务退成 0。
+//
+// 幂等：TerminateByRequestID 按 requestID 幂等；重复调用只会重复写同一
+// 结论（日志按 requestID 幂等），金额不变。
+func (p *Poller) settleSuccessAtHeld(ctx context.Context, task *Task, requestID string) {
+	if err := p.billing.TerminateByRequestID(requestID, contract.UsageFact{}); err != nil {
+		// 结算失败：hold 仍在，写 settlement_pending + 保留 billing_pending，
+		// 补偿扫描下一轮重试。终态不回退。
+		p.markBilling(ctx, task, nil, map[string]any{
+			"settlement_pending": true,
+			"billing_pending":    true,
+		})
+		p.log.Error("tasks: terminate-at-held failed; marked settlement_pending for reconciliation",
+			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
+		return
+	}
+	// 成功：quota 即预扣额（本次结算不改变金额），封账并清除待办标记。
+	held := task.Quota
+	p.finishBilling(ctx, task, &held, map[string]any{
 		"billing_pending":    false,
-		"settlement_pending": true,
-		"settled_at":         p.now().UTC().Format(time.RFC3339),
-	}); err != nil {
-		p.log.Error("tasks: persist keep-reservation failed; billing_pending retained",
-			"task_id", task.PublicTaskID, "error", err)
-		return
-	}
-	if task.PrivateData != nil {
-		task.PrivateData["settlement_pending"] = true
-		task.PrivateData["billing_pending"] = false
-	}
-	if alreadyPending {
-		return
-	}
-	var manifest *plugin.Manifest
-	if compiled != nil {
-		manifest = compiled.Manifest()
-	}
-	fact := buildTaskUsageFact(task.Data, manifest)
-	p.log.Warn("tasks: successful task kept its reservation because no task billing expression is configured; "+
-		"settlement deferred to the task-pricing batch (T6c)",
-		"task_id", task.PublicTaskID, "plugin", task.PluginKey,
-		"request_id", toString(task.PrivateData["request_id"]),
-		"quota_held", task.Quota, "usage_facts", len(fact.Facts))
+		"settlement_pending": false,
+	})
 }
 
 // finishBilling 在资金动作成功后落最终标记；失败只记录（幂等动作可重试）。
@@ -137,48 +129,33 @@ func (p *Poller) markBilling(ctx context.Context, task *Task, quota *int64, flag
 
 // reconcileOnce 是补偿扫描的最小版本。
 //
-// 处理对象：
+// 处理对象（均为终态）：
 //   - FAILURE 且 billing_pending/refund_pending：重试退款；
-//   - SUCCESS 且 billing_pending（尚未写下保留预扣结论）：补写 settlement_pending。
+//   - SUCCESS 且 billing_pending/settlement_pending：重试「按预扣额终结」。
+//     这同时覆盖 T6a 遗留的即时成功无 usage 行（当时只写了 settlement_pending）：
+//     它们的 hold 同样需要释放，否则永久冻结。
 //
-// settlement_pending 的成功任务**不重试**：本批没有表达式可求值，重试只会
-// 产生同一结论并每轮写库。只统计数量供运维观察；真正的补结算属 T6c。
+// 单轮上限 defaultReconcileLimit（200 行）；更细的分页/水位属 T6c。
 func (p *Poller) reconcileOnce(ctx context.Context) {
 	tasks, err := p.repo.ListReconcilable(ctx, p.reconcileLimit)
 	if err != nil {
 		p.log.Error("tasks: list reconcilable tasks failed; retrying next round", "error", err)
 		return
 	}
-	if len(tasks) == 0 {
-		return
-	}
-	var settlementPending int
 	for _, task := range tasks {
 		if ctx.Err() != nil {
 			return
 		}
-		switch task.State {
-		case StateFailure:
-			p.settleTerminal(ctx, task, nil)
-		case StateSuccess:
-			if boolFlag(task.PrivateData["settlement_pending"]) && !boolFlag(task.PrivateData["billing_pending"]) {
-				settlementPending++
-				continue
-			}
-			p.settleTerminal(ctx, task, nil)
-		}
-	}
-	if settlementPending > 0 {
-		p.log.Debug("tasks: successful tasks await task-pricing expression settlement (T6c)",
-			"count", settlementPending)
+		p.settleTerminal(ctx, task, nil)
 	}
 }
 
 // buildTaskUsageFact 把 task.data.usage 转成契约的 TaskUsageFact（只数量）。
 //
-// 单位来自插件声明；未声明单位的数值字段不入 Units（设计 §9.3：枚举字段
-// 无单位）。本批不消费它做计价——保留它是为了 T6c 的表达式求值有唯一入口，
-// 避免届时候选两套「从 data 读 usage」的实现。
+// 本批结算以预扣额终结、不消费 usage 求值；保留这个唯一构造入口是为了
+// T6c 的任务计价表达式：届时的表达式求值只应从这里读 usage，避免出现第二套
+// 「从 data 读 usage」的实现。单位来自插件声明；未声明单位的数值字段不入
+// Units（设计 §9.3：枚举字段无单位）。
 func buildTaskUsageFact(data map[string]any, m *plugin.Manifest) contract.TaskUsageFact {
 	fact := contract.TaskUsageFact{Facts: map[string]contract.UsageFactValue{}}
 	usage, ok := data["usage"].(map[string]any)

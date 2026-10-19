@@ -316,12 +316,13 @@ func TestMainSchemaRuntimeIndexes(t *testing.T) {
 	}
 }
 
-// TestMainSchemaTaskIndexes：（c.1）tasks 的三条读取索引必须精确存在。
+// TestMainSchemaTaskIndexes：（c.1）tasks 的读取索引必须精确存在。
 //
-// 三条索引各有唯一用途，删掉任意一条都会让对应查询退化成全表扫描：
+// 各索引各有唯一用途，删掉任意一条都会让对应查询退化成全表扫描：
 //   - tasks_user_public_idx：能力式读取按 (user_id, public_task_id) 定位；
 //   - tasks_pending_idx：轮询器只扫未完成任务的**部分**索引；
-//   - tasks_user_created_idx：客户端台账按创建时间倒序分页。
+//   - tasks_user_created_idx：客户端台账按创建时间倒序分页；
+//   - tasks_billing_pending_idx（T6b）：补偿扫描只扫带待办标记的终态行。
 //
 // 这里不只断言「存在」，还断言列序与部分谓词，避免被同名但语义不同的
 // 索引顶替（那会让「索引存在」变成假阳性）。
@@ -336,6 +337,8 @@ func TestMainSchemaTaskIndexes(t *testing.T) {
 		{"tasks_user_public_idx", []string{"user_id", "public_task_id"}, false, ""},
 		{"tasks_pending_idx", []string{"state"}, true, "success"},
 		{"tasks_user_created_idx", []string{"user_id", "created_at"}, false, ""},
+		// T6b：终态补偿扫描的部分索引（T6b 迁移）。谓词含 billing_pending。
+		{"tasks_billing_pending_idx", []string{"id"}, true, "billing_pending"},
 	}
 	for _, c := range cases {
 		c := c

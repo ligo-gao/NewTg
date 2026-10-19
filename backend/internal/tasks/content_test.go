@@ -108,6 +108,21 @@ func TestContentURLContainsEscapedTicket(t *testing.T) {
 	}
 }
 
+func TestValidArtifactKey(t *testing.T) {
+	valid := []string{"v1", "art_1", "a.b-c", strings.Repeat("a", 128)}
+	invalid := []string{"", "a/b", "a b", "a%2Fb", "中文", strings.Repeat("a", 129)}
+	for _, key := range valid {
+		if !ValidArtifactKey(key) {
+			t.Fatalf("key %q must be valid", key)
+		}
+	}
+	for _, key := range invalid {
+		if ValidArtifactKey(key) {
+			t.Fatalf("key %q must be rejected", key)
+		}
+	}
+}
+
 func TestRedactAccess(t *testing.T) {
 	cases := map[string]string{
 		"/v1/tasks/sample/artifacts/v1/content?task_id=task_abc&access=v1.123.abc": "access=REDACTED",
@@ -196,6 +211,28 @@ func TestFetchContentHeadUsesHeadMethod(t *testing.T) {
 	if resp.Headers["Content-Length"] != "123" {
 		t.Fatalf("headers not propagated: %#v", resp.Headers)
 	}
+}
+
+func TestIdleReadCloserAbortsStalledUpstream(t *testing.T) {
+	pr, pw := io.Pipe()
+	// 生产值 30s 不适合单测；直接构造一个 20ms 空闲上限，验证「卡死即关闭」。
+	body := newIdleReadCloser(pr, 20*time.Millisecond)
+	defer body.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 8)
+		if _, err := body.Read(buf); err == nil {
+			t.Errorf("stalled read must fail after the idle timeout")
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("idle timeout did not interrupt the blocked read")
+	}
+	_ = pw.Close()
 }
 
 func TestFetchContentRejectsOversizeByContentLength(t *testing.T) {

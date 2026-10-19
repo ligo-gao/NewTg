@@ -6078,10 +6078,11 @@ components:
       name: artifact_key
       in: path
       required: true
-      description: 任务内产物 key（由 task.data.artifacts[].key 投影）
+      description: 任务内产物 key（由 task.data.artifacts[].key 投影；T6b 冻结字符集）
       schema:
         type: string
-        maxLength: 191
+        pattern: ^[A-Za-z0-9._-]{1,128}$
+        maxLength: 128
     TaskArtifactAccess:
       name: access
       in: query

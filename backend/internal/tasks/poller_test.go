@@ -183,17 +183,18 @@ func cloneTask(t *Task) *Task {
 }
 
 type fakeHandoff struct {
-	mu         sync.Mutex
-	refunds    []string
-	terminates int
-	refundErr  error
+	mu           sync.Mutex
+	refunds      []string
+	terminates   []string
+	terminateErr error
+	refundErr    error
 }
 
-func (f *fakeHandoff) TerminateByRequestID(string, contract.UsageFact) error {
+func (f *fakeHandoff) TerminateByRequestID(requestID string, _ contract.UsageFact) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.terminates++
-	return nil
+	f.terminates = append(f.terminates, requestID)
+	return f.terminateErr
 }
 
 func (f *fakeHandoff) RefundByRequestID(requestID string) error {
@@ -207,6 +208,12 @@ func (f *fakeHandoff) refundCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.refunds)
+}
+
+func (f *fakeHandoff) terminateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.terminates)
 }
 
 func compilePollPlugin(t *testing.T) *plugin.CompiledPlugin {
@@ -295,15 +302,19 @@ func TestPollSuccessKeepsReservation(t *testing.T) {
 	if got.State != StateSuccess || got.FinishTime == nil || got.ProgressPercent != 100 {
 		t.Fatalf("task not finalized: %#v", got)
 	}
-	if !boolFlag(got.PrivateData["settlement_pending"]) || boolFlag(got.PrivateData["billing_pending"]) {
-		t.Fatalf("success must keep reservation with settlement_pending: %#v", got.PrivateData)
+	if !boolFlag(got.PrivateData["billing_final"]) || boolFlag(got.PrivateData["settlement_pending"]) ||
+		boolFlag(got.PrivateData["billing_pending"]) {
+		t.Fatalf("success must be settled: private=%#v", got.PrivateData)
 	}
 	if got.Quota != 100 {
 		t.Fatalf("quota = %d, want the untouched pre-consumed 100", got.Quota)
 	}
-	if handoff.refundCount() != 0 || handoff.terminates != 0 {
-		t.Fatalf("success must not refund/terminate without an expression (refunds=%d terminates=%d)",
-			handoff.refundCount(), handoff.terminates)
+	if handoff.refundCount() != 0 || handoff.terminateCount() != 1 {
+		t.Fatalf("success must terminate at held without refund (refunds=%d terminates=%d)",
+			handoff.refundCount(), handoff.terminateCount())
+	}
+	if handoff.terminates[0] != "req_1" {
+		t.Fatalf("terminate used wrong request id: %v", handoff.terminates)
 	}
 	usage, _ := got.Data["usage"].(map[string]any)
 	// seconds 钳到 MaxRequestTaskDurationSeconds；未声明字段（cost）不得落库。
@@ -526,6 +537,66 @@ func TestSettleIsIdempotentOnFailure(t *testing.T) {
 	}
 	if got := repo.get(task.ID); got.State != StateFailure || got.Quota != 0 {
 		t.Fatalf("repeat settlement changed state/quota: %#v", got)
+	}
+}
+
+func TestSuccessTerminateFailureMarksPendingAndRetries(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"SUCCESS"}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := repo.add(submittedTask(1, 7))
+	handoff := &fakeHandoff{terminateErr: errors.New("ledger unavailable")}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	got := repo.get(task.ID)
+	// 终态不回退；settlement_pending + billing_pending 供补偿重试。
+	if got.State != StateSuccess || !boolFlag(got.PrivateData["settlement_pending"]) ||
+		!boolFlag(got.PrivateData["billing_pending"]) {
+		t.Fatalf("failed terminate must leave settlement_pending: state=%s private=%#v", got.State, got.PrivateData)
+	}
+	// 同一轮 reconcile 还会再试一次（补偿），仍然失败但不会误退。
+	if handoff.refundCount() != 0 {
+		t.Fatalf("failed terminate must never refund a successful task")
+	}
+
+	handoff.mu.Lock()
+	handoff.terminateErr = nil
+	handoff.mu.Unlock()
+	p.RunOnce(context.Background())
+	got = repo.get(task.ID)
+	if !boolFlag(got.PrivateData["billing_final"]) || boolFlag(got.PrivateData["settlement_pending"]) {
+		t.Fatalf("reconcile did not finish the held settlement: %#v", got.PrivateData)
+	}
+}
+
+func TestBuildTaskUsageFactUsesDeclaredUnits(t *testing.T) {
+	manifest := &plugin.Manifest{
+		UsageSchema: map[string]plugin.UsageField{
+			"seconds": {Type: "number", Unit: "second"},
+			"mode":    {Type: "enum"},
+		},
+	}
+	fact := buildTaskUsageFact(map[string]any{"usage": map[string]any{
+		"seconds": float64(5),
+		"mode":    "pro",
+		"cost":    float64(9),
+	}}, manifest)
+	if len(fact.Facts) != 2 || fact.Facts["seconds"].Num == nil || *fact.Facts["seconds"].Num != 5 {
+		t.Fatalf("unexpected facts: %#v", fact.Facts)
+	}
+	if fact.Units["seconds"] != contract.UnitSecond {
+		t.Fatalf("unit mapping wrong: %#v", fact.Units)
+	}
+	if _, ok := fact.Facts["mode"]; !ok || fact.Facts["mode"].Str == nil || *fact.Facts["mode"].Str != "pro" {
+		t.Fatalf("enum fact missing: %#v", fact.Facts)
+	}
+	if _, ok := fact.Facts["cost"]; ok {
+		t.Fatalf("undeclared field leaked into usage fact")
 	}
 }
 
