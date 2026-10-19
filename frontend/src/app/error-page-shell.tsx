@@ -237,7 +237,11 @@ function RequestIdRow({ requestId, t }: RequestIdRowProps) {
         视觉反馈由 Toast 承担，这里保持视觉隐藏以免重复。
       */}
       <p role="status" aria-live="polite" className="sr-only">
-        {status === 'copied' ? t('common.action.copied') : null}
+        {status === 'copied'
+          ? t('common.action.copied')
+          : status === 'failed'
+            ? t('common.error_page.copy_failed')
+            : null}
       </p>
     </div>
   )

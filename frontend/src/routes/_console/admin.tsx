@@ -19,7 +19,12 @@ export const Route = createFileRoute('/_console/admin')({
       throw redirect({ to: '/sign-in', search: { redirect: location.href } })
     }
     if (me.role !== 'admin') {
-      throw redirect({ to: '/403' })
+      // 403 页在会话失效时要能把用户送回「他真正想去的地方」，而不是
+      // /403 自己；把当前 pathname+search 作为 redirect 交给 /403。
+      throw redirect({
+        to: '/403',
+        search: { redirect: `${location.pathname}${location.searchStr}` },
+      })
     }
   },
   component: Outlet,

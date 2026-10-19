@@ -61,6 +61,15 @@ export function readOptionalSiteConfig(status: unknown): OptionalSiteConfig {
   return config
 }
 
+/**
+ * fetch 传输失败（DNS/连接拒绝等）在 `parseProblem` 里归一为 `status: 0` /
+ * `kind: 'offline'`。浏览器此时 `navigator.onLine` 仍可能为 true，所以探测
+ * 错误必须显式传给骨架，否则会把断网误报成权限或维护状态（web-00 §8.5）。
+ */
+function isTransportFailure(error: unknown): boolean {
+  return error instanceof ApiError && error.kind === 'offline'
+}
+
 export interface ErrorStatusPageProps {
   status: 401 | 403
   /** 触发 401/403 的原路径；经 `sanitizeAuthRedirect` 后才能进入登录链接。 */
@@ -101,6 +110,10 @@ export function ErrorStatusPage({
   const probe = useQuery({
     ...meQueryOptions(),
     enabled: status === 403 && probeSession && !offline,
+    // 停留期间必须持续观察会话：用户可能在别的标签页退出/被踢，只在挂载时
+    // 探测一次会让 403 页一直留在屏幕上（F-09-10 TC-05）。30s 与 503 的
+    // readyz 探测同频；refetchOnWindowFocus 仍保留默认的立即复查。
+    refetchInterval: 30_000,
   })
 
   useEffect(() => {
@@ -148,6 +161,7 @@ export function ErrorStatusPage({
       title={t('common.error_page.403.title')}
       body={t('common.error_page.403.body')}
       requestId={requestId}
+      networkFailure={isTransportFailure(probe.error)}
       actions={
         <>
           <ErrorActionLink href="/">{t('common.error_page.home')}</ErrorActionLink>
@@ -243,6 +257,14 @@ export function ServerErrorPage({
   )
 }
 
+/**
+ * 503 探测间隔（F-09-13 超限态）：默认 30s；探测本身被限流（429）时拉长到
+ * 60s，避免在服务恢复前继续加压。导出为纯函数以便直接验证 429 分支。
+ */
+export function readyzProbeInterval(error: unknown, baseMs: number): number {
+  return error instanceof ApiError && error.status === 429 ? 60_000 : baseMs
+}
+
 export interface ServiceUnavailablePageProps {
   requestId?: string
   /** 可重发的原请求；无 redirect 时路由层传入整页 reload。 */
@@ -273,10 +295,7 @@ export function ServiceUnavailablePage({
     queryFn: ({ signal }) => fetchReadyz(signal),
     retry: false,
     refetchInterval: (query) =>
-      query.state.error instanceof ApiError &&
-      query.state.error.status === 429
-        ? 60_000
-        : probeIntervalMs,
+      readyzProbeInterval(query.state.error, probeIntervalMs),
     refetchIntervalInBackground: false,
   })
 
@@ -309,6 +328,7 @@ export function ServiceUnavailablePage({
       title={t('common.error_page.503.title')}
       body={t('common.error_page.503.body')}
       requestId={requestId}
+      networkFailure={isTransportFailure(probe.error)}
       banner={
         recovered ? (
           <div
@@ -329,6 +349,20 @@ export function ServiceUnavailablePage({
               <path d="m3 8 3.5 3.5L13 5" />
             </svg>
             {t('common.error_page.503.recovered')}
+            {/* 恢复横幅内嵌重试（F-09-13 线框）：与下方主按钮同一动作，
+                用户看到「已恢复」时就地重发，不必再移动视线。 */}
+            {onRetry !== undefined ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 px-3 text-xs"
+                onClick={() => void retry()}
+                disabled={offline || retrying}
+                aria-busy={retrying}
+              >
+                {t('common.action.retry')}
+              </Button>
+            ) : null}
           </div>
         ) : null
       }
