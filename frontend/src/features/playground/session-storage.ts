@@ -15,6 +15,8 @@ export interface PlaygroundMessage {
   model?: string
   /** 用户中途停止时保留已生成内容并标记。 */
   stopped?: boolean
+  /** 流被截断/传输中断（未收到 `[DONE]`）：保留内容但不得当成成功回复。 */
+  interrupted?: boolean
   usage?: PlaygroundUsage
 }
 

@@ -38,6 +38,8 @@ type PlaygroundFailure =
   | { kind: 'quota' }
   | { kind: 'forbidden' }
   | { kind: 'auth' }
+  | { kind: 'session' }
+  | { kind: 'csrf' }
   | { kind: 'server'; requestId?: string }
   | { kind: 'other'; requestId?: string; message?: string }
 
@@ -71,8 +73,18 @@ export function PlaygroundPage() {
   })
 
   const groups: UsableGroup[] = statusQuery.data?.usable_groups ?? []
-  const availableModels = groups.flatMap((group) => group.models)
+  /**
+   * `/pg` 的准入按 `users.group`（当前分组）判定，不是全部可用分组。
+   * 下拉只展示当前分组的模型，避免多分组部署下选到别的分组、首条请求
+   * 就 403。当前分组取自钱包摘要（schema 的 `group`），因为它是本页已经
+   * 需要读取的结算身份来源。
+   */
+  const currentGroupName = walletQuery.data?.group ?? ''
+  const currentGroup = groups.find((group) => group.name === currentGroupName)
+  const availableModels = currentGroup?.models ?? []
   const availableSet = new Set(availableModels)
+  const groupReady = walletQuery.isSuccess && currentGroup !== undefined
+  const groupUnknown = !walletQuery.isPending && !groupReady
   const defaultModel = settingsQuery.data?.default_model ?? ''
   const username = meQuery.data?.username ?? ''
 
@@ -82,17 +94,17 @@ export function PlaygroundPage() {
   const [streaming, setStreaming] = useState(false)
   const [failure, setFailure] = useState<PlaygroundFailure | null>(null)
   const [announcement, setAnnouncement] = useState('')
+  const [announceReplies, setAnnounceReplies] = useState(true)
   const controllerRef = useRef<AbortController | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   /** 用户是否手动选过模型：手动选择后，服务端默认模型到达也不能覆盖它。 */
   const pickedModelRef = useRef(false)
 
-  // 初始模型：default_model（仍可用）→ 首个可用模型（§2.16 主流程 1）。
-  // 必须等 GET /api/self 落定再决定，否则会先选中首个模型、再被默认模型
-  // 覆盖，页面出现一次可见的闪跳。依赖 availableKey 而非数组本身，避免
-  // 每次渲染新建数组导致循环。
+  // 初始模型：default_model（仍可用且属于当前分组）→ 当前分组首个可用
+  // 模型（§2.16 主流程 1 + /pg 当前分组准入）。必须等钱包摘要与个人设置
+  // 都落定再决定，否则会出现一次可见的闪跳。
   const availableKey = availableModels.join('\u0000')
-  const defaultsReady = !settingsQuery.isPending
+  const defaultsReady = !settingsQuery.isPending && walletQuery.isSuccess
   useEffect(() => {
     if (!defaultsReady) return
     if (pickedModelRef.current && model !== '' && availableSet.has(model)) {
@@ -131,7 +143,16 @@ export function PlaygroundPage() {
       return
     }
     if (error.status === 403) {
-      setFailure({ kind: 'forbidden' })
+      // 403 的语义由 problem type/code 决定，不能一律当「模型不可用」。
+      if (error.code === 'model_not_available') {
+        setFailure({ kind: 'forbidden' })
+      } else if (error.code === 'session_required') {
+        setFailure({ kind: 'session' })
+      } else if (error.code === 'csrf_failed') {
+        setFailure({ kind: 'csrf' })
+      } else {
+        setFailure({ kind: 'forbidden' })
+      }
       return
     }
     if (error.status === 401) {
@@ -201,7 +222,7 @@ export function PlaygroundPage() {
       })
 
       const credits =
-        result.requestId !== undefined
+        result.usage !== undefined && result.requestId !== undefined
           ? await fetchTurnCredits(result.requestId)
           : null
       const assistant: PlaygroundMessage = {
@@ -211,6 +232,9 @@ export function PlaygroundPage() {
         model,
         stopped: false,
       }
+      // EOF 未见 `[DONE]` = 流被截断。保留已生成内容，但必须标记「已中断」，
+      // 不能伪装成一次成功回复（MEDIUM-1）。
+      if (!result.done) assistant.interrupted = true
       if (result.usage !== undefined) {
         assistant.usage = {
           promptTokens: result.usage.prompt_tokens,
@@ -218,8 +242,18 @@ export function PlaygroundPage() {
           credits,
         }
       }
-      commit([...prior, userMessage, assistant])
-      setAnnouncement(t('account.playground.reply_ready'))
+      const hasAssistant = result.content !== '' || result.usage !== undefined
+      commit(
+        hasAssistant
+          ? [...prior, userMessage, assistant]
+          : [...prior, userMessage],
+      )
+      if (result.done) {
+        setAnnouncement(t('account.playground.reply_ready'))
+      } else {
+        setAnnouncement(t('account.playground.interrupted'))
+        push({ tone: 'info', message: t('account.playground.interrupted') })
+      }
       // 余额在每次完成后刷新（不本地递增，避免与服务端结算分叉）。
       void queryClient.invalidateQueries({ queryKey: WALLET_SUMMARY_KEY })
     } catch (error) {
@@ -250,8 +284,24 @@ export function PlaygroundPage() {
           failFromError(error)
           setAnnouncement(t('account.playground.error_title'))
         }
+      } else if (accumulated !== '') {
+        // 传输层中断（断网/连接被切断）且已生成部分内容：保留并标记中断，
+        // 不显示错误卡，也不要求用户重新发送已经拿到的内容。
+        const assistant: PlaygroundMessage = {
+          id: assistantId,
+          role: 'assistant',
+          content: accumulated,
+          model,
+          interrupted: true,
+        }
+        commit([...prior, userMessage, assistant])
+        setAnnouncement(t('account.playground.interrupted'))
+        push({
+          tone: 'error',
+          message: t('account.playground.interrupted_network'),
+        })
       } else {
-        // 传输失败（离线）：回滚并保留草稿。
+        // 尚未收到任何 token 的传输失败：回滚并保留草稿。
         commit(prior)
         setDraft(text)
         push({ tone: 'error', message: t('account.playground.offline') })
@@ -276,7 +326,9 @@ export function PlaygroundPage() {
 
   const balance = walletQuery.data?.balance ?? null
   const noModels = availableModels.length === 0
-  const sendDisabled = streaming || draft.trim() === '' || noModels || model === ''
+  const sendDisabled =
+    streaming || draft.trim() === '' || !groupReady || model === ''
+  const modelsLoading = statusQuery.isPending || walletQuery.isPending
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
@@ -285,32 +337,48 @@ export function PlaygroundPage() {
           {t('account.playground.title')}
         </h1>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="sr-only" htmlFor="playground-model">
-            {t('account.playground.select_model')}
-          </label>
-          <select
-            id="playground-model"
-            value={model}
-            disabled={streaming || noModels}
-            onChange={(event) => {
-              pickedModelRef.current = true
-              setModel(event.target.value)
-            }}
-            className="h-9 min-w-[220px] rounded-lg border border-border-default bg-surface-page px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
-          >
-            {noModels ? (
-              <option value="">{t('account.playground.no_models')}</option>
-            ) : null}
-            {groups.map((group) => (
-              <optgroup key={group.name} label={group.name}>
-                {group.models.map((name) => (
-                  <option key={`${group.name}:${name}`} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          {modelsLoading ? (
+            <div
+              aria-busy="true"
+              data-testid="playground-model-skeleton"
+              className="h-9 w-[220px] animate-pulse rounded-lg bg-surface-subtle motion-reduce:animate-none"
+            />
+          ) : groupUnknown || currentGroup === undefined ? (
+            <p
+              role="alert"
+              data-testid="playground-group-unknown"
+              className="max-w-[260px] text-[13px] text-danger"
+            >
+              {t('account.playground.group_unknown')}
+            </p>
+          ) : (
+            <>
+              <label className="sr-only" htmlFor="playground-model">
+                {t('account.playground.select_model')}
+              </label>
+              <select
+                id="playground-model"
+                value={model}
+                disabled={streaming || noModels}
+                onChange={(event) => {
+                  pickedModelRef.current = true
+                  setModel(event.target.value)
+                }}
+                className="h-9 min-w-[220px] rounded-lg border border-border-default bg-surface-page px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
+              >
+                {noModels ? (
+                  <option value="">{t('account.playground.no_models')}</option>
+                ) : null}
+                <optgroup label={currentGroup.name}>
+                  {currentGroup.models.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </>
+          )}
 
           <a
             href="/wallet"
@@ -323,13 +391,23 @@ export function PlaygroundPage() {
             </span>
           </a>
 
-          <Button
-            variant="secondary"
-            onClick={handleClear}
-            disabled={streaming || messages.length === 0}
+          {messages.length > 0 ? (
+            <Button
+              variant="secondary"
+              onClick={handleClear}
+              disabled={streaming}
+            >
+              {t('account.playground.clear')}
+            </Button>
+          ) : null}
+          <button
+            type="button"
+            aria-pressed={announceReplies}
+            onClick={() => setAnnounceReplies((value) => !value)}
+            className="rounded-lg border border-border-default bg-surface-card px-2 py-1 text-xs text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
-            {t('account.playground.clear')}
-          </Button>
+            {t('account.playground.announce_toggle')}
+          </button>
           <a
             href="/model-config?focus=default-model"
             className="text-[13px] text-brand underline-offset-2 hover:underline"
@@ -355,7 +433,7 @@ export function PlaygroundPage() {
       <section
         aria-label={t('account.playground.messages_label')}
         role="log"
-        aria-live={streaming ? 'off' : 'polite'}
+        aria-live={streaming || !announceReplies ? 'off' : 'polite'}
         aria-relevant="additions"
         className="min-h-[320px] space-y-3 rounded-xl border border-border-hairline bg-surface-card p-4"
       >
@@ -396,6 +474,11 @@ export function PlaygroundPage() {
               {message.stopped === true ? (
                 <p className="mt-1 text-xs text-warning">
                   {t('account.playground.stopped')}
+                </p>
+              ) : null}
+              {message.interrupted === true ? (
+                <p className="mt-1 text-xs text-warning">
+                  {t('account.playground.interrupted')}
                 </p>
               ) : null}
               {message.usage !== undefined ? (
@@ -457,9 +540,11 @@ export function PlaygroundPage() {
             }
           }}
           placeholder={
-            noModels
-              ? t('account.playground.no_models')
-              : t('account.playground.input_placeholder')
+            groupUnknown
+              ? t('account.playground.group_unknown')
+              : noModels
+                ? t('account.playground.no_models')
+                : t('account.playground.input_placeholder')
           }
           aria-describedby="playground-input-hint"
           className="mt-1 min-h-[72px] w-full resize-y rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
@@ -560,6 +645,24 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
         >
           {t('common.error401.sign_in')}
         </a>
+      </div>
+    )
+  }
+  if (failure.kind === 'session') {
+    return (
+      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+        <p className="font-medium text-ink-1">
+          {t('account.playground.session_required')}
+        </p>
+      </div>
+    )
+  }
+  if (failure.kind === 'csrf') {
+    return (
+      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+        <p className="font-medium text-ink-1">
+          {t('account.playground.csrf_failed')}
+        </p>
       </div>
     )
   }

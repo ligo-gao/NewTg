@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
+import { useToastStore } from '@/shared/ui/toast'
 
 import {
   findRequest,
@@ -279,5 +280,117 @@ describe('ModelConfigPage', () => {
           request.url.pathname.startsWith('/api/tokens/'),
       ),
     ).toHaveLength(3)
+  })
+
+  it('offers only the token group models in the inline editor', async () => {
+    const user = userEvent.setup()
+    install((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(
+          listResponse([
+            token({ id: 1, name: 'alpha', group: 'default' }),
+            token({ id: 2, name: 'beta', group: 'pro' }),
+          ]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    await renderWithProviders(<ModelConfigPage />, ['account'])
+    const row = await screen.findByTestId('key-row-1')
+    await user.click(within(row).getByRole('button', { name: 'Edit' }))
+
+    expect(screen.getByRole('checkbox', { name: 'gpt-4o-mini' })).toBeTruthy()
+    // pro 分组的模型不得出现在 default 令牌的候选里。
+    expect(screen.queryByRole('checkbox', { name: 'o3' })).toBeNull()
+  })
+
+  it('shows an inline 404 notice, a toast, and refreshes the list', async () => {
+    const user = userEvent.setup()
+    const requests = install((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(listResponse([token()]))
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/tokens/1') {
+        return problemResponse(404, {
+          type: 'about:blank',
+          title: 'Token not found',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    await renderWithProviders(<ModelConfigPage />, ['account'])
+    const row = await screen.findByTestId('key-row-1')
+    await user.click(within(row).getByRole('button', { name: 'Edit' }))
+    const saveButtons = screen.getAllByRole('button', { name: 'Save' })
+    await user.click(saveButtons[saveButtons.length - 1] as HTMLElement)
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(
+          'This token no longer exists. The list has been refreshed.',
+        ).length,
+      ).toBeGreaterThanOrEqual(1)
+    })
+    // Toast 独立于行内提示：列表刷新后行可能消失，提示不能跟着瞬间丢。
+    expect(
+      useToastStore
+        .getState()
+        .toasts.some(
+          (toast) =>
+            toast.message ===
+            'This token no longer exists. The list has been refreshed.',
+        ),
+    ).toBe(true)
+    await waitFor(() => {
+      expect(
+        requests.filter(
+          (request) =>
+            request.method === 'GET' &&
+            request.url.pathname === '/api/tokens',
+        ).length,
+      ).toBeGreaterThan(1)
+    })
+  })
+
+  it('scrolls to and focuses the default model card when ?focus=default-model', async () => {
+    install((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(listResponse([token()]))
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    await renderWithProviders(<ModelConfigPage focusDefaultModel />, ['account'])
+    await screen.findByRole('radio', { name: 'gpt-4o-mini' })
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByTestId('default-model-card'),
+      )
+    })
+  })
+
+  it('renders placeholder skeletons while /api/status is pending', async () => {
+    installFetch((request) => {
+      if (request.url.pathname === '/api/status') {
+        return new Promise<Response>(() => {})
+      }
+      if (request.method === 'GET' && request.url.pathname === '/api/self') {
+        return jsonResponse(selfSettings('gpt-4o-mini'))
+      }
+      if (request.method === 'GET' && request.url.pathname === '/api/tokens') {
+        return jsonResponse(listResponse([]))
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    await renderWithProviders(<ModelConfigPage />, ['account'])
+
+    expect(await screen.findByTestId('default-model-skeleton')).toBeTruthy()
+    await waitFor(() => {
+      expect(screen.queryByText('No models available in this group')).toBeNull()
+    })
   })
 })

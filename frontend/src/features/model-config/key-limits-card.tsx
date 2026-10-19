@@ -122,10 +122,13 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
       push({ tone: 'success', message: t('account.model_config.keys.row_saved') })
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'not_found') {
+        const message = t('account.model_config.keys.row_not_found')
         setRowNotice((previous) => ({
           ...previous,
-          [token.id]: t('account.model_config.keys.row_not_found'),
+          [token.id]: message,
         }))
+        // Toast 独立于行内提示：列表刷新后行可能消失，提示不能跟着瞬间丢。
+        push({ tone: 'error', message })
         setEditingId(null)
         await queryClient.invalidateQueries({ queryKey: TOKENS_QUERY_KEY })
       } else if (error instanceof ApiError && error.kind === 'rate_limited') {

@@ -224,7 +224,8 @@
       "save_error": "默认模型保存失败。",
       "invalid": "该模型不在你的可用分组内",
       "unavailable_selected": "该模型不在你的可用分组内",
-      "loading": "加载中…"
+      "loading": "加载中…",
+      "playground_note": "只有当前分组的模型可以直接在 Playground 中使用。"
     },
     "keys": {
       "title": "令牌模型限制",
@@ -267,7 +268,8 @@
       "editor_label": "{name} 允许的模型",
       "models_empty": "该令牌的分组没有可用模型",
       "batch_models_label": "允许的模型"
-    }
+    },
+    "offline": "当前处于离线状态，你的选择已保留。"
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "请求 ID：{id}",
     "offline": "当前处于离线状态，草稿已保留。",
     "copy_code": "复制代码",
-    "copied": "已复制"
+    "copied": "已复制",
+    "group_unknown": "无法确定你的当前分组，请刷新页面重试。",
+    "interrupted": "已中断（回复不完整）",
+    "interrupted_network": "连接中断，已保留部分回复。",
+    "session_required": "Playground 只接受浏览器会话，请移除 API 令牌后刷新页面。",
+    "csrf_failed": "安全校验失败，请刷新页面后重试。",
+    "announce_toggle": "读屏播报"
   }
 }

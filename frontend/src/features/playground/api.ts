@@ -17,6 +17,11 @@ export interface PlaygroundStreamResult {
   usage?: PlaygroundUsageTokens
   requestId?: string
   finishReason?: string
+  /**
+   * 是否收到 `data: [DONE]`。EOF 未见终止标记说明流被截断（上游异常/连接
+   * 中断），调用方必须标注「已中断」，绝不能当成一次成功回复。
+   */
+  done: boolean
 }
 
 /**
@@ -148,6 +153,7 @@ export async function streamChatCompletion(options: {
   let usage: PlaygroundUsageTokens | undefined
   let finishReason: string | undefined
   let requestId = response.headers.get(REQUEST_ID_HEADER) ?? undefined
+  let done = false
 
   function consumeFrame(frame: string): boolean {
     // 心跳帧是 `: PING` 注释；只处理 data 行。
@@ -186,38 +192,46 @@ export async function streamChatCompletion(options: {
 
   try {
     for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
+      const { done: finished, value } = await reader.read()
+      if (finished) break
       buffer += decoder.decode(value, { stream: true })
       let separator = buffer.indexOf('\n\n')
       while (separator !== -1) {
         const frame = buffer.slice(0, separator)
         buffer = buffer.slice(separator + 2)
         if (consumeFrame(frame)) {
+          done = true
           await reader.cancel()
-          return { content, usage, requestId, finishReason }
+          return { content, usage, requestId, finishReason, done }
         }
         separator = buffer.indexOf('\n\n')
       }
     }
-    if (buffer.trim() !== '') consumeFrame(buffer)
+    if (buffer.trim() !== '') {
+      if (consumeFrame(buffer)) done = true
+    }
   } finally {
     reader.releaseLock()
   }
 
-  return { content, usage, requestId, finishReason }
+  return { content, usage, requestId, finishReason, done }
 }
 
 /**
  * 完成后按 request_id 回读 `usage_logs.cost`（本轮 credits）。
  *
  * 为什么再查一次：SSE 末块只带 token 数，credits 是计费管线的结算结果，
- * 本地用价格表估算会与「实际扣费」分叉。查不到（日志尚未落库/无权限）时
- * 返回 null，界面显示待定而不是编造数字。
+ * 本地用价格表估算会与「实际扣费」分叉。日志可能晚于响应落库，因此做
+ * **有界重试**：250/500/1000/2000ms 共四次（总 <4s），仍取不到才返回
+ * null（界面显示待定）。绝不能无限轮询。
  */
-export async function fetchTurnCredits(
-  requestId: string,
-): Promise<number | null> {
+const CREDIT_RETRY_DELAYS_MS = [250, 500, 1000, 2000] as const
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function readTurnCost(requestId: string): Promise<number | null> {
   try {
     const data = requireData(
       await apiClient.GET('/api/usage-logs', {
@@ -231,4 +245,15 @@ export async function fetchTurnCredits(
   } catch {
     return null
   }
+}
+
+export async function fetchTurnCredits(
+  requestId: string,
+): Promise<number | null> {
+  for (const delay of CREDIT_RETRY_DELAYS_MS) {
+    const credits = await readTurnCost(requestId)
+    if (credits !== null) return credits
+    await sleep(delay)
+  }
+  return readTurnCost(requestId)
 }

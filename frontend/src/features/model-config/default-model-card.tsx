@@ -103,6 +103,9 @@ export function DefaultModelCard({
         setSelected(latest?.default_model ?? '')
       } else if (err instanceof ApiError && err.kind === 'rate_limited') {
         push({ tone: 'error', message: t('account.model_config.rate_limited') })
+      } else if (err instanceof ApiError && err.kind === 'offline') {
+        // 离线时保留本地选择（不失效、不回读），用户恢复网络后可继续保存。
+        push({ tone: 'error', message: t('account.model_config.offline') })
       } else {
         push({
           tone: 'error',
@@ -137,6 +140,9 @@ export function DefaultModelCard({
           </h2>
           <p className="mt-1 text-[13px] text-ink-2">
             {t('account.model_config.default.description')}
+          </p>
+          <p className="mt-1 text-xs text-ink-3">
+            {t('account.model_config.default.playground_note')}
           </p>
         </div>
         <p className="text-[13px] text-ink-2">
@@ -190,7 +196,20 @@ export function DefaultModelCard({
             })}
           </div>
 
-          {currentGroup === undefined || currentGroup.models.length === 0 ? (
+          {loading ? (
+            <div
+              aria-busy="true"
+              data-testid="default-model-skeleton"
+              className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
+            >
+              {[0, 1, 2, 3, 4, 5].map((index) => (
+                <div
+                  key={index}
+                  className="h-10 animate-pulse rounded-lg bg-surface-subtle motion-reduce:animate-none"
+                />
+              ))}
+            </div>
+          ) : currentGroup === undefined || currentGroup.models.length === 0 ? (
             <p className="mt-4 text-[13px] text-ink-3">
               {t('account.model_config.default.empty_models')}
             </p>

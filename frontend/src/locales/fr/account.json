@@ -224,7 +224,8 @@
       "save_error": "Impossible d'enregistrer le modèle par défaut.",
       "invalid": "Ce modèle n'est pas disponible dans vos groupes",
       "unavailable_selected": "Ce modèle n'est pas disponible dans vos groupes",
-      "loading": "Chargement…"
+      "loading": "Chargement…",
+      "playground_note": "Seuls les modèles de votre groupe actuel sont utilisables directement dans le Playground."
     },
     "keys": {
       "title": "Limites de modèles par clé API",
@@ -267,7 +268,8 @@
       "editor_label": "Modèles autorisés pour {name}",
       "models_empty": "Aucun modèle disponible pour les groupes de ce jeton",
       "batch_models_label": "Modèles autorisés"
-    }
+    },
+    "offline": "Vous êtes hors ligne. Votre sélection a été conservée."
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "ID de requête : {id}",
     "offline": "Vous êtes hors ligne. Votre brouillon a été conservé.",
     "copy_code": "Copier le code",
-    "copied": "Copié"
+    "copied": "Copié",
+    "group_unknown": "Impossible de déterminer votre groupe actuel. Rechargez la page pour réessayer.",
+    "interrupted": "Interrompu (réponse incomplète)",
+    "interrupted_network": "La connexion a été interrompue. La réponse partielle a été conservée.",
+    "session_required": "Le Playground n'accepte qu'une session navigateur. Supprimez le jeton API et rechargez.",
+    "csrf_failed": "La vérification de sécurité a échoué. Rechargez la page et réessayez.",
+    "announce_toggle": "Annonces lecteur d’écran"
   }
 }

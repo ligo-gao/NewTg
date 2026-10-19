@@ -224,7 +224,8 @@
       "save_error": "Không thể lưu mô hình mặc định.",
       "invalid": "Mô hình này không có trong các nhóm khả dụng của bạn",
       "unavailable_selected": "Mô hình này không có trong các nhóm khả dụng của bạn",
-      "loading": "Đang tải…"
+      "loading": "Đang tải…",
+      "playground_note": "Chỉ các mô hình trong nhóm hiện tại của bạn dùng trực tiếp được trong Playground."
     },
     "keys": {
       "title": "Giới hạn mô hình theo API key",
@@ -267,7 +268,8 @@
       "editor_label": "Mô hình được phép cho {name}",
       "models_empty": "Không có mô hình khả dụng cho các nhóm của token này",
       "batch_models_label": "Mô hình được phép"
-    }
+    },
+    "offline": "Bạn đang ngoại tuyến. Lựa chọn của bạn đã được giữ lại."
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "ID yêu cầu: {id}",
     "offline": "Bạn đang ngoại tuyến. Bản nháp đã được giữ lại.",
     "copy_code": "Sao chép mã",
-    "copied": "Đã sao chép"
+    "copied": "Đã sao chép",
+    "group_unknown": "Không xác định được nhóm hiện tại của bạn. Hãy tải lại trang để thử lại.",
+    "interrupted": "Đã gián đoạn (phản hồi chưa đầy đủ)",
+    "interrupted_network": "Kết nối bị gián đoạn. Phần phản hồi đã nhận được giữ lại.",
+    "session_required": "Playground chỉ chấp nhận phiên trình duyệt. Hãy bỏ API token và tải lại trang.",
+    "csrf_failed": "Kiểm tra bảo mật thất bại. Hãy tải lại trang và thử lại.",
+    "announce_toggle": "Thông báo cho trình đọc màn hình"
   }
 }

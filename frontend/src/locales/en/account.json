@@ -224,7 +224,8 @@
       "save_error": "Could not save the default model.",
       "invalid": "This model is not available in your groups",
       "unavailable_selected": "This model is not available in your groups",
-      "loading": "Loading…"
+      "loading": "Loading…",
+      "playground_note": "Only models in your current group can be used directly in Playground."
     },
     "keys": {
       "title": "Model Limits per API Key",
@@ -267,7 +268,8 @@
       "editor_label": "Models allowed for {name}",
       "models_empty": "No models available for this token’s groups",
       "batch_models_label": "Models allowed"
-    }
+    },
+    "offline": "You are offline. Your selection has been kept."
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "Request ID: {id}",
     "offline": "You are offline. Your draft has been kept.",
     "copy_code": "Copy code",
-    "copied": "Copied"
+    "copied": "Copied",
+    "group_unknown": "Cannot determine your current group. Reload the page to retry.",
+    "interrupted": "Interrupted (incomplete)",
+    "interrupted_network": "The connection was interrupted. The partial reply has been kept.",
+    "session_required": "Playground only accepts a browser session. Remove the API token and reload.",
+    "csrf_failed": "The security check failed. Reload the page and try again.",
+    "announce_toggle": "Screen reader announcements"
   }
 }

@@ -49,33 +49,6 @@ export async function updateTokenModelLimits(
   )
 }
 
-function groupModels(groups: readonly UsableGroup[], name: string): string[] {
-  return groups.find((group) => group.name === name)?.models ?? []
-}
-
-/**
- * 该令牌可选的模型清单。
- *
- * - 普通令牌：取其绑定分组的模型；
- * - `auto` 令牌：取 `auto_groups` 各分组模型的并集（自动分组没有单一分组）；
- * - 分组不可用（被管理员下线、或跨版本残留）：空数组，多选器显示空态，
- *   绝不把用户不可用分组的模型展示出来（§2.15 安全纪律）。
- */
-export function modelsForToken(
-  token: Token,
-  groups: readonly UsableGroup[],
-): string[] {
-  if (token.group === 'auto') {
-    const names = token.auto_groups ?? []
-    const union = new Set<string>()
-    for (const name of names) {
-      for (const model of groupModels(groups, name)) union.add(model)
-    }
-    return [...union].sort((a, b) => a.localeCompare(b))
-  }
-  return groupModels(groups, token.group)
-}
-
 /** 可用模型的全集（用于判断已保存的默认模型是否仍然可选）。 */
 export function allUsableModels(groups: readonly UsableGroup[]): Set<string> {
   const union = new Set<string>()

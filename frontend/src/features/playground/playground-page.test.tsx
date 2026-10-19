@@ -326,4 +326,262 @@ describe('PlaygroundPage', () => {
     expect(await screen.findByText('Restored hello')).toBeTruthy()
     expect(screen.getByText('Restored reply')).toBeTruthy()
   })
+
+  it('only offers the current group and ignores a default model from another group', async () => {
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/status') {
+        return jsonResponse(STATUS)
+      }
+      if (request.method === 'GET' && request.url.pathname === '/api/self') {
+        return jsonResponse({ ...SELF, default_model: 'gamma' })
+      }
+      return baseResponse(request) ?? jsonResponse({}, 404)
+    })
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+
+    const select = (await screen.findByLabelText(
+      'Select a model',
+    )) as HTMLSelectElement
+    await waitFor(() => {
+      expect(select.value).toBe('alpha')
+    })
+    const values = Array.from(select.options).map((option) => option.value)
+    expect(values).toEqual(['alpha', 'beta'])
+    expect(values).not.toContain('gamma')
+  })
+
+  it('marks a stream as interrupted when [DONE] never arrives', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      const base = baseResponse(request)
+      if (base !== null) return base
+      if (request.url.pathname === '/pg/chat/completions') {
+        return sse([
+          'data: {"id":"chatcmpl-cut","choices":[{"delta":{"content":"Partial"}}]}\n\n',
+        ])
+      }
+      return jsonResponse({}, 404)
+    })
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+    await screen.findByLabelText('Select a model')
+    await user.type(screen.getByLabelText('Message'), 'go')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('Partial')).toBeTruthy()
+    expect(
+      screen.getAllByText('Interrupted (incomplete)').length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('keeps partial content when the stream errors mid-way', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const raw =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        const url = new URL(raw, 'http://localhost:3000')
+        const base = baseResponse({ method: init?.method ?? 'GET', url })
+        if (base !== null) return base
+        const state = { sent: false }
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (state.sent) {
+              controller.error(new Error('socket closed'))
+              return
+            }
+            state.sent = true
+            controller.enqueue(
+              ENCODER.encode(
+                'data: {"id":"chatcmpl-boom","choices":[{"delta":{"content":"Half"}}]}\n\n',
+              ),
+            )
+          },
+        })
+        return new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }),
+    )
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+    await screen.findByLabelText('Select a model')
+    await user.type(screen.getByLabelText('Message'), 'go')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('Half')).toBeTruthy()
+    expect(
+      screen.getAllByText('Interrupted (incomplete)').length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('shows the top-up card on 402', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      const base = baseResponse(request)
+      if (base !== null) return base
+      if (request.url.pathname === '/pg/chat/completions') {
+        return jsonResponse(
+          {
+            error: {
+              message: 'insufficient quota',
+              type: 'newtg_relay_error',
+              code: 'insufficient_quota',
+            },
+          },
+          402,
+        )
+      }
+      return jsonResponse({}, 404)
+    })
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+    await screen.findByLabelText('Select a model')
+    await user.type(screen.getByLabelText('Message'), 'hi')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Insufficient balance. Top up or subscribe.',
+    )
+    expect(screen.getByText('Top up / Subscribe')).toBeTruthy()
+  })
+
+  it('renders the request id for a 5xx error', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      const base = baseResponse(request)
+      if (base !== null) return base
+      if (request.url.pathname === '/pg/chat/completions') {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'upstream exploded',
+              type: 'newtg_relay_error',
+              code: 'internal_error',
+            },
+          }),
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Request-ID': 'srv-1',
+            },
+          },
+        )
+      }
+      return jsonResponse({}, 404)
+    })
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+    await screen.findByLabelText('Select a model')
+    await user.type(screen.getByLabelText('Message'), 'hi')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Request ID: srv-1',
+    )
+  })
+
+  it('keeps the draft when the network is offline before any token', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const raw =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        const url = new URL(raw, 'http://localhost:3000')
+        const base = baseResponse({ method: init?.method ?? 'GET', url })
+        if (base !== null) return base
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+    await screen.findByLabelText('Select a model')
+    const input = screen.getByLabelText('Message') as HTMLTextAreaElement
+    await user.type(input, 'offline draft')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => {
+      expect(input.value).toBe('offline draft')
+    })
+    expect(
+      screen.queryByTestId('message-assistant'),
+    ).toBeNull()
+  })
+
+  it('does not offer any model when the current group cannot be determined', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      if (
+        request.method === 'GET' &&
+        request.url.pathname === '/api/wallet/summary'
+      ) {
+        return jsonResponse(
+          { type: 'about:blank', title: 'internal error' },
+          500,
+        )
+      }
+      return baseResponse(request) ?? jsonResponse({}, 404)
+    })
+
+    await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+
+    expect(
+      (await screen.findByTestId('playground-group-unknown')).textContent,
+    ).toContain('Cannot determine your current group')
+    expect(screen.queryByLabelText('Select a model')).toBeNull()
+
+    await user.type(screen.getByLabelText('Message'), 'hi')
+    expect(
+      (screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+  })
+
+  it('sends the CSRF header on the raw fetch path', async () => {
+    const user = userEvent.setup()
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: () => '__Host-nkt_csrf=test-token',
+    })
+    try {
+      const requests = installFetch((request) => {
+        const base = baseResponse(request)
+        if (base !== null) return base
+        if (request.url.pathname === '/pg/chat/completions') {
+          return sse([
+            'data: {"id":"chatcmpl-ok","choices":[{"delta":{"content":"ok"}}]}\n\n',
+            'data: [DONE]\n\n',
+          ])
+        }
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 1 })
+      })
+
+      await renderWithProviders(<PlaygroundPage />, ['common', 'account'])
+      await screen.findByLabelText('Select a model')
+      await user.type(screen.getByLabelText('Message'), 'hi')
+      await user.click(screen.getByRole('button', { name: 'Send' }))
+      await screen.findByText('ok')
+
+      expect(
+        findRequest(requests, 'POST', '/pg/chat/completions')?.headers.get(
+          'X-CSRF-Token',
+        ),
+      ).toBe('test-token')
+    } finally {
+      delete (document as unknown as { cookie?: unknown }).cookie
+    }
+  })
 })

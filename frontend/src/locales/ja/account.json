@@ -224,7 +224,8 @@
       "save_error": "既定モデルを保存できませんでした。",
       "invalid": "このモデルは利用可能なグループに含まれていません",
       "unavailable_selected": "このモデルは利用可能なグループに含まれていません",
-      "loading": "読み込み中…"
+      "loading": "読み込み中…",
+      "playground_note": "Playground で直接使えるのは現在のグループのモデルだけです。"
     },
     "keys": {
       "title": "API キーごとのモデル制限",
@@ -267,7 +268,8 @@
       "editor_label": "{name} に許可するモデル",
       "models_empty": "このトークンのグループに利用可能なモデルはありません",
       "batch_models_label": "許可するモデル"
-    }
+    },
+    "offline": "オフラインです。選択は保持されています。"
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "リクエスト ID: {id}",
     "offline": "オフラインです。下書きは保持されています。",
     "copy_code": "コードをコピー",
-    "copied": "コピーしました"
+    "copied": "コピーしました",
+    "group_unknown": "現在のグループを特定できません。ページを再読み込みしてください。",
+    "interrupted": "中断されました（応答が不完全）",
+    "interrupted_network": "接続が中断されました。部分的な応答は保持されています。",
+    "session_required": "Playground はブラウザセッションのみを受け付けます。API トークンを外して再読み込みしてください。",
+    "csrf_failed": "セキュリティチェックに失敗しました。ページを再読み込みしてください。",
+    "announce_toggle": "スクリーンリーダー通知"
   }
 }

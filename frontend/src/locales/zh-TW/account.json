@@ -224,7 +224,8 @@
       "save_error": "預設模型儲存失敗。",
       "invalid": "此模型不在你的可用群組內",
       "unavailable_selected": "此模型不在你的可用群組內",
-      "loading": "載入中…"
+      "loading": "載入中…",
+      "playground_note": "只有目前群組的模型可以直接在 Playground 中使用。"
     },
     "keys": {
       "title": "權杖模型限制",
@@ -267,7 +268,8 @@
       "editor_label": "{name} 允許的模型",
       "models_empty": "此權杖的群組沒有可用模型",
       "batch_models_label": "允許的模型"
-    }
+    },
+    "offline": "目前為離線狀態，你的選擇已保留。"
   },
   "playground": {
     "title": "Playground",
@@ -312,6 +314,12 @@
     "request_id": "請求 ID：{id}",
     "offline": "目前為離線狀態，草稿已保留。",
     "copy_code": "複製程式碼",
-    "copied": "已複製"
+    "copied": "已複製",
+    "group_unknown": "無法判斷你的目前群組，請重新整理頁面後重試。",
+    "interrupted": "已中斷（回覆不完整）",
+    "interrupted_network": "連線中斷，已保留部分回覆。",
+    "session_required": "Playground 只接受瀏覽器工作階段，請移除 API 權杖後重新整理頁面。",
+    "csrf_failed": "安全驗證失敗，請重新整理頁面後重試。",
+    "announce_toggle": "讀屏播報"
   }
 }
