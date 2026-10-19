@@ -898,6 +898,7 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 
 	message := contract.Message{Role: contract.RoleAssistant}
 	var unmapped []any
+	unparseable := 0
 	for i, raw := range payload.Content {
 		part, err := parseAnthropicBlock(raw)
 		if err != nil {
@@ -914,6 +915,9 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 			var opaque any
 			if json.Unmarshal(raw, &opaque) == nil {
 				unmapped = append(unmapped, opaque)
+			} else {
+				// 诊断标记：极端情况下无法原样保留时，让审计侧可见。
+				unparseable++
 			}
 			continue
 		}
@@ -924,6 +928,12 @@ func ParseAnthropicResponse(body []byte) (*contract.Response, contract.Usage, er
 			message.Extensions = map[string]any{}
 		}
 		message.Extensions["unmapped_blocks"] = unmapped
+	}
+	if unparseable > 0 {
+		if message.Extensions == nil {
+			message.Extensions = map[string]any{}
+		}
+		message.Extensions["unmapped_blocks_unparseable"] = unparseable
 	}
 	finishReason := normalizeAnthropicStopReason(payload.StopReason)
 	if payload.StopReason != "" {
@@ -1015,11 +1025,12 @@ func ParseAnthropicUsage(raw json.RawMessage) contract.Usage {
 	return usage
 }
 
-// hasAnyMapKey 判断 map 是否至少含一个给定键（键存在即为已识别，
-// 与取值是否为零无关——上游可能合法地报告 0）。
+// hasAnyMapKey 判断 map 是否至少含一个给定键且取值为非 null。
+// null 键不算「已识别」：与 T3 的 claudeUsageKeysPresent 同口径——
+// `{"input_tokens":null}` 没有携带任何上游事实，不能标记 upstream_exact。
 func hasAnyMapKey(values map[string]any, keys ...string) bool {
 	for _, key := range keys {
-		if _, ok := values[key]; ok {
+		if value, ok := values[key]; ok && value != nil {
 			return true
 		}
 	}

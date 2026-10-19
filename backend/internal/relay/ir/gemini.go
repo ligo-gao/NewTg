@@ -909,6 +909,7 @@ func ParseGeminiResponse(body []byte) (*contract.Response, contract.Usage, error
 	for _, candidate := range payload.Candidates {
 		message := contract.Message{Role: contract.RoleAssistant}
 		var unmapped []any
+		unparseable := 0
 		if len(candidate.Content) > 0 {
 			var content struct {
 				Parts []json.RawMessage `json:"parts"`
@@ -930,6 +931,10 @@ func ParseGeminiResponse(body []byte) (*contract.Response, contract.Usage, error
 					var opaque any
 					if json.Unmarshal(rawPart, &opaque) == nil {
 						unmapped = append(unmapped, opaque)
+					} else {
+						// 诊断标记：极端情况下连原样保留都做不到时，至少让
+						// 审计侧看到存在被跳过的 part，而不是完全静默。
+						unparseable++
 					}
 					continue
 				}
@@ -941,6 +946,12 @@ func ParseGeminiResponse(body []byte) (*contract.Response, contract.Usage, error
 				message.Extensions = map[string]any{}
 			}
 			message.Extensions["unmapped_blocks"] = unmapped
+		}
+		if unparseable > 0 {
+			if message.Extensions == nil {
+				message.Extensions = map[string]any{}
+			}
+			message.Extensions["unmapped_blocks_unparseable"] = unparseable
 		}
 		finishReason := normalizeGeminiFinishReason(candidate.FinishReason)
 		if candidate.FinishReason != "" {

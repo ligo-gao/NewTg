@@ -474,11 +474,19 @@ func TestGeminiResponseUnknownPartPreserved(t *testing.T) {
 }
 
 // TestGeminiUsageUnknownObjectIsEstimated 是终验 M5 的回归：非空但无
-// 已识别用量键的对象不能标记 upstream_exact。
+// 已识别用量键（含 null 值键）的对象不能标记 upstream_exact。
 func TestGeminiUsageUnknownObjectIsEstimated(t *testing.T) {
 	usage := ParseGeminiUsage([]byte(`{"foo":1}`))
 	if usage.Source != contract.UsageEstimated {
 		t.Fatalf("未知键 usage 应标记 estimated，得到 %v", usage.Source)
+	}
+	nullUsage := ParseGeminiUsage([]byte(`{"promptTokenCount":null}`))
+	if nullUsage.Source != contract.UsageEstimated {
+		t.Fatalf("null 用量键应标记 estimated，得到 %v", nullUsage.Source)
+	}
+	mixed := ParseGeminiUsage([]byte(`{"promptTokenCount":null,"candidatesTokenCount":5}`))
+	if mixed.Source != contract.UsageUpstreamExact || mixed.Completion != 5 {
+		t.Fatalf("部分 null 键解析错误：%+v", mixed)
 	}
 }
 

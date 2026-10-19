@@ -262,6 +262,16 @@ func TestAnthropicUsageUnknownObjectIsEstimated(t *testing.T) {
 	if usage.Source != contract.UsageEstimated {
 		t.Fatalf("未知键 usage 应标记 estimated，得到 %v", usage.Source)
 	}
+	// null 键同样不算事实（与 T3 claudeUsageKeysPresent 同口径）。
+	nullUsage := ParseAnthropicUsage([]byte(`{"input_tokens":null}`))
+	if nullUsage.Source != contract.UsageEstimated {
+		t.Fatalf("null 用量键应标记 estimated，得到 %v", nullUsage.Source)
+	}
+	// 有一个非 null 的已识别键时仍是 exact（零值键不擦除事实）。
+	mixed := ParseAnthropicUsage([]byte(`{"input_tokens":null,"output_tokens":5}`))
+	if mixed.Source != contract.UsageUpstreamExact || mixed.Completion != 5 {
+		t.Fatalf("部分 null 键解析错误：%+v", mixed)
+	}
 }
 
 func TestAnthropicResponseParse(t *testing.T) {

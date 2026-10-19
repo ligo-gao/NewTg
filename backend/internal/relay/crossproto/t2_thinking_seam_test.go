@@ -100,6 +100,16 @@ func TestCrossProtoUnknownUsageDoesNotSynthesizeZero(t *testing.T) {
 			adapter:  adapters.NewGeminiAdapter(contract.ChannelTypeGemini),
 			body:     `{"responseId":"r","candidates":[{"index":0,"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"foo":1}}`,
 		},
+		{
+			protocol: ProtocolAnthropic,
+			adapter:  adapters.NewAnthropicAdapter(contract.ChannelTypeAnthropic),
+			body:     `{"id":"m","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":null}}`,
+		},
+		{
+			protocol: ProtocolGemini,
+			adapter:  adapters.NewGeminiAdapter(contract.ChannelTypeGemini),
+			body:     `{"responseId":"r","candidates":[{"index":0,"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":null}}`,
+		},
 	}
 	for _, tc := range cases {
 		object := forwardToOpenAI(t, tc.protocol, nativeResponse(t, tc.adapter, tc.body))
