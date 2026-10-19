@@ -23,6 +23,11 @@ export interface TagProps {
   variant?: TagVariant
   children: ReactNode
   className?: string
+  /**
+   * 可访问名称。分类标签在表格里常与状态徽章、数字相邻，读屏需要一个
+   * 明确名称；可见文本不变。
+   */
+  ariaLabel?: string
 }
 
 const BASE_CLASSES =
@@ -40,13 +45,18 @@ const VARIANT_CLASSES: Record<TagVariant, string> = {
   reversal: 'border border-dashed border-accent-reversal bg-transparent text-accent-reversal',
 }
 
-export function Tag({ variant = 'neutral', children, className }: TagProps) {
+export function Tag({ variant = 'neutral', children, className, ariaLabel }: TagProps) {
   const classes = [BASE_CLASSES, VARIANT_CLASSES[variant], className]
     .filter(Boolean)
     .join(' ')
 
   return (
-    <span data-testid="tag" data-variant={variant} className={classes}>
+    <span
+      data-testid="tag"
+      data-variant={variant}
+      aria-label={ariaLabel}
+      className={classes}
+    >
       {children}
     </span>
   )

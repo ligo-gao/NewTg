@@ -54,3 +54,29 @@ parameters:
     schema:
       type: string
       pattern: '^[a-z0-9_-]{2,32}$'
+  PathPricingModel:
+    name: model
+    in: path
+    required: true
+    description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。
+    schema:
+      type: string
+      pattern: '^[A-Za-z0-9._:-]{1,128}$'
+  PathGroupTag:
+    name: group
+    in: path
+    required: true
+    description: 分组名（user_groups.name）。
+    schema:
+      type: string
+      pattern: '^[a-z0-9_-]{2,32}$'
+  UpdatedAtQuery:
+    name: updated_at
+    in: query
+    required: true
+    description: |
+      乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+      故通过查询参数传递；不匹配返回 409。
+    schema:
+      type: string
+      format: date-time

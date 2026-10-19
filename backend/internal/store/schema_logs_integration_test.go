@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	// pgx/v5 stdlib 驱动为 Task 4 冻结选型（platform-04 §9.1 同款）。
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -28,6 +30,43 @@ import (
 var logsWantColumns = map[string]int{
 	"usage_logs": 25,
 	"audit_logs": 14,
+}
+
+// logsPartitionLookaheadMonths 是日志迁移预建的分区窗口（R-56：当月 + 下 11
+// 个月）。迁移版本 20261019000000/20261019000001 都保证这个窗口；schema 测试
+// 断言它至少覆盖到「当前月 + lookahead - 1」，而不是只接受当月+下月。
+const logsPartitionLookaheadMonths = 12
+
+// logsPartitionBoundRe 匹配 pg_get_expr(relpartbound) 的精确月区间输出：
+//
+//	FOR VALUES FROM ('2099-03-01 00:00:00+00') TO ('2099-04-01 00:00:00+00')
+var logsPartitionBoundRe = regexp.MustCompile(
+	`^FOR VALUES FROM \('([^']+)'\) TO \('([^']+)'\)$`)
+
+// parseLogsPartitionBound 解析分区边界并校验「月初 → 次月初（UTC）」的不变量。
+func parseLogsPartitionBound(t *testing.T, name, bound string) (time.Time, time.Time) {
+	t.Helper()
+	m := logsPartitionBoundRe.FindStringSubmatch(bound)
+	if m == nil {
+		t.Fatalf("分区 %s 的边界格式非法: %q", name, bound)
+	}
+	from, err := time.Parse("2006-01-02 15:04:05-07", m[1])
+	if err != nil {
+		t.Fatalf("解析分区 %s 起点 %q: %v", name, m[1], err)
+	}
+	to, err := time.Parse("2006-01-02 15:04:05-07", m[2])
+	if err != nil {
+		t.Fatalf("解析分区 %s 终点 %q: %v", name, m[2], err)
+	}
+	from, to = from.UTC(), to.UTC()
+	monthStart := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if !from.Equal(monthStart) {
+		t.Fatalf("分区 %s 起点不是 UTC 月初: %s", name, from)
+	}
+	if !to.Equal(monthStart.AddDate(0, 1, 0)) {
+		t.Fatalf("分区 %s 终点不是次月初: %s", name, to)
+	}
+	return from, to
 }
 
 // openLogsTestDB 连接日志库：取 NEWTG_TEST_DB_DSN 并把 dbname 换成 newtg_logs。
@@ -100,43 +139,60 @@ func TestLogsSchema(t *testing.T) {
 		}
 	})
 
-	// (b) 分区恰两个，名字 == 当月/下月 YYYYMM（期望值同用 date_trunc 计算，UTC）。
+	// (b) 分区窗口：日志迁移预建 12 个月（R-56）。要求当前月与下月存在；
+	// 每个分区名 == usage_logs_YYYYMM 且边界恰为 [月初, 次月初) UTC；从当前
+	// 月起连续 lookahead 个月都存在（允许更早/更晚的额外分区，但边界同样
+	// 必须精确）。不建 DEFAULT 由 (e) 断言。
 	t.Run("partitions", func(t *testing.T) {
-		var cur, next string
-		err := db.QueryRow(`SELECT
-				to_char(date_trunc('month', now() AT TIME ZONE 'UTC'), 'YYYYMM'),
-				to_char(date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month', 'YYYYMM')`).
-			Scan(&cur, &next)
-		if err != nil {
-			t.Fatalf("compute expected months: %v", err)
-		}
-
-		rows, err := db.Query(`SELECT c.relname
+		rows, err := db.Query(`SELECT c.relname, pg_get_expr(c.relpartbound, c.oid)
 			FROM pg_inherits i
 			JOIN pg_class c ON c.oid = i.inhrelid
 			JOIN pg_class p ON p.oid = i.inhparent
 			JOIN pg_namespace n ON n.oid = p.relnamespace
 			WHERE p.relname = 'usage_logs' AND n.nspname = current_schema()
+			  AND c.relispartition
 			ORDER BY c.relname`)
 		if err != nil {
 			t.Fatalf("query partitions: %v", err)
 		}
 		defer rows.Close()
-		var got []string
+
+		months := make(map[string]bool)
+		var earliest time.Time
 		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
+			var name, bound string
+			if err := rows.Scan(&name, &bound); err != nil {
 				t.Fatalf("scan: %v", err)
 			}
-			got = append(got, name)
+			from, _ := parseLogsPartitionBound(t, name, bound)
+			wantName := "usage_logs_" + from.Format("200601")
+			if name != wantName {
+				t.Fatalf("分区名 %q 与边界月份不符（want %q）", name, wantName)
+			}
+			months[from.Format("200601")] = true
+			if earliest.IsZero() || from.Before(earliest) {
+				earliest = from
+			}
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		want := []string{"usage_logs_" + cur, "usage_logs_" + next}
-		sort.Strings(want)
-		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Fatalf("分区集合 = %v，want %v（当月+下月，UTC）", got, want)
+
+		now := time.Now().UTC()
+		cur := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		next := cur.AddDate(0, 1, 0)
+		if !months[cur.Format("200601")] || !months[next.Format("200601")] {
+			t.Fatalf("当前月与下月分区必须存在（init 迁移保证）：cur=%s next=%s",
+				cur.Format("200601"), next.Format("200601"))
+		}
+		// 12 个月窗口固定在**迁移执行时刻**，不能从 time.Now() 起算（持久
+		// 测试库跨月后会假失败）。从最早既有分区起要求连续 lookahead 个月。
+		for i := 0; i < logsPartitionLookaheadMonths; i++ {
+			key := earliest.AddDate(0, i, 0).Format("200601")
+			if !months[key] {
+				t.Fatalf("从最早分区 %s 起缺第 %d 个月 usage_logs_%s（R-56 连续性）",
+					earliest.Format("200601"), i, key)
+			}
 		}
 	})
 
@@ -212,15 +268,16 @@ func TestLogsSchema(t *testing.T) {
 		}
 	})
 
-	// (e) 无 DEFAULT 分区（V11）；pg_partition_tree 叶子节点恰 2 个。
+	// (e) 无 DEFAULT 分区（V11）；叶子分区至少覆盖 12 个月 lookahead（R-56）。
 	t.Run("no_default_partition", func(t *testing.T) {
 		var leaves, defaults int
 		err := db.QueryRow(`SELECT count(*) FROM pg_partition_tree('usage_logs') WHERE isleaf`).Scan(&leaves)
 		if err != nil {
 			t.Fatalf("query partition tree: %v", err)
 		}
-		if leaves != 2 {
-			t.Fatalf("usage_logs 叶子分区数 = %d，want 2", leaves)
+		if leaves < logsPartitionLookaheadMonths {
+			t.Fatalf("usage_logs 叶子分区数 = %d，want >= %d（R-56 lookahead）",
+				leaves, logsPartitionLookaheadMonths)
 		}
 
 		err = db.QueryRow(`SELECT count(*)

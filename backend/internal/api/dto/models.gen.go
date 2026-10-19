@@ -69,6 +69,42 @@ func (e GeoIPResponseSource) Valid() bool {
 	}
 }
 
+// Defines values for GroupPricingSourceStatus.
+const (
+	GroupPricingSourceStatusN0 GroupPricingSourceStatus = 0
+	GroupPricingSourceStatusN1 GroupPricingSourceStatus = 1
+	GroupPricingSourceStatusN2 GroupPricingSourceStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the GroupPricingSourceStatus enum.
+func (e GroupPricingSourceStatus) Valid() bool {
+	switch e {
+	case GroupPricingSourceStatusN0:
+		return true
+	case GroupPricingSourceStatusN1:
+		return true
+	case GroupPricingSourceStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GroupPricingMode1.
+const (
+	Empty GroupPricingMode1 = ""
+)
+
+// Valid indicates whether the value is a known member of the GroupPricingMode1 enum.
+func (e GroupPricingMode1) Valid() bool {
+	switch e {
+	case Empty:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Language.
 const (
 	En   Language = "en"
@@ -273,6 +309,45 @@ func (e PermissionKey) Valid() bool {
 	}
 }
 
+// Defines values for PricingMode.
+const (
+	PerRequest PricingMode = "per_request"
+	PerToken   PricingMode = "per_token"
+	TieredExpr PricingMode = "tiered_expr"
+)
+
+// Valid indicates whether the value is a known member of the PricingMode enum.
+func (e PricingMode) Valid() bool {
+	switch e {
+	case PerRequest:
+		return true
+	case PerToken:
+		return true
+	case TieredExpr:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PricingStatus.
+const (
+	PricingStatusN1 PricingStatus = 1
+	PricingStatusN2 PricingStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the PricingStatus enum.
+func (e PricingStatus) Valid() bool {
+	switch e {
+	case PricingStatusN1:
+		return true
+	case PricingStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Problem402Currency.
 const (
 	Credits Problem402Currency = "credits"
@@ -459,6 +534,141 @@ const (
 func (e VerifyEmailResponseEmailVerified) Valid() bool {
 	switch e {
 	case VerifyEmailResponseEmailVerifiedTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListGroupPricingParamsStatus.
+const (
+	ListGroupPricingParamsStatusDisabled ListGroupPricingParamsStatus = "disabled"
+	ListGroupPricingParamsStatusEnabled  ListGroupPricingParamsStatus = "enabled"
+	ListGroupPricingParamsStatusN1       ListGroupPricingParamsStatus = "1"
+	ListGroupPricingParamsStatusN2       ListGroupPricingParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the ListGroupPricingParamsStatus enum.
+func (e ListGroupPricingParamsStatus) Valid() bool {
+	switch e {
+	case ListGroupPricingParamsStatusDisabled:
+		return true
+	case ListGroupPricingParamsStatusEnabled:
+		return true
+	case ListGroupPricingParamsStatusN1:
+		return true
+	case ListGroupPricingParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListGroupPricingParamsSort.
+const (
+	ListGroupPricingParamsSortGroup          ListGroupPricingParamsSort = "group"
+	ListGroupPricingParamsSortMinusGroup     ListGroupPricingParamsSort = "-group"
+	ListGroupPricingParamsSortMinusModel     ListGroupPricingParamsSort = "-model"
+	ListGroupPricingParamsSortMinusUpdatedAt ListGroupPricingParamsSort = "-updated_at"
+	ListGroupPricingParamsSortModel          ListGroupPricingParamsSort = "model"
+	ListGroupPricingParamsSortUpdatedAt      ListGroupPricingParamsSort = "updated_at"
+)
+
+// Valid indicates whether the value is a known member of the ListGroupPricingParamsSort enum.
+func (e ListGroupPricingParamsSort) Valid() bool {
+	switch e {
+	case ListGroupPricingParamsSortGroup:
+		return true
+	case ListGroupPricingParamsSortMinusGroup:
+		return true
+	case ListGroupPricingParamsSortMinusModel:
+		return true
+	case ListGroupPricingParamsSortMinusUpdatedAt:
+		return true
+	case ListGroupPricingParamsSortModel:
+		return true
+	case ListGroupPricingParamsSortUpdatedAt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListModelPricingParamsStatus.
+const (
+	ListModelPricingParamsStatusDisabled ListModelPricingParamsStatus = "disabled"
+	ListModelPricingParamsStatusEnabled  ListModelPricingParamsStatus = "enabled"
+	ListModelPricingParamsStatusN1       ListModelPricingParamsStatus = "1"
+	ListModelPricingParamsStatusN2       ListModelPricingParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the ListModelPricingParamsStatus enum.
+func (e ListModelPricingParamsStatus) Valid() bool {
+	switch e {
+	case ListModelPricingParamsStatusDisabled:
+		return true
+	case ListModelPricingParamsStatusEnabled:
+		return true
+	case ListModelPricingParamsStatusN1:
+		return true
+	case ListModelPricingParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListModelPricingParamsSort.
+const (
+	ListModelPricingParamsSortMinusModel       ListModelPricingParamsSort = "-model"
+	ListModelPricingParamsSortMinusPromptPrice ListModelPricingParamsSort = "-prompt_price"
+	ListModelPricingParamsSortMinusUpdatedAt   ListModelPricingParamsSort = "-updated_at"
+	ListModelPricingParamsSortModel            ListModelPricingParamsSort = "model"
+	ListModelPricingParamsSortPromptPrice      ListModelPricingParamsSort = "prompt_price"
+	ListModelPricingParamsSortUpdatedAt        ListModelPricingParamsSort = "updated_at"
+)
+
+// Valid indicates whether the value is a known member of the ListModelPricingParamsSort enum.
+func (e ListModelPricingParamsSort) Valid() bool {
+	switch e {
+	case ListModelPricingParamsSortMinusModel:
+		return true
+	case ListModelPricingParamsSortMinusPromptPrice:
+		return true
+	case ListModelPricingParamsSortMinusUpdatedAt:
+		return true
+	case ListModelPricingParamsSortModel:
+		return true
+	case ListModelPricingParamsSortPromptPrice:
+		return true
+	case ListModelPricingParamsSortUpdatedAt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListPricingModelsParamsStatus.
+const (
+	ListPricingModelsParamsStatusAll      ListPricingModelsParamsStatus = "all"
+	ListPricingModelsParamsStatusDisabled ListPricingModelsParamsStatus = "disabled"
+	ListPricingModelsParamsStatusEnabled  ListPricingModelsParamsStatus = "enabled"
+	ListPricingModelsParamsStatusN1       ListPricingModelsParamsStatus = "1"
+	ListPricingModelsParamsStatusN2       ListPricingModelsParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the ListPricingModelsParamsStatus enum.
+func (e ListPricingModelsParamsStatus) Valid() bool {
+	switch e {
+	case ListPricingModelsParamsStatusAll:
+		return true
+	case ListPricingModelsParamsStatusDisabled:
+		return true
+	case ListPricingModelsParamsStatusEnabled:
+		return true
+	case ListPricingModelsParamsStatusN1:
+		return true
+	case ListPricingModelsParamsStatusN2:
 		return true
 	default:
 		return false
@@ -1066,6 +1276,95 @@ type GeoIPResponse_Region struct {
 // GeoIPResponseSource local_db=命中本地 GeoIP 库；unknown=库缺失或无匹配
 type GeoIPResponseSource string
 
+// GroupPricing defines model for GroupPricing.
+type GroupPricing struct {
+	CacheReadPrice  int64     `json:"cache_read_price"`
+	CacheWritePrice int64     `json:"cache_write_price"`
+	CompletionPrice int64     `json:"completion_price"`
+	CreatedAt       time.Time `json:"created_at"`
+	Group           string    `json:"group"`
+	Id              int64     `json:"id"`
+
+	// Mode 随源模型只读展示；源 model_pricing 行缺失时为空串。
+	Mode        GroupPricingMode `json:"mode"`
+	Model       string           `json:"model"`
+	PromptPrice int64            `json:"prompt_price"`
+
+	// SourceStatus 源 model_pricing 状态；0=源行缺失。
+	SourceStatus GroupPricingSourceStatus `json:"source_status"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status    PricingStatus `json:"status"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// GroupPricingSourceStatus 源 model_pricing 状态；0=源行缺失。
+type GroupPricingSourceStatus int
+
+// GroupPricingCreateRequest 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。
+type GroupPricingCreateRequest struct {
+	// CacheReadPrice 覆盖价（整数绝对价）；缺省 0。
+	CacheReadPrice *int64 `json:"cache_read_price,omitempty"`
+
+	// CacheWritePrice 覆盖价（整数绝对价）；缺省 0。
+	CacheWritePrice *int64 `json:"cache_write_price,omitempty"`
+
+	// CompletionPrice 覆盖价（整数绝对价）；缺省 0。
+	CompletionPrice *int64 `json:"completion_price,omitempty"`
+
+	// Group 必须存在且启用（否则 422）。
+	Group string `json:"group"`
+
+	// Model 必须已在 model_pricing 定价（否则 422）。
+	Model string `json:"model"`
+
+	// PromptPrice 覆盖价（整数绝对价）；缺省 0。
+	PromptPrice *int64 `json:"prompt_price,omitempty"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status *PricingStatus `json:"status,omitempty"`
+}
+
+// GroupPricingList GET /api/group-pricing 的 offset 分页信封。
+type GroupPricingList struct {
+	Items []GroupPricing `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize     int    `json:"page_size"`
+	QuotaPerUnit *int64 `json:"quota_per_unit,omitempty"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// GroupPricingMode 随源模型只读展示；源 model_pricing 行缺失时为空串。
+type GroupPricingMode struct {
+	union json.RawMessage
+}
+
+// GroupPricingMode1 defines model for GroupPricingMode.1.
+type GroupPricingMode1 string
+
+// GroupPricingStatusRequest defines model for GroupPricingStatusRequest.
+type GroupPricingStatusRequest struct {
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// GroupPricingUpdateRequest 部分更新；group/model 不可改（字段策略 403）。
+type GroupPricingUpdateRequest struct {
+	CacheReadPrice  *int64 `json:"cache_read_price,omitempty"`
+	CacheWritePrice *int64 `json:"cache_write_price,omitempty"`
+	CompletionPrice *int64 `json:"completion_price,omitempty"`
+	PromptPrice     *int64 `json:"prompt_price,omitempty"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status    *PricingStatus `json:"status,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
 // Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 type Language string
 
@@ -1122,6 +1421,161 @@ type MeView struct {
 	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 	Status   UserStatus `json:"status"`
 	Username string     `json:"username"`
+}
+
+// ModelPricing defines model for ModelPricing.
+type ModelPricing struct {
+	Author string `json:"author"`
+
+	// BillingExpr 非 null 即表达式模式；与四个价列互斥。
+	BillingExpr     *string   `json:"billing_expr,omitempty"`
+	CacheReadPrice  *int64    `json:"cache_read_price,omitempty"`
+	CacheWritePrice *int64    `json:"cache_write_price,omitempty"`
+	CompletionPrice *int64    `json:"completion_price,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// Free 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。
+	Free bool  `json:"free"`
+	Id   int64 `json:"id"`
+
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode  PricingMode `json:"mode"`
+	Model string      `json:"model"`
+
+	// PromptPrice 输入价（积分/1M tokens）；per_request 模式下是每次请求价。
+	PromptPrice *int64 `json:"prompt_price,omitempty"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status PricingStatus `json:"status"`
+
+	// UpdatedAt 乐观锁版本；PATCH/启停必须原样回传。
+	UpdatedAt time.Time `json:"updated_at"`
+	Vendor    *string   `json:"vendor,omitempty"`
+}
+
+// ModelPricingCreateRequest 价格单位是整数积分；展示层按 quota_per_unit 换算为元。
+// 表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
+// 422；模型重复 409。
+type ModelPricingCreateRequest struct {
+	// Author 缺省 Unknown；null 与空串 422。
+	Author *string `json:"author,omitempty"`
+
+	// BillingExpr 非空即表达式模式；与数值价列互斥（混用 400）。
+	BillingExpr     *string `json:"billing_expr,omitempty"`
+	CacheReadPrice  *int64  `json:"cache_read_price,omitempty"`
+	CacheWritePrice *int64  `json:"cache_write_price,omitempty"`
+	CompletionPrice *int64  `json:"completion_price,omitempty"`
+
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode        *PricingMode `json:"mode,omitempty"`
+	Model       string       `json:"model"`
+	PromptPrice *int64       `json:"prompt_price,omitempty"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status *PricingStatus `json:"status,omitempty"`
+	Vendor *string        `json:"vendor,omitempty"`
+}
+
+// ModelPricingList GET /api/model-pricing 的 offset 分页信封。
+type ModelPricingList struct {
+	Items []ModelPricing `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// QuotaPerUnit 展示换算的每货币单位积分（默认 100）。
+	QuotaPerUnit *int64 `json:"quota_per_unit,omitempty"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// ModelPricingPreviewRequest defines model for ModelPricingPreviewRequest.
+type ModelPricingPreviewRequest struct {
+	// GroupRatio 预览用的分组倍率，必须 > 0；缺省 1（服务端默认）。
+	GroupRatio *float64 `json:"group_ratio,omitempty"`
+
+	// Model 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
+	Model  *string               `json:"model,omitempty"`
+	Params *PricingPreviewParams `json:"params,omitempty"`
+
+	// Spec pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+	// prompt_price/completion_price/cache_read_price/cache_write_price，
+	// 也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+	// 求值与保存使用同一解析器。按次预览可只给 model_price（自动按
+	// per_request 解释），或显式 mode=per_request 且必须提供 model_price；
+	// 后者缺失返回 400。
+	Spec ModelPricingPreviewRequest_Spec `json:"spec"`
+}
+
+// ModelPricingPreviewRequestSpec0 defines model for ModelPricingPreviewRequest.Spec.0.
+type ModelPricingPreviewRequestSpec0 map[string]interface{}
+
+// ModelPricingPreviewRequestSpec1 defines model for ModelPricingPreviewRequest.Spec.1.
+type ModelPricingPreviewRequestSpec1 = string
+
+// ModelPricingPreviewRequest_Spec pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+// prompt_price/completion_price/cache_read_price/cache_write_price，
+// 也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+// 求值与保存使用同一解析器。按次预览可只给 model_price（自动按
+// per_request 解释），或显式 mode=per_request 且必须提供 model_price；
+// 后者缺失返回 400。
+type ModelPricingPreviewRequest_Spec struct {
+	union json.RawMessage
+}
+
+// ModelPricingPreviewResponse defines model for ModelPricingPreviewResponse.
+type ModelPricingPreviewResponse struct {
+	// AmountYuan 元，HALF_UP 到分。
+	AmountYuan string `json:"amount_yuan"`
+
+	// Clamp 饱和审计标记（op/kind/original/clamped）；未饱和时为 null。
+	Clamp map[string]interface{} `json:"clamp"`
+
+	// Clamped 命中配额饱和（quota 已是钳制后的值，同时返回 clamp 审计）。
+	Clamped   bool `json:"clamped"`
+	FreeModel bool `json:"free_model"`
+
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode PricingMode `json:"mode"`
+
+	// Quota 整数积分。
+	Quota        int64 `json:"quota"`
+	QuotaPerUnit int64 `json:"quota_per_unit"`
+}
+
+// ModelPricingStatusRequest defines model for ModelPricingStatusRequest.
+type ModelPricingStatusRequest struct {
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ModelPricingUpdateRequest 部分更新；model 不可改（提交 model 由字段策略 403）。
+// updated_at 缺失 400、不匹配 409。空对象/无字段 400。
+type ModelPricingUpdateRequest struct {
+	// Author 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。
+	Author *string `json:"author,omitempty"`
+
+	// BillingExpr null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。
+	BillingExpr     *string `json:"billing_expr,omitempty"`
+	CacheReadPrice  *int64  `json:"cache_read_price,omitempty"`
+	CacheWritePrice *int64  `json:"cache_write_price,omitempty"`
+	CompletionPrice *int64  `json:"completion_price,omitempty"`
+
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode        *PricingMode `json:"mode,omitempty"`
+	PromptPrice *int64       `json:"prompt_price,omitempty"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status    *PricingStatus `json:"status,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Vendor    *string        `json:"vendor,omitempty"`
 }
 
 // NotificationChannel defines model for NotificationChannel.
@@ -1264,6 +1718,49 @@ type PermissionGrant1 string
 // PermissionKey modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
 // 通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
 type PermissionKey string
+
+// PricingMode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+type PricingMode string
+
+// PricingModelList defines model for PricingModelList.
+type PricingModelList struct {
+	Items []PricingModelOption `json:"items"`
+}
+
+// PricingModelOption defines model for PricingModelOption.
+type PricingModelOption struct {
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode  PricingMode `json:"mode"`
+	Model string      `json:"model"`
+
+	// Status 1=启用，2=停用（软状态，不删行）。
+	Status PricingStatus `json:"status"`
+}
+
+// PricingPreviewParams defines model for PricingPreviewParams.
+type PricingPreviewParams struct {
+	Ai   *int64 `json:"ai,omitempty"`
+	Ao   *int64 `json:"ao,omitempty"`
+	C    *int64 `json:"c,omitempty"`
+	Cc1h *int64 `json:"cc1h,omitempty"`
+	Cc5m *int64 `json:"cc5m,omitempty"`
+	Cr   *int64 `json:"cr,omitempty"`
+
+	// ImageCount -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。
+	ImageCount *int   `json:"image_count,omitempty"`
+	Img        *int64 `json:"img,omitempty"`
+	ImgCr      *int64 `json:"img_cr,omitempty"`
+	ImgO       *int64 `json:"img_o,omitempty"`
+	Len        *int64 `json:"len,omitempty"`
+
+	// P 输入 token（未单独定价的部分）。
+	P *int64 `json:"p,omitempty"`
+}
+
+// PricingStatus 1=启用，2=停用（软状态，不删行）。
+type PricingStatus int
 
 // Problem RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Problem struct {
@@ -1761,6 +2258,12 @@ type PageSize = int
 // PathGroupName defines model for PathGroupName.
 type PathGroupName = string
 
+// PathGroupTag defines model for PathGroupTag.
+type PathGroupTag = string
+
+// PathPricingModel defines model for PathPricingModel.
+type PathPricingModel = string
+
 // PathSessionID defines model for PathSessionID.
 type PathSessionID = string
 
@@ -1769,6 +2272,9 @@ type PathTokenID = int64
 
 // PathUserID defines model for PathUserID.
 type PathUserID = int64
+
+// UpdatedAtQuery defines model for UpdatedAtQuery.
+type UpdatedAtQuery = time.Time
 
 // Error400 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error400 = Problem
@@ -1854,6 +2360,69 @@ type ChangeEmailParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListGroupPricingParams defines parameters for ListGroupPricing.
+type ListGroupPricingParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Group    *string   `form:"group,omitempty" json:"group,omitempty"`
+
+	// Keyword 模型名前缀。
+	Keyword *string                       `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status  *ListGroupPricingParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Sort    *ListGroupPricingParamsSort   `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// ListGroupPricingParamsStatus defines parameters for ListGroupPricing.
+type ListGroupPricingParamsStatus string
+
+// ListGroupPricingParamsSort defines parameters for ListGroupPricing.
+type ListGroupPricingParamsSort string
+
+// CreateGroupPricingParams defines parameters for CreateGroupPricing.
+type CreateGroupPricingParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteGroupPricingParams defines parameters for DeleteGroupPricing.
+type DeleteGroupPricingParams struct {
+	// UpdatedAt 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+	// 故通过查询参数传递；不匹配返回 409。
+	UpdatedAt UpdatedAtQuery `form:"updated_at" json:"updated_at"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateGroupPricingParams defines parameters for UpdateGroupPricing.
+type UpdateGroupPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DisableGroupPricingParams defines parameters for DisableGroupPricing.
+type DisableGroupPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// EnableGroupPricingParams defines parameters for EnableGroupPricing.
+type EnableGroupPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListGroupsParams defines parameters for ListGroups.
 type ListGroupsParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -1886,6 +2455,86 @@ type UpdateGroupParams struct {
 
 // PatchMeParams defines parameters for PatchMe.
 type PatchMeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListModelPricingParams defines parameters for ListModelPricing.
+type ListModelPricingParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize    `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Keyword  *string      `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Mode     *PricingMode `form:"mode,omitempty" json:"mode,omitempty"`
+
+	// Status 接受 1/2 与 enabled/disabled。
+	Status *ListModelPricingParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Sort   *ListModelPricingParamsSort   `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// ListModelPricingParamsStatus defines parameters for ListModelPricing.
+type ListModelPricingParamsStatus string
+
+// ListModelPricingParamsSort defines parameters for ListModelPricing.
+type ListModelPricingParamsSort string
+
+// CreateModelPricingParams defines parameters for CreateModelPricing.
+type CreateModelPricingParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListPricingModelsParams defines parameters for ListPricingModels.
+type ListPricingModelsParams struct {
+	Keyword *string                        `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status  *ListPricingModelsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Limit   *int                           `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListPricingModelsParamsStatus defines parameters for ListPricingModels.
+type ListPricingModelsParamsStatus string
+
+// DeleteModelPricingParams defines parameters for DeleteModelPricing.
+type DeleteModelPricingParams struct {
+	// UpdatedAt 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+	// 故通过查询参数传递；不匹配返回 409。
+	UpdatedAt UpdatedAtQuery `form:"updated_at" json:"updated_at"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateModelPricingParams defines parameters for UpdateModelPricing.
+type UpdateModelPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DisableModelPricingParams defines parameters for DisableModelPricing.
+type DisableModelPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// EnableModelPricingParams defines parameters for EnableModelPricing.
+type EnableModelPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PreviewModelPricingParams defines parameters for PreviewModelPricing.
+type PreviewModelPricingParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -2190,6 +2839,18 @@ type RegisterJSONRequestBody = RegisterRequest
 // ChangeEmailJSONRequestBody defines body for ChangeEmail for application/json ContentType.
 type ChangeEmailJSONRequestBody = ChangeEmailRequest
 
+// CreateGroupPricingJSONRequestBody defines body for CreateGroupPricing for application/json ContentType.
+type CreateGroupPricingJSONRequestBody = GroupPricingCreateRequest
+
+// UpdateGroupPricingJSONRequestBody defines body for UpdateGroupPricing for application/json ContentType.
+type UpdateGroupPricingJSONRequestBody = GroupPricingUpdateRequest
+
+// DisableGroupPricingJSONRequestBody defines body for DisableGroupPricing for application/json ContentType.
+type DisableGroupPricingJSONRequestBody = GroupPricingStatusRequest
+
+// EnableGroupPricingJSONRequestBody defines body for EnableGroupPricing for application/json ContentType.
+type EnableGroupPricingJSONRequestBody = GroupPricingStatusRequest
+
 // CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
 type CreateGroupJSONRequestBody = AdminCreateGroupRequest
 
@@ -2198,6 +2859,21 @@ type UpdateGroupJSONRequestBody = AdminUpdateGroupRequest
 
 // PatchMeJSONRequestBody defines body for PatchMe for application/json ContentType.
 type PatchMeJSONRequestBody = PatchMeRequest
+
+// CreateModelPricingJSONRequestBody defines body for CreateModelPricing for application/json ContentType.
+type CreateModelPricingJSONRequestBody = ModelPricingCreateRequest
+
+// UpdateModelPricingJSONRequestBody defines body for UpdateModelPricing for application/json ContentType.
+type UpdateModelPricingJSONRequestBody = ModelPricingUpdateRequest
+
+// DisableModelPricingJSONRequestBody defines body for DisableModelPricing for application/json ContentType.
+type DisableModelPricingJSONRequestBody = ModelPricingStatusRequest
+
+// EnableModelPricingJSONRequestBody defines body for EnableModelPricing for application/json ContentType.
+type EnableModelPricingJSONRequestBody = ModelPricingStatusRequest
+
+// PreviewModelPricingJSONRequestBody defines body for PreviewModelPricing for application/json ContentType.
+type PreviewModelPricingJSONRequestBody = ModelPricingPreviewRequest
 
 // UpdateNotificationPreferencesJSONRequestBody defines body for UpdateNotificationPreferences for application/json ContentType.
 type UpdateNotificationPreferencesJSONRequestBody = NotificationPreferences
@@ -2874,6 +3550,68 @@ func (t *GeoIPResponse_Region) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsPricingMode returns the union data inside the GroupPricingMode as a PricingMode
+func (t GroupPricingMode) AsPricingMode() (PricingMode, error) {
+	var body PricingMode
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingMode overwrites any union data inside the GroupPricingMode as the provided PricingMode
+func (t *GroupPricingMode) FromPricingMode(v PricingMode) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingMode performs a merge with any union data inside the GroupPricingMode, using the provided PricingMode
+func (t *GroupPricingMode) MergePricingMode(v PricingMode) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsGroupPricingMode1 returns the union data inside the GroupPricingMode as a GroupPricingMode1
+func (t GroupPricingMode) AsGroupPricingMode1() (GroupPricingMode1, error) {
+	var body GroupPricingMode1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromGroupPricingMode1 overwrites any union data inside the GroupPricingMode as the provided GroupPricingMode1
+func (t *GroupPricingMode) FromGroupPricingMode1(v GroupPricingMode1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeGroupPricingMode1 performs a merge with any union data inside the GroupPricingMode, using the provided GroupPricingMode1
+func (t *GroupPricingMode) MergeGroupPricingMode1(v GroupPricingMode1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GroupPricingMode) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GroupPricingMode) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsAuthSessionResponse returns the union data inside the LoginResponse as a AuthSessionResponse
 func (t LoginResponse) AsAuthSessionResponse() (AuthSessionResponse, error) {
 	var body AuthSessionResponse
@@ -2932,6 +3670,68 @@ func (t LoginResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (t *LoginResponse) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsModelPricingPreviewRequestSpec0 returns the union data inside the ModelPricingPreviewRequest_Spec as a ModelPricingPreviewRequestSpec0
+func (t ModelPricingPreviewRequest_Spec) AsModelPricingPreviewRequestSpec0() (ModelPricingPreviewRequestSpec0, error) {
+	var body ModelPricingPreviewRequestSpec0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingPreviewRequestSpec0 overwrites any union data inside the ModelPricingPreviewRequest_Spec as the provided ModelPricingPreviewRequestSpec0
+func (t *ModelPricingPreviewRequest_Spec) FromModelPricingPreviewRequestSpec0(v ModelPricingPreviewRequestSpec0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingPreviewRequestSpec0 performs a merge with any union data inside the ModelPricingPreviewRequest_Spec, using the provided ModelPricingPreviewRequestSpec0
+func (t *ModelPricingPreviewRequest_Spec) MergeModelPricingPreviewRequestSpec0(v ModelPricingPreviewRequestSpec0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingPreviewRequestSpec1 returns the union data inside the ModelPricingPreviewRequest_Spec as a ModelPricingPreviewRequestSpec1
+func (t ModelPricingPreviewRequest_Spec) AsModelPricingPreviewRequestSpec1() (ModelPricingPreviewRequestSpec1, error) {
+	var body ModelPricingPreviewRequestSpec1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingPreviewRequestSpec1 overwrites any union data inside the ModelPricingPreviewRequest_Spec as the provided ModelPricingPreviewRequestSpec1
+func (t *ModelPricingPreviewRequest_Spec) FromModelPricingPreviewRequestSpec1(v ModelPricingPreviewRequestSpec1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingPreviewRequestSpec1 performs a merge with any union data inside the ModelPricingPreviewRequest_Spec, using the provided ModelPricingPreviewRequestSpec1
+func (t *ModelPricingPreviewRequest_Spec) MergeModelPricingPreviewRequestSpec1(v ModelPricingPreviewRequestSpec1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingPreviewRequest_Spec) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingPreviewRequest_Spec) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

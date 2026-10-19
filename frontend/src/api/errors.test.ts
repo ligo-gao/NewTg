@@ -63,6 +63,18 @@ describe('parseProblem', () => {
     expect(JSON.stringify(error)).not.toContain('do not surface this')
   })
 
+  it('reads problem.fields and drops non-string or empty entries', () => {
+    const error = parseProblem({
+      status: 422,
+      body: {
+        title: 'Validation failed',
+        fields: ['prompt_price', 3, '', 'billing_expr'],
+      },
+    })
+
+    expect(error.fields).toEqual(['prompt_price', 'billing_expr'])
+  })
+
   it('treats a network failure (status 0) as offline', () => {
     const error = parseProblem({ status: 0 })
 

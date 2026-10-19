@@ -71,8 +71,14 @@ func (sc *stubConnectors) openLogsDB(ctx context.Context, cfg *config.Config) (R
 }
 
 func (sc *stubConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
-	db, logsDB, rds Resource, log *slog.Logger) (http.Handler, error) {
-	return sc.apiHandler, sc.apiErr
+	db, logsDB, rds Resource, log *slog.Logger) (*gatewayAssembly, error) {
+	if sc.apiErr != nil {
+		return nil, sc.apiErr
+	}
+	if sc.apiHandler == nil {
+		return nil, nil
+	}
+	return &gatewayAssembly{Handler: sc.apiHandler}, nil
 }
 
 func (sc *stubConnectors) openRedis(cfg *config.Config) (Resource, error) {
@@ -355,7 +361,7 @@ func TestMountRelayRoutesConcreteResources(t *testing.T) {
 	defer func() { _ = rdb.Close() }()
 
 	mux := http.NewServeMux()
-	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"), sqlDB, redisResource{client: rdb})
+	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"), sqlDB, redisResource{client: rdb}, nil)
 
 	cases := []struct {
 		method string
@@ -378,7 +384,7 @@ func TestMountRelayRoutesConcreteResources(t *testing.T) {
 func TestMountRelayRoutesSkipsStubResources(t *testing.T) {
 	mux := http.NewServeMux()
 	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"),
-		&stubResource{name: "db"}, &stubResource{name: "redis"})
+		&stubResource{name: "db"}, &stubResource{name: "redis"}, nil)
 
 	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/api/channels"} {
 		if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" {

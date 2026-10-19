@@ -1088,6 +1088,216 @@ export interface paths {
         patch: operations["updateGroup"];
         trace?: never;
     };
+    "/api/model-pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型定价列表（offset 分页 + 筛选）
+         * @description keyword 为模型名前缀匹配；mode/status 精确筛选；sort 白名单
+         *     model/-model/prompt_price/-prompt_price/updated_at/-updated_at，
+         *     默认模型名升序。非法枚举/排序 400（不静默忽略）。
+         */
+        get: operations["listModelPricing"];
+        put?: never;
+        /**
+         * 创建模型定价（Idempotency-Key）
+         * @description 价格是整数积分（积分/1M tokens；per_request 时 prompt_price=积分/次）。
+         *     billing_expr 非空即表达式模式：保存期用 pricing.ParsePricing 编译并
+         *     校验变量白名单，非法/空白 400（problem.fields=[billing_expr]）；
+         *     表达式与数值价列混用 400。模型重复 409。
+         */
+        post: operations["createModelPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-pricing/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型选择器（已定价模型清单）
+         * @description 默认只返回启用模型；status=all 含停用。用于定价/覆盖价抽屉的下拉。
+         */
+        get: operations["listPricingModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-pricing:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 实时求值预览（spec + 样例变量）
+         * @description 复用 pricing.ParsePricingSpec + pricing.ComputeQuota：不写库、不做
+         *     第二套计价。返回整数积分与按 quota_per_unit 换算的元金额
+         *     （HALF_UP 到分）。spec 非法 400；params 非法 400。
+         */
+        post: operations["previewModelPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-pricing/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除模型定价（updated_at 乐观锁）
+         * @description 删除模型时同一事务清理其 group_pricing 覆盖价（覆盖价脱离源定价
+         *     没有意义，留下孤儿会在重建同名模型时「复活」旧价）。
+         */
+        delete: operations["deleteModelPricing"];
+        options?: never;
+        head?: never;
+        /**
+         * 部分更新模型定价（updated_at 乐观锁）
+         * @description 必须原样回传 updated_at（缺失 400、不匹配 409）。model 不可改
+         *     （提交 model 由字段策略 403）。离开 tiered_expr 必须显式
+         *     billing_expr:null；在表达式行上写数值价列 422。
+         */
+        patch: operations["updateModelPricing"];
+        trace?: never;
+    };
+    "/api/model-pricing/{model}:enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 启用模型定价 */
+        post: operations["enableModelPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-pricing/{model}:disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 停用模型定价（停用后用户请求不命中该模型） */
+        post: operations["disableModelPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/group-pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 分组覆盖价列表（offset 分页）
+         * @description 返回源模型的 mode/source_status，供 UI 展示「源定价已停用」警告。
+         *     分组目录本身归模块 07 / GET /api/groups，本端点只消费 group 标签。
+         */
+        get: operations["listGroupPricing"];
+        put?: never;
+        /**
+         * 创建分组覆盖价（Idempotency-Key）
+         * @description group 必须存在且启用（422）；model 必须已在 model_pricing 定价（422）；
+         *     重复 (group, model) 409。覆盖价优先于「基准价 × 分组倍率」。
+         */
+        post: operations["createGroupPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/group-pricing/{group}/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除分组覆盖价（updated_at 乐观锁） */
+        delete: operations["deleteGroupPricing"];
+        options?: never;
+        head?: never;
+        /** 部分更新分组覆盖价（updated_at 乐观锁） */
+        patch: operations["updateGroupPricing"];
+        trace?: never;
+    };
+    "/api/group-pricing/{group}/{model}:enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 启用分组覆盖价 */
+        post: operations["enableGroupPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/group-pricing/{group}/{model}:disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 停用分组覆盖价（该分组恢复按倍率计费） */
+        post: operations["disableGroupPricing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/channels": {
         parameters: {
             query?: never;
@@ -2008,6 +2218,263 @@ export interface components {
             name?: string;
             description?: string | null;
         };
+        /**
+         * @description per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+         *     tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+         * @enum {string}
+         */
+        PricingMode: "per_token" | "per_request" | "tiered_expr";
+        /**
+         * @description 1=启用，2=停用（软状态，不删行）。
+         * @enum {integer}
+         */
+        PricingStatus: 1 | 2;
+        ModelPricing: {
+            /** Format: int64 */
+            id: number;
+            model: string;
+            mode: components["schemas"]["PricingMode"];
+            /** @description 非 null 即表达式模式；与四个价列互斥。 */
+            billing_expr?: string | null;
+            /**
+             * Format: int64
+             * @description 输入价（积分/1M tokens）；per_request 模式下是每次请求价。
+             */
+            prompt_price?: number | null;
+            /** Format: int64 */
+            completion_price?: number | null;
+            /** Format: int64 */
+            cache_read_price?: number | null;
+            /** Format: int64 */
+            cache_write_price?: number | null;
+            author: string;
+            vendor?: string | null;
+            status: components["schemas"]["PricingStatus"];
+            /** @description 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。 */
+            free: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PATCH/启停必须原样回传。
+             */
+            updated_at: string;
+        };
+        /** @description GET /api/model-pricing 的 offset 分页信封。 */
+        ModelPricingList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["ModelPricing"][];
+            /**
+             * Format: int64
+             * @description 展示换算的每货币单位积分（默认 100）。
+             */
+            quota_per_unit?: number;
+        };
+        /**
+         * @description 价格单位是整数积分；展示层按 quota_per_unit 换算为元。
+         *     表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
+         *     422；模型重复 409。
+         */
+        ModelPricingCreateRequest: {
+            model: string;
+            mode?: components["schemas"]["PricingMode"];
+            /** @description 非空即表达式模式；与数值价列互斥（混用 400）。 */
+            billing_expr?: string | null;
+            /** Format: int64 */
+            prompt_price?: number | null;
+            /** Format: int64 */
+            completion_price?: number | null;
+            /** Format: int64 */
+            cache_read_price?: number | null;
+            /** Format: int64 */
+            cache_write_price?: number | null;
+            /** @description 缺省 Unknown；null 与空串 422。 */
+            author?: string;
+            vendor?: string | null;
+            status?: components["schemas"]["PricingStatus"];
+        };
+        PricingModelOption: {
+            model: string;
+            mode: components["schemas"]["PricingMode"];
+            status: components["schemas"]["PricingStatus"];
+        };
+        PricingModelList: {
+            items: components["schemas"]["PricingModelOption"][];
+        };
+        PricingPreviewParams: {
+            /**
+             * Format: int64
+             * @description 输入 token（未单独定价的部分）。
+             */
+            p?: number;
+            /** Format: int64 */
+            c?: number;
+            /** Format: int64 */
+            len?: number;
+            /** Format: int64 */
+            cr?: number;
+            /** Format: int64 */
+            cc5m?: number;
+            /** Format: int64 */
+            cc1h?: number;
+            /** Format: int64 */
+            img?: number;
+            /** Format: int64 */
+            img_cr?: number;
+            /** Format: int64 */
+            img_o?: number;
+            /** Format: int64 */
+            ai?: number;
+            /** Format: int64 */
+            ao?: number;
+            /** @description -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。 */
+            image_count?: number;
+        };
+        ModelPricingPreviewRequest: {
+            /**
+             * @description pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+             *     prompt_price/completion_price/cache_read_price/cache_write_price，
+             *     也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+             *     求值与保存使用同一解析器。按次预览可只给 model_price（自动按
+             *     per_request 解释），或显式 mode=per_request 且必须提供 model_price；
+             *     后者缺失返回 400。
+             */
+            spec: {
+                [key: string]: unknown;
+            } | string;
+            /** @description 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。 */
+            model?: string;
+            /**
+             * Format: double
+             * @description 预览用的分组倍率，必须 > 0；缺省 1（服务端默认）。
+             */
+            group_ratio?: number;
+            params?: components["schemas"]["PricingPreviewParams"];
+        };
+        ModelPricingPreviewResponse: {
+            /**
+             * Format: int64
+             * @description 整数积分。
+             */
+            quota: number;
+            /** Format: int64 */
+            quota_per_unit: number;
+            /** @description 元，HALF_UP 到分。 */
+            amount_yuan: string;
+            mode: components["schemas"]["PricingMode"];
+            free_model: boolean;
+            /** @description 命中配额饱和（quota 已是钳制后的值，同时返回 clamp 审计）。 */
+            clamped: boolean;
+            /** @description 饱和审计标记（op/kind/original/clamped）；未饱和时为 null。 */
+            clamp: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * @description 部分更新；model 不可改（提交 model 由字段策略 403）。
+         *     updated_at 缺失 400、不匹配 409。空对象/无字段 400。
+         */
+        ModelPricingUpdateRequest: {
+            /** Format: date-time */
+            updated_at: string;
+            mode?: components["schemas"]["PricingMode"];
+            /** @description null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。 */
+            billing_expr?: string | null;
+            /** Format: int64 */
+            prompt_price?: number | null;
+            /** Format: int64 */
+            completion_price?: number | null;
+            /** Format: int64 */
+            cache_read_price?: number | null;
+            /** Format: int64 */
+            cache_write_price?: number | null;
+            /** @description 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。 */
+            author?: string;
+            vendor?: string | null;
+            status?: components["schemas"]["PricingStatus"];
+        };
+        ModelPricingStatusRequest: {
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description 随源模型只读展示；源 model_pricing 行缺失时为空串。 */
+        GroupPricingMode: components["schemas"]["PricingMode"] | "";
+        GroupPricing: {
+            /** Format: int64 */
+            id: number;
+            group: string;
+            model: string;
+            mode: components["schemas"]["GroupPricingMode"];
+            /** Format: int64 */
+            prompt_price: number;
+            /** Format: int64 */
+            completion_price: number;
+            /** Format: int64 */
+            cache_read_price: number;
+            /** Format: int64 */
+            cache_write_price: number;
+            status: components["schemas"]["PricingStatus"];
+            /**
+             * @description 源 model_pricing 状态；0=源行缺失。
+             * @enum {integer}
+             */
+            source_status: 0 | 1 | 2;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description GET /api/group-pricing 的 offset 分页信封。 */
+        GroupPricingList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["GroupPricing"][];
+            /** Format: int64 */
+            quota_per_unit?: number;
+        };
+        /** @description 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。 */
+        GroupPricingCreateRequest: {
+            /** @description 必须存在且启用（否则 422）。 */
+            group: string;
+            /** @description 必须已在 model_pricing 定价（否则 422）。 */
+            model: string;
+            /**
+             * Format: int64
+             * @description 覆盖价（整数绝对价）；缺省 0。
+             */
+            prompt_price?: number;
+            /**
+             * Format: int64
+             * @description 覆盖价（整数绝对价）；缺省 0。
+             */
+            completion_price?: number;
+            /**
+             * Format: int64
+             * @description 覆盖价（整数绝对价）；缺省 0。
+             */
+            cache_read_price?: number;
+            /**
+             * Format: int64
+             * @description 覆盖价（整数绝对价）；缺省 0。
+             */
+            cache_write_price?: number;
+            status?: components["schemas"]["PricingStatus"];
+        };
+        /** @description 部分更新；group/model 不可改（字段策略 403）。 */
+        GroupPricingUpdateRequest: {
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: int64 */
+            prompt_price?: number;
+            /** Format: int64 */
+            completion_price?: number;
+            /** Format: int64 */
+            cache_read_price?: number;
+            /** Format: int64 */
+            cache_write_price?: number;
+            status?: components["schemas"]["PricingStatus"];
+        };
+        GroupPricingStatusRequest: {
+            /** Format: date-time */
+            updated_at: string;
+        };
     };
     responses: {
         /** @description 请求不符合契约（参数/请求体校验失败） */
@@ -2132,6 +2599,15 @@ export interface components {
         PathSessionID: string;
         /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
         PathGroupName: string;
+        /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+        PathPricingModel: string;
+        /** @description 分组名（user_groups.name）。 */
+        PathGroupTag: string;
+        /**
+         * @description 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+         *     故通过查询参数传递；不匹配返回 409。
+         */
+        UpdatedAtQuery: string;
     };
     requestBodies: never;
     headers: never;
@@ -4116,6 +4592,534 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminGroup"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listModelPricing: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                keyword?: string;
+                mode?: components["schemas"]["PricingMode"];
+                /** @description 接受 1/2 与 enabled/disabled。 */
+                status?: "1" | "2" | "enabled" | "disabled";
+                sort?: "model" | "-model" | "prompt_price" | "-prompt_price" | "updated_at" | "-updated_at";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createModelPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listPricingModels: {
+        parameters: {
+            query?: {
+                keyword?: string;
+                status?: "1" | "2" | "enabled" | "disabled" | "all";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PricingModelList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    previewModelPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingPreviewResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteModelPricing: {
+        parameters: {
+            query: {
+                /**
+                 * @description 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+                 *     故通过查询参数传递；不匹配返回 409。
+                 */
+                updated_at: components["parameters"]["UpdatedAtQuery"];
+            };
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateModelPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的定价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    enableModelPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的定价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    disableModelPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的定价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listGroupPricing: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                group?: string;
+                /** @description 模型名前缀。 */
+                keyword?: string;
+                status?: "1" | "2" | "enabled" | "disabled";
+                sort?: "group" | "-group" | "model" | "-model" | "updated_at" | "-updated_at";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupPricingList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createGroupPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupPricingCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteGroupPricing: {
+        parameters: {
+            query: {
+                /**
+                 * @description 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+                 *     故通过查询参数传递；不匹配返回 409。
+                 */
+                updated_at: components["parameters"]["UpdatedAtQuery"];
+            };
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（user_groups.name）。 */
+                group: components["parameters"]["PathGroupTag"];
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateGroupPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（user_groups.name）。 */
+                group: components["parameters"]["PathGroupTag"];
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupPricingUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的覆盖价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    enableGroupPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（user_groups.name）。 */
+                group: components["parameters"]["PathGroupTag"];
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupPricingStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的覆盖价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    disableGroupPricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（user_groups.name）。 */
+                group: components["parameters"]["PathGroupTag"];
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupPricingStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的覆盖价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupPricing"];
                 };
             };
             400: components["responses"]["Error400"];

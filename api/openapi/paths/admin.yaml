@@ -544,3 +544,571 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error403'
         '429':
           $ref: '../components/responses.yaml#/responses/Error429'
+
+  # ---------------------------------------------------------------------------
+  # 定价管理（M3 Task 7 / modules-06 F-06-13/14/16）
+  #
+  # 命名空间：管理面是 /api/model-pricing 与 /api/group-pricing；公开目录
+  # /api/pricing 归模块 09，二者不得混用（modules-06 G-5 裁决）。
+  # ---------------------------------------------------------------------------
+  /api/model-pricing:
+    get:
+      tags: [admin]
+      operationId: listModelPricing
+      x-required-permission: pricing:read
+      summary: 模型定价列表（offset 分页 + 筛选）
+      description: |
+        keyword 为模型名前缀匹配；mode/status 精确筛选；sort 白名单
+        model/-model/prompt_price/-prompt_price/updated_at/-updated_at，
+        默认模型名升序。非法枚举/排序 400（不静默忽略）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: mode
+          in: query
+          required: false
+          schema:
+            $ref: '../schemas/admin.yaml#/schemas/PricingMode'
+        - name: status
+          in: query
+          required: false
+          description: 接受 1/2 与 enabled/disabled。
+          schema:
+            type: string
+            enum: ['1', '2', enabled, disabled]
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [model, -model, prompt_price, -prompt_price, updated_at, -updated_at]
+            default: model
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricingList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createModelPricing
+      x-required-permission: pricing:manage
+      summary: 创建模型定价（Idempotency-Key）
+      description: |
+        价格是整数积分（积分/1M tokens；per_request 时 prompt_price=积分/次）。
+        billing_expr 非空即表达式模式：保存期用 pricing.ParsePricing 编译并
+        校验变量白名单，非法/空白 400（problem.fields=[billing_expr]）；
+        表达式与数值价列混用 400。模型重复 409。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/model-pricing/models:
+    get:
+      tags: [admin]
+      operationId: listPricingModels
+      x-required-permission: pricing:read
+      summary: 模型选择器（已定价模型清单）
+      description: 默认只返回启用模型；status=all 含停用。用于定价/覆盖价抽屉的下拉。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1', '2', enabled, disabled, all]
+            default: '1'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PricingModelList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/model-pricing:preview:
+    post:
+      tags: [admin]
+      operationId: previewModelPricing
+      x-required-permission: pricing:read
+      summary: 实时求值预览（spec + 样例变量）
+      description: |
+        复用 pricing.ParsePricingSpec + pricing.ComputeQuota：不写库、不做
+        第二套计价。返回整数积分与按 quota_per_unit 换算的元金额
+        （HALF_UP 到分）。spec 非法 400；params 非法 400。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricingPreviewResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/model-pricing/{model}:
+    patch:
+      tags: [admin]
+      operationId: updateModelPricing
+      x-required-permission: pricing:manage
+      summary: 部分更新模型定价（updated_at 乐观锁）
+      description: |
+        必须原样回传 updated_at（缺失 400、不匹配 409）。model 不可改
+        （提交 model 由字段策略 403）。离开 tiered_expr 必须显式
+        billing_expr:null；在表达式行上写数值价列 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteModelPricing
+      x-required-permission: pricing:manage
+      summary: 删除模型定价（updated_at 乐观锁）
+      description: |
+        删除模型时同一事务清理其 group_pricing 覆盖价（覆盖价脱离源定价
+        没有意义，留下孤儿会在重建同名模型时「复活」旧价）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/UpdatedAtQuery'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/model-pricing/{model}:enable:
+    post:
+      tags: [admin]
+      operationId: enableModelPricing
+      x-required-permission: pricing:manage
+      summary: 启用模型定价
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/model-pricing/{model}:disable:
+    post:
+      tags: [admin]
+      operationId: disableModelPricing
+      x-required-permission: pricing:manage
+      summary: 停用模型定价（停用后用户请求不命中该模型）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/group-pricing:
+    get:
+      tags: [admin]
+      operationId: listGroupPricing
+      x-required-permission: pricing:read
+      summary: 分组覆盖价列表（offset 分页）
+      description: |
+        返回源模型的 mode/source_status，供 UI 展示「源定价已停用」警告。
+        分组目录本身归模块 07 / GET /api/groups，本端点只消费 group 标签。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[a-z0-9_-]{2,32}$'
+        - name: keyword
+          in: query
+          required: false
+          description: 模型名前缀。
+          schema:
+            type: string
+            maxLength: 128
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1', '2', enabled, disabled]
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [group, -group, model, -model, updated_at, -updated_at]
+            default: group
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/GroupPricingList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createGroupPricing
+      x-required-permission: pricing:manage
+      summary: 创建分组覆盖价（Idempotency-Key）
+      description: |
+        group 必须存在且启用（422）；model 必须已在 model_pricing 定价（422）；
+        重复 (group, model) 409。覆盖价优先于「基准价 × 分组倍率」。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/GroupPricingCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/GroupPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/group-pricing/{group}/{model}:
+    patch:
+      tags: [admin]
+      operationId: updateGroupPricing
+      x-required-permission: pricing:manage
+      summary: 部分更新分组覆盖价（updated_at 乐观锁）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupTag'
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/GroupPricingUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/GroupPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteGroupPricing
+      x-required-permission: pricing:manage
+      summary: 删除分组覆盖价（updated_at 乐观锁）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupTag'
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/UpdatedAtQuery'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/group-pricing/{group}/{model}:enable:
+    post:
+      tags: [admin]
+      operationId: enableGroupPricing
+      x-required-permission: pricing:manage
+      summary: 启用分组覆盖价
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupTag'
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/GroupPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/GroupPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/group-pricing/{group}/{model}:disable:
+    post:
+      tags: [admin]
+      operationId: disableGroupPricing
+      x-required-permission: pricing:manage
+      summary: 停用分组覆盖价（该分组恢复按倍率计费）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathGroupTag'
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/GroupPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/GroupPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

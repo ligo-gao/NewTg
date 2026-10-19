@@ -21,20 +21,65 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/clientip"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
 )
 
+// gatewayAssembly 是 gateway 角色一次装配的产物：管理面 handler 与中继面
+// （/v1）所需的计费接线。
+//
+// 中继路由在 platform.mountRelayRoutes 挂载，但计费引擎依赖 gorm、配置中心
+// 快照与独立日志库——这些只在 newGatewayAPI 里就绪。把工厂与模型状态查询
+// 一并交回 runGateway，保证引擎/定价源**只装配一次**（同一 source 实例既供
+// 引擎结算，又接管理面的 OnChange 失效钩子）。
+type gatewayAssembly struct {
+	// Handler 是 /api/* 管理面；nil 表示探针-only 装配（测试）。
+	Handler http.Handler
+	// Billing 为每个中继请求构造计费会话；nil 时中继回退 M2 桩。
+	Billing func(*contract.RelayContext) contract.BillingSession
+	// ModelStatus 是派发前的模型停用检查（R-84）。
+	ModelStatus httpapi.RelayModelStatusStore
+	// PricingSource 是引擎与管理面共用的定价源（装配验证/诊断用）。
+	PricingSource *pricing.DBSource
+	// PricingOnChange 就是注入管理面的缓存失效回调（R-63）；与
+	// PricingSource.Invalidate 同一个函数值，供装配测试验证接线。
+	PricingOnChange func()
+}
+
+// pricingCacheInvalidator 是定价源进程内缓存失效的最小缝。
+//
+// 生产实现是 *pricing.DBSource（NewSource 返回）；单测用计数 fake 证明
+// newGatewayAPI 把 **同一个** Invalidate 接给了管理面 OnChange（R-63）。
+type pricingCacheInvalidator interface {
+	Invalidate()
+}
+
+var _ pricingCacheInvalidator = (*pricing.DBSource)(nil)
+
+// pricingOnChange 把定价源适配成管理面的「写后失效」回调。
+//
+// nil 源返回 nil：管理面只靠 sourceCacheTTL=30s 兜底，而不是 panic 或静默
+// 接一个空实现（两种都难排查）。
+func pricingOnChange(source pricingCacheInvalidator) func() {
+	if source == nil {
+		return nil
+	}
+	return source.Invalidate
+}
+
 // newAPIHandler 是 connectors 的生产实现：把 Resource 还原为具体类型后
 // 交给 newGatewayAPI。类型不匹配说明装配被错误调用（例如测试 stub 走了
 // 生产 connectors），直接报错而不是静默跳过 API 装配。
 func (prodConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
-	db, logsDB, rds Resource, log *slog.Logger) (http.Handler, error) {
+	db, logsDB, rds Resource, log *slog.Logger) (*gatewayAssembly, error) {
 
 	sqlDB, ok := db.(*sql.DB)
 	if !ok {
@@ -48,6 +93,11 @@ func (prodConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
 	if !ok {
 		return nil, errors.New("gateway: api assembly requires a redis resource")
 	}
+	if redisRes.client == nil {
+		// R-41/R-88：计费引擎与在飞租约都必须拿到非 nil 客户端（结算双扣
+		// 窗口靠 requestID 锁收窄，租约靠心跳续期）。
+		return nil, errors.New("gateway: api assembly requires a non-nil redis client")
+	}
 	return newGatewayAPI(ctx, cfg, sqlDB, sqlLogs, redisRes.client, log)
 }
 
@@ -59,7 +109,7 @@ func (prodConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
 //   - configcenter.Subscribe：≤1s 的跨副本配置生效路径；
 //   - tokenstore.Subscribe：GC-11 的令牌缓存第二失效通道（强制）。
 func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
-	rdb *redis.Client, log *slog.Logger) (http.Handler, error) {
+	rdb *redis.Client, log *slog.Logger) (*gatewayAssembly, error) {
 
 	// tokenstore 的 CRUD 用 GORM；复用已建好的 database/sql 连接池，
 	// 不另开第二组连接（避免连接数与事务边界分裂）。
@@ -81,6 +131,22 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err := center.Load(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: load config center: %w", err)
 	}
+	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
+	// 元↔积分换算基准），并接入钳制审计日志。必须在 Load 之后、任何
+	// handler 读取 CurrentQuotaPerUnit 之前；非法 QPU 让启动失败。
+	//
+	// 返回的 source 实例必须保留：它同时是（a）真实计费引擎的定价源，
+	// （b）管理面定价写成功后的缓存失效目标（R-63）。两处必须共用同一实例，
+	// 否则失效钩子清的是另一个缓存，定价变更仍要等 30s TTL。
+	source, err := initBillingAssembly(gormDB, center, cfg, log, "gateway")
+	if err != nil {
+		return nil, fmt.Errorf("gateway: billing assembly: %w", err)
+	}
+
+	// T9：真实计费引擎。R-41/R-88 的生产保证要求 Redis 非 nil（结算双扣
+	// 窗口靠 requestID 锁收窄）；Saturator 写独立日志库（usage_logs）。
+	engine := billing.NewEngine(gormDB, logsDB, rdb, center, source,
+		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB))
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
 	}
@@ -131,7 +197,14 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		},
 	)
 
-	return httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
+	// 定价仓储同时服务管理面与中继的停用模型检查（R-84）：同一实例、
+	// 同一套候选解析语义，避免两处对「这个模型是否被停用」得出不同答案。
+	pricingRepo := store.NewPricingRepo(db)
+	// R-63：定价写成功后立即清空 30s 缓存。这里把回调保存到 assembly，
+	// 既注入 GatewayDeps，也让装配测试能验证「就是 source.Invalidate」。
+	pricingChanged := pricingOnChange(source)
+
+	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
 		Redis:                   rdb,
@@ -146,7 +219,20 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PublicBaseURL:           cfg.PublicBaseURL,
 		Logger:                  log,
 		ChannelHandler:          channelHandler,
+		PricingRepo:             pricingRepo,
+		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
+		PricingOnChange: pricingChanged,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &gatewayAssembly{
+		Handler:         router,
+		Billing:         engine.NewSession,
+		ModelStatus:     pricingRepo,
+		PricingSource:   source,
+		PricingOnChange: pricingChanged,
+	}, nil
 }
 
 // newAuthzMiddleware 构造 RBAC 中间件并接线拒绝审计（security-09 §2.7 设计 B /

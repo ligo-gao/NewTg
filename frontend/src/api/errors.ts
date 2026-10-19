@@ -38,6 +38,11 @@ export interface ApiErrorFields {
   problem402?: Problem402
   request_id?: string
   /**
+   * `problem.fields`（RFC 7807 扩展）：服务端指出的字段级错误。定价保存
+   * 用它把 400/422 定位回具体输入（F-04/F-06-14），未知/非字符串一律丢弃。
+   */
+  fields?: string[]
+  /**
    * Seconds from a `Retry-After` response header. Server-driven countdowns
    * (email-code 429, login lockout) must never hardcode their duration.
    */
@@ -69,6 +74,7 @@ export class ApiError extends Error {
   readonly instance?: string
   readonly problem402?: Problem402
   readonly request_id?: string
+  readonly fields?: string[]
   readonly retry_after?: number
   readonly kind: ApiErrorKind
 
@@ -82,6 +88,7 @@ export class ApiError extends Error {
     this.instance = fields.instance
     this.problem402 = fields.problem402
     this.request_id = fields.request_id
+    this.fields = fields.fields
     this.retry_after = fields.retry_after
     this.kind = fields.kind
   }
@@ -151,6 +158,16 @@ function readRetryAfter(value: string | undefined): number | undefined {
   return Math.ceil(seconds)
 }
 
+/** Reads `problem.fields`, dropping anything that is not a non-empty string. */
+function readFields(body: Record<string, unknown> | undefined): string[] | undefined {
+  const value = body?.fields
+  if (!Array.isArray(value)) return undefined
+  const fields = value.filter(
+    (item): item is string => typeof item === 'string' && item.length > 0,
+  )
+  return fields.length > 0 ? fields : undefined
+}
+
 /**
  * Builds an `ApiError` from an HTTP status and an optional Problem body.
  *
@@ -171,6 +188,7 @@ export function parseProblem(input: ParseProblemInput): ApiError {
     instance: readString(body, 'instance'),
     problem402: kind === 'quota' ? readProblem402(body) : undefined,
     request_id: input.requestId,
+    fields: readFields(body),
     retry_after: readRetryAfter(input.retryAfter),
     kind,
   })

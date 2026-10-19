@@ -164,3 +164,27 @@ func TestAuthzDenyAuditorDataScopeUses404(t *testing.T) {
 		t.Fatalf("detail.reason 不是 data_scope: %s", detail)
 	}
 }
+
+// recordingInvalidator 记录 Invalidate 调用次数（F3 装配测试）。
+type recordingInvalidator struct{ calls int }
+
+func (r *recordingInvalidator) Invalidate() { r.calls++ }
+
+// TestPricingOnChangeWiredToSourceInvalidate 冻结 R-63 的装配接缝：
+// newGatewayAPI 必须把定价源的 Invalidate 作为管理面写后回调（同一个函数值），
+// 且 nil 源时给出 nil 回调（只靠 30s TTL），而不是空实现。
+func TestPricingOnChangeWiredToSourceInvalidate(t *testing.T) {
+	source := &recordingInvalidator{}
+	onChange := pricingOnChange(source)
+	if onChange == nil {
+		t.Fatal("pricingOnChange(source) = nil, want source.Invalidate")
+	}
+	onChange()
+	onChange()
+	if source.calls != 2 {
+		t.Fatalf("Invalidate calls = %d, want 2（回调必须直接送达定价源）", source.calls)
+	}
+	if got := pricingOnChange(nil); got != nil {
+		t.Fatal("pricingOnChange(nil) must be nil（未接源时只靠 TTL）")
+	}
+}

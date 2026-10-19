@@ -35,12 +35,21 @@ export interface ProblemFieldError {
   message: string
 }
 
-export type ChannelApiError = ApiError & { fields?: ProblemFieldError[] }
+/**
+ * M3's `ApiError` carries `fields?: string[]` from the RFC 7807
+ * `problem.fields` extension. Channel management 422s use a different
+ * extension (`errors: [{field, message}]`) normalised into
+ * `ProblemFieldError[]`; keep it under a distinct property so the two shapes
+ * can never be confused at runtime or intersect to `never` in the type system.
+ */
+export interface ChannelApiError extends Omit<ApiError, 'fields'> {
+  fieldErrors?: ProblemFieldError[]
+}
 
 /** Returns the field-level `errors` array when the problem body carried one. */
 export function fieldErrorsOf(error: unknown): ProblemFieldError[] {
   if (error instanceof ApiError) {
-    return (error as ChannelApiError).fields ?? []
+    return (error as ChannelApiError).fieldErrors ?? []
   }
   return []
 }
@@ -99,8 +108,8 @@ async function problemFields(response: Response): Promise<ProblemFieldError[]> {
 
 async function normalizeError(response: Response): Promise<ChannelApiError> {
   const error = await toApiError(response)
-  const fields = await problemFields(response)
-  return fields.length > 0 ? Object.assign(error, { fields }) : error
+  const fieldErrors = await problemFields(response)
+  return fieldErrors.length > 0 ? Object.assign(error, { fieldErrors }) : error
 }
 
 async function dispatch(

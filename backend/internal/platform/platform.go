@@ -5,7 +5,6 @@ package platform
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
 	"newtg/gateway/internal/config"
 )
@@ -30,10 +29,14 @@ type connectors interface {
 	openLogsDB(ctx context.Context, cfg *config.Config) (Resource, error)
 	openRedis(cfg *config.Config) (Resource, error)
 	runMigrate(ctx context.Context, cfg *config.Config) error
-	// newAPIHandler 构造 /api/* 路由。nil handler 表示该角色/测试装配只跑
-	// 探针端点（生产实现恒返回完整 M1 路由）。
+	// newAPIHandler 构造 /api/* 路由与中继面计费接线。nil assembly 表示该
+	// 角色/测试装配只跑探针端点（生产实现恒返回完整 M1 路由 + 计费引擎）。
+	//
+	// 为什么把计费工厂与模型状态查询一并返回：/v1 路由由 platform.mountRelayRoutes
+	// 挂载，而引擎依赖 gorm/配置中心/日志库——它们只在 api 装配里就绪。
+	// 单一装配点避免在 mountRelayRoutes 重复初始化配置中心与定价源。
 	newAPIHandler(ctx context.Context, cfg *config.Config,
-		db, logsDB, rds Resource, log *slog.Logger) (http.Handler, error)
+		db, logsDB, rds Resource, log *slog.Logger) (*gatewayAssembly, error)
 }
 
 // prodConnectors 生产实现：OpenDB / OpenRedis 从 cfg 真实建连并验证连通性。

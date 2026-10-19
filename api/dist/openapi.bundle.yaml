@@ -2148,6 +2148,597 @@ paths:
           $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/model-pricing:
+    get:
+      tags:
+        - admin
+      operationId: listModelPricing
+      x-required-permission: pricing:read
+      summary: 模型定价列表（offset 分页 + 筛选）
+      description: |
+        keyword 为模型名前缀匹配；mode/status 精确筛选；sort 白名单
+        model/-model/prompt_price/-prompt_price/updated_at/-updated_at，
+        默认模型名升序。非法枚举/排序 400（不静默忽略）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: mode
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PricingMode'
+        - name: status
+          in: query
+          required: false
+          description: 接受 1/2 与 enabled/disabled。
+          schema:
+            type: string
+            enum:
+              - '1'
+              - '2'
+              - enabled
+              - disabled
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - model
+              - -model
+              - prompt_price
+              - -prompt_price
+              - updated_at
+              - -updated_at
+            default: model
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricingList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createModelPricing
+      x-required-permission: pricing:manage
+      summary: 创建模型定价（Idempotency-Key）
+      description: |
+        价格是整数积分（积分/1M tokens；per_request 时 prompt_price=积分/次）。
+        billing_expr 非空即表达式模式：保存期用 pricing.ParsePricing 编译并
+        校验变量白名单，非法/空白 400（problem.fields=[billing_expr]）；
+        表达式与数值价列混用 400。模型重复 409。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPricingCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/model-pricing/models:
+    get:
+      tags:
+        - admin
+      operationId: listPricingModels
+      x-required-permission: pricing:read
+      summary: 模型选择器（已定价模型清单）
+      description: 默认只返回启用模型；status=all 含停用。用于定价/覆盖价抽屉的下拉。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - '1'
+              - '2'
+              - enabled
+              - disabled
+              - all
+            default: '1'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingModelList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/model-pricing:preview:
+    post:
+      tags:
+        - admin
+      operationId: previewModelPricing
+      x-required-permission: pricing:read
+      summary: 实时求值预览（spec + 样例变量）
+      description: |
+        复用 pricing.ParsePricingSpec + pricing.ComputeQuota：不写库、不做
+        第二套计价。返回整数积分与按 quota_per_unit 换算的元金额
+        （HALF_UP 到分）。spec 非法 400；params 非法 400。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPricingPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricingPreviewResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/model-pricing/{model}:
+    patch:
+      tags:
+        - admin
+      operationId: updateModelPricing
+      x-required-permission: pricing:manage
+      summary: 部分更新模型定价（updated_at 乐观锁）
+      description: |
+        必须原样回传 updated_at（缺失 400、不匹配 409）。model 不可改
+        （提交 model 由字段策略 403）。离开 tiered_expr 必须显式
+        billing_expr:null；在表达式行上写数值价列 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPricingUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteModelPricing
+      x-required-permission: pricing:manage
+      summary: 删除模型定价（updated_at 乐观锁）
+      description: |
+        删除模型时同一事务清理其 group_pricing 覆盖价（覆盖价脱离源定价
+        没有意义，留下孤儿会在重建同名模型时「复活」旧价）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/UpdatedAtQuery'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/model-pricing/{model}:enable:
+    post:
+      tags:
+        - admin
+      operationId: enableModelPricing
+      x-required-permission: pricing:manage
+      summary: 启用模型定价
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/model-pricing/{model}:disable:
+    post:
+      tags:
+        - admin
+      operationId: disableModelPricing
+      x-required-permission: pricing:manage
+      summary: 停用模型定价（停用后用户请求不命中该模型）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的定价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/group-pricing:
+    get:
+      tags:
+        - admin
+      operationId: listGroupPricing
+      x-required-permission: pricing:read
+      summary: 分组覆盖价列表（offset 分页）
+      description: |
+        返回源模型的 mode/source_status，供 UI 展示「源定价已停用」警告。
+        分组目录本身归模块 07 / GET /api/groups，本端点只消费 group 标签。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: ^[a-z0-9_-]{2,32}$
+        - name: keyword
+          in: query
+          required: false
+          description: 模型名前缀。
+          schema:
+            type: string
+            maxLength: 128
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - '1'
+              - '2'
+              - enabled
+              - disabled
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - group
+              - -group
+              - model
+              - -model
+              - updated_at
+              - -updated_at
+            default: group
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPricingList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createGroupPricing
+      x-required-permission: pricing:manage
+      summary: 创建分组覆盖价（Idempotency-Key）
+      description: |
+        group 必须存在且启用（422）；model 必须已在 model_pricing 定价（422）；
+        重复 (group, model) 409。覆盖价优先于「基准价 × 分组倍率」。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupPricingCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/group-pricing/{group}/{model}:
+    patch:
+      tags:
+        - admin
+      operationId: updateGroupPricing
+      x-required-permission: pricing:manage
+      summary: 部分更新分组覆盖价（updated_at 乐观锁）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupTag'
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupPricingUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteGroupPricing
+      x-required-permission: pricing:manage
+      summary: 删除分组覆盖价（updated_at 乐观锁）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupTag'
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/UpdatedAtQuery'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/group-pricing/{group}/{model}:enable:
+    post:
+      tags:
+        - admin
+      operationId: enableGroupPricing
+      x-required-permission: pricing:manage
+      summary: 启用分组覆盖价
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupTag'
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/group-pricing/{group}/{model}:disable:
+    post:
+      tags:
+        - admin
+      operationId: disableGroupPricing
+      x-required-permission: pricing:manage
+      summary: 停用分组覆盖价（该分组恢复按倍率计费）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupTag'
+        - $ref: '#/components/parameters/PathPricingModel'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupPricingStatusRequest'
+      responses:
+        '200':
+          description: 更新后的覆盖价
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPricing'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/channels:
     get:
       tags:
@@ -2292,6 +2883,32 @@ components:
       schema:
         type: string
         pattern: ^[a-z0-9_-]{2,32}$
+    PathPricingModel:
+      name: model
+      in: path
+      required: true
+      description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。
+      schema:
+        type: string
+        pattern: ^[A-Za-z0-9._:-]{1,128}$
+    PathGroupTag:
+      name: group
+      in: path
+      required: true
+      description: 分组名（user_groups.name）。
+      schema:
+        type: string
+        pattern: ^[a-z0-9_-]{2,32}$
+    UpdatedAtQuery:
+      name: updated_at
+      in: query
+      required: true
+      description: |
+        乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+        故通过查询参数传递；不匹配返回 409。
+      schema:
+        type: string
+        format: date-time
   schemas:
     Problem:
       type: object
@@ -3976,6 +4593,529 @@ components:
         至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
         （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
         ErrGroupSystem → 400），被引用的分组删除返回 409。
+    PricingMode:
+      type: string
+      enum:
+        - per_token
+        - per_request
+        - tiered_expr
+      description: |
+        per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+        tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+    PricingStatus:
+      type: integer
+      enum:
+        - 1
+        - 2
+      description: 1=启用，2=停用（软状态，不删行）。
+    ModelPricing:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - model
+        - mode
+        - author
+        - status
+        - free
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        model:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+        mode:
+          $ref: '#/components/schemas/PricingMode'
+        billing_expr:
+          type: string
+          nullable: true
+          description: 非 null 即表达式模式；与四个价列互斥。
+        prompt_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: 输入价（积分/1M tokens）；per_request 模式下是每次请求价。
+        completion_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_read_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_write_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        author:
+          type: string
+          minLength: 1
+          maxLength: 64
+        vendor:
+          type: string
+          nullable: true
+          maxLength: 64
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+        free:
+          type: boolean
+          description: 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: 乐观锁版本；PATCH/启停必须原样回传。
+    ModelPricingList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ModelPricing'
+            quota_per_unit:
+              type: integer
+              format: int64
+              description: 展示换算的每货币单位积分（默认 100）。
+      description: GET /api/model-pricing 的 offset 分页信封。
+    ModelPricingCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+        mode:
+          $ref: '#/components/schemas/PricingMode'
+        billing_expr:
+          type: string
+          nullable: true
+          description: 非空即表达式模式；与数值价列互斥（混用 400）。
+        prompt_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        completion_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_read_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_write_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        author:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 缺省 Unknown；null 与空串 422。
+        vendor:
+          type: string
+          nullable: true
+          maxLength: 64
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+      description: |
+        价格单位是整数积分；展示层按 quota_per_unit 换算为元。
+        表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
+        422；模型重复 409。
+    PricingModelOption:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+        - mode
+        - status
+      properties:
+        model:
+          type: string
+        mode:
+          $ref: '#/components/schemas/PricingMode'
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+    PricingModelList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PricingModelOption'
+    PricingPreviewParams:
+      type: object
+      additionalProperties: false
+      properties:
+        p:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 输入 token（未单独定价的部分）。
+        c:
+          type: integer
+          format: int64
+          minimum: 0
+        len:
+          type: integer
+          format: int64
+          minimum: 0
+        cr:
+          type: integer
+          format: int64
+          minimum: 0
+        cc5m:
+          type: integer
+          format: int64
+          minimum: 0
+        cc1h:
+          type: integer
+          format: int64
+          minimum: 0
+        img:
+          type: integer
+          format: int64
+          minimum: 0
+        img_cr:
+          type: integer
+          format: int64
+          minimum: 0
+        img_o:
+          type: integer
+          format: int64
+          minimum: 0
+        ai:
+          type: integer
+          format: int64
+          minimum: 0
+        ao:
+          type: integer
+          format: int64
+          minimum: 0
+        image_count:
+          type: integer
+          minimum: -1
+          description: -1=未设置（按请求域缺省 1）；>=0=精确张数（0 合法且计 0）。缺省 -1。
+    ModelPricingPreviewRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - spec
+      properties:
+        spec:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+          description: |
+            pricing.ParsePricing 接受的 spec：JSON 对象（mode/expr 或
+            prompt_price/completion_price/cache_read_price/cache_write_price，
+            也接受旧倍率风格 model_ratio 等）或等价的 JSON 字符串。
+            求值与保存使用同一解析器。按次预览可只给 model_price（自动按
+            per_request 解释），或显式 mode=per_request 且必须提供 model_price；
+            后者缺失返回 400。
+        model:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          description: 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
+        group_ratio:
+          type: number
+          format: double
+          not:
+            maximum: 0
+          description: 预览用的分组倍率，必须 > 0；缺省 1（服务端默认）。
+        params:
+          $ref: '#/components/schemas/PricingPreviewParams'
+    ModelPricingPreviewResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - quota
+        - quota_per_unit
+        - amount_yuan
+        - mode
+        - free_model
+        - clamped
+        - clamp
+      properties:
+        quota:
+          type: integer
+          format: int64
+          description: 整数积分。
+        quota_per_unit:
+          type: integer
+          format: int64
+        amount_yuan:
+          type: string
+          pattern: ^-?[0-9]+\.[0-9]{2}$
+          description: 元，HALF_UP 到分。
+        mode:
+          $ref: '#/components/schemas/PricingMode'
+        free_model:
+          type: boolean
+        clamped:
+          type: boolean
+          description: 命中配额饱和（quota 已是钳制后的值，同时返回 clamp 审计）。
+        clamp:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 饱和审计标记（op/kind/original/clamped）；未饱和时为 null。
+    ModelPricingUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+        mode:
+          $ref: '#/components/schemas/PricingMode'
+        billing_expr:
+          type: string
+          nullable: true
+          description: |
+            null 表示显式清除表达式（离开 tiered_expr 必须同时给出 mode）。
+        prompt_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        completion_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_read_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_write_price:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        author:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 提交 null 或空串 422（NOT NULL 列）；复位请提交 "Unknown"。
+        vendor:
+          type: string
+          nullable: true
+          maxLength: 64
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+      description: |
+        部分更新；model 不可改（提交 model 由字段策略 403）。
+        updated_at 缺失 400、不匹配 409。空对象/无字段 400。
+    ModelPricingStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+    GroupPricingMode:
+      oneOf:
+        - $ref: '#/components/schemas/PricingMode'
+        - type: string
+          enum:
+            - ''
+      description: 随源模型只读展示；源 model_pricing 行缺失时为空串。
+    GroupPricing:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - group
+        - model
+        - mode
+        - prompt_price
+        - completion_price
+        - cache_read_price
+        - cache_write_price
+        - status
+        - source_status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        group:
+          type: string
+          pattern: ^[a-z0-9_-]{2,32}$
+        model:
+          type: string
+        mode:
+          $ref: '#/components/schemas/GroupPricingMode'
+        prompt_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        completion_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_read_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_write_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+        source_status:
+          type: integer
+          enum:
+            - 0
+            - 1
+            - 2
+          description: 源 model_pricing 状态；0=源行缺失。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GroupPricingList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/GroupPricing'
+            quota_per_unit:
+              type: integer
+              format: int64
+      description: GET /api/group-pricing 的 offset 分页信封。
+    GroupPricingCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - group
+        - model
+      properties:
+        group:
+          type: string
+          pattern: ^[a-z0-9_-]{2,32}$
+          description: 必须存在且启用（否则 422）。
+        model:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          description: 必须已在 model_pricing 定价（否则 422）。
+        prompt_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: 覆盖价（整数绝对价）；缺省 0。
+        completion_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: 覆盖价（整数绝对价）；缺省 0。
+        cache_read_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: 覆盖价（整数绝对价）；缺省 0。
+        cache_write_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: 覆盖价（整数绝对价）；缺省 0。
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+      description: 覆盖价是整数绝对价，优先于「基准价 × 分组倍率」；重复 (group, model) 409。
+    GroupPricingUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+        prompt_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        completion_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_read_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        cache_write_price:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        status:
+          $ref: '#/components/schemas/PricingStatus'
+      description: 部分更新；group/model 不可改（字段策略 403）。
+    GroupPricingStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - updated_at
+      properties:
+        updated_at:
+          type: string
+          format: date-time
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）

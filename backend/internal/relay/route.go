@@ -163,7 +163,7 @@ type RouteDeps struct {
 	Dispatch func(contract.ChannelType) (contract.Adapter, error)
 
 	// Billing 是计费会话；nil 表示不接入计费（仅测试/降级）。
-	// 有值时：循环前 PreConsume 一次，最终失败/取消时 Terminate 一次（GC-7）。
+	// 有值时：循环前 PreConsume 一次；最终失败/取消/panic 时 Refund 一次（GC-7/R-85）。
 	Billing contract.BillingSession
 
 	// Client 是上游 HTTP 客户端；nil 时使用按 relay-01 §11.1 冻结默认值构造的
@@ -223,9 +223,10 @@ func newDefaultRouteClient() *http.Client {
 //   - 上下文取消：立即停止并返回包裹 context 错误的 *AttemptsError；
 //   - 预算耗尽：返回 *AttemptsError。
 //
-// 计费生命周期：PreConsume 成功之后的所有失败/取消出口都会 Terminate 一次
-// （GC-7）；PreConsume 之前的失败（计划/pin/依赖校验，或请求在预扣前已取消）
-// 没有开启会话，因此**不调用** Terminate。
+// 计费生命周期：PreConsume 成功之后的所有失败/取消/panic 出口都会 Refund 一次
+// （GC-7/R-85：失败整笔不收费；Terminate(零事实) 会让按次模型照常扣费）；
+// PreConsume 之前的失败（计划/pin/依赖校验，或请求在预扣前已取消）没有开启
+// 会话，因此**不调用** Refund。
 //
 // 职责边界（控制器裁决 R-P4）：候选排序、每轮渠道组整组写入、BuildRequest + Do、
 // HTTP 错误分类、重试/快失败判定、循环前一次性 PreConsume、最终失败 Terminate
@@ -303,18 +304,24 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		}
 	}
 
-	// GC-7：预扣之后的所有失败出口都必须释放预算。Terminate 自身幂等（契约 §6.1），
+	// GC-7：预扣之后的所有失败出口都必须释放预算。Refund 自身幂等（契约 §6.1），
 	// 但本函数仍用本地标志保证恰好一次：显式失败出口立即释放；defer 只兜底
 	// 「没有走显式释放且没有成功」的出口——panic 不经过任何 return，只能靠 defer。
 	// 修复 load-bearing finding：此前 releaseBudget 只挂在显式 error return 上，
 	// PreConsume 之后任意环节 panic 会永久泄漏预留。
+	//
+	// 【R-85：释放必须走 Refund，不是 Terminate(零事实)】失败/取消/panic 是
+	// 「整笔不收费」语义。Terminate 会按真实计价求值：按次（per_call）模型与
+	// 常量表达式模型即使 UsageFact 全零也照常扣费，并把日志写成 success——
+	// 这正是 T9 复审复现的「失败请求照常扣 150 积分」。Refund 全额退回
+	// hold 与 ChargeIncrement 增量，并把 usage_logs 收敛为 refunded。
 	released := false
 	releaseBudget := func() {
 		if released || deps.Billing == nil {
 			return
 		}
 		released = true
-		_ = deps.Billing.Terminate(contract.UsageFact{})
+		_ = deps.Billing.Refund()
 	}
 	// succeeded 在唯一成功出口（2xx）返回前置位：成功时预算由调用方结算
 	// （Route / 流式端点），defer 不得释放。
@@ -501,7 +508,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 }
 
 // Route 执行一次**非流式**中继：ExecuteAttempts → ParseResponse → usage.ExtractUsage
-// → Terminate(fact)。
+// → Terminate(fact)（成功）；解析失败/panic → Refund()（R-85）。
 //
 // 用量事实统一由 usage.ExtractUsage 产出（R-05 三源优先级：原生 usage > 注入 >
 // `x-model-response-usage` 头），本函数是它在**非流式路径**的生产调用方；
@@ -527,28 +534,34 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	defer func() { _ = result.Response.Body.Close() }()
 
 	// GC-7 panic 安全（final-review finding 10）：PreConsume 之后会话已开启，
-	// 任何退出路径（含 ParseResponse/事实构建里的 panic）都必须恰好释放一次
-	// 预留。用与 httpapi.bridgeStream 相同的 terminated 幂等标志 + defer 兜底：
-	// 延迟调用默认用零值 UsageFact（失败/panic 的释放语义），成功路径在返回前
-	// 把最终事实写入 finalFact，defer 读到后按真实用量结算。
+	// 任何退出路径（含 ParseResponse/事实构建里的 panic）都必须恰好终结一次。
+	// 用与 httpapi.bridgeStream 相同的 finalized 幂等标志 + defer 兜底：
+	//   - 成功解析并拿到最终事实 → Terminate(finalFact)；
+	//   - 解析失败 / panic 等失败出口 → Refund()（R-85：失败整笔不收费，
+	//     绝不能把零值事实交给 Terminate 按按次价/常量表达式照常扣费）。
 	var (
-		terminated bool
-		finalFact  contract.UsageFact
+		finalized bool
+		finalFact contract.UsageFact
+		settle    bool
 	)
-	terminate := func(fact contract.UsageFact) {
-		if terminated || deps.Billing == nil {
+	finish := func(refund bool) {
+		if finalized || deps.Billing == nil {
 			return
 		}
-		terminated = true
+		finalized = true
 		// relay-01 §2 阶段 14：结算失败记日志、不阻断响应。本层没有 logger，
 		// 故丢弃错误；响应已完整解析，客户端不应因结算失败拿不到内容。
-		_ = deps.Billing.Terminate(fact)
+		if refund {
+			_ = deps.Billing.Refund()
+			return
+		}
+		_ = deps.Billing.Terminate(finalFact)
 	}
-	defer func() { terminate(finalFact) }()
+	defer func() { finish(!settle) }()
 
 	response, adapterUsage, parseErr := result.Adapter.ParseResponse(rc, result.Response)
 	if parseErr != nil {
-		// 上游 2xx 但响应不可用：会话已开启，defer 以零值事实释放预算（GC-7）。
+		// 上游 2xx 但响应不可用：会话已开启，defer 以 Refund 释放预算（GC-7/R-85）。
 		// 这里不把解析失败标成 FastFailError：它不是 4xx 判定（契约 §4），
 		// 用安全包装保留适配器错误链供端点层读取分类（§9.3）。
 		return nil, safeWrapf(parseErr, "relay: 解析上游响应失败（渠道 %d）", rc.ChannelID)
@@ -581,6 +594,7 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	fact.Attempts = rc.AttemptIndex + 1
 	// FirstTokenMS 保持 nil：非流式没有首 token 时刻（契约 §6.1 · 决议 B6）。
 	finalFact = *fact
+	settle = true // defer 走 Terminate；失败/panic 出口保持 false → Refund
 	return response, nil
 }
 

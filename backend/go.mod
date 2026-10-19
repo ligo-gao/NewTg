@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/redis/go-redis/v9 v9.23.0
+	github.com/shopspring/decimal v1.5.0
 	golang.org/x/crypto v0.58.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1

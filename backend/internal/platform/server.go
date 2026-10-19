@@ -11,8 +11,14 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
+	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/version"
@@ -75,12 +81,16 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 
 	// 管理面路由必须在监听之前装配完成：配置中心/令牌缓存订阅失败、
 	// 权限装载器或审计缺失都必须阻止进程上线（GC-7）。
-	apiHandler, err := conn.newAPIHandler(ctx, cfg, db, logsDB, redisRes, log)
+	assembly, err := conn.newAPIHandler(ctx, cfg, db, logsDB, redisRes, log)
 	if err != nil {
 		_ = redisRes.Close()
 		_ = logsDB.Close()
 		_ = db.Close()
 		return fmt.Errorf("gateway: assemble http api: %w", err)
+	}
+	var apiHandler http.Handler
+	if assembly != nil {
+		apiHandler = assembly.Handler
 	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
@@ -99,8 +109,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	mux := newGatewayMux(checker, apiHandler)
 	// /v1/*（中继面）只在资源是生产具体类型时挂载；platform 单测注入的 stub
 	// Resource 无法还原 *sql.DB / *redis.Client，此时保持 health-only mux
-	// （既有测试不触真 PG/Redis）。
-	mountRelayRoutes(mux, cfg, db, redisRes)
+	// （既有测试不触真 PG/Redis）。assembly 携带真实计费引擎工厂；nil 时中继
+	// 回退 M2 桩（测试装配）。
+	mountRelayRoutes(mux, cfg, db, redisRes, assembly)
 	srv := newGatewayHTTPServer(SecurityHeaders(mux))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
@@ -166,10 +177,13 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 // （含 M2 渠道端点）由 newAPIHandler 在 httpapi 组合根中装配，newGatewayMux
 // 负责把整个管理面挂到 /api/；本函数只处理需要 db/redis 具体类型的 /v1。
 //
+// assembly 提供 T9 的真实计费会话工厂与模型停用检查；nil（测试装配）时
+// 中继回退 billingseam.NewStub（M2 行为），模型停用检查跳过。
+//
 // 只有生产资源（OpenDB 的 *sql.DB、OpenRedis 的 redisResource）才能构造仓储与
 // 密钥封装；测试 path 的 stubResource 无法还原具体类型，此时静默跳过——
 // 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
-func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) {
+func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, assembly *gatewayAssembly) {
 	sqlDB, ok := db.(*sql.DB)
 	if !ok || sqlDB == nil {
 		return
@@ -184,6 +198,13 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) 
 	channelRepo := store.NewChannelRepo(sqlDB)
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
 
+	var billingFactory func(*contract.RelayContext) contract.BillingSession
+	var modelStatus httpapi.RelayModelStatusStore
+	if assembly != nil {
+		billingFactory = assembly.Billing
+		modelStatus = assembly.ModelStatus
+	}
+
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
 	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
@@ -191,6 +212,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource) 
 		Tokens:         tokenRepo,
 		Access:         tokenRepo,
 		Sealer:         sealer,
+		Billing:        billingFactory,
+		ModelStatus:    modelStatus,
 		TrustedProxies: cfg.TrustedProxies,
 	})
 	relayHandler.Register(mux)
@@ -240,8 +263,8 @@ func checkerFromResources(db, rds Resource, migrationExpected int, log *slog.Log
 	return NewChecker(sqldb, client, migrationExpected, log)
 }
 
-// RunWorker 以 worker 角色运行：M0 装配到连上 DB/Redis 并打一条
-// worker started 日志后阻塞等 ctx；调度循环 M3 填。
+// RunWorker 以 worker 角色运行：装配计费引擎与在飞租约注册表，进入兜底
+// 扫描循环，阻塞至 ctx done 后按 Redis → 日志库 → 主库顺序关闭。
 func RunWorker(ctx context.Context, cfg *config.Config) error {
 	return runWorker(ctx, cfg, prodConnectors{})
 }
@@ -254,26 +277,120 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		"node", cfg.NodeName,
 	)
 
-	db, err := conn.openDB(ctx, cfg)
+	dbRes, err := conn.openDB(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("worker: open db: %w", err)
 	}
+	// worker 的计费引擎需要 GORM 句柄（复用同一个 database/sql 连接池，
+	// 不另开第二组连接，避免连接数与事务边界分裂）。
+	sqlDB, ok := dbRes.(*sql.DB)
+	if !ok {
+		_ = dbRes.Close()
+		return errors.New("worker: main database resource is not *sql.DB")
+	}
+
+	// 日志库与主库分开建连：usage_logs 的分区维护与日志写入都在日志库，
+	// 不能让它和钱包事务抢连接（platform-03 §3.4 的两库分治）。
+	logsRes, err := conn.openLogsDB(ctx, cfg)
+	if err != nil {
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: open logs db: %w", err)
+	}
+	sqlLogs, ok := logsRes.(*sql.DB)
+	if !ok {
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: logs database resource is not *sql.DB")
+	}
+
 	redisRes, err := conn.openRedis(cfg)
 	if err != nil {
-		// 正在返回打开 Redis 的主错误；清理 DB 的失败不覆盖它。
-		_ = db.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
 		return fmt.Errorf("worker: open redis: %w", err)
 	}
-
-	log.Info("worker started")
-	<-ctx.Done()
-
-	if err := db.Close(); err != nil {
-		log.Warn("close db failed", "error", err)
+	rr, ok := redisRes.(redisResource)
+	if !ok {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: redis resource has unexpected type")
 	}
+	if rr.client == nil {
+		// redisResource.Close 会解引用 client；nil 客户端说明装配被错误
+		// 调用，直接失败（R-41：引擎与注册表都必须拿到非 nil 客户端）。
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return errors.New("worker: redis client is nil")
+	}
+
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+	})
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: open gorm: %w", err)
+	}
+
+	// 配置中心必须在定价源之前装载：NewSource 从快照读取
+	// billing.quota_per_unit 并写入进程级 QPU。订阅是兜底刷新路径
+	// （5 分钟整表重载 + pub/sub），worker 与 gateway 同口径。
+	center := configcenter.New(sqlDB, rr.client)
+	if err := center.Load(ctx); err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: load config center: %w", err)
+	}
+	// 计费进程级装配（与 gateway 共用）：定价源构造写入进程级 QPU，
+	// 并把钳制审计接到 slog（billing-07 §4.5）。必须在 configcenter.Load
+	// 之后；非法 QPU 让 worker 启动失败，而不是带着错误汇率运行。
+	source, err := initBillingAssembly(gormDB, center, cfg, log, "worker")
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: billing assembly: %w", err)
+	}
+	if err := center.Subscribe(ctx); err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: subscribe config center: %w", err)
+	}
+
+	registry := billing.NewRegistry(rr.client)
+	// Saturator 是 usage_logs 的落库实现（Task 6 的 DBLogger）。worker 的
+	// 兜底退款只依赖钱包流水，日志是辅助状态面（R-14）；但装配真实的
+	// Saturator 让引擎在将来被 worker 复用时行为与 gateway 一致。
+	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
+		billing.NewDBLogger(sqlLogs))
+
+	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
+	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
+	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
+	log.Info("worker started")
+
+	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
+		Abandoned: registry,
+		Recoverer: engine,
+		LogsDB:    sqlLogs,
+		Logger:    log,
+	})
+
+	// 停机序与启动序相反：先断 Redis（循环已退出，不再有租约写入），
+	// 再关日志库与主库。
 	if err := redisRes.Close(); err != nil {
 		log.Warn("close redis failed", "error", err)
 	}
+	if err := logsRes.Close(); err != nil {
+		log.Warn("close logs db failed", "error", err)
+	}
+	if err := dbRes.Close(); err != nil {
+		log.Warn("close db failed", "error", err)
+	}
 	log.Info("worker stopped")
-	return nil
+	return runErr
 }

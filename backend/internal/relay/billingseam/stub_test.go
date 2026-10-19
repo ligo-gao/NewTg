@@ -438,3 +438,41 @@ func TestConcurrentUse(t *testing.T) {
 		t.Errorf("len(ChargedFacts()) = %d, want %d", got, n)
 	}
 }
+
+// TestRefundClosesZeroReservationSession 冻结 T9 的失败出口语义：
+// PreConsume 未传 MaxTokens（名义预留 0）时，Refund 仍必须终结会话计数
+// （Relay 的失败路径统一走 Refund；若桩不关闭会话，路由测试会把已退款
+// 的请求显示为存活）。
+func TestRefundClosesZeroReservationSession(t *testing.T) {
+	st := NewStub()
+	if err := st.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if st.Reserved() != 0 || st.Sessions() != 1 {
+		t.Fatalf("reserved=%d sessions=%d, want 0/1", st.Reserved(), st.Sessions())
+	}
+	if err := st.Refund(); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if !st.Refunded() {
+		t.Fatal("Refunded() = false, want true（失败出口必须可观察）")
+	}
+	if st.Sessions() != 0 || st.Reserved() != 0 {
+		t.Fatalf("after Refund sessions=%d reserved=%d, want 0/0", st.Sessions(), st.Reserved())
+	}
+	// 幂等：再次 Refund 不改变状态。
+	if err := st.Refund(); err != nil || st.Sessions() != 0 {
+		t.Fatalf("second Refund: err=%v sessions=%d", err, st.Sessions())
+	}
+	// 未开启的会话（PreConsume 失败）Refund 是 no-op。
+	empty := NewStubWithLimit(1)
+	if err := empty.PreConsume(contract.QuotaEstimate{MaxTokens: intPtr(10)}); err == nil {
+		t.Fatal("PreConsume should fail over the limit")
+	}
+	if err := empty.Refund(); err != nil {
+		t.Fatalf("Refund on unstarted stub: %v", err)
+	}
+	if empty.Refunded() || empty.Sessions() != 0 {
+		t.Fatalf("unstarted Refund must be a no-op: refunded=%v sessions=%d", empty.Refunded(), empty.Sessions())
+	}
+}

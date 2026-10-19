@@ -133,6 +133,28 @@ paths:
   /api/groups/{name}:
     $ref: './paths/admin.yaml#/paths/~1api~1groups~1{name}'
 
+  # 定价管理（M3 Task 7；管理面族与公开 /api/pricing 分离）。
+  /api/model-pricing:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing'
+  /api/model-pricing/models:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1models'
+  /api/model-pricing:preview:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing:preview'
+  /api/model-pricing/{model}:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1{model}'
+  /api/model-pricing/{model}:enable:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1{model}:enable'
+  /api/model-pricing/{model}:disable:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1{model}:disable'
+  /api/group-pricing:
+    $ref: './paths/admin.yaml#/paths/~1api~1group-pricing'
+  /api/group-pricing/{group}/{model}:
+    $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}'
+  /api/group-pricing/{group}/{model}:enable:
+    $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}:enable'
+  /api/group-pricing/{group}/{model}:disable:
+    $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}:disable'
+
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
@@ -163,6 +185,12 @@ components:
       $ref: './components/params.yaml#/parameters/PathSessionID'
     PathGroupName:
       $ref: './components/params.yaml#/parameters/PathGroupName'
+    PathPricingModel:
+      $ref: './components/params.yaml#/parameters/PathPricingModel'
+    PathGroupTag:
+      $ref: './components/params.yaml#/parameters/PathGroupTag'
+    UpdatedAtQuery:
+      $ref: './components/params.yaml#/parameters/UpdatedAtQuery'
 
   schemas:
     Problem:
