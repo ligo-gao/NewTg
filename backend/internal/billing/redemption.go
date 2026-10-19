@@ -84,12 +84,21 @@ type RedemptionService struct {
 	funding FundingSource
 	cfg     ConfigReader
 	now     func() time.Time
+	// generateCode 是随机码生成接缝（默认 crypto/rand 实现）。测试可注入
+	// 已知碰撞序列来验证重试；生产装配不应覆盖。
+	generateCode func() (string, error)
 }
 
 // NewRedemptionService 构造兑换码服务。cfg 可为 nil（测试/未接配置中心），
 // 此时 quota_per_unit=100、倍率表为空（所有分组 1.0）——P-6 的冻结默认值。
 func NewRedemptionService(db *gorm.DB, funding FundingSource, cfg ConfigReader) *RedemptionService {
-	return &RedemptionService{db: db, funding: funding, cfg: cfg, now: time.Now}
+	return &RedemptionService{
+		db:           db,
+		funding:      funding,
+		cfg:          cfg,
+		now:          time.Now,
+		generateCode: generateRedemptionCode,
+	}
 }
 
 // NormalizeRedemptionCode 是生成、兑换与迁移共用的唯一归一化实现。
@@ -164,25 +173,31 @@ func (s *RedemptionService) GenerateCodes(ctx context.Context, batchName *string
 		for i := 0; i < count; i++ {
 			inserted := false
 			for attempt := 0; attempt < redemptionCollisionRetries; attempt++ {
-				plain, err := generateRedemptionCode()
+				plain, err := s.generateCode()
 				if err != nil {
 					return err
 				}
 				hash := HashRedemptionCode(plain)
-				err = tx.Exec(`
+				// ON CONFLICT DO NOTHING 而不是「普通 INSERT + 捕获 23505 重试」：
+				// PostgreSQL 在语句出错后会中止整个事务，同一事务里的下一次
+				// INSERT 只会得到 "current transaction is aborted"，重试形同虚设。
+				// 让数据库把冲突降级为 0 行影响，事务保持可用。
+				res := tx.Exec(`
 					INSERT INTO redemption_codes
 						(code_hash, credits, status, batch_name, created_by, expires_at)
-					VALUES (?, ?, 'unused', ?, ?, ?)`,
-					hash, credits, batchName, createdBy, expiresAt).Error
-				if err == nil {
-					codes = append(codes, plain)
-					inserted = true
-					break
+					VALUES (?, ?, 'unused', ?, ?, ?)
+					ON CONFLICT (code_hash) DO NOTHING`,
+					hash, credits, batchName, createdBy, expiresAt)
+				if res.Error != nil {
+					return fmt.Errorf("billing: insert redemption code: %w", res.Error)
 				}
-				if isUniqueViolation(err) {
+				if res.RowsAffected == 0 {
+					// 哈希碰撞：换一个码重试，事务未受损。
 					continue
 				}
-				return fmt.Errorf("billing: insert redemption code: %w", err)
+				codes = append(codes, plain)
+				inserted = true
+				break
 			}
 			if !inserted {
 				return fmt.Errorf("%w: retried %d times",

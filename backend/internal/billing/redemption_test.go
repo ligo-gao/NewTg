@@ -160,6 +160,51 @@ func TestGenerateRedemptionCodesValidation(t *testing.T) {
 	}
 }
 
+// TestGenerateRedemptionCodesRetriesCollision 证明碰撞重试在 PostgreSQL 上
+// 真的可用：23505 会中止整个事务，因此实现必须用 ON CONFLICT DO NOTHING
+// 把冲突降级为 0 行影响。注入已知碰撞序列强制第一次命中。
+func TestGenerateRedemptionCodesRetriesCollision(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	svc := NewRedemptionService(gormDB, NewWalletFunding(gormDB), nil)
+
+	// 注入值只用 Crockford 字母表字符，保证与生成路径的哈希口径一致。
+	colliding := "C011" + strings.Repeat("A", 22)
+	collidingID := insertRedemptionCode(t, gormDB, colliding, 999, "unused", nil)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM redemption_codes WHERE id = $1`, collidingID) })
+
+	unique := "B2C4" + strings.Repeat("B", 22)
+	calls := 0
+	svc.generateCode = func() (string, error) {
+		calls++
+		if calls == 1 {
+			return colliding, nil
+		}
+		return unique, nil
+	}
+
+	batch := fmt.Sprintf("col-%d", time.Now().UnixNano()%1_000_000_000)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM redemption_codes WHERE batch_name = $1`, batch) })
+
+	codes, err := svc.GenerateCodes(context.Background(), &batch, 100, 1, nil, 1)
+	if err != nil {
+		t.Fatalf("GenerateCodes with collision: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("generator calls = %d, want 2（第一次碰撞后必须重试）", calls)
+	}
+	if len(codes) != 1 || codes[0] != unique {
+		t.Fatalf("codes = %v, want [%s]", codes, unique)
+	}
+	var stored int
+	if err := db.QueryRow(`SELECT count(*) FROM redemption_codes WHERE code_hash = $1`,
+		HashRedemptionCode(unique)).Scan(&stored); err != nil {
+		t.Fatalf("read retried code: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("重试后的码落库 %d 行, want 1", stored)
+	}
+}
+
 func TestRedeemCreditsAndRatio(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	group := "vip-" + uniqueFundingSuffix()

@@ -485,6 +485,36 @@ func codeIDByValue(t *testing.T, env *redemptionTestEnv, plain string) int64 {
 	return id
 }
 
+// TestRedeemHTTPCreditsAndBalance 用非零初始余额钉死响应字段：
+// credits 是本次到账面额，balance_after 是入账后余额；两者不能对调
+// （初始余额为 0 的用例会让二者恰好相等，从而掩盖赋值顺序错误）。
+func TestRedeemHTTPCreditsAndBalance(t *testing.T) {
+	env := newRedemptionTestEnv(t, nil)
+	admin := fullAdmin()
+	const initialBalance int64 = 2_500
+	userID := createRedemptionTestUser(t, env.db, initialBalance)
+	user := &auth.Principal{UserID: userID, Role: rbac.RoleUser}
+	codes := createCodes(t, env, admin, 1_000, 1)
+
+	rr := env.request(user, http.MethodPost, "/api/redemption-codes/redeem", map[string]any{"code": codes[0]})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("redeem = %d, want 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Credits      int64 `json:"credits"`
+		BalanceAfter int64 `json:"balance_after"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("redeem JSON: %v", err)
+	}
+	if resp.Credits != 1_000 {
+		t.Fatalf("credits = %d, want 1000（本次到账面额）", resp.Credits)
+	}
+	if resp.BalanceAfter != initialBalance+1_000 {
+		t.Fatalf("balance_after = %d, want %d", resp.BalanceAfter, initialBalance+1_000)
+	}
+}
+
 func TestRedeemRateLimit(t *testing.T) {
 	env := newRedemptionTestEnv(t, nil)
 	userID := createRedemptionTestUser(t, env.db, 0)

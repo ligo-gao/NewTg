@@ -525,7 +525,10 @@ func (h *RedemptionHandlers) handleRedeem(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	balanceAfter, credits, err := h.svc.RedeemDetailed(r.Context(), p.UserID, req.Code)
+	// RedeemDetailed 返回 (credits, balanceAfter, err)：credits 是本次到账
+	// 积分，balanceAfter 是入账后余额。两者在初始余额非零时必然不同，
+	// 赋值顺序不能交换。
+	credits, balanceAfter, err := h.svc.RedeemDetailed(r.Context(), p.UserID, req.Code)
 	if err != nil {
 		switch {
 		case errors.Is(err, billing.ErrRedemptionCodeInvalid):
