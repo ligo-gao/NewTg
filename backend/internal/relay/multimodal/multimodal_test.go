@@ -1253,6 +1253,7 @@ func TestEndpointChannelMatrix(t *testing.T) {
 		{"embeddings-siliconflow-yes", contract.ChannelTypeSiliconFlow, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
 		{"rerank-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), false},
 		{"rerank-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
+		{"rerank-xinference-yes", contract.ChannelTypeXinference, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
 		{"image-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointImageGenerate, jsonBody(`{"model":"m","prompt":"p"}`), false},
 		{"image-xai-yes", contract.ChannelTypeXai, contract.EndpointImageGenerate, jsonBody(`{"model":"m","prompt":"p"}`), true},
 		{"speech-volcengine-yes", contract.ChannelTypeVolcEngine, contract.EndpointAudioSpeech, jsonBody(`{"model":"m","input":"x"}`), true},
@@ -1422,5 +1423,69 @@ func TestStreamInactivityWatchdog(t *testing.T) {
 	_, refunds, facts, _ := billing.snapshot()
 	if refunds != 1 || len(facts) != 0 {
 		t.Fatalf("refunds=%d facts=%d, want refund once", refunds, len(facts))
+	}
+}
+
+// TestRealtimeHandleReachesP0_501（N1）：可解析的升级请求必须穿过支持矩阵、
+// 完成上游握手，然后返回明确的 501（桥接未实现），而不是在握手前 400。
+func TestRealtimeHandleReachesP0_501(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buffer := make([]byte, 8192)
+		n, _ := conn.Read(buffer)
+		key := ""
+		for _, line := range strings.Split(string(buffer[:n]), "\r\n") {
+			if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
+				key = strings.TrimSpace(line[len("sec-websocket-key:"):])
+			}
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + websocketAccept(key) + "\r\n\r\n"))
+	}()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeOpenAI, APIBase: "http://" + listener.Addr().String(), Credential: "k"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   http.DefaultClient,
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	rc := &contract.RelayContext{RequestID: "rt", OriginModel: "rt-model", Request: &contract.Request{Model: "rt-model"}}
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, rc, contract.EndpointRealtime)
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 after successful handshake; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not_implemented") {
+		t.Fatalf("body = %s, want not_implemented", recorder.Body.String())
+	}
+}
+
+// TestID3PrefixedAAC（N3）：带 ID3 标签的 ADTS AAC 同样不得按 MP3 解析。
+func TestID3PrefixedAAC(t *testing.T) {
+	aac := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x80)
+	aac = append(aac, bytes.Repeat([]byte{0}, 200)...)
+	for _, hint := range []string{"", "aac"} {
+		if seconds, ok := AudioDurationWithSize(aac, int64(len(aac)), hint); ok {
+			t.Fatalf("hint %q: ID3-prefixed AAC parsed as %v seconds, want ok=false", hint, seconds)
+		}
 	}
 }

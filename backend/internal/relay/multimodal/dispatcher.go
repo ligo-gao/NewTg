@@ -271,6 +271,9 @@ var endpointChannelSupport = map[contract.Endpoint]map[contract.ChannelType]stru
 		contract.ChannelTypeOpenAI:      {},
 		contract.ChannelTypeAli:         {},
 		contract.ChannelTypeSiliconFlow: {},
+		// N2：relay-04 §2.3 明确 Xinference 的重排响应形态；
+		// 其 OpenAI 兼容适配器可以承载本实现。
+		contract.ChannelTypeXinference: {},
 	},
 	contract.EndpointAudioSpeech: {
 		contract.ChannelTypeOpenAI:      {},
@@ -294,6 +297,11 @@ var endpointChannelSupport = map[contract.Endpoint]map[contract.ChannelType]stru
 		contract.ChannelTypeOpenAI: {},
 		contract.ChannelTypeAli:    {},
 		contract.ChannelTypeXai:    {},
+	},
+	// N1：realtime P0 骨架仍由 OpenAI 兼容渠道的 DialUpstream 承载；
+	// 矩阵缺项会让 Handle 在握手前就 400，F6 的路径不可达。
+	contract.EndpointRealtime: {
+		contract.ChannelTypeOpenAI: {},
 	},
 }
 
