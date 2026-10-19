@@ -32,7 +32,6 @@
       "confirm_action": "Show",
       "hidden": "Sensitive content hidden",
       "enable_hint": "Sensitive content hidden, enable it in the filter bar",
-      "no_permission": "No permission to view prompt",
       "permission_changed": "Permission changed, sensitive content hidden",
       "recording_disabled": "Prompt recording is disabled by administrator"
     },
@@ -227,6 +226,7 @@
       "system_initialized": "System initialized",
       "log_export": "Logs exported",
       "settings_update": "Settings updated",
+      "notification_template_update": "Notification template updated",
       "authz_denied": "Permission denied"
     },
     "columns": {

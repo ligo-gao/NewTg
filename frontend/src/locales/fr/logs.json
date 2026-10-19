@@ -32,7 +32,6 @@
       "confirm_action": "Afficher",
       "hidden": "Contenu sensible masqué",
       "enable_hint": "Contenu sensible masqué, activez-le dans la barre de filtres",
-      "no_permission": "Aucune autorisation pour voir l'invite",
       "permission_changed": "Autorisation modifiée, contenu sensible masqué",
       "recording_disabled": "L'enregistrement des invites est désactivé par l'administrateur"
     },
@@ -227,7 +226,8 @@
       "system_initialized": "Système initialisé",
       "authz_denied": "Autorisation refusée",
       "log_export": "Journaux exportés",
-      "settings_update": "Paramètres mis à jour"
+      "settings_update": "Paramètres mis à jour",
+      "notification_template_update": "Modèle de notification mis à jour"
     },
     "columns": {
       "time": "Heure",

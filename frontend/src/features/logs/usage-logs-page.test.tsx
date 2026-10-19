@@ -704,16 +704,12 @@ describe('usage logs list', () => {
     })
     renderWithProviders(<PageHarness />)
 
-    // 权限门在打开抽屉之前验证：对话框打开后背景被 aria-hidden，读屏与
-    // Testing Library 都不应再看到工具栏。
+    // UI §6.4/§6.5：无 log.prompt.view 时静默隐藏入口，不渲染禁用态或
+    // 「没有权限」提示（入口本身不得暴露敏感面存在）。
+    await screen.findByText('gpt-4o')
     expect(
-      (await screen.findByRole('switch', {
-        name: 'Show Sensitive Content',
-      }) as HTMLButtonElement).disabled,
-    ).toBe(true)
-    expect(
-      screen.getByText('No permission to view prompt'),
-    ).toBeTruthy()
+      screen.queryByRole('switch', { name: 'Show Sensitive Content' }),
+    ).toBeNull()
 
     await user.click(await screen.findByText('gpt-4o'))
     const dialog = await screen.findByRole('dialog')

@@ -32,7 +32,6 @@
       "confirm_action": "顯示",
       "hidden": "敏感內容已隱藏",
       "enable_hint": "敏感內容已隱藏，可於篩選列中啟用",
-      "no_permission": "無權檢視提示詞",
       "permission_changed": "權限已變更，敏感內容已隱藏",
       "recording_disabled": "管理員已關閉提示詞記錄"
     },
@@ -227,7 +226,8 @@
       "system_initialized": "系統已初始化",
       "authz_denied": "權限被拒絕",
       "log_export": "日誌已匯出",
-      "settings_update": "設定已更新"
+      "settings_update": "設定已更新",
+      "notification_template_update": "通知範本已更新"
     },
     "columns": {
       "time": "時間",

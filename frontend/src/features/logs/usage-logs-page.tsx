@@ -578,19 +578,22 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             />
           ) : null}
 
-          <SensitiveSwitch
-            checked={revealSensitive}
-            disabled={capabilities.loading || !capabilities.canViewSensitive}
-            onChange={(next) => {
-              if (next) {
-                // 开启前确认：共享屏幕时把 Prompt 原文暴露给旁观者的风险
-                // 由用户显式承担（modules-05 §6.4）。
-                setSensitiveConfirmOpen(true)
-                return
-              }
-              setRevealSensitive(false)
-            }}
-          />
+          {/* F-05-06 §6.4/§6.5 设计裁决：无 log.prompt.view 时静默隐藏，
+              不渲染「禁用 + 提示」——入口本身不暴露敏感面存在。 */}
+          {capabilities.canViewSensitive ? (
+            <SensitiveSwitch
+              checked={revealSensitive}
+              onChange={(next) => {
+                if (next) {
+                  // 开启前确认：共享屏幕时把 Prompt 原文暴露给旁观者的风险
+                  // 由用户显式承担（modules-05 §6.4）。
+                  setSensitiveConfirmOpen(true)
+                  return
+                }
+                setRevealSensitive(false)
+              }}
+            />
+          ) : null}
         </div>
 
         {search.range === 'custom' ? (
@@ -1036,60 +1039,47 @@ function FilterChip({
 /**
  * F-05-06 敏感内容开关（modules-05 §6.4 / §6.7 / §6.8）。
  *
- * 关闭是默认且安全的；开启需要确认。无 `log.prompt.view` 时保持可见但
- * 禁用，并给出「没有查看权限」的原因——用户不会误以为开关坏了，也不会
- * 在无权限时发出一份声称已解除打码的请求。
+ * 关闭是默认且安全的；开启需要确认。调用方只在 `log.prompt.view` 成立时
+ * 渲染本组件（§6.4「无权限静默隐藏」），所以这里不再重复权限判断。
  */
 function SensitiveSwitch({
   checked,
-  disabled,
   onChange,
 }: {
   checked: boolean
-  disabled: boolean
   onChange: (next: boolean) => void
 }) {
   const { t } = useI18n()
   const label = t('logs.usage.sensitive.toggle')
-  const hintId = 'logs-sensitive-hint'
 
   return (
-    <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        aria-describedby={disabled ? hintId : undefined}
-        disabled={disabled}
-        data-testid="sensitive-toggle"
-        onClick={() => {
-          onChange(!checked)
-        }}
-        className="flex h-9 items-center gap-2 rounded-lg border border-border-default bg-surface-card px-2.5 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      data-testid="sensitive-toggle"
+      onClick={() => {
+        onChange(!checked)
+      }}
+      className="flex h-9 items-center gap-2 rounded-lg border border-border-default bg-surface-card px-2.5 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+    >
+      <span>{label}</span>
+      <span
+        aria-hidden="true"
+        className={[
+          'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors motion-reduce:transition-none',
+          checked ? 'bg-warning' : 'bg-surface-subtle',
+        ].join(' ')}
       >
-        <span>{label}</span>
         <span
           aria-hidden="true"
           className={[
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors motion-reduce:transition-none',
-            checked ? 'bg-warning' : 'bg-surface-subtle',
+            'absolute size-4 rounded-full bg-surface-card shadow-sm transition-transform motion-reduce:transition-none',
+            checked ? 'translate-x-[18px]' : 'translate-x-0.5',
           ].join(' ')}
-        >
-          <span
-            aria-hidden="true"
-            className={[
-              'absolute size-4 rounded-full bg-surface-card shadow-sm transition-transform motion-reduce:transition-none',
-              checked ? 'translate-x-[18px]' : 'translate-x-0.5',
-            ].join(' ')}
-          />
-        </span>
-      </button>
-      {disabled ? (
-        <span id={hintId} className="text-xs text-ink-3">
-          {t('logs.usage.sensitive.no_permission')}
-        </span>
-      ) : null}
-    </div>
+        />
+      </span>
+    </button>
   )
 }

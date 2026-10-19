@@ -32,7 +32,6 @@
       "confirm_action": "表示",
       "hidden": "機密コンテンツは非表示です",
       "enable_hint": "機密コンテンツは非表示です。フィルターバーで有効にしてください",
-      "no_permission": "プロンプトを表示する権限がありません",
       "permission_changed": "権限が変更されたため、機密コンテンツは非表示です",
       "recording_disabled": "管理者がプロンプトの記録を無効にしています"
     },
@@ -227,7 +226,8 @@
       "system_initialized": "システム初期化",
       "authz_denied": "権限拒否",
       "log_export": "ログをエクスポートしました",
-      "settings_update": "設定を更新しました"
+      "settings_update": "設定を更新しました",
+      "notification_template_update": "通知テンプレートを更新しました"
     },
     "columns": {
       "time": "時刻",

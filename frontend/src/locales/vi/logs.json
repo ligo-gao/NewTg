@@ -32,7 +32,6 @@
       "confirm_action": "Hiện",
       "hidden": "Đã ẩn nội dung nhạy cảm",
       "enable_hint": "Nội dung nhạy cảm đã bị ẩn, hãy bật trong thanh bộ lọc",
-      "no_permission": "Không có quyền xem lời nhắc",
       "permission_changed": "Quyền đã thay đổi, nội dung nhạy cảm đã bị ẩn",
       "recording_disabled": "Quản trị viên đã tắt ghi lời nhắc"
     },
@@ -227,7 +226,8 @@
       "system_initialized": "Hệ thống đã khởi tạo",
       "authz_denied": "Bị từ chối quyền",
       "log_export": "Đã xuất nhật ký",
-      "settings_update": "Đã cập nhật cài đặt"
+      "settings_update": "Đã cập nhật cài đặt",
+      "notification_template_update": "Mẫu thông báo đã được cập nhật"
     },
     "columns": {
       "time": "Thời gian",
