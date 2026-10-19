@@ -245,6 +245,7 @@
   "nav.settings": "Cài đặt",
   "nav.system_status": "Trạng thái hệ thống",
   "nav.operation_logs": "Nhật ký thao tác",
+  "nav.model_deployments": "Triển khai mô hình",
   "channels": {
     "title": "Kênh",
     "new": "Kênh mới",

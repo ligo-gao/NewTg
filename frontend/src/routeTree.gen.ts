@@ -51,6 +51,7 @@ import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_conso
 import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/admin/system/status'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
 import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
+import { Route as ConsoleAdminSystemDeploymentsIndexRouteImport } from './routes/_console/admin/system/deployments/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -271,6 +272,12 @@ const ConsoleAdminUsersGroupsRoute = ConsoleAdminUsersGroupsRouteImport.update({
   path: '/users/groups',
   getParentRoute: () => ConsoleAdminRoute,
 } as any)
+const ConsoleAdminSystemDeploymentsIndexRoute =
+  ConsoleAdminSystemDeploymentsIndexRouteImport.update({
+    id: '/system/deployments/',
+    path: '/system/deployments/',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -314,6 +321,7 @@ export interface FileRoutesByFullPath {
   '/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
   '/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users/': typeof ConsoleAdminUsersIndexRoute
+  '/admin/system/deployments/': typeof ConsoleAdminSystemDeploymentsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -356,6 +364,7 @@ export interface FileRoutesByTo {
   '/admin/pricing': typeof ConsoleAdminPricingIndexRoute
   '/admin/settings': typeof ConsoleAdminSettingsIndexRoute
   '/admin/users': typeof ConsoleAdminUsersIndexRoute
+  '/admin/system/deployments': typeof ConsoleAdminSystemDeploymentsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -401,6 +410,7 @@ export interface FileRoutesById {
   '/_console/admin/pricing/': typeof ConsoleAdminPricingIndexRoute
   '/_console/admin/settings/': typeof ConsoleAdminSettingsIndexRoute
   '/_console/admin/users/': typeof ConsoleAdminUsersIndexRoute
+  '/_console/admin/system/deployments/': typeof ConsoleAdminSystemDeploymentsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -446,6 +456,7 @@ export interface FileRouteTypes {
     | '/admin/pricing/'
     | '/admin/settings/'
     | '/admin/users/'
+    | '/admin/system/deployments/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -488,6 +499,7 @@ export interface FileRouteTypes {
     | '/admin/pricing'
     | '/admin/settings'
     | '/admin/users'
+    | '/admin/system/deployments'
   id:
     | '__root__'
     | '/'
@@ -532,6 +544,7 @@ export interface FileRouteTypes {
     | '/_console/admin/pricing/'
     | '/_console/admin/settings/'
     | '/_console/admin/users/'
+    | '/_console/admin/system/deployments/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -851,6 +864,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminUsersGroupsRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/system/deployments/': {
+      id: '/_console/admin/system/deployments/'
+      path: '/system/deployments'
+      fullPath: '/admin/system/deployments/'
+      preLoaderRoute: typeof ConsoleAdminSystemDeploymentsIndexRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
   }
 }
 
@@ -866,6 +886,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminPricingIndexRoute: typeof ConsoleAdminPricingIndexRoute
   ConsoleAdminSettingsIndexRoute: typeof ConsoleAdminSettingsIndexRoute
   ConsoleAdminUsersIndexRoute: typeof ConsoleAdminUsersIndexRoute
+  ConsoleAdminSystemDeploymentsIndexRoute: typeof ConsoleAdminSystemDeploymentsIndexRoute
 }
 
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
@@ -881,6 +902,8 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminPricingIndexRoute: ConsoleAdminPricingIndexRoute,
   ConsoleAdminSettingsIndexRoute: ConsoleAdminSettingsIndexRoute,
   ConsoleAdminUsersIndexRoute: ConsoleAdminUsersIndexRoute,
+  ConsoleAdminSystemDeploymentsIndexRoute:
+    ConsoleAdminSystemDeploymentsIndexRoute,
 }
 
 const ConsoleAdminRouteWithChildren = ConsoleAdminRoute._addFileChildren(

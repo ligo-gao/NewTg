@@ -245,6 +245,7 @@
   "nav.settings": "Paramètres",
   "nav.system_status": "État du système",
   "nav.operation_logs": "Journaux d'opérations",
+  "nav.model_deployments": "Déploiements de modèles",
   "channels": {
     "title": "Canaux",
     "new": "Nouveau canal",

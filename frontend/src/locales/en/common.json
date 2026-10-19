@@ -245,6 +245,7 @@
   "nav.settings": "Settings",
   "nav.system_status": "System status",
   "nav.operation_logs": "Operation logs",
+  "nav.model_deployments": "Model deployments",
   "channels": {
     "title": "Channels",
     "new": "New Channel",

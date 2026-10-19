@@ -245,6 +245,7 @@
   "nav.settings": "設定",
   "nav.system_status": "系統狀態",
   "nav.operation_logs": "操作日誌",
+  "nav.model_deployments": "模型部署",
   "channels": {
     "title": "通道",
     "new": "新增通道",

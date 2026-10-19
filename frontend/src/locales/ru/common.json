@@ -245,6 +245,7 @@
   "nav.settings": "Настройки",
   "nav.system_status": "Состояние системы",
   "nav.operation_logs": "Журналы операций",
+  "nav.model_deployments": "Развёртывания моделей",
   "channels": {
     "title": "Каналы",
     "new": "Новый канал",

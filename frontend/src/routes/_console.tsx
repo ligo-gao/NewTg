@@ -46,6 +46,14 @@ const NAV_ITEMS = [
     key: 'common.nav.operation_logs',
     admin: true,
   },
+  // M6d 模型部署（modules-08 §6.13）：独立页，入口与页面能力一致地复用
+  // settings:manage；缺少权限时连入口都不渲染，直链由路由守卫落 403。
+  {
+    href: '/admin/system/deployments',
+    key: 'common.nav.model_deployments',
+    admin: true,
+    permission: 'settings:manage',
+  },
 ] as const
 
 /**
@@ -114,6 +122,14 @@ export function ConsoleHeader({
   // 可能没有 pricing:read 的管理员。服务端仍会拒绝越权请求。
   const canSeePricing = capabilities.known && capabilities.canRead
 
+  // 细粒度权限的入口可见性（§9.3 UX 层）：服务端仍逐请求强制。权限集合
+  // 来自 /api/me 的生效权限（`["*"]` 代表全量管理员）。
+  const permissions = meQuery.data?.permissions
+  const can = (key: string): boolean =>
+    permissions?.some(
+      (permission) => permission === '*' || permission === key,
+    ) ?? false
+
   return (
     <header className="border-b border-border-hairline bg-surface-card px-6 py-3">
       <div className="flex items-center gap-6">
@@ -123,7 +139,9 @@ export function ConsoleHeader({
           className="flex flex-wrap items-center gap-4 text-[13px]"
         >
           {NAV_ITEMS.filter(
-            (item) => !('admin' in item) || meQuery.data?.role === 'admin',
+            (item) =>
+              (!('admin' in item) || meQuery.data?.role === 'admin') &&
+              (!('permission' in item) || can(item.permission)),
           ).map((item) => (
             <a
               key={item.href}
