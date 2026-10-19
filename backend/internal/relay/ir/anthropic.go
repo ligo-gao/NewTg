@@ -233,14 +233,20 @@ func parseAnthropicBlock(raw json.RawMessage) (contract.ContentPart, error) {
 		return contract.ContentPart{Kind: contract.PartText, Text: text, Meta: meta}, nil
 	case "thinking":
 		// 扩展思考是 Anthropic 的标准块，不是「未知类型」。IR 没有独立的
-		// reasoning 部件，用 text + Meta{"thought":true} 作为逃生舱：
-		// 顺序与 signature 都能无损回写；下游若要区分正文与思考可读 Meta。
+		// reasoning 部件，用 text + Meta 作为逃生舱：顺序与 signature 都能
+		// 无损回写；下游若要区分正文与思考可读 Meta。
+		//
+		// 【复审 N1】anthropic_thinking 是 Anthropic 专属来源标记：Gemini 的
+		// thought part 也复用 Meta["thought"]=true，若编码器只看 thought 就会
+		// 把 Gemini 推理误写成没有 signature 的 Anthropic thinking 块，
+		// 上游会拒绝。因此 Anthropic 的 thinking 回写只认本标记。
 		thinking, _ := block["thinking"].(string)
 		meta := blockMeta(block, "cache_control")
 		if meta == nil {
 			meta = map[string]any{}
 		}
 		meta["thought"] = true
+		meta["anthropic_thinking"] = true
 		if signature, _ := block["signature"].(string); signature != "" {
 			meta["signature"] = signature
 		}
@@ -447,9 +453,11 @@ func parseAnthropicStopSequences(raw json.RawMessage) ([]string, error) {
 	return stops, nil
 }
 
-// isAnthropicThinkingPart 判断 IR 部件是否由 thinking/redacted_thinking 映射而来。
+// isAnthropicThinkingPart 判断 IR 部件是否由 Anthropic thinking /
+// redacted_thinking 映射而来。只看 anthropic_thinking：Gemini 的 thought part
+// 同样带 Meta["thought"]，不能据此当作 Anthropic 思考块（复审 N1）。
 func isAnthropicThinkingPart(part contract.ContentPart) bool {
-	if thought, _ := part.Meta["thought"].(bool); thought {
+	if anthropicThinking, _ := part.Meta["anthropic_thinking"].(bool); anthropicThinking {
 		return true
 	}
 	_, redacted := part.Meta["redacted_thinking"]
@@ -672,7 +680,7 @@ func encodeAnthropicBlock(part contract.ContentPart) (map[string]any, error) {
 			copyMetaField(block, part.Meta, "cache_control")
 			return block, nil
 		}
-		if thought, _ := part.Meta["thought"].(bool); thought {
+		if thought, _ := part.Meta["anthropic_thinking"].(bool); thought {
 			block := map[string]any{"type": "thinking", "thinking": part.Text}
 			if signature := metaString(part.Meta, "signature"); signature != "" {
 				block["signature"] = signature

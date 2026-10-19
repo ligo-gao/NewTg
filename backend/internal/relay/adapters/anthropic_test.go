@@ -99,14 +99,15 @@ func TestAnthropicMoonshotURLPrefix(t *testing.T) {
 		t.Fatalf("去重后 URL = %q", got)
 	}
 
-	// base_url 已带 /v1 时不得拼出 /v1/v1。
+	// base_url 已带 /v1 时不得拼出 /v1/v1；当前实现产生 /v1/anthropic/v1/messages
+	// （前缀是类型语义，不参与 /v1 去重），这里钉住实际路径防止回归。
 	rc.APIBase = "https://proxy.example.com/v1"
 	httpReq, err = adapter.BuildRequest(rc, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(httpReq.URL.Path, "/v1/v1") {
-		t.Fatalf("出现 /v1/v1：%q", httpReq.URL.Path)
+	if got := httpReq.URL.String(); got != "https://proxy.example.com/v1/anthropic/v1/messages" {
+		t.Fatalf("base_url=/v1 的实际路径 = %q, want https://proxy.example.com/v1/anthropic/v1/messages", got)
 	}
 
 	// base_url 同时带前缀与 /v1 时也不得重复任一段。

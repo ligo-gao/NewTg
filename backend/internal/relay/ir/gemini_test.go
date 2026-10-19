@@ -380,6 +380,41 @@ func TestGeminiThoughtSignatureRoundTrip(t *testing.T) {
 	}
 }
 
+// TestGeminiThoughtDoesNotBecomeAnthropicThinking 是复审 N1 的回归：
+// Gemini 推理 part 与 Anthropic thinking 共用 Meta["thought"]，但跨协议
+// 编码到 Anthropic 时绝不能生成没有 signature 的 thinking 块。
+func TestGeminiThoughtDoesNotBecomeAnthropicThinking(t *testing.T) {
+	body := `{"contents":[{"role":"user","parts":[
+	  {"text":"question"},
+	  {"thought":true,"text":"gemini reasoning"}
+	]}]}`
+	req, err := ParseGeminiRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := BuildAnthropicRequestBody(req)
+	if err != nil {
+		t.Fatalf("Gemini→Anthropic 编码失败：%v", err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := built["messages"].([]any)
+	msg, _ := messages[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	for _, item := range blocks {
+		block, _ := item.(map[string]any)
+		if block["type"] == "thinking" {
+			t.Fatalf("Gemini reasoning 不得变成 Anthropic thinking 块：%v", block)
+		}
+	}
+	last, _ := blocks[len(blocks)-1].(map[string]any)
+	if last["type"] != "text" || last["text"] != "gemini reasoning" {
+		t.Fatalf("Gemini reasoning 应作为普通 text 保留：%v", last)
+	}
+}
+
 func TestGeminiBuildFunctionCallArgsMustBeObject(t *testing.T) {
 	req := &contract.Request{
 		Model: "gemini",
