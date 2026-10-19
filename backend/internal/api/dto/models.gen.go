@@ -2283,13 +2283,20 @@ type LoginResponse struct {
 	union json.RawMessage
 }
 
-// MeView GET /api/me 的冻结投影：只有这六个字段。email/avatar_url/display_name
-// 未设置时字段缺席（响应中为 null 或省略由 Go omitempty 决定，客户端按可空处理）。
+// MeView GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效权限。
+// email/avatar_url/display_name 未设置时字段缺席（响应中为 null 或省略由
+// Go omitempty 决定，客户端按可空处理）。permissions 是调用者的生效权限键：
+// 管理员 SQL NULL 或 ["*"] 归一为 ["*"]，role=user 恒为空数组（绝不泄露
+// 无权限的 admin_permissions 原始列）。该字段按 M6 R-17 扩展，用于前端
+// 能力闸门（服务端仍是最终权威）。
 type MeView struct {
 	AvatarUrl   *string              `json:"avatar_url,omitempty"`
 	DisplayName *string              `json:"display_name,omitempty"`
 	Email       *openapi_types.Email `json:"email,omitempty"`
-	Role        UserRole             `json:"role"`
+
+	// Permissions 生效权限键。FULL/NULL 管理员为 ["*"]；role=user 或显式空集合为 []。
+	Permissions []string `json:"permissions"`
+	Role        UserRole `json:"role"`
 
 	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 	Status   UserStatus `json:"status"`

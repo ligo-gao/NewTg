@@ -258,6 +258,7 @@ export function DashboardPage() {
         <div className="lg:col-span-2">
           <ConsumptionTrend
             items={timeseries.data ?? []}
+            range={range}
             granularity={granularity}
             loading={timeseries.isPending}
             error={timeseries.isError}

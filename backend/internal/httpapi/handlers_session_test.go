@@ -193,6 +193,7 @@ type sessionTestEnv struct {
 	mr       *miniredis.Miniredis
 	rdb      *redis.Client
 	repo     *fakeSelfRepo
+	access   *fakeUserAccess
 	tokens   *fakeTokenLookup
 	router   http.Handler
 	handlers *SessionHandlers
@@ -211,6 +212,7 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	repo := newFakeSelfRepo()
+	access := newFakeUserAccess()
 	tokens := &fakeTokenLookup{metas: map[string]*auth.TokenMeta{}}
 
 	h, err := NewSessionHandlers(SessionHandlerConfig{
@@ -219,6 +221,7 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 		Redis:         rdb,
 		SessionSecret: []byte(testSessionSecret),
 		Config:        cfg,
+		Access:        access,
 	})
 	if err != nil {
 		t.Fatalf("NewSessionHandlers: %v", err)
@@ -237,6 +240,7 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 		mr:       mr,
 		rdb:      rdb,
 		repo:     repo,
+		access:   access,
 		tokens:   tokens,
 		router:   outer,
 		handlers: h,
@@ -567,6 +571,11 @@ func TestMeGetAndPatch(t *testing.T) {
 	if me.DisplayName == nil || *me.DisplayName != "Alice" {
 		t.Errorf("display_name 未回传: %+v", me.DisplayName)
 	}
+	// M6 R-17: role=user 的 permissions 必须是非 nil 空集合（JSON []），
+	// 而不是泄露 admin_permissions 原始列或序列化成 null。
+	if me.Permissions == nil || len(me.Permissions) != 0 {
+		t.Errorf("user permissions = %#v，期望空集合", me.Permissions)
+	}
 	for _, forbidden := range []string{"password", "totp", "backup", "key_hash", "admin_permissions", "hash"} {
 		if strings.Contains(strings.ToLower(rr.Body.String()), forbidden) {
 			t.Errorf("/api/me 响应包含敏感字段 %q: %s", forbidden, rr.Body.String())
@@ -627,6 +636,49 @@ func TestMeGetAndPatch(t *testing.T) {
 	// 未认证不得访问。
 	if rr := env.request(http.MethodGet, "/api/me", nil, "", ""); rr.Code != http.StatusUnauthorized {
 		t.Errorf("未认证 GET /api/me status = %d，期望 401", rr.Code)
+	}
+}
+
+// TestMePermissionsEffectiveSet 覆盖 M6 R-17 的 permissions 归一：
+// user → []；admin 显式键 → 原样；SQL NULL / ["*"] → ["*"]；显式 [] → []。
+func TestMePermissionsEffectiveSet(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		role        string
+		permissions []string
+		want        []string
+	}{
+		{"user", rbac.RoleUser, nil, []string{}},
+		{"logs-read-only-admin", rbac.RoleAdmin, []string{"logs:read"}, []string{"logs:read"}},
+		{"full-null-admin", rbac.RoleAdmin, nil, []string{"*"}},
+		{"full-star-admin", rbac.RoleAdmin, []string{"*"}, []string{"*"}},
+		{"explicitly-empty-admin", rbac.RoleAdmin, []string{}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newSessionTestEnv(t)
+			env.repo.add(sessionTestUserID, SelfRecord{
+				Username: "actor",
+				Role:     tc.role,
+				Status:   "enabled",
+			})
+			env.access.set(sessionTestUserID, tc.role, tc.permissions, "enabled")
+			sid, csrf := env.createSession(sessionTestUserID, tc.role, "Test/1.0", "203.0.113.1")
+
+			rr := env.request(http.MethodGet, "/api/me", nil, sid, csrf)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("GET /api/me status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+			}
+			var me meView
+			if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil {
+				t.Fatalf("GET /api/me JSON 非法: %v（body=%q）", err, rr.Body.String())
+			}
+			if !reflect.DeepEqual(me.Permissions, tc.want) {
+				t.Errorf("permissions = %#v，期望 %#v", me.Permissions, tc.want)
+			}
+			if strings.Contains(rr.Body.String(), `"permissions":null`) {
+				t.Errorf("permissions 不得为 null: %s", rr.Body.String())
+			}
+		})
 	}
 }
 

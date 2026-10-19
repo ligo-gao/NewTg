@@ -4,10 +4,12 @@ import { bucketSeries, type ChartSeries } from '@/shared/lib/chart-data'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { AnalyticsChart } from '@/shared/ui/analytics-chart'
 
-import type { UsageGranularity, UsageStatsTimeseriesItem } from './api'
+import type { UsageGranularity, UsageRange, UsageStatsTimeseriesItem } from './api'
+import { fillBucketSpine } from './timeseries-spine'
 
 export interface ConsumptionTrendProps {
   items: UsageStatsTimeseriesItem[]
+  range: UsageRange
   granularity: UsageGranularity
   loading: boolean
   error: boolean
@@ -24,6 +26,7 @@ export interface ConsumptionTrendProps {
  */
 export function ConsumptionTrend({
   items,
+  range,
   granularity,
   loading,
   error,
@@ -34,9 +37,9 @@ export function ConsumptionTrend({
   const { t } = useI18n()
 
   const series: ChartSeries[] = useMemo(() => {
-    // Drop malformed rows before the contract sees them: `bucketSeries` throws
-    // on an invalid timestamp by design, and one bad upstream row must not
-    // blank the whole overview. Valid rows keep their UTC ISO identity.
+    // Drop malformed rows before the contract sees them and materialise the
+    // full UTC bucket spine (the API only sends existing buckets). One bad
+    // upstream row must not blank the whole overview.
     const points = items.flatMap((item) => {
       const ms = Date.parse(item.bucket)
       if (Number.isNaN(ms) || !Number.isFinite(item.cost)) return []
@@ -48,12 +51,12 @@ export function ConsumptionTrend({
         {
           id: 'cost',
           label: t('common.dashboard.trend.series'),
-          points,
+          points: fillBucketSpine(points, range, granularity),
         },
       ],
       granularity,
     )
-  }, [items, granularity, t])
+  }, [items, range, granularity, t])
 
   const hasPoints = (series[0]?.points.length ?? 0) > 0
 

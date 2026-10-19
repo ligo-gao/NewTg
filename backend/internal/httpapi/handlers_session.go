@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // RFC 7807 type URI。not_found 与 rbac 层的 404 同形：越权 sid 与真实不存在
@@ -305,6 +307,9 @@ type SessionHandlerConfig struct {
 	// Config 是配置中心读取面：首次邮箱验证时按当期配置决定是否补发注册
 	// 赠送（发放时点求值，不追溯注册时刻）。nil 时按默认值（不补发）。
 	Config ConfigReader
+	// Access 是 GET /api/me permissions 的权限回源接缝（M6 R-17 扩展）。
+	// nil 时由 DB 构造 TokenRepo；两者都不可用时按 fail-closed 返回空集。
+	Access UserAccessStore
 	Logger *slog.Logger
 }
 
@@ -313,6 +318,7 @@ type SessionHandlers struct {
 	repo     SelfRepo
 	sessions *auth.SessionManager
 	authz    *rbac.AuthzMiddleware
+	access   UserAccessStore
 	rdb      *redis.Client
 	codes    *emailCodeStore
 	config   ConfigReader
@@ -358,10 +364,15 @@ func NewSessionHandlers(cfg SessionHandlerConfig) (*SessionHandlers, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	access := cfg.Access
+	if access == nil && cfg.DB != nil {
+		access = store.NewTokenRepo(cfg.DB)
+	}
 	return &SessionHandlers{
 		repo:     repo,
 		sessions: cfg.Sessions,
 		authz:    authz,
+		access:   access,
 		rdb:      cfg.Redis,
 		codes:    newEmailCodeStore(cfg.Redis, cfg.SessionSecret),
 		config:   cfg.Config,
@@ -405,18 +416,24 @@ func (h *SessionHandlers) RegisterSessionRoutes(mux *http.ServeMux, wrap func(ht
 // 视图
 // ---------------------------------------------------------------------------
 
-// meView 是 GET /api/me 的冻结投影：只有这六个字段，任何口令/TOTP/备用码/
-// 哈希/权限列都不得出现（GC-6）。
+// meView 是 GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效
+// 权限。任何口令/TOTP/备用码/哈希列都不得出现（GC-6）。permissions 是 M6
+// R-17 的契约扩展：前端据此隐藏 admin-only 控件，服务端仍是最终权威。
 type meView struct {
-	Username    string  `json:"username"`
-	Email       *string `json:"email"`
-	Role        string  `json:"role"`
-	Status      string  `json:"status"`
-	AvatarURL   *string `json:"avatar_url"`
-	DisplayName *string `json:"display_name"`
+	Username    string   `json:"username"`
+	Email       *string  `json:"email"`
+	Role        string   `json:"role"`
+	Status      string   `json:"status"`
+	AvatarURL   *string  `json:"avatar_url"`
+	DisplayName *string  `json:"display_name"`
+	Permissions []string `json:"permissions"`
 }
 
-func newMeView(rec SelfRecord) meView {
+func newMeView(rec SelfRecord, permissions []string) meView {
+	if permissions == nil {
+		// JSON null 会让前端把「无权限」与「未知」混在一起；空切片序列化为 []。
+		permissions = []string{}
+	}
 	return meView{
 		Username:    rec.Username,
 		Email:       rec.Email,
@@ -424,7 +441,43 @@ func newMeView(rec SelfRecord) meView {
 		Status:      rec.Status,
 		AvatarURL:   rec.AvatarURL,
 		DisplayName: rec.DisplayName,
+		Permissions: permissions,
 	}
+}
+
+// effectivePermissions 把 admin_permissions 归一为调用者的生效权限键：
+//   - role != admin（或 status != enabled）→ []（绝不泄露残留列）；
+//   - SQL NULL / ["*"] → ["*"]（FULL）；
+//   - 显式集合 → 排序后的键集合（空数组仍是 []，不是 FULL）。
+//
+// 回源失败或接缝缺失时返回 []（fail-closed）：/api/me 是会话探测路径，
+// 不能因一次权限读取故障把整个控制台变成 500；代价只是 admin-only 控件
+// 暂时隐藏，服务端每个请求仍会独立鉴权。
+func (h *SessionHandlers) effectivePermissions(
+	ctx context.Context,
+	userID int64,
+	role string,
+) []string {
+	if role != rbac.RoleAdmin {
+		return []string{}
+	}
+	if h.access == nil {
+		return []string{}
+	}
+	storedRole, permissions, status, err := h.access.UserAccess(ctx, userID)
+	if err != nil {
+		h.log.Warn("me: load permissions failed", "user_id", userID, "error", err)
+		return []string{}
+	}
+	if storedRole != rbac.RoleAdmin || status != "enabled" {
+		return []string{}
+	}
+	if permissions == nil || slices.Contains(permissions, "*") {
+		return []string{"*"}
+	}
+	result := append([]string(nil), permissions...)
+	slices.Sort(result)
+	return result
 }
 
 // sessionView 是会话列表的一行。UA/IP/时间为空时仍返回零值，前端展示「未知」。
@@ -592,7 +645,8 @@ func (h *SessionHandlers) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		h.writeSelfError(w, "get me", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newMeView(rec))
+	writeJSON(w, http.StatusOK, newMeView(rec,
+		h.effectivePermissions(r.Context(), p.UserID, rec.Role)))
 }
 
 // handlePatchMe 只写 display_name。字段白名单由 rbac 字段层先行校验
@@ -635,7 +689,8 @@ func (h *SessionHandlers) handlePatchMe(w http.ResponseWriter, r *http.Request) 
 		h.writeSelfError(w, "update display name", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newMeView(rec))
+	writeJSON(w, http.StatusOK, newMeView(rec,
+		h.effectivePermissions(r.Context(), p.UserID, rec.Role)))
 }
 
 // ---------------------------------------------------------------------------

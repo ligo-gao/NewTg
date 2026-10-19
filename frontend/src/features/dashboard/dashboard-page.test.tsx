@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DashboardPage } from './dashboard-page'
 import {
@@ -20,27 +20,14 @@ const ME_USER = {
   status: 'enabled' as const,
   avatar_url: null,
   display_name: null,
+  permissions: [] as string[],
 }
 
-const ME_ADMIN = { ...ME_USER, username: 'root', role: 'admin' as const }
-
-function adminRow(permissions: string[] | null) {
-  return {
-    id: 1,
-    username: 'root',
-    display_name: null,
-    email: null,
-    role: 'admin' as const,
-    status: 'enabled' as const,
-    balance: 0,
-    group: 'default',
-    admin_permissions: permissions,
-    totp_enabled: false,
-    must_change_password: false,
-    token_count: 0,
-    created_at: '2026-10-01T00:00:00Z',
-    updated_at: '2026-10-01T00:00:00Z',
-  }
+const ME_ADMIN = {
+  ...ME_USER,
+  username: 'root',
+  role: 'admin' as const,
+  permissions: ['logs:read'] as string[],
 }
 
 function emptySummary() {
@@ -68,7 +55,6 @@ function emptyRates() {
 
 interface Scenario {
   me?: object
-  users?: Response
   summary?: () => Response
   byModel?: () => Response
   timeseries?: () => Response
@@ -80,11 +66,6 @@ function installScenario(scenario: Scenario): FetchRecord[] {
     switch (request.url.pathname) {
       case '/api/me':
         return jsonResponse(scenario.me ?? ME_USER)
-      case '/api/users':
-        return (
-          scenario.users ??
-          jsonResponse({ items: [adminRow(null)], total: 1, page: 1, page_size: 100 })
-        )
       case '/api/usage-stats/summary':
         return scenario.summary?.() ?? jsonResponse(emptySummary())
       case '/api/usage-stats/by-model':
@@ -105,6 +86,10 @@ const STAT_PATHS = [
   '/api/usage-stats/timeseries',
   '/api/usage-stats/rates',
 ] as const
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('DashboardPage', () => {
   it('renders zero data as 0 / -- and never NaN', async () => {
@@ -255,13 +240,7 @@ describe('DashboardPage', () => {
   it('shows the username filter to an admin with logs:read and refetches every query with it', async () => {
     const user = userEvent.setup()
     const requests = installScenario({
-      me: ME_ADMIN,
-      users: jsonResponse({
-        items: [adminRow(['logs:read'])],
-        total: 1,
-        page: 1,
-        page_size: 100,
-      }),
+      me: { ...ME_ADMIN, permissions: ['logs:read'] },
     })
     renderWithProviders(<DashboardPage />)
 
@@ -276,17 +255,13 @@ describe('DashboardPage', () => {
         )
       }
     })
+    // Capability now comes from /api/me; the users list is never probed.
+    expect(requestsFor(requests, '/api/users')).toHaveLength(0)
   })
 
   it('hides the username filter from an admin who lacks logs:read', async () => {
     installScenario({
-      me: ME_ADMIN,
-      users: jsonResponse({
-        items: [adminRow([])],
-        total: 1,
-        page: 1,
-        page_size: 100,
-      }),
+      me: { ...ME_ADMIN, permissions: [] },
     })
     renderWithProviders(<DashboardPage />)
 
@@ -384,12 +359,15 @@ describe('DashboardPage', () => {
     })
   })
 
-  it('feeds the trend chart UTC ISO buckets from the timeseries endpoint', async () => {
+  it('zero-fills the trend across the whole selected window with UTC buckets', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-18T12:34:00Z'))
+
     installScenario({
       timeseries: () =>
         jsonResponse([
           { bucket: '2026-10-18T01:00:00Z', cost: 5, requests: 2 },
-          { bucket: '2026-10-18T02:00:00Z', cost: 7, requests: 3 },
+          { bucket: '2026-10-18T05:00:00Z', cost: 7, requests: 3 },
         ]),
     })
     renderWithProviders(<DashboardPage />)
@@ -398,11 +376,27 @@ describe('DashboardPage', () => {
     expect(screen.getByTestId('analytics-chart').getAttribute('data-kind')).toBe('area')
 
     const table = screen.getByRole('table')
-    expect(
-      within(table).getByText('2026-10-18T01:00:00.000Z'),
-    ).toBeTruthy()
-    expect(within(table).getByText('2026-10-18T02:00:00.000Z')).toBeTruthy()
-    expect(within(table).getByText('5')).toBeTruthy()
-    expect(within(table).getByText('7')).toBeTruthy()
+    const rowFor = (ts: string): HTMLElement => {
+      const cell = within(table).getByText(ts)
+      const row = cell.closest('tr')
+      if (row === null) throw new Error(`no row for ${ts}`)
+      return row
+    }
+
+    // The spine covers the full 24h window, not just first→last active bucket.
+    expect(rowFor('2026-10-17T13:00:00.000Z')).toBeTruthy()
+    expect(rowFor('2026-10-18T12:00:00.000Z')).toBeTruthy()
+    expect(within(table).getAllByRole('row')).toHaveLength(25)
+
+    // Inactive hours are materialised as zero instead of being skipped.
+    for (const ts of [
+      '2026-10-18T02:00:00.000Z',
+      '2026-10-18T03:00:00.000Z',
+      '2026-10-18T04:00:00.000Z',
+    ]) {
+      expect(within(rowFor(ts)).getByText('0')).toBeTruthy()
+    }
+    expect(within(rowFor('2026-10-18T01:00:00.000Z')).getByText('5')).toBeTruthy()
+    expect(within(rowFor('2026-10-18T05:00:00.000Z')).getByText('7')).toBeTruthy()
   })
 })
