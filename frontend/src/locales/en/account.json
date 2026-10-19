@@ -126,7 +126,13 @@
     "refresh_qr": "Refresh QR Code",
     "qr_expired": "QR code expired",
     "generating": "Generating QR code...",
-    "qr_failed": "Failed to create payment order"
+    "qr_failed": "Failed to create payment order",
+    "replay_title": "Payment already created",
+    "replay_pending": "This order was created earlier. Open Order History to check its status, or use \"I have paid\" to confirm the payment.",
+    "retry_payment": "Try again",
+    "failed_body": "The payment failed. Try again or view the order in Order History.",
+    "expired_body": "This order expired. Start a new payment.",
+    "cancelled_body": "This order was cancelled. Start a new payment."
   },
   "orders": {
     "title": "Order History",

@@ -9,7 +9,7 @@ import { Button } from '@/shared/ui/button'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { centsToCredits, formatYuan } from './money'
-import type { CreateOrderResponse, TopupProvider } from './types'
+import type { CreateOrderResponse, OrderView, TopupProvider } from './types'
 
 export interface PaymentConfirmDialogProps {
   open: boolean
@@ -18,7 +18,7 @@ export interface PaymentConfirmDialogProps {
   provider: TopupProvider
   quotaPerUnit?: number
   onOpenChange: (open: boolean) => void
-  onCreated: (response: CreateOrderResponse) => void
+  onCreated: (response: CreateOrderResponse, replayOrder?: OrderView) => void
 }
 
 function newKey(): string {
@@ -69,7 +69,24 @@ export function PaymentConfirmDialog({
           body: { amount, currency: 'CNY', provider },
         }),
       )
-      onCreated(response)
+      // A replay (HTTP 200) deliberately omits the payment payload: the
+      // client_secret is a bearer credential the server never stores. Fetch
+      // the authoritative order row so the checkout can render the real
+      // status instead of dead-ending on a missing QR/Elements payload.
+      const hasPayload =
+        provider === 'stripe'
+          ? response.client_secret !== undefined
+          : response.qr_code !== undefined
+      if (hasPayload) {
+        onCreated(response)
+        return
+      }
+      const replayOrder = requireData(
+        await apiClient.GET('/api/orders/{id}', {
+          params: { path: { id: response.order.id } },
+        }),
+      )
+      onCreated(response, replayOrder)
     } catch {
       push({ tone: 'error', message: t('account.topup.create_failed') })
       // Keep the dialog open and the key intact so a retry is idempotent.

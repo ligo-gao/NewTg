@@ -104,6 +104,10 @@ type GatewayDeps struct {
 	//     SessionAuth/CSRF（渠道回调没有会话，安全性由验签+限流承担）。
 	TopupHandlers *TopupHandlers
 
+	// WalletHandlers 是 M5 Task 6 补齐的 /api/wallet/summary（modules-03
+	// §F-03-01）。非 nil 时挂到受保护子树，只读取当前会话用户自己的余额。
+	WalletHandlers *WalletHandlers
+
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
 	TurnstileHTTPClient *http.Client
@@ -230,6 +234,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	if deps.TopupHandlers != nil {
 		deps.TopupHandlers.RegisterTopupRoutes(rt.protected, nil)
 		deps.TopupHandlers.RegisterWebhookRoutes(rt)
+	}
+
+	if deps.WalletHandlers != nil {
+		deps.WalletHandlers.RegisterWalletRoutes(rt.protected, nil)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

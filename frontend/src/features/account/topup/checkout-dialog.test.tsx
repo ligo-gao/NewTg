@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { renderWithProviders } from '@/test-support/providers'
 
 import { CheckoutDialog } from './checkout-dialog'
-import type { TopupOrderView } from './types'
+import type { OrderView, TopupOrderView } from './types'
 
 vi.mock('@stripe/stripe-js', () => ({
   loadStripe: vi.fn(() => Promise.resolve(null)),
@@ -35,7 +35,7 @@ const PENDING_ORDER: TopupOrderView = {
   created_at: '2026-10-19T10:00:00Z',
 }
 
-const SUCCEEDED_ORDER = {
+const SUCCEEDED_ORDER: OrderView = {
   id: 7,
   user_id: 1,
   provider: 'alipay',
@@ -98,11 +98,70 @@ describe('CheckoutDialog', () => {
 
     expect(await screen.findByText('Payment successful')).toBeTruthy()
     await waitFor(() => {
-      expect(onSucceeded).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'succeeded', credited_credits: 5000 }),
-      )
+      expect(onSucceeded).toHaveBeenCalledWith({
+        amount: 5000,
+        credited_credits: 5000,
+      })
     })
     // Balance/credits in the success view come from the server response.
     expect(screen.getByText('5,000')).toBeTruthy()
   })
+
+  it('explains a payload-less pending replay instead of a dead checkout', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/orders/7`, () => HttpResponse.json(PENDING_ORDER)),
+    )
+
+    await renderWithProviders(
+      <CheckoutDialog
+        open
+        order={PENDING_ORDER}
+        replayOrder={{ ...SUCCEEDED_ORDER, status: 'pending', credited_credits: 0 }}
+        onOpenChange={() => undefined}
+        onSucceeded={() => undefined}
+        pollIntervalMs={20}
+      />,
+      ['common', 'account'],
+    )
+
+    expect(await screen.findByText('Payment already created')).toBeTruthy()
+    expect(
+      screen.getByText(/Open Order History to check its status/),
+    ).toBeTruthy()
+  })
+
+  it.each([
+    ['failed', 'The payment failed. Try again or view the order in Order History.'],
+    ['expired', 'This order expired. Start a new payment.'],
+    ['cancelled', 'This order was cancelled. Start a new payment.'],
+  ] as const)(
+    'renders the %s terminal state and stops polling',
+    async (status, body) => {
+      let calls = 0
+      server.use(
+        http.get(`${ORIGIN}/api/orders/7`, () => {
+          calls += 1
+          return HttpResponse.json({ ...SUCCEEDED_ORDER, status })
+        }),
+      )
+
+      await renderWithProviders(
+        <CheckoutDialog
+          open
+          order={PENDING_ORDER}
+          replayOrder={{ ...SUCCEEDED_ORDER, status }}
+          onOpenChange={() => undefined}
+          onSucceeded={() => undefined}
+          pollIntervalMs={10}
+          pollMaxMs={20}
+        />,
+        ['common', 'account'],
+      )
+
+      expect(await screen.findByText(body)).toBeTruthy()
+      // Terminal means terminal: no 10s polling until the 5-minute ceiling.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(calls).toBe(0)
+    },
+  )
 })

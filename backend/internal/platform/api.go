@@ -237,6 +237,18 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: topup handlers: %w", err)
 	}
 
+	// 钱包摘要（modules-03 §F-03-01）：Task 6 的余额卡从该端点读取余额。
+	// 主库提供余额/冻结/消费，日志库提供请求总数；阈值来自站点配置。
+	walletHandler, err := httpapi.NewWalletHandlers(httpapi.WalletHandlerConfig{
+		DB:     db,
+		LogDB:  logsDB,
+		Config: center,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: wallet handlers: %w", err)
+	}
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -255,6 +267,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PricingRepo:             pricingRepo,
 		RedemptionHandlers:      redemptionHandler,
 		TopupHandlers:           topupHandler,
+		WalletHandlers:          walletHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
 	})

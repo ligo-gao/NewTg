@@ -830,6 +830,45 @@ schemas:
           $ref: '#/schemas/TopupProviderConfig'
         description: 只包含 enabled_providers 中的渠道
 
+  # 钱包摘要（modules-03 §F-03-01；Task 6 余额卡消费 balance）。
+  WalletSummary:
+    type: object
+    additionalProperties: false
+    required: [balance, held_credits, total_consumed, total_requests, threshold, health, group]
+    properties:
+      balance:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 可用余额（积分），`users.balance` 原子读
+      held_credits:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+      total_consumed:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 历史累计消费（`type='consume'` 流水绝对值之和）
+      total_requests:
+        type: integer
+        format: int64
+        minimum: 0
+        description: API 请求总数（`usage_logs` count）
+      threshold:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+      health:
+        type: string
+        enum: [healthy, low, depleted]
+        description: 服务端计算的余额健康度
+      group:
+        type: string
+        description: 当前定价分组（`users.group`）
+
   CreateOrderRequest:
     type: object
     additionalProperties: false

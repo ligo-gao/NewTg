@@ -21,18 +21,12 @@ import type {
 } from './types'
 
 const CONFIG_KEY = ['topup', 'config'] as const
+const WALLET_SUMMARY_KEY = ['wallet', 'summary'] as const
 
 interface CheckoutState {
   response: CreateOrderResponse
-}
-
-export interface TopupPageProps {
-  /**
-   * Balance at mount. M5 exposes no user-facing balance endpoint, so the page
-   * starts unknown (`—`) and is seeded by redemption responses / successful
-   * order credits; the server remains authoritative for every amount.
-   */
-  initialBalance?: number | null
+  /** Replayed orders carry no payment payload; the full row is fetched. */
+  replayOrder?: OrderView
 }
 
 /**
@@ -40,9 +34,11 @@ export interface TopupPageProps {
  *
  * Selection state is local; the amount is always cents and the credits preview
  * is `cents × quota_per_unit / 100`. The server re-prices every order, so the
- * preview is never sent as a trusted value.
+ * preview is never sent as a trusted value. The balance card is seeded from
+ * `GET /api/wallet/summary` (F-03-01) and re-read after a successful top-up or
+ * redemption — never incremented locally.
  */
-export function TopupPage({ initialBalance = null }: TopupPageProps) {
+export function TopupPage() {
   const { t } = useI18n()
   const queryClient = useQueryClient()
 
@@ -53,7 +49,13 @@ export function TopupPage({ initialBalance = null }: TopupPageProps) {
   })
   const config: TopupConfig | undefined = configQuery.data
 
-  const [balance, setBalance] = useState<number | null>(initialBalance)
+  const summaryQuery = useQuery({
+    queryKey: WALLET_SUMMARY_KEY,
+    queryFn: async () =>
+      requireData(await apiClient.GET('/api/wallet/summary')),
+  })
+  const balance = summaryQuery.data?.balance ?? null
+
   const [amountCents, setAmountCents] = useState<number | null>(null)
   const [customMode, setCustomMode] = useState(false)
   const [customInput, setCustomInput] = useState('')
@@ -124,17 +126,19 @@ export function TopupPage({ initialBalance = null }: TopupPageProps) {
     setCustomInput(value.replace(/\D/g, ''))
   }
 
-  function handleCreated(response: CreateOrderResponse): void {
+  function handleCreated(response: CreateOrderResponse, replayOrder?: OrderView): void {
     setConfirmOpen(false)
-    setCheckout({ response })
+    setCheckout({ response, replayOrder })
   }
 
-  function handleSucceeded(order: OrderView): void {
-    // The polled order is the server truth; project it onto the local balance
-    // when a balance is already known (no balance read endpoint exists in M5).
-    setBalance((current) =>
-      current === null ? null : current + order.credited_credits,
-    )
+  function refreshBalance(): void {
+    void queryClient.invalidateQueries({ queryKey: WALLET_SUMMARY_KEY })
+  }
+
+  function handleSucceeded(): void {
+    // The order endpoint is the payment truth; the balance is re-read from the
+    // wallet summary instead of being incremented from credited_credits.
+    refreshBalance()
     void queryClient.invalidateQueries({ queryKey: ['orders'] })
   }
 
@@ -270,8 +274,10 @@ export function TopupPage({ initialBalance = null }: TopupPageProps) {
       </section>
 
       <RedeemPage
-        onBalance={(next) => {
-          setBalance(next)
+        onBalance={() => {
+          // Redemption already returns balance_after, but the wallet summary is
+          // the shared source of truth with the rest of the console.
+          refreshBalance()
         }}
       />
 
@@ -292,6 +298,7 @@ export function TopupPage({ initialBalance = null }: TopupPageProps) {
           order={checkout.response.order}
           clientSecret={checkout.response.client_secret}
           qrCode={checkout.response.qr_code}
+          replayOrder={checkout.replayOrder}
           publishableKey={config.providers.stripe?.publishable_key}
           balance={balance}
           onOpenChange={(next) => {

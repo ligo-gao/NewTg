@@ -165,6 +165,10 @@ paths:
   /api/redemption-codes/redeem:
     $ref: './paths/user.yaml#/paths/~1api~1redemption-codes~1redeem'
 
+  # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡）。
+  /api/wallet/summary:
+    $ref: './paths/user.yaml#/paths/~1api~1wallet~1summary'
+
   # 在线充值（M5 Task 3；用户端点 + 公网回调）。
   /api/topup/config:
     $ref: './paths/user.yaml#/paths/~1api~1topup~1config'

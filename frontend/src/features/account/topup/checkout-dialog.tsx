@@ -28,21 +28,38 @@ export interface CheckoutDialogProps {
   clientSecret?: string
   /** Alipay precreate QR payload (alipay only). */
   qrCode?: string
+  /**
+   * Full order row fetched for a payload-less idempotent replay. Its status is
+   * authoritative: the replayed order may already be terminal.
+   */
+  replayOrder?: OrderView
   /** Stripe publishable key from `GET /api/topup/config`. */
   publishableKey?: string
   /** Server-known balance; the success view omits the row while unknown. */
   balance?: number | null
   onOpenChange: (open: boolean) => void
-  onSucceeded: (order: OrderView) => void
+  onSucceeded: (order: SucceededOrder) => void
   /** Alipay only: mint a fresh order after the QR expired. */
   onRefresh?: () => void
+  /** Terminal/failed orders: return to amount selection and start over. */
+  onRetry?: () => void
   /** Test seams for the 2s → 10s → 5min polling contract. */
   pollIntervalMs?: number
   pollMaxMs?: number
   pollDurationMs?: number
 }
 
-type View = 'checkout' | 'waiting' | 'success'
+export interface SucceededOrder {
+  amount: number
+  credited_credits: number
+}
+
+type View = 'checkout' | 'waiting' | 'success' | 'terminal'
+type TerminalStatus = 'failed' | 'expired' | 'cancelled'
+
+function isTerminal(status: string): status is TerminalStatus {
+  return status === 'failed' || status === 'expired' || status === 'cancelled'
+}
 
 interface PollOptions {
   orderId: number
@@ -137,11 +154,13 @@ export function CheckoutDialog({
   order,
   clientSecret,
   qrCode,
+  replayOrder,
   publishableKey,
   balance = null,
   onOpenChange,
   onSucceeded,
   onRefresh,
+  onRetry,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   pollMaxMs = DEFAULT_POLL_MAX_MS,
   pollDurationMs = DEFAULT_POLL_DURATION_MS,
@@ -149,40 +168,53 @@ export function CheckoutDialog({
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
   const [view, setView] = useState<View>('checkout')
-  const [settled, setSettled] = useState<OrderView | null>(null)
-  const [expired, setExpired] = useState(false)
+  const [settled, setSettled] = useState<SucceededOrder | null>(null)
+  const [terminalStatus, setTerminalStatus] = useState<TerminalStatus | null>(null)
   const [pollTimedOut, setPollTimedOut] = useState(false)
   const [stripe, setStripe] = useState<Stripe | null>(null)
   const [stripeError, setStripeError] = useState(false)
   const [stripeLoadAttempt, setStripeLoadAttempt] = useState(0)
   const [countdownReady, setCountdownReady] = useState(false)
   const countdown = useCountdown()
+  // A single success may arrive both from the initial row and from a poll;
+  // report it exactly once so the wallet summary is refreshed once.
+  const reportedSucceeded = useRef(false)
+  const onSucceededRef = useRef(onSucceeded)
+
+  useEffect(() => {
+    onSucceededRef.current = onSucceeded
+  }, [onSucceeded])
 
   const isAlipay = order.provider === 'alipay'
+  const hasPayload = isAlipay ? qrCode !== undefined : clientSecret !== undefined
   const createdMs = Date.parse(order.created_at)
   const expiresMs = Number.isNaN(createdMs)
     ? Date.now() + ORDER_LIFETIME_MS
     : createdMs + ORDER_LIFETIME_MS
 
-  const handleFinal = useCallback(
-    (next: OrderView): void => {
-      if (next.status === 'succeeded') {
-        setSettled(next)
-        setView('success')
-        // Success copy and the balance projection come from the server row.
-        onSucceeded(next)
-        return
+  const handleFinal = useCallback((next: OrderView): void => {
+    if (next.status === 'succeeded') {
+      setSettled({
+        amount: next.amount,
+        credited_credits: next.credited_credits,
+      })
+      setView('success')
+      if (!reportedSucceeded.current) {
+        reportedSucceeded.current = true
+        onSucceededRef.current({
+          amount: next.amount,
+          credited_credits: next.credited_credits,
+        })
       }
-      if (next.status === 'expired') {
-        setExpired(true)
-        return
-      }
-      // failed / cancelled: keep the dialog on the checkout view with the
-      // canonical order state, so the user can retry from order history.
-      setSettled(next)
-    },
-    [onSucceeded],
-  )
+      return
+    }
+    if (isTerminal(next.status)) {
+      // Stop here: a terminal order can never change again, so polling must not
+      // continue to the 5-minute ceiling with no UI feedback.
+      setTerminalStatus(next.status)
+      setView('terminal')
+    }
+  }, [])
 
   const handleTimeout = useCallback((): void => {
     setPollTimedOut(true)
@@ -190,7 +222,9 @@ export function CheckoutDialog({
 
   useOrderPolling({
     orderId: order.id,
-    active: open && view !== 'success',
+    // Terminal views never poll; neither does a succeeded one. A payload-less
+    // pending replay keeps polling so a late webhook still flips the view.
+    active: open && (view === 'checkout' || view === 'waiting'),
     initialDelayMs: pollIntervalMs,
     maxDelayMs: pollMaxMs,
     durationMs: pollDurationMs,
@@ -198,14 +232,32 @@ export function CheckoutDialog({
     onTimeout: handleTimeout,
   })
 
-  // Reset per order; the dialog stays open through view changes.
+  // Reset per order; the dialog stays open through view changes. The status of
+  // a replayed (payload-less) idempotent response is rendered immediately:
+  // succeeded → success view, terminal → terminal view, pending → notice.
   useEffect(() => {
     if (!open) return
-    setView('checkout')
+    reportedSucceeded.current = false
     setSettled(null)
-    setExpired(false)
+    setTerminalStatus(null)
     setPollTimedOut(false)
     setStripeError(false)
+
+    const status = replayOrder?.status ?? order.status
+    if (status === 'succeeded') {
+      const credits = replayOrder?.credited_credits ?? order.credited_credits
+      const amount = replayOrder?.amount ?? order.amount
+      setSettled({ amount, credited_credits: credits })
+      setView('success')
+      reportedSucceeded.current = true
+      onSucceededRef.current({ amount, credited_credits: credits })
+    } else if (isTerminal(status)) {
+      setTerminalStatus(status)
+      setView('terminal')
+    } else {
+      setView('checkout')
+    }
+
     const remaining = Math.max(0, Math.round((expiresMs - Date.now()) / 1000))
     countdown.start(remaining)
     setCountdownReady(true)
@@ -268,6 +320,33 @@ export function CheckoutDialog({
         >
           {t('account.checkout.view_order')}
         </Button>
+      )
+    }
+    if (view === 'terminal') {
+      return (
+        <>
+          <a
+            href="/orders"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover"
+          >
+            {t('account.checkout.view_order')}
+          </a>
+          <Button
+            onClick={() => {
+              // Retry = abandon this order and return to amount selection for a
+              // fresh Idempotency-Key; the old order stays visible in history.
+              if (onRetry !== undefined) {
+                onRetry()
+              } else if (onRefresh !== undefined) {
+                onRefresh()
+              } else {
+                onOpenChange(false)
+              }
+            }}
+          >
+            {t('account.checkout.retry_payment')}
+          </Button>
+        </>
       )
     }
     return (
@@ -337,25 +416,41 @@ export function CheckoutDialog({
         </div>
       ) : null}
 
-      {view === 'checkout' && isAlipay ? (
+      {view === 'terminal' && terminalStatus !== null ? (
+        <div aria-live="polite" className="mt-4">
+          <p className="text-[15px] font-semibold text-danger">
+            {t(`account.orders.status_${terminalStatus}`)}
+          </p>
+          <p className="mt-1 text-sm text-ink-2">
+            {t(`account.checkout.${terminalStatus}_body`)}
+          </p>
+        </div>
+      ) : null}
+
+      {view === 'checkout' && !hasPayload ? (
+        <div aria-live="polite" className="mt-4">
+          <p className="text-[15px] font-semibold text-warning">
+            {t('account.checkout.replay_title')}
+          </p>
+          <p className="mt-1 text-sm text-ink-2">
+            {t('account.checkout.replay_pending')}
+          </p>
+        </div>
+      ) : null}
+
+      {view === 'checkout' && isAlipay && qrCode !== undefined ? (
         <div className="mt-4">
           <div className="relative mx-auto w-fit rounded-lg border border-border-default bg-surface-card p-4">
-            {qrCode === undefined ? (
-              <div className="flex size-64 items-center justify-center text-sm text-ink-2">
-                {t('account.checkout.generating')}
-              </div>
-            ) : (
-              <QRCodeSVG
-                value={qrCode}
-                size={256}
-                role="img"
-                aria-label={t('account.checkout.qr_alt', {
-                  id: order.id,
-                  amount: formatYuan(order.amount),
-                })}
-              />
-            )}
-            {expired || (countdownReady && countdown.seconds === 0) ? (
+            <QRCodeSVG
+              value={qrCode}
+              size={256}
+              role="img"
+              aria-label={t('account.checkout.qr_alt', {
+                id: order.id,
+                amount: formatYuan(order.amount),
+              })}
+            />
+            {countdownReady && countdown.seconds === 0 ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-overlay">
                 <p className="text-sm font-medium text-ink-1">
                   {t('account.checkout.qr_expired')}
@@ -385,7 +480,7 @@ export function CheckoutDialog({
         </div>
       ) : null}
 
-      {view === 'checkout' && !isAlipay ? (
+      {view === 'checkout' && !isAlipay && clientSecret !== undefined ? (
         <div className="mt-4">
           <p className="text-xs text-ink-3">
             {t('account.checkout.powered_by')}

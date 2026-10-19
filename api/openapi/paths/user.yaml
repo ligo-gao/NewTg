@@ -1103,6 +1103,33 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡读取）。
+  /api/wallet/summary:
+    get:
+      tags: [user]
+      operationId: getWalletSummary
+      summary: 当前用户钱包摘要
+      description: |
+        仅返回当前会话用户自己的余额数据（无用户 ID 参数，不接受跨用户
+        读取）。`balance` 来自 `users.balance`；`held_credits` 为进行中
+        预扣（status='hold'）的绝对值之和；`total_consumed` 为
+        `type='consume'` 流水之和；`total_requests` 为 `usage_logs` 行数；
+        `health` 由服务端按余额与阈值计算（0=depleted，低于阈值=low）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/WalletSummary'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   # M5 在线充值配置（modules-04 §4.A F-04-01；P-9/P-17）。
   /api/topup/config:
     get:

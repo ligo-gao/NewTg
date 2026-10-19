@@ -1392,6 +1392,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wallet/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前用户钱包摘要
+         * @description 仅返回当前会话用户自己的余额数据（无用户 ID 参数，不接受跨用户
+         *     读取）。`balance` 来自 `users.balance`；`held_credits` 为进行中
+         *     预扣（status='hold'）的绝对值之和；`total_consumed` 为
+         *     `type='consume'` 流水之和；`total_requests` 为 `usage_logs` 行数；
+         *     `health` 由服务端按余额与阈值计算（0=depleted，低于阈值=low）。
+         */
+        get: operations["getWalletSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/topup/config": {
         parameters: {
             query?: never;
@@ -2865,6 +2889,40 @@ export interface components {
              * @description 入账后的钱包余额快照
              */
             balance_after: number;
+        };
+        WalletSummary: {
+            /**
+             * Format: int64
+             * @description 可用余额（积分），`users.balance` 原子读
+             */
+            balance: number;
+            /**
+             * Format: int64
+             * @description 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+             */
+            held_credits: number;
+            /**
+             * Format: int64
+             * @description 历史累计消费（`type='consume'` 流水绝对值之和）
+             */
+            total_consumed: number;
+            /**
+             * Format: int64
+             * @description API 请求总数（`usage_logs` count）
+             */
+            total_requests: number;
+            /**
+             * Format: int64
+             * @description 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+             */
+            threshold: number;
+            /**
+             * @description 服务端计算的余额健康度
+             * @enum {string}
+             */
+            health: "healthy" | "low" | "depleted";
+            /** @description 当前定价分组（`users.group`） */
+            group: string;
         };
         /** @description 公开的渠道配置；secret 永不出现。 */
         TopupProviderConfig: {
@@ -5871,6 +5929,28 @@ export interface operations {
             409: components["responses"]["Error409"];
             410: components["responses"]["Error410"];
             429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getWalletSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletSummary"];
+                };
+            };
+            401: components["responses"]["Error401"];
             500: components["responses"]["Error500"];
         };
     };

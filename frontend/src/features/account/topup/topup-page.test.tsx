@@ -24,10 +24,23 @@ const CONFIG = {
   providers: { stripe: { publishable_key: 'pk_test_123' }, alipay: {} },
 }
 
+function summary(balance: number) {
+  return {
+    balance,
+    held_credits: 0,
+    total_consumed: 0,
+    total_requests: 0,
+    threshold: 1000,
+    health: balance === 0 ? 'depleted' : balance < 1000 ? 'low' : 'healthy',
+    group: 'default',
+  }
+}
+
 describe('TopupPage', () => {
   it('renders amount chips, limits and providers from GET /api/topup/config', async () => {
     server.use(
       http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
     )
     await renderWithProviders(<TopupPage />, ['common', 'account'])
     const user = userEvent.setup()
@@ -69,6 +82,7 @@ describe('TopupPage', () => {
     let idempotencyKey: string | null = null
     server.use(
       http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
       http.post(`${ORIGIN}/api/orders`, async ({ request }) => {
         body = await request.json()
         idempotencyKey = request.headers.get('idempotency-key')
@@ -117,5 +131,104 @@ describe('TopupPage', () => {
       expect(body).toEqual({ amount: 5000, currency: 'CNY', provider: 'alipay' })
     })
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('renders a payload-less idempotent replay from the fetched order status', async () => {
+    let detailCalls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+      http.post(`${ORIGIN}/api/orders`, () =>
+        // Replay: the contract returns the first order without a QR payload.
+        HttpResponse.json(
+          {
+            order: {
+              id: 7,
+              provider: 'alipay',
+              amount: 5000,
+              currency: 'CNY',
+              status: 'pending',
+              credited_credits: 0,
+              created_at: '2026-10-19T10:00:00Z',
+            },
+          },
+          { status: 200 },
+        ),
+      ),
+      http.get(`${ORIGIN}/api/orders/7`, () => {
+        detailCalls += 1
+        return HttpResponse.json({
+          id: 7,
+          user_id: 1,
+          provider: 'alipay',
+          amount: 5000,
+          currency: 'CNY',
+          status: 'pending',
+          credited_credits: 0,
+          manual_completed: false,
+          created_at: '2026-10-19T10:00:00Z',
+          updated_at: '2026-10-19T10:00:00Z',
+          expires_at: '2026-10-19T10:30:00Z',
+        })
+      }),
+    )
+    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('radio', { name: 'Alipay' }))
+    await user.click(screen.getByRole('button', { name: /^Pay ¥10\.00/ }))
+    await user.click(screen.getByRole('button', { name: 'Confirm & Pay' }))
+
+    expect(await screen.findByText('Payment already created')).toBeTruthy()
+    expect(
+      screen.getByText(/Open Order History to check its status/),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(detailCalls).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it('seeds the balance from /api/wallet/summary and refetches after success', async () => {
+    let summaryCalls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => {
+        summaryCalls += 1
+        return HttpResponse.json(summary(summaryCalls === 1 ? 123450 : 128450))
+      }),
+      http.post(`${ORIGIN}/api/orders`, () =>
+        HttpResponse.json(
+          {
+            order: {
+              id: 7,
+              provider: 'alipay',
+              amount: 5000,
+              currency: 'CNY',
+              status: 'succeeded',
+              credited_credits: 5000,
+              created_at: '2026-10-19T10:00:00Z',
+            },
+            qr_code: 'https://qr.alipay.com/example',
+          },
+          { status: 201 },
+        ),
+      ),
+    )
+    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('balance-value').textContent).toBe('123,450')
+    })
+
+    await user.click(await screen.findByRole('radio', { name: 'Alipay' }))
+    await user.click(screen.getByRole('button', { name: /^Pay ¥10\.00/ }))
+    await user.click(screen.getByRole('button', { name: 'Confirm & Pay' }))
+
+    expect(await screen.findByText('Payment successful')).toBeTruthy()
+    await waitFor(() => {
+      expect(summaryCalls).toBe(2)
+      expect(screen.getByTestId('balance-value').textContent).toBe('128,450')
+    })
   })
 })

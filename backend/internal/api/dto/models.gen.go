@@ -879,6 +879,27 @@ func (e VerifyEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for WalletSummaryHealth.
+const (
+	WalletSummaryHealthDepleted WalletSummaryHealth = "depleted"
+	WalletSummaryHealthHealthy  WalletSummaryHealth = "healthy"
+	WalletSummaryHealthLow      WalletSummaryHealth = "low"
+)
+
+// Valid indicates whether the value is a known member of the WalletSummaryHealth enum.
+func (e WalletSummaryHealth) Valid() bool {
+	switch e {
+	case WalletSummaryHealthDepleted:
+		return true
+	case WalletSummaryHealthHealthy:
+		return true
+	case WalletSummaryHealthLow:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListGroupPricingParamsStatus.
 const (
 	ListGroupPricingParamsStatusDisabled ListGroupPricingParamsStatus = "disabled"
@@ -2855,6 +2876,33 @@ type VerifyEmailResponse struct {
 
 // VerifyEmailResponseEmailVerified defines model for VerifyEmailResponse.EmailVerified.
 type VerifyEmailResponseEmailVerified bool
+
+// WalletSummary defines model for WalletSummary.
+type WalletSummary struct {
+	// Balance 可用余额（积分），`users.balance` 原子读
+	Balance int64 `json:"balance"`
+
+	// Group 当前定价分组（`users.group`）
+	Group string `json:"group"`
+
+	// Health 服务端计算的余额健康度
+	Health WalletSummaryHealth `json:"health"`
+
+	// HeldCredits 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+	HeldCredits int64 `json:"held_credits"`
+
+	// Threshold 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+	Threshold int64 `json:"threshold"`
+
+	// TotalConsumed 历史累计消费（`type='consume'` 流水绝对值之和）
+	TotalConsumed int64 `json:"total_consumed"`
+
+	// TotalRequests API 请求总数（`usage_logs` count）
+	TotalRequests int64 `json:"total_requests"`
+}
+
+// WalletSummaryHealth 服务端计算的余额健康度
+type WalletSummaryHealth string
 
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
