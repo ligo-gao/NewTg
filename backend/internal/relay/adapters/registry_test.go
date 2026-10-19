@@ -78,7 +78,6 @@ func TestDispatchUnsupportedTypes(t *testing.T) {
 		contract.ChannelTypeAIProxyLibrary, // 21：无适配器，ForbidFallback
 		contract.ChannelTypeTaskPlugin,     // 61：禁止回退
 		contract.ChannelTypeSora,           // AKTask 尚未实现，且无回退声明
-		contract.ChannelTypeMoonshot,       // AKAnthropicNative 尚未实现，且无回退声明
 		contract.ChannelTypeUnknown,        // 哨兵
 		"not-a-channel-type",
 	} {

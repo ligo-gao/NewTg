@@ -169,6 +169,10 @@ var adapterConstructors = map[AdapterKey]func(contract.ChannelType) contract.Ada
 	AKOpenAI: func(channelType contract.ChannelType) contract.Adapter {
 		return &OpenAI{channelType: channelType}
 	},
+	// 原生协议适配器（M4 Task 2 / R-13）：anthropic 与 moonshot 共用
+	// AKAnthropicNative，Type() 返回各自渠道类型；gemini 走 AKGeminiNative。
+	AKAnthropicNative: NewAnthropicAdapter,
+	AKGeminiNative:    NewGeminiAdapter,
 }
 
 // keyRoles 声明每个适配器键的渠道身份（relay-02 §2.4、§2.5 末段）。
