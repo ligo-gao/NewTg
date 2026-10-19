@@ -55,6 +55,10 @@ type RouterConfig struct {
 	// TokenService 是令牌 CRUD 服务（生产 *tokenstore.Store）。提供且未显式
 	// 给出 TokenHandlers/TokenStore 时，NewRouter 自动构造并接线两者。
 	TokenService TokenService
+	// TaskPluginHandlers 是 M6d 任务插件管理端点（插件/版本/市场/dryrun）。
+	// 非 nil 时挂到受保护管理子树；handler 内部按「读 admin、写
+	// settings:manage」做功能级判定（R-M6D-02）。
+	TaskPluginHandlers *TaskPluginHandlers
 	// PricingHandlers 是 M3 定价管理端点（modules-06 F-06-13/14/16）。
 	// 非 nil 时挂到受保护管理子树；装配方负责构造 Repo 与字段策略。
 	// 定价端点的路径族是 /api/model-pricing 与 /api/group-pricing——不得复用
@@ -222,6 +226,11 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// PricingHandlers 构造时登记（未登记动作由 authz 失败关闭）。
 	if cfg.PricingHandlers != nil {
 		cfg.PricingHandlers.RegisterPricingRoutes(rt.protected, nil)
+	}
+
+	// 任务插件管理端点（M6d Task 5）：与其余管理面共用受保护链。
+	if cfg.TaskPluginHandlers != nil {
+		cfg.TaskPluginHandlers.Register(rt.protected)
 	}
 
 	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限

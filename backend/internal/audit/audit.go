@@ -111,6 +111,19 @@ const (
 	ActionDeployRename = "deploy.rename"
 	ActionDeployExtend = "deploy.extend"
 	ActionDeployDelete = "deploy.delete"
+
+	// M6d 任务插件管理面（modules-08 §3.10 / relay-06 §2.6）。全部归 operation：
+	// 上传/激活/删除版本与市场操作都是管理配置变更。detail 只允许 key/version/
+	// source_hash 前 8 位这类非秘密事实；source_text 与市场包体绝不进入审计
+	// （S5：插件列表/详情/审计都不含源码正文），避免审计表成为源码的第二副本。
+	ActionPluginUpload             = "plugin.upload"
+	ActionPluginActivate           = "plugin.activate"
+	ActionPluginVersionDelete      = "plugin.version_delete"
+	ActionPluginEnable             = "plugin.enable"
+	ActionPluginDisable            = "plugin.disable"
+	ActionPluginMarketSourceUpdate = "plugin.market_source_update"
+	ActionPluginMarketInstall      = "plugin.market_install"
+	ActionPluginDryRun             = "plugin.dryrun"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -176,6 +189,15 @@ var actionCategories = map[string]string{
 	ActionDeployRename:         categoryOperation,
 	ActionDeployExtend:         categoryOperation,
 	ActionDeployDelete:         categoryOperation,
+
+	ActionPluginUpload:             categoryOperation,
+	ActionPluginActivate:           categoryOperation,
+	ActionPluginVersionDelete:      categoryOperation,
+	ActionPluginEnable:             categoryOperation,
+	ActionPluginDisable:            categoryOperation,
+	ActionPluginMarketSourceUpdate: categoryOperation,
+	ActionPluginMarketInstall:      categoryOperation,
+	ActionPluginDryRun:             categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

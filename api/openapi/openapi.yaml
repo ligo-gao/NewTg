@@ -209,6 +209,33 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1extend'
 
   # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡）。
+  # 任务插件管理（M6d Task 5）：静态子路径先于 /api/plugin/task/{key} 声明。
+  /api/plugin/task:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task'
+  /api/plugin/task/runtime/status:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1runtime~1status'
+  /api/plugin/task/marketplace:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1marketplace'
+  /api/plugin/task/marketplace/sources:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1marketplace~1sources'
+  /api/plugin/task/marketplace/sources/{id}/check:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1marketplace~1sources~1{id}~1check'
+  /api/plugin/task/marketplace/install:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1marketplace~1install'
+  /api/plugin/task/{key}:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}'
+  /api/plugin/task/{key}/versions:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1versions'
+  /api/plugin/task/{key}/source:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1source'
+  /api/plugin/task/{key}/activate:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1activate'
+  /api/plugin/task/{key}/status:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1status'
+  /api/plugin/task/{key}/dryrun:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1dryrun'
+  /api/plugin/task/{key}/versions/{version}:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1versions~1{version}'
   /api/wallet/summary:
     $ref: './paths/user.yaml#/paths/~1api~1wallet~1summary'
 

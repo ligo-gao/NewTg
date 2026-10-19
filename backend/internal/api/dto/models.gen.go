@@ -213,6 +213,57 @@ func (e Language) Valid() bool {
 	}
 }
 
+// Defines values for MarketplaceHomeSchemaVersion.
+const (
+	MarketplaceHomeSchemaVersionN1 MarketplaceHomeSchemaVersion = 1
+)
+
+// Valid indicates whether the value is a known member of the MarketplaceHomeSchemaVersion enum.
+func (e MarketplaceHomeSchemaVersion) Valid() bool {
+	switch e {
+	case MarketplaceHomeSchemaVersionN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MarketplaceSourceLastCheckStatus.
+const (
+	MarketplaceSourceLastCheckStatusFailed  MarketplaceSourceLastCheckStatus = "failed"
+	MarketplaceSourceLastCheckStatusOk      MarketplaceSourceLastCheckStatus = "ok"
+	MarketplaceSourceLastCheckStatusPending MarketplaceSourceLastCheckStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the MarketplaceSourceLastCheckStatus enum.
+func (e MarketplaceSourceLastCheckStatus) Valid() bool {
+	switch e {
+	case MarketplaceSourceLastCheckStatusFailed:
+		return true
+	case MarketplaceSourceLastCheckStatusOk:
+		return true
+	case MarketplaceSourceLastCheckStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MarketplaceVersionApiVersion.
+const (
+	MarketplaceVersionApiVersionV1 MarketplaceVersionApiVersion = "v1"
+)
+
+// Valid indicates whether the value is a known member of the MarketplaceVersionApiVersion enum.
+func (e MarketplaceVersionApiVersion) Valid() bool {
+	switch e {
+	case MarketplaceVersionApiVersionV1:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotificationChannel.
 const (
 	Bark    NotificationChannel = "bark"
@@ -468,6 +519,24 @@ func (e PermissionKey) Valid() bool {
 	}
 }
 
+// Defines values for PluginRuntimePluginLayer.
+const (
+	PluginRuntimePluginLayerFactory  PluginRuntimePluginLayer = "factory"
+	PluginRuntimePluginLayerOverride PluginRuntimePluginLayer = "override"
+)
+
+// Valid indicates whether the value is a known member of the PluginRuntimePluginLayer enum.
+func (e PluginRuntimePluginLayer) Valid() bool {
+	switch e {
+	case PluginRuntimePluginLayerFactory:
+		return true
+	case PluginRuntimePluginLayerOverride:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PricingMode.
 const (
 	PerRequest PricingMode = "per_request"
@@ -542,19 +611,19 @@ func (e PublicPricingTypeFacetValue) Valid() bool {
 
 // Defines values for QuotaAdjustmentRequestMode.
 const (
-	Add      QuotaAdjustmentRequestMode = "add"
-	Override QuotaAdjustmentRequestMode = "override"
-	Subtract QuotaAdjustmentRequestMode = "subtract"
+	QuotaAdjustmentRequestModeAdd      QuotaAdjustmentRequestMode = "add"
+	QuotaAdjustmentRequestModeOverride QuotaAdjustmentRequestMode = "override"
+	QuotaAdjustmentRequestModeSubtract QuotaAdjustmentRequestMode = "subtract"
 )
 
 // Valid indicates whether the value is a known member of the QuotaAdjustmentRequestMode enum.
 func (e QuotaAdjustmentRequestMode) Valid() bool {
 	switch e {
-	case Add:
+	case QuotaAdjustmentRequestModeAdd:
 		return true
-	case Override:
+	case QuotaAdjustmentRequestModeOverride:
 		return true
-	case Subtract:
+	case QuotaAdjustmentRequestModeSubtract:
 		return true
 	default:
 		return false
@@ -693,6 +762,84 @@ func (e SetupResponseUserStatus) Valid() bool {
 	case SetupResponseUserStatusDisabled:
 		return true
 	case SetupResponseUserStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskPluginLayer.
+const (
+	TaskPluginLayerFactory  TaskPluginLayer = "factory"
+	TaskPluginLayerOverride TaskPluginLayer = "override"
+)
+
+// Valid indicates whether the value is a known member of the TaskPluginLayer enum.
+func (e TaskPluginLayer) Valid() bool {
+	switch e {
+	case TaskPluginLayerFactory:
+		return true
+	case TaskPluginLayerOverride:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskPluginSource.
+const (
+	TaskPluginSourceBuiltin TaskPluginSource = "builtin"
+	TaskPluginSourceUpload  TaskPluginSource = "upload"
+)
+
+// Valid indicates whether the value is a known member of the TaskPluginSource enum.
+func (e TaskPluginSource) Valid() bool {
+	switch e {
+	case TaskPluginSourceBuiltin:
+		return true
+	case TaskPluginSourceUpload:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskPluginRuntimeStatus.
+const (
+	TaskPluginRuntimeStatusCompileFailed    TaskPluginRuntimeStatus = "compile_failed"
+	TaskPluginRuntimeStatusDisabled         TaskPluginRuntimeStatus = "disabled"
+	TaskPluginRuntimeStatusDisabledFallback TaskPluginRuntimeStatus = "disabled_fallback"
+	TaskPluginRuntimeStatusNotRegistered    TaskPluginRuntimeStatus = "not_registered"
+	TaskPluginRuntimeStatusRegistered       TaskPluginRuntimeStatus = "registered"
+)
+
+// Valid indicates whether the value is a known member of the TaskPluginRuntimeStatus enum.
+func (e TaskPluginRuntimeStatus) Valid() bool {
+	switch e {
+	case TaskPluginRuntimeStatusCompileFailed:
+		return true
+	case TaskPluginRuntimeStatusDisabled:
+		return true
+	case TaskPluginRuntimeStatusDisabledFallback:
+		return true
+	case TaskPluginRuntimeStatusNotRegistered:
+		return true
+	case TaskPluginRuntimeStatusRegistered:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskPluginVersionApiVersion.
+const (
+	TaskPluginVersionApiVersionV1 TaskPluginVersionApiVersion = "v1"
+)
+
+// Valid indicates whether the value is a known member of the TaskPluginVersionApiVersion enum.
+func (e TaskPluginVersionApiVersion) Valid() bool {
+	switch e {
+	case TaskPluginVersionApiVersionV1:
 		return true
 	default:
 		return false
@@ -1230,6 +1377,60 @@ func (e ListOrdersParamsStatus) Valid() bool {
 	case ListOrdersParamsStatusPending:
 		return true
 	case ListOrdersParamsStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListTaskPluginsParamsSource.
+const (
+	ListTaskPluginsParamsSourceBuiltin ListTaskPluginsParamsSource = "builtin"
+	ListTaskPluginsParamsSourceUpload  ListTaskPluginsParamsSource = "upload"
+)
+
+// Valid indicates whether the value is a known member of the ListTaskPluginsParamsSource enum.
+func (e ListTaskPluginsParamsSource) Valid() bool {
+	switch e {
+	case ListTaskPluginsParamsSourceBuiltin:
+		return true
+	case ListTaskPluginsParamsSourceUpload:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPluginMarketplaceParamsRefresh.
+const (
+	GetPluginMarketplaceParamsRefreshN0 GetPluginMarketplaceParamsRefresh = "0"
+	GetPluginMarketplaceParamsRefreshN1 GetPluginMarketplaceParamsRefresh = "1"
+)
+
+// Valid indicates whether the value is a known member of the GetPluginMarketplaceParamsRefresh enum.
+func (e GetPluginMarketplaceParamsRefresh) Valid() bool {
+	switch e {
+	case GetPluginMarketplaceParamsRefreshN0:
+		return true
+	case GetPluginMarketplaceParamsRefreshN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetTaskPluginParamsIncludeSource.
+const (
+	GetTaskPluginParamsIncludeSourceN0 GetTaskPluginParamsIncludeSource = "0"
+	GetTaskPluginParamsIncludeSourceN1 GetTaskPluginParamsIncludeSource = "1"
+)
+
+// Valid indicates whether the value is a known member of the GetTaskPluginParamsIncludeSource enum.
+func (e GetTaskPluginParamsIncludeSource) Valid() bool {
+	switch e {
+	case GetTaskPluginParamsIncludeSourceN0:
+		return true
+	case GetTaskPluginParamsIncludeSourceN1:
 		return true
 	default:
 		return false
@@ -2618,6 +2819,91 @@ type LoginResponse struct {
 	union json.RawMessage
 }
 
+// MarketplaceHome defines model for MarketplaceHome.
+type MarketplaceHome struct {
+	CachedAt      time.Time                    `json:"cached_at"`
+	Plugins       []MarketplacePlugin          `json:"plugins"`
+	SchemaVersion MarketplaceHomeSchemaVersion `json:"schema_version"`
+	Sources       []MarketplaceSource          `json:"sources"`
+}
+
+// MarketplaceHomeSchemaVersion defines model for MarketplaceHome.SchemaVersion.
+type MarketplaceHomeSchemaVersion int
+
+// MarketplaceInstallRequest defines model for MarketplaceInstallRequest.
+type MarketplaceInstallRequest struct {
+	// Activate 默认不激活（R-M6D-07）。
+	Activate *bool              `json:"activate,omitempty"`
+	Key      string             `json:"key"`
+	SourceId openapi_types.UUID `json:"source_id"`
+	Version  string             `json:"version"`
+}
+
+// MarketplaceInstallResponse defines model for MarketplaceInstallResponse.
+type MarketplaceInstallResponse struct {
+	Activated  bool              `json:"activated"`
+	Created    bool              `json:"created"`
+	Installed  bool              `json:"installed"`
+	Key        string            `json:"key"`
+	Plugin     TaskPlugin        `json:"plugin"`
+	SourceId   string            `json:"source_id"`
+	Version    string            `json:"version"`
+	VersionRow TaskPluginVersion `json:"version_row"`
+}
+
+// MarketplacePlugin defines model for MarketplacePlugin.
+type MarketplacePlugin struct {
+	Conflicts        *[]string            `json:"conflicts,omitempty"`
+	Description      string               `json:"description"`
+	IconUrl          *string              `json:"icon_url,omitempty"`
+	Installed        bool                 `json:"installed"`
+	InstalledVersion *string              `json:"installed_version,omitempty"`
+	Key              string               `json:"key"`
+	LatestVersion    string               `json:"latest_version"`
+	Name             string               `json:"name"`
+	UpgradeAvailable bool                 `json:"upgrade_available"`
+	Versions         []MarketplaceVersion `json:"versions"`
+}
+
+// MarketplaceSource defines model for MarketplaceSource.
+type MarketplaceSource struct {
+	Enabled bool `json:"enabled"`
+
+	// Error 本次聚合的分类摘要（不落库）。
+	Error           *string                          `json:"error,omitempty"`
+	Id              openapi_types.UUID               `json:"id"`
+	LastCheckAt     *time.Time                       `json:"last_check_at,omitempty"`
+	LastCheckStatus MarketplaceSourceLastCheckStatus `json:"last_check_status"`
+	LastError       *string                          `json:"last_error,omitempty"`
+	Name            string                           `json:"name"`
+	Url             string                           `json:"url"`
+}
+
+// MarketplaceSourceLastCheckStatus defines model for MarketplaceSource.LastCheckStatus.
+type MarketplaceSourceLastCheckStatus string
+
+// MarketplaceSourceList defines model for MarketplaceSourceList.
+type MarketplaceSourceList struct {
+	Items []MarketplaceSource `json:"items"`
+	Total int                 `json:"total"`
+}
+
+// MarketplaceVersion defines model for MarketplaceVersion.
+type MarketplaceVersion struct {
+	ApiVersion MarketplaceVersionApiVersion `json:"api_version"`
+
+	// Conflict 多源同 key+version 但 hash 不同。
+	Conflict   *bool              `json:"conflict,omitempty"`
+	Installed  bool               `json:"installed"`
+	SourceHash string             `json:"source_hash"`
+	SourceId   openapi_types.UUID `json:"source_id"`
+	SourceUrl  string             `json:"source_url"`
+	Version    string             `json:"version"`
+}
+
+// MarketplaceVersionApiVersion defines model for MarketplaceVersion.ApiVersion.
+type MarketplaceVersionApiVersion string
+
 // MeView GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效权限。
 // email/avatar_url/display_name 未设置时字段缺席（响应中为 null 或省略由
 // Go omitempty 决定，客户端按可空处理）。permissions 是调用者的生效权限键：
@@ -2986,6 +3272,106 @@ type PermissionGrant1 string
 // PermissionKey modules-07 F-07-08 的 20 键冻结目录（order 与文档表格一致）。
 // 通配符 "*" 单独建模为 PermissionGrant，不放宽本枚举。
 type PermissionKey string
+
+// PluginActivateRequest defines model for PluginActivateRequest.
+type PluginActivateRequest struct {
+	ExpectUpdatedAt *time.Time `json:"expect_updated_at,omitempty"`
+	Version         string     `json:"version"`
+}
+
+// PluginActivateResponse defines model for PluginActivateResponse.
+type PluginActivateResponse struct {
+	Plugin  TaskPlugin        `json:"plugin"`
+	Version TaskPluginVersion `json:"version"`
+}
+
+// PluginDryRunRequest defines model for PluginDryRunRequest.
+type PluginDryRunRequest struct {
+	// AllowOutbound 出站执行器落地前，true 显式返回 422 dryrun_outbound_unavailable。
+	AllowOutbound *bool `json:"allow_outbound,omitempty"`
+
+	// Endpoint submit | query | result | submit_response
+	Endpoint string      `json:"endpoint"`
+	Payload  interface{} `json:"payload,omitempty"`
+
+	// Version 缺省使用当前生效层。
+	Version *string `json:"version,omitempty"`
+}
+
+// PluginDryRunResult defines model for PluginDryRunResult.
+type PluginDryRunResult struct {
+	DurationMs int64       `json:"duration_ms"`
+	Endpoint   string      `json:"endpoint"`
+	Key        string      `json:"key"`
+	Result     interface{} `json:"result"`
+	Version    string      `json:"version"`
+}
+
+// PluginIssue defines model for PluginIssue.
+type PluginIssue struct {
+	FieldPath string `json:"fieldPath"`
+	Key       string `json:"key"`
+	Locale    string `json:"locale"`
+	Message   string `json:"message"`
+	Rule      string `json:"rule"`
+}
+
+// PluginRuntimePlugin defines model for PluginRuntimePlugin.
+type PluginRuntimePlugin struct {
+	Errors *[]PluginIssue            `json:"errors,omitempty"`
+	Key    string                    `json:"key"`
+	Layer  *PluginRuntimePluginLayer `json:"layer,omitempty"`
+
+	// Status 运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+	// registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+	// not_registered=未注册；compile_failed=编译失败且无可用层。
+	Status  TaskPluginRuntimeStatus `json:"status"`
+	Version *string                 `json:"version,omitempty"`
+}
+
+// PluginRuntimePluginLayer defines model for PluginRuntimePlugin.Layer.
+type PluginRuntimePluginLayer string
+
+// PluginRuntimeStatus defines model for PluginRuntimeStatus.
+type PluginRuntimeStatus struct {
+	// Generation 节点本地单调代际；跨节点比较必须用 revision。
+	Generation  int64                 `json:"generation"`
+	Node        string                `json:"node"`
+	Plugins     []PluginRuntimePlugin `json:"plugins"`
+	ReloadError *string               `json:"reload_error,omitempty"`
+	ReloadedAt  time.Time             `json:"reloaded_at"`
+	Revision    string                `json:"revision"`
+}
+
+// PluginStatusRequest defines model for PluginStatusRequest.
+type PluginStatusRequest struct {
+	Enabled         bool       `json:"enabled"`
+	ExpectUpdatedAt *time.Time `json:"expect_updated_at,omitempty"`
+}
+
+// PluginStatusResponse defines model for PluginStatusResponse.
+type PluginStatusResponse struct {
+	BoundChannels int       `json:"bound_channels"`
+	Enabled       bool      `json:"enabled"`
+	Key           string    `json:"key"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// PluginVersionDeleteRequest defines model for PluginVersionDeleteRequest.
+type PluginVersionDeleteRequest struct {
+	ExpectUpdatedAt *time.Time `json:"expect_updated_at,omitempty"`
+}
+
+// PluginVersionDeleteResponse defines model for PluginVersionDeleteResponse.
+type PluginVersionDeleteResponse struct {
+	ActiveVersion  *string `json:"active_version,omitempty"`
+	DeletedVersion string  `json:"deleted_version"`
+	Key            string  `json:"key"`
+
+	// PromotedVersion 空串表示删除的不是 active 版本。
+	PromotedVersion string     `json:"promoted_version"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+}
 
 // PricingMode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
 // tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
@@ -3936,6 +4322,91 @@ type SetupResponse struct {
 // SetupResponseUserStatus defines model for SetupResponse.User.Status.
 type SetupResponseUserStatus string
 
+// TaskPlugin defines model for TaskPlugin.
+type TaskPlugin struct {
+	ActiveVersion *string `json:"active_version,omitempty"`
+
+	// BoundChannels 绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
+	// 前恒为 0（不是「未知」，而是当前没有真源可计算）。
+	BoundChannels int              `json:"bound_channels"`
+	Builtin       bool             `json:"builtin"`
+	CompileError  *string          `json:"compile_error,omitempty"`
+	Description   *string          `json:"description,omitempty"`
+	Enabled       bool             `json:"enabled"`
+	Icon          *string          `json:"icon,omitempty"`
+	Key           string           `json:"key"`
+	Layer         *TaskPluginLayer `json:"layer,omitempty"`
+	Name          string           `json:"name"`
+	RuntimeErrors *[]PluginIssue   `json:"runtime_errors,omitempty"`
+
+	// RuntimeStatus 运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+	// registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+	// not_registered=未注册；compile_failed=编译失败且无可用层。
+	RuntimeStatus TaskPluginRuntimeStatus `json:"runtime_status"`
+	Source        TaskPluginSource        `json:"source"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+}
+
+// TaskPluginLayer defines model for TaskPlugin.Layer.
+type TaskPluginLayer string
+
+// TaskPluginSource defines model for TaskPlugin.Source.
+type TaskPluginSource string
+
+// TaskPluginDetail defines model for TaskPluginDetail.
+type TaskPluginDetail struct {
+	Plugin TaskPlugin `json:"plugin"`
+
+	// SourceText 仅在 include_source=1 时返回；只读源查看器使用。
+	SourceText    *string             `json:"source_text,omitempty"`
+	SourceVersion *string             `json:"source_version,omitempty"`
+	Versions      []TaskPluginVersion `json:"versions"`
+}
+
+// TaskPluginPage defines model for TaskPluginPage.
+type TaskPluginPage struct {
+	Items    []TaskPlugin `json:"items"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
+	Total    int          `json:"total"`
+}
+
+// TaskPluginRuntimeStatus 运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+// registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+// not_registered=未注册；compile_failed=编译失败且无可用层。
+type TaskPluginRuntimeStatus string
+
+// TaskPluginSourceText defines model for TaskPluginSourceText.
+type TaskPluginSourceText struct {
+	Key        string `json:"key"`
+	SourceHash string `json:"source_hash"`
+	SourceText string `json:"source_text"`
+	Version    string `json:"version"`
+}
+
+// TaskPluginVersion defines model for TaskPluginVersion.
+type TaskPluginVersion struct {
+	Active     bool                        `json:"active"`
+	ApiVersion TaskPluginVersionApiVersion `json:"api_version"`
+	CreatedAt  time.Time                   `json:"created_at"`
+	Enabled    bool                        `json:"enabled"`
+	Icon       *string                     `json:"icon,omitempty"`
+	Id         openapi_types.UUID          `json:"id"`
+	Key        string                      `json:"key"`
+	SourceHash string                      `json:"source_hash"`
+	UploadedBy int64                       `json:"uploaded_by"`
+	Version    string                      `json:"version"`
+}
+
+// TaskPluginVersionApiVersion defines model for TaskPluginVersion.ApiVersion.
+type TaskPluginVersionApiVersion string
+
+// TaskPluginVersionList defines model for TaskPluginVersionList.
+type TaskPluginVersionList struct {
+	Items []TaskPluginVersion `json:"items"`
+	Total int                 `json:"total"`
+}
+
 // Token 管理面令牌响应。永不包含 key 明文或 key_hash；完整 key 只在创建
 // （POST /api/tokens）与重置（POST /api/tokens/{id}:reset-key）响应中出现一次。
 type Token struct {
@@ -4207,6 +4678,18 @@ type UpdateDeploymentRequest struct {
 	TrafficPort        *int               `json:"traffic_port,omitempty"`
 }
 
+// UpdateMarketplaceSourcesRequest defines model for UpdateMarketplaceSourcesRequest.
+type UpdateMarketplaceSourcesRequest struct {
+	Sources []struct {
+		Enabled *bool `json:"enabled,omitempty"`
+
+		// Id 留空表示新源（按 URL 复用已有行）。
+		Id   *string `json:"id,omitempty"`
+		Name string  `json:"name"`
+		Url  string  `json:"url"`
+	} `json:"sources"`
+}
+
 // UpdateSelfSettingsRequest PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
 // 等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
 // 7 语内返回 400。
@@ -4246,6 +4729,19 @@ type UpdateTokenRequestExpiresAt1 = time.Time
 // UpdateTokenRequest_ExpiresAt defines model for UpdateTokenRequest.ExpiresAt.
 type UpdateTokenRequest_ExpiresAt struct {
 	union json.RawMessage
+}
+
+// UploadTaskPluginRequest defines model for UploadTaskPluginRequest.
+type UploadTaskPluginRequest struct {
+	// SourceText 插件单文件源码；服务端计算 sha256 并编译校验。
+	SourceText string `json:"source_text"`
+}
+
+// UploadTaskPluginResponse defines model for UploadTaskPluginResponse.
+type UploadTaskPluginResponse struct {
+	Created bool              `json:"created"`
+	Plugin  TaskPlugin        `json:"plugin"`
+	Version TaskPluginVersion `json:"version"`
 }
 
 // UsableGroup defines model for UsableGroup.
@@ -4906,6 +5402,54 @@ type ChangePasswordParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListTaskPluginsParams defines parameters for ListTaskPlugins.
+type ListTaskPluginsParams struct {
+	Search        *string                      `form:"search,omitempty" json:"search,omitempty"`
+	Source        *ListTaskPluginsParamsSource `form:"source,omitempty" json:"source,omitempty"`
+	Enabled       *bool                        `form:"enabled,omitempty" json:"enabled,omitempty"`
+	RuntimeStatus *TaskPluginRuntimeStatus     `form:"runtime_status,omitempty" json:"runtime_status,omitempty"`
+
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// ListTaskPluginsParamsSource defines parameters for ListTaskPlugins.
+type ListTaskPluginsParamsSource string
+
+// UploadTaskPluginMultipartBody defines parameters for UploadTaskPlugin.
+type UploadTaskPluginMultipartBody struct {
+	File openapi_types.File `json:"file"`
+}
+
+// UploadTaskPluginParams defines parameters for UploadTaskPlugin.
+type UploadTaskPluginParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// GetPluginMarketplaceParams defines parameters for GetPluginMarketplace.
+type GetPluginMarketplaceParams struct {
+	Refresh *GetPluginMarketplaceParamsRefresh `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
+// GetPluginMarketplaceParamsRefresh defines parameters for GetPluginMarketplace.
+type GetPluginMarketplaceParamsRefresh string
+
+// GetTaskPluginParams defines parameters for GetTaskPlugin.
+type GetTaskPluginParams struct {
+	IncludeSource *GetTaskPluginParamsIncludeSource `form:"include_source,omitempty" json:"include_source,omitempty"`
+}
+
+// GetTaskPluginParamsIncludeSource defines parameters for GetTaskPlugin.
+type GetTaskPluginParamsIncludeSource string
+
+// GetTaskPluginSourceTextParams defines parameters for GetTaskPluginSourceText.
+type GetTaskPluginSourceTextParams struct {
+	Version *string `form:"version,omitempty" json:"version,omitempty"`
+}
+
 // GetPublicPricingParams defines parameters for GetPublicPricing.
 type GetPublicPricingParams struct {
 	// P 页码（1 基）；非法或越界回退首屏/最后一页。
@@ -5467,6 +6011,30 @@ type CompleteOrderManuallyJSONRequestBody = CompleteOrderRequest
 
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// UploadTaskPluginJSONRequestBody defines body for UploadTaskPlugin for application/json ContentType.
+type UploadTaskPluginJSONRequestBody = UploadTaskPluginRequest
+
+// UploadTaskPluginMultipartRequestBody defines body for UploadTaskPlugin for multipart/form-data ContentType.
+type UploadTaskPluginMultipartRequestBody UploadTaskPluginMultipartBody
+
+// InstallPluginFromMarketplaceJSONRequestBody defines body for InstallPluginFromMarketplace for application/json ContentType.
+type InstallPluginFromMarketplaceJSONRequestBody = MarketplaceInstallRequest
+
+// ReplacePluginMarketplaceSourcesJSONRequestBody defines body for ReplacePluginMarketplaceSources for application/json ContentType.
+type ReplacePluginMarketplaceSourcesJSONRequestBody = UpdateMarketplaceSourcesRequest
+
+// ActivateTaskPluginVersionJSONRequestBody defines body for ActivateTaskPluginVersion for application/json ContentType.
+type ActivateTaskPluginVersionJSONRequestBody = PluginActivateRequest
+
+// DryRunTaskPluginJSONRequestBody defines body for DryRunTaskPlugin for application/json ContentType.
+type DryRunTaskPluginJSONRequestBody = PluginDryRunRequest
+
+// SetTaskPluginStatusJSONRequestBody defines body for SetTaskPluginStatus for application/json ContentType.
+type SetTaskPluginStatusJSONRequestBody = PluginStatusRequest
+
+// DeleteTaskPluginVersionJSONRequestBody defines body for DeleteTaskPluginVersion for application/json ContentType.
+type DeleteTaskPluginVersionJSONRequestBody = PluginVersionDeleteRequest
 
 // CreateRedemptionCodesJSONRequestBody defines body for CreateRedemptionCodes for application/json ContentType.
 type CreateRedemptionCodesJSONRequestBody = RedemptionCodeCreateRequest

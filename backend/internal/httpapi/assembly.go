@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -34,9 +35,11 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/plugins"
 )
 
 // GatewayDeps 是 gateway 角色装配管理面所需的完整依赖。
@@ -126,6 +129,16 @@ type GatewayDeps struct {
 	// DeployProvider 是部署控制面的测试接缝（按生效密钥构造 provider）。
 	// nil 时使用固定 host 的 ionet 客户端；生产不注入。
 	DeployProvider func(apiKey string) ionet.DeploymentProvider
+	// TaskPluginStore 是插件管理仓储的可选测试接缝；nil 且 DB 非 nil 时由
+	// store.NewTaskPluginRepo(DB) 构造。
+	TaskPluginStore TaskPluginStore
+	// PluginManager 是任务插件运行时的可选测试接缝；nil 时由内置插件源 +
+	// SQLVersionLoader 构造。装配完成后由 BuildGatewayRouter 启动即 Reload。
+	PluginManager *plugin.Manager
+	// TaskPluginAccess 是上传端点 settings:manage 的权限回源接缝；nil 且
+	// DB 非 nil 时使用 store.NewTokenRepo(DB)。
+	TaskPluginAccess UserAccessStore
+
 	// NodeName / StartedAt 供 GET /api/system/status 的实例信息使用。
 	NodeName  string
 	StartedAt time.Time
@@ -202,6 +215,64 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		pricingHandlers = handlers
 	}
 
+	// 任务插件管理端点（M6d Task 5 / modules-08 §3.10）。运行时 Manager 与
+	// 管理面共用同一个 DB 版本加载器：写路径提交后调用 Reload，快照与 DB
+	// 立即一致；30s 轮询/pub-sub 属后续装配项（T3 遗留，已登记）。
+	var taskPluginHandlers *TaskPluginHandlers
+	if deps.DB != nil {
+		var err error
+		pluginStore := deps.TaskPluginStore
+		if pluginStore == nil {
+			pluginStore = store.NewTaskPluginRepo(deps.DB)
+		}
+		manager := deps.PluginManager
+		if manager == nil {
+			sources, sourceErr := plugins.TaskPluginSources()
+			if sourceErr != nil {
+				// 内置插件是构建期产物；embed 目录不可读说明构建被破坏，
+				// 必须阻止上线（relay-06 §2.1）。
+				return nil, sourceErr
+			}
+			manager, err = plugin.NewManager(sources, plugin.NewSQLVersionLoader(deps.DB), plugin.Options{
+				Node:                deps.NodeName,
+				MasterEnabled:       readConfigBool(deps.Config, "plugin.enabled", true),
+				DisabledFactoryKeys: readConfigStringList(deps.Config, "plugin.disabled_factory_keys"),
+			})
+			if err != nil {
+				// 内置插件编译/校验失败 = 构建期缺陷，启动失败而不是带残缺注册表上线。
+				return nil, fmt.Errorf("httpapi: load built-in task plugins: %w", err)
+			}
+		}
+		// 启动即 Reload：DB 版本层必须在监听端口前进入快照。加载失败不阻止
+		// 启动——快照保留空/旧内容，runtime/status 暴露 reload_error，管理员
+		// 可据此排查，而不是让一次瞬时的 DB 抖动把整个网关下线。
+		reloadCtx, cancelReload := context.WithTimeout(context.Background(), 10*time.Second)
+		if reloadErr := manager.Reload(reloadCtx); reloadErr != nil {
+			if deps.Logger != nil {
+				deps.Logger.Warn("httpapi: initial task plugin reload failed", "err", reloadErr)
+			}
+		}
+		cancelReload()
+
+		access := deps.TaskPluginAccess
+		if access == nil {
+			access = store.NewTokenRepo(deps.DB)
+		}
+		taskPluginHandlers, err = NewTaskPluginHandlers(TaskPluginHandlerConfig{
+			Store:   pluginStore,
+			Manager: manager,
+			Config:  deps.Config,
+			Authz:   deps.Authz,
+			Access:  access,
+			Audit:   deps.Audit,
+			Logger:  deps.Logger,
+			Idem:    NewRedisIdempotencyStore(deps.Redis),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	rt, err := NewRouter(RouterConfig{
 		DB:                  deps.DB,
 		LogDB:               deps.LogDB,
@@ -219,6 +290,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		PasswordChecker:     deps.PasswordChecker,
 		TokenService:        deps.TokenService,
 		PricingHandlers:     pricingHandlers,
+		TaskPluginHandlers:  taskPluginHandlers,
 		LoginLimiter:        limiter,
 		LoginEncryption:     loginEncryption,
 		TurnstileSettings:   turnstileSettings,
@@ -488,6 +560,35 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		return nil, err
 	}
 	return rt, nil
+}
+
+// readConfigStringList 读取字符串数组类设置（JSON null/缺省 → nil）。
+//
+// settings 的 TypeList 在配置中心快照中以 JSON 数组出现；同时容忍 []any 的
+// 通用形态，避免设置服务实现变化让禁用清单静默变成空。
+func readConfigStringList(config ConfigReader, key string) []string {
+	if config == nil {
+		return nil
+	}
+	raw, ok := config.Get(key)
+	if !ok {
+		return nil
+	}
+	var direct []string
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		return direct
+	}
+	var generic []any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(generic))
+	for _, item := range generic {
+		if value, ok := item.(string); ok {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // effectivePublicBaseURL 实施 platform-03 §3.1 #20 的回退链：

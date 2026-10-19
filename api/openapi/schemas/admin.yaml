@@ -1515,3 +1515,363 @@ schemas:
         items: {type: string}
       next_page_token: {type: string}
       has_more: {type: boolean}
+
+  # ---------------------------------------------------------------------------
+  # 任务插件管理（M6d Task 5 / modules-08 §3.10 / relay-06 §2.4–§2.6）
+  # 所有响应都不含上游凭据；列表永不包含源文本（S5）。
+  # ---------------------------------------------------------------------------
+  PluginIssue:
+    type: object
+    additionalProperties: false
+    required: [key, fieldPath, locale, rule, message]
+    properties:
+      key: {type: string}
+      fieldPath: {type: string}
+      locale: {type: string}
+      rule: {type: string}
+      message: {type: string}
+
+  TaskPluginRuntimeStatus:
+    type: string
+    enum: [registered, disabled, disabled_fallback, not_registered, compile_failed]
+    description: |
+      运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+      registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+      not_registered=未注册；compile_failed=编译失败且无可用层。
+
+  TaskPlugin:
+    type: object
+    additionalProperties: false
+    required:
+      - key
+      - name
+      - source
+      - builtin
+      - enabled
+      - runtime_status
+      - bound_channels
+      - updated_at
+    properties:
+      key: {type: string, maxLength: 30}
+      name: {type: string, maxLength: 128}
+      icon: {type: string, nullable: true}
+      source: {type: string, enum: [builtin, upload]}
+      builtin: {type: boolean}
+      enabled: {type: boolean}
+      active_version: {type: string, nullable: true, maxLength: 32}
+      description: {type: string, nullable: true, maxLength: 1024}
+      runtime_status: {$ref: '#/schemas/TaskPluginRuntimeStatus'}
+      layer: {type: string, enum: [factory, override]}
+      compile_error: {type: string}
+      runtime_errors:
+        type: array
+        items: {$ref: '#/schemas/PluginIssue'}
+      bound_channels:
+        type: integer
+        description: |
+          绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
+          前恒为 0（不是「未知」，而是当前没有真源可计算）。
+      updated_at: {type: string, format: date-time}
+
+  TaskPluginPage:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/TaskPlugin'}
+      total: {type: integer, minimum: 0}
+      page: {type: integer, minimum: 1}
+      page_size: {type: integer, minimum: 1, maximum: 100}
+
+  TaskPluginVersion:
+    type: object
+    additionalProperties: false
+    required: [id, key, version, api_version, source_hash, enabled, active, uploaded_by, created_at]
+    properties:
+      id: {type: string, format: uuid}
+      key: {type: string}
+      version: {type: string, maxLength: 32}
+      api_version: {type: string, enum: [v1]}
+      source_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+      icon: {type: string, nullable: true}
+      enabled: {type: boolean}
+      active: {type: boolean}
+      uploaded_by: {type: integer, format: int64}
+      created_at: {type: string, format: date-time}
+
+  TaskPluginVersionList:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/TaskPluginVersion'}
+      total: {type: integer, minimum: 0}
+
+  TaskPluginDetail:
+    type: object
+    additionalProperties: false
+    required: [plugin, versions]
+    properties:
+      plugin: {$ref: '#/schemas/TaskPlugin'}
+      versions:
+        type: array
+        items: {$ref: '#/schemas/TaskPluginVersion'}
+      source_text:
+        type: string
+        description: 仅在 include_source=1 时返回；只读源查看器使用。
+      source_version: {type: string}
+
+  TaskPluginSourceText:
+    type: object
+    additionalProperties: false
+    required: [key, version, source_hash, source_text]
+    properties:
+      key: {type: string}
+      version: {type: string}
+      source_hash: {type: string}
+      source_text: {type: string}
+
+  UploadTaskPluginRequest:
+    type: object
+    additionalProperties: false
+    required: [source_text]
+    properties:
+      source_text:
+        type: string
+        description: 插件单文件源码；服务端计算 sha256 并编译校验。
+
+  UploadTaskPluginResponse:
+    type: object
+    additionalProperties: false
+    required: [created, plugin, version]
+    properties:
+      created: {type: boolean}
+      plugin: {$ref: '#/schemas/TaskPlugin'}
+      version: {$ref: '#/schemas/TaskPluginVersion'}
+
+  PluginActivateRequest:
+    type: object
+    additionalProperties: false
+    required: [version]
+    properties:
+      version: {type: string, maxLength: 32}
+      expect_updated_at: {type: string, format: date-time, nullable: true}
+
+  PluginActivateResponse:
+    type: object
+    additionalProperties: false
+    required: [plugin, version]
+    properties:
+      plugin: {$ref: '#/schemas/TaskPlugin'}
+      version: {$ref: '#/schemas/TaskPluginVersion'}
+
+  PluginStatusRequest:
+    type: object
+    additionalProperties: false
+    required: [enabled]
+    properties:
+      enabled: {type: boolean}
+      expect_updated_at: {type: string, format: date-time, nullable: true}
+
+  PluginStatusResponse:
+    type: object
+    additionalProperties: false
+    required: [key, enabled, bound_channels, updated_at]
+    properties:
+      key: {type: string}
+      enabled: {type: boolean}
+      bound_channels: {type: integer}
+      updated_at: {type: string, format: date-time}
+
+  PluginVersionDeleteRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      expect_updated_at: {type: string, format: date-time, nullable: true}
+
+  PluginVersionDeleteResponse:
+    type: object
+    additionalProperties: false
+    required: [key, deleted_version, promoted_version]
+    properties:
+      key: {type: string}
+      deleted_version: {type: string}
+      promoted_version: {type: string, description: 空串表示删除的不是 active 版本。}
+      active_version: {type: string, nullable: true}
+      updated_at: {type: string, format: date-time}
+
+  PluginDryRunRequest:
+    type: object
+    additionalProperties: false
+    required: [endpoint]
+    properties:
+      version: {type: string, description: 缺省使用当前生效层。}
+      endpoint: {type: string, description: submit | query | result | submit_response }
+      payload: {}
+      allow_outbound:
+        type: boolean
+        default: false
+        description: 出站执行器落地前，true 显式返回 422 dryrun_outbound_unavailable。
+
+  PluginDryRunResult:
+    type: object
+    additionalProperties: false
+    required: [key, version, endpoint, result, duration_ms]
+    properties:
+      key: {type: string}
+      version: {type: string}
+      endpoint: {type: string}
+      result: {}
+      duration_ms: {type: integer, format: int64}
+
+  PluginRuntimePlugin:
+    type: object
+    additionalProperties: false
+    required: [key, status]
+    properties:
+      key: {type: string}
+      status: {$ref: '#/schemas/TaskPluginRuntimeStatus'}
+      version: {type: string}
+      layer: {type: string, enum: [factory, override]}
+      errors:
+        type: array
+        items: {$ref: '#/schemas/PluginIssue'}
+
+  PluginRuntimeStatus:
+    type: object
+    additionalProperties: false
+    required: [node, generation, revision, reloaded_at, plugins]
+    properties:
+      node: {type: string}
+      generation:
+        type: integer
+        format: int64
+        description: 节点本地单调代际；跨节点比较必须用 revision。
+      revision: {type: string}
+      reloaded_at: {type: string, format: date-time}
+      reload_error: {type: string}
+      plugins:
+        type: array
+        items: {$ref: '#/schemas/PluginRuntimePlugin'}
+
+  MarketplaceSource:
+    type: object
+    additionalProperties: false
+    required: [id, name, url, enabled, last_check_status]
+    properties:
+      id: {type: string, format: uuid}
+      name: {type: string, maxLength: 64}
+      url: {type: string, format: uri, maxLength: 1024}
+      enabled: {type: boolean}
+      last_check_status: {type: string, enum: [pending, ok, failed]}
+      last_check_at: {type: string, format: date-time, nullable: true}
+      last_error: {type: string, nullable: true, maxLength: 512}
+      error: {type: string, description: 本次聚合的分类摘要（不落库）。}
+
+  MarketplaceSourceList:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/MarketplaceSource'}
+      total: {type: integer}
+
+  UpdateMarketplaceSourcesRequest:
+    type: object
+    additionalProperties: false
+    required: [sources]
+    properties:
+      sources:
+        type: array
+        maxItems: 100
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, url]
+          properties:
+            id: {type: string, description: 留空表示新源（按 URL 复用已有行）。}
+            name: {type: string, maxLength: 64}
+            url: {type: string, format: uri, maxLength: 1024}
+            enabled: {type: boolean, default: true}
+
+  MarketplaceVersion:
+    type: object
+    additionalProperties: false
+    required: [version, api_version, source_url, source_hash, source_id, installed]
+    properties:
+      version: {type: string}
+      api_version: {type: string, enum: [v1]}
+      source_url: {type: string, format: uri}
+      source_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+      source_id: {type: string, format: uuid}
+      installed: {type: boolean}
+      conflict:
+        type: boolean
+        description: 多源同 key+version 但 hash 不同。
+
+  MarketplacePlugin:
+    type: object
+    additionalProperties: false
+    required: [key, name, description, latest_version, versions, installed, upgrade_available]
+    properties:
+      key: {type: string}
+      name: {type: string}
+      description: {type: string}
+      icon_url: {type: string}
+      latest_version: {type: string}
+      versions:
+        type: array
+        items: {$ref: '#/schemas/MarketplaceVersion'}
+      installed: {type: boolean}
+      installed_version: {type: string}
+      upgrade_available: {type: boolean}
+      conflicts:
+        type: array
+        items: {type: string}
+
+  MarketplaceHome:
+    type: object
+    additionalProperties: false
+    required: [schema_version, plugins, sources, cached_at]
+    properties:
+      schema_version: {type: integer, enum: [1]}
+      plugins:
+        type: array
+        items: {$ref: '#/schemas/MarketplacePlugin'}
+      sources:
+        type: array
+        items: {$ref: '#/schemas/MarketplaceSource'}
+      cached_at: {type: string, format: date-time}
+
+  MarketplaceInstallRequest:
+    type: object
+    additionalProperties: false
+    required: [source_id, key, version]
+    properties:
+      source_id: {type: string, format: uuid}
+      key: {type: string, maxLength: 30}
+      version: {type: string, maxLength: 32}
+      activate:
+        type: boolean
+        default: false
+        description: 默认不激活（R-M6D-07）。
+
+  MarketplaceInstallResponse:
+    type: object
+    additionalProperties: false
+    required: [installed, created, activated, source_id, key, version, plugin, version_row]
+    properties:
+      installed: {type: boolean}
+      created: {type: boolean}
+      activated: {type: boolean}
+      source_id: {type: string}
+      key: {type: string}
+      version: {type: string}
+      plugin: {$ref: '#/schemas/TaskPlugin'}
+      version_row: {$ref: '#/schemas/TaskPluginVersion'}

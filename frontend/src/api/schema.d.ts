@@ -1792,6 +1792,286 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plugin/task": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 插件列表（运行状态徽章 + 筛选 + 分页）
+         * @description 默认排序「运行状态异常优先，其次名称」。search 匹配 key/名称；
+         *     source=builtin|upload；enabled=true|false；runtime_status 取五态之一。
+         *     响应不含源文本与密钥（S5）。
+         */
+        get: operations["listTaskPlugins"];
+        put?: never;
+        /**
+         * 上传插件源（JSON 或 multipart，默认不激活）
+         * @description 服务端计算 sha256 并编译/校验（S1）：失败 422 plugin_compile_failed
+         *     且零写入。同 (key, version) 同 hash 幂等返回 200；异 hash 422/409
+         *     plugin_version_conflict。入库 enabled=true、active=false（R-M6D-07）。
+         *     必须携带 Idempotency-Key。multipart 文件必须为 .js，正文 ≤
+         *     plugin.upload.max_bytes（默认 2 MiB）。
+         */
+        post: operations["uploadTaskPlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/runtime/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本副本插件运行时状态
+         * @description generation 是节点本地号，跨节点比较必须用 revision（relay-06 §2.5）。
+         *     逐副本聚合（失联判定）需要实例心跳表，当前返回单节点对象。
+         */
+        get: operations["getTaskPluginRuntimeStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/marketplace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 聚合市场索引（含安装/升级标记）
+         * @description plugin.marketplace.enabled=false 时 409 plugin_marketplace_disabled。
+         *     仅聚合已启用源；refresh=1 绕过 5 分钟缓存。多源同 key+version 不同
+         *     hash 标记 conflict，不猜测权威源。
+         */
+        get: operations["getPluginMarketplace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/marketplace/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 市场源列表（含最近校验状态） */
+        get: operations["listPluginMarketplaceSources"];
+        /**
+         * 整份替换市场源并立即试拉
+         * @description 仅接受 https（R-M6D-03）并套用最小 SSRF 守卫（拒绝私网/环回字面量、
+         *     userinfo 与重定向）。保存前校验名称/URL 唯一性；保存后立即试拉每个
+         *     启用源并写回 ok/failed（失败仍保存）。
+         */
+        put: operations["replacePluginMarketplaceSources"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/marketplace/sources/{id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重新试拉一个市场源
+         * @description 远端失败不返回 5xx：写回 last_check_status=failed 与分类摘要后返回 200。
+         */
+        post: operations["checkPluginMarketplaceSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/marketplace/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从市场安装一个版本（默认不激活）
+         * @description 下载包体 → 校验 source_hash（不符 422 plugin_hash_mismatch 且零写入）
+         *     → 与上传同一编译/校验关口 → 入库非激活版本。包体 key/version 必须
+         *     与索引声明一致（否则 422 plugin_package_mismatch）。activate=true 才激活。
+         */
+        post: operations["installPluginFromMarketplace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 插件详情（可选源文本）
+         * @description include_source=1 时附带 active（否则最新）版本的只读源文本。
+         */
+        get: operations["getTaskPlugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 插件版本列表（按创建时间倒序） */
+        get: operations["listTaskPluginVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 只读源查看器
+         * @description version 缺省时取 active 版本（无 active 取最新）。
+         */
+        get: operations["getTaskPluginSourceText"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 激活版本（同 key 至多一个 active）
+         * @description 事务 + SELECT ... FOR UPDATE；同 key 其它行 active=false，目标行
+         *     active=true、enabled=true，并同步 B-11 active_version 镜像。
+         *     expect_updated_at 陈旧 → 409 plugin_updated_at_conflict。
+         */
+        post: operations["activateTaskPluginVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用/禁用插件
+         * @description enabled 必填；expect_updated_at 是乐观锁版本。禁用被渠道绑定的插件时
+         *     返回 bound_channels（绑定列未落地前恒为 0）。在途任务不受影响。
+         */
+        post: operations["setTaskPluginStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/dryrun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 沙箱试运行（默认零副作用）
+         * @description 不写任务表、不扣费、不出站。allow_outbound=true 在出站执行器落地前
+         *     显式 422 dryrun_outbound_unavailable（不静默忽略）。
+         */
+        post: operations["dryRunTaskPlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugin/task/{key}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除版本（active 版本按创建时间提升上一版本）
+         * @description 唯一版本禁删；删除 active 且没有 enabled 的旧版本可提升 → 409
+         *     plugin_version_required。expect_updated_at 陈旧 → 409。
+         */
+        delete: operations["deleteTaskPluginVersion"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wallet/summary": {
         parameters: {
             query?: never;
@@ -4049,6 +4329,250 @@ export interface components {
         };
         ExtendDeploymentRequest: {
             duration_hours: number;
+        };
+        /**
+         * @description 运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+         *     registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+         *     not_registered=未注册；compile_failed=编译失败且无可用层。
+         * @enum {string}
+         */
+        TaskPluginRuntimeStatus: "registered" | "disabled" | "disabled_fallback" | "not_registered" | "compile_failed";
+        PluginIssue: {
+            key: string;
+            fieldPath: string;
+            locale: string;
+            rule: string;
+            message: string;
+        };
+        TaskPlugin: {
+            key: string;
+            name: string;
+            icon?: string | null;
+            /** @enum {string} */
+            source: "builtin" | "upload";
+            builtin: boolean;
+            enabled: boolean;
+            active_version?: string | null;
+            description?: string | null;
+            runtime_status: components["schemas"]["TaskPluginRuntimeStatus"];
+            /** @enum {string} */
+            layer?: "factory" | "override";
+            compile_error?: string;
+            runtime_errors?: components["schemas"]["PluginIssue"][];
+            /**
+             * @description 绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
+             *     前恒为 0（不是「未知」，而是当前没有真源可计算）。
+             */
+            bound_channels: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        TaskPluginPage: {
+            items: components["schemas"]["TaskPlugin"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        UploadTaskPluginRequest: {
+            /** @description 插件单文件源码；服务端计算 sha256 并编译校验。 */
+            source_text: string;
+        };
+        TaskPluginVersion: {
+            /** Format: uuid */
+            id: string;
+            key: string;
+            version: string;
+            /** @enum {string} */
+            api_version: "v1";
+            source_hash: string;
+            icon?: string | null;
+            enabled: boolean;
+            active: boolean;
+            /** Format: int64 */
+            uploaded_by: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        UploadTaskPluginResponse: {
+            created: boolean;
+            plugin: components["schemas"]["TaskPlugin"];
+            version: components["schemas"]["TaskPluginVersion"];
+        };
+        PluginRuntimePlugin: {
+            key: string;
+            status: components["schemas"]["TaskPluginRuntimeStatus"];
+            version?: string;
+            /** @enum {string} */
+            layer?: "factory" | "override";
+            errors?: components["schemas"]["PluginIssue"][];
+        };
+        PluginRuntimeStatus: {
+            node: string;
+            /**
+             * Format: int64
+             * @description 节点本地单调代际；跨节点比较必须用 revision。
+             */
+            generation: number;
+            revision: string;
+            /** Format: date-time */
+            reloaded_at: string;
+            reload_error?: string;
+            plugins: components["schemas"]["PluginRuntimePlugin"][];
+        };
+        MarketplaceVersion: {
+            version: string;
+            /** @enum {string} */
+            api_version: "v1";
+            /** Format: uri */
+            source_url: string;
+            source_hash: string;
+            /** Format: uuid */
+            source_id: string;
+            installed: boolean;
+            /** @description 多源同 key+version 但 hash 不同。 */
+            conflict?: boolean;
+        };
+        MarketplacePlugin: {
+            key: string;
+            name: string;
+            description: string;
+            icon_url?: string;
+            latest_version: string;
+            versions: components["schemas"]["MarketplaceVersion"][];
+            installed: boolean;
+            installed_version?: string;
+            upgrade_available: boolean;
+            conflicts?: string[];
+        };
+        MarketplaceSource: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uri */
+            url: string;
+            enabled: boolean;
+            /** @enum {string} */
+            last_check_status: "pending" | "ok" | "failed";
+            /** Format: date-time */
+            last_check_at?: string | null;
+            last_error?: string | null;
+            /** @description 本次聚合的分类摘要（不落库）。 */
+            error?: string;
+        };
+        MarketplaceHome: {
+            /** @enum {integer} */
+            schema_version: 1;
+            plugins: components["schemas"]["MarketplacePlugin"][];
+            sources: components["schemas"]["MarketplaceSource"][];
+            /** Format: date-time */
+            cached_at: string;
+        };
+        MarketplaceSourceList: {
+            items: components["schemas"]["MarketplaceSource"][];
+            total: number;
+        };
+        UpdateMarketplaceSourcesRequest: {
+            sources: {
+                /** @description 留空表示新源（按 URL 复用已有行）。 */
+                id?: string;
+                name: string;
+                /** Format: uri */
+                url: string;
+                /** @default true */
+                enabled: boolean;
+            }[];
+        };
+        MarketplaceInstallRequest: {
+            /** Format: uuid */
+            source_id: string;
+            key: string;
+            version: string;
+            /**
+             * @description 默认不激活（R-M6D-07）。
+             * @default false
+             */
+            activate: boolean;
+        };
+        MarketplaceInstallResponse: {
+            installed: boolean;
+            created: boolean;
+            activated: boolean;
+            source_id: string;
+            key: string;
+            version: string;
+            plugin: components["schemas"]["TaskPlugin"];
+            version_row: components["schemas"]["TaskPluginVersion"];
+        };
+        TaskPluginDetail: {
+            plugin: components["schemas"]["TaskPlugin"];
+            versions: components["schemas"]["TaskPluginVersion"][];
+            /** @description 仅在 include_source=1 时返回；只读源查看器使用。 */
+            source_text?: string;
+            source_version?: string;
+        };
+        TaskPluginVersionList: {
+            items: components["schemas"]["TaskPluginVersion"][];
+            total: number;
+        };
+        TaskPluginSourceText: {
+            key: string;
+            version: string;
+            source_hash: string;
+            source_text: string;
+        };
+        PluginActivateRequest: {
+            version: string;
+            /** Format: date-time */
+            expect_updated_at?: string | null;
+        };
+        PluginActivateResponse: {
+            plugin: components["schemas"]["TaskPlugin"];
+            version: components["schemas"]["TaskPluginVersion"];
+        };
+        PluginStatusRequest: {
+            enabled: boolean;
+            /** Format: date-time */
+            expect_updated_at?: string | null;
+        };
+        PluginStatusResponse: {
+            key: string;
+            enabled: boolean;
+            bound_channels: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        PluginDryRunRequest: {
+            /** @description 缺省使用当前生效层。 */
+            version?: string;
+            /** @description submit | query | result | submit_response */
+            endpoint: string;
+            payload?: unknown;
+            /**
+             * @description 出站执行器落地前，true 显式返回 422 dryrun_outbound_unavailable。
+             * @default false
+             */
+            allow_outbound: boolean;
+        };
+        PluginDryRunResult: {
+            key: string;
+            version: string;
+            endpoint: string;
+            result: unknown;
+            /** Format: int64 */
+            duration_ms: number;
+        };
+        PluginVersionDeleteRequest: {
+            /** Format: date-time */
+            expect_updated_at?: string | null;
+        };
+        PluginVersionDeleteResponse: {
+            key: string;
+            deleted_version: string;
+            /** @description 空串表示删除的不是 active 版本。 */
+            promoted_version: string;
+            active_version?: string | null;
+            /** Format: date-time */
+            updated_at?: string;
         };
         WalletSummary: {
             /**
@@ -8006,6 +8530,463 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    listTaskPlugins: {
+        parameters: {
+            query?: {
+                search?: string;
+                source?: "builtin" | "upload";
+                enabled?: boolean;
+                runtime_status?: components["schemas"]["TaskPluginRuntimeStatus"];
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 插件分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPluginPage"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    uploadTaskPlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadTaskPluginRequest"];
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 幂等命中已有版本 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTaskPluginResponse"];
+                };
+            };
+            /** @description 新版本已入库（不自动激活） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTaskPluginResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getTaskPluginRuntimeStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行时快照 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginRuntimeStatus"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPluginMarketplace: {
+        parameters: {
+            query?: {
+                refresh?: "0" | "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 聚合索引 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceHome"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listPluginMarketplaceSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 市场源列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceSourceList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    replacePluginMarketplaceSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMarketplaceSourcesRequest"];
+            };
+        };
+        responses: {
+            /** @description 保存后的市场源列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceSourceList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    checkPluginMarketplaceSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的市场源 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceSource"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    installPluginFromMarketplace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarketplaceInstallRequest"];
+            };
+        };
+        responses: {
+            /** @description 已安装（幂等命中已有版本） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceInstallResponse"];
+                };
+            };
+            /** @description 新版本已安装 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketplaceInstallResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    getTaskPlugin: {
+        parameters: {
+            query?: {
+                include_source?: "0" | "1";
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 插件详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPluginDetail"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listTaskPluginVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 版本列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPluginVersionList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getTaskPluginSourceText: {
+        parameters: {
+            query?: {
+                version?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 源文本 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPluginSourceText"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    activateTaskPluginVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PluginActivateRequest"];
+            };
+        };
+        responses: {
+            /** @description 激活结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginActivateResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    setTaskPluginStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PluginStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginStatusResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    dryRunTaskPlugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PluginDryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description 试运行结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginDryRunResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteTaskPluginVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PluginVersionDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description 删除结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginVersionDeleteResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
         };
     };
     getWalletSummary: {

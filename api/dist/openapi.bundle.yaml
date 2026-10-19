@@ -3974,6 +3974,602 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/plugin/task:
+    get:
+      tags:
+        - admin
+      operationId: listTaskPlugins
+      x-required-permission: settings:manage
+      summary: 插件列表（运行状态徽章 + 筛选 + 分页）
+      description: |
+        默认排序「运行状态异常优先，其次名称」。search 匹配 key/名称；
+        source=builtin|upload；enabled=true|false；runtime_status 取五态之一。
+        响应不含源文本与密钥（S5）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - builtin
+              - upload
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: runtime_status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TaskPluginRuntimeStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 插件分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPluginPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: uploadTaskPlugin
+      x-required-permission: settings:manage
+      summary: 上传插件源（JSON 或 multipart，默认不激活）
+      description: |
+        服务端计算 sha256 并编译/校验（S1）：失败 422 plugin_compile_failed
+        且零写入。同 (key, version) 同 hash 幂等返回 200；异 hash 422/409
+        plugin_version_conflict。入库 enabled=true、active=false（R-M6D-07）。
+        必须携带 Idempotency-Key。multipart 文件必须为 .js，正文 ≤
+        plugin.upload.max_bytes（默认 2 MiB）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadTaskPluginRequest'
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 幂等命中已有版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTaskPluginResponse'
+        '201':
+          description: 新版本已入库（不自动激活）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTaskPluginResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/runtime/status:
+    get:
+      tags:
+        - admin
+      operationId: getTaskPluginRuntimeStatus
+      x-required-permission: settings:manage
+      summary: 本副本插件运行时状态
+      description: |
+        generation 是节点本地号，跨节点比较必须用 revision（relay-06 §2.5）。
+        逐副本聚合（失联判定）需要实例心跳表，当前返回单节点对象。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 运行时快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginRuntimeStatus'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/marketplace:
+    get:
+      tags:
+        - admin
+      operationId: getPluginMarketplace
+      x-required-permission: settings:manage
+      summary: 聚合市场索引（含安装/升级标记）
+      description: |
+        plugin.marketplace.enabled=false 时 409 plugin_marketplace_disabled。
+        仅聚合已启用源；refresh=1 绕过 5 分钟缓存。多源同 key+version 不同
+        hash 标记 conflict，不猜测权威源。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - '0'
+              - '1'
+      responses:
+        '200':
+          description: 聚合索引
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceHome'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/marketplace/sources:
+    get:
+      tags:
+        - admin
+      operationId: listPluginMarketplaceSources
+      x-required-permission: settings:manage
+      summary: 市场源列表（含最近校验状态）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 市场源列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceSourceList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    put:
+      tags:
+        - admin
+      operationId: replacePluginMarketplaceSources
+      x-required-permission: settings:manage
+      summary: 整份替换市场源并立即试拉
+      description: |
+        仅接受 https（R-M6D-03）并套用最小 SSRF 守卫（拒绝私网/环回字面量、
+        userinfo 与重定向）。保存前校验名称/URL 唯一性；保存后立即试拉每个
+        启用源并写回 ok/failed（失败仍保存）。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMarketplaceSourcesRequest'
+      responses:
+        '200':
+          description: 保存后的市场源列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceSourceList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/marketplace/sources/{id}/check:
+    post:
+      tags:
+        - admin
+      operationId: checkPluginMarketplaceSource
+      x-required-permission: settings:manage
+      summary: 重新试拉一个市场源
+      description: 远端失败不返回 5xx：写回 last_check_status=failed 与分类摘要后返回 200。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 更新后的市场源
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceSource'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/marketplace/install:
+    post:
+      tags:
+        - admin
+      operationId: installPluginFromMarketplace
+      x-required-permission: settings:manage
+      summary: 从市场安装一个版本（默认不激活）
+      description: |
+        下载包体 → 校验 source_hash（不符 422 plugin_hash_mismatch 且零写入）
+        → 与上传同一编译/校验关口 → 入库非激活版本。包体 key/version 必须
+        与索引声明一致（否则 422 plugin_package_mismatch）。activate=true 才激活。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketplaceInstallRequest'
+      responses:
+        '200':
+          description: 已安装（幂等命中已有版本）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceInstallResponse'
+        '201':
+          description: 新版本已安装
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceInstallResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
+  /api/plugin/task/{key}:
+    get:
+      tags:
+        - admin
+      operationId: getTaskPlugin
+      x-required-permission: settings:manage
+      summary: 插件详情（可选源文本）
+      description: include_source=1 时附带 active（否则最新）版本的只读源文本。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - '0'
+              - '1'
+      responses:
+        '200':
+          description: 插件详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPluginDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/versions:
+    get:
+      tags:
+        - admin
+      operationId: listTaskPluginVersions
+      x-required-permission: settings:manage
+      summary: 插件版本列表（按创建时间倒序）
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPluginVersionList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/source:
+    get:
+      tags:
+        - admin
+      operationId: getTaskPluginSourceText
+      x-required-permission: settings:manage
+      summary: 只读源查看器
+      description: version 缺省时取 active 版本（无 active 取最新）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 源文本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPluginSourceText'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/activate:
+    post:
+      tags:
+        - admin
+      operationId: activateTaskPluginVersion
+      x-required-permission: settings:manage
+      summary: 激活版本（同 key 至多一个 active）
+      description: |
+        事务 + SELECT ... FOR UPDATE；同 key 其它行 active=false，目标行
+        active=true、enabled=true，并同步 B-11 active_version 镜像。
+        expect_updated_at 陈旧 → 409 plugin_updated_at_conflict。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PluginActivateRequest'
+      responses:
+        '200':
+          description: 激活结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginActivateResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/status:
+    post:
+      tags:
+        - admin
+      operationId: setTaskPluginStatus
+      x-required-permission: settings:manage
+      summary: 启用/禁用插件
+      description: |
+        enabled 必填；expect_updated_at 是乐观锁版本。禁用被渠道绑定的插件时
+        返回 bound_channels（绑定列未落地前恒为 0）。在途任务不受影响。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PluginStatusRequest'
+      responses:
+        '200':
+          description: 更新结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginStatusResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/dryrun:
+    post:
+      tags:
+        - admin
+      operationId: dryRunTaskPlugin
+      x-required-permission: settings:manage
+      summary: 沙箱试运行（默认零副作用）
+      description: |
+        不写任务表、不扣费、不出站。allow_outbound=true 在出站执行器落地前
+        显式 422 dryrun_outbound_unavailable（不静默忽略）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PluginDryRunRequest'
+      responses:
+        '200':
+          description: 试运行结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginDryRunResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/plugin/task/{key}/versions/{version}:
+    delete:
+      tags:
+        - admin
+      operationId: deleteTaskPluginVersion
+      x-required-permission: settings:manage
+      summary: 删除版本（active 版本按创建时间提升上一版本）
+      description: |
+        唯一版本禁删；删除 active 且没有 enabled 的旧版本可提升 → 409
+        plugin_version_required。expect_updated_at 陈旧 → 409。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PluginVersionDeleteRequest'
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginVersionDeleteResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/wallet/summary:
     get:
       tags:
@@ -8925,6 +9521,626 @@ components:
         duration_hours:
           type: integer
           minimum: 1
+    TaskPluginRuntimeStatus:
+      type: string
+      enum:
+        - registered
+        - disabled
+        - disabled_fallback
+        - not_registered
+        - compile_failed
+      description: |
+        运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
+        registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
+        not_registered=未注册；compile_failed=编译失败且无可用层。
+    PluginIssue:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - fieldPath
+        - locale
+        - rule
+        - message
+      properties:
+        key:
+          type: string
+        fieldPath:
+          type: string
+        locale:
+          type: string
+        rule:
+          type: string
+        message:
+          type: string
+    TaskPlugin:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - name
+        - source
+        - builtin
+        - enabled
+        - runtime_status
+        - bound_channels
+        - updated_at
+      properties:
+        key:
+          type: string
+          maxLength: 30
+        name:
+          type: string
+          maxLength: 128
+        icon:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - builtin
+            - upload
+        builtin:
+          type: boolean
+        enabled:
+          type: boolean
+        active_version:
+          type: string
+          nullable: true
+          maxLength: 32
+        description:
+          type: string
+          nullable: true
+          maxLength: 1024
+        runtime_status:
+          $ref: '#/components/schemas/TaskPluginRuntimeStatus'
+        layer:
+          type: string
+          enum:
+            - factory
+            - override
+        compile_error:
+          type: string
+        runtime_errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginIssue'
+        bound_channels:
+          type: integer
+          description: |
+            绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
+            前恒为 0（不是「未知」，而是当前没有真源可计算）。
+        updated_at:
+          type: string
+          format: date-time
+    TaskPluginPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskPlugin'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    UploadTaskPluginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - source_text
+      properties:
+        source_text:
+          type: string
+          description: 插件单文件源码；服务端计算 sha256 并编译校验。
+    TaskPluginVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - key
+        - version
+        - api_version
+        - source_hash
+        - enabled
+        - active
+        - uploaded_by
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+        version:
+          type: string
+          maxLength: 32
+        api_version:
+          type: string
+          enum:
+            - v1
+        source_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        icon:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        active:
+          type: boolean
+        uploaded_by:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+    UploadTaskPluginResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - created
+        - plugin
+        - version
+      properties:
+        created:
+          type: boolean
+        plugin:
+          $ref: '#/components/schemas/TaskPlugin'
+        version:
+          $ref: '#/components/schemas/TaskPluginVersion'
+    PluginRuntimePlugin:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - status
+      properties:
+        key:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskPluginRuntimeStatus'
+        version:
+          type: string
+        layer:
+          type: string
+          enum:
+            - factory
+            - override
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginIssue'
+    PluginRuntimeStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - node
+        - generation
+        - revision
+        - reloaded_at
+        - plugins
+      properties:
+        node:
+          type: string
+        generation:
+          type: integer
+          format: int64
+          description: 节点本地单调代际；跨节点比较必须用 revision。
+        revision:
+          type: string
+        reloaded_at:
+          type: string
+          format: date-time
+        reload_error:
+          type: string
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginRuntimePlugin'
+    MarketplaceVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - api_version
+        - source_url
+        - source_hash
+        - source_id
+        - installed
+      properties:
+        version:
+          type: string
+        api_version:
+          type: string
+          enum:
+            - v1
+        source_url:
+          type: string
+          format: uri
+        source_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        source_id:
+          type: string
+          format: uuid
+        installed:
+          type: boolean
+        conflict:
+          type: boolean
+          description: 多源同 key+version 但 hash 不同。
+    MarketplacePlugin:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - name
+        - description
+        - latest_version
+        - versions
+        - installed
+        - upgrade_available
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        icon_url:
+          type: string
+        latest_version:
+          type: string
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketplaceVersion'
+        installed:
+          type: boolean
+        installed_version:
+          type: string
+        upgrade_available:
+          type: boolean
+        conflicts:
+          type: array
+          items:
+            type: string
+    MarketplaceSource:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - url
+        - enabled
+        - last_check_status
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 64
+        url:
+          type: string
+          format: uri
+          maxLength: 1024
+        enabled:
+          type: boolean
+        last_check_status:
+          type: string
+          enum:
+            - pending
+            - ok
+            - failed
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+          maxLength: 512
+        error:
+          type: string
+          description: 本次聚合的分类摘要（不落库）。
+    MarketplaceHome:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - plugins
+        - sources
+        - cached_at
+      properties:
+        schema_version:
+          type: integer
+          enum:
+            - 1
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketplacePlugin'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketplaceSource'
+        cached_at:
+          type: string
+          format: date-time
+    MarketplaceSourceList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketplaceSource'
+        total:
+          type: integer
+    UpdateMarketplaceSourcesRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sources
+      properties:
+        sources:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - name
+              - url
+            properties:
+              id:
+                type: string
+                description: 留空表示新源（按 URL 复用已有行）。
+              name:
+                type: string
+                maxLength: 64
+              url:
+                type: string
+                format: uri
+                maxLength: 1024
+              enabled:
+                type: boolean
+                default: true
+    MarketplaceInstallRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - source_id
+        - key
+        - version
+      properties:
+        source_id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          maxLength: 30
+        version:
+          type: string
+          maxLength: 32
+        activate:
+          type: boolean
+          default: false
+          description: 默认不激活（R-M6D-07）。
+    MarketplaceInstallResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - installed
+        - created
+        - activated
+        - source_id
+        - key
+        - version
+        - plugin
+        - version_row
+      properties:
+        installed:
+          type: boolean
+        created:
+          type: boolean
+        activated:
+          type: boolean
+        source_id:
+          type: string
+        key:
+          type: string
+        version:
+          type: string
+        plugin:
+          $ref: '#/components/schemas/TaskPlugin'
+        version_row:
+          $ref: '#/components/schemas/TaskPluginVersion'
+    TaskPluginDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - plugin
+        - versions
+      properties:
+        plugin:
+          $ref: '#/components/schemas/TaskPlugin'
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskPluginVersion'
+        source_text:
+          type: string
+          description: 仅在 include_source=1 时返回；只读源查看器使用。
+        source_version:
+          type: string
+    TaskPluginVersionList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskPluginVersion'
+        total:
+          type: integer
+          minimum: 0
+    TaskPluginSourceText:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - version
+        - source_hash
+        - source_text
+      properties:
+        key:
+          type: string
+        version:
+          type: string
+        source_hash:
+          type: string
+        source_text:
+          type: string
+    PluginActivateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+      properties:
+        version:
+          type: string
+          maxLength: 32
+        expect_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+    PluginActivateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - plugin
+        - version
+      properties:
+        plugin:
+          $ref: '#/components/schemas/TaskPlugin'
+        version:
+          $ref: '#/components/schemas/TaskPluginVersion'
+    PluginStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        expect_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+    PluginStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - enabled
+        - bound_channels
+        - updated_at
+      properties:
+        key:
+          type: string
+        enabled:
+          type: boolean
+        bound_channels:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    PluginDryRunRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - endpoint
+      properties:
+        version:
+          type: string
+          description: 缺省使用当前生效层。
+        endpoint:
+          type: string
+          description: submit | query | result | submit_response
+        payload: {}
+        allow_outbound:
+          type: boolean
+          default: false
+          description: 出站执行器落地前，true 显式返回 422 dryrun_outbound_unavailable。
+    PluginDryRunResult:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - version
+        - endpoint
+        - result
+        - duration_ms
+      properties:
+        key:
+          type: string
+        version:
+          type: string
+        endpoint:
+          type: string
+        result: {}
+        duration_ms:
+          type: integer
+          format: int64
+    PluginVersionDeleteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expect_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+    PluginVersionDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - deleted_version
+        - promoted_version
+      properties:
+        key:
+          type: string
+        deleted_version:
+          type: string
+        promoted_version:
+          type: string
+          description: 空串表示删除的不是 active 版本。
+        active_version:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
     WalletSummary:
       type: object
       additionalProperties: false

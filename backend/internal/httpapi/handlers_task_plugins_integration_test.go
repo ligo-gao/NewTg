@@ -1,0 +1,186 @@
+//go:build integration
+
+package httpapi
+
+// 插件管理端点的数据库级验收：上传/激活/删除/乐观锁经过真实仓储与运行时
+// Manager；市场安装的 hash 校验在真实库上证明「零写入」。
+//
+//	NEWTG_TEST_DB_DSN='postgres://newtg:newtg@localhost:55432/newtg_m6d_t5?sslmode=disable' \
+//	  go test -tags=integration ./internal/httpapi/ -run TestTaskPluginIntegration -v
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/plugin"
+	"newtg/gateway/internal/plugin/market"
+	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
+	"newtg/gateway/plugins"
+)
+
+type pluginIntegrationEnv struct {
+	mux     *http.ServeMux
+	repo    *store.TaskPluginRepo
+	manager *plugin.Manager
+}
+
+func newPluginIntegrationEnv(t *testing.T, marketClient *market.Client) *pluginIntegrationEnv {
+	t.Helper()
+	db := openDeployTestDB(t)
+	ctx := t.Context()
+	for _, query := range []string{
+		`DELETE FROM task_plugin_versions`,
+		`DELETE FROM task_plugins`,
+		`DELETE FROM plugin_marketplace_sources`,
+	} {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			t.Fatalf("clean: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM task_plugin_versions`)
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM task_plugins`)
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM plugin_marketplace_sources`)
+	})
+
+	repo := store.NewTaskPluginRepo(db)
+	sources, err := plugins.TaskPluginSources()
+	if err != nil {
+		t.Fatalf("TaskPluginSources: %v", err)
+	}
+	manager, err := plugin.NewManager(sources, plugin.NewSQLVersionLoader(db), plugin.Options{MasterEnabled: true})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := manager.Reload(ctx); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	exec := &fakeAuditExec{}
+	handlers, err := NewTaskPluginHandlers(TaskPluginHandlerConfig{
+		Store: repo, Manager: manager, Authz: rbac.NewAuthzMiddleware(),
+		Access: newFakeUserAccess(), Audit: audit.New(exec), Market: marketClient,
+	})
+	if err != nil {
+		t.Fatalf("NewTaskPluginHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	return &pluginIntegrationEnv{mux: mux, repo: repo, manager: manager}
+}
+
+func TestTaskPluginIntegrationUploadActivateDelete(t *testing.T) {
+	env := newPluginIntegrationEnv(t, nil)
+	source := samplePluginSource(t)
+	body := `{"source_text":` + mustJSON(t, source) + `}`
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task", body, pluginAdmin(),
+		map[string]string{"Idempotency-Key": "it-upload-1"}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("上传 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var upload struct {
+		Plugin struct {
+			UpdatedAt time.Time `json:"updated_at"`
+		} `json:"plugin"`
+		Version struct {
+			Version string `json:"version"`
+		} `json:"version"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &upload); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	if upload.Version.Version == "" {
+		t.Fatal("上传响应缺版本")
+	}
+
+	// 唯一版本禁删（S4）。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodDelete,
+		"/api/plugin/task/sample/versions/"+upload.Version.Version, `{}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "plugin_version_required") {
+		t.Fatalf("删除唯一版本 = %d（body=%s），期望 409 plugin_version_required", rr.Code, rr.Body.String())
+	}
+
+	// 激活：expect_updated_at 来自上传响应。
+	activateBody := `{"version":` + mustJSON(t, upload.Version.Version) + `,"expect_updated_at":` +
+		mustJSON(t, upload.Plugin.UpdatedAt.UTC().Format(time.RFC3339Nano)) + `}`
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/activate",
+		activateBody, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("激活 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var activated struct {
+		Plugin struct {
+			ActiveVersion *string   `json:"active_version"`
+			UpdatedAt     time.Time `json:"updated_at"`
+		} `json:"plugin"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &activated); err != nil {
+		t.Fatalf("decode activate: %v", err)
+	}
+	if activated.Plugin.ActiveVersion == nil || *activated.Plugin.ActiveVersion != upload.Version.Version {
+		t.Fatalf("激活后镜像 active_version = %v", activated.Plugin.ActiveVersion)
+	}
+
+	// 陈旧 expect_updated_at → 409。
+	stale := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/status",
+		`{"enabled":false,"expect_updated_at":`+mustJSON(t, stale)+`}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "plugin_updated_at_conflict") {
+		t.Fatalf("陈旧乐观锁 = %d（body=%s），期望 409", rr.Code, rr.Body.String())
+	}
+
+	// 正确版本值切启用状态，响应 bound_channels=0（绑定列未落地）。
+	statusBody := `{"enabled":false,"expect_updated_at":` +
+		mustJSON(t, activated.Plugin.UpdatedAt.UTC().Format(time.RFC3339Nano)) + `}`
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/status",
+		statusBody, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"bound_channels":0`) {
+		t.Fatalf("禁用 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPluginIntegrationMarketHashMismatchZeroWrite(t *testing.T) {
+	source := sourceForKey(t, "market-it")
+	sum := sha256.Sum256([]byte("tampered"))
+	marketServer := newMarketTestServer(t, "market-it", "1.0.0", source, hex.EncodeToString(sum[:]))
+	env := newPluginIntegrationEnv(t, marketServer.client(t))
+	if _, err := env.repo.ReplaceMarketSources(t.Context(), []store.MarketSourceInput{
+		{Name: "IT market", URL: "https://market.example/index.json", Enabled: true},
+	}); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sources, err := env.repo.ListMarketSources(t.Context())
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("list sources = %+v, %v", sources, err)
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/marketplace/install",
+		`{"source_id":"`+sources[0].ID+`","key":"market-it","version":"1.0.0"}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), "plugin_hash_mismatch") {
+		t.Fatalf("hash 不符 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	pluginsList, err := env.repo.List(t.Context())
+	if err != nil {
+		t.Fatalf("list plugins: %v", err)
+	}
+	for _, p := range pluginsList {
+		if p.Key == "market-it" {
+			t.Fatalf("hash 不符不得创建主表行：%+v", p)
+		}
+	}
+}
