@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -72,6 +72,11 @@ function installPublicHandlers() {
       requestedPaths.push(new URL(request.url).pathname)
       return HttpResponse.json({ status: 'ok', checks: {} })
     }),
+    // Public shell probes the session (401 = guest, silent) and stats band.
+    http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+    http.get(`${ORIGIN}/api/home/stats`, () =>
+      HttpResponse.json({ upstreams: 0, models: 0, endpoints: 3, routing_dims: 6 }),
+    ),
   )
 }
 
@@ -110,7 +115,7 @@ describe('public route integration (anonymous reachability)', () => {
 
   it('renders /pricing/$modelId with the disabled middle breadcrumb level', async () => {
     installPublicHandlers()
-    const { findByText, findByRole, getByText, router } = renderAt('/pricing/gpt-4o')
+    const { findByText, findByRole, router } = renderAt('/pricing/gpt-4o')
 
     expect(await findByText('820 ms')).toBeTruthy()
     await waitFor(() => {
@@ -122,7 +127,7 @@ describe('public route integration (anonymous reachability)', () => {
     expect(nav.textContent).toContain('Pricing')
 
     // /pricing 尚未开放（M7）：中间层不可点，但读屏器能读到原因。
-    const middle = getByText('Pricing')
+    const middle = within(nav).getByText('Pricing')
     expect(middle.getAttribute('aria-disabled')).toBe('true')
     const describedBy = middle.getAttribute('aria-describedby')
     expect(document.getElementById(describedBy ?? '')?.textContent).toBe(

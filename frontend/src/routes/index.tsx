@@ -1,28 +1,20 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { loadRouteDictionary } from '@/app/providers/i18n'
+import { HomePage } from '@/features/public/home/home-page'
 import { PublicLayout } from '@/features/public/public-layout'
-import { useI18n } from '@/shared/lib/i18n-context'
 
 export const Route = createFileRoute('/')({
   loader: () => loadRouteDictionary('public'),
-  component: HomePage,
+  component: HomeRoute,
 })
 
-function HomePage() {
-  const { t } = useI18n()
-
+function HomeRoute() {
   return (
-    <PublicLayout activePath="/">
-      <div className="flex flex-col gap-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-ink-3">
-          {t('public.nav.brand')}
-        </p>
-        <h1 className="text-xl font-semibold">{t('public.home.tagline')}</h1>
-        <p className="max-w-prose text-sm text-ink-2">
-          {t('public.home.placeholder')}
-        </p>
-      </div>
+    // `contained={false}`: F-09-01..05 sections own their full-bleed surfaces
+    // and vertical rhythm (UI design §0.7).
+    <PublicLayout activePath="/" contained={false}>
+      <HomePage />
     </PublicLayout>
   )
 }

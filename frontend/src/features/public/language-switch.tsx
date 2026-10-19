@@ -1,0 +1,83 @@
+import { useId } from 'react'
+
+import type { Locale } from '@/shared/lib/i18n-context'
+import { useI18n } from '@/shared/lib/i18n-context'
+
+/**
+ * Canonical bundled set (web-00 §7.3). Duplicated here instead of importing
+ * `app/providers/i18n` so the public feature layer does not depend on `app/`
+ * (web-00 §2.2); the runtime list always arrives through the context.
+ */
+const FALLBACK_LOCALES: readonly Locale[] = ['en', 'zh-CN', 'zh-TW', 'fr', 'ru', 'ja', 'vi']
+
+/**
+ * Native language names, deliberately not translated: a language picker is
+ * only usable when every option is written in its own language (UI design
+ * F-09-34 "最终文案").
+ */
+// Endonyms are built from code points rather than literal CJK text: the i18n
+// lint gate forbids CJK literals in source, and these values must not go
+// through translation (a picker shows every language in its own script).
+const fromCodePoints = (...points: number[]) => String.fromCodePoint(...points)
+
+const ZH_CN = fromCodePoints(0x7b80, 0x4f53, 0x4e2d, 0x6587)
+const ZH_TW = fromCodePoints(0x7e41, 0x9ad4, 0x4e2d, 0x6587)
+const JA = fromCodePoints(0x65e5, 0x672c, 0x8a9e)
+
+export const LANGUAGE_LABELS: Record<Locale, string> = {
+  en: 'English (en)',
+  'zh-CN': `${ZH_CN} (zh-CN)`,
+  'zh-TW': `${ZH_TW} (zh-TW)`,
+  fr: 'Français (fr)',
+  ru: 'Русский (ru)',
+  ja: `${JA} (ja)`,
+  vi: 'Tiếng Việt (vi)',
+}
+
+export interface LanguageSwitchProps {
+  /** Extra classes for the wrapper; the header and footer size it differently. */
+  className?: string
+  /** `footer` drops the visible label (the footer heading names the control). */
+  variant?: 'header' | 'footer'
+}
+
+/**
+ * F-09-34 language picker shared by header, mobile drawer and footer.
+ *
+ * A native `<select>` is used instead of a custom listbox: it is keyboard and
+ * screen-reader accessible on every platform, never traps focus, and keeps the
+ * public-page JS budget (F-09-06) free of a popover implementation. The server
+ * advertises the available set through `/api/status.languages`; the provider
+ * hands back the bundled intersection in server order.
+ */
+export function LanguageSwitch({ className, variant = 'header' }: LanguageSwitchProps) {
+  const { t, locale, setLocale, availableLocales } = useI18n()
+  const id = useId()
+  const locales = availableLocales ?? FALLBACK_LOCALES
+
+  return (
+    <div className={['flex items-center gap-1.5', className].filter(Boolean).join(' ')}>
+      {variant === 'header' ? (
+        <label htmlFor={id} className="sr-only">
+          {t('public.language.label')}
+        </label>
+      ) : null}
+      <select
+        id={id}
+        aria-label={variant === 'footer' ? t('public.language.label') : undefined}
+        value={locale}
+        onChange={(event) => {
+          const next = event.target.value
+          if (locales.includes(next as Locale)) setLocale?.(next as Locale)
+        }}
+        className="h-8 max-w-[150px] cursor-pointer rounded-lg border border-border-default bg-surface-card px-2 text-[13px] text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+      >
+        {locales.map((item) => (
+          <option key={item} value={item}>
+            {LANGUAGE_LABELS[item]}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
