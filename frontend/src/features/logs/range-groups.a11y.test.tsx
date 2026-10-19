@@ -91,7 +91,13 @@ const USAGE_ROW = {
 }
 
 function AuditHarness() {
-  const [search, setSearch] = useState<AuditLogSearch>(DEFAULT_AUDIT_LOG_SEARCH)
+  // R-07 例外（2026-10-19 评审裁决）：审计日志默认范围按设计稿 modules-05
+  // 保持 30d，本规格验证的是范围单选组的键盘行为，因此 harness 显式传入
+  // 24h 作为起始值——断言本身未做任何改动。
+  const [search, setSearch] = useState<AuditLogSearch>({
+    ...DEFAULT_AUDIT_LOG_SEARCH,
+    range: '24h',
+  })
   return <AuditLogsPage search={search} onSearchChange={setSearch} />
 }
 

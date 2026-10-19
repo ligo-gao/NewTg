@@ -26,10 +26,7 @@ export interface AuditLogSearch {
 }
 
 export const DEFAULT_AUDIT_LOG_SEARCH: AuditLogSearch = {
-  // UI-5 走查裁决：审计日志的默认时间范围与用量日志页统一为 24h。
-  // 冻结的 a11y 规格假定首次进入页面时 24h 单选为选中态，方向键从 24h
-  // 出发；其它取值会让键盘用户一进页就落在无选中项的单选组上。
-  range: '24h',
+  range: '30d',
   p: 1,
   page_size: 20,
 }

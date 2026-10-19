@@ -21,7 +21,15 @@ const FOCUSABLE_SELECTOR = [
 
 function focusableInside(panel: HTMLElement): HTMLElement[] {
   return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => element.getClientRects().length > 0,
+    (element) =>
+      // 与 Dialog 对齐（UI-5 评审）：`[tabindex]` 选择器已排除 -1，但元素
+      // 仍可能通过负值属性以外的途径不可聚焦；aria-hidden 的子树也不能
+      // 成为陷阱的落点，否则 Tab 会把焦点送进视觉上不存在的控件。
+      element.tabIndex !== -1 &&
+      element.getAttribute('aria-hidden') !== 'true' &&
+      // jsdom 没有布局；display:none 的元素不产生盒子，getClientRects()
+      // 为空，据此把隐藏候选排除出首/末位置。
+      element.getClientRects().length > 0,
   )
 }
 

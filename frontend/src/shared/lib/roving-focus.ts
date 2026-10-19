@@ -72,6 +72,13 @@ function handleRovingKeyDown(
   if (next === undefined) return
 
   event.preventDefault()
+  // Home/End 落在已经选中的边界项时只聚焦、不重复 click：重复 click 会
+  // 触发一次无意义的“重新选择”（把页码重置到第 1 页、重发请求），而
+  // 键盘用户的预期只是把焦点送到组首/组尾。
+  if (next === target) {
+    next.focus()
+    return
+  }
   next.focus()
   next.click()
 }
