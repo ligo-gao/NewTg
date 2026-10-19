@@ -1422,7 +1422,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * 订单列表与订单号搜索
+         * @description 本人订单（管理员 `orders:read` 可跨用户）。offset 分页（`p` 从 1
+         *     开始，`page_size` 默认 20 / 最大 100），按 `created_at DESC, id DESC`
+         *     倒序。`q` 是订单号子串；`user_id` 仅管理员可指定，普通用户指定他人
+         *     返回 403。列表永不返回 `raw_callback`。
+         */
+        get: operations["listOrders"];
         put?: never;
         /**
          * 幂等创建充值订单并初始化渠道支付
@@ -1436,6 +1443,99 @@ export interface paths {
          *     403；渠道 5xx 返回 502 且订单置 failed。
          */
         post: operations["createOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 订单详情（本人；管理员 orders:read 可查看任意订单）
+         * @description 本人订单返回完整视图（不含 `raw_callback`）；管理员（`orders:read`）
+         *     可查看任意订单并看到 `raw_callback`。他人订单对无权限者一律 404
+         *     （security-02：不得用 403 确认资源存在）。`expires_at` 是
+         *     `created_at + 30min` 的派生值，不是数据库列。
+         */
+        get: operations["getOrder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消 pending 订单（本人；管理员 orders:manage）
+         * @description 仅 `pending → cancelled`；条件 UPDATE 抢不到（订单已终态/并发迁移）
+         *     返回 409 `order_state_conflict`。数据库迁移成功后尽力关闭渠道支付单
+         *     （支付宝 `alipay.trade.close` / Stripe PaymentIntent cancel），渠道
+         *     失败只记日志，不阻断取消。
+         */
+        post: operations["cancelOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 主动核实渠道支付结果（回调丢失兜底）
+         * @description 仅 `pending` 订单。服务端调用 Stripe retrieve / `alipay.trade.query`：
+         *     已支付 → 复用 webhook 同一条幂等入账路径（条件 UPDATE + 入账同事务，
+         *     重复核实不会重复入账）；未支付 → 200 `{paid:false}` 且不改变状态；
+         *     渠道查询失败 → 502。限流每订单 5 次/分钟（Redis，故障时 fail closed）。
+         */
+        post: operations["verifyOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 管理员人工完成订单（须渠道确认已收款）
+         * @description 需要 `orders:manage`。订单必须为 `pending` 且渠道主动查询确认已支付；
+         *     查询失败或未支付 → 400 且不写状态。`manual_reason` 10–200 字符，
+         *     成功后写 `manual_completed/manual_reason/manual_operator_id` 并复用
+         *     同一条幂等入账路径。阈值/二次认证属于 P-19 的后续适配器族，本端点
+         *     为基本旁路、不写 audit_logs（P-16）。
+         */
+        post: operations["completeOrderManually"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2794,6 +2894,52 @@ export interface components {
                 [key: string]: components["schemas"]["TopupProviderConfig"];
             };
         };
+        OrderView: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            user_id: number;
+            /** @enum {string} */
+            provider: "stripe" | "alipay";
+            /**
+             * Format: int64
+             * @description 订单金额（分），服务端定价唯一真源
+             */
+            amount: number;
+            currency: string;
+            /**
+             * @description 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+             *     expired/cancelled；终态不可再迁移。
+             * @enum {string}
+             */
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+            /** Format: int64 */
+            credited_credits: number;
+            /** @enum {string|null} */
+            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
+            /** Format: date-time */
+            paid_at?: string | null;
+            manual_completed: boolean;
+            manual_reason?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: date-time
+             * @description 派生值 `created_at + 30min`（P-1；不是数据库列）
+             */
+            expires_at: string;
+            /** @description 仅管理员（role=admin）详情可见；用户响应不包含该字段 */
+            raw_callback?: Record<string, never> | null;
+        };
+        OrderList: {
+            items: components["schemas"]["OrderView"][];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            page_size: number;
+        };
         CreateOrderRequest: {
             /**
              * Format: int64
@@ -2842,6 +2988,15 @@ export interface components {
             client_secret?: string;
             /** @description 仅 alipay 首次创建返回 */
             qr_code?: string;
+        };
+        OrderVerifyResponse: {
+            /** @description 渠道是否已确认收款；false 时订单状态不变 */
+            paid: boolean;
+            order: components["schemas"]["OrderView"];
+        };
+        CompleteOrderRequest: {
+            /** @description 人工完成原因（按 Unicode 字符计数） */
+            manual_reason: string;
         };
     };
     responses: {
@@ -5739,6 +5894,38 @@ export interface operations {
             500: components["responses"]["Error500"];
         };
     };
+    listOrders: {
+        parameters: {
+            query?: {
+                p?: number;
+                page_size?: number;
+                status?: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+                /** @description 订单号子串（最长 128 字符） */
+                q?: string;
+                /** @description 仅 `orders:read` 管理员可用 */
+                user_id?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
     createOrder: {
         parameters: {
             query?: never;
@@ -5808,6 +5995,215 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    getOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            /** @description 订单不存在或不属于调用者 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    cancelOrder: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已取消 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            /** @description 订单不存在或不属于调用者 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 订单已不是 pending（order_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    verifyOrder: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询完成（paid 表示渠道是否已收款） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderVerifyResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            /** @description 订单不存在或不属于调用者 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 订单已不是 pending（order_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            /** @description 渠道查询失败（provider_unavailable） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 限流器不可用（fail closed） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    completeOrderManually: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 人工完成并入账 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description 原因非法，或渠道未确认收款/查询失败 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 订单不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 订单已不是 pending（order_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
         };
     };
     stripeWebhook: {

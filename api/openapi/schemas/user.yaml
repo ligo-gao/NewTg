@@ -905,3 +905,112 @@ schemas:
       qr_code:
         type: string
         description: 仅 alipay 首次创建返回
+
+  # ---------------------------------------------------------------------------
+  # 订单中心（M5 Task 4 / modules-04 §4.D–E；P-1/P-9/P-18/P-19）
+  # ---------------------------------------------------------------------------
+
+  OrderView:
+    type: object
+    additionalProperties: false
+    required: [id, user_id, provider, amount, currency, status, credited_credits,
+               manual_completed, created_at, updated_at, expires_at]
+    properties:
+      id:
+        type: integer
+        format: int64
+      user_id:
+        type: integer
+        format: int64
+      provider:
+        type: string
+        enum: [stripe, alipay]
+      amount:
+        type: integer
+        format: int64
+        description: 订单金额（分），服务端定价唯一真源
+      currency:
+        type: string
+        minLength: 3
+        maxLength: 3
+      status:
+        type: string
+        enum: [pending, succeeded, failed, expired, cancelled]
+        description: |
+          五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+          expired/cancelled；终态不可再迁移。
+      credited_credits:
+        type: integer
+        format: int64
+      failure_code:
+        type: string
+        nullable: true
+        enum: [provider_unavailable, provider_rejected, signature_invalid, amount_mismatch,
+               currency_mismatch, order_not_found, order_state_conflict, manual_required, null]
+      paid_at:
+        type: string
+        format: date-time
+        nullable: true
+      manual_completed:
+        type: boolean
+      manual_reason:
+        type: string
+        nullable: true
+        minLength: 10
+        maxLength: 200
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      expires_at:
+        type: string
+        format: date-time
+        description: 派生值 `created_at + 30min`（P-1；不是数据库列）
+      raw_callback:
+        type: object
+        nullable: true
+        description: 仅管理员（role=admin）详情可见；用户响应不包含该字段
+
+  OrderList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/OrderView'
+      total:
+        type: integer
+        format: int64
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  OrderVerifyResponse:
+    type: object
+    additionalProperties: false
+    required: [paid, order]
+    properties:
+      paid:
+        type: boolean
+        description: 渠道是否已确认收款；false 时订单状态不变
+      order:
+        $ref: '#/schemas/OrderView'
+
+  CompleteOrderRequest:
+    type: object
+    additionalProperties: false
+    required: [manual_reason]
+    properties:
+      manual_reason:
+        type: string
+        minLength: 10
+        maxLength: 200
+        description: 人工完成原因（按 Unicode 字符计数）

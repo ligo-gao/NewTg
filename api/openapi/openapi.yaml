@@ -170,6 +170,14 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1topup~1config'
   /api/orders:
     $ref: './paths/user.yaml#/paths/~1api~1orders'
+  /api/orders/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}'
+  /api/orders/{id}/cancel:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1cancel'
+  /api/orders/{id}/verify:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1verify'
+  /api/orders/{id}/complete:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1complete'
   /api/webhooks/stripe:
     $ref: './paths/public.yaml#/paths/~1api~1webhooks~1stripe'
   /api/webhooks/alipay:

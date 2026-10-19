@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/rbac"
 )
 
 // 本文件是 M5 Task 3 的 HTTP 端点验收（P-9/P-10/P-12）：
@@ -136,6 +138,15 @@ func (e *topupTestEnv) createUser(balance int64) int64 {
 
 func (e *topupTestEnv) request(userID int64, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	e.t.Helper()
+	if userID <= 0 {
+		return e.requestAs(nil, method, path, body, headers)
+	}
+	return e.requestAs(&auth.Principal{UserID: userID, Role: "user"}, method, path, body, headers)
+}
+
+// requestAs 允许测试注入管理员角色与权限集合（production 由 authz 中间件解析）。
+func (e *topupTestEnv) requestAs(p *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
+	e.t.Helper()
 	var reader io.Reader = http.NoBody
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -151,11 +162,91 @@ func (e *topupTestEnv) request(userID int64, method, path string, body any, head
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	if userID > 0 {
-		req = req.WithContext(auth.WithPrincipal(req.Context(),
-			&auth.Principal{UserID: userID, Role: "user"}))
+	if p != nil {
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
 	}
 	return serve(e.router, req)
+}
+
+// insertOrder 直接落一笔订单，用于构造各种状态（HTTP 创建路径只产生 pending）。
+func (e *topupTestEnv) insertOrder(userID int64, status string, amount int64, providerTxnID string) int64 {
+	e.t.Helper()
+	key := fmt.Sprintf("seed-%d-%d", time.Now().UnixNano(), userID)
+	var txn *string
+	if providerTxnID != "" {
+		txn = &providerTxnID
+	}
+	var id int64
+	if err := e.db.QueryRow(`
+		INSERT INTO orders (user_id, provider, amount, currency, status, idempotency_key, provider_txn_id)
+		VALUES ($1, 'stripe', $2, 'CNY', $3, $4, $5) RETURNING id`,
+		userID, amount, status, key, txn).Scan(&id); err != nil {
+		e.t.Fatalf("insert order: %v", err)
+	}
+	return id
+}
+
+// newOrderStripeStub 模拟 PaymentIntent retrieve/cancel（Task 4 主动核实）。
+// state 可在测试中途修改，以覆盖「未支付 → 已支付」的状态变化。
+type orderStripeStubState struct {
+	mu             sync.Mutex
+	status         string
+	amount         int64
+	amountReceived int64
+	currency       string
+	httpStatus     int // 非 0 时直接返回该 HTTP 错误（模拟渠道故障）
+}
+
+func (s *orderStripeStubState) set(fn func(*orderStripeStubState)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(s)
+}
+
+func newOrderStripeStub(t *testing.T) (*httptest.Server, *orderStripeStubState) {
+	t.Helper()
+	state := &orderStripeStubState{
+		status: "requires_payment_method", amount: 1000,
+		amountReceived: 0, currency: "cny",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/payment_intents/") {
+			if strings.HasSuffix(r.URL.Path, "/cancel") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"pi_order","status":"canceled"}`)
+				return
+			}
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.httpStatus != 0 {
+				w.WriteHeader(state.httpStatus)
+				_, _ = io.WriteString(w, `{"error":{"message":"provider down"}}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"id":%q,"amount":%d,"amount_received":%d,"currency":%q,"status":%q}`,
+				strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/"),
+				state.amount, state.amountReceived, state.currency, state.status)
+			return
+		}
+		// 创建路径沿用 Task 3 的桩语义。
+		_ = r.ParseForm()
+		amount, _ := strconv.ParseInt(r.PostForm.Get("amount"), 10, 64)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"pi_order_%d","client_secret":"pi_order_%d_secret"}`, amount, amount)
+	}))
+	t.Cleanup(server.Close)
+	return server, state
+}
+
+// insertOrderRawCallback 写入原始回调，验证「用户不可见、管理员可见」。
+func (e *topupTestEnv) insertOrderRawCallback(orderID int64, raw string) {
+	e.t.Helper()
+	if _, err := e.db.Exec(
+		`UPDATE orders SET raw_callback = $1::jsonb WHERE id = $2`, raw, orderID); err != nil {
+		e.t.Fatalf("set raw_callback: %v", err)
+	}
 }
 
 // postWebhook 发送原始 body（webhook 验签必须针对原始字节）。
@@ -492,5 +583,501 @@ func TestAlipayWebhookRejectsForgedSignature(t *testing.T) {
 	}
 	if got := strings.TrimSpace(rr.Body.String()); got != "failure" {
 		t.Fatalf("body = %q, want failure", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M5 Task 4：订单五状态状态机与订单端点（P-1/P-9/P-18）
+// ---------------------------------------------------------------------------
+
+func orderProblemType(t *testing.T, rr *httptest.ResponseRecorder) string {
+	t.Helper()
+	var problem struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v (body=%s)", err, rr.Body.String())
+	}
+	return problem.Type
+}
+
+type orderListPayload struct {
+	Items []struct {
+		ID              int64           `json:"id"`
+		UserID          int64           `json:"user_id"`
+		Status          string          `json:"status"`
+		CreditedCredits int64           `json:"credited_credits"`
+		RawCallback     json.RawMessage `json:"raw_callback"`
+		ExpiresAt       *time.Time      `json:"expires_at"`
+	} `json:"items"`
+	Total    int64 `json:"total"`
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+}
+
+type orderDetailPayload struct {
+	ID              int64           `json:"id"`
+	UserID          int64           `json:"user_id"`
+	Provider        string          `json:"provider"`
+	Amount          int64           `json:"amount"`
+	Status          string          `json:"status"`
+	CreditedCredits int64           `json:"credited_credits"`
+	ManualCompleted bool            `json:"manual_completed"`
+	ManualReason    *string         `json:"manual_reason"`
+	ExpiresAt       *time.Time      `json:"expires_at"`
+	RawCallback     json.RawMessage `json:"raw_callback"`
+}
+
+func decodeOrderDetail(t *testing.T, rr *httptest.ResponseRecorder) orderDetailPayload {
+	t.Helper()
+	var view orderDetailPayload
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode order view: %v (body=%s)", err, rr.Body.String())
+	}
+	return view
+}
+
+func TestOrdersListPaginationFilterAndScope(t *testing.T) {
+	stripe, _ := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	other := env.createUser(0)
+
+	aPending := env.insertOrder(owner, "pending", 1000, "")
+	aSucceeded := env.insertOrder(owner, "succeeded", 2000, "")
+	aCancelled := env.insertOrder(owner, "cancelled", 3000, "")
+	bPending := env.insertOrder(other, "pending", 4000, "")
+	bSucceeded := env.insertOrder(other, "succeeded", 5000, "")
+
+	first := env.request(owner, http.MethodGet, "/api/orders?p=1&page_size=2", nil, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var page1 orderListPayload
+	if err := json.Unmarshal(first.Body.Bytes(), &page1); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if page1.Total != 3 || page1.Page != 1 || page1.PageSize != 2 {
+		t.Fatalf("envelope = total %d page %d size %d", page1.Total, page1.Page, page1.PageSize)
+	}
+	if len(page1.Items) != 2 || page1.Items[0].ID != aCancelled || page1.Items[1].ID != aSucceeded {
+		t.Fatalf("page1 items = %+v, want newest first [%d %d]", page1.Items, aCancelled, aSucceeded)
+	}
+	for _, item := range page1.Items {
+		if item.UserID != owner || item.ID == bPending || item.ID == bSucceeded {
+			t.Fatalf("user A list leaked another user's order: %+v", item)
+		}
+	}
+
+	page2 := env.request(owner, http.MethodGet, "/api/orders?p=2&page_size=2", nil, nil)
+	var page2Payload orderListPayload
+	if err := json.Unmarshal(page2.Body.Bytes(), &page2Payload); err != nil {
+		t.Fatalf("decode page2: %v", err)
+	}
+	if len(page2Payload.Items) != 1 || page2Payload.Items[0].ID != aPending {
+		t.Fatalf("page2 items = %+v", page2Payload.Items)
+	}
+
+	filtered := env.request(owner, http.MethodGet, "/api/orders?status=succeeded", nil, nil)
+	var filteredPayload orderListPayload
+	if err := json.Unmarshal(filtered.Body.Bytes(), &filteredPayload); err != nil {
+		t.Fatalf("decode filtered: %v", err)
+	}
+	if filteredPayload.Total != 1 || len(filteredPayload.Items) != 1 ||
+		filteredPayload.Items[0].ID != aSucceeded {
+		t.Fatalf("status filter = %+v", filteredPayload)
+	}
+
+	searched := env.request(owner, http.MethodGet,
+		"/api/orders?q="+strconv.FormatInt(aSucceeded, 10), nil, nil)
+	var searchedPayload orderListPayload
+	if err := json.Unmarshal(searched.Body.Bytes(), &searchedPayload); err != nil {
+		t.Fatalf("decode searched: %v", err)
+	}
+	if searchedPayload.Total != 1 || searchedPayload.Items[0].ID != aSucceeded {
+		t.Fatalf("q search = %+v", searchedPayload)
+	}
+
+	invalidStatus := env.request(owner, http.MethodGet, "/api/orders?status=paid", nil, nil)
+	if invalidStatus.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status code = %d, want 400", invalidStatus.Code)
+	}
+	tooBig := env.request(owner, http.MethodGet, "/api/orders?page_size=101", nil, nil)
+	if tooBig.Code != http.StatusBadRequest {
+		t.Fatalf("page_size=101 code = %d, want 400", tooBig.Code)
+	}
+
+	// 用户显式询问他人 user_id → 403，不得退化成「静默过滤掉」。
+	crossUser := env.request(owner, http.MethodGet,
+		fmt.Sprintf("/api/orders?user_id=%d", other), nil, nil)
+	if crossUser.Code != http.StatusForbidden {
+		t.Fatalf("cross user filter code = %d, want 403", crossUser.Code)
+	}
+
+	admin := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersRead}}
+	adminList := env.requestAs(admin, http.MethodGet,
+		fmt.Sprintf("/api/orders?user_id=%d", other), nil, nil)
+	if adminList.Code != http.StatusOK {
+		t.Fatalf("admin list status = %d, body = %s", adminList.Code, adminList.Body.String())
+	}
+	var adminPayload orderListPayload
+	if err := json.Unmarshal(adminList.Body.Bytes(), &adminPayload); err != nil {
+		t.Fatalf("decode admin list: %v", err)
+	}
+	if adminPayload.Total != 2 {
+		t.Fatalf("admin total = %d, want 2", adminPayload.Total)
+	}
+
+	// 无 orders:read 的 admin 不能跨用户查询。
+	noRead := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	if rr := env.requestAs(noRead, http.MethodGet,
+		fmt.Sprintf("/api/orders?user_id=%d", other), nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("admin without orders:read code = %d, want 403", rr.Code)
+	}
+}
+
+func TestOrderDetailOwnershipAndRawCallbackVisibility(t *testing.T) {
+	stripe, _ := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	other := env.createUser(0)
+	orderID := env.insertOrder(other, "pending", 1000, "")
+	env.insertOrderRawCallback(orderID, `{"provider":"stripe","event_id":"evt_secret"}`)
+
+	own := env.request(other, http.MethodGet, fmt.Sprintf("/api/orders/%d", orderID), nil, nil)
+	if own.Code != http.StatusOK {
+		t.Fatalf("owner detail status = %d, body = %s", own.Code, own.Body.String())
+	}
+	view := decodeOrderDetail(t, own)
+	if view.ID != orderID || view.Status != "pending" || view.ExpiresAt == nil {
+		t.Fatalf("owner detail = %+v", view)
+	}
+	if len(view.RawCallback) != 0 || strings.Contains(own.Body.String(), "raw_callback") {
+		t.Fatalf("user detail leaked raw_callback: %s", own.Body.String())
+	}
+
+	// 他人订单：404（不泄漏存在性）。
+	if rr := env.request(owner, http.MethodGet,
+		fmt.Sprintf("/api/orders/%d", orderID), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("cross user detail code = %d, want 404", rr.Code)
+	}
+
+	admin := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersRead}}
+	adminView := env.requestAs(admin, http.MethodGet, fmt.Sprintf("/api/orders/%d", orderID), nil, nil)
+	if adminView.Code != http.StatusOK {
+		t.Fatalf("admin detail status = %d, body = %s", adminView.Code, adminView.Body.String())
+	}
+	var raw struct {
+		RawCallback map[string]any `json:"raw_callback"`
+	}
+	if err := json.Unmarshal(adminView.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode admin detail: %v", err)
+	}
+	if raw.RawCallback["event_id"] != "evt_secret" {
+		t.Fatalf("admin raw_callback = %+v", raw.RawCallback)
+	}
+
+	// admin 没有 orders:read：不获得全局范围，他人订单同样 404。
+	noRead := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	if rr := env.requestAs(noRead, http.MethodGet,
+		fmt.Sprintf("/api/orders/%d", orderID), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("admin without orders:read code = %d, want 404", rr.Code)
+	}
+}
+
+func TestOrderCancelStateMachine(t *testing.T) {
+	stripe, _ := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	other := env.createUser(0)
+
+	pending := env.insertOrder(owner, "pending", 1000, "")
+	cancelled := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", pending), nil, nil)
+	if cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelled.Code, cancelled.Body.String())
+	}
+	if view := decodeOrderDetail(t, cancelled); view.Status != "cancelled" {
+		t.Fatalf("cancelled order = %+v", view)
+	}
+	var dbStatus string
+	if err := env.db.QueryRow(`SELECT status FROM orders WHERE id = $1`, pending).Scan(&dbStatus); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	if dbStatus != "cancelled" {
+		t.Fatalf("db status = %s, want cancelled", dbStatus)
+	}
+
+	// 终态不可再迁移：重复取消与过期订单均为 409。
+	again := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", pending), nil, nil)
+	if again.Code != http.StatusConflict || orderProblemType(t, again) != problemTypeOrderConflict {
+		t.Fatalf("repeat cancel = %d %s", again.Code, again.Body.String())
+	}
+	expired := env.insertOrder(owner, "expired", 1000, "")
+	expiredCancel := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", expired), nil, nil)
+	if expiredCancel.Code != http.StatusConflict {
+		t.Fatalf("expired cancel = %d, want 409", expiredCancel.Code)
+	}
+
+	// 他人订单 → 404，不泄漏存在性。
+	foreign := env.insertOrder(other, "pending", 1000, "")
+	if rr := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", foreign), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("cross user cancel = %d, want 404", rr.Code)
+	}
+
+	// admin orders:manage 可取消任意订单；只有 read 不够。
+	admin := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	if rr := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", foreign), nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("admin cancel = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	readOnlyForeign := env.insertOrder(other, "pending", 1000, "")
+	readOnly := &auth.Principal{UserID: owner, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersRead}}
+	if rr := env.requestAs(readOnly, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/cancel", readOnlyForeign), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("read-only admin cancel = %d, want 404", rr.Code)
+	}
+}
+
+func TestOrderVerifyCreditsOnce(t *testing.T) {
+	stripe, state := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	other := env.createUser(0)
+	orderID := env.insertOrder(owner, "pending", 1000, "pi_order")
+	state.set(func(s *orderStripeStubState) {
+		s.status = "succeeded"
+		s.amount = 1000
+		s.amountReceived = 1000
+	})
+
+	first := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("verify status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var resp struct {
+		Paid  bool               `json:"paid"`
+		Order orderDetailPayload `json:"order"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if !resp.Paid || resp.Order.Status != "succeeded" || resp.Order.CreditedCredits != 1000 {
+		t.Fatalf("verify response = %+v", resp)
+	}
+	var walletRows int64
+	if err := env.db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE user_id = $1 AND type = 'topup' AND reference_id = $2`,
+		owner, strconv.FormatInt(orderID, 10)).Scan(&walletRows); err != nil {
+		t.Fatalf("count wallet: %v", err)
+	}
+	if walletRows != 1 {
+		t.Fatalf("wallet rows = %d, want 1", walletRows)
+	}
+
+	// 已成功的订单再次 verify：409，且绝不重复入账。
+	repeat := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if repeat.Code != http.StatusConflict {
+		t.Fatalf("repeat verify = %d, want 409", repeat.Code)
+	}
+	if err := env.db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE user_id = $1 AND type = 'topup' AND reference_id = $2`,
+		owner, strconv.FormatInt(orderID, 10)).Scan(&walletRows); err != nil {
+		t.Fatalf("count wallet after repeat: %v", err)
+	}
+	if walletRows != 1 {
+		t.Fatalf("wallet rows after repeat = %d, want 1", walletRows)
+	}
+
+	// 他人订单 → 404；终态订单 → 409。
+	foreign := env.insertOrder(other, "pending", 1000, "pi_order_foreign")
+	if rr := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", foreign), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("cross user verify = %d, want 404", rr.Code)
+	}
+	expired := env.insertOrder(owner, "expired", 1000, "pi_order_expired")
+	if rr := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", expired), nil, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("expired verify = %d, want 409", rr.Code)
+	}
+}
+
+func TestOrderVerifyNotPaidAndProviderError(t *testing.T) {
+	stripe, state := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	orderID := env.insertOrder(owner, "pending", 1000, "pi_order")
+
+	notPaid := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if notPaid.Code != http.StatusOK {
+		t.Fatalf("not paid verify status = %d, body = %s", notPaid.Code, notPaid.Body.String())
+	}
+	var resp struct {
+		Paid  bool `json:"paid"`
+		Order struct {
+			Status string `json:"status"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(notPaid.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode not paid: %v", err)
+	}
+	if resp.Paid || resp.Order.Status != "pending" {
+		t.Fatalf("not paid response = %+v", resp)
+	}
+
+	state.set(func(s *orderStripeStubState) { s.httpStatus = http.StatusInternalServerError })
+	broken := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if broken.Code != http.StatusBadGateway {
+		t.Fatalf("provider error verify = %d, want 502 (body=%s)", broken.Code, broken.Body.String())
+	}
+}
+
+func TestOrderVerifyRateLimit(t *testing.T) {
+	stripe, _ := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	orderID := env.insertOrder(owner, "pending", 1000, "pi_order")
+
+	for i := 0; i < 5; i++ {
+		rr := env.request(owner, http.MethodPost,
+			fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d unexpectedly rate limited", i+1)
+		}
+	}
+	sixth := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/verify", orderID), nil, nil)
+	if sixth.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th verify = %d, want 429", sixth.Code)
+	}
+}
+
+func TestOrderCompleteRequiresPaidAndReason(t *testing.T) {
+	stripe, state := newOrderStripeStub(t)
+	env := newTopupHTTPTestEnv(t, stripe.URL)
+	owner := env.createUser(0)
+	adminID := env.createUser(0)
+	admin := &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	readOnly := &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersRead}}
+	validReason := "人工核实渠道已收款，客服确认完成"
+
+	paidOrder := env.insertOrder(owner, "pending", 1000, "pi_order")
+	state.set(func(s *orderStripeStubState) {
+		s.status = "succeeded"
+		s.amount = 1000
+		s.amountReceived = 1000
+	})
+
+	// 非管理员与只有 read 的 admin 都被功能级拒绝。
+	if rr := env.request(owner, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("non-admin complete = %d, want 403", rr.Code)
+	}
+	if rr := env.requestAs(readOnly, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("read-only admin complete = %d, want 403", rr.Code)
+	}
+
+	// 原因长度（按 rune）必须 10–200。
+	for _, reason := range []string{"九个字符不够长", strings.Repeat("a", 201)} {
+		rr := env.requestAs(admin, http.MethodPost,
+			fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+			map[string]any{"manual_reason": reason}, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("reason %q code = %d, want 400", reason, rr.Code)
+		}
+	}
+
+	// 渠道未确认收款 → 400 且不入账。
+	unpaid := env.insertOrder(owner, "pending", 1000, "pi_unpaid")
+	state.set(func(s *orderStripeStubState) { s.status = "requires_payment_method"; s.amountReceived = 0 })
+	if rr := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", unpaid),
+		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("unpaid complete = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
+	}
+	var unpaidStatus string
+	var unpaidCredits int64
+	if err := env.db.QueryRow(`SELECT status, credited_credits FROM orders WHERE id = $1`, unpaid).
+		Scan(&unpaidStatus, &unpaidCredits); err != nil {
+		t.Fatalf("read unpaid: %v", err)
+	}
+	if unpaidStatus != "pending" || unpaidCredits != 0 {
+		t.Fatalf("unpaid order mutated: %s/%d", unpaidStatus, unpaidCredits)
+	}
+
+	// 渠道查询失败 → 400。
+	state.set(func(s *orderStripeStubState) { s.httpStatus = http.StatusBadGateway })
+	if rr := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("query failure complete = %d, want 400", rr.Code)
+	}
+
+	// 恢复渠道状态并完成：使用与 webhook 相同的幂等入账路径。
+	state.set(func(s *orderStripeStubState) {
+		s.httpStatus = 0
+		s.status = "succeeded"
+		s.amountReceived = 1000
+	})
+	done := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+		map[string]any{"manual_reason": validReason}, nil)
+	if done.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", done.Code, done.Body.String())
+	}
+	view := decodeOrderDetail(t, done)
+	if view.Status != "succeeded" || !view.ManualCompleted ||
+		view.ManualReason == nil || *view.ManualReason != validReason {
+		t.Fatalf("completed order = %+v", view)
+	}
+	var operator int64
+	var credits int64
+	if err := env.db.QueryRow(`SELECT manual_operator_id, credited_credits FROM orders WHERE id = $1`,
+		paidOrder).Scan(&operator, &credits); err != nil {
+		t.Fatalf("read completed order: %v", err)
+	}
+	if operator != adminID || credits != 1000 {
+		t.Fatalf("operator/credits = %d/%d", operator, credits)
+	}
+	var walletRows int64
+	if err := env.db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE user_id = $1 AND type = 'topup' AND reference_id = $2`,
+		owner, strconv.FormatInt(paidOrder, 10)).Scan(&walletRows); err != nil {
+		t.Fatalf("count wallet: %v", err)
+	}
+	if walletRows != 1 {
+		t.Fatalf("wallet rows = %d, want 1", walletRows)
+	}
+
+	// 已终态订单再次 complete → 409。
+	again := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", paidOrder),
+		map[string]any{"manual_reason": validReason}, nil)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("repeat complete = %d, want 409", again.Code)
+	}
+	expired := env.insertOrder(owner, "expired", 1000, "pi_order_expired")
+	if rr := env.requestAs(admin, http.MethodPost,
+		fmt.Sprintf("/api/orders/%d/complete", expired),
+		map[string]any{"manual_reason": validReason}, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("expired complete = %d, want 409", rr.Code)
 	}
 }

@@ -225,6 +225,90 @@ func (e NotificationTestResponseSent) Valid() bool {
 	}
 }
 
+// Defines values for OrderViewFailureCode.
+const (
+	OrderViewFailureCodeAmountMismatch      OrderViewFailureCode = "amount_mismatch"
+	OrderViewFailureCodeCurrencyMismatch    OrderViewFailureCode = "currency_mismatch"
+	OrderViewFailureCodeLessThannil         OrderViewFailureCode = "<nil>"
+	OrderViewFailureCodeManualRequired      OrderViewFailureCode = "manual_required"
+	OrderViewFailureCodeOrderNotFound       OrderViewFailureCode = "order_not_found"
+	OrderViewFailureCodeOrderStateConflict  OrderViewFailureCode = "order_state_conflict"
+	OrderViewFailureCodeProviderRejected    OrderViewFailureCode = "provider_rejected"
+	OrderViewFailureCodeProviderUnavailable OrderViewFailureCode = "provider_unavailable"
+	OrderViewFailureCodeSignatureInvalid    OrderViewFailureCode = "signature_invalid"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewFailureCode enum.
+func (e OrderViewFailureCode) Valid() bool {
+	switch e {
+	case OrderViewFailureCodeAmountMismatch:
+		return true
+	case OrderViewFailureCodeCurrencyMismatch:
+		return true
+	case OrderViewFailureCodeLessThannil:
+		return true
+	case OrderViewFailureCodeManualRequired:
+		return true
+	case OrderViewFailureCodeOrderNotFound:
+		return true
+	case OrderViewFailureCodeOrderStateConflict:
+		return true
+	case OrderViewFailureCodeProviderRejected:
+		return true
+	case OrderViewFailureCodeProviderUnavailable:
+		return true
+	case OrderViewFailureCodeSignatureInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OrderViewProvider.
+const (
+	OrderViewProviderAlipay OrderViewProvider = "alipay"
+	OrderViewProviderStripe OrderViewProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewProvider enum.
+func (e OrderViewProvider) Valid() bool {
+	switch e {
+	case OrderViewProviderAlipay:
+		return true
+	case OrderViewProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OrderViewStatus.
+const (
+	OrderViewStatusCancelled OrderViewStatus = "cancelled"
+	OrderViewStatusExpired   OrderViewStatus = "expired"
+	OrderViewStatusFailed    OrderViewStatus = "failed"
+	OrderViewStatusPending   OrderViewStatus = "pending"
+	OrderViewStatusSucceeded OrderViewStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewStatus enum.
+func (e OrderViewStatus) Valid() bool {
+	switch e {
+	case OrderViewStatusCancelled:
+		return true
+	case OrderViewStatusExpired:
+		return true
+	case OrderViewStatusFailed:
+		return true
+	case OrderViewStatusPending:
+		return true
+	case OrderViewStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PasswordResetValidateResponseValid.
 const (
 	PasswordResetValidateResponseValidTrue PasswordResetValidateResponseValid = true
@@ -614,37 +698,37 @@ func (e TopupConfigEnabledProviders) Valid() bool {
 
 // Defines values for TopupOrderViewFailureCode.
 const (
-	AmountMismatch      TopupOrderViewFailureCode = "amount_mismatch"
-	CurrencyMismatch    TopupOrderViewFailureCode = "currency_mismatch"
-	LessThannil         TopupOrderViewFailureCode = "<nil>"
-	ManualRequired      TopupOrderViewFailureCode = "manual_required"
-	OrderNotFound       TopupOrderViewFailureCode = "order_not_found"
-	OrderStateConflict  TopupOrderViewFailureCode = "order_state_conflict"
-	ProviderRejected    TopupOrderViewFailureCode = "provider_rejected"
-	ProviderUnavailable TopupOrderViewFailureCode = "provider_unavailable"
-	SignatureInvalid    TopupOrderViewFailureCode = "signature_invalid"
+	TopupOrderViewFailureCodeAmountMismatch      TopupOrderViewFailureCode = "amount_mismatch"
+	TopupOrderViewFailureCodeCurrencyMismatch    TopupOrderViewFailureCode = "currency_mismatch"
+	TopupOrderViewFailureCodeLessThannil         TopupOrderViewFailureCode = "<nil>"
+	TopupOrderViewFailureCodeManualRequired      TopupOrderViewFailureCode = "manual_required"
+	TopupOrderViewFailureCodeOrderNotFound       TopupOrderViewFailureCode = "order_not_found"
+	TopupOrderViewFailureCodeOrderStateConflict  TopupOrderViewFailureCode = "order_state_conflict"
+	TopupOrderViewFailureCodeProviderRejected    TopupOrderViewFailureCode = "provider_rejected"
+	TopupOrderViewFailureCodeProviderUnavailable TopupOrderViewFailureCode = "provider_unavailable"
+	TopupOrderViewFailureCodeSignatureInvalid    TopupOrderViewFailureCode = "signature_invalid"
 )
 
 // Valid indicates whether the value is a known member of the TopupOrderViewFailureCode enum.
 func (e TopupOrderViewFailureCode) Valid() bool {
 	switch e {
-	case AmountMismatch:
+	case TopupOrderViewFailureCodeAmountMismatch:
 		return true
-	case CurrencyMismatch:
+	case TopupOrderViewFailureCodeCurrencyMismatch:
 		return true
-	case LessThannil:
+	case TopupOrderViewFailureCodeLessThannil:
 		return true
-	case ManualRequired:
+	case TopupOrderViewFailureCodeManualRequired:
 		return true
-	case OrderNotFound:
+	case TopupOrderViewFailureCodeOrderNotFound:
 		return true
-	case OrderStateConflict:
+	case TopupOrderViewFailureCodeOrderStateConflict:
 		return true
-	case ProviderRejected:
+	case TopupOrderViewFailureCodeProviderRejected:
 		return true
-	case ProviderUnavailable:
+	case TopupOrderViewFailureCodeProviderUnavailable:
 		return true
-	case SignatureInvalid:
+	case TopupOrderViewFailureCodeSignatureInvalid:
 		return true
 	default:
 		return false
@@ -924,6 +1008,33 @@ func (e ListPricingModelsParamsStatus) Valid() bool {
 	case ListPricingModelsParamsStatusN1:
 		return true
 	case ListPricingModelsParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListOrdersParamsStatus.
+const (
+	ListOrdersParamsStatusCancelled ListOrdersParamsStatus = "cancelled"
+	ListOrdersParamsStatusExpired   ListOrdersParamsStatus = "expired"
+	ListOrdersParamsStatusFailed    ListOrdersParamsStatus = "failed"
+	ListOrdersParamsStatusPending   ListOrdersParamsStatus = "pending"
+	ListOrdersParamsStatusSucceeded ListOrdersParamsStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ListOrdersParamsStatus enum.
+func (e ListOrdersParamsStatus) Valid() bool {
+	switch e {
+	case ListOrdersParamsStatusCancelled:
+		return true
+	case ListOrdersParamsStatusExpired:
+		return true
+	case ListOrdersParamsStatusFailed:
+		return true
+	case ListOrdersParamsStatusPending:
+		return true
+	case ListOrdersParamsStatusSucceeded:
 		return true
 	default:
 		return false
@@ -1368,6 +1479,12 @@ type ChangeEmailResponseEmailVerified bool
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+// CompleteOrderRequest defines model for CompleteOrderRequest.
+type CompleteOrderRequest struct {
+	// ManualReason 人工完成原因（按 Unicode 字符计数）
+	ManualReason string `json:"manual_reason"`
 }
 
 // CreateOrderRequest defines model for CreateOrderRequest.
@@ -1923,6 +2040,59 @@ type NotificationTestResponse struct {
 
 // NotificationTestResponseSent defines model for NotificationTestResponse.Sent.
 type NotificationTestResponseSent bool
+
+// OrderList defines model for OrderList.
+type OrderList struct {
+	Items    []OrderView `json:"items"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+	Total    int64       `json:"total"`
+}
+
+// OrderVerifyResponse defines model for OrderVerifyResponse.
+type OrderVerifyResponse struct {
+	Order OrderView `json:"order"`
+
+	// Paid 渠道是否已确认收款；false 时订单状态不变
+	Paid bool `json:"paid"`
+}
+
+// OrderView defines model for OrderView.
+type OrderView struct {
+	// Amount 订单金额（分），服务端定价唯一真源
+	Amount          int64     `json:"amount"`
+	CreatedAt       time.Time `json:"created_at"`
+	CreditedCredits int64     `json:"credited_credits"`
+	Currency        string    `json:"currency"`
+
+	// ExpiresAt 派生值 `created_at + 30min`（P-1；不是数据库列）
+	ExpiresAt       time.Time             `json:"expires_at"`
+	FailureCode     *OrderViewFailureCode `json:"failure_code,omitempty"`
+	Id              int64                 `json:"id"`
+	ManualCompleted bool                  `json:"manual_completed"`
+	ManualReason    *string               `json:"manual_reason,omitempty"`
+	PaidAt          *time.Time            `json:"paid_at,omitempty"`
+	Provider        OrderViewProvider     `json:"provider"`
+
+	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
+	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
+
+	// Status 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+	// expired/cancelled；终态不可再迁移。
+	Status    OrderViewStatus `json:"status"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	UserId    int64           `json:"user_id"`
+}
+
+// OrderViewFailureCode defines model for OrderView.FailureCode.
+type OrderViewFailureCode string
+
+// OrderViewProvider defines model for OrderView.Provider.
+type OrderViewProvider string
+
+// OrderViewStatus 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+// expired/cancelled；终态不可再迁移。
+type OrderViewStatus string
 
 // Page offset 分页信封；各域 items 的 DTO 随里程碑细化。
 type Page struct {
@@ -3003,6 +3173,22 @@ type TestNotificationParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListOrdersParams defines parameters for ListOrders.
+type ListOrdersParams struct {
+	P        *int                    `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int                    `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Status   *ListOrdersParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Q 订单号子串（最长 128 字符）
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// UserId 仅 `orders:read` 管理员可用
+	UserId *int64 `form:"user_id,omitempty" json:"user_id,omitempty"`
+}
+
+// ListOrdersParamsStatus defines parameters for ListOrders.
+type ListOrdersParamsStatus string
+
 // CreateOrderParams defines parameters for CreateOrder.
 type CreateOrderParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -3011,6 +3197,27 @@ type CreateOrderParams struct {
 
 	// IdempotencyKey 客户端生成的 UUID v4；全表唯一（P-2）
 	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// CancelOrderParams defines parameters for CancelOrder.
+type CancelOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CompleteOrderManuallyParams defines parameters for CompleteOrderManually.
+type CompleteOrderManuallyParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// VerifyOrderParams defines parameters for VerifyOrder.
+type VerifyOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // ChangePasswordParams defines parameters for ChangePassword.
@@ -3397,6 +3604,9 @@ type TestNotificationJSONRequestBody = NotificationTestRequest
 
 // CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
 type CreateOrderJSONRequestBody = CreateOrderRequest
+
+// CompleteOrderManuallyJSONRequestBody defines body for CompleteOrderManually for application/json ContentType.
+type CompleteOrderManuallyJSONRequestBody = CompleteOrderRequest
 
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest

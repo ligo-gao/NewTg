@@ -45,6 +45,15 @@ func TestOrderTransition(t *testing.T) {
 	if err := Transition(OrderStatus("paid"), OrderSucceeded); !errors.Is(err, ErrInvalidOrderTransition) {
 		t.Errorf("Transition(paid, succeeded) err = %v, want ErrInvalidOrderTransition", err)
 	}
+	// 架构 spec 的历史拼写同样非法：refunded→paid 既跨过未启用的枚举，
+	// 也跨过终态，必须是 409 而不是被静默归一化。
+	if err := Transition(OrderStatus("refunded"), OrderStatus("paid")); !errors.Is(err, ErrInvalidOrderTransition) {
+		t.Errorf("Transition(refunded, paid) err = %v, want ErrInvalidOrderTransition", err)
+	}
+	// expired→paid/succeeded 是被状态机拒绝的典型迟到回调。
+	if err := Transition(OrderExpired, OrderSucceeded); !errors.Is(err, ErrInvalidOrderTransition) {
+		t.Errorf("Transition(expired, succeeded) err = %v, want ErrInvalidOrderTransition", err)
+	}
 }
 
 // TestOrderStatusValid 校验枚举合法性与终态判定。

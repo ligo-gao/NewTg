@@ -3,10 +3,15 @@
 //
 // 端点面（P-9 冻结）：
 //
-//	GET  /api/topup/config        已登录用户：档位/上下限/汇率/可用渠道
-//	POST /api/orders              已登录用户：Idempotency-Key 幂等下单
-//	POST /api/webhooks/stripe     公网：Stripe-Signature 验签后入账
-//	POST /api/webhooks/alipay     公网：RSA2 验签后入账
+//	GET  /api/topup/config           已登录用户：档位/上下限/汇率/可用渠道
+//	POST /api/orders                 已登录用户：Idempotency-Key 幂等下单
+//	GET  /api/orders                 本人订单（管理员 orders:read 可看全部）
+//	GET  /api/orders/{id}            订单详情；他人订单 404（管理员 orders:read 例外）
+//	POST /api/orders/{id}/cancel     本人/orders:manage：pending → cancelled
+//	POST /api/orders/{id}/verify     本人：主动核实渠道并复用幂等入账
+//	POST /api/orders/{id}/complete   管理员 orders:manage：人工完成（须渠道已收款）
+//	POST /api/webhooks/stripe        公网：Stripe-Signature 验签后入账
+//	POST /api/webhooks/alipay        公网：RSA2 验签后入账
 //
 // 安全口径：
 //   - webhook 是未认证端点，依赖验签 + **每个 provider 独立**的 60 次/分钟
@@ -20,12 +25,14 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -34,6 +41,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
 
@@ -44,6 +52,18 @@ const (
 	webhookRateStripe   = "newtg:webhook:rate:stripe:"
 	webhookRateAlipay   = "newtg:webhook:rate:alipay:"
 	webhookMaxBodyBytes = 1 << 20
+
+	// 订单分页（P-9）：默认 20，上限 100；p 上限与其它管理列表一致。
+	orderPageSizeDefault = 20
+	orderPageSizeMax     = 100
+	orderPageMax         = 1_000_000
+	orderSearchMaxRunes  = 128
+
+	// 主动核实限流：每订单每分钟 5 次（F-04-12 冻结）。键含订单号，
+	// 用户无法通过切换订单号放大对同一订单的渠道调用。
+	orderVerifyRateLimit  = 5
+	orderVerifyRateWindow = time.Minute
+	orderVerifyRatePrefix = "newtg:order:verify:"
 )
 
 // problem type URI（沿用 https://newtg.dev/problems/<slug> 约定）。
@@ -52,6 +72,7 @@ const (
 	problemTypeTopupUnavailable    = "https://newtg.dev/problems/topup_unavailable"
 	problemTypeOrderConflict       = "https://newtg.dev/problems/order_state_conflict"
 	problemTypeProviderUnavailable = "https://newtg.dev/problems/provider_unavailable"
+	problemTypeOrderNotPaid        = "https://newtg.dev/problems/order_not_paid"
 )
 
 // TopupHandlerConfig 是充值端点的装配输入。
@@ -64,6 +85,11 @@ type TopupHandlerConfig struct {
 	Config  ConfigReader
 	Sealer  configcenter.SecretSealer
 	Logger  *slog.Logger
+	// Authz 用于解析管理员权限（orders:read/manage）。生产必填：
+	// 会话 Principal 的 Permissions 为 nil，而 nil 在 RBAC 语义里是
+	// DB NULL=FULL；不解析会让受限管理员在订单端点被误判为全权。
+	// nil 仅用于已显式注入权威权限集合的测试。
+	Authz *rbac.AuthzMiddleware
 	// Now 是限流窗口时钟接缝；nil 时 time.Now。
 	Now func() time.Time
 	// StripeBaseURL / AlipayGatewayURL 是渠道地址覆盖（测试）。
@@ -73,10 +99,11 @@ type TopupHandlerConfig struct {
 
 // TopupHandlers 持有充值端点的依赖，可并发使用。
 type TopupHandlers struct {
-	svc *billing.TopupService
-	rdb *redis.Client
-	log *slog.Logger
-	now func() time.Time
+	svc   *billing.TopupService
+	rdb   *redis.Client
+	log   *slog.Logger
+	now   func() time.Time
+	authz *rbac.AuthzMiddleware
 }
 
 // NewTopupHandlers 构造充值端点。Redis 必填：webhook 限流是公网资金接口
@@ -112,7 +139,7 @@ func NewTopupHandlers(cfg TopupHandlerConfig) (*TopupHandlers, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &TopupHandlers{svc: svc, rdb: cfg.Redis, log: log, now: now}, nil
+	return &TopupHandlers{svc: svc, rdb: cfg.Redis, log: log, now: now, authz: cfg.Authz}, nil
 }
 
 // RegisterTopupRoutes 注册已登录用户端点。wrap 语义同其它 Register*Routes。
@@ -125,6 +152,11 @@ func (h *TopupHandlers) RegisterTopupRoutes(mux *http.ServeMux, wrap func(http.H
 	}
 	mount("GET /api/topup/config", http.HandlerFunc(h.handleConfig))
 	mount("POST /api/orders", http.HandlerFunc(h.handleCreateOrder))
+	mount("GET /api/orders", http.HandlerFunc(h.handleListOrders))
+	mount("GET /api/orders/{id}", http.HandlerFunc(h.handleGetOrder))
+	mount("POST /api/orders/{id}/cancel", http.HandlerFunc(h.handleCancelOrder))
+	mount("POST /api/orders/{id}/verify", http.HandlerFunc(h.handleVerifyOrder))
+	mount("POST /api/orders/{id}/complete", http.HandlerFunc(h.handleCompleteOrder))
 }
 
 // RegisterWebhookRoutes 把两个公网回调挂到根 mux。
@@ -175,6 +207,68 @@ type createOrderResponse struct {
 	Order        topupOrderView `json:"order"`
 	ClientSecret string         `json:"client_secret,omitempty"`
 	QRCode       string         `json:"qr_code,omitempty"`
+}
+
+// orderView 是订单列表/详情的统一投影（F-04-08/F-04-09）。
+//
+// raw_callback 只在 includeRaw（管理员详情）时填充；用户视图连字段名都
+// 不出现（omitempty + json.RawMessage），避免越权证据进入用户响应。
+// expires_at 是 created_at + 30min 的派生值（P-1，不落库）。
+type orderView struct {
+	ID              int64           `json:"id"`
+	UserID          int64           `json:"user_id"`
+	Provider        string          `json:"provider"`
+	Amount          int64           `json:"amount"`
+	Currency        string          `json:"currency"`
+	Status          string          `json:"status"`
+	CreditedCredits int64           `json:"credited_credits"`
+	FailureCode     *string         `json:"failure_code"`
+	PaidAt          *time.Time      `json:"paid_at"`
+	ManualCompleted bool            `json:"manual_completed"`
+	ManualReason    *string         `json:"manual_reason"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	ExpiresAt       time.Time       `json:"expires_at"`
+	RawCallback     json.RawMessage `json:"raw_callback,omitempty"`
+}
+
+func orderViewFrom(order *store.Order, includeRaw bool) orderView {
+	view := orderView{
+		ID:              order.ID,
+		UserID:          order.UserID,
+		Provider:        order.Provider,
+		Amount:          order.Amount,
+		Currency:        order.Currency,
+		Status:          order.Status,
+		CreditedCredits: order.CreditedCredits,
+		FailureCode:     order.FailureCode,
+		PaidAt:          order.PaidAt,
+		ManualCompleted: order.ManualCompleted,
+		ManualReason:    order.ManualReason,
+		CreatedAt:       order.CreatedAt,
+		UpdatedAt:       order.UpdatedAt,
+		ExpiresAt:       billing.OrderExpiresAt(order.CreatedAt),
+	}
+	if includeRaw && len(order.RawCallback) > 0 {
+		view.RawCallback = json.RawMessage(order.RawCallback)
+	}
+	return view
+}
+
+type orderListView struct {
+	Items    []orderView `json:"items"`
+	Total    int64       `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+}
+
+type orderVerifyResponse struct {
+	Paid  bool      `json:"paid"`
+	Order orderView `json:"order"`
+}
+
+type completeOrderRequest struct {
+	ManualReason string `json:"manual_reason"`
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +351,319 @@ func topupOrderViewFrom(order *store.Order) topupOrderView {
 		PaidAt:          order.PaidAt,
 		CreatedAt:       order.CreatedAt,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 订单中心与人工旁路（M5 Task 4 / P-9/P-18/P-19）
+// ---------------------------------------------------------------------------
+
+// orderPrincipal 提取身份并解析权威权限。
+//
+// 为什么不能直接用会话 Principal：SessionAuth 只填 UserID/Role，
+// Permissions=nil 在 RBAC 里等价于 DB NULL=FULL。若不解析，一个没有
+// orders:read 的受限管理员会被这里当成全权管理员；解析失败则 fail closed。
+func (h *TopupHandlers) orderPrincipal(w http.ResponseWriter, r *http.Request) (*auth.Principal, bool) {
+	p, ok := auth.PrincipalFrom(r.Context())
+	if !ok || p == nil || p.UserID <= 0 {
+		writeProblem(w, http.StatusUnauthorized, problemTypeUnauthorized, "Unauthorized")
+		return nil, false
+	}
+	if h.authz != nil {
+		resolved, err := h.authz.ResolvePermissions(r.Context(), *p)
+		if err != nil {
+			h.log.Error("order permission resolve failed", "user_id", p.UserID, "error", err)
+			writeProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden")
+			return nil, false
+		}
+		p = &resolved
+	}
+	return p, true
+}
+
+// parseOrderID 把 {id} 映射为主键；不可解析一律 404（不区分「格式错」
+// 与「不存在」，避免为 ID 枚举提供额外信号）。
+func (h *TopupHandlers) parseOrderID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		return 0, false
+	}
+	return id, true
+}
+
+// loadOrder 读取订单；不存在时写 404。
+func (h *TopupHandlers) loadOrder(w http.ResponseWriter, r *http.Request) (*store.Order, bool) {
+	id, ok := h.parseOrderID(w, r)
+	if !ok {
+		return nil, false
+	}
+	order, err := h.svc.GetOrder(r.Context(), id)
+	if errors.Is(err, billing.ErrOrderNotFound) {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		return nil, false
+	}
+	if err != nil {
+		h.log.Error("get order failed", "order_id", id, "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return nil, false
+	}
+	return order, true
+}
+
+// orderVisible 实现 P-18 的数据级范围：本人永远可见；管理员只有持有
+// orders:read 才获得全局范围。不可见一律 404（不确认资源存在）。
+func orderVisible(p *auth.Principal, order *store.Order) bool {
+	return order.UserID == p.UserID || rbac.HasPermission(*p, rbac.PermOrdersRead)
+}
+
+// writeOrderProblem 是订单端点共用的状态码映射。
+func writeOrderProblem(w http.ResponseWriter, status int, problemType, title, detail string) {
+	writeProblemDetail(w, status, problemType, title, detail)
+}
+
+func (h *TopupHandlers) handleListOrders(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize := 1, orderPageSizeDefault
+	if raw := strings.TrimSpace(r.URL.Query().Get("p")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > orderPageMax {
+			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				fmt.Sprintf("p must be between 1 and %d", orderPageMax))
+			return
+		}
+		page = value
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > orderPageSizeMax {
+			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				fmt.Sprintf("page_size must be between 1 and %d", orderPageSizeMax))
+			return
+		}
+		pageSize = value
+	}
+
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status != "" && !billing.OrderStatus(status).Valid() {
+		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"status must be one of pending, succeeded, failed, expired, cancelled")
+		return
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(search)) > orderSearchMaxRunes {
+		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			fmt.Sprintf("q must be at most %d characters", orderSearchMaxRunes))
+		return
+	}
+
+	// 范围：无 orders:read 的用户只能看自己；显式指定他人 user_id 直接
+	// 403（静默忽略会让调用方误以为筛选生效）。
+	userID := p.UserID
+	if rbac.HasPermission(*p, rbac.PermOrdersRead) {
+		userID = 0
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("user_id")); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value <= 0 {
+			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				"user_id must be a positive integer")
+			return
+		}
+		if !rbac.HasPermission(*p, rbac.PermOrdersRead) && value != p.UserID {
+			writeProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden")
+			return
+		}
+		userID = value
+	}
+
+	orders, total, err := h.svc.ListOrders(r.Context(), billing.OrderListFilter{
+		UserID:   userID,
+		Status:   status,
+		Query:    search,
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		h.log.Error("list orders failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	items := make([]orderView, 0, len(orders))
+	for i := range orders {
+		// 列表永不返回 raw_callback（即使管理员）：详情页才需要原始回调。
+		items = append(items, orderViewFrom(&orders[i], false))
+	}
+	writeJSON(w, http.StatusOK, orderListView{
+		Items: items, Total: total, Page: page, PageSize: pageSize,
+	})
+}
+
+func (h *TopupHandlers) handleGetOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	order, ok := h.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	if !orderVisible(p, order) {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		return
+	}
+	// raw_callback 仅管理员可见（F-04-09；P-9）。
+	writeJSON(w, http.StatusOK, orderViewFrom(order, p.Role == rbac.RoleAdmin))
+}
+
+func (h *TopupHandlers) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	order, ok := h.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	if order.UserID != p.UserID && !rbac.HasPermission(*p, rbac.PermOrdersManage) {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		return
+	}
+	if err := h.svc.CancelOrder(r.Context(), order); err != nil {
+		if errors.Is(err, billing.ErrOrderStateConflict) ||
+			errors.Is(err, billing.ErrInvalidOrderTransition) {
+			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
+				"Order state conflict", "Only pending orders can be cancelled.")
+			return
+		}
+		h.log.Error("cancel order failed", "order_id", order.ID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, orderViewFrom(order, p.Role == rbac.RoleAdmin))
+}
+
+func (h *TopupHandlers) handleVerifyOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	order, ok := h.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	if !orderVisible(p, order) {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		return
+	}
+	// 限流在归属检查之后：不能让他人订单号消耗受害者订单的核实配额，
+	// 也不会因为未授权请求把 Redis 打成放大面。
+	if !h.allowOrderVerify(w, r, order.ID) {
+		return
+	}
+	result, err := h.svc.VerifyOrder(r.Context(), order)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrOrderStateConflict),
+			errors.Is(err, billing.ErrInvalidOrderTransition):
+			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
+				"Order state conflict", "Only pending orders can be verified.")
+		case errors.Is(err, billing.ErrProviderUnavailable),
+			errors.Is(err, billing.ErrProviderDisabled),
+			errors.Is(err, billing.ErrPaymentConfig):
+			writeOrderProblem(w, http.StatusBadGateway, problemTypeProviderUnavailable,
+				"Payment provider unavailable", "Failed to query the payment provider.")
+		case errors.Is(err, billing.ErrAmountMismatch),
+			errors.Is(err, billing.ErrCurrencyMismatch):
+			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
+				"Order state conflict", "The provider amount does not match the order.")
+		default:
+			h.log.Error("verify order failed", "order_id", order.ID, "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, orderVerifyResponse{
+		Paid:  result.Paid,
+		Order: orderViewFrom(result.Order, p.Role == rbac.RoleAdmin),
+	})
+}
+
+// allowOrderVerify 是「每订单 5 次/分钟」固定窗口限流。
+//
+// Redis 故障 fail closed（503）：主动核实会打渠道 API，限流器不可用时
+// 放量等于把渠道凭据变成可无限调用的探针。
+func (h *TopupHandlers) allowOrderVerify(w http.ResponseWriter, r *http.Request, orderID int64) bool {
+	// 键不含时间桶而是「首次请求时设置 60s TTL」：固定窗口在分钟边界
+	// 会允许瞬时 10 次，滚动窗口更贴近「每分钟 5 次」的冻结语义。
+	key := fmt.Sprintf("%s%d", orderVerifyRatePrefix, orderID)
+	count, err := h.rdb.Incr(r.Context(), key).Result()
+	if err != nil {
+		h.log.Error("order verify rate limiter unavailable", "order_id", orderID, "error", err)
+		w.Header().Set("Retry-After", "5")
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Service temporarily unavailable")
+		return false
+	}
+	if count == 1 {
+		h.rdb.Expire(r.Context(), key, orderVerifyRateWindow)
+	}
+	if count > orderVerifyRateLimit {
+		w.Header().Set("Retry-After", strconv.Itoa(int(orderVerifyRateWindow/time.Second)))
+		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests, "Too many requests")
+		return false
+	}
+	return true
+}
+
+func (h *TopupHandlers) handleCompleteOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	// 功能级：人工完成只属于 orders:manage。非管理员一律 403（不是 404：
+	// 该动作本身不可见，隐藏订单存在性没有意义）。
+	if !rbac.HasPermission(*p, rbac.PermOrdersManage) {
+		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden")
+		return
+	}
+	order, ok := h.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	var req completeOrderRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"request body must be a JSON object with manual_reason")
+		return
+	}
+	if err := h.svc.CompleteOrder(r.Context(), order, p.UserID, req.ManualReason); err != nil {
+		switch {
+		case errors.Is(err, billing.ErrInvalidManualReason):
+			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				"manual_reason must be 10-200 characters")
+		case errors.Is(err, billing.ErrOrderNotPaid),
+			errors.Is(err, billing.ErrProviderUnavailable),
+			errors.Is(err, billing.ErrProviderDisabled),
+			errors.Is(err, billing.ErrPaymentConfig),
+			errors.Is(err, billing.ErrAmountMismatch),
+			errors.Is(err, billing.ErrCurrencyMismatch):
+			// P-19：渠道未确认收款/查询失败 → 400，绝不入账。
+			writeOrderProblem(w, http.StatusBadRequest, problemTypeOrderNotPaid,
+				"Payment not confirmed", "The provider has not confirmed payment for this order.")
+		case errors.Is(err, billing.ErrOrderStateConflict),
+			errors.Is(err, billing.ErrInvalidOrderTransition):
+			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
+				"Order state conflict", "Only pending orders can be completed.")
+		default:
+			h.log.Error("complete order failed", "order_id", order.ID, "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, orderViewFrom(order, true))
 }
 
 // writeOrderError 把计费错误映射为稳定的 HTTP 面。
