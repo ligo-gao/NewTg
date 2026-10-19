@@ -8,6 +8,7 @@ import {
   formatRatio,
   formatTotal,
   parseCredit,
+  rechargeReference,
 } from './format'
 
 describe('pricing amount formatting (int64 strings, never Number)', () => {
@@ -40,6 +41,8 @@ describe('pricing amount formatting (int64 strings, never Number)', () => {
     // quota_per_unit=100: 10,000 积分 = ¥100.00（TC-F-09-19-02）。
     expect(creditsToCny('10000', 100, 'en')).toBe('100.00')
     expect(creditsToCny('1', 100, 'en')).toBe('0.01')
+    // 非零余数也必须保留 2 位：1510 / 100 = 15.10，而不是 15.1。
+    expect(creditsToCny('1510', 100, 'en')).toBe('15.10')
     expect(creditsToCny('10', 0, 'en')).toBeNull()
   })
 
@@ -51,6 +54,18 @@ describe('pricing amount formatting (int64 strings, never Number)', () => {
     expect(reference).not.toBeNull()
     expect(reference?.cny).toBe('¥100.00')
     expect(reference?.usd).toBe('$14.08')
+
+    const tail = currencyReference('1510', {
+      quota_per_unit: 100,
+      usd_exchange_rate: 7.1,
+    }, 'en')
+    expect(tail?.cny).toBe('¥15.10')
+    expect(tail?.usd).toBe('$2.13')
+    // 充值价与双币种共用同一条整数分换算路径，不能一个 15.10、一个 15.1。
+    expect(rechargeReference('1510', {
+      quota_per_unit: 100,
+      usd_exchange_rate: 7.1,
+    }, 'en')).toBe('¥15.10')
   })
 
   it('formats ratios and totals', () => {

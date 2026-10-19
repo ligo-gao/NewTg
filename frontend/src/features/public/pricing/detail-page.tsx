@@ -86,9 +86,11 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
     return (
       <InlineError
         message={
-          query.error instanceof ApiError && query.error.kind === 'rate_limited'
-            ? t('public.pricing.rate_limited')
-            : t('public.pricing.error')
+          query.error instanceof ApiError && query.error.kind === 'offline'
+            ? t('public.pricing.offline')
+            : query.error instanceof ApiError && query.error.kind === 'rate_limited'
+              ? t('public.pricing.rate_limited')
+              : t('public.pricing.error')
         }
         onRetry={() => void query.refetch()}
       />
@@ -174,11 +176,13 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
         <p className="font-mono text-[13px] leading-5 text-ink-2">{detail.model_id}</p>
       </div>
 
-      <dl className="grid grid-cols-2 gap-4 rounded-xl border border-border-default bg-surface-card p-4 md:grid-cols-4">
-        {specs.map((spec) => (
-          <SpecItem key={spec.key} label={spec.label} value={spec.value} />
-        ))}
-      </dl>
+      {specs.some((spec) => spec.value !== null && spec.value !== '') ? (
+        <dl className="grid grid-cols-2 gap-4 rounded-xl border border-border-default bg-surface-card p-4 md:grid-cols-4">
+          {specs.map((spec) => (
+            <SpecItem key={spec.key} label={spec.label} value={spec.value} />
+          ))}
+        </dl>
+      ) : null}
 
       <section aria-labelledby="pricing-detail-price" className="flex flex-col gap-2">
         <h2 id="pricing-detail-price" className="text-base font-semibold leading-6 text-ink-1">

@@ -190,3 +190,38 @@ export function clearedFilters(search: PricingSearch): PricingSearch {
     quotaType: 'all',
   }
 }
+
+/**
+ * 规范化后的查询串。键序与 `validatePricingSearch` 的返回顺序一致，
+ * 便于与路由序列化结果做等价比较。
+ */
+export function canonicalPricingSearch(search: PricingSearch): string {
+  const params = new URLSearchParams()
+  params.set('p', String(search.p))
+  params.set('page_size', String(search.page_size))
+  params.set('search', search.search)
+  params.set('sort', search.sort)
+  params.set('vendor', search.vendor)
+  params.set('group', search.group)
+  params.set('quotaType', search.quotaType)
+  params.set('view', search.view)
+  params.set('tokenUnit', search.tokenUnit)
+  params.set('dualCurrency', String(search.dualCurrency))
+  params.set('rechargePrice', String(search.rechargePrice))
+  return params.toString()
+}
+
+/**
+ * 原始地址栏与规范化结果是否有差异（F-09-22 口径 2）。
+ *
+ * 直接比较**原始 search** 而不是逐项白名单：`page_size=30`、`dualCurrency=yes`、
+ * `search=%20gpt`、`vendor=OpenAI` 这些都会被 validateSearch 静默降级，
+ * 只检查部分键会让地址栏继续显示无效值，分享出去再次降级。
+ */
+export function needsPricingUrlRepair(
+  rawSearch: string,
+  search: PricingSearch,
+): boolean {
+  const raw = rawSearch.startsWith('?') ? rawSearch.slice(1) : rawSearch
+  return new URLSearchParams(raw).toString() !== canonicalPricingSearch(search)
+}

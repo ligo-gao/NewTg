@@ -5,38 +5,21 @@ import { loadRouteDictionary } from '@/app/providers/i18n'
 import { PublicLayout } from '@/features/public/public-layout'
 import { pricingAccessRedirect } from '@/features/public/pricing/guard'
 import {
+  needsPricingUrlRepair,
   validatePricingSearch,
   type PricingSearch,
 } from '@/features/public/pricing/params'
 import { PricingPage } from '@/features/public/pricing/pricing-page'
 
-const SORTS = new Set(['name', 'price_asc', 'price_desc'])
-
 /**
- * 首屏 URL 里是否存在会被静默降级的参数（F-09-22 要求修正地址栏）。
- * facet 取值是否存在要等接口返回，由页面在响应后修正；这里只处理
- * 纯语法层（枚举/数值/长度）。
+ * 首屏 URL 是否需要规范化（F-09-22 口径 2）。memory-router 测试里
+ * `window.location` 不属于该路由，直接跳过，避免误写地址栏。
  */
-function needsCanonicalisation(): boolean {
+function needsCanonicalisation(search: PricingSearch): boolean {
   if (typeof window === 'undefined') return false
-  const params = new URLSearchParams(window.location.search)
-  const sort = params.get('sort')
-  if (sort !== null && !SORTS.has(sort)) return true
-  const view = params.get('view')
-  if (view !== null && view !== 'card' && view !== 'table') return true
-  const quota = params.get('quotaType')
-  if (quota !== null && quota !== 'all' && quota !== 'token' && quota !== 'request') {
-    return true
-  }
-  const unit = params.get('tokenUnit')
-  if (unit !== null && unit !== 'M' && unit !== 'K') return true
-  const page = params.get('p')
-  if (page !== null && (!/^\d+$/.test(page) || Number(page) < 1)) return true
-  const size = params.get('page_size')
-  if (size !== null && !/^\d+$/.test(size)) return true
-  const search = params.get('search')
-  if (search !== null && search.length > 128) return true
-  return false
+  const pathname = window.location.pathname.replace(/\/+$/, '')
+  if (!pathname.endsWith('/pricing')) return false
+  return needsPricingUrlRepair(window.location.search, search)
 }
 
 /**
@@ -76,7 +59,7 @@ function PricingRoute() {
   // 非法枚举/数值已在 validateSearch 里降级；这里把同一结果写回地址栏，
   // 用 replace 不新增历史（F-09-22 口径 2）。
   useEffect(() => {
-    if (needsCanonicalisation()) change(search, { replace: true })
+    if (needsCanonicalisation(search)) change(search, { replace: true })
     // 只在首次挂载时检查一次；后续导航由本组件的 change 写入合法值。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

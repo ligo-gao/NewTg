@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "Thay <YOUR_TOKEN> bằng token API của bạn (token bắt đầu bằng nkt-).",
   "pricing.detail.create_token": "Tạo token",
   "pricing.detail.sign_in_token": "Đăng nhập để tạo token",
-  "pricing.detail.copy_code": "Sao chép đoạn mã"
+  "pricing.detail.copy_code": "Sao chép đoạn mã",
+  "pricing.offline": "Mất kết nối mạng. Hãy kiểm tra kết nối và thử lại."
 }

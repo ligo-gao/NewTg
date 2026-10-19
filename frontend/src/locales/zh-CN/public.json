@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "将 <YOUR_TOKEN> 替换为你的 API 令牌（令牌以 nkt- 开头）。",
   "pricing.detail.create_token": "去创建令牌",
   "pricing.detail.sign_in_token": "登录以创建令牌",
-  "pricing.detail.copy_code": "复制代码片段"
+  "pricing.detail.copy_code": "复制代码片段",
+  "pricing.offline": "网络连接已断开，请检查网络后重试。"
 }

@@ -117,12 +117,52 @@ describe('pricing route guard (F-09-14)', () => {
     handlers({ pricing: { enabled: true, require_auth: true } })
     const router = renderAt('/pricing?sort=price_asc')
     await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
-    expect(router.state.location.pathname).toBe('/sign-in')
     // 路由的 validateSearch 会物化默认值，所以 redirect 里除了原始 search
     // 还带着 p/page_size 等默认项；关键断言是原搜索参数被完整保留。
     const redirect = router.state.location.search.redirect
     expect(typeof redirect).toBe('string')
     expect(redirect).toContain('/pricing?')
     expect(redirect).toContain('sort=price_asc')
+  })
+
+  it('keeps a model_id containing "/" inside one encoded path segment', async () => {
+    const paths: string[] = []
+    const detail = {
+      model_id: 'openai/gpt-5',
+      display_name: 'GPT-5',
+      vendor: 'openai',
+      capabilities: [],
+      context_length: 128000,
+      max_output: 32000,
+      mode: 'per_token',
+      prompt_price: '500',
+      completion_price: '1500',
+      cache_read_price: null,
+      cache_write_price: null,
+      is_free: false,
+      group_price: null,
+      endpoints: [],
+      tags: [],
+      description: '',
+      modalities: [],
+      knowledge_cutoff: null,
+      released_at: null,
+      group_prices: [],
+      parameters: [],
+      rate_limits: [],
+      auth_style: 'bearer',
+    }
+    handlers({ pricing: { enabled: true, require_auth: false } })
+    server.use(
+      http.get(`${ORIGIN}/api/pricing/:modelId`, ({ request }) => {
+        paths.push(new URL(request.url).pathname)
+        return HttpResponse.json(detail)
+      }),
+    )
+
+    const router = renderAt('/pricing/openai%2Fgpt-5')
+    await waitFor(() => expect(paths.length).toBeGreaterThan(0))
+    expect(paths[0]).toBe('/api/pricing/openai%2Fgpt-5')
+    expect(router.state.location.pathname).toBe('/pricing/openai%2Fgpt-5')
   })
 })

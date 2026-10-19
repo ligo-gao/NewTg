@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "Remplacez <YOUR_TOKEN> par votre jeton API (les jetons commencent par nkt-).",
   "pricing.detail.create_token": "Créer un jeton",
   "pricing.detail.sign_in_token": "Connectez-vous pour créer un jeton",
-  "pricing.detail.copy_code": "Copier l'exemple de code"
+  "pricing.detail.copy_code": "Copier l'exemple de code",
+  "pricing.offline": "Connexion réseau perdue. Vérifiez votre connexion et réessayez."
 }

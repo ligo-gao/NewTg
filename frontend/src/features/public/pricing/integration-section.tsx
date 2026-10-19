@@ -120,7 +120,6 @@ export function IntegrationSection({
                 <tr className="h-9">
                   <th scope="col" className="px-3">{t('public.pricing.detail.group')}</th>
                   <th scope="col" className="px-3 text-right">{t('public.pricing.detail.rpm')}</th>
-                  <th scope="col" className="px-3 text-right">{t('public.pricing.detail.effective')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -128,11 +127,6 @@ export function IntegrationSection({
                   <tr key={limit.group} className="h-11 border-t border-border-hairline">
                     <td className="px-3 text-ink-1">{limit.group}</td>
                     <td className="px-3 text-right font-mono tabular-nums text-ink-1">
-                      {limit.user_model_rpm === 0
-                        ? t('public.pricing.detail.unlimited')
-                        : new Intl.NumberFormat(locale).format(limit.user_model_rpm)}
-                    </td>
-                    <td className="px-3 text-right text-ink-2">
                       {limit.user_model_rpm === 0
                         ? t('public.pricing.detail.unlimited')
                         : new Intl.NumberFormat(locale).format(limit.user_model_rpm)}

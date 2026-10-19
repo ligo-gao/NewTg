@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "<YOUR_TOKEN> を API トークンに置き換えてください（トークンは nkt- で始まります）。",
   "pricing.detail.create_token": "トークンを作成",
   "pricing.detail.sign_in_token": "サインインしてトークンを作成",
-  "pricing.detail.copy_code": "コードサンプルをコピー"
+  "pricing.detail.copy_code": "コードサンプルをコピー",
+  "pricing.offline": "ネットワークに接続できません。接続を確認して再試行してください。"
 }

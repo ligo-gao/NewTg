@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from '@testing-library/react'
+import { fireEvent, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { useState } from 'react'
@@ -244,5 +244,101 @@ describe('PricingPage (F-09-14 ~ F-09-22)', () => {
     expect(getByText('600')).toBeTruthy()
     // 侧栏分组候选与实付行各有一个倍率标签。
     expect(getAllByText('1.20x').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('sends page_size, sort and quotaType to the API', async () => {
+    const urls: string[] = []
+    baseHandlers((url) => urls.push(url.search))
+
+    const { findByText } = await renderWithProviders(
+      <Harness initial={{ page_size: 50, sort: 'price_asc', quotaType: 'token' }} />,
+      ['public'],
+    )
+    await findByText('GPT-5')
+    const query = urls.find((value) => value.includes('page_size=50'))
+    expect(query).toBeDefined()
+    expect(query).toContain('page_size=50')
+    expect(query).toContain('sort=price_asc')
+    expect(query).toContain('quotaType=token')
+  })
+
+  it('distinguishes an explicitly free model from a partial zero price', async () => {
+    baseHandlers(
+      undefined,
+      listResponse({
+        items: [
+          card({
+            model_id: 'free/model',
+            display_name: 'FreeModel',
+            prompt_price: '0',
+            completion_price: '0',
+            cache_read_price: '0',
+            cache_write_price: '0',
+            is_free: true,
+          }),
+          card({
+            model_id: 'zero/model',
+            display_name: 'ZeroModel',
+            prompt_price: '0',
+            completion_price: '500',
+            cache_read_price: null,
+            cache_write_price: null,
+            is_free: false,
+          }),
+        ],
+        total: '2',
+      }),
+    )
+
+    const { findByText, getByText, getAllByText } = await renderWithProviders(<Harness />, ['public'])
+    await findByText('FreeModel')
+    // 全 0 才由服务端标记免费；部分 0 仍显示数字 0（不挂免费标）。
+    // 免费卡片有两处「免费」：标题行分类标签 + 价格区替换块。
+    const freeArticle = getByText('FreeModel').closest('article')
+    expect(freeArticle).not.toBeNull()
+    expect(within(freeArticle as HTMLElement).getAllByText('Free')).toHaveLength(2)
+    expect(getAllByText('Billed at 0 credits')).toHaveLength(1)
+    const zeroArticle = getByText('ZeroModel').closest('article')
+    expect(zeroArticle).not.toBeNull()
+    expect(within(zeroArticle as HTMLElement).queryByText('Free')).toBeNull()
+    expect(within(zeroArticle as HTMLElement).getAllByText('0').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('shows the rate-limit message and retries after a transient error', async () => {
+    let fail = true
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(STATUS)),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+      http.get(`${ORIGIN}/api/pricing`, () => {
+        if (fail) {
+          fail = false
+          return HttpResponse.json(
+            { type: 'rate_limited', title: 'Too many requests' },
+            { status: 429, headers: { 'Retry-After': '5' } },
+          )
+        }
+        return HttpResponse.json(listResponse())
+      }),
+    )
+
+    const { findByText, getByRole } = await renderWithProviders(<Harness />, ['public'])
+    expect(
+      await findByText('Too many requests. Please try again later.'),
+    ).toBeTruthy()
+    fireEvent.click(getByRole('button', { name: 'Retry' }))
+    expect(await findByText('GPT-5')).toBeTruthy()
+  })
+
+  it('uses the offline copy when the request cannot reach the server', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(STATUS)),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+      http.get(`${ORIGIN}/api/pricing`, () => HttpResponse.error()),
+    )
+
+    const { findByText } = await renderWithProviders(<Harness />, ['public'])
+    expect(
+      await findByText('Network disconnected. Check your connection and try again.'),
+    ).toBeTruthy()
   })
 })

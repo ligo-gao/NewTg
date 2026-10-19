@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "將 <YOUR_TOKEN> 替換為你的 API 權杖（權杖以 nkt- 開頭）。",
   "pricing.detail.create_token": "去建立權杖",
   "pricing.detail.sign_in_token": "登入以建立權杖",
-  "pricing.detail.copy_code": "複製程式碼片段"
+  "pricing.detail.copy_code": "複製程式碼片段",
+  "pricing.offline": "網路連線已中斷，請檢查網路後重試。"
 }

@@ -36,8 +36,9 @@ export function Pagination({
     }
   })()
   const size = BigInt(pageSize)
+  // 页数也留在 BigInt 域：int64 total 超过 2^53 时 Number() 会先丢精度。
   const lastPageNumber =
-    totalCount === 0n ? 1 : Number((totalCount + size - 1n) / size)
+    totalCount === 0n ? 1n : (totalCount + size - 1n) / size
   const options = PAGE_SIZE_OPTIONS[view].includes(pageSize)
     ? PAGE_SIZE_OPTIONS[view]
     : [...PAGE_SIZE_OPTIONS[view], pageSize].sort((a, b) => a - b)
@@ -81,7 +82,7 @@ export function Pagination({
 
       <button
         type="button"
-        disabled={page >= lastPageNumber || pending}
+        disabled={BigInt(page) >= lastPageNumber || pending}
         onClick={() => onPageChange(page + 1)}
         className="h-9 rounded-lg border border-border-default px-3 font-medium text-ink-1 hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >

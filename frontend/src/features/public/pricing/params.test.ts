@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   activeFilterCount,
+  canonicalPricingSearch,
   clearedFilters,
+  needsPricingUrlRepair,
   validatePricingSearch,
   vendorList,
   withVendors,
@@ -83,5 +85,30 @@ describe('pricing URL contract (F-09-22)', () => {
       tokenUnit: 'K',
       dualCurrency: true,
     })
+  })
+
+  it('detects every silently downgraded raw parameter (F-09-22)', () => {
+    const base = validatePricingSearch({})
+    // 规范化后的地址栏无需修正。
+    expect(needsPricingUrlRepair(`?${canonicalPricingSearch(base)}`, base)).toBe(false)
+    // page_size 非法（服务端只认 24/48/96/20/50/100）。
+    expect(needsPricingUrlRepair('?page_size=30', validatePricingSearch({ page_size: '30' }))).toBe(true)
+    expect(needsPricingUrlRepair('?page_size=0', validatePricingSearch({ page_size: '0' }))).toBe(true)
+    expect(needsPricingUrlRepair('?page_size=101', validatePricingSearch({ page_size: '101' }))).toBe(true)
+    // 非布尔展示开关。
+    expect(
+      needsPricingUrlRepair(
+        '?dualCurrency=yes',
+        validatePricingSearch({ dualCurrency: 'yes' }),
+      ),
+    ).toBe(true)
+    // 搜索前后空白。
+    expect(
+      needsPricingUrlRepair('?search=%20gpt%20', validatePricingSearch({ search: ' gpt ' })),
+    ).toBe(true)
+    // vendor 大小写归一。
+    expect(
+      needsPricingUrlRepair('?vendor=OpenAI', validatePricingSearch({ vendor: 'OpenAI' })),
+    ).toBe(true)
   })
 })

@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "Замените <YOUR_TOKEN> на ваш API-токен (токены начинаются с nkt-).",
   "pricing.detail.create_token": "Создать токен",
   "pricing.detail.sign_in_token": "Войдите, чтобы создать токен",
-  "pricing.detail.copy_code": "Скопировать пример кода"
+  "pricing.detail.copy_code": "Скопировать пример кода",
+  "pricing.offline": "Сеть недоступна. Проверьте подключение и повторите попытку."
 }

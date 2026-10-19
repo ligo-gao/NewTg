@@ -267,5 +267,6 @@
   "pricing.detail.key_hint": "Replace <YOUR_TOKEN> with your API token (tokens start with nkt-).",
   "pricing.detail.create_token": "Create a token",
   "pricing.detail.sign_in_token": "Sign in to create a token",
-  "pricing.detail.copy_code": "Copy code sample"
+  "pricing.detail.copy_code": "Copy code sample",
+  "pricing.offline": "Network disconnected. Check your connection and try again."
 }

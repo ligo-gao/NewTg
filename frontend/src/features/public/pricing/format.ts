@@ -85,12 +85,13 @@ function formatScaled(
   const remainder = scaled % divisor
   const text = formatBigInt(integer, locale)
   if (maxFractionDigits <= 0) return text
-  if (remainder === 0n) {
-    // 币种金额必须恒为 2 位小数（¥100.00），换算值才允许去掉尾随 0。
-    return fixed
-      ? `${text}${decimalSeparator(locale)}${'0'.repeat(maxFractionDigits)}`
-      : text
+  if (fixed) {
+    // 币种金额必须恒为 2 位小数：15.10 不能缩成 15.1。整数「分」直接
+    // 补足两位，不做尾随 0 裁剪。
+    const fraction = remainder.toString().padStart(scale, '0').slice(0, maxFractionDigits)
+    return `${text}${decimalSeparator(locale)}${fraction}`
   }
+  if (remainder === 0n) return text
   const padded = remainder.toString().padStart(scale, '0')
   const trimmed = padded.replace(/0+$/, '').slice(0, maxFractionDigits)
   return trimmed === '' ? text : `${text}${decimalSeparator(locale)}${trimmed}`

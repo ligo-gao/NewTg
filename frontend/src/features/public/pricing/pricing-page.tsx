@@ -66,6 +66,9 @@ function useMinWidth(px: number): boolean {
 }
 
 function errorMessage(error: unknown, t: (key: string) => string): string {
+  if (error instanceof ApiError && error.kind === 'offline') {
+    return t('public.pricing.offline')
+  }
   if (error instanceof ApiError && error.kind === 'rate_limited') {
     return t('public.pricing.rate_limited')
   }
@@ -247,7 +250,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
             onOpenFilters={() => setSheetOpen(true)}
           />
 
-          {data === undefined ? null : data.facets.vendors.length === 0 &&
+          {data === undefined || data.items.length === 0 ? null : data.facets.vendors.length === 0 &&
             data.facets.groups.length === 0 &&
             data.facets.pricing_types.length === 0 ? (
             <p className="text-[13px] leading-5 text-ink-3">
