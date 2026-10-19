@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, waitFor, within } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -28,17 +28,30 @@ const PUBLIC_STATUS = {
   default_language: 'en',
 }
 
-const METRICS = {
-  summary: {
-    avg_latency_ms: 820,
-    success_rate: 0.997,
-    tps: 42.5,
-    failed_24h: 12,
-    sample_size: 1543,
-  },
-  per_group: [
-    { group: 'default', avg_ttft_ms: 210, avg_latency_ms: 800, success_rate: 0.998 },
-  ],
+const PRICING_DETAIL = {
+  model_id: 'gpt-4o',
+  display_name: 'GPT-4o',
+  vendor: 'openai',
+  capabilities: [],
+  context_length: 128000,
+  max_output: 32000,
+  mode: 'per_token',
+  prompt_price: '500',
+  completion_price: '1500',
+  cache_read_price: null,
+  cache_write_price: null,
+  is_free: false,
+  group_price: null,
+  endpoints: [],
+  tags: [],
+  description: '',
+  modalities: ['text', 'image'],
+  knowledge_cutoff: null,
+  released_at: null,
+  group_prices: [],
+  parameters: [],
+  rate_limits: [],
+  auth_style: 'bearer',
 }
 
 const server = setupServer()
@@ -62,9 +75,9 @@ function installPublicHandlers() {
       requestedPaths.push(new URL(request.url).pathname)
       return HttpResponse.json(PUBLIC_STATUS)
     }),
-    http.get(`${ORIGIN}/api/pricing/:modelId/metrics`, ({ request }) => {
+    http.get(`${ORIGIN}/api/pricing/:modelId`, ({ request }) => {
       requestedPaths.push(new URL(request.url).pathname)
-      return HttpResponse.json(METRICS)
+      return HttpResponse.json(PRICING_DETAIL)
     }),
     // 显式登记 /readyz：否则「公开外壳不探测 readyz」的断言是空的——
     // 请求只会落到未处理分支，不会出现在 requestedPaths 里。
@@ -113,26 +126,20 @@ describe('public route integration (anonymous reachability)', () => {
     expect(requestedPaths.some((path) => path === '/readyz')).toBe(false)
   })
 
-  it('renders /pricing/$modelId with the disabled middle breadcrumb level', async () => {
+  it('renders /pricing/$modelId with the pricing marketplace breadcrumb level', async () => {
     installPublicHandlers()
     const { findByText, findByRole, router } = renderAt('/pricing/gpt-4o')
 
-    expect(await findByText('820 ms')).toBeTruthy()
+    expect(await findByRole('heading', { name: 'GPT-4o' })).toBeTruthy()
+    expect(await findByText('500')).toBeTruthy()
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/pricing/gpt-4o')
     })
 
     const nav = await findByRole('navigation', { name: 'Breadcrumb' })
     expect(nav.textContent).toContain('Home')
-    expect(nav.textContent).toContain('Pricing')
-
-    // /pricing 尚未开放（M7）：中间层不可点，但读屏器能读到原因。
-    const middle = within(nav).getByText('Pricing')
-    expect(middle.getAttribute('aria-disabled')).toBe('true')
-    const describedBy = middle.getAttribute('aria-describedby')
-    expect(document.getElementById(describedBy ?? '')?.textContent).toBe(
-      'This page is not open yet',
-    )
+    expect(nav.textContent).toContain('Model Marketplace')
+    expect(nav.textContent).toContain('GPT-4o')
     expect(requestedPaths.some((path) => path === '/readyz')).toBe(false)
   })
 })
