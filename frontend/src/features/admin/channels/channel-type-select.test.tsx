@@ -57,7 +57,7 @@ describe('ChannelTypeSelect', () => {
       screen.getByRole('option', { name: 'Anthropic (native Messages API)' }),
     ).toBeTruthy()
     expect(
-      screen.getByRole('option', { name: 'Vertex AI (Gemini native)' }),
+      screen.getByRole('option', { name: 'Vertex AI (Gemini/Claude native)' }),
     ).toBeTruthy()
     expect(screen.getByRole('option', { name: 'openai' })).toBeTruthy()
 
@@ -75,6 +75,25 @@ describe('ChannelTypeSelect', () => {
     expect(
       screen.queryByText(/The upstream speaks the .* protocol/),
     ).toBeNull()
+  })
+
+  it('preserves a caller-supplied error reference next to the description', () => {
+    renderWithProviders(
+      <ChannelTypeSelect
+        value="gemini"
+        onChange={() => {}}
+        aria-describedby="channel-type-error"
+      />,
+    )
+
+    const description = screen.getByText(
+      'The upstream speaks the Gemini generateContent protocol (:generateContent).',
+    )
+    // Both ids must survive: dropping the error reference would hide the
+    // validation message from assistive technology while the user fixes it.
+    expect(screen.getByRole('combobox').getAttribute('aria-describedby')).toBe(
+      `channel-type-error ${description.id}`,
+    )
   })
 
   it('shows the selected type', () => {

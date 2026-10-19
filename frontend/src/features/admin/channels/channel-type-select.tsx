@@ -29,9 +29,10 @@ export interface ChannelTypeSelectProps {
  *
  * Native-protocol types (relay-02 §2.5) additionally get a human label and a
  * one-line description. The raw slug alone does not tell an administrator that
- * `moonshot` is an Anthropic-Messages upstream or that `vertex_ai` reuses the
- * Gemini encoding, which is exactly the distinction that matters when the
- * channel is later reached through cross-protocol forwarding.
+ * `moonshot` is an Anthropic-Messages upstream or that `vertex_ai` speaks
+ * Gemini/Claude natively through a Vertex-specific adapter. Cross-protocol
+ * forwarding currently requires an implemented native adapter; Vertex is not
+ * part of that target map, which the description states explicitly.
  */
 export function ChannelTypeSelect({
   id,

@@ -63,6 +63,9 @@ export function CrossProtocolForwardInfo({
             values: headerValues,
           })}
         </p>
+        <p className="text-xs text-ink-2">
+          {t('common.channels.crossProtocol.selectionRules')}
+        </p>
       </div>
 
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-xs sm:grid-cols-2">

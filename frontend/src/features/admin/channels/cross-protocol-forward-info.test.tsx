@@ -12,7 +12,7 @@ import { renderWithProviders } from './test-utils'
  * variant.
  */
 describe('CrossProtocolForwardInfo', () => {
-  it('documents the header and the switch key', () => {
+  it('documents the header, selection rules and the switch key', () => {
     renderWithProviders(<CrossProtocolForwardInfo />)
 
     const panel = screen.getByRole('note')
@@ -21,22 +21,30 @@ describe('CrossProtocolForwardInfo', () => {
     expect(
       screen.getByText(/choose the upstream protocol/i),
     ).toBeTruthy()
+    // A header value is a *filter*, not a pin: no matching candidate (or a
+    // pinned mismatch) is a 400, and an empty value is ignored.
+    expect(
+      screen.getByText(/no candidate supports it, or a pinned channel does not match, the request fails with 400/i),
+    ).toBeTruthy()
+    expect(screen.getByText(/empty header value is ignored/i)).toBeTruthy()
   })
 
   it('reports the switch as unavailable when no value can be read', () => {
     renderWithProviders(<CrossProtocolForwardInfo />)
 
     expect(screen.getByTestId('cross-protocol-status').textContent).toBe(
-      'Not readable from this console — maintained in site settings (module 08).',
+      'Not shown here — this switch lives in site settings, which are not yet available in this release.',
     )
-    expect(screen.getByText(/M4 ships no settings API/)).toBeTruthy()
+    expect(
+      screen.getByText(/this console cannot read or change it/),
+    ).toBeTruthy()
   })
 
-  it('explains the 403 behaviour while the switch is off', () => {
+  it('explains the disabled state while the switch is off', () => {
     renderWithProviders(<CrossProtocolForwardInfo enabled={false} />)
 
     expect(screen.getByTestId('cross-protocol-status').textContent).toBe(
-      'Off — requests that carry the header are rejected with 403.',
+      'Off — cross-protocol forwarding is disabled.',
     )
     expect(screen.getByText(/fails with 403 instead of being relayed/)).toBeTruthy()
   })
@@ -59,6 +67,8 @@ describe('CrossProtocolForwardInfo', () => {
     expect(screen.queryByRole('button')).toBeNull()
     expect(container.querySelector('input, select, textarea, button')).toBeNull()
     // The deferral is stated in the UI rather than hidden from the operator.
-    expect(screen.getByText(/deferred until module 08's settings API/)).toBeTruthy()
+    expect(
+      screen.getByText(/will follow when site settings are available/),
+    ).toBeTruthy()
   })
 })

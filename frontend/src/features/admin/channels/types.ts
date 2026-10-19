@@ -272,9 +272,10 @@ export interface NativeChannelTypeInfo {
  * The four channel types whose upstream uses a native Anthropic/Gemini
  * protocol (relay-02 §2.5): `AKAnthropicNative` = types 14 (`anthropic`) and
  * 25 (`moonshot`, an Anthropic-compatible `/v1/messages` upstream), and the
- * Gemini family = type 24 (`gemini`) plus type 41 (`vertex_ai`, which reuses
- * the Gemini encoding under its own adapter key). The selector groups already
- * match this split; this table adds the user-facing labels the raw slugs lack.
+ * Gemini family = type 24 (`gemini`) plus type 41 (`vertex_ai`). Vertex is a
+ * credential-conditional Gemini/Claude native adapter, not plain Gemini: it is
+ * grouped with Gemini for display, but it is not a cross-protocol target
+ * (Task 5 only forwards to implemented native adapters).
  */
 export const NATIVE_CHANNEL_TYPES: Readonly<
   Record<string, NativeChannelTypeInfo>
