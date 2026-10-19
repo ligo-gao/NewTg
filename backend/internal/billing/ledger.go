@@ -138,14 +138,15 @@ func (l *Ledger) ApplyDelta(ctx context.Context, userID, delta int64,
 }
 
 // ApplyDeltaID 与 ApplyDelta 语义完全相同，但额外返回新建流水的
-// wallet_transactions.id。
+// wallet_transactions.id，并允许写入 note。
 //
 // 存在的理由：M5 的 FundingSource 契约要求返回 txID，让订单/兑换审计能
 // 精确关联入账行。若在 ApplyDelta 之后再按 (user_id, reference_type,
 // reference_id) 查询「最近一行」，并发入账时可能取到别人的行（同一次
 // 充值被重试时更明显）；RETURNING 在事务内拿到的 id 没有这个竞态。
+// note 用于满足 wallet_transactions_admin_note_chk（管理员调整必填理由）。
 func (l *Ledger) ApplyDeltaID(ctx context.Context, userID, delta int64,
-	txType, status, refType, refID string) (balanceAfter, txID int64, err error) {
+	txType, status, refType, refID, note string) (balanceAfter, txID int64, err error) {
 
 	if delta == 0 {
 		return 0, 0, errors.New("billing: ledger delta must not be zero")
@@ -166,7 +167,7 @@ func (l *Ledger) ApplyDeltaID(ctx context.Context, userID, delta int64,
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var txErr error
 		balanceAfter, txID, txErr = applyDeltaTxNote(ctx, tx, userID, delta,
-			txType, status, refType, refID, "")
+			txType, status, refType, refID, note)
 		return txErr
 	})
 	if err != nil {

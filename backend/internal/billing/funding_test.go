@@ -3,8 +3,10 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +246,68 @@ func TestFundingApply(t *testing.T) {
 	}
 }
 
+// TestFundingApplyAdminAdjustment 覆盖 admin_adjustment 的 note 契约：
+// DB CHECK wallet_transactions_admin_note_chk 要求该类型必须带理由，
+// 因此有 note 时入账成功且 note 落库；无 note 时须在触库前拒绝。
+func TestFundingApplyAdminAdjustment(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	funding := NewWalletFunding(gormDB)
+	ctx := context.Background()
+
+	balanceAfter, txID, err := funding.Apply(ctx, Credit{
+		UserID:        userID,
+		Amount:        250,
+		Type:          CreditTypeAdminAdjustment,
+		ReferenceType: "admin_op",
+		ReferenceID:   "99",
+		Note:          "客服补偿：工单 2026-1019",
+	})
+	if err != nil {
+		t.Fatalf("Apply(admin_adjustment with note): %v", err)
+	}
+	if balanceAfter != 250 || txID == "" {
+		t.Fatalf("balanceAfter = %d, txID = %q; want 250 / non-empty", balanceAfter, txID)
+	}
+	rows := readFundingRows(t, db, userID)
+	if len(rows) != 1 {
+		t.Fatalf("wallet rows = %d, want 1", len(rows))
+	}
+	if rows[0].Type != CreditTypeAdminAdjustment || rows[0].Note != "客服补偿：工单 2026-1019" {
+		t.Fatalf("row = %+v, want admin_adjustment with note", rows[0])
+	}
+
+	// 无 note：应用层拒绝，余额与流水都不变（不能靠 DB CHECK 兜底，
+	// 否则调用方只会拿到难以定位的 SQLSTATE 23514）。
+	if _, _, err := funding.Apply(ctx, Credit{
+		UserID:        userID,
+		Amount:        100,
+		Type:          CreditTypeAdminAdjustment,
+		ReferenceType: "admin_op",
+		ReferenceID:   "100",
+	}); !errors.Is(err, ErrInvalidFundingCredit) {
+		t.Fatalf("Apply(admin_adjustment without note) err = %v, want ErrInvalidFundingCredit", err)
+	}
+	if got := userBalance(t, db, userID); got != 250 {
+		t.Fatalf("balance = %d, want 250（拒绝路径不得改动余额）", got)
+	}
+	if rows := readFundingRows(t, db, userID); len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1（拒绝路径不得写流水）", len(rows))
+	}
+
+	// note 超长同样在应用层拒绝（DB 是 1–200 字符口径）。
+	if _, _, err := funding.Apply(ctx, Credit{
+		UserID:        userID,
+		Amount:        100,
+		Type:          CreditTypeAdminAdjustment,
+		ReferenceType: "admin_op",
+		ReferenceID:   "101",
+		Note:          strings.Repeat("长", 201),
+	}); !errors.Is(err, ErrInvalidFundingCredit) {
+		t.Fatalf("Apply(oversized note) err = %v, want ErrInvalidFundingCredit", err)
+	}
+}
+
 // TestFundingApplyRejects 覆盖 FundingSource 的应用层校验：非正金额、
 // 非法流水类型、渠道名作 reference_type、缺引用一律拒绝且不落任何行。
 func TestFundingApplyRejects(t *testing.T) {
@@ -367,6 +431,7 @@ type fundingRow struct {
 	Status        string
 	ReferenceType string
 	ReferenceID   string
+	Note          string
 }
 
 // readFundingRows 返回某用户全部充值/兑换流水（按 id 升序）。
@@ -374,7 +439,7 @@ func readFundingRows(t *testing.T, db *sql.DB, userID int64) []fundingRow {
 	t.Helper()
 	rows, err := db.Query(
 		`SELECT id, type, amount, balance_after, status,
-		        COALESCE(reference_type, ''), COALESCE(reference_id, '')
+		        COALESCE(reference_type, ''), COALESCE(reference_id, ''), COALESCE(note, '')
 		 FROM wallet_transactions WHERE user_id = $1 ORDER BY id`, userID)
 	if err != nil {
 		t.Fatalf("read wallet rows: %v", err)
@@ -384,7 +449,7 @@ func readFundingRows(t *testing.T, db *sql.DB, userID int64) []fundingRow {
 	for rows.Next() {
 		var r fundingRow
 		if err := rows.Scan(&r.ID, &r.Type, &r.Amount, &r.BalanceAfter, &r.Status,
-			&r.ReferenceType, &r.ReferenceID); err != nil {
+			&r.ReferenceType, &r.ReferenceID, &r.Note); err != nil {
 			t.Fatalf("scan wallet row: %v", err)
 		}
 		out = append(out, r)

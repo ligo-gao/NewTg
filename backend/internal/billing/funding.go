@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -67,6 +68,10 @@ const (
 //   - 在线充值：reference_type='order'，reference_id=orders.id；
 //   - 兑换码：reference_type='redemption'，reference_id=redemption_codes.id。
 //
+// Note 会原样写入 wallet_transactions.note。`admin_adjustment` 必须提供
+// 非空理由（DB CHECK wallet_transactions_admin_note_chk：管理员调整没有
+// 审计理由的流水不可追溯，因此不是可选装饰）。
+//
 // 绝不使用 'stripe' / 'alipay' 等渠道名作 reference_type——渠道由订单行
 // 承载，流水只关联订单，否则按渠道对账会与订单口径分叉。
 type Credit struct {
@@ -75,6 +80,7 @@ type Credit struct {
 	Type          string
 	ReferenceType string
 	ReferenceID   string
+	Note          string
 }
 
 // FundingSource 是「入账」的唯一抽象。M5 的充值、兑换码与后续人工调整
@@ -106,7 +112,7 @@ func (w *walletFunding) Apply(ctx context.Context, credit Credit) (int64, string
 		return 0, "", err
 	}
 	balanceAfter, txID, err := w.ledger.ApplyDeltaID(ctx, credit.UserID, credit.Amount,
-		credit.Type, "confirmed", credit.ReferenceType, credit.ReferenceID)
+		credit.Type, "confirmed", credit.ReferenceType, credit.ReferenceID, credit.Note)
 	if err != nil {
 		return 0, "", err
 	}
@@ -125,6 +131,17 @@ func (c Credit) validate() error {
 	case CreditTypeTopup, CreditTypeBonus, CreditTypeAdminAdjustment:
 	default:
 		return fmt.Errorf("%w: type %q is not a funding credit type", ErrInvalidFundingCredit, c.Type)
+	}
+	// 管理员调整必须带理由：数据库 CHECK wallet_transactions_admin_note_chk
+	// 会拒绝无 note 的 admin_adjustment 行。在应用层先拒绝，既给出可读错误，
+	// 也避免事务里「先加余额、再撞约束回滚」的无谓开销。
+	if c.Type == CreditTypeAdminAdjustment && c.Note == "" {
+		return fmt.Errorf("%w: admin_adjustment requires a note", ErrInvalidFundingCredit)
+	}
+	// note 的长度口径与 DB 一致（1–200 字符，不是字节）；超长会让
+	// wallet_transactions_note_len_chk 以晦涩的 SQLSTATE 失败。
+	if c.Note != "" && utf8.RuneCountInString(c.Note) > 200 {
+		return fmt.Errorf("%w: note exceeds 200 characters", ErrInvalidFundingCredit)
 	}
 	if !validWalletRefType[c.ReferenceType] {
 		return fmt.Errorf("%w: invalid reference type %q", ErrInvalidFundingCredit, c.ReferenceType)
