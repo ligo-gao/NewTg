@@ -36,6 +36,15 @@ paths:
     $ref: './paths/public.yaml#/paths/~1api~1status'
   /api/geoip:
     $ref: './paths/public.yaml#/paths/~1api~1geoip'
+  # 公开读面（modules-09；M6c Task 7）：首页统计与定价目录。
+  /api/home/stats:
+    $ref: './paths/public.yaml#/paths/~1api~1home~1stats'
+  /api/pricing:
+    $ref: './paths/public.yaml#/paths/~1api~1pricing'
+  /api/pricing/{model_id}:
+    $ref: './paths/public.yaml#/paths/~1api~1pricing~1{model_id}'
+  /api/pricing/{model_id}/metrics:
+    $ref: './paths/public.yaml#/paths/~1api~1pricing~1{model_id}~1metrics'
   /api/auth/login/encryption-key:
     $ref: './paths/public.yaml#/paths/~1api~1auth~1login~1encryption-key'
   /api/auth/email-code:

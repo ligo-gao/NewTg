@@ -289,7 +289,11 @@ func buildRegistry() []Setting {
 		def("nav.rankings.enabled", "nav", TypeBool, true, public()),
 		def("nav.rankings.require_auth", "nav", TypeBool, false, public()),
 		def("nav.docs.enabled", "nav", TypeBool, true, public()),
+		// R-PUB-09：文档站与关于页的登录守卫。默认 false（公开页可匿名访问）；
+		// 与其它 nav.*.require_auth 同语义，由前端路由守卫消费。
+		def("nav.docs.require_auth", "nav", TypeBool, false, public()),
 		def("nav.about.enabled", "nav", TypeBool, true, public()),
+		def("nav.about.require_auth", "nav", TypeBool, false, public()),
 		def("nav.modules.console", "nav", TypeObject, map[string]any{
 			"dashboard": true, "tokens": true, "usage_logs": true,
 			"wallet": true, "profile": true, "security": true,

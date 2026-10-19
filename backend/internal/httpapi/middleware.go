@@ -2,10 +2,16 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -376,4 +382,68 @@ func normalizeRequestHost(hostport string) string {
 		return h
 	}
 	return net.JoinHostPort(h, p)
+}
+
+// ---------------------------------------------------------------------------
+// 全局 X-Request-ID（R-PUB-10）
+// ---------------------------------------------------------------------------
+
+// requestIDHeader 是请求/响应共用的头部名。
+const requestIDHeader = "X-Request-ID"
+
+// requestIDPattern 是允许采纳的入站 Request-ID 字符集（R-PUB-10 冻结）：
+// 1–128 个 [A-Za-z0-9._-]。
+//
+// 【为什么要字符集白名单】该值会写入响应头并被日志/前端排障引用。放行任意
+// 字节会让攻击者注入 CR/LF（响应头拆分）或不可见字符污染日志；128 的上界
+// 则防止超长值放大每一行日志。
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// requestIDContextKey 是私有空结构键，避免与其他包的 context 键碰撞。
+type requestIDContextKey struct{}
+
+// RequestIDFromContext 返回当前请求的 Request-ID；缺失时为空串。
+func RequestIDFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(requestIDContextKey{}).(string)
+	return value
+}
+
+// RequestIDMiddleware 保证每个请求都有 Request-ID：
+//   - 入站值合法（requestIDPattern）则原样采纳——调用方跨服务串联同一次
+//     操作时需要它；
+//   - 否则生成 UUID v4（不信任客户端提供的畸形值）；
+//   - 响应头在 handler 之前写入，因此 401/404/500 与 panic 恢复路径都带上它；
+//   - 放入 context 供日志/审计读取。
+//
+// 该中间件只包住管理面/公开面的 /api/* Router（见 NewRouter）。中继 /v1
+// 由自己的 RelayContext 生成并写 X-Request-ID，两者不共享实例，因此不会
+// 出现「同一请求两个不同 id」的冲突。
+func RequestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inbound := strings.TrimSpace(r.Header.Get(requestIDHeader))
+		id := inbound
+		if !requestIDPattern.MatchString(id) {
+			id = newRequestUUID()
+		}
+		w.Header().Set(requestIDHeader, id)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id)))
+	})
+}
+
+// newRequestUUID 生成 RFC 4122 v4 UUID（小写 8-4-4-4-12）。
+//
+// 用 crypto/rand 而不是时间戳/计数器：Request-ID 会被写入日志并可能用于
+// 关联审计事件，可预测的 id 会泄露请求顺序。熵源异常（理论上不会发生）时
+// 退化为「时间戳的 SHA-256 前 16 字节」，仍是合法字符集，且绝不返回空串
+// （空串会让下游把请求当成「没有 id」而重新生成）。
+func newRequestUUID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		sum := sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+		copy(buf[:], sum[:16])
+	}
+	// version=4，variant=RFC 4122（RFC 9562 §5.4）。
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

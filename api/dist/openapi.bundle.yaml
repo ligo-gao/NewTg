@@ -246,6 +246,220 @@ paths:
                 $ref: '#/components/schemas/GeoIPResponse'
         '429':
           $ref: '#/components/responses/Error429'
+  /api/home/stats:
+    get:
+      tags:
+        - public
+      operationId: getHomeStats
+      summary: 首页统计数据条（公开，5 分钟服务端缓存）
+      description: |
+        4 个计数指标：upstreams=COUNT(DISTINCT channels.type) WHERE status=1；
+        models=与 `/api/pricing` 同一可见集合的计数；endpoints=冻结协议端点目录
+        （openai chat/completions、anthropic messages、gemini generateContent）
+        大小 3；routing_dims=冻结调度维度清单（priority/weight/group/
+        model-allowlist/affinity/retry）大小 6。0 如实返回（前端在 0 时隐藏区块）。
+        数据库故障返回 500 problem，绝不返回 200 空对象。Cache-Control:
+        public, max-age=300。B8 公开只读限流（60 次/分钟/IP+path，fail-open）。
+      security: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: public, max-age=300（服务端缓存窗口同值）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HomeStats'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/pricing:
+    get:
+      tags:
+        - public
+      operationId: getPublicPricing
+      summary: 公开定价目录（offset 分页；宽容参数）
+      description: |
+        只读 `model_pricing` / `group_pricing` / `user_groups`，可见集合为
+        `model_pricing.status=1 AND billing_expr IS NULL`。金额一律 int64 的 JSON
+        字符串；NULL 价列下发 null（不伪造兜底价）。非法参数逐项降级并返回 200
+        （不存在的 facet 值丢弃、非法分页回退默认、`p` 越界回退最后一页）；空集
+        是 200 + `items:[]`。facet 计数忽略本组自身筛选。`group_price` 仅在登录
+        或显式 `group` 时出现；匿名且 `billing.expose_group_ratios=false` 时分组
+        facet 的 ratio 为 null。响应带 `ETag: "pricing-v<hash>"`，命中
+        `If-None-Match` 返回 304 无 body；缓存 `public, max-age=30,
+        stale-while-revalidate=30`（带会话的个性化响应降级为 private）。
+      security: []
+      parameters:
+        - name: p
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+          description: 页码（1 基）；非法或越界回退首屏/最后一页。
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 24
+          description: 每页条数；默认 24，上限 100（超出按 100 截断）。
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+          description: model_id 大小写不敏感子串；超长截断。
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum:
+              - name
+              - price_asc
+              - price_desc
+            default: name
+          description: |
+            价格按输入价；同模式内 per_token 在 per_request 前，tie-breaker 为
+            model_id。非法值回退 name。
+        - name: vendor
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。
+        - name: group
+          in: query
+          schema:
+            type: string
+          description: 分组预览；不存在则忽略。
+        - name: quotaType
+          in: query
+          schema:
+            type: string
+            enum:
+              - all
+              - token
+              - request
+            default: all
+          description: 计费类型；非法值回退 all。
+        - name: include_group_price
+          in: query
+          schema:
+            type: string
+            enum:
+              - '0'
+              - '1'
+            default: '1'
+          description: 是否返回分组实付价（仍受会话/expose 规则约束）。
+      responses:
+        '200':
+          description: OK（空集也是 200 + items:[]）
+          headers:
+            ETag:
+              description: '"pricing-v<hash>"；hash 由三张表的 max(updated_at)+count+max(id) 派生'
+              schema:
+                type: string
+            Cache-Control:
+              description: public, max-age=30, stale-while-revalidate=30（个性化响应 private）
+              schema:
+                type: string
+            Vary:
+              description: Accept-Encoding；个性化响应额外含 Cookie
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicPricingList'
+        '304':
+          description: If-None-Match 命中（无 body）
+          headers:
+            ETag:
+              schema:
+                type: string
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/pricing/{model_id}:
+    get:
+      tags:
+        - public
+      operationId: getPublicPricingDetail
+      summary: 公开模型详情（URL 编码的 `/`）
+      description: |
+        `model_id` 以 URL 编码承载（如 `openai%2Fgpt-5`）。不存在、停用、无定价
+        或表达式计价的模型统一返回 404 `model-not-found`。缓存与 ETag 策略同
+        `/api/pricing`；详情 ETag 由域版本 + 模型名哈希派生。
+      security: []
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 512
+          description: URL 编码的模型名（可含 `/`）。
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: '"pricing-v<hash>-<modelHash>"'
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicModelDetail'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '404':
+          description: 模型不存在或不可公示（type=model-not-found）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/pricing/{model_id}/metrics:
+    get:
+      tags:
+        - public
+      operationId: getPublicPricingMetrics
+      summary: 模型性能指标（P1 占位，未实现）
+      description: |
+        本波（M6c）只注册 404：不返回伪造数据。type=not-implemented 以区别于
+        「模型不存在」。
+      security: []
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        '404':
+          description: 未实现（type=not-implemented）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/auth/login/encryption-key:
     get:
       tags:
@@ -4235,6 +4449,12 @@ components:
         - password_login_encryption_enabled
         - languages
         - default_language
+        - site
+        - nav
+        - billing
+        - pay
+        - usd_exchange_rate
+        - credit_display_symbol
       description: |
         公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
         变更必须立即反映到登录/注册页，禁止任何中间层缓存。
@@ -4291,6 +4511,23 @@ components:
             $ref: '#/components/schemas/Language'
         default_language:
           $ref: '#/components/schemas/Language'
+        site:
+          $ref: '#/components/schemas/PublicSite'
+        nav:
+          $ref: '#/components/schemas/PublicNav'
+        billing:
+          $ref: '#/components/schemas/PublicBilling'
+        pay:
+          $ref: '#/components/schemas/PublicPay'
+        usd_exchange_rate:
+          type: number
+          format: double
+          description: |
+            USD→CNY 展示汇率常量（billing-02 §4.1 唯一真源，7.1 = 71/10）。
+            只用于展示层换算，不是设置键。
+        credit_display_symbol:
+          type: string
+          description: 等于 billing.currency_symbol（展示用积分符号）。
     GeoIPResponse:
       type: object
       additionalProperties: false
@@ -4415,6 +4652,576 @@ components:
         - ja
         - vi
       description: 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
+    PublicSite:
+      type: object
+      description: |
+        `site` 域公开键投影。`home_custom_html` 仅在 `home_custom_enabled=true`
+        时下发（R-PUB-07）；关闭时字段整体缺席。
+      properties:
+        title:
+          type: string
+        logo_url:
+          type: string
+        server_address:
+          type: string
+        timezone:
+          type: string
+        footer_html:
+          type: string
+        about_html:
+          type: string
+        filing_no:
+          type: string
+        docs_url:
+          type: string
+        status_page_url:
+          type: string
+        rankings_min_samples:
+          type: integer
+          format: int64
+        oss_credits:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        seo:
+          type: object
+          properties:
+            description:
+              type: string
+            og_image_url:
+              type: string
+        home_custom_enabled:
+          type: boolean
+        home_custom_html:
+          type: string
+          description: 仅当 home_custom_enabled=true 时存在。
+        home_blocks:
+          type: object
+          properties:
+            hero:
+              type: boolean
+            live_feed:
+              type: boolean
+            features:
+              type: boolean
+            stats:
+              type: boolean
+            onboarding:
+              type: boolean
+        demo:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+    PublicNavItem:
+      type: object
+      required:
+        - enabled
+        - require_auth
+      properties:
+        enabled:
+          type: boolean
+        require_auth:
+          type: boolean
+    PublicNav:
+      type: object
+      description: |
+        六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+        require_auth，以及控制台模块显隐。`docs.require_auth` 与
+        `about.require_auth` 默认 false（R-PUB-09）。
+      properties:
+        home:
+          $ref: '#/components/schemas/PublicNavItem'
+        console:
+          $ref: '#/components/schemas/PublicNavItem'
+        pricing:
+          $ref: '#/components/schemas/PublicNavItem'
+        rankings:
+          $ref: '#/components/schemas/PublicNavItem'
+        docs:
+          $ref: '#/components/schemas/PublicNavItem'
+        about:
+          $ref: '#/components/schemas/PublicNavItem'
+        modules:
+          type: object
+          properties:
+            console:
+              type: object
+              properties:
+                dashboard:
+                  type: boolean
+                tokens:
+                  type: boolean
+                usage_logs:
+                  type: boolean
+                wallet:
+                  type: boolean
+                profile:
+                  type: boolean
+                security:
+                  type: boolean
+            chat:
+              type: object
+              properties:
+                playground:
+                  type: boolean
+    PublicBilling:
+      type: object
+      description: billing 域的公开键（§1.4.1）。
+      properties:
+        quota_per_unit:
+          type: integer
+          format: int64
+        display_unit:
+          type: string
+          description: credits（积分为主单位）或 cny（人民币为主单位）。
+        currency_symbol:
+          type: string
+        signup_grant_credits:
+          type: integer
+          format: int64
+        signup_grant_requires_verified_email:
+          type: boolean
+        display_token_stat_enabled:
+          type: boolean
+    PublicPay:
+      type: object
+      description: pay 域的公开键（§1.4.1）；绝不含任何支付密钥。
+      properties:
+        online_enabled:
+          type: boolean
+        amount_presets_cny:
+          type: array
+          items:
+            type: integer
+            format: int64
+        stripe:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            publishable_key:
+              type: string
+              description: 公开可发布 key（P-17）；secret/webhook secret 永不下发。
+        alipay:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            sandbox:
+              type: boolean
+        epay:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+        creem:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+        waffo:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+        waffo_pancake:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+    HomeStats:
+      type: object
+      additionalProperties: false
+      required:
+        - upstreams
+        - models
+        - endpoints
+        - routing_dims
+      properties:
+        upstreams:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 已启用渠道去重到上游服务商类型后的数量。
+        models:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 与 /api/pricing 同一可见集合的计数。
+        endpoints:
+          type: integer
+          format: int64
+          description: 冻结协议端点目录大小（3）。
+        routing_dims:
+          type: integer
+          format: int64
+          description: 冻结调度控制维度大小（6）。
+    PublicGroupPrice:
+      type: object
+      additionalProperties: false
+      required:
+        - group
+        - ratio
+        - prompt
+        - completion
+        - cache_read
+        - cache_write
+        - source
+      properties:
+        group:
+          type: string
+        ratio:
+          anyOf:
+            - type: integer
+            - enum:
+                - null
+          description: 分组倍率（整数百分比，120 = 1.20x）。
+        prompt:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        completion:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        cache_read:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        cache_write:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        source:
+          type: string
+          description: override=覆盖价；ratio=基准价 × 倍率 ÷ 100（服务端整数运算）。
+    PublicModelCard:
+      type: object
+      additionalProperties: false
+      required:
+        - model_id
+        - display_name
+        - vendor
+        - capabilities
+        - context_length
+        - max_output
+        - mode
+        - prompt_price
+        - completion_price
+        - cache_read_price
+        - cache_write_price
+        - is_free
+        - group_price
+        - endpoints
+        - tags
+        - description
+      properties:
+        model_id:
+          type: string
+          maxLength: 128
+        display_name:
+          type: string
+          description: 元数据未落库时等于 model_id（R-PUB-01）。
+        vendor:
+          type: string
+          description: model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+        capabilities:
+          type: array
+          items:
+            type: string
+        context_length:
+          anyOf:
+            - type: integer
+              format: int64
+              minimum: 0
+            - enum:
+                - null
+        max_output:
+          anyOf:
+            - type: integer
+              format: int64
+              minimum: 0
+            - enum:
+                - null
+        mode:
+          type: string
+          description: per_token 或 per_request（MVP 仅两种）。
+        prompt_price:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+          description: int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
+        completion_price:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        cache_read_price:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        cache_write_price:
+          anyOf:
+            - type: string
+              pattern: ^[0-9]+$
+            - enum:
+                - null
+        is_free:
+          type: boolean
+          description: 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。
+        group_price:
+          anyOf:
+            - $ref: '#/components/schemas/PublicGroupPrice'
+            - enum:
+                - null
+          description: 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+        endpoints:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+    PublicFacetOption:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+        - label
+        - count
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+    PublicGroupFacet:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+        - label
+        - ratio
+        - count
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        ratio:
+          anyOf:
+            - type: integer
+            - enum:
+                - null
+          description: 匿名且 expose_group_ratios=false 时为 null（R-PUB-05）。
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+    PublicPricingTypeFacet:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+        - count
+      properties:
+        value:
+          type: string
+          enum:
+            - token
+            - request
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+    PublicFacets:
+      type: object
+      additionalProperties: false
+      required:
+        - vendors
+        - capabilities
+        - context
+        - groups
+        - endpoints
+        - pricing_types
+      properties:
+        vendors:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicFacetOption'
+        capabilities:
+          type: array
+          description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+          items:
+            $ref: '#/components/schemas/PublicFacetOption'
+        context:
+          type: array
+          description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+          items:
+            $ref: '#/components/schemas/PublicFacetOption'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicGroupFacet'
+        endpoints:
+          type: array
+          description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+          items:
+            $ref: '#/components/schemas/PublicFacetOption'
+        pricing_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicPricingTypeFacet'
+    PublicPricingMeta:
+      type: object
+      additionalProperties: false
+      required:
+        - credit_symbol
+        - quota_per_unit
+        - usd_exchange_rate
+        - version
+        - generated_at
+      properties:
+        credit_symbol:
+          type: string
+        quota_per_unit:
+          type: integer
+          format: int64
+        usd_exchange_rate:
+          type: number
+          format: double
+        version:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+    PublicPricingList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+        - facets
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicModelCard'
+        total:
+          type: string
+          pattern: ^[0-9]+$
+          description: 命中总数（int64 的 JSON 字符串，防前端精度丢失）。
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        facets:
+          $ref: '#/components/schemas/PublicFacets'
+        meta:
+          $ref: '#/components/schemas/PublicPricingMeta'
+    PublicModelParameter:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - required
+        - type
+        - default
+        - description
+      properties:
+        name:
+          type: string
+        required:
+          type: boolean
+        type:
+          type: string
+        default: {}
+        description:
+          type: string
+    PublicRateLimit:
+      type: object
+      additionalProperties: false
+      required:
+        - group
+        - user_model_rpm
+      properties:
+        group:
+          type: string
+        user_model_rpm:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 每用户每模型 RPM；0=不限。
+    PublicModelDetail:
+      allOf:
+        - $ref: '#/components/schemas/PublicModelCard'
+        - type: object
+          additionalProperties: false
+          required:
+            - modalities
+            - knowledge_cutoff
+            - released_at
+            - group_prices
+            - parameters
+            - rate_limits
+            - auth_style
+          properties:
+            modalities:
+              type: array
+              items:
+                type: string
+            knowledge_cutoff:
+              anyOf:
+                - type: string
+                - enum:
+                    - null
+            released_at:
+              anyOf:
+                - type: string
+                - enum:
+                    - null
+            group_prices:
+              type: array
+              items:
+                $ref: '#/components/schemas/PublicGroupPrice'
+            parameters:
+              type: array
+              items:
+                $ref: '#/components/schemas/PublicModelParameter'
+            rate_limits:
+              type: array
+              items:
+                $ref: '#/components/schemas/PublicRateLimit'
+            auth_style:
+              type: string
+              description: 认证头风格；当前实现恒为 bearer。
     LoginEncryptionKeyResponse:
       type: object
       additionalProperties: false

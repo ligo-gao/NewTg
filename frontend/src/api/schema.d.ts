@@ -88,6 +88,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/home/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 首页统计数据条（公开，5 分钟服务端缓存）
+         * @description 4 个计数指标：upstreams=COUNT(DISTINCT channels.type) WHERE status=1；
+         *     models=与 `/api/pricing` 同一可见集合的计数；endpoints=冻结协议端点目录
+         *     （openai chat/completions、anthropic messages、gemini generateContent）
+         *     大小 3；routing_dims=冻结调度维度清单（priority/weight/group/
+         *     model-allowlist/affinity/retry）大小 6。0 如实返回（前端在 0 时隐藏区块）。
+         *     数据库故障返回 500 problem，绝不返回 200 空对象。Cache-Control:
+         *     public, max-age=300。B8 公开只读限流（60 次/分钟/IP+path，fail-open）。
+         */
+        get: operations["getHomeStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公开定价目录（offset 分页；宽容参数）
+         * @description 只读 `model_pricing` / `group_pricing` / `user_groups`，可见集合为
+         *     `model_pricing.status=1 AND billing_expr IS NULL`。金额一律 int64 的 JSON
+         *     字符串；NULL 价列下发 null（不伪造兜底价）。非法参数逐项降级并返回 200
+         *     （不存在的 facet 值丢弃、非法分页回退默认、`p` 越界回退最后一页）；空集
+         *     是 200 + `items:[]`。facet 计数忽略本组自身筛选。`group_price` 仅在登录
+         *     或显式 `group` 时出现；匿名且 `billing.expose_group_ratios=false` 时分组
+         *     facet 的 ratio 为 null。响应带 `ETag: "pricing-v<hash>"`，命中
+         *     `If-None-Match` 返回 304 无 body；缓存 `public, max-age=30,
+         *     stale-while-revalidate=30`（带会话的个性化响应降级为 private）。
+         */
+        get: operations["getPublicPricing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pricing/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公开模型详情（URL 编码的 `/`）
+         * @description `model_id` 以 URL 编码承载（如 `openai%2Fgpt-5`）。不存在、停用、无定价
+         *     或表达式计价的模型统一返回 404 `model-not-found`。缓存与 ETag 策略同
+         *     `/api/pricing`；详情 ETag 由域版本 + 模型名哈希派生。
+         */
+        get: operations["getPublicPricingDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pricing/{model_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型性能指标（P1 占位，未实现）
+         * @description 本波（M6c）只注册 404：不返回伪造数据。type=not-implemented 以区别于
+         *     「模型不存在」。
+         */
+        get: operations["getPublicPricingMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/login/encryption-key": {
         parameters: {
             query?: never;
@@ -1897,6 +1994,18 @@ export interface components {
             /** @description canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。 */
             languages: components["schemas"]["Language"][];
             default_language: components["schemas"]["Language"];
+            site: components["schemas"]["PublicSite"];
+            nav: components["schemas"]["PublicNav"];
+            billing: components["schemas"]["PublicBilling"];
+            pay: components["schemas"]["PublicPay"];
+            /**
+             * Format: double
+             * @description USD→CNY 展示汇率常量（billing-02 §4.1 唯一真源，7.1 = 71/10）。
+             *     只用于展示层换算，不是设置键。
+             */
+            usd_exchange_rate: number;
+            /** @description 等于 billing.currency_symbol（展示用积分符号）。 */
+            credit_display_symbol: string;
         };
         /**
          * @description 客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
@@ -1965,6 +2074,243 @@ export interface components {
          * @enum {string}
          */
         Language: "en" | "zh-CN" | "zh-TW" | "fr" | "ru" | "ja" | "vi";
+        /**
+         * @description `site` 域公开键投影。`home_custom_html` 仅在 `home_custom_enabled=true`
+         *     时下发（R-PUB-07）；关闭时字段整体缺席。
+         */
+        PublicSite: {
+            title?: string;
+            logo_url?: string;
+            server_address?: string;
+            timezone?: string;
+            footer_html?: string;
+            about_html?: string;
+            filing_no?: string;
+            docs_url?: string;
+            status_page_url?: string;
+            /** Format: int64 */
+            rankings_min_samples?: number;
+            oss_credits?: {
+                [key: string]: unknown;
+            }[];
+            seo?: {
+                description?: string;
+                og_image_url?: string;
+            };
+            home_custom_enabled?: boolean;
+            /** @description 仅当 home_custom_enabled=true 时存在。 */
+            home_custom_html?: string;
+            home_blocks?: {
+                hero?: boolean;
+                live_feed?: boolean;
+                features?: boolean;
+                stats?: boolean;
+                onboarding?: boolean;
+            };
+            demo?: {
+                enabled?: boolean;
+            };
+        };
+        PublicNavItem: {
+            enabled: boolean;
+            require_auth: boolean;
+        };
+        /**
+         * @description 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+         *     require_auth，以及控制台模块显隐。`docs.require_auth` 与
+         *     `about.require_auth` 默认 false（R-PUB-09）。
+         */
+        PublicNav: {
+            home?: components["schemas"]["PublicNavItem"];
+            console?: components["schemas"]["PublicNavItem"];
+            pricing?: components["schemas"]["PublicNavItem"];
+            rankings?: components["schemas"]["PublicNavItem"];
+            docs?: components["schemas"]["PublicNavItem"];
+            about?: components["schemas"]["PublicNavItem"];
+            modules?: {
+                console?: {
+                    dashboard?: boolean;
+                    tokens?: boolean;
+                    usage_logs?: boolean;
+                    wallet?: boolean;
+                    profile?: boolean;
+                    security?: boolean;
+                };
+                chat?: {
+                    playground?: boolean;
+                };
+            };
+        };
+        /** @description billing 域的公开键（§1.4.1）。 */
+        PublicBilling: {
+            /** Format: int64 */
+            quota_per_unit?: number;
+            /** @description credits（积分为主单位）或 cny（人民币为主单位）。 */
+            display_unit?: string;
+            currency_symbol?: string;
+            /** Format: int64 */
+            signup_grant_credits?: number;
+            signup_grant_requires_verified_email?: boolean;
+            display_token_stat_enabled?: boolean;
+        };
+        /** @description pay 域的公开键（§1.4.1）；绝不含任何支付密钥。 */
+        PublicPay: {
+            online_enabled?: boolean;
+            amount_presets_cny?: number[];
+            stripe?: {
+                enabled?: boolean;
+                /** @description 公开可发布 key（P-17）；secret/webhook secret 永不下发。 */
+                publishable_key?: string;
+            };
+            alipay?: {
+                enabled?: boolean;
+                sandbox?: boolean;
+            };
+            epay?: {
+                enabled?: boolean;
+            };
+            creem?: {
+                enabled?: boolean;
+            };
+            waffo?: {
+                enabled?: boolean;
+            };
+            waffo_pancake?: {
+                enabled?: boolean;
+            };
+        };
+        HomeStats: {
+            /**
+             * Format: int64
+             * @description 已启用渠道去重到上游服务商类型后的数量。
+             */
+            upstreams: number;
+            /**
+             * Format: int64
+             * @description 与 /api/pricing 同一可见集合的计数。
+             */
+            models: number;
+            /**
+             * Format: int64
+             * @description 冻结协议端点目录大小（3）。
+             */
+            endpoints: number;
+            /**
+             * Format: int64
+             * @description 冻结调度控制维度大小（6）。
+             */
+            routing_dims: number;
+        };
+        PublicGroupPrice: {
+            group: string;
+            /** @description 分组倍率（整数百分比，120 = 1.20x）。 */
+            ratio: number | null;
+            prompt: string | null;
+            completion: string | null;
+            cache_read: string | null;
+            cache_write: string | null;
+            /** @description override=覆盖价；ratio=基准价 × 倍率 ÷ 100（服务端整数运算）。 */
+            source: string;
+        };
+        PublicModelCard: {
+            model_id: string;
+            /** @description 元数据未落库时等于 model_id（R-PUB-01）。 */
+            display_name: string;
+            /** @description model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。 */
+            vendor: string;
+            capabilities: string[];
+            context_length: number | null;
+            max_output: number | null;
+            /** @description per_token 或 per_request（MVP 仅两种）。 */
+            mode: string;
+            /** @description int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。 */
+            prompt_price: string | null;
+            completion_price: string | null;
+            cache_read_price: string | null;
+            cache_write_price: string | null;
+            /** @description 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。 */
+            is_free: boolean;
+            /** @description 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。 */
+            group_price: components["schemas"]["PublicGroupPrice"] | null;
+            endpoints: string[];
+            tags: string[];
+            description: string;
+        };
+        PublicFacetOption: {
+            value: string;
+            label: string;
+            /** Format: int64 */
+            count: number;
+        };
+        PublicGroupFacet: {
+            value: string;
+            label: string;
+            /** @description 匿名且 expose_group_ratios=false 时为 null（R-PUB-05）。 */
+            ratio: number | null;
+            /** Format: int64 */
+            count: number;
+        };
+        PublicPricingTypeFacet: {
+            /** @enum {string} */
+            value: "token" | "request";
+            /** Format: int64 */
+            count: number;
+        };
+        PublicFacets: {
+            vendors: components["schemas"]["PublicFacetOption"][];
+            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            capabilities: components["schemas"]["PublicFacetOption"][];
+            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            context: components["schemas"]["PublicFacetOption"][];
+            groups: components["schemas"]["PublicGroupFacet"][];
+            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            endpoints: components["schemas"]["PublicFacetOption"][];
+            pricing_types: components["schemas"]["PublicPricingTypeFacet"][];
+        };
+        PublicPricingMeta: {
+            credit_symbol: string;
+            /** Format: int64 */
+            quota_per_unit: number;
+            /** Format: double */
+            usd_exchange_rate: number;
+            version: string;
+            /** Format: date-time */
+            generated_at: string;
+        };
+        PublicPricingList: {
+            items: components["schemas"]["PublicModelCard"][];
+            /** @description 命中总数（int64 的 JSON 字符串，防前端精度丢失）。 */
+            total: string;
+            page: number;
+            page_size: number;
+            facets: components["schemas"]["PublicFacets"];
+            meta: components["schemas"]["PublicPricingMeta"];
+        };
+        PublicModelParameter: {
+            name: string;
+            required: boolean;
+            type: string;
+            default: unknown;
+            description: string;
+        };
+        PublicRateLimit: {
+            group: string;
+            /**
+             * Format: int64
+             * @description 每用户每模型 RPM；0=不限。
+             */
+            user_model_rpm: number;
+        };
+        PublicModelDetail: components["schemas"]["PublicModelCard"] & {
+            modalities: string[];
+            knowledge_cutoff: string | null;
+            released_at: string | null;
+            group_prices: components["schemas"]["PublicGroupPrice"][];
+            parameters: components["schemas"]["PublicModelParameter"][];
+            rate_limits: components["schemas"]["PublicRateLimit"][];
+            /** @description 认证头风格；当前实现恒为 bearer。 */
+            auth_style: string;
+        };
         /**
          * @description 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
          *     前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
@@ -3673,6 +4019,152 @@ export interface operations {
                 };
             };
             429: components["responses"]["Error429"];
+        };
+    };
+    getHomeStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description public, max-age=300（服务端缓存窗口同值） */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HomeStats"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPublicPricing: {
+        parameters: {
+            query?: {
+                /** @description 页码（1 基）；非法或越界回退首屏/最后一页。 */
+                p?: number;
+                /** @description 每页条数；默认 24，上限 100（超出按 100 截断）。 */
+                page_size?: number;
+                /** @description model_id 大小写不敏感子串；超长截断。 */
+                search?: string;
+                /**
+                 * @description 价格按输入价；同模式内 per_token 在 per_request 前，tie-breaker 为
+                 *     model_id。非法值回退 name。
+                 */
+                sort?: "name" | "price_asc" | "price_desc";
+                /** @description 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。 */
+                vendor?: string[];
+                /** @description 分组预览；不存在则忽略。 */
+                group?: string;
+                /** @description 计费类型；非法值回退 all。 */
+                quotaType?: "all" | "token" | "request";
+                /** @description 是否返回分组实付价（仍受会话/expose 规则约束）。 */
+                include_group_price?: "0" | "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（空集也是 200 + items:[]） */
+            200: {
+                headers: {
+                    /** @description "pricing-v<hash>"；hash 由三张表的 max(updated_at)+count+max(id) 派生 */
+                    ETag?: string;
+                    /** @description public, max-age=30, stale-while-revalidate=30（个性化响应 private） */
+                    "Cache-Control"?: string;
+                    /** @description Accept-Encoding；个性化响应额外含 Cookie */
+                    Vary?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicPricingList"];
+                };
+            };
+            /** @description If-None-Match 命中（无 body） */
+            304: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPublicPricingDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description URL 编码的模型名（可含 `/`）。 */
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description "pricing-v<hash>-<modelHash>" */
+                    ETag?: string;
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicModelDetail"];
+                };
+            };
+            /** @description If-None-Match 命中（无 body） */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模型不存在或不可公示（type=model-not-found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPublicPricingMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 未实现（type=not-implemented） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getLoginEncryptionKey: {

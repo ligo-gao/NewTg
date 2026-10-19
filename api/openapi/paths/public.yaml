@@ -469,3 +469,189 @@ paths:
           description: 内部错误（纯文本 `failure`，渠道会重投）
         '503':
           description: 限流器不可用（fail closed）
+
+  /api/home/stats:
+    get:
+      tags: [public]
+      operationId: getHomeStats
+      summary: 首页统计数据条（公开，5 分钟服务端缓存）
+      description: |
+        4 个计数指标：upstreams=COUNT(DISTINCT channels.type) WHERE status=1；
+        models=与 `/api/pricing` 同一可见集合的计数；endpoints=冻结协议端点目录
+        （openai chat/completions、anthropic messages、gemini generateContent）
+        大小 3；routing_dims=冻结调度维度清单（priority/weight/group/
+        model-allowlist/affinity/retry）大小 6。0 如实返回（前端在 0 时隐藏区块）。
+        数据库故障返回 500 problem，绝不返回 200 空对象。Cache-Control:
+        public, max-age=300。B8 公开只读限流（60 次/分钟/IP+path，fail-open）。
+      security: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: public, max-age=300（服务端缓存窗口同值）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/HomeStats'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/pricing:
+    get:
+      tags: [public]
+      operationId: getPublicPricing
+      summary: 公开定价目录（offset 分页；宽容参数）
+      description: |
+        只读 `model_pricing` / `group_pricing` / `user_groups`，可见集合为
+        `model_pricing.status=1 AND billing_expr IS NULL`。金额一律 int64 的 JSON
+        字符串；NULL 价列下发 null（不伪造兜底价）。非法参数逐项降级并返回 200
+        （不存在的 facet 值丢弃、非法分页回退默认、`p` 越界回退最后一页）；空集
+        是 200 + `items:[]`。facet 计数忽略本组自身筛选。`group_price` 仅在登录
+        或显式 `group` 时出现；匿名且 `billing.expose_group_ratios=false` 时分组
+        facet 的 ratio 为 null。响应带 `ETag: "pricing-v<hash>"`，命中
+        `If-None-Match` 返回 304 无 body；缓存 `public, max-age=30,
+        stale-while-revalidate=30`（带会话的个性化响应降级为 private）。
+      security: []
+      parameters:
+        - name: p
+          in: query
+          schema: {type: integer, minimum: 1}
+          description: 页码（1 基）；非法或越界回退首屏/最后一页。
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 24}
+          description: 每页条数；默认 24，上限 100（超出按 100 截断）。
+        - name: search
+          in: query
+          schema: {type: string, maxLength: 128}
+          description: model_id 大小写不敏感子串；超长截断。
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, price_asc, price_desc]
+            default: name
+          description: |
+            价格按输入价；同模式内 per_token 在 per_request 前，tie-breaker 为
+            model_id。非法值回退 name。
+        - name: vendor
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: {type: string}
+          description: 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。
+        - name: group
+          in: query
+          schema: {type: string}
+          description: 分组预览；不存在则忽略。
+        - name: quotaType
+          in: query
+          schema:
+            type: string
+            enum: [all, token, request]
+            default: all
+          description: 计费类型；非法值回退 all。
+        - name: include_group_price
+          in: query
+          schema:
+            type: string
+            enum: ['0', '1']
+            default: '1'
+          description: 是否返回分组实付价（仍受会话/expose 规则约束）。
+      responses:
+        '200':
+          description: OK（空集也是 200 + items:[]）
+          headers:
+            ETag:
+              description: '"pricing-v<hash>"；hash 由三张表的 max(updated_at)+count+max(id) 派生'
+              schema: {type: string}
+            Cache-Control:
+              description: public, max-age=30, stale-while-revalidate=30（个性化响应 private）
+              schema: {type: string}
+            Vary:
+              description: Accept-Encoding；个性化响应额外含 Cookie
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PublicPricingList'
+        '304':
+          description: If-None-Match 命中（无 body）
+          headers:
+            ETag:
+              schema: {type: string}
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/pricing/{model_id}:
+    get:
+      tags: [public]
+      operationId: getPublicPricingDetail
+      summary: 公开模型详情（URL 编码的 `/`）
+      description: |
+        `model_id` 以 URL 编码承载（如 `openai%2Fgpt-5`）。不存在、停用、无定价
+        或表达式计价的模型统一返回 404 `model-not-found`。缓存与 ETag 策略同
+        `/api/pricing`；详情 ETag 由域版本 + 模型名哈希派生。
+      security: []
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema: {type: string, maxLength: 512}
+          description: URL 编码的模型名（可含 `/`）。
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: '"pricing-v<hash>-<modelHash>"'
+              schema: {type: string}
+            Cache-Control:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PublicModelDetail'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '404':
+          description: 模型不存在或不可公示（type=model-not-found）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/pricing/{model_id}/metrics:
+    get:
+      tags: [public]
+      operationId: getPublicPricingMetrics
+      summary: 模型性能指标（P1 占位，未实现）
+      description: |
+        本波（M6c）只注册 404：不返回伪造数据。type=not-implemented 以区别于
+        「模型不存在」。
+      security: []
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema: {type: string, maxLength: 512}
+      responses:
+        '404':
+          description: 未实现（type=not-implemented）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'

@@ -15,6 +15,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // RouterConfig 是管理面 HTTP 路由的装配输入。必填 Redis（会话/失败锁定/
@@ -88,6 +89,15 @@ type RouterConfig struct {
 	// SignupGrantAlert 在注册赠送被反滥用上限抑制时触发（nil 时仅 Warn 日志）。
 	SignupGrantAlert func(ctx context.Context, userID int64, ip string)
 	Logger           *slog.Logger
+
+	// PublicPricingRepo 是公开读面（GET /api/pricing、/api/home/stats）的
+	// 存储接缝。nil 且 DB 非 nil 时由 store.NewPublicPricingRepo(DB) 构造；
+	// 两者都为空时不挂载公开读面（纯内存 Repo 的单元装配没有定价表）。
+	// 公开路由与受保护路由共享同一 DB，但只读可见集合，不触碰内部字段。
+	PublicPricingRepo store.PublicPricingRepo
+	// PublicUserGroupLookup 是软鉴权读取 users.group 的接缝；nil 且 DB 非 nil
+	// 时使用 SQL 实现。缺失只影响「登录用户的 group_price」，不影响公开访问。
+	PublicUserGroupLookup PublicUserGroupLookup
 }
 
 // Router 是管理面根路由：公开认证端点直接注册，其余 /api/* 走
@@ -182,7 +192,10 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		protected: http.NewServeMux(),
 		handlers:  h,
 	}
-	rt.handler = noStoreAPI(rt.mux)
+	// 全局 X-Request-ID 在最外层：公开/管理全部 /api/* 响应（含 401/404/500）
+	// 都带同一个 id；no-store 紧随其后，二者都不依赖具体 handler。中继 /v1
+	// 不走本 Router，由 RelayContext 自行生成，互不冲突（R-PUB-10）。
+	rt.handler = RequestIDMiddleware(noStoreAPI(rt.mux))
 
 	// 登录加密公钥端点是公开的（登录前取公钥），精确模式优先于 /api/ 子树。
 	if cfg.LoginEncryption != nil {
@@ -222,6 +235,36 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	rt.mux.HandleFunc("GET /api/status", h.handleStatus)
 	// 公开地理区域：精确模式挂根 mux，绕过 SessionAuth（匿名恒 200）。
 	rt.mux.HandleFunc("GET /api/geoip", h.handleGeoIP)
+
+	// 公开读面（modules-09；M6c Task 7）：首页统计与定价目录。
+	// 与上面的精确端点同属「绕过 SessionAuth」的根 mux 路由；个性化分组价由
+	// handler 内部的软鉴权解析，匿名请求绝不 401。
+	publicRepo := cfg.PublicPricingRepo
+	if publicRepo == nil && cfg.DB != nil {
+		publicRepo = store.NewPublicPricingRepo(cfg.DB)
+	}
+	if publicRepo != nil {
+		userGroups := cfg.PublicUserGroupLookup
+		if userGroups == nil && cfg.DB != nil {
+			userGroups = &sqlPublicUserGroupLookup{db: cfg.DB}
+		}
+		homeStats, err := NewHomeStatsHandlers(HomeStatsHandlerConfig{
+			Repo: publicRepo, Redis: cfg.Redis, Logger: cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		homeStats.RegisterHomeStatsRoutes(rt)
+		publicPricing, err := NewPublicPricingHandlers(PublicPricingHandlerConfig{
+			Repo: publicRepo, Config: cfg.Config, Sessions: cfg.Sessions,
+			UserGroups: userGroups, Redis: cfg.Redis, Logger: cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		publicPricing.RegisterPublicPricingRoutes(rt)
+	}
+
 	rt.mux.HandleFunc("POST /api/auth/email-code", h.handleEmailCode)
 	rt.mux.HandleFunc("POST /api/auth/register", h.handleRegister)
 	rt.mux.HandleFunc("POST /api/auth/login", h.handleLogin)

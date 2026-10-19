@@ -124,3 +124,89 @@ func TestPublicStatusSettingsDefaults(t *testing.T) {
 		t.Fatalf("billing.display_unit 默认 = %q", body.Billing.DisplayUnit)
 	}
 }
+
+// R-PUB-07：home_custom_html 仅在 home_custom_enabled=true 时下发。
+func TestPublicStatusHomeCustomHTMLConditional(t *testing.T) {
+	// 默认（disabled）：字段完全不出现，而不是空串。
+	env := newAuthTestEnv(t, mapConfig{
+		"site.home_custom_html": configString("<section>custom</section>"),
+	}, authTestOptions{})
+	rr := env.request(http.MethodGet, "/api/status", nil, nil)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	var site map[string]json.RawMessage
+	if err := json.Unmarshal(raw["site"], &site); err != nil {
+		t.Fatalf("site 非法: %v", err)
+	}
+	if _, ok := site["home_custom_html"]; ok {
+		t.Fatal("home_custom_enabled=false 时不得下发 home_custom_html")
+	}
+	if enabled, _ := site["home_custom_enabled"]; string(enabled) != "false" {
+		t.Fatalf("home_custom_enabled = %s", enabled)
+	}
+
+	// enabled=true：字段下发且内容一致。
+	enabledEnv := newAuthTestEnv(t, mapConfig{
+		"site.home_custom_enabled": configBool(true),
+		"site.home_custom_html":    configString("<section>custom</section>"),
+	}, authTestOptions{})
+	rr = enabledEnv.request(http.MethodGet, "/api/status", nil, nil)
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	if err := json.Unmarshal(raw["site"], &site); err != nil {
+		t.Fatalf("site 非法: %v", err)
+	}
+	var html string
+	if err := json.Unmarshal(site["home_custom_html"], &html); err != nil {
+		t.Fatalf("home_custom_html 缺失或类型错误: %v", err)
+	}
+	if html != "<section>custom</section>" {
+		t.Fatalf("home_custom_html = %q", html)
+	}
+}
+
+// R-PUB-09：nav.docs.require_auth / nav.about.require_auth 默认 false 并可配置。
+func TestPublicStatusNavAuthKeys(t *testing.T) {
+	env := newAuthTestEnv(t, nil, authTestOptions{})
+	rr := env.request(http.MethodGet, "/api/status", nil, nil)
+	var body struct {
+		Nav struct {
+			Docs struct {
+				Enabled     bool `json:"enabled"`
+				RequireAuth bool `json:"require_auth"`
+			} `json:"docs"`
+			About struct {
+				Enabled     bool `json:"enabled"`
+				RequireAuth bool `json:"require_auth"`
+			} `json:"about"`
+		} `json:"nav"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	if body.Nav.Docs.RequireAuth || body.Nav.About.RequireAuth {
+		t.Fatalf("两个新键默认应为 false: %+v", body.Nav)
+	}
+	if !body.Nav.Docs.Enabled || !body.Nav.About.Enabled {
+		t.Fatalf("enabled 默认应为 true: %+v", body.Nav)
+	}
+
+	enabled := newAuthTestEnv(t, mapConfig{
+		"nav.docs.require_auth":  configBool(true),
+		"nav.about.require_auth": configBool(true),
+	}, authTestOptions{})
+	rr = enabled.request(http.MethodGet, "/api/status", nil, nil)
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	if !body.Nav.Docs.RequireAuth || !body.Nav.About.RequireAuth {
+		t.Fatalf("配置值未投影到 nav: %+v", body.Nav)
+	}
+	// R-PUB-06：status 仍保持 no-store（设置即时生效）。
+	if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q，期望 no-store", cc)
+	}
+}

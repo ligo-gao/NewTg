@@ -688,6 +688,14 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 公开键全集来自注册表（§1.4.1 单一真源）：site/nav/billing/pay 按域投影，
 	// 缺值自动回落注册表默认值。auth 区保留既有窄结构以维持向后兼容。
 	public := settings.PublicSnapshot(h.config)
+	site := settings.DomainValues(public, "site")
+	// R-PUB-07：自定义首页 HTML 只在开关打开时下发。此前无条件下发会让
+	// home_custom_enabled=false 的站点仍把整段 HTML（可能很大且含运营文案）
+	// 发给所有访客；开关关闭时前端也不应收到这段「已失效」的内容。
+	// 用投影值判断（而不是再次读配置），保证与下发值来自同一快照。
+	if enabled, _ := site["home_custom_enabled"].(bool); !enabled {
+		delete(site, "home_custom_html")
+	}
 	// 站点开关变更要求即时反映到登录/注册页，禁止中间层缓存公开状态。
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, statusResponse{
@@ -701,7 +709,7 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 			},
 			Passkey: statusPasskey{Enabled: publicBool(public, "auth.passkey.enabled")},
 		},
-		Site:                           settings.DomainValues(public, "site"),
+		Site:                           site,
 		Nav:                            settings.DomainValues(public, "nav"),
 		Billing:                        settings.DomainValues(public, "billing"),
 		Pay:                            settings.DomainValues(public, "pay"),

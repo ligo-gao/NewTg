@@ -522,6 +522,24 @@ func (e Problem402Currency) Valid() bool {
 	}
 }
 
+// Defines values for PublicPricingTypeFacetValue.
+const (
+	PublicPricingTypeFacetValueRequest PublicPricingTypeFacetValue = "request"
+	PublicPricingTypeFacetValueToken   PublicPricingTypeFacetValue = "token"
+)
+
+// Valid indicates whether the value is a known member of the PublicPricingTypeFacetValue enum.
+func (e PublicPricingTypeFacetValue) Valid() bool {
+	switch e {
+	case PublicPricingTypeFacetValueRequest:
+		return true
+	case PublicPricingTypeFacetValueToken:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QuotaAdjustmentRequestMode.
 const (
 	Add      QuotaAdjustmentRequestMode = "add"
@@ -1212,6 +1230,66 @@ func (e ListOrdersParamsStatus) Valid() bool {
 	case ListOrdersParamsStatusPending:
 		return true
 	case ListOrdersParamsStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPublicPricingParamsSort.
+const (
+	Name      GetPublicPricingParamsSort = "name"
+	PriceAsc  GetPublicPricingParamsSort = "price_asc"
+	PriceDesc GetPublicPricingParamsSort = "price_desc"
+)
+
+// Valid indicates whether the value is a known member of the GetPublicPricingParamsSort enum.
+func (e GetPublicPricingParamsSort) Valid() bool {
+	switch e {
+	case Name:
+		return true
+	case PriceAsc:
+		return true
+	case PriceDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPublicPricingParamsQuotaType.
+const (
+	GetPublicPricingParamsQuotaTypeAll     GetPublicPricingParamsQuotaType = "all"
+	GetPublicPricingParamsQuotaTypeRequest GetPublicPricingParamsQuotaType = "request"
+	GetPublicPricingParamsQuotaTypeToken   GetPublicPricingParamsQuotaType = "token"
+)
+
+// Valid indicates whether the value is a known member of the GetPublicPricingParamsQuotaType enum.
+func (e GetPublicPricingParamsQuotaType) Valid() bool {
+	switch e {
+	case GetPublicPricingParamsQuotaTypeAll:
+		return true
+	case GetPublicPricingParamsQuotaTypeRequest:
+		return true
+	case GetPublicPricingParamsQuotaTypeToken:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPublicPricingParamsIncludeGroupPrice.
+const (
+	GetPublicPricingParamsIncludeGroupPriceN0 GetPublicPricingParamsIncludeGroupPrice = "0"
+	GetPublicPricingParamsIncludeGroupPriceN1 GetPublicPricingParamsIncludeGroupPrice = "1"
+)
+
+// Valid indicates whether the value is a known member of the GetPublicPricingParamsIncludeGroupPrice enum.
+func (e GetPublicPricingParamsIncludeGroupPrice) Valid() bool {
+	switch e {
+	case GetPublicPricingParamsIncludeGroupPriceN0:
+		return true
+	case GetPublicPricingParamsIncludeGroupPriceN1:
 		return true
 	default:
 		return false
@@ -2238,6 +2316,21 @@ type GroupPricingUpdateRequest struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+// HomeStats defines model for HomeStats.
+type HomeStats struct {
+	// Endpoints 冻结协议端点目录大小（3）。
+	Endpoints int64 `json:"endpoints"`
+
+	// Models 与 /api/pricing 同一可见集合的计数。
+	Models int64 `json:"models"`
+
+	// RoutingDims 冻结调度控制维度大小（6）。
+	RoutingDims int64 `json:"routing_dims"`
+
+	// Upstreams 已启用渠道去重到上游服务商类型后的数量。
+	Upstreams int64 `json:"upstreams"`
+}
+
 // Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 type Language string
 
@@ -2746,6 +2839,513 @@ type Problem402 struct {
 // Problem402Currency defines model for Problem402.Currency.
 type Problem402Currency string
 
+// PublicBilling billing 域的公开键（§1.4.1）。
+type PublicBilling struct {
+	CurrencySymbol          *string `json:"currency_symbol,omitempty"`
+	DisplayTokenStatEnabled *bool   `json:"display_token_stat_enabled,omitempty"`
+
+	// DisplayUnit credits（积分为主单位）或 cny（人民币为主单位）。
+	DisplayUnit                      *string `json:"display_unit,omitempty"`
+	QuotaPerUnit                     *int64  `json:"quota_per_unit,omitempty"`
+	SignupGrantCredits               *int64  `json:"signup_grant_credits,omitempty"`
+	SignupGrantRequiresVerifiedEmail *bool   `json:"signup_grant_requires_verified_email,omitempty"`
+}
+
+// PublicFacetOption defines model for PublicFacetOption.
+type PublicFacetOption struct {
+	Count int64  `json:"count"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// PublicFacets defines model for PublicFacets.
+type PublicFacets struct {
+	// Capabilities 元数据未落库（R-PUB-01）；当前恒为空数组。
+	Capabilities []PublicFacetOption `json:"capabilities"`
+
+	// Context 元数据未落库（R-PUB-01）；当前恒为空数组。
+	Context []PublicFacetOption `json:"context"`
+
+	// Endpoints 元数据未落库（R-PUB-01）；当前恒为空数组。
+	Endpoints    []PublicFacetOption      `json:"endpoints"`
+	Groups       []PublicGroupFacet       `json:"groups"`
+	PricingTypes []PublicPricingTypeFacet `json:"pricing_types"`
+	Vendors      []PublicFacetOption      `json:"vendors"`
+}
+
+// PublicGroupFacet defines model for PublicGroupFacet.
+type PublicGroupFacet struct {
+	Count int64  `json:"count"`
+	Label string `json:"label"`
+
+	// Ratio 匿名且 expose_group_ratios=false 时为 null（R-PUB-05）。
+	Ratio PublicGroupFacet_Ratio `json:"ratio"`
+	Value string                 `json:"value"`
+}
+
+// PublicGroupFacetRatio0 defines model for PublicGroupFacet.Ratio.0.
+type PublicGroupFacetRatio0 = int
+
+// PublicGroupFacetRatio1 defines model for PublicGroupFacet.Ratio.1.
+type PublicGroupFacetRatio1 = interface{}
+
+// PublicGroupFacet_Ratio 匿名且 expose_group_ratios=false 时为 null（R-PUB-05）。
+type PublicGroupFacet_Ratio struct {
+	union json.RawMessage
+}
+
+// PublicGroupPrice defines model for PublicGroupPrice.
+type PublicGroupPrice struct {
+	CacheRead  PublicGroupPrice_CacheRead  `json:"cache_read"`
+	CacheWrite PublicGroupPrice_CacheWrite `json:"cache_write"`
+	Completion PublicGroupPrice_Completion `json:"completion"`
+	Group      string                      `json:"group"`
+	Prompt     PublicGroupPrice_Prompt     `json:"prompt"`
+
+	// Ratio 分组倍率（整数百分比，120 = 1.20x）。
+	Ratio PublicGroupPrice_Ratio `json:"ratio"`
+
+	// Source override=覆盖价；ratio=基准价 × 倍率 ÷ 100（服务端整数运算）。
+	Source string `json:"source"`
+}
+
+// PublicGroupPriceCacheRead0 defines model for PublicGroupPrice.CacheRead.0.
+type PublicGroupPriceCacheRead0 = string
+
+// PublicGroupPriceCacheRead1 defines model for PublicGroupPrice.CacheRead.1.
+type PublicGroupPriceCacheRead1 = interface{}
+
+// PublicGroupPrice_CacheRead defines model for PublicGroupPrice.CacheRead.
+type PublicGroupPrice_CacheRead struct {
+	union json.RawMessage
+}
+
+// PublicGroupPriceCacheWrite0 defines model for PublicGroupPrice.CacheWrite.0.
+type PublicGroupPriceCacheWrite0 = string
+
+// PublicGroupPriceCacheWrite1 defines model for PublicGroupPrice.CacheWrite.1.
+type PublicGroupPriceCacheWrite1 = interface{}
+
+// PublicGroupPrice_CacheWrite defines model for PublicGroupPrice.CacheWrite.
+type PublicGroupPrice_CacheWrite struct {
+	union json.RawMessage
+}
+
+// PublicGroupPriceCompletion0 defines model for PublicGroupPrice.Completion.0.
+type PublicGroupPriceCompletion0 = string
+
+// PublicGroupPriceCompletion1 defines model for PublicGroupPrice.Completion.1.
+type PublicGroupPriceCompletion1 = interface{}
+
+// PublicGroupPrice_Completion defines model for PublicGroupPrice.Completion.
+type PublicGroupPrice_Completion struct {
+	union json.RawMessage
+}
+
+// PublicGroupPricePrompt0 defines model for PublicGroupPrice.Prompt.0.
+type PublicGroupPricePrompt0 = string
+
+// PublicGroupPricePrompt1 defines model for PublicGroupPrice.Prompt.1.
+type PublicGroupPricePrompt1 = interface{}
+
+// PublicGroupPrice_Prompt defines model for PublicGroupPrice.Prompt.
+type PublicGroupPrice_Prompt struct {
+	union json.RawMessage
+}
+
+// PublicGroupPriceRatio0 defines model for PublicGroupPrice.Ratio.0.
+type PublicGroupPriceRatio0 = int
+
+// PublicGroupPriceRatio1 defines model for PublicGroupPrice.Ratio.1.
+type PublicGroupPriceRatio1 = interface{}
+
+// PublicGroupPrice_Ratio 分组倍率（整数百分比，120 = 1.20x）。
+type PublicGroupPrice_Ratio struct {
+	union json.RawMessage
+}
+
+// PublicModelCard defines model for PublicModelCard.
+type PublicModelCard struct {
+	CacheReadPrice  PublicModelCard_CacheReadPrice  `json:"cache_read_price"`
+	CacheWritePrice PublicModelCard_CacheWritePrice `json:"cache_write_price"`
+	Capabilities    []string                        `json:"capabilities"`
+	CompletionPrice PublicModelCard_CompletionPrice `json:"completion_price"`
+	ContextLength   PublicModelCard_ContextLength   `json:"context_length"`
+	Description     string                          `json:"description"`
+
+	// DisplayName 元数据未落库时等于 model_id（R-PUB-01）。
+	DisplayName string   `json:"display_name"`
+	Endpoints   []string `json:"endpoints"`
+
+	// GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+	GroupPrice PublicModelCard_GroupPrice `json:"group_price"`
+
+	// IsFree 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。
+	IsFree    bool                      `json:"is_free"`
+	MaxOutput PublicModelCard_MaxOutput `json:"max_output"`
+
+	// Mode per_token 或 per_request（MVP 仅两种）。
+	Mode    string `json:"mode"`
+	ModelId string `json:"model_id"`
+
+	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
+	PromptPrice PublicModelCard_PromptPrice `json:"prompt_price"`
+	Tags        []string                    `json:"tags"`
+
+	// Vendor model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+	Vendor string `json:"vendor"`
+}
+
+// PublicModelCardCacheReadPrice0 defines model for PublicModelCard.CacheReadPrice.0.
+type PublicModelCardCacheReadPrice0 = string
+
+// PublicModelCardCacheReadPrice1 defines model for PublicModelCard.CacheReadPrice.1.
+type PublicModelCardCacheReadPrice1 = interface{}
+
+// PublicModelCard_CacheReadPrice defines model for PublicModelCard.CacheReadPrice.
+type PublicModelCard_CacheReadPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelCardCacheWritePrice0 defines model for PublicModelCard.CacheWritePrice.0.
+type PublicModelCardCacheWritePrice0 = string
+
+// PublicModelCardCacheWritePrice1 defines model for PublicModelCard.CacheWritePrice.1.
+type PublicModelCardCacheWritePrice1 = interface{}
+
+// PublicModelCard_CacheWritePrice defines model for PublicModelCard.CacheWritePrice.
+type PublicModelCard_CacheWritePrice struct {
+	union json.RawMessage
+}
+
+// PublicModelCardCompletionPrice0 defines model for PublicModelCard.CompletionPrice.0.
+type PublicModelCardCompletionPrice0 = string
+
+// PublicModelCardCompletionPrice1 defines model for PublicModelCard.CompletionPrice.1.
+type PublicModelCardCompletionPrice1 = interface{}
+
+// PublicModelCard_CompletionPrice defines model for PublicModelCard.CompletionPrice.
+type PublicModelCard_CompletionPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelCardContextLength0 defines model for PublicModelCard.ContextLength.0.
+type PublicModelCardContextLength0 = int64
+
+// PublicModelCardContextLength1 defines model for PublicModelCard.ContextLength.1.
+type PublicModelCardContextLength1 = interface{}
+
+// PublicModelCard_ContextLength defines model for PublicModelCard.ContextLength.
+type PublicModelCard_ContextLength struct {
+	union json.RawMessage
+}
+
+// PublicModelCardGroupPrice1 defines model for PublicModelCard.GroupPrice.1.
+type PublicModelCardGroupPrice1 = interface{}
+
+// PublicModelCard_GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+type PublicModelCard_GroupPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelCardMaxOutput0 defines model for PublicModelCard.MaxOutput.0.
+type PublicModelCardMaxOutput0 = int64
+
+// PublicModelCardMaxOutput1 defines model for PublicModelCard.MaxOutput.1.
+type PublicModelCardMaxOutput1 = interface{}
+
+// PublicModelCard_MaxOutput defines model for PublicModelCard.MaxOutput.
+type PublicModelCard_MaxOutput struct {
+	union json.RawMessage
+}
+
+// PublicModelCardPromptPrice0 defines model for PublicModelCard.PromptPrice.0.
+type PublicModelCardPromptPrice0 = string
+
+// PublicModelCardPromptPrice1 defines model for PublicModelCard.PromptPrice.1.
+type PublicModelCardPromptPrice1 = interface{}
+
+// PublicModelCard_PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
+type PublicModelCard_PromptPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetail defines model for PublicModelDetail.
+type PublicModelDetail struct {
+	// AuthStyle 认证头风格；当前实现恒为 bearer。
+	AuthStyle       string                            `json:"auth_style"`
+	CacheReadPrice  PublicModelDetail_CacheReadPrice  `json:"cache_read_price"`
+	CacheWritePrice PublicModelDetail_CacheWritePrice `json:"cache_write_price"`
+	Capabilities    []string                          `json:"capabilities"`
+	CompletionPrice PublicModelDetail_CompletionPrice `json:"completion_price"`
+	ContextLength   PublicModelDetail_ContextLength   `json:"context_length"`
+	Description     string                            `json:"description"`
+
+	// DisplayName 元数据未落库时等于 model_id（R-PUB-01）。
+	DisplayName string   `json:"display_name"`
+	Endpoints   []string `json:"endpoints"`
+
+	// GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+	GroupPrice  PublicModelDetail_GroupPrice `json:"group_price"`
+	GroupPrices []PublicGroupPrice           `json:"group_prices"`
+
+	// IsFree 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。
+	IsFree          bool                              `json:"is_free"`
+	KnowledgeCutoff PublicModelDetail_KnowledgeCutoff `json:"knowledge_cutoff"`
+	MaxOutput       PublicModelDetail_MaxOutput       `json:"max_output"`
+	Modalities      []string                          `json:"modalities"`
+
+	// Mode per_token 或 per_request（MVP 仅两种）。
+	Mode       string                 `json:"mode"`
+	ModelId    string                 `json:"model_id"`
+	Parameters []PublicModelParameter `json:"parameters"`
+
+	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
+	PromptPrice PublicModelDetail_PromptPrice `json:"prompt_price"`
+	RateLimits  []PublicRateLimit             `json:"rate_limits"`
+	ReleasedAt  PublicModelDetail_ReleasedAt  `json:"released_at"`
+	Tags        []string                      `json:"tags"`
+
+	// Vendor model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+	Vendor string `json:"vendor"`
+}
+
+// PublicModelDetailCacheReadPrice0 defines model for PublicModelDetail.CacheReadPrice.0.
+type PublicModelDetailCacheReadPrice0 = string
+
+// PublicModelDetailCacheReadPrice1 defines model for PublicModelDetail.CacheReadPrice.1.
+type PublicModelDetailCacheReadPrice1 = interface{}
+
+// PublicModelDetail_CacheReadPrice defines model for PublicModelDetail.CacheReadPrice.
+type PublicModelDetail_CacheReadPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailCacheWritePrice0 defines model for PublicModelDetail.CacheWritePrice.0.
+type PublicModelDetailCacheWritePrice0 = string
+
+// PublicModelDetailCacheWritePrice1 defines model for PublicModelDetail.CacheWritePrice.1.
+type PublicModelDetailCacheWritePrice1 = interface{}
+
+// PublicModelDetail_CacheWritePrice defines model for PublicModelDetail.CacheWritePrice.
+type PublicModelDetail_CacheWritePrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailCompletionPrice0 defines model for PublicModelDetail.CompletionPrice.0.
+type PublicModelDetailCompletionPrice0 = string
+
+// PublicModelDetailCompletionPrice1 defines model for PublicModelDetail.CompletionPrice.1.
+type PublicModelDetailCompletionPrice1 = interface{}
+
+// PublicModelDetail_CompletionPrice defines model for PublicModelDetail.CompletionPrice.
+type PublicModelDetail_CompletionPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailContextLength0 defines model for PublicModelDetail.ContextLength.0.
+type PublicModelDetailContextLength0 = int64
+
+// PublicModelDetailContextLength1 defines model for PublicModelDetail.ContextLength.1.
+type PublicModelDetailContextLength1 = interface{}
+
+// PublicModelDetail_ContextLength defines model for PublicModelDetail.ContextLength.
+type PublicModelDetail_ContextLength struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailGroupPrice1 defines model for PublicModelDetail.GroupPrice.1.
+type PublicModelDetailGroupPrice1 = interface{}
+
+// PublicModelDetail_GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+type PublicModelDetail_GroupPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailKnowledgeCutoff0 defines model for PublicModelDetail.KnowledgeCutoff.0.
+type PublicModelDetailKnowledgeCutoff0 = string
+
+// PublicModelDetailKnowledgeCutoff1 defines model for PublicModelDetail.KnowledgeCutoff.1.
+type PublicModelDetailKnowledgeCutoff1 = interface{}
+
+// PublicModelDetail_KnowledgeCutoff defines model for PublicModelDetail.KnowledgeCutoff.
+type PublicModelDetail_KnowledgeCutoff struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailMaxOutput0 defines model for PublicModelDetail.MaxOutput.0.
+type PublicModelDetailMaxOutput0 = int64
+
+// PublicModelDetailMaxOutput1 defines model for PublicModelDetail.MaxOutput.1.
+type PublicModelDetailMaxOutput1 = interface{}
+
+// PublicModelDetail_MaxOutput defines model for PublicModelDetail.MaxOutput.
+type PublicModelDetail_MaxOutput struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailPromptPrice0 defines model for PublicModelDetail.PromptPrice.0.
+type PublicModelDetailPromptPrice0 = string
+
+// PublicModelDetailPromptPrice1 defines model for PublicModelDetail.PromptPrice.1.
+type PublicModelDetailPromptPrice1 = interface{}
+
+// PublicModelDetail_PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
+type PublicModelDetail_PromptPrice struct {
+	union json.RawMessage
+}
+
+// PublicModelDetailReleasedAt0 defines model for PublicModelDetail.ReleasedAt.0.
+type PublicModelDetailReleasedAt0 = string
+
+// PublicModelDetailReleasedAt1 defines model for PublicModelDetail.ReleasedAt.1.
+type PublicModelDetailReleasedAt1 = interface{}
+
+// PublicModelDetail_ReleasedAt defines model for PublicModelDetail.ReleasedAt.
+type PublicModelDetail_ReleasedAt struct {
+	union json.RawMessage
+}
+
+// PublicModelParameter defines model for PublicModelParameter.
+type PublicModelParameter struct {
+	Default     interface{} `json:"default"`
+	Description string      `json:"description"`
+	Name        string      `json:"name"`
+	Required    bool        `json:"required"`
+	Type        string      `json:"type"`
+}
+
+// PublicNav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+// require_auth，以及控制台模块显隐。`docs.require_auth` 与
+// `about.require_auth` 默认 false（R-PUB-09）。
+type PublicNav struct {
+	About   *PublicNavItem `json:"about,omitempty"`
+	Console *PublicNavItem `json:"console,omitempty"`
+	Docs    *PublicNavItem `json:"docs,omitempty"`
+	Home    *PublicNavItem `json:"home,omitempty"`
+	Modules *struct {
+		Chat *struct {
+			Playground *bool `json:"playground,omitempty"`
+		} `json:"chat,omitempty"`
+		Console *struct {
+			Dashboard *bool `json:"dashboard,omitempty"`
+			Profile   *bool `json:"profile,omitempty"`
+			Security  *bool `json:"security,omitempty"`
+			Tokens    *bool `json:"tokens,omitempty"`
+			UsageLogs *bool `json:"usage_logs,omitempty"`
+			Wallet    *bool `json:"wallet,omitempty"`
+		} `json:"console,omitempty"`
+	} `json:"modules,omitempty"`
+	Pricing  *PublicNavItem `json:"pricing,omitempty"`
+	Rankings *PublicNavItem `json:"rankings,omitempty"`
+}
+
+// PublicNavItem defines model for PublicNavItem.
+type PublicNavItem struct {
+	Enabled     bool `json:"enabled"`
+	RequireAuth bool `json:"require_auth"`
+}
+
+// PublicPay pay 域的公开键（§1.4.1）；绝不含任何支付密钥。
+type PublicPay struct {
+	Alipay *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+		Sandbox *bool `json:"sandbox,omitempty"`
+	} `json:"alipay,omitempty"`
+	AmountPresetsCny *[]int64 `json:"amount_presets_cny,omitempty"`
+	Creem            *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	} `json:"creem,omitempty"`
+	Epay *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	} `json:"epay,omitempty"`
+	OnlineEnabled *bool `json:"online_enabled,omitempty"`
+	Stripe        *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+
+		// PublishableKey 公开可发布 key（P-17）；secret/webhook secret 永不下发。
+		PublishableKey *string `json:"publishable_key,omitempty"`
+	} `json:"stripe,omitempty"`
+	Waffo *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	} `json:"waffo,omitempty"`
+	WaffoPancake *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	} `json:"waffo_pancake,omitempty"`
+}
+
+// PublicPricingList defines model for PublicPricingList.
+type PublicPricingList struct {
+	Facets   PublicFacets      `json:"facets"`
+	Items    []PublicModelCard `json:"items"`
+	Meta     PublicPricingMeta `json:"meta"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"page_size"`
+
+	// Total 命中总数（int64 的 JSON 字符串，防前端精度丢失）。
+	Total string `json:"total"`
+}
+
+// PublicPricingMeta defines model for PublicPricingMeta.
+type PublicPricingMeta struct {
+	CreditSymbol    string    `json:"credit_symbol"`
+	GeneratedAt     time.Time `json:"generated_at"`
+	QuotaPerUnit    int64     `json:"quota_per_unit"`
+	UsdExchangeRate float64   `json:"usd_exchange_rate"`
+	Version         string    `json:"version"`
+}
+
+// PublicPricingTypeFacet defines model for PublicPricingTypeFacet.
+type PublicPricingTypeFacet struct {
+	Count int64                       `json:"count"`
+	Value PublicPricingTypeFacetValue `json:"value"`
+}
+
+// PublicPricingTypeFacetValue defines model for PublicPricingTypeFacet.Value.
+type PublicPricingTypeFacetValue string
+
+// PublicRateLimit defines model for PublicRateLimit.
+type PublicRateLimit struct {
+	Group string `json:"group"`
+
+	// UserModelRpm 每用户每模型 RPM；0=不限。
+	UserModelRpm int64 `json:"user_model_rpm"`
+}
+
+// PublicSite `site` 域公开键投影。`home_custom_html` 仅在 `home_custom_enabled=true`
+// 时下发（R-PUB-07）；关闭时字段整体缺席。
+type PublicSite struct {
+	AboutHtml *string `json:"about_html,omitempty"`
+	Demo      *struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	} `json:"demo,omitempty"`
+	DocsUrl    *string `json:"docs_url,omitempty"`
+	FilingNo   *string `json:"filing_no,omitempty"`
+	FooterHtml *string `json:"footer_html,omitempty"`
+	HomeBlocks *struct {
+		Features   *bool `json:"features,omitempty"`
+		Hero       *bool `json:"hero,omitempty"`
+		LiveFeed   *bool `json:"live_feed,omitempty"`
+		Onboarding *bool `json:"onboarding,omitempty"`
+		Stats      *bool `json:"stats,omitempty"`
+	} `json:"home_blocks,omitempty"`
+	HomeCustomEnabled *bool `json:"home_custom_enabled,omitempty"`
+
+	// HomeCustomHtml 仅当 home_custom_enabled=true 时存在。
+	HomeCustomHtml     *string                   `json:"home_custom_html,omitempty"`
+	LogoUrl            *string                   `json:"logo_url,omitempty"`
+	OssCredits         *[]map[string]interface{} `json:"oss_credits,omitempty"`
+	RankingsMinSamples *int64                    `json:"rankings_min_samples,omitempty"`
+	Seo                *struct {
+		Description *string `json:"description,omitempty"`
+		OgImageUrl  *string `json:"og_image_url,omitempty"`
+	} `json:"seo,omitempty"`
+	ServerAddress *string `json:"server_address,omitempty"`
+	StatusPageUrl *string `json:"status_page_url,omitempty"`
+	Timezone      *string `json:"timezone,omitempty"`
+	Title         *string `json:"title,omitempty"`
+}
+
 // PublicStatus 公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
 // 变更必须立即反映到登录/注册页，禁止任何中间层缓存。
 type PublicStatus struct {
@@ -2766,21 +3366,43 @@ type PublicStatus struct {
 		} `json:"turnstile"`
 	} `json:"auth"`
 
+	// Billing billing 域的公开键（§1.4.1）。
+	Billing PublicBilling `json:"billing"`
+
+	// CreditDisplaySymbol 等于 billing.currency_symbol（展示用积分符号）。
+	CreditDisplaySymbol string `json:"credit_display_symbol"`
+
 	// DefaultLanguage 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 	DefaultLanguage Language `json:"default_language"`
 
 	// Languages canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
 	Languages []Language `json:"languages"`
 
+	// Nav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+	// require_auth，以及控制台模块显隐。`docs.require_auth` 与
+	// `about.require_auth` 默认 false（R-PUB-09）。
+	Nav PublicNav `json:"nav"`
+
 	// PasswordLoginEncryptionEnabled 与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
 	// true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
 	// （reason=encryption_required，对外响应与口令错误不可区分）。
 	PasswordLoginEncryptionEnabled bool `json:"password_login_encryption_enabled"`
 
+	// Pay pay 域的公开键（§1.4.1）；绝不含任何支付密钥。
+	Pay PublicPay `json:"pay"`
+
+	// Site `site` 域公开键投影。`home_custom_html` 仅在 `home_custom_enabled=true`
+	// 时下发（R-PUB-07）；关闭时字段整体缺席。
+	Site PublicSite `json:"site"`
+
 	// SystemInitialized 站点是否已完成首次初始化（system.install.completed_at 已写入）。前端据此
 	// 实现 /setup 闸门：false 时控制台路由一律重定向到安装向导；已初始化后
 	// 向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
 	SystemInitialized bool `json:"system_initialized"`
+
+	// UsdExchangeRate USD→CNY 展示汇率常量（billing-02 §4.1 唯一真源，7.1 = 71/10）。
+	// 只用于展示层换算，不是设置键。
+	UsdExchangeRate float64 `json:"usd_exchange_rate"`
 }
 
 // QuotaAdjustmentRequest 原子 UPDATE（GC-5）：subtract 超过余额返回 400，绝不产生负余额；
@@ -3905,6 +4527,43 @@ type ChangePasswordParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
+
+// GetPublicPricingParams defines parameters for GetPublicPricing.
+type GetPublicPricingParams struct {
+	// P 页码（1 基）；非法或越界回退首屏/最后一页。
+	P *int `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数；默认 24，上限 100（超出按 100 截断）。
+	PageSize *int `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Search model_id 大小写不敏感子串；超长截断。
+	Search *string `form:"search,omitempty" json:"search,omitempty"`
+
+	// Sort 价格按输入价；同模式内 per_token 在 per_request 前，tie-breaker 为
+	// model_id。非法值回退 name。
+	Sort *GetPublicPricingParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// Vendor 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。
+	Vendor *[]string `form:"vendor,omitempty" json:"vendor,omitempty"`
+
+	// Group 分组预览；不存在则忽略。
+	Group *string `form:"group,omitempty" json:"group,omitempty"`
+
+	// QuotaType 计费类型；非法值回退 all。
+	QuotaType *GetPublicPricingParamsQuotaType `form:"quotaType,omitempty" json:"quotaType,omitempty"`
+
+	// IncludeGroupPrice 是否返回分组实付价（仍受会话/expose 规则约束）。
+	IncludeGroupPrice *GetPublicPricingParamsIncludeGroupPrice `form:"include_group_price,omitempty" json:"include_group_price,omitempty"`
+}
+
+// GetPublicPricingParamsSort defines parameters for GetPublicPricing.
+type GetPublicPricingParamsSort string
+
+// GetPublicPricingParamsQuotaType defines parameters for GetPublicPricing.
+type GetPublicPricingParamsQuotaType string
+
+// GetPublicPricingParamsIncludeGroupPrice defines parameters for GetPublicPricing.
+type GetPublicPricingParamsIncludeGroupPrice string
 
 // ListRedemptionCodesParams defines parameters for ListRedemptionCodes.
 type ListRedemptionCodesParams struct {
@@ -5331,6 +5990,1370 @@ func (t PermissionGrant) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PermissionGrant) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupFacetRatio0 returns the union data inside the PublicGroupFacet_Ratio as a PublicGroupFacetRatio0
+func (t PublicGroupFacet_Ratio) AsPublicGroupFacetRatio0() (PublicGroupFacetRatio0, error) {
+	var body PublicGroupFacetRatio0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupFacetRatio0 overwrites any union data inside the PublicGroupFacet_Ratio as the provided PublicGroupFacetRatio0
+func (t *PublicGroupFacet_Ratio) FromPublicGroupFacetRatio0(v PublicGroupFacetRatio0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupFacetRatio0 performs a merge with any union data inside the PublicGroupFacet_Ratio, using the provided PublicGroupFacetRatio0
+func (t *PublicGroupFacet_Ratio) MergePublicGroupFacetRatio0(v PublicGroupFacetRatio0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupFacetRatio1 returns the union data inside the PublicGroupFacet_Ratio as a PublicGroupFacetRatio1
+func (t PublicGroupFacet_Ratio) AsPublicGroupFacetRatio1() (PublicGroupFacetRatio1, error) {
+	var body PublicGroupFacetRatio1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupFacetRatio1 overwrites any union data inside the PublicGroupFacet_Ratio as the provided PublicGroupFacetRatio1
+func (t *PublicGroupFacet_Ratio) FromPublicGroupFacetRatio1(v PublicGroupFacetRatio1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupFacetRatio1 performs a merge with any union data inside the PublicGroupFacet_Ratio, using the provided PublicGroupFacetRatio1
+func (t *PublicGroupFacet_Ratio) MergePublicGroupFacetRatio1(v PublicGroupFacetRatio1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupFacet_Ratio) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupFacet_Ratio) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPriceCacheRead0 returns the union data inside the PublicGroupPrice_CacheRead as a PublicGroupPriceCacheRead0
+func (t PublicGroupPrice_CacheRead) AsPublicGroupPriceCacheRead0() (PublicGroupPriceCacheRead0, error) {
+	var body PublicGroupPriceCacheRead0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCacheRead0 overwrites any union data inside the PublicGroupPrice_CacheRead as the provided PublicGroupPriceCacheRead0
+func (t *PublicGroupPrice_CacheRead) FromPublicGroupPriceCacheRead0(v PublicGroupPriceCacheRead0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCacheRead0 performs a merge with any union data inside the PublicGroupPrice_CacheRead, using the provided PublicGroupPriceCacheRead0
+func (t *PublicGroupPrice_CacheRead) MergePublicGroupPriceCacheRead0(v PublicGroupPriceCacheRead0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupPriceCacheRead1 returns the union data inside the PublicGroupPrice_CacheRead as a PublicGroupPriceCacheRead1
+func (t PublicGroupPrice_CacheRead) AsPublicGroupPriceCacheRead1() (PublicGroupPriceCacheRead1, error) {
+	var body PublicGroupPriceCacheRead1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCacheRead1 overwrites any union data inside the PublicGroupPrice_CacheRead as the provided PublicGroupPriceCacheRead1
+func (t *PublicGroupPrice_CacheRead) FromPublicGroupPriceCacheRead1(v PublicGroupPriceCacheRead1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCacheRead1 performs a merge with any union data inside the PublicGroupPrice_CacheRead, using the provided PublicGroupPriceCacheRead1
+func (t *PublicGroupPrice_CacheRead) MergePublicGroupPriceCacheRead1(v PublicGroupPriceCacheRead1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupPrice_CacheRead) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupPrice_CacheRead) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPriceCacheWrite0 returns the union data inside the PublicGroupPrice_CacheWrite as a PublicGroupPriceCacheWrite0
+func (t PublicGroupPrice_CacheWrite) AsPublicGroupPriceCacheWrite0() (PublicGroupPriceCacheWrite0, error) {
+	var body PublicGroupPriceCacheWrite0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCacheWrite0 overwrites any union data inside the PublicGroupPrice_CacheWrite as the provided PublicGroupPriceCacheWrite0
+func (t *PublicGroupPrice_CacheWrite) FromPublicGroupPriceCacheWrite0(v PublicGroupPriceCacheWrite0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCacheWrite0 performs a merge with any union data inside the PublicGroupPrice_CacheWrite, using the provided PublicGroupPriceCacheWrite0
+func (t *PublicGroupPrice_CacheWrite) MergePublicGroupPriceCacheWrite0(v PublicGroupPriceCacheWrite0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupPriceCacheWrite1 returns the union data inside the PublicGroupPrice_CacheWrite as a PublicGroupPriceCacheWrite1
+func (t PublicGroupPrice_CacheWrite) AsPublicGroupPriceCacheWrite1() (PublicGroupPriceCacheWrite1, error) {
+	var body PublicGroupPriceCacheWrite1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCacheWrite1 overwrites any union data inside the PublicGroupPrice_CacheWrite as the provided PublicGroupPriceCacheWrite1
+func (t *PublicGroupPrice_CacheWrite) FromPublicGroupPriceCacheWrite1(v PublicGroupPriceCacheWrite1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCacheWrite1 performs a merge with any union data inside the PublicGroupPrice_CacheWrite, using the provided PublicGroupPriceCacheWrite1
+func (t *PublicGroupPrice_CacheWrite) MergePublicGroupPriceCacheWrite1(v PublicGroupPriceCacheWrite1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupPrice_CacheWrite) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupPrice_CacheWrite) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPriceCompletion0 returns the union data inside the PublicGroupPrice_Completion as a PublicGroupPriceCompletion0
+func (t PublicGroupPrice_Completion) AsPublicGroupPriceCompletion0() (PublicGroupPriceCompletion0, error) {
+	var body PublicGroupPriceCompletion0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCompletion0 overwrites any union data inside the PublicGroupPrice_Completion as the provided PublicGroupPriceCompletion0
+func (t *PublicGroupPrice_Completion) FromPublicGroupPriceCompletion0(v PublicGroupPriceCompletion0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCompletion0 performs a merge with any union data inside the PublicGroupPrice_Completion, using the provided PublicGroupPriceCompletion0
+func (t *PublicGroupPrice_Completion) MergePublicGroupPriceCompletion0(v PublicGroupPriceCompletion0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupPriceCompletion1 returns the union data inside the PublicGroupPrice_Completion as a PublicGroupPriceCompletion1
+func (t PublicGroupPrice_Completion) AsPublicGroupPriceCompletion1() (PublicGroupPriceCompletion1, error) {
+	var body PublicGroupPriceCompletion1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceCompletion1 overwrites any union data inside the PublicGroupPrice_Completion as the provided PublicGroupPriceCompletion1
+func (t *PublicGroupPrice_Completion) FromPublicGroupPriceCompletion1(v PublicGroupPriceCompletion1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceCompletion1 performs a merge with any union data inside the PublicGroupPrice_Completion, using the provided PublicGroupPriceCompletion1
+func (t *PublicGroupPrice_Completion) MergePublicGroupPriceCompletion1(v PublicGroupPriceCompletion1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupPrice_Completion) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupPrice_Completion) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPricePrompt0 returns the union data inside the PublicGroupPrice_Prompt as a PublicGroupPricePrompt0
+func (t PublicGroupPrice_Prompt) AsPublicGroupPricePrompt0() (PublicGroupPricePrompt0, error) {
+	var body PublicGroupPricePrompt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPricePrompt0 overwrites any union data inside the PublicGroupPrice_Prompt as the provided PublicGroupPricePrompt0
+func (t *PublicGroupPrice_Prompt) FromPublicGroupPricePrompt0(v PublicGroupPricePrompt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPricePrompt0 performs a merge with any union data inside the PublicGroupPrice_Prompt, using the provided PublicGroupPricePrompt0
+func (t *PublicGroupPrice_Prompt) MergePublicGroupPricePrompt0(v PublicGroupPricePrompt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupPricePrompt1 returns the union data inside the PublicGroupPrice_Prompt as a PublicGroupPricePrompt1
+func (t PublicGroupPrice_Prompt) AsPublicGroupPricePrompt1() (PublicGroupPricePrompt1, error) {
+	var body PublicGroupPricePrompt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPricePrompt1 overwrites any union data inside the PublicGroupPrice_Prompt as the provided PublicGroupPricePrompt1
+func (t *PublicGroupPrice_Prompt) FromPublicGroupPricePrompt1(v PublicGroupPricePrompt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPricePrompt1 performs a merge with any union data inside the PublicGroupPrice_Prompt, using the provided PublicGroupPricePrompt1
+func (t *PublicGroupPrice_Prompt) MergePublicGroupPricePrompt1(v PublicGroupPricePrompt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupPrice_Prompt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupPrice_Prompt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPriceRatio0 returns the union data inside the PublicGroupPrice_Ratio as a PublicGroupPriceRatio0
+func (t PublicGroupPrice_Ratio) AsPublicGroupPriceRatio0() (PublicGroupPriceRatio0, error) {
+	var body PublicGroupPriceRatio0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceRatio0 overwrites any union data inside the PublicGroupPrice_Ratio as the provided PublicGroupPriceRatio0
+func (t *PublicGroupPrice_Ratio) FromPublicGroupPriceRatio0(v PublicGroupPriceRatio0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceRatio0 performs a merge with any union data inside the PublicGroupPrice_Ratio, using the provided PublicGroupPriceRatio0
+func (t *PublicGroupPrice_Ratio) MergePublicGroupPriceRatio0(v PublicGroupPriceRatio0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicGroupPriceRatio1 returns the union data inside the PublicGroupPrice_Ratio as a PublicGroupPriceRatio1
+func (t PublicGroupPrice_Ratio) AsPublicGroupPriceRatio1() (PublicGroupPriceRatio1, error) {
+	var body PublicGroupPriceRatio1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPriceRatio1 overwrites any union data inside the PublicGroupPrice_Ratio as the provided PublicGroupPriceRatio1
+func (t *PublicGroupPrice_Ratio) FromPublicGroupPriceRatio1(v PublicGroupPriceRatio1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPriceRatio1 performs a merge with any union data inside the PublicGroupPrice_Ratio, using the provided PublicGroupPriceRatio1
+func (t *PublicGroupPrice_Ratio) MergePublicGroupPriceRatio1(v PublicGroupPriceRatio1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicGroupPrice_Ratio) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicGroupPrice_Ratio) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardCacheReadPrice0 returns the union data inside the PublicModelCard_CacheReadPrice as a PublicModelCardCacheReadPrice0
+func (t PublicModelCard_CacheReadPrice) AsPublicModelCardCacheReadPrice0() (PublicModelCardCacheReadPrice0, error) {
+	var body PublicModelCardCacheReadPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCacheReadPrice0 overwrites any union data inside the PublicModelCard_CacheReadPrice as the provided PublicModelCardCacheReadPrice0
+func (t *PublicModelCard_CacheReadPrice) FromPublicModelCardCacheReadPrice0(v PublicModelCardCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCacheReadPrice0 performs a merge with any union data inside the PublicModelCard_CacheReadPrice, using the provided PublicModelCardCacheReadPrice0
+func (t *PublicModelCard_CacheReadPrice) MergePublicModelCardCacheReadPrice0(v PublicModelCardCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardCacheReadPrice1 returns the union data inside the PublicModelCard_CacheReadPrice as a PublicModelCardCacheReadPrice1
+func (t PublicModelCard_CacheReadPrice) AsPublicModelCardCacheReadPrice1() (PublicModelCardCacheReadPrice1, error) {
+	var body PublicModelCardCacheReadPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCacheReadPrice1 overwrites any union data inside the PublicModelCard_CacheReadPrice as the provided PublicModelCardCacheReadPrice1
+func (t *PublicModelCard_CacheReadPrice) FromPublicModelCardCacheReadPrice1(v PublicModelCardCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCacheReadPrice1 performs a merge with any union data inside the PublicModelCard_CacheReadPrice, using the provided PublicModelCardCacheReadPrice1
+func (t *PublicModelCard_CacheReadPrice) MergePublicModelCardCacheReadPrice1(v PublicModelCardCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_CacheReadPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_CacheReadPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardCacheWritePrice0 returns the union data inside the PublicModelCard_CacheWritePrice as a PublicModelCardCacheWritePrice0
+func (t PublicModelCard_CacheWritePrice) AsPublicModelCardCacheWritePrice0() (PublicModelCardCacheWritePrice0, error) {
+	var body PublicModelCardCacheWritePrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCacheWritePrice0 overwrites any union data inside the PublicModelCard_CacheWritePrice as the provided PublicModelCardCacheWritePrice0
+func (t *PublicModelCard_CacheWritePrice) FromPublicModelCardCacheWritePrice0(v PublicModelCardCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCacheWritePrice0 performs a merge with any union data inside the PublicModelCard_CacheWritePrice, using the provided PublicModelCardCacheWritePrice0
+func (t *PublicModelCard_CacheWritePrice) MergePublicModelCardCacheWritePrice0(v PublicModelCardCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardCacheWritePrice1 returns the union data inside the PublicModelCard_CacheWritePrice as a PublicModelCardCacheWritePrice1
+func (t PublicModelCard_CacheWritePrice) AsPublicModelCardCacheWritePrice1() (PublicModelCardCacheWritePrice1, error) {
+	var body PublicModelCardCacheWritePrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCacheWritePrice1 overwrites any union data inside the PublicModelCard_CacheWritePrice as the provided PublicModelCardCacheWritePrice1
+func (t *PublicModelCard_CacheWritePrice) FromPublicModelCardCacheWritePrice1(v PublicModelCardCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCacheWritePrice1 performs a merge with any union data inside the PublicModelCard_CacheWritePrice, using the provided PublicModelCardCacheWritePrice1
+func (t *PublicModelCard_CacheWritePrice) MergePublicModelCardCacheWritePrice1(v PublicModelCardCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_CacheWritePrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_CacheWritePrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardCompletionPrice0 returns the union data inside the PublicModelCard_CompletionPrice as a PublicModelCardCompletionPrice0
+func (t PublicModelCard_CompletionPrice) AsPublicModelCardCompletionPrice0() (PublicModelCardCompletionPrice0, error) {
+	var body PublicModelCardCompletionPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCompletionPrice0 overwrites any union data inside the PublicModelCard_CompletionPrice as the provided PublicModelCardCompletionPrice0
+func (t *PublicModelCard_CompletionPrice) FromPublicModelCardCompletionPrice0(v PublicModelCardCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCompletionPrice0 performs a merge with any union data inside the PublicModelCard_CompletionPrice, using the provided PublicModelCardCompletionPrice0
+func (t *PublicModelCard_CompletionPrice) MergePublicModelCardCompletionPrice0(v PublicModelCardCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardCompletionPrice1 returns the union data inside the PublicModelCard_CompletionPrice as a PublicModelCardCompletionPrice1
+func (t PublicModelCard_CompletionPrice) AsPublicModelCardCompletionPrice1() (PublicModelCardCompletionPrice1, error) {
+	var body PublicModelCardCompletionPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardCompletionPrice1 overwrites any union data inside the PublicModelCard_CompletionPrice as the provided PublicModelCardCompletionPrice1
+func (t *PublicModelCard_CompletionPrice) FromPublicModelCardCompletionPrice1(v PublicModelCardCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardCompletionPrice1 performs a merge with any union data inside the PublicModelCard_CompletionPrice, using the provided PublicModelCardCompletionPrice1
+func (t *PublicModelCard_CompletionPrice) MergePublicModelCardCompletionPrice1(v PublicModelCardCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_CompletionPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_CompletionPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardContextLength0 returns the union data inside the PublicModelCard_ContextLength as a PublicModelCardContextLength0
+func (t PublicModelCard_ContextLength) AsPublicModelCardContextLength0() (PublicModelCardContextLength0, error) {
+	var body PublicModelCardContextLength0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardContextLength0 overwrites any union data inside the PublicModelCard_ContextLength as the provided PublicModelCardContextLength0
+func (t *PublicModelCard_ContextLength) FromPublicModelCardContextLength0(v PublicModelCardContextLength0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardContextLength0 performs a merge with any union data inside the PublicModelCard_ContextLength, using the provided PublicModelCardContextLength0
+func (t *PublicModelCard_ContextLength) MergePublicModelCardContextLength0(v PublicModelCardContextLength0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardContextLength1 returns the union data inside the PublicModelCard_ContextLength as a PublicModelCardContextLength1
+func (t PublicModelCard_ContextLength) AsPublicModelCardContextLength1() (PublicModelCardContextLength1, error) {
+	var body PublicModelCardContextLength1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardContextLength1 overwrites any union data inside the PublicModelCard_ContextLength as the provided PublicModelCardContextLength1
+func (t *PublicModelCard_ContextLength) FromPublicModelCardContextLength1(v PublicModelCardContextLength1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardContextLength1 performs a merge with any union data inside the PublicModelCard_ContextLength, using the provided PublicModelCardContextLength1
+func (t *PublicModelCard_ContextLength) MergePublicModelCardContextLength1(v PublicModelCardContextLength1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_ContextLength) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_ContextLength) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPrice returns the union data inside the PublicModelCard_GroupPrice as a PublicGroupPrice
+func (t PublicModelCard_GroupPrice) AsPublicGroupPrice() (PublicGroupPrice, error) {
+	var body PublicGroupPrice
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPrice overwrites any union data inside the PublicModelCard_GroupPrice as the provided PublicGroupPrice
+func (t *PublicModelCard_GroupPrice) FromPublicGroupPrice(v PublicGroupPrice) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPrice performs a merge with any union data inside the PublicModelCard_GroupPrice, using the provided PublicGroupPrice
+func (t *PublicModelCard_GroupPrice) MergePublicGroupPrice(v PublicGroupPrice) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardGroupPrice1 returns the union data inside the PublicModelCard_GroupPrice as a PublicModelCardGroupPrice1
+func (t PublicModelCard_GroupPrice) AsPublicModelCardGroupPrice1() (PublicModelCardGroupPrice1, error) {
+	var body PublicModelCardGroupPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardGroupPrice1 overwrites any union data inside the PublicModelCard_GroupPrice as the provided PublicModelCardGroupPrice1
+func (t *PublicModelCard_GroupPrice) FromPublicModelCardGroupPrice1(v PublicModelCardGroupPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardGroupPrice1 performs a merge with any union data inside the PublicModelCard_GroupPrice, using the provided PublicModelCardGroupPrice1
+func (t *PublicModelCard_GroupPrice) MergePublicModelCardGroupPrice1(v PublicModelCardGroupPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_GroupPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_GroupPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardMaxOutput0 returns the union data inside the PublicModelCard_MaxOutput as a PublicModelCardMaxOutput0
+func (t PublicModelCard_MaxOutput) AsPublicModelCardMaxOutput0() (PublicModelCardMaxOutput0, error) {
+	var body PublicModelCardMaxOutput0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardMaxOutput0 overwrites any union data inside the PublicModelCard_MaxOutput as the provided PublicModelCardMaxOutput0
+func (t *PublicModelCard_MaxOutput) FromPublicModelCardMaxOutput0(v PublicModelCardMaxOutput0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardMaxOutput0 performs a merge with any union data inside the PublicModelCard_MaxOutput, using the provided PublicModelCardMaxOutput0
+func (t *PublicModelCard_MaxOutput) MergePublicModelCardMaxOutput0(v PublicModelCardMaxOutput0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardMaxOutput1 returns the union data inside the PublicModelCard_MaxOutput as a PublicModelCardMaxOutput1
+func (t PublicModelCard_MaxOutput) AsPublicModelCardMaxOutput1() (PublicModelCardMaxOutput1, error) {
+	var body PublicModelCardMaxOutput1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardMaxOutput1 overwrites any union data inside the PublicModelCard_MaxOutput as the provided PublicModelCardMaxOutput1
+func (t *PublicModelCard_MaxOutput) FromPublicModelCardMaxOutput1(v PublicModelCardMaxOutput1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardMaxOutput1 performs a merge with any union data inside the PublicModelCard_MaxOutput, using the provided PublicModelCardMaxOutput1
+func (t *PublicModelCard_MaxOutput) MergePublicModelCardMaxOutput1(v PublicModelCardMaxOutput1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_MaxOutput) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_MaxOutput) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelCardPromptPrice0 returns the union data inside the PublicModelCard_PromptPrice as a PublicModelCardPromptPrice0
+func (t PublicModelCard_PromptPrice) AsPublicModelCardPromptPrice0() (PublicModelCardPromptPrice0, error) {
+	var body PublicModelCardPromptPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardPromptPrice0 overwrites any union data inside the PublicModelCard_PromptPrice as the provided PublicModelCardPromptPrice0
+func (t *PublicModelCard_PromptPrice) FromPublicModelCardPromptPrice0(v PublicModelCardPromptPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardPromptPrice0 performs a merge with any union data inside the PublicModelCard_PromptPrice, using the provided PublicModelCardPromptPrice0
+func (t *PublicModelCard_PromptPrice) MergePublicModelCardPromptPrice0(v PublicModelCardPromptPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardPromptPrice1 returns the union data inside the PublicModelCard_PromptPrice as a PublicModelCardPromptPrice1
+func (t PublicModelCard_PromptPrice) AsPublicModelCardPromptPrice1() (PublicModelCardPromptPrice1, error) {
+	var body PublicModelCardPromptPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardPromptPrice1 overwrites any union data inside the PublicModelCard_PromptPrice as the provided PublicModelCardPromptPrice1
+func (t *PublicModelCard_PromptPrice) FromPublicModelCardPromptPrice1(v PublicModelCardPromptPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardPromptPrice1 performs a merge with any union data inside the PublicModelCard_PromptPrice, using the provided PublicModelCardPromptPrice1
+func (t *PublicModelCard_PromptPrice) MergePublicModelCardPromptPrice1(v PublicModelCardPromptPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_PromptPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_PromptPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailCacheReadPrice0 returns the union data inside the PublicModelDetail_CacheReadPrice as a PublicModelDetailCacheReadPrice0
+func (t PublicModelDetail_CacheReadPrice) AsPublicModelDetailCacheReadPrice0() (PublicModelDetailCacheReadPrice0, error) {
+	var body PublicModelDetailCacheReadPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCacheReadPrice0 overwrites any union data inside the PublicModelDetail_CacheReadPrice as the provided PublicModelDetailCacheReadPrice0
+func (t *PublicModelDetail_CacheReadPrice) FromPublicModelDetailCacheReadPrice0(v PublicModelDetailCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCacheReadPrice0 performs a merge with any union data inside the PublicModelDetail_CacheReadPrice, using the provided PublicModelDetailCacheReadPrice0
+func (t *PublicModelDetail_CacheReadPrice) MergePublicModelDetailCacheReadPrice0(v PublicModelDetailCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailCacheReadPrice1 returns the union data inside the PublicModelDetail_CacheReadPrice as a PublicModelDetailCacheReadPrice1
+func (t PublicModelDetail_CacheReadPrice) AsPublicModelDetailCacheReadPrice1() (PublicModelDetailCacheReadPrice1, error) {
+	var body PublicModelDetailCacheReadPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCacheReadPrice1 overwrites any union data inside the PublicModelDetail_CacheReadPrice as the provided PublicModelDetailCacheReadPrice1
+func (t *PublicModelDetail_CacheReadPrice) FromPublicModelDetailCacheReadPrice1(v PublicModelDetailCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCacheReadPrice1 performs a merge with any union data inside the PublicModelDetail_CacheReadPrice, using the provided PublicModelDetailCacheReadPrice1
+func (t *PublicModelDetail_CacheReadPrice) MergePublicModelDetailCacheReadPrice1(v PublicModelDetailCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_CacheReadPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_CacheReadPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailCacheWritePrice0 returns the union data inside the PublicModelDetail_CacheWritePrice as a PublicModelDetailCacheWritePrice0
+func (t PublicModelDetail_CacheWritePrice) AsPublicModelDetailCacheWritePrice0() (PublicModelDetailCacheWritePrice0, error) {
+	var body PublicModelDetailCacheWritePrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCacheWritePrice0 overwrites any union data inside the PublicModelDetail_CacheWritePrice as the provided PublicModelDetailCacheWritePrice0
+func (t *PublicModelDetail_CacheWritePrice) FromPublicModelDetailCacheWritePrice0(v PublicModelDetailCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCacheWritePrice0 performs a merge with any union data inside the PublicModelDetail_CacheWritePrice, using the provided PublicModelDetailCacheWritePrice0
+func (t *PublicModelDetail_CacheWritePrice) MergePublicModelDetailCacheWritePrice0(v PublicModelDetailCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailCacheWritePrice1 returns the union data inside the PublicModelDetail_CacheWritePrice as a PublicModelDetailCacheWritePrice1
+func (t PublicModelDetail_CacheWritePrice) AsPublicModelDetailCacheWritePrice1() (PublicModelDetailCacheWritePrice1, error) {
+	var body PublicModelDetailCacheWritePrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCacheWritePrice1 overwrites any union data inside the PublicModelDetail_CacheWritePrice as the provided PublicModelDetailCacheWritePrice1
+func (t *PublicModelDetail_CacheWritePrice) FromPublicModelDetailCacheWritePrice1(v PublicModelDetailCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCacheWritePrice1 performs a merge with any union data inside the PublicModelDetail_CacheWritePrice, using the provided PublicModelDetailCacheWritePrice1
+func (t *PublicModelDetail_CacheWritePrice) MergePublicModelDetailCacheWritePrice1(v PublicModelDetailCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_CacheWritePrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_CacheWritePrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailCompletionPrice0 returns the union data inside the PublicModelDetail_CompletionPrice as a PublicModelDetailCompletionPrice0
+func (t PublicModelDetail_CompletionPrice) AsPublicModelDetailCompletionPrice0() (PublicModelDetailCompletionPrice0, error) {
+	var body PublicModelDetailCompletionPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCompletionPrice0 overwrites any union data inside the PublicModelDetail_CompletionPrice as the provided PublicModelDetailCompletionPrice0
+func (t *PublicModelDetail_CompletionPrice) FromPublicModelDetailCompletionPrice0(v PublicModelDetailCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCompletionPrice0 performs a merge with any union data inside the PublicModelDetail_CompletionPrice, using the provided PublicModelDetailCompletionPrice0
+func (t *PublicModelDetail_CompletionPrice) MergePublicModelDetailCompletionPrice0(v PublicModelDetailCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailCompletionPrice1 returns the union data inside the PublicModelDetail_CompletionPrice as a PublicModelDetailCompletionPrice1
+func (t PublicModelDetail_CompletionPrice) AsPublicModelDetailCompletionPrice1() (PublicModelDetailCompletionPrice1, error) {
+	var body PublicModelDetailCompletionPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailCompletionPrice1 overwrites any union data inside the PublicModelDetail_CompletionPrice as the provided PublicModelDetailCompletionPrice1
+func (t *PublicModelDetail_CompletionPrice) FromPublicModelDetailCompletionPrice1(v PublicModelDetailCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailCompletionPrice1 performs a merge with any union data inside the PublicModelDetail_CompletionPrice, using the provided PublicModelDetailCompletionPrice1
+func (t *PublicModelDetail_CompletionPrice) MergePublicModelDetailCompletionPrice1(v PublicModelDetailCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_CompletionPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_CompletionPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailContextLength0 returns the union data inside the PublicModelDetail_ContextLength as a PublicModelDetailContextLength0
+func (t PublicModelDetail_ContextLength) AsPublicModelDetailContextLength0() (PublicModelDetailContextLength0, error) {
+	var body PublicModelDetailContextLength0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailContextLength0 overwrites any union data inside the PublicModelDetail_ContextLength as the provided PublicModelDetailContextLength0
+func (t *PublicModelDetail_ContextLength) FromPublicModelDetailContextLength0(v PublicModelDetailContextLength0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailContextLength0 performs a merge with any union data inside the PublicModelDetail_ContextLength, using the provided PublicModelDetailContextLength0
+func (t *PublicModelDetail_ContextLength) MergePublicModelDetailContextLength0(v PublicModelDetailContextLength0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailContextLength1 returns the union data inside the PublicModelDetail_ContextLength as a PublicModelDetailContextLength1
+func (t PublicModelDetail_ContextLength) AsPublicModelDetailContextLength1() (PublicModelDetailContextLength1, error) {
+	var body PublicModelDetailContextLength1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailContextLength1 overwrites any union data inside the PublicModelDetail_ContextLength as the provided PublicModelDetailContextLength1
+func (t *PublicModelDetail_ContextLength) FromPublicModelDetailContextLength1(v PublicModelDetailContextLength1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailContextLength1 performs a merge with any union data inside the PublicModelDetail_ContextLength, using the provided PublicModelDetailContextLength1
+func (t *PublicModelDetail_ContextLength) MergePublicModelDetailContextLength1(v PublicModelDetailContextLength1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_ContextLength) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_ContextLength) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicGroupPrice returns the union data inside the PublicModelDetail_GroupPrice as a PublicGroupPrice
+func (t PublicModelDetail_GroupPrice) AsPublicGroupPrice() (PublicGroupPrice, error) {
+	var body PublicGroupPrice
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicGroupPrice overwrites any union data inside the PublicModelDetail_GroupPrice as the provided PublicGroupPrice
+func (t *PublicModelDetail_GroupPrice) FromPublicGroupPrice(v PublicGroupPrice) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicGroupPrice performs a merge with any union data inside the PublicModelDetail_GroupPrice, using the provided PublicGroupPrice
+func (t *PublicModelDetail_GroupPrice) MergePublicGroupPrice(v PublicGroupPrice) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailGroupPrice1 returns the union data inside the PublicModelDetail_GroupPrice as a PublicModelDetailGroupPrice1
+func (t PublicModelDetail_GroupPrice) AsPublicModelDetailGroupPrice1() (PublicModelDetailGroupPrice1, error) {
+	var body PublicModelDetailGroupPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailGroupPrice1 overwrites any union data inside the PublicModelDetail_GroupPrice as the provided PublicModelDetailGroupPrice1
+func (t *PublicModelDetail_GroupPrice) FromPublicModelDetailGroupPrice1(v PublicModelDetailGroupPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailGroupPrice1 performs a merge with any union data inside the PublicModelDetail_GroupPrice, using the provided PublicModelDetailGroupPrice1
+func (t *PublicModelDetail_GroupPrice) MergePublicModelDetailGroupPrice1(v PublicModelDetailGroupPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_GroupPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_GroupPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailKnowledgeCutoff0 returns the union data inside the PublicModelDetail_KnowledgeCutoff as a PublicModelDetailKnowledgeCutoff0
+func (t PublicModelDetail_KnowledgeCutoff) AsPublicModelDetailKnowledgeCutoff0() (PublicModelDetailKnowledgeCutoff0, error) {
+	var body PublicModelDetailKnowledgeCutoff0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailKnowledgeCutoff0 overwrites any union data inside the PublicModelDetail_KnowledgeCutoff as the provided PublicModelDetailKnowledgeCutoff0
+func (t *PublicModelDetail_KnowledgeCutoff) FromPublicModelDetailKnowledgeCutoff0(v PublicModelDetailKnowledgeCutoff0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailKnowledgeCutoff0 performs a merge with any union data inside the PublicModelDetail_KnowledgeCutoff, using the provided PublicModelDetailKnowledgeCutoff0
+func (t *PublicModelDetail_KnowledgeCutoff) MergePublicModelDetailKnowledgeCutoff0(v PublicModelDetailKnowledgeCutoff0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailKnowledgeCutoff1 returns the union data inside the PublicModelDetail_KnowledgeCutoff as a PublicModelDetailKnowledgeCutoff1
+func (t PublicModelDetail_KnowledgeCutoff) AsPublicModelDetailKnowledgeCutoff1() (PublicModelDetailKnowledgeCutoff1, error) {
+	var body PublicModelDetailKnowledgeCutoff1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailKnowledgeCutoff1 overwrites any union data inside the PublicModelDetail_KnowledgeCutoff as the provided PublicModelDetailKnowledgeCutoff1
+func (t *PublicModelDetail_KnowledgeCutoff) FromPublicModelDetailKnowledgeCutoff1(v PublicModelDetailKnowledgeCutoff1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailKnowledgeCutoff1 performs a merge with any union data inside the PublicModelDetail_KnowledgeCutoff, using the provided PublicModelDetailKnowledgeCutoff1
+func (t *PublicModelDetail_KnowledgeCutoff) MergePublicModelDetailKnowledgeCutoff1(v PublicModelDetailKnowledgeCutoff1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_KnowledgeCutoff) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_KnowledgeCutoff) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailMaxOutput0 returns the union data inside the PublicModelDetail_MaxOutput as a PublicModelDetailMaxOutput0
+func (t PublicModelDetail_MaxOutput) AsPublicModelDetailMaxOutput0() (PublicModelDetailMaxOutput0, error) {
+	var body PublicModelDetailMaxOutput0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailMaxOutput0 overwrites any union data inside the PublicModelDetail_MaxOutput as the provided PublicModelDetailMaxOutput0
+func (t *PublicModelDetail_MaxOutput) FromPublicModelDetailMaxOutput0(v PublicModelDetailMaxOutput0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailMaxOutput0 performs a merge with any union data inside the PublicModelDetail_MaxOutput, using the provided PublicModelDetailMaxOutput0
+func (t *PublicModelDetail_MaxOutput) MergePublicModelDetailMaxOutput0(v PublicModelDetailMaxOutput0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailMaxOutput1 returns the union data inside the PublicModelDetail_MaxOutput as a PublicModelDetailMaxOutput1
+func (t PublicModelDetail_MaxOutput) AsPublicModelDetailMaxOutput1() (PublicModelDetailMaxOutput1, error) {
+	var body PublicModelDetailMaxOutput1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailMaxOutput1 overwrites any union data inside the PublicModelDetail_MaxOutput as the provided PublicModelDetailMaxOutput1
+func (t *PublicModelDetail_MaxOutput) FromPublicModelDetailMaxOutput1(v PublicModelDetailMaxOutput1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailMaxOutput1 performs a merge with any union data inside the PublicModelDetail_MaxOutput, using the provided PublicModelDetailMaxOutput1
+func (t *PublicModelDetail_MaxOutput) MergePublicModelDetailMaxOutput1(v PublicModelDetailMaxOutput1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_MaxOutput) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_MaxOutput) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailPromptPrice0 returns the union data inside the PublicModelDetail_PromptPrice as a PublicModelDetailPromptPrice0
+func (t PublicModelDetail_PromptPrice) AsPublicModelDetailPromptPrice0() (PublicModelDetailPromptPrice0, error) {
+	var body PublicModelDetailPromptPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailPromptPrice0 overwrites any union data inside the PublicModelDetail_PromptPrice as the provided PublicModelDetailPromptPrice0
+func (t *PublicModelDetail_PromptPrice) FromPublicModelDetailPromptPrice0(v PublicModelDetailPromptPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailPromptPrice0 performs a merge with any union data inside the PublicModelDetail_PromptPrice, using the provided PublicModelDetailPromptPrice0
+func (t *PublicModelDetail_PromptPrice) MergePublicModelDetailPromptPrice0(v PublicModelDetailPromptPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailPromptPrice1 returns the union data inside the PublicModelDetail_PromptPrice as a PublicModelDetailPromptPrice1
+func (t PublicModelDetail_PromptPrice) AsPublicModelDetailPromptPrice1() (PublicModelDetailPromptPrice1, error) {
+	var body PublicModelDetailPromptPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailPromptPrice1 overwrites any union data inside the PublicModelDetail_PromptPrice as the provided PublicModelDetailPromptPrice1
+func (t *PublicModelDetail_PromptPrice) FromPublicModelDetailPromptPrice1(v PublicModelDetailPromptPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailPromptPrice1 performs a merge with any union data inside the PublicModelDetail_PromptPrice, using the provided PublicModelDetailPromptPrice1
+func (t *PublicModelDetail_PromptPrice) MergePublicModelDetailPromptPrice1(v PublicModelDetailPromptPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_PromptPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_PromptPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelDetailReleasedAt0 returns the union data inside the PublicModelDetail_ReleasedAt as a PublicModelDetailReleasedAt0
+func (t PublicModelDetail_ReleasedAt) AsPublicModelDetailReleasedAt0() (PublicModelDetailReleasedAt0, error) {
+	var body PublicModelDetailReleasedAt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailReleasedAt0 overwrites any union data inside the PublicModelDetail_ReleasedAt as the provided PublicModelDetailReleasedAt0
+func (t *PublicModelDetail_ReleasedAt) FromPublicModelDetailReleasedAt0(v PublicModelDetailReleasedAt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailReleasedAt0 performs a merge with any union data inside the PublicModelDetail_ReleasedAt, using the provided PublicModelDetailReleasedAt0
+func (t *PublicModelDetail_ReleasedAt) MergePublicModelDetailReleasedAt0(v PublicModelDetailReleasedAt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailReleasedAt1 returns the union data inside the PublicModelDetail_ReleasedAt as a PublicModelDetailReleasedAt1
+func (t PublicModelDetail_ReleasedAt) AsPublicModelDetailReleasedAt1() (PublicModelDetailReleasedAt1, error) {
+	var body PublicModelDetailReleasedAt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailReleasedAt1 overwrites any union data inside the PublicModelDetail_ReleasedAt as the provided PublicModelDetailReleasedAt1
+func (t *PublicModelDetail_ReleasedAt) FromPublicModelDetailReleasedAt1(v PublicModelDetailReleasedAt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailReleasedAt1 performs a merge with any union data inside the PublicModelDetail_ReleasedAt, using the provided PublicModelDetailReleasedAt1
+func (t *PublicModelDetail_ReleasedAt) MergePublicModelDetailReleasedAt1(v PublicModelDetailReleasedAt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_ReleasedAt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_ReleasedAt) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
