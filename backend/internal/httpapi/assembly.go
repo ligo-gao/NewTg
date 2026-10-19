@@ -266,10 +266,24 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	if selfRepo == nil {
 		selfRepo = NewSQLSelfRepo(deps.DB)
 	}
+	// /api/me 的 permissions（M6 R-17）必须使用与 Authz 相同的权限真源，
+	// 否则生产装配下该字段会恒为 []。解析顺序与 NewRouter 一致：显式
+	// Permissions → 实现 PermissionLoader 的 AuthRepo → SQLAuthRepo(DB)。
+	sessionAccess := deps.Permissions
+	if sessionAccess == nil {
+		if loader, ok := deps.Repo.(rbac.PermissionLoader); ok {
+			sessionAccess = loader
+		}
+	}
+	if sessionAccess == nil && deps.DB != nil {
+		sessionAccess = NewSQLAuthRepo(deps.DB)
+	}
 	sessions, err := NewSessionHandlers(SessionHandlerConfig{
+		DB:            deps.DB,
 		Repo:          selfRepo,
 		Sessions:      deps.Sessions,
 		Authz:         deps.Authz,
+		Access:        sessionAccess,
 		Redis:         deps.Redis,
 		SessionSecret: deps.SessionSecret,
 		Config:        deps.Config,

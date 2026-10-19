@@ -6,10 +6,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -438,4 +440,68 @@ func TestLoginEncryptionFieldsDecode(t *testing.T) {
 			t.Fatalf("开启时明文登录 = %d, want 401 (body=%q)", rr.Code, rr.Body.String())
 		}
 	})
+}
+
+// TestAssemblyMePermissionsReflectsEffectiveSet 验证生产装配路径（而不只是
+// SessionHandlers 单测里的注入接缝）：BuildGatewayRouter 必须把与 Authz 同源的
+// PermissionLoader 传给 SessionHandlers，使 GET /api/me.permissions 对
+// FULL/NULL 管理员返回 ["*"]、对仅有 logs:read 的管理员返回 ["logs:read"]。
+func TestAssemblyMePermissionsReflectsEffectiveSet(t *testing.T) {
+	deps, _ := gatewayDepsForTest(t)
+	authRepo, ok := deps.Repo.(*pwdTestRepo)
+	if !ok {
+		t.Fatalf("测试装配 Repo 类型 = %T，期望 *pwdTestRepo", deps.Repo)
+	}
+	selfRepo, ok := deps.SelfRepo.(*fakeSelfRepo)
+	if !ok {
+		t.Fatalf("测试装配 SelfRepo 类型 = %T，期望 *fakeSelfRepo", deps.SelfRepo)
+	}
+
+	fullAdmin := authRepo.add(UserRecord{Username: "full-admin", Role: rbac.RoleAdmin})
+	scopedAdmin := authRepo.add(UserRecord{Username: "logs-admin", Role: rbac.RoleAdmin})
+	// 未登记 permissions = SQL NULL = FULL；显式登记就是精确键集合。
+	authRepo.permissions[scopedAdmin.ID] = []string{"logs:read"}
+	for _, rec := range []*UserRecord{fullAdmin, scopedAdmin} {
+		selfRepo.add(rec.ID, SelfRecord{
+			Username: rec.Username,
+			Role:     rec.Role,
+			Status:   rec.Status,
+		})
+	}
+
+	rt, err := BuildGatewayRouter(deps)
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		userID int64
+		want   []string
+	}{
+		{"full-admin", fullAdmin.ID, []string{"*"}},
+		{"logs-only-admin", scopedAdmin.ID, []string{"logs:read"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sid, err := deps.Sessions.Create(context.Background(), tc.userID, auth.SessionOpts{
+				UA: "assembly-test/1.0", IP: "203.0.113.10", Role: rbac.RoleAdmin,
+			})
+			if err != nil {
+				t.Fatalf("Create session: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+			rr := serve(rt, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("GET /api/me = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+			}
+			var me meView
+			if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil {
+				t.Fatalf("GET /api/me JSON 非法: %v（body=%q）", err, rr.Body.String())
+			}
+			if !reflect.DeepEqual(me.Permissions, tc.want) {
+				t.Errorf("permissions = %#v，期望 %#v", me.Permissions, tc.want)
+			}
+		})
+	}
 }

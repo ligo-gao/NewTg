@@ -19,6 +19,12 @@ const RANGE_BUCKETS: Record<UsageRange, number> = {
   '30d': 30,
 }
 
+// Stray server buckets (clock skew) are merged into the spine, but only within
+// a bounded distance from the selected window: a corrupt far-past/far-future
+// timestamp must not allocate hundreds of thousands of points.
+const MAX_STRAY_HOURS = 168
+const MAX_STRAY_DAYS = 7
+
 function stepMs(granularity: UsageGranularity): number {
   return granularity === 'hour' ? HOUR_MS : DAY_MS
 }
@@ -55,8 +61,25 @@ export function fillBucketSpine(
       lastServerBucket === undefined ? bucket : Math.max(lastServerBucket, bucket)
   }
 
-  const start = Math.min(windowStart, firstServerBucket ?? windowStart)
-  const finish = Math.max(end, lastServerBucket ?? end)
+  const strayBuckets = granularity === 'hour' ? MAX_STRAY_HOURS : MAX_STRAY_DAYS
+  const clamp = (value: number, low: number, high: number): number =>
+    Math.min(Math.max(value, low), high)
+  const start = Math.min(
+    windowStart,
+    clamp(
+      firstServerBucket ?? windowStart,
+      windowStart - strayBuckets * step,
+      end + strayBuckets * step,
+    ),
+  )
+  const finish = Math.max(
+    end,
+    clamp(
+      lastServerBucket ?? end,
+      windowStart - strayBuckets * step,
+      end + strayBuckets * step,
+    ),
+  )
 
   const filled: ChartPoint[] = []
   for (let bucket = start; bucket <= finish; bucket += step) {

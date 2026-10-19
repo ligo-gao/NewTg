@@ -193,7 +193,6 @@ type sessionTestEnv struct {
 	mr       *miniredis.Miniredis
 	rdb      *redis.Client
 	repo     *fakeSelfRepo
-	access   *fakeUserAccess
 	tokens   *fakeTokenLookup
 	router   http.Handler
 	handlers *SessionHandlers
@@ -212,7 +211,6 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	repo := newFakeSelfRepo()
-	access := newFakeUserAccess()
 	tokens := &fakeTokenLookup{metas: map[string]*auth.TokenMeta{}}
 
 	h, err := NewSessionHandlers(SessionHandlerConfig{
@@ -221,7 +219,6 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 		Redis:         rdb,
 		SessionSecret: []byte(testSessionSecret),
 		Config:        cfg,
-		Access:        access,
 	})
 	if err != nil {
 		t.Fatalf("NewSessionHandlers: %v", err)
@@ -240,7 +237,6 @@ func newSessionTestEnvWithConfig(t *testing.T, cfg mapConfig) *sessionTestEnv {
 		mr:       mr,
 		rdb:      rdb,
 		repo:     repo,
-		access:   access,
 		tokens:   tokens,
 		router:   outer,
 		handlers: h,
@@ -661,7 +657,7 @@ func TestMePermissionsEffectiveSet(t *testing.T) {
 				Role:     tc.role,
 				Status:   "enabled",
 			})
-			env.access.set(sessionTestUserID, tc.role, tc.permissions, "enabled")
+			env.handlers.access = staticPermissions{perms: tc.permissions}
 			sid, csrf := env.createSession(sessionTestUserID, tc.role, "Test/1.0", "203.0.113.1")
 
 			rr := env.request(http.MethodGet, "/api/me", nil, sid, csrf)
