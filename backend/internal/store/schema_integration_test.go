@@ -255,7 +255,7 @@ func indexInfo(t *testing.T, db *sql.DB, name string) (def string, unique, parti
 	return def, unique, partial, true
 }
 
-// TestMainSchemaPartialUniqueIndexes：（c）三处部分唯一索引存在且确为 UNIQUE + 部分。
+// TestMainSchemaPartialUniqueIndexes：（c）四处部分唯一索引存在且确为 UNIQUE + 部分。
 func TestMainSchemaPartialUniqueIndexes(t *testing.T) {
 	db := openTestDB(t)
 	for _, idx := range wantPartialUniqueIndexes {
@@ -597,6 +597,11 @@ var documentedChecks = []struct {
 		Table: "orders", Name: "orders_fx_rate_pair_chk",
 		Fragments: []string{"fx_rate_num IS NULL", "fx_rate_den IS NULL"},
 	},
+	// M6d Task 1 / modules-08 §3.10.2：市场源 URL 仅 https 且 ≤1024。
+	{
+		Table: "plugin_marketplace_sources", Name: "plugin_marketplace_sources_url_len_chk",
+		Fragments: []string{"char_length", "url", "1024"},
+	},
 }
 
 func expectExecError(t *testing.T, db *sql.DB, stmt string) {
@@ -692,6 +697,16 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	t.Run("fx_rate 半对被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO orders (user_id, provider, amount, currency, idempotency_key, fx_rate_num)
 			VALUES (1, 'stripe', 1, 'USD', 'chk_fx_half', 710)`)
+	})
+
+	// M6d Task 1：市场源 URL 的两个独立分支（scheme / 长度）各有一条负向探针。
+	t.Run("市场源非 https URL 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO plugin_marketplace_sources (name, url)
+			VALUES ('chk_url_scheme', 'http://example.com/index.json')`)
+	})
+	t.Run("市场源 URL 超长被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO plugin_marketplace_sources (name, url)
+			VALUES ('chk_url_len', 'https://' || repeat('a', 1024))`)
 	})
 }
 

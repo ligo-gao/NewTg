@@ -120,6 +120,10 @@ CREATE TABLE IF NOT EXISTS plugin_marketplace_sources (
         CHECK (char_length(name) <= 64),
     CONSTRAINT plugin_marketplace_sources_url_chk
         CHECK (url ~ '^https://'),
+    -- modules-08 §3.10.2 冻结 url ≤1024（URL 会进列表/详情响应与出站请求，
+    -- 超长值无业务意义且会放大日志与错误文本）。char_length 计字符。
+    CONSTRAINT plugin_marketplace_sources_url_len_chk
+        CHECK (char_length(url) <= 1024),
     CONSTRAINT plugin_marketplace_sources_last_check_status_chk
         CHECK (last_check_status IN ('pending', 'ok', 'failed')),
     CONSTRAINT plugin_marketplace_sources_last_error_len_chk
