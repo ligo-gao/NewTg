@@ -313,7 +313,10 @@ func (m *Manager) Snapshot() *Snapshot {
 	return &Snapshot{entries: map[string]*Entry{}, routes: map[string]string{}}
 }
 
-// buildKey 把影响快照内容的输入压成签名。
+// buildKey 把影响快照内容的动态输入压成签名：DB revision、系统总开关、
+// 内置禁用集合，以及每个版本的 (key/version/enabled/active/hash)。
+// factory 源是编译期常量（进程内不会变化），故不入签名；timeout/Node
+// 不改变注册结果，也不入签名。签名相同则 Reload 不发布新 generation。
 func (m *Manager) buildKey(revision string, versions []ActiveVersion) string {
 	var b strings.Builder
 	b.WriteString(revision)
@@ -405,11 +408,13 @@ func (m *Manager) effectiveEntry(key string, overrides []ActiveVersion) *Entry {
 	var overrideErrs Issues
 	var overridePlugin *CompiledPlugin
 	if len(overrides) > 1 {
-		// active 部分唯一索引保证最多一行；出现多行说明注入方/DB 约束损坏。
-		// fail-closed：不猜哪个是权威版本。
+		// active 部分唯一索引保证最多一行；出现多行说明注入方/DB 约束损坏
+		// （数据完整性破坏）。裁决 R-M6D-15：保留 fail-closed 的
+		// compile_failed，错误码明确为 multiple_active_versions；
+		// 不猜哪个是权威版本（选错会让任务解析到非预期插件版本）。
 		entry.Status = StatusCompileFailed
-		entry.Errors = append(entry.Errors, issuef(key, "versions", "", "duplicate_active",
-			"同 key 存在 %d 个 active 版本，拒绝选择", len(overrides)))
+		entry.Errors = append(entry.Errors, issuef(key, "versions", "", "multiple_active_versions",
+			"同 key 存在 %d 个 active 版本（数据完整性破坏），拒绝选择", len(overrides)))
 		return entry
 	}
 	if len(overrides) == 1 {

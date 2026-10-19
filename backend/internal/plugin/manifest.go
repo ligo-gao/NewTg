@@ -17,9 +17,12 @@ import (
 // 「能加载但写不进任务行」的分裂。
 const MaxKeyLen = 30
 
-// keyPattern 限制 key 可用于 URL 路径与表索引（relay-06 §2.2 只写了长度，
-// 这里补最小字符集约束：空白/控制字符会让 `/v1/tasks/:key` 路由不可达）。
-var keyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+// keyPattern 与 T1 的 DB CHECK 同源（R-M6D-01 / 复核 H1）：
+// `task_plugins_key_chk` 为 `^[a-z0-9-]{1,30}$`。key 同时是 URL 路由段、
+// 路由索引键与前端选择器取值，字符集必须在 DB、应用层与路由层完全一致；
+// 大写/点/下划线在 DB 层会被拒绝，若应用层放行就会产生「能加载、写不进库」
+// 的分裂，因此在加载期同样拒绝。
+var keyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // semverPattern 是对 §2.2「version: semver」的宽松实现：接受可选的 v 前缀
 // 与 prerelease/build 后缀，拒绝空串与任意文本。刻意不引第三方 semver 库：
@@ -81,11 +84,14 @@ type AuthSpec struct {
 
 // Manifest 是插件导出对象的**元数据**部分（函数钩子单独记录）。
 type Manifest struct {
-	APIVersion           int
-	Key                  string
-	Name                 string
-	Version              string
-	Author               Author
+	APIVersion int
+	Key        string
+	Name       string
+	Version    string
+	Author     Author
+	// Icon 是可选的图标引用（≤128 字符，与 DB 列口径一致）；
+	// 内置插件的侧车图标仍以目录内 icon.svg/icon.png 为主（relay-06 §2.1）。
+	Icon                 string
 	Description          map[string]string
 	Models               []string
 	FetchMode            string
@@ -110,7 +116,7 @@ type Manifest struct {
 // 字段，任何把 `$defs.filePlaceholder` 抄进 meta 的源都会被拒。
 var knownMetaKeys = map[string]struct{}{
 	"apiVersion": {}, "key": {}, "name": {}, "version": {}, "author": {},
-	"description": {}, "models": {}, "fetchMode": {}, "channelTypes": {},
+	"description": {}, "icon": {}, "models": {}, "fetchMode": {}, "channelTypes": {},
 	"routes": {}, "protocols": {}, "usageSchema": {}, "usageProfiles": {},
 	"usageExamples": {}, "baseUrl": {}, "allowedHosts": {}, "upstreams": {},
 	"requiredCapabilities": {}, "submitResponseTypes": {}, "auth": {},
@@ -296,6 +302,9 @@ func decodeManifest(key string, raw map[string]any) (*Manifest, Issues) {
 			d.typeError("meta.name", "字符串", v)
 		} else if strings.TrimSpace(s) == "" {
 			d.add("meta.name", "", "meta_required", "name 不得为空")
+		} else if utf8.RuneCountInString(s) > 128 {
+			// 与 DB `task_plugins_name_len_chk`（char_length ≤ 128）同值。
+			d.add("meta.name", "", "meta_name_len", "name 最长 128 字符，实际 %d", utf8.RuneCountInString(s))
 		} else {
 			m.Name = s
 		}
@@ -309,6 +318,10 @@ func decodeManifest(key string, raw map[string]any) (*Manifest, Issues) {
 			d.typeError("meta.version", "字符串", v)
 		} else if !semverPattern.MatchString(s) {
 			d.add("meta.version", "", "semver", "version %q 不是 semver", s)
+		} else if utf8.RuneCountInString(s) > 32 {
+			// 与 DB `task_plugins_active_version_len_chk`（≤ 32）同值：
+			// active_version 是版本行 version 的镜像，超长会写不进主表。
+			d.add("meta.version", "", "meta_version_len", "version 最长 32 字符，实际 %d", utf8.RuneCountInString(s))
 		} else {
 			m.Version = s
 		}
@@ -317,10 +330,30 @@ func decodeManifest(key string, raw map[string]any) (*Manifest, Issues) {
 	}
 
 	m.Author = d.decodeAuthor(raw["author"])
+	if v, ok := raw["icon"]; ok {
+		icon, ok := asString(v)
+		if !ok {
+			d.typeError("meta.icon", "字符串", v)
+		} else if utf8.RuneCountInString(icon) > 128 {
+			d.add("meta.icon", "", "meta_icon_len", "icon 最长 128 字符，实际 %d", utf8.RuneCountInString(icon))
+		} else {
+			m.Icon = icon
+		}
+	}
 
-	// —— description：T2 ——
+	// —— description：T2 + DB 总长上限 ——
 	if v, ok := raw["description"]; ok {
 		m.Description = d.localizedText(v, "meta.description", 512, "T2", true)
+		// DB `task_plugins_description_len_chk` 对单个 description 列限 1024。
+		// manifest 是 localizedText（每 locale 512），总长取全部 locale 之和；
+		// 超限即拒绝，避免「能加载但主表写入失败」。
+		total := 0
+		for _, text := range m.Description {
+			total += utf8.RuneCountInString(text)
+		}
+		if total > 1024 {
+			d.add("meta.description", "", "meta_description_len", "description 总长最长 1024 字符，实际 %d", total)
+		}
 	} else {
 		d.add("meta.description", "", "T2", "缺少 description")
 	}
@@ -916,6 +949,9 @@ func (d *decoder) decodeAuth(v any) AuthSpec {
 		d.add("meta.auth", "", "T3", "auth 必须是字符串或 {type} 对象")
 		return AuthSpec{Raw: v}
 	}
+	// auth 对象只定义 `type`（relay-06 §4.2 T3）；额外字段无宿主语义，
+	// 严格拒绝（与 manifest 的「未知字段拒绝」同纪律）。
+	d.checkUnknown(obj, "meta.auth.", map[string]struct{}{"type": {}}, "meta_unknown_field")
 	typ, ok := asString(obj["type"])
 	if !ok {
 		d.add("meta.auth.type", "", "T3", "auth.type 必须为字符串")

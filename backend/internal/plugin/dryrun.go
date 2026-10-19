@@ -23,7 +23,9 @@ type DryRunRequest struct {
 	// Payload 是端点参数：submit/query 传 ctx 对象；result 传
 	// {ctx, body, status, headers}；submit_response 传 {statusCode, headers, body}。
 	Payload any
-	// AllowOutbound 预留；本任务不实现出站，true 也不会产生网络调用。
+	// AllowOutbound 预留给后续出站执行器。本任务没有网络栈；传 true 时
+	// 显式拒绝（dryrun_outbound_unavailable），不静默忽略——否则调用方会
+	// 以为已执行出站而结果其实是纯变换（复核 L2）。
 	AllowOutbound bool
 }
 
@@ -41,6 +43,11 @@ type DryRunResult struct {
 func (m *Manager) DryRun(ctx context.Context, req DryRunRequest) (*DryRunResult, error) {
 	if req.Key == "" {
 		return nil, Issues{issuef("", "key", "", "dryrun_required", "dryrun 必须指定 key")}
+	}
+	if req.AllowOutbound {
+		// 出站执行器（含 SSRF/白名单守卫）尚未实现，见 t3-report 的未实现清单。
+		return nil, Issues{issuef(req.Key, "allow_outbound", "", "dryrun_outbound_unavailable",
+			"出站执行器未实现，dryrun 不支持 allow_outbound=true")}
 	}
 	plugin, err := m.resolveForDryRun(ctx, req)
 	if err != nil {

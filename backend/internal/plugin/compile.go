@@ -299,67 +299,145 @@ func firstLine(exception *sobek.Exception) int {
 // 扫描跳过字符串与注释（避免描述文案里出现 async 等词被误伤）；
 // 正则字面量不单独识别——这是可接受的残留：正则里出现这些标识符
 // 只会导致「更严格地拒绝」，不会放过危险代码（fail-closed）。
+// forbiddenIdentifiers 是宿主不提供的入口名（relay-06 §5.1 硬限制）。
+//
+// `async`/`await` 是 Sobek 本身支持的语法，但设计冻结「无异步」；暴露它们
+// 会让插件以为存在事件循环（实际没有 timers/网络回调），因此在加载期拒绝。
+var forbiddenIdentifiers = map[string]struct{}{
+	"import": {}, "require": {}, "fetch": {},
+	"XMLHttpRequest": {}, "WebSocket": {}, "process": {}, "Deno": {}, "Bun": {},
+	"async": {}, "await": {}, "eval": {}, "setTimeout": {}, "setInterval": {},
+}
+
+// sourceScanner 是加载期沙箱扫描的词法器。
+//
+// 覆盖面与盲区（复核 L1）：
+//   - 字符串（单/双引号）与注释的内容按字面量跳过，不做关键字匹配；
+//   - 模板字符串的 `${...}` **进入代码上下文**扫描（“ `${async () => 1}` “
+//     会命中 async），模板纯文本部分跳过；
+//   - 正则字面量不单独识别：`/pattern/` 会被当作代码扫描，正则里的关键字
+//     可能被误报——方向是**更严格地拒绝**，不会放过危险代码（fail-closed）。
+type sourceScanner struct {
+	src  string
+	idx  int
+	line int
+}
+
 func findForbiddenIdentifier(source string) (string, int, bool) {
-	forbidden := map[string]struct{}{
-		"import": {}, "require": {}, "fetch": {},
-		"XMLHttpRequest": {}, "WebSocket": {}, "process": {}, "Deno": {}, "Bun": {},
-		"async": {}, "await": {}, "eval": {}, "setTimeout": {}, "setInterval": {},
-	}
-	line := 1
-	idx := 0
-	for idx < len(source) {
-		ch := source[idx]
+	scanner := &sourceScanner{src: source, line: 1}
+	return scanner.scanCode(false)
+}
+
+// scanCode 在代码上下文扫描；stopAtBrace 用于模板插值，遇到配对的 `}` 返回。
+func (s *sourceScanner) scanCode(stopAtBrace bool) (string, int, bool) {
+	braceDepth := 0
+	for s.idx < len(s.src) {
+		ch := s.src[s.idx]
 		switch {
 		case ch == '\n':
-			line++
-			idx++
-		case ch == '/' && idx+1 < len(source) && source[idx+1] == '/':
-			for idx < len(source) && source[idx] != '\n' {
-				idx++
-			}
-		case ch == '/' && idx+1 < len(source) && source[idx+1] == '*':
-			idx += 2
-			for idx+1 < len(source) && !(source[idx] == '*' && source[idx+1] == '/') {
-				if source[idx] == '\n' {
-					line++
-				}
-				idx++
-			}
-			idx += 2
-		case ch == '\'' || ch == '"' || ch == '`':
-			quote := ch
-			idx++
-			for idx < len(source) {
-				if source[idx] == '\\' {
-					if idx+1 < len(source) && source[idx+1] == '\n' {
-						line++
-					}
-					idx += 2
-					continue
-				}
-				if source[idx] == '\n' {
-					line++
-				}
-				if source[idx] == quote {
-					idx++
-					break
-				}
-				idx++
+			s.line++
+			s.idx++
+		case ch == '/' && s.idx+1 < len(s.src) && s.src[s.idx+1] == '/':
+			s.skipLineComment()
+		case ch == '/' && s.idx+1 < len(s.src) && s.src[s.idx+1] == '*':
+			s.skipBlockComment()
+		case ch == '\'' || ch == '"':
+			s.skipString(ch)
+		case ch == '`':
+			if name, line, ok := s.skipTemplate(); ok {
+				return name, line, true
 			}
 		case isIdentStart(ch):
-			start := idx
-			for idx < len(source) && isIdentPart(source[idx]) {
-				idx++
+			start := s.idx
+			for s.idx < len(s.src) && isIdentPart(s.src[s.idx]) {
+				s.idx++
 			}
-			word := source[start:idx]
-			if _, bad := forbidden[word]; bad {
-				return word, line, true
+			if _, bad := forbiddenIdentifiers[s.src[start:s.idx]]; bad {
+				return s.src[start:s.idx], s.line, true
 			}
+		case stopAtBrace && ch == '{':
+			braceDepth++
+			s.idx++
+		case stopAtBrace && ch == '}':
+			if braceDepth == 0 {
+				s.idx++
+				return "", 0, false
+			}
+			braceDepth--
+			s.idx++
 		default:
-			idx++
+			s.idx++
 		}
 	}
 	return "", 0, false
+}
+
+// skipString 跳过一个单/双引号字符串（含转义）。
+func (s *sourceScanner) skipString(quote byte) {
+	s.idx++
+	for s.idx < len(s.src) {
+		if s.src[s.idx] == '\\' {
+			if s.idx+1 < len(s.src) && s.src[s.idx+1] == '\n' {
+				s.line++
+			}
+			s.idx += 2
+			continue
+		}
+		if s.src[s.idx] == '\n' {
+			s.line++
+		}
+		if s.src[s.idx] == quote {
+			s.idx++
+			return
+		}
+		s.idx++
+	}
+}
+
+// skipTemplate 跳过模板字符串的纯文本部分，并对 `${...}` 递归扫描代码。
+func (s *sourceScanner) skipTemplate() (string, int, bool) {
+	s.idx++ // 反引号
+	for s.idx < len(s.src) {
+		switch s.src[s.idx] {
+		case '\\':
+			s.idx += 2
+		case '`':
+			s.idx++
+			return "", 0, false
+		case '\n':
+			s.line++
+			s.idx++
+		case '$':
+			if s.idx+1 < len(s.src) && s.src[s.idx+1] == '{' {
+				s.idx += 2
+				if name, line, ok := s.scanCode(true); ok {
+					return name, line, true
+				}
+				continue
+			}
+			s.idx++
+		default:
+			s.idx++
+		}
+	}
+	return "", 0, false
+}
+
+func (s *sourceScanner) skipLineComment() {
+	for s.idx < len(s.src) && s.src[s.idx] != '\n' {
+		s.idx++
+	}
+}
+
+func (s *sourceScanner) skipBlockComment() {
+	s.idx += 2
+	for s.idx+1 < len(s.src) && !(s.src[s.idx] == '*' && s.src[s.idx+1] == '/') {
+		if s.src[s.idx] == '\n' {
+			s.line++
+		}
+		s.idx++
+	}
+	s.idx += 2
 }
 
 func isIdentStart(ch byte) bool {

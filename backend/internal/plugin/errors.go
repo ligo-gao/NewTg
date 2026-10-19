@@ -14,7 +14,7 @@ import (
 type Issue struct {
 	Key       string `json:"key"`
 	FieldPath string `json:"fieldPath"`
-	Locale    string `json:"locale,omitempty"`
+	Locale    string `json:"locale"`
 	Rule      string `json:"rule"`
 	Message   string `json:"message"`
 }

@@ -221,6 +221,17 @@ func validatePricingDescription(d *decoder, path, locale, text string, strict bo
 			break
 		}
 	}
+	// D4 只禁止**结尾**标点；中间标点（如 "Image, video unit price"）合法。
+	runeText := []rune(trimmed)
+	if strings.ContainsRune(".!?,;:。！？，；：", runeText[len(runeText)-1]) {
+		d.add(path, locale, "D4", "描述不得以标点 %q 结尾", string(runeText[len(runeText)-1]))
+	}
+	if !strict {
+		// 非数值字段只强制 D1/D2/D4（relay-06 §4.2 末段）。D3（禁数字）是
+		// 「描述不得像价格」的数值字段专用代理：布尔/枚举描述里的数字是
+		// 合法短语（如 "Generate 2 variants"），不得误伤。
+		return
+	}
 	for _, r := range text {
 		// D3：阿拉伯数字（unicode.IsDigit 同时覆盖全角 ０-９ 与阿拉伯-印度数字）。
 		if unicode.IsDigit(r) {
@@ -228,22 +239,15 @@ func validatePricingDescription(d *decoder, path, locale, text string, strict bo
 			break
 		}
 	}
-	// D4 只禁止**结尾**标点；中间标点（如 "Image, video unit price"）合法。
-	runeText := []rune(trimmed)
-	if strings.ContainsRune(".!?,;:。！？，；：", runeText[len(runeText)-1]) {
-		d.add(path, locale, "D4", "描述不得以标点 %q 结尾", string(runeText[len(runeText)-1]))
-	}
-	if !strict {
-		return
-	}
 	lower := strings.ToLower(trimmed)
+	normalizedLocale := strings.ToLower(locale)
 	switch {
-	case locale == "en":
+	case normalizedLocale == "en":
 		// D5：英文必须以 unit price 结尾（大小写不敏感）。
 		if !strings.HasSuffix(lower, "unit price") {
 			d.add(path, locale, "D5", "英文描述必须以 unit price 结尾")
 		}
-	case strings.HasPrefix(strings.ToLower(locale), "zh"):
+	case strings.HasPrefix(normalizedLocale, "zh"):
 		// D6：中文（zh / zh-TW / zh-Hans / zh-Hant）必须含「单价」。
 		if !strings.Contains(text, "单价") {
 			d.add(path, locale, "D6", "中文描述必须包含 单价")

@@ -13,12 +13,15 @@ import (
 // 一条规则改动就会让十几个用例一起失败；生成器让每个用例只声明它关心的
 // 那一个字段（其余保持合规），失败信号因此是局部的。
 type fixture struct {
-	Key                 string
-	APIVersion          string
-	Version             string
-	FetchMode           string
-	EnDesc              string
-	ZhDesc              string
+	Key        string
+	Name       string
+	APIVersion string
+	Version    string
+	FetchMode  string
+	EnDesc     string
+	ZhDesc     string
+	// DescriptionJS 覆盖整个 description 表达式（用于多 locale / 总长上限用例）。
+	DescriptionJS       string
 	UsageSchema         string
 	UsageProfiles       string
 	UsageExamples       string
@@ -86,6 +89,9 @@ func (f fixture) withDefaults() fixture {
 	if f.FetchMode == "" {
 		f.FetchMode = "per_task"
 	}
+	if f.Name == "" {
+		f.Name = "Sample"
+	}
 	if f.EnDesc == "" {
 		f.EnDesc = "Sample task plugin"
 	}
@@ -142,10 +148,14 @@ func (f fixture) Source() string {
 	b.WriteString("globalThis.__NEWTG_PLUGIN__ = {\n")
 	fmt.Fprintf(&b, "  apiVersion: %s,\n", f.APIVersion)
 	fmt.Fprintf(&b, "  key: %q,\n", f.Key)
-	b.WriteString("  name: \"Sample\",\n")
+	fmt.Fprintf(&b, "  name: %q,\n", f.Name)
 	fmt.Fprintf(&b, "  version: %q,\n", f.Version)
 	b.WriteString("  author: { name: \"NewTG\" },\n")
-	fmt.Fprintf(&b, "  description: { en: %q, zh: %q },\n", f.EnDesc, f.ZhDesc)
+	if f.DescriptionJS != "" {
+		fmt.Fprintf(&b, "  description: %s,\n", f.DescriptionJS)
+	} else {
+		fmt.Fprintf(&b, "  description: { en: %q, zh: %q },\n", f.EnDesc, f.ZhDesc)
+	}
 	b.WriteString("  models: [\"sample-model\"],\n")
 	fmt.Fprintf(&b, "  fetchMode: %q,\n", f.FetchMode)
 	fmt.Fprintf(&b, "  auth: %s,\n", f.Auth)
