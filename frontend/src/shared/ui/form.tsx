@@ -35,10 +35,10 @@ export function TextField({
   const fieldId = id ?? generatedId
   const errorId = `${fieldId}-error`
   const hintId = `${fieldId}-hint`
+  // Reference the hint only while it is rendered: when an error replaces the
+  // hint its paragraph disappears, so a dangling id would describe nothing.
   const describedBy =
-    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
-      .filter(Boolean)
-      .join(' ') || undefined
+    error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -94,9 +94,7 @@ export function PasswordField({
   const hintId = `${fieldId}-hint`
   const [visible, setVisible] = useState(false)
   const describedBy =
-    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
-      .filter(Boolean)
-      .join(' ') || undefined
+    error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   return (
     <div className="flex flex-col gap-1.5">

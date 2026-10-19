@@ -431,10 +431,15 @@ export function SettingsSectionForm({
     const dangerous = Object.entries(values).some(([key, value]) => {
       const item = itemByKey.get(key)
       if (item === undefined || !item.dangerous) return false
+      const declared = item.danger_direction
+      // `any` is an explicit server verdict, not a missing value: map it to
+      // the local `change` semantics so the fallback table cannot override it.
       const serverDirection =
-        item.danger_direction === 'off' || item.danger_direction === 'on'
-          ? item.danger_direction
-          : undefined
+        declared === 'off' || declared === 'on'
+          ? declared
+          : declared === 'any'
+            ? ('change' as const)
+            : undefined
       const direction =
         serverDirection ??
         fields.find((entry) => entry.key === key)?.dangerDirection ??

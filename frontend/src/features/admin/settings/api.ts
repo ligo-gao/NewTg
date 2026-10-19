@@ -28,11 +28,11 @@ export interface SettingsItem {
   dangerous: boolean
   /**
    * Server-declared risky direction (contract v2): `off` means turning the
-   * key false needs confirmation, `on` means turning it true does. `null` /
-   * absent means the server did not classify the direction and the client
-   * falls back to its local table.
+   * key false needs confirmation, `on` means turning it true does, and `any`
+   * means any change is risky. `null` / absent means the server did not
+   * classify the direction and the client falls back to its local table.
    */
-  danger_direction?: 'off' | 'on' | null
+  danger_direction?: 'off' | 'on' | 'any' | null
 }
 
 export interface SettingsSectionResponse {
