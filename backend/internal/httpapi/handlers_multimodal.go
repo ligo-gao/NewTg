@@ -133,21 +133,23 @@ func RegisterMultimodalRoutes(mux *http.ServeMux, auth func(http.Handler) http.H
 	if auth == nil {
 		panic("httpapi: RegisterMultimodalRoutes requires the relay auth middleware")
 	}
-	register := func(path string, endpoint contract.Endpoint) {
-		mux.Handle("POST "+path, auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	register := func(method, path string, endpoint contract.Endpoint) {
+		mux.Handle(method+" "+path, auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h.serve(w, r, endpoint)
 		})))
 	}
-	register("/v1/images/generations", contract.EndpointImageGenerate)
-	register("/v1/images/edits", contract.EndpointImageEdit)
-	register("/v1/embeddings", contract.EndpointEmbeddings)
-	register("/v1/rerank", contract.EndpointRerank)
-	register("/v1/audio/speech", contract.EndpointAudioSpeech)
-	register("/v1/audio/transcriptions", contract.EndpointAudioTranscribe)
-	register("/v1/audio/translations", contract.EndpointAudioTranslate)
-	// 实时骨架：WebSocket 升级由 Task 4/T5 的 Dispatcher 负责；T1 只保证
-	// 鉴权与上下文注入与其它端点一致。
-	register("/v1/realtime", contract.EndpointRealtime)
+	register(http.MethodPost, "/v1/images/generations", contract.EndpointImageGenerate)
+	register(http.MethodPost, "/v1/images/edits", contract.EndpointImageEdit)
+	register(http.MethodPost, "/v1/embeddings", contract.EndpointEmbeddings)
+	register(http.MethodPost, "/v1/rerank", contract.EndpointRerank)
+	register(http.MethodPost, "/v1/audio/speech", contract.EndpointAudioSpeech)
+	register(http.MethodPost, "/v1/audio/transcriptions", contract.EndpointAudioTranscribe)
+	register(http.MethodPost, "/v1/audio/translations", contract.EndpointAudioTranslate)
+	// 实时骨架：WebSocket 握手是 GET（relay-07 G-06 冻结 `GET /v1/realtime`）。
+	// M4 计划草图写的 POST 已被该裁决取代；这里只注册 GET，避免留下一个
+	// 永远不会收到升级请求的 POST 半死路径。升级与双向桥接由 T4/T5 负责，
+	// T1 只保证鉴权与上下文注入与其它端点一致。
+	register(http.MethodGet, "/v1/realtime", contract.EndpointRealtime)
 }
 
 // serve 是所有多模态端点的公共流程：读体 → 入口校验 → 组装 RelayContext →
@@ -520,8 +522,10 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 	}
 	var (
 		model, prompt, size, quality string
+		parameters                   string
 		nRaw                         string
 		hasPrompt, hasN              bool
+		hasParameters                bool
 	)
 	for {
 		part, err := reader.NextPart()
@@ -532,6 +536,19 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 			return "", invalidMultimodalEntry("invalid multipart form")
 		}
 		name := part.FormName()
+		// parameters 是计费乘数通道（Extra["parameters"].n），即使它以文件
+		// part 的形式上传也必须按文本读取并走与 JSON 相同的校验——否则
+		// multipart 会绕过 parameters.n 的上界（复审 F1）。
+		if name == "parameters" {
+			value, fieldErr := readMultipartField(part)
+			_ = part.Close()
+			if fieldErr != nil {
+				return "", fieldErr
+			}
+			parameters = value
+			hasParameters = true
+			continue
+		}
 		// image / mask 等文件 part：只校验整体大小（已由 MaxBytesReader 限幅），
 		// 内容留给 Task 4 重新解析。
 		if part.FileName() != "" || name == "image" || name == "mask" {
@@ -584,6 +601,15 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 	}
 	if quality != "" {
 		if err := validateImageQuality(quality); err != nil {
+			return "", err
+		}
+	}
+	if hasParameters {
+		// 空字符串不是合法 JSON；与 JSON 入口 `"parameters":""` 同样拒绝。
+		if strings.TrimSpace(parameters) == "" {
+			return "", invalidMultimodalEntry("parameters must be a JSON object")
+		}
+		if err := validateImageParameters(json.RawMessage(parameters)); err != nil {
 			return "", err
 		}
 	}

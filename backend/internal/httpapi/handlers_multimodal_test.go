@@ -73,6 +73,7 @@ func newMultimodalTestHandler(t *testing.T, dispatcher MultimodalDispatcher) htt
 }
 
 type multimodalRequest struct {
+	method      string
 	path        string
 	body        []byte
 	contentType string
@@ -80,7 +81,11 @@ type multimodalRequest struct {
 
 func doMultimodal(t *testing.T, handler http.Handler, req multimodalRequest, authenticated bool) *httptest.ResponseRecorder {
 	t.Helper()
-	httpReq := httptest.NewRequest(http.MethodPost, req.path, bytes.NewReader(req.body))
+	method := req.method
+	if method == "" {
+		method = http.MethodPost
+	}
+	httpReq := httptest.NewRequest(method, req.path, bytes.NewReader(req.body))
 	if req.contentType != "" {
 		httpReq.Header.Set("Content-Type", req.contentType)
 	}
@@ -142,15 +147,15 @@ func TestMultimodal_RoutesAuthAndDispatch(t *testing.T) {
 		req      multimodalRequest
 		endpoint contract.Endpoint
 	}{
-		{"image-generation", multimodalRequest{"/v1/images/generations", validImageJSON(), "application/json"}, contract.EndpointImageGenerate},
-		{"image-edit-json", multimodalRequest{"/v1/images/edits", validImageJSON(), "application/json"}, contract.EndpointImageEdit},
-		{"image-edit-multipart", multimodalRequest{"/v1/images/edits", imageMultipartBody, imageContentType}, contract.EndpointImageEdit},
-		{"embeddings", multimodalRequest{"/v1/embeddings", []byte(`{"model":"emb","input":"hello"}`), "application/json"}, contract.EndpointEmbeddings},
-		{"rerank", multimodalRequest{"/v1/rerank", []byte(`{"model":"re","query":"q","documents":["d"]}`), "application/json"}, contract.EndpointRerank},
-		{"audio-speech", multimodalRequest{"/v1/audio/speech", []byte(`{"model":"tts","input":"hi","speed":1.0}`), "application/json"}, contract.EndpointAudioSpeech},
-		{"audio-transcriptions", multimodalRequest{"/v1/audio/transcriptions", audioBody, audioContentType}, contract.EndpointAudioTranscribe},
-		{"audio-translations", multimodalRequest{"/v1/audio/translations", audioBody, audioContentType}, contract.EndpointAudioTranslate},
-		{"realtime", multimodalRequest{"/v1/realtime", nil, ""}, contract.EndpointRealtime},
+		{"image-generation", multimodalRequest{path: "/v1/images/generations", body: validImageJSON(), contentType: "application/json"}, contract.EndpointImageGenerate},
+		{"image-edit-json", multimodalRequest{path: "/v1/images/edits", body: validImageJSON(), contentType: "application/json"}, contract.EndpointImageEdit},
+		{"image-edit-multipart", multimodalRequest{path: "/v1/images/edits", body: imageMultipartBody, contentType: imageContentType}, contract.EndpointImageEdit},
+		{"embeddings", multimodalRequest{path: "/v1/embeddings", body: []byte(`{"model":"emb","input":"hello"}`), contentType: "application/json"}, contract.EndpointEmbeddings},
+		{"rerank", multimodalRequest{path: "/v1/rerank", body: []byte(`{"model":"re","query":"q","documents":["d"]}`), contentType: "application/json"}, contract.EndpointRerank},
+		{"audio-speech", multimodalRequest{path: "/v1/audio/speech", body: []byte(`{"model":"tts","input":"hi","speed":1.0}`), contentType: "application/json"}, contract.EndpointAudioSpeech},
+		{"audio-transcriptions", multimodalRequest{path: "/v1/audio/transcriptions", body: audioBody, contentType: audioContentType}, contract.EndpointAudioTranscribe},
+		{"audio-translations", multimodalRequest{path: "/v1/audio/translations", body: audioBody, contentType: audioContentType}, contract.EndpointAudioTranslate},
+		{"realtime", multimodalRequest{method: http.MethodGet, path: "/v1/realtime"}, contract.EndpointRealtime},
 	}
 
 	for _, tc := range requests {
@@ -294,6 +299,13 @@ func TestMultimodal_ImageMultipartValidation(t *testing.T) {
 		{"quality-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "quality": "ultra"}, nil, http.StatusBadRequest},
 		{"size-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "size": "10000x100"}, nil, http.StatusBadRequest},
 		{"prompt-too-long", map[string]string{"model": "img-model", "prompt": strings.Repeat("a", MaxImagePromptBytes+1)}, nil, http.StatusBadRequest},
+		{"parameters-n-too-large", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":129}`}, nil, http.StatusBadRequest},
+		{"parameters-n-1000", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":1000}`}, nil, http.StatusBadRequest},
+		{"parameters-n-zero-provider", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":0,"useProviderParameters":true}`}, nil, http.StatusBadRequest},
+		{"parameters-non-json", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": "not-json"}, nil, http.StatusBadRequest},
+		{"parameters-empty", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": ""}, nil, http.StatusBadRequest},
+		{"parameters-file-non-json", base, map[string][]byte{"parameters": []byte("not-json")}, http.StatusBadRequest},
+		{"parameters-valid", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":2}`}, nil, http.StatusOK},
 	}
 
 	for _, tc := range cases {
