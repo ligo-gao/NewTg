@@ -138,6 +138,10 @@ jobs:
           --health-retries 10
     env:
       NEWTG_TEST_DB_DSN: postgres://newtg:newtg@localhost:5432/newtg_test?sslmode=disable
+      # 日志库 DSN 必须显式注入：httpapi/platform 的集成用例在变量为空时
+      # t.Skip，静默跳过会让流水线「绿」但 15 个用例根本没跑。库由下方
+      # 「建日志库 newtg_logs」步骤创建，与主库同一个 service container。
+      NEWTG_TEST_LOGS_DSN: postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable
       NEWTG_TEST_REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

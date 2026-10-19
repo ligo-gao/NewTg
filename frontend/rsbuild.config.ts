@@ -58,6 +58,10 @@ export default defineConfig({
           autoCodeSplitting: true,
           routesDirectory: './src/routes',
           generatedRouteTree: './src/routeTree.gen.ts',
+          // 测试文件与路由同目录但永远不是路由：不忽略时插件会把
+          // `_console.test.tsx` 当路由扫描并在每次构建时告警。这里只排除
+          // `.test.tsx`，Vitest 的 include 仍会正常收集并运行它。
+          routeFileIgnorePattern: '\\.test\\.tsx$',
         }),
       ],
     },

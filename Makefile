@@ -73,7 +73,9 @@ test-cover: ## 覆盖率报告（不上传第三方）
 	cd $(BACKEND) && go test -covermode=atomic -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
 
 test-integration: ## 集成测试：需真实 PG + Redis（§8.2）
-	cd $(BACKEND) && NEWTG_TEST_DB_DSN='$(TEST_DB_DSN)' NEWTG_TEST_REDIS_ADDR='$(TEST_REDIS_ADDR)' go test -tags=integration ./...
+	# NEWTG_TEST_LOGS_DSN 不可省略：用例在缺少它时 t.Skip，会让集成测试
+	# 表面通过、实际漏跑日志库相关断言（与 migrate-verify 复用同一 DSN）。
+	cd $(BACKEND) && NEWTG_TEST_DB_DSN='$(TEST_DB_DSN)' NEWTG_TEST_LOGS_DSN='$(TEST_LOGS_DB_DSN)' NEWTG_TEST_REDIS_ADDR='$(TEST_REDIS_ADDR)' go test -tags=integration ./...
 
 migrate-up: ## 应用全部迁移
 	migrate -path $(MIGRATIONS) -database "$(TEST_DB_DSN)" up

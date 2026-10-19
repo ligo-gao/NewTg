@@ -44,7 +44,7 @@ const LOGIN_ROW = {
   route: '/api/auth/login',
   status_code: 200,
   result: 'success' as const,
-  detail: { action: 'password_login', login_method: 'password' },
+  detail: { action: 'auth.login', login_method: 'password' },
   before: null,
   after: null,
   created_at: '2026-10-14T09:41:22Z',
@@ -62,7 +62,7 @@ const OPERATION_ROW = {
   status_code: 403,
   result: 'failed' as const,
   detail: {
-    action: 'token_create',
+    action: 'token.create',
     resource_type: 'token',
     resource_id: 7,
     failure_reason: 'quota_exceeded',
@@ -125,7 +125,7 @@ describe('audit logs page', () => {
       <PageHarness initial={{ username: 'someone-else' }} />,
     )
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     const table = screen.getByRole('table')
     expect(within(table).getByText('Login')).toBeTruthy()
     expect(within(table).getByText('Operation')).toBeTruthy()
@@ -148,7 +148,7 @@ describe('audit logs page', () => {
     })
     renderWithProviders(<PageHarness initial={{ username: 'alice' }} />)
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     expect(await screen.findByRole('columnheader', { name: 'Username' })).toBeTruthy()
     expect(screen.getByLabelText('Username')).toBeTruthy()
     await waitFor(() => {
@@ -168,7 +168,7 @@ describe('audit logs page', () => {
     })
     renderWithProviders(<PageHarness onSearch={(next) => changes.push(next)} />)
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     await user.selectOptions(screen.getByLabelText('Category'), 'operation')
     await user.selectOptions(screen.getByLabelText('Result'), 'failed')
     await user.click(screen.getByRole('radio', { name: '7d' }))
@@ -189,13 +189,15 @@ describe('audit logs page', () => {
     installScenario({ list: () => jsonResponse(page([OPERATION_ROW])) })
     renderWithProviders(<PageHarness />)
 
-    await screen.findByText('token_create')
+    await screen.findByText('Token created')
     await user.click(screen.getByRole('button', { name: 'View' }))
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Audit detail')).toBeTruthy()
     expect(within(dialog).getByText('General')).toBeTruthy()
     expect(within(dialog).getByText('Category fields')).toBeTruthy()
+    // 枚举映射同时作用于列表与详情的 action 字段。
+    expect(within(dialog).getByText('Token created')).toBeTruthy()
     expect(within(dialog).getByText('token')).toBeTruthy()
     expect(within(dialog).getByText('7')).toBeTruthy()
     expect(within(dialog).getByText('name')).toBeTruthy()
@@ -211,12 +213,29 @@ describe('audit logs page', () => {
     installScenario({ list: () => jsonResponse(page([LOGIN_ROW])) })
     renderWithProviders(<PageHarness />)
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     await user.click(screen.getByRole('button', { name: 'View' }))
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Login method')).toBeTruthy()
     expect(within(dialog).getByText('password')).toBeTruthy()
+  })
+
+  it('humanizes actions outside the frozen enum instead of crashing', async () => {
+    const user = userEvent.setup()
+    installScenario({
+      list: () =>
+        jsonResponse(
+          page([{ ...OPERATION_ROW, detail: { action: 'future.event_type' } }]),
+        ),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('Future event type')
+    await user.click(screen.getByRole('button', { name: 'View' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Future event type')).toBeTruthy()
   })
 
   it('paginates and renders the default empty state', async () => {
@@ -226,7 +245,7 @@ describe('audit logs page', () => {
     })
     renderWithProviders(<PageHarness />)
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     expect(screen.getByText('Page 1 of 3')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Next page' }))
     await waitFor(() => {
@@ -272,7 +291,7 @@ describe('audit logs page', () => {
     })
     renderWithProviders(<PageHarness />)
 
-    await screen.findByText('password_login')
+    await screen.findByText('Signed in')
     const input = screen.getByLabelText('Username') as HTMLInputElement
     await user.type(input, 'alice')
     await user.selectOptions(screen.getByLabelText('Category'), 'login')

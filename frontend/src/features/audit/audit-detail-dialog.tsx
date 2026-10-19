@@ -8,6 +8,7 @@ import { StatusBadge } from '@/shared/ui/status-badge'
 import { Tag } from '@/shared/ui/tag'
 
 import type { AuditCategory, AuditLogItem } from './search'
+import { auditActionLabel } from './actions'
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null
@@ -103,7 +104,7 @@ function CategoryFields({
     rows.push({
       key: 'action',
       label: t('logs.audit.detail.action'),
-      value: readString(detail, ['action']),
+      value: auditActionLabel(t, readString(detail, ['action'])),
     })
   } else if (category === 'operation') {
     rows.push({
@@ -119,7 +120,7 @@ function CategoryFields({
     rows.push({
       key: 'action',
       label: t('logs.audit.detail.action'),
-      value: readString(detail, ['action']),
+      value: auditActionLabel(t, readString(detail, ['action'])),
     })
   } else {
     rows.push({
@@ -130,7 +131,7 @@ function CategoryFields({
     rows.push({
       key: 'action',
       label: t('logs.audit.detail.action'),
-      value: readString(detail, ['action']),
+      value: auditActionLabel(t, readString(detail, ['action'])),
     })
     rows.push({
       key: 'source_ip',

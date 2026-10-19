@@ -22,6 +22,7 @@ import { Tag } from '@/shared/ui/tag'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { AuditDetailDialog } from './audit-detail-dialog'
+import { auditActionLabel } from './actions'
 import {
   DEFAULT_AUDIT_LOG_SEARCH,
   type AuditCategory,
@@ -429,13 +430,17 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
             <tbody>
               {items.map((row) => {
                 const detail = asRecord(row.detail)
-                const action =
+                // 优先用 writer 注入的 detail.action（冻结枚举），再兼容旧字段；
+                // 未登记动作由 auditActionLabel 做可读回退，绝不直接抛错。
+                const action = auditActionLabel(
+                  t,
                   readString(detail, [
-                    'action_label',
                     'action',
+                    'action_label',
                     'event',
                     'description',
-                  ]) ?? '—'
+                  ]),
+                )
                 return (
                   <tr
                     key={row.id}
