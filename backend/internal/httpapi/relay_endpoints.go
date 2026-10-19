@@ -161,6 +161,21 @@ type RelayHandlerOptions struct {
 	// Config 是跨协议转发开关的读取面（configcenter.Center 实现 ConfigReader）。
 	// nil 时按默认 false 处理（GC-8 / R-03）：功能必须显式启用，绝无隐式开启。
 	Config ConfigReader
+	// UserGroups 是 /pg/* 会话中继的用户分组查询面（Task 13）：会话身份没有
+	// 令牌分组，必须回源 users."group" 才能选渠道；同时用可用分组模型清单
+	// 在计费前把「模型不可用」判成 403。nil 时 /pg 路径不可用（会话请求
+	// 会以 500 失败关闭），生产装配必须传入。
+	UserGroups PlaygroundUserGroups
+}
+
+// PlaygroundUserGroups 是 /pg/*（Playground 会话中继）需要的用户分组读取面。
+// 生产实现是 *store.UserGroupsRepo；测试可注入内存实现。
+type PlaygroundUserGroups interface {
+	// UserGroup 返回启用用户的当前分组；用户不存在/停用返回 store.ErrUserNotFound。
+	UserGroup(ctx context.Context, userID int64) (string, error)
+	// UsableGroupsForUser 返回可用分组与各自已定价、有启用渠道的模型清单，
+	// 与 GET /api/status 的 usable_groups 同口径。
+	UsableGroupsForUser(ctx context.Context, userID int64) ([]store.UsableGroup, error)
 }
 
 // RelayHandler 持有 /v1 端点依赖。字段不导出，装配面只有 RelayHandlerOptions。
@@ -177,6 +192,10 @@ type RelayHandler struct {
 	streamInactivity time.Duration
 	multimodal       MultimodalDispatcher
 	config           ConfigReader
+	userGroups       PlaygroundUserGroups
+	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
+	// 会话鉴权由 RegisterPlayground 的外层链完成）。
+	playground *http.ServeMux
 }
 
 // NewRelayHandler 构造中继端点 handler。
@@ -219,6 +238,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		streamInactivity: inactivity,
 		multimodal:       opts.Multimodal,
 		config:           opts.Config,
+		userGroups:       opts.UserGroups,
 	}
 	// M4 T4：生产装配默认注入真实多模态分派器（T1 复审 F2/F4/F5 与 R-02 的
 	// 落点）。显式传入的 Multimodal 优先（测试可替换）；nil 不再表示 501——
@@ -257,6 +277,7 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 		Tokens:      h.tokens,
 		ModelStatus: h.modelStatus,
 		Dispatcher:  h.multimodal,
+		Groups:      h.userGroups,
 	}))
 }
 
@@ -265,6 +286,124 @@ func (h *RelayHandler) Handler() http.Handler {
 	mux := http.NewServeMux()
 	h.Register(mux)
 	return mux
+}
+
+// ---------- /pg/*（Playground 会话中继，relay-01 §1.5） ----------
+
+// RegisterPlayground 把 /pg/* 挂到根 mux。
+//
+// 与 Register 的区别只在鉴权链：/pg 只接受浏览器会话（PlaygroundSessionAuth），
+// 不接受 API 令牌；通过后把路径重写到 /v1/*，交给**同一批**转发函数
+// （handleChatCompletions / handleModels / 多模态路由）。本函数刻意不复制
+// 路由、计费、流式桥接逻辑：任何 /v1 侧的修复都会自动作用于 /pg。
+//
+// 会话写路径沿用 /api/* 的 CSRF + OriginRefererCheck（Task 13 brief §3）：
+// Playground 的 POST 是浏览器写操作，必须与其它会话写请求同口径。
+func (h *RelayHandler) RegisterPlayground(mux *http.ServeMux, sessions *auth.SessionManager, publicBaseURL string) {
+	if mux == nil || sessions == nil {
+		panic("httpapi: RegisterPlayground requires a mux and a session manager")
+	}
+	// 内部转发表没有 RelayAuth「无鉴权透传」版本：多模态注册函数要求一个
+	// auth 包装器，这里传恒等函数（会话已在最外层完成）。
+	inner := http.NewServeMux()
+	inner.Handle("POST /v1/chat/completions", http.HandlerFunc(h.handleChatCompletions))
+	inner.Handle("GET /v1/models", http.HandlerFunc(h.handleModels))
+	RegisterMultimodalRoutes(inner, func(next http.Handler) http.Handler { return next },
+		NewMultimodalHandler(MultimodalHandlerOptions{
+			Tokens:      h.tokens,
+			ModelStatus: h.modelStatus,
+			Dispatcher:  h.multimodal,
+			Groups:      h.userGroups,
+		}))
+	h.playground = inner
+
+	chain := PlaygroundSessionAuth(sessions)(
+		CSRF(sessions)(
+			OriginRefererCheck(parseAllowedOrigins(publicBaseURL))(
+				http.HandlerFunc(h.handlePlayground))))
+	mux.Handle("/pg/", chain)
+	// 精确 /pg（无尾斜杠）也要落到同一 404 语义，而不是根 mux 的纯文本 404。
+	mux.Handle("/pg", chain)
+}
+
+// handlePlayground 把 /pg 前缀重写为 /v1 后分派给内部转发表。
+//
+// 未支持的 /pg/* 返回 404 + OpenAI 错误信封（/pg 是 OpenAI 协议面，
+// 不使用管理面的 RFC 7807 problem）。
+func (h *RelayHandler) handlePlayground(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/pg")
+	if suffix == "" || !strings.HasPrefix(suffix, "/") {
+		writeRelayError(w, http.StatusNotFound, "", "not_found", "unsupported playground endpoint")
+		return
+	}
+	// Clone 而不是原地改写：外层中间件/日志仍持有原始请求，且 RequestURI
+	// 必须清空——它在服务端请求里是只读的权威字段，留着 /pg 会让下游
+	// 任何基于 RequestURI 的判断看到未重写路径。
+	rewritten := r.Clone(r.Context())
+	urlCopy := *r.URL
+	urlCopy.Path = "/v1" + suffix
+	urlCopy.RawPath = ""
+	rewritten.URL = &urlCopy
+	rewritten.RequestURI = ""
+
+	target, pattern := h.playground.Handler(rewritten)
+	if pattern == "" {
+		writeRelayError(w, http.StatusNotFound, "", "not_found", "unsupported playground endpoint")
+		return
+	}
+	target.ServeHTTP(w, rewritten)
+}
+
+// applyPlaygroundSession 为会话身份补分组并执行模型准入。
+//
+// 返回 (status, code, message, ok)；ok=true 时 rc 已完成身份补齐。
+// 判定顺序即语义：身份/用户状态（401/500）→ 分组回源 → 模型准入（403，
+// 发生在任何 PreConsume 之前，因此不产生资金变动或 usage_logs 行）。
+//
+// 模型准入只认**当前分组**的模型清单：会话请求没有分组选择器，路由也用
+// rc.UsingGroup，若按「任一可用分组」放行会出现「页面允许、路由必失败」
+// 的两套答案。默认模型校验（PUT /api/self/setting）则按 brief 冻结的
+// 「全部可用分组」口径，两者差异是有意的。
+func applyPlaygroundSession(
+	ctx context.Context,
+	groups PlaygroundUserGroups,
+	principal *auth.Principal,
+	rc *contract.RelayContext,
+	model string,
+) (int, string, string, bool) {
+	if principal == nil || principal.TokenID != nil {
+		return 0, "", "", true
+	}
+	if groups == nil {
+		// 生产装配必须提供；缺失时 fail-closed，绝不把空分组当「全部可用」。
+		return http.StatusInternalServerError, "database_error", "user group lookup is unavailable", false
+	}
+	group, err := groups.UserGroup(ctx, principal.UserID)
+	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			// 会话指向已删除/停用用户：身份失效，与坏令牌同语义（401）。
+			return http.StatusUnauthorized, "", "invalid token", false
+		}
+		return http.StatusInternalServerError, "database_error", "failed to resolve user group", false
+	}
+	relay.WithIdentity(rc, rc.RequestID, rc.UserID, rc.TokenID, group, group)
+
+	available, err := groups.UsableGroupsForUser(ctx, principal.UserID)
+	if err != nil {
+		return http.StatusInternalServerError, "database_error", "failed to resolve available models", false
+	}
+	for _, candidate := range available {
+		if candidate.Name != group {
+			continue
+		}
+		for _, allowed := range candidate.Models {
+			if allowed == model {
+				return 0, "", "", true
+			}
+		}
+	}
+	return http.StatusForbidden, "model_not_available",
+		"the requested model is not available in the current group", false
 }
 
 // ---------- POST /v1/chat/completions ----------
@@ -334,6 +473,19 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
 	// 必须在 BuildRelayContext 之后写：它会先用 peekStreaming 填一个尽力值。
 	relay.WithRequest(rc, parsed, ir.FormatOpenAIChat, r.URL.Path)
+
+	// /pg/* 会话路径（relay-01 §1.5）：BuildRelayContext 不查令牌，因此
+	// UsingGroup 为空；必须回源 users."group" 再写身份组，否则候选查询会
+	// 变成「所有分组」并把定价倍率落到错误分组。
+	// 同一分支在计费前执行模型准入：模型不在用户当前分组的可用清单 →
+	// 403 且不落任何计费/日志（modules-02 §2.15 入口 6 与 TC-F-02-19-06）。
+	if principal.TokenID == nil {
+		status, code, message, ok := applyPlaygroundSession(r.Context(), h.userGroups, principal, rc, parsed.Model)
+		if !ok {
+			writeRelayError(w, status, requestID, code, message)
+			return
+		}
+	}
 
 	// finding 1（relay-01 §3.5/§5.4-A）：pin 必须在 BuildRelayContext **之后**
 	// 解析——后者已经完成了「非管理员使用 pin → 403」的统一校验（R-P2a）。

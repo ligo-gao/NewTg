@@ -25,8 +25,9 @@ import (
 // M0 = 16 表；M1 追加认证族 6 表（R-07）并给 users/api_tokens 各补列（R-02/R-01），
 // 故 users 23→24、api_tokens 13→15，表数 16→22。
 // M6c Task 4 追加通知模板 2 表（modules-08 §3.9），表数 22→24。
+// M6c Task 13 给 users 追加 default_model（modules-02 §2.14），users 24→25。
 var wantColumns = map[string]int{
-	"users":                   24,
+	"users":                   25,
 	"api_tokens":              15,
 	"user_groups":             9,
 	"system_settings":         5,

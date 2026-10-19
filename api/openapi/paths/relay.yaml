@@ -33,3 +33,67 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error500'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
+
+  /pg/chat/completions:
+    post:
+      tags: [relay]
+      operationId: playgroundChatCompletion
+      x-codegen: false
+      x-openai-compatible: true
+      summary: Playground 会话中继（OpenAI Chat Completions）
+      description: |
+        Playground 的会话身份中继（relay-01 §1.5 / modules-02 §2.15）。只接受
+        浏览器会话 Cookie + CSRF；**任何 Authorization 头（含 Bearer）一律 403**，
+        即使同时携带有效会话。内部把 /pg 重写为 /v1 后走同一条中继管线：
+        跳过令牌额度与令牌模型白名单，但照常扣钱包/订阅、照常写 usage_logs
+        （token_id = NULL），违规费不豁免。
+
+        错误：402 余额不足（预扣前拒绝、无资金变动）；403 模型不在用户当前
+        分组的可用清单（不计费）；429 限流；5xx 上游失败（带 X-Request-ID）。
+        错误体遵循 OpenAI 信封（与 /v1 一致，不使用 RFC 7807）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      externalDocs:
+        description: OpenAI Chat Completions API reference
+        url: https://platform.openai.com/docs/api-reference/chat
+      responses:
+        '200':
+          description: ChatCompletion 对象或 SSE 流（schema 见上游公开规范）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          description: 缺少/失效的会话 Cookie（OpenAI 错误信封）
+        '402':
+          $ref: '../components/responses.yaml#/responses/Error402'
+        '403':
+          description: |
+            - 携带 Authorization（API 令牌不可用于 Playground）；
+            - 模型不在用户当前分组的可用清单；
+            - CSRF/同源校验失败（写路径与其它 /api/* 同口径）。
+        '404':
+          description: 不支持的 /pg/* 子路径
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /pg/models:
+    get:
+      tags: [relay]
+      operationId: playgroundListModels
+      x-codegen: false
+      summary: Playground 模型清单（会话身份）
+      description: |
+        启用渠道支持模型的去重并集（与 GET /v1/models 同源）。按模型/分组
+        展示可用性以 GET /api/status 的 usable_groups 为准。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OpenAI ListModels 对象
+        '401':
+          description: 缺少/失效的会话 Cookie

@@ -80,6 +80,68 @@ func writeRelayError(w http.ResponseWriter, status int, requestID, code, message
 	}})
 }
 
+// PlaygroundSessionAuth 是 /pg/* 的会话鉴权中间件（relay-01 §1.5）。
+//
+// 与 SessionAuth 的差别：
+//   - 只接受浏览器会话 Cookie，**拒绝任何 Authorization 头**——即使同时携带
+//     有效会话也拒绝。参照侧「登录会话可调、access token 不可调」是 Playground
+//     的冻结契约（TC-A-26）；如果允许令牌与会话并存，调用来源就无法在审计/
+//     计费归因上唯一确定（token_id 必须为 NULL）。
+//   - 失败形状用 OpenAI 错误信封（/pg 是协议面，不是管理面）。401 不带 code，
+//     与 /v1 的令牌错误同口径；Bearer 场景用 403 + session_required 明确告知
+//     调用方换用会话 Cookie。
+//
+// Touch 与 SessionAuth 一致：Playground 是用户活跃操作，应当滑动续期。
+func PlaygroundSessionAuth(sessions *auth.SessionManager) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 先拒绝令牌载体：任何非空 Authorization 都不属于会话平面。
+			// 不解析 key 形态（Bearer/裸 key 都拒绝），避免成为「这个令牌是否
+			// 存在」的探测信道。
+			if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+				writeRelayError(w, http.StatusForbidden, "", "session_required",
+					"the playground only accepts a browser session, not an API token")
+				return
+			}
+			if sessions == nil {
+				writeRelayError(w, http.StatusInternalServerError, "", "internal_error", "session store is unavailable")
+				return
+			}
+			sid, ok := sessionID(r)
+			if !ok || strings.TrimSpace(sid) == "" {
+				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid session")
+				return
+			}
+			sess, err := sessions.Get(r.Context(), sid)
+			if err != nil || sess == nil || sess.UserID == 0 {
+				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid session")
+				return
+			}
+			// 强制改密的会话不得使用 Playground：与 SessionAuth 的 fail-closed
+			// 语义一致（无法确认受限状态时也拒绝）。
+			restricted, err := sessions.PasswordChangeRequired(r.Context(), sess.UserID)
+			if err != nil {
+				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid session")
+				return
+			}
+			if restricted {
+				writeRelayError(w, http.StatusForbidden, "", "password_change_required",
+					"password change is required before using the playground")
+				return
+			}
+			if err := sessions.Touch(r.Context(), sid); err != nil {
+				// 会话可能在 Get 与 Touch 之间被吊销；状态无法确认时 fail-closed。
+				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid session")
+				return
+			}
+			// TokenID 保持 nil：这是「会话身份」的唯一标记，计费侧据此跳过
+			// 令牌额度并让 usage_logs.token_id 落 NULL。
+			p := &auth.Principal{UserID: sess.UserID, Role: sess.AuthLevel}
+			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		})
+	}
+}
+
 // RelayAuth 是 /v1 中继路径的令牌鉴权中间件。
 //
 // 判定顺序（relay-01 §3.2–§3.4，顺序即语义）：

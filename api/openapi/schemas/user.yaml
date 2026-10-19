@@ -66,7 +66,7 @@ schemas:
   SelfSettings:
     type: object
     additionalProperties: false
-    required: [language, sidebar_modules, record_ip_log, updated_at]
+    required: [language, sidebar_modules, record_ip_log, default_model, updated_at]
     description: |
       GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
       必须携带的乐观锁令牌——同一行的资料变更也会推进它。
@@ -81,6 +81,14 @@ schemas:
       record_ip_log:
         type: boolean
         description: 是否记录登录/操作 IP。
+      default_model:
+        type: string
+        nullable: true
+        maxLength: 128
+        description: |
+          用户默认模型（modules-02 F-02-18）。null = 未设置（Playground 回落到
+          首个可用模型）。写入值必须属于用户可用分组的模型清单（见
+          GET /api/status 的 usable_groups），否则 422 user.default_model_invalid。
       updated_at:
         type: string
         format: date-time
@@ -102,6 +110,12 @@ schemas:
         nullable: true
       record_ip_log:
         type: boolean
+      default_model:
+        type: string
+        maxLength: 128
+        description: |
+          设置默认模型。空串表示清除（落库 NULL）；非空值必须属于该用户可用
+          分组的模型清单，否则 422 user.default_model_invalid。
       updated_at:
         type: string
         format: date-time

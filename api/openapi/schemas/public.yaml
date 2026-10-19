@@ -7,7 +7,7 @@ schemas:
   PublicStatus:
     type: object
     additionalProperties: false
-    required: [system_initialized, auth, password_login_encryption_enabled, languages, default_language, site, nav, billing, pay, usd_exchange_rate, credit_display_symbol]
+    required: [system_initialized, auth, password_login_encryption_enabled, languages, default_language, site, nav, billing, pay, usd_exchange_rate, credit_display_symbol, usable_groups]
     description: |
       公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
       变更必须立即反映到登录/注册页，禁止任何中间层缓存。
@@ -75,6 +75,37 @@ schemas:
       credit_display_symbol:
         type: string
         description: 等于 billing.currency_symbol（展示用积分符号）。
+      usable_groups:
+        type: array
+        description: |
+          当前会话用户的可用分组与分组模型清单（modules-02 §2.14 / F-02-18）。
+          仅当请求携带有效会话时非空；匿名、会话失效或 Redis/DB 查询失败时
+          一律为空数组（公开面不返回 401/5xx）。可用分组 =
+          user_groups.status=1 且（user_selectable=true 或 name = 用户当前分组）；
+          models = 该分组下启用渠道的 supported_models 之并集，且仅保留
+          model_pricing.status=1 的模型，去重排序。
+        items:
+          $ref: '#/schemas/UsableGroup'
+
+  UsableGroup:
+    type: object
+    additionalProperties: false
+    required: [name, description, ratio, models]
+    properties:
+      name:
+        type: string
+        description: user_groups.name
+      description:
+        type: string
+        description: 分组描述；未设置时为空串。
+      ratio:
+        type: integer
+        description: 分组倍率（整数百分比，100 = 1.00x）。
+      models:
+        type: array
+        description: 该分组可调用的模型（去重、字典序）；无可用模型时为 []。
+        items:
+          type: string
 
   # ---------------------------------------------------------------------------
   # 公开设置投影（modules-08 §1.4.1；由注册表 public:true 键自动聚合）

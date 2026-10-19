@@ -117,6 +117,15 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error404'
         '409':
           $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          description: |
+            default_model 不属于该用户的可用分组（type=
+            https://newtg.dev/problems/default_model_invalid，
+            title=user.default_model_invalid）。不静默落空。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 

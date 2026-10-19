@@ -201,6 +201,12 @@ func (b *recordingBilling) terminateCount() int {
 	return len(b.terminated)
 }
 
+func (b *recordingBilling) preConsumeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.preConsumed)
+}
+
 func (b *recordingBilling) refundCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

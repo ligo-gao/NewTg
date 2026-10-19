@@ -3400,6 +3400,14 @@ type PublicStatus struct {
 	// 向导页反向导流到登录页（重复 POST /api/setup 返回 409 + initialized=true）。
 	SystemInitialized bool `json:"system_initialized"`
 
+	// UsableGroups 当前会话用户的可用分组与分组模型清单（modules-02 §2.14 / F-02-18）。
+	// 仅当请求携带有效会话时非空；匿名、会话失效或 Redis/DB 查询失败时
+	// 一律为空数组（公开面不返回 401/5xx）。可用分组 =
+	// user_groups.status=1 且（user_selectable=true 或 name = 用户当前分组）；
+	// models = 该分组下启用渠道的 supported_models 之并集，且仅保留
+	// model_pricing.status=1 的模型，去重排序。
+	UsableGroups []UsableGroup `json:"usable_groups"`
+
 	// UsdExchangeRate USD→CNY 展示汇率常量（billing-02 §4.1 唯一真源，7.1 = 71/10）。
 	// 只用于展示层换算，不是设置键。
 	UsdExchangeRate float64 `json:"usd_exchange_rate"`
@@ -3577,6 +3585,11 @@ type ResetTokenKeyResponse struct {
 // SelfSettings GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
 // 必须携带的乐观锁令牌——同一行的资料变更也会推进它。
 type SelfSettings struct {
+	// DefaultModel 用户默认模型（modules-02 F-02-18）。null = 未设置（Playground 回落到
+	// 首个可用模型）。写入值必须属于用户可用分组的模型清单（见
+	// GET /api/status 的 usable_groups），否则 422 user.default_model_invalid。
+	DefaultModel string `json:"default_model"`
+
 	// Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 	Language Language `json:"language"`
 
@@ -3908,6 +3921,10 @@ type TwoFASetupResponse struct {
 // 等于 GET /api/self 返回的值，否则 409（乐观锁）。语言不在 canonical
 // 7 语内返回 400。
 type UpdateSelfSettingsRequest struct {
+	// DefaultModel 设置默认模型。空串表示清除（落库 NULL）；非空值必须属于该用户可用
+	// 分组的模型清单，否则 422 user.default_model_invalid。
+	DefaultModel *string `json:"default_model,omitempty"`
+
 	// Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 	Language       *Language               `json:"language,omitempty"`
 	RecordIpLog    *bool                   `json:"record_ip_log,omitempty"`
@@ -3939,6 +3956,21 @@ type UpdateTokenRequestExpiresAt1 = time.Time
 // UpdateTokenRequest_ExpiresAt defines model for UpdateTokenRequest.ExpiresAt.
 type UpdateTokenRequest_ExpiresAt struct {
 	union json.RawMessage
+}
+
+// UsableGroup defines model for UsableGroup.
+type UsableGroup struct {
+	// Description 分组描述；未设置时为空串。
+	Description string `json:"description"`
+
+	// Models 该分组可调用的模型（去重、字典序）；无可用模型时为 []。
+	Models []string `json:"models"`
+
+	// Name user_groups.name
+	Name string `json:"name"`
+
+	// Ratio 分组倍率（整数百分比，100 = 1.00x）。
+	Ratio int `json:"ratio"`
 }
 
 // UsageLogDetail defines model for UsageLogDetail.

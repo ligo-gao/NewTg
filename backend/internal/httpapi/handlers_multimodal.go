@@ -117,6 +117,9 @@ type MultimodalHandlerOptions struct {
 	// Dispatcher 为 nil 时端点返回 501（仅入口骨架的直接构造场景；生产装配
 	// 由 RelayHandler 注入真实实现，不会走到该分支）。
 	Dispatcher MultimodalDispatcher
+	// Groups 是 /pg/* 会话路径的用户分组查询面；nil 时仅令牌路径可用
+	// （会话请求会 fail-closed 500）。
+	Groups PlaygroundUserGroups
 }
 
 // MultimodalHandler 持有入口校验之外的最小依赖。
@@ -124,6 +127,7 @@ type MultimodalHandler struct {
 	tokens      auth.TokenLookup
 	modelStatus RelayModelStatusStore
 	dispatcher  MultimodalDispatcher
+	groups      PlaygroundUserGroups
 }
 
 // NewMultimodalHandler 构造多模态端点 handler。
@@ -134,6 +138,7 @@ func NewMultimodalHandler(opts MultimodalHandlerOptions) *MultimodalHandler {
 		tokens:      opts.Tokens,
 		modelStatus: opts.ModelStatus,
 		dispatcher:  opts.Dispatcher,
+		groups:      opts.Groups,
 	}
 }
 
@@ -228,6 +233,13 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 		Model: model,
 		Raw:   contract.ProtocolBody(body),
 	}, multimodalRawFormat, r.URL.Path)
+
+	// /pg/* 会话路径：补分组 + 计费前模型准入（与 chat 路径同一 helper，
+	// 保证两条入口对「模型不可用」得到相同 403 与相同的零计费副作用）。
+	if status, code, message, ok := applyPlaygroundSession(r.Context(), h.groups, principal, rc, model); !ok {
+		writeRelayError(w, status, requestID, code, message)
+		return
+	}
 
 	// 鉴权/授权一致性（T1 复审 F2）：多模态端点必须复用 chat 路径的两道
 	// 派发前检查，否则它们会成为「绕过令牌模型白名单 / 调用已停用模型」的通道。

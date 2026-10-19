@@ -50,12 +50,24 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // RFC 7807 type URI。not_found 与 rbac 层的 404 同形：越权 sid 与真实不存在
 // 必须逐字相同，否则状态码/文案差异会成为会话存在性信道。
 const (
 	problemTypeNotFoundSelf = "https://newtg.dev/problems/not_found"
+
+	// problemTypeDefaultModelInvalid 是 modules-02 §2.14 冻结的 422：
+	// 默认模型不属于该用户的可用分组。title 用点分码 `user.default_model_invalid`
+	// 保留契约里的机器可读字面量（RFC 7807 的 type 必须是 URI，不能直接放点分码）。
+	problemTypeDefaultModelInvalid = "https://newtg.dev/problems/default_model_invalid"
+	defaultModelInvalidTitle       = "user.default_model_invalid"
+
+	// maxDefaultModelRunes 与迁移的 users_default_model_len_chk（≤128）一致，
+	// 也与 model_pricing.model varchar(128) 对齐：超过该长度的名字不可能存在于
+	// 可用模型清单中，提前拒绝可给出稳定的 422 而不是 DB CHECK 500。
+	maxDefaultModelRunes = 128
 
 	// maxDisplayNameRunes 与 users.display_name 的 CHECK（≤32 字符）一致。
 	maxDisplayNameRunes = 32
@@ -88,7 +100,10 @@ type SelfRecord struct {
 	SidebarModules  json.RawMessage
 	RecordIPLog     bool
 	EmailVerifiedAt *time.Time
-	UpdatedAt       time.Time
+	// DefaultModel 是用户默认模型（modules-02 §2.14）；NULL = 未设置。
+	// 空串不入库（迁移 CHECK 1..128），因此指针 nil 是唯一的「未设置」表示。
+	DefaultModel *string
+	UpdatedAt    time.Time
 }
 
 // SelfPatch 是 PUT /api/self/setting 的部分更新。nil 表示「本次不改该键」；
@@ -97,6 +112,10 @@ type SelfPatch struct {
 	Language       *string
 	SidebarModules *json.RawMessage
 	RecordIPLog    *bool
+	// DefaultModel 为 nil 表示本次不改；非 nil 时指向的值写入（空串表示清除，
+	// 归一为 SQL NULL）。三值语义与 language 不同是有意的：默认模型需要
+	// 「显式清除」这一状态，而 language 永远有 canonical 值。
+	DefaultModel *string
 }
 
 // SelfRepo 是自助端点对 users 表的最小依赖面。单测注入内存假实现；
@@ -105,6 +124,9 @@ type SelfRepo interface {
 	GetSelf(ctx context.Context, userID int64) (SelfRecord, error)
 	UpdateDisplayName(ctx context.Context, userID int64, displayName *string) (SelfRecord, error)
 	UpdateSettings(ctx context.Context, userID int64, patch SelfPatch, expectUpdatedAt time.Time) (SelfRecord, error)
+	// UsableGroupsForUser 是 default_model 校验的唯一数据源（可用分组 ×
+	// 已定价且有启用渠道的模型）。与 GET /api/status 的 usable_groups 同口径。
+	UsableGroupsForUser(ctx context.Context, userID int64) ([]store.UsableGroup, error)
 	// MarkEmailVerified 置首次验证时间；signupBonus > 0 时在同一事务内幂等
 	// 补发注册赠送（reference_type=signup_grant），插入冲突即视为已发放。
 	// granted 报告本次是否真的插入了赠送流水（false = 已发放/无赠送）。
@@ -113,7 +135,7 @@ type SelfRepo interface {
 
 // selfColumns 是 SelfRecord 的 SELECT/RETURNING 列序，供 scanSelfRecord 消费。
 const selfColumns = `username, display_name, email, role, status, avatar_url,
-	language, sidebar_modules, record_ip_log, email_verified_at, updated_at`
+	language, sidebar_modules, record_ip_log, email_verified_at, default_model, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -128,7 +150,7 @@ func scanSelfRecord(row rowScanner) (SelfRecord, error) {
 	)
 	err := row.Scan(&rec.Username, &rec.DisplayName, &rec.Email, &rec.Role, &rec.Status,
 		&rec.AvatarURL, &rec.Language, &sidebar, &rec.RecordIPLog,
-		&rec.EmailVerifiedAt, &rec.UpdatedAt)
+		&rec.EmailVerifiedAt, &rec.DefaultModel, &rec.UpdatedAt)
 	if err != nil {
 		return SelfRecord{}, err
 	}
@@ -139,10 +161,22 @@ func scanSelfRecord(row rowScanner) (SelfRecord, error) {
 }
 
 // SQLSelfRepo 是 SelfRepo 的 PostgreSQL 实现。
-type SQLSelfRepo struct{ db *sql.DB }
+type SQLSelfRepo struct {
+	db     *sql.DB
+	groups *store.UserGroupsRepo
+}
 
 // NewSQLSelfRepo 构造自助资料仓储。
-func NewSQLSelfRepo(db *sql.DB) *SQLSelfRepo { return &SQLSelfRepo{db: db} }
+func NewSQLSelfRepo(db *sql.DB) *SQLSelfRepo {
+	return &SQLSelfRepo{db: db, groups: store.NewUserGroupsRepo(db)}
+}
+
+// UsableGroupsForUser 委托给 store 层：默认模型校验与 /api/status 的
+// usable_groups 必须共用同一 SQL 口径（Task 13 brief §2 冻结的形状），
+// 否则「页面能选的模型」与「保存时接受的模型」会出现两套答案。
+func (r *SQLSelfRepo) UsableGroupsForUser(ctx context.Context, userID int64) ([]store.UsableGroup, error) {
+	return r.groups.UsableGroupsForUser(ctx, userID)
+}
 
 // GetSelf 读取本人资料行。用户被硬删除后返回 ErrSelfNotFound。
 func (r *SQLSelfRepo) GetSelf(ctx context.Context, userID int64) (SelfRecord, error) {
@@ -185,16 +219,26 @@ func (r *SQLSelfRepo) UpdateSettings(ctx context.Context, userID int64, patch Se
 	if setSidebar {
 		sidebar = string(*patch.SidebarModules)
 	}
+	// default_model 的三值语义：nil = 不改；指向空串 = 清除（写 NULL）；
+	// 其它 = 写入该模型名。空串在这里归一为 NULL，与迁移的「空串不入库」CHECK
+	// 保持一致（读到 NULL 的 UI 才等价于「未设置」）。
+	setDefault := patch.DefaultModel != nil
+	var defaultModel *string
+	if setDefault && *patch.DefaultModel != "" {
+		defaultModel = patch.DefaultModel
+	}
 	row := r.db.QueryRowContext(ctx, `
 		UPDATE users SET
 			language = COALESCE($1, language),
 			sidebar_modules = CASE WHEN $2 THEN NULLIF($3::jsonb, 'null'::jsonb)
 			                       ELSE sidebar_modules END,
 			record_ip_log = COALESCE($4, record_ip_log),
+			default_model = CASE WHEN $5 THEN $6 ELSE default_model END,
 			updated_at = now()
-		WHERE id = $5 AND updated_at = $6
+		WHERE id = $7 AND updated_at = $8
 		RETURNING `+selfColumns,
-		patch.Language, setSidebar, sidebar, patch.RecordIPLog, userID, expectUpdatedAt.UTC())
+		patch.Language, setSidebar, sidebar, patch.RecordIPLog,
+		setDefault, defaultModel, userID, expectUpdatedAt.UTC())
 	rec, err := scanSelfRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 无法区分「版本冲突」与「用户行已被删除」时不能猜：查一次存在性，
@@ -357,6 +401,7 @@ func NewSessionHandlers(cfg SessionHandlerConfig) (*SessionHandlers, error) {
 		"language":        nil,
 		"sidebar_modules": nil, // 结构由 handler 校验（必须是 object<string,bool>）
 		"record_ip_log":   nil,
+		"default_model":   nil, // 值域（可用分组模型）由 handler 校验
 		"updated_at":      nil, // 乐观锁令牌，不是落库列
 	}})
 
@@ -504,7 +549,9 @@ type selfView struct {
 	Language       string          `json:"language"`
 	SidebarModules json.RawMessage `json:"sidebar_modules"`
 	RecordIPLog    bool            `json:"record_ip_log"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	// DefaultModel 为 null 表示未设置（Playground 回落到首个可用模型）。
+	DefaultModel *string   `json:"default_model"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func newSelfView(rec SelfRecord) selfView {
@@ -516,6 +563,7 @@ func newSelfView(rec SelfRecord) selfView {
 		Language:       rec.Language,
 		SidebarModules: sidebar,
 		RecordIPLog:    rec.RecordIPLog,
+		DefaultModel:   rec.DefaultModel,
 		UpdatedAt:      rec.UpdatedAt,
 	}
 }
@@ -774,8 +822,43 @@ func (h *SessionHandlers) handlePutSelfSetting(w http.ResponseWriter, r *http.Re
 		}
 		patch.RecordIPLog = &record
 	}
+	if raw, present := body["default_model"]; present {
+		// 只接受字符串：null 与缺失的差别在这里无关紧要（两者都不能表达
+		// 「清除」——清除的冻结语义是空串，见 modules-02 §2.14 主流程 2）。
+		// 显式拒绝 null 可避免前端把「字段置空」误当成清除。
+		if string(raw) == "null" {
+			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "default_model must be a string")
+			return
+		}
+		var defaultModel string
+		if err := json.Unmarshal(raw, &defaultModel); err != nil {
+			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "default_model must be a string")
+			return
+		}
+		// 非空值必须在「可用分组 × 已定价且有启用渠道的模型」集合内；不可用
+		// 一律 422 user.default_model_invalid，绝不静默落空（modules-02 §2.14
+		// 服务端校验）。空串是清除，不校验。
+		if defaultModel != "" {
+			if utf8.RuneCountInString(defaultModel) > maxDefaultModelRunes {
+				writeDefaultModelInvalid(w)
+				return
+			}
+			groups, err := h.repo.UsableGroupsForUser(r.Context(), p.UserID)
+			if err != nil {
+				h.log.Error("validate default model failed", "user_id", p.UserID, "error", err)
+				writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+				return
+			}
+			if !defaultModelAvailable(groups, defaultModel) {
+				writeDefaultModelInvalid(w)
+				return
+			}
+		}
+		patch.DefaultModel = &defaultModel
+	}
 
-	if patch.Language == nil && patch.SidebarModules == nil && patch.RecordIPLog == nil {
+	if patch.Language == nil && patch.SidebarModules == nil && patch.RecordIPLog == nil &&
+		patch.DefaultModel == nil {
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "no settings to update")
 		return
 	}
@@ -947,6 +1030,25 @@ func isCanonicalLanguage(language string) bool {
 		}
 	}
 	return false
+}
+
+// defaultModelAvailable 判定模型是否出现在任一可用分组的模型清单中。
+// 精确匹配：模型名是协议标识符，不做大小写/空白归一化（与令牌白名单同口径）。
+func defaultModelAvailable(groups []store.UsableGroup, model string) bool {
+	for _, group := range groups {
+		for _, candidate := range group.Models {
+			if candidate == model {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeDefaultModelInvalid 输出冻结的 422：type URI 稳定可机读，title 保留
+// 契约里的点分码 `user.default_model_invalid`（前端按 title 显示 / 埋点）。
+func writeDefaultModelInvalid(w http.ResponseWriter) {
+	writeProblem(w, http.StatusUnprocessableEntity, problemTypeDefaultModelInvalid, defaultModelInvalidTitle)
 }
 
 // signupGrantOnVerify 返回首次邮箱验证时应补发的赠送额（0 = 不补发）。

@@ -240,3 +240,66 @@ func TestIntegrationMarkEmailVerifiedGrantsOnce(t *testing.T) {
 		t.Fatalf("流水 amount/balance_after = %d/%d，期望 %d/%d", amount, balanceAfter, bonus, bonus)
 	}
 }
+
+// TestIntegrationSelfDefaultModelSQL 验证 users.default_model 的 SQL 三值语义：
+// 设置/保持/清除（空串 → NULL）与「只改该键」。
+func TestIntegrationSelfDefaultModelSQL(t *testing.T) {
+	db, _ := openAuthIntegration(t)
+	ensureDefaultGroup(t, db)
+	repo := NewSQLSelfRepo(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	username := "defmodel_" + uniqueAuthSuffix()
+	var userID int64
+	if err := db.QueryRow(`INSERT INTO users (username) VALUES ($1) RETURNING id`, username).
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	t.Cleanup(func() { cleanupAuthUser(t, db, userID) })
+
+	rec, err := repo.GetSelf(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetSelf: %v", err)
+	}
+	if rec.DefaultModel != nil {
+		t.Fatalf("新用户 default_model = %v, want NULL", rec.DefaultModel)
+	}
+
+	model := "gpt-5"
+	rec, err = repo.UpdateSettings(ctx, userID, SelfPatch{DefaultModel: &model}, rec.UpdatedAt)
+	if err != nil {
+		t.Fatalf("set default_model: %v", err)
+	}
+	if rec.DefaultModel == nil || *rec.DefaultModel != model {
+		t.Fatalf("default_model = %v, want %s", rec.DefaultModel, model)
+	}
+	if rec.Language != "en" {
+		t.Fatalf("language = %q，设置默认模型不得改写其它键", rec.Language)
+	}
+
+	// 只改 language，default_model 必须保持（CASE WHEN 的 ELSE 分支）。
+	language := "zh-CN"
+	rec, err = repo.UpdateSettings(ctx, userID, SelfPatch{Language: &language}, rec.UpdatedAt)
+	if err != nil {
+		t.Fatalf("set language: %v", err)
+	}
+	if rec.DefaultModel == nil || *rec.DefaultModel != model {
+		t.Fatalf("default_model = %v，未提交时必须保持", rec.DefaultModel)
+	}
+
+	// 空串 = 清除。
+	empty := ""
+	rec, err = repo.UpdateSettings(ctx, userID, SelfPatch{DefaultModel: &empty}, rec.UpdatedAt)
+	if err != nil {
+		t.Fatalf("clear default_model: %v", err)
+	}
+	if rec.DefaultModel != nil {
+		t.Fatalf("清除后 default_model = %v, want NULL", rec.DefaultModel)
+	}
+
+	// 迁移 CHECK：空串不得入库（应用层归一之外的最后防线）。
+	if _, err := db.Exec(`UPDATE users SET default_model = '' WHERE id = $1`, userID); err == nil {
+		t.Fatal("空串 default_model 被数据库接受，users_default_model_len_chk 未生效")
+	}
+}

@@ -22,6 +22,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // 本文件是 Task 9 的单元验收：会话管理 / GET|PATCH /api/me / /api/self(/setting)
@@ -56,6 +57,8 @@ type fakeSelfRepo struct {
 	// verifyGranted 覆盖「流水实际插入」结果（nil = signupBonus>0 即成功）；
 	// false 模拟「已发放过 → ON CONFLICT 0 行」，用于断言名额归还。
 	verifyGranted *bool
+	// usableGroups 是 UsableGroupsForUser 的内存返回值（default_model 校验）。
+	usableGroups []store.UsableGroup
 }
 
 func newFakeSelfRepo() *fakeSelfRepo {
@@ -150,9 +153,29 @@ func (r *fakeSelfRepo) UpdateSettings(_ context.Context, userID int64, patch Sel
 	if patch.RecordIPLog != nil {
 		rec.RecordIPLog = *patch.RecordIPLog
 	}
+	if patch.DefaultModel != nil {
+		// 空串 = 清除（与 SQL 实现的 NULL 归一一致）。
+		if *patch.DefaultModel == "" {
+			rec.DefaultModel = nil
+		} else {
+			value := *patch.DefaultModel
+			rec.DefaultModel = &value
+		}
+	}
 	rec.UpdatedAt = r.tick()
 	r.updates = append(r.updates, patch)
 	return *rec, nil
+}
+
+// UsableGroupsForUser 返回测试预置的可用分组清单；未预置时为空（所有模型
+// 都不可用），便于构造 422 用例。
+func (r *fakeSelfRepo) UsableGroupsForUser(_ context.Context, _ int64) ([]store.UsableGroup, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.usableGroups, nil
 }
 
 func (r *fakeSelfRepo) MarkEmailVerified(_ context.Context, userID int64, signupBonus int64) (time.Time, bool, error) {
@@ -1216,5 +1239,106 @@ func TestReleaseSignupGrantSlotDetached(t *testing.T) {
 	if mr.Exists(signupGrantSlotKey(missing)) {
 		t.Fatalf("缺失键被 DECR 创建为 %q，期望不存在",
 			rdb.Get(ctx, signupGrantSlotKey(missing)).Val())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 默认模型（M6c Task 13 / modules-02 §2.14）
+// ---------------------------------------------------------------------------
+
+// TestSelfDefaultModelSetClearAndValidation 覆盖 TC-F-02-18-01/02/03：
+//   - 只写 default_model，其余键不变；
+//   - 不可用模型 → 422 user.default_model_invalid，且不落库；
+//   - 空串 → 清除（NULL），响应回读 default_model=null。
+func TestSelfDefaultModelSetClearAndValidation(t *testing.T) {
+	env := newSessionTestEnv(t)
+	env.repo.add(sessionTestUserID, SelfRecord{Username: "dm-user"})
+	env.repo.usableGroups = []store.UsableGroup{{
+		Name: "default", Description: "默认分组", Ratio: 100,
+		Models: []string{"gpt-5", "gpt-5-mini"},
+	}}
+	sid, csrf := env.createSession(sessionTestUserID, rbac.RoleUser, "ua", "203.0.113.1")
+
+	// 先改语言，证明后续 default_model 保存不会顺带重写其它键。
+	view := env.mustGetSelf(t, sid, csrf)
+	rr := env.request(http.MethodPut, "/api/self/setting", map[string]any{
+		"updated_at": view.UpdatedAt.Format(time.RFC3339Nano),
+		"language":   "zh-CN",
+	}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set language status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	view = env.mustGetSelf(t, sid, csrf)
+	rr = env.request(http.MethodPut, "/api/self/setting", map[string]any{
+		"updated_at":    view.UpdatedAt.Format(time.RFC3339Nano),
+		"default_model": "gpt-5",
+	}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set default_model status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var after selfView
+	if err := json.Unmarshal(rr.Body.Bytes(), &after); err != nil {
+		t.Fatalf("decode set response: %v", err)
+	}
+	if after.DefaultModel == nil || *after.DefaultModel != "gpt-5" {
+		t.Fatalf("default_model = %v, want gpt-5", after.DefaultModel)
+	}
+	if after.Language != "zh-CN" {
+		t.Fatalf("language = %q，默认模型保存不得改写其它键", after.Language)
+	}
+
+	// 不可用模型：422 + 冻结的点分码，且服务端值保持 gpt-5。
+	rr = env.request(http.MethodPut, "/api/self/setting", map[string]any{
+		"updated_at":    after.UpdatedAt.Format(time.RFC3339Nano),
+		"default_model": "not-in-any-group",
+	}, sid, csrf)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid model status = %d, want 422（body=%s）", rr.Code, rr.Body.String())
+	}
+	var problem struct {
+		Type   string `json:"type"`
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Status != http.StatusUnprocessableEntity || problem.Title != defaultModelInvalidTitle {
+		t.Fatalf("problem = %+v, want 422/%s", problem, defaultModelInvalidTitle)
+	}
+	view = env.mustGetSelf(t, sid, csrf)
+	if view.DefaultModel == nil || *view.DefaultModel != "gpt-5" {
+		t.Fatalf("422 后 default_model = %v，必须保持原值", view.DefaultModel)
+	}
+
+	// 空串 = 清除。
+	rr = env.request(http.MethodPut, "/api/self/setting", map[string]any{
+		"updated_at":    view.UpdatedAt.Format(time.RFC3339Nano),
+		"default_model": "",
+	}, sid, csrf)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear default_model status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	view = env.mustGetSelf(t, sid, csrf)
+	if view.DefaultModel != nil {
+		t.Fatalf("清除后 default_model = %v, want null", view.DefaultModel)
+	}
+}
+
+// TestSelfDefaultModelRejectsNullAndUnknownFields：JSON null 不是清除语义
+// （清除是空串），未知字段仍走 BOPLA 403。
+func TestSelfDefaultModelRejectsNull(t *testing.T) {
+	env := newSessionTestEnv(t)
+	env.repo.add(sessionTestUserID, SelfRecord{Username: "dm-null"})
+	sid, csrf := env.createSession(sessionTestUserID, rbac.RoleUser, "ua", "203.0.113.2")
+
+	view := env.mustGetSelf(t, sid, csrf)
+	rr := env.request(http.MethodPut, "/api/self/setting", map[string]any{
+		"updated_at":    view.UpdatedAt.Format(time.RFC3339Nano),
+		"default_model": nil,
+	}, sid, csrf)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("null default_model status = %d, want 400（body=%s）", rr.Code, rr.Body.String())
 	}
 }

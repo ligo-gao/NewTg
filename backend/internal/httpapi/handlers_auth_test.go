@@ -217,6 +217,8 @@ type authTestOptions struct {
 	publicBaseURL    string
 	audit            *audit.Logger
 	signupGrantAlert func(ctx context.Context, userID int64, ip string)
+	// userGroups 是 GET /api/status usable_groups 的测试接缝。
+	userGroups UsableGroupLookup
 }
 
 type authTestEnv struct {
@@ -261,6 +263,7 @@ func newAuthTestEnv(t *testing.T, cfg mapConfig, opts authTestOptions) *authTest
 		Authz:            opts.authz,
 		Audit:            opts.audit,
 		SignupGrantAlert: opts.signupGrantAlert,
+		UserGroups:       opts.userGroups,
 	})
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)

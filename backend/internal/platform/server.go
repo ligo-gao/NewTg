@@ -220,8 +220,15 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		ModelStatus:    modelStatus,
 		Config:         settings,
 		TrustedProxies: cfg.TrustedProxies,
+		// /pg/* 会话路径的分组回源：与 /api/status 的 usable_groups 同口径。
+		UserGroups: store.NewUserGroupsRepo(sqlDB),
 	})
 	relayHandler.Register(mux)
+	// /pg/*（Playground 会话中继）：只接受会话 Cookie，重写到 /v1 后复用同一
+	// 管线。SessionManager 与 /api/* 使用同一 Redis 与 secret，登录态天然共享。
+	relayHandler.RegisterPlayground(mux,
+		auth.NewSessionManager(redisRes.client, []byte(cfg.SessionSecret)),
+		cfg.PublicBaseURL)
 }
 
 // maxHeaderBytes 是 HTTP 请求头总大小上限（32 KiB）。

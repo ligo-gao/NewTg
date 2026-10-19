@@ -98,6 +98,10 @@ type RouterConfig struct {
 	// PublicUserGroupLookup 是软鉴权读取 users.group 的接缝；nil 且 DB 非 nil
 	// 时使用 SQL 实现。缺失只影响「登录用户的 group_price」，不影响公开访问。
 	PublicUserGroupLookup PublicUserGroupLookup
+	// UserGroups 是 GET /api/status 的 usable_groups 查询接缝（Task 13）。
+	// nil 且 DB 非 nil 时由 store.NewUserGroupsRepo(DB) 构造；两者都为空时
+	// 该字段恒为空数组（纯内存装配的单元测试）。
+	UserGroups UsableGroupLookup
 }
 
 // Router 是管理面根路由：公开认证端点直接注册，其余 /api/* 走
@@ -163,6 +167,12 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	h.signupGrantAlert = cfg.SignupGrantAlert
 	h.initialized = cfg.Initialized
 	h.geoIP = cfg.GeoIP
+	// usable_groups 与默认模型校验共用同一 Sql 口径（store.UserGroupsRepo）。
+	// 只有提供了 DB 才接线；纯 Repo 单测没有分组/渠道表，保持空数组语义。
+	h.usableGroups = cfg.UserGroups
+	if h.usableGroups == nil && cfg.DB != nil {
+		h.usableGroups = store.NewUserGroupsRepo(cfg.DB)
+	}
 	if cfg.LoginLimiter != nil {
 		// 与 2FA 共享同一失败锁定桶：阈值/键形只有一处实现。
 		h.limiter = cfg.LoginLimiter

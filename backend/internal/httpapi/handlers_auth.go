@@ -38,6 +38,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
+	"newtg/gateway/internal/store"
 )
 
 // 认证端点的冻结常量。验证码 TTL/限流阈值来自 modules-01 F-01-02 与
@@ -586,6 +587,9 @@ type authHandlers struct {
 	initialized func(ctx context.Context) (bool, error)
 	// geoIP 是本地 GeoIP 库接缝；nil 表示库未配置，/api/geoip 返回 unknown。
 	geoIP GeoIPLookup
+	// usableGroups 是 GET /api/status 的 usable_groups 数据源（Task 13）。
+	// nil 时该字段恒为空数组（未接线的单元装配）。
+	usableGroups UsableGroupLookup
 }
 
 func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Client,
@@ -630,6 +634,66 @@ type statusResponse struct {
 	// usd_exchange_rate 的常量真源是 billing-02 §4.1（7.1 = 71/10）。
 	USDExchangeRate     float64 `json:"usd_exchange_rate"`
 	CreditDisplaySymbol string  `json:"credit_display_symbol"`
+	// UsableGroups 只在请求携带有效会话时非空（Modules-02 §2.14 / Task 13
+	// 冻结形状）。匿名请求恒为空数组，不读用户分组、也不返回 401。
+	UsableGroups []usableGroupView `json:"usable_groups"`
+}
+
+// usableGroupView 是 GET /api/status 的 usable_groups 元素（Task 13 冻结）。
+type usableGroupView struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Ratio       int32    `json:"ratio"`
+	Models      []string `json:"models"`
+}
+
+// UsableGroupLookup 是 usable_groups 的查询接缝（production: *store.UserGroupsRepo；
+// 单测可注入内存实现）。
+type UsableGroupLookup interface {
+	UsableGroupsForUser(ctx context.Context, userID int64) ([]store.UsableGroup, error)
+}
+
+// statusUsableGroups 解析会话并返回该用户的可用分组。
+//
+// 公开面语义（R-PUB-05 同口径）：无会话/会话失效/Redis 故障/查询失败一律
+// 降级为空数组，绝不 401、绝不 5xx——登录页的 status 探测不能因为个性化
+// 增量数据不可用而失效。这里不 Touch 会话：/api/status 会被匿名流量高频
+// 访问，替用户续期等于让第三方流量决定会话寿命。
+func (h *authHandlers) statusUsableGroups(r *http.Request) []usableGroupView {
+	empty := []usableGroupView{}
+	if h.sessions == nil || h.usableGroups == nil {
+		return empty
+	}
+	sid, ok := sessionID(r)
+	if !ok {
+		return empty
+	}
+	sess, err := h.sessions.Get(r.Context(), sid)
+	if err != nil || sess == nil || sess.UserID == 0 {
+		return empty
+	}
+	groups, err := h.usableGroups.UsableGroupsForUser(r.Context(), sess.UserID)
+	if err != nil {
+		// 不返回错误：个性化分组清单是公开状态的增量，查询失败只影响该字段。
+		h.log.Warn("status: load usable groups failed", "user_id", sess.UserID, "error", err)
+		return empty
+	}
+	views := make([]usableGroupView, 0, len(groups))
+	for _, group := range groups {
+		models := group.Models
+		if models == nil {
+			// JSON null 与空数组在模型选择器上语义不同：null 像「未知」，
+			// [] 才是「该分组当前无可用模型」。
+			models = []string{}
+		}
+		views = append(views, usableGroupView{
+			Name:        group.Name,
+			Description: group.Description,
+			Ratio:       group.Ratio,
+			Models:      models,
+		})
+	}
+	return views
 }
 
 type statusAuth struct {
@@ -719,6 +783,7 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		DefaultLanguage:                "en",
 		USDExchangeRate:                usdExchangeRate,
 		CreditDisplaySymbol:            publicString(public, "billing.currency_symbol", "¥"),
+		UsableGroups:                   h.statusUsableGroups(r),
 	})
 }
 
