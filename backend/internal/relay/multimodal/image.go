@@ -231,6 +231,33 @@ func validImageQuality(quality string) bool {
 }
 
 // （relay-04 §8.1.3：真实 SSE 只数 completed 事件）。
+// imageCompletedEventPayload 构造 §8.1.4 的展平完成事件：
+//
+//	{"type":"image_generation.completed","created_at":<unix>,
+//	 "url":...,"b64_json":...,"revised_prompt":...,"usage":{...}}
+//
+// 上游 item 的字段平铺到顶层（不嵌套 data）；usage 只在上游给出时附加。
+func imageCompletedEventPayload(item json.RawMessage, createdAt int64, usage json.RawMessage) ([]byte, error) {
+	event := map[string]json.RawMessage{
+		"type":       json.RawMessage(`"image_generation.completed"`),
+		"created_at": json.RawMessage(strconv.FormatInt(createdAt, 10)),
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(item, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range fields {
+		if key == "type" || key == "created_at" || key == "data" {
+			continue
+		}
+		event[key] = value
+	}
+	if trimmed := bytes.TrimSpace(usage); len(trimmed) > 0 && string(trimmed) != "null" {
+		event["usage"] = trimmed
+	}
+	return json.Marshal(event)
+}
+
 func imageCompletedEvent(payload []byte) bool {
 	var event struct {
 		Type string `json:"type"`

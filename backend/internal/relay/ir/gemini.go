@@ -275,6 +275,18 @@ func parseGeminiPart(raw json.RawMessage) (contract.ContentPart, error) {
 	return contract.ContentPart{}, paramErrf("不支持的 Gemini part 载荷")
 }
 
+// isKnownGeminiPart 判断 part 是否含已建模的载荷键。
+// 响应解析用它区分「已知 part 的字段错误」（拒绝）与「未来新增 part 类型」
+// （保留到 Extensions），与 Anthropic 的 isKnownAnthropicBlockType 同策略。
+func isKnownGeminiPart(part map[string]any) bool {
+	for _, key := range []string{"text", "inlineData", "fileData", "functionCall", "functionResponse"} {
+		if _, ok := part[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // binaryPart 按 mimeType 把二进制载荷归一到图片或音频部件。
 func binaryPart(mimeType string, payload []byte, meta map[string]any) (contract.ContentPart, error) {
 	if meta == nil {
@@ -300,22 +312,34 @@ func parseGeminiTools(raws []json.RawMessage) ([]contract.Tool, error) {
 	}
 	var tools []contract.Tool
 	for i, raw := range raws {
-		var group struct {
-			FunctionDeclarations []struct {
-				Name        string         `json:"name"`
-				Description string         `json:"description"`
-				Parameters  map[string]any `json:"parameters"`
-			} `json:"functionDeclarations"`
-		}
+		// L6：逐组检查所有键。内建工具（googleSearch / codeExecution 等）
+		// 与 functionDeclarations 混在同一组时，只取后者会静默改变语义；
+		// 任一未知组键都显式拒绝，而不是悄悄丢弃。
+		var group map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &group); err != nil {
 			return nil, paramErrf("tools[%d] 不是合法 JSON 对象", i)
 		}
-		if len(group.FunctionDeclarations) == 0 {
-			// googleSearch / codeExecution 等内建工具没有 IR 承载位；
-			// 静默忽略会让客户端以为工具仍可用，故显式拒绝。
+		for key := range group {
+			if key != "functionDeclarations" {
+				return nil, paramErrf("tools[%d] 含不支持的内建工具 %q", i, key)
+			}
+		}
+		declarationsRaw, ok := group["functionDeclarations"]
+		if !ok {
 			return nil, paramErrf("tools[%d] 没有 functionDeclarations（内建工具暂不支持）", i)
 		}
-		for j, declaration := range group.FunctionDeclarations {
+		var declarations []struct {
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Parameters  map[string]any `json:"parameters"`
+		}
+		if err := json.Unmarshal(declarationsRaw, &declarations); err != nil {
+			return nil, paramErrf("tools[%d].functionDeclarations 形状非法", i)
+		}
+		if len(declarations) == 0 {
+			return nil, paramErrf("tools[%d] 没有 functionDeclarations", i)
+		}
+		for j, declaration := range declarations {
 			if declaration.Name == "" {
 				return nil, paramErrf("tools[%d].functionDeclarations[%d] 缺少 name", i, j)
 			}
@@ -446,20 +470,14 @@ func BuildGeminiRequestBody(req *contract.Request) ([]byte, error) {
 	}
 	obj["contents"] = contents
 
+	// L6：原始 functionDeclarations 必须在覆盖前捕获。contract.Tool 只有
+	// name/description/parameters，response、behavior 等声明级字段只能靠
+	// 原始子对象合并保留。
+	rawTools, _ := obj["tools"].([]any)
 	if len(req.Tools) > 0 {
-		declarations := make([]any, 0, len(req.Tools))
-		for i, tool := range req.Tools {
-			if tool.Name == "" {
-				return nil, paramErrf("tools[%d] 缺少 name", i)
-			}
-			declaration := map[string]any{"name": tool.Name}
-			if tool.Description != "" {
-				declaration["description"] = tool.Description
-			}
-			if tool.Schema != nil {
-				declaration["parameters"] = tool.Schema
-			}
-			declarations = append(declarations, declaration)
+		declarations, err := encodeGeminiTools(req.Tools, rawTools)
+		if err != nil {
+			return nil, err
 		}
 		obj["tools"] = []any{map[string]any{"functionDeclarations": declarations}}
 	} else {
@@ -587,6 +605,58 @@ func encodeGeminiContents(messages []contract.Message) (map[string]any, []any, e
 	return system, contents, nil
 }
 
+// encodeGeminiTools 编码 functionDeclarations；原始声明按名称合并，
+// 保留 response/behavior 等未建模字段。
+func encodeGeminiTools(tools []contract.Tool, rawTools []any) ([]any, error) {
+	rawDeclarations := flattenGeminiDeclarations(rawTools)
+	out := make([]any, 0, len(tools))
+	for i, tool := range tools {
+		if tool.Name == "" {
+			return nil, paramErrf("tools[%d] 缺少 name", i)
+		}
+		declaration := map[string]any{}
+		if raw := rawDeclarations[tool.Name]; raw != nil {
+			declaration = cloneMap(raw)
+		}
+		declaration["name"] = tool.Name
+		if tool.Description != "" {
+			declaration["description"] = tool.Description
+		}
+		if tool.Schema != nil {
+			declaration["parameters"] = tool.Schema
+		}
+		out = append(out, declaration)
+	}
+	return out, nil
+}
+
+// flattenGeminiDeclarations 建立工具名 → 原始声明索引（跨 tool 分组）。
+func flattenGeminiDeclarations(rawTools []any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, rawGroup := range rawTools {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			continue
+		}
+		declarations, ok := group["functionDeclarations"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawDeclaration := range declarations {
+			declaration, ok := rawDeclaration.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := declaration["name"].(string)
+			if name != "" {
+				out[name] = declaration
+			}
+		}
+	}
+	return out
+}
+
+// encodeGeminiParts 把 IR 部件转为 Gemini parts。
 func encodeGeminiParts(parts []contract.ContentPart, toolCallNames map[string]string) ([]any, error) {
 	out := make([]any, 0, len(parts))
 	for i, part := range parts {
@@ -838,6 +908,8 @@ func ParseGeminiResponse(body []byte) (*contract.Response, contract.Usage, error
 	}
 	for _, candidate := range payload.Candidates {
 		message := contract.Message{Role: contract.RoleAssistant}
+		var unmapped []any
+		unparseable := 0
 		if len(candidate.Content) > 0 {
 			var content struct {
 				Parts []json.RawMessage `json:"parts"`
@@ -848,10 +920,38 @@ func ParseGeminiResponse(body []byte) (*contract.Response, contract.Usage, error
 			for j, rawPart := range content.Parts {
 				part, err := parseGeminiPart(rawPart)
 				if err != nil {
-					return nil, contract.Usage{}, fmt.Errorf("candidates[%d].parts[%d]: %w", candidate.Index, j, err)
+					// H3：与 Anthropic 响应策略对齐——已建模 part 的字段错误
+					// 仍拒绝；真正未知的 part 类型保留到 Extensions，不能让
+					// 一个有效 200 响应变成 502。
+					var probe map[string]any
+					_ = json.Unmarshal(rawPart, &probe)
+					if isKnownGeminiPart(probe) {
+						return nil, contract.Usage{}, fmt.Errorf("candidates[%d].parts[%d]: %w", candidate.Index, j, err)
+					}
+					var opaque any
+					if json.Unmarshal(rawPart, &opaque) == nil {
+						unmapped = append(unmapped, opaque)
+					} else {
+						// 诊断标记：极端情况下连原样保留都做不到时，至少让
+						// 审计侧看到存在被跳过的 part，而不是完全静默。
+						unparseable++
+					}
+					continue
 				}
 				message.Content = append(message.Content, part)
 			}
+		}
+		if len(unmapped) > 0 {
+			if message.Extensions == nil {
+				message.Extensions = map[string]any{}
+			}
+			message.Extensions["unmapped_blocks"] = unmapped
+		}
+		if unparseable > 0 {
+			if message.Extensions == nil {
+				message.Extensions = map[string]any{}
+			}
+			message.Extensions["unmapped_blocks_unparseable"] = unparseable
 		}
 		finishReason := normalizeGeminiFinishReason(candidate.FinishReason)
 		if candidate.FinishReason != "" {
@@ -918,6 +1018,14 @@ func ParseGeminiUsage(raw json.RawMessage) contract.Usage {
 	}
 	var rawMap map[string]any
 	if err := json.Unmarshal(raw, &rawMap); err != nil || len(rawMap) == 0 {
+		return base
+	}
+	// M5：非空但没有任何 Gemini 用量键的对象不是上游事实，不能标记
+	// upstream_exact（否则跨协议层会合成全零 usage）。
+	if !hasAnyMapKey(rawMap, "promptTokenCount", "toolUsePromptTokenCount",
+		"candidatesTokenCount", "totalTokenCount", "thoughtsTokenCount",
+		"cachedContentTokenCount", "promptTokensDetails", "candidatesTokensDetails",
+		"cacheTokensDetails") {
 		return base
 	}
 

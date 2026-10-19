@@ -253,15 +253,7 @@ export function isChannelType(value: string): boolean {
 // Native protocol channels (relay-02 §2.5)
 // ---------------------------------------------------------------------------
 
-/**
- * Protocol a native channel speaks upstream. Only Anthropic and Gemini have a
- * native adapter family in M4; everything else routes through the OpenAI-
- * compatible path or a proprietary adapter (relay-02 §2.5).
- */
-export type NativeProtocol = 'anthropic' | 'gemini'
-
 export interface NativeChannelTypeInfo {
-  protocol: NativeProtocol
   /** i18n key for the human label shown inside the type selector. */
   labelKey: string
   /** i18n key for the one-line explanation shown under the selector. */
@@ -269,34 +261,30 @@ export interface NativeChannelTypeInfo {
 }
 
 /**
- * The four channel types whose upstream uses a native Anthropic/Gemini
+ * The four channel types whose upstream speaks an Anthropic/Gemini native
  * protocol (relay-02 §2.5): `AKAnthropicNative` = types 14 (`anthropic`) and
  * 25 (`moonshot`, an Anthropic-compatible `/v1/messages` upstream), and the
- * Gemini family = type 24 (`gemini`) plus type 41 (`vertex_ai`). Vertex is a
- * credential-conditional Gemini/Claude native adapter, not plain Gemini: it is
- * grouped with Gemini for display, but it is not a cross-protocol target
- * (Task 5 only forwards to implemented native adapters).
+ * Gemini family = type 24 (`gemini`) plus type 41 (`vertex_ai`). Vertex has
+ * its own adapter key and is grouped with Gemini for display, but that adapter
+ * is not implemented in this release (requests get ErrEndpointUnsupported) and
+ * it is not a cross-protocol target.
  */
 export const NATIVE_CHANNEL_TYPES: Readonly<
   Record<string, NativeChannelTypeInfo>
 > = {
   anthropic: {
-    protocol: 'anthropic',
     labelKey: 'common.channels.nativeType.anthropic.label',
     descriptionKey: 'common.channels.nativeType.anthropic.description',
   },
   moonshot: {
-    protocol: 'anthropic',
     labelKey: 'common.channels.nativeType.moonshot.label',
     descriptionKey: 'common.channels.nativeType.moonshot.description',
   },
   gemini: {
-    protocol: 'gemini',
     labelKey: 'common.channels.nativeType.gemini.label',
     descriptionKey: 'common.channels.nativeType.gemini.description',
   },
   vertex_ai: {
-    protocol: 'gemini',
     labelKey: 'common.channels.nativeType.vertex_ai.label',
     descriptionKey: 'common.channels.nativeType.vertex_ai.description',
   },

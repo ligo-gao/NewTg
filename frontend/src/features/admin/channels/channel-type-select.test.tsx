@@ -30,7 +30,7 @@ describe('ChannelTypeSelect', () => {
     expect(groups.map((group) => group.getAttribute('label'))).toEqual([
       'OpenAI compatible',
       'Anthropic native (incl. Moonshot)',
-      'Gemini native',
+      'Gemini native (incl. Vertex)',
       'Google PaLM legacy',
       'Proprietary protocols',
       'Task platforms',

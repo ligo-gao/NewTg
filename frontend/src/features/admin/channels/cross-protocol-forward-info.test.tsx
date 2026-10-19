@@ -19,7 +19,7 @@ describe('CrossProtocolForwardInfo', () => {
     expect(panel.textContent).toContain('x-newtg-protocol: openai | anthropic | gemini')
     expect(panel.textContent).toContain('relay.cross_protocol_forward_enabled')
     expect(
-      screen.getByText(/choose the upstream protocol/i),
+      screen.getByText(/choose which upstream protocol family/i),
     ).toBeTruthy()
     // A header value is a *filter*, not a pin: no matching candidate (or a
     // pinned mismatch) is a 400, and an empty value is ignored.
@@ -33,7 +33,7 @@ describe('CrossProtocolForwardInfo', () => {
     renderWithProviders(<CrossProtocolForwardInfo />)
 
     expect(screen.getByTestId('cross-protocol-status').textContent).toBe(
-      'Not shown here — this switch lives in site settings, which are not yet available in this release.',
+      'Not available in this release.',
     )
     expect(
       screen.getByText(/this console cannot read or change it/),

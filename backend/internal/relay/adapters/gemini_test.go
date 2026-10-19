@@ -249,6 +249,23 @@ func TestGeminiStreamEvents(t *testing.T) {
 	}
 }
 
+// TestGeminiStreamFunctionCallWithoutArgs 是终验 H4 的回归：args 缺失时
+// 流式与非流式都必须给 "{}"，不能是 "null"。
+func TestGeminiStreamFunctionCallWithoutArgs(t *testing.T) {
+	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
+	sse := `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"name":"lookup"}}]},"finishReason":"STOP"}]}` + "\n\n"
+	events := collectStreamEvents(adapter.(contract.StreamAdapter).StreamEvents(geminiContext("k"), bytes.NewBufferString(sse)))
+	var fragment string
+	for _, event := range events {
+		if event.ToolDelta != nil {
+			fragment = event.ToolDelta.ArgumentsFragment
+		}
+	}
+	if fragment != "{}" {
+		t.Fatalf("缺省 args 的 ArgumentsFragment = %q, want {}", fragment)
+	}
+}
+
 func TestGeminiStreamErrorAndRawParts(t *testing.T) {
 	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
 	sse := strings.Join([]string{
