@@ -982,6 +982,12 @@ func ParseAnthropicUsage(raw json.RawMessage) contract.Usage {
 		// 空对象 / 非法形状没有任何上游事实，不谎报 upstream_exact。
 		return base
 	}
+	// M5：非空但没有任何 Anthropic 用量键的对象（如 {"foo":1}）不是上游
+	// 用量事实；若标成 upstream_exact，跨协议层会据此合成一份全零 usage。
+	if !hasAnyMapKey(rawMap, "input_tokens", "output_tokens",
+		"cache_creation_input_tokens", "cache_read_input_tokens", "cache_creation") {
+		return base
+	}
 
 	cacheWrite := payload.CacheCreationInputTokens
 	if cacheWrite == 0 {
@@ -1007,6 +1013,17 @@ func ParseAnthropicUsage(raw json.RawMessage) contract.Usage {
 	}
 	usage.CompletionDetail = contract.UsageDetail{Text: usage.Completion}
 	return usage
+}
+
+// hasAnyMapKey 判断 map 是否至少含一个给定键（键存在即为已识别，
+// 与取值是否为零无关——上游可能合法地报告 0）。
+func hasAnyMapKey(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := values[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // cacheCreationSum 对 cache_creation 子字段求和（非数值键忽略）。

@@ -697,10 +697,22 @@ func encodeMessage(message contract.Message) ([]any, error) {
 	content := make([]any, 0, len(message.Content))
 	var toolCalls []any
 	plainText := ""
+	reasoning := ""
 	nonText := false
 	for _, part := range message.Content {
 		switch part.Kind {
 		case contract.PartText:
+			// H1：思考/推理部件不能当作可见正文。Anthropic thinking 与
+			// Gemini thought part 在 IR 里都是 PartText + Meta 标记；流式
+			// 渲染器已经把推理放进 reasoning_content，非流式必须同口径，
+			// 否则 Gemini 2.5 的 CoT 会混进答案、Anthropic thinking 会冒充正文。
+			if isReasoningPart(part) {
+				// redacted_thinking 没有可读文本：只排除，不渲染。
+				if _, redacted := part.Meta["redacted_thinking"]; !redacted {
+					reasoning += part.Text
+				}
+				continue
+			}
 			content = append(content, map[string]any{"type": "text", "text": part.Text})
 			plainText += part.Text
 		case contract.PartToolCall:
@@ -740,7 +752,28 @@ func encodeMessage(message contract.Message) ([]any, error) {
 	if len(toolCalls) > 0 {
 		obj["tool_calls"] = toolCalls
 	}
+	if reasoning != "" {
+		// 与流式渲染器一致：推理单独走 reasoning_content（DeepSeek 兼容字段），
+		// 不并入 content，避免客户端把思考当答案展示。
+		obj["reasoning_content"] = reasoning
+	}
 	return []any{obj}, nil
+}
+
+// isReasoningPart 判断 PartText 是否是协议推理载体。
+//
+// Anthropic thinking 带 anthropic_thinking/thought，Gemini thought 带
+// thought，redacted_thinking 带 redacted_thinking。三者都必须从可见正文中
+// 排除（H1）；具体协议差异已由各自的 IR 映射写入 Meta，这里只做统一判定。
+func isReasoningPart(part contract.ContentPart) bool {
+	if thought, _ := part.Meta["thought"].(bool); thought {
+		return true
+	}
+	if anthropicThinking, _ := part.Meta["anthropic_thinking"].(bool); anthropicThinking {
+		return true
+	}
+	_, redacted := part.Meta["redacted_thinking"]
+	return redacted
 }
 
 func encodeContentPart(part contract.ContentPart) (map[string]any, error) {

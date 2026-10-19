@@ -415,6 +415,120 @@ func TestGeminiThoughtDoesNotBecomeAnthropicThinking(t *testing.T) {
 	}
 }
 
+// TestGeminiThoughtExcludedFromOpenAIContent 是终验 H1 的回归：Gemini 2.5
+// 非流式响应里的 CoT 不得混入可见 content。
+func TestGeminiThoughtExcludedFromOpenAIContent(t *testing.T) {
+	body := []byte(`{"responseId":"r","modelVersion":"gemini-2.5-flash","candidates":[{
+	  "index":0,
+	  "content":{"role":"model","parts":[{"thought":true,"text":"internal cot"},{"text":"answer"}]},
+	  "finishReason":"STOP"
+	}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`)
+	resp, _, err := ParseGeminiResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := FromIR(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded.Raw, &built); err != nil {
+		t.Fatal(err)
+	}
+	choices, _ := built["choices"].([]any)
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message["content"] != "answer" {
+		t.Fatalf("content 不得包含 CoT：%v", message["content"])
+	}
+	if message["reasoning_content"] != "internal cot" {
+		t.Fatalf("CoT 必须走 reasoning_content：%v", message)
+	}
+}
+
+// TestGeminiResponseUnknownPartPreserved 是终验 H3 的回归：未知 part 不得
+// 让有效 200 响应变成 502，原始 part 保留到 Extensions。
+func TestGeminiResponseUnknownPartPreserved(t *testing.T) {
+	body := []byte(`{"responseId":"r","candidates":[{"index":0,"content":{"role":"model","parts":[
+	  {"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}},
+	  {"text":"ok"}
+	]},"finishReason":"STOP"}]}`)
+	resp, _, err := ParseGeminiResponse(body)
+	if err != nil {
+		t.Fatalf("未知响应 part 必须保留而不是报错：%v", err)
+	}
+	message := resp.Choices[0].Message
+	if len(message.Content) != 1 || message.Content[0].Text != "ok" {
+		t.Fatalf("已建模内容映射错误：%+v", message.Content)
+	}
+	unmapped, ok := message.Extensions["unmapped_blocks"].([]any)
+	if !ok || len(unmapped) != 1 {
+		t.Fatalf("未知 part 必须保留在 Extensions：%+v", message.Extensions)
+	}
+
+	// 已建模 part 的字段错误仍然拒绝（不能把坏 base64 当未知类型）。
+	bad := []byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"!!!"}}]}}]}`)
+	if _, _, err := ParseGeminiResponse(bad); err == nil {
+		t.Fatal("已建模 part 的非法字段必须报错")
+	}
+}
+
+// TestGeminiUsageUnknownObjectIsEstimated 是终验 M5 的回归：非空但无
+// 已识别用量键的对象不能标记 upstream_exact。
+func TestGeminiUsageUnknownObjectIsEstimated(t *testing.T) {
+	usage := ParseGeminiUsage([]byte(`{"foo":1}`))
+	if usage.Source != contract.UsageEstimated {
+		t.Fatalf("未知键 usage 应标记 estimated，得到 %v", usage.Source)
+	}
+}
+
+// TestGeminiToolDeclarationExtrasPreserved 是终验 L6 的回归：声明级未建模
+// 字段必须随往返保留。
+func TestGeminiToolDeclarationExtrasPreserved(t *testing.T) {
+	body := `{
+	  "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+	  "tools":[{"functionDeclarations":[{
+	    "name":"lookup","description":"d","parameters":{"type":"object"},
+	    "response":{"type":"object","properties":{"x":{"type":"string"}}},
+	    "behavior":"BLOCKING"
+	  }]}]
+	}`
+	req, err := ParseGeminiRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := BuildGeminiRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := built["tools"].([]any)
+	group, _ := tools[0].(map[string]any)
+	declarations, _ := group["functionDeclarations"].([]any)
+	declaration, _ := declarations[0].(map[string]any)
+	if _, ok := declaration["response"].(map[string]any); !ok {
+		t.Fatalf("声明级 response 字段丢失：%v", declaration)
+	}
+	if declaration["behavior"] != "BLOCKING" {
+		t.Fatalf("声明级 behavior 字段丢失：%v", declaration)
+	}
+	if declaration["name"] != "lookup" {
+		t.Fatalf("已建模字段错误：%v", declaration)
+	}
+}
+
+// TestGeminiMixedBuiltinToolRejected 是终验 L6 的回归：内建工具与
+// functionDeclarations 混在同一组时必须显式拒绝，不能只取后者。
+func TestGeminiMixedBuiltinToolRejected(t *testing.T) {
+	body := `{"contents":[{"role":"user","parts":[{"text":"x"}]}],"tools":[{"googleSearch":{},"functionDeclarations":[{"name":"f"}]}]}`
+	if _, err := ParseGeminiRequest([]byte(body)); !errors.Is(err, ErrParamInvalid) {
+		t.Fatalf("混合内建工具必须报 ErrParamInvalid，得到 %v", err)
+	}
+}
+
 func TestGeminiBuildFunctionCallArgsMustBeObject(t *testing.T) {
 	req := &contract.Request{
 		Model: "gemini",

@@ -256,6 +256,14 @@ func TestAnthropicUsageEmptyIsEstimated(t *testing.T) {
 	}
 }
 
+// TestAnthropicUsageUnknownObjectIsEstimated 是终验 M5 的回归。
+func TestAnthropicUsageUnknownObjectIsEstimated(t *testing.T) {
+	usage := ParseAnthropicUsage([]byte(`{"foo":1}`))
+	if usage.Source != contract.UsageEstimated {
+		t.Fatalf("未知键 usage 应标记 estimated，得到 %v", usage.Source)
+	}
+}
+
 func TestAnthropicResponseParse(t *testing.T) {
 	body := []byte(`{
 	  "id": "msg_1",
@@ -458,6 +466,36 @@ func TestAnthropicToolFieldsPreserved(t *testing.T) {
 	}
 	if _, ok := choice["name"]; ok {
 		t.Fatalf("auto 模式不得残留 name：%v", choice)
+	}
+}
+
+// TestAnthropicThinkingExcludedFromOpenAIContent 是终验 H1 的回归：
+// 非流式 thinking 必须走 reasoning_content，不能混进 visible content。
+func TestAnthropicThinkingExcludedFromOpenAIContent(t *testing.T) {
+	body := []byte(`{"id":"m","model":"claude","content":[
+	  {"type":"thinking","thinking":"let me think","signature":"sig"},
+	  {"type":"text","text":"answer"}
+	],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`)
+	resp, _, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := FromIR(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded.Raw, &built); err != nil {
+		t.Fatal(err)
+	}
+	choices, _ := built["choices"].([]any)
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message["content"] != "answer" {
+		t.Fatalf("content 不得包含 thinking：%v", message["content"])
+	}
+	if message["reasoning_content"] != "let me think" {
+		t.Fatalf("thinking 必须走 reasoning_content：%v", message)
 	}
 }
 
