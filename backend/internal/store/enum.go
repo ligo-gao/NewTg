@@ -73,13 +73,25 @@ var EnumChecks = map[string][]string{
 
 	// request_registry（§18 / platform-04 V9）
 	"request_registry.state": {"in_flight", "settled", "refunded", "failed"},
+
+	// notification_templates / notification_deliveries（M6c Task 4，
+	// modules-08 §3.9.2 / §3.9.5）。两处 channel 枚举**互不为超集**是设计
+	// 明文：模板载体 {email,inapp}，投递记录 {email,webhook}。locale 与
+	// users.language 同集（canonical 7 语）。
+	"notification_templates.channel":  {"email", "inapp"},
+	"notification_templates.locale":   {"en", "zh-CN", "zh-TW", "fr", "ru", "ja", "vi"},
+	"notification_deliveries.channel": {"email", "webhook"},
+	"notification_deliveries.locale":  {"en", "zh-CN", "zh-TW", "fr", "ru", "ja", "vi"},
+	"notification_deliveries.status": {
+		"queued", "sent", "failed", "bounced", "suppressed",
+	},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
 // 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
-// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 = 22 表），
+// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 = 24 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
