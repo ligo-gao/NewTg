@@ -2156,3 +2156,49 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 		}
 	})
 }
+
+// TestChannelPluginBindingLegacyType60Patch 锁定复核发现的存量行行为：
+// 迁移前已存在的类型 60 渠道没有多绑配置，任何 PATCH 都会按「有效状态」
+// 判定并返回 400，错误必须明确指向 task_extend_plugin_keys（而不是泛化
+// 「请求非法」），让控制台能给出可操作提示。
+func TestChannelPluginBindingLegacyType60Patch(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+	seed := seedChannel(t, env, func(ch *store.Channel) {
+		ch.Type = "newapi"
+		baseURL := "https://upstream.example.com"
+		ch.BaseURL = &baseURL
+		ch.TaskExtendPluginKeys = []byte(`[]`) // 迁移默认值：无多绑
+	})
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"remark":           "legacy row",
+	}), channelAdminPrincipal(PermChannelsManage))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("存量类型 60 行 PATCH = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "task_extend_plugin_keys") ||
+		!strings.Contains(rr.Body.String(), "at least one plugin key") {
+		t.Fatalf("错误语义不清晰：%s", rr.Body.String())
+	}
+}
+
+// TestChannelPluginBindingRegistryFailureIs500 锁定注册表查询失败的分支：
+// DB 故障必须映射为 500（不能伪装成 400「key 不存在」，否则管理员会误删
+// 正确配置或误以为 key 拼错）。
+func TestChannelPluginBindingRegistryFailureIs500(t *testing.T) {
+	catalog := pluginBindingCatalog()
+	catalog.err = errors.New("registry db down")
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: catalog})
+	rr := createChannelForBinding(t, env, channelCreateBody("task_plugin", map[string]any{
+		"task_plugin_key": "kling",
+	}))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("注册表故障 = %d，期望 500（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "internal_error") {
+		t.Fatalf("problem.type 应为 internal_error：%s", rr.Body.String())
+	}
+	if len(catalog.calls) == 0 || catalog.calls[0] != "kling" {
+		t.Fatalf("未实际查询注册表：%v", catalog.calls)
+	}
+}

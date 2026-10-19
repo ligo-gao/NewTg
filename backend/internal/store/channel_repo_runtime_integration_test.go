@@ -245,26 +245,48 @@ func TestChannelRepoPluginBindingRuntime(t *testing.T) {
 		t.Fatalf("extend 持久化 = %s", got.TaskExtendPluginKeys)
 	}
 
-	// 计数：单绑 + 多绑 + 停用排除。
+	// 计数：单绑 + 多绑 + 停用排除 + 同一渠道两种形态命中同一 key 只计一次。
+	// key 带本次运行的唯一后缀，共享库里其它行的绑定不会影响精确断言。
+	k1 := fmt.Sprintf("it-k1-%d", suffix)
+	k2 := fmt.Sprintf("it-k2-%d", suffix)
+	k3 := fmt.Sprintf("it-k3-%d", suffix)
 	single := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-single-%d", suffix), 1, `["video-x"]`, `{}`, "")
 	multi := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-multi-%d", suffix), 1, `["video-x"]`, `{}`, "")
+	both := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-both-%d", suffix), 1, `["video-x"]`, `{}`, "")
 	disabled := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-disabled-%d", suffix), 2, `["video-x"]`, `{}`, "")
 	for id, stmt := range map[int64]string{
-		single:   `UPDATE channels SET task_plugin_key = 'it-k1', task_extend_plugin_keys = '[]'::jsonb WHERE id = $1`,
-		multi:    `UPDATE channels SET task_extend_plugin_keys = '["it-k1","it-k2"]'::jsonb WHERE id = $1`,
-		disabled: `UPDATE channels SET task_plugin_key = 'it-k1' WHERE id = $1`,
+		single:   `UPDATE channels SET task_plugin_key = $2, task_extend_plugin_keys = '[]'::jsonb WHERE id = $1`,
+		multi:    `UPDATE channels SET task_extend_plugin_keys = jsonb_build_array($2::text, $3::text) WHERE id = $1`,
+		both:     `UPDATE channels SET task_plugin_key = $2, task_extend_plugin_keys = jsonb_build_array($2::text, $3::text) WHERE id = $1`,
+		disabled: `UPDATE channels SET task_plugin_key = $2 WHERE id = $1`,
 	} {
-		if _, err := db.Exec(stmt, id); err != nil {
+		var args []any
+		switch id {
+		case single, disabled:
+			args = []any{id, k1}
+		case multi:
+			args = []any{id, k1, k2}
+		case both:
+			args = []any{id, k3, fmt.Sprintf("%s-other", k3)}
+		}
+		if _, err := db.Exec(stmt, args...); err != nil {
 			t.Fatalf("bind channel %d: %v", id, err)
 		}
 	}
-	counts, err := repo.CountBoundChannels(ctx, []string{"it-k1", "it-k2", "it-missing"})
+	counts, err := repo.CountBoundChannels(ctx, []string{k1, k2, k3, "it-missing"})
 	if err != nil {
 		t.Fatalf("CountBoundChannels: %v", err)
 	}
-	// 既有测试库可能有其它行绑定同名 key；用唯一前缀避免污染。
-	if counts["it-k1"] < 2 || counts["it-k2"] < 1 {
-		t.Fatalf("counts = %v，期望 it-k1≥2 / it-k2≥1（停用渠道不计）", counts)
+	// k1：single + multi（disabled 不计）= 2；k2：multi = 1；
+	// k3：both 的两种形态命中同一渠道，DISTINCT 后 = 1。
+	if counts[k1] != 2 {
+		t.Fatalf("counts[%s] = %d，期望 2（停用渠道不计）", k1, counts[k1])
+	}
+	if counts[k2] != 1 {
+		t.Fatalf("counts[%s] = %d，期望 1", k2, counts[k2])
+	}
+	if counts[k3] != 1 {
+		t.Fatalf("counts[%s] = %d，期望 1（单绑+多绑同 key 只计一次）", k3, counts[k3])
 	}
 	if _, ok := counts["it-missing"]; !ok || counts["it-missing"] != 0 {
 		t.Fatalf("未绑定 key 必须返回 0：%v", counts)
