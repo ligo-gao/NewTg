@@ -137,6 +137,45 @@ func (l *Ledger) ApplyDelta(ctx context.Context, userID, delta int64,
 	return balanceAfter, nil
 }
 
+// ApplyDeltaID 与 ApplyDelta 语义完全相同，但额外返回新建流水的
+// wallet_transactions.id，并允许写入 note。
+//
+// 存在的理由：M5 的 FundingSource 契约要求返回 txID，让订单/兑换审计能
+// 精确关联入账行。若在 ApplyDelta 之后再按 (user_id, reference_type,
+// reference_id) 查询「最近一行」，并发入账时可能取到别人的行（同一次
+// 充值被重试时更明显）；RETURNING 在事务内拿到的 id 没有这个竞态。
+// note 用于满足 wallet_transactions_admin_note_chk（管理员调整必填理由）。
+func (l *Ledger) ApplyDeltaID(ctx context.Context, userID, delta int64,
+	txType, status, refType, refID, note string) (balanceAfter, txID int64, err error) {
+
+	if delta == 0 {
+		return 0, 0, errors.New("billing: ledger delta must not be zero")
+	}
+	if delta == math.MinInt64 {
+		return 0, 0, errors.New("billing: ledger delta out of int64 range")
+	}
+	if !validWalletTxType[txType] {
+		return 0, 0, fmt.Errorf("billing: invalid wallet transaction type %q", txType)
+	}
+	if !validWalletTxStatus[status] {
+		return 0, 0, fmt.Errorf("billing: invalid wallet transaction status %q", status)
+	}
+	if !validWalletRefType[refType] {
+		return 0, 0, fmt.Errorf("billing: invalid wallet reference type %q", refType)
+	}
+
+	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var txErr error
+		balanceAfter, txID, txErr = applyDeltaTxNote(ctx, tx, userID, delta,
+			txType, status, refType, refID, note)
+		return txErr
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return balanceAfter, txID, nil
+}
+
 // ApplyDeltaWithToken 在**同一主库事务**内先扣令牌额度、再变更钱包
 // （R-73；billing-03 §2.5「先令牌额度，后资金来源」）。
 //
@@ -385,19 +424,22 @@ func requestTerminalTx(ctx context.Context, tx *gorm.DB, requestID string) (bool
 // applyDeltaTx 是 ApplyDelta 的事务内核；也供持有同一事务的结算/退款路径复用。
 func applyDeltaTx(ctx context.Context, tx *gorm.DB, userID, delta int64,
 	txType, status, refType, refID string) (int64, error) {
-	return applyDeltaTxNote(ctx, tx, userID, delta, txType, status, refType, refID, "")
+	balanceAfter, _, err := applyDeltaTxNote(ctx, tx, userID, delta, txType, status, refType, refID, "")
+	return balanceAfter, err
 }
 
-// applyDeltaTxNote 在 applyDeltaTx 基础上写入 note。
+// applyDeltaTxNote 在 applyDeltaTx 基础上写入 note，并返回新流水的 id。
 //
 // 结案标记（note 以 "billing:" 开头）是无 hold 结算的 DB 幂等锚点（R-41）：
 // wallet_transactions 没有 requestID 唯一约束（同一请求合法多行），只能靠
 // 一行「结算/退款标记」证明该 requestID 已经结案。ChargeIncrement 的增量行
 // 不带标记，因此不会被误判为已结算。
+//
+// 返回 txID 供 M5 充值路径把流水 id 交给订单/兑换审计（FundingSource.txID）；
+// 不需要它的调用方丢弃即可。
 func applyDeltaTxNote(ctx context.Context, tx *gorm.DB, userID, delta int64,
-	txType, status, refType, refID, note string) (int64, error) {
+	txType, status, refType, refID, note string) (balanceAfter, txID int64, err error) {
 
-	var balanceAfter int64
 	var row *sql.Row
 	if delta < 0 {
 		amount := -delta
@@ -421,19 +463,23 @@ func applyDeltaTxNote(ctx context.Context, tx *gorm.DB, userID, delta int64,
 
 	if err := row.Scan(&balanceAfter); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, classifyBalanceMiss(ctx, tx, userID, delta)
+			return 0, 0, classifyBalanceMiss(ctx, tx, userID, delta)
 		}
-		return 0, fmt.Errorf("billing: update balance for user %d: %w", userID, err)
+		return 0, 0, fmt.Errorf("billing: update balance for user %d: %w", userID, err)
 	}
 
-	if res := tx.WithContext(ctx).Exec(
+	// RETURNING id：与余额变更同一条事务，充值路径据此把流水 id 返回给
+	// 订单/兑换审计，无需事务外的「查最近一行」竞态查询。
+	if err := tx.WithContext(ctx).Raw(
 		`INSERT INTO wallet_transactions
 		   (user_id, type, amount, balance_after, status, reference_type, reference_id, note)
-		 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
-		userID, txType, delta, balanceAfter, status, refType, refID, note); res.Error != nil {
-		return 0, fmt.Errorf("billing: insert wallet transaction for user %d: %w", userID, res.Error)
+		 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))
+		 RETURNING id`,
+		userID, txType, delta, balanceAfter, status, refType, refID, note).
+		Row().Scan(&txID); err != nil {
+		return 0, 0, fmt.Errorf("billing: insert wallet transaction for user %d: %w", userID, err)
 	}
-	return balanceAfter, nil
+	return balanceAfter, txID, nil
 }
 
 // classifyBalanceMiss 区分「用户不存在」「减法余额不足」与「加法越过钱包上界」。
@@ -560,7 +606,7 @@ func (l *Ledger) settleHolds(ctx context.Context, userID int64, requestID string
 		if delta < 0 {
 			txType = "release"
 		}
-		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, -delta, txType,
+		balanceAfter, _, txErr = applyDeltaTxNote(ctx, tx, userID, -delta, txType,
 			"confirmed", "usage_log", requestID, settlementNote)
 		return txErr
 	})
@@ -585,7 +631,7 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 			return errNoOpenHold
 		}
 		// 退款是入账：applyDeltaTx 正数表示 credit。
-		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, held, "release",
+		balanceAfter, _, txErr = applyDeltaTxNote(ctx, tx, userID, held, "release",
 			"confirmed", "usage_log", requestID, refundNote)
 		return txErr
 	})
@@ -644,7 +690,7 @@ func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID stri
 		if total <= 0 {
 			return errNoOpenHold
 		}
-		balanceAfter, txErr = applyDeltaTxNote(ctx, tx, userID, total, "release",
+		balanceAfter, _, txErr = applyDeltaTxNote(ctx, tx, userID, total, "release",
 			"confirmed", "usage_log", requestID, refundNote)
 		if txErr != nil {
 			// 无 hold 路径上唯一的 INSERT 撞 23505 只可能是
@@ -801,7 +847,7 @@ func (l *Ledger) releaseAbandoned(ctx context.Context, requestID string, tokenID
 			return nil
 		}
 		// 兜底退款同样是入账。
-		balanceAfter, qerr = applyDeltaTxNote(ctx, tx, userID, held, "release",
+		balanceAfter, _, qerr = applyDeltaTxNote(ctx, tx, userID, held, "release",
 			"confirmed", "usage_log", requestID, recoverNote)
 		if qerr != nil && isUniqueViolation(qerr) {
 			// 竞态：另一执行者在复核与 INSERT 之间写入了 release。回滚本次

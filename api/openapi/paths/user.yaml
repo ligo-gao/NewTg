@@ -1061,3 +1061,439 @@ paths:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
+
+  # M5 兑换码核销（modules-04 F-04-14；任意已认证用户）。
+  /api/redemption-codes/redeem:
+    post:
+      tags: [user]
+      operationId: redeemCode
+      summary: 核销兑换码并入账
+      description: |
+        服务端先归一化（trim → 大写 → I/L→1、O→0）再按 SHA-256 查码；
+        条件 UPDATE 与入账在同一事务内完成，并发兑换同一码仅一次成功。
+        独立限流桶 10 次/分钟/用户。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/RedeemCodeRequest'
+      responses:
+        '200':
+          description: 核销成功（credits 为本次到账积分）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/RedeemCodeResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '410':
+          $ref: '../components/responses.yaml#/responses/Error410'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡读取）。
+  /api/wallet/summary:
+    get:
+      tags: [user]
+      operationId: getWalletSummary
+      summary: 当前用户钱包摘要
+      description: |
+        仅返回当前会话用户自己的余额数据（无用户 ID 参数，不接受跨用户
+        读取）。`balance` 来自 `users.balance`；`held_credits` 为进行中
+        预扣（status='hold'）的绝对值之和；`total_consumed` 为
+        `type='consume'` 流水之和；`total_requests` 为 `usage_logs` 行数；
+        `health` 由服务端按余额与阈值计算（0=depleted，低于阈值=low）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/WalletSummary'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M5 在线充值配置（modules-04 §4.A F-04-01；P-9/P-17）。
+  /api/topup/config:
+    get:
+      tags: [user]
+      operationId: getTopupConfig
+      summary: 获取充值页配置
+      description: |
+        档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
+        `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`、
+        当前用户分组的有效倍率 `credits_ratio`，以及「已启用且配置完整」的
+        渠道集合。每个渠道条目带自己的 `min_topup`（有效下限由调用方取
+        max(全局, 渠道)）。`pay.stripe.publishable_key` 是公开值，随
+        `providers.stripe` 下发；任何 secret 都不进入响应。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TopupConfig'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M5 幂等下单（modules-04 §4.B/§4.C/§4.E F-04-03/05/10；P-9/P-10）。
+  /api/orders:
+    post:
+      tags: [user]
+      operationId: createOrder
+      summary: 幂等创建充值订单并初始化渠道支付
+      description: |
+        `Idempotency-Key` 必填（UUID v4）。同一 key 重复提交返回首次订单
+        （HTTP 200，不新建、不重新创建渠道支付单；即使渠道被关闭或下限
+        被调整也照样返回首次订单）；key 属于其他用户时 409
+        `order_state_conflict`。首次创建返回 201。
+        **M5 无汇率：`currency` 只接受 CNY**（大小写不敏感），其它币种
+        400。`provider=stripe` 返回 `client_secret`；`provider=alipay`
+        返回 `qr_code`。渠道未启用/配置不完整（含支付宝沙箱模式）返回
+        403；渠道 5xx 返回 502 且订单置 failed。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 客户端生成的 UUID v4；全表唯一（P-2）
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: 首次创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/CreateOrderResponse'
+        '200':
+          description: 幂等重放（返回首次订单，不含渠道支付载荷）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/CreateOrderResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          description: 在线支付关闭或该渠道未启用/配置不完整
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '409':
+          description: Idempotency-Key 已被其他用户占用（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '502':
+          description: 渠道初始化失败（订单已置 failed，provider_unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+    get:
+      tags: [user]
+      operationId: listOrders
+      summary: 订单列表与订单号搜索
+      description: |
+        本人订单（管理员 `orders:read` 可跨用户）。offset 分页（`p` 从 1
+        开始，`page_size` 默认 20 / 最大 100），按 `created_at DESC, id DESC`
+        倒序。`q` 是订单号子串；`user_id` 仅管理员可指定，普通用户指定他人
+        返回 403。列表永不返回 `raw_callback`。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: p
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000000
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, expired, cancelled]
+        - name: q
+          in: query
+          description: 订单号子串（最长 128 字符）
+          schema:
+            type: string
+            maxLength: 128
+        - name: user_id
+          in: query
+          description: 仅 `orders:read` 管理员可用
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M5 订单中心（modules-04 §4.D F-04-08/09；P-9/P-18）。
+  /api/orders/{id}:
+    get:
+      tags: [user]
+      operationId: getOrder
+      summary: 订单详情（本人；管理员 orders:read 可查看任意订单）
+      description: |
+        本人订单返回完整视图（不含 `raw_callback`）；管理员（`orders:read`）
+        可查看任意订单并看到 `raw_callback`。他人订单对无权限者一律 404
+        （security-02：不得用 403 确认资源存在）。`expires_at` 是
+        `created_at + 30min` 的派生值，不是数据库列。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderView'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/orders/{id}/cancel:
+    post:
+      tags: [user]
+      operationId: cancelOrder
+      summary: 取消 pending 订单（本人；管理员 orders:manage）
+      description: |
+        仅 `pending → cancelled`；条件 UPDATE 抢不到（订单已终态/并发迁移）
+        返回 409 `order_state_conflict`。数据库迁移成功后尽力关闭渠道支付单
+        （支付宝 `alipay.trade.close` / Stripe PaymentIntent cancel），渠道
+        失败只记日志，不阻断取消。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderView'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/orders/{id}/verify:
+    post:
+      tags: [user]
+      operationId: verifyOrder
+      summary: 主动核实渠道支付结果（回调丢失兜底；本人或 orders:manage）
+      description: |
+        仅 `pending` 订单。本人或持有 `orders:manage` 的管理员；只有
+        `orders:read` 的管理员无法替他人核实（数据级 404）。服务端调用
+        Stripe retrieve / `alipay.trade.query`：
+        已支付 → 复用 webhook 同一条幂等入账路径（条件 UPDATE + 入账同事务，
+        重复核实不会重复入账）；未支付 → 200 `{paid:false}` 且不改变状态；
+        渠道查询失败 → 502。限流每订单 5 次/分钟（Redis，故障时 fail closed）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 查询完成（paid 表示渠道是否已收款）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderVerifyResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          description: 渠道查询失败（provider_unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '503':
+          description: 限流器不可用（fail closed）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/orders/{id}/complete:
+    post:
+      tags: [admin]
+      operationId: completeOrderManually
+      x-required-permission: orders:manage
+      summary: 管理员人工完成订单（须渠道确认已收款）
+      description: |
+        需要 `orders:manage`。订单必须为 `pending` 且渠道主动查询确认已支付；
+        查询失败或未支付 → 400 且不写状态。`manual_reason` 10–200 字符，
+        成功后写 `manual_completed/manual_reason/manual_operator_id` 并复用
+        同一条幂等入账路径。阈值/二次认证属于 P-19 的后续适配器族，本端点
+        为基本旁路、不写 audit_logs（P-16）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/CompleteOrderRequest'
+      responses:
+        '200':
+          description: 人工完成并入账
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderView'
+        '400':
+          description: 原因非法，或渠道未确认收款/查询失败
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          description: 订单不存在
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

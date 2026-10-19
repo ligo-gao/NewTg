@@ -907,3 +907,193 @@ schemas:
       updated_at:
         type: string
         format: date-time
+
+  # ---- M5 兑换码（modules-04 §4.F F-04-15/16）----
+  RedemptionCodeStatus:
+    type: string
+    enum: [unused, disabled, used, expired]
+
+  RedemptionCodeStatusFilter:
+    type: string
+    enum: [unused, disabled, used, expired]
+    description: expired 是虚拟态（不落库）
+
+  RedemptionCode:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - credits
+      - status
+      - code_mask
+      - created_by
+      - created_at
+      - updated_at
+    description: |
+      兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+      expired 是 SQL 按 expires_at 计算的虚拟状态。
+    properties:
+      id:
+        type: integer
+        format: int64
+      batch_name:
+        type: string
+        maxLength: 20
+        nullable: true
+      credits:
+        type: integer
+        format: int64
+        minimum: 1
+      status:
+        $ref: '#/schemas/RedemptionCodeStatus'
+      code_mask:
+        type: string
+        enum: ['••••••']
+      created_by:
+        type: integer
+        format: int64
+      used_by:
+        type: integer
+        format: int64
+        nullable: true
+      used_at:
+        type: string
+        format: date-time
+        nullable: true
+      expires_at:
+        type: string
+        format: date-time
+        nullable: true
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+
+  RedemptionCodeList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/RedemptionCode'
+      total:
+        type: integer
+        minimum: 0
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  RedemptionCodeCreateRequest:
+    type: object
+    additionalProperties: false
+    required: [batch_name, credits, count]
+    properties:
+      batch_name:
+        type: string
+        minLength: 1
+        maxLength: 20
+      credits:
+        type: integer
+        format: int64
+        minimum: 1
+      count:
+        type: integer
+        minimum: 1
+        maximum: 100
+      expires_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 必须晚于当前时间；null = 永不过期
+
+  RedemptionCodeCreateResponse:
+    type: object
+    additionalProperties: false
+    required: [batch_name, credits, count, codes]
+    properties:
+      batch_name:
+        type: string
+        maxLength: 20
+      credits:
+        type: integer
+        format: int64
+      count:
+        type: integer
+      expires_at:
+        type: string
+        format: date-time
+        nullable: true
+      codes:
+        type: array
+        description: 明文码，仅本响应返回一次；库中只存 SHA-256 哈希
+        items:
+          type: string
+          minLength: 26
+          maxLength: 26
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        minItems: 1
+        maxItems: 100
+
+  RedemptionCodeStatusRequest:
+    type: object
+    additionalProperties: false
+    required: [status]
+    properties:
+      status:
+        type: string
+        enum: [unused, disabled]
+
+  RedemptionCodeStatusResult:
+    type: object
+    additionalProperties: false
+    required: [id, status]
+    properties:
+      id:
+        type: integer
+        format: int64
+      status:
+        type: string
+        enum: [unused, disabled]
+
+  RedemptionCodeBatchDeleteRequest:
+    type: object
+    additionalProperties: false
+    required: [ids]
+    properties:
+      ids:
+        type: array
+        items:
+          type: integer
+          format: int64
+        minItems: 1
+        maxItems: 100
+
+  RedemptionCodeBatchDeleteResponse:
+    type: object
+    additionalProperties: false
+    required: [succeeded, failed]
+    properties:
+      succeeded:
+        type: integer
+        minimum: 0
+      failed:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, detail]
+          properties:
+            id:
+              type: integer
+              format: int64
+            detail:
+              type: string
+              enum: [used, not_found, invalid_id]

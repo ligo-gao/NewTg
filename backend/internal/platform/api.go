@@ -207,6 +207,48 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 既注入 GatewayDeps，也让装配测试能验证「就是 source.Invalidate」。
 	pricingChanged := pricingOnChange(source)
 
+	// M5 兑换码端点（Task 2）：默认 FundingSource 复用主库 GORM 句柄；
+	// 配置读取走 configcenter，兑换限流用同一 Redis 客户端。
+	redemptionHandler, err := httpapi.NewRedemptionHandlers(httpapi.RedemptionHandlerConfig{
+		DB:     gormDB,
+		Redis:  rdb,
+		Config: center,
+		Authz:  authz,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: redemption handlers: %w", err)
+	}
+
+	// M5 在线充值端点（Task 3）：密钥类配置（Stripe secret/webhook secret、
+	// 支付宝私钥/公钥）经与配置中心同一个 SecretSealer 解封；webhook 限流
+	// 复用同一 Redis 客户端，缺 Redis 时构造失败（fail closed）。
+	topupHandler, err := httpapi.NewTopupHandlers(httpapi.TopupHandlerConfig{
+		DB:     gormDB,
+		Redis:  rdb,
+		Config: center,
+		Sealer: cipher,
+		Logger: log,
+		// 订单端点按 orders:read/orders:manage 判定管理员范围；必须复用
+		// 同一个 authz 实例，才能拿到 SessionAuth 未填充的权威权限集合。
+		Authz: authz,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: topup handlers: %w", err)
+	}
+
+	// 钱包摘要（modules-03 §F-03-01）：Task 6 的余额卡从该端点读取余额。
+	// 主库提供余额/冻结/消费，日志库提供请求总数；阈值来自站点配置。
+	walletHandler, err := httpapi.NewWalletHandlers(httpapi.WalletHandlerConfig{
+		DB:     db,
+		LogDB:  logsDB,
+		Config: center,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: wallet handlers: %w", err)
+	}
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -223,6 +265,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Logger:                  log,
 		ChannelHandler:          channelHandler,
 		PricingRepo:             pricingRepo,
+		RedemptionHandlers:      redemptionHandler,
+		TopupHandlers:           topupHandler,
+		WalletHandlers:          walletHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
 	})

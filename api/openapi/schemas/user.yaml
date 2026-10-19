@@ -749,3 +749,322 @@ schemas:
         type: string
         format: date-time
         nullable: true
+
+  RedeemCodeRequest:
+    type: object
+    additionalProperties: false
+    required: [code]
+    properties:
+      code:
+        type: string
+        minLength: 1
+        maxLength: 64
+        description: 用户输入原样提交；服务端归一化后再哈希
+
+  RedeemCodeResponse:
+    type: object
+    additionalProperties: false
+    required: [credits, balance_after]
+    properties:
+      credits:
+        type: integer
+        format: int64
+        minimum: 1
+        description: 本次到账积分（已含 quota_per_unit 与分组倍率）
+      balance_after:
+        type: integer
+        format: int64
+        description: 入账后的钱包余额快照
+
+  # ---------------------------------------------------------------------------
+  # 充值（M5 Task 3 / modules-04 §4.A–C；P-9/P-17）
+  # ---------------------------------------------------------------------------
+
+  TopupProviderConfig:
+    type: object
+    additionalProperties: false
+    required: [min_topup]
+    description: 公开的渠道配置；secret 永不出现。
+    properties:
+      publishable_key:
+        type: string
+        description: Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
+      min_topup:
+        type: integer
+        format: int64
+        minimum: 0
+        description: |
+          该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+          有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
+
+  TopupConfig:
+    type: object
+    additionalProperties: false
+    required: [amount_options, min_topup, max_topup, quota_per_unit, credits_ratio, enabled_providers, providers]
+    properties:
+      amount_options:
+        type: array
+        minItems: 1
+        maxItems: 20
+        items:
+          type: integer
+          format: int64
+          minimum: 1
+        description: 档位，最小货币单位（分）；来源 `pay.amount_presets_cny`
+      min_topup:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 全局最低充值（分），来源 `pay.min_topup_cny`
+      max_topup:
+        type: integer
+        format: int64
+        minimum: 1
+        description: 单笔硬上限（分），冻结 10000000
+      quota_per_unit:
+        type: integer
+        format: int64
+        minimum: 1
+        description: 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+      credits_ratio:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: |
+          当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+          未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
+      enabled_providers:
+        type: array
+        items:
+          type: string
+          enum: [stripe, alipay]
+        description: 已启用且配置完整的渠道（P-13）
+      providers:
+        type: object
+        additionalProperties:
+          $ref: '#/schemas/TopupProviderConfig'
+        description: 只包含 enabled_providers 中的渠道
+
+  # 钱包摘要（modules-03 §F-03-01；Task 6 余额卡消费 balance）。
+  WalletSummary:
+    type: object
+    additionalProperties: false
+    required: [balance, held_credits, total_consumed, total_requests, threshold, health, group]
+    properties:
+      balance:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 可用余额（积分），`users.balance` 原子读
+      held_credits:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+      total_consumed:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 历史累计消费（`type='consume'` 流水绝对值之和）
+      total_requests:
+        type: integer
+        format: int64
+        minimum: 0
+        description: API 请求总数（`usage_logs` count）
+      threshold:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+      health:
+        type: string
+        enum: [healthy, low, depleted]
+        description: 服务端计算的余额健康度
+      group:
+        type: string
+        description: 当前定价分组（`users.group`）
+
+  CreateOrderRequest:
+    type: object
+    additionalProperties: false
+    required: [amount, provider]
+    properties:
+      amount:
+        type: integer
+        format: int64
+        minimum: 1
+        maximum: 10000000
+        description: 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
+      currency:
+        type: string
+        enum: [CNY]
+        default: CNY
+        description: |
+          站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+          统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+          金额放大到账积分。
+      provider:
+        type: string
+        enum: [stripe, alipay]
+
+  TopupOrderView:
+    type: object
+    additionalProperties: false
+    required: [id, provider, amount, currency, status, credited_credits, created_at]
+    properties:
+      id:
+        type: integer
+        format: int64
+      provider:
+        type: string
+        enum: [stripe, alipay]
+      amount:
+        type: integer
+        format: int64
+        description: 订单金额（分），服务端定价的唯一真源
+      currency:
+        type: string
+        minLength: 3
+        maxLength: 3
+      status:
+        type: string
+        enum: [pending, succeeded, failed, expired, cancelled]
+      credited_credits:
+        type: integer
+        format: int64
+        description: 成功时到账积分快照；pending/failed 为 0
+      failure_code:
+        type: string
+        nullable: true
+        enum: [provider_unavailable, provider_rejected, signature_invalid, amount_mismatch,
+               currency_mismatch, order_not_found, order_state_conflict, manual_required, null]
+      paid_at:
+        type: string
+        format: date-time
+        nullable: true
+      created_at:
+        type: string
+        format: date-time
+
+  CreateOrderResponse:
+    type: object
+    additionalProperties: false
+    required: [order]
+    properties:
+      order:
+        $ref: '#/schemas/TopupOrderView'
+      client_secret:
+        type: string
+        description: 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
+      qr_code:
+        type: string
+        description: 仅 alipay 首次创建返回
+
+  # ---------------------------------------------------------------------------
+  # 订单中心（M5 Task 4 / modules-04 §4.D–E；P-1/P-9/P-18/P-19）
+  # ---------------------------------------------------------------------------
+
+  OrderView:
+    type: object
+    additionalProperties: false
+    required: [id, user_id, provider, amount, currency, status, credited_credits,
+               manual_completed, created_at, updated_at, expires_at]
+    properties:
+      id:
+        type: integer
+        format: int64
+      user_id:
+        type: integer
+        format: int64
+      provider:
+        type: string
+        enum: [stripe, alipay]
+      amount:
+        type: integer
+        format: int64
+        description: 订单金额（分），服务端定价唯一真源
+      currency:
+        type: string
+        minLength: 3
+        maxLength: 3
+      status:
+        type: string
+        enum: [pending, succeeded, failed, expired, cancelled]
+        description: |
+          五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+          expired/cancelled；终态不可再迁移。
+      credited_credits:
+        type: integer
+        format: int64
+      failure_code:
+        type: string
+        nullable: true
+        enum: [provider_unavailable, provider_rejected, signature_invalid, amount_mismatch,
+               currency_mismatch, order_not_found, order_state_conflict, manual_required, null]
+      paid_at:
+        type: string
+        format: date-time
+        nullable: true
+      manual_completed:
+        type: boolean
+      manual_reason:
+        type: string
+        nullable: true
+        minLength: 10
+        maxLength: 200
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      expires_at:
+        type: string
+        format: date-time
+        description: 派生值 `created_at + 30min`（P-1；不是数据库列）
+      raw_callback:
+        type: object
+        nullable: true
+        description: 仅管理员（role=admin）详情可见；用户响应不包含该字段
+
+  OrderList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/OrderView'
+      total:
+        type: integer
+        format: int64
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  OrderVerifyResponse:
+    type: object
+    additionalProperties: false
+    required: [paid, order]
+    properties:
+      paid:
+        type: boolean
+        description: 渠道是否已确认收款；false 时订单状态不变
+      order:
+        $ref: '#/schemas/OrderView'
+
+  CompleteOrderRequest:
+    type: object
+    additionalProperties: false
+    required: [manual_reason]
+    properties:
+      manual_reason:
+        type: string
+        minLength: 10
+        maxLength: 200
+        description: 人工完成原因（按 Unicode 字符计数）

@@ -93,6 +93,21 @@ type GatewayDeps struct {
 	// OriginRefererCheck 链；handler 内部再按 channels:* 做功能级权限检查。
 	ChannelHandler *ChannelHandler
 
+	// RedemptionHandlers 是 M5 兑换码端点集合（Task 2）。非 nil 时挂到
+	// 受保护子树；管理端点内部按 redemption:manage 做 RBAC，用户兑换走
+	// 独立 Redis 限流桶。
+	RedemptionHandlers *RedemptionHandlers
+
+	// TopupHandlers 是 M5 在线充值端点集合（Task 3）。非 nil 时：
+	//   - GET /api/topup/config、POST /api/orders 挂到受保护子树；
+	//   - POST /api/webhooks/{stripe,alipay} 以精确模式挂根 mux，绕过
+	//     SessionAuth/CSRF（渠道回调没有会话，安全性由验签+限流承担）。
+	TopupHandlers *TopupHandlers
+
+	// WalletHandlers 是 M5 Task 6 补齐的 /api/wallet/summary（modules-03
+	// §F-03-01）。非 nil 时挂到受保护子树，只读取当前会话用户自己的余额。
+	WalletHandlers *WalletHandlers
+
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
 	TurnstileHTTPClient *http.Client
@@ -206,6 +221,23 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 因此复用 NewRouter 已挂好的受保护链与 no-store 响应策略。
 	if deps.ChannelHandler != nil {
 		deps.ChannelHandler.Register(rt.protected)
+	}
+
+	// M5 兑换码端点：与渠道/定价共用同一条受保护链。用户兑换端点也挂在
+	// 受保护子树（必须已认证），限流在 handler 内执行。
+	if deps.RedemptionHandlers != nil {
+		deps.RedemptionHandlers.RegisterRedemptionRoutes(rt.protected, nil)
+	}
+
+	// M5 在线充值端点（Task 3）：用户端点共用受保护链；webhook 精确挂根
+	// mux（验签 + 每 provider 独立限流，见 handlers_topup.go）。
+	if deps.TopupHandlers != nil {
+		deps.TopupHandlers.RegisterTopupRoutes(rt.protected, nil)
+		deps.TopupHandlers.RegisterWebhookRoutes(rt)
+	}
+
+	if deps.WalletHandlers != nil {
+		deps.WalletHandlers.RegisterWalletRoutes(rt.protected, nil)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

@@ -16,6 +16,8 @@ import { useI18n } from '@/shared/lib/i18n-context'
 // server still enforces RBAC on every request — this is UX only (§9.1).
 const NAV_ITEMS = [
   { href: '/dashboard', key: 'common.nav.dashboard' },
+  { href: '/wallet', key: 'common.nav.wallet' },
+  { href: '/orders', key: 'common.nav.orders' },
   { href: '/profile', key: 'common.nav.profile' },
   { href: '/security', key: 'common.nav.security' },
   // M2 channel management; `/admin/channels` sits under the admin layout guard.

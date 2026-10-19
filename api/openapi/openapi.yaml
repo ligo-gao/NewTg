@@ -155,6 +155,38 @@ paths:
   /api/group-pricing/{group}/{model}:disable:
     $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}:disable'
 
+  # 兑换码（M5 Task 2；管理面 + 用户核销）。
+  /api/redemption-codes:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'
+  /api/redemption-codes/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes~1{id}'
+  /api/redemption-codes/batch-delete:
+    $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes~1batch-delete'
+  /api/redemption-codes/redeem:
+    $ref: './paths/user.yaml#/paths/~1api~1redemption-codes~1redeem'
+
+  # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡）。
+  /api/wallet/summary:
+    $ref: './paths/user.yaml#/paths/~1api~1wallet~1summary'
+
+  # 在线充值（M5 Task 3；用户端点 + 公网回调）。
+  /api/topup/config:
+    $ref: './paths/user.yaml#/paths/~1api~1topup~1config'
+  /api/orders:
+    $ref: './paths/user.yaml#/paths/~1api~1orders'
+  /api/orders/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}'
+  /api/orders/{id}/cancel:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1cancel'
+  /api/orders/{id}/verify:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1verify'
+  /api/orders/{id}/complete:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1complete'
+  /api/webhooks/stripe:
+    $ref: './paths/public.yaml#/paths/~1api~1webhooks~1stripe'
+  /api/webhooks/alipay:
+    $ref: './paths/public.yaml#/paths/~1api~1webhooks~1alipay'
+
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'

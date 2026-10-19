@@ -2739,6 +2739,716 @@ paths:
           $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/redemption-codes:
+    get:
+      tags:
+        - admin
+      operationId: listRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 兑换码列表（offset 分页 + 状态/批次/面额筛选）
+      description: |
+        status 支持 unused|disabled|used|expired；expired 是虚拟态
+        （status='unused' AND expires_at <= now()），不落库。
+        列表永不返回码值，只返回固定掩码 `••••••`。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RedemptionCodeStatusFilter'
+        - name: batch_name
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 20
+        - name: min_credits
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: max_credits
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 批量生成兑换码（明文仅本响应返回一次）
+      description: |
+        count 1–100；credits > 0；expires_at 必须晚于 now 或为 null。
+        生成 26 位 Crockford Base32，库中只存 SHA-256 哈希；碰撞自动重试
+        至多 3 次。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeCreateRequest'
+      responses:
+        '201':
+          description: 创建成功（codes 仅此一次返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeCreateResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/{id}:
+    patch:
+      tags:
+        - admin
+      operationId: updateRedemptionCodeStatus
+      x-required-permission: redemption:manage
+      summary: 启用/禁用兑换码（unused ↔ disabled）
+      description: 已使用码返回 409；status=used 不可手工写入（400）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathRedemptionCodeID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeStatusRequest'
+      responses:
+        '200':
+          description: 更新后的 id 与状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeStatusResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteRedemptionCode
+      x-required-permission: redemption:manage
+      summary: 删除未使用/已禁用兑换码
+      description: 已使用码返回 409（保留审计）；不存在 404；成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathRedemptionCodeID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/batch-delete:
+    post:
+      tags:
+        - admin
+      operationId: batchDeleteRedemptionCodes
+      x-required-permission: redemption:manage
+      summary: 批量删除兑换码（≤100）
+      description: 逐条删除；已使用码进入 failed 明细，不中断其余删除。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedemptionCodeBatchDeleteRequest'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionCodeBatchDeleteResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/redemption-codes/redeem:
+    post:
+      tags:
+        - user
+      operationId: redeemCode
+      summary: 核销兑换码并入账
+      description: |
+        服务端先归一化（trim → 大写 → I/L→1、O→0）再按 SHA-256 查码；
+        条件 UPDATE 与入账在同一事务内完成，并发兑换同一码仅一次成功。
+        独立限流桶 10 次/分钟/用户。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemCodeRequest'
+      responses:
+        '200':
+          description: 核销成功（credits 为本次到账积分）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedeemCodeResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '410':
+          $ref: '#/components/responses/Error410'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/wallet/summary:
+    get:
+      tags:
+        - user
+      operationId: getWalletSummary
+      summary: 当前用户钱包摘要
+      description: |
+        仅返回当前会话用户自己的余额数据（无用户 ID 参数，不接受跨用户
+        读取）。`balance` 来自 `users.balance`；`held_credits` 为进行中
+        预扣（status='hold'）的绝对值之和；`total_consumed` 为
+        `type='consume'` 流水之和；`total_requests` 为 `usage_logs` 行数；
+        `health` 由服务端按余额与阈值计算（0=depleted，低于阈值=low）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletSummary'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/topup/config:
+    get:
+      tags:
+        - user
+      operationId: getTopupConfig
+      summary: 获取充值页配置
+      description: |
+        档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
+        `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`、
+        当前用户分组的有效倍率 `credits_ratio`，以及「已启用且配置完整」的
+        渠道集合。每个渠道条目带自己的 `min_topup`（有效下限由调用方取
+        max(全局, 渠道)）。`pay.stripe.publishable_key` 是公开值，随
+        `providers.stripe` 下发；任何 secret 都不进入响应。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopupConfig'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/orders:
+    post:
+      tags:
+        - user
+      operationId: createOrder
+      summary: 幂等创建充值订单并初始化渠道支付
+      description: |
+        `Idempotency-Key` 必填（UUID v4）。同一 key 重复提交返回首次订单
+        （HTTP 200，不新建、不重新创建渠道支付单；即使渠道被关闭或下限
+        被调整也照样返回首次订单）；key 属于其他用户时 409
+        `order_state_conflict`。首次创建返回 201。
+        **M5 无汇率：`currency` 只接受 CNY**（大小写不敏感），其它币种
+        400。`provider=stripe` 返回 `client_secret`；`provider=alipay`
+        返回 `qr_code`。渠道未启用/配置不完整（含支付宝沙箱模式）返回
+        403；渠道 5xx 返回 502 且订单置 failed。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 客户端生成的 UUID v4；全表唯一（P-2）
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '200':
+          description: 幂等重放（返回首次订单，不含渠道支付载荷）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOrderResponse'
+        '201':
+          description: 首次创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOrderResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          description: 在线支付关闭或该渠道未启用/配置不完整
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Idempotency-Key 已被其他用户占用（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          description: 渠道初始化失败（订单已置 failed，provider_unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    get:
+      tags:
+        - user
+      operationId: listOrders
+      summary: 订单列表与订单号搜索
+      description: |
+        本人订单（管理员 `orders:read` 可跨用户）。offset 分页（`p` 从 1
+        开始，`page_size` 默认 20 / 最大 100），按 `created_at DESC, id DESC`
+        倒序。`q` 是订单号子串；`user_id` 仅管理员可指定，普通用户指定他人
+        返回 403。列表永不返回 `raw_callback`。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: p
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000000
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending
+              - succeeded
+              - failed
+              - expired
+              - cancelled
+        - name: q
+          in: query
+          description: 订单号子串（最长 128 字符）
+          schema:
+            type: string
+            maxLength: 128
+        - name: user_id
+          in: query
+          description: 仅 `orders:read` 管理员可用
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/orders/{id}:
+    get:
+      tags:
+        - user
+      operationId: getOrder
+      summary: 订单详情（本人；管理员 orders:read 可查看任意订单）
+      description: |
+        本人订单返回完整视图（不含 `raw_callback`）；管理员（`orders:read`）
+        可查看任意订单并看到 `raw_callback`。他人订单对无权限者一律 404
+        （security-02：不得用 403 确认资源存在）。`expires_at` 是
+        `created_at + 30min` 的派生值，不是数据库列。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderView'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/orders/{id}/cancel:
+    post:
+      tags:
+        - user
+      operationId: cancelOrder
+      summary: 取消 pending 订单（本人；管理员 orders:manage）
+      description: |
+        仅 `pending → cancelled`；条件 UPDATE 抢不到（订单已终态/并发迁移）
+        返回 409 `order_state_conflict`。数据库迁移成功后尽力关闭渠道支付单
+        （支付宝 `alipay.trade.close` / Stripe PaymentIntent cancel），渠道
+        失败只记日志，不阻断取消。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderView'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/orders/{id}/verify:
+    post:
+      tags:
+        - user
+      operationId: verifyOrder
+      summary: 主动核实渠道支付结果（回调丢失兜底；本人或 orders:manage）
+      description: |
+        仅 `pending` 订单。本人或持有 `orders:manage` 的管理员；只有
+        `orders:read` 的管理员无法替他人核实（数据级 404）。服务端调用
+        Stripe retrieve / `alipay.trade.query`：
+        已支付 → 复用 webhook 同一条幂等入账路径（条件 UPDATE + 入账同事务，
+        重复核实不会重复入账）；未支付 → 200 `{paid:false}` 且不改变状态；
+        渠道查询失败 → 502。限流每订单 5 次/分钟（Redis，故障时 fail closed）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 查询完成（paid 表示渠道是否已收款）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderVerifyResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 订单不存在或不属于调用者
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '502':
+          description: 渠道查询失败（provider_unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: 限流器不可用（fail closed）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/orders/{id}/complete:
+    post:
+      tags:
+        - admin
+      operationId: completeOrderManually
+      x-required-permission: orders:manage
+      summary: 管理员人工完成订单（须渠道确认已收款）
+      description: |
+        需要 `orders:manage`。订单必须为 `pending` 且渠道主动查询确认已支付；
+        查询失败或未支付 → 400 且不写状态。`manual_reason` 10–200 字符，
+        成功后写 `manual_completed/manual_reason/manual_operator_id` 并复用
+        同一条幂等入账路径。阈值/二次认证属于 P-19 的后续适配器族，本端点
+        为基本旁路、不写 audit_logs（P-16）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteOrderRequest'
+      responses:
+        '200':
+          description: 人工完成并入账
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderView'
+        '400':
+          description: 原因非法，或渠道未确认收款/查询失败
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          description: 订单不存在
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 订单已不是 pending（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/webhooks/stripe:
+    post:
+      tags:
+        - public
+      operationId: stripeWebhook
+      summary: Stripe 异步通知
+      description: |
+        验签使用**原始请求体**：`Stripe-Signature` 的 `t=...,v1=...` 为
+        HMAC-SHA256(`t + "." + body`)，时间戳偏差 > 300s 拒绝。仅处理
+        `payment_intent.succeeded`；金额/币种与订单不一致 → 订单 failed +
+        告警且不入账。重复投递幂等（provider_txn_id 唯一 + 条件 UPDATE）。
+        每端点独立 60 次/分钟限流（429）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Stripe Event 原文（验签前不反序列化）
+      responses:
+        '200':
+          description: 已处理或按状态机忽略
+        '400':
+          description: 验签或载荷非法（不改订单、不入账）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: 超过 60 次/分钟
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: 限流器不可用（fail closed）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/webhooks/alipay:
+    post:
+      tags:
+        - public
+      operationId: alipayNotify
+      summary: 支付宝异步通知
+      description: |
+        表单编码回调；RSA2（SHA256withRSA）验签。仅 `TRADE_SUCCESS` 入账，
+        其余状态回 `success` 并忽略。`total_amount`（元）换算为分后与订单
+        比对，不一致 → 订单 failed + 告警并回 `failure`。重复通知幂等。
+        每端点独立 60 次/分钟限流（429）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: 处理完成（纯文本 `success`）
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum:
+                  - success
+                  - failure
+        '400':
+          description: 验签失败或金额不符（纯文本 `failure`，不入账）
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum:
+                  - success
+                  - failure
+        '429':
+          description: 超过 60 次/分钟
+        '500':
+          description: 内部错误（纯文本 `failure`，渠道会重投）
+        '503':
+          description: 限流器不可用（fail closed）
   /api/channels:
     get:
       tags:
@@ -2909,6 +3619,15 @@ components:
       schema:
         type: string
         format: date-time
+    PathRedemptionCodeID:
+      name: id
+      in: path
+      required: true
+      description: redemption_codes.id
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
   schemas:
     Problem:
       type: object
@@ -5116,6 +5835,601 @@ components:
         updated_at:
           type: string
           format: date-time
+    RedemptionCodeStatusFilter:
+      type: string
+      enum:
+        - unused
+        - disabled
+        - used
+        - expired
+      description: expired 是虚拟态（不落库）
+    RedemptionCodeStatus:
+      type: string
+      enum:
+        - unused
+        - disabled
+        - used
+        - expired
+    RedemptionCode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - credits
+        - status
+        - code_mask
+        - created_by
+        - created_at
+        - updated_at
+      description: |
+        兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+        expired 是 SQL 按 expires_at 计算的虚拟状态。
+      properties:
+        id:
+          type: integer
+          format: int64
+        batch_name:
+          type: string
+          maxLength: 20
+          nullable: true
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/RedemptionCodeStatus'
+        code_mask:
+          type: string
+          enum:
+            - ••••••
+        created_by:
+          type: integer
+          format: int64
+        used_by:
+          type: integer
+          format: int64
+          nullable: true
+        used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RedemptionCodeList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RedemptionCode'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    RedemptionCodeCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_name
+        - credits
+        - count
+      properties:
+        batch_name:
+          type: string
+          minLength: 1
+          maxLength: 20
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 必须晚于当前时间；null = 永不过期
+    RedemptionCodeCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_name
+        - credits
+        - count
+        - codes
+      properties:
+        batch_name:
+          type: string
+          maxLength: 20
+        credits:
+          type: integer
+          format: int64
+        count:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        codes:
+          type: array
+          description: 明文码，仅本响应返回一次；库中只存 SHA-256 哈希
+          items:
+            type: string
+            minLength: 26
+            maxLength: 26
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          minItems: 1
+          maxItems: 100
+    RedemptionCodeStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - unused
+            - disabled
+    RedemptionCodeStatusResult:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum:
+            - unused
+            - disabled
+    RedemptionCodeBatchDeleteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          minItems: 1
+          maxItems: 100
+    RedemptionCodeBatchDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - succeeded
+        - failed
+      properties:
+        succeeded:
+          type: integer
+          minimum: 0
+        failed:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - detail
+            properties:
+              id:
+                type: integer
+                format: int64
+              detail:
+                type: string
+                enum:
+                  - used
+                  - not_found
+                  - invalid_id
+    RedeemCodeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 用户输入原样提交；服务端归一化后再哈希
+    RedeemCodeResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - credits
+        - balance_after
+      properties:
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 本次到账积分（已含 quota_per_unit 与分组倍率）
+        balance_after:
+          type: integer
+          format: int64
+          description: 入账后的钱包余额快照
+    WalletSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - balance
+        - held_credits
+        - total_consumed
+        - total_requests
+        - threshold
+        - health
+        - group
+      properties:
+        balance:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 可用余额（积分），`users.balance` 原子读
+        held_credits:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+        total_consumed:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 历史累计消费（`type='consume'` 流水绝对值之和）
+        total_requests:
+          type: integer
+          format: int64
+          minimum: 0
+          description: API 请求总数（`usage_logs` count）
+        threshold:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+        health:
+          type: string
+          enum:
+            - healthy
+            - low
+            - depleted
+          description: 服务端计算的余额健康度
+        group:
+          type: string
+          description: 当前定价分组（`users.group`）
+    TopupProviderConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - min_topup
+      description: 公开的渠道配置；secret 永不出现。
+      properties:
+        publishable_key:
+          type: string
+          description: Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
+        min_topup:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+            有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
+    TopupConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - amount_options
+        - min_topup
+        - max_topup
+        - quota_per_unit
+        - credits_ratio
+        - enabled_providers
+        - providers
+      properties:
+        amount_options:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: 档位，最小货币单位（分）；来源 `pay.amount_presets_cny`
+        min_topup:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 全局最低充值（分），来源 `pay.min_topup_cny`
+        max_topup:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 单笔硬上限（分），冻结 10000000
+        quota_per_unit:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+        credits_ratio:
+          type: number
+          format: double
+          exclusiveMinimum: 0
+          description: |
+            当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+            未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
+        enabled_providers:
+          type: array
+          items:
+            type: string
+            enum:
+              - stripe
+              - alipay
+          description: 已启用且配置完整的渠道（P-13）
+        providers:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TopupProviderConfig'
+          description: 只包含 enabled_providers 中的渠道
+    OrderView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - user_id
+        - provider
+        - amount
+        - currency
+        - status
+        - credited_credits
+        - manual_completed
+        - created_at
+        - updated_at
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        provider:
+          type: string
+          enum:
+            - stripe
+            - alipay
+        amount:
+          type: integer
+          format: int64
+          description: 订单金额（分），服务端定价唯一真源
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        status:
+          type: string
+          enum:
+            - pending
+            - succeeded
+            - failed
+            - expired
+            - cancelled
+          description: |
+            五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+            expired/cancelled；终态不可再迁移。
+        credited_credits:
+          type: integer
+          format: int64
+        failure_code:
+          type: string
+          nullable: true
+          enum:
+            - provider_unavailable
+            - provider_rejected
+            - signature_invalid
+            - amount_mismatch
+            - currency_mismatch
+            - order_not_found
+            - order_state_conflict
+            - manual_required
+            - null
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        manual_completed:
+          type: boolean
+        manual_reason:
+          type: string
+          nullable: true
+          minLength: 10
+          maxLength: 200
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 派生值 `created_at + 30min`（P-1；不是数据库列）
+        raw_callback:
+          type: object
+          nullable: true
+          description: 仅管理员（role=admin）详情可见；用户响应不包含该字段
+    OrderList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderView'
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - amount
+        - provider
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10000000
+          description: 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
+        currency:
+          type: string
+          enum:
+            - CNY
+          default: CNY
+          description: |
+            站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+            统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+            金额放大到账积分。
+        provider:
+          type: string
+          enum:
+            - stripe
+            - alipay
+    TopupOrderView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - provider
+        - amount
+        - currency
+        - status
+        - credited_credits
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        provider:
+          type: string
+          enum:
+            - stripe
+            - alipay
+        amount:
+          type: integer
+          format: int64
+          description: 订单金额（分），服务端定价的唯一真源
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        status:
+          type: string
+          enum:
+            - pending
+            - succeeded
+            - failed
+            - expired
+            - cancelled
+        credited_credits:
+          type: integer
+          format: int64
+          description: 成功时到账积分快照；pending/failed 为 0
+        failure_code:
+          type: string
+          nullable: true
+          enum:
+            - provider_unavailable
+            - provider_rejected
+            - signature_invalid
+            - amount_mismatch
+            - currency_mismatch
+            - order_not_found
+            - order_state_conflict
+            - manual_required
+            - null
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    CreateOrderResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - order
+      properties:
+        order:
+          $ref: '#/components/schemas/TopupOrderView'
+        client_secret:
+          type: string
+          description: 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
+        qr_code:
+          type: string
+          description: 仅 alipay 首次创建返回
+    OrderVerifyResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - paid
+        - order
+      properties:
+        paid:
+          type: boolean
+          description: 渠道是否已确认收款；false 时订单状态不变
+        order:
+          $ref: '#/components/schemas/OrderView'
+    CompleteOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - manual_reason
+      properties:
+        manual_reason:
+          type: string
+          minLength: 10
+          maxLength: 200
+          description: 人工完成原因（按 Unicode 字符计数）
   responses:
     Error400:
       description: 请求不符合契约（参数/请求体校验失败）
@@ -5185,6 +6499,12 @@ components:
             $ref: '#/components/schemas/Problem'
     Error503:
       description: 服务不可用（依赖未就绪或过载）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error410:
+      description: 资源已过期（兑换码虚拟过期态）
       content:
         application/problem+json:
           schema:

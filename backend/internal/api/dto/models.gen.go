@@ -27,6 +27,39 @@ func (e ChangeEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for CreateOrderRequestCurrency.
+const (
+	CNY CreateOrderRequestCurrency = "CNY"
+)
+
+// Valid indicates whether the value is a known member of the CreateOrderRequestCurrency enum.
+func (e CreateOrderRequestCurrency) Valid() bool {
+	switch e {
+	case CNY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CreateOrderRequestProvider.
+const (
+	CreateOrderRequestProviderAlipay CreateOrderRequestProvider = "alipay"
+	CreateOrderRequestProviderStripe CreateOrderRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the CreateOrderRequestProvider enum.
+func (e CreateOrderRequestProvider) Valid() bool {
+	switch e {
+	case CreateOrderRequestProviderAlipay:
+		return true
+	case CreateOrderRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EmailCodeRequestPurpose.
 const (
 	Bind     EmailCodeRequestPurpose = "bind"
@@ -92,13 +125,13 @@ func (e GroupPricingSourceStatus) Valid() bool {
 
 // Defines values for GroupPricingMode1.
 const (
-	Empty GroupPricingMode1 = ""
+	GroupPricingMode1Empty GroupPricingMode1 = ""
 )
 
 // Valid indicates whether the value is a known member of the GroupPricingMode1 enum.
 func (e GroupPricingMode1) Valid() bool {
 	switch e {
-	case Empty:
+	case GroupPricingMode1Empty:
 		return true
 	default:
 		return false
@@ -186,6 +219,90 @@ const (
 func (e NotificationTestResponseSent) Valid() bool {
 	switch e {
 	case NotificationTestResponseSentTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OrderViewFailureCode.
+const (
+	OrderViewFailureCodeAmountMismatch      OrderViewFailureCode = "amount_mismatch"
+	OrderViewFailureCodeCurrencyMismatch    OrderViewFailureCode = "currency_mismatch"
+	OrderViewFailureCodeLessThannil         OrderViewFailureCode = "<nil>"
+	OrderViewFailureCodeManualRequired      OrderViewFailureCode = "manual_required"
+	OrderViewFailureCodeOrderNotFound       OrderViewFailureCode = "order_not_found"
+	OrderViewFailureCodeOrderStateConflict  OrderViewFailureCode = "order_state_conflict"
+	OrderViewFailureCodeProviderRejected    OrderViewFailureCode = "provider_rejected"
+	OrderViewFailureCodeProviderUnavailable OrderViewFailureCode = "provider_unavailable"
+	OrderViewFailureCodeSignatureInvalid    OrderViewFailureCode = "signature_invalid"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewFailureCode enum.
+func (e OrderViewFailureCode) Valid() bool {
+	switch e {
+	case OrderViewFailureCodeAmountMismatch:
+		return true
+	case OrderViewFailureCodeCurrencyMismatch:
+		return true
+	case OrderViewFailureCodeLessThannil:
+		return true
+	case OrderViewFailureCodeManualRequired:
+		return true
+	case OrderViewFailureCodeOrderNotFound:
+		return true
+	case OrderViewFailureCodeOrderStateConflict:
+		return true
+	case OrderViewFailureCodeProviderRejected:
+		return true
+	case OrderViewFailureCodeProviderUnavailable:
+		return true
+	case OrderViewFailureCodeSignatureInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OrderViewProvider.
+const (
+	OrderViewProviderAlipay OrderViewProvider = "alipay"
+	OrderViewProviderStripe OrderViewProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewProvider enum.
+func (e OrderViewProvider) Valid() bool {
+	switch e {
+	case OrderViewProviderAlipay:
+		return true
+	case OrderViewProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OrderViewStatus.
+const (
+	OrderViewStatusCancelled OrderViewStatus = "cancelled"
+	OrderViewStatusExpired   OrderViewStatus = "expired"
+	OrderViewStatusFailed    OrderViewStatus = "failed"
+	OrderViewStatusPending   OrderViewStatus = "pending"
+	OrderViewStatusSucceeded OrderViewStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the OrderViewStatus enum.
+func (e OrderViewStatus) Valid() bool {
+	switch e {
+	case OrderViewStatusCancelled:
+		return true
+	case OrderViewStatusExpired:
+		return true
+	case OrderViewStatusFailed:
+		return true
+	case OrderViewStatusPending:
+		return true
+	case OrderViewStatusSucceeded:
 		return true
 	default:
 		return false
@@ -384,6 +501,126 @@ func (e QuotaAdjustmentRequestMode) Valid() bool {
 	}
 }
 
+// Defines values for RedemptionCodeCodeMask.
+const (
+	RedemptionCodeCodeMaskEmpty RedemptionCodeCodeMask = "••••••"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeCodeMask enum.
+func (e RedemptionCodeCodeMask) Valid() bool {
+	switch e {
+	case RedemptionCodeCodeMaskEmpty:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeBatchDeleteResponseFailedDetail.
+const (
+	RedemptionCodeBatchDeleteResponseFailedDetailInvalidId RedemptionCodeBatchDeleteResponseFailedDetail = "invalid_id"
+	RedemptionCodeBatchDeleteResponseFailedDetailNotFound  RedemptionCodeBatchDeleteResponseFailedDetail = "not_found"
+	RedemptionCodeBatchDeleteResponseFailedDetailUsed      RedemptionCodeBatchDeleteResponseFailedDetail = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeBatchDeleteResponseFailedDetail enum.
+func (e RedemptionCodeBatchDeleteResponseFailedDetail) Valid() bool {
+	switch e {
+	case RedemptionCodeBatchDeleteResponseFailedDetailInvalidId:
+		return true
+	case RedemptionCodeBatchDeleteResponseFailedDetailNotFound:
+		return true
+	case RedemptionCodeBatchDeleteResponseFailedDetailUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatus.
+const (
+	RedemptionCodeStatusDisabled RedemptionCodeStatus = "disabled"
+	RedemptionCodeStatusExpired  RedemptionCodeStatus = "expired"
+	RedemptionCodeStatusUnused   RedemptionCodeStatus = "unused"
+	RedemptionCodeStatusUsed     RedemptionCodeStatus = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatus enum.
+func (e RedemptionCodeStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusDisabled:
+		return true
+	case RedemptionCodeStatusExpired:
+		return true
+	case RedemptionCodeStatusUnused:
+		return true
+	case RedemptionCodeStatusUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusFilter.
+const (
+	RedemptionCodeStatusFilterDisabled RedemptionCodeStatusFilter = "disabled"
+	RedemptionCodeStatusFilterExpired  RedemptionCodeStatusFilter = "expired"
+	RedemptionCodeStatusFilterUnused   RedemptionCodeStatusFilter = "unused"
+	RedemptionCodeStatusFilterUsed     RedemptionCodeStatusFilter = "used"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusFilter enum.
+func (e RedemptionCodeStatusFilter) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusFilterDisabled:
+		return true
+	case RedemptionCodeStatusFilterExpired:
+		return true
+	case RedemptionCodeStatusFilterUnused:
+		return true
+	case RedemptionCodeStatusFilterUsed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusRequestStatus.
+const (
+	RedemptionCodeStatusRequestStatusDisabled RedemptionCodeStatusRequestStatus = "disabled"
+	RedemptionCodeStatusRequestStatusUnused   RedemptionCodeStatusRequestStatus = "unused"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusRequestStatus enum.
+func (e RedemptionCodeStatusRequestStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusRequestStatusDisabled:
+		return true
+	case RedemptionCodeStatusRequestStatusUnused:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RedemptionCodeStatusResultStatus.
+const (
+	RedemptionCodeStatusResultStatusDisabled RedemptionCodeStatusResultStatus = "disabled"
+	RedemptionCodeStatusResultStatusUnused   RedemptionCodeStatusResultStatus = "unused"
+)
+
+// Valid indicates whether the value is a known member of the RedemptionCodeStatusResultStatus enum.
+func (e RedemptionCodeStatusResultStatus) Valid() bool {
+	switch e {
+	case RedemptionCodeStatusResultStatusDisabled:
+		return true
+	case RedemptionCodeStatusResultStatusUnused:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SetupResponseUserStatus.
 const (
 	SetupResponseUserStatusDisabled SetupResponseUserStatus = "disabled"
@@ -435,6 +672,108 @@ const (
 func (e TokenUsageObject) Valid() bool {
 	switch e {
 	case TokenUsageObjectTokenUsage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupConfigEnabledProviders.
+const (
+	TopupConfigEnabledProvidersAlipay TopupConfigEnabledProviders = "alipay"
+	TopupConfigEnabledProvidersStripe TopupConfigEnabledProviders = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the TopupConfigEnabledProviders enum.
+func (e TopupConfigEnabledProviders) Valid() bool {
+	switch e {
+	case TopupConfigEnabledProvidersAlipay:
+		return true
+	case TopupConfigEnabledProvidersStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewFailureCode.
+const (
+	TopupOrderViewFailureCodeAmountMismatch      TopupOrderViewFailureCode = "amount_mismatch"
+	TopupOrderViewFailureCodeCurrencyMismatch    TopupOrderViewFailureCode = "currency_mismatch"
+	TopupOrderViewFailureCodeLessThannil         TopupOrderViewFailureCode = "<nil>"
+	TopupOrderViewFailureCodeManualRequired      TopupOrderViewFailureCode = "manual_required"
+	TopupOrderViewFailureCodeOrderNotFound       TopupOrderViewFailureCode = "order_not_found"
+	TopupOrderViewFailureCodeOrderStateConflict  TopupOrderViewFailureCode = "order_state_conflict"
+	TopupOrderViewFailureCodeProviderRejected    TopupOrderViewFailureCode = "provider_rejected"
+	TopupOrderViewFailureCodeProviderUnavailable TopupOrderViewFailureCode = "provider_unavailable"
+	TopupOrderViewFailureCodeSignatureInvalid    TopupOrderViewFailureCode = "signature_invalid"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewFailureCode enum.
+func (e TopupOrderViewFailureCode) Valid() bool {
+	switch e {
+	case TopupOrderViewFailureCodeAmountMismatch:
+		return true
+	case TopupOrderViewFailureCodeCurrencyMismatch:
+		return true
+	case TopupOrderViewFailureCodeLessThannil:
+		return true
+	case TopupOrderViewFailureCodeManualRequired:
+		return true
+	case TopupOrderViewFailureCodeOrderNotFound:
+		return true
+	case TopupOrderViewFailureCodeOrderStateConflict:
+		return true
+	case TopupOrderViewFailureCodeProviderRejected:
+		return true
+	case TopupOrderViewFailureCodeProviderUnavailable:
+		return true
+	case TopupOrderViewFailureCodeSignatureInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewProvider.
+const (
+	TopupOrderViewProviderAlipay TopupOrderViewProvider = "alipay"
+	TopupOrderViewProviderStripe TopupOrderViewProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewProvider enum.
+func (e TopupOrderViewProvider) Valid() bool {
+	switch e {
+	case TopupOrderViewProviderAlipay:
+		return true
+	case TopupOrderViewProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewStatus.
+const (
+	TopupOrderViewStatusCancelled TopupOrderViewStatus = "cancelled"
+	TopupOrderViewStatusExpired   TopupOrderViewStatus = "expired"
+	TopupOrderViewStatusFailed    TopupOrderViewStatus = "failed"
+	TopupOrderViewStatusPending   TopupOrderViewStatus = "pending"
+	TopupOrderViewStatusSucceeded TopupOrderViewStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewStatus enum.
+func (e TopupOrderViewStatus) Valid() bool {
+	switch e {
+	case TopupOrderViewStatusCancelled:
+		return true
+	case TopupOrderViewStatusExpired:
+		return true
+	case TopupOrderViewStatusFailed:
+		return true
+	case TopupOrderViewStatusPending:
+		return true
+	case TopupOrderViewStatusSucceeded:
 		return true
 	default:
 		return false
@@ -534,6 +873,27 @@ const (
 func (e VerifyEmailResponseEmailVerified) Valid() bool {
 	switch e {
 	case VerifyEmailResponseEmailVerifiedTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletSummaryHealth.
+const (
+	WalletSummaryHealthDepleted WalletSummaryHealth = "depleted"
+	WalletSummaryHealthHealthy  WalletSummaryHealth = "healthy"
+	WalletSummaryHealthLow      WalletSummaryHealth = "low"
+)
+
+// Valid indicates whether the value is a known member of the WalletSummaryHealth enum.
+func (e WalletSummaryHealth) Valid() bool {
+	switch e {
+	case WalletSummaryHealthDepleted:
+		return true
+	case WalletSummaryHealthHealthy:
+		return true
+	case WalletSummaryHealthLow:
 		return true
 	default:
 		return false
@@ -669,6 +1029,33 @@ func (e ListPricingModelsParamsStatus) Valid() bool {
 	case ListPricingModelsParamsStatusN1:
 		return true
 	case ListPricingModelsParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListOrdersParamsStatus.
+const (
+	ListOrdersParamsStatusCancelled ListOrdersParamsStatus = "cancelled"
+	ListOrdersParamsStatusExpired   ListOrdersParamsStatus = "expired"
+	ListOrdersParamsStatusFailed    ListOrdersParamsStatus = "failed"
+	ListOrdersParamsStatusPending   ListOrdersParamsStatus = "pending"
+	ListOrdersParamsStatusSucceeded ListOrdersParamsStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ListOrdersParamsStatus enum.
+func (e ListOrdersParamsStatus) Valid() bool {
+	switch e {
+	case ListOrdersParamsStatusCancelled:
+		return true
+	case ListOrdersParamsStatusExpired:
+		return true
+	case ListOrdersParamsStatusFailed:
+		return true
+	case ListOrdersParamsStatusPending:
+		return true
+	case ListOrdersParamsStatusSucceeded:
 		return true
 	default:
 		return false
@@ -1113,6 +1500,42 @@ type ChangeEmailResponseEmailVerified bool
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+// CompleteOrderRequest defines model for CompleteOrderRequest.
+type CompleteOrderRequest struct {
+	// ManualReason 人工完成原因（按 Unicode 字符计数）
+	ManualReason string `json:"manual_reason"`
+}
+
+// CreateOrderRequest defines model for CreateOrderRequest.
+type CreateOrderRequest struct {
+	// Amount 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
+	Amount int64 `json:"amount"`
+
+	// Currency 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+	// 统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+	// 金额放大到账积分。
+	Currency *CreateOrderRequestCurrency `json:"currency,omitempty"`
+	Provider CreateOrderRequestProvider  `json:"provider"`
+}
+
+// CreateOrderRequestCurrency 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
+// 统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
+// 金额放大到账积分。
+type CreateOrderRequestCurrency string
+
+// CreateOrderRequestProvider defines model for CreateOrderRequest.Provider.
+type CreateOrderRequestProvider string
+
+// CreateOrderResponse defines model for CreateOrderResponse.
+type CreateOrderResponse struct {
+	// ClientSecret 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
+	ClientSecret *string        `json:"client_secret,omitempty"`
+	Order        TopupOrderView `json:"order"`
+
+	// QrCode 仅 alipay 首次创建返回
+	QrCode *string `json:"qr_code,omitempty"`
 }
 
 // CreateTokenRequest POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
@@ -1639,6 +2062,59 @@ type NotificationTestResponse struct {
 // NotificationTestResponseSent defines model for NotificationTestResponse.Sent.
 type NotificationTestResponseSent bool
 
+// OrderList defines model for OrderList.
+type OrderList struct {
+	Items    []OrderView `json:"items"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+	Total    int64       `json:"total"`
+}
+
+// OrderVerifyResponse defines model for OrderVerifyResponse.
+type OrderVerifyResponse struct {
+	Order OrderView `json:"order"`
+
+	// Paid 渠道是否已确认收款；false 时订单状态不变
+	Paid bool `json:"paid"`
+}
+
+// OrderView defines model for OrderView.
+type OrderView struct {
+	// Amount 订单金额（分），服务端定价唯一真源
+	Amount          int64     `json:"amount"`
+	CreatedAt       time.Time `json:"created_at"`
+	CreditedCredits int64     `json:"credited_credits"`
+	Currency        string    `json:"currency"`
+
+	// ExpiresAt 派生值 `created_at + 30min`（P-1；不是数据库列）
+	ExpiresAt       time.Time             `json:"expires_at"`
+	FailureCode     *OrderViewFailureCode `json:"failure_code,omitempty"`
+	Id              int64                 `json:"id"`
+	ManualCompleted bool                  `json:"manual_completed"`
+	ManualReason    *string               `json:"manual_reason,omitempty"`
+	PaidAt          *time.Time            `json:"paid_at,omitempty"`
+	Provider        OrderViewProvider     `json:"provider"`
+
+	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
+	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
+
+	// Status 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+	// expired/cancelled；终态不可再迁移。
+	Status    OrderViewStatus `json:"status"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	UserId    int64           `json:"user_id"`
+}
+
+// OrderViewFailureCode defines model for OrderView.FailureCode.
+type OrderViewFailureCode string
+
+// OrderViewProvider defines model for OrderView.Provider.
+type OrderViewProvider string
+
+// OrderViewStatus 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
+// expired/cancelled；终态不可再迁移。
+type OrderViewStatus string
+
 // Page offset 分页信封；各域 items 的 DTO 随里程碑细化。
 type Page struct {
 	Items []interface{} `json:"items"`
@@ -1874,6 +2350,109 @@ type QuotaAdjustmentResponse struct {
 	TransactionId int64 `json:"transaction_id"`
 	UserId        int64 `json:"user_id"`
 }
+
+// RedeemCodeRequest defines model for RedeemCodeRequest.
+type RedeemCodeRequest struct {
+	// Code 用户输入原样提交；服务端归一化后再哈希
+	Code string `json:"code"`
+}
+
+// RedeemCodeResponse defines model for RedeemCodeResponse.
+type RedeemCodeResponse struct {
+	// BalanceAfter 入账后的钱包余额快照
+	BalanceAfter int64 `json:"balance_after"`
+
+	// Credits 本次到账积分（已含 quota_per_unit 与分组倍率）
+	Credits int64 `json:"credits"`
+}
+
+// RedemptionCode 兑换码列表投影。永不包含码值：code_mask 固定为 `••••••`。
+// expired 是 SQL 按 expires_at 计算的虚拟状态。
+type RedemptionCode struct {
+	BatchName *string                `json:"batch_name,omitempty"`
+	CodeMask  RedemptionCodeCodeMask `json:"code_mask"`
+	CreatedAt time.Time              `json:"created_at"`
+	CreatedBy int64                  `json:"created_by"`
+	Credits   int64                  `json:"credits"`
+	ExpiresAt *time.Time             `json:"expires_at,omitempty"`
+	Id        int64                  `json:"id"`
+	Status    RedemptionCodeStatus   `json:"status"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	UsedAt    *time.Time             `json:"used_at,omitempty"`
+	UsedBy    *int64                 `json:"used_by,omitempty"`
+}
+
+// RedemptionCodeCodeMask defines model for RedemptionCode.CodeMask.
+type RedemptionCodeCodeMask string
+
+// RedemptionCodeBatchDeleteRequest defines model for RedemptionCodeBatchDeleteRequest.
+type RedemptionCodeBatchDeleteRequest struct {
+	Ids []int64 `json:"ids"`
+}
+
+// RedemptionCodeBatchDeleteResponse defines model for RedemptionCodeBatchDeleteResponse.
+type RedemptionCodeBatchDeleteResponse struct {
+	Failed []struct {
+		Detail RedemptionCodeBatchDeleteResponseFailedDetail `json:"detail"`
+		Id     int64                                         `json:"id"`
+	} `json:"failed"`
+	Succeeded int `json:"succeeded"`
+}
+
+// RedemptionCodeBatchDeleteResponseFailedDetail defines model for RedemptionCodeBatchDeleteResponse.Failed.Detail.
+type RedemptionCodeBatchDeleteResponseFailedDetail string
+
+// RedemptionCodeCreateRequest defines model for RedemptionCodeCreateRequest.
+type RedemptionCodeCreateRequest struct {
+	BatchName string `json:"batch_name"`
+	Count     int    `json:"count"`
+	Credits   int64  `json:"credits"`
+
+	// ExpiresAt 必须晚于当前时间；null = 永不过期
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// RedemptionCodeCreateResponse defines model for RedemptionCodeCreateResponse.
+type RedemptionCodeCreateResponse struct {
+	BatchName string `json:"batch_name"`
+
+	// Codes 明文码，仅本响应返回一次；库中只存 SHA-256 哈希
+	Codes     []string   `json:"codes"`
+	Count     int        `json:"count"`
+	Credits   int64      `json:"credits"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// RedemptionCodeList defines model for RedemptionCodeList.
+type RedemptionCodeList struct {
+	Items    []RedemptionCode `json:"items"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+	Total    int              `json:"total"`
+}
+
+// RedemptionCodeStatus defines model for RedemptionCodeStatus.
+type RedemptionCodeStatus string
+
+// RedemptionCodeStatusFilter expired 是虚拟态（不落库）
+type RedemptionCodeStatusFilter string
+
+// RedemptionCodeStatusRequest defines model for RedemptionCodeStatusRequest.
+type RedemptionCodeStatusRequest struct {
+	Status RedemptionCodeStatusRequestStatus `json:"status"`
+}
+
+// RedemptionCodeStatusRequestStatus defines model for RedemptionCodeStatusRequest.Status.
+type RedemptionCodeStatusRequestStatus string
+
+// RedemptionCodeStatusResult defines model for RedemptionCodeStatusResult.
+type RedemptionCodeStatusResult struct {
+	Id     int64                            `json:"id"`
+	Status RedemptionCodeStatusResultStatus `json:"status"`
+}
+
+// RedemptionCodeStatusResultStatus defines model for RedemptionCodeStatusResult.Status.
+type RedemptionCodeStatusResultStatus string
 
 // RegisterRequest 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
 // 文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
@@ -2126,6 +2705,69 @@ type TokenUsage struct {
 // TokenUsageObject defines model for TokenUsage.Object.
 type TokenUsageObject string
 
+// TopupConfig defines model for TopupConfig.
+type TopupConfig struct {
+	// AmountOptions 档位，最小货币单位（分）；来源 `pay.amount_presets_cny`
+	AmountOptions []int64 `json:"amount_options"`
+
+	// CreditsRatio 当前用户分组的有效兑换倍率（`pay.topup_group_ratio[users.group]`，
+	// 未配置回退 1.0）。仅用于前端预览；实际到账以服务端入账为准。
+	CreditsRatio float64 `json:"credits_ratio"`
+
+	// EnabledProviders 已启用且配置完整的渠道（P-13）
+	EnabledProviders []TopupConfigEnabledProviders `json:"enabled_providers"`
+
+	// MaxTopup 单笔硬上限（分），冻结 10000000
+	MaxTopup int64 `json:"max_topup"`
+
+	// MinTopup 全局最低充值（分），来源 `pay.min_topup_cny`
+	MinTopup int64 `json:"min_topup"`
+
+	// Providers 只包含 enabled_providers 中的渠道
+	Providers map[string]TopupProviderConfig `json:"providers"`
+
+	// QuotaPerUnit 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+	QuotaPerUnit int64 `json:"quota_per_unit"`
+}
+
+// TopupConfigEnabledProviders defines model for TopupConfig.EnabledProviders.
+type TopupConfigEnabledProviders string
+
+// TopupOrderView defines model for TopupOrderView.
+type TopupOrderView struct {
+	// Amount 订单金额（分），服务端定价的唯一真源
+	Amount    int64     `json:"amount"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreditedCredits 成功时到账积分快照；pending/failed 为 0
+	CreditedCredits int64                      `json:"credited_credits"`
+	Currency        string                     `json:"currency"`
+	FailureCode     *TopupOrderViewFailureCode `json:"failure_code,omitempty"`
+	Id              int64                      `json:"id"`
+	PaidAt          *time.Time                 `json:"paid_at,omitempty"`
+	Provider        TopupOrderViewProvider     `json:"provider"`
+	Status          TopupOrderViewStatus       `json:"status"`
+}
+
+// TopupOrderViewFailureCode defines model for TopupOrderView.FailureCode.
+type TopupOrderViewFailureCode string
+
+// TopupOrderViewProvider defines model for TopupOrderView.Provider.
+type TopupOrderViewProvider string
+
+// TopupOrderViewStatus defines model for TopupOrderView.Status.
+type TopupOrderViewStatus string
+
+// TopupProviderConfig 公开的渠道配置；secret 永不出现。
+type TopupProviderConfig struct {
+	// MinTopup 该渠道自己的最低充值（分，`pay.<provider>.min_topup_cny`）；
+	// 有效下限 = max(全局 `min_topup`, 渠道 `min_topup`)（F-04-01）
+	MinTopup int64 `json:"min_topup"`
+
+	// PublishableKey Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
+	PublishableKey *string `json:"publishable_key,omitempty"`
+}
+
 // TwoFABackupCodesResponse defines model for TwoFABackupCodesResponse.
 type TwoFABackupCodesResponse struct {
 	// BackupCodes 明文备用码，仅本次响应出现；重生成后旧码立即失效。
@@ -2243,6 +2885,33 @@ type VerifyEmailResponse struct {
 // VerifyEmailResponseEmailVerified defines model for VerifyEmailResponse.EmailVerified.
 type VerifyEmailResponseEmailVerified bool
 
+// WalletSummary defines model for WalletSummary.
+type WalletSummary struct {
+	// Balance 可用余额（积分），`users.balance` 原子读
+	Balance int64 `json:"balance"`
+
+	// Group 当前定价分组（`users.group`）
+	Group string `json:"group"`
+
+	// Health 服务端计算的余额健康度
+	Health WalletSummaryHealth `json:"health"`
+
+	// HeldCredits 冻结中积分（`wallet_transactions` 中 status='hold' 的 |amount| 之和）
+	HeldCredits int64 `json:"held_credits"`
+
+	// Threshold 低余额提醒阈值，来源 `billing.balance_alert_threshold_credits`（默认 1000）
+	Threshold int64 `json:"threshold"`
+
+	// TotalConsumed 历史累计消费（`type='consume'` 流水绝对值之和）
+	TotalConsumed int64 `json:"total_consumed"`
+
+	// TotalRequests API 请求总数（`usage_logs` count）
+	TotalRequests int64 `json:"total_requests"`
+}
+
+// WalletSummaryHealth 服务端计算的余额健康度
+type WalletSummaryHealth string
+
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
 
@@ -2263,6 +2932,9 @@ type PathGroupTag = string
 
 // PathPricingModel defines model for PathPricingModel.
 type PathPricingModel = string
+
+// PathRedemptionCodeID defines model for PathRedemptionCodeID.
+type PathRedemptionCodeID = int64
 
 // PathSessionID defines model for PathSessionID.
 type PathSessionID = string
@@ -2293,6 +2965,9 @@ type Error404 = Problem
 
 // Error409 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error409 = Problem
+
+// Error410 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error410 = Problem
 
 // Error422 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error422 = Problem
@@ -2554,8 +3229,103 @@ type TestNotificationParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListOrdersParams defines parameters for ListOrders.
+type ListOrdersParams struct {
+	P        *int                    `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int                    `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Status   *ListOrdersParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Q 订单号子串（最长 128 字符）
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// UserId 仅 `orders:read` 管理员可用
+	UserId *int64 `form:"user_id,omitempty" json:"user_id,omitempty"`
+}
+
+// ListOrdersParamsStatus defines parameters for ListOrders.
+type ListOrdersParamsStatus string
+
+// CreateOrderParams defines parameters for CreateOrder.
+type CreateOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+
+	// IdempotencyKey 客户端生成的 UUID v4；全表唯一（P-2）
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// CancelOrderParams defines parameters for CancelOrder.
+type CancelOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CompleteOrderManuallyParams defines parameters for CompleteOrderManually.
+type CompleteOrderManuallyParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// VerifyOrderParams defines parameters for VerifyOrder.
+type VerifyOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ChangePasswordParams defines parameters for ChangePassword.
 type ChangePasswordParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListRedemptionCodesParams defines parameters for ListRedemptionCodes.
+type ListRedemptionCodesParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize   *PageSize                   `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Status     *RedemptionCodeStatusFilter `form:"status,omitempty" json:"status,omitempty"`
+	BatchName  *string                     `form:"batch_name,omitempty" json:"batch_name,omitempty"`
+	MinCredits *int64                      `form:"min_credits,omitempty" json:"min_credits,omitempty"`
+	MaxCredits *int64                      `form:"max_credits,omitempty" json:"max_credits,omitempty"`
+}
+
+// CreateRedemptionCodesParams defines parameters for CreateRedemptionCodes.
+type CreateRedemptionCodesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchDeleteRedemptionCodesParams defines parameters for BatchDeleteRedemptionCodes.
+type BatchDeleteRedemptionCodesParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RedeemCodeParams defines parameters for RedeemCode.
+type RedeemCodeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteRedemptionCodeParams defines parameters for DeleteRedemptionCode.
+type DeleteRedemptionCodeParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateRedemptionCodeStatusParams defines parameters for UpdateRedemptionCodeStatus.
+type UpdateRedemptionCodeStatusParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -2764,6 +3534,13 @@ type VerifyEmailParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// AlipayNotifyFormdataBody defines parameters for AlipayNotify.
+type AlipayNotifyFormdataBody struct {
+}
+
+// StripeWebhookJSONBody defines parameters for StripeWebhook.
+type StripeWebhookJSONBody = map[string]interface{}
+
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
@@ -2881,8 +3658,26 @@ type UpdateNotificationPreferencesJSONRequestBody = NotificationPreferences
 // TestNotificationJSONRequestBody defines body for TestNotification for application/json ContentType.
 type TestNotificationJSONRequestBody = NotificationTestRequest
 
+// CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
+type CreateOrderJSONRequestBody = CreateOrderRequest
+
+// CompleteOrderManuallyJSONRequestBody defines body for CompleteOrderManually for application/json ContentType.
+type CompleteOrderManuallyJSONRequestBody = CompleteOrderRequest
+
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// CreateRedemptionCodesJSONRequestBody defines body for CreateRedemptionCodes for application/json ContentType.
+type CreateRedemptionCodesJSONRequestBody = RedemptionCodeCreateRequest
+
+// BatchDeleteRedemptionCodesJSONRequestBody defines body for BatchDeleteRedemptionCodes for application/json ContentType.
+type BatchDeleteRedemptionCodesJSONRequestBody = RedemptionCodeBatchDeleteRequest
+
+// RedeemCodeJSONRequestBody defines body for RedeemCode for application/json ContentType.
+type RedeemCodeJSONRequestBody = RedeemCodeRequest
+
+// UpdateRedemptionCodeStatusJSONRequestBody defines body for UpdateRedemptionCodeStatus for application/json ContentType.
+type UpdateRedemptionCodeStatusJSONRequestBody = RedemptionCodeStatusRequest
 
 // UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
 type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest
@@ -2922,6 +3717,12 @@ type SetUserStatusJSONRequestBody = AdminUserStatusRequest
 
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = VerifyEmailRequest
+
+// AlipayNotifyFormdataRequestBody defines body for AlipayNotify for application/x-www-form-urlencoded ContentType.
+type AlipayNotifyFormdataRequestBody AlipayNotifyFormdataBody
+
+// StripeWebhookJSONRequestBody defines body for StripeWebhook for application/json ContentType.
+type StripeWebhookJSONRequestBody = StripeWebhookJSONBody
 
 // Getter for additional properties for Problem. Returns the specified
 // element and whether it was found
