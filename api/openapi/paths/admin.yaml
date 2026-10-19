@@ -1410,3 +1410,573 @@ paths:
             application/problem+json:
               schema:
                 $ref: '../components/problem.yaml#/schemas/Problem'
+
+  # ---------------------------------------------------------------------------
+  # 模型部署控制面 · 部署管理（M6d Task 4 / modules-08 §3.20 / F-08-52～F-08-58）。
+  #
+  # provider 是唯一真源：本组端点只做实时代理，不落库、不镜像容器/日志。
+  # 全部能力（含只读）要求 settings:manage；deploy.ionet.enabled=false 时
+  # 返回 409 deploy_disabled（设置与连接测试除外）。
+  # 写操作（创建/更新/改名/续期/终止）必须携带 Idempotency-Key；写超时返回
+  # 504「结果未知」，网关不自动重试。
+  # ---------------------------------------------------------------------------
+  /api/deployments:
+    get:
+      tags: [admin]
+      operationId: listDeployments
+      x-required-permission: settings:manage
+      summary: 部署列表与全量检索
+      description: |
+        keyword 在**全结果集**上过滤（provider 无 keyword 参数时按页扫描，
+        上限 10 页 / 1000 条；达到上限时 search_truncated=true）。
+        status_counts 按扫描到的全量口径统计，不受当前页影响。
+        p 默认 1；page_size 默认 20、上限 100（超出截断并回显实际值）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: status, in: query, required: false, schema: {type: string}}
+        - {name: keyword, in: query, required: false, schema: {type: string}}
+        - {name: p, in: query, required: false, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: page_size, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        '200':
+          description: 部署列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployDeploymentList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+    post:
+      tags: [admin]
+      operationId: createDeployment
+      x-required-permission: settings:manage
+      summary: 创建部署（产生 provider 侧费用）
+      description: |
+        创建前与提交前各查重一次名称；创建前必须先取得 provider 报价，
+        报价失败返回 422 deploy_price_unavailable 且不发起写。
+        registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
+        不进审计（键名也不记）。成功返回 202 受理结果。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 必填；同键重放返回首次结果。
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/CreateDeploymentRequest'
+      responses:
+        '202':
+          description: 创建请求已受理
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时（写结果未知；先刷新再决定是否用新键重试）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/deployments/hardware-types:
+    get:
+      tags: [admin]
+      operationId: listDeployHardwareTypes
+      x-required-permission: settings:manage
+      summary: 硬件类型目录（provider 实时）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 硬件类型目录
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployHardwareTypes'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/deployments/locations:
+    get:
+      tags: [admin]
+      operationId: listDeployLocations
+      x-required-permission: settings:manage
+      summary: 地域目录（provider 实时）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 地域目录
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployLocations'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/available-replicas:
+    get:
+      tags: [admin]
+      operationId: getDeployAvailableReplicas
+      x-required-permission: settings:manage
+      summary: 各地域可用副本余量
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: hardware_id, in: query, required: true, schema: {type: integer, minimum: 1}}
+        - {name: gpu_count, in: query, required: false, schema: {type: integer, minimum: 1, default: 1}}
+      responses:
+        '200':
+          description: 副本余量
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAvailableReplicas'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/price-estimation:
+    post:
+      tags: [admin]
+      operationId: estimateDeployPrice
+      x-required-permission: settings:manage
+      summary: 价格估算（provider USD 报价，只读）
+      description: |
+        原样返回 provider 的金额、币种与费用分解；不换算成积分、不扣用户配额。
+        缺失的分解项不返回（不用 0 伪造）。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/DeployPriceEstimationRequest'
+      responses:
+        '200':
+          description: 报价
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployPriceEstimation'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/deployments/check-name:
+    get:
+      tags: [admin]
+      operationId: checkDeployName
+      x-required-permission: settings:manage
+      summary: 部署名称可用性
+      description: 名称不可用是 200 结果（available=false），不是错误。
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: name, in: query, required: true, schema: {type: string, minLength: 1}}
+      responses:
+        '200':
+          description: 可用性
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployNameAvailability'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    get:
+      tags: [admin]
+      operationId: getDeployment
+      x-required-permission: settings:manage
+      summary: 部署概览（provider 实时；秘密不回显）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 部署概览
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployDeploymentDetail'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+    patch:
+      tags: [admin]
+      operationId: updateDeployment
+      x-required-permission: settings:manage
+      summary: 更新部署配置（可能重启容器）
+      description: |
+        只接受变更字段。registry_secret / secret_env_variables 留空 = 不更新；
+        显式清除用 clear_registry_secret / clear_secret_env（与同时提供新值
+        互斥，400）。秘密字段不落库、不回显、不进审计。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/UpdateDeploymentRequest'
+      responses:
+        '200':
+          description: 更新已提交
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时（写结果未知）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+    delete:
+      tags: [admin]
+      operationId: deleteDeployment
+      x-required-permission: settings:manage
+      summary: 终止部署（不可恢复）
+      description: 返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        '202':
+          description: 终止请求已受理
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时（写结果未知）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/deployments/{id}/containers:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    get:
+      tags: [admin]
+      operationId: listDeploymentContainers
+      x-required-permission: settings:manage
+      summary: 部署容器列表
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 容器列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployContainerList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/{id}/containers/{container_id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+      - {name: container_id, in: path, required: true, schema: {type: string, minLength: 1}}
+    get:
+      tags: [admin]
+      operationId: getDeploymentContainer
+      x-required-permission: settings:manage
+      summary: 容器详情（状态/硬件/GPU/运行时长/公网 URL/事件）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 容器详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployContainer'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/{id}/logs:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    get:
+      tags: [admin]
+      operationId: getDeploymentLogs
+      x-required-permission: settings:manage
+      summary: 容器日志（纯文本 → 行数组；不提供 follow）
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: container_id, in: query, required: true, schema: {type: string, minLength: 1}}
+        - {name: level, in: query, required: false, schema: {type: string}}
+        - {name: stream, in: query, required: false, schema: {type: string}}
+        - {name: start_time, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: end_time, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: page_token, in: query, required: false, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses:
+        '200':
+          description: 日志分页
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployLogs'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/{id}/name:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    patch:
+      tags: [admin]
+      operationId: renameDeployment
+      x-required-permission: settings:manage
+      summary: 部署改名（服务端再次查重）
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/RenameDeploymentRequest'
+      responses:
+        '200':
+          description: 改名成功
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
+  /api/deployments/{id}/extend:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    post:
+      tags: [admin]
+      operationId: extendDeployment
+      x-required-permission: settings:manage
+      summary: 续期（先报价后提交）
+      description: 续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ExtendDeploymentRequest'
+      responses:
+        '202':
+          description: 续期请求已受理
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/DeployAction'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+        '504':
+          description: provider 超时（写结果未知）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'

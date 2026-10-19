@@ -2036,6 +2036,30 @@ type CompleteOrderRequest struct {
 	ManualReason string `json:"manual_reason"`
 }
 
+// CreateDeploymentRequest defines model for CreateDeploymentRequest.
+type CreateDeploymentRequest struct {
+	Args             *[]string          `json:"args,omitempty"`
+	DurationHours    int                `json:"duration_hours"`
+	Entrypoint       *[]string          `json:"entrypoint,omitempty"`
+	EnvVariables     *map[string]string `json:"env_variables,omitempty"`
+	GpusPerContainer int                `json:"gpus_per_container"`
+	HardwareId       int                `json:"hardware_id"`
+
+	// ImageUrl 审计前会剥离 userinfo 与查询串。
+	ImageUrl    string `json:"image_url"`
+	LocationIds []int  `json:"location_ids"`
+	Name        string `json:"name"`
+
+	// RegistrySecret 只写不读；不落库、不回显、不进审计。
+	RegistrySecret   *string `json:"registry_secret,omitempty"`
+	RegistryUsername *string `json:"registry_username,omitempty"`
+	ReplicaCount     int     `json:"replica_count"`
+
+	// SecretEnvVariables 只写不读；键名与值都不进审计。
+	SecretEnvVariables *map[string]string `json:"secret_env_variables,omitempty"`
+	TrafficPort        *int               `json:"traffic_port,omitempty"`
+}
+
 // CreateOrderRequest defines model for CreateOrderRequest.
 type CreateOrderRequest struct {
 	// Amount 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
@@ -2170,6 +2194,26 @@ type DeleteAccountRequest struct {
 	TotpCode *string `json:"totp_code,omitempty"`
 }
 
+// DeployAction defines model for DeployAction.
+type DeployAction struct {
+	DeploymentId string `json:"deployment_id"`
+	Status       string `json:"status"`
+}
+
+// DeployAvailableReplica defines model for DeployAvailableReplica.
+type DeployAvailableReplica struct {
+	AvailableCount int    `json:"available_count"`
+	HardwareId     int    `json:"hardware_id"`
+	LocationId     int    `json:"location_id"`
+	LocationName   string `json:"location_name"`
+	MaxGpus        int    `json:"max_gpus"`
+}
+
+// DeployAvailableReplicas defines model for DeployAvailableReplicas.
+type DeployAvailableReplicas struct {
+	Replicas []DeployAvailableReplica `json:"replicas"`
+}
+
 // DeployConnectionTestRequest defines model for DeployConnectionTestRequest.
 type DeployConnectionTestRequest struct {
 	// ApiKey 可选的候选密钥；只在本次请求内存中使用。
@@ -2182,6 +2226,171 @@ type DeployConnectionTestResult struct {
 	LatencyMs      int64 `json:"latency_ms"`
 	Ok             bool  `json:"ok"`
 	TotalAvailable int   `json:"total_available"`
+}
+
+// DeployContainer defines model for DeployContainer.
+type DeployContainer struct {
+	BrandName        *string                 `json:"brand_name,omitempty"`
+	ContainerId      string                  `json:"container_id"`
+	CreatedAt        *time.Time              `json:"created_at,omitempty"`
+	DeviceId         *string                 `json:"device_id,omitempty"`
+	Events           *[]DeployContainerEvent `json:"events,omitempty"`
+	GpusPerContainer int                     `json:"gpus_per_container"`
+	Hardware         *string                 `json:"hardware,omitempty"`
+	PublicUrl        *string                 `json:"public_url,omitempty"`
+
+	// RuntimeSeconds 由 created_at 推导的展示值，不参与计费。
+	RuntimeSeconds *int64 `json:"runtime_seconds,omitempty"`
+	Status         string `json:"status"`
+	UptimePercent  *int   `json:"uptime_percent,omitempty"`
+}
+
+// DeployContainerConfig 非秘密容器配置；秘密环境变量永不返回。
+type DeployContainerConfig struct {
+	Entrypoint   *[]string               `json:"entrypoint,omitempty"`
+	EnvVariables *map[string]interface{} `json:"env_variables,omitempty"`
+	ImageUrl     *string                 `json:"image_url,omitempty"`
+	TrafficPort  *int                    `json:"traffic_port,omitempty"`
+}
+
+// DeployContainerEvent defines model for DeployContainerEvent.
+type DeployContainerEvent struct {
+	Message *string    `json:"message,omitempty"`
+	Time    *time.Time `json:"time,omitempty"`
+}
+
+// DeployContainerList defines model for DeployContainerList.
+type DeployContainerList struct {
+	Containers []DeployContainer `json:"containers"`
+	Total      int               `json:"total"`
+}
+
+// DeployDeployment defines model for DeployDeployment.
+type DeployDeployment struct {
+	BrandName               *string    `json:"brand_name,omitempty"`
+	CompletedPercent        float32    `json:"completed_percent"`
+	ComputeMinutesRemaining int        `json:"compute_minutes_remaining"`
+	ComputeMinutesServed    int        `json:"compute_minutes_served"`
+	CreatedAt               *time.Time `json:"created_at,omitempty"`
+	GpuCount                int        `json:"gpu_count"`
+	HardwareName            *string    `json:"hardware_name,omitempty"`
+	Id                      string     `json:"id"`
+	Name                    string     `json:"name"`
+	ReplicaCount            int        `json:"replica_count"`
+	Status                  string     `json:"status"`
+}
+
+// DeployDeploymentDetail defines model for DeployDeploymentDetail.
+type DeployDeploymentDetail struct {
+	AmountPaid              *float32 `json:"amount_paid,omitempty"`
+	BrandName               *string  `json:"brand_name,omitempty"`
+	CompletedPercent        *float32 `json:"completed_percent,omitempty"`
+	ComputeMinutesRemaining *int     `json:"compute_minutes_remaining,omitempty"`
+	ComputeMinutesServed    *int     `json:"compute_minutes_served,omitempty"`
+
+	// ContainerConfig 非秘密容器配置；秘密环境变量永不返回。
+	ContainerConfig  *DeployContainerConfig `json:"container_config,omitempty"`
+	CreatedAt        *time.Time             `json:"created_at,omitempty"`
+	FinishedAt       *time.Time             `json:"finished_at,omitempty"`
+	GpusPerContainer *int                   `json:"gpus_per_container,omitempty"`
+	HardwareId       *int                   `json:"hardware_id,omitempty"`
+	HardwareName     *string                `json:"hardware_name,omitempty"`
+	Id               string                 `json:"id"`
+	Locations        *[]DeployLocation      `json:"locations,omitempty"`
+	StartedAt        *time.Time             `json:"started_at,omitempty"`
+	Status           string                 `json:"status"`
+	TotalContainers  *int                   `json:"total_containers,omitempty"`
+	TotalGpus        *int                   `json:"total_gpus,omitempty"`
+}
+
+// DeployDeploymentList defines model for DeployDeploymentList.
+type DeployDeploymentList struct {
+	Items    []DeployDeployment `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+
+	// SearchTruncated provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。
+	SearchTruncated *bool            `json:"search_truncated,omitempty"`
+	StatusCounts    map[string]int64 `json:"status_counts"`
+	Total           int              `json:"total"`
+}
+
+// DeployHardwareType defines model for DeployHardwareType.
+type DeployHardwareType struct {
+	AvailableReplicas    *int                   `json:"available_replicas,omitempty"`
+	Id                   *int64                 `json:"id,omitempty"`
+	Name                 *string                `json:"name,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// DeployHardwareTypes defines model for DeployHardwareTypes.
+type DeployHardwareTypes struct {
+	HardwareTypes  []DeployHardwareType `json:"hardware_types"`
+	Total          int                  `json:"total"`
+	TotalAvailable int                  `json:"total_available"`
+}
+
+// DeployLocation defines model for DeployLocation.
+type DeployLocation struct {
+	Id                   *int64                 `json:"id,omitempty"`
+	Name                 *string                `json:"name,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// DeployLocations defines model for DeployLocations.
+type DeployLocations struct {
+	Locations []DeployLocation `json:"locations"`
+	Total     int              `json:"total"`
+}
+
+// DeployLogs defines model for DeployLogs.
+type DeployLogs struct {
+	HasMore       bool     `json:"has_more"`
+	Logs          []string `json:"logs"`
+	NextPageToken string   `json:"next_page_token"`
+}
+
+// DeployNameAvailability defines model for DeployNameAvailability.
+type DeployNameAvailability struct {
+	Available bool   `json:"available"`
+	Name      string `json:"name"`
+}
+
+// DeployPriceBreakdown 只包含 provider 实际提供的费用项；缺失项不出现（不用 0 伪造）。
+type DeployPriceBreakdown struct {
+	ComputeCost                  *float32 `json:"compute_cost,omitempty"`
+	CurrencyConversionFee        *float32 `json:"currency_conversion_fee,omitempty"`
+	CurrencyConversionFeePercent *float32 `json:"currency_conversion_fee_percent,omitempty"`
+	Discount                     *float32 `json:"discount,omitempty"`
+	HourlyRate                   *float32 `json:"hourly_rate,omitempty"`
+	IonetFee                     *float32 `json:"ionet_fee,omitempty"`
+	IonetFeePercent              *float32 `json:"ionet_fee_percent,omitempty"`
+	NetworkCost                  *float32 `json:"network_cost,omitempty"`
+	StorageCost                  *float32 `json:"storage_cost,omitempty"`
+	TotalCost                    *float32 `json:"total_cost,omitempty"`
+}
+
+// DeployPriceEstimation defines model for DeployPriceEstimation.
+type DeployPriceEstimation struct {
+	Currency        string  `json:"currency"`
+	EstimatedCost   float32 `json:"estimated_cost"`
+	EstimationValid bool    `json:"estimation_valid"`
+
+	// PriceBreakdown 只包含 provider 实际提供的费用项；缺失项不出现（不用 0 伪造）。
+	PriceBreakdown DeployPriceBreakdown `json:"price_breakdown"`
+}
+
+// DeployPriceEstimationRequest defines model for DeployPriceEstimationRequest.
+type DeployPriceEstimationRequest struct {
+	Currency         *string `json:"currency,omitempty"`
+	DurationHours    int     `json:"duration_hours"`
+	DurationQty      *int    `json:"duration_qty,omitempty"`
+	DurationType     *string `json:"duration_type,omitempty"`
+	GpusPerContainer int     `json:"gpus_per_container"`
+	HardwareId       int     `json:"hardware_id"`
+	HardwareQty      *int    `json:"hardware_qty,omitempty"`
+	LocationIds      []int   `json:"location_ids"`
+	ReplicaCount     int     `json:"replica_count"`
 }
 
 // DeploySettings 作用域化设置投影。永不含 api_key；has_secret 是密钥是否已配置的唯一
@@ -2212,6 +2421,11 @@ type EmailCodeRequest struct {
 // EmailCodeRequestPurpose register/reset 面向匿名请求；verify/bind 要求有效会话——本端点虽挂在
 // 公开路由（不经过 SessionAuth），实现会显式校验会话，缺失即 401。
 type EmailCodeRequestPurpose string
+
+// ExtendDeploymentRequest defines model for ExtendDeploymentRequest.
+type ExtendDeploymentRequest struct {
+	DurationHours int `json:"duration_hours"`
+}
 
 // GeoIPResponse 客户端粗粒度地理区域。不返回坐标、城市级精度、IP 原文、ASN 或代理链。
 // 响应缓存策略：Cache-Control: private, max-age=300。
@@ -3591,6 +3805,11 @@ type RegisterRequest struct {
 	Username       string  `json:"username"`
 }
 
+// RenameDeploymentRequest defines model for RenameDeploymentRequest.
+type RenameDeploymentRequest struct {
+	Name string `json:"name"`
+}
+
 // ResetPasswordResponse 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
 type ResetPasswordResponse struct {
 	// TempPassword 16 位一次性临时口令，仅本次响应出现（Cache-Control: no-store）。
@@ -3952,6 +4171,29 @@ type UpdateDeploySettingsRequest struct {
 
 	// UpdatedAt 读取时的乐观锁版本；陈旧值返回 409。
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// UpdateDeploymentRequest defines model for UpdateDeploymentRequest.
+type UpdateDeploymentRequest struct {
+	Args *[]string `json:"args,omitempty"`
+
+	// ClearRegistrySecret 显式清除；与 registry_secret 同时出现返回 400。
+	ClearRegistrySecret *bool `json:"clear_registry_secret,omitempty"`
+
+	// ClearSecretEnv 显式清除；与 secret_env_variables 同时出现返回 400。
+	ClearSecretEnv *bool              `json:"clear_secret_env,omitempty"`
+	Command        *string            `json:"command,omitempty"`
+	Entrypoint     *[]string          `json:"entrypoint,omitempty"`
+	EnvVariables   *map[string]string `json:"env_variables,omitempty"`
+	ImageUrl       *string            `json:"image_url,omitempty"`
+
+	// RegistrySecret 留空 = 不更新。
+	RegistrySecret   *string `json:"registry_secret,omitempty"`
+	RegistryUsername *string `json:"registry_username,omitempty"`
+
+	// SecretEnvVariables 留空 = 不更新；空对象同样视为不更新。
+	SecretEnvVariables *map[string]string `json:"secret_env_variables,omitempty"`
+	TrafficPort        *int               `json:"traffic_port,omitempty"`
 }
 
 // UpdateSelfSettingsRequest PUT /api/self/setting 的部分更新：未出现的键保持原值。updated_at 必须
@@ -4340,6 +4582,62 @@ type ListChannelsParams struct {
 
 	// PageSize 每页条数（默认 20，上限 100）
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// ListDeploymentsParams defines parameters for ListDeployments.
+type ListDeploymentsParams struct {
+	Status   *string `form:"status,omitempty" json:"status,omitempty"`
+	Keyword  *string `form:"keyword,omitempty" json:"keyword,omitempty"`
+	P        *int    `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int    `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// CreateDeploymentParams defines parameters for CreateDeployment.
+type CreateDeploymentParams struct {
+	// IdempotencyKey 必填；同键重放返回首次结果。
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// GetDeployAvailableReplicasParams defines parameters for GetDeployAvailableReplicas.
+type GetDeployAvailableReplicasParams struct {
+	HardwareId int  `form:"hardware_id" json:"hardware_id"`
+	GpuCount   *int `form:"gpu_count,omitempty" json:"gpu_count,omitempty"`
+}
+
+// CheckDeployNameParams defines parameters for CheckDeployName.
+type CheckDeployNameParams struct {
+	Name string `form:"name" json:"name"`
+}
+
+// DeleteDeploymentParams defines parameters for DeleteDeployment.
+type DeleteDeploymentParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// UpdateDeploymentParams defines parameters for UpdateDeployment.
+type UpdateDeploymentParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// ExtendDeploymentParams defines parameters for ExtendDeployment.
+type ExtendDeploymentParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// GetDeploymentLogsParams defines parameters for GetDeploymentLogs.
+type GetDeploymentLogsParams struct {
+	ContainerId string     `form:"container_id" json:"container_id"`
+	Level       *string    `form:"level,omitempty" json:"level,omitempty"`
+	Stream      *string    `form:"stream,omitempty" json:"stream,omitempty"`
+	StartTime   *time.Time `form:"start_time,omitempty" json:"start_time,omitempty"`
+	EndTime     *time.Time `form:"end_time,omitempty" json:"end_time,omitempty"`
+	PageToken   *string    `form:"page_token,omitempty" json:"page_token,omitempty"`
+	Limit       *int       `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// RenameDeploymentParams defines parameters for RenameDeployment.
+type RenameDeploymentParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
 // ChangeEmailParams defines parameters for ChangeEmail.
@@ -5084,11 +5382,26 @@ type ValidatePasswordResetTokenJSONRequestBody = PasswordResetValidateRequest
 // RegisterJSONRequestBody defines body for Register for application/json ContentType.
 type RegisterJSONRequestBody = RegisterRequest
 
+// CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
+type CreateDeploymentJSONRequestBody = CreateDeploymentRequest
+
+// EstimateDeployPriceJSONRequestBody defines body for EstimateDeployPrice for application/json ContentType.
+type EstimateDeployPriceJSONRequestBody = DeployPriceEstimationRequest
+
 // UpdateDeploySettingsJSONRequestBody defines body for UpdateDeploySettings for application/json ContentType.
 type UpdateDeploySettingsJSONRequestBody = UpdateDeploySettingsRequest
 
 // TestDeployConnectionJSONRequestBody defines body for TestDeployConnection for application/json ContentType.
 type TestDeployConnectionJSONRequestBody = DeployConnectionTestRequest
+
+// UpdateDeploymentJSONRequestBody defines body for UpdateDeployment for application/json ContentType.
+type UpdateDeploymentJSONRequestBody = UpdateDeploymentRequest
+
+// ExtendDeploymentJSONRequestBody defines body for ExtendDeployment for application/json ContentType.
+type ExtendDeploymentJSONRequestBody = ExtendDeploymentRequest
+
+// RenameDeploymentJSONRequestBody defines body for RenameDeployment for application/json ContentType.
+type RenameDeploymentJSONRequestBody = RenameDeploymentRequest
 
 // ChangeEmailJSONRequestBody defines body for ChangeEmail for application/json ContentType.
 type ChangeEmailJSONRequestBody = ChangeEmailRequest
@@ -5200,6 +5513,187 @@ type AlipayNotifyFormdataRequestBody AlipayNotifyFormdataBody
 
 // StripeWebhookJSONRequestBody defines body for StripeWebhook for application/json ContentType.
 type StripeWebhookJSONRequestBody = StripeWebhookJSONBody
+
+// Getter for additional properties for DeployHardwareType. Returns the specified
+// element and whether it was found
+func (a DeployHardwareType) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for DeployHardwareType
+func (a *DeployHardwareType) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for DeployHardwareType to handle AdditionalProperties
+func (a *DeployHardwareType) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["available_replicas"]; found {
+		err = json.Unmarshal(raw, &a.AvailableReplicas)
+		if err != nil {
+			return fmt.Errorf("error reading 'available_replicas': %w", err)
+		}
+		delete(object, "available_replicas")
+	}
+
+	if raw, found := object["id"]; found {
+		err = json.Unmarshal(raw, &a.Id)
+		if err != nil {
+			return fmt.Errorf("error reading 'id': %w", err)
+		}
+		delete(object, "id")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for DeployHardwareType to handle AdditionalProperties
+func (a DeployHardwareType) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.AvailableReplicas != nil {
+		object["available_replicas"], err = json.Marshal(a.AvailableReplicas)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'available_replicas': %w", err)
+		}
+	}
+
+	if a.Id != nil {
+		object["id"], err = json.Marshal(a.Id)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'id': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for DeployLocation. Returns the specified
+// element and whether it was found
+func (a DeployLocation) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for DeployLocation
+func (a *DeployLocation) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for DeployLocation to handle AdditionalProperties
+func (a *DeployLocation) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["id"]; found {
+		err = json.Unmarshal(raw, &a.Id)
+		if err != nil {
+			return fmt.Errorf("error reading 'id': %w", err)
+		}
+		delete(object, "id")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for DeployLocation to handle AdditionalProperties
+func (a DeployLocation) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Id != nil {
+		object["id"], err = json.Marshal(a.Id)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'id': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // Getter for additional properties for Problem. Returns the specified
 // element and whether it was found

@@ -104,6 +104,13 @@ const (
 	// 绝不进入审计（§3.20.5）。
 	ActionDeploySettingsUpdate = "deploy.settings_update"
 	ActionDeployConnectionTest = "deploy.connection_test"
+	// T4 的管理面写操作（modules-08 §3.20.6）。detail 只允许非秘密字段：
+	// 镜像地址剥离 userinfo/query，秘密值与环境变量键名一律不记。
+	ActionDeployCreate = "deploy.create"
+	ActionDeployUpdate = "deploy.update"
+	ActionDeployRename = "deploy.rename"
+	ActionDeployExtend = "deploy.extend"
+	ActionDeployDelete = "deploy.delete"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -164,6 +171,11 @@ var actionCategories = map[string]string{
 
 	ActionDeploySettingsUpdate: categoryOperation,
 	ActionDeployConnectionTest: categoryOperation,
+	ActionDeployCreate:         categoryOperation,
+	ActionDeployUpdate:         categoryOperation,
+	ActionDeployRename:         categoryOperation,
+	ActionDeployExtend:         categoryOperation,
+	ActionDeployDelete:         categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

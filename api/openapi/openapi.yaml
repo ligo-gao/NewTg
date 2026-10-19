@@ -181,6 +181,33 @@ paths:
   /api/deployments/settings/test-connection:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1settings~1test-connection'
 
+  # 模型部署控制面 · 部署管理（M6d Task 4 / modules-08 §3.20 F-08-52～F-08-58）。
+  # 静态子路径全部先于 /api/deployments/{id} 声明。
+  /api/deployments:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments'
+  /api/deployments/hardware-types:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1hardware-types'
+  /api/deployments/locations:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1locations'
+  /api/deployments/available-replicas:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1available-replicas'
+  /api/deployments/price-estimation:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1price-estimation'
+  /api/deployments/check-name:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1check-name'
+  /api/deployments/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}'
+  /api/deployments/{id}/containers:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1containers'
+  /api/deployments/{id}/containers/{container_id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1containers~1{container_id}'
+  /api/deployments/{id}/logs:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1logs'
+  /api/deployments/{id}/name:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1name'
+  /api/deployments/{id}/extend:
+    $ref: './paths/admin.yaml#/paths/~1api~1deployments~1{id}~1extend'
+
   # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡）。
   /api/wallet/summary:
     $ref: './paths/user.yaml#/paths/~1api~1wallet~1summary'

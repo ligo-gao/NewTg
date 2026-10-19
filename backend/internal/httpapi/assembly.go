@@ -297,6 +297,28 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		}
 		deploySettingsHandlers.Register(rt.protected)
 
+		// 模型部署控制面管理端点（M6d Task 4 / modules-08 §3.20）：
+		// 与设置端点共用同一 settings.Service、Sealer 与 provider 工厂；
+		// 幂等复用渠道/设置端点的 Redis 存储（不新建第二套）。
+		deploySecrets := DeploySecretStore(missingSecretStore{})
+		if deps.Sealer != nil {
+			deploySecrets = &sqlDeploySecretStore{db: deps.DB, sealer: deps.Sealer}
+		}
+		deployHandlers, err := NewDeployManagementHandlers(DeployManagementHandlerConfig{
+			Settings: settingsService,
+			Secrets:  deploySecrets,
+			Provider: deps.DeployProvider,
+			Authz:    deps.Authz,
+			Audit:    deps.Audit,
+			Redis:    deps.Redis,
+			Idem:     NewRedisIdempotencyStore(deps.Redis),
+			Logger:   deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deployHandlers.Register(rt.protected)
+
 		NewSystemStatusHandlers(SystemStatusConfig{
 			DB:        deps.DB,
 			Redis:     deps.Redis,

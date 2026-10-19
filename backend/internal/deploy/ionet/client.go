@@ -40,12 +40,17 @@ const (
 	// DefaultTimeout 是普通控制面请求上限（§3.20.7：30s）。
 	DefaultTimeout = 30 * time.Second
 
-	// apiBasePath 是 provider 控制面的版本前缀。
+	// apiBasePath 是 provider 控制面（企业版）的版本前缀。
 	//
-	// ★ 待实测冻结（R-M6D-13）：没有真实凭据前无法确认 provider 实际前缀，
-	// 因此只允许在这一处常量修改；路径常量全部由它派生，适配器测试锁定
-	// method/path/header 契约。未实测前不得把本能力标记为「已完成」。
-	apiBasePath = "/v1"
+	// 参照侧证据：token-gateway/pkg/ionet/client.go 的 DefaultEnterpriseBaseURL
+	// 为 https://api.io.solutions/enterprise/v1/io-cloud/caas，部署/硬件/价格
+	// 全部走企业版前缀；地域目录与容器日志（publicAPIPath）走公开前缀。
+	// 仍然只允许在这一处常量修改（R-M6D-13：真实凭据实测前不把本能力标记
+	// 为「已完成」）。路径常量全部由它派生。
+	apiBasePath = "/enterprise/v1/io-cloud/caas"
+
+	// publicAPIPath 是 provider 公开 API 前缀。参照侧仅 locations 与日志走它。
+	publicAPIPath = "/v1/io-cloud/caas"
 
 	// 只读 GET 的有界重试（§3.20.7：最多 2 次，指数退避，尊重 Retry-After）。
 	maxReadRetries  = 2
@@ -58,7 +63,8 @@ const (
 // 控制面路径（全部由 apiBasePath 派生，适配器测试逐条锁定）。
 const (
 	PathHardwareTypes = apiBasePath + "/hardware-types"
-	PathLocations     = apiBasePath + "/locations"
+	// PathLocations 走公开前缀：参照侧 GetLocations 使用 NewClient（公开版）。
+	PathLocations = publicAPIPath + "/locations"
 )
 
 // Config 是客户端装配输入。BaseURL / Timeout / HTTPClient 只用于测试；
@@ -129,15 +135,28 @@ func (c *Client) HTTPClient() *http.Client { return c.http }
 // BaseURL 返回生效的 base URL（测试断言固定 host）。
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// DeploymentProvider 是部署控制面的能力接口。T2 只交付连接测试所需的三个
-// 只读方法；T4 将在此基础上增加部署管理（写）方法，已有实现只需补方法，
-// 不改变本接口的既有语义。
+// DeploymentProvider 是部署控制面的能力接口。
 //
-// 所有方法都只读 provider 状态，不写库、不产生副作用。
+// 所有方法都由固定 host/path 出站；调用方不得传入 URL。写方法（Create/
+// Update/Rename/Extend/Delete）在客户端层**单次发送**：provider 侧不保证
+// 幂等，自动重试可能重复计费（modules-08 §3.20.7）。
 type DeploymentProvider interface {
 	TestConnection(ctx context.Context) (ConnectionInfo, error)
 	ListHardware(ctx context.Context) (HardwareTypesResponse, error)
 	ListLocations(ctx context.Context) (LocationsResponse, error)
+	ListDeployments(ctx context.Context, opts DeploymentListOptions) (DeploymentPage, error)
+	GetDeployment(ctx context.Context, id string) (DeploymentDetail, error)
+	ListContainers(ctx context.Context, id string) (ContainerList, error)
+	GetContainer(ctx context.Context, id, containerID string) (Container, error)
+	GetLogs(ctx context.Context, id string, opts LogsOptions) (LogsPage, error)
+	AvailableReplicas(ctx context.Context, hardwareID, gpuCount int) (AvailableReplicas, error)
+	EstimatePrice(ctx context.Context, req PriceEstimationRequest) (PriceEstimationResponse, error)
+	CheckName(ctx context.Context, name string) (bool, error)
+	CreateDeployment(ctx context.Context, req CreateDeploymentRequest) (DeploymentAction, error)
+	UpdateDeployment(ctx context.Context, id string, req UpdateDeploymentRequest) (DeploymentAction, error)
+	RenameDeployment(ctx context.Context, id, name string) (DeploymentAction, error)
+	ExtendDeployment(ctx context.Context, id string, hours int) (DeploymentAction, error)
+	DeleteDeployment(ctx context.Context, id string) (DeploymentAction, error)
 }
 
 var _ DeploymentProvider = (*Client)(nil)
@@ -241,17 +260,34 @@ func (e *InvalidResponseError) Unwrap() error { return e.Err }
 // get 执行带重试的只读 GET。重试只覆盖网络错误、429 与 5xx；
 // 4xx（含 401/403）立即返回，避免把鉴权失败放大成多次请求。
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	body, err := c.getBytes(ctx, path)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return &InvalidResponseError{Err: err}
+	}
+	return nil
+}
+
+// getBytes 执行带重试的只读 GET 并返回原始响应体。适配器（adapter.go）
+// 需要先看原始 JSON 才能决定是否解包 {"data": ...}，因此把读取与反序列化
+// 拆开；重试/脱敏语义与 get 完全一致。
+func (c *Client) getBytes(ctx context.Context, path string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxReadRetries; attempt++ {
 		if attempt > 0 {
 			if err := sleepContext(ctx, retryDelay(lastErr, attempt)); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		resp, err := c.doOnce(ctx, http.MethodGet, path)
 		if err != nil {
 			if ctx.Err() != nil {
-				return err
+				return nil, err
 			}
 			lastErr = err
 			c.log.Warn("ionet: request failed", "path", path, "attempt", attempt+1, "err", err)
@@ -264,31 +300,34 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 			continue
 		}
 		if len(body) > maxResponseSize {
-			return &InvalidResponseError{Err: errors.New("response too large")}
+			return nil, &InvalidResponseError{Err: errors.New("response too large")}
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			if out == nil {
-				return nil
-			}
-			if err := json.Unmarshal(body, out); err != nil {
-				return &InvalidResponseError{Err: err}
-			}
-			return nil
+			return body, nil
 		}
 		apiErr := c.newAPIError(resp.StatusCode, body, parseRetryAfter(resp.Header.Get("Retry-After")))
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = apiErr
 			continue
 		}
-		return apiErr
+		return nil, apiErr
 	}
-	return lastErr
+	return nil, lastErr
 }
 
 // doOnce 发送单次请求。请求始终带 X-API-KEY 与 application/json，即使 GET
 // 没有请求体——provider 的控制面契约要求两者同时出现。
 func (c *Client) doOnce(ctx context.Context, method, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+	return c.doOnceWithBody(ctx, method, path, nil)
+}
+
+// doOnceWithBody 是带请求体的单次发送；写方法只调用它，**不做任何重试**。
+func (c *Client) doOnceWithBody(ctx context.Context, method, path string, payload []byte) (*http.Response, error) {
+	var body io.Reader
+	if len(payload) > 0 {
+		body = strings.NewReader(string(payload))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +336,58 @@ func (c *Client) doOnce(ctx context.Context, method, path string) (*http.Respons
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "newtg-deploy/1")
 	return c.http.Do(req)
+}
+
+// writeJSON 发送一次写请求并返回 2xx 响应体。
+//
+// 与只读 getBytes 的关键差异：**绝不重试**（§3.20.7，写操作可能产生费用），
+// 且把请求里携带的秘密值一并从 provider 错误正文中抹掉——provider 有可能
+// 回显请求片段，仓库密钥/秘密环境变量不得经错误消息泄漏到响应/审计/日志。
+func (c *Client) writeJSON(ctx context.Context, method, path string, payload any, out any, secretValues ...string) error {
+	var raw []byte
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return &InvalidResponseError{Err: err}
+		}
+		raw = encoded
+	}
+	resp, err := c.doOnceWithBody(ctx, method, path, raw)
+	if err != nil {
+		return err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if len(body) > maxResponseSize {
+		return &InvalidResponseError{Err: errors.New("response too large")}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		apiErr := c.newAPIError(resp.StatusCode, body, parseRetryAfter(resp.Header.Get("Retry-After")))
+		apiErr.Detail = redactValues(apiErr.Detail, secretValues)
+		return apiErr
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return &InvalidResponseError{Err: err}
+	}
+	return nil
+}
+
+// redactValues 把请求里携带的秘密值替换为 [REDACTED]。
+// 空值跳过：空串没有可泄漏信息，ReplaceAll 反而会把文本拆碎。
+func redactValues(detail string, values []string) string {
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		detail = strings.ReplaceAll(detail, value, "[REDACTED]")
+	}
+	return detail
 }
 
 // newAPIError 解析并脱敏错误响应。

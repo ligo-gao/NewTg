@@ -1541,6 +1541,256 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 部署列表与全量检索
+         * @description keyword 在**全结果集**上过滤（provider 无 keyword 参数时按页扫描，
+         *     上限 10 页 / 1000 条；达到上限时 search_truncated=true）。
+         *     status_counts 按扫描到的全量口径统计，不受当前页影响。
+         *     p 默认 1；page_size 默认 20、上限 100（超出截断并回显实际值）。
+         */
+        get: operations["listDeployments"];
+        put?: never;
+        /**
+         * 创建部署（产生 provider 侧费用）
+         * @description 创建前与提交前各查重一次名称；创建前必须先取得 provider 报价，
+         *     报价失败返回 422 deploy_price_unavailable 且不发起写。
+         *     registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
+         *     不进审计（键名也不记）。成功返回 202 受理结果。
+         */
+        post: operations["createDeployment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/hardware-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 硬件类型目录（provider 实时） */
+        get: operations["listDeployHardwareTypes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 地域目录（provider 实时） */
+        get: operations["listDeployLocations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/available-replicas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 各地域可用副本余量 */
+        get: operations["getDeployAvailableReplicas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/price-estimation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 价格估算（provider USD 报价，只读）
+         * @description 原样返回 provider 的金额、币种与费用分解；不换算成积分、不扣用户配额。
+         *     缺失的分解项不返回（不用 0 伪造）。
+         */
+        post: operations["estimateDeployPrice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/check-name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 部署名称可用性
+         * @description 名称不可用是 200 结果（available=false），不是错误。
+         */
+        get: operations["checkDeployName"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** 部署概览（provider 实时；秘密不回显） */
+        get: operations["getDeployment"];
+        put?: never;
+        post?: never;
+        /**
+         * 终止部署（不可恢复）
+         * @description 返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+         */
+        delete: operations["deleteDeployment"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新部署配置（可能重启容器）
+         * @description 只接受变更字段。registry_secret / secret_env_variables 留空 = 不更新；
+         *     显式清除用 clear_registry_secret / clear_secret_env（与同时提供新值
+         *     互斥，400）。秘密字段不落库、不回显、不进审计。
+         */
+        patch: operations["updateDeployment"];
+        trace?: never;
+    };
+    "/api/deployments/{id}/containers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** 部署容器列表 */
+        get: operations["listDeploymentContainers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/{id}/containers/{container_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                container_id: string;
+            };
+            cookie?: never;
+        };
+        /** 容器详情（状态/硬件/GPU/运行时长/公网 URL/事件） */
+        get: operations["getDeploymentContainer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** 容器日志（纯文本 → 行数组；不提供 follow） */
+        get: operations["getDeploymentLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deployments/{id}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 部署改名（服务端再次查重） */
+        patch: operations["renameDeployment"];
+        trace?: never;
+    };
+    "/api/deployments/{id}/extend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 续期（先报价后提交）
+         * @description 续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+         */
+        post: operations["extendDeployment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wallet/summary": {
         parameters: {
             query?: never;
@@ -3572,6 +3822,220 @@ export interface components {
             total_available: number;
             /** Format: int64 */
             latency_ms: number;
+        };
+        DeployDeployment: {
+            id: string;
+            name: string;
+            status: string;
+            completed_percent: number;
+            gpu_count: number;
+            replica_count: number;
+            hardware_name?: string;
+            brand_name?: string;
+            compute_minutes_served: number;
+            compute_minutes_remaining: number;
+            /** Format: date-time */
+            created_at?: string | null;
+        };
+        DeployDeploymentList: {
+            items: components["schemas"]["DeployDeployment"][];
+            total: number;
+            page: number;
+            page_size: number;
+            status_counts: {
+                [key: string]: number;
+            };
+            /** @description provider 全量结果超过扫描上限（10 页 / 1000 条）时为 true。 */
+            search_truncated?: boolean;
+        };
+        CreateDeploymentRequest: {
+            name: string;
+            hardware_id: number;
+            location_ids: number[];
+            gpus_per_container: number;
+            replica_count: number;
+            duration_hours: number;
+            /**
+             * Format: uri
+             * @description 审计前会剥离 userinfo 与查询串。
+             */
+            image_url: string;
+            registry_username?: string;
+            /** @description 只写不读；不落库、不回显、不进审计。 */
+            registry_secret?: string;
+            entrypoint?: string[];
+            args?: string[];
+            traffic_port?: number;
+            env_variables?: {
+                [key: string]: string;
+            };
+            /** @description 只写不读；键名与值都不进审计。 */
+            secret_env_variables?: {
+                [key: string]: string;
+            };
+        };
+        DeployAction: {
+            deployment_id: string;
+            status: string;
+        };
+        DeployHardwareType: {
+            /** Format: int64 */
+            id?: number;
+            name?: string;
+            available_replicas?: number;
+        } & {
+            [key: string]: unknown;
+        };
+        DeployHardwareTypes: {
+            hardware_types: components["schemas"]["DeployHardwareType"][];
+            total: number;
+            total_available: number;
+        };
+        DeployLocation: {
+            /** Format: int64 */
+            id?: number;
+            name?: string;
+        } & {
+            [key: string]: unknown;
+        };
+        DeployLocations: {
+            locations: components["schemas"]["DeployLocation"][];
+            total: number;
+        };
+        DeployAvailableReplica: {
+            location_id: number;
+            location_name: string;
+            hardware_id: number;
+            available_count: number;
+            max_gpus: number;
+        };
+        DeployAvailableReplicas: {
+            replicas: components["schemas"]["DeployAvailableReplica"][];
+        };
+        DeployPriceEstimationRequest: {
+            hardware_id: number;
+            location_ids: number[];
+            gpus_per_container: number;
+            replica_count: number;
+            duration_hours: number;
+            currency?: string;
+            duration_type?: string;
+            duration_qty?: number;
+            hardware_qty?: number;
+        };
+        /** @description 只包含 provider 实际提供的费用项；缺失项不出现（不用 0 伪造）。 */
+        DeployPriceBreakdown: {
+            compute_cost?: number;
+            network_cost?: number;
+            storage_cost?: number;
+            total_cost?: number;
+            hourly_rate?: number;
+            ionet_fee?: number;
+            ionet_fee_percent?: number;
+            currency_conversion_fee?: number;
+            currency_conversion_fee_percent?: number;
+            discount?: number;
+        };
+        DeployPriceEstimation: {
+            estimated_cost: number;
+            currency: string;
+            price_breakdown: components["schemas"]["DeployPriceBreakdown"];
+            estimation_valid: boolean;
+        };
+        DeployNameAvailability: {
+            name: string;
+            available: boolean;
+        };
+        /** @description 非秘密容器配置；秘密环境变量永不返回。 */
+        DeployContainerConfig: {
+            entrypoint?: string[];
+            env_variables?: {
+                [key: string]: unknown;
+            };
+            traffic_port?: number;
+            image_url?: string;
+        };
+        DeployDeploymentDetail: {
+            id: string;
+            status: string;
+            /** Format: date-time */
+            created_at?: string | null;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            amount_paid?: number;
+            completed_percent?: number;
+            total_gpus?: number;
+            gpus_per_container?: number;
+            total_containers?: number;
+            hardware_id?: number;
+            hardware_name?: string;
+            brand_name?: string;
+            locations?: components["schemas"]["DeployLocation"][];
+            compute_minutes_served?: number;
+            compute_minutes_remaining?: number;
+            container_config?: components["schemas"]["DeployContainerConfig"];
+        };
+        UpdateDeploymentRequest: {
+            /** Format: uri */
+            image_url?: string;
+            registry_username?: string;
+            /** @description 留空 = 不更新。 */
+            registry_secret?: string;
+            /** @description 显式清除；与 registry_secret 同时出现返回 400。 */
+            clear_registry_secret?: boolean;
+            entrypoint?: string[];
+            args?: string[];
+            command?: string;
+            traffic_port?: number;
+            env_variables?: {
+                [key: string]: string;
+            };
+            /** @description 留空 = 不更新；空对象同样视为不更新。 */
+            secret_env_variables?: {
+                [key: string]: string;
+            };
+            /** @description 显式清除；与 secret_env_variables 同时出现返回 400。 */
+            clear_secret_env?: boolean;
+        };
+        DeployContainerEvent: {
+            /** Format: date-time */
+            time?: string;
+            message?: string;
+        };
+        DeployContainer: {
+            device_id?: string;
+            container_id: string;
+            hardware?: string;
+            brand_name?: string;
+            status: string;
+            gpus_per_container: number;
+            uptime_percent?: number;
+            /**
+             * Format: int64
+             * @description 由 created_at 推导的展示值，不参与计费。
+             */
+            runtime_seconds?: number;
+            public_url?: string;
+            /** Format: date-time */
+            created_at?: string | null;
+            events?: components["schemas"]["DeployContainerEvent"][];
+        };
+        DeployContainerList: {
+            containers: components["schemas"]["DeployContainer"][];
+            total: number;
+        };
+        DeployLogs: {
+            logs: string[];
+            next_page_token: string;
+            has_more: boolean;
+        };
+        RenameDeploymentRequest: {
+            name: string;
+        };
+        ExtendDeploymentRequest: {
+            duration_hours: number;
         };
         WalletSummary: {
             /**
@@ -6997,6 +7461,530 @@ export interface operations {
             500: components["responses"]["Error500"];
             502: components["responses"]["Error502"];
             /** @description provider 超时（只读探测，无副作用） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listDeployments: {
+        parameters: {
+            query?: {
+                status?: string;
+                keyword?: string;
+                p?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 部署列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployDeploymentList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时 */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    createDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 必填；同键重放返回首次结果。 */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDeploymentRequest"];
+            };
+        };
+        responses: {
+            /** @description 创建请求已受理 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAction"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时（写结果未知；先刷新再决定是否用新键重试） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listDeployHardwareTypes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 硬件类型目录 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployHardwareTypes"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时 */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listDeployLocations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 地域目录 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployLocations"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    getDeployAvailableReplicas: {
+        parameters: {
+            query: {
+                hardware_id: number;
+                gpu_count?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 副本余量 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAvailableReplicas"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    estimateDeployPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployPriceEstimationRequest"];
+            };
+        };
+        responses: {
+            /** @description 报价 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployPriceEstimation"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时 */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    checkDeployName: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 可用性 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployNameAvailability"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    getDeployment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 部署概览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployDeploymentDetail"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时 */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deleteDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 终止请求已受理 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAction"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时（写结果未知） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    updateDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDeploymentRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新已提交 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAction"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时（写结果未知） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listDeploymentContainers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 容器列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployContainerList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    getDeploymentContainer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                container_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 容器详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployContainer"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    getDeploymentLogs: {
+        parameters: {
+            query: {
+                container_id: string;
+                level?: string;
+                stream?: string;
+                start_time?: string;
+                end_time?: string;
+                page_token?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 日志分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployLogs"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    renameDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameDeploymentRequest"];
+            };
+        };
+        responses: {
+            /** @description 改名成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAction"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+        };
+    };
+    extendDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExtendDeploymentRequest"];
+            };
+        };
+        responses: {
+            /** @description 续期请求已受理 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployAction"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
+            /** @description provider 超时（写结果未知） */
             504: {
                 headers: {
                     [name: string]: unknown;
