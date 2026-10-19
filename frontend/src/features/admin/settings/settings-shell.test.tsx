@@ -448,7 +448,10 @@ describe('SettingsShell contract', () => {
       sec: {
         updated_at: '2026-10-19T10:00:00Z',
         items: [
-          item('sec.ssrf.allow_private_ip', true, { dangerous: true }),
+          item('sec.ssrf.allow_private_ip', true, {
+            dangerous: true,
+            danger_direction: 'on',
+          }),
         ],
       } satisfies SectionState,
     }
@@ -469,6 +472,50 @@ describe('SettingsShell contract', () => {
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(requests[0]?.body?.dangerous_confirmed).toBeUndefined()
+  })
+
+  it('sends dangerous_confirmed only for the server-declared risky direction (N1)', async () => {
+    const user = userEvent.setup()
+    const stores = {
+      site: structuredClone(SITE_STATE),
+      nav: structuredClone(NAV_STATE),
+      pay: {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [
+          item('pay.online_enabled', true, {
+            dangerous: true,
+            danger_direction: 'off',
+          }),
+          item('pay.amount_presets_cny', [10, 30]),
+        ],
+      } satisfies SectionState,
+      'pay.stripe': structuredClone(PAY_STRIPE_STATE),
+      'pay.alipay': structuredClone(PAY_ALIPAY_STATE),
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="payment" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Online payments' }))
+    const card = screen.getByTestId('settings-section-pay')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    // Risky direction: no PUT may leave the browser before the confirmation.
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+    expect(
+      requests.filter((entry) => entry.body?.dangerous_confirmed !== true),
+    ).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({ 'pay.online_enabled': false })
+    expect(requests[0]?.body?.dangerous_confirmed).toBe(true)
   })
 
   it('shows 429 as a toast without leaking into field errors', async () => {

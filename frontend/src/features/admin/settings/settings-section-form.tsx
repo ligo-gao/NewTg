@@ -425,17 +425,23 @@ export function SettingsSectionForm({
       return
     }
 
-    // Confirmation is required only in the risky direction (F5): turning a
-    // safety switch off, or enabling a switch that loosens protection.
+    // Confirmation is required only in the risky direction (F5). The server's
+    // `danger_direction` is authoritative once present; the local table is a
+    // temporary fallback for backends that have not shipped the field yet.
     const dangerous = Object.entries(values).some(([key, value]) => {
       const item = itemByKey.get(key)
       if (item === undefined || !item.dangerous) return false
+      const serverDirection =
+        item.danger_direction === 'off' || item.danger_direction === 'on'
+          ? item.danger_direction
+          : undefined
       const direction =
-        fields.find((entry) => entry.key === key)?.dangerDirection ?? 'change'
-      const baseline = baselineValue(item)
-      if (direction === 'off') return value === false && baseline !== false
-      if (direction === 'on') return value === true && baseline !== true
-      return !sameValue(value, baseline)
+        serverDirection ??
+        fields.find((entry) => entry.key === key)?.dangerDirection ??
+        'change'
+      if (direction === 'off') return value === false
+      if (direction === 'on') return value === true
+      return !sameValue(value, baselineValue(item))
     })
     if (dangerous) {
       setPendingSave(values)
@@ -674,10 +680,11 @@ function FieldRow({
   const inputId = `setting-${sectionId}-${field.key}`
   const hintId = `${inputId}-hint`
   const errorId = `${inputId}-error`
+  // Only describe the hint while it is actually rendered: when an error is
+  // present the hint paragraph disappears, so pointing aria-describedby at it
+  // would reference a missing id.
   const describedBy =
-    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
-      .filter(Boolean)
-      .join(' ') || undefined
+    error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   if (field.control === 'switch') {
     return (
@@ -985,10 +992,11 @@ function SecretField({
   const clearRequested = value === null
   const hintId = `${id}-hint`
   const errorId = `${id}-error`
+  // Only describe the hint while it is actually rendered: when an error is
+  // present the hint paragraph disappears, so pointing aria-describedby at it
+  // would reference a missing id.
   const describedBy =
-    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
-      .filter(Boolean)
-      .join(' ') || undefined
+    error !== undefined ? errorId : hint !== undefined ? hintId : undefined
   const common = {
     id,
     value: text,
@@ -1079,10 +1087,11 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
   const [pending, setPending] = useState('')
   const hintId = `${id}-hint`
   const errorId = `${id}-error`
+  // Only describe the hint while it is actually rendered: when an error is
+  // present the hint paragraph disappears, so pointing aria-describedby at it
+  // would reference a missing id.
   const describedBy =
-    [error !== undefined ? errorId : null, hint !== undefined ? hintId : null]
-      .filter(Boolean)
-      .join(' ') || undefined
+    error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   function commit(raw: string): void {
     const entries = raw
