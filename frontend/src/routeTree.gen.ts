@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
+import { Route as AboutRouteImport } from './routes/about'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SetupRouteImport } from './routes/setup'
@@ -29,6 +30,7 @@ import { Route as Errors401RouteImport } from './routes/_errors/401'
 import { Route as Errors403RouteImport } from './routes/_errors/403'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
+import { Route as PricingModelIdRouteImport } from './routes/pricing.$modelId'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 import { Route as ConsoleAdminChannelsIndexRouteImport } from './routes/_console/admin/channels/index'
@@ -45,6 +47,11 @@ const IndexRoute = IndexRouteImport.update({
 } as any)
 const ConsoleRoute = ConsoleRouteImport.update({
   id: '/_console',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AboutRoute = AboutRouteImport.update({
+  id: '/about',
+  path: '/about',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
@@ -137,6 +144,11 @@ const LegalDocRoute = LegalDocRouteImport.update({
   path: '/legal/$doc',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PricingModelIdRoute = PricingModelIdRouteImport.update({
+  id: '/pricing/$modelId',
+  path: '/pricing/$modelId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConsoleAdminIndexRoute = ConsoleAdminIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -184,6 +196,7 @@ const ConsoleAdminUsersGroupsRoute = ConsoleAdminUsersGroupsRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/about': typeof AboutRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -202,6 +215,7 @@ export interface FileRoutesByFullPath {
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/pricing/$modelId': typeof PricingModelIdRoute
   '/admin/': typeof ConsoleAdminIndexRoute
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -213,6 +227,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/about': typeof AboutRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -230,6 +245,7 @@ export interface FileRoutesByTo {
   '/403': typeof Errors403Route
   '/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/pricing/$modelId': typeof PricingModelIdRoute
   '/admin': typeof ConsoleAdminIndexRoute
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -243,6 +259,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
+  '/about': typeof AboutRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -261,6 +278,7 @@ export interface FileRoutesById {
   '/_errors/403': typeof Errors403Route
   '/_errors/404': typeof Errors404Route
   '/legal/$doc': typeof LegalDocRoute
+  '/pricing/$modelId': typeof PricingModelIdRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
@@ -274,6 +292,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/about'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -292,6 +311,7 @@ export interface FileRouteTypes {
     | '/403'
     | '/404'
     | '/legal/$doc'
+    | '/pricing/$modelId'
     | '/admin/'
     | '/dashboard/'
     | '/admin/pricing/group-pricing'
@@ -303,6 +323,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/about'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -320,6 +341,7 @@ export interface FileRouteTypes {
     | '/403'
     | '/404'
     | '/legal/$doc'
+    | '/pricing/$modelId'
     | '/admin'
     | '/dashboard'
     | '/admin/pricing/group-pricing'
@@ -332,6 +354,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_console'
+    | '/about'
     | '/forgot-password'
     | '/reset-password'
     | '/setup'
@@ -350,6 +373,7 @@ export interface FileRouteTypes {
     | '/_errors/403'
     | '/_errors/404'
     | '/legal/$doc'
+    | '/pricing/$modelId'
     | '/_console/admin/'
     | '/_console/dashboard/'
     | '/_console/admin/pricing/group-pricing'
@@ -363,6 +387,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ConsoleRoute: typeof ConsoleRouteWithChildren
+  AboutRoute: typeof AboutRoute
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SetupRoute: typeof SetupRoute
@@ -373,6 +398,7 @@ export interface RootRouteChildren {
   Errors403Route: typeof Errors403Route
   Errors404Route: typeof Errors404Route
   LegalDocRoute: typeof LegalDocRoute
+  PricingModelIdRoute: typeof PricingModelIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -389,6 +415,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof ConsoleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/about': {
+      id: '/about'
+      path: '/about'
+      fullPath: '/about'
+      preLoaderRoute: typeof AboutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/forgot-password': {
@@ -517,6 +550,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LegalDocRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pricing/$modelId': {
+      id: '/pricing/$modelId'
+      path: '/pricing/$modelId'
+      fullPath: '/pricing/$modelId'
+      preLoaderRoute: typeof PricingModelIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_console/admin/': {
       id: '/_console/admin/'
       path: '/'
@@ -630,6 +670,7 @@ const ConsoleRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ConsoleRoute: ConsoleRouteWithChildren,
+  AboutRoute: AboutRoute,
   ForgotPasswordRoute: ForgotPasswordRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SetupRoute: SetupRoute,
@@ -640,6 +681,7 @@ const rootRouteChildren: RootRouteChildren = {
   Errors403Route: Errors403Route,
   Errors404Route: Errors404Route,
   LegalDocRoute: LegalDocRoute,
+  PricingModelIdRoute: PricingModelIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
