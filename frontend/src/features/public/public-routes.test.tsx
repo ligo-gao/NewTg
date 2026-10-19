@@ -66,6 +66,12 @@ function installPublicHandlers() {
       requestedPaths.push(new URL(request.url).pathname)
       return HttpResponse.json(METRICS)
     }),
+    // 显式登记 /readyz：否则「公开外壳不探测 readyz」的断言是空的——
+    // 请求只会落到未处理分支，不会出现在 requestedPaths 里。
+    http.get(`${ORIGIN}/readyz`, ({ request }) => {
+      requestedPaths.push(new URL(request.url).pathname)
+      return HttpResponse.json({ status: 'ok', checks: {} })
+    }),
   )
 }
 
