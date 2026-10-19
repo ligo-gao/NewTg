@@ -26,6 +26,15 @@
   "error403.back": "Back to dashboard",
   "not_found.title": "Page not found",
   "not_found.action": "Back to home",
+  "chart": {
+    "empty": "No statistics yet",
+    "aria": "{kind} chart with {count} series: {series}. Unit: {unit}.",
+    "table": {
+      "series": "Series",
+      "time": "Time",
+      "value": "Value"
+    }
+  },
   "toast.success": "Success",
   "toast.info": "Information",
   "toast.error": "Something went wrong",
