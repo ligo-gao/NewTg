@@ -27,12 +27,13 @@ import (
 // M6c Task 4 追加通知模板 2 表（modules-08 §3.9），表数 22→24。
 // M6c Task 13 给 users 追加 default_model（modules-02 §2.14），users 24→25。
 // M6d Task 1 追加任务插件三表（modules-08 §3.10.2），表数 24→27。
+// M6d Task 7a 给 channels 追加任务插件绑定 2 列（relay-06 §1.3），22→24。
 var wantColumns = map[string]int{
 	"users":                   25,
 	"api_tokens":              15,
 	"user_groups":             9,
 	"system_settings":         5,
-	"channels":                22,
+	"channels":                24,
 	"model_pricing":           13,
 	"group_pricing":           10,
 	"redemption_codes":        11,
@@ -72,10 +73,12 @@ var wantPartialUniqueIndexes = []string{
 	"task_plugin_versions_active_key_uq",
 }
 
-// 两处 GIN jsonb_path_ops（platform-04 §3.3.3 / GC-5）。
+// GIN jsonb_path_ops 索引（platform-04 §3.3.3 / GC-5）。
 var wantGINIndexes = []string{
 	"channels_supported_models_gin",
 	"channels_group_tags_gin",
+	// M6d Task 7a：类型 60 多绑的反查（@> jsonb_build_array(key)）。
+	"channels_task_extend_plugin_keys_gin",
 }
 
 // request_registry 的两个索引（platform-01 §18 / platform-04 §4.4）。
@@ -583,6 +586,15 @@ var documentedChecks = []struct {
 	{
 		Table: "channels", Name: "channels_tag_chk",
 		Fragments: []string{"char_length", "btrim", "[[:alnum:]"},
+	},
+	// M6d Task 7a / relay-06 §1.3：插件绑定 key 形态与多绑数组形态。
+	{
+		Table: "channels", Name: "channels_task_plugin_key_chk",
+		Fragments: []string{"task_plugin_key", "a-z0-9", "29"},
+	},
+	{
+		Table: "channels", Name: "channels_task_extend_plugin_keys_chk",
+		Fragments: []string{"jsonb_typeof", "array"},
 	},
 	// R-24 / platform-01 §10
 	{

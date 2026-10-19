@@ -4326,8 +4326,9 @@ type SetupResponseUserStatus string
 type TaskPlugin struct {
 	ActiveVersion *string `json:"active_version,omitempty"`
 
-	// BoundChannels 绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
-	// 前恒为 0（不是「未知」，而是当前没有真源可计算）。
+	// BoundChannels 绑定该插件的启用渠道数（实时计算，不落库）：channels.status=1 且
+	// task_plugin_key 命中或多绑 task_extend_plugin_keys 包含该 key。
+	// 同一渠道同时命中两种形态时只计一次。
 	BoundChannels int              `json:"bound_channels"`
 	Builtin       bool             `json:"builtin"`
 	CompileError  *string          `json:"compile_error,omitempty"`
@@ -4364,6 +4365,20 @@ type TaskPluginDetail struct {
 	SourceText    *string             `json:"source_text,omitempty"`
 	SourceVersion *string             `json:"source_version,omitempty"`
 	Versions      []TaskPluginVersion `json:"versions"`
+}
+
+// TaskPluginOption 渠道表单的插件候选（M6d Task 7a）。不含源码、图标或密钥。
+type TaskPluginOption struct {
+	// ChannelCount 绑定该插件的启用（status=1）渠道数；单绑与多绑命中都计一次。
+	ChannelCount int    `json:"channel_count"`
+	Key          string `json:"key"`
+	Name         string `json:"name"`
+}
+
+// TaskPluginOptions defines model for TaskPluginOptions.
+type TaskPluginOptions struct {
+	Items []TaskPluginOption `json:"items"`
+	Total int                `json:"total"`
 }
 
 // TaskPluginPage defines model for TaskPluginPage.

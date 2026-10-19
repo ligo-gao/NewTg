@@ -156,6 +156,27 @@ func (r *TaskPluginRepo) Get(ctx context.Context, key string) (*TaskPlugin, erro
 	return p, nil
 }
 
+// HasActiveVersion 判断 key 是否有「有效 active 上传版本」（active 且 enabled）。
+//
+// 渠道绑定校验用它补足「注册表 = factory ∪ 有效 active 上传版本」的上传侧
+// （relay-06 §1.3 / M6d Task 7a）：factory 层是编译期常量，由调用方直接给出；
+// 上传层的 active 唯一性由部分唯一索引保证，这里只做存在性判断。
+// 注意这只证明版本行存在，不证明源码当前可编译——运行期可用性由 Manager
+// 快照判定，绑定选项按注册表（可执行层）过滤，两者职责不同。
+func (r *TaskPluginRepo) HasActiveVersion(ctx context.Context, key string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("store: task plugin repo not configured")
+	}
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM task_plugin_versions
+		                 WHERE "key" = $1 AND active AND enabled)`, key).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: check active plugin version %q: %w", key, err)
+	}
+	return exists, nil
+}
+
 // ListVersions 返回某插件全部版本行，按创建时间倒序（最新在前）。
 //
 // 排序与「删除 active 后提升上一版本」一致（relay-06 §2.4）；不加

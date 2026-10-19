@@ -70,6 +70,50 @@ var (
 // 映射（失败 → 泛化 RFC7807，绝不回传上游 URL/key）。
 type ChannelTester func(ctx context.Context, ch *store.Channel, model string) (latencyMS int, err error)
 
+// TaskPluginVersionLookup 是「有效 active 上传版本」的存在性读取面
+// （生产实现 *store.TaskPluginRepo）。渠道绑定校验用它补足注册表的上传侧。
+type TaskPluginVersionLookup interface {
+	HasActiveVersion(ctx context.Context, key string) (bool, error)
+}
+
+// TaskPluginCatalog 判断 key 是否存在于任务插件注册表（relay-06 §1.3）：
+// factory 层（编译期内置）∪ 有效 active 上传版本。渠道绑定必须是已注册 key；
+// 是否当前可执行（enabled/编译成功）由运行时快照决定，不在此处判定。
+type TaskPluginCatalog interface {
+	Exists(ctx context.Context, key string) (bool, error)
+}
+
+type taskPluginCatalog struct {
+	factory  map[string]struct{}
+	versions TaskPluginVersionLookup
+}
+
+// NewTaskPluginCatalog 构造绑定校验用的注册表视图。versions 可以为 nil
+// （纯 factory 装配/测试）。
+func NewTaskPluginCatalog(factoryKeys []string, versions TaskPluginVersionLookup) TaskPluginCatalog {
+	factory := make(map[string]struct{}, len(factoryKeys))
+	for _, key := range factoryKeys {
+		factory[key] = struct{}{}
+	}
+	return &taskPluginCatalog{factory: factory, versions: versions}
+}
+
+// Exists 先查 factory 层（命中即存在），未命中再查 active 上传版本。
+// 查询失败必须向上传播（fail-closed：不能把「查不到」当成「不存在」，
+// 否则一次 DB 抖动会让合法绑定被误拒为 400）。
+func (c *taskPluginCatalog) Exists(ctx context.Context, key string) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	if _, ok := c.factory[key]; ok {
+		return true, nil
+	}
+	if c.versions == nil {
+		return false, nil
+	}
+	return c.versions.HasActiveVersion(ctx, key)
+}
+
 // IdempotentResponse 是首次响应快照（status + body）。
 type IdempotentResponse struct {
 	Status int    `json:"status"`
@@ -342,9 +386,13 @@ type ChannelResponse struct {
 	FailCount       int32    `json:"fail_count"`
 	LastTestAt      *string  `json:"last_test_at"`
 	LastTestResult  *bool    `json:"last_test_result"`
-	CreatedAt       string   `json:"created_at"`
-	UpdatedAt       string   `json:"updated_at"`
-	Version         string   `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
+	// 任务插件绑定（M6d Task 7a / relay-06 §1.3）。两者互斥，按渠道类型
+	// 投影：类型 61 单绑、类型 60 多绑、其余渠道均为空。它们不是秘密。
+	TaskPluginKey        *string  `json:"task_plugin_key"`
+	TaskExtendPluginKeys []string `json:"task_extend_plugin_keys"`
+	CreatedAt            string   `json:"created_at"`
+	UpdatedAt            string   `json:"updated_at"`
+	Version              string   `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
 
 	CredentialsMasked *ChannelCredentialsMasked `json:"credentials_masked,omitempty"`
 	CredentialsSet    *bool                     `json:"credentials_set,omitempty"`
@@ -373,6 +421,10 @@ type createChannelRequest struct {
 	TestModel       *string             `json:"test_model"`
 	Remark          *string             `json:"remark"`
 	Tag             *string             `json:"tag"`
+	// 任务插件绑定（relay-06 §1.3）：类型 61 必填 key；类型 60 必填
+	// extend 数组；其余类型两者都必须缺省/为空。
+	TaskPluginKey        *string  `json:"task_plugin_key"`
+	TaskExtendPluginKeys []string `json:"task_extend_plugin_keys"`
 }
 
 type updateChannelRequest struct {
@@ -392,6 +444,9 @@ type updateChannelRequest struct {
 	TestModel       json.RawMessage `json:"test_model"`
 	Remark          json.RawMessage `json:"remark"`
 	Tag             json.RawMessage `json:"tag"`
+	// RawMessage 区分「缺省」（不修改）、`null`（清空）与具体值。
+	TaskPluginKey        json.RawMessage `json:"task_plugin_key"`
+	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
 }
 
 type batchStatusRequest struct {
@@ -421,6 +476,9 @@ type channelTestResponse struct {
 type ChannelHandlerOptions struct {
 	Tester      ChannelTester
 	Idempotency IdempotencyStore
+	// Plugins 是任务插件注册表（渠道绑定校验）。nil 时任何 60/61 绑定都
+	// 视为未注册（fail-closed）；生产装配必须注入。
+	Plugins TaskPluginCatalog
 	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
 	// nil 时使用 slog.Default()（不得静默丢弃错误）。
 	Logger *slog.Logger
@@ -432,6 +490,7 @@ type ChannelHandler struct {
 	access   UserAccessStore
 	sealer   *SecretSealer
 	tester   ChannelTester
+	plugins  TaskPluginCatalog
 	idem     IdempotencyStore
 	log      *slog.Logger
 }
@@ -458,6 +517,7 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		access:   access,
 		sealer:   sealer,
 		tester:   opts.Tester,
+		plugins:  opts.Plugins,
 		idem:     idem,
 		log:      logger,
 	}
@@ -545,11 +605,17 @@ func (h *ChannelHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (h *ChannelHandler) createChannel(r *http.Request) (int, []byte, bool) {
 	var req createChannelRequest
 	if err := decodeChannelJSON(r, &req); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			return fieldNotWritableResponse(field)
+		}
 		return errorResponse(invalidRequestError("request body is not valid JSON"))
 	}
 
 	v := &validator{}
-	ch := h.channelFromCreate(v, &req)
+	ch, apiErr := h.channelFromCreate(r.Context(), v, &req)
+	if apiErr != nil {
+		return apiErr.Status, apiErr.marshal(), false
+	}
 	if e := v.err(); e != nil {
 		return e.Status, e.marshal(), false
 	}
@@ -570,7 +636,9 @@ func (h *ChannelHandler) createChannel(r *http.Request) (int, []byte, bool) {
 }
 
 // channelFromCreate 校验并构造待插入行；所有用户可见的校验错误写入 v。
-func (h *ChannelHandler) channelFromCreate(v *validator, req *createChannelRequest) *store.Channel {
+// 第二个返回值只在注册表查询失败等「请求本身没问题但服务端无法完成校验」
+// 的场景非空（映射为 500，而不是把 DB 故障伪装成 422）。
+func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, req *createChannelRequest) (*store.Channel, *apiError) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" || utf8.RuneCountInString(name) > 64 {
 		v.add("name", "name is required and must be at most 64 characters")
@@ -642,6 +710,12 @@ func (h *ChannelHandler) channelFromCreate(v *validator, req *createChannelReque
 		v.add("tag", "tag must be at most 32 characters")
 	}
 
+	// 任务插件绑定（relay-06 §1.3）：类型决定形态，跨类型误填一律 400。
+	pluginKey, extendKeys, bindErr := h.validatePluginBinding(ctx, ct, req.TaskPluginKey, req.TaskExtendPluginKeys)
+	if bindErr != nil {
+		return nil, bindErr
+	}
+
 	var sealed []byte
 	if req.Credentials == nil {
 		v.add("credentials", "credentials are required")
@@ -653,22 +727,24 @@ func (h *ChannelHandler) channelFromCreate(v *validator, req *createChannelReque
 	}
 
 	return &store.Channel{
-		Name:            name,
-		Type:            string(ct),
-		BaseURL:         baseURL,
-		Credentials:     sealed,
-		SupportedModels: modelsJSON,
-		GroupTags:       groupTags,
-		ModelMapping:    mapping,
-		Weight:          weight,
-		Priority:        priority,
-		RateLimit:       rateLimit,
-		Status:          1, // F-06-03：创建时 status 恒为 enabled(1)
-		AutoBan:         autoBan,
-		TestModel:       testModel,
-		Remark:          remark,
-		Tag:             tag,
-	}
+		Name:                 name,
+		Type:                 string(ct),
+		BaseURL:              baseURL,
+		Credentials:          sealed,
+		SupportedModels:      modelsJSON,
+		GroupTags:            groupTags,
+		ModelMapping:         mapping,
+		Weight:               weight,
+		Priority:             priority,
+		RateLimit:            rateLimit,
+		Status:               1, // F-06-03：创建时 status 恒为 enabled(1)
+		AutoBan:              autoBan,
+		TestModel:            testModel,
+		Remark:               remark,
+		Tag:                  tag,
+		TaskPluginKey:        pluginKey,
+		TaskExtendPluginKeys: extendKeys,
+	}, nil
 }
 
 // ---------- 更新 ----------
@@ -685,6 +761,10 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var req updateChannelRequest
 	if err := decodeChannelJSON(r, &req); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			writeFieldNotWritableProblem(w, field)
+			return
+		}
 		writeAPIError(w, invalidRequestError("request body is not valid JSON"))
 		return
 	}
@@ -708,7 +788,11 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := &validator{}
-	patch := h.buildPatch(v, existing, &req)
+	patch, apiErr := h.buildPatch(r.Context(), v, existing, &req)
+	if apiErr != nil {
+		writeAPIError(w, apiErr)
+		return
+	}
 	if e := v.err(); e != nil {
 		writeAPIError(w, e)
 		return
@@ -730,7 +814,7 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 // buildPatch 把 PATCH 载荷（含 null/缺省区分）转成 store.ChannelPatch，
 // 并对「合并后的有效状态」做校验（例如已有 azure 渠道只改 remark 时，
 // 仍要保证 effective base_url 非空）。
-func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *updateChannelRequest) store.ChannelPatch {
+func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing *store.Channel, req *updateChannelRequest) (store.ChannelPatch, *apiError) {
 	patch := store.ChannelPatch{}
 
 	if req.Name != nil {
@@ -953,7 +1037,56 @@ func (h *ChannelHandler) buildPatch(v *validator, existing *store.Channel, req *
 		validateModelMappingCoverage(v, effectiveMapping, models)
 	}
 
-	return patch
+	// 任务插件绑定（M6d Task 7a）：校验**合并后的有效状态**，与 model_mapping
+	// 的 PATCH 口径一致——只改 remark 时也要能发现既有的跨类型误配。
+	// raw 字段区分「缺省」（保持原值）与 `null`（清空）。
+	effectiveKey := existing.TaskPluginKey
+	effectiveExtend := decodeStringSlice(existing.TaskExtendPluginKeys)
+	bindingChanged := false
+	if req.TaskPluginKey != nil {
+		bindingChanged = true
+		if isJSONNull(req.TaskPluginKey) {
+			effectiveKey = nil
+		} else {
+			var raw string
+			if err := json.Unmarshal(req.TaskPluginKey, &raw); err != nil {
+				v.add("task_plugin_key", "task_plugin_key must be a string or null")
+			} else {
+				trimmed := strings.TrimSpace(raw)
+				if trimmed == "" {
+					effectiveKey = nil
+				} else {
+					effectiveKey = &trimmed
+				}
+			}
+		}
+	}
+	if req.TaskExtendPluginKeys != nil {
+		bindingChanged = true
+		if isJSONNull(req.TaskExtendPluginKeys) {
+			effectiveExtend = nil
+		} else {
+			var raw []string
+			if err := json.Unmarshal(req.TaskExtendPluginKeys, &raw); err != nil {
+				v.add("task_extend_plugin_keys", "task_extend_plugin_keys must be an array of strings or null")
+			} else {
+				effectiveExtend = raw
+			}
+		}
+	}
+	pluginKey, extendKeys, bindErr := h.validatePluginBinding(ctx, ct, effectiveKey, effectiveExtend)
+	if bindErr != nil {
+		return store.ChannelPatch{}, bindErr
+	}
+	// 类型变化也必须重写两列：从 61/60 切到普通类型时，旧的绑定值即使
+	// 未在请求中出现也要被规范化清空，避免留下跨类型的悬空绑定。
+	if bindingChanged || typeChanged {
+		patch.TaskPluginKeySet = true
+		patch.TaskPluginKey = pluginKey
+		patch.TaskExtendPluginKeys = extendKeys
+	}
+
+	return patch, nil
 }
 
 // jsonRawEqual 语义比较两份 JSON 文档（键顺序与空白不敏感），用于判断
@@ -1001,6 +1134,145 @@ func validateModelMappingCoverage(v *validator, mapping []byte, models []string)
 		if _, ok := supported[key]; !ok {
 			v.add("model_mapping", fmt.Sprintf("model_mapping key %q must be one of supported_models", key))
 		}
+	}
+}
+
+// taskPluginKeyRe 与 task_plugins.key / R-M6D-01 的 DB CHECK 同源
+// （^[a-z0-9][a-z0-9-]{0,29}$）：key 会进入 URL 段、路由索引与前端选择器。
+var taskPluginKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,29}$`)
+
+// validatePluginBinding 校验并规范化渠道的任务插件绑定（relay-06 §1.3）。
+//
+// 形态矩阵：
+//   - 类型 61（task_plugin）：task_plugin_key 必填；extend 必须为空；
+//   - 类型 60（newapi）：extend 非空、元素为已注册 key、去重；key 必须为空；
+//   - 其他类型：两者都必须为空/缺省。
+//
+// 返回值：规范化的单绑 key（未绑定为 nil）与多绑 JSON（始终是数组文本）。
+// 字段错误统一 400（绑定的「存在性」属于请求语义校验，不是 DB 约束失败）；
+// 注册表查询失败返回 500，绝不把基础设施故障伪装成 422/400。
+func (h *ChannelHandler) validatePluginBinding(ctx context.Context, ct contract.ChannelType,
+	key *string, extend []string) (*string, []byte, *apiError) {
+	fields := make([]fieldError, 0, 2)
+	add := func(field, message string) { fields = append(fields, fieldError{Field: field, Message: message}) }
+
+	normalizedKey := ""
+	if key != nil {
+		normalizedKey = strings.TrimSpace(*key)
+	}
+
+	single := ct == contract.ChannelTypeTaskPlugin
+	multi := ct == contract.ChannelTypeNewAPI
+
+	switch {
+	case !single && !multi:
+		if normalizedKey != "" {
+			add("task_plugin_key", "task_plugin_key is only allowed for task_plugin channels")
+		}
+		if len(extend) > 0 {
+			add("task_extend_plugin_keys", "task_extend_plugin_keys is only allowed for newapi channels")
+		}
+	case single:
+		if normalizedKey == "" {
+			add("task_plugin_key", "task_plugin_key is required for task_plugin channels")
+		}
+		if len(extend) > 0 {
+			add("task_extend_plugin_keys", "task_extend_plugin_keys must be empty for task_plugin channels")
+		}
+	case multi:
+		if normalizedKey != "" {
+			add("task_plugin_key", "task_plugin_key must be empty for newapi channels")
+		}
+		if len(extend) == 0 {
+			add("task_extend_plugin_keys", "task_extend_plugin_keys must contain at least one plugin key for newapi channels")
+		}
+	}
+
+	if len(fields) > 0 {
+		return nil, nil, badBindingError(fields)
+	}
+
+	switch {
+	case single:
+		if !taskPluginKeyRe.MatchString(normalizedKey) {
+			return nil, nil, badBindingError([]fieldError{{Field: "task_plugin_key",
+				Message: "task_plugin_key must match ^[a-z0-9][a-z0-9-]{0,29}$"}})
+		}
+		registered, apiErr := h.pluginRegistered(ctx, normalizedKey)
+		if apiErr != nil {
+			return nil, nil, apiErr
+		}
+		if !registered {
+			return nil, nil, badBindingError([]fieldError{{Field: "task_plugin_key",
+				Message: fmt.Sprintf("task_plugin_key %q is not a registered task plugin", normalizedKey)}})
+		}
+		bound := normalizedKey
+		return &bound, []byte(`[]`), nil
+	case multi:
+		seen := make(map[string]struct{}, len(extend))
+		deduped := make([]string, 0, len(extend))
+		for i, raw := range extend {
+			item := strings.TrimSpace(raw)
+			if !taskPluginKeyRe.MatchString(item) {
+				add("task_extend_plugin_keys", fmt.Sprintf(
+					"task_extend_plugin_keys[%d] must match ^[a-z0-9][a-z0-9-]{0,29}$", i))
+				continue
+			}
+			if _, dup := seen[item]; dup {
+				// 重复元素按「去重」处理（brief 冻结语义）：同 key 只保留
+				// 首次出现的位置，不制造第二条执行候选。
+				continue
+			}
+			seen[item] = struct{}{}
+			deduped = append(deduped, item)
+		}
+		if len(fields) == 0 {
+			for _, item := range deduped {
+				registered, apiErr := h.pluginRegistered(ctx, item)
+				if apiErr != nil {
+					return nil, nil, apiErr
+				}
+				if !registered {
+					add("task_extend_plugin_keys", fmt.Sprintf(
+						"task_extend_plugin_keys entry %q is not a registered task plugin", item))
+				}
+			}
+		}
+		if len(fields) > 0 {
+			return nil, nil, badBindingError(fields)
+		}
+		encoded, err := json.Marshal(deduped)
+		if err != nil {
+			return nil, nil, internalAPIError()
+		}
+		return nil, encoded, nil
+	default:
+		// 其他类型：两列都必须为空。key 用 NULL、extend 用空数组规范化。
+		return nil, []byte(`[]`), nil
+	}
+}
+
+// pluginRegistered 查询注册表；nil 依赖按 fail-closed 处理（未装配即未注册）。
+func (h *ChannelHandler) pluginRegistered(ctx context.Context, key string) (bool, *apiError) {
+	if h.plugins == nil {
+		return false, nil
+	}
+	ok, err := h.plugins.Exists(ctx, key)
+	if err != nil {
+		// GC-6：不把内部错误文本带给客户端。
+		h.log.Error("check task plugin registry", "key", key, "error", err)
+		return false, internalAPIError()
+	}
+	return ok, nil
+}
+
+// badBindingError 把绑定字段错误封装为 400（brief 冻结「跨类型误填 400」）。
+func badBindingError(fields []fieldError) *apiError {
+	return &apiError{
+		Status: http.StatusBadRequest,
+		Type:   problemTypeValidationFailed,
+		Title:  "Validation failed",
+		Fields: fields,
 	}
 }
 
@@ -1244,27 +1516,35 @@ func channelToResponse(ch *store.Channel) (ChannelResponse, error) {
 			return ChannelResponse{}, fmt.Errorf("decode group_tags: %w", err)
 		}
 	}
+	// 绑定投影：不透明 JSON 损坏时按空处理而不是 500（列表不能因单行损坏
+	// 整体不可用）；写入路径的 CHECK 已保证数组形态。
+	extendKeys := []string{}
+	if len(ch.TaskExtendPluginKeys) > 0 {
+		_ = json.Unmarshal(ch.TaskExtendPluginKeys, &extendKeys)
+	}
 	version := formatChannelTime(ch.UpdatedAt)
 	return ChannelResponse{
-		ID:              ch.ID,
-		Name:            ch.Name,
-		Type:            ch.Type,
-		Status:          ch.Status,
-		Priority:        ch.Priority,
-		Weight:          ch.Weight,
-		SupportedModels: models,
-		GroupTags:       groups,
-		RateLimit:       ch.RateLimit,
-		AutoBan:         ch.AutoBan,
-		TestModel:       ch.TestModel,
-		Remark:          ch.Remark,
-		Tag:             ch.Tag,
-		FailCount:       ch.FailCount,
-		LastTestAt:      formatChannelTimePtr(ch.LastTestAt),
-		LastTestResult:  ch.LastTestResult,
-		CreatedAt:       formatChannelTime(ch.CreatedAt),
-		UpdatedAt:       version,
-		Version:         version,
+		ID:                   ch.ID,
+		Name:                 ch.Name,
+		Type:                 ch.Type,
+		Status:               ch.Status,
+		Priority:             ch.Priority,
+		Weight:               ch.Weight,
+		SupportedModels:      models,
+		GroupTags:            groups,
+		RateLimit:            ch.RateLimit,
+		AutoBan:              ch.AutoBan,
+		TestModel:            ch.TestModel,
+		Remark:               ch.Remark,
+		Tag:                  ch.Tag,
+		FailCount:            ch.FailCount,
+		LastTestAt:           formatChannelTimePtr(ch.LastTestAt),
+		LastTestResult:       ch.LastTestResult,
+		TaskPluginKey:        ch.TaskPluginKey,
+		TaskExtendPluginKeys: extendKeys,
+		CreatedAt:            formatChannelTime(ch.CreatedAt),
+		UpdatedAt:            version,
+		Version:              version,
 	}, nil
 }
 
@@ -1564,6 +1844,50 @@ func decodeChannelJSON(r *http.Request, dst any) error {
 	return nil
 }
 
+// unknownJSONField 从 encoding/json 的 unknown-field 错误中提取字段名。
+//
+// 渠道写端点的 DTO 是写侧字段白名单（BOPLA，security-02 §2.6.1）：未登记
+// 字段必须 403 field_not_writable，而不是静默丢弃或退化成普通 400。用错误
+// 文本解析而不是维护第二份字段清单，保证「DTO 加了字段」与「白名单加了
+// 字段」永远是同一处修改（清单漂移不可能发生）。
+func unknownJSONField(err error) (string, bool) {
+	const prefix = `json: unknown field "`
+	msg := err.Error()
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return "", false
+	}
+	rest := msg[idx+len(prefix):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return "", false
+	}
+	return rest[:end], true
+}
+
+// fieldNotWritableResponse 生成 403 field_not_writable（供幂等执行体返回
+// status+body 的调用路径使用）。
+func fieldNotWritableResponse(field string) (int, []byte, bool) {
+	return http.StatusForbidden, fieldNotWritableProblem(field).marshal(), false
+}
+
+func fieldNotWritableProblem(field string) *apiError {
+	return &apiError{
+		Status: http.StatusForbidden,
+		Type:   problemTypeFieldNotWritable,
+		Title:  "Field not writable",
+		Detail: "request body contains fields that this action may not write",
+		Fields: []fieldError{{Field: field, Message: "field is not writable"}},
+	}
+}
+
+func writeFieldNotWritableProblem(w http.ResponseWriter, field string) {
+	e := fieldNotWritableProblem(field)
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(e.Status)
+	_, _ = w.Write(e.marshal())
+}
+
 type fieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
@@ -1659,6 +1983,7 @@ const (
 	problemTypeChannelNameConflict    = "https://newtg.dev/problems/channel_name_conflict"
 	problemTypeChannelVersionConflict = "https://newtg.dev/problems/channel_version_conflict"
 	problemTypeIdempotencyInProgress  = "https://newtg.dev/problems/idempotency_in_progress"
+	problemTypeFieldNotWritable       = "https://newtg.dev/problems/field_not_writable"
 )
 
 func validationError(field, message string) *apiError {

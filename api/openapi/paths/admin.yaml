@@ -1989,6 +1989,39 @@ paths:
   # 要求 settings:manage——受限 admin 不得读取插件源码/运行时诊断。
   # 所有响应不含上游凭据；列表/审计永不包含插件源文本（S5）。
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # 渠道 → 任务插件绑定选项（M6d Task 7a / relay-06 §1.3、§2.6）
+  #
+  # 权限是 channels:read（R-M6D-02），不是 settings:manage：这是渠道表单的
+  # 数据源，不是插件管理面。只返回注册表中当前可执行的插件。
+  # ---------------------------------------------------------------------------
+  /api/task_plugin_options:
+    get:
+      tags: [admin]
+      operationId: listTaskPluginOptions
+      x-required-permission: channels:read
+      summary: 任务插件绑定选项
+      description: |
+        渠道创建/编辑表单的插件候选。只列注册表中有可执行层的插件
+        （registered 或回退到上传层的 disabled_fallback）；编译失败/未注册
+        的 key 不出现。channel_count 只统计 status=1 的渠道，口径与
+        /api/plugin/task 的 bound_channels 一致。按 key 升序。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/TaskPluginOptions'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+
   /api/plugin/task:
     get:
       tags: [admin]
@@ -2361,7 +2394,8 @@ paths:
       summary: 启用/禁用插件
       description: |
         enabled 必填；expect_updated_at 是乐观锁版本。禁用被渠道绑定的插件时
-        返回 bound_channels（绑定列未落地前恒为 0）。在途任务不受影响。
+        响应返回真实的 bound_channels（status=1 且单绑/多绑该 key 的渠道数），
+        供前端预检列出受影响渠道。已提交任务不受影响。
       security:
         - sessionCookie: []
       parameters:

@@ -210,6 +210,9 @@ paths:
 
   # 钱包摘要（modules-03 §F-03-01；M5 Task 6 余额卡）。
   # 任务插件管理（M6d Task 5）：静态子路径先于 /api/plugin/task/{key} 声明。
+  # 渠道表单的插件绑定选项（M6d Task 7a）：权限 channels:read。
+  /api/task_plugin_options:
+    $ref: './paths/admin.yaml#/paths/~1api~1task_plugin_options'
   /api/plugin/task:
     $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task'
   /api/plugin/task/runtime/status:

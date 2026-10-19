@@ -693,10 +693,15 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 		"source_id": source.ID, "plugin_key": key, "version": version,
 		"source_hash_prefix": hashPrefix(v.SourceHash), "created": created, "activated": activated,
 	})
+	counts, err := h.bindingCounts(r.Context(), []string{p.Key})
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
 	writeJSON(w, status, map[string]any{
 		"installed": true, "created": created, "activated": activated,
 		"source_id": source.ID, "key": key, "version": version,
-		"plugin": h.pluginView(*p), "version_row": versionView(*v),
+		"plugin": h.pluginView(*p, counts[p.Key]), "version_row": versionView(*v),
 	})
 }
 

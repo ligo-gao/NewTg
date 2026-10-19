@@ -189,3 +189,86 @@ func TestChannelRepoCandidatesAliasRouting(t *testing.T) {
 	}
 	requireCandidateSet(t, got, map[int64]bool{id: true}, "real model")
 }
+
+// TestChannelRepoPluginBindingRuntime 覆盖 M6d Task 7a 的 SQL 路径：
+//   - Create/Update/Get 对 task_plugin_key / task_extend_plugin_keys 的读写；
+//   - CountBoundChannels 的单绑/多绑/停用渠道口径与 jsonb 包含谓词。
+func TestChannelRepoPluginBindingRuntime(t *testing.T) {
+	db := openChannelRuntimeTestDB(t)
+	repo := NewChannelRepo(db)
+	ctx := context.Background()
+	suffix := time.Now().UnixNano()
+	name := fmt.Sprintf("it-binding-%d", suffix)
+
+	created, err := repo.Create(ctx, &Channel{
+		Name:                 name,
+		Type:                 string(contract.ChannelTypeTaskPlugin),
+		Credentials:          []byte("ciphertext"),
+		SupportedModels:      []byte(`["video-x"]`),
+		TaskPluginKey:        stringPtrForTest("kling"),
+		TaskExtendPluginKeys: []byte(`[]`),
+		Weight:               1,
+		Status:               1,
+		AutoBan:              true,
+	})
+	if err != nil {
+		t.Fatalf("Create binding channel: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM channels WHERE id = $1`, created.ID) })
+	if created.TaskPluginKey == nil || *created.TaskPluginKey != "kling" {
+		t.Fatalf("created task_plugin_key = %v", created.TaskPluginKey)
+	}
+	if string(created.TaskExtendPluginKeys) != "[]" {
+		t.Fatalf("created extend = %s，期望 []", created.TaskExtendPluginKeys)
+	}
+
+	// 清空单绑并写多绑（换类型 60）。
+	patch := ChannelPatch{
+		Type:                 stringPtrForTest("newapi"),
+		TaskPluginKeySet:     true,
+		TaskPluginKey:        nil,
+		TaskExtendPluginKeys: []byte(`["kling","sora"]`),
+	}
+	updated, err := repo.Update(ctx, created.ID, patch, created.UpdatedAt)
+	if err != nil {
+		t.Fatalf("Update binding channel: %v", err)
+	}
+	if updated.TaskPluginKey != nil {
+		t.Fatalf("task_plugin_key 未清空：%v", *updated.TaskPluginKey)
+	}
+	got, err := repo.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get binding channel: %v", err)
+	}
+	if string(got.TaskExtendPluginKeys) != `["kling", "sora"]` &&
+		string(got.TaskExtendPluginKeys) != `["kling","sora"]` {
+		t.Fatalf("extend 持久化 = %s", got.TaskExtendPluginKeys)
+	}
+
+	// 计数：单绑 + 多绑 + 停用排除。
+	single := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-single-%d", suffix), 1, `["video-x"]`, `{}`, "")
+	multi := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-multi-%d", suffix), 1, `["video-x"]`, `{}`, "")
+	disabled := insertRuntimeChannel(t, db, fmt.Sprintf("it-bind-disabled-%d", suffix), 2, `["video-x"]`, `{}`, "")
+	for id, stmt := range map[int64]string{
+		single:   `UPDATE channels SET task_plugin_key = 'it-k1', task_extend_plugin_keys = '[]'::jsonb WHERE id = $1`,
+		multi:    `UPDATE channels SET task_extend_plugin_keys = '["it-k1","it-k2"]'::jsonb WHERE id = $1`,
+		disabled: `UPDATE channels SET task_plugin_key = 'it-k1' WHERE id = $1`,
+	} {
+		if _, err := db.Exec(stmt, id); err != nil {
+			t.Fatalf("bind channel %d: %v", id, err)
+		}
+	}
+	counts, err := repo.CountBoundChannels(ctx, []string{"it-k1", "it-k2", "it-missing"})
+	if err != nil {
+		t.Fatalf("CountBoundChannels: %v", err)
+	}
+	// 既有测试库可能有其它行绑定同名 key；用唯一前缀避免污染。
+	if counts["it-k1"] < 2 || counts["it-k2"] < 1 {
+		t.Fatalf("counts = %v，期望 it-k1≥2 / it-k2≥1（停用渠道不计）", counts)
+	}
+	if _, ok := counts["it-missing"]; !ok || counts["it-missing"] != 0 {
+		t.Fatalf("未绑定 key 必须返回 0：%v", counts)
+	}
+}
+
+func stringPtrForTest(v string) *string { return &v }

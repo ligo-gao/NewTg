@@ -11,15 +11,18 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/plugin/market"
 	"newtg/gateway/internal/rbac"
@@ -31,6 +34,7 @@ type pluginIntegrationEnv struct {
 	mux     *http.ServeMux
 	repo    *store.TaskPluginRepo
 	manager *plugin.Manager
+	db      *sql.DB
 }
 
 func newPluginIntegrationEnv(t *testing.T, marketClient *market.Client) *pluginIntegrationEnv {
@@ -68,13 +72,14 @@ func newPluginIntegrationEnv(t *testing.T, marketClient *market.Client) *pluginI
 	handlers, err := NewTaskPluginHandlers(TaskPluginHandlerConfig{
 		Store: repo, Manager: manager, Authz: rbac.NewAuthzMiddleware(),
 		Access: newFakeUserAccess(), Audit: audit.New(exec), Market: marketClient,
+		Bindings: store.NewChannelRepo(db),
 	})
 	if err != nil {
 		t.Fatalf("NewTaskPluginHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &pluginIntegrationEnv{mux: mux, repo: repo, manager: manager}
+	return &pluginIntegrationEnv{mux: mux, repo: repo, manager: manager, db: db}
 }
 
 func TestTaskPluginIntegrationUploadActivateDelete(t *testing.T) {
@@ -265,3 +270,106 @@ func TestTaskPluginIntegrationBuiltinRows(t *testing.T) {
 }
 
 func strPtrIntegration(value string) *string { return &value }
+
+// TestTaskPluginIntegrationBoundChannels 覆盖 M6d Task 7a 的真实计数：
+// 单绑/多绑命中、停用渠道排除、绑定选项只列已注册插件。
+func TestTaskPluginIntegrationBoundChannels(t *testing.T) {
+	env := newPluginIntegrationEnv(t, nil)
+	ctx := t.Context()
+	suffix := time.Now().UnixNano()
+
+	insert := func(role string, status int16, pluginKey any, extend string) int64 {
+		t.Helper()
+		var id int64
+		err := env.db.QueryRowContext(ctx, `INSERT INTO channels
+			(name, type, credentials, supported_models, status, task_plugin_key, task_extend_plugin_keys)
+			VALUES ($1, 'task_plugin', $2, '["video-x"]'::jsonb, $3, $4, $5::jsonb) RETURNING id`,
+			"it-plugin-bind-"+role+"-"+strconv.FormatInt(suffix, 10), []byte("ciphertext"), status, pluginKey, extend).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert channel %s: %v", role, err)
+		}
+		return id
+	}
+	ids := []int64{
+		insert("single", 1, "sample", `[]`),
+		insert("multi", 1, nil, `["sample"]`),
+		insert("disabled", 2, "sample", `[]`),
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			_, _ = env.db.ExecContext(context.Background(), `DELETE FROM channels WHERE id = $1`, id)
+		}
+	})
+	if err := env.repo.UpsertBuiltinPlugins(ctx, []store.BuiltinPlugin{
+		{Key: "sample", Name: "Sample"},
+	}); err != nil {
+		t.Fatalf("seed plugin rows: %v", err)
+	}
+
+	// 绑定选项：channels:read 可读，按真实计数投影。
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/task_plugin_options", "",
+		&auth.Principal{UserID: 9, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermChannelsRead}}, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("绑定选项 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var options struct {
+		Items []struct {
+			Key          string `json:"key"`
+			ChannelCount int    `json:"channel_count"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &options); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+	found := false
+	for _, item := range options.Items {
+		if item.Key == "sample" {
+			found = true
+			if item.ChannelCount != 2 {
+				t.Fatalf("sample channel_count = %d，期望 2（停用渠道不计）", item.ChannelCount)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("绑定选项缺少 sample：%+v", options.Items)
+	}
+
+	// 插件列表 bound_channels 真实计数。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("插件列表 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var list struct {
+		Items []struct {
+			Key           string `json:"key"`
+			BoundChannels int    `json:"bound_channels"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	for _, item := range list.Items {
+		if item.Key == "sample" && item.BoundChannels != 2 {
+			t.Fatalf("列表 sample bound_channels = %d，期望 2", item.BoundChannels)
+		}
+	}
+
+	// 停用预检：bound_channels 与列表一致。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/status",
+		`{"enabled":false}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("停用 sample = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var status struct {
+		BoundChannels int `json:"bound_channels"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.BoundChannels != 2 {
+		t.Fatalf("停用响应 bound_channels = %d，期望 2", status.BoundChannels)
+	}
+}

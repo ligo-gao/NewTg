@@ -1539,6 +1539,30 @@ schemas:
       registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
       not_registered=未注册；compile_failed=编译失败且无可用层。
 
+  TaskPluginOption:
+    type: object
+    additionalProperties: false
+    required: [key, name, channel_count]
+    description: |
+      渠道表单的插件候选（M6d Task 7a）。不含源码、图标或密钥。
+    properties:
+      key: {type: string, maxLength: 30}
+      name: {type: string, maxLength: 128}
+      channel_count:
+        type: integer
+        minimum: 0
+        description: 绑定该插件的启用（status=1）渠道数；单绑与多绑命中都计一次。
+
+  TaskPluginOptions:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/TaskPluginOption'}
+      total: {type: integer, minimum: 0}
+
   TaskPlugin:
     type: object
     additionalProperties: false
@@ -1571,9 +1595,11 @@ schemas:
         items: {$ref: '#/schemas/PluginIssue'}
       bound_channels:
         type: integer
+        minimum: 0
         description: |
-          绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
-          前恒为 0（不是「未知」，而是当前没有真源可计算）。
+          绑定该插件的启用渠道数（实时计算，不落库）：channels.status=1 且
+          task_plugin_key 命中或多绑 task_extend_plugin_keys 包含该 key。
+          同一渠道同时命中两种形态时只计一次。
       updated_at: {type: string, format: date-time}
 
   TaskPluginPage:

@@ -1792,6 +1792,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task_plugin_options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 任务插件绑定选项
+         * @description 渠道创建/编辑表单的插件候选。只列注册表中有可执行层的插件
+         *     （registered 或回退到上传层的 disabled_fallback）；编译失败/未注册
+         *     的 key 不出现。channel_count 只统计 status=1 的渠道，口径与
+         *     /api/plugin/task 的 bound_channels 一致。按 key 升序。
+         */
+        get: operations["listTaskPluginOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/plugin/task": {
         parameters: {
             query?: never;
@@ -2021,7 +2044,8 @@ export interface paths {
         /**
          * 启用/禁用插件
          * @description enabled 必填；expect_updated_at 是乐观锁版本。禁用被渠道绑定的插件时
-         *     返回 bound_channels（绑定列未落地前恒为 0）。在途任务不受影响。
+         *     响应返回真实的 bound_channels（status=1 且单绑/多绑该 key 的渠道数），
+         *     供前端预检列出受影响渠道。已提交任务不受影响。
          */
         post: operations["setTaskPluginStatus"];
         delete?: never;
@@ -4330,6 +4354,17 @@ export interface components {
         ExtendDeploymentRequest: {
             duration_hours: number;
         };
+        /** @description 渠道表单的插件候选（M6d Task 7a）。不含源码、图标或密钥。 */
+        TaskPluginOption: {
+            key: string;
+            name: string;
+            /** @description 绑定该插件的启用（status=1）渠道数；单绑与多绑命中都计一次。 */
+            channel_count: number;
+        };
+        TaskPluginOptions: {
+            items: components["schemas"]["TaskPluginOption"][];
+            total: number;
+        };
         /**
          * @description 运行状态五态（relay-06 §2.5 / modules-08 F-08-28 同集）。
          *     registered=正常；disabled=已禁用；disabled_fallback=内置禁用但回退到上传层；
@@ -4362,8 +4397,9 @@ export interface components {
             compile_error?: string;
             runtime_errors?: components["schemas"]["PluginIssue"][];
             /**
-             * @description 绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
-             *     前恒为 0（不是「未知」，而是当前没有真源可计算）。
+             * @description 绑定该插件的启用渠道数（实时计算，不落库）：channels.status=1 且
+             *     task_plugin_key 命中或多绑 task_extend_plugin_keys 包含该 key。
+             *     同一渠道同时命中两种形态时只计一次。
              */
             bound_channels: number;
             /** Format: date-time */
@@ -8532,6 +8568,29 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    listTaskPluginOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPluginOptions"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            429: components["responses"]["Error429"];
         };
     };
     listTaskPlugins: {

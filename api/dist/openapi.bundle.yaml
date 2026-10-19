@@ -3974,6 +3974,33 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/task_plugin_options:
+    get:
+      tags:
+        - admin
+      operationId: listTaskPluginOptions
+      x-required-permission: channels:read
+      summary: 任务插件绑定选项
+      description: |
+        渠道创建/编辑表单的插件候选。只列注册表中有可执行层的插件
+        （registered 或回退到上传层的 disabled_fallback）；编译失败/未注册
+        的 key 不出现。channel_count 只统计 status=1 的渠道，口径与
+        /api/plugin/task 的 bound_channels 一致。按 key 升序。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPluginOptions'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '429':
+          $ref: '#/components/responses/Error429'
   /api/plugin/task:
     get:
       tags:
@@ -4447,7 +4474,8 @@ paths:
       summary: 启用/禁用插件
       description: |
         enabled 必填；expect_updated_at 是乐观锁版本。禁用被渠道绑定的插件时
-        返回 bound_channels（绑定列未落地前恒为 0）。在途任务不受影响。
+        响应返回真实的 bound_channels（status=1 且单绑/多绑该 key 的渠道数），
+        供前端预检列出受影响渠道。已提交任务不受影响。
       security:
         - sessionCookie: []
       parameters:
@@ -9521,6 +9549,40 @@ components:
         duration_hours:
           type: integer
           minimum: 1
+    TaskPluginOption:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - name
+        - channel_count
+      description: |
+        渠道表单的插件候选（M6d Task 7a）。不含源码、图标或密钥。
+      properties:
+        key:
+          type: string
+          maxLength: 30
+        name:
+          type: string
+          maxLength: 128
+        channel_count:
+          type: integer
+          minimum: 0
+          description: 绑定该插件的启用（status=1）渠道数；单绑与多绑命中都计一次。
+    TaskPluginOptions:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskPluginOption'
+        total:
+          type: integer
+          minimum: 0
     TaskPluginRuntimeStatus:
       type: string
       enum:
@@ -9610,9 +9672,11 @@ components:
             $ref: '#/components/schemas/PluginIssue'
         bound_channels:
           type: integer
+          minimum: 0
           description: |
-            绑定该插件的渠道数。channels.task_plugin_key 绑定列在后续任务落地
-            前恒为 0（不是「未知」，而是当前没有真源可计算）。
+            绑定该插件的启用渠道数（实时计算，不落库）：channels.status=1 且
+            task_plugin_key 命中或多绑 task_extend_plugin_keys 包含该 key。
+            同一渠道同时命中两种形态时只计一次。
         updated_at:
           type: string
           format: date-time

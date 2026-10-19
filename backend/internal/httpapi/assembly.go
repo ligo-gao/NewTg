@@ -309,6 +309,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Audit:   deps.Audit,
 			Logger:  deps.Logger,
 			Idem:    NewRedisIdempotencyStore(deps.Redis),
+			// 绑定渠道数实时读 channels（M6d Task 7a）；与渠道管理共用同一
+			// 仓库口径（status=1 + 单绑/多绑命中）。
+			Bindings: store.NewChannelRepo(deps.DB),
 		})
 		if err != nil {
 			return nil, err

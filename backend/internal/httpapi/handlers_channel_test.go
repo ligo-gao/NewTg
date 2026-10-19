@@ -118,6 +118,11 @@ func cloneChannel(c *store.Channel) *store.Channel {
 		v := *c.LastTestResult
 		out.LastTestResult = &v
 	}
+	if c.TaskPluginKey != nil {
+		v := *c.TaskPluginKey
+		out.TaskPluginKey = &v
+	}
+	out.TaskExtendPluginKeys = append([]byte(nil), c.TaskExtendPluginKeys...)
 	return &out
 }
 
@@ -261,6 +266,12 @@ func (f *fakeChannelStore) Update(_ context.Context, id int64, patch store.Chann
 	}
 	if patch.LastTestResultSet {
 		c.LastTestResult = patch.LastTestResult
+	}
+	if patch.TaskPluginKeySet {
+		c.TaskPluginKey = patch.TaskPluginKey
+	}
+	if patch.TaskExtendPluginKeys != nil {
+		c.TaskExtendPluginKeys = append([]byte(nil), patch.TaskExtendPluginKeys...)
 	}
 	c.UpdatedAt = time.Now().UTC()
 	f.items[id] = c
@@ -612,6 +623,7 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 		"weight": true, "supported_models": true, "group_tags": true, "rate_limit": true,
 		"auto_ban": true, "test_model": true, "remark": true, "tag": true,
 		"fail_count": true, "last_test_at": true, "last_test_result": true,
+		"task_plugin_key": true, "task_extend_plugin_keys": true,
 		"created_at": true, "updated_at": true, "version": true,
 	}
 	for _, item := range envelope.Items {
@@ -1897,4 +1909,250 @@ func TestChannelPatchAzureOnlyAPIKeyKeepsDeployment(t *testing.T) {
 	if creds.Deployment != "my-deployment" || creds.APIVersion != "2025-04-01" {
 		t.Fatalf("deployment/api_version 未从旧密文保留: %+v", creds)
 	}
+}
+
+// ---------- M6d Task 7a：任务插件绑定 ----------
+
+// fakeTaskPluginCatalog 是注册表校验用的内存实现；err 模拟 DB 故障。
+type fakeTaskPluginCatalog struct {
+	keys  map[string]bool
+	err   error
+	calls []string
+}
+
+func (f *fakeTaskPluginCatalog) Exists(_ context.Context, key string) (bool, error) {
+	f.calls = append(f.calls, key)
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.keys[key], nil
+}
+
+func pluginBindingCatalog() *fakeTaskPluginCatalog {
+	return &fakeTaskPluginCatalog{keys: map[string]bool{"kling": true, "sora": true}}
+}
+
+func channelCreateBody(typ string, extra map[string]any) map[string]any {
+	body := map[string]any{
+		"name":             "binding-" + typ,
+		"type":             typ,
+		"base_url":         "https://upstream.example.com",
+		"credentials":      map[string]any{"api_key": "sk-0123456789"},
+		"supported_models": []string{"video-x"},
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return body
+}
+
+func createChannelForBinding(t *testing.T, env *channelTestEnv, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels", body), channelAdminPrincipal(PermChannelsManage))
+	return rr
+}
+
+func TestChannelPluginBindingCreateMatrix(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     string
+		extra   map[string]any
+		want    int
+		wantKey *string
+		wantExt []string
+	}{
+		{
+			name: "type61 单绑合法", typ: "task_plugin",
+			extra: map[string]any{"task_plugin_key": "kling"}, want: http.StatusCreated,
+			wantKey: stringPointer("kling"), wantExt: []string{},
+		},
+		{
+			name: "type61 缺失 key", typ: "task_plugin", extra: nil, want: http.StatusBadRequest,
+		},
+		{
+			name: "type61 key 格式非法", typ: "task_plugin",
+			extra: map[string]any{"task_plugin_key": "Kling_1"}, want: http.StatusBadRequest,
+		},
+		{
+			name: "type61 key 未注册", typ: "task_plugin",
+			extra: map[string]any{"task_plugin_key": "unknown-plugin"}, want: http.StatusBadRequest,
+		},
+		{
+			name: "type61 误填多绑", typ: "task_plugin",
+			extra: map[string]any{"task_plugin_key": "kling", "task_extend_plugin_keys": []string{"sora"}},
+			want:  http.StatusBadRequest,
+		},
+		{
+			name: "type60 多绑合法且去重", typ: "newapi",
+			extra: map[string]any{"task_extend_plugin_keys": []string{"sora", "kling", "sora"}},
+			want:  http.StatusCreated, wantExt: []string{"sora", "kling"},
+		},
+		{
+			name: "type60 空多绑", typ: "newapi",
+			extra: map[string]any{"task_extend_plugin_keys": []string{}}, want: http.StatusBadRequest,
+		},
+		{
+			name: "type60 误填单绑", typ: "newapi",
+			extra: map[string]any{"task_plugin_key": "kling", "task_extend_plugin_keys": []string{"sora"}},
+			want:  http.StatusBadRequest,
+		},
+		{
+			name: "type60 含未注册 key", typ: "newapi",
+			extra: map[string]any{"task_extend_plugin_keys": []string{"kling", "nope"}},
+			want:  http.StatusBadRequest,
+		},
+		{
+			name: "普通类型误填单绑", typ: "openai",
+			extra: map[string]any{"task_plugin_key": "kling"}, want: http.StatusBadRequest,
+		},
+		{
+			name: "普通类型误填多绑", typ: "openai",
+			extra: map[string]any{"task_extend_plugin_keys": []string{"kling"}}, want: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+			rr := createChannelForBinding(t, env, channelCreateBody(tc.typ, tc.extra))
+			if rr.Code != tc.want {
+				t.Fatalf("创建 = %d，期望 %d（body=%s）", rr.Code, tc.want, rr.Body.String())
+			}
+			if tc.want != http.StatusCreated {
+				return
+			}
+			resp := decodeJSONResponse[ChannelResponse](t, rr)
+			if tc.wantKey != nil {
+				if resp.TaskPluginKey == nil || *resp.TaskPluginKey != *tc.wantKey {
+					t.Fatalf("task_plugin_key = %v，期望 %q", resp.TaskPluginKey, *tc.wantKey)
+				}
+			} else if resp.TaskPluginKey != nil {
+				t.Fatalf("task_plugin_key = %v，期望 null", *resp.TaskPluginKey)
+			}
+			if len(tc.wantExt) > 0 {
+				if !slicesEqual(resp.TaskExtendPluginKeys, tc.wantExt) {
+					t.Fatalf("task_extend_plugin_keys = %v，期望 %v", resp.TaskExtendPluginKeys, tc.wantExt)
+				}
+			} else if len(resp.TaskExtendPluginKeys) != 0 {
+				t.Fatalf("task_extend_plugin_keys = %v，期望空", resp.TaskExtendPluginKeys)
+			}
+		})
+	}
+}
+
+func stringPointer(v string) *string { return &v }
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestChannelPluginBindingUnknownFieldIs403(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+	body := channelCreateBody("openai", map[string]any{"task_plugin_keys": []string{"kling"}})
+	rr := createChannelForBinding(t, env, body)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("未登记字段 = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "field_not_writable") {
+		t.Fatalf("problem.type 应为 field_not_writable：%s", rr.Body.String())
+	}
+}
+
+func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
+	t.Run("type61 换绑合法 key", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+		seed := seedChannel(t, env, func(ch *store.Channel) {
+			ch.Type = "task_plugin"
+			baseURL := "https://upstream.example.com"
+			ch.BaseURL = &baseURL
+			ch.TaskPluginKey = stringPointer("kling")
+			ch.TaskExtendPluginKeys = []byte(`[]`)
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"task_plugin_key":  "sora",
+		}), channelAdminPrincipal(PermChannelsManage))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("更新 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if resp.TaskPluginKey == nil || *resp.TaskPluginKey != "sora" {
+			t.Fatalf("task_plugin_key = %v，期望 sora", resp.TaskPluginKey)
+		}
+	})
+
+	t.Run("type61 切换为普通类型必须显式清空", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+		seed := seedChannel(t, env, func(ch *store.Channel) {
+			ch.Type = "task_plugin"
+			baseURL := "https://upstream.example.com"
+			ch.BaseURL = &baseURL
+			ch.TaskPluginKey = stringPointer("kling")
+			ch.TaskExtendPluginKeys = []byte(`[]`)
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":             "openai",
+		}), channelAdminPrincipal(PermChannelsManage))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("未清空绑定切换类型 = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		}
+
+		rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+			"expected_version":        seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"type":                    "openai",
+			"credentials":             map[string]any{"api_key": "sk-0123456789"},
+			"task_plugin_key":         nil,
+			"task_extend_plugin_keys": []string{},
+		}), channelAdminPrincipal(PermChannelsManage))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("清空绑定切换类型 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if resp.TaskPluginKey != nil || len(resp.TaskExtendPluginKeys) != 0 {
+			t.Fatalf("绑定未清空：key=%v extend=%v", resp.TaskPluginKey, resp.TaskExtendPluginKeys)
+		}
+	})
+
+	t.Run("type60 多绑去重", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+		seed := seedChannel(t, env, func(ch *store.Channel) {
+			ch.Type = "newapi"
+			baseURL := "https://upstream.example.com"
+			ch.BaseURL = &baseURL
+			ch.TaskExtendPluginKeys = []byte(`["kling","sora"]`)
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+			"expected_version":        seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"task_extend_plugin_keys": []string{"kling", "kling"},
+		}), channelAdminPrincipal(PermChannelsManage))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("更新多绑 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if !slicesEqual(resp.TaskExtendPluginKeys, []string{"kling"}) {
+			t.Fatalf("task_extend_plugin_keys = %v，期望 [kling]", resp.TaskExtendPluginKeys)
+		}
+	})
+
+	t.Run("普通类型存量行误填绑定 400", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+		seed := seedChannel(t, env, nil)
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"task_plugin_key":  "kling",
+		}), channelAdminPrincipal(PermChannelsManage))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("普通类型绑定 = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
 }

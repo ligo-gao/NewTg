@@ -31,6 +31,7 @@ import (
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
+	"newtg/gateway/plugins"
 )
 
 // gatewayAssembly 是 gateway 角色一次装配的产物：管理面 handler 与中继面
@@ -190,6 +191,17 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 这里只构造 handler，由 BuildGatewayRouter 负责挂到受保护子树，避免在
 	// platform 层重复装配一条 /api/ 中间件链（两条 /api/ 挂载会冲突）。
 	channelSealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
+	// 渠道绑定校验的注册表视图：factory 层来自编入二进制的内置源，
+	// 上传侧查 active 版本行（relay-06 §1.3）。这里与 assembly 的内置插件
+	// 装配各自读取同一份 embed 源，代价仅一次目录遍历。
+	pluginSources, err := plugins.TaskPluginSources()
+	if err != nil {
+		return nil, fmt.Errorf("gateway: load built-in task plugin sources: %w", err)
+	}
+	factoryKeys := make([]string, 0, len(pluginSources))
+	for key := range pluginSources {
+		factoryKeys = append(factoryKeys, key)
+	}
 	channelHandler := httpapi.NewChannelHandler(
 		store.NewChannelRepo(db),
 		store.NewTokenRepo(db),
@@ -197,6 +209,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		httpapi.ChannelHandlerOptions{
 			Tester:      httpapi.NewChannelConnectivityTester(channelSealer, nil),
 			Idempotency: httpapi.NewRedisIdempotencyStore(rdb),
+			Plugins: httpapi.NewTaskPluginCatalog(
+				factoryKeys, store.NewTaskPluginRepo(db)),
 		},
 	)
 

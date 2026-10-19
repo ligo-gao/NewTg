@@ -94,7 +94,8 @@ type SystemSetting struct{}
 // TableName 返回 GORM 表名。
 func (SystemSetting) TableName() string { return "system_settings" }
 
-// Channel 对应 channels（§6，22 列；含 G-API-043 tag）。
+// Channel 对应 channels（§6，22 列 + M6d Task 7a 任务插件绑定 2 列 = 24 列；
+// 含 G-API-043 tag）。
 //
 // 字段口径（platform-01 §6、modules-06 §1.4/§1.5、GC-6/GC-8）：
 //   - Type 是 text slug，不做 DB CHECK（Tier-2）；白名单唯一真源是
@@ -127,8 +128,15 @@ type Channel struct {
 	AutoDisabledReason *string    `gorm:"column:auto_disabled_reason"`
 	LastTestAt         *time.Time `gorm:"column:last_test_at"`
 	LastTestResult     *bool      `gorm:"column:last_test_result"`
-	CreatedAt          time.Time  `gorm:"column:created_at"`
-	UpdatedAt          time.Time  `gorm:"column:updated_at"`
+	// 任务插件绑定（M6d Task 7a / relay-06 §1.3）。两种形态互斥：
+	//   - 类型 61（task_plugin）：TaskPluginKey 单绑，Extend 必须为空数组；
+	//   - 类型 60（newapi）：TaskPluginKey 必须为 NULL，Extend 非空。
+	// 其他类型两者都必须为空/空数组。指针表示 NULL（未绑定），空数组是
+	//「没有多绑」，二者语义不同但都合法，故 Extend 不用指针。
+	TaskPluginKey        *string   `gorm:"column:task_plugin_key"`
+	TaskExtendPluginKeys []byte    `gorm:"column:task_extend_plugin_keys"`
+	CreatedAt            time.Time `gorm:"column:created_at"`
+	UpdatedAt            time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 返回 GORM 表名。

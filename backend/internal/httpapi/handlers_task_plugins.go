@@ -93,7 +93,17 @@ var (
 	pluginStatusAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "status"}
 	pluginDeleteAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "version_delete"}
 	pluginDryRunAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "dryrun"}
+	// 绑定选项属于渠道配置面（模块 06）：权限复用 channels:read
+	// （R-M6D-02），不新增权限键，也不要求 settings:manage。
+	pluginOptionsAction = rbac.AuthzAction{ResourceKind: "channels", ActionName: "task_plugin_options"}
 )
+
+// ChannelBindingCounter 是「插件被多少启用渠道绑定」的读取面
+// （生产实现 *store.ChannelRepo）。nil 时计数恒为 0（纯内存装配/测试），
+// 但生产装配必须注入——0 会被前端当成「无受影响渠道」。
+type ChannelBindingCounter interface {
+	CountBoundChannels(ctx context.Context, keys []string) (map[string]int, error)
+}
 
 const (
 	// maxAuthBodyBytes（1 MiB）是管理面 JSON 请求体的通用上限；上传体积
@@ -123,20 +133,23 @@ type TaskPluginHandlerConfig struct {
 	Idem   IdempotencyStore
 	Market *market.Client
 	Now    func() time.Time
+	// Bindings 是绑定渠道计数（M6d Task 7a）。nil 时 bound_channels=0。
+	Bindings ChannelBindingCounter
 }
 
 // TaskPluginHandlers 持有插件管理端点依赖，可并发使用。
 type TaskPluginHandlers struct {
-	store   TaskPluginStore
-	manager *plugin.Manager
-	config  ConfigReader
-	authz   *rbac.AuthzMiddleware
-	access  UserAccessStore
-	audit   *audit.Logger
-	log     *slog.Logger
-	idem    IdempotencyStore
-	market  *market.Client
-	now     func() time.Time
+	store    TaskPluginStore
+	manager  *plugin.Manager
+	config   ConfigReader
+	authz    *rbac.AuthzMiddleware
+	access   UserAccessStore
+	audit    *audit.Logger
+	log      *slog.Logger
+	idem     IdempotencyStore
+	market   *market.Client
+	now      func() time.Time
+	bindings ChannelBindingCounter
 
 	// marketMu 保护 5 分钟索引缓存；刷新失败不覆写旧缓存（见 handlers_plugin_marketplace.go）。
 	marketMu       sync.Mutex
@@ -196,7 +209,7 @@ func NewTaskPluginHandlers(cfg TaskPluginHandlerConfig) (*TaskPluginHandlers, er
 	return &TaskPluginHandlers{
 		store: cfg.Store, manager: manager, config: cfg.Config, authz: authz,
 		access: cfg.Access, audit: cfg.Audit, log: log,
-		idem: idem, market: client, now: now,
+		idem: idem, market: client, now: now, bindings: cfg.Bindings,
 	}, nil
 }
 
@@ -218,6 +231,10 @@ func (h *TaskPluginHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/plugin/task/{key}", read(pluginDetailAction, h.handleGet))
 	mux.Handle("GET /api/plugin/task/{key}/versions", read(pluginVersionsAction, h.handleVersions))
 	mux.Handle("GET /api/plugin/task/{key}/source", read(pluginSourceAction, h.handleSource))
+	// 绑定选项（M6d Task 7a / relay-06 §2.6）：渠道配置面读取，权限
+	// channels:read（R-M6D-02），客户端必须持有该键而不是 settings:manage。
+	mux.Handle("GET /api/task_plugin_options",
+		h.authz.Handler(rbac.PermChannelsRead, pluginOptionsAction)(http.HandlerFunc(h.handlePluginOptions)))
 
 	// 写端点。
 	// multipart 不能走 authz.Handler（字段层只解析 JSON），上传单独授权。
@@ -260,9 +277,9 @@ type taskPluginView struct {
 	Layer         plugin.Layer  `json:"layer,omitempty"`
 	CompileError  string        `json:"compile_error,omitempty"`
 	RuntimeErrors plugin.Issues `json:"runtime_errors,omitempty"`
-	// BoundChannels 恒为 0：channels.task_plugin_key 绑定列在 T7 才落地，
-	// 当前没有真源可实时计算。返回 0 而不是省略字段，避免前端把「未知」
-	// 当成 0 还是 null 的歧义；T7 接线后改为实时查询（已登记）。
+	// BoundChannels 是「启用且绑定该 key」的渠道数（M6d Task 7a 实时查询：
+	// 单绑 task_plugin_key 或多绑 task_extend_plugin_keys 命中均计一次）。
+	// 关系不落库，每次读取按 channels 当前状态计算。
 	BoundChannels int       `json:"bound_channels"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	// SourceText 只出现在 include_source=1 的详情响应。
@@ -290,13 +307,28 @@ func versionView(v store.TaskPluginVersion) taskPluginVersionView {
 	}
 }
 
-// pluginView 把 DB 行与运行时条目合成管理面投影。
-func (h *TaskPluginHandlers) pluginView(p store.TaskPlugin) taskPluginView {
+// bindingCounts 查询绑定渠道数；没有注入计数依赖时返回全 0（不省略字段）。
+// 查询失败向上返回：管理面把 0 当成「无受影响渠道」是危险的错误信息，
+// 宁可 500 也不要伪造计数（停用预检依赖该值）。
+func (h *TaskPluginHandlers) bindingCounts(ctx context.Context, keys []string) (map[string]int, error) {
+	counts := make(map[string]int, len(keys))
+	for _, key := range keys {
+		counts[key] = 0
+	}
+	if h.bindings == nil || len(keys) == 0 {
+		return counts, nil
+	}
+	return h.bindings.CountBoundChannels(ctx, keys)
+}
+
+// pluginView 把 DB 行与运行时条目合成管理面投影。bound 是该 key 的绑定渠道数
+// （由调用方批量/单次查询后传入；无绑定计数依赖时为 0）。
+func (h *TaskPluginHandlers) pluginView(p store.TaskPlugin, bound int) taskPluginView {
 	entry := h.manager.Snapshot().Lookup(p.Key)
 	view := taskPluginView{
 		Key: p.Key, Name: p.Name, Icon: p.Icon, Source: p.Source, Builtin: p.Builtin,
 		Enabled: p.Enabled, ActiveVersion: p.ActiveVersion, Description: p.Description,
-		RuntimeStatus: entry.Status, Version: entry.Version, Layer: entry.Layer, BoundChannels: 0,
+		RuntimeStatus: entry.Status, Version: entry.Version, Layer: entry.Layer, BoundChannels: bound,
 		UpdatedAt: p.UpdatedAt,
 	}
 	if view.ActiveVersion == nil && p.Builtin && entry.Version != "" {
@@ -344,6 +376,15 @@ func (h *TaskPluginHandlers) handleList(w http.ResponseWriter, r *http.Request) 
 		h.writeStoreError(w, "list task plugins", err)
 		return
 	}
+	pluginKeys := make([]string, 0, len(plugins))
+	for _, p := range plugins {
+		pluginKeys = append(pluginKeys, p.Key)
+	}
+	counts, err := h.bindingCounts(r.Context(), pluginKeys)
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
 	views := make([]taskPluginView, 0, len(plugins))
 	for _, p := range plugins {
 		if source != "" && p.Source != source {
@@ -360,7 +401,7 @@ func (h *TaskPluginHandlers) handleList(w http.ResponseWriter, r *http.Request) 
 				continue
 			}
 		}
-		view := h.pluginView(p)
+		view := h.pluginView(p, counts[p.Key])
 		if runtimeFilter != "" && string(view.RuntimeStatus) != runtimeFilter {
 			continue
 		}
@@ -435,7 +476,12 @@ func (h *TaskPluginHandlers) handleGet(w http.ResponseWriter, r *http.Request) {
 		h.writeStoreError(w, "list task plugin versions", err)
 		return
 	}
-	view := h.pluginView(*p)
+	counts, err := h.bindingCounts(r.Context(), []string{p.Key})
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
+	view := h.pluginView(*p, counts[p.Key])
 	viewMap := map[string]any{"plugin": view, "versions": make([]taskPluginVersionView, 0, len(versions))}
 	items := make([]taskPluginVersionView, 0, len(versions))
 	for _, v := range versions {
@@ -724,8 +770,13 @@ func (h *TaskPluginHandlers) performUpload(r *http.Request, actor int64, source 
 		status = http.StatusOK
 	}
 	h.auditUpload(r, actor, p.Key, v.Version, v.SourceHash, created, status)
+	counts, err := h.bindingCounts(r.Context(), []string{p.Key})
+	if err != nil {
+		return pluginProblemResponse(http.StatusInternalServerError, authProblemInternal,
+			"Internal Server Error", "")
+	}
 	body, _ := json.Marshal(map[string]any{
-		"created": created, "plugin": h.pluginView(*p), "version": versionView(*v),
+		"created": created, "plugin": h.pluginView(*p, counts[p.Key]), "version": versionView(*v),
 	})
 	return status, body
 }
@@ -817,7 +868,14 @@ func (h *TaskPluginHandlers) handleActivate(w http.ResponseWriter, r *http.Reque
 	h.writePluginAudit(r, audit.ActionPluginActivate, http.StatusOK, map[string]any{
 		"plugin_key": v.Key, "version": v.Version, "source_hash_prefix": hashPrefix(v.SourceHash),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"plugin": h.pluginView(*p), "version": versionView(*v)})
+	counts, err := h.bindingCounts(r.Context(), []string{p.Key})
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plugin": h.pluginView(*p, counts[p.Key]), "version": versionView(*v),
+	})
 }
 
 func (h *TaskPluginHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -849,14 +907,73 @@ func (h *TaskPluginHandlers) handleStatus(w http.ResponseWriter, r *http.Request
 	if *req.Enabled {
 		action = audit.ActionPluginEnable
 	}
-	// bound_channels 恒 0（绑定列未落地，见 taskPluginView 注释）；明确返回
-	// 而不是省略，前端据此展示「受影响渠道」提示。
+	// bound_channels 是真实绑定计数（M6d Task 7a）：停用预检据此提示
+	// 「受影响渠道数」，即使插件已停用，绑定关系本身仍存在，计数照常返回。
+	counts, err := h.bindingCounts(r.Context(), []string{p.Key})
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
+	bound := counts[p.Key]
 	h.writePluginAudit(r, action, http.StatusOK, map[string]any{
-		"plugin_key": p.Key, "enabled": p.Enabled, "bound_channels": 0,
+		"plugin_key": p.Key, "enabled": p.Enabled, "bound_channels": bound,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"key": p.Key, "enabled": p.Enabled, "bound_channels": 0, "updated_at": p.UpdatedAt,
+		"key": p.Key, "enabled": p.Enabled, "bound_channels": bound, "updated_at": p.UpdatedAt,
 	})
+}
+
+// handlePluginOptions 返回「可绑定插件」选项（relay-06 §2.6 / F-08-28）。
+//
+// 只列注册表中当前可执行的插件（entry.Plugin != nil：registered 与
+// disabled_fallback 有可执行层，not_registered/compile_failed/disabled 无）；
+// 按 key 升序。channel_count 只统计启用渠道（与 bound_channels 同口径），
+// 供渠道表单提示「这个插件已被多少渠道使用」。
+func (h *TaskPluginHandlers) handlePluginOptions(w http.ResponseWriter, r *http.Request) {
+	snapshot := h.manager.Snapshot()
+	rows, err := h.store.List(r.Context())
+	if err != nil {
+		h.writeStoreError(w, "list task plugins", err)
+		return
+	}
+	names := make(map[string]string, len(rows))
+	for _, row := range rows {
+		names[row.Key] = row.Name
+	}
+	keys := make([]string, 0, len(snapshot.Keys()))
+	for _, key := range snapshot.Keys() {
+		if entry := snapshot.Lookup(key); entry.Plugin != nil {
+			keys = append(keys, key)
+		}
+	}
+	counts, err := h.bindingCounts(r.Context(), keys)
+	if err != nil {
+		h.writeStoreError(w, "count bound channels", err)
+		return
+	}
+	items := make([]taskPluginOptionView, 0, len(keys))
+	for _, key := range keys {
+		name := names[key]
+		if name == "" {
+			if entry := snapshot.Lookup(key); entry.Plugin != nil {
+				name = entry.Plugin.Manifest().Name
+			}
+		}
+		if name == "" {
+			name = key
+		}
+		items = append(items, taskPluginOptionView{
+			Key: key, Name: name, ChannelCount: counts[key],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+// taskPluginOptionView 是绑定选项的白名单投影（无源码、无密钥）。
+type taskPluginOptionView struct {
+	Key          string `json:"key"`
+	Name         string `json:"name"`
+	ChannelCount int    `json:"channel_count"`
 }
 
 func (h *TaskPluginHandlers) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {

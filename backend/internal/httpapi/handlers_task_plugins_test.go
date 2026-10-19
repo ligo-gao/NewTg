@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,30 @@ type pluginTestEnv struct {
 	manager  *plugin.Manager
 	audit    *fakeAuditExec
 	handlers *TaskPluginHandlers
+	bindings *fakeChannelBindingCounter
+}
+
+// fakeChannelBindingCounter 是绑定计数接缝的内存实现（M6d Task 7a）。
+type fakeChannelBindingCounter struct {
+	counts   map[string]int
+	err      error
+	lastKeys []string
+}
+
+func newFakeChannelBindingCounter() *fakeChannelBindingCounter {
+	return &fakeChannelBindingCounter{counts: map[string]int{}}
+}
+
+func (f *fakeChannelBindingCounter) CountBoundChannels(_ context.Context, keys []string) (map[string]int, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.lastKeys = append([]string(nil), keys...)
+	out := make(map[string]int, len(keys))
+	for _, key := range keys {
+		out[key] = f.counts[key]
+	}
+	return out, nil
 }
 
 func samplePluginSource(t *testing.T) string {
@@ -80,20 +105,22 @@ func newPluginTestEnvWithMarket(t *testing.T, manager *plugin.Manager, marketCli
 		}
 		manager = created
 	}
+	bindings := newFakeChannelBindingCounter()
 	handlers, err := NewTaskPluginHandlers(TaskPluginHandlerConfig{
-		Store:   store,
-		Manager: manager,
-		Authz:   rbac.NewAuthzMiddleware(),
-		Audit:   audit.New(exec),
-		Access:  newFakeUserAccess(),
-		Market:  marketClient,
+		Store:    store,
+		Manager:  manager,
+		Authz:    rbac.NewAuthzMiddleware(),
+		Audit:    audit.New(exec),
+		Access:   newFakeUserAccess(),
+		Market:   marketClient,
+		Bindings: bindings,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskPluginHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &pluginTestEnv{mux: mux, store: store, manager: manager, audit: exec, handlers: handlers}
+	return &pluginTestEnv{mux: mux, store: store, manager: manager, audit: exec, handlers: handlers, bindings: bindings}
 }
 
 // sha256HexForTest 直接计算字节哈希：测试 loader 里可能出现故意不可编译的
@@ -598,5 +625,101 @@ func TestTaskPluginDryRunAuditRedactsPayload(t *testing.T) {
 	}
 	if !strings.Contains(detail, `"plugin.dryrun"`) || !strings.Contains(detail, `"plugin_key":"sample"`) {
 		t.Fatalf("dryrun 审计缺动作/key：%s", detail)
+	}
+}
+
+// ---------- M6d Task 7a：绑定选项与真实绑定计数 ----------
+
+func pluginChannelsReader() *auth.Principal {
+	return &auth.Principal{UserID: 5, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermChannelsRead}}
+}
+
+func TestTaskPluginOptionsPermissionAndContent(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	env.bindings.counts["sample"] = 3
+	env.bindings.counts["uploaded-x"] = 1
+
+	// 只有 settings:manage（无 channels:read）→ 403：绑定选项属于渠道配置面。
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/task_plugin_options", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺 channels:read 读绑定选项 = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/task_plugin_options", "", pluginChannelsReader(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("channels:read 读绑定选项 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			Key          string `json:"key"`
+			Name         string `json:"name"`
+			ChannelCount int    `json:"channel_count"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+	// 只列注册表中有可执行层的 key：sample（factory）与 uploaded-x（active 上传），
+	// bad-plugin 编译失败 → not_registered/compile_failed，不出现。
+	if resp.Total != 2 || len(resp.Items) != 2 {
+		t.Fatalf("options = %+v，期望 2 项", resp)
+	}
+	if resp.Items[0].Key != "sample" || resp.Items[1].Key != "uploaded-x" {
+		t.Fatalf("未按 key 升序：%+v", resp.Items)
+	}
+	if resp.Items[0].ChannelCount != 3 || resp.Items[1].ChannelCount != 1 {
+		t.Fatalf("channel_count 不符：%+v", resp.Items)
+	}
+	if resp.Items[0].Name == "" {
+		t.Fatal("选项缺少 name")
+	}
+}
+
+func TestTaskPluginBoundChannelsRealCount(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	if err := env.store.UpsertBuiltinPlugins(t.Context(), []store.BuiltinPlugin{
+		{Key: "sample", Name: "Sample"},
+	}); err != nil {
+		t.Fatalf("seed plugin row: %v", err)
+	}
+	env.bindings.counts["sample"] = 2
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("列表 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var list struct {
+		Items []struct {
+			Key           string `json:"key"`
+			BoundChannels int    `json:"bound_channels"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Key != "sample" || list.Items[0].BoundChannels != 2 {
+		t.Fatalf("bound_channels 未接真实计数：%+v", list.Items)
+	}
+
+	// 停用响应必须带同一计数（F-08-32 预检）。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/status",
+		`{"enabled":false}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("停用 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var status struct {
+		Enabled       bool `json:"enabled"`
+		BoundChannels int  `json:"bound_channels"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Enabled || status.BoundChannels != 2 {
+		t.Fatalf("停用响应 = %+v，期望 enabled=false bound_channels=2", status)
 	}
 }

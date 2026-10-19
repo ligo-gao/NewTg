@@ -89,6 +89,13 @@ type ChannelPatch struct {
 	LastTestAt            *time.Time
 	LastTestResultSet     bool
 	LastTestResult        *bool
+
+	// 任务插件绑定（M6d Task 7a）。
+	//   TaskPluginKeySet=true 且 TaskPluginKey=nil → 清空单绑（SQL NULL）；
+	//   TaskExtendPluginKeys=nil → 不修改；非 nil（含 `[]`）→ 整体写入。
+	TaskPluginKeySet     bool
+	TaskPluginKey        *string
+	TaskExtendPluginKeys []byte
 }
 
 // BatchResult 对应 modules-06 F-06-02 的 {succeeded:[id], failed:[{id,reason}]}。
@@ -112,10 +119,12 @@ type ChannelRepo struct{ db *sql.DB }
 // NewChannelRepo 构造仓储；db 由 platform.OpenDB 提供（pgx stdlib 驱动）。
 func NewChannelRepo(db *sql.DB) *ChannelRepo { return &ChannelRepo{db: db} }
 
-// channelColumns 与 platform-01 §6 的 22 列逐列对应（顺序固定，供 scanChannel 使用）。
+// channelColumns 与 platform-01 §6 的 22 列 + M6d Task 7a 绑定 2 列逐列对应
+// （顺序固定，供 scanChannel 使用）。
 const channelColumns = `id, name, type, base_url, credentials, supported_models, group_tags,
 	model_mapping, weight, priority, rate_limit, status, auto_ban, test_model, remark, tag,
-	fail_count, auto_disabled_reason, last_test_at, last_test_result, created_at, updated_at`
+	fail_count, auto_disabled_reason, last_test_at, last_test_result, created_at, updated_at,
+	task_plugin_key, task_extend_plugin_keys`
 
 // scanRow 抽象 *sql.Row / *sql.Rows 的共同 Scan 方法。
 type scanRow interface {
@@ -136,12 +145,16 @@ func scanChannel(row scanRow) (*Channel, error) {
 		reason   sql.NullString
 		lastAt   sql.NullTime
 		lastRes  sql.NullBool
+		// task_plugin_key 为 NULL = 未单绑；task_extend_plugin_keys 列上有
+		// NOT NULL DEFAULT '[]'，仍用 []byte 承载（jsonb 文本）。
+		taskPluginKey sql.NullString
+		taskExtend    []byte
 	)
 	err := row.Scan(
 		&ch.ID, &ch.Name, &ch.Type, &baseURL, &ch.Credentials, &ch.SupportedModels, &groupTag,
 		&ch.ModelMapping, &ch.Weight, &ch.Priority, &rateLim, &ch.Status, &ch.AutoBan,
 		&testMod, &remark, &tag, &ch.FailCount, &reason, &lastAt, &lastRes,
-		&ch.CreatedAt, &ch.UpdatedAt,
+		&ch.CreatedAt, &ch.UpdatedAt, &taskPluginKey, &taskExtend,
 	)
 	if err != nil {
 		return nil, err
@@ -175,6 +188,11 @@ func scanChannel(row scanRow) (*Channel, error) {
 		v := lastRes.Bool
 		ch.LastTestResult = &v
 	}
+	if taskPluginKey.Valid {
+		v := taskPluginKey.String
+		ch.TaskPluginKey = &v
+	}
+	ch.TaskExtendPluginKeys = taskExtend
 	return &ch, nil
 }
 
@@ -239,15 +257,22 @@ func (r *ChannelRepo) Create(ctx context.Context, ch *Channel) (*Channel, error)
 		// model_mapping NOT NULL DEFAULT '{}'；显式写入以保证 RETURNING 语义一致。
 		ch.ModelMapping = []byte(`{}`)
 	}
+	if len(ch.TaskExtendPluginKeys) == 0 {
+		// task_extend_plugin_keys NOT NULL DEFAULT '[]'；显式写入空数组而不是
+		// SQL NULL（列为 NOT NULL，NULL 会被约束拒绝）。
+		ch.TaskExtendPluginKeys = []byte(`[]`)
+	}
 	row := r.db.QueryRowContext(ctx, `INSERT INTO channels
 		(name, type, base_url, credentials, supported_models, group_tags, model_mapping,
-		 weight, priority, rate_limit, status, auto_ban, test_model, remark, tag, auto_disabled_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		 weight, priority, rate_limit, status, auto_ban, test_model, remark, tag, auto_disabled_reason,
+		 task_plugin_key, task_extend_plugin_keys)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		RETURNING `+channelColumns,
 		ch.Name, ch.Type, nullableString(ch.BaseURL), ch.Credentials, ch.SupportedModels,
 		nullableBytes(ch.GroupTags), ch.ModelMapping, ch.Weight, ch.Priority,
 		nullableInt32(ch.RateLimit), ch.Status, ch.AutoBan, nullableString(ch.TestModel),
-		nullableString(ch.Remark), nullableString(ch.Tag), nullableString(ch.AutoDisabledReason))
+		nullableString(ch.Remark), nullableString(ch.Tag), nullableString(ch.AutoDisabledReason),
+		nullableString(ch.TaskPluginKey), ch.TaskExtendPluginKeys)
 
 	out, err := scanChannel(row)
 	if isUniqueViolation(err) {
@@ -333,6 +358,12 @@ func (r *ChannelRepo) Update(ctx context.Context, id int64, patch ChannelPatch, 
 	}
 	if patch.LastTestResultSet {
 		add("last_test_result = $%d", nullableBool(patch.LastTestResult))
+	}
+	if patch.TaskPluginKeySet {
+		add("task_plugin_key = $%d", nullableString(patch.TaskPluginKey))
+	}
+	if patch.TaskExtendPluginKeys != nil {
+		add("task_extend_plugin_keys = $%d", patch.TaskExtendPluginKeys)
 	}
 
 	if len(sets) == 0 {
@@ -666,6 +697,56 @@ func (r *ChannelRepo) Candidates(ctx context.Context, model, group string) ([]co
 		return nil, fmt.Errorf("store: channel candidates iterate: %w", err)
 	}
 	return candidates, nil
+}
+
+// boundChannelsQuery 按插件 key 统计「启用且绑定该 key」的渠道数。
+//
+// 一个渠道可能同时单绑与多绑同一个 key（应用层互斥，但历史/手工数据要
+// 防重），count(DISTINCT c.id) 保证同一渠道只计一次。禁用渠道不计：
+// 「受影响渠道」预检与 F-08-28 的绑定渠道数都只关心启用中的路由面。
+// unnest($1::text[]) 让一次往返覆盖整页插件；没有匹配行的 key 由调用方
+// 补 0（JOIN 不产生行）。
+const boundChannelsQuery = `
+	SELECT k.key, count(DISTINCT c.id)
+	FROM unnest($1::text[]) AS k(key)
+	JOIN channels c
+	  ON c.status = 1
+	 AND (c.task_plugin_key = k.key
+	      OR c.task_extend_plugin_keys @> jsonb_build_array(k.key))
+	GROUP BY k.key`
+
+// CountBoundChannels 返回每个插件 key 的绑定渠道数（仅启用渠道）。
+// 返回值对入参中的每个 key 都存在（未绑定的为 0），便于直接投影。
+func (r *ChannelRepo) CountBoundChannels(ctx context.Context, keys []string) (map[string]int, error) {
+	counts := make(map[string]int, len(keys))
+	unique := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, seen := counts[key]; seen {
+			continue
+		}
+		counts[key] = 0
+		unique = append(unique, key)
+	}
+	if len(unique) == 0 {
+		return counts, nil
+	}
+	rows, err := r.db.QueryContext(ctx, boundChannelsQuery, unique)
+	if err != nil {
+		return nil, fmt.Errorf("store: count bound channels: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var n int
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, fmt.Errorf("store: bound channel count scan: %w", err)
+		}
+		counts[key] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: bound channel count iterate: %w", err)
+	}
+	return counts, nil
 }
 
 // ---------- 内部工具 ----------
