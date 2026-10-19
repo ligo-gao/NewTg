@@ -3256,8 +3256,8 @@ export interface components {
             /** Format: int64 */
             refunded: number;
             latency_ms?: number | null;
-            /** @description 首 token 耗时；非流式为 null */
-            first_token_ms?: number | null;
+            /** @description 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。 */
+            ttft?: number | null;
             stream: boolean;
             /** @enum {string} */
             status: "success" | "error" | "refunded" | "refused";

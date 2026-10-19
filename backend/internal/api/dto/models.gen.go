@@ -3322,13 +3322,10 @@ type UsageLogDetail struct {
 	CreatedAt        time.Time `json:"created_at"`
 	ErrorClass       *string   `json:"error_class,omitempty"`
 	ErrorMessage     *string   `json:"error_message,omitempty"`
-
-	// FirstTokenMs 首 token 耗时；非流式为 null
-	FirstTokenMs *int    `json:"first_token_ms,omitempty"`
-	Group        *string `json:"group,omitempty"`
-	Id           int64   `json:"id"`
-	LatencyMs    *int    `json:"latency_ms,omitempty"`
-	Model        string  `json:"model"`
+	Group            *string   `json:"group,omitempty"`
+	Id               int64     `json:"id"`
+	LatencyMs        *int      `json:"latency_ms,omitempty"`
+	Model            string    `json:"model"`
 
 	// Other 按角色投影后的 other（user 仅 public 键；admin 含 admin_info/root_info）
 	Other        map[string]interface{} `json:"other"`
@@ -3343,7 +3340,10 @@ type UsageLogDetail struct {
 	Stream     bool                      `json:"stream"`
 	TokenId    *int64                    `json:"token_id,omitempty"`
 	TokenName  *string                   `json:"token_name,omitempty"`
-	Upstream   *string                   `json:"upstream,omitempty"`
+
+	// Ttft 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。
+	Ttft     *int    `json:"ttft,omitempty"`
+	Upstream *string `json:"upstream,omitempty"`
 
 	// Username 仅 admin+logs:read 视图返回
 	Username *string `json:"username,omitempty"`
@@ -3354,25 +3354,22 @@ type UsageLogDetailStatus string
 
 // UsageLogItem 用量日志列表项（user 视图不含 username）。
 type UsageLogItem struct {
-	CacheReadTokens  int       `json:"cache_read_tokens"`
-	CacheWriteTokens int       `json:"cache_write_tokens"`
-	ChannelId        *int64    `json:"channel_id,omitempty"`
-	CompletionTokens int       `json:"completion_tokens"`
-	Cost             int64     `json:"cost"`
-	CreatedAt        time.Time `json:"created_at"`
-	ErrorClass       *string   `json:"error_class,omitempty"`
-	ErrorMessage     *string   `json:"error_message,omitempty"`
-
-	// FirstTokenMs 首 token 耗时；非流式为 null
-	FirstTokenMs *int               `json:"first_token_ms,omitempty"`
-	Group        *string            `json:"group,omitempty"`
-	Id           int64              `json:"id"`
-	LatencyMs    *int               `json:"latency_ms,omitempty"`
-	Model        string             `json:"model"`
-	PreDeducted  *int64             `json:"pre_deducted,omitempty"`
-	PromptTokens int                `json:"prompt_tokens"`
-	Refunded     int64              `json:"refunded"`
-	RequestId    openapi_types.UUID `json:"request_id"`
+	CacheReadTokens  int                `json:"cache_read_tokens"`
+	CacheWriteTokens int                `json:"cache_write_tokens"`
+	ChannelId        *int64             `json:"channel_id,omitempty"`
+	CompletionTokens int                `json:"completion_tokens"`
+	Cost             int64              `json:"cost"`
+	CreatedAt        time.Time          `json:"created_at"`
+	ErrorClass       *string            `json:"error_class,omitempty"`
+	ErrorMessage     *string            `json:"error_message,omitempty"`
+	Group            *string            `json:"group,omitempty"`
+	Id               int64              `json:"id"`
+	LatencyMs        *int               `json:"latency_ms,omitempty"`
+	Model            string             `json:"model"`
+	PreDeducted      *int64             `json:"pre_deducted,omitempty"`
+	PromptTokens     int                `json:"prompt_tokens"`
+	Refunded         int64              `json:"refunded"`
+	RequestId        openapi_types.UUID `json:"request_id"`
 
 	// RetryChain user 视图仅 8 个可见键；admin 视图保留完整选路细节
 	RetryChain *[]map[string]interface{} `json:"retry_chain,omitempty"`
@@ -3380,7 +3377,10 @@ type UsageLogItem struct {
 	Stream     bool                      `json:"stream"`
 	TokenId    *int64                    `json:"token_id,omitempty"`
 	TokenName  *string                   `json:"token_name,omitempty"`
-	Upstream   *string                   `json:"upstream,omitempty"`
+
+	// Ttft 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。
+	Ttft     *int    `json:"ttft,omitempty"`
+	Upstream *string `json:"upstream,omitempty"`
 
 	// Username 仅 admin+logs:read 视图返回
 	Username *string `json:"username,omitempty"`

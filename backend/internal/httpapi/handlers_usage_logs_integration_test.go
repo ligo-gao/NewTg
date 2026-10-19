@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -355,6 +356,13 @@ func TestIntegrationUsageLogsScoping(t *testing.T) {
 		if _, ok := item["username"]; ok {
 			t.Fatalf("user list must not expose username")
 		}
+		// 对外字段名冻结为 ttft（G7-R51）；不得同时出现内部列名。
+		if _, ok := item["ttft"]; !ok {
+			t.Fatalf("list item missing ttft: %v", item)
+		}
+		if _, ok := item["first_token_ms"]; ok {
+			t.Fatalf("list item leaked internal first_token_ms name: %v", item)
+		}
 	}
 
 	// admin + logs:read：全部 5 条，且带 username。
@@ -563,7 +571,7 @@ func TestIntegrationUsageLogsProjection(t *testing.T) {
 		"reject_reason":"legacy-reason",
 		"admin_info":{"quota_saturation":true},
 		"root_info":{"root_only":1},
-		"audit_info":{}
+		"audit_info":{"root_audit":"secret"}
 	}`
 	retry := `[{"attempt":"1/2","channel_id":7,"channel_name":"ch-a","upstream":"up-a","use_group":"default","priority":10,"weight":5,"decision":"retry_next_priority","error_class":"timeout","latency_ms":120,"upstream_request_id":"req-1"}]`
 	id := env.seed(t, usageSeed{UserID: userID, Other: other, RetryChain: retry})
@@ -596,7 +604,8 @@ func TestIntegrationUsageLogsProjection(t *testing.T) {
 		t.Fatalf("user other projection = %v, want only public_key", userDetail.Other)
 	}
 
-	// admin 详情：保留 admin_info/root_info，audit_info 为空时不输出。
+	// admin 详情：public + admin_info；root_info 与 audit_info（即使非空）
+	// 都是 root 专属分区，不得下发给管理员（platform-01 §12.5）。
 	rec = env.do(t, http.MethodGet, fmt.Sprintf("/api/usage-logs/%d", id), usageAdminPrincipal(1, rbac.PermLogsRead))
 	adminDetail := decodeUsageJSON[struct {
 		Other      map[string]any   `json:"other"`
@@ -604,13 +613,13 @@ func TestIntegrationUsageLogsProjection(t *testing.T) {
 		Username   *string          `json:"username"`
 	}](t, rec)
 	if _, ok := adminDetail.Other["audit_info"]; ok {
-		t.Fatalf("admin other must not emit empty audit_info: %v", adminDetail.Other)
+		t.Fatalf("admin other must not emit audit_info: %v", adminDetail.Other)
 	}
 	if _, ok := adminDetail.Other["admin_info"]; !ok {
 		t.Fatalf("admin other missing admin_info: %v", adminDetail.Other)
 	}
-	if _, ok := adminDetail.Other["root_info"]; !ok {
-		t.Fatalf("admin other missing root_info: %v", adminDetail.Other)
+	if _, ok := adminDetail.Other["root_info"]; ok {
+		t.Fatalf("admin other must not emit root_info: %v", adminDetail.Other)
 	}
 	if _, ok := adminDetail.RetryChain[0]["priority"]; !ok {
 		t.Fatalf("admin retry_chain missing priority: %v", adminDetail.RetryChain[0])
@@ -757,6 +766,36 @@ func TestIntegrationUsageStatsByModel(t *testing.T) {
 	rec = env.do(t, http.MethodGet, "/api/usage-stats/by-model", userPrincipal(otherUser))
 	if got := strings.TrimSpace(rec.Body.String()); got != `[]` {
 		t.Fatalf("empty by-model = %s, want []", got)
+	}
+}
+
+// TestIntegrationUsageStatsByModelPercentRegression 覆盖评审 round 1 的
+// 残差回归：9 个已知消费在四舍五入后基点合计 9999，残差必须在整数基点上
+// 补齐；旧实现先把百分数转 float64 再重建 int64，会因截断丢掉残差（99.99）。
+func TestIntegrationUsageStatsByModelPercentRegression(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "br")
+	costs := []int64{3975, 3443, 2842, 2632, 2602, 2311, 2283, 1262, 1257}
+	for i, cost := range costs {
+		env.seed(t, usageSeed{UserID: userID, Model: fmt.Sprintf("reg-%d", i), Cost: cost})
+	}
+	rec := env.do(t, http.MethodGet, "/api/usage-stats/by-model", userPrincipal(userID))
+	body := decodeUsageJSON[[]struct {
+		Model   string  `json:"model"`
+		Percent float64 `json:"percent"`
+	}](t, rec)
+	if rec.Code != http.StatusOK || len(body) != 9 {
+		t.Fatalf("by-model status/rows = %d/%d body=%s", rec.Code, len(body), rec.Body.String())
+	}
+	var bps int64
+	for _, item := range body {
+		bps += int64(math.Round(item.Percent * 100))
+	}
+	if bps != 10000 {
+		t.Fatalf("percent basis points = %d, want exactly 10000 (%+v)", bps, body)
+	}
+	if body[0].Percent != 17.59 {
+		t.Fatalf("largest model percent = %v, want 17.59 (residual applied)", body[0].Percent)
 	}
 }
 

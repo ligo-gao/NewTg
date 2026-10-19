@@ -450,30 +450,32 @@ func (row *usageLogRow) scanDetail(scanner usageRowScanner) error {
 
 // usageLogItem 是列表项契约（R-M6-2）。username 仅管理员视图出现。
 type usageLogItem struct {
-	ID               int64           `json:"id"`
-	RequestID        string          `json:"request_id"`
-	TokenID          *int64          `json:"token_id"`
-	TokenName        *string         `json:"token_name"`
-	ChannelID        *int64          `json:"channel_id"`
-	Upstream         *string         `json:"upstream"`
-	Model            string          `json:"model"`
-	Group            *string         `json:"group"`
-	PromptTokens     int64           `json:"prompt_tokens"`
-	CompletionTokens int64           `json:"completion_tokens"`
-	CacheReadTokens  int64           `json:"cache_read_tokens"`
-	CacheWriteTokens int64           `json:"cache_write_tokens"`
-	PreDeducted      *int64          `json:"pre_deducted"`
-	Cost             int64           `json:"cost"`
-	Refunded         int64           `json:"refunded"`
-	LatencyMS        *int64          `json:"latency_ms"`
-	FirstTokenMS     *int64          `json:"first_token_ms"`
-	Stream           bool            `json:"stream"`
-	Status           string          `json:"status"`
-	ErrorClass       *string         `json:"error_class"`
-	ErrorMessage     *string         `json:"error_message"`
-	RetryChain       json.RawMessage `json:"retry_chain"`
-	CreatedAt        time.Time       `json:"created_at"`
-	Username         *string         `json:"username,omitempty"`
+	ID               int64   `json:"id"`
+	RequestID        string  `json:"request_id"`
+	TokenID          *int64  `json:"token_id"`
+	TokenName        *string `json:"token_name"`
+	ChannelID        *int64  `json:"channel_id"`
+	Upstream         *string `json:"upstream"`
+	Model            string  `json:"model"`
+	Group            *string `json:"group"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	PreDeducted      *int64  `json:"pre_deducted"`
+	Cost             int64   `json:"cost"`
+	Refunded         int64   `json:"refunded"`
+	LatencyMS        *int64  `json:"latency_ms"`
+	// 对外字段名冻结为 `ttft`（G7-R51 / platform-01 §12）：内部列名
+	// first_token_ms 只是数据库事实，不得作为 API 字段泄露第二个名字。
+	FirstTokenMS *int64          `json:"ttft"`
+	Stream       bool            `json:"stream"`
+	Status       string          `json:"status"`
+	ErrorClass   *string         `json:"error_class"`
+	ErrorMessage *string         `json:"error_message"`
+	RetryChain   json.RawMessage `json:"retry_chain"`
+	CreatedAt    time.Time       `json:"created_at"`
+	Username     *string         `json:"username,omitempty"`
 }
 
 type usageLogDetail struct {
@@ -549,11 +551,11 @@ func projectOther(raw []byte, admin bool) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	if admin {
-		// audit_info 是预留的空分区：为空时不输出（R-M6-2）；
-		// 非空时保留，供 root 审计对账。
-		if value, ok := fields["audit_info"]; ok && isEmptyJSON(value) {
-			delete(fields, "audit_info")
-		}
+		// 裁决（platform-01 §12.5，M6 评审 round 1）：admin 视图 =
+		// public + admin_info。root_info 与 audit_info 都是 root 专属分区，
+		// 即使 audit_info 非空也不得下发给管理员。
+		delete(fields, "root_info")
+		delete(fields, "audit_info")
 	} else {
 		for _, key := range otherUserHiddenKeys {
 			delete(fields, key)
@@ -564,11 +566,6 @@ func projectOther(raw []byte, admin bool) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return out
-}
-
-func isEmptyJSON(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	return trimmed == "" || trimmed == "null" || trimmed == "{}" || trimmed == "[]"
 }
 
 // retryChainUserKeys 是用户可见的 8 个元素（modules-05 §4.4 / R-M6-2）；
@@ -1020,16 +1017,21 @@ func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {
 		return
 	}
 	total := decimal.NewFromInt(totalCost)
+	bps := make([]int64, len(items))
 	used := int64(0)
 	for i := range items {
-		bps := decimal.NewFromInt(items[i].Cost).
+		bps[i] = decimal.NewFromInt(items[i].Cost).
 			Mul(decimal.NewFromInt(10000)).
 			DivRound(total, 0).IntPart()
-		items[i].Percent = float64(bps) / 100
-		used += bps
+		used += bps[i]
 	}
-	if residual := int64(10000) - used; residual != 0 && len(items) > 0 {
-		items[0].Percent = float64(int64(items[0].Percent*100)+residual) / 100
+	// 残差在整数基点上补齐，最后才转回百分数：先转 float64 再重建
+	// int64 会因二进制表示截断（如 17.58 → 1757.99…）而丢掉残差。
+	if residual := int64(10000) - used; residual != 0 && len(bps) > 0 {
+		bps[0] += residual
+	}
+	for i := range items {
+		items[i].Percent = float64(bps[i]) / 100
 	}
 }
 
