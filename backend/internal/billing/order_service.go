@@ -158,8 +158,9 @@ func (s *TopupService) refreshOrder(ctx context.Context, order *store.Order) err
 	return nil
 }
 
-// closeProviderOrder 是取消后的 best-effort 渠道关单。失败只告警：
-// 用户的取消意图已经落库，渠道侧残留由超时 worker/渠道自身过期兜底。
+// closeProviderOrder 是取消/超时回收后的 best-effort 渠道关单。失败只
+// 告警：用户的取消意图或 worker 的过期判定已经落库，渠道侧残留由下一轮
+// 回收/渠道自身过期兜底。
 func (s *TopupService) closeProviderOrder(ctx context.Context, order *store.Order) {
 	if order.ProviderTxnID == nil || strings.TrimSpace(*order.ProviderTxnID) == "" {
 		return
@@ -174,7 +175,7 @@ func (s *TopupService) closeProviderOrder(ctx context.Context, order *store.Orde
 		return
 	}
 	if err != nil {
-		s.log.Warn("close provider order after cancel failed",
+		s.log.Warn("close provider order failed",
 			"order_id", order.ID, "provider", order.Provider, "error", err)
 	}
 }

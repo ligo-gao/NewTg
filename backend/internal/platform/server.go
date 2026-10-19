@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
@@ -341,6 +343,17 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// billing.quota_per_unit 并写入进程级 QPU。订阅是兜底刷新路径
 	// （5 分钟整表重载 + pub/sub），worker 与 gateway 同口径。
 	center := configcenter.New(sqlDB, rr.client)
+	// 密钥类配置（支付宝 app 私钥/公钥）在配置中心以 AES-GCM 密封存储；
+	// worker 的轮询兜底要解封后才能调用 alipay.trade.query/trade.close，
+	// 因此必须与 gateway 使用同一把 CREDENTIAL_ENCRYPTION_KEY。
+	cipher, err := auth.NewSecretCipher(cfg.CredentialEncryptionKey)
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: credential cipher: %w", err)
+	}
+	center.Sealer = cipher
 	if err := center.Load(ctx); err != nil {
 		_ = redisRes.Close()
 		_ = logsRes.Close()
@@ -376,12 +389,49 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
 	log.Info("worker started")
 
+	// M5 Token 5：订单过期回收（F-04-07）与支付宝轮询兜底（F-04-06）。
+	// 与 M3 兜底循环并行运行：两者依赖独立、失败语义一致（记录后下一轮
+	// 重试）。TopupService 只用于渠道查询/关单与入账，复用 worker 的
+	// 配置中心快照与 SecretSealer（支付宝密钥是密封配置）。
+	topup, err := billing.NewTopupService(billing.TopupServiceConfig{
+		DB:     gormDB,
+		Config: center,
+		Sealer: cipher,
+		Logger: log,
+	})
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: topup service: %w", err)
+	}
+
+	expiryCtx, cancelExpiry := context.WithCancel(ctx)
+	var expiryWG sync.WaitGroup
+	var expiryErr error
+	expiryWG.Add(1)
+	go func() {
+		defer expiryWG.Done()
+		expiryErr = billing.RunExpiryLoop(expiryCtx, billing.ExpiryWorkerDeps{
+			DB:     gormDB,
+			Topup:  topup,
+			Logger: log,
+		})
+	}()
+
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned: registry,
 		Recoverer: engine,
 		LogsDB:    sqlLogs,
 		Logger:    log,
 	})
+	// 先停 M5 循环再关连接池：否则过期扫描可能在下一次 DB 调用上拿到
+	// 「连接已关闭」错误，把正常停机噪声打进告警。
+	cancelExpiry()
+	expiryWG.Wait()
+	if runErr == nil {
+		runErr = expiryErr
+	}
 
 	// 停机序与启动序相反：先断 Redis（循环已退出，不再有租约写入），
 	// 再关日志库与主库。
