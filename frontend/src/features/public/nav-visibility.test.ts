@@ -43,7 +43,7 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
 
   it('keeps render order and marks absolute docs targets external', () => {
     const items = visibleNavItems(
-      { ...FULL_NAV, rankings: { enabled: false } },
+      { ...FULL_NAV, rankings: { enabled: false, require_auth: false } },
       true,
       'https://docs.example.com',
     )
@@ -62,12 +62,12 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
 
   it('leaves no slot when every entry is disabled', () => {
     const off = {
-      home: { enabled: false },
-      console: { enabled: false },
-      pricing: { enabled: false },
-      rankings: { enabled: false },
-      docs: { enabled: false },
-      about: { enabled: false },
+      home: { enabled: false, require_auth: false },
+      console: { enabled: false, require_auth: true },
+      pricing: { enabled: false, require_auth: false },
+      rankings: { enabled: false, require_auth: false },
+      docs: { enabled: false, require_auth: false },
+      about: { enabled: false, require_auth: false },
     }
     expect(visibleNavItems(off, true, 'https://docs.example.com')).toEqual([])
   })

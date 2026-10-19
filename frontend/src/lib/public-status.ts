@@ -4,81 +4,26 @@ import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 
-type GeneratedPublicStatus = components['schemas']['PublicStatus']
-
 /**
- * Narrow local mirror of the `site` / `nav` / `billing` branches of
- * `GET /api/status` (modules-09 F-09-06 field table, frozen by the M6c backend
- * task; registered in `docs/plans` as R-PUB-06/07/09).
+ * Generated contract types for `GET /api/status` (R-PUB-06/07/09).
  *
- * Why a local type instead of `components['schemas']`: the generated
- * `api/schema.d.ts` is produced from the checked-in OpenAPI document and the
- * backend task that adds these branches updates that document separately. This
- * task must not hand-edit the generated file (the drift check would then fail
- * against the backend and the next regeneration would silently drop the edit).
- * The shape below is therefore a hand-transcribed copy of the frozen contract;
- * every field is optional because a mixed-version deploy (new frontend, older
- * backend) must still render with the documented defaults instead of crashing.
- * When the generated schema catches up, this interface is the single place to
- * delete in favour of `components['schemas']['PublicStatus']`.
+ * The backend task that introduced `site` / `nav` / `billing` also regenerated
+ * `api/schema.d.ts`, so the hand-written narrow mirror this task originally
+ * carried is gone. These aliases remain the single import surface for public
+ * page code and centralise a subtle detail of the generated document: the
+ * nested `site`/`nav`/`billing` objects are required, but most of *their*
+ * properties are optional (mixed-version deploys and sparse setting projections
+ * are legitimate), and `PublicNavItem.enabled/require_auth` stay required —
+ * `navEntryOf` in `features/public/nav-visibility.ts` still applies the
+ * documented defaults when an older backend omits an entry entirely.
  */
-export interface PublicHomeBlocks {
-  hero?: boolean
-  live_feed?: boolean
-  features?: boolean
-  stats?: boolean
-  onboarding?: boolean
-}
-
-export interface PublicSiteSeo {
-  description?: string
-  og_image_url?: string
-}
-
-export interface PublicSite {
-  title?: string
-  logo_url?: string
-  server_address?: string
-  docs_url?: string
-  footer_html?: string
-  about_html?: string
-  filing_no?: string
-  status_page_url?: string
-  oss_credits?: unknown
-  seo?: PublicSiteSeo
-  home_custom_enabled?: boolean
-  /** Only sent when `home_custom_enabled=true` (R-PUB-07). */
-  home_custom_html?: string
-  home_blocks?: PublicHomeBlocks
-}
-
-export interface PublicNavEntry {
-  enabled?: boolean
-  require_auth?: boolean
-}
-
-export interface PublicNav {
-  home?: PublicNavEntry
-  /** Server locks `require_auth=true`; the mirror keeps it optional for old responses. */
-  console?: PublicNavEntry
-  pricing?: PublicNavEntry
-  rankings?: PublicNavEntry
-  docs?: PublicNavEntry
-  about?: PublicNavEntry
-}
-
-export interface PublicBilling {
-  quota_per_unit?: number
-  /** `credits` | `cny` (backend enum); kept as string for forward compatibility. */
-  display_unit?: string
-  currency_symbol?: string
-}
-
-export interface PublicStatus extends GeneratedPublicStatus {
-  site?: PublicSite
-  nav?: PublicNav
-  billing?: PublicBilling
-}
+export type PublicStatus = components['schemas']['PublicStatus']
+export type PublicSite = components['schemas']['PublicSite']
+export type PublicSiteSeo = NonNullable<PublicSite['seo']>
+export type PublicHomeBlocks = NonNullable<PublicSite['home_blocks']>
+export type PublicNav = components['schemas']['PublicNav']
+export type PublicNavEntry = components['schemas']['PublicNavItem']
+export type PublicBilling = components['schemas']['PublicBilling']
 
 /** Shared cache key (web-00 §5.3); every public page reads one entry. */
 export const PUBLIC_STATUS_QUERY_KEY = ['public', 'status'] as const
