@@ -175,6 +175,7 @@
   "pricing.unit_k": "За 1K",
   "pricing.unit_converted": "пересчёт",
   "pricing.dual_currency": "Показать оценку в валюте",
+  "pricing.dual_currency_forced": "Цены публикуются в юанях, поэтому пересчёт в валюту показывается всегда.",
   "pricing.dual_currency_short": "Валюта",
   "pricing.recharge_price": "Показать оценку по курсу пополнения",
   "pricing.recharge_price_short": "Цена пополнения",

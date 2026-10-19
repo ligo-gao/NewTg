@@ -175,6 +175,7 @@
   "pricing.unit_k": "Per 1K",
   "pricing.unit_converted": "converted",
   "pricing.dual_currency": "Show currency estimate",
+  "pricing.dual_currency_forced": "Prices are published in CNY, so the currency estimate is always shown.",
   "pricing.dual_currency_short": "Currency",
   "pricing.recharge_price": "Show recharge-price estimate",
   "pricing.recharge_price_short": "Recharge price",

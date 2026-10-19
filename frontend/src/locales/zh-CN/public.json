@@ -175,6 +175,7 @@
   "pricing.unit_k": "每 K",
   "pricing.unit_converted": "换算值",
   "pricing.dual_currency": "显示币种换算",
+  "pricing.dual_currency_forced": "本站以人民币标价，货币换算始终显示。",
   "pricing.dual_currency_short": "币种换算",
   "pricing.recharge_price": "显示充值价参考",
   "pricing.recharge_price_short": "充值价",

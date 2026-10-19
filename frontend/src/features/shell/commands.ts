@@ -26,6 +26,8 @@ export type CommandRoutePath =
   | '/orders'
   | '/profile'
   | '/security'
+  | '/model-config'
+  | '/playground'
   | '/admin/users'
   | '/admin/users/groups'
   | '/admin/pricing/model-pricing'
@@ -48,6 +50,13 @@ export interface CommandDefinition {
   to?: CommandRoutePath
   /** Local side effect executed without any request. */
   action?: 'copy-page-url'
+  /**
+   * Entry is only meaningful while `nav.modules.chat.playground` is on
+   * (modules-02 §2.15). The `/playground` route guard is still authoritative
+   * for direct links; the palette hides the entry instead of offering a
+   * command that would silently bounce to `/dashboard`.
+   */
+  requiresPlayground?: true
 }
 
 export const COMMAND_GROUP_LABEL_KEYS: Record<CommandGroupId, string> = {
@@ -131,6 +140,25 @@ export const COMMANDS: readonly CommandDefinition[] = [
     keywords: ['password', '2fa', 'sessions', 'account'],
     analyticsId: 'nav.security',
     to: '/security',
+  },
+  {
+    id: 'model-config',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.model_config',
+    keywords: ['models', 'default model', 'limits', 'keys', 'config'],
+    analyticsId: 'nav.model_config',
+    to: '/model-config',
+  },
+  {
+    id: 'playground',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.playground',
+    keywords: ['chat', 'llm', 'prompt', 'test model'],
+    analyticsId: 'nav.playground',
+    requiresPlayground: true,
+    to: '/playground',
   },
   {
     id: 'admin-users',

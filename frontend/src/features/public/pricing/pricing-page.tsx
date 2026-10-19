@@ -85,6 +85,17 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
 
+  /**
+   * `billing.display_unit=cny` publishes prices in CNY as the primary unit, so
+   * the list must always show the currency estimate. This is a site-level
+   * decision, not a personal display preference: the URL may say
+   * `dualCurrency=false` (an older shared link), but it is never allowed to
+   * turn the forced estimate off; the toolbar switch is disabled with an
+   * explanation instead of silently accepting a value it cannot honour.
+   */
+  const dualCurrencyForced = status.data?.billing?.display_unit === 'cny'
+  const dualCurrency = search.dualCurrency || dualCurrencyForced
+
   const params = queryParamsOf(search)
   const query = useQuery({
     ...pricingListQueryOptions(params),
@@ -237,7 +248,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
 
         <div className="flex min-w-0 flex-col gap-3">
           <PricingToolbar
-            value={{ ...search, view: effectiveView }}
+            value={{ ...search, view: effectiveView, dualCurrency }}
             onChange={updateFilters}
             onDisplayChange={updateDisplay}
             onViewChange={(view) =>
@@ -246,6 +257,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
               onSearchChange({ ...search, view })
             }
             currencyAvailable={currencyAvailable}
+            dualCurrencyForced={dualCurrencyForced}
             activeFilters={active}
             onOpenFilters={() => setSheetOpen(true)}
           />
@@ -352,7 +364,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
                     card={card}
                     meta={meta}
                     tokenUnit={search.tokenUnit}
-                    dualCurrency={search.dualCurrency}
+                    dualCurrency={dualCurrency}
                     rechargePrice={search.rechargePrice}
                     search={search.search}
                     isOwnGroup={card.group_price !== null && ownGroupPrice}

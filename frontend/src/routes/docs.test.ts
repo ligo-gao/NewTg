@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { docsNeedsSignIn, resolveDocsTarget } from './docs'
+import { docsDisabled, docsNeedsSignIn, resolveDocsTarget } from './docs'
 
 describe('/docs ruling (F-09-38)', () => {
   it('accepts absolute http(s) and single-slash relative targets', () => {
@@ -25,5 +25,14 @@ describe('/docs ruling (F-09-38)', () => {
     expect(docsNeedsSignIn(nav, true)).toBe(false)
     expect(docsNeedsSignIn({ docs: { enabled: false, require_auth: true } }, false)).toBe(false)
     expect(docsNeedsSignIn(undefined, false)).toBe(false)
+  })
+
+  it('treats nav.docs.enabled=false as "docs do not exist" (P2)', () => {
+    // The entry is hidden from every surface; `/docs` must not keep
+    // redirecting to `site.docs_url` behind the operator's back.
+    expect(docsDisabled({ docs: { enabled: false, require_auth: false } })).toBe(true)
+    expect(docsDisabled({ docs: { enabled: true, require_auth: false } })).toBe(false)
+    // Missing values keep the documented default (`enabled=true`).
+    expect(docsDisabled(undefined)).toBe(false)
   })
 })

@@ -341,4 +341,52 @@ describe('PricingPage (F-09-14 ~ F-09-22)', () => {
       await findByText('Network disconnected. Check your connection and try again.'),
     ).toBeTruthy()
   })
+
+  it('forces and disables the dual-currency switch when prices are published in CNY (P1-3)', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({ ...STATUS, billing: { display_unit: 'cny' } }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+      http.get(`${ORIGIN}/api/pricing`, () => HttpResponse.json(listResponse())),
+    )
+
+    // A shared URL still says `dualCurrency=false`; it must not win.
+    const { findByRole, findByText } = await renderWithProviders(
+      <Harness initial={{ dualCurrency: false }} />,
+      ['public'],
+    )
+    // Wait for the listing meta: `currencyAvailable` (and the switch state)
+    // only settles once the pricing response arrives.
+    await findByText('GPT-5')
+
+    const toggle = (await findByRole('switch', {
+      name: 'Show currency estimate',
+    })) as HTMLButtonElement
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+    })
+    expect(toggle.disabled).toBe(true)
+    expect(
+      await findByText(
+        'Prices are published in CNY, so the currency estimate is always shown.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('leaves the dual-currency switch user-controlled for a non-CNY site (P1-3)', async () => {
+    const { findByRole, findByText } = await renderWithProviders(<Harness />, ['public'])
+    await findByText('GPT-5')
+
+    const toggle = (await findByRole('switch', {
+      name: 'Show currency estimate',
+    })) as HTMLButtonElement
+    await waitFor(() => expect(toggle.disabled).toBe(false))
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+
+    fireEvent.click(toggle)
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+    })
+  })
 })

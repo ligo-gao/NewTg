@@ -240,6 +240,8 @@
   "toast.request_id": "request_id：{requestId}",
   "nav.channels": "チャネル",
   "nav.tokens": "API トークン",
+  "nav.model_config": "モデル設定",
+  "nav.skip": "本文へスキップ",
   "nav.settings": "設定",
   "nav.system_status": "システム状態",
   "nav.operation_logs": "操作ログ",

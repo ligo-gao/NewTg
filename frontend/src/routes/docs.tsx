@@ -30,6 +30,11 @@ export function resolveDocsTarget(raw: string | undefined): DocsTarget {
   return { kind: 'unavailable' }
 }
 
+/** True when `nav.docs.enabled=false` hides the entry from every surface. */
+export function docsDisabled(nav: PublicNav | undefined): boolean {
+  return !navEntryOf(nav, 'docs').enabled
+}
+
 /** True when `nav.docs.require_auth=true` keeps a guest out of `/docs`. */
 export function docsNeedsSignIn(
   nav: PublicNav | undefined,
@@ -48,7 +53,14 @@ export function DocsRoute() {
   const { t } = useI18n()
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
-  const target = resolveDocsTarget(status.data?.site?.docs_url)
+  // `nav.docs.enabled=false` is a site-wide "docs do not exist" verdict. It
+  // must match `publicRouteGuardRedirect` (disabled public pages never
+  // redirect, they fall back to `/`): redirecting to `site.docs_url` while the
+  // entry is hidden would keep exposing a page the operator switched off.
+  const disabled = status.data !== undefined && docsDisabled(status.data.nav)
+  const target: DocsTarget = disabled
+    ? { kind: 'unavailable' }
+    : resolveDocsTarget(status.data?.site?.docs_url)
   const navigableHref = target.kind === 'unavailable' ? null : target.href
   const needsSignIn =
     status.data !== undefined && docsNeedsSignIn(status.data.nav, me.isSuccess)

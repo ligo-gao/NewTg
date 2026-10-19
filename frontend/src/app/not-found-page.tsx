@@ -1,3 +1,4 @@
+import { isSafePublicHref } from '@/features/public/nav-visibility'
 import { usePublicStatus } from '@/lib/public-status'
 
 import { ErrorActionLink, ErrorPageShell, useErrorPageTranslate } from './error-page-shell'
@@ -35,7 +36,10 @@ export function NotFoundPageContent({
   const t = useErrorPageTranslate()
   const status = usePublicStatus()
   const config = readOptionalSiteConfig(status.data)
-  const docs = docsUrl ?? config.docsUrl
+  const rawDocs = docsUrl ?? config.docsUrl
+  // Reuse the public URL allowlist (F-09-38): a stale `javascript:` row must
+  // not become the "Read the docs" link target.
+  const docs = isSafePublicHref(rawDocs) ? rawDocs?.trim() : undefined
   const pricing = pricingEnabled ?? config.pricingEnabled
 
   return (

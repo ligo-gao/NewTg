@@ -18,6 +18,12 @@ export interface PricingToolbarProps {
   onDisplayChange: (patch: Partial<PricingSearch>) => void
   onViewChange: (view: PricingView) => void
   currencyAvailable: boolean
+  /**
+   * Operator publishes prices in CNY (`billing.display_unit=cny`), so the
+   * currency estimate is mandatory and the switch is read-only. The URL
+   * cannot override it (P1-3).
+   */
+  dualCurrencyForced?: boolean
   activeFilters: number
   onOpenFilters: () => void
 }
@@ -99,6 +105,7 @@ export function PricingToolbar({
   onDisplayChange,
   onViewChange,
   currencyAvailable,
+  dualCurrencyForced = false,
   activeFilters,
   onOpenFilters,
 }: PricingToolbarProps) {
@@ -157,12 +164,23 @@ export function PricingToolbar({
         <SwitchControl
           label={t('public.pricing.dual_currency')}
           checked={value.dualCurrency}
-          disabled={!currencyAvailable}
-          disabledHint={t('public.pricing.rate_unavailable')}
+          disabled={!currencyAvailable || dualCurrencyForced}
+          disabledHint={
+            dualCurrencyForced
+              ? t('public.pricing.dual_currency_forced')
+              : t('public.pricing.rate_unavailable')
+          }
           onChange={(dualCurrency) => onDisplayChange({ dualCurrency })}
         >
           {t('public.pricing.dual_currency_short')}
         </SwitchControl>
+        {dualCurrencyForced ? (
+          // Visible explanation, not just a tooltip: the disabled switch
+          // otherwise looks broken when a shared URL asked for it to be off.
+          <span className="text-xs leading-5 text-ink-3">
+            {t('public.pricing.dual_currency_forced')}
+          </span>
+        ) : null}
 
         <SwitchControl
           label={t('public.pricing.recharge_price')}

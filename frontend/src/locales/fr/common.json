@@ -240,6 +240,8 @@
   "toast.request_id": "request_id : {requestId}",
   "nav.channels": "Canaux",
   "nav.tokens": "Jetons d'API",
+  "nav.model_config": "Configuration des modèles",
+  "nav.skip": "Aller au contenu",
   "nav.settings": "Paramètres",
   "nav.system_status": "État du système",
   "nav.operation_logs": "Journaux d'opérations",

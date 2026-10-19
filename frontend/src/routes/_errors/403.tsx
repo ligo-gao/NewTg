@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { ErrorStatusPage } from '@/app/error-status-page'
 
 export interface ForbiddenSearch {
@@ -20,6 +21,7 @@ function validateForbiddenSearch(
  */
 export const Route = createFileRoute('/_errors/403')({
   validateSearch: validateForbiddenSearch,
+  loader: () => loadRouteDictionary('public'),
   component: ForbiddenRoute,
 })
 

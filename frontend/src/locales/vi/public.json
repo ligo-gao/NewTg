@@ -175,6 +175,7 @@
   "pricing.unit_k": "Mỗi 1K",
   "pricing.unit_converted": "quy đổi",
   "pricing.dual_currency": "Hiển thị ước tính ngoại tệ",
+  "pricing.dual_currency_forced": "Giá được công bố bằng CNY, nên ước tính theo tiền tệ luôn được hiển thị.",
   "pricing.dual_currency_short": "Ngoại tệ",
   "pricing.recharge_price": "Hiển thị ước tính theo giá nạp",
   "pricing.recharge_price_short": "Giá nạp",

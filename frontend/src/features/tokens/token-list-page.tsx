@@ -384,6 +384,16 @@ export function TokenListPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-ink-1">{t('common.tokens.title')}</h1>
         <div className="flex items-center gap-2">
+          {/* F-02-18 / web-00 §4.3.3: the token page's toolbar carries the
+              entry to per-key model limits, so users do not have to know the
+              `/model-config` URL. A real anchor keeps middle-click and
+              keyboard behaviour native. */}
+          <a
+            href="/model-config"
+            className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-3 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            {t('common.nav.model_config')}
+          </a>
           <Button variant="secondary" onClick={() => setAddressesOpen(true)}>
             {t('common.tokens.apiAddresses.title')}
           </Button>

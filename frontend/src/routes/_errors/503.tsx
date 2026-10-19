@@ -1,11 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import {
   readOptionalSiteConfig,
   ServiceUnavailablePage,
 } from '@/app/error-status-page'
 import { usePublicStatus } from '@/lib/public-status'
 import { sanitizeAuthRedirect } from '@/lib/auth-redirect'
+import { isSafePublicHref } from '@/features/public/nav-visibility'
 
 export interface ServiceUnavailableSearch {
   redirect?: string
@@ -27,6 +29,7 @@ function validateServiceUnavailableSearch(
  */
 export const Route = createFileRoute('/_errors/503')({
   validateSearch: validateServiceUnavailableSearch,
+  loader: () => loadRouteDictionary('public'),
   component: ServiceUnavailableRoute,
 })
 
@@ -40,9 +43,15 @@ function ServiceUnavailableRoute() {
       ? undefined
       : sanitizeAuthRedirect(redirect)
 
+  // Same client-side scheme rule as the public footer: a stored
+  // `javascript:`/protocol-relative URL must never become a link target.
+  const statusPageUrl = isSafePublicHref(config.statusPageUrl)
+    ? config.statusPageUrl
+    : undefined
+
   return (
     <ServiceUnavailablePage
-      statusPageUrl={config.statusPageUrl}
+      statusPageUrl={statusPageUrl}
       onRetry={() => {
         if (target !== undefined) {
           window.location.assign(target)

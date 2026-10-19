@@ -60,6 +60,10 @@ describe('TokenListPage', () => {
     // No raw i18n keys may reach the UI (an object-node key renders verbatim).
     expect(document.body.textContent ?? '').not.toMatch(/common\.tokens\./)
     expect(screen.getByRole('button', { name: 'API Addresses' })).toBeTruthy()
+    // F-02-18: the toolbar carries the model-config entry.
+    expect(
+      screen.getByRole('link', { name: 'Model Config' }).getAttribute('href'),
+    ).toBe('/model-config')
     // The projection can never contain a plaintext key: no `nkt-` followed by
     // the 48-character Base62 payload from the contract is present.
     expect(document.body.textContent ?? '').not.toMatch(/nkt-[A-Za-z0-9]{20,}/)

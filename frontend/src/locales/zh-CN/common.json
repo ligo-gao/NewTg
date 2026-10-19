@@ -240,6 +240,8 @@
   "toast.request_id": "request_id：{requestId}",
   "nav.channels": "渠道",
   "nav.tokens": "API 令牌",
+  "nav.model_config": "模型配置",
+  "nav.skip": "跳到主要内容",
   "nav.settings": "设置",
   "nav.system_status": "系统状态",
   "nav.operation_logs": "操作日志",

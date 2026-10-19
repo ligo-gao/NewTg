@@ -28,6 +28,7 @@ import {
   ServiceUnavailablePage,
 } from '@/app/error-status-page'
 import { I18nProvider } from '@/app/providers/i18n'
+import { UNAUTHORIZED_REQUEST_ID_KEY } from '@/app/providers/auth-failures'
 import { createQueryClient } from '@/app/providers/query'
 import { router as appRouter } from '@/app/router'
 import { routeTree } from '@/routeTree.gen'
@@ -59,6 +60,7 @@ beforeAll(() => {
 afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
+  globalThis.sessionStorage?.clear()
   useToastStore.setState({ toasts: [] })
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
 })
@@ -512,25 +514,125 @@ describe('503 recovery', () => {
   })
 })
 
-describe('route mapping', () => {
-  function renderAt(path: string) {
-    const queryClient = createQueryClient()
-    const router = createRouter({
-      routeTree,
-      context: { queryClient },
-      history: createMemoryHistory({ initialEntries: [path] }),
-      scrollRestoration: false,
-    })
-    render(
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider modules={['common']}>
-          <RouterProvider router={router} />
-        </I18nProvider>
-      </QueryClientProvider>,
-    )
-    return router
-  }
+/** Mounts the real route tree at `path` with the shared providers. */
+function renderAt(path: string) {
+  const queryClient = createQueryClient()
+  const router = createRouter({
+    routeTree,
+    context: { queryClient },
+    history: createMemoryHistory({ initialEntries: [path] }),
+    scrollRestoration: false,
+  })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider modules={['common', 'public']}>
+        <RouterProvider router={router} />
+      </I18nProvider>
+    </QueryClientProvider>,
+  )
+  return router
+}
 
+describe('public chrome around error pages (P1-4)', () => {
+  it('renders the header and footer when /api/status is available', async () => {
+    statusHandler()
+    meUnauthorized()
+    server.use(
+      http.get(`${ORIGIN}/readyz`, () =>
+        HttpResponse.json({ status: 'degraded', checks: {} }),
+      ),
+    )
+    await renderWithProviders(<ServiceUnavailablePage probeIntervalMs={60_000} onRetry={() => undefined} />, ['common', 'public'])
+
+    // Public header/footer mount around the error content.
+    expect((await screen.findAllByRole('link', { name: 'NewTG' })).length).toBeGreaterThan(0)
+    expect(screen.getByRole('contentinfo')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
+      'Service temporarily unavailable',
+    )
+  })
+
+  it('keeps the 503 content when /api/status itself fails and hides navigation', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({ type: 'about:blank', title: 'down' }, { status: 503 }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ type: 'about:blank', title: 'down' }, { status: 503 }),
+      ),
+      http.get(`${ORIGIN}/readyz`, () =>
+        HttpResponse.json({ status: 'degraded', checks: {} }),
+      ),
+    )
+
+    await renderWithProviders(
+      <ServiceUnavailablePage probeIntervalMs={60_000} onRetry={() => undefined} />,
+      ['common', 'public'],
+    )
+
+    // The degraded header renders no nav entries and the footer degrades to
+    // the minimal copyright line; neither blocks the error heading.
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
+      'Service temporarily unavailable',
+    )
+    expect(screen.queryByRole('navigation', { name: 'Public pages' })).toBeNull()
+    expect(screen.getByRole('contentinfo').textContent).toContain('NewTG')
+  })
+})
+
+describe('runtime 401 request_id hand-off (P1-5)', () => {
+  it('shows the stashed request_id once and clears it immediately', async () => {
+    statusHandler()
+    meUnauthorized()
+    globalThis.sessionStorage?.setItem(UNAUTHORIZED_REQUEST_ID_KEY, 'req_live_401')
+
+    renderAt('/401')
+
+    expect(await screen.findByDisplayValue('req_live_401')).toBeTruthy()
+    // Read-once: a reload must not replay a stale identifier.
+    expect(
+      globalThis.sessionStorage?.getItem(UNAUTHORIZED_REQUEST_ID_KEY),
+    ).toBeNull()
+  })
+
+  it('shows no request_id row when nothing was stashed', async () => {
+    statusHandler()
+    meUnauthorized()
+    renderAt('/401')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Your session has expired' }),
+    ).toBeTruthy()
+    expect(screen.queryByDisplayValue(/req_/)).toBeNull()
+  })
+})
+
+describe('503 status page link sanitization (P2)', () => {
+  it('drops a non-http(s) site.status_page_url on the /503 route', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({
+          ...PUBLIC_STATUS,
+          site: { status_page_url: 'javascript:alert(1)' },
+        }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ type: 'about:blank', title: 'Unauthorized' }, { status: 401 }),
+      ),
+      http.get(`${ORIGIN}/readyz`, () =>
+        HttpResponse.json({ status: 'degraded', checks: {} }),
+      ),
+    )
+
+    renderAt('/503')
+    expect(
+      await screen.findByRole('heading', { name: 'Service temporarily unavailable' }),
+    ).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'View status page' })).toBeNull()
+  })
+})
+
+describe('route mapping', () => {
   it('renders the shared 404 page for an unmatched path', async () => {
     statusHandler()
     renderAt('/no-such-page')

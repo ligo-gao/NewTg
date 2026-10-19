@@ -676,4 +676,124 @@ describe('SettingsShell contract', () => {
     })
     expect(await screen.findByText('Not configured')).toBeTruthy()
   })
+
+  it('confirms a non-boolean dangerous text setting registered as `on` (P0-1)', async () => {
+    // `danger_direction:'on'` is boolean vocabulary, but the backend treats
+    // any change to a non-boolean key as risky. Interpreting `on` as "value
+    // becomes true" made string/number/list keys unsavable (400: missing
+    // dangerous_confirmed).
+    const user = userEvent.setup()
+    const stores = {
+      site: {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [
+          item('site.title', 'NewTG'),
+          item('site.home_custom_html', 'before', {
+            dangerous: true,
+            danger_direction: 'on',
+          }),
+        ],
+      } satisfies SectionState,
+      nav: structuredClone(NAV_STATE),
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="site" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const html = await screen.findByLabelText('Custom homepage HTML')
+    await user.clear(html)
+    await user.type(html, '<p>after</p>')
+    const card = screen.getByTestId('settings-section-site')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    // No PUT may leave before confirmation, and the dialog must appear.
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({
+      'site.home_custom_html': '<p>after</p>',
+    })
+    expect(requests[0]?.body?.dangerous_confirmed).toBe(true)
+  })
+
+  it('confirms changed number and text billing keys registered as `on` (P0-1)', async () => {
+    const user = userEvent.setup()
+    const stores = {
+      billing: {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [
+          item('billing.quota_per_unit', 100, {
+            dangerous: true,
+            danger_direction: 'on',
+          }),
+          item('billing.currency_symbol', '$', {
+            dangerous: true,
+            danger_direction: 'on',
+          }),
+          item('billing.display_unit', 'credits'),
+        ],
+      } satisfies SectionState,
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="billing" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const quota = await screen.findByLabelText('Credits per unit of currency')
+    await user.clear(quota)
+    await user.type(quota, '200')
+    const symbol = screen.getByLabelText('Currency symbol')
+    await user.clear(symbol)
+    await user.type(symbol, '¥')
+
+    const card = screen.getByTestId('settings-section-billing')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({
+      'billing.quota_per_unit': 200,
+      'billing.currency_symbol': '¥',
+    })
+    expect(requests[0]?.body?.dangerous_confirmed).toBe(true)
+  })
+
+  it('renders an empty generic list as JSON, not as a lines control (P2)', async () => {
+    // `[].every(...)` is true, so an empty `site.oss_credits` used to pick the
+    // lines control and render an empty textarea. The registry type is a list
+    // of objects; the generic control must preserve the array shape.
+    const stores = {
+      site: {
+        updated_at: '2026-10-19T10:00:00Z',
+        items: [item('site.oss_credits', [], { type: 'list', default: [] })],
+      } satisfies SectionState,
+      nav: structuredClone(NAV_STATE),
+    }
+    installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="site" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const control = (await screen.findByLabelText('site.oss_credits')) as HTMLTextAreaElement
+    expect(control.tagName).toBe('TEXTAREA')
+    expect(control.value).toBe('[]')
+  })
 })

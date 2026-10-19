@@ -240,6 +240,8 @@
   "toast.request_id": "request_id: {requestId}",
   "nav.channels": "Kênh",
   "nav.tokens": "API token",
+  "nav.model_config": "Cấu hình mô hình",
+  "nav.skip": "Chuyển đến nội dung",
   "nav.settings": "Cài đặt",
   "nav.system_status": "Trạng thái hệ thống",
   "nav.operation_logs": "Nhật ký thao tác",

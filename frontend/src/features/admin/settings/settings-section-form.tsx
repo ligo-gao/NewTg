@@ -82,7 +82,14 @@ function genericField(item: SettingsItem): FieldConfig {
     ? 'switch'
     : numberType(item.type)
       ? 'number'
-      : Array.isArray(item.default) && item.default.every((entry) => typeof entry === 'string')
+      // An empty list is not evidence of a line-based control: `[].every(...)`
+      // is vacuously true and previously rendered `site.oss_credits: []` as a
+      // lines textarea (which loses the array-of-objects shape). Only a
+      // non-empty all-string list can pick `lines`/`tags`; everything else
+      // (including an empty list) uses the JSON control.
+      : Array.isArray(item.default) &&
+          item.default.length > 0 &&
+          item.default.every((entry) => typeof entry === 'string')
         ? item.default.every((entry) => String(entry).includes('\n'))
           ? 'lines'
           : 'tags'
@@ -444,6 +451,15 @@ export function SettingsSectionForm({
         serverDirection ??
         fields.find((entry) => entry.key === key)?.dangerDirection ??
         'change'
+      // The server's `on`/`off` vocabulary describes the *boolean* direction.
+      // For non-boolean keys (strings, numbers, lists) the backend treats any
+      // change as risky (`settings/service.go`: non-boolean values cannot be
+      // compared to `true`), so interpreting `on` as "value becomes true"
+      // would never ask for confirmation and the PUT would 400 on
+      // `dangerous_confirmed` being absent. Every changed key in `values` is
+      // already a real change, so any non-boolean edited value is risky.
+      const booleanKey = boolType(item.type)
+      if (!booleanKey) return true
       if (direction === 'off') return value === false
       if (direction === 'on') return value === true
       return !sameValue(value, baselineValue(item))

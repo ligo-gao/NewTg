@@ -5,6 +5,7 @@ import {
 } from '@tanstack/react-router'
 
 import { ErrorFallback } from '@/app/error-boundary'
+import { useErrorPageTranslate } from '@/app/error-page-shell'
 import { NotFoundPage } from '@/app/not-found-page'
 import type { RouterContext } from '@/app/router'
 import { fetchPublicStatus } from '@/lib/public-status'
@@ -12,13 +13,18 @@ import { fetchPublicStatus } from '@/lib/public-status'
 const SETUP_PATH = '/setup'
 
 function RootLayout() {
+  // The router normally mounts inside `AppProviders`, but the root layout is
+  // also reached by tests and by the global fallback path. `useErrorPageTranslate`
+  // falls back to the module-level `translate` (common is the resident
+  // baseline), so the skip link never renders a hardcoded English string.
+  const t = useErrorPageTranslate()
   return (
     <>
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-surface-card focus:px-3 focus:py-2 focus:text-sm focus:text-ink-1 focus:shadow-[var(--focus-ring)]"
       >
-        Skip to content
+        {t('common.nav.skip')}
       </a>
       <Outlet />
     </>

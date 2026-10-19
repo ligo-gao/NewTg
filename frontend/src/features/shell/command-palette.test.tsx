@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
@@ -14,6 +15,9 @@ import {
   vi,
 } from 'vitest'
 
+import { I18nProvider, loadDictionary } from '@/app/providers/i18n'
+import { createQueryClient } from '@/app/providers/query'
+import { PUBLIC_STATUS_QUERY_KEY } from '@/lib/public-status'
 import { renderWithProviders } from '@/test-support/providers'
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -353,6 +357,57 @@ describe('command palette matching and navigation', () => {
       expect(useToastStore.getState().toasts).toHaveLength(1)
     })
     expect(useToastStore.getState().toasts[0]?.tone).toBe('error')
+  })
+})
+
+describe('command palette session routes (web-00 §15.1)', () => {
+  it('lists Model Config and Playground for an ordinary session', async () => {
+    const user = userEvent.setup()
+    const onNavigate = vi.fn()
+    await renderHarness(ME_USER, onNavigate)
+
+    const input = await openPalette()
+    await user.type(input, 'model config')
+    expect(
+      await screen.findByRole('option', { name: /Model Config/ }),
+    ).toBeTruthy()
+    await user.keyboard('{Enter}')
+    expect(onNavigate).toHaveBeenCalledWith('/model-config')
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true })
+    const second = await screen.findByRole('combobox')
+    await user.type(second, 'playground')
+    expect(
+      await screen.findByRole('option', { name: /Playground/ }),
+    ).toBeTruthy()
+  })
+
+  it('hides Playground when nav.modules.chat.playground=false', async () => {
+    installMe(ME_USER)
+    await loadDictionary('en', 'common')
+    const queryClient = createQueryClient()
+    // The root guard seeds this cache before the console mounts; the palette
+    // only reads the snapshot (no extra request).
+    queryClient.setQueryData(PUBLIC_STATUS_QUERY_KEY, {
+      nav: { modules: { chat: { playground: false } } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider modules={['common']}>
+          <CommandPalette open onOpenChange={() => {}} onNavigate={() => {}} />
+        </I18nProvider>
+      </QueryClientProvider>,
+    )
+
+    const input = await screen.findByRole('combobox')
+    await userEvent.setup().type(input, 'playground')
+    await waitFor(() => {
+      expect(screen.queryByRole('option', { name: /Playground/ })).toBeNull()
+    })
+    // The rest of the session pages is unaffected.
+    expect(screen.getByRole('status').textContent).toContain('No results')
   })
 })
 

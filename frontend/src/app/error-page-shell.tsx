@@ -1,4 +1,5 @@
 import {
+  Component,
   useEffect,
   useRef,
   useState,
@@ -6,6 +7,8 @@ import {
 } from 'react'
 
 import { translate, getActiveLocale, type TranslateFn } from '@/app/providers/i18n'
+import { PublicFooter } from '@/features/public/public-footer'
+import { PublicHeader } from '@/features/public/public-header'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { useToastStore } from '@/shared/ui/toast'
@@ -247,6 +250,37 @@ function RequestIdRow({ requestId, t }: RequestIdRowProps) {
   )
 }
 
+/**
+ * Public chrome around the error content (P1-4). Two failure modes must not
+ * block the error itself:
+ *
+ * - the shell can render outside `AppProviders` (the global `ErrorBoundary`
+ *   wraps `AppProviders`), where the header/footer hooks would throw;
+ * - `/api/status` can be down (exactly the 500/503 case), where the header and
+ *   footer already degrade to brand + minimal copyright.
+ *
+ * The boundary catches the first case and renders nothing. The second case is
+ * handled inside `PublicHeader`/`PublicFooter` (degraded nav, no link guesses).
+ */
+class PublicChromeBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(): void {
+    // The error page is the last stop; a broken header must stay silent.
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children
+  }
+}
+
 export interface ErrorPageShellProps {
   status: ErrorStatus
   title: ReactNode
@@ -285,37 +319,45 @@ export function ErrorPageShell({
   }, [])
 
   return (
-    <main
-      id="main"
-      className="flex min-h-screen flex-col items-center justify-center bg-surface-page px-4 py-12 text-ink-1"
-    >
-      <div className="w-full max-w-[560px] text-center">
-        {banner}
-        <StatusIcon status={status} />
-        {/*
-          状态码是页面在 0.5 秒内自我标识的主体（UI §8 图形策略），
-          移动端降为 36/44（00 §5 三档），保留 tabular-nums 防止位数跳动。
-        */}
-        <p className="mt-4 font-mono text-[48px] font-semibold leading-[56px] tabular-nums text-ink-2 max-[767px]:text-[36px] max-[767px]:leading-[44px]">
-          {status}
-        </p>
-        <h1
-          ref={headingRef}
-          tabIndex={-1}
-          className="mt-4 text-xl font-semibold leading-7 text-ink-1 outline-none"
-        >
-          {offline ? t('common.error_page.offline.title') : title}
-        </h1>
-        <div className="mx-auto mt-2 max-w-[80ch] text-sm leading-[22px] text-ink-2">
-          {offline ? t('common.error_page.offline.body') : body}
-        </div>
-        {actions ? (
-          <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
-            {actions}
+    <div className="flex min-h-screen flex-col bg-surface-page text-ink-1">
+      <PublicChromeBoundary>
+        <PublicHeader />
+      </PublicChromeBoundary>
+      <main
+        id="main"
+        className="flex flex-1 flex-col items-center justify-center px-4 py-12"
+      >
+        <div className="w-full max-w-[560px] text-center">
+          {banner}
+          <StatusIcon status={status} />
+          {/*
+            状态码是页面在 0.5 秒内自我标识的主体（UI §8 图形策略），
+            移动端降为 36/44（00 §5 三档），保留 tabular-nums 防止位数跳动。
+          */}
+          <p className="mt-4 font-mono text-[48px] font-semibold leading-[56px] tabular-nums text-ink-2 max-[767px]:text-[36px] max-[767px]:leading-[44px]">
+            {status}
+          </p>
+          <h1
+            ref={headingRef}
+            tabIndex={-1}
+            className="mt-4 text-xl font-semibold leading-7 text-ink-1 outline-none"
+          >
+            {offline ? t('common.error_page.offline.title') : title}
+          </h1>
+          <div className="mx-auto mt-2 max-w-[80ch] text-sm leading-[22px] text-ink-2">
+            {offline ? t('common.error_page.offline.body') : body}
           </div>
-        ) : null}
-        {requestId ? <RequestIdRow requestId={requestId} t={t} /> : null}
-      </div>
-    </main>
+          {actions ? (
+            <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
+              {actions}
+            </div>
+          ) : null}
+          {requestId ? <RequestIdRow requestId={requestId} t={t} /> : null}
+        </div>
+      </main>
+      <PublicChromeBoundary>
+        <PublicFooter />
+      </PublicChromeBoundary>
+    </div>
   )
 }

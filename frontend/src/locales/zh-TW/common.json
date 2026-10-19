@@ -240,6 +240,8 @@
   "toast.request_id": "request_id：{requestId}",
   "nav.channels": "通道",
   "nav.tokens": "API 權杖",
+  "nav.model_config": "模型設定",
+  "nav.skip": "跳至主要內容",
   "nav.settings": "設定",
   "nav.system_status": "系統狀態",
   "nav.operation_logs": "操作日誌",

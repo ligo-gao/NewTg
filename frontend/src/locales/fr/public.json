@@ -175,6 +175,7 @@
   "pricing.unit_k": "Par 1K",
   "pricing.unit_converted": "converti",
   "pricing.dual_currency": "Afficher l'estimation en devise",
+  "pricing.dual_currency_forced": "Les prix sont publiés en CNY ; l'estimation en devise est donc toujours affichée.",
   "pricing.dual_currency_short": "Devise",
   "pricing.recharge_price": "Afficher l'estimation au tarif de recharge",
   "pricing.recharge_price_short": "Prix de recharge",

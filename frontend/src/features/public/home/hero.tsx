@@ -1,7 +1,7 @@
 import type { PublicNav, PublicSite } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-import { navEntryOf } from '../nav-visibility'
+import { isSafePublicHref, navEntryOf } from '../nav-visibility'
 import { SiteBrand } from '../public-header'
 
 export interface HeroSectionProps {
@@ -32,7 +32,10 @@ export function HeroSection({
   onRetry,
 }: HeroSectionProps) {
   const { t } = useI18n()
-  const docsUrl = (site?.docs_url ?? '').trim()
+  const rawDocsUrl = (site?.docs_url ?? '').trim()
+  // Same allowlist as the header/footer: never emit `javascript:`/`data:` or a
+  // protocol-relative href even if a stale row bypassed server validation.
+  const docsUrl = isSafePublicHref(rawDocsUrl) ? rawDocsUrl : ''
   const pricingEnabled = navEntryOf(nav, 'pricing').enabled
 
   return (

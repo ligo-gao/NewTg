@@ -9,6 +9,7 @@ import {
 
 import { meQueryOptions } from '@/lib/session'
 import { writeClipboard } from '@/features/tokens/clipboard'
+import { usePlaygroundEnabled } from '@/features/playground/visibility'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useToastStore } from '@/shared/ui/toast'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -63,6 +64,10 @@ export function CommandPalette({
   const { t } = useI18n()
   const meQuery = useQuery(meQueryOptions())
   const me = meQuery.data
+  // Reads the root guard's `['public','status']` snapshot without a request.
+  // The route guard still protects direct `/playground` links; hiding here
+  // avoids offering a command that would bounce straight back to `/dashboard`.
+  const playgroundEnabled = usePlaygroundEnabled()
 
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -75,6 +80,7 @@ export function CommandPalette({
     )
 
     for (const command of COMMANDS) {
+      if (command.requiresPlayground === true && !playgroundEnabled) continue
       if (!isCommandAllowed(command, me)) continue
       const label = t(command.labelKey)
       const score = matchCommand(command, query, label)
@@ -94,7 +100,7 @@ export function CommandPalette({
       remaining -= limited.length
       return { id, items: limited }
     })
-  }, [me, query, t])
+  }, [me, query, t, playgroundEnabled])
 
   const flatItems = useMemo(
     () => groups.flatMap((group) => group.items),

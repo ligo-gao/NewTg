@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
+import { loadRouteDictionary } from '@/app/providers/i18n'
 import { ServerErrorPage } from '@/app/error-status-page'
 import { sanitizeAuthRedirect } from '@/lib/auth-redirect'
 
@@ -22,6 +23,7 @@ function validateServerErrorSearch(
  */
 export const Route = createFileRoute('/_errors/500')({
   validateSearch: validateServerErrorSearch,
+  loader: () => loadRouteDictionary('public'),
   component: ServerErrorRoute,
 })
 

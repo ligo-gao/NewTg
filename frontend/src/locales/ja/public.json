@@ -175,6 +175,7 @@
   "pricing.unit_k": "1K あたり",
   "pricing.unit_converted": "換算値",
   "pricing.dual_currency": "通貨換算を表示",
+  "pricing.dual_currency_forced": "価格は人民元建てのため、通貨換算は常に表示されます。",
   "pricing.dual_currency_short": "通貨換算",
   "pricing.recharge_price": "チャージ価格の参考値を表示",
   "pricing.recharge_price_short": "チャージ価格",

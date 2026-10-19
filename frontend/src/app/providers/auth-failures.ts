@@ -42,6 +42,39 @@ const defaultHandlers: AuthFailureHandlers = {
 let handlers: AuthFailureHandlers = { ...defaultHandlers }
 
 /**
+ * One-shot hand-off for the `request_id` of a runtime 401.
+ *
+ * The failing query is what knows the Problem's `request_id`, but the
+ * navigation happens through a handler that only receives the path. Writing
+ * the id into the URL is forbidden (web-00 §8.4: it leaks into history,
+ * referrers and logs), so it travels in `sessionStorage` under a fixed key,
+ * where the `/401` page consumes and immediately removes it. Storage can be
+ * blocked (private mode); both sides fail soft and simply render no id.
+ */
+export const UNAUTHORIZED_REQUEST_ID_KEY = 'newtg.unauthorized.request_id'
+
+export function stashUnauthorizedRequestId(requestId: string | undefined): void {
+  if (requestId === undefined || requestId === '') return
+  try {
+    globalThis.sessionStorage?.setItem(UNAUTHORIZED_REQUEST_ID_KEY, requestId)
+  } catch {
+    // No storage: the error page renders without an id, never with a fake one.
+  }
+}
+
+/** Reads and clears the stashed id so a reload cannot replay a stale one. */
+export function takeUnauthorizedRequestId(): string | undefined {
+  try {
+    const value = globalThis.sessionStorage?.getItem(UNAUTHORIZED_REQUEST_ID_KEY)
+    if (value === null || value === undefined || value === '') return undefined
+    globalThis.sessionStorage?.removeItem(UNAUTHORIZED_REQUEST_ID_KEY)
+    return value
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Many queries can fail together when a session dies (the dashboard fires
  * several). Navigation is idempotent in effect, but a burst of identical
  * redirects is wasteful and can race two router transitions; collapse them.
@@ -90,5 +123,8 @@ export function reportServerError(error: unknown, queryKey: readonly unknown[]):
   const now = Date.now()
   if (now - lastUnauthorizedAt < UNAUTHORIZED_DEBOUNCE_MS) return
   lastUnauthorizedAt = now
+  // Stash only when this error actually wins the debounce and navigates:
+  // a suppressed burst must not overwrite the id of the redirect in flight.
+  stashUnauthorizedRequestId(error.request_id)
   handlers.unauthorized(currentPath())
 }
