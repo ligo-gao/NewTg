@@ -32,31 +32,58 @@ const (
 )
 
 // openAIInputToGeminiEmbedding 把 `/v1/engines/{model}/embeddings` 的
-// OpenAI 风格 `input`（string 或 string[]）翻译成 Gemini `:embedContent`
-// 的 `content.parts[].text`（N2）。非字符串数组元素按基线忽略；没有任何
-// 字符串输入时返回 ok=false（保留原 body，让上游给出明确的参数错误）。
-func openAIInputToGeminiEmbedding(body []byte) ([]byte, bool) {
+// OpenAI 风格 `input`（string 或 string[]）翻译成 Gemini 请求：
+//   - 单输入 → `:embedContent` 的 `content.parts[]`；
+//   - 多输入 → `:batchEmbedContents` 的 `requests[]`（每个输入一个 embedding，
+//     relay-04 §1.1 的语义）；调用方据 batch 选择路径动作。
+//
+// dimensions 若给出则映射为 Gemini `outputDimensionality`（同参数语义）。
+// 没有任何字符串输入时返回 ok=false（保留原 body，让上游给出明确错误）。
+func openAIInputToGeminiEmbedding(body []byte, model string) ([]byte, bool, bool) {
 	var payload struct {
-		Input json.RawMessage `json:"input"`
+		Input      json.RawMessage `json:"input"`
+		Dimensions *int            `json:"dimensions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	texts := jsonStringList(payload.Input)
 	if len(texts) == 0 {
-		return nil, false
+		return nil, false, false
 	}
-	parts := make([]map[string]string, 0, len(texts))
+	outputDim := 0
+	if payload.Dimensions != nil && *payload.Dimensions > 0 {
+		outputDim = *payload.Dimensions
+	}
+	if len(texts) == 1 {
+		content := map[string]any{
+			"content": map[string]any{"parts": []map[string]string{{"text": texts[0]}}},
+		}
+		if outputDim > 0 {
+			content["outputDimensionality"] = outputDim
+		}
+		translated, err := json.Marshal(content)
+		if err != nil {
+			return nil, false, false
+		}
+		return translated, false, true
+	}
+	requests := make([]map[string]any, 0, len(texts))
 	for _, text := range texts {
-		parts = append(parts, map[string]string{"text": text})
+		request := map[string]any{
+			"model":   "models/" + model,
+			"content": map[string]any{"parts": []map[string]string{{"text": text}}},
+		}
+		if outputDim > 0 {
+			request["outputDimensionality"] = outputDim
+		}
+		requests = append(requests, request)
 	}
-	translated, err := json.Marshal(map[string]any{
-		"content": map[string]any{"parts": parts},
-	})
+	translated, err := json.Marshal(map[string]any{"requests": requests})
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
-	return translated, true
+	return translated, true, true
 }
 
 // jsonStringList 把 JSON string / string[] 归一为字符串列表（忽略非字符串

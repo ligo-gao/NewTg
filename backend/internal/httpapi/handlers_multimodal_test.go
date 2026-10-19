@@ -767,7 +767,7 @@ func TestMultimodal_GeminiEmbeddingRoutes(t *testing.T) {
 		body     string
 		wantCode int
 	}{
-		{"/v1/engines/text-embedding-004/embeddings", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK},
+		{"/v1/engines/text-embedding-004/embeddings", "text-embedding-004", `{"input":"hi"}`, http.StatusOK},
 		{"/v1/models/text-embedding-004:embedContent", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK},
 		{"/v1beta/models/text-embedding-004:batchEmbedContents", "text-embedding-004", `{"requests":[]}`, http.StatusOK},
 		{"/v1/models/text-embedding-004:countTokens", "", `{}`, http.StatusNotFound},
@@ -813,6 +813,39 @@ func TestMultimodal_GeminiEmbeddingLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := doMultimodal(t, handler, multimodalRequest{
 				path: "/v1beta/models/text-embedding-004:embedContent", body: tc.body, contentType: "application/json",
+			}, true)
+			if resp.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%s", resp.Code, tc.want, resp.Body.String())
+			}
+		})
+	}
+}
+
+// TestMultimodal_GeminiEnginesEntryBounds（N3 残余）：engines 路由必须与
+// 主嵌入入口同强度校验 input（非空、批量、单条字节）。
+func TestMultimodal_GeminiEnginesEntryBounds(t *testing.T) {
+	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
+	batch := make([]string, multimodal.MaxEmbeddingBatch+1)
+	for i := range batch {
+		batch[i] = "x"
+	}
+	batchBody, _ := json.Marshal(map[string]any{"input": batch})
+	oversized, _ := json.Marshal(map[string]any{"input": strings.Repeat("a", multimodal.MaxEmbeddingInputBytes+1)})
+	cases := []struct {
+		name string
+		body []byte
+		want int
+	}{
+		{"empty-input", []byte(`{"input":""}`), http.StatusBadRequest},
+		{"missing-input", []byte(`{"model":"m"}`), http.StatusBadRequest},
+		{"batch-too-large", batchBody, http.StatusBadRequest},
+		{"item-too-large", oversized, http.StatusBadRequest},
+		{"valid", []byte(`{"input":["a","b"],"dimensions":256}`), http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doMultimodal(t, handler, multimodalRequest{
+				path: "/v1/engines/text-embedding-004/embeddings", body: tc.body, contentType: "application/json",
 			}, true)
 			if resp.Code != tc.want {
 				t.Fatalf("status = %d, want %d; body=%s", resp.Code, tc.want, resp.Body.String())

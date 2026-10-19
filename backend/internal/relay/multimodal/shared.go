@@ -157,6 +157,7 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 	if upstreamModel == "" {
 		upstreamModel = req.Model
 	}
+	path := a.plan.path
 	if a.plan.multipart {
 		// F10：multipart 也必须做模型映射（编辑/转写/翻译）。重新编码表单
 		// 时保持原 boundary 与 part 顺序，内容逐字节复制。
@@ -177,9 +178,14 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 			body = rewriteJSONModel(body, upstreamModel)
 		} else if a.plan.geminiEngines {
 			// N2：`/v1/engines/{model}/embeddings` 的入站是 OpenAI 风格
-			// `input`，必须翻译成 Gemini `content.parts`。
-			if translated, ok := openAIInputToGeminiEmbedding(body); ok {
+			// `input`，翻译成 Gemini `content.parts`；多输入 → 批量端点。
+			if translated, batch, ok := openAIInputToGeminiEmbedding(body, a.plan.geminiModel); ok {
 				body = translated
+				action := ":embedContent"
+				if batch {
+					action = ":batchEmbedContents"
+				}
+				path = "/v1beta/models/" + a.plan.geminiModel + action
 			}
 		}
 		if err := validatePayloadForUpstream(a.plan, body); err != nil {
@@ -187,7 +193,6 @@ func (a *endpointAdapter) BuildRequest(rc *contract.RelayContext, req *contract.
 		}
 	}
 
-	path := a.plan.path
 	var query url.Values
 	if channelType == contract.ChannelTypeAzure {
 		// Azure 的图像/音频端点挂在部署名之下；api-version 与 chat 路径同口径
@@ -409,10 +414,15 @@ func joinBaseURL(baseURL, requestPath string, query url.Values) (string, error) 
 		return "", classified(contract.ErrChannelConfig, "multimodal: invalid API base URL")
 	}
 	basePath := strings.TrimRight(parsed.Path, "/")
-	for _, version := range []string{"/v1beta", "/v1"} {
-		if strings.HasSuffix(basePath, version) && strings.HasPrefix(requestPath, version+"/") {
-			requestPath = strings.TrimPrefix(requestPath, version)
-			break
+	// 任意版本段对之间去重：base 以 /v1、/v1beta、/v1alpha 等结尾时，
+	// 客户端路径若再以任一版本段开头（例如 base=/v1 + /v1beta/...），
+	// 去掉客户端路径的版本段，避免 /v1/v1beta/...（N3 残余）。
+	if baseSegments := strings.Split(strings.Trim(basePath, "/"), "/"); len(baseSegments) > 0 &&
+		isVersionSegment(baseSegments[len(baseSegments)-1]) {
+		trimmed := strings.TrimPrefix(requestPath, "/")
+		parts := strings.SplitN(trimmed, "/", 2)
+		if len(parts) == 2 && isVersionSegment(parts[0]) {
+			requestPath = "/" + parts[1]
 		}
 	}
 	parsed.Path = basePath + requestPath
@@ -420,6 +430,43 @@ func joinBaseURL(baseURL, requestPath string, query url.Values) (string, error) 
 		parsed.RawQuery = query.Encode()
 	}
 	return parsed.String(), nil
+}
+
+// isVersionSegment 判断单个路径段是否是 API 版本段（v1 / v1beta / v1alpha
+// / v1beta1 / v2 等）。
+func isVersionSegment(segment string) bool {
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	index := 1
+	for index < len(segment) && segment[index] >= '0' && segment[index] <= '9' {
+		index++
+	}
+	if index == 1 {
+		return false
+	}
+	// s[1:index] 是主版本号；其后只允许 alpha/beta 或 alphaN/betaN。
+	rest := segment[index:]
+	switch rest {
+	case "", "alpha", "beta":
+		return true
+	}
+	for _, marker := range []string{"alpha", "beta"} {
+		if !strings.HasPrefix(rest, marker) {
+			continue
+		}
+		suffix := rest[len(marker):]
+		if suffix == "" {
+			return true
+		}
+		for i := 0; i < len(suffix); i++ {
+			if suffix[i] < '0' || suffix[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // endpointPath 返回端点族的上游路径（relay-04 §0.1）。

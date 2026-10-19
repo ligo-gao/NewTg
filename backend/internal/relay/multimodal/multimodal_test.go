@@ -1019,8 +1019,65 @@ func TestTranscriptionPartialUsageAddsAudio(t *testing.T) {
 }
 
 // TestGeminiEnginesPathTranslates（N2）：/v1/engines/{model}/embeddings 的
-// OpenAI input 必须翻译为 Gemini :embedContent 的 content.parts。
+// 多输入必须翻译为 :batchEmbedContents 的 requests[]（每个输入一个 embedding），
+// 并映射 dimensions → outputDimensionality。
 func TestGeminiEnginesPathTranslates(t *testing.T) {
+	var (
+		seenPath string
+		seenBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		_, _ = w.Write([]byte(`{"embeddings":[{"values":[0.1]},{"values":[0.2]}]}`))
+	}))
+	defer server.Close()
+	billing := &fakeBilling{}
+	dispatcher := NewDispatcher(Options{
+		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
+			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
+		},
+		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
+			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeGemini, APIBase: server.URL, Credential: "g"}, nil
+		},
+		Dispatch: adapters.Dispatch,
+		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Client:   server.Client(),
+		WriteError: func(w http.ResponseWriter, requestID string, err error) {
+			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
+		},
+	})
+	body := []byte(`{"input":["one","two"],"dimensions":256}`)
+	path := "/v1/engines/text-embedding-004/embeddings"
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	rc := &contract.RelayContext{RequestID: "eng", OriginModel: "text-embedding-004", RequestPath: path, Request: &contract.Request{Model: "text-embedding-004", Raw: body}}
+	recorder := httptest.NewRecorder()
+	dispatcher.Handle(recorder, request, rc, contract.EndpointEmbeddings)
+
+	if seenPath != "/v1beta/models/text-embedding-004:batchEmbedContents" {
+		t.Fatalf("upstream path = %q", seenPath)
+	}
+	requests, _ := seenBody["requests"].([]any)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v, want 2", seenBody["requests"])
+	}
+	first, _ := requests[0].(map[string]any)
+	if first["outputDimensionality"] != float64(256) {
+		t.Fatalf("outputDimensionality = %#v, want 256", first["outputDimensionality"])
+	}
+	if _, exists := seenBody["model"]; exists {
+		t.Fatalf("translated batch body must not carry a top-level model: %#v", seenBody)
+	}
+	// 无 usage 时用 OpenAI 形状的 input 做本地估算（不是 Gemini parts）。
+	_, _, facts, _ := billing.snapshot()
+	if len(facts) != 1 || facts[0].Usage.Prompt <= 0 {
+		t.Fatalf("engines estimate = %+v, want Prompt>0 from input", facts)
+	}
+}
+
+// TestGeminiEnginesSingleInput：单输入 → :embedContent + content.parts。
+func TestGeminiEnginesSingleInput(t *testing.T) {
 	var (
 		seenPath string
 		seenBody map[string]any
@@ -1046,37 +1103,42 @@ func TestGeminiEnginesPathTranslates(t *testing.T) {
 			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
 		},
 	})
-	body := []byte(`{"input":["one","two"]}`)
+	body := []byte(`{"input":"one"}`)
 	path := "/v1/engines/text-embedding-004/embeddings"
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	rc := &contract.RelayContext{RequestID: "eng", OriginModel: "text-embedding-004", RequestPath: path, Request: &contract.Request{Model: "text-embedding-004", Raw: body}}
-	recorder := httptest.NewRecorder()
-	dispatcher.Handle(recorder, request, rc, contract.EndpointEmbeddings)
-
+	dispatcher.Handle(httptest.NewRecorder(), request, rc, contract.EndpointEmbeddings)
 	if seenPath != "/v1beta/models/text-embedding-004:embedContent" {
 		t.Fatalf("upstream path = %q", seenPath)
 	}
 	content, _ := seenBody["content"].(map[string]any)
 	parts, _ := content["parts"].([]any)
-	if len(parts) != 2 {
-		t.Fatalf("content.parts = %#v, want 2 text parts", content)
-	}
-	if _, exists := seenBody["model"]; exists {
-		t.Fatalf("translated body must not carry a top-level model: %#v", seenBody)
+	if len(parts) != 1 {
+		t.Fatalf("content.parts = %#v, want 1", content)
 	}
 }
 
-// TestJoinBaseURLDedupesVersion（N3）：base 已以 /v1beta 结尾时不得拼出
-// /v1beta/v1beta/...。
+// TestJoinBaseURLDedupesVersion（N3）：base 与客户端路径的任意版本段对
+// （/v1、/v1beta、/v1alpha 等）都不得拼出双版本。
 func TestJoinBaseURLDedupesVersion(t *testing.T) {
-	got, err := joinBaseURL("https://generativelanguage.googleapis.com/v1beta", "/v1beta/models/m:embedContent", nil)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		base, path, want string
+	}{
+		{"https://x/v1beta", "/v1beta/models/m:embedContent", "https://x/v1beta/models/m:embedContent"},
+		{"https://x/v1", "/v1beta/models/m:embedContent", "https://x/v1/models/m:embedContent"},
+		{"https://x/v1alpha", "/v1/models/m:embedContent", "https://x/v1alpha/models/m:embedContent"},
+		{"https://x/v1beta1", "/v1beta/models/m:embedContent", "https://x/v1beta1/models/m:embedContent"},
+		{"https://x", "/v1beta/models/m:embedContent", "https://x/v1beta/models/m:embedContent"},
 	}
-	want := "https://generativelanguage.googleapis.com/v1beta/models/m:embedContent"
-	if got != want {
-		t.Fatalf("joinBaseURL = %q, want %q", got, want)
+	for _, tc := range cases {
+		got, err := joinBaseURL(tc.base, tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Fatalf("joinBaseURL(%q,%q) = %q, want %q", tc.base, tc.path, got, tc.want)
+		}
 	}
 }
 

@@ -344,6 +344,9 @@ func validateMultimodalEntry(endpoint contract.Endpoint, path string, contentTyp
 		return "", nil
 	case contract.EndpointEmbeddings:
 		if model, ok := geminiEmbeddingModel(path); ok {
+			if strings.HasPrefix(path, "/v1/engines/") {
+				return validateGeminiEnginesJSON(model, body)
+			}
 			return validateGeminiEmbeddingJSON(model, body)
 		}
 		return validateEmbeddingsJSON(body)
@@ -372,6 +375,68 @@ func geminiEmbeddingModel(path string) (string, bool) {
 	// N6：路径形态的唯一实现位于 multimodal 包，避免入口与 dispatcher
 	// 两处各写一份后漂移。
 	return multimodal.GeminiEmbeddingModel(path)
+}
+
+// validateGeminiEnginesJSON 校验 `/v1/engines/{model}/embeddings` 的
+// OpenAI 风格 body：input 必填（string 或 string[]），批量/单条字节与
+// dimensions 上界与主嵌入入口一致（N3 残余：此路由此前完全绕过字段校验）。
+func validateGeminiEnginesJSON(model string, body []byte) (string, error) {
+	var payload struct {
+		Input      json.RawMessage    `json:"input"`
+		Dimensions optionalJSONNumber `json:"dimensions"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	input := bytes.TrimSpace(payload.Input)
+	if len(input) == 0 || string(input) == "null" {
+		return "", invalidMultimodalEntry("input is required")
+	}
+	switch input[0] {
+	case '"':
+		var text string
+		if err := json.Unmarshal(input, &text); err != nil || text == "" {
+			return "", invalidMultimodalEntry("input is required")
+		}
+		if len(text) > multimodal.MaxEmbeddingInputBytes {
+			return "", invalidMultimodalEntry("input exceeds the 1 MiB limit")
+		}
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(input, &items); err != nil || len(items) == 0 {
+			return "", invalidMultimodalEntry("input is required")
+		}
+		if len(items) > multimodal.MaxEmbeddingBatch {
+			return "", invalidMultimodalEntry("input batch exceeds 2048 items")
+		}
+		found := false
+		for _, item := range items {
+			item = bytes.TrimSpace(item)
+			if len(item) == 0 || item[0] != '"' {
+				continue
+			}
+			var text string
+			if json.Unmarshal(item, &text) != nil {
+				continue
+			}
+			found = true
+			if len(text) > multimodal.MaxEmbeddingInputBytes {
+				return "", invalidMultimodalEntry("input item exceeds the 1 MiB limit")
+			}
+		}
+		if !found {
+			return "", invalidMultimodalEntry("input is required")
+		}
+	default:
+		return "", invalidMultimodalEntry("input must be a string or an array of strings")
+	}
+	if payload.Dimensions.Set {
+		value, ok := jsonNumberInt(payload.Dimensions)
+		if !ok || value < 1 || value > multimodal.MaxEmbeddingDimensions {
+			return "", invalidMultimodalEntry("dimensions must be an integer in [1, 8192]")
+		}
+	}
+	return model, nil
 }
 
 // validateGeminiEmbeddingJSON 校验 Gemini 语义嵌入请求。

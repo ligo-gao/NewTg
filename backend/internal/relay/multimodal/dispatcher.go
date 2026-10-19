@@ -525,7 +525,10 @@ func (d *Dispatcher) serveJSON(w http.ResponseWriter, rc *contract.RelayContext,
 	if !usageHasFact(fact.Usage) {
 		switch plan.endpoint {
 		case contract.EndpointEmbeddings:
-			if plan.geminiPath {
+			// engines 路由的请求体是 OpenAI 形状（input），即使它走 Gemini
+			// 语义上游；只有原生 :embedContent/:batchEmbedContents 才是
+			// Gemini parts 形状。
+			if plan.geminiPath && !plan.geminiEngines {
 				fact.Usage = estimatedTextUsage(estimateGeminiEmbeddingText(plan.rawBody))
 			} else {
 				fact.Usage = estimatedTextUsage(estimateEmbeddingText(plan.rawBody))
