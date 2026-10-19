@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // 本文件是 M5 Task 5（worker 订单过期回收 + 支付宝轮询兜底）的验收。
@@ -72,10 +74,11 @@ func countOrderCredits(t *testing.T, db *sql.DB, orderID int64) int64 {
 // expiryAlipayServer 是可编排的支付宝网关桩：按 out_trade_no 返回查询状态，
 // 并可按需让 query/close 失败。签名往返复用 topup_test.go 的 RSA 工具。
 type expiryAlipayServer struct {
-	mu        sync.Mutex
-	query     map[string]string // out_trade_no -> trade_status
-	queryFail map[string]bool   // out_trade_no -> HTTP 500
-	closeFail bool
+	mu         sync.Mutex
+	query      map[string]string // out_trade_no -> trade_status
+	queryFail  map[string]bool   // out_trade_no -> HTTP 500
+	closeFail  bool
+	closeCalls int
 }
 
 func (e *expiryAlipayServer) setQuery(txn, status string) {
@@ -125,6 +128,9 @@ func newExpiryAlipayServer(t *testing.T, privatePEM, publicPEM string,
 			node = fmt.Sprintf(`{"code":"10000","msg":"Success","out_trade_no":%q,`+
 				`"trade_status":%q,"total_amount":"10.00"}`, outTradeNo, status)
 		case "alipay.trade.close":
+			state.mu.Lock()
+			state.closeCalls++
+			state.mu.Unlock()
 			if closeFail {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
@@ -369,6 +375,237 @@ func TestExpiryAlipayPollProviderErrorContinues(t *testing.T) {
 	}
 	if got := orderStatus(t, db, goodID); got != string(OrderSucceeded) {
 		t.Fatalf("good order status = %q, want succeeded", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 到期前的最终收款核实（复审 Important #1）
+// ---------------------------------------------------------------------------
+
+func newExpiryAlipayServiceForTest(t *testing.T, gormDB *gorm.DB,
+	serverURL, privatePEM, publicPEM string) *TopupService {
+	t.Helper()
+	svc, err := NewTopupService(TopupServiceConfig{
+		DB:     gormDB,
+		Config: alipayTestConfig(serverURL, "app_test", privatePEM, publicPEM),
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	return svc
+}
+
+// TestExpiryPrecheckPaidOrderCreditsInsteadOfExpiring：订单在到期扫描时
+// 已被渠道确认付款（最后一个轮询间隙内支付）→ 入账，绝不置 expired，
+// 且重复扫描不重复入账。
+func TestExpiryPrecheckPaidOrderCreditsInsteadOfExpiring(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	privatePEM, publicPEM := alipayTestKeys(t)
+	state := &expiryAlipayServer{query: map[string]string{}, queryFail: map[string]bool{}}
+	server := newExpiryAlipayServer(t, privatePEM, publicPEM, state)
+	svc := newExpiryAlipayServiceForTest(t, gormDB, server.URL, privatePEM, publicPEM)
+
+	now := time.Now().UTC()
+	txn := "TGPRECHECKPAID1"
+	state.setQuery(txn, "TRADE_SUCCESS")
+	orderID := insertExpiryOrder(t, db, userID, ProviderAlipay,
+		string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+	count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("ExpirePendingOrders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expired count = %d, want 0 (paid order must be credited)", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderSucceeded) {
+		t.Fatalf("order status = %q, want succeeded", got)
+	}
+	if got := userBalance(t, db, userID); got != 1000 {
+		t.Fatalf("balance = %d, want 1000", got)
+	}
+	if got := countOrderCredits(t, db, orderID); got != 1 {
+		t.Fatalf("credit rows = %d, want 1", got)
+	}
+
+	// 重复扫描：已是终态，不再命中 pending；余额不变。
+	if _, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry); err != nil {
+		t.Fatalf("second ExpirePendingOrders: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 1000 {
+		t.Fatalf("balance after second scan = %d, want 1000", got)
+	}
+}
+
+// TestExpiryPrecheckTradeClosedExpiresWithoutClose：渠道明确 TRADE_CLOSED
+// 时直接过期，不再重复调用 trade.close。
+func TestExpiryPrecheckTradeClosedExpiresWithoutClose(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	privatePEM, publicPEM := alipayTestKeys(t)
+	state := &expiryAlipayServer{query: map[string]string{}, queryFail: map[string]bool{}}
+	server := newExpiryAlipayServer(t, privatePEM, publicPEM, state)
+	svc := newExpiryAlipayServiceForTest(t, gormDB, server.URL, privatePEM, publicPEM)
+
+	now := time.Now().UTC()
+	txn := "TGPRECHECKCLOSED1"
+	state.setQuery(txn, "TRADE_CLOSED")
+	orderID := insertExpiryOrder(t, db, userID, ProviderAlipay,
+		string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+	count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("ExpirePendingOrders: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expired count = %d, want 1", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderExpired) {
+		t.Fatalf("order status = %q, want expired", got)
+	}
+	state.mu.Lock()
+	calls := state.closeCalls
+	state.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("trade.close called %d times for TRADE_CLOSED order, want 0", calls)
+	}
+}
+
+// TestExpiryPrecheckStillUnpaidExpires：渠道确认仍未付款 → 正常过期，
+// 且先尝试关单（close 失败也不影响，见上一个用例）。
+func TestExpiryPrecheckStillUnpaidExpires(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	privatePEM, publicPEM := alipayTestKeys(t)
+	state := &expiryAlipayServer{query: map[string]string{}, queryFail: map[string]bool{}}
+	server := newExpiryAlipayServer(t, privatePEM, publicPEM, state)
+	svc := newExpiryAlipayServiceForTest(t, gormDB, server.URL, privatePEM, publicPEM)
+
+	now := time.Now().UTC()
+	txn := "TGPRECHECKUNPAID1"
+	orderID := insertExpiryOrder(t, db, userID, ProviderAlipay,
+		string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+	count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("ExpirePendingOrders: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expired count = %d, want 1", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderExpired) {
+		t.Fatalf("order status = %q, want expired", got)
+	}
+}
+
+// TestExpiryPrecheckProviderErrorKeepsPending：到期时渠道查询失败 →
+// 本轮保持 pending（不能把可能已付款的订单关掉），下一轮恢复后正常过期。
+func TestExpiryPrecheckProviderErrorKeepsPending(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	privatePEM, publicPEM := alipayTestKeys(t)
+	state := &expiryAlipayServer{query: map[string]string{}, queryFail: map[string]bool{}}
+	server := newExpiryAlipayServer(t, privatePEM, publicPEM, state)
+	svc := newExpiryAlipayServiceForTest(t, gormDB, server.URL, privatePEM, publicPEM)
+
+	now := time.Now().UTC()
+	txn := "TGPRECHECKERROR1"
+	state.setQueryFail(txn)
+	orderID := insertExpiryOrder(t, db, userID, ProviderAlipay,
+		string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+	count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("ExpirePendingOrders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expired count = %d, want 0 on provider error", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderPending) {
+		t.Fatalf("order status = %q, want pending after query error", got)
+	}
+
+	// 渠道恢复且确认未付款：下一轮可以正常过期。
+	state.mu.Lock()
+	delete(state.queryFail, txn)
+	state.query[txn] = "WAIT_BUYER_PAY"
+	state.mu.Unlock()
+	count, err = ExpirePendingOrders(context.Background(), gormDB, svc, now.Add(time.Minute), OrderExpiry)
+	if err != nil {
+		t.Fatalf("second ExpirePendingOrders: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("second scan expired %d, want 1", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderExpired) {
+		t.Fatalf("order status = %q, want expired", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 单轮批量上限与跨轮次排空（复审 Important #2）
+// ---------------------------------------------------------------------------
+
+// TestExpiryBatchDrainsAcrossRounds：积压超过 ExpiryScanBatchSize 时，
+// 每轮只处理上限条（最旧优先），剩余订单由后续轮次继续且不跳过任何行。
+func TestExpiryBatchDrainsAcrossRounds(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	const extra = 5
+	total := ExpiryScanBatchSize + extra
+	now := time.Now().UTC()
+	// 一条 SQL 造积压：created_at 从 31 分钟前开始逐秒更早，全部命中扫描。
+	if _, err := db.Exec(`
+		INSERT INTO orders (user_id, provider, amount, currency, status,
+		                    idempotency_key, created_at)
+		SELECT $1, 'stripe', 1000, 'CNY', 'pending',
+		       'expiry-batch-' || $2 || '-' || g,
+		       $3::timestamptz - (g || ' seconds')::interval
+		FROM generate_series(1, $4) AS g`,
+		userID, fmt.Sprintf("%d", time.Now().UnixNano()), now.Add(-31*time.Minute), total); err != nil {
+		t.Fatalf("insert batch orders: %v", err)
+	}
+
+	first, err := ExpirePendingOrders(context.Background(), gormDB, nil, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+	if first != ExpiryScanBatchSize {
+		t.Fatalf("first batch expired %d, want limit %d", first, ExpiryScanBatchSize)
+	}
+	second, err := ExpirePendingOrders(context.Background(), gormDB, nil, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("second batch: %v", err)
+	}
+	if second != extra {
+		t.Fatalf("second batch expired %d, want %d", second, extra)
+	}
+	third, err := ExpirePendingOrders(context.Background(), gormDB, nil, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("third batch: %v", err)
+	}
+	if third != 0 {
+		t.Fatalf("third batch expired %d, want 0", third)
+	}
+	var pending int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM orders WHERE user_id = $1 AND status = 'pending'`,
+		userID).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending orders left = %d, want 0 (no row skipped)", pending)
 	}
 }
 

@@ -41,6 +41,13 @@ const (
 	// 更年轻的交易可能仍在用户扫码过程中，查询只会得到 WAIT_BUYER_PAY，
 	// 白白放大渠道请求量与限流风险。
 	AlipayPollMinAge = 5 * time.Minute
+
+	// ExpiryScanBatchSize 是单轮扫描的确定性上限（订单过期与支付宝轮询
+	// 共用）。为什么必须限量：两条扫描串行跑在同一 goroutine，积压或渠道
+	// 变慢时单轮可能超过 60s/2min 的契约周期；time.Ticker 会静默丢 tick，
+	// 周期就失去保证。LIMIT + ORDER BY(created_at, id) 让每轮工作量有界，
+	// 未处理的行由下一轮继续（最旧优先，不会跳过或饿死新行以外的行）。
+	ExpiryScanBatchSize = 200
 )
 
 // ExpiryWorkerDeps 是订单过期循环的依赖与可调参数。
@@ -173,9 +180,10 @@ func RunExpiryLoop(ctx context.Context, deps ExpiryWorkerDeps) error {
 // 返回本次实际迁移的数量（affected>0 的订单数）。查询失败返回 error；
 // 单个订单的关单失败或条件 UPDATE 落败只记录、不影响同轮其它订单。
 //
-// 顺序刻意是「先尽力关单、再条件 UPDATE」：F-04-07 要求支付宝订单先调
-// alipay.trade.close；关单失败也必须置 expired（异常流程原文），所以
-// closeProviderOrder 只告警，绝不中断后面的 DB 迁移。
+// 每轮最多处理 ExpiryScanBatchSize 条（最旧优先），积压由后续轮次继续。
+// 顺序是「支付宝先做最终收款核实 → 尽力关单 → 条件 UPDATE」：核实确认
+// 已付款的订单走入账而不是过期；关单失败仍必须置 expired（F-04-07
+// 异常流程原文），所以 closeProviderOrder 只告警，绝不中断 DB 迁移。
 func ExpirePendingOrders(ctx context.Context, db *gorm.DB, topup *TopupService,
 	now time.Time, expiry time.Duration) (int, error) {
 
@@ -190,7 +198,9 @@ func ExpirePendingOrders(ctx context.Context, db *gorm.DB, topup *TopupService,
 	var orders []store.Order
 	err := db.WithContext(ctx).
 		Where("status = ? AND created_at < ?", string(OrderPending), cutoff).
-		Order("id").Find(&orders).Error
+		Order("created_at").Order("id").
+		Limit(ExpiryScanBatchSize).
+		Find(&orders).Error
 	if err != nil {
 		return 0, err
 	}
@@ -202,10 +212,31 @@ func ExpirePendingOrders(ctx context.Context, db *gorm.DB, topup *TopupService,
 	}
 	for i := range orders {
 		order := &orders[i]
-		// 渠道关闭是 best-effort：Topup 为 nil 的纯 DB 单测直接跳过。
-		if topup != nil {
-			topup.closeProviderOrder(ctx, order)
+
+		// 资金安全（复审 Important #1）：到期前对支付宝订单做最后一次
+		// alipay.trade.query。用户可能在最后一个轮询间隙或渠道故障期间完成
+		// 支付；一旦置 expired，轮询不再查它、入账与人工完成也都拒绝非
+		// pending 订单——就会「扣款不到账且无补救路径」。因此：
+		//   paid     → 走同一幂等入账，绝不置 expired；
+		//   closed   → 置 expired（渠道已关单，无需再 close）；
+		//   unpaid   → 正常过期；
+		//   查询错误 → 本轮保持 pending，下一轮重试（fail-safe 方向是钱）。
+		disposition := expireAfterClose
+		if topup != nil && order.Provider == ProviderAlipay {
+			disposition = topup.alipayExpiryDisposition(ctx, order)
 		}
+		switch disposition {
+		case keepPending:
+			continue
+		case expireAfterClose:
+			// 渠道关闭是 best-effort：关闭失败也只告警，不阻塞 DB 迁移。
+			if topup != nil {
+				topup.closeProviderOrder(ctx, order)
+			}
+		case expireWithoutClose:
+			// TRADE_CLOSED：渠道侧已是关闭态，重复 close 只会产生噪声。
+		}
+
 		res := db.WithContext(ctx).Exec(
 			`UPDATE orders SET status = 'expired', updated_at = now()
 			 WHERE id = ? AND status = 'pending'`, order.ID)
@@ -221,6 +252,74 @@ func ExpirePendingOrders(ctx context.Context, db *gorm.DB, topup *TopupService,
 		}
 	}
 	return expired, nil
+}
+
+// expiryDisposition 是「到期时如何处理该订单」的三态判定结果。
+type expiryDisposition int
+
+const (
+	// expireAfterClose：未付款/未关闭的订单——先 best-effort 关单再置 expired。
+	expireAfterClose expiryDisposition = iota
+	// expireWithoutClose：渠道已明确 TRADE_CLOSED——直接置 expired。
+	expireWithoutClose
+	// keepPending：金额已支付但入账未完成，或渠道状态不可判定——本轮不动，
+	// 绝不能用「过期」切断唯一的资金补救路径。
+	keepPending
+)
+
+// alipayExpiryDisposition 在订单到期前做最后一次渠道核实（复审 Important #1）。
+//
+// 这不是「正常轮询」的重复：轮询只覆盖 created_at 在 5–30 分钟窗口的订单，
+// 而付款可能恰好发生在最后一个轮询 tick 与 30 分钟扫描之间，或发生在渠道
+// 查询故障期间。到期扫描是最后一道防线，必须在写 expired 前确认渠道确实
+// 未收款。
+func (s *TopupService) alipayExpiryDisposition(ctx context.Context, order *store.Order) expiryDisposition {
+	if order.ProviderTxnID == nil || strings.TrimSpace(*order.ProviderTxnID) == "" {
+		// 没有渠道单号就无法核实；宁可保持 pending 等人工排查，也不在
+		// 可能已扣款的情况下关闭订单。
+		s.log.Warn("expiry skipped: alipay order has no provider txn id", "order_id", order.ID)
+		return keepPending
+	}
+	txn := *order.ProviderTxnID
+	trade, err := s.QueryAlipayTrade(ctx, txn)
+	if err != nil {
+		// 渠道故障：不确认收款就不能关闭（fail-safe 方向是钱）。
+		// 下一轮扫描会重试；若渠道恢复后确认已付，则走同一入账路径。
+		s.log.Warn("alipay expiry pre-check failed; keeping order pending",
+			"order_id", order.ID, "error", err)
+		return keepPending
+	}
+	switch {
+	case AlipayTradePaid(trade.TradeStatus):
+		cents, err := yuanToCents(trade.TotalAmount)
+		if err != nil {
+			// 已付款但金额不可解析：保持 pending 等待人工核对，
+			// 绝不按订单金额猜测入账，也绝不置 expired。
+			s.log.Error("alipay paid order has unparsable amount; keeping pending",
+				"order_id", order.ID, "error", err)
+			return keepPending
+		}
+		raw := marshalWhitelisted(map[string]any{
+			"provider":     ProviderAlipay,
+			"source":       "expiry_precheck",
+			"out_trade_no": txn,
+			"trade_status": trade.TradeStatus,
+			"total_amount": trade.TotalAmount,
+		})
+		// 与 webhook/轮询同一条幂等入账路径：条件 UPDATE + ApplyTx。
+		// 即使 settle 失败（如并发已入账/瞬时 DB 错误）也不置 expired：
+		// 钱的路径优先，下一轮扫描会再次核实。
+		if err := s.settleOrder(ctx, order, cents, AlipayCurrency, raw); err != nil {
+			s.log.Error("alipay expiry pre-check settle failed; keeping order pending",
+				"order_id", order.ID, "error", err)
+		}
+		return keepPending
+	case trade.TradeStatus == "TRADE_CLOSED":
+		return expireWithoutClose
+	default:
+		// WAIT_BUYER_PAY 等：渠道确认未收款，可以安全过期。
+		return expireAfterClose
+	}
 }
 
 // AlipayTradePaid 报告查询状态是否表示资金已到账。TRADE_FINISHED 是交易
@@ -263,7 +362,9 @@ func PollPendingAlipayOrders(ctx context.Context, db *gorm.DB, topup *TopupServi
 	err := db.WithContext(ctx).
 		Where("status = ? AND provider = ? AND created_at < ?",
 			string(OrderPending), ProviderAlipay, cutoff).
-		Order("id").Find(&orders).Error
+		Order("created_at").Order("id").
+		Limit(ExpiryScanBatchSize).
+		Find(&orders).Error
 	if err != nil {
 		return err
 	}
