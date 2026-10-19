@@ -99,11 +99,21 @@ func doMultimodal(t *testing.T, handler http.Handler, req multimodalRequest, aut
 
 func buildMultipartBody(t *testing.T, fields map[string]string, files map[string][]byte) (string, []byte) {
 	t.Helper()
+	ordered := make([][2]string, 0, len(fields))
+	for name, value := range fields {
+		ordered = append(ordered, [2]string{name, value})
+	}
+	return buildMultipartOrdered(t, ordered, files)
+}
+
+// buildMultipartOrdered 允许重复字段，用于固化「重复计费标量必须 400」。
+func buildMultipartOrdered(t *testing.T, fields [][2]string, files map[string][]byte) (string, []byte) {
+	t.Helper()
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	for name, value := range fields {
-		if err := writer.WriteField(name, value); err != nil {
-			t.Fatalf("write field %s: %v", name, err)
+	for _, field := range fields {
+		if err := writer.WriteField(field[0], field[1]); err != nil {
+			t.Fatalf("write field %s: %v", field[0], err)
 		}
 	}
 	for name, value := range files {
@@ -199,6 +209,16 @@ func TestMultimodal_RemovedRoutesAre404(t *testing.T) {
 	}
 }
 
+// TestMultimodal_RealtimeIsGETOnly 锁定 relay-07 G-06 的 GET-only 裁决：
+// WebSocket 握手是 GET，POST 必须由 ServeMux 以 405 拒绝。
+func TestMultimodal_RealtimeIsGETOnly(t *testing.T) {
+	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
+	resp := doMultimodal(t, handler, multimodalRequest{path: "/v1/realtime"}, true)
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/realtime status = %d, want 405; body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 // TestMultimodal_ModelsStillServedByM2 确认 R-09：多模态注册不重复注册
 // GET /v1/models（重复注册会让 ServeMux 在装配期 panic），且该端点仍为 200。
 func TestMultimodal_ModelsStillServedByM2(t *testing.T) {
@@ -285,32 +305,47 @@ func TestMultimodal_ImageMultipartValidation(t *testing.T) {
 
 	base := map[string]string{"model": "img-model", "prompt": "a cat"}
 	cases := []struct {
-		name   string
-		fields map[string]string
-		files  map[string][]byte
-		want   int
+		name    string
+		fields  map[string]string
+		ordered [][2]string
+		files   map[string][]byte
+		want    int
 	}{
-		{"valid", base, map[string][]byte{"image": []byte("fake-image")}, http.StatusOK},
-		{"missing-model", map[string]string{"prompt": "a cat"}, nil, http.StatusBadRequest},
-		{"missing-prompt", map[string]string{"model": "img-model"}, nil, http.StatusBadRequest},
-		{"n-zero", map[string]string{"model": "img-model", "prompt": "a cat", "n": "0"}, nil, http.StatusBadRequest},
-		{"n-too-large", map[string]string{"model": "img-model", "prompt": "a cat", "n": "129"}, nil, http.StatusBadRequest},
-		{"n-not-integer", map[string]string{"model": "img-model", "prompt": "a cat", "n": "1.5"}, nil, http.StatusBadRequest},
-		{"quality-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "quality": "ultra"}, nil, http.StatusBadRequest},
-		{"size-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "size": "10000x100"}, nil, http.StatusBadRequest},
-		{"prompt-too-long", map[string]string{"model": "img-model", "prompt": strings.Repeat("a", MaxImagePromptBytes+1)}, nil, http.StatusBadRequest},
-		{"parameters-n-too-large", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":129}`}, nil, http.StatusBadRequest},
-		{"parameters-n-1000", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":1000}`}, nil, http.StatusBadRequest},
-		{"parameters-n-zero-provider", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":0,"useProviderParameters":true}`}, nil, http.StatusBadRequest},
-		{"parameters-non-json", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": "not-json"}, nil, http.StatusBadRequest},
-		{"parameters-empty", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": ""}, nil, http.StatusBadRequest},
-		{"parameters-file-non-json", base, map[string][]byte{"parameters": []byte("not-json")}, http.StatusBadRequest},
-		{"parameters-valid", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":2}`}, nil, http.StatusOK},
+		{"valid", base, nil, map[string][]byte{"image": []byte("fake-image")}, http.StatusOK},
+		{"missing-model", map[string]string{"prompt": "a cat"}, nil, nil, http.StatusBadRequest},
+		{"missing-prompt", map[string]string{"model": "img-model"}, nil, nil, http.StatusBadRequest},
+		{"n-zero", map[string]string{"model": "img-model", "prompt": "a cat", "n": "0"}, nil, nil, http.StatusBadRequest},
+		{"n-too-large", map[string]string{"model": "img-model", "prompt": "a cat", "n": "129"}, nil, nil, http.StatusBadRequest},
+		{"n-not-integer", map[string]string{"model": "img-model", "prompt": "a cat", "n": "1.5"}, nil, nil, http.StatusBadRequest},
+		{"quality-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "quality": "ultra"}, nil, nil, http.StatusBadRequest},
+		{"size-invalid", map[string]string{"model": "img-model", "prompt": "a cat", "size": "10000x100"}, nil, nil, http.StatusBadRequest},
+		{"prompt-too-long", map[string]string{"model": "img-model", "prompt": strings.Repeat("a", MaxImagePromptBytes+1)}, nil, nil, http.StatusBadRequest},
+		{"parameters-n-too-large", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":129}`}, nil, nil, http.StatusBadRequest},
+		{"parameters-n-1000", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":1000}`}, nil, nil, http.StatusBadRequest},
+		{"parameters-n-zero-provider", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":0,"useProviderParameters":true}`}, nil, nil, http.StatusBadRequest},
+		{"parameters-non-json", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": "not-json"}, nil, nil, http.StatusBadRequest},
+		{"parameters-empty", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": ""}, nil, nil, http.StatusBadRequest},
+		{"parameters-file-non-json", base, nil, map[string][]byte{"parameters": []byte("not-json")}, http.StatusBadRequest},
+		{"parameters-valid", map[string]string{"model": "img-model", "prompt": "a cat", "parameters": `{"n":2}`}, nil, nil, http.StatusOK},
+		// 重复计费标量：本层 last-wins、标准库 first-wins，必须 fail-closed（F9）。
+		{"duplicate-n-out-of-bounds-first", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"n", "1000"}, {"n", "2"}}, nil, http.StatusBadRequest},
+		{"duplicate-n-valid-both", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"n", "2"}, {"n", "2"}}, nil, http.StatusBadRequest},
+		{"duplicate-parameters-out-of-bounds-first", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"parameters", `{"n":1000}`}, {"parameters", `{"n":2}`}}, nil, http.StatusBadRequest},
+		{"duplicate-model", nil, [][2]string{{"model", "img-model"}, {"model", "other-model"}, {"prompt", "a cat"}}, nil, http.StatusBadRequest},
+		{"duplicate-prompt", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"prompt", "a dog"}}, nil, http.StatusBadRequest},
+		{"duplicate-size", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"size", "1024x1024"}, {"size", "512x512"}}, nil, http.StatusBadRequest},
+		{"duplicate-quality", nil, [][2]string{{"model", "img-model"}, {"prompt", "a cat"}, {"quality", "hd"}, {"quality", "low"}}, nil, http.StatusBadRequest},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			contentType, body := buildMultipartBody(t, tc.fields, tc.files)
+			var contentType string
+			var body []byte
+			if tc.ordered != nil {
+				contentType, body = buildMultipartOrdered(t, tc.ordered, tc.files)
+			} else {
+				contentType, body = buildMultipartBody(t, tc.fields, tc.files)
+			}
 			resp := doMultimodal(t, handler, multimodalRequest{
 				path: "/v1/images/edits", body: body, contentType: contentType,
 			}, true)
@@ -351,6 +386,15 @@ func TestMultimodal_AudioMultipartValidation(t *testing.T) {
 		})
 		t.Run("missing-model"+path, func(t *testing.T) {
 			contentType, body := buildMultipartBody(t, nil, map[string][]byte{"file": []byte("audio")})
+			resp := doMultimodal(t, handler, multimodalRequest{path: path, body: body, contentType: contentType}, true)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+			}
+		})
+		t.Run("duplicate-model"+path, func(t *testing.T) {
+			contentType, body := buildMultipartOrdered(t,
+				[][2]string{{"model", "whisper-1"}, {"model", "other"}, {"file", ""}},
+				map[string][]byte{"file": []byte("audio")})
 			resp := doMultimodal(t, handler, multimodalRequest{path: path, body: body, contentType: contentType}, true)
 			if resp.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())

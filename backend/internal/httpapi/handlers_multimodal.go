@@ -527,6 +527,13 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 		hasPrompt, hasN              bool
 		hasParameters                bool
 	)
+	// seen 用于拒绝重复的计费相关标量字段（复审 F9）。
+	//
+	// 本函数是顺序读取、后者覆盖前者（last-wins），而 Go 标准库的
+	// ParseMultipartForm/FormValue 取**第一个**值。两者对重复字段的解释不同，
+	// 攻击者可以先给越界值再给合法值绕过入口校验、让下游消费越界值（反之亦然）。
+	// 重复本身不是合法表单，统一 400 fail-closed。
+	seen := make(map[string]bool, 6)
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -540,6 +547,11 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 		// part 的形式上传也必须按文本读取并走与 JSON 相同的校验——否则
 		// multipart 会绕过 parameters.n 的上界（复审 F1）。
 		if name == "parameters" {
+			if seen[name] {
+				_ = part.Close()
+				return "", invalidMultimodalEntry("duplicate multipart field")
+			}
+			seen[name] = true
 			value, fieldErr := readMultipartField(part)
 			_ = part.Close()
 			if fieldErr != nil {
@@ -563,6 +575,13 @@ func validateImageMultipart(contentType string, body []byte) (string, error) {
 		_ = part.Close()
 		if err != nil {
 			return "", err
+		}
+		switch name {
+		case "model", "prompt", "size", "quality", "n":
+			if seen[name] {
+				return "", invalidMultimodalEntry("duplicate multipart field")
+			}
+			seen[name] = true
 		}
 		switch name {
 		case "model":
@@ -627,6 +646,7 @@ func validateAudioMultipart(contentType string, body []byte) (string, error) {
 		model     string
 		fileBytes int64
 		fileSeen  bool
+		modelSeen bool
 	)
 	for {
 		part, err := reader.NextPart()
@@ -665,6 +685,12 @@ func validateAudioMultipart(contentType string, body []byte) (string, error) {
 			return "", fieldErr
 		}
 		if name == "model" {
+			// 与图像字段同理：本层 last-wins、标准库 FormValue first-wins，
+			// 重复 model 会让校验与会话/定价消费到不同模型名，fail-closed。
+			if modelSeen {
+				return "", invalidMultimodalEntry("duplicate multipart field")
+			}
+			modelSeen = true
 			model = value
 		}
 	}
