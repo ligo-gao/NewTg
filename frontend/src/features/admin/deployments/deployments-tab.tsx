@@ -278,9 +278,7 @@ export function DeploymentsTab({
       </div>
 
       {data?.search_truncated === true ? (
-        <FormAlert tone="warning">
-          {t('admin.deployments.list.truncated', { n: 1000 })}
-        </FormAlert>
+        <FormAlert tone="warning">{t('admin.deployments.list.truncated')}</FormAlert>
       ) : null}
 
       {query.isPending && enabled !== false ? (
@@ -336,7 +334,12 @@ export function DeploymentsTab({
               {t('admin.deployments.common.clear')}
             </Button>
           ) : canManage && enabled !== false ? (
-            <Button className="mt-3" disabled={hasSecret === false} onClick={onCreate}>
+            <Button
+              className="mt-3"
+              disabled={hasSecret === false || !online}
+              title={!online ? t('admin.deployments.common.offline') : undefined}
+              onClick={onCreate}
+            >
               {t('admin.deployments.list.create')}
             </Button>
           ) : null}

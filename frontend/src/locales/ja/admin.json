@@ -348,7 +348,8 @@
       "offline": "ネットワーク接続が切断されました。書き込み操作は利用できません。",
       "forbidden": "このアカウントには settings:manage 権限がありません。",
       "read_only": "読み取り専用：このアカウントには settings:manage 権限がありません。",
-      "unknown_result": "結果は不明です。まず更新してプロバイダ側の状態を確認してから再試行してください。"
+      "unknown_result": "結果は不明です。まず更新してプロバイダ側の状態を確認してから再試行してください。",
+      "close_and_refresh": "閉じて更新"
     },
     "actions": {
       "detail": "詳細",
@@ -367,7 +368,7 @@
       "status_filter": "ステータス",
       "all_statuses": "すべてのステータス",
       "total": "デプロイ {total} 件",
-      "truncated": "先頭 {n} 件のみ走査しました。結果が不完全な可能性があります。",
+      "truncated": "結果が走査上限を超えています。不完全な可能性があります。",
       "col_name": "名前",
       "col_status": "ステータス",
       "col_hardware": "ハードウェア",

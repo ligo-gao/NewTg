@@ -16,6 +16,7 @@ import {
 } from './api'
 import { DeploymentStatusBadge } from './status'
 import type { DeploymentActionTarget } from './deployments-tab'
+import { useOnlineStatus } from './use-online'
 import {
   errorMessage,
   formatDateTime,
@@ -508,6 +509,7 @@ export function DeploymentDetailDrawer({
   onAction,
 }: DeploymentDetailDrawerProps) {
   const { t } = useI18n()
+  const online = useOnlineStatus()
   const [tab, setTab] = useState<DetailTab>('overview')
   const [containerId, setContainerId] = useState<string | null>(null)
 
@@ -534,6 +536,7 @@ export function DeploymentDetailDrawer({
   const status = detail?.status ?? ''
   const writable =
     canManage &&
+    online &&
     enabled !== false &&
     status.trim().toLowerCase() !== 'destroyed' &&
     deploymentId !== null
@@ -568,6 +571,11 @@ export function DeploymentDetailDrawer({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             {detail !== undefined ? <DeploymentStatusBadge status={detail.status} /> : <span />}
+            {!online && canManage ? (
+              <p className="text-xs text-ink-3">
+                {t('admin.deployments.common.offline')}
+              </p>
+            ) : null}
             {writable ? (
               <div className="flex flex-wrap gap-1">
                 <Button variant="secondary" className="h-7 px-2 text-xs" onClick={() => trigger('extend')}>

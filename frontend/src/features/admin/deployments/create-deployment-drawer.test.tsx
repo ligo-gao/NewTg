@@ -211,4 +211,28 @@ describe('create deployment drawer (F-08-55)', () => {
     ).toBe(true)
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it('does not silently treat a cleared GPU count as 1', async () => {
+    installCatalog()
+    await renderWithProviders(
+      <CreateDeploymentDrawer open onClose={vi.fn()} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('Deployment name'), 'llm-new')
+    await user.type(screen.getByLabelText('Image URL'), 'https://registry.example.com/llm:1')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    await screen.findByRole('option', { name: 'NVIDIA A100' })
+    await user.selectOptions(screen.getByLabelText('Hardware type'), '1')
+    await user.click(await screen.findByRole('checkbox', { name: /us-east/ }))
+    const gpu = screen.getByLabelText('GPUs per container')
+    await user.clear(gpu)
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(await screen.findByText('Enter a positive integer.')).toBeTruthy()
+    // 仍停留在硬件与地域步骤。
+    expect(screen.getByLabelText('Hardware type')).toBeTruthy()
+    expect(screen.queryByLabelText('Replicas')).toBeNull()
+  })
 })

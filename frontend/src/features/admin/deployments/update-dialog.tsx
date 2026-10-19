@@ -63,6 +63,8 @@ export function UpdateDialog({
   const [pendingClear, setPendingClear] = useState<'registry' | 'env' | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  // 504 后幂等键已释放：禁止同 key 重提，只能关闭刷新后用新会话重做。
+  const [unknownResult, setUnknownResult] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null)
 
   // 详情到达后初始化表单；秘密字段永远从空开始（不回显）。
@@ -80,14 +82,27 @@ export function UpdateDialog({
     setClearRegistrySecret(false)
     setClearSecretEnv(false)
     setSecretEnvRows([])
-  }, [detail])
+  }, [detail, open])
 
   const close = (): void => {
     setError(null)
     setSubmitting(false)
     setConfirmOpen(false)
     setPendingClear(null)
+    setUnknownResult(false)
     setIdempotencyKey(null)
+    // 关闭即丢弃草稿：同一 detail 缓存引用下重新打开不应保留上次编辑。
+    setImageUrl('')
+    setRegistryUsername('')
+    setRegistrySecret('')
+    setClearRegistrySecret(false)
+    setEntrypoint('')
+    setArgs('')
+    setCommand('')
+    setTrafficPort('')
+    setEnvRows([])
+    setSecretEnvRows([])
+    setClearSecretEnv(false)
     onClose()
   }
 
@@ -115,7 +130,7 @@ export function UpdateDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (target === null || submitting) return
+    if (target === null || submitting || unknownResult) return
     const key = idempotencyKey ?? createIdempotencyKey()
     if (idempotencyKey === null) setIdempotencyKey(key)
     setSubmitting(true)
@@ -127,6 +142,7 @@ export function UpdateDialog({
       close()
     } catch (cause) {
       setConfirmOpen(false)
+      if (isUnknownResult(cause)) setUnknownResult(true)
       setError(cause)
     } finally {
       setSubmitting(false)
@@ -153,7 +169,7 @@ export function UpdateDialog({
             </Button>
             <Button
               onClick={() => setConfirmOpen(true)}
-              disabled={submitting || detail === undefined}
+              disabled={submitting || unknownResult || detail === undefined}
             >
               {submitting
                 ? t('admin.deployments.common.saving')
@@ -269,6 +285,19 @@ export function UpdateDialog({
                 ? ` ${t('admin.deployments.settings.retry_after', { seconds: retryAfter })}`
                 : ''}
             </FormAlert>
+          ) : null}
+          {unknownResult && target !== null ? (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                const id = target.id
+                close()
+                void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+                void queryClient.invalidateQueries({ queryKey: ['deployment', id] })
+              }}
+            >
+              {t('admin.deployments.common.close_and_refresh')}
+            </Button>
           ) : null}
         </div>
       </Dialog>

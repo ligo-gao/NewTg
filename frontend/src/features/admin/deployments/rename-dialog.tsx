@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -27,7 +27,11 @@ export function RenameDialog({
   const [nameState, setNameState] = useState<NameState>('idle')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  // 504 后幂等键已被后端释放，禁止复用同一 key 再提交（见 §3.20.7）。
+  const [unknownResult, setUnknownResult] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null)
+  // 名称查重请求序号：旧响应不得覆盖新名称的可用性结论。
+  const checkRequest = useRef(0)
 
   const check = async (): Promise<void> => {
     const candidate = name.trim()
@@ -35,11 +39,14 @@ export function RenameDialog({
       setNameState('idle')
       return
     }
+    const request = ++checkRequest.current
     setNameState('checking')
     try {
       const result = await checkDeploymentName(candidate)
+      if (request !== checkRequest.current) return
       setNameState(result.available ? 'available' : 'taken')
     } catch {
+      if (request !== checkRequest.current) return
       // 网络失败不阻止继续填写；提交时服务端仍会查重并返回 409。
       setNameState('unknown')
     }
@@ -50,12 +57,15 @@ export function RenameDialog({
     setNameState('idle')
     setError(null)
     setSubmitting(false)
+    setUnknownResult(false)
     setIdempotencyKey(null)
+    // 让在途的名称查重结果失效。
+    checkRequest.current += 1
     onClose()
   }
 
   const submit = async (): Promise<void> => {
-    if (target === null || submitting) return
+    if (target === null || submitting || unknownResult) return
     const candidate = name.trim()
     if (candidate === '' || candidate === target.name) return
     const key = idempotencyKey ?? createIdempotencyKey()
@@ -69,6 +79,7 @@ export function RenameDialog({
       close()
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) setNameState('taken')
+      if (isUnknownResult(cause)) setUnknownResult(true)
       setError(cause)
     } finally {
       setSubmitting(false)
@@ -105,6 +116,7 @@ export function RenameDialog({
             onClick={() => void submit()}
             disabled={
               submitting ||
+              unknownResult ||
               name.trim() === '' ||
               name.trim() === target?.name ||
               nameState === 'taken'
@@ -124,6 +136,8 @@ export function RenameDialog({
           onChange={(event) => {
             setName(event.target.value)
             setNameState('idle')
+            // 名称已改，旧查重响应不再适用。
+            checkRequest.current += 1
           }}
           onBlur={() => void check()}
           hint={nameHint}
@@ -138,6 +152,19 @@ export function RenameDialog({
               ? ` ${t('admin.deployments.settings.retry_after', { seconds: retryAfter })}`
               : ''}
           </FormAlert>
+        ) : null}
+        {unknownResult && target !== null ? (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              const id = target.id
+              close()
+              void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+              void queryClient.invalidateQueries({ queryKey: ['deployment', id] })
+            }}
+          >
+            {t('admin.deployments.common.close_and_refresh')}
+          </Button>
         ) : null}
       </div>
     </Dialog>

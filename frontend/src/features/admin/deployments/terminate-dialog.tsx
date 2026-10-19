@@ -24,18 +24,21 @@ export function TerminateDialog({
   const [typed, setTyped] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  // 504 后幂等键已释放，禁止再次提交（终止操作尤其不可重复）。
+  const [unknownResult, setUnknownResult] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null)
 
   const close = (): void => {
     setTyped('')
     setSubmitting(false)
     setError(null)
+    setUnknownResult(false)
     setIdempotencyKey(null)
     onClose()
   }
 
   const submit = async (): Promise<void> => {
-    if (target === null || submitting || typed !== target.name) return
+    if (target === null || submitting || unknownResult || typed !== target.name) return
     const key = idempotencyKey ?? createIdempotencyKey()
     if (idempotencyKey === null) setIdempotencyKey(key)
     setSubmitting(true)
@@ -46,6 +49,7 @@ export function TerminateDialog({
       await queryClient.invalidateQueries({ queryKey: ['deployment', target.id] })
       close()
     } catch (cause) {
+      if (isUnknownResult(cause)) setUnknownResult(true)
       setError(cause)
     } finally {
       setSubmitting(false)
@@ -77,7 +81,7 @@ export function TerminateDialog({
           </Button>
           <Button
             variant="danger"
-            disabled={!matched || submitting}
+            disabled={!matched || submitting || unknownResult}
             onClick={() => void submit()}
           >
             {submitting
@@ -106,6 +110,19 @@ export function TerminateDialog({
               ? ` ${t('admin.deployments.settings.retry_after', { seconds: retryAfter })}`
               : ''}
           </FormAlert>
+        ) : null}
+        {unknownResult && target !== null ? (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              const id = target.id
+              close()
+              void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+              void queryClient.invalidateQueries({ queryKey: ['deployment', id] })
+            }}
+          >
+            {t('admin.deployments.common.close_and_refresh')}
+          </Button>
         ) : null}
       </div>
     </Dialog>

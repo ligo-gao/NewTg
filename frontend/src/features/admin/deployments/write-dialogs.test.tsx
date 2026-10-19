@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
@@ -8,6 +9,7 @@ import { renderWithProviders } from '@/test-support/providers'
 
 import type { DeploymentActionTarget } from './deployments-tab'
 import { ExtendDialog } from './extend-dialog'
+import { RenameDialog } from './rename-dialog'
 import { TerminateDialog } from './terminate-dialog'
 import { UpdateDialog } from './update-dialog'
 
@@ -161,5 +163,271 @@ describe('deployment write dialogs (F-08-57 / F-08-58)', () => {
     expect(patchBody).not.toHaveProperty('image_url')
     expect(patchBody).toMatchObject({ env_variables: { MODEL: 'llm' } })
     await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('locks extension submission after a 504 and uses a new key on reopen', async () => {
+    installDetail()
+    server.use(
+      http.post(`${ORIGIN}/api/deployments/price-estimation`, () =>
+        HttpResponse.json({
+          estimated_cost: 30,
+          currency: 'USD',
+          price_breakdown: { compute_cost: 30 },
+          estimation_valid: true,
+        }),
+      ),
+    )
+    const keys: string[] = []
+    server.use(
+      http.post(`${ORIGIN}/api/deployments/d1/extend`, ({ request }) => {
+        keys.push(request.headers.get('Idempotency-Key') ?? '')
+        if (keys.length === 1) {
+          return HttpResponse.json(
+            {
+              type: 'https://newtg.dev/problems/deploy_provider_timeout',
+              title: 'Provider timeout',
+            },
+            { status: 504, headers: { 'Content-Type': 'application/problem+json' } },
+          )
+        }
+        return HttpResponse.json(
+          { deployment_id: 'd1', status: 'extend requested' },
+          { status: 202 },
+        )
+      }),
+    )
+
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            reopen
+          </button>
+          <ExtendDialog
+            target={open ? target('extend') : null}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      )
+    }
+
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    const estimate = screen.getByRole('button', { name: 'Estimate' })
+    await waitFor(() => expect(estimate.hasAttribute('disabled')).toBe(false))
+    await user.click(estimate)
+    const confirm = screen.getByRole('button', { name: 'Confirm extension' })
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false))
+    await user.click(confirm)
+
+    expect(
+      await screen.findByText(
+        'The result is unknown. Refresh first to confirm the provider state before retrying.',
+      ),
+    ).toBeTruthy()
+    expect(keys).toHaveLength(1)
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Close and refresh' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm extension' })).toBeNull())
+
+    // 重新打开是一次新意图：必须使用新的 Idempotency-Key。
+    await user.click(screen.getByRole('button', { name: 'reopen' }))
+    const estimate2 = await screen.findByRole('button', { name: 'Estimate' })
+    await waitFor(() => expect(estimate2.hasAttribute('disabled')).toBe(false))
+    await user.click(estimate2)
+    const confirm2 = await screen.findByRole('button', { name: 'Confirm extension' })
+    await waitFor(() => expect(confirm2.hasAttribute('disabled')).toBe(false))
+    await user.click(confirm2)
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[0]).not.toBe('')
+    expect(keys[1]).not.toBe(keys[0])
+  })
+
+  it('locks rename submission after a 504 and uses a new key on reopen', async () => {
+    const keys: string[] = []
+    server.use(
+      http.patch(`${ORIGIN}/api/deployments/d1/name`, ({ request }) => {
+        keys.push(request.headers.get('Idempotency-Key') ?? '')
+        if (keys.length === 1) {
+          return HttpResponse.json(
+            { type: 'https://newtg.dev/problems/deploy_provider_timeout', title: 'Timeout' },
+            { status: 504, headers: { 'Content-Type': 'application/problem+json' } },
+          )
+        }
+        return HttpResponse.json({ deployment_id: 'd1', status: 'running' })
+      }),
+    )
+
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            reopen
+          </button>
+          <RenameDialog
+            target={open ? target('rename') : null}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      )
+    }
+
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('New name'), 'llm-b')
+    const save = screen.getByRole('button', { name: 'Save name' })
+    await user.click(save)
+    expect(
+      await screen.findByText(
+        'The result is unknown. Refresh first to confirm the provider state before retrying.',
+      ),
+    ).toBeTruthy()
+    expect(save.hasAttribute('disabled')).toBe(true)
+    expect(keys).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: 'Close and refresh' }))
+    await user.click(screen.getByRole('button', { name: 'reopen' }))
+    const nameInput = await screen.findByLabelText('New name')
+    expect((nameInput as HTMLInputElement).value).toBe('')
+    await user.type(nameInput, 'llm-c')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[1]).not.toBe(keys[0])
+  })
+
+  it('locks terminate submission after a 504 and uses a new key on reopen', async () => {
+    const keys: string[] = []
+    server.use(
+      http.delete(`${ORIGIN}/api/deployments/d1`, ({ request }) => {
+        keys.push(request.headers.get('Idempotency-Key') ?? '')
+        if (keys.length === 1) {
+          return HttpResponse.json(
+            { type: 'https://newtg.dev/problems/deploy_provider_timeout', title: 'Timeout' },
+            { status: 504, headers: { 'Content-Type': 'application/problem+json' } },
+          )
+        }
+        return HttpResponse.json(
+          { deployment_id: 'd1', status: 'termination requested' },
+          { status: 202 },
+        )
+      }),
+    )
+
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            reopen
+          </button>
+          <TerminateDialog
+            target={open ? target('terminate') : null}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      )
+    }
+
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    let dialog = await screen.findByRole('alertdialog')
+    await user.type(within(dialog).getByLabelText('Deployment name'), 'llm-a')
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Terminate deployment' }),
+    )
+    expect(
+      await screen.findByText(
+        'The result is unknown. Refresh first to confirm the provider state before retrying.',
+      ),
+    ).toBeTruthy()
+    expect(keys).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: 'Close and refresh' }))
+    await user.click(screen.getByRole('button', { name: 'reopen' }))
+    dialog = await screen.findByRole('alertdialog')
+    expect(
+      within(dialog)
+        .getByRole('button', { name: 'Terminate deployment' })
+        .hasAttribute('disabled'),
+    ).toBe(true)
+    await user.type(within(dialog).getByLabelText('Deployment name'), 'llm-a')
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Terminate deployment' }),
+    )
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[1]).not.toBe(keys[0])
+  })
+
+  it('locks update submission after a 504 and resets the draft on reopen', async () => {
+    installDetail()
+    const keys: string[] = []
+    server.use(
+      http.patch(`${ORIGIN}/api/deployments/d1`, ({ request }) => {
+        keys.push(request.headers.get('Idempotency-Key') ?? '')
+        if (keys.length === 1) {
+          return HttpResponse.json(
+            { type: 'https://newtg.dev/problems/deploy_provider_timeout', title: 'Timeout' },
+            { status: 504, headers: { 'Content-Type': 'application/problem+json' } },
+          )
+        }
+        return HttpResponse.json({ deployment_id: 'd1', status: 'running' })
+      }),
+    )
+
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            reopen
+          </button>
+          <UpdateDialog
+            target={open ? target('update') : null}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      )
+    }
+
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    const image = await screen.findByLabelText('Image URL')
+    await waitFor(() =>
+      expect((image as HTMLInputElement).value).toBe(
+        'https://registry.example.com/llm:1',
+      ),
+    )
+    await user.clear(image)
+    await user.type(image, 'https://registry.example.com/changed:2')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    let dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+
+    expect(
+      await screen.findByText(
+        'The result is unknown. Refresh first to confirm the provider state before retrying.',
+      ),
+    ).toBeTruthy()
+    expect(keys).toHaveLength(1)
+    expect(
+      screen.getByRole('button', { name: 'Save changes' }).hasAttribute('disabled'),
+    ).toBe(true)
+
+    await user.click(screen.getByRole('button', { name: 'Close and refresh' }))
+    await user.click(screen.getByRole('button', { name: 'reopen' }))
+    const reopenedImage = await screen.findByLabelText('Image URL')
+    await waitFor(() =>
+      expect((reopenedImage as HTMLInputElement).value).toBe(
+        'https://registry.example.com/llm:1',
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[1]).not.toBe(keys[0])
   })
 })

@@ -348,7 +348,8 @@
       "offline": "Mất kết nối mạng. Không thể thực hiện thao tác ghi.",
       "forbidden": "Tài khoản của bạn thiếu quyền settings:manage.",
       "read_only": "Chỉ đọc: tài khoản của bạn thiếu quyền settings:manage.",
-      "unknown_result": "Kết quả không xác định. Hãy làm mới để xác nhận trạng thái phía nhà cung cấp trước khi thử lại."
+      "unknown_result": "Kết quả không xác định. Hãy làm mới để xác nhận trạng thái phía nhà cung cấp trước khi thử lại.",
+      "close_and_refresh": "Đóng và làm mới"
     },
     "actions": {
       "detail": "Chi tiết",
@@ -367,7 +368,7 @@
       "status_filter": "Trạng thái",
       "all_statuses": "Tất cả trạng thái",
       "total": "{total} triển khai",
-      "truncated": "Đã quét {n} bản ghi đầu tiên; kết quả có thể chưa đầy đủ.",
+      "truncated": "Kết quả vượt quá giới hạn quét; có thể chưa đầy đủ.",
       "col_name": "Tên",
       "col_status": "Trạng thái",
       "col_hardware": "Phần cứng",

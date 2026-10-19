@@ -49,6 +49,10 @@ export function ExtendDialog({
   const [estimateError, setEstimateError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  // 504 = 结果未知。后端在非 2xx（含 504）时已释放幂等键，继续用同一 key
+  // 重试会真的再执行一次（重复加时长/计费），所以此时必须锁死提交，直到
+  // 用户关闭并刷新确认 provider 状态；重新打开会生成新 key。
+  const [unknownResult, setUnknownResult] = useState(false)
   // 同一意图的重试复用同一 key；只有成功/关闭后才丢弃。
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null)
 
@@ -59,6 +63,7 @@ export function ExtendDialog({
     setError(null)
     setSubmitting(false)
     setEstimating(false)
+    setUnknownResult(false)
     setIdempotencyKey(null)
   }
 
@@ -98,7 +103,7 @@ export function ExtendDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (target === null || estimate === null || submitting) return
+    if (target === null || estimate === null || submitting || unknownResult) return
     const duration = positiveInteger(hours)
     if (duration === null) return
     const key = idempotencyKey ?? createIdempotencyKey()
@@ -112,6 +117,7 @@ export function ExtendDialog({
       close()
     } catch (cause) {
       // 504 结果未知：不自动重试、不换 key；刷新确认 provider 状态后再操作。
+      if (isUnknownResult(cause)) setUnknownResult(true)
       setError(cause)
     } finally {
       setSubmitting(false)
@@ -137,7 +143,9 @@ export function ExtendDialog({
           </Button>
           <Button
             onClick={() => void submit()}
-            disabled={estimate === null || submitting || durationValue === null}
+            disabled={
+              estimate === null || submitting || durationValue === null || unknownResult
+            }
           >
             {submitting
               ? t('admin.deployments.common.saving')
@@ -198,6 +206,19 @@ export function ExtendDialog({
               ? ` ${t('admin.deployments.settings.retry_after', { seconds: retryAfter })}`
               : ''}
           </FormAlert>
+        ) : null}
+        {unknownResult && target !== null ? (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              const id = target.id
+              close()
+              void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+              void queryClient.invalidateQueries({ queryKey: ['deployment', id] })
+            }}
+          >
+            {t('admin.deployments.common.close_and_refresh')}
+          </Button>
         ) : null}
       </div>
     </Dialog>

@@ -348,7 +348,8 @@
       "offline": "Network connection lost. Write actions are unavailable.",
       "forbidden": "Your account lacks the settings:manage permission.",
       "read_only": "Read-only: your account lacks the settings:manage permission.",
-      "unknown_result": "The result is unknown. Refresh first to confirm the provider state before retrying."
+      "unknown_result": "The result is unknown. Refresh first to confirm the provider state before retrying.",
+      "close_and_refresh": "Close and refresh"
     },
     "actions": {
       "detail": "Details",
@@ -367,7 +368,7 @@
       "status_filter": "Status",
       "all_statuses": "All statuses",
       "total": "{total} deployments",
-      "truncated": "Scanned the first {n} records; results may be incomplete.",
+      "truncated": "Results exceed the scan limit; they may be incomplete.",
       "col_name": "Name",
       "col_status": "Status",
       "col_hardware": "Hardware",

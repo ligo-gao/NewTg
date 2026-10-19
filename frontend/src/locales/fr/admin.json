@@ -348,7 +348,8 @@
       "offline": "Connexion réseau perdue. Les actions d’écriture sont indisponibles.",
       "forbidden": "Votre compte ne dispose pas de la permission settings:manage.",
       "read_only": "Lecture seule : votre compte ne dispose pas de la permission settings:manage.",
-      "unknown_result": "Le résultat est inconnu. Actualisez d’abord pour vérifier l’état chez le fournisseur avant de réessayer."
+      "unknown_result": "Le résultat est inconnu. Actualisez d’abord pour vérifier l’état chez le fournisseur avant de réessayer.",
+      "close_and_refresh": "Fermer et actualiser"
     },
     "actions": {
       "detail": "Détails",
@@ -367,7 +368,7 @@
       "status_filter": "Statut",
       "all_statuses": "Tous les statuts",
       "total": "{total} déploiements",
-      "truncated": "Les {n} premiers enregistrements ont été analysés ; les résultats peuvent être incomplets.",
+      "truncated": "Les résultats dépassent la limite d’analyse ; ils peuvent être incomplets.",
       "col_name": "Nom",
       "col_status": "Statut",
       "col_hardware": "Matériel",

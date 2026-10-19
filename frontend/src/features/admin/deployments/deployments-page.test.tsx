@@ -140,7 +140,7 @@ describe('model deployments list tab (F-08-52)', () => {
     await waitFor(() => expect(requestedKeyword).toBe('mat'))
     expect(
       await screen.findByText(
-        'Scanned the first 1000 records; results may be incomplete.',
+        'Results exceed the scan limit; they may be incomplete.',
       ),
     ).toBeTruthy()
   })

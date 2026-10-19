@@ -348,7 +348,8 @@
       "offline": "网络连接已断开，无法执行写操作。",
       "forbidden": "当前账号缺少 settings:manage 权限。",
       "read_only": "只读：当前账号缺少 settings:manage 权限。",
-      "unknown_result": "结果未知，请先刷新确认 provider 侧状态后再决定是否重试。"
+      "unknown_result": "结果未知，请先刷新确认 provider 侧状态后再决定是否重试。",
+      "close_and_refresh": "关闭并刷新"
     },
     "actions": {
       "detail": "详情",
@@ -367,7 +368,7 @@
       "status_filter": "状态",
       "all_statuses": "全部状态",
       "total": "共 {total} 个部署",
-      "truncated": "已扫描前 {n} 条，结果可能不完整。",
+      "truncated": "结果超出扫描上限，可能不完整。",
       "col_name": "名称",
       "col_status": "状态",
       "col_hardware": "硬件",

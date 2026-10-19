@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
@@ -68,6 +68,8 @@ export function CreateDeploymentDrawer({
 
   const [name, setName] = useState('')
   const [nameState, setNameState] = useState<NameState>('idle')
+  // 名称查重请求序号：名称变化后，旧响应不得覆盖新名称的可用性结论。
+  const nameCheckRequest = useRef(0)
   const [imageUrl, setImageUrl] = useState('')
   const [registryUsername, setRegistryUsername] = useState('')
   const [registrySecret, setRegistrySecret] = useState<string | null>('')
@@ -168,6 +170,7 @@ export function CreateDeploymentDrawer({
     setSubmitError(null)
     setUnknownResult(false)
     setIdempotencyKey(null)
+    nameCheckRequest.current += 1
   }
 
   const close = (): void => {
@@ -236,11 +239,14 @@ export function CreateDeploymentDrawer({
       setNameState('idle')
       return
     }
+    const request = ++nameCheckRequest.current
     setNameState('checking')
     try {
       const result = await checkDeploymentName(candidate)
+      if (request !== nameCheckRequest.current) return
       setNameState(result.available ? 'available' : 'taken')
     } catch {
+      if (request !== nameCheckRequest.current) return
       // 网络失败允许继续填写；提交时服务端仍会查重并返回 409。
       setNameState('unknown')
     }
@@ -261,6 +267,8 @@ export function CreateDeploymentDrawer({
     }
     if (index === 1) {
       if (hardwareNumber === null) next.hardware = t('admin.deployments.create.field_required')
+      // GPU 数必填且 ≥1：清空后不得静默按 1 提交。
+      if (gpuNumber === null) next.gpu = t('admin.deployments.create.field_positive')
       if (locationIds.length === 0) next.locations = t('admin.deployments.create.locations_required')
     }
     if (index === 2) {
@@ -290,7 +298,9 @@ export function CreateDeploymentDrawer({
             ? `${idPrefix}-port`
             : field === 'hardware'
               ? `${idPrefix}-hardware`
-              : field === 'replicas'
+              : field === 'gpu'
+                ? `${idPrefix}-gpu`
+                : field === 'replicas'
                 ? `${idPrefix}-replicas`
                 : field === 'duration'
                   ? `${idPrefix}-duration`
@@ -318,14 +328,16 @@ export function CreateDeploymentDrawer({
   }
 
   const buildBody = (): CreateDeploymentRequest | null => {
-    if (hardwareNumber === null || replicaNumber === null) return null
+    if (hardwareNumber === null || gpuNumber === null || replicaNumber === null) {
+      return null
+    }
     const duration = positiveInteger(durationHours)
     if (duration === null) return null
     const body: CreateDeploymentRequest = {
       name: name.trim(),
       hardware_id: hardwareNumber,
       location_ids: locationIds,
-      gpus_per_container: gpuNumber ?? 1,
+      gpus_per_container: gpuNumber,
       replica_count: replicaNumber,
       duration_hours: duration,
       image_url: imageUrl.trim(),
@@ -477,6 +489,7 @@ export function CreateDeploymentDrawer({
               onChange={(event) => {
                 setName(event.target.value)
                 setNameState('idle')
+                nameCheckRequest.current += 1
               }}
               onBlur={() => void checkName()}
               hint={nameHint}
@@ -597,6 +610,7 @@ export function CreateDeploymentDrawer({
               ) : null}
             </label>
             <TextField
+              id={`${idPrefix}-gpu`}
               label={t('admin.deployments.create.gpu')}
               type="number"
               inputMode="numeric"
@@ -606,6 +620,7 @@ export function CreateDeploymentDrawer({
                 setGpuCount(event.target.value)
                 setLocationIds([])
               }}
+              error={errors.gpu}
               disabled={submitting}
             />
             <div className="flex flex-col gap-1" id={`${idPrefix}-locations`} tabIndex={-1}>
