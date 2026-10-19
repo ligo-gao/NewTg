@@ -213,17 +213,23 @@ func ExpirePendingOrders(ctx context.Context, db *gorm.DB, topup *TopupService,
 	for i := range orders {
 		order := &orders[i]
 
-		// 资金安全（复审 Important #1）：到期前对支付宝订单做最后一次
-		// alipay.trade.query。用户可能在最后一个轮询间隙或渠道故障期间完成
-		// 支付；一旦置 expired，轮询不再查它、入账与人工完成也都拒绝非
-		// pending 订单——就会「扣款不到账且无补救路径」。因此：
-		//   paid     → 走同一幂等入账，绝不置 expired；
-		//   closed   → 置 expired（渠道已关单，无需再 close）；
-		//   unpaid   → 正常过期；
-		//   查询错误 → 本轮保持 pending，下一轮重试（fail-safe 方向是钱）。
+		// 资金安全（复审 Critical #3）：到期前对渠道订单做最后一次核实。
+		// 用户可能在最后一个轮询间隙或渠道故障期间完成支付；一旦置 expired，
+		// 入账与人工完成也都拒绝非 pending 订单——就会「扣款不到账且无补救
+		// 路径」。支付宝与 Stripe 都必须先问渠道：
+		//   paid/succeeded → 走同一幂等入账，绝不置 expired；
+		//   已关闭/canceled → 置 expired；
+		//   未付款/可取消 → 正常过期（先 best-effort 关单）；
+		//   查询错误/processing → 本轮保持 pending，下一轮重试（fail-safe
+		//   方向是钱）。
 		disposition := expireAfterClose
-		if topup != nil && order.Provider == ProviderAlipay {
-			disposition = topup.alipayExpiryDisposition(ctx, order)
+		if topup != nil {
+			switch order.Provider {
+			case ProviderAlipay:
+				disposition = topup.alipayExpiryDisposition(ctx, order)
+			case ProviderStripe:
+				disposition = topup.stripeExpiryDisposition(ctx, order)
+			}
 		}
 		switch disposition {
 		case keepPending:
@@ -327,6 +333,71 @@ func (s *TopupService) alipayExpiryDisposition(ctx context.Context, order *store
 // 交易已完结的订单会永远停在 pending。
 func AlipayTradePaid(status string) bool {
 	return status == "TRADE_SUCCESS" || status == "TRADE_FINISHED"
+}
+
+// stripeExpiryDisposition 在 Stripe 订单到期前查询 PaymentIntent。
+//
+// Stripe 的 succeeded 回调可能丢投或晚于 30 分钟：用户实际已付款，但
+// webhook 没到。worker 若直接 cancel + expired，后续回调、主动核实与
+// 人工完成都会因「非 pending」拒绝，形成永久扣款不到账。因此：
+//   - succeeded → settleOrder（与 webhook 同一条幂等入账路径），keepPending；
+//   - processing / 查询错误 → keepPending：钱可能正在清算，过期不可逆；
+//   - requires_payment_method / canceled / requires_confirmation →
+//     best-effort cancel 后过期（资金确定未到）；
+//   - 其它未知状态（requires_action/requires_capture 等）→ keepPending，
+//     宁可等人工核对也不切断资金路径。
+func (s *TopupService) stripeExpiryDisposition(ctx context.Context, order *store.Order) expiryDisposition {
+	if order.ProviderTxnID == nil || strings.TrimSpace(*order.ProviderTxnID) == "" {
+		// 没有 PI 号无法核实；宁可保持 pending 等人工排查，也不在
+		// 可能已扣款的情况下关闭订单。
+		s.log.Warn("expiry skipped: stripe order has no provider txn id", "order_id", order.ID)
+		return keepPending
+	}
+	txn := *order.ProviderTxnID
+	intent, err := s.QueryStripePaymentIntent(ctx, txn)
+	if err != nil {
+		// 渠道故障：不确认收款就不能关闭（fail-safe 方向是钱）。
+		// 下一轮扫描会重试；若渠道恢复后确认已付，则走同一入账路径。
+		s.log.Warn("stripe expiry pre-check failed; keeping order pending",
+			"order_id", order.ID, "error", err)
+		return keepPending
+	}
+	switch intent.Status {
+	case "succeeded":
+		amount := intent.AmountReceived
+		if amount == 0 {
+			amount = intent.Amount
+		}
+		raw := marshalWhitelisted(map[string]any{
+			"provider":        ProviderStripe,
+			"source":          "expiry_precheck",
+			"provider_txn_id": intent.ID,
+			"status":          intent.Status,
+			"amount":          amount,
+			"amount_received": intent.AmountReceived,
+			"currency":        strings.ToUpper(intent.Currency),
+		})
+		// 与 webhook/verify 同一条幂等入账路径：条件 UPDATE + ApplyTx。
+		// 即使 settle 失败（并发已入账/瞬时 DB 错误）也不置 expired：
+		// 钱的路径优先，下一轮扫描会再次核实。
+		if err := s.settleOrder(ctx, order, amount, strings.ToUpper(intent.Currency), raw); err != nil {
+			s.log.Error("stripe expiry pre-check settle failed; keeping order pending",
+				"order_id", order.ID, "error", err)
+		}
+		return keepPending
+	case "processing":
+		// 清算中：可能马上 succeeded，绝不能过期。
+		s.log.Info("stripe payment intent still processing; keeping order pending",
+			"order_id", order.ID)
+		return keepPending
+	case "requires_payment_method", "canceled", "requires_confirmation":
+		// 资金确定未到账（或交易已取消），可以安全关单并过期。
+		return expireAfterClose
+	default:
+		s.log.Warn("stripe payment intent in unrecognized state; keeping order pending",
+			"order_id", order.ID, "status", intent.Status)
+		return keepPending
+	}
 }
 
 // PollPendingAlipayOrders 扫描一轮创建超过 minAge 的 pending 支付宝订单并

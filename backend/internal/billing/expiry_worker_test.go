@@ -552,6 +552,229 @@ func TestExpiryPrecheckProviderErrorKeepsPending(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 到期前的最终收款核实：Stripe PaymentIntent
+// ---------------------------------------------------------------------------
+
+// expiryStripeServer 是可编排的 Stripe 桩：GET 返回 PaymentIntent 状态，
+// POST /cancel 记录关单调用并可注入失败。到期扫描必须先查 PI，再决定
+// 「入账 / 保持 pending / 关单后过期」。
+type expiryStripeServer struct {
+	mu           sync.Mutex
+	status       map[string]string
+	retrieveFail map[string]bool
+	cancelFail   bool
+	cancelCalls  int
+}
+
+func newExpiryStripeServer(t *testing.T, state *expiryStripeServer) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/payment_intents" && r.Method == http.MethodPost {
+			// 创建路径不参与本组用例；返回稳定的 PI id。
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"pi_expiry","client_secret":"pi_expiry_secret"}`)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/v1/payment_intents/") {
+			http.NotFound(w, r)
+			return
+		}
+		txn := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
+		if strings.HasSuffix(txn, "/cancel") {
+			txn = strings.TrimSuffix(txn, "/cancel")
+			state.mu.Lock()
+			state.cancelCalls++
+			fail := state.cancelFail
+			state.mu.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"canceled"}`, txn)
+			return
+		}
+		state.mu.Lock()
+		fail := state.retrieveFail[txn]
+		status := state.status[txn]
+		state.mu.Unlock()
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		amountReceived := int64(0)
+		if status == "succeeded" {
+			amountReceived = 1000
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w,
+			`{"id":%q,"amount":1000,"amount_received":%d,"currency":"cny","status":%q}`,
+			txn, amountReceived, status)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newExpiryStripeServiceForTest(t *testing.T, gormDB *gorm.DB, baseURL string) *TopupService {
+	t.Helper()
+	svc, err := NewTopupService(TopupServiceConfig{
+		DB:            gormDB,
+		Config:        stripeTestConfig(),
+		StripeBaseURL: baseURL,
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	return svc
+}
+
+// TestExpiryStripePrecheckSucceededCredits：PI 在到期时已 succeeded →
+// 走同一幂等入账路径，绝不置 expired；重复扫描不重复入账。
+func TestExpiryStripePrecheckSucceededCredits(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	state := &expiryStripeServer{
+		status:       map[string]string{"pi_expiry_paid": "succeeded"},
+		retrieveFail: map[string]bool{},
+	}
+	server := newExpiryStripeServer(t, state)
+	svc := newExpiryStripeServiceForTest(t, gormDB, server.URL)
+
+	now := time.Now().UTC()
+	txn := "pi_expiry_paid"
+	orderID := insertExpiryOrder(t, db, userID, ProviderStripe,
+		string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+	count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+	if err != nil {
+		t.Fatalf("ExpirePendingOrders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expired count = %d, want 0 (paid PI must be credited)", count)
+	}
+	if got := orderStatus(t, db, orderID); got != string(OrderSucceeded) {
+		t.Fatalf("order status = %q, want succeeded", got)
+	}
+	if got := userBalance(t, db, userID); got != 1000 {
+		t.Fatalf("balance = %d, want 1000", got)
+	}
+	if got := countOrderCredits(t, db, orderID); got != 1 {
+		t.Fatalf("credit rows = %d, want 1", got)
+	}
+	state.mu.Lock()
+	cancels := state.cancelCalls
+	state.mu.Unlock()
+	if cancels != 0 {
+		t.Fatalf("cancel calls = %d, want 0 for a succeeded PI", cancels)
+	}
+
+	// 重复扫描：已是终态，不再命中也就不再重复入账。
+	if _, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry); err != nil {
+		t.Fatalf("second ExpirePendingOrders: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 1000 {
+		t.Fatalf("balance after second scan = %d, want 1000", got)
+	}
+}
+
+// TestExpiryStripePrecheckKeepsPendingOnUnknownState：查询失败或仍然
+// processing 时本轮保持 pending（下一轮重试）——钱可能已在路上，
+// 过期会切断唯一的补救路径。
+func TestExpiryStripePrecheckKeepsPendingOnUnknownState(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       string
+		retrieveFail bool
+	}{
+		{"retrieval error", "", true},
+		{"processing", "processing", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gormDB, db := openBillingTestDB(t)
+			userID := createBillingTestUser(t, db, 0)
+			deleteTestOrders(t, db, userID)
+
+			txn := "pi_expiry_unknown"
+			state := &expiryStripeServer{
+				status:       map[string]string{txn: tc.status},
+				retrieveFail: map[string]bool{txn: tc.retrieveFail},
+			}
+			server := newExpiryStripeServer(t, state)
+			svc := newExpiryStripeServiceForTest(t, gormDB, server.URL)
+
+			now := time.Now().UTC()
+			orderID := insertExpiryOrder(t, db, userID, ProviderStripe,
+				string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+			count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+			if err != nil {
+				t.Fatalf("ExpirePendingOrders: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("expired count = %d, want 0", count)
+			}
+			if got := orderStatus(t, db, orderID); got != string(OrderPending) {
+				t.Fatalf("order status = %q, want pending", got)
+			}
+			state.mu.Lock()
+			cancels := state.cancelCalls
+			state.mu.Unlock()
+			if cancels != 0 {
+				t.Fatalf("cancel calls = %d, want 0 while money may be in flight", cancels)
+			}
+		})
+	}
+}
+
+// TestExpiryStripePrecheckCancelableExpires：渠道明确处于不可支付态时
+// best-effort 关单后置 expired；关单失败也不阻塞状态迁移（F-04-07）。
+func TestExpiryStripePrecheckCancelableExpires(t *testing.T) {
+	for _, status := range []string{"requires_payment_method", "canceled", "requires_confirmation"} {
+		t.Run(status, func(t *testing.T) {
+			gormDB, db := openBillingTestDB(t)
+			userID := createBillingTestUser(t, db, 0)
+			deleteTestOrders(t, db, userID)
+
+			txn := "pi_expiry_cancelable"
+			state := &expiryStripeServer{
+				status:       map[string]string{txn: status},
+				retrieveFail: map[string]bool{},
+				cancelFail:   true,
+			}
+			server := newExpiryStripeServer(t, state)
+			svc := newExpiryStripeServiceForTest(t, gormDB, server.URL)
+
+			now := time.Now().UTC()
+			orderID := insertExpiryOrder(t, db, userID, ProviderStripe,
+				string(OrderPending), now.Add(-31*time.Minute), &txn)
+
+			count, err := ExpirePendingOrders(context.Background(), gormDB, svc, now, OrderExpiry)
+			if err != nil {
+				t.Fatalf("ExpirePendingOrders: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("expired count = %d, want 1", count)
+			}
+			if got := orderStatus(t, db, orderID); got != string(OrderExpired) {
+				t.Fatalf("order status = %q, want expired despite cancel failure", got)
+			}
+			if got := userBalance(t, db, userID); got != 0 {
+				t.Fatalf("balance = %d, want 0", got)
+			}
+			state.mu.Lock()
+			cancels := state.cancelCalls
+			state.mu.Unlock()
+			if cancels != 1 {
+				t.Fatalf("cancel calls = %d, want 1 best-effort close", cancels)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 单轮批量上限与跨轮次排空（复审 Important #2）
 // ---------------------------------------------------------------------------
 
