@@ -102,7 +102,7 @@ func newExpiryAlipayServer(t *testing.T, privatePEM, publicPEM string,
 		for key := range query {
 			params[key] = query.Get(key)
 		}
-		if err := verifyRSA2(params, publicPEM); err != nil {
+		if err := verifyRSA2Request(params, publicPEM); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

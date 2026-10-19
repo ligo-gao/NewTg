@@ -880,9 +880,9 @@ func (s *TopupService) alipayGateway() string {
 
 // alipayParams 组装公共参数（含 sign），返回可直接 GET 的 url.Values。
 //
-// 签名串 = 除 sign/sign_type 外的参数按键名排序后的 `k=v&...`。值使用
-// 原始明文（biz_content 是 JSON 字符串），与支付宝规范一致；URL 编码只
-// 发生在传输层，不参与签名。
+// 签名串 = 除 sign 外的参数按键名升序 `k=v&...`；sign_type **参与**
+// （OpenAPI 请求口径，见 canonicalAlipayRequestString），空值省略。值使用
+// 原始明文（biz_content 是 JSON 字符串），URL 编码只发生在传输层，不参与签名。
 func (s *TopupService) alipayParams(method, bizContent, privateKeyPEM string) (url.Values, error) {
 	params := map[string]string{
 		"app_id":      s.configString(ConfigAlipayAppID),
@@ -1136,13 +1136,24 @@ func (s *TopupService) HandleAlipayNotify(ctx context.Context, params url.Values
 	return s.settleOrder(ctx, order, cents, AlipayCurrency, raw)
 }
 
-// signRSA2 对参数做支付宝 RSA2 签名（SHA256withRSA + PKCS#1 v1.5）。
+// signRSA2 对**出站 OpenAPI 请求**参数做支付宝 RSA2 签名
+// （SHA256withRSA + PKCS#1 v1.5）。
+//
+// 请求签名与异步通知验签的规范化口径**不对称**：请求只排除 `sign`，
+// `sign_type` 必须参与签名；通知两者都排除。混用会让支付宝判定验签失败
+// （默认 QPU 等其他配置正确时仍然 100% 失败）。
 func signRSA2(params map[string]string, privateKeyPEM string) (string, error) {
+	return signRSA2With(params, privateKeyPEM, canonicalAlipayRequestString)
+}
+
+func signRSA2With(params map[string]string, privateKeyPEM string,
+	canonical func(map[string]string) string) (string, error) {
+
 	key, err := parseRSAPrivateKey(privateKeyPEM)
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256([]byte(canonicalAlipayString(params)))
+	digest := sha256.Sum256([]byte(canonical(params)))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
 		return "", err
@@ -1150,8 +1161,21 @@ func signRSA2(params map[string]string, privateKeyPEM string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// verifyRSA2 验证 url.Values 形态的通知（已 URL 解码后传入）。
+// verifyRSA2 验证 url.Values 形态的**异步通知**（已 URL 解码后传入）。
 func verifyRSA2(params map[string]string, publicKeyPEM string) error {
+	return verifyRSA2With(params, publicKeyPEM, canonicalAlipayNotifyString)
+}
+
+// verifyRSA2Request 按 OpenAPI 请求口径验证签名（只排除 sign）。
+// 生产路径当前只验通知，但签名口径的对称性需要可测试：测试网关桩用它
+// 校验出站请求，任何把 sign_type 从请求签名串里漏掉的回归都会立即失败。
+func verifyRSA2Request(params map[string]string, publicKeyPEM string) error {
+	return verifyRSA2With(params, publicKeyPEM, canonicalAlipayRequestString)
+}
+
+func verifyRSA2With(params map[string]string, publicKeyPEM string,
+	canonical func(map[string]string) string) error {
+
 	sign := strings.TrimSpace(params["sign"])
 	if sign == "" {
 		return fmt.Errorf("%w: missing sign", ErrWebhookSignature)
@@ -1167,7 +1191,7 @@ func verifyRSA2(params map[string]string, publicKeyPEM string) error {
 	if err != nil {
 		return fmt.Errorf("%w: sign is not base64", ErrWebhookSignature)
 	}
-	digest := sha256.Sum256([]byte(canonicalAlipayString(params)))
+	digest := sha256.Sum256([]byte(canonical(params)))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], decoded); err != nil {
 		return fmt.Errorf("%w: signature mismatch", ErrWebhookSignature)
 	}
@@ -1188,12 +1212,27 @@ func verifyRSA2Raw(raw json.RawMessage, sign, publicKeyPEM string) error {
 	return rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], decoded)
 }
 
-// canonicalAlipayString 生成签名串：去掉 sign/sign_type，按键名升序，
-// 以 `k=v` 用 & 连接。空值参数同样参与（支付宝规范如此，不能省略）。
-func canonicalAlipayString(params map[string]string) string {
+// canonicalAlipayRequestString 生成 OpenAPI 请求签名串：
+// 只排除 `sign`（`sign_type` 参与），空值参数省略，按键名升序。
+func canonicalAlipayRequestString(params map[string]string) string {
+	return canonicalAlipayParams(params, func(key string) bool { return key == "sign" })
+}
+
+// canonicalAlipayNotifyString 生成异步通知验签串：
+// 同时排除 `sign` 与 `sign_type`，空值参数省略，按键名升序。
+func canonicalAlipayNotifyString(params map[string]string) string {
+	return canonicalAlipayParams(params, func(key string) bool {
+		return key == "sign" || key == "sign_type"
+	})
+}
+
+// canonicalAlipayParams 是两种口径的唯一实现：skip 决定排除哪些键。
+// 支付宝规范对「请求签名」与「通知验签」的排除集合不同，且空值参数
+// 一律不参与；把它们写成一个可参数化的函数，避免未来再次混淆。
+func canonicalAlipayParams(params map[string]string, skip func(string) bool) string {
 	keys := make([]string, 0, len(params))
 	for key := range params {
-		if key == "sign" || key == "sign_type" {
+		if skip(key) || params[key] == "" {
 			continue
 		}
 		keys = append(keys, key)

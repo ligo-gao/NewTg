@@ -155,7 +155,7 @@ func newAlipayTestServer(t *testing.T, privatePEM, publicPEM string) *httptest.S
 		for key := range query {
 			params[key] = query.Get(key)
 		}
-		if err := verifyRSA2(params, publicPEM); err != nil {
+		if err := verifyRSA2Request(params, publicPEM); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"bad sign"}`))
 			return
@@ -210,17 +210,19 @@ func signRSA2Raw(raw []byte, privatePEM string) (string, error) {
 }
 
 // alipayNotify 构造带 RSA2 签名的异步通知参数。
+// 通知签名排除 sign 与 sign_type，并省略空值参数（memo="" 是回归样本）。
 func alipayNotify(t *testing.T, privatePEM, appID, outTradeNo, totalAmount, status string) url.Values {
 	t.Helper()
 	params := map[string]string{
 		"app_id":       appID,
+		"memo":         "",
 		"out_trade_no": outTradeNo,
 		"trade_no":     "2026101922001400000000000001",
 		"trade_status": status,
 		"total_amount": totalAmount,
 		"sign_type":    "RSA2",
 	}
-	sign, err := signRSA2(params, privatePEM)
+	sign, err := signRSA2With(params, privatePEM, canonicalAlipayNotifyString)
 	if err != nil {
 		t.Fatalf("sign notify: %v", err)
 	}
@@ -230,6 +232,53 @@ func alipayNotify(t *testing.T, privatePEM, appID, outTradeNo, totalAmount, stat
 		values.Set(key, value)
 	}
 	return values
+}
+
+// ---------------------------------------------------------------------------
+// 支付宝签名串口径（OpenAPI 请求 vs 异步通知）
+// ---------------------------------------------------------------------------
+
+// TestAlipayCanonicalRequestString 钉死 OpenAPI 请求签名串：
+//   - 只排除 `sign`；`sign_type` **参与**签名（与通知验签不对称）；
+//   - 空值参数不参与（支付宝请求签名规范）；
+//   - 键名升序、`k=v` 以 & 连接、值用原始明文。
+func TestAlipayCanonicalRequestString(t *testing.T) {
+	params := map[string]string{
+		"app_id":      "app_1",
+		"biz_content": `{"out_trade_no":"X"}`,
+		"charset":     "utf-8",
+		"empty":       "",
+		"format":      "JSON",
+		"method":      "alipay.trade.query",
+		"sign":        "IGNORED",
+		"sign_type":   "RSA2",
+		"timestamp":   "2026-10-19 12:00:00",
+		"version":     "1.0",
+	}
+	want := `app_id=app_1&biz_content={"out_trade_no":"X"}&charset=utf-8&format=JSON&method=alipay.trade.query&sign_type=RSA2&timestamp=2026-10-19 12:00:00&version=1.0`
+	if got := canonicalAlipayRequestString(params); got != want {
+		t.Fatalf("request canonical string =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestAlipayCanonicalNotifyString 钉死异步通知验签串：
+//   - 同时排除 `sign` 与 `sign_type`（通知的签名不含算法字段）；
+//   - 空值参数同样不参与；
+//   - 若误用请求口径（保留 sign_type），验签必然失败。
+func TestAlipayCanonicalNotifyString(t *testing.T) {
+	params := map[string]string{
+		"app_id":       "app_1",
+		"empty":        "",
+		"out_trade_no": "TG1",
+		"sign":         "IGNORED",
+		"sign_type":    "RSA2",
+		"trade_status": "TRADE_SUCCESS",
+		"total_amount": "10.00",
+	}
+	want := "app_id=app_1&out_trade_no=TG1&total_amount=10.00&trade_status=TRADE_SUCCESS"
+	if got := canonicalAlipayNotifyString(params); got != want {
+		t.Fatalf("notify canonical string =\n%q\nwant\n%q", got, want)
+	}
 }
 
 // ---------------------------------------------------------------------------
