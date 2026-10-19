@@ -27,6 +27,24 @@ func (e ChangeEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for CreateOrderRequestProvider.
+const (
+	CreateOrderRequestProviderAlipay CreateOrderRequestProvider = "alipay"
+	CreateOrderRequestProviderStripe CreateOrderRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the CreateOrderRequestProvider enum.
+func (e CreateOrderRequestProvider) Valid() bool {
+	switch e {
+	case CreateOrderRequestProviderAlipay:
+		return true
+	case CreateOrderRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EmailCodeRequestPurpose.
 const (
 	Bind     EmailCodeRequestPurpose = "bind"
@@ -555,6 +573,108 @@ const (
 func (e TokenUsageObject) Valid() bool {
 	switch e {
 	case TokenUsageObjectTokenUsage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupConfigEnabledProviders.
+const (
+	TopupConfigEnabledProvidersAlipay TopupConfigEnabledProviders = "alipay"
+	TopupConfigEnabledProvidersStripe TopupConfigEnabledProviders = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the TopupConfigEnabledProviders enum.
+func (e TopupConfigEnabledProviders) Valid() bool {
+	switch e {
+	case TopupConfigEnabledProvidersAlipay:
+		return true
+	case TopupConfigEnabledProvidersStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewFailureCode.
+const (
+	AmountMismatch      TopupOrderViewFailureCode = "amount_mismatch"
+	CurrencyMismatch    TopupOrderViewFailureCode = "currency_mismatch"
+	LessThannil         TopupOrderViewFailureCode = "<nil>"
+	ManualRequired      TopupOrderViewFailureCode = "manual_required"
+	OrderNotFound       TopupOrderViewFailureCode = "order_not_found"
+	OrderStateConflict  TopupOrderViewFailureCode = "order_state_conflict"
+	ProviderRejected    TopupOrderViewFailureCode = "provider_rejected"
+	ProviderUnavailable TopupOrderViewFailureCode = "provider_unavailable"
+	SignatureInvalid    TopupOrderViewFailureCode = "signature_invalid"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewFailureCode enum.
+func (e TopupOrderViewFailureCode) Valid() bool {
+	switch e {
+	case AmountMismatch:
+		return true
+	case CurrencyMismatch:
+		return true
+	case LessThannil:
+		return true
+	case ManualRequired:
+		return true
+	case OrderNotFound:
+		return true
+	case OrderStateConflict:
+		return true
+	case ProviderRejected:
+		return true
+	case ProviderUnavailable:
+		return true
+	case SignatureInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewProvider.
+const (
+	TopupOrderViewProviderAlipay TopupOrderViewProvider = "alipay"
+	TopupOrderViewProviderStripe TopupOrderViewProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewProvider enum.
+func (e TopupOrderViewProvider) Valid() bool {
+	switch e {
+	case TopupOrderViewProviderAlipay:
+		return true
+	case TopupOrderViewProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TopupOrderViewStatus.
+const (
+	TopupOrderViewStatusCancelled TopupOrderViewStatus = "cancelled"
+	TopupOrderViewStatusExpired   TopupOrderViewStatus = "expired"
+	TopupOrderViewStatusFailed    TopupOrderViewStatus = "failed"
+	TopupOrderViewStatusPending   TopupOrderViewStatus = "pending"
+	TopupOrderViewStatusSucceeded TopupOrderViewStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the TopupOrderViewStatus enum.
+func (e TopupOrderViewStatus) Valid() bool {
+	switch e {
+	case TopupOrderViewStatusCancelled:
+		return true
+	case TopupOrderViewStatusExpired:
+		return true
+	case TopupOrderViewStatusFailed:
+		return true
+	case TopupOrderViewStatusPending:
+		return true
+	case TopupOrderViewStatusSucceeded:
 		return true
 	default:
 		return false
@@ -1233,6 +1353,29 @@ type ChangeEmailResponseEmailVerified bool
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+// CreateOrderRequest defines model for CreateOrderRequest.
+type CreateOrderRequest struct {
+	// Amount 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
+	Amount int64 `json:"amount"`
+
+	// Currency ISO-4217 三字母；服务端统一大写
+	Currency *string                    `json:"currency,omitempty"`
+	Provider CreateOrderRequestProvider `json:"provider"`
+}
+
+// CreateOrderRequestProvider defines model for CreateOrderRequest.Provider.
+type CreateOrderRequestProvider string
+
+// CreateOrderResponse defines model for CreateOrderResponse.
+type CreateOrderResponse struct {
+	// ClientSecret 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
+	ClientSecret *string        `json:"client_secret,omitempty"`
+	Order        TopupOrderView `json:"order"`
+
+	// QrCode 仅 alipay 首次创建返回
+	QrCode *string `json:"qr_code,omitempty"`
 }
 
 // CreateTokenRequest POST /api/tokens 应携带 Idempotency-Key：同键重放返回首次结果，
@@ -2349,6 +2492,61 @@ type TokenUsage struct {
 // TokenUsageObject defines model for TokenUsage.Object.
 type TokenUsageObject string
 
+// TopupConfig defines model for TopupConfig.
+type TopupConfig struct {
+	// AmountOptions 档位，最小货币单位（分）；来源 `pay.amount_presets_cny`
+	AmountOptions []int64 `json:"amount_options"`
+
+	// EnabledProviders 已启用且配置完整的渠道（P-13）
+	EnabledProviders []TopupConfigEnabledProviders `json:"enabled_providers"`
+
+	// MaxTopup 单笔硬上限（分），冻结 10000000
+	MaxTopup int64 `json:"max_topup"`
+
+	// MinTopup 全局最低充值（分），来源 `pay.min_topup_cny`
+	MinTopup int64 `json:"min_topup"`
+
+	// Providers 只包含 enabled_providers 中的渠道
+	Providers map[string]TopupProviderConfig `json:"providers"`
+
+	// QuotaPerUnit 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+	QuotaPerUnit int64 `json:"quota_per_unit"`
+}
+
+// TopupConfigEnabledProviders defines model for TopupConfig.EnabledProviders.
+type TopupConfigEnabledProviders string
+
+// TopupOrderView defines model for TopupOrderView.
+type TopupOrderView struct {
+	// Amount 订单金额（分），服务端定价的唯一真源
+	Amount    int64     `json:"amount"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreditedCredits 成功时到账积分快照；pending/failed 为 0
+	CreditedCredits int64                      `json:"credited_credits"`
+	Currency        string                     `json:"currency"`
+	FailureCode     *TopupOrderViewFailureCode `json:"failure_code,omitempty"`
+	Id              int64                      `json:"id"`
+	PaidAt          *time.Time                 `json:"paid_at,omitempty"`
+	Provider        TopupOrderViewProvider     `json:"provider"`
+	Status          TopupOrderViewStatus       `json:"status"`
+}
+
+// TopupOrderViewFailureCode defines model for TopupOrderView.FailureCode.
+type TopupOrderViewFailureCode string
+
+// TopupOrderViewProvider defines model for TopupOrderView.Provider.
+type TopupOrderViewProvider string
+
+// TopupOrderViewStatus defines model for TopupOrderView.Status.
+type TopupOrderViewStatus string
+
+// TopupProviderConfig 公开的渠道配置；secret 永不出现。
+type TopupProviderConfig struct {
+	// PublishableKey Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
+	PublishableKey *string `json:"publishable_key,omitempty"`
+}
+
 // TwoFABackupCodesResponse defines model for TwoFABackupCodesResponse.
 type TwoFABackupCodesResponse struct {
 	// BackupCodes 明文备用码，仅本次响应出现；重生成后旧码立即失效。
@@ -2783,6 +2981,16 @@ type TestNotificationParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// CreateOrderParams defines parameters for CreateOrder.
+type CreateOrderParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+
+	// IdempotencyKey 客户端生成的 UUID v4；全表唯一（P-2）
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // ChangePasswordParams defines parameters for ChangePassword.
 type ChangePasswordParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -3041,6 +3249,13 @@ type VerifyEmailParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// AlipayNotifyFormdataBody defines parameters for AlipayNotify.
+type AlipayNotifyFormdataBody struct {
+}
+
+// StripeWebhookJSONBody defines parameters for StripeWebhook.
+type StripeWebhookJSONBody = map[string]interface{}
+
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
@@ -3158,6 +3373,9 @@ type UpdateNotificationPreferencesJSONRequestBody = NotificationPreferences
 // TestNotificationJSONRequestBody defines body for TestNotification for application/json ContentType.
 type TestNotificationJSONRequestBody = NotificationTestRequest
 
+// CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
+type CreateOrderJSONRequestBody = CreateOrderRequest
+
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
 
@@ -3211,6 +3429,12 @@ type SetUserStatusJSONRequestBody = AdminUserStatusRequest
 
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = VerifyEmailRequest
+
+// AlipayNotifyFormdataRequestBody defines body for AlipayNotify for application/x-www-form-urlencoded ContentType.
+type AlipayNotifyFormdataRequestBody AlipayNotifyFormdataBody
+
+// StripeWebhookJSONRequestBody defines body for StripeWebhook for application/json ContentType.
+type StripeWebhookJSONRequestBody = StripeWebhookJSONBody
 
 // Getter for additional properties for Problem. Returns the specified
 // element and whether it was found

@@ -165,6 +165,16 @@ paths:
   /api/redemption-codes/redeem:
     $ref: './paths/user.yaml#/paths/~1api~1redemption-codes~1redeem'
 
+  # 在线充值（M5 Task 3；用户端点 + 公网回调）。
+  /api/topup/config:
+    $ref: './paths/user.yaml#/paths/~1api~1topup~1config'
+  /api/orders:
+    $ref: './paths/user.yaml#/paths/~1api~1orders'
+  /api/webhooks/stripe:
+    $ref: './paths/public.yaml#/paths/~1api~1webhooks~1stripe'
+  /api/webhooks/alipay:
+    $ref: './paths/public.yaml#/paths/~1api~1webhooks~1alipay'
+
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'

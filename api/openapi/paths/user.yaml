@@ -1102,3 +1102,98 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M5 在线充值配置（modules-04 §4.A F-04-01；P-9/P-17）。
+  /api/topup/config:
+    get:
+      tags: [user]
+      operationId: getTopupConfig
+      summary: 获取充值页配置
+      description: |
+        档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
+        `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`
+        与「已启用且配置完整」的渠道集合。`pay.stripe.publishable_key` 是
+        公开值，随 `providers.stripe` 下发；任何 secret 都不进入响应。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TopupConfig'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # M5 幂等下单（modules-04 §4.B/§4.C/§4.E F-04-03/05/10；P-9/P-10）。
+  /api/orders:
+    post:
+      tags: [user]
+      operationId: createOrder
+      summary: 幂等创建充值订单并初始化渠道支付
+      description: |
+        `Idempotency-Key` 必填（UUID v4）。同一 key 重复提交返回首次订单
+        （HTTP 200，不新建、不重新创建渠道支付单）；key 属于其他用户时
+        409 `order_state_conflict`。首次创建返回 201。
+        `provider=stripe` 返回 `client_secret`；`provider=alipay` 返回 `qr_code`。
+        渠道未启用/配置不完整返回 403；渠道 5xx 返回 502 且订单置 failed。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 客户端生成的 UUID v4；全表唯一（P-2）
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: 首次创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/CreateOrderResponse'
+        '200':
+          description: 幂等重放（返回首次订单，不含渠道支付载荷）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/CreateOrderResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          description: 在线支付关闭或该渠道未启用/配置不完整
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '409':
+          description: Idempotency-Key 已被其他用户占用（order_state_conflict）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '502':
+          description: 渠道初始化失败（订单已置 failed，provider_unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'

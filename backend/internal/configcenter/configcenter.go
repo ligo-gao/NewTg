@@ -44,8 +44,18 @@ type SecretSealer interface {
 // secretKeys 是密钥类键清单（security-03 §2.4：写入前 AES-256-GCM 密封）。
 // R-09 的 M1 落地：Turnstile 私钥必须密封落库（modules-08 F-08-07）；
 // site_key / enabled 是公开下发字段，不登记。
+//
+// M5 充值（Task 3）追加支付渠道凭据：Stripe secret/webhook secret 与
+// 支付宝应用私钥/公钥都来自 modules-08 §3.20 的密钥类键。登记后 Save
+// 会先密封再落库，TopupService 用同一个 SecretSealer 解封；不登记会让
+// 生产环境读取到明文/解封失败，渠道被判定为「配置不完整」。
+// `pay.stripe.publishable_key` 是公开下发字段（P-17），刻意不登记。
 var secretKeys = map[string]struct{}{
 	"auth.turnstile.secret_key": {},
+	"pay.stripe.secret_key":     {},
+	"pay.stripe.webhook_secret": {},
+	"pay.alipay.private_key":    {},
+	"pay.alipay.public_key":     {},
 }
 
 // rowScanner 抽象 *sql.Row 的 Scan，便于单测以缝隙替代真实数据库（GC-8）。

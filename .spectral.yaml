@@ -6,10 +6,14 @@ formats:
   - oas3_1
 rules:
   newtg-problem-json-errors:
-    description: 4xx/5xx 响应必须使用 application/problem+json（RFC 7807）；唯一例外是 /readyz 的 503——其就绪信封 {status,checks,version,node} 已冻结（platform-03 §4）
+    description: >-
+      4xx/5xx 响应必须使用 application/problem+json（RFC 7807）；两个例外：
+      /readyz 的 503——其就绪信封 {status,checks,version,node} 已冻结（platform-03 §4）；
+      /api/webhooks/alipay——支付宝异步通知协议要求纯文本 success/failure，
+      返回 problem+json 会被渠道判为投递失败（modules-04 F-04-06）。
     message: "{{path}}: 4xx/5xx 响应缺少 application/problem+json"
     severity: error
-    given: "$.paths[?(@property != '/readyz')][*].responses[?(@property.match(/^[45][0-9][0-9]$/))]"
+    given: "$.paths[?(@property != '/readyz' && @property != '/api/webhooks/alipay')][*].responses[?(@property.match(/^[45][0-9][0-9]$/))]"
     then:
       field: content.application/problem+json
       function: truthy

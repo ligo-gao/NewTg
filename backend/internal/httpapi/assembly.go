@@ -98,6 +98,12 @@ type GatewayDeps struct {
 	// 独立 Redis 限流桶。
 	RedemptionHandlers *RedemptionHandlers
 
+	// TopupHandlers 是 M5 在线充值端点集合（Task 3）。非 nil 时：
+	//   - GET /api/topup/config、POST /api/orders 挂到受保护子树；
+	//   - POST /api/webhooks/{stripe,alipay} 以精确模式挂根 mux，绕过
+	//     SessionAuth/CSRF（渠道回调没有会话，安全性由验签+限流承担）。
+	TopupHandlers *TopupHandlers
+
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
 	TurnstileHTTPClient *http.Client
@@ -217,6 +223,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 受保护子树（必须已认证），限流在 handler 内执行。
 	if deps.RedemptionHandlers != nil {
 		deps.RedemptionHandlers.RegisterRedemptionRoutes(rt.protected, nil)
+	}
+
+	// M5 在线充值端点（Task 3）：用户端点共用受保护链；webhook 精确挂根
+	// mux（验签 + 每 provider 独立限流，见 handlers_topup.go）。
+	if deps.TopupHandlers != nil {
+		deps.TopupHandlers.RegisterTopupRoutes(rt.protected, nil)
+		deps.TopupHandlers.RegisterWebhookRoutes(rt)
 	}
 
 	checker := withSiteTitle(deps.Config, deps.PasswordChecker)

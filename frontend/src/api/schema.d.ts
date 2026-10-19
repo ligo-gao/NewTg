@@ -1392,6 +1392,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/topup/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取充值页配置
+         * @description 档位（`pay.amount_presets_cny`，已换算为最小货币单位）、全局最低
+         *     `pay.min_topup_cny`、硬上限 10,000,000 分、`billing.quota_per_unit`
+         *     与「已启用且配置完整」的渠道集合。`pay.stripe.publishable_key` 是
+         *     公开值，随 `providers.stripe` 下发；任何 secret 都不进入响应。
+         */
+        get: operations["getTopupConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 幂等创建充值订单并初始化渠道支付
+         * @description `Idempotency-Key` 必填（UUID v4）。同一 key 重复提交返回首次订单
+         *     （HTTP 200，不新建、不重新创建渠道支付单）；key 属于其他用户时
+         *     409 `order_state_conflict`。首次创建返回 201。
+         *     `provider=stripe` 返回 `client_secret`；`provider=alipay` 返回 `qr_code`。
+         *     渠道未启用/配置不完整返回 403；渠道 5xx 返回 502 且订单置 failed。
+         */
+        post: operations["createOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhooks/stripe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stripe 异步通知
+         * @description 验签使用**原始请求体**：`Stripe-Signature` 的 `t=...,v1=...` 为
+         *     HMAC-SHA256(`t + "." + body`)，时间戳偏差 > 300s 拒绝。仅处理
+         *     `payment_intent.succeeded`；金额/币种与订单不一致 → 订单 failed +
+         *     告警且不入账。重复投递幂等（provider_txn_id 唯一 + 条件 UPDATE）。
+         *     每端点独立 60 次/分钟限流（429）。
+         */
+        post: operations["stripeWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhooks/alipay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 支付宝异步通知
+         * @description 表单编码回调；RSA2（SHA256withRSA）验签。仅 `TRADE_SUCCESS` 入账，
+         *     其余状态回 `success` 并忽略。`total_amount`（元）换算为分后与订单
+         *     比对，不一致 → 订单 failed + 告警并回 `failure`。重复通知幂等。
+         *     每端点独立 60 次/分钟限流（429）。
+         */
+        post: operations["alipayNotify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/channels": {
         parameters: {
             query?: never;
@@ -2666,6 +2760,82 @@ export interface components {
              * @description 入账后的钱包余额快照
              */
             balance_after: number;
+        };
+        /** @description 公开的渠道配置；secret 永不出现。 */
+        TopupProviderConfig: {
+            /** @description Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`） */
+            publishable_key?: string;
+        };
+        TopupConfig: {
+            /** @description 档位，最小货币单位（分）；来源 `pay.amount_presets_cny` */
+            amount_options: number[];
+            /**
+             * Format: int64
+             * @description 全局最低充值（分），来源 `pay.min_topup_cny`
+             */
+            min_topup: number;
+            /**
+             * Format: int64
+             * @description 单笔硬上限（分），冻结 10000000
+             */
+            max_topup: number;
+            /**
+             * Format: int64
+             * @description 1 元 = N 积分（`billing.quota_per_unit`，默认 100）
+             */
+            quota_per_unit: number;
+            /** @description 已启用且配置完整的渠道（P-13） */
+            enabled_providers: ("stripe" | "alipay")[];
+            /** @description 只包含 enabled_providers 中的渠道 */
+            providers: {
+                [key: string]: components["schemas"]["TopupProviderConfig"];
+            };
+        };
+        CreateOrderRequest: {
+            /**
+             * Format: int64
+             * @description 最小货币单位（分）；下限由全局/渠道最低值取 max 后校验
+             */
+            amount: number;
+            /**
+             * @description ISO-4217 三字母；服务端统一大写
+             * @default CNY
+             */
+            currency: string;
+            /** @enum {string} */
+            provider: "stripe" | "alipay";
+        };
+        TopupOrderView: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            provider: "stripe" | "alipay";
+            /**
+             * Format: int64
+             * @description 订单金额（分），服务端定价的唯一真源
+             */
+            amount: number;
+            currency: string;
+            /** @enum {string} */
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+            /**
+             * Format: int64
+             * @description 成功时到账积分快照；pending/failed 为 0
+             */
+            credited_credits: number;
+            /** @enum {string|null} */
+            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
+            /** Format: date-time */
+            paid_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        CreateOrderResponse: {
+            order: components["schemas"]["TopupOrderView"];
+            /** @description 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放） */
+            client_secret?: string;
+            /** @description 仅 alipay 首次创建返回 */
+            qr_code?: string;
         };
     };
     responses: {
@@ -5539,6 +5709,204 @@ export interface operations {
             410: components["responses"]["Error410"];
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+        };
+    };
+    getTopupConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopupConfig"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                /** @description 客户端生成的 UUID v4；全表唯一（P-2） */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 幂等重放（返回首次订单，不含渠道支付载荷） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            /** @description 首次创建成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            /** @description 在线支付关闭或该渠道未启用/配置不完整 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Idempotency-Key 已被其他用户占用（order_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+            /** @description 渠道初始化失败（订单已置 failed，provider_unavailable） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stripeWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 已处理或按状态机忽略 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 验签或载荷非法（不改订单、不入账） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 超过 60 次/分钟 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 限流器不可用（fail closed） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    alipayNotify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    [key: string]: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 处理完成（纯文本 `success`） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "failure";
+                };
+            };
+            /** @description 验签失败或金额不符（纯文本 `failure`，不入账） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "failure";
+                };
+            };
+            /** @description 超过 60 次/分钟 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（纯文本 `failure`，渠道会重投） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 限流器不可用（fail closed） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listChannels: {

@@ -220,6 +220,20 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: redemption handlers: %w", err)
 	}
 
+	// M5 在线充值端点（Task 3）：密钥类配置（Stripe secret/webhook secret、
+	// 支付宝私钥/公钥）经与配置中心同一个 SecretSealer 解封；webhook 限流
+	// 复用同一 Redis 客户端，缺 Redis 时构造失败（fail closed）。
+	topupHandler, err := httpapi.NewTopupHandlers(httpapi.TopupHandlerConfig{
+		DB:     gormDB,
+		Redis:  rdb,
+		Config: center,
+		Sealer: cipher,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: topup handlers: %w", err)
+	}
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -237,6 +251,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		ChannelHandler:          channelHandler,
 		PricingRepo:             pricingRepo,
 		RedemptionHandlers:      redemptionHandler,
+		TopupHandlers:           topupHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
 	})

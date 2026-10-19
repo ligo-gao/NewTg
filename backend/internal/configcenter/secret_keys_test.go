@@ -26,6 +26,24 @@ func TestTurnstileSecretKeyRegistered(t *testing.T) {
 	}
 }
 
+// TestPaymentSecretKeysRegistered：M5 充值渠道凭据必须密封落库；
+// publishable_key 是公开值，不得登记。
+func TestPaymentSecretKeysRegistered(t *testing.T) {
+	for _, secret := range []string{
+		"pay.stripe.secret_key",
+		"pay.stripe.webhook_secret",
+		"pay.alipay.private_key",
+		"pay.alipay.public_key",
+	} {
+		if _, ok := secretKeys[secret]; !ok {
+			t.Fatalf("%q 必须登记进 secretKeys（security-03 / modules-08 §3.20）", secret)
+		}
+	}
+	if _, ok := secretKeys["pay.stripe.publishable_key"]; ok {
+		t.Fatal("pay.stripe.publishable_key 是公开下发字段，不得登记为密钥类")
+	}
+}
+
 // TestSaveTurnstileSecretRequiresSealer：注册路径在无 Sealer 时拒绝写入，
 // 且不触达 DB / PUBLISH。
 func TestSaveTurnstileSecretRequiresSealer(t *testing.T) {

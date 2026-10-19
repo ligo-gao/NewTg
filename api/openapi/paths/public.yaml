@@ -385,3 +385,87 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error500'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
+
+  # M5 Stripe 回调（modules-04 F-04-04；P-7/P-15）。
+  /api/webhooks/stripe:
+    post:
+      tags: [public]
+      operationId: stripeWebhook
+      summary: Stripe 异步通知
+      description: |
+        验签使用**原始请求体**：`Stripe-Signature` 的 `t=...,v1=...` 为
+        HMAC-SHA256(`t + "." + body`)，时间戳偏差 > 300s 拒绝。仅处理
+        `payment_intent.succeeded`；金额/币种与订单不一致 → 订单 failed +
+        告警且不入账。重复投递幂等（provider_txn_id 唯一 + 条件 UPDATE）。
+        每端点独立 60 次/分钟限流（429）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Stripe Event 原文（验签前不反序列化）
+      responses:
+        '200':
+          description: 已处理或按状态机忽略
+        '400':
+          description: 验签或载荷非法（不改订单、不入账）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '429':
+          description: 超过 60 次/分钟
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '503':
+          description: 限流器不可用（fail closed）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  # M5 支付宝异步通知（modules-04 F-04-06；P-7/P-15）。
+  /api/webhooks/alipay:
+    post:
+      tags: [public]
+      operationId: alipayNotify
+      summary: 支付宝异步通知
+      description: |
+        表单编码回调；RSA2（SHA256withRSA）验签。仅 `TRADE_SUCCESS` 入账，
+        其余状态回 `success` 并忽略。`total_amount`（元）换算为分后与订单
+        比对，不一致 → 订单 failed + 告警并回 `failure`。重复通知幂等。
+        每端点独立 60 次/分钟限流（429）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: 处理完成（纯文本 `success`）
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: [success, failure]
+        '400':
+          description: 验签失败或金额不符（纯文本 `failure`，不入账）
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: [success, failure]
+        '429':
+          description: 超过 60 次/分钟
+        '500':
+          description: 内部错误（纯文本 `failure`，渠道会重投）
+        '503':
+          description: 限流器不可用（fail closed）
