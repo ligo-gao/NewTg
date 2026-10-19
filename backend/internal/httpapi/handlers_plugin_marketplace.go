@@ -149,6 +149,11 @@ func (h *TaskPluginHandlers) handleMarketSourcesList(w http.ResponseWriter, r *h
 }
 
 func (h *TaskPluginHandlers) handleMarketSourcesPut(w http.ResponseWriter, r *http.Request) {
+	if !h.marketplaceEnabled() {
+		writePluginProblem(w, http.StatusConflict, pluginProblemMarketDisabled,
+			"Marketplace is disabled", "plugin.marketplace.enabled is false", nil)
+		return
+	}
 	var req struct {
 		Sources []struct {
 			ID      string `json:"id"`
@@ -233,6 +238,7 @@ func (h *TaskPluginHandlers) handleMarketSourcesPut(w http.ResponseWriter, r *ht
 		return
 	}
 	h.writeMarketSourceAudit(r, before, after)
+	h.invalidateMarketCache()
 	items := make([]marketSourceView, 0, len(after))
 	for _, source := range after {
 		items = append(items, marketSourceViewOf(source))
@@ -241,6 +247,11 @@ func (h *TaskPluginHandlers) handleMarketSourcesPut(w http.ResponseWriter, r *ht
 }
 
 func (h *TaskPluginHandlers) handleMarketSourceCheck(w http.ResponseWriter, r *http.Request) {
+	if !h.marketplaceEnabled() {
+		writePluginProblem(w, http.StatusConflict, pluginProblemMarketDisabled,
+			"Marketplace is disabled", "plugin.marketplace.enabled is false", nil)
+		return
+	}
 	source, err := h.store.GetMarketSource(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.writeMarketError(w, err)
@@ -468,6 +479,15 @@ func (h *TaskPluginHandlers) annotateInstalled(ctx context.Context, aggregated m
 	return nil
 }
 
+// invalidateMarketCache 让下一次 GET 重新聚合（安装会改变 installed 标记，
+// 保存源会改变参与聚合的源集合）。
+func (h *TaskPluginHandlers) invalidateMarketCache() {
+	h.marketMu.Lock()
+	defer h.marketMu.Unlock()
+	h.marketCache = nil
+	h.marketCachedAt = time.Time{}
+}
+
 func findMarketVersion(versions []marketplaceVersionView, version string) *marketplaceVersionView {
 	for i := range versions {
 		if versions[i].Version == version {
@@ -585,6 +605,7 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 	index, err := h.market.FetchIndex(fetchCtx, source.URL)
 	cancel()
 	if err != nil {
+		h.auditMarketInstallFailure(r, key, version, "index_unreachable", http.StatusBadGateway)
 		h.writeMarketFetchError(w, err)
 		return
 	}
@@ -604,6 +625,7 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 	sourceBytes, err := h.market.FetchSource(sourceCtx, versionEntry.SourceURL, versionEntry.SourceHash)
 	cancelSource()
 	if err != nil {
+		h.auditMarketInstallFailure(r, key, version, "package_rejected", http.StatusUnprocessableEntity)
 		h.writeMarketFetchError(w, err)
 		return
 	}
@@ -611,6 +633,7 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 
 	compiled, err := plugin.Compile(r.Context(), sourceText, plugin.CompileOptions{Layer: plugin.LayerOverride})
 	if err != nil {
+		h.auditMarketInstallFailure(r, key, version, "compile_failed", http.StatusUnprocessableEntity)
 		status, body := pluginIssuesResponse(http.StatusUnprocessableEntity, pluginProblemCompileFailed,
 			"Plugin compile failed", "the downloaded plugin source failed compilation or validation", err)
 		writeJSONBytes(w, status, body)
@@ -620,6 +643,7 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 	if manifest.Key != key || manifest.Version != version {
 		// F-08-33：包体版本与索引声明不符 → 拒绝。否则 index 声明的
 		// (key, version) 与实际入库的内容会指向不同版本，hash 校验也失去意义。
+		h.auditMarketInstallFailure(r, key, version, "package_mismatch", http.StatusUnprocessableEntity)
 		writePluginProblem(w, http.StatusUnprocessableEntity, pluginProblemPackageMismatch,
 			"Package does not match index",
 			fmt.Sprintf("index declares %s@%s, package exports %s@%s", key, version, manifest.Key, manifest.Version), nil)
@@ -636,12 +660,14 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 	p, v, created, err := h.store.Upload(r.Context(), upload)
 	if err != nil {
 		if errors.Is(err, store.ErrTaskPluginVersionConflict) {
+			h.auditMarketInstallFailure(r, key, version, "version_conflict", http.StatusConflict)
 			writePluginProblem(w, http.StatusConflict, pluginProblemVersionConflict,
 				"Plugin version already exists",
 				"the same plugin key/version is already stored with different source content", nil)
 			return
 		}
 		h.log.Error("plugin: market install persist failed", "err", err)
+		h.auditMarketInstallFailure(r, key, version, "store_error", http.StatusInternalServerError)
 		writePluginProblem(w, http.StatusInternalServerError, authProblemInternal,
 			"Internal Server Error", "", nil)
 		return
@@ -651,12 +677,14 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 	if req.Activate != nil && *req.Activate {
 		p, _, err = h.store.Activate(r.Context(), key, version, nil)
 		if err != nil {
+			h.auditMarketInstallFailure(r, key, version, "activate_failed", http.StatusConflict)
 			h.writeStoreError(w, "activate marketplace install", err)
 			return
 		}
 		activated = true
 	}
 	h.reloadAsync(r.Context())
+	h.invalidateMarketCache()
 	status := http.StatusCreated
 	if !created {
 		status = http.StatusOK
@@ -669,6 +697,13 @@ func (h *TaskPluginHandlers) handleMarketInstall(w http.ResponseWriter, r *http.
 		"installed": true, "created": created, "activated": activated,
 		"source_id": source.ID, "key": key, "version": version,
 		"plugin": h.pluginView(*p), "version_row": versionView(*v),
+	})
+}
+
+// auditMarketInstallFailure 记录安装失败（result=failed）；detail 不含包体。
+func (h *TaskPluginHandlers) auditMarketInstallFailure(r *http.Request, key, version, reason string, status int) {
+	h.writePluginAudit(r, audit.ActionPluginMarketInstall, status, map[string]any{
+		"plugin_key": key, "version": version, "result_reason": reason,
 	})
 }
 

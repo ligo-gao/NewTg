@@ -9594,6 +9594,9 @@ components:
           maxLength: 1024
         runtime_status:
           $ref: '#/components/schemas/TaskPluginRuntimeStatus'
+        version:
+          type: string
+          description: 运行时生效版本；内置 factory 插件无 B-12 active 行时由快照补充。
         layer:
           type: string
           enum:

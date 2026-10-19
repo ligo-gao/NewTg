@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +122,27 @@ func TestTaskPluginPermissionMatrix(t *testing.T) {
 	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task", "", pluginUser(), nil))
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("普通用户读列表 = %d，期望 403", rr.Code)
+	}
+
+	// 裁决 R-M6D-16：读端点同样要求 settings:manage（受限 admin 不得读源码/诊断）。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task", "", pluginAdminNoWrite(), nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("无 settings:manage 的 admin 读列表 = %d，期望 403", rr.Code)
+	}
+	for _, path := range []string{
+		"/api/plugin/task/runtime/status",
+		"/api/plugin/task/marketplace",
+		"/api/plugin/task/marketplace/sources",
+		"/api/plugin/task/sample",
+		"/api/plugin/task/sample/versions",
+		"/api/plugin/task/sample/source",
+	} {
+		rr = httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, path, "", pluginAdminNoWrite(), nil))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("无 settings:manage 读 %s = %d，期望 403", path, rr.Code)
+		}
 	}
 
 	rr = httptest.NewRecorder()
@@ -508,5 +531,72 @@ func TestTaskPluginRuntimeStatusAllFiveStates(t *testing.T) {
 		"/api/plugin/task?runtime_status=not_registered", "", pluginAdmin(), nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"key":"ghost"`) {
 		t.Fatalf("not_registered 列表 = %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPluginUploadMultipart(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	source := sourceForKey(t, "mp-upload")
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("file", "plugin.js")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte(source)); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/plugin/task", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Idempotency-Key", "multipart-1")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), pluginAdmin()))
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("multipart 上传 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 2 MiB + 1 字节：在读取阶段被专用 MaxBytesReader/正文校验拒绝。
+	var big bytes.Buffer
+	bigWriter := multipart.NewWriter(&big)
+	bigPart, _ := bigWriter.CreateFormFile("file", "plugin.js")
+	_, _ = bigPart.Write([]byte(strings.Repeat("a", maxPluginUploadDefault+1)))
+	_ = bigWriter.Close()
+	req = httptest.NewRequest(http.MethodPost, "/api/plugin/task", &big)
+	req.Header.Set("Content-Type", bigWriter.FormDataContentType())
+	req.Header.Set("Idempotency-Key", "multipart-too-large")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), pluginAdmin()))
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), "plugin_source_too_large") {
+		t.Fatalf("multipart 超限 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPluginDryRunAuditRedactsPayload(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	env.store.seed(store.TaskPlugin{Key: "sample", Name: "Sample", Source: "builtin", Builtin: true,
+		Enabled: true, UpdatedAt: time.Now().UTC()})
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/dryrun",
+		`{"endpoint":"submit","payload":{"prompt":"super-secret-prompt"}}`, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("dryrun = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	calls := env.audit.snapshot()
+	if len(calls) == 0 {
+		t.Fatal("dryrun 必须写审计")
+	}
+	detail := fmt.Sprint(calls[len(calls)-1][9])
+	if strings.Contains(detail, "super-secret-prompt") || strings.Contains(detail, `"payload"`) {
+		t.Fatalf("dryrun 审计不得包含样例请求体：%s", detail)
+	}
+	if !strings.Contains(detail, `"plugin.dryrun"`) || !strings.Contains(detail, `"plugin_key":"sample"`) {
+		t.Fatalf("dryrun 审计缺动作/key：%s", detail)
 	}
 }

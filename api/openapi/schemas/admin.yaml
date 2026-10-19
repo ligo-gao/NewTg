@@ -1561,6 +1561,9 @@ schemas:
       active_version: {type: string, nullable: true, maxLength: 32}
       description: {type: string, nullable: true, maxLength: 1024}
       runtime_status: {$ref: '#/schemas/TaskPluginRuntimeStatus'}
+      version:
+        type: string
+        description: 运行时生效版本；内置 factory 插件无 B-12 active 行时由快照补充。
       layer: {type: string, enum: [factory, override]}
       compile_error: {type: string}
       runtime_errors:

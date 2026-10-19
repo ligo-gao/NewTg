@@ -286,3 +286,58 @@ func TestMarketSourcesReplacePreservesCheckState(t *testing.T) {
 		t.Fatalf("重复 URL err = %v，期望 ErrMarketSourceURLConflict", err)
 	}
 }
+
+func TestTaskPluginBuiltinUpsertAndMetadataListing(t *testing.T) {
+	cleanPluginTables(t)
+	db := openTestDB(t)
+	repo := NewTaskPluginRepo(db)
+	ctx := context.Background()
+	key := uniquePluginKey(t)
+	description := "builtin description"
+
+	if err := repo.UpsertBuiltinPlugins(ctx, []BuiltinPlugin{
+		{Key: key, Name: "Builtin", Description: &description},
+	}); err != nil {
+		t.Fatalf("UpsertBuiltinPlugins: %v", err)
+	}
+	// 幂等：再次装配不应改变 enabled/active_version。
+	if err := repo.UpsertBuiltinPlugins(ctx, []BuiltinPlugin{
+		{Key: key, Name: "Builtin renamed", Description: &description},
+	}); err != nil {
+		t.Fatalf("UpsertBuiltinPlugins 2: %v", err)
+	}
+	p, err := repo.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !p.Builtin || p.Source != "builtin" || p.Name != "Builtin renamed" || p.ActiveVersion != nil {
+		t.Fatalf("内置行不符：%+v", p)
+	}
+
+	// 覆盖层上传保留内置事实，版本列表不含源码、GetVersion 单独返回正文。
+	if _, _, _, err := repo.Upload(ctx, TaskPluginUpload{
+		Key: key, Name: "Builtin", Version: "1.0.0", APIVersion: "v1",
+		SourceText: "builtin override source", SourceHash: strings.Repeat("d", 64),
+		UploadedBy: 1, Builtin: true,
+	}); err != nil {
+		t.Fatalf("Upload override: %v", err)
+	}
+	p, err = repo.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get after upload: %v", err)
+	}
+	if !p.Builtin || p.Source != "builtin" {
+		t.Fatalf("上传覆盖层不得改写内置来源：%+v", p)
+	}
+	versions, err := repo.ListVersions(ctx, key)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("ListVersions = %+v, %v", versions, err)
+	}
+	if versions[0].SourceText != "" {
+		t.Fatalf("版本列表不得返回源码正文：%q", versions[0].SourceText)
+	}
+	full, err := repo.GetVersion(ctx, key, "1.0.0")
+	if err != nil || full.SourceText != "builtin override source" {
+		t.Fatalf("GetVersion = %+v, %v", full, err)
+	}
+}

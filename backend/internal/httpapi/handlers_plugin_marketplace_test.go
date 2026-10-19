@@ -254,3 +254,42 @@ func TestMarketplacePackageMismatchRejected(t *testing.T) {
 		t.Fatalf("版本不符必须零写入，uploadCalls=%d", env.store.uploadCalls)
 	}
 }
+
+func TestMarketplaceSourcesDuplicateURLRejected(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/plugin/task/marketplace/sources",
+		`{"sources":[{"name":"A","url":"https://market.example/index.json","enabled":true},`+
+			`{"name":"B","url":"https://market.example/index.json","enabled":true}]}`,
+		pluginAdmin(), nil))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "plugin_market_source_conflict") {
+		t.Fatalf("重复 URL = %d（body=%s），期望 409", rr.Code, rr.Body.String())
+	}
+	if len(env.store.sources) != 0 {
+		t.Fatal("重复 URL 不得落库")
+	}
+}
+
+func TestMarketplaceDisabledBlocksMarketEndpoints(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	env.handlers.config = mapConfig{"plugin.marketplace.enabled": configBool(false)}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/plugin/task/marketplace", ""},
+		{http.MethodPut, "/api/plugin/task/marketplace/sources", `{"sources":[]}`},
+		{http.MethodPost, "/api/plugin/task/marketplace/install",
+			`{"source_id":"s1","key":"x","version":"1.0.0"}`},
+		{http.MethodPost, "/api/plugin/task/marketplace/sources/s1/check", ""},
+	} {
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, settingsRequest(tc.method, tc.path, tc.body, pluginAdmin(), nil))
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "plugin_marketplace_disabled") {
+			t.Fatalf("%s %s = %d（body=%s），期望 409 plugin_marketplace_disabled",
+				tc.method, tc.path, rr.Code, rr.Body.String())
+		}
+	}
+}

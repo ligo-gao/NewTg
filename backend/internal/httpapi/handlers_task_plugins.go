@@ -48,6 +48,7 @@ type TaskPluginStore interface {
 	List(ctx context.Context) ([]store.TaskPlugin, error)
 	Get(ctx context.Context, key string) (*store.TaskPlugin, error)
 	ListVersions(ctx context.Context, key string) ([]store.TaskPluginVersion, error)
+	GetVersion(ctx context.Context, key, version string) (*store.TaskPluginVersion, error)
 	Upload(ctx context.Context, in store.TaskPluginUpload) (*store.TaskPlugin, *store.TaskPluginVersion, bool, error)
 	Activate(ctx context.Context, key, version string, expect *time.Time) (*store.TaskPlugin, *store.TaskPluginVersion, error)
 	SetEnabled(ctx context.Context, key string, enabled bool, expect *time.Time) (*store.TaskPlugin, error)
@@ -56,6 +57,7 @@ type TaskPluginStore interface {
 	GetMarketSource(ctx context.Context, id string) (*store.PluginMarketplaceSource, error)
 	ReplaceMarketSources(ctx context.Context, inputs []store.MarketSourceInput) ([]store.PluginMarketplaceSource, error)
 	UpdateMarketSourceCheck(ctx context.Context, id, status, lastError string, at time.Time) (*store.PluginMarketplaceSource, error)
+	UpsertBuiltinPlugins(ctx context.Context, plugins []store.BuiltinPlugin) error
 }
 
 // 编译期断言：仓储漂移在编译期暴露。
@@ -76,6 +78,16 @@ const (
 )
 
 var (
+	// 读端点同样要求 settings:manage（裁决 R-M6D-16，取代 R-M6D-02 的
+	// 「读 admin」）：受限 admin 不应能读插件源码/运行时诊断。与 OpenAPI
+	// 声明一致，避免「文档更严、实现更宽」的授权面漂移。
+	pluginListAction       = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "list"}
+	pluginDetailAction     = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "read"}
+	pluginVersionsAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "versions"}
+	pluginSourceAction     = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "source"}
+	pluginRuntimeAction    = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "runtime_status"}
+	pluginMarketReadAction = rbac.AuthzAction{ResourceKind: "plugin_marketplace", ActionName: "read"}
+
 	pluginUploadAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "upload"}
 	pluginActivateAction = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "activate"}
 	pluginStatusAction   = rbac.AuthzAction{ResourceKind: "task_plugins", ActionName: "status"}
@@ -191,19 +203,21 @@ func NewTaskPluginHandlers(cfg TaskPluginHandlerConfig) (*TaskPluginHandlers, er
 // Register 挂载插件管理端点。静态子路径先于 {key} 注册；Go 1.22 ServeMux
 // 按「字面量优先」择路，显式顺序仅用于让契约在阅读时成立。
 func (h *TaskPluginHandlers) Register(mux *http.ServeMux) {
-	read := func(fn http.HandlerFunc) http.Handler { return requireAdminRole(fn) }
+	read := func(action rbac.AuthzAction, fn http.HandlerFunc) http.Handler {
+		return h.authz.Handler(rbac.PermSettingsManage, action)(fn)
+	}
 	write := func(action rbac.AuthzAction, fn http.HandlerFunc) http.Handler {
 		return h.authz.Handler(rbac.PermSettingsManage, action)(fn)
 	}
 
 	// 读端点。
-	mux.Handle("GET /api/plugin/task", read(h.handleList))
-	mux.Handle("GET /api/plugin/task/runtime/status", read(h.handleRuntimeStatus))
-	mux.Handle("GET /api/plugin/task/marketplace/sources", read(h.handleMarketSourcesList))
-	mux.Handle("GET /api/plugin/task/marketplace", read(h.handleMarketplace))
-	mux.Handle("GET /api/plugin/task/{key}", read(h.handleGet))
-	mux.Handle("GET /api/plugin/task/{key}/versions", read(h.handleVersions))
-	mux.Handle("GET /api/plugin/task/{key}/source", read(h.handleSource))
+	mux.Handle("GET /api/plugin/task", read(pluginListAction, h.handleList))
+	mux.Handle("GET /api/plugin/task/runtime/status", read(pluginRuntimeAction, h.handleRuntimeStatus))
+	mux.Handle("GET /api/plugin/task/marketplace/sources", read(pluginMarketReadAction, h.handleMarketSourcesList))
+	mux.Handle("GET /api/plugin/task/marketplace", read(pluginMarketReadAction, h.handleMarketplace))
+	mux.Handle("GET /api/plugin/task/{key}", read(pluginDetailAction, h.handleGet))
+	mux.Handle("GET /api/plugin/task/{key}/versions", read(pluginVersionsAction, h.handleVersions))
+	mux.Handle("GET /api/plugin/task/{key}/source", read(pluginSourceAction, h.handleSource))
 
 	// 写端点。
 	// multipart 不能走 authz.Handler（字段层只解析 JSON），上传单独授权。
@@ -240,9 +254,12 @@ type taskPluginView struct {
 	ActiveVersion *string             `json:"active_version"`
 	Description   *string             `json:"description"`
 	RuntimeStatus plugin.PluginStatus `json:"runtime_status"`
-	Layer         plugin.Layer        `json:"layer,omitempty"`
-	CompileError  string              `json:"compile_error,omitempty"`
-	RuntimeErrors plugin.Issues       `json:"runtime_errors,omitempty"`
+	// Version 是运行时快照的生效版本（factory 层来自编译产物，override 层
+	// 来自 active 行）；内置插件没有 B-12 active 行，UI 的「当前版本」取它。
+	Version       string        `json:"version,omitempty"`
+	Layer         plugin.Layer  `json:"layer,omitempty"`
+	CompileError  string        `json:"compile_error,omitempty"`
+	RuntimeErrors plugin.Issues `json:"runtime_errors,omitempty"`
 	// BoundChannels 恒为 0：channels.task_plugin_key 绑定列在 T7 才落地，
 	// 当前没有真源可实时计算。返回 0 而不是省略字段，避免前端把「未知」
 	// 当成 0 还是 null 的歧义；T7 接线后改为实时查询（已登记）。
@@ -279,8 +296,14 @@ func (h *TaskPluginHandlers) pluginView(p store.TaskPlugin) taskPluginView {
 	view := taskPluginView{
 		Key: p.Key, Name: p.Name, Icon: p.Icon, Source: p.Source, Builtin: p.Builtin,
 		Enabled: p.Enabled, ActiveVersion: p.ActiveVersion, Description: p.Description,
-		RuntimeStatus: entry.Status, Layer: entry.Layer, BoundChannels: 0,
+		RuntimeStatus: entry.Status, Version: entry.Version, Layer: entry.Layer, BoundChannels: 0,
 		UpdatedAt: p.UpdatedAt,
+	}
+	if view.ActiveVersion == nil && p.Builtin && entry.Version != "" {
+		// 内置插件没有 B-12 active 行，B-11 镜像为 NULL；管理面的「当前版本」
+		// 由运行时快照补充（只影响响应投影，不回写 DB）。
+		version := entry.Version
+		view.ActiveVersion = &version
 	}
 	if len(entry.Errors) > 0 {
 		view.RuntimeErrors = append(plugin.Issues(nil), entry.Errors...)
@@ -424,25 +447,21 @@ func (h *TaskPluginHandlers) handleGet(w http.ResponseWriter, r *http.Request) {
 	if includeSource == "1" || strings.EqualFold(includeSource, "true") {
 		// 源查看器只读：返回 active 版本的源码；没有 active 时回退最新版本，
 		// 便于管理员在上传后、激活前核对内容（F-08-29 完整性页签）。
-		source, sourceVersion := activeOrLatestSource(versions)
-		if sourceVersion != nil {
-			viewMap["source_text"] = source
-			viewMap["source_version"] = sourceVersion.Version
+		// 正文不在列表投影里（S5），必须单独调用 GetVersion。
+		sourceVersion := ""
+		if p.ActiveVersion != nil {
+			sourceVersion = *p.ActiveVersion
+		} else if len(versions) > 0 {
+			sourceVersion = versions[0].Version
+		}
+		if sourceVersion != "" {
+			if full, err := h.store.GetVersion(r.Context(), key, sourceVersion); err == nil {
+				viewMap["source_text"] = full.SourceText
+				viewMap["source_version"] = full.Version
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, viewMap)
-}
-
-func activeOrLatestSource(versions []store.TaskPluginVersion) (string, *store.TaskPluginVersion) {
-	for i := range versions {
-		if versions[i].Active {
-			return versions[i].SourceText, &versions[i]
-		}
-	}
-	if len(versions) > 0 {
-		return versions[0].SourceText, &versions[0]
-	}
-	return "", nil
 }
 
 func (h *TaskPluginHandlers) handleVersions(w http.ResponseWriter, r *http.Request) {
@@ -476,12 +495,12 @@ func (h *TaskPluginHandlers) handleSource(w http.ResponseWriter, r *http.Request
 			version = *p.ActiveVersion
 		}
 	}
-	versions, err := h.store.ListVersions(r.Context(), key)
-	if err != nil {
-		h.writeStoreError(w, "list task plugin versions", err)
-		return
-	}
 	if version == "" {
+		versions, err := h.store.ListVersions(r.Context(), key)
+		if err != nil {
+			h.writeStoreError(w, "list task plugin versions", err)
+			return
+		}
 		if len(versions) == 0 {
 			writePluginProblem(w, http.StatusNotFound, pluginProblemVersionNotFound,
 				"Version not found", "this plugin has no versions", nil)
@@ -489,17 +508,15 @@ func (h *TaskPluginHandlers) handleSource(w http.ResponseWriter, r *http.Request
 		}
 		version = versions[0].Version
 	}
-	for _, v := range versions {
-		if v.Version == version {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"key": v.Key, "version": v.Version, "source_hash": v.SourceHash,
-				"source_text": v.SourceText,
-			})
-			return
-		}
+	v, err := h.store.GetVersion(r.Context(), key, version)
+	if err != nil {
+		h.writeStoreError(w, "get task plugin version", err)
+		return
 	}
-	writePluginProblem(w, http.StatusNotFound, pluginProblemVersionNotFound,
-		"Version not found", "the requested plugin version does not exist", nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key": v.Key, "version": v.Version, "source_hash": v.SourceHash,
+		"source_text": v.SourceText,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +675,11 @@ func uploadBodyProblem(code, title, detail string) (uploadBody, int, []byte) {
 func (h *TaskPluginHandlers) performUpload(r *http.Request, actor int64, source string) (int, []byte) {
 	compiled, err := plugin.Compile(r.Context(), source, plugin.CompileOptions{Layer: plugin.LayerOverride})
 	if err != nil {
+		// 失败也要留审计（result=failed），但只记可得的 key 与规则名，
+		// 不记源码/编译错误正文（错误正文可能包含源片段）。
+		h.writePluginAudit(r, audit.ActionPluginUpload, http.StatusUnprocessableEntity, map[string]any{
+			"plugin_key": issueKey(err), "result_reason": "compile_failed",
+		})
 		return pluginIssuesResponse(http.StatusUnprocessableEntity, pluginProblemCompileFailed,
 			"Plugin compile failed", "the plugin source failed compilation or validation", err)
 	}
@@ -673,16 +695,25 @@ func (h *TaskPluginHandlers) performUpload(r *http.Request, actor int64, source 
 		Key: manifest.Key, Name: manifest.Name, Version: manifest.Version,
 		APIVersion: "v1", SourceText: source, SourceHash: compiled.SourceHash(),
 		Icon: icon, Description: description, UploadedBy: actor,
+		// 覆盖内置 key 时主表行仍必须标记 builtin/source=builtin（内置事实
+		// 不由上传改写；版本行才是 upload 层）。
+		Builtin: h.manager.HasFactoryKey(manifest.Key),
 	}
 	p, v, created, err := h.store.Upload(r.Context(), version)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrTaskPluginVersionConflict):
+			h.writePluginAudit(r, audit.ActionPluginUpload, http.StatusConflict, map[string]any{
+				"plugin_key": manifest.Key, "version": manifest.Version, "result_reason": "version_conflict",
+			})
 			return pluginProblemResponse(http.StatusConflict, pluginProblemVersionConflict,
 				"Plugin version already exists",
 				"the same plugin key/version is already stored with different source content")
 		default:
 			h.log.Error("plugin: upload persist failed", "err", err)
+			h.writePluginAudit(r, audit.ActionPluginUpload, http.StatusInternalServerError, map[string]any{
+				"plugin_key": manifest.Key, "version": manifest.Version, "result_reason": "store_error",
+			})
 			return pluginProblemResponse(http.StatusInternalServerError, authProblemInternal,
 				"Internal Server Error", "")
 		}
@@ -775,8 +806,10 @@ func (h *TaskPluginHandlers) handleActivate(w http.ResponseWriter, r *http.Reque
 			"Invalid request", "version is required", nil)
 		return
 	}
-	p, v, err := h.store.Activate(r.Context(), r.PathValue("key"), req.Version, req.ExpectUpdatedAt)
+	key := r.PathValue("key")
+	p, v, err := h.store.Activate(r.Context(), key, req.Version, req.ExpectUpdatedAt)
 	if err != nil {
+		h.auditWriteFailure(r, audit.ActionPluginActivate, key, err)
 		h.writeStoreError(w, "activate plugin version", err)
 		return
 	}
@@ -800,8 +833,14 @@ func (h *TaskPluginHandlers) handleStatus(w http.ResponseWriter, r *http.Request
 			"Invalid request", "enabled is required", nil)
 		return
 	}
-	p, err := h.store.SetEnabled(r.Context(), r.PathValue("key"), *req.Enabled, req.ExpectUpdatedAt)
+	key := r.PathValue("key")
+	p, err := h.store.SetEnabled(r.Context(), key, *req.Enabled, req.ExpectUpdatedAt)
 	if err != nil {
+		action := audit.ActionPluginDisable
+		if *req.Enabled {
+			action = audit.ActionPluginEnable
+		}
+		h.auditWriteFailure(r, action, key, err)
 		h.writeStoreError(w, "set plugin status", err)
 		return
 	}
@@ -840,6 +879,7 @@ func (h *TaskPluginHandlers) handleDeleteVersion(w http.ResponseWriter, r *http.
 	key, version := r.PathValue("key"), r.PathValue("version")
 	p, promoted, err := h.store.DeleteVersion(r.Context(), key, version, req.ExpectUpdatedAt)
 	if err != nil {
+		h.auditWriteFailure(r, audit.ActionPluginVersionDelete, key, err)
 		h.writeStoreError(w, "delete plugin version", err)
 		return
 	}
@@ -878,6 +918,10 @@ func (h *TaskPluginHandlers) handleDryRun(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		var issues plugin.Issues
 		if errors.As(err, &issues) {
+			h.writePluginAudit(r, audit.ActionPluginDryRun, http.StatusUnprocessableEntity, map[string]any{
+				"plugin_key": r.PathValue("key"), "version": req.Version, "endpoint": req.Endpoint,
+				"result_reason": "dryrun_failed",
+			})
 			for _, issue := range issues {
 				if issue.Rule == "dryrun_outbound_unavailable" {
 					writePluginIssues(w, http.StatusUnprocessableEntity, pluginProblemOutbound,
@@ -890,6 +934,10 @@ func (h *TaskPluginHandlers) handleDryRun(w http.ResponseWriter, r *http.Request
 			return
 		}
 		h.log.Warn("plugin: dryrun failed", "err", err)
+		h.writePluginAudit(r, audit.ActionPluginDryRun, http.StatusInternalServerError, map[string]any{
+			"plugin_key": r.PathValue("key"), "version": req.Version, "endpoint": req.Endpoint,
+			"result_reason": "internal",
+		})
 		writePluginProblem(w, http.StatusInternalServerError, authProblemInternal,
 			"Internal Server Error", "", nil)
 		return
@@ -946,6 +994,33 @@ func (h *TaskPluginHandlers) writePluginAudit(r *http.Request, action string, st
 	})
 }
 
+// auditWriteFailure 记录失败写路径（409/乐观锁/404）的审计。
+// detail 只有 key 与可分类的原因，不含请求体。
+func (h *TaskPluginHandlers) auditWriteFailure(r *http.Request, action, key string, err error) {
+	status, reason := pluginStoreErrorAudit(err)
+	h.writePluginAudit(r, action, status, map[string]any{
+		"plugin_key": key, "result_reason": reason,
+	})
+}
+
+// pluginStoreErrorAudit 把仓储错误映射为与 HTTP 响应一致的状态码/原因。
+func pluginStoreErrorAudit(err error) (int, string) {
+	switch {
+	case errors.Is(err, store.ErrTaskPluginNotFound):
+		return http.StatusNotFound, "plugin_not_found"
+	case errors.Is(err, store.ErrTaskPluginVersionNotFound):
+		return http.StatusNotFound, "version_not_found"
+	case errors.Is(err, store.ErrTaskPluginVersionConflict):
+		return http.StatusConflict, "version_conflict"
+	case errors.Is(err, store.ErrTaskPluginVersionRequired):
+		return http.StatusConflict, "version_required"
+	case errors.Is(err, store.ErrTaskPluginStale):
+		return http.StatusConflict, "updated_at_conflict"
+	default:
+		return http.StatusInternalServerError, "store_error"
+	}
+}
+
 // hashPrefix 返回 source hash 前 8 位（brief 允许的审计脱敏形态）。
 func hashPrefix(hash string) string {
 	if len(hash) <= 8 {
@@ -991,6 +1066,18 @@ func (h *TaskPluginHandlers) writeStoreError(w http.ResponseWriter, operation st
 func (h *TaskPluginHandlers) reloadAsync(parent context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), plugin.DefaultTimeout)
 	defer cancel()
+	// 内置插件的数据面开关由「设置禁用集 + B-11 enabled=false」共同决定：
+	// /status 停用内置 key 必须让它从 factory 层消失（否则管理面显示禁用、
+	// 运行时仍注册）。每次写后重算并交给 Manager，随后的 Reload 原子生效。
+	disabled := readConfigStringList(h.config, "plugin.disabled_factory_keys")
+	if plugins, err := h.store.List(ctx); err == nil {
+		for _, p := range plugins {
+			if p.Builtin && !p.Enabled {
+				disabled = append(disabled, p.Key)
+			}
+		}
+	}
+	h.manager.SetDisabledFactoryKeys(disabled)
 	if err := h.manager.Reload(ctx); err != nil {
 		h.log.Warn("plugin: reload after write failed", "err", err)
 	}
@@ -1048,6 +1135,19 @@ func pluginIssuesResponse(status int, problemType, title, detail string, err err
 
 func writePluginIssues(w http.ResponseWriter, status int, problemType, title, detail string, issues plugin.Issues) {
 	writePluginProblem(w, status, problemType, title, detail, map[string]any{"issues": issues})
+}
+
+// issueKey 从结构化错误里取第一个非空 key（编译失败时用于审计定位）。
+func issueKey(err error) string {
+	var issues plugin.Issues
+	if errors.As(err, &issues) {
+		for _, issue := range issues {
+			if issue.Key != "" {
+				return issue.Key
+			}
+		}
+	}
+	return ""
 }
 
 func issuesFromError(err error) plugin.Issues {

@@ -4355,6 +4355,8 @@ export interface components {
             active_version?: string | null;
             description?: string | null;
             runtime_status: components["schemas"]["TaskPluginRuntimeStatus"];
+            /** @description 运行时生效版本；内置 factory 插件无 B-12 active 行时由快照补充。 */
+            version?: string;
             /** @enum {string} */
             layer?: "factory" | "override";
             compile_error?: string;

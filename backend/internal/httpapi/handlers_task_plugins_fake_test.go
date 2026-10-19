@@ -70,6 +70,38 @@ func (f *fakeTaskPluginStore) ListVersions(_ context.Context, key string) ([]sto
 	return out, nil
 }
 
+func (f *fakeTaskPluginStore) GetVersion(_ context.Context, key, version string) (*store.TaskPluginVersion, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.versions[key] {
+		if v.Version == version {
+			copied := v
+			return &copied, nil
+		}
+	}
+	if _, ok := f.plugins[key]; !ok {
+		return nil, store.ErrTaskPluginNotFound
+	}
+	return nil, store.ErrTaskPluginVersionNotFound
+}
+
+func (f *fakeTaskPluginStore) UpsertBuiltinPlugins(_ context.Context, inputs []store.BuiltinPlugin) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, in := range inputs {
+		p, ok := f.plugins[in.Key]
+		if !ok {
+			p = store.TaskPlugin{Key: in.Key, Name: in.Name, Icon: in.Icon, Source: "builtin",
+				Builtin: true, Enabled: true, Description: in.Description, UpdatedAt: time.Now().UTC()}
+		} else {
+			p.Name, p.Icon, p.Description = in.Name, in.Icon, in.Description
+			p.Source, p.Builtin = "builtin", true
+		}
+		f.plugins[in.Key] = p
+	}
+	return nil
+}
+
 func (f *fakeTaskPluginStore) Upload(_ context.Context, in store.TaskPluginUpload) (*store.TaskPlugin, *store.TaskPluginVersion, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -77,10 +109,17 @@ func (f *fakeTaskPluginStore) Upload(_ context.Context, in store.TaskPluginUploa
 	p, ok := f.plugins[in.Key]
 	if !ok {
 		now := time.Now().UTC()
+		source, builtin := "upload", false
+		if in.Builtin {
+			source, builtin = "builtin", true
+		}
 		p = store.TaskPlugin{
-			Key: in.Key, Name: in.Name, Icon: in.Icon, Source: "upload",
+			Key: in.Key, Name: in.Name, Icon: in.Icon, Source: source, Builtin: builtin,
 			Enabled: true, Description: in.Description, CreatedAt: now, UpdatedAt: now,
 		}
+		f.plugins[in.Key] = p
+	} else if in.Builtin && (!p.Builtin || p.Source != "builtin") {
+		p.Builtin, p.Source = true, "builtin"
 		f.plugins[in.Key] = p
 	}
 	for _, existing := range f.versions[in.Key] {

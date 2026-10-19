@@ -4345,6 +4345,9 @@ type TaskPlugin struct {
 	RuntimeStatus TaskPluginRuntimeStatus `json:"runtime_status"`
 	Source        TaskPluginSource        `json:"source"`
 	UpdatedAt     time.Time               `json:"updated_at"`
+
+	// Version 运行时生效版本；内置 factory 插件无 B-12 active 行时由快照补充。
+	Version *string `json:"version,omitempty"`
 }
 
 // TaskPluginLayer defines model for TaskPlugin.Layer.

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -225,14 +226,15 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if pluginStore == nil {
 			pluginStore = store.NewTaskPluginRepo(deps.DB)
 		}
+		sources, sourceErr := plugins.TaskPluginSources()
+		if sourceErr != nil {
+			// 内置插件是构建期产物；embed 目录不可读说明构建被破坏，
+			// 必须阻止上线（relay-06 §2.1）。
+			return nil, sourceErr
+		}
 		manager := deps.PluginManager
-		if manager == nil {
-			sources, sourceErr := plugins.TaskPluginSources()
-			if sourceErr != nil {
-				// 内置插件是构建期产物；embed 目录不可读说明构建被破坏，
-				// 必须阻止上线（relay-06 §2.1）。
-				return nil, sourceErr
-			}
+		constructed := manager == nil
+		if constructed {
 			manager, err = plugin.NewManager(sources, plugin.NewSQLVersionLoader(deps.DB), plugin.Options{
 				Node:                deps.NodeName,
 				MasterEnabled:       readConfigBool(deps.Config, "plugin.enabled", true),
@@ -243,16 +245,56 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 				return nil, fmt.Errorf("httpapi: load built-in task plugins: %w", err)
 			}
 		}
-		// 启动即 Reload：DB 版本层必须在监听端口前进入快照。加载失败不阻止
-		// 启动——快照保留空/旧内容，runtime/status 暴露 reload_error，管理员
-		// 可据此排查，而不是让一次瞬时的 DB 抖动把整个网关下线。
-		reloadCtx, cancelReload := context.WithTimeout(context.Background(), 10*time.Second)
-		if reloadErr := manager.Reload(reloadCtx); reloadErr != nil {
+
+		// 内置插件入库（MEDIUM-2）：列表/详情/启停都读 B-11；没有行时
+		// 「已安装」永远为空，即便 factory 层正常运行。upsert 幂等，只维护
+		// 内置事实（source/builtin/name/description），不动 enabled 与覆盖层
+		// 的 active_version。
+		startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+		builtins := make([]store.BuiltinPlugin, 0, len(sources))
+		for _, key := range sortedPluginKeys(sources) {
+			compiled, compileErr := plugin.Compile(startupCtx, sources[key], plugin.CompileOptions{
+				ExpectedKey: key, Layer: plugin.LayerFactory,
+			})
+			if compileErr != nil {
+				cancelStartup()
+				return nil, fmt.Errorf("httpapi: compile built-in task plugin %q: %w", key, compileErr)
+			}
+			builtins = append(builtins, store.BuiltinPlugin{
+				Key: key, Name: compiled.Manifest().Name,
+				Icon:        stringPtr(compiled.Manifest().Icon),
+				Description: stringPtr(chooseDescription(compiled.Manifest().Description)),
+			})
+		}
+		if len(builtins) > 0 {
+			if upsertErr := pluginStore.UpsertBuiltinPlugins(startupCtx, builtins); upsertErr != nil {
+				cancelStartup()
+				return nil, fmt.Errorf("httpapi: upsert built-in task plugins: %w", upsertErr)
+			}
+		}
+
+		if constructed {
+			// 内置插件的 B-11 enabled=false 与设置禁用集共同决定 factory 层是
+			// 否注册：重启后仍维持管理员通过 /status 关闭的内置插件。
+			disabled := readConfigStringList(deps.Config, "plugin.disabled_factory_keys")
+			if pluginsList, listErr := pluginStore.List(startupCtx); listErr == nil {
+				for _, p := range pluginsList {
+					if p.Builtin && !p.Enabled {
+						disabled = append(disabled, p.Key)
+					}
+				}
+			}
+			manager.SetDisabledFactoryKeys(disabled)
+		}
+		// 启动即 Reload：DB 版本层/内置禁用集必须在监听端口前进入快照。
+		// 加载失败不阻止启动——快照保留空/旧内容，runtime/status 暴露
+		// reload_error，而不是让一次瞬时的 DB 抖动把整个网关下线。
+		if reloadErr := manager.Reload(startupCtx); reloadErr != nil {
 			if deps.Logger != nil {
 				deps.Logger.Warn("httpapi: initial task plugin reload failed", "err", reloadErr)
 			}
 		}
-		cancelReload()
+		cancelStartup()
 
 		access := deps.TaskPluginAccess
 		if access == nil {
@@ -560,6 +602,16 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		return nil, err
 	}
 	return rt, nil
+}
+
+// sortedPluginKeys 返回内置源 key 的稳定序（upsert 与编译顺序可复现）。
+func sortedPluginKeys(sources map[string]string) []string {
+	keys := make([]string, 0, len(sources))
+	for key := range sources {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // readConfigStringList 读取字符串数组类设置（JSON null/缺省 → nil）。

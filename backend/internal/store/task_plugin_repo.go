@@ -56,6 +56,21 @@ type TaskPluginUpload struct {
 	Icon        *string
 	Description *string
 	UploadedBy  int64
+	// Builtin 表示这个 key 同时是 factory 层内置插件（由装配层依据内置源
+	// 清单注入）。它只影响主表行的 source/builtin 标记：覆盖层版本仍来自
+	// upload，B-11 的「内置事实」不能因为一次上传而被抹掉。
+	Builtin bool
+}
+
+// BuiltinPlugin 是内置 factory 插件的主表元数据（装配期幂等 upsert 的输入）。
+//
+// 内置插件在编译期编入二进制，但 B-11 仍需要行：列表/详情/启停都读主表；
+// 没有行会让「已安装」列表永远为空（F-08-28）。
+type BuiltinPlugin struct {
+	Key         string
+	Name        string
+	Icon        *string
+	Description *string
 }
 
 // MarketSourceInput 是整份替换时的一行。ID 为空表示新源（按 URL 匹配已有行，
@@ -79,6 +94,12 @@ const taskPluginColumns = `"key", name, icon, source, builtin, enabled,
 // taskPluginVersionColumns 是 B-12 的固定列序；写路径与读路径共用，
 // 避免两边列序漂移导致 scan 错位。
 const taskPluginVersionColumns = `id, "key", version, api_version, source_text, source_hash,
+	icon, enabled, active, uploaded_by, created_at`
+
+// taskPluginVersionMetaColumns 是版本列表投影：**不含 source_text**。
+// 列表/详情默认不得下发源码（S5）；源查看器与 include_source=1 通过
+// GetVersion 单独读取正文。
+const taskPluginVersionMetaColumns = `id, "key", version, api_version, source_hash,
 	icon, enabled, active, uploaded_by, created_at`
 
 // scanTaskPlugin 把一行主表投影扫进模型。
@@ -144,7 +165,7 @@ func (r *TaskPluginRepo) ListVersions(ctx context.Context, key string) ([]TaskPl
 		return nil, errors.New("store: task plugin repo not configured")
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+taskPluginVersionColumns+`
+		`SELECT `+taskPluginVersionMetaColumns+`
 		   FROM task_plugin_versions WHERE "key" = $1
 		  ORDER BY created_at DESC`, key)
 	if err != nil {
@@ -153,7 +174,7 @@ func (r *TaskPluginRepo) ListVersions(ctx context.Context, key string) ([]TaskPl
 	defer rows.Close()
 	var out []TaskPluginVersion
 	for rows.Next() {
-		v, err := scanTaskPluginVersion(rows)
+		v, err := scanTaskPluginVersionMeta(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan task plugin version: %w", err)
 		}
@@ -200,11 +221,17 @@ func (r *TaskPluginRepo) Upload(ctx context.Context, in TaskPluginUpload) (*Task
 	// 主表行只在 key 首次出现时插入。已存在时保留既有元数据：内置插件被
 	// 上传覆盖（override）时，source/builtin 仍表示「它属于 factory 层」，
 	// 覆盖关系由 B-12 的 active 行表达，不能在主表上抹掉内置事实。
+	source, builtin := "upload", false
+	if in.Builtin {
+		source, builtin = "builtin", true
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO task_plugins
 		("key", name, icon, source, builtin, enabled, description)
-		VALUES ($1, $2, $3, 'upload', false, true, $4)
-		ON CONFLICT ("key") DO NOTHING`,
-		in.Key, in.Name, in.Icon, in.Description); err != nil {
+		VALUES ($1, $2, $3, $4, $5, true, $6)
+		ON CONFLICT ("key") DO UPDATE SET
+			builtin = task_plugins.builtin OR EXCLUDED.builtin,
+			source = CASE WHEN EXCLUDED.builtin THEN 'builtin' ELSE task_plugins.source END`,
+		in.Key, in.Name, in.Icon, source, builtin, in.Description); err != nil {
 		return nil, nil, false, fmt.Errorf("store: insert task plugin %q: %w", in.Key, err)
 	}
 
@@ -264,6 +291,70 @@ func scanTaskPluginVersion(row interface{ Scan(...any) error }) (*TaskPluginVers
 		return nil, err
 	}
 	return &v, nil
+}
+
+// scanTaskPluginVersionMeta 扫描不含 source_text 的版本投影，正文留空。
+func scanTaskPluginVersionMeta(row interface{ Scan(...any) error }) (*TaskPluginVersion, error) {
+	var v TaskPluginVersion
+	if err := row.Scan(&v.ID, &v.Key, &v.Version, &v.APIVersion,
+		&v.SourceHash, &v.Icon, &v.Enabled, &v.Active, &v.UploadedBy, &v.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// GetVersion 读取单个版本的完整行（含 source_text）。
+//
+// 只有源查看器与详情 include_source=1 使用：版本列表刻意不含正文，避免
+// 一次列表请求把全部插件源码带进响应（S5）。
+func (r *TaskPluginRepo) GetVersion(ctx context.Context, key, version string) (*TaskPluginVersion, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("store: task plugin repo not configured")
+	}
+	v, err := scanTaskPluginVersion(r.db.QueryRowContext(ctx, `SELECT `+taskPluginVersionColumns+`
+		FROM task_plugin_versions WHERE "key" = $1 AND version = $2`, key, version))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTaskPluginVersionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get task plugin version %s/%s: %w", key, version, err)
+	}
+	return v, nil
+}
+
+// UpsertBuiltinPlugins 把内置 factory 清单幂等写入 B-11（装配期调用）。
+//
+// 只维护「内置事实」相关列：source='builtin'、builtin=true、name/icon/
+// description 以 manifest 为准。**不动** enabled（管理员可能已停用）与
+// active_version（内置 key 可能已有上传覆盖层的 active 版本）。新行默认
+// enabled=true、active_version=NULL。
+func (r *TaskPluginRepo) UpsertBuiltinPlugins(ctx context.Context, plugins []BuiltinPlugin) error {
+	if r == nil || r.db == nil {
+		return errors.New("store: task plugin repo not configured")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin builtin plugin upsert: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, p := range plugins {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_plugins
+			("key", name, icon, source, builtin, enabled, description)
+			VALUES ($1, $2, $3, 'builtin', true, true, $4)
+			ON CONFLICT ("key") DO UPDATE SET
+				name = EXCLUDED.name,
+				icon = COALESCE(EXCLUDED.icon, task_plugins.icon),
+				description = COALESCE(EXCLUDED.description, task_plugins.description),
+				source = 'builtin',
+				builtin = true`,
+			p.Key, p.Name, p.Icon, p.Description); err != nil {
+			return fmt.Errorf("store: upsert builtin plugin %q: %w", p.Key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit builtin plugin upsert: %w", err)
+	}
+	return nil
 }
 
 // lockTaskPlugin 在事务内锁定插件主表行并返回投影。

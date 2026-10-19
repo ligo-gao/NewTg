@@ -88,3 +88,17 @@ func (l *SQLVersionLoader) LoadVersion(ctx context.Context, key, version string)
 	}
 	return &v, nil
 }
+
+// HasFactoryKey 报告 key 是否属于内置 factory 层（与当前是否禁用无关）。
+//
+// 管理端上传一个内置 key 时用它决定主表行的 source/builtin 标记：覆盖层
+// 版本来自 upload，但插件的「内置事实」不能因此被改写。
+func (m *Manager) HasFactoryKey(key string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.factory[key]
+	return ok
+}

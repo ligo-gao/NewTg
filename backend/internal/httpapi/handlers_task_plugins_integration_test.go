@@ -184,3 +184,84 @@ func TestTaskPluginIntegrationMarketHashMismatchZeroWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskPluginIntegrationBuiltinRows(t *testing.T) {
+	env := newPluginIntegrationEnv(t, nil)
+	ctx := t.Context()
+	if err := env.repo.UpsertBuiltinPlugins(ctx, []store.BuiltinPlugin{{
+		Key: "sample", Name: "Sample", Description: strPtrIntegration("builtin sample"),
+	}}); err != nil {
+		t.Fatalf("UpsertBuiltinPlugins: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"key":"sample"`) ||
+		!strings.Contains(rr.Body.String(), `"runtime_status":"registered"`) {
+		t.Fatalf("内置插件应出现在列表且 registered：%d %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"version":"1.0.0"`) {
+		t.Fatalf("内置插件列表应带运行时生效版本：%s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task/sample", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("内置插件详情 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 上传内置 key 的覆盖层：主表必须保留 builtin/source=builtin，版本行不激活。
+	source := samplePluginSource(t)
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task",
+		`{"source_text":`+mustJSON(t, source)+`}`, pluginAdmin(),
+		map[string]string{"Idempotency-Key": "builtin-override"}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("上传内置 key = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var upload struct {
+		Plugin struct {
+			Source    string    `json:"source"`
+			Builtin   bool      `json:"builtin"`
+			UpdatedAt time.Time `json:"updated_at"`
+		} `json:"plugin"`
+		Version struct {
+			Active bool `json:"active"`
+		} `json:"version"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &upload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if upload.Plugin.Source != "builtin" || !upload.Plugin.Builtin {
+		t.Fatalf("上传内置 key 后主表来源被改写：%+v", upload.Plugin)
+	}
+	if upload.Version.Active {
+		t.Fatal("上传不得自动激活")
+	}
+
+	// 停用内置 key：B-11 enabled=false 必须让 factory 层不再注册。
+	statusBody := `{"enabled":false,"expect_updated_at":` +
+		mustJSON(t, upload.Plugin.UpdatedAt.UTC().Format(time.RFC3339Nano)) + `}`
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/status",
+		statusBody, pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("停用内置 key = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/plugin/task/runtime/status", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("runtime status = %d", rr.Code)
+	}
+	var status plugin.RuntimeStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode runtime: %v", err)
+	}
+	for _, p := range status.Plugins {
+		if p.Key == "sample" && p.Status != plugin.StatusDisabled {
+			t.Fatalf("停用后内置 key 状态 = %s，期望 disabled：%+v", p.Status, status.Plugins)
+		}
+	}
+}
+
+func strPtrIntegration(value string) *string { return &value }
