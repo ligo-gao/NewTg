@@ -288,6 +288,70 @@ describe('usage logs list', () => {
     )
   })
 
+  it('debounces the group and token filters by 300ms', async () => {
+    const user = userEvent.setup()
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o')
+    await user.type(screen.getByLabelText('Group'), 'default')
+    expect(
+      requestsFor(requests, '/api/usage-logs').every(
+        (request) => request.url.searchParams.get('group') !== 'default',
+      ),
+    ).toBe(true)
+    await waitFor(
+      () => {
+        expect(
+          latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
+            'group',
+          ),
+        ).toBe('default')
+      },
+      { timeout: 2000 },
+    )
+
+    await user.type(screen.getByLabelText('Token ID'), '12')
+    await waitFor(
+      () => {
+        expect(
+          latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
+            'token_id',
+          ),
+        ).toBe('12')
+      },
+      { timeout: 2000 },
+    )
+  })
+
+  it('keeps in-flight username text when another filter changes', async () => {
+    const user = userEvent.setup()
+    const requests = installScenario({
+      me: ME_ADMIN,
+      list: () => jsonResponse(page([{ ...USER_ROW, username: 'alice' }])),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o')
+    const input = screen.getByLabelText('Username') as HTMLInputElement
+    await user.type(input, 'alice')
+    // Change another filter inside the 300ms debounce window. The external
+    // search sync must not wipe the in-flight username draft.
+    await user.selectOptions(screen.getByLabelText('Status'), 'error')
+    expect(input.value).toBe('alice')
+
+    await waitFor(
+      () => {
+        const request = latestRequest(requests, '/api/usage-logs')
+        expect(request?.url.searchParams.get('username')).toBe('alice')
+        expect(request?.url.searchParams.get('status')).toBe('error')
+      },
+      { timeout: 2500 },
+    )
+  })
+
   it('blocks an invalid request ID and shows a field error', async () => {
     const user = userEvent.setup()
     const requests = installScenario({
@@ -366,6 +430,9 @@ describe('usage logs list', () => {
     renderWithProviders(<PageHarness />)
 
     expect(await screen.findByText(/Invalid time range/)).toBeTruthy()
+    // The filter toolbar stays available so the user can correct the range.
+    expect(screen.getByLabelText('Status')).toBeTruthy()
+    expect(screen.getByRole('radio', { name: 'Custom' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
@@ -382,6 +449,29 @@ describe('usage logs list', () => {
 
     expect(
       await screen.findByText('Too many requests, retry in 30s'),
+    ).toBeTruthy()
+    // Filters remain editable while rate-limited.
+    expect(screen.getByLabelText('Status')).toBeTruthy()
+  })
+
+  it('keeps the 429 countdown at zero instead of snapping back to Retry-After', async () => {
+    installScenario({
+      list: () =>
+        problemResponse(
+          429,
+          { type: 'rate_limited', title: 'Too many requests' },
+          { 'Retry-After': '1' },
+        ),
+    })
+    renderWithProviders(<PageHarness />)
+
+    expect(
+      await screen.findByText('Too many requests, retry in 1s'),
+    ).toBeTruthy()
+    expect(
+      await screen.findByText('Too many requests, retry in 0s', undefined, {
+        timeout: 3000,
+      }),
     ).toBeTruthy()
   })
 
@@ -514,7 +604,79 @@ describe('usage logs list', () => {
     expect(within(dialog).getByText('OpenRouter-A')).toBeTruthy()
     expect(within(dialog).getByText('OpenRouter-GPT')).toBeTruthy()
     expect(within(dialog).getByText(/3 attempts and succeeded/)).toBeTruthy()
+    expect(within(dialog).getByText('2 retries')).toBeTruthy()
     expect(within(dialog).getByText('9f3a8d2e-1b2c-4d5e-8f90-112233445566')).toBeTruthy()
+  })
+
+  it('never shows raw retry decision keys to a non-admin', async () => {
+    const user = userEvent.setup()
+    installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+      detail: () =>
+        jsonResponse({
+          ...USER_ROW,
+          retry_chain: [
+            {
+              channel_name: 'OpenRouter-A',
+              decision: 'priority',
+              error_class: 'upstream_rate_limited',
+              latency_ms: 800,
+            },
+            {
+              channel_name: 'OpenRouter-B',
+              decision: 'fallback',
+              error_class: null,
+              latency_ms: 1200,
+            },
+          ],
+        }),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await user.click(await screen.findByText('gpt-4o'))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('OpenRouter-A')).toBeTruthy()
+    expect(within(dialog).queryByText('priority')).toBeNull()
+    expect(within(dialog).queryByText('fallback')).toBeNull()
+  })
+
+  it('masks error messages for users by default', async () => {
+    const user = userEvent.setup()
+    installScenario({
+      list: () => jsonResponse(page([ERROR_ROW])),
+      detail: () =>
+        jsonResponse({
+          ...ERROR_ROW,
+          error_message: 'upstream exploded at host db.internal',
+        }),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await user.click(await screen.findByText('gpt-4o-mini'))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Failure Reason')).toBeTruthy()
+    expect(within(dialog).getAllByText('****').length).toBeGreaterThan(0)
+    expect(dialog.textContent).not.toContain('upstream exploded')
+  })
+
+  it('shows raw error messages to admins with logs:read', async () => {
+    const user = userEvent.setup()
+    installScenario({
+      me: ME_ADMIN,
+      list: () => jsonResponse(page([{ ...ERROR_ROW, username: 'alice' }])),
+      detail: () =>
+        jsonResponse({
+          ...ERROR_ROW,
+          error_message: 'upstream exploded at host db.internal',
+        }),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await user.click(await screen.findByText('gpt-4o-mini'))
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      within(dialog).getByText('upstream exploded at host db.internal'),
+    ).toBeTruthy()
   })
 
   it('hides View Prompt without log.prompt.view and masks prompt-like fields', async () => {

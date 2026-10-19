@@ -200,6 +200,8 @@ export function LogDetailDrawer({
   ].filter((row) => row.always || row.quantity > 0)
 
   const attempts = retryChain.length > 0 ? retryChain.length : 1
+  // `retry_chain` contains every attempt, so 3 steps = 2 retries.
+  const retries = Math.max(0, retryChain.length - 1)
   const lastRetry = asRecord(retryChain.at(-1))
   const lastError = readString(lastRetry, ['error_class', 'error'])
   const failureClass =
@@ -420,10 +422,8 @@ export function LogDetailDrawer({
               <Field label={t('logs.usage.detail.ttft')}>
                 {detail.stream ? formatSeconds(detail.ttft) : '—'}
               </Field>
-              <Field label={t('logs.usage.detail.retry_count')}>
-                {t('logs.usage.detail.retry_count', {
-                  count: retryChain.length,
-                })}
+              <Field label={t('logs.usage.detail.retry_count_label')}>
+                {t('logs.usage.detail.retry_count', { count: retries })}
               </Field>
             </dl>
 
@@ -436,7 +436,14 @@ export function LogDetailDrawer({
                   <span className="mr-2 rounded bg-danger-bg px-1.5 py-0.5 text-xs text-danger">
                     {detail.error_class ?? '—'}
                   </span>
-                  {detail.error_message ?? '—'}
+                  {detail.error_message !== null &&
+                  detail.error_message !== undefined
+                    ? capabilities.canViewSensitive
+                      ? detail.error_message
+                      : // Mask by default for non-admins (controller ruling).
+                        // F-05-06 will turn this into a user-controlled switch.
+                        t('logs.usage.detail.masked')
+                    : '—'}
                 </p>
               </div>
             ) : null}
@@ -457,10 +464,12 @@ export function LogDetailDrawer({
                     'upstream',
                     'channel',
                   ])
-                  const decision = readString(record, [
-                    'decision_label',
-                    'decision',
-                  ])
+                  // `decision` is an internal routing key. Non-admins only see
+                  // the user-facing label (`decision_label`), never the raw
+                  // priority/weight decision (G7-R47 element projection).
+                  const decision = capabilities.isAdmin
+                    ? readString(record, ['decision_label', 'decision'])
+                    : readString(record, ['decision_label'])
                   const error = readString(record, ['error_class', 'error'])
                   const latency = readNumber(record, ['latency_ms', 'latency'])
                   const ok = error === undefined

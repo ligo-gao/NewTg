@@ -126,7 +126,8 @@
       "masked": "****",
       "view_prompt": "View Prompt",
       "prompt_unavailable": "Prompt not available",
-      "sensitive_hidden": "Sensitive content hidden"
+      "sensitive_hidden": "Sensitive content hidden",
+      "retry_count_label": "Retries"
     },
     "credits": "credits"
   },

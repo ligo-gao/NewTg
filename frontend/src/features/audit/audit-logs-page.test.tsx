@@ -260,5 +260,31 @@ describe('audit logs page', () => {
     expect(
       await screen.findByText('Too many requests, retry in 12s'),
     ).toBeTruthy()
+    // The filter toolbar stays mounted while the list is rate-limited.
+    expect(screen.getByLabelText('Category')).toBeTruthy()
+  })
+
+  it('keeps in-flight username text when another filter changes', async () => {
+    const user = userEvent.setup()
+    const requests = installScenario({
+      me: ME_ADMIN,
+      list: () => jsonResponse(page([LOGIN_ROW])),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('password_login')
+    const input = screen.getByLabelText('Username') as HTMLInputElement
+    await user.type(input, 'alice')
+    await user.selectOptions(screen.getByLabelText('Category'), 'login')
+    expect(input.value).toBe('alice')
+
+    await waitFor(
+      () => {
+        const request = latestRequest(requests, '/api/audit-logs')
+        expect(request?.url.searchParams.get('username')).toBe('alice')
+        expect(request?.url.searchParams.get('category')).toBe('login')
+      },
+      { timeout: 2500 },
+    )
   })
 })

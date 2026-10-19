@@ -113,8 +113,13 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
 
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [modelDraft, setModelDraft] = useState(search.model ?? '')
+  const [groupDraft, setGroupDraft] = useState(search.group ?? '')
+  const [tokenIdDraft, setTokenIdDraft] = useState(
+    search.token_id === undefined ? '' : String(search.token_id),
+  )
   const [requestIdDraft, setRequestIdDraft] = useState(search.request_id ?? '')
   const [requestIdError, setRequestIdError] = useState(false)
+  const [retryRemaining, setRetryRemaining] = useState(0)
   const [usernameDraft, setUsernameDraft] = useState(search.username ?? '')
   const [customStart, setCustomStart] = useState(search.start ?? '')
   const [customEnd, setCustomEnd] = useState(search.end ?? '')
@@ -135,19 +140,36 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     onSearchChangeRef.current(next)
   }, [])
 
-  // External navigation (back/forward, shared link) re-seeds the drafts.
-  const signature = JSON.stringify(search)
-  const lastSignature = useRef(signature)
+  // External navigation (back/forward, shared link) re-seeds only the fields
+  // whose applied value actually changed. Re-seeding every draft on any search
+  // change would wipe text the user is still typing when another filter is
+  // changed inside the debounce window.
+  const lastSearchRef = useRef(search)
   useEffect(() => {
-    if (signature === lastSignature.current) return
-    lastSignature.current = signature
-    setModelDraft(search.model ?? '')
-    setRequestIdDraft(search.request_id ?? '')
-    setUsernameDraft(search.username ?? '')
-    setCustomStart(search.start ?? '')
-    setCustomEnd(search.end ?? '')
-    setRequestIdError(false)
-  }, [signature, search])
+    const previous = lastSearchRef.current
+    if (previous === search) return
+    if ((search.model ?? '') !== (previous.model ?? '')) {
+      setModelDraft(search.model ?? '')
+    }
+    if ((search.group ?? '') !== (previous.group ?? '')) {
+      setGroupDraft(search.group ?? '')
+    }
+    if (search.token_id !== previous.token_id) {
+      setTokenIdDraft(
+        search.token_id === undefined ? '' : String(search.token_id),
+      )
+    }
+    if ((search.request_id ?? '') !== (previous.request_id ?? '')) {
+      setRequestIdDraft(search.request_id ?? '')
+      setRequestIdError(false)
+    }
+    if ((search.username ?? '') !== (previous.username ?? '')) {
+      setUsernameDraft(search.username ?? '')
+    }
+    if (search.start !== previous.start) setCustomStart(search.start ?? '')
+    if (search.end !== previous.end) setCustomEnd(search.end ?? '')
+    lastSearchRef.current = search
+  }, [search])
 
   useEffect(() => {
     const next = modelDraft.trim()
@@ -159,6 +181,41 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
       clearTimeout(timer)
     }
   }, [modelDraft, search.model, update])
+
+  useEffect(() => {
+    const next = groupDraft.trim()
+    if (next === (search.group ?? '')) return
+    const timer = setTimeout(() => {
+      update({ group: next === '' ? undefined : next, p: 1 })
+    }, 300)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [groupDraft, search.group, update])
+
+  useEffect(() => {
+    const next = tokenIdDraft.trim()
+    if (next === '') {
+      if (search.token_id === undefined) return
+      const timer = setTimeout(() => {
+        update({ token_id: undefined, p: 1 })
+      }, 300)
+      return () => {
+        clearTimeout(timer)
+      }
+    }
+    const parsed = Number(next)
+    // Invalid token IDs stay out of the query; the field keeps the raw text so
+    // the user can correct it.
+    if (!Number.isInteger(parsed) || parsed < 1) return
+    if (parsed === search.token_id) return
+    const timer = setTimeout(() => {
+      update({ token_id: parsed, p: 1 })
+    }, 300)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [tokenIdDraft, search.token_id, update])
 
   useEffect(() => {
     const next = requestIdDraft.trim()
@@ -233,15 +290,31 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   const items = data?.items ?? []
 
   // 429 countdown: the duration is server-driven (`Retry-After`), never a
-  // hardcoded constant.
+  // hardcoded constant. The value is mirrored once the countdown reaches zero
+  // so the message shows `0` instead of snapping back to the full duration;
+  // Retry stays enabled throughout.
   const listError = listQuery.error
+  const isRateLimited =
+    listError instanceof ApiError && listError.kind === 'rate_limited'
+  const countdownErrorRef = useRef<unknown>(null)
+
   useEffect(() => {
-    if (listError instanceof ApiError && listError.kind === 'rate_limited') {
-      startCountdown(listError.retry_after ?? 60)
-    } else {
+    if (!isRateLimited) {
+      countdownErrorRef.current = null
       stopCountdown()
+      setRetryRemaining(0)
+      return
     }
-  }, [listError, startCountdown, stopCountdown])
+    if (countdownErrorRef.current === listError) return
+    countdownErrorRef.current = listError
+    const seconds = (listError as ApiError).retry_after ?? 60
+    setRetryRemaining(seconds)
+    startCountdown(seconds)
+  }, [isRateLimited, listError, startCountdown, stopCountdown])
+
+  useEffect(() => {
+    if (countdownErrorRef.current !== null) setRetryRemaining(retrySeconds)
+  }, [retrySeconds])
 
   // Page overflow fallback (sub-feature §3.2): a shrunken dataset can make the
   // requested offset page empty while `total` is still exact. Return to the
@@ -276,6 +349,8 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
 
   function clearFilters(): void {
     setModelDraft('')
+    setGroupDraft('')
+    setTokenIdDraft('')
     setRequestIdDraft('')
     setUsernameDraft('')
     setCustomStart('')
@@ -308,36 +383,24 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     push({ tone: 'success', message: t('common.action.copied') })
   }
 
-  if (listQuery.isError) {
-    const error = listQuery.error
-    let message = t('logs.usage.error.load')
-    if (error instanceof ApiError) {
-      if (error.kind === 'rate_limited') {
-        message = t('logs.usage.error.too_many', {
-          seconds: retrySeconds > 0 ? retrySeconds : (error.retry_after ?? 60),
-        })
-      } else if (error.kind === 'validation') {
-        message = t('logs.usage.error.invalid_range')
-      } else if (error.kind === 'offline') {
-        message = t('logs.usage.error.offline')
-      }
+  // Keep the filter toolbar mounted on every failure: a 422/429 must leave the
+  // user able to correct the range or clear the filters. Only the table region
+  // is replaced by the inline error.
+  let errorMessage: string | null = null
+  if (listError instanceof ApiError) {
+    if (listError.kind === 'rate_limited') {
+      errorMessage = t('logs.usage.error.too_many', {
+        seconds: retryRemaining,
+      })
+    } else if (listError.kind === 'validation') {
+      errorMessage = t('logs.usage.error.invalid_range')
+    } else if (listError.kind === 'offline') {
+      errorMessage = t('logs.usage.error.offline')
+    } else {
+      errorMessage = t('logs.usage.error.load')
     }
-    return (
-      <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
-        <UsageHeader
-          onClear={clearFilters}
-          clearLabel={t('logs.usage.filters.reset')}
-          showClear={hasActiveFilters}
-        />
-        <div className="rounded-xl border border-border-hairline bg-surface-card">
-          <InlineError
-            message={message}
-            onRetry={() => void listQuery.refetch()}
-            retryLabel={t('logs.usage.error.retry')}
-          />
-        </div>
-      </section>
-    )
+  } else if (listError !== null) {
+    errorMessage = t('logs.usage.error.load')
   }
 
   const columnCount =
@@ -397,10 +460,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             id="logs-group"
             label={t('logs.usage.filters.group')}
             placeholder={t('logs.usage.filters.group_placeholder')}
-            value={search.group ?? ''}
+            value={groupDraft}
             onChange={(event) => {
-              const value = event.target.value
-              update({ group: value.trim() === '' ? undefined : value.trim(), p: 1 })
+              setGroupDraft(event.target.value)
             }}
             className="h-9 w-36"
           />
@@ -410,17 +472,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             label={t('logs.usage.filters.token')}
             placeholder={t('logs.usage.filters.token_placeholder')}
             inputMode="numeric"
-            value={search.token_id === undefined ? '' : String(search.token_id)}
+            value={tokenIdDraft}
             onChange={(event) => {
-              const raw = event.target.value.trim()
-              const parsed = Number(raw)
-              update({
-                token_id:
-                  raw === '' || !Number.isInteger(parsed) || parsed < 1
-                    ? undefined
-                    : parsed,
-                p: 1,
-              })
+              setTokenIdDraft(event.target.value)
             }}
             className="h-9 w-32"
           />
@@ -558,17 +612,25 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
-        <span data-testid="logs-total">
-          {total > 10_000
-            ? t('logs.usage.total_capped')
-            : t('logs.usage.total', {
-                total: new Intl.NumberFormat(locale).format(total),
-              })}
-        </span>
+        {errorMessage === null ? (
+          <span data-testid="logs-total">
+            {total > 10_000
+              ? t('logs.usage.total_capped')
+              : t('logs.usage.total', {
+                  total: new Intl.NumberFormat(locale).format(total),
+                })}
+          </span>
+        ) : null}
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
-        {listQuery.isPending ? (
+        {errorMessage !== null ? (
+          <InlineError
+            message={errorMessage}
+            onRetry={() => void listQuery.refetch()}
+            retryLabel={t('logs.usage.error.retry')}
+          />
+        ) : listQuery.isPending ? (
           <SkeletonRows columns={columnCount} />
         ) : items.length === 0 ? (
           <EmptyState
@@ -633,7 +695,10 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             </thead>
             <tbody>
               {items.map((row) => {
-                const retries = row.retry_chain?.length ?? 0
+                const retries = Math.max(
+                  0,
+                  (row.retry_chain?.length ?? 0) - 1,
+                )
                 return (
                   <tr
                     key={row.id}
@@ -751,7 +816,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         )}
       </div>
 
-      {!listQuery.isPending && items.length > 0 ? (
+      {errorMessage === null &&
+      !listQuery.isPending &&
+      items.length > 0 ? (
         <PaginationFooter
           namespace="usage"
           page={search.p}

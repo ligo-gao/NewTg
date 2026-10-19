@@ -11,6 +11,12 @@ export interface LogsCapabilities {
   canFilterByUsername: boolean
   /** Prompt plaintext gate: effective permission `log.prompt.view` or `*`. */
   canViewPrompt: boolean
+  /**
+   * Sensitive payload gate for stored error text: admin with `logs:read` or
+   * `*`. Users see masked content. F-05-06 will make this a user-controlled
+   * switch; until then the controller ruling is mask-by-default for non-admins.
+   */
+  canViewSensitive: boolean
 }
 
 const NONE: LogsCapabilities = {
@@ -18,6 +24,7 @@ const NONE: LogsCapabilities = {
   isAdmin: false,
   canFilterByUsername: false,
   canViewPrompt: false,
+  canViewSensitive: false,
 }
 
 /**
@@ -47,5 +54,8 @@ export function useLogsCapabilities(): LogsCapabilities {
     canFilterByUsername:
       me.role === 'admin' && (fullAccess || permissions.includes('logs:read')),
     canViewPrompt: fullAccess || permissions.includes('log.prompt.view'),
+    canViewSensitive:
+      me.role === 'admin' &&
+      (fullAccess || permissions.includes('logs:read')),
   }
 }

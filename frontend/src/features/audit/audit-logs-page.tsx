@@ -118,6 +118,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
   } = useCountdown()
   const [selected, setSelected] = useState<AuditLogItem | null>(null)
   const [usernameDraft, setUsernameDraft] = useState(search.username ?? '')
+  const [retryRemaining, setRetryRemaining] = useState(0)
 
   const searchRef = useRef(search)
   const onSearchChangeRef = useRef(onSearchChange)
@@ -132,13 +133,18 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
     onSearchChangeRef.current(next)
   }, [])
 
-  const signature = JSON.stringify(search)
-  const lastSignature = useRef(signature)
+  // Re-seed the username draft only when the *applied* username changed, so an
+  // in-flight value survives a category/result/range change inside the
+  // debounce window.
+  const lastSearchRef = useRef(search)
   useEffect(() => {
-    if (signature === lastSignature.current) return
-    lastSignature.current = signature
-    setUsernameDraft(search.username ?? '')
-  }, [signature, search.username])
+    const previous = lastSearchRef.current
+    if (previous === search) return
+    if ((search.username ?? '') !== (previous.username ?? '')) {
+      setUsernameDraft(search.username ?? '')
+    }
+    lastSearchRef.current = search
+  }, [search])
 
   useEffect(() => {
     if (!capabilities.canFilterByUsername) return
@@ -173,13 +179,28 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
   const items = data?.items ?? []
 
   const listError = listQuery.error
+  const isRateLimited =
+    listError instanceof ApiError && listError.kind === 'rate_limited'
+  const countdownErrorRef = useRef<unknown>(null)
+
   useEffect(() => {
-    if (listError instanceof ApiError && listError.kind === 'rate_limited') {
-      startCountdown(listError.retry_after ?? 60)
-    } else {
+    if (!isRateLimited) {
+      countdownErrorRef.current = null
       stopCountdown()
+      setRetryRemaining(0)
+      return
     }
-  }, [listError, startCountdown, stopCountdown])
+    if (countdownErrorRef.current === listError) return
+    countdownErrorRef.current = listError
+    const seconds = (listError as ApiError).retry_after ?? 60
+    setRetryRemaining(seconds)
+    startCountdown(seconds)
+  }, [isRateLimited, listError, startCountdown, stopCountdown])
+
+  useEffect(() => {
+    // Keep 0 at expiry instead of snapping back to the original Retry-After.
+    if (countdownErrorRef.current !== null) setRetryRemaining(retrySeconds)
+  }, [retrySeconds])
 
   useEffect(() => {
     if (!listQuery.isSuccess || data === undefined) return
@@ -216,32 +237,19 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
     onSearchChangeRef.current(next)
   }
 
-  if (listQuery.isError) {
-    const error = listQuery.error
-    let message = t('logs.audit.error.load')
-    if (error instanceof ApiError) {
-      if (error.kind === 'rate_limited') {
-        message = t('logs.audit.error.too_many', {
-          seconds: retrySeconds > 0 ? retrySeconds : (error.retry_after ?? 60),
-        })
-      } else if (error.kind === 'offline') {
-        message = t('logs.audit.error.offline')
-      }
+  let errorMessage: string | null = null
+  if (listError instanceof ApiError) {
+    if (listError.kind === 'rate_limited') {
+      errorMessage = t('logs.audit.error.too_many', {
+        seconds: retryRemaining,
+      })
+    } else if (listError.kind === 'offline') {
+      errorMessage = t('logs.audit.error.offline')
+    } else {
+      errorMessage = t('logs.audit.error.load')
     }
-    return (
-      <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
-        <h1 className="text-xl font-semibold text-ink-1">
-          {t('logs.audit.title')}
-        </h1>
-        <div className="rounded-xl border border-border-hairline bg-surface-card">
-          <InlineError
-            message={message}
-            onRetry={() => void listQuery.refetch()}
-            retryLabel={t('logs.audit.error.retry')}
-          />
-        </div>
-      </section>
-    )
+  } else if (listError !== null) {
+    errorMessage = t('logs.audit.error.load')
   }
 
   const columnCount = 6 + (capabilities.canFilterByUsername ? 1 : 0)
@@ -356,15 +364,23 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
-        <span data-testid="audit-total">
-          {t('logs.audit.total', {
-            total: new Intl.NumberFormat(locale).format(total),
-          })}
-        </span>
+        {errorMessage === null ? (
+          <span data-testid="audit-total">
+            {t('logs.audit.total', {
+              total: new Intl.NumberFormat(locale).format(total),
+            })}
+          </span>
+        ) : null}
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
-        {listQuery.isPending ? (
+        {errorMessage !== null ? (
+          <InlineError
+            message={errorMessage}
+            onRetry={() => void listQuery.refetch()}
+            retryLabel={t('logs.audit.error.retry')}
+          />
+        ) : listQuery.isPending ? (
           <SkeletonRows columns={columnCount} />
         ) : items.length === 0 ? (
           <EmptyState
@@ -487,7 +503,9 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
         )}
       </div>
 
-      {!listQuery.isPending && items.length > 0 ? (
+      {errorMessage === null &&
+      !listQuery.isPending &&
+      items.length > 0 ? (
         <PaginationFooter
           namespace="audit"
           page={search.p}
