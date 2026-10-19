@@ -208,6 +208,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		usageLogs, err := NewUsageLogHandlers(UsageLogHandlerConfig{
 			DB:     cfg.DB,
 			LogDB:  cfg.LogDB,
+			Audit:  cfg.Audit,
 			Logger: cfg.Logger,
 		})
 		if err != nil {

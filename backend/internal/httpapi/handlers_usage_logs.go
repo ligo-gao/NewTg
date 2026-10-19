@@ -1,10 +1,13 @@
 // Package httpapi 的用量日志 / 统计 / 审计只读端点（M6 Task 2）。
 //
-// 端点面（R-M6-2 冻结，导出 P1 不在本任务）：
+// 端点面（R-M6-2 冻结；M6c 补齐 F-05-06/07/08）：
 //
-//	GET /api/usage-logs                  offset 分页 + 筛选
-//	GET /api/usage-logs/{id}             单条详情（含 other 投影）
+//	GET /api/usage-logs                  offset 分页 + 筛选（reveal_sensitive）
+//	GET /api/usage-logs/export           流式导出 TXT/Markdown（≤10,000 行）
+//	GET /api/usage-logs/{id}             单条详情（含 other 投影，reveal_sensitive）
 //	GET /api/usage-logs/{id}/prompt      Prompt 原文（无载体，恒 404）
+//	GET /api/model-perf                  模型性能看板（F-05-08；别名
+//	                                     /api/usage-logs/model-performance）
 //	GET /api/usage-stats/summary         概览卡片聚合
 //	GET /api/usage-stats/by-model        模型分布（top 8 + other）
 //	GET /api/usage-stats/timeseries      UTC 时间桶序列
@@ -25,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -35,6 +39,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -58,7 +63,18 @@ const (
 	// 审计日志默认窗口 30 天（modules-05 §7.2）。
 	auditDefaultRange = "30d"
 
+	// exportRowLimit 是 F-05-07 冻结的单次导出行数上限（modules-05 §9.1）。
+	// 超限必须在写出任何字节之前返回 422，因此先在同一只读快照里 count。
+	exportRowLimit = 10000
+
+	// maskedSensitive 是敏感开关关闭时的占位值（modules-05 F-05-06：
+	// Prompt / error_message / 重试链错误原文统一打码）。
+	maskedSensitive = "••••••"
+
 	problemTypeNotFound = "https://newtg.dev/problems/not_found"
+	// problemTypeExportRowLimit 是导出超限的稳定机器可读 type；detail 同时
+	// 带 `EXPORT_ROW_LIMIT` 字样，前端按 422 + type 识别分批提示。
+	problemTypeExportRowLimit = "https://newtg.dev/problems/export_row_limit"
 )
 
 // UsageLogHandlerConfig 是只读端点集合的装配输入。
@@ -69,18 +85,29 @@ type UsageLogHandlerConfig struct {
 	LogDB *sql.DB
 	// Access 是权限回源接缝；nil 时由 DB 构造 TokenRepo（同 P-9 口径）。
 	Access UserAccessStore
+	// Audit 是导出审计写入器；nil 时跳过（测试/未装配日志库的装配）。
+	Audit  *audit.Logger
 	Logger *slog.Logger
 	// Now 是时间窗口的时钟接缝（测试可注入固定时间）。
 	Now func() time.Time
+	// Perf 是 F-05-08 模型性能指标库查询接缝（platform-05 §3.5）。nil 表示
+	// 采集管道未装配，端点返回「采集未启用」闸门而绝不用 usage_logs 伪造。
+	Perf ModelPerfSource
+	// PerfFlushInterval 是管道刷写周期，用于陈旧度判定（3×周期无更新 = 停摆）。
+	// 零值时取设计默认 5 分钟。
+	PerfFlushInterval time.Duration
 }
 
 // UsageLogHandlers 持有只读端点依赖，可并发使用。
 type UsageLogHandlers struct {
-	db     *sql.DB
-	logDB  *sql.DB
-	access UserAccessStore
-	log    *slog.Logger
-	now    func() time.Time
+	db        *sql.DB
+	logDB     *sql.DB
+	access    UserAccessStore
+	audit     *audit.Logger
+	log       *slog.Logger
+	now       func() time.Time
+	perf      ModelPerfSource
+	perfFlush time.Duration
 }
 
 // NewUsageLogHandlers 构造只读端点。两个数据库都是必需项：
@@ -104,10 +131,24 @@ func NewUsageLogHandlers(cfg UsageLogHandlerConfig) (*UsageLogHandlers, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &UsageLogHandlers{db: cfg.DB, logDB: cfg.LogDB, access: access, log: logger, now: now}, nil
+	flush := cfg.PerfFlushInterval
+	if flush <= 0 {
+		// platform-05 §3.5.5：PERF_METRICS_FLUSH_INTERVAL 默认 5 分钟。
+		flush = 5 * time.Minute
+	}
+	return &UsageLogHandlers{
+		db:        cfg.DB,
+		logDB:     cfg.LogDB,
+		access:    access,
+		audit:     cfg.Audit,
+		log:       logger,
+		now:       now,
+		perf:      cfg.Perf,
+		perfFlush: flush,
+	}, nil
 }
 
-// RegisterUsageLogRoutes 注册八个只读端点。wrap 语义同其它 Register*Routes。
+// RegisterUsageLogRoutes 注册只读端点。wrap 语义同其它 Register*Routes。
 func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	register := func(pattern string, handler http.HandlerFunc) {
 		var hd http.Handler = handler
@@ -117,6 +158,12 @@ func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(
 		mux.Handle(pattern, hd)
 	}
 	register("GET /api/usage-logs", h.handleUsageLogList)
+	register("GET /api/usage-logs/export", h.handleUsageLogExport)
+	// F-05-08 的规范路径是 GET /api/model-perf（modules-05 §5.5 / UI §8.9）；
+	// 同时保留 /api/usage-logs/model-performance 别名，兼容只读端点族的
+	// 直觉路径。两个路径共用同一 handler，鉴权与参数校验不可能漂移。
+	register("GET /api/model-perf", h.handleModelPerf)
+	register("GET /api/usage-logs/model-performance", h.handleModelPerf)
 	register("GET /api/usage-logs/{id}", h.handleUsageLogDetail)
 	register("GET /api/usage-logs/{id}/prompt", h.handleUsageLogPrompt)
 	register("GET /api/usage-stats/summary", h.handleUsageStatsSummary)
@@ -175,6 +222,60 @@ func rejectAdminOnlyParams(w http.ResponseWriter, q url.Values, admin bool, keys
 		}
 	}
 	return false
+}
+
+// parseRevealSensitive 解析 F-05-06 的敏感内容开关。缺省 = 打码（false）；
+// 只接受 0/1，其它值视为非法参数而不是「按打码处理」——静默纠正会让前端
+// 误以为开关已生效。
+func parseRevealSensitive(q url.Values) (bool, string) {
+	raw := strings.TrimSpace(q.Get("reveal_sensitive"))
+	switch raw {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, "reveal_sensitive must be 0 or 1"
+	}
+}
+
+// sensitiveRevealAllowed 在客户端要求显示敏感内容时服务端二次校验
+// `log.prompt.view`（modules-05 F-05-06 §8.1 第 2 步 / F-05-07）。
+//
+// 判定结果刻意不是 403：无权限时仍返回打码字段，避免把「你没有 prompt
+// 权限」变成列表/导出的硬失败。存储故障返回 500（不能把基础设施故障伪装成
+// 打码，否则运维永远发现不了权限面失效）。
+func (h *UsageLogHandlers) sensitiveRevealAllowed(r *http.Request, reveal bool) (bool, error) {
+	if !reveal {
+		return false, nil
+	}
+	err := CheckPermission(r.Context(), h.access, rbac.PermLogPromptView)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrPermissionDenied), errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
+		// 无权限 / 身份已失效：静默降级为打码（F-05-06 明确「即使传参也返回
+		// 打码字段 + 403 仅对独立 prompt 接口生效」）。
+		return false, nil
+	case errors.Is(err, ErrAccessStore):
+		return false, err
+	default:
+		return false, err
+	}
+}
+
+// maskSensitiveError 返回按开关处理后的错误原文。NULL 保持为空，不把「没有
+// 错误」伪造成一段打码值。
+func maskSensitiveError(value sql.NullString, reveal bool) *string {
+	if !value.Valid {
+		return nil
+	}
+	if !reveal {
+		out := maskedSensitive
+		return &out
+	}
+	out := value.String
+	return &out
 }
 
 // parseUsageWindow 解析 range 预设或显式 start/end（RFC3339，UTC）。
@@ -483,7 +584,7 @@ type usageLogDetail struct {
 	Other json.RawMessage `json:"other"`
 }
 
-func (row *usageLogRow) toItem(admin bool) usageLogItem {
+func (row *usageLogRow) toItem(admin, revealSensitive bool) usageLogItem {
 	return usageLogItem{
 		ID:               row.ID,
 		RequestID:        row.RequestID,
@@ -505,9 +606,11 @@ func (row *usageLogRow) toItem(admin bool) usageLogItem {
 		Stream:           row.Stream,
 		Status:           usageStatusString(row.Status),
 		ErrorClass:       nullableString(row.ErrorClass),
-		ErrorMessage:     nullableString(row.ErrorMessage),
-		RetryChain:       projectRetryChain(row.RetryChain, admin),
-		CreatedAt:        row.CreatedAt.UTC(),
+		// 错误原文与 Prompt 同属 F-05-06 的敏感面：缺省打码；即使客户端
+		// 传 reveal_sensitive=1，也只有在服务端重校验通过后才返回原文。
+		ErrorMessage: maskSensitiveError(row.ErrorMessage, revealSensitive),
+		RetryChain:   projectRetryChain(row.RetryChain, admin),
+		CreatedAt:    row.CreatedAt.UTC(),
 	}
 }
 
@@ -540,9 +643,14 @@ var otherUserHiddenKeys = []string{
 	"channel_id", "channel_name", "channel_type", "reject_reason",
 }
 
+// otherAdminSensitiveKeys 是 admin 视图在敏感开关关闭时仍须打码的键。
+// 这些键可能承载上游错误原文或拒绝原因，属于 F-05-06 的「错误原文」面；
+// 分类字段（error_class 等）不在此列，因为它们不是原文。
+var otherAdminSensitiveKeys = []string{"reject_reason", "error_message", "error"}
+
 // projectOther 按角色做可见性投影（platform-01 §12.5）。任何解析失败都
 // 返回空对象而不是原始 jsonb：宁可丢字段也不能泄露内部映射。
-func projectOther(raw []byte, admin bool) json.RawMessage {
+func projectOther(raw []byte, admin, revealSensitive bool) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage("{}")
 	}
@@ -556,6 +664,20 @@ func projectOther(raw []byte, admin bool) json.RawMessage {
 		// 即使 audit_info 非空也不得下发给管理员。
 		delete(fields, "root_info")
 		delete(fields, "audit_info")
+		if !revealSensitive {
+			// 只替换字符串值：非字符串形态（对象/数组）原样保留更安全，
+			// 因为它们的结构本身不是可直接阅读的错误原文。
+			for _, key := range otherAdminSensitiveKeys {
+				value, ok := fields[key]
+				if !ok {
+					continue
+				}
+				var text string
+				if err := json.Unmarshal(value, &text); err == nil {
+					fields[key], _ = json.Marshal(maskedSensitive)
+				}
+			}
+		}
 	} else {
 		for _, key := range otherUserHiddenKeys {
 			delete(fields, key)
@@ -689,7 +811,17 @@ func (h *UsageLogHandlers) handleUsageLogList(w http.ResponseWriter, r *http.Req
 		writeInvalidRequest(w, detail)
 		return
 	}
-
+	revealSensitive, detail := parseRevealSensitive(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	revealSensitive, err := h.sensitiveRevealAllowed(r, revealSensitive)
+	if err != nil {
+		h.log.Error("usage logs: sensitive permission check failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
 	if !viewer.admin {
 		userID := viewer.userID
 		filter.userID = &userID
@@ -735,7 +867,7 @@ func (h *UsageLogHandlers) handleUsageLogList(w http.ResponseWriter, r *http.Req
 			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 			return
 		}
-		items = append(items, row.toItem(viewer.admin))
+		items = append(items, row.toItem(viewer.admin, revealSensitive))
 		userIDs = append(userIDs, row.UserID)
 	}
 	if err := rows.Err(); err != nil {
@@ -780,6 +912,17 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusNotFound, problemTypeNotFound, "Not Found")
 		return
 	}
+	revealSensitive, invalidDetail := parseRevealSensitive(r.URL.Query())
+	if invalidDetail != "" {
+		writeInvalidRequest(w, invalidDetail)
+		return
+	}
+	revealSensitive, err := h.sensitiveRevealAllowed(r, revealSensitive)
+	if err != nil {
+		h.log.Error("usage log detail: sensitive permission check failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
 	query := `SELECT ` + usageListColumns + `, other FROM usage_logs WHERE id = $1`
 	args := []any{id}
 	if !viewer.admin {
@@ -796,7 +939,7 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		return
 	}
-	detail := usageLogDetail{usageLogItem: row.toItem(viewer.admin), Other: projectOther(row.Other, viewer.admin)}
+	detail := usageLogDetail{usageLogItem: row.toItem(viewer.admin, revealSensitive), Other: projectOther(row.Other, viewer.admin, revealSensitive)}
 	if viewer.admin {
 		if name, err := h.usernamesFor(r, []int64{row.UserID}); err == nil {
 			if username, ok := name[row.UserID]; ok {
@@ -809,6 +952,456 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		}
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// --- 导出（F-05-07） ------------------------------------------------------
+
+// exportFilterDimensions 返回本次导出实际生效的筛选「维度名」——只记名字，
+// 不记任何值（modules-05 §9.1 第 5 步：审计不得成为筛选值的副本）。
+func exportFilterDimensions(q url.Values) []string {
+	dims := make([]string, 0, 8)
+	if strings.TrimSpace(q.Get("start")) != "" || strings.TrimSpace(q.Get("end")) != "" {
+		dims = append(dims, "time")
+	} else if strings.TrimSpace(q.Get("range")) != "" {
+		dims = append(dims, "range")
+	}
+	for _, key := range []string{"model", "group", "token_id", "status", "request_id", "username"} {
+		if strings.TrimSpace(q.Get(key)) != "" {
+			dims = append(dims, key)
+		}
+	}
+	return dims
+}
+
+func parseExportScope(q url.Values) (string, string) {
+	switch strings.TrimSpace(q.Get("scope")) {
+	case "", "filtered":
+		return "filtered", ""
+	case "all":
+		return "all", ""
+	default:
+		return "", "scope must be filtered or all"
+	}
+}
+
+func parseExportFormat(q url.Values) (string, string) {
+	switch strings.TrimSpace(q.Get("format")) {
+	case "", "txt":
+		return "txt", ""
+	case "markdown":
+		return "markdown", ""
+	default:
+		return "", "format must be txt or markdown"
+	}
+}
+
+// exportCell 中和单行文本字段的注入面（modules-05 §9.3）：
+//   - TXT：TAB/CR/LF 一律替换为空格，避免伪造列/行；
+//   - Markdown：`|` 转义，CR/LF 折为空格，避免伪造表格列；
+//   - 两种格式都以 `= + - @` 开头的文本前置单引号，防电子表格公式注入。
+//
+// 数值列不经过这里（数值本身不可能是公式前缀，也不应被引号污染）。
+func exportCell(raw, format string) string {
+	if format == "markdown" {
+		raw = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(raw)
+		raw = strings.ReplaceAll(raw, "|", `\|`)
+	} else {
+		raw = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(raw)
+	}
+	if raw != "" && strings.ContainsRune("=+-@", rune(raw[0])) {
+		return "'" + raw
+	}
+	return raw
+}
+
+func exportOptionalInt(value sql.NullInt64) string {
+	if !value.Valid {
+		return ""
+	}
+	return strconv.FormatInt(value.Int64, 10)
+}
+
+// exportUsername 按需解析用户快照。导出最多 1 万行，但不同用户通常很少；
+// 用惰性缓存避免 N+1，同时绝不做跨库 join（R-M6-5）。
+func (h *UsageLogHandlers) exportUsername(r *http.Request, cache map[int64]string, userID int64) string {
+	if name, ok := cache[userID]; ok {
+		return name
+	}
+	name := ""
+	if names, err := h.usernamesFor(r, []int64{userID}); err == nil {
+		name = names[userID]
+	} else {
+		h.log.Warn("usage log export: username lookup failed", "user_id", userID, "error", err)
+	}
+	cache[userID] = name
+	return name
+}
+
+func (h *UsageLogHandlers) handleUsageLogExport(w http.ResponseWriter, r *http.Request) {
+	viewer, ok := h.resolveViewer(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	if rejectAdminOnlyParams(w, q, viewer.admin, "username") {
+		return
+	}
+	scope, detail := parseExportScope(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	format, detail := parseExportFormat(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	filter, detail := parseUsageFilter(q, true)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	revealSensitive, detail := parseRevealSensitive(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	// 参数即使在 scope=all 下被忽略也要先校验：非法 range 不应因为
+	// 「全部范围」而静默通过，否则同一 URL 在两种 scope 下判定不一致。
+	start, end, detail := parseUsageWindow(q, "24h", h.now())
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	revealSensitive, err := h.sensitiveRevealAllowed(r, revealSensitive)
+	if err != nil {
+		h.log.Error("usage log export: sensitive permission check failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	dims := exportFilterDimensions(q)
+	if scope == "all" {
+		// 「全部」= 角色可见全量：忽略所有筛选（含时间窗），只保留角色范围。
+		filter = usageFilter{}
+		dims = nil
+	}
+	if !viewer.admin {
+		userID := viewer.userID
+		filter.userID = &userID
+	} else if scope == "filtered" {
+		if username := strings.TrimSpace(q.Get("username")); username != "" {
+			userID, found, err := h.resolveUserID(r, username)
+			if err != nil {
+				h.log.Error("usage log export: resolve username failed", "error", err)
+				writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+				return
+			}
+			if !found {
+				// 查无此人 = 空集；不生成空文件（modules-05 §9.1）。
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			filter.userID = &userID
+		}
+	}
+
+	where, args := buildUsageWhere(filter, start, end)
+	if scope == "all" {
+		// scope=all 不带时间条件：WHERE 必须完全由角色范围构成。
+		where, args = buildUsageWhereAll(filter)
+	}
+
+	// 只读 + REPEATABLE READ：count 与流式查询必须看同一快照，否则两查
+	// 之间新增的行可能让「已判定 ≤10000」的导出悄悄多出行（或反之）。
+	tx, err := h.logDB.BeginTx(r.Context(), &sql.TxOptions{
+		Isolation: sql.LevelRepeatableRead,
+		ReadOnly:  true,
+	})
+	if err != nil {
+		h.log.Error("usage log export: begin tx failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var rowCount int64
+	if err := tx.QueryRowContext(r.Context(), `SELECT count(*) FROM usage_logs`+where, args...).Scan(&rowCount); err != nil {
+		h.log.Error("usage log export: count failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	if rowCount == 0 {
+		// 不生成空文件：204 明确表示「没有内容可导出」，且不写审计（没有
+		// 任何数据离开系统）。
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if rowCount > exportRowLimit {
+		// 必须在写出任何字节之前拒绝：422 + EXPORT_ROW_LIMIT，响应体是
+		// problem+json 而不是附件，天然不存在「部分文件」。
+		writeProblemDetail(w, http.StatusUnprocessableEntity,
+			problemTypeExportRowLimit, "Export row limit exceeded",
+			fmt.Sprintf("EXPORT_ROW_LIMIT: export is limited to %d rows; narrow the filters or export in batches", exportRowLimit))
+		return
+	}
+
+	rows, err := tx.QueryContext(r.Context(),
+		`SELECT `+usageListColumns+` FROM usage_logs`+where+` ORDER BY created_at DESC, id DESC`, args...)
+	if err != nil {
+		h.log.Error("usage log export: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	filename := fmt.Sprintf("usage-logs-%s-%s.%s", scope, h.now().UTC().Format("20060102-1504"), exportFileExt(format))
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	if format == "markdown" {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	// 导出内容包含错误原文（开关打开时）属于敏感面，任何层都不得缓存。
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	writeErr := writeExportHeader(w, format, scope, dims, rowCount, viewer.admin, h.now().UTC())
+	usernameCache := make(map[int64]string)
+	written := int64(0)
+	for writeErr == nil && rows.Next() {
+		var row usageLogRow
+		if err := row.scan(rows); err != nil {
+			h.log.Error("usage log export: scan failed", "error", err)
+			writeErr = err
+			break
+		}
+		username := ""
+		if viewer.admin {
+			username = h.exportUsername(r, usernameCache, row.UserID)
+		}
+		writeErr = writeExportRow(w, format, &row, username, viewer.admin, revealSensitive)
+		written++
+		if flusher != nil && written%200 == 0 {
+			flusher.Flush()
+		}
+	}
+	if err := rows.Err(); err != nil && writeErr == nil {
+		h.log.Error("usage log export: rows failed", "error", err)
+		writeErr = err
+	}
+	_ = rows.Close()
+	if writeErr == nil {
+		if err := tx.Commit(); err != nil {
+			// 提交失败无妨：这只是一个只读快照，响应已经完整写出。
+			h.log.Warn("usage log export: commit read-only tx failed", "error", err)
+		}
+	}
+
+	if writeErr != nil {
+		// 客户端中途断开或扫描失败：响应已开始，无法改状态码；不写成功审计。
+		h.log.Warn("usage log export: stream aborted", "error", writeErr)
+		return
+	}
+	h.writeExportAudit(r, viewer.userID, scope, format, rowCount, dims)
+}
+
+// buildUsageWhereAll 生成不带时间窗的 WHERE（scope=all 专用）。参数编号从
+// $1 起，避免先构造时间条件再前移编号（前移在 $10+ 时会与已替换的 $1
+// 发生二次替换）。
+func buildUsageWhereAll(f usageFilter) (string, []any) {
+	args := make([]any, 0, 6)
+	clauses := make([]string, 0, 6)
+	add := func(clause string, value any) {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
+	}
+	if f.userID != nil {
+		add("user_id = $%d", *f.userID)
+	}
+	if f.modelPrefix != "" {
+		add("model LIKE $%d", likePrefix(f.modelPrefix))
+	}
+	if f.group != "" {
+		add(`"group" = $%d`, f.group)
+	}
+	if f.tokenID != nil {
+		add("token_id = $%d", *f.tokenID)
+	}
+	if f.status != nil {
+		add("status = $%d", *f.status)
+	}
+	if f.requestID != "" {
+		add("request_id = $%d::uuid", f.requestID)
+	}
+	if len(clauses) == 0 {
+		// 管理员导出全量：仍然保持 WHERE 语法，便于与其它分支共用 SQL 拼接。
+		return " WHERE 1 = 1", nil
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func exportFileExt(format string) string {
+	if format == "markdown" {
+		return "md"
+	}
+	return "txt"
+}
+
+func (h *UsageLogHandlers) writeExportAudit(r *http.Request, actor int64, scope, format string, rowCount int64, dims []string) {
+	if h.audit == nil {
+		return
+	}
+	payload := map[string]any{
+		"scope":     scope,
+		"format":    format,
+		"row_count": rowCount,
+	}
+	if len(dims) > 0 {
+		payload["filters"] = dims
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		h.log.Warn("usage log export: encode audit detail failed", "error", err)
+		return
+	}
+	event := audit.Event{
+		Action:    audit.ActionLogExport,
+		Actor:     actor,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Method:    r.Method,
+		Route:     r.Pattern,
+		Detail:    raw,
+	}
+	if name, err := h.usernamesFor(r, []int64{actor}); err == nil {
+		event.Username = name[actor]
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Warn("usage log export: audit write failed", "actor", actor, "error", err)
+	}
+}
+
+// exportColumns 是固定字段集（modules-05 §9.3），不受前端列显隐影响。
+// 用户列仅 admin 出现；Prompt 原文永不出现在导出中（无载体，也无字段）。
+func exportColumns(admin bool) []string {
+	cols := []string{
+		"time", "status", "model", "token_name",
+		"prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
+		"cost_credits", "latency_ms", "ttft_ms", "channel",
+	}
+	if admin {
+		cols = append(cols, "username")
+	}
+	return append(cols, "stream", "request_id", "error_class", "error_message")
+}
+
+func exportRowValues(row *usageLogRow, username string, admin, revealSensitive bool) []string {
+	values := []string{
+		row.CreatedAt.UTC().Format(time.RFC3339),
+		usageStatusString(row.Status),
+		row.Model,
+		nullStringValue(row.TokenName),
+		strconv.FormatInt(nullIntValue(row.PromptTokens), 10),
+		strconv.FormatInt(nullIntValue(row.Completion), 10),
+		strconv.FormatInt(nullIntValue(row.CacheRead), 10),
+		strconv.FormatInt(nullIntValue(row.CacheWrite), 10),
+		strconv.FormatInt(nullIntValue(row.Cost), 10),
+		exportOptionalInt(row.LatencyMS),
+		"",
+		nullStringValue(row.Upstream),
+	}
+	// TTFT 只对 SSE 流式请求有意义（非流式即使列有值也不导出）。
+	if row.Stream {
+		values[10] = exportOptionalInt(row.FirstTokenMS)
+	}
+	if admin {
+		values = append(values, username)
+	}
+	stream := "no"
+	if row.Stream {
+		stream = "yes"
+	}
+	values = append(values,
+		stream,
+		row.RequestID,
+		nullStringValue(row.ErrorClass),
+	)
+	if value := maskSensitiveError(row.ErrorMessage, revealSensitive); value != nil {
+		values = append(values, *value)
+	} else {
+		values = append(values, "")
+	}
+	return values
+}
+
+func nullStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func writeExportHeader(w io.Writer, format, scope string, dims []string, rowCount int64, admin bool, now time.Time) error {
+	cols := exportColumns(admin)
+	filters := "none"
+	if len(dims) > 0 {
+		filters = strings.Join(dims, ", ")
+	}
+	var b strings.Builder
+	if format == "markdown" {
+		b.WriteString("# Usage Logs Export\n\n")
+		fmt.Fprintf(&b, "- Exported at: %s\n", now.Format(time.RFC3339))
+		fmt.Fprintf(&b, "- Scope: %s\n", scope)
+		fmt.Fprintf(&b, "- Filters: %s\n", filters)
+		fmt.Fprintf(&b, "- Rows: %d\n", rowCount)
+		b.WriteString("- Timezone: UTC\n\n")
+		b.WriteString("| " + strings.Join(cols, " | ") + " |\n")
+		b.WriteString("|")
+		for range cols {
+			b.WriteString(" --- |")
+		}
+		b.WriteString("\n")
+	} else {
+		fmt.Fprintf(&b, "# Exported at: %s\n", now.Format(time.RFC3339))
+		fmt.Fprintf(&b, "# Scope: %s\n", scope)
+		fmt.Fprintf(&b, "# Filters: %s\n", filters)
+		fmt.Fprintf(&b, "# Rows: %d / Timezone: UTC\n", rowCount)
+		b.WriteString(strings.Join(cols, "\t") + "\n")
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+func writeExportRow(w io.Writer, format string, row *usageLogRow, username string, admin, revealSensitive bool) error {
+	values := exportRowValues(row, username, admin, revealSensitive)
+	// 仅文本列经过注入中和；数值列（token/cost/latency/ttft）保持原样。
+	numeric := map[int]bool{4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true}
+	var line strings.Builder
+	if format == "markdown" {
+		line.WriteString("| ")
+	}
+	for i, value := range values {
+		if !numeric[i] {
+			value = exportCell(value, format)
+		}
+		if i > 0 {
+			if format == "markdown" {
+				line.WriteString(" | ")
+			} else {
+				line.WriteString("\t")
+			}
+		}
+		line.WriteString(value)
+	}
+	if format == "markdown" {
+		line.WriteString(" |")
+	}
+	line.WriteString("\n")
+	_, err := io.WriteString(w, line.String())
+	return err
 }
 
 // --- Prompt（无载体） -----------------------------------------------------

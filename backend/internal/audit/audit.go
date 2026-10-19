@@ -76,6 +76,11 @@ const (
 	// 在审计日志可查），故归于 operation 类。
 	ActionSystemInitialized = "system_initialized"
 
+	// ActionLogExport 是 modules-05 F-05-07 / §9.1 的日志导出事件。detail
+	// 只允许 scope/format/row_count/筛选维度名，绝不记录导出行内容（设计
+	// 明确「不记日志内容」，避免审计表成为敏感数据的第二副本）。
+	ActionLogExport = "log.export"
+
 	// ActionAuthzDenied 是 RBAC 授权拒绝事件（security-09 §2.7 设计 B /
 	// security-02 TC-B-17）：并入既有 security 类，不新增第 5 个 category
 	// （platform-01 §5 的 CHECK 变更成本高）。detail 由装配层写成固定形状
@@ -131,6 +136,8 @@ var actionCategories = map[string]string{
 	ActionGroupDelete: categoryOperation,
 
 	ActionSystemInitialized: categoryOperation,
+
+	ActionLogExport: categoryOperation,
 
 	ActionAuthzDenied: categorySecurity,
 }

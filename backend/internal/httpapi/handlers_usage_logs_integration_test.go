@@ -21,6 +21,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 )
@@ -44,6 +45,18 @@ type usageTestEnv struct {
 }
 
 func newUsageTestEnv(t *testing.T) *usageTestEnv {
+	t.Helper()
+	return newUsageTestEnvWith(t, usageTestOptions{})
+}
+
+// usageTestOptions 让 F-05-07/F-05-08 的用例注入审计写入器与指标源；
+// 其余用例保持零值（导出仍可用，只是不写审计）。
+type usageTestOptions struct {
+	Perf ModelPerfSource
+	Now  func() time.Time
+}
+
+func newUsageTestEnvWith(t *testing.T, opts usageTestOptions) *usageTestEnv {
 	t.Helper()
 	mainDSN := os.Getenv("NEWTG_TEST_DB_DSN")
 	logsDSN := os.Getenv("NEWTG_TEST_LOGS_DSN")
@@ -74,7 +87,14 @@ func newUsageTestEnv(t *testing.T) *usageTestEnv {
 
 	ensureUsageTestTables(t, mainDB, logsDB)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h, err := NewUsageLogHandlers(UsageLogHandlerConfig{DB: mainDB, LogDB: logsDB, Logger: logger})
+	h, err := NewUsageLogHandlers(UsageLogHandlerConfig{
+		DB:     mainDB,
+		LogDB:  logsDB,
+		Audit:  audit.New(logsDB),
+		Logger: logger,
+		Perf:   opts.Perf,
+		Now:    opts.Now,
+	})
 	if err != nil {
 		t.Fatalf("NewUsageLogHandlers: %v", err)
 	}
