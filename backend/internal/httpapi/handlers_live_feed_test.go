@@ -22,9 +22,10 @@ import (
 )
 
 type liveFeedTestEnv struct {
-	t      *testing.T
-	router *Router
-	rdb    *redis.Client
+	t        *testing.T
+	router   *Router
+	rdb      *redis.Client
+	handlers *LiveFeedHandlers
 }
 
 func newLiveFeedTestEnv(t *testing.T, cfg mapConfig, mutate func(*LiveFeedHandlerConfig)) *liveFeedTestEnv {
@@ -44,12 +45,16 @@ func newLiveFeedTestEnv(t *testing.T, cfg mapConfig, mutate func(*LiveFeedHandle
 	if err != nil {
 		t.Fatalf("NewLiveFeedHandlers: %v", err)
 	}
+	// 进程级 Pub/Sub 订阅是后台资源：每个测试结束必须关闭，否则协程与
+	// Redis 订阅会跨测试泄漏（-count=200 时尤其明显）。LIFO 顺序保证先
+	// 关订阅再关客户端。
+	t.Cleanup(func() { _ = handlers.Close() })
 	// 只挂 live_feed 路由的根 mux：测试需要自定义心跳/租约间隔，若走
 	// NewRouter 的默认装配会出现重复注册。
 	rt := &Router{mux: http.NewServeMux(), protected: http.NewServeMux()}
 	rt.handler = RequestIDMiddleware(noStoreAPI(rt.mux))
 	handlers.RegisterLiveFeedRoutes(rt)
-	return &liveFeedTestEnv{t: t, router: rt, rdb: rdb}
+	return &liveFeedTestEnv{t: t, router: rt, rdb: rdb, handlers: handlers}
 }
 
 func (e *liveFeedTestEnv) get(path string) *httptest.ResponseRecorder {
@@ -273,6 +278,53 @@ func waitForBody(t *testing.T, rec *streamRecorder, substr string) {
 	t.Fatalf("SSE body 未出现 %q；body=%q", substr, rec.body())
 }
 
+// waitForStatus 等处理协程写出状态行。M1 的契约是「订阅 ack 之后才写
+// 200」，所以状态行出现即证明订阅已生效，可以安全发布测试事件。
+func waitForStatus(t *testing.T, rec *streamRecorder, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if code := rec.statusCode(); code != 0 {
+			if code != want {
+				t.Fatalf("SSE status = %d, want %d", code, want)
+			}
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("SSE 未写出状态码（want %d）", want)
+}
+
+// publishUntilSeen 反复发布同一事件直到 SSE 体出现该帧。
+//
+// 单次 Publish 与订阅侧扇出之间没有跨协程的同步点（Redis ack 只证明
+// SUBSCRIBE 生效，不证明读循环已开始），高 -count 下偶发丢帧会让断言
+// flake。重发只影响测试，断言仍是「事件最终到达」这一真实语义。
+func publishUntilSeen(t *testing.T, rdb *redis.Client, rec *streamRecorder, payload []byte) {
+	t.Helper()
+	want := "event: call\ndata: " + string(payload) + "\n\n"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.body(), want) {
+			return
+		}
+		if err := rdb.Publish(context.Background(), billing.FeedChannel, payload).Err(); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("SSE body 未出现事件 %q；body=%q", string(payload), rec.body())
+}
+
+func waitForDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE handler 未在期限内退出")
+	}
+}
+
 func TestLiveFeedStreamForwardsEventsAndHeartbeat(t *testing.T) {
 	env := newLiveFeedTestEnv(t, nil, func(cfg *LiveFeedHandlerConfig) {
 		cfg.HeartbeatInterval = 20 * time.Millisecond
@@ -282,13 +334,12 @@ func TestLiveFeedStreamForwardsEventsAndHeartbeat(t *testing.T) {
 	defer func() { cancel(); <-done }()
 
 	waitForLeaseCount(t, env.rdb, "192.0.2.1", 1)
-	// 订阅确认后再发布：SSE 是实时面，不补发订阅前的事件。
+	// 200 在订阅 ack 之后才写出（M1）：等到状态行再发布，避免把「订阅
+	// 尚未生效」误判成丢事件。publishUntilSeen 再兜住扇出时序。
+	waitForStatus(t, rec, http.StatusOK)
 	payload := []byte(`{"id":"a1b2c3d4","ts":"2026-10-20T04:00:00Z","model":"gpt-4o","upstream":"openai","tokens_in":10,"tokens_out":5,"latency_ms":100,"status":"ok"}`)
-	if err := env.rdb.Publish(context.Background(), billing.FeedChannel, payload).Err(); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
+	publishUntilSeen(t, env.rdb, rec, payload)
 
-	waitForBody(t, rec, "event: call\ndata: "+string(payload)+"\n\n")
 	waitForBody(t, rec, ": heartbeat\n\n")
 
 	if rec.statusCode() != http.StatusOK && rec.statusCode() != 0 {
@@ -365,4 +416,64 @@ func TestLiveFeedStreamLeaseExpiresWithoutRenewal(t *testing.T) {
 	if strings.Contains(rec.body(), "problem") {
 		t.Fatalf("过期租约不应阻止新连接: %s", rec.body())
 	}
+}
+
+// M4：list 的唯一数据源不可用时必须 503，不能返回 200 空数组。
+func TestLiveFeedListRedisFailureReturns503(t *testing.T) {
+	env := newLiveFeedTestEnv(t, nil, nil)
+	if err := env.rdb.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+	rr := env.get("/api/home/live-feed")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("503 应带 Retry-After")
+	}
+}
+
+// M4：租约依赖 Redis；无法判定并发数时必须 fail-closed 返回 503。
+func TestLiveFeedStreamLeaseFailureReturns503(t *testing.T) {
+	env := newLiveFeedTestEnv(t, nil, nil)
+	if err := env.rdb.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+	rr := env.get("/api/home/live-feed/stream")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("503 应带 Retry-After")
+	}
+}
+
+// M4：心跳续期让租约在 TTL 之后仍然有效；键被淘汰后续期返回 0，主动断流。
+func TestLiveFeedStreamRenewsLeaseAndDropsOnEviction(t *testing.T) {
+	env := newLiveFeedTestEnv(t, nil, func(cfg *LiveFeedHandlerConfig) {
+		cfg.HeartbeatInterval = 20 * time.Millisecond
+		cfg.LeaseTTL = 200 * time.Millisecond
+	})
+	key := LiveFeedLeaseKey("192.0.2.1")
+	rec, cancel, done := startStream(t, env.router)
+	defer cancel()
+
+	waitForLeaseCount(t, env.rdb, "192.0.2.1", 1)
+	waitForStatus(t, rec, http.StatusOK)
+
+	// 超过两倍 TTL 后租约仍应存在（每次心跳续期），证明续期而不是"过期未回收"。
+	time.Sleep(450 * time.Millisecond)
+	n, err := env.rdb.ZCard(context.Background(), key).Result()
+	if err != nil {
+		t.Fatalf("zcard: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("lease count = %d, want 1（续期应保持租约）", n)
+	}
+
+	// 键被淘汰：下一次心跳的续期脚本返回 0，handler 必须主动结束流。
+	if err := env.rdb.Del(context.Background(), key).Err(); err != nil {
+		t.Fatalf("evict lease key: %v", err)
+	}
+	waitForDone(t, done)
 }

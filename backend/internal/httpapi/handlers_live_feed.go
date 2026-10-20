@@ -20,10 +20,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -56,6 +58,16 @@ const (
 
 	// problemTypeLiveFeedDisabled 是 live_feed 关闭时的 404 type。
 	problemTypeLiveFeedDisabled = "https://newtg.dev/problems/not_found"
+
+	// liveFeedSubscribeAckTimeout 是「建立订阅 → 收到 SUBSCRIBE ack」的
+	// 等待上限。必须在写 200 之前完成：一旦进入流式响应，订阅失败的
+	// 事件就只能表现为静默断流，客户端无法区分「暂无调用」与「后端故障」。
+	liveFeedSubscribeAckTimeout = 3 * time.Second
+
+	// liveFeedSubscriberBuffer 是单条 SSE 连接的本地扇出队列长度。
+	// 慢客户端（不读 socket）填满队列后丢事件而不是阻塞整个进程的扇出；
+	// SSE 是「最近事件」语义，丢一帧比拖垮其他连接可接受。
+	liveFeedSubscriberBuffer = 64
 )
 
 // LiveFeedHandlerConfig 是 live_feed 端点的装配输入。
@@ -73,6 +85,11 @@ type LiveFeedHandlerConfig struct {
 }
 
 // LiveFeedHandlers 持有 live_feed 端点依赖，可并发使用。
+//
+// 【进程级单一订阅】所有 SSE 连接共享一条 Redis Pub/Sub 订阅，由后台
+// 协程把消息广播到各连接的本地 channel。每连接各开一条 Pub/Sub 会让
+// 订阅数随访客数增长（Redis 侧每个 SUBSCRIBE 都要维护状态，且各连接
+// 各自重连会放大故障抖动）；进程级订阅把 Redis 侧成本固定为副本数。
 type LiveFeedHandlers struct {
 	rdb       *redis.Client
 	config    ConfigReader
@@ -81,6 +98,12 @@ type LiveFeedHandlers struct {
 	heartbeat time.Duration
 	leaseTTL  time.Duration
 	maxConns  int
+
+	// subMu 保护订阅生命周期与 subscribers。扇出发送与注销关闭都在锁内
+	// 完成，避免「向已关闭 channel 发送」的竞态。
+	subMu       sync.Mutex
+	pubsub      *redis.PubSub
+	subscribers map[chan []byte]struct{}
 }
 
 // NewLiveFeedHandlers 构造 live_feed 端点。Redis 必填：没有 Redis 就没有
@@ -112,6 +135,7 @@ func NewLiveFeedHandlers(cfg LiveFeedHandlerConfig) (*LiveFeedHandlers, error) {
 	return &LiveFeedHandlers{
 		rdb: cfg.Redis, config: cfg.Config, log: logger, now: now,
 		heartbeat: heartbeat, leaseTTL: leaseTTL, maxConns: maxConns,
+		subscribers: make(map[chan []byte]struct{}),
 	}, nil
 }
 
@@ -320,6 +344,127 @@ func newLiveFeedConnID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// ensureFeedSubscription 保证本进程已建立共享订阅，且订阅已收到 Redis 的
+// SUBSCRIBE ack。返回 nil 表示「此后发布的事件一定会进入本地扇出」，因此
+// 调用方可以安全地写 200；返回错误时连接必须 503，绝不能用空流冒充在线。
+//
+// 【为什么要等 ack】go-redis 的 Subscribe 只是异步发出命令并立即返回对象；
+// 真正的订阅生效在 ack 之后。若在 ack 前收到的事件已经发布，SSE 会永久
+// 缺失它（Pub/Sub 不补发）。等待 ack 把「订阅就绪」变成可断言的时序点，
+// 也是单测消除 flake 的依据。
+func (h *LiveFeedHandlers) ensureFeedSubscription(ctx context.Context) error {
+	// 整个握手（含等待 ack）都在锁内完成：并发首连必须等同一个 ack，
+	// 不能在订阅尚未生效时就返回 nil 去写 200。
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	if h.pubsub != nil {
+		return nil
+	}
+
+	// 用 Background：订阅是进程级资源，不能随首个访客断开而被取消。
+	ps := h.rdb.Subscribe(context.Background(), billing.FeedChannel)
+
+	ackCtx, cancel := context.WithTimeout(ctx, liveFeedSubscribeAckTimeout)
+	defer cancel()
+	for {
+		raw, err := ps.Receive(ackCtx)
+		if err != nil {
+			_ = ps.Close()
+			return fmt.Errorf("httpapi: subscribe live feed channel: %w", err)
+		}
+		// Receive 可能先返回订阅确认（*redis.Subscription），也可能返回期间
+		// 到达的消息；只有确认才是「已生效」的证据。
+		if sub, ok := raw.(*redis.Subscription); ok && sub.Kind == "subscribe" {
+			break
+		}
+	}
+
+	h.pubsub = ps
+	go h.fanoutFeed(ps)
+	return nil
+}
+
+// detachPubSub 仅在字段仍指向 ps 时清空，避免误清掉重连后建立的新订阅。
+func (h *LiveFeedHandlers) detachPubSub(ps *redis.PubSub) {
+	h.subMu.Lock()
+	if h.pubsub == ps {
+		h.pubsub = nil
+	}
+	h.subMu.Unlock()
+}
+
+// fanoutFeed 读取共享订阅并把事件广播给本进程的 SSE 连接。
+//
+// 订阅异常退出时清空 pubsub，让下一条连接重新建立订阅；否则端会一直
+// 认为「已有订阅」却再也收不到事件。Close 造成的 ErrClosed 同样走清理，
+// 不重复告警。
+func (h *LiveFeedHandlers) fanoutFeed(ps *redis.PubSub) {
+	defer func() {
+		h.detachPubSub(ps)
+		_ = ps.Close()
+	}()
+	for {
+		msg, err := ps.ReceiveMessage(context.Background())
+		if err != nil {
+			if errors.Is(err, redis.ErrClosed) {
+				return
+			}
+			// 连接抖动由 go-redis 自动重连；短暂退避避免错误风暴打满日志。
+			h.log.Warn("live feed: shared subscription receive failed", "error", err)
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		payload := []byte(msg.Payload)
+		h.subMu.Lock()
+		for ch := range h.subscribers {
+			select {
+			case ch <- payload:
+			default:
+				// 慢客户端队列已满：丢弃这一帧，不阻塞其他连接。
+			}
+		}
+		h.subMu.Unlock()
+	}
+}
+
+// registerSubscriber 注册一条本地扇出队列；调用方退出时必须 unregister。
+func (h *LiveFeedHandlers) registerSubscriber() chan []byte {
+	ch := make(chan []byte, liveFeedSubscriberBuffer)
+	h.subMu.Lock()
+	h.subscribers[ch] = struct{}{}
+	h.subMu.Unlock()
+	return ch
+}
+
+// unregisterSubscriber 注销并关闭队列。关闭在锁内进行，与 fanoutFeed 的
+// 锁内发送互斥，因此不会出现向已关闭 channel 发送的 panic。
+func (h *LiveFeedHandlers) unregisterSubscriber(ch chan []byte) {
+	h.subMu.Lock()
+	if _, ok := h.subscribers[ch]; ok {
+		delete(h.subscribers, ch)
+		close(ch)
+	}
+	h.subMu.Unlock()
+}
+
+// Close 释放进程级订阅并关闭所有本地队列（测试/进程优雅退出使用）。
+// 之后若有新连接，会按需重新建立订阅。
+func (h *LiveFeedHandlers) Close() error {
+	h.subMu.Lock()
+	ps := h.pubsub
+	h.pubsub = nil
+	for ch := range h.subscribers {
+		delete(h.subscribers, ch)
+		close(ch)
+	}
+	h.subMu.Unlock()
+	// 锁外关闭：fanoutFeed 退出时需要拿 subMu 清理字段。
+	if ps != nil {
+		return ps.Close()
+	}
+	return nil
+}
+
 func (h *LiveFeedHandlers) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !h.homeBlockEnabled() {
 		writeProblem(w, http.StatusNotFound, problemTypeLiveFeedDisabled, "Not Found")
@@ -356,11 +501,20 @@ func (h *LiveFeedHandlers) handleStream(w http.ResponseWriter, r *http.Request) 
 	}
 	defer h.releaseLiveFeedLease(ip, member)
 
-	pubsub := h.rdb.Subscribe(r.Context(), billing.FeedChannel)
-	defer func() { _ = pubsub.Close() }()
-	// 先确认订阅再写响应头：订阅失败时还能返回 503；一旦进入流式响应，
-	// 任何错误都只能表现为断流。
-	messages := pubsub.Channel()
+	// 先确认进程级订阅已生效（含 SUBSCRIBE ack）再写响应头：订阅失败时
+	// 还能返回 503；一旦进入流式响应，任何错误都只能表现为断流。
+	ackCtx, ackCancel := context.WithTimeout(r.Context(), liveFeedSubscribeAckTimeout)
+	err = h.ensureFeedSubscription(ackCtx)
+	ackCancel()
+	if err != nil {
+		h.log.Error("live feed: subscribe failed", "error", err)
+		w.Header().Set("Retry-After", "5")
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Live feed is temporarily unavailable")
+		return
+	}
+	events := h.registerSubscriber()
+	defer h.unregisterSubscriber(events)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -377,11 +531,11 @@ func (h *LiveFeedHandlers) handleStream(w http.ResponseWriter, r *http.Request) 
 		select {
 		case <-r.Context().Done():
 			return
-		case msg, ok := <-messages:
+		case payload, ok := <-events:
 			if !ok {
+				// 进程关闭（Close）会关闭本地队列，连接随之结束。
 				return
 			}
-			payload := []byte(msg.Payload)
 			if !json.Valid(payload) {
 				// 损坏的 Redis 条目不能拼成 SSE data（换行会破坏帧结构）。
 				h.log.Warn("live feed: skip invalid event payload")

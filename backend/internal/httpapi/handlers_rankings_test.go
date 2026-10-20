@@ -293,6 +293,129 @@ func TestRankingsServesFromCache(t *testing.T) {
 	}
 }
 
+// M4：缓存/限流的 Redis 故障不能让公开榜单不可用——应回源快照并返回 200。
+func TestRankingsRedisFailureFallsBackToSnapshot(t *testing.T) {
+	now := time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)
+	repo := &fakeRankingsRepo{snap: testRankingsSnapshot(now), found: true}
+	env := newRankingsTestEnv(t, nil, repo, func() time.Time { return now })
+	if err := env.rdb.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+
+	rr := env.get("/api/rankings?period=week", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（Redis 故障回源快照），body=%s", rr.Code, rr.Body.String())
+	}
+	if repo.calls.Load() != 1 {
+		t.Fatalf("repo calls = %d, want 1", repo.calls.Load())
+	}
+	var body RankingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "ok" || len(body.Models) != 2 {
+		t.Fatalf("回源响应不完整: status=%q models=%d", body.Status, len(body.Models))
+	}
+}
+
+// M4：缓存结构可解析但语义不可信时按 miss 回源（M3 校验）。
+func TestRankingsInvalidCacheFallsBackToSnapshot(t *testing.T) {
+	now := time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)
+
+	valid := func() RankingsResponse {
+		computed := "2026-10-20T11:57:00+08:00"
+		fresh := int64(0)
+		return RankingsResponse{
+			Period: "week", Timezone: "Asia/Shanghai",
+			Window:           RankingsWindow{Start: "2026-10-19T00:00:00+08:00", End: "2026-10-20T12:00:00+08:00"},
+			ComputedAt:       &computed,
+			FreshnessSeconds: &fresh,
+			Status:           "ok",
+			Models:           []RankingsModel{},
+			Movers:           RankingsMovers{Up: []RankingsMover{}, Down: []RankingsMover{}},
+			Providers:        []RankingsProvider{},
+			Trend:            RankingsTrend{Granularity: "day", Buckets: []string{}, Series: []RankingsTrendSeries{}},
+		}
+	}
+	cases := []struct {
+		name   string
+		mutate func(*RankingsResponse)
+	}{
+		{"wrong period", func(v *RankingsResponse) { v.Period = "month" }},
+		{"invalid status", func(v *RankingsResponse) { v.Status = "stale" }},
+		{"nil models", func(v *RankingsResponse) { v.Models = nil }},
+		{"nil providers", func(v *RankingsResponse) { v.Providers = nil }},
+		{"nil movers", func(v *RankingsResponse) { v.Movers.Down = nil }},
+		{"nil trend", func(v *RankingsResponse) { v.Trend.Series = nil }},
+		{"missing computed_at", func(v *RankingsResponse) { v.ComputedAt = nil }},
+		{"unparseable computed_at", func(v *RankingsResponse) { bad := "yesterday"; v.ComputedAt = &bad }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRankingsRepo{snap: testRankingsSnapshot(now), found: true}
+			env := newRankingsTestEnv(t, nil, repo, func() time.Time { return now })
+			cached := valid()
+			tc.mutate(&cached)
+			raw, err := json.Marshal(cached)
+			if err != nil {
+				t.Fatalf("marshal cache: %v", err)
+			}
+			if err := env.rdb.Set(context.Background(), rankings.CacheKey(rankings.PeriodWeek), raw, time.Minute).Err(); err != nil {
+				t.Fatalf("seed cache: %v", err)
+			}
+
+			rr := env.get("/api/rankings?period=week", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rr.Code)
+			}
+			if repo.calls.Load() != 1 {
+				t.Fatalf("repo calls = %d, want 1（坏缓存必须回源）", repo.calls.Load())
+			}
+			var body RankingsResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Period != "week" || len(body.Models) != 2 {
+				t.Fatalf("回源内容错误: period=%q models=%d", body.Period, len(body.Models))
+			}
+		})
+	}
+}
+
+// M4：models[] 上限 50（F-09-30）；第 51 条起不进入响应。
+func TestRankingsModelsTruncatedTo50(t *testing.T) {
+	now := time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)
+	snap := store.RankingsSnapshot{
+		Run: store.RankingsSnapshotRun{
+			Period: "week", WindowStart: now.Add(-time.Hour), WindowEnd: now,
+			SnapshotAt: now.Add(-time.Minute), SampleThreshold: 100, Status: "ok",
+		},
+	}
+	for i := 0; i < 51; i++ {
+		snap.Models = append(snap.Models, store.RankingsModelStat{
+			Model:       "m" + string(rune('A'+i%26)) + string(rune('a'+i/26)),
+			TotalTokens: int64(1000 - i), Requests: 1, Rank: intP(i + 1),
+		})
+	}
+	env := newRankingsTestEnv(t, nil, &fakeRankingsRepo{snap: snap, found: true},
+		func() time.Time { return now })
+	rr := env.get("/api/rankings?period=week", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var body RankingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Models) != rankingsModelLimit {
+		t.Fatalf("models = %d, want %d", len(body.Models), rankingsModelLimit)
+	}
+	if body.Models[len(body.Models)-1].Rank != rankingsModelLimit {
+		t.Fatalf("last rank = %d", body.Models[len(body.Models)-1].Rank)
+	}
+}
+
 func TestRankingsColdStart(t *testing.T) {
 	now := time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)
 	env := newRankingsTestEnv(t, mapConfig{
@@ -303,6 +426,10 @@ func TestRankingsColdStart(t *testing.T) {
 	rr := env.get("/api/rankings", nil) // 默认 week
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
+	}
+	// L2：冷启动没有快照时刻，不能下发固定 ETag（否则跨窗口 304 复用旧 window）。
+	if got := rr.Header().Get("ETag"); got != "" {
+		t.Fatalf("冷启动不应下发 ETag，得到 %q", got)
 	}
 	var body RankingsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
@@ -322,6 +449,12 @@ func TestRankingsColdStart(t *testing.T) {
 	}
 	if body.Movers.Up == nil || body.Movers.Down == nil || body.Trend.Buckets == nil {
 		t.Fatal("冷启动数组字段必须是 [] 而不是 null")
+	}
+
+	// 即使客户端带着旧实现的 "week:0" 验证器，也必须拿完整 200（新窗口）。
+	stale := env.get("/api/rankings", map[string]string{"If-None-Match": `"week:0"`})
+	if stale.Code != http.StatusOK {
+		t.Fatalf("冷启动 stale If-None-Match status = %d, want 200", stale.Code)
 	}
 }
 

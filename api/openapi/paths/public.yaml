@@ -824,6 +824,11 @@ paths:
         429，客户端应降级为 `/api/home/live-feed` 轮询。租约存于 Redis ZSET，
         随心跳续期，进程崩溃后最多 60s 自动回收。`site.home_blocks.live_feed
         =false` 时返回 404。
+
+        实现先完成租约占用与 Redis `SUBSCRIBE` 确认（ack）后才写 `200`
+        响应头：任一步失败都返回 `503`（带 `Retry-After`），而不是先建立
+        一条永远收不到事件的空流。所有连接共享进程级订阅，连接只做本地
+        注册/注销，不单独订阅 Redis。
       security: []
       responses:
         '200':
@@ -857,7 +862,9 @@ paths:
               schema:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '503':
-          description: Redis 不可用（无法建立租约/订阅）
+          description: |
+            Redis 不可用，或租约占用/`SUBSCRIBE` 确认失败；此时尚未写出
+            200 响应头，客户端应按 `Retry-After` 重试或降级为轮询。
           headers:
             Retry-After:
               description: 建议重试等待秒数（实现冻结为 5）

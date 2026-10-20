@@ -513,7 +513,47 @@ func (h *RankingsHandlers) readCache(ctx context.Context, period rankings.Period
 			"period", period, "error", err)
 		return RankingsResponse{}, false
 	}
+	if reason := rankingsCacheMismatch(view, period); reason != "" {
+		// 结构可解析但语义不可信（错 period、缺数组、computed_at 坏）同样
+		// 回源：把旧周期/半截缓存当作当前榜单会静默展示错误数据。
+		h.log.Warn("rankings: cached payload failed validation; falling back to snapshot",
+			"period", period, "reason", reason)
+		return RankingsResponse{}, false
+	}
 	return view, true
+}
+
+// rankingsCacheMismatch 校验缓存值的语义完整性，返回空串表示可用。
+//
+// 【为什么必须逐项校验】缓存键只有 period，值是上一次写入时的完整 DTO。
+// 若部署跨越结构变更、或有人手工写坏、或 worker 未来写入 partial 但字段
+// 不全，单看 json.Unmarshal 成功并不能证明这份数据能安全下发：
+//   - period 必须是本次请求的周期（否则会拿 week 的榜单响应 month）；
+//   - status 必须是契约枚举（ok/partial/empty），未知值前端无法渲染；
+//   - 四个数组字段必须存在（JSON null 反序列化为 nil），否则响应会把
+//     「空」与「损坏」混为一谈，且破坏前端「总是数组」的契约；
+//   - computed_at 必须可解析：ETag 由它派生，解析失败会退化成固定 ETag。
+func rankingsCacheMismatch(view RankingsResponse, period rankings.Period) string {
+	if view.Period != string(period) {
+		return "period mismatch"
+	}
+	switch view.Status {
+	case "ok", "partial", "empty":
+	default:
+		return "invalid status"
+	}
+	if view.Models == nil || view.Providers == nil ||
+		view.Movers.Up == nil || view.Movers.Down == nil ||
+		view.Trend.Buckets == nil || view.Trend.Series == nil {
+		return "missing array field"
+	}
+	if view.ComputedAt == nil {
+		return "missing computed_at"
+	}
+	if _, err := time.Parse(time.RFC3339, *view.ComputedAt); err != nil {
+		return "unparseable computed_at"
+	}
+	return ""
 }
 
 // writeCache 回填缓存，TTL = 该 period 的 worker 刷新间隔（§C1.7）。
@@ -552,21 +592,29 @@ func (h *RankingsHandlers) finalizeFreshness(view *RankingsResponse, now time.Ti
 }
 
 // writeResponse 写 ETag / Cache-Control；命 304 时直接返回。
+//
+// 【冷启动不发 ETag】computed_at=null 时没有稳定的快照时刻可派生 ETag；
+// 早先实现退化为 `"{period}:0"`，于是跨天/跨窗口的两次冷启动拿到同一个
+// ETag，客户端带 If-None-Match 会 304 复用旧窗口（window.end 已经变了）。
+// 没有快照就不提供验证器，让客户端每次都拿到当前的空态。
 func (h *RankingsHandlers) writeResponse(w http.ResponseWriter, r *http.Request, view RankingsResponse) {
-	etag := rankingsETag(view.Period, view.ComputedAt)
-	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", rankingsCacheControl)
-	if etagMatches(r.Header.Get("If-None-Match"), etag) {
-		w.WriteHeader(http.StatusNotModified)
-		return
+	if view.ComputedAt != nil {
+		etag := rankingsETag(view.Period, view.ComputedAt)
+		w.Header().Set("ETag", etag)
+		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, view)
 }
 
-// rankingsETag 由 period + 快照时刻（epoch 秒）派生；无快照时为 0。
+// rankingsETag 由 period + 快照时刻（epoch 秒）派生。
 //
 // 只含这两个不变量：同一快照的 body 中唯一会变的是 freshness_seconds，而
 // 304 命中时客户端复用本地表示、由前端自己按 computed_at 算相对时间。
+// 调用方只在 computed_at 非空时使用（冷启动没有验证器，见 writeResponse）。
 func rankingsETag(period string, computedAt *string) string {
 	epoch := int64(0)
 	if computedAt != nil {
