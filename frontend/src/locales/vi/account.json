@@ -321,5 +321,99 @@
     "session_required": "Playground chỉ chấp nhận phiên trình duyệt. Hãy bỏ API token và tải lại trang.",
     "csrf_failed": "Kiểm tra bảo mật thất bại. Hãy tải lại trang và thử lại.",
     "announce_toggle": "Thông báo cho trình đọc màn hình"
+  },
+  "subscription": {
+    "plans": {
+      "title": "Gói đăng ký",
+      "subtitle": "Chọn gói phù hợp với mức sử dụng của bạn.",
+      "loading": "Đang tải gói...",
+      "error": "Không thể tải các gói đăng ký.",
+      "retry": "Thử lại",
+      "empty": "Không có gói nào khả dụng"
+    },
+    "plan": {
+      "label": "Gói",
+      "period": "{days} ngày",
+      "period_label": "Chu kỳ",
+      "price": "Giá",
+      "free": "Miễn phí",
+      "grant_credits": "Tín dụng đi kèm",
+      "unlimited": "Không giới hạn",
+      "model_scope": "Mô hình",
+      "all_models": "Tất cả mô hình",
+      "models_more": "+{count} mục khác"
+    },
+    "action": {
+      "subscribe": "Đăng ký",
+      "amount_due": "Số tiền phải trả",
+      "confirm_title": "Xác nhận đăng ký",
+      "confirm": "Xác nhận",
+      "cancel": "Hủy",
+      "creating": "Đang tạo đơn hàng...",
+      "done": "Xong"
+    },
+    "purchase": {
+      "payment_method": "Phương thức thanh toán",
+      "loading_providers": "Đang tải phương thức thanh toán...",
+      "no_providers": "Hiện không có phương thức thanh toán nào khả dụng.",
+      "free_hint": "Gói này miễn phí và sẽ được kích hoạt ngay.",
+      "activated_title": "Đã kích hoạt đăng ký",
+      "activated_body": "Đăng ký của bạn đang hoạt động. Bạn có thể đóng hộp thoại này.",
+      "rate_limited": "Quá nhiều lần thử mua. Vui lòng thử lại sau {seconds} giây.",
+      "conflict": "Gói này không còn khả dụng hoặc yêu cầu đã được sử dụng.",
+      "invalid": "Không thể mua gói này ngay bây giờ.",
+      "unavailable": "Thanh toán tạm thời không khả dụng. Vui lòng thử lại sau.",
+      "failed": "Không thể tạo đơn đăng ký. Vui lòng thử lại.",
+      "offline": "Bạn đang ngoại tuyến. Hãy kết nối lại để hoàn tất giao dịch."
+    },
+    "checkout": {
+      "title": "Thanh toán đăng ký",
+      "success": "Đã kích hoạt đăng ký"
+    },
+    "mine": {
+      "title": "Đăng ký của tôi",
+      "loading": "Đang tải đăng ký...",
+      "error": "Không thể tải đăng ký của bạn.",
+      "retry": "Thử lại",
+      "empty": "Bạn chưa có đăng ký nào",
+      "period": "{days} ngày",
+      "total": "Tổng",
+      "used": "Đã dùng",
+      "remain": "Còn lại",
+      "unlimited": "Không giới hạn",
+      "next_reset": "Đặt lại tiếp theo",
+      "until": "Đến {time}",
+      "expired_at": "Đã hết hạn vào {time}",
+      "cancelled_at": "Đã hủy vào {time}",
+      "cancel_at_period_end": "Hủy vào cuối chu kỳ",
+      "cancel_error": "Không thể cập nhật đăng ký."
+    },
+    "status": {
+      "active": "Hoạt động",
+      "expired": "Đã hết hạn",
+      "cancelled": "Đã hủy"
+    },
+    "preference": {
+      "label": "Tùy chọn tính phí",
+      "description": "Chọn số dư nào thanh toán cho yêu cầu trước.",
+      "loading": "Đang tải tùy chọn tính phí...",
+      "load_error": "Không thể tải tùy chọn tính phí.",
+      "subscription_first": "Ưu tiên đăng ký",
+      "subscription_first_desc": "Dùng hạn mức đăng ký trước, sau đó dùng ví.",
+      "wallet_first": "Ưu tiên ví",
+      "wallet_first_desc": "Dùng ví trước, sau đó dùng hạn mức đăng ký.",
+      "subscription_only": "Chỉ đăng ký",
+      "subscription_only_desc": "Chỉ hạn mức đăng ký được thanh toán; yêu cầu sẽ thất bại khi hết hạn mức.",
+      "wallet_only": "Chỉ ví",
+      "wallet_only_desc": "Chỉ ví được thanh toán; hạn mức đăng ký không được sử dụng.",
+      "save_failed": "Không thể lưu tùy chọn tính phí."
+    },
+    "toast": {
+      "preference_saved": "Đã lưu tùy chọn tính phí",
+      "cancelled": "Đăng ký sẽ kết thúc vào cuối chu kỳ hiện tại",
+      "activated": "Đã kích hoạt đăng ký",
+      "activated_unlimited": "Đã kích hoạt đăng ký với hạn mức không giới hạn"
+    },
+    "offline_notice": "Bạn đang ngoại tuyến. Các thay đổi bị tắt cho đến khi có kết nối."
   }
 }

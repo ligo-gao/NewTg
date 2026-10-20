@@ -321,5 +321,99 @@
     "session_required": "Playground 只接受浏览器会话，请移除 API 令牌后刷新页面。",
     "csrf_failed": "安全校验失败，请刷新页面后重试。",
     "announce_toggle": "读屏播报"
+  },
+  "subscription": {
+    "plans": {
+      "title": "订阅套餐",
+      "subtitle": "选择适合你的套餐。",
+      "loading": "正在加载套餐...",
+      "error": "无法加载订阅套餐。",
+      "retry": "重试",
+      "empty": "暂无可用套餐"
+    },
+    "plan": {
+      "label": "套餐",
+      "period": "{days} 天",
+      "period_label": "周期",
+      "price": "价格",
+      "free": "免费",
+      "grant_credits": "内含额度",
+      "unlimited": "无限",
+      "model_scope": "模型范围",
+      "all_models": "全部模型",
+      "models_more": "另有 {count} 个"
+    },
+    "action": {
+      "subscribe": "立即订阅",
+      "amount_due": "应付金额",
+      "confirm_title": "确认订阅",
+      "confirm": "确认",
+      "cancel": "取消",
+      "creating": "正在创建订单...",
+      "done": "完成"
+    },
+    "purchase": {
+      "payment_method": "支付方式",
+      "loading_providers": "正在加载支付方式...",
+      "no_providers": "当前没有可用的支付方式。",
+      "free_hint": "该套餐免费，确认后将立即生效。",
+      "activated_title": "订阅已激活",
+      "activated_body": "你的订阅已生效，可以关闭此对话框。",
+      "rate_limited": "购买请求过于频繁，请在 {seconds} 秒后重试。",
+      "conflict": "该套餐已下架，或该请求已被使用。",
+      "invalid": "该套餐当前无法购买。",
+      "unavailable": "支付服务暂时不可用，请稍后再试。",
+      "failed": "无法创建订阅订单，请重试。",
+      "offline": "当前处于离线状态，请恢复网络后完成购买。"
+    },
+    "checkout": {
+      "title": "订阅收银台",
+      "success": "订阅已激活"
+    },
+    "mine": {
+      "title": "我的订阅",
+      "loading": "正在加载订阅...",
+      "error": "无法加载你的订阅。",
+      "retry": "重试",
+      "empty": "你还没有订阅",
+      "period": "{days} 天",
+      "total": "总额度",
+      "used": "已用",
+      "remain": "剩余",
+      "unlimited": "无限",
+      "next_reset": "下次重置",
+      "until": "至 {time}",
+      "expired_at": "已于 {time} 过期",
+      "cancelled_at": "已于 {time} 取消",
+      "cancel_at_period_end": "周期末取消",
+      "cancel_error": "无法更新该订阅。"
+    },
+    "status": {
+      "active": "活跃",
+      "expired": "已过期",
+      "cancelled": "已取消"
+    },
+    "preference": {
+      "label": "扣费偏好",
+      "description": "选择请求优先由哪种余额支付。",
+      "loading": "正在加载扣费偏好...",
+      "load_error": "无法加载扣费偏好。",
+      "subscription_first": "优先订阅",
+      "subscription_first_desc": "先使用订阅额度，用尽后回退到钱包。",
+      "wallet_first": "优先钱包",
+      "wallet_first_desc": "先使用钱包余额，用尽后回退到订阅额度。",
+      "subscription_only": "仅订阅",
+      "subscription_only_desc": "只允许订阅额度支付，额度用尽后请求失败。",
+      "wallet_only": "仅钱包",
+      "wallet_only_desc": "只允许钱包余额支付，不使用订阅额度。",
+      "save_failed": "无法保存扣费偏好。"
+    },
+    "toast": {
+      "preference_saved": "扣费偏好已保存",
+      "cancelled": "订阅将在周期末取消",
+      "activated": "订阅已激活",
+      "activated_unlimited": "订阅已激活，额度无限"
+    },
+    "offline_notice": "当前处于离线状态，恢复网络前无法修改。"
   }
 }

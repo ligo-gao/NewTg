@@ -321,5 +321,99 @@
     "session_required": "Playground 只接受瀏覽器工作階段，請移除 API 權杖後重新整理頁面。",
     "csrf_failed": "安全驗證失敗，請重新整理頁面後重試。",
     "announce_toggle": "讀屏播報"
+  },
+  "subscription": {
+    "plans": {
+      "title": "訂閱方案",
+      "subtitle": "選擇適合你的方案。",
+      "loading": "正在載入方案...",
+      "error": "無法載入訂閱方案。",
+      "retry": "重試",
+      "empty": "暫無可用方案"
+    },
+    "plan": {
+      "label": "方案",
+      "period": "{days} 天",
+      "period_label": "週期",
+      "price": "價格",
+      "free": "免費",
+      "grant_credits": "內含額度",
+      "unlimited": "無限",
+      "model_scope": "模型範圍",
+      "all_models": "全部模型",
+      "models_more": "另有 {count} 個"
+    },
+    "action": {
+      "subscribe": "立即訂閱",
+      "amount_due": "應付金額",
+      "confirm_title": "確認訂閱",
+      "confirm": "確認",
+      "cancel": "取消",
+      "creating": "正在建立訂單...",
+      "done": "完成"
+    },
+    "purchase": {
+      "payment_method": "付款方式",
+      "loading_providers": "正在載入付款方式...",
+      "no_providers": "目前沒有可用的付款方式。",
+      "free_hint": "此方案免費，確認後將立即生效。",
+      "activated_title": "訂閱已啟用",
+      "activated_body": "你的訂閱已生效，可以關閉此對話框。",
+      "rate_limited": "購買請求過於頻繁，請在 {seconds} 秒後重試。",
+      "conflict": "此方案已下架，或此請求已被使用。",
+      "invalid": "此方案目前無法購買。",
+      "unavailable": "付款服務暫時無法使用，請稍後再試。",
+      "failed": "無法建立訂閱訂單，請重試。",
+      "offline": "目前處於離線狀態，請恢復網路後完成購買。"
+    },
+    "checkout": {
+      "title": "訂閱結帳",
+      "success": "訂閱已啟用"
+    },
+    "mine": {
+      "title": "我的訂閱",
+      "loading": "正在載入訂閱...",
+      "error": "無法載入你的訂閱。",
+      "retry": "重試",
+      "empty": "你還沒有訂閱",
+      "period": "{days} 天",
+      "total": "總額度",
+      "used": "已用",
+      "remain": "剩餘",
+      "unlimited": "無限",
+      "next_reset": "下次重置",
+      "until": "至 {time}",
+      "expired_at": "已於 {time} 過期",
+      "cancelled_at": "已於 {time} 取消",
+      "cancel_at_period_end": "週期末取消",
+      "cancel_error": "無法更新此訂閱。"
+    },
+    "status": {
+      "active": "活躍",
+      "expired": "已過期",
+      "cancelled": "已取消"
+    },
+    "preference": {
+      "label": "扣費偏好",
+      "description": "選擇請求優先由哪種餘額支付。",
+      "loading": "正在載入扣費偏好...",
+      "load_error": "無法載入扣費偏好。",
+      "subscription_first": "優先訂閱",
+      "subscription_first_desc": "先使用訂閱額度，用盡後回退至錢包。",
+      "wallet_first": "優先錢包",
+      "wallet_first_desc": "先使用錢包餘額，用盡後回退至訂閱額度。",
+      "subscription_only": "僅訂閱",
+      "subscription_only_desc": "只允許訂閱額度支付，額度用盡後請求將失敗。",
+      "wallet_only": "僅錢包",
+      "wallet_only_desc": "只允許錢包餘額支付，不使用訂閱額度。",
+      "save_failed": "無法儲存扣費偏好。"
+    },
+    "toast": {
+      "preference_saved": "扣費偏好已儲存",
+      "cancelled": "訂閱將於週期末取消",
+      "activated": "訂閱已啟用",
+      "activated_unlimited": "訂閱已啟用，額度無限"
+    },
+    "offline_notice": "目前處於離線狀態，恢復網路前無法修改。"
   }
 }

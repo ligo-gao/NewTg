@@ -321,5 +321,99 @@
     "session_required": "Playground only accepts a browser session. Remove the API token and reload.",
     "csrf_failed": "The security check failed. Reload the page and try again.",
     "announce_toggle": "Screen reader announcements"
+  },
+  "subscription": {
+    "plans": {
+      "title": "Subscription Plans",
+      "subtitle": "Choose a plan that fits how much you use.",
+      "loading": "Loading plans...",
+      "error": "Could not load subscription plans.",
+      "retry": "Retry",
+      "empty": "No plans available"
+    },
+    "plan": {
+      "label": "Plan",
+      "period": "{days} days",
+      "period_label": "Period",
+      "price": "Price",
+      "free": "Free",
+      "grant_credits": "Included credits",
+      "unlimited": "Unlimited",
+      "model_scope": "Models",
+      "all_models": "All models",
+      "models_more": "+{count} more"
+    },
+    "action": {
+      "subscribe": "Subscribe",
+      "amount_due": "Amount due",
+      "confirm_title": "Confirm Subscription",
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "creating": "Creating order...",
+      "done": "Done"
+    },
+    "purchase": {
+      "payment_method": "Payment method",
+      "loading_providers": "Loading payment methods...",
+      "no_providers": "No payment method is currently available.",
+      "free_hint": "This plan is free and will be activated immediately.",
+      "activated_title": "Subscription activated",
+      "activated_body": "Your subscription is active. You can close this dialog.",
+      "rate_limited": "Too many purchase attempts. Try again in {seconds}s.",
+      "conflict": "This plan is no longer available, or the request was already used.",
+      "invalid": "This plan cannot be purchased right now.",
+      "unavailable": "Payment is temporarily unavailable. Please try again later.",
+      "failed": "Could not create the subscription order. Please try again.",
+      "offline": "You are offline. Reconnect to complete the purchase."
+    },
+    "checkout": {
+      "title": "Subscription Checkout",
+      "success": "Subscription activated"
+    },
+    "mine": {
+      "title": "My Subscriptions",
+      "loading": "Loading subscriptions...",
+      "error": "Could not load your subscriptions.",
+      "retry": "Retry",
+      "empty": "You have no subscriptions yet",
+      "period": "{days} days",
+      "total": "Total",
+      "used": "Used",
+      "remain": "Remaining",
+      "unlimited": "Unlimited",
+      "next_reset": "Next reset",
+      "until": "Until {time}",
+      "expired_at": "Expired at {time}",
+      "cancelled_at": "Cancelled at {time}",
+      "cancel_at_period_end": "Cancel at period end",
+      "cancel_error": "Could not update the subscription."
+    },
+    "status": {
+      "active": "Active",
+      "expired": "Expired",
+      "cancelled": "Cancelled"
+    },
+    "preference": {
+      "label": "Billing Preference",
+      "description": "Choose which balance pays for requests first.",
+      "loading": "Loading billing preference...",
+      "load_error": "Could not load the billing preference.",
+      "subscription_first": "Subscription first",
+      "subscription_first_desc": "Use subscription quota first, then fall back to your wallet.",
+      "wallet_first": "Wallet first",
+      "wallet_first_desc": "Use your wallet first, then fall back to subscription quota.",
+      "subscription_only": "Subscription only",
+      "subscription_only_desc": "Only subscription quota may pay; requests fail when it runs out.",
+      "wallet_only": "Wallet only",
+      "wallet_only_desc": "Only your wallet may pay; subscription quota is never used.",
+      "save_failed": "Could not save the billing preference."
+    },
+    "toast": {
+      "preference_saved": "Billing preference saved",
+      "cancelled": "Subscription will end at the current period",
+      "activated": "Subscription activated",
+      "activated_unlimited": "Subscription activated with unlimited quota"
+    },
+    "offline_notice": "You are offline. Changes are disabled until the connection returns."
   }
 }

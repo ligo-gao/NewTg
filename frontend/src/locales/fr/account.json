@@ -321,5 +321,99 @@
     "session_required": "Le Playground n'accepte qu'une session navigateur. Supprimez le jeton API et rechargez.",
     "csrf_failed": "La vérification de sécurité a échoué. Rechargez la page et réessayez.",
     "announce_toggle": "Annonces lecteur d’écran"
+  },
+  "subscription": {
+    "plans": {
+      "title": "Formules d'abonnement",
+      "subtitle": "Choisissez une formule adaptée à votre usage.",
+      "loading": "Chargement des formules...",
+      "error": "Impossible de charger les formules d'abonnement.",
+      "retry": "Réessayer",
+      "empty": "Aucune formule disponible"
+    },
+    "plan": {
+      "label": "Formule",
+      "period": "{days} jours",
+      "period_label": "Période",
+      "price": "Prix",
+      "free": "Gratuit",
+      "grant_credits": "Crédits inclus",
+      "unlimited": "Illimité",
+      "model_scope": "Modèles",
+      "all_models": "Tous les modèles",
+      "models_more": "+{count} de plus"
+    },
+    "action": {
+      "subscribe": "S'abonner",
+      "amount_due": "Montant dû",
+      "confirm_title": "Confirmer l'abonnement",
+      "confirm": "Confirmer",
+      "cancel": "Annuler",
+      "creating": "Création de la commande...",
+      "done": "Terminé"
+    },
+    "purchase": {
+      "payment_method": "Moyen de paiement",
+      "loading_providers": "Chargement des moyens de paiement...",
+      "no_providers": "Aucun moyen de paiement n'est disponible pour le moment.",
+      "free_hint": "Cette formule est gratuite et sera activée immédiatement.",
+      "activated_title": "Abonnement activé",
+      "activated_body": "Votre abonnement est actif. Vous pouvez fermer cette fenêtre.",
+      "rate_limited": "Trop de tentatives d'achat. Réessayez dans {seconds} s.",
+      "conflict": "Cette formule n'est plus disponible, ou la requête a déjà été utilisée.",
+      "invalid": "Cette formule ne peut pas être achetée pour le moment.",
+      "unavailable": "Le paiement est temporairement indisponible. Veuillez réessayer plus tard.",
+      "failed": "Impossible de créer la commande d'abonnement. Veuillez réessayer.",
+      "offline": "Vous êtes hors ligne. Reconnectez-vous pour finaliser l'achat."
+    },
+    "checkout": {
+      "title": "Paiement de l'abonnement",
+      "success": "Abonnement activé"
+    },
+    "mine": {
+      "title": "Mes abonnements",
+      "loading": "Chargement des abonnements...",
+      "error": "Impossible de charger vos abonnements.",
+      "retry": "Réessayer",
+      "empty": "Vous n'avez encore aucun abonnement",
+      "period": "{days} jours",
+      "total": "Total",
+      "used": "Utilisé",
+      "remain": "Restant",
+      "unlimited": "Illimité",
+      "next_reset": "Prochaine réinitialisation",
+      "until": "Jusqu'au {time}",
+      "expired_at": "Expiré le {time}",
+      "cancelled_at": "Annulé le {time}",
+      "cancel_at_period_end": "Annuler en fin de période",
+      "cancel_error": "Impossible de mettre à jour l'abonnement."
+    },
+    "status": {
+      "active": "Actif",
+      "expired": "Expiré",
+      "cancelled": "Annulé"
+    },
+    "preference": {
+      "label": "Préférence de facturation",
+      "description": "Choisissez le solde qui paie les requêtes en premier.",
+      "loading": "Chargement de la préférence de facturation...",
+      "load_error": "Impossible de charger la préférence de facturation.",
+      "subscription_first": "Abonnement d'abord",
+      "subscription_first_desc": "Utiliser d'abord le quota de l'abonnement, puis le portefeuille.",
+      "wallet_first": "Portefeuille d'abord",
+      "wallet_first_desc": "Utiliser d'abord le portefeuille, puis le quota de l'abonnement.",
+      "subscription_only": "Abonnement uniquement",
+      "subscription_only_desc": "Seul le quota de l'abonnement peut payer ; les requêtes échouent lorsqu'il est épuisé.",
+      "wallet_only": "Portefeuille uniquement",
+      "wallet_only_desc": "Seul le portefeuille peut payer ; le quota de l'abonnement n'est jamais utilisé.",
+      "save_failed": "Impossible d'enregistrer la préférence de facturation."
+    },
+    "toast": {
+      "preference_saved": "Préférence de facturation enregistrée",
+      "cancelled": "L'abonnement prendra fin à la période en cours",
+      "activated": "Abonnement activé",
+      "activated_unlimited": "Abonnement activé avec quota illimité"
+    },
+    "offline_notice": "Vous êtes hors ligne. Les modifications sont désactivées jusqu'au retour de la connexion."
   }
 }

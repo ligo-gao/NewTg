@@ -321,5 +321,99 @@
     "session_required": "Playground はブラウザセッションのみを受け付けます。API トークンを外して再読み込みしてください。",
     "csrf_failed": "セキュリティチェックに失敗しました。ページを再読み込みしてください。",
     "announce_toggle": "スクリーンリーダー通知"
+  },
+  "subscription": {
+    "plans": {
+      "title": "サブスクリプションプラン",
+      "subtitle": "利用量に合ったプランをお選びください。",
+      "loading": "プランを読み込み中...",
+      "error": "サブスクリプションプランを読み込めませんでした。",
+      "retry": "再試行",
+      "empty": "利用可能なプランはありません"
+    },
+    "plan": {
+      "label": "プラン",
+      "period": "{days} 日",
+      "period_label": "期間",
+      "price": "価格",
+      "free": "無料",
+      "grant_credits": "付与クレジット",
+      "unlimited": "無制限",
+      "model_scope": "モデル",
+      "all_models": "すべてのモデル",
+      "models_more": "ほか {count} 件"
+    },
+    "action": {
+      "subscribe": "登録する",
+      "amount_due": "お支払い金額",
+      "confirm_title": "サブスクリプションの確認",
+      "confirm": "確認",
+      "cancel": "キャンセル",
+      "creating": "注文を作成中...",
+      "done": "完了"
+    },
+    "purchase": {
+      "payment_method": "支払い方法",
+      "loading_providers": "支払い方法を読み込み中...",
+      "no_providers": "現在利用できる支払い方法がありません。",
+      "free_hint": "このプランは無料で、すぐに有効になります。",
+      "activated_title": "サブスクリプションが有効になりました",
+      "activated_body": "サブスクリプションは有効です。このダイアログを閉じられます。",
+      "rate_limited": "購入試行が多すぎます。{seconds} 秒後にもう一度お試しください。",
+      "conflict": "このプランは提供終了したか、このリクエストは既に使用されています。",
+      "invalid": "このプランは現在購入できません。",
+      "unavailable": "支払いを一時的に利用できません。しばらくしてから再試行してください。",
+      "failed": "サブスクリプション注文を作成できませんでした。再試行してください。",
+      "offline": "オフラインです。接続を回復して購入を完了してください。"
+    },
+    "checkout": {
+      "title": "サブスクリプションのお支払い",
+      "success": "サブスクリプションが有効になりました"
+    },
+    "mine": {
+      "title": "マイサブスクリプション",
+      "loading": "サブスクリプションを読み込み中...",
+      "error": "サブスクリプションを読み込めませんでした。",
+      "retry": "再試行",
+      "empty": "サブスクリプションはまだありません",
+      "period": "{days} 日",
+      "total": "合計",
+      "used": "使用済み",
+      "remain": "残り",
+      "unlimited": "無制限",
+      "next_reset": "次回リセット",
+      "until": "{time} まで",
+      "expired_at": "{time} に期限切れ",
+      "cancelled_at": "{time} にキャンセル",
+      "cancel_at_period_end": "期間末にキャンセル",
+      "cancel_error": "サブスクリプションを更新できませんでした。"
+    },
+    "status": {
+      "active": "有効",
+      "expired": "期限切れ",
+      "cancelled": "キャンセル済み"
+    },
+    "preference": {
+      "label": "課金の優先設定",
+      "description": "リクエストの支払いに優先する残高を選択します。",
+      "loading": "課金の優先設定を読み込み中...",
+      "load_error": "課金の優先設定を読み込めませんでした。",
+      "subscription_first": "サブスクリプション優先",
+      "subscription_first_desc": "まずサブスクリプションのクォータを使用し、次にウォレットを使用します。",
+      "wallet_first": "ウォレット優先",
+      "wallet_first_desc": "まずウォレットを使用し、次にサブスクリプションのクォータを使用します。",
+      "subscription_only": "サブスクリプションのみ",
+      "subscription_only_desc": "サブスクリプションのクォータのみで支払い、使い切るとリクエストは失敗します。",
+      "wallet_only": "ウォレットのみ",
+      "wallet_only_desc": "ウォレットのみで支払い、サブスクリプションのクォータは使用しません。",
+      "save_failed": "課金の優先設定を保存できませんでした。"
+    },
+    "toast": {
+      "preference_saved": "課金の優先設定を保存しました",
+      "cancelled": "サブスクリプションは現在の期間末に終了します",
+      "activated": "サブスクリプションが有効になりました",
+      "activated_unlimited": "サブスクリプションが有効になりました（クォータ無制限）"
+    },
+    "offline_notice": "オフラインです。接続が回復するまで変更できません。"
   }
 }

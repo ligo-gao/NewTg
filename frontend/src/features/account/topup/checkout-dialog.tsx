@@ -24,6 +24,13 @@ export interface CheckoutDialogProps {
   open: boolean
   /** Order as returned by `POST /api/orders` (top-up projection). */
   order: TopupOrderView
+  /**
+   * `subscription` reuses the same Elements/QR/polling flow but the purchase
+   * grants a plan rather than wallet credits: the success view hides the
+   * credits/balance rows (the order credits 0) and offers "Done" instead of
+   * "Top up again".
+   */
+  variant?: 'topup' | 'subscription'
   /** Stripe PaymentIntent client secret (stripe only). */
   clientSecret?: string
   /** Alipay precreate QR payload (alipay only). */
@@ -152,6 +159,7 @@ function useOrderPolling(options: PollOptions): void {
 export function CheckoutDialog({
   open,
   order,
+  variant = 'topup',
   clientSecret,
   qrCode,
   replayOrder,
@@ -186,6 +194,7 @@ export function CheckoutDialog({
   }, [onSucceeded])
 
   const isAlipay = order.provider === 'alipay'
+  const isSubscription = variant === 'subscription'
   const hasPayload = isAlipay ? qrCode !== undefined : clientSecret !== undefined
   const createdMs = Date.parse(order.created_at)
   const expiresMs = Number.isNaN(createdMs)
@@ -286,12 +295,27 @@ export function CheckoutDialog({
     }
   }, [open, isAlipay, publishableKey, stripeLoadAttempt])
 
-  const title = isAlipay
-    ? t('account.checkout.alipay_title')
-    : t('account.checkout.title')
+  const title = isSubscription
+    ? t('account.subscription.checkout.title')
+    : isAlipay
+      ? t('account.checkout.alipay_title')
+      : t('account.checkout.title')
 
   const footer = (() => {
     if (view === 'success') {
+      // A subscription order is the whole intent: there is nothing to "top up
+      // again", and the new instance is already listed on this page.
+      if (isSubscription) {
+        return (
+          <Button
+            onClick={() => {
+              onOpenChange(false)
+            }}
+          >
+            {t('account.subscription.action.done')}
+          </Button>
+        )
+      }
       return (
         <>
           <a
@@ -380,19 +404,23 @@ export function CheckoutDialog({
         <div aria-live="polite" className="mt-4">
           <p className="flex items-center gap-2 text-[15px] font-semibold text-success">
             <span aria-hidden="true">✓</span>
-            {t('account.checkout.success')}
+            {isSubscription
+              ? t('account.subscription.checkout.success')
+              : t('account.checkout.success')}
           </p>
           <dl className="mt-3 flex flex-col gap-2">
-            <SummaryRow
-              label={t('account.checkout.credits_received')}
-              value={formatCredits(settled.credited_credits)}
-              testId="checkout-credits"
-            />
+            {isSubscription ? null : (
+              <SummaryRow
+                label={t('account.checkout.credits_received')}
+                value={formatCredits(settled.credited_credits)}
+                testId="checkout-credits"
+              />
+            )}
             <SummaryRow
               label={t('account.topup.you_pay')}
               value={formatYuan(settled.amount)}
             />
-            {balance !== null ? (
+            {balance !== null && !isSubscription ? (
               <SummaryRow
                 label={t('account.checkout.new_balance')}
                 value={formatCredits(balance)}
