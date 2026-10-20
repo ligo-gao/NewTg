@@ -56,6 +56,14 @@ const NAV_ITEMS = [
   },
   { href: '/admin/users', key: 'common.nav.users', admin: true },
   { href: '/admin/users/groups', key: 'common.nav.groups', admin: true },
+  // billing-08 §16.2 订阅套餐管理（F-H-01/02）：独立页、读写同为
+  // settings:manage；缺权限时入口不渲染，直链由路由 beforeLoad 送 403。
+  {
+    href: '/admin/subscriptions',
+    key: 'common.nav.subscriptions',
+    admin: true,
+    permission: 'settings:manage',
+  },
   // M6c FE-08: settings shell plus the two system pages that are reachable
   // from the same admin area. All three inherit the `_console/admin` guard.
   { href: '/admin/settings', key: 'common.nav.settings', admin: true },

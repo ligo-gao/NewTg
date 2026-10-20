@@ -51,13 +51,30 @@ export type {
 /** 动态 `import()` 后的 JSON 模块形状。 */
 type JsonDictionary = { default: Record<string, unknown> }
 
-type LocaleLoader = Record<string, () => Promise<JsonDictionary>>
+/**
+ * 域名称是 `{module}.{feature}.{element}` 的 `<module>` 段。
+ *
+ * 这个联合类型刻意显式声明而不是从 JSON 模块推断：词典增长后
+ * `typeof import(...)` 的字面量类型会大到触发 TS7056（序列化上限），
+ * 一个显式注解既消除了该问题，也让「可用域」保持稳定契约。
+ */
+export type DictionaryModule =
+  | 'common'
+  | 'public'
+  | 'auth'
+  | 'account'
+  | 'admin'
+  | 'logs'
+  | 'settings'
 
 /**
  * `locale → domain → loader`。每一项都必须是懒加载：这里若写成静态 import，
  * 词典会被并回入口 chunk，直接破坏 §7.2 的首屏预算。
  */
-const DICTIONARY_LOADERS = {
+const DICTIONARY_LOADERS: Record<
+  Locale,
+  Record<DictionaryModule, () => Promise<JsonDictionary>>
+> = {
   en: {
     common: () => import('@/locales/en/common.json'),
     public: () => import('@/locales/en/public.json'),
@@ -123,10 +140,7 @@ const DICTIONARY_LOADERS = {
     logs: () => import('@/locales/vi/logs.json'),
     settings: () => import('@/locales/vi/settings.json'),
   },
-} satisfies Record<Locale, LocaleLoader>
-
-/** 域名称是 `{module}.{feature}.{element}` 的 `<module>` 段。 */
-export type DictionaryModule = keyof (typeof DICTIONARY_LOADERS)[Locale]
+}
 
 /** 随包发布的 7 语（canonical，默认 `en`）。 */
 export const BUNDLED_LOCALES = Object.keys(DICTIONARY_LOADERS) as Locale[]

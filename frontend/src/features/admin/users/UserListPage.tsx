@@ -17,6 +17,7 @@ import { useToastStore } from '@/shared/ui/toast'
 import { AccountRecoveryDialogs } from './AccountRecoveryDialogs'
 import { AdjustQuotaDialog } from './AdjustQuotaDialog'
 import { UserMutateSheet } from './UserMutateSheet'
+import { UserSubscriptionsDialog } from '../subscriptions/user-subscriptions-dialog'
 
 type AdminUser = components['schemas']['AdminUser']
 type UserStatus = components['schemas']['UserStatus']
@@ -49,6 +50,7 @@ export function UserListPage() {
   const [pageSize, setPageSize] = useState<number>(20)
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
   const [quotaUser, setQuotaUser] = useState<AdminUser | null>(null)
+  const [subscriptionsUser, setSubscriptionsUser] = useState<AdminUser | null>(null)
   const [recoveryUser, setRecoveryUser] = useState<AdminUser | null>(null)
   const [disableUser, setDisableUser] = useState<AdminUser | null>(null)
 
@@ -302,6 +304,14 @@ export function UserListPage() {
                         >
                           {t('admin.users.adjust_quota')}
                         </Button>
+                        {/* billing-08 §16.4：单用户订阅实例（只读，立即取消待 P2）。 */}
+                        <Button
+                          variant="ghost"
+                          className="h-8 px-2 text-[13px]"
+                          onClick={() => setSubscriptionsUser(user)}
+                        >
+                          {t('admin.users.manage_subscriptions')}
+                        </Button>
                         <Button
                           variant="ghost"
                           className="h-8 px-2 text-[13px]"
@@ -404,6 +414,11 @@ export function UserListPage() {
           onClose={() => setRecoveryUser(null)}
         />
       ) : null}
+
+      <UserSubscriptionsDialog
+        user={subscriptionsUser}
+        onClose={() => setSubscriptionsUser(null)}
+      />
 
       <Dialog
         open={disableUser !== null}

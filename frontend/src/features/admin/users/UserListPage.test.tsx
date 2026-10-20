@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor } from '@testing-library/react'
+import { waitFor, screen } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -121,5 +121,58 @@ describe('UserListPage', () => {
       expect(applied?.get('keyword')).toBe('zhang')
       expect(applied?.get('p')).toBe('1')
     })
+  })
+
+  it('opens the read-only subscriptions dialog from the row action (billing-08 §16.4)', async () => {
+    installHandlers(() => undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/users/1/subscriptions`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: 10,
+              user_id: 1,
+              plan_id: 1,
+              plan_title_snapshot: 'Pro Monthly',
+              status: 'active',
+              start_at: '2026-10-01T00:00:00Z',
+              end_at: '2026-10-31T00:00:00Z',
+              next_reset_at: null,
+              amount_total: 1000,
+              amount_used: 10,
+              amount_remain: 990,
+              auto_renew: false,
+              cancel_at_period_end: false,
+              period_days: 30,
+              grace_days: 0,
+              model_scope: null,
+              concurrency_limit: null,
+              allow_wallet_overflow: true,
+              order_id: 42,
+              currency: 'CNY',
+              price_paid_amount: 5000,
+              created_at: '2026-10-01T00:00:00Z',
+              updated_at: '2026-10-01T00:00:00Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 100,
+        }),
+      ),
+    )
+
+    const { getByRole, findByText } = await renderWithProviders(<UserListPage />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    expect(await findByText('@alice')).toBeTruthy()
+    await user.click(getByRole('button', { name: 'Manage subscriptions' }))
+
+    expect(await screen.findByText('Subscriptions of @alice')).toBeTruthy()
+    expect(await screen.findByText('Pro Monthly')).toBeTruthy()
+    expect(screen.getByText('#42')).toBeTruthy()
   })
 })

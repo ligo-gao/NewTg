@@ -57,6 +57,11 @@ export interface ApiErrorFields {
    * `model_count` 可能已过期，弹窗必须用服务端的最新计数。
    */
   reference_count?: number
+  /**
+   * 套餐删除 409（`plan_referenced`）的未终结订单数。与 `reference_count`
+   * （订阅实例数）一起给出，管理页才能提示「先停用或等订单终结」。
+   */
+  order_reference_count?: number
   /** 供应商批量操作 409 的冲突行；仅用于诊断，不参与主要文案。 */
   conflicts?: VendorVersionConflict[]
   /**
@@ -99,6 +104,7 @@ export class ApiError extends Error {
   readonly fields?: string[]
   readonly channel_ids?: number[]
   readonly reference_count?: number
+  readonly order_reference_count?: number
   readonly conflicts?: VendorVersionConflict[]
   readonly retry_after?: number
   readonly kind: ApiErrorKind
@@ -116,6 +122,7 @@ export class ApiError extends Error {
     this.fields = fields.fields
     this.channel_ids = fields.channel_ids
     this.reference_count = fields.reference_count
+    this.order_reference_count = fields.order_reference_count
     this.conflicts = fields.conflicts
     this.retry_after = fields.retry_after
     this.kind = fields.kind
@@ -268,6 +275,7 @@ export function parseProblem(input: ParseProblemInput): ApiError {
     fields: readFields(body),
     channel_ids: readChannelIds(body),
     reference_count: readCount(body?.reference_count),
+    order_reference_count: readCount(body?.order_reference_count),
     conflicts: readConflicts(body),
     retry_after: readRetryAfter(input.retryAfter),
     kind,

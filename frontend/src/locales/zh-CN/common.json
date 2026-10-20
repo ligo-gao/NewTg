@@ -746,5 +746,6 @@
     "category_notice": "公告",
     "category_maintenance": "维护",
     "category_release": "更新"
-  }
+  },
+  "nav.subscriptions": "订阅套餐"
 }

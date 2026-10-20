@@ -746,5 +746,6 @@
     "category_notice": "Notice",
     "category_maintenance": "Maintenance",
     "category_release": "Update"
-  }
+  },
+  "nav.subscriptions": "Subscriptions"
 }

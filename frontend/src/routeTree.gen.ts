@@ -41,6 +41,7 @@ import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
 import { Route as RankingsIndexRouteImport } from './routes/rankings/index'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleAdminModelsRouteImport } from './routes/_console/admin/models'
+import { Route as ConsoleAdminSubscriptionsRouteImport } from './routes/_console/admin/subscriptions'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 import { Route as ConsoleDashboardAuditLogsRouteImport } from './routes/_console/dashboard/audit-logs'
 import { Route as ConsoleDashboardUsageLogsRouteImport } from './routes/_console/dashboard/usage-logs'
@@ -218,6 +219,12 @@ const ConsoleAdminModelsRoute = ConsoleAdminModelsRouteImport.update({
   path: '/models',
   getParentRoute: () => ConsoleAdminRoute,
 } as any)
+const ConsoleAdminSubscriptionsRoute =
+  ConsoleAdminSubscriptionsRouteImport.update({
+    id: '/subscriptions',
+    path: '/subscriptions',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   id: '/dashboard/',
   path: '/dashboard/',
@@ -349,6 +356,7 @@ export interface FileRoutesByFullPath {
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
+  '/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin/': typeof ConsoleAdminIndexRoute
@@ -398,6 +406,7 @@ export interface FileRoutesByTo {
   '/pricing': typeof PricingIndexRoute
   '/rankings': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
+  '/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin': typeof ConsoleAdminIndexRoute
@@ -450,6 +459,7 @@ export interface FileRoutesById {
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
   '/_console/admin/models': typeof ConsoleAdminModelsRoute
+  '/_console/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
   '/_console/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/_console/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
@@ -502,6 +512,7 @@ export interface FileRouteTypes {
     | '/pricing/'
     | '/rankings/'
     | '/admin/models'
+    | '/admin/subscriptions'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin/'
@@ -551,6 +562,7 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/rankings'
     | '/admin/models'
+    | '/admin/subscriptions'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin'
@@ -602,6 +614,7 @@ export interface FileRouteTypes {
     | '/pricing/'
     | '/rankings/'
     | '/_console/admin/models'
+    | '/_console/admin/subscriptions'
     | '/_console/dashboard/audit-logs'
     | '/_console/dashboard/usage-logs'
     | '/_console/admin/'
@@ -870,6 +883,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminModelsRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/subscriptions': {
+      id: '/_console/admin/subscriptions'
+      path: '/subscriptions'
+      fullPath: '/admin/subscriptions'
+      preLoaderRoute: typeof ConsoleAdminSubscriptionsRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/dashboard/': {
       id: '/_console/dashboard/'
       path: '/dashboard'
@@ -994,6 +1014,7 @@ declare module '@tanstack/react-router' {
 
 interface ConsoleAdminRouteChildren {
   ConsoleAdminModelsRoute: typeof ConsoleAdminModelsRoute
+  ConsoleAdminSubscriptionsRoute: typeof ConsoleAdminSubscriptionsRoute
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
@@ -1013,6 +1034,7 @@ interface ConsoleAdminRouteChildren {
 
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminModelsRoute: ConsoleAdminModelsRoute,
+  ConsoleAdminSubscriptionsRoute: ConsoleAdminSubscriptionsRoute,
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,

@@ -746,5 +746,6 @@
     "category_notice": "Уведомление",
     "category_maintenance": "Обслуживание",
     "category_release": "Обновление"
-  }
+  },
+  "nav.subscriptions": "Подписки"
 }
