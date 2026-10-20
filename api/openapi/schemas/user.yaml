@@ -1546,8 +1546,12 @@ schemas:
         minimum: 1
       provider:
         type: string
-        enum: [stripe, alipay]
-        description: 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+        enum: [stripe, alipay, wallet]
+        description: |
+          支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+          `wallet` 为余额购买：服务端在同一事务内扣减钱包、写
+          `subscription_purchase` 流水、将订单置 succeeded 并创建订阅实例；
+          余额不足返回 402，且不留下订单/实例/流水。
 
   SubscriptionRenewRequest:
     type: object
@@ -1603,6 +1607,12 @@ schemas:
         type: string
         description: 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
       link_url: {type: string}
+      announcement_id:
+        type: string
+        format: uuid
+        description: |
+          公告投递的归因键（payload.announcement_id）；前端据此拼
+          `/announcements/{id}` 详情深链。普通站内通知没有该字段。
       locale:
         type: string
         enum: [en, zh-CN, zh-TW, fr, ru, ja, vi]

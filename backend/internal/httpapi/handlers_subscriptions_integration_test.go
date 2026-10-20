@@ -912,3 +912,139 @@ func TestSubscriptionIntegrationCreateIdempotency(t *testing.T) {
 		t.Fatalf("plan key 前缀异常: %s", planKey)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P2b 余额购买（provider=wallet）
+// ---------------------------------------------------------------------------
+
+// insertWalletUser 创建用户并设置初始余额；清理时先删该用户的订阅/订单/流水。
+func (e *subscriptionIntegrationEnv) insertWalletUser(t *testing.T, balance int64) int64 {
+	t.Helper()
+	userID := e.insertUser(t, "user")
+	if _, err := e.db.Exec(`UPDATE users SET balance = $2 WHERE id = $1`, userID, balance); err != nil {
+		t.Fatalf("set wallet balance: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.db.Exec(`DELETE FROM subscriptions WHERE user_id = $1`, userID)
+		_, _ = e.db.Exec(`DELETE FROM orders WHERE user_id = $1`, userID)
+		_, _ = e.db.Exec(`DELETE FROM wallet_transactions WHERE user_id = $1`, userID)
+	})
+	return userID
+}
+
+func (e *subscriptionIntegrationEnv) walletBalance(t *testing.T, userID int64) int64 {
+	t.Helper()
+	var balance int64
+	if err := e.db.QueryRow(`SELECT balance FROM users WHERE id = $1`, userID).
+		Scan(&balance); err != nil {
+		t.Fatalf("read wallet balance: %v", err)
+	}
+	return balance
+}
+
+// TestSubscriptionIntegrationWalletPurchase 覆盖 P2b 的 HTTP 面：余额充足
+// 下单即 succeeded（无支付凭据），余额与流水正确；同 key 重放不二次扣款；
+// 余额不足 402 且零写入；跨用户同 key 409 且不扣他人余额。
+func TestSubscriptionIntegrationWalletPurchase(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	alice := env.insertWalletUser(t, 10_000)
+	bob := env.insertWalletUser(t, 5_000)
+	planID := env.insertPlanRow(t, "p2b-"+subscriptionITKey(), "enabled")
+	key := "p2b-wallet-" + subscriptionITKey()
+	principal := func(id int64) *auth.Principal {
+		return &auth.Principal{UserID: id, Role: rbac.RoleUser}
+	}
+
+	rr := env.do(t, principal(alice), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": planID, "provider": "wallet"},
+		map[string]string{"Idempotency-Key": key})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("wallet purchase = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var created createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode purchase: %v", err)
+	}
+	if created.ClientSecret != "" || created.QRCode != "" ||
+		created.Order.Status != string(billing.OrderSucceeded) ||
+		created.Order.Provider != billing.ProviderWallet {
+		t.Fatalf("余额购买响应 = %+v", created)
+	}
+	if got := env.walletBalance(t, alice); got != 100 {
+		t.Fatalf("alice balance = %d，期望 100", got)
+	}
+	var (
+		txCount int64
+		amount  int64
+		subs    int64
+	)
+	if err := env.db.QueryRow(`SELECT count(*), COALESCE(min(amount), 0)
+		FROM wallet_transactions WHERE user_id = $1 AND type = 'subscription_purchase'`,
+		alice).Scan(&txCount, &amount); err != nil {
+		t.Fatalf("read wallet tx: %v", err)
+	}
+	if txCount != 1 || amount != -9_900 {
+		t.Fatalf("流水 = count:%d amount:%d，期望 1 / -9900", txCount, amount)
+	}
+	if err := env.db.QueryRow(`SELECT count(*) FROM subscriptions WHERE order_id = $1`,
+		created.Order.ID).Scan(&subs); err != nil {
+		t.Fatalf("count subscriptions: %v", err)
+	}
+	if subs != 1 {
+		t.Fatalf("订阅实例数 = %d，期望 1", subs)
+	}
+
+	// 同 key 重放：200 + 同一订单，不二次扣款。
+	rr = env.do(t, principal(alice), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": planID, "provider": "wallet"},
+		map[string]string{"Idempotency-Key": key})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("replay = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var replayed createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &replayed); err != nil {
+		t.Fatalf("decode replay: %v", err)
+	}
+	if replayed.Order.ID != created.Order.ID {
+		t.Fatalf("重放订单 id = %d，期望 %d", replayed.Order.ID, created.Order.ID)
+	}
+	if got := env.walletBalance(t, alice); got != 100 {
+		t.Fatalf("重放后 alice balance = %d，期望 100", got)
+	}
+
+	// 跨用户重放同一 key：409，且不扣 bob 余额。
+	rr = env.do(t, principal(bob), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": planID, "provider": "wallet"},
+		map[string]string{"Idempotency-Key": key})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("跨用户重放 = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
+	}
+	if got := env.walletBalance(t, bob); got != 5_000 {
+		t.Fatalf("bob balance = %d，期望 5000", got)
+	}
+
+	// 余额不足：402，零写入。
+	rr = env.do(t, principal(bob), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": planID, "provider": "wallet"},
+		map[string]string{"Idempotency-Key": "p2b-short-" + subscriptionITKey()})
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("余额不足 = %d，期望 402（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "insufficient_wallet_balance") {
+		t.Fatalf("402 problem type 不符: %s", rr.Body.String())
+	}
+	var shortTx, shortSubs, shortOrders int64
+	if err := env.db.QueryRow(`SELECT
+		(SELECT count(*) FROM wallet_transactions WHERE user_id = $1 AND type = 'subscription_purchase'),
+		(SELECT count(*) FROM subscriptions WHERE user_id = $1),
+		(SELECT count(*) FROM orders WHERE user_id = $1)`,
+		bob).Scan(&shortTx, &shortSubs, &shortOrders); err != nil {
+		t.Fatalf("read insufficient state: %v", err)
+	}
+	if shortTx != 0 || shortSubs != 0 || shortOrders != 0 {
+		t.Fatalf("余额不足零写入 = tx:%d subs:%d orders:%d", shortTx, shortSubs, shortOrders)
+	}
+	if got := env.walletBalance(t, bob); got != 5_000 {
+		t.Fatalf("余额不足后 bob balance = %d，期望 5000", got)
+	}
+}

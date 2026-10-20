@@ -59,6 +59,8 @@ var validWalletTxType = map[string]bool{
 	"bonus":              true,
 	"affiliate_transfer": true,
 	"checkin_bonus":      true,
+	// P2b：余额购买订阅（出账）。与 topup 分型，便于账单按业务统计。
+	"subscription_purchase": true,
 }
 
 // validWalletTxStatus 是 wallet_transactions.status 的 M0 CHECK 枚举。

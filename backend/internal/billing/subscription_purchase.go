@@ -24,6 +24,12 @@ package billing
 //   - orders.provider_txn_id UNIQUE（重复回调找回同一订单）；
 //   - subscriptions.order_id UNIQUE（同一订单只建一条实例的最终防线）。
 // 重复回调在订单已 succeeded 时直接返回，不进入订阅插入。
+//
+// P2b 余额购买（provider=wallet）走同一下单入口，但**不经渠道、不等回调**：
+// 同一事务内完成「条件 UPDATE 扣钱包 → 恰一行 wallet_transactions →
+// 订单 succeeded → 建订阅实例」，任一步失败整体回滚。因此钱包订单没有
+// provider_txn_id，也不可能出现「pending 等回调」的状态；重复回调到达时
+// settleOrder 看到 succeeded 直接返回，永远不会二次扣款。
 
 import (
 	"context"
@@ -31,6 +37,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -38,6 +45,14 @@ import (
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/store"
+)
+
+const (
+	// walletTxTypeSubscriptionPurchase 是余额购买订阅的流水类型（P2b）。
+	// amount 为负（出账），balance_after 来自同一条条件 UPDATE 的 RETURNING。
+	// 与 topup 分型的原因：账单/对账需要把「买订阅」与「充值」分开统计，
+	// 不能靠 reference_type=order 猜测业务含义。
+	walletTxTypeSubscriptionPurchase = "subscription_purchase"
 )
 
 var (
@@ -126,7 +141,9 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 		return s.replayOrder(existing, userID)
 	}
 
-	if provider != ProviderStripe && provider != ProviderAlipay {
+	// provider=wallet 是余额购买（P2b）：不经第三方渠道，但仍复用订单
+	// 幂等与快照纪律。渠道校验只决定「如何履约」，不改变订单语义。
+	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderWallet {
 		return nil, ErrInvalidProvider
 	}
 
@@ -154,7 +171,9 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 		// 套餐价还必须达到该渠道的最低下单金额：渠道会在 precreate 阶段
 		// 拒绝过小金额，那时订单已落库、只能标 failed；这里提前 422，
 		// 不产生任何订单。0 元套餐是显式例外（完全免费，不经渠道）。
-		if plan.PriceAmount > 0 {
+		// wallet 不是第三方渠道：没有最低金额/配置可校验，余额不足在扣款
+		// 的条件 UPDATE 处判定（402），且同样不会留下订单。
+		if plan.PriceAmount > 0 && provider != ProviderWallet {
 			providerMin, err := s.providerReady(provider)
 			if err != nil {
 				return err
@@ -170,6 +189,41 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 			return fmt.Errorf("billing: marshal subscription order snapshot: %w", err)
 		}
 		order.ChannelMetadata = metadata
+
+		// P2b：余额购买在同一事务内完成全部四步。先按 pending 落订单以取得
+		// 订单 id（流水 reference_id 需要它），再条件扣款（余额不足 → 402，
+		// 整个事务回滚，订单行不会留下），然后 pending→succeeded，最后建实例。
+		// 任一步失败（含实例插入失败）都回滚钱包、流水、订单与实例。
+		if provider == ProviderWallet && plan.PriceAmount > 0 {
+			err = tx.Raw(`
+				INSERT INTO orders (user_id, provider, amount, currency, status,
+					idempotency_key, biz_kind, biz_ref_id, channel_metadata)
+				VALUES (?, 'wallet', ?, ?, 'pending', ?, 'subscribe', ?, ?)
+				RETURNING id, created_at, updated_at`,
+				userID, plan.PriceAmount, plan.Currency, key, planID, metadata).
+				Row().Scan(&order.ID, &order.CreatedAt, &order.UpdatedAt)
+			if err != nil {
+				return fmt.Errorf("billing: create wallet subscription order: %w", err)
+			}
+			if _, _, err := applyDeltaTxNote(ctx, tx, userID, -plan.PriceAmount,
+				walletTxTypeSubscriptionPurchase, "confirmed", "order",
+				strconv.FormatInt(order.ID, 10), ""); err != nil {
+				return err
+			}
+			err = tx.Raw(`
+				UPDATE orders
+				SET status = 'succeeded', paid_at = now(), credited_credits = 0,
+				    updated_at = now()
+				WHERE id = ? AND status = 'pending'
+				RETURNING paid_at, updated_at`, order.ID).
+				Row().Scan(&order.PaidAt, &order.UpdatedAt)
+			if err != nil {
+				return fmt.Errorf("billing: mark wallet subscription order %d succeeded: %w", order.ID, err)
+			}
+			order.Status = string(OrderSucceeded)
+			immediate = true
+			return insertSubscriptionTx(tx, order, snapshot, s.now().UTC())
+		}
 
 		if plan.PriceAmount == 0 {
 			immediate = true

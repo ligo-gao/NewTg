@@ -81,6 +81,9 @@ const (
 	problemTypePurchaseInvalid     = "https://newtg.dev/problems/invalid_subscription_purchase"
 	problemTypePurchaseConflict    = "https://newtg.dev/problems/subscription_purchase_conflict"
 	problemTypePurchaseUnavailable = "https://newtg.dev/problems/subscription_purchase_unavailable"
+	// 余额购买（P2b）余额不足：402，与中继的 insufficient_quota 同语义
+	// （钱包不得为负）。独立 type 让前端可直接引导充值。
+	problemTypePurchaseInsufficient = "https://newtg.dev/problems/insufficient_wallet_balance"
 	// 用户周期末取消（billing-08 §3.5 P1）：实例已进入 expired/cancelled
 	// 终态时不能再置位。独立 type 让前端可区分「不能取消」与「找不到」。
 	problemTypeSubscriptionNotActive = "https://newtg.dev/problems/subscription_not_active"
@@ -1400,9 +1403,12 @@ func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Req
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(*req.Provider))
-	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay {
+	// wallet 是余额购买（P2b）：仍是订阅购买订单，仍要求 Idempotency-Key 与
+	// 同一限流；服务端在同一事务内扣款+履约，响应没有支付凭据。
+	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay &&
+		provider != billing.ProviderWallet {
 		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
-			"Invalid subscription purchase", "provider must be stripe or alipay", []string{"provider"})
+			"Invalid subscription purchase", "provider must be stripe, alipay or wallet", []string{"provider"})
 		return
 	}
 	if h.purchase == nil {
@@ -1461,6 +1467,12 @@ func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Req
 // 内完成订单状态与实例创建，失败整体回滚。
 func (h *SubscriptionHandlers) writePurchaseError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, billing.ErrInsufficientQuota):
+		// 余额购买（P2b）：条件 UPDATE 未命中，事务已整体回滚（订单/实例/
+		// 流水都没有写入）。402 与中继额度不足同口径。
+		writeSubscriptionFieldsProblem(w, http.StatusPaymentRequired,
+			problemTypePurchaseInsufficient, "Insufficient wallet balance",
+			"the wallet balance is not enough for this plan", nil)
 	case errors.Is(err, billing.ErrInvalidIdempotency),
 		errors.Is(err, billing.ErrInvalidProvider):
 		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,

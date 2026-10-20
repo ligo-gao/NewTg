@@ -25,6 +25,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -1335,6 +1336,46 @@ func TestPurchaseDelegatesToPaymentService(t *testing.T) {
 	}
 }
 
+// TestPurchaseWalletProviderAndInsufficientBalance 覆盖 P2b：provider=wallet
+// 被原样交给计费服务；余额不足（*billing.QuotaError）映射 402。
+func TestPurchaseWalletProviderAndInsufficientBalance(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	env.purchase.result = &billing.TopupOrder{
+		Order: &store.Order{ID: 11, UserID: 7, Provider: billing.ProviderWallet,
+			Amount: 9900, Currency: "CNY", Status: "succeeded",
+			BizKind: store.OrderBizKindSubscribe},
+	}
+	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 42, "provider": " Wallet "},
+		map[string]string{"Idempotency-Key": "purchase-wallet"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("wallet purchase = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if len(env.purchase.calls) != 1 || env.purchase.calls[0].provider != billing.ProviderWallet {
+		t.Fatalf("wallet 未原样交给计费服务: %+v", env.purchase.calls)
+	}
+	var resp createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ClientSecret != "" || resp.QRCode != "" || resp.Order.Status != "succeeded" {
+		t.Fatalf("余额购买响应 = %+v", resp)
+	}
+
+	env.purchase.err = &billing.QuotaError{
+		Class: contract.ErrInsufficientQuota, Required: 9900, Available: 100,
+	}
+	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 42, "provider": "wallet"},
+		map[string]string{"Idempotency-Key": "purchase-wallet-short"})
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("余额不足 = %d，期望 402（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "insufficient_wallet_balance") {
+		t.Fatalf("402 problem type 不符: %s", rr.Body.String())
+	}
+}
+
 func TestPurchaseReplayReturns200(t *testing.T) {
 	env := newSubscriptionTestEnv(t)
 	env.purchase.result = &billing.TopupOrder{
@@ -1448,6 +1489,28 @@ func TestPurchaseRateLimitedPerUserAndPlan(t *testing.T) {
 		map[string]string{"Idempotency-Key": "rl-other-user"})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("另一用户 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPurchaseWalletRateLimited 证明 provider=wallet 仍走同一「用户 × 套餐」
+// 固定窗口限流（P2b 冻结语义 1：余额购买不得绕过防重闸）。
+func TestPurchaseWalletRateLimited(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	body := map[string]any{"plan_id": 77, "provider": billing.ProviderWallet}
+	for i := 0; i < 5; i++ {
+		rr := env.do(t, endUser(9), http.MethodPost, "/api/subscription/purchase", body,
+			map[string]string{"Idempotency-Key": fmt.Sprintf("rl-wallet-%d", i)})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("第 %d 次余额购买 = %d（body=%s）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := env.do(t, endUser(9), http.MethodPost, "/api/subscription/purchase", body,
+		map[string]string{"Idempotency-Key": "rl-wallet-blocked"})
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 6 次余额购买 = %d，期望 429（body=%s）", rr.Code, rr.Body.String())
+	}
+	if len(env.purchase.calls) != 5 {
+		t.Fatalf("超限请求不得调用计费服务，调用次数 = %d", len(env.purchase.calls))
 	}
 }
 

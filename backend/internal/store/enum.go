@@ -112,7 +112,9 @@ var EnumChecks = map[string][]string{
 	"redemption_codes.status": {"unused", "disabled", "used"},
 
 	// orders（§10；failure_code 值集取 modules-04 F-04-18「统一失败码」8 值）
-	"orders.provider": {"stripe", "alipay", "creem", "waffo", "waffo_pancake", "epay"},
+	// provider 的 wallet 是 P2b 余额购买订阅（迁移 20261020230000），
+	// 不是第三方渠道：只出现在 biz_kind='subscribe' 的订单上。
+	"orders.provider": {"stripe", "alipay", "creem", "waffo", "waffo_pancake", "epay", "wallet"},
 	"orders.status":   {"pending", "succeeded", "failed", "expired", "cancelled"},
 	"orders.failure_code": {
 		"provider_unavailable", "provider_rejected", "signature_invalid", "amount_mismatch",
@@ -123,6 +125,8 @@ var EnumChecks = map[string][]string{
 	"wallet_transactions.type": {
 		"topup", "redemption", "consume_pre", "consume", "release",
 		"reversal", "admin_adjustment", "bonus", "affiliate_transfer", "checkin_bonus",
+		// P2b 余额购买订阅（迁移 20261020230000）。
+		"subscription_purchase",
 	},
 	"wallet_transactions.status": {"hold", "settled", "released", "expired", "confirmed"},
 	"wallet_transactions.reference_type": {

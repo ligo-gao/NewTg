@@ -988,16 +988,20 @@ export interface paths {
         /**
          * 购买订阅（创建支付订单）
          * @description 创建订阅购买订单（`orders.biz_kind='subscribe'`、`biz_ref_id=plan_id`），
-         *     金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay}，
-         *     支付载荷与充值下单同构（stripe 返回 client_secret，alipay 返回 qr_code）。
+         *     金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay, wallet}：
+         *     前两者创建支付订单并返回支付载荷（stripe 返回 client_secret，alipay 返回 qr_code）；
+         *     `wallet` 为余额购买，服务端在同一事务内扣减钱包、写一条
+         *     `wallet_transactions(type=subscription_purchase)` 流水、将订单置 succeeded
+         *     并创建订阅实例，响应无支付凭据。任一步失败整体回滚（含余额、流水、订单、实例）。
          *
          *     `Idempotency-Key` 必带；同 key 重放返回首次订单（200，不回放支付凭据）。
          *     `price_amount=0` 的套餐在同一事务内直接创建 succeeded 订单与订阅实例，
-         *     不调用渠道，响应无 client_secret/qr_code。
+         *     不调用渠道、不写钱包流水，响应无 client_secret/qr_code。
          *
          *     失败口径：套餐不存在/停用或幂等键复用到另一订单 → 409；币种/金额/
-         *     套餐字段非法（含套餐价低于渠道最低金额）→ 422；渠道未配置 → 503；
-         *     渠道出站失败 → 502。任何失败都不会留下 succeeded 订单或 subscriptions 行。
+         *     套餐字段非法（含套餐价低于渠道最低金额）→ 422；钱包余额不足 → 402；
+         *     渠道未配置 → 503；渠道出站失败 → 502。任何失败都不会留下 succeeded
+         *     订单或 subscriptions 行。
          *
          *     限流：按「用户 × 套餐」固定窗口 5 次/分钟（键
          *     `rl:subpurchase:<userID>:<planID>`），超限 429 + Retry-After；
@@ -4920,9 +4924,12 @@ export interface components {
             plan_id: number;
             /**
              * @description 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+             *     `wallet` 为余额购买：服务端在同一事务内扣减钱包、写
+             *     `subscription_purchase` 流水、将订单置 succeeded 并创建订阅实例；
+             *     余额不足返回 402，且不留下订单/实例/流水。
              * @enum {string}
              */
-            provider: "stripe" | "alipay";
+            provider: "stripe" | "alipay" | "wallet";
         };
         /**
          * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
@@ -9055,6 +9062,15 @@ export interface operations {
             };
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
+            /** @description 钱包余额不足（仅 provider=wallet）；事务整体回滚，不留下订单/实例/流水 */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             403: components["responses"]["Error403"];
             409: components["responses"]["Error409"];
             422: components["responses"]["Error422"];

@@ -71,6 +71,10 @@ const (
 const (
 	ProviderStripe = "stripe"
 	ProviderAlipay = "alipay"
+	// ProviderWallet 是订阅购买的余额支付渠道（P2b）：它不是第三方支付
+	// 渠道，没有回调、没有 provider_txn_id，下单即在同一事务内完成扣款与
+	// 履约。只允许出现在订阅购买端点；充值/续费仍只接受 stripe/alipay。
+	ProviderWallet = "wallet"
 
 	// DefaultStripeBaseURL 是 Stripe API 根地址；测试注入 httptest URL。
 	DefaultStripeBaseURL = "https://api.stripe.com"
