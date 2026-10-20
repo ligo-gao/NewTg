@@ -248,16 +248,34 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 回源。两者缺一时不挂载（部署配置缺失应在启动期由日志库健康检查暴露，
 	// 而不是让这里用空数据伪造 200）。
 	if cfg.LogDB != nil && cfg.DB != nil {
+		// 只读按 key 查询（F-05-11）需要一条**宽松**的令牌解析接缝：
+		// Resolve 会拒绝过期/耗尽令牌，只读面只拒绝禁用。优先从令牌服务
+		// 的具体实现取容量（生产 *tokenstore.Store），没有就保持 nil——
+		// 端点会返回 503，而不是悄悄退回严格口径把过期令牌判 401。
+		var readOnly auth.ReadOnlyTokenLookup
+		if ro, ok := cfg.TokenStore.(auth.ReadOnlyTokenLookup); ok {
+			readOnly = ro
+		}
+		if readOnly == nil {
+			if ro, ok := cfg.TokenService.(auth.ReadOnlyTokenLookup); ok {
+				readOnly = ro
+			}
+		}
 		usageLogs, err := NewUsageLogHandlers(UsageLogHandlerConfig{
-			DB:     cfg.DB,
-			LogDB:  cfg.LogDB,
-			Audit:  cfg.Audit,
-			Logger: cfg.Logger,
+			DB:             cfg.DB,
+			LogDB:          cfg.LogDB,
+			Audit:          cfg.Audit,
+			Logger:         cfg.Logger,
+			ReadOnlyTokens: readOnly,
+			Redis:          cfg.Redis,
 		})
 		if err != nil {
 			return nil, err
 		}
 		usageLogs.RegisterUsageLogRoutes(rt.protected, nil)
+		// 只读面必须绕过 SessionAuth：过期/额度耗尽的令牌仍可查自己的明细。
+		// 挂根 mux 的精确模式，与 GET /api/usage/token 同挂载方式（D2-01）。
+		usageLogs.RegisterLogsByKeyRoute(rt.mux)
 	}
 
 	// 公开端点：精确注册，先于 /api/ 子树（ServeMux 按特异性择路，顺序无关，

@@ -90,6 +90,17 @@ type TokenLookup interface {
 	Resolve(ctx context.Context, keyHash string) (*TokenMeta, error)
 }
 
+// ReadOnlyTokenLookup 是只读排障面（GET /api/logs/by-key）的令牌认证接缝。
+//
+// 与 TokenLookup 的差别只在判定口径：普通鉴权拒绝「禁用/过期/额度耗尽」三态，
+// 只读面只拒绝**显式禁用**——过期与额度耗尽的令牌仍可查自己的历史明细
+// （modules-05 F-05-11：只读面不因这两态拒绝）。接口单独定义而不是给
+// TokenLookup 加方法：SessionAuth 的 Resolve 语义不能被只读面的宽松口径污染，
+// 两者混用会让管理端点意外接受耗尽令牌。
+type ReadOnlyTokenLookup interface {
+	ResolveReadOnly(ctx context.Context, keyHash string) (*TokenMeta, error)
+}
+
 // HashTokenKey 返回写 api_tokens.key_hash 的 SHA-256 小写十六进制。
 //
 // 与 HashSessionID 使用同一编码口径，避免「会话哈希用 hex、令牌哈希用 base64」

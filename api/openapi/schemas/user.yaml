@@ -1172,6 +1172,35 @@ schemas:
             items:
               $ref: '#/schemas/UsageLogItem'
 
+  LogsByKeyItem:
+    allOf:
+      - $ref: '#/schemas/UsageLogItem'
+      - type: object
+        required: [other]
+        properties:
+          other:
+            type: object
+            additionalProperties: true
+            description: |
+              按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
+              拒绝原因键一律剥离；error_message 打码为 ••••••）。
+    description: |
+      GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
+      （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
+      明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
+
+  LogsByKeyPage:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        maxItems: 1000
+        items:
+          $ref: '#/schemas/LogsByKeyItem'
+    description: 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。
+
   UsageStatsSummary:
     type: object
     additionalProperties: false

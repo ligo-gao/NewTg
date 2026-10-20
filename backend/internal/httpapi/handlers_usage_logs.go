@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 
 	"newtg/gateway/internal/audit"
@@ -96,6 +97,12 @@ type UsageLogHandlerConfig struct {
 	// PerfFlushInterval 是管道刷写周期，用于陈旧度判定（3×周期无更新 = 停摆）。
 	// 零值时取设计默认 5 分钟。
 	PerfFlushInterval time.Duration
+	// ReadOnlyTokens 是 GET /api/logs/by-key 的只读令牌认证接缝
+	// （modules-05 F-05-11）。nil 时不挂载该端点；生产为 *tokenstore.Store。
+	ReadOnlyTokens auth.ReadOnlyTokenLookup
+	// Redis 是 by-key 限流桶（rateLimit:v2:token:RO:<id>）的连接。
+	// nil 时限流失效（fail-open），只影响限流不影响认证/查询。
+	Redis *redis.Client
 }
 
 // UsageLogHandlers 持有只读端点依赖，可并发使用。
@@ -108,6 +115,8 @@ type UsageLogHandlers struct {
 	now       func() time.Time
 	perf      ModelPerfSource
 	perfFlush time.Duration
+	readOnly  auth.ReadOnlyTokenLookup
+	rdb       *redis.Client
 }
 
 // NewUsageLogHandlers 构造只读端点。两个数据库都是必需项：
@@ -145,6 +154,8 @@ func NewUsageLogHandlers(cfg UsageLogHandlerConfig) (*UsageLogHandlers, error) {
 		now:       now,
 		perf:      cfg.Perf,
 		perfFlush: flush,
+		readOnly:  cfg.ReadOnlyTokens,
+		rdb:       cfg.Redis,
 	}, nil
 }
 

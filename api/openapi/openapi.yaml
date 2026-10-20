@@ -273,6 +273,8 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1pg~1models'
 
   # 用量日志 / 统计 / 审计只读端点（M6 Task 2 / modules-05）。
+  /api/logs/by-key:
+    $ref: './paths/user.yaml#/paths/~1api~1logs~1by-key'
   /api/usage-logs:
     $ref: './paths/user.yaml#/paths/~1api~1usage-logs'
   /api/usage-logs/{id}:

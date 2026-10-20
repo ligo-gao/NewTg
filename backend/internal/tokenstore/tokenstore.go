@@ -201,6 +201,9 @@ type Store struct {
 // SessionAuth。签名漂移会在这里编译失败，而不是等到装配期才发现。
 var _ auth.TokenLookup = (*Store)(nil)
 
+// 只读面接缝同样钉死：日志端点装配时若签名漂移，编译期失败而不是运行时 503。
+var _ auth.ReadOnlyTokenLookup = (*Store)(nil)
+
 // New 构造令牌存储。settings 可为 nil（全部走默认值）；rdb 可为 nil（无缓存，
 // 仅测试装配会这么做）。
 func New(db *gorm.DB, rdb *redis.Client, settings Settings) *Store {
@@ -1175,12 +1178,40 @@ type resolveRow struct {
 // ErrTokenDisabled；过期 → ErrTokenExpired；额度耗尽仍返回 meta（自读用量
 // 必须可用，modules-02 §2.13），由调用方决定 402/401。
 func (s *Store) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, error) {
+	meta, err := s.resolveMeta(ctx, keyHash)
+	if err != nil {
+		return nil, err
+	}
+	return checkResolved(meta, s.now())
+}
+
+// ResolveReadOnly 实现 auth.ReadOnlyTokenLookup：只读排障面（logs by-key）。
+//
+// 与 Resolve 共用同一份缓存与 DB 查询，唯一差别是把 checkResolved 换成
+// 「仅拒绝 raw status != enabled」（modules-05 F-05-11）：过期与额度耗尽
+// 仍可读，显式禁用仍 401。缓存不区分两种判定口径——缓存里只有原始行，
+// 判定发生在读缓存之后，所以同一 meta 可以安全地被两条路径复用。
+func (s *Store) ResolveReadOnly(ctx context.Context, keyHash string) (*auth.TokenMeta, error) {
+	meta, err := s.resolveMeta(ctx, keyHash)
+	if err != nil {
+		return nil, err
+	}
+	// 只认人工位（api_tokens.status），不看派生态：过期/耗尽是派生结论，
+	// 只读面刻意不消费（否则脚本在令牌过期当天就查不了历史用量）。
+	if meta.Status != StatusEnabled {
+		return nil, ErrTokenDisabled
+	}
+	return meta, nil
+}
+
+// resolveMeta 是 Resolve/ResolveReadOnly 的共同前半段：缓存 → DB → 回填。
+// 返回的是**未判定**的原始元数据；业务判定由调用方各自执行。
+func (s *Store) resolveMeta(ctx context.Context, keyHash string) (*auth.TokenMeta, error) {
 	if keyHash == "" {
 		return nil, ErrInvalidToken
 	}
-	now := s.now()
 	if meta, ok := s.loadCachedMeta(ctx, keyHash); ok {
-		return checkResolved(meta, now)
+		return cloneMeta(meta), nil
 	}
 
 	// 代际在读 DB 之前取：并发变更会让回填的 WATCH 失败（防 read-add 竞争）。
@@ -1212,7 +1243,7 @@ func (s *Store) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, e
 	if cacheable {
 		s.storeCachedMeta(ctx, gen, keyHash, meta)
 	}
-	return checkResolved(meta, now)
+	return cloneMeta(meta), nil
 }
 
 func checkResolved(meta *auth.TokenMeta, now time.Time) (*auth.TokenMeta, error) {
