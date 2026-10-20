@@ -1184,5 +1184,113 @@
     "ops_select_models": "1 つ以上のモデルを選択してください。",
     "ops_select_target": "対象プロバイダーを選択してください。",
     "ops_target_in_sources": "対象はソースの中から選べません。"
+  },
+  "performance": {
+    "page": {
+      "title": "パフォーマンス管理",
+      "instance_label": "インスタンス {id}",
+      "refresh": "更新",
+      "last_updated": "最終更新 {time}",
+      "scope_notice": "このページの操作は現在のインスタンスにのみ適用されます。マルチレプリカ環境ではインスタンスごとに実行してください。",
+      "offline_snapshot": "オフラインスナップショット。データが古い可能性があります。",
+      "offline_toast": "ネットワーク接続が切断されました。",
+      "desktop_only": "このページはデスクトップ画面（1024px 以上）でのみ利用できます。"
+    },
+    "common": {
+      "read_only": "読み取り専用：アカウントに settings:manage 権限がありません。",
+      "retry": "再試行",
+      "cancel": "キャンセル",
+      "working": "実行中…"
+    },
+    "disk": {
+      "title": "ディスクキャッシュ",
+      "status_enabled": "有効",
+      "status_disabled": "無効",
+      "path": "パス {path}",
+      "files": "ファイル {count}",
+      "usage": "{used} / 上限 {max}",
+      "usage_label": "ディスクキャッシュ使用量",
+      "threshold": "しきい値 {size}",
+      "last_cleared": "最終クリア {time}",
+      "never_cleared": "未クリア",
+      "empty": "ディスクキャッシュは無効です（デプロイの環境変数でオフ）。",
+      "clear_button": "未使用ディスクキャッシュをクリア",
+      "consequence": "10 分間未使用のファイルのみ削除されます。進行中のリクエストには影響しません。",
+      "confirm_title": "未使用ディスクキャッシュをクリア",
+      "confirm_body": "10 分間未使用のファイルのみ削除されます。キャッシュミスはソースから再構築されます。進行中のリクエストには影響しません。",
+      "result_success": "{count} ファイルを削除し、{size} を解放しました。",
+      "result_partial": "{count} ファイルを削除し、{size} を解放しました。{failed} 件失敗。"
+    },
+    "gc": {
+      "title": "ランタイム GC",
+      "alloc": "ヒープ割り当て {size}",
+      "sys": "システムメモリ {size}",
+      "num_gc": "GC 回数 {count}",
+      "goroutines": "Goroutine {count}",
+      "run_button": "ランタイム GC を実行",
+      "note": "GC は一時的に CPU 使用率を上げ、数ミリ秒の停止を引き起こす可能性があります。",
+      "confirm_title": "ランタイム GC を実行",
+      "confirm_body": "GC は一時的に CPU 使用率を上げ、数ミリ秒の停止を引き起こす可能性があります。実行しますか？",
+      "result": "GC 完了、{ms} ms。ヒープ割り当て {before} → {after}。"
+    },
+    "logs": {
+      "title": "アプリケーションログの整理",
+      "dir": "ログディレクトリ {dir}",
+      "files": "ファイル {count}",
+      "total": "合計 {size}",
+      "oldest": "最古 {time}",
+      "newest": "最新 {time}",
+      "mode_label": "整理方法",
+      "mode_by_days": "日数で保持",
+      "mode_by_count": "ファイル数で保持",
+      "value_label": "保持値",
+      "days_unit": "日",
+      "count_unit": "個",
+      "preview_none": "プレビュー：削除されるファイルはありません。",
+      "preview": "プレビュー：{count} ファイル（{size}）が削除されます。",
+      "active_note": "現在のアクティブログファイルは削除されません。",
+      "cleanup_button": "ログファイルを整理",
+      "consequence": "整理は元に戻せません。実行前にプレビューを確認してください。",
+      "confirm_title": "ログファイルを整理",
+      "confirm_body": "{count} 個のログファイル（{size}）を完全に削除します。元に戻せません。{active_note}",
+      "empty": "ログディレクトリが設定されていません。",
+      "result_success": "{count} ファイルを削除し、{size} を解放しました。",
+      "result_partial": "{count} ファイルを削除し、{size} を解放しました。{failed} 件失敗。",
+      "result_skipped": "アクティブログファイルはスキップされました。"
+    },
+    "recent": {
+      "title": "最近の操作",
+      "time": "時刻",
+      "actor": "実行者",
+      "action": "操作",
+      "params": "パラメータ",
+      "result": "結果",
+      "amount": "解放 / 削除量",
+      "empty": "操作記録はまだありません。",
+      "success": "成功",
+      "failed": "失敗",
+      "action_system_disk_cache_clear": "ディスクキャッシュのクリア",
+      "action_system_gc_run": "ランタイム GC",
+      "action_system_log_cleanup_run": "ログ整理",
+      "params_summary": "{mode} · {value}",
+      "deleted": "{count} 件削除 · {size}",
+      "failed_count": "{count} 件失敗",
+      "skipped_active": "アクティブファイルをスキップ"
+    },
+    "errors": {
+      "confirm_required": "操作が確認されませんでした。もう一度お試しください。",
+      "instance_mismatch": "対象インスタンスが現在のインスタンスと一致しません。対象に切り替えて再試行してください。",
+      "invalid_mode": "整理方法が無効です。",
+      "invalid_value": "値が無効です。",
+      "disk_cache_not_configured": "ディスクキャッシュが設定されていません。",
+      "log_dir_not_configured": "ログディレクトリが設定されていません。",
+      "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください。",
+      "rate_limited_retry": "リクエストが多すぎます。{seconds} 秒後に再試行してください。",
+      "generic": "操作に失敗しました。もう一度お試しください。"
+    },
+    "validation": {
+      "value_required": "保持値を入力してください。",
+      "value_range": "1〜36500 の整数を入力してください。"
+    }
   }
 }

@@ -1184,5 +1184,113 @@
     "ops_select_models": "Sélectionnez au moins un modèle.",
     "ops_select_target": "Sélectionnez un fournisseur cible.",
     "ops_target_in_sources": "La cible ne peut pas être une source."
+  },
+  "performance": {
+    "page": {
+      "title": "Performances",
+      "instance_label": "Instance {id}",
+      "refresh": "Actualiser",
+      "last_updated": "Dernière mise à jour {time}",
+      "scope_notice": "Les actions ne concernent que l’instance actuelle. En déploiement multi-répliques, exécutez-les instance par instance.",
+      "offline_snapshot": "Instantané hors ligne ; les données peuvent être obsolètes.",
+      "offline_toast": "Connexion réseau perdue.",
+      "desktop_only": "Cette page est disponible sur les écrans de bureau (1024 px et plus)."
+    },
+    "common": {
+      "read_only": "Lecture seule : votre compte n’a pas la permission settings:manage.",
+      "retry": "Réessayer",
+      "cancel": "Annuler",
+      "working": "En cours…"
+    },
+    "disk": {
+      "title": "Cache disque",
+      "status_enabled": "Activé",
+      "status_disabled": "Désactivé",
+      "path": "Chemin {path}",
+      "files": "{count} fichiers",
+      "usage": "{used} / limite {max}",
+      "usage_label": "Utilisation du cache disque",
+      "threshold": "Seuil {size}",
+      "last_cleared": "Dernier nettoyage {time}",
+      "never_cleared": "Jamais nettoyé",
+      "empty": "Le cache disque est désactivé (désactivé par une variable d’environnement de déploiement).",
+      "clear_button": "Vider le cache disque inactif",
+      "consequence": "Seuls les fichiers inutilisés depuis 10 minutes sont supprimés. Les requêtes en cours ne sont pas affectées.",
+      "confirm_title": "Vider le cache disque inactif",
+      "confirm_body": "Seuls les fichiers inutilisés depuis 10 minutes sont supprimés. Les caches manquants seront reconstruits depuis la source. Les requêtes en cours ne sont pas affectées.",
+      "result_success": "{count} fichiers supprimés, {size} libérés.",
+      "result_partial": "{count} fichiers supprimés, {size} libérés ; {failed} en échec."
+    },
+    "gc": {
+      "title": "GC d’exécution",
+      "alloc": "Allocation du tas {size}",
+      "sys": "Mémoire système {size}",
+      "num_gc": "GC exécutés {count}",
+      "goroutines": "Goroutines {count}",
+      "run_button": "Lancer le GC d’exécution",
+      "note": "Le GC augmente brièvement l’usage CPU et peut provoquer une pause de quelques millisecondes.",
+      "confirm_title": "Lancer le GC d’exécution",
+      "confirm_body": "Le GC augmente brièvement l’usage CPU et peut provoquer une pause de quelques millisecondes. Lancer ?",
+      "result": "GC terminé en {ms} ms ; allocation du tas {before} → {after}."
+    },
+    "logs": {
+      "title": "Nettoyage des fichiers journaux",
+      "dir": "Répertoire des journaux {dir}",
+      "files": "{count} fichiers",
+      "total": "Total {size}",
+      "oldest": "Plus ancien {time}",
+      "newest": "Plus récent {time}",
+      "mode_label": "Mode de nettoyage",
+      "mode_by_days": "Conserver par jours",
+      "mode_by_count": "Conserver par nombre de fichiers",
+      "value_label": "Valeur à conserver",
+      "days_unit": "jours",
+      "count_unit": "fichiers",
+      "preview_none": "Aperçu : aucun fichier ne sera supprimé.",
+      "preview": "Aperçu : {count} fichiers ({size}) seront supprimés.",
+      "active_note": "Le fichier journal actif n’est jamais supprimé.",
+      "cleanup_button": "Nettoyer les fichiers journaux",
+      "consequence": "Le nettoyage est irréversible. Vérifiez l’aperçu avant de l’exécuter.",
+      "confirm_title": "Nettoyer les fichiers journaux",
+      "confirm_body": "Supprimer définitivement {count} fichiers journaux ({size}). Cette action est irréversible. {active_note}",
+      "empty": "Le répertoire des journaux n’est pas configuré.",
+      "result_success": "{count} fichiers supprimés, {size} libérés.",
+      "result_partial": "{count} fichiers supprimés, {size} libérés ; {failed} en échec.",
+      "result_skipped": "Le fichier journal actif a été ignoré."
+    },
+    "recent": {
+      "title": "Opérations récentes",
+      "time": "Heure",
+      "actor": "Auteur",
+      "action": "Action",
+      "params": "Paramètres",
+      "result": "Résultat",
+      "amount": "Libéré / supprimé",
+      "empty": "Aucune opération pour l’instant.",
+      "success": "Succès",
+      "failed": "Échec",
+      "action_system_disk_cache_clear": "Nettoyage du cache disque",
+      "action_system_gc_run": "GC d’exécution",
+      "action_system_log_cleanup_run": "Nettoyage des journaux",
+      "params_summary": "{mode} · {value}",
+      "deleted": "{count} supprimés · {size}",
+      "failed_count": "{count} en échec",
+      "skipped_active": "Fichier actif ignoré"
+    },
+    "errors": {
+      "confirm_required": "L’action n’a pas été confirmée. Réessayez.",
+      "instance_mismatch": "L’instance cible n’est pas l’instance actuelle. Basculez vers elle et réessayez.",
+      "invalid_mode": "Mode de nettoyage invalide.",
+      "invalid_value": "Valeur invalide.",
+      "disk_cache_not_configured": "Le cache disque n’est pas configuré.",
+      "log_dir_not_configured": "Le répertoire des journaux n’est pas configuré.",
+      "rate_limited": "Trop de requêtes. Réessayez bientôt.",
+      "rate_limited_retry": "Trop de requêtes. Réessayez dans {seconds} secondes.",
+      "generic": "L’action a échoué. Réessayez."
+    },
+    "validation": {
+      "value_required": "Saisissez une valeur à conserver.",
+      "value_range": "Saisissez un entier entre 1 et 36500."
+    }
   }
 }

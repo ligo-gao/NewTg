@@ -81,6 +81,15 @@ const NAV_ITEMS = [
     admin: true,
     permission: 'settings:manage',
   },
+  // D3b 性能管理（modules-08 §6.12）：独立页，三个运维对象都是进程本地，
+  // 读写统一复用 settings:manage；缺权限时入口不渲染、直链由 beforeLoad
+  // 送 403（与部署/插件页同一口径）。
+  {
+    href: '/admin/system/performance',
+    key: 'common.nav.performance',
+    admin: true,
+    permission: 'settings:manage',
+  },
 ] as const
 
 /**

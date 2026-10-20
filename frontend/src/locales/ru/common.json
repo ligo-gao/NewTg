@@ -738,5 +738,6 @@
   "nav.playground": "Playground",
   "nav.task_plugins": "Плагины задач",
   "nav.redemption_codes": "Коды погашения",
-  "nav.models": "Модели и поставщики"
+  "nav.models": "Модели и поставщики",
+  "nav.performance": "Производительность"
 }

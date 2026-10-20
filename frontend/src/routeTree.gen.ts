@@ -50,6 +50,7 @@ import { Route as ConsoleAdminPricingModelPricingRouteImport } from './routes/_c
 import { Route as ConsoleAdminSettingsIndexRouteImport } from './routes/_console/admin/settings/index'
 import { Route as ConsoleAdminSettingsNotificationTemplatesRouteImport } from './routes/_console/admin/settings/notification-templates'
 import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_console/admin/system/audit-logs'
+import { Route as ConsoleAdminSystemPerformanceRouteImport } from './routes/_console/admin/system/performance'
 import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/admin/system/status'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
 import { Route as ConsoleAdminUsersGroupsRouteImport } from './routes/_console/admin/users/groups'
@@ -269,6 +270,12 @@ const ConsoleAdminSystemAuditLogsRoute =
     path: '/system/audit-logs',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSystemPerformanceRoute =
+  ConsoleAdminSystemPerformanceRouteImport.update({
+    id: '/system/performance',
+    path: '/system/performance',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminSystemStatusRoute =
   ConsoleAdminSystemStatusRouteImport.update({
     id: '/system/status',
@@ -336,6 +343,7 @@ export interface FileRoutesByFullPath {
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
@@ -382,6 +390,7 @@ export interface FileRoutesByTo {
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/admin/channels': typeof ConsoleAdminChannelsIndexRoute
@@ -431,6 +440,7 @@ export interface FileRoutesById {
   '/_console/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
   '/_console/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/_console/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/_console/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/_console/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
   '/_console/admin/channels/': typeof ConsoleAdminChannelsIndexRoute
@@ -480,6 +490,7 @@ export interface FileRouteTypes {
     | '/admin/pricing/model-pricing'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
+    | '/admin/system/performance'
     | '/admin/system/status'
     | '/admin/users/groups'
     | '/admin/channels/'
@@ -526,6 +537,7 @@ export interface FileRouteTypes {
     | '/admin/pricing/model-pricing'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
+    | '/admin/system/performance'
     | '/admin/system/status'
     | '/admin/users/groups'
     | '/admin/channels'
@@ -574,6 +586,7 @@ export interface FileRouteTypes {
     | '/_console/admin/pricing/model-pricing'
     | '/_console/admin/settings/notification-templates'
     | '/_console/admin/system/audit-logs'
+    | '/_console/admin/system/performance'
     | '/_console/admin/system/status'
     | '/_console/admin/users/groups'
     | '/_console/admin/channels/'
@@ -894,6 +907,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSystemAuditLogsRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/system/performance': {
+      id: '/_console/admin/system/performance'
+      path: '/system/performance'
+      fullPath: '/admin/system/performance'
+      preLoaderRoute: typeof ConsoleAdminSystemPerformanceRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/system/status': {
       id: '/_console/admin/system/status'
       path: '/system/status'
@@ -939,6 +959,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
   ConsoleAdminSettingsNotificationTemplatesRoute: typeof ConsoleAdminSettingsNotificationTemplatesRoute
   ConsoleAdminSystemAuditLogsRoute: typeof ConsoleAdminSystemAuditLogsRoute
+  ConsoleAdminSystemPerformanceRoute: typeof ConsoleAdminSystemPerformanceRoute
   ConsoleAdminSystemStatusRoute: typeof ConsoleAdminSystemStatusRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
   ConsoleAdminChannelsIndexRoute: typeof ConsoleAdminChannelsIndexRoute
@@ -957,6 +978,7 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminSettingsNotificationTemplatesRoute:
     ConsoleAdminSettingsNotificationTemplatesRoute,
   ConsoleAdminSystemAuditLogsRoute: ConsoleAdminSystemAuditLogsRoute,
+  ConsoleAdminSystemPerformanceRoute: ConsoleAdminSystemPerformanceRoute,
   ConsoleAdminSystemStatusRoute: ConsoleAdminSystemStatusRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,
   ConsoleAdminChannelsIndexRoute: ConsoleAdminChannelsIndexRoute,

@@ -1184,5 +1184,113 @@
     "ops_select_models": "請至少選擇一個模型。",
     "ops_select_target": "請選擇目標供應商。",
     "ops_target_in_sources": "目標供應商不能是來源供應商之一。"
+  },
+  "performance": {
+    "page": {
+      "title": "效能管理",
+      "instance_label": "執行個體 {id}",
+      "refresh": "重新整理",
+      "last_updated": "上次更新 {time}",
+      "scope_notice": "本頁操作只作用於目前執行個體；多副本部署請逐個執行個體執行。",
+      "offline_snapshot": "離線快照，資料可能已過期",
+      "offline_toast": "網路連線已中斷",
+      "desktop_only": "本頁僅在桌面螢幕（1024px 及以上）可用。"
+    },
+    "common": {
+      "read_only": "唯讀：你的帳號缺少 settings:manage 權限。",
+      "retry": "重試",
+      "cancel": "取消",
+      "working": "執行中…"
+    },
+    "disk": {
+      "title": "磁碟快取",
+      "status_enabled": "已啟用",
+      "status_disabled": "未啟用",
+      "path": "路徑 {path}",
+      "files": "檔案 {count}",
+      "usage": "合計 {used} / 上限 {max}",
+      "usage_label": "磁碟快取用量",
+      "threshold": "閾值 {size}",
+      "last_cleared": "最近清理 {time}",
+      "never_cleared": "從未清理",
+      "empty": "磁碟快取未啟用（部署環境變數關閉）",
+      "clear_button": "清理不活躍磁碟快取",
+      "consequence": "僅刪除 10 分鐘內未使用的快取檔案；進行中的請求不受影響。",
+      "confirm_title": "清理不活躍磁碟快取",
+      "confirm_body": "僅刪除 10 分鐘內未使用的快取檔案；清理後未命中快取將回源重建。進行中的請求不受影響。",
+      "result_success": "已刪除 {count} 個檔案，釋放 {size}。",
+      "result_partial": "已刪除 {count} 個檔案，釋放 {size}；{failed} 個失敗。"
+    },
+    "gc": {
+      "title": "執行階段 GC",
+      "alloc": "堆積配置 {size}",
+      "sys": "系統記憶體 {size}",
+      "num_gc": "GC 次數 {count}",
+      "goroutines": "Goroutine {count}",
+      "run_button": "觸發執行階段 GC",
+      "note": "GC 會短暫增加 CPU 使用率，可能造成毫秒級停頓。",
+      "confirm_title": "觸發執行階段 GC",
+      "confirm_body": "GC 會短暫增加 CPU 使用率並可能造成毫秒級停頓，確認執行？",
+      "result": "GC 完成，耗時 {ms} ms；堆積配置 {before} → {after}。"
+    },
+    "logs": {
+      "title": "應用程式日誌檔案清理",
+      "dir": "日誌目錄 {dir}",
+      "files": "檔案 {count}",
+      "total": "合計 {size}",
+      "oldest": "最早 {time}",
+      "newest": "最新 {time}",
+      "mode_label": "清理方式",
+      "mode_by_days": "按天數保留",
+      "mode_by_count": "按檔案數保留",
+      "value_label": "保留值",
+      "days_unit": "天",
+      "count_unit": "個",
+      "preview_none": "預覽：沒有檔案會被刪除。",
+      "preview": "預覽：將刪除 {count} 個檔案（{size}）。",
+      "active_note": "目前作用中的日誌檔案不會被刪除",
+      "cleanup_button": "清理日誌檔案",
+      "consequence": "清理不可復原，請先確認預覽數量。",
+      "confirm_title": "清理日誌檔案",
+      "confirm_body": "將永久刪除 {count} 個日誌檔案（{size}），不可復原。{active_note}",
+      "empty": "日誌目錄未設定",
+      "result_success": "已刪除 {count} 個檔案，釋放 {size}。",
+      "result_partial": "已刪除 {count} 個檔案，釋放 {size}；{failed} 個失敗。",
+      "result_skipped": "已略過作用中的日誌檔案。"
+    },
+    "recent": {
+      "title": "最近操作",
+      "time": "時間",
+      "actor": "操作人",
+      "action": "動作",
+      "params": "參數摘要",
+      "result": "結果",
+      "amount": "釋放/刪除量",
+      "empty": "暫無操作記錄",
+      "success": "成功",
+      "failed": "失敗",
+      "action_system_disk_cache_clear": "磁碟快取清理",
+      "action_system_gc_run": "執行階段 GC",
+      "action_system_log_cleanup_run": "日誌清理",
+      "params_summary": "{mode} · {value}",
+      "deleted": "{count} 個 · {size}",
+      "failed_count": "{count} 個失敗",
+      "skipped_active": "已略過作用中檔案"
+    },
+    "errors": {
+      "confirm_required": "操作未確認，請重試。",
+      "instance_mismatch": "目標執行個體與目前執行個體不一致，請切換到該執行個體後重試",
+      "invalid_mode": "清理方式無效。",
+      "invalid_value": "參數值無效。",
+      "disk_cache_not_configured": "磁碟快取未設定。",
+      "log_dir_not_configured": "日誌目錄未設定。",
+      "rate_limited": "請求過於頻繁，請稍後再試。",
+      "rate_limited_retry": "請求過於頻繁，請在 {seconds} 秒後重試。",
+      "generic": "操作失敗，請重試。"
+    },
+    "validation": {
+      "value_required": "請輸入保留值。",
+      "value_range": "請輸入 1–36500 之間的整數。"
+    }
   }
 }

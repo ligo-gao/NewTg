@@ -1184,5 +1184,113 @@
     "ops_select_models": "Select at least one model.",
     "ops_select_target": "Select a target vendor.",
     "ops_target_in_sources": "The target cannot be one of the source vendors."
+  },
+  "performance": {
+    "page": {
+      "title": "Performance",
+      "instance_label": "Instance {id}",
+      "refresh": "Refresh",
+      "last_updated": "Last updated {time}",
+      "scope_notice": "Actions apply to the current instance only. On multi-replica deployments, run them per instance.",
+      "offline_snapshot": "Offline snapshot; data may be stale.",
+      "offline_toast": "Network connection lost.",
+      "desktop_only": "This page is available on desktop screens (1024px and wider)."
+    },
+    "common": {
+      "read_only": "Read-only: your account lacks the settings:manage permission.",
+      "retry": "Retry",
+      "cancel": "Cancel",
+      "working": "Working…"
+    },
+    "disk": {
+      "title": "Disk cache",
+      "status_enabled": "Enabled",
+      "status_disabled": "Disabled",
+      "path": "Path {path}",
+      "files": "{count} files",
+      "usage": "{used} / limit {max}",
+      "usage_label": "Disk cache usage",
+      "threshold": "Threshold {size}",
+      "last_cleared": "Last cleared {time}",
+      "never_cleared": "Never cleared",
+      "empty": "Disk cache is disabled (turned off by a deployment environment variable).",
+      "clear_button": "Clear inactive disk cache",
+      "consequence": "Only files unused for 10 minutes are removed. In-flight requests are not affected.",
+      "confirm_title": "Clear inactive disk cache",
+      "confirm_body": "Only files unused for 10 minutes are removed. Cache misses will be rebuilt from the source. In-flight requests are not affected.",
+      "result_success": "Deleted {count} files, freed {size}.",
+      "result_partial": "Deleted {count} files, freed {size}; {failed} failed."
+    },
+    "gc": {
+      "title": "Runtime GC",
+      "alloc": "Heap allocation {size}",
+      "sys": "System memory {size}",
+      "num_gc": "GC runs {count}",
+      "goroutines": "Goroutines {count}",
+      "run_button": "Run runtime GC",
+      "note": "GC briefly increases CPU usage and may pause for milliseconds.",
+      "confirm_title": "Run runtime GC",
+      "confirm_body": "GC briefly increases CPU usage and may pause for milliseconds. Run it?",
+      "result": "GC finished in {ms} ms; heap allocation {before} → {after}."
+    },
+    "logs": {
+      "title": "Application log cleanup",
+      "dir": "Log directory {dir}",
+      "files": "{count} files",
+      "total": "Total {size}",
+      "oldest": "Oldest {time}",
+      "newest": "Newest {time}",
+      "mode_label": "Cleanup mode",
+      "mode_by_days": "Keep by days",
+      "mode_by_count": "Keep by file count",
+      "value_label": "Keep value",
+      "days_unit": "days",
+      "count_unit": "files",
+      "preview_none": "Preview: no files will be deleted.",
+      "preview": "Preview: {count} files ({size}) will be deleted.",
+      "active_note": "The active log file is never deleted.",
+      "cleanup_button": "Clean up log files",
+      "consequence": "Cleanup is permanent. Check the preview before running it.",
+      "confirm_title": "Clean up log files",
+      "confirm_body": "Permanently delete {count} log files ({size}). This cannot be undone. {active_note}",
+      "empty": "Log directory is not configured.",
+      "result_success": "Deleted {count} files, freed {size}.",
+      "result_partial": "Deleted {count} files, freed {size}; {failed} failed.",
+      "result_skipped": "The active log file was skipped."
+    },
+    "recent": {
+      "title": "Recent operations",
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "params": "Parameters",
+      "result": "Result",
+      "amount": "Freed / deleted",
+      "empty": "No operations yet.",
+      "success": "Success",
+      "failed": "Failed",
+      "action_system_disk_cache_clear": "Disk cache cleanup",
+      "action_system_gc_run": "Runtime GC",
+      "action_system_log_cleanup_run": "Log cleanup",
+      "params_summary": "{mode} · {value}",
+      "deleted": "{count} deleted · {size}",
+      "failed_count": "{count} failed",
+      "skipped_active": "Active file skipped"
+    },
+    "errors": {
+      "confirm_required": "The action was not confirmed. Please try again.",
+      "instance_mismatch": "The target instance is not the current instance. Switch to it and try again.",
+      "invalid_mode": "Invalid cleanup mode.",
+      "invalid_value": "Invalid value.",
+      "disk_cache_not_configured": "Disk cache is not configured.",
+      "log_dir_not_configured": "Log directory is not configured.",
+      "rate_limited": "Too many requests. Try again shortly.",
+      "rate_limited_retry": "Too many requests. Try again in {seconds} seconds.",
+      "generic": "The action failed. Please try again."
+    },
+    "validation": {
+      "value_required": "Enter a keep value.",
+      "value_range": "Enter a whole number between 1 and 36500."
+    }
   }
 }

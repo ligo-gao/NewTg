@@ -738,5 +738,6 @@
   "nav.playground": "Playground",
   "nav.task_plugins": "Task plugins",
   "nav.redemption_codes": "Redemption Codes",
-  "nav.models": "Models & Vendors"
+  "nav.models": "Models & Vendors",
+  "nav.performance": "Performance"
 }

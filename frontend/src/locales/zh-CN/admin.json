@@ -1184,5 +1184,113 @@
     "ops_select_models": "请至少选择一个模型。",
     "ops_select_target": "请选择目标供应商。",
     "ops_target_in_sources": "目标供应商不能是源供应商之一。"
+  },
+  "performance": {
+    "page": {
+      "title": "性能管理",
+      "instance_label": "实例 {id}",
+      "refresh": "刷新",
+      "last_updated": "上次更新 {time}",
+      "scope_notice": "本页操作只作用于当前实例；多副本部署请逐实例执行。",
+      "offline_snapshot": "离线快照，数据可能已过期",
+      "offline_toast": "网络连接已断开",
+      "desktop_only": "本页仅在桌面屏幕（1024px 及以上）可用。"
+    },
+    "common": {
+      "read_only": "只读：你的账号缺少 settings:manage 权限。",
+      "retry": "重试",
+      "cancel": "取消",
+      "working": "执行中…"
+    },
+    "disk": {
+      "title": "磁盘缓存",
+      "status_enabled": "已启用",
+      "status_disabled": "未启用",
+      "path": "路径 {path}",
+      "files": "文件 {count}",
+      "usage": "合计 {used} / 上限 {max}",
+      "usage_label": "磁盘缓存用量",
+      "threshold": "阈值 {size}",
+      "last_cleared": "最近清理 {time}",
+      "never_cleared": "从未清理",
+      "empty": "磁盘缓存未启用（部署环境变量关闭）",
+      "clear_button": "清理不活跃磁盘缓存",
+      "consequence": "仅删除 10 分钟内未使用的缓存文件；正在进行的请求不受影响。",
+      "confirm_title": "清理不活跃磁盘缓存",
+      "confirm_body": "仅删除 10 分钟内未使用的缓存文件；清理后未命中缓存将回源重建。正在进行的请求不受影响。",
+      "result_success": "已删除 {count} 个文件，释放 {size}。",
+      "result_partial": "已删除 {count} 个文件，释放 {size}；{failed} 个失败。"
+    },
+    "gc": {
+      "title": "运行时 GC",
+      "alloc": "堆分配 {size}",
+      "sys": "系统内存 {size}",
+      "num_gc": "GC 次数 {count}",
+      "goroutines": "Goroutine {count}",
+      "run_button": "触发运行时 GC",
+      "note": "GC 会短暂增加 CPU 占用，可能造成毫秒级停顿。",
+      "confirm_title": "触发运行时 GC",
+      "confirm_body": "GC 会短暂增加 CPU 占用并可能造成毫秒级停顿，确认执行？",
+      "result": "GC 完成，耗时 {ms} ms；堆分配 {before} → {after}。"
+    },
+    "logs": {
+      "title": "应用日志文件清理",
+      "dir": "日志目录 {dir}",
+      "files": "文件 {count}",
+      "total": "合计 {size}",
+      "oldest": "最早 {time}",
+      "newest": "最新 {time}",
+      "mode_label": "清理方式",
+      "mode_by_days": "按天数保留",
+      "mode_by_count": "按文件数保留",
+      "value_label": "保留值",
+      "days_unit": "天",
+      "count_unit": "个",
+      "preview_none": "预览：没有文件会被删除。",
+      "preview": "预览：将删除 {count} 个文件（{size}）。",
+      "active_note": "当前活动日志文件不会被删除",
+      "cleanup_button": "清理日志文件",
+      "consequence": "清理不可恢复，请先确认预览数量。",
+      "confirm_title": "清理日志文件",
+      "confirm_body": "将永久删除 {count} 个日志文件（{size}），不可恢复。{active_note}",
+      "empty": "日志目录未配置",
+      "result_success": "已删除 {count} 个文件，释放 {size}。",
+      "result_partial": "已删除 {count} 个文件，释放 {size}；{failed} 个失败。",
+      "result_skipped": "已跳过活动日志文件。"
+    },
+    "recent": {
+      "title": "最近操作",
+      "time": "时间",
+      "actor": "操作人",
+      "action": "动作",
+      "params": "参数摘要",
+      "result": "结果",
+      "amount": "释放/删除量",
+      "empty": "暂无操作记录",
+      "success": "成功",
+      "failed": "失败",
+      "action_system_disk_cache_clear": "磁盘缓存清理",
+      "action_system_gc_run": "运行时 GC",
+      "action_system_log_cleanup_run": "日志清理",
+      "params_summary": "{mode} · {value}",
+      "deleted": "{count} 个 · {size}",
+      "failed_count": "{count} 个失败",
+      "skipped_active": "已跳过活动文件"
+    },
+    "errors": {
+      "confirm_required": "操作未确认，请重试。",
+      "instance_mismatch": "目标实例与当前实例不一致，请切换到该实例后重试",
+      "invalid_mode": "清理方式无效。",
+      "invalid_value": "参数值无效。",
+      "disk_cache_not_configured": "磁盘缓存未配置。",
+      "log_dir_not_configured": "日志目录未配置。",
+      "rate_limited": "请求过于频繁，请稍后再试。",
+      "rate_limited_retry": "请求过于频繁，请在 {seconds} 秒后重试。",
+      "generic": "操作失败，请重试。"
+    },
+    "validation": {
+      "value_required": "请输入保留值。",
+      "value_range": "请输入 1–36500 之间的整数。"
+    }
   }
 }

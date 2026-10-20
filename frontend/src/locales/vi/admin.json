@@ -1184,5 +1184,113 @@
     "ops_select_models": "Chọn ít nhất một mô hình.",
     "ops_select_target": "Chọn nhà cung cấp đích.",
     "ops_target_in_sources": "Đích không thể là một trong các nguồn."
+  },
+  "performance": {
+    "page": {
+      "title": "Hiệu năng",
+      "instance_label": "Phiên bản {id}",
+      "refresh": "Làm mới",
+      "last_updated": "Cập nhật lần cuối {time}",
+      "scope_notice": "Thao tác chỉ áp dụng cho phiên bản hiện tại. Với triển khai nhiều bản sao, hãy chạy cho từng phiên bản.",
+      "offline_snapshot": "Ảnh chụp ngoại tuyến; dữ liệu có thể đã cũ.",
+      "offline_toast": "Mất kết nối mạng.",
+      "desktop_only": "Trang này chỉ dùng được trên màn hình máy tính (từ 1024px)."
+    },
+    "common": {
+      "read_only": "Chỉ đọc: tài khoản của bạn thiếu quyền settings:manage.",
+      "retry": "Thử lại",
+      "cancel": "Hủy",
+      "working": "Đang thực hiện…"
+    },
+    "disk": {
+      "title": "Bộ đệm đĩa",
+      "status_enabled": "Đã bật",
+      "status_disabled": "Đã tắt",
+      "path": "Đường dẫn {path}",
+      "files": "{count} tệp",
+      "usage": "{used} / giới hạn {max}",
+      "usage_label": "Mức dùng bộ đệm đĩa",
+      "threshold": "Ngưỡng {size}",
+      "last_cleared": "Dọn lần cuối {time}",
+      "never_cleared": "Chưa từng dọn",
+      "empty": "Bộ đệm đĩa đã tắt (bị tắt bởi biến môi trường triển khai).",
+      "clear_button": "Dọn bộ đệm đĩa không hoạt động",
+      "consequence": "Chỉ xóa các tệp không dùng trong 10 phút. Các yêu cầu đang chạy không bị ảnh hưởng.",
+      "confirm_title": "Dọn bộ đệm đĩa không hoạt động",
+      "confirm_body": "Chỉ xóa các tệp không dùng trong 10 phút. Bộ đệm thiếu sẽ được tạo lại từ nguồn. Các yêu cầu đang chạy không bị ảnh hưởng.",
+      "result_success": "Đã xóa {count} tệp, giải phóng {size}.",
+      "result_partial": "Đã xóa {count} tệp, giải phóng {size}; {failed} thất bại."
+    },
+    "gc": {
+      "title": "GC thời gian chạy",
+      "alloc": "Cấp phát heap {size}",
+      "sys": "Bộ nhớ hệ thống {size}",
+      "num_gc": "Số lần GC {count}",
+      "goroutines": "Goroutine {count}",
+      "run_button": "Chạy GC thời gian chạy",
+      "note": "GC tạm thời tăng mức dùng CPU và có thể gây dừng vài mili giây.",
+      "confirm_title": "Chạy GC thời gian chạy",
+      "confirm_body": "GC tạm thời tăng mức dùng CPU và có thể gây dừng vài mili giây. Chạy?",
+      "result": "GC hoàn tất trong {ms} ms; cấp phát heap {before} → {after}."
+    },
+    "logs": {
+      "title": "Dọn tệp nhật ký ứng dụng",
+      "dir": "Thư mục nhật ký {dir}",
+      "files": "{count} tệp",
+      "total": "Tổng {size}",
+      "oldest": "Cũ nhất {time}",
+      "newest": "Mới nhất {time}",
+      "mode_label": "Cách dọn",
+      "mode_by_days": "Giữ theo số ngày",
+      "mode_by_count": "Giữ theo số tệp",
+      "value_label": "Giá trị giữ lại",
+      "days_unit": "ngày",
+      "count_unit": "tệp",
+      "preview_none": "Xem trước: không có tệp nào sẽ bị xóa.",
+      "preview": "Xem trước: {count} tệp ({size}) sẽ bị xóa.",
+      "active_note": "Tệp nhật ký đang hoạt động không bao giờ bị xóa.",
+      "cleanup_button": "Dọn tệp nhật ký",
+      "consequence": "Dọn không thể hoàn tác. Hãy kiểm tra xem trước trước khi chạy.",
+      "confirm_title": "Dọn tệp nhật ký",
+      "confirm_body": "Xóa vĩnh viễn {count} tệp nhật ký ({size}). Không thể hoàn tác. {active_note}",
+      "empty": "Thư mục nhật ký chưa được cấu hình.",
+      "result_success": "Đã xóa {count} tệp, giải phóng {size}.",
+      "result_partial": "Đã xóa {count} tệp, giải phóng {size}; {failed} thất bại.",
+      "result_skipped": "Đã bỏ qua tệp nhật ký đang hoạt động."
+    },
+    "recent": {
+      "title": "Thao tác gần đây",
+      "time": "Thời gian",
+      "actor": "Người thực hiện",
+      "action": "Hành động",
+      "params": "Tham số",
+      "result": "Kết quả",
+      "amount": "Giải phóng / đã xóa",
+      "empty": "Chưa có thao tác nào.",
+      "success": "Thành công",
+      "failed": "Thất bại",
+      "action_system_disk_cache_clear": "Dọn bộ đệm đĩa",
+      "action_system_gc_run": "GC thời gian chạy",
+      "action_system_log_cleanup_run": "Dọn nhật ký",
+      "params_summary": "{mode} · {value}",
+      "deleted": "Đã xóa {count} · {size}",
+      "failed_count": "{count} thất bại",
+      "skipped_active": "Đã bỏ qua tệp đang hoạt động"
+    },
+    "errors": {
+      "confirm_required": "Thao tác chưa được xác nhận. Vui lòng thử lại.",
+      "instance_mismatch": "Phiên bản đích không phải phiên bản hiện tại. Hãy chuyển sang phiên bản đó và thử lại.",
+      "invalid_mode": "Cách dọn không hợp lệ.",
+      "invalid_value": "Giá trị không hợp lệ.",
+      "disk_cache_not_configured": "Bộ đệm đĩa chưa được cấu hình.",
+      "log_dir_not_configured": "Thư mục nhật ký chưa được cấu hình.",
+      "rate_limited": "Quá nhiều yêu cầu. Hãy thử lại sau.",
+      "rate_limited_retry": "Quá nhiều yêu cầu. Hãy thử lại sau {seconds} giây.",
+      "generic": "Thao tác thất bại. Vui lòng thử lại."
+    },
+    "validation": {
+      "value_required": "Hãy nhập giá trị giữ lại.",
+      "value_range": "Hãy nhập số nguyên từ 1 đến 36500."
+    }
   }
 }
