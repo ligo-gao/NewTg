@@ -42,6 +42,7 @@ import (
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
+	"newtg/gateway/internal/version"
 	"newtg/gateway/plugins"
 )
 
@@ -537,6 +538,8 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Redis:      deps.Redis,
 			InstanceID: deps.InstanceID,
 			Role:       "gateway",
+			Version:    version.Version,
+			StartedAt:  deps.StartedAt,
 			Authz:      deps.Authz,
 			Logger:     deps.Logger,
 		}).Register(rt.protected)

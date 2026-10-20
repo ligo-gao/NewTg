@@ -36,6 +36,8 @@ func newInstanceTestEnv(t *testing.T, instanceID, role string, authz *rbac.Authz
 		Redis:      rdb,
 		InstanceID: instanceID,
 		Role:       role,
+		Version:    "1.5.0",
+		StartedAt:  time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC),
 		Authz:      authz,
 		Logger:     testLogger(),
 	})
@@ -135,6 +137,38 @@ func TestInstanceListIncludesCurrentAndBothRoles(t *testing.T) {
 	}
 	if roles["gateway-1"] != "gateway" || roles["worker-1"] != "worker" {
 		t.Fatalf("roles = %+v", roles)
+	}
+	// 契约按 instance_id 升序；兜底注入的行必须参与排序，不能直接 append。
+	if body.Items[0].InstanceID != "gateway-1" || body.Items[1].InstanceID != "worker-1" {
+		t.Fatalf("items 顺序 = [%s, %s]，期望升序", body.Items[0].InstanceID, body.Items[1].InstanceID)
+	}
+	// 注入行必须与心跳行同形：零值时间会被前端当真实日期渲染。
+	injected := body.Items[0]
+	if injected.Version == "" || injected.StartedAt.IsZero() || injected.LastSeen.IsZero() {
+		t.Fatalf("注入的当前实例字段不完整：%+v", injected)
+	}
+}
+
+// TestInstanceListSortsInjectedCurrentInstance 覆盖「当前实例 id 排在已有
+// 心跳之后」的方向：若实现只做 append，本用例的 items[0] 会是 worker-1。
+func TestInstanceListSortsInjectedCurrentInstance(t *testing.T) {
+	env := newInstanceTestEnv(t, "aaa-gateway", "gateway", rbac.NewAuthzMiddleware())
+	if err := env.rdb.HSet(t.Context(), InstanceHeartbeatKey("worker-1"), map[string]interface{}{
+		"status":     "active",
+		"role":       "worker",
+		"version":    "1.4.1",
+		"started_at": "2026-10-20T10:00:00Z",
+		"last_seen":  "2026-10-20T10:00:30Z",
+	}).Err(); err != nil {
+		t.Fatalf("seed worker heartbeat: %v", err)
+	}
+
+	_, body := listInstancesRequest(t, env, instanceManager())
+	if len(body.Items) != 2 {
+		t.Fatalf("items = %+v，期望 2 条", body.Items)
+	}
+	if body.Items[0].InstanceID != "aaa-gateway" || body.Items[1].InstanceID != "worker-1" {
+		t.Fatalf("items 顺序 = [%s, %s]，期望升序", body.Items[0].InstanceID, body.Items[1].InstanceID)
 	}
 }
 

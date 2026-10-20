@@ -316,17 +316,6 @@ func ListInstanceHeartbeats(ctx context.Context, rdb *redis.Client) ([]InstanceR
 	return records, nil
 }
 
-// DefaultInstanceRole 返回当前运行模式对应的角色枚举。RUN_MODE 的合法值
-// 由 config 校验为 gateway/worker/migrate；migrate 不常驻、不写心跳。
-func DefaultInstanceRole(runMode string) string {
-	switch strings.TrimSpace(runMode) {
-	case instanceRoleWorker:
-		return instanceRoleWorker
-	default:
-		return instanceRoleGateway
-	}
-}
-
 // ResolveProcessInstanceID 是生产路径的便捷封装（os.Getenv + os.Hostname），
 // 供 platform 装配与 httpapi 组合根共用。
 func ResolveProcessInstanceID() string {

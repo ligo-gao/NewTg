@@ -18,6 +18,8 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -38,8 +40,13 @@ type InstanceHandlerConfig struct {
 	Redis      *redis.Client
 	InstanceID string
 	Role       string
-	Authz      *rbac.AuthzMiddleware
-	Logger     *slog.Logger
+	// Version / StartedAt 与心跳写入侧取同一份进程信息：兜底注入的当前实例
+	// 行必须与心跳行同形，否则 version 为空、started_at 序列化成零值日期
+	// （B3 复核 LOW-2）。
+	Version   string
+	StartedAt time.Time
+	Authz     *rbac.AuthzMiddleware
+	Logger    *slog.Logger
 }
 
 // InstanceHandlers 持有实例列表依赖。
@@ -47,6 +54,8 @@ type InstanceHandlers struct {
 	rdb        *redis.Client
 	instanceID string
 	role       string
+	version    string
+	startedAt  time.Time
 	authz      *rbac.AuthzMiddleware
 	log        *slog.Logger
 }
@@ -66,6 +75,8 @@ func NewInstanceHandlers(cfg InstanceHandlerConfig) *InstanceHandlers {
 		rdb:        cfg.Redis,
 		instanceID: cfg.InstanceID,
 		role:       role,
+		version:    cfg.Version,
+		startedAt:  cfg.StartedAt,
 		authz:      cfg.Authz,
 		log:        log,
 	}
@@ -99,12 +110,28 @@ func (h *InstanceHandlers) handleList(w http.ResponseWriter, r *http.Request) {
 	// 当前实例即使心跳写失败也必须在列表里：否则管理员在故障窗口内会看到
 	// 「自己不存在」，页头实例标识随之消失。
 	if h.instanceID != "" && !containsInstance(items, h.instanceID) {
+		lastSeen := time.Now().UTC()
+		startedAt := h.startedAt
+		if startedAt.IsZero() {
+			// 装配未提供启动时间时退化为「现在」：宁可保守，也不要让前端把
+			// 0001-01-01 当成真实启动日期渲染。
+			startedAt = lastSeen
+		}
 		items = append(items, InstanceRecord{
 			InstanceID: h.instanceID,
 			Status:     instanceStatusLive,
 			Role:       h.role,
+			Version:    h.version,
+			StartedAt:  startedAt,
+			LastSeen:   lastSeen,
 		})
 	}
+	// append 之后必须重排：开放端点契约按 instance_id 升序返回，而兜底注入
+	// 恰好发生在「Redis 里读不到本实例」的故障窗口——不重排会让最常见于
+	// 故障期的响应顺序违反契约（B3 复核 MEDIUM-1）。
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].InstanceID < items[j].InstanceID
+	})
 	if items == nil {
 		items = []InstanceRecord{}
 	}
