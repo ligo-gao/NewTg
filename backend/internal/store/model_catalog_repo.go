@@ -249,7 +249,14 @@ type VendorPreview struct {
 	// Affected 与 ApplyVendorOperations 返回的 Affected 同口径：
 	// assign/merge 为受影响的模型行数，delete 为将被删除的供应商数。
 	Affected int64
-	// Conflicts 只在调用方传了非空 ExpectedVersion 且与当前指纹不一致时非空。
+	// Conflict 是「调用方传了非空 ExpectedVersion 且与当前指纹不一致」的
+	// 权威布尔值。它与 Conflicts 的关系：指纹不一致时恒为 true；但涉及集合
+	// 为空（assign target=0）时 Conflicts 只能为空列表，此时仍可用 Conflict
+	// 判定过期，不会把「指纹过期」误认为「无冲突」。
+	Conflict bool
+	// Conflicts 在 Conflict 为 true 时给出全部涉及供应商的当前版本；涉及集合
+	// 为空时为空列表（见 Conflict 的说明）。调用方应以 Conflict 判定是否冲突，
+	// 用本列表定位漂移原因。
 	Conflicts []VendorVersionConflict
 	// ExpectedVersion 是当前操作集的指纹；调用方应原样回传给 apply。
 	ExpectedVersion string
@@ -794,8 +801,8 @@ func (r *SQLModelCatalogRepo) ApplyVendorOperations(ctx context.Context, op Vend
 // 供 D1b 的 preview 端点调用。
 //
 // 不加锁：preview 是建议性的，最终一致性由 apply 在同一事务内重算指纹保证。
-// Conflicts 只在调用方主动传了 ExpectedVersion 时计算——首次 preview 的客户端
-// 还没有指纹，把「未传」报告成「全部冲突」只会制造噪音。
+// Conflict/Conflicts 只在调用方主动传了 ExpectedVersion 时计算——首次 preview
+// 的客户端还没有指纹，把「未传」报告成「全部冲突」只会制造噪音。
 func (r *SQLModelCatalogRepo) PreviewVendorOperations(ctx context.Context, op VendorOperation) (VendorPreview, error) {
 	involved, err := vendorOperationVendorIDs(op)
 	if err != nil {
@@ -814,6 +821,9 @@ func (r *SQLModelCatalogRepo) PreviewVendorOperations(ctx context.Context, op Ve
 		preview.Vendors = append(preview.Vendors, VendorVersionRef{VendorID: v.ID, Version: v.Version()})
 	}
 	if op.ExpectedVersion != "" && op.ExpectedVersion != preview.ExpectedVersion {
+		// 涉及集合为空（assign target=0）时 vendors 为空，Conflicts 也会是空
+		// 列表；Conflict 单独记录判定结果，调用方不会因此漏判过期指纹。
+		preview.Conflict = true
 		preview.Conflicts = vendorVersionConflicts(vendors)
 	}
 
@@ -1009,18 +1019,31 @@ func applyVendorMerge(ctx context.Context, tx *sql.Tx, op VendorOperation) (int6
 	}
 	_ = rows.Close()
 
+	// 逐条 UPDATE 时重复校验源归属（`vendor_id = ANY(sources)`）：上面的 SELECT
+	// 只是快照，并发 assign/merge 可能在 SELECT 与 UPDATE 之间把某行改挂到第三方
+	// 供应商。READ COMMITTED 下 UPDATE 会按最新已提交行重新求值 WHERE，带归属
+	// 条件即可跳过这些行，避免把别人的改挂覆盖回目标（lost update）。Affected
+	// 按 RowsAffected 累加，与真正改挂的行数一致。
+	var affected int64
 	for _, id := range modelIDs {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE model_meta SET vendor_id = $1, updated_at = now() WHERE id = $2`, target, id); err != nil {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE model_meta SET vendor_id = $1, updated_at = now()
+			 WHERE id = $2 AND vendor_id = ANY($3::bigint[])`, target, id, sources)
+		if err != nil {
 			return 0, fmt.Errorf("store: merge model(%d) into vendor(%d): %w", id, target, err)
 		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("store: merge model(%d) rows: %w", id, err)
+		}
+		affected += n
 	}
 	for _, source := range sources {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM vendors WHERE id = $1`, source); err != nil {
 			return 0, fmt.Errorf("store: delete merged vendor(%d): %w", source, err)
 		}
 	}
-	return int64(len(modelIDs)), nil
+	return affected, nil
 }
 
 func applyVendorDelete(ctx context.Context, tx *sql.Tx, op VendorOperation) (int64, error) {
@@ -1081,6 +1104,18 @@ func defaultJSONBytes(value []byte, fallback string) []byte {
 func isInvalidTextRepresentation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
+}
+
+// isConstraintViolation 精确识别指定名称的 CHECK 约束冲突（SQLSTATE 23514）。
+//
+// 【为什么必须按名字判定】channels 上不止一条 CHECK：除「至少 1 个元素」的
+// channels_supported_models_chk 外，还有 channels_test_model_in_models_chk、
+// channels_name_len_chk 等。若把全部 23514 都映射为 ErrChannelModelsEmpty，
+// 例如「删除的模型恰好是 test_model」会被误报成「渠道将变空」，调用方据此
+// 提示管理员的操作也是错的。故只在 ConstraintName 精确匹配时映射。
+func isConstraintViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == constraint
 }
 
 // validateVendorReference 在同一事务内以 FOR SHARE 锁定被引用的供应商。
@@ -1524,7 +1559,8 @@ func (r *SQLModelCatalogRepo) MissingModels(ctx context.Context) (MissingResult,
 // （至少 1 个元素）。若移除后某启用渠道会变空，返回 ErrChannelModelsEmpty
 // 并整体回滚——部分渠道被掏空、档案却没删的中间态比直接失败更难修复。
 // DB CHECK 的 23514 作为兜底同样映射为该哨兵（覆盖停用渠道等预检未覆盖的
-// 情形），绝不让数据层约束以 500 泄露给调用方。
+// 情形），但只对 channels_supported_models_chk 生效；其它 CHECK 违反原样
+// 包装返回，不会被误报成「渠道将变空」。
 //
 // 【部分 id 不存在（L-5）】不报错：Requested 是去重后的选择集，Deleted 是
 // 实际命中数；全部不存在才返回 NotFound（与单条删除同口径）。
@@ -1606,8 +1642,10 @@ func (r *SQLModelCatalogRepo) BatchDeleteModelMeta(ctx context.Context, ids []in
 			)`, exactNames)
 		if err != nil {
 			// 预检只覆盖启用渠道；停用渠道同样受 CHECK 约束，命中时按同一哨兵
-			// 返回（此时事务已被 PG 标记为 aborted，无法再查出渠道 id）。
-			if isCheckViolation(err) {
+			// 返回（此时事务已被 PG 标记为 aborted，无法再查出渠道 id）。只认
+			// channels_supported_models_chk：其它 CHECK（如 test_model 不再属于
+			// supported_models）不能误报为「渠道将变空」。
+			if isConstraintViolation(err, "channels_supported_models_chk") {
 				return BatchDeleteResult{}, ErrChannelModelsEmpty{}
 			}
 			return BatchDeleteResult{}, fmt.Errorf("store: remove models from channels: %w", err)

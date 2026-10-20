@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // 本文件是 D1 模型目录仓储的集成验收：
@@ -857,8 +859,13 @@ func TestValidateModelMetaInput(t *testing.T) {
 	}{
 		{"description 512 ok", func(m *ModelMeta) { m.Description = strPtr(strings.Repeat("d", 512)) }, ""},
 		{"description 513 rejected", func(m *ModelMeta) { m.Description = strPtr(strings.Repeat("d", 513)) }, "description"},
+		// CJK 用例：UTF-8 下一个汉字 3 字节。上限按 rune 计，按字节计会提前拒绝。
+		{"description 512 CJK ok", func(m *ModelMeta) { m.Description = strPtr(strings.Repeat("模", 512)) }, ""},
+		{"description 513 CJK rejected", func(m *ModelMeta) { m.Description = strPtr(strings.Repeat("模", 513)) }, "description"},
 		{"display_name 64 ok", func(m *ModelMeta) { m.DisplayName = strPtr(strings.Repeat("n", 64)) }, ""},
 		{"display_name 65 rejected", func(m *ModelMeta) { m.DisplayName = strPtr(strings.Repeat("n", 65)) }, "display_name"},
+		{"display_name 64 CJK ok", func(m *ModelMeta) { m.DisplayName = strPtr(strings.Repeat("名", 64)) }, ""},
+		{"display_name 65 CJK rejected", func(m *ModelMeta) { m.DisplayName = strPtr(strings.Repeat("名", 65)) }, "display_name"},
 		{"display_name empty ok", func(m *ModelMeta) { m.DisplayName = strPtr("") }, ""},
 		{"tags ok", func(m *ModelMeta) { m.Tags = tags("a", "B") }, ""},
 		{"tags empty ok", func(m *ModelMeta) { m.Tags = []byte(`[]`) }, ""},
@@ -918,5 +925,282 @@ func TestValidateModelMetaInput(t *testing.T) {
 				t.Fatalf("Field = %q，want %q（err=%v）", invalid.Field, tc.wantField, err)
 			}
 		})
+	}
+}
+
+// waitForCatalogLockWaiter 轮询 pg_stat_activity，直到观察到一条匹配
+// queryPattern 的、正在等待行锁的语句。用于稳定地定位「并发窗口已打开」，
+// 而不是依赖 sleep 的时序猜测。
+func waitForCatalogLockWaiter(t *testing.T, db *sql.DB, queryPattern string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var waiters int
+		err := db.QueryRow(`
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND pid <> pg_backend_pid()
+			  AND wait_event_type = 'Lock'
+			  AND query LIKE $1`, queryPattern).Scan(&waiters)
+		if err != nil {
+			t.Fatalf("查询 pg_stat_activity: %v", err)
+		}
+		if waiters > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待 %s 内没有观察到匹配 %q 的锁等待", timeout, queryPattern)
+}
+
+// TestModelCatalogVendorMergeSkipsConcurrentlyMovedRows 覆盖 Low-1：merge 的
+// SELECT 与逐条 UPDATE 之间存在窗口，另一连接把某行改挂到第三方供应商后，
+// merge 不得覆盖该改挂（lost update），Affected 也只计真正改挂的行。
+//
+// 窗口构造：先用第二个连接锁住一行的行锁，merge 的 SELECT（快照读）不会阻塞，
+// 随后的 UPDATE 会阻塞在该行锁上；确认出现锁等待后再在同一事务里改挂并提交，
+// UPDATE 恢复时会按最新已提交行重新求值 WHERE（READ COMMITTED）。
+func TestModelCatalogVendorMergeSkipsConcurrentlyMovedRows(t *testing.T) {
+	dbA := openTestDB(t)
+	dbB := openTestDB(t)
+	repoA := NewModelCatalogRepo(dbA)
+	ctx := catalogCtx()
+
+	target, err := repoA.CreateVendor(ctx, VendorInput{Name: catalogUnique("mg-target")})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	source, err := repoA.CreateVendor(ctx, VendorInput{Name: catalogUnique("mg-source")})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	third, err := repoA.CreateVendor(ctx, VendorInput{Name: catalogUnique("mg-third")})
+	if err != nil {
+		t.Fatalf("create third: %v", err)
+	}
+	// 两行都属于 source；先创建的行 id 更小，merge 会先更新它并在此阻塞。
+	moved, err := repoA.CreateModelMeta(ctx, ModelMetaInput{ModelName: catalogUnique("mg-moved"), VendorID: &source.ID})
+	if err != nil {
+		t.Fatalf("create moved meta: %v", err)
+	}
+	kept, err := repoA.CreateModelMeta(ctx, ModelMetaInput{ModelName: catalogUnique("mg-kept"), VendorID: &source.ID})
+	if err != nil {
+		t.Fatalf("create kept meta: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = dbA.Exec(`DELETE FROM model_meta WHERE id = ANY($1)`, []int64{moved.ID, kept.ID})
+		_, _ = dbA.Exec(`DELETE FROM vendors WHERE id = ANY($1)`, []int64{target.ID, third.ID})
+		_, _ = dbA.Exec(`DELETE FROM vendors WHERE id = $1`, source.ID)
+	})
+
+	op := VendorOperation{Action: VendorActionMerge, VendorIDs: []int64{source.ID}, TargetVendorID: target.ID}
+	preview, err := repoA.PreviewVendorOperations(ctx, op)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview.Affected != 2 {
+		t.Fatalf("preview Affected = %d，want 2", preview.Affected)
+	}
+	op.ExpectedVersion = preview.ExpectedVersion
+
+	tx, err := dbB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var lockedID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM model_meta WHERE id = $1 FOR UPDATE`, moved.ID).Scan(&lockedID); err != nil {
+		t.Fatalf("lock moved row: %v", err)
+	}
+
+	type applyResult struct {
+		res VendorOperationResult
+		err error
+	}
+	done := make(chan applyResult, 1)
+	applyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	go func() {
+		res, err := repoA.ApplyVendorOperations(applyCtx, op)
+		done <- applyResult{res: res, err: err}
+	}()
+
+	// merge 已读完快照并卡在对 moved 行的 UPDATE 上——窗口稳定打开。
+	waitForCatalogLockWaiter(t, dbB, "%UPDATE model_meta SET vendor_id%", 5*time.Second)
+
+	// 在 merge 等待期间把 moved 改挂到第三方供应商并提交。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE model_meta SET vendor_id = $1, updated_at = now() WHERE id = $2`, third.ID, moved.ID); err != nil {
+		t.Fatalf("concurrent reassign: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit concurrent reassign: %v", err)
+	}
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("merge err = %v", got.err)
+	}
+	if got.res.Affected != 1 {
+		t.Fatalf("merge Affected = %d，want 1（moved 行已不属于 source，不得计数）", got.res.Affected)
+	}
+	movedAfter, err := repoA.GetModelMeta(ctx, moved.ID)
+	if err != nil {
+		t.Fatalf("get moved: %v", err)
+	}
+	if movedAfter.VendorID == nil || *movedAfter.VendorID != third.ID {
+		t.Fatalf("moved 行的归属被 merge 覆盖：%v，want %d", movedAfter.VendorID, third.ID)
+	}
+	keptAfter, err := repoA.GetModelMeta(ctx, kept.ID)
+	if err != nil {
+		t.Fatalf("get kept: %v", err)
+	}
+	if keptAfter.VendorID == nil || *keptAfter.VendorID != target.ID {
+		t.Fatalf("kept 行 vendor = %v，want %d", keptAfter.VendorID, target.ID)
+	}
+	if _, err := repoA.GetVendor(ctx, source.ID); !errors.Is(err, ErrVendorNotFound) {
+		t.Fatalf("merge 后源供应商应已删除，err = %v", err)
+	}
+}
+
+// TestModelCatalogPreviewConflictWithEmptyInvolvedSet 覆盖 Low-3：assign
+// target=0 的涉及集合为空，Conflicts 只能是空列表，但过期指纹仍须可判定。
+func TestModelCatalogPreviewConflictWithEmptyInvolvedSet(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewModelCatalogRepo(db)
+	ctx := catalogCtx()
+
+	meta, err := repo.CreateModelMeta(ctx, ModelMetaInput{ModelName: catalogUnique("pc-empty")})
+	if err != nil {
+		t.Fatalf("create meta: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM model_meta WHERE id = $1`, meta.ID) })
+
+	stale := strings.Repeat("0", 64)
+	op := VendorOperation{Action: VendorActionAssign, ModelIDs: []int64{meta.ID}, ExpectedVersion: stale}
+	preview, err := repo.PreviewVendorOperations(ctx, op)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(preview.Vendors) != 0 || len(preview.Conflicts) != 0 {
+		t.Fatalf("preview Vendors/Conflicts = %+v/%+v，want 均空", preview.Vendors, preview.Conflicts)
+	}
+	if !preview.Conflict {
+		t.Fatalf("涉及集合为空时过期指纹未被标记：%+v", preview)
+	}
+	if preview.Affected != 1 {
+		t.Fatalf("preview Affected = %d，want 1", preview.Affected)
+	}
+
+	// 回传当前指纹 → 不冲突。
+	op.ExpectedVersion = preview.ExpectedVersion
+	fresh, err := repo.PreviewVendorOperations(ctx, op)
+	if err != nil {
+		t.Fatalf("fresh preview: %v", err)
+	}
+	if fresh.Conflict || len(fresh.Conflicts) != 0 {
+		t.Fatalf("当前指纹被标记为冲突：%+v", fresh)
+	}
+
+	// apply 侧同口径：过期指纹整体回滚。
+	op.ExpectedVersion = stale
+	if _, err := repo.ApplyVendorOperations(ctx, op); !errors.Is(err, ErrVendorVersionConflict{}) {
+		t.Fatalf("过期指纹 apply err = %v，want ErrVendorVersionConflict", err)
+	}
+	if got, err := repo.GetModelMeta(ctx, meta.ID); err != nil || got.VendorID != nil {
+		t.Fatalf("冲突时不应写入：vendor=%v err=%v", got.VendorID, err)
+	}
+}
+
+// TestModelCatalogBatchDeleteCheckConstraintMapping 覆盖 Low-2 / Low-4①：
+// 停用渠道被掏空走 23514 兜底；test_model 约束违反不得误报为「渠道将变空」。
+func TestModelCatalogBatchDeleteCheckConstraintMapping(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewModelCatalogRepo(db)
+	ctx := catalogCtx()
+
+	// ① 停用渠道：预检只覆盖启用渠道，由 DB CHECK 兜底。
+	emptiedName := catalogUnique("bd-disabled")
+	emptied, err := repo.CreateModelMeta(ctx, ModelMetaInput{ModelName: emptiedName})
+	if err != nil {
+		t.Fatalf("create emptied meta: %v", err)
+	}
+	emptiedChannel := insertCatalogChannel(t, db, []byte(fmt.Sprintf(`[%q]`, emptiedName)), 2)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM model_meta WHERE id = $1`, emptied.ID)
+		_, _ = db.Exec(`DELETE FROM channels WHERE id = $1`, emptiedChannel)
+	})
+	_, err = repo.BatchDeleteModelMeta(ctx, []int64{emptied.ID}, true, false)
+	var empty ErrChannelModelsEmpty
+	if !errors.As(err, &empty) {
+		t.Fatalf("停用渠道被掏空 err = %v，want ErrChannelModelsEmpty", err)
+	}
+	if len(empty.ChannelIDs) != 0 {
+		t.Fatalf("DB 兜底路径 ChannelIDs = %v，want 空（无法查回渠道 id）", empty.ChannelIDs)
+	}
+	if _, err := repo.GetModelMeta(ctx, emptied.ID); err != nil {
+		t.Fatalf("哨兵返回后 model_meta 应保留：%v", err)
+	}
+
+	// ② test_model 不再属于 supported_models：命中另一条 CHECK，必须原样包装。
+	testModel := catalogUnique("bd-testmodel")
+	keepModel := catalogUnique("bd-keepmodel")
+	tested, err := repo.CreateModelMeta(ctx, ModelMetaInput{ModelName: testModel})
+	if err != nil {
+		t.Fatalf("create test_model meta: %v", err)
+	}
+	var testedChannel int64
+	if err := db.QueryRow(`
+		INSERT INTO channels (name, type, credentials, supported_models, status, test_model)
+		VALUES ($1, 'openai', decode('00','hex'), $2, 2, $3) RETURNING id`,
+		catalogUnique("ch-testmodel"),
+		[]byte(fmt.Sprintf(`[%q,%q]`, testModel, keepModel)), testModel).Scan(&testedChannel); err != nil {
+		t.Fatalf("insert channel with test_model: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM model_meta WHERE id = $1`, tested.ID)
+		_, _ = db.Exec(`DELETE FROM channels WHERE id = $1`, testedChannel)
+	})
+
+	if _, err := repo.BatchDeleteModelMeta(ctx, []int64{tested.ID}, true, false); err == nil {
+		t.Fatalf("删除 test_model 后约束违反应返回错误")
+	} else {
+		if errors.Is(err, ErrChannelModelsEmpty{}) {
+			t.Fatalf("test_model 约束被误报为 ErrChannelModelsEmpty：%v", err)
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" ||
+			pgErr.ConstraintName != "channels_test_model_in_models_chk" {
+			t.Fatalf("err = %v，want 包装 channels_test_model_in_models_chk 的 23514", err)
+		}
+	}
+	if _, err := repo.GetModelMeta(ctx, tested.ID); err != nil {
+		t.Fatalf("失败事务应整体回滚，model_meta 应保留：%v", err)
+	}
+}
+
+// TestModelCatalogCreateModelMetaValidatesEndpoints 覆盖 Low-4②：Create 入口
+// 确实调用了字段校验（非法 endpoints 在写库前被拒）。
+func TestModelCatalogCreateModelMetaValidatesEndpoints(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewModelCatalogRepo(db)
+	ctx := catalogCtx()
+
+	name := catalogUnique("create-invalid-ep")
+	_, err := repo.CreateModelMeta(ctx, ModelMetaInput{
+		ModelName: name,
+		Endpoints: []byte(`[]`),
+	})
+	var invalid ErrModelMetaInvalid
+	if !errors.As(err, &invalid) || invalid.Field != "endpoints" {
+		t.Fatalf("err = %v，want ErrModelMetaInvalid{Field:endpoints}", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM model_meta WHERE model_name = $1`, name).Scan(&count); err != nil {
+		t.Fatalf("count model_meta: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("校验失败仍写入了 %d 行", count)
 	}
 }
