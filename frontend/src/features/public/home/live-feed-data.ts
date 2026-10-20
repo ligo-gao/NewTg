@@ -6,6 +6,10 @@
  * id/ts/model/upstream/tokens_in/tokens_out/latency_ms/status —— 不含费用、
  * 用户、渠道或上游凭据（裁决 A-1）。本模块在边界处丢弃不合约的条目，
  * 一条坏数据不会让整块动态消失。
+ *
+ * 聚合条（`window:{calls,cost_credits}`）只由轮询端点返回；SSE 帧仍是
+ * 纯事件（A6 冻结：不做心跳附带）。`window` 缺失/损坏时返回 null，组件
+ * 隐藏聚合条而不是把 0 当成真实读数展示。
  */
 
 import { toApiError } from '@/api/client'
@@ -14,6 +18,13 @@ import type { components } from '@/api/schema'
 
 export type LiveFeedEvent = components['schemas']['LiveFeedEvent']
 export type LiveFeedUpstream = components['schemas']['LiveFeedUpstream']
+export type LiveFeedWindow = components['schemas']['LiveFeedWindow']
+
+/** 一次轮询/播种得到的快照：事件 + 可选的聚合条。 */
+export interface LiveFeedSnapshot {
+  events: LiveFeedEvent[]
+  window: LiveFeedWindow | null
+}
 
 export const LIVE_FEED_LIMIT = 20
 export const LIVE_FEED_SSE_PATH = '/api/home/live-feed/stream'
@@ -62,24 +73,43 @@ export function normalizeLiveFeedEvent(value: unknown): LiveFeedEvent | null {
   }
 }
 
-export function normalizeLiveFeedList(body: unknown): LiveFeedEvent[] {
+/**
+ * 聚合条校验。calls/cost_credits 都必须是非负整数；任何一项不合格都让
+ * 整个 window 失效（隐藏聚合条），不把半可信读数展示成「真实费用」。
+ */
+export function normalizeLiveFeedWindow(value: unknown): LiveFeedWindow | null {
+  if (!isRecord(value)) return null
+  const { calls, cost_credits: costCredits } = value
+  if (
+    !Number.isInteger(calls) ||
+    !Number.isInteger(costCredits) ||
+    (calls as number) < 0 ||
+    (costCredits as number) < 0
+  ) {
+    return null
+  }
+  return { calls: calls as number, cost_credits: costCredits as number }
+}
+
+export function normalizeLiveFeedSnapshot(body: unknown): LiveFeedSnapshot {
   if (!isRecord(body) || !Array.isArray(body.events)) {
     throw new Error('invalid live feed envelope')
   }
-  return body.events.flatMap((entry) => {
+  const events = body.events.flatMap((entry) => {
     const event = normalizeLiveFeedEvent(entry)
     return event === null ? [] : [event]
   })
+  return { events, window: normalizeLiveFeedWindow(body.window) }
 }
 
 function apiBase(): string {
   return typeof location !== 'undefined' ? location.origin : 'http://localhost'
 }
 
-export async function fetchLiveFeedEvents(
+export async function fetchLiveFeedSnapshot(
   limit: number = LIVE_FEED_LIMIT,
   signal?: AbortSignal,
-): Promise<LiveFeedEvent[]> {
+): Promise<LiveFeedSnapshot> {
   let response: Response
   try {
     response = await fetch(
@@ -95,7 +125,7 @@ export async function fetchLiveFeedEvents(
     throw parseProblem({ status: 0 })
   }
   if (!response.ok) throw await toApiError(response)
-  return normalizeLiveFeedList(await response.json().catch(() => undefined))
+  return normalizeLiveFeedSnapshot(await response.json().catch(() => undefined))
 }
 
 /** SSE `event: call` 帧的 data 解析；损坏帧返回 null 而不是抛错断流。 */

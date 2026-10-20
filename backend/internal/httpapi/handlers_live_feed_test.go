@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -476,4 +477,88 @@ func TestLiveFeedStreamRenewsLeaseAndDropsOnEviction(t *testing.T) {
 		t.Fatalf("evict lease key: %v", err)
 	}
 	waitForDone(t, done)
+}
+
+// ---------------------------------------------------------------------------
+// 聚合条 window（F-09-02 / A6 冻结语义）
+// ---------------------------------------------------------------------------
+
+// 成功事件计 cost、失败事件只计 calls；逐行事件仍不含任何费用字段。
+func TestLiveFeedListIncludesWindowAggregate(t *testing.T) {
+	env := newLiveFeedTestEnv(t, nil, nil)
+	ctx := context.Background()
+	pub := billing.NewRedisFeedPublisher(env.rdb)
+	for _, event := range []billing.FeedEvent{
+		{ID: "ok000001", TS: "2026-10-20T04:00:00Z", Model: "m", Upstream: "openai", Status: "ok", CostCredits: 30},
+		{ID: "err00002", TS: "2026-10-20T04:00:01Z", Model: "m", Upstream: "openai", Status: "error", CostCredits: 999},
+		{ID: "ok000003", TS: "2026-10-20T04:00:02Z", Model: "m", Upstream: "openai", Status: "ok", CostCredits: 12},
+	} {
+		if err := pub.PublishCall(ctx, event); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+
+	rr := env.get("/api/home/live-feed?limit=2")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body LiveFeedListResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Events) != 2 {
+		t.Fatalf("events = %d, want 2（limit 与 window 并存）", len(body.Events))
+	}
+	if body.Window.Calls != 3 || body.Window.CostCredits != 42 {
+		t.Fatalf("window = %+v, want calls=3 cost=42", body.Window)
+	}
+	// A-1：逐行事件不得出现费用字段；费用只允许出现在顶层 window。
+	for _, raw := range body.Events {
+		if strings.Contains(string(raw), "cost") || strings.Contains(string(raw), "credit") {
+			t.Fatalf("逐行事件泄露费用: %s", raw)
+		}
+	}
+	if !strings.Contains(rr.Body.String(), `"window":{"calls":3,"cost_credits":42}`) {
+		t.Fatalf("响应缺少 window 聚合条: %s", rr.Body.String())
+	}
+}
+
+// window 读取失败时按冻结语义降级为 0/0，事件照常返回（list 仍可用）。
+func TestLiveFeedListWindowFailureDegradesToZero(t *testing.T) {
+	env := newLiveFeedTestEnv(t, nil, nil)
+	seedLiveFeedEvents(t, env.rdb, 3)
+	env.rdb.AddHook(failMGetHook{})
+
+	rr := env.get("/api/home/live-feed")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（window 故障不应拖垮事件列表）", rr.Code)
+	}
+	var body LiveFeedListResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Events) != 3 {
+		t.Fatalf("events = %d, want 3", len(body.Events))
+	}
+	if body.Window.Calls != 0 || body.Window.CostCredits != 0 {
+		t.Fatalf("window = %+v, want 0/0", body.Window)
+	}
+}
+
+// failMGetHook 只让 MGET 失败，模拟「list 可读、聚合桶不可读」的部分故障。
+type failMGetHook struct{}
+
+func (failMGetHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (failMGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if strings.EqualFold(cmd.Name(), "mget") {
+			return errors.New("simulated mget failure")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (failMGetHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
 }

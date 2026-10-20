@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +62,29 @@ const (
 	FeedChannel = FeedListKey
 	// FeedListMax 是 list 保留的最近事件数（环形缓冲上界）。
 	FeedListMax = 200
+
+	// FeedWindowKeyPrefix 是聚合条分钟桶的键前缀（F-09-02 聚合条）。
+	// 每个桶是一对键：`...:<minute>:calls` 与 `...:<minute>:cost`。
+	FeedWindowKeyPrefix = "newtg:feed:win:"
+	// FeedWindowMinutes 是滚动窗口长度（按分钟桶计）：当前分钟 + 前 4 个。
+	// 【冻结值】F-09-02 原文写「近 60 秒」；A6 冻结为「最近 5 分钟滚动窗口」，
+	// 避免低流量部署的聚合条长期显示 0，同时让读数仍然足够实时。
+	FeedWindowMinutes = 5
+	// FeedWindowBucketTTL 是分钟桶的保留时长（冻结 10 分钟）。
+	// 窗口只读最近 5 个桶，留 5 分钟余量是为了让窗口边界附近的读数不会
+	// 因为桶在「仍在窗口内」时就过期而突然下跌。
+	FeedWindowBucketTTL = 10 * time.Minute
 )
+
+// FeedWindow 是首页聚合条读数（modules-09 F-09-02）。
+//
+// 【整数积分】CostCredits 取结算事实里的整数积分（SettlementOutcome.Cost），
+// 不做货币换算、不暴露任何单条事件费用（裁决 A-1）。逐行事件保持无费用，
+// 费用只在这个平台级聚合读数里出现。
+type FeedWindow struct {
+	Calls       int64 `json:"calls"`
+	CostCredits int64 `json:"cost_credits"`
+}
 
 // FeedEvent 是投递到公开 live_feed 的单条脱敏事件（F-09-02 数据字段表）。
 //
@@ -78,6 +101,68 @@ type FeedEvent struct {
 	TokensOut int    `json:"tokens_out"`
 	LatencyMS int64  `json:"latency_ms"`
 	Status    string `json:"status"`
+	// CostCredits 是本次调用的整数积分消耗，只用于投递侧维护聚合条
+	// （F-09-02 `window.cost_credits`）。`json:"-"` 是脱敏红线的一部分：
+	// 逐行事件按裁决 A-1 绝不下发任何费用字段，代价是它也不会进入
+	// Pub/Sub 帧——SSE 只传事件，聚合条只由轮询端点返回。
+	CostCredits int64 `json:"-"`
+}
+
+// FeedWindowMinute 返回时间点所属的分钟桶编号（Unix 分钟）。
+func FeedWindowMinute(now time.Time) int64 { return now.Unix() / 60 }
+
+// FeedWindowCallsKey 返回某分钟桶的 calls 键。
+func FeedWindowCallsKey(minute int64) string {
+	return fmt.Sprintf("%s%d:calls", FeedWindowKeyPrefix, minute)
+}
+
+// FeedWindowCostKey 返回某分钟桶的 cost 键。
+func FeedWindowCostKey(minute int64) string {
+	return fmt.Sprintf("%s%d:cost", FeedWindowKeyPrefix, minute)
+}
+
+// ReadFeedWindow 汇总最近 FeedWindowMinutes 个分钟桶的 calls/cost。
+//
+// 【一次往返】10 个键用一条 MGET 读取：聚合条每个轮询请求都要读，逐键
+// GET 会把公开页的 Redis 往返放大 10 倍。
+//
+// 【坏桶按 0】桶值只可能由 INCR/INCRBY 产生；解析失败（手工写入/版本升级）
+// 时跳过该桶而不是返回错误——聚合条是展示面读数，不应因为一个坏数字让
+// 整个公开列表变成 5xx。
+func ReadFeedWindow(ctx context.Context, rdb *redis.Client, now time.Time) (FeedWindow, error) {
+	if rdb == nil {
+		return FeedWindow{}, errors.New("billing: live feed window has no redis client")
+	}
+	current := FeedWindowMinute(now)
+	keys := make([]string, 0, 2*FeedWindowMinutes)
+	for i := int64(0); i < FeedWindowMinutes; i++ {
+		minute := current - i
+		keys = append(keys, FeedWindowCallsKey(minute), FeedWindowCostKey(minute))
+	}
+	values, err := rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return FeedWindow{}, fmt.Errorf("billing: read live feed window: %w", err)
+	}
+	var window FeedWindow
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(text, 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		if i%2 == 0 {
+			window.Calls += n
+		} else {
+			window.CostCredits += n
+		}
+	}
+	return window, nil
 }
 
 // FeedPublisher 是 live_feed 事件投递接缝（测试可注入失败实现）。
@@ -85,21 +170,33 @@ type FeedPublisher interface {
 	PublishCall(ctx context.Context, event FeedEvent) error
 }
 
-// RedisFeedPublisher 用 LPUSH + LTRIM + PUBLISH 投递事件。
+// RedisFeedPublisher 用 LPUSH + LTRIM + PUBLISH 投递事件，并维护聚合条分钟桶。
 type RedisFeedPublisher struct {
 	rdb *redis.Client
+	// now 是聚合条分钟桶的时钟接缝；零值时使用 time.Now。
+	// 抽出来是为了单测能固定「哪一分钟」而不在分钟边界上抖动。
+	now func() time.Time
 }
 
 // NewRedisFeedPublisher 构造 Redis 投递器。rdb 为 nil 时 PublishCall 直接返回
 // 错误（由 DBLogger 记录并吞掉），不影响计费。
 func NewRedisFeedPublisher(rdb *redis.Client) *RedisFeedPublisher {
-	return &RedisFeedPublisher{rdb: rdb}
+	return &RedisFeedPublisher{rdb: rdb, now: time.Now}
 }
 
-// PublishCall 原子写入 list（保留最近 FeedListMax 条）并广播到频道。
+// PublishCall 原子写入 list（保留最近 FeedListMax 条）、广播到频道，并累加
+// 当前分钟桶的聚合读数。
 //
-// 用 TxPipeline（MULTI/EXEC）让 LPUSH 与 LTRIM 不出现「插入了但没裁剪」
-// 的中间态；PUBLISH 同事务提交，订阅侧看到的事件与 list 内容一致。
+// 用 TxPipeline（MULTI/EXEC）让 LPUSH/LTRIM、PUBLISH 与 INCR 不出现中间态：
+// 订阅侧看到的事件与 list/聚合桶来自同一次投递。
+//
+// 【聚合口径（A6 冻结）】calls 对**所有**事件 +1（成功与失败都算一次调用）；
+// cost 只对 status=ok 的事件累加 event.CostCredits（整数积分）。失败事件
+// 不计费用，逐行事件本身也从不携带费用（裁决 A-1）。
+//
+// 【TTL】两个桶都设 FeedWindowBucketTTL。PEXPIRE 每次都续期是安全的：
+// 同一分钟桶只会被该分钟的事件写入，重复续期不会延长到超过「最后一次
+// 写入 + 10 分钟」，窗口读取端最多看 5 个桶，不会读到过期边界的脏值。
 func (p *RedisFeedPublisher) PublishCall(ctx context.Context, event FeedEvent) error {
 	if p == nil || p.rdb == nil {
 		return errors.New("billing: live feed publisher has no redis client")
@@ -109,10 +206,24 @@ func (p *RedisFeedPublisher) PublishCall(ctx context.Context, event FeedEvent) e
 		// 固定结构体的 Marshal 不会失败；保底避免把 nil 发出去。
 		return fmt.Errorf("billing: marshal live feed event: %w", err)
 	}
+	now := time.Now
+	if p.now != nil {
+		now = p.now
+	}
+	// 只取一次分钟：两次调用 now() 可能跨分钟，让 calls 与 cost 落到不同桶。
+	minute := FeedWindowMinute(now())
+	callsKey := FeedWindowCallsKey(minute)
 	pipe := p.rdb.TxPipeline()
 	pipe.LPush(ctx, FeedListKey, payload)
 	pipe.LTrim(ctx, FeedListKey, 0, FeedListMax-1)
 	pipe.Publish(ctx, FeedChannel, payload)
+	pipe.Incr(ctx, callsKey)
+	pipe.Expire(ctx, callsKey, FeedWindowBucketTTL)
+	if event.Status == "ok" && event.CostCredits > 0 {
+		costKey := FeedWindowCostKey(minute)
+		pipe.IncrBy(ctx, costKey, event.CostCredits)
+		pipe.Expire(ctx, costKey, FeedWindowBucketTTL)
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("billing: publish live feed event: %w", err)
 	}
@@ -248,15 +359,22 @@ func buildFeedEvent(row usageLogRow, rc *contract.RelayContext, outcome Settleme
 	if rc != nil {
 		upstream = feedUpstreamFamily(rc.ChannelType)
 	}
+	// 只有成功事件计入聚合条费用；refused/error/refunded 的 cost 在日志
+	// 语义里已被强制为 0（或属于退回金额），不能计入「近期消耗」。
+	costCredits := int64(0)
+	if outcome.Status == UsageLogStatusSuccess {
+		costCredits = outcome.Cost
+	}
 	return FeedEvent{
-		ID:        feedEventID(row.requestID),
-		TS:        now.Format(time.RFC3339),
-		Model:     row.model,
-		Upstream:  upstream,
-		TokensIn:  row.promptTokens,
-		TokensOut: row.completionTokens,
-		LatencyMS: latency,
-		Status:    status,
+		ID:          feedEventID(row.requestID),
+		TS:          now.Format(time.RFC3339),
+		Model:       row.model,
+		Upstream:    upstream,
+		TokensIn:    row.promptTokens,
+		TokensOut:   row.completionTokens,
+		LatencyMS:   latency,
+		Status:      status,
+		CostCredits: costCredits,
 	}
 }
 

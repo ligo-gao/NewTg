@@ -84,6 +84,10 @@ func TestFeedEventRedactionAndMapping(t *testing.T) {
 			t.Fatalf("未预期的公开字段 %q", key)
 		}
 	}
+	// 裁决 A-1：逐行事件不含任何费用字段，CostCredits 只走 json:"-"。
+	if strings.Contains(body, "cost") || strings.Contains(body, "credit") {
+		t.Fatalf("逐行事件泄露费用字段: %s", body)
+	}
 }
 
 func TestFeedUpstreamFamily(t *testing.T) {
@@ -166,5 +170,133 @@ func TestRedisFeedPublisherNilClient(t *testing.T) {
 	pub := NewRedisFeedPublisher(nil)
 	if err := pub.PublishCall(context.Background(), FeedEvent{}); err == nil {
 		t.Fatal("nil redis client 应返回错误")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 聚合条窗口（F-09-02 / A6 冻结语义）
+// ---------------------------------------------------------------------------
+
+func newFeedWindowTestRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return mr, rdb
+}
+
+// 投递侧：calls 计所有事件，cost 只计成功事件；桶带 10 分钟 TTL。
+func TestRedisFeedPublisherMaintainsWindowBuckets(t *testing.T) {
+	mr, rdb := newFeedWindowTestRedis(t)
+	ctx := context.Background()
+	fixed := time.Date(2026, 10, 20, 4, 7, 30, 0, time.UTC)
+
+	pub := NewRedisFeedPublisher(rdb)
+	pub.now = func() time.Time { return fixed }
+
+	cases := []FeedEvent{
+		{ID: "ok000001", Model: "m", Status: "ok", CostCredits: 30},
+		// 失败事件即使带着（不应存在的）费用也只计 calls。
+		{ID: "err00002", Model: "m", Status: "error", CostCredits: 999},
+		{ID: "ok000003", Model: "m", Status: "ok", CostCredits: 20},
+	}
+	for _, event := range cases {
+		if err := pub.PublishCall(ctx, event); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+
+	window, err := ReadFeedWindow(ctx, rdb, fixed)
+	if err != nil {
+		t.Fatalf("read window: %v", err)
+	}
+	if window.Calls != 3 || window.CostCredits != 50 {
+		t.Fatalf("window = %+v, want calls=3 cost=50", window)
+	}
+
+	minute := FeedWindowMinute(fixed)
+	for _, key := range []string{FeedWindowCallsKey(minute), FeedWindowCostKey(minute)} {
+		if ttl := mr.TTL(key); ttl != FeedWindowBucketTTL {
+			t.Fatalf("%s TTL = %s, want %s", key, ttl, FeedWindowBucketTTL)
+		}
+	}
+}
+
+// 读取侧：只汇总当前分钟 + 前 4 个桶；窗口外与未来桶一律忽略。
+func TestReadFeedWindowRollsAcrossMinutesAndIgnoresOutside(t *testing.T) {
+	_, rdb := newFeedWindowTestRedis(t)
+	ctx := context.Background()
+	fixed := time.Date(2026, 10, 20, 4, 7, 30, 0, time.UTC)
+	minute := FeedWindowMinute(fixed)
+
+	// minute → (calls, cost)
+	seed := map[int64][2]int64{
+		minute:     {2, 70},   // 当前分钟
+		minute - 1: {1, 30},   // 前 1 分钟
+		minute - 4: {5, 100},  // 窗口最后一桶（前 4 分钟）
+		minute - 5: {99, 999}, // 窗口外（前 5 分钟）
+		minute + 1: {7, 7},    // 未来桶，不可信也不计入
+	}
+	for offset, values := range seed {
+		if err := rdb.Set(ctx, FeedWindowCallsKey(offset), values[0], 0).Err(); err != nil {
+			t.Fatalf("seed calls: %v", err)
+		}
+		if err := rdb.Set(ctx, FeedWindowCostKey(offset), values[1], 0).Err(); err != nil {
+			t.Fatalf("seed cost: %v", err)
+		}
+	}
+
+	window, err := ReadFeedWindow(ctx, rdb, fixed)
+	if err != nil {
+		t.Fatalf("read window: %v", err)
+	}
+	if window.Calls != 8 || window.CostCredits != 200 {
+		t.Fatalf("window = %+v, want calls=8 cost=200（仅最近 5 个桶）", window)
+	}
+}
+
+// 坏桶（手工写入/版本升级）按 0 处理，不能把公开列表变成 5xx。
+func TestReadFeedWindowToleratesCorruptBuckets(t *testing.T) {
+	_, rdb := newFeedWindowTestRedis(t)
+	ctx := context.Background()
+	fixed := time.Date(2026, 10, 20, 4, 7, 30, 0, time.UTC)
+	minute := FeedWindowMinute(fixed)
+	if err := rdb.Set(ctx, FeedWindowCallsKey(minute), "not-a-number", 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := rdb.Set(ctx, FeedWindowCostKey(minute), "-5", 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	window, err := ReadFeedWindow(ctx, rdb, fixed)
+	if err != nil {
+		t.Fatalf("read window: %v", err)
+	}
+	if window.Calls != 0 || window.CostCredits != 0 {
+		t.Fatalf("坏桶应按 0: %+v", window)
+	}
+}
+
+// buildFeedEvent 只把成功结算的 cost 带入投递侧聚合，且绝不进 JSON。
+func TestBuildFeedEventCarriesCostOnlyForSuccess(t *testing.T) {
+	row := usageLogRow{requestID: "x", model: "m"}
+	event := buildFeedEvent(row, &contract.RelayContext{},
+		SettlementOutcome{Status: UsageLogStatusSuccess, Cost: 42}, time.Now())
+	if event.CostCredits != 42 {
+		t.Fatalf("success CostCredits = %d, want 42", event.CostCredits)
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(payload), "cost") {
+		t.Fatalf("CostCredits 不得序列化到公开事件: %s", payload)
+	}
+
+	for _, status := range []int16{UsageLogStatusError, UsageLogStatusRefused, UsageLogStatusRefunded} {
+		event := buildFeedEvent(row, &contract.RelayContext{},
+			SettlementOutcome{Status: status, Cost: 42, RetainedCost: 42}, time.Now())
+		if event.CostCredits != 0 {
+			t.Fatalf("status=%d CostCredits = %d, want 0", status, event.CostCredits)
+		}
 	}
 }

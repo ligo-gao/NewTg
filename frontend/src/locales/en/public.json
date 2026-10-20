@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "Quick Start",
   "rankings.cold_start.sign_up": "Sign Up Free",
   "live_feed.title": "Live call feed",
+  "live_feed.window": "Last 5 minutes · {calls} calls · {credits} credits",
   "live_feed.live": "Live",
   "live_feed.paused": "Paused",
   "live_feed.reconnecting": "Reconnecting",

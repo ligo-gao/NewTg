@@ -150,12 +150,12 @@ func (h *LiveFeedHandlers) RegisterLiveFeedRoutes(rt *Router) {
 // events 直接透传 Redis 里的 JSON 对象（json.RawMessage），不二次投影：
 // 事件在写入侧已完成脱敏，读取侧再 Marshal 一次只会引入字段漂移。
 //
-// 【已知设计缺口】modules-09 F-09-02 的响应还包含
-// `window:{calls,cost_credits}` 聚合条。逐条事件按裁决 A-1 不含费用，而
-// cost_credits 没有独立数据源；本实现只返回 events，聚合条登记为待实现
-// （G-DOM-21），不编造 0 值。
+// window 是 F-09-02 的聚合条（最近 5 分钟滚动分钟桶，A6 冻结语义）：
+// calls 计所有事件，cost_credits 只计成功事件的整数积分。逐行事件仍然
+// 不含任何费用字段（裁决 A-1）——费用只在这里以平台级聚合出现。
 type LiveFeedListResponse struct {
-	Events []json.RawMessage `json:"events"`
+	Events []json.RawMessage  `json:"events"`
+	Window billing.FeedWindow `json:"window"`
 }
 
 // homeBlockEnabled 读取 site.home_blocks.live_feed；缺省/损坏按注册表默认
@@ -230,9 +230,18 @@ func (h *LiveFeedHandlers) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 聚合条与事件列表共享 Redis，但失败口径不同：list 是唯一内容源，
+	// 读失败即 503（不能把故障伪装成空列表）；window 是补充读数，读失败
+	// 时按冻结语义降级为 0/0 并照常返回事件，不让一个辅助统计放大故障面。
+	window, windowErr := billing.ReadFeedWindow(ctx, h.rdb, h.now())
+	if windowErr != nil {
+		h.log.Warn("live feed: read window failed; returning zero aggregate", "error", windowErr)
+		window = billing.FeedWindow{}
+	}
+
 	// 实时调用列表不得被任何中间层缓存（F-09-02）。
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, LiveFeedListResponse{Events: events})
+	writeJSON(w, http.StatusOK, LiveFeedListResponse{Events: events, Window: window})
 }
 
 // parseLiveFeedLimit 解析 limit：缺省 20；非整数或 <1 → 400；>100 截到 100。

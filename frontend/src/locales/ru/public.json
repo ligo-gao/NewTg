@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "Быстрый старт",
   "rankings.cold_start.sign_up": "Бесплатная регистрация",
   "live_feed.title": "Поток вызовов",
+  "live_feed.window": "Последние 5 минут · вызовов: {calls} · кредитов: {credits}",
   "live_feed.live": "В эфире",
   "live_feed.paused": "Пауза",
   "live_feed.reconnecting": "Переподключение",

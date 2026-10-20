@@ -5,9 +5,10 @@
  * 降级为 5s 轮询 `?limit=20`，失败按 5s→15s→60s 退避。暂停开关与页面
  * 隐藏都会关闭连接；恢复可见/继续时重新建立。
  *
- * 【聚合条】服务端尚未下发 `window:{calls,cost_credits}`（G-DOM-21）。
- * 页面只展示区块标题与连接状态，绝不编造调用次数或费用（裁决 A-1 的
- * 信任边界：真实读数只在服务端提供时出现）。
+ * 【聚合条】`window:{calls,cost_credits}` 由轮询端点返回（A6 冻结：SSE 帧
+ * 不附带聚合读数）。SSE 模式下没有轮询循环，因此每 30s 轻量拉一次快照
+ * 只刷新 window；否则聚合条会永远停在 onopen 播种时的那一刻。读数为
+ * 最近 5 分钟滚动窗口，费用只以整数积分出现在这里，逐行事件不含费用。
  *
  * 逐行字段不含费用：时间 / 模型 / 上游 / token(in/out) / 耗时 / 状态。
  * 桌面表格 + 移动端卡片；状态用图标 + 文字双编码，不用彩色徽章。
@@ -21,14 +22,22 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import {
   LIVE_FEED_LIMIT,
   LIVE_FEED_SSE_PATH,
-  fetchLiveFeedEvents,
+  fetchLiveFeedSnapshot,
   formatClock,
   formatInteger,
   parseLiveFeedSseData,
   type LiveFeedEvent,
+  type LiveFeedWindow,
 } from './live-feed-data'
 
 type ConnectionState = 'connecting' | 'live' | 'paused' | 'reconnecting'
+
+/**
+ * SSE 模式下聚合条的刷新间隔。轮询降级模式由 5s 轮询顺带刷新，不需要
+ * 这个计时器。取 30s：5 分钟窗口的分母足够大，30s 的滞后不会让读数感
+ * 到停滞，同时把公开只读限流（60 次/分钟/IP+path）的占用压到很低。
+ */
+const LIVE_FEED_WINDOW_REFRESH_MS = 30_000
 
 function PauseIcon({ paused }: { paused: boolean }) {
   return (
@@ -229,6 +238,8 @@ export function LiveFeedSection() {
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   // 服务端关闭区块（404）时整块隐藏：轮询/SSE 都不该对已关闭端点无限重试。
   const [disabled, setDisabled] = useState(false)
+  // null = 服务端未提供或窗口数据不可信 → 隐藏聚合条（不伪造 0）。
+  const [aggregate, setAggregate] = useState<LiveFeedWindow | null>(null)
 
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -246,6 +257,7 @@ export function LiveFeedSection() {
     let disposed = false
     let source: EventSource | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
+    let windowTimer: ReturnType<typeof setInterval> | undefined
     let failures = 0
     let polling = false
 
@@ -278,14 +290,30 @@ export function LiveFeedSection() {
      */
     const seed = async () => {
       try {
-        const next = await fetchLiveFeedEvents(LIVE_FEED_LIMIT)
+        const snapshot = await fetchLiveFeedSnapshot(LIVE_FEED_LIMIT)
         if (disposed) return
-        setEvents((previous) => mergeEvents(previous, next))
+        setEvents((previous) => mergeEvents(previous, snapshot.events))
+        setAggregate(snapshot.window)
       } catch (error) {
         if (disposed) return
         if (error instanceof ApiError && error.kind === 'not_found') {
           setDisabled(true)
         }
+      }
+    }
+
+    /**
+     * SSE 模式下的聚合条刷新：只取窗口读数，不覆盖事件列表（事件由 SSE
+     * 实时插入，快照可能比本地列表旧）。失败静默——聚合条缺失不等于
+     * 通道断流，下一轮再试。
+     */
+    const refreshAggregate = async () => {
+      try {
+        const snapshot = await fetchLiveFeedSnapshot(1)
+        if (disposed) return
+        setAggregate(snapshot.window)
+      } catch {
+        // 限流/网络抖动都静默：这条读数不是内容主路径。
       }
     }
 
@@ -301,10 +329,11 @@ export function LiveFeedSection() {
       if (disposed || polling) return
       polling = true
       try {
-        const next = await fetchLiveFeedEvents(LIVE_FEED_LIMIT)
+        const snapshot = await fetchLiveFeedSnapshot(LIVE_FEED_LIMIT)
         if (disposed) return
         failures = 0
-        setEvents(next)
+        setEvents(snapshot.events)
+        setAggregate(snapshot.window)
         setConnection('live')
         schedule(5000)
       } catch (error) {
@@ -350,6 +379,12 @@ export function LiveFeedSection() {
           failures = 0
           setConnection('live')
           void seed()
+          // SSE 帧不携带聚合读数：用低频轮询保持 window 新鲜（见文件头）。
+          if (windowTimer === undefined) {
+            windowTimer = setInterval(() => {
+              void refreshAggregate()
+            }, LIVE_FEED_WINDOW_REFRESH_MS)
+          }
         }
         source.addEventListener('call', (raw) => {
           const event = parseLiveFeedSseData((raw as MessageEvent<string>).data)
@@ -360,6 +395,11 @@ export function LiveFeedSection() {
           // 浏览器会无限重连；这里主动关闭并降级为轮询，由轮询退避兜底。
           source?.close()
           source = undefined
+          // 轮询每 5s 自带 window，保留独立计时器会变成双请求。
+          if (windowTimer !== undefined) {
+            clearInterval(windowTimer)
+            windowTimer = undefined
+          }
           failures = 0
           setConnection('reconnecting')
           void poll()
@@ -390,6 +430,7 @@ export function LiveFeedSection() {
       window.removeEventListener('online', onOnline)
       source?.close()
       if (timer !== undefined) clearTimeout(timer)
+      if (windowTimer !== undefined) clearInterval(windowTimer)
     }
   }, [paused, hidden])
 
@@ -427,6 +468,18 @@ export function LiveFeedSection() {
             </button>
           </div>
         </div>
+
+        {aggregate !== null ? (
+          <p
+            data-testid="live-feed-window"
+            className="mt-3 text-xs font-medium tabular-nums text-ink-2"
+          >
+            {t('public.live_feed.window', {
+              calls: formatInteger(aggregate.calls, locale),
+              credits: formatInteger(aggregate.cost_credits, locale),
+            })}
+          </p>
+        ) : null}
 
         {connection === 'reconnecting' ? (
           <p className="mt-3 text-xs text-warning" role="status">

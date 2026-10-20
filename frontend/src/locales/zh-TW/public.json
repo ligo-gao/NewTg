@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "快速開始",
   "rankings.cold_start.sign_up": "免費註冊",
   "live_feed.title": "即時調用動態",
+  "live_feed.window": "近 5 分鐘 · {calls} 次調用 · 消耗 {credits} 積分",
   "live_feed.live": "即時",
   "live_feed.paused": "已暫停",
   "live_feed.reconnecting": "正在重連",

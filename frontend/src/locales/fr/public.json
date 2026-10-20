@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "Démarrage rapide",
   "rankings.cold_start.sign_up": "S’inscrire gratuitement",
   "live_feed.title": "Flux d’appels en direct",
+  "live_feed.window": "5 dernières minutes · {calls} appels · {credits} crédits",
   "live_feed.live": "En direct",
   "live_feed.paused": "En pause",
   "live_feed.reconnecting": "Reconnexion",

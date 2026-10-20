@@ -159,8 +159,12 @@ export interface paths {
          *     base_url、prompt/response、request_id 原文（id 为 8 位十六进制短哈希）。
          *     `site.home_blocks.live_feed=false` 时返回 404。响应 `Cache-Control:
          *     no-store`。B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
-         *     【已知缺口】modules-09 F-09-02 的 `window:{calls,cost_credits}` 聚合条
-         *     尚未实现（逐行事件按裁决 A-1 不含费用），登记为 G-DOM-21。
+         *
+         *     响应顶层 `window` 是聚合条：最近 **5 分钟滚动窗口**（按分钟桶汇总
+         *     当前分钟 + 前 4 个桶），calls 计所有事件，cost_credits 只计成功事件
+         *     的整数积分。逐行事件按裁决 A-1 不含任何费用字段。Redis 聚合桶
+         *     读取失败时 `window` 降级为 `{calls:0,cost_credits:0}` 且事件照常
+         *     返回；list 本身不可用时仍按下方 503 口径处理。
          */
         get: operations["getHomeLiveFeed"];
         put?: never;
@@ -4092,11 +4096,30 @@ export interface components {
             status: components["schemas"]["LiveFeedStatus"];
         };
         /**
-         * @description 轮询降级响应。事件按时间倒序（最新在前）。F-09-02 的
-         *     `window:{calls,cost_credits}` 聚合条尚未实现（G-DOM-21）。
+         * @description 聚合条读数。窗口冻结为**最近 5 分钟滚动窗口**：服务端按分钟桶累加
+         *     最近 5 个桶（当前分钟 + 前 4 个）。calls 计所有已发布事件；cost_credits
+         *     只计成功事件的整数积分（失败/退款不计费用）。这是平台级聚合，不含
+         *     任何单条调用费用，也不含用户/渠道维度。
+         */
+        LiveFeedWindow: {
+            /**
+             * Format: int64
+             * @description 近 5 分钟调用次数（成功与失败都计入）。
+             */
+            calls: number;
+            /**
+             * Format: int64
+             * @description 近 5 分钟成功调用的消耗积分（整数，取结算事实）。
+             */
+            cost_credits: number;
+        };
+        /**
+         * @description 轮询降级响应。事件按时间倒序（最新在前）。window 为 F-09-02 聚合条；
+         *     逐行事件不含费用（裁决 A-1）。
          */
         LiveFeedList: {
             events: components["schemas"]["LiveFeedEvent"][];
+            window: components["schemas"]["LiveFeedWindow"];
         };
         PublicGroupPrice: {
             group: string;

@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "クイックスタート",
   "rankings.cold_start.sign_up": "無料登録",
   "live_feed.title": "リアルタイム呼び出し",
+  "live_feed.window": "直近 5 分間 · {calls} 回の呼び出し · {credits} クレジット",
   "live_feed.live": "ライブ",
   "live_feed.paused": "一時停止",
   "live_feed.reconnecting": "再接続中",

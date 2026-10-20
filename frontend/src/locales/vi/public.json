@@ -363,6 +363,7 @@
   "rankings.cold_start.quick_start": "Bắt đầu nhanh",
   "rankings.cold_start.sign_up": "Đăng ký miễn phí",
   "live_feed.title": "Luồng gọi trực tiếp",
+  "live_feed.window": "5 phút gần nhất · {calls} lượt gọi · {credits} tín dụng",
   "live_feed.live": "Trực tiếp",
   "live_feed.paused": "Tạm dừng",
   "live_feed.reconnecting": "Đang kết nối lại",

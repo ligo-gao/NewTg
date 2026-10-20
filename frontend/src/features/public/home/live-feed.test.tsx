@@ -182,6 +182,49 @@ describe('home live feed (F-09-02)', () => {
     expect(paths[0]).toBe('/api/home/live-feed?limit=20')
   })
 
+  it('renders the 5-minute aggregate window from the polling endpoint', async () => {
+    vi.stubGlobal('EventSource', undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () =>
+        HttpResponse.json({
+          events: [feedEvent()],
+          window: { calls: 128, cost_credits: 1530 },
+        }),
+      ),
+    )
+
+    const { findByTestId, findByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    await findByText('Live call feed')
+    const bar = await findByTestId('live-feed-window')
+    expect(bar.textContent).toBe(
+      'Last 5 minutes · 128 calls · 1,530 credits',
+    )
+    // 聚合条是唯一的费用读数；逐行表格仍不含费用字段。
+    expect(bar.textContent).toContain('1,530')
+  })
+
+  it('hides the aggregate bar when the window payload is malformed', async () => {
+    vi.stubGlobal('EventSource', undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () =>
+        HttpResponse.json({
+          events: [feedEvent()],
+          window: { calls: -1, cost_credits: 'n/a' },
+        }),
+      ),
+    )
+
+    const { findAllByText, queryByTestId } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    expect((await findAllByText('gpt-4o-mini')).length).toBeGreaterThan(0)
+    expect(queryByTestId('live-feed-window')).toBeNull()
+  })
+
   it('pauses and resumes the stream with the switch', async () => {
     useSse()
     const { findByText, getByRole, getByText } = await renderWithProviders(
