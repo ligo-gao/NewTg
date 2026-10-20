@@ -30,6 +30,7 @@ import {
   contextList,
   endpointTypeList,
   queryParamsOf,
+  retainFacetValues,
   vendorList,
   withCapabilities,
   withContexts,
@@ -142,20 +143,25 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
     // 再比较（服务端已经在此刻把越界页收敛好了）。
     if (query.isFetching) return
     const next: Partial<PricingSearch> = {}
+    // facet 只在本次筛选有结果时才能当作合法域（见 retainFacetValues 的
+    // 注释）：零结果时 facet 缺失也可能只是「合法值 + 其它筛选无交集」。
+    const hasResults = data.items.length > 0
     const knownVendors = new Set(data.facets.vendors.map((entry) => entry.value))
     const current = vendorList(search)
-    const valid = current.filter((vendor) => knownVendors.has(vendor))
+    const valid = retainFacetValues(current, knownVendors, hasResults)
     if (valid.length !== current.length) next.vendor = withVendors(valid)
 
     // capability 的合法域来自目录数据，只能用返回的 facet 候选集判断：
-    // 不在候选集里的值要么拼错、要么与其它筛选叠加后已无候选，两种情况
-    // 都该从地址栏剔除，避免分享链接继续携带无效项。
+    // 不在候选集里的值要么拼错、要么与其它筛选叠加后已无候选。零结果时
+    // 后者无法排除（例如 vendor 没有该能力），因此保留 URL 值走空态。
     const knownCapabilities = new Set(
       data.facets.capabilities.map((entry) => entry.value),
     )
     const capabilities = capabilityList(search)
-    const validCapabilities = capabilities.filter((entry) =>
-      knownCapabilities.has(entry),
+    const validCapabilities = retainFacetValues(
+      capabilities,
+      knownCapabilities,
+      hasResults,
     )
     if (validCapabilities.length !== capabilities.length) {
       next.capability = withCapabilities(validCapabilities)

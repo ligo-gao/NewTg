@@ -284,6 +284,26 @@ export function queryParamsOf(search: PricingSearch) {
   }
 }
 
+/**
+ * 用 facet 候选集裁剪 vendor / capability 的 URL 值（F-09-22）。
+ *
+ * facet 是「faceted navigation」：它忽略自己这一组的筛选、但会叠加其它组，
+ * 因此候选集缺失一个值有两种完全不同的含义：
+ * - 结果集非空：本次筛选确实命中，候选集说明「在这个结果集里哪些值存在」，
+ *   缺失即可判定为拼错或不存在的值，可以从地址栏剔除；
+ * - 结果集为空：缺失无法区分「值本身不存在」与「值合法但与其它筛选组合无
+ *   命中」。例如 `vendor=anthropic&capability=vision`（anthropic 无 vision）
+ *   合法但零命中，若按候选集剔除就会把用户合法的 capability 悄悄改写掉，
+ *   空态也无从解释。此时必须原样保留 URL 值，让页面渲染空态。
+ */
+export function retainFacetValues(
+  values: readonly string[],
+  known: ReadonlySet<string>,
+  hasResults: boolean,
+): string[] {
+  return hasResults ? values.filter((value) => known.has(value)) : [...values]
+}
+
 /** 活动筛选计数（移动端「筛选 (N)」徽标与重置按钮）。 */
 export function activeFilterCount(search: PricingSearch): number {
   let count = vendorList(search).length

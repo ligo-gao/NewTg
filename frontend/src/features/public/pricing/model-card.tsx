@@ -82,7 +82,7 @@ export function ModelCard({
         {card.vendor !== '' ? (
           <>
             <span aria-hidden="true">·</span>
-            <span className="shrink-0 truncate">{card.vendor}</span>
+            <span className="min-w-0 truncate">{card.vendor}</span>
           </>
         ) : null}
         <button

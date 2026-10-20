@@ -10,7 +10,7 @@
 import type { TranslateFn } from '@/shared/lib/i18n-context'
 
 /** 与后端 model_meta_validate.go 的 modelMetaCapabilities 同值。 */
-const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([
+export const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([
   'text',
   'vision',
   'audio',
@@ -26,7 +26,7 @@ const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([
 ])
 
 /** 与后端 modelMetaModalities 同值。 */
-const KNOWN_MODALITIES: ReadonlySet<string> = new Set([
+export const KNOWN_MODALITIES: ReadonlySet<string> = new Set([
   'text',
   'image',
   'audio',
@@ -37,7 +37,7 @@ const KNOWN_MODALITIES: ReadonlySet<string> = new Set([
  * 与后端 publicEndpointMapping 同值，键为 URL 里的小写形态。
  * 注意 `generateContent` 的 value 在 facet 中被后端转成小写，故此处也用小写。
  */
-const KNOWN_ENDPOINTS: ReadonlySet<string> = new Set([
+export const KNOWN_ENDPOINTS: ReadonlySet<string> = new Set([
   'chat.completions',
   'messages',
   'embeddings',
@@ -52,7 +52,7 @@ const KNOWN_ENDPOINTS: ReadonlySet<string> = new Set([
  * 上下文分档只有四个固定桶。保留技术标签（8K/32K/…）但按语言本地化区间
  * 描述：用户需要知道「这个桶覆盖多大」，而不是记住后端枚举拼写。
  */
-const KNOWN_CONTEXT_BUCKETS: ReadonlySet<string> = new Set([
+export const KNOWN_CONTEXT_BUCKETS: ReadonlySet<string> = new Set([
   '8k',
   '32k',
   '128k',

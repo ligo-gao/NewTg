@@ -8,6 +8,7 @@ import {
   contextList,
   endpointTypeList,
   needsPricingUrlRepair,
+  retainFacetValues,
   validatePricingSearch,
   vendorList,
   withVendors,
@@ -144,6 +145,36 @@ describe('pricing URL contract (F-09-22)', () => {
       tokenUnit: 'K',
       dualCurrency: true,
     })
+  })
+
+  it('counts and clears the three metadata filter groups', () => {
+    const search = validatePricingSearch({
+      capability: 'vision,text',
+      context: '8k,128k',
+      endpointType: 'messages,rerank',
+    })
+    expect(activeFilterCount(search)).toBe(6)
+
+    const cleared = clearedFilters(search)
+    expect(cleared).toMatchObject({
+      capability: '',
+      context: '',
+      endpointType: '',
+    })
+    expect(activeFilterCount(cleared)).toBe(0)
+  })
+
+  it('only prunes missing facet values when the result set is non-empty', () => {
+    const known = new Set(['vision'])
+    // 有结果：facet 候选集可作为合法域，缺失值剔除。
+    expect(retainFacetValues(['vision', 'telepathy'], known, true)).toEqual([
+      'vision',
+    ])
+    // 零结果：facet 只反映「其它筛选下的命中」，缺失不能判定为未知。
+    expect(retainFacetValues(['vision', 'telepathy'], known, false)).toEqual([
+      'vision',
+      'telepathy',
+    ])
   })
 
   it('detects every silently downgraded raw parameter (F-09-22)', () => {

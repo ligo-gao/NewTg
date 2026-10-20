@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { renderWithProviders } from '@/test-support/providers'
 
 import type { PublicPricingList } from './api'
-import { PricingFilterSheet } from './facet-panel'
+import { PricingFacetPanel, PricingFilterSheet } from './facet-panel'
 import { validatePricingSearch, type PricingSearch } from './params'
 import { PricingPage } from './pricing-page'
 
@@ -256,6 +256,122 @@ describe('PricingPage (F-09-14 ~ F-09-22)', () => {
     await waitFor(() => {
       expect(changes.some((next) => next.capability === '')).toBe(true)
     })
+  })
+
+  it('keeps a valid zero-hit capability and vendor in the URL and shows the empty state', async () => {
+    const changes: PricingSearch[] = []
+    baseHandlers(
+      undefined,
+      listResponse({
+        items: [],
+        total: '0',
+        facets: {
+          // faceted navigation 忽略 capability 自身的筛选，只叠加 vendor：
+          // anthropic 存在（所以 vendor facet 有值），但它没有 vision，
+          // capability facet 里自然没有 vision——这是一个合法的零命中组合。
+          vendors: [{ value: 'anthropic', label: 'Anthropic', count: 3 }],
+          capabilities: [{ value: 'text', label: 'text', count: 3 }],
+          context: [{ value: '128k', label: '128K', count: 3 }],
+          groups: [],
+          endpoints: [{ value: 'messages', label: 'messages', count: 3 }],
+          pricing_types: [{ value: 'token', count: 3 }],
+        },
+      }),
+    )
+
+    const { findByText, getByLabelText } = await renderWithProviders(
+      <Harness
+        initial={{ capability: 'vision', vendor: 'anthropic' }}
+        onChange={(next) => changes.push(next)}
+      />,
+      ['public'],
+    )
+
+    expect(await findByText('No models match your filters')).toBeTruthy()
+    // 零结果时 facet 缺失无法区分「值不存在」与「组合无命中」，URL 值必须
+    // 原样保留（chip 仍在），而不是被修复 effect 悄悄剔除。
+    expect(getByLabelText('Remove filter: Capability: Vision')).toBeTruthy()
+    expect(getByLabelText('Remove filter: Vendor: anthropic')).toBeTruthy()
+    expect(changes).toHaveLength(0)
+  })
+
+  it('keeps a frozen context bucket that the response facets do not list', async () => {
+    const changes: PricingSearch[] = []
+    baseHandlers(
+      undefined,
+      listResponse({
+        items: [],
+        total: '0',
+        facets: {
+          vendors: [],
+          capabilities: [],
+          // 目录里没有 8K 档命中，facet 只列出有命中的档位；8k 仍是冻结
+          // 枚举，必须保留。
+          context: [],
+          groups: [],
+          endpoints: [],
+          pricing_types: [{ value: 'token', count: 0 }],
+        },
+      }),
+    )
+
+    const { findByText, getByLabelText } = await renderWithProviders(
+      <Harness initial={{ context: '8k' }} onChange={(next) => changes.push(next)} />,
+      ['public'],
+    )
+
+    expect(await findByText('No models match your filters')).toBeTruthy()
+    expect(getByLabelText('Remove filter: Context: 8K or less')).toBeTruthy()
+    expect(changes).toHaveLength(0)
+  })
+
+  it('allows a selected zero-count facet option to be unchecked', async () => {
+    const changes: PricingSearch[] = []
+    const { getByLabelText } = await renderWithProviders(
+      <PricingFacetPanel
+        facets={listResponse().facets}
+        value={validatePricingSearch({ capability: 'embedding' })}
+        onChange={(next) => changes.push(next)}
+      />,
+      ['public'],
+    )
+
+    // embedding 的 facet 计数为 0，但它是当前已选中的值：复选框必须是
+    // 可用的，否则用户会被自己的筛选锁死。
+    const checkbox = getByLabelText(/Embeddings/) as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
+    expect(checkbox.disabled).toBe(false)
+
+    fireEvent.click(checkbox)
+    expect(changes.at(-1)?.capability).toBe('')
+  })
+
+  it('sends multiple capabilities as repeated query keys', async () => {
+    const urls: URL[] = []
+    baseHandlers(
+      (url) => urls.push(url),
+      listResponse({
+        facets: {
+          ...listResponse().facets,
+          capabilities: [
+            { value: 'vision', label: 'Vision', count: 1 },
+            { value: 'text', label: 'text', count: 1 },
+          ],
+        },
+      }),
+    )
+
+    const { findByText } = await renderWithProviders(
+      <Harness initial={{ capability: 'vision,text' }} />,
+      ['public'],
+    )
+    await findByText('GPT-5')
+    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
+
+    // 后端冻结的入参形态是重复键（而非 JSON 数组），openapi-fetch 的默认
+    // 数组序列化正好匹配。
+    const request = urls.find((url) => url.searchParams.has('capability'))
+    expect(request?.searchParams.getAll('capability')).toEqual(['vision', 'text'])
   })
 
   it('syncs metadata facets inside the mobile filter sheet', async () => {
