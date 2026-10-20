@@ -38,6 +38,7 @@ import { Route as Errors503RouteImport } from './routes/_errors/503'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
+import { Route as RankingsIndexRouteImport } from './routes/rankings/index'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleAdminModelsRouteImport } from './routes/_console/admin/models'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
@@ -201,6 +202,11 @@ const PricingModelIdRoute = PricingModelIdRouteImport.update({
   path: '/pricing/$modelId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RankingsIndexRoute = RankingsIndexRouteImport.update({
+  id: '/rankings/',
+  path: '/rankings/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConsoleAdminIndexRoute = ConsoleAdminIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -334,6 +340,7 @@ export interface FileRoutesByFullPath {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
+  '/rankings/': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
@@ -381,6 +388,7 @@ export interface FileRoutesByTo {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing': typeof PricingIndexRoute
+  '/rankings': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
@@ -431,6 +439,7 @@ export interface FileRoutesById {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
+  '/rankings/': typeof RankingsIndexRoute
   '/_console/admin/models': typeof ConsoleAdminModelsRoute
   '/_console/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/_console/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
@@ -481,6 +490,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
+    | '/rankings/'
     | '/admin/models'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
@@ -528,6 +538,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing'
+    | '/rankings'
     | '/admin/models'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
@@ -577,6 +588,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
+    | '/rankings/'
     | '/_console/admin/models'
     | '/_console/dashboard/audit-logs'
     | '/_console/dashboard/usage-logs'
@@ -616,6 +628,7 @@ export interface RootRouteChildren {
   LegalDocRoute: typeof LegalDocRoute
   PricingModelIdRoute: typeof PricingModelIdRoute
   PricingIndexRoute: typeof PricingIndexRoute
+  RankingsIndexRoute: typeof RankingsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -821,6 +834,13 @@ declare module '@tanstack/react-router' {
       path: '/pricing/$modelId'
       fullPath: '/pricing/$modelId'
       preLoaderRoute: typeof PricingModelIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/rankings/': {
+      id: '/rankings/'
+      path: '/rankings'
+      fullPath: '/rankings/'
+      preLoaderRoute: typeof RankingsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_console/admin/': {
@@ -1051,6 +1071,7 @@ const rootRouteChildren: RootRouteChildren = {
   LegalDocRoute: LegalDocRoute,
   PricingModelIdRoute: PricingModelIdRoute,
   PricingIndexRoute: PricingIndexRoute,
+  RankingsIndexRoute: RankingsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

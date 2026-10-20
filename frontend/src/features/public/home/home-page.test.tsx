@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { fireEvent, waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -65,7 +65,10 @@ beforeEach(() => {
   requestedPaths = []
   localStorage.clear()
 })
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  vi.unstubAllGlobals()
+})
 afterAll(() => server.close())
 
 function useHandlers(
@@ -129,8 +132,48 @@ describe('homepage (F-09-01/03/04/05/06)', () => {
       getByRole('link', { name: 'Create token' }).getAttribute('href'),
     ).toBe('/sign-up?redirect=%2Ftokens')
 
-    // live_feed is P1: its endpoint must not be probed from the home page.
+    // live_feed is disabled in this fixture: its endpoint must not be probed.
     expect(requestedPaths.some((path) => path.includes('live-feed'))).toBe(false)
+  })
+
+  it('renders the live feed between hero and features only when enabled (F-09-02)', async () => {
+    // No SSE in jsdom: force the documented polling fallback deterministically.
+    vi.stubGlobal('EventSource', undefined)
+    useHandlers(
+      status({
+        site: {
+          ...status().site,
+          home_blocks: { hero: true, live_feed: true, features: true, stats: true, onboarding: true },
+        },
+      }),
+    )
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, ({ request }) => {
+        requestedPaths.push(new URL(request.url).pathname)
+        return HttpResponse.json({ events: [] })
+      }),
+    )
+
+    const { findByText, getByRole, queryByText } = await renderWithProviders(
+      <HomePage />,
+      ['public'],
+    )
+
+    expect(await findByText('Live call feed')).toBeTruthy()
+    expect(await findByText('No recent calls yet')).toBeTruthy()
+    await waitFor(() =>
+      expect(requestedPaths).toContain('/api/home/live-feed'),
+    )
+
+    // Frozen order: hero → live_feed → features.
+    const headings = Array.from(
+      document.querySelectorAll('h1, h2'),
+    ).map((node) => node.textContent)
+    expect(headings.indexOf('Live call feed')).toBeLessThan(
+      headings.indexOf('Core capabilities'),
+    )
+    expect(queryByText('Core capabilities')).toBeTruthy()
+    expect(getByRole('switch', { name: 'Pause live updates' })).toBeTruthy()
   })
 
   it('lets custom HTML take over and strips scripts and event handlers', async () => {

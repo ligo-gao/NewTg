@@ -8,6 +8,7 @@ import { SiteBrand } from '../public-header'
 import { CustomHomeHtml, sanitizeHtmlFragment } from './custom-html'
 import { FeaturesSection } from './features'
 import { HeroSection } from './hero'
+import { LiveFeedSection } from './live-feed'
 import { OnboardingSection } from './onboarding'
 import { PublicSeo } from './seo'
 import { StatsSection } from './stats'
@@ -16,9 +17,9 @@ import { StatsSection } from './stats'
  * F-09-01/03/04/05/06 homepage composition.
  *
  * Section order is frozen (`hero → live_feed → features → stats → onboarding`);
- * the front end never reorders. `live_feed` is P1 and has no backend endpoint
- * yet, so it is neither requested nor rendered (R-PUB / F-09-02 remains out of
- * M6).
+ * the front end never reorders. `live_feed` renders when
+ * `site.home_blocks.live_feed !== false` and owns its own SSE/polling channel
+ * (F-09-02); it is skipped entirely under a custom-HTML takeover.
  *
  * The custom-HTML takeover replaces all five built-in sections. Its sanitized
  * result being empty is the documented degradation branch: fall back to the
@@ -49,6 +50,7 @@ export function HomePage() {
 
   const sections = {
     hero: blocks?.hero !== false,
+    live_feed: blocks?.live_feed !== false,
     features: blocks?.features !== false,
     stats: blocks?.stats !== false,
     onboarding: blocks?.onboarding !== false,
@@ -82,6 +84,7 @@ export function HomePage() {
               onRetry={() => void status.refetch()}
             />
           ) : null}
+          {sections.live_feed ? <LiveFeedSection /> : null}
           {sections.features ? <FeaturesSection /> : null}
           {sections.stats ? <StatsSection /> : null}
           {sections.onboarding ? (
