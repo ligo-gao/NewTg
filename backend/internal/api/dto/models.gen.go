@@ -7049,7 +7049,7 @@ type BatchDeleteModelMetaParams struct {
 type SearchModelCatalogParams struct {
 	Keyword *string `form:"keyword,omitempty" json:"keyword,omitempty"`
 
-	// Status 仅做枚举校验；选择器返回结果由关键字决定。
+	// Status 按 status 精确筛选（1=启用，2=停用）；省略或空串则不过滤。非法枚举 400。
 	Status *SearchModelCatalogParamsStatus `form:"status,omitempty" json:"status,omitempty"`
 	Limit  *int                            `form:"limit,omitempty" json:"limit,omitempty"`
 }

@@ -551,6 +551,20 @@ func (r *fakeCatalogRepo) DeleteModelMeta(_ context.Context, id int64) error {
 	return nil
 }
 
+func (r *fakeCatalogRepo) DeleteModelMetaVersioned(_ context.Context, id int64, expectUpdatedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.models[id]
+	if !ok {
+		return store.ErrModelMetaNotFound
+	}
+	if !rec.UpdatedAt.Equal(expectUpdatedAt) {
+		return store.ErrModelMetaConflict
+	}
+	delete(r.models, id)
+	return nil
+}
+
 func (r *fakeCatalogRepo) ListModelMeta(_ context.Context, filter store.ModelMetaFilter) ([]store.ModelMeta, int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -572,11 +586,139 @@ func (r *fakeCatalogRepo) ListModelMeta(_ context.Context, filter store.ModelMet
 	return fakePaginate(items, filter.Page, filter.PageSize), total, nil
 }
 
-func (r *fakeCatalogRepo) SearchModelMeta(_ context.Context, keyword string, limit int) ([]store.ModelMeta, error) {
+func (r *fakeCatalogRepo) SearchModelMeta(_ context.Context, keyword string, status *int16, limit int) ([]store.ModelMeta, error) {
 	items, _, err := r.ListModelMeta(context.Background(), store.ModelMetaFilter{
-		Page: 1, PageSize: limit, Keyword: keyword,
+		Page: 1, PageSize: limit, Keyword: keyword, Status: status,
 	})
 	return items, err
+}
+
+// ApplyModelSync 在单个锁内模拟一次事务：全部写入先落到临时副本，任何一条
+// 失败就丢弃副本（= 回滚），成功才整体替换。
+func (r *fakeCatalogRepo) ApplyModelSync(_ context.Context, vendors []store.ModelSyncVendorEntry, models []store.ModelSyncModelEntry) (store.ModelSyncResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result := store.ModelSyncResult{
+		CreatedVendors: []string{}, UpdatedVendors: []string{},
+		CreatedModels: []string{}, UpdatedModels: []string{},
+	}
+	modelsCopy := make(map[int64]*store.ModelMeta, len(r.models))
+	for id, rec := range r.models {
+		clone := *rec
+		modelsCopy[id] = &clone
+	}
+	vendorsCopy := make(map[int64]*store.Vendor, len(r.vendors))
+	for id, rec := range r.vendors {
+		clone := *rec
+		vendorsCopy[id] = &clone
+	}
+	nextModelID, nextVendor, clock := r.nextModelID, r.nextVendor, r.clock
+	tick := func() time.Time { clock = clock.Add(time.Second); return clock }
+
+	for _, entry := range vendors {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			return store.ModelSyncResult{}, store.ErrVendorInvalid
+		}
+		var current *store.Vendor
+		for _, vendor := range vendorsCopy {
+			if strings.EqualFold(vendor.Name, name) {
+				current = vendor
+				break
+			}
+		}
+		if current == nil {
+			nextVendor++
+			now := tick()
+			rec := &store.Vendor{
+				ID: nextVendor, Name: name, Description: entry.Description, Icon: entry.Icon,
+				Status: 1, CreatedAt: now, UpdatedAt: now,
+			}
+			vendorsCopy[rec.ID] = rec
+			result.CreatedVendors = append(result.CreatedVendors, rec.Name)
+			continue
+		}
+		if entry.Description != nil {
+			current.Description = entry.Description
+		}
+		if entry.Icon != nil {
+			current.Icon = entry.Icon
+		}
+		current.UpdatedAt = tick()
+		result.UpdatedVendors = append(result.UpdatedVendors, current.Name)
+	}
+
+	for _, entry := range models {
+		name := strings.TrimSpace(entry.ModelName)
+		if name == "" {
+			return store.ModelSyncResult{}, store.ErrModelMetaInvalid{Field: "model_name", Reason: "must not be blank"}
+		}
+		var currentID int64
+		var current *store.ModelMeta
+		for id, rec := range modelsCopy {
+			if rec.ModelName == name {
+				currentID, current = id, rec
+				break
+			}
+		}
+		if current == nil {
+			candidate := store.ModelMeta{
+				ModelName: name, DisplayName: entry.DisplayName, Description: entry.Description,
+				Icon: entry.Icon, Tags: normalizeJSON(entry.Tags, "[]"),
+				Endpoints: []byte("{}"), Capabilities: normalizeJSON(entry.Capabilities, "[]"),
+				Modalities: []byte("[]"), Parameters: []byte("[]"),
+				ContextLength: entry.ContextLength, MaxOutput: entry.MaxOutput,
+			}
+			if err := store.ValidateModelMetaInput(&candidate); err != nil {
+				return store.ModelSyncResult{}, err
+			}
+			nextModelID++
+			now := tick()
+			candidate.ID = nextModelID
+			candidate.Status = 1
+			candidate.SyncOfficial = true
+			candidate.CreatedAt, candidate.UpdatedAt = now, now
+			modelsCopy[candidate.ID] = &candidate
+			result.CreatedModels = append(result.CreatedModels, candidate.ModelName)
+			continue
+		}
+		if !current.SyncOfficial {
+			return store.ModelSyncResult{}, store.ErrSyncBlocked{ModelName: current.ModelName}
+		}
+		updated := *current
+		if entry.DisplayName != nil {
+			updated.DisplayName = entry.DisplayName
+		}
+		if entry.Description != nil {
+			updated.Description = entry.Description
+		}
+		if entry.Icon != nil {
+			updated.Icon = entry.Icon
+		}
+		if entry.Tags != nil {
+			updated.Tags = normalizeJSON(entry.Tags, "[]")
+		}
+		if entry.Capabilities != nil {
+			updated.Capabilities = normalizeJSON(entry.Capabilities, "[]")
+		}
+		if entry.ContextLength != nil {
+			updated.ContextLength = entry.ContextLength
+		}
+		if entry.MaxOutput != nil {
+			updated.MaxOutput = entry.MaxOutput
+		}
+		if err := store.ValidateModelMetaInput(&updated); err != nil {
+			return store.ModelSyncResult{}, err
+		}
+		updated.UpdatedAt = tick()
+		modelsCopy[currentID] = &updated
+		result.UpdatedModels = append(result.UpdatedModels, updated.ModelName)
+	}
+
+	r.models, r.vendors = modelsCopy, vendorsCopy
+	r.nextModelID, r.nextVendor, r.clock = nextModelID, nextVendor, clock
+	return result, nil
 }
 
 func (r *fakeCatalogRepo) MissingModels(_ context.Context) (store.MissingResult, error) {
@@ -1541,5 +1683,339 @@ func TestModelCatalogDerivedSquareState(t *testing.T) {
 	missing, ok := derive("absent")
 	if ok || missing.SquareState != squareStateUnavailable || missing.ConfiguredChannelCount != 0 {
 		t.Fatalf("absent = %+v", missing)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D1b 收口：同步去重/回滚、null 口径、清单校验、删除竞争窗口、重定向
+// ---------------------------------------------------------------------------
+
+// syncManifestFor 构造任意上游清单原文。
+func syncManifestFor(t *testing.T, models, vendors []map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"version": "upstream-x", "models": models, "vendors": vendors})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	return raw
+}
+
+// previewSourceVersion 跑一次 preview 并返回 source_version（顺带写入 Redis 缓存）。
+func previewSourceVersion(t *testing.T, env *catalogTestEnv) string {
+	t.Helper()
+	rr := env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preview = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var preview syncPreviewResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("preview JSON: %v", err)
+	}
+	return preview.SourceVersion
+}
+
+func TestModelCatalogSyncDuplicateSelections(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	env.syncRaw = syncManifestFor(t,
+		[]map[string]any{{"model_name": "dup-model"}},
+		[]map[string]any{{"name": "DupVendor"}},
+	)
+	version := previewSourceVersion(t, env)
+
+	// 内容完全一致的重复项：幂等合并，只创建一次。
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": version,
+		"models": []any{
+			map[string]any{"model_name": "dup-model"},
+			map[string]any{"model_name": "dup-model"},
+		},
+		"vendors": []any{
+			map[string]any{"name": "dupvendor"},
+			map[string]any{"name": "DupVendor"},
+		},
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("幂等去重 = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var applied syncApplyResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &applied)
+	if len(applied.CreatedModels) != 1 || len(applied.CreatedVendors) != 1 {
+		t.Fatalf("重复项应只写一次：%+v", applied)
+	}
+
+	// 同名但内容不同：422，且不产生写入。
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": version,
+		"models": []any{
+			map[string]any{"model_name": "dup-model", "display_name": "A"},
+			map[string]any{"model_name": "dup-model", "display_name": "B"},
+		},
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("冲突重复项 = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestModelCatalogSyncAppliesAtomically(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	// bad-model 的 capabilities 非法：供应商写入成功后会在这里失败，用于验证
+	// 整体回滚（供应商不能残留）。
+	env.syncRaw = syncManifestFor(t,
+		[]map[string]any{{"model_name": "bad-model", "capabilities": []string{"not-a-capability"}}},
+		[]map[string]any{{"name": "RollbackVendor", "description": "v"}},
+	)
+	version := previewSourceVersion(t, env)
+
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": version,
+		"models":         []any{map[string]any{"model_name": "bad-model"}},
+		"vendors":        []any{map[string]any{"name": "RollbackVendor"}},
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("非法模型 = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	vendors, _, err := env.repo.ListVendors(context.Background(), store.VendorFilter{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list vendors: %v", err)
+	}
+	for _, vendor := range vendors {
+		if strings.EqualFold(vendor.Name, "RollbackVendor") {
+			t.Fatalf("事务未回滚：供应商 %q 被写入", vendor.Name)
+		}
+	}
+}
+
+func TestModelCatalogSyncMissingOrNullDoesNotDiff(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models", map[string]any{
+		"model_name": "null-desc", "description": "local-null",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create null-desc = %d", rr.Code)
+	}
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models", map[string]any{
+		"model_name": "missing-desc", "description": "local-missing",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create missing-desc = %d", rr.Code)
+	}
+
+	// 显式 null 与字段缺失都必须「不参与 diff/patch」。
+	env.syncRaw = syncManifestFor(t, []map[string]any{
+		{"model_name": "null-desc", "description": nil},
+		{"model_name": "missing-desc"},
+	}, nil)
+	version := previewSourceVersion(t, env)
+
+	rr = env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	var preview syncPreviewResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &preview)
+	if len(preview.Groups.Update) != 0 || len(preview.Groups.Unchanged) != 2 {
+		t.Fatalf("null/缺失不应产生 update：update=%+v unchanged=%+v",
+			preview.Groups.Update, preview.Groups.Unchanged)
+	}
+
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": version,
+		"models": []any{
+			map[string]any{"model_name": "null-desc"},
+			map[string]any{"model_name": "missing-desc"},
+		},
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("apply = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	models, _, _ := env.repo.ListModelMeta(context.Background(), store.ModelMetaFilter{Page: 1, PageSize: 100})
+	for _, model := range models {
+		switch model.ModelName {
+		case "null-desc":
+			if model.Description == nil || *model.Description != "local-null" {
+				t.Fatalf("null 清空了本地值：%+v", model.Description)
+			}
+		case "missing-desc":
+			if model.Description == nil || *model.Description != "local-missing" {
+				t.Fatalf("缺失清空了本地值：%+v", model.Description)
+			}
+		}
+	}
+}
+
+func TestModelCatalogSyncManifestVendorValidation(t *testing.T) {
+	cases := []struct {
+		name   string
+		vendor map[string]any
+	}{
+		{"name too long", map[string]any{"name": strings.Repeat("n", catalogVendorNameMaxRunes+1)}},
+		{"description too long", map[string]any{"name": "v", "description": strings.Repeat("d", 513)}},
+		{"icon too long", map[string]any{"name": "v", "icon": strings.Repeat("i", catalogIconMaxRunes+1)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseSyncManifest(syncManifestFor(t, nil, []map[string]any{tc.vendor})); err == nil {
+				t.Fatalf("非法供应商清单未被拒绝")
+			}
+		})
+	}
+
+	// 上游数据问题 → preview 502（不是 422）。
+	env := newCatalogTestEnv(t)
+	env.syncRaw = syncManifestFor(t, nil, []map[string]any{
+		{"name": "v", "description": strings.Repeat("d", 513)},
+	})
+	rr := env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("非法清单 = %d，期望 502", rr.Code)
+	}
+	problem := decodeCatalogProblem(t, rr)
+	if problem["detail"] != "the upstream manifest does not match the expected schema" {
+		t.Fatalf("502 文案必须固定，实际 %v", problem["detail"])
+	}
+}
+
+func TestModelCatalogSyncManifestRejectsTrailingData(t *testing.T) {
+	if _, err := parseSyncManifest([]byte(`{"models":[]}{"models":[]}`)); err == nil {
+		t.Fatalf("尾随 JSON 文档未被拒绝")
+	}
+}
+
+func TestModelCatalogSyncManifestTrimsNames(t *testing.T) {
+	manifest, err := parseSyncManifest(syncManifestFor(t,
+		[]map[string]any{{"model_name": "  gpt-4  "}},
+		[]map[string]any{{"name": "  Acme  "}},
+	))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if manifest.Models[0].ModelName != "gpt-4" || manifest.Vendors[0].Name != "Acme" {
+		t.Fatalf("名称未统一裁剪：%+v %+v", manifest.Models[0], manifest.Vendors[0])
+	}
+}
+
+func TestModelCatalogDeleteRejectsConcurrentUpdate(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	view := createTestModel(t, env, "race-model")
+	stale := view.UpdatedAt
+
+	// 模拟「读后、删前」另一次更新已提交。
+	rr := env.request(catalogFullAdmin(), http.MethodPut,
+		fmt.Sprintf("/api/models/%d", view.ID),
+		map[string]any{"description": "updated", "updated_at": stale.Format(time.RFC3339Nano)}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("并发更新 = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	rr = env.request(catalogFullAdmin(), http.MethodDelete,
+		fmt.Sprintf("/api/models/%d?updated_at=%s", view.ID, url.QueryEscape(stale.Format(time.RFC3339Nano))),
+		nil, nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("过期版本删除 = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
+	}
+	rr = env.request(catalogFullAdmin(), http.MethodGet, fmt.Sprintf("/api/models/%d", view.ID), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("409 删除不应删行，GET = %d", rr.Code)
+	}
+}
+
+func TestModelCatalogSearchStatusUsesSQLFilter(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	disabled := int16(2)
+	_, _ = env.repo.CreateModelMeta(context.Background(), store.ModelMetaInput{
+		ModelName: "disabled-match", Status: &disabled,
+	})
+	createTestModel(t, env, "enabled-match")
+
+	rr := env.request(catalogFullAdmin(), http.MethodGet, "/api/models/search?status=disabled", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("search = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var list modelSearchListView
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("search JSON: %v", err)
+	}
+	for _, item := range list.Items {
+		if item.Status != 2 {
+			t.Fatalf("status=disabled 返回了启用项：%+v", item)
+		}
+	}
+	if len(list.Items) != 1 || list.Items[0].ModelName != "disabled-match" {
+		t.Fatalf("status 过滤结果 = %+v", list.Items)
+	}
+}
+
+func TestModelCatalogReleasedAtIsDate(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models", map[string]any{
+		"model_name": "dated-model", "released_at": "2026-01-02",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if body["released_at"] != "2026-01-02" {
+		t.Fatalf("released_at = %v，期望 YYYY-MM-DD（契约 format: date）", body["released_at"])
+	}
+}
+
+func TestModelCatalogUnknownWriteFieldDenied(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models",
+		map[string]any{"model_name": "unknown-field", "bogus": 1}, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("未知字段 = %d，期望 403（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestVendorOperationErrorLocatesField(t *testing.T) {
+	cases := []struct {
+		body  map[string]any
+		field string
+	}{
+		{map[string]any{"action": "assign", "target_vendor_id": "not-an-int"}, "target_vendor_id"},
+		{map[string]any{"action": "assign", "model_ids": "not-an-array"}, "model_ids"},
+		{map[string]any{"action": "nope"}, "action"},
+	}
+	env := newCatalogTestEnv(t)
+	for _, tc := range cases {
+		rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/vendors/operations/preview", tc.body, nil)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%+v = %d，期望 422", tc.body, rr.Code)
+		}
+		problem := decodeCatalogProblem(t, rr)
+		fields, _ := problem["fields"].([]any)
+		if len(fields) != 1 || fields[0] != tc.field {
+			t.Fatalf("fields = %v，期望 [%s]", problem["fields"], tc.field)
+		}
+	}
+}
+
+func TestValidateSyncURL(t *testing.T) {
+	allowed := []string{"http://example.com/manifest.json", "https://example.com:443/x", "http://example.com:80/x"}
+	for _, raw := range allowed {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if err := validateSyncURL(parsed); err != nil {
+			t.Fatalf("应允许 %q：%v", raw, err)
+		}
+	}
+	rejected := []string{
+		"http://example.com:6379/x",
+		"http://example.com:22/x",
+		"ftp://example.com/x",
+		"http://user:pass@example.com/x",
+		"http:///no-host",
+	}
+	for _, raw := range rejected {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue // 无法解析本身即拒绝
+		}
+		if err := validateSyncURL(parsed); err == nil {
+			t.Fatalf("应拒绝重定向/目标 %q", raw)
+		}
 	}
 }

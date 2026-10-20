@@ -245,7 +245,7 @@ func TestModelCatalogModelMetaCRUD(t *testing.T) {
 	if err != nil || total != 1 || len(list) != 1 {
 		t.Fatalf("list = (%d, %v, %v)，want 1 条", len(list), total, err)
 	}
-	found, err := repo.SearchModelMeta(ctx, name, 5)
+	found, err := repo.SearchModelMeta(ctx, name, nil, 5)
 	if err != nil || len(found) != 1 {
 		t.Fatalf("search = (%d, %v)，want 1 条", len(found), err)
 	}

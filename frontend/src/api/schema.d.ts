@@ -1515,9 +1515,12 @@ export interface paths {
          * @description source_version 必须是 preview 的返回值；缺失/过期/条目在清单中消失
          *     ⇒ 409（整体拒绝，不产生任何写入）。勾选 sync_official=false 的模型
          *     ⇒ 400（前端不应允许勾选，后端仍校验）。写入值取自服务端缓存的清单，
-         *     请求条目只用于选择。
-         *     注意：写入是逐条 store 调用，store 未提供跨行事务接缝（D1a 边界），
-         *     预校验全部通过后才开始写；数据库在写入中途故障时可能部分生效。
+         *     请求条目只用于选择。选择集按匹配键去重：内容一致的重复项幂等合并，
+         *     同名但内容不一致 ⇒ 422。
+         *     写入在**单个数据库事务**内完成（供应商 + 模型），事务开始即获取
+         *     advisory lock 串行化并发同步，并在锁内重新判断 create/update 与
+         *     sync_official；任一条失败（唯一约束/乐观锁 → 409，字段校验 → 422）
+         *     整体回滚，不会部分生效。
          */
         post: operations["applyModelSync"];
         delete?: never;
@@ -8790,7 +8793,7 @@ export interface operations {
         parameters: {
             query?: {
                 keyword?: string;
-                /** @description 仅做枚举校验；选择器返回结果由关键字决定。 */
+                /** @description 按 status 精确筛选（1=启用，2=停用）；省略或空串则不过滤。非法枚举 400。 */
                 status?: "1" | "2" | "enabled" | "disabled";
                 limit?: number;
             };

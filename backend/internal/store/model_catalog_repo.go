@@ -20,12 +20,15 @@ package store
 // `sql.Tx` 内完成，任一步报错即 defer Rollback。
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -377,6 +380,55 @@ type MissingResult struct {
 	SkippedChannels int64
 }
 
+// ModelSyncVendorEntry 是上游同步要落库的一个供应商条目。
+//
+// Description/Icon 为 nil 表示上游未提供（或显式 null，两者同义）：不参与
+// 更新，绝不把本地值清空。匹配键是 lower(name)，与 vendors 的唯一索引一致。
+type ModelSyncVendorEntry struct {
+	Name        string
+	Description *string
+	Icon        *string
+}
+
+// ModelSyncModelEntry 是上游同步要落库的一个模型条目。
+//
+// 只有上游实际提供的字段才有非 nil 值；nil 字段不参与更新（缺失 ≠ 清空）。
+// Tags/Capabilities 为 nil 表示不提供；创建时走列默认值。
+type ModelSyncModelEntry struct {
+	ModelName     string
+	DisplayName   *string
+	Description   *string
+	Icon          *string
+	Tags          []byte
+	Capabilities  []byte
+	ContextLength *int64
+	MaxOutput     *int64
+}
+
+// ModelSyncResult 是同步 apply 的逐类计数/名称，供响应与审计使用。
+type ModelSyncResult struct {
+	CreatedVendors []string
+	UpdatedVendors []string
+	CreatedModels  []string
+	UpdatedModels  []string
+}
+
+// ErrSyncBlocked 表示同步清单命中了本地锁定档案（sync_official=false）。
+// handler 映射 400（前端不应勾选，后端仍校验）。
+type ErrSyncBlocked struct {
+	ModelName string
+}
+
+func (e ErrSyncBlocked) Error() string {
+	return "store: model " + e.ModelName + " has sync_official=false and cannot be overwritten"
+}
+
+// Is 让 errors.Is(err, ErrSyncBlocked{}) 可用于类型判断。
+func (e ErrSyncBlocked) Is(target error) bool {
+	_, ok := target.(ErrSyncBlocked)
+	return ok
+}
+
 // ModelCatalogRepo 是目录管理端点的存储接缝（单测注入内存假实现）。
 type ModelCatalogRepo interface {
 	CreateVendor(ctx context.Context, in VendorInput) (Vendor, error)
@@ -392,8 +444,10 @@ type ModelCatalogRepo interface {
 	GetModelMeta(ctx context.Context, id int64) (ModelMeta, error)
 	UpdateModelMeta(ctx context.Context, id int64, patch ModelMetaPatch, expectUpdatedAt time.Time) (ModelMeta, error)
 	DeleteModelMeta(ctx context.Context, id int64) error
+	DeleteModelMetaVersioned(ctx context.Context, id int64, expectUpdatedAt time.Time) error
 	ListModelMeta(ctx context.Context, filter ModelMetaFilter) ([]ModelMeta, int64, error)
-	SearchModelMeta(ctx context.Context, keyword string, limit int) ([]ModelMeta, error)
+	SearchModelMeta(ctx context.Context, keyword string, status *int16, limit int) ([]ModelMeta, error)
+	ApplyModelSync(ctx context.Context, vendors []ModelSyncVendorEntry, models []ModelSyncModelEntry) (ModelSyncResult, error)
 	MissingModels(ctx context.Context) (MissingResult, error)
 	BatchDeleteModelMeta(ctx context.Context, ids []int64, removeFromChannels, clearPricing bool) (BatchDeleteResult, error)
 	ResolveMeta(ctx context.Context, modelNames []string) (map[string]ModelMeta, error)
@@ -1139,6 +1193,25 @@ func validateVendorReference(ctx context.Context, tx *sql.Tx, vendorID int64) er
 // 其余字段先过 ValidateModelMetaInput（L-3：规则下沉到 store，任何写入路径
 // 都绕不过去）。
 func (r *SQLModelCatalogRepo) CreateModelMeta(ctx context.Context, in ModelMetaInput) (ModelMeta, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelMeta{}, fmt.Errorf("store: begin create model_meta(%s): %w", in.ModelName, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rec, err := createModelMetaTx(ctx, tx, in)
+	if err != nil {
+		return ModelMeta{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ModelMeta{}, fmt.Errorf("store: commit create model_meta(%s): %w", rec.ModelName, err)
+	}
+	return rec, nil
+}
+
+// createModelMetaTx 是 CreateModelMeta 的事务内实现；同步 apply 复用同一份
+// 校验/默认值/错误映射，保证两条写入路径的语义完全一致。
+func createModelMetaTx(ctx context.Context, tx *sql.Tx, in ModelMetaInput) (ModelMeta, error) {
 	name := strings.TrimSpace(in.ModelName)
 	if name == "" {
 		return ModelMeta{}, ErrModelMetaInvalid{Field: "model_name", Reason: "must not be blank"}
@@ -1175,12 +1248,6 @@ func (r *SQLModelCatalogRepo) CreateModelMeta(ctx context.Context, in ModelMetaI
 		return ModelMeta{}, err
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ModelMeta{}, fmt.Errorf("store: begin create model_meta(%s): %w", name, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	if in.VendorID != nil {
 		if err := validateVendorReference(ctx, tx, *in.VendorID); err != nil {
 			return ModelMeta{}, err
@@ -1208,9 +1275,6 @@ func (r *SQLModelCatalogRepo) CreateModelMeta(ctx context.Context, in ModelMetaI
 		}
 		return ModelMeta{}, fmt.Errorf("store: create model_meta(%s): %w", name, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return ModelMeta{}, fmt.Errorf("store: commit create model_meta(%s): %w", name, err)
-	}
 	return rec, nil
 }
 
@@ -1231,6 +1295,25 @@ func (r *SQLModelCatalogRepo) GetModelMeta(ctx context.Context, id int64) (Model
 //
 // 只校验「本次提交了的」字段：nil/未 Set 表示不修改，交给 DB 保留原值。
 func (r *SQLModelCatalogRepo) UpdateModelMeta(ctx context.Context, id int64, patch ModelMetaPatch, expectUpdatedAt time.Time) (ModelMeta, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelMeta{}, fmt.Errorf("store: begin update model_meta(%d): %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rec, err := updateModelMetaTx(ctx, tx, id, patch, expectUpdatedAt)
+	if err != nil {
+		return ModelMeta{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ModelMeta{}, fmt.Errorf("store: commit update model_meta(%d): %w", id, err)
+	}
+	return rec, nil
+}
+
+// updateModelMetaTx 是 UpdateModelMeta 的事务内实现；同步 apply 复用同一份
+// 校验/乐观锁/错误映射。
+func updateModelMetaTx(ctx context.Context, tx *sql.Tx, id int64, patch ModelMetaPatch, expectUpdatedAt time.Time) (ModelMeta, error) {
 	var trimmedName *string
 	if patch.ModelName != nil {
 		name := strings.TrimSpace(*patch.ModelName)
@@ -1276,12 +1359,6 @@ func (r *SQLModelCatalogRepo) UpdateModelMeta(ctx context.Context, id int64, pat
 	}); err != nil {
 		return ModelMeta{}, err
 	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ModelMeta{}, fmt.Errorf("store: begin update model_meta(%d): %w", id, err)
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	// 改挂供应商时同样用 FOR SHARE 堵住「校验存在 → 供应商被删」的窗口。
 	if patch.VendorIDSet && patch.VendorID != nil {
@@ -1375,9 +1452,6 @@ func (r *SQLModelCatalogRepo) UpdateModelMeta(ctx context.Context, id int64, pat
 		}
 		return ModelMeta{}, fmt.Errorf("store: update model_meta(%d): %w", id, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return ModelMeta{}, fmt.Errorf("store: commit update model_meta(%d): %w", id, err)
-	}
 	return rec, nil
 }
 
@@ -1395,6 +1469,246 @@ func (r *SQLModelCatalogRepo) DeleteModelMeta(ctx context.Context, id int64) err
 		return ErrModelMetaNotFound
 	}
 	return nil
+}
+
+// DeleteModelMetaVersioned 以 updated_at 做乐观锁删除（F-06-22）。
+//
+// 【为什么必须一条 DELETE ... WHERE】先读后删在「比较」与「删除」之间留有
+// 窗口：另一请求的 UPDATE 可在这个窗口内提交，随后删除会悄无声息地删掉
+// 管理员没看到的版本。把版本条件放进 DELETE 的 WHERE 后，比较与删除是同一
+// 条语句，0 行时再区分「行不存在（404）」与「版本过期（409）」。
+func (r *SQLModelCatalogRepo) DeleteModelMetaVersioned(ctx context.Context, id int64, expectUpdatedAt time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin delete model_meta(%d): %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM model_meta WHERE id = $1 AND updated_at = $2`, id, expectUpdatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("store: delete model_meta(%d): %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete model_meta(%d) rows: %w", id, err)
+	}
+	if affected == 0 {
+		// 二次查询区分「行不存在（404）」与「版本过期（409）」。
+		var exists bool
+		if checkErr := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM model_meta WHERE id = $1)`, id).Scan(&exists); checkErr != nil {
+			return fmt.Errorf("store: check model_meta(%d): %w", id, checkErr)
+		}
+		if !exists {
+			return ErrModelMetaNotFound
+		}
+		return ErrModelMetaConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit delete model_meta(%d): %w", id, err)
+	}
+	return nil
+}
+
+// ApplyModelSync 在同一事务内应用一次上游同步（F-06-25）。
+//
+// 【为什么必须单事务】供应商与模型是一组语义上的写入：先建供应商、后建模型
+// 的中间态一旦被并发读看到，公开面会读到「供应商已存在但模型未更新」的
+// 半成品；任一条失败必须整体回滚，不能部分生效。
+//
+// 【为什么先拿咨询锁】两个管理员同时 apply 两份不同清单时，唯一约束只能
+// 拦住冲突的那一条，已写入的前序行仍会保留。事务级 advisory lock 把
+// 「读现状 → 决定 create/update → 写入」串行化：后到者阻塞到前者提交，随后
+// 基于新状态重新判定（已存在的行走 update，不再撞唯一约束）。锁在事务提交/
+// 回滚时自动释放，与 settings/service.go 的 section 锁同机制。
+//
+// 【为什么在事务里重新读现状】handler 的 preview/选择校验发生在事务外；
+// 拿到锁后必须重新判断 create/update 与 sync_official，才能保证「基于新
+// 状态校验」，而不是照着过期快照写。
+func (r *SQLModelCatalogRepo) ApplyModelSync(ctx context.Context, vendors []ModelSyncVendorEntry, models []ModelSyncModelEntry) (ModelSyncResult, error) {
+	result := ModelSyncResult{
+		CreatedVendors: []string{}, UpdatedVendors: []string{},
+		CreatedModels: []string{}, UpdatedModels: []string{},
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("store: begin model sync: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('newtg.model_sync')::bigint)`); err != nil {
+		return result, fmt.Errorf("store: lock model sync: %w", err)
+	}
+
+	// 1) 供应商：按 lower(name) 匹配（与唯一索引同口径）。
+	for _, entry := range vendors {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			return result, ErrVendorInvalid
+		}
+		current, scanErr := scanVendor(tx.QueryRowContext(ctx, `
+			SELECT `+vendorColumns+` FROM vendors
+			WHERE lower(name) = lower($1) ORDER BY id LIMIT 1 FOR UPDATE`, name))
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			created, createErr := scanVendor(tx.QueryRowContext(ctx, `
+				INSERT INTO vendors (name, description, icon, status)
+				VALUES ($1, $2, $3, 1) RETURNING `+vendorColumns,
+				name, entry.Description, entry.Icon))
+			if createErr != nil {
+				if isUniqueViolation(createErr) {
+					return result, ErrVendorDuplicate
+				}
+				if isCheckViolation(createErr) {
+					return result, ErrVendorInvalid
+				}
+				return result, fmt.Errorf("store: sync create vendor(%s): %w", name, createErr)
+			}
+			result.CreatedVendors = append(result.CreatedVendors, created.Name)
+			continue
+		}
+		if scanErr != nil {
+			return result, fmt.Errorf("store: sync lock vendor(%s): %w", name, scanErr)
+		}
+		// 上游未提供的字段保持本地值（缺失 ≠ 清空）。
+		description, icon := current.Description, current.Icon
+		if entry.Description != nil {
+			description = entry.Description
+		}
+		if entry.Icon != nil {
+			icon = entry.Icon
+		}
+		if sameOptionalString(current.Description, description) && sameOptionalString(current.Icon, icon) {
+			continue
+		}
+		if _, updateErr := tx.ExecContext(ctx, `
+			UPDATE vendors SET description = $1, icon = $2, updated_at = now()
+			WHERE id = $3`, description, icon, current.ID); updateErr != nil {
+			if isCheckViolation(updateErr) {
+				return result, ErrVendorInvalid
+			}
+			return result, fmt.Errorf("store: sync update vendor(%s): %w", name, updateErr)
+		}
+		result.UpdatedVendors = append(result.UpdatedVendors, current.Name)
+	}
+
+	// 2) 模型：按 model_name 精确匹配。先供应商后模型，保持原有写入顺序。
+	for _, entry := range models {
+		name := strings.TrimSpace(entry.ModelName)
+		if name == "" {
+			return result, ErrModelMetaInvalid{Field: "model_name", Reason: "must not be blank"}
+		}
+		current, scanErr := scanModelMeta(tx.QueryRowContext(ctx, `
+			SELECT `+modelMetaColumns+` FROM model_meta
+			WHERE model_name = $1 FOR UPDATE`, name))
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			created, createErr := createModelMetaTx(ctx, tx, ModelMetaInput{
+				ModelName: name, DisplayName: entry.DisplayName, Description: entry.Description,
+				Icon: entry.Icon, Tags: entry.Tags, Capabilities: entry.Capabilities,
+				ContextLength: entry.ContextLength, MaxOutput: entry.MaxOutput,
+			})
+			if createErr != nil {
+				return result, createErr
+			}
+			result.CreatedModels = append(result.CreatedModels, created.ModelName)
+			continue
+		}
+		if scanErr != nil {
+			return result, fmt.Errorf("store: sync lock model_meta(%s): %w", name, scanErr)
+		}
+		if !current.SyncOfficial {
+			// 本地锁定：即使客户端绕过 preview 勾选也不覆盖。
+			return result, ErrSyncBlocked{ModelName: current.ModelName}
+		}
+		patch := syncModelPatchFromEntry(current, entry)
+		if modelMetaPatchEmpty(patch) {
+			continue
+		}
+		updated, updateErr := updateModelMetaTx(ctx, tx, current.ID, patch, current.UpdatedAt)
+		if updateErr != nil {
+			return result, updateErr
+		}
+		result.UpdatedModels = append(result.UpdatedModels, updated.ModelName)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("store: commit model sync: %w", err)
+	}
+	return result, nil
+}
+
+// syncModelPatchFromEntry 只更新上游提供且确有差异的字段（缺失 ≠ 清空）。
+func syncModelPatchFromEntry(local ModelMeta, entry ModelSyncModelEntry) ModelMetaPatch {
+	var patch ModelMetaPatch
+	if entry.DisplayName != nil && !sameOptionalString(local.DisplayName, entry.DisplayName) {
+		patch.DisplayName = entry.DisplayName
+		patch.DisplayNameSet = true
+	}
+	if entry.Description != nil && !sameOptionalString(local.Description, entry.Description) {
+		patch.Description = entry.Description
+		patch.DescriptionSet = true
+	}
+	if entry.Icon != nil && !sameOptionalString(local.Icon, entry.Icon) {
+		patch.Icon = entry.Icon
+		patch.IconSet = true
+	}
+	if entry.Tags != nil && !jsonBytesEqual(local.Tags, entry.Tags) {
+		patch.Tags = entry.Tags
+		patch.TagsSet = true
+	}
+	if entry.Capabilities != nil && !jsonBytesEqual(local.Capabilities, entry.Capabilities) {
+		patch.Capabilities = entry.Capabilities
+		patch.CapabilitiesSet = true
+	}
+	if entry.ContextLength != nil && (local.ContextLength == nil || *local.ContextLength != *entry.ContextLength) {
+		patch.ContextLength = entry.ContextLength
+		patch.ContextLengthSet = true
+	}
+	if entry.MaxOutput != nil && (local.MaxOutput == nil || *local.MaxOutput != *entry.MaxOutput) {
+		patch.MaxOutput = entry.MaxOutput
+		patch.MaxOutputSet = true
+	}
+	return patch
+}
+
+// modelMetaPatchEmpty 判断 patch 是否不含任何写入列（同步 apply 用于跳过
+// 与本地完全一致的条目）。
+func modelMetaPatchEmpty(patch ModelMetaPatch) bool {
+	return patch.ModelName == nil &&
+		!patch.DisplayNameSet && !patch.DescriptionSet && !patch.IconSet &&
+		!patch.TagsSet && !patch.VendorIDSet && !patch.EndpointsSet &&
+		!patch.CapabilitiesSet && !patch.ModalitiesSet && !patch.ParametersSet &&
+		!patch.ContextLengthSet && !patch.MaxOutputSet && !patch.KnowledgeCutoffSet &&
+		!patch.ReleasedAtSet && patch.Status == nil && patch.SyncOfficial == nil &&
+		patch.NameRule == nil
+}
+
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// jsonBytesEqual 按语义比较两个 jsonb 原文（键序/空白不构成差异）；无法解析
+// 时退回字节比较。与 preview 的 jsonValue/DeepEqual 口径一致。
+func jsonBytesEqual(a, b []byte) bool {
+	if len(a) == 0 {
+		a = []byte("[]")
+	}
+	if len(b) == 0 {
+		b = []byte("[]")
+	}
+	var left, right any
+	if err := json.Unmarshal(a, &left); err != nil {
+		return bytes.Equal(a, b)
+	}
+	if err := json.Unmarshal(b, &right); err != nil {
+		return bytes.Equal(a, b)
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func modelMetaWhere(filter ModelMetaFilter) (string, []any) {
@@ -1452,14 +1766,26 @@ func (r *SQLModelCatalogRepo) ListModelMeta(ctx context.Context, filter ModelMet
 }
 
 // SearchModelMeta 是选择器用的轻量搜索。
-func (r *SQLModelCatalogRepo) SearchModelMeta(ctx context.Context, keyword string, limit int) ([]ModelMeta, error) {
+//
+// 【status 必须在 SQL 里过滤】先 LIMIT 再内存过滤会让「前 N 条全是停用」时
+// 选择器返回空列表，即使更靠后的行匹配——过滤条件必须在 LIMIT 之前生效。
+func (r *SQLModelCatalogRepo) SearchModelMeta(ctx context.Context, keyword string, status *int16, limit int) ([]ModelMeta, error) {
 	limit = clampCatalogLimit(limit)
 	query := `SELECT ` + modelMetaColumns + ` FROM model_meta`
-	args := make([]any, 0, 2)
+	args := make([]any, 0, 3)
+	conditions := make([]string, 0, 2)
 	if kw := strings.TrimSpace(keyword); kw != "" {
 		args = append(args, "%"+escapeLike(kw)+"%")
-		query += fmt.Sprintf(` WHERE (model_name ILIKE $%d ESCAPE '!' OR COALESCE(display_name, '') ILIKE $%d ESCAPE '!')`,
-			len(args), len(args))
+		conditions = append(conditions, fmt.Sprintf(
+			`(model_name ILIKE $%d ESCAPE '!' OR COALESCE(display_name, '') ILIKE $%d ESCAPE '!')`,
+			len(args), len(args)))
+	}
+	if status != nil {
+		args = append(args, *status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	args = append(args, limit)
 	query += ` ORDER BY model_name ASC, id ASC` + fmt.Sprintf(" LIMIT $%d", len(args))

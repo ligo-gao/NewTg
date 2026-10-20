@@ -41,6 +41,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -150,10 +151,11 @@ const (
 )
 
 const (
-	catalogModelNameMaxRunes = 128
-	catalogIconMaxRunes      = 128
-	catalogSearchLimitMax    = 100
-	catalogKeywordMaxRunes   = 128
+	catalogModelNameMaxRunes  = 128
+	catalogVendorNameMaxRunes = 128
+	catalogIconMaxRunes       = 128
+	catalogSearchLimitMax     = 100
+	catalogKeywordMaxRunes    = 128
 	// catalogPageSizeAll 是「需要全量装载后再派生/排序」时的内部页大小。
 	// 只用固定值翻页，不把 100 的对外上限泄漏给内部循环。
 	catalogPageSizeAll = 100
@@ -165,6 +167,9 @@ const (
 	// catalogSyncManifestMaxBytes 是上游清单原文上限；清单是元数据，4MB 足够
 	// 覆盖数千模型，同时避免把一次 preview 变成内存放大面。
 	catalogSyncManifestMaxBytes = 4 << 20
+	// catalogSyncMaxRedirects 是同步拉取允许的最大跳转次数（Go 默认 10；
+	// 上游清单不需要长跳转链，收紧可减少被重定向到内部服务的窗口）。
+	catalogSyncMaxRedirects = 3
 )
 
 var (
@@ -316,12 +321,15 @@ type modelMetaView struct {
 	ContextLength   *int64          `json:"context_length"`
 	MaxOutput       *int64          `json:"max_output"`
 	KnowledgeCutoff *string         `json:"knowledge_cutoff"`
-	ReleasedAt      *time.Time      `json:"released_at"`
-	Status          int16           `json:"status"`
-	SyncOfficial    bool            `json:"sync_official"`
-	NameRule        int16           `json:"name_rule"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	// released_at 的列类型是 date，契约（schemas/admin.yaml）是 format: date。
+	// 用 *time.Time 输出会得到 RFC 3339 date-time，与契约不一致；这里显式
+	// 格式化为 YYYY-MM-DD。
+	ReleasedAt   *string   `json:"released_at"`
+	Status       int16     `json:"status"`
+	SyncOfficial bool      `json:"sync_official"`
+	NameRule     int16     `json:"name_rule"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 
 	VendorName             *string  `json:"vendor_name"`
 	SquareState            string   `json:"square_state"`
@@ -419,6 +427,15 @@ type vendorOperationResponse struct {
 	Affected int64 `json:"affected"`
 }
 
+// formatCatalogDate 把 date 列（UTC 零点）输出成契约要求的 YYYY-MM-DD。
+func formatCatalogDate(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := value.UTC().Format("2006-01-02")
+	return &formatted
+}
+
 func newModelMetaView(rec store.ModelMeta) modelMetaView {
 	return modelMetaView{
 		ID: rec.ID, ModelName: rec.ModelName, DisplayName: rec.DisplayName,
@@ -430,7 +447,7 @@ func newModelMetaView(rec store.ModelMeta) modelMetaView {
 		Modalities:    rawJSONOr(rec.Modalities, "[]"),
 		Parameters:    rawJSONOr(rec.Parameters, "[]"),
 		ContextLength: rec.ContextLength, MaxOutput: rec.MaxOutput,
-		KnowledgeCutoff: rec.KnowledgeCutoff, ReleasedAt: rec.ReleasedAt,
+		KnowledgeCutoff: rec.KnowledgeCutoff, ReleasedAt: formatCatalogDate(rec.ReleasedAt),
 		Status: rec.Status, SyncOfficial: rec.SyncOfficial, NameRule: rec.NameRule,
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
 		// 派生字段的零值：调用方必须用 applyDerived 填充；零值不是合法广场态，
@@ -1255,18 +1272,13 @@ func (h *ModelCatalogHandlers) handleSearchModels(w http.ResponseWriter, r *http
 		writeCatalogProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error(), nil)
 		return
 	}
-	items, err := h.repo.SearchModelMeta(r.Context(), keyword, limit)
+	items, err := h.repo.SearchModelMeta(r.Context(), keyword, status, limit)
 	if err != nil {
 		h.writeModelCatalogError(w, "search model metadata", err)
 		return
 	}
 	views := make([]modelSearchView, 0, len(items))
 	for _, rec := range items {
-		// store.SearchModelMeta 只支持关键字；status 在内存过滤，保持「非法
-		// 枚举 400、合法枚举真实生效」的契约，不静默忽略。
-		if status != nil && rec.Status != *status {
-			continue
-		}
 		views = append(views, modelSearchView{
 			ID: rec.ID, ModelName: rec.ModelName, DisplayName: rec.DisplayName, Status: rec.Status,
 		})
@@ -1391,21 +1403,16 @@ func (h *ModelCatalogHandlers) handleDeleteModel(w http.ResponseWriter, r *http.
 			"updated_at must be an RFC 3339 timestamp", nil)
 		return
 	}
-	// 【为什么先读后删】store.DeleteModelMeta 的签名没有乐观锁参数（D1a 关闭，
-	// 本任务不改 store）。这里用「读当前 updated_at → 比对 → 删除」实现契约；
-	// 比较与删除之间仍有理论窗口，已在报告登记（需要 store 增
-	// DeleteModelMetaVersioned 才能完全原子）。
+	// 【为什么读一次】审计 detail 需要 model_name；真正的乐观锁由
+	// DeleteModelMetaVersioned 的 `WHERE id = $1 AND updated_at = $2` 保证：
+	// 读取之后、删除之前若有其他请求提交了 UPDATE，删除命中 0 行并返回 409，
+	// 不会删掉管理员没看到的版本。读取本身不再承担校验职责。
 	current, err := h.repo.GetModelMeta(r.Context(), id)
 	if err != nil {
 		h.writeModelCatalogError(w, "read model metadata before delete", err)
 		return
 	}
-	if !current.UpdatedAt.Equal(expectUpdatedAt) {
-		writeCatalogProblem(w, http.StatusConflict, authProblemConflict, "Conflict",
-			"the model metadata was modified by another request; refresh and retry", nil)
-		return
-	}
-	if err := h.repo.DeleteModelMeta(r.Context(), id); err != nil {
+	if err := h.repo.DeleteModelMetaVersioned(r.Context(), id, expectUpdatedAt); err != nil {
 		h.writeModelCatalogError(w, "delete model metadata", err)
 		return
 	}
@@ -1857,43 +1864,46 @@ func (h *ModelCatalogHandlers) handleDeleteVendor(w http.ResponseWriter, r *http
 // ---------------------------------------------------------------------------
 
 // parseVendorOperation 解析 preview/apply 共用入参。
-func parseVendorOperation(body map[string]json.RawMessage) (store.VendorOperation, error) {
+// parseVendorOperation 解析批量操作请求，并返回出错字段名：RFC 7807 的
+// fields 必须指向实际非法字段（target_vendor_id / model_ids / ...），而不是
+// 一律把 action 报成坏字段。
+func parseVendorOperation(body map[string]json.RawMessage) (store.VendorOperation, string, error) {
 	var op store.VendorOperation
 	rawAction, ok := body["action"]
 	if !ok {
-		return op, errors.New("action is required")
+		return op, "action", errors.New("action is required")
 	}
 	if err := json.Unmarshal(rawAction, &op.Action); err != nil {
-		return op, errors.New("action must be a string")
+		return op, "action", errors.New("action must be a string")
 	}
 	op.Action = strings.TrimSpace(op.Action)
 	switch op.Action {
 	case store.VendorActionAssign, store.VendorActionMerge, store.VendorActionDelete:
 	default:
-		return op, errors.New("action must be assign, merge or delete")
+		return op, "action", errors.New("action must be assign, merge or delete")
 	}
 	if raw, ok := body["model_ids"]; ok {
 		if err := json.Unmarshal(raw, &op.ModelIDs); err != nil {
-			return op, errors.New("model_ids must be an array of integers")
+			return op, "model_ids", errors.New("model_ids must be an array of integers")
 		}
 	}
 	if raw, ok := body["vendor_ids"]; ok {
 		if err := json.Unmarshal(raw, &op.VendorIDs); err != nil {
-			return op, errors.New("vendor_ids must be an array of integers")
+			return op, "vendor_ids", errors.New("vendor_ids must be an array of integers")
 		}
 	}
 	if raw, ok := body["target_vendor_id"]; ok {
 		if err := json.Unmarshal(raw, &op.TargetVendorID); err != nil || op.TargetVendorID < 0 {
-			return op, errors.New("target_vendor_id must be a non-negative integer")
+			return op, "target_vendor_id", errors.New("target_vendor_id must be a non-negative integer")
 		}
 	}
 	if raw, ok := body["expected_version"]; ok {
 		if err := json.Unmarshal(raw, &op.ExpectedVersion); err != nil {
-			return op, errors.New("expected_version must be a string")
+			return op, "expected_version", errors.New("expected_version must be a string")
 		}
 		op.ExpectedVersion = strings.TrimSpace(op.ExpectedVersion)
 	}
-	return op, nil
+	return op, "", nil
 }
 
 func (h *ModelCatalogHandlers) handlePreviewVendorOperations(w http.ResponseWriter, r *http.Request) {
@@ -1903,9 +1913,9 @@ func (h *ModelCatalogHandlers) handlePreviewVendorOperations(w http.ResponseWrit
 			"request body must be a JSON object", nil)
 		return
 	}
-	op, err := parseVendorOperation(body)
+	op, field, err := parseVendorOperation(body)
 	if err != nil {
-		writeCatalogFieldsProblem(w, err.Error(), []string{"action"})
+		writeCatalogFieldsProblem(w, err.Error(), []string{field})
 		return
 	}
 	preview, err := h.repo.PreviewVendorOperations(r.Context(), op)
@@ -1936,9 +1946,9 @@ func (h *ModelCatalogHandlers) handleApplyVendorOperations(w http.ResponseWriter
 			"request body must be a JSON object", nil)
 		return
 	}
-	op, err := parseVendorOperation(body)
+	op, field, err := parseVendorOperation(body)
 	if err != nil {
-		writeCatalogFieldsProblem(w, err.Error(), []string{"action"})
+		writeCatalogFieldsProblem(w, err.Error(), []string{field})
 		return
 	}
 	// 空版本亦视为冲突（F-06-24 / store.verifyVendorVersion 同口径）：
@@ -1964,6 +1974,11 @@ func (h *ModelCatalogHandlers) handleApplyVendorOperations(w http.ResponseWriter
 // ---------------------------------------------------------------------------
 
 // syncManifestModel 是上游清单的模型条目（任务书 §2 冻结格式）。
+//
+// Present 记录「字段存在且非 null」。缺失与显式 null 同义（都不参与
+// diff/patch，缺失 ≠ 清空），但仍显式区分「有值」：只看指针会把
+// `"display_name": null` 与 `"display_name": "x"` 之外的形态混在一起，
+// preview 与 apply 的口径就难以自证一致。
 type syncManifestModel struct {
 	ModelName     string          `json:"model_name"`
 	DisplayName   *string         `json:"display_name"`
@@ -1973,12 +1988,70 @@ type syncManifestModel struct {
 	Capabilities  json.RawMessage `json:"capabilities"`
 	ContextLength *int64          `json:"context_length"`
 	MaxOutput     *int64          `json:"max_output"`
+
+	Present map[string]bool `json:"-"`
+}
+
+func (m *syncManifestModel) UnmarshalJSON(data []byte) error {
+	type plain syncManifestModel
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*m = syncManifestModel(decoded)
+	m.Present = presentNonNilFields(raw, "display_name", "description", "icon", "tags", "capabilities",
+		"context_length", "max_output")
+	// 显式 null 与缺失同义：归一化为「未提供」，避免把 "null" 当数组/对象写库。
+	if !m.Present["tags"] {
+		m.Tags = nil
+	}
+	if !m.Present["capabilities"] {
+		m.Capabilities = nil
+	}
+	return nil
 }
 
 type syncManifestVendor struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Icon        *string `json:"icon"`
+
+	Present map[string]bool `json:"-"`
+}
+
+func (v *syncManifestVendor) UnmarshalJSON(data []byte) error {
+	type plain syncManifestVendor
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*v = syncManifestVendor(decoded)
+	v.Present = presentNonNilFields(raw, "description", "icon")
+	return nil
+}
+
+// presentNonNilFields 返回「键存在且不是 JSON null」的字段集合。
+func presentNonNilFields(raw map[string]json.RawMessage, fields ...string) map[string]bool {
+	present := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		value, ok := raw[field]
+		if !ok {
+			continue
+		}
+		if string(bytes.TrimSpace(value)) == "null" {
+			continue
+		}
+		present[field] = true
+	}
+	return present
 }
 
 type syncManifest struct {
@@ -2096,11 +2169,21 @@ func (h *ModelCatalogHandlers) handleSyncPreview(w http.ResponseWriter, r *http.
 
 // parseSyncManifest 解析并做结构性校验；任何未知形状按 502（不是 422：
 // 这是上游数据问题，管理员改本地请求无法修复）。
+//
+// 【名称统一裁剪（L4）】preview 的匹配键、apply 的写入值都取自这里，必须在
+// 同一点裁剪，否则 `" gpt-4 "` 会与本地 `"gpt-4"` 对不上，preview 判 create、
+// apply 又建出同名带空格的档案。
 func parseSyncManifest(raw []byte) (syncManifest, error) {
 	var manifest syncManifest
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&manifest); err != nil {
 		return manifest, err
+	}
+	// 尾随数据（例如两个 JSON 文档拼接）不是合法清单：静默忽略会让人误以为
+	// 后半段也被同步了（L5）。
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return manifest, errors.New("manifest must contain exactly one JSON document")
 	}
 	seen := make(map[string]struct{}, len(manifest.Models))
 	for i, model := range manifest.Models {
@@ -2115,14 +2198,7 @@ func parseSyncManifest(raw []byte) (syncManifest, error) {
 			return manifest, fmt.Errorf("models[%d].model_name %q is duplicated", i, name)
 		}
 		seen[name] = struct{}{}
-		// 显式 null 与「字段缺失」同义：jsonb 列 NOT NULL，写入 null 会触发
-		// CHECK。上游用 null 表示「不提供」是最常见的形态，必须在入口归一化。
-		if string(model.Tags) == "null" {
-			manifest.Models[i].Tags = nil
-		}
-		if string(model.Capabilities) == "null" {
-			manifest.Models[i].Capabilities = nil
-		}
+		manifest.Models[i].ModelName = name
 	}
 	vendorSeen := make(map[string]struct{}, len(manifest.Vendors))
 	for i, vendor := range manifest.Vendors {
@@ -2130,11 +2206,23 @@ func parseSyncManifest(raw []byte) (syncManifest, error) {
 		if name == "" {
 			return manifest, fmt.Errorf("vendors[%d].name is required", i)
 		}
+		if utf8.RuneCountInString(name) > catalogVendorNameMaxRunes {
+			return manifest, fmt.Errorf("vendors[%d].name must be at most %d characters", i, catalogVendorNameMaxRunes)
+		}
+		// vendor 行没有 DB CHECK：上游数据问题必须在入口按 502 拦住，
+		// 否则会在 apply 阶段变成 422（客户端输入错误的语义）。
+		if err := validateCatalogDescription(vendor.Description); err != nil {
+			return manifest, fmt.Errorf("vendors[%d].description %w", i, err)
+		}
+		if err := validateCatalogIcon(vendor.Icon); err != nil {
+			return manifest, fmt.Errorf("vendors[%d].icon %w", i, err)
+		}
 		key := strings.ToLower(name)
 		if _, dup := vendorSeen[key]; dup {
 			return manifest, fmt.Errorf("vendors[%d].name %q is duplicated", i, name)
 		}
 		vendorSeen[key] = struct{}{}
+		manifest.Vendors[i].Name = name
 	}
 	return manifest, nil
 }
@@ -2218,8 +2306,8 @@ func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor
 	return groups
 }
 
-// diffSyncModel 只比较上游清单提供字段；上游未提供的字段不参与差异
-// （缺失 ≠ 清空）。
+// diffSyncModel 只比较上游清单提供字段；上游缺失或显式 null 的字段不参与
+// 差异（缺失 ≠ 清空）。preview 与 apply 共用 Present 口径。
 func diffSyncModel(local store.ModelMeta, upstream syncManifestModel) map[string]syncFieldChange {
 	changes := map[string]syncFieldChange{}
 	add := func(field string, localValue, upstreamValue any) {
@@ -2227,13 +2315,27 @@ func diffSyncModel(local store.ModelMeta, upstream syncManifestModel) map[string
 			changes[field] = syncFieldChange{Local: localValue, Upstream: upstreamValue}
 		}
 	}
-	add("display_name", derefString(local.DisplayName), derefString(upstream.DisplayName))
-	add("description", derefString(local.Description), derefString(upstream.Description))
-	add("icon", derefString(local.Icon), derefString(upstream.Icon))
-	add("tags", jsonValue(local.Tags, "[]"), jsonValue(upstream.Tags, "[]"))
-	add("capabilities", jsonValue(local.Capabilities, "[]"), jsonValue(upstream.Capabilities, "[]"))
-	add("context_length", derefInt64(local.ContextLength), derefInt64(upstream.ContextLength))
-	add("max_output", derefInt64(local.MaxOutput), derefInt64(upstream.MaxOutput))
+	if upstream.Present["display_name"] {
+		add("display_name", derefString(local.DisplayName), derefString(upstream.DisplayName))
+	}
+	if upstream.Present["description"] {
+		add("description", derefString(local.Description), derefString(upstream.Description))
+	}
+	if upstream.Present["icon"] {
+		add("icon", derefString(local.Icon), derefString(upstream.Icon))
+	}
+	if upstream.Present["tags"] {
+		add("tags", jsonValue(local.Tags, "[]"), jsonValue(upstream.Tags, "[]"))
+	}
+	if upstream.Present["capabilities"] {
+		add("capabilities", jsonValue(local.Capabilities, "[]"), jsonValue(upstream.Capabilities, "[]"))
+	}
+	if upstream.Present["context_length"] {
+		add("context_length", derefInt64(local.ContextLength), derefInt64(upstream.ContextLength))
+	}
+	if upstream.Present["max_output"] {
+		add("max_output", derefInt64(local.MaxOutput), derefInt64(upstream.MaxOutput))
+	}
 	if len(changes) == 0 {
 		return nil
 	}
@@ -2242,12 +2344,14 @@ func diffSyncModel(local store.ModelMeta, upstream syncManifestModel) map[string
 
 func diffSyncVendor(local store.Vendor, upstream syncManifestVendor) map[string]syncFieldChange {
 	changes := map[string]syncFieldChange{}
-	if !reflect.DeepEqual(derefString(local.Description), derefString(upstream.Description)) {
+	if upstream.Present["description"] &&
+		!reflect.DeepEqual(derefString(local.Description), derefString(upstream.Description)) {
 		changes["description"] = syncFieldChange{
 			Local: derefString(local.Description), Upstream: derefString(upstream.Description),
 		}
 	}
-	if !reflect.DeepEqual(derefString(local.Icon), derefString(upstream.Icon)) {
+	if upstream.Present["icon"] &&
+		!reflect.DeepEqual(derefString(local.Icon), derefString(upstream.Icon)) {
 		changes["icon"] = syncFieldChange{
 			Local: derefString(local.Icon), Upstream: derefString(upstream.Icon),
 		}
@@ -2348,128 +2452,98 @@ func (h *ModelCatalogHandlers) handleSyncApply(w http.ResponseWriter, r *http.Re
 		manifestVendors[strings.ToLower(strings.TrimSpace(vendor.Name))] = vendor
 	}
 
-	// 1) 选择集校验：条目必须仍在本次 preview 的清单里（消失 ⇒ 409 整体拒绝）。
-	selectedModels := make([]syncManifestModel, 0, len(request.Models))
+	// 1) 选择集去重：匹配键是模型 model_name 精确、供应商 lower(name)
+	//    （任务书 §2）。重复项内容一致 ⇒ 幂等合并；内容不一致 ⇒ 422——
+	//    同一键携带两种写入意图时无法判定优先级，静默取一个会掩盖客户端 bug。
+	modelSelections := make([]syncManifestModel, 0, len(request.Models))
+	seenModels := make(map[string]syncManifestModel, len(request.Models))
 	for i, selected := range request.Models {
 		name := strings.TrimSpace(selected.ModelName)
 		if name == "" {
 			writeCatalogFieldsProblem(w, fmt.Sprintf("models[%d].model_name is required", i), []string{"models"})
 			return
 		}
-		model, ok := manifestModels[name]
-		if !ok {
-			writeCatalogProblem(w, http.StatusConflict, catalogProblemSyncVersion,
-				"Sync source version conflict",
-				fmt.Sprintf("model %q no longer exists in the previewed manifest; run preview again", name), nil)
-			return
+		selected.ModelName = name
+		if previous, ok := seenModels[name]; ok {
+			if !reflect.DeepEqual(previous, selected) {
+				writeCatalogFieldsProblem(w,
+					fmt.Sprintf("models[%d] duplicates model_name %q with conflicting content", i, name),
+					[]string{"models"})
+				return
+			}
+			continue
 		}
-		selectedModels = append(selectedModels, model)
+		seenModels[name] = selected
+		modelSelections = append(modelSelections, selected)
 	}
-	selectedVendors := make([]syncManifestVendor, 0, len(request.Vendors))
+	vendorSelections := make([]syncManifestVendor, 0, len(request.Vendors))
+	seenVendors := make(map[string]syncManifestVendor, len(request.Vendors))
 	for i, selected := range request.Vendors {
 		name := strings.TrimSpace(selected.Name)
 		if name == "" {
 			writeCatalogFieldsProblem(w, fmt.Sprintf("vendors[%d].name is required", i), []string{"vendors"})
 			return
 		}
-		vendor, ok := manifestVendors[strings.ToLower(name)]
+		selected.Name = name
+		key := strings.ToLower(name)
+		if previous, ok := seenVendors[key]; ok {
+			if !sameSyncVendorSelection(previous, selected) {
+				writeCatalogFieldsProblem(w,
+					fmt.Sprintf("vendors[%d] duplicates name %q with conflicting content", i, name),
+					[]string{"vendors"})
+				return
+			}
+			continue
+		}
+		seenVendors[key] = selected
+		vendorSelections = append(vendorSelections, selected)
+	}
+
+	// 2) 选择集校验：条目必须仍在本次 preview 的清单里（消失 ⇒ 409 整体拒绝）。
+	//    写入值取自服务端缓存的清单，请求条目只用于选择（防篡改）。
+	selectedModels := make([]store.ModelSyncModelEntry, 0, len(modelSelections))
+	for _, selected := range modelSelections {
+		model, ok := manifestModels[selected.ModelName]
 		if !ok {
 			writeCatalogProblem(w, http.StatusConflict, catalogProblemSyncVersion,
 				"Sync source version conflict",
-				fmt.Sprintf("vendor %q no longer exists in the previewed manifest; run preview again", name), nil)
+				fmt.Sprintf("model %q no longer exists in the previewed manifest; run preview again", selected.ModelName), nil)
 			return
 		}
-		selectedVendors = append(selectedVendors, vendor)
+		selectedModels = append(selectedModels, store.ModelSyncModelEntry{
+			ModelName: model.ModelName, DisplayName: model.DisplayName,
+			Description: model.Description, Icon: model.Icon,
+			Tags: model.Tags, Capabilities: model.Capabilities,
+			ContextLength: model.ContextLength, MaxOutput: model.MaxOutput,
+		})
 	}
-
-	// 2) 本地现状：用于区分 create/update 并取得 updated_at 乐观锁版本。
-	localModels, err := h.loadAllModels(r.Context(), store.ModelMetaFilter{})
-	if err != nil {
-		h.writeModelCatalogError(w, "sync: list model metadata", err)
-		return
-	}
-	localByName := make(map[string]store.ModelMeta, len(localModels))
-	for _, model := range localModels {
-		localByName[model.ModelName] = model
-	}
-	for _, model := range selectedModels {
-		local, exists := localByName[model.ModelName]
-		if exists && !local.SyncOfficial {
-			// 客户端不得勾选 blocked；后端仍校验（F-06-25「前端不许勾选，
-			// 后端仍校验」）。
-			writeCatalogProblem(w, http.StatusBadRequest, catalogProblemSyncBlocked,
-				"Blocked model selected",
-				fmt.Sprintf("model %q has sync_official=false and cannot be overwritten", model.ModelName), nil)
+	selectedVendors := make([]store.ModelSyncVendorEntry, 0, len(vendorSelections))
+	for _, selected := range vendorSelections {
+		vendor, ok := manifestVendors[strings.ToLower(selected.Name)]
+		if !ok {
+			writeCatalogProblem(w, http.StatusConflict, catalogProblemSyncVersion,
+				"Sync source version conflict",
+				fmt.Sprintf("vendor %q no longer exists in the previewed manifest; run preview again", selected.Name), nil)
 			return
 		}
+		selectedVendors = append(selectedVendors, store.ModelSyncVendorEntry{
+			Name: vendor.Name, Description: vendor.Description, Icon: vendor.Icon,
+		})
 	}
 
-	localVendors, err := h.loadAllVendors(r.Context(), store.VendorFilter{})
-	if err != nil {
-		h.writeVendorCatalogError(w, "sync: list vendors", err)
+	// 3) 单事务写入。store 在事务内重新读取现状（create/update、sync_official
+	//    锁定），因此这里不依赖事务外的快照；任一条失败整体回滚。
+	result, applyErr := h.repo.ApplyModelSync(r.Context(), selectedVendors, selectedModels)
+	if applyErr != nil {
+		h.writeSyncApplyError(w, "apply model sync", applyErr)
 		return
 	}
-	localVendorsByName := make(map[string]store.Vendor, len(localVendors))
-	for _, vendor := range localVendors {
-		localVendorsByName[strings.ToLower(vendor.Name)] = vendor
-	}
-
-	// 3) 写入。先供应商后模型（供应商可能被模型引用；当前清单格式不含
-	// 模型→供应商字段，顺序仍保持稳定以便未来扩展）。
 	response := syncApplyResponse{
-		SourceVersion: request.SourceVersion,
-		CreatedModels: []string{}, UpdatedModels: []string{},
-		CreatedVendors: []string{}, UpdatedVendors: []string{},
-	}
-	for _, vendor := range selectedVendors {
-		local, exists := localVendorsByName[strings.ToLower(vendor.Name)]
-		if !exists {
-			created, createErr := h.repo.CreateVendor(r.Context(), store.VendorInput{
-				Name: vendor.Name, Description: vendor.Description, Icon: vendor.Icon,
-			})
-			if createErr != nil {
-				h.writeVendorCatalogError(w, "sync: create vendor", createErr)
-				return
-			}
-			response.CreatedVendors = append(response.CreatedVendors, created.Name)
-			continue
-		}
-		update := store.VendorUpdate{
-			Name: local.Name, Description: local.Description, Icon: local.Icon, Status: local.Status,
-		}
-		if vendor.Description != nil {
-			update.Description = vendor.Description
-		}
-		if vendor.Icon != nil {
-			update.Icon = vendor.Icon
-		}
-		if _, updateErr := h.repo.UpdateVendor(r.Context(), local.ID, update, local.Version()); updateErr != nil {
-			h.writeVendorCatalogError(w, "sync: update vendor", updateErr)
-			return
-		}
-		response.UpdatedVendors = append(response.UpdatedVendors, local.Name)
-	}
-	for _, model := range selectedModels {
-		local, exists := localByName[model.ModelName]
-		if !exists {
-			input := syncModelInput(model)
-			if _, createErr := h.repo.CreateModelMeta(r.Context(), input); createErr != nil {
-				h.writeModelCatalogError(w, "sync: create model metadata", createErr)
-				return
-			}
-			response.CreatedModels = append(response.CreatedModels, model.ModelName)
-			continue
-		}
-		patch := syncModelPatch(local, model)
-		if len(patchFields(patch)) == 0 {
-			// 已是最新（preview 判 unchanged 但管理员仍勾选）：不产生写。
-			continue
-		}
-		if _, updateErr := h.repo.UpdateModelMeta(r.Context(), local.ID, patch, local.UpdatedAt); updateErr != nil {
-			h.writeModelCatalogError(w, "sync: update model metadata", updateErr)
-			return
-		}
-		response.UpdatedModels = append(response.UpdatedModels, model.ModelName)
+		SourceVersion:  request.SourceVersion,
+		CreatedModels:  result.CreatedModels,
+		UpdatedModels:  result.UpdatedModels,
+		CreatedVendors: result.CreatedVendors,
+		UpdatedVendors: result.UpdatedVendors,
 	}
 
 	h.writeAudit(r, audit.ActionModelSync, map[string]any{
@@ -2482,115 +2556,54 @@ func (h *ModelCatalogHandlers) handleSyncApply(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, response)
 }
 
-// syncModelInput 把上游条目转成创建写入值；未提供字段走列默认值。
-func syncModelInput(model syncManifestModel) store.ModelMetaInput {
-	input := store.ModelMetaInput{
-		ModelName: model.ModelName, DisplayName: model.DisplayName,
-		Description: model.Description, Icon: model.Icon,
-		ContextLength: model.ContextLength, MaxOutput: model.MaxOutput,
-	}
-	if len(model.Tags) > 0 {
-		input.Tags = []byte(model.Tags)
-	}
-	if len(model.Capabilities) > 0 {
-		input.Capabilities = []byte(model.Capabilities)
-	}
-	return input
+// sameSyncVendorSelection 判断两个选择条目内容是否一致（大小写不同的同名
+// 供应商是同一键，内容按字段比较）。
+func sameSyncVendorSelection(a, b syncManifestVendor) bool {
+	return strings.EqualFold(a.Name, b.Name) &&
+		sameOptionalString(a.Description, b.Description) &&
+		sameOptionalString(a.Icon, b.Icon)
 }
 
-// syncModelPatch 只更新上游提供且确有差异的字段。
-func syncModelPatch(local store.ModelMeta, model syncManifestModel) store.ModelMetaPatch {
-	var patch store.ModelMetaPatch
-	if model.DisplayName != nil && !reflect.DeepEqual(derefString(local.DisplayName), derefString(model.DisplayName)) {
-		patch.DisplayName = model.DisplayName
-		patch.DisplayNameSet = true
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
 	}
-	if model.Description != nil && !reflect.DeepEqual(derefString(local.Description), derefString(model.Description)) {
-		patch.Description = model.Description
-		patch.DescriptionSet = true
-	}
-	if model.Icon != nil && !reflect.DeepEqual(derefString(local.Icon), derefString(model.Icon)) {
-		patch.Icon = model.Icon
-		patch.IconSet = true
-	}
-	if len(model.Tags) > 0 &&
-		!reflect.DeepEqual(jsonValue(local.Tags, "[]"), jsonValue(model.Tags, "[]")) {
-		patch.Tags = []byte(model.Tags)
-		patch.TagsSet = true
-	}
-	if len(model.Capabilities) > 0 &&
-		!reflect.DeepEqual(jsonValue(local.Capabilities, "[]"), jsonValue(model.Capabilities, "[]")) {
-		patch.Capabilities = []byte(model.Capabilities)
-		patch.CapabilitiesSet = true
-	}
-	if model.ContextLength != nil &&
-		!reflect.DeepEqual(derefInt64(local.ContextLength), derefInt64(model.ContextLength)) {
-		patch.ContextLength = model.ContextLength
-		patch.ContextLengthSet = true
-	}
-	if model.MaxOutput != nil &&
-		!reflect.DeepEqual(derefInt64(local.MaxOutput), derefInt64(model.MaxOutput)) {
-		patch.MaxOutput = model.MaxOutput
-		patch.MaxOutputSet = true
-	}
-	return patch
+	return *a == *b
 }
 
-// patchFields 返回 patch 中已 Set 的列名（用于跳过空更新）。
-func patchFields(patch store.ModelMetaPatch) []string {
-	var fields []string
-	if patch.ModelName != nil {
-		fields = append(fields, "model_name")
+// writeSyncApplyError 把同步事务错误统一映射为 409（唯一约束/乐观锁）或
+// 422（字段校验），blocked 仍是 400。
+func (h *ModelCatalogHandlers) writeSyncApplyError(w http.ResponseWriter, op string, err error) {
+	var blocked store.ErrSyncBlocked
+	var invalid store.ErrModelMetaInvalid
+	switch {
+	case errors.As(err, &blocked):
+		writeCatalogProblem(w, http.StatusBadRequest, catalogProblemSyncBlocked,
+			"Blocked model selected",
+			fmt.Sprintf("model %q has sync_official=false and cannot be overwritten", blocked.ModelName), nil)
+	case errors.Is(err, store.ErrModelMetaDuplicate),
+		errors.Is(err, store.ErrModelMetaConflict),
+		errors.Is(err, store.ErrVendorDuplicate),
+		errors.Is(err, store.ErrVendorConflict):
+		writeCatalogProblem(w, http.StatusConflict, authProblemConflict, "Conflict",
+			"the sync conflicted with concurrent catalog changes; no changes were applied, run preview again", nil)
+	case errors.As(err, &invalid):
+		fields := []string{}
+		if invalid.Field != "" {
+			fields = []string{invalid.Field}
+		}
+		detail := "model metadata is invalid"
+		if invalid.Reason != "" {
+			detail = invalid.Field + ": " + invalid.Reason
+		}
+		writeCatalogFieldsProblem(w, detail, fields)
+	case errors.Is(err, store.ErrVendorInvalid):
+		writeCatalogFieldsProblem(w, "vendor input is invalid", []string{"name"})
+	default:
+		h.log.Error(op+" failed", "error", err)
+		writeCatalogProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
 	}
-	if patch.DisplayNameSet {
-		fields = append(fields, "display_name")
-	}
-	if patch.DescriptionSet {
-		fields = append(fields, "description")
-	}
-	if patch.IconSet {
-		fields = append(fields, "icon")
-	}
-	if patch.TagsSet {
-		fields = append(fields, "tags")
-	}
-	if patch.VendorIDSet {
-		fields = append(fields, "vendor_id")
-	}
-	if patch.EndpointsSet {
-		fields = append(fields, "endpoints")
-	}
-	if patch.CapabilitiesSet {
-		fields = append(fields, "capabilities")
-	}
-	if patch.ModalitiesSet {
-		fields = append(fields, "modalities")
-	}
-	if patch.ParametersSet {
-		fields = append(fields, "parameters")
-	}
-	if patch.ContextLengthSet {
-		fields = append(fields, "context_length")
-	}
-	if patch.MaxOutputSet {
-		fields = append(fields, "max_output")
-	}
-	if patch.KnowledgeCutoffSet {
-		fields = append(fields, "knowledge_cutoff")
-	}
-	if patch.ReleasedAtSet {
-		fields = append(fields, "released_at")
-	}
-	if patch.Status != nil {
-		fields = append(fields, "status")
-	}
-	if patch.SyncOfficial != nil {
-		fields = append(fields, "sync_official")
-	}
-	if patch.NameRule != nil {
-		fields = append(fields, "name_rule")
-	}
-	return fields
 }
 
 // ---------------------------------------------------------------------------
@@ -2882,15 +2895,10 @@ func NewModelSyncSourceFromConfig(cfg ConfigReader) func(ctx context.Context) ([
 // Dialer.Control 再校验一次（防 DNS rebinding）。比默认配置更严，不会放宽。
 func fetchSyncManifest(ctx context.Context, rawURL string) ([]byte, error) {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
+	if err != nil {
 		return nil, ErrSyncSourceUnavailable
 	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "http", "https":
-	default:
-		return nil, ErrSyncSourceUnavailable
-	}
-	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
+	if err := validateSyncURL(parsed); err != nil {
 		return nil, ErrSyncSourceUnavailable
 	}
 	client := &http.Client{
@@ -2912,13 +2920,15 @@ func fetchSyncManifest(ctx context.Context, rawURL string) ([]byte, error) {
 				},
 			}).DialContext,
 		},
-		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-			// 重定向目标仍需通过 Dialer.Control 的地址校验；这里只限制跳转次数
-			// 与凭据延续。
-			if req.URL.User != nil {
-				return errors.New("redirect target must not contain userinfo")
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 【为什么重定向目标要重新校验】初始 URL 的校验只覆盖第一次请求：
+			// 上游返回 302 → http://host:6379 时，若只靠 Dialer.Control，端口
+			// 6379 的连接仍会被建立（地址校验只拒绝私网，不限制端口）。重定向
+			// 必须复用同一套 scheme/端口/userinfo 规则（M5），并限制跳转次数。
+			if len(via) >= catalogSyncMaxRedirects {
+				return errors.New("too many redirects")
 			}
-			return nil
+			return validateSyncURL(req.URL)
 		},
 	}
 	defer client.CloseIdleConnections()
@@ -2941,6 +2951,23 @@ func fetchSyncManifest(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, ErrSyncSourceUnavailable
 	}
 	return body, nil
+}
+
+// validateSyncURL 是同步拉取的目标校验：仅 http/https、仅默认端口/80/443、
+// 拒绝 userinfo。初始 URL 与每次重定向目标共用同一规则（M5）。
+func validateSyncURL(target *url.URL) error {
+	if target == nil || target.Host == "" || target.Hostname() == "" || target.User != nil {
+		return errors.New("outbound target must be an absolute URL without userinfo")
+	}
+	switch strings.ToLower(target.Scheme) {
+	case "http", "https":
+	default:
+		return errors.New("outbound target must use http or https")
+	}
+	if port := target.Port(); port != "" && port != "80" && port != "443" {
+		return errors.New("outbound target must use port 80 or 443")
+	}
+	return nil
 }
 
 // isDisallowedSyncIP 拒绝回环/私网/链路本地/组播/未指定/保留地址。
