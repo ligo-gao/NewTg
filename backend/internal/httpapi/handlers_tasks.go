@@ -7,6 +7,7 @@
 //	GET  /v1/tasks/{key}/artifacts?task_id= 列产物（Bearer 令牌）
 //	GET|HEAD /v1/tasks/{key}/artifacts/{artifact_key}/content?task_id=&access=
 //	                                        取产物内容（HMAC 能力 URL，无需 Bearer）
+//	GET  /v1/responses/{id}                 Responses 产物回放（resp_<x> → task_<x>，T3 / P-02）
 //	GET  /api/task/self                     本人任务台账（会话）
 //	GET  /api/task                          管理员台账（logs:read）
 //
@@ -146,6 +147,10 @@ func (h *TasksHandler) RegisterRelay(mux *http.ServeMux, authMiddleware func(htt
 	mux.Handle("GET /v1/tasks/{key}", authMiddleware(http.HandlerFunc(h.handleGet)))
 	mux.Handle("GET /v1/tasks/{key}/artifacts", authMiddleware(http.HandlerFunc(h.handleArtifacts)))
 	mux.HandleFunc("GET /v1/tasks/{key}/artifacts/{artifact_key}/content", h.handleContent)
+	// T3 / P-02：Responses 产物回放。与 POST /v1/responses 同一条 RelayAuth 链，
+	// 但在任务数据面上注册：响应体由 task.data 的产物投影装配，中继面既没有
+	// 任务存储也没有产物签名器，放过去只会让两份实现分叉。
+	mux.Handle("GET /v1/responses/{id}", authMiddleware(http.HandlerFunc(h.handleResponsesGet)))
 }
 
 // RegisterAdmin 把台账端点挂到管理面受保护链。
@@ -758,6 +763,212 @@ func (h *TasksHandler) lookupOwnedTask(w http.ResponseWriter, r *http.Request, r
 		return nil, "", false
 	}
 	return task, key, true
+}
+
+// ---------- GET /v1/responses/{id}（T3 / P-02） ----------
+
+const (
+	// responsesIDPrefix 是 OpenAI Responses 的对外 id 前缀。任务行的 public id
+	// 用 task_ 前缀；两者共享同一段随机量，因此映射是纯前缀替换。
+	responsesIDPrefix = "resp_"
+	// responsesObjectType 是 Responses 对象的 object 字段冻结值。
+	responsesObjectType = "response"
+	// responsesProtocolName 是插件声明「接管 Responses 协议」时使用的键
+	// （manifest meta.protocols.openai_responses，relay-06 §3.1）。
+	responsesProtocolName = "openai_responses"
+)
+
+// resolvetaskFromResponseID 把 Responses 的 response_id 映射为 tasks.public_task_id。
+//
+// 只做前缀替换、不做解码：resp_ 与 task_ 后的随机量来自同一个
+// tasks.NewPublicTaskID，任何转义/哈希都会破坏一一对应（P-02）。
+// 非 resp_ 前缀（含空串与裸 "resp_"）一律 ok=false：不把任意路径段当作
+// task id 去查库，端点因此不会变成任务 id 的存在性 oracle。
+func resolvetaskFromResponseID(raw string) (taskID string, ok bool) {
+	id := strings.TrimSpace(raw)
+	if !strings.HasPrefix(id, responsesIDPrefix) {
+		return "", false
+	}
+	suffix := id[len(responsesIDPrefix):]
+	if suffix == "" {
+		return "", false
+	}
+	return tasks.PublicTaskIDPrefix + suffix, true
+}
+
+// responsesObject 是 GET /v1/responses/{id} 的成功响应体。
+//
+// 字段集合对齐 OpenAI Responses 对象的只读子集：网关不持有 Responses 对话
+// 历史（基线-09 §1.5），能如实给出的只有由任务行派生的部分（id/状态/模型/
+// 产物）。刻意不填 output_text / usage 等需要上游原始响应的字段——凭空构造
+// 会让客户端按不存在的语义解析。
+type responsesObject struct {
+	ID        string                `json:"id"`
+	Object    string                `json:"object"`
+	CreatedAt int64                 `json:"created_at"`
+	Status    string                `json:"status"`
+	Model     string                `json:"model,omitempty"`
+	Output    []responsesOutputItem `json:"output"`
+}
+
+// responsesOutputItem 是 output[] 的一项：一个可检索产物 + 能力 URL。
+//
+// Type 原样取插件声明的产物类别（video / image / audio …），不映射到 OpenAI
+// 的内建 output item 类型（message / image_generation_call …）：宿主没有足够
+// 信息做这个映射，臆造类型会让客户端按错误的 schema 解析内容。
+type responsesOutputItem struct {
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	MIMEType string `json:"mime_type,omitempty"`
+	URL      string `json:"url"`
+}
+
+// handleResponsesGet 回放插件任务的产物（T3 / P-02）。
+//
+// 服务范围（冻结）：只服务**插件任务产物**——`resp_<x>` 映射为 `task_<x>`，
+// 任务归属必须是当前令牌的 user_id，插件必须仍在装且声明
+// `openai_responses` 协议，且任务至少有一个可检索产物。任一条件不满足都
+// 返回 404，不区分原因：resp_<32 hex> 是高熵 id，但「存在但无权」与「不存在」
+// 若给出不同状态码（403 vs 404），仍然构成存在性 oracle。
+//
+// 为什么先查 RouteIndex（R-10 / pluginDispatchedBuiltinShapes）：本形状登记为
+// 「处理器先查插件索引」的内建路由。插件声明 GET /v1/responses/{id} 的 query
+// 路由时必须由插件接管；否则内建回放会成为插件路由的静默黑洞（注册成功但
+// 永远不可达）。
+func (h *TasksHandler) handleResponsesGet(w http.ResponseWriter, r *http.Request) {
+	requestID := newRelayRequestID()
+
+	if match, ok := h.plugins.Snapshot().Routes().Match(r.Method, r.URL.Path); ok {
+		h.DispatchNativeRoute(w, r, match)
+		return
+	}
+
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
+		return
+	}
+	taskID, ok := resolvetaskFromResponseID(r.PathValue("id"))
+	if !ok {
+		writeResponsesNotFound(w, requestID)
+		return
+	}
+	task, err := h.store.GetByPublicIDAny(r.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, tasks.ErrTaskNotFound) {
+			writeResponsesNotFound(w, requestID)
+			return
+		}
+		writeRelayError(w, http.StatusInternalServerError, requestID, "database_error", "failed to read the task")
+		return
+	}
+	// 归属不符 → 404（P-02：不是 403）：403 会把「这个 id 存在、只是不是你的」
+	// 告诉调用方，使 resp_ 空间变成可枚举的存在性 oracle。
+	if task.UserID != principal.UserID {
+		writeResponsesNotFound(w, requestID)
+		return
+	}
+	// 只有声明 openai_responses 协议的插件任务才由本端点服务；插件已卸载或
+	// 从未声明协议 = 该 Responses 对象不存在（404，而不是 503/400）。
+	compiled, ok := h.plugins.Snapshot().Plugin(task.PluginKey)
+	if !ok || !pluginClaimsResponsesProtocol(compiled.Manifest()) {
+		writeResponsesNotFound(w, requestID)
+		return
+	}
+	// 保留期已过 = 产物不可检索（relay-06 §7 的 retention_deadline 语义）。
+	// 用 !After(now) 而不是 Before(now)：恰好到期的那一毫秒也算过期。
+	if task.RetentionDeadline != nil && !task.RetentionDeadline.After(time.Now()) {
+		writeResponsesNotFound(w, requestID)
+		return
+	}
+
+	artifacts := h.signArtifacts(r, task.PluginKey, task, tasks.ProjectArtifacts(task.Data))
+	output := make([]responsesOutputItem, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		// 非法 artifact key 不签发 content_url（见 signArtifacts）；没有能力 URL
+		// 的产物不可检索，不能出现在回放里。
+		if artifact.ContentURL == "" {
+			continue
+		}
+		output = append(output, responsesOutputItem{
+			Type:     artifact.Type,
+			ID:       artifact.Key,
+			Status:   "completed",
+			MIMEType: artifact.MIMEType,
+			URL:      artifact.ContentURL,
+		})
+	}
+	// 产物为空 = 这个 Responses 对象没有可回放的内容（还在生成、失败、或
+	// retainResult=false 已丢弃）。按 P-02 一律 404，而不是返回一个空 output
+	// 的 200——后者会让客户端以为检索成功但拿不到任何产物。
+	if len(output) == 0 {
+		writeResponsesNotFound(w, requestID)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, responsesObject{
+		ID:        responsesIDPrefix + strings.TrimPrefix(task.PublicTaskID, tasks.PublicTaskIDPrefix),
+		Object:    responsesObjectType,
+		CreatedAt: responsesCreatedAt(task),
+		Status:    responsesStatusForState(task.State),
+		Model:     toStringValue(task.Properties["OriginModelName"]),
+		Output:    output,
+	})
+}
+
+// responsesCreatedAt 返回 Responses 对象的 created_at（Unix 秒）。
+//
+// 优先 submit_time（提交时刻就是 Response 对象的诞生时刻）；历史行可能没有，
+// 回退 created_at（行写入时刻），再回退 0 —— 绝不用 now()，那会让同一个对象
+// 每次检索都换一个 created_at。
+func responsesCreatedAt(task *tasks.Task) int64 {
+	if task == nil {
+		return 0
+	}
+	if task.SubmitTime != nil {
+		return task.SubmitTime.Unix()
+	}
+	if !task.CreatedAt.IsZero() {
+		return task.CreatedAt.Unix()
+	}
+	return 0
+}
+
+// responsesStatusForState 把任务的 7 态映射为 Responses 的 status 字面量。
+//
+// UNKNOWN 映射为 incomplete 而不是 in_progress：设计明确禁止把无法识别的
+// 上游状态默认成进行中（会让客户端无限轮询），而 Responses 没有 unknown。
+func responsesStatusForState(state tasks.State) string {
+	switch state {
+	case tasks.StateSuccess:
+		return "completed"
+	case tasks.StateFailure:
+		return "failed"
+	case tasks.StateInProgress:
+		return "in_progress"
+	case tasks.StateUnknown:
+		return "incomplete"
+	default:
+		// not_start / submitted / queued
+		return "queued"
+	}
+}
+
+// pluginClaimsResponsesProtocol 判定插件 manifest 是否声明了
+// `meta.protocols.openai_responses`（relay-06 §3.1）。
+func pluginClaimsResponsesProtocol(m *plugin.Manifest) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m.Protocols[responsesProtocolName]
+	return ok
+}
+
+// writeResponsesNotFound 是 Responses 端点唯一的「不存在」出口：固定文案、
+// 不区分原因（见 handleResponsesGet 的归属注释）。
+func writeResponsesNotFound(w http.ResponseWriter, requestID string) {
+	writeRelayError(w, http.StatusNotFound, requestID, "not_found", "response not found")
 }
 
 // ---------- /api：台账 ----------

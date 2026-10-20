@@ -8132,6 +8132,9 @@ type PathTokenID = int64
 // PathUserID defines model for PathUserID.
 type PathUserID = int64
 
+// ResponseID defines model for ResponseID.
+type ResponseID = string
+
 // TaskArtifactAccess defines model for TaskArtifactAccess.
 type TaskArtifactAccess = string
 
@@ -8176,6 +8179,9 @@ type Error429 = Problem
 
 // Error500 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error500 = Problem
+
+// Error501 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
+type Error501 = Problem
 
 // Error502 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error502 = Problem

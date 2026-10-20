@@ -55,8 +55,10 @@ const responsesPluginSource = `globalThis.__NEWTG_PLUGIN__ = {
   parseTaskResult: function () { return { state: "SUCCESS" }; }
 };`
 
-// upstreamResponsesBody 是上游返回的 Responses 对象（带 input/output 形状字段，
-// 刻意不含 choices/usage——它必须被逐字节送回客户端，而不是被 chat 编解码器改写）。
+// upstreamResponsesBody 是假上游在 /chat/completions 返回的 Responses 形态对象
+// （刻意不含 choices/usage）。它**不是** Responses 端点的合法出口：R-13 之后
+// 未命中插件路由一律 501，通用中继绝不把这份 body 送到客户端。保留它是因为
+// 「旧实现尽力转发」的回归会以 200 + 这份 body 立刻暴露在 fail-closed 用例里。
 const upstreamResponsesBody = `{"id":"resp_up","object":"response","status":"completed","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`
 
 func newResponsesPluginManager(t *testing.T) *plugin.Manager {

@@ -3573,6 +3573,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/responses/{response_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取回 Responses 对象（仅插件任务产物）
+         * @description `resp_<x>` 映射为 `task_<x>` 后按任务检索面回放**产物**：
+         *     `{id, object, created_at, status, model, output[]}`；`output[]` 每项为
+         *     `{type, id, status, mime_type?, url}`，`url` 是宿主签发的产物能力 URL
+         *     （与 `/v1/tasks/{key}/artifacts` 的 `content_url` 同一签名）。
+         *
+         *     只服务同时满足以下条件的任务：产物可检索、归属当前令牌用户、插件在装
+         *     且声明 `openai_responses` 协议。其余来源（非 `resp_` 前缀、任务不存在、
+         *     属于他人、插件未声明协议或已卸载、无产物、已过保留期）**一律 404**
+         *     且不区分原因——区分会把 `resp_` 空间变成存在性 oracle。
+         *
+         *     插件若声明了 `GET /v1/responses/{id}` 原生路由，请求由插件接管
+         *     （内建回放只在路由索引未命中时生效）。
+         */
+        get: operations["getResponse"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/responses/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * OpenAI Responses 压缩（当前 fail-closed）
+         * @description 压缩端点按 G7-R51 有**独立计费口径**、**不产生任务行**，输出是压缩后的
+         *     Responses 对象。通用中继没有该语义：转成 chat 形态会返回与压缩结果无关
+         *     的对象并按真实 usage 结算（P-03 明文禁止）；原样转发上游则绕过定价。
+         *
+         *     因此当前实现 fail-closed：`501` + `application/problem+json`
+         *     （`type=https://newtg.dev/problems/endpoint-not-supported`），
+         *     **不读请求体、不产生计费、不调用上游**。真实实现（独立计费表达式 +
+         *     上游压缩转发）登记为后续项。
+         */
+        post: operations["compactResponse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/pg/chat/completions": {
         parameters: {
             query?: never;
@@ -7667,6 +7725,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description 中继无法表达该端点形态（fail-closed：不产生计费、不调用上游） */
+        Error501: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
     };
     parameters: {
         /** @description 页码，1 基（默认 1） */
@@ -7705,6 +7772,8 @@ export interface components {
         ConfirmAction: string;
         /** @description redemption_codes.id */
         PathRedemptionCodeID: number;
+        /** @description Responses 对象 ID（`resp_<x>`；映射到 task_<x> 的任务产物） */
+        ResponseID: string;
         /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
         TaskPluginKey: string;
         /** @description 对外任务 ID（task_<32 hex>） */
@@ -14470,19 +14539,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            500: components["responses"]["Error500"];
-            /**
-             * @description 未命中插件原生路由：通用中继不支持 Responses。
-             *     `application/problem+json`（RFC 7807），
-             *     `type=https://newtg.dev/problems/endpoint-not-supported`；
-             *     不产生计费、不调用上游。
-             */
-            501: {
+            /** @description 请求体超过任务提交上限 4 MiB（`maxTaskSubmitBytes`） */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            500: components["responses"]["Error500"];
+            501: components["responses"]["Error501"];
             /** @description 上游提交失败（任务插件路径） */
             502: {
                 headers: {
@@ -14490,6 +14555,53 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getResponse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Responses 对象 ID（`resp_<x>`；映射到 task_<x> 的任务产物） */
+                response_id: components["parameters"]["ResponseID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description `{id, object:"response", created_at, status, model?, output[]}`。
+             *     `status` 取任务状态：queued / in_progress / completed / failed /
+             *     incomplete（任务状态 unknown）。
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            /** @description 该 Responses 对象不可检索（原因不区分，见上方说明） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    compactResponse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Error401"];
+            501: components["responses"]["Error501"];
         };
     };
     playgroundChatCompletion: {

@@ -37,7 +37,8 @@ import (
 //
 //	POST /v1/chat/completions   非流式走 relay.Route；流式走 ExecuteAttempts + SSE 桥接
 //	GET  /v1/models             启用渠道 supported_models 去重并集
-//	POST /v1/responses          插件原生路由优先，未命中回落通用中继（T2 / P-01）
+//	POST /v1/responses          插件原生路由优先，未命中返回 501（T2 / P-01 / R-13）
+//	POST /v1/responses/compact  fail-closed 501（T3 / P-03：中继无法表达压缩语义）
 //
 // 边界（relay-01 §2 阶段序）：鉴权在中间件（relay_auth.go）已完成；本文件负责
 // 请求体上限与 IR 归一化（阶段 4）、RelayContext 组装（阶段 5）、路由/执行
@@ -296,10 +297,15 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := h.AuthMiddleware()
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
-	// T2 / P-01：OpenAI Responses 创建端点——插件原生路由优先，未命中回落通用中继。
+	// T2 / P-01：OpenAI Responses 创建端点——插件原生路由优先，未命中返回
+	// 501（R-13；Responses 透传/转码另立 T2b，通用中继不承接）。
 	// 精确模式注册（不是 /v1/ 子树），与 T1 的兜底不重叠：ServeMux 让精确模式
 	// 胜出，兜底只接收没有其它路由认领的 /v1 请求。
 	mux.Handle("POST /v1/responses", authMiddleware(http.HandlerFunc(h.handleResponses)))
+	// T3 / P-03：Responses 压缩端点。独立计费口径、不产生任务行；中继的 IR
+	// 没有压缩语义（见 handleResponsesCompact 的 why），因此 fail-closed 501。
+	// 精确模式：不会与 GET /v1/responses/{id}（handlers_tasks.go 注册）冲突。
+	mux.Handle("POST /v1/responses/compact", authMiddleware(http.HandlerFunc(h.handleResponsesCompact)))
 
 	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
 	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
@@ -702,7 +708,36 @@ func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
 		"the generic relay cannot execute /v1/responses; declare the route in an installed task plugin's routes[]")
 }
 
-// problemTypeEndpointNotSupported 是 R-13 冻结的 problem type URI。
+// handleResponsesCompact 是 OpenAI Responses 压缩端点（T3 / P-03）。
+//
+// 冻结语义：compact 有**独立计费口径**（G7-R51：用量形态与普通 Responses 不同，
+// 复用会错价）、**不产生任务行**，且输出是一个压缩后的 Responses 对象。
+//
+// 为什么 fail-closed 501（与 R-13 同口径）：通用中继的 IR/适配器只有 chat 与
+// （T2b 之后的）Responses 创建两种形态，没有「压缩请求 → 压缩结果」这条语义。
+// 任何看似可用的替代都会给出错误答案：
+//   - 转成 chat 形态 → 客户端拿到 chat.completion，语义与压缩结果无关，却按
+//     真实 usage 结算（「不得返回 chat 形态」是 P-03 的明文禁令）；
+//   - 原样转发到上游 /v1/responses/compact → 中继没有该请求的归一化与计费
+//     口径，等于绕过定价。
+//
+// 因此本分支在**任何计费/上游调用之前**拒绝：请求体刻意不读，零副作用
+// （与 handleResponses 的 fail-closed 分支同一理由，见其 why 注释）。
+//
+// 登记：compact 的真实实现（独立计费表达式 + 上游压缩转发）不在本任务范围，
+// 已在 T3 报告中登记为后续项。
+func (h *RelayHandler) handleResponsesCompact(w http.ResponseWriter, r *http.Request) {
+	requestID := newRelayRequestID()
+	if requestID != "" {
+		w.Header().Set("X-Request-ID", requestID)
+	}
+	writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
+		"Responses compaction is not supported by the generic relay",
+		"the generic relay cannot express Responses compaction; this endpoint performs no billing and no upstream call")
+}
+
+// problemTypeEndpointNotSupported 是 R-13 冻结的 problem type URI（P-03 的
+// compact fail-closed 复用同一个类型：两者都是「中继无法表达该端点形态」）。
 //
 // 沿用仓库既有的 `https://newtg.dev/problems/` 命名空间（与
 // handlers_public_pricing.go 的 not-implemented 同源），不另造第二套命名；

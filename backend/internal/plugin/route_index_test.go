@@ -213,6 +213,33 @@ func TestRegistryBraceParamShapeConflict(t *testing.T) {
 	}
 }
 
+// TestBuiltinRouteShapesCoverResponsesFamily 冻结 R-10 的维护契约（T2/T3）：
+// `/v1/responses` 族的三个内建形状都必须在保留集里，否则插件可以声明一条
+// 内建 ServeMux 会永远抢走的路由（注册成功但不可达）。
+//
+// 例外集只对「处理器先查 RouteIndex」的形状开放：T2 的创建与 T3 的产物检索
+// 都先 Match 插件索引；compact 是 fail-closed 的独立计费口径，不查索引，
+// 必须继续按内建保留拒绝（否则插件声明会被静默吞掉）。
+func TestBuiltinRouteShapesCoverResponsesFamily(t *testing.T) {
+	for _, shape := range []string{
+		"POST /v1/responses",
+		"GET /v1/responses/{}",
+		"POST /v1/responses/compact",
+	} {
+		if _, ok := builtinRouteShapes[shape]; !ok {
+			t.Fatalf("%s 必须登记在 builtinRouteShapes（R-10 维护契约）", shape)
+		}
+	}
+	for _, shape := range []string{"POST /v1/responses", "GET /v1/responses/{}"} {
+		if _, ok := pluginDispatchedBuiltinShapes[shape]; !ok {
+			t.Fatalf("%s 的处理器先查 RouteIndex，必须对插件开放", shape)
+		}
+	}
+	if _, ok := pluginDispatchedBuiltinShapes["POST /v1/responses/compact"]; ok {
+		t.Fatal("POST /v1/responses/compact 不查 RouteIndex，不得对插件开放")
+	}
+}
+
 // TestRegistryAllowsPluginDispatchedResponsesRoute 冻结 P-01 与 R-10 的交集：
 // `POST /v1/responses` 虽然在保留集里，但它的内建处理器先查 RouteIndex，
 // 插件声明必须注册成功并可匹配——否则「插件优先、通用回退」的插件分支
@@ -313,10 +340,10 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 		{"POST", "/v1/images/generations"},
 		{"POST", "/v1/engines/:model/embeddings"},
 		{"GET", "/v1/realtime"},
-		// T2 / R-10：Responses 族中由 T3 注册、且没有插件优先分发面的形状。
-		// （POST /v1/responses 例外：处理器先查 RouteIndex，见
-		// TestRegistryAllowsPluginDispatchedResponsesRoute。）
-		{"GET", "/v1/responses/:response_id"},
+		// T2 / R-10：Responses 族中**没有**插件优先分发面的形状。
+		// （`POST /v1/responses` 与 `GET /v1/responses/{id}` 例外：处理器先查
+		// RouteIndex，见 TestRegistryAllowsPluginDispatchedResponsesRoute 与
+		// TestBuiltinRouteShapesCoverResponsesFamily。）
 		{"POST", "/v1/responses/compact"},
 	}
 	for _, tc := range cases {

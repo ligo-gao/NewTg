@@ -550,8 +550,9 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 // 是否先查 RouteIndex）与 builtinReservedRouteFamilies（通配族）。
 //
 // 当前条目与本仓库的注册点一一对应：
-//   - relay_endpoints.go：chat/completions、models、responses（T2；GET/compact 由 T3 注册，
-//     这里按 R-10 提前登记形状，避免 T2..T3 之间出现保留集空窗）；
+//   - relay_endpoints.go：chat/completions、models、responses（T2 的创建、
+//     T3 的 compact）、GET responses 回放（T3 的产物检索，处理器在
+//     handlers_tasks.go 注册）；
 //   - handlers_tasks.go：tasks/{key} 及其产物族；
 //   - handlers_multimodal.go：images/embeddings/rerank/audio/engines/models 通配/realtime。
 var builtinRouteShapes = map[string]struct{}{
@@ -580,14 +581,17 @@ var builtinRouteShapes = map[string]struct{}{
 // pluginDispatchedBuiltinShapes 是 builtinRouteShapes 中「处理器显式先查
 // RouteIndex」的子集（P-01）。
 //
-// 为什么需要这个例外：`POST /v1/responses` 的内建 handler 先 Match 插件索引，
-// 命中即转任务插件提交（计费只发生一次），只有在未命中时才回落通用中继。
-// 这类内建路由对插件**可达**，不能按「ServeMux 更具体模式会吞掉」的理由拒绝，
-// 否则 P-01 冻结的插件分支永远注册不进来（整插件 route_conflict 失败）。
+// 为什么需要这个例外：`POST /v1/responses` 与 `GET /v1/responses/{id}` 的内建
+// 处理器都先 Match 插件索引——命中即转任务插件（提交 / 查询），只有在未命中时
+// 才走内建分支（前者 501 fail-closed，后者任务产物回放）。这类内建路由对插件
+// **可达**，不能按「ServeMux 更具体模式会吞掉」的理由拒绝，否则 P-01 冻结的
+// 插件分支永远注册不进来（整插件 route_conflict 失败）。
 // 其余内建形状仍按保留集拒绝：它们没有插件优先的分发面，放行只会造成
-// 静默不可达。
+// 静默不可达（`POST /v1/responses/compact` 即属此类：它是 fail-closed 的
+// 独立计费口径，不查插件索引）。
 var pluginDispatchedBuiltinShapes = map[string]struct{}{
-	"POST /v1/responses": {},
+	"POST /v1/responses":   {},
+	"GET /v1/responses/{}": {},
 }
 
 // builtinReservedRouteFamilies 是内建 ServeMux 通配族的保留集合（R-11/R-12/R-14）。

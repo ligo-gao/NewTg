@@ -66,6 +66,12 @@ responses:
       application/problem+json:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
+  Error501:
+    description: 中继无法表达该端点形态（fail-closed：不产生计费、不调用上游）
+    content:
+      application/problem+json:
+        schema:
+          $ref: './problem.yaml#/schemas/Problem'
   Error502:
     description: 上游依赖失败（如验证码邮件投递失败）
     content:
