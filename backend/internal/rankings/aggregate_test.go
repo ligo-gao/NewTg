@@ -292,7 +292,7 @@ func TestBuildAuthorSeriesTop5Only(t *testing.T) {
 	bucket1 := time.Date(2026, 10, 20, 2, 0, 0, 0, time.UTC)
 	bucket2 := time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC)
 
-	// 作者顺序即 provider 顺序（rank 升序）：只有前 5 名写历史。
+	// 作者顺序即 provider 顺序（rank 升序）：只有前 5 行写历史。
 	providers := []store.RankingsProviderStat{
 		{Author: "a"}, {Author: "b"}, {Author: "c"}, {Author: "d"}, {Author: "e"},
 		{Author: "f"},
@@ -312,16 +312,16 @@ func TestBuildAuthorSeriesTop5Only(t *testing.T) {
 		{Model: "f1", Granularity: "hour", BucketStart: bucket1, Tokens: 99},
 		{Model: "unknown", Granularity: "hour", BucketStart: bucket1, Tokens: 88},
 	}
-	got := buildAuthorSeries(providers, models, points, GranularityHour)
+	got := buildAuthorSeries(providers, models, points, PeriodToday)
 
 	// a 两个桶（按时间升序）、b 一个桶；f/Unknown 不落表。
 	if len(got) != 3 {
 		t.Fatalf("作者桶数 = %d，want 3（a×2 + b×1）：%+v", len(got), got)
 	}
 	want := []store.RankingsAuthorTimeseries{
-		{Author: "a", Granularity: "hour", BucketStart: bucket1, Tokens: 15},
-		{Author: "a", Granularity: "hour", BucketStart: bucket2, Tokens: 7},
-		{Author: "b", Granularity: "hour", BucketStart: bucket1, Tokens: 20},
+		{Period: "today", Author: "a", Granularity: "hour", BucketStart: bucket1, Tokens: 15},
+		{Period: "today", Author: "a", Granularity: "hour", BucketStart: bucket2, Tokens: 7},
+		{Period: "today", Author: "b", Granularity: "hour", BucketStart: bucket1, Tokens: 20},
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -334,7 +334,7 @@ func TestBuildAuthorSeriesTop5Only(t *testing.T) {
 		{Model: "f1", Granularity: "hour", BucketStart: bucket1, Tokens: 99},
 		{Model: "unknown", Granularity: "hour", BucketStart: bucket1, Tokens: 88},
 	}
-	few := buildAuthorSeries(providers[:1], models, outsiderPoints, GranularityHour)
+	few := buildAuthorSeries(providers[:1], models, outsiderPoints, PeriodToday)
 	if len(few) != 0 {
 		t.Fatalf("榜外作者不应写序列，实际 %+v", few)
 	}

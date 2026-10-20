@@ -2,10 +2,11 @@ package rankings
 
 // 排行榜快照写入（D6a；R-D6-07/R-D6-09、platform-01 §13–§17）。
 //
-// 【单事务】run + model_stats + provider_stats + timeseries + entities 必须
-// 同一次提交：公开接口只读「最新 run」，如果 run 先提交而子表分几次写，
-// 读侧会看到 model_count 与子表行数不一致的半成品。失败整体回滚，上一份
-// 完整快照继续服务（append-only 的历史 run 不受影响）。
+// 【单事务】run + model_stats + provider_stats + timeseries +
+// author_timeseries + entities 必须同一次提交：公开接口只读「最新 run」，
+// 如果 run 先提交而子表分几次写，读侧会看到 model_count 与子表行数不一致
+// 的半成品。失败整体回滚，上一份完整快照继续服务（append-only 的历史 run
+// 不受影响）。
 //
 // 【保留 K 个 run】K 来自 site.rankings_keep_runs（默认 10；缺省由 worker
 // 解析后随 snapshotInput 传入）。清理放在同一事务里：新 run 插入后立刻删更早
@@ -119,7 +120,7 @@ func writeModelStats(ctx context.Context, tx *sql.Tx, runID int64, models []stor
 	}
 	// 只有能获得独立身份色的实体才落 rankings_entities：色板 8 槽，榜单
 	// 之外的实体在图表里归入 Other（R-D6-06「超出归 Other（不落 entity）」）。
-	// 模型榜/趋势最多展示 Top 6~10、作者榜 Top 5，因此注册各自前 8 名足够；
+	// 模型榜/趋势最多展示 Top 6~10、作者榜前 5 行，因此注册各自前 8 名足够；
 	// 超过 8 名的排在 model_stats/provider_stats 里仍可由表格视图展示，
 	// 只是不再占用实体槽位。
 	names := slotEntities(models, func(m store.RankingsModelStat) string { return m.Model })
@@ -187,22 +188,25 @@ func writeTimeseries(ctx context.Context, tx *sql.Tx, points []store.RankingsTim
 	return nil
 }
 
-// writeAuthorTimeseries 以 (author, granularity, bucket_start) 为幂等键
-// upsert 作者桶（B5a）。
+// writeAuthorTimeseries 以 (period, author, granularity, bucket_start) 为
+// 幂等键 upsert 作者桶（B5a）。
 //
 // 与 writeTimeseries 同一取舍：usage_logs 是 append-only，窗口内重算得到
-// 相同值，覆盖天然幂等；累加会在多副本/重复执行时双计。只有作者榜 Top 5
-// 会进入 points（buildAuthorSeries 已截断），这里不再判断。
+// 相同值，覆盖天然幂等；累加会在多副本/重复执行时双计。period 必须进键：
+// week 与 month 共用 day 粒度，否则同一作者同一桶会被另一个周期覆盖。
+// 只有作者榜前 5 行会进入 points（buildAuthorSeries 已截断），这里不再判断。
 func writeAuthorTimeseries(ctx context.Context, tx *sql.Tx, points []store.RankingsAuthorTimeseries) error {
 	for _, point := range points {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (author, granularity, bucket_start)
+			INSERT INTO rankings_author_timeseries
+			    (period, author, granularity, bucket_start, tokens)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (period, author, granularity, bucket_start)
 			DO UPDATE SET tokens = EXCLUDED.tokens`,
-			point.Author, point.Granularity, point.BucketStart, point.Tokens,
+			point.Period, point.Author, point.Granularity, point.BucketStart, point.Tokens,
 		); err != nil {
-			return fmt.Errorf("rankings: upsert author timeseries %q/%s: %w", point.Author, point.Granularity, err)
+			return fmt.Errorf("rankings: upsert author timeseries %s/%q/%s: %w",
+				point.Period, point.Author, point.Granularity, err)
 		}
 	}
 	return nil

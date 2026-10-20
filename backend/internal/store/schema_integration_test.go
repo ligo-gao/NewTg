@@ -35,7 +35,7 @@ import (
 // 表数 30→33；并给 orders 补 biz_kind/biz_ref_id（23→25）、users 补
 // billing_preference（25→26）。
 // D7a 追加站点公告两表（modules-08 F-08-04 / R-D7-01/R-D7-02），表数 33→35。
-// B5a 追加供应商时间序列表（rankings_author_timeseries），表数 35→36，4 列。
+// B5a 追加供应商时间序列表（rankings_author_timeseries），表数 35→36。
 //
 //	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
@@ -55,8 +55,10 @@ var wantColumns = map[string]int{
 	"rankings_provider_stats": 5,
 	"rankings_timeseries":     4,
 	"rankings_entities":       3,
-	// B5a：供应商时间序列（作者榜 Top 5 的桶；自然唯一 author+granularity+bucket_start）。
-	"rankings_author_timeseries": 4,
+	// B5a：供应商时间序列（作者榜前 5 行的桶；自然唯一
+	// period+author+granularity+bucket_start）。period 由 B5a 收口迁移加入，
+	// 隔离 week/month 共用的 day 桶。
+	"rankings_author_timeseries": 5,
 	"request_registry":           9,
 	// M1 认证族（modules-01 §3.5/§3.6/§3.13/§3.14/§3.19 + platform-01 §22.10）
 	"login_sessions":         4,
@@ -187,8 +189,9 @@ var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},
 	"rankings_timeseries": {"model", "granularity", "bucket_start"},
 	"rankings_entities":   {"entity", "kind"},
-	// B5a：作者时间序列的主键就是幂等键（author, granularity, bucket_start）。
-	"rankings_author_timeseries":       {"author", "granularity", "bucket_start"},
+	// B5a：作者时间序列的主键就是幂等键；period 由收口迁移加入并置于键首，
+	// week/month 同桶不再互相覆盖。
+	"rankings_author_timeseries":       {"period", "author", "granularity", "bucket_start"},
 	"request_registry":                 {"request_id"},
 	"task_plugins":                     {"key"},
 	"subscription_pre_consume_records": {"request_id"},
@@ -410,6 +413,38 @@ func TestMainSchemaNotificationDeliveryPrefixIndex(t *testing.T) {
 	}
 	if !strings.Contains(def, "dedupe_key") || !strings.Contains(def, "text_pattern_ops") {
 		t.Fatalf("prefix 索引定义不符，want (dedupe_key text_pattern_ops)：%s", def)
+	}
+}
+
+// TestMainSchemaRankingsTimeseriesIndexes：B5a 收口的两个复合索引
+// （migrations 20261020261000）。
+//
+// 清理与读取都按 `granularity = ? AND bucket_start < ?` 过滤；只有
+// (granularity, bucket_start) 复合索引能先用等值前缀缩小范围。这里同时
+// 断言作者表的旧单列索引已删除，防止「新索引加了、旧索引还留着」的重复
+// 维护成本被静默接受。
+func TestMainSchemaRankingsTimeseriesIndexes(t *testing.T) {
+	db := openTestDB(t)
+	for _, name := range []string{
+		"rankings_timeseries_granularity_bucket_idx",
+		"rankings_author_timeseries_granularity_bucket_idx",
+	} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			def, unique, partial, ok := indexInfo(t, db, name)
+			if !ok {
+				t.Fatalf("索引 %s 不存在", name)
+			}
+			if unique || partial {
+				t.Fatalf("%s unique=%v partial=%v，want false/false（定义：%s）", name, unique, partial, def)
+			}
+			if !strings.Contains(def, "(granularity, bucket_start)") {
+				t.Fatalf("%s 定义不符，want (granularity, bucket_start)：%s", name, def)
+			}
+		})
+	}
+	if _, _, _, ok := indexInfo(t, db, "rankings_author_timeseries_bucket_idx"); ok {
+		t.Fatal("作者表单列 bucket_start 索引应已被复合索引替换")
 	}
 }
 

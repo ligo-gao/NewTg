@@ -146,6 +146,8 @@ func testConfig(enabled bool, minSamples int) mapConfig {
 		configKeyTimezone:   fmt.Sprintf("%q", testSiteTimezone),
 		configKeyMinSamples: fmt.Sprintf("%d", minSamples),
 		configKeyEnabled:    fmt.Sprintf("%t", enabled),
+		// keep_runs=2：端到端用 3 次刷新验证「只保留最近 2 个 run」。
+		configKeyKeepRuns: "2",
 	}
 }
 
@@ -181,6 +183,7 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 	defer cleanupRankingsFixture(t, mainDB, logsDB, prefix, now)
 	// year 用例的 run 也要清理（cleanupRankingsFixture 只清 today 窗口）。
 	yearWindow := CurrentWindow(PeriodYear, now, now.Location())
+	todayWindow := CurrentWindow(PeriodToday, now, now.Location())
 	t.Cleanup(func() {
 		_, _ = mainDB.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = $1 AND window_start = $2`,
 			string(PeriodYear), yearWindow.Start)
@@ -411,6 +414,12 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 		t.Fatalf("作者 A 两桶合计 = %d，want 3250", authorTotal)
 	}
 
+	// keep_runs=2：本用例已刷新 today 三次（首次 + 幂等重刷 + 排名反转后），
+	// 同一 period 必须只保留最近 2 个 run，旧 run 的模型/作者子表由 CASCADE 回收。
+	if got := countRuns(t, mainDB, PeriodToday, todayWindow.Start); got != 2 {
+		t.Fatalf("keep_runs=2 刷新 3 次后 run 数 = %d，want 2", got)
+	}
+
 	// R-D6-04：year 周期必须能写 week 粒度（迁移放开了 CHECK）。同一批行在
 	// year 窗口内落到「周一 00:00 +08」的周桶，且同桶覆盖不双计。
 	refreshPeriod(ctx, deps, PeriodYear)
@@ -591,6 +600,151 @@ func TestAssignSlotsNoCollisionAcrossRounds(t *testing.T) {
 	})
 }
 
+// TestRankingsAuthorSeriesIsolatedByPeriod 覆盖 B5a 收口的高危回归：
+// week 与 month 都是 day 粒度，作者桶键若不带 period，两个周期会互相覆盖；
+// 且读取侧为 year 首桶放宽「一个桶」，month 在 week 起点前一天的日桶会落进
+// week 的读取范围。
+//
+// 构造「月达标、周不达标」的模型 modelMonth：120 次调用落在 2026-10-18
+// （站点时区周日），只进 month 榜；modelWeek 150 次落在 2026-10-20，week 与
+// month 都达标。同一作者下，week 的作者桶只能是 modelWeek 的 1500，不能
+// 带上 modelMonth 的 1200（哪怕后者恰好落在 week 首桶放宽范围内）。
+//
+// 两个刷新顺序（month→week、week→month）都必须得到相同的 week 结果，
+// 证明隔离来自 period 键而不是执行顺序。
+func TestRankingsAuthorSeriesIsolatedByPeriod(t *testing.T) {
+	mainDB := openRankingsDB(t, "NEWTG_TEST_DB_DSN")
+	logsDB := openRankingsDB(t, "NEWTG_TEST_LOGS_DSN")
+	rdb := openRankingsRedis(t)
+	now, loc := testNow(t)
+	ctx := context.Background()
+	prefix := uniquePrefix(t)
+
+	weekWindow := CurrentWindow(PeriodWeek, now, loc)
+	monthWindow := CurrentWindow(PeriodMonth, now, loc)
+	t.Cleanup(func() {
+		_, _ = mainDB.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = $1 AND window_start = $2`,
+			string(PeriodWeek), weekWindow.Start)
+		_, _ = mainDB.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = $1 AND window_start = $2`,
+			string(PeriodMonth), monthWindow.Start)
+		_, _ = mainDB.Exec(`DELETE FROM rankings_timeseries WHERE model LIKE $1`, prefix+"%")
+		_, _ = mainDB.Exec(`DELETE FROM rankings_author_timeseries WHERE author LIKE $1`, prefix+"%")
+		_, _ = mainDB.Exec(`DELETE FROM rankings_entities WHERE entity LIKE $1`, prefix+"%")
+		_, _ = mainDB.Exec(`DELETE FROM model_pricing WHERE model LIKE $1`, prefix+"%")
+		_, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE model LIKE $1`, prefix+"%")
+		_ = rdb.Del(context.Background(), LockKey(PeriodWeek), LockKey(PeriodMonth),
+			CacheKey(PeriodWeek), CacheKey(PeriodMonth)).Err()
+	})
+
+	author := prefix + "-author"
+	modelMonth := prefix + "-month-only"
+	modelWeek := prefix + "-week-ok"
+	for _, model := range []string{modelMonth, modelWeek} {
+		if _, err := mainDB.Exec(`INSERT INTO model_pricing (model, author) VALUES ($1, $2)`,
+			model, author); err != nil {
+			t.Fatalf("insert model_pricing %s: %v", model, err)
+		}
+	}
+
+	// 站点时区：2026-10-18 10:00（周日，week 窗口外）/ 2026-10-20 10:00（周二）。
+	monthOnlyAt := time.Date(2026, 10, 18, 10, 0, 0, 0, loc)
+	weekAt := time.Date(2026, 10, 20, 10, 0, 0, 0, loc)
+	insertUsageRows(t, logsDB, modelMonth, 120, 10, 0, 1, monthOnlyAt) // 1200 token
+	insertUsageRows(t, logsDB, modelWeek, 150, 10, 0, 1, weekAt)       // 1500 token
+
+	deps := rankingsDeps(mainDB, logsDB, rdb, testConfig(true, 100), now)
+	repo := store.NewRankingsRepo(mainDB)
+
+	bucketTokens := func(points []store.RankingsAuthorTimeseries, period Period, bucket time.Time) int64 {
+		for _, point := range points {
+			if point.Period == string(period) && point.Author == author && point.BucketStart.Equal(bucket) {
+				return point.Tokens
+			}
+		}
+		return -1
+	}
+	// 站点时区的日桶起点转 UTC：10-18 00:00 +08 / 10-20 00:00 +08。
+	monthOnlyBucket := time.Date(2026, 10, 18, 0, 0, 0, 0, loc).UTC()
+	weekBucket := time.Date(2026, 10, 20, 0, 0, 0, 0, loc).UTC()
+
+	assertWeek := func(t *testing.T) {
+		t.Helper()
+		snap, ok, err := repo.LatestRun(ctx, string(PeriodWeek))
+		if err != nil || !ok {
+			t.Fatalf("LatestRun(week): ok=%v err=%v", ok, err)
+		}
+		// modelMonth 的周调用数为 0，低于阈值，不得进入 week 榜。
+		if len(snap.Models) != 1 || snap.Models[0].Model != modelWeek {
+			t.Fatalf("week 模型行 = %+v，want 只有 %s", snap.Models, modelWeek)
+		}
+		if len(snap.Providers) != 1 || snap.Providers[0].TotalTokens != 1500 {
+			t.Fatalf("week 作者行 = %+v，want 单个 1500", snap.Providers)
+		}
+		// 关键断言：只有 10-20 一个周内桶，10-18 的 month 桶不得泄漏。
+		if len(snap.AuthorSeries) != 1 {
+			t.Fatalf("week 作者桶 = %+v，want 仅 1 个周内桶", snap.AuthorSeries)
+		}
+		if got := bucketTokens(snap.AuthorSeries, PeriodWeek, weekBucket); got != 1500 {
+			t.Fatalf("week 作者桶(10-20) = %d，want 1500", got)
+		}
+		if got := bucketTokens(snap.AuthorSeries, PeriodWeek, monthOnlyBucket); got != -1 {
+			t.Fatalf("week 作者序列混入 10-18 的 month 桶 = %d（跨周期泄漏）", got)
+		}
+		// 作者桶合计不得超过该周该作者的真实总量（由 usage_logs 直接求和）。
+		var weekTotal int64
+		if err := logsDB.QueryRow(`
+			SELECT COALESCE(SUM(COALESCE(prompt_tokens, 0)::bigint
+			                  + COALESCE(completion_tokens, 0)::bigint), 0)::bigint
+			FROM usage_logs
+			WHERE status = 1 AND created_at >= $1 AND created_at < $2
+			  AND model = ANY($3)`,
+			weekWindow.Start, weekWindow.End, []string{modelMonth, modelWeek}).Scan(&weekTotal); err != nil {
+			t.Fatalf("query week author total: %v", err)
+		}
+		var got int64
+		for _, point := range snap.AuthorSeries {
+			got += point.Tokens
+		}
+		if weekTotal != 1500 || got != weekTotal {
+			t.Fatalf("week 作者桶合计 = %d，want 周总量 %d", got, weekTotal)
+		}
+	}
+
+	assertMonth := func(t *testing.T) {
+		t.Helper()
+		snap, ok, err := repo.LatestRun(ctx, string(PeriodMonth))
+		if err != nil || !ok {
+			t.Fatalf("LatestRun(month): ok=%v err=%v", ok, err)
+		}
+		if len(snap.Models) != 2 {
+			t.Fatalf("month 模型行 = %+v，want 2", snap.Models)
+		}
+		if len(snap.AuthorSeries) != 2 {
+			t.Fatalf("month 作者桶 = %+v，want 10-18 与 10-20 两桶", snap.AuthorSeries)
+		}
+		if got := bucketTokens(snap.AuthorSeries, PeriodMonth, monthOnlyBucket); got != 1200 {
+			t.Fatalf("month 作者桶(10-18) = %d，want 1200", got)
+		}
+		if got := bucketTokens(snap.AuthorSeries, PeriodMonth, weekBucket); got != 1500 {
+			t.Fatalf("month 作者桶(10-20) = %d，want 1500", got)
+		}
+	}
+
+	// 顺序一：先 month 后 week。month 先写入 10-18 的 day 桶，随后 week
+	// 刷新不能让该桶出现在 week 的读取结果里。
+	refreshPeriod(ctx, deps, PeriodMonth)
+	refreshPeriod(ctx, deps, PeriodWeek)
+	assertWeek(t)
+	assertMonth(t)
+
+	// 顺序二：反向再刷一轮。period 进键后两个周期的行共存，week 结果必须
+	// 与顺序一完全相同（不因 month 后写而改变）。
+	refreshPeriod(ctx, deps, PeriodWeek)
+	refreshPeriod(ctx, deps, PeriodMonth)
+	assertWeek(t)
+	assertMonth(t)
+}
+
 func TestRankingsRefreshEmptyStatus(t *testing.T) {
 	mainDB := openRankingsDB(t, "NEWTG_TEST_DB_DSN")
 	logsDB := openRankingsDB(t, "NEWTG_TEST_LOGS_DSN")
@@ -694,8 +848,8 @@ func TestCleanupExpiredTimeseriesRetention(t *testing.T) {
 			VALUES ($1, $2, $3, $4)`, model, c.granularity, c.at, i+1); err != nil {
 			t.Fatalf("insert model bucket: %v", err)
 		}
-		if _, err := mainDB.Exec(`INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
-			VALUES ($1, $2, $3, $4)`, author, c.granularity, c.at, i+1); err != nil {
+		if _, err := mainDB.Exec(`INSERT INTO rankings_author_timeseries (period, author, granularity, bucket_start, tokens)
+			VALUES ('today', $1, $2, $3, $4)`, author, c.granularity, c.at, i+1); err != nil {
 			t.Fatalf("insert author bucket: %v", err)
 		}
 	}
@@ -703,8 +857,8 @@ func TestCleanupExpiredTimeseriesRetention(t *testing.T) {
 	// 一批以上的过期 hour 桶：验证 LIMIT 1000 的循环删除不是只删第一批。
 	batchAuthor := prefix + "-batch"
 	if _, err := mainDB.Exec(`
-		INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
-		SELECT $1, 'hour', $2::timestamptz + (i || ' seconds')::interval, 1
+		INSERT INTO rankings_author_timeseries (period, author, granularity, bucket_start, tokens)
+		SELECT 'today', $1, 'hour', $2::timestamptz + (i || ' seconds')::interval, 1
 		FROM generate_series(0, $3) AS i`,
 		batchAuthor, now.Add(-retentionHour-time.Hour), cleanupBatchSize+4); err != nil {
 		t.Fatalf("insert batch buckets: %v", err)

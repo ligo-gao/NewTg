@@ -141,7 +141,10 @@ var EnumChecks = map[string][]string{
 	"rankings_snapshot_runs.status":          {"ok", "partial", "empty"},
 	"rankings_timeseries.granularity":        {"day", "hour", "week"},
 	"rankings_author_timeseries.granularity": {"day", "hour", "week"},
-	"rankings_entities.kind":                 {"model", "author"},
+	// 作者序列按公开周期隔离（B5a 收口迁移 20261020260000）；period 进自然键后
+	// week/month 的 day 桶不再互相覆盖，读侧也按 run.Period 过滤。
+	"rankings_author_timeseries.period": {"today", "week", "month", "year"},
+	"rankings_entities.kind":            {"model", "author"},
 
 	// request_registry（§18 / platform-04 V9）
 	"request_registry.state": {"in_flight", "settled", "refunded", "failed"},
@@ -214,7 +217,7 @@ var EnumChecks = map[string][]string{
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
-// + D1 2 + D5a 3 + D7a 2 = 35 表），
+// + D1 2 + D5a 3 + D7a 2 + B5a 1 = 36 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{

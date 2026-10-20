@@ -318,12 +318,19 @@ type RankingsTimeseries struct {
 // TableName 返回 GORM 表名。
 func (RankingsTimeseries) TableName() string { return "rankings_timeseries" }
 
-// RankingsAuthorTimeseries 对应 rankings_author_timeseries（B5a，4 列；
-// 自然唯一 (author, granularity, bucket_start)）。
+// RankingsAuthorTimeseries 对应 rankings_author_timeseries（B5a，5 列；
+// 自然唯一 (period, author, granularity, bucket_start)）。
 //
-// 只承载作者榜 Top 5 的桶：Other 不落表（前端用 100% 份额余量表达）。
-// 与 run 无 FK——它与 rankings_timeseries 一样是跨 run 累积的历史序列。
+// Period 是序列所属的公开周期。week 与 month 共用 day 粒度，若不把 period
+// 放进键，同一 (author, granularity, bucket_start) 会被两个周期互相覆盖；
+// 读侧按 run.Period 过滤后，跨周期（尤其 week 首桶放宽一个桶的窗口）不会
+// 混入其他周期的桶。
+//
+// 只承载作者榜前 5 行的桶（按 provider 行序截断，不按 rank 值扩员）：
+// Other 不落表（前端用 100% 份额余量表达）。与 run 无 FK——它与
+// rankings_timeseries 一样是跨 run 累积的历史序列。
 type RankingsAuthorTimeseries struct {
+	Period      string    `gorm:"column:period"`
 	Author      string    `gorm:"column:author"`
 	Granularity string    `gorm:"column:granularity"`
 	BucketStart time.Time `gorm:"column:bucket_start"`

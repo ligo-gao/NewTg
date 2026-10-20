@@ -249,20 +249,23 @@ func ResolveKeepRuns(reader ConfigReader, log *slog.Logger) int {
 	if !ok {
 		return defaultKeepRuns
 	}
-	var v int
-	if err := json.Unmarshal(raw, &v); err != nil {
+	// 用指针解析：设置快照里显式 null（键存在但值为空）应等价于「未设置」
+	// 而回退默认值。直接 Unmarshal 到 int 时 null 会静默留下 0，随后被钳制
+	// 到下限 1——保留数从 10 悄悄降到 1，历史 run 被多删。
+	var v *int
+	if err := json.Unmarshal(raw, &v); err != nil || v == nil {
 		log.Warn("rankings: site.rankings_keep_runs 不是整数，使用默认保留数", "raw", string(raw))
 		return defaultKeepRuns
 	}
-	if v < keepRunsFloor {
-		log.Warn("rankings: site.rankings_keep_runs 低于下限，钳制到 1", "configured", v)
+	if *v < keepRunsFloor {
+		log.Warn("rankings: site.rankings_keep_runs 低于下限，钳制到 1", "configured", *v)
 		return keepRunsFloor
 	}
-	if v > keepRunsCeil {
-		log.Warn("rankings: site.rankings_keep_runs 超过上限，钳制到 100", "configured", v)
+	if *v > keepRunsCeil {
+		log.Warn("rankings: site.rankings_keep_runs 超过上限，钳制到 100", "configured", *v)
 		return keepRunsCeil
 	}
-	return v
+	return *v
 }
 
 // RankingsEnabled 读取 nav.rankings.enabled。

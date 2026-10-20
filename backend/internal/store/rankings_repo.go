@@ -158,7 +158,8 @@ func scanRankingsSnapshotRun(s rankingsScanner) (RankingsSnapshotRun, error) {
 	return run, err
 }
 
-// loadRankingsChildren 读取 run 的三类子数据（模型、作者、趋势桶）。
+// loadRankingsChildren 读取 run 的四类子数据（模型、作者份额、模型趋势桶、
+// 作者趋势桶）。
 //
 // 趋势桶的粒度由 period 派生（today→hour、year→week、其余→day），与
 // internal/rankings.Period.Granularity 同口径。这里用 SQL CASE 表达，是为了
@@ -184,8 +185,9 @@ func loadRankingsChildren(ctx context.Context, db *sql.DB, run RankingsSnapshotR
 	}
 	snap.Timeseries = series
 
-	// 作者序列只取作者榜前 5（与 worker 的写入口径一致）：查询按 provider
-	// 的 rank 顺序截断，避免把「曾是 Top5、现在已掉出」的旧序列带回来。
+	// 作者序列只取作者榜前 5 行（按 provider 行序截断，不按 rank 值扩员；
+	// 与 worker 的写入口径一致）：避免把「曾在前 5、现在已掉出」的旧序列
+	// 带回来。
 	authors := make([]string, 0, rankingsAuthorSeriesLimit)
 	for _, p := range providers {
 		if len(authors) >= rankingsAuthorSeriesLimit {
@@ -202,7 +204,7 @@ func loadRankingsChildren(ctx context.Context, db *sql.DB, run RankingsSnapshotR
 }
 
 // rankingsAuthorSeriesLimit 与 internal/rankings.authorSeriesLimit 同值
-// （只写/只读作者榜 Top 5）。store 不反向依赖 rankings，故在此重复常量。
+// （只写/只读作者榜前 5 行）。store 不反向依赖 rankings，故在此重复常量。
 const rankingsAuthorSeriesLimit = 5
 
 func loadRankingsModels(ctx context.Context, db *sql.DB, runID int64) ([]RankingsModelStat, error) {
@@ -325,18 +327,24 @@ func loadRankingsTimeseries(ctx context.Context, db *sql.DB, run RankingsSnapsho
 	return out, nil
 }
 
-// loadRankingsAuthorTimeseries 读取 run 周期内作者榜 Top 5 的历史桶。
+// loadRankingsAuthorTimeseries 读取 run 周期内作者榜前 5 行的历史桶。
 //
 // 窗口/粒度规则与 loadRankingsTimeseries 完全一致（下界按粒度放宽一个桶、
 // 上界不放松），保证 providers[].series 与 trend.buckets 对齐。
+//
+// 【必须带 period】week 与 month 都是 day 粒度，且读侧放宽首桶（day −1d）。
+// 若只按 author/granularity/bucket_start 过滤，month 在 week 起点前一天的
+// 日桶会落进 week 的读取范围。period 是写入时记录的公开周期，按
+// run.Period 精确过滤，跨周期隔离不依赖窗口算术。
 func loadRankingsAuthorTimeseries(ctx context.Context, db *sql.DB, run RankingsSnapshotRun, authors []string) ([]RankingsAuthorTimeseries, error) {
 	if len(authors) == 0 {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT t.author, t.granularity, t.bucket_start, COALESCE(t.tokens, 0)
+		SELECT t.period, t.author, t.granularity, t.bucket_start, COALESCE(t.tokens, 0)
 		FROM rankings_author_timeseries t
-		WHERE t.granularity = CASE $1::text
+		WHERE t.period = $1
+		  AND t.granularity = CASE $1::text
 		        WHEN 'today' THEN 'hour'
 		        WHEN 'year'  THEN 'week'
 		        ELSE 'day'
@@ -357,7 +365,8 @@ func loadRankingsAuthorTimeseries(ctx context.Context, db *sql.DB, run RankingsS
 	out := make([]RankingsAuthorTimeseries, 0, 64)
 	for rows.Next() {
 		var point RankingsAuthorTimeseries
-		if err := rows.Scan(&point.Author, &point.Granularity, &point.BucketStart, &point.Tokens); err != nil {
+		if err := rows.Scan(&point.Period, &point.Author, &point.Granularity,
+			&point.BucketStart, &point.Tokens); err != nil {
 			return nil, fmt.Errorf("store: scan rankings author timeseries: %w", err)
 		}
 		out = append(out, point)

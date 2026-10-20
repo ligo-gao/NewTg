@@ -197,10 +197,17 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 		{author, time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), 777}, // window_start - 3d：过旧
 		{prefix + "-outsider", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 555},
 	} {
-		if _, err := db.Exec(`INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
-			VALUES ($1, 'day', $2, $3)`, point.author, point.bucket, point.tokens); err != nil {
+		if _, err := db.Exec(`INSERT INTO rankings_author_timeseries (period, author, granularity, bucket_start, tokens)
+			VALUES ('month', $1, 'day', $2, $3)`, point.author, point.bucket, point.tokens); err != nil {
 			t.Fatalf("insert author timeseries: %v", err)
 		}
+	}
+	// 同一作者、同一桶但属于 week 周期：run 是 month，读侧必须按 period 过滤，
+	// 否则 week 的行会混进 month 的 series（这是 B5a 收口要防的跨周期泄漏）。
+	if _, err := db.Exec(`INSERT INTO rankings_author_timeseries (period, author, granularity, bucket_start, tokens)
+		VALUES ('week', $1, 'day', $2, $3)`,
+		author, time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 4444); err != nil {
+		t.Fatalf("insert cross-period author timeseries: %v", err)
 	}
 
 	snap, found, err := repo.LatestRun(ctx, "month")
@@ -244,6 +251,9 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 		t.Fatalf("author series = %+v，want 窗口内 11 + 90", snap.AuthorSeries)
 	}
 	for _, point := range snap.AuthorSeries {
+		if point.Period != "month" {
+			t.Fatalf("作者序列 period = %q，want month（week 的同桶行不得泄漏）", point.Period)
+		}
 		if point.Granularity != "day" {
 			t.Fatalf("作者序列粒度 = %s，want day", point.Granularity)
 		}

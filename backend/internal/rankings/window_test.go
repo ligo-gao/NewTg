@@ -219,6 +219,7 @@ func TestResolveKeepRuns(t *testing.T) {
 		want int
 	}{
 		{"", defaultKeepRuns},
+		{`null`, defaultKeepRuns},
 		{`10`, 10},
 		{`1`, keepRunsFloor},
 		{`100`, keepRunsCeil},

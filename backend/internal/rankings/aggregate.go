@@ -348,24 +348,28 @@ func ComputeMovers(models []store.RankingsModelStat) Movers {
 	return Movers{Up: up, Down: down}
 }
 
-// authorSeriesLimit 是写入历史序列的作者数（B5a 冻结值）：只写作者榜 Top 5，
-// 与 providers 列表顺序一致；Other 不落表（前端用份额余量表达）。
+// authorSeriesLimit 是写入历史序列的作者行数（B5a 冻结值）：只写作者榜前
+// 5 行（按 provider 行序截断，不按 rank 值扩员），与 providers 列表顺序一致；
+// Other 不落表（前端用份额余量表达）。
 const authorSeriesLimit = 5
 
 // buildAuthorSeries 把模型桶按作者归并成作者时间序列。
 //
 // 输入 series 已按当前窗口与 period 粒度聚合（queryTimeseries），这里只做
 // 「模型 → 作者」的加总：同一作者的多模型桶合并（F-09-33 分支流程）。
-// 只保留作者榜前 5 名：榜单之外的作者不写历史，避免跨 run 的序列表被长尾
+// 只保留作者榜前 5 行：榜单之外的作者不写历史，避免跨 run 的序列表被长尾
 // 实体无界撑大（与 rankings_timeseries 只取入榜模型同一取舍）。
 //
+// period 写进每一行：week 与 month 同为 day 粒度，幂等键必须带周期，
+// 否则同一 (author, granularity, bucket_start) 会被另一个周期覆盖。
+//
 // 输出按 provider 顺序、桶时间升序，便于测试与确定性日志；幂等键由
-// (author, granularity, bucket_start) 承担，顺序不影响落库结果。
+// (period, author, granularity, bucket_start) 承担，顺序不影响落库结果。
 func buildAuthorSeries(
 	providers []store.RankingsProviderStat,
 	models []store.RankingsModelStat,
 	points []store.RankingsTimeseries,
-	granularity Granularity,
+	period Period,
 ) []store.RankingsAuthorTimeseries {
 	if len(providers) == 0 || len(points) == 0 {
 		return nil
@@ -413,8 +417,9 @@ func buildAuthorSeries(
 		sort.Slice(buckets, func(i, j int) bool { return buckets[i].Before(buckets[j]) })
 		for _, bucket := range buckets {
 			out = append(out, store.RankingsAuthorTimeseries{
+				Period:      string(period),
 				Author:      author,
-				Granularity: string(granularity),
+				Granularity: string(period.Granularity()),
 				BucketStart: bucket,
 				Tokens:      tokens[bucketKey{author: author, bucket: bucket}],
 			})
@@ -423,7 +428,7 @@ func buildAuthorSeries(
 	return out
 }
 
-// queryTimeseries 按趋势粒度聚合本次窗口内的桶。//
+// queryTimeseries 按趋势粒度聚合本次窗口内的桶。
 // 只对已入榜模型取桶（models 参数）：趋势图只展示 Top 模型 + Other，
 // 未达阈值的模型既不公开也不应无限累积到跨 run 的 timeseries 表里。
 //
@@ -608,7 +613,7 @@ func aggregatePeriod(ctx context.Context, mainDB, logsDB *sql.DB, period Period,
 		Models:       models,
 		Providers:    providers,
 		Timeseries:   series,
-		AuthorSeries: buildAuthorSeries(providers, models, series, period.Granularity()),
+		AuthorSeries: buildAuthorSeries(providers, models, series, period),
 		Threshold:    minSamples,
 	}, nil
 }

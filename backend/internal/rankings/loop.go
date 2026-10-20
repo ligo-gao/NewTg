@@ -54,7 +54,7 @@ type Deps struct {
 	// Redis 提供 period 级租约、公开缓存失效与刷新广播。
 	Redis *redis.Client
 	// Config 是站点设置快照（site.timezone / site.rankings_min_samples /
-	// nav.rankings.enabled）。
+	// site.rankings_keep_runs / nav.rankings.enabled）。
 	Config ConfigReader
 	// Logger 为空时使用 slog.Default。
 	Logger *slog.Logger
