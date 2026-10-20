@@ -11,14 +11,35 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"sync"
 	"testing"
 
+	"gorm.io/gorm"
+
 	"newtg/gateway/internal/store"
 )
+
+// newWalletTopupServiceWithQPU 构造使用指定 billing.quota_per_unit 的充值服务。
+// 钱包购买必须按 QPU 把「分」换算成积分，默认 100 的用例看不出换算错误，
+// 因此换算验收需要显式覆盖 QPU。
+func newWalletTopupServiceWithQPU(t *testing.T, gormDB *gorm.DB, qpu int64) *TopupService {
+	t.Helper()
+	cfg := stripeTestConfig()
+	cfg[ConfigQuotaPerUnit] = json.RawMessage(strconv.FormatInt(qpu, 10))
+	svc, err := NewTopupService(TopupServiceConfig{
+		DB:            gormDB,
+		Config:        cfg,
+		StripeBaseURL: "http://127.0.0.1:1",
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	return svc
+}
 
 // readWalletBalance 读取用户钱包余额。
 func readWalletBalance(t *testing.T, db *sql.DB, userID int64) int64 {
@@ -386,5 +407,110 @@ func TestWalletSubscriptionPurchaseBalanceNeverNegative(t *testing.T) {
 	}
 	if got := countSubscriptionsForUser(t, db, userID); got != 1 {
 		t.Fatalf("实例数 = %d，期望 1", got)
+	}
+}
+
+// TestWalletSubscriptionPurchaseUsesQuotaPerUnit 覆盖 HIGH 修复：扣款额必须
+// 按 billing.quota_per_unit 把套餐价（分）换算成积分，而不是直接用「分」。
+// ¥99 套餐在 QPU=200 时扣 19,800 积分、QPU=50 时扣 4,950 积分；订单金额
+// 仍是 CNY 分（9,900），流水与 402 的 Required 都是积分口径。
+func TestWalletSubscriptionPurchaseUsesQuotaPerUnit(t *testing.T) {
+	cases := []struct {
+		name       string
+		qpu        int64
+		balance    int64
+		wantDebit  int64
+		wantRemain int64
+	}{
+		{name: "QPU=200 ¥99 → 19800", qpu: 200, balance: 20_000, wantDebit: 19_800, wantRemain: 200},
+		{name: "QPU=50 ¥99 → 4950", qpu: 50, balance: 10_000, wantDebit: 4_950, wantRemain: 5_050},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gormDB, db := openBillingTestDB(t)
+			userID := createBillingTestUser(t, db, tc.balance)
+			deleteTestOrders(t, db, userID)
+			planID := insertSubscriptionPlan(t, db, 9_900, 100, 30, true, "enabled", "")
+			svc := newWalletTopupServiceWithQPU(t, gormDB, tc.qpu)
+			key := fmt.Sprintf("p2b-qpu-%d-%d", tc.qpu, topupTestSeq.Add(1))
+
+			result, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderWallet, key)
+			if err != nil {
+				t.Fatalf("wallet purchase: %v", err)
+			}
+			// 订单金额是合同价（分），不随 QPU 变化。
+			if result.Order.Amount != 9_900 {
+				t.Fatalf("订单金额 = %d，期望 9900（分）", result.Order.Amount)
+			}
+			if got := readWalletBalance(t, db, userID); got != tc.wantRemain {
+				t.Fatalf("balance = %d，期望 %d", got, tc.wantRemain)
+			}
+			var amount, balanceAfter int64
+			if err := db.QueryRow(`SELECT amount, balance_after FROM wallet_transactions
+				WHERE user_id = $1 AND type = 'subscription_purchase'`, userID).
+				Scan(&amount, &balanceAfter); err != nil {
+				t.Fatalf("read wallet transaction: %v", err)
+			}
+			if amount != -tc.wantDebit || balanceAfter != tc.wantRemain {
+				t.Fatalf("流水 = amount:%d balance_after:%d，期望 -%d/%d",
+					amount, balanceAfter, tc.wantDebit, tc.wantRemain)
+			}
+			sub := readSubscriptionByOrder(t, db, result.Order.ID)
+			if sub == nil || sub.PricePaidAmount != 9_900 {
+				t.Fatalf("订阅实例 = %+v，price_paid_amount 应为订单金额 9900", sub)
+			}
+		})
+	}
+}
+
+// TestWalletSubscriptionPurchaseInsufficientReportsCredits 证明 402 的
+// Required 是积分（按 QPU 换算后），不是订单的「分」。
+func TestWalletSubscriptionPurchaseInsufficientReportsCredits(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 10_000)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9_900, 100, 30, true, "enabled", "")
+	svc := newWalletTopupServiceWithQPU(t, gormDB, 200)
+	key := fmt.Sprintf("p2b-qpu-short-%d", topupTestSeq.Add(1))
+
+	_, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderWallet, key)
+	var quotaErr *QuotaError
+	if !errors.As(err, &quotaErr) {
+		t.Fatalf("err = %v，期望 *QuotaError", err)
+	}
+	if quotaErr.Required != 19_800 || quotaErr.Available != 10_000 {
+		t.Fatalf("QuotaError = %+v，期望 Required=19800 Available=10000", quotaErr)
+	}
+	if got := readWalletBalance(t, db, userID); got != 10_000 {
+		t.Fatalf("余额不足时 balance = %d，期望 10000", got)
+	}
+	if got := countOrdersByKey(t, db, key); got != 0 {
+		t.Fatalf("余额不足留下 %d 个订单，期望 0", got)
+	}
+}
+
+// TestWalletSubscriptionPurchaseCreditsFloorGuard 覆盖 required<=0 守卫：
+// QPU 把扣款抹平为 0 时与充值入账同口径拒绝，不得以 0 积分交付付费套餐。
+func TestWalletSubscriptionPurchaseCreditsFloorGuard(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 10_000)
+	deleteTestOrders(t, db, userID)
+	// 1 分 × QPU=1 = 0.01 积分，floor 后为 0。
+	planID := insertSubscriptionPlan(t, db, 1, 100, 30, true, "enabled", "")
+	svc := newWalletTopupServiceWithQPU(t, gormDB, 1)
+	key := fmt.Sprintf("p2b-floor-%d", topupTestSeq.Add(1))
+
+	_, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderWallet, key)
+	if !errors.Is(err, ErrInvalidFundingCredit) {
+		t.Fatalf("err = %v，期望 ErrInvalidFundingCredit", err)
+	}
+	if got := readWalletBalance(t, db, userID); got != 10_000 {
+		t.Fatalf("balance = %d，期望 10000", got)
+	}
+	if got := countOrdersByKey(t, db, key); got != 0 {
+		t.Fatalf("floor 守卫失败后留下 %d 个订单，期望 0", got)
+	}
+	if got := countSubscriptionsForUser(t, db, userID); got != 0 {
+		t.Fatalf("floor 守卫失败后留下 %d 个实例，期望 0", got)
 	}
 }

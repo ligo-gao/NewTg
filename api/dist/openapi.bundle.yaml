@@ -10945,6 +10945,11 @@ components:
           enum:
             - stripe
             - alipay
+            - wallet
+          description: |
+            响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
+            （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
+            充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
         amount:
           type: integer
           format: int64
@@ -15787,6 +15792,10 @@ components:
           enum:
             - stripe
             - alipay
+            - wallet
+          description: |
+            响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
+            消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
         amount:
           type: integer
           format: int64

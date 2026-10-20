@@ -1204,6 +1204,7 @@ func (e OrderViewFailureCode) Valid() bool {
 const (
 	OrderViewProviderAlipay OrderViewProvider = "alipay"
 	OrderViewProviderStripe OrderViewProvider = "stripe"
+	OrderViewProviderWallet OrderViewProvider = "wallet"
 )
 
 // Valid indicates whether the value is a known member of the OrderViewProvider enum.
@@ -1212,6 +1213,8 @@ func (e OrderViewProvider) Valid() bool {
 	case OrderViewProviderAlipay:
 		return true
 	case OrderViewProviderStripe:
+		return true
+	case OrderViewProviderWallet:
 		return true
 	default:
 		return false
@@ -2149,6 +2152,7 @@ func (e TopupOrderViewFailureCode) Valid() bool {
 const (
 	TopupOrderViewProviderAlipay TopupOrderViewProvider = "alipay"
 	TopupOrderViewProviderStripe TopupOrderViewProvider = "stripe"
+	TopupOrderViewProviderWallet TopupOrderViewProvider = "wallet"
 )
 
 // Valid indicates whether the value is a known member of the TopupOrderViewProvider enum.
@@ -2157,6 +2161,8 @@ func (e TopupOrderViewProvider) Valid() bool {
 	case TopupOrderViewProviderAlipay:
 		return true
 	case TopupOrderViewProviderStripe:
+		return true
+	case TopupOrderViewProviderWallet:
 		return true
 	default:
 		return false
@@ -5412,7 +5418,10 @@ type OrderView struct {
 	ManualCompleted bool                  `json:"manual_completed"`
 	ManualReason    *string               `json:"manual_reason,omitempty"`
 	PaidAt          *time.Time            `json:"paid_at,omitempty"`
-	Provider        OrderViewProvider     `json:"provider"`
+
+	// Provider 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
+	// 消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
+	Provider OrderViewProvider `json:"provider"`
 
 	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
 	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
@@ -5427,7 +5436,8 @@ type OrderView struct {
 // OrderViewFailureCode defines model for OrderView.FailureCode.
 type OrderViewFailureCode string
 
-// OrderViewProvider defines model for OrderView.Provider.
+// OrderViewProvider 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
+// 消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
 type OrderViewProvider string
 
 // OrderViewStatus 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
@@ -7405,14 +7415,20 @@ type TopupOrderView struct {
 	FailureCode     *TopupOrderViewFailureCode `json:"failure_code,omitempty"`
 	Id              int64                      `json:"id"`
 	PaidAt          *time.Time                 `json:"paid_at,omitempty"`
-	Provider        TopupOrderViewProvider     `json:"provider"`
-	Status          TopupOrderViewStatus       `json:"status"`
+
+	// Provider 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
+	// （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
+	// 充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
+	Provider TopupOrderViewProvider `json:"provider"`
+	Status   TopupOrderViewStatus   `json:"status"`
 }
 
 // TopupOrderViewFailureCode defines model for TopupOrderView.FailureCode.
 type TopupOrderViewFailureCode string
 
-// TopupOrderViewProvider defines model for TopupOrderView.Provider.
+// TopupOrderViewProvider 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
+// （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
+// 充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
 type TopupOrderViewProvider string
 
 // TopupOrderViewStatus defines model for TopupOrderView.Status.

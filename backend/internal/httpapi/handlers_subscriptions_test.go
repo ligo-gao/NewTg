@@ -1647,6 +1647,9 @@ func TestSubscriptionRenewEndpoint(t *testing.T) {
 		for name, body := range map[string]map[string]any{
 			"missing provider": {},
 			"invalid provider": {"provider": "paypal"},
+			// wallet 只允许购买，不允许续费：续费仍是渠道支付单，没有
+			// 余额扣款分支，接受它会产生无法履约的订单。
+			"wallet provider": {"provider": "wallet"},
 		} {
 			rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID), body, headers("renew-bad"))
 			if rr.Code != http.StatusBadRequest {

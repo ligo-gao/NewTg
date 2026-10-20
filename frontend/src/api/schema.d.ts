@@ -4924,8 +4924,13 @@ export interface components {
         TopupOrderView: {
             /** Format: int64 */
             id: number;
-            /** @enum {string} */
-            provider: "stripe" | "alipay";
+            /**
+             * @description 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
+             *     （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
+             *     充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay" | "wallet";
             /**
              * Format: int64
              * @description 订单金额（分），服务端定价的唯一真源
@@ -7037,8 +7042,12 @@ export interface components {
             id: number;
             /** Format: int64 */
             user_id: number;
-            /** @enum {string} */
-            provider: "stripe" | "alipay";
+            /**
+             * @description 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
+             *     消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay" | "wallet";
             /**
              * Format: int64
              * @description 订单金额（分），服务端定价唯一真源

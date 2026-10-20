@@ -516,6 +516,16 @@ func TestOrderCreateEndpointValidation(t *testing.T) {
 			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 		}
 	})
+	t.Run("wallet provider rejected", func(t *testing.T) {
+		// wallet 只是订阅余额购买的响应侧取值：充值端点不按余额扣款，
+		// 必须 400，不能建出一个没有渠道回调可结算的订单。
+		rr := env.request(userID, http.MethodPost, "/api/orders",
+			map[string]any{"amount": 1000, "currency": "CNY", "provider": "wallet"},
+			map[string]string{"Idempotency-Key": fmt.Sprintf("wallet-%d", time.Now().UnixNano())})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+	})
 	t.Run("non-CNY currency", func(t *testing.T) {
 		// M5 无汇率：USD/JPY/TRY 一律 400，且不得留下订单。
 		for _, currency := range []string{"USD", "JPY", "TRY"} {

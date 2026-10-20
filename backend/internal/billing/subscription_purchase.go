@@ -7,7 +7,9 @@ package billing
 //     渠道支付单复用 topup.go 的 startProviderPayment（同一套 Stripe/
 //     支付宝协议，不引入第二个支付 owner）。
 //  2. 在 settleOrder 的 subscribe 分支里，同一事务内把订单置 succeeded 并
-//     创建 subscriptions 实例；**跳过 ComputeCredits 与钱包入账/流水**。
+//     创建 subscriptions 实例；**跳过钱包入账/流水**。渠道支付订单在结算
+//     时不做 ComputeCredits（订单金额就是已付的合同价）；仅余额购买
+//     （provider=wallet）在下单事务内按 quota_per_unit 换算扣款积分。
 //
 // 快照纪律（R-D5-03）：套餐派生的列必须取「下单瞬间」的条件，而不是
 // 回调到达时重新读套餐——管理员可能在等待支付期间改价/改额度。因此下单
@@ -30,6 +32,13 @@ package billing
 // 订单 succeeded → 建订阅实例」，任一步失败整体回滚。因此钱包订单没有
 // provider_txn_id，也不可能出现「pending 等回调」的状态；重复回调到达时
 // settleOrder 看到 succeeded 直接返回，永远不会二次扣款。
+//
+// 【扣款积分口径】套餐 price_amount 是「分」，钱包余额是积分，两者不能
+// 直接相减。扣款额必须与充值入账同一公式换算：required =
+// ComputeCredits(price_amount, quota_per_unit, ratio=1)。倍率固定为 1：
+// 套餐价是明码标价的合同价，充值分组倍率（pay.topup_group_ratio）只影响
+// 充值到账，叠加到购买上会变成第二条定价路径。required 被 floor 抹平为 0
+// 时与充值入账同样拒绝（付费套餐不得以 0 积分交付），事务整体回滚。
 
 import (
 	"context"
@@ -42,6 +51,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/store"
@@ -195,6 +205,22 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 		// 整个事务回滚，订单行不会留下），然后 pending→succeeded，最后建实例。
 		// 任一步失败（含实例插入失败）都回滚钱包、流水、订单与实例。
 		if provider == ProviderWallet && plan.PriceAmount > 0 {
+			// 扣款额是积分，不是订单金额（分）：必须按 quota_per_unit 换算，
+			// 与充值入账同一公式（ratio=1，不叠加分组倍率）。
+			quotaPerUnit, err := s.quotaPerUnit()
+			if err != nil {
+				return err
+			}
+			required, err := ComputeCredits(plan.PriceAmount, quotaPerUnit, decimal.NewFromInt(1))
+			if err != nil {
+				return err
+			}
+			if required <= 0 {
+				// 与充值入账 floor 守卫同口径：极小 QPU 把扣款抹平为 0 时，
+				// 用户不付积分就能拿到付费套餐，必须拒绝而不是「免费」履约。
+				return fmt.Errorf("%w: wallet purchase required credits floor to zero for plan %d",
+					ErrInvalidFundingCredit, planID)
+			}
 			err = tx.Raw(`
 				INSERT INTO orders (user_id, provider, amount, currency, status,
 					idempotency_key, biz_kind, biz_ref_id, channel_metadata)
@@ -205,7 +231,7 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 			if err != nil {
 				return fmt.Errorf("billing: create wallet subscription order: %w", err)
 			}
-			if _, _, err := applyDeltaTxNote(ctx, tx, userID, -plan.PriceAmount,
+			if _, _, err := applyDeltaTxNote(ctx, tx, userID, -required,
 				walletTxTypeSubscriptionPurchase, "confirmed", "order",
 				strconv.FormatInt(order.ID, 10), ""); err != nil {
 				return err
