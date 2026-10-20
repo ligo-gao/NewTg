@@ -7447,7 +7447,7 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
-                    /** @description "{period}:{computed_at_epoch}"；无快照时为 "{period}:0" */
+                    /** @description 有快照时 `"{period}:{computed_at_epoch}"`；冷启动（无快照）不下发 ETag */
                     ETag?: string;
                     /** @description public, max-age=30, stale-while-revalidate=30 */
                     "Cache-Control"?: string;
