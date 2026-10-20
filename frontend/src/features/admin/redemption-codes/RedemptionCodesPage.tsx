@@ -242,7 +242,10 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   }, [selectionKey])
 
   function applyFilters(): void {
+    // size 是用户的浏览偏好而非筛选条件，应用筛选时保留它，
+    // 否则选 50 条/页后点「查询」会被静默重置回 20。
     const next: RedemptionSearch = { p: 1 }
+    if (search.size !== undefined) next.size = search.size
     if (draft.status !== '') next.status = draft.status
     const batch = draft.batch.trim().slice(0, 20)
     if (batch !== '') next.batch = batch
@@ -255,7 +258,10 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
 
   function resetFilters(): void {
     setDraft(EMPTY_DRAFT)
-    onSearchChange({ p: 1 })
+    // 「重置筛选」只清筛选与页码，保留每页条数（同上）。
+    const next: RedemptionSearch = { p: 1 }
+    if (search.size !== undefined) next.size = search.size
+    onSearchChange(next)
   }
 
   function toggleSelected(id: number, checked: boolean): void {

@@ -87,7 +87,6 @@ function installHandlers({
             type: 'about:blank',
             title: 'Validation failed',
             detail: 'Invalid request',
-            fields: ['credits'],
           },
           { status: createStatus, headers: { 'Content-Type': 'application/problem+json' } },
         )

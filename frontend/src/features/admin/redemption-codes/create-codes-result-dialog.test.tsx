@@ -1,6 +1,6 @@
 import userEvent from '@testing-library/user-event'
 import { screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { components } from '@/api/schema'
 import { renderWithProviders } from '@/test-support/providers'
@@ -8,6 +8,16 @@ import { renderWithProviders } from '@/test-support/providers'
 import { CreateCodesResultDialog } from './create-codes-sheet'
 
 type CreateResponse = components['schemas']['RedemptionCodeCreateResponse']
+
+// 该用例会把 navigator.clipboard 置空；不恢复会污染同文件后续用例。
+const originalClipboard = navigator.clipboard
+
+afterEach(() => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: originalClipboard,
+  })
+})
 
 function result(overrides: Partial<CreateResponse> = {}): CreateResponse {
   return {
