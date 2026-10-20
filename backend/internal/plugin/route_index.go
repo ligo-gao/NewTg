@@ -210,13 +210,29 @@ func splitRoutePath(path string) ([]string, string) {
 // 插件源在「注册期形状」与「运行期匹配」之间会分叉。`*name` 在 v1 没有
 // 多段语义，按单段处理：至少让字面段仍然可路由，而不是注册成功后永远不可达。
 func parseRouteSegment(segment string) routeSegment {
-	switch {
-	case len(segment) > 2 && strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}"):
-		return routeSegment{param: segment[1 : len(segment)-1]}
-	case len(segment) > 1 && strings.HasPrefix(segment, ":"):
-		return routeSegment{param: segment[1:]}
-	case len(segment) > 1 && strings.HasPrefix(segment, "*"):
-		return routeSegment{param: segment[1:]}
+	if name := routeSegmentParamName(segment); name != "" {
+		return routeSegment{param: name}
 	}
 	return routeSegment{literal: segment}
+}
+
+// routeSegmentParamName 返回参数段的参数名，字面段返回空串。
+//
+// 这是**唯一**的段语法判据：routeShape（注册期冲突检测）与 RouteIndex
+// （运行期匹配）都必须经它归一，否则 `{id}` 会在注册期被当字面量、在运行期
+// 被当参数——两个插件用 `{id}` / `:task_id` 声明同一路径时都不会报冲突，
+// 运行期却只有先注册者可达，后注册者永久静默失效（复核 Important-1）。
+//
+// `{}` / `:` / `*` 这类没有参数名的段按字面量处理：它们不是合法的参数声明，
+// 当参数会捕获任意值，反而放大歧义。
+func routeSegmentParamName(segment string) string {
+	switch {
+	case len(segment) > 2 && strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}"):
+		return segment[1 : len(segment)-1]
+	case len(segment) > 1 && strings.HasPrefix(segment, ":"):
+		return segment[1:]
+	case len(segment) > 1 && strings.HasPrefix(segment, "*"):
+		return segment[1:]
+	}
+	return ""
 }

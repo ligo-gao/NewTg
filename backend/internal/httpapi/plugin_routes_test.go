@@ -35,6 +35,7 @@ const nativeRoutePluginSource = `globalThis.__NEWTG_PLUGIN__ = {
   channelTypes: [],
   routes: [
     { method: "POST", path: "/v1/videos", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
+    { method: "POST", path: "/v1/videos/:key/remix", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
     { method: "GET", path: "/v1/suno/fetch/:task_id", kind: "query", render: "parseTaskResult" }
   ],
   protocols: {},
@@ -174,15 +175,20 @@ func TestPluginRouteUnknownPathIs404Envelope(t *testing.T) {
 }
 
 // TestPluginRouteUnknownPathWithoutTokenStill404：未知路径的可见性与兜底上线
-// 之前一致（根 mux 原本就 404），不因缺少令牌变成 401。
+// 之前一致（根 mux 原本就 404），不因缺少令牌变成 401。这里注入**非空**索引，
+// 确保走的是「索引未命中」分支而不是「无分发面直接 404」的短路。
 func TestPluginRouteUnknownPathWithoutTokenStill404(t *testing.T) {
-	mux := newNativeRelayMux(t, nil)
+	dispatcher := &recordingNativeDispatcher{manager: newNativeRouteManager(t)}
+	mux := newNativeRelayMux(t, dispatcher)
 
 	rec := doNative(t, mux, http.MethodGet, "/v1/plugin-not-declared", "", false)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 	assertOpenAIErrorEnvelope(t, rec, "invalid_request_error")
+	if dispatcher.callCount() != 0 {
+		t.Fatal("unknown path must not reach the native dispatcher")
+	}
 }
 
 // TestPluginNativeRouteDispatches 证明声明的精确路由被兜底交给原生分发面。
@@ -292,15 +298,22 @@ func TestPluginFallbackDoesNotSwallowExactRoutes(t *testing.T) {
 	}
 }
 
-// TestPluginNativeRouteReusesTaskSubmitPath 是「复用提交流程」的端到端证据：
-// 原生路由命中后走 TasksHandler 的 handleSubmit（建任务行 + 预扣 + 提交上游），
-// 而不是任何单独的转发实现。
-func TestPluginNativeRouteReusesTaskSubmitPath(t *testing.T) {
+// nativeTaskEnv 是「中继面 + 真实 TasksHandler」的端到端装配：
+// RelayAuth（中继）→ /v1/ 兜底 → DispatchNativeRoute → handleSubmit/handleGet。
+type nativeTaskEnv struct {
+	handler *TasksHandler
+	mux     *http.ServeMux
+	store   *fakeTaskStore
+	billing *taskBillingRecorder
+}
+
+func newNativeTaskEnv(t *testing.T) *nativeTaskEnv {
+	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"up_native"}`))
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
 
 	taskSealer := NewSecretSealer("task-handler-test-key")
 	store := &fakeTaskStore{}
@@ -325,26 +338,119 @@ func TestPluginNativeRouteReusesTaskSubmitPath(t *testing.T) {
 	mux := http.NewServeMux()
 	relayHandler.Register(mux)
 	taskHandler.RegisterRelay(mux, relayHandler.AuthMiddleware())
+	return &nativeTaskEnv{handler: taskHandler, mux: mux, store: store, billing: billing}
+}
 
-	rec := doNative(t, mux, http.MethodPost, "/v1/videos",
+func (e *nativeTaskEnv) submitVideo(t *testing.T) string {
+	t.Helper()
+	rec := doNative(t, e.mux, http.MethodPost, "/v1/videos",
 		`{"model":"video-model","prompt":"hi","seconds":5}`, true)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if store.inserted != 1 {
-		t.Fatalf("inserted = %d, want 1", store.inserted)
+	var resp taskSubmitResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
 	}
-	row := store.rows[0]
+	if resp.PublicTaskID == "" {
+		t.Fatalf("public_task_id must not be empty: %s", rec.Body.String())
+	}
+	return resp.PublicTaskID
+}
+
+// TestPluginNativeRouteReusesTaskSubmitPath 是「复用提交流程」的端到端证据：
+// 原生路由命中后走 TasksHandler 的 handleSubmit（建任务行 + 预扣 + 提交上游），
+// 而不是任何单独的转发实现。
+func TestPluginNativeRouteReusesTaskSubmitPath(t *testing.T) {
+	env := newNativeTaskEnv(t)
+	env.submitVideo(t)
+
+	if env.store.inserted != 1 {
+		t.Fatalf("inserted = %d, want 1", env.store.inserted)
+	}
+	row := env.store.rows[0]
 	if row.PluginKey != "video" {
 		t.Fatalf("plugin key = %q, want video (route index must drive submission)", row.PluginKey)
 	}
 	if row.UserID != 42 {
 		t.Fatalf("user id = %d, want 42 (RelayAuth identity must survive dispatch)", row.UserID)
 	}
-	calls := billing.ReserveCalls()
+	calls := env.billing.ReserveCalls()
 	if len(calls) == 0 || calls[0] != "preconsume" {
 		t.Fatalf("billing calls = %v, want preconsume as the first step", calls)
 	}
+}
+
+// TestPluginNativeRouteParamNamedKeyDoesNotOverridePluginKey 覆盖复核 Minor-1：
+// manifest 把路径参数命名为 `{key}` 时，URL 段不得覆盖路由索引给出的插件 key。
+func TestPluginNativeRouteParamNamedKeyDoesNotOverridePluginKey(t *testing.T) {
+	env := newNativeTaskEnv(t)
+
+	rec := doNative(t, env.mux, http.MethodPost, "/v1/videos/evil-plugin/remix",
+		`{"model":"video-model","seconds":5}`, true)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if env.store.inserted != 1 {
+		t.Fatalf("inserted = %d, want 1", env.store.inserted)
+	}
+	if got := env.store.rows[0].PluginKey; got != "video" {
+		t.Fatalf("plugin key = %q, want video: URL segment {key} must not override the indexed key", got)
+	}
+}
+
+// TestPluginNativeQueryRouteDispatchesToTaskLookup 覆盖复核 Minor-3：
+// query 原生路由必须把 taskIdParam 注入 ?task_id= 并复用 handleGet。
+// 若把它改成走 handleSubmit（GET + 空 body），本用例会以 400 失败。
+func TestPluginNativeQueryRouteDispatchesToTaskLookup(t *testing.T) {
+	env := newNativeTaskEnv(t)
+	publicID := env.submitVideo(t)
+
+	rec := doNative(t, env.mux, http.MethodGet, "/v1/suno/fetch/"+publicID, "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp taskQueryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if resp.TaskID != publicID {
+		t.Fatalf("task_id = %q, want %q", resp.TaskID, publicID)
+	}
+
+	// 缺参分支：路由声明的 taskIdParam 在 PathParams 里不存在时必须 400，
+	// 而不是把空 task_id 交给查询层（那会变成 404，混淆配置错误与不存在）。
+	// 直接调用分发面，避免为这条分支再造一份 manifest。
+	req := httptest.NewRequest(http.MethodGet, "/v1/suno/fetch/x", nil)
+	missing := httptest.NewRecorder()
+	env.handler.DispatchNativeRoute(missing, req, plugin.RouteMatch{
+		PluginKey:  "video",
+		Route:      plugin.Route{Method: http.MethodGet, Path: "/v1/suno/fetch/:task_id", Kind: "query", TaskIDParam: "missing"},
+		PathParams: map[string]string{"task_id": "x"},
+	})
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing task id: status = %d, want 400; body=%s", missing.Code, missing.Body.String())
+	}
+	assertOpenAIErrorEnvelope(t, missing, "invalid_request_error")
+}
+
+// TestPluginNativeRouteUnknownKindIsRejected 覆盖复核 Minor-2：未知 kind 不得
+// 静默落入提交路径（加载期已拒绝，但索引与校验分叉时必须 fail-closed）。
+func TestPluginNativeRouteUnknownKindIsRejected(t *testing.T) {
+	env := newNativeTaskEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"video-model"}`))
+	rec := httptest.NewRecorder()
+	env.handler.DispatchNativeRoute(rec, req, plugin.RouteMatch{
+		PluginKey: "video",
+		Route:     plugin.Route{Method: http.MethodPost, Path: "/v1/videos", Kind: "bogus"},
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if env.store.inserted != 0 {
+		t.Fatalf("inserted = %d, want 0 (unknown kind must not submit)", env.store.inserted)
+	}
+	assertOpenAIErrorEnvelope(t, rec, "internal_error")
 }
 
 // TestPluginFallbackPreservesMethodNotAllowed：`/v1/` 匹配所有方法，兜底必须

@@ -578,6 +578,14 @@ func (d *decoder) decodeRoutes(v any) []Route {
 		}
 		if s, ok := asString(obj["path"]); ok && strings.HasPrefix(s, "/") {
 			route.Path = s
+			// R-09（复核裁决）：原生路由只允许挂在 /v1/ 下。宿主只在 /v1/ 子树
+			// 上挂了运行期兜底，声明其它前缀（含设计旧例 `/kling/v1/...`）的
+			// 路由永远不会被任何 mux 匹配——注册成功但不可达比加载期拒绝更糟，
+			// 因此整插件 fail-closed 并给出结构化 issue。
+			if !strings.HasPrefix(s, "/v1/") {
+				d.add(path+".path", "", "route_prefix_unsupported",
+					"原生路由必须位于 /v1/ 下（当前 %q）", s)
+			}
 		} else {
 			d.add(path+".path", "", "route_path", "path 必须以 / 开头")
 		}

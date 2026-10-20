@@ -89,17 +89,34 @@ func TestRouteIndexTrailingSlashNormalized(t *testing.T) {
 	}
 }
 
-// TestRouteIndexOverlapDeterministic：不同形状的参数路由可以同时匹配一个路径
-// （注册期按形状去重覆盖不到）。Match 必须给出稳定答案：字面段多者优先。
-func TestRouteIndexOverlapDeterministic(t *testing.T) {
+// TestRouteIndexMoreLiteralsWins：字面段多者优先，且必须能区分于字典序
+// tiebreak——这里的「字面多」路由 pattern 字典序反而更大（`/v1/{}/b/c` >
+// `/v1/a/{}/{}`），删掉 literals 比较后本用例会失败。
+func TestRouteIndexMoreLiteralsWins(t *testing.T) {
 	var index RouteIndex
-	index.add("generic", Route{Method: "GET", Path: "/v1/{a}/b/c", Kind: "query"})
-	index.add("literal", Route{Method: "GET", Path: "/v1/a/{b}/c", Kind: "query"})
+	index.add("generic", Route{Method: "GET", Path: "/v1/a/{b}/{c}", Kind: "query"})
+	index.add("literal", Route{Method: "GET", Path: "/v1/{a}/b/c", Kind: "query"})
 
 	for i := 0; i < 10; i++ {
 		match, ok := index.Match("GET", "/v1/a/b/c")
 		if !ok || match.PluginKey != "literal" {
-			t.Fatalf("more literal segments must win deterministically: %+v ok=%v", match, ok)
+			t.Fatalf("more literal segments must win over lexicographic order: %+v ok=%v", match, ok)
+		}
+	}
+}
+
+// TestRouteIndexOverlapTieBreakDeterministic 固化同分情形的 tiebreak：
+// 两个字面段相同时按 pattern 字典序取小，保证同一请求恒定命中同一条路由
+// （（`/v1/{a}/b/c` 与 `/v1/a/{b}/c` 都是 2 个字面段）。
+func TestRouteIndexOverlapTieBreakDeterministic(t *testing.T) {
+	var index RouteIndex
+	index.add("later", Route{Method: "GET", Path: "/v1/{a}/b/c", Kind: "query"})
+	index.add("earlier", Route{Method: "GET", Path: "/v1/a/{b}/c", Kind: "query"})
+
+	for i := 0; i < 10; i++ {
+		match, ok := index.Match("GET", "/v1/a/b/c")
+		if !ok || match.PluginKey != "earlier" {
+			t.Fatalf("tie must be broken by pattern order: %+v ok=%v", match, ok)
 		}
 	}
 }
@@ -159,5 +176,94 @@ func TestSnapshotRoutesMasterDisabled(t *testing.T) {
 	}
 	if _, ok := m.Snapshot().Routes().Match("POST", "/v1/anything"); ok {
 		t.Fatal("disabled master switch must not expose plugin routes")
+	}
+}
+
+// TestRegistryBraceParamShapeConflict 覆盖复核 Important-1：`{id}` 与 `:task_id`
+// 混写/同写必须按同一形状冲突，后到插件整插件失败且不进索引。
+func TestRegistryBraceParamShapeConflict(t *testing.T) {
+	cases := []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{"brace_vs_colon", "/v1/a/{id}", "/v1/a/:task_id"},
+		{"colon_vs_brace", "/v1/a/:id", "/v1/a/{task_id}"},
+		{"brace_vs_brace", "/v1/a/{id}", "/v1/a/{task_id}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			first := fixture{Key: "sample", Routes: routeJS("POST", tc.first, "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+			second := fixture{Key: "sample2", Routes: routeJS("POST", tc.second, "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+			m := MustNewManager(map[string]string{"sample": first, "sample2": second}, nil, Options{MasterEnabled: true})
+			if err := m.Reload(context.Background()); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			entry := m.Snapshot().Lookup("sample2")
+			if entry.Status != StatusCompileFailed || !entry.Errors.hasRule("route_conflict") {
+				t.Fatalf("形状冲突必须让后到插件 compile_failed: %+v", entry)
+			}
+			// 先注册者仍可达；后注册者的路由不得进入索引（同形状时无法区分，
+			// 因此只断言先到者命中）。
+			match, ok := m.Snapshot().Routes().Match("POST", "/v1/a/x")
+			if !ok || match.PluginKey != "sample" {
+				t.Fatalf("first plugin must keep the route: %+v ok=%v", match, ok)
+			}
+		})
+	}
+}
+
+// TestRegistryRejectsBuiltinRouteConflict 覆盖复核 Important-2 / R-10：与内建
+// /v1 路由同形状的声明必须在注册期整插件失败（否则 ServeMux 更具体模式优先，
+// 插件路由静默不可达）。
+func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/v1/chat/completions"},
+		{"GET", "/v1/models"},
+		{"POST", "/v1/tasks/:key"},
+		{"GET", "/v1/tasks/{key}/artifacts"},
+		{"POST", "/v1/images/generations"},
+		{"POST", "/v1/engines/:model/embeddings"},
+		{"GET", "/v1/realtime"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			source := fixture{Key: "sample", Routes: routeJS(tc.method, tc.path, "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+			m := MustNewManager(map[string]string{"sample": source}, nil, Options{MasterEnabled: true})
+			if err := m.Reload(context.Background()); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			entry := m.Snapshot().Lookup("sample")
+			if entry.Status != StatusCompileFailed || !entry.Errors.hasRule("route_conflict") {
+				t.Fatalf("内建路由冲突必须 compile_failed: %+v", entry)
+			}
+			if _, ok := m.Snapshot().Routes().Match(tc.method, tc.path); ok {
+				t.Fatal("builtin-conflicting route must not enter the index")
+			}
+		})
+	}
+}
+
+// TestCompileRejectsNonV1RoutePrefix 覆盖复核 R-09：非 /v1/ 前缀在加载期以
+// 结构化 issue 拒绝（运行时没有任何 mux 会匹配它）。
+func TestCompileRejectsNonV1RoutePrefix(t *testing.T) {
+	for _, path := range []string{"/kling/v1/videos", "/suno/submit/:action", "/v1"} {
+		issues := compileIssues(t, fixture{
+			Key:    "sample",
+			Routes: routeJS("POST", path, "submit", "buildSubmitRequest", "parseSubmitResponse"),
+		}.Source(), CompileOptions{})
+		if !issues.hasRule("route_prefix_unsupported") {
+			t.Fatalf("path %q: want route_prefix_unsupported, got %v", path, issues)
+		}
+	}
+	// 合法前缀不得误报。
+	if _, err := Compile(context.Background(), fixture{
+		Key:    "sample",
+		Routes: routeJS("POST", "/v1/videos", "submit", "buildSubmitRequest", "parseSubmitResponse"),
+	}.Source(), CompileOptions{}); err != nil {
+		t.Fatalf("/v1/ 前缀不应被拒绝: %v", err)
 	}
 }

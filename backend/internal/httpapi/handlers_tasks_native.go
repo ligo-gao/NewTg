@@ -8,6 +8,7 @@
 package httpapi
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -37,18 +38,27 @@ func (h *TasksHandler) DispatchNativeRoute(w http.ResponseWriter, r *http.Reques
 		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown task plugin")
 		return
 	}
-	r.SetPathValue("key", key)
 	for name, value := range match.PathParams {
 		r.SetPathValue(name, value)
 	}
+	// 插件 key 必须最后写回：manifest 可以把参数段命名为 `{key}`，先写 key
+	// 会被 URL 段值覆盖，提交就会落到另一个插件（复核 Minor-1）。
+	r.SetPathValue("key", key)
 
 	switch match.Route.Kind {
 	case "query":
 		h.dispatchNativeQuery(w, r, match)
-	default:
+	case "submit", "dynamic":
 		// submit / dynamic：两者都由宿主提交上游任务，复用提交路径。
-		// manifest 只允许这三类 kind，未知值在加载期已被拒绝。
 		h.handleSubmit(w, r)
+	default:
+		// manifest 只允许 submit/query/dynamic（加载期已拒绝其它值）；走到
+		// 这里说明 RouteIndex 与 manifest 校验分叉，fail-closed 而不是把它
+		// 当 submit 静默执行（复核 Minor-2）。
+		slog.Error("tasks: native route has unknown kind",
+			"plugin", key, "method", match.Route.Method, "path", match.Route.Path, "kind", match.Route.Kind)
+		writeRelayError(w, http.StatusInternalServerError, requestID, "internal_error",
+			"native route kind is not dispatchable")
 	}
 }
 

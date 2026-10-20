@@ -535,10 +535,46 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 	return plugin, nil
 }
 
+// builtinRouteShapes 是内建 /v1 路由的保留形状集（复核 Important-2 / R-10）。
+//
+// 为什么需要：内建路由是 ServeMux 上的更具体模式，插件即使注册成功、进入
+// RouteIndex，也永远收不到请求（ServeMux 优先精确/更具体模式）。这类
+// 「注册成功但静默不可达」比加载期拒绝更糟——管理面显示 registered，排障时
+// 却找不到任何错误。
+//
+// 维护契约（R-10）：任何任务在 /v1 面新增或删除内建路由（T2 的
+// `POST /v1/responses`、T3 的 `GET /v1/responses/{id}` 与 compact、T4 的
+// `/v1/videos`、`/v1/batches` 等），**必须**同步增删本集合；参数段统一写成
+// `{}`，由 routeShape 的同一套段归一化与插件路由比较。
+//
+// 当前条目与本仓库的注册点一一对应：
+//   - relay_endpoints.go：chat/completions、models；
+//   - handlers_tasks.go：tasks/{key} 及其产物族；
+//   - handlers_multimodal.go：images/embeddings/rerank/audio/engines/models 通配/realtime。
+var builtinRouteShapes = map[string]struct{}{
+	"POST /v1/chat/completions":             {},
+	"GET /v1/models":                        {},
+	"POST /v1/tasks/{}":                     {},
+	"GET /v1/tasks/{}":                      {},
+	"GET /v1/tasks/{}/artifacts":            {},
+	"GET /v1/tasks/{}/artifacts/{}/content": {},
+	"POST /v1/images/generations":           {},
+	"POST /v1/images/edits":                 {},
+	"POST /v1/embeddings":                   {},
+	"POST /v1/rerank":                       {},
+	"POST /v1/audio/speech":                 {},
+	"POST /v1/audio/transcriptions":         {},
+	"POST /v1/audio/translations":           {},
+	"POST /v1/engines/{}/embeddings":        {},
+	"POST /v1/models/{}":                    {}, // ServeMux 通配 /v1/models/{path...}
+	"POST /v1beta/models/{}":                {}, // ServeMux 通配 /v1beta/models/{path...}
+	"GET /v1/realtime":                      {},
+}
+
 // registerRoutes 把插件路由加入全局索引（形状表 + 可匹配索引）；冲突时返回
 // 结构化错误。
 //
-// 冲突判定 = 方法 + 归一化路径形状（relay-06 §2.2）：`:id` 与 `:task_id`
+// 冲突判定 = 方法 + 归一化路径形状（relay-06 §2.2）：`:id`、`*id`、`{id}`
 // 形状相同，视为同一路由。先到先得（key 升序），后到插件整插件失败——
 // 路由歧义没有安全的运行时消解方式。冲突必须在**注册期**解决而不是让
 // RouteIndex 在匹配时猜：运行期消歧会让同一条请求在不同快照/不同节点上
@@ -551,6 +587,11 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 	seen := make(map[string]struct{}, len(plugin.Manifest().Routes))
 	for idx, route := range plugin.Manifest().Routes {
 		shape := routeShape(route)
+		if _, reserved := builtinRouteShapes[shape]; reserved {
+			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
+				"路由 %s 与内建路由冲突（内建模式优先，插件路由将不可达）", shape))
+			continue
+		}
 		if owner, dup := index[shape]; dup {
 			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
 				"路由 %s 已被插件 %q 注册", shape, owner))
@@ -581,8 +622,9 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 
 // routeShape 归一化「方法 + 路径形状」。
 //
-// 参数段（`:x` / `*x`）统一替换为 `{}`；空路径段保留以便 `/a//b` 与 `/a/b`
-// 不被误判为同一形状。
+// 参数段（`:x` / `*x` / `{x}`）统一替换为 `{}`；空路径段保留以便 `/a//b` 与
+// `/a/b` 不被误判为同一形状。段语法判据与 RouteIndex 共用
+// routeSegmentParamName：注册期与运行期对同一段必须给出同一答案（Important-1）。
 func routeShape(route Route) string {
 	trimmed := strings.Trim(route.Path, "/")
 	if trimmed == "" {
@@ -590,7 +632,7 @@ func routeShape(route Route) string {
 	}
 	parts := strings.Split(trimmed, "/")
 	for idx, part := range parts {
-		if strings.HasPrefix(part, ":") || strings.HasPrefix(part, "*") {
+		if routeSegmentParamName(part) != "" {
 			parts[idx] = "{}"
 		}
 	}
