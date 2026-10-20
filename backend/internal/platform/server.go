@@ -24,6 +24,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/migrations"
@@ -437,6 +438,27 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: start task poller: %w", err)
 	}
 
+	// 排行榜快照 worker（D6a / M09 F-09-29~33）：每 period 一个 ticker，用
+	// Redis 租约收敛多副本执行。与计费兜底/任务轮询并行，但独立取消：
+	// 它只读 usage_logs、写 rankings_* 与 Redis 缓存，不参与资金路径。
+	// 依赖装配在同一次启动内完成，失败只可能是编程错误，RunLoop 的校验
+	// 在 goroutine 内记录 Error，不阻塞 worker 上线（排行榜是 P1 展示面）。
+	rankingsCtx, cancelRankings := context.WithCancel(ctx)
+	var rankingsWG sync.WaitGroup
+	rankingsWG.Add(1)
+	go func() {
+		defer rankingsWG.Done()
+		if err := rankings.RunLoop(rankingsCtx, rankings.Deps{
+			MainDB: sqlDB,
+			LogsDB: sqlLogs,
+			Redis:  rr.client,
+			Config: center,
+			Logger: log,
+		}); err != nil {
+			log.Error("rankings worker exited with error", "error", err)
+		}
+	}()
+
 	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
 	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
@@ -453,6 +475,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		Logger: log,
 	})
 	if err != nil {
+		// 排行榜循环已经启动：先取消并等待它退出，再关连接池，
+		// 避免聚合 SQL 撞上已关闭的 *sql.DB（vet 的 context-leak 检查同口径）。
+		cancelRankings()
+		rankingsWG.Wait()
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -478,11 +504,13 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		LogsDB:    sqlLogs,
 		Logger:    log,
 	})
-	// 先停后台循环（过期扫描 + 任务轮询）再关连接池：否则下一次 DB 调用会
-	// 拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜）再关连接池：否则下一次
+	// DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
 	cancelExpiry()
 	expiryWG.Wait()
 	stopTaskPoller()
+	cancelRankings()
+	rankingsWG.Wait()
 	if runErr == nil {
 		runErr = expiryErr
 	}

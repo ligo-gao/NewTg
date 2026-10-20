@@ -247,31 +247,77 @@ type WalletTransaction struct {
 func (WalletTransaction) TableName() string { return "wallet_transactions" }
 
 // RankingsSnapshotRun 对应 rankings_snapshot_runs（§13，8 列；append-only，快照时刻 snapshot_at）。
-type RankingsSnapshotRun struct{}
+//
+// 无 created_at/updated_at：R6 规定快照表只有 snapshot_at 一个时间戳。
+type RankingsSnapshotRun struct {
+	ID              int64     `gorm:"column:id;primaryKey"`
+	Period          string    `gorm:"column:period"`
+	WindowStart     time.Time `gorm:"column:window_start"`
+	WindowEnd       time.Time `gorm:"column:window_end"`
+	SnapshotAt      time.Time `gorm:"column:snapshot_at"`
+	SampleThreshold int       `gorm:"column:sample_threshold"`
+	Status          string    `gorm:"column:status"`
+	ModelCount      int       `gorm:"column:model_count"`
+}
 
 // TableName 返回 GORM 表名。
 func (RankingsSnapshotRun) TableName() string { return "rankings_snapshot_runs" }
 
 // RankingsModelStat 对应 rankings_model_stats（§14，10 列；自然唯一 (run_id, model)）。
-type RankingsModelStat struct{}
+//
+// Rank/PrevRank/DeltaTokens/DeltaPct 用指针保留可空语义：prev_rank NULL 表示
+// 上一窗口样本不足/未入榜，delta_pct NULL 表示上窗口该模型 token 为 0。
+// Slot 不是本表列，而是读投影时从 rankings_entities LEFT JOIN 来的稳定色板槽位
+// （§C1.9 颜色跟随实体），故 gorm:"-"。
+type RankingsModelStat struct {
+	RunID       int64    `gorm:"column:run_id"`
+	Model       string   `gorm:"column:model"`
+	DisplayName *string  `gorm:"column:display_name"`
+	Author      *string  `gorm:"column:author"`
+	TotalTokens int64    `gorm:"column:total_tokens"`
+	Requests    int64    `gorm:"column:requests"`
+	Rank        *int     `gorm:"column:rank"`
+	PrevRank    *int     `gorm:"column:prev_rank"`
+	DeltaTokens *int64   `gorm:"column:delta_tokens"`
+	DeltaPct    *float64 `gorm:"column:delta_pct"`
+	Slot        *int16   `gorm:"-"`
+}
 
 // TableName 返回 GORM 表名。
 func (RankingsModelStat) TableName() string { return "rankings_model_stats" }
 
 // RankingsProviderStat 对应 rankings_provider_stats（§15，5 列；自然唯一 (run_id, author)）。
-type RankingsProviderStat struct{}
+// Slot 同 RankingsModelStat，是读投影字段而非本表列。
+type RankingsProviderStat struct {
+	RunID       int64    `gorm:"column:run_id"`
+	Author      string   `gorm:"column:author"`
+	TotalTokens int64    `gorm:"column:total_tokens"`
+	SharePct    *float64 `gorm:"column:share_pct"`
+	Rank        *int     `gorm:"column:rank"`
+	Slot        *int16   `gorm:"-"`
+}
 
 // TableName 返回 GORM 表名。
 func (RankingsProviderStat) TableName() string { return "rankings_provider_stats" }
 
 // RankingsTimeseries 对应 rankings_timeseries（§16，4 列；自然唯一 (model, granularity, bucket_start)）。
-type RankingsTimeseries struct{}
+type RankingsTimeseries struct {
+	Model       string    `gorm:"column:model"`
+	Granularity string    `gorm:"column:granularity"`
+	BucketStart time.Time `gorm:"column:bucket_start"`
+	Tokens      int64     `gorm:"column:tokens"`
+}
 
 // TableName 返回 GORM 表名。
 func (RankingsTimeseries) TableName() string { return "rankings_timeseries" }
 
 // RankingsEntity 对应 rankings_entities（§17，3 列；自然唯一 (entity, kind)）。
-type RankingsEntity struct{}
+// 槽位首次见即分配、永不回收/重排（R-D6-06）。
+type RankingsEntity struct {
+	Entity string `gorm:"column:entity"`
+	Kind   string `gorm:"column:kind"`
+	Slot   int16  `gorm:"column:slot"`
+}
 
 // TableName 返回 GORM 表名。
 func (RankingsEntity) TableName() string { return "rankings_entities" }
