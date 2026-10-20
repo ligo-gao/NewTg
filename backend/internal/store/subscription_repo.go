@@ -29,6 +29,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // 订阅域哨兵错误。handler 据此映射 404/409/422。
@@ -39,12 +41,6 @@ var (
 	ErrPlanDuplicate = errors.New("store: subscription plan key already exists")
 	// ErrPlanInvalid：套餐字段不合法（长度/取值域/DB CHECK 兜底）→ 422。
 	ErrPlanInvalid = errors.New("store: subscription plan input is invalid")
-	// ErrPlanReferenced：套餐仍被订阅实例引用，删除被拒 → 409。
-	//
-	// 【为什么停用实例也算引用】逻辑引用没有 FK；已过期/已取消实例仍通过
-	// plan_id 指向套餐（历史可追溯、账单日志可回查）。只数 active 会让删除
-	// 留下悬挂引用。
-	ErrPlanReferenced = errors.New("store: subscription plan is referenced by subscriptions")
 
 	// ErrSubscriptionNotFound：订阅实例不存在。
 	ErrSubscriptionNotFound = errors.New("store: subscription not found")
@@ -62,6 +58,39 @@ var (
 	// ErrPreConsumeInvalid：requestId 非法或预扣额 <= 0。
 	ErrPreConsumeInvalid = errors.New("store: subscription pre-consume input is invalid")
 )
+
+// ErrPlanReferenced 表示套餐仍被引用，删除被拒（HTTP 409）。
+//
+// 【为什么停用/终态实例也算引用】逻辑引用没有 FK；已过期/已取消实例仍通过
+// plan_id 指向套餐（历史可追溯、账单日志可回查）。只数 active 会让删除
+// 留下悬挂引用。
+//
+// 【为什么未终结订单也算引用】订阅购买先落 orders（biz_kind='subscribe',
+// biz_ref_id=plan_id），入账回调随后才创建实例。若只看 subscriptions，用户
+// 刚下单（订单仍 pending）而回调稍后到达时管理员可以删掉套餐，回调就只能
+// 撞 ErrPlanNotFound，订单成为无法履约的孤儿。只计 pending/succeeded：
+// cancelled/expired/failed 已是终态，不会再创建实例，继续阻塞会让用户放弃
+// 支付后套餐永远删不掉。
+//
+// ReferenceCount 是两类引用之和（实例数 + 未终结订阅订单数），供响应层直接
+// 展示总量；OrderReferenceCount 单独给出订单侧计数，便于区分「已购实例」与
+// 「在途订单」。调用方用 errors.As 读取计数，用 errors.Is(err,
+// ErrPlanReferenced{}) 判断错误类别。
+type ErrPlanReferenced struct {
+	ReferenceCount      int64
+	OrderReferenceCount int64
+}
+
+func (e ErrPlanReferenced) Error() string {
+	return fmt.Sprintf("store: subscription plan is referenced by %d instance(s) and %d open order(s)",
+		e.ReferenceCount-e.OrderReferenceCount, e.OrderReferenceCount)
+}
+
+// Is 让 errors.Is(err, ErrPlanReferenced{}) 可用于「是否引用类错误」的判断。
+func (e ErrPlanReferenced) Is(target error) bool {
+	_, ok := target.(ErrPlanReferenced)
+	return ok
+}
 
 // SubscriptionPlanInput 是**创建**套餐的写入值。
 //
@@ -273,7 +302,8 @@ func (r *SQLSubscriptionRepo) CreatePlan(ctx context.Context, in SubscriptionPla
 		switch {
 		case isUniqueViolation(err):
 			return SubscriptionPlan{}, ErrPlanDuplicate
-		case isCheckViolation(err), isInvalidTextRepresentation(err):
+		case isCheckViolation(err), isInvalidTextRepresentation(err),
+			isStringDataRightTruncation(err):
 			return SubscriptionPlan{}, ErrPlanInvalid
 		}
 		return SubscriptionPlan{}, fmt.Errorf("store: create subscription plan(%s): %w", in.PlanKey, err)
@@ -320,7 +350,8 @@ func (r *SQLSubscriptionRepo) UpdatePlan(ctx context.Context, id int64, in Subsc
 		switch {
 		case isUniqueViolation(err):
 			return SubscriptionPlan{}, ErrPlanDuplicate
-		case isCheckViolation(err), isInvalidTextRepresentation(err):
+		case isCheckViolation(err), isInvalidTextRepresentation(err),
+			isStringDataRightTruncation(err):
 			return SubscriptionPlan{}, ErrPlanInvalid
 		}
 		return SubscriptionPlan{}, fmt.Errorf("store: update subscription plan(%d): %w", id, err)
@@ -384,11 +415,17 @@ func (r *SQLSubscriptionRepo) setPlanStatus(ctx context.Context, id int64, statu
 	return nil
 }
 
-// DeletePlan 删除套餐；有实例引用时返回 ErrPlanReferenced。
+// DeletePlan 删除套餐；有实例或未终结订阅订单引用时返回 ErrPlanReferenced。
 //
 // 事务内先 `FOR UPDATE` 锁套餐行：CreateSubscription 对同一行 `FOR SHARE`，
-// 因此「统计引用 → 删除」之间不可能插入新实例。统计口径包含全部状态
-// （expired/cancelled 实例同样是逻辑引用，见 ErrPlanReferenced 注释）。
+// 因此「统计引用 → 删除」之间不可能插入新实例。统计口径包含全部实例状态
+// （expired/cancelled 实例同样是逻辑引用，见 ErrPlanReferenced 注释），以及
+// orders 中 biz_kind='subscribe' 且 status IN ('pending','succeeded') 的
+// 未终结订单：回调尚未落成实例的窗口里，订单本身就是必须保护的引用。
+//
+// 【订单计数无法靠套餐行锁阻止并发写入】下单路径（S4）尚未对 plan 行取
+// FOR SHARE；本事务的 FOR UPDATE 只与实例创建互斥。若未来下单路径需要与删除
+// 严格互斥，应在创建订单的同一事务里对 plan 行 FOR SHARE（登记为实现期项）。
 func (r *SQLSubscriptionRepo) DeletePlan(ctx context.Context, id int64) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -410,8 +447,15 @@ func (r *SQLSubscriptionRepo) DeletePlan(ctx context.Context, id int64) error {
 		`SELECT count(*) FROM subscriptions WHERE plan_id = $1`, id).Scan(&refs); err != nil {
 		return fmt.Errorf("store: count subscriptions of plan(%d): %w", id, err)
 	}
-	if refs > 0 {
-		return ErrPlanReferenced
+	var orderRefs int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM orders
+		WHERE biz_kind = 'subscribe' AND biz_ref_id = $1
+		  AND status IN ('pending', 'succeeded')`, id).Scan(&orderRefs); err != nil {
+		return fmt.Errorf("store: count open subscribe orders of plan(%d): %w", id, err)
+	}
+	if refs+orderRefs > 0 {
+		return ErrPlanReferenced{ReferenceCount: refs + orderRefs, OrderReferenceCount: orderRefs}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM subscription_plans WHERE id = $1`, id); err != nil {
@@ -487,6 +531,15 @@ func (r *SQLSubscriptionRepo) CreateSubscription(ctx context.Context, in Subscri
 	}
 	status := "active"
 
+	// reset_on_renew=false 表示这个实例没有周期重置：next_reset_at 必须归一到
+	// NULL。若保留调用方传入的游标，DueForReset 会把该实例扫进 B12，
+	// ResetSubscriptionQuota 却因 reset_on_renew=false 拒绝执行——扫描与执行
+	// 口径不一致会形成永远「到期待重置」的僵尸行。NULL 是唯一自洽的表示。
+	var nextResetAt any
+	if in.ResetOnRenew {
+		nextResetAt = nullableTime(in.NextResetAt)
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Subscription{}, fmt.Errorf("store: begin create subscription: %w", err)
@@ -514,7 +567,7 @@ func (r *SQLSubscriptionRepo) CreateSubscription(ctx context.Context, in Subscri
 		        $14, $15, $16, $17, $18, $19, $20)
 		RETURNING `+subscriptionColumns,
 		in.UserID, in.PlanID, in.PlanTitleSnapshot, status, startAt, endAt,
-		nullableTime(in.NextResetAt), in.AmountTotal, in.AmountUsed,
+		nextResetAt, in.AmountTotal, in.AmountUsed,
 		in.AllowWalletOverflow, in.AutoRenew, in.CancelAtPeriodEnd, in.OrderID,
 		in.Currency, in.PricePaidAmount, in.PeriodDays, in.ResetOnRenew,
 		in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit))
@@ -522,7 +575,8 @@ func (r *SQLSubscriptionRepo) CreateSubscription(ctx context.Context, in Subscri
 		switch {
 		case isUniqueViolation(err):
 			return Subscription{}, ErrSubscriptionDuplicate
-		case isCheckViolation(err), isInvalidTextRepresentation(err):
+		case isCheckViolation(err), isInvalidTextRepresentation(err),
+			isStringDataRightTruncation(err):
 			return Subscription{}, ErrSubscriptionInvalid
 		}
 		return Subscription{}, fmt.Errorf("store: create subscription(user=%d plan=%d): %w",
@@ -730,6 +784,8 @@ func (r *SQLSubscriptionRepo) DueForReset(ctx context.Context, now time.Time) ([
 //
 // 条件里带 `next_reset_at <= $2`：第二次 pass 时游标已被前移到未来，
 // RowsAffected=0 —— 同一周期不会双倍重置（billing-08 §7 / §10-9）。
+// 条件里还带 `reset_on_renew`：该列是购买瞬间快照，false 表示用户买的
+// 「不周期重置」合同，即使历史行里残留了 next_reset_at 也不能被重置。
 // 推进量用快照 period_days 而不是读当前套餐：续费/编辑不得改变本实例的周期。
 //
 // 【与在飞请求的竞态】设计已登记（billing-08 §13-3）：重置归零时冻结该实例
@@ -741,7 +797,7 @@ func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int
 		SET amount_used = 0,
 		    next_reset_at = next_reset_at + make_interval(days => period_days),
 		    updated_at = now()
-		WHERE id = $1 AND status = 'active'
+		WHERE id = $1 AND status = 'active' AND reset_on_renew
 		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2`, id, now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("store: reset subscription(%d) quota: %w", id, err)
@@ -857,4 +913,14 @@ func nullableJSON(value []byte) any {
 		return nil
 	}
 	return value
+}
+
+// isStringDataRightTruncation 识别 char(n)/varchar(n) 超长（SQLSTATE 22001）。
+//
+// 订阅域最典型的触发点是 currency char(3)：传 "USDX" 时 PostgreSQL 在求值
+// CHECK（23514）之前就先报 string_data_right_truncation。若不单独映射，用户的
+// 四位币种会被 handler 当作内部错误返回 500，而不是可读的 422。
+func isStringDataRightTruncation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22001"
 }

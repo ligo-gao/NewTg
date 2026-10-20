@@ -7,6 +7,71 @@
 // GORM 模型字段随里程碑填充（M0 空壳，M1 起逐步落地）。
 package store
 
+import (
+	"errors"
+
+	"newtg/gateway/internal/contract"
+)
+
+// 用户扣费来源偏好的持久化字面量（users.billing_preference，R-D5-05）。
+//
+// 【禁止按下标 / 类型转换】这四个常量的顺序刻意与 contract.BillingPreference
+// 的 iota 顺序不同，也不要假设它与 DB CHECK 的书写顺序相同：
+//
+//	contract（内部枚举）：subscription_first=0, subscription_only=1,
+//	                      wallet_only=2, wallet_first=3
+//	users.billing_preference（DB 文本）：subscription_first, wallet_first,
+//	                      subscription_only, wallet_only
+//
+// 例如把 internal 值 1 直接用 strconv/index 转成文本会写成 wallet_first，
+// 而它其实是 subscription_only——用户的扣费来源被悄悄改成「只用钱包」，
+// 属于资金路径上的静默数据损坏。两个方向只能走下面的显式映射表。
+const (
+	BillingPreferenceSubscriptionFirst = "subscription_first"
+	BillingPreferenceWalletFirst       = "wallet_first"
+	BillingPreferenceSubscriptionOnly  = "subscription_only"
+	BillingPreferenceWalletOnly        = "wallet_only"
+)
+
+// ErrBillingPreferenceInvalid：偏好文本不在四值白名单内。
+var ErrBillingPreferenceInvalid = errors.New("store: billing preference is invalid")
+
+// billingPreferencePairs 是文本 ↔ 内部枚举的唯一对照表。双向映射都从这里
+// 读取，新增/调整取值只需改一处，避免两个 switch 各自漂移。
+var billingPreferencePairs = [...]struct {
+	text  string
+	value contract.BillingPreference
+}{
+	{BillingPreferenceSubscriptionFirst, contract.PrefSubscriptionFirst},
+	{BillingPreferenceWalletFirst, contract.PrefWalletFirst},
+	{BillingPreferenceSubscriptionOnly, contract.PrefSubscriptionOnly},
+	{BillingPreferenceWalletOnly, contract.PrefWalletOnly},
+}
+
+// BillingPreferenceText 把内部枚举映射为 users.billing_preference 落库文本。
+// 越界值返回 ErrBillingPreferenceInvalid，而不是兜底成 subscription_first：
+// 静默归一属于迁移层的职责，存储层不能掩盖调用方的枚举错误。
+func BillingPreferenceText(p contract.BillingPreference) (string, error) {
+	for _, pair := range billingPreferencePairs {
+		if pair.value == p {
+			return pair.text, nil
+		}
+	}
+	return "", ErrBillingPreferenceInvalid
+}
+
+// ParseBillingPreference 把 DB 文本解析为内部枚举（未知文本返回
+// ErrBillingPreferenceInvalid，由调用方决定是否按迁移规则归一为
+// subscription_first）。
+func ParseBillingPreference(text string) (contract.BillingPreference, error) {
+	for _, pair := range billingPreferencePairs {
+		if pair.text == text {
+			return pair.value, nil
+		}
+	}
+	return 0, ErrBillingPreferenceInvalid
+}
+
 // EnumChecks 是 Tier-1 枚举列的「DB CHECK ↔ 期望值」对照表（platform-04 §6 V6）：
 // 键为 "<table>.<column>"，值为 CHECK IN 白名单成员。CI/集成测试逐条与
 // pg_constraint 的 CHECK 文本对账（成员集合相等），漂移即红。
@@ -133,7 +198,7 @@ var EnumChecks = map[string][]string{
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
-// + D1 2 = 30 表），
+// + D1 2 + D5a 3 = 33 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{

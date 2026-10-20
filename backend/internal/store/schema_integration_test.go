@@ -267,7 +267,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（30 表，共 30 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（33 表，共 33 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -301,6 +301,33 @@ func indexInfo(t *testing.T, db *sql.DB, name string) (def string, unique, parti
 		t.Fatalf("query index %s: %v", name, err)
 	}
 	return def, unique, partial, true
+}
+
+// indexPredicate 返回部分索引的谓词表达式（pg_get_expr），用于精确比对；
+// 非部分索引返回空串。
+func indexPredicate(t *testing.T, db *sql.DB, name string) string {
+	t.Helper()
+	var expr sql.NullString
+	err := db.QueryRow(`SELECT pg_get_expr(i.indpred, i.indrelid)
+		FROM pg_index i
+		JOIN pg_class idx ON idx.oid = i.indexrelid
+		JOIN pg_namespace nsp ON nsp.oid = idx.relnamespace
+		WHERE nsp.nspname = current_schema() AND idx.relname = $1`, name).Scan(&expr)
+	if err == sql.ErrNoRows || !expr.Valid {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("query index predicate %s: %v", name, err)
+	}
+	return expr.String
+}
+
+// normalizeIndexPredicate 去掉 PG 规范化产生的噪声（::text 强制转换、空白、
+// 分组括号），只保留谓词结构；两边用同一函数规范化后做全串相等比较。
+func normalizeIndexPredicate(expr string) string {
+	expr = strings.ReplaceAll(expr, "::text", "")
+	expr = strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "(", "", ")", "").Replace(expr)
+	return expr
 }
 
 // TestMainSchemaPartialUniqueIndexes：（c）四处部分唯一索引存在且确为 UNIQUE + 部分。
@@ -468,15 +495,20 @@ func TestMainSchemaSubscriptionIndexes(t *testing.T) {
 		wantUnique  bool
 		wantPartial bool
 		wantPred    string
+		// wantPredExpr 对部分谓词做**精确**比对（规范化空白/括号/::text 后
+		// 全串相等）。wantPred 的子串断言无法区分 `next_reset_at` 列与
+		// `next_reset_at IS NOT NULL` 条件，也会漏掉多出来的 OR 分支。
+		wantPredExpr string
 	}{
-		{"subscription_plans_plan_key_uq", []string{"plan_key"}, true, false, ""},
-		{"subscription_plans_status_sort_idx", []string{"status", "sort_order"}, false, false, ""},
-		{"subscriptions_order_id_uq", []string{"order_id"}, true, false, ""},
-		{"subscriptions_active_idx", []string{"user_id", "end_at"}, false, true, "active"},
-		{"subscriptions_expiry_idx", []string{"status", "end_at"}, false, true, "active"},
-		{"subscriptions_reset_idx", []string{"status", "next_reset_at"}, false, true, "next_reset_at"},
-		{"subscriptions_plan_idx", []string{"plan_id"}, false, false, ""},
-		{"subscription_pre_consume_records_subscription_idx", []string{"subscription_id"}, false, false, ""},
+		{"subscription_plans_plan_key_uq", []string{"plan_key"}, true, false, "", ""},
+		{"subscription_plans_status_sort_idx", []string{"status", "sort_order"}, false, false, "", ""},
+		{"subscriptions_order_id_uq", []string{"order_id"}, true, false, "", ""},
+		{"subscriptions_active_idx", []string{"user_id", "end_at"}, false, true, "active", ""},
+		{"subscriptions_expiry_idx", []string{"status", "end_at"}, false, true, "active", ""},
+		{"subscriptions_reset_idx", []string{"status", "next_reset_at"}, false, true, "",
+			"status = 'active' AND next_reset_at IS NOT NULL"},
+		{"subscriptions_plan_idx", []string{"plan_id"}, false, false, "", ""},
+		{"subscription_pre_consume_records_subscription_idx", []string{"subscription_id"}, false, false, "", ""},
 	}
 	for _, c := range cases {
 		c := c
@@ -496,6 +528,13 @@ func TestMainSchemaSubscriptionIndexes(t *testing.T) {
 			}
 			if c.wantPred != "" && !strings.Contains(def, c.wantPred) {
 				t.Fatalf("%s 部分谓词缺少 %q：%s", c.name, c.wantPred, def)
+			}
+			if c.wantPredExpr != "" {
+				got := indexPredicate(t, db, c.name)
+				if normalizeIndexPredicate(got) != normalizeIndexPredicate(c.wantPredExpr) {
+					t.Fatalf("%s 部分谓词 = %q，want 精确等于 %q",
+						c.name, got, c.wantPredExpr)
+				}
 			}
 		})
 	}

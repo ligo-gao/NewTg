@@ -208,6 +208,23 @@ func containsPlan(plans []SubscriptionPlan, id int64) bool {
 	return false
 }
 
+// requirePlanReferenced 断言删除被引用保护拒绝，并核对两类计数。
+// wantInstances 是 subscriptions 行数，wantOrders 是未终结订阅订单数。
+func requirePlanReferenced(t *testing.T, err error, wantInstances, wantOrders int64) {
+	t.Helper()
+	var ref ErrPlanReferenced
+	if !errors.As(err, &ref) {
+		t.Fatalf("err = %v，want ErrPlanReferenced", err)
+	}
+	if ref.OrderReferenceCount != wantOrders {
+		t.Fatalf("OrderReferenceCount = %d，want %d", ref.OrderReferenceCount, wantOrders)
+	}
+	if ref.ReferenceCount != wantInstances+wantOrders {
+		t.Fatalf("ReferenceCount = %d，want %d（实例 %d + 订单 %d）",
+			ref.ReferenceCount, wantInstances+wantOrders, wantInstances, wantOrders)
+	}
+}
+
 func TestSubscriptionPlanDeleteProtection(t *testing.T) {
 	db := openTestDB(t)
 	repo := NewSubscriptionRepo(db)
@@ -216,16 +233,12 @@ func TestSubscriptionPlanDeleteProtection(t *testing.T) {
 	now := time.Now().UTC()
 
 	sub := createTestSubscription(t, repo, plan, 900001, now.Add(-time.Hour), now.Add(time.Hour), nil)
-	if err := repo.DeletePlan(ctx, plan.ID); !errors.Is(err, ErrPlanReferenced) {
-		t.Fatalf("有实例引用时删除 err = %v，want ErrPlanReferenced", err)
-	}
+	requirePlanReferenced(t, repo.DeletePlan(ctx, plan.ID), 1, 0)
 	// 终态实例仍是逻辑引用（历史可追溯），不能因取消而放行删除。
 	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
 		t.Fatalf("cancel immediately: %v", err)
 	}
-	if err := repo.DeletePlan(ctx, plan.ID); !errors.Is(err, ErrPlanReferenced) {
-		t.Fatalf("终态实例引用时删除 err = %v，want ErrPlanReferenced", err)
-	}
+	requirePlanReferenced(t, repo.DeletePlan(ctx, plan.ID), 1, 0)
 
 	if _, err := db.Exec(`DELETE FROM subscriptions WHERE id = $1`, sub.ID); err != nil {
 		t.Fatalf("cleanup subscription: %v", err)
@@ -235,6 +248,186 @@ func TestSubscriptionPlanDeleteProtection(t *testing.T) {
 	}
 	if err := repo.DeletePlan(ctx, plan.ID); !errors.Is(err, ErrPlanNotFound) {
 		t.Fatalf("重复删除 err = %v，want ErrPlanNotFound", err)
+	}
+}
+
+// insertSubscribeOrder 插入一条订阅购买订单（biz_ref_id 指向套餐）。
+func insertSubscribeOrder(t *testing.T, db *sql.DB, planID int64, status string) int64 {
+	t.Helper()
+	var id int64
+	err := db.QueryRow(`
+		INSERT INTO orders (user_id, provider, amount, currency, status,
+			idempotency_key, biz_kind, biz_ref_id)
+		VALUES (900090, 'stripe', 9900, 'CNY', $1, $2, 'subscribe', $3)
+		RETURNING id`,
+		status, fmt.Sprintf("d5a-order-%d-%s", time.Now().UnixNano(), status), planID).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert subscribe order: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM orders WHERE id = $1`, id) })
+	return id
+}
+
+// TestSubscriptionPlanDeleteProtectionByOrders：没有实例、但存在未终结的
+// 订阅订单时，套餐同样不能被删除（MEDIUM-1）。
+//
+// 场景：用户已下单（orders pending），支付回调尚未创建实例。此时套餐仍是
+// 履约依据，删除会让回调撞 ErrPlanNotFound、订单成为孤儿。pending 与
+// succeeded 都算引用；cancelled/expired/failed 是终态，不再阻塞。
+func TestSubscriptionPlanDeleteProtectionByOrders(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+
+	plan := newTestPlan(t, repo, db, "d5a-del-order")
+	orderID := insertSubscribeOrder(t, db, plan.ID, "pending")
+
+	// 无实例、仅一条 pending 订单 → 409，且套餐保留。
+	requirePlanReferenced(t, repo.DeletePlan(ctx, plan.ID), 0, 1)
+	if _, err := repo.GetPlan(ctx, plan.ID); err != nil {
+		t.Fatalf("被订单引用时套餐应保留：GetPlan err = %v", err)
+	}
+
+	// 已支付但回调尚未落成实例同样是引用。
+	if _, err := db.Exec(`UPDATE orders SET status = 'succeeded' WHERE id = $1`, orderID); err != nil {
+		t.Fatalf("set order succeeded: %v", err)
+	}
+	requirePlanReferenced(t, repo.DeletePlan(ctx, plan.ID), 0, 1)
+
+	// 取消后不再阻塞：用户放弃支付不应让套餐永远删不掉。
+	if _, err := db.Exec(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, orderID); err != nil {
+		t.Fatalf("set order cancelled: %v", err)
+	}
+	if err := repo.DeletePlan(ctx, plan.ID); err != nil {
+		t.Fatalf("订单取消后删除套餐: %v", err)
+	}
+
+	// 过期订单同样不阻塞（终态口径与 cancelled 一致）。
+	expiredPlan := newTestPlan(t, repo, db, "d5a-del-order-expired")
+	insertSubscribeOrder(t, db, expiredPlan.ID, "expired")
+	if err := repo.DeletePlan(ctx, expiredPlan.ID); err != nil {
+		t.Fatalf("订单过期后删除套餐: %v", err)
+	}
+}
+
+// TestSubscriptionModelScopeNullVsEmpty：model_scope 的 NULL（全部模型）与
+// '[]'（没有任何可用模型）必须可区分地落库与读回（LOW-6）。
+//
+// 二者都合法，但语义相反。nullableJSON 把 nil 写成 SQL NULL、把非空字节写
+// 成 jsonb 原文；若任一侧被「空值即 NULL」的归一吞掉，套餐/实例的准入范围
+// 会从「无模型可用」静默变成「全部模型」，属于授权扩大。
+func TestSubscriptionModelScopeNullVsEmpty(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	now := time.Now().UTC()
+
+	createPlan := func(prefix string, scope []byte) SubscriptionPlan {
+		t.Helper()
+		p, err := repo.CreatePlan(ctx, SubscriptionPlanInput{
+			PlanKey: subscriptionPlanKey(prefix), Title: "Scope Plan",
+			PeriodDays: 30, PriceAmount: 100, Currency: "CNY", GrantCredits: 10,
+			ModelScope: scope,
+		})
+		if err != nil {
+			t.Fatalf("create plan %s: %v", prefix, err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.Exec(`DELETE FROM subscriptions WHERE plan_id = $1`, p.ID)
+			_, _ = db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, p.ID)
+		})
+		return p
+	}
+
+	planAll := createPlan("d5a-scope-null", nil)
+	planNone := createPlan("d5a-scope-empty", []byte(`[]`))
+
+	// 套餐侧：NULL 读回 nil；'[]' 读回字面量（不是 nil）。
+	gotAll, err := repo.GetPlan(ctx, planAll.ID)
+	if err != nil {
+		t.Fatalf("get null-scope plan: %v", err)
+	}
+	if gotAll.ModelScope != nil {
+		t.Fatalf("NULL model_scope 读回 %q，want nil（全部模型）", gotAll.ModelScope)
+	}
+	gotNone, err := repo.GetPlan(ctx, planNone.ID)
+	if err != nil {
+		t.Fatalf("get empty-scope plan: %v", err)
+	}
+	if string(gotNone.ModelScope) != "[]" {
+		t.Fatalf("'[]' model_scope 读回 %q，want []（无可用模型）", gotNone.ModelScope)
+	}
+
+	// DB 侧直接确认两种存储形态不同。
+	var jsonIsNull bool
+	if err := db.QueryRow(`SELECT model_scope IS NULL FROM subscription_plans WHERE id = $1`,
+		planAll.ID).Scan(&jsonIsNull); err != nil || !jsonIsNull {
+		t.Fatalf("NULL scope 落库形态 = %v/%v，want jsonb IS NULL", jsonIsNull, err)
+	}
+	var typeof string
+	if err := db.QueryRow(`SELECT jsonb_typeof(model_scope) FROM subscription_plans WHERE id = $1`,
+		planNone.ID).Scan(&typeof); err != nil || typeof != "array" {
+		t.Fatalf("'[]' scope 落库形态 = %q/%v，want jsonb array", typeof, err)
+	}
+
+	// 实例侧同样区分（快照列不得把 '[]' 折成 NULL）。
+	createSub := func(plan SubscriptionPlan, userID int64) Subscription {
+		t.Helper()
+		s, createErr := repo.CreateSubscription(ctx, SubscriptionCreateInput{
+			UserID: userID, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+			StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+			AmountTotal: plan.GrantCredits, Currency: "CNY", PeriodDays: 30,
+			ResetOnRenew: true, ModelScope: plan.ModelScope,
+		})
+		if createErr != nil {
+			t.Fatalf("create subscription: %v", createErr)
+		}
+		return s
+	}
+	subAll := createSub(planAll, 900030)
+	subNone := createSub(planNone, 900031)
+	if subAll.ModelScope != nil {
+		t.Fatalf("实例 NULL model_scope 读回 %q，want nil", subAll.ModelScope)
+	}
+	if string(subNone.ModelScope) != "[]" {
+		t.Fatalf("实例 '[]' model_scope 读回 %q，want []", subNone.ModelScope)
+	}
+}
+
+// TestSubscriptionTextOverflowMapping：char(3) 超长（SQLSTATE 22001）必须
+// 映射为可读的输入错误，而不是原始数据库错误（LOW-12）。
+//
+// currency 是 char(3)；传四位币种时 PG 在求值 CHECK 前先报
+// string_data_right_truncation（22001），不会走 23514 分支。漏映射会让
+// handler 把用户输入错误当作 500。
+func TestSubscriptionTextOverflowMapping(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	now := time.Now().UTC()
+
+	if _, err := repo.CreatePlan(ctx, SubscriptionPlanInput{
+		PlanKey: subscriptionPlanKey("d5a-overflow"), Title: "Overflow",
+		PeriodDays: 30, Currency: "USDX",
+	}); !errors.Is(err, ErrPlanInvalid) {
+		t.Fatalf("四位币种创建套餐 err = %v，want ErrPlanInvalid", err)
+	}
+
+	plan := newTestPlan(t, repo, db, "d5a-overflow-sub")
+	if _, err := repo.UpdatePlan(ctx, plan.ID, SubscriptionPlanUpdate{
+		PlanKey: plan.PlanKey, Title: "Overflow", PeriodDays: 30,
+		Currency: "USDX", Status: "enabled",
+	}); !errors.Is(err, ErrPlanInvalid) {
+		t.Fatalf("四位币种更新套餐 err = %v，want ErrPlanInvalid", err)
+	}
+
+	if _, err := repo.CreateSubscription(ctx, SubscriptionCreateInput{
+		UserID: 900040, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		AmountTotal: 10, Currency: "USDX", PricePaidAmount: 0,
+		PeriodDays: 30, ResetOnRenew: true,
+	}); !errors.Is(err, ErrSubscriptionInvalid) {
+		t.Fatalf("四位币种创建实例 err = %v，want ErrSubscriptionInvalid", err)
 	}
 }
 
@@ -521,6 +714,75 @@ func TestSubscriptionQuotaReset(t *testing.T) {
 	}
 	if _, err := repo.ResetPlanQuota(ctx, 1<<60, true); !errors.Is(err, ErrPlanNotFound) {
 		t.Fatalf("不存在套餐 reset err = %v，want ErrPlanNotFound", err)
+	}
+}
+
+// TestSubscriptionResetOnRenewContract：reset_on_renew=false 的「不周期重置」
+// 合同必须在数据层两端自洽（LOW-3）。
+//
+//  1. 创建时把调用方误传的 next_reset_at 归一为 NULL——否则 DueForReset 会
+//     永远扫到它，而重置条件又因 reset_on_renew=false 拒绝，形成僵尸行；
+//  2. ResetSubscriptionQuota 的 WHERE 必须带 reset_on_renew——历史行/人工
+//     UPDATE 残留的游标也不能绕过快照列的合同。
+func TestSubscriptionResetOnRenewContract(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "d5a-reset-contract")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// 1. 创建时归一：调用方传了游标，但 reset_on_renew=false。
+	strayReset := now.Add(-time.Minute)
+	sub, err := repo.CreateSubscription(ctx, SubscriptionCreateInput{
+		UserID: 900020, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		NextResetAt: &strayReset, AmountTotal: 1000, AmountUsed: 100,
+		Currency: "CNY", PricePaidAmount: 9900, PeriodDays: 30, ResetOnRenew: false,
+	})
+	if err != nil {
+		t.Fatalf("create non-reset subscription: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM subscriptions WHERE id = $1`, sub.ID) })
+	if sub.NextResetAt != nil {
+		t.Fatalf("reset_on_renew=false 时 next_reset_at = %v，want NULL", sub.NextResetAt)
+	}
+	got, err := repo.GetSubscription(ctx, sub.ID)
+	if err != nil || got.NextResetAt != nil {
+		t.Fatalf("落库后 next_reset_at = %v/%v，want NULL/nil", got.NextResetAt, err)
+	}
+	due, err := repo.DueForReset(ctx, now)
+	if err != nil {
+		t.Fatalf("due for reset: %v", err)
+	}
+	if containsSubscription(due, sub.ID) {
+		t.Fatalf("reset_on_renew=false 的实例不应进入 B12 重置扫描")
+	}
+
+	// 2. 重置条件带 reset_on_renew：模拟历史行残留的过期游标。
+	legacy, err := repo.CreateSubscription(ctx, SubscriptionCreateInput{
+		UserID: 900021, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		NextResetAt: &strayReset, AmountTotal: 1000, AmountUsed: 400,
+		Currency: "CNY", PricePaidAmount: 9900, PeriodDays: 30, ResetOnRenew: true,
+	})
+	if err != nil {
+		t.Fatalf("create legacy subscription: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM subscriptions WHERE id = $1`, legacy.ID) })
+	if _, err := db.Exec(`UPDATE subscriptions
+		SET reset_on_renew = false, next_reset_at = $2 WHERE id = $1`, legacy.ID, strayReset); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	affected, err := repo.ResetSubscriptionQuota(ctx, legacy.ID, now)
+	if err != nil || affected != 0 {
+		t.Fatalf("reset_on_renew=false 的 reset = %d/%v，want 0/nil", affected, err)
+	}
+	got, err = repo.GetSubscription(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("get legacy: %v", err)
+	}
+	if got.AmountUsed != 400 || got.NextResetAt == nil || !got.NextResetAt.Equal(strayReset) {
+		t.Fatalf("被拒绝的重置改动了实例：amount_used=%d next_reset_at=%v", got.AmountUsed, got.NextResetAt)
 	}
 }
 
