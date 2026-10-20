@@ -84,15 +84,17 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
       ) : query.isError ? (
         <div className="flex items-center gap-3 text-sm text-ink-2">
           <span>
-            {error instanceof ApiError && error.kind === 'forbidden'
-              ? t('admin.subscriptions.user.forbidden')
-              : error instanceof ApiError && error.kind === 'rate_limited'
-                ? error.retry_after === undefined
-                  ? t('admin.subscriptions.rate_limited_generic')
-                  : t('admin.subscriptions.rate_limited', {
-                      seconds: error.retry_after,
-                    })
-                : t('admin.subscriptions.user.error')}
+            {error instanceof ApiError && error.kind === 'offline'
+              ? t('admin.subscriptions.offline_read_error')
+              : error instanceof ApiError && error.kind === 'forbidden'
+                ? t('admin.subscriptions.user.forbidden')
+                : error instanceof ApiError && error.kind === 'rate_limited'
+                  ? error.retry_after === undefined
+                    ? t('admin.subscriptions.rate_limited_generic')
+                    : t('admin.subscriptions.rate_limited', {
+                        seconds: error.retry_after,
+                      })
+                  : t('admin.subscriptions.user.error')}
           </span>
           <Button variant="secondary" onClick={() => void query.refetch()}>
             {t('common.action.retry')}
@@ -102,7 +104,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
         <p className="text-sm text-ink-2">{t('admin.subscriptions.user.empty')}</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[1040px] text-sm">
             <thead>
               <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
                 <th scope="col" className="px-3 py-2 font-medium">
@@ -110,6 +112,12 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('admin.subscriptions.user.column_plan')}
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  {t('admin.subscriptions.user.column_start')}
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  {t('admin.subscriptions.user.column_end')}
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('admin.subscriptions.user.column_period')}
@@ -121,7 +129,10 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                   {t('admin.subscriptions.user.column_next_reset')}
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  {t('admin.subscriptions.user.column_end')}
+                  {t('admin.subscriptions.user.column_auto_renew')}
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  {t('admin.subscriptions.user.column_cancel_at_end')}
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('admin.subscriptions.user.column_order')}
@@ -140,6 +151,12 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                     </StatusBadge>
                   </td>
                   <td className="px-3 py-2 text-ink-1">{item.plan_title_snapshot}</td>
+                  <td className="px-3 py-2 text-xs text-ink-2">
+                    {formatDateTime(item.start_at, locale)}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-ink-2">
+                    {formatDateTime(item.end_at, locale)}
+                  </td>
                   <td className="px-3 py-2 text-ink-2">
                     {t('admin.subscriptions.period_days', { count: item.period_days })}
                   </td>
@@ -151,8 +168,21 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                       ? '—'
                       : formatDateTime(item.next_reset_at, locale)}
                   </td>
-                  <td className="px-3 py-2 text-xs text-ink-2">
-                    {formatDateTime(item.end_at, locale)}
+                  <td className="px-3 py-2">
+                    <StatusBadge variant={item.auto_renew ? 'success' : 'neutral'}>
+                      {item.auto_renew
+                        ? t('admin.subscriptions.user.auto_renew_on')
+                        : t('admin.subscriptions.user.auto_renew_off')}
+                    </StatusBadge>
+                  </td>
+                  <td className="px-3 py-2">
+                    <StatusBadge
+                      variant={item.cancel_at_period_end ? 'warning' : 'neutral'}
+                    >
+                      {item.cancel_at_period_end
+                        ? t('admin.subscriptions.user.cancel_at_end_yes')
+                        : t('admin.subscriptions.user.cancel_at_end_no')}
+                    </StatusBadge>
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-ink-2">
                     {item.order_id === null || item.order_id === undefined
@@ -163,6 +193,11 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
               ))}
             </tbody>
           </table>
+          {query.data !== undefined && query.data.total > items.length ? (
+            <p className="mt-2 text-xs text-ink-3">
+              {t('admin.subscriptions.user.cap_notice', { count: items.length })}
+            </p>
+          ) : null}
         </div>
       )}
     </Dialog>

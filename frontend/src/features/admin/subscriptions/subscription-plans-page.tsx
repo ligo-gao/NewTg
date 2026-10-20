@@ -77,9 +77,9 @@ export function SubscriptionPlansPage() {
   const [advanceReset, setAdvanceReset] = useState(false)
   const [resetError, setResetError] = useState<string | undefined>(undefined)
   const [statusTarget, setStatusTarget] = useState<SubscriptionPlan | null>(null)
+  const [statusError, setStatusError] = useState<string | undefined>(undefined)
   const [deleteTarget, setDeleteTarget] = useState<SubscriptionPlan | null>(null)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
-  const [actionError, setActionError] = useState<string | undefined>(undefined)
 
   const plansQuery = useQuery({
     queryKey: ['admin-subscription-plans', applied, page, pageSize],
@@ -139,7 +139,7 @@ export function SubscriptionPlansPage() {
       }
     },
     onSuccess: async (_data, variables) => {
-      setActionError(undefined)
+      setStatusError(undefined)
       push({
         tone: 'success',
         message:
@@ -151,14 +151,16 @@ export function SubscriptionPlansPage() {
       await queryClient.invalidateQueries({ queryKey: ['admin-subscription-plans'] })
     },
     onError: (error) => {
-      setActionError(actionErrorText(error))
+      // Keep the confirm dialog open so the failure stays next to the action
+      // that caused it; closing it would drop the operator back to a page
+      // where the only feedback is a transient banner.
+      setStatusError(actionErrorText(error))
       if (
         error instanceof ApiError &&
         (error.kind === 'conflict' || error.kind === 'not_found')
       ) {
         void queryClient.invalidateQueries({ queryKey: ['admin-subscription-plans'] })
       }
-      setStatusTarget(null)
     },
   })
 
@@ -204,14 +206,16 @@ export function SubscriptionPlansPage() {
     },
     onError: (error) => {
       if (error instanceof ApiError && error.kind === 'conflict') {
-        // 409 plan_referenced 带服务端最新计数；直接展示，而不是让管理员
-        // 回列表猜「到底还有几个实例/订单」。
-        const subscriptions = error.reference_count
+        // `reference_count` is instances + unclosed orders (backend
+        // ErrPlanReferenced); `order_reference_count` is the order part, so
+        // the instance count must be the difference. Only show the precise
+        // split when both members arrived — otherwise say "referenced".
+        const total = error.reference_count
         const orders = error.order_reference_count
         setDeleteError(
-          subscriptions !== undefined && orders !== undefined
+          total !== undefined && orders !== undefined && total >= orders
             ? t('admin.subscriptions.delete_referenced', {
-                subscriptions,
+                subscriptions: total - orders,
                 orders,
               })
             : t('admin.subscriptions.delete_referenced_generic'),
@@ -283,21 +287,6 @@ export function SubscriptionPlansPage() {
         >
           {t('admin.subscriptions.offline_notice')}
         </p>
-      ) : null}
-
-      {actionError !== undefined ? (
-        <FormAlert>
-          <div className="flex items-center justify-between gap-3">
-            <span>{actionError}</span>
-            <Button
-              variant="ghost"
-              className="h-7 px-2 text-[13px]"
-              onClick={() => setActionError(undefined)}
-            >
-              {t('common.action.cancel')}
-            </Button>
-          </div>
-        </FormAlert>
       ) : null}
 
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
@@ -373,16 +362,19 @@ export function SubscriptionPlansPage() {
           <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
             <span>
               {plansQuery.error instanceof ApiError &&
-              plansQuery.error.kind === 'forbidden'
-                ? t('admin.subscriptions.load_forbidden')
+              plansQuery.error.kind === 'offline'
+                ? t('admin.subscriptions.offline_read_error')
                 : plansQuery.error instanceof ApiError &&
-                    plansQuery.error.kind === 'rate_limited'
-                  ? plansQuery.error.retry_after === undefined
-                    ? t('admin.subscriptions.rate_limited_generic')
-                    : t('admin.subscriptions.rate_limited', {
-                        seconds: plansQuery.error.retry_after,
-                      })
-                  : t('admin.subscriptions.error')}
+                    plansQuery.error.kind === 'forbidden'
+                  ? t('admin.subscriptions.load_forbidden')
+                  : plansQuery.error instanceof ApiError &&
+                      plansQuery.error.kind === 'rate_limited'
+                    ? plansQuery.error.retry_after === undefined
+                      ? t('admin.subscriptions.rate_limited_generic')
+                      : t('admin.subscriptions.rate_limited', {
+                          seconds: plansQuery.error.retry_after,
+                        })
+                    : t('admin.subscriptions.error')}
             </span>
             <Button variant="secondary" onClick={() => void plansQuery.refetch()}>
               {t('common.action.retry')}
@@ -525,7 +517,10 @@ export function SubscriptionPlansPage() {
                           variant="ghost"
                           className="h-8 px-2 text-[13px]"
                           disabled={writeDisabled}
-                          onClick={() => setStatusTarget(plan)}
+                          onClick={() => {
+                            setStatusError(undefined)
+                            setStatusTarget(plan)
+                          }}
                         >
                           {plan.status === 'enabled'
                             ? t('admin.subscriptions.disable')
@@ -665,8 +660,16 @@ export function SubscriptionPlansPage() {
         }
         footer={
           <>
-            <Button variant="secondary" onClick={() => setStatusTarget(null)}>
-              {t('common.action.cancel')}
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setStatusError(undefined)
+                setStatusTarget(null)
+              }}
+            >
+              {statusError !== undefined
+                ? t('common.action.close')
+                : t('common.action.cancel')}
             </Button>
             <Button
               disabled={setStatus.isPending || offline}
@@ -684,7 +687,9 @@ export function SubscriptionPlansPage() {
             </Button>
           </>
         }
-      />
+      >
+        {statusError !== undefined ? <FormAlert>{statusError}</FormAlert> : null}
+      </Dialog>
 
       <Dialog
         open={deleteTarget !== null}

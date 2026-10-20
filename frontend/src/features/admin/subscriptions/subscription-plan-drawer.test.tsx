@@ -197,16 +197,195 @@ describe('SubscriptionPlanDrawer', () => {
     })
   })
 
-  it('supports adding and removing model scope rows', async () => {
+  it('supports adding and removing model scope rows in list mode', async () => {
     await renderDrawer({ mode: 'create' })
     const user = userEvent.setup()
 
+    // The row editor is hidden while "All models" is on; switch to list mode.
+    expect(screen.queryByRole('button', { name: 'Add model' })).toBeNull()
+    await user.click(screen.getByRole('checkbox', { name: /All models/ }))
     await user.click(screen.getByRole('button', { name: 'Add model' }))
     await user.type(screen.getByLabelText('Model name 1'), 'gpt-4o')
     expect(screen.getByDisplayValue('gpt-4o')).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: 'Remove model 1' }))
     expect(screen.queryByDisplayValue('gpt-4o')).toBeNull()
+  })
+
+  it('keeps an empty allowlist as [] when editing (does not widen to all models)', async () => {
+    let body: unknown
+    server.use(
+      http.put(`${ORIGIN}/api/subscription-plans/1`, async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(planRow({ model_scope: [] }))
+      }),
+    )
+    const { onSaved } = await renderDrawer({
+      mode: 'edit',
+      plan: planRow({ model_scope: [] }),
+    })
+    const user = userEvent.setup()
+
+    const allModels = screen.getByRole('checkbox', {
+      name: /All models/,
+    }) as HTMLInputElement
+    expect(allModels.checked).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Add model' })).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body).toMatchObject({ model_scope: [] })
+  })
+
+  it('submits null when All models is switched on for a scoped plan', async () => {
+    let body: unknown
+    server.use(
+      http.put(`${ORIGIN}/api/subscription-plans/1`, async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(planRow({ model_scope: null }))
+      }),
+    )
+    const { onSaved } = await renderDrawer({
+      mode: 'edit',
+      plan: planRow({ model_scope: ['gpt-4o'] }),
+    })
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('checkbox', { name: /All models/ }))
+    expect(screen.queryByRole('button', { name: 'Add model' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body).toMatchObject({ model_scope: null })
+  })
+
+  it('submits [] when list mode is on but no model row remains', async () => {
+    let body: unknown
+    server.use(
+      http.post(`${ORIGIN}/api/subscription-plans`, async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(planRow({ model_scope: [] }), { status: 201 })
+      }),
+    )
+    const { onSaved } = await renderDrawer({ mode: 'create' })
+    const user = userEvent.setup()
+
+    await user.type(screen.getByLabelText('Plan Key'), 'no-models')
+    await user.type(screen.getByLabelText('Title'), 'No Models')
+    await user.click(screen.getByRole('checkbox', { name: /All models/ }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body).toMatchObject({ model_scope: [] })
+  })
+
+  it('keeps the P2 concurrency limit greyed out and submits it unchanged', async () => {
+    let body: unknown
+    server.use(
+      http.put(`${ORIGIN}/api/subscription-plans/1`, async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(planRow())
+      }),
+    )
+    const { onSaved } = await renderDrawer({
+      mode: 'edit',
+      plan: planRow({ concurrency_limit: 5 }),
+    })
+    const user = userEvent.setup()
+
+    const input = screen.getByLabelText('Concurrency Limit') as HTMLInputElement
+    expect(input.disabled).toBe(true)
+    expect(input.value).toBe('5')
+    expect(screen.getByText(/P2: takes effect in a later release/)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body).toMatchObject({ concurrency_limit: 5 })
+  })
+
+  it('omits status from the update when the operator did not change it', async () => {
+    let body: Record<string, unknown> = {}
+    server.use(
+      http.put(`${ORIGIN}/api/subscription-plans/1`, async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(planRow())
+      }),
+    )
+    const { onSaved } = await renderDrawer({
+      mode: 'edit',
+      plan: planRow({ status: 'enabled' }),
+    })
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body).not.toHaveProperty('status')
+  })
+
+  it('sends status only after the operator changes it', async () => {
+    let body: Record<string, unknown> = {}
+    server.use(
+      http.put(`${ORIGIN}/api/subscription-plans/1`, async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(planRow({ status: 'disabled' }))
+      }),
+    )
+    const { onSaved } = await renderDrawer({
+      mode: 'edit',
+      plan: planRow({ status: 'enabled' }),
+    })
+    const user = userEvent.setup()
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'disabled')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(body.status).toBe('disabled')
+  })
+
+  it('sends an Idempotency-Key with the create request', async () => {
+    let idempotencyKey: string | null = null
+    server.use(
+      http.post(`${ORIGIN}/api/subscription-plans`, ({ request }) => {
+        idempotencyKey = request.headers.get('Idempotency-Key')
+        return HttpResponse.json(planRow(), { status: 201 })
+      }),
+    )
+    const { onSaved } = await renderDrawer({ mode: 'create' })
+    const user = userEvent.setup()
+
+    await user.type(screen.getByLabelText('Plan Key'), 'idem-key')
+    await user.type(screen.getByLabelText('Title'), 'Idem')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(idempotencyKey).not.toBeNull()
+    expect((idempotencyKey ?? '').length).toBeGreaterThan(0)
+  })
+
+  it('rejects a price whose cents exceed Number.MAX_SAFE_INTEGER', async () => {
+    let called = false
+    server.use(
+      http.post(`${ORIGIN}/api/subscription-plans`, () => {
+        called = true
+        return HttpResponse.json(planRow(), { status: 201 })
+      }),
+    )
+    await renderDrawer({ mode: 'create' })
+    const user = userEvent.setup()
+
+    await user.type(screen.getByLabelText('Plan Key'), 'too-pricey')
+    await user.type(screen.getByLabelText('Title'), 'Too Pricey')
+    await user.clear(screen.getByLabelText('Price Amount'))
+    await user.type(screen.getByLabelText('Price Amount'), '99999999999999999')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(
+      await screen.findByText(
+        'Enter a non-negative amount with at most two decimals.',
+      ),
+    ).toBeTruthy()
+    expect(called).toBe(false)
   })
 
   it('shows the offline notice and disables saving', async () => {

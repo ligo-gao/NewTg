@@ -88,6 +88,10 @@ export function SubscriptionPlanDrawer({
   const [grantCredits, setGrantCredits] = useState('0')
   const [resetOnRenew, setResetOnRenew] = useState(true)
   const [allowWalletOverflow, setAllowWalletOverflow] = useState(true)
+  // `model_scope` has three distinct contract states, so one array cannot
+  // carry it: null = all models, [] = no model is admissible, [..] = allowlist.
+  // The explicit switch keeps null and [] from collapsing into each other.
+  const [allModels, setAllModels] = useState(true)
   const [modelScope, setModelScope] = useState<string[]>([])
   const [graceDays, setGraceDays] = useState('0')
   const [concurrencyLimit, setConcurrencyLimit] = useState('')
@@ -107,6 +111,9 @@ export function SubscriptionPlanDrawer({
     setGrantCredits(String(plan?.grant_credits ?? 0))
     setResetOnRenew(plan?.reset_on_renew ?? true)
     setAllowWalletOverflow(plan?.allow_wallet_overflow ?? true)
+    // Only an explicit null/omitted scope means "all models"; an empty array
+    // is a real (if unusual) selection and must stay in list mode when edited.
+    setAllModels(plan?.model_scope === null || plan?.model_scope === undefined)
     setModelScope(plan?.model_scope ?? [])
     setGraceDays(String(plan?.grace_days ?? 0))
     setConcurrencyLimit(
@@ -169,15 +176,16 @@ export function SubscriptionPlanDrawer({
     const scope = Array.from(
       new Set(modelScope.map((entry) => entry.trim()).filter((entry) => entry !== '')),
     )
-    if (scope.some((entry) => entry.length > 128)) {
+    if (!allModels && scope.some((entry) => entry.length > 128)) {
       errors.model_scope = t('admin.subscriptions.drawer.field_invalid_model_scope')
     }
 
     setFieldErrors(errors)
     if (Object.keys(errors).length > 0) return null
 
-    // model_scope: null = 全部模型；[] 在契约里表示「无模型可用」，UI 不能
-    // 用空行编辑器意外表达这种危险状态，所以空列表统一归一为 null。
+    // The switch is authoritative. On = null (all models). Off = the list
+    // exactly as entered, including [] — silently promoting an empty list to
+    // null would widen a deliberately empty allowlist into "every model".
     return {
       plan_key: trimmedKey,
       title: trimmedTitle,
@@ -188,7 +196,7 @@ export function SubscriptionPlanDrawer({
       grant_credits: grant ?? 0,
       reset_on_renew: resetOnRenew,
       allow_wallet_overflow: allowWalletOverflow,
-      model_scope: scope.length === 0 ? null : scope,
+      model_scope: allModels ? null : scope,
       concurrency_limit: concurrencyLimit.trim() === '' ? null : concurrency,
       grace_days: grace ?? 0,
       status,
@@ -253,6 +261,13 @@ export function SubscriptionPlanDrawer({
         await apiClient.POST('/api/subscription-plans', { body })
         push({ tone: 'success', message: t('admin.subscriptions.drawer.create_success') })
       } else if (plan !== undefined) {
+        // No expected_updated_at exists yet, so a full PUT is last-write-wins.
+        // Sending status only when the operator actually changed it narrows
+        // that window: the server keeps its current status on omission
+        // (`subscriptionPlanPayload.Status` is a pointer). See ledger G-DOM-41.
+        if (body.status === plan.status) {
+          delete (body as Partial<SubscriptionPlanInput>).status
+        }
         await apiClient.PUT('/api/subscription-plans/{id}', {
           params: { path: { id: plan.id } },
           body,
@@ -486,7 +501,26 @@ export function SubscriptionPlanDrawer({
             <p className="text-xs text-ink-3">
               {t('admin.subscriptions.drawer.model_scope_hint')}
             </p>
-            {modelScope.map((entry, index) => (
+            <label className="flex items-start gap-2 text-sm text-ink-1">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 accent-brand"
+                checked={allModels}
+                onChange={(event) => {
+                  setAllModels(event.target.checked)
+                  setFieldErrors((current) => withoutKey(current, 'model_scope'))
+                }}
+              />
+              <span>
+                {t('admin.subscriptions.drawer.all_models_toggle')}
+                <span className="block text-xs text-ink-3">
+                  {t('admin.subscriptions.drawer.all_models_toggle_hint')}
+                </span>
+              </span>
+            </label>
+            {!allModels ? (
+              <>
+                {modelScope.map((entry, index) => (
               <div key={index} className="flex items-center gap-2">
                 <input
                   aria-label={t('admin.subscriptions.drawer.model_scope_row', {
@@ -522,17 +556,19 @@ export function SubscriptionPlanDrawer({
                   {t('admin.subscriptions.drawer.remove_model_label')}
                 </Button>
               </div>
-            ))}
-            <div>
-              <Button
-                type="button"
-                variant="secondary"
-                className="h-8 px-2 text-[13px]"
-                onClick={() => setModelScope((current) => [...current, ''])}
-              >
-                {t('admin.subscriptions.drawer.add_model')}
-              </Button>
-            </div>
+                ))}
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-8 px-2 text-[13px]"
+                    onClick={() => setModelScope((current) => [...current, ''])}
+                  >
+                    {t('admin.subscriptions.drawer.add_model')}
+                  </Button>
+                </div>
+              </>
+            ) : null}
             {fieldErrors.model_scope !== undefined ? (
               <p className="text-xs text-danger">{fieldErrors.model_scope}</p>
             ) : null}
@@ -553,6 +589,7 @@ export function SubscriptionPlanDrawer({
               label={t('admin.subscriptions.drawer.concurrency_limit')}
               inputMode="numeric"
               value={concurrencyLimit}
+              disabled
               error={fieldErrors.concurrency_limit}
               hint={t('admin.subscriptions.drawer.concurrency_limit_hint')}
               onChange={(event) => {

@@ -157,12 +157,21 @@ describe('SubscriptionPlansPage', () => {
   })
 
   it('renders the 403 state without settings:manage and does not query plans', async () => {
+    let planRequests = 0
     installMe([])
+    server.use(
+      http.get(`${ORIGIN}/api/subscription-plans`, () => {
+        planRequests += 1
+        return HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 })
+      }),
+    )
 
     await renderWithProviders(<SubscriptionPlansPage />, ['common', 'admin'])
     expect(
       await screen.findByText('Your account lacks the settings:manage permission.'),
     ).toBeTruthy()
+    // 能力层在查询前就短路：无权限时不得把请求发到服务端。
+    expect(planRequests).toBe(0)
   })
 
   it('confirms disable and calls the idempotent endpoint', async () => {
@@ -225,7 +234,7 @@ describe('SubscriptionPlansPage', () => {
     )
   })
 
-  it('shows the server reference counts when deleting a referenced plan (409)', async () => {
+  it('shows instances (total minus orders) when deleting a referenced plan (409)', async () => {
     installMe()
     installPlans()
     server.use(
@@ -234,7 +243,9 @@ describe('SubscriptionPlansPage', () => {
           {
             type: 'https://newtg.dev/problems/plan_referenced',
             title: 'plan_referenced',
-            reference_count: 2,
+            // reference_count = instances + unclosed orders, so 3 total with
+            // 1 order means 2 instances (the backend detail says the same).
+            reference_count: 3,
             order_reference_count: 1,
           },
           { status: 409 },
@@ -257,6 +268,114 @@ describe('SubscriptionPlansPage', () => {
     ).toBeTruthy()
     // 引用未解除时对话框必须保持打开，管理员才能读到计数与处理提示。
     expect(screen.getByRole('alertdialog')).toBeTruthy()
+  })
+
+  it('falls back to generic copy when the 409 lacks the order count', async () => {
+    installMe()
+    installPlans()
+    server.use(
+      http.delete(`${ORIGIN}/api/subscription-plans/1`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/plan_referenced',
+            title: 'plan_referenced',
+            reference_count: 2,
+          },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    await renderWithProviders(<SubscriptionPlansPage />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    await screen.findByText('pro-monthly')
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    expect(
+      await within(dialog).findByText(
+        'This plan is still referenced. Disable it or wait for its orders to finish before deleting.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('keeps a failed enable/disable inside the confirm dialog with a Close action', async () => {
+    installMe()
+    installPlans()
+    server.use(
+      http.post(`${ORIGIN}/api/subscription-plans/1/disable`, () =>
+        HttpResponse.json(
+          { type: 'https://newtg.dev/problems/internal', title: 'Internal error' },
+          { status: 500 },
+        ),
+      ),
+    )
+
+    await renderWithProviders(<SubscriptionPlansPage />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    await screen.findByText('pro-monthly')
+    await user.click(screen.getByRole('button', { name: 'Disable' }))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Disable' }))
+
+    expect(
+      await within(dialog).findByText('The action failed. Try again.'),
+    ).toBeTruthy()
+    // 失败后仍停留在确认框内，且次要按钮改为「关闭」而不是「取消」。
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeTruthy()
+  })
+
+  it('falls back to a page when the current page is out of range', async () => {
+    const pages: string[] = []
+    installMe()
+    installPlans((params) => {
+      const p = params.get('p') ?? '1'
+      pages.push(p)
+      if (p === '1') {
+        return HttpResponse.json({
+          items: [planRow()],
+          total: 45,
+          page: 1,
+          page_size: 20,
+        })
+      }
+      // The second page shrank (e.g. concurrent deletion), so page 2 no
+      // longer exists and the page must clamp back to page 1.
+      return HttpResponse.json({
+        items: [],
+        total: 12,
+        page: Number(p),
+        page_size: 20,
+      })
+    })
+
+    await renderWithProviders(<SubscriptionPlansPage />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    await screen.findByText('pro-monthly')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    await waitFor(() => expect(pages).toContain('2'))
+    await waitFor(() => expect(pages.at(-1)).toBe('1'))
+  })
+
+  it('shows offline-specific copy when the list read fails offline', async () => {
+    installMe()
+    server.use(
+      http.get(`${ORIGIN}/api/subscription-plans`, () => HttpResponse.error()),
+    )
+
+    await renderWithProviders(<SubscriptionPlansPage />, ['common', 'admin'])
+
+    expect(
+      await screen.findByText(
+        'Could not load data while offline. Reconnect and retry.',
+      ),
+    ).toBeTruthy()
   })
 
   it('opens the edit drawer with a locked plan key', async () => {

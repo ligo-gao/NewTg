@@ -58,8 +58,10 @@ export interface ApiErrorFields {
    */
   reference_count?: number
   /**
-   * 套餐删除 409（`plan_referenced`）的未终结订单数。与 `reference_count`
-   * （订阅实例数）一起给出，管理页才能提示「先停用或等订单终结」。
+   * 套餐删除 409（`plan_referenced`）的未终结订单数。服务端把
+   * `reference_count` 定义为**订阅实例数 + 未终结订单数**（store.ErrPlanReferenced），
+   * 因此实例数 = `reference_count - order_reference_count`；两者齐全时
+   * 前端才拆分展示，缺一则退回通用文案，避免把总数误报成实例数。
    */
   order_reference_count?: number
   /** 供应商批量操作 409 的冲突行；仅用于诊断，不参与主要文案。 */

@@ -89,6 +89,8 @@ describe('UserSubscriptionsDialog', () => {
         amount_used: 900,
         amount_remain: undefined,
         order_id: null,
+        auto_renew: true,
+        cancel_at_period_end: true,
       }),
     ])
 
@@ -107,6 +109,16 @@ describe('UserSubscriptionsDialog', () => {
     expect(within(dialog).getByText('250 / 1,000')).toBeTruthy()
     expect(within(dialog).getByText('#42')).toBeTruthy()
     expect(within(dialog).getByText('Active')).toBeTruthy()
+
+    // 起止区间、自动续费与周期末取消状态都是管理侧需要的事实。
+    expect(within(dialog).getByText('Starts')).toBeTruthy()
+    expect(within(dialog).getByText('Ends')).toBeTruthy()
+    expect(within(dialog).getByText('Auto-renew')).toBeTruthy()
+    expect(within(dialog).getByText('Cancel at period end')).toBeTruthy()
+    expect(within(dialog).getAllByText('Off')).toHaveLength(1)
+    expect(within(dialog).getAllByText('No')).toHaveLength(1)
+    expect(within(dialog).getByText('On')).toBeTruthy()
+    expect(within(dialog).getByText('Scheduled')).toBeTruthy()
 
     expect(within(dialog).getByText('Starter')).toBeTruthy()
     // amount_total = 0 是无限额度：不渲染分母，也不渲染进度条。
@@ -149,6 +161,47 @@ describe('UserSubscriptionsDialog', () => {
 
     expect(
       await screen.findByText('This user has no subscription instances.'),
+    ).toBeTruthy()
+  })
+
+  it('warns when more instances exist than the 100-row cap shows', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/users/1/subscriptions`, () =>
+        HttpResponse.json({
+          items: [subscription()],
+          total: 150,
+          page: 1,
+          page_size: 100,
+        }),
+      ),
+    )
+
+    await renderWithProviders(
+      <UserSubscriptionsDialog user={USER} onClose={() => undefined} />,
+      ['common', 'admin'],
+    )
+
+    expect(
+      await screen.findByText(
+        'Showing the 1 most recent subscriptions. Older instances are not displayed.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('shows offline-specific copy when the read fails offline', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/users/1/subscriptions`, () => HttpResponse.error()),
+    )
+
+    await renderWithProviders(
+      <UserSubscriptionsDialog user={USER} onClose={() => undefined} />,
+      ['common', 'admin'],
+    )
+
+    expect(
+      await screen.findByText(
+        'Could not load data while offline. Reconnect and retry.',
+      ),
     ).toBeTruthy()
   })
 })

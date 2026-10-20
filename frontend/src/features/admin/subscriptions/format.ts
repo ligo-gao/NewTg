@@ -49,5 +49,8 @@ export function parseYuanToCents(value: string): number | null {
   if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return null
   const yuan = Number(trimmed)
   if (!Number.isFinite(yuan) || yuan < 0) return null
-  return Math.round(yuan * 100)
+  // Cents travel as int64; beyond 2^53 the multiplication has already lost
+  // precision, so reject instead of sending a silently wrong price.
+  const cents = Math.round(yuan * 100)
+  return Number.isSafeInteger(cents) ? cents : null
 }
