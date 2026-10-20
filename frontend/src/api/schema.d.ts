@@ -1404,6 +1404,291 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型目录列表（分页 + 筛选 + 排序 + 派生字段）
+         * @description 每行是 model_meta 的 20 列 + 派生字段 vendor_name / square_state /
+         *     configured_channel_count / enable_groups[]。
+         *     square_state：status=2 ⇒ hidden；否则按 name_rule 与实际启用渠道的
+         *     supported_models 匹配——覆盖全部启用用户分组 ⇒ visible，部分 ⇒
+         *     partial，无启用渠道 ⇒ unavailable。该筛选项在服务端对完整结果集
+         *     求值后再分页，total 与 items 口径一致。
+         *     非法枚举/排序/分页参数一律 400（管理面不宽容降级）。
+         */
+        get: operations["listModelCatalog"];
+        put?: never;
+        /**
+         * 新建模型档案
+         * @description 应携带 Idempotency-Key：同键重放返回首次响应；同键不同请求体 422。
+         *     model_name 必须匹配 ^[A-Za-z0-9._:/-]{1,128}$（放行 `/`，公开模型名
+         *     可含厂商前缀）。vendor_id 不存在 ⇒ 422。model_name 重复 ⇒ 409。
+         */
+        post: operations["createModelMeta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型选择器（关键字搜索，limit 上限 100） */
+        get: operations["searchModelCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/missing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 缺失模型检测（只读）
+         * @description 启用渠道 supported_models 的并集减去 model_meta.model_name。
+         *     supported_models 含非法元素（非字符串/空白）的渠道**整渠道跳过**，其
+         *     模型不计入 channel_count，跳过数在 skipped_channels 上报。
+         *     已建档模型不出现；has_pricing 表示 model_pricing 中已有同名行。
+         */
+        get: operations["listMissingModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/sync/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 上游元数据同步预览（只读）
+         * @description 拉取 model_sync.source_url 的清单，与本地目录对账并返回六类候选：
+         *     create / update / unchanged / blocked（本地 sync_official=false）/
+         *     missing_upstream（本地有、上游无）/ missing_vendor（本地 vendor_id
+         *     指向不存在的供应商）。source_version 是清单原文的 sha256，apply 必须
+         *     原样回传；服务端把清单缓存 1h（不落同步历史表）。
+         *     源未配置 ⇒ 503；清单不可达/非法 ⇒ 502（固定文案，不含上游细节）。
+         */
+        get: operations["previewModelSync"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 应用上游同步（只写勾选项）
+         * @description source_version 必须是 preview 的返回值；缺失/过期/条目在清单中消失
+         *     ⇒ 409（整体拒绝，不产生任何写入）。勾选 sync_official=false 的模型
+         *     ⇒ 400（前端不应允许勾选，后端仍校验）。写入值取自服务端缓存的清单，
+         *     请求条目只用于选择。
+         *     注意：写入是逐条 store 调用，store 未提供跨行事务接缝（D1a 边界），
+         *     预校验全部通过后才开始写；数据库在写入中途故障时可能部分生效。
+         */
+        post: operations["applyModelSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/batch-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除模型档案（1–1000）
+         * @description 去重后空选择 / 超过 1000 条 ⇒ 422。
+         *     remove_from_channels 只对 name_rule=0 的档案生效；若移除会让某渠道
+         *     supported_models 变空 ⇒ 422 channel_models_empty + channel_ids
+         *     （整体回滚）。
+         *     clear_pricing=true 会删除 model_pricing / group_pricing 同名行，
+         *     **额外要求 pricing:manage**（否则 403）；目标行按 model_name 精确匹配。
+         *     部分 id 不存在不算错误：requested 与 deleted 如实相减即未命中数。
+         */
+        post: operations["batchDeleteModelMeta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型档案详情（含派生字段） */
+        get: operations["getModelMeta"];
+        /**
+         * 更新模型档案（updated_at 乐观锁）
+         * @description 请求体是部分更新：未提交的字段保持不变；显式 null 清除可空列。
+         *     updated_at 必填（缺失 400）；与当前行不一致 ⇒ 409。无任何可更新字段
+         *     ⇒ 422。
+         */
+        put: operations["updateModelMeta"];
+        post?: never;
+        /** 删除模型档案（updated_at 乐观锁） */
+        delete: operations["deleteModelMeta"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vendors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 供应商列表（分页 + 筛选 + 排序）
+         * @description version 是 7 列规范化后的 sha256 **派生值**（不落库）；model_count
+         *     统计全部档案（含停用）。attached=true/false 按「是否已挂模型」分区。
+         */
+        get: operations["listVendors"];
+        put?: never;
+        /**
+         * 新建供应商
+         * @description 名称大小写不敏感唯一（lower(name)）；重名 ⇒ 409。应携带 Idempotency-Key。
+         */
+        post: operations["createVendor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vendors/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 供应商选择器（关键字搜索，limit 上限 100） */
+        get: operations["searchVendors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vendors/operations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 供应商批量操作预览（只读）
+         * @description action=assign 用 model_ids；merge/delete 用 vendor_ids；assign/merge
+         *     可带 target_vendor_id（assign 的 0 = 清空归属）。
+         *     expected_version 是**操作指纹**（涉及供应商的 id=version 升序拼接后
+         *     sha256），首次预览不必传；传了且不一致时 conflict=true 并返回当前
+         *     版本集合。空选择/超过 1000 条/参数组合非法 ⇒ 422。
+         */
+        post: operations["previewVendorOperations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vendors/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 供应商批量操作（assign / merge / delete）
+         * @description 必须回传 preview 的 expected_version；缺失或过期 ⇒ 409
+         *     vendor_conflict（conflicts[] 给出涉及供应商的当前版本）。
+         *     merge 先把源供应商的模型改挂目标再删源；delete 仅允许零引用
+         *     （有引用 ⇒ 409 vendor_referenced + reference_count）。
+         *     事务内任一失败整体回滚。
+         */
+        post: operations["applyVendorOperations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vendors/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 供应商详情 */
+        get: operations["getVendor"];
+        /**
+         * 更新供应商（派生 version 乐观锁）
+         * @description version 必填（缺失 400）；与当前派生版本不一致 ⇒ 409。名称仍受
+         *     lower(name) 唯一约束（重名 409）。
+         */
+        put: operations["updateVendor"];
+        post?: never;
+        /** 删除供应商（有引用 ⇒ 409 + reference_count） */
+        delete: operations["deleteVendor"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/redemption-codes": {
         parameters: {
             query?: never;
@@ -4200,6 +4485,340 @@ export interface components {
         GroupPricingStatusRequest: {
             /** Format: date-time */
             updated_at: string;
+        };
+        /**
+         * @description 广场态（派生字段，不落库）：status=2 ⇒ hidden；否则按 name_rule 与
+         *     启用渠道 supported_models 匹配——覆盖全部启用用户分组 ⇒ visible，
+         *     部分 ⇒ partial，无启用渠道 ⇒ unavailable。
+         * @enum {string}
+         */
+        SquareState: "hidden" | "visible" | "partial" | "unavailable";
+        /**
+         * @description 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+         * @enum {integer}
+         */
+        ModelMetaNameRule: 0 | 1 | 2 | 3;
+        ModelMeta: {
+            /** Format: int64 */
+            id: number;
+            model_name: string;
+            display_name?: string | null;
+            description?: string | null;
+            /** @description 前端资源键（不是 URL）。 */
+            icon?: string | null;
+            tags: string[];
+            /** Format: int64 */
+            vendor_id?: number | null;
+            /** @description 键必须以 / 开头。 */
+            endpoints: {
+                [key: string]: ("GET" | "POST" | "PUT" | "PATCH" | "DELETE")[];
+            };
+            capabilities: ("text" | "vision" | "audio" | "video" | "function_calling" | "tool_use" | "reasoning" | "embedding" | "rerank" | "image_generation" | "speech" | "transcription")[];
+            modalities: ("text" | "image" | "audio" | "video")[];
+            parameters: ({
+                name: string;
+                /** @enum {string} */
+                type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+            } & {
+                [key: string]: unknown;
+            })[];
+            /** Format: int64 */
+            context_length?: number | null;
+            /** Format: int64 */
+            max_output?: number | null;
+            /** @description YYYY-MM。 */
+            knowledge_cutoff?: string | null;
+            /** Format: date */
+            released_at?: string | null;
+            /** @enum {integer} */
+            status: 1 | 2;
+            /** @description false = 本地锁定，上游同步 preview 判 blocked 且永不覆盖。 */
+            sync_official: boolean;
+            name_rule: components["schemas"]["ModelMetaNameRule"];
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PUT / DELETE 必须原样回传。
+             */
+            updated_at: string;
+            /** @description 派生字段（vendors.name）。 */
+            vendor_name?: string | null;
+            square_state: components["schemas"]["SquareState"];
+            /**
+             * Format: int64
+             * @description 启用渠道中 supported_models 按 name_rule 命中该档案的 DISTINCT 渠道数。
+             */
+            configured_channel_count: number;
+            /** @description 派生字段：命中启用渠道的 group_tags 与启用用户分组的交集；NULL group_tags = 全部分组。 */
+            enable_groups: string[];
+        };
+        /** @description GET /api/models 的 offset 分页信封。 */
+        ModelMetaList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["ModelMeta"][];
+        };
+        ModelMetaCommonFields: {
+            display_name?: string | null;
+            description?: string | null;
+            icon?: string | null;
+            tags?: string[];
+            /**
+             * Format: int64
+             * @description null = 未归属；不存在的 id ⇒ 422。
+             */
+            vendor_id?: number | null;
+            endpoints?: {
+                [key: string]: ("GET" | "POST" | "PUT" | "PATCH" | "DELETE")[];
+            };
+            capabilities?: ("text" | "vision" | "audio" | "video" | "function_calling" | "tool_use" | "reasoning" | "embedding" | "rerank" | "image_generation" | "speech" | "transcription")[];
+            modalities?: ("text" | "image" | "audio" | "video")[];
+            parameters?: ({
+                name: string;
+                /** @enum {string} */
+                type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+            } & {
+                [key: string]: unknown;
+            })[];
+            /** Format: int64 */
+            context_length?: number | null;
+            /** Format: int64 */
+            max_output?: number | null;
+            knowledge_cutoff?: string | null;
+            /** Format: date */
+            released_at?: string | null;
+            /** @enum {integer} */
+            status?: 1 | 2;
+            sync_official?: boolean;
+        };
+        ModelMetaCreateRequest: components["schemas"]["ModelMetaCommonFields"] & {
+            model_name: string;
+            name_rule?: components["schemas"]["ModelMetaNameRule"];
+        };
+        ModelMetaSearchList: {
+            items: {
+                /** Format: int64 */
+                id: number;
+                model_name: string;
+                display_name?: string | null;
+                /** @enum {integer} */
+                status: 1 | 2;
+            }[];
+        };
+        ModelMissing: {
+            model_name: string;
+            /**
+             * Format: int64
+             * @description 支持该模型的启用渠道数（跳过含非法 supported_models 元素的渠道）。
+             */
+            channel_count: number;
+            /** @description model_pricing 中已有同名行（不区分启停）。 */
+            has_pricing: boolean;
+        };
+        ModelMissingList: {
+            items: components["schemas"]["ModelMissing"][];
+            /**
+             * Format: int64
+             * @description 因 supported_models 含非法元素而整渠道跳过的启用渠道数。
+             */
+            skipped_channels: number;
+            /** Format: int64 */
+            total: number;
+        };
+        ModelSyncFieldChange: {
+            /** @description 本地值（可能为 null）。 */
+            local: unknown;
+            /** @description 上游值（可能为 null）。 */
+            upstream: unknown;
+        };
+        ModelSyncModelCandidate: {
+            model_name: string;
+            /** @description 仅 update 组提供；只为上游清单提供的字段计算差异。 */
+            changes?: {
+                [key: string]: components["schemas"]["ModelSyncFieldChange"];
+            };
+        };
+        ModelSyncVendorCandidate: {
+            name: string;
+            changes?: {
+                [key: string]: components["schemas"]["ModelSyncFieldChange"];
+            };
+        };
+        ModelSyncVendorGroups: {
+            create: string[];
+            update: components["schemas"]["ModelSyncVendorCandidate"][];
+            unchanged: string[];
+        };
+        ModelSyncPreview: {
+            /** @description 上游清单原文的 sha256（hex）；apply 必须原样回传。 */
+            source_version: string;
+            groups: {
+                create: components["schemas"]["ModelSyncModelCandidate"][];
+                update: components["schemas"]["ModelSyncModelCandidate"][];
+                unchanged: string[];
+                /** @description 本地 sync_official=false，apply 永不覆盖。 */
+                blocked: string[];
+                /** @description 本地有、上游清单无。 */
+                missing_upstream: string[];
+                /** @description 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。 */
+                missing_vendor: string[];
+                vendors: components["schemas"]["ModelSyncVendorGroups"];
+            };
+        };
+        ModelSyncManifestModel: {
+            model_name: string;
+            display_name?: string | null;
+            description?: string | null;
+            icon?: string | null;
+            tags?: string[];
+            capabilities?: string[];
+            /** Format: int64 */
+            context_length?: number | null;
+            /** Format: int64 */
+            max_output?: number | null;
+        };
+        ModelSyncManifestVendor: {
+            name: string;
+            description?: string | null;
+            icon?: string | null;
+        };
+        ModelSyncApplyRequest: {
+            source_version: string;
+            /** @description 只用于选择；写入值取自服务端缓存的清单。 */
+            models?: components["schemas"]["ModelSyncManifestModel"][];
+            vendors?: components["schemas"]["ModelSyncManifestVendor"][];
+        };
+        ModelSyncApplyResponse: {
+            source_version: string;
+            created_models: string[];
+            updated_models: string[];
+            created_vendors: string[];
+            updated_vendors: string[];
+        };
+        ModelMetaBatchDeleteRequest: {
+            ids: number[];
+            /**
+             * @description 只对 name_rule=0 的档案生效；会让渠道变空时整体 422。
+             * @default false
+             */
+            remove_from_channels: boolean;
+            /**
+             * @description 额外要求 pricing:manage，否则 403。
+             * @default false
+             */
+            clear_pricing: boolean;
+        };
+        ModelMetaBatchDeleteResponse: {
+            /**
+             * Format: int64
+             * @description 去重后的选择集大小。
+             */
+            requested: number;
+            /**
+             * Format: int64
+             * @description 实际命中的档案数。
+             */
+            deleted: number;
+            /** Format: int64 */
+            channels_updated: number;
+            /** Format: int64 */
+            pricing_deleted: number;
+            /** Format: int64 */
+            group_pricing_deleted: number;
+        };
+        ModelMetaUpdateRequest: components["schemas"]["ModelMetaCommonFields"] & {
+            model_name?: string;
+            name_rule?: components["schemas"]["ModelMetaNameRule"];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        Vendor: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            description?: string | null;
+            icon?: string | null;
+            /** @enum {integer} */
+            status: 1 | 2;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: int64
+             * @description 引用该供应商的档案数（含停用模型）。
+             */
+            model_count: number;
+            /** @description 7 列规范化后的 sha256 派生值（不落库）；PUT 必须原样回传。 */
+            version: string;
+        };
+        /** @description GET /api/vendors 的 offset 分页信封。 */
+        VendorList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["Vendor"][];
+        };
+        VendorCreateRequest: {
+            name: string;
+            description?: string | null;
+            icon?: string | null;
+            /**
+             * @default 1
+             * @enum {integer}
+             */
+            status: 1 | 2;
+        };
+        VendorSearchList: {
+            items: {
+                /** Format: int64 */
+                id: number;
+                name: string;
+                /** @enum {integer} */
+                status: 1 | 2;
+            }[];
+        };
+        VendorOperationRequest: {
+            /** @enum {string} */
+            action: "assign" | "merge" | "delete";
+            /** @description assign 使用。 */
+            model_ids?: number[];
+            /** @description merge / delete 使用。 */
+            vendor_ids?: number[];
+            /**
+             * Format: int64
+             * @description assign 的 0 = 清空归属。
+             */
+            target_vendor_id?: number;
+            /** @description preview 返回的操作指纹；apply 必填，缺失亦视为冲突。 */
+            expected_version?: string;
+        };
+        VendorOperationConflict: {
+            /** Format: int64 */
+            vendor_id: number;
+            current_version: string;
+        };
+        VendorOperationPreview: {
+            /** @enum {string} */
+            action: "assign" | "merge" | "delete";
+            /** Format: int64 */
+            affected: number;
+            conflict: boolean;
+            conflicts: components["schemas"]["VendorOperationConflict"][];
+            expected_version: string;
+            vendors: {
+                /** Format: int64 */
+                vendor_id: number;
+                version: string;
+            }[];
+        };
+        VendorOperationResult: {
+            /** Format: int64 */
+            affected: number;
+        };
+        VendorUpdateRequest: {
+            name?: string;
+            description?: string | null;
+            icon?: string | null;
+            /** @enum {integer} */
+            status?: 1 | 2;
+            version: string;
         };
         /**
          * @description expired 是虚拟态（不落库）
@@ -8087,6 +8706,600 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listModelCatalog: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 匹配 model_name / display_name（ILIKE）。 */
+                keyword?: string;
+                vendor_id?: number;
+                status?: "1" | "2" | "enabled" | "disabled";
+                square_state?: components["schemas"]["SquareState"];
+                sort?: "model_name" | "-model_name" | "status" | "-status" | "updated_at" | "-updated_at" | "created_at" | "-created_at";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMetaList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createModelMeta: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelMetaCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMeta"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    searchModelCatalog: {
+        parameters: {
+            query?: {
+                keyword?: string;
+                /** @description 仅做枚举校验；选择器返回结果由关键字决定。 */
+                status?: "1" | "2" | "enabled" | "disabled";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMetaSearchList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listMissingModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMissingList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    previewModelSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSyncPreview"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+            502: components["responses"]["Error502"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    applyModelSync: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSyncApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSyncApplyResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    batchDeleteModelMeta: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelMetaBatchDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMetaBatchDeleteResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getModelMeta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMeta"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateModelMeta: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelMetaUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelMeta"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteModelMeta: {
+        parameters: {
+            query: {
+                /**
+                 * @description 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+                 *     故通过查询参数传递；不匹配返回 409。
+                 */
+                updated_at: components["parameters"]["UpdatedAtQuery"];
+            };
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listVendors: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                keyword?: string;
+                status?: "1" | "2" | "enabled" | "disabled";
+                attached?: boolean;
+                sort?: "name" | "-name" | "model_count" | "-model_count" | "updated_at" | "-updated_at" | "created_at" | "-created_at";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createVendor: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Vendor"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    searchVendors: {
+        parameters: {
+            query?: {
+                keyword?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorSearchList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    previewVendorOperations: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorOperationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOperationPreview"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    applyVendorOperations: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorOperationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOperationResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getVendor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Vendor"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateVendor: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Vendor"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteVendor: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];

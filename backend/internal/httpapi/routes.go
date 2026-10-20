@@ -239,6 +239,26 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.PricingHandlers.RegisterPricingRoutes(rt.protected, nil)
 	}
 
+	// 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。目录没有内存兜底：
+	// 只有提供 DB 时才挂载，避免纯内存装配用空数据伪造 200（与定价接缝一致）。
+	// 派生字段读取面直接查 channels/user_groups（固定条数查询，非逐行）；
+	// 上游同步地址从配置中心 model_sync.source_url 读取，未配置时 preview 503。
+	if cfg.DB != nil {
+		catalogHandlers, err := NewModelCatalogHandlers(ModelCatalogHandlerConfig{
+			Repo:       store.NewModelCatalogRepo(cfg.DB),
+			Redis:      cfg.Redis,
+			Authz:      cfg.Authz,
+			Audit:      cfg.Audit,
+			Logger:     cfg.Logger,
+			Derived:    NewSQLCatalogDerived(cfg.DB),
+			SyncSource: NewModelSyncSourceFromConfig(cfg.Config),
+		})
+		if err != nil {
+			return nil, err
+		}
+		catalogHandlers.RegisterModelCatalogRoutes(rt.protected, nil)
+	}
+
 	// 任务插件管理端点（M6d Task 5）：与其余管理面共用受保护链。
 	if cfg.TaskPluginHandlers != nil {
 		cfg.TaskPluginHandlers.Register(rt.protected)

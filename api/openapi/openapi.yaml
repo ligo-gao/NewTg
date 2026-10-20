@@ -164,6 +164,33 @@ paths:
   /api/group-pricing/{group}/{model}:disable:
     $ref: './paths/admin.yaml#/paths/~1api~1group-pricing~1{group}~1{model}:disable'
 
+  # 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。
+  # 静态子路径先于 {id} 声明，与 ServeMux 的字面量优先一致。
+  /api/models:
+    $ref: './paths/admin.yaml#/paths/~1api~1models'
+  /api/models/search:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1search'
+  /api/models/missing:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1missing'
+  /api/models/sync/preview:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1sync~1preview'
+  /api/models/sync:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1sync'
+  /api/models/batch-delete:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1batch-delete'
+  /api/models/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1models~1{id}'
+  /api/vendors:
+    $ref: './paths/admin.yaml#/paths/~1api~1vendors'
+  /api/vendors/search:
+    $ref: './paths/admin.yaml#/paths/~1api~1vendors~1search'
+  /api/vendors/operations/preview:
+    $ref: './paths/admin.yaml#/paths/~1api~1vendors~1operations~1preview'
+  /api/vendors/operations:
+    $ref: './paths/admin.yaml#/paths/~1api~1vendors~1operations'
+  /api/vendors/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1vendors~1{id}'
+
   # 兑换码（M5 Task 2；管理面 + 用户核销）。
   /api/redemption-codes:
     $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'

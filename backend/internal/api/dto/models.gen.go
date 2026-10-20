@@ -288,6 +288,636 @@ func (e MarketplaceVersionApiVersion) Valid() bool {
 	}
 }
 
+// Defines values for ModelMetaCapabilities.
+const (
+	ModelMetaCapabilitiesAudio           ModelMetaCapabilities = "audio"
+	ModelMetaCapabilitiesEmbedding       ModelMetaCapabilities = "embedding"
+	ModelMetaCapabilitiesFunctionCalling ModelMetaCapabilities = "function_calling"
+	ModelMetaCapabilitiesImageGeneration ModelMetaCapabilities = "image_generation"
+	ModelMetaCapabilitiesReasoning       ModelMetaCapabilities = "reasoning"
+	ModelMetaCapabilitiesRerank          ModelMetaCapabilities = "rerank"
+	ModelMetaCapabilitiesSpeech          ModelMetaCapabilities = "speech"
+	ModelMetaCapabilitiesText            ModelMetaCapabilities = "text"
+	ModelMetaCapabilitiesToolUse         ModelMetaCapabilities = "tool_use"
+	ModelMetaCapabilitiesTranscription   ModelMetaCapabilities = "transcription"
+	ModelMetaCapabilitiesVideo           ModelMetaCapabilities = "video"
+	ModelMetaCapabilitiesVision          ModelMetaCapabilities = "vision"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCapabilities enum.
+func (e ModelMetaCapabilities) Valid() bool {
+	switch e {
+	case ModelMetaCapabilitiesAudio:
+		return true
+	case ModelMetaCapabilitiesEmbedding:
+		return true
+	case ModelMetaCapabilitiesFunctionCalling:
+		return true
+	case ModelMetaCapabilitiesImageGeneration:
+		return true
+	case ModelMetaCapabilitiesReasoning:
+		return true
+	case ModelMetaCapabilitiesRerank:
+		return true
+	case ModelMetaCapabilitiesSpeech:
+		return true
+	case ModelMetaCapabilitiesText:
+		return true
+	case ModelMetaCapabilitiesToolUse:
+		return true
+	case ModelMetaCapabilitiesTranscription:
+		return true
+	case ModelMetaCapabilitiesVideo:
+		return true
+	case ModelMetaCapabilitiesVision:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaEndpoints.
+const (
+	ModelMetaEndpointsDELETE ModelMetaEndpoints = "DELETE"
+	ModelMetaEndpointsGET    ModelMetaEndpoints = "GET"
+	ModelMetaEndpointsPATCH  ModelMetaEndpoints = "PATCH"
+	ModelMetaEndpointsPOST   ModelMetaEndpoints = "POST"
+	ModelMetaEndpointsPUT    ModelMetaEndpoints = "PUT"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaEndpoints enum.
+func (e ModelMetaEndpoints) Valid() bool {
+	switch e {
+	case ModelMetaEndpointsDELETE:
+		return true
+	case ModelMetaEndpointsGET:
+		return true
+	case ModelMetaEndpointsPATCH:
+		return true
+	case ModelMetaEndpointsPOST:
+		return true
+	case ModelMetaEndpointsPUT:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaModalities.
+const (
+	ModelMetaModalitiesAudio ModelMetaModalities = "audio"
+	ModelMetaModalitiesImage ModelMetaModalities = "image"
+	ModelMetaModalitiesText  ModelMetaModalities = "text"
+	ModelMetaModalitiesVideo ModelMetaModalities = "video"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaModalities enum.
+func (e ModelMetaModalities) Valid() bool {
+	switch e {
+	case ModelMetaModalitiesAudio:
+		return true
+	case ModelMetaModalitiesImage:
+		return true
+	case ModelMetaModalitiesText:
+		return true
+	case ModelMetaModalitiesVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaParametersType.
+const (
+	ModelMetaParametersTypeArray   ModelMetaParametersType = "array"
+	ModelMetaParametersTypeBoolean ModelMetaParametersType = "boolean"
+	ModelMetaParametersTypeInteger ModelMetaParametersType = "integer"
+	ModelMetaParametersTypeNumber  ModelMetaParametersType = "number"
+	ModelMetaParametersTypeObject  ModelMetaParametersType = "object"
+	ModelMetaParametersTypeString  ModelMetaParametersType = "string"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaParametersType enum.
+func (e ModelMetaParametersType) Valid() bool {
+	switch e {
+	case ModelMetaParametersTypeArray:
+		return true
+	case ModelMetaParametersTypeBoolean:
+		return true
+	case ModelMetaParametersTypeInteger:
+		return true
+	case ModelMetaParametersTypeNumber:
+		return true
+	case ModelMetaParametersTypeObject:
+		return true
+	case ModelMetaParametersTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaStatus.
+const (
+	ModelMetaStatusN1 ModelMetaStatus = 1
+	ModelMetaStatusN2 ModelMetaStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaStatus enum.
+func (e ModelMetaStatus) Valid() bool {
+	switch e {
+	case ModelMetaStatusN1:
+		return true
+	case ModelMetaStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCommonFieldsCapabilities.
+const (
+	ModelMetaCommonFieldsCapabilitiesAudio           ModelMetaCommonFieldsCapabilities = "audio"
+	ModelMetaCommonFieldsCapabilitiesEmbedding       ModelMetaCommonFieldsCapabilities = "embedding"
+	ModelMetaCommonFieldsCapabilitiesFunctionCalling ModelMetaCommonFieldsCapabilities = "function_calling"
+	ModelMetaCommonFieldsCapabilitiesImageGeneration ModelMetaCommonFieldsCapabilities = "image_generation"
+	ModelMetaCommonFieldsCapabilitiesReasoning       ModelMetaCommonFieldsCapabilities = "reasoning"
+	ModelMetaCommonFieldsCapabilitiesRerank          ModelMetaCommonFieldsCapabilities = "rerank"
+	ModelMetaCommonFieldsCapabilitiesSpeech          ModelMetaCommonFieldsCapabilities = "speech"
+	ModelMetaCommonFieldsCapabilitiesText            ModelMetaCommonFieldsCapabilities = "text"
+	ModelMetaCommonFieldsCapabilitiesToolUse         ModelMetaCommonFieldsCapabilities = "tool_use"
+	ModelMetaCommonFieldsCapabilitiesTranscription   ModelMetaCommonFieldsCapabilities = "transcription"
+	ModelMetaCommonFieldsCapabilitiesVideo           ModelMetaCommonFieldsCapabilities = "video"
+	ModelMetaCommonFieldsCapabilitiesVision          ModelMetaCommonFieldsCapabilities = "vision"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCommonFieldsCapabilities enum.
+func (e ModelMetaCommonFieldsCapabilities) Valid() bool {
+	switch e {
+	case ModelMetaCommonFieldsCapabilitiesAudio:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesEmbedding:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesFunctionCalling:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesImageGeneration:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesReasoning:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesRerank:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesSpeech:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesText:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesToolUse:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesTranscription:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesVideo:
+		return true
+	case ModelMetaCommonFieldsCapabilitiesVision:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCommonFieldsEndpoints.
+const (
+	ModelMetaCommonFieldsEndpointsDELETE ModelMetaCommonFieldsEndpoints = "DELETE"
+	ModelMetaCommonFieldsEndpointsGET    ModelMetaCommonFieldsEndpoints = "GET"
+	ModelMetaCommonFieldsEndpointsPATCH  ModelMetaCommonFieldsEndpoints = "PATCH"
+	ModelMetaCommonFieldsEndpointsPOST   ModelMetaCommonFieldsEndpoints = "POST"
+	ModelMetaCommonFieldsEndpointsPUT    ModelMetaCommonFieldsEndpoints = "PUT"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCommonFieldsEndpoints enum.
+func (e ModelMetaCommonFieldsEndpoints) Valid() bool {
+	switch e {
+	case ModelMetaCommonFieldsEndpointsDELETE:
+		return true
+	case ModelMetaCommonFieldsEndpointsGET:
+		return true
+	case ModelMetaCommonFieldsEndpointsPATCH:
+		return true
+	case ModelMetaCommonFieldsEndpointsPOST:
+		return true
+	case ModelMetaCommonFieldsEndpointsPUT:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCommonFieldsModalities.
+const (
+	ModelMetaCommonFieldsModalitiesAudio ModelMetaCommonFieldsModalities = "audio"
+	ModelMetaCommonFieldsModalitiesImage ModelMetaCommonFieldsModalities = "image"
+	ModelMetaCommonFieldsModalitiesText  ModelMetaCommonFieldsModalities = "text"
+	ModelMetaCommonFieldsModalitiesVideo ModelMetaCommonFieldsModalities = "video"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCommonFieldsModalities enum.
+func (e ModelMetaCommonFieldsModalities) Valid() bool {
+	switch e {
+	case ModelMetaCommonFieldsModalitiesAudio:
+		return true
+	case ModelMetaCommonFieldsModalitiesImage:
+		return true
+	case ModelMetaCommonFieldsModalitiesText:
+		return true
+	case ModelMetaCommonFieldsModalitiesVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCommonFieldsParametersType.
+const (
+	ModelMetaCommonFieldsParametersTypeArray   ModelMetaCommonFieldsParametersType = "array"
+	ModelMetaCommonFieldsParametersTypeBoolean ModelMetaCommonFieldsParametersType = "boolean"
+	ModelMetaCommonFieldsParametersTypeInteger ModelMetaCommonFieldsParametersType = "integer"
+	ModelMetaCommonFieldsParametersTypeNumber  ModelMetaCommonFieldsParametersType = "number"
+	ModelMetaCommonFieldsParametersTypeObject  ModelMetaCommonFieldsParametersType = "object"
+	ModelMetaCommonFieldsParametersTypeString  ModelMetaCommonFieldsParametersType = "string"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCommonFieldsParametersType enum.
+func (e ModelMetaCommonFieldsParametersType) Valid() bool {
+	switch e {
+	case ModelMetaCommonFieldsParametersTypeArray:
+		return true
+	case ModelMetaCommonFieldsParametersTypeBoolean:
+		return true
+	case ModelMetaCommonFieldsParametersTypeInteger:
+		return true
+	case ModelMetaCommonFieldsParametersTypeNumber:
+		return true
+	case ModelMetaCommonFieldsParametersTypeObject:
+		return true
+	case ModelMetaCommonFieldsParametersTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCommonFieldsStatus.
+const (
+	ModelMetaCommonFieldsStatusN1 ModelMetaCommonFieldsStatus = 1
+	ModelMetaCommonFieldsStatusN2 ModelMetaCommonFieldsStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCommonFieldsStatus enum.
+func (e ModelMetaCommonFieldsStatus) Valid() bool {
+	switch e {
+	case ModelMetaCommonFieldsStatusN1:
+		return true
+	case ModelMetaCommonFieldsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCreateRequestCapabilities.
+const (
+	ModelMetaCreateRequestCapabilitiesAudio           ModelMetaCreateRequestCapabilities = "audio"
+	ModelMetaCreateRequestCapabilitiesEmbedding       ModelMetaCreateRequestCapabilities = "embedding"
+	ModelMetaCreateRequestCapabilitiesFunctionCalling ModelMetaCreateRequestCapabilities = "function_calling"
+	ModelMetaCreateRequestCapabilitiesImageGeneration ModelMetaCreateRequestCapabilities = "image_generation"
+	ModelMetaCreateRequestCapabilitiesReasoning       ModelMetaCreateRequestCapabilities = "reasoning"
+	ModelMetaCreateRequestCapabilitiesRerank          ModelMetaCreateRequestCapabilities = "rerank"
+	ModelMetaCreateRequestCapabilitiesSpeech          ModelMetaCreateRequestCapabilities = "speech"
+	ModelMetaCreateRequestCapabilitiesText            ModelMetaCreateRequestCapabilities = "text"
+	ModelMetaCreateRequestCapabilitiesToolUse         ModelMetaCreateRequestCapabilities = "tool_use"
+	ModelMetaCreateRequestCapabilitiesTranscription   ModelMetaCreateRequestCapabilities = "transcription"
+	ModelMetaCreateRequestCapabilitiesVideo           ModelMetaCreateRequestCapabilities = "video"
+	ModelMetaCreateRequestCapabilitiesVision          ModelMetaCreateRequestCapabilities = "vision"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCreateRequestCapabilities enum.
+func (e ModelMetaCreateRequestCapabilities) Valid() bool {
+	switch e {
+	case ModelMetaCreateRequestCapabilitiesAudio:
+		return true
+	case ModelMetaCreateRequestCapabilitiesEmbedding:
+		return true
+	case ModelMetaCreateRequestCapabilitiesFunctionCalling:
+		return true
+	case ModelMetaCreateRequestCapabilitiesImageGeneration:
+		return true
+	case ModelMetaCreateRequestCapabilitiesReasoning:
+		return true
+	case ModelMetaCreateRequestCapabilitiesRerank:
+		return true
+	case ModelMetaCreateRequestCapabilitiesSpeech:
+		return true
+	case ModelMetaCreateRequestCapabilitiesText:
+		return true
+	case ModelMetaCreateRequestCapabilitiesToolUse:
+		return true
+	case ModelMetaCreateRequestCapabilitiesTranscription:
+		return true
+	case ModelMetaCreateRequestCapabilitiesVideo:
+		return true
+	case ModelMetaCreateRequestCapabilitiesVision:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCreateRequestEndpoints.
+const (
+	ModelMetaCreateRequestEndpointsDELETE ModelMetaCreateRequestEndpoints = "DELETE"
+	ModelMetaCreateRequestEndpointsGET    ModelMetaCreateRequestEndpoints = "GET"
+	ModelMetaCreateRequestEndpointsPATCH  ModelMetaCreateRequestEndpoints = "PATCH"
+	ModelMetaCreateRequestEndpointsPOST   ModelMetaCreateRequestEndpoints = "POST"
+	ModelMetaCreateRequestEndpointsPUT    ModelMetaCreateRequestEndpoints = "PUT"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCreateRequestEndpoints enum.
+func (e ModelMetaCreateRequestEndpoints) Valid() bool {
+	switch e {
+	case ModelMetaCreateRequestEndpointsDELETE:
+		return true
+	case ModelMetaCreateRequestEndpointsGET:
+		return true
+	case ModelMetaCreateRequestEndpointsPATCH:
+		return true
+	case ModelMetaCreateRequestEndpointsPOST:
+		return true
+	case ModelMetaCreateRequestEndpointsPUT:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCreateRequestModalities.
+const (
+	ModelMetaCreateRequestModalitiesAudio ModelMetaCreateRequestModalities = "audio"
+	ModelMetaCreateRequestModalitiesImage ModelMetaCreateRequestModalities = "image"
+	ModelMetaCreateRequestModalitiesText  ModelMetaCreateRequestModalities = "text"
+	ModelMetaCreateRequestModalitiesVideo ModelMetaCreateRequestModalities = "video"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCreateRequestModalities enum.
+func (e ModelMetaCreateRequestModalities) Valid() bool {
+	switch e {
+	case ModelMetaCreateRequestModalitiesAudio:
+		return true
+	case ModelMetaCreateRequestModalitiesImage:
+		return true
+	case ModelMetaCreateRequestModalitiesText:
+		return true
+	case ModelMetaCreateRequestModalitiesVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCreateRequestParametersType.
+const (
+	ModelMetaCreateRequestParametersTypeArray   ModelMetaCreateRequestParametersType = "array"
+	ModelMetaCreateRequestParametersTypeBoolean ModelMetaCreateRequestParametersType = "boolean"
+	ModelMetaCreateRequestParametersTypeInteger ModelMetaCreateRequestParametersType = "integer"
+	ModelMetaCreateRequestParametersTypeNumber  ModelMetaCreateRequestParametersType = "number"
+	ModelMetaCreateRequestParametersTypeObject  ModelMetaCreateRequestParametersType = "object"
+	ModelMetaCreateRequestParametersTypeString  ModelMetaCreateRequestParametersType = "string"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCreateRequestParametersType enum.
+func (e ModelMetaCreateRequestParametersType) Valid() bool {
+	switch e {
+	case ModelMetaCreateRequestParametersTypeArray:
+		return true
+	case ModelMetaCreateRequestParametersTypeBoolean:
+		return true
+	case ModelMetaCreateRequestParametersTypeInteger:
+		return true
+	case ModelMetaCreateRequestParametersTypeNumber:
+		return true
+	case ModelMetaCreateRequestParametersTypeObject:
+		return true
+	case ModelMetaCreateRequestParametersTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaCreateRequestStatus.
+const (
+	ModelMetaCreateRequestStatusN1 ModelMetaCreateRequestStatus = 1
+	ModelMetaCreateRequestStatusN2 ModelMetaCreateRequestStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaCreateRequestStatus enum.
+func (e ModelMetaCreateRequestStatus) Valid() bool {
+	switch e {
+	case ModelMetaCreateRequestStatusN1:
+		return true
+	case ModelMetaCreateRequestStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaNameRule.
+const (
+	ModelMetaNameRuleN0 ModelMetaNameRule = 0
+	ModelMetaNameRuleN1 ModelMetaNameRule = 1
+	ModelMetaNameRuleN2 ModelMetaNameRule = 2
+	ModelMetaNameRuleN3 ModelMetaNameRule = 3
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaNameRule enum.
+func (e ModelMetaNameRule) Valid() bool {
+	switch e {
+	case ModelMetaNameRuleN0:
+		return true
+	case ModelMetaNameRuleN1:
+		return true
+	case ModelMetaNameRuleN2:
+		return true
+	case ModelMetaNameRuleN3:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaSearchListItemsStatus.
+const (
+	ModelMetaSearchListItemsStatusN1 ModelMetaSearchListItemsStatus = 1
+	ModelMetaSearchListItemsStatusN2 ModelMetaSearchListItemsStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaSearchListItemsStatus enum.
+func (e ModelMetaSearchListItemsStatus) Valid() bool {
+	switch e {
+	case ModelMetaSearchListItemsStatusN1:
+		return true
+	case ModelMetaSearchListItemsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaUpdateRequestCapabilities.
+const (
+	ModelMetaUpdateRequestCapabilitiesAudio           ModelMetaUpdateRequestCapabilities = "audio"
+	ModelMetaUpdateRequestCapabilitiesEmbedding       ModelMetaUpdateRequestCapabilities = "embedding"
+	ModelMetaUpdateRequestCapabilitiesFunctionCalling ModelMetaUpdateRequestCapabilities = "function_calling"
+	ModelMetaUpdateRequestCapabilitiesImageGeneration ModelMetaUpdateRequestCapabilities = "image_generation"
+	ModelMetaUpdateRequestCapabilitiesReasoning       ModelMetaUpdateRequestCapabilities = "reasoning"
+	ModelMetaUpdateRequestCapabilitiesRerank          ModelMetaUpdateRequestCapabilities = "rerank"
+	ModelMetaUpdateRequestCapabilitiesSpeech          ModelMetaUpdateRequestCapabilities = "speech"
+	ModelMetaUpdateRequestCapabilitiesText            ModelMetaUpdateRequestCapabilities = "text"
+	ModelMetaUpdateRequestCapabilitiesToolUse         ModelMetaUpdateRequestCapabilities = "tool_use"
+	ModelMetaUpdateRequestCapabilitiesTranscription   ModelMetaUpdateRequestCapabilities = "transcription"
+	ModelMetaUpdateRequestCapabilitiesVideo           ModelMetaUpdateRequestCapabilities = "video"
+	ModelMetaUpdateRequestCapabilitiesVision          ModelMetaUpdateRequestCapabilities = "vision"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaUpdateRequestCapabilities enum.
+func (e ModelMetaUpdateRequestCapabilities) Valid() bool {
+	switch e {
+	case ModelMetaUpdateRequestCapabilitiesAudio:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesEmbedding:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesFunctionCalling:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesImageGeneration:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesReasoning:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesRerank:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesSpeech:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesText:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesToolUse:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesTranscription:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesVideo:
+		return true
+	case ModelMetaUpdateRequestCapabilitiesVision:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaUpdateRequestEndpoints.
+const (
+	ModelMetaUpdateRequestEndpointsDELETE ModelMetaUpdateRequestEndpoints = "DELETE"
+	ModelMetaUpdateRequestEndpointsGET    ModelMetaUpdateRequestEndpoints = "GET"
+	ModelMetaUpdateRequestEndpointsPATCH  ModelMetaUpdateRequestEndpoints = "PATCH"
+	ModelMetaUpdateRequestEndpointsPOST   ModelMetaUpdateRequestEndpoints = "POST"
+	ModelMetaUpdateRequestEndpointsPUT    ModelMetaUpdateRequestEndpoints = "PUT"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaUpdateRequestEndpoints enum.
+func (e ModelMetaUpdateRequestEndpoints) Valid() bool {
+	switch e {
+	case ModelMetaUpdateRequestEndpointsDELETE:
+		return true
+	case ModelMetaUpdateRequestEndpointsGET:
+		return true
+	case ModelMetaUpdateRequestEndpointsPATCH:
+		return true
+	case ModelMetaUpdateRequestEndpointsPOST:
+		return true
+	case ModelMetaUpdateRequestEndpointsPUT:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaUpdateRequestModalities.
+const (
+	ModelMetaUpdateRequestModalitiesAudio ModelMetaUpdateRequestModalities = "audio"
+	ModelMetaUpdateRequestModalitiesImage ModelMetaUpdateRequestModalities = "image"
+	ModelMetaUpdateRequestModalitiesText  ModelMetaUpdateRequestModalities = "text"
+	ModelMetaUpdateRequestModalitiesVideo ModelMetaUpdateRequestModalities = "video"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaUpdateRequestModalities enum.
+func (e ModelMetaUpdateRequestModalities) Valid() bool {
+	switch e {
+	case ModelMetaUpdateRequestModalitiesAudio:
+		return true
+	case ModelMetaUpdateRequestModalitiesImage:
+		return true
+	case ModelMetaUpdateRequestModalitiesText:
+		return true
+	case ModelMetaUpdateRequestModalitiesVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaUpdateRequestParametersType.
+const (
+	ModelMetaUpdateRequestParametersTypeArray   ModelMetaUpdateRequestParametersType = "array"
+	ModelMetaUpdateRequestParametersTypeBoolean ModelMetaUpdateRequestParametersType = "boolean"
+	ModelMetaUpdateRequestParametersTypeInteger ModelMetaUpdateRequestParametersType = "integer"
+	ModelMetaUpdateRequestParametersTypeNumber  ModelMetaUpdateRequestParametersType = "number"
+	ModelMetaUpdateRequestParametersTypeObject  ModelMetaUpdateRequestParametersType = "object"
+	ModelMetaUpdateRequestParametersTypeString  ModelMetaUpdateRequestParametersType = "string"
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaUpdateRequestParametersType enum.
+func (e ModelMetaUpdateRequestParametersType) Valid() bool {
+	switch e {
+	case ModelMetaUpdateRequestParametersTypeArray:
+		return true
+	case ModelMetaUpdateRequestParametersTypeBoolean:
+		return true
+	case ModelMetaUpdateRequestParametersTypeInteger:
+		return true
+	case ModelMetaUpdateRequestParametersTypeNumber:
+		return true
+	case ModelMetaUpdateRequestParametersTypeObject:
+		return true
+	case ModelMetaUpdateRequestParametersTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelMetaUpdateRequestStatus.
+const (
+	ModelMetaUpdateRequestStatusN1 ModelMetaUpdateRequestStatus = 1
+	ModelMetaUpdateRequestStatusN2 ModelMetaUpdateRequestStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ModelMetaUpdateRequestStatus enum.
+func (e ModelMetaUpdateRequestStatus) Valid() bool {
+	switch e {
+	case ModelMetaUpdateRequestStatusN1:
+		return true
+	case ModelMetaUpdateRequestStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotificationChannel.
 const (
 	Bark    NotificationChannel = "bark"
@@ -792,6 +1422,30 @@ func (e SetupResponseUserStatus) Valid() bool {
 	}
 }
 
+// Defines values for SquareState.
+const (
+	Hidden      SquareState = "hidden"
+	Partial     SquareState = "partial"
+	Unavailable SquareState = "unavailable"
+	Visible     SquareState = "visible"
+)
+
+// Valid indicates whether the value is a known member of the SquareState enum.
+func (e SquareState) Valid() bool {
+	switch e {
+	case Hidden:
+		return true
+	case Partial:
+		return true
+	case Unavailable:
+		return true
+	case Visible:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TaskListItemFamily.
 const (
 	Plugin TaskListItemFamily = "plugin"
@@ -1212,6 +1866,120 @@ func (e UserStatus) Valid() bool {
 	}
 }
 
+// Defines values for VendorStatus.
+const (
+	VendorStatusN1 VendorStatus = 1
+	VendorStatusN2 VendorStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the VendorStatus enum.
+func (e VendorStatus) Valid() bool {
+	switch e {
+	case VendorStatusN1:
+		return true
+	case VendorStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VendorCreateRequestStatus.
+const (
+	VendorCreateRequestStatusN1 VendorCreateRequestStatus = 1
+	VendorCreateRequestStatusN2 VendorCreateRequestStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the VendorCreateRequestStatus enum.
+func (e VendorCreateRequestStatus) Valid() bool {
+	switch e {
+	case VendorCreateRequestStatusN1:
+		return true
+	case VendorCreateRequestStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VendorOperationPreviewAction.
+const (
+	VendorOperationPreviewActionAssign VendorOperationPreviewAction = "assign"
+	VendorOperationPreviewActionDelete VendorOperationPreviewAction = "delete"
+	VendorOperationPreviewActionMerge  VendorOperationPreviewAction = "merge"
+)
+
+// Valid indicates whether the value is a known member of the VendorOperationPreviewAction enum.
+func (e VendorOperationPreviewAction) Valid() bool {
+	switch e {
+	case VendorOperationPreviewActionAssign:
+		return true
+	case VendorOperationPreviewActionDelete:
+		return true
+	case VendorOperationPreviewActionMerge:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VendorOperationRequestAction.
+const (
+	VendorOperationRequestActionAssign VendorOperationRequestAction = "assign"
+	VendorOperationRequestActionDelete VendorOperationRequestAction = "delete"
+	VendorOperationRequestActionMerge  VendorOperationRequestAction = "merge"
+)
+
+// Valid indicates whether the value is a known member of the VendorOperationRequestAction enum.
+func (e VendorOperationRequestAction) Valid() bool {
+	switch e {
+	case VendorOperationRequestActionAssign:
+		return true
+	case VendorOperationRequestActionDelete:
+		return true
+	case VendorOperationRequestActionMerge:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VendorSearchListItemsStatus.
+const (
+	VendorSearchListItemsStatusN1 VendorSearchListItemsStatus = 1
+	VendorSearchListItemsStatusN2 VendorSearchListItemsStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the VendorSearchListItemsStatus enum.
+func (e VendorSearchListItemsStatus) Valid() bool {
+	switch e {
+	case VendorSearchListItemsStatusN1:
+		return true
+	case VendorSearchListItemsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VendorUpdateRequestStatus.
+const (
+	VendorUpdateRequestStatusN1 VendorUpdateRequestStatus = 1
+	VendorUpdateRequestStatusN2 VendorUpdateRequestStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the VendorUpdateRequestStatus enum.
+func (e VendorUpdateRequestStatus) Valid() bool {
+	switch e {
+	case VendorUpdateRequestStatusN1:
+		return true
+	case VendorUpdateRequestStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for VerifyEmailResponseEmailVerified.
 const (
 	VerifyEmailResponseEmailVerifiedTrue VerifyEmailResponseEmailVerified = true
@@ -1449,6 +2217,90 @@ func (e ListPricingModelsParamsStatus) Valid() bool {
 	}
 }
 
+// Defines values for ListModelCatalogParamsStatus.
+const (
+	ListModelCatalogParamsStatusDisabled ListModelCatalogParamsStatus = "disabled"
+	ListModelCatalogParamsStatusEnabled  ListModelCatalogParamsStatus = "enabled"
+	ListModelCatalogParamsStatusN1       ListModelCatalogParamsStatus = "1"
+	ListModelCatalogParamsStatusN2       ListModelCatalogParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the ListModelCatalogParamsStatus enum.
+func (e ListModelCatalogParamsStatus) Valid() bool {
+	switch e {
+	case ListModelCatalogParamsStatusDisabled:
+		return true
+	case ListModelCatalogParamsStatusEnabled:
+		return true
+	case ListModelCatalogParamsStatusN1:
+		return true
+	case ListModelCatalogParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListModelCatalogParamsSort.
+const (
+	ListModelCatalogParamsSortCreatedAt      ListModelCatalogParamsSort = "created_at"
+	ListModelCatalogParamsSortMinusCreatedAt ListModelCatalogParamsSort = "-created_at"
+	ListModelCatalogParamsSortMinusModelName ListModelCatalogParamsSort = "-model_name"
+	ListModelCatalogParamsSortMinusStatus    ListModelCatalogParamsSort = "-status"
+	ListModelCatalogParamsSortMinusUpdatedAt ListModelCatalogParamsSort = "-updated_at"
+	ListModelCatalogParamsSortModelName      ListModelCatalogParamsSort = "model_name"
+	ListModelCatalogParamsSortStatus         ListModelCatalogParamsSort = "status"
+	ListModelCatalogParamsSortUpdatedAt      ListModelCatalogParamsSort = "updated_at"
+)
+
+// Valid indicates whether the value is a known member of the ListModelCatalogParamsSort enum.
+func (e ListModelCatalogParamsSort) Valid() bool {
+	switch e {
+	case ListModelCatalogParamsSortCreatedAt:
+		return true
+	case ListModelCatalogParamsSortMinusCreatedAt:
+		return true
+	case ListModelCatalogParamsSortMinusModelName:
+		return true
+	case ListModelCatalogParamsSortMinusStatus:
+		return true
+	case ListModelCatalogParamsSortMinusUpdatedAt:
+		return true
+	case ListModelCatalogParamsSortModelName:
+		return true
+	case ListModelCatalogParamsSortStatus:
+		return true
+	case ListModelCatalogParamsSortUpdatedAt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SearchModelCatalogParamsStatus.
+const (
+	SearchModelCatalogParamsStatusDisabled SearchModelCatalogParamsStatus = "disabled"
+	SearchModelCatalogParamsStatusEnabled  SearchModelCatalogParamsStatus = "enabled"
+	SearchModelCatalogParamsStatusN1       SearchModelCatalogParamsStatus = "1"
+	SearchModelCatalogParamsStatusN2       SearchModelCatalogParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the SearchModelCatalogParamsStatus enum.
+func (e SearchModelCatalogParamsStatus) Valid() bool {
+	switch e {
+	case SearchModelCatalogParamsStatusDisabled:
+		return true
+	case SearchModelCatalogParamsStatusEnabled:
+		return true
+	case SearchModelCatalogParamsStatusN1:
+		return true
+	case SearchModelCatalogParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListOrdersParamsStatus.
 const (
 	ListOrdersParamsStatusCancelled ListOrdersParamsStatus = "cancelled"
@@ -1532,19 +2384,19 @@ func (e GetTaskPluginParamsIncludeSource) Valid() bool {
 
 // Defines values for GetPublicPricingParamsSort.
 const (
-	Name      GetPublicPricingParamsSort = "name"
-	PriceAsc  GetPublicPricingParamsSort = "price_asc"
-	PriceDesc GetPublicPricingParamsSort = "price_desc"
+	GetPublicPricingParamsSortName      GetPublicPricingParamsSort = "name"
+	GetPublicPricingParamsSortPriceAsc  GetPublicPricingParamsSort = "price_asc"
+	GetPublicPricingParamsSortPriceDesc GetPublicPricingParamsSort = "price_desc"
 )
 
 // Valid indicates whether the value is a known member of the GetPublicPricingParamsSort enum.
 func (e GetPublicPricingParamsSort) Valid() bool {
 	switch e {
-	case Name:
+	case GetPublicPricingParamsSortName:
 		return true
-	case PriceAsc:
+	case GetPublicPricingParamsSortPriceAsc:
 		return true
-	case PriceDesc:
+	case GetPublicPricingParamsSortPriceDesc:
 		return true
 	default:
 		return false
@@ -1857,6 +2709,66 @@ func (e GetUsageStatsTimeseriesParamsGranularity) Valid() bool {
 	case Day:
 		return true
 	case Hour:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListVendorsParamsStatus.
+const (
+	ListVendorsParamsStatusDisabled ListVendorsParamsStatus = "disabled"
+	ListVendorsParamsStatusEnabled  ListVendorsParamsStatus = "enabled"
+	ListVendorsParamsStatusN1       ListVendorsParamsStatus = "1"
+	ListVendorsParamsStatusN2       ListVendorsParamsStatus = "2"
+)
+
+// Valid indicates whether the value is a known member of the ListVendorsParamsStatus enum.
+func (e ListVendorsParamsStatus) Valid() bool {
+	switch e {
+	case ListVendorsParamsStatusDisabled:
+		return true
+	case ListVendorsParamsStatusEnabled:
+		return true
+	case ListVendorsParamsStatusN1:
+		return true
+	case ListVendorsParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListVendorsParamsSort.
+const (
+	ListVendorsParamsSortCreatedAt       ListVendorsParamsSort = "created_at"
+	ListVendorsParamsSortMinusCreatedAt  ListVendorsParamsSort = "-created_at"
+	ListVendorsParamsSortMinusModelCount ListVendorsParamsSort = "-model_count"
+	ListVendorsParamsSortMinusName       ListVendorsParamsSort = "-name"
+	ListVendorsParamsSortMinusUpdatedAt  ListVendorsParamsSort = "-updated_at"
+	ListVendorsParamsSortModelCount      ListVendorsParamsSort = "model_count"
+	ListVendorsParamsSortName            ListVendorsParamsSort = "name"
+	ListVendorsParamsSortUpdatedAt       ListVendorsParamsSort = "updated_at"
+)
+
+// Valid indicates whether the value is a known member of the ListVendorsParamsSort enum.
+func (e ListVendorsParamsSort) Valid() bool {
+	switch e {
+	case ListVendorsParamsSortCreatedAt:
+		return true
+	case ListVendorsParamsSortMinusCreatedAt:
+		return true
+	case ListVendorsParamsSortMinusModelCount:
+		return true
+	case ListVendorsParamsSortMinusName:
+		return true
+	case ListVendorsParamsSortMinusUpdatedAt:
+		return true
+	case ListVendorsParamsSortModelCount:
+		return true
+	case ListVendorsParamsSortName:
+		return true
+	case ListVendorsParamsSortUpdatedAt:
 		return true
 	default:
 		return false
@@ -3063,6 +3975,288 @@ type MeView struct {
 	Username string     `json:"username"`
 }
 
+// ModelMeta defines model for ModelMeta.
+type ModelMeta struct {
+	Capabilities []ModelMetaCapabilities `json:"capabilities"`
+
+	// ConfiguredChannelCount 启用渠道中 supported_models 按 name_rule 命中该档案的 DISTINCT 渠道数。
+	ConfiguredChannelCount int64     `json:"configured_channel_count"`
+	ContextLength          *int64    `json:"context_length,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	Description            *string   `json:"description,omitempty"`
+	DisplayName            *string   `json:"display_name,omitempty"`
+
+	// EnableGroups 派生字段：命中启用渠道的 group_tags 与启用用户分组的交集；NULL group_tags = 全部分组。
+	EnableGroups []string `json:"enable_groups"`
+
+	// Endpoints 键必须以 / 开头。
+	Endpoints map[string][]ModelMetaEndpoints `json:"endpoints"`
+
+	// Icon 前端资源键（不是 URL）。
+	Icon *string `json:"icon,omitempty"`
+	Id   int64   `json:"id"`
+
+	// KnowledgeCutoff YYYY-MM。
+	KnowledgeCutoff *string               `json:"knowledge_cutoff,omitempty"`
+	MaxOutput       *int64                `json:"max_output,omitempty"`
+	Modalities      []ModelMetaModalities `json:"modalities"`
+	ModelName       string                `json:"model_name"`
+
+	// NameRule 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+	NameRule   ModelMetaNameRule           `json:"name_rule"`
+	Parameters []ModelMeta_Parameters_Item `json:"parameters"`
+	ReleasedAt *openapi_types.Date         `json:"released_at,omitempty"`
+
+	// SquareState 广场态（派生字段，不落库）：status=2 ⇒ hidden；否则按 name_rule 与
+	// 启用渠道 supported_models 匹配——覆盖全部启用用户分组 ⇒ visible，
+	// 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
+	SquareState SquareState     `json:"square_state"`
+	Status      ModelMetaStatus `json:"status"`
+
+	// SyncOfficial false = 本地锁定，上游同步 preview 判 blocked 且永不覆盖。
+	SyncOfficial bool     `json:"sync_official"`
+	Tags         []string `json:"tags"`
+
+	// UpdatedAt 乐观锁版本；PUT / DELETE 必须原样回传。
+	UpdatedAt time.Time `json:"updated_at"`
+	VendorId  *int64    `json:"vendor_id,omitempty"`
+
+	// VendorName 派生字段（vendors.name）。
+	VendorName *string `json:"vendor_name,omitempty"`
+}
+
+// ModelMetaCapabilities defines model for ModelMeta.Capabilities.
+type ModelMetaCapabilities string
+
+// ModelMetaEndpoints defines model for ModelMeta.Endpoints.
+type ModelMetaEndpoints string
+
+// ModelMetaModalities defines model for ModelMeta.Modalities.
+type ModelMetaModalities string
+
+// ModelMetaParametersType defines model for ModelMeta.Parameters.Type.
+type ModelMetaParametersType string
+
+// ModelMeta_Parameters_Item defines model for ModelMeta.parameters.Item.
+type ModelMeta_Parameters_Item struct {
+	Name                 string                  `json:"name"`
+	Type                 ModelMetaParametersType `json:"type"`
+	AdditionalProperties map[string]interface{}  `json:"-"`
+}
+
+// ModelMetaStatus defines model for ModelMeta.Status.
+type ModelMetaStatus int
+
+// ModelMetaBatchDeleteRequest defines model for ModelMetaBatchDeleteRequest.
+type ModelMetaBatchDeleteRequest struct {
+	// ClearPricing 额外要求 pricing:manage，否则 403。
+	ClearPricing *bool   `json:"clear_pricing,omitempty"`
+	Ids          []int64 `json:"ids"`
+
+	// RemoveFromChannels 只对 name_rule=0 的档案生效；会让渠道变空时整体 422。
+	RemoveFromChannels *bool `json:"remove_from_channels,omitempty"`
+}
+
+// ModelMetaBatchDeleteResponse defines model for ModelMetaBatchDeleteResponse.
+type ModelMetaBatchDeleteResponse struct {
+	ChannelsUpdated int64 `json:"channels_updated"`
+
+	// Deleted 实际命中的档案数。
+	Deleted             int64 `json:"deleted"`
+	GroupPricingDeleted int64 `json:"group_pricing_deleted"`
+	PricingDeleted      int64 `json:"pricing_deleted"`
+
+	// Requested 去重后的选择集大小。
+	Requested int64 `json:"requested"`
+}
+
+// ModelMetaCommonFields defines model for ModelMetaCommonFields.
+type ModelMetaCommonFields struct {
+	Capabilities    *[]ModelMetaCommonFieldsCapabilities         `json:"capabilities,omitempty"`
+	ContextLength   *int64                                       `json:"context_length,omitempty"`
+	Description     *string                                      `json:"description,omitempty"`
+	DisplayName     *string                                      `json:"display_name,omitempty"`
+	Endpoints       *map[string][]ModelMetaCommonFieldsEndpoints `json:"endpoints,omitempty"`
+	Icon            *string                                      `json:"icon,omitempty"`
+	KnowledgeCutoff *string                                      `json:"knowledge_cutoff,omitempty"`
+	MaxOutput       *int64                                       `json:"max_output,omitempty"`
+	Modalities      *[]ModelMetaCommonFieldsModalities           `json:"modalities,omitempty"`
+	Parameters      *[]ModelMetaCommonFields_Parameters_Item     `json:"parameters,omitempty"`
+	ReleasedAt      *openapi_types.Date                          `json:"released_at,omitempty"`
+	Status          *ModelMetaCommonFieldsStatus                 `json:"status,omitempty"`
+	SyncOfficial    *bool                                        `json:"sync_official,omitempty"`
+	Tags            *[]string                                    `json:"tags,omitempty"`
+
+	// VendorId null = 未归属；不存在的 id ⇒ 422。
+	VendorId *int64 `json:"vendor_id,omitempty"`
+}
+
+// ModelMetaCommonFieldsCapabilities defines model for ModelMetaCommonFields.Capabilities.
+type ModelMetaCommonFieldsCapabilities string
+
+// ModelMetaCommonFieldsEndpoints defines model for ModelMetaCommonFields.Endpoints.
+type ModelMetaCommonFieldsEndpoints string
+
+// ModelMetaCommonFieldsModalities defines model for ModelMetaCommonFields.Modalities.
+type ModelMetaCommonFieldsModalities string
+
+// ModelMetaCommonFieldsParametersType defines model for ModelMetaCommonFields.Parameters.Type.
+type ModelMetaCommonFieldsParametersType string
+
+// ModelMetaCommonFields_Parameters_Item defines model for ModelMetaCommonFields.parameters.Item.
+type ModelMetaCommonFields_Parameters_Item struct {
+	Name                 string                              `json:"name"`
+	Type                 ModelMetaCommonFieldsParametersType `json:"type"`
+	AdditionalProperties map[string]interface{}              `json:"-"`
+}
+
+// ModelMetaCommonFieldsStatus defines model for ModelMetaCommonFields.Status.
+type ModelMetaCommonFieldsStatus int
+
+// ModelMetaCreateRequest defines model for ModelMetaCreateRequest.
+type ModelMetaCreateRequest struct {
+	Capabilities    *[]ModelMetaCreateRequestCapabilities         `json:"capabilities,omitempty"`
+	ContextLength   *int64                                        `json:"context_length,omitempty"`
+	Description     *string                                       `json:"description,omitempty"`
+	DisplayName     *string                                       `json:"display_name,omitempty"`
+	Endpoints       *map[string][]ModelMetaCreateRequestEndpoints `json:"endpoints,omitempty"`
+	Icon            *string                                       `json:"icon,omitempty"`
+	KnowledgeCutoff *string                                       `json:"knowledge_cutoff,omitempty"`
+	MaxOutput       *int64                                        `json:"max_output,omitempty"`
+	Modalities      *[]ModelMetaCreateRequestModalities           `json:"modalities,omitempty"`
+	ModelName       string                                        `json:"model_name"`
+
+	// NameRule 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+	NameRule     *ModelMetaNameRule                        `json:"name_rule,omitempty"`
+	Parameters   *[]ModelMetaCreateRequest_Parameters_Item `json:"parameters,omitempty"`
+	ReleasedAt   *openapi_types.Date                       `json:"released_at,omitempty"`
+	Status       *ModelMetaCreateRequestStatus             `json:"status,omitempty"`
+	SyncOfficial *bool                                     `json:"sync_official,omitempty"`
+	Tags         *[]string                                 `json:"tags,omitempty"`
+
+	// VendorId null = 未归属；不存在的 id ⇒ 422。
+	VendorId *int64 `json:"vendor_id,omitempty"`
+}
+
+// ModelMetaCreateRequestCapabilities defines model for ModelMetaCreateRequest.Capabilities.
+type ModelMetaCreateRequestCapabilities string
+
+// ModelMetaCreateRequestEndpoints defines model for ModelMetaCreateRequest.Endpoints.
+type ModelMetaCreateRequestEndpoints string
+
+// ModelMetaCreateRequestModalities defines model for ModelMetaCreateRequest.Modalities.
+type ModelMetaCreateRequestModalities string
+
+// ModelMetaCreateRequestParametersType defines model for ModelMetaCreateRequest.Parameters.Type.
+type ModelMetaCreateRequestParametersType string
+
+// ModelMetaCreateRequest_Parameters_Item defines model for ModelMetaCreateRequest.parameters.Item.
+type ModelMetaCreateRequest_Parameters_Item struct {
+	Name                 string                               `json:"name"`
+	Type                 ModelMetaCreateRequestParametersType `json:"type"`
+	AdditionalProperties map[string]interface{}               `json:"-"`
+}
+
+// ModelMetaCreateRequestStatus defines model for ModelMetaCreateRequest.Status.
+type ModelMetaCreateRequestStatus int
+
+// ModelMetaList GET /api/models 的 offset 分页信封。
+type ModelMetaList struct {
+	Items []ModelMeta `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// ModelMetaNameRule 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+type ModelMetaNameRule int
+
+// ModelMetaSearchList defines model for ModelMetaSearchList.
+type ModelMetaSearchList struct {
+	Items []struct {
+		DisplayName *string                        `json:"display_name,omitempty"`
+		Id          int64                          `json:"id"`
+		ModelName   string                         `json:"model_name"`
+		Status      ModelMetaSearchListItemsStatus `json:"status"`
+	} `json:"items"`
+}
+
+// ModelMetaSearchListItemsStatus defines model for ModelMetaSearchList.Items.Status.
+type ModelMetaSearchListItemsStatus int
+
+// ModelMetaUpdateRequest defines model for ModelMetaUpdateRequest.
+type ModelMetaUpdateRequest struct {
+	Capabilities    *[]ModelMetaUpdateRequestCapabilities         `json:"capabilities,omitempty"`
+	ContextLength   *int64                                        `json:"context_length,omitempty"`
+	Description     *string                                       `json:"description,omitempty"`
+	DisplayName     *string                                       `json:"display_name,omitempty"`
+	Endpoints       *map[string][]ModelMetaUpdateRequestEndpoints `json:"endpoints,omitempty"`
+	Icon            *string                                       `json:"icon,omitempty"`
+	KnowledgeCutoff *string                                       `json:"knowledge_cutoff,omitempty"`
+	MaxOutput       *int64                                        `json:"max_output,omitempty"`
+	Modalities      *[]ModelMetaUpdateRequestModalities           `json:"modalities,omitempty"`
+	ModelName       *string                                       `json:"model_name,omitempty"`
+
+	// NameRule 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+	NameRule     *ModelMetaNameRule                        `json:"name_rule,omitempty"`
+	Parameters   *[]ModelMetaUpdateRequest_Parameters_Item `json:"parameters,omitempty"`
+	ReleasedAt   *openapi_types.Date                       `json:"released_at,omitempty"`
+	Status       *ModelMetaUpdateRequestStatus             `json:"status,omitempty"`
+	SyncOfficial *bool                                     `json:"sync_official,omitempty"`
+	Tags         *[]string                                 `json:"tags,omitempty"`
+	UpdatedAt    time.Time                                 `json:"updated_at"`
+
+	// VendorId null = 未归属；不存在的 id ⇒ 422。
+	VendorId *int64 `json:"vendor_id,omitempty"`
+}
+
+// ModelMetaUpdateRequestCapabilities defines model for ModelMetaUpdateRequest.Capabilities.
+type ModelMetaUpdateRequestCapabilities string
+
+// ModelMetaUpdateRequestEndpoints defines model for ModelMetaUpdateRequest.Endpoints.
+type ModelMetaUpdateRequestEndpoints string
+
+// ModelMetaUpdateRequestModalities defines model for ModelMetaUpdateRequest.Modalities.
+type ModelMetaUpdateRequestModalities string
+
+// ModelMetaUpdateRequestParametersType defines model for ModelMetaUpdateRequest.Parameters.Type.
+type ModelMetaUpdateRequestParametersType string
+
+// ModelMetaUpdateRequest_Parameters_Item defines model for ModelMetaUpdateRequest.parameters.Item.
+type ModelMetaUpdateRequest_Parameters_Item struct {
+	Name                 string                               `json:"name"`
+	Type                 ModelMetaUpdateRequestParametersType `json:"type"`
+	AdditionalProperties map[string]interface{}               `json:"-"`
+}
+
+// ModelMetaUpdateRequestStatus defines model for ModelMetaUpdateRequest.Status.
+type ModelMetaUpdateRequestStatus int
+
+// ModelMissing defines model for ModelMissing.
+type ModelMissing struct {
+	// ChannelCount 支持该模型的启用渠道数（跳过含非法 supported_models 元素的渠道）。
+	ChannelCount int64 `json:"channel_count"`
+
+	// HasPricing model_pricing 中已有同名行（不区分启停）。
+	HasPricing bool   `json:"has_pricing"`
+	ModelName  string `json:"model_name"`
+}
+
+// ModelMissingList defines model for ModelMissingList.
+type ModelMissingList struct {
+	Items []ModelMissing `json:"items"`
+
+	// SkippedChannels 因 supported_models 含非法元素而整渠道跳过的启用渠道数。
+	SkippedChannels int64 `json:"skipped_channels"`
+	Total           int64 `json:"total"`
+}
+
 // ModelPricing defines model for ModelPricing.
 type ModelPricing struct {
 	Author string `json:"author"`
@@ -3216,6 +4410,92 @@ type ModelPricingUpdateRequest struct {
 	Status    *PricingStatus `json:"status,omitempty"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	Vendor    *string        `json:"vendor,omitempty"`
+}
+
+// ModelSyncApplyRequest defines model for ModelSyncApplyRequest.
+type ModelSyncApplyRequest struct {
+	// Models 只用于选择；写入值取自服务端缓存的清单。
+	Models        *[]ModelSyncManifestModel  `json:"models,omitempty"`
+	SourceVersion string                     `json:"source_version"`
+	Vendors       *[]ModelSyncManifestVendor `json:"vendors,omitempty"`
+}
+
+// ModelSyncApplyResponse defines model for ModelSyncApplyResponse.
+type ModelSyncApplyResponse struct {
+	CreatedModels  []string `json:"created_models"`
+	CreatedVendors []string `json:"created_vendors"`
+	SourceVersion  string   `json:"source_version"`
+	UpdatedModels  []string `json:"updated_models"`
+	UpdatedVendors []string `json:"updated_vendors"`
+}
+
+// ModelSyncFieldChange defines model for ModelSyncFieldChange.
+type ModelSyncFieldChange struct {
+	// Local 本地值（可能为 null）。
+	Local interface{} `json:"local"`
+
+	// Upstream 上游值（可能为 null）。
+	Upstream interface{} `json:"upstream"`
+}
+
+// ModelSyncManifestModel defines model for ModelSyncManifestModel.
+type ModelSyncManifestModel struct {
+	Capabilities  *[]string `json:"capabilities,omitempty"`
+	ContextLength *int64    `json:"context_length,omitempty"`
+	Description   *string   `json:"description,omitempty"`
+	DisplayName   *string   `json:"display_name,omitempty"`
+	Icon          *string   `json:"icon,omitempty"`
+	MaxOutput     *int64    `json:"max_output,omitempty"`
+	ModelName     string    `json:"model_name"`
+	Tags          *[]string `json:"tags,omitempty"`
+}
+
+// ModelSyncManifestVendor defines model for ModelSyncManifestVendor.
+type ModelSyncManifestVendor struct {
+	Description *string `json:"description,omitempty"`
+	Icon        *string `json:"icon,omitempty"`
+	Name        string  `json:"name"`
+}
+
+// ModelSyncModelCandidate defines model for ModelSyncModelCandidate.
+type ModelSyncModelCandidate struct {
+	// Changes 仅 update 组提供；只为上游清单提供的字段计算差异。
+	Changes   *map[string]ModelSyncFieldChange `json:"changes,omitempty"`
+	ModelName string                           `json:"model_name"`
+}
+
+// ModelSyncPreview defines model for ModelSyncPreview.
+type ModelSyncPreview struct {
+	Groups struct {
+		// Blocked 本地 sync_official=false，apply 永不覆盖。
+		Blocked []string                  `json:"blocked"`
+		Create  []ModelSyncModelCandidate `json:"create"`
+
+		// MissingUpstream 本地有、上游清单无。
+		MissingUpstream []string `json:"missing_upstream"`
+
+		// MissingVendor 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。
+		MissingVendor []string                  `json:"missing_vendor"`
+		Unchanged     []string                  `json:"unchanged"`
+		Update        []ModelSyncModelCandidate `json:"update"`
+		Vendors       ModelSyncVendorGroups     `json:"vendors"`
+	} `json:"groups"`
+
+	// SourceVersion 上游清单原文的 sha256（hex）；apply 必须原样回传。
+	SourceVersion string `json:"source_version"`
+}
+
+// ModelSyncVendorCandidate defines model for ModelSyncVendorCandidate.
+type ModelSyncVendorCandidate struct {
+	Changes *map[string]ModelSyncFieldChange `json:"changes,omitempty"`
+	Name    string                           `json:"name"`
+}
+
+// ModelSyncVendorGroups defines model for ModelSyncVendorGroups.
+type ModelSyncVendorGroups struct {
+	Create    []string                   `json:"create"`
+	Unchanged []string                   `json:"unchanged"`
+	Update    []ModelSyncVendorCandidate `json:"update"`
 }
 
 // NotificationChannel defines model for NotificationChannel.
@@ -4501,6 +5781,11 @@ type SetupResponse struct {
 // SetupResponseUserStatus defines model for SetupResponse.User.Status.
 type SetupResponseUserStatus string
 
+// SquareState 广场态（派生字段，不落库）：status=2 ⇒ hidden；否则按 name_rule 与
+// 启用渠道 supported_models 匹配——覆盖全部启用用户分组 ⇒ visible，
+// 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
+type SquareState string
+
 // TaskListItem defines model for TaskListItem.
 type TaskListItem struct {
 	Action            string                  `json:"action"`
@@ -5152,6 +6437,122 @@ type UserRole string
 // UserStatus 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 type UserStatus string
 
+// Vendor defines model for Vendor.
+type Vendor struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description *string   `json:"description,omitempty"`
+	Icon        *string   `json:"icon,omitempty"`
+	Id          int64     `json:"id"`
+
+	// ModelCount 引用该供应商的档案数（含停用模型）。
+	ModelCount int64        `json:"model_count"`
+	Name       string       `json:"name"`
+	Status     VendorStatus `json:"status"`
+	UpdatedAt  time.Time    `json:"updated_at"`
+
+	// Version 7 列规范化后的 sha256 派生值（不落库）；PUT 必须原样回传。
+	Version string `json:"version"`
+}
+
+// VendorStatus defines model for Vendor.Status.
+type VendorStatus int
+
+// VendorCreateRequest defines model for VendorCreateRequest.
+type VendorCreateRequest struct {
+	Description *string                    `json:"description,omitempty"`
+	Icon        *string                    `json:"icon,omitempty"`
+	Name        string                     `json:"name"`
+	Status      *VendorCreateRequestStatus `json:"status,omitempty"`
+}
+
+// VendorCreateRequestStatus defines model for VendorCreateRequest.Status.
+type VendorCreateRequestStatus int
+
+// VendorList GET /api/vendors 的 offset 分页信封。
+type VendorList struct {
+	Items []Vendor `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
+}
+
+// VendorOperationConflict defines model for VendorOperationConflict.
+type VendorOperationConflict struct {
+	CurrentVersion string `json:"current_version"`
+	VendorId       int64  `json:"vendor_id"`
+}
+
+// VendorOperationPreview defines model for VendorOperationPreview.
+type VendorOperationPreview struct {
+	Action          VendorOperationPreviewAction `json:"action"`
+	Affected        int64                        `json:"affected"`
+	Conflict        bool                         `json:"conflict"`
+	Conflicts       []VendorOperationConflict    `json:"conflicts"`
+	ExpectedVersion string                       `json:"expected_version"`
+	Vendors         []struct {
+		VendorId int64  `json:"vendor_id"`
+		Version  string `json:"version"`
+	} `json:"vendors"`
+}
+
+// VendorOperationPreviewAction defines model for VendorOperationPreview.Action.
+type VendorOperationPreviewAction string
+
+// VendorOperationRequest defines model for VendorOperationRequest.
+type VendorOperationRequest struct {
+	Action VendorOperationRequestAction `json:"action"`
+
+	// ExpectedVersion preview 返回的操作指纹；apply 必填，缺失亦视为冲突。
+	ExpectedVersion *string `json:"expected_version,omitempty"`
+
+	// ModelIds assign 使用。
+	ModelIds *[]int64 `json:"model_ids,omitempty"`
+
+	// TargetVendorId assign 的 0 = 清空归属。
+	TargetVendorId *int64 `json:"target_vendor_id,omitempty"`
+
+	// VendorIds merge / delete 使用。
+	VendorIds *[]int64 `json:"vendor_ids,omitempty"`
+}
+
+// VendorOperationRequestAction defines model for VendorOperationRequest.Action.
+type VendorOperationRequestAction string
+
+// VendorOperationResult defines model for VendorOperationResult.
+type VendorOperationResult struct {
+	Affected int64 `json:"affected"`
+}
+
+// VendorSearchList defines model for VendorSearchList.
+type VendorSearchList struct {
+	Items []struct {
+		Id     int64                       `json:"id"`
+		Name   string                      `json:"name"`
+		Status VendorSearchListItemsStatus `json:"status"`
+	} `json:"items"`
+}
+
+// VendorSearchListItemsStatus defines model for VendorSearchList.Items.Status.
+type VendorSearchListItemsStatus int
+
+// VendorUpdateRequest defines model for VendorUpdateRequest.
+type VendorUpdateRequest struct {
+	Description *string                    `json:"description,omitempty"`
+	Icon        *string                    `json:"icon,omitempty"`
+	Name        *string                    `json:"name,omitempty"`
+	Status      *VendorUpdateRequestStatus `json:"status,omitempty"`
+	Version     string                     `json:"version"`
+}
+
+// VendorUpdateRequestStatus defines model for VendorUpdateRequest.Status.
+type VendorUpdateRequestStatus int
+
 // VerifyEmailRequest defines model for VerifyEmailRequest.
 type VerifyEmailRequest struct {
 	// EmailCode 由 POST /api/auth/email-code（purpose=verify）下发的一次性验证码。
@@ -5597,6 +6998,85 @@ type EnableModelPricingParams struct {
 
 // PreviewModelPricingParams defines parameters for PreviewModelPricing.
 type PreviewModelPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListModelCatalogParams defines parameters for ListModelCatalog.
+type ListModelCatalogParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Keyword 匹配 model_name / display_name（ILIKE）。
+	Keyword     *string                       `form:"keyword,omitempty" json:"keyword,omitempty"`
+	VendorId    *int64                        `form:"vendor_id,omitempty" json:"vendor_id,omitempty"`
+	Status      *ListModelCatalogParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	SquareState *SquareState                  `form:"square_state,omitempty" json:"square_state,omitempty"`
+	Sort        *ListModelCatalogParamsSort   `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// ListModelCatalogParamsStatus defines parameters for ListModelCatalog.
+type ListModelCatalogParamsStatus string
+
+// ListModelCatalogParamsSort defines parameters for ListModelCatalog.
+type ListModelCatalogParamsSort string
+
+// CreateModelMetaParams defines parameters for CreateModelMeta.
+type CreateModelMetaParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// BatchDeleteModelMetaParams defines parameters for BatchDeleteModelMeta.
+type BatchDeleteModelMetaParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// SearchModelCatalogParams defines parameters for SearchModelCatalog.
+type SearchModelCatalogParams struct {
+	Keyword *string `form:"keyword,omitempty" json:"keyword,omitempty"`
+
+	// Status 仅做枚举校验；选择器返回结果由关键字决定。
+	Status *SearchModelCatalogParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Limit  *int                            `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// SearchModelCatalogParamsStatus defines parameters for SearchModelCatalog.
+type SearchModelCatalogParamsStatus string
+
+// ApplyModelSyncParams defines parameters for ApplyModelSync.
+type ApplyModelSyncParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteModelMetaParams defines parameters for DeleteModelMeta.
+type DeleteModelMetaParams struct {
+	// UpdatedAt 乐观锁版本（GET 列表返回的 updated_at 原样回传）。DELETE 无 body，
+	// 故通过查询参数传递；不匹配返回 409。
+	UpdatedAt UpdatedAtQuery `form:"updated_at" json:"updated_at"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateModelMetaParams defines parameters for UpdateModelMeta.
+type UpdateModelMetaParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -6149,6 +7629,69 @@ type SetUserStatusParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListVendorsParams defines parameters for ListVendors.
+type ListVendorsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize                `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Keyword  *string                  `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status   *ListVendorsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Attached *bool                    `form:"attached,omitempty" json:"attached,omitempty"`
+	Sort     *ListVendorsParamsSort   `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// ListVendorsParamsStatus defines parameters for ListVendors.
+type ListVendorsParamsStatus string
+
+// ListVendorsParamsSort defines parameters for ListVendors.
+type ListVendorsParamsSort string
+
+// CreateVendorParams defines parameters for CreateVendor.
+type CreateVendorParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ApplyVendorOperationsParams defines parameters for ApplyVendorOperations.
+type ApplyVendorOperationsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PreviewVendorOperationsParams defines parameters for PreviewVendorOperations.
+type PreviewVendorOperationsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// SearchVendorsParams defines parameters for SearchVendors.
+type SearchVendorsParams struct {
+	Keyword *string `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Limit   *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// DeleteVendorParams defines parameters for DeleteVendor.
+type DeleteVendorParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateVendorParams defines parameters for UpdateVendor.
+type UpdateVendorParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // VerifyEmailParams defines parameters for VerifyEmail.
 type VerifyEmailParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -6332,6 +7875,18 @@ type EnableModelPricingJSONRequestBody = ModelPricingStatusRequest
 // PreviewModelPricingJSONRequestBody defines body for PreviewModelPricing for application/json ContentType.
 type PreviewModelPricingJSONRequestBody = ModelPricingPreviewRequest
 
+// CreateModelMetaJSONRequestBody defines body for CreateModelMeta for application/json ContentType.
+type CreateModelMetaJSONRequestBody = ModelMetaCreateRequest
+
+// BatchDeleteModelMetaJSONRequestBody defines body for BatchDeleteModelMeta for application/json ContentType.
+type BatchDeleteModelMetaJSONRequestBody = ModelMetaBatchDeleteRequest
+
+// ApplyModelSyncJSONRequestBody defines body for ApplyModelSync for application/json ContentType.
+type ApplyModelSyncJSONRequestBody = ModelSyncApplyRequest
+
+// UpdateModelMetaJSONRequestBody defines body for UpdateModelMeta for application/json ContentType.
+type UpdateModelMetaJSONRequestBody = ModelMetaUpdateRequest
+
 // UpdateNotificationPreferencesJSONRequestBody defines body for UpdateNotificationPreferences for application/json ContentType.
 type UpdateNotificationPreferencesJSONRequestBody = NotificationPreferences
 
@@ -6418,6 +7973,18 @@ type AdjustUserQuotaJSONRequestBody = QuotaAdjustmentRequest
 
 // SetUserStatusJSONRequestBody defines body for SetUserStatus for application/json ContentType.
 type SetUserStatusJSONRequestBody = AdminUserStatusRequest
+
+// CreateVendorJSONRequestBody defines body for CreateVendor for application/json ContentType.
+type CreateVendorJSONRequestBody = VendorCreateRequest
+
+// ApplyVendorOperationsJSONRequestBody defines body for ApplyVendorOperations for application/json ContentType.
+type ApplyVendorOperationsJSONRequestBody = VendorOperationRequest
+
+// PreviewVendorOperationsJSONRequestBody defines body for PreviewVendorOperations for application/json ContentType.
+type PreviewVendorOperationsJSONRequestBody = VendorOperationRequest
+
+// UpdateVendorJSONRequestBody defines body for UpdateVendor for application/json ContentType.
+type UpdateVendorJSONRequestBody = VendorUpdateRequest
 
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = VerifyEmailRequest
@@ -6598,6 +8165,322 @@ func (a DeployLocation) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error marshaling 'name': %w", err)
 		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ModelMeta_Parameters_Item. Returns the specified
+// element and whether it was found
+func (a ModelMeta_Parameters_Item) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ModelMeta_Parameters_Item
+func (a *ModelMeta_Parameters_Item) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ModelMeta_Parameters_Item to handle AdditionalProperties
+func (a *ModelMeta_Parameters_Item) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ModelMeta_Parameters_Item to handle AdditionalProperties
+func (a ModelMeta_Parameters_Item) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ModelMetaCommonFields_Parameters_Item. Returns the specified
+// element and whether it was found
+func (a ModelMetaCommonFields_Parameters_Item) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ModelMetaCommonFields_Parameters_Item
+func (a *ModelMetaCommonFields_Parameters_Item) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ModelMetaCommonFields_Parameters_Item to handle AdditionalProperties
+func (a *ModelMetaCommonFields_Parameters_Item) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ModelMetaCommonFields_Parameters_Item to handle AdditionalProperties
+func (a ModelMetaCommonFields_Parameters_Item) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ModelMetaCreateRequest_Parameters_Item. Returns the specified
+// element and whether it was found
+func (a ModelMetaCreateRequest_Parameters_Item) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ModelMetaCreateRequest_Parameters_Item
+func (a *ModelMetaCreateRequest_Parameters_Item) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ModelMetaCreateRequest_Parameters_Item to handle AdditionalProperties
+func (a *ModelMetaCreateRequest_Parameters_Item) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ModelMetaCreateRequest_Parameters_Item to handle AdditionalProperties
+func (a ModelMetaCreateRequest_Parameters_Item) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ModelMetaUpdateRequest_Parameters_Item. Returns the specified
+// element and whether it was found
+func (a ModelMetaUpdateRequest_Parameters_Item) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ModelMetaUpdateRequest_Parameters_Item
+func (a *ModelMetaUpdateRequest_Parameters_Item) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ModelMetaUpdateRequest_Parameters_Item to handle AdditionalProperties
+func (a *ModelMetaUpdateRequest_Parameters_Item) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ModelMetaUpdateRequest_Parameters_Item to handle AdditionalProperties
+func (a ModelMetaUpdateRequest_Parameters_Item) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
 	}
 
 	for fieldName, field := range a.AdditionalProperties {

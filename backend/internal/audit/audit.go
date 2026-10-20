@@ -129,6 +129,21 @@ const (
 	ActionPluginMarketSourceUpdate = "plugin.market_source_update"
 	ActionPluginMarketInstall      = "plugin.market_install"
 	ActionPluginDryRun             = "plugin.dryrun"
+
+	// D1b 模型目录 / 供应商目录（modules-06 F-06-22～26）。全部归 operation：
+	// 目录元数据是管理配置，同步是对目录的批量写入。detail 只允许 id / 名称 /
+	// 影响计数，绝不记录整行 JSON（图标/描述等展示内容无审计价值，且会把
+	// 目录内容复制进审计表）。
+	ActionModelCreate      = "model.create"
+	ActionModelUpdate      = "model.update"
+	ActionModelDelete      = "model.delete"
+	ActionModelBatchDelete = "model.batch_delete"
+	ActionModelSync        = "model.sync"
+
+	ActionVendorCreate     = "vendor.create"
+	ActionVendorUpdate     = "vendor.update"
+	ActionVendorDelete     = "vendor.delete"
+	ActionVendorOperations = "vendor.operations"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -204,6 +219,17 @@ var actionCategories = map[string]string{
 	ActionPluginMarketSourceUpdate: categoryOperation,
 	ActionPluginMarketInstall:      categoryOperation,
 	ActionPluginDryRun:             categoryOperation,
+
+	ActionModelCreate:      categoryOperation,
+	ActionModelUpdate:      categoryOperation,
+	ActionModelDelete:      categoryOperation,
+	ActionModelBatchDelete: categoryOperation,
+	ActionModelSync:        categoryOperation,
+
+	ActionVendorCreate:     categoryOperation,
+	ActionVendorUpdate:     categoryOperation,
+	ActionVendorDelete:     categoryOperation,
+	ActionVendorOperations: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

@@ -1918,3 +1918,516 @@ schemas:
         minimum: 0
         description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
     description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。
+
+  # ---------------------------------------------------------------------------
+  # 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）
+  # ---------------------------------------------------------------------------
+  SquareState:
+    type: string
+    enum: [hidden, visible, partial, unavailable]
+    description: |
+      广场态（派生字段，不落库）：status=2 ⇒ hidden；否则按 name_rule 与
+      启用渠道 supported_models 匹配——覆盖全部启用用户分组 ⇒ visible，
+      部分 ⇒ partial，无启用渠道 ⇒ unavailable。
+
+  ModelMetaNameRule:
+    type: integer
+    enum: [0, 1, 2, 3]
+    description: 0=精确 / 1=前缀 / 2=包含 / 3=后缀（与实际被路由的模型名匹配）。
+
+  ModelMeta:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - model_name
+      - tags
+      - endpoints
+      - capabilities
+      - modalities
+      - parameters
+      - status
+      - sync_official
+      - name_rule
+      - created_at
+      - updated_at
+      - square_state
+      - configured_channel_count
+      - enable_groups
+    properties:
+      id: {type: integer, format: int64}
+      model_name:
+        type: string
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+      display_name: {type: string, nullable: true, maxLength: 64}
+      description: {type: string, nullable: true, maxLength: 512}
+      icon:
+        type: string
+        nullable: true
+        maxLength: 128
+        description: 前端资源键（不是 URL）。
+      tags:
+        type: array
+        maxItems: 10
+        items: {type: string, maxLength: 32}
+      vendor_id: {type: integer, format: int64, nullable: true, minimum: 1}
+      endpoints:
+        type: object
+        additionalProperties:
+          type: array
+          minItems: 1
+          items: {type: string, enum: [GET, POST, PUT, PATCH, DELETE]}
+        description: 键必须以 / 开头。
+      capabilities:
+        type: array
+        items:
+          type: string
+          enum: [text, vision, audio, video, function_calling, tool_use, reasoning, embedding, rerank, image_generation, speech, transcription]
+      modalities:
+        type: array
+        items: {type: string, enum: [text, image, audio, video]}
+      parameters:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+          required: [name, type]
+          properties:
+            name: {type: string}
+            type: {type: string, enum: [string, number, integer, boolean, array, object]}
+      context_length: {type: integer, format: int64, nullable: true, minimum: 0}
+      max_output: {type: integer, format: int64, nullable: true, minimum: 0}
+      knowledge_cutoff:
+        type: string
+        nullable: true
+        pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        description: YYYY-MM。
+      released_at: {type: string, format: date, nullable: true}
+      status: {type: integer, enum: [1, 2]}
+      sync_official:
+        type: boolean
+        description: false = 本地锁定，上游同步 preview 判 blocked 且永不覆盖。
+      name_rule: {$ref: '#/schemas/ModelMetaNameRule'}
+      created_at: {type: string, format: date-time}
+      updated_at:
+        type: string
+        format: date-time
+        description: 乐观锁版本；PUT / DELETE 必须原样回传。
+      vendor_name:
+        type: string
+        nullable: true
+        description: 派生字段（vendors.name）。
+      square_state: {$ref: '#/schemas/SquareState'}
+      configured_channel_count:
+        type: integer
+        format: int64
+        description: 启用渠道中 supported_models 按 name_rule 命中该档案的 DISTINCT 渠道数。
+      enable_groups:
+        type: array
+        items: {type: string}
+        description: 派生字段：命中启用渠道的 group_tags 与启用用户分组的交集；NULL group_tags = 全部分组。
+
+  ModelMetaList:
+    allOf:
+      - $ref: '../components/pagination.yaml#/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items: {$ref: '#/schemas/ModelMeta'}
+    description: GET /api/models 的 offset 分页信封。
+
+  ModelMetaSearchList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, model_name, status]
+          properties:
+            id: {type: integer, format: int64}
+            model_name: {type: string}
+            display_name: {type: string, nullable: true}
+            status: {type: integer, enum: [1, 2]}
+
+  ModelMetaCommonFields:
+    type: object
+    additionalProperties: false
+    properties:
+      display_name: {type: string, nullable: true, maxLength: 64}
+      description: {type: string, nullable: true, maxLength: 512}
+      icon: {type: string, nullable: true, maxLength: 128}
+      tags:
+        type: array
+        maxItems: 10
+        items: {type: string, maxLength: 32}
+      vendor_id:
+        type: integer
+        format: int64
+        nullable: true
+        minimum: 1
+        description: null = 未归属；不存在的 id ⇒ 422。
+      endpoints:
+        type: object
+        additionalProperties:
+          type: array
+          minItems: 1
+          items: {type: string, enum: [GET, POST, PUT, PATCH, DELETE]}
+      capabilities:
+        type: array
+        items:
+          type: string
+          enum: [text, vision, audio, video, function_calling, tool_use, reasoning, embedding, rerank, image_generation, speech, transcription]
+      modalities:
+        type: array
+        items: {type: string, enum: [text, image, audio, video]}
+      parameters:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+          required: [name, type]
+          properties:
+            name: {type: string}
+            type: {type: string, enum: [string, number, integer, boolean, array, object]}
+      context_length: {type: integer, format: int64, nullable: true, minimum: 0}
+      max_output: {type: integer, format: int64, nullable: true, minimum: 0}
+      knowledge_cutoff:
+        type: string
+        nullable: true
+        pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+      released_at: {type: string, format: date, nullable: true}
+      status: {type: integer, enum: [1, 2]}
+      sync_official: {type: boolean}
+
+  ModelMetaCreateRequest:
+    allOf:
+      - $ref: '#/schemas/ModelMetaCommonFields'
+      - type: object
+        required: [model_name]
+        properties:
+          model_name:
+            type: string
+            pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+          name_rule: {$ref: '#/schemas/ModelMetaNameRule'}
+
+  ModelMetaUpdateRequest:
+    allOf:
+      - $ref: '#/schemas/ModelMetaCommonFields'
+      - type: object
+        required: [updated_at]
+        properties:
+          model_name:
+            type: string
+            pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+          name_rule: {$ref: '#/schemas/ModelMetaNameRule'}
+          updated_at: {type: string, format: date-time}
+
+  ModelMetaBatchDeleteRequest:
+    type: object
+    additionalProperties: false
+    required: [ids]
+    properties:
+      ids:
+        type: array
+        minItems: 1
+        maxItems: 1000
+        items: {type: integer, format: int64, minimum: 1}
+      remove_from_channels:
+        type: boolean
+        default: false
+        description: 只对 name_rule=0 的档案生效；会让渠道变空时整体 422。
+      clear_pricing:
+        type: boolean
+        default: false
+        description: 额外要求 pricing:manage，否则 403。
+
+  ModelMetaBatchDeleteResponse:
+    type: object
+    additionalProperties: false
+    required: [requested, deleted, channels_updated, pricing_deleted, group_pricing_deleted]
+    properties:
+      requested: {type: integer, format: int64, description: 去重后的选择集大小。}
+      deleted: {type: integer, format: int64, description: 实际命中的档案数。}
+      channels_updated: {type: integer, format: int64}
+      pricing_deleted: {type: integer, format: int64}
+      group_pricing_deleted: {type: integer, format: int64}
+
+  ModelMissing:
+    type: object
+    additionalProperties: false
+    required: [model_name, channel_count, has_pricing]
+    properties:
+      model_name: {type: string}
+      channel_count:
+        type: integer
+        format: int64
+        description: 支持该模型的启用渠道数（跳过含非法 supported_models 元素的渠道）。
+      has_pricing:
+        type: boolean
+        description: model_pricing 中已有同名行（不区分启停）。
+
+  ModelMissingList:
+    type: object
+    additionalProperties: false
+    required: [items, skipped_channels, total]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/ModelMissing'}
+      skipped_channels:
+        type: integer
+        format: int64
+        description: 因 supported_models 含非法元素而整渠道跳过的启用渠道数。
+      total: {type: integer, format: int64}
+
+  ModelSyncFieldChange:
+    type: object
+    additionalProperties: false
+    required: [local, upstream]
+    properties:
+      local: {description: 本地值（可能为 null）。}
+      upstream: {description: 上游值（可能为 null）。}
+
+  ModelSyncModelCandidate:
+    type: object
+    additionalProperties: false
+    required: [model_name]
+    properties:
+      model_name: {type: string}
+      changes:
+        type: object
+        additionalProperties: {$ref: '#/schemas/ModelSyncFieldChange'}
+        description: 仅 update 组提供；只为上游清单提供的字段计算差异。
+
+  ModelSyncVendorCandidate:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string}
+      changes:
+        type: object
+        additionalProperties: {$ref: '#/schemas/ModelSyncFieldChange'}
+
+  ModelSyncVendorGroups:
+    type: object
+    additionalProperties: false
+    required: [create, update, unchanged]
+    properties:
+      create: {type: array, items: {type: string}}
+      update: {type: array, items: {$ref: '#/schemas/ModelSyncVendorCandidate'}}
+      unchanged: {type: array, items: {type: string}}
+
+  ModelSyncPreview:
+    type: object
+    additionalProperties: false
+    required: [source_version, groups]
+    properties:
+      source_version:
+        type: string
+        description: 上游清单原文的 sha256（hex）；apply 必须原样回传。
+      groups:
+        type: object
+        additionalProperties: false
+        required: [create, update, unchanged, blocked, missing_upstream, missing_vendor, vendors]
+        properties:
+          create: {type: array, items: {$ref: '#/schemas/ModelSyncModelCandidate'}}
+          update: {type: array, items: {$ref: '#/schemas/ModelSyncModelCandidate'}}
+          unchanged: {type: array, items: {type: string}}
+          blocked:
+            type: array
+            items: {type: string}
+            description: 本地 sync_official=false，apply 永不覆盖。
+          missing_upstream:
+            type: array
+            items: {type: string}
+            description: 本地有、上游清单无。
+          missing_vendor:
+            type: array
+            items: {type: string}
+            description: 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。
+          vendors: {$ref: '#/schemas/ModelSyncVendorGroups'}
+
+  ModelSyncManifestModel:
+    type: object
+    additionalProperties: false
+    required: [model_name]
+    properties:
+      model_name: {type: string}
+      display_name: {type: string, nullable: true}
+      description: {type: string, nullable: true}
+      icon: {type: string, nullable: true}
+      tags: {type: array, items: {type: string}}
+      capabilities: {type: array, items: {type: string}}
+      context_length: {type: integer, format: int64, nullable: true}
+      max_output: {type: integer, format: int64, nullable: true}
+
+  ModelSyncManifestVendor:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string}
+      description: {type: string, nullable: true}
+      icon: {type: string, nullable: true}
+
+  ModelSyncApplyRequest:
+    type: object
+    additionalProperties: false
+    required: [source_version]
+    properties:
+      source_version: {type: string}
+      models:
+        type: array
+        items: {$ref: '#/schemas/ModelSyncManifestModel'}
+        description: 只用于选择；写入值取自服务端缓存的清单。
+      vendors:
+        type: array
+        items: {$ref: '#/schemas/ModelSyncManifestVendor'}
+
+  ModelSyncApplyResponse:
+    type: object
+    additionalProperties: false
+    required: [source_version, created_models, updated_models, created_vendors, updated_vendors]
+    properties:
+      source_version: {type: string}
+      created_models: {type: array, items: {type: string}}
+      updated_models: {type: array, items: {type: string}}
+      created_vendors: {type: array, items: {type: string}}
+      updated_vendors: {type: array, items: {type: string}}
+
+  Vendor:
+    type: object
+    additionalProperties: false
+    required: [id, name, status, created_at, updated_at, model_count, version]
+    properties:
+      id: {type: integer, format: int64}
+      name: {type: string, maxLength: 128}
+      description: {type: string, nullable: true, maxLength: 512}
+      icon: {type: string, nullable: true, maxLength: 128}
+      status: {type: integer, enum: [1, 2]}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+      model_count:
+        type: integer
+        format: int64
+        description: 引用该供应商的档案数（含停用模型）。
+      version:
+        type: string
+        description: 7 列规范化后的 sha256 派生值（不落库）；PUT 必须原样回传。
+
+  VendorList:
+    allOf:
+      - $ref: '../components/pagination.yaml#/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items: {$ref: '#/schemas/Vendor'}
+    description: GET /api/vendors 的 offset 分页信封。
+
+  VendorSearchList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, name, status]
+          properties:
+            id: {type: integer, format: int64}
+            name: {type: string}
+            status: {type: integer, enum: [1, 2]}
+
+  VendorCreateRequest:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, minLength: 1, maxLength: 128}
+      description: {type: string, nullable: true, maxLength: 512}
+      icon: {type: string, nullable: true, maxLength: 128}
+      status: {type: integer, enum: [1, 2], default: 1}
+
+  VendorUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [version]
+    properties:
+      name: {type: string, minLength: 1, maxLength: 128}
+      description: {type: string, nullable: true, maxLength: 512}
+      icon: {type: string, nullable: true, maxLength: 128}
+      status: {type: integer, enum: [1, 2]}
+      version: {type: string}
+
+  VendorOperationRequest:
+    type: object
+    additionalProperties: false
+    required: [action]
+    properties:
+      action:
+        type: string
+        enum: [assign, merge, delete]
+      model_ids:
+        type: array
+        maxItems: 1000
+        items: {type: integer, format: int64, minimum: 1}
+        description: assign 使用。
+      vendor_ids:
+        type: array
+        maxItems: 1000
+        items: {type: integer, format: int64, minimum: 1}
+        description: merge / delete 使用。
+      target_vendor_id:
+        type: integer
+        format: int64
+        minimum: 0
+        description: assign 的 0 = 清空归属。
+      expected_version:
+        type: string
+        description: preview 返回的操作指纹；apply 必填，缺失亦视为冲突。
+
+  VendorOperationConflict:
+    type: object
+    additionalProperties: false
+    required: [vendor_id, current_version]
+    properties:
+      vendor_id: {type: integer, format: int64}
+      current_version: {type: string}
+
+  VendorOperationPreview:
+    type: object
+    additionalProperties: false
+    required: [action, affected, conflict, conflicts, expected_version, vendors]
+    properties:
+      action: {type: string, enum: [assign, merge, delete]}
+      affected: {type: integer, format: int64}
+      conflict: {type: boolean}
+      conflicts:
+        type: array
+        items: {$ref: '#/schemas/VendorOperationConflict'}
+      expected_version: {type: string}
+      vendors:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [vendor_id, version]
+          properties:
+            vendor_id: {type: integer, format: int64}
+            version: {type: string}
+
+  VendorOperationResult:
+    type: object
+    additionalProperties: false
+    required: [affected]
+    properties:
+      affected: {type: integer, format: int64}
