@@ -109,6 +109,12 @@ type PerformanceHandlerConfig struct {
 	Hostname func() (string, error)
 	// Remove 是单文件删除接缝（测试注入失败以覆盖 failed_files）；nil 时 os.Remove。
 	Remove func(string) error
+	// RuntimeGC 是运行时 GC 接缝；nil 时 runtime.GC。
+	//
+	// 为什么需要接缝：实例不匹配的 409 用例要证明请求停在 GC 之前，而进程
+	// 全局的 MemStats.NumGC 会被循环自身分配触发的自动 GC 推进，用它做断言
+	// 会随机 flake（D3a 复核 F1）。注入 stub 计数才是确定性的观测。
+	RuntimeGC func()
 }
 
 // PerformanceHandlers 持有性能端点依赖，可并发使用。
@@ -122,6 +128,7 @@ type PerformanceHandlers struct {
 	geten func(string) string
 	host  func() (string, error)
 	rm    func(string) error
+	gc    func()
 	// lastClearedAt 是本进程最近一次磁盘缓存清理的完成时间（UnixNano）。
 	// 0 = 从未清理。它是进程本地观测值：重启后归零，与三个对象本身一样
 	// 不跨副本、不落库（§3.19 Q4）。
@@ -162,9 +169,13 @@ func NewPerformanceHandlers(cfg PerformanceHandlerConfig) *PerformanceHandlers {
 	if remove == nil {
 		remove = os.Remove
 	}
+	runGC := cfg.RuntimeGC
+	if runGC == nil {
+		runGC = runtime.GC
+	}
 	return &PerformanceHandlers{
 		logDB: cfg.LogDB, audit: cfg.Audit, log: log, rdb: cfg.Redis,
-		authz: authz, now: now, geten: getenv, host: hostname, rm: remove,
+		authz: authz, now: now, geten: getenv, host: hostname, rm: remove, gc: runGC,
 	}
 }
 
@@ -532,7 +543,7 @@ func (h *PerformanceHandlers) handleGC(w http.ResponseWriter, r *http.Request) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	started := h.now()
-	runtime.GC()
+	h.gc()
 	duration := h.now().Sub(started)
 	runtime.ReadMemStats(&after)
 

@@ -34,6 +34,8 @@ type perfTestEnv struct {
 	audit  *fakeAuditExec
 	now    time.Time
 	remove func(string) error
+	// gc 是运行时 GC 接缝；nil 时走真实 runtime.GC（GC 行为用例）。
+	gc func()
 }
 
 func newPerfTestEnv(t *testing.T) *perfTestEnv {
@@ -65,6 +67,13 @@ func newPerfTestEnvWithRedis(t *testing.T, rdb *redis.Client) *perfTestEnv {
 				return env.remove(path)
 			}
 			return os.Remove(path)
+		},
+		RuntimeGC: func() {
+			if env.gc != nil {
+				env.gc()
+				return
+			}
+			runtime.GC()
 		},
 	})
 	mux := http.NewServeMux()
@@ -205,16 +214,11 @@ func TestPerformanceInstanceMismatchReturns409(t *testing.T) {
 		{http.MethodDelete, "/api/performance/logs?mode=by_days&value=1&instance_id=gateway-2", ""},
 		{http.MethodPost, "/api/performance/gc", `{"instance_id":"gateway-2"}`},
 	}
-	// GC 分支的零副作用用 GC 次数证明：实例不匹配时请求必须停在
-	// runtime.GC() 之前。磁盘/日志两个分支不会触发 GC，因此整个循环前后
-	// 的计数相等即说明 GC 没有被执行。（标准库没有 runtime.NumGC，
-	// 次数来自 ReadMemStats.NumGC。）
-	gcCount := func() uint32 {
-		var stats runtime.MemStats
-		runtime.ReadMemStats(&stats)
-		return stats.NumGC
-	}
-	numGCBefore := gcCount()
+	// GC 分支的零副作用用注入的接缝计数证明：实例不匹配时请求必须停在
+	// h.gc() 之前。不能用进程全局 MemStats.NumGC 前后相等来推断——循环
+	// 自身的分配会触发自动 GC，那个断言会 flake（D3a 复核 F1）。
+	gcCalls := 0
+	env.gc = func() { gcCalls++ }
 	for _, tc := range cases {
 		rr := httptest.NewRecorder()
 		env.mux.ServeHTTP(rr, perfRequest(tc.method, tc.target, tc.body, confirm))
@@ -225,9 +229,8 @@ func TestPerformanceInstanceMismatchReturns409(t *testing.T) {
 			t.Fatalf("缺少 INSTANCE_MISMATCH: %s", rr.Body.String())
 		}
 	}
-	numGCAfter := gcCount()
-	if numGCAfter != numGCBefore {
-		t.Fatalf("实例不匹配的 GC 请求不得执行 runtime.GC: num_gc %d -> %d", numGCBefore, numGCAfter)
+	if gcCalls != 0 {
+		t.Fatalf("实例不匹配的 GC 请求不得执行运行时 GC: 调用 %d 次", gcCalls)
 	}
 	assertExists(t, cacheFile)
 	assertExists(t, logFile)
@@ -655,6 +658,14 @@ func TestPerformanceLogCleanupValidation(t *testing.T) {
 	env := newPerfTestEnv(t)
 	confirm := map[string]string{"X-Confirm-Action": "true"}
 
+	// 上限用例必须证明校验发生在扫描/删除之前（D3a 复核 F2）：目录先配好并
+	// 放入一个远超 1 天截止线的候选文件。若实现先扫描再校验 value，这个文件
+	// 就会被删掉；故断言 422 之后它仍在。
+	logDir := t.TempDir()
+	env.env["LOG_DIR"] = logDir
+	oldCandidate := writePerfFile(t, logDir, "newtg-old.log",
+		env.now.Add(-100*24*time.Hour), "old")
+
 	cases := []struct {
 		target string
 		code   string
@@ -675,7 +686,10 @@ func TestPerformanceLogCleanupValidation(t *testing.T) {
 			t.Fatalf("%s = %d（body=%s）", tc.target, rr.Code, rr.Body.String())
 		}
 	}
+	assertExists(t, oldCandidate)
 
+	// LOG_DIR 未配置的 422（Q10）与参数校验是两条独立路径。
+	env.env["LOG_DIR"] = ""
 	rr := httptest.NewRecorder()
 	env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete,
 		"/api/performance/logs?mode=by_days&value=30", "", confirm))
