@@ -244,7 +244,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（28 表，共 28 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（30 表，共 30 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
