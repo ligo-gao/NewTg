@@ -600,8 +600,12 @@ type SessionBilling interface {
 //
 //	Detach                 停止心跳、移除在飞租约，**保留 hold 不结算**；
 //	                       幂等；由提交路径在任务行落库成功后调用。
-//	TerminateByRequestID   T6b 轮询器在任务终态时按持久化 requestID 结算；
-//	RefundByRequestID      T6b 在失败/超时时按持久化 requestID 全额退款。
+//	TerminateByRequestID   T6b 轮询器在任务终态时按持久化 requestID 结算
+//	                       （**任务路径必须使用引擎的 ForToken 变体**，否则
+//	                       令牌额度不调整/不归属）；
+//	RefundByRequestID      T6b 在失败/超时时按持久化 requestID 全额退款
+//	                       （同上：任务路径使用 ForToken 变体，否则令牌
+//	                       额度不回补）。
 //
 // 两个 ByRequestID 只依赖持久化账本行，不依赖进程内 Session；幂等语义与
 // BillingSession.Terminate/Refund 相同。

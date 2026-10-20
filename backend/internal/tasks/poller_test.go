@@ -416,6 +416,45 @@ func TestPollOther4xxNonTerminalAccumulatesFailure(t *testing.T) {
 	}
 }
 
+func TestPollOther4xxUnknownCountsOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"state":"UNKNOWN"}`))
+	}))
+	defer upstream.Close()
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := repo.add(submittedTask(1, 7))
+	p := newTestPoller(t, repo, &fakeHandoff{}, NewOutboundClient())
+	p.RunOnce(context.Background())
+	got := repo.get(task.ID)
+	if got.State != StateUnknown {
+		t.Fatalf("state = %s, want unknown", got.State)
+	}
+	if privateInt(got.PrivateData["poll_failures"]) != 1 {
+		t.Fatalf("UNKNOWN must be counted exactly once, got %v", got.PrivateData["poll_failures"])
+	}
+}
+
+func TestPollOther4xxTerminalAccepted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"state":"SUCCESS","progress":100}`))
+	}))
+	defer upstream.Close()
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := repo.add(submittedTask(1, 7))
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+	got := repo.get(task.ID)
+	if got.State != StateSuccess || handoff.terminateCount() != 1 || handoff.refundCount() != 0 {
+		t.Fatalf("terminal 4xx must be accepted and settled: state=%s terminates=%d refunds=%d",
+			got.State, handoff.terminateCount(), handoff.refundCount())
+	}
+}
+
 func TestPollRetryableAccumulatesThenRefundsAtLimit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

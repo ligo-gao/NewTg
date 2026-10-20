@@ -291,3 +291,33 @@ func readTokenRemain(t *testing.T, db *sql.DB, tokenID int64) int64 {
 	}
 	return remain
 }
+
+// TestTerminateByRequestIDForTokenNonEmptyFactAdjustsToken 验收 T6b 复核
+// MEDIUM-A：非空 fact 的「多退少补」必须同步调整令牌额度。
+func TestTerminateByRequestIDForTokenNonEmptyFactAdjustsToken(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	// 提交时按 100 预扣；终结时按 50 重新定价（差额退回）。
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(),
+		&staticPricingSource{snap: *perCallSnapshot(50)}, nil, nil)
+
+	requestID := testRequestID("handoff-token-fact")
+	session := newBillingTestSessionWithToken(engine, userID, tokenID, requestID, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := session.Detach(requestID); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	if err := engine.TerminateByRequestIDForToken(requestID, tokenID,
+		contract.UsageFact{Model: "test-model"}); err != nil {
+		t.Fatalf("TerminateByRequestIDForToken: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 450 {
+		t.Fatalf("wallet after reprice = %d, want 450", got)
+	}
+	if got := readTokenRemain(t, db, tokenID); got != 450 {
+		t.Fatalf("token after reprice = %d, want 450 (MEDIUM-A: token must follow the delta)", got)
+	}
+}

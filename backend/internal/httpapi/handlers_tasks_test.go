@@ -566,6 +566,10 @@ func TestTaskSubmitInlineFailureRefunds(t *testing.T) {
 	if _, pending := row.PrivateData["refund_pending"]; pending {
 		t.Fatalf("refund succeeded but refund_pending was persisted")
 	}
+	// 即时终态已封账：与轮询终态同一审计口径（T6b 复核 LOW-2）。
+	if row.PrivateData["billing_final"] != true {
+		t.Fatalf("inline failure must mark billing_final: %#v", row.PrivateData)
+	}
 }
 
 func TestTaskSubmitInlineSuccessWithoutUsageSettlesAtHeld(t *testing.T) {
@@ -596,6 +600,9 @@ func TestTaskSubmitInlineSuccessWithoutUsageSettlesAtHeld(t *testing.T) {
 	}
 	if row := store.rows[0]; row.PrivateData["settlement_pending"] == true {
 		t.Fatalf("at-held settlement must not be left pending: %#v", row.PrivateData)
+	}
+	if store.rows[0].PrivateData["billing_final"] != true {
+		t.Fatalf("inline success must mark billing_final: %#v", store.rows[0].PrivateData)
 	}
 }
 

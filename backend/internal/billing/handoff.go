@@ -15,8 +15,9 @@ import (
 
 // TerminateByRequestID 在任务终态时结算（T6b 调用）。
 //
-// 不带令牌身份：tokenID=0 时令牌额度不参与调整/日志归属。任务路径应使用
-// TerminateByRequestIDForToken——提交时的 PreConsume 已扣过令牌额度。
+// Deprecated: 任务路径必须使用 TerminateByRequestIDForToken。无令牌版本
+// 以 tokenID=0 结算，令牌额度不参与调整/归属；新调用方误用会重新引入
+// T6b 复核 H1 的钱包/令牌不一致。保留仅为兼容既有测试与内部调用。
 func (e *Engine) TerminateByRequestID(requestID string, fact contract.UsageFact) error {
 	return e.TerminateByRequestIDForToken(requestID, 0, fact)
 }
@@ -33,13 +34,28 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 	if fact.Model == "" && usageIsZero(fact.Usage) {
 		return e.terminateAtHeld(requestID, tokenID, fact)
 	}
-	// rc 只承载持久化事实：requestID 是日志幂等键，UserID 由 Terminate 从
-	// hold 行回填（见 session.go 的 ByRequestID 注释）。
+	// 从账本水合 hold 与令牌扣减：非空 fact 会「多退少补」，令牌额度也必须
+	// 跟着差额调整。若只设 tokenID 而不水合 tokenDeducted，Terminate 内的
+	// adjustTokenToCost 会以 tokenDeducted=0 计算，CreditToken 命中 0 行、
+	// 日志后返回 nil，造成钱包与令牌不一致（T6b 复核 MEDIUM-A）。
+	ctx, cancel := opCtx()
+	defer cancel()
+	st, err := e.ledger.openHoldState(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("billing: read task holds for %s: %w", requestID, err)
+	}
 	s := &Session{
-		engine:    e,
-		requestID: requestID,
-		tokenID:   tokenID,
-		rc:        &contract.RelayContext{RequestID: requestID, TokenID: int(tokenID)},
+		engine:        e,
+		requestID:     requestID,
+		tokenID:       tokenID,
+		userID:        st.UserID,
+		preConsumed:   st.Held,
+		tokenDeducted: st.Held,
+		rc: &contract.RelayContext{
+			RequestID: requestID,
+			UserID:    int(st.UserID),
+			TokenID:   int(tokenID),
+		},
 	}
 	return s.Terminate(fact)
 }
@@ -114,8 +130,9 @@ func usageIsZero(u contract.Usage) bool {
 
 // RefundByRequestID 在任务失败/超时时全额退款（T6b 调用）。
 //
-// 不带令牌身份：任务路径应使用 RefundByRequestIDForToken，否则 PreConsume
-// 扣掉的令牌额度不会回补（钱包退回、令牌永久少扣）。
+// Deprecated: 任务路径必须使用 RefundByRequestIDForToken。无令牌版本
+// 退款只回补钱包，PreConsume 扣掉的令牌额度不会退回（T6b 复核 H1）。
+// 保留仅为兼容既有测试与内部调用。
 func (e *Engine) RefundByRequestID(requestID string) error {
 	return e.RefundByRequestIDForToken(requestID, 0)
 }
