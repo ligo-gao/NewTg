@@ -281,6 +281,11 @@ func httpsAbsoluteURL(v any) error {
 	if parsed.Fragment != "" {
 		return errors.New("fragment is not allowed")
 	}
+	// `https://host/?` 解析为 ForceQuery=true、RawQuery=""：空查询分隔符
+	// 既不是有效参数，又会把 `?` 带进下游拼接的地址。
+	if parsed.ForceQuery {
+		return errors.New("empty query delimiter is not allowed")
+	}
 	return nil
 }
 
@@ -758,6 +763,10 @@ func validateAlipaySection(values map[string]any, secretConfigured map[string]bo
 //
 // api_url 额外拒绝 query/fragment/userinfo：它是 submit.php 的基址，拼接
 // 后带 query 会产生「submit.php?x=y」这类歧义入口（providerReady 同样校验）。
+// 空 query 标记 `?`（ForceQuery=true、RawQuery=""）也必须拒绝：只看
+// RawQuery/Fragment 会把 `https://pay.example.com/?` 当成合法地址放行。
+// notify_url / return_url 允许真实 query（返回页可带固定参数），但同样
+// 拒绝空 `?`，否则渠道拿到的回调地址与站内配置会多出一个空查询分隔符。
 func validateEpaySection(values map[string]any, secretConfigured map[string]bool) error {
 	if values["pay.epay.enabled"] != true {
 		return nil
@@ -770,8 +779,23 @@ func validateEpaySection(values map[string]any, secretConfigured map[string]bool
 	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Scheme != "https" {
 		return invalid("pay.epay.api_url", "must be an absolute https URL")
 	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery {
 		return invalid("pay.epay.api_url", "must not contain userinfo, query or fragment")
+	}
+	for _, key := range []string{"pay.epay.notify_url", "pay.epay.return_url"} {
+		raw := strings.TrimSpace(asString(values[key]))
+		if raw == "" {
+			continue
+		}
+		// 相对路径（return_url 允许 /wallet）也走 url.Parse：`/wallet?`
+		// 同样得到 ForceQuery=true。
+		optional, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return invalid(key, "invalid URL")
+		}
+		if optional.ForceQuery {
+			return invalid(key, "must not use an empty query (\"?\")")
+		}
 	}
 	if strings.TrimSpace(asString(values["pay.epay.pid"])) == "" {
 		return invalid("pay.epay.pid", "required when Epay is enabled")

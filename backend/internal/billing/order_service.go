@@ -308,7 +308,16 @@ func (s *TopupService) clearManualCompletion(ctx context.Context, orderID int64)
 //
 // 所有失败都收敛为 ErrProviderUnavailable（HTTP 层据此选择 502/400），
 // 响应体不携带渠道原始错误，避免把密钥或渠道内部信息带出边界。
+// 例外：渠道根本不支持查询（epay）返回 ErrProviderActionUnsupported，
+// 由 HTTP 层映射为 409/400——那是「动作不可用」而非「渠道故障」。
 func (s *TopupService) queryProviderPayment(ctx context.Context, order *store.Order) (*providerPaymentState, error) {
+	// epay 协议没有主动查询接口（F-04-21 明确声明）：这是渠道能力缺失，
+	// 不是瞬时故障。若落到 default 分支返回 ErrProviderDisabled，HTTP 层
+	// 会把它解释成 502「渠道不可用」，误导用户重试。这里先于 txn 检查返回
+	// ErrProviderActionUnsupported，由 HTTP 层回 409/400 固定文案。
+	if order.Provider == ProviderEpay {
+		return nil, fmt.Errorf("%w: %s has no active query API", ErrProviderActionUnsupported, ProviderEpay)
+	}
 	if order.ProviderTxnID == nil || strings.TrimSpace(*order.ProviderTxnID) == "" {
 		return nil, fmt.Errorf("%w: order %d has no provider transaction id",
 			ErrProviderUnavailable, order.ID)

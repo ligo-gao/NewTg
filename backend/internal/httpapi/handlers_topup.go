@@ -73,6 +73,7 @@ const (
 	problemTypeTopupUnavailable    = "https://newtg.dev/problems/topup_unavailable"
 	problemTypeOrderConflict       = "https://newtg.dev/problems/order_state_conflict"
 	problemTypeProviderUnavailable = "https://newtg.dev/problems/provider_unavailable"
+	problemTypeProviderActionUnsup = "https://newtg.dev/problems/provider_action_unsupported"
 	problemTypeOrderNotPaid        = "https://newtg.dev/problems/order_not_paid"
 )
 
@@ -602,6 +603,12 @@ func (h *TopupHandlers) handleVerifyOrder(w http.ResponseWriter, r *http.Request
 			errors.Is(err, billing.ErrInvalidOrderTransition):
 			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
 				"Order state conflict", "Only pending orders can be verified.")
+		case errors.Is(err, billing.ErrProviderActionUnsupported):
+			// epay 等无主动查询能力的渠道：请求本身合法，但该渠道没有这个
+			// 动作。用 409 + 固定 problem type 与「渠道故障 502」区分开，
+			// 避免用户把「不支持核实」当成可重试的瞬时错误。
+			writeOrderProblem(w, http.StatusConflict, problemTypeProviderActionUnsup,
+				"Action not supported", "This payment provider does not support order verification.")
 		case errors.Is(err, billing.ErrProviderUnavailable),
 			errors.Is(err, billing.ErrProviderDisabled),
 			errors.Is(err, billing.ErrPaymentConfig):
@@ -676,6 +683,12 @@ func (h *TopupHandlers) handleCompleteOrder(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, billing.ErrInvalidManualReason):
 			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 				"manual_reason must be 10-200 characters")
+		case errors.Is(err, billing.ErrProviderActionUnsupported):
+			// 人工完成的前提是渠道能确认收款；epay 没有查询接口，管理员
+			// 不能通过该端点完成订单（迟到支付需走退款/人工对账流程）。
+			// 400 + 固定文案，且不写任何状态。
+			writeOrderProblem(w, http.StatusBadRequest, problemTypeProviderActionUnsup,
+				"Action not supported", "This payment provider does not support order confirmation.")
 		case errors.Is(err, billing.ErrOrderNotPaid),
 			errors.Is(err, billing.ErrProviderUnavailable),
 			errors.Is(err, billing.ErrProviderDisabled),

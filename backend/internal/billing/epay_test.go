@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+
+	"newtg/gateway/internal/store"
 )
 
 const epayTestKey = "testkey"
@@ -60,7 +62,7 @@ func epayNotifyParams(txn, money, status string) map[string]string {
 // 参与签名（标准易支付网关会附带该字段）。
 func epayNotifyForm(txn, money, status string) url.Values {
 	flat := epayNotifyParams(txn, money, status)
-	flat["sign"] = epaySign(flat, epayTestKey)
+	flat["sign"] = epaySign(flat, epayTestKey, EpaySignModeAppend)
 	flat["sign_type"] = "MD5"
 	return epayValues(flat)
 }
@@ -96,8 +98,19 @@ func TestEpaySignatureVector(t *testing.T) {
 	if got := epayCanonical(fields); got != canonical {
 		t.Fatalf("canonical = %q\n期望 %q", got, canonical)
 	}
-	if got, want := epaySign(fields, epayTestKey), "baf5c7e32cb08e09e976bd6e14b9162f"; got != want {
+	if got, want := epaySign(fields, epayTestKey, EpaySignModeAppend), "baf5c7e32cb08e09e976bd6e14b9162f"; got != want {
 		t.Fatalf("sign = %s，期望 %s", got, want)
+	}
+	// amp 变体：canonical 与 key 之间多一个 `&`。期望值同样由独立脚本
+	// 计算（md5(canonical + "&" + key)），与 append 向量无法互相冒充。
+	if got, want := epaySign(fields, epayTestKey, EpaySignModeAmp), "59e25984b451d04c5fa529c8ae3ddcd2"; got != want {
+		t.Fatalf("amp sign = %s，期望 %s", got, want)
+	}
+	// 同一份参数在两种口径下签名不同：验证模式确实参与拼接口径，
+	// 而不是仅做参数校验后仍走默认分支。
+	if epaySign(fields, epayTestKey, EpaySignModeAppend) ==
+		epaySign(fields, epayTestKey, EpaySignModeAmp) {
+		t.Fatal("append 与 amp 的签名不应相同")
 	}
 
 	notify := map[string]string{
@@ -110,15 +123,15 @@ func TestEpaySignatureVector(t *testing.T) {
 		"trade_status": "TRADE_SUCCESS",
 		"sign_type":    "MD5",
 	}
-	notify["sign"] = epaySign(notify, epayTestKey)
+	notify["sign"] = epaySign(notify, epayTestKey, EpaySignModeAppend)
 	if notify["sign"] != "22f0f3b554c28fd028cecbb93d0c9f64" {
 		t.Fatalf("notify sign = %s，期望 22f0f3b554c28fd028cecbb93d0c9f64", notify["sign"])
 	}
-	if err := VerifyEpaySignature(notify, epayTestKey); err != nil {
+	if err := VerifyEpaySignature(notify, epayTestKey, EpaySignModeAppend); err != nil {
 		t.Fatalf("合法签名应通过: %v", err)
 	}
 	notify["money"] = "10.01"
-	if err := VerifyEpaySignature(notify, epayTestKey); !errors.Is(err, ErrWebhookSignature) {
+	if err := VerifyEpaySignature(notify, epayTestKey, EpaySignModeAppend); !errors.Is(err, ErrWebhookSignature) {
 		t.Fatalf("篡改金额应验签失败，实际 %v", err)
 	}
 }
@@ -167,18 +180,23 @@ func TestEpayFullFormExternalVector(t *testing.T) {
 	if got := epayCanonical(fields); got != canonical {
 		t.Fatalf("canonical = %q\n期望 %q", got, canonical)
 	}
-	fields["sign"] = epaySign(fields, "s3cr3t")
+	fields["sign"] = epaySign(fields, "s3cr3t", EpaySignModeAppend)
 	const want = "81bd2a04e662c7a9ed22fd8e6091cc06"
 	if fields["sign"] != want {
 		t.Fatalf("sign = %s，期望 %s（标准算法 canonical+key）", fields["sign"], want)
 	}
-	if err := VerifyEpaySignature(fields, "s3cr3t"); err != nil {
+	if err := VerifyEpaySignature(fields, "s3cr3t", EpaySignModeAppend); err != nil {
 		t.Fatalf("黄金向量应通过验签: %v", err)
 	}
-	// `&key` 变体（错误实现）必须验签失败：防止实现回退到错误拼接。
+	// `&key` 变体在默认（append）口径下必须验签失败：防止实现回退到
+	// 错误拼接。a42e7b… 正是同一表单按 amp（canonical + "&" + key）算出
+	// 的签名；它只在显式选择 amp 时才应通过。
 	fields["sign"] = "a42e7b0692cd6f4a7c6627b680720670"
-	if err := VerifyEpaySignature(fields, "s3cr3t"); !errors.Is(err, ErrWebhookSignature) {
-		t.Fatalf("非标准签名应失败，实际 %v", err)
+	if err := VerifyEpaySignature(fields, "s3cr3t", EpaySignModeAppend); !errors.Is(err, ErrWebhookSignature) {
+		t.Fatalf("amp 签名在 append 口径下应失败，实际 %v", err)
+	}
+	if err := VerifyEpaySignature(fields, "s3cr3t", EpaySignModeAmp); err != nil {
+		t.Fatalf("amp 签名在 amp 口径下应通过: %v", err)
 	}
 }
 
@@ -217,7 +235,7 @@ func TestEpayTopupCheckoutAndNotify(t *testing.T) {
 		t.Fatalf("sign_type/device = %q/%q",
 			result.FormFields["sign_type"], result.FormFields["device"])
 	}
-	if err := VerifyEpaySignature(result.FormFields, epayTestKey); err != nil {
+	if err := VerifyEpaySignature(result.FormFields, epayTestKey, EpaySignModeAppend); err != nil {
 		t.Fatalf("下单表单签名无效: %v", err)
 	}
 	txn := result.FormFields["out_trade_no"]
@@ -330,7 +348,7 @@ func TestEpayNotifyRejectsPIDMismatchAndIntermediateStatus(t *testing.T) {
 	first, userID := newOrder("epay-pid-wrong")
 	params := epayNotifyParams(*first.Order.ProviderTxnID, "10.00", "TRADE_SUCCESS")
 	params["pid"] = "9999"
-	params["sign"] = epaySign(params, epayTestKey)
+	params["sign"] = epaySign(params, epayTestKey, EpaySignModeAppend)
 	if err := svc.HandleEpayNotify(ctx, epayValues(params)); !errors.Is(err, ErrWebhookPayload) {
 		t.Fatalf("pid 不符应返回 ErrWebhookPayload，实际 %v", err)
 	}
@@ -345,7 +363,7 @@ func TestEpayNotifyRejectsPIDMismatchAndIntermediateStatus(t *testing.T) {
 	second, _ := newOrder("epay-pid-missing")
 	params = epayNotifyParams(*second.Order.ProviderTxnID, "10.00", "TRADE_SUCCESS")
 	delete(params, "pid")
-	params["sign"] = epaySign(params, epayTestKey)
+	params["sign"] = epaySign(params, epayTestKey, EpaySignModeAppend)
 	if err := svc.HandleEpayNotify(ctx, epayValues(params)); !errors.Is(err, ErrWebhookPayload) {
 		t.Fatalf("缺失 pid 应返回 ErrWebhookPayload，实际 %v", err)
 	}
@@ -436,6 +454,128 @@ func TestEpayNotifyRejectedWhenDisabled(t *testing.T) {
 	if err := svc.HandleEpayNotify(context.Background(),
 		epayNotifyForm("TGEP1", "10.00", "TRADE_SUCCESS")); !errors.Is(err, ErrProviderDisabled) {
 		t.Fatalf("未启用渠道应返回 ErrProviderDisabled，实际 %v", err)
+	}
+}
+
+// TestEpayProviderReadyRejectsEmptyQueryAndSignMode 覆盖启用门禁：
+//   - api_url / notify_url / return_url 的空 `?`（ForceQuery=true）必须拒绝；
+//   - sign_mode 只接受 append/amp，未知值不能静默回退；
+//   - pid 的尾随空格在配置读取时归一，不影响可用性判定。
+func TestEpayProviderReadyRejectsEmptyQueryAndSignMode(t *testing.T) {
+	valid := func() mapConfig { return epayTestConfig("https://pay.example.com") }
+
+	cases := []struct {
+		name    string
+		mutate  func(mapConfig)
+		wantErr bool
+	}{
+		{"api_url 空 query", func(c mapConfig) {
+			c[ConfigEpayAPIURL] = json.RawMessage(`"https://pay.example.com/?"`)
+		}, true},
+		{"notify_url 空 query", func(c mapConfig) {
+			c[ConfigEpayNotifyURL] = json.RawMessage(`"https://tg.example.com/cb?"`)
+		}, true},
+		{"return_url 空 query", func(c mapConfig) {
+			c[ConfigEpayReturnURL] = json.RawMessage(`"/wallet?"`)
+		}, true},
+		{"sign_mode 未知", func(c mapConfig) {
+			c[ConfigEpaySignMode] = json.RawMessage(`"raw"`)
+		}, true},
+		{"sign_mode amp", func(c mapConfig) {
+			c[ConfigEpaySignMode] = json.RawMessage(`"amp"`)
+		}, false},
+		{"pid 尾随空格", func(c mapConfig) {
+			c[ConfigEpayPID] = json.RawMessage(`" 1001 "`)
+		}, false},
+		{"return_url 真实 query 合法", func(c mapConfig) {
+			c[ConfigEpayReturnURL] = json.RawMessage(`"/wallet?pay=epay"`)
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := valid()
+			tc.mutate(cfg)
+			svc := &TopupService{cfg: cfg}
+			_, err := svc.providerReady(ProviderEpay)
+			if tc.wantErr {
+				if !errors.Is(err, ErrProviderDisabled) {
+					t.Fatalf("期望 ErrProviderDisabled，实际 %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("期望可用，实际 %v", err)
+			}
+		})
+	}
+}
+
+// TestEpayProviderHasNoActiveQuery：主动核实/人工完成的查询入口对 epay
+// 必须返回 ErrProviderActionUnsupported（渠道能力缺失），而不是
+// ErrProviderDisabled/ErrProviderUnavailable（会被 HTTP 层映射成 502）。
+// 即使 provider_txn_id 缺失也一样：不能先被「无交易号」分支截走。
+func TestEpayProviderHasNoActiveQuery(t *testing.T) {
+	svc := &TopupService{}
+	txn := "TGEP1"
+	for _, order := range []*store.Order{
+		{Provider: ProviderEpay, ProviderTxnID: &txn},
+		{Provider: ProviderEpay},
+	} {
+		_, err := svc.queryProviderPayment(context.Background(), order)
+		if !errors.Is(err, ErrProviderActionUnsupported) {
+			t.Fatalf("provider_txn_id=%v 时应返回 ErrProviderActionUnsupported，实际 %v",
+				order.ProviderTxnID, err)
+		}
+		if errors.Is(err, ErrProviderUnavailable) || errors.Is(err, ErrProviderDisabled) {
+			t.Fatalf("不得复用瞬时故障错误：%v", err)
+		}
+	}
+}
+
+// TestEpayPIDTrimAndAmpSignMode 覆盖 R2 的两个配置归一/兼容点：
+//   - 配置 pid 带尾随空格时，下单表单与回调校验都使用去空白后的值；
+//   - sign_mode=amp 时下单与回调共用 `canonical + "&" + key` 口径。
+func TestEpayPIDTrimAndAmpSignMode(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	server := httptest.NewTLSServer(notFoundHandler())
+	t.Cleanup(server.Close)
+	cfg := epayTestConfig(server.URL)
+	cfg[ConfigEpayPID] = json.RawMessage(`" 1001 "`)
+	cfg[ConfigEpaySignMode] = json.RawMessage(`"amp"`)
+	svc, err := NewTopupService(TopupServiceConfig{DB: gormDB, Config: cfg})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	ctx := context.Background()
+
+	result, err := svc.CreateTopupOrder(ctx, userID, 1000, "CNY", ProviderEpay,
+		"epay-r2-"+strconv.FormatInt(timeNowSeq(), 10))
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if got := result.FormFields["pid"]; got != "1001" {
+		t.Fatalf("pid = %q，期望去空白后的 1001", got)
+	}
+	if err := VerifyEpaySignature(result.FormFields, epayTestKey, EpaySignModeAmp); err != nil {
+		t.Fatalf("amp 口径下单签名无效: %v", err)
+	}
+	if err := VerifyEpaySignature(result.FormFields, epayTestKey, EpaySignModeAppend); !errors.Is(err, ErrWebhookSignature) {
+		t.Fatalf("amp 签名不应在 append 口径下通过，实际 %v", err)
+	}
+
+	params := epayNotifyParams(*result.Order.ProviderTxnID, "10.00", "TRADE_SUCCESS")
+	params["sign"] = epaySign(params, epayTestKey, EpaySignModeAmp)
+	if err := svc.HandleEpayNotify(ctx, epayValues(params)); err != nil {
+		t.Fatalf("amp 回调应入账: %v", err)
+	}
+	order, err := svc.GetOrder(ctx, result.Order.ID)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if order.Status != string(OrderSucceeded) || order.CreditedCredits != 1000 {
+		t.Fatalf("订单状态/入账 = %s/%d", order.Status, order.CreditedCredits)
 	}
 }
 

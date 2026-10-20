@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/rbac"
 )
 
 func epayTLSStub(t *testing.T) *httptest.Server {
@@ -242,6 +244,58 @@ func TestEpayWebhookDisabledReturns503(t *testing.T) {
 	rr := env.postEpayForm(http.MethodPost, epayCallbackForm("TGEP1", "10.00", "TRADE_SUCCESS"))
 	if rr.Code != http.StatusServiceUnavailable || strings.TrimSpace(rr.Body.String()) != "fail" {
 		t.Fatalf("disabled = %d %q", rr.Code, rr.Body.String())
+	}
+}
+
+// TestEpayVerifyAndCompleteReturnActionUnsupported：epay 没有主动查询
+// 能力，核实接口必须回 409 provider_action_unsupported（不是 502 渠道
+// 不可用），人工完成必须回 400 且订单保持 pending。
+func TestEpayVerifyAndCompleteReturnActionUnsupported(t *testing.T) {
+	server := epayTLSStub(t)
+	env := newTopupHTTPTestEnvWithConfig(t, "", withEpayConfig(server.URL))
+	userID := env.createUser(0)
+
+	rr := env.request(userID, http.MethodPost, "/api/orders", map[string]any{
+		"amount": 1000, "provider": "epay",
+	}, map[string]string{"Idempotency-Key": "epay-unsupported-" + strconv.FormatInt(nowSeq(), 10)})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create order status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var created createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create order: %v", err)
+	}
+
+	// 主动核实：409 + 固定 problem type。
+	rr = env.request(userID, http.MethodPost,
+		"/api/orders/"+strconv.FormatInt(created.Order.ID, 10)+"/verify", nil, nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("verify = %d %s，期望 409", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "provider_action_unsupported") {
+		t.Fatalf("verify body 缺少 provider_action_unsupported: %s", rr.Body.String())
+	}
+
+	// 人工完成：400 + 同一 problem type，且不写任何状态。
+	adminID := env.createUser(0)
+	admin := &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermOrdersManage}}
+	rr = env.requestAs(admin, http.MethodPost,
+		"/api/orders/"+strconv.FormatInt(created.Order.ID, 10)+"/complete",
+		map[string]any{"manual_reason": "人工核实渠道已收款，客服确认完成"}, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("complete = %d %s，期望 400", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "provider_action_unsupported") {
+		t.Fatalf("complete body 缺少 provider_action_unsupported: %s", rr.Body.String())
+	}
+	var status string
+	if err := env.db.QueryRow(`SELECT status FROM orders WHERE id = $1`,
+		created.Order.ID).Scan(&status); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("不支持的核实动作不得改变订单状态，实际 %s", status)
 	}
 }
 

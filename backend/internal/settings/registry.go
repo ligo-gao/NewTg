@@ -394,6 +394,11 @@ func buildRegistry() []Setting {
 			validate(httpsAbsoluteURL)),
 		def("pay.epay.pid", "pay.epay", TypeString, "", maxLen(128), dangerousOn()),
 		def("pay.epay.key", "pay.epay", TypeString, "", secret(), dangerousAny()),
+		// 签名拼接口径：append（默认，标准 $signstr.$key）或 amp
+		// （部分网关的 $signstr."&".$key）。两种口径不能同时兼容，
+		// 默认保持标准算法；下单与回调共用同一取值。
+		def("pay.epay.sign_mode", "pay.epay", TypeEnum, "append",
+			enum("append", "amp")),
 		// 可选回调/返回地址；留空时由 site.server_address 推导默认值。
 		def("pay.epay.notify_url", "pay.epay", TypeString, "", maxLen(1024),
 			validate(httpsAbsoluteURL)),

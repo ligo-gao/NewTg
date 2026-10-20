@@ -10,10 +10,13 @@ package billing
 //     密钥再 md5（小写），密钥前没有 `&`（标准易支付的 `$signstr.$key`）。
 //     空值不参与（渠道侧实现普遍如此），`sign` 与 `sign_type` 都不参与——
 //     `sign_type` 是渠道自行追加的元数据，若把它算进签名会与标准易支付
-//     网关互不兼容。
+//     网关互不兼容。少数网关的「&key」变体（`$signstr."&".$key`）由
+//     `pay.epay.sign_mode=amp` 显式选择，默认仍是标准口径。
 //   - 回调可能是 GET 也可能是 POST（表单编码），因此处理器使用 r.Form
 //     （query 与 body 的合并视图），两者走同一条验签路径。
 //   - 没有主动查询/关单能力（F-04-21 明确声明）；超时关单只置 expired。
+//     因此主动核实/人工完成的渠道查询返回 ErrProviderActionUnsupported，
+//     由 HTTP 层映射为「该动作不支持」而不是 502（那不是渠道故障）。
 //
 // 金额口径：订单 amount 是分，渠道 money 是**元字符串（两位小数）**；
 // 回调换算用 yuanToCents（小数位 >2 拒绝，不四舍五入），再交给
@@ -24,6 +27,7 @@ import (
 	"crypto/md5"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -41,11 +45,26 @@ const (
 	ConfigEpayKey       = "pay.epay.key"
 	ConfigEpayNotifyURL = "pay.epay.notify_url"
 	ConfigEpayReturnURL = "pay.epay.return_url"
+	// ConfigEpaySignMode 选择签名拼接口径；默认（空值）等价 append。
+	ConfigEpaySignMode = "pay.epay.sign_mode"
 
 	// ConfigSiteServerAddress 是公开基址（不带末尾斜杠），用于推导
 	// notify_url / return_url 的默认值。缺键时回退本地默认。
 	ConfigSiteServerAddress = "site.server_address"
 )
+
+// Epay 签名拼接口径。标准易支付是 canonical 直接接 key；amp 变体在两者
+// 之间多一个 `&`。两种口径无法用同一 key 同时兼容，因此必须显式选择，
+// 默认保持标准算法（不猜测网关实现）。
+const (
+	EpaySignModeAppend = "append"
+	EpaySignModeAmp    = "amp"
+)
+
+// ErrProviderActionUnsupported 表示渠道本身不具备该动作的能力（不是瞬时
+// 故障）。epay 无主动查询接口，主动核实/人工完成必须返回它，HTTP 层据此
+// 回 409/400 固定文案，而不是把它当成 502「渠道不可用」。
+var ErrProviderActionUnsupported = errors.New("billing: payment provider does not support this action")
 
 // ProviderEpay 是易支付渠道标识（orders.provider 取值域已含 epay）。
 const ProviderEpay = "epay"
@@ -104,6 +123,31 @@ func (s *TopupService) epayReturnURL() string {
 	return configured
 }
 
+// epaySignMode 归一化签名拼接口径。空值（未配置）按 append 处理：这是
+// 标准易支付算法，也是升级前所有已部署实例的行为，不能因新增键而改变。
+// 非空且未知的取值属于配置错误——静默回退会让运营以为 amp 已生效，
+// 实际全部回调验签失败，因此返回 ErrPaymentConfig。
+func (s *TopupService) epaySignMode() (string, error) {
+	switch mode := s.configString(ConfigEpaySignMode); mode {
+	case "", EpaySignModeAppend:
+		return EpaySignModeAppend, nil
+	case EpaySignModeAmp:
+		return EpaySignModeAmp, nil
+	default:
+		return "", fmt.Errorf("%w: %s=%q", ErrPaymentConfig, ConfigEpaySignMode, mode)
+	}
+}
+
+// epayEmptyQuery 判断 raw 是否带「空查询标记」。
+//
+// url.Parse("https://pay.example.com/?") 得到 ForceQuery=true 而 RawQuery=""，
+// 只检查 RawQuery 会把这种地址当成合法基址/回调地址放行；拼接 submit.php
+// 后它变成 "submit.php?"，渠道侧对空 `?` 的接受度不一致。
+func epayEmptyQuery(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && parsed.ForceQuery
+}
+
 // epayCanonical 生成签名串：排除 sign/sign_type 与空值，按键名升序
 // `k=v` 以 `&` 连接。返回值不含密钥。
 func epayCanonical(params map[string]string) string {
@@ -127,13 +171,19 @@ func epayCanonical(params map[string]string) string {
 	return b.String()
 }
 
-// epaySign 计算 MD5 签名（小写）：md5(canonical + key)。
+// epaySign 计算 MD5 签名（小写）。
 //
-// 标准易支付的签名串是 `$signstr.$key`：密钥**直接追加**，中间没有 `&`。
-// canonical 为空时就是 md5(key)，与标准算法一致。
-func epaySign(params map[string]string, key string) string {
+// mode 为空等价 append。append 是标准易支付 `$signstr.$key`（密钥直接
+// 追加，中间没有 `&`）；amp 是部分网关的 `$signstr."&".$key` 变体。下单与
+// 回调必须使用同一口径，否则自己签出的表单/接受的回调会互相矛盾。
+func epaySign(params map[string]string, key, mode string) string {
 	canonical := epayCanonical(params)
-	sum := md5.Sum([]byte(canonical + key))
+	if mode == EpaySignModeAmp {
+		canonical += "&" + key
+	} else {
+		canonical += key
+	}
+	sum := md5.Sum([]byte(canonical))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -142,7 +192,7 @@ func epaySign(params map[string]string, key string) string {
 // 先算期望值再做 subtle.ConstantTimeCompare：直接字符串比较会把签名
 // 前缀匹配长度泄漏给攻击者（理论上可逐字节猜签名）。签名长度不等时
 // ConstantTimeCompare 立即返回 0，不构成可利用的信号（MD5 定长 32）。
-func VerifyEpaySignature(params map[string]string, key string) error {
+func VerifyEpaySignature(params map[string]string, key, mode string) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("%w: epay key not configured", ErrWebhookSignature)
 	}
@@ -150,7 +200,7 @@ func VerifyEpaySignature(params map[string]string, key string) error {
 	if got == "" {
 		return fmt.Errorf("%w: missing sign", ErrWebhookSignature)
 	}
-	expected := epaySign(params, key)
+	expected := epaySign(params, key, mode)
 	if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
 		return fmt.Errorf("%w: signature mismatch", ErrWebhookSignature)
 	}
@@ -163,8 +213,14 @@ func VerifyEpaySignature(params map[string]string, key string) error {
 // 前端收到响应前就完成支付。它同时是回调防重的唯一锚（唯一约束）。
 func (s *TopupService) createEpayPayment(ctx context.Context, order *store.Order) (*TopupOrder, error) {
 	apiURL := s.configString(ConfigEpayAPIURL)
-	pid := s.configString(ConfigEpayPID)
+	// configString 已去首尾空白；这里再 TrimSpace 是显式归一化，保证「配置里
+	// pid 带尾随空格」不会让下单表单与回调校验使用两个不同值。
+	pid := strings.TrimSpace(s.configString(ConfigEpayPID))
 	key, err := s.configSecret(ConfigEpayKey)
+	if err != nil {
+		return nil, err
+	}
+	signMode, err := s.epaySignMode()
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +258,7 @@ func (s *TopupService) createEpayPayment(ctx context.Context, order *store.Order
 		"sign_type":    "MD5",
 		"device":       "pc",
 	}
-	fields["sign"] = epaySign(fields, key)
+	fields["sign"] = epaySign(fields, key, signMode)
 	return &TopupOrder{Order: order, PayURL: epaySubmitURL(apiURL), FormFields: fields}, nil
 }
 
@@ -222,19 +278,24 @@ func (s *TopupService) HandleEpayNotify(ctx context.Context, params url.Values) 
 	if err != nil {
 		return err
 	}
+	signMode, err := s.epaySignMode()
+	if err != nil {
+		return err
+	}
 	flat := make(map[string]string, len(params))
 	for name, values := range params {
 		if len(values) > 0 {
 			flat[name] = values[len(values)-1]
 		}
 	}
-	if err := VerifyEpaySignature(flat, key); err != nil {
+	if err := VerifyEpaySignature(flat, key, signMode); err != nil {
 		return err
 	}
 	// 次级校验：同一密钥可能被多个站点共用（渠道后台按 pid 隔离），
 	// pid 必须与本站配置**完全一致**；缺失 pid 也拒绝——否则共用密钥的
-	// 另一站点带签名的回调会被本站入账。
-	configuredPID := s.configString(ConfigEpayPID)
+	// 另一站点带签名的回调会被本站入账。两侧都 TrimSpace 归一：配置侧
+	// 的尾随空格是常见的复制粘贴错误，不能让它把所有合法回调判成不符。
+	configuredPID := strings.TrimSpace(s.configString(ConfigEpayPID))
 	if configuredPID == "" {
 		return fmt.Errorf("%w: epay pid not configured", ErrPaymentConfig)
 	}

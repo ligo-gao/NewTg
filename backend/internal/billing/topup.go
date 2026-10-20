@@ -444,13 +444,18 @@ func (s *TopupService) providerReady(provider string) (int64, error) {
 			return 0, ErrProviderDisabled
 		}
 		apiURL := strings.TrimSpace(s.configString(ConfigEpayAPIURL))
-		pid := s.configString(ConfigEpayPID)
+		pid := strings.TrimSpace(s.configString(ConfigEpayPID))
 		key, err := s.configSecret(ConfigEpayKey)
 		if err != nil {
 			return 0, err
 		}
 		if apiURL == "" || pid == "" || key == "" {
 			return 0, fmt.Errorf("%w: epay api_url/pid/key missing", ErrProviderDisabled)
+		}
+		// 未知的 sign_mode 是配置错误：继续放行会让下单用 append、回调却
+		// 按错误口径验签（或反之），表现为「所有回调都验签失败」。
+		if _, err := s.epaySignMode(); err != nil {
+			return 0, fmt.Errorf("%w: epay sign_mode is not append/amp", ErrProviderDisabled)
 		}
 		// api_url 必须是 https 绝对地址：收银台表单会把 pid、金额与签名
 		// 发往该地址，明文 http 会在传输层泄漏签名（虽然 MD5 签名不可逆，
@@ -463,9 +468,17 @@ func (s *TopupService) providerReady(provider string) (int64, error) {
 			return 0, fmt.Errorf("%w: epay api_url must not contain userinfo", ErrProviderDisabled)
 		}
 		// 收银台入口是站点根/固定 submit.php；query 与 fragment 会在拼接
-		// submit.php 时产生歧义，也容易把签名参数混进地址栏。
-		if parsed.RawQuery != "" || parsed.Fragment != "" {
+		// submit.php 时产生歧义，也容易把签名参数混进地址栏。空标记 `?`
+		// （ForceQuery=true、RawQuery=""）同样拒绝——只看 RawQuery 会漏掉它。
+		if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery {
 			return 0, fmt.Errorf("%w: epay api_url must not contain query or fragment", ErrProviderDisabled)
+		}
+		// 显式配置的回调/返回地址同样拒绝空 `?`：它会被原样交给渠道，
+		// 部分网关会把空 query 拼进跳转，造成回调地址与配置不一致。
+		for _, optional := range []string{ConfigEpayNotifyURL, ConfigEpayReturnURL} {
+			if epayEmptyQuery(s.configString(optional)) {
+				return 0, fmt.Errorf("%w: epay %s must not use an empty query", ErrProviderDisabled, optional)
+			}
 		}
 		// 当前任务未给 epay 单独的 min_topup 键：沿用全局渠道默认下限，
 		// 有效下限仍是 max(全局, 该值)。
