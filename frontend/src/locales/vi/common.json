@@ -747,5 +747,34 @@
     "category_maintenance": "Bảo trì",
     "category_release": "Cập nhật"
   },
-  "nav.subscriptions": "Gói đăng ký"
+  "nav.subscriptions": "Gói đăng ký",
+  "notifications": {
+    "bell_label": "Thông báo ({count} chưa đọc)",
+    "bell_label_none": "Thông báo",
+    "unread_count": "{count} thông báo chưa đọc",
+    "unread_count_none": "Không có thông báo chưa đọc",
+    "title": "Thông báo",
+    "description": "Thông báo và tin nhắn tài khoản.",
+    "list_label": "Danh sách thông báo",
+    "total": "Tổng cộng {count} thông báo",
+    "mark_all": "Đánh dấu tất cả đã đọc",
+    "marking_all": "Đang đánh dấu…",
+    "mark_read_failed": "Không thể đánh dấu thông báo là đã đọc.",
+    "mark_all_failed": "Một số thông báo chưa thể đánh dấu là đã đọc.",
+    "loading": "Đang tải thông báo…",
+    "empty": "Bạn chưa có thông báo nào.",
+    "retry": "Thử lại",
+    "error_generic": "Không thể tải thông báo.",
+    "error_offline": "Bạn đang ngoại tuyến. Hãy kết nối lại và thử lại.",
+    "error_rate_limited": "Quá nhiều yêu cầu. Thử lại sau {seconds} giây.",
+    "unread": "Chưa đọc",
+    "untitled": "(không có tiêu đề)",
+    "category_announcement": "Thông báo",
+    "pagination": {
+      "label": "Phân trang thông báo",
+      "prev": "Trước",
+      "next": "Tiếp",
+      "page": "Trang {page} / {pages}"
+    }
+  }
 }

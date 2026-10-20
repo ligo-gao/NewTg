@@ -48,6 +48,9 @@ function installAdminActor({
   recordActor?: () => void
 } = {}) {
   server.use(
+    http.get(`${ORIGIN}/api/notifications`, () =>
+      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+    ),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json({ username: 'root', role: 'admin', status: 'enabled' }),
     ),
@@ -101,6 +104,9 @@ describe('console layout i18n', () => {
     let meCalls = 0
     let usersCalls = 0
     server.use(
+      http.get(`${ORIGIN}/api/notifications`, () =>
+        HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+      ),
       http.get(`${ORIGIN}/api/me`, () => {
         meCalls += 1
         return HttpResponse.json({ username: 'alice', role: 'user', status: 'enabled' })

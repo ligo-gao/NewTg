@@ -67,6 +67,9 @@ function renderAt(path: string) {
 
 function guestHandlers() {
   server.use(
+    http.get(`${ORIGIN}/api/notifications`, () =>
+      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+    ),
     http.get(`${ORIGIN}/api/announcements/active`, () =>
       HttpResponse.json({ items: [] }),
     ),
@@ -135,6 +138,9 @@ describe('route guard chain (web-00 §9.3)', () => {
       http.get(`${ORIGIN}/api/announcements/active`, () =>
       HttpResponse.json({ items: [] }),
     ),
+      http.get(`${ORIGIN}/api/notifications`, () =>
+        HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+      ),
       http.get(`${ORIGIN}/api/me`, () =>
         HttpResponse.json({ username: 'root', role: 'admin', status: 'enabled' }),
       ),

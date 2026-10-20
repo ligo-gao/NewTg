@@ -39,6 +39,9 @@ afterAll(() => server.close())
 
 function installSession(permissions: string[]) {
   server.use(
+    http.get(`${ORIGIN}/api/notifications`, () =>
+      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
+    ),
     http.get(`${ORIGIN}/api/announcements/active`, () =>
       HttpResponse.json({ items: [] }),
     ),

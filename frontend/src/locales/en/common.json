@@ -747,5 +747,34 @@
     "category_maintenance": "Maintenance",
     "category_release": "Update"
   },
-  "nav.subscriptions": "Subscriptions"
+  "nav.subscriptions": "Subscriptions",
+  "notifications": {
+    "bell_label": "Notifications ({count} unread)",
+    "bell_label_none": "Notifications",
+    "unread_count": "{count} unread notifications",
+    "unread_count_none": "No unread notifications",
+    "title": "Notifications",
+    "description": "Announcements and account messages.",
+    "list_label": "Notification list",
+    "total": "{count} notifications",
+    "mark_all": "Mark all as read",
+    "marking_all": "Marking…",
+    "mark_read_failed": "Could not mark the notification as read.",
+    "mark_all_failed": "Some notifications could not be marked as read.",
+    "loading": "Loading notifications…",
+    "empty": "You have no notifications.",
+    "retry": "Try again",
+    "error_generic": "Could not load notifications.",
+    "error_offline": "You are offline. Reconnect and try again.",
+    "error_rate_limited": "Too many requests. Try again in {seconds}s.",
+    "unread": "Unread",
+    "untitled": "(no title)",
+    "category_announcement": "Announcement",
+    "pagination": {
+      "label": "Notification pagination",
+      "prev": "Previous",
+      "next": "Next",
+      "page": "Page {page} of {pages}"
+    }
+  }
 }

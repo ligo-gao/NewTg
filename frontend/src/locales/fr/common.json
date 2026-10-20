@@ -747,5 +747,34 @@
     "category_maintenance": "Maintenance",
     "category_release": "Nouveauté"
   },
-  "nav.subscriptions": "Abonnements"
+  "nav.subscriptions": "Abonnements",
+  "notifications": {
+    "bell_label": "Notifications ({count} non lues)",
+    "bell_label_none": "Notifications",
+    "unread_count": "{count} notifications non lues",
+    "unread_count_none": "Aucune notification non lue",
+    "title": "Notifications",
+    "description": "Annonces et messages du compte.",
+    "list_label": "Liste des notifications",
+    "total": "{count} notifications",
+    "mark_all": "Tout marquer comme lu",
+    "marking_all": "Marquage…",
+    "mark_read_failed": "Impossible de marquer la notification comme lue.",
+    "mark_all_failed": "Certaines notifications n'ont pas pu être marquées comme lues.",
+    "loading": "Chargement des notifications…",
+    "empty": "Aucune notification.",
+    "retry": "Réessayer",
+    "error_generic": "Impossible de charger les notifications.",
+    "error_offline": "Vous êtes hors ligne. Rétablissez la connexion et réessayez.",
+    "error_rate_limited": "Trop de requêtes. Réessayez dans {seconds} s.",
+    "unread": "Non lue",
+    "untitled": "(sans titre)",
+    "category_announcement": "Annonce",
+    "pagination": {
+      "label": "Pagination des notifications",
+      "prev": "Précédent",
+      "next": "Suivant",
+      "page": "Page {page} sur {pages}"
+    }
+  }
 }

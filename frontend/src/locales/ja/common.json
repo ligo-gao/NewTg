@@ -747,5 +747,34 @@
     "category_maintenance": "メンテナンス",
     "category_release": "更新"
   },
-  "nav.subscriptions": "サブスクリプション"
+  "nav.subscriptions": "サブスクリプション",
+  "notifications": {
+    "bell_label": "通知（未読 {count} 件）",
+    "bell_label_none": "通知",
+    "unread_count": "未読の通知が {count} 件あります",
+    "unread_count_none": "未読の通知はありません",
+    "title": "通知",
+    "description": "お知らせとアカウントのメッセージ。",
+    "list_label": "通知一覧",
+    "total": "通知 {count} 件",
+    "mark_all": "すべて既読にする",
+    "marking_all": "既読にしています…",
+    "mark_read_failed": "通知を既読にできませんでした。",
+    "mark_all_failed": "一部の通知を既読にできませんでした。",
+    "loading": "通知を読み込んでいます…",
+    "empty": "通知はありません。",
+    "retry": "再試行",
+    "error_generic": "通知を読み込めませんでした。",
+    "error_offline": "オフラインです。接続を回復してから再試行してください。",
+    "error_rate_limited": "リクエストが多すぎます。{seconds} 秒後に再試行してください。",
+    "unread": "未読",
+    "untitled": "（無題）",
+    "category_announcement": "お知らせ",
+    "pagination": {
+      "label": "通知のページ送り",
+      "prev": "前へ",
+      "next": "次へ",
+      "page": "{pages} ページ中 {page} ページ"
+    }
+  }
 }

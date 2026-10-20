@@ -15,6 +15,7 @@ import {
   CommandPalette,
   useCommandPaletteShortcut,
 } from '@/features/shell/command-palette'
+import { NotificationBell } from '@/features/notifications/notification-bell'
 import { fetchMe, meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 
@@ -131,6 +132,11 @@ export interface ConsoleHeaderProps {
   activePath?: string
   /** 打开命令面板的可见入口（web-00 §15.1.1）。 */
   onOpenCommandPalette?: () => void
+  /**
+   * 通知链接的导航接缝（测试注入）。生产环境由面板缺省整页跳转，
+   * 因为 link_url 可能是站外绝对地址。
+   */
+  onNotificationNavigate?: (href: string) => void
 }
 
 /**
@@ -150,6 +156,7 @@ function isApplePlatform(): boolean {
 export function ConsoleHeader({
   activePath,
   onOpenCommandPalette,
+  onNotificationNavigate,
 }: ConsoleHeaderProps) {
   const { t } = useI18n()
   const shortcutHint = isApplePlatform()
@@ -235,28 +242,40 @@ export function ConsoleHeader({
             </div>
           ) : null}
         </nav>
-        <button
-          type="button"
-          aria-keyshortcuts="Meta+K Control+K"
-          onClick={onOpenCommandPalette}
-          className="ml-auto inline-flex h-8 items-center gap-2 rounded-lg border border-border-default bg-surface-page px-2.5 text-[13px] text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-        >
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 16 16"
-            className="size-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
+        <div className="ml-auto flex items-center gap-2">
+          {/*
+           * 站内通知入口只在会话确定后挂载：`beforeLoad` 已预热 ['me']，
+           * 但直接渲染 ConsoleHeader 的测试可能尚无数据，此时不探测。
+           */}
+          {meQuery.data !== undefined ? (
+            <NotificationBell
+              signedIn
+              onNavigate={onNotificationNavigate}
+            />
+          ) : null}
+          <button
+            type="button"
+            aria-keyshortcuts="Meta+K Control+K"
+            onClick={onOpenCommandPalette}
+            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border-default bg-surface-page px-2.5 text-[13px] text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
-            <circle cx="7" cy="7" r="4.5" />
-            <path d="m10.5 10.5 3 3" strokeLinecap="round" />
-          </svg>
-          <span>{t('common.command.open')}</span>
-          <kbd className="rounded border border-border-hairline bg-surface-card px-1 font-mono text-[11px] text-ink-3">
-            {shortcutHint}
-          </kbd>
-        </button>
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 16 16"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="m10.5 10.5 3 3" strokeLinecap="round" />
+            </svg>
+            <span>{t('common.command.open')}</span>
+            <kbd className="rounded border border-border-hairline bg-surface-card px-1 font-mono text-[11px] text-ink-3">
+              {shortcutHint}
+            </kbd>
+          </button>
+        </div>
       </div>
     </header>
   )
