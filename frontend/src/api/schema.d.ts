@@ -123,15 +123,22 @@ export interface paths {
         };
         /**
          * 公开定价目录（offset 分页；宽容参数）
-         * @description 只读 `model_pricing` / `group_pricing` / `user_groups`，可见集合为
-         *     `model_pricing.status=1 AND billing_expr IS NULL`。金额一律 int64 的 JSON
-         *     字符串；NULL 价列下发 null（不伪造兜底价）。非法参数逐项降级并返回 200
-         *     （不存在的 facet 值丢弃、非法分页回退默认、`p` 越界回退最后一页）；空集
-         *     是 200 + `items:[]`。facet 计数忽略本组自身筛选。`group_price` 仅在登录
-         *     或显式 `group` 时出现；匿名且 `billing.expose_group_ratios=false` 时分组
-         *     facet 的 ratio 为 null。响应带 `ETag: "pricing-v<hash>"`，命中
-         *     `If-None-Match` 返回 304 无 body；缓存 `public, max-age=30,
-         *     stale-while-revalidate=30`（带会话的个性化响应降级为 private）。
+         * @description 只读 `model_pricing` / `group_pricing` / `user_groups`，并挂载
+         *     `model_meta` / `vendors` 的展示元数据（同一快照）。可见集合为
+         *     `model_pricing.status=1 AND billing_expr IS NULL`；命中的
+         *     `model_meta.status=2` 档案使该模型从 items/facets 剔除（详情 404）。
+         *     金额一律 int64 的 JSON 字符串；NULL 价列下发 null（不伪造兜底价）。
+         *     非法参数逐项降级并返回 200（不存在的 facet 值丢弃、非法分页回退默认、
+         *     `p` 越界回退最后一页）；空集是 200 + `items:[]`。facet 计数忽略本组
+         *     自身筛选；capability/context/endpointType 的未知值丢弃。无档案模型的
+         *     元数据字段按空数组/null 降级，`display_name` 回退 `model_id`、`vendor`
+         *     按 `vendors.name` → `model_pricing.vendor` → `model_id` 前缀三级回退。
+         *     `group_price` 仅在登录或显式 `group` 时出现；匿名且
+         *     `billing.expose_group_ratios=false` 时分组 facet 的 ratio 为 null。响应带
+         *     `ETag: "pricing-v<hash>"`，命中 `If-None-Match` 返回 304 无 body；版本
+         *     hash 覆盖 model_pricing/group_pricing/user_groups/model_meta/vendors。
+         *     缓存 `public, max-age=30, stale-while-revalidate=30`（带会话的个性化
+         *     响应降级为 private）。
          */
         get: operations["getPublicPricing"];
         put?: never;
@@ -3066,12 +3073,18 @@ export interface components {
         };
         PublicModelCard: {
             model_id: string;
-            /** @description 元数据未落库时等于 model_id（R-PUB-01）。 */
+            /** @description 有档案时取档案 display_name；无档案（或空串）回退 model_id（D1-15/D1-16）。 */
             display_name: string;
-            /** @description model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。 */
+            /**
+             * @description 三级回退（D1-16）：档案关联的 vendors.name → model_pricing.vendor →
+             *     model_id 首个 `/` 前缀；都不可得时为空串。
+             */
             vendor: string;
+            /** @description 档案 capabilities 枚举；无档案时为空数组。 */
             capabilities: string[];
+            /** @description 档案 context_length；无档案或未设置时为 null。 */
             context_length: number | null;
+            /** @description 档案 max_output；无档案或未设置时为 null。 */
             max_output: number | null;
             /** @description per_token 或 per_request（MVP 仅两种）。 */
             mode: string;
@@ -3084,8 +3097,14 @@ export interface components {
             is_free: boolean;
             /** @description 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。 */
             group_price: components["schemas"]["PublicGroupPrice"] | null;
+            /**
+             * @description 档案 endpoints 派生的协议端点枚举（D1-19）；未知路径忽略，无档案时
+             *     为空数组。
+             */
             endpoints: string[];
+            /** @description 档案 tags；无档案时为空数组。 */
             tags: string[];
+            /** @description 档案 description；无档案时为空串。 */
             description: string;
         };
         PublicFacetOption: {
@@ -3110,12 +3129,22 @@ export interface components {
         };
         PublicFacets: {
             vendors: components["schemas"]["PublicFacetOption"][];
-            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            /**
+             * @description 档案 capabilities 计数（D1-18）；忽略本组自身筛选，未知值丢弃，
+             *     无档案模型不计入。无任何档案能力时为空数组。
+             */
             capabilities: components["schemas"]["PublicFacetOption"][];
-            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            /**
+             * @description 档案 context_length 分档计数（D1-20）：8K（≤8,192）、32K
+             *     （8,193–32,768）、128K（32,769–131,072）、200K+（>131,072），
+             *     null 不计数。无档案时为空数组。
+             */
             context: components["schemas"]["PublicFacetOption"][];
             groups: components["schemas"]["PublicGroupFacet"][];
-            /** @description 元数据未落库（R-PUB-01）；当前恒为空数组。 */
+            /**
+             * @description 档案 endpoints 派生枚举计数（D1-19）；未知路径忽略，无档案模型
+             *     不计入。无任何档案端点时为空数组。
+             */
             endpoints: components["schemas"]["PublicFacetOption"][];
             pricing_types: components["schemas"]["PublicPricingTypeFacet"][];
         };
@@ -3154,10 +3183,14 @@ export interface components {
             user_model_rpm: number;
         };
         PublicModelDetail: components["schemas"]["PublicModelCard"] & {
+            /** @description 档案 modalities；无档案时为空数组。 */
             modalities: string[];
+            /** @description 档案 knowledge_cutoff（YYYY-MM）；无档案或未设置时为 null。 */
             knowledge_cutoff: string | null;
+            /** @description 档案 released_at（YYYY-MM-DD）；无档案或未设置时为 null。 */
             released_at: string | null;
             group_prices: components["schemas"]["PublicGroupPrice"][];
+            /** @description 档案 parameters；无档案时为空数组。 */
             parameters: components["schemas"]["PublicModelParameter"][];
             rate_limits: components["schemas"]["PublicRateLimit"][];
             /** @description 认证头风格；当前实现恒为 bearer。 */
@@ -5565,8 +5598,26 @@ export interface operations {
                  *     model_id。非法值回退 name。
                  */
                 sort?: "name" | "price_asc" | "price_desc";
-                /** @description 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。 */
+                /** @description 供应商多选（重复键或逗号分隔；大小写不敏感）；不存在的值丢弃。 */
                 vendor?: string[];
+                /**
+                 * @description 能力多选（D1-21；重复键或逗号分隔，也接受 `capability[]`）；取
+                 *     `model_meta.capabilities`，无档案的模型不命中；未知值丢弃。
+                 */
+                capability?: string[];
+                /**
+                 * @description 上下文分档多选（也接受 `context[]`）：`8k`（≤8,192）、`32k`
+                 *     （8,193–32,768）、`128k`（32,769–131,072）、`200k+`（>131,072）；
+                 *     大小写不敏感，未知值丢弃。context_length 为 null 的模型不命中。
+                 */
+                context?: string[];
+                /**
+                 * @description 端点类型多选（D1-21；也接受 `endpointType[]` / `endpoint_type`）。
+                 *     取值来自档案 endpoints 的映射：chat.completions、messages、
+                 *     embeddings、images.generations、audio.speech、audio.transcriptions、
+                 *     rerank、generateContent；未知路径不产生取值，未知筛选值丢弃。
+                 */
+                endpointType?: string[];
                 /** @description 分组预览；不存在则忽略。 */
                 group?: string;
                 /** @description 计费类型；非法值回退 all。 */
@@ -5583,7 +5634,7 @@ export interface operations {
             /** @description OK（空集也是 200 + items:[]） */
             200: {
                 headers: {
-                    /** @description "pricing-v<hash>"；hash 由三张表的 max(updated_at)+count+max(id) 派生 */
+                    /** @description "pricing-v<hash>"；hash 由 model_pricing/group_pricing/user_groups/model_meta/vendors 五张表的 max(updated_at)+count+max(id) 派生 */
                     ETag?: string;
                     /** @description public, max-age=30, stale-while-revalidate=30（个性化响应 private） */
                     "Cache-Control"?: string;

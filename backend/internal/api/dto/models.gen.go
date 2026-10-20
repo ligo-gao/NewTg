@@ -3627,13 +3627,17 @@ type PublicFacetOption struct {
 
 // PublicFacets defines model for PublicFacets.
 type PublicFacets struct {
-	// Capabilities 元数据未落库（R-PUB-01）；当前恒为空数组。
+	// Capabilities 档案 capabilities 计数（D1-18）；忽略本组自身筛选，未知值丢弃，
+	// 无档案模型不计入。无任何档案能力时为空数组。
 	Capabilities []PublicFacetOption `json:"capabilities"`
 
-	// Context 元数据未落库（R-PUB-01）；当前恒为空数组。
+	// Context 档案 context_length 分档计数（D1-20）：8K（≤8,192）、32K
+	// （8,193–32,768）、128K（32,769–131,072）、200K+（>131,072），
+	// null 不计数。无档案时为空数组。
 	Context []PublicFacetOption `json:"context"`
 
-	// Endpoints 元数据未落库（R-PUB-01）；当前恒为空数组。
+	// Endpoints 档案 endpoints 派生枚举计数（D1-19）；未知路径忽略，无档案模型
+	// 不计入。无任何档案端点时为空数组。
 	Endpoints    []PublicFacetOption      `json:"endpoints"`
 	Groups       []PublicGroupFacet       `json:"groups"`
 	PricingTypes []PublicPricingTypeFacet `json:"pricing_types"`
@@ -3735,20 +3739,31 @@ type PublicGroupPrice_Ratio struct {
 type PublicModelCard struct {
 	CacheReadPrice  PublicModelCard_CacheReadPrice  `json:"cache_read_price"`
 	CacheWritePrice PublicModelCard_CacheWritePrice `json:"cache_write_price"`
+
+	// Capabilities 档案 capabilities 枚举；无档案时为空数组。
 	Capabilities    []string                        `json:"capabilities"`
 	CompletionPrice PublicModelCard_CompletionPrice `json:"completion_price"`
-	ContextLength   PublicModelCard_ContextLength   `json:"context_length"`
-	Description     string                          `json:"description"`
 
-	// DisplayName 元数据未落库时等于 model_id（R-PUB-01）。
-	DisplayName string   `json:"display_name"`
-	Endpoints   []string `json:"endpoints"`
+	// ContextLength 档案 context_length；无档案或未设置时为 null。
+	ContextLength PublicModelCard_ContextLength `json:"context_length"`
+
+	// Description 档案 description；无档案时为空串。
+	Description string `json:"description"`
+
+	// DisplayName 有档案时取档案 display_name；无档案（或空串）回退 model_id（D1-15/D1-16）。
+	DisplayName string `json:"display_name"`
+
+	// Endpoints 档案 endpoints 派生的协议端点枚举（D1-19）；未知路径忽略，无档案时
+	// 为空数组。
+	Endpoints []string `json:"endpoints"`
 
 	// GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
 	GroupPrice PublicModelCard_GroupPrice `json:"group_price"`
 
 	// IsFree 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。
-	IsFree    bool                      `json:"is_free"`
+	IsFree bool `json:"is_free"`
+
+	// MaxOutput 档案 max_output；无档案或未设置时为 null。
 	MaxOutput PublicModelCard_MaxOutput `json:"max_output"`
 
 	// Mode per_token 或 per_request（MVP 仅两种）。
@@ -3757,9 +3772,12 @@ type PublicModelCard struct {
 
 	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
 	PromptPrice PublicModelCard_PromptPrice `json:"prompt_price"`
-	Tags        []string                    `json:"tags"`
 
-	// Vendor model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+	// Tags 档案 tags；无档案时为空数组。
+	Tags []string `json:"tags"`
+
+	// Vendor 三级回退（D1-16）：档案关联的 vendors.name → model_pricing.vendor →
+	// model_id 首个 `/` 前缀；都不可得时为空串。
 	Vendor string `json:"vendor"`
 }
 
@@ -3802,7 +3820,7 @@ type PublicModelCardContextLength0 = int64
 // PublicModelCardContextLength1 defines model for PublicModelCard.ContextLength.1.
 type PublicModelCardContextLength1 = interface{}
 
-// PublicModelCard_ContextLength defines model for PublicModelCard.ContextLength.
+// PublicModelCard_ContextLength 档案 context_length；无档案或未设置时为 null。
 type PublicModelCard_ContextLength struct {
 	union json.RawMessage
 }
@@ -3821,7 +3839,7 @@ type PublicModelCardMaxOutput0 = int64
 // PublicModelCardMaxOutput1 defines model for PublicModelCard.MaxOutput.1.
 type PublicModelCardMaxOutput1 = interface{}
 
-// PublicModelCard_MaxOutput defines model for PublicModelCard.MaxOutput.
+// PublicModelCard_MaxOutput 档案 max_output；无档案或未设置时为 null。
 type PublicModelCard_MaxOutput struct {
 	union json.RawMessage
 }
@@ -3843,37 +3861,59 @@ type PublicModelDetail struct {
 	AuthStyle       string                            `json:"auth_style"`
 	CacheReadPrice  PublicModelDetail_CacheReadPrice  `json:"cache_read_price"`
 	CacheWritePrice PublicModelDetail_CacheWritePrice `json:"cache_write_price"`
+
+	// Capabilities 档案 capabilities 枚举；无档案时为空数组。
 	Capabilities    []string                          `json:"capabilities"`
 	CompletionPrice PublicModelDetail_CompletionPrice `json:"completion_price"`
-	ContextLength   PublicModelDetail_ContextLength   `json:"context_length"`
-	Description     string                            `json:"description"`
 
-	// DisplayName 元数据未落库时等于 model_id（R-PUB-01）。
-	DisplayName string   `json:"display_name"`
-	Endpoints   []string `json:"endpoints"`
+	// ContextLength 档案 context_length；无档案或未设置时为 null。
+	ContextLength PublicModelDetail_ContextLength `json:"context_length"`
+
+	// Description 档案 description；无档案时为空串。
+	Description string `json:"description"`
+
+	// DisplayName 有档案时取档案 display_name；无档案（或空串）回退 model_id（D1-15/D1-16）。
+	DisplayName string `json:"display_name"`
+
+	// Endpoints 档案 endpoints 派生的协议端点枚举（D1-19）；未知路径忽略，无档案时
+	// 为空数组。
+	Endpoints []string `json:"endpoints"`
 
 	// GroupPrice 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
 	GroupPrice  PublicModelDetail_GroupPrice `json:"group_price"`
 	GroupPrices []PublicGroupPrice           `json:"group_prices"`
 
 	// IsFree 四项有效价全部显式 0；NULL 不算 0（R-PUB-03）。
-	IsFree          bool                              `json:"is_free"`
+	IsFree bool `json:"is_free"`
+
+	// KnowledgeCutoff 档案 knowledge_cutoff（YYYY-MM）；无档案或未设置时为 null。
 	KnowledgeCutoff PublicModelDetail_KnowledgeCutoff `json:"knowledge_cutoff"`
-	MaxOutput       PublicModelDetail_MaxOutput       `json:"max_output"`
-	Modalities      []string                          `json:"modalities"`
+
+	// MaxOutput 档案 max_output；无档案或未设置时为 null。
+	MaxOutput PublicModelDetail_MaxOutput `json:"max_output"`
+
+	// Modalities 档案 modalities；无档案时为空数组。
+	Modalities []string `json:"modalities"`
 
 	// Mode per_token 或 per_request（MVP 仅两种）。
-	Mode       string                 `json:"mode"`
-	ModelId    string                 `json:"model_id"`
+	Mode    string `json:"mode"`
+	ModelId string `json:"model_id"`
+
+	// Parameters 档案 parameters；无档案时为空数组。
 	Parameters []PublicModelParameter `json:"parameters"`
 
 	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
 	PromptPrice PublicModelDetail_PromptPrice `json:"prompt_price"`
 	RateLimits  []PublicRateLimit             `json:"rate_limits"`
-	ReleasedAt  PublicModelDetail_ReleasedAt  `json:"released_at"`
-	Tags        []string                      `json:"tags"`
 
-	// Vendor model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+	// ReleasedAt 档案 released_at（YYYY-MM-DD）；无档案或未设置时为 null。
+	ReleasedAt PublicModelDetail_ReleasedAt `json:"released_at"`
+
+	// Tags 档案 tags；无档案时为空数组。
+	Tags []string `json:"tags"`
+
+	// Vendor 三级回退（D1-16）：档案关联的 vendors.name → model_pricing.vendor →
+	// model_id 首个 `/` 前缀；都不可得时为空串。
 	Vendor string `json:"vendor"`
 }
 
@@ -3916,7 +3956,7 @@ type PublicModelDetailContextLength0 = int64
 // PublicModelDetailContextLength1 defines model for PublicModelDetail.ContextLength.1.
 type PublicModelDetailContextLength1 = interface{}
 
-// PublicModelDetail_ContextLength defines model for PublicModelDetail.ContextLength.
+// PublicModelDetail_ContextLength 档案 context_length；无档案或未设置时为 null。
 type PublicModelDetail_ContextLength struct {
 	union json.RawMessage
 }
@@ -3935,7 +3975,7 @@ type PublicModelDetailKnowledgeCutoff0 = string
 // PublicModelDetailKnowledgeCutoff1 defines model for PublicModelDetail.KnowledgeCutoff.1.
 type PublicModelDetailKnowledgeCutoff1 = interface{}
 
-// PublicModelDetail_KnowledgeCutoff defines model for PublicModelDetail.KnowledgeCutoff.
+// PublicModelDetail_KnowledgeCutoff 档案 knowledge_cutoff（YYYY-MM）；无档案或未设置时为 null。
 type PublicModelDetail_KnowledgeCutoff struct {
 	union json.RawMessage
 }
@@ -3946,7 +3986,7 @@ type PublicModelDetailMaxOutput0 = int64
 // PublicModelDetailMaxOutput1 defines model for PublicModelDetail.MaxOutput.1.
 type PublicModelDetailMaxOutput1 = interface{}
 
-// PublicModelDetail_MaxOutput defines model for PublicModelDetail.MaxOutput.
+// PublicModelDetail_MaxOutput 档案 max_output；无档案或未设置时为 null。
 type PublicModelDetail_MaxOutput struct {
 	union json.RawMessage
 }
@@ -3968,7 +4008,7 @@ type PublicModelDetailReleasedAt0 = string
 // PublicModelDetailReleasedAt1 defines model for PublicModelDetail.ReleasedAt.1.
 type PublicModelDetailReleasedAt1 = interface{}
 
-// PublicModelDetail_ReleasedAt defines model for PublicModelDetail.ReleasedAt.
+// PublicModelDetail_ReleasedAt 档案 released_at（YYYY-MM-DD）；无档案或未设置时为 null。
 type PublicModelDetail_ReleasedAt struct {
 	union json.RawMessage
 }
@@ -5693,8 +5733,23 @@ type GetPublicPricingParams struct {
 	// model_id。非法值回退 name。
 	Sort *GetPublicPricingParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
 
-	// Vendor 供应商前缀多选（重复键或逗号分隔）；不存在的值丢弃。
+	// Vendor 供应商多选（重复键或逗号分隔；大小写不敏感）；不存在的值丢弃。
 	Vendor *[]string `form:"vendor,omitempty" json:"vendor,omitempty"`
+
+	// Capability 能力多选（D1-21；重复键或逗号分隔，也接受 `capability[]`）；取
+	// `model_meta.capabilities`，无档案的模型不命中；未知值丢弃。
+	Capability *[]string `form:"capability,omitempty" json:"capability,omitempty"`
+
+	// Context 上下文分档多选（也接受 `context[]`）：`8k`（≤8,192）、`32k`
+	// （8,193–32,768）、`128k`（32,769–131,072）、`200k+`（>131,072）；
+	// 大小写不敏感，未知值丢弃。context_length 为 null 的模型不命中。
+	Context *[]string `form:"context,omitempty" json:"context,omitempty"`
+
+	// EndpointType 端点类型多选（D1-21；也接受 `endpointType[]` / `endpoint_type`）。
+	// 取值来自档案 endpoints 的映射：chat.completions、messages、
+	// embeddings、images.generations、audio.speech、audio.transcriptions、
+	// rerank、generateContent；未知路径不产生取值，未知筛选值丢弃。
+	EndpointType *[]string `form:"endpointType,omitempty" json:"endpointType,omitempty"`
 
 	// Group 分组预览；不存在则忽略。
 	Group *string `form:"group,omitempty" json:"group,omitempty"`

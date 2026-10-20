@@ -42,6 +42,20 @@ type PublicModelPricing struct {
 	CompletionPrice *int64
 	CacheReadPrice  *int64
 	CacheWritePrice *int64
+	// Vendor 是 model_pricing.vendor（可空）。它是卡片供应商的**第二级**
+	// 回退：档案关联的 vendors.name → 本列 → model_id 首段前缀（D1-16）。
+	Vendor *string
+}
+
+// PublicVendor 是公开面需要的供应商投影。
+//
+// Status 一并取出（1=启用 / 2=停用）：档案 vendor_id 指向停用供应商时，
+// 供应商名仍是模型的展示名——停用只影响管理面的可选性，不影响历史档案
+// 的公开展示。这里不决定取舍，由 handler 按 D1-16 的三级回退使用。
+type PublicVendor struct {
+	ID     int64
+	Name   string
+	Status int16
 }
 
 // PublicGroup 是公开分组目录的投影（值/倍率/启用状态已由 SQL 过滤）。
@@ -62,13 +76,23 @@ type PublicGroupPricing struct {
 
 // PublicPricingCatalog 是一次快照读取的结果。
 //
-// Version 由三张表的 (max(updated_at), count(*), max(id)) 派生（F-09-14 的
-// ETag 口径）；它只反映「定价域有没有变化」，不随请求参数变化，因此同一版本
-// 下不同筛选条件的条件请求可以命中 304。
+// Version 由五张表的 (max(updated_at), count(*), max(id)) 派生（F-09-14 的
+// ETag 口径 + D1-22：元数据/供应商编辑也必须使版本变化，否则 304 会让
+// 缓存继续返回旧名称与旧 facet）；它只反映「定价域有没有变化」，不随请求
+// 参数变化，因此同一版本下不同筛选条件的条件请求可以命中 304。
 type PublicPricingCatalog struct {
-	Models      []PublicModelPricing
-	Groups      []PublicGroup
-	Overrides   []PublicGroupPricing
+	Models    []PublicModelPricing
+	Groups    []PublicGroup
+	Overrides []PublicGroupPricing
+	// Meta 是 model_meta 的**全表**投影（含 status=2）。启用档案用于卡片/
+	// 详情/facet；停用档案参与名称匹配，命中即剔除该模型或详情 404（D1-13：
+	// 只加载停用档案才能判断「精确命中的是一条停用档案」）。
+	//
+	// 顺序不保证；解析走 store.ResolveModelMeta，它自行排序，不依赖 SQL
+	// ORDER BY。
+	Meta []ModelMeta
+	// Vendors 是 vendors 的全表投影（含停用行，见 PublicVendor.Status）。
+	Vendors     []PublicVendor
 	Version     string
 	GeneratedAt time.Time
 }
@@ -132,6 +156,17 @@ func (r *SQLPublicPricingRepo) LoadPublicPricingCatalog(ctx context.Context) (Pu
 	if err != nil {
 		return PublicPricingCatalog{}, err
 	}
+	// 元数据与供应商在**同一事务**内读取（D1-22）：若它们来自独立连接，
+	// 可能与定价行分属不同提交点，出现「新价格 + 旧展示名」的混合快照；
+	// 版本哈希也会与展示内容脱节，让 ETag 无法作为内容指纹。
+	meta, err := loadPublicModelMeta(ctx, tx)
+	if err != nil {
+		return PublicPricingCatalog{}, err
+	}
+	vendors, err := loadPublicVendors(ctx, tx)
+	if err != nil {
+		return PublicPricingCatalog{}, err
+	}
 	version, err := publicPricingVersion(ctx, tx)
 	if err != nil {
 		return PublicPricingCatalog{}, err
@@ -141,13 +176,14 @@ func (r *SQLPublicPricingRepo) LoadPublicPricingCatalog(ctx context.Context) (Pu
 	}
 	return PublicPricingCatalog{
 		Models: models, Groups: groups, Overrides: overrides,
+		Meta: meta, Vendors: vendors,
 		Version: version, GeneratedAt: time.Now().UTC(),
 	}, nil
 }
 
 func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT model, mode, prompt_price, completion_price, cache_read_price, cache_write_price
+		SELECT model, mode, prompt_price, completion_price, cache_read_price, cache_write_price, vendor
 		FROM model_pricing
 		WHERE `+visibleModelWhere+`
 		ORDER BY model ASC`)
@@ -162,7 +198,7 @@ func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, er
 	for rows.Next() {
 		var rec PublicModelPricing
 		if err := rows.Scan(&rec.Model, &rec.Mode, &rec.PromptPrice,
-			&rec.CompletionPrice, &rec.CacheReadPrice, &rec.CacheWritePrice); err != nil {
+			&rec.CompletionPrice, &rec.CacheReadPrice, &rec.CacheWritePrice, &rec.Vendor); err != nil {
 			return nil, fmt.Errorf("store: scan public model_pricing: %w", err)
 		}
 		models = append(models, rec)
@@ -171,6 +207,56 @@ func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, er
 		return nil, fmt.Errorf("store: iterate public model_pricing: %w", err)
 	}
 	return models, nil
+}
+
+// loadPublicModelMeta 读取全部模型档案（含 status=2）。
+//
+// 为什么不过滤 status：D1-13 要求「停用档案精确命中 ⇒ 剔除模型」。若 SQL
+// 直接丢掉停用行，一条 exact 停用档案会被更宽的前缀档案「穿透」，模型反而
+// 带着错误的展示名出现在广场上。过滤交给解析后的 Status 判定。
+func loadPublicModelMeta(ctx context.Context, tx *sql.Tx) ([]ModelMeta, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+modelMetaColumns+` FROM model_meta`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list public model_meta: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	meta := make([]ModelMeta, 0, 64)
+	for rows.Next() {
+		rec, scanErr := scanModelMeta(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan public model_meta: %w", scanErr)
+		}
+		meta = append(meta, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate public model_meta: %w", err)
+	}
+	return meta, nil
+}
+
+// loadPublicVendors 读取供应商目录（含停用行，见 PublicVendor.Status）。
+func loadPublicVendors(ctx context.Context, tx *sql.Tx) ([]PublicVendor, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, name, status FROM vendors ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list public vendors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	vendors := make([]PublicVendor, 0, 16)
+	for rows.Next() {
+		var rec PublicVendor
+		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Status); err != nil {
+			return nil, fmt.Errorf("store: scan public vendors: %w", err)
+		}
+		vendors = append(vendors, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate public vendors: %w", err)
+	}
+	return vendors, nil
 }
 
 func loadPublicGroups(ctx context.Context, tx *sql.Tx) ([]PublicGroup, error) {
@@ -230,13 +316,17 @@ func loadPublicOverrides(ctx context.Context, tx *sql.Tx) ([]PublicGroupPricing,
 
 // publicPricingVersion 计算定价域版本号（F-09-14/B3 契约的 ETag 派生口径）。
 //
-// 取三张表各自的 max(updated_at)+count(*)+max(id)。只用 count 不够：同一行
-// 改价并重新启用时 count 不变；只用 max(updated_at) 不够：删除最新一行会让
-// max 回退，而删除同样必须改变版本。max(id) 覆盖「删除后又插入同内容行」的
-// 情形，三者组合在常规管理操作下不会产生版本回退。
+// 取五张表各自的 max(updated_at)+count(*)+max(id)——定价三表之外必须纳入
+// model_meta 与 vendors（D1-22）：卡片名称、能力标签、上下文分档与供应商
+// 展示名都来自这两张表，若版本不含它们，管理员改完档案后公开页仍会因
+// If-None-Match 命中 304 而继续展示旧内容（最长一个缓存周期）。
+//
+// 只用 count 不够：同一行改价并重新启用时 count 不变；只用 max(updated_at)
+// 不够：删除最新一行会让 max 回退，而删除同样必须改变版本。max(id) 覆盖
+// 「删除后又插入同内容行」的情形，三者组合在常规管理操作下不会产生版本回退。
 func publicPricingVersion(ctx context.Context, tx *sql.Tx) (string, error) {
 	var builder []byte
-	for _, table := range []string{"model_pricing", "group_pricing", "user_groups"} {
+	for _, table := range []string{"model_pricing", "group_pricing", "user_groups", "model_meta", "vendors"} {
 		var (
 			updated time.Time
 			count   int64

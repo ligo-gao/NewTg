@@ -126,6 +126,17 @@ func (e *publicTestEnv) decodeList(t *testing.T, path string, headers map[string
 
 func publicInt64Ptr(v int64) *int64 { return &v }
 
+func publicStringPtr(v string) *string { return &v }
+
+// publicJSON 把测试数据编码成 model_meta 的 jsonb 列形态。
+func publicJSON(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
 // fixtureCatalog 构造覆盖主要分支的目录：
 //   - openai/gpt-5      per_token  prompt 500 / completion 1500 / cache 50/150
 //   - openai/gpt-free   per_token  全 0（免费）
@@ -179,8 +190,10 @@ func TestPublicPricingListMoneyAndVisibility(t *testing.T) {
 		gpt.CacheWritePrice == nil || *gpt.CacheWritePrice != "150" {
 		t.Fatalf("金额未按字符串下发: %+v", gpt)
 	}
+	// 本 fixture 无档案：display_name 回退 model_id、vendor 回退前缀（D1-15）；
+	// 有档案时改用档案（TestPublicPricingMetadataCards）。
 	if gpt.Vendor != "openai" || gpt.DisplayName != "openai/gpt-5" {
-		t.Fatalf("vendor/display_name 口径错误: %+v", gpt)
+		t.Fatalf("无档案时 vendor/display_name 降级错误: %+v", gpt)
 	}
 	nullPrice := byID["vendorless-model"]
 	if nullPrice.PromptPrice != nil {
@@ -289,7 +302,7 @@ func TestPublicPricingFacets(t *testing.T) {
 	}
 	if body.Facets.Capabilities == nil || len(body.Facets.Capabilities) != 0 ||
 		len(body.Facets.Context) != 0 || len(body.Facets.Endpoints) != 0 {
-		t.Fatalf("缺失元数据的 facet 必须为空数组（不是 null）: %+v", body.Facets)
+		t.Fatalf("无档案时 capability/context/endpoint facet 必须为空数组（不是 null）: %+v", body.Facets)
 	}
 	// pricing_types 计数。
 	types := map[string]int64{}
@@ -616,5 +629,369 @@ func TestPublicPricingETagStar(t *testing.T) {
 	rr := env.request(http.MethodGet, "/api/pricing", map[string]string{"If-None-Match": "*"}, nil)
 	if rr.Code != http.StatusNotModified || rr.Body.Len() != 0 {
 		t.Fatalf("If-None-Match:* = %d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D1c：公开定价元数据集成（D1-13…D1-23）
+// ---------------------------------------------------------------------------
+
+// fixtureCatalogWithMeta 在基础目录上挂载档案与供应商，覆盖：
+//   - openai/gpt-5      精确档案 + vendors.name（一级回退）；
+//   - anthropic/claude  精确档案 + 完整详情字段；
+//   - gemini/flash      前缀档案（name_rule=1），供应商回退到 model_id 前缀；
+//   - vendorless-model  无档案，供应商回退到 model_pricing.vendor；
+//   - openai/gpt-free   无档案，display_name 回退 model_id；
+//   - image/dall-e      精确命中**停用**档案（status=2）⇒ 整条剔除。
+func fixtureCatalogWithMeta() store.PublicPricingCatalog {
+	catalog := fixtureCatalog()
+	for i := range catalog.Models {
+		if catalog.Models[i].Model == "vendorless-model" {
+			catalog.Models[i].Vendor = publicStringPtr("Acme")
+		}
+	}
+	released := time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC)
+	catalog.Vendors = []store.PublicVendor{
+		{ID: 1, Name: "OpenAI", Status: 1},
+		{ID: 2, Name: "Anthropic", Status: 1},
+		{ID: 3, Name: "Retired Vendor", Status: 2},
+	}
+	catalog.Meta = []store.ModelMeta{
+		{
+			ModelName: "openai/gpt-5", DisplayName: publicStringPtr("GPT-5"),
+			Description: publicStringPtr("Flagship model."),
+			Tags:        publicJSON([]string{"long-context"}),
+			VendorID:    publicInt64Ptr(1),
+			Endpoints: publicJSON(map[string][]string{
+				"/v1/chat/completions": {"POST"},
+				"/v1/messages":         {"POST"},
+				"/private/unknown":     {"POST"},
+			}),
+			Capabilities:  publicJSON([]string{"text", "vision"}),
+			ContextLength: publicInt64Ptr(128000),
+			MaxOutput:     publicInt64Ptr(32000),
+			Status:        1, NameRule: 0,
+		},
+		{
+			ModelName: "anthropic/claude", DisplayName: publicStringPtr("Claude"),
+			VendorID:     publicInt64Ptr(2),
+			Capabilities: publicJSON([]string{"text", "reasoning"}),
+			Modalities:   publicJSON([]string{"text", "image"}),
+			Parameters: publicJSON([]map[string]any{{
+				"name": "temperature", "required": false, "type": "number",
+				"default": 1, "description": "Sampling temperature.",
+			}}),
+			ContextLength:   publicInt64Ptr(200000),
+			KnowledgeCutoff: publicStringPtr("2025-03"),
+			ReleasedAt:      &released,
+			Status:          1, NameRule: 0,
+		},
+		{
+			ModelName: "gemini/", DisplayName: publicStringPtr("Gemini Flash"),
+			Capabilities:  publicJSON([]string{"text"}),
+			Endpoints:     publicJSON(map[string][]string{"/v1beta/models/{model}:generateContent": {"POST"}}),
+			ContextLength: publicInt64Ptr(32768),
+			Status:        1, NameRule: 1,
+		},
+		{
+			// 停用档案：与 image/dall-e 精确命中 ⇒ 公开面剔除（D1-13）。
+			ModelName: "image/dall-e", DisplayName: publicStringPtr("Hidden"),
+			Status: 2, NameRule: 0,
+		},
+	}
+	return catalog
+}
+
+func TestPublicPricingMetadataCards(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	code, body, rr := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d（body=%s）", code, rr.Body.String())
+	}
+	if body.Total != "5" {
+		t.Fatalf("停用档案命中的模型必须剔除，total=%s", body.Total)
+	}
+	cards := cardsByID(body.Items)
+	if _, ok := cards["image/dall-e"]; ok {
+		t.Fatal("status=2 档案命中的模型不得出现在 items")
+	}
+
+	// 有档案：卡片字段来自档案。
+	gpt := cards["openai/gpt-5"]
+	if gpt.DisplayName != "GPT-5" || gpt.Vendor != "OpenAI" {
+		t.Fatalf("档案 display_name/vendor 未生效: %+v", gpt)
+	}
+	if !equalStrings(gpt.Capabilities, []string{"text", "vision"}) {
+		t.Fatalf("capabilities = %v", gpt.Capabilities)
+	}
+	if gpt.ContextLength == nil || *gpt.ContextLength != 128000 ||
+		gpt.MaxOutput == nil || *gpt.MaxOutput != 32000 {
+		t.Fatalf("context_length/max_output 未生效: %+v", gpt)
+	}
+	if !equalStrings(gpt.Endpoints, []string{"chat.completions", "messages"}) {
+		t.Fatalf("endpoints 派生错误（未知路径必须忽略）: %v", gpt.Endpoints)
+	}
+	if !equalStrings(gpt.Tags, []string{"long-context"}) || gpt.Description != "Flagship model." {
+		t.Fatalf("tags/description 未生效: %+v", gpt)
+	}
+	// 价格仍只来自 model_pricing，不得从元数据推导。
+	if gpt.PromptPrice == nil || *gpt.PromptPrice != "500" || gpt.IsFree {
+		t.Fatalf("价格字段被元数据污染: %+v", gpt)
+	}
+
+	// 无档案：D1-15 降级。
+	free := cards["openai/gpt-free"]
+	if free.DisplayName != "openai/gpt-free" || free.Vendor != "openai" ||
+		free.Capabilities == nil || len(free.Capabilities) != 0 ||
+		free.Endpoints == nil || len(free.Endpoints) != 0 ||
+		free.Tags == nil || len(free.Tags) != 0 || free.Description != "" ||
+		free.ContextLength != nil || free.MaxOutput != nil {
+		t.Fatalf("无档案卡片必须完全降级: %+v", free)
+	}
+
+	// vendor 三级回退：vendors.name → model_pricing.vendor → model_id 前缀。
+	if cards["vendorless-model"].Vendor != "Acme" {
+		t.Fatalf("第二级回退（model_pricing.vendor）失败: %+v", cards["vendorless-model"])
+	}
+	if cards["gemini/flash"].Vendor != "gemini" {
+		t.Fatalf("第三级回退（model_id 前缀）失败: %+v", cards["gemini/flash"])
+	}
+}
+
+func TestPublicPricingMetadataDetail(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	decode := func(model string) PublicModelDetail {
+		t.Helper()
+		rr := env.request(http.MethodGet, "/api/pricing/"+url.PathEscape(model), nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s 详情 status = %d（body=%s）", model, rr.Code, rr.Body.String())
+		}
+		var detail PublicModelDetail
+		if err := json.Unmarshal(rr.Body.Bytes(), &detail); err != nil {
+			t.Fatalf("解码详情失败: %v", err)
+		}
+		return detail
+	}
+
+	claude := decode("anthropic/claude")
+	if !equalStrings(claude.Modalities, []string{"text", "image"}) {
+		t.Fatalf("modalities = %v", claude.Modalities)
+	}
+	if claude.KnowledgeCutoff == nil || *claude.KnowledgeCutoff != "2025-03" {
+		t.Fatalf("knowledge_cutoff = %v", claude.KnowledgeCutoff)
+	}
+	if claude.ReleasedAt == nil || *claude.ReleasedAt != "2025-08-07" {
+		t.Fatalf("released_at = %v", claude.ReleasedAt)
+	}
+	if len(claude.Parameters) != 1 || claude.Parameters[0].Name != "temperature" ||
+		claude.Parameters[0].Type != "number" || claude.Parameters[0].Required ||
+		claude.Parameters[0].Description != "Sampling temperature." {
+		t.Fatalf("parameters = %+v", claude.Parameters)
+	}
+
+	// 无档案：详情追加字段按 D1-15 降级为空数组/null。
+	free := decode("openai/gpt-free")
+	if free.Modalities == nil || len(free.Modalities) != 0 ||
+		free.Parameters == nil || len(free.Parameters) != 0 ||
+		free.KnowledgeCutoff != nil || free.ReleasedAt != nil {
+		t.Fatalf("无档案详情必须降级: %+v", free)
+	}
+
+	// 停用档案命中的模型详情 404（与不存在同一分支）。
+	hidden := env.request(http.MethodGet, "/api/pricing/"+url.PathEscape("image/dall-e"), nil, nil)
+	if hidden.Code != http.StatusNotFound {
+		t.Fatalf("停用档案模型详情 status = %d，期望 404", hidden.Code)
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(hidden.Body.Bytes(), &problem); err != nil || problem["type"] != problemTypeModelNotFound {
+		t.Fatalf("详情 404 problem = %v", problem)
+	}
+}
+
+func TestPublicPricingMetadataFacets(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	facetCounts := func(options []PublicFacetOption) map[string]int64 {
+		out := make(map[string]int64, len(options))
+		for _, option := range options {
+			out[option.Value] = option.Count
+		}
+		return out
+	}
+
+	_, body, _ := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	vendors := facetCounts(body.Facets.Vendors)
+	if vendors["openai"] != 2 || vendors["anthropic"] != 1 || vendors["acme"] != 1 || vendors["gemini"] != 1 {
+		t.Fatalf("vendor facet 计数错误（vendors.name 优先）: %+v", body.Facets.Vendors)
+	}
+	caps := facetCounts(body.Facets.Capabilities)
+	if caps["text"] != 3 || caps["vision"] != 1 || caps["reasoning"] != 1 {
+		t.Fatalf("capability facet 计数错误: %+v", body.Facets.Capabilities)
+	}
+	contexts := facetCounts(body.Facets.Context)
+	if contexts["32k"] != 1 || contexts["128k"] != 1 || contexts["200k+"] != 1 || len(contexts) != 3 {
+		t.Fatalf("context facet 计数错误: %+v", body.Facets.Context)
+	}
+	endpoints := facetCounts(body.Facets.Endpoints)
+	if endpoints["chat.completions"] != 1 || endpoints["messages"] != 1 ||
+		endpoints["generatecontent"] != 1 || len(endpoints) != 3 {
+		t.Fatalf("endpoint facet 计数错误: %+v", body.Facets.Endpoints)
+	}
+
+	// 跨组 AND：capability=vision 且 context=128k → 只剩 openai/gpt-5。
+	_, and, _ := env.decodeList(t, "/api/pricing?capability=vision&context=128k&page_size=100", nil, nil)
+	if and.Total != "1" || and.Items[0].ModelID != "openai/gpt-5" {
+		t.Fatalf("跨组 AND 失败: total=%s items=%v", and.Total, modelIDs(and.Items))
+	}
+
+	// 组内 OR：capability=vision,reasoning → 两个模型。
+	_, or, _ := env.decodeList(t, "/api/pricing?capability=vision,reasoning&page_size=100", nil, nil)
+	if or.Total != "2" {
+		t.Fatalf("组内 OR 失败: total=%s", or.Total)
+	}
+
+	// facet 计数忽略自身筛选：capability=vision 时 capability 组仍按全集计数。
+	_, self, _ := env.decodeList(t, "/api/pricing?capability=vision&page_size=100", nil, nil)
+	if got := facetCounts(self.Facets.Capabilities); got["text"] != 3 || got["vision"] != 1 {
+		t.Fatalf("capability facet 未忽略自身筛选: %+v", self.Facets.Capabilities)
+	}
+	// 其它组照常受筛选影响：context facet 只剩 vision 模型的 128K。
+	if got := facetCounts(self.Facets.Context); got["128k"] != 1 || len(got) != 1 {
+		t.Fatalf("context facet 未应用其它组筛选: %+v", self.Facets.Context)
+	}
+
+	// 未知值丢弃：bogus 不产生筛选。
+	_, dropped, _ := env.decodeList(t, "/api/pricing?capability=bogus&context=999k&endpointType=nope&page_size=100", nil, nil)
+	if dropped.Total != "5" {
+		t.Fatalf("未知 facet 值应被丢弃，total=%s", dropped.Total)
+	}
+
+	// 端点筛选值大小写归一（generateContent → generatecontent）。
+	_, endpoint, _ := env.decodeList(t, "/api/pricing?endpointType=generateContent&page_size=100", nil, nil)
+	if endpoint.Total != "1" || endpoint.Items[0].ModelID != "gemini/flash" {
+		t.Fatalf("endpointType 筛选失败: total=%s", endpoint.Total)
+	}
+}
+
+func TestPublicContextBucketBoundaries(t *testing.T) {
+	cases := []struct {
+		length *int64
+		want   string
+	}{
+		{nil, ""},
+		{publicInt64Ptr(0), "8K"},
+		{publicInt64Ptr(8_192), "8K"},
+		{publicInt64Ptr(8_193), "32K"},
+		{publicInt64Ptr(32_768), "32K"},
+		{publicInt64Ptr(32_769), "128K"},
+		{publicInt64Ptr(131_072), "128K"},
+		{publicInt64Ptr(131_073), "200K+"},
+	}
+	for _, tc := range cases {
+		if got := publicContextBucket(tc.length); got != tc.want {
+			t.Fatalf("context bucket(%v) = %q，期望 %q", tc.length, got, tc.want)
+		}
+	}
+}
+
+func TestPublicEndpointDerivation(t *testing.T) {
+	raw := publicJSON(map[string][]string{
+		"/v1/chat/completions":                         {"POST"},
+		"/v1/embeddings":                               {"POST"},
+		"/v1/audio/transcriptions":                     {"POST"},
+		"/v1beta/models/{model}:generateContent":       {"POST"},
+		"/v1beta/models/{model}:streamGenerateContent": {"POST"}, // 未知，忽略
+		"/custom/private":                              {"POST"}, // 未知，忽略
+	})
+	want := []string{"chat.completions", "embeddings", "audio.transcriptions", "generateContent"}
+	if got := deriveEndpointTypes(raw); !equalStrings(got, want) {
+		t.Fatalf("endpoint 派生 = %v，期望 %v", got, want)
+	}
+	if got := deriveEndpointTypes(nil); got == nil || len(got) != 0 {
+		t.Fatalf("无端点必须是空数组，得到 %v", got)
+	}
+}
+
+func TestPublicPricingNameRuleResolution(t *testing.T) {
+	models := []store.PublicModelPricing{}
+	add := func(name string) {
+		models = append(models, store.PublicModelPricing{
+			Model: name, Mode: 0, PromptPrice: publicInt64Ptr(100),
+		})
+	}
+	for _, name := range []string{
+		"rule/exact", "pre/exact2", "org/prefix-target", "zz-suffix",
+		"xx-mid-yy", "aaabbb", "xx/pre-target-suf",
+	} {
+		add(name)
+	}
+	meta := []store.ModelMeta{
+		// exact > prefix：两个规则都命中时取精确。
+		{ModelName: "rule/exact", DisplayName: publicStringPtr("exact"), Status: 1, NameRule: 0},
+		{ModelName: "rule/", DisplayName: publicStringPtr("prefix"), Status: 1, NameRule: 1},
+		// exact > prefix（再来一组，确保不是顺序偶然）。
+		{ModelName: "pre/exact2", DisplayName: publicStringPtr("exact2"), Status: 1, NameRule: 0},
+		{ModelName: "org/", DisplayName: publicStringPtr("org-prefix"), Status: 1, NameRule: 1},
+		// prefix > suffix。
+		{ModelName: "xx/", DisplayName: publicStringPtr("xx-prefix"), Status: 1, NameRule: 1},
+		{ModelName: "pre-target-suf", DisplayName: publicStringPtr("suffix"), Status: 1, NameRule: 3},
+		// suffix > contains。
+		{ModelName: "-suffix", DisplayName: publicStringPtr("suffix-win"), Status: 1, NameRule: 3},
+		{ModelName: "zz", DisplayName: publicStringPtr("contains"), Status: 1, NameRule: 2},
+		// 只有 contains 命中。
+		{ModelName: "mid", DisplayName: publicStringPtr("contains-win"), Status: 1, NameRule: 2},
+		// 同规则 tie-break：更长的前缀优先。
+		{ModelName: "aa", DisplayName: publicStringPtr("short-prefix"), Status: 1, NameRule: 1},
+		{ModelName: "aaa", DisplayName: publicStringPtr("long-prefix"), Status: 1, NameRule: 1},
+	}
+	repo := &fakePublicPricingRepo{catalog: store.PublicPricingCatalog{
+		Models: models, Meta: meta, Version: "v1", GeneratedAt: time.Now().UTC(),
+	}}
+	env := newPublicTestEnv(t, nil, repo, nil)
+	_, body, _ := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	names := make(map[string]string, len(body.Items))
+	for _, item := range body.Items {
+		names[item.ModelID] = item.DisplayName
+	}
+	want := map[string]string{
+		"rule/exact":        "exact",
+		"pre/exact2":        "exact2",
+		"org/prefix-target": "org-prefix",
+		"zz-suffix":         "suffix-win",
+		"xx-mid-yy":         "contains-win",
+		"aaabbb":            "long-prefix",
+		"xx/pre-target-suf": "xx-prefix",
+	}
+	for model, display := range want {
+		if names[model] != display {
+			t.Fatalf("%s display_name = %q，期望 %q（全表 %v）", model, names[model], display, names)
+		}
+	}
+}
+
+func TestPublicPricingMetadataETag(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	first := env.request(http.MethodGet, "/api/pricing", nil, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("status = %d", first.Code)
+	}
+	etag := first.Header().Get("ETag")
+
+	// 模拟元数据编辑后版本变化：ETag 必须随之变化，否则 304 会让缓存
+	// 继续返回旧名称/旧 facet（D1-22）。
+	repo.catalog.Version = "cafebabecafebabe"
+	second := env.request(http.MethodGet, "/api/pricing", map[string]string{"If-None-Match": etag}, nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("元数据版本变化后条件请求应 200，得到 %d", second.Code)
+	}
+	if second.Header().Get("ETag") == etag {
+		t.Fatal("版本变化后 ETag 未变化")
 	}
 }

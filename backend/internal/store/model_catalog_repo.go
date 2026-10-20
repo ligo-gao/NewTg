@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1760,27 +1761,61 @@ func (r *SQLModelCatalogRepo) ResolveMeta(ctx context.Context, modelNames []stri
 	}
 	defer func() { _ = rows.Close() }()
 
-	// 按 name_rule 分桶；桶内保持 SQL 的「长度降序 + 名称升序」。
-	byRule := map[int16][]ModelMeta{
-		0: {}, 1: {}, 2: {}, 3: {},
-	}
+	entries := make([]ModelMeta, 0, 64)
 	for rows.Next() {
 		rec, scanErr := scanModelMeta(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("store: scan model_meta for resolve: %w", scanErr)
 		}
-		if _, ok := byRule[rec.NameRule]; ok {
-			byRule[rec.NameRule] = append(byRule[rec.NameRule], rec)
-		}
+		entries = append(entries, rec)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate model_meta for resolve: %w", err)
 	}
+	return ResolveModelMeta(entries, requested), nil
+}
+
+// ResolveModelMeta 在**调用方提供的档案集合**上执行冻结的命中规则（D1-14）。
+//
+// 【为什么拆出纯函数】公开定价目录在一个 REPEATABLE READ 事务里同时读取
+// model_pricing 与 model_meta（D1-22 的同一快照要求），不能走 ResolveMeta
+// 的独立连接；而命中优先级必须只有一份实现，否则两条路径会随修改漂移。
+// ResolveMeta 只负责「取 status=1 的行」，本函数负责匹配语义。
+//
+// 【调用方语义】entries 可以包含 status=2 的档案：停用档案仍参与匹配，
+// 由调用方检查返回记录的 Status 决定「命中的是一条停用档案」⇒ 该模型从
+// 公开面剔除（D1-13）。ResolveMeta 因为只查 status=1，天然不会返回停用行。
+//
+// 命中优先级冻结为 精确(0) → 前缀(1) → 后缀(3) → 包含(2)；同规则内
+// tie-break 为 `length(model_name) DESC, model_name ASC`（D1-14）。这里自行
+// 排序而不是依赖 SQL ORDER BY：纯函数也必须对乱序输入给出确定结果。
+func ResolveModelMeta(entries []ModelMeta, modelNames []string) map[string]ModelMeta {
+	// 先排序：更长的模式更具体（`gpt-4o` 优先于 `gpt-4`），同长度按名称
+	// 升序。模型名在 DB 层被限制为 ASCII，len 与字符数一致。
+	sorted := make([]ModelMeta, len(entries))
+	copy(sorted, entries)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if len(sorted[i].ModelName) != len(sorted[j].ModelName) {
+			return len(sorted[i].ModelName) > len(sorted[j].ModelName)
+		}
+		return sorted[i].ModelName < sorted[j].ModelName
+	})
+
+	// 按 name_rule 分桶；桶内保持上面的排序。
+	byRule := map[int16][]ModelMeta{0: {}, 1: {}, 2: {}, 3: {}}
+	for _, rec := range sorted {
+		if _, ok := byRule[rec.NameRule]; ok {
+			byRule[rec.NameRule] = append(byRule[rec.NameRule], rec)
+		}
+	}
 
 	// 冻结的优先级顺序：0 精确 → 1 前缀 → 3 后缀 → 2 包含。
 	precedence := []int16{0, 1, 3, 2}
-	resolved := make(map[string]ModelMeta, len(requested))
-	for _, name := range requested {
+	resolved := make(map[string]ModelMeta, len(modelNames))
+	for _, name := range modelNames {
+		if name == "" {
+			continue
+		}
 		for _, rule := range precedence {
 			matched := false
 			for _, candidate := range byRule[rule] {
@@ -1795,7 +1830,7 @@ func (r *SQLModelCatalogRepo) ResolveMeta(ctx context.Context, modelNames []stri
 			}
 		}
 	}
-	return resolved, nil
+	return resolved
 }
 
 // modelNameMatches 判断目录模式是否命中实际路由名（rule 语义见 D1-02）。

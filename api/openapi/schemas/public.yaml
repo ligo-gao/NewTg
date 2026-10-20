@@ -316,25 +316,30 @@ schemas:
       model_id: {type: string, maxLength: 128}
       display_name:
         type: string
-        description: 元数据未落库时等于 model_id（R-PUB-01）。
+        description: 有档案时取档案 display_name；无档案（或空串）回退 model_id（D1-15/D1-16）。
       vendor:
         type: string
-        description: model_id 首个 `/` 前缀；无前缀时为空串（R-PUB-02）。
+        description: |
+          三级回退（D1-16）：档案关联的 vendors.name → model_pricing.vendor →
+          model_id 首个 `/` 前缀；都不可得时为空串。
       capabilities:
         type: array
         items: {type: string}
+        description: 档案 capabilities 枚举；无档案时为空数组。
       context_length:
         anyOf:
           - type: integer
             format: int64
             minimum: 0
           - enum: [null]
+        description: 档案 context_length；无档案或未设置时为 null。
       max_output:
         anyOf:
           - type: integer
             format: int64
             minimum: 0
           - enum: [null]
+        description: 档案 max_output；无档案或未设置时为 null。
       mode:
         type: string
         description: per_token 或 per_request（MVP 仅两种）。
@@ -370,10 +375,16 @@ schemas:
       endpoints:
         type: array
         items: {type: string}
+        description: |
+          档案 endpoints 派生的协议端点枚举（D1-19）；未知路径忽略，无档案时
+          为空数组。
       tags:
         type: array
         items: {type: string}
-      description: {type: string}
+        description: 档案 tags；无档案时为空数组。
+      description:
+        type: string
+        description: 档案 description；无档案时为空串。
 
   PublicGroupPrice:
     type: object
@@ -409,12 +420,17 @@ schemas:
           $ref: '#/schemas/PublicFacetOption'
       capabilities:
         type: array
-        description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+        description: |
+          档案 capabilities 计数（D1-18）；忽略本组自身筛选，未知值丢弃，
+          无档案模型不计入。无任何档案能力时为空数组。
         items:
           $ref: '#/schemas/PublicFacetOption'
       context:
         type: array
-        description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+        description: |
+          档案 context_length 分档计数（D1-20）：8K（≤8,192）、32K
+          （8,193–32,768）、128K（32,769–131,072）、200K+（>131,072），
+          null 不计数。无档案时为空数组。
         items:
           $ref: '#/schemas/PublicFacetOption'
       groups:
@@ -423,7 +439,9 @@ schemas:
           $ref: '#/schemas/PublicGroupFacet'
       endpoints:
         type: array
-        description: 元数据未落库（R-PUB-01）；当前恒为空数组。
+        description: |
+          档案 endpoints 派生枚举计数（D1-19）；未知路径忽略，无档案模型
+          不计入。无任何档案端点时为空数组。
         items:
           $ref: '#/schemas/PublicFacetOption'
       pricing_types:
@@ -486,10 +504,13 @@ schemas:
           modalities:
             type: array
             items: {type: string}
+            description: 档案 modalities；无档案时为空数组。
           knowledge_cutoff:
             anyOf: [{type: string}, {enum: [null]}]
+            description: 档案 knowledge_cutoff（YYYY-MM）；无档案或未设置时为 null。
           released_at:
             anyOf: [{type: string}, {enum: [null]}]
+            description: 档案 released_at（YYYY-MM-DD）；无档案或未设置时为 null。
           group_prices:
             type: array
             items:
@@ -498,6 +519,7 @@ schemas:
             type: array
             items:
               $ref: '#/schemas/PublicModelParameter'
+            description: 档案 parameters；无档案时为空数组。
           rate_limits:
             type: array
             items:

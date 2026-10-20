@@ -162,3 +162,105 @@ func TestPublicPricingRepoVisibleSetAndVersion(t *testing.T) {
 		t.Fatal("GeneratedAt 为零值")
 	}
 }
+
+// TestPublicPricingRepoMetadataSnapshot 冻结 D1-22 的两条真相：
+//  1. model_meta（含 status=2）与 vendors 与定价三表在同一快照返回；
+//  2. 两表的编辑都会改变版本号——否则公开页的 If-None-Match 会持续 304。
+func TestPublicPricingRepoMetadataSnapshot(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewPublicPricingRepo(db)
+	ctx := context.Background()
+
+	suffix := time.Now().UnixNano()
+	model := fmt.Sprintf("t7-meta-model-%d", suffix)
+	vendorName := fmt.Sprintf("t7-meta-vendor-%d", suffix)
+	vendorValue := fmt.Sprintf("t7-meta-priced-vendor-%d", suffix)
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM model_meta WHERE model_name = $1`, model)
+		_, _ = db.Exec(`DELETE FROM vendors WHERE name = $1`, vendorName)
+		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model)
+	})
+
+	if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, vendor, author, status)
+		VALUES ($1, 0, 100, $2, 't7', 1)`, model, vendorValue); err != nil {
+		t.Fatalf("insert model_pricing: %v", err)
+	}
+	baseline, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("baseline Load: %v", err)
+	}
+
+	var vendorID int64
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO vendors (name) VALUES ($1) RETURNING id`, vendorName).Scan(&vendorID); err != nil {
+		t.Fatalf("insert vendor: %v", err)
+	}
+	afterVendor, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("Load after vendor: %v", err)
+	}
+	if afterVendor.Version == baseline.Version {
+		t.Fatal("vendors 变更后版本号未改变（D1-22）")
+	}
+	foundVendor := false
+	for _, vendor := range afterVendor.Vendors {
+		if vendor.ID == vendorID && vendor.Name == vendorName && vendor.Status == 1 {
+			foundVendor = true
+		}
+	}
+	if !foundVendor {
+		t.Fatalf("vendors 快照未包含新供应商: %+v", afterVendor.Vendors)
+	}
+
+	// 停用档案也必须被加载：D1-13 依赖它判断「精确命中停用档案」。
+	if _, err := db.Exec(`INSERT INTO model_meta
+		(model_name, display_name, vendor_id, capabilities, context_length, status, name_rule)
+		VALUES ($1, 'Hidden Meta', $2, '["text"]'::jsonb, 128000, 2, 0)`,
+		model, vendorID); err != nil {
+		t.Fatalf("insert model_meta: %v", err)
+	}
+	afterMeta, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("Load after meta: %v", err)
+	}
+	if afterMeta.Version == afterVendor.Version {
+		t.Fatal("model_meta 变更后版本号未改变（D1-22）")
+	}
+	foundMeta := false
+	for _, rec := range afterMeta.Meta {
+		if rec.ModelName == model {
+			foundMeta = true
+			if rec.Status != 2 || rec.VendorID == nil || *rec.VendorID != vendorID {
+				t.Fatalf("model_meta 投影错误: %+v", rec)
+			}
+		}
+	}
+	if !foundMeta {
+		t.Fatalf("model_meta 快照未包含停用档案: %+v", afterMeta.Meta)
+	}
+
+	// model_pricing.vendor 作为 D1-16 的第二级回退也必须随定价快照返回。
+	var pricedVendor *string
+	for _, row := range afterMeta.Models {
+		if row.Model == model {
+			pricedVendor = row.Vendor
+		}
+	}
+	if pricedVendor == nil || *pricedVendor != vendorValue {
+		t.Fatalf("model_pricing.vendor 未随快照返回: %v", pricedVendor)
+	}
+
+	// 编辑档案同样必须改变版本（不只是新增行）。
+	if _, err := db.Exec(`UPDATE model_meta SET display_name = 'Edited', updated_at = now()
+		WHERE model_name = $1`, model); err != nil {
+		t.Fatalf("update model_meta: %v", err)
+	}
+	afterEdit, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("Load after meta edit: %v", err)
+	}
+	if afterEdit.Version == afterMeta.Version {
+		t.Fatal("model_meta 编辑后版本号未改变（D1-22）")
+	}
+}
