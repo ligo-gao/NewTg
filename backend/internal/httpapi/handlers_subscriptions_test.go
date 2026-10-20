@@ -33,9 +33,19 @@ import (
 // 「金额/币种全部由服务端按套餐读取」与错误映射。真实定价/事务行为由
 // billing 与集成测试覆盖。
 type fakeSubscriptionPurchase struct {
-	calls  []subscriptionPurchaseCall
-	result *billing.TopupOrder
-	err    error
+	calls       []subscriptionPurchaseCall
+	renewCalls  []subscriptionRenewalCall
+	result      *billing.TopupOrder
+	err         error
+	renewResult *billing.TopupOrder
+	renewErr    error
+}
+
+type subscriptionRenewalCall struct {
+	userID         int64
+	subscriptionID int64
+	provider       string
+	idempotencyKey string
 }
 
 type subscriptionPurchaseCall struct {
@@ -64,10 +74,29 @@ func (f *fakeSubscriptionPurchase) CreateSubscriptionOrder(_ context.Context,
 	}}, nil
 }
 
+func (f *fakeSubscriptionPurchase) CreateSubscriptionRenewalOrder(_ context.Context,
+	userID, subscriptionID int64, provider, idempotencyKey string) (*billing.TopupOrder, error) {
+
+	f.renewCalls = append(f.renewCalls, subscriptionRenewalCall{
+		userID: userID, subscriptionID: subscriptionID,
+		provider: provider, idempotencyKey: idempotencyKey,
+	})
+	if f.renewErr != nil {
+		return nil, f.renewErr
+	}
+	if f.renewResult != nil {
+		return f.renewResult, nil
+	}
+	return &billing.TopupOrder{Order: &store.Order{
+		ID: 20, UserID: userID, Provider: provider, Amount: 9900,
+		Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindRenew,
+		BizRefID: &subscriptionID, IdempotencyKey: idempotencyKey,
+	}}, nil
+}
+
 // ---------------------------------------------------------------------------
 // 假仓储
 // ---------------------------------------------------------------------------
-
 type fakeSubscriptionRepo struct {
 	mu             sync.Mutex
 	plans          map[int64]*store.SubscriptionPlan
@@ -1518,6 +1547,165 @@ func seedSubscription(t *testing.T, env *subscriptionTestEnv, userID int64, stat
 	env.repo.subs[sub.ID].Status = status
 	env.repo.mu.Unlock()
 	return sub.ID
+}
+
+func TestSubscriptionRenewEndpoint(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID := int64(7), int64(8)
+	activeID := seedSubscription(t, env, ownerID, "active")
+	expiredID := seedSubscription(t, env, ownerID, "expired")
+	cancelledID := seedSubscription(t, env, ownerID, "cancelled")
+	foreignID := seedSubscription(t, env, otherID, "active")
+	headers := func(key string) map[string]string { return map[string]string{"Idempotency-Key": key} }
+	renewPath := func(id int64) string {
+		return fmt.Sprintf("/api/subscriptions/%d/renew", id)
+	}
+
+	t.Run("Idempotency-Key 必带", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID),
+			map[string]any{"provider": "stripe"}, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("缺少 Idempotency-Key = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if len(env.purchase.renewCalls) != 0 {
+			t.Fatal("被拒绝的请求不得调用支付服务")
+		}
+	})
+
+	t.Run("未知字段 403", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID),
+			map[string]any{"provider": "stripe", "amount": 1}, headers("renew-extra"))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("未知字段 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("provider 缺失或非法 400", func(t *testing.T) {
+		for name, body := range map[string]map[string]any{
+			"missing provider": {},
+			"invalid provider": {"provider": "paypal"},
+		} {
+			rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID), body, headers("renew-bad"))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+			}
+		}
+		if len(env.purchase.renewCalls) != 0 {
+			t.Fatalf("非法请求不得调用支付服务: %+v", env.purchase.renewCalls)
+		}
+	})
+
+	t.Run("他人实例 404", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(foreignID),
+			map[string]any{"provider": "stripe"}, headers("renew-foreign"))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("他人实例 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if len(env.purchase.renewCalls) != 0 {
+			t.Fatal("他人实例不得调用支付服务")
+		}
+	})
+
+	t.Run("cancelled 409", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(cancelledID),
+			map[string]any{"provider": "stripe"}, headers("renew-cancelled"))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("cancelled = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotRenewable {
+			t.Fatalf("type = %s", got)
+		}
+	})
+
+	t.Run("active/expired 委托支付服务", func(t *testing.T) {
+		for name, id := range map[string]int64{"active": activeID, "expired": expiredID} {
+			rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(id),
+				map[string]any{"provider": "Alipay"}, headers("renew-"+name))
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+			}
+			call := env.purchase.renewCalls[len(env.purchase.renewCalls)-1]
+			if call.userID != ownerID || call.subscriptionID != id || call.provider != "alipay" ||
+				call.idempotencyKey != "renew-"+name {
+				t.Fatalf("%s 入参 = %+v", name, call)
+			}
+		}
+	})
+
+	t.Run("重放 200", func(t *testing.T) {
+		env.purchase.renewResult = &billing.TopupOrder{
+			Order: &store.Order{ID: 20, UserID: ownerID, Provider: "stripe", Amount: 9900,
+				Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindRenew},
+			Replayed: true,
+		}
+		rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID),
+			map[string]any{"provider": "stripe"}, headers("renew-replay"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("重放 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("错误映射", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			err    error
+			status int
+		}{
+			{"subscription missing", billing.ErrRenewalSubscriptionNotFound, http.StatusNotFound},
+			{"not renewable", billing.ErrSubscriptionNotRenewable, http.StatusConflict},
+			{"plan unavailable", billing.ErrSubscriptionPlanUnavailable, http.StatusConflict},
+			{"idempotency conflict", billing.ErrIdempotencyConflict, http.StatusConflict},
+			{"plan invalid", billing.ErrSubscriptionPlanInvalid, http.StatusUnprocessableEntity},
+			{"currency", billing.ErrInvalidCurrency, http.StatusUnprocessableEntity},
+			{"provider disabled", billing.ErrProviderDisabled, http.StatusServiceUnavailable},
+			{"provider down", billing.ErrProviderUnavailable, http.StatusBadGateway},
+			{"invalid idempotency", billing.ErrInvalidIdempotency, http.StatusBadRequest},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				env.purchase.renewResult = nil
+				env.purchase.renewErr = tc.err
+				rr := env.do(t, endUser(ownerID), http.MethodPost, renewPath(activeID),
+					map[string]any{"provider": "stripe"}, headers("renew-err"))
+				if rr.Code != tc.status {
+					t.Fatalf("%v = %d，期望 %d（body=%s）", tc.err, rr.Code, tc.status, rr.Body.String())
+				}
+			})
+		}
+	})
+}
+
+func TestSubscriptionRenewWithoutPaymentServiceFailsClosed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	repo := newFakeSubscriptionRepo()
+	repo.subs[1] = &store.Subscription{
+		ID: 1, UserID: 7, PlanID: 1, Status: "active",
+		StartAt: time.Now().UTC().Add(-time.Hour),
+		EndAt:   time.Now().UTC().Add(time.Hour),
+	}
+	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
+		Repo: repo, DB: &sql.DB{}, Redis: rdb,
+		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(&subAuditExecer{}), Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewSubscriptionHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	req := httptest.NewRequest(http.MethodPost, "/api/subscriptions/1/renew",
+		strings.NewReader(`{"provider":"stripe"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "nil-renew")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), endUser(7)))
+	rr := serve(mux, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("未装配支付服务 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("503 必须带 Retry-After")
+	}
 }
 
 func TestSubscriptionCancelAtPeriodEnd(t *testing.T) {

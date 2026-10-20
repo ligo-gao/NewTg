@@ -14,6 +14,7 @@
 //	GET    /api/subscription/plans                    用户：可购套餐（仅 enabled）
 //	GET    /api/subscriptions                         用户：本人实例（含终态）
 //	POST   /api/subscriptions/{id}/cancel             用户：周期末取消（幂等；终态 409）
+//	POST   /api/subscriptions/{id}/renew              用户：手动续费（必须 Idempotency-Key）
 //	GET    /api/billing-preference                    用户：扣费偏好
 //	PUT    /api/billing-preference                    用户：扣费偏好（四值归一）
 //	POST   /api/subscription/purchase                 用户：购买（创建支付订单）
@@ -83,6 +84,13 @@ const (
 	// 用户周期末取消（billing-08 §3.5 P1）：实例已进入 expired/cancelled
 	// 终态时不能再置位。独立 type 让前端可区分「不能取消」与「找不到」。
 	problemTypeSubscriptionNotActive = "https://newtg.dev/problems/subscription_not_active"
+	// 手动续费（P2a）：invalid=请求体/字段非法，conflict=实例不可续费
+	// （cancelled）或幂等键复用到另一份订单，unavailable=支付渠道未配置。
+	problemTypeRenewInvalid     = "https://newtg.dev/problems/invalid_subscription_renewal"
+	problemTypeRenewConflict    = "https://newtg.dev/problems/subscription_renewal_conflict"
+	problemTypeRenewUnavailable = "https://newtg.dev/problems/subscription_renewal_unavailable"
+	// 实例处于 cancelled 终态：与「不能取消」分开，前端可据此提示重新购买。
+	problemTypeSubscriptionNotRenewable = "https://newtg.dev/problems/subscription_not_renewable"
 )
 
 // SubscriptionPurchaseService 是订阅购买的支付接缝。
@@ -91,6 +99,10 @@ const (
 // 同时避免 httpapi 直接构造 GORM 事务。
 type SubscriptionPurchaseService interface {
 	CreateSubscriptionOrder(ctx context.Context, userID, planID int64,
+		provider, idempotencyKey string) (*billing.TopupOrder, error)
+	// CreateSubscriptionRenewalOrder 创建手动续费订单（P2a）。支付成功后由
+	// billing 的结算分支推进**同一实例**的 end_at，不新建 subscriptions 行。
+	CreateSubscriptionRenewalOrder(ctx context.Context, userID, subscriptionID int64,
 		provider, idempotencyKey string) (*billing.TopupOrder, error)
 }
 
@@ -107,6 +119,7 @@ var (
 	userBillingPreferenceAction    = rbac.AuthzAction{ResourceKind: "billing_preference", ActionName: "update"}
 	userSubscriptionPurchaseAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "purchase"}
 	userSubscriptionCancelAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
+	userSubscriptionRenewAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
 )
 
 // SubscriptionHandlerConfig 是订阅端点装配输入。
@@ -205,6 +218,10 @@ func (h *SubscriptionHandlers) registerPolicies() {
 		"plan_id":  nil,
 		"provider": nil,
 	}})
+	// 续费只需 provider：目标实例来自路径，金额/周期一律由服务端按套餐行读取。
+	h.authz.SetWritePolicy(userSubscriptionRenewAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"provider": nil,
+	}})
 	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
 	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
 	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
@@ -242,6 +259,9 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/subscriptions", http.HandlerFunc(h.handleListMySubscriptions))
 	mux.Handle("POST /api/subscriptions/{id}/cancel",
 		self(userSubscriptionCancelAction, h.handleCancelSubscriptionAtPeriodEnd))
+	// 续费与取消同为「本人实例 + 幂等写」：cancelled → 409，active/expired 可续。
+	mux.Handle("POST /api/subscriptions/{id}/renew",
+		self(userSubscriptionRenewAction, h.handleRenewSubscription))
 	mux.Handle("GET /api/billing-preference", http.HandlerFunc(h.handleGetBillingPreference))
 	mux.Handle("PUT /api/billing-preference", self(userBillingPreferenceAction, h.handlePutBillingPreference))
 	mux.Handle("POST /api/subscription/purchase", self(userSubscriptionPurchaseAction, h.handlePurchase))
@@ -1466,6 +1486,145 @@ func (h *SubscriptionHandlers) writePurchaseError(w http.ResponseWriter, err err
 			"Payment provider unavailable", "failed to initialize payment with the provider", nil)
 	default:
 		h.log.Error("create subscription order failed", "error", err)
+		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用户端：手动续费（P2a）
+// ---------------------------------------------------------------------------
+
+// subscriptionRenewRequest 是 POST /api/subscriptions/{id}/renew 的请求体。
+//
+// 只有 provider：目标实例来自路径，金额/周期/额度由服务端按实例当前套餐行
+// 读取（与购买同一原则，不信任请求体）。
+type subscriptionRenewRequest struct {
+	Provider *string `json:"provider"`
+}
+
+// handleRenewSubscription 创建手动续费订单（billing-08 §3.3 方案甲，P2a）。
+//
+// 状态口径：
+//   - 仅本人实例；他人实例与不存在统一 404（不泄露 ID 存在性）；
+//   - `cancelled` 是唯一不可续费的终态 → 409；`active`/`expired` 允许，
+//     expired 在支付成功后恢复 active（由 billing 结算推进 end_at 并置状态）；
+//   - Idempotency-Key 必带：服务端代生成会让重试变成新订单，防重语义失效。
+//
+// 响应与购买同构（订单 + 支付载荷）；0 元套餐在同一事务内即时生效，
+// 响应无 client_secret/qr_code。
+func (h *SubscriptionHandlers) handleRenewSubscription(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		// 非法 id 与不存在同口径：不给出「格式错」这一额外信号。
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
+			"Invalid subscription renewal", "Idempotency-Key header is required", []string{"Idempotency-Key"})
+		return
+	}
+	var req subscriptionRenewRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
+			"Invalid subscription renewal", "request body must be a JSON object", nil)
+		return
+	}
+	if req.Provider == nil || strings.TrimSpace(*req.Provider) == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
+			"Invalid subscription renewal", "provider is required", []string{"provider"})
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(*req.Provider))
+	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
+			"Invalid subscription renewal", "provider must be stripe or alipay", []string{"provider"})
+		return
+	}
+
+	// 归属校验先于状态判定：他人实例与不存在统一 404（§15.4）。
+	sub, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		h.writeRepoError(w, "get subscription for renewal", err)
+		return
+	}
+	if sub.UserID != p.UserID {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if sub.Status != "active" && sub.Status != "expired" {
+		writeRenewNotRenewableProblem(w)
+		return
+	}
+	if h.purchase == nil {
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeRenewUnavailable,
+			"Subscription renewal is unavailable", "the payment service is not configured", nil)
+		return
+	}
+
+	result, err := h.purchase.CreateSubscriptionRenewalOrder(r.Context(), p.UserID, id, provider, key)
+	if err != nil {
+		h.writeRenewalError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if result.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, createOrderResponse{
+		Order:        topupOrderViewFrom(result.Order),
+		ClientSecret: result.ClientSecret,
+		QRCode:       result.QRCode,
+	})
+}
+
+func writeRenewNotRenewableProblem(w http.ResponseWriter) {
+	writeAdminProblem(w, http.StatusConflict, problemTypeSubscriptionNotRenewable,
+		"subscription_not_renewable", "subscription is cancelled and cannot be renewed")
+}
+
+// writeRenewalError 把 billing 的续费错误映射为 RFC 7807。
+//
+// 口径与购买一致（任务书 P2a 冻结语义 5）：套餐停用/删除、幂等键复用、
+// 实例不可续费 → 409；币种/金额/套餐字段非法 → 422；渠道未配置 → 503；
+// 渠道出站失败 → 502。任何失败都不会留下 succeeded 订单，也不会扩展实例。
+func (h *SubscriptionHandlers) writeRenewalError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, billing.ErrRenewalSubscriptionNotFound):
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+	case errors.Is(err, billing.ErrInvalidIdempotency),
+		errors.Is(err, billing.ErrInvalidProvider):
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
+			"Invalid subscription renewal", "provider or Idempotency-Key is invalid", nil)
+	case errors.Is(err, billing.ErrSubscriptionNotRenewable),
+		errors.Is(err, billing.ErrSubscriptionPlanUnavailable),
+		errors.Is(err, billing.ErrIdempotencyConflict):
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeRenewConflict,
+			"Subscription renewal conflict",
+			"the subscription cannot be renewed or the Idempotency-Key belongs to another order", nil)
+	case errors.Is(err, billing.ErrSubscriptionPlanInvalid),
+		errors.Is(err, billing.ErrInvalidCurrency),
+		errors.Is(err, billing.ErrInvalidTopupAmount):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeRenewInvalid,
+			"Invalid subscription plan", "the plan price or currency is not supported", nil)
+	case errors.Is(err, billing.ErrTopupDisabled),
+		errors.Is(err, billing.ErrProviderDisabled),
+		errors.Is(err, billing.ErrPaymentConfig):
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeRenewUnavailable,
+			"Payment provider is unavailable", "the selected payment provider is not available", []string{"provider"})
+	case errors.Is(err, billing.ErrProviderUnavailable):
+		writeSubscriptionFieldsProblem(w, http.StatusBadGateway, problemTypeRenewUnavailable,
+			"Payment provider unavailable", "failed to initialize payment with the provider", nil)
+	default:
+		h.log.Error("create subscription renewal order failed", "error", err)
 		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
 			"Internal server error", "", nil)
 	}

@@ -1034,6 +1034,108 @@ func TestSubscriptionPreConsumeConcurrentSameRequest(t *testing.T) {
 
 func timePtr(t time.Time) *time.Time { return &t }
 
+// TestSubscriptionRenew 覆盖 P2a 的条件扩展：同一实例推进 end_at、清零
+// amount_used、重置游标、恢复 active、清 cancel_at_period_end、按续费快照
+// 更新派生列；cancelled 不可续费；归属/套餐不符统一 NotFound。
+func TestSubscriptionRenew(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "p2a-renew")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	t.Run("active 续费推进并更新快照列", func(t *testing.T) {
+		oldEnd := now.Add(10 * 24 * time.Hour)
+		sub := createTestSubscription(t, repo, plan, 900003, now.Add(-20*24*time.Hour), oldEnd, nil)
+		if _, err := db.Exec(`UPDATE subscriptions
+			SET amount_used = 7, cancel_at_period_end = true WHERE id = $1`, sub.ID); err != nil {
+			t.Fatalf("seed used/cancel flag: %v", err)
+		}
+		scope := []byte(`["gpt-4o"]`)
+		limit := int32(2)
+		got, err := RenewSubscription(ctx, db, RenewalExtendInput{
+			SubscriptionID: sub.ID, UserID: 900003, PlanID: plan.ID,
+			PlanTitleSnapshot: "Renewed Plan", PeriodDays: 30,
+			GrantCredits: 4242, ResetOnRenew: true, AllowWalletOverflow: false,
+			ModelScope: scope, ConcurrencyLimit: &limit, GraceDays: 3,
+			Currency: "CNY", PricePaidAmount: 19900, Now: now,
+		})
+		if err != nil {
+			t.Fatalf("renew active: %v", err)
+		}
+		if !got.EndAt.UTC().Equal(oldEnd.Add(30 * 24 * time.Hour)) {
+			t.Fatalf("end_at = %s，期望 %s", got.EndAt, oldEnd.Add(30*24*time.Hour))
+		}
+		if got.AmountUsed != 0 || got.AmountTotal != 4242 || got.Status != "active" ||
+			got.CancelAtPeriodEnd {
+			t.Fatalf("续费后状态 = %+v", got)
+		}
+		if got.NextResetAt == nil || !got.NextResetAt.UTC().Equal(got.EndAt.UTC()) {
+			t.Fatalf("next_reset_at = %v，期望等于 end_at %s", got.NextResetAt, got.EndAt)
+		}
+		if got.PlanTitleSnapshot != "Renewed Plan" || got.PeriodDays != 30 ||
+			got.GraceDays != 3 || got.AllowWalletOverflow || got.PricePaidAmount != 19900 {
+			t.Fatalf("快照列未更新: %+v", got)
+		}
+		if string(got.ModelScope) != `["gpt-4o"]` ||
+			got.ConcurrencyLimit == nil || *got.ConcurrencyLimit != 2 {
+			t.Fatalf("scope/limit = %s / %v", got.ModelScope, got.ConcurrencyLimit)
+		}
+	})
+
+	t.Run("expired 从 now 起算并恢复 active", func(t *testing.T) {
+		oldEnd := now.Add(-15 * 24 * time.Hour)
+		sub := createTestSubscription(t, repo, plan, 900003, oldEnd.Add(-30*24*time.Hour), oldEnd, nil)
+		if _, err := db.Exec(`UPDATE subscriptions
+			SET status = 'expired', amount_used = 99 WHERE id = $1`, sub.ID); err != nil {
+			t.Fatalf("seed expired: %v", err)
+		}
+		got, err := RenewSubscription(ctx, db, RenewalExtendInput{
+			SubscriptionID: sub.ID, UserID: 900003, PlanID: plan.ID,
+			PlanTitleSnapshot: plan.Title, PeriodDays: 30, GrantCredits: 1000,
+			ResetOnRenew: false, AllowWalletOverflow: true, GraceDays: 0,
+			Currency: "CNY", PricePaidAmount: 9900, Now: now,
+		})
+		if err != nil {
+			t.Fatalf("renew expired: %v", err)
+		}
+		if got.Status != "active" || got.AmountUsed != 0 {
+			t.Fatalf("expired 续费后 = status:%s used:%d", got.Status, got.AmountUsed)
+		}
+		if !got.EndAt.UTC().Equal(now.Add(30 * 24 * time.Hour)) {
+			t.Fatalf("expired end_at = %s，期望 now+30d %s", got.EndAt, now.Add(30*24*time.Hour))
+		}
+		if got.NextResetAt != nil {
+			t.Fatalf("reset_on_renew=false 时 next_reset_at 必须为 NULL，得到 %v", got.NextResetAt)
+		}
+	})
+
+	t.Run("cancelled 与归属不符", func(t *testing.T) {
+		sub := createTestSubscription(t, repo, plan, 900003, now.Add(-time.Hour), now.Add(24*time.Hour), nil)
+		if _, err := db.Exec(`UPDATE subscriptions SET status = 'cancelled' WHERE id = $1`, sub.ID); err != nil {
+			t.Fatalf("seed cancelled: %v", err)
+		}
+		in := RenewalExtendInput{
+			SubscriptionID: sub.ID, UserID: 900003, PlanID: plan.ID,
+			PlanTitleSnapshot: plan.Title, PeriodDays: 30, GrantCredits: 1000,
+			ResetOnRenew: true, AllowWalletOverflow: true, Currency: "CNY",
+			PricePaidAmount: 9900, Now: now,
+		}
+		if _, err := RenewSubscription(ctx, db, in); !errors.Is(err, ErrSubscriptionNotActive) {
+			t.Fatalf("cancelled err = %v，期望 ErrSubscriptionNotActive", err)
+		}
+		in.UserID = 900004
+		if _, err := RenewSubscription(ctx, db, in); !errors.Is(err, ErrSubscriptionNotFound) {
+			t.Fatalf("他人实例 err = %v，期望 ErrSubscriptionNotFound", err)
+		}
+		in.UserID = 900003
+		in.PlanID = plan.ID + 999999
+		if _, err := RenewSubscription(ctx, db, in); !errors.Is(err, ErrSubscriptionNotFound) {
+			t.Fatalf("套餐不符 err = %v，期望 ErrSubscriptionNotFound", err)
+		}
+	})
+}
+
 // TestSubscriptionCancelAtPeriodEndBoundary 覆盖 M2 / G-DOM-30 ②：周期末取消
 // 的实例不享宽限。宽限期内（end_at < now < end_at+grace）未取消实例仍可
 // 消费；一旦置 cancel_at_period_end，三条读侧契约与预扣写入都必须拒绝。

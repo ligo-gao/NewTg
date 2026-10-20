@@ -1389,12 +1389,15 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, order.Status)
 	}
 
-	// 订阅购买订单的入账动作不是「加钱到钱包」，而是在同一事务内创建
-	// subscriptions 实例并跳过 ComputeCredits/wallet_transactions
-	// （billing-08 §3.2/§3.8、S3 冻结裁决 3）。分流必须早于分组倍率与
-	// 积分计算：那些配置对订阅购买没有语义，读到脏配置不应阻止履约。
-	if order.BizKind == store.OrderBizKindSubscribe {
+	// 订阅购买/续费订单的入账动作不是「加钱到钱包」，而是在同一事务内
+	// 创建/扩展 subscriptions 实例并跳过 ComputeCredits/wallet_transactions
+	// （billing-08 §3.2/§3.3、S3/P2a 冻结裁决）。分流必须早于分组倍率与
+	// 积分计算：那些配置对订阅订单没有语义，读到脏配置不应阻止履约。
+	switch order.BizKind {
+	case store.OrderBizKindSubscribe:
 		return s.settleSubscriptionOrder(ctx, order, providerAmount, providerCurrency, raw)
+	case store.OrderBizKindRenew:
+		return s.settleSubscriptionRenewal(ctx, order, providerAmount, providerCurrency, raw)
 	}
 
 	// 金额/币种比对在入账之前完成；任何不一致都不写余额、不写流水。

@@ -695,6 +695,157 @@ func TestSubscriptionIntegrationPurchaseSettles(t *testing.T) {
 	}
 }
 
+// TestSubscriptionIntegrationRenew 覆盖 P2a 手动续费的端点 + 真实 SQL：
+// 订单 biz_kind='renew'/biz_ref_id=subscriptions.id，支付回调在真实 webhook
+// 路径上**复用同一实例**推进 end_at；重复回调只扩展一次；cancelled 409；
+// 停用套餐 409；他人实例 404；钱包零流水。
+func TestSubscriptionIntegrationRenew(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	userID := env.insertUser(t, "user")
+	otherID := env.insertUser(t, "user")
+	planID := env.insertPlanRow(t, "p2a-"+subscriptionITKey(), "enabled")
+	subID := env.insertSubscription(t, userID, planID, "active", 321)
+	foreignID := env.insertSubscription(t, otherID, planID, "active", 0)
+	cancelledID := env.insertSubscription(t, userID, planID, "cancelled", 0)
+
+	var oldEnd time.Time
+	if err := env.db.QueryRow(`SELECT end_at FROM subscriptions WHERE id = $1`, subID).
+		Scan(&oldEnd); err != nil {
+		t.Fatalf("read old end_at: %v", err)
+	}
+	beforeWallet := env.walletTxCount(t, userID)
+	owner := &auth.Principal{UserID: userID, Role: rbac.RoleUser}
+	headers := map[string]string{
+		"Idempotency-Key": "p2a-reenew-" + subscriptionITKey(),
+	}
+
+	rr := env.do(t, owner, http.MethodPost,
+		fmt.Sprintf("/api/subscriptions/%d/renew", subID),
+		map[string]any{"provider": "stripe"}, headers)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("renew = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var created createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode renewal: %v", err)
+	}
+	if created.Order.Status != "pending" || created.Order.Amount != 9900 || created.ClientSecret == "" {
+		t.Fatalf("续费响应 = %+v", created)
+	}
+	orderID := created.Order.ID
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM orders WHERE id = $1`, orderID)
+	})
+	var bizKind string
+	var bizRef int64
+	if err := env.db.QueryRow(`SELECT biz_kind, biz_ref_id FROM orders WHERE id = $1`, orderID).
+		Scan(&bizKind, &bizRef); err != nil {
+		t.Fatalf("read renewal order: %v", err)
+	}
+	if bizKind != "renew" || bizRef != subID {
+		t.Fatalf("订单判别列 = %s/%d，期望 renew/%d", bizKind, bizRef, subID)
+	}
+
+	var txnID string
+	if err := env.db.QueryRow(`SELECT provider_txn_id FROM orders WHERE id = $1`, orderID).
+		Scan(&txnID); err != nil {
+		t.Fatalf("read provider txn: %v", err)
+	}
+	payload := subscriptionStripeEvent(txnID, 9900)
+	sig := subscriptionStripeSig("whsec_test_123", time.Now().Unix(), payload)
+	if err := env.purchase.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("renew stripe webhook: %v", err)
+	}
+
+	var (
+		gotStatus, gotTitle         string
+		gotEnd, gotReset            sql.NullTime
+		gotUsed, gotTotal, gotPrice int64
+		gotCancel                   bool
+	)
+	if err := env.db.QueryRow(`
+		SELECT status, plan_title_snapshot, end_at, next_reset_at,
+		       amount_used, amount_total, price_paid_amount, cancel_at_period_end
+		FROM subscriptions WHERE id = $1`, subID).Scan(
+		&gotStatus, &gotTitle, &gotEnd, &gotReset, &gotUsed, &gotTotal,
+		&gotPrice, &gotCancel); err != nil {
+		t.Fatalf("read renewed subscription: %v", err)
+	}
+	if gotStatus != "active" || gotUsed != 0 || gotTotal != 1000 || gotPrice != 9900 {
+		t.Fatalf("续费后实例 = status:%s used:%d total:%d price:%d",
+			gotStatus, gotUsed, gotTotal, gotPrice)
+	}
+	if gotCancel {
+		t.Fatal("续费必须清 cancel_at_period_end")
+	}
+	if !gotEnd.Valid || gotEnd.Time.Sub(oldEnd) < 29*24*time.Hour ||
+		gotEnd.Time.Sub(oldEnd) > 30*24*time.Hour+time.Minute {
+		t.Fatalf("end_at = %s，期望在旧值 %s 上 +30 天", gotEnd.Time, oldEnd)
+	}
+	if !gotReset.Valid || !gotReset.Time.Equal(gotEnd.Time) {
+		t.Fatalf("next_reset_at = %v，期望等于 end_at %s", gotReset.Time, gotEnd.Time)
+	}
+	if gotTitle != "IT Plan" {
+		t.Fatalf("续费快照 title = %s", gotTitle)
+	}
+	if got := env.walletTxCount(t, userID); got != beforeWallet {
+		t.Fatalf("续费不得写钱包流水：%d → %d", beforeWallet, got)
+	}
+
+	// 重复回调：订单已 succeeded，只幂等返回，不再推进 end_at。
+	if err := env.purchase.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("replay renewal webhook: %v", err)
+	}
+	var afterEnd time.Time
+	if err := env.db.QueryRow(`SELECT end_at FROM subscriptions WHERE id = $1`, subID).
+		Scan(&afterEnd); err != nil {
+		t.Fatalf("read end_at after replay: %v", err)
+	}
+	if !afterEnd.Equal(gotEnd.Time) {
+		t.Fatalf("重复回调再次推进 end_at：%s → %s", gotEnd.Time, afterEnd)
+	}
+
+	t.Run("cancelled 409", func(t *testing.T) {
+		rr := env.do(t, owner, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/renew", cancelledID),
+			map[string]any{"provider": "stripe"},
+			map[string]string{"Idempotency-Key": "p2a-cancelled-" + subscriptionITKey()})
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("cancelled = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("他人实例 404", func(t *testing.T) {
+		rr := env.do(t, owner, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/renew", foreignID),
+			map[string]any{"provider": "stripe"},
+			map[string]string{"Idempotency-Key": "p2a-foreign-" + subscriptionITKey()})
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("他人实例 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("套餐停用 409", func(t *testing.T) {
+		disabledPlan := env.insertPlanRow(t, "p2a-disabled-"+subscriptionITKey(), "disabled")
+		disabledSub := env.insertSubscription(t, userID, disabledPlan, "active", 0)
+		rr := env.do(t, owner, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/renew", disabledSub),
+			map[string]any{"provider": "stripe"},
+			map[string]string{"Idempotency-Key": "p2a-disabled-" + subscriptionITKey()})
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("停用套餐 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var count int64
+		if err := env.db.QueryRow(`SELECT count(*) FROM orders WHERE biz_kind = 'renew' AND biz_ref_id = $1`,
+			disabledSub).Scan(&count); err != nil {
+			t.Fatalf("count renewal orders: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("停用套餐不得留续费订单，得到 %d 行", count)
+		}
+	})
+}
+
 func (e *subscriptionIntegrationEnv) walletTxCount(t *testing.T, userID int64) int64 {
 	t.Helper()
 	var count int64

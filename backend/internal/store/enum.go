@@ -193,7 +193,7 @@ var EnumChecks = map[string][]string{
 	"subscription_plans.status":               {"enabled", "disabled"},
 	"subscriptions.status":                    {"active", "expired", "cancelled"},
 	"subscription_pre_consume_records.status": {"consumed", "refunded"},
-	"orders.biz_kind":                         {"topup", "subscribe"},
+	"orders.biz_kind":                         {"topup", "subscribe", "renew"},
 	"users.billing_preference":                {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
 
 	// 站点公告（D7a，modules-08 F-08-04 / R-D7-01）。

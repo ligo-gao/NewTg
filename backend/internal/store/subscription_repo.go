@@ -892,6 +892,120 @@ func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int
 	return affected, nil
 }
 
+// SubscriptionTx 是订阅写方法参与**调用方事务**的最小执行面。
+//
+// P2a 续费的订单 succeeded 与实例扩展必须原子提交（billing-08 §3.3 方案甲）：
+// 若 store 自开 *sql.Tx，会留下「订单已成功、end_at 未推进」的窗口。
+// *sql.DB、*sql.Tx 与 gorm.ConnPool 都满足该接口；billing 在 GORM 事务内
+// 传入 tx.Statement.ConnPool。
+type SubscriptionTx interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// RenewalExtendInput 是一次手动续费要写入实例的**下单快照**。
+//
+// 快照列全部来自订单冻结的条件（R-D5-03），而不是结算时重读套餐：
+// 管理员可能在等待支付期间改价/改额度，用户已付款的合同不能随之变化。
+// UserID / PlanID 是归属与身份条件：只有「该用户的该套餐实例」才能被扩展，
+// 防止订单元数据错配或篡改把续费额度打到别的实例上。
+type RenewalExtendInput struct {
+	SubscriptionID      int64
+	UserID              int64
+	PlanID              int64
+	PlanTitleSnapshot   string
+	PeriodDays          int32
+	GrantCredits        int64
+	ResetOnRenew        bool
+	AllowWalletOverflow bool
+	ModelScope          []byte
+	ConcurrencyLimit    *int32
+	GraceDays           int32
+	Currency            string
+	PricePaidAmount     int64
+	Now                 time.Time
+}
+
+// RenewSubscription 在调用方事务内**条件扩展**一个续费实例（P2a）。
+//
+// 冻结语义（任务书 P2a）：
+//   - `end_at = GREATEST(end_at, now) + period_days`：active 实例在当前
+//     到期日上累加；expired 实例从 now 起算（续费后恢复 active，而不是
+//     从早已过去的 end_at 再补一个周期）。
+//   - `amount_used = 0`：续费视为新周期合同，已用额度归零。
+//   - `next_reset_at`：reset_on_renew=true → 新的 end_at；false → NULL
+//     （与 CreateSubscription 同口径：没有周期重置的实例不得留游标，
+//     否则 DueForReset 会把它扫成永远到期待重置的僵尸行）。
+//   - `status = 'active'` 且清 `cancel_at_period_end`：用户用续费表达了
+//     「继续」的意图，周期末取消标记随新周期失效。
+//   - 快照列（title/period/grant/overflow/scope/limit/grace/currency/
+//     price）按本次订单快照更新：R-D5-03 对续费同样适用，续费是按**当前
+//     套餐**订立的新周期合同，而不是沿用首购时的旧条件。
+//
+// 条件 `status IN ('active','expired')` 是唯一迁移守卫：cancelled 实例
+// 不可续费（RowsAffected=0 → ErrSubscriptionNotActive）；重复调用由调用方
+// 的订单状态守卫（pending→succeeded 只发生一次）兜住，本函数自身也因
+// 返回完整行而可安全重放（幂等扩两次的唯一防线是订单状态）。
+func RenewSubscription(ctx context.Context, q SubscriptionTx,
+	in RenewalExtendInput) (Subscription, error) {
+
+	if in.SubscriptionID <= 0 || in.UserID <= 0 || in.PlanID <= 0 ||
+		in.PeriodDays < 1 || in.GrantCredits < 0 || in.GraceDays < 0 ||
+		in.PricePaidAmount < 0 || strings.TrimSpace(in.PlanTitleSnapshot) == "" ||
+		strings.TrimSpace(in.Currency) == "" {
+		return Subscription{}, ErrSubscriptionInvalid
+	}
+	s, err := scanSubscription(q.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET end_at = GREATEST(end_at, $2) + make_interval(days => $3),
+		    amount_total = $4,
+		    amount_used = 0,
+		    next_reset_at = CASE WHEN $5
+		        THEN GREATEST(end_at, $2) + make_interval(days => $3)
+		        ELSE NULL END,
+		    status = 'active',
+		    cancel_at_period_end = false,
+		    plan_title_snapshot = $6,
+		    period_days = $3,
+		    reset_on_renew = $5,
+		    allow_wallet_overflow = $7,
+		    grace_days = $8,
+		    model_scope = $9,
+		    concurrency_limit = $10,
+		    currency = $11,
+		    price_paid_amount = $12,
+		    updated_at = now()
+		WHERE id = $1 AND user_id = $13 AND plan_id = $14
+		  AND status IN ('active', 'expired')
+		RETURNING `+subscriptionColumns,
+		in.SubscriptionID, in.Now.UTC(), in.PeriodDays, in.GrantCredits,
+		in.ResetOnRenew, in.PlanTitleSnapshot, in.AllowWalletOverflow,
+		in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit,
+		in.Currency, in.PricePaidAmount, in.UserID, in.PlanID))
+	if errors.Is(err, sql.ErrNoRows) {
+		// 0 行：区分「不存在/归属或套餐不符」与「cancelled 终态」。
+		// 归属不符与不存在统一 ErrSubscriptionNotFound，不泄露跨用户存在性。
+		var status string
+		findErr := q.QueryRowContext(ctx, `
+			SELECT status FROM subscriptions
+			 WHERE id = $1 AND user_id = $2 AND plan_id = $3`,
+			in.SubscriptionID, in.UserID, in.PlanID).Scan(&status)
+		if errors.Is(findErr, sql.ErrNoRows) {
+			return Subscription{}, ErrSubscriptionNotFound
+		}
+		if findErr != nil {
+			return Subscription{}, fmt.Errorf("store: read subscription(%d) for renewal: %w",
+				in.SubscriptionID, findErr)
+		}
+		return Subscription{}, fmt.Errorf("%w: subscription %d is %s",
+			ErrSubscriptionNotActive, in.SubscriptionID, status)
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: renew subscription(%d): %w", in.SubscriptionID, err)
+	}
+	return s, nil
+}
+
 // DeletePreConsumeBefore 删除 created_at 早于 cutoff 的预扣幂等记录（B12）。
 //
 // 【为什么分批】保留期 7 天（billing-04 §3.4；billing-08 §7），单次清理在

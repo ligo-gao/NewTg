@@ -938,6 +938,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手动续费本人订阅（复用同一实例推进 end_at）
+         * @description 创建续费订单（`orders.biz_kind='renew'`、`biz_ref_id=subscriptions.id`）。
+         *     金额/币种/周期/额度由服务端按实例当前套餐行读取，不接受客户端传入；
+         *     provider ∈ {stripe, alipay}，支付载荷与购买同构。
+         *
+         *     支付成功后**复用同一实例**：`end_at = GREATEST(end_at, now) + period_days`、
+         *     `amount_used=0`、`next_reset_at` 为新 end_at（reset_on_renew=true）或 NULL、
+         *     状态恢复/保持 active、清 `cancel_at_period_end`，快照列按本次订单更新
+         *     （billing-08 §3.3 方案甲）。
+         *
+         *     `Idempotency-Key` 必带；同 key 重放返回首次订单（200，不回放支付凭据）。
+         *     `price_amount=0` 的套餐在同一事务内直接创建 succeeded 订单并扩展实例。
+         *
+         *     仅本人实例；他人实例与不存在统一 404；`cancelled` 终态 → 409，
+         *     `active`/`expired` 允许（expired 续费后恢复 active）。套餐停用/删除、
+         *     幂等键复用到另一订单 → 409；币种/金额/套餐字段非法 → 422；
+         *     渠道未配置 → 503；渠道出站失败 → 502。任何失败都不会留下 succeeded
+         *     订单，也不会扩展实例。
+         */
+        post: operations["renewSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription/purchase": {
         parameters: {
             query?: never;
@@ -2326,6 +2364,9 @@ export interface paths {
          * 本人站内通知（含 read_at）
          * @description 返回 channel=inapp 的投递记录，按 created_at DESC 排序；`read_at`
          *     为 null 表示未读。A5 之前站内通知不落库，因此旧数据不会出现。
+         *     公告类投递（payload 带 announcement_id）只在公告仍生效时返回：
+         *     公告下线、到达 expire_at 虚拟过期或已被删除后，对应站内信从列表与
+         *     total 中消失；没有公告归因的普通站内通知不受影响。
          */
         get: operations["listUserNotifications"];
         put?: never;
@@ -4835,11 +4876,9 @@ export interface components {
             page: number;
             page_size: number;
         };
-        SubscriptionPurchaseRequest: {
-            /** Format: int64 */
-            plan_id: number;
+        SubscriptionRenewRequest: {
             /**
-             * @description 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+             * @description 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
              * @enum {string}
              */
             provider: "stripe" | "alipay";
@@ -4875,6 +4914,15 @@ export interface components {
             client_secret?: string;
             /** @description 仅 alipay 首次创建返回 */
             qr_code?: string;
+        };
+        SubscriptionPurchaseRequest: {
+            /** Format: int64 */
+            plan_id: number;
+            /**
+             * @description 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay";
         };
         /**
          * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
@@ -8898,6 +8946,73 @@ export interface operations {
             409: components["responses"]["Error409"];
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+        };
+    };
+    renewSubscription: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description 幂等重放（返回首次订单，不含支付凭据） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            /** @description 续费订单已创建（首次） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            /** @description 渠道支付单创建失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 支付渠道未配置或已停用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     purchaseSubscription: {

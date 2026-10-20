@@ -60,6 +60,10 @@ var (
 // `plan_id` 单独保存，用于与 orders.biz_ref_id 交叉校验，防止元数据被
 // 误写到另一张订单上。
 type subscriptionOrderSnapshot struct {
+	// SubscriptionID 只出现在续费订单（P2a）的 `renewal` 命名空间里：
+	// 用于与 orders.biz_ref_id（= subscriptions.id）交叉校验。购买订单
+	// 的 `subscription` 命名空间没有该键（omitempty），解码后为 0。
+	SubscriptionID      int64           `json:"subscription_id,omitempty"`
 	PlanID              int64           `json:"plan_id"`
 	PlanTitle           string          `json:"plan_title"`
 	PeriodDays          int32           `json:"period_days"`

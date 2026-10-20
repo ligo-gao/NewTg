@@ -1860,6 +1860,24 @@ func (e SubscriptionPurchaseRequestProvider) Valid() bool {
 	}
 }
 
+// Defines values for SubscriptionRenewRequestProvider.
+const (
+	SubscriptionRenewRequestProviderAlipay SubscriptionRenewRequestProvider = "alipay"
+	SubscriptionRenewRequestProviderStripe SubscriptionRenewRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionRenewRequestProvider enum.
+func (e SubscriptionRenewRequestProvider) Valid() bool {
+	switch e {
+	case SubscriptionRenewRequestProviderAlipay:
+		return true
+	case SubscriptionRenewRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TaskListItemFamily.
 const (
 	Plugin TaskListItemFamily = "plugin"
@@ -7015,6 +7033,15 @@ type SubscriptionPurchaseRequest struct {
 // SubscriptionPurchaseRequestProvider 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
 type SubscriptionPurchaseRequestProvider string
 
+// SubscriptionRenewRequest defines model for SubscriptionRenewRequest.
+type SubscriptionRenewRequest struct {
+	// Provider 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
+	Provider SubscriptionRenewRequestProvider `json:"provider"`
+}
+
+// SubscriptionRenewRequestProvider 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
+type SubscriptionRenewRequestProvider string
+
 // TaskListItem defines model for TaskListItem.
 type TaskListItem struct {
 	Action            string                  `json:"action"`
@@ -8843,6 +8870,14 @@ type CancelSubscriptionAtPeriodEndParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// RenewSubscriptionParams defines parameters for RenewSubscription.
+type RenewSubscriptionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken     *CSRFToken `json:"X-CSRF-Token,omitempty"`
+	IdempotencyKey string     `json:"Idempotency-Key"`
+}
+
 // ListTasksParams defines parameters for ListTasks.
 type ListTasksParams struct {
 	UserId   *int    `form:"user_id,omitempty" json:"user_id,omitempty"`
@@ -9493,6 +9528,9 @@ type ResetSubscriptionPlanQuotaJSONRequestBody = SubscriptionPlanResetQuotaReque
 
 // PurchaseSubscriptionJSONRequestBody defines body for PurchaseSubscription for application/json ContentType.
 type PurchaseSubscriptionJSONRequestBody = SubscriptionPurchaseRequest
+
+// RenewSubscriptionJSONRequestBody defines body for RenewSubscription for application/json ContentType.
+type RenewSubscriptionJSONRequestBody = SubscriptionRenewRequest
 
 // CreateTokensJSONRequestBody defines body for CreateTokens for application/json ContentType.
 type CreateTokensJSONRequestBody = CreateTokenRequest

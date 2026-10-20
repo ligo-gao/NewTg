@@ -206,8 +206,8 @@ type Order struct {
 	// 读取一律按列名（GORM 自动 SELECT *），写入走 billing 的显式 INSERT。
 	// `default:topup` 让 GORM Create 在零值时交给 DB 默认值：否则零值 ""
 	// 会被显式写入并撞 orders_biz_kind_chk（既有测试用 GORM Create 建单）。
-	BizKind          string     `gorm:"column:biz_kind;default:topup"` // topup（默认）/ subscribe
-	BizRefID         *int64     `gorm:"column:biz_ref_id"`             // subscribe 时 = subscription_plans.id
+	BizKind          string     `gorm:"column:biz_kind;default:topup"` // topup（默认）/ subscribe / renew
+	BizRefID         *int64     `gorm:"column:biz_ref_id"`             // subscribe → subscription_plans.id；renew → subscriptions.id
 	IdempotencyKey   string     `gorm:"column:idempotency_key"`        // 创建订单防重
 	ProviderTxnID    *string    `gorm:"column:provider_txn_id"`        // 上游流水号；人工旁路为 manual:{order_id}
 	PaidAt           *time.Time `gorm:"column:paid_at"`
@@ -605,4 +605,8 @@ const (
 	OrderBizKindTopup = "topup"
 	// OrderBizKindSubscribe 是订阅购买订单；BizRefID = subscription_plans.id。
 	OrderBizKindSubscribe = "subscribe"
+	// OrderBizKindRenew 是订阅手动续费订单；BizRefID = subscriptions.id
+	// （P2a，billing-08 §3.3 方案甲：支付成功后推进同一实例的 end_at，
+	// 不新建 subscriptions 行）。
+	OrderBizKindRenew = "renew"
 )
