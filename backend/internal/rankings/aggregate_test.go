@@ -1,6 +1,7 @@
 package rankings
 
 import (
+	"fmt"
 	"testing"
 
 	"newtg/gateway/internal/store"
@@ -207,6 +208,66 @@ func TestClampDeltaPct(t *testing.T) { // numeric(7,2) 上限 99999.99：极端�
 	if got := clampDeltaPct(12.34); got != 12.34 {
 		t.Fatalf("区间内不应改变: %v", got)
 	}
+}
+
+// TestBuildProvidersResidualNeverNegative 覆盖末位吸收残差的负数边界。
+//
+// (1) 99.995% / 0.005%：两项各自四舍五入后合计 10001，末位吸收 -1 后必须
+// 是 0.00 而不是负数；
+// (2) 多个作者的舍入误差同向累积时，末位不足以吸收全部负残差，必须从最大
+// 作者扣回，保证所有 share_pct ≥ 0 且合计恰为 100.00。
+func TestBuildProvidersResidualNeverNegative(t *testing.T) {
+	assertShares := func(t *testing.T, providers []store.RankingsProviderStat, want int) {
+		t.Helper()
+		if len(providers) != want {
+			t.Fatalf("作者行数 = %d，want %d", len(providers), want)
+		}
+		var sum float64
+		for _, p := range providers {
+			if p.SharePct == nil || *p.SharePct < 0 {
+				t.Fatalf("作者 %s 份额 = %v，不得为负", p.Author, p.SharePct)
+			}
+			sum += *p.SharePct
+		}
+		// 以「万分之一」比较，避免 0.01 量级的浮点尾差。
+		if got := round2(sum); got != 100 {
+			t.Fatalf("份额合计 = %v，want 100", got)
+		}
+	}
+
+	t.Run("99.995/0.005", func(t *testing.T) {
+		models := []store.RankingsModelStat{
+			{Model: "a", Author: strPtr("author-a"), TotalTokens: 999_950},
+			{Model: "b", Author: strPtr("author-b"), TotalTokens: 50},
+		}
+		providers := buildProviders(models)
+		assertShares(t, providers, 2)
+		if *providers[0].SharePct != 100 || *providers[1].SharePct != 0 {
+			t.Fatalf("份额 = %v/%v，want 100.00/0.00", *providers[0].SharePct, *providers[1].SharePct)
+		}
+	})
+
+	t.Run("negative residual moves to largest", func(t *testing.T) {
+		// 精度刻意取到 0.0001%：7 个作者各 1249.575 bp、1 个 1252.575 bp、
+		// 末位 0.4 bp。四舍五入后合计 10003，负残差 -3 超过末位的 0 bp。
+		models := []store.RankingsModelStat{
+			{Model: "big", Author: strPtr("author-big"), TotalTokens: 12_525_750},
+			{Model: "tiny", Author: strPtr("author-tiny"), TotalTokens: 4_000},
+		}
+		for i := 0; i < 7; i++ {
+			models = append(models, store.RankingsModelStat{
+				Model:       fmt.Sprintf("mid-%d", i),
+				Author:      strPtr(fmt.Sprintf("author-mid-%d", i)),
+				TotalTokens: 12_495_750,
+			})
+		}
+		providers := buildProviders(models)
+		assertShares(t, providers, 9)
+		// 末位吸收后为负数时被归零，差额从最大作者扣回。
+		if got := *providers[len(providers)-1].SharePct; got != 0 {
+			t.Fatalf("末位份额 = %v，want 0（不得为负）", got)
+		}
+	})
 }
 
 func TestSlotEntitiesCapsAtPaletteSize(t *testing.T) {

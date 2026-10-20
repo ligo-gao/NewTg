@@ -421,6 +421,128 @@ func entitySlots(t *testing.T, db *sql.DB, prefix string) map[string]int {
 	return out
 }
 
+// TestAssignSlotsNoCollisionAcrossRounds 覆盖 H1/H2 的槽位语义。
+//
+// 两个 period（today/week）或两轮刷新会用完全不同的 top8 调用
+// assignSlotsTx。旧的 `entity = ANY($2)` 读取方式看不到上一批占用的槽位，
+// 第二批会把 1–8 再分配一遍，产生重复 (kind, slot)。修复后：
+//   - 第二批能看到全部已注册行，不再产生重复；
+//   - 8 槽耗尽后新实体 slot=NULL（不复用、不重排），第 9 个实体及其后都是 NULL。
+//
+// 用例在事务内先清空 kind=model 的注册行再回滚，保证起点确定，且不污染
+// 其他并行测试（rollback 后什么都没写）。
+func TestAssignSlotsNoCollisionAcrossRounds(t *testing.T) {
+	db := openRankingsDB(t, "NEWTG_TEST_DB_DSN")
+	ctx := context.Background()
+	prefix := uniquePrefix(t)
+
+	beginClean := func(t *testing.T) *sql.Tx {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin slots tx: %v", err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback() })
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rankings_entities WHERE kind = 'model'`); err != nil {
+			t.Fatalf("clear model entities: %v", err)
+		}
+		return tx
+	}
+
+	assertNoDuplicateSlots := func(t *testing.T, tx *sql.Tx) {
+		t.Helper()
+		var dup int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM (
+			  SELECT slot FROM rankings_entities
+			  WHERE kind = 'model' AND slot IS NOT NULL
+			  GROUP BY slot HAVING count(*) > 1
+			) d`).Scan(&dup); err != nil {
+			t.Fatalf("count duplicate slots: %v", err)
+		}
+		if dup != 0 {
+			t.Fatalf("出现 %d 个重复 (kind,slot)", dup)
+		}
+	}
+
+	t.Run("two rounds with different top8 allocate disjoint slots", func(t *testing.T) {
+		tx := beginClean(t)
+		round1 := make([]string, 8)
+		round2 := make([]string, 8)
+		for i := 0; i < 8; i++ {
+			round1[i] = fmt.Sprintf("%s-r1-%d", prefix, i)
+			round2[i] = fmt.Sprintf("%s-r2-%d", prefix, i)
+		}
+
+		slots1, err := assignSlotsTx(ctx, tx, entityKindModel, round1)
+		if err != nil {
+			t.Fatalf("assign round1: %v", err)
+		}
+		seen := map[int16]struct{}{}
+		for _, entity := range round1 {
+			slot := slots1[entity]
+			if slot == nil {
+				t.Fatalf("round1 实体 %s 应拿到槽位", entity)
+			}
+			if _, dup := seen[*slot]; dup {
+				t.Fatalf("round1 内部重复槽位 %d", *slot)
+			}
+			seen[*slot] = struct{}{}
+		}
+		if len(seen) != entitySlotCount {
+			t.Fatalf("round1 使用槽位数 = %d，want %d", len(seen), entitySlotCount)
+		}
+
+		// 第二批（模拟另一个 period 的 top8）必须全部 NULL，且不得复用 1–8。
+		slots2, err := assignSlotsTx(ctx, tx, entityKindModel, round2)
+		if err != nil {
+			t.Fatalf("assign round2: %v", err)
+		}
+		for _, entity := range round2 {
+			if slot := slots2[entity]; slot != nil {
+				t.Fatalf("槽位耗尽后实体 %s 拿到槽位 %d（禁止回绕复用）", entity, *slot)
+			}
+		}
+		assertNoDuplicateSlots(t, tx)
+	})
+
+	t.Run("ninth entity is null and stays null", func(t *testing.T) {
+		tx := beginClean(t)
+		entities := make([]string, 9)
+		for i := 0; i < 9; i++ {
+			entities[i] = fmt.Sprintf("%s-nine-%d", prefix, i)
+		}
+		slots, err := assignSlotsTx(ctx, tx, entityKindModel, entities)
+		if err != nil {
+			t.Fatalf("assign nine: %v", err)
+		}
+		for i := 0; i < 8; i++ {
+			if slots[entities[i]] == nil {
+				t.Fatalf("第 %d 个实体应拿到槽位", i+1)
+			}
+		}
+		if slot := slots[entities[8]]; slot != nil {
+			t.Fatalf("第 9 个实体槽位 = %d，want NULL", *slot)
+		}
+		assertNoDuplicateSlots(t, tx)
+
+		// 释放一个槽位后再传入同一实体：NULL 必须保持 NULL，不得补位
+		// （槽位永不重排；否则颜色会在实体生命周期内变化）。
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM rankings_entities WHERE kind = 'model' AND entity = $1`, entities[0]); err != nil {
+			t.Fatalf("free slot: %v", err)
+		}
+		again, err := assignSlotsTx(ctx, tx, entityKindModel, entities)
+		if err != nil {
+			t.Fatalf("assign nine again: %v", err)
+		}
+		if slot := again[entities[8]]; slot != nil {
+			t.Fatalf("已登记 NULL 的实体在槽位释放后被重新分配 %d", *slot)
+		}
+		assertNoDuplicateSlots(t, tx)
+	})
+}
+
 func TestRankingsRefreshEmptyStatus(t *testing.T) {
 	mainDB := openRankingsDB(t, "NEWTG_TEST_DB_DSN")
 	logsDB := openRankingsDB(t, "NEWTG_TEST_LOGS_DSN")

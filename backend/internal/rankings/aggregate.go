@@ -238,6 +238,10 @@ func buildProviders(models []store.RankingsModelStat) []store.RankingsProviderSt
 	})
 
 	// 以「万分之一」为单位做整数运算，避免 float 累计误差；最后一项吸收残差。
+	// 残差可能是负数（逐项四舍五入后合计 > 10000），若末位份额不足以吸收，
+	// 不能让它变成负数（share_pct numeric 允许负值，但公开面「负份额」是
+	// 明确错误）：把不足部分从份额最大的作者扣回，保证所有项 ≥ 0 且合计
+	// 仍恰为 10000（=100.00%）。
 	bps := make([]int64, len(rows))
 	var sum int64
 	for i, row := range rows {
@@ -245,6 +249,19 @@ func buildProviders(models []store.RankingsModelStat) []store.RankingsProviderSt
 		sum += bps[i]
 	}
 	bps[len(bps)-1] += 10000 - sum
+	if bps[len(bps)-1] < 0 {
+		deficit := -bps[len(bps)-1]
+		bps[len(bps)-1] = 0
+		// rows 已按 token 降序，从最大作者开始扣；正常情况下首位足以吸收。
+		for i := 0; i < len(bps)-1 && deficit > 0; i++ {
+			take := deficit
+			if bps[i] < take {
+				take = bps[i]
+			}
+			bps[i] -= take
+			deficit -= take
+		}
+	}
 
 	out := make([]store.RankingsProviderStat, 0, len(rows))
 	rank := 0

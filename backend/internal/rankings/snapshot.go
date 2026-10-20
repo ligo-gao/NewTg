@@ -199,12 +199,18 @@ func slotEntities[T any](rows []T, key func(T) string) []string {
 // 规则：已注册实体保持原槽位（永不回收/重排）；新实体取 1–8 中**最小空闲槽**，
 // 使早期实体的颜色与插入/排名顺序解耦。
 //
-// 【8 槽用尽后的兜底】色板只有 8 槽且实体跨 period 永久累积，长期运行必然
-// 超过 8 个不同模型/作者。DB CHECK 只允许 1–8，禁止生成第 9 色，因此兜底
-// 槽位取 (已有实体数 + 序号) % 8 + 1 —— 该实体自己的槽位一旦分配就固定，
-// 只是可能与更早的实体同色。UI 只展示 Top 6 模型 / Top 5 作者，前 8 个被
-// 展示的实体仍可拿到互不冲突的颜色；此限制已登记为设计缺口。
-func assignSlotsTx(ctx context.Context, tx *sql.Tx, kind string, entities []string) (map[string]int16, error) {
+// 【必须读该 kind 的全部已注册行】`used` 只能由全量注册表得出，不能只看
+// 本批 entity：两个 period（today/week）或两轮刷新可能在同一进程里先后
+// 调用本函数，本批 top8 与上一批完全不同。若只查 `entity = ANY($2)`，第二
+// 批看不到第一批占用的槽位，会把 1–8 再分配一遍，产生重复 (kind, slot)。
+//
+// 【8 槽用尽后的裁决：slot = NULL】色板只有 8 槽且实体跨 period 永久累积，
+// 长期运行必然超过 8 个不同模型/作者。2026-10-20 复核裁决：禁止回绕复用
+// （回绕会让两个实体永久同色，且违反「颜色跟随实体」的唯一性），也不重排
+// 已有槽位；槽位耗尽后的新实体登记为 slot = NULL，公开面不给他们独立颜色
+// （图表归入 Other）。已分配槽位的实体永不回收，因此 NULL 实体以后也不会
+// 因为旧实体消失而补位——这保证颜色跨 period 稳定。
+func assignSlotsTx(ctx context.Context, tx *sql.Tx, kind string, entities []string) (map[string]*int16, error) {
 	unique := make([]string, 0, len(entities))
 	seen := make(map[string]struct{}, len(entities))
 	for _, entity := range entities {
@@ -215,28 +221,43 @@ func assignSlotsTx(ctx context.Context, tx *sql.Tx, kind string, entities []stri
 		unique = append(unique, entity)
 	}
 	if len(unique) == 0 {
-		return map[string]int16{}, nil
+		return map[string]*int16{}, nil
 	}
 
+	// 全量读取该 kind 的注册行：`used` 来自全部非 NULL 槽位，本批实体的
+	// 既有槽位同时填入返回值。slot 可空，必须用 sql.NullInt16 扫描。
 	rows, err := tx.QueryContext(ctx, `
 		SELECT entity, slot FROM rankings_entities
-		WHERE kind = $1 AND entity = ANY($2)`, kind, unique)
+		WHERE kind = $1`, kind)
 	if err != nil {
 		return nil, fmt.Errorf("rankings: load entity slots: %w", err)
 	}
-	slots := make(map[string]int16, len(unique))
-	used := make(map[int16]struct{}, 8)
+	slots := make(map[string]*int16, len(unique))
+	used := make(map[int16]struct{}, entitySlotCount)
 	for rows.Next() {
 		var (
 			entity string
-			slot   int16
+			slot   sql.NullInt16
 		)
 		if err := rows.Scan(&entity, &slot); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("rankings: scan entity slot: %w", err)
 		}
-		slots[entity] = slot
-		used[slot] = struct{}{}
+		if _, wanted := seen[entity]; wanted {
+			if slot.Valid {
+				value := slot.Int16
+				slots[entity] = &value
+			} else {
+				// 已登记 NULL 的实体必须记住「已处理」，否则本批会再次尝试
+				// 分配；槽位一旦回收（手动清理旧实体）就可能把它补位，破坏
+				// 「NULL 永不复用/不重排」的稳定性。
+				slots[entity] = nil
+			}
+		}
+		if !slot.Valid {
+			continue // 槽位耗尽的实体不占用色板
+		}
+		used[slot.Int16] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -244,14 +265,8 @@ func assignSlotsTx(ctx context.Context, tx *sql.Tx, kind string, entities []stri
 	}
 	_ = rows.Close()
 
-	var existingCount int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM rankings_entities WHERE kind = $1`, kind).Scan(&existingCount); err != nil {
-		return nil, fmt.Errorf("rankings: count entities: %w", err)
-	}
-
 	nextFree := func() (int16, bool) {
-		for slot := int16(1); slot <= 8; slot++ {
+		for slot := int16(1); slot <= entitySlotCount; slot++ {
 			if _, taken := used[slot]; !taken {
 				used[slot] = struct{}{}
 				return slot, true
@@ -260,16 +275,15 @@ func assignSlotsTx(ctx context.Context, tx *sql.Tx, kind string, entities []stri
 		return 0, false
 	}
 
-	missingIndex := 0
 	for _, entity := range unique {
 		if _, ok := slots[entity]; ok {
 			continue
 		}
-		slot, ok := nextFree()
-		if !ok {
-			slot = int16((existingCount+int64(missingIndex))%8) + 1
+		// 槽位耗尽时 slot 保持 nil → 写入 NULL（迁移已放开 NOT NULL）。
+		var slot *int16
+		if free, ok := nextFree(); ok {
+			slot = &free
 		}
-		missingIndex++
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO rankings_entities (entity, kind, slot)
 			VALUES ($1, $2, $3)

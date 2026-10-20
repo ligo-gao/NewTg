@@ -46,6 +46,60 @@ func insertRankingsRun(t *testing.T, db *sql.DB, period string, windowStart, win
 	return id
 }
 
+// TestRankingsRepoTimeseriesFirstWeekBucket 覆盖 M1：year 周期的首个周桶
+// 会被 date_trunc 截断到 window_start 之前的周一，读取时按 week 粒度把
+// 下界放宽 7 天，首桶必须返回；超出 7 天前或窗口后的桶仍必须排除。
+func TestRankingsRepoTimeseriesFirstWeekBucket(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	repo := NewRankingsRepo(db)
+	prefix := rankingsRepoPrefix()
+	windowStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	model := prefix + "-year"
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = 'year' AND window_start = $1`, windowStart)
+		_, _ = db.Exec(`DELETE FROM rankings_timeseries WHERE model = $1`, model)
+	})
+	if _, err := db.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = 'year' AND window_start = $1`, windowStart); err != nil {
+		t.Fatalf("pre-clean year run: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM rankings_timeseries WHERE model = $1`, model); err != nil {
+		t.Fatalf("pre-clean timeseries: %v", err)
+	}
+
+	runID := insertRankingsRun(t, db, "year", windowStart, windowEnd, windowEnd, 1)
+	if _, err := db.Exec(`
+		INSERT INTO rankings_model_stats (run_id, model, total_tokens, requests, rank)
+		VALUES ($1, $2, 100, 50, 1)`, runID, model); err != nil {
+		t.Fatalf("insert model stat: %v", err)
+	}
+	for _, point := range []struct {
+		bucket time.Time
+		tokens int64
+	}{
+		{time.Date(2025, 12, 26, 0, 0, 0, 0, time.UTC), 111}, // window_start - 6d：首桶（放宽 7d 内）
+		{time.Date(2025, 12, 24, 0, 0, 0, 0, time.UTC), 999}, // window_start - 8d：过旧
+		{time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC), 222},   // 窗口内
+	} {
+		if _, err := db.Exec(`INSERT INTO rankings_timeseries (model, granularity, bucket_start, tokens)
+			VALUES ($1, 'week', $2, $3)`, model, point.bucket, point.tokens); err != nil {
+			t.Fatalf("insert week bucket: %v", err)
+		}
+	}
+
+	snap, found, err := repo.LatestRun(ctx, "year")
+	if err != nil || !found {
+		t.Fatalf("LatestRun(year): found=%v err=%v", found, err)
+	}
+	if len(snap.Timeseries) != 2 ||
+		snap.Timeseries[0].Tokens != 111 || !snap.Timeseries[0].BucketStart.Equal(time.Date(2025, 12, 26, 0, 0, 0, 0, time.UTC)) ||
+		snap.Timeseries[1].Tokens != 222 {
+		t.Fatalf("year timeseries = %+v，want 首桶 111 + 窗口内 222", snap.Timeseries)
+	}
+}
+
 func TestRankingsRepoReadAndRetention(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -109,14 +163,15 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 			t.Fatalf("insert entity slot: %v", err)
 		}
 	}
-	// 趋势桶：窗口内一条、窗口外一条、其他模型一条（都不应出现在本 run 的结果里）。
+	// 趋势桶：窗口内一条、窗口前一桶边界一条（M1：day 粒度放宽 1 天，
+	// 首桶起点早于 window_start 仍须返回）、以及其他模型一条（不应出现）。
 	for _, point := range []struct {
 		model  string
 		bucket time.Time
 		tokens int64
 	}{
 		{modelA, time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 120},
-		{modelA, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), 999}, // 窗口外
+		{modelA, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), 999}, // window_start - 1d：首桶
 		{prefix + "-other", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 500},
 	} {
 		if _, err := db.Exec(`INSERT INTO rankings_timeseries (model, granularity, bucket_start, tokens)
@@ -147,10 +202,16 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 	if snap.Providers[0].SharePct == nil || *snap.Providers[0].SharePct != 100 {
 		t.Fatalf("share_pct = %v", snap.Providers[0].SharePct)
 	}
-	// 只返回窗口内、属于入榜模型的日桶。
-	if len(snap.Timeseries) != 1 || snap.Timeseries[0].Model != modelA ||
-		snap.Timeseries[0].Tokens != 120 || snap.Timeseries[0].Granularity != "day" {
+	// 只返回窗口内（含 M1 放宽的首桶）且属于入榜模型的日桶。
+	if len(snap.Timeseries) != 2 ||
+		snap.Timeseries[0].Model != modelA || snap.Timeseries[0].Tokens != 999 ||
+		snap.Timeseries[1].Model != modelA || snap.Timeseries[1].Tokens != 120 {
 		t.Fatalf("timeseries = %+v", snap.Timeseries)
+	}
+	for _, point := range snap.Timeseries {
+		if point.Granularity != "day" {
+			t.Fatalf("粒度 = %s，want day", point.Granularity)
+		}
 	}
 
 	byID, found, err := repo.RunByID(ctx, runID)

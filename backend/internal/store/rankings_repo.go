@@ -14,7 +14,8 @@ package store
 //
 // 【为什么带 Slot】颜色跟随实体（§C1.9）要求跨 period 稳定。槽位注册表
 // rankings_entities 与 run 无 FK，但公开面总是「榜单实体 + 槽位」一起用；
-// LEFT JOIN 把槽位随子表带出，D6b 不需要第二次查询（未注册实体 slot=NULL）。
+// LEFT JOIN 把槽位随子表带出，D6b 不需要第二次查询（未注册实体或色板耗尽
+// 的已注册实体 slot=NULL）。
 
 import (
 	"context"
@@ -264,15 +265,24 @@ func loadRankingsProviders(ctx context.Context, db *sql.DB, runID int64) ([]Rank
 }
 
 func loadRankingsTimeseries(ctx context.Context, db *sql.DB, run RankingsSnapshotRun) ([]RankingsTimeseries, error) {
+	// 【下界放宽一个桶】写入侧按站点时区 date_trunc 对齐桶起点；year 的首个
+	// 周桶会截断到窗口开始前的周一（例如 1 月 1 日是周四，首桶起点为 12 月
+	// 29 日），若仍用 `bucket_start >= window_start` 会丢掉合法首桶。因此按
+	// 粒度放宽恰好一个桶：hour −1h、day −1d、week −7d。上界保持 window_end
+	// 不放松，避免把下一窗口的桶带进当前快照。
 	rows, err := db.QueryContext(ctx, `
 		SELECT t.model, t.granularity, t.bucket_start, COALESCE(t.tokens, 0)
 		FROM rankings_timeseries t
-		WHERE t.granularity = CASE $1
+		WHERE t.granularity = CASE $1::text
 		        WHEN 'today' THEN 'hour'
 		        WHEN 'year'  THEN 'week'
 		        ELSE 'day'
 		      END
-		  AND t.bucket_start >= $2
+		  AND t.bucket_start >= $2::timestamptz - CASE $1::text
+		        WHEN 'today' THEN interval '1 hour'
+		        WHEN 'year'  THEN interval '7 days'
+		        ELSE interval '1 day'
+		      END
 		  AND t.bucket_start < $3
 		  AND t.model IN (SELECT model FROM rankings_model_stats WHERE run_id = $4)
 		ORDER BY t.bucket_start, t.model`, run.Period, run.WindowStart, run.WindowEnd, run.ID)
