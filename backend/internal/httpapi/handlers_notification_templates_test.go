@@ -47,9 +47,10 @@ type fakeNotificationService struct {
 	testErr  error
 	lastTest notify.TestInput
 
-	deliveries      []notify.DeliveryView
-	deliveriesTotal int
-	deliveriesErr   error
+	deliveries         []notify.DeliveryView
+	deliveriesTotal    int
+	deliveriesErr      error
+	lastDeliveryFilter notify.DeliveryFilter
 }
 
 func (f *fakeNotificationService) List(_ context.Context, filter notify.TemplateFilter) ([]notify.TemplateView, error) {
@@ -91,7 +92,10 @@ func (f *fakeNotificationService) TestSend(_ context.Context, in notify.TestInpu
 	return f.delivery, f.testErr
 }
 
-func (f *fakeNotificationService) ListDeliveries(_ context.Context, _ notify.DeliveryFilter) ([]notify.DeliveryView, int, error) {
+func (f *fakeNotificationService) ListDeliveries(_ context.Context, filter notify.DeliveryFilter) ([]notify.DeliveryView, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastDeliveryFilter = filter
 	return f.deliveries, f.deliveriesTotal, f.deliveriesErr
 }
 
@@ -303,6 +307,18 @@ func TestNotificationDeliveriesRequiresAdminPagination(t *testing.T) {
 	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-deliveries?page_size=101", "", admin, nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("超限 page_size = %d，期望 400", rr.Code)
+	}
+
+	// A5 残余（G-DOM-37 ⑦）：管理面投递列表的 channel 筛选必须接受 inapp，
+	// 且原样透传到仓储过滤（真实值就是 'inapp'，不做 UI 词汇映射）。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/notification-deliveries?channel=inapp", "", admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("channel=inapp = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastDeliveryFilter.Channel != notify.ChannelInApp {
+		t.Fatalf("channel 过滤未透传：%+v", service.lastDeliveryFilter)
 	}
 }
 

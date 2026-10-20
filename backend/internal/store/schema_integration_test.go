@@ -389,6 +389,25 @@ func TestMainSchemaRuntimeIndexes(t *testing.T) {
 	}
 }
 
+// TestMainSchemaNotificationDeliveryPrefixIndex：A5 残余补批（G-DOM-37 ⑨）。
+//
+// 公告删除按 dedupe_key 前缀 LIKE 清理投递行；dedupe_key 的 UNIQUE 索引
+// 使用默认 collation ops，普通 LIKE 前缀匹配用不上。这里断言存在一条
+// 非唯一、非部分的 text_pattern_ops 索引，支撑 `announcement:<id>:%`。
+func TestMainSchemaNotificationDeliveryPrefixIndex(t *testing.T) {
+	db := openTestDB(t)
+	def, unique, partial, ok := indexInfo(t, db, "notification_deliveries_dedupe_prefix_idx")
+	if !ok {
+		t.Fatalf("notification_deliveries_dedupe_prefix_idx 不存在")
+	}
+	if unique || partial {
+		t.Fatalf("prefix 索引 unique=%v partial=%v，want false/false（定义：%s）", unique, partial, def)
+	}
+	if !strings.Contains(def, "dedupe_key") || !strings.Contains(def, "text_pattern_ops") {
+		t.Fatalf("prefix 索引定义不符，want (dedupe_key text_pattern_ops)：%s", def)
+	}
+}
+
 // TestMainSchemaTaskIndexes：（c.1）tasks 的读取索引必须精确存在。
 //
 // 各索引各有唯一用途，删掉任意一条都会让对应查询退化成全表扫描：

@@ -5126,6 +5126,9 @@ paths:
       description: |
         返回 channel=inapp 的投递记录，按 created_at DESC 排序；`read_at`
         为 null 表示未读。A5 之前站内通知不落库，因此旧数据不会出现。
+        公告类投递（payload 带 announcement_id）只在公告仍生效时返回：
+        公告下线、到达 expire_at 虚拟过期或已被删除后，对应站内信从列表与
+        total 中消失；没有公告归因的普通站内通知不受影响。
       security:
         - sessionCookie: []
         - bearerToken: []

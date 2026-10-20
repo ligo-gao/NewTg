@@ -419,14 +419,24 @@ type InAppAudience struct {
 	Locale Locale
 }
 
-// ListInAppAudience 返回全部启用用户（status='enabled'）及其语言。
+// ListInAppAudience 按 users.id 升序返回一页启用用户（status='enabled'）。
 //
-// A5 的冻结语义是「recipient_user_id = 每个启用用户」；这里刻意不做分页
-// 游标：公告广播是一次性全量事件，调用方按批（≤500）写入投递记录即可。
+// keyset 分页：afterID 传上一页最后一个 id（首页传 0），limit 由调用方
+// 固定为写入批大小（≤500）。旧实现一次 SELECT 全表，用户量大时内存与查询
+// 时长不可控；keyset 也避免 OFFSET 在并发写入下的跳页/重复。
 // 只取 id/language 两列，避免把 users 行的敏感列带进内存。
-func (s *Store) ListInAppAudience(ctx context.Context) ([]InAppAudience, error) {
+func (s *Store) ListInAppAudience(ctx context.Context, afterID int64, limit int) ([]InAppAudience, error) {
+	if afterID < 0 {
+		afterID = 0
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, language FROM users WHERE status = 'enabled' ORDER BY id`)
+		SELECT id, language FROM users
+		WHERE status = 'enabled' AND id > $1
+		ORDER BY id
+		LIMIT $2`, afterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("notify: list inapp audience: %w", err)
 	}
@@ -453,6 +463,17 @@ func (s *Store) ListInAppAudience(ctx context.Context) ([]InAppAudience, error) 
 		return nil, fmt.Errorf("notify: iterate inapp audience: %w", err)
 	}
 	return out, nil
+}
+
+// CountInAppAudience 返回启用用户总数。只在模板缺失这类异常路径上使用，
+// 用于保留审计的「失败数 = 启用用户数」口径，不参与正常广播循环。
+func (s *Store) CountInAppAudience(ctx context.Context) (int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE status = 'enabled'`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("notify: count inapp audience: %w", err)
+	}
+	return total, nil
 }
 
 // InsertInAppDeliveries 批量写入站内投递记录（A5）。
@@ -507,15 +528,39 @@ func (s *Store) InsertInAppDeliveries(ctx context.Context, items []Delivery) (in
 	return int(affected), nil
 }
 
+// inAppVisibleAnnouncementClause 让站内信读取面随公告生命周期失效
+// （G-DOM-37 ⑧）：公告投递（payload 带 announcement_id）只有在公告仍
+// 生效时才返回——status='published' AND publish_at<=now AND
+// (expire_at IS NULL OR expire_at>now)。下线（offline）与虚拟过期
+// （expired）都由这一组条件派生；公告行被物理删除时子查询自然不含该 id。
+//
+// 普通站内通知没有 announcement_id，条件短路为真，不受影响。
+// 实现选择「文本集合半连接」而不是 a.id = ($x)::uuid：payload 是 JSONB，
+// 非法 uuid 文本在读取面会变成 500；这里比较 a.id::text 与 payload 原文，
+// 只扫一遍 announcements 的生效集（status/publish 索引可用），每页 ≤100 行
+// 的读取开销可忽略。EXISTS + PK 的点查同样可行，但需要 uuid 强转，故不取。
+const inAppVisibleAnnouncementClause = `
+	AND (
+		payload->>'announcement_id' IS NULL
+		OR payload->>'announcement_id' IN (
+			SELECT a.id::text FROM announcements a
+			WHERE a.status = 'published'
+			  AND a.publish_at <= now()
+			  AND (a.expire_at IS NULL OR a.expire_at > now())
+		)
+	)`
+
 // ListUserInAppDeliveries 分页返回某用户本人的站内通知（A5 读取端点）。
-// 数据范围只由 recipient_user_id 决定，绝不接受调用方传入他人 id。
+// 数据范围只由 recipient_user_id 决定，绝不接受调用方传入他人 id；
+// 公告已下线/已过期/已删除的投递不会出现在列表与 total 中。
 func (s *Store) ListUserInAppDeliveries(ctx context.Context, userID int64, page, pageSize int) ([]Delivery, int, error) {
 	if userID <= 0 {
 		return nil, 0, errors.New("notify: user id is required")
 	}
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM notification_deliveries
-		WHERE channel = 'inapp' AND recipient_user_id = $1`, userID).Scan(&total); err != nil {
+		WHERE channel = 'inapp' AND recipient_user_id = $1`+inAppVisibleAnnouncementClause,
+		userID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("notify: count user inapp deliveries: %w", err)
 	}
 	if page < 1 {
@@ -528,7 +573,7 @@ func (s *Store) ListUserInAppDeliveries(ctx context.Context, userID int64, page,
 		recipient_user_id, locale, dedupe_key, status, attempt, next_retry_at, last_error,
 		provider_message_id, payload, read_at, created_at, updated_at
 		FROM notification_deliveries
-		WHERE channel = 'inapp' AND recipient_user_id = $1
+		WHERE channel = 'inapp' AND recipient_user_id = $1`+inAppVisibleAnnouncementClause+`
 		ORDER BY created_at DESC, id DESC
 		LIMIT $2 OFFSET $3`, userID, pageSize, (page-1)*pageSize)
 	if err != nil {

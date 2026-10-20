@@ -404,11 +404,19 @@ type AnnouncementDeliveryResult struct {
 // 读取端直接消费它，不回头查公告表：发布后编辑公告（N-35 原地更新）不应
 // 让用户已经收到的「站内信」改变标题/摘要。
 type InAppPayload struct {
-	Title       string `json:"title"`
-	Summary     string `json:"summary,omitempty"`
-	Body        string `json:"body,omitempty"`
-	LinkURL     string `json:"link_url,omitempty"`
-	PublishedAt string `json:"published_at,omitempty"`
+	// AnnouncementID 是公告投递的归因键（A5 残余补批）。读取端用它关联
+	// announcements，过滤「公告已下线/已过期/已删除」的投递；普通站内通知
+	// 没有这个字段，读取端按「无关联」原样返回。
+	//
+	// 为什么复制到 payload 而不是从 dedupe_key 解析：读路径只该依赖一个
+	// 稳定、可索引的载荷键；dedupe_key 是幂等锚，格式冻结但语义属于写入侧
+	// （见 G-DOM-37 ⑧⑨）。
+	AnnouncementID string `json:"announcement_id,omitempty"`
+	Title          string `json:"title"`
+	Summary        string `json:"summary,omitempty"`
+	Body           string `json:"body,omitempty"`
+	LinkURL        string `json:"link_url,omitempty"`
+	PublishedAt    string `json:"published_at,omitempty"`
 }
 
 // DeliverAnnouncementInApp 为每个启用用户生成一条 `system.announcement`
@@ -427,19 +435,17 @@ func (s *Service) DeliverAnnouncementInApp(ctx context.Context, in AnnouncementD
 	if strings.TrimSpace(in.AnnouncementID) == "" {
 		return result, errors.New("notify: announcement id is required")
 	}
-	audience, err := s.store.ListInAppAudience(ctx)
-	if err != nil {
-		return result, err
-	}
-	if len(audience) == 0 {
-		return result, nil
-	}
-
+	// 先解析模板再取受众：模板是编译期注册表，缺失属于代码缺陷；此时用
+	// count 保留旧口径「Failed = 启用用户数」，同时避免把整表读进内存。
 	spec, ok := LookupTemplate("system.announcement", ChannelInApp)
 	if !ok {
 		// 注册表是编译期常量；走到这里说明代码被改坏，仍不阻塞发布。
 		s.log.Error("notify: system.announcement template is not registered")
-		return AnnouncementDeliveryResult{Failed: len(audience)}, nil
+		failed, countErr := s.store.CountInAppAudience(ctx)
+		if countErr != nil {
+			return result, countErr
+		}
+		return AnnouncementDeliveryResult{Failed: failed}, nil
 	}
 
 	vars := map[string]any{
@@ -453,11 +459,12 @@ func (s *Service) DeliverAnnouncementInApp(ctx context.Context, in AnnouncementD
 
 	buildPayload := func(locale Locale) []byte {
 		payload := InAppPayload{
-			Title:       in.Title,
-			Summary:     in.Summary,
-			Body:        bodies[locale],
-			LinkURL:     in.LinkURL,
-			PublishedAt: vars["published_at"].(string),
+			AnnouncementID: in.AnnouncementID,
+			Title:          in.Title,
+			Summary:        in.Summary,
+			Body:           bodies[locale],
+			LinkURL:        in.LinkURL,
+			PublishedAt:    vars["published_at"].(string),
 		}
 		raw, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
@@ -485,48 +492,67 @@ func (s *Service) DeliverAnnouncementInApp(ctx context.Context, in AnnouncementD
 		batch = batch[:0]
 	}
 
-	for _, user := range audience {
-		locale := user.Locale
-		if _, ok := payloads[locale]; !ok {
-			body := ""
-			if content, resolved, row, resolveErr := s.resolve(ctx, spec, locale, false); resolveErr != nil {
-				// 模板行缺失（未播种/被删）不影响投递记录：payload 仍带原始
-				// 标题与摘要，读取端照常展示（见函数头注释）。
-				s.log.Warn("notify: resolve system.announcement template failed",
-					"locale", locale, "err", resolveErr)
-			} else if row != nil && !row.Enabled {
-				s.log.Warn("notify: system.announcement template is disabled", "locale", locale)
-			} else if rendered, renderErr := RenderContent(spec, content, resolved, vars); renderErr != nil {
-				s.log.Warn("notify: render system.announcement failed",
-					"locale", locale, "err", renderErr)
-			} else {
-				body = rendered.Body
+	// 受众按 users.id keyset 分页（每页 500）。旧实现一次 SELECT 全表再分批
+	// 写入，用户量大时内存与查询时长都不可控；keyset（id > 上一页末值）比
+	// OFFSET 稳定：投递期间新增用户不会被重复计入，也不会因删除而跳页。
+	var afterID int64
+	for {
+		audience, err := s.store.ListInAppAudience(ctx, afterID, batchSize)
+		if err != nil {
+			// 已 flush 的批次保留，未拉取的批次不再尝试（best-effort，见
+			// G-DOM-37 ⑤）。返回 result+err 让审计保留已完成计数。
+			return result, err
+		}
+		if len(audience) == 0 {
+			break
+		}
+		for _, user := range audience {
+			locale := user.Locale
+			if _, ok := payloads[locale]; !ok {
+				body := ""
+				if content, resolved, row, resolveErr := s.resolve(ctx, spec, locale, false); resolveErr != nil {
+					// 模板行缺失（未播种/被删）不影响投递记录：payload 仍带原始
+					// 标题与摘要，读取端照常展示（见函数头注释）。
+					s.log.Warn("notify: resolve system.announcement template failed",
+						"locale", locale, "err", resolveErr)
+				} else if row != nil && !row.Enabled {
+					s.log.Warn("notify: system.announcement template is disabled", "locale", locale)
+				} else if rendered, renderErr := RenderContent(spec, content, resolved, vars); renderErr != nil {
+					s.log.Warn("notify: render system.announcement failed",
+						"locale", locale, "err", renderErr)
+				} else {
+					body = rendered.Body
+				}
+				bodies[locale] = body
+				payloads[locale] = buildPayload(locale)
 			}
-			bodies[locale] = body
-			payloads[locale] = buildPayload(locale)
-		}
 
-		userID := user.UserID
-		localeCopy := locale
-		batch = append(batch, Delivery{
-			TemplateKey:     stringPtr(spec.Key),
-			Category:        spec.Category,
-			Channel:         ChannelInApp,
-			Recipient:       "user:" + strconv.FormatInt(userID, 10),
-			RecipientUserID: &userID,
-			Locale:          &localeCopy,
-			// 冻结语义：dedupe 前缀固定为 announcement:<id>:<user>，公告
-			// 删除按 `announcement:<id>:%` 前缀同事务清理。
-			DedupeKey: "announcement:" + in.AnnouncementID + ":" + strconv.FormatInt(userID, 10),
-			Status:    "sent",
-			Attempt:   1,
-			Payload:   payloads[locale],
-		})
-		if len(batch) >= batchSize {
-			flush()
+			userID := user.UserID
+			localeCopy := locale
+			batch = append(batch, Delivery{
+				TemplateKey:     stringPtr(spec.Key),
+				Category:        spec.Category,
+				Channel:         ChannelInApp,
+				Recipient:       "user:" + strconv.FormatInt(userID, 10),
+				RecipientUserID: &userID,
+				Locale:          &localeCopy,
+				// 冻结语义：dedupe 前缀固定为 announcement:<id>:<user>，公告
+				// 删除按 `announcement:<id>:%` 前缀同事务清理。
+				DedupeKey: "announcement:" + in.AnnouncementID + ":" + strconv.FormatInt(userID, 10),
+				Status:    "sent",
+				Attempt:   1,
+				Payload:   payloads[locale],
+			})
+			if len(batch) >= batchSize {
+				flush()
+			}
 		}
+		flush()
+		if len(audience) < batchSize {
+			break
+		}
+		afterID = audience[len(audience)-1].UserID
 	}
-	flush()
 	return result, nil
 }
 
