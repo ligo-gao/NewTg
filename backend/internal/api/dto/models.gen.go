@@ -6602,10 +6602,16 @@ type RankingsMovers struct {
 // RankingsPeriod 排行榜统计周期（缺省 week）。
 type RankingsPeriod string
 
-// RankingsProvider 作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。
+// RankingsProvider 作者/供应商排名一行。`series` 是可选字段：作者榜 Top 5 下发该周期的
+// token 时间桶（与 `trend.buckets` 一一对齐），其余作者省略；Other 由
+// 前端按 100% 份额余量表达。
 type RankingsProvider struct {
 	Author string `json:"author"`
 	Rank   int    `json:"rank"`
+
+	// Series 该作者当前周期的 token 桶，长度与 `trend.buckets` 相同、按下标对齐
+	// （缺失桶补 0）。只有作者榜 Top 5 返回；其余作者无此字段。
+	Series *[]int64 `json:"series,omitempty"`
 
 	// SharePct 占本窗口全部入榜 token 的比例；全表合计 100.00。
 	SharePct float64 `json:"share_pct"`

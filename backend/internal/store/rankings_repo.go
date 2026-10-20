@@ -28,10 +28,11 @@ import (
 // 行类型复用 models.go 的 GORM 模型：它们是 DB 的唯一权威投影，
 // Slot 字段是从 rankings_entities LEFT JOIN 来的读投影（gorm:"-"）。
 type RankingsSnapshot struct {
-	Run        RankingsSnapshotRun
-	Models     []RankingsModelStat
-	Providers  []RankingsProviderStat
-	Timeseries []RankingsTimeseries
+	Run          RankingsSnapshotRun
+	Models       []RankingsModelStat
+	Providers    []RankingsProviderStat
+	Timeseries   []RankingsTimeseries
+	AuthorSeries []RankingsAuthorTimeseries
 }
 
 // RankingsRepo 是公开排行榜的只读接缝（单测可注入假实现）。
@@ -182,8 +183,27 @@ func loadRankingsChildren(ctx context.Context, db *sql.DB, run RankingsSnapshotR
 		return RankingsSnapshot{}, err
 	}
 	snap.Timeseries = series
+
+	// 作者序列只取作者榜前 5（与 worker 的写入口径一致）：查询按 provider
+	// 的 rank 顺序截断，避免把「曾是 Top5、现在已掉出」的旧序列带回来。
+	authors := make([]string, 0, rankingsAuthorSeriesLimit)
+	for _, p := range providers {
+		if len(authors) >= rankingsAuthorSeriesLimit {
+			break
+		}
+		authors = append(authors, p.Author)
+	}
+	authorSeries, err := loadRankingsAuthorTimeseries(ctx, db, run, authors)
+	if err != nil {
+		return RankingsSnapshot{}, err
+	}
+	snap.AuthorSeries = authorSeries
 	return snap, nil
 }
+
+// rankingsAuthorSeriesLimit 与 internal/rankings.authorSeriesLimit 同值
+// （只写/只读作者榜 Top 5）。store 不反向依赖 rankings，故在此重复常量。
+const rankingsAuthorSeriesLimit = 5
 
 func loadRankingsModels(ctx context.Context, db *sql.DB, runID int64) ([]RankingsModelStat, error) {
 	rows, err := db.QueryContext(ctx, `
@@ -301,6 +321,49 @@ func loadRankingsTimeseries(ctx context.Context, db *sql.DB, run RankingsSnapsho
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: rankings timeseries rows: %w", err)
+	}
+	return out, nil
+}
+
+// loadRankingsAuthorTimeseries 读取 run 周期内作者榜 Top 5 的历史桶。
+//
+// 窗口/粒度规则与 loadRankingsTimeseries 完全一致（下界按粒度放宽一个桶、
+// 上界不放松），保证 providers[].series 与 trend.buckets 对齐。
+func loadRankingsAuthorTimeseries(ctx context.Context, db *sql.DB, run RankingsSnapshotRun, authors []string) ([]RankingsAuthorTimeseries, error) {
+	if len(authors) == 0 {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.author, t.granularity, t.bucket_start, COALESCE(t.tokens, 0)
+		FROM rankings_author_timeseries t
+		WHERE t.granularity = CASE $1::text
+		        WHEN 'today' THEN 'hour'
+		        WHEN 'year'  THEN 'week'
+		        ELSE 'day'
+		      END
+		  AND t.bucket_start >= $2::timestamptz - CASE $1::text
+		        WHEN 'today' THEN interval '1 hour'
+		        WHEN 'year'  THEN interval '7 days'
+		        ELSE interval '1 day'
+		      END
+		  AND t.bucket_start < $3
+		  AND t.author = ANY($4)
+		ORDER BY t.bucket_start, t.author`, run.Period, run.WindowStart, run.WindowEnd, authors)
+	if err != nil {
+		return nil, fmt.Errorf("store: rankings author timeseries: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]RankingsAuthorTimeseries, 0, 64)
+	for rows.Next() {
+		var point RankingsAuthorTimeseries
+		if err := rows.Scan(&point.Author, &point.Granularity, &point.BucketStart, &point.Tokens); err != nil {
+			return nil, fmt.Errorf("store: scan rankings author timeseries: %w", err)
+		}
+		out = append(out, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: rankings author timeseries rows: %w", err)
 	}
 	return out, nil
 }

@@ -137,10 +137,11 @@ var EnumChecks = map[string][]string{
 	// rankings_*（§13/§16/§17）
 	// granularity 的 week 由 D6a 迁移 20261020171000 加入（R-D6-04：year 周期
 	// 天桶跨度 > 90 天，必须降采样为周桶）。
-	"rankings_snapshot_runs.period":   {"today", "week", "month", "year"},
-	"rankings_snapshot_runs.status":   {"ok", "partial", "empty"},
-	"rankings_timeseries.granularity": {"day", "hour", "week"},
-	"rankings_entities.kind":          {"model", "author"},
+	"rankings_snapshot_runs.period":          {"today", "week", "month", "year"},
+	"rankings_snapshot_runs.status":          {"ok", "partial", "empty"},
+	"rankings_timeseries.granularity":        {"day", "hour", "week"},
+	"rankings_author_timeseries.granularity": {"day", "hour", "week"},
+	"rankings_entities.kind":                 {"model", "author"},
 
 	// request_registry（§18 / platform-04 V9）
 	"request_registry.state": {"in_flight", "settled", "refunded", "failed"},

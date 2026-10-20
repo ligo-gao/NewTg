@@ -113,6 +113,7 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM rankings_snapshot_runs WHERE period = 'month'`)
 		_, _ = db.Exec(`DELETE FROM rankings_timeseries WHERE model LIKE $1`, prefix+"%")
+		_, _ = db.Exec(`DELETE FROM rankings_author_timeseries WHERE author LIKE $1`, prefix+"%")
 		_, _ = db.Exec(`DELETE FROM rankings_entities WHERE entity LIKE $1`, prefix+"%")
 	})
 
@@ -122,6 +123,9 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 	}
 	if _, err := db.Exec(`DELETE FROM rankings_timeseries WHERE model LIKE $1`, prefix+"%"); err != nil {
 		t.Fatalf("pre-clean timeseries: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM rankings_author_timeseries WHERE author LIKE $1`, prefix+"%"); err != nil {
+		t.Fatalf("pre-clean author timeseries: %v", err)
 	}
 	if _, err := db.Exec(`DELETE FROM rankings_entities WHERE entity LIKE $1`, prefix+"%"); err != nil {
 		t.Fatalf("pre-clean entities: %v", err)
@@ -181,6 +185,23 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 			t.Fatalf("insert timeseries: %v", err)
 		}
 	}
+	// 作者序列：窗口内、窗口前一桶边界（放宽 1 天）各一条，窗口外一条不得返回；
+	// 另一个不在该 run 作者榜的作者的桶也不得返回。
+	for _, point := range []struct {
+		author string
+		bucket time.Time
+		tokens int64
+	}{
+		{author, time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 90},
+		{author, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), 11},
+		{author, time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), 777}, // window_start - 3d：过旧
+		{prefix + "-outsider", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC), 555},
+	} {
+		if _, err := db.Exec(`INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
+			VALUES ($1, 'day', $2, $3)`, point.author, point.bucket, point.tokens); err != nil {
+			t.Fatalf("insert author timeseries: %v", err)
+		}
+	}
 
 	snap, found, err := repo.LatestRun(ctx, "month")
 	if err != nil || !found {
@@ -213,6 +234,18 @@ func TestRankingsRepoReadAndRetention(t *testing.T) {
 	for _, point := range snap.Timeseries {
 		if point.Granularity != "day" {
 			t.Fatalf("粒度 = %s，want day", point.Granularity)
+		}
+	}
+
+	// 作者序列只返回该 run 作者榜（Top5）成员、窗口内（含放宽首桶）的桶。
+	if len(snap.AuthorSeries) != 2 ||
+		snap.AuthorSeries[0].Author != author || snap.AuthorSeries[0].Tokens != 11 ||
+		snap.AuthorSeries[1].Author != author || snap.AuthorSeries[1].Tokens != 90 {
+		t.Fatalf("author series = %+v，want 窗口内 11 + 90", snap.AuthorSeries)
+	}
+	for _, point := range snap.AuthorSeries {
+		if point.Granularity != "day" {
+			t.Fatalf("作者序列粒度 = %s，want day", point.Granularity)
 		}
 	}
 

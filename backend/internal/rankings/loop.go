@@ -106,6 +106,13 @@ func RunLoop(ctx context.Context, deps Deps) error {
 			runPeriod(ctx, deps, p)
 		}(period)
 	}
+	// 历史桶保留清理独立于四个 period：每小时一次，多副本并发调用是幂等的
+	// （按 bucket_start 条件删除）。它不抢 period 租约——租约只保护快照写入。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runCleanupLoop(ctx, deps)
+	}()
 	wg.Wait()
 	deps.Logger.Info("rankings worker stopped")
 	return nil
@@ -165,6 +172,7 @@ func refreshPeriod(ctx context.Context, deps Deps, period Period) {
 	now := deps.Now()
 	loc := ResolveLocation(deps.Config, deps.Logger)
 	minSamples := ResolveMinSamples(deps.Config, deps.Logger)
+	keepRuns := ResolveKeepRuns(deps.Config, deps.Logger)
 
 	agg, err := aggregatePeriod(ctx, deps.MainDB, deps.LogsDB, period, now, loc, minSamples)
 	if err != nil {
@@ -179,9 +187,11 @@ func refreshPeriod(ctx context.Context, deps Deps, period Period) {
 		Window:          agg.Window,
 		SnapshotAt:      now.UTC(),
 		SampleThreshold: agg.Threshold,
+		KeepRuns:        keepRuns,
 		Models:          agg.Models,
 		Providers:       agg.Providers,
 		Timeseries:      agg.Timeseries,
+		AuthorSeries:    agg.AuthorSeries,
 	})
 	if err != nil {
 		if ctx.Err() == nil {

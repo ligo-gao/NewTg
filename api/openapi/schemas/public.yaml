@@ -1092,7 +1092,9 @@ schemas:
     additionalProperties: false
     required: [rank, author, total_tokens, share_pct, slot]
     description: |
-      作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。
+      作者/供应商排名一行。`series` 是可选字段：作者榜 Top 5 下发该周期的
+      token 时间桶（与 `trend.buckets` 一一对齐），其余作者省略；Other 由
+      前端按 100% 份额余量表达。
     properties:
       rank: {type: integer, minimum: 1}
       author: {type: string, maxLength: 64}
@@ -1110,6 +1112,15 @@ schemas:
             maximum: 8
           - enum: [null]
         description: 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。
+      series:
+        type: array
+        items:
+          type: integer
+          format: int64
+          minimum: 0
+        description: |
+          该作者当前周期的 token 桶，长度与 `trend.buckets` 相同、按下标对齐
+          （缺失桶补 0）。只有作者榜 Top 5 返回；其余作者无此字段。
 
   RankingsTrendSeries:
     type: object

@@ -124,6 +124,9 @@ func cleanupRankingsFixture(t *testing.T, mainDB, logsDB *sql.DB, prefix string,
 	if _, err := mainDB.Exec(`DELETE FROM rankings_timeseries WHERE model LIKE $1`, prefix+"%"); err != nil {
 		t.Fatalf("cleanup timeseries: %v", err)
 	}
+	if _, err := mainDB.Exec(`DELETE FROM rankings_author_timeseries WHERE author LIKE $1`, prefix+"%"); err != nil {
+		t.Fatalf("cleanup author timeseries: %v", err)
+	}
 	if _, err := mainDB.Exec(`DELETE FROM rankings_entities WHERE entity LIKE $1`, prefix+"%"); err != nil {
 		t.Fatalf("cleanup entities: %v", err)
 	}
@@ -328,6 +331,25 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 		}
 	}
 
+	// 作者序列（B5a）：两个作者都在 Top5，按站点时区的小时桶写入。
+	authorBucket := func(points []store.RankingsAuthorTimeseries, author string, bucket time.Time) int64 {
+		for _, point := range points {
+			if point.Author == author && point.BucketStart.Equal(bucket) {
+				return point.Tokens
+			}
+		}
+		return -1
+	}
+	if len(snap.AuthorSeries) != 2 {
+		t.Fatalf("作者桶数 = %d，want 2：%+v", len(snap.AuthorSeries), snap.AuthorSeries)
+	}
+	if got := authorBucket(snap.AuthorSeries, authorA, curAt); got != 750 {
+		t.Fatalf("作者 A 桶 = %d，want 750", got)
+	}
+	if got := authorBucket(snap.AuthorSeries, authorB, curAt); got != 1000 {
+		t.Fatalf("作者 B 桶 = %d，want 1000", got)
+	}
+
 	slots := entitySlots(t, mainDB, prefix)
 	// 第二次刷新（同一 now）：timeseries 覆盖而不是累加，槽位不变。
 	refreshPeriod(ctx, deps, PeriodToday)
@@ -343,6 +365,13 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 	}
 	if seriesA != 750 {
 		t.Fatalf("重复刷新后 A 的桶 tokens = %d，want 750（幂等覆盖，不双计）", seriesA)
+	}
+	// 作者桶同样必须幂等覆盖：重算同一窗口不得累加。
+	if len(snap2.AuthorSeries) != 2 {
+		t.Fatalf("重复刷新后作者桶数 = %d，want 2（覆盖不新增）", len(snap2.AuthorSeries))
+	}
+	if got := authorBucket(snap2.AuthorSeries, authorA, curAt); got != 750 {
+		t.Fatalf("重复刷新后作者 A 桶 = %d，want 750", got)
 	}
 	if got := entitySlots(t, mainDB, prefix); fmt.Sprint(got) != fmt.Sprint(slots) {
 		t.Fatalf("重复刷新后槽位变化: %v -> %v", slots, got)
@@ -371,6 +400,16 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 	if total != 3250 {
 		t.Fatalf("A 两桶合计 = %d，want 3250", total)
 	}
+	// 作者序列横跨两个小时桶，合计同样 3250。
+	var authorTotal int64
+	for _, point := range snap3.AuthorSeries {
+		if point.Author == authorA {
+			authorTotal += point.Tokens
+		}
+	}
+	if authorTotal != 3250 {
+		t.Fatalf("作者 A 两桶合计 = %d，want 3250", authorTotal)
+	}
 
 	// R-D6-04：year 周期必须能写 week 粒度（迁移放开了 CHECK）。同一批行在
 	// year 窗口内落到「周一 00:00 +08」的周桶，且同桶覆盖不双计。
@@ -395,6 +434,15 @@ func TestRankingsRefreshEndToEnd(t *testing.T) {
 		if point.Model == modelA && point.Tokens != 3750 {
 			t.Fatalf("A 的周桶 tokens = %d，want 3750", point.Tokens)
 		}
+	}
+	// 作者周桶：A = modelA 的 3750 + 同一作者 modelF 的 5000（modelF 在
+	// year 窗口内达阈值，作者聚合要按「同作者多模型合并」计入）= 8750；
+	// B = 2500（含上一窗口 1500）。
+	if got := authorBucket(yearSnap.AuthorSeries, authorA, weekStart); got != 8750 {
+		t.Fatalf("作者 A 周桶 = %d，want 8750", got)
+	}
+	if got := authorBucket(yearSnap.AuthorSeries, authorB, weekStart); got != 2500 {
+		t.Fatalf("作者 B 周桶 = %d，want 2500", got)
 	}
 }
 
@@ -609,5 +657,107 @@ func TestRankingsRefreshSkipsWhenDisabledOrLocked(t *testing.T) {
 	}
 	if token, err := rdb.Get(ctx, LockKey(PeriodToday)).Result(); err != nil || token != "other-replica" {
 		t.Fatalf("不得删除他人租约，token=%q err=%v", token, err)
+	}
+}
+
+// TestCleanupExpiredTimeseriesRetention 覆盖 B5a 的桶保留清理：
+// hour 30d / day 730d / week 1825d，模型桶与作者桶都清，且分批循环能把
+// 超过一批（1000 行）的过期桶一次清理完。
+func TestCleanupExpiredTimeseriesRetention(t *testing.T) {
+	mainDB := openRankingsDB(t, "NEWTG_TEST_DB_DSN")
+	ctx := context.Background()
+	now, _ := testNow(t)
+	prefix := uniquePrefix(t)
+
+	t.Cleanup(func() {
+		_, _ = mainDB.Exec(`DELETE FROM rankings_timeseries WHERE model LIKE $1`, prefix+"%")
+		_, _ = mainDB.Exec(`DELETE FROM rankings_author_timeseries WHERE author LIKE $1`, prefix+"%")
+	})
+
+	type bucket struct {
+		granularity string
+		at          time.Time
+		expired     bool
+	}
+	cases := []bucket{
+		{"hour", now.Add(-retentionHour - time.Hour), true},
+		{"hour", now.Add(-time.Hour), false},
+		{"day", now.Add(-retentionDay - 24*time.Hour), true},
+		{"day", now.Add(-24 * time.Hour), false},
+		{"week", now.Add(-retentionWeek - 7*24*time.Hour), true},
+		{"week", now.Add(-7 * 24 * time.Hour), false},
+	}
+	model := prefix + "-model"
+	author := prefix + "-author"
+	for i, c := range cases {
+		if _, err := mainDB.Exec(`INSERT INTO rankings_timeseries (model, granularity, bucket_start, tokens)
+			VALUES ($1, $2, $3, $4)`, model, c.granularity, c.at, i+1); err != nil {
+			t.Fatalf("insert model bucket: %v", err)
+		}
+		if _, err := mainDB.Exec(`INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
+			VALUES ($1, $2, $3, $4)`, author, c.granularity, c.at, i+1); err != nil {
+			t.Fatalf("insert author bucket: %v", err)
+		}
+	}
+
+	// 一批以上的过期 hour 桶：验证 LIMIT 1000 的循环删除不是只删第一批。
+	batchAuthor := prefix + "-batch"
+	if _, err := mainDB.Exec(`
+		INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
+		SELECT $1, 'hour', $2::timestamptz + (i || ' seconds')::interval, 1
+		FROM generate_series(0, $3) AS i`,
+		batchAuthor, now.Add(-retentionHour-time.Hour), cleanupBatchSize+4); err != nil {
+		t.Fatalf("insert batch buckets: %v", err)
+	}
+
+	deleted, err := CleanupExpiredTimeseries(ctx, mainDB, now)
+	if err != nil {
+		t.Fatalf("CleanupExpiredTimeseries: %v", err)
+	}
+	if deleted < int64(cleanupBatchSize+4+6) {
+		t.Fatalf("删除行数 = %d，want ≥ %d", deleted, cleanupBatchSize+4+6)
+	}
+
+	for _, table := range []string{"rankings_timeseries", "rankings_author_timeseries"} {
+		col, key := "model", model
+		if table == "rankings_author_timeseries" {
+			col, key = "author", author
+		}
+		for _, c := range cases {
+			var n int
+			if err := mainDB.QueryRow(fmt.Sprintf(
+				`SELECT count(*) FROM %s WHERE %s = $1 AND granularity = $2 AND bucket_start = $3`,
+				table, col), key, c.granularity, c.at).Scan(&n); err != nil {
+				t.Fatalf("count %s: %v", table, err)
+			}
+			want := 1
+			if c.expired {
+				want = 0
+			}
+			if n != want {
+				t.Fatalf("%s %s bucket %s 剩余 %d，want %d", table, c.granularity, c.at, n, want)
+			}
+		}
+	}
+	var batchLeft int
+	if err := mainDB.QueryRow(`SELECT count(*) FROM rankings_author_timeseries WHERE author = $1`,
+		batchAuthor).Scan(&batchLeft); err != nil {
+		t.Fatalf("count batch: %v", err)
+	}
+	if batchLeft != 0 {
+		t.Fatalf("过期批次剩余 %d 行，want 0（必须循环删除到不足一批）", batchLeft)
+	}
+
+	// 重复执行幂等：本用例的数据已清空，不会再有本前缀的行被删。
+	if _, err := CleanupExpiredTimeseries(ctx, mainDB, now); err != nil {
+		t.Fatalf("second cleanup: %v", err)
+	}
+	var remaining int
+	if err := mainDB.QueryRow(`SELECT count(*) FROM rankings_author_timeseries WHERE author LIKE $1`,
+		prefix+"%").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 3 { // 三个未过期桶
+		t.Fatalf("未过期桶剩余 %d，want 3", remaining)
 	}
 }

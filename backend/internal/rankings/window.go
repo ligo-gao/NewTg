@@ -156,11 +156,23 @@ type ConfigReader interface {
 const (
 	configKeyTimezone   = "site.timezone"
 	configKeyMinSamples = "site.rankings_min_samples"
+	configKeyKeepRuns   = "site.rankings_keep_runs"
 	configKeyEnabled    = "nav.rankings.enabled"
 )
 
 // defaultMinSamples 是阈值缺省值（R-D6-02；与 settings 注册表默认值一致）。
 const defaultMinSamples = 100
+
+// defaultKeepRuns 是每 period 保留 run 数的缺省值（R-D6-07 /
+// site.rankings_keep_runs 注册表默认值）。设置缺失时 worker 回退到此值。
+const defaultKeepRuns = 10
+
+// keepRunsFloor / keepRunsCeil 与 settings 注册表一致（1–100）。
+// 下限 1 保证 worker 永远留得下最新 run；上限防止把「保留」配成近乎不清理。
+const (
+	keepRunsFloor = 1
+	keepRunsCeil  = 100
+)
 
 // minSamplesFloor / minSamplesCeil 是隐私地板与上界（R-D6-02）：
 // 下限 50 不允许配置为 0，避免单用户/少量请求反推行为。
@@ -220,6 +232,35 @@ func ResolveMinSamples(reader ConfigReader, log *slog.Logger) int64 {
 	if v > minSamplesCeil {
 		log.Warn("rankings: site.rankings_min_samples 超过上界，钳制到 100000", "configured", v)
 		return minSamplesCeil
+	}
+	return v
+}
+
+// ResolveKeepRuns 读取 site.rankings_keep_runs 并钳制到 [1, 100]。
+//
+// 缺省/非法/越界都回退或钳制而不是让 worker 失败：清理是后台维护，
+// 为一条展示性设置让快照写入整轮失败不值得。设置写入侧已由注册表校验，
+// 这里兜历史脏值/手工改库。
+func ResolveKeepRuns(reader ConfigReader, log *slog.Logger) int {
+	if log == nil {
+		log = slog.Default()
+	}
+	raw, ok := reader.Get(configKeyKeepRuns)
+	if !ok {
+		return defaultKeepRuns
+	}
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		log.Warn("rankings: site.rankings_keep_runs 不是整数，使用默认保留数", "raw", string(raw))
+		return defaultKeepRuns
+	}
+	if v < keepRunsFloor {
+		log.Warn("rankings: site.rankings_keep_runs 低于下限，钳制到 1", "configured", v)
+		return keepRunsFloor
+	}
+	if v > keepRunsCeil {
+		log.Warn("rankings: site.rankings_keep_runs 超过上限，钳制到 100", "configured", v)
+		return keepRunsCeil
 	}
 	return v
 }

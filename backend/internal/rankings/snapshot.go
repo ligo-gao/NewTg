@@ -7,9 +7,10 @@ package rankings
 // 读侧会看到 model_count 与子表行数不一致的半成品。失败整体回滚，上一份
 // 完整快照继续服务（append-only 的历史 run 不受影响）。
 //
-// 【保留 10 个 run】keepRuns=10 是 R-D6-07 的冻结常量（不新增设置键）。
-// 清理放在同一事务里：新 run 插入后立刻删更早的 run，避免「插入成功但清理
-// 失败」留下无界增长的 run 表。子表由 ON DELETE CASCADE 回收。
+// 【保留 K 个 run】K 来自 site.rankings_keep_runs（默认 10；缺省由 worker
+// 解析后随 snapshotInput 传入）。清理放在同一事务里：新 run 插入后立刻删更早
+// 的 run，避免「插入成功但清理失败」留下无界增长的 run 表。子表由
+// ON DELETE CASCADE 回收。
 
 import (
 	"context"
@@ -21,8 +22,6 @@ import (
 )
 
 const (
-	// keepRuns 是每 period 保留的快照数（R-D6-07 / billing-06 §8）。
-	keepRuns = 10
 	// statusOK / statusEmpty 是 R-D6-03 允许写入的两个状态；
 	// partial 由服务端刻意不产生（没有可靠的「部分成功」判据）。
 	statusOK    = "ok"
@@ -44,9 +43,13 @@ type snapshotInput struct {
 	Window          Window
 	SnapshotAt      time.Time
 	SampleThreshold int64
-	Models          []store.RankingsModelStat
-	Providers       []store.RankingsProviderStat
-	Timeseries      []store.RankingsTimeseries
+	// KeepRuns 是本次清理要保留的 run 数（site.rankings_keep_runs）；
+	// <=0 时回退 defaultKeepRuns，避免调用方零值导致删掉刚写入的 run。
+	KeepRuns     int
+	Models       []store.RankingsModelStat
+	Providers    []store.RankingsProviderStat
+	Timeseries   []store.RankingsTimeseries
+	AuthorSeries []store.RankingsAuthorTimeseries
 }
 
 // writeSnapshot 在单事务内写入一份完整快照并返回 run ID。
@@ -88,10 +91,17 @@ func writeSnapshot(ctx context.Context, db *sql.DB, input snapshotInput) (int64,
 	if err := writeTimeseries(ctx, tx, input.Timeseries); err != nil {
 		return 0, err
 	}
+	if err := writeAuthorTimeseries(ctx, tx, input.AuthorSeries); err != nil {
+		return 0, err
+	}
 
 	// 与快照同事务回收旧 run（R-D6-07）。此时新 run 已插入，子查询按
-	// snapshot_at DESC, id DESC 保留最近 keepRuns 个，删掉的旧 run 由
+	// snapshot_at DESC, id DESC 保留最近 KeepRuns 个，删掉的旧 run 由
 	// CASCADE 带走子表。
+	keepRuns := input.KeepRuns
+	if keepRuns <= 0 {
+		keepRuns = defaultKeepRuns
+	}
 	if _, err := store.DeleteOlderRunsTx(ctx, tx, string(input.Period), keepRuns); err != nil {
 		return 0, err
 	}
@@ -172,6 +182,27 @@ func writeTimeseries(ctx context.Context, tx *sql.Tx, points []store.RankingsTim
 			point.Model, point.Granularity, point.BucketStart, point.Tokens,
 		); err != nil {
 			return fmt.Errorf("rankings: upsert timeseries %q/%s: %w", point.Model, point.Granularity, err)
+		}
+	}
+	return nil
+}
+
+// writeAuthorTimeseries 以 (author, granularity, bucket_start) 为幂等键
+// upsert 作者桶（B5a）。
+//
+// 与 writeTimeseries 同一取舍：usage_logs 是 append-only，窗口内重算得到
+// 相同值，覆盖天然幂等；累加会在多副本/重复执行时双计。只有作者榜 Top 5
+// 会进入 points（buildAuthorSeries 已截断），这里不再判断。
+func writeAuthorTimeseries(ctx context.Context, tx *sql.Tx, points []store.RankingsAuthorTimeseries) error {
+	for _, point := range points {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO rankings_author_timeseries (author, granularity, bucket_start, tokens)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (author, granularity, bucket_start)
+			DO UPDATE SET tokens = EXCLUDED.tokens`,
+			point.Author, point.Granularity, point.BucketStart, point.Tokens,
+		); err != nil {
+			return fmt.Errorf("rankings: upsert author timeseries %q/%s: %w", point.Author, point.Granularity, err)
 		}
 	}
 	return nil

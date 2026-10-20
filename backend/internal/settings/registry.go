@@ -269,6 +269,10 @@ func buildRegistry() []Setting {
 			validate(absoluteHTTPURL)),
 		def("site.rankings_min_samples", "site", TypeInt, int64(100), public(),
 			minInt(50), maxInt(100000)),
+		// 每 period 保留的排行榜 run 数（B5a；billing-06 §8 / R-D6-07）。
+		// 仅 worker 清理时消费，不需要下发给公开面，故不标 public。
+		def("site.rankings_keep_runs", "site", TypeInt, int64(10),
+			minInt(1), maxInt(100)),
 		def("site.oss_credits", "site", TypeList, []any{}, public(),
 			element(validateOSSCredit)),
 		def("site.seo.description", "site", TypeString, "", public(), maxLen(160)),

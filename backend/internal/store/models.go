@@ -302,6 +302,9 @@ type RankingsProviderStat struct {
 	SharePct    *float64 `gorm:"column:share_pct"`
 	Rank        *int     `gorm:"column:rank"`
 	Slot        *int16   `gorm:"-"`
+	// Series 是读投影：该作者当前周期的时间桶 token（与 trend 桶对齐）。
+	// 只有作者榜 Top 5 有值；其余作者为 nil（不下发 series）。
+	Series []int64 `gorm:"-"`
 }
 
 // TableName 返回 GORM 表名。
@@ -317,6 +320,21 @@ type RankingsTimeseries struct {
 
 // TableName 返回 GORM 表名。
 func (RankingsTimeseries) TableName() string { return "rankings_timeseries" }
+
+// RankingsAuthorTimeseries 对应 rankings_author_timeseries（B5a，4 列；
+// 自然唯一 (author, granularity, bucket_start)）。
+//
+// 只承载作者榜 Top 5 的桶：Other 不落表（前端用 100% 份额余量表达）。
+// 与 run 无 FK——它与 rankings_timeseries 一样是跨 run 累积的历史序列。
+type RankingsAuthorTimeseries struct {
+	Author      string    `gorm:"column:author"`
+	Granularity string    `gorm:"column:granularity"`
+	BucketStart time.Time `gorm:"column:bucket_start"`
+	Tokens      int64     `gorm:"column:tokens"`
+}
+
+// TableName 返回 GORM 表名。
+func (RankingsAuthorTimeseries) TableName() string { return "rankings_author_timeseries" }
 
 // RankingsEntity 对应 rankings_entities（§17，3 列；自然唯一 (entity, kind)）。
 // 槽位首次见即分配、永不回收/重排（R-D6-06）。

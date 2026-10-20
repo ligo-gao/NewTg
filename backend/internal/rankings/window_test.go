@@ -211,3 +211,28 @@ func TestRankingsEnabled(t *testing.T) {
 		t.Fatal("非法值应回退开启（与注册表默认值一致）")
 	}
 }
+
+func TestResolveKeepRuns(t *testing.T) {
+	log := quietLogger()
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"", defaultKeepRuns},
+		{`10`, 10},
+		{`1`, keepRunsFloor},
+		{`100`, keepRunsCeil},
+		{`0`, keepRunsFloor},
+		{`101`, keepRunsCeil},
+		{`"x"`, defaultKeepRuns},
+	}
+	for _, tc := range cases {
+		cfg := mapConfig{}
+		if tc.raw != "" {
+			cfg[configKeyKeepRuns] = tc.raw
+		}
+		if got := ResolveKeepRuns(cfg, log); got != tc.want {
+			t.Fatalf("ResolveKeepRuns(%q) = %d，want %d", tc.raw, got, tc.want)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package rankings
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"newtg/gateway/internal/store"
 )
@@ -284,5 +285,57 @@ func TestSlotEntitiesCapsAtPaletteSize(t *testing.T) {
 	}
 	if small := slotEntities(rows[:3], func(m store.RankingsModelStat) string { return m.Model }); len(small) != 3 {
 		t.Fatalf("不足 8 个时不应补齐: %v", small)
+	}
+}
+
+func TestBuildAuthorSeriesTop5Only(t *testing.T) {
+	bucket1 := time.Date(2026, 10, 20, 2, 0, 0, 0, time.UTC)
+	bucket2 := time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC)
+
+	// 作者顺序即 provider 顺序（rank 升序）：只有前 5 名写历史。
+	providers := []store.RankingsProviderStat{
+		{Author: "a"}, {Author: "b"}, {Author: "c"}, {Author: "d"}, {Author: "e"},
+		{Author: "f"},
+	}
+	models := []store.RankingsModelStat{
+		{Model: "a1", Author: strPtr("a")},
+		{Model: "a2", Author: strPtr("a")},
+		{Model: "b1", Author: strPtr("b")},
+		{Model: "f1", Author: strPtr("f")},
+		{Model: "unknown", Author: nil}, // 缺失作者=Unknown，不在 Top5
+	}
+	points := []store.RankingsTimeseries{
+		{Model: "a1", Granularity: "hour", BucketStart: bucket1, Tokens: 10},
+		{Model: "a2", Granularity: "hour", BucketStart: bucket1, Tokens: 5}, // 同作者多模型合并
+		{Model: "a1", Granularity: "hour", BucketStart: bucket2, Tokens: 7},
+		{Model: "b1", Granularity: "hour", BucketStart: bucket1, Tokens: 20},
+		{Model: "f1", Granularity: "hour", BucketStart: bucket1, Tokens: 99},
+		{Model: "unknown", Granularity: "hour", BucketStart: bucket1, Tokens: 88},
+	}
+	got := buildAuthorSeries(providers, models, points, GranularityHour)
+
+	// a 两个桶（按时间升序）、b 一个桶；f/Unknown 不落表。
+	if len(got) != 3 {
+		t.Fatalf("作者桶数 = %d，want 3（a×2 + b×1）：%+v", len(got), got)
+	}
+	want := []store.RankingsAuthorTimeseries{
+		{Author: "a", Granularity: "hour", BucketStart: bucket1, Tokens: 15},
+		{Author: "a", Granularity: "hour", BucketStart: bucket2, Tokens: 7},
+		{Author: "b", Granularity: "hour", BucketStart: bucket1, Tokens: 20},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("第 %d 项 = %+v，want %+v", i, got[i], want[i])
+		}
+	}
+
+	// 榜外作者的桶不写：provider 列表只有 a，而点的作者是 f/Unknown。
+	outsiderPoints := []store.RankingsTimeseries{
+		{Model: "f1", Granularity: "hour", BucketStart: bucket1, Tokens: 99},
+		{Model: "unknown", Granularity: "hour", BucketStart: bucket1, Tokens: 88},
+	}
+	few := buildAuthorSeries(providers[:1], models, outsiderPoints, GranularityHour)
+	if len(few) != 0 {
+		t.Fatalf("榜外作者不应写序列，实际 %+v", few)
 	}
 }

@@ -348,8 +348,82 @@ func ComputeMovers(models []store.RankingsModelStat) Movers {
 	return Movers{Up: up, Down: down}
 }
 
-// queryTimeseries 按趋势粒度聚合本次窗口内的桶。
+// authorSeriesLimit 是写入历史序列的作者数（B5a 冻结值）：只写作者榜 Top 5，
+// 与 providers 列表顺序一致；Other 不落表（前端用份额余量表达）。
+const authorSeriesLimit = 5
+
+// buildAuthorSeries 把模型桶按作者归并成作者时间序列。
 //
+// 输入 series 已按当前窗口与 period 粒度聚合（queryTimeseries），这里只做
+// 「模型 → 作者」的加总：同一作者的多模型桶合并（F-09-33 分支流程）。
+// 只保留作者榜前 5 名：榜单之外的作者不写历史，避免跨 run 的序列表被长尾
+// 实体无界撑大（与 rankings_timeseries 只取入榜模型同一取舍）。
+//
+// 输出按 provider 顺序、桶时间升序，便于测试与确定性日志；幂等键由
+// (author, granularity, bucket_start) 承担，顺序不影响落库结果。
+func buildAuthorSeries(
+	providers []store.RankingsProviderStat,
+	models []store.RankingsModelStat,
+	points []store.RankingsTimeseries,
+	granularity Granularity,
+) []store.RankingsAuthorTimeseries {
+	if len(providers) == 0 || len(points) == 0 {
+		return nil
+	}
+	limit := len(providers)
+	if limit > authorSeriesLimit {
+		limit = authorSeriesLimit
+	}
+	top := make(map[string]struct{}, limit)
+	order := make([]string, 0, limit)
+	for _, p := range providers[:limit] {
+		top[p.Author] = struct{}{}
+		order = append(order, p.Author)
+	}
+
+	authorOfModel := make(map[string]string, len(models))
+	for _, m := range models {
+		authorOfModel[m.Model] = authorOf(m.Author)
+	}
+
+	type bucketKey struct {
+		author string
+		bucket time.Time
+	}
+	tokens := make(map[bucketKey]int64)
+	for _, point := range points {
+		author, ok := authorOfModel[point.Model]
+		if !ok {
+			continue
+		}
+		if _, wanted := top[author]; !wanted {
+			continue
+		}
+		tokens[bucketKey{author: author, bucket: point.BucketStart.UTC()}] += point.Tokens
+	}
+
+	out := make([]store.RankingsAuthorTimeseries, 0, len(tokens))
+	for _, author := range order {
+		buckets := make([]time.Time, 0, 8)
+		for key := range tokens {
+			if key.author == author {
+				buckets = append(buckets, key.bucket)
+			}
+		}
+		sort.Slice(buckets, func(i, j int) bool { return buckets[i].Before(buckets[j]) })
+		for _, bucket := range buckets {
+			out = append(out, store.RankingsAuthorTimeseries{
+				Author:      author,
+				Granularity: string(granularity),
+				BucketStart: bucket,
+				Tokens:      tokens[bucketKey{author: author, bucket: bucket}],
+			})
+		}
+	}
+	return out
+}
+
+// queryTimeseries 按趋势粒度聚合本次窗口内的桶。//
 // 只对已入榜模型取桶（models 参数）：趋势图只展示 Top 模型 + Other，
 // 未达阈值的模型既不公开也不应无限累积到跨 run 的 timeseries 表里。
 //
@@ -489,11 +563,12 @@ func enrichModelMetadata(ctx context.Context, db *sql.DB, models []store.Ranking
 
 // aggregate 完成一个周期的全部只读聚合（不含写库）。
 type aggregation struct {
-	Window     Window
-	Models     []store.RankingsModelStat
-	Providers  []store.RankingsProviderStat
-	Timeseries []store.RankingsTimeseries
-	Threshold  int64
+	Window       Window
+	Models       []store.RankingsModelStat
+	Providers    []store.RankingsProviderStat
+	Timeseries   []store.RankingsTimeseries
+	AuthorSeries []store.RankingsAuthorTimeseries
+	Threshold    int64
 }
 
 // aggregatePeriod 读取当前/上一窗口并构造快照内容。
@@ -527,11 +602,13 @@ func aggregatePeriod(ctx context.Context, mainDB, logsDB *sql.DB, period Period,
 		return aggregation{}, err
 	}
 
+	providers := buildProviders(models)
 	return aggregation{
-		Window:     window,
-		Models:     models,
-		Providers:  buildProviders(models),
-		Timeseries: series,
-		Threshold:  minSamples,
+		Window:       window,
+		Models:       models,
+		Providers:    providers,
+		Timeseries:   series,
+		AuthorSeries: buildAuthorSeries(providers, models, series, period.Granularity()),
+		Threshold:    minSamples,
 	}, nil
 }

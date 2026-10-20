@@ -131,7 +131,8 @@ export interface paths {
          *     名称/cost 等内部维度。`display_name` 缺失回退 `model`，`author` 缺失
          *     回退 `Unknown`；`delta_pct` 在上一窗口 token 为 0 时为 null，
          *     `prev_rank` 在上一窗口样本不足时为 null（`delta_tokens` 的 D6a 口径见
-         *     schema 说明）。`providers[].series` 按 R-D6-05 不返回。
+         *     schema 说明）。`providers[].series` 仅作者榜 Top 5 下发，是该周期的
+         *     token 桶数组，与 `trend.buckets` 一一对齐（B5a）。
          *     Redis 缓存 `rankings:public:<period>`（TTL=刷新间隔）；快照表不可用
          *     返回 503，快照从未生成返回 200 + `status=empty`（冷启动）。
          *     B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
@@ -4149,7 +4150,11 @@ export interface components {
             up: components["schemas"]["RankingsMover"][];
             down: components["schemas"]["RankingsMover"][];
         };
-        /** @description 作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。 */
+        /**
+         * @description 作者/供应商排名一行。`series` 是可选字段：作者榜 Top 5 下发该周期的
+         *     token 时间桶（与 `trend.buckets` 一一对齐），其余作者省略；Other 由
+         *     前端按 100% 份额余量表达。
+         */
         RankingsProvider: {
             rank: number;
             author: string;
@@ -4162,6 +4167,11 @@ export interface components {
             share_pct: number;
             /** @description 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。 */
             slot: number | null;
+            /**
+             * @description 该作者当前周期的 token 桶，长度与 `trend.buckets` 相同、按下标对齐
+             *     （缺失桶补 0）。只有作者榜 Top 5 返回；其余作者无此字段。
+             */
+            series?: number[];
         };
         /**
          * @description 趋势桶粒度（today→hour、week/month→day、year→week）。
