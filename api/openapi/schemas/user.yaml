@@ -1414,3 +1414,129 @@ schemas:
       total: {type: integer}
       page: {type: integer}
       page_size: {type: integer}
+
+  # ---------------------------------------------------------------------------
+  # 订阅套餐用户面（D5b；billing-08 §15.2/§15.4）
+  # ---------------------------------------------------------------------------
+
+  AvailableSubscriptionPlan:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - plan_key
+      - title
+      - period_days
+      - price_amount
+      - currency
+      - grant_credits
+      - reset_on_renew
+      - grace_days
+      - sort_order
+    description: |
+      用户侧套餐卡片投影。刻意不含 allow_wallet_overflow（内部回退开关）与
+      审计时间戳；model_scope 为 null 表示全部模型。
+    properties:
+      id: {type: integer, format: int64}
+      plan_key: {type: string}
+      title: {type: string}
+      description: {type: string, nullable: true}
+      period_days: {type: integer, minimum: 1}
+      price_amount: {type: integer, format: int64, minimum: 0}
+      currency: {type: string, enum: [CNY]}
+      grant_credits: {type: integer, format: int64, minimum: 0}
+      reset_on_renew: {type: boolean}
+      model_scope:
+        type: array
+        nullable: true
+        items: {type: string}
+      concurrency_limit: {type: integer, minimum: 1, nullable: true}
+      grace_days: {type: integer, minimum: 0}
+      sort_order: {type: integer}
+
+  AvailableSubscriptionPlanList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/AvailableSubscriptionPlan'}
+
+  UserSubscription:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - plan_title_snapshot
+      - status
+      - start_at
+      - end_at
+      - amount_total
+      - amount_used
+      - auto_renew
+      - cancel_at_period_end
+      - period_days
+      - grace_days
+      - created_at
+      - updated_at
+    description: |
+      我的订阅投影；不含 user_id/order_id/价格/allow_wallet_overflow。
+      amount_total=0 表示无限额度，此时省略 amount_remain。
+    properties:
+      id: {type: integer, format: int64}
+      plan_title_snapshot: {type: string}
+      status: {type: string, enum: [active, expired, cancelled]}
+      start_at: {type: string, format: date-time}
+      end_at: {type: string, format: date-time}
+      next_reset_at: {type: string, format: date-time, nullable: true}
+      amount_total: {type: integer, format: int64, minimum: 0}
+      amount_used: {type: integer, format: int64, minimum: 0}
+      amount_remain: {type: integer, format: int64, minimum: 0}
+      auto_renew: {type: boolean}
+      cancel_at_period_end: {type: boolean}
+      period_days: {type: integer, minimum: 1}
+      grace_days: {type: integer, minimum: 0}
+      model_scope:
+        type: array
+        nullable: true
+        items: {type: string}
+      concurrency_limit: {type: integer, minimum: 1, nullable: true}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+
+  UserSubscriptionList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/UserSubscription'}
+      total: {type: integer, minimum: 0}
+      page: {type: integer, minimum: 1}
+      page_size: {type: integer, minimum: 1, maximum: 100}
+
+  BillingPreference:
+    type: object
+    additionalProperties: false
+    required: [preference]
+    properties:
+      preference:
+        type: string
+        enum: [subscription_first, wallet_first, subscription_only, wallet_only]
+
+  BillingPreferenceUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [preference]
+    properties:
+      preference:
+        type: string
+        description: 未知/空值归一为 subscription_first（不返回 422）
+
+  SubscriptionPurchaseRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      plan_id: {type: integer, format: int64, minimum: 1}

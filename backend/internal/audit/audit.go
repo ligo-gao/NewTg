@@ -153,6 +153,18 @@ const (
 	ActionSystemDiskCacheClear = "system.disk_cache.clear"
 	ActionSystemGCRun          = "system.gc.run"
 	ActionSystemLogCleanupRun  = "system.log_cleanup.run"
+
+	// D5b 订阅套餐管理面与用户扣费偏好（billing-08 §15.1/§15.2）。全部归
+	// operation：套餐是管理配置，偏好是用户设置。detail 只允许 id/plan_key/
+	// 受影响计数；用户偏好的 before/after 只允许四值枚举，绝不记录整行或
+	// 请求上下文（§15.4 的可见性口径同样约束审计）。
+	ActionSubscriptionPlanCreate     = "subscription_plan.create"
+	ActionSubscriptionPlanUpdate     = "subscription_plan.update"
+	ActionSubscriptionPlanDelete     = "subscription_plan.delete"
+	ActionSubscriptionPlanEnable     = "subscription_plan.enable"
+	ActionSubscriptionPlanDisable    = "subscription_plan.disable"
+	ActionSubscriptionPlanResetQuota = "subscription_plan.reset_quota"
+	ActionBillingPreferenceUpdate    = "billing_preference.update"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -243,6 +255,14 @@ var actionCategories = map[string]string{
 	ActionSystemDiskCacheClear: categoryOperation,
 	ActionSystemGCRun:          categoryOperation,
 	ActionSystemLogCleanupRun:  categoryOperation,
+
+	ActionSubscriptionPlanCreate:     categoryOperation,
+	ActionSubscriptionPlanUpdate:     categoryOperation,
+	ActionSubscriptionPlanDelete:     categoryOperation,
+	ActionSubscriptionPlanEnable:     categoryOperation,
+	ActionSubscriptionPlanDisable:    categoryOperation,
+	ActionSubscriptionPlanResetQuota: categoryOperation,
+	ActionBillingPreferenceUpdate:    categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

@@ -1431,6 +1431,155 @@ paths:
           $ref: '#/components/responses/Error429'
         '503':
           $ref: '#/components/responses/Error503'
+  /api/billing-preference:
+    get:
+      tags:
+        - user
+      operationId: getBillingPreference
+      summary: 当前用户扣费偏好
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPreference'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    put:
+      tags:
+        - user
+      operationId: updateBillingPreference
+      summary: 设置扣费偏好（四值；未知/空归一 subscription_first）
+      description: |
+        preference 为字符串；四个冻结字面量之外的任何值（含空串）都归一为
+        subscription_first，不返回 422。未知字段 403 field_not_writable。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingPreferenceUpdateRequest'
+      responses:
+        '200':
+          description: 归一后的偏好
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPreference'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription/plans:
+    get:
+      tags:
+        - user
+      operationId: listAvailableSubscriptionPlans
+      summary: 可购套餐（仅 enabled，按 sort_order,id）
+      description: |
+        用户侧投影不含 allow_wallet_overflow（内部回退开关）。无可用套餐时
+        items 为空数组。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableSubscriptionPlanList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscriptions:
+    get:
+      tags:
+        - user
+      operationId: listMySubscriptions
+      summary: 我的订阅实例（含已终结）
+      description: |
+        只返回当前用户实例。用户侧不返回 user_id/order_id/价格/内部回退开关；
+        amount_total=0 表示无限额度，此时省略 amount_remain。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSubscriptionList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription/purchase:
+    post:
+      tags:
+        - user
+      operationId: purchaseSubscription
+      summary: 购买订阅（占位：固定 501）
+      description: |
+        S3 支付/收银台尚未实现。端点固定返回 501
+        subscription_purchase_disabled，且零写入（不创建订单/订阅/幂等记录）。
+        Idempotency-Key 必带，缺失返回 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionPurchaseRequest'
+      responses:
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '501':
+          description: 购买功能未启用（固定 type/title）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/tokens:
     get:
       tags:
@@ -2276,6 +2425,345 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription-plans:
+    get:
+      tags:
+        - admin
+      operationId: listSubscriptionPlans
+      x-required-permission: settings:manage
+      summary: 套餐列表（offset 分页 + keyword/status 筛选）
+      description: |
+        返回含 status=disabled 的全部套餐；keyword 同时匹配 plan_key 与 title
+        （大小写不敏感子串）；status 只接受 enabled|disabled。排序固定
+        sort_order asc, id asc。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - enabled
+              - disabled
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlanList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 新建套餐（plan_key 冲突 409）
+      description: |
+        plan_key 匹配 ^[a-z0-9][a-z0-9-]{0,63}$，重名（含 disabled 行）返回
+        409 plan_key_conflict。字段取值非法返回 422 + fields[]；缺少必填字段
+        或类型错误返回 400。可选 Idempotency-Key：同 key 同 body 24h 内逐字
+        重放，同 key 不同 body 返回 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionPlanInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlan'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription-plans/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    get:
+      tags:
+        - admin
+      operationId: getSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 套餐详情
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlan'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    put:
+      tags:
+        - admin
+      operationId: updateSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 全量更新套餐（不追溯已购实例）
+      description: |
+        已购实例持有购买瞬间的快照，改价/改额度只影响未来购买。省略 status
+        时保留当前启停状态（启停另有独立幂等端点）。未知字段 403
+        field_not_writable；取值非法 422 + fields[]。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionPlanInput'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlan'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 删除套餐（引用保护）
+      description: |
+        存在订阅实例（含终态）或未终结订阅订单（pending/succeeded）时返回
+        409 plan_referenced，响应体带 reference_count 与 order_reference_count。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription-plans/{id}/enable:
+    post:
+      tags:
+        - admin
+      operationId: enableSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 启用套餐（幂等）
+      description: 只影响新购买；已购实例继续消费至到期。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlan'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription-plans/{id}/disable:
+    post:
+      tags:
+        - admin
+      operationId: disableSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 停用套餐（幂等，不追溯已购实例）
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlan'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/subscription-plans/{id}/reset-quota:
+    post:
+      tags:
+        - admin
+      operationId: resetSubscriptionPlanQuota
+      x-required-permission: settings:manage
+      summary: 批量重置套餐下活跃实例的已用额度
+      description: |
+        只命中 status=active 的实例。advance_next_reset=true 时同步推进
+        next_reset_at 一个周期，避免与 B12 周期重置叠加造成同周期双倍赠额。
+        返回受影响实例数；审计只记 plan_key 与计数。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionPlanResetQuotaRequest'
+      responses:
+        '200':
+          description: 受影响实例数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPlanResetQuotaResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/subscriptions:
+    get:
+      tags:
+        - admin
+      operationId: listUserSubscriptions
+      x-required-permission: users:read
+      summary: 单用户订阅实例（含终态）
+      description: Manage Subscriptions 数据源；只返回路径 id 对应用户的实例。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSubscriptionList'
         '400':
           $ref: '#/components/responses/Error400'
         '401':
@@ -8965,6 +9453,207 @@ components:
           type: boolean
           enum:
             - false
+    BillingPreference:
+      type: object
+      additionalProperties: false
+      required:
+        - preference
+      properties:
+        preference:
+          type: string
+          enum:
+            - subscription_first
+            - wallet_first
+            - subscription_only
+            - wallet_only
+    BillingPreferenceUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - preference
+      properties:
+        preference:
+          type: string
+          description: 未知/空值归一为 subscription_first（不返回 422）
+    AvailableSubscriptionPlan:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - plan_key
+        - title
+        - period_days
+        - price_amount
+        - currency
+        - grant_credits
+        - reset_on_renew
+        - grace_days
+        - sort_order
+      description: |
+        用户侧套餐卡片投影。刻意不含 allow_wallet_overflow（内部回退开关）与
+        审计时间戳；model_scope 为 null 表示全部模型。
+      properties:
+        id:
+          type: integer
+          format: int64
+        plan_key:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        period_days:
+          type: integer
+          minimum: 1
+        price_amount:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          enum:
+            - CNY
+        grant_credits:
+          type: integer
+          format: int64
+          minimum: 0
+        reset_on_renew:
+          type: boolean
+        model_scope:
+          type: array
+          nullable: true
+          items:
+            type: string
+        concurrency_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+        grace_days:
+          type: integer
+          minimum: 0
+        sort_order:
+          type: integer
+    AvailableSubscriptionPlanList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableSubscriptionPlan'
+    UserSubscription:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - plan_title_snapshot
+        - status
+        - start_at
+        - end_at
+        - amount_total
+        - amount_used
+        - auto_renew
+        - cancel_at_period_end
+        - period_days
+        - grace_days
+        - created_at
+        - updated_at
+      description: |
+        我的订阅投影；不含 user_id/order_id/价格/allow_wallet_overflow。
+        amount_total=0 表示无限额度，此时省略 amount_remain。
+      properties:
+        id:
+          type: integer
+          format: int64
+        plan_title_snapshot:
+          type: string
+        status:
+          type: string
+          enum:
+            - active
+            - expired
+            - cancelled
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        next_reset_at:
+          type: string
+          format: date-time
+          nullable: true
+        amount_total:
+          type: integer
+          format: int64
+          minimum: 0
+        amount_used:
+          type: integer
+          format: int64
+          minimum: 0
+        amount_remain:
+          type: integer
+          format: int64
+          minimum: 0
+        auto_renew:
+          type: boolean
+        cancel_at_period_end:
+          type: boolean
+        period_days:
+          type: integer
+          minimum: 1
+        grace_days:
+          type: integer
+          minimum: 0
+        model_scope:
+          type: array
+          nullable: true
+          items:
+            type: string
+        concurrency_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UserSubscriptionList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSubscription'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    SubscriptionPurchaseRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        plan_id:
+          type: integer
+          format: int64
+          minimum: 1
     TokenStatus:
       type: string
       enum:
@@ -9542,6 +10231,324 @@ components:
       description: |
         PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
         （400）。成功 200 返回更新后的 AdminUser。
+    SubscriptionPlan:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - plan_key
+        - title
+        - period_days
+        - price_amount
+        - currency
+        - grant_credits
+        - reset_on_renew
+        - allow_wallet_overflow
+        - grace_days
+        - status
+        - sort_order
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        plan_key:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9-]{0,63}$
+          description: 稳定外部标识；改名不改键
+        title:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
+        period_days:
+          type: integer
+          minimum: 1
+        price_amount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 最小货币单位整数（与 orders.amount 同口径）
+        currency:
+          type: string
+          enum:
+            - CNY
+        grant_credits:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 每周期内含额度；0 表示无限
+        reset_on_renew:
+          type: boolean
+        allow_wallet_overflow:
+          type: boolean
+          description: 订阅额度用尽后是否允许回落钱包（内部开关，用户侧不返回）
+        model_scope:
+          type: array
+          nullable: true
+          description: 模型白名单；null = 全部模型；[] = 无任何模型可用
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+          uniqueItems: true
+        concurrency_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+        grace_days:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum:
+            - enabled
+            - disabled
+        sort_order:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SubscriptionPlanList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionPlan'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    SubscriptionPlanInput:
+      type: object
+      additionalProperties: false
+      required:
+        - plan_key
+        - title
+        - period_days
+        - price_amount
+        - currency
+        - grant_credits
+      properties:
+        plan_key:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9-]{0,63}$
+        title:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
+        period_days:
+          type: integer
+          minimum: 1
+        price_amount:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          enum:
+            - CNY
+        grant_credits:
+          type: integer
+          format: int64
+          minimum: 0
+        reset_on_renew:
+          type: boolean
+          default: true
+        allow_wallet_overflow:
+          type: boolean
+          default: true
+        model_scope:
+          type: array
+          nullable: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+          uniqueItems: true
+        concurrency_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+        grace_days:
+          type: integer
+          minimum: 0
+          default: 0
+        status:
+          type: string
+          enum:
+            - enabled
+            - disabled
+          default: enabled
+        sort_order:
+          type: integer
+          default: 0
+    SubscriptionPlanResetQuotaRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        advance_next_reset:
+          type: boolean
+          default: false
+          description: true 时同步推进 next_reset_at 一个周期，避免与 B12 双倍重置
+    SubscriptionPlanResetQuotaResult:
+      type: object
+      additionalProperties: false
+      required:
+        - affected
+      properties:
+        affected:
+          type: integer
+          format: int64
+          minimum: 0
+    AdminSubscription:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - user_id
+        - plan_id
+        - plan_title_snapshot
+        - status
+        - start_at
+        - end_at
+        - amount_total
+        - amount_used
+        - auto_renew
+        - cancel_at_period_end
+        - period_days
+        - grace_days
+        - allow_wallet_overflow
+        - currency
+        - price_paid_amount
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        plan_id:
+          type: integer
+          format: int64
+        plan_title_snapshot:
+          type: string
+        status:
+          type: string
+          enum:
+            - active
+            - expired
+            - cancelled
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        next_reset_at:
+          type: string
+          format: date-time
+          nullable: true
+        amount_total:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 0 表示无限额度
+        amount_used:
+          type: integer
+          format: int64
+          minimum: 0
+        amount_remain:
+          type: integer
+          format: int64
+          minimum: 0
+          description: amount_total>0 时返回；无限额度时省略
+        auto_renew:
+          type: boolean
+        cancel_at_period_end:
+          type: boolean
+        period_days:
+          type: integer
+          minimum: 1
+        grace_days:
+          type: integer
+          minimum: 0
+        model_scope:
+          type: array
+          nullable: true
+          items:
+            type: string
+        concurrency_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+        allow_wallet_overflow:
+          type: boolean
+        order_id:
+          type: integer
+          format: int64
+          nullable: true
+        currency:
+          type: string
+        price_paid_amount:
+          type: integer
+          format: int64
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminSubscriptionList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSubscription'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
     AdminGroup:
       type: object
       additionalProperties: false

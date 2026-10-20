@@ -12,6 +12,27 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AdminSubscriptionStatus.
+const (
+	AdminSubscriptionStatusActive    AdminSubscriptionStatus = "active"
+	AdminSubscriptionStatusCancelled AdminSubscriptionStatus = "cancelled"
+	AdminSubscriptionStatusExpired   AdminSubscriptionStatus = "expired"
+)
+
+// Valid indicates whether the value is a known member of the AdminSubscriptionStatus enum.
+func (e AdminSubscriptionStatus) Valid() bool {
+	switch e {
+	case AdminSubscriptionStatusActive:
+		return true
+	case AdminSubscriptionStatusCancelled:
+		return true
+	case AdminSubscriptionStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AuditLogItemCategory.
 const (
 	AuditLogItemCategoryAccessToken AuditLogItemCategory = "access_token"
@@ -54,6 +75,45 @@ func (e AuditLogItemResult) Valid() bool {
 	}
 }
 
+// Defines values for AvailableSubscriptionPlanCurrency.
+const (
+	AvailableSubscriptionPlanCurrencyCNY AvailableSubscriptionPlanCurrency = "CNY"
+)
+
+// Valid indicates whether the value is a known member of the AvailableSubscriptionPlanCurrency enum.
+func (e AvailableSubscriptionPlanCurrency) Valid() bool {
+	switch e {
+	case AvailableSubscriptionPlanCurrencyCNY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BillingPreferencePreference.
+const (
+	SubscriptionFirst BillingPreferencePreference = "subscription_first"
+	SubscriptionOnly  BillingPreferencePreference = "subscription_only"
+	WalletFirst       BillingPreferencePreference = "wallet_first"
+	WalletOnly        BillingPreferencePreference = "wallet_only"
+)
+
+// Valid indicates whether the value is a known member of the BillingPreferencePreference enum.
+func (e BillingPreferencePreference) Valid() bool {
+	switch e {
+	case SubscriptionFirst:
+		return true
+	case SubscriptionOnly:
+		return true
+	case WalletFirst:
+		return true
+	case WalletOnly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChangeEmailResponseEmailVerified.
 const (
 	ChangeEmailResponseEmailVerifiedTrue ChangeEmailResponseEmailVerified = true
@@ -71,13 +131,13 @@ func (e ChangeEmailResponseEmailVerified) Valid() bool {
 
 // Defines values for CreateOrderRequestCurrency.
 const (
-	CNY CreateOrderRequestCurrency = "CNY"
+	CreateOrderRequestCurrencyCNY CreateOrderRequestCurrency = "CNY"
 )
 
 // Valid indicates whether the value is a known member of the CreateOrderRequestCurrency enum.
 func (e CreateOrderRequestCurrency) Valid() bool {
 	switch e {
-	case CNY:
+	case CreateOrderRequestCurrencyCNY:
 		return true
 	default:
 		return false
@@ -1521,6 +1581,72 @@ func (e SquareState) Valid() bool {
 	}
 }
 
+// Defines values for SubscriptionPlanCurrency.
+const (
+	SubscriptionPlanCurrencyCNY SubscriptionPlanCurrency = "CNY"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionPlanCurrency enum.
+func (e SubscriptionPlanCurrency) Valid() bool {
+	switch e {
+	case SubscriptionPlanCurrencyCNY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SubscriptionPlanStatus.
+const (
+	SubscriptionPlanStatusDisabled SubscriptionPlanStatus = "disabled"
+	SubscriptionPlanStatusEnabled  SubscriptionPlanStatus = "enabled"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionPlanStatus enum.
+func (e SubscriptionPlanStatus) Valid() bool {
+	switch e {
+	case SubscriptionPlanStatusDisabled:
+		return true
+	case SubscriptionPlanStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SubscriptionPlanInputCurrency.
+const (
+	SubscriptionPlanInputCurrencyCNY SubscriptionPlanInputCurrency = "CNY"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionPlanInputCurrency enum.
+func (e SubscriptionPlanInputCurrency) Valid() bool {
+	switch e {
+	case SubscriptionPlanInputCurrencyCNY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SubscriptionPlanInputStatus.
+const (
+	SubscriptionPlanInputStatusDisabled SubscriptionPlanInputStatus = "disabled"
+	SubscriptionPlanInputStatusEnabled  SubscriptionPlanInputStatus = "enabled"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionPlanInputStatus enum.
+func (e SubscriptionPlanInputStatus) Valid() bool {
+	switch e {
+	case SubscriptionPlanInputStatusDisabled:
+		return true
+	case SubscriptionPlanInputStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TaskListItemFamily.
 const (
 	Plugin TaskListItemFamily = "plugin"
@@ -1935,6 +2061,27 @@ func (e UserStatus) Valid() bool {
 	case UserStatusDisabled:
 		return true
 	case UserStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserSubscriptionStatus.
+const (
+	UserSubscriptionStatusActive    UserSubscriptionStatus = "active"
+	UserSubscriptionStatusCancelled UserSubscriptionStatus = "cancelled"
+	UserSubscriptionStatusExpired   UserSubscriptionStatus = "expired"
+)
+
+// Valid indicates whether the value is a known member of the UserSubscriptionStatus enum.
+func (e UserSubscriptionStatus) Valid() bool {
+	switch e {
+	case UserSubscriptionStatusActive:
+		return true
+	case UserSubscriptionStatusCancelled:
+		return true
+	case UserSubscriptionStatusExpired:
 		return true
 	default:
 		return false
@@ -2529,6 +2676,24 @@ func (e GetPublicPricingParamsIncludeGroupPrice) Valid() bool {
 	case GetPublicPricingParamsIncludeGroupPriceN0:
 		return true
 	case GetPublicPricingParamsIncludeGroupPriceN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListSubscriptionPlansParamsStatus.
+const (
+	ListSubscriptionPlansParamsStatusDisabled ListSubscriptionPlansParamsStatus = "disabled"
+	ListSubscriptionPlansParamsStatusEnabled  ListSubscriptionPlansParamsStatus = "enabled"
+)
+
+// Valid indicates whether the value is a known member of the ListSubscriptionPlansParamsStatus enum.
+func (e ListSubscriptionPlansParamsStatus) Valid() bool {
+	switch e {
+	case ListSubscriptionPlansParamsStatusDisabled:
+		return true
+	case ListSubscriptionPlansParamsStatusEnabled:
 		return true
 	default:
 		return false
@@ -3154,6 +3319,48 @@ type AdminGroupList struct {
 	Total int `json:"total"`
 }
 
+// AdminSubscription defines model for AdminSubscription.
+type AdminSubscription struct {
+	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
+
+	// AmountRemain amount_total>0 时返回；无限额度时省略
+	AmountRemain *int64 `json:"amount_remain,omitempty"`
+
+	// AmountTotal 0 表示无限额度
+	AmountTotal       int64                   `json:"amount_total"`
+	AmountUsed        int64                   `json:"amount_used"`
+	AutoRenew         bool                    `json:"auto_renew"`
+	CancelAtPeriodEnd bool                    `json:"cancel_at_period_end"`
+	ConcurrencyLimit  *int                    `json:"concurrency_limit,omitempty"`
+	CreatedAt         time.Time               `json:"created_at"`
+	Currency          string                  `json:"currency"`
+	EndAt             time.Time               `json:"end_at"`
+	GraceDays         int                     `json:"grace_days"`
+	Id                int64                   `json:"id"`
+	ModelScope        *[]string               `json:"model_scope,omitempty"`
+	NextResetAt       *time.Time              `json:"next_reset_at,omitempty"`
+	OrderId           *int64                  `json:"order_id,omitempty"`
+	PeriodDays        int                     `json:"period_days"`
+	PlanId            int64                   `json:"plan_id"`
+	PlanTitleSnapshot string                  `json:"plan_title_snapshot"`
+	PricePaidAmount   int64                   `json:"price_paid_amount"`
+	StartAt           time.Time               `json:"start_at"`
+	Status            AdminSubscriptionStatus `json:"status"`
+	UpdatedAt         time.Time               `json:"updated_at"`
+	UserId            int64                   `json:"user_id"`
+}
+
+// AdminSubscriptionStatus defines model for AdminSubscription.Status.
+type AdminSubscriptionStatus string
+
+// AdminSubscriptionList defines model for AdminSubscriptionList.
+type AdminSubscriptionList struct {
+	Items    []AdminSubscription `json:"items"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
+	Total    int                 `json:"total"`
+}
+
 // AdminUpdateGroupRequest 至少提供一个字段，否则 400。改名会同步更新引用该分组的用户/令牌
 // （仓储事务）；系统组（default/auto 等）删除返回 400（handlers_groups.go:
 // ErrGroupSystem → 400），被引用的分组删除返回 409。
@@ -3297,9 +3504,49 @@ type AuthUser struct {
 	Username           string   `json:"username"`
 }
 
+// AvailableSubscriptionPlan 用户侧套餐卡片投影。刻意不含 allow_wallet_overflow（内部回退开关）与
+// 审计时间戳；model_scope 为 null 表示全部模型。
+type AvailableSubscriptionPlan struct {
+	ConcurrencyLimit *int                              `json:"concurrency_limit,omitempty"`
+	Currency         AvailableSubscriptionPlanCurrency `json:"currency"`
+	Description      *string                           `json:"description,omitempty"`
+	GraceDays        int                               `json:"grace_days"`
+	GrantCredits     int64                             `json:"grant_credits"`
+	Id               int64                             `json:"id"`
+	ModelScope       *[]string                         `json:"model_scope,omitempty"`
+	PeriodDays       int                               `json:"period_days"`
+	PlanKey          string                            `json:"plan_key"`
+	PriceAmount      int64                             `json:"price_amount"`
+	ResetOnRenew     bool                              `json:"reset_on_renew"`
+	SortOrder        int                               `json:"sort_order"`
+	Title            string                            `json:"title"`
+}
+
+// AvailableSubscriptionPlanCurrency defines model for AvailableSubscriptionPlan.Currency.
+type AvailableSubscriptionPlanCurrency string
+
+// AvailableSubscriptionPlanList defines model for AvailableSubscriptionPlanList.
+type AvailableSubscriptionPlanList struct {
+	Items []AvailableSubscriptionPlan `json:"items"`
+}
+
 // BatchTokenRequest defines model for BatchTokenRequest.
 type BatchTokenRequest struct {
 	Ids []int64 `json:"ids"`
+}
+
+// BillingPreference defines model for BillingPreference.
+type BillingPreference struct {
+	Preference BillingPreferencePreference `json:"preference"`
+}
+
+// BillingPreferencePreference defines model for BillingPreference.Preference.
+type BillingPreferencePreference string
+
+// BillingPreferenceUpdateRequest defines model for BillingPreferenceUpdateRequest.
+type BillingPreferenceUpdateRequest struct {
+	// Preference 未知/空值归一为 subscription_first（不返回 422）
+	Preference string `json:"preference"`
 }
 
 // ChangeEmailRequest 全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
@@ -6035,6 +6282,90 @@ type SetupResponseUserStatus string
 // 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
 type SquareState string
 
+// SubscriptionPlan defines model for SubscriptionPlan.
+type SubscriptionPlan struct {
+	// AllowWalletOverflow 订阅额度用尽后是否允许回落钱包（内部开关，用户侧不返回）
+	AllowWalletOverflow bool                     `json:"allow_wallet_overflow"`
+	ConcurrencyLimit    *int                     `json:"concurrency_limit,omitempty"`
+	CreatedAt           time.Time                `json:"created_at"`
+	Currency            SubscriptionPlanCurrency `json:"currency"`
+	Description         *string                  `json:"description,omitempty"`
+	GraceDays           int                      `json:"grace_days"`
+
+	// GrantCredits 每周期内含额度；0 表示无限
+	GrantCredits int64 `json:"grant_credits"`
+	Id           int64 `json:"id"`
+
+	// ModelScope 模型白名单；null = 全部模型；[] = 无任何模型可用
+	ModelScope *[]string `json:"model_scope,omitempty"`
+	PeriodDays int       `json:"period_days"`
+
+	// PlanKey 稳定外部标识；改名不改键
+	PlanKey string `json:"plan_key"`
+
+	// PriceAmount 最小货币单位整数（与 orders.amount 同口径）
+	PriceAmount  int64                  `json:"price_amount"`
+	ResetOnRenew bool                   `json:"reset_on_renew"`
+	SortOrder    int                    `json:"sort_order"`
+	Status       SubscriptionPlanStatus `json:"status"`
+	Title        string                 `json:"title"`
+	UpdatedAt    time.Time              `json:"updated_at"`
+}
+
+// SubscriptionPlanCurrency defines model for SubscriptionPlan.Currency.
+type SubscriptionPlanCurrency string
+
+// SubscriptionPlanStatus defines model for SubscriptionPlan.Status.
+type SubscriptionPlanStatus string
+
+// SubscriptionPlanInput defines model for SubscriptionPlanInput.
+type SubscriptionPlanInput struct {
+	AllowWalletOverflow *bool                         `json:"allow_wallet_overflow,omitempty"`
+	ConcurrencyLimit    *int                          `json:"concurrency_limit,omitempty"`
+	Currency            SubscriptionPlanInputCurrency `json:"currency"`
+	Description         *string                       `json:"description,omitempty"`
+	GraceDays           *int                          `json:"grace_days,omitempty"`
+	GrantCredits        int64                         `json:"grant_credits"`
+	ModelScope          *[]string                     `json:"model_scope,omitempty"`
+	PeriodDays          int                           `json:"period_days"`
+	PlanKey             string                        `json:"plan_key"`
+	PriceAmount         int64                         `json:"price_amount"`
+	ResetOnRenew        *bool                         `json:"reset_on_renew,omitempty"`
+	SortOrder           *int                          `json:"sort_order,omitempty"`
+	Status              *SubscriptionPlanInputStatus  `json:"status,omitempty"`
+	Title               string                        `json:"title"`
+}
+
+// SubscriptionPlanInputCurrency defines model for SubscriptionPlanInput.Currency.
+type SubscriptionPlanInputCurrency string
+
+// SubscriptionPlanInputStatus defines model for SubscriptionPlanInput.Status.
+type SubscriptionPlanInputStatus string
+
+// SubscriptionPlanList defines model for SubscriptionPlanList.
+type SubscriptionPlanList struct {
+	Items    []SubscriptionPlan `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Total    int                `json:"total"`
+}
+
+// SubscriptionPlanResetQuotaRequest defines model for SubscriptionPlanResetQuotaRequest.
+type SubscriptionPlanResetQuotaRequest struct {
+	// AdvanceNextReset true 时同步推进 next_reset_at 一个周期，避免与 B12 双倍重置
+	AdvanceNextReset *bool `json:"advance_next_reset,omitempty"`
+}
+
+// SubscriptionPlanResetQuotaResult defines model for SubscriptionPlanResetQuotaResult.
+type SubscriptionPlanResetQuotaResult struct {
+	Affected int64 `json:"affected"`
+}
+
+// SubscriptionPurchaseRequest defines model for SubscriptionPurchaseRequest.
+type SubscriptionPurchaseRequest struct {
+	PlanId *int64 `json:"plan_id,omitempty"`
+}
+
 // TaskListItem defines model for TaskListItem.
 type TaskListItem struct {
 	Action            string                  `json:"action"`
@@ -6686,6 +7017,39 @@ type UserRole string
 // UserStatus 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 type UserStatus string
 
+// UserSubscription 我的订阅投影；不含 user_id/order_id/价格/allow_wallet_overflow。
+// amount_total=0 表示无限额度，此时省略 amount_remain。
+type UserSubscription struct {
+	AmountRemain      *int64                 `json:"amount_remain,omitempty"`
+	AmountTotal       int64                  `json:"amount_total"`
+	AmountUsed        int64                  `json:"amount_used"`
+	AutoRenew         bool                   `json:"auto_renew"`
+	CancelAtPeriodEnd bool                   `json:"cancel_at_period_end"`
+	ConcurrencyLimit  *int                   `json:"concurrency_limit,omitempty"`
+	CreatedAt         time.Time              `json:"created_at"`
+	EndAt             time.Time              `json:"end_at"`
+	GraceDays         int                    `json:"grace_days"`
+	Id                int64                  `json:"id"`
+	ModelScope        *[]string              `json:"model_scope,omitempty"`
+	NextResetAt       *time.Time             `json:"next_reset_at,omitempty"`
+	PeriodDays        int                    `json:"period_days"`
+	PlanTitleSnapshot string                 `json:"plan_title_snapshot"`
+	StartAt           time.Time              `json:"start_at"`
+	Status            UserSubscriptionStatus `json:"status"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+}
+
+// UserSubscriptionStatus defines model for UserSubscription.Status.
+type UserSubscriptionStatus string
+
+// UserSubscriptionList defines model for UserSubscriptionList.
+type UserSubscriptionList struct {
+	Items    []UserSubscription `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Total    int                `json:"total"`
+}
+
 // Vendor defines model for Vendor.
 type Vendor struct {
 	CreatedAt   time.Time `json:"created_at"`
@@ -7002,6 +7366,13 @@ type ListAuditLogsParamsResult string
 
 // ListAuditLogsParamsRange defines parameters for ListAuditLogs.
 type ListAuditLogsParamsRange string
+
+// UpdateBillingPreferenceParams defines parameters for UpdateBillingPreference.
+type UpdateBillingPreferenceParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
 
 // ListChannelsParams defines parameters for ListChannels.
 type ListChannelsParams struct {
@@ -7622,6 +7993,80 @@ type TestWebhookSettingsParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListSubscriptionPlansParams defines parameters for ListSubscriptionPlans.
+type ListSubscriptionPlansParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize                          `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Keyword  *string                            `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Status   *ListSubscriptionPlansParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// ListSubscriptionPlansParamsStatus defines parameters for ListSubscriptionPlans.
+type ListSubscriptionPlansParamsStatus string
+
+// CreateSubscriptionPlanParams defines parameters for CreateSubscriptionPlan.
+type CreateSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken     *CSRFToken `json:"X-CSRF-Token,omitempty"`
+	IdempotencyKey *string    `json:"Idempotency-Key,omitempty"`
+}
+
+// DeleteSubscriptionPlanParams defines parameters for DeleteSubscriptionPlan.
+type DeleteSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateSubscriptionPlanParams defines parameters for UpdateSubscriptionPlan.
+type UpdateSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DisableSubscriptionPlanParams defines parameters for DisableSubscriptionPlan.
+type DisableSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// EnableSubscriptionPlanParams defines parameters for EnableSubscriptionPlan.
+type EnableSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ResetSubscriptionPlanQuotaParams defines parameters for ResetSubscriptionPlanQuota.
+type ResetSubscriptionPlanQuotaParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PurchaseSubscriptionParams defines parameters for PurchaseSubscription.
+type PurchaseSubscriptionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken     *CSRFToken `json:"X-CSRF-Token,omitempty"`
+	IdempotencyKey string     `json:"Idempotency-Key"`
+}
+
+// ListMySubscriptionsParams defines parameters for ListMySubscriptions.
+type ListMySubscriptionsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
 // ListTasksParams defines parameters for ListTasks.
 type ListTasksParams struct {
 	UserId   *int    `form:"user_id,omitempty" json:"user_id,omitempty"`
@@ -7925,6 +8370,15 @@ type SetUserStatusParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListUserSubscriptionsParams defines parameters for ListUserSubscriptions.
+type ListUserSubscriptionsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
 // ListVendorsParams defines parameters for ListVendors.
 type ListVendorsParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -8111,6 +8565,9 @@ type ValidatePasswordResetTokenJSONRequestBody = PasswordResetValidateRequest
 // RegisterJSONRequestBody defines body for Register for application/json ContentType.
 type RegisterJSONRequestBody = RegisterRequest
 
+// UpdateBillingPreferenceJSONRequestBody defines body for UpdateBillingPreference for application/json ContentType.
+type UpdateBillingPreferenceJSONRequestBody = BillingPreferenceUpdateRequest
+
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = CreateDeploymentRequest
 
@@ -8242,6 +8699,18 @@ type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest
 
 // CompleteSetupJSONRequestBody defines body for CompleteSetup for application/json ContentType.
 type CompleteSetupJSONRequestBody = SetupRequest
+
+// CreateSubscriptionPlanJSONRequestBody defines body for CreateSubscriptionPlan for application/json ContentType.
+type CreateSubscriptionPlanJSONRequestBody = SubscriptionPlanInput
+
+// UpdateSubscriptionPlanJSONRequestBody defines body for UpdateSubscriptionPlan for application/json ContentType.
+type UpdateSubscriptionPlanJSONRequestBody = SubscriptionPlanInput
+
+// ResetSubscriptionPlanQuotaJSONRequestBody defines body for ResetSubscriptionPlanQuota for application/json ContentType.
+type ResetSubscriptionPlanQuotaJSONRequestBody = SubscriptionPlanResetQuotaRequest
+
+// PurchaseSubscriptionJSONRequestBody defines body for PurchaseSubscription for application/json ContentType.
+type PurchaseSubscriptionJSONRequestBody = SubscriptionPurchaseRequest
 
 // CreateTokensJSONRequestBody defines body for CreateTokens for application/json ContentType.
 type CreateTokensJSONRequestBody = CreateTokenRequest

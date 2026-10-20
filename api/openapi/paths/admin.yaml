@@ -3528,3 +3528,340 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error422'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 订阅套餐（D5b；billing-08 §15.1）。管理配置域，全部要求 settings:manage。
+  # ---------------------------------------------------------------------------
+  /api/subscription-plans:
+    get:
+      tags: [admin]
+      operationId: listSubscriptionPlans
+      x-required-permission: settings:manage
+      summary: 套餐列表（offset 分页 + keyword/status 筛选）
+      description: |
+        返回含 status=disabled 的全部套餐；keyword 同时匹配 plan_key 与 title
+        （大小写不敏感子串）；status 只接受 enabled|disabled。排序固定
+        sort_order asc, id asc。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [enabled, disabled]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlanList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 新建套餐（plan_key 冲突 409）
+      description: |
+        plan_key 匹配 ^[a-z0-9][a-z0-9-]{0,63}$，重名（含 disabled 行）返回
+        409 plan_key_conflict。字段取值非法返回 422 + fields[]；缺少必填字段
+        或类型错误返回 400。可选 Idempotency-Key：同 key 同 body 24h 内逐字
+        重放，同 key 不同 body 返回 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlanInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlan'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscription-plans/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    get:
+      tags: [admin]
+      operationId: getSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 套餐详情
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlan'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: updateSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 全量更新套餐（不追溯已购实例）
+      description: |
+        已购实例持有购买瞬间的快照，改价/改额度只影响未来购买。省略 status
+        时保留当前启停状态（启停另有独立幂等端点）。未知字段 403
+        field_not_writable；取值非法 422 + fields[]。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlanInput'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlan'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 删除套餐（引用保护）
+      description: |
+        存在订阅实例（含终态）或未终结订阅订单（pending/succeeded）时返回
+        409 plan_referenced，响应体带 reference_count 与 order_reference_count。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscription-plans/{id}/enable:
+    post:
+      tags: [admin]
+      operationId: enableSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 启用套餐（幂等）
+      description: 只影响新购买；已购实例继续消费至到期。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlan'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscription-plans/{id}/disable:
+    post:
+      tags: [admin]
+      operationId: disableSubscriptionPlan
+      x-required-permission: settings:manage
+      summary: 停用套餐（幂等，不追溯已购实例）
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlan'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscription-plans/{id}/reset-quota:
+    post:
+      tags: [admin]
+      operationId: resetSubscriptionPlanQuota
+      x-required-permission: settings:manage
+      summary: 批量重置套餐下活跃实例的已用额度
+      description: |
+        只命中 status=active 的实例。advance_next_reset=true 时同步推进
+        next_reset_at 一个周期，避免与 B12 周期重置叠加造成同周期双倍赠额。
+        返回受影响实例数；审计只记 plan_key 与计数。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlanResetQuotaRequest'
+      responses:
+        '200':
+          description: 受影响实例数
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SubscriptionPlanResetQuotaResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/users/{id}/subscriptions:
+    get:
+      tags: [admin]
+      operationId: listUserSubscriptions
+      x-required-permission: users:read
+      summary: 单用户订阅实例（含终态）
+      description: Manage Subscriptions 数据源；只返回路径 id 对应用户的实例。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AdminSubscriptionList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

@@ -101,6 +101,14 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~12fa~1backup-codes~1regenerate'
 
   # API 令牌。
+  /api/billing-preference:
+    $ref: './paths/user.yaml#/paths/~1api~1billing-preference'
+  /api/subscription/plans:
+    $ref: './paths/user.yaml#/paths/~1api~1subscription~1plans'
+  /api/subscriptions:
+    $ref: './paths/user.yaml#/paths/~1api~1subscriptions'
+  /api/subscription/purchase:
+    $ref: './paths/user.yaml#/paths/~1api~1subscription~1purchase'
   /api/tokens:
     $ref: './paths/user.yaml#/paths/~1api~1tokens'
   /api/tokens/{id}:
@@ -137,6 +145,19 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1reset-password'
   /api/users/{id}/permissions:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1permissions'
+  # 订阅套餐（D5b；billing-08 §15.1）。
+  /api/subscription-plans:
+    $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans'
+  /api/subscription-plans/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans~1{id}'
+  /api/subscription-plans/{id}/enable:
+    $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans~1{id}~1enable'
+  /api/subscription-plans/{id}/disable:
+    $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans~1{id}~1disable'
+  /api/subscription-plans/{id}/reset-quota:
+    $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans~1{id}~1reset-quota'
+  /api/users/{id}/subscriptions:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1subscriptions'
   /api/groups:
     $ref: './paths/admin.yaml#/paths/~1api~1groups'
   /api/groups/{name}:

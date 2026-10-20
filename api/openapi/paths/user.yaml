@@ -2001,3 +2001,154 @@ paths:
         '400': {$ref: '../components/responses.yaml#/responses/Error400'}
         '401': {$ref: '../components/responses.yaml#/responses/Error401'}
         '500': {$ref: '../components/responses.yaml#/responses/Error500'}
+
+  # ---------------------------------------------------------------------------
+  # 订阅套餐用户面（D5b；billing-08 §15.2/§15.4）。数据范围恒为当前会话用户。
+  # ---------------------------------------------------------------------------
+  /api/subscription/plans:
+    get:
+      tags: [user]
+      operationId: listAvailableSubscriptionPlans
+      summary: 可购套餐（仅 enabled，按 sort_order,id）
+      description: |
+        用户侧投影不含 allow_wallet_overflow（内部回退开关）。无可用套餐时
+        items 为空数组。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/AvailableSubscriptionPlanList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscriptions:
+    get:
+      tags: [user]
+      operationId: listMySubscriptions
+      summary: 我的订阅实例（含已终结）
+      description: |
+        只返回当前用户实例。用户侧不返回 user_id/order_id/价格/内部回退开关；
+        amount_total=0 表示无限额度，此时省略 amount_remain。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UserSubscriptionList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/billing-preference:
+    get:
+      tags: [user]
+      operationId: getBillingPreference
+      summary: 当前用户扣费偏好
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/BillingPreference'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [user]
+      operationId: updateBillingPreference
+      summary: 设置扣费偏好（四值；未知/空归一 subscription_first）
+      description: |
+        preference 为字符串；四个冻结字面量之外的任何值（含空串）都归一为
+        subscription_first，不返回 422。未知字段 403 field_not_writable。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/BillingPreferenceUpdateRequest'
+      responses:
+        '200':
+          description: 归一后的偏好
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/BillingPreference'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/subscription/purchase:
+    post:
+      tags: [user]
+      operationId: purchaseSubscription
+      summary: 购买订阅（占位：固定 501）
+      description: |
+        S3 支付/收银台尚未实现。端点固定返回 501
+        subscription_purchase_disabled，且零写入（不创建订单/订阅/幂等记录）。
+        Idempotency-Key 必带，缺失返回 400。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/SubscriptionPurchaseRequest'
+      responses:
+        '501':
+          description: 购买功能未启用（固定 type/title）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'

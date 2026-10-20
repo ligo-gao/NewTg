@@ -64,6 +64,10 @@ type RouterConfig struct {
 	// 定价端点的路径族是 /api/model-pricing 与 /api/group-pricing——不得复用
 	// 公开目录 /api/pricing（modules-06 G-5 命名空间裁决）。
 	PricingHandlers *PricingHandlers
+	// SubscriptionHandlers 是 D5b 订阅套餐端点。nil 且 DB 非 nil 时由
+	// NewRouter 自动构造（store.NewSubscriptionRepo + users 偏好读写）；
+	// 单元测试可显式注入。
+	SubscriptionHandlers *SubscriptionHandlers
 	// Sealer 密封令牌幂等缓存体（含一次性明文 key）。nil 时令牌端点跳过
 	// 幂等缓存（绝不回落明文）；生产由 CREDENTIAL_ENCRYPTION_KEY 派生。
 	Sealer configcenter.SecretSealer
@@ -237,6 +241,27 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// PricingHandlers 构造时登记（未登记动作由 authz 失败关闭）。
 	if cfg.PricingHandlers != nil {
 		cfg.PricingHandlers.RegisterPricingRoutes(rt.protected, nil)
+	}
+
+	// 订阅套餐端点（D5b；billing-08 §15）。与定价同属受保护子树；订阅表没有
+	// 内存兜底，只有提供 DB 时才自动挂载。用户的 billing_preference 存在
+	// users 行，因此 DB 是构造前提（Repo 只是订阅表接缝）。
+	if cfg.SubscriptionHandlers == nil && cfg.DB != nil {
+		subscriptionHandlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
+			Repo:   store.NewSubscriptionRepo(cfg.DB),
+			DB:     cfg.DB,
+			Redis:  cfg.Redis,
+			Authz:  cfg.Authz,
+			Audit:  cfg.Audit,
+			Logger: cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		cfg.SubscriptionHandlers = subscriptionHandlers
+	}
+	if cfg.SubscriptionHandlers != nil {
+		cfg.SubscriptionHandlers.Register(rt.protected)
 	}
 
 	// 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。目录没有内存兜底：

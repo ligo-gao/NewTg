@@ -2652,3 +2652,186 @@ schemas:
       items:
         type: array
         items: {$ref: '#/schemas/PerformanceRecentOperation'}
+
+  # ---------------------------------------------------------------------------
+  # 订阅套餐（D5b；billing-08 §2.1 / §15.1）
+  # ---------------------------------------------------------------------------
+
+  SubscriptionPlan:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - plan_key
+      - title
+      - period_days
+      - price_amount
+      - currency
+      - grant_credits
+      - reset_on_renew
+      - allow_wallet_overflow
+      - grace_days
+      - status
+      - sort_order
+      - created_at
+      - updated_at
+    properties:
+      id: {type: integer, format: int64}
+      plan_key:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+        description: 稳定外部标识；改名不改键
+      title: {type: string, minLength: 1, maxLength: 64}
+      description: {type: string, maxLength: 255, nullable: true}
+      period_days: {type: integer, minimum: 1}
+      price_amount:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 最小货币单位整数（与 orders.amount 同口径）
+      currency: {type: string, enum: [CNY]}
+      grant_credits:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 每周期内含额度；0 表示无限
+      reset_on_renew: {type: boolean}
+      allow_wallet_overflow:
+        type: boolean
+        description: 订阅额度用尽后是否允许回落钱包（内部开关，用户侧不返回）
+      model_scope:
+        type: array
+        nullable: true
+        description: 模型白名单；null = 全部模型；[] = 无任何模型可用
+        items: {type: string, minLength: 1, maxLength: 128}
+        uniqueItems: true
+      concurrency_limit: {type: integer, minimum: 1, nullable: true}
+      grace_days: {type: integer, minimum: 0}
+      status: {type: string, enum: [enabled, disabled]}
+      sort_order: {type: integer}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+
+  SubscriptionPlanList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/SubscriptionPlan'}
+      total: {type: integer, minimum: 0}
+      page: {type: integer, minimum: 1}
+      page_size: {type: integer, minimum: 1, maximum: 100}
+
+  SubscriptionPlanInput:
+    type: object
+    additionalProperties: false
+    required: [plan_key, title, period_days, price_amount, currency, grant_credits]
+    properties:
+      plan_key:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+      title: {type: string, minLength: 1, maxLength: 64}
+      description: {type: string, maxLength: 255, nullable: true}
+      period_days: {type: integer, minimum: 1}
+      price_amount: {type: integer, format: int64, minimum: 0}
+      currency: {type: string, enum: [CNY]}
+      grant_credits: {type: integer, format: int64, minimum: 0}
+      reset_on_renew: {type: boolean, default: true}
+      allow_wallet_overflow: {type: boolean, default: true}
+      model_scope:
+        type: array
+        nullable: true
+        items: {type: string, minLength: 1, maxLength: 128}
+        uniqueItems: true
+      concurrency_limit: {type: integer, minimum: 1, nullable: true}
+      grace_days: {type: integer, minimum: 0, default: 0}
+      status: {type: string, enum: [enabled, disabled], default: enabled}
+      sort_order: {type: integer, default: 0}
+
+  SubscriptionPlanResetQuotaRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      advance_next_reset:
+        type: boolean
+        default: false
+        description: true 时同步推进 next_reset_at 一个周期，避免与 B12 双倍重置
+
+  SubscriptionPlanResetQuotaResult:
+    type: object
+    additionalProperties: false
+    required: [affected]
+    properties:
+      affected: {type: integer, format: int64, minimum: 0}
+
+  AdminSubscription:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - user_id
+      - plan_id
+      - plan_title_snapshot
+      - status
+      - start_at
+      - end_at
+      - amount_total
+      - amount_used
+      - auto_renew
+      - cancel_at_period_end
+      - period_days
+      - grace_days
+      - allow_wallet_overflow
+      - currency
+      - price_paid_amount
+      - created_at
+      - updated_at
+    properties:
+      id: {type: integer, format: int64}
+      user_id: {type: integer, format: int64}
+      plan_id: {type: integer, format: int64}
+      plan_title_snapshot: {type: string}
+      status: {type: string, enum: [active, expired, cancelled]}
+      start_at: {type: string, format: date-time}
+      end_at: {type: string, format: date-time}
+      next_reset_at: {type: string, format: date-time, nullable: true}
+      amount_total:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 0 表示无限额度
+      amount_used: {type: integer, format: int64, minimum: 0}
+      amount_remain:
+        type: integer
+        format: int64
+        minimum: 0
+        description: amount_total>0 时返回；无限额度时省略
+      auto_renew: {type: boolean}
+      cancel_at_period_end: {type: boolean}
+      period_days: {type: integer, minimum: 1}
+      grace_days: {type: integer, minimum: 0}
+      model_scope:
+        type: array
+        nullable: true
+        items: {type: string}
+      concurrency_limit: {type: integer, minimum: 1, nullable: true}
+      allow_wallet_overflow: {type: boolean}
+      order_id: {type: integer, format: int64, nullable: true}
+      currency: {type: string}
+      price_paid_amount: {type: integer, format: int64, minimum: 0}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+
+  AdminSubscriptionList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/AdminSubscription'}
+      total: {type: integer, minimum: 0}
+      page: {type: integer, minimum: 1}
+      page_size: {type: integer, minimum: 1, maximum: 100}

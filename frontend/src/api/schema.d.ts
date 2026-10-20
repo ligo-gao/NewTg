@@ -755,6 +755,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/billing-preference": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 当前用户扣费偏好 */
+        get: operations["getBillingPreference"];
+        /**
+         * 设置扣费偏好（四值；未知/空归一 subscription_first）
+         * @description preference 为字符串；四个冻结字面量之外的任何值（含空串）都归一为
+         *     subscription_first，不返回 422。未知字段 403 field_not_writable。
+         */
+        put: operations["updateBillingPreference"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 可购套餐（仅 enabled，按 sort_order,id）
+         * @description 用户侧投影不含 allow_wallet_overflow（内部回退开关）。无可用套餐时
+         *     items 为空数组。
+         */
+        get: operations["listAvailableSubscriptionPlans"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 我的订阅实例（含已终结）
+         * @description 只返回当前用户实例。用户侧不返回 user_id/order_id/价格/内部回退开关；
+         *     amount_total=0 表示无限额度，此时省略 amount_remain。
+         */
+        get: operations["listMySubscriptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription/purchase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 购买订阅（占位：固定 501）
+         * @description S3 支付/收银台尚未实现。端点固定返回 501
+         *     subscription_purchase_disabled，且零写入（不创建订单/订阅/幂等记录）。
+         *     Idempotency-Key 必带，缺失返回 400。
+         */
+        post: operations["purchaseSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tokens": {
         parameters: {
             query?: never;
@@ -1145,6 +1231,144 @@ export interface paths {
          *     不能修改自己（400）。成功 200 返回更新后的用户。
          */
         patch: operations["setUserPermissions"];
+        trace?: never;
+    };
+    "/api/subscription-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 套餐列表（offset 分页 + keyword/status 筛选）
+         * @description 返回含 status=disabled 的全部套餐；keyword 同时匹配 plan_key 与 title
+         *     （大小写不敏感子串）；status 只接受 enabled|disabled。排序固定
+         *     sort_order asc, id asc。
+         */
+        get: operations["listSubscriptionPlans"];
+        put?: never;
+        /**
+         * 新建套餐（plan_key 冲突 409）
+         * @description plan_key 匹配 ^[a-z0-9][a-z0-9-]{0,63}$，重名（含 disabled 行）返回
+         *     409 plan_key_conflict。字段取值非法返回 422 + fields[]；缺少必填字段
+         *     或类型错误返回 400。可选 Idempotency-Key：同 key 同 body 24h 内逐字
+         *     重放，同 key 不同 body 返回 422。
+         */
+        post: operations["createSubscriptionPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-plans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        /** 套餐详情 */
+        get: operations["getSubscriptionPlan"];
+        /**
+         * 全量更新套餐（不追溯已购实例）
+         * @description 已购实例持有购买瞬间的快照，改价/改额度只影响未来购买。省略 status
+         *     时保留当前启停状态（启停另有独立幂等端点）。未知字段 403
+         *     field_not_writable；取值非法 422 + fields[]。
+         */
+        put: operations["updateSubscriptionPlan"];
+        post?: never;
+        /**
+         * 删除套餐（引用保护）
+         * @description 存在订阅实例（含终态）或未终结订阅订单（pending/succeeded）时返回
+         *     409 plan_referenced，响应体带 reference_count 与 order_reference_count。
+         */
+        delete: operations["deleteSubscriptionPlan"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-plans/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用套餐（幂等）
+         * @description 只影响新购买；已购实例继续消费至到期。
+         */
+        post: operations["enableSubscriptionPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-plans/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 停用套餐（幂等，不追溯已购实例） */
+        post: operations["disableSubscriptionPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subscription-plans/{id}/reset-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量重置套餐下活跃实例的已用额度
+         * @description 只命中 status=active 的实例。advance_next_reset=true 时同步推进
+         *     next_reset_at 一个周期，避免与 B12 周期重置叠加造成同周期双倍赠额。
+         *     返回受影响实例数；审计只记 plan_key 与计数。
+         */
+        post: operations["resetSubscriptionPlanQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 单用户订阅实例（含终态）
+         * @description Manage Subscriptions 数据源；只返回路径 id 对应用户的实例。
+         */
+        get: operations["listUserSubscriptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/groups": {
@@ -4036,6 +4260,83 @@ export interface components {
             /** @enum {boolean} */
             totp_enabled: false;
         };
+        BillingPreference: {
+            /** @enum {string} */
+            preference: "subscription_first" | "wallet_first" | "subscription_only" | "wallet_only";
+        };
+        BillingPreferenceUpdateRequest: {
+            /** @description 未知/空值归一为 subscription_first（不返回 422） */
+            preference: string;
+        };
+        /**
+         * @description 用户侧套餐卡片投影。刻意不含 allow_wallet_overflow（内部回退开关）与
+         *     审计时间戳；model_scope 为 null 表示全部模型。
+         */
+        AvailableSubscriptionPlan: {
+            /** Format: int64 */
+            id: number;
+            plan_key: string;
+            title: string;
+            description?: string | null;
+            period_days: number;
+            /** Format: int64 */
+            price_amount: number;
+            /** @enum {string} */
+            currency: "CNY";
+            /** Format: int64 */
+            grant_credits: number;
+            reset_on_renew: boolean;
+            model_scope?: string[] | null;
+            concurrency_limit?: number | null;
+            grace_days: number;
+            sort_order: number;
+        };
+        AvailableSubscriptionPlanList: {
+            items: components["schemas"]["AvailableSubscriptionPlan"][];
+        };
+        /**
+         * @description 我的订阅投影；不含 user_id/order_id/价格/allow_wallet_overflow。
+         *     amount_total=0 表示无限额度，此时省略 amount_remain。
+         */
+        UserSubscription: {
+            /** Format: int64 */
+            id: number;
+            plan_title_snapshot: string;
+            /** @enum {string} */
+            status: "active" | "expired" | "cancelled";
+            /** Format: date-time */
+            start_at: string;
+            /** Format: date-time */
+            end_at: string;
+            /** Format: date-time */
+            next_reset_at?: string | null;
+            /** Format: int64 */
+            amount_total: number;
+            /** Format: int64 */
+            amount_used: number;
+            /** Format: int64 */
+            amount_remain?: number;
+            auto_renew: boolean;
+            cancel_at_period_end: boolean;
+            period_days: number;
+            grace_days: number;
+            model_scope?: string[] | null;
+            concurrency_limit?: number | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        UserSubscriptionList: {
+            items: components["schemas"]["UserSubscription"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        SubscriptionPurchaseRequest: {
+            /** Format: int64 */
+            plan_id?: number;
+        };
         /**
          * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
          *     disabled 是唯一可写的人工位；其余为时间/额度派生态。
@@ -4307,6 +4608,136 @@ export interface components {
              *     会绕过超集校验；授予全权必须显式提交 ["*"]。
              */
             admin_permissions: components["schemas"]["PermissionGrant"][];
+        };
+        SubscriptionPlan: {
+            /** Format: int64 */
+            id: number;
+            /** @description 稳定外部标识；改名不改键 */
+            plan_key: string;
+            title: string;
+            description?: string | null;
+            period_days: number;
+            /**
+             * Format: int64
+             * @description 最小货币单位整数（与 orders.amount 同口径）
+             */
+            price_amount: number;
+            /** @enum {string} */
+            currency: "CNY";
+            /**
+             * Format: int64
+             * @description 每周期内含额度；0 表示无限
+             */
+            grant_credits: number;
+            reset_on_renew: boolean;
+            /** @description 订阅额度用尽后是否允许回落钱包（内部开关，用户侧不返回） */
+            allow_wallet_overflow: boolean;
+            /** @description 模型白名单；null = 全部模型；[] = 无任何模型可用 */
+            model_scope?: string[] | null;
+            concurrency_limit?: number | null;
+            grace_days: number;
+            /** @enum {string} */
+            status: "enabled" | "disabled";
+            sort_order: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        SubscriptionPlanList: {
+            items: components["schemas"]["SubscriptionPlan"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        SubscriptionPlanInput: {
+            plan_key: string;
+            title: string;
+            description?: string | null;
+            period_days: number;
+            /** Format: int64 */
+            price_amount: number;
+            /** @enum {string} */
+            currency: "CNY";
+            /** Format: int64 */
+            grant_credits: number;
+            /** @default true */
+            reset_on_renew: boolean;
+            /** @default true */
+            allow_wallet_overflow: boolean;
+            model_scope?: string[] | null;
+            concurrency_limit?: number | null;
+            /** @default 0 */
+            grace_days: number;
+            /**
+             * @default enabled
+             * @enum {string}
+             */
+            status: "enabled" | "disabled";
+            /** @default 0 */
+            sort_order: number;
+        };
+        SubscriptionPlanResetQuotaRequest: {
+            /**
+             * @description true 时同步推进 next_reset_at 一个周期，避免与 B12 双倍重置
+             * @default false
+             */
+            advance_next_reset: boolean;
+        };
+        SubscriptionPlanResetQuotaResult: {
+            /** Format: int64 */
+            affected: number;
+        };
+        AdminSubscription: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            user_id: number;
+            /** Format: int64 */
+            plan_id: number;
+            plan_title_snapshot: string;
+            /** @enum {string} */
+            status: "active" | "expired" | "cancelled";
+            /** Format: date-time */
+            start_at: string;
+            /** Format: date-time */
+            end_at: string;
+            /** Format: date-time */
+            next_reset_at?: string | null;
+            /**
+             * Format: int64
+             * @description 0 表示无限额度
+             */
+            amount_total: number;
+            /** Format: int64 */
+            amount_used: number;
+            /**
+             * Format: int64
+             * @description amount_total>0 时返回；无限额度时省略
+             */
+            amount_remain?: number;
+            auto_renew: boolean;
+            cancel_at_period_end: boolean;
+            period_days: number;
+            grace_days: number;
+            model_scope?: string[] | null;
+            concurrency_limit?: number | null;
+            allow_wallet_overflow: boolean;
+            /** Format: int64 */
+            order_id?: number | null;
+            currency: string;
+            /** Format: int64 */
+            price_paid_amount: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AdminSubscriptionList: {
+            items: components["schemas"]["AdminSubscription"][];
+            total: number;
+            page: number;
+            page_size: number;
         };
         AdminGroup: {
             /** Format: int64 */
@@ -7512,6 +7943,148 @@ export interface operations {
             503: components["responses"]["Error503"];
         };
     };
+    getBillingPreference: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingPreference"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateBillingPreference: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BillingPreferenceUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 归一后的偏好 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingPreference"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listAvailableSubscriptionPlans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailableSubscriptionPlanList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listMySubscriptions: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSubscriptionList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    purchaseSubscription: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionPurchaseRequest"];
+            };
+        };
+        responses: {
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 购买功能未启用（固定 type/title） */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     listTokens: {
         parameters: {
             query?: {
@@ -8318,6 +8891,303 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listSubscriptionPlans: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                keyword?: string;
+                status?: "enabled" | "disabled";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlanList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionPlanInput"];
+            };
+        };
+        responses: {
+            /** @description 创建成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlan"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlan"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionPlanInput"];
+            };
+        };
+        responses: {
+            /** @description 更新后的套餐 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlan"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    enableSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的套餐 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlan"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    disableSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的套餐 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlan"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    resetSubscriptionPlanQuota: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionPlanResetQuotaRequest"];
+            };
+        };
+        responses: {
+            /** @description 受影响实例数 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPlanResetQuotaResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listUserSubscriptions: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSubscriptionList"];
                 };
             };
             400: components["responses"]["Error400"];
