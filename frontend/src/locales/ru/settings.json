@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "Управление объявлениями",
     "field_https_url": "Введите абсолютный https URL.",
+    "field_https_url_no_credentials": "Введите https URL без учётных данных и фрагмента.",
     "cross_webhook_url": "При включении Webhook требуется URL эндпоинта.",
     "cross_webhook_secret": "При включении Webhook требуется секрет подписи."
   },
@@ -578,6 +579,8 @@
       "result": "Эндпоинт ответил {code}.",
       "failed": "Тест не удался: {reason}",
       "not_configured": "Сохраните URL эндпоинта и секрет подписи перед тестом.",
+      "target_blocked": "Сохранённый эндпоинт не является разрешённой исходящей целью. Измените URL или разрешите этот хост и повторите.",
+      "invalid_config": "Сохранённая конфигурация Webhook отклонена. Проверьте URL и секрет подписи.",
       "timeout": "Эндпоинт не ответил вовремя.",
       "rate_limited": "Слишком много тестовых событий. Повторите позже.",
       "retry_in": "Повтор через {seconds} с",

@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "Manage announcements",
     "field_https_url": "Enter an absolute https URL.",
+    "field_https_url_no_credentials": "Enter an https URL without credentials or a fragment.",
     "cross_webhook_url": "An endpoint URL is required when the webhook is enabled.",
     "cross_webhook_secret": "A signing secret is required when the webhook is enabled."
   },
@@ -578,6 +579,8 @@
       "result": "Endpoint responded with {code}.",
       "failed": "Test failed: {reason}",
       "not_configured": "Save the endpoint URL and signing secret before testing.",
+      "target_blocked": "The saved endpoint is not an allowed outbound target. Change the URL or allow this host, then try again.",
+      "invalid_config": "The saved webhook configuration was rejected. Check the URL and signing secret.",
       "timeout": "The endpoint did not respond in time.",
       "rate_limited": "Too many test events. Please wait before trying again.",
       "retry_in": "Retry in {seconds}s",

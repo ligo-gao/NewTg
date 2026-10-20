@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "お知らせの管理",
     "field_https_url": "絶対 https URL を入力してください。",
+    "field_https_url_no_credentials": "認証情報やフラグメントを含まない https URL を入力してください。",
     "cross_webhook_url": "Webhook を有効にするにはエンドポイント URL が必要です。",
     "cross_webhook_secret": "Webhook を有効にするには署名シークレットが必要です。"
   },
@@ -578,6 +579,8 @@
       "result": "エンドポイントの応答: {code}",
       "failed": "テストに失敗しました: {reason}",
       "not_configured": "テストの前にエンドポイント URL と署名シークレットを保存してください。",
+      "target_blocked": "保存済みエンドポイントは許可された送信先ではありません。URL を変更するか、このホストを許可してから再試行してください。",
+      "invalid_config": "保存済みの Webhook 設定が拒否されました。URL と署名シークレットを確認してください。",
       "timeout": "エンドポイントが時間内に応答しませんでした。",
       "rate_limited": "テストイベントの送信回数が多すぎます。しばらく待ってから再試行してください。",
       "retry_in": "{seconds}秒後に再試行",

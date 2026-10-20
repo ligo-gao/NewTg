@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "Gérer les annonces",
     "field_https_url": "Saisissez une URL https absolue.",
+    "field_https_url_no_credentials": "Saisissez une URL https sans identifiants ni fragment.",
     "cross_webhook_url": "Une URL de point de terminaison est requise lorsque le Webhook est activé.",
     "cross_webhook_secret": "Un secret de signature est requis lorsque le Webhook est activé."
   },
@@ -578,6 +579,8 @@
       "result": "Le point de terminaison a répondu {code}.",
       "failed": "Échec du test : {reason}",
       "not_configured": "Enregistrez l'URL et le secret de signature avant de tester.",
+      "target_blocked": "Le point de terminaison enregistré n'est pas une cible sortante autorisée. Modifiez l'URL ou autorisez cet hôte, puis réessayez.",
+      "invalid_config": "La configuration Webhook enregistrée a été refusée. Vérifiez l'URL et le secret de signature.",
       "timeout": "Le point de terminaison n'a pas répondu à temps.",
       "rate_limited": "Trop d'événements de test. Veuillez patienter avant de réessayer.",
       "retry_in": "Réessayer dans {seconds} s",

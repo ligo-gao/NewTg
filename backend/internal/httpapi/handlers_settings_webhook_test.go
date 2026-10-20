@@ -102,8 +102,8 @@ func TestWebhookTestEndpointErrorMapping(t *testing.T) {
 		wantStatus int
 		wantType   string
 	}{
-		{"not_configured", notify.ErrWebhookNotConfigured, http.StatusUnprocessableEntity, problemTypeValidationFailed},
-		{"blocked_target", notify.ErrWebhookBlockedTarget, http.StatusUnprocessableEntity, problemTypeValidationFailed},
+		{"not_configured", notify.ErrWebhookNotConfigured, http.StatusUnprocessableEntity, webhookProblemNotConfigured},
+		{"blocked_target", notify.ErrWebhookBlockedTarget, http.StatusUnprocessableEntity, webhookProblemTargetBlocked},
 		// LOW-1：504 必须是 gateway_timeout，而不是 internal_error。
 		{"transport", notify.ErrWebhookTransport, http.StatusGatewayTimeout, problemTypeGatewayTimeout},
 		{"internal", errors.New("seal open failed: internal detail"), http.StatusInternalServerError, authProblemInternal},

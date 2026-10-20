@@ -137,6 +137,39 @@ function valuesOf(item: SettingsItem, draft: Draft): unknown {
   return baselineValue(item)
 }
 
+/**
+ * Client mirror of the sender's URL guard (`notify/webhook.go`).
+ *
+ * The backend rejects a URL whose target has userinfo or a fragment even when
+ * it is otherwise a valid https URL; without this check the console would
+ * happily save it and only the test button would fail. `invalid` covers an
+ * unparsable value, which is also what a missing scheme produces.
+ */
+type WebhookURLProblem = 'https' | 'credentials' | 'invalid'
+
+function webhookURLProblem(value: string): WebhookURLProblem | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return 'https'
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname === '') return 'https'
+  if (parsed.username !== '' || parsed.password !== '' || parsed.hash !== '') {
+    return 'credentials'
+  }
+  return undefined
+}
+
+function webhookURLMessage(
+  problem: WebhookURLProblem,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  return problem === 'credentials'
+    ? t('settings.shell.field_https_url_no_credentials')
+    : t('settings.shell.field_https_url')
+}
+
 function validate(
   field: FieldConfig,
   value: unknown,
@@ -240,7 +273,11 @@ function validate(
     if (field.required === true && trimmed === '') {
       return t('settings.shell.field_required')
     }
-    if (field.maxLength !== undefined && value.length > field.maxLength) {
+    // Count Unicode code points, not UTF-16 code units: the backend limit is
+    // `utf8.RuneCountInString`, so astral characters (emoji, some CJK
+    // extensions) would otherwise be rejected here while the server accepts
+    // them.
+    if (field.maxLength !== undefined && [...value].length > field.maxLength) {
       return t('settings.shell.field_too_long', { max: field.maxLength })
     }
     if (
@@ -258,7 +295,10 @@ function validate(
     if (field.key === 'notify.webhook.url' && trimmed !== '') {
       // UI §6.6 / ruling 08-3: webhook endpoints are https-only. The backend
       // allows an http draft while disabled, but the console never stores one.
-      if (!/^https:\/\/[^\s]+$/i.test(trimmed)) return t('settings.shell.field_https_url')
+      // userinfo/fragment are rejected too, mirroring the sender's outbound
+      // guard so an untestable URL cannot be saved.
+      const problem = webhookURLProblem(trimmed)
+      if (problem !== undefined) return webhookURLMessage(problem, t)
     }
     return undefined
   } catch {
@@ -454,8 +494,11 @@ export function SettingsSectionForm({
         const url = effective('notify.webhook.url')
         if (typeof url !== 'string' || url.trim() === '') {
           validationErrors['notify.webhook.url'] ??= t('settings.shell.cross_webhook_url')
-        } else if (!/^https:\/\/[^\s]+$/i.test(url.trim())) {
-          validationErrors['notify.webhook.url'] ??= t('settings.shell.field_https_url')
+        } else {
+          const problem = webhookURLProblem(url.trim())
+          if (problem !== undefined) {
+            validationErrors['notify.webhook.url'] ??= webhookURLMessage(problem, t)
+          }
         }
 
         const secretItem = itemByKey.get('notify.webhook.secret')
@@ -754,19 +797,31 @@ function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
   const countdown = useCountdown()
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState<{ tone: TestTone; message: string } | null>(null)
+  // Abort the in-flight test when the card unmounts (tab switch, navigation):
+  // otherwise the late response would call setState on a dead tree and, on a
+  // slow endpoint, keep the request alive for no reader.
+  const inFlight = useRef<AbortController | null>(null)
+
+  useEffect(() => () => inFlight.current?.abort(), [])
 
   const blocked = disabled || sending || countdown.running || !urlConfigured
 
   async function send(): Promise<void> {
+    const controller = new AbortController()
+    inFlight.current?.abort()
+    inFlight.current = controller
     setSending(true)
     setResult(null)
     try {
-      const response = await testWebhook()
+      const response = await testWebhook(controller.signal)
+      if (controller.signal.aborted) return
       setResult({
         tone: response.ok ? 'success' : 'danger',
         message: t('settings.webhook.test.result', { code: response.status_code }),
       })
     } catch (error) {
+      // A deliberate cancel is not a result; the unmount path must stay silent.
+      if (error instanceof DOMException && error.name === 'AbortError') return
       if (error instanceof ApiError) {
         if (error.kind === 'rate_limited') {
           // Server-declared window; never invent a duration.
@@ -777,10 +832,25 @@ function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
             message: t('settings.webhook.test.rate_limited'),
           })
         } else if (error.status === 422) {
-          setResult({
-            tone: 'danger',
-            message: t('settings.webhook.test.not_configured'),
-          })
+          // Two 422s need different actions: complete the configuration, or
+          // change the target. The server `detail` is fixed copy and is never
+          // shown; unknown 422s fall back to a neutral "rejected" message.
+          if (error.type.endsWith('/webhook_target_blocked')) {
+            setResult({
+              tone: 'danger',
+              message: t('settings.webhook.test.target_blocked'),
+            })
+          } else if (error.type.endsWith('/webhook_not_configured')) {
+            setResult({
+              tone: 'danger',
+              message: t('settings.webhook.test.not_configured'),
+            })
+          } else {
+            setResult({
+              tone: 'danger',
+              message: t('settings.webhook.test.invalid_config'),
+            })
+          }
         } else if (error.status === 504) {
           setResult({
             tone: 'danger',
@@ -808,7 +878,10 @@ function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
         })
       }
     } finally {
-      setSending(false)
+      if (inFlight.current === controller) {
+        inFlight.current = null
+        setSending(false)
+      }
     }
   }
 

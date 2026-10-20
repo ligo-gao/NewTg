@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -15,8 +15,25 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  vi.restoreAllMocks()
+  server.resetHandlers()
+})
 afterAll(() => server.close())
+
+/**
+ * The settings transport reads the CSRF cookie through `document.cookie`.
+ * jsdom refuses real `__Host-` cookies over http, so every case gets a
+ * controllable reader; CSRF-specific cases mutate `csrfToken`.
+ */
+let csrfToken: string | undefined
+
+beforeEach(() => {
+  csrfToken = 'stale-token'
+  vi.spyOn(document, 'cookie', 'get').mockImplementation(() =>
+    csrfToken === undefined ? '' : `__Host-nkt_csrf=${csrfToken}`,
+  )
+})
 
 const CONFIG = tabConfig('notify').sections.find((entry) => entry.id === 'notify.webhook')!
 
@@ -71,6 +88,8 @@ interface Harness {
   state: SectionState
   saves: SaveLog[]
   tests: number
+  /** `X-CSRF-Token` seen by each test-endpoint POST, in order. */
+  testCsrf: Array<string | null>
 }
 
 /**
@@ -81,7 +100,7 @@ function installHandlers(
   state: SectionState = webhookState(),
   onTest?: () => Response | Promise<Response>,
 ): Harness {
-  const harness: Harness = { state, saves: [], tests: 0 }
+  const harness: Harness = { state, saves: [], tests: 0, testCsrf: [] }
 
   server.use(
     http.get(`${ORIGIN}/api/settings`, ({ request }) => {
@@ -112,8 +131,9 @@ function installHandlers(
         items: state.items,
       })
     }),
-    http.post(`${ORIGIN}/api/settings/test/webhook`, () => {
+    http.post(`${ORIGIN}/api/settings/test/webhook`, ({ request }) => {
       harness.tests += 1
+      harness.testCsrf.push(request.headers.get('X-CSRF-Token'))
       if (onTest !== undefined) return onTest()
       return HttpResponse.json({ ok: true, status_code: 200 })
     }),
@@ -136,10 +156,6 @@ async function renderForm(readOnly = false, harness: Harness = installHandlers()
   return { harness, onDirtyChange }
 }
 
-beforeEach(() => {
-  server.resetHandlers()
-})
-
 describe('Webhook settings section', () => {
   it('loads saved values and masks the configured secret', async () => {
     await renderForm()
@@ -160,10 +176,15 @@ describe('Webhook settings section', () => {
 
   it('shows server field errors from a 422 on the matching field', async () => {
     const user = userEvent.setup()
-    const { harness } = await renderForm()
+    // The overriding handler replaces the harness PUT, so `harness.saves`
+    // would stay empty whether or not the request was sent. Count attempts
+    // inside the handler that actually answers instead.
+    let saveAttempts = 0
+    await renderForm()
     server.use(
-      http.put(`${ORIGIN}/api/settings`, () =>
-        HttpResponse.json(
+      http.put(`${ORIGIN}/api/settings`, () => {
+        saveAttempts += 1
+        return HttpResponse.json(
           {
             type: 'validation_failed',
             title: 'validation failed',
@@ -175,8 +196,8 @@ describe('Webhook settings section', () => {
             ],
           },
           { status: 422 },
-        ),
-      ),
+        )
+      }),
     )
 
     const url = await screen.findByLabelText('Endpoint URL')
@@ -185,7 +206,7 @@ describe('Webhook settings section', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
     expect(await screen.findByText('must use https when webhook is enabled')).toBeTruthy()
-    expect(harness.saves).toHaveLength(0)
+    expect(saveAttempts).toBe(1)
   })
 
   it('leaves an untouched secret out of the payload when saving other fields', async () => {
@@ -280,6 +301,115 @@ describe('Webhook settings section', () => {
     expect(await screen.findByText('The endpoint did not respond in time.')).toBeTruthy()
   })
 
+  it('maps webhook_not_configured to the configuration message', async () => {
+    const user = userEvent.setup()
+    await renderForm(false, installHandlers(webhookState(), () =>
+      HttpResponse.json(
+        {
+          type: 'https://newtg.dev/problems/webhook_not_configured',
+          title: 'Webhook is not configured',
+          detail: 'configure notify.webhook.url and notify.webhook.secret before testing',
+        },
+        { status: 422 },
+      ),
+    ))
+
+    await user.click(await screen.findByRole('button', { name: 'Send test event' }))
+
+    expect(
+      await screen.findByText('Save the endpoint URL and signing secret before testing.'),
+    ).toBeTruthy()
+    // Fixed copy only: the internal detail is never rendered.
+    expect(screen.queryByText(/configure notify\.webhook/)).toBeNull()
+  })
+
+  it('maps webhook_target_blocked to the outbound-target message', async () => {
+    const user = userEvent.setup()
+    await renderForm(false, installHandlers(webhookState(), () =>
+      HttpResponse.json(
+        {
+          type: 'https://newtg.dev/problems/webhook_target_blocked',
+          title: 'Webhook target is not allowed',
+          detail: 'the configured URL is not an allowed outbound target',
+        },
+        { status: 422 },
+      ),
+    ))
+
+    await user.click(await screen.findByRole('button', { name: 'Send test event' }))
+
+    expect(
+      await screen.findByText(
+        'The saved endpoint is not an allowed outbound target. Change the URL or allow this host, then try again.',
+      ),
+    ).toBeTruthy()
+    // The blocked message must not be conflated with "not configured": the
+    // administrator's next action is different (change target vs. fill in).
+    expect(
+      screen.queryByText('Save the endpoint URL and signing secret before testing.'),
+    ).toBeNull()
+    expect(screen.queryByText(/not an allowed outbound target$/)).toBeNull()
+  })
+
+  it('reports a transport TypeError as offline', async () => {
+    const user = userEvent.setup()
+    await renderForm(false, installHandlers(webhookState(), () => HttpResponse.error()))
+
+    await user.click(await screen.findByRole('button', { name: 'Send test event' }))
+
+    // A rejected fetch must be normalized to a status-0 Problem, otherwise
+    // the panel falls into the generic "Test failed: …" branch.
+    expect(
+      await screen.findByText('You are offline. Check your connection and try again.'),
+    ).toBeTruthy()
+  })
+
+  it('refreshes the CSRF cookie and replays the test exactly once', async () => {
+    const user = userEvent.setup()
+    let postCalls = 0
+    let meCalls = 0
+    const sentTokens: Array<string | null> = []
+    await renderForm(false, installHandlers(webhookState()))
+    server.use(
+      http.get(`${ORIGIN}/api/me`, () => {
+        meCalls += 1
+        csrfToken = 'fresh-token'
+        return HttpResponse.json({ id: 'me' })
+      }),
+      http.post(`${ORIGIN}/api/settings/test/webhook`, ({ request }) => {
+        postCalls += 1
+        sentTokens.push(request.headers.get('X-CSRF-Token'))
+        if (postCalls === 1) {
+          return HttpResponse.json(
+            {
+              type: 'https://newtg.dev/problems/csrf_failed',
+              title: 'CSRF validation failed',
+            },
+            { status: 403 },
+          )
+        }
+        return HttpResponse.json({ ok: true, status_code: 200 })
+      }),
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Send test event' }))
+
+    expect(await screen.findByText('Endpoint responded with 200.')).toBeTruthy()
+    expect(postCalls).toBe(2)
+    expect(meCalls).toBe(1)
+    expect(sentTokens).toEqual(['stale-token', 'fresh-token'])
+  })
+
+  it('sends X-CSRF-Token on the test POST', async () => {
+    const user = userEvent.setup()
+    const { harness } = await renderForm(false)
+
+    await user.click(await screen.findByRole('button', { name: 'Send test event' }))
+
+    await waitFor(() => expect(harness.tests).toBe(1))
+    expect(harness.testCsrf).toEqual(['stale-token'])
+  })
+
   it('starts an inline countdown from Retry-After on 429', async () => {
     const user = userEvent.setup()
     await renderForm(false, installHandlers(webhookState(), () =>
@@ -294,7 +424,8 @@ describe('Webhook settings section', () => {
     expect(
       await screen.findByText('Too many test events. Please wait before trying again.'),
     ).toBeTruthy()
-    const retry = await screen.findByRole('button', { name: /Retry in \d+s/ })
+    // The countdown must use the server's Retry-After verbatim, not a default.
+    const retry = await screen.findByRole('button', { name: 'Retry in 5s' })
     expect((retry as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -323,6 +454,57 @@ describe('Webhook settings section', () => {
 
     expect(await screen.findByText('Enter an absolute https URL.')).toBeTruthy()
     expect(harness.saves).toHaveLength(0)
+  })
+
+  it('enables the webhook when URL and secret are already configured (D2-11)', async () => {
+    const user = userEvent.setup()
+    const { harness } = await renderForm()
+
+    // The saved secret is masked; the untouched field must not be re-sent.
+    await user.click(await screen.findByRole('switch', { name: 'Enable webhook' }))
+    await user.click(within(screen.getByTestId('settings-section-notify.webhook')).getByRole('button', {
+      name: 'Save changes',
+    }))
+
+    await waitFor(() => expect(harness.saves).toHaveLength(1))
+    expect(harness.saves[0]?.body?.values).toEqual({ 'notify.webhook.enabled': true })
+    expect(harness.saves[0]?.body?.expect_updated_at).toBe('2026-10-19T10:00:00Z')
+  })
+
+  it('blocks an https URL with userinfo or a fragment (client mirrors the guard)', async () => {
+    const user = userEvent.setup()
+    const { harness } = await renderForm()
+
+    const url = await screen.findByLabelText('Endpoint URL')
+    for (const candidate of [
+      'https://user:pass@hooks.example.com/notify',
+      'https://hooks.example.com/notify#fragment',
+    ]) {
+      await user.clear(url)
+      await user.type(url, candidate)
+      await user.click(screen.getByRole('button', { name: 'Save changes' }))
+      expect(
+        await screen.findByText('Enter an https URL without credentials or a fragment.'),
+      ).toBeTruthy()
+    }
+
+    expect(harness.saves).toHaveLength(0)
+  })
+
+  it('counts URL length in code points, matching the server rune limit', async () => {
+    const { harness } = await renderForm()
+
+    // 900 supplementary-plane characters are 1800 UTF-16 units but only 900
+    // runes; the whole URL is 926 runes, which the server accepts. A UTF-16
+    // length check would reject it.
+    const url = (await screen.findByLabelText('Endpoint URL')) as HTMLInputElement
+    fireEvent.change(url, {
+      target: { value: `https://hooks.example.com/${'😀'.repeat(900)}` },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(harness.saves).toHaveLength(1))
+    expect(screen.queryByText('At most 1024 characters.')).toBeNull()
   })
 
   it('blocks enabling without an endpoint URL and signing secret (D2-11)', async () => {

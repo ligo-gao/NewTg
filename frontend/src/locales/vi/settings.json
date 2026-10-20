@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "Quản lý thông báo",
     "field_https_url": "Nhập URL https tuyệt đối.",
+    "field_https_url_no_credentials": "Nhập URL https không có thông tin đăng nhập hoặc fragment.",
     "cross_webhook_url": "Cần URL điểm cuối khi bật Webhook.",
     "cross_webhook_secret": "Cần khóa bí mật ký khi bật Webhook."
   },
@@ -578,6 +579,8 @@
       "result": "Điểm cuối phản hồi {code}.",
       "failed": "Kiểm tra thất bại: {reason}",
       "not_configured": "Hãy lưu URL điểm cuối và khóa bí mật ký trước khi kiểm tra.",
+      "target_blocked": "Điểm cuối đã lưu không phải là đích gửi đi được phép. Hãy đổi URL hoặc cho phép máy chủ này rồi thử lại.",
+      "invalid_config": "Cấu hình Webhook đã lưu bị từ chối. Hãy kiểm tra URL và khóa bí mật ký.",
       "timeout": "Điểm cuối không phản hồi kịp thời.",
       "rate_limited": "Gửi sự kiện thử quá nhiều. Vui lòng đợi rồi thử lại.",
       "retry_in": "Thử lại sau {seconds} giây",

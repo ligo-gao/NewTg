@@ -34,6 +34,13 @@ const (
 	// webhookTestEvent 是样例事件名。它**不是事件契约**：业务 payload 的
 	// 字段与事件名归模块 01/03/04，这里只用于连通性与签名验证。
 	webhookTestEvent = "test"
+
+	// 两个 422 必须可区分（D2-14 复核 M1）：未配置是管理员能就地补齐的
+	// 状态，目标被守卫拒绝则是 URL 本身不可用；前端据此给「去配置」还是
+	// 「换目标/加白名单」的不同动作。合并成 validation_failed 会让 UI 只能
+	// 展示一句含糊的通用文案。
+	webhookProblemNotConfigured = "https://newtg.dev/problems/webhook_not_configured"
+	webhookProblemTargetBlocked = "https://newtg.dev/problems/webhook_target_blocked"
 )
 
 // webhookTestPayload 是固定样例字节。刻意用常量而不是运行时 Marshal：
@@ -65,13 +72,13 @@ func (h *SettingsHandlers) handleTestWebhook(w http.ResponseWriter, r *http.Requ
 
 	result, err := h.webhook.SendTest(r.Context(), webhookTestPayload)
 	if err != nil {
-		status, title, detail := webhookTestErrorFields(err)
+		status, problemType, title, detail := webhookTestErrorFields(err)
 		if status == http.StatusInternalServerError {
 			// 解封失败等内部错误只记服务端日志；响应固定文案。
 			h.log.Error("settings: webhook test failed", "err", err)
 		}
 		h.writeWebhookTestAudit(r, actor, webhookTestResponse{OK: false, StatusCode: 0}, status)
-		writeProblemDetail(w, status, settingsProblemType(status), title, detail)
+		writeProblemDetail(w, status, problemType, title, detail)
 		return
 	}
 
@@ -101,23 +108,29 @@ func (h *SettingsHandlers) allowWebhookTest(w http.ResponseWriter, r *http.Reque
 	return true
 }
 
-// webhookTestErrorFields 把发送错误映射为状态码与固定文案。
+// webhookTestErrorFields 把发送错误映射为状态码、problem type 与固定文案。
 //
 // 分类刻意只到「未配置 / 目标被守卫拒绝 / 传输失败 / 内部错误」四档：
 // 任何更细的上游错误（DNS、TLS、连接重置、响应体）都可能携带端点内部信息。
-func webhookTestErrorFields(err error) (status int, title, detail string) {
+// 前两档同为 422，但 problem type 不同：前者可补齐配置后重试，后者必须
+// 更换目标或调整白名单，前端需要据此给出不同动作。
+func webhookTestErrorFields(err error) (status int, problemType, title, detail string) {
 	switch {
 	case errors.Is(err, notify.ErrWebhookNotConfigured):
-		return http.StatusUnprocessableEntity, "Webhook is not configured",
+		return http.StatusUnprocessableEntity, webhookProblemNotConfigured,
+			"Webhook is not configured",
 			"configure notify.webhook.url and notify.webhook.secret before testing"
 	case errors.Is(err, notify.ErrWebhookBlockedTarget):
-		return http.StatusUnprocessableEntity, "Webhook target is not allowed",
+		return http.StatusUnprocessableEntity, webhookProblemTargetBlocked,
+			"Webhook target is not allowed",
 			"the configured URL is not an allowed outbound target"
 	case errors.Is(err, notify.ErrWebhookTransport):
-		return http.StatusGatewayTimeout, "Webhook request failed",
+		return http.StatusGatewayTimeout, problemTypeGatewayTimeout,
+			"Webhook request failed",
 			"the endpoint did not return an HTTP response in time"
 	default:
-		return http.StatusInternalServerError, "Internal Server Error", ""
+		return http.StatusInternalServerError, authProblemInternal,
+			"Internal Server Error", ""
 	}
 }
 

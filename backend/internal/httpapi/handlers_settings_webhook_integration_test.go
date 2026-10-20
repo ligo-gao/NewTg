@@ -237,5 +237,16 @@ func TestIntegrationWebhookTestEndpoint(t *testing.T) {
 		if rr.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d，期望 422", rr.Code)
 		}
+		var problem struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("decode problem: %v（body=%s）", err, rr.Body.String())
+		}
+		// 未配置必须是独立的 problem type，前端才能提示「去配置」而不是
+		// 把它与「目标被拒」混成同一句通用错误。
+		if problem.Type != webhookProblemNotConfigured {
+			t.Fatalf("problem.type = %q，期望 %q", problem.Type, webhookProblemNotConfigured)
+		}
 	})
 }

@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "公告管理",
     "field_https_url": "請輸入絕對的 https URL。",
+    "field_https_url_no_credentials": "請輸入不含憑證或片段的 https URL。",
     "cross_webhook_url": "啟用 Webhook 時必須填寫端點 URL。",
     "cross_webhook_secret": "啟用 Webhook 時必須設定簽章密鑰。"
   },
@@ -578,6 +579,8 @@
       "result": "目標端點回應 {code}",
       "failed": "測試失敗：{reason}",
       "not_configured": "請先儲存端點 URL 與簽章密鑰。",
+      "target_blocked": "已儲存的端點不是允許的輸出目標。請更換 URL 或將主機加入白名單後再試。",
+      "invalid_config": "已儲存的 Webhook 設定遭到拒絕，請檢查 URL 與簽章密鑰。",
       "timeout": "端點未在時限內回應。",
       "rate_limited": "測試事件傳送過於頻繁，請稍後再試。",
       "retry_in": "重試（{seconds}s）",

@@ -59,6 +59,7 @@
     "module_webhook": "Webhook",
     "manage_announcements": "公告管理",
     "field_https_url": "请输入绝对的 https URL。",
+    "field_https_url_no_credentials": "请输入不含凭据或片段的 https URL。",
     "cross_webhook_url": "启用 Webhook 时必须填写端点 URL。",
     "cross_webhook_secret": "启用 Webhook 时必须配置签名密钥。"
   },
@@ -578,6 +579,8 @@
       "result": "目标端点返回 {code}",
       "failed": "测试失败：{reason}",
       "not_configured": "请先保存端点 URL 与签名密钥。",
+      "target_blocked": "已保存的端点不是允许的出站目标。请更换 URL 或将主机加入白名单后重试。",
+      "invalid_config": "已保存的 Webhook 配置被拒绝，请检查 URL 与签名密钥。",
       "timeout": "端点未在限定时间内响应。",
       "rate_limited": "测试事件发送过于频繁，请稍后重试。",
       "retry_in": "重试（{seconds}s）",

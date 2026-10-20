@@ -2427,7 +2427,9 @@ export interface paths {
         /**
          * 向已保存的 Webhook 端点发送一条固定样例事件
          * @description 配置取自**已保存**的 `notify.webhook.*` 快照；请求体为空。
-         *     URL/secret 未配置 → 422；目标被最小 SSRF 守卫拒绝 → 422；
+         *     URL/secret 未配置 → 422 `type=https://newtg.dev/problems/webhook_not_configured`；
+         *     目标被最小 SSRF 守卫拒绝 → 422 `type=https://newtg.dev/problems/webhook_target_blocked`
+         *     （两者都是 422，但 type 不同：前者补齐配置后可重试，后者必须更换目标或调整白名单）；
          *     连接失败/超时 → 504 固定文案；**已收到 HTTP 响应即返回 200**，
          *     `ok` 表示目标是否 2xx，`status_code` 原样回传（含 3xx/4xx/5xx，3xx 不跟随）。
          *     不受 `enabled=false` 与事件订阅影响（测试目的就是验证未启用的配置）。
@@ -11934,7 +11936,13 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            /** @description URL/secret 未配置，或目标地址被出站守卫拒绝 */
+            /**
+             * @description 保存的 Webhook 配置不可用于测试，响应的 `type` 区分两种可操作原因：
+             *     - `https://newtg.dev/problems/webhook_not_configured`：URL 或签名密钥未配置；
+             *     - `https://newtg.dev/problems/webhook_target_blocked`：URL 被出站守卫拒绝
+             *       （非 https、含 userinfo/fragment、私网/loopback/link-local 或主机不可解析）。
+             *     两者 `detail` 均为固定文案，不包含目标地址或上游错误原文。
+             */
             422: {
                 headers: {
                     [name: string]: unknown;

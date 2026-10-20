@@ -13,9 +13,11 @@
 import {
   CSRF_HEADER,
   getCsrfToken,
+  isCsrfFailure,
+  refreshCsrfCookie,
   toApiError,
 } from '@/api/client'
-import { ApiError } from '@/api/errors'
+import { ApiError, parseProblem } from '@/api/errors'
 
 export interface SettingsItem {
   key: string
@@ -189,19 +191,53 @@ export interface WebhookTestResult {
  * The endpoint is in the generated contract, but the surrounding settings
  * transport is hand-rolled (the section registry is not in the schema yet),
  * so this sits next to `fetchSettingsSection` and shares its Problem
- * normalization. `Retry-After` on 429 reaches callers via `ApiError`.
+ * normalization.
+ *
+ * Transport handling mirrors `features/admin/notifications/api.ts`:
+ * - a `TypeError` from `fetch` is a transport failure, normalized to a
+ *   status-0 Problem so the panel's offline branch is reachable;
+ * - an `AbortError` is rethrown unchanged (an unmount/cancel is not a failure);
+ * - `403 csrf_failed` refreshes the session cookie via `GET /api/me` and
+ *   replays exactly once with the re-read token.
+ * `Retry-After` on 429 reaches callers via `ApiError`.
  */
 export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResult> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
+  const headers = new Headers({ Accept: 'application/json' })
   const csrfToken = getCsrfToken()
-  if (csrfToken !== undefined) headers[CSRF_HEADER] = csrfToken
+  if (csrfToken !== undefined) headers.set(CSRF_HEADER, csrfToken)
 
-  const response = await fetch(apiUrl('/api/settings/test/webhook'), {
+  const init: RequestInit = {
     method: 'POST',
     credentials: 'same-origin',
     headers,
     signal,
-  })
+  }
+
+  const dispatch = async (): Promise<Response> => {
+    try {
+      return await fetch(apiUrl('/api/settings/test/webhook'), init)
+    } catch (error) {
+      // 调用方主动取消不是传输失败，必须原样抛出让 React Query 丢弃结果。
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      // Only a transport-level TypeError means "no HTTP response arrived";
+      // programming errors are not offline.
+      if (error instanceof TypeError) throw parseProblem({ status: 0 })
+      throw error
+    }
+  }
+
+  let response = await dispatch()
+
+  if (!response.ok && (await isCsrfFailure(response))) {
+    await refreshCsrfCookie()
+    // The replay must not resend the rejected token when the refresh did not
+    // produce a cookie (`init.headers` is the same Headers instance).
+    headers.delete(CSRF_HEADER)
+    const refreshedToken = getCsrfToken()
+    if (refreshedToken !== undefined) headers.set(CSRF_HEADER, refreshedToken)
+    response = await dispatch()
+  }
+
   if (!response.ok) throw await normalizeError(response)
   return (await response.json()) as WebhookTestResult
 }
