@@ -27,7 +27,7 @@ const DETAIL: PublicModelDetail = {
   model_id: 'openai/gpt-5',
   display_name: 'GPT-5',
   vendor: 'openai',
-  capabilities: [],
+  capabilities: ['vision'],
   context_length: 128000,
   max_output: 32000,
   mode: 'per_token',
@@ -40,7 +40,7 @@ const DETAIL: PublicModelDetail = {
   endpoints: ['chat.completions'],
   tags: ['long-context'],
   description: '',
-  modalities: ['text', 'image'],
+  modalities: ['text', 'image', 'hologram'],
   knowledge_cutoff: '2025-03',
   released_at: '2025-08-07',
   group_prices: [
@@ -86,6 +86,13 @@ describe('PricingDetailPage (F-09-24 / F-09-27)', () => {
     expect(await findByRole('heading', { name: 'GPT-5' })).toBeTruthy()
     expect(getByText('128K')).toBeTruthy()
     expect(getByText('2025-03')).toBeTruthy()
+    // 模态与端点枚举走本地化可读名；未知模态原样显示（不回退成 i18n 键名）。
+    expect(getByText('Text · Image · hologram')).toBeTruthy()
+    expect(getByText('Vision')).toBeTruthy()
+    expect(getByText('Chat completions')).toBeTruthy()
+    // 参数表列标签完整（name/required/type/default/description）。
+    expect(getByText('Default')).toBeTruthy()
+    expect(getByText('Description')).toBeTruthy()
     expect(getByText('vip')).toBeTruthy()
     // 分组表直接展示服务端算好的 600，不做倍率乘法。
     expect(getByText('600')).toBeTruthy()

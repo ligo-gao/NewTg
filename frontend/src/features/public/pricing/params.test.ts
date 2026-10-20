@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   activeFilterCount,
   canonicalPricingSearch,
+  capabilityList,
   clearedFilters,
+  contextList,
+  endpointTypeList,
   needsPricingUrlRepair,
   validatePricingSearch,
   vendorList,
@@ -18,6 +21,9 @@ describe('pricing URL contract (F-09-22)', () => {
       search: '',
       sort: 'name',
       vendor: '',
+      capability: '',
+      context: '',
+      endpointType: '',
       group: '',
       quotaType: 'all',
       view: 'card',
@@ -57,6 +63,59 @@ describe('pricing URL contract (F-09-22)', () => {
     )
     expect(vendorList(validatePricingSearch({ vendor: 'a,b' }))).toEqual(['a', 'b'])
     expect(withVendors(['b', 'a', 'b'])).toBe('b,a')
+  })
+
+  it('normalizes the new metadata filters as comma lists and repeated keys', () => {
+    const search = validatePricingSearch({
+      capability: 'Vision, text,vision',
+      context: ['128k', '8k,128k'],
+      endpointType: 'chat.completions,generateContent',
+    })
+    expect(search.capability).toBe('vision,text')
+    expect(search.context).toBe('128k,8k')
+    // 端点枚举统一小写，与服务端 facet 的 value 形态一致。
+    expect(search.endpointType).toBe('chat.completions,generatecontent')
+    expect(capabilityList(search)).toEqual(['vision', 'text'])
+    expect(contextList(search)).toEqual(['128k', '8k'])
+    expect(endpointTypeList(search)).toEqual(['chat.completions', 'generatecontent'])
+  })
+
+  it('drops unknown context buckets and endpoint enums but keeps valid zero-hit values', () => {
+    const search = validatePricingSearch({
+      // 8k/200k+ 是冻结枚举：目录暂无命中也必须保留（服务端会返回空集），
+      // 16k / chat 之类不在枚举里的拼写直接丢弃。
+      context: '8k,16k,200K+',
+      endpointType: 'messages,chat,images.generations',
+    })
+    expect(search.context).toBe('8k,200k+')
+    expect(search.endpointType).toBe('messages,images.generations')
+  })
+
+  it('keeps capability unknown to the client and lets the facets prune it later', () => {
+    // capability 的合法域来自目录，validateSearch 无法静态判断。
+    expect(validatePricingSearch({ capability: 'telepathy' }).capability).toBe(
+      'telepathy',
+    )
+  })
+
+  it('serializes the new filters into a canonical round trip', () => {
+    const search = validatePricingSearch({
+      vendor: 'openai',
+      capability: 'vision',
+      context: '128k',
+      endpointType: 'messages',
+    })
+    const reparsed = validatePricingSearch(
+      Object.fromEntries(new URLSearchParams(canonicalPricingSearch(search))),
+    )
+    expect(reparsed).toEqual(search)
+    expect(needsPricingUrlRepair(`?${canonicalPricingSearch(search)}`, search)).toBe(
+      false,
+    )
+    // 未知值被降级后，原始地址栏必须触发一次修复回写。
+    expect(
+      needsPricingUrlRepair('?context=16k', validatePricingSearch({ context: '16k' })),
+    ).toBe(true)
   })
 
   it('truncates search to 128 characters', () => {

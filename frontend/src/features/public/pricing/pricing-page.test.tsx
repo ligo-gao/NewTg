@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { renderWithProviders } from '@/test-support/providers'
 
 import type { PublicPricingList } from './api'
+import { PricingFilterSheet } from './facet-panel'
 import { validatePricingSearch, type PricingSearch } from './params'
 import { PricingPage } from './pricing-page'
 
@@ -57,10 +58,16 @@ function listResponse(overrides: Partial<PublicPricingList> = {}): PublicPricing
         { value: 'openai', label: 'OpenAI', count: 1 },
         { value: 'anthropic', label: 'Anthropic', count: 0 },
       ],
-      capabilities: [],
-      context: [],
+      capabilities: [
+        { value: 'vision', label: 'Vision', count: 1 },
+        { value: 'embedding', label: 'embedding', count: 0 },
+      ],
+      context: [{ value: '128k', label: '128K', count: 1 }],
       groups: [{ value: 'vip', label: 'vip', ratio: 120, count: 1 }],
-      endpoints: [],
+      endpoints: [
+        { value: 'chat.completions', label: 'chat.completions', count: 1 },
+        { value: 'messages', label: 'messages', count: 0 },
+      ],
       pricing_types: [
         { value: 'token', count: 1 },
         { value: 'request', count: 0 },
@@ -139,6 +146,135 @@ describe('PricingPage (F-09-14 ~ F-09-22)', () => {
       expect(urls.some((search) => search.includes('vendor=openai'))).toBe(true)
     })
     expect(changes.at(-1)?.p).toBe(1)
+  })
+
+  it('writes metadata facets into the URL and the API request', async () => {
+    const urls: string[] = []
+    baseHandlers((url) => urls.push(url.search))
+    const changes: PricingSearch[] = []
+
+    const { findByText, getByLabelText } = await renderWithProviders(
+      <Harness initial={{ p: 3 }} onChange={(next) => changes.push(next)} />,
+      ['public'],
+    )
+    await findByText('GPT-5')
+
+    fireEvent.click(getByLabelText(/Vision/))
+    await waitFor(() => {
+      expect(urls.some((search) => search.includes('capability=vision'))).toBe(true)
+    })
+    expect(changes.at(-1)?.capability).toBe('vision')
+    // 任何筛选变化都重置页码（F-09-21）。
+    expect(changes.at(-1)?.p).toBe(1)
+
+    fireEvent.click(getByLabelText(/32K – 128K/))
+    await waitFor(() => {
+      expect(urls.some((search) => search.includes('context=128k'))).toBe(true)
+    })
+
+    fireEvent.click(getByLabelText(/Chat completions/))
+    await waitFor(() => {
+      expect(
+        urls.some((search) => search.includes('endpointType=chat.completions')),
+      ).toBe(true)
+    })
+  })
+
+  it('disables metadata facet options whose count is zero', async () => {
+    const { findByText, getByLabelText } = await renderWithProviders(<Harness />, [
+      'public',
+    ])
+    await findByText('GPT-5')
+
+    const zeroCapability = getByLabelText(/Embeddings/) as HTMLInputElement
+    expect(zeroCapability.disabled).toBe(true)
+    expect(zeroCapability.closest('label')?.getAttribute('aria-disabled')).toBe(
+      'true',
+    )
+    const zeroEndpoint = getByLabelText(/Messages/) as HTMLInputElement
+    expect(zeroEndpoint.disabled).toBe(true)
+  })
+
+  it('renders profile metadata on cards and keeps the plain fallback without it', async () => {
+    baseHandlers(
+      undefined,
+      listResponse({
+        items: [
+          card({
+            model_id: 'openai/gpt-5',
+            display_name: 'GPT-5',
+            vendor: 'OpenAI',
+            capabilities: ['vision', 'function_calling'],
+            tags: ['long-context'],
+            endpoints: ['chat.completions'],
+            description: 'A multimodal model',
+          }),
+          card({
+            // 无档案：display_name 为空、能力/标签/端点为空数组。
+            model_id: 'legacy/model',
+            display_name: '',
+            vendor: '',
+            capabilities: [],
+            tags: [],
+            endpoints: [],
+            context_length: null,
+            max_output: null,
+            description: '',
+          }),
+        ],
+        total: '2',
+      }),
+    )
+
+    const { findByText, getAllByText } = await renderWithProviders(<Harness />, ['public'])
+    const profiled = (await findByText('GPT-5')).closest('article') as HTMLElement
+    expect(profiled).not.toBeNull()
+    expect(within(profiled).getByText('OpenAI')).toBeTruthy()
+    expect(within(profiled).getByText('Vision')).toBeTruthy()
+    expect(within(profiled).getByText('Function calling')).toBeTruthy()
+    expect(within(profiled).getByText('long-context')).toBeTruthy()
+    expect(within(profiled).getByText('Chat completions')).toBeTruthy()
+
+    // 空 display_name 回退 model_id，且不渲染能力/标签/端点空壳。
+    const fallback = getAllByText('legacy/model')[0]?.closest(
+      'article',
+    ) as HTMLElement
+    expect(fallback).not.toBeNull()
+    expect(within(fallback).queryByText('Chat completions')).toBeNull()
+    expect(within(fallback).queryByText('Context unknown')).toBeNull()
+  })
+
+  it('drops a capability the facet candidates do not know from the URL', async () => {
+    const changes: PricingSearch[] = []
+    const { findByText } = await renderWithProviders(
+      <Harness initial={{ capability: 'telepathy' }} onChange={(next) => changes.push(next)} />,
+      ['public'],
+    )
+    await findByText('GPT-5')
+
+    // 响应落定后 effect 把未知 capability 从地址栏剔除（replace，不新增历史）。
+    await waitFor(() => {
+      expect(changes.some((next) => next.capability === '')).toBe(true)
+    })
+  })
+
+  it('syncs metadata facets inside the mobile filter sheet', async () => {
+    const applies: PricingSearch[] = []
+    const { findByRole, getByLabelText, getByRole } = await renderWithProviders(
+      <PricingFilterSheet
+        open
+        onOpenChange={() => {}}
+        facets={listResponse().facets}
+        value={validatePricingSearch({})}
+        onApply={(next) => applies.push(next)}
+      />,
+      ['public'],
+    )
+
+    expect(await findByRole('dialog', { name: 'Filters' })).toBeTruthy()
+    fireEvent.click(getByLabelText(/Vision/))
+    fireEvent.click(getByRole('button', { name: 'Apply filters' }))
+    expect(applies.at(-1)?.capability).toBe('vision')
   })
 
   it('debounces search input into a single request', async () => {

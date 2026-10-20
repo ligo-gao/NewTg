@@ -21,13 +21,22 @@ import { Breadcrumb } from '@/features/public/breadcrumb'
 import { pricingListQueryOptions } from './api'
 import { PricingFacetPanel, PricingFilterSheet } from './facet-panel'
 import { formatTotal } from './format'
+import { capabilityLabel, contextBucketLabel, endpointLabel } from './metadata'
 import { ModelCard } from './model-card'
 import {
   activeFilterCount,
+  capabilityList,
   clearedFilters,
+  contextList,
+  endpointTypeList,
   queryParamsOf,
   vendorList,
+  withCapabilities,
+  withContexts,
+  withEndpointTypes,
   withVendors,
+  CONTEXT_BUCKETS,
+  ENDPOINT_TYPES,
   type PricingSearch,
   type PricingView,
 } from './params'
@@ -137,6 +146,39 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
     const current = vendorList(search)
     const valid = current.filter((vendor) => knownVendors.has(vendor))
     if (valid.length !== current.length) next.vendor = withVendors(valid)
+
+    // capability 的合法域来自目录数据，只能用返回的 facet 候选集判断：
+    // 不在候选集里的值要么拼错、要么与其它筛选叠加后已无候选，两种情况
+    // 都该从地址栏剔除，避免分享链接继续携带无效项。
+    const knownCapabilities = new Set(
+      data.facets.capabilities.map((entry) => entry.value),
+    )
+    const capabilities = capabilityList(search)
+    const validCapabilities = capabilities.filter((entry) =>
+      knownCapabilities.has(entry),
+    )
+    if (validCapabilities.length !== capabilities.length) {
+      next.capability = withCapabilities(validCapabilities)
+    }
+
+    // context / endpointType 是**冻结枚举**：当前目录没有命中时后端仍返回
+    // 空集并保留筛选语义，facet 却只列出有命中的值。因此这里用常量白名单，
+    // 而不是 facet 候选集，只剔除真正未知的拼写。
+    const contexts = contextList(search)
+    const validContexts = contexts.filter((entry) =>
+      (CONTEXT_BUCKETS as readonly string[]).includes(entry),
+    )
+    if (validContexts.length !== contexts.length) {
+      next.context = withContexts(validContexts)
+    }
+    const endpointTypes = endpointTypeList(search)
+    const validEndpointTypes = endpointTypes.filter((entry) =>
+      (ENDPOINT_TYPES as readonly string[]).includes(entry),
+    )
+    if (validEndpointTypes.length !== endpointTypes.length) {
+      next.endpointType = withEndpointTypes(validEndpointTypes)
+    }
+
     if (
       search.group !== '' &&
       !data.facets.groups.some((group) => group.value === search.group)
@@ -149,7 +191,16 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
     }
     // 只在响应/URL 变化时运行；`search` 整体作为依赖会让每次渲染都进入。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, query.isFetching, search.vendor, search.group, search.p])
+  }, [
+    data,
+    query.isFetching,
+    search.vendor,
+    search.capability,
+    search.context,
+    search.endpointType,
+    search.group,
+    search.p,
+  ])
 
   const effectiveView: PricingView =
     search.view === 'table' && wideEnoughForTable ? 'table' : 'card'
@@ -168,10 +219,23 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
   const isFiltered =
     search.search !== '' ||
     search.vendor !== '' ||
+    search.capability !== '' ||
+    search.context !== '' ||
+    search.endpointType !== '' ||
     search.group !== '' ||
     search.quotaType !== 'all'
 
-  const removeFilter = (kind: 'search' | 'vendor' | 'group' | 'quotaType', value?: string) => {
+  const removeFilter = (
+    kind:
+      | 'search'
+      | 'vendor'
+      | 'capability'
+      | 'context'
+      | 'endpointType'
+      | 'group'
+      | 'quotaType',
+    value?: string,
+  ) => {
     switch (kind) {
       case 'search':
         updateFilters({ search: '' })
@@ -179,6 +243,27 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
       case 'vendor':
         updateFilters({
           vendor: withVendors(vendorList(search).filter((vendor) => vendor !== value)),
+        })
+        break
+      case 'capability':
+        updateFilters({
+          capability: withCapabilities(
+            capabilityList(search).filter((entry) => entry !== value),
+          ),
+        })
+        break
+      case 'context':
+        updateFilters({
+          context: withContexts(
+            contextList(search).filter((entry) => entry !== value),
+          ),
+        })
+        break
+      case 'endpointType':
+        updateFilters({
+          endpointType: withEndpointTypes(
+            endpointTypeList(search).filter((entry) => entry !== value),
+          ),
         })
         break
       case 'group':
@@ -263,7 +348,10 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
           />
 
           {data === undefined || data.items.length === 0 ? null : data.facets.vendors.length === 0 &&
+            data.facets.capabilities.length === 0 &&
+            data.facets.context.length === 0 &&
             data.facets.groups.length === 0 &&
+            data.facets.endpoints.length === 0 &&
             data.facets.pricing_types.length === 0 ? (
             <p className="text-[13px] leading-5 text-ink-3">
               {t('public.pricing.filters_unavailable')}
@@ -289,6 +377,48 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
                     label: t('public.pricing.filter_vendor', { value: vendor }),
                   })}
                   onRemove={() => removeFilter('vendor', vendor)}
+                />
+              ))}
+              {capabilityList(search).map((entry) => (
+                <FilterChip
+                  key={`capability-${entry}`}
+                  label={t('public.pricing.filter_capability', {
+                    value: capabilityLabel(entry, t),
+                  })}
+                  removeLabel={t('public.pricing.remove_filter', {
+                    label: t('public.pricing.filter_capability', {
+                      value: capabilityLabel(entry, t),
+                    }),
+                  })}
+                  onRemove={() => removeFilter('capability', entry)}
+                />
+              ))}
+              {contextList(search).map((entry) => (
+                <FilterChip
+                  key={`context-${entry}`}
+                  label={t('public.pricing.filter_context', {
+                    value: contextBucketLabel(entry, t),
+                  })}
+                  removeLabel={t('public.pricing.remove_filter', {
+                    label: t('public.pricing.filter_context', {
+                      value: contextBucketLabel(entry, t),
+                    }),
+                  })}
+                  onRemove={() => removeFilter('context', entry)}
+                />
+              ))}
+              {endpointTypeList(search).map((entry) => (
+                <FilterChip
+                  key={`endpoint-${entry}`}
+                  label={t('public.pricing.filter_endpoint', {
+                    value: endpointLabel(entry, t),
+                  })}
+                  removeLabel={t('public.pricing.remove_filter', {
+                    label: t('public.pricing.filter_endpoint', {
+                      value: endpointLabel(entry, t),
+                    }),
+                  })}
+                  onRemove={() => removeFilter('endpointType', entry)}
                 />
               ))}
               {search.group !== '' ? (

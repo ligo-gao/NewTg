@@ -1,9 +1,10 @@
 /**
  * facet 侧栏（F-09-15）与移动端筛选 Sheet（F-09-23）。
  *
- * 只渲染后端**真正接受**的四组参数：vendor / group / quotaType 与
- * pricing_types。capabilities/context/endpoints 在当前波次恒为空数组
- * （元数据未落库，R-PUB-01），渲染空组只会制造「点了没反应」的假入口。
+ * 渲染后端**真正接受**的六组参数：vendor / capability / context / group /
+ * quotaType / endpointType。D1c 起 `/api/pricing` 返回元数据 facets，
+ * 此前恒为空数组的三组（capability/context/endpointType）随之解禁；
+ * 空组仍显示「无」而不是整组隐藏，保持六组的稳定布局（F-09-15 六态）。
  *
  * 计数为 0 的候选置灰且不可聚焦；已选中的 0 计数项仍可取消，否则用户
  * 会被自己的筛选锁死。
@@ -11,9 +12,21 @@
 
 import { useEffect, useId, useState, type ReactNode } from 'react'
 
-import type { PublicFacets } from './api'
+import type { PublicFacetOption, PublicFacets } from './api'
+import { capabilityLabel, contextBucketLabel, endpointLabel } from './metadata'
 import type { PricingQuotaType, PricingSearch } from './params'
-import { activeFilterCount, clearedFilters, vendorList, withVendors } from './params'
+import {
+  activeFilterCount,
+  capabilityList,
+  clearedFilters,
+  contextList,
+  endpointTypeList,
+  vendorList,
+  withCapabilities,
+  withContexts,
+  withEndpointTypes,
+  withVendors,
+} from './params'
 import { MobileSheet } from '@/features/public/mobile-sheet'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Tag } from '@/shared/ui/tag'
@@ -100,6 +113,49 @@ export interface PricingFacetPanelProps {
   onChange: (next: PricingSearch) => void
 }
 
+/**
+ * 多选 facet 组的通用渲染。新三组与 vendor 共用同一套交互与 0 计数禁用
+ * 规则；抽出来是为了避免复制三份「选中后写回 URL」的逻辑（写回口径一旦
+ * 分叉就会出现漏掉 `p: 1` 的组）。
+ */
+function MultiFacetGroup({
+  title,
+  options,
+  selected,
+  labelOf,
+  onToggle,
+}: {
+  title: string
+  options: readonly PublicFacetOption[]
+  selected: readonly string[]
+  labelOf: (option: PublicFacetOption) => string
+  onToggle: (value: string) => void
+}) {
+  const { t } = useI18n()
+  return (
+    <FacetGroup title={title}>
+      {options.length === 0 ? (
+        <p className="px-1 text-ink-3">{t('public.pricing.none')}</p>
+      ) : (
+        options.map((option) => {
+          const checked = selected.includes(option.value)
+          return (
+            <OptionRow
+              key={option.value}
+              checked={checked}
+              disabled={option.count === 0 && !checked}
+              onSelect={() => onToggle(option.value)}
+              count={option.count}
+            >
+              {labelOf(option)}
+            </OptionRow>
+          )
+        })
+      )}
+    </FacetGroup>
+  )
+}
+
 export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanelProps) {
   const { t, locale } = useI18n()
   const [showAllVendors, setShowAllVendors] = useState(false)
@@ -121,6 +177,22 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
       : [...selectedVendors, vendor]
     onChange({ ...value, p: 1, vendor: withVendors(next) })
   }
+
+  function toggleEnum(
+    selected: readonly string[],
+    entry: string,
+    write: (next: string[]) => string,
+    key: 'capability' | 'context' | 'endpointType',
+  ) {
+    const next = selected.includes(entry)
+      ? selected.filter((item) => item !== entry)
+      : [...selected, entry]
+    onChange({ ...value, p: 1, [key]: write(next) })
+  }
+
+  const selectedCapabilities = capabilityList(value)
+  const selectedContexts = contextList(value)
+  const selectedEndpointTypes = endpointTypeList(value)
 
   const pricingTypes = facets.pricing_types ?? []
   const countOf = (type: 'token' | 'request') =>
@@ -209,6 +281,26 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
         )}
       </FacetGroup>
 
+      <MultiFacetGroup
+        title={t('public.pricing.capabilities')}
+        options={facets.capabilities}
+        selected={selectedCapabilities}
+        labelOf={(option) => capabilityLabel(option.value, t)}
+        onToggle={(entry) =>
+          toggleEnum(selectedCapabilities, entry, withCapabilities, 'capability')
+        }
+      />
+
+      <MultiFacetGroup
+        title={t('public.pricing.context_length')}
+        options={facets.context}
+        selected={selectedContexts}
+        labelOf={(option) => contextBucketLabel(option.value, t)}
+        onToggle={(entry) =>
+          toggleEnum(selectedContexts, entry, withContexts, 'context')
+        }
+      />
+
       <FacetGroup title={t('public.pricing.groups')}>
         {facets.groups.length === 0 ? (
           <p className="px-1 text-ink-3">{t('public.pricing.none')}</p>
@@ -267,6 +359,21 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
           </OptionRow>
         ))}
       </FacetGroup>
+
+      <MultiFacetGroup
+        title={t('public.pricing.endpoint_types')}
+        options={facets.endpoints}
+        selected={selectedEndpointTypes}
+        labelOf={(option) => endpointLabel(option.value, t)}
+        onToggle={(entry) =>
+          toggleEnum(
+            selectedEndpointTypes,
+            entry,
+            withEndpointTypes,
+            'endpointType',
+          )
+        }
+      />
     </div>
   )
 }

@@ -6,8 +6,9 @@
 
 import type { PublicModelCard } from './api'
 import { convertCreditsPerK, formatCredit, formatRatio } from './format'
-import type { PricingSort, PricingTokenUnit } from './params'
 import { HighlightedText } from './highlight'
+import { endpointLabel } from './metadata'
+import type { PricingSort, PricingTokenUnit } from './params'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Tag } from '@/shared/ui/tag'
 
@@ -73,9 +74,12 @@ export function PricingTable({
                   <a
                     href={`/pricing/${encodeURIComponent(card.model_id)}`}
                     className="inline-flex max-w-[180px] items-center truncate font-medium text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-                    title={card.display_name}
+                    title={card.display_name === '' ? card.model_id : card.display_name}
                   >
-                    <HighlightedText text={card.display_name} query={search} />
+                    <HighlightedText
+                      text={card.display_name === '' ? card.model_id : card.display_name}
+                      query={search}
+                    />
                   </a>
                 </td>
                 <td className="sticky left-[200px] z-10 bg-surface-card px-4 py-2">
@@ -107,8 +111,13 @@ export function PricingTable({
                   </span>
                 </td>
                 <td className="max-w-[160px] px-4 py-2 text-ink-2">
-                  <span className="line-clamp-1" title={card.endpoints.join(', ')}>
-                    {card.endpoints.length > 0 ? card.endpoints.join(', ') : '—'}
+                  <span
+                    className="line-clamp-1"
+                    title={card.endpoints.map((entry) => endpointLabel(entry, t)).join(', ')}
+                  >
+                    {card.endpoints.length > 0
+                      ? card.endpoints.map((entry) => endpointLabel(entry, t)).join(', ')
+                      : '—'}
                   </span>
                 </td>
                 <td className="px-4 py-2 text-ink-2">

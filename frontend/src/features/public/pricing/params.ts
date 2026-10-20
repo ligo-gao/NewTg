@@ -26,8 +26,18 @@ export interface PricingSearch {
    * 逗号分隔的供应商标识。刻意用字符串而不是数组：TanStack Router 的默认
    * 序列化器会把数组写成 JSON（`vendor=["openai"]`），既不符合冻结契约的
    * `vendor=a,b`/重复键形态，也让分享链接难以人工阅读。
+   *
+   * capability / context / endpointType 用同一形态：地址栏里是逗号分隔，
+   * 发请求时再拆成数组走 openapi-fetch 的重复键序列化（`capability=a&capability=b`），
+   * 与后端冻结的「重复键或逗号分隔」两种入参形态一致。
    */
   vendor: string
+  /** 能力多选（小写枚举）；空串表示不过滤。 */
+  capability: string
+  /** 上下文分档多选（8k/32k/128k/200k+）；空串表示不过滤。 */
+  context: string
+  /** 端点类型多选（派生枚举，小写）；空串表示不过滤。 */
+  endpointType: string
   /** 空串表示不按分组过滤（浏览默认价）。 */
   group: string
   quotaType: PricingQuotaType
@@ -42,6 +52,29 @@ export interface PricingSearch {
 
 export const SEARCH_MAX_LENGTH = 128
 export const VENDOR_FILTER_MAX = 50
+
+/**
+ * 上下文分档的冻结枚举（与后端 publicContextBuckets 同值，小写用于 URL）。
+ * 为什么前端也要冻结：合法分档即使当前目录里没有命中，后端仍会返回空集而
+ * 不是「无筛选」；只有真正的拼错值才该从地址栏剔除。facet 只输出有命中的
+ * 档位，因此不能拿 facet 是否出现来判断合法性。
+ */
+export const CONTEXT_BUCKETS = ['8k', '32k', '128k', '200k+'] as const
+
+/**
+ * 端点类型派生枚举（与后端 publicEndpointMapping 同值）。比较大小写不敏感，
+ * URL 统一写小写（facet 的 value 也是小写），避免分享链接因大小写重复。
+ */
+export const ENDPOINT_TYPES = [
+  'chat.completions',
+  'messages',
+  'embeddings',
+  'images.generations',
+  'audio.speech',
+  'audio.transcriptions',
+  'rerank',
+  'generatecontent',
+] as const
 
 /** 卡片/表格各自的每页密度（F-09-21）。服务端上限 100。 */
 export const PAGE_SIZE_OPTIONS: Record<PricingView, readonly number[]> = {
@@ -104,6 +137,78 @@ export function withVendors(vendors: readonly string[]): string {
 }
 
 /**
+ * capability/context/endpointType 与 vendor 共用「重复键或逗号分隔」形态。
+ * 三者都是枚举（后端按大小写不敏感匹配），因此统一转小写去重，保证地址栏
+ * 与 facet 的 value 口径一致、同一筛选不会因大小写出现两份。
+ */
+function normalizeEnumList(
+  value: unknown,
+  allowed?: ReadonlySet<string>,
+): string[] {
+  const raw = Array.isArray(value) ? value : [value]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    for (const part of item.split(',')) {
+      const entry = part.trim().toLowerCase()
+      if (entry === '' || seen.has(entry)) continue
+      // 未知值直接丢弃（F-09-22）：合法但当前无命中的分档不在此列——
+      // allowed 是冻结枚举，不是眼前 facet 的命中集合。
+      if (allowed !== undefined && !allowed.has(entry)) continue
+      seen.add(entry)
+      out.push(entry)
+      if (out.length >= VENDOR_FILTER_MAX) return out
+    }
+  }
+  return out
+}
+
+const CONTEXT_BUCKET_SET: ReadonlySet<string> = new Set(CONTEXT_BUCKETS)
+const ENDPOINT_TYPE_SET: ReadonlySet<string> = new Set(ENDPOINT_TYPES)
+
+/** capability 的合法域来自目录数据，静态代码无法判定，故此处不做白名单。 */
+export function normalizeCapabilities(value: unknown): string[] {
+  return normalizeEnumList(value)
+}
+
+export function normalizeContexts(value: unknown): string[] {
+  return normalizeEnumList(value, CONTEXT_BUCKET_SET)
+}
+
+export function normalizeEndpointTypes(value: unknown): string[] {
+  return normalizeEnumList(value, ENDPOINT_TYPE_SET)
+}
+
+export function capabilityList(
+  search: Pick<PricingSearch, 'capability'>,
+): string[] {
+  return normalizeCapabilities(search.capability)
+}
+
+export function contextList(search: Pick<PricingSearch, 'context'>): string[] {
+  return normalizeContexts(search.context)
+}
+
+export function endpointTypeList(
+  search: Pick<PricingSearch, 'endpointType'>,
+): string[] {
+  return normalizeEndpointTypes(search.endpointType)
+}
+
+export function withCapabilities(values: readonly string[]): string {
+  return normalizeCapabilities([...values]).join(',')
+}
+
+export function withContexts(values: readonly string[]): string {
+  return normalizeContexts([...values]).join(',')
+}
+
+export function withEndpointTypes(values: readonly string[]): string {
+  return normalizeEndpointTypes([...values]).join(',')
+}
+
+/**
  * 两种视图的尺寸集合取并集：切换视图时旧尺寸仍是合法的服务端值，
  * 保留它比静默改写更贴近「视图切换保留分页位置」（F-09-17）。
  */
@@ -134,6 +239,9 @@ export function validatePricingSearch(raw: Record<string, unknown>): PricingSear
     raw.sort === 'price_asc' || raw.sort === 'price_desc' ? raw.sort : 'name'
 
   const vendor = withVendors(normalizeVendors(raw.vendor))
+  const capability = withCapabilities(normalizeCapabilities(raw.capability))
+  const context = withContexts(normalizeContexts(raw.context))
+  const endpointType = withEndpointTypes(normalizeEndpointTypes(raw.endpointType))
 
   const group = toText(raw.group).trim()
 
@@ -148,6 +256,9 @@ export function validatePricingSearch(raw: Record<string, unknown>): PricingSear
     search,
     sort,
     vendor,
+    capability,
+    context,
+    endpointType,
     group,
     quotaType,
     view,
@@ -165,6 +276,9 @@ export function queryParamsOf(search: PricingSearch) {
     search: search.search,
     sort: search.sort,
     vendors: vendorList(search),
+    capabilities: capabilityList(search),
+    contexts: contextList(search),
+    endpointTypes: endpointTypeList(search),
     group: search.group,
     quotaType: search.quotaType,
   }
@@ -173,6 +287,9 @@ export function queryParamsOf(search: PricingSearch) {
 /** 活动筛选计数（移动端「筛选 (N)」徽标与重置按钮）。 */
 export function activeFilterCount(search: PricingSearch): number {
   let count = vendorList(search).length
+  count += capabilityList(search).length
+  count += contextList(search).length
+  count += endpointTypeList(search).length
   if (search.search !== '') count += 1
   if (search.group !== '') count += 1
   if (search.quotaType !== 'all') count += 1
@@ -186,6 +303,9 @@ export function clearedFilters(search: PricingSearch): PricingSearch {
     p: 1,
     search: '',
     vendor: '',
+    capability: '',
+    context: '',
+    endpointType: '',
     group: '',
     quotaType: 'all',
   }
@@ -202,6 +322,9 @@ export function canonicalPricingSearch(search: PricingSearch): string {
   params.set('search', search.search)
   params.set('sort', search.sort)
   params.set('vendor', search.vendor)
+  params.set('capability', search.capability)
+  params.set('context', search.context)
+  params.set('endpointType', search.endpointType)
   params.set('group', search.group)
   params.set('quotaType', search.quotaType)
   params.set('view', search.view)

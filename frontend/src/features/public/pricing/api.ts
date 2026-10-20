@@ -17,6 +17,7 @@ export type PublicModelDetail = components['schemas']['PublicModelDetail']
 export type PublicGroupPrice = components['schemas']['PublicGroupPrice']
 export type PublicPricingMeta = components['schemas']['PublicPricingMeta']
 export type PublicFacets = components['schemas']['PublicFacets']
+export type PublicFacetOption = components['schemas']['PublicFacetOption']
 
 export interface PricingQuery {
   p: number
@@ -24,6 +25,9 @@ export interface PricingQuery {
   search: string
   sort: PricingSort
   vendors: readonly string[]
+  capabilities: readonly string[]
+  contexts: readonly string[]
+  endpointTypes: readonly string[]
   group: string
   quotaType: PricingQuotaType
 }
@@ -42,6 +46,9 @@ export function pricingListQueryKey(query: PricingQuery) {
     query.search,
     query.sort,
     [...query.vendors].sort().join(','),
+    [...query.capabilities].sort().join(','),
+    [...query.contexts].sort().join(','),
+    [...query.endpointTypes].sort().join(','),
     query.group,
     query.quotaType,
   ] as const
@@ -59,6 +66,15 @@ export async function fetchPricingList(
         ...(query.search !== '' ? { search: query.search } : {}),
         sort: query.sort,
         ...(query.vendors.length > 0 ? { vendor: [...query.vendors] } : {}),
+        // 后端冻结的形态是重复键（`capability=a&capability=b`）或逗号分隔；
+        // openapi-fetch 默认把数组序列化成重复键，正好匹配，无需自拼查询串。
+        ...(query.capabilities.length > 0
+          ? { capability: [...query.capabilities] }
+          : {}),
+        ...(query.contexts.length > 0 ? { context: [...query.contexts] } : {}),
+        ...(query.endpointTypes.length > 0
+          ? { endpointType: [...query.endpointTypes] }
+          : {}),
         ...(query.group !== '' ? { group: query.group } : {}),
         quotaType: query.quotaType,
       },

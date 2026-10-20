@@ -20,6 +20,7 @@ import { pricingDetailQueryOptions } from './api'
 import { copyText } from './copy'
 import { formatContextTokens, formatCredit, formatRatio } from './format'
 import { IntegrationSection } from './integration-section'
+import { capabilityLabel, endpointLabel, modalityLabel } from './metadata'
 import { PriceRegister } from './price-register'
 import { DetailNotFound, InlineError } from './states'
 
@@ -98,6 +99,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
   }
 
   const detail = query.data
+  const displayName = detail.display_name === '' ? detail.model_id : detail.display_name
   const specs = [
     {
       key: 'context',
@@ -116,7 +118,12 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
     {
       key: 'modalities',
       label: t('public.pricing.detail.spec_modalities'),
-      value: detail.modalities.length === 0 ? null : detail.modalities.join(' · '),
+      value:
+        detail.modalities.length === 0
+          ? null
+          : detail.modalities
+              .map((modality) => modalityLabel(modality, t))
+              .join(' · '),
     },
     {
       key: 'knowledge_cutoff',
@@ -136,7 +143,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
         items={[
           { label: t('public.nav.home'), path: '/' },
           { label: t('public.pricing.title'), path: '/pricing' },
-          { label: detail.display_name, current: true },
+          { label: displayName, current: true },
         ]}
       />
 
@@ -150,7 +157,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
         </a>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-semibold leading-7 text-ink-1">
-            {detail.display_name}
+            {displayName}
           </h1>
           <button
             type="button"
@@ -174,6 +181,15 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
           ) : null}
         </div>
         <p className="font-mono text-[13px] leading-5 text-ink-2">{detail.model_id}</p>
+        {detail.capabilities.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {detail.capabilities.map((capability) => (
+              <Tag key={capability} variant="neutral">
+                {capabilityLabel(capability, t)}
+              </Tag>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {specs.some((spec) => spec.value !== null && spec.value !== '') ? (
@@ -264,7 +280,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
             <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
               <span className="font-medium text-ink-1">{t('public.pricing.detail.endpoints')}</span>
               {detail.endpoints.map((endpoint) => (
-                <Tag key={endpoint} variant="neutral">{endpoint}</Tag>
+                <Tag key={endpoint} variant="neutral">{endpointLabel(endpoint, t)}</Tag>
               ))}
             </div>
           ) : null}

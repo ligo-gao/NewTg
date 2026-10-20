@@ -7,6 +7,7 @@ import type { PublicModelCard, PublicPricingMeta } from './api'
 import { copyText } from './copy'
 import { formatContextTokens } from './format'
 import { HighlightedText } from './highlight'
+import { capabilityLabel, endpointLabel } from './metadata'
 import type { PricingTokenUnit } from './params'
 import { PriceRegister } from './price-register'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -52,12 +53,16 @@ export function ModelCard({
       ? null
       : formatContextTokens(card.context_length, locale)
 
+  // 契约保证 display_name 空串时后端已回退 model_id；这里再兜一层，防止
+  // 老缓存/第三方实现漏回退时标题区变成空白（无档案卡片必须保持可识别）。
+  const displayName = card.display_name === '' ? card.model_id : card.display_name
+
   return (
     <article className="flex flex-col rounded-xl border border-border-default bg-surface-card p-4 transition-colors duration-150 hover:bg-surface-hover motion-reduce:transition-none">
       <div className="flex items-start justify-between gap-2">
         <h3 className="min-w-0 text-[15px] font-semibold leading-6 text-ink-1">
           <a href={detailHref(card.model_id)} className="hover:underline">
-            <HighlightedText text={card.display_name} query={search} />
+            <HighlightedText text={displayName} query={search} />
           </a>
         </h3>
         <div className="flex shrink-0 items-center gap-1">
@@ -74,6 +79,12 @@ export function ModelCard({
 
       <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-5 text-ink-2">
         <span className="truncate font-mono">{card.model_id}</span>
+        {card.vendor !== '' ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span className="shrink-0 truncate">{card.vendor}</span>
+          </>
+        ) : null}
         <button
           type="button"
           onClick={() => void copy()}
@@ -115,7 +126,26 @@ export function ModelCard({
         <div className="mt-2 flex flex-wrap gap-1">
           {card.capabilities.map((capability) => (
             <Tag key={capability} variant="neutral">
-              {capability}
+              {capabilityLabel(capability, t)}
+            </Tag>
+          ))}
+        </div>
+      ) : null}
+
+      {/*
+       * tags/endpoints 只来自模型档案：无档案时恒为空数组，因此整行不渲染，
+       * 卡片保持与元数据落库前完全一致的降级外观（R-PUB-01）。
+       */}
+      {card.tags.length > 0 || card.endpoints.length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {card.tags.map((tag) => (
+            <Tag key={`tag-${tag}`} variant="neutral">
+              {tag}
+            </Tag>
+          ))}
+          {card.endpoints.map((endpoint) => (
+            <Tag key={`endpoint-${endpoint}`} variant="info">
+              {endpointLabel(endpoint, t)}
             </Tag>
           ))}
         </div>
