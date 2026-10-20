@@ -26,6 +26,7 @@ import (
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/subscriptionworker"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/migrations"
 )
@@ -462,6 +463,27 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// B12 订阅到期 / 额度重置 / 预扣幂等记录清理（billing-06 §9.3、
+	// billing-08 §7）。与排行榜循环同样的装配形态：独立取消 + WaitGroup，
+	// 停机时先于连接池关闭退出。三条维护都只读写订阅域表，不参与请求
+	// 路径；多副本重复执行由 Redis SET NX PX 锁收敛，且 SQL 条件更新本身
+	// 幂等（到期终态单向、重置推进游标、清理按时间窗）。
+	subscriptionCtx, cancelSubscriptions := context.WithCancel(ctx)
+	var subscriptionsWG sync.WaitGroup
+	subscriptionsWG.Add(1)
+	go func() {
+		defer subscriptionsWG.Done()
+		repo := store.NewSubscriptionRepo(sqlDB)
+		if err := subscriptionworker.RunLoop(subscriptionCtx, subscriptionworker.Deps{
+			Repo:    repo,
+			Cleaner: repo,
+			Redis:   rr.client,
+			Logger:  log,
+		}); err != nil {
+			log.Error("subscription worker exited with error", "error", err)
+		}
+	}()
+
 	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
 	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
@@ -478,10 +500,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		Logger: log,
 	})
 	if err != nil {
-		// 排行榜循环已经启动：先取消并等待它退出，再关连接池，
-		// 避免聚合 SQL 撞上已关闭的 *sql.DB（vet 的 context-leak 检查同口径）。
+		// 排行榜与订阅维护循环已经启动：先取消并等待它们退出，再关连接池，
+		// 避免聚合/扫描 SQL 撞上已关闭的 *sql.DB（vet 的 context-leak 检查同口径）。
 		cancelRankings()
 		rankingsWG.Wait()
+		cancelSubscriptions()
+		subscriptionsWG.Wait()
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -507,13 +531,15 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		LogsDB:    sqlLogs,
 		Logger:    log,
 	})
-	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜）再关连接池：否则下一次
-	// DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
+	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
 	cancelExpiry()
 	expiryWG.Wait()
 	stopTaskPoller()
 	cancelRankings()
 	rankingsWG.Wait()
+	cancelSubscriptions()
+	subscriptionsWG.Wait()
 	if runErr == nil {
 		runErr = expiryErr
 	}

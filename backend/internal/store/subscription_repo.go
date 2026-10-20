@@ -809,6 +809,69 @@ func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int
 	return affected, nil
 }
 
+// AdvanceNextResetAt 只推进无限额度实例（amount_total=0）的重置游标（B12）。
+//
+// 为什么无限额度实例不能复用 ResetSubscriptionQuota：该函数会把
+// amount_used 归零。amount_total=0（R-D5-07）表示没有额度上限，amount_used
+// 只是累计用量展示，不是可重置的周期额度；归零会让「无限套餐」的累计用量
+// 在每月 1 日凭空消失。但 next_reset_at 仍必须前移，否则 DueForReset 每个
+// 扫描周期都会再次命中同一行，worker 永远在做无意义的推进。
+//
+// 条件与 ResetSubscriptionQuota 完全一致（含 reset_on_renew 快照与
+// `next_reset_at <= now`）：重复 pass 返回 affected=0，游标只前移一次。
+func (r *SQLSubscriptionRepo) AdvanceNextResetAt(ctx context.Context, id int64, now time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE subscriptions
+		SET next_reset_at = next_reset_at + make_interval(days => period_days),
+		    updated_at = now()
+		WHERE id = $1 AND status = 'active' AND reset_on_renew
+		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2`, id, now.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("store: advance subscription(%d) reset cursor: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: advance subscription(%d) rows: %w", id, err)
+	}
+	return affected, nil
+}
+
+// DeletePreConsumeBefore 删除 created_at 早于 cutoff 的预扣幂等记录（B12）。
+//
+// 【为什么分批】保留期 7 天（billing-04 §3.4；billing-08 §7），单次清理在
+// 积压时可能删除数十万行。一个大 DELETE 会持有长事务、放大 WAL 与锁等待，
+// 把并发预扣/退款的事务拖慢甚至超时。LIMIT 子查询让每次删除的行数有界，
+// 调用方（worker）循环多批，直到返回 affected < limit。
+//
+// 【为什么没有 created_at 索引也能接受】该表只保留 7 天窗口，稳态行数由
+// 请求量决定；每批子查询最多带走 limit 行，PG 顺序扫描的成本被 LIMIT 截断，
+// 且清理间隔（小时级）远低于写入速率。若未来请求量显著增长，再补
+// (created_at) 索引，而不是现在让小表承担额外写放大。
+//
+// ORDER BY created_at, request_id 让批次顺序确定（同秒行按 PK 稳定），
+// 避免同一批反复选中相同行导致空转。
+func (r *SQLSubscriptionRepo) DeletePreConsumeBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM subscription_pre_consume_records
+		WHERE request_id IN (
+			SELECT request_id FROM subscription_pre_consume_records
+			WHERE created_at < $1
+			ORDER BY created_at ASC, request_id ASC
+			LIMIT $2
+		)`, cutoff.UTC(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete subscription pre-consume records: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete subscription pre-consume rows: %w", err)
+	}
+	return affected, nil
+}
+
 // InsertPreConsume 写入/读取订阅预扣幂等记录（billing-08 §4.4、R-D5-02）。
 //
 // 语义：
