@@ -68,10 +68,19 @@ type webhookResumeResponse struct {
 //   - 队列本身不动：所有 queued 行保持原 attempt/next_retry_at。
 //
 // Redis 不可用时返回 503：恢复动作没有生效，不能谎报成功。
-// 审计 detail 只写 {paused:false}，不包含 secret、URL 或队列内容。
+// 失败路径同样写审计（status_code=503）；detail 只写 {paused:true}——
+// 恢复未生效，暂停状态（或未知）按仍暂停记录，绝不包含 secret、URL 或
+// 队列内容。成功路径 detail 为 {paused:false}。
 func (h *SettingsHandlers) handleResumeWebhook(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFrom(r.Context())
+	actor := int64(0)
+	if principal != nil {
+		actor = principal.UserID
+	}
+
 	if h.rdb == nil {
 		h.log.Error("settings: webhook resume requested without redis")
+		h.writeWebhookResumeAudit(r, actor, http.StatusServiceUnavailable, true)
 		writeProblemDetail(w, http.StatusServiceUnavailable, authProblemInternal,
 			"Service unavailable", "")
 		return
@@ -80,26 +89,25 @@ func (h *SettingsHandlers) handleResumeWebhook(w http.ResponseWriter, r *http.Re
 		if r.Context().Err() == nil {
 			h.log.Error("settings: clear webhook pause state failed", "err", err)
 		}
+		h.writeWebhookResumeAudit(r, actor, http.StatusServiceUnavailable, true)
 		writeProblemDetail(w, http.StatusServiceUnavailable, authProblemInternal,
 			"Service unavailable", "")
 		return
 	}
 
-	principal, _ := auth.PrincipalFrom(r.Context())
-	actor := int64(0)
-	if principal != nil {
-		actor = principal.UserID
-	}
-	h.writeWebhookResumeAudit(r, actor)
+	h.writeWebhookResumeAudit(r, actor, http.StatusOK, false)
 	writeJSON(w, http.StatusOK, webhookResumeResponse{Paused: false})
 }
 
 // writeWebhookResumeAudit 写 settings.webhook_resume。
-func (h *SettingsHandlers) writeWebhookResumeAudit(r *http.Request, actor int64) {
+//
+// paused 反映恢复动作结束后的暂停状态：成功后为 false；503 时为 true
+// （没有清除成功，按仍未恢复记录）。detail 零敏感。
+func (h *SettingsHandlers) writeWebhookResumeAudit(r *http.Request, actor int64, httpStatus int, paused bool) {
 	if h.audit == nil {
 		return
 	}
-	detail, err := json.Marshal(map[string]any{"paused": false})
+	detail, err := json.Marshal(map[string]any{"paused": paused})
 	if err != nil {
 		return
 	}
@@ -108,7 +116,7 @@ func (h *SettingsHandlers) writeWebhookResumeAudit(r *http.Request, actor int64)
 		Actor:      actor,
 		Method:     http.MethodPost,
 		Route:      "/api/settings/notify-webhook:resume",
-		StatusCode: http.StatusOK,
+		StatusCode: httpStatus,
 		IP:         clientIP(r),
 		UserAgent:  r.UserAgent(),
 		Detail:     detail,

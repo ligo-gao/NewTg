@@ -73,7 +73,13 @@ func TestWebhookSignatureFixedVector(t *testing.T) {
 	if gotHeaders.Get(WebhookTimestampHeader) != "1700000000" {
 		t.Fatalf("timestamp = %q", gotHeaders.Get(WebhookTimestampHeader))
 	}
+	// 第三头是 B1a 实现扩展（台账 G-DOM-55），值就是调用方传入的幂等锚。
+	if got := gotHeaders.Get(WebhookEventIDHeader); got != "evt-1" {
+		t.Fatalf("event id = %q，期望 evt-1", got)
+	}
 	// 固定向量：HMAC-SHA256("s3cret", "1700000000." + body)，由独立实现算出。
+	// 它同时证明 Event-Id 不参与签名——若实现把 eventID 拼进原文字节，
+	// 这条向量会立刻失配。
 	const want = "sha256=7309f4d898fa7748ec38492ebcd583ea43fadd45e069f17458663bed137fb439"
 	if got := gotHeaders.Get(WebhookSignatureHeader); got != want {
 		t.Fatalf("signature = %q，期望 %q", got, want)
@@ -83,6 +89,53 @@ func TestWebhookSignatureFixedVector(t *testing.T) {
 	}
 	if !bytes.Equal(gotBody, payload) {
 		t.Fatalf("发送字节被改写: %q", gotBody)
+	}
+}
+
+func TestWebhookEventIDHeaderIsNotSigned(t *testing.T) {
+	payload := []byte(`{"event":"balance_low"}`)
+	var signatures []string
+	var eventIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signatures = append(signatures, r.Header.Get(WebhookSignatureHeader))
+		eventIDs = append(eventIDs, r.Header.Get(WebhookEventIDHeader))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := testSender(webhookConfig(map[string]any{KeyWebhookURL: server.URL}), time.Unix(1700000000, 0))
+	for _, eventID := range []string{"dedupe-a", "dedupe-b"} {
+		if _, err := sender.Send(context.Background(), payload, "balance_low", eventID); err != nil {
+			t.Fatalf("Send(%s): %v", eventID, err)
+		}
+	}
+	if len(signatures) != 2 || signatures[0] != signatures[1] {
+		t.Fatalf("不同 Event-Id 改变了签名：%v", signatures)
+	}
+	// 签名原文字节仍只有 timestamp + "." + body。
+	if want := signForTest("s3cret", "1700000000", payload); signatures[0] != want {
+		t.Fatalf("signature = %s，期望 %s", signatures[0], want)
+	}
+	if eventIDs[0] != "dedupe-a" || eventIDs[1] != "dedupe-b" {
+		t.Fatalf("Event-Id 头 = %v", eventIDs)
+	}
+}
+
+func TestWebhookTestSendOmitsEventIDHeader(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := testSender(webhookConfig(map[string]any{KeyWebhookURL: server.URL}), time.Unix(1700000000, 0))
+	if _, err := sender.SendTest(context.Background(), []byte(`{"event":"test"}`)); err != nil {
+		t.Fatalf("SendTest: %v", err)
+	}
+	// 测试事件没有投递行：不得伪造一个空/占位幂等锚。
+	if _, ok := got[http.CanonicalHeaderKey(WebhookEventIDHeader)]; ok {
+		t.Fatalf("SendTest 不应发送 %s：%q", WebhookEventIDHeader, got.Get(WebhookEventIDHeader))
 	}
 }
 

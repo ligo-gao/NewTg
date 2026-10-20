@@ -5,7 +5,8 @@ package notify
 // 设计权威：modules-08 F-08-20 / §3.9.6，签名语义逐字遵循 modules-03
 // F-03-10「投递」第 9 条：
 //
-//   - 头：X-NewTG-Timestamp（Unix 秒）+ X-NewTG-Signature: sha256=<hex>；
+//   - 头：X-NewTG-Timestamp（Unix 秒）+ X-NewTG-Signature: sha256=<hex>
+//     + X-NewTG-Event-Id（投递事件的幂等锚，见下）；
 //   - 原文：HMAC-SHA256(secret, timestamp + "." + 请求体)；
 //   - **签名覆盖实际发送的字节**。因此本实现先把 payload 固定为 []byte，
 //     签名该切片，再用同一个切片构造请求体——签名之后不做任何重排、
@@ -14,9 +15,16 @@ package notify
 //   - 响应体最多读 4KiB 且**永不进入错误文本**；错误只带主机名，绝不带
 //     完整 URL（url.Error 会拼上 query，可能含端点方 token）。
 //
+// 【实现扩展】F-03-10 第 9 条原文冻结的是 timestamp/signature 两个头
+// （「B1a 两头冻结口径」）。N8 投递需要把事件幂等锚传给接收方，否则接收方
+// 无法在重试之间去重，因此这里增加第三头 X-NewTG-Event-Id（值 = 投递行的
+// dedupe_key，缺失时退化为 delivery:<id>）。**签名仍只覆盖
+// timestamp + "." + 请求体**，Event-Id 不参与签名：它只用于去重与排障，
+// 篡改它不会绕过完整性校验，接收方也不得以它为签名输入。该扩展需回写
+// modules-03 F-03-10 #9（见台账 G-DOM-55）。
+//
 // payload 的结构归模块 01/03/04（本包只接受不透明字节），event 只用于
-// 订阅过滤，eventID 供 N8 投递记录关联与排障——线上头契约只冻结了
-// timestamp/signature 两个头，这里不额外发明请求头。
+// 订阅过滤；SendTest 没有业务投递行，因此不发 Event-Id 头（空值省略）。
 
 import (
 	"bytes"
@@ -44,10 +52,13 @@ const (
 	KeyWebhookEvents  = "notify.webhook.events"
 )
 
-// 线协议常量（F-03-10 第 9 条冻结）。
+// 线协议常量（F-03-10 第 9 条；Event-Id 为 B1a 实现扩展，见文件头）。
 const (
 	WebhookTimestampHeader = "X-NewTG-Timestamp"
 	WebhookSignatureHeader = "X-NewTG-Signature"
+	// WebhookEventIDHeader 携带投递事件的幂等锚（dedupe_key）。它**不参与
+	// 签名**，接收方只用于重试去重；值来自生产者，不保证是 UUID。
+	WebhookEventIDHeader = "X-NewTG-Event-Id"
 	// WebhookDefaultTimeout 是 D2-12 冻结的单次投递超时。
 	WebhookDefaultTimeout = 10 * time.Second
 	// webhookMaxResponseBytes 是响应体读取上限：只用于读完连接以便复用，
@@ -166,10 +177,10 @@ func (s *WebhookSender) Subscribed(event string) bool {
 
 // Send 投递一个业务事件：先过开关与订阅过滤，再交给 deliver。
 //
-// eventID 不参与签名、也不额外上头：它属于投递记录（N8）的幂等锚，
-// 线上协议只冻结 timestamp/signature，见文件头说明。
+// eventID 是投递行的幂等锚（dedupe_key，缺失时由 worker 退化为
+// delivery:<id>），作为 X-NewTG-Event-Id 发给接收方，**不参与签名**；
+// 见文件头「实现扩展」。
 func (s *WebhookSender) Send(ctx context.Context, payload []byte, event, eventID string) (WebhookResult, error) {
-	_ = eventID
 	settings, err := s.settings()
 	if err != nil {
 		return WebhookResult{}, err
@@ -180,11 +191,12 @@ func (s *WebhookSender) Send(ctx context.Context, payload []byte, event, eventID
 	if !containsEvent(settings.Events, event) {
 		return WebhookResult{}, ErrEventNotSubscribed
 	}
-	return s.deliver(ctx, settings, payload)
+	return s.deliver(ctx, settings, payload, eventID)
 }
 
 // SendTest 是测试端点专用入口：**忽略 enabled 与事件订阅**（测试的目的
 // 就是验证未启用的配置；也不写投递记录）。URL/secret 未配置仍拒绝。
+// 测试事件没有投递行，因此不发 X-NewTG-Event-Id。
 func (s *WebhookSender) SendTest(ctx context.Context, payload []byte) (WebhookResult, error) {
 	settings, err := s.settings()
 	if err != nil {
@@ -193,10 +205,10 @@ func (s *WebhookSender) SendTest(ctx context.Context, payload []byte) (WebhookRe
 	if settings.URL == "" || settings.Secret == "" {
 		return WebhookResult{}, ErrWebhookNotConfigured
 	}
-	return s.deliver(ctx, settings, payload)
+	return s.deliver(ctx, settings, payload, "")
 }
 
-func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, payload []byte) (WebhookResult, error) {
+func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, payload []byte, eventID string) (WebhookResult, error) {
 	target, err := url.Parse(settings.URL)
 	if err != nil || target.Hostname() == "" {
 		return WebhookResult{}, fmt.Errorf("%w: invalid url", ErrWebhookBlockedTarget)
@@ -237,6 +249,10 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set(WebhookTimestampHeader, timestamp)
 	req.Header.Set(WebhookSignatureHeader, signature)
+	// 空值省略：SendTest 没有投递行，不应伪造一个幂等锚。
+	if eventID != "" {
+		req.Header.Set(WebhookEventIDHeader, eventID)
+	}
 
 	resp, err := s.client().Do(req)
 	if err != nil {

@@ -640,3 +640,239 @@ func TestWebhookWorkerStartupScanAndShutdown(t *testing.T) {
 // 保证 fake 与生产发送器接口一致（编译期钉死）。
 var _ WebhookWorkerSender = (*fakeWebhookWorkerSender)(nil)
 var _ WebhookWorkerSender = (*WebhookSender)(nil)
+
+// deadWebhookRedis 返回一个必定连不上的客户端（127.0.0.1:1 无监听）：
+// 用于验证 Redis 故障时 isPaused/countFailure 的 fail-open 语义。
+func deadWebhookRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         "127.0.0.1:1",
+		MaxRetries:   -1,
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return rdb
+}
+
+// TestWebhookWorkerSkipsNotDueRows 是 LOW-3 的回归：next_retry_at 尚未到期
+// 的行不得被领取，attempt/status 原样保留。
+func TestWebhookWorkerSkipsNotDueRows(t *testing.T) {
+	db := openNotifyTestDB(t)
+	cleanWebhookDeliveries(t, db)
+	rdb := newWebhookWorkerRedis(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+	future := now.Add(5 * time.Minute)
+	id := insertWebhookDelivery(t, db, webhookDeliverySeed{
+		dedupe: "not-due:1", category: "billing.balance_low",
+		payload: `{"event":"balance_low"}`, next: &future,
+	})
+	sender := &fakeWebhookWorkerSender{active: true}
+	worker := webhookWorkerForTest(t, db, rdb, sender, now)
+	if result := worker.RunOnce(ctx); result.Claimed != 0 {
+		t.Fatalf("未到期行被领取：%+v", result)
+	}
+	if sender.callCount() != 0 {
+		t.Fatalf("未到期行仍被发送 %d 次", sender.callCount())
+	}
+	status, attempt, next, _ := readWebhookDelivery(t, db, id)
+	if status != "queued" || attempt != 0 || next == nil || !next.Equal(future) {
+		t.Fatalf("行被改动：%s/%d/%v", status, attempt, next)
+	}
+}
+
+// TestWebhookWorkerReleasesRowsWhenConfigDisappears 是 LOW-2 的回归：
+// 投递期间配置被关闭（ErrWebhookDisabled）或清空（ErrWebhookNotConfigured）
+// 都必须 Release——不消耗 attempt、不计连续失败，且本轮立即停止。
+func TestWebhookWorkerReleasesRowsWhenConfigDisappears(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"disabled", ErrWebhookDisabled},
+		{"not_configured", ErrWebhookNotConfigured},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openNotifyTestDB(t)
+			cleanWebhookDeliveries(t, db)
+			rdb := newWebhookWorkerRedis(t)
+			ctx := context.Background()
+			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+			ids := []int64{
+				insertWebhookDelivery(t, db, webhookDeliverySeed{
+					dedupe: "release-a", category: "billing.balance_low",
+					payload: `{"event":"balance_low"}`,
+				}),
+				insertWebhookDelivery(t, db, webhookDeliverySeed{
+					dedupe: "release-b", category: "billing.balance_low",
+					payload: `{"event":"balance_low"}`,
+				}),
+			}
+			sender := &fakeWebhookWorkerSender{
+				active: true,
+				onSend: func(webhookWorkerCall) (WebhookResult, error) {
+					return WebhookResult{}, tc.err
+				},
+			}
+			worker := webhookWorkerForTest(t, db, rdb, sender, now)
+			result := worker.RunOnce(ctx)
+			if result.Claimed != 1 || result.Sent != 0 || result.Failed != 0 {
+				t.Fatalf("result = %+v，期望只领取 1 条并释放", result)
+			}
+			// 释放后本轮必须停止：第二条不应被同一轮尝试。
+			if sender.callCount() != 1 {
+				t.Fatalf("Send 调用数 = %d，期望 1", sender.callCount())
+			}
+			for _, id := range ids {
+				status, attempt, next, lastError := readWebhookDelivery(t, db, id)
+				if status != "queued" || attempt != 0 || next != nil || lastError != nil {
+					t.Fatalf("%s 被消耗：%s/%d/%v/%v", tc.name, status, attempt, next, lastError)
+				}
+			}
+			if exists, err := rdb.Exists(ctx, WebhookFailStreakKey).Result(); err != nil || exists != 0 {
+				t.Fatalf("连续失败计数被写入：exists=%d err=%v", exists, err)
+			}
+		})
+	}
+}
+
+// TestWebhookWorkerRedisFailureFailsOpen 是 LOW-3 的回归：Redis 不可用时
+// isPaused 视为未暂停、countFailure 不阻断投递（fail-open），正确性仍由
+// 投递行的行锁与重试状态保证。
+func TestWebhookWorkerRedisFailureFailsOpen(t *testing.T) {
+	db := openNotifyTestDB(t)
+	cleanWebhookDeliveries(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+	t.Run("isPaused", func(t *testing.T) {
+		id := insertWebhookDelivery(t, db, webhookDeliverySeed{
+			dedupe: "redis-fail-paused", category: "billing.balance_low",
+			payload: `{"event":"balance_low"}`,
+		})
+		sender := &fakeWebhookWorkerSender{active: true}
+		worker := webhookWorkerForTest(t, db, deadWebhookRedis(t), sender, now)
+		result := worker.RunOnce(ctx)
+		if result.Paused || result.Claimed != 1 || result.Sent != 1 {
+			t.Fatalf("Redis 故障时不应暂停/跳过：%+v", result)
+		}
+		status, attempt, _, _ := readWebhookDelivery(t, db, id)
+		if status != "sent" || attempt != 1 {
+			t.Fatalf("投递未完成：%s/%d", status, attempt)
+		}
+	})
+
+	t.Run("countFailure", func(t *testing.T) {
+		id := insertWebhookDelivery(t, db, webhookDeliverySeed{
+			dedupe: "redis-fail-count", category: "billing.balance_low",
+			payload: `{"event":"balance_low"}`,
+		})
+		sender := &fakeWebhookWorkerSender{
+			active: true,
+			onSend: func(webhookWorkerCall) (WebhookResult, error) {
+				return WebhookResult{}, ErrWebhookTransport
+			},
+		}
+		worker := webhookWorkerForTest(t, db, deadWebhookRedis(t), sender, now)
+		result := worker.RunOnce(ctx)
+		if result.Failed != 1 {
+			t.Fatalf("计数失败不应阻断失败落库：%+v", result)
+		}
+		status, attempt, next, lastError := readWebhookDelivery(t, db, id)
+		if status != "queued" || attempt != 1 || next == nil ||
+			lastError == nil || *lastError != "webhook request failed" {
+			t.Fatalf("失败状态未落库：%s/%d/%v/%v", status, attempt, next, lastError)
+		}
+	})
+}
+
+// installWebhookMarkFailureTrigger 让指定投递行的 UPDATE 抛错，用于验证
+// MarkSent/MarkFailed 失败时的「中止本轮」语义（LOW-1）。
+func installWebhookMarkFailureTrigger(t *testing.T, db *sql.DB, id int64) {
+	t.Helper()
+	const fn = "newtg_test_fail_mark_update"
+	if _, err := db.Exec(fmt.Sprintf(`
+		CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.id = %d THEN
+				RAISE EXCEPTION 'forced mark failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$`, fn, id)); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`
+		CREATE TRIGGER %s BEFORE UPDATE ON notification_deliveries
+		FOR EACH ROW EXECUTE FUNCTION %s()`, fn, fn)); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON notification_deliveries`, fn))
+		_, _ = db.Exec(fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
+	})
+}
+
+// TestWebhookWorkerAbortsRoundWhenMarkFails 是 LOW-1 的回归：MarkSent 或
+// MarkFailed 落库失败时，占用已回滚、行仍是 queued；本轮必须立即停止，
+// 否则同一行会被同一轮再次领取并重复发送。
+func TestWebhookWorkerAbortsRoundWhenMarkFails(t *testing.T) {
+	cases := []struct {
+		name   string
+		sender func(call webhookWorkerCall) (WebhookResult, error)
+	}{
+		{
+			name: "mark_sent",
+			sender: func(webhookWorkerCall) (WebhookResult, error) {
+				return WebhookResult{StatusCode: 200, OK: true}, nil
+			},
+		},
+		{
+			name: "mark_failed",
+			sender: func(webhookWorkerCall) (WebhookResult, error) {
+				return WebhookResult{}, ErrWebhookTransport
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openNotifyTestDB(t)
+			cleanWebhookDeliveries(t, db)
+			rdb := newWebhookWorkerRedis(t)
+			ctx := context.Background()
+			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+			first := insertWebhookDelivery(t, db, webhookDeliverySeed{
+				dedupe: "mark-fail-1", category: "billing.balance_low",
+				payload: `{"event":"balance_low"}`,
+			})
+			second := insertWebhookDelivery(t, db, webhookDeliverySeed{
+				dedupe: "mark-fail-2", category: "billing.balance_low",
+				payload: `{"event":"balance_low"}`,
+			})
+			installWebhookMarkFailureTrigger(t, db, first)
+
+			sender := &fakeWebhookWorkerSender{active: true, onSend: tc.sender}
+			worker := webhookWorkerForTest(t, db, rdb, sender, now)
+			result := worker.RunOnce(ctx)
+			if result.Claimed != 1 || result.Sent != 0 || result.Failed != 0 {
+				t.Fatalf("result = %+v，期望领取 1 条后中止且不计数", result)
+			}
+			// 关键断言：同一轮不得再领取/发送第二条。
+			if sender.callCount() != 1 {
+				t.Fatalf("Send 调用数 = %d，期望 1（Mark 失败后必须中止本轮）", sender.callCount())
+			}
+			for _, id := range []int64{first, second} {
+				status, attempt, _, _ := readWebhookDelivery(t, db, id)
+				if status != "queued" || attempt != 0 {
+					t.Fatalf("行 %d 未回到 queued/attempt=0：%s/%d", id, status, attempt)
+				}
+			}
+		})
+	}
+}

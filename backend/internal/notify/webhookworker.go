@@ -259,6 +259,11 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) WebhookWorkerResult {
 		case webhookOutcomeReleased:
 			// 配置在投递中途关闭/暂停：行保持 queued，不计数。
 			return result
+		case webhookOutcomeAborted:
+			// 投递状态写不进去（MarkSent/MarkFailed 失败）：占用已回滚，
+			// 行仍是 queued。若继续本轮，下一轮 claim 会立刻再次领取同一行
+			// 并重复发送；因此这里必须中止，把重试留给下一个扫描周期。
+			return result
 		}
 	}
 	if result.Claimed > 0 {
@@ -279,6 +284,9 @@ const (
 	webhookOutcomeSent
 	webhookOutcomeSuppressed
 	webhookOutcomeReleased
+	// webhookOutcomeAborted 表示投递状态未能落库（Mark* 失败）。占用已回滚，
+	// 行保持 queued；本轮必须停止，否则同一行会在同一轮被再次领取/发送。
+	webhookOutcomeAborted
 )
 
 // deliver 投递一条已占用的记录。无论结果如何都必须关闭占用（提交或回滚）。
@@ -291,6 +299,7 @@ func (w *WebhookWorker) deliver(ctx context.Context, claim *WebhookDeliveryClaim
 		reason := "unsupported webhook category"
 		if err := claim.MarkFailed(ctx, delivery.Attempt, nil, reason); err != nil {
 			w.log.Error("webhook worker: mark unsupported delivery failed", "id", delivery.ID, "error", err)
+			return webhookOutcomeAborted
 		}
 		w.log.Warn("webhook worker: delivery category has no webhook event",
 			"id", delivery.ID, "category", delivery.Category)
@@ -301,6 +310,7 @@ func (w *WebhookWorker) deliver(ctx context.Context, claim *WebhookDeliveryClaim
 		// 也不会变好，直接终态失败。
 		if err := claim.MarkFailed(ctx, delivery.Attempt, nil, "webhook payload is missing"); err != nil {
 			w.log.Error("webhook worker: mark empty payload delivery failed", "id", delivery.ID, "error", err)
+			return webhookOutcomeAborted
 		}
 		return webhookOutcomeFailed
 	}
@@ -310,11 +320,19 @@ func (w *WebhookWorker) deliver(ctx context.Context, claim *WebhookDeliveryClaim
 	case sendErr == nil && result.OK:
 		if err := claim.MarkSent(ctx, delivery.Attempt+1); err != nil {
 			w.log.Error("webhook worker: mark delivery sent", "id", delivery.ID, "error", err)
+			// 行已回滚到 queued；继续本轮会立刻重领并重复投递。
+			return webhookOutcomeAborted
 		}
 		w.resetFailStreak(ctx)
 		return webhookOutcomeSent
 	case errors.Is(sendErr, ErrWebhookDisabled):
 		// 开关在本轮中途被关闭：不消耗尝试，行保持 queued。
+		claim.Release()
+		return webhookOutcomeReleased
+	case errors.Is(sendErr, ErrWebhookNotConfigured):
+		// URL/secret 在本轮中途被清空：与 disabled 同属「配置暂时不可用」，
+		// 不消耗 attempt、不计连续失败，行保持 queued 等配置修复。
+		// （Active 已在扫描前挡掉常态；这里是投递期间配置被改的竞态。）
 		claim.Release()
 		return webhookOutcomeReleased
 	case errors.Is(sendErr, ErrEventNotSubscribed):
@@ -324,12 +342,18 @@ func (w *WebhookWorker) deliver(ctx context.Context, claim *WebhookDeliveryClaim
 		}
 		return webhookOutcomeSuppressed
 	default:
-		w.recordFailure(ctx, claim, delivery, event, result, sendErr)
+		if !w.recordFailure(ctx, claim, delivery, event, result, sendErr) {
+			return webhookOutcomeAborted
+		}
 		return webhookOutcomeFailed
 	}
 }
 
 // recordFailure 写入一次失败并维护连续失败/暂停状态。
+//
+// 返回 false 表示 MarkFailed 未落库：占用已回滚，调用方必须中止本轮
+// （否则同一行会在本轮被再次领取并重复发送）。此时也不再累加连续失败
+// 计数——该行下一次真正重试时会重新计数，避免为一次未记录的结果双计。
 func (w *WebhookWorker) recordFailure(
 	ctx context.Context,
 	claim *WebhookDeliveryClaim,
@@ -337,13 +361,14 @@ func (w *WebhookWorker) recordFailure(
 	event string,
 	result WebhookResult,
 	sendErr error,
-) {
+) bool {
 	attempt := delivery.Attempt + 1
 	next := retryAtForAttempt(w.now().UTC(), attempt)
 	reason := webhookFailureReason(result, sendErr)
 
 	if err := claim.MarkFailed(ctx, attempt, next, reason); err != nil {
 		w.log.Error("webhook worker: mark delivery failed", "id", delivery.ID, "error", err)
+		return false
 	}
 	// 日志只带非敏感事实：id/event/attempt/status/reason。绝不带 payload、
 	// URL（含 query）、secret 或响应体。
@@ -355,6 +380,7 @@ func (w *WebhookWorker) recordFailure(
 		"reason", reason,
 	)
 	w.countFailure(ctx)
+	return true
 }
 
 // retryAtForAttempt 返回第 attempt 次失败后的重试时刻；nil 表示已达终态。

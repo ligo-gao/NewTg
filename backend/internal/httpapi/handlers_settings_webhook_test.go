@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -254,6 +255,118 @@ func TestWebhookResumeEndpointWithoutRedis(t *testing.T) {
 		webhookTestPrincipal(), nil))
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("未装配 Redis = %d，期望 503", rr.Code)
+	}
+}
+
+// TestWebhookResumeEndpointRedisFailureIs503 是 LOW-3 的回归：Redis Del
+// **真的失败**（不是未装配）时，恢复动作没有生效，必须 503 而不是 200。
+func TestWebhookResumeEndpointRedisFailureIs503(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         "127.0.0.1:1", // 无监听：Del 必定失败
+		MaxRetries:   -1,
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	mux := webhookResumeMux(t, rdb)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "",
+		webhookTestPrincipal(), nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Redis Del 失败 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+	}
+	var problem struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v（body=%s）", err, rr.Body.String())
+	}
+	if problem.Type != authProblemInternal {
+		t.Fatalf("problem.type = %q，期望 %q", problem.Type, authProblemInternal)
+	}
+}
+
+// TestWebhookResumeRouteRequiresCSRF 是 LOW-5 的 router 层用例：resume 挂
+// SessionAuth → CSRF → OriginRefererCheck 链后，带有效会话但缺 CSRF 头
+// 必须 403 且不得清暂停标记；正控证明 403 来自 CSRF 而非链上其它环节。
+func TestWebhookResumeRouteRequiresCSRF(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+
+	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
+	router, err := NewRouter(RouterConfig{
+		Redis:         rdb,
+		Sessions:      sessions,
+		Repo:          newFakeAuthRepo(),
+		SessionSecret: []byte(testSessionSecret),
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	handlers, err := NewSettingsHandlers(SettingsHandlerConfig{
+		Service: &fakeSettingsService{},
+		Authz:   rbac.NewAuthzMiddleware(),
+		Idem:    NewMemoryIdempotencyStore(),
+		Redis:   rdb,
+	})
+	if err != nil {
+		t.Fatalf("NewSettingsHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	router.HandleProtected("POST /api/settings/notify-webhook:resume", mux)
+
+	sid, err := sessions.Create(ctx, 42, auth.SessionOpts{UA: "router-test", IP: "127.0.0.1", Role: "admin"})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	send := func(csrf string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings/notify-webhook:resume", nil)
+		req.Host = "app.example.com"
+		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+		req.Header.Set("Origin", "https://app.example.com")
+		if csrf != "" {
+			req.Header.Set(auth.CSRFHeaderName, csrf)
+		}
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if err := rdb.Set(ctx, notify.WebhookPausedKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed paused: %v", err)
+	}
+	rr := send("")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺 CSRF = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+	var problem struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v（body=%s）", err, rr.Body.String())
+	}
+	if problem.Type != problemTypeCSRFFailed {
+		t.Fatalf("problem.type = %q，期望 %q", problem.Type, problemTypeCSRFFailed)
+	}
+	if exists, err := rdb.Exists(ctx, notify.WebhookPausedKey).Result(); err != nil || exists != 1 {
+		t.Fatalf("CSRF 拒绝的请求改变了暂停状态：exists=%d err=%v", exists, err)
+	}
+
+	// 正控：签发 CSRF 并带上后必须放行并真正清除暂停状态。
+	csrf := auth.NewCSRFToken()
+	if err := sessions.IssueCSRF(ctx, sid, csrf); err != nil {
+		t.Fatalf("IssueCSRF: %v", err)
+	}
+	if rr := send(csrf); rr.Code != http.StatusOK {
+		t.Fatalf("有效 CSRF = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if exists, err := rdb.Exists(ctx, notify.WebhookPausedKey).Result(); err != nil || exists != 0 {
+		t.Fatalf("有效 CSRF 未清除 paused：exists=%d err=%v", exists, err)
 	}
 }
 

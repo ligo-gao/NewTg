@@ -64,8 +64,10 @@ type Delivery struct {
 	NextRetryAt       *time.Time
 	LastError         *string
 	ProviderMessageID *string
-	// Payload 是站内通知的渲染输入/结果（A5，迁移
-	// 20261020200000）。email/webhook 行为 NULL。
+	// Payload 是投递载荷：站内通知的渲染输入/结果（A5，迁移
+	// 20261020200000）与 **webhook 投递的请求体**（N8 worker 原样发送并
+	// 对这份字节签名）。email 行没有载荷，为 NULL。注意 PostgreSQL jsonb
+	// 会重排/格式化，worker 签名的是读回来的这一份字节。
 	Payload []byte
 	// AnnouncementID 是读取面从 payload->>'announcement_id' 提取的公告
 	// 归因键（D7b）。普通站内通知与非对象 payload 一律为空串：这里只做
@@ -727,37 +729,6 @@ func (c *WebhookDeliveryClaim) finish(ctx context.Context, query string, args ..
 		return fmt.Errorf("notify: commit webhook delivery: %w", err)
 	}
 	return nil
-}
-
-// ListQueuedWebhookDeliveries 返回当前到期的 Webhook 投递（只读，不加锁）。
-// worker 走 ClaimWebhookDelivery；本方法供排障与测试观察队列，禁止用于
-// 「先 list 再断言可发送」——那样会绕开 SKIP LOCKED 的单发保证。
-func (s *Store) ListQueuedWebhookDeliveries(ctx context.Context, now time.Time, limit int) ([]Delivery, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+webhookDeliveryColumns+`
-		FROM notification_deliveries
-		WHERE channel = 'webhook' AND status = 'queued'
-		  AND (next_retry_at IS NULL OR next_retry_at <= $1)
-		ORDER BY next_retry_at NULLS FIRST, id
-		LIMIT $2`, now.UTC(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("notify: list queued webhook deliveries: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []Delivery
-	for rows.Next() {
-		item, err := scanDelivery(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("notify: iterate queued webhook deliveries: %w", err)
-	}
-	return out, nil
 }
 
 // rowScanner 抽象 *sql.Row / *sql.Rows，便于同一扫描逻辑复用。

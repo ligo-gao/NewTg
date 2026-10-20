@@ -308,3 +308,69 @@ func TestIntegrationWebhookResumeClearsPauseAndAudits(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegrationWebhookResumeFailureAudits503 是 LOW-4 的回归：resume 的
+// Redis Del 真失败时，除了 503 之外还必须落一条 settings.webhook_resume
+// 审计，status_code=503、detail 只含 {paused:true}、零敏感字段。
+func TestIntegrationWebhookResumeFailureAudits503(t *testing.T) {
+	logsDB, _, _ := newWebhookEndpointEnv(t)
+	actor := int64(424242)
+	principal := &auth.Principal{UserID: actor, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+
+	// 无监听的地址：Del 必然失败，但 handler 仍须写审计。
+	deadRedis := redis.NewClient(&redis.Options{
+		Addr:         "127.0.0.1:1",
+		MaxRetries:   -1,
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = deadRedis.Close() })
+
+	handlers, err := NewSettingsHandlers(SettingsHandlerConfig{
+		Service: &fakeSettingsService{},
+		Authz:   rbac.NewAuthzMiddleware(),
+		Audit:   audit.New(logsDB),
+		Idem:    NewMemoryIdempotencyStore(),
+		Redis:   deadRedis,
+	})
+	if err != nil {
+		t.Fatalf("NewSettingsHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "", principal, nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	var raw []byte
+	var statusCode int
+	if err := logsDB.QueryRow(`
+		SELECT detail, status_code FROM audit_logs
+		WHERE user_id = $1 AND route = '/api/settings/notify-webhook:resume'
+		ORDER BY id DESC LIMIT 1`, actor).Scan(&raw, &statusCode); err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if statusCode != http.StatusServiceUnavailable {
+		t.Fatalf("审计 status_code = %d，期望 503", statusCode)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail["action"] != audit.ActionSettingsWebhookResume {
+		t.Fatalf("action = %v，期望 %s", detail["action"], audit.ActionSettingsWebhookResume)
+	}
+	// 失败路径不得谎报 paused=false：恢复没有生效。
+	if detail["paused"] != true {
+		t.Fatalf("paused = %v，期望 true（恢复未生效）", detail["paused"])
+	}
+	for _, leak := range []string{"super-secret-value", "token=", "s3cret", "/hook", "127.0.0.1"} {
+		if strings.Contains(string(raw), leak) {
+			t.Fatalf("审计泄露 %q: %s", leak, string(raw))
+		}
+	}
+}
