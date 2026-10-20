@@ -70,7 +70,10 @@ type GatewayDeps struct {
 	EmailSender             EmailCodeSender
 	PasswordChecker         auth.CompromisedPasswordChecker
 	SignupGrantAlert        func(ctx context.Context, userID int64, ip string)
-	Logger                  *slog.Logger
+	// SignupWebhook 是注册成功后的 user_signup 事件生产者（B1b）。生产由
+	// platform 用主库 Store + WebhookSender 构造并传入；nil 时不入队。
+	SignupWebhook SignupWebhookProducer
+	Logger        *slog.Logger
 
 	// 可选覆盖/测试缝隙。nil 时由 DB 构造 SQL 实现。
 	Repo              AuthRepo
@@ -406,6 +409,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		TurnstileHTTPClient: deps.TurnstileHTTPClient,
 		Audit:               deps.Audit,
 		SignupGrantAlert:    deps.SignupGrantAlert,
+		SignupWebhook:       deps.SignupWebhook,
 		Logger:              deps.Logger,
 		// 订阅购买与充值共用同一个支付服务实例。
 		SubscriptionPurchase: deps.SubscriptionPurchase,

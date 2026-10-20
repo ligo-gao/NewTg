@@ -28,6 +28,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
@@ -244,15 +245,30 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: redemption handlers: %w", err)
 	}
 
+	// B1b：Webhook 业务事件生产者（payment_success / user_signup）。
+	// 订阅过滤与 N8 worker 共用同一 WebhookSender（读取 notify.webhook.events
+	// 快照）；投递行写主库，由 worker 进程按 1/5/25 分钟重试。生产者在
+	// 这里构造一次，同时供充值结算与注册路径使用。
+	notifyStore, err := notify.NewStore(db)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: notify store: %w", err)
+	}
+	webhookEvents, err := notify.NewWebhookEventProducer(
+		notifyStore, notify.NewWebhookSender(center, cipher), log)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: webhook event producer: %w", err)
+	}
+
 	// M5 在线充值端点（Task 3）：密钥类配置（Stripe secret/webhook secret、
 	// 支付宝私钥/公钥）经与配置中心同一个 SecretSealer 解封；webhook 限流
 	// 复用同一 Redis 客户端，缺 Redis 时构造失败（fail closed）。
 	topupHandler, err := httpapi.NewTopupHandlers(httpapi.TopupHandlerConfig{
-		DB:     gormDB,
-		Redis:  rdb,
-		Config: center,
-		Sealer: cipher,
-		Logger: log,
+		DB:      gormDB,
+		Redis:   rdb,
+		Config:  center,
+		Sealer:  cipher,
+		Logger:  log,
+		Webhook: webhookEvents,
 		// 订单端点按 orders:read/orders:manage 判定管理员范围；必须复用
 		// 同一个 authz 实例，才能拿到 SessionAuth 未填充的权威权限集合。
 		Authz: authz,
@@ -282,6 +298,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Sealer:                  cipher,
 		Audit:                   auditor,
 		Authz:                   authz,
+		SignupWebhook:           webhookEvents,
 		TokenService:            tokens,
 		SessionSecret:           []byte(cfg.SessionSecret),
 		CredentialEncryptionKey: cfg.CredentialEncryptionKey,

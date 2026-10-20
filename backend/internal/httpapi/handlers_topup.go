@@ -95,6 +95,10 @@ type TopupHandlerConfig struct {
 	// StripeBaseURL / AlipayGatewayURL 是渠道地址覆盖（测试）。
 	StripeBaseURL    string
 	AlipayGatewayURL string
+	// Webhook 是充值入账成功后的 payment_success 事件生产者（B1b）。
+	// 仅在使用 DB 构造默认服务时生效；显式注入 Service 的装配由调用方
+	// 自行把生产者接进该 Service。
+	Webhook billing.PaymentSuccessWebhook
 }
 
 // TopupHandlers 持有充值端点的依赖，可并发使用。
@@ -125,6 +129,7 @@ func NewTopupHandlers(cfg TopupHandlerConfig) (*TopupHandlers, error) {
 			Now:              cfg.Now,
 			StripeBaseURL:    cfg.StripeBaseURL,
 			AlipayGatewayURL: cfg.AlipayGatewayURL,
+			Webhook:          cfg.Webhook,
 		})
 		if err != nil {
 			return nil, err

@@ -172,6 +172,8 @@ type TopupService struct {
 	stripeBaseURL string
 	// alipayGatewayURL 覆盖 pay.alipay.gateway_url（测试注入 httptest）。
 	alipayGatewayURL string
+	// webhook 是结算成功后 payment_success 事件的生产者（B1b）；nil 时不入队。
+	webhook PaymentSuccessWebhook
 }
 
 // TopupServiceConfig 是 TopupService 的装配输入。
@@ -189,6 +191,9 @@ type TopupServiceConfig struct {
 	StripeBaseURL string
 	// AlipayGatewayURL 覆盖支付宝网关（测试）；生产由 pay.alipay.gateway_url 决定。
 	AlipayGatewayURL string
+	// Webhook 是充值入账成功后的 Webhook 事件生产者（B1b）。nil 表示未接线
+	// （纯计费单测/嵌入式装配），此时不产生 payment_success 投递。
+	Webhook PaymentSuccessWebhook
 }
 
 // NewTopupService 构造充值服务。DB 与 Funding 必填：订单、余额与流水必须
@@ -229,6 +234,7 @@ func NewTopupService(cfg TopupServiceConfig) (*TopupService, error) {
 		http:             client,
 		stripeBaseURL:    strings.TrimRight(base, "/"),
 		alipayGatewayURL: strings.TrimSpace(cfg.AlipayGatewayURL),
+		webhook:          cfg.Webhook,
 	}, nil
 }
 
@@ -1385,7 +1391,13 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 	if order.Status == string(OrderSucceeded) {
 		// 幂等重放也要把内存结构对齐数据库：调用方（verify/complete）
 		// 可能在拿到订单后、入账前被并发请求抢先入账。
-		return s.refreshOrder(ctx, order)
+		if err := s.refreshOrder(ctx, order); err != nil {
+			return err
+		}
+		// B1b：重放也尝试入队。首次入队失败/订阅后补开时这一次仍可补上；
+		// 已入队过则由 dedupe_key 收敛，不会重复投递。
+		s.enqueuePaymentSuccess(ctx, order)
+		return nil
 	}
 	if order.Status != string(OrderPending) {
 		s.log.Warn("payment callback for non-pending order",
@@ -1493,7 +1505,13 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 	}
 	// 无论本次是否实际入账（并发落败路径 credited=false），都重读数据库：
 	// 条件 UPDATE 可能由另一请求完成，内存状态可能仍是 pending。
-	return s.refreshOrder(ctx, order)
+	if err := s.refreshOrder(ctx, order); err != nil {
+		return err
+	}
+	// B1b：事务已提交（新入账）或并发请求已完成入账；两者都在此处写
+	// payment_success 投递。失败只 Warn，不改变已经成功的结算结果。
+	s.enqueuePaymentSuccess(ctx, order)
+	return nil
 }
 
 // failMismatch 把订单置 failed 并写受控失败码；绝不入账。

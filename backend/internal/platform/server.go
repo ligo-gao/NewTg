@@ -508,6 +508,20 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		_ = dbRes.Close()
 		return fmt.Errorf("worker: notify store: %w", err)
 	}
+	// B1b：worker 侧的充值结算（过期回收/支付宝轮询兜底）也走 settleOrder，
+	// 必须与 gateway 共享同一生产者语义。订阅过滤读取同一配置中心快照。
+	webhookEvents, err := notify.NewWebhookEventProducer(
+		notifyStore, notify.NewWebhookSender(center, cipher), log)
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		cancelSubscriptions()
+		subscriptionsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: webhook event producer: %w", err)
+	}
 	webhookCtx, cancelWebhook := context.WithCancel(ctx)
 	var webhookWG sync.WaitGroup
 	webhookWG.Add(1)
@@ -533,10 +547,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 重试）。TopupService 只用于渠道查询/关单与入账，复用 worker 的
 	// 配置中心快照与 SecretSealer（支付宝密钥是密封配置）。
 	topup, err := billing.NewTopupService(billing.TopupServiceConfig{
-		DB:     gormDB,
-		Config: center,
-		Sealer: cipher,
-		Logger: log,
+		DB:      gormDB,
+		Config:  center,
+		Sealer:  cipher,
+		Logger:  log,
+		Webhook: webhookEvents,
 	})
 	if err != nil {
 		// 排行榜与订阅维护循环已经启动：先取消并等待它们退出，再关连接池，

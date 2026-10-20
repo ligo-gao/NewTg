@@ -36,6 +36,7 @@ import (
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
@@ -120,11 +121,13 @@ type CreateUserInput struct {
 }
 
 // CreatedUser 是 INSERT ... RETURNING 的结果：角色/状态取自信赖的 DB 行，
-// 绝不取请求体（ruling 3）。
+// 绝不取请求体（ruling 3）。CreatedAt 是 DB 时钟写入的 users.created_at，
+// 供 user_signup Webhook 的事件时间使用（B1b）。
 type CreatedUser struct {
-	ID     int64
-	Role   string
-	Status string
+	ID        int64
+	Role      string
+	Status    string
+	CreatedAt time.Time
 }
 
 // ErrDuplicateUser 表示 username 或 email 撞唯一约束。上层必须把它映射成
@@ -137,6 +140,12 @@ type AuthRepo interface {
 	FindUserByIdentifier(ctx context.Context, identifier string) (*UserRecord, error)
 	UsernameOrEmailTaken(ctx context.Context, username, email string) (bool, error)
 	CreateUser(ctx context.Context, in CreateUserInput) (CreatedUser, error)
+}
+
+// SignupWebhookProducer 是注册成功后的 user_signup Webhook 事件生产者
+// （B1b）。生产实现是 *notify.WebhookEventProducer；nil 表示未接线。
+type SignupWebhookProducer interface {
+	EnqueueUserSignup(ctx context.Context, event notify.UserSignupEvent) error
 }
 
 // ConfigReader 是 configcenter.Center.Get 的读取面（便于单测注入）。
@@ -214,9 +223,9 @@ func (r *SQLAuthRepo) CreateUser(ctx context.Context, in CreateUserInput) (Creat
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO users (username, email, email_verified_at, password_hash, aff)
 		VALUES ($1, $2, CASE WHEN $3 THEN now() ELSE NULL END, $4, NULLIF($5, ''))
-		RETURNING id, role, status`,
+		RETURNING id, role, status, created_at`,
 		in.Username, in.Email, in.EmailVerified, in.PasswordHash, in.Aff,
-	).Scan(&out.ID, &out.Role, &out.Status)
+	).Scan(&out.ID, &out.Role, &out.Status, &out.CreatedAt)
 	if isUniqueViolation(err) {
 		return CreatedUser{}, ErrDuplicateUser
 	}
@@ -590,6 +599,8 @@ type authHandlers struct {
 	// usableGroups 是 GET /api/status 的 usable_groups 数据源（Task 13）。
 	// nil 时该字段恒为空数组（未接线的单元装配）。
 	usableGroups UsableGroupLookup
+	// signupWebhook 是注册成功后的 user_signup 事件生产者（B1b）；nil 时不入队。
+	signupWebhook SignupWebhookProducer
 }
 
 func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Client,
@@ -1092,6 +1103,22 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if grantSuppressed {
 		h.alertSignupGrantSuppressed(r.Context(), created.ID, ip)
+	}
+	// B1b：账号事务已提交，写 user_signup Webhook 投递。best-effort：
+	// 入队失败只 Warn，注册与会话照常进行（账号是权威，通知可补）。
+	if h.signupWebhook != nil {
+		createdAt := created.CreatedAt
+		if createdAt.IsZero() {
+			// 内存假实现/历史装配没有 DB 默认值；用当前时刻保证 payload 合法。
+			createdAt = time.Now().UTC()
+		}
+		if err := h.signupWebhook.EnqueueUserSignup(r.Context(), notify.UserSignupEvent{
+			UserID:    created.ID,
+			Username:  username,
+			CreatedAt: createdAt,
+		}); err != nil {
+			h.log.Warn("user signup webhook enqueue failed", "user_id", created.ID, "error", err)
+		}
 	}
 
 	user := &UserRecord{

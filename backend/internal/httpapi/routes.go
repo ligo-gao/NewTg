@@ -115,6 +115,10 @@ type RouterConfig struct {
 	// SignupGrantAlert 在注册赠送被反滥用上限抑制时触发（nil 时仅 Warn 日志）。
 	SignupGrantAlert func(ctx context.Context, userID int64, ip string)
 	Logger           *slog.Logger
+	// SignupWebhook 是注册成功后的 user_signup 事件生产者（B1b）。
+	// 生产为 *notify.WebhookEventProducer（与充值事件共用订阅过滤）；
+	// nil 时注册照常完成但不写 Webhook 投递。
+	SignupWebhook SignupWebhookProducer
 
 	// PublicPricingRepo 是公开读面（GET /api/pricing、/api/home/stats）的
 	// 存储接缝。nil 且 DB 非 nil 时由 store.NewPublicPricingRepo(DB) 构造；
@@ -213,6 +217,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.SessionSecret, cfg.EmailSender, withSiteTitle(cfg.Config, cfg.PasswordChecker), cfg.Logger)
 	h.audit = cfg.Audit
 	h.signupGrantAlert = cfg.SignupGrantAlert
+	h.signupWebhook = cfg.SignupWebhook
 	h.initialized = cfg.Initialized
 	h.geoIP = cfg.GeoIP
 	// usable_groups 与默认模型校验共用同一 Sql 口径（store.UserGroupsRepo）。

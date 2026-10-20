@@ -186,7 +186,7 @@ func (r *fakeAuthRepo) CreateUser(_ context.Context, in CreateUserInput) (Create
 	r.byUsername[in.Username] = r.nextID
 	r.byEmail[strings.ToLower(in.Email)] = r.nextID
 	r.created = append(r.created, in)
-	return CreatedUser{ID: r.nextID, Role: role, Status: "enabled"}, nil
+	return CreatedUser{ID: r.nextID, Role: role, Status: "enabled", CreatedAt: time.Now().UTC()}, nil
 }
 
 func (r *fakeAuthRepo) Load(_ context.Context, userID int64) ([]string, error) {
