@@ -13,6 +13,7 @@
 //	GET    /api/users/{id}/subscriptions              管理：单用户实例（users:read）
 //	GET    /api/subscription/plans                    用户：可购套餐（仅 enabled）
 //	GET    /api/subscriptions                         用户：本人实例（含终态）
+//	POST   /api/subscriptions/{id}/cancel             用户：周期末取消（幂等；终态 409）
 //	GET    /api/billing-preference                    用户：扣费偏好
 //	PUT    /api/billing-preference                    用户：扣费偏好（四值归一）
 //	POST   /api/subscription/purchase                 用户：购买（创建支付订单）
@@ -22,6 +23,8 @@
 //     由 RBAC 字段层直接 403（绝不静默丢弃）。
 //   - 用户侧一律以 Principal.UserID 为唯一数据范围：接口不接收 user_id，也不存在
 //     可枚举他人实例的路径（§15.4）。管理侧单用户列表以 users:read 做功能级门。
+//   - 周期末取消只置 cancel_at_period_end，不立即作废额度、不退款（§3.5 P1）；
+//     归属校验先于状态判定，他人实例与不存在统一 404，终态 409。
 //   - 购买端点在 S3 接通支付：订单创建/渠道载荷/幂等全部委托
 //     billing.TopupService（与充值同一套实现），本层只做请求形态与错误映射。
 //     金额/币种/周期/额度一律由服务端按套餐行读取，不信任请求体。
