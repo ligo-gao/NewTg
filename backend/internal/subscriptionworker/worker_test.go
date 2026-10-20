@@ -21,17 +21,17 @@ import (
 type fakeRepo struct {
 	mu sync.Mutex
 
-	expireAffected  int64
-	expireErr       error
-	due             []store.Subscription
-	dueErr          error
-	resetAffected   map[int64]int64
-	advanceAffected map[int64]int64
-	resetErr        error
+	expireAffected int64
+	expireErr      error
+	due            []store.Subscription
+	dueErr         error
+	resetAffected  map[int64]int64
+	resetErr       error
+	// resetHook 在每次 ResetSubscriptionQuota 内执行（pass 中取消测试用）。
+	resetHook func()
 
-	expireCalls  int
-	resetCalls   []int64
-	advanceCalls []int64
+	expireCalls int
+	resetCalls  []int64
 
 	// sweepEntered/sweepRelease 让锁竞争测试把第一轮阻塞在 ExpireDue 内。
 	sweepEntered chan struct{}
@@ -63,6 +63,9 @@ func (r *fakeRepo) ResetSubscriptionQuota(_ context.Context, id int64, _ time.Ti
 	r.mu.Lock()
 	r.resetCalls = append(r.resetCalls, id)
 	r.mu.Unlock()
+	if r.resetHook != nil {
+		r.resetHook()
+	}
 	if r.resetErr != nil {
 		return 0, r.resetErr
 	}
@@ -72,20 +75,10 @@ func (r *fakeRepo) ResetSubscriptionQuota(_ context.Context, id int64, _ time.Ti
 	return 1, nil
 }
 
-func (r *fakeRepo) AdvanceNextResetAt(_ context.Context, id int64, _ time.Time) (int64, error) {
-	r.mu.Lock()
-	r.advanceCalls = append(r.advanceCalls, id)
-	r.mu.Unlock()
-	if affected, ok := r.advanceAffected[id]; ok {
-		return affected, nil
-	}
-	return 1, nil
-}
-
-func (r *fakeRepo) callCounts() (expire int, reset, advance int) {
+func (r *fakeRepo) callCounts() (expire int, reset int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.expireCalls, len(r.resetCalls), len(r.advanceCalls)
+	return r.expireCalls, len(r.resetCalls)
 }
 
 // fakeCleaner 按脚本返回每批删除行数。
@@ -93,20 +86,30 @@ type fakeCleaner struct {
 	mu      sync.Mutex
 	batches []int64
 	err     error
-	calls   int
-	cutoffs []time.Time
-	limits  []int
+	// errOnCall 指定错误只在第 N 次调用（1 起）发生；0 表示每次都错。
+	errOnCall int
+	calls     int
+	cutoffs   []time.Time
+	limits    []int
+	// onCall 在每批删除内执行（pass 中取消测试用）。
+	onCall func()
 }
 
 func (c *fakeCleaner) DeletePreConsumeBefore(_ context.Context, cutoff time.Time, limit int) (int64, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.calls++
+	call := c.calls
 	c.cutoffs = append(c.cutoffs, cutoff)
 	c.limits = append(c.limits, limit)
-	if c.err != nil {
+	c.mu.Unlock()
+	if c.onCall != nil {
+		c.onCall()
+	}
+	if c.err != nil && (c.errOnCall == 0 || call == c.errOnCall) {
 		return 0, c.err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if len(c.batches) == 0 {
 		return 0, nil
 	}
@@ -141,12 +144,12 @@ func newTestWorker(t *testing.T, repo Repository, cleaner Cleaner) *worker {
 	return w
 }
 
-// TestSweepResetsAndAdvancesCursor 验证两类重置分流：
-//   - 有额度（amount_total>0）→ ResetSubscriptionQuota；
-//   - 无限额度（amount_total=0）→ 只推进游标，不归零 amount_used。
+// TestSweepResetsAllInstances 验证所有到期实例统一归零 amount_used：
+// amount_total>0 与 amount_total=0（无限额度）走同一条条件 UPDATE，
+// 不再有无限额度的「只推进游标」特判（H1 裁决，§7 表格口径）。
 //
 // 第二轮的 affected=0 模拟条件 UPDATE 的幂等：重复 pass 不再计数。
-func TestSweepResetsAndAdvancesCursor(t *testing.T) {
+func TestSweepResetsAllInstances(t *testing.T) {
 	repo := &fakeRepo{
 		expireAffected: 3,
 		due: []store.Subscription{
@@ -161,24 +164,20 @@ func TestSweepResetsAndAdvancesCursor(t *testing.T) {
 	if err != nil || !ran {
 		t.Fatalf("sweep = %+v/%v/%v，want ran/nil", res, ran, err)
 	}
-	if res.Expired != 3 || res.Reset != 1 || res.CursorAdvanced != 1 {
-		t.Fatalf("result = %+v，want expired=3 reset=1 advanced=1", res)
+	if res.Expired != 3 || res.Reset != 2 {
+		t.Fatalf("result = %+v，want expired=3 reset=2", res)
 	}
-	if len(repo.resetCalls) != 1 || repo.resetCalls[0] != 11 {
-		t.Fatalf("reset calls = %v，want [11]", repo.resetCalls)
-	}
-	if len(repo.advanceCalls) != 1 || repo.advanceCalls[0] != 12 {
-		t.Fatalf("advance calls = %v，want [12]", repo.advanceCalls)
+	if len(repo.resetCalls) != 2 || repo.resetCalls[0] != 11 || repo.resetCalls[1] != 12 {
+		t.Fatalf("reset calls = %v，want [11 12]", repo.resetCalls)
 	}
 
 	// 同一 now 的第二轮：游标前移后条件 UPDATE 返回 0，不重复计数。
-	repo.resetAffected = map[int64]int64{11: 0}
-	repo.advanceAffected = map[int64]int64{12: 0}
+	repo.resetAffected = map[int64]int64{11: 0, 12: 0}
 	res, ran, err = w.sweep(context.Background())
 	if err != nil || !ran {
 		t.Fatalf("second sweep = %v/%v，want ran/nil", ran, err)
 	}
-	if res.Reset != 0 || res.CursorAdvanced != 0 {
+	if res.Reset != 0 {
 		t.Fatalf("second sweep result = %+v，want no double reset", res)
 	}
 }
@@ -217,8 +216,8 @@ func TestSweepLockContention(t *testing.T) {
 	if ran || res != (SweepResult{}) {
 		t.Fatalf("contended sweep = %+v/%v，want skipped", res, ran)
 	}
-	if expire, reset, advance := repo.callCounts(); expire != 1 || reset != 0 || advance != 0 {
-		t.Fatalf("repo calls = %d/%d/%d，want only the lock holder to run", expire, reset, advance)
+	if expire, reset := repo.callCounts(); expire != 1 || reset != 0 {
+		t.Fatalf("repo calls = %d/%d，want only the lock holder to run", expire, reset)
 	}
 
 	close(repo.sweepRelease)
@@ -322,7 +321,7 @@ func TestRunLoopStopsOnCancel(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if expire, _, _ := repo.callCounts(); expire > 0 {
+		if expire, _ := repo.callCounts(); expire > 0 {
 			break
 		}
 		select {
@@ -356,8 +355,8 @@ func TestRunLoopPreCancelled(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RunLoop = %v，want nil", err)
 	}
-	if expire, reset, advance := repo.callCounts(); expire != 0 || reset != 0 || advance != 0 {
-		t.Fatalf("pre-cancelled RunLoop called repo: %d/%d/%d", expire, reset, advance)
+	if expire, reset := repo.callCounts(); expire != 0 || reset != 0 {
+		t.Fatalf("pre-cancelled RunLoop called repo: %d/%d", expire, reset)
 	}
 	if cleaner.calls != 0 {
 		t.Fatalf("pre-cancelled RunLoop called cleaner %d times", cleaner.calls)
@@ -379,5 +378,154 @@ func TestNewWorkerRequiresDeps(t *testing.T) {
 		if _, err := newWorker(tc.deps); err == nil {
 			t.Fatalf("newWorker(%s) = nil error，want failure", tc.name)
 		}
+	}
+}
+
+// TestSweepRedisFailureSkips：Redis 不可用时抢锁失败，整轮跳过且不碰
+// 仓储。锁是正确性的必要条件（多副本互斥），不能在无锁状态下「尽力执行」。
+func TestSweepRedisFailureSkips(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	mr.Close() // 模拟 Redis 运行时故障。
+
+	repo := &fakeRepo{expireAffected: 1}
+	w, err := newWorker(Deps{Repo: repo, Cleaner: &fakeCleaner{}, Redis: client, Now: fixedNow})
+	if err != nil {
+		t.Fatalf("newWorker: %v", err)
+	}
+
+	res, ran, err := w.sweep(context.Background())
+	if err == nil || ran || res != (SweepResult{}) {
+		t.Fatalf("sweep = %+v/%v/%v，want skipped with error", res, ran, err)
+	}
+	if expire, reset := repo.callCounts(); expire != 0 || reset != 0 {
+		t.Fatalf("repo calls = %d/%d，want none when Redis is down", expire, reset)
+	}
+}
+
+// TestCleanupRedisFailureSkips：清理同样在抢锁失败时跳过。
+func TestCleanupRedisFailureSkips(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	mr.Close()
+
+	cleaner := &fakeCleaner{batches: []int64{1}}
+	w, err := newWorker(Deps{Repo: &fakeRepo{}, Cleaner: cleaner, Redis: client, Now: fixedNow})
+	if err != nil {
+		t.Fatalf("newWorker: %v", err)
+	}
+
+	deleted, ran, err := w.cleanup(context.Background())
+	if err == nil || ran || deleted != 0 {
+		t.Fatalf("cleanup = %d/%v/%v，want skipped with error", deleted, ran, err)
+	}
+	if cleaner.calls != 0 {
+		t.Fatalf("cleaner calls = %d，want 0", cleaner.calls)
+	}
+}
+
+// TestReleaseLockCompareDelete：只有持有者令牌能删除锁。TTL 恰在操作结束
+// 前过期、另一副本已经抢到锁时，无条件 DEL 会误删别人的锁，导致真正的
+// 互斥失效（两个副本同时扫描）。
+func TestReleaseLockCompareDelete(t *testing.T) {
+	repo := &fakeRepo{}
+	cleaner := &fakeCleaner{}
+	w := newTestWorker(t, repo, cleaner)
+	ctx := context.Background()
+
+	if err := w.redis.Set(ctx, SweepLockKey, "other-replica", time.Minute).Err(); err != nil {
+		t.Fatalf("seed lock: %v", err)
+	}
+	w.releaseLock(SweepLockKey, "my-stale-token")
+	got, err := w.redis.Get(ctx, SweepLockKey).Result()
+	if err != nil {
+		t.Fatalf("get lock after non-owner release: %v", err)
+	}
+	if got != "other-replica" {
+		t.Fatalf("lock holder = %q，want other-replica（非持有者不得删除）", got)
+	}
+
+	// 持有者删除：令牌匹配才删除。
+	w.releaseLock(SweepLockKey, "other-replica")
+	if _, err := w.redis.Get(ctx, SweepLockKey).Result(); !errors.Is(err, redis.Nil) {
+		t.Fatalf("lock still present after owner release: %v", err)
+	}
+}
+
+// TestCleanupLockContentionSkips：另一副本持有清理锁时，本轮不产生任何
+// 删除调用（多副本下的预期路径，不是错误）。
+func TestCleanupLockContentionSkips(t *testing.T) {
+	repo := &fakeRepo{}
+	cleaner := &fakeCleaner{batches: []int64{1}}
+	w := newTestWorker(t, repo, cleaner)
+	if err := w.redis.Set(context.Background(), CleanupLockKey, "other-replica", time.Minute).Err(); err != nil {
+		t.Fatalf("seed cleanup lock: %v", err)
+	}
+
+	deleted, ran, err := w.cleanup(context.Background())
+	if err != nil || ran || deleted != 0 {
+		t.Fatalf("cleanup = %d/%v/%v，want skipped", deleted, ran, err)
+	}
+	if cleaner.calls != 0 {
+		t.Fatalf("cleaner calls = %d，want 0 while another replica holds the lock", cleaner.calls)
+	}
+}
+
+// TestSweepStopsMidPassOnCancel：一轮扫描处理到一半时 ctx 取消，必须停止
+// 后续实例的重置（停机时不再发起新的资金写）。已完成的实例保留其效果。
+func TestSweepStopsMidPassOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repo := &fakeRepo{
+		due: []store.Subscription{{ID: 21}, {ID: 22}, {ID: 23}},
+	}
+	repo.resetHook = cancel
+	w := newTestWorker(t, repo, &fakeCleaner{})
+
+	res, ran, err := w.sweep(ctx)
+	if err != nil || !ran {
+		t.Fatalf("sweep = %+v/%v/%v，want ran/nil", res, ran, err)
+	}
+	if res.Reset != 1 || len(repo.resetCalls) != 1 || repo.resetCalls[0] != 21 {
+		t.Fatalf("reset = %d calls=%v，want only the first instance before cancel", res.Reset, repo.resetCalls)
+	}
+}
+
+// TestCleanupStopsMidPassOnCancel：分批清理在 ctx 取消后不再发起下一批，
+// 返回已删除数而不是继续加大停机时的 DB 负载。
+func TestCleanupStopsMidPassOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleaner := &fakeCleaner{batches: []int64{500, 500, 500}}
+	cleaner.onCall = cancel
+	w := newTestWorker(t, &fakeRepo{}, cleaner)
+
+	deleted, ran, err := w.cleanup(ctx)
+	if err != nil || !ran || deleted != 500 {
+		t.Fatalf("cleanup = %d/%v/%v，want 500/true/nil after cancel", deleted, ran, err)
+	}
+	if cleaner.calls != 1 {
+		t.Fatalf("cleaner calls = %d，want 1 after cancel", cleaner.calls)
+	}
+}
+
+// TestCleanupPartialFailureKeepsDeleted：第二批失败时，第一批已删除的行数
+// 必须如实返回（日志/指标不能把已发生的删除报成 0），并停止后续批次。
+func TestCleanupPartialFailureKeepsDeleted(t *testing.T) {
+	cleaner := &fakeCleaner{
+		batches:   []int64{500},
+		err:       errors.New("db down"),
+		errOnCall: 2,
+	}
+	w := newTestWorker(t, &fakeRepo{}, cleaner)
+
+	deleted, ran, err := w.cleanup(context.Background())
+	if err == nil || !ran || deleted != 500 {
+		t.Fatalf("cleanup = %d/%v/%v，want 500/true/error", deleted, ran, err)
+	}
+	if cleaner.calls != 2 {
+		t.Fatalf("cleaner calls = %d，want 2（第二批失败后停止）", cleaner.calls)
 	}
 }

@@ -3,10 +3,13 @@ package subscriptionworker
 // 订阅域的 B12 后台任务（billing-06 §9.3、billing-08 §7）。
 //
 // 本包只负责三件周期性、可重复执行的数据维护：
-//  1. 到期：active 且 end_at + grace_days <= now 的实例置 expired；
-//     cancel_at_period_end=true 的实例同样在周期末到期（它仍是 active，
-//     只是不再续费——到期判定不需要额外分支）。
-//  2. 额度重置：next_reset_at <= now 的 active 实例重置周期额度并推进游标。
+//  1. 到期：宽限期只适用于「正常周期末」——未取消续费的实例在
+//     end_at + grace_days <= now 时置 expired；cancel_at_period_end=true
+//     表示用户明确不续费，到期即终止、**不享宽限**（end_at <= now）。
+//     两条分支必须在同一条条件 UPDATE 里，避免宽限期把已取消实例留活。
+//  2. 额度重置：next_reset_at <= now 且仍在本周期内（end_at > now）的
+//     active 实例把 amount_used 归零并推进游标。宽限期内不发放新周期额度
+//     （billing-08 §3.4）；amount_total=0（无限额度）也与其他实例一样归零。
 //     推进游标是幂等的核心：没有它，同一实例会在每个扫描周期被重复重置
 //     （双倍赠额，属于严重资损）。
 //  3. 清理：删除 7 天前的 subscription_pre_consume_records，分批 LIMIT，
@@ -41,13 +44,12 @@ const (
 	// DefaultSweepInterval 是到期/重置扫描周期（billing-06 §9.3：每分钟）。
 	DefaultSweepInterval = 60 * time.Second
 
-	// DefaultCleanupInterval 是幂等记录清理扫描周期。
+	// DefaultCleanupInterval 是幂等记录清理扫描周期（billing-08 §7 / C-3：30 分钟）。
 	//
-	// billing-08 §7 写的是 30 分钟（C-3）；本实现按 A4 任务书冻结为 1 小时。
-	// 两者都不是保留期：保留期恒为 7 天（PreConsumeRetention），间隔只决定
-	// 「过期数据最多多留多久」，与资金正确性无关。差异已登记台账
-	// （G-DOM-29），改回 30 分钟只需调整该常量。
-	DefaultCleanupInterval = time.Hour
+	// 它不是保留期：保留期恒为 7 天（PreConsumeRetention），间隔只决定
+	// 「过期数据最多多留多久」，与资金正确性无关。C-3 已澄清两者的区别，
+	// 实现按设计取 30 分钟。
+	DefaultCleanupInterval = 30 * time.Minute
 
 	// PreConsumeRetention 是预扣幂等记录的保留期（billing-04 §3.4 /
 	// billing-08 §7）。不能短于请求可能延迟结算的窗口，否则迟到的
@@ -72,18 +74,18 @@ const (
 
 // Repository 是本 worker 需要的订阅存储接缝。
 //
-// 刻意不复用 store.SubscriptionRepo 全接口：worker 只依赖这四个方法，
+// 刻意不复用 store.SubscriptionRepo 全接口：worker 只依赖这三个方法，
 // 窄接口让单测 fake 不必实现套餐 CRUD / 预扣写入等无关能力。
 // *store.SQLSubscriptionRepo 是生产实现。
 type Repository interface {
 	// ExpireDue 条件更新到期实例，返回实际迁移行数。
 	ExpireDue(ctx context.Context, now time.Time) (int64, error)
-	// DueForReset 返回 next_reset_at 已到期的 active 实例（只读扫描）。
+	// DueForReset 返回 next_reset_at 已到期且仍在本周期内的 active 实例
+	// （只读扫描；宽限期实例由 SQL 的 end_at > now 排除）。
 	DueForReset(ctx context.Context, now time.Time) ([]store.Subscription, error)
-	// ResetSubscriptionQuota 重置额度并原子推进 next_reset_at。
+	// ResetSubscriptionQuota 把所有实例（含 amount_total=0）的 amount_used
+	// 归零，并把 next_reset_at 一次推进到第一个严格晚于 now 的周期边界。
 	ResetSubscriptionQuota(ctx context.Context, id int64, now time.Time) (int64, error)
-	// AdvanceNextResetAt 仅推进无限额度实例的游标（不归零 amount_used）。
-	AdvanceNextResetAt(ctx context.Context, id int64, now time.Time) (int64, error)
 }
 
 // Cleaner 是预扣幂等记录的删除接缝。
@@ -118,10 +120,8 @@ type Deps struct {
 type SweepResult struct {
 	// Expired 是本轮由 active 迁移为 expired 的实例数。
 	Expired int64
-	// Reset 是本轮真正重置了额度并推进游标的实例数。
+	// Reset 是本轮真正重置了额度并推进游标的实例数（含无限额度实例）。
 	Reset int64
-	// CursorAdvanced 是本轮只推进游标（无限额度实例，amount_total=0）的数量。
-	CursorAdvanced int64
 }
 
 type worker struct {
@@ -241,11 +241,10 @@ func (w *worker) sweepOnce(ctx context.Context) {
 	if err != nil && ctx.Err() == nil {
 		w.log.Error("subscription sweep failed", "error", err)
 	}
-	if ran && (res.Expired > 0 || res.Reset > 0 || res.CursorAdvanced > 0) {
+	if ran && (res.Expired > 0 || res.Reset > 0) {
 		w.log.Info("subscriptions swept",
 			"expired", res.Expired,
 			"reset", res.Reset,
-			"cursor_advanced", res.CursorAdvanced,
 		)
 	}
 }
@@ -290,17 +289,9 @@ func (w *worker) sweep(ctx context.Context) (SweepResult, bool, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		// amount_total=0 是无限额度（R-D5-07）：amount_used 是累计用量，
-		// 不是周期额度，归零会丢失展示数据；只推进游标以停止重复扫描。
-		if sub.AmountTotal == 0 {
-			affected, rerr := w.repo.AdvanceNextResetAt(ctx, sub.ID, now)
-			if rerr != nil {
-				errs = append(errs, rerr)
-				continue
-			}
-			res.CursorAdvanced += affected
-			continue
-		}
+		// 所有实例统一归零 amount_used 并推进游标，amount_total=0（无限
+		// 额度，R-D5-07）不例外：amount_used 是**本周期**已用额度，重置
+		// 语义对所有实例一致；「累计用量」不属于本列。
 		affected, rerr := w.repo.ResetSubscriptionQuota(ctx, sub.ID, now)
 		if rerr != nil {
 			errs = append(errs, rerr)

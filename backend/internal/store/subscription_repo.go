@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -749,16 +750,26 @@ func (r *SQLSubscriptionRepo) subscriptionStatus(ctx context.Context, id int64) 
 	return status, nil
 }
 
-// ExpireDue 把到期实例置 expired（B12；billing-08 §7）。
+// ExpireDue 把到期实例置 expired（B12；billing-08 §3.4 / §7）。
 //
 // 条件 UPDATE 是唯一迁移守卫：重复执行只会在第一次命中，之后 affected=0
-// 即幂等返回。判定含快照宽限期（grace_days>0 时 end_at + grace_days <= now）。
+// 即幂等返回。到期分两支（M4 裁决）：
+//   - cancel_at_period_end=true：用户已明确不续费，周期末即终止，**不享宽限**
+//     （end_at <= now）；
+//   - 其余实例：宽限期只属于「可能续费」的周期末（end_at + grace_days <= now）。
+//
+// 若把宽限无条件套用到已取消实例，用户点了「周期末取消」后仍能多用
+// grace_days 天，与取消语义冲突。
 // 注意：到期实例仍允许在飞请求结算 delta（§3.4），本函数不碰 amount_used。
 func (r *SQLSubscriptionRepo) ExpireDue(ctx context.Context, now time.Time) (int64, error) {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE subscriptions SET status = 'expired', updated_at = now()
 		WHERE status = 'active'
-		  AND end_at + make_interval(days => grace_days) <= $1`, now.UTC())
+		  AND (
+		        (cancel_at_period_end AND end_at <= $1)
+		     OR (NOT cancel_at_period_end
+		         AND end_at + make_interval(days => grace_days) <= $1)
+		  )`, now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("store: expire subscriptions: %w", err)
 	}
@@ -773,12 +784,24 @@ func (r *SQLSubscriptionRepo) ExpireDue(ctx context.Context, now time.Time) (int
 //
 // 只读：真正的重置由 ResetSubscriptionQuota 的条件 UPDATE 完成，扫描与写入
 // 分离让 worker 可以分批处理且幂等。
+//
+// `end_at > now` 是 H3 裁决：宽限期（end_at < now < end_at+grace_days）内
+// 不得发放新周期额度。与 ExpireDue 配合后，恰在周期内的实例才进入重置；
+// 宽限期内仍 active 的实例被这里排除，宽限结束则被 ExpireDue 迁移。
+//
+// LIMIT 让单次扫描的返回集有界：积压时本轮只取最旧的一批，重置后它们
+// 的游标前移、自然离开候选集，下一轮继续；不会把整表 due 行一次读进内存。
 func (r *SQLSubscriptionRepo) DueForReset(ctx context.Context, now time.Time) ([]Subscription, error) {
 	return r.querySubscriptions(ctx, `
 		SELECT `+subscriptionColumns+` FROM subscriptions
 		WHERE status = 'active' AND next_reset_at IS NOT NULL AND next_reset_at <= $1
-		ORDER BY next_reset_at ASC, id ASC`, now.UTC())
+		  AND end_at > $1
+		ORDER BY next_reset_at ASC, id ASC
+		LIMIT `+strconv.Itoa(ResetScanLimit), now.UTC())
 }
+
+// ResetScanLimit 是 DueForReset 单轮返回上限（LOW：积压时有界扫描）。
+const ResetScanLimit = 1000
 
 // ResetSubscriptionQuota 重置单个实例并**原子推进** next_reset_at（B12）。
 //
@@ -788,6 +811,19 @@ func (r *SQLSubscriptionRepo) DueForReset(ctx context.Context, now time.Time) ([
 // 「不周期重置」合同，即使历史行里残留了 next_reset_at 也不能被重置。
 // 推进量用快照 period_days 而不是读当前套餐：续费/编辑不得改变本实例的周期。
 //
+// 【H3：宽限期不重置】`end_at > $2` 排除 end_at < now < end_at+grace 的
+// 实例。宽限期只延长「能否继续消费」，不发放新周期额度（§3.4）；
+// 若此处不设守卫，宽限期内 next_reset_at 到期会把 amount_used 清零，
+// 等于凭空赠送一个周期。等值边界（end_at = now）也按不重置处理。
+//
+// 【M2：一次推进到第一个严格晚于 now 的边界】停机多轮后 next_reset_at
+// 可能落后 now 好几个周期。若只 +period，需要多轮扫描才能追上，且每轮都
+// 会重复「归零」同一实例（虽然 amount_used 已为 0，仍是无谓写与日志噪声）。
+// 周期数 = FLOOR((now - next_reset_at) / period) + 1：
+//   - 停机 62 天、周期 30 天 → floor(62/30)+1 = 3 → 前进 90 天；
+//   - 恰好整周期（差 30 天）→ floor(1)+1 = 2，跳过落在 now 上的边界，
+//     保证推进后严格 > now（否则下一轮会再次命中并多跳一个周期）。
+//
 // 【与在飞请求的竞态】设计已登记（billing-08 §13-3）：重置归零时冻结该实例
 // 的在飞请求，其 Terminate delta 会落到已重置计数上。本函数不等待在飞租约，
 // 调用方（worker）按 §13-3 的处置决定是否在重置前检查租约。
@@ -795,43 +831,20 @@ func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE subscriptions
 		SET amount_used = 0,
-		    next_reset_at = next_reset_at + make_interval(days => period_days),
+		    next_reset_at = next_reset_at + make_interval(days =>
+		        (FLOOR(EXTRACT(EPOCH FROM ($2 - next_reset_at))
+		               / (period_days * 86400.0))::int + 1) * period_days),
 		    updated_at = now()
 		WHERE id = $1 AND status = 'active' AND reset_on_renew
-		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2`, id, now.UTC())
+		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2
+		  AND end_at > $2
+		  AND period_days > 0`, id, now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("store: reset subscription(%d) quota: %w", id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("store: reset subscription(%d) rows: %w", id, err)
-	}
-	return affected, nil
-}
-
-// AdvanceNextResetAt 只推进无限额度实例（amount_total=0）的重置游标（B12）。
-//
-// 为什么无限额度实例不能复用 ResetSubscriptionQuota：该函数会把
-// amount_used 归零。amount_total=0（R-D5-07）表示没有额度上限，amount_used
-// 只是累计用量展示，不是可重置的周期额度；归零会让「无限套餐」的累计用量
-// 在每月 1 日凭空消失。但 next_reset_at 仍必须前移，否则 DueForReset 每个
-// 扫描周期都会再次命中同一行，worker 永远在做无意义的推进。
-//
-// 条件与 ResetSubscriptionQuota 完全一致（含 reset_on_renew 快照与
-// `next_reset_at <= now`）：重复 pass 返回 affected=0，游标只前移一次。
-func (r *SQLSubscriptionRepo) AdvanceNextResetAt(ctx context.Context, id int64, now time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions
-		SET next_reset_at = next_reset_at + make_interval(days => period_days),
-		    updated_at = now()
-		WHERE id = $1 AND status = 'active' AND reset_on_renew
-		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2`, id, now.UTC())
-	if err != nil {
-		return 0, fmt.Errorf("store: advance subscription(%d) reset cursor: %w", id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: advance subscription(%d) rows: %w", id, err)
 	}
 	return affected, nil
 }
@@ -843,10 +856,10 @@ func (r *SQLSubscriptionRepo) AdvanceNextResetAt(ctx context.Context, id int64, 
 // 把并发预扣/退款的事务拖慢甚至超时。LIMIT 子查询让每次删除的行数有界，
 // 调用方（worker）循环多批，直到返回 affected < limit。
 //
-// 【为什么没有 created_at 索引也能接受】该表只保留 7 天窗口，稳态行数由
-// 请求量决定；每批子查询最多带走 limit 行，PG 顺序扫描的成本被 LIMIT 截断，
-// 且清理间隔（小时级）远低于写入速率。若未来请求量显著增长，再补
-// (created_at) 索引，而不是现在让小表承担额外写放大。
+// 【created_at 索引】清理谓词是 `created_at < cutoff`，子查询按 created_at
+// 排序取 LIMIT；迁移 20261020190000 为 (created_at) 建索引，让每批只触碰
+// 索引上的前 N 行，而不是在保留窗口内反复顺序扫描。索引的写放大只落在
+// 每秒少量预扣插入上，远小于清理时的扫描收益。
 //
 // ORDER BY created_at, request_id 让批次顺序确定（同秒行按 PK 稳定），
 // 避免同一批反复选中相同行导致空转。

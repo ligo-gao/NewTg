@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS subscription_pre_consume_records_created_idx;

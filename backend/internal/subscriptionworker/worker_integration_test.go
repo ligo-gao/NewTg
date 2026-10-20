@@ -5,9 +5,13 @@ package subscriptionworker
 // B12 的真实 PG 验收（billing-06 §9.3、billing-08 §7）。
 //
 // 覆盖单测（fake）无法证明的 SQL 语义：
-//   - 到期条件含 grace_days；cancel_at_period_end=true 在周期末同样到期；
+//   - 到期条件：宽限期只适用于未取消续费的实例；cancel_at_period_end=true
+//     到期即终止、不享宽限（M4）；
 //   - 重置原子推进 next_reset_at，第二次 pass 不双倍重置；
-//   - amount_total=0 的无限额度实例只推进游标、不清 amount_used；
+//   - 宽限期内（end_at < now < end_at+grace）不发放新周期额度（H3），
+//     包括 end_at = now 的等值边界；
+//   - 停机多轮后游标一次推进到第一个严格晚于 now 的边界（M2）；
+//   - amount_total=0 的无限额度实例与其他实例一样统一归零（H1）；
 //   - 预扣幂等记录按 created_at 的 7 天边界删除，且分批执行。
 //
 // 运行（隔离库，先 migrate up）：
@@ -130,9 +134,26 @@ func TestIntegrationExpireDueGraceAndCancelAtPeriodEnd(t *testing.T) {
 		AmountTotal: 1000, Currency: "CNY", PeriodDays: 30,
 		CancelAtPeriodEnd: true,
 	})
+	// M4：已取消续费的实例即使配置了宽限期，也不得在宽限期内继续存活。
+	cancellingGrace := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910005, StartAt: now.Add(-2 * time.Hour), EndAt: now.Add(-time.Hour),
+		AmountTotal: 1000, Currency: "CNY", PeriodDays: 30, GraceDays: 5,
+		CancelAtPeriodEnd: true,
+	})
+	// 等值边界：end_at = now 且 grace=0 应到期（<=）。
+	boundary := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910006, StartAt: now.Add(-2 * time.Hour), EndAt: now,
+		AmountTotal: 1000, Currency: "CNY", PeriodDays: 30,
+	})
 	future := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
 		UserID: 910004, StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
 		AmountTotal: 1000, Currency: "CNY", PeriodDays: 30,
+	})
+	// 未到期的取消实例保持 active（周期末才终止）。
+	cancelFuture := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910007, StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		AmountTotal: 1000, Currency: "CNY", PeriodDays: 30, GraceDays: 5,
+		CancelAtPeriodEnd: true,
 	})
 
 	if _, err := repo.ExpireDue(ctx, now); err != nil {
@@ -140,8 +161,11 @@ func TestIntegrationExpireDueGraceAndCancelAtPeriodEnd(t *testing.T) {
 	}
 	assertStatus(t, repo, expired.ID, "expired")
 	assertStatus(t, repo, cancelling.ID, "expired")
+	assertStatus(t, repo, cancellingGrace.ID, "expired")
+	assertStatus(t, repo, boundary.ID, "expired")
 	assertStatus(t, repo, grace.ID, "active")
 	assertStatus(t, repo, future.ID, "active")
+	assertStatus(t, repo, cancelFuture.ID, "active")
 
 	// 重复 pass：已迁移行不再命中（条件 UPDATE 幂等）。
 	if affected, err := repo.ExpireDue(ctx, now); err != nil || affected != 0 {
@@ -155,9 +179,10 @@ func TestIntegrationExpireDueGraceAndCancelAtPeriodEnd(t *testing.T) {
 	assertStatus(t, repo, grace.ID, "expired")
 	// 未来实例此刻也早已过了 end_at（+1h），同样到期；仅确认终态单向。
 	assertStatus(t, repo, future.ID, "expired")
+	assertStatus(t, repo, cancelFuture.ID, "expired")
 }
 
-// TestIntegrationResetCursorAndUnlimited 验证额度重置与无限额度分流。
+// TestIntegrationResetCursorAndUnlimited 验证额度重置、H1/H3/M2 边界。
 func TestIntegrationResetCursorAndUnlimited(t *testing.T) {
 	db := openIntegrationDB(t)
 	repo := store.NewSubscriptionRepo(db)
@@ -170,9 +195,29 @@ func TestIntegrationResetCursorAndUnlimited(t *testing.T) {
 		NextResetAt: ptrTime(oldReset), AmountTotal: 1000, AmountUsed: 400,
 		Currency: "CNY", PeriodDays: 30, ResetOnRenew: true,
 	})
+	// H1：无限额度实例与其他实例统一归零，不再有「只推进游标」特判。
 	unlimited := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
 		UserID: 910012, StartAt: now.Add(-31 * 24 * time.Hour), EndAt: now.Add(time.Hour),
 		NextResetAt: ptrTime(oldReset), AmountTotal: 0, AmountUsed: 777,
+		Currency: "CNY", PeriodDays: 30, ResetOnRenew: true,
+	})
+	// H3：宽限期内（end_at < now < end_at+grace）不得发放新周期额度。
+	inGrace := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910013, StartAt: now.Add(-32 * 24 * time.Hour), EndAt: now.Add(-time.Hour),
+		NextResetAt: ptrTime(oldReset), AmountTotal: 1000, AmountUsed: 250,
+		Currency: "CNY", PeriodDays: 30, GraceDays: 5, ResetOnRenew: true,
+	})
+	// H3 等值边界：end_at = now 同样不重置（守卫是 end_at > now）。
+	endBoundary := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910014, StartAt: now.Add(-31 * 24 * time.Hour), EndAt: now,
+		NextResetAt: ptrTime(oldReset), AmountTotal: 1000, AmountUsed: 300,
+		Currency: "CNY", PeriodDays: 30, GraceDays: 5, ResetOnRenew: true,
+	})
+	// M2：停机 62 天、周期 30 天，游标一次推进到第一个严格晚于 now 的边界。
+	downtimeReset := now.Add(-62 * 24 * time.Hour)
+	afterDowntime := integrationSub(t, repo, plan, store.SubscriptionCreateInput{
+		UserID: 910015, StartAt: now.Add(-93 * 24 * time.Hour), EndAt: now.Add(time.Hour),
+		NextResetAt: ptrTime(downtimeReset), AmountTotal: 1000, AmountUsed: 500,
 		Currency: "CNY", PeriodDays: 30, ResetOnRenew: true,
 	})
 
@@ -190,8 +235,8 @@ func TestIntegrationResetCursorAndUnlimited(t *testing.T) {
 	if err != nil || !ran {
 		t.Fatalf("sweep = %+v/%v/%v，want ran/nil", res, ran, err)
 	}
-	if res.Reset < 1 || res.CursorAdvanced < 1 {
-		t.Fatalf("sweep result = %+v，want reset>=1 and cursor_advanced>=1", res)
+	if res.Reset < 3 {
+		t.Fatalf("sweep result = %+v，want reset >= 3（regular/unlimited/downtime）", res)
 	}
 
 	regularGot, err := repo.GetSubscription(context.Background(), regular.ID)
@@ -209,19 +254,59 @@ func TestIntegrationResetCursorAndUnlimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get unlimited: %v", err)
 	}
-	if unlimitedGot.AmountUsed != 777 {
-		t.Fatalf("unlimited amount_used = %d，want 777（累计用量不得被清）", unlimitedGot.AmountUsed)
+	if unlimitedGot.AmountUsed != 0 {
+		t.Fatalf("unlimited amount_used = %d，want 0（H1：统一归零）", unlimitedGot.AmountUsed)
 	}
 	if unlimitedGot.NextResetAt == nil || !unlimitedGot.NextResetAt.Equal(oldReset.Add(30*24*time.Hour)) {
 		t.Fatalf("unlimited next_reset_at = %v，want %v", unlimitedGot.NextResetAt, oldReset.Add(30*24*time.Hour))
 	}
 
-	// 同一 now 的重复 pass：两条游标都已前移，affected 全为 0。
+	// H3：宽限期实例保持 active、额度与游标都不动。
+	graceGot, err := repo.GetSubscription(context.Background(), inGrace.ID)
+	if err != nil {
+		t.Fatalf("get in-grace: %v", err)
+	}
+	if graceGot.Status != "active" {
+		t.Fatalf("in-grace status = %q，want active", graceGot.Status)
+	}
+	if graceGot.AmountUsed != 250 {
+		t.Fatalf("in-grace amount_used = %d，want 250（宽限期不得发放新周期额度）", graceGot.AmountUsed)
+	}
+	if graceGot.NextResetAt == nil || !graceGot.NextResetAt.Equal(oldReset) {
+		t.Fatalf("in-grace next_reset_at = %v，want %v（不得推进）", graceGot.NextResetAt, oldReset)
+	}
+	// 即使绕过扫描直接调用重置，SQL 守卫也必须拒绝（affected=0）。
+	if affected, err := repo.ResetSubscriptionQuota(context.Background(), inGrace.ID, now); err != nil || affected != 0 {
+		t.Fatalf("in-grace direct reset = %d/%v，want 0/nil", affected, err)
+	}
+
+	// H3 等值边界：end_at = now 且处于宽限期内，重置不得命中。
+	if affected, err := repo.ResetSubscriptionQuota(context.Background(), endBoundary.ID, now); err != nil || affected != 0 {
+		t.Fatalf("end-boundary reset = %d/%v，want 0/nil", affected, err)
+	}
+
+	// M2：62 天停机 → floor(62/30)+1 = 3 个周期 = 90 天。
+	downGot, err := repo.GetSubscription(context.Background(), afterDowntime.ID)
+	if err != nil {
+		t.Fatalf("get downtime: %v", err)
+	}
+	wantDown := downtimeReset.Add(90 * 24 * time.Hour)
+	if downGot.NextResetAt == nil || !downGot.NextResetAt.Equal(wantDown) {
+		t.Fatalf("downtime next_reset_at = %v，want %v", downGot.NextResetAt, wantDown)
+	}
+	if !downGot.NextResetAt.After(now) {
+		t.Fatalf("downtime next_reset_at = %v，必须严格晚于 now=%v", downGot.NextResetAt, now)
+	}
+	if downGot.AmountUsed != 0 {
+		t.Fatalf("downtime amount_used = %d，want 0", downGot.AmountUsed)
+	}
+
+	// 同一 now 的重复 pass：游标都已前移，affected 全为 0。
 	res, ran, err = w.sweep(context.Background())
 	if err != nil || !ran {
 		t.Fatalf("second sweep = %v/%v，want ran/nil", ran, err)
 	}
-	if res.Reset != 0 || res.CursorAdvanced != 0 {
+	if res.Reset != 0 {
 		t.Fatalf("second sweep result = %+v，want no double reset", res)
 	}
 }
@@ -234,6 +319,11 @@ func TestIntegrationCleanupSevenDayBoundary(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	cutoff := now.Add(-PreConsumeRetention)
 
+	// 本用例使用本次运行独有的 subscription_id 范围，清理语句只删这些行；
+	// 共享隔离库上可能有并行包，固定 ID 会误删别人的数据。
+	baseSubID := time.Now().UnixNano() % 1_000_000_000
+	subA, subB := baseSubID, baseSubID+1
+
 	insert := func(createdAt time.Time, subscriptionID int64) string {
 		requestID := uuid.NewString()
 		if _, err := db.Exec(`INSERT INTO subscription_pre_consume_records
@@ -244,18 +334,18 @@ func TestIntegrationCleanupSevenDayBoundary(t *testing.T) {
 		return requestID
 	}
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id IN ($1, $2)`,
-			919001, 919002)
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records
+			WHERE subscription_id IN ($1, $2)`, subA, subB)
 	})
 
 	// 边界：恰在 cutoff 之前删除；cutoff 之后保留（严格 <）。
-	oldID := insert(cutoff.Add(-time.Second), 919001)
-	justOldID := insert(cutoff.Add(-time.Microsecond), 919001)
-	justNewID := insert(cutoff.Add(time.Microsecond), 919002)
-	freshID := insert(now, 919002)
+	oldID := insert(cutoff.Add(-time.Second), subA)
+	justOldID := insert(cutoff.Add(-time.Microsecond), subA)
+	justNewID := insert(cutoff.Add(time.Microsecond), subB)
+	freshID := insert(now, subB)
 	// 额外 5 条旧行：BatchSize=2 时必须循环多批才能全部清掉。
 	for i := 0; i < 5; i++ {
-		insert(cutoff.Add(-time.Duration(i+2)*time.Minute), 919001)
+		insert(cutoff.Add(-time.Duration(i+2)*time.Minute), subA)
 	}
 
 	w, err := newWorker(Deps{
@@ -269,13 +359,12 @@ func TestIntegrationCleanupSevenDayBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWorker: %v", err)
 	}
-	deleted, ran, err := w.cleanup(context.Background())
+	_, ran, err := w.cleanup(context.Background())
 	if err != nil || !ran {
-		t.Fatalf("cleanup = %d/%v/%v，want ran/nil", deleted, ran, err)
+		t.Fatalf("cleanup ran=%v err=%v，want ran/nil", ran, err)
 	}
-	if deleted < 7 {
-		t.Fatalf("cleanup deleted = %d，want >= 7（本用例旧行全部删除）", deleted)
-	}
+	// 不断言全局 deleted 计数：共享库上并行包的行也会被同一轮清理带走，
+	// 计数是噪声。断言只针对本次 subscription_id 范围内的具体行。
 
 	if exists(t, db, oldID) || exists(t, db, justOldID) {
 		t.Fatal("cutoff 之前的记录应被删除")
