@@ -34,6 +34,7 @@ import (
 // D5a 追加订阅套餐数据层三表（billing-08 §2.1/§6.1 + platform-04 §4.5 V10），
 // 表数 30→33；并给 orders 补 biz_kind/biz_ref_id（23→25）、users 补
 // billing_preference（25→26）。
+// D7a 追加站点公告两表（modules-08 F-08-04 / R-D7-01/R-D7-02），表数 33→35。
 //
 //	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
@@ -85,6 +86,10 @@ var wantColumns = map[string]int{
 	"subscription_plans":               17,
 	"subscriptions":                    23,
 	"subscription_pre_consume_records": 5,
+	// D7a 站点公告（modules-08 F-08-04 / R-D7-01/R-D7-02）：公告主表 13 列、
+	// 已读记录 3 列；已读表无 FK，公告删除时由 repo 同事务清理。
+	"announcements":      13,
+	"announcement_reads": 3,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -170,10 +175,10 @@ var wantIdentityPKTables = []string{
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及两张 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：33 表
-// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3）= 23 张单列 id identity
-// + 6 张自然键例外 + 2 张 uuid 代理键 + 2 张 run_id 领头自然键；
-// **非 identity PK 的表恰 10 张**，由 TestMainSchemaNonIdentityPKSet 断言。
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：35 表
+// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2）= 23 张单列 id identity
+// + 7 张自然键例外 + 3 张 uuid 代理键 + 2 张 run_id 领头自然键；
+// **非 identity PK 的表恰 12 张**，由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":                  {"key"},
 	"rankings_timeseries":              {"model", "granularity", "bucket_start"},
@@ -181,6 +186,8 @@ var identityPKExceptions = map[string][]string{
 	"request_registry":                 {"request_id"},
 	"task_plugins":                     {"key"},
 	"subscription_pre_consume_records": {"request_id"},
+	// D7a：已读表的复合主键就是幂等键（R-D7-02），不引入代理 id。
+	"announcement_reads": {"user_id", "announcement_id"},
 }
 
 // uuidPKTables：以 uuid 代理主键（单列 id + DEFAULT gen_random_uuid()）领头的表，
@@ -190,6 +197,8 @@ var identityPKExceptions = map[string][]string{
 var uuidPKTables = map[string][]string{
 	"task_plugin_versions":       {"id"},
 	"plugin_marketplace_sources": {"id"},
+	// D7a：公告 id 由 gen_random_uuid() 生成（R-D7-01）。
+	"announcements": {"id"},
 }
 
 // runIDLedNaturalPKs：以 FK run_id 领头的复合自然唯一键（platform-01 §14/§15）。
@@ -238,7 +247,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 33 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 35 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -267,7 +276,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（33 表，共 33 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（35 表，共 35 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -666,11 +675,11 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 6 项 + uuid 代理键 2 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 7 项 + uuid 代理键 3 项
 // + run_id 领头复合自然键。
 func TestMainSchemaIdentityPK(t *testing.T) {
-	if len(identityPKExceptions) != 6 {
-		t.Fatalf("自然键例外清单须恰 6 项（另有 2 张 uuid 代理键 + 2 张 run_id 领头的复合自然键），实际 %d 项", len(identityPKExceptions))
+	if len(identityPKExceptions) != 7 {
+		t.Fatalf("自然键例外清单须恰 7 项（另有 3 张 uuid 代理键 + 2 张 run_id 领头的复合自然键），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -713,8 +722,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 
 	// (e.3) uuid 代理主键：单列 id、类型 uuid、DEFAULT gen_random_uuid()，
 	// 且**不是** identity（M6d B-12/B-13）。
-	if len(uuidPKTables) != 2 {
-		t.Fatalf("uuid 代理主键表须恰 2 张，实际 %d 张", len(uuidPKTables))
+	if len(uuidPKTables) != 3 {
+		t.Fatalf("uuid 代理主键表须恰 3 张，实际 %d 张", len(uuidPKTables))
 	}
 	for table, wantCols := range uuidPKTables {
 		table, wantCols := table, wantCols
@@ -775,7 +784,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 10 张 =
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 12 张 =
 // 6 张自然键例外（identityPKExceptions）+ 2 张 uuid 代理键（uuidPKTables）
 // + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（23 张）均为
 // 单列 id + GENERATED ALWAYS AS IDENTITY。
@@ -791,8 +800,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 10 {
-		t.Fatalf("非 identity PK 表须恰 10 张（6 自然键 + 2 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 12 {
+		t.Fatalf("非 identity PK 表须恰 12 张（7 自然键 + 3 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string
@@ -984,6 +993,20 @@ var documentedChecks = []struct {
 	{
 		Table: "subscriptions", Name: "subscriptions_model_scope_chk",
 		Fragments: []string{"model_scope", "jsonb_typeof", "array"},
+	},
+	// D7a / modules-08 F-08-04：标题非空且 ≤80；正文 64KiB 硬兜底
+	// （应用层 16KB）；过期必须晚于生效（R-D7-01）。
+	{
+		Table: "announcements", Name: "announcements_title_len_chk",
+		Fragments: []string{"char_length", "btrim", "80"},
+	},
+	{
+		Table: "announcements", Name: "announcements_content_len_chk",
+		Fragments: []string{"octet_length", "65536"},
+	},
+	{
+		Table: "announcements", Name: "announcements_expire_after_publish_chk",
+		Fragments: []string{"expire_at", "publish_at"},
 	},
 }
 

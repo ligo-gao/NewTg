@@ -1540,3 +1540,38 @@ schemas:
     additionalProperties: false
     properties:
       plan_id: {type: integer, format: int64, minimum: 1}
+
+  # 站点公告 · 用户侧投影（D7a；modules-08 F-08-04 / R-D7-05）。
+  # 刻意不含 created_by/updated_by/offline_at 等管理面事实。
+  ActiveAnnouncement:
+    type: object
+    additionalProperties: false
+    required: [id, title, category, publish_at, content_markdown, content_html, read]
+    properties:
+      id: {type: string, format: uuid}
+      title: {type: string, maxLength: 80}
+      category:
+        type: string
+        enum: [notice, maintenance, release]
+      publish_at: {type: string, format: date-time}
+      expire_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null = 永久有效。
+      content_markdown: {type: string}
+      content_html:
+        type: string
+        description: 净化后的 HTML（原始 HTML 不解析，危险链接丢弃 href）。
+      read:
+        type: boolean
+        description: 当前用户是否已读；未登录不可访问本端点。
+
+  ActiveAnnouncementList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/ActiveAnnouncement'}

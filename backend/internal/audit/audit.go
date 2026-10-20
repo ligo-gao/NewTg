@@ -165,6 +165,15 @@ const (
 	ActionSubscriptionPlanDisable    = "subscription_plan.disable"
 	ActionSubscriptionPlanResetQuota = "subscription_plan.reset_quota"
 	ActionBillingPreferenceUpdate    = "billing_preference.update"
+
+	// D7a 站点公告（modules-08 F-08-04 / R-D7-08）。全部归 operation：
+	// 创建/编辑/发布/下线/删除都是管理配置变更。detail 只允许 id/title/
+	// status——公告正文可能含未公开内容，审计表不得成为它的第二副本。
+	ActionAnnouncementCreate  = "announcement.create"
+	ActionAnnouncementUpdate  = "announcement.update"
+	ActionAnnouncementPublish = "announcement.publish"
+	ActionAnnouncementOffline = "announcement.offline"
+	ActionAnnouncementDelete  = "announcement.delete"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -263,6 +272,12 @@ var actionCategories = map[string]string{
 	ActionSubscriptionPlanDisable:    categoryOperation,
 	ActionSubscriptionPlanResetQuota: categoryOperation,
 	ActionBillingPreferenceUpdate:    categoryOperation,
+
+	ActionAnnouncementCreate:  categoryOperation,
+	ActionAnnouncementUpdate:  categoryOperation,
+	ActionAnnouncementPublish: categoryOperation,
+	ActionAnnouncementOffline: categoryOperation,
+	ActionAnnouncementDelete:  categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

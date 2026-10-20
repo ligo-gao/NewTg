@@ -3865,3 +3865,270 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # 站点公告（D7a；modules-08 F-08-04 / R-D7-06～R-D7-08）。
+  # 管理面全部要求 settings:manage（不新增权限键，R-D7-11）。
+  /api/announcements:
+    get:
+      tags: [admin]
+      operationId: listAnnouncements
+      x-required-permission: settings:manage
+      summary: 公告列表（offset 分页 + status/category 筛选）
+      description: |
+        排序固定 publish_at DESC, id DESC。status 只接受 draft|published|
+        offline|expired：expired 是**虚拟态**（status=published 且
+        expire_at<=now，R-D7-10），与 published 互斥——已过期公告只出现在
+        expired 筛选项里。列表不含正文（正文只在详情/编辑读取）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, published, offline, expired]
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '../schemas/admin.yaml#/schemas/AnnouncementCategory'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createAnnouncement
+      x-required-permission: settings:manage
+      summary: 新建公告（publish_now 单事务写+发布）
+      description: |
+        缺省落 draft。publish_now=true 时在**同一事务**内写入并发布：校验或
+        发布失败整体回滚（不留草稿行）并返回 422。正文 ≤16KB（应用层），
+        expire_at 必须晚于生效时间。未知字段由 RBAC 字段层直接 403。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AnnouncementWriteInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/announcements/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [admin]
+      operationId: getAnnouncement
+      x-required-permission: settings:manage
+      summary: 公告详情（含原文与净化后 HTML）
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: updateAnnouncement
+      x-required-permission: settings:manage
+      summary: 编辑公告（N-35：已发布原地更新，下线编辑回 draft）
+      description: |
+        N-35 裁决：编辑已发布公告保持 published 并原地更新，publish_at/
+        published_at 不变；offline 编辑保存回 draft 并清 offline_at。
+        publish_now=true 时 draft/offline 在同一条 UPDATE 内迁移到 published。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/AnnouncementWriteInput'
+      responses:
+        '200':
+          description: 更新后的公告详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteAnnouncement
+      x-required-permission: settings:manage
+      summary: 删除公告（同事务清理已读记录）
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/announcements/{id}/publish:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [admin]
+      operationId: publishAnnouncement
+      x-required-permission: settings:manage
+      summary: 发布公告（draft|offline → published；published 幂等）
+      description: |
+        published → published 幂等返回 200 且不重写 published_at、不重复触发
+        发布副作用。publish_at 取 LEAST(publish_at, now)：预排未来生效的
+        草稿在点击发布后立即可见。可选 Idempotency-Key：同键同请求逐字重放。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 发布后的公告详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/announcements/{id}/offline:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [admin]
+      operationId: offlineAnnouncement
+      x-required-permission: settings:manage
+      summary: 下线公告（published → offline；offline 幂等）
+      description: |
+        draft → offline 是非法迁移，返回 409。offline → offline 幂等 200
+        且不重写下线时刻。可选 Idempotency-Key。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 下线后的公告详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/AnnouncementDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

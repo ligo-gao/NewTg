@@ -2835,3 +2835,135 @@ schemas:
       total: {type: integer, minimum: 0}
       page: {type: integer, minimum: 1}
       page_size: {type: integer, minimum: 1, maximum: 100}
+
+  # 站点公告（D7a；modules-08 F-08-04 / R-D7-01）。
+  AnnouncementCategory:
+    type: string
+    enum: [notice, maintenance, release]
+
+  AnnouncementStatus:
+    type: string
+    description: DB 状态只有三值；expired 是虚拟态，不落库（R-D7-10）。
+    enum: [draft, published, offline]
+
+  AnnouncementDisplayStatus:
+    type: string
+    description: UI 徽章状态；expired = status=published 且 expire_at<=now。
+    enum: [draft, published, expired, offline]
+
+  AnnouncementSummary:
+    type: object
+    additionalProperties: false
+    required: [id, title, category, status, display_status, publish_at,
+               created_by, updated_by, created_at, updated_at]
+    properties:
+      id: {type: string, format: uuid}
+      title: {type: string, minLength: 1, maxLength: 80}
+      category: {$ref: '#/schemas/AnnouncementCategory'}
+      status: {$ref: '#/schemas/AnnouncementStatus'}
+      display_status: {$ref: '#/schemas/AnnouncementDisplayStatus'}
+      publish_at:
+        type: string
+        format: date-time
+        description: 生效时间（可预排未来）。
+      expire_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null = 永久有效；必须晚于 publish_at。
+      published_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 实际点击发布的时刻；编辑已发布公告不重写（N-35）。
+      offline_at:
+        type: string
+        format: date-time
+        nullable: true
+      created_by: {type: integer, format: int64}
+      updated_by: {type: integer, format: int64}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+
+  AnnouncementDetail:
+    type: object
+    additionalProperties: false
+    required: [id, title, category, status, display_status, publish_at,
+               created_by, updated_by, created_at, updated_at,
+               content_markdown, content_html]
+    properties:
+      id: {type: string, format: uuid}
+      title: {type: string, minLength: 1, maxLength: 80}
+      category: {$ref: '#/schemas/AnnouncementCategory'}
+      status: {$ref: '#/schemas/AnnouncementStatus'}
+      display_status: {$ref: '#/schemas/AnnouncementDisplayStatus'}
+      publish_at: {type: string, format: date-time}
+      expire_at:
+        type: string
+        format: date-time
+        nullable: true
+      published_at:
+        type: string
+        format: date-time
+        nullable: true
+      offline_at:
+        type: string
+        format: date-time
+        nullable: true
+      created_by: {type: integer, format: int64}
+      updated_by: {type: integer, format: int64}
+      created_at: {type: string, format: date-time}
+      updated_at: {type: string, format: date-time}
+      content_markdown:
+        type: string
+        maxLength: 16384
+        description: Markdown 原文（≤16KB）。
+      content_html:
+        type: string
+        description: |
+          服务端净化后的 HTML 片段：原始 HTML 不解析（`<script>`/`<img
+          onerror>` 只会以文本出现），链接仅 http(s) 且强制
+          rel="noopener noreferrer"（R-D7-04）。
+
+  AnnouncementList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/AnnouncementSummary'}
+      total: {type: integer, minimum: 0}
+      page: {type: integer, minimum: 1}
+      page_size: {type: integer, minimum: 1, maximum: 100}
+
+  AnnouncementWriteInput:
+    type: object
+    additionalProperties: false
+    required: [title, content]
+    properties:
+      title: {type: string, minLength: 1, maxLength: 80}
+      category:
+        allOf:
+          - $ref: '#/schemas/AnnouncementCategory'
+        description: 省略时默认 notice。
+      content:
+        type: string
+        minLength: 1
+        maxLength: 16384
+        description: Markdown 原文；渲染期净化（R-D7-04）。
+      publish_at:
+        type: string
+        format: date-time
+        description: 省略时创建取 now()、编辑保留原值；编辑已发布公告时忽略。
+      expire_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null/省略 = 永久有效；必须晚于生效时间。
+      publish_now:
+        type: boolean
+        default: false
+        description: |
+          true = 在同一事务内写入并发布（draft/offline → published）；
+          校验或发布失败整体回滚并返回 422（R-D7-06 组合路径）。

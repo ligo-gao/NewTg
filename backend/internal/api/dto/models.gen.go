@@ -12,6 +12,27 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ActiveAnnouncementCategory.
+const (
+	ActiveAnnouncementCategoryMaintenance ActiveAnnouncementCategory = "maintenance"
+	ActiveAnnouncementCategoryNotice      ActiveAnnouncementCategory = "notice"
+	ActiveAnnouncementCategoryRelease     ActiveAnnouncementCategory = "release"
+)
+
+// Valid indicates whether the value is a known member of the ActiveAnnouncementCategory enum.
+func (e ActiveAnnouncementCategory) Valid() bool {
+	switch e {
+	case ActiveAnnouncementCategoryMaintenance:
+		return true
+	case ActiveAnnouncementCategoryNotice:
+		return true
+	case ActiveAnnouncementCategoryRelease:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminSubscriptionStatus.
 const (
 	AdminSubscriptionStatusActive    AdminSubscriptionStatus = "active"
@@ -27,6 +48,72 @@ func (e AdminSubscriptionStatus) Valid() bool {
 	case AdminSubscriptionStatusCancelled:
 		return true
 	case AdminSubscriptionStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AnnouncementCategory.
+const (
+	AnnouncementCategoryMaintenance AnnouncementCategory = "maintenance"
+	AnnouncementCategoryNotice      AnnouncementCategory = "notice"
+	AnnouncementCategoryRelease     AnnouncementCategory = "release"
+)
+
+// Valid indicates whether the value is a known member of the AnnouncementCategory enum.
+func (e AnnouncementCategory) Valid() bool {
+	switch e {
+	case AnnouncementCategoryMaintenance:
+		return true
+	case AnnouncementCategoryNotice:
+		return true
+	case AnnouncementCategoryRelease:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AnnouncementDisplayStatus.
+const (
+	AnnouncementDisplayStatusDraft     AnnouncementDisplayStatus = "draft"
+	AnnouncementDisplayStatusExpired   AnnouncementDisplayStatus = "expired"
+	AnnouncementDisplayStatusOffline   AnnouncementDisplayStatus = "offline"
+	AnnouncementDisplayStatusPublished AnnouncementDisplayStatus = "published"
+)
+
+// Valid indicates whether the value is a known member of the AnnouncementDisplayStatus enum.
+func (e AnnouncementDisplayStatus) Valid() bool {
+	switch e {
+	case AnnouncementDisplayStatusDraft:
+		return true
+	case AnnouncementDisplayStatusExpired:
+		return true
+	case AnnouncementDisplayStatusOffline:
+		return true
+	case AnnouncementDisplayStatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AnnouncementStatus.
+const (
+	AnnouncementStatusDraft     AnnouncementStatus = "draft"
+	AnnouncementStatusOffline   AnnouncementStatus = "offline"
+	AnnouncementStatusPublished AnnouncementStatus = "published"
+)
+
+// Valid indicates whether the value is a known member of the AnnouncementStatus enum.
+func (e AnnouncementStatus) Valid() bool {
+	switch e {
+	case AnnouncementStatusDraft:
+		return true
+	case AnnouncementStatusOffline:
+		return true
+	case AnnouncementStatusPublished:
 		return true
 	default:
 		return false
@@ -2238,6 +2325,30 @@ func (e WalletSummaryHealth) Valid() bool {
 	}
 }
 
+// Defines values for ListAnnouncementsParamsStatus.
+const (
+	ListAnnouncementsParamsStatusDraft     ListAnnouncementsParamsStatus = "draft"
+	ListAnnouncementsParamsStatusExpired   ListAnnouncementsParamsStatus = "expired"
+	ListAnnouncementsParamsStatusOffline   ListAnnouncementsParamsStatus = "offline"
+	ListAnnouncementsParamsStatusPublished ListAnnouncementsParamsStatus = "published"
+)
+
+// Valid indicates whether the value is a known member of the ListAnnouncementsParamsStatus enum.
+func (e ListAnnouncementsParamsStatus) Valid() bool {
+	switch e {
+	case ListAnnouncementsParamsStatusDraft:
+		return true
+	case ListAnnouncementsParamsStatusExpired:
+		return true
+	case ListAnnouncementsParamsStatusOffline:
+		return true
+	case ListAnnouncementsParamsStatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListAuditLogsParamsCategory.
 const (
 	ListAuditLogsParamsCategoryAccessToken ListAuditLogsParamsCategory = "access_token"
@@ -3264,6 +3375,32 @@ func (e GetReadyz503JSONResponseBodyStatus) Valid() bool {
 	}
 }
 
+// ActiveAnnouncement defines model for ActiveAnnouncement.
+type ActiveAnnouncement struct {
+	Category ActiveAnnouncementCategory `json:"category"`
+
+	// ContentHtml 净化后的 HTML（原始 HTML 不解析，危险链接丢弃 href）。
+	ContentHtml     string `json:"content_html"`
+	ContentMarkdown string `json:"content_markdown"`
+
+	// ExpireAt null = 永久有效。
+	ExpireAt  *time.Time         `json:"expire_at,omitempty"`
+	Id        openapi_types.UUID `json:"id"`
+	PublishAt time.Time          `json:"publish_at"`
+
+	// Read 当前用户是否已读；未登录不可访问本端点。
+	Read  bool   `json:"read"`
+	Title string `json:"title"`
+}
+
+// ActiveAnnouncementCategory defines model for ActiveAnnouncement.Category.
+type ActiveAnnouncementCategory string
+
+// ActiveAnnouncementList defines model for ActiveAnnouncementList.
+type ActiveAnnouncementList struct {
+	Items []ActiveAnnouncement `json:"items"`
+}
+
 // AdminCreateGroupRequest 名称唯一；冲突 409（不区分大小写归一后比较）。
 type AdminCreateGroupRequest struct {
 	Description *string `json:"description,omitempty"`
@@ -3438,6 +3575,99 @@ type AdminUserStatusResponse struct {
 
 	// Status 账号状态；disabled 时除登录/找回流程外的认证端点一律拒绝。
 	Status UserStatus `json:"status"`
+}
+
+// AnnouncementCategory defines model for AnnouncementCategory.
+type AnnouncementCategory string
+
+// AnnouncementDetail defines model for AnnouncementDetail.
+type AnnouncementDetail struct {
+	Category AnnouncementCategory `json:"category"`
+
+	// ContentHtml 服务端净化后的 HTML 片段：原始 HTML 不解析（`<script>`/`<img
+	// onerror>` 只会以文本出现），链接仅 http(s) 且强制
+	// rel="noopener noreferrer"（R-D7-04）。
+	ContentHtml string `json:"content_html"`
+
+	// ContentMarkdown Markdown 原文（≤16KB）。
+	ContentMarkdown string    `json:"content_markdown"`
+	CreatedAt       time.Time `json:"created_at"`
+	CreatedBy       int64     `json:"created_by"`
+
+	// DisplayStatus UI 徽章状态；expired = status=published 且 expire_at<=now。
+	DisplayStatus AnnouncementDisplayStatus `json:"display_status"`
+	ExpireAt      *time.Time                `json:"expire_at,omitempty"`
+	Id            openapi_types.UUID        `json:"id"`
+	OfflineAt     *time.Time                `json:"offline_at,omitempty"`
+	PublishAt     time.Time                 `json:"publish_at"`
+	PublishedAt   *time.Time                `json:"published_at,omitempty"`
+
+	// Status DB 状态只有三值；expired 是虚拟态，不落库（R-D7-10）。
+	Status    AnnouncementStatus `json:"status"`
+	Title     string             `json:"title"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	UpdatedBy int64              `json:"updated_by"`
+}
+
+// AnnouncementDisplayStatus UI 徽章状态；expired = status=published 且 expire_at<=now。
+type AnnouncementDisplayStatus string
+
+// AnnouncementList defines model for AnnouncementList.
+type AnnouncementList struct {
+	Items    []AnnouncementSummary `json:"items"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"page_size"`
+	Total    int                   `json:"total"`
+}
+
+// AnnouncementStatus DB 状态只有三值；expired 是虚拟态，不落库（R-D7-10）。
+type AnnouncementStatus string
+
+// AnnouncementSummary defines model for AnnouncementSummary.
+type AnnouncementSummary struct {
+	Category  AnnouncementCategory `json:"category"`
+	CreatedAt time.Time            `json:"created_at"`
+	CreatedBy int64                `json:"created_by"`
+
+	// DisplayStatus UI 徽章状态；expired = status=published 且 expire_at<=now。
+	DisplayStatus AnnouncementDisplayStatus `json:"display_status"`
+
+	// ExpireAt null = 永久有效；必须晚于 publish_at。
+	ExpireAt  *time.Time         `json:"expire_at,omitempty"`
+	Id        openapi_types.UUID `json:"id"`
+	OfflineAt *time.Time         `json:"offline_at,omitempty"`
+
+	// PublishAt 生效时间（可预排未来）。
+	PublishAt time.Time `json:"publish_at"`
+
+	// PublishedAt 实际点击发布的时刻；编辑已发布公告不重写（N-35）。
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+
+	// Status DB 状态只有三值；expired 是虚拟态，不落库（R-D7-10）。
+	Status    AnnouncementStatus `json:"status"`
+	Title     string             `json:"title"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	UpdatedBy int64              `json:"updated_by"`
+}
+
+// AnnouncementWriteInput defines model for AnnouncementWriteInput.
+type AnnouncementWriteInput struct {
+	// Category 省略时默认 notice。
+	Category *AnnouncementCategory `json:"category,omitempty"`
+
+	// Content Markdown 原文；渲染期净化（R-D7-04）。
+	Content string `json:"content"`
+
+	// ExpireAt null/省略 = 永久有效；必须晚于生效时间。
+	ExpireAt *time.Time `json:"expire_at,omitempty"`
+
+	// PublishAt 省略时创建取 now()、编辑保留原值；编辑已发布公告时忽略。
+	PublishAt *time.Time `json:"publish_at,omitempty"`
+
+	// PublishNow true = 在同一事务内写入并发布（draft/offline → published）；
+	// 校验或发布失败整体回滚并返回 422（R-D7-06 组合路径）。
+	PublishNow *bool  `json:"publish_now,omitempty"`
+	Title      string `json:"title"`
 }
 
 // AuditLogItem defines model for AuditLogItem.
@@ -7341,6 +7571,68 @@ type DeleteAccountParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListAnnouncementsParams defines parameters for ListAnnouncements.
+type ListAnnouncementsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize                      `form:"page_size,omitempty" json:"page_size,omitempty"`
+	Status   *ListAnnouncementsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Category *AnnouncementCategory          `form:"category,omitempty" json:"category,omitempty"`
+}
+
+// ListAnnouncementsParamsStatus defines parameters for ListAnnouncements.
+type ListAnnouncementsParamsStatus string
+
+// CreateAnnouncementParams defines parameters for CreateAnnouncement.
+type CreateAnnouncementParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteAnnouncementParams defines parameters for DeleteAnnouncement.
+type DeleteAnnouncementParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateAnnouncementParams defines parameters for UpdateAnnouncement.
+type UpdateAnnouncementParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// OfflineAnnouncementParams defines parameters for OfflineAnnouncement.
+type OfflineAnnouncementParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// PublishAnnouncementParams defines parameters for PublishAnnouncement.
+type PublishAnnouncementParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// MarkAnnouncementReadParams defines parameters for MarkAnnouncementRead.
+type MarkAnnouncementReadParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListAuditLogsParams defines parameters for ListAuditLogs.
 type ListAuditLogsParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -8543,6 +8835,12 @@ type EnableTwoFAJSONRequestBody = TwoFAEnableRequest
 
 // DeleteAccountJSONRequestBody defines body for DeleteAccount for application/json ContentType.
 type DeleteAccountJSONRequestBody = DeleteAccountRequest
+
+// CreateAnnouncementJSONRequestBody defines body for CreateAnnouncement for application/json ContentType.
+type CreateAnnouncementJSONRequestBody = AnnouncementWriteInput
+
+// UpdateAnnouncementJSONRequestBody defines body for UpdateAnnouncement for application/json ContentType.
+type UpdateAnnouncementJSONRequestBody = AnnouncementWriteInput
 
 // SubmitTwoFAChallengeJSONRequestBody defines body for SubmitTwoFAChallenge for application/json ContentType.
 type SubmitTwoFAChallengeJSONRequestBody = TwoFAChallengeRequest

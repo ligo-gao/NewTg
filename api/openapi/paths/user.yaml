@@ -2152,3 +2152,66 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
+
+  # 站点公告 · 用户侧（D7a；modules-08 F-08-04 / R-D7-05）。
+  # 仅登录用户本人；数据范围恒为会话/令牌身份，不接受 user_id 参数。
+  /api/announcements/active:
+    get:
+      tags: [user]
+      operationId: listActiveAnnouncements
+      summary: 生效中公告（含本人 read 标记）
+      description: |
+        返回 status=published 且 publish_at<=now 且未过期的公告，按
+        publish_at DESC 排序。read 是当前用户的已读标记；未登录不可访问。
+        正文同时返回 Markdown 原文与**净化后** HTML（`content_html`，
+        原始 HTML 不解析、危险链接丢弃 href）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/ActiveAnnouncementList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/announcements/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [user]
+      operationId: markAnnouncementRead
+      summary: 标记公告已读（幂等）
+      description: |
+        (user_id, announcement_id) 唯一，重复调用返回 204。只允许标记**生效中**
+        的公告：草稿/下线/过期/不存在统一返回 404（不透露「存在但不可读」）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已标记（幂等）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

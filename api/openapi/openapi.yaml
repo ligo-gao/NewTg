@@ -226,6 +226,21 @@ paths:
   /api/performance/recent-operations:
     $ref: './paths/admin.yaml#/paths/~1api~1performance~1recent-operations'
 
+  # 站点公告（D7a；modules-08 F-08-04）。管理面 settings:manage；
+  # 用户侧 active/read 仅登录用户本人（R-D7-05/R-D7-11）。
+  /api/announcements:
+    $ref: './paths/admin.yaml#/paths/~1api~1announcements'
+  /api/announcements/{id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1announcements~1{id}'
+  /api/announcements/{id}/publish:
+    $ref: './paths/admin.yaml#/paths/~1api~1announcements~1{id}~1publish'
+  /api/announcements/{id}/offline:
+    $ref: './paths/admin.yaml#/paths/~1api~1announcements~1{id}~1offline'
+  /api/announcements/active:
+    $ref: './paths/user.yaml#/paths/~1api~1announcements~1active'
+  /api/announcements/{id}/read:
+    $ref: './paths/user.yaml#/paths/~1api~1announcements~1{id}~1read'
+
   # 兑换码（M5 Task 2；管理面 + 用户核销）。
   /api/redemption-codes:
     $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'

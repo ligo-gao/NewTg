@@ -2036,6 +2036,154 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/announcements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公告列表（offset 分页 + status/category 筛选）
+         * @description 排序固定 publish_at DESC, id DESC。status 只接受 draft|published|
+         *     offline|expired：expired 是**虚拟态**（status=published 且
+         *     expire_at<=now，R-D7-10），与 published 互斥——已过期公告只出现在
+         *     expired 筛选项里。列表不含正文（正文只在详情/编辑读取）。
+         */
+        get: operations["listAnnouncements"];
+        put?: never;
+        /**
+         * 新建公告（publish_now 单事务写+发布）
+         * @description 缺省落 draft。publish_now=true 时在**同一事务**内写入并发布：校验或
+         *     发布失败整体回滚（不留草稿行）并返回 422。正文 ≤16KB（应用层），
+         *     expire_at 必须晚于生效时间。未知字段由 RBAC 字段层直接 403。
+         */
+        post: operations["createAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** 公告详情（含原文与净化后 HTML） */
+        get: operations["getAnnouncement"];
+        /**
+         * 编辑公告（N-35：已发布原地更新，下线编辑回 draft）
+         * @description N-35 裁决：编辑已发布公告保持 published 并原地更新，publish_at/
+         *     published_at 不变；offline 编辑保存回 draft 并清 offline_at。
+         *     publish_now=true 时 draft/offline 在同一条 UPDATE 内迁移到 published。
+         */
+        put: operations["updateAnnouncement"];
+        post?: never;
+        /** 删除公告（同事务清理已读记录） */
+        delete: operations["deleteAnnouncement"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发布公告（draft|offline → published；published 幂等）
+         * @description published → published 幂等返回 200 且不重写 published_at、不重复触发
+         *     发布副作用。publish_at 取 LEAST(publish_at, now)：预排未来生效的
+         *     草稿在点击发布后立即可见。可选 Idempotency-Key：同键同请求逐字重放。
+         */
+        post: operations["publishAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements/{id}/offline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 下线公告（published → offline；offline 幂等）
+         * @description draft → offline 是非法迁移，返回 409。offline → offline 幂等 200
+         *     且不重写下线时刻。可选 Idempotency-Key。
+         */
+        post: operations["offlineAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 生效中公告（含本人 read 标记）
+         * @description 返回 status=published 且 publish_at<=now 且未过期的公告，按
+         *     publish_at DESC 排序。read 是当前用户的已读标记；未登录不可访问。
+         *     正文同时返回 Markdown 原文与**净化后** HTML（`content_html`，
+         *     原始 HTML 不解析、危险链接丢弃 href）。
+         */
+        get: operations["listActiveAnnouncements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 标记公告已读（幂等）
+         * @description (user_id, announcement_id) 唯一，重复调用返回 204。只允许标记**生效中**
+         *     的公告：草稿/下线/过期/不存在统一返回 404（不透露「存在但不可读」）。
+         */
+        post: operations["markAnnouncementRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/redemption-codes": {
         parameters: {
             query?: never;
@@ -5522,6 +5670,134 @@ export interface components {
         };
         PerformanceRecentOperations: {
             items: components["schemas"]["PerformanceRecentOperation"][];
+        };
+        /** @enum {string} */
+        AnnouncementCategory: "notice" | "maintenance" | "release";
+        /**
+         * @description DB 状态只有三值；expired 是虚拟态，不落库（R-D7-10）。
+         * @enum {string}
+         */
+        AnnouncementStatus: "draft" | "published" | "offline";
+        /**
+         * @description UI 徽章状态；expired = status=published 且 expire_at<=now。
+         * @enum {string}
+         */
+        AnnouncementDisplayStatus: "draft" | "published" | "expired" | "offline";
+        AnnouncementSummary: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            category: components["schemas"]["AnnouncementCategory"];
+            status: components["schemas"]["AnnouncementStatus"];
+            display_status: components["schemas"]["AnnouncementDisplayStatus"];
+            /**
+             * Format: date-time
+             * @description 生效时间（可预排未来）。
+             */
+            publish_at: string;
+            /**
+             * Format: date-time
+             * @description null = 永久有效；必须晚于 publish_at。
+             */
+            expire_at?: string | null;
+            /**
+             * Format: date-time
+             * @description 实际点击发布的时刻；编辑已发布公告不重写（N-35）。
+             */
+            published_at?: string | null;
+            /** Format: date-time */
+            offline_at?: string | null;
+            /** Format: int64 */
+            created_by: number;
+            /** Format: int64 */
+            updated_by: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AnnouncementList: {
+            items: components["schemas"]["AnnouncementSummary"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        AnnouncementWriteInput: {
+            title: string;
+            /** @description 省略时默认 notice。 */
+            category?: components["schemas"]["AnnouncementCategory"];
+            /** @description Markdown 原文；渲染期净化（R-D7-04）。 */
+            content: string;
+            /**
+             * Format: date-time
+             * @description 省略时创建取 now()、编辑保留原值；编辑已发布公告时忽略。
+             */
+            publish_at?: string;
+            /**
+             * Format: date-time
+             * @description null/省略 = 永久有效；必须晚于生效时间。
+             */
+            expire_at?: string | null;
+            /**
+             * @description true = 在同一事务内写入并发布（draft/offline → published）；
+             *     校验或发布失败整体回滚并返回 422（R-D7-06 组合路径）。
+             * @default false
+             */
+            publish_now: boolean;
+        };
+        AnnouncementDetail: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            category: components["schemas"]["AnnouncementCategory"];
+            status: components["schemas"]["AnnouncementStatus"];
+            display_status: components["schemas"]["AnnouncementDisplayStatus"];
+            /** Format: date-time */
+            publish_at: string;
+            /** Format: date-time */
+            expire_at?: string | null;
+            /** Format: date-time */
+            published_at?: string | null;
+            /** Format: date-time */
+            offline_at?: string | null;
+            /** Format: int64 */
+            created_by: number;
+            /** Format: int64 */
+            updated_by: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description Markdown 原文（≤16KB）。 */
+            content_markdown: string;
+            /**
+             * @description 服务端净化后的 HTML 片段：原始 HTML 不解析（`<script>`/`<img
+             *     onerror>` 只会以文本出现），链接仅 http(s) 且强制
+             *     rel="noopener noreferrer"（R-D7-04）。
+             */
+            content_html: string;
+        };
+        ActiveAnnouncement: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            /** @enum {string} */
+            category: "notice" | "maintenance" | "release";
+            /** Format: date-time */
+            publish_at: string;
+            /**
+             * Format: date-time
+             * @description null = 永久有效。
+             */
+            expire_at?: string | null;
+            content_markdown: string;
+            /** @description 净化后的 HTML（原始 HTML 不解析，危险链接丢弃 href）。 */
+            content_html: string;
+            /** @description 当前用户是否已读；未登录不可访问本端点。 */
+            read: boolean;
+        };
+        ActiveAnnouncementList: {
+            items: components["schemas"]["ActiveAnnouncement"][];
         };
         /**
          * @description expired 是虚拟态（不落库）
@@ -10640,6 +10916,299 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listAnnouncements: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                status?: "draft" | "published" | "offline" | "expired";
+                category?: components["schemas"]["AnnouncementCategory"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnnouncementWriteInput"];
+            };
+        };
+        responses: {
+            /** @description 创建成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnnouncementWriteInput"];
+            };
+        };
+        responses: {
+            /** @description 更新后的公告详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    publishAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 发布后的公告详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    offlineAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 下线后的公告详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listActiveAnnouncements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveAnnouncementList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    markAnnouncementRead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已标记（幂等） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };

@@ -193,6 +193,13 @@ var EnumChecks = map[string][]string{
 	"subscription_pre_consume_records.status": {"consumed", "refunded"},
 	"orders.biz_kind":                         {"topup", "subscribe"},
 	"users.billing_preference":                {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
+
+	// 站点公告（D7a，modules-08 F-08-04 / R-D7-01）。
+	// status 只有三值：expired 是**虚拟态**（published + expire_at <= now），
+	// 刻意不进入 CHECK 白名单——落库会引入一个需要 worker 迁移的状态
+	// （R-D7-10），而时间流逝是纯函数，不需要后台任务。
+	"announcements.category": {"notice", "maintenance", "release"},
+	"announcements.status":   {"draft", "published", "offline"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
@@ -200,7 +207,7 @@ var EnumChecks = map[string][]string{
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
-// + D1 2 + D5a 3 = 33 表），
+// + D1 2 + D5a 3 + D7a 2 = 35 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{

@@ -14,6 +14,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -68,6 +69,11 @@ type RouterConfig struct {
 	// NewRouter 自动构造（store.NewSubscriptionRepo + users 偏好读写）；
 	// 单元测试可显式注入。
 	SubscriptionHandlers *SubscriptionHandlers
+	// AnnouncementHandlers 是 D7a 站点公告端点（modules-08 F-08-04）。
+	// nil 且 DB 非 nil 时由 NewRouter 自动构造：仓储是 store.NewAnnouncementRepo，
+	// Webhook 发送器从配置中心读取 notify.webhook.*（未配置时静默跳过），
+	// 站点基址取 site.server_address。单元测试可显式注入。
+	AnnouncementHandlers *AnnouncementHandlers
 	// Sealer 密封令牌幂等缓存体（含一次性明文 key）。nil 时令牌端点跳过
 	// 幂等缓存（绝不回落明文）；生产由 CREDENTIAL_ENCRYPTION_KEY 派生。
 	Sealer configcenter.SecretSealer
@@ -264,6 +270,28 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.SubscriptionHandlers.Register(rt.protected)
 	}
 
+	// 站点公告端点（D7a；modules-08 F-08-04）。公告表没有内存兜底，只有
+	// 提供 DB 时才自动挂载；Webhook 发送器从配置中心快照读取，未配置时
+	// 发布副作用静默跳过（R-D7-09）。
+	if cfg.AnnouncementHandlers == nil && cfg.DB != nil {
+		announcementHandlers, err := NewAnnouncementHandlers(AnnouncementHandlerConfig{
+			Repo:    store.NewAnnouncementRepo(cfg.DB),
+			Redis:   cfg.Redis,
+			Authz:   cfg.Authz,
+			Audit:   cfg.Audit,
+			Logger:  cfg.Logger,
+			Webhook: notify.NewWebhookSender(cfg.Config, cfg.Sealer),
+			BaseURL: announcementBaseURL(cfg.Config),
+		})
+		if err != nil {
+			return nil, err
+		}
+		cfg.AnnouncementHandlers = announcementHandlers
+	}
+	if cfg.AnnouncementHandlers != nil {
+		cfg.AnnouncementHandlers.Register(rt.protected)
+	}
+
 	// 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。目录没有内存兜底：
 	// 只有提供 DB 时才挂载，避免纯内存装配用空数据伪造 200（与定价接缝一致）。
 	// 派生字段读取面直接查 channels/user_groups（固定条数查询，非逐行）；
@@ -432,7 +460,28 @@ func parseAllowedOrigins(raw string) []string {
 	return out
 }
 
+// announcementBaseURL 返回公告 Webhook payload 使用的站点基址
+// （site.server_address）。配置不可读/为空时返回空串，发送侧据此降级为
+// 站内相对路径（R-D7-09）。每次发布都重新读取，管理员改配置后立即生效。
+func announcementBaseURL(config ConfigReader) func() string {
+	return func() string {
+		if config == nil {
+			return ""
+		}
+		raw, ok := config.Get("site.server_address")
+		if !ok {
+			return ""
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(value)
+	}
+}
+
 // withSiteTitle 把 site.title 注入泄露口令检查器的站点级上下文词
+
 // （security-01 §2.3：站点名/产品名不得出现在口令中）。
 func withSiteTitle(config ConfigReader, checker auth.CompromisedPasswordChecker) auth.CompromisedPasswordChecker {
 	if config == nil {

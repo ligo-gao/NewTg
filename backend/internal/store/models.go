@@ -546,7 +546,51 @@ func (SubscriptionPreConsume) TableName() string {
 	return "subscription_pre_consume_records"
 }
 
+// Announcement 对应 announcements（modules-08 F-08-04 / R-D7-01，13 列；D7a）。
+//
+// 口径：
+//   - ID 是 uuid 字符串（PG uuid 列），由 DB 的 gen_random_uuid() 生成；
+//     本模型不设 default 标签（包级「零值不被标签改写」纪律）。
+//   - Status 只有 draft/published/offline 三值；**expired 是虚拟态**
+//     （status='published' 且 expire_at <= now），不落库（R-D7-10）。
+//   - PublishAt 是「生效时间」（可预排未来），PublishedAt 是「实际点击发布
+//     的时刻」，OfflineAt 是下线时刻；三者的区别是 N-35 的原地更新语义：
+//     编辑已发布公告不重写 PublishAt/PublishedAt。
+//   - CreatedBy/UpdatedBy 是 bigint 用户 id，逻辑引用 users.id（无 FK）。
+//   - Read 是用户侧投影（LEFT JOIN announcement_reads），**不落库**。
+type Announcement struct {
+	ID          string     `gorm:"column:id;primaryKey"`
+	Title       string     `gorm:"column:title"`
+	Category    string     `gorm:"column:category"`
+	Content     string     `gorm:"column:content"`
+	PublishAt   time.Time  `gorm:"column:publish_at"`
+	ExpireAt    *time.Time `gorm:"column:expire_at"`
+	Status      string     `gorm:"column:status"`
+	CreatedBy   int64      `gorm:"column:created_by"`
+	UpdatedBy   int64      `gorm:"column:updated_by"`
+	PublishedAt *time.Time `gorm:"column:published_at"`
+	OfflineAt   *time.Time `gorm:"column:offline_at"`
+	CreatedAt   time.Time  `gorm:"column:created_at"`
+	UpdatedAt   time.Time  `gorm:"column:updated_at"`
+	Read        bool       `gorm:"-"`
+}
+
+// TableName 返回 GORM 表名。
+func (Announcement) TableName() string { return "announcements" }
+
+// AnnouncementRead 对应 announcement_reads（R-D7-02，3 列）。复合主键即
+// 幂等键：(user_id, announcement_id) 至多一行。
+type AnnouncementRead struct {
+	UserID         int64     `gorm:"column:user_id;primaryKey"`
+	AnnouncementID string    `gorm:"column:announcement_id;primaryKey"`
+	ReadAt         time.Time `gorm:"column:read_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (AnnouncementRead) TableName() string { return "announcement_reads" }
+
 // 注：orders.biz_kind / biz_ref_id 与 users.billing_preference 只存在于
+
 // 迁移与 EnumChecks 中，**刻意不加入 Order/User 的 GORM 投影**：
 //   - Order 由 billing 包用 GORM Create 写入（topup.go），新增 NOT NULL
 //     字符串字段的零值 "" 会撞 CHECK；本任务边界禁止改 billing/。
