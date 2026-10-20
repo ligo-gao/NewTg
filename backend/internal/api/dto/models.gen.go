@@ -8096,6 +8096,9 @@ type WebhookTestResult struct {
 	StatusCode int `json:"status_code"`
 }
 
+// BatchID defines model for BatchID.
+type BatchID = string
+
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
 
@@ -8149,6 +8152,9 @@ type TaskPluginKey = string
 
 // UpdatedAtQuery defines model for UpdatedAtQuery.
 type UpdatedAtQuery = time.Time
+
+// VideoID defines model for VideoID.
+type VideoID = string
 
 // Error400 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error400 = Problem

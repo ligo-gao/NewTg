@@ -19,6 +19,9 @@ var (
 	ErrTaskNotFound = errors.New("tasks: task not found")
 	// ErrChannelNotFound 表示没有启用且绑定该插件、支持该模型的渠道。
 	ErrChannelNotFound = errors.New("tasks: no task channel for plugin/model")
+	// ErrBatchNotFound 表示批次不存在或不属于当前用户（与 ErrTaskNotFound
+	// 同口径：不区分原因，避免批次 id 成为存在性 oracle）。
+	ErrBatchNotFound = errors.New("tasks: batch not found")
 )
 
 // Repo 是 tasks 表的 SQL 仓储。db 为 nil 时所有方法 fail-closed（返回错误），
@@ -444,6 +447,158 @@ func (r *Repo) UpdateBilling(ctx context.Context, id int64, quota *int64, privat
 		return fmt.Errorf("tasks: update billing: %w", err)
 	}
 	return nil
+}
+
+// ---------- 批次（T4 / P-04） ----------
+
+const insertBatchSQL = `
+	INSERT INTO task_batches (
+		id, user_id, token_id, status, total, completed, failed
+	) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at, updated_at`
+
+// InsertBatch 在一个事务里写入父批次行与全部子任务关联，失败整体回滚。
+//
+// 为什么子任务只按 public_task_id 关联、不在这里插 tasks 行：上游提交是
+// 网络 I/O + 逐条计费，不能放进数据库事务（长事务会锁住写入并让预扣
+// hold 与上游耗时耦合）；每条子任务由**同一条**提交管线（handleSubmit）
+// 独立落库 —— 批次事务只负责「父行 + 全部关联」的原子性，任一条关联
+// 找不到对应任务（不属于该用户/已被删除）或插入失败都会整体回滚，绝不
+// 留下半关联的批次。
+//
+// 关联用 INSERT ... SELECT：任务行由提交管线写入，public_task_id 唯一，
+// 这里只需证明「该任务属于本用户」；RowsAffected != 1 即视为事务失败。
+func (r *Repo) InsertBatch(ctx context.Context, b *Batch, itemPublicIDs []string) error {
+	if r == nil || r.db == nil {
+		return errors.New("tasks: repository is not configured")
+	}
+	if b == nil || strings.TrimSpace(b.ID) == "" {
+		return errors.New("tasks: batch without id")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("tasks: begin batch transaction: %w", err)
+	}
+	// 提交前任意出口都回滚；Commit 成功后 rollback 是 no-op。
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.QueryRowContext(ctx, insertBatchSQL,
+		b.ID, b.UserID, b.TokenID, b.Status, b.Total, b.Completed, b.Failed,
+	).Scan(&b.CreatedAt, &b.UpdatedAt); err != nil {
+		return fmt.Errorf("tasks: insert batch: %w", err)
+	}
+	for _, publicID := range itemPublicIDs {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO task_batches_items (batch_id, task_id)
+			SELECT $1, id FROM tasks WHERE public_task_id = $2 AND user_id = $3`,
+			b.ID, publicID, b.UserID)
+		if err != nil {
+			return fmt.Errorf("tasks: link batch item: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("tasks: link batch item rows: %w", err)
+		}
+		if affected != 1 {
+			return fmt.Errorf("tasks: link batch item %q: task not found for user", publicID)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("tasks: commit batch: %w", err)
+	}
+	return nil
+}
+
+// GetBatchByID 读取批次聚合视图（归属过滤：他人批次与不存在同为 ErrBatchNotFound）。
+//
+// 聚合状态为什么在读取时算而不是落库时算：子任务状态由轮询器异步推进
+// （T6b），本任务没有批次 worker；把计数写死在创建期会让 GET 永远看到
+// in_progress。读取是唯一观测点，因此在这里由 task_batches_items ⋈ tasks
+// 现算 completed/failed，并把结果**尽力**回写快照列（失败不影响返回值：
+// 视图的权威来源是任务行，回写只是给将来的扫描/管理查询留可用数据）。
+//
+// 提交失败的子请求没有 tasks 行（提交管线失败不落孤儿行，见 handleSubmit），
+// 它们计入 failed：failed = 状态为 failure 的子任务 + (total - 已关联数)。
+func (r *Repo) GetBatchByID(ctx context.Context, userID int64, id string) (*Batch, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("tasks: repository is not configured")
+	}
+	b := &Batch{}
+	var status string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, user_id, token_id, status, total, completed, failed, created_at, updated_at
+		FROM task_batches WHERE id = $1 AND user_id = $2`, id, userID).
+		Scan(&b.ID, &b.UserID, &b.TokenID, &status, &b.Total, &b.Completed, &b.Failed, &b.CreatedAt, &b.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrBatchNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tasks: get batch: %w", err)
+	}
+	b.Status = status
+	b.ID = FormatBatchPublicID(b.ID)
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT t.public_task_id, t.state, t.progress_percent
+		FROM task_batches_items i
+		JOIN tasks t ON t.id = i.task_id
+		WHERE i.batch_id = $1
+		ORDER BY t.id ASC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: list batch items: %w", err)
+	}
+	defer rows.Close()
+	items := make([]BatchItem, 0, b.Total)
+	completed, failedTasks := 0, 0
+	for rows.Next() {
+		var (
+			item  BatchItem
+			state string
+		)
+		if err := rows.Scan(&item.PublicTaskID, &state, &item.ProgressPercent); err != nil {
+			return nil, fmt.Errorf("tasks: scan batch item: %w", err)
+		}
+		item.State = State(state)
+		switch item.State {
+		case StateSuccess:
+			completed++
+		case StateFailure:
+			failedTasks++
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tasks: iterate batch items: %w", err)
+	}
+	b.Items = items
+
+	// total 是提交行数；未被关联的行是提交失败（无任务行），按 failed 计。
+	missing := b.Total - len(items)
+	if missing < 0 {
+		missing = 0
+	}
+	storedCompleted, storedFailed := b.Completed, b.Failed
+	completedCount := completed
+	failedCount := failedTasks + missing
+	switch {
+	case b.Total == 0:
+		b.Status = BatchStatusFailed
+	case completedCount+failedCount >= b.Total && completedCount == 0:
+		b.Status = BatchStatusFailed
+	case completedCount+failedCount >= b.Total:
+		b.Status = BatchStatusCompleted
+	default:
+		b.Status = BatchStatusInProgress
+	}
+	b.Completed = completedCount
+	b.Failed = failedCount
+
+	if b.Status != status || b.Completed != storedCompleted || b.Failed != storedFailed {
+		// 尽力回写：失败不影响读取（见函数注释）。
+		_, _ = r.db.ExecContext(ctx,
+			`UPDATE task_batches SET status = $2, completed = $3, failed = $4, updated_at = now()
+			 WHERE id = $1`, id, b.Status, b.Completed, b.Failed)
+	}
+	return b, nil
 }
 
 // ---------- 扫描 ----------

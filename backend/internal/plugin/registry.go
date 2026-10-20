@@ -565,17 +565,25 @@ var builtinRouteShapes = map[string]struct{}{
 	"GET /v1/tasks/{}":                      {},
 	"GET /v1/tasks/{}/artifacts":            {},
 	"GET /v1/tasks/{}/artifacts/{}/content": {},
-	"POST /v1/images/generations":           {},
-	"POST /v1/images/edits":                 {},
-	"POST /v1/embeddings":                   {},
-	"POST /v1/rerank":                       {},
-	"POST /v1/audio/speech":                 {},
-	"POST /v1/audio/transcriptions":         {},
-	"POST /v1/audio/translations":           {},
-	"POST /v1/engines/{}/embeddings":        {},
-	"POST /v1/models/{}":                    {}, // ServeMux 通配 /v1/models/{path...}
-	"POST /v1beta/models/{}":                {}, // ServeMux 通配 /v1beta/models/{path...}
-	"GET /v1/realtime":                      {},
+	// T4 / P-04：OpenAI Videos 与 Batches 是 tasks 数据面的纯内建薄封装。
+	// 处理器不查 RouteIndex（R-10），故只进保留集、不进例外集。
+	"POST /v1/videos":                {},
+	"GET /v1/videos/{}":              {},
+	"GET /v1/videos/{}/content":      {},
+	"POST /v1/batches":               {},
+	"GET /v1/batches/{}":             {},
+	"POST /v1/batches/{}/cancel":     {},
+	"POST /v1/images/generations":    {},
+	"POST /v1/images/edits":          {},
+	"POST /v1/embeddings":            {},
+	"POST /v1/rerank":                {},
+	"POST /v1/audio/speech":          {},
+	"POST /v1/audio/transcriptions":  {},
+	"POST /v1/audio/translations":    {},
+	"POST /v1/engines/{}/embeddings": {},
+	"POST /v1/models/{}":             {}, // ServeMux 通配 /v1/models/{path...}
+	"POST /v1beta/models/{}":         {}, // ServeMux 通配 /v1beta/models/{path...}
+	"GET /v1/realtime":               {},
 }
 
 // pluginDispatchedBuiltinShapes 是 builtinRouteShapes 中「处理器显式先查

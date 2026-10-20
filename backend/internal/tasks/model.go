@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // State 是 tasks.state 的持久化字面量（契约 §2.5 TaskState 7 态）。
@@ -128,6 +130,83 @@ type ListFilter struct {
 	States   []State // 空 = 不筛状态
 	Page     int
 	PageSize int
+}
+
+// ---------- 批次（T4 / P-04） ----------
+
+// BatchPublicIDPrefix 是批次对外 id 前缀。DB 主键是 uuid（便于 join/索引），
+// 对外 id 加前缀是为了让客户端一眼区分 batch 与 task，映射是纯前缀替换
+// （与 resp_/task_ 同一口径），不做任何转义或哈希。
+const BatchPublicIDPrefix = "batch_"
+
+// 批次状态字面量（OpenAI Batch 状态机的只读子集）。
+//
+// 本实现只产出三种：创建即 in_progress、全部子任务终态后 completed（有成功）
+// 或 failed（全失败）；validating/finalizing/cancelled 保留给将来（取消端点
+// 当前 fail-closed，见 handlers_batches.go）。
+const (
+	BatchStatusInProgress = "in_progress"
+	BatchStatusCompleted  = "completed"
+	BatchStatusFailed     = "failed"
+)
+
+// Batch 是 task_batches 的读写投影。
+//
+// Total 是**提交行数**（含上游提交失败的子请求）；Completed/Failed 是读取时
+// 由子任务状态重算的聚合值（见 Repo.GetBatchByID 的 why 注释），落库列只是
+// 上次观测的快照，供将来后台扫描使用。
+type Batch struct {
+	ID        string      `json:"id"`
+	UserID    int64       `json:"user_id,omitempty"`
+	TokenID   int64       `json:"token_id,omitempty"`
+	Status    string      `json:"status"`
+	Total     int         `json:"total"`
+	Completed int         `json:"completed"`
+	Failed    int         `json:"failed"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+	Items     []BatchItem `json:"items,omitempty"`
+}
+
+// BatchItem 是批次内一条子任务的最小投影（custom_id 不在冻结表结构里，
+// 因此只暴露任务 id 与状态；调用方按创建顺序自行对应输入行）。
+type BatchItem struct {
+	PublicTaskID    string `json:"task_id"`
+	State           State  `json:"state"`
+	ProgressPercent int    `json:"progress_percent"`
+}
+
+// NewBatchID 生成 uuid v4 批次主键（crypto/rand 由 google/uuid 提供）。
+// 用随机 uuid 而不是自增：批次 id 会出现在客户端 URL 里，可预测 id 会变成
+// 他人批次的枚举面。
+func NewBatchID() (string, error) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
+}
+
+// ParseBatchPublicID 把对外 id（batch_<uuid>）还原为 DB 主键。
+//
+// 只接受 uuid 形状：把任意路径段直接拼进 uuid 比较会让 PostgreSQL 抛
+// invalid input syntax（500），也会把「畸形 id」与「不存在」分成两种响应。
+// 校验失败与不存在因此同为 ok=false。
+func ParseBatchPublicID(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, BatchPublicIDPrefix) {
+		return "", false
+	}
+	id, err := uuid.Parse(trimmed[len(BatchPublicIDPrefix):])
+	if err != nil {
+		return "", false
+	}
+	return id.String(), true
+}
+
+// FormatBatchPublicID 把 DB 主键写成对外 id。
+func FormatBatchPublicID(id string) string {
+	return BatchPublicIDPrefix + id
 }
 
 // ArtifactView 是产物清单项（relay-06 §10.5：{key,type,mimeType?}）。

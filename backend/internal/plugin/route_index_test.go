@@ -345,6 +345,13 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 		// RouteIndex，见 TestRegistryAllowsPluginDispatchedResponsesRoute 与
 		// TestBuiltinRouteShapesCoverResponsesFamily。）
 		{"POST", "/v1/responses/compact"},
+		// T4 / R-10：Videos 与 Batches 是纯内建形状（处理器不查 RouteIndex）。
+		{"POST", "/v1/videos"},
+		{"GET", "/v1/videos/{video_id}"},
+		{"GET", "/v1/videos/{video_id}/content"},
+		{"POST", "/v1/batches"},
+		{"GET", "/v1/batches/{batch_id}"},
+		{"POST", "/v1/batches/{batch_id}/cancel"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

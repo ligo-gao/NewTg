@@ -3947,6 +3947,150 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/videos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 创建视频生成任务（任务插件）
+         * @description 请求体为 JSON（**不支持 multipart**，返回 400）。`model` 决定任务插件：
+         *     宿主在当前插件快照的 `meta.models` 中解析唯一命中的插件；0 命中 404
+         *     `model_not_found`，多命中 400（歧义不做静默择优）。
+         *
+         *     提交与 `/v1/tasks/{key}` 完全同一条管线（渠道选择 → 预扣 → 上游提交 →
+         *     tasks 落库），计费只发生一次。成功返回 OpenAI video 对象（`status=queued`
+         *     或即时终态 `completed`），随后用 `GET /v1/videos/{id}` 轮询。
+         */
+        post: operations["createVideo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/videos/{video_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取回视频任务
+         * @description `video_<x>` 映射为 `task_<x>` 后按 (user_id, public_task_id) 读取。
+         *     状态映射：success→completed、failure/unknown→failed、in_progress→
+         *     in_progress、其余→queued。`unknown` 不会默认成进行中（客户端会无限轮询）。
+         */
+        get: operations["getVideo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/videos/{video_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取视频内容（Bearer 归属校验）
+         * @description 代理任务的首个视频产物（优先 `type=video`，否则第一项）。与
+         *     `/v1/tasks/{key}/artifacts/{artifact_key}/content` 不同，这里用 Bearer
+         *     归属校验而不是能力票据（OpenAI SDK 的约定）。没有可检索产物时 404。
+         *     HEAD 只返回头部。
+         */
+        get: operations["getVideoContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 创建批次（内联 requests[]）
+         * @description 本网关没有 `/v1/files` 数据面，因此只接受**内联** `requests[]`（JSONL 行
+         *     同形：`custom_id/method/url/body`）；只给 `input_file_id` 时返回 501
+         *     `problem+json`，绝不伪造空批次。每行 `url` 目前只支持 `/v1/videos`。
+         *
+         *     全部行的参数（custom_id 唯一、url、model 可解析）在**任何计费之前**校验，
+         *     参数错误零副作用。逐行提交复用 `/v1/videos` 的提交管线；提交失败的行
+         *     没有任务行、计入 `request_counts.failed`，其余行照常成立。父批次与全部
+         *     子任务关联在一个事务里写入（失败整体回滚）。
+         */
+        post: operations["createBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches/{batch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取回批次聚合视图
+         * @description `request_counts` 由子任务状态**现算**：total 是提交行数，completed 是
+         *     `state=success` 的子任务数，failed 是 `state=failure` 的子任务数加上
+         *     「提交失败、没有任务行」的行数。任一子任务非终态 → `in_progress`；
+         *     全部终态 → `completed`（有成功）或 `failed`（全失败）。
+         */
+        get: operations["getBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches/{batch_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消批次（当前 fail-closed）
+         * @description 子任务在批次创建时已经提交到上游，任务插件没有取消钩子；只改本地状态
+         *     会造成「上游仍在计费、本地已退款」的账实不符，并会被轮询器推进回 success。
+         *     因此本端点返回 501 `problem+json`（`type=.../endpoint-not-supported`），
+         *     **零计费、零状态变更**；归属校验先于 501（他人批次 404）。
+         */
+        post: operations["cancelBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/self": {
         parameters: {
             query?: never;
@@ -7782,6 +7926,10 @@ export interface components {
         TaskArtifactKey: string;
         /** @description 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403） */
         TaskArtifactAccess: string;
+        /** @description 视频对象 ID（`video_<x>`；映射到 task_<x> 的任务） */
+        VideoID: string;
+        /** @description 批次 ID（`batch_<uuid>`） */
+        BatchID: string;
     };
     requestBodies: never;
     headers: never;
@@ -15202,6 +15350,226 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    createVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI video 对象（`{id, object:"video", created_at, status, model, progress, seconds?, size?, error?}`） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            402: components["responses"]["Error402"];
+            /** @description 令牌模型白名单不允许该模型 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 没有任务插件声明该模型 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求体超过任务提交上限 4 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+            /** @description 上游提交失败（提交管线已退款） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 视频对象 ID（`video_<x>`；映射到 task_<x> 的任务） */
+                video_id: components["parameters"]["VideoID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI video 对象（failed 时带 error 子对象） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            /** @description 视频不存在、不属于本人或 id 形状非法（不区分原因） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    getVideoContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 视频对象 ID（`video_<x>`；映射到 task_<x> 的任务） */
+                video_id: components["parameters"]["VideoID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 视频二进制流（Content-Type 取上游或产物声明） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            /** @description 视频不存在、不属于本人或没有可检索产物 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 上游拒绝或取产物失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 插件当前不可用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI batch 对象 + 宿主扩展 `items[]` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            /** @description 令牌模型白名单不允许某行的模型 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 某行的模型没有任务插件 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求体超过批次上限 8 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+            501: components["responses"]["Error501"];
+        };
+    };
+    getBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 批次 ID（`batch_<uuid>`） */
+                batch_id: components["parameters"]["BatchID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI batch 对象 + 宿主扩展 `items[]` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            /** @description 批次不存在或不属于本人（不区分原因） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    cancelBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 批次 ID（`batch_<uuid>`） */
+                batch_id: components["parameters"]["BatchID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Error401"];
+            /** @description 批次不存在或不属于本人 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: components["responses"]["Error501"];
         };
     };
     listSelfTasks: {

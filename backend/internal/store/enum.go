@@ -181,6 +181,10 @@ var EnumChecks = map[string][]string{
 		"not_start", "submitted", "queued", "in_progress",
 		"success", "failure", "unknown",
 	},
+	// T4 / P-04：批次聚合状态。只登记本实现会产出的三态；validating/
+	// finalizing/cancelled 属 OpenAI 状态机，取消端点当前 fail-closed，
+	// 因而不进约束（写死未使用取值会掩盖实现进度）。
+	"task_batches.status": {"in_progress", "completed", "failed"},
 
 	// 模型目录与供应商（D1，platform-01 §22.7.1/§22.7.2）。
 	// vendors.status / model_meta.status：1=启用 / 2=停用；

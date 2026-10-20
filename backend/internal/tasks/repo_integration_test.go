@@ -337,3 +337,71 @@ func TestRepoSelectChannelByBinding(t *testing.T) {
 		t.Fatalf("missing model err = %v, want ErrChannelNotFound", err)
 	}
 }
+
+func TestRepoBatchCreateAndAggregate(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	userID := time.Now().UnixNano() % 1_000_000
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM task_batches WHERE user_id = $1`, userID)
+		_, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID)
+	})
+
+	done := insertTaskFixture(t, repo, ctx, fmt.Sprintf("task_%d_done", userID), userID, StateSuccess, time.Now().UTC())
+	pending := insertTaskFixture(t, repo, ctx, fmt.Sprintf("task_%d_pending", userID), userID, StateSubmitted, time.Now().UTC())
+
+	batchID, err := NewBatchID()
+	if err != nil {
+		t.Fatalf("NewBatchID: %v", err)
+	}
+	// total=3 但只关联两条任务：第三条模拟「上游提交失败、没有任务行」的行。
+	batch := &Batch{ID: batchID, UserID: userID, Status: BatchStatusInProgress, Total: 3}
+	if err := repo.InsertBatch(ctx, batch, []string{done.PublicTaskID, pending.PublicTaskID}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	view, err := repo.GetBatchByID(ctx, userID, batchID)
+	if err != nil {
+		t.Fatalf("GetBatchByID: %v", err)
+	}
+	if view.Completed != 1 || view.Failed != 1 || view.Status != BatchStatusInProgress {
+		t.Fatalf("view = %#v, want completed=1 failed=1 in_progress", view)
+	}
+	if len(view.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(view.Items))
+	}
+
+	// 子任务推进到终态后，同一批次下一次读取即为 completed。
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET state = 'success' WHERE id = $1`, pending.ID); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	view, err = repo.GetBatchByID(ctx, userID, batchID)
+	if err != nil {
+		t.Fatalf("GetBatchByID after terminal: %v", err)
+	}
+	if view.Completed != 2 || view.Failed != 1 || view.Status != BatchStatusCompleted {
+		t.Fatalf("terminal view = %#v, want completed=2 failed=1 completed-status", view)
+	}
+
+	// 归属过滤：他人读取与不存在同为 ErrBatchNotFound。
+	if _, err := repo.GetBatchByID(ctx, userID+1, batchID); err != ErrBatchNotFound {
+		t.Fatalf("foreign batch err = %v, want ErrBatchNotFound", err)
+	}
+
+	// 关联不存在的任务 → 整个事务回滚，父批次行不得残留。
+	badID, err := NewBatchID()
+	if err != nil {
+		t.Fatalf("NewBatchID: %v", err)
+	}
+	bad := &Batch{ID: badID, UserID: userID, Status: BatchStatusInProgress, Total: 1}
+	if err := repo.InsertBatch(ctx, bad, []string{"task_does_not_exist"}); err == nil {
+		t.Fatal("InsertBatch must fail when an item task does not exist")
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM task_batches WHERE id = $1`, badID).Scan(&count); err != nil {
+		t.Fatalf("count rolled back batch: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("batch row survived a failed transaction: count=%d", count)
+	}
+}

@@ -8,6 +8,10 @@
 //	GET|HEAD /v1/tasks/{key}/artifacts/{artifact_key}/content?task_id=&access=
 //	                                        取产物内容（HMAC 能力 URL，无需 Bearer）
 //	GET  /v1/responses/{id}                 Responses 产物回放（resp_<x> → task_<x>，T3 / P-02）
+//	POST /v1/videos                          OpenAI Videos 提交 / 查询 / 内容（T4 / P-04）
+//	GET  /v1/videos/{id}、/v1/videos/{id}/content
+//	POST /v1/batches                         OpenAI Batches（T4 / P-04；父批次只聚合）
+//	GET  /v1/batches/{id}、POST /v1/batches/{id}/cancel
 //	GET  /api/task/self                     本人任务台账（会话）
 //	GET  /api/task                          管理员台账（logs:read）
 //
@@ -77,6 +81,10 @@ type TasksHandlerConfig struct {
 	Store    TaskRepository
 	Channels TaskChannelSource
 	Plugins  *plugin.Manager
+	// Batches 是批次聚合的存储面（T4 / P-04）。nil 时若 Store 同时实现了
+	// BatchRepository 就复用它（生产 tasks.Repo 两者同源）；两者都缺失时
+	// /v1/batches* 返回 503，绝不把「没有存储」伪装成空批次。
+	Batches BatchRepository
 	// Sealer 解开渠道凭据（GC-8）。必填：没有它就只能拒绝提交，绝不回落明文。
 	Sealer *SecretSealer
 	// Tokens 是 relay.BuildRelayContext 回源令牌分组的接缝（Bearer 路径）。
@@ -98,6 +106,7 @@ type TasksHandlerConfig struct {
 // TasksHandler 持有任务端点依赖，可并发使用。
 type TasksHandler struct {
 	store        TaskRepository
+	batches      BatchRepository
 	channels     TaskChannelSource
 	plugins      *plugin.Manager
 	sealer       *SecretSealer
@@ -123,8 +132,17 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 	if client == nil {
 		client = tasks.NewOutboundClient()
 	}
+	// 批次存储默认复用同一仓储实例：生产装配只注入 Store（tasks.Repo 同时
+	// 实现两个接口），不要为了批次再建第二套连接面/仓储（R-07）。
+	batches := cfg.Batches
+	if batches == nil {
+		if shared, ok := cfg.Store.(BatchRepository); ok {
+			batches = shared
+		}
+	}
 	return &TasksHandler{
 		store:        cfg.Store,
+		batches:      batches,
 		channels:     cfg.Channels,
 		plugins:      cfg.Plugins,
 		sealer:       cfg.Sealer,
@@ -151,6 +169,14 @@ func (h *TasksHandler) RegisterRelay(mux *http.ServeMux, authMiddleware func(htt
 	// 但在任务数据面上注册：响应体由 task.data 的产物投影装配，中继面既没有
 	// 任务存储也没有产物签名器，放过去只会让两份实现分叉。
 	mux.Handle("GET /v1/responses/{id}", authMiddleware(http.HandlerFunc(h.handleResponsesGet)))
+	// T4 / P-04：/v1/videos 与 /v1/batches 都是 tasks 数据面的**纯内建**薄封装
+	// （R-10：只登记 builtinRouteShapes，处理器不查插件路由索引）。
+	mux.Handle("POST /v1/videos", authMiddleware(http.HandlerFunc(h.handleVideosSubmit)))
+	mux.Handle("GET /v1/videos/{id}", authMiddleware(http.HandlerFunc(h.handleVideosGet)))
+	mux.Handle("GET /v1/videos/{id}/content", authMiddleware(http.HandlerFunc(h.handleVideosContent)))
+	mux.Handle("POST /v1/batches", authMiddleware(http.HandlerFunc(h.handleBatchesSubmit)))
+	mux.Handle("GET /v1/batches/{id}", authMiddleware(http.HandlerFunc(h.handleBatchesGet)))
+	mux.Handle("POST /v1/batches/{id}/cancel", authMiddleware(http.HandlerFunc(h.handleBatchesCancel)))
 }
 
 // RegisterAdmin 把台账端点挂到管理面受保护链。
@@ -629,6 +655,17 @@ func (h *TasksHandler) handleContent(w http.ResponseWriter, r *http.Request) {
 		writeRelayError(w, http.StatusNotFound, requestID, "artifact_not_found", "artifact not found")
 		return
 	}
+	// 代理段与 /v1/videos/{id}/content（T4）共用：后者不经过能力票据，
+	// 授权由 Bearer 归属校验完成，取产物的动作完全相同。
+	h.serveTaskArtifact(w, r, requestID, task, artifact)
+}
+
+// serveTaskArtifact 把 task.data 投影出的一项产物从上游代理给客户端。
+//
+// 调用方负责授权（能力票据或 Bearer 归属）；本函数只按任务行上的
+// plugin_key/channel 事实取回内容，绝不接受调用方另行指定的插件或渠道。
+func (h *TasksHandler) serveTaskArtifact(w http.ResponseWriter, r *http.Request, requestID string, task *tasks.Task, artifact tasks.ArtifactView) {
+	key := task.PluginKey
 	compiled, ok := h.plugins.Snapshot().Plugin(key)
 	if !ok {
 		writeRelayError(w, http.StatusServiceUnavailable, requestID, "plugin_unavailable", "task plugin is not available")
@@ -674,7 +711,7 @@ func (h *TasksHandler) handleContent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// access 票据绝不能进日志：这里记录的入站 URL 必须脱敏。
 		slog.Warn("tasks: artifact content proxy failed",
-			"task_id", task.PublicTaskID, "artifact", artifactKey,
+			"task_id", task.PublicTaskID, "artifact", artifact.Key,
 			"url", tasks.RedactAccess(r.URL.String()), "error", err)
 		writeRelayError(w, http.StatusBadGateway, requestID, "upstream_error",
 			"failed to fetch artifact content")
@@ -707,7 +744,7 @@ func (h *TasksHandler) handleContent(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.CopyBuffer(w, stream.Body, buf); err != nil {
 		// 头已发出：无法改状态码，只能中断连接（不完整的流不能被当成完整产物）。
 		slog.Warn("tasks: artifact content stream interrupted",
-			"task_id", task.PublicTaskID, "artifact", artifactKey, "error", err)
+			"task_id", task.PublicTaskID, "artifact", artifact.Key, "error", err)
 	}
 }
 

@@ -419,6 +419,19 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}~1artifacts'
   /v1/tasks/{key}/artifacts/{artifact_key}/content:
     $ref: './paths/relay.yaml#/paths/~1v1~1tasks~1{key}~1artifacts~1{artifact_key}~1content'
+  # OpenAI Videos / Batches（T4 / P-04 / R-10）：tasks 数据面的纯内建薄封装。
+  /v1/videos:
+    $ref: './paths/relay.yaml#/paths/~1v1~1videos'
+  /v1/videos/{video_id}:
+    $ref: './paths/relay.yaml#/paths/~1v1~1videos~1{video_id}'
+  /v1/videos/{video_id}/content:
+    $ref: './paths/relay.yaml#/paths/~1v1~1videos~1{video_id}~1content'
+  /v1/batches:
+    $ref: './paths/relay.yaml#/paths/~1v1~1batches'
+  /v1/batches/{batch_id}:
+    $ref: './paths/relay.yaml#/paths/~1v1~1batches~1{batch_id}'
+  /v1/batches/{batch_id}/cancel:
+    $ref: './paths/relay.yaml#/paths/~1v1~1batches~1{batch_id}~1cancel'
   /api/task/self:
     $ref: './paths/user.yaml#/paths/~1api~1task~1self'
   /api/task:

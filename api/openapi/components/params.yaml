@@ -124,6 +124,20 @@ parameters:
     description: 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403）
     schema:
       type: string
+  VideoID:
+    name: video_id
+    in: path
+    required: true
+    description: 视频对象 ID（`video_<x>`；映射到 task_<x> 的任务）
+    schema:
+      type: string
+  BatchID:
+    name: batch_id
+    in: path
+    required: true
+    description: 批次 ID（`batch_<uuid>`）
+    schema:
+      type: string
   ResponseID:
     name: response_id
     in: path

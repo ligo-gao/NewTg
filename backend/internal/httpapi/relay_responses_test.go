@@ -243,7 +243,7 @@ func TestResponsesFallbackFailsClosedWithoutBilling(t *testing.T) {
 		`not-json`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			// T1 的 video 插件只声明 /v1/videos：索引非空，但 /v1/responses 未命中。
+			// T1 的 video 插件只声明 /v1/video-native：索引非空，但 /v1/responses 未命中。
 			env := newResponsesEnv(t, newNativeRouteManager(t))
 
 			rec := env.postResponses(t, body)

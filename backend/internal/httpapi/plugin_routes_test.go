@@ -34,7 +34,7 @@ const nativeRoutePluginSource = `globalThis.__NEWTG_PLUGIN__ = {
   auth: { type: "api_key" },
   channelTypes: [],
   routes: [
-    { method: "POST", path: "/v1/videos", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
+    { method: "POST", path: "/v1/video-native", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
     { method: "POST", path: "/v1/videos/:key/remix", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
     { method: "GET", path: "/v1/suno/fetch/:task_id", kind: "query", render: "parseTaskResult" }
   ],
@@ -196,7 +196,7 @@ func TestPluginNativeRouteDispatches(t *testing.T) {
 	dispatcher := &recordingNativeDispatcher{manager: newNativeRouteManager(t)}
 	mux := newNativeRelayMux(t, dispatcher)
 
-	rec := doNative(t, mux, http.MethodPost, "/v1/videos", `{"model":"video-model"}`, true)
+	rec := doNative(t, mux, http.MethodPost, "/v1/video-native", `{"model":"video-model"}`, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (dispatched); body=%s", rec.Code, rec.Body.String())
 	}
@@ -235,7 +235,7 @@ func TestPluginNativeRouteRequiresAuth(t *testing.T) {
 	dispatcher := &recordingNativeDispatcher{manager: newNativeRouteManager(t)}
 	mux := newNativeRelayMux(t, dispatcher)
 
-	rec := doNative(t, mux, http.MethodPost, "/v1/videos", `{"model":"video-model"}`, false)
+	rec := doNative(t, mux, http.MethodPost, "/v1/video-native", `{"model":"video-model"}`, false)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
 	}
@@ -343,7 +343,7 @@ func newNativeTaskEnv(t *testing.T) *nativeTaskEnv {
 
 func (e *nativeTaskEnv) submitVideo(t *testing.T) string {
 	t.Helper()
-	rec := doNative(t, e.mux, http.MethodPost, "/v1/videos",
+	rec := doNative(t, e.mux, http.MethodPost, "/v1/video-native",
 		`{"model":"video-model","prompt":"hi","seconds":5}`, true)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
@@ -438,11 +438,11 @@ func TestPluginNativeQueryRouteDispatchesToTaskLookup(t *testing.T) {
 // 静默落入提交路径（加载期已拒绝，但索引与校验分叉时必须 fail-closed）。
 func TestPluginNativeRouteUnknownKindIsRejected(t *testing.T) {
 	env := newNativeTaskEnv(t)
-	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"video-model"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/video-native", strings.NewReader(`{"model":"video-model"}`))
 	rec := httptest.NewRecorder()
 	env.handler.DispatchNativeRoute(rec, req, plugin.RouteMatch{
 		PluginKey: "video",
-		Route:     plugin.Route{Method: http.MethodPost, Path: "/v1/videos", Kind: "bogus"},
+		Route:     plugin.Route{Method: http.MethodPost, Path: "/v1/video-native", Kind: "bogus"},
 	})
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())

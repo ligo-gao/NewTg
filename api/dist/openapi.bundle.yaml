@@ -8689,6 +8689,188 @@ paths:
           description: 上游拒绝或取产物失败
         '503':
           description: 插件当前不可用
+  /v1/videos:
+    post:
+      tags:
+        - relay
+      operationId: createVideo
+      x-openai-compatible: true
+      summary: 创建视频生成任务（任务插件）
+      description: |
+        请求体为 JSON（**不支持 multipart**，返回 400）。`model` 决定任务插件：
+        宿主在当前插件快照的 `meta.models` 中解析唯一命中的插件；0 命中 404
+        `model_not_found`，多命中 400（歧义不做静默择优）。
+
+        提交与 `/v1/tasks/{key}` 完全同一条管线（渠道选择 → 预扣 → 上游提交 →
+        tasks 落库），计费只发生一次。成功返回 OpenAI video 对象（`status=queued`
+        或即时终态 `completed`），随后用 `GET /v1/videos/{id}` 轮询。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: OpenAI Videos API reference
+        url: https://platform.openai.com/docs/api-reference/videos
+      responses:
+        '200':
+          description: OpenAI video 对象（`{id, object:"video", created_at, status, model, progress, seconds?, size?, error?}`）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '402':
+          $ref: '#/components/responses/Error402'
+        '403':
+          description: 令牌模型白名单不允许该模型
+        '404':
+          description: 没有任务插件声明该模型
+        '413':
+          description: 请求体超过任务提交上限 4 MiB
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          description: 上游提交失败（提交管线已退款）
+  /v1/videos/{video_id}:
+    get:
+      tags:
+        - relay
+      operationId: getVideo
+      x-openai-compatible: true
+      summary: 取回视频任务
+      description: |
+        `video_<x>` 映射为 `task_<x>` 后按 (user_id, public_task_id) 读取。
+        状态映射：success→completed、failure/unknown→failed、in_progress→
+        in_progress、其余→queued。`unknown` 不会默认成进行中（客户端会无限轮询）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/VideoID'
+      externalDocs:
+        description: OpenAI Videos API reference
+        url: https://platform.openai.com/docs/api-reference/videos
+      responses:
+        '200':
+          description: OpenAI video 对象（failed 时带 error 子对象）
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 视频不存在、不属于本人或 id 形状非法（不区分原因）
+        '500':
+          $ref: '#/components/responses/Error500'
+  /v1/videos/{video_id}/content:
+    get:
+      tags:
+        - relay
+      operationId: getVideoContent
+      summary: 取视频内容（Bearer 归属校验）
+      description: |
+        代理任务的首个视频产物（优先 `type=video`，否则第一项）。与
+        `/v1/tasks/{key}/artifacts/{artifact_key}/content` 不同，这里用 Bearer
+        归属校验而不是能力票据（OpenAI SDK 的约定）。没有可检索产物时 404。
+        HEAD 只返回头部。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/VideoID'
+      responses:
+        '200':
+          description: 视频二进制流（Content-Type 取上游或产物声明）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 视频不存在、不属于本人或没有可检索产物
+        '502':
+          description: 上游拒绝或取产物失败
+        '503':
+          description: 插件当前不可用
+  /v1/batches:
+    post:
+      tags:
+        - relay
+      operationId: createBatch
+      x-openai-compatible: true
+      summary: 创建批次（内联 requests[]）
+      description: |
+        本网关没有 `/v1/files` 数据面，因此只接受**内联** `requests[]`（JSONL 行
+        同形：`custom_id/method/url/body`）；只给 `input_file_id` 时返回 501
+        `problem+json`，绝不伪造空批次。每行 `url` 目前只支持 `/v1/videos`。
+
+        全部行的参数（custom_id 唯一、url、model 可解析）在**任何计费之前**校验，
+        参数错误零副作用。逐行提交复用 `/v1/videos` 的提交管线；提交失败的行
+        没有任务行、计入 `request_counts.failed`，其余行照常成立。父批次与全部
+        子任务关联在一个事务里写入（失败整体回滚）。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: OpenAI Batch API reference
+        url: https://platform.openai.com/docs/api-reference/batch
+      responses:
+        '200':
+          description: OpenAI batch 对象 + 宿主扩展 `items[]`
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          description: 令牌模型白名单不允许某行的模型
+        '404':
+          description: 某行的模型没有任务插件
+        '413':
+          description: 请求体超过批次上限 8 MiB
+        '500':
+          $ref: '#/components/responses/Error500'
+        '501':
+          $ref: '#/components/responses/Error501'
+  /v1/batches/{batch_id}:
+    get:
+      tags:
+        - relay
+      operationId: getBatch
+      x-openai-compatible: true
+      summary: 取回批次聚合视图
+      description: |
+        `request_counts` 由子任务状态**现算**：total 是提交行数，completed 是
+        `state=success` 的子任务数，failed 是 `state=failure` 的子任务数加上
+        「提交失败、没有任务行」的行数。任一子任务非终态 → `in_progress`；
+        全部终态 → `completed`（有成功）或 `failed`（全失败）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/BatchID'
+      externalDocs:
+        description: OpenAI Batch API reference
+        url: https://platform.openai.com/docs/api-reference/batch
+      responses:
+        '200':
+          description: OpenAI batch 对象 + 宿主扩展 `items[]`
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 批次不存在或不属于本人（不区分原因）
+        '500':
+          $ref: '#/components/responses/Error500'
+  /v1/batches/{batch_id}/cancel:
+    post:
+      tags:
+        - relay
+      operationId: cancelBatch
+      summary: 取消批次（当前 fail-closed）
+      description: |
+        子任务在批次创建时已经提交到上游，任务插件没有取消钩子；只改本地状态
+        会造成「上游仍在计费、本地已退款」的账实不符，并会被轮询器推进回 success。
+        因此本端点返回 501 `problem+json`（`type=.../endpoint-not-supported`），
+        **零计费、零状态变更**；归属校验先于 501（他人批次 404）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/BatchID'
+      responses:
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          description: 批次不存在或不属于本人
+        '501':
+          $ref: '#/components/responses/Error501'
   /api/task/self:
     get:
       tags:
@@ -8954,6 +9136,20 @@ components:
       in: query
       required: true
       description: 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403）
+      schema:
+        type: string
+    VideoID:
+      name: video_id
+      in: path
+      required: true
+      description: 视频对象 ID（`video_<x>`；映射到 task_<x> 的任务）
+      schema:
+        type: string
+    BatchID:
+      name: batch_id
+      in: path
+      required: true
+      description: 批次 ID（`batch_<uuid>`）
       schema:
         type: string
   schemas:
