@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -971,6 +972,185 @@ func TestPublicPricingNameRuleResolution(t *testing.T) {
 		if names[model] != display {
 			t.Fatalf("%s display_name = %q，期望 %q（全表 %v）", model, names[model], display, names)
 		}
+	}
+}
+
+// 冻结枚举预置：context 的四个分档与 endpoint 的八个枚举是完整合法取值域。
+// 目录当前没有命中该值的模型时，筛选必须返回 0 条，而不是被当成「不存在的
+// 值」丢弃后返回全集。
+func TestPublicPricingFrozenEnumerationFilters(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	// 目录里没有 8K 模型（fixture 只有 32K/128K/200K+）。
+	_, eightK, _ := env.decodeList(t, "/api/pricing?context=8k&page_size=100", nil, nil)
+	if eightK.Total != "0" || len(eightK.Items) != 0 {
+		t.Fatalf("合法但无命中的 context=8k 应返回 0 条，得到 total=%s items=%v",
+			eightK.Total, modelIDs(eightK.Items))
+	}
+
+	// 目录里没有 embeddings 模型。
+	_, embeddings, _ := env.decodeList(t, "/api/pricing?endpointType=embeddings&page_size=100", nil, nil)
+	if embeddings.Total != "0" || len(embeddings.Items) != 0 {
+		t.Fatalf("合法但无命中的 endpointType=embeddings 应返回 0 条，得到 total=%s items=%v",
+			embeddings.Total, modelIDs(embeddings.Items))
+	}
+
+	// 真正不在冻结枚举里的值仍然丢弃（不产生筛选）。
+	_, bogus, _ := env.decodeList(t, "/api/pricing?context=999k&endpointType=telepathy&page_size=100", nil, nil)
+	if bogus.Total != "5" {
+		t.Fatalf("未知枚举值应被丢弃，total=%s", bogus.Total)
+	}
+}
+
+// 档案 capabilities 的大小写折叠去重：facet 计数与筛选 total 必须同口径，
+// 输出保留首个原值。
+func TestPublicPricingCapabilityDedup(t *testing.T) {
+	catalog := store.PublicPricingCatalog{
+		Models: []store.PublicModelPricing{
+			{Model: "dup/repeat", Mode: 0, PromptPrice: publicInt64Ptr(100)},
+			{Model: "dup/mixed", Mode: 0, PromptPrice: publicInt64Ptr(200)},
+		},
+		Meta: []store.ModelMeta{
+			{
+				ModelName: "dup/repeat", Status: 1, NameRule: 0,
+				Capabilities: publicJSON([]string{"text", "text"}),
+			},
+			{
+				ModelName: "dup/mixed", Status: 1, NameRule: 0,
+				Capabilities: publicJSON([]string{"Text", "text"}),
+			},
+		},
+		Version: "v1", GeneratedAt: time.Now().UTC(),
+	}
+	repo := &fakePublicPricingRepo{catalog: catalog}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	_, body, _ := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	var facetCount int64
+	for _, option := range body.Facets.Capabilities {
+		if option.Value == "text" {
+			facetCount = option.Count
+			if option.Label != "text" {
+				t.Fatalf("capability facet label 应保留首个原值 text，得到 %q", option.Label)
+			}
+		}
+	}
+	if facetCount != 2 {
+		t.Fatalf("重复能力只能按模型计一次，facet text 计数 = %d，期望 2（%+v）",
+			facetCount, body.Facets.Capabilities)
+	}
+
+	_, filtered, _ := env.decodeList(t, "/api/pricing?capability=text&page_size=100", nil, nil)
+	if filtered.Total != "2" || int64(len(filtered.Items)) != facetCount {
+		t.Fatalf("capability=text total=%s 与 facet 计数 %d 不一致", filtered.Total, facetCount)
+	}
+	if got := filtered.Facets.Capabilities; len(got) != 1 || got[0].Count != 2 {
+		t.Fatalf("自身 facet 计数错误: %+v", got)
+	}
+
+	cards := cardsByID(body.Items)
+	if got := cards["dup/repeat"].Capabilities; !equalStrings(got, []string{"text"}) {
+		t.Fatalf("重复能力输出未去重: %v", got)
+	}
+	if got := cards["dup/mixed"].Capabilities; !equalStrings(got, []string{"Text"}) {
+		t.Fatalf("大小写变体应保留首个原值: %v", got)
+	}
+}
+
+// display_name 的判空与下发使用同一口径：返回 TrimSpace 后的值。
+func TestPublicPricingDisplayNameTrimmed(t *testing.T) {
+	catalog := store.PublicPricingCatalog{
+		Models: []store.PublicModelPricing{
+			{Model: "trim/name", Mode: 0, PromptPrice: publicInt64Ptr(100)},
+		},
+		Meta: []store.ModelMeta{{
+			ModelName: "trim/name", Status: 1, NameRule: 0,
+			DisplayName: publicStringPtr("  Padded Name  "),
+		}},
+		Version: "v1", GeneratedAt: time.Now().UTC(),
+	}
+	repo := &fakePublicPricingRepo{catalog: catalog}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	_, body, _ := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	if got := cardsByID(body.Items)["trim/name"].DisplayName; got != "Padded Name" {
+		t.Fatalf("display_name = %q，期望 TrimSpace 后的 Padded Name", got)
+	}
+}
+
+// parameters 逐元素解析：一个非法元素不能把整张参数表清空。
+func TestDecodeModelParametersSkipsBadElements(t *testing.T) {
+	raw := []byte(`[{"name":"ok","required":true,"type":"number","default":1,"description":"d"},1,"bad",null,{"name":" "},{"type":"string"}]`)
+	params := decodeModelParameters(raw)
+	if len(params) != 1 {
+		t.Fatalf("params = %+v，期望只保留 1 条合法元素", params)
+	}
+	got := params[0]
+	if got.Name != "ok" || !got.Required || got.Type != "number" || got.Description != "d" {
+		t.Fatalf("合法元素解析错误: %+v", got)
+	}
+	if value, ok := got.Default.(float64); !ok || value != 1 {
+		t.Fatalf("default = %#v，期望 1", got.Default)
+	}
+}
+
+// 停用的精确档案压过启用的前缀档案：模型整体隐藏（列表无、详情 404），
+// 不能被更宽的前缀档案救活。
+func TestPublicPricingDisabledExactBeatsActivePrefix(t *testing.T) {
+	catalog := store.PublicPricingCatalog{
+		Models: []store.PublicModelPricing{
+			{Model: "exact/pre", Mode: 0, PromptPrice: publicInt64Ptr(100)},
+		},
+		Meta: []store.ModelMeta{
+			{ModelName: "exact/pre", DisplayName: publicStringPtr("Disabled Exact"), Status: 2, NameRule: 0},
+			{ModelName: "exact/", DisplayName: publicStringPtr("Active Prefix"), Status: 1, NameRule: 1},
+		},
+		Version: "v1", GeneratedAt: time.Now().UTC(),
+	}
+	repo := &fakePublicPricingRepo{catalog: catalog}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	_, body, _ := env.decodeList(t, "/api/pricing?page_size=100", nil, nil)
+	if body.Total != "0" || len(body.Items) != 0 {
+		t.Fatalf("停用精确档案应压过启用前缀档案，得到 total=%s items=%v",
+			body.Total, modelIDs(body.Items))
+	}
+
+	detail := env.request(http.MethodGet, "/api/pricing/"+url.PathEscape("exact/pre"), nil, nil)
+	if detail.Code != http.StatusNotFound {
+		t.Fatalf("停用精确档案模型详情 status = %d，期望 404", detail.Code)
+	}
+}
+
+// 参数形态：capability[] 方括号数组、endpoint_type 别名、单组 50 值上限。
+func TestPublicPricingFacetParameterForms(t *testing.T) {
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalogWithMeta()}
+	env := newPublicTestEnv(t, nil, repo, nil)
+
+	_, bracket, _ := env.decodeList(t, "/api/pricing?capability[]=vision&page_size=100", nil, nil)
+	if bracket.Total != "1" || len(bracket.Items) != 1 || bracket.Items[0].ModelID != "openai/gpt-5" {
+		t.Fatalf("capability[] 形态失败: total=%s items=%v", bracket.Total, modelIDs(bracket.Items))
+	}
+
+	_, alias, _ := env.decodeList(t, "/api/pricing?endpoint_type=generateContent&page_size=100", nil, nil)
+	if alias.Total != "1" || len(alias.Items) != 1 || alias.Items[0].ModelID != "gemini/flash" {
+		t.Fatalf("endpoint_type 别名失败: total=%s items=%v", alias.Total, modelIDs(alias.Items))
+	}
+
+	values := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		values = append(values, fmt.Sprintf("v%02d", i))
+	}
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/pricing?capability="+strings.Join(values, ","), http.NoBody)
+	parsed := parsePublicPricingQuery(req)
+	if len(parsed.Capability) != publicPricingMaxVendorFilters {
+		t.Fatalf("capability 取值数 = %d，期望上限 %d", len(parsed.Capability), publicPricingMaxVendorFilters)
+	}
+	if parsed.Capability[0] != "v00" || parsed.Capability[len(parsed.Capability)-1] != "v49" {
+		t.Fatalf("50 值上限应保留前 50 个，得到首 %q 尾 %q",
+			parsed.Capability[0], parsed.Capability[len(parsed.Capability)-1])
 	}
 }
 

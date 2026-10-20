@@ -442,7 +442,10 @@ func buildPublicCatalogModels(rows []store.PublicModelPricing,
 			lowerID: strings.ToLower(row.Model),
 		}
 		if attached != nil {
-			model.capabilities = decodeStringArray(attached.Capabilities)
+			// 档案允许重复/大小写变体（["text","text"]、["text","Text"]）。去重
+			// 在装配期完成：facet 计数与筛选 total 必须同口径，否则一个重复
+			// 能力会在 facet 里显示 2、筛选结果却只有 1 个模型。
+			model.capabilities = dedupeFoldPreserveFirst(decodeStringArray(attached.Capabilities))
 			model.contextBucket = publicContextBucket(attached.ContextLength)
 			model.endpointTypes = deriveEndpointTypes(attached.Endpoints)
 		}
@@ -579,25 +582,50 @@ func decodeStringArray(raw []byte) []string {
 // decodeModelParameters 解析 parameters jsonb（元素形如
 // `{name, required, type, default, description}`）。缺名/非法的元素跳过，
 // 不让一条脏数据把整张参数表变成空。
+//
+// 逐元素解析成 json.RawMessage 而不是整体反序列化成 []map[string]any：
+// 后者遇到一个非对象元素（数字、字符串、坏 JSON）会整列失败，与注释承诺的
+// 「跳过非法元素」不符。
 func decodeModelParameters(raw []byte) []PublicModelParameter {
 	out := make([]PublicModelParameter, 0)
 	if len(raw) == 0 {
 		return out
 	}
-	var items []map[string]any
+	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil {
+		// 整列不是数组：没有可解析的元素。
 		return out
 	}
 	for _, item := range items {
-		name, _ := item["name"].(string)
+		var fields map[string]any
+		if err := json.Unmarshal(item, &fields); err != nil {
+			continue
+		}
+		name, _ := fields["name"].(string)
 		if strings.TrimSpace(name) == "" {
 			continue
 		}
-		param := PublicModelParameter{Name: name, Default: item["default"]}
-		param.Required, _ = item["required"].(bool)
-		param.Type, _ = item["type"].(string)
-		param.Description, _ = item["description"].(string)
+		param := PublicModelParameter{Name: name, Default: fields["default"]}
+		param.Required, _ = fields["required"].(bool)
+		param.Type, _ = fields["type"].(string)
+		param.Description, _ = fields["description"].(string)
 		out = append(out, param)
+	}
+	return out
+}
+
+// dedupeFoldPreserveFirst 按大小写折叠去重，保留首次出现的原值作为展示值
+// （label/输出）；匹配侧本来就用大小写不敏感比较，因此折叠不改变命中语义。
+func dedupeFoldPreserveFirst(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		folded := strings.ToLower(value)
+		if _, ok := seen[folded]; ok {
+			continue
+		}
+		seen[folded] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
@@ -721,8 +749,11 @@ func (idx publicCatalogIndex) knownVendors(values []string) []string {
 	return filterKnown(values, known)
 }
 
-// knownCapabilities / knownContexts / knownEndpoints 同 knownVendors：把一个
-// 目录里不存在的筛选值当作「没有筛选」丢弃，只保留合法项（D1-21）。
+// knownCapabilities / knownContexts / knownEndpoints 同 knownVendors 的
+// 「不存在的值丢弃」，但 context/endpoint 的合法取值域是**冻结枚举**而不是
+// 目录里当前出现的值：某个分档/端点在目录里暂无命中（如没有 8K 模型、没有
+// embeddings 模型）仍是合法筛选，必须返回命中 0 条；只有真正不在冻结枚举
+// 里的值才丢弃（否则拼错的值会静默变成「无筛选」返回全集）。
 // 资产缺失的模型不贡献已知值，因此筛选未知能力不会误命中降级卡片。
 func (idx publicCatalogIndex) knownCapabilities(values []string) []string {
 	known := make(map[string]struct{})
@@ -738,20 +769,16 @@ func (idx publicCatalogIndex) knownCapabilities(values []string) []string {
 
 func (idx publicCatalogIndex) knownContexts(values []string) []string {
 	known := make(map[string]struct{}, len(publicContextBuckets))
-	for _, model := range idx.models {
-		if model.contextBucket != "" {
-			known[strings.ToLower(model.contextBucket)] = struct{}{}
-		}
+	for _, bucket := range publicContextBuckets {
+		known[strings.ToLower(bucket)] = struct{}{}
 	}
 	return filterKnown(values, known)
 }
 
 func (idx publicCatalogIndex) knownEndpoints(values []string) []string {
-	known := make(map[string]struct{})
-	for _, model := range idx.models {
-		for _, endpoint := range model.endpointTypes {
-			known[strings.ToLower(endpoint)] = struct{}{}
-		}
+	known := make(map[string]struct{}, len(publicEndpointMapping))
+	for _, entry := range publicEndpointMapping {
+		known[strings.ToLower(entry.Value)] = struct{}{}
 	}
 	return filterKnown(values, known)
 }
@@ -818,7 +845,11 @@ func (idx publicCatalogIndex) capabilityFacets(query publicPricingQuery) []Publi
 				continue
 			}
 			counts[value]++
-			labels[value] = capability
+			// 同一 capacity 的多个大小写变体只保留首个原值作为 label，
+			// 与装配期的保留首个原值口径一致。
+			if _, ok := labels[value]; !ok {
+				labels[value] = capability
+			}
 		}
 	}
 	values := make([]string, 0, len(counts))
@@ -1023,13 +1054,16 @@ func newPublicModelCard(model publicCatalogModel, groupPrice *PublicGroupPriceVi
 	}
 	if meta := model.meta; meta != nil {
 		// display_name 允许空串：空串回退 model_id（D1-16），避免卡片标题行
-		// 变成一条不可见/不可点击的空白。
+		// 变成一条不可见/不可点击的空白。下发 TrimSpace 后的值，与判空
+		// 口径一致（首尾空白不进入响应）。
 		if meta.DisplayName != nil {
 			if name := strings.TrimSpace(*meta.DisplayName); name != "" {
-				card.DisplayName = *meta.DisplayName
+				card.DisplayName = name
 			}
 		}
-		card.Capabilities = decodeStringArray(meta.Capabilities)
+		// 直接复用装配期已去重的大小写折叠结果，保证卡片输出与 facet
+		// 计数/筛选口径一致。
+		card.Capabilities = model.capabilities
 		card.ContextLength = meta.ContextLength
 		card.MaxOutput = meta.MaxOutput
 		card.Endpoints = deriveEndpointTypes(meta.Endpoints)
