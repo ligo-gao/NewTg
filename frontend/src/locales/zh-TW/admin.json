@@ -1356,15 +1356,11 @@
       "edit": "編輯",
       "publish": "發布",
       "offline": "下線",
-      "copy_link": "複製連結",
       "delete": "刪除",
       "edit_aria": "編輯「{title}」",
       "publish_aria": "發布「{title}」",
       "offline_aria": "下線「{title}」",
-      "copy_link_aria": "複製「{title}」對應的公告頁連結",
-      "delete_aria": "刪除「{title}」",
-      "copy_done": "公告頁連結已複製。",
-      "copy_failed": "複製失敗，請手動複製位址。"
+      "delete_aria": "刪除「{title}」"
     },
     "confirm": {
       "publish_title": "發布公告",
@@ -1397,7 +1393,7 @@
       "content_too_long": "內容不能超過 {max} 個 UTF-8 位元組。",
       "content_counter": "已用 {used} / {max} 位元組 · {chars} 個字元",
       "publish_at_label": "生效時間",
-      "publish_at_readonly": "已發布公告的生效時間保持不變（N-35）。",
+      "publish_at_readonly": "已發布公告的生效時間保持不變。",
       "publish_at_invalid": "請選擇有效的生效時間。",
       "expire_at_label": "過期時間",
       "expire_at_hint": "留空表示永久有效。",

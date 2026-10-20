@@ -27,6 +27,14 @@ export interface DialogProps {
    * regular `dialog` role used by the rest of the console.
    */
   role?: 'dialog' | 'alertdialog'
+  /**
+   * Where focus lands when the dialog opens. `panel` (default) keeps focus on
+   * the container so a screen reader starts at the title; confirmations that
+   * ask about a destructive/irreversible action pass `first` to land on the
+   * least destructive control (the Cancel button, rendered first in the
+   * footer) instead of the confirming one.
+   */
+  initialFocus?: 'panel' | 'first' | 'last'
 }
 
 /** Keyboard-focusable descendants, in document order (WAI-ARIA dialog pattern). */
@@ -57,6 +65,21 @@ function focusableInside(panel: HTMLElement): HTMLElement[] {
 }
 
 /**
+ * Module-level modal stack (WAI-ARIA nested dialogs).
+ *
+ * Every open `Dialog` pushes a token; only the last one — the visually topmost
+ * portal — may consume Tab/Escape. Without this, a confirmation opened from a
+ * drawer would leave the drawer's key handler alive: Escape would dismiss both
+ * layers at once and Tab could jump into the inert background panel. Tokens
+ * (not booleans) make removal order-independent when nested effects clean up.
+ */
+const dialogStack: symbol[] = []
+
+function isTopDialog(token: symbol): boolean {
+  return dialogStack[dialogStack.length - 1] === token
+}
+
+/**
  * Minimal Base UI Dialog primitive (web-00 §2.1, modules-00 §4.8).
  * M0 scope: portal, modal semantics, Escape/overlay close, focus trap and
  * focus restore. The background is made inert while the dialog is open so
@@ -73,6 +96,7 @@ export function Dialog({
   variant = 'center',
   panelClassName,
   role = 'dialog',
+  initialFocus = 'panel',
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -92,6 +116,11 @@ export function Dialog({
     dismissibleRef.current = dismissible
   }, [dismissible])
 
+  const initialFocusRef = useRef(initialFocus)
+  useEffect(() => {
+    initialFocusRef.current = initialFocus
+  }, [initialFocus])
+
   // One effect owns the whole focus lifecycle so capture, inertness and
   // restoration happen in a safe order:
   //   1. record the trigger before focus moves;
@@ -110,7 +139,21 @@ export function Dialog({
         ? document.activeElement
         : null
 
+    // Register before the first paint of the handler; the token identifies
+    // this specific dialog on the module-level stack.
+    const token = Symbol('dialog')
+    dialogStack.push(token)
+
     panel.focus()
+
+    if (initialFocusRef.current !== 'panel') {
+      const focusable = focusableInside(panel)
+      const target =
+        initialFocusRef.current === 'first'
+          ? focusable[0]
+          : focusable[focusable.length - 1]
+      target?.focus()
+    }
 
     const portalRoot = panel.parentElement
     const background = Array.from(document.body.children).filter(
@@ -129,6 +172,11 @@ export function Dialog({
     }
 
     const handleKeyDown = (event: KeyboardEvent): void => {
+      // Only the topmost modal owns keyboard navigation. A lower dialog stays
+      // mounted (and inert) while a confirmation is on top, but must not react
+      // to Escape or Tab.
+      if (!isTopDialog(token)) return
+
       if (event.key === 'Escape') {
         event.preventDefault()
         if (dismissibleRef.current) onOpenChangeRef.current(false)
@@ -168,6 +216,8 @@ export function Dialog({
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
+      const index = dialogStack.indexOf(token)
+      if (index !== -1) dialogStack.splice(index, 1)
       for (const snapshot of snapshots) {
         if (!snapshot.wasInert) snapshot.element.removeAttribute('inert')
         if (snapshot.ariaHidden === null) {

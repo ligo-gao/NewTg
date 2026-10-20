@@ -65,8 +65,7 @@ function openDialog() {
   return { trigger, dialog: screen.getByRole('dialog') }
 }
 
-describe('Dialog focus management', () => {
-  it('moves focus to the panel and makes the background inert', () => {
+describe('Dialog focus management', () => {  it('moves focus to the panel and makes the background inert', () => {
     const { dialog } = openDialog()
 
     expect(document.activeElement).toBe(dialog)
@@ -128,5 +127,94 @@ describe('Dialog focus management', () => {
     rerender(<Harness notify={() => {}} />)
 
     expect(document.activeElement).toBe(middle)
+  })
+})
+
+/**
+ * A confirmation opened from a sheet/drawer is a second modal layer. The lower
+ * dialog must stay mounted (it holds the form) but must not consume keyboard
+ * events; otherwise Escape closes both layers and Tab can walk into the
+ * now-inert lower panel.
+ */
+function NestedHarness() {
+  const [outerOpen, setOuterOpen] = useState(false)
+  const [innerOpen, setInnerOpen] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOuterOpen(true)}>
+        Open outer
+      </button>
+      <Dialog
+        open={outerOpen}
+        onOpenChange={setOuterOpen}
+        title="Outer"
+        footer={
+          <>
+            <button type="button" onClick={() => setOuterOpen(false)}>
+              Outer cancel
+            </button>
+            <button type="button" onClick={() => setInnerOpen(true)}>
+              Open inner
+            </button>
+          </>
+        }
+      >
+        <button type="button">Outer middle</button>
+      </Dialog>
+      <Dialog
+        open={innerOpen}
+        onOpenChange={setInnerOpen}
+        title="Inner"
+        footer={
+          <button type="button" onClick={() => setInnerOpen(false)}>
+            Inner cancel
+          </button>
+        }
+      >
+        <button type="button">Inner middle</button>
+      </Dialog>
+    </>
+  )
+}
+
+describe('Dialog modal stack', () => {
+  it('lets only the topmost dialog handle Tab, Escape and inertness', () => {
+    render(<NestedHarness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open outer' }))
+    const outer = screen.getByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Open inner' }))
+
+    // 外层 portal 在确认期间被 aria-hidden + inert，`getByRole` 会按可访问性
+    // 树过滤掉它；这里直接查 DOM 以同时观察两层。
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"]'),
+    )
+    expect(dialogs).toHaveLength(2)
+    const inner = dialogs[1] as HTMLElement
+    expect(inner.textContent).toContain('Inner')
+    // 外层 portal 在确认期间必须整体 inert，读屏与 Tab 都不能进入。
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(true)
+
+    const innerMiddle = screen.getByRole('button', { name: 'Inner middle' })
+    const innerCancel = screen.getByRole('button', { name: 'Inner cancel' })
+
+    // Tab 在顶层内部循环，且不会落回外层表单。
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(innerMiddle)
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(innerCancel)
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(innerMiddle)
+    expect(inner.contains(document.activeElement)).toBe(true)
+
+    // Escape 只关闭最上层。
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByRole('dialog').textContent).toContain('Outer')
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(false)
+
+    // 顶层退出后，下层重新接管键盘。
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

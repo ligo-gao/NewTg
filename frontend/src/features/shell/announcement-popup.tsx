@@ -7,6 +7,7 @@ import {
   type ActiveAnnouncement,
 } from '@/features/announcements/api'
 import { ANNOUNCEMENT_ACTIVE_QUERY_KEY } from '@/features/announcements/query-keys'
+import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { Button } from '@/shared/ui/button'
@@ -17,12 +18,20 @@ import { Tag } from '@/shared/ui/tag'
  * 这里只覆盖「确认后标记已读请求失败 / 尚未落库」的窗口，避免同一
  * 公告在一次浏览会话里反复出现。sessionStorage 在隐私模式下可能不可用，
  * 读写都失败关闭（退化为仅本组件生命周期内去重，仍不阻塞页面）。
+ *
+ * 键必须按当前用户分域：`sessionStorage` 在同一标签页内跨登录共享，
+ * 否则 A 用户确认过的公告会让 B 用户在同一标签页里看不到。
+ * `/api/me` 尚无稳定数值 id 字段，用户名即当前会话的唯一身份。
  */
 const DISMISSED_SESSION_KEY = 'newtg.announcements.dismissed'
 
-function readDismissed(): string[] {
+function dismissedStorageKey(scope: string): string {
+  return `${DISMISSED_SESSION_KEY}:${scope}`
+}
+
+function readDismissed(scope: string): string[] {
   try {
-    const raw = globalThis.sessionStorage?.getItem(DISMISSED_SESSION_KEY)
+    const raw = globalThis.sessionStorage?.getItem(dismissedStorageKey(scope))
     if (raw === null || raw === undefined) return []
     const parsed: unknown = JSON.parse(raw)
     return Array.isArray(parsed)
@@ -33,9 +42,12 @@ function readDismissed(): string[] {
   }
 }
 
-function writeDismissed(ids: ReadonlySet<string>): void {
+function writeDismissed(scope: string, ids: ReadonlySet<string>): void {
   try {
-    globalThis.sessionStorage?.setItem(DISMISSED_SESSION_KEY, JSON.stringify([...ids]))
+    globalThis.sessionStorage?.setItem(
+      dismissedStorageKey(scope),
+      JSON.stringify([...ids]),
+    )
   } catch {
     // 本地记忆不可用不影响确认动作本身。
   }
@@ -50,9 +62,14 @@ function writeDismissed(ids: ReadonlySet<string>): void {
  */
 export function AnnouncementPopup() {
   const { t } = useI18n()
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(
-    () => new Set(readDismissed()),
-  )
+  // 登录身份决定本地去重命名空间。控制台路由守卫已通过 `ensureQueryData`
+  // 预热 `['me']`，这里通常同步命中缓存。
+  const meQuery = useQuery(meQueryOptions())
+  const scope = meQuery.data?.username
+  const [dismissal, setDismissal] = useState<{
+    scope: string
+    ids: ReadonlySet<string>
+  } | null>(null)
 
   const query = useQuery({
     queryKey: ANNOUNCEMENT_ACTIVE_QUERY_KEY,
@@ -67,8 +84,18 @@ export function AnnouncementPopup() {
     retry: false,
   })
 
+  // 身份未就绪时不显示弹层：既无法安全定位去重键，也避免在账号切换的
+  // 瞬间把上一账号的「已确认」记忆套到新账号上。
+  if (scope === undefined) return null
+
+  const userScope: string = scope
+  const dismissedIds =
+    dismissal !== null && dismissal.scope === userScope
+      ? dismissal.ids
+      : new Set(readDismissed(userScope))
+
   const current: ActiveAnnouncement | undefined = query.data?.items.find(
-    (item) => !item.read && !dismissed.has(item.id),
+    (item) => !item.read && !dismissedIds.has(item.id),
   )
 
   if (current === undefined) return null
@@ -76,12 +103,11 @@ export function AnnouncementPopup() {
   function acknowledge(item: ActiveAnnouncement): void {
     // 先本地出队再发请求：网络失败时用户仍能继续使用控制台；服务端未读到
     // 记录会在下一次会话重新弹出，这是可接受且符合「一次性」语义的降级。
-    setDismissed((previous) => {
-      const next = new Set(previous)
-      next.add(item.id)
-      writeDismissed(next)
-      return next
-    })
+    // 标记已读失败也不回滚本地出队，否则失败的请求会把弹层重新顶出来。
+    const next = new Set(dismissedIds)
+    next.add(item.id)
+    setDismissal({ scope: userScope, ids: next })
+    writeDismissed(userScope, next)
     markRead.mutate(item.id)
   }
 

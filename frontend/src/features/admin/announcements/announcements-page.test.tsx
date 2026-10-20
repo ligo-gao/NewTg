@@ -25,11 +25,21 @@ const server = setupServer()
 let lastListUrl: URL | undefined
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // jsdom 不做布局，Dialog 的初始焦点候选过滤依赖非空 rect；
+  // 确认框「初始焦点落在取消」的断言需要这个 mock。
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(
+    () => ({ length: 1 }) as unknown as DOMRectList,
+  )
+})
 afterEach(() => {
   server.resetHandlers()
   useToastStore.setState({ toasts: [] })
   sessionStorage.clear()
+  vi.restoreAllMocks()
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+  // 让仍挂载的组件从离线态恢复；也是下一个用例的干净起点。
+  window.dispatchEvent(new Event('online'))
 })
 afterAll(() => server.close())
 
@@ -113,8 +123,8 @@ interface Capture {
 }
 
 interface InstallOptions {
-  /** 覆盖列表响应；用于空态/错误/429。 */
-  listOverride?: (rows: AnnouncementSummary[]) => Response
+  /** 覆盖列表响应；用于空态/错误/429/分页 clamp。 */
+  listOverride?: (rows: AnnouncementSummary[], url: URL) => Response
   /** 覆盖写请求响应；用于 publish_now 回滚与 429。 */
   writeOverride?: (request: Request) => Response | undefined
 }
@@ -130,7 +140,7 @@ function install(options: InstallOptions = {}) {
       capture.listUrls.push(url)
       lastListUrl = url
       if (options.listOverride !== undefined) {
-        return options.listOverride(rows)
+        return options.listOverride(rows, url)
       }
       let items = rows
       const status = url.searchParams.get('status')
@@ -474,6 +484,120 @@ describe('announcements admin page (F-08-04)', () => {
     expect(capture.posts[0]?.headers.get('Idempotency-Key')).toBeTruthy()
   })
 
+  it('takes an expired announcement offline like a published one', async () => {
+    const capture = install()
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Take Expired release offline' }),
+    )
+    await waitFor(() => {
+      expect(capture.posts).toHaveLength(1)
+    })
+    expect(capture.posts[0]?.path).toBe('offline')
+    await waitFor(() => {
+      const row = screen
+        .getAllByTestId('announcement-row')
+        .find((entry) => entry.textContent?.includes('Expired release'))
+      expect(
+        within(row as HTMLElement).getByTestId('status-badge').textContent,
+      ).toContain('Offline')
+    })
+  })
+
+  it('keeps the publish confirmation open and reports a 429', async () => {
+    install({
+      writeOverride: (request) =>
+        new URL(request.url).pathname.endsWith('/publish')
+          ? new HttpResponse(
+              JSON.stringify({ title: 'Too many requests' }),
+              {
+                status: 429,
+                headers: {
+                  'Content-Type': 'application/problem+json',
+                  'Retry-After': '5',
+                },
+              },
+            )
+          : undefined,
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Publish Draft notice' }),
+    )
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Publish' }))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(
+        'Too many requests. Try again in 5 s.',
+      )
+    })
+    // 限流不是「已处理」：确认框保留，用户可以稍后重试。
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
+  })
+
+  it('sets initial focus on Cancel for destructive confirmations', async () => {
+    install()
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Delete Pulled notice' }),
+    )
+    const deleteDialog = await screen.findByRole('alertdialog')
+    expect(document.activeElement).toBe(
+      within(deleteDialog).getByRole('button', { name: 'Cancel' }),
+    )
+
+    await user.click(within(deleteDialog).getByRole('button', { name: 'Cancel' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Publish Draft notice' }),
+    )
+    const publishDialog = await screen.findByRole('alertdialog')
+    expect(document.activeElement).toBe(
+      within(publishDialog).getByRole('button', { name: 'Cancel' }),
+    )
+  })
+
+  it('clamps the page back after deleting the last row on it', async () => {
+    install({
+      listOverride: (_rows, url) => {
+        const requested = Number(url.searchParams.get('p') ?? '1')
+        if (requested === 2) {
+          return HttpResponse.json({
+            items: [summary(SEEDS[3] as RowSeed)],
+            total: 21,
+            page: 2,
+            page_size: 20,
+          })
+        }
+        return HttpResponse.json({
+          items: SEEDS.slice(0, 3).map(summary),
+          total: 21,
+          page: 1,
+          page_size: 20,
+        })
+      },
+    })
+    const user = userEvent.setup()
+    await renderWithProviders(<Harness initial={{ p: 2 }} />, ['common', 'admin'])
+    await screen.findByText('Pulled notice')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Pulled notice' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Delete permanently' }),
+    )
+
+    await waitFor(() => {
+      expect(lastListUrl?.searchParams.get('p')).toBe('1')
+    })
+  })
+
   it('deletes only after the destructive confirmation', async () => {
     const capture = install()
     const user = userEvent.setup()
@@ -495,26 +619,6 @@ describe('announcements admin page (F-08-04)', () => {
     })
   })
 
-  it('copies the management page link instead of inventing a detail route', async () => {
-    install()
-    const user = userEvent.setup()
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
-    })
-    await renderPage()
-
-    await user.click(
-      screen.getByRole('button', {
-        name: 'Copy the announcements page link for Live maintenance',
-      }),
-    )
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith(`${ORIGIN}/admin/settings/announcements`)
-    })
-  })
-
   it('keeps the loaded snapshot but disables every write while offline', async () => {
     install()
     await renderPage()
@@ -530,6 +634,11 @@ describe('announcements admin page (F-08-04)', () => {
     expect(screen.getByText('Live maintenance')).toBeTruthy()
     expect(
       (screen.getByRole('button', { name: 'Take Live maintenance offline' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+    // 离线时编辑同样是写路径的入口，必须一并禁用（LOW）。
+    expect(
+      (screen.getByRole('button', { name: 'Edit Live maintenance' }) as HTMLButtonElement)
         .disabled,
     ).toBe(true)
     expect(screen.getByText(/You are offline/)).toBeTruthy()
@@ -709,6 +818,77 @@ describe('announcement drawer', () => {
     })
     // 生效时间被忽略（既不出现在请求里，也不会被服务端重写）。
     expect(body).not.toHaveProperty('publish_at')
+  })
+
+  it('shows the saved values when the same row is reopened', async () => {
+    const capture = install()
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Edit Live maintenance' }),
+    )
+    await within(await screen.findByRole('dialog')).findByText(/Saving updates it in place/)
+    const title = screen.getByLabelText('Title')
+    await user.clear(title)
+    await user.type(title, 'Live maintenance v2')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => {
+      expect(capture.puts).toHaveLength(1)
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+
+    // 重开同一行：详情缓存必须已被服务端返回值覆盖（staleTime: Infinity
+    // 不会自动重取），否则这里仍是编辑前的标题。
+    await user.click(
+      screen.getByRole('button', { name: 'Edit Live maintenance v2' }),
+    )
+    await within(await screen.findByRole('dialog')).findByText(/Saving updates it in place/)
+    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(
+      'Live maintenance v2',
+    )
+  })
+
+  it('explains why writes are disabled when the connection drops mid-edit', async () => {
+    install()
+    const user = userEvent.setup()
+    await renderPage()
+    await openCreate(user)
+
+    window.dispatchEvent(new Event('offline'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog').textContent).toContain(
+        'You are offline. Publishing changes is disabled until the connection returns.',
+      )
+    })
+  })
+
+  it('links the content error and focuses the first invalid field', async () => {
+    const capture = install()
+    const user = userEvent.setup()
+    await renderPage()
+
+    await openCreate(user)
+    await user.type(screen.getByLabelText('Title'), 'Title without content')
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+
+    const textarea = screen.getByLabelText(
+      'Content (Markdown)',
+    ) as HTMLTextAreaElement
+    await waitFor(() => {
+      expect(document.activeElement).toBe(textarea)
+    })
+    const errorId = textarea.getAttribute('aria-describedby')
+    expect(errorId).toBeTruthy()
+    expect(document.getElementById(errorId as string)?.textContent).toContain(
+      'Enter the announcement content.',
+    )
+    await waitFor(() => {
+      expect(capture.posts).toHaveLength(0)
+    })
   })
 
   it('returns an offline announcement to draft when saved', async () => {

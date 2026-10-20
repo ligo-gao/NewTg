@@ -1356,15 +1356,11 @@
       "edit": "Sửa",
       "publish": "Đăng",
       "offline": "Gỡ xuống",
-      "copy_link": "Sao chép liên kết",
       "delete": "Xóa",
       "edit_aria": "Sửa {title}",
       "publish_aria": "Đăng {title}",
       "offline_aria": "Gỡ {title} xuống",
-      "copy_link_aria": "Sao chép liên kết trang thông báo cho {title}",
-      "delete_aria": "Xóa {title}",
-      "copy_done": "Đã sao chép liên kết trang thông báo.",
-      "copy_failed": "Sao chép thất bại. Vui lòng sao chép địa chỉ thủ công."
+      "delete_aria": "Xóa {title}"
     },
     "confirm": {
       "publish_title": "Đăng thông báo",
@@ -1397,7 +1393,7 @@
       "content_too_long": "Nội dung tối đa {max} byte UTF-8.",
       "content_counter": "{used} / {max} byte · {chars} ký tự",
       "publish_at_label": "Có hiệu lực",
-      "publish_at_readonly": "Đã đăng: thời điểm hiệu lực giữ nguyên như lần đăng đầu (N-35).",
+      "publish_at_readonly": "Đã đăng: thời điểm hiệu lực giữ nguyên như lần đăng đầu.",
       "publish_at_invalid": "Chọn thời điểm hiệu lực hợp lệ.",
       "expire_at_label": "Hết hạn",
       "expire_at_hint": "Để trống để đăng vĩnh viễn.",

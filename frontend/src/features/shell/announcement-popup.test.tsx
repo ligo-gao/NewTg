@@ -38,9 +38,20 @@ interface Capture {
   reads: string[]
 }
 
-function install(items: ActiveAnnouncement[], options: { activeStatus?: number } = {}): Capture {
+function install(
+  items: ActiveAnnouncement[],
+  options: { activeStatus?: number; readStatus?: number; username?: string } = {},
+): Capture {
   const capture: Capture = { activeCalls: 0, reads: [] }
   server.use(
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({
+        username: options.username ?? 'alice',
+        role: 'user',
+        status: 'enabled',
+        permissions: [],
+      }),
+    ),
     http.get(`${ORIGIN}/api/announcements/active`, () => {
       capture.activeCalls += 1
       if (options.activeStatus !== undefined) {
@@ -56,6 +67,15 @@ function install(items: ActiveAnnouncement[], options: { activeStatus?: number }
     }),
     http.post(`${ORIGIN}/api/announcements/:id/read`, ({ params }) => {
       capture.reads.push(String(params.id))
+      if (options.readStatus !== undefined) {
+        return new HttpResponse(
+          JSON.stringify({ title: 'Unavailable' }),
+          {
+            status: options.readStatus,
+            headers: { 'Content-Type': 'application/problem+json' },
+          },
+        )
+      }
       return new HttpResponse(null, { status: 204 })
     }),
   )
@@ -158,5 +178,32 @@ describe('announcement popup (console shell)', () => {
       expect(capture.activeCalls).toBe(1)
     })
     expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('dismisses the popup even when recording the read fails', async () => {
+    const capture = install([active()], { readStatus: 500 })
+    const user = userEvent.setup()
+    await renderWithProviders(<AnnouncementPopup />, ['common'])
+
+    await user.click(await screen.findByRole('button', { name: 'Got it' }))
+
+    // 标记已读失败不阻断：本地先出队，服务端未落库只影响下一次会话。
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+    })
+    expect(capture.reads).toEqual(['11111111-1111-4111-8111-111111111111'])
+  })
+
+  it('scopes the per-session memory to the signed-in user', async () => {
+    install([active()], { username: 'alice' })
+    const user = userEvent.setup()
+    const first = await renderWithProviders(<AnnouncementPopup />, ['common'])
+    await user.click(await screen.findByRole('button', { name: 'Got it' }))
+    first.unmount()
+
+    // 同一标签页切换到 bob：alice 的「已确认」记忆不能让他看不到公告。
+    install([active()], { username: 'bob' })
+    await renderWithProviders(<AnnouncementPopup />, ['common'])
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
   })
 })

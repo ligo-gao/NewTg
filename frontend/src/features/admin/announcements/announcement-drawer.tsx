@@ -8,7 +8,7 @@ import { FormAlert, TextField } from '@/shared/ui/form'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useToastStore } from '@/shared/ui/toast'
 
-import { ANNOUNCEMENT_ACTIVE_QUERY_KEY } from '@/features/announcements/query-keys'
+import { ANNOUNCEMENT_ACTIVE_QUERY_KEY, announcementDetailQueryKey } from '@/features/announcements/query-keys'
 import {
   createAnnouncement,
   getAnnouncement,
@@ -35,6 +35,16 @@ const SELECT_CLASSES =
   'h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 const TEXTAREA_CLASSES =
   'min-h-[200px] w-full rounded-lg border bg-surface-card px-3 py-2 font-mono text-[13px] leading-5 text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+
+/** 稳定 id：提交失败时按表单顺序聚焦第一个错误字段。 */
+const FIELD_IDS = {
+  title: 'announcement-title',
+  content: 'announcement-content',
+  publish_at: 'announcement-publish-at',
+  expire_at: 'announcement-expire-at',
+} as const
+
+const FIELD_ORDER = ['title', 'content', 'publish_at', 'expire_at'] as const
 
 function emptyValues(): AnnouncementFormValues {
   return {
@@ -94,7 +104,7 @@ export function AnnouncementDrawer({
   const queryClient = useQueryClient()
 
   const detailQuery = useQuery({
-    queryKey: ['announcements', 'detail', announcementId],
+    queryKey: announcementDetailQueryKey(announcementId),
     queryFn: ({ signal }) => {
       // enabled 保证 id 非空；这里显式失败关闭，避免把 undefined 当路径参数。
       if (announcementId === null) throw new Error('missing announcement id')
@@ -168,7 +178,10 @@ export function AnnouncementDrawer({
         : updateAnnouncement(announcementId, input)
     },
     retry: false,
-    onSuccess: async (_detail, publishNow) => {
+    onSuccess: async (saved, publishNow) => {
+      // 保存返回的是服务端权威详情。详情查询的 staleTime 是 Infinity，
+      // 若不写回缓存，重新打开同一行会继续用编辑前的正文初始化表单。
+      queryClient.setQueryData(announcementDetailQueryKey(saved.id), saved)
       const key =
         publishNow && !isPublished
           ? 'admin.announcements.toast.published'
@@ -186,8 +199,25 @@ export function AnnouncementDrawer({
       // publish_now 是单事务原子路径：422 意味着整体回滚，界面必须说清
       // 「什么都没保存」，而不是笼统的「保存失败」。
       setSubmitError({ error, publishNow })
+      if (error instanceof ApiError && error.fields !== undefined) {
+        for (const field of FIELD_ORDER) {
+          if (error.fields.includes(field)) {
+            document.getElementById(FIELD_IDS[field])?.focus()
+            break
+          }
+        }
+      }
     },
   })
+
+  function focusFirstError(errors: AnnouncementFormErrors): void {
+    for (const field of FIELD_ORDER) {
+      if (errors[field] !== undefined) {
+        document.getElementById(FIELD_IDS[field])?.focus()
+        return
+      }
+    }
+  }
 
   function runValidation(): boolean {
     const nextErrors = validateAnnouncementForm(
@@ -208,7 +238,12 @@ export function AnnouncementDrawer({
       },
     )
     setClientErrors(nextErrors)
-    return Object.keys(nextErrors).length === 0
+    if (Object.keys(nextErrors).length > 0) {
+      // 键盘/读屏用户不应在提交后自己逐字段寻找错误：聚焦首个错误字段。
+      focusFirstError(nextErrors)
+      return false
+    }
+    return true
   }
 
   function save(publishNow: boolean): void {
@@ -272,7 +307,7 @@ export function AnnouncementDrawer({
         {isPublished ? (
           <Button
             disabled={disabled}
-            title={!online ? t('admin.announcements.offline_write_disabled') : undefined}
+            title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
             onClick={() => {
               save(false)
             }}
@@ -286,7 +321,7 @@ export function AnnouncementDrawer({
             <Button
               variant="ghost"
               disabled={disabled}
-              title={!online ? t('admin.announcements.offline_write_disabled') : undefined}
+              title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
               onClick={() => {
                 save(false)
               }}
@@ -295,7 +330,7 @@ export function AnnouncementDrawer({
             </Button>
             <Button
               disabled={disabled}
-              title={!online ? t('admin.announcements.offline_write_disabled') : undefined}
+              title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
               onClick={() => {
                 save(true)
               }}
@@ -325,7 +360,7 @@ export function AnnouncementDrawer({
         <div className="flex flex-col gap-4">
           {!online ? (
             <FormAlert tone="warning">
-              {t('admin.announcements.offline_write_disabled')}
+              {t('admin.announcements.page.offline_write_disabled')}
             </FormAlert>
           ) : null}
 
@@ -374,6 +409,7 @@ export function AnnouncementDrawer({
               ) : null}
 
               <TextField
+                id={FIELD_IDS.title}
                 label={t('admin.announcements.drawer.title_label')}
                 value={values.title}
                 hint={t('admin.announcements.drawer.title_hint', {
@@ -420,7 +456,7 @@ export function AnnouncementDrawer({
                   {t('admin.announcements.drawer.content_label')}
                 </label>
                 <textarea
-                  id="announcement-content"
+                  id={FIELD_IDS.content}
                   className={[
                     TEXTAREA_CLASSES,
                     fieldError('content') !== undefined
@@ -428,6 +464,11 @@ export function AnnouncementDrawer({
                       : 'border-border-default',
                   ].join(' ')}
                   aria-invalid={fieldError('content') !== undefined || undefined}
+                  aria-describedby={
+                    fieldError('content') !== undefined
+                      ? `${FIELD_IDS.content}-error`
+                      : undefined
+                  }
                   value={values.content}
                   disabled={saving}
                   onChange={(event) => {
@@ -455,7 +496,12 @@ export function AnnouncementDrawer({
                   </span>
                 </div>
                 {fieldError('content') !== undefined ? (
-                  <p className="text-xs text-danger">{fieldError('content')}</p>
+                  <p
+                    id={`${FIELD_IDS.content}-error`}
+                    className="text-xs text-danger"
+                  >
+                    {fieldError('content')}
+                  </p>
                 ) : null}
               </div>
 
@@ -476,6 +522,7 @@ export function AnnouncementDrawer({
                 </div>
               ) : (
                 <TextField
+                  id={FIELD_IDS.publish_at}
                   label={t('admin.announcements.drawer.publish_at_label')}
                   type="datetime-local"
                   value={values.publishAt}
@@ -490,6 +537,7 @@ export function AnnouncementDrawer({
               )}
 
               <TextField
+                id={FIELD_IDS.expire_at}
                 label={t('admin.announcements.drawer.expire_at_label')}
                 type="datetime-local"
                 value={values.expireAt}
@@ -511,6 +559,9 @@ export function AnnouncementDrawer({
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         role="alertdialog"
+        // 抽屉之上再叠一层确认框：初始焦点放「取消」，且模态栈保证
+        // Escape/Tab 只作用于这一层（外层抽屉挂起）。
+        initialFocus="first"
         title={t('admin.announcements.confirm.publish_title')}
         description={t('admin.announcements.confirm.publish_body')}
         footer={

@@ -1356,15 +1356,11 @@
       "edit": "編集",
       "publish": "公開",
       "offline": "非公開",
-      "copy_link": "リンクをコピー",
       "delete": "削除",
       "edit_aria": "{title} を編集",
       "publish_aria": "{title} を公開",
       "offline_aria": "{title} を非公開",
-      "copy_link_aria": "{title} のお知らせページのリンクをコピー",
-      "delete_aria": "{title} を削除",
-      "copy_done": "お知らせページのリンクをコピーしました。",
-      "copy_failed": "コピーに失敗しました。アドレスを手動でコピーしてください。"
+      "delete_aria": "{title} を削除"
     },
     "confirm": {
       "publish_title": "お知らせを公開",
@@ -1397,7 +1393,7 @@
       "content_too_long": "本文は最大 {max} UTF-8 バイトです。",
       "content_counter": "{used} / {max} バイト · {chars} 文字",
       "publish_at_label": "有効開始",
-      "publish_at_readonly": "公開済みのため、有効開始時刻は公開時のまま変更されません（N-35）。",
+      "publish_at_readonly": "公開済みのため、有効開始時刻は公開時のまま変更されません。",
       "publish_at_invalid": "有効な開始時刻を選択してください。",
       "expire_at_label": "有効期限",
       "expire_at_hint": "空欄の場合は無期限で公開されます。",

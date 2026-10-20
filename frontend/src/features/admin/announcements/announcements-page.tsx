@@ -18,6 +18,7 @@ import {
 import {
   ANNOUNCEMENT_ACTIVE_QUERY_KEY,
   ANNOUNCEMENT_LIST_QUERY_KEY,
+  announcementDetailQueryKey,
 } from '@/features/announcements/query-keys'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -119,11 +120,14 @@ export function AnnouncementsPage({
   }
 
   const publishMutation = useMutation({
-    // 发布是幂等动作：一次用户意图一个 key，重试（若有）复用同一个值。
+    // 一次用户意图一个 key；仅 CSRF 重放复用。
     mutationFn: (row: AnnouncementSummary) =>
       publishAnnouncement(row.id, createIdempotencyKey()),
     retry: false,
-    onSuccess: async () => {
+    onSuccess: async (detail) => {
+      // 服务端返回值是列表投影之外的权威详情；写回缓存保证随后打开编辑
+      // 抽屉时看到的是发布后的状态，而不是 staleTime: Infinity 的旧快照。
+      queryClient.setQueryData(announcementDetailQueryKey(detail.id), detail)
       push({ tone: 'success', message: t('admin.announcements.toast.published') })
       setPublishTarget(null)
       await invalidate()
@@ -141,10 +145,12 @@ export function AnnouncementsPage({
   })
 
   const offlineMutation = useMutation({
+    // 一次用户意图一个 key；仅 CSRF 重放复用。
     mutationFn: (row: AnnouncementSummary) =>
       offlineAnnouncement(row.id, createIdempotencyKey()),
     retry: false,
-    onSuccess: async () => {
+    onSuccess: async (detail) => {
+      queryClient.setQueryData(announcementDetailQueryKey(detail.id), detail)
       push({ tone: 'success', message: t('admin.announcements.toast.offline') })
       await invalidate()
     },
@@ -162,10 +168,17 @@ export function AnnouncementsPage({
   const deleteMutation = useMutation({
     mutationFn: (row: AnnouncementSummary) => deleteAnnouncement(row.id),
     retry: false,
-    onSuccess: async () => {
+    onSuccess: async (_data, row) => {
+      // 详情缓存指向已删除实体，直接移除而不是留着等一次必然 404 的重取。
+      queryClient.removeQueries({ queryKey: announcementDetailQueryKey(row.id) })
       push({ tone: 'success', message: t('admin.announcements.toast.deleted') })
       setDeleteTarget(null)
       await invalidate()
+      // 删除本页最后一行后，当前页码可能已不存在（例如第 2 页只有 1 行）；
+      // 回退一页，避免列表空白却停在越界页码。
+      if (rows.length === 1 && page > 1) {
+        onSearchChange({ p: page - 1 })
+      }
     },
     onError: (error) => {
       push({ tone: 'error', message: actionError(error) })
@@ -199,36 +212,6 @@ export function AnnouncementsPage({
     setDrawerOpen(true)
   }
 
-  async function copyLink(row: AnnouncementSummary): Promise<void> {
-    // 公开公告详情页尚不存在：D7a 的 webhook payload 也明确使用站点根
-    // `/`（`announcementURL()` 注释）。按「不编造路由」的约束复制管理页
-    // 链接，而不是造一个会 404 的 `/announcements/{id}`。
-    const target =
-      typeof location === 'undefined'
-        ? '/admin/settings/announcements'
-        : new URL('/admin/settings/announcements', location.origin).toString()
-    try {
-      if (
-        typeof navigator === 'undefined' ||
-        navigator.clipboard?.writeText === undefined
-      ) {
-        throw new Error('clipboard unavailable')
-      }
-      await navigator.clipboard.writeText(target)
-      push({
-        tone: 'success',
-        message: t('admin.announcements.actions.copy_done'),
-      })
-    } catch {
-      push({
-        tone: 'error',
-        message: t('admin.announcements.actions.copy_failed', {
-          title: row.title,
-        }),
-      })
-    }
-  }
-
   function listErrorMessage(): string {
     const error = listQuery.error
     if (error instanceof ApiError) {
@@ -257,7 +240,7 @@ export function AnnouncementsPage({
         </div>
         <Button
           disabled={writesDisabled}
-          title={!online ? t('admin.announcements.offline_write_disabled') : undefined}
+          title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
           onClick={openCreate}
         >
           {t('admin.announcements.page.create')}
@@ -393,7 +376,7 @@ export function AnnouncementsPage({
           </p>
           <Button
             disabled={writesDisabled}
-            title={!online ? t('admin.announcements.offline_write_disabled') : undefined}
+            title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
             onClick={openCreate}
           >
             {t('admin.announcements.empty.action')}
@@ -468,7 +451,8 @@ export function AnnouncementsPage({
                             <Button
                               variant="ghost"
                               className="h-7 px-2 text-xs"
-                              disabled={busy}
+                              disabled={writesDisabled}
+                              title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
                               aria-label={t('admin.announcements.actions.edit_aria', {
                                 title: row.title,
                               })}
@@ -503,18 +487,6 @@ export function AnnouncementsPage({
                               {t('admin.announcements.actions.offline')}
                             </Button>
                           ) : null}
-                          <Button
-                            variant="ghost"
-                            className="h-7 px-2 text-xs"
-                            aria-label={t('admin.announcements.actions.copy_link_aria', {
-                              title: row.title,
-                            })}
-                            onClick={() => {
-                              void copyLink(row)
-                            }}
-                          >
-                            {t('admin.announcements.actions.copy_link')}
-                          </Button>
                           <Button
                             variant="ghost"
                             className="h-7 px-2 text-xs text-danger"
@@ -610,6 +582,8 @@ export function AnnouncementsPage({
           if (!open) setPublishTarget(null)
         }}
         role="alertdialog"
+        // 破坏性/立即生效的确认：初始焦点落在「取消」，避免回车误确认。
+        initialFocus="first"
         title={t('admin.announcements.confirm.publish_title')}
         description={t('admin.announcements.confirm.publish_body')}
         footer={
@@ -635,6 +609,8 @@ export function AnnouncementsPage({
           if (!open) setDeleteTarget(null)
         }}
         role="alertdialog"
+        // 删除不可撤销：初始焦点落在「取消」。
+        initialFocus="first"
         title={t('admin.announcements.confirm.delete_title')}
         description={t('admin.announcements.confirm.delete_body')}
         footer={

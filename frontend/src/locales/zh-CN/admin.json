@@ -1356,15 +1356,11 @@
       "edit": "编辑",
       "publish": "发布",
       "offline": "下线",
-      "copy_link": "复制链接",
       "delete": "删除",
       "edit_aria": "编辑「{title}」",
       "publish_aria": "发布「{title}」",
       "offline_aria": "下线「{title}」",
-      "copy_link_aria": "复制「{title}」对应的公告页链接",
-      "delete_aria": "删除「{title}」",
-      "copy_done": "公告页链接已复制。",
-      "copy_failed": "复制失败，请手动复制地址。"
+      "delete_aria": "删除「{title}」"
     },
     "confirm": {
       "publish_title": "发布公告",
@@ -1397,7 +1393,7 @@
       "content_too_long": "内容不能超过 {max} 个 UTF-8 字节。",
       "content_counter": "已用 {used} / {max} 字节 · {chars} 个字符",
       "publish_at_label": "生效时间",
-      "publish_at_readonly": "已发布公告的生效时间保持不变（N-35）。",
+      "publish_at_readonly": "已发布公告的生效时间保持不变。",
       "publish_at_invalid": "请选择有效的生效时间。",
       "expire_at_label": "过期时间",
       "expire_at_hint": "留空表示永久有效。",

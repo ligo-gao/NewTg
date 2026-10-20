@@ -1356,15 +1356,11 @@
       "edit": "Modifier",
       "publish": "Publier",
       "offline": "Retirer",
-      "copy_link": "Copier le lien",
       "delete": "Supprimer",
       "edit_aria": "Modifier {title}",
       "publish_aria": "Publier {title}",
       "offline_aria": "Retirer {title}",
-      "copy_link_aria": "Copier le lien de la page des annonces pour {title}",
-      "delete_aria": "Supprimer {title}",
-      "copy_done": "Lien de la page des annonces copié.",
-      "copy_failed": "La copie a échoué. Veuillez copier l’adresse manuellement."
+      "delete_aria": "Supprimer {title}"
     },
     "confirm": {
       "publish_title": "Publier l’annonce",
@@ -1397,7 +1393,7 @@
       "content_too_long": "Le contenu doit faire au plus {max} octets UTF-8.",
       "content_counter": "{used} / {max} octets · {chars} caractères",
       "publish_at_label": "Prend effet",
-      "publish_at_readonly": "Déjà publiée : l’heure d’effet reste celle de la publication initiale (N-35).",
+      "publish_at_readonly": "Déjà publiée : l’heure d’effet reste celle de la publication initiale.",
       "publish_at_invalid": "Choisissez une heure d’effet valide.",
       "expire_at_label": "Expire",
       "expire_at_hint": "Laissez vide pour la conserver indéfiniment.",

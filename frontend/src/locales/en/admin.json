@@ -1356,15 +1356,11 @@
       "edit": "Edit",
       "publish": "Publish",
       "offline": "Take offline",
-      "copy_link": "Copy link",
       "delete": "Delete",
       "edit_aria": "Edit {title}",
       "publish_aria": "Publish {title}",
       "offline_aria": "Take {title} offline",
-      "copy_link_aria": "Copy the announcements page link for {title}",
-      "delete_aria": "Delete {title}",
-      "copy_done": "Announcements page link copied.",
-      "copy_failed": "Copy failed. Please copy the address manually."
+      "delete_aria": "Delete {title}"
     },
     "confirm": {
       "publish_title": "Publish announcement",
@@ -1397,7 +1393,7 @@
       "content_too_long": "The content must be at most {max} UTF-8 bytes.",
       "content_counter": "{used} / {max} bytes · {chars} characters",
       "publish_at_label": "Takes effect",
-      "publish_at_readonly": "Already published: the effective time stays as originally published (N-35).",
+      "publish_at_readonly": "Already published: the effective time stays as originally published.",
       "publish_at_invalid": "Choose a valid effective time.",
       "expire_at_label": "Expires",
       "expire_at_hint": "Leave empty to keep it published permanently.",
