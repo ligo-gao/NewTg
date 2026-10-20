@@ -60,7 +60,7 @@ const (
 	// 限制在有界事务内；清理期间仍可正常预扣/退款。
 	CleanupBatchSize = 500
 
-	// CleanupMaxBatchesPerPass 限制单轮清理的工作量（默认 1 万行/小时）。
+	// CleanupMaxBatchesPerPass 限制单轮清理的工作量（默认每轮 1 万行，按 30 分钟间隔即每小时 2 万行）。
 	// 有界工作量让清理不会长时间占住 unique goroutine，从而推迟同一 select
 	// 里的到期/重置扫描；未清完的积压由下一轮继续（最旧优先）。
 	CleanupMaxBatchesPerPass = 20
