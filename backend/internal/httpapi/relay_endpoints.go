@@ -21,6 +21,7 @@ import (
 	"newtg/gateway/internal/billing/expr"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
@@ -166,6 +167,19 @@ type RelayHandlerOptions struct {
 	// 在计费前把「模型不可用」判成 403。nil 时 /pg 路径不可用（会话请求
 	// 会以 500 失败关闭），生产装配必须传入。
 	UserGroups PlaygroundUserGroups
+	// NativeRoutes 是插件原生路由的执行面（T6c-a）；nil 时 /v1/ 兜底仍会
+	// 挂载，但只做 404/405 判定——未知路径的 OpenAI 信封不依赖它。
+	NativeRoutes NativeRouteDispatcher
+}
+
+// NativeRouteDispatcher 是插件原生路由在 HTTP 面的唯一接缝（生产实现
+// *TasksHandler）。索引与执行必须来自同一份插件快照：分开注入两次会让
+// 「匹配到的 Route」与「实际执行它的插件版本」分属不同 generation。
+type NativeRouteDispatcher interface {
+	// NativeRoutes 返回当前插件快照的只读路由索引。
+	NativeRoutes() plugin.RouteIndex
+	// DispatchNativeRoute 执行一次已命中的原生路由；鉴权由调用方先完成。
+	DispatchNativeRoute(w http.ResponseWriter, r *http.Request, match plugin.RouteMatch)
 }
 
 // PlaygroundUserGroups 是 /pg/*（Playground 会话中继）需要的用户分组读取面。
@@ -193,6 +207,7 @@ type RelayHandler struct {
 	multimodal       MultimodalDispatcher
 	config           ConfigReader
 	userGroups       PlaygroundUserGroups
+	nativeRoutes     NativeRouteDispatcher
 	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
 	// 会话鉴权由 RegisterPlayground 的外层链完成）。
 	playground *http.ServeMux
@@ -239,6 +254,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		multimodal:       opts.Multimodal,
 		config:           opts.Config,
 		userGroups:       opts.UserGroups,
+		nativeRoutes:     opts.NativeRoutes,
 	}
 	// M4 T4：生产装配默认注入真实多模态分派器（T1 复审 F2/F4/F5 与 R-02 的
 	// 落点）。显式传入的 Multimodal 优先（测试可替换）；nil 不再表示 501——
@@ -288,6 +304,83 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 		Dispatcher:  h.multimodal,
 		Groups:      h.userGroups,
 	}))
+
+	// T6c-a：插件原生路由（manifest routes[]）的 /v1 兜底。
+	//
+	// 用无方法的子树模式 `/v1/`：更具体的精确模式（POST /v1/chat/completions、
+	// GET /v1/models、POST /v1/tasks/{key} 等）按 ServeMux 优先级胜出，兜底只
+	// 接收「没有其它路由认领」的 /v1 请求。它不是通用中继回退：命中插件路由
+	// 走任务数据面，未命中一律 404 OpenAI 信封（P-05），绝不进入 chat 管线。
+	mux.Handle(nativeRouteFallbackPattern, h.nativeRouteFallback(authMiddleware, mux))
+}
+
+// nativeRouteFallbackPattern 是原生路由兜底的 ServeMux 模式。
+const nativeRouteFallbackPattern = "/v1/"
+
+// nativeRouteFallback 构建 /v1/ 兜底 handler。
+//
+// 鉴权只包裹**命中**的原生路由（与 /v1/tasks 同一条 RelayAuth 链）：未知
+// 路径保持「无令牌也 404」的既有可见性——兜底上线之前根 mux 对未知 /v1
+// 就是 404，能力探测面不应因为加了兜底而变成 401/404 二值 oracle。
+//
+// 405 语义必须由这里补回：Go 的 ServeMux 只有在「路径匹配某个模式但方法不
+// 匹配」时才返回 405，而 `/v1/` 匹配所有方法，若不显式探测，POST /v1/realtime
+// 会从 405 退化成 404。探测只查路由表（mux.Handler），不执行任何 handler。
+func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) http.Handler, mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRelayRequestID()
+		if h.nativeRoutes != nil {
+			if match, ok := h.nativeRoutes.NativeRoutes().Match(r.Method, r.URL.Path); ok {
+				// 每次命中现建一个只用一次的 handler 链：中间件本身无状态，
+				// 包住 match 比把 RouteMatch 塞进 context 更直接、更易审计。
+				authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					h.nativeRoutes.DispatchNativeRoute(w, r, match)
+				})).ServeHTTP(w, r)
+				return
+			}
+		}
+		if allowed := methodMismatchAllowed(mux, r); len(allowed) > 0 {
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeRelayError(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
+				"method not allowed for this endpoint")
+			return
+		}
+		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+	})
+}
+
+// nativeProbeMethods 是方法不匹配探测的候选集合。
+//
+// 覆盖 /v1 面已注册的全部方法族（含 OPTIONS，供将来的 CORS 端点）；HEAD 单独
+// 探测是因为 Go 的 GET 模式同时匹配 HEAD，不探测就无法在 Allow 里体现它。
+var nativeProbeMethods = []string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodOptions,
+}
+
+// methodMismatchAllowed 返回「此路径存在、但当前方法不匹配」时允许的方法。
+//
+// 返回空切片表示路径本身没有注册过（真正的 404）。探测通过 mux.Handler
+// 只做路由求解，不会执行 handler，也不消耗 body（请求未动，浅拷贝仅改 Method）。
+func methodMismatchAllowed(mux *http.ServeMux, r *http.Request) []string {
+	if mux == nil {
+		return nil
+	}
+	allowed := make([]string, 0, len(nativeProbeMethods))
+	for _, method := range nativeProbeMethods {
+		if method == r.Method {
+			continue
+		}
+		probe := new(http.Request)
+		*probe = *r
+		probe.Method = method
+		_, pattern := mux.Handler(probe)
+		if pattern == "" || pattern == nativeRouteFallbackPattern {
+			continue
+		}
+		allowed = append(allowed, method)
+	}
+	return allowed
 }
 
 // Handler 返回挂好路由的独立 mux（测试与嵌入式装配用）。

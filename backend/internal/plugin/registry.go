@@ -89,7 +89,11 @@ type Snapshot struct {
 	revision   string
 	builtAt    time.Time
 	entries    map[string]*Entry
-	routes     map[string]string // 归一化路由形状 → 插件 key
+	routes     map[string]string // 归一化路由形状 → 插件 key（诊断用）
+	// routeIndex 是 HTTP 面消费的可匹配索引（T6c-a / R-03）。它与 routes
+	// 同批构建、同批冻结：routes 只回答「谁占了哪个形状」，routeIndex 回答
+	// 「这个请求命中哪条路由」，后者必须携带 Route 与插件 key 才能分发。
+	routeIndex RouteIndex
 }
 
 // Generation 返回节点本地单调递增代际（relay-06 §2.5：跨节点比较用 Revision）。
@@ -140,6 +144,26 @@ func (s *Snapshot) RouteOwners() map[string]string {
 		out[shape] = key
 	}
 	return out
+}
+
+// Routes 返回本快照的原生路由索引（T6c-a）。
+//
+// 返回值是**已冻结**的只读快照：索引在 buildSnapshot 后不再修改，调用方可以
+// 在整个请求生命周期内安全复用（generation-atomic）。零值 Snapshot / 首次
+// Reload 之前返回空索引，Match 一律未命中，而不是 nil 恐慌。
+func (s *Snapshot) Routes() RouteIndex {
+	if s == nil {
+		return RouteIndex{}
+	}
+	return s.routeIndex
+}
+
+// Routes 返回当前快照的路由索引（等价于 Snapshot().Routes()）。
+//
+// 名字按 t1-brief 的「Registry.Routes」保留：仓库里没有独立的 Registry 类型，
+// Snapshot 就是注册结果的权威载体，Manager 只是它的最新发布者。
+func (m *Manager) Routes() RouteIndex {
+	return m.Snapshot().Routes()
 }
 
 // SnapshotManager 是 Manager 的冻结别名（t3-brief 冻结约定 6 使用该名称）。
@@ -350,10 +374,11 @@ func (m *Manager) buildKey(revision string, versions []ActiveVersion) string {
 //     （「compile_failed 仅当无可用层」）。
 func (m *Manager) buildSnapshot(versions []ActiveVersion, revision string) *Snapshot {
 	snap := &Snapshot{
-		revision: revision,
-		builtAt:  time.Now(),
-		entries:  make(map[string]*Entry, len(m.factory)+len(versions)),
-		routes:   make(map[string]string),
+		revision:   revision,
+		builtAt:    time.Now(),
+		entries:    make(map[string]*Entry, len(m.factory)+len(versions)),
+		routes:     make(map[string]string),
+		routeIndex: newRouteIndex(),
 	}
 	overrides := make(map[string][]ActiveVersion, len(versions))
 	keys := make(map[string]struct{}, len(m.factory)+len(versions))
@@ -372,7 +397,7 @@ func (m *Manager) buildSnapshot(versions []ActiveVersion, revision string) *Snap
 	for _, key := range sortedKeys(keys) {
 		entry := m.effectiveEntry(key, overrides[key])
 		if entry.Plugin != nil {
-			if conflict := registerRoutes(snap.routes, entry.Plugin); conflict != nil {
+			if conflict := registerRoutes(snap.routes, &snap.routeIndex, entry.Plugin); conflict != nil {
 				entry.Status = StatusCompileFailed
 				entry.Plugin = nil
 				entry.Version = ""
@@ -510,12 +535,18 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 	return plugin, nil
 }
 
-// registerRoutes 把插件路由加入全局索引；冲突时返回结构化错误。
+// registerRoutes 把插件路由加入全局索引（形状表 + 可匹配索引）；冲突时返回
+// 结构化错误。
 //
 // 冲突判定 = 方法 + 归一化路径形状（relay-06 §2.2）：`:id` 与 `:task_id`
 // 形状相同，视为同一路由。先到先得（key 升序），后到插件整插件失败——
-// 路由歧义没有安全的运行时消解方式。
-func registerRoutes(index map[string]string, plugin *CompiledPlugin) Issues {
+// 路由歧义没有安全的运行时消解方式。冲突必须在**注册期**解决而不是让
+// RouteIndex 在匹配时猜：运行期消歧会让同一条请求在不同快照/不同节点上
+// 命中不同插件，计费与产物归属随之分裂。
+//
+// 两个索引同批提交、同批回滚：routes 用于诊断/形状去重，routeIndex 供 HTTP
+// 面分发；漏回滚任意一个都会让「已判定失败」的插件仍然可达或仍显示占用。
+func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *CompiledPlugin) Issues {
 	var issues Issues
 	seen := make(map[string]struct{}, len(plugin.Manifest().Routes))
 	for idx, route := range plugin.Manifest().Routes {
@@ -532,6 +563,7 @@ func registerRoutes(index map[string]string, plugin *CompiledPlugin) Issues {
 		}
 		seen[shape] = struct{}{}
 		index[shape] = plugin.Key
+		routeIndex.add(plugin.Key, route)
 	}
 	if issues.HasErrors() {
 		// 冲突插件已写入的部分索引必须回滚，否则会把「失败的插件」
@@ -541,6 +573,7 @@ func registerRoutes(index map[string]string, plugin *CompiledPlugin) Issues {
 				delete(index, shape)
 			}
 		}
+		routeIndex.removePlugin(plugin.Key)
 		return issues
 	}
 	return nil

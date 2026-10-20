@@ -241,6 +241,14 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		settings = assembly.Config
 	}
 
+	// 插件原生路由（T6c-a）的执行面就是任务数据面 handler：两者共用同一个
+	// 插件管理器与同一份提交/查询实现，不能各自持有一个 Manager 实例。
+	// 显式判空避免 typed-nil 接口陷阱（*TasksHandler(nil) 装进接口后 != nil）。
+	var nativeRoutes httpapi.NativeRouteDispatcher
+	if assembly != nil && assembly.Tasks != nil {
+		nativeRoutes = assembly.Tasks
+	}
+
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
 	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
@@ -254,6 +262,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		TrustedProxies: cfg.TrustedProxies,
 		// /pg/* 会话路径的分组回源：与 /api/status 的 usable_groups 同口径。
 		UserGroups: store.NewUserGroupsRepo(sqlDB),
+		// 原生路由索引/分发（manifest routes[] → /v1 兜底）。
+		NativeRoutes: nativeRoutes,
 	})
 	relayHandler.Register(mux)
 	// 任务数据面（M6d Task 6a）：/v1/tasks* 与中继共用同一 RelayAuth
