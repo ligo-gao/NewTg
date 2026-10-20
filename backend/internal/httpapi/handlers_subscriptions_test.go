@@ -42,6 +42,9 @@ type fakeSubscriptionRepo struct {
 	resets         []resetCall
 	preConsume     map[string]store.SubscriptionPreConsume
 	writeCallCount int
+	// leakForeign 模拟仓储实现漂移：ListSubscriptionsByUser 故意返回他人实例。
+	// handler 仍必须按归属过滤后再算 total/分页（L2 防御用例）。
+	leakForeign bool
 }
 
 type resetCall struct {
@@ -256,7 +259,7 @@ func (r *fakeSubscriptionRepo) ListSubscriptionsByUser(_ context.Context, userID
 	defer r.mu.Unlock()
 	out := make([]store.Subscription, 0, len(r.subs))
 	for _, sub := range r.subs {
-		if sub.UserID == userID {
+		if r.leakForeign || sub.UserID == userID {
 			out = append(out, *sub)
 		}
 	}
@@ -510,6 +513,7 @@ func TestSubscriptionEndpointPermissions(t *testing.T) {
 		{"end user cannot list plans", endUser(9), http.MethodGet, "/api/subscription-plans", nil, 403},
 		{"unauthenticated（authz 层失败关闭）", nil, http.MethodGet, "/api/subscription-plans", nil, 403},
 		{"end user can list available plans", endUser(9), http.MethodGet, "/api/subscription/plans", nil, 200},
+		{"unauthenticated available plans（handler fail-closed）", nil, http.MethodGet, "/api/subscription/plans", nil, 401},
 		{"end user cannot read another user's subscriptions via admin path", endUser(9), http.MethodGet, "/api/users/1/subscriptions", nil, 403},
 		{"restricted admin with users:read can read user subscriptions", adminRestricted(rbac.PermUsersRead), http.MethodGet, "/api/users/1/subscriptions", nil, 200},
 		{"admin without users:read cannot read user subscriptions", adminRestricted(rbac.PermSettingsManage), http.MethodGet, "/api/users/1/subscriptions", nil, 403},
@@ -662,6 +666,32 @@ func TestSubscriptionPlanCRUDAndValidation(t *testing.T) {
 			t.Fatalf("enable = %d", rr.Code)
 		}
 	})
+
+	// 未知字段在写动作上一律 403（字段白名单失败关闭），且请求不得触达 handler。
+	t.Run("PUT/DELETE/启停的未知字段 403", func(t *testing.T) {
+		writeCalls := env.repo.writeCallCount
+		unknown := func() map[string]any { return map[string]any{"unexpected": true} }
+		cases := []struct {
+			name   string
+			method string
+			path   string
+			body   map[string]any
+		}{
+			{"PUT", http.MethodPut, fmt.Sprintf("/api/subscription-plans/%d", created.ID), unknown()},
+			{"DELETE", http.MethodDelete, fmt.Sprintf("/api/subscription-plans/%d", created.ID), unknown()},
+			{"enable", http.MethodPost, fmt.Sprintf("/api/subscription-plans/%d/enable", created.ID), unknown()},
+			{"disable", http.MethodPost, fmt.Sprintf("/api/subscription-plans/%d/disable", created.ID), unknown()},
+		}
+		for _, tc := range cases {
+			rr := env.do(t, adminFull(), tc.method, tc.path, tc.body, nil)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("%s 未知字段 = %d，期望 403（body=%s）", tc.name, rr.Code, rr.Body.String())
+			}
+		}
+		if env.repo.writeCallCount != writeCalls {
+			t.Fatalf("被字段层拒绝的请求不得写库：%d → %d", writeCalls, env.repo.writeCallCount)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +753,49 @@ func TestSubscriptionPlanListPagination(t *testing.T) {
 // 删除引用保护 / reset-quota
 // ---------------------------------------------------------------------------
 
+// TestResetQuotaOptionalBodyUsesContentNotContentLength 钉死 L4：
+// body 是否存在的判据必须是读取后的实际内容，而不是 ContentLength。
+// chunked/未知长度（-1）的空 body 与纯空白 body 都应视为「无 body」，
+// 照常重置且 advance_next_reset 取默认 false。
+func TestResetQuotaOptionalBodyUsesContentNotContentLength(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	rr := env.do(t, adminFull(), http.MethodPost, "/api/subscription-plans", validPlanBody("reset-empty"), nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var plan subscriptionPlanView
+	_ = json.Unmarshal(rr.Body.Bytes(), &plan)
+
+	cases := []struct {
+		name    string
+		body    io.Reader
+		length  int64
+		wantAdv bool
+	}{
+		{"chunked/未知长度的空 body", http.NoBody, -1, false},
+		{"纯空白 body", strings.NewReader("  \n\t "), 6, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(env.repo.resets)
+			req := httptest.NewRequest(http.MethodPost,
+				fmt.Sprintf("/api/subscription-plans/%d/reset-quota", plan.ID), tc.body)
+			req.ContentLength = tc.length
+			req = req.WithContext(auth.WithPrincipal(req.Context(), adminFull()))
+			rr := serve(env.router, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+			}
+			if len(env.repo.resets) != before+1 {
+				t.Fatalf("reset 调用次数 = %d，期望 %d", len(env.repo.resets), before+1)
+			}
+			if got := env.repo.resets[len(env.repo.resets)-1]; got.advance != tc.wantAdv {
+				t.Fatalf("advance = %v，期望 %v", got.advance, tc.wantAdv)
+			}
+		})
+	}
+}
+
 func TestSubscriptionPlanReferenceProtectionAndReset(t *testing.T) {
 	env := newSubscriptionTestEnv(t)
 	rr := env.do(t, adminFull(), http.MethodPost, "/api/subscription-plans", validPlanBody("guarded"), nil)
@@ -771,8 +844,25 @@ func TestSubscriptionPlanReferenceProtectionAndReset(t *testing.T) {
 	}
 
 	// 审计 detail 不含整行（无 title/price/grant）；只允许 id/plan_key/count。
-	if env.repo.writeCallCount == 0 {
-		t.Fatal("写计数异常")
+	// 用真实审计内容断言，而不是恒真的 writeCallCount==0 之类的计数检查。
+	args := env.audit.last(t)
+	raw, _ := args[9].([]byte)
+	if raw == nil {
+		if text, ok := args[9].(string); ok {
+			raw = []byte(text)
+		}
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatalf("审计 detail 不是 JSON: %v（%v）", err, args[9])
+	}
+	if detail["action"] != audit.ActionSubscriptionPlanResetQuota || detail["affected"] != float64(1) {
+		t.Fatalf("审计 detail = %v，期望 reset_quota/affected=1", detail)
+	}
+	for _, forbidden := range []string{"title", "price_amount", "grant_credits"} {
+		if _, present := detail[forbidden]; present {
+			t.Fatalf("审计 detail 不得含整行字段 %q: %v", forbidden, detail)
+		}
 	}
 }
 
@@ -876,6 +966,138 @@ func TestUserSubscriptionIsolation(t *testing.T) {
 	}
 }
 
+// TestUserSubscriptionAmountRemainPaginationAndOwnership 覆盖 D5b 收口项：
+//   - M1：amount_total=0（无限额度）时 amount_remain 整个省略；有限额度时
+//     必现且值为 total-used（最小 0）；
+//   - 用户侧分页：total 是全集计数，各页 items 不重叠、不丢行；
+//   - L2：仓储漂移（返回他人实例）时先按归属过滤再算 total/分页，
+//     保证 total == len(items) 且绝不下发他人数据。
+func TestUserSubscriptionAmountRemainPaginationAndOwnership(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	rr := env.do(t, adminFull(), http.MethodPost, "/api/subscription-plans", validPlanBody("remain-plan"), nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create plan = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var plan subscriptionPlanView
+	_ = json.Unmarshal(rr.Body.Bytes(), &plan)
+
+	base := time.Now().UTC()
+	seed := func(userID, total, used int64) int64 {
+		sub, err := env.repo.CreateSubscription(context.Background(), store.SubscriptionCreateInput{
+			UserID: userID, PlanID: plan.ID, PlanTitleSnapshot: "Remain",
+			StartAt: base, EndAt: base.Add(30 * 24 * time.Hour),
+			AmountTotal: total, AmountUsed: used,
+			Currency: "CNY", PeriodDays: 30, ResetOnRenew: true,
+		})
+		if err != nil {
+			t.Fatalf("seed subscription: %v", err)
+		}
+		return sub.ID
+	}
+	unlimitedID := seed(7, 0, 0) // 无限额度：没有分母
+	for i := 0; i < 4; i++ {
+		seed(7, 100, 10)
+	}
+	foreignID := seed(9, 100, 10)
+
+	rr = env.do(t, endUser(7), http.MethodGet, "/api/subscriptions?page_size=100", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("my subscriptions = %d", rr.Code)
+	}
+	var rawList struct {
+		Items []map[string]any `json:"items"`
+		Total int64            `json:"total"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &rawList); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if rawList.Total != 5 || len(rawList.Items) != 5 {
+		t.Fatalf("total/items = %d/%d，期望 5/5", rawList.Total, len(rawList.Items))
+	}
+	sawUnlimited, sawLimited := false, false
+	for _, item := range rawList.Items {
+		if int64(item["id"].(float64)) == unlimitedID {
+			sawUnlimited = true
+			if _, present := item["amount_remain"]; present {
+				t.Fatalf("amount_total=0 时 amount_remain 必须省略: %v", item)
+			}
+			continue
+		}
+		sawLimited = true
+		remain, present := item["amount_remain"]
+		if !present {
+			t.Fatalf("有限额度必须返回 amount_remain: %v", item)
+		}
+		if remain != float64(90) {
+			t.Fatalf("amount_remain = %v，期望 90（100-10）", remain)
+		}
+	}
+	if !sawUnlimited || !sawLimited {
+		t.Fatalf("用例未覆盖两种额度形态：unlimited=%v limited=%v", sawUnlimited, sawLimited)
+	}
+
+	// 分页：3 页（2+2+1），每页 total 恒为 5，行不重叠也不遗漏。
+	seen := map[float64]bool{}
+	for page := 1; page <= 3; page++ {
+		rr = env.do(t, endUser(7), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions?p=%d&page_size=2", page), nil, nil)
+		var view userSubscriptionListView
+		if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode page %d: %v", page, err)
+		}
+		want := 2
+		if page == 3 {
+			want = 1
+		}
+		if view.Total != 5 || len(view.Items) != want {
+			t.Fatalf("page %d total/items = %d/%d，期望 5/%d", page, view.Total, len(view.Items), want)
+		}
+		for _, item := range view.Items {
+			if seen[float64(item.ID)] {
+				t.Fatalf("分页出现重复行 id=%d", item.ID)
+			}
+			seen[float64(item.ID)] = true
+		}
+	}
+	if len(seen) != 5 {
+		t.Fatalf("分页共返回 %d 行，期望 5", len(seen))
+	}
+
+	// L2 防御：仓储返回他人实例时，管理侧与用户侧都必须先过滤再计数。
+	env.repo.leakForeign = true
+	rr = env.do(t, adminRestricted(rbac.PermUsersRead), http.MethodGet,
+		"/api/users/7/subscriptions?page_size=100", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin user list = %d", rr.Code)
+	}
+	var managed adminSubscriptionListView
+	if err := json.Unmarshal(rr.Body.Bytes(), &managed); err != nil {
+		t.Fatalf("decode managed: %v", err)
+	}
+	if managed.Total != int64(len(managed.Items)) || managed.Total != 5 {
+		t.Fatalf("管理侧 total/items = %d/%d，期望 5/5（先过滤后计数）", managed.Total, len(managed.Items))
+	}
+	for _, item := range managed.Items {
+		if item.UserID != 7 {
+			t.Fatalf("管理侧泄漏他人实例: %+v", item)
+		}
+	}
+
+	rr = env.do(t, endUser(7), http.MethodGet, "/api/subscriptions?page_size=100", nil, nil)
+	var mine userSubscriptionListView
+	if err := json.Unmarshal(rr.Body.Bytes(), &mine); err != nil {
+		t.Fatalf("decode mine: %v", err)
+	}
+	if mine.Total != int64(len(mine.Items)) || mine.Total != 5 {
+		t.Fatalf("用户侧 total/items = %d/%d，期望 5/5（先过滤后计数）", mine.Total, len(mine.Items))
+	}
+	for _, item := range mine.Items {
+		if item.ID == foreignID {
+			t.Fatalf("用户侧泄漏他人实例 id=%d", foreignID)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 偏好归一 / 购买占位
 // ---------------------------------------------------------------------------
@@ -901,6 +1123,9 @@ func TestNormalizeBillingPreference(t *testing.T) {
 func TestPurchaseReturns501WithoutWrites(t *testing.T) {
 	env := newSubscriptionTestEnv(t)
 	before := env.repo.writeCallCount
+	// 除写调用计数外，直接钉死两张与购买路径最相关的表：套餐与预扣记录。
+	beforePlans := len(env.repo.plans)
+	beforePreConsume := len(env.repo.preConsume)
 
 	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
 		map[string]any{"plan_id": 1}, map[string]string{"Idempotency-Key": "purchase-1"})
@@ -917,6 +1142,10 @@ func TestPurchaseReturns501WithoutWrites(t *testing.T) {
 	if env.repo.writeCallCount != before {
 		t.Fatalf("购买占位必须零写入")
 	}
+	if len(env.repo.plans) != beforePlans || len(env.repo.preConsume) != beforePreConsume {
+		t.Fatalf("购买占位不得改动 subscription_plans / subscription_pre_consume_records：plans %d→%d，preconsume %d→%d",
+			beforePlans, len(env.repo.plans), beforePreConsume, len(env.repo.preConsume))
+	}
 
 	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
 		map[string]any{"plan_id": 1}, nil)
@@ -931,6 +1160,9 @@ func TestPurchaseReturns501WithoutWrites(t *testing.T) {
 	}
 	if env.repo.writeCallCount != before {
 		t.Fatalf("被拒绝的购买请求不得写库")
+	}
+	if len(env.repo.plans) != beforePlans || len(env.repo.preConsume) != beforePreConsume {
+		t.Fatalf("被拒绝的购买请求不得改动套餐/预扣表")
 	}
 }
 
@@ -956,6 +1188,37 @@ func TestSubscriptionPlanCreateIdempotency(t *testing.T) {
 	rr3 := env.do(t, adminFull(), http.MethodPost, "/api/subscription-plans", different, headers)
 	if rr3.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("同 key 不同 body = %d，期望 422", rr3.Code)
+	}
+
+	// 未知字段 + Idempotency-Key：字段层 403 必须在幂等层之前生效——
+	// 既不能写库，也不能把 403 结果或进行中锁留在 Redis（否则同 key 的
+	// 后续合法请求会被回放错误或被锁挡住）。
+	bad := validPlanBody("idem-bad")
+	bad["price_amount_yuan"] = 99
+	badKey := "create-bad"
+	writeCalls := env.repo.writeCallCount
+	rr4 := env.do(t, adminFull(), http.MethodPost, "/api/subscription-plans", bad,
+		map[string]string{"Idempotency-Key": badKey})
+	if rr4.Code != http.StatusForbidden {
+		t.Fatalf("未知字段 + Idempotency-Key = %d，期望 403（body=%s）", rr4.Code, rr4.Body.String())
+	}
+	cacheKey := fmt.Sprintf("newtg:idem:subscription_plan:create:%d:%s", int64(1), badKey)
+	exists, err := env.rdb.Exists(context.Background(), cacheKey).Result()
+	if err != nil {
+		t.Fatalf("exists cache: %v", err)
+	}
+	if exists != 0 {
+		t.Fatalf("403 响应不得进入幂等缓存（key=%s）", cacheKey)
+	}
+	lockExists, err := env.rdb.Exists(context.Background(), cacheKey+":lock").Result()
+	if err != nil {
+		t.Fatalf("exists lock: %v", err)
+	}
+	if lockExists != 0 {
+		t.Fatalf("被拒绝的请求不得遗留幂等锁")
+	}
+	if env.repo.writeCallCount != writeCalls {
+		t.Fatalf("被字段层拒绝的创建请求不得写库")
 	}
 }
 

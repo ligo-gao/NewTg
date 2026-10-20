@@ -292,15 +292,19 @@ type userSubscriptionView struct {
 	NextResetAt       *time.Time `json:"next_reset_at"`
 	AmountTotal       int64      `json:"amount_total"`
 	AmountUsed        int64      `json:"amount_used"`
-	AmountRemain      *int64     `json:"amount_remain"`
-	AutoRenew         bool       `json:"auto_renew"`
-	CancelAtPeriodEnd bool       `json:"cancel_at_period_end"`
-	PeriodDays        int32      `json:"period_days"`
-	GraceDays         int32      `json:"grace_days"`
-	ModelScope        []string   `json:"model_scope"`
-	ConcurrencyLimit  *int32     `json:"concurrency_limit"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// 【omitempty 是契约的一部分】amount_total=0 表示无限额度，此时没有分母，
+	// amount_remain 必须整个省略而不是返回 0/null（user.yaml/admin.yaml 同口径）。
+	// 指针 nil + omitempty 正好覆盖 amountRemain 的 nil 分支；有限额度时指针
+	// 非 nil，字段照常输出（含 0）。
+	AmountRemain      *int64    `json:"amount_remain,omitempty"`
+	AutoRenew         bool      `json:"auto_renew"`
+	CancelAtPeriodEnd bool      `json:"cancel_at_period_end"`
+	PeriodDays        int32     `json:"period_days"`
+	GraceDays         int32     `json:"grace_days"`
+	ModelScope        []string  `json:"model_scope"`
+	ConcurrencyLimit  *int32    `json:"concurrency_limit"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // adminSubscriptionView 额外带 user_id 与订单/价格列（管理对账口径）。
@@ -948,17 +952,30 @@ func (h *SubscriptionHandlers) handleResetPlanQuota(w http.ResponseWriter, r *ht
 	}
 	advance := false
 	// body 可选：字段策略已保证只有 advance_next_reset 能出现。
-	if r.ContentLength != 0 {
-		var payload struct {
-			AdvanceNextReset *bool `json:"advance_next_reset"`
-		}
-		if err := readAuthJSON(r, &payload); err != nil {
+	//
+	// 【为什么不用 ContentLength 判定】ContentLength 是客户端可省略的提示：
+	// chunked 编码或未知长度时它是 -1，空 body 会被误判成「有 body」并返回 400；
+	// 反过来伪造 ContentLength>0 的空 body 也会把「无 body」变成解析错误。
+	// 唯一可靠口径是读取后的实际内容：TrimSpace 为空即视为无 body。
+	if r.Body != nil {
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAuthBodyBytes))
+		if err != nil {
 			writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-				"advance_next_reset must be a boolean")
+				"unable to read request body")
 			return
 		}
-		if payload.AdvanceNextReset != nil {
-			advance = *payload.AdvanceNextReset
+		if len(strings.TrimSpace(string(raw))) != 0 {
+			var payload struct {
+				AdvanceNextReset *bool `json:"advance_next_reset"`
+			}
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+					"advance_next_reset must be a boolean")
+				return
+			}
+			if payload.AdvanceNextReset != nil {
+				advance = *payload.AdvanceNextReset
+			}
 		}
 	}
 	plan, err := h.repo.GetPlan(r.Context(), id)
@@ -993,15 +1010,21 @@ func (h *SubscriptionHandlers) handleListUserSubscriptions(w http.ResponseWriter
 		h.writeRepoError(w, "list user subscriptions", err)
 		return
 	}
-	total := len(subs)
-	start, end := paginateBounds(total, page, pageSize)
-	items := make([]adminSubscriptionView, 0, end-start)
-	for _, sub := range subs[start:end] {
+	// 数据层已按 user_id 过滤；这里先做一次归属断言再计算 total/分页，
+	// 防止未来仓储实现漂移把他人数据带进 users:read 管理视图。顺序很重要：
+	// 若先分页再在循环里 continue，total 会把被剔除的行也算进去，出现
+	// total != len(items) 且分页错位（同一页可能只剩 0 条）。
+	owned := make([]store.Subscription, 0, len(subs))
+	for _, sub := range subs {
 		if sub.UserID != userID {
-			// 数据层已按 user_id 过滤；这里再做一次归属断言，防止未来仓储
-			// 实现漂移把他人数据带进 users:read 管理视图。
 			continue
 		}
+		owned = append(owned, sub)
+	}
+	total := len(owned)
+	start, end := paginateBounds(total, page, pageSize)
+	items := make([]adminSubscriptionView, 0, end-start)
+	for _, sub := range owned[start:end] {
 		items = append(items, newAdminSubscriptionView(sub))
 	}
 	writeJSON(w, http.StatusOK, adminSubscriptionListView{
@@ -1014,6 +1037,12 @@ func (h *SubscriptionHandlers) handleListUserSubscriptions(w http.ResponseWriter
 // ---------------------------------------------------------------------------
 
 func (h *SubscriptionHandlers) handleListAvailablePlans(w http.ResponseWriter, r *http.Request) {
+	// 该端点没有 authz 字段/权限 wrapper（可购列表不按用户分片），因此必须
+	// 自己 fail-closed：中间件缺失或顺序错误时绝不能把零值身份当匿名放行。
+	// 与其它用户端点同一约定（adminPrincipal → 401）。
+	if _, ok := adminPrincipal(w, r); !ok {
+		return
+	}
 	plans, err := h.repo.ListPlans(r.Context(), "enabled")
 	if err != nil {
 		h.writeRepoError(w, "list available subscription plans", err)
@@ -1042,13 +1071,19 @@ func (h *SubscriptionHandlers) handleListMySubscriptions(w http.ResponseWriter, 
 		h.writeRepoError(w, "list my subscriptions", err)
 		return
 	}
-	total := len(subs)
-	start, end := paginateBounds(total, page, pageSize)
-	items := make([]userSubscriptionView, 0, end-start)
-	for _, sub := range subs[start:end] {
+	// 同管理侧：先按 Principal 归属过滤再算 total/分页，保证
+	// total == len(items)（单页场景）不会被未来的仓储漂移破坏。
+	owned := make([]store.Subscription, 0, len(subs))
+	for _, sub := range subs {
 		if sub.UserID != p.UserID {
 			continue
 		}
+		owned = append(owned, sub)
+	}
+	total := len(owned)
+	start, end := paginateBounds(total, page, pageSize)
+	items := make([]userSubscriptionView, 0, end-start)
+	for _, sub := range owned[start:end] {
 		items = append(items, newUserSubscriptionView(sub))
 	}
 	writeJSON(w, http.StatusOK, userSubscriptionListView{
@@ -1063,17 +1098,21 @@ func (h *SubscriptionHandlers) handleListMySubscriptions(w http.ResponseWriter, 
 // normalizeBillingPreference 实现 §4.2 的空值/未知值归一：四个冻结字面量
 // 以外的一切输入（含空串）都落到默认 subscription_first。不做 422 是设计
 // 裁决——偏好是幂等的用户设置，旧客户端或迁移遗留值不应让设置页永久报错。
+//
+// 【单一真源】文本 ↔ 枚举的对照表只存在于 store.ParseBillingPreference /
+// BillingPreferenceText（store/enum.go 明确禁止另写 switch 或按下标转换）。
+// 这里本地再写一份四值 switch 会在新增取值时静默漂移，而且一旦有人把
+// contract 枚举误当文本，就会在资金路径上把订阅偏好改写成钱包偏好。
 func normalizeBillingPreference(raw string) string {
-	switch strings.TrimSpace(raw) {
-	case store.BillingPreferenceWalletFirst:
-		return store.BillingPreferenceWalletFirst
-	case store.BillingPreferenceSubscriptionOnly:
-		return store.BillingPreferenceSubscriptionOnly
-	case store.BillingPreferenceWalletOnly:
-		return store.BillingPreferenceWalletOnly
-	default:
+	preference, err := store.ParseBillingPreference(strings.TrimSpace(raw))
+	if err != nil {
 		return store.BillingPreferenceSubscriptionFirst
 	}
+	text, err := store.BillingPreferenceText(preference)
+	if err != nil {
+		return store.BillingPreferenceSubscriptionFirst
+	}
+	return text
 }
 
 func (h *SubscriptionHandlers) handleGetBillingPreference(w http.ResponseWriter, r *http.Request) {

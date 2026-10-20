@@ -34,6 +34,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -43,6 +44,7 @@ type subscriptionIntegrationEnv struct {
 	db     *sql.DB
 	repo   *store.SQLSubscriptionRepo
 	router http.Handler
+	audit  *subAuditExecer
 }
 
 func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
@@ -68,15 +70,17 @@ func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	repo := store.NewSubscriptionRepo(db)
+	capture := &subAuditExecer{}
 	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
-		Repo: repo, DB: db, Redis: rdb, Authz: rbac.NewAuthzMiddleware(), Logger: testLogger(),
+		Repo: repo, DB: db, Redis: rdb, Authz: rbac.NewAuthzMiddleware(),
+		Audit: audit.New(capture), Logger: testLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewSubscriptionHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &subscriptionIntegrationEnv{db: db, repo: repo, router: mux}
+	return &subscriptionIntegrationEnv{db: db, repo: repo, router: mux, audit: capture}
 }
 
 func (e *subscriptionIntegrationEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -104,6 +108,27 @@ func (e *subscriptionIntegrationEnv) do(t *testing.T, principal *auth.Principal,
 
 func subscriptionITKey() string {
 	return fmt.Sprintf("d5b-%d", time.Now().UnixNano())
+}
+
+// subAuditObject 把审计 INSERT 的 jsonb 参数（[]byte 或 string）解码为对象。
+func subAuditObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	var raw []byte
+	switch v := value.(type) {
+	case nil:
+		t.Fatalf("审计 jsonb 参数为空")
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		t.Fatalf("审计 jsonb 参数类型 = %T", value)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("审计 jsonb 解码失败: %v（%s）", err, raw)
+	}
+	return out
 }
 
 func (e *subscriptionIntegrationEnv) insertUser(t *testing.T, role string) int64 {
@@ -326,6 +351,26 @@ func TestSubscriptionIntegrationBillingPreference(t *testing.T) {
 		}
 	}
 
+	// 审计 before/after 必须反映真实迁移：先置 wallet_first，再改 wallet_only，
+	// 最后一条审计的 before 必须是落库前的 wallet_first，而不是请求体原文。
+	for _, input := range []string{"wallet_first", "wallet_only"} {
+		if rr := env.do(t, principal, http.MethodPut, "/api/billing-preference",
+			map[string]any{"preference": input}, nil); rr.Code != http.StatusOK {
+			t.Fatalf("put %q = %d（body=%s）", input, rr.Code, rr.Body.String())
+		}
+	}
+	args := env.audit.last(t)
+	detail := subAuditObject(t, args[9])
+	if detail["action"] != audit.ActionBillingPreferenceUpdate {
+		t.Fatalf("审计 action = %v，期望 %s", detail["action"], audit.ActionBillingPreferenceUpdate)
+	}
+	beforePref := subAuditObject(t, args[10])["preference"]
+	afterPref := subAuditObject(t, args[11])["preference"]
+	if beforePref != store.BillingPreferenceWalletFirst || afterPref != store.BillingPreferenceWalletOnly {
+		t.Fatalf("审计 before/after = %v/%v，期望 %q/%q",
+			beforePref, afterPref, store.BillingPreferenceWalletFirst, store.BillingPreferenceWalletOnly)
+	}
+
 	// 另一用户的偏好不受影响。
 	otherID := env.insertUser(t, "user")
 	var other string
@@ -363,8 +408,22 @@ func TestSubscriptionIntegrationUserIsolationAndPurchaseZeroWrite(t *testing.T) 
 		}
 	}
 
+	// 用户侧分页：total 是全集（含终态），items 只含当前页。
+	rr = env.do(t, &auth.Principal{UserID: userA, Role: rbac.RoleUser},
+		http.MethodGet, "/api/subscriptions?p=2&page_size=1", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("paged my subscriptions = %d", rr.Code)
+	}
+	var page2 userSubscriptionListView
+	_ = json.Unmarshal(rr.Body.Bytes(), &page2)
+	if page2.Total != 2 || len(page2.Items) != 1 || page2.Page != 2 || page2.PageSize != 1 {
+		t.Fatalf("用户侧分页 = %+v，期望 total=2 page=2 size=1 items=1", page2)
+	}
+
 	beforeSubs := env.countRows(t, "subscriptions")
 	beforeOrders := env.countRows(t, "orders")
+	beforePlans := env.countRows(t, "subscription_plans")
+	beforePreConsume := env.countRows(t, "subscription_pre_consume_records")
 	rr = env.do(t, &auth.Principal{UserID: userA, Role: rbac.RoleUser},
 		http.MethodPost, "/api/subscription/purchase",
 		map[string]any{"plan_id": planID}, map[string]string{"Idempotency-Key": key})
@@ -373,6 +432,10 @@ func TestSubscriptionIntegrationUserIsolationAndPurchaseZeroWrite(t *testing.T) 
 	}
 	if env.countRows(t, "subscriptions") != beforeSubs || env.countRows(t, "orders") != beforeOrders {
 		t.Fatalf("购买占位不得写 subscriptions/orders")
+	}
+	if env.countRows(t, "subscription_plans") != beforePlans ||
+		env.countRows(t, "subscription_pre_consume_records") != beforePreConsume {
+		t.Fatalf("购买占位不得写 subscription_plans / subscription_pre_consume_records")
 	}
 }
 
