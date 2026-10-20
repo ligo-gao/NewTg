@@ -123,6 +123,12 @@ const (
 	ActionDeployExtend = "deploy.extend"
 	ActionDeployDelete = "deploy.delete"
 
+	// Task 5c GPU 站点成本账（billing-03 §5.9.4）。两类事件都由 worker
+	// 写入，actor=0（系统动作）；detail 只含 segment_id/deployment_id、
+	// 积分与脱敏 provider 状态，绝不含密钥。
+	ActionDeployBillingSettle    = "deploy.billing_settle"
+	ActionDeployBillingReconcile = "deploy.billing_reconcile"
+
 	// M6d 任务插件管理面（modules-08 §3.10 / relay-06 §2.6）。全部归 operation：
 	// 上传/激活/删除版本与市场操作都是管理配置变更。detail 只允许 key/version/
 	// source_hash 前 8 位这类非秘密事实；source_text 与市场包体绝不进入审计
@@ -244,13 +250,15 @@ var actionCategories = map[string]string{
 
 	ActionNotificationTemplateUpdate: categoryOperation,
 
-	ActionDeploySettingsUpdate: categoryOperation,
-	ActionDeployConnectionTest: categoryOperation,
-	ActionDeployCreate:         categoryOperation,
-	ActionDeployUpdate:         categoryOperation,
-	ActionDeployRename:         categoryOperation,
-	ActionDeployExtend:         categoryOperation,
-	ActionDeployDelete:         categoryOperation,
+	ActionDeploySettingsUpdate:   categoryOperation,
+	ActionDeployConnectionTest:   categoryOperation,
+	ActionDeployCreate:           categoryOperation,
+	ActionDeployUpdate:           categoryOperation,
+	ActionDeployRename:           categoryOperation,
+	ActionDeployExtend:           categoryOperation,
+	ActionDeployDelete:           categoryOperation,
+	ActionDeployBillingSettle:    categoryOperation,
+	ActionDeployBillingReconcile: categoryOperation,
 
 	ActionPluginUpload:             categoryOperation,
 	ActionPluginActivate:           categoryOperation,

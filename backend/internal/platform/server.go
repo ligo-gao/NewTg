@@ -18,11 +18,13 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
+	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rankings"
@@ -437,6 +439,30 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
 		store.NewSubscriptionRepo(sqlDB), sqlDB))
 
+	// C2 GPU 站点成本账（Task 5c / G-OPS-012）：账本只读写
+	// deployment_billing_segments / deployment_cost_facts，**不触碰任何用户
+	// 资金入口**。审计走日志库（deploy.billing_settle / deploy.billing_reconcile）。
+	// 账本在这里构造（不启动 goroutine），失败路径只需关闭连接池。
+	deployAudit := audit.New(sqlLogs)
+	deployLedger, err := deploybilling.NewLedger(deploybilling.LedgerConfig{
+		DB:       sqlDB,
+		Provider: deploybilling.ProviderFromSettings(center, cipher, log),
+		Logger:   log,
+		Audit: func(ctx context.Context, action string, detail map[string]any) error {
+			raw, marshalErr := json.Marshal(detail)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			return deployAudit.Log(ctx, action, 0, raw)
+		},
+	})
+	if err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: deploy billing ledger: %w", err)
+	}
+
 	// 任务轮询（M6d T6b）：装配插件运行时 + async_task_poll 循环。失败即
 	// 阻止 worker 上线——没有轮询器时任务会一直停在 submitted，预扣永久冻结。
 	stopTaskPoller, err := startTaskPoller(ctx, cfg, sqlDB, center, engine, log)
@@ -581,6 +607,25 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		})
 	}()
 
+	// C2 GPU 计费 worker（N16）：60s 对账 + 每小时记账。独立取消 + WaitGroup，
+	// 停机时先于连接池关闭退出。provider 每轮按配置中心快照重建（密钥可轮换）；
+	// Redis 租约只做跨副本节流，SQL 唯一约束才是幂等真源。记账/对账失败只
+	// 记录并下一轮重试，不阻断其它 worker。
+	deployCtx, cancelDeploy := context.WithCancel(ctx)
+	var deployWG sync.WaitGroup
+	deployWG.Add(1)
+	go func() {
+		defer deployWG.Done()
+		if err := deploybilling.RunLoop(deployCtx, deploybilling.WorkerDeps{
+			Ledger:   deployLedger,
+			Provider: deploybilling.ProviderFromSettings(center, cipher, log),
+			Redis:    rr.client,
+			Logger:   log,
+		}); err != nil {
+			log.Error("deploy billing worker exited with error", "error", err)
+		}
+	}()
+
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,
 		Recoverer:             engine,
@@ -599,6 +644,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	subscriptionsWG.Wait()
 	cancelWebhook()
 	webhookWG.Wait()
+	cancelDeploy()
+	deployWG.Wait()
 	if runErr == nil {
 		runErr = expiryErr
 	}
