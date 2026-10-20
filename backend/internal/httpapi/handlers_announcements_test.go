@@ -35,6 +35,7 @@ import (
 type fakeAnnouncementRepo struct {
 	createFn     func(context.Context, store.AnnouncementInput, int64) (store.AnnouncementMutation, error)
 	getFn        func(context.Context, string) (store.Announcement, error)
+	getPublicFn  func(context.Context, string, time.Time) (store.Announcement, error)
 	updateFn     func(context.Context, string, store.AnnouncementInput, int64) (store.AnnouncementMutation, error)
 	listFn       func(context.Context, store.AnnouncementFilter) ([]store.Announcement, int64, error)
 	publishFn    func(context.Context, string, int64) (store.AnnouncementMutation, error)
@@ -54,6 +55,13 @@ func (f *fakeAnnouncementRepo) Create(ctx context.Context, in store.Announcement
 func (f *fakeAnnouncementRepo) Get(ctx context.Context, id string) (store.Announcement, error) {
 	if f.getFn != nil {
 		return f.getFn(ctx, id)
+	}
+	return store.Announcement{}, store.ErrAnnouncementNotFound
+}
+
+func (f *fakeAnnouncementRepo) GetPublic(ctx context.Context, id string, now time.Time) (store.Announcement, error) {
+	if f.getPublicFn != nil {
+		return f.getPublicFn(ctx, id, now)
 	}
 	return store.Announcement{}, store.ErrAnnouncementNotFound
 }
@@ -147,6 +155,9 @@ func newAnnouncementTestHandlers(t *testing.T, cfg AnnouncementHandlerConfig) (*
 	}
 	mux := http.NewServeMux()
 	h.Register(mux)
+	// 单测 mux 同时承载受保护与公开路由：生产里两者分处 protected 子树与根
+	// mux，但 ServeMux 的选择语义一致（精确模式优先），这里无需另建 Router。
+	h.RegisterPublic(mux)
 	return h, mux
 }
 
@@ -497,9 +508,10 @@ func TestAnnouncementPublishWebhookPayload(t *testing.T) {
 			t.Fatalf("payload 缺少 %q：%s", key, webhook.payloads[0])
 		}
 	}
-	// L3：公告详情页由 D7b 实现；那之前 url 回站点根，避免 webhook 指向 404。
-	if payload["url"] != "https://gw.example.com/" {
-		t.Fatalf("url = %v，want 站点根", payload["url"])
+	// D7b：详情页已落地，url 直接指向公告详情（基址末尾的 / 被剥掉）。
+	wantURL := "https://gw.example.com/announcements/11111111-1111-4111-8111-111111111111"
+	if payload["url"] != wantURL {
+		t.Fatalf("url = %v，want %s", payload["url"], wantURL)
 	}
 	if payload["announcement_id"] != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("announcement_id = %v", payload["announcement_id"])
@@ -669,5 +681,130 @@ func TestAnnouncementAdminWriteRateLimited(t *testing.T) {
 	}
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("超限后 = %d，want 429", last)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 公开详情（D7b）
+// ---------------------------------------------------------------------------
+
+func TestAnnouncementPublicDetailRendersSanitizedHTML(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	var gotID string
+	var gotNow time.Time
+	repo := &fakeAnnouncementRepo{getPublicFn: func(_ context.Context, got string, now time.Time) (store.Announcement, error) {
+		gotID, gotNow = got, now
+		a := sampleAnnouncement()
+		a.ID = id
+		// 原始 HTML 与危险链接必须由渲染器降级，不得出现在 content_html 里。
+		a.Content = "## Window\n\n[bad](javascript:alert(1))\n\n<script>alert(1)</script>"
+		return a, nil
+	}}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{Repo: repo})
+
+	got := doAnnouncementRequest(t, mux, nil, http.MethodGet,
+		"/api/announcements/public/"+id, nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("公开详情 = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	if gotID != id {
+		t.Fatalf("repo id = %q，want %q", gotID, id)
+	}
+	if !gotNow.Equal(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("now = %v，want 冻结时钟", gotNow)
+	}
+	if cc := got.Header().Get("Cache-Control"); cc != publicAnnouncementCacheControl {
+		t.Fatalf("Cache-Control = %q，want %q", cc, publicAnnouncementCacheControl)
+	}
+
+	var view map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// 公开投影只含冻结字段：不得泄露管理面状态/正文源文。
+	for _, key := range []string{"id", "title", "category", "content_html", "published_at", "expire_at"} {
+		if _, ok := view[key]; !ok {
+			t.Fatalf("响应缺少 %q：%s", key, got.Body.String())
+		}
+	}
+	for _, forbidden := range []string{"content_markdown", "status", "created_by"} {
+		if _, ok := view[forbidden]; ok {
+			t.Fatalf("公开响应不应包含 %q", forbidden)
+		}
+	}
+	html := view["content_html"].(string)
+	if !strings.Contains(html, "<h2>Window</h2>") {
+		t.Fatalf("content_html 未渲染标题：%s", html)
+	}
+	if strings.Contains(html, "<script>") || strings.Contains(html, "javascript:") {
+		t.Fatalf("content_html 未净化：%s", html)
+	}
+}
+
+func TestAnnouncementPublicDetailNotFoundDoesNotLeak(t *testing.T) {
+	repo := &fakeAnnouncementRepo{getPublicFn: func(context.Context, string, time.Time) (store.Announcement, error) {
+		return store.Announcement{}, store.ErrAnnouncementNotFound
+	}}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{Repo: repo})
+	got := doAnnouncementRequest(t, mux, nil, http.MethodGet,
+		"/api/announcements/public/11111111-1111-4111-8111-111111111111", nil)
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("不可见公告 = %d，want 404（body=%s）", got.Code, got.Body.String())
+	}
+	if ct := got.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("Content-Type = %q，want problem+json", ct)
+	}
+	// 不可见响应不得带缓存头：否则共享缓存可能把 404 记住一分钟，
+	// 覆盖刚发布后的首个成功请求。
+	if cc := got.Header().Get("Cache-Control"); cc != "" && cc != "no-store" {
+		t.Fatalf("404 Cache-Control = %q，want 空/no-store", cc)
+	}
+	var problem map[string]any
+	_ = json.Unmarshal(got.Body.Bytes(), &problem)
+	if problem["type"] != problemTypeAnnouncementNotFound {
+		t.Fatalf("type = %v，want %s", problem["type"], problemTypeAnnouncementNotFound)
+	}
+	if detail, ok := problem["detail"]; ok && detail != "" {
+		t.Fatalf("404 不应带解释性 detail（存在性探测）：%v", detail)
+	}
+}
+
+func TestAnnouncementPublicDetailInternalErrorIs500(t *testing.T) {
+	repo := &fakeAnnouncementRepo{getPublicFn: func(context.Context, string, time.Time) (store.Announcement, error) {
+		return store.Announcement{}, errors.New("db down")
+	}}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{Repo: repo})
+	got := doAnnouncementRequest(t, mux, nil, http.MethodGet,
+		"/api/announcements/public/11111111-1111-4111-8111-111111111111", nil)
+	if got.Code != http.StatusInternalServerError {
+		t.Fatalf("存储故障 = %d，want 500", got.Code)
+	}
+	if strings.Contains(got.Body.String(), "db down") {
+		t.Fatalf("500 不应回显内部错误：%s", got.Body.String())
+	}
+}
+
+func TestAnnouncementPublicReadRateLimited(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	repo := &fakeAnnouncementRepo{getPublicFn: func(context.Context, string, time.Time) (store.Announcement, error) {
+		return sampleAnnouncement(), nil
+	}}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{Repo: repo, Redis: rdb})
+	path := "/api/announcements/public/11111111-1111-4111-8111-111111111111"
+
+	for i := 0; i < PublicReadRateLimit; i++ {
+		if got := doAnnouncementRequest(t, mux, nil, http.MethodGet, path, nil); got.Code != http.StatusOK {
+			t.Fatalf("第 %d 次公开读取 = %d，want 200", i+1, got.Code)
+		}
+	}
+	got := doAnnouncementRequest(t, mux, nil, http.MethodGet, path, nil)
+	if got.Code != http.StatusTooManyRequests {
+		t.Fatalf("超限后 = %d，want 429", got.Code)
+	}
+	if got.Header().Get("Retry-After") == "" {
+		t.Fatalf("429 缺少 Retry-After")
 	}
 }

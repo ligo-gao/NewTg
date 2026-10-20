@@ -501,6 +501,48 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  # 公告公开详情（D7b；modules-08 F-08-04 用户侧公开只读视图）。
+  # 匿名可读；不可见状态统一 404，不泄露存在性。
+  /api/announcements/public/{id}:
+    get:
+      tags: [public]
+      operationId: getPublicAnnouncement
+      summary: 生效中公告的公开详情
+      description: |
+        仅 `status='published'` 且 `publish_at<=now` 且（`expire_at` 为 null
+        或 `expire_at>now`）的公告返回 200。draft/offline/未来生效/已过期/
+        已删除/畸形 id 一律返回同一个 404 `problem+json`，公开面不得成为
+        「某 id 是否存在」的探测信道。匿名只读：不写审计、不写已读。
+        B8 限流 60 次/分钟/IP+path；响应 `Cache-Control: public, max-age=60`。
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+          description: 公告 id（UUID）。
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: public, max-age=60
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PublicAnnouncement'
+        '404':
+          description: 公告不可见或不存在（响应完全相同）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/pricing:
     get:
       tags: [public]

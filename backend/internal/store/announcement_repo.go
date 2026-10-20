@@ -102,6 +102,10 @@ type AnnouncementMutation struct {
 type AnnouncementRepo interface {
 	Create(ctx context.Context, in AnnouncementInput, actor int64) (AnnouncementMutation, error)
 	Get(ctx context.Context, id string) (Announcement, error)
+	// GetPublic 返回**对外可见**的公告：status=published 且 publish_at<=now
+	// 且未过期。其它状态/不存在/id 形态非法统一 ErrAnnouncementNotFound——
+	// 公开面不得成为「某 id 是否存在/是否草稿」的探测信道。
+	GetPublic(ctx context.Context, id string, now time.Time) (Announcement, error)
 	Update(ctx context.Context, id string, in AnnouncementInput, actor int64) (AnnouncementMutation, error)
 	List(ctx context.Context, f AnnouncementFilter) ([]Announcement, int64, error)
 	Publish(ctx context.Context, id string, actor int64) (AnnouncementMutation, error)
@@ -238,6 +242,35 @@ func (r *SQLAnnouncementRepo) Get(ctx context.Context, id string) (Announcement,
 			return Announcement{}, ErrAnnouncementNotFound
 		}
 		return Announcement{}, fmt.Errorf("store: get announcement(%s): %w", id, err)
+	}
+	return a, nil
+}
+
+// GetPublic 按公开可见性读取公告（D7b；R-D7-10 的同一组时间谓词）。
+//
+// 【为什么不用 Get + handler 判状态】可见性谓词必须与 ListActive/List 共用
+// 同一份 SQL 口径。分散到 handler 会让「已过期」的边界在第四处出现漂移；
+// 同时公开面不能区分「不存在」与「存在但不可见」，仓储层直接收敛成
+// ErrAnnouncementNotFound，handler 无需知道灰度条件。
+func (r *SQLAnnouncementRepo) GetPublic(ctx context.Context, id string, now time.Time) (Announcement, error) {
+	if !validAnnouncementID(id) {
+		return Announcement{}, ErrAnnouncementNotFound
+	}
+	a, err := scanAnnouncement(r.db.QueryRowContext(ctx, `
+		SELECT `+announcementColumns+`
+		FROM announcements
+		WHERE id = $1 AND status = $2
+		  AND publish_at <= $3
+		  AND (expire_at IS NULL OR expire_at > $3)`,
+		id, AnnouncementStatusPublished, now.UTC()))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Announcement{}, ErrAnnouncementNotFound
+	}
+	if err != nil {
+		if isInvalidTextRepresentation(err) {
+			return Announcement{}, ErrAnnouncementNotFound
+		}
+		return Announcement{}, fmt.Errorf("store: get public announcement(%s): %w", id, err)
 	}
 	return a, nil
 }

@@ -104,6 +104,9 @@ func newAnnouncementIntegrationEnv(t *testing.T) *announcementIntegrationEnv {
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
+	// D7b：公开详情在真实 Router 里挂根 mux；集成环境用同一 ServeMux 同时
+	// 承载两条路径（精确模式优先，语义与生产一致）。
+	handlers.RegisterPublic(mux)
 	adminID := time.Now().UnixNano()%1_000_000_000 + 2_000_000_000
 	env := &announcementIntegrationEnv{db: db, logs: logsDB, repo: repo, router: mux, adminID: adminID}
 	if logsDB != nil {
@@ -900,6 +903,125 @@ func TestAnnouncementIntegrationUpdatePublishNowDelivers(t *testing.T) {
 		}
 		if failed, ok := detail["delivery_failed"].(float64); !ok || failed != 0 {
 			t.Fatalf("PUT 发布审计 delivery_failed = %v，want 0：%s", detail["delivery_failed"], rawDetail)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D7b 公开只读详情
+// ---------------------------------------------------------------------------
+
+// TestAnnouncementIntegrationPublicDetailVisibility 钉死公开详情的可见性矩阵：
+// 已发布且生效 → 200；draft/未来/过期/offline/已删除/不存在/畸形 id → 同一个
+// 404（不泄露存在性）。真实 SQL 谓词由 store.GetPublic 执行。
+func TestAnnouncementIntegrationPublicDetailVisibility(t *testing.T) {
+	env := newAnnouncementIntegrationEnv(t)
+	admin := env.adminPrincipal()
+
+	// 可见：正文含原始 HTML 与 javascript: 链接，公开响应必须已净化。
+	visible := env.createAnnouncement(t, map[string]any{
+		"title":       "Public detail",
+		"content":     "## Heading\n\n[bad](javascript:alert(1))\n\n<script>alert(1)</script>",
+		"publish_now": true,
+	})
+	visibleID := visible["id"].(string)
+	got := env.do(t, nil, http.MethodGet, "/api/announcements/public/"+visibleID, nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("可见公告 = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	if cc := got.Header().Get("Cache-Control"); cc != publicAnnouncementCacheControl {
+		t.Fatalf("Cache-Control = %q，want %q", cc, publicAnnouncementCacheControl)
+	}
+	var pub map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &pub); err != nil {
+		t.Fatalf("decode public detail: %v", err)
+	}
+	for _, key := range []string{"id", "title", "category", "content_html", "published_at", "expire_at"} {
+		if _, ok := pub[key]; !ok {
+			t.Fatalf("公开响应缺少 %q：%s", key, got.Body.String())
+		}
+	}
+	html := pub["content_html"].(string)
+	if !strings.Contains(html, "<h2>Heading</h2>") {
+		t.Fatalf("content_html 未渲染标题：%s", html)
+	}
+	if strings.Contains(html, "<script>") || strings.Contains(html, "javascript:") {
+		t.Fatalf("content_html 未净化：%s", html)
+	}
+	// 公开读取不写已读行（匿名没有用户维度）。
+	var reads int
+	if err := env.db.QueryRow(`SELECT count(*) FROM announcement_reads WHERE announcement_id = $1`,
+		visibleID).Scan(&reads); err != nil {
+		t.Fatalf("count reads: %v", err)
+	}
+	if reads != 0 {
+		t.Fatalf("公开读取写入了 %d 条已读记录", reads)
+	}
+
+	// 草稿不可见。
+	draft := env.createAnnouncement(t, map[string]any{"title": "Draft", "content": "x"})
+
+	// 已发布但 publish_at 在未来。
+	future := env.createAnnouncement(t, map[string]any{
+		"title": "Future", "content": "x", "publish_now": true,
+		"publish_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	})
+
+	// 已发布但已过期。
+	expiredAt := time.Now().UTC().Add(-time.Hour)
+	expired := env.createAnnouncement(t, map[string]any{
+		"title": "Expired", "content": "x", "publish_now": true,
+		"publish_at": expiredAt.Add(-time.Hour).Format(time.RFC3339),
+		"expire_at":  expiredAt.Format(time.RFC3339),
+	})
+
+	// 已下线。
+	offline := env.createAnnouncement(t, map[string]any{
+		"title": "Offline", "content": "x", "publish_now": true,
+	})
+	offlineID := offline["id"].(string)
+	if r := env.do(t, admin, http.MethodPost,
+		"/api/announcements/"+offlineID+"/offline", nil); r.Code != http.StatusOK {
+		t.Fatalf("offline = %d，want 200", r.Code)
+	}
+
+	// 已删除。
+	deleted := env.createAnnouncement(t, map[string]any{
+		"title": "Deleted", "content": "x", "publish_now": true,
+	})
+	deletedID := deleted["id"].(string)
+	if r := env.do(t, admin, http.MethodDelete,
+		"/api/announcements/"+deletedID, nil); r.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d，want 204", r.Code)
+	}
+
+	invisible := []struct {
+		name string
+		id   string
+	}{
+		{"draft", draft["id"].(string)},
+		{"future", future["id"].(string)},
+		{"expired", expired["id"].(string)},
+		{"offline", offlineID},
+		{"deleted", deletedID},
+		{"unknown", "22222222-2222-4222-8222-222222222222"},
+		{"malformed", "not-a-uuid"},
+	}
+	var firstBody []byte
+	for _, tc := range invisible {
+		r := env.do(t, nil, http.MethodGet, "/api/announcements/public/"+tc.id, nil)
+		if r.Code != http.StatusNotFound {
+			t.Fatalf("%s = %d，want 404（body=%s）", tc.name, r.Code, r.Body.String())
+		}
+		if ct := r.Header().Get("Content-Type"); ct != "application/problem+json" {
+			t.Fatalf("%s Content-Type = %q，want problem+json", tc.name, ct)
+		}
+		if firstBody == nil {
+			firstBody = append([]byte(nil), r.Body.Bytes()...)
+		} else if !bytes.Equal(firstBody, r.Body.Bytes()) {
+			// 所有不可见分支必须逐字节相同：任何差异都是存在性探测信道。
+			t.Fatalf("%s 的 404 与其它分支不一致：\n got=%s\nwant=%s",
+				tc.name, r.Body.String(), firstBody)
 		}
 	}
 }

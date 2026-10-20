@@ -40,17 +40,25 @@ function isUnread(item: UserNotification): boolean {
 }
 
 /**
- * 通知目标地址：服务端 payload 的 link_url 优先，其次回退到公告详情路径。
+ * 通知目标地址（D7b 起公告详情页已落地）。
  *
- * 只接受站内单斜杠相对路径与 http(s) 绝对 URL；`javascript:`、协议相对
- * `//host` 等一律丢弃。link_url 由服务端公告发布时写入，当前实现指向站点
- * 根（D7b 公告详情页尚未落地），因此 fallback 才是「点公告看详情」的
- * 预期路径；通知载荷没有单独的公告 id，只能用投递 id 占位（已登记契约
- * 差异）。
+ * 优先级冻结为：
+ *  1. 投递载荷自带的 `announcement_id`（A5b 写入，服务端作为
+ *     `UserNotification.announcement_id` 下发）→ `/announcements/{id}`。
+ *     这是唯一能保证落到**该公告**详情的来源；`link_url` 是发布时刻的
+ *     快照，历史投递可能仍指向旧路径。
+ *  2. `link_url`：只接受站内单斜杠相对路径与 http(s) 绝对 URL；
+ *     `javascript:`、协议相对 `//host` 等一律丢弃。
+ *  3. 两者都缺失时沿用旧的投递 id 占位（无公告归因的普通站内信没有
+ *     更合适的站内目标；保留行为而不凭空造路径）。
  */
 export function notificationHref(
-  item: Pick<UserNotification, 'id' | 'link_url'>,
+  item: Pick<UserNotification, 'id' | 'link_url' | 'announcement_id'>,
 ): string {
+  const announcementId = item.announcement_id?.trim()
+  if (announcementId !== undefined && announcementId !== '') {
+    return `/announcements/${encodeURIComponent(announcementId)}`
+  }
   const raw = item.link_url?.trim() ?? ''
   if (raw.startsWith('/') && !raw.startsWith('//')) return raw
   if (/^https?:\/\//i.test(raw)) return raw

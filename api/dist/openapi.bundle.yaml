@@ -5215,6 +5215,49 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/announcements/public/{id}:
+    get:
+      tags:
+        - public
+      operationId: getPublicAnnouncement
+      summary: 生效中公告的公开详情
+      description: |
+        仅 `status='published'` 且 `publish_at<=now` 且（`expire_at` 为 null
+        或 `expire_at>now`）的公告返回 200。draft/offline/未来生效/已过期/
+        已删除/畸形 id 一律返回同一个 404 `problem+json`，公开面不得成为
+        「某 id 是否存在」的探测信道。匿名只读：不写审计、不写已读。
+        B8 限流 60 次/分钟/IP+path；响应 `Cache-Control: public, max-age=60`。
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: 公告 id（UUID）。
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: public, max-age=60
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicAnnouncement'
+        '404':
+          description: 公告不可见或不存在（响应完全相同）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/notifications:
     get:
       tags:
@@ -13967,6 +14010,40 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ActiveAnnouncement'
+    PublicAnnouncement:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - category
+        - content_html
+        - published_at
+        - expire_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        category:
+          type: string
+          enum:
+            - notice
+            - maintenance
+            - release
+        content_html:
+          type: string
+          description: 服务端由 Markdown 渲染并净化的 HTML（原始 HTML 不解析、危险链接丢弃 href）。
+        published_at:
+          type: string
+          format: date-time
+          description: 公告对用户可见的发布时间（发布时刻；历史数据缺失时回退 publish_at）。
+        expire_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: null = 永久有效。
     UserNotification:
       type: object
       additionalProperties: false
@@ -13992,6 +14069,12 @@ components:
           description: 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
         link_url:
           type: string
+        announcement_id:
+          type: string
+          format: uuid
+          description: |
+            公告投递的归因键（payload.announcement_id）；前端据此拼
+            `/announcements/{id}` 详情深链。普通站内通知没有该字段。
         locale:
           type: string
           enum:

@@ -378,3 +378,40 @@ func TestAnnouncementNotificationSummary(t *testing.T) {
 		t.Fatalf("摘要残留链接 URL：%q", got)
 	}
 }
+
+// TestUserNotificationsAnnouncementIDJsonShape 覆盖 D7b 的下发口径：
+// 公告投递带 announcement_id，普通站内通知不出现该键（omitempty），
+// 避免前端把空串当成可跳转的公告。
+func TestUserNotificationsAnnouncementIDJsonShape(t *testing.T) {
+	const announcementID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	mux := newNotificationTestHandlers(t, &fakeUserNotificationService{
+		listFn: func(context.Context, int64, int, int) ([]notify.UserNotificationView, int, error) {
+			return []notify.UserNotificationView{
+				{ID: 1, Category: "system.announcement", Title: "公告",
+					AnnouncementID: announcementID, CreatedAt: now},
+				{ID: 2, Category: "system.notice", Title: "普通通知", CreatedAt: now},
+			}, 2, nil
+		},
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(42, rbac.RoleUser),
+		http.MethodGet, "/api/notifications", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("list = %d（body=%s）", got.Code, got.Body.String())
+	}
+	var view struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(view.Items) != 2 {
+		t.Fatalf("items = %d，want 2", len(view.Items))
+	}
+	if view.Items[0]["announcement_id"] != announcementID {
+		t.Fatalf("公告 announcement_id = %v，want %s", view.Items[0]["announcement_id"], announcementID)
+	}
+	if _, ok := view.Items[1]["announcement_id"]; ok {
+		t.Fatalf("普通投递不应下发 announcement_id：%v", view.Items[1])
+	}
+}

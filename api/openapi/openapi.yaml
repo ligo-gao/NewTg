@@ -251,6 +251,9 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1announcements~1active'
   /api/announcements/{id}/read:
     $ref: './paths/user.yaml#/paths/~1api~1announcements~1{id}~1read'
+  # 公告公开详情（D7b）：匿名只读，挂根 mux 绕过 SessionAuth。
+  /api/announcements/public/{id}:
+    $ref: './paths/public.yaml#/paths/~1api~1announcements~1public~1{id}'
 
   # 站内通知读取（A5；modules-08 §3.9.1 system.announcement）。
   # 仅登录用户本人；数据范围恒为会话/令牌身份。

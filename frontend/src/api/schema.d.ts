@@ -2357,6 +2357,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/announcements/public/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 生效中公告的公开详情
+         * @description 仅 `status='published'` 且 `publish_at<=now` 且（`expire_at` 为 null
+         *     或 `expire_at>now`）的公告返回 200。draft/offline/未来生效/已过期/
+         *     已删除/畸形 id 一律返回同一个 404 `problem+json`，公开面不得成为
+         *     「某 id 是否存在」的探测信道。匿名只读：不写审计、不写已读。
+         *     B8 限流 60 次/分钟/IP+path；响应 `Cache-Control: public, max-age=60`。
+         */
+        get: operations["getPublicAnnouncement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notifications": {
         parameters: {
             query?: never;
@@ -6245,6 +6269,25 @@ export interface components {
         ActiveAnnouncementList: {
             items: components["schemas"]["ActiveAnnouncement"][];
         };
+        PublicAnnouncement: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            /** @enum {string} */
+            category: "notice" | "maintenance" | "release";
+            /** @description 服务端由 Markdown 渲染并净化的 HTML（原始 HTML 不解析、危险链接丢弃 href）。 */
+            content_html: string;
+            /**
+             * Format: date-time
+             * @description 公告对用户可见的发布时间（发布时刻；历史数据缺失时回退 publish_at）。
+             */
+            published_at: string;
+            /**
+             * Format: date-time
+             * @description null = 永久有效。
+             */
+            expire_at: string | null;
+        };
         UserNotification: {
             /** Format: int64 */
             id: number;
@@ -6256,6 +6299,12 @@ export interface components {
             /** @description 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。 */
             body?: string;
             link_url?: string;
+            /**
+             * Format: uuid
+             * @description 公告投递的归因键（payload.announcement_id）；前端据此拼
+             *     `/announcements/{id}` 详情深链。普通站内通知没有该字段。
+             */
+            announcement_id?: string;
             /** @enum {string} */
             locale?: "en" | "zh-CN" | "zh-TW" | "fr" | "ru" | "ja" | "vi";
             /**
@@ -11954,6 +12003,42 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPublicAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 公告 id（UUID）。 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description public, max-age=60 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicAnnouncement"];
+                };
+            };
+            /** @description 公告不可见或不存在（响应完全相同） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
         };
     };

@@ -1509,6 +1509,27 @@ func (e Problem402Currency) Valid() bool {
 	}
 }
 
+// Defines values for PublicAnnouncementCategory.
+const (
+	PublicAnnouncementCategoryMaintenance PublicAnnouncementCategory = "maintenance"
+	PublicAnnouncementCategoryNotice      PublicAnnouncementCategory = "notice"
+	PublicAnnouncementCategoryRelease     PublicAnnouncementCategory = "release"
+)
+
+// Valid indicates whether the value is a known member of the PublicAnnouncementCategory enum.
+func (e PublicAnnouncementCategory) Valid() bool {
+	switch e {
+	case PublicAnnouncementCategoryMaintenance:
+		return true
+	case PublicAnnouncementCategoryNotice:
+		return true
+	case PublicAnnouncementCategoryRelease:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PublicPricingTypeFacetValue.
 const (
 	PublicPricingTypeFacetValueRequest PublicPricingTypeFacetValue = "request"
@@ -5843,6 +5864,25 @@ type Problem402 struct {
 // Problem402Currency defines model for Problem402.Currency.
 type Problem402Currency string
 
+// PublicAnnouncement defines model for PublicAnnouncement.
+type PublicAnnouncement struct {
+	Category PublicAnnouncementCategory `json:"category"`
+
+	// ContentHtml 服务端由 Markdown 渲染并净化的 HTML（原始 HTML 不解析、危险链接丢弃 href）。
+	ContentHtml string `json:"content_html"`
+
+	// ExpireAt null = 永久有效。
+	ExpireAt time.Time          `json:"expire_at"`
+	Id       openapi_types.UUID `json:"id"`
+
+	// PublishedAt 公告对用户可见的发布时间（发布时刻；历史数据缺失时回退 publish_at）。
+	PublishedAt time.Time `json:"published_at"`
+	Title       string    `json:"title"`
+}
+
+// PublicAnnouncementCategory defines model for PublicAnnouncement.Category.
+type PublicAnnouncementCategory string
+
 // PublicBilling billing 域的公开键（§1.4.1）。
 type PublicBilling struct {
 	CurrencySymbol          *string `json:"currency_symbol,omitempty"`
@@ -7698,6 +7738,10 @@ type UsageStatsTimeseriesItem struct {
 
 // UserNotification defines model for UserNotification.
 type UserNotification struct {
+	// AnnouncementId 公告投递的归因键（payload.announcement_id）；前端据此拼
+	// `/announcements/{id}` 详情深链。普通站内通知没有该字段。
+	AnnouncementId *openapi_types.UUID `json:"announcement_id,omitempty"`
+
 	// Body 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
 	Body      *string                 `json:"body,omitempty"`
 	Category  string                  `json:"category"`

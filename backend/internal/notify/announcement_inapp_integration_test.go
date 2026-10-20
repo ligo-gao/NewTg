@@ -188,6 +188,10 @@ func TestUserInAppNotificationsIsolationAndIdempotentRead(t *testing.T) {
 	if total != 1 || len(list) != 1 || list[0].Title != "hello" || list[0].ReadAt != nil {
 		t.Fatalf("用户 A 列表 = %+v total=%d", list, total)
 	}
+	// D7b：读取面把 payload.announcement_id 下发给前端拼详情深链。
+	if list[0].AnnouncementID != announcementID {
+		t.Fatalf("announcement_id = %q，want %q", list[0].AnnouncementID, announcementID)
+	}
 	otherID := int64(0)
 	if err := db.QueryRow(`SELECT id FROM notification_deliveries WHERE recipient_user_id = $1`,
 		userB).Scan(&otherID); err != nil {
@@ -426,5 +430,84 @@ func TestAnnouncementInAppAudienceKeysetCoversLargeAudience(t *testing.T) {
 	}
 	if covered != enabled {
 		t.Fatalf("投递覆盖 = %d，want %d", covered, enabled)
+	}
+}
+
+// TestUserInAppNotificationsAnnouncementIDExtraction 覆盖 D7b 的读取口径：
+// announcement_id 由存储层用 payload->>'announcement_id' 单独提取，
+// 公告投递下发 UUID，普通投递为空串，非法值（非字符串）折叠为空串且
+// 不报错，不影响同页其它行。
+func TestUserInAppNotificationsAnnouncementIDExtraction(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	userID := insertA5User(t, db, "en", "enabled")
+	const announcementID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	insertA5Announcement(t, db, announcementID, "published", time.Now().Add(-time.Hour), nil)
+
+	announcementPayload, err := json.Marshal(InAppPayload{
+		AnnouncementID: announcementID, Title: "announcement",
+	})
+	if err != nil {
+		t.Fatalf("marshal announcement payload: %v", err)
+	}
+	plainPayload, err := json.Marshal(InAppPayload{Title: "plain"})
+	if err != nil {
+		t.Fatalf("marshal plain payload: %v", err)
+	}
+	locale := LocaleEN
+	newItem := func(key string, payload []byte) Delivery {
+		return Delivery{
+			TemplateKey: stringPtr("system.announcement"), Category: "system.announcement",
+			Channel: ChannelInApp, Recipient: fmt.Sprintf("user:%d", userID),
+			RecipientUserID: &userID, Locale: &locale, Status: "sent", Attempt: 1,
+			DedupeKey: key, Payload: payload,
+		}
+	}
+	items := []Delivery{
+		newItem(fmt.Sprintf("d7b:announcement:%d", userID), announcementPayload),
+		newItem(fmt.Sprintf("d7b:plain:%d", userID), plainPayload),
+		// 对象但类型非法：jsonb_typeof != 'string' 时提取为 NULL（空串），
+		// 整包解码失败只记 Warn，列表照常返回。
+		newItem(fmt.Sprintf("d7b:invalid:%d", userID),
+			[]byte(`{"announcement_id":{"nested":true},"title":"invalid"}`)),
+	}
+	inserted, err := service.store.InsertInAppDeliveries(ctx, items)
+	if err != nil || inserted != len(items) {
+		t.Fatalf("insert deliveries = %d/%v，want %d", inserted, err, len(items))
+	}
+
+	list, total, err := service.ListUserNotifications(ctx, userID, 1, 20)
+	if err != nil {
+		t.Fatalf("ListUserNotifications: %v", err)
+	}
+	if total != 3 || len(list) != 3 {
+		t.Fatalf("total=%d len=%d，want 3", total, len(list))
+	}
+	byTitle := make(map[string]UserNotificationView, len(list))
+	emptyKey := 0
+	for _, view := range list {
+		if view.ID == 0 || view.CreatedAt.IsZero() {
+			t.Fatalf("行缺少 id/created_at：%+v", view)
+		}
+		if view.AnnouncementID == "" {
+			emptyKey++
+		}
+		byTitle[view.Title] = view
+	}
+	if got := byTitle["announcement"].AnnouncementID; got != announcementID {
+		t.Fatalf("公告 announcement_id = %q，want %q", got, announcementID)
+	}
+	plain, ok := byTitle["plain"]
+	if !ok {
+		t.Fatalf("普通投递缺失：%+v", list)
+	}
+	if plain.AnnouncementID != "" {
+		t.Fatalf("普通投递 announcement_id = %q，want 空串", plain.AnnouncementID)
+	}
+	// 普通投递与非法值两行都折叠为空串，且整页仍正常返回（不因解码失败 500）。
+	if emptyKey != 2 {
+		t.Fatalf("空 announcement_id 行数 = %d，want 2（列表=%+v）", emptyKey, list)
 	}
 }

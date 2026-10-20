@@ -67,6 +67,11 @@ type Delivery struct {
 	// Payload 是站内通知的渲染输入/结果（A5，迁移
 	// 20261020200000）。email/webhook 行为 NULL。
 	Payload []byte
+	// AnnouncementID 是读取面从 payload->>'announcement_id' 提取的公告
+	// 归因键（D7b）。普通站内通知与非对象 payload 一律为空串：这里只做
+	// 文本提取，不解析整个 payload，因此 payload 损坏也不影响本字段与
+	// 其它列（jsonb 保证存进去的必是合法 JSON，但可能是标量/数组）。
+	AnnouncementID string
 	// ReadAt 是站内通知的已读时刻；email/webhook 恒为 NULL。
 	ReadAt    *time.Time
 	CreatedAt time.Time
@@ -389,7 +394,7 @@ func (s *Store) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]De
 	args = append(args, pageSize, (page-1)*pageSize)
 	query := fmt.Sprintf(`SELECT id, template_key, category, channel, recipient, recipient_user_id,
 		locale, dedupe_key, status, attempt, next_retry_at, last_error, provider_message_id,
-		payload, read_at, created_at, updated_at
+		payload,`+inAppAnnouncementIDExpr+`, read_at, created_at, updated_at
 		FROM notification_deliveries%s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d`, clause, len(args)-1, len(args))
@@ -528,6 +533,14 @@ func (s *Store) InsertInAppDeliveries(ctx context.Context, items []Delivery) (in
 	return int(affected), nil
 }
 
+// inAppAnnouncementIDExpr 是读取面唯一的 announcement_id 提取口径：
+// 只认「对象里字符串类型的 announcement_id」。缺失、JSON null、数字/对象
+// 等非法值统一折叠成 SQL NULL，扫描后归一为空串——既不会让整页 500，
+// 也不会把非法文本当成归因键下发给前端。
+const inAppAnnouncementIDExpr = `
+	CASE WHEN jsonb_typeof(payload->'announcement_id') = 'string'
+		THEN payload->>'announcement_id' END`
+
 // inAppVisibleAnnouncementClause 让站内信读取面随公告生命周期失效
 // （G-DOM-37 ⑧）：公告投递（payload 带 announcement_id）只有在公告仍
 // 生效时才返回——status='published' AND publish_at<=now AND
@@ -541,8 +554,8 @@ func (s *Store) InsertInAppDeliveries(ctx context.Context, items []Delivery) (in
 // 的读取开销可忽略。EXISTS + PK 的点查同样可行，但需要 uuid 强转，故不取。
 const inAppVisibleAnnouncementClause = `
 	AND (
-		payload->>'announcement_id' IS NULL
-		OR payload->>'announcement_id' IN (
+		` + inAppAnnouncementIDExpr + ` IS NULL
+		OR ` + inAppAnnouncementIDExpr + ` IN (
 			SELECT a.id::text FROM announcements a
 			WHERE a.status = 'published'
 			  AND a.publish_at <= now()
@@ -571,7 +584,7 @@ func (s *Store) ListUserInAppDeliveries(ctx context.Context, userID int64, page,
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, template_key, category, channel, recipient,
 		recipient_user_id, locale, dedupe_key, status, attempt, next_retry_at, last_error,
-		provider_message_id, payload, read_at, created_at, updated_at
+		provider_message_id, payload,`+inAppAnnouncementIDExpr+`, read_at, created_at, updated_at
 		FROM notification_deliveries
 		WHERE channel = 'inapp' AND recipient_user_id = $1`+inAppVisibleAnnouncementClause+`
 		ORDER BY created_at DESC, id DESC
@@ -653,16 +666,20 @@ func scanDelivery(scanner rowScanner) (Delivery, error) {
 		nextRetryAt           sql.NullTime
 		lastError, providerID sql.NullString
 		payload               []byte
+		announcementID        sql.NullString
 		readAt                sql.NullTime
 	)
 	if err := scanner.Scan(&item.ID, &templateKey, &item.Category, &channel, &item.Recipient,
 		&recipientUserID, &locale, &item.DedupeKey, &item.Status, &item.Attempt,
-		&nextRetryAt, &lastError, &providerID, &payload, &readAt,
+		&nextRetryAt, &lastError, &providerID, &payload, &announcementID, &readAt,
 		&item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Delivery{}, err
 	}
 	item.Channel = Channel(channel)
 	item.Payload = payload
+	// payload 为 NULL、非对象或缺少该键时 -> 为 SQL NULL，归一为空串；
+	// 视图层靠 omitempty 决定是否下发。
+	item.AnnouncementID = announcementID.String
 	if readAt.Valid {
 		value := readAt.Time
 		item.ReadAt = &value

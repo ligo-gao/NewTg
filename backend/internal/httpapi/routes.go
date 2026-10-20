@@ -332,6 +332,9 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	}
 	if cfg.AnnouncementHandlers != nil {
 		cfg.AnnouncementHandlers.Register(rt.protected)
+		// D7b 公开只读详情：挂根 mux（精确模式先于 `/api/` 子树命中），
+		// 匿名可访问且不经过 SessionAuth/CSRF/Origin 链。
+		cfg.AnnouncementHandlers.RegisterPublic(rt.mux)
 	}
 
 	// 站内通知读取（A5；modules-08 §3.9.1 system.announcement）。投递记录
@@ -534,11 +537,8 @@ func (rt *Router) HandleProtected(pattern string, h http.Handler) {
 }
 
 // HandlePublic 把 handler 挂到根 mux。精确模式比 `/api/` 子树更具体，
-// 因此会绕过 SessionAuth 链——只允许自带凭据语义的端点使用。
-//
-// 当前唯一使用者是 GET /api/usage/token：令牌自读用量必须对「额度耗尽」
-// 的令牌返回 200（modules-02 §2.13），而 SessionAuth 的 tokenUsable 会拒绝
-// 耗尽令牌；它还需要返回 token_disabled/token_expired 的精确错误码。
+// 因此会绕过 SessionAuth 链——只允许公开只读端点或自带凭据语义的端点使用
+// （如公开定价/公告详情、GET /api/usage/token 的令牌自读用量）。
 func (rt *Router) HandlePublic(pattern string, h http.Handler) {
 	rt.mux.Handle(pattern, h)
 }

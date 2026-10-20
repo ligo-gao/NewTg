@@ -232,6 +232,35 @@ describe('console notification bell', () => {
     })
   })
 
+  it('prefers payload announcement_id over link_url for the detail deep link', async () => {
+    install({
+      items: [
+        notification({
+          id: 43,
+          title: 'Announcement deep link',
+          announcement_id: '0b6f3b1e-2d3c-4f0a-9a6d-1f2e3d4c5b6a',
+          // 发布时刻的快照可能指向旧路径；公告归因键必须优先。
+          link_url: '/legacy/notice',
+        }),
+      ],
+    })
+    const onNavigate = vi.fn()
+    await renderWithProviders(
+      <ConsoleHeader onNotificationNavigate={onNavigate} />,
+      ['common'],
+    )
+
+    const dialog = await openPanel()
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByText('Announcement deep link'))
+
+    await waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledWith(
+        '/announcements/0b6f3b1e-2d3c-4f0a-9a6d-1f2e3d4c5b6a',
+      )
+    })
+  })
+
   it('supports marking every unread notification as read', async () => {
     const log = install({
       items: [

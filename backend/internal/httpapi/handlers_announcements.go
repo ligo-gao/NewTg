@@ -11,10 +11,13 @@
 //	POST   /api/announcements/{id}/offline         管理：下线（幂等）
 //	GET    /api/announcements/active               用户：生效中公告 + read 标记
 //	POST   /api/announcements/{id}/read            用户：标记已读（幂等）
+//	GET    /api/announcements/public/{id}          公开：生效中公告详情（D7b）
 //
 // 设计约束：
 //   - 管理面全部要求 settings:manage（R-D7-06/R-D7-11，不新增权限键）；
 //     用户侧只要求已登录本人（R-D7-05/R-D7-11），数据范围恒为 Principal.UserID。
+//   - 公开详情挂**根 mux**（RegisterPublic），绕过 SessionAuth：匿名访客只读
+//     且不写审计/不写已读；不可见状态一律 404，不泄露存在性（D7b）。
 //   - 写动作登记字段白名单，未知字段由 RBAC 字段层直接 403（绝不静默丢弃）。
 //   - 发布/下线支持可选 Idempotency-Key；发布副作用 best-effort（R-D7-09）。
 //   - 管理写操作用管理员维度 10/min 固定窗口限流（与设置写端点的兜底口径
@@ -67,6 +70,10 @@ const (
 	// announcementSideEffectTimeout 是 goroutine 内副作用的硬上限：Webhook
 	// 自身 10s 超时 + Redis 往返。请求已返回，这个上限只防止 goroutine 泄漏。
 	announcementSideEffectTimeout = 15 * time.Second
+
+	// publicAnnouncementCacheControl 是公开详情页的冻结缓存策略（D7b）：
+	// 60 秒与 B8 公开只读窗口同量级；公告发布/下线最多一分钟对匿名缓存可见。
+	publicAnnouncementCacheControl = "public, max-age=60"
 )
 
 // RFC 7807 type URI（管理面用可机读的公告域 slug，与渠道/订阅端点同构）。
@@ -229,6 +236,15 @@ func (h *AnnouncementHandlers) Register(mux *http.ServeMux) {
 		self(announcementMarkReadAction, h.handleMarkRead))
 }
 
+// RegisterPublic 把公开只读详情挂到**根 mux**（D7b）。
+//
+// 与 Register 分开是有意的：Register 的目标是受保护子树（管理/用户侧），
+// 而根 mux 上的精确模式比 `/api/` 子树更具体，会在 SessionAuth 之前命中。
+// 公开详情因此必须**不依赖** Principal、RBAC、CSRF，也不写审计/已读。
+func (h *AnnouncementHandlers) RegisterPublic(mux *http.ServeMux) {
+	mux.Handle("GET /api/announcements/public/{id}", http.HandlerFunc(h.handlePublicGet))
+}
+
 // ---------------------------------------------------------------------------
 // 响应 DTO
 // ---------------------------------------------------------------------------
@@ -276,6 +292,39 @@ type announcementListView struct {
 	Total    int64                     `json:"total"`
 	Page     int                       `json:"page"`
 	PageSize int                       `json:"page_size"`
+}
+
+// publicAnnouncementView 是公开详情的**最小**投影（D7b）：不含管理面字段
+// （status/created_by/offline_at…），也不回传 Markdown 原文——公开页只渲染
+// 服务端净化后的 HTML，原文下发只会扩大注入面并多出一份可被误用的副本。
+type publicAnnouncementView struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Category    string     `json:"category"`
+	ContentHTML string     `json:"content_html"`
+	PublishedAt time.Time  `json:"published_at"`
+	ExpireAt    *time.Time `json:"expire_at"`
+}
+
+// newPublicAnnouncementView 构造公开投影。
+//
+// published_at 用 published_at 列，NULL 时回退 publish_at：可见性条件已保证
+// publish_at<=now，回退值仍然是「对用户可见的时间」，比返回 null 更符合
+// 契约（前端按必填 date-time 解析）。正常发布路径两列都会被写入，回退只
+// 防御历史/手工数据。
+func (h *AnnouncementHandlers) newPublicAnnouncementView(a store.Announcement) publicAnnouncementView {
+	publishedAt := a.PublishAt
+	if a.PublishedAt != nil {
+		publishedAt = *a.PublishedAt
+	}
+	return publicAnnouncementView{
+		ID:          a.ID,
+		Title:       a.Title,
+		Category:    a.Category,
+		ContentHTML: h.renderAnnouncementHTML(a.Content),
+		PublishedAt: publishedAt,
+		ExpireAt:    a.ExpireAt,
+	}
 }
 
 type announcementActiveListView struct {
@@ -640,6 +689,59 @@ func (h *AnnouncementHandlers) handleOffline(w http.ResponseWriter, r *http.Requ
 }
 
 // ---------------------------------------------------------------------------
+// 公开只读 handler（D7b）
+// ---------------------------------------------------------------------------
+
+// handlePublicGet 返回生效中公告的公开详情。
+//
+// 语义冻结（D7b）：
+//   - 只有 status=published 且 publish_at<=now 且未过期才 200；draft/offline/
+//     未来/过期/已删除/id 畸形一律同一 404 problem+json，不泄露存在性；
+//   - 不写审计、不写已读（匿名只读）；
+//   - Cache-Control: public, max-age=60；B8 60/min/IP+path。
+func (h *AnnouncementHandlers) handlePublicGet(w http.ResponseWriter, r *http.Request) {
+	if !h.allowPublicRead(w, r) {
+		return
+	}
+	// h.now() 是时钟接缝：未来公告的「未生效」边界与 ListActive/MarkRead
+	// 使用同一个 now 来源，集成测试才能在冻结时间下断言。
+	a, err := h.repo.GetPublic(r.Context(), r.PathValue("id"), h.now())
+	if err != nil {
+		if errors.Is(err, store.ErrAnnouncementNotFound) {
+			// detail 留空：任何「为什么不可见」的解释都会把公开面变成探测信道。
+			writeProblemDetail(w, http.StatusNotFound, problemTypeAnnouncementNotFound,
+				"Announcement not found", "")
+			return
+		}
+		h.log.Error("announcements: public get failed", "err", err)
+		writeProblemDetail(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal Server Error", "")
+		return
+	}
+	w.Header().Set("Cache-Control", publicAnnouncementCacheControl)
+	writeJSON(w, http.StatusOK, h.newPublicAnnouncementView(a))
+}
+
+// allowPublicRead 消耗 B8 公开只读桶（60/min/IP+path）。
+// Redis 不可用时 fail-open：与定价/排行榜等公开面同一策略，限流不是授权边界。
+func (h *AnnouncementHandlers) allowPublicRead(w http.ResponseWriter, r *http.Request) bool {
+	if h.rdb == nil {
+		return true
+	}
+	over, retry, err := allowRequestRate(r.Context(), h.rdb,
+		PublicReadRateLimitKey(clientIP(r), r.URL.Path), PublicReadRateLimit, PublicReadRateWindow)
+	if err != nil {
+		h.log.Warn("announcements: public rate limiter unavailable; failing open", "err", err)
+		return true
+	}
+	if over {
+		writeRateLimited(w, retry, "Too many requests")
+		return false
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // 用户侧 handlers
 // ---------------------------------------------------------------------------
 
@@ -779,7 +881,7 @@ func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a s
 		AnnouncementID: a.ID,
 		Title:          a.Title,
 		Summary:        announcementNotificationSummary(a.Content),
-		LinkURL:        h.announcementURL(),
+		LinkURL:        h.announcementURL(a.ID),
 		PublishedAt:    publishedAt,
 	})
 	if err != nil {
@@ -872,7 +974,7 @@ func (h *AnnouncementHandlers) publishSideEffects(ctx context.Context, a store.A
 		"title":           a.Title,
 		"category":        a.Category,
 		"published_at":    a.PublishedAt,
-		"url":             h.announcementURL(),
+		"url":             h.announcementURL(a.ID),
 	})
 	if err != nil {
 		h.log.Warn("announcements: marshal webhook payload failed",
@@ -892,16 +994,14 @@ func (h *AnnouncementHandlers) publishSideEffects(ctx context.Context, a store.A
 	}
 }
 
-// announcementURL 组装 webhook payload 的 url：当前指向站点根 `/`。
+// announcementURL 组装 webhook/站内信的公告详情 URL（D7b 已落地公开详情页）。
 //
-// 公告详情页由 D7b 实现，在那之前 `/announcements/{id}` 会 404；按 R-D7-09
-// 「若前端无该页则用 `/`」的裁决先回根路径。**待 D7b 落地后恢复**
-// `base + "/announcements/" + id`（id 参数随之加回）。基址未配置时使用
-// 站内相对路径（R-D7-09 允许的缺省）；base 末尾的 `/` 先剥掉，避免出现
-// `https://gw//`。
-func (h *AnnouncementHandlers) announcementURL() string {
+// 基址回退链由装配方保证（PUBLIC_BASE_URL → site.server_address → 空串），
+// 未配置时使用站内相对路径（R-D7-09 允许的缺省）；base 末尾的 `/` 先剥掉，
+// 避免出现 `https://gw//announcements/...`。id 为 uuid，不需要额外转义。
+func (h *AnnouncementHandlers) announcementURL(id string) string {
 	base := strings.TrimRight(strings.TrimSpace(h.baseURL()), "/")
-	return base + "/"
+	return base + "/announcements/" + id
 }
 
 // ---------------------------------------------------------------------------

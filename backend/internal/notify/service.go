@@ -559,16 +559,20 @@ func (s *Service) DeliverAnnouncementInApp(ctx context.Context, in AnnouncementD
 // UserNotificationView 是 GET /api/notifications 的 item。
 // 只暴露用户可见字段；dedupe_key/recipient_user_id 等内部幂等锚不外泄。
 type UserNotificationView struct {
-	ID          int64      `json:"id"`
-	TemplateKey string     `json:"template_key,omitempty"`
-	Category    string     `json:"category"`
-	Title       string     `json:"title"`
-	Summary     string     `json:"summary,omitempty"`
-	Body        string     `json:"body,omitempty"`
-	LinkURL     string     `json:"link_url,omitempty"`
-	Locale      string     `json:"locale,omitempty"`
-	ReadAt      *time.Time `json:"read_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          int64  `json:"id"`
+	TemplateKey string `json:"template_key,omitempty"`
+	Category    string `json:"category"`
+	Title       string `json:"title"`
+	Summary     string `json:"summary,omitempty"`
+	Body        string `json:"body,omitempty"`
+	LinkURL     string `json:"link_url,omitempty"`
+	// AnnouncementID 是公告投递的归因键（payload.announcement_id）。
+	// 只用于前端拼详情深链；普通站内通知没有该值。不下发 dedupe_key 等
+	// 内部幂等锚，但 id 本身是公告的公开标识，可以安全暴露。
+	AnnouncementID string     `json:"announcement_id,omitempty"`
+	Locale         string     `json:"locale,omitempty"`
+	ReadAt         *time.Time `json:"read_at"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // ListUserNotifications 返回本人站内通知（含 read_at）。userID 由认证上下文
@@ -586,6 +590,10 @@ func (s *Service) ListUserNotifications(ctx context.Context, userID int64, page,
 			ReadAt:    row.ReadAt,
 			CreatedAt: row.CreatedAt,
 		}
+		// 归因键由存储层从 payload->>'announcement_id' 单独提取，
+		// 不依赖下面的整包解码：payload 结构损坏时其它字段留空，
+		// 但已提取的 id 仍保留。
+		view.AnnouncementID = row.AnnouncementID
 		if row.TemplateKey != nil {
 			view.TemplateKey = *row.TemplateKey
 		}

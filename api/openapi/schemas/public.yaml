@@ -1219,3 +1219,30 @@ schemas:
           $ref: '#/schemas/LiveFeedEvent'
       window:
         $ref: '#/schemas/LiveFeedWindow'
+
+  # 公告公开详情（D7b；modules-08 F-08-04 用户侧公开只读视图）。
+  # 只暴露展示所需字段：不回传 Markdown 原文/管理面状态/操作者。
+  PublicAnnouncement:
+    type: object
+    additionalProperties: false
+    required: [id, title, category, content_html, published_at, expire_at]
+    properties:
+      id:
+        type: string
+        format: uuid
+      title: {type: string}
+      category:
+        type: string
+        enum: [notice, maintenance, release]
+      content_html:
+        type: string
+        description: 服务端由 Markdown 渲染并净化的 HTML（原始 HTML 不解析、危险链接丢弃 href）。
+      published_at:
+        type: string
+        format: date-time
+        description: 公告对用户可见的发布时间（发布时刻；历史数据缺失时回退 publish_at）。
+      expire_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null = 永久有效。
