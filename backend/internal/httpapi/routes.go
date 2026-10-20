@@ -467,8 +467,9 @@ func parseAllowedOrigins(raw string) []string {
 // announcementBaseURL 返回公告 Webhook payload 使用的站点基址，回退链与
 // assembly 一致：PUBLIC_BASE_URL（cfg.PublicBaseURL，可逗号分隔多个 → 取
 // 第一个）→ site.server_address → 空串（发送侧据此降级为站内相对路径，
-// R-D7-09）。每次发布都重新读取配置，管理员改 site.server_address 后立即
-// 生效。PUBLIC_BASE_URL 是部署期环境变量，组装闭包时已确定。
+// R-D7-09）。注意：生产装配时 BuildGatewayRouter 会把启动时解析出的基址作为
+// publicBaseURL 传入，因此一旦启动时已确定，运行期修改 site.server_address
+// 不会生效（需重启）；仅启动时为空、随后由安装向导写入的场景才动态读取。
 func announcementBaseURL(config ConfigReader, publicBaseURL string) func() string {
 	envBase := ""
 	if origins := parseAllowedOrigins(publicBaseURL); len(origins) > 0 {
