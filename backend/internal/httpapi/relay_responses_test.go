@@ -3,8 +3,8 @@ package httpapi
 // 本文件是 T2（`POST /v1/responses`）的 HTTP 面验收：
 //   - P-01：插件原生路由命中 → 走任务插件提交，且**不产生**通用中继的预扣
 //     （计费只发生一次）；
-//   - P-01 回退：未命中插件路由 → 回落 relay.FormatOpenAIResponses 的通用中继，
-//     上游 Responses 形态的响应体逐字节返回；
+//   - R-13 回退：未命中插件路由 → 501 problem+json（fail-closed，零计费、
+//     零上游调用）；
 //   - R-03：分发复用 T1 的 RouteIndex（这里用真实 plugin.Manager 的快照驱动）。
 
 import (
@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +80,36 @@ type responsesEnv struct {
 	store        *fakeTaskStore
 	taskBilling  *taskBillingRecorder
 	relayBilling *recordingBilling
+	transport    *countingTransport
+}
+
+// countingTransport 记录通用中继实际发往上游的请求（C1/R-13 的证据面）：
+// fail-closed 分支必须在任何上游调用之前拒绝，计数必须为 0。
+// 任务提交路径走 TasksHandler 自己的客户端，不经这里——两套计费/执行面
+// 互斥正是 P-01 要证明的。
+type countingTransport struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	seen []string
+}
+
+func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.seen = append(t.seen, req.Method+" "+req.URL.Path)
+	t.mu.Unlock()
+	return t.base.RoundTrip(req)
+}
+
+func (t *countingTransport) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.seen)
+}
+
+func (t *countingTransport) paths() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.seen...)
 }
 
 func newResponsesEnv(t *testing.T, manager *plugin.Manager) *responsesEnv {
@@ -123,6 +154,7 @@ func newResponsesEnv(t *testing.T, manager *plugin.Manager) *responsesEnv {
 		models: []string{"gpt-test"},
 	}
 	relayBilling := newRecordingBilling()
+	transport := &countingTransport{base: upstream.Client().Transport}
 	// 身份必须与 newTaskTestHandler 的 fakeTaskTokens（ID 1 / UserID 42）一致：
 	// BuildRelayContext 会拒绝两次解析指向不同行的令牌。
 	relayHandler := NewRelayHandler(RelayHandlerOptions{
@@ -132,14 +164,15 @@ func newResponsesEnv(t *testing.T, manager *plugin.Manager) *responsesEnv {
 		}),
 		Access:       &fakeRelayAccess{role: "admin", status: "enabled"},
 		Sealer:       sealer,
-		Client:       upstream.Client(),
+		Client:       &http.Client{Transport: transport},
 		Billing:      func(*contract.RelayContext) contract.BillingSession { return relayBilling },
 		NativeRoutes: taskHandler,
 	})
 	mux := http.NewServeMux()
 	relayHandler.Register(mux)
 	taskHandler.RegisterRelay(mux, relayHandler.AuthMiddleware())
-	return &responsesEnv{mux: mux, store: taskStore, taskBilling: taskBilling, relayBilling: relayBilling}
+	return &responsesEnv{mux: mux, store: taskStore, taskBilling: taskBilling,
+		relayBilling: relayBilling, transport: transport}
 }
 
 func (e *responsesEnv) postResponses(t *testing.T, body string) *httptest.ResponseRecorder {
@@ -184,6 +217,9 @@ func TestResponsesPluginHitSkipsGenericPreConsume(t *testing.T) {
 	if n := env.relayBilling.refundCount(); n != 0 {
 		t.Fatalf("generic relay refund count = %d, want 0", n)
 	}
+	if n := env.transport.count(); n != 0 {
+		t.Fatalf("generic relay upstream calls = %d, want 0; calls=%v", n, env.transport.paths())
+	}
 
 	var resp taskSubmitResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -194,83 +230,92 @@ func TestResponsesPluginHitSkipsGenericPreConsume(t *testing.T) {
 	}
 }
 
-// TestResponsesFallbackKeepsResponsesShape 是 brief Step 2：索引存在但没有声明
-// `/v1/responses` 时，请求必须回落通用中继（而不是 404），且上游的 Responses
-// 响应体原样返回（不被 chat 编解码器改写）。同时断言计费只经由中继会话发生一次。
-func TestResponsesFallbackKeepsResponsesShape(t *testing.T) {
-	// T1 的 video 插件只声明 /v1/videos：索引非空，但 Match 未命中。
-	env := newResponsesEnv(t, newNativeRouteManager(t))
-
-	rec := env.postResponses(t, `{"model":"gpt-test","input":"hello"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (generic relay); body=%s", rec.Code, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("Content-Type = %q, want application/json", ct)
-	}
-	if got := rec.Body.String(); got != upstreamResponsesBody {
-		t.Fatalf("body = %s, want upstream Responses body verbatim %s", got, upstreamResponsesBody)
-	}
-
-	if env.store.inserted != 0 {
-		t.Fatalf("tasks inserted = %d, want 0 (fallback must not create task rows)", env.store.inserted)
-	}
-	if calls := env.taskBilling.ReserveCalls(); len(calls) != 0 {
-		t.Fatalf("task billing calls = %v, want none on the fallback path", calls)
-	}
-	if n := env.relayBilling.preConsumeCount(); n != 1 {
-		t.Fatalf("generic relay pre-consume count = %d, want 1", n)
-	}
-	if n := env.relayBilling.terminateCount(); n != 1 {
-		t.Fatalf("generic relay terminate count = %d, want 1", n)
-	}
-	if fact := env.relayBilling.lastFact(); fact.Model != "gpt-test" {
-		t.Fatalf("usage fact model = %q, want gpt-test (OriginModel must come from the Responses body)", fact.Model)
-	}
-}
-
-// TestResponsesFallbackWithoutDispatcher：未装配插件分发面（探针/无任务数据面）
-// 时，通用回退仍必须工作，不得因为索引缺失变成 404/panic。
-func TestResponsesFallbackWithoutDispatcher(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(upstreamResponsesBody))
-	}))
-	t.Cleanup(upstream.Close)
-
-	env := newRelayTestEnv(t, upstream, nil)
-	rec := env.doAuthed(t, http.MethodPost, "/v1/responses", `{"model":"gpt-test","input":"hello"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if got := rec.Body.String(); got != upstreamResponsesBody {
-		t.Fatalf("body = %s, want %s", got, upstreamResponsesBody)
-	}
-}
-
-// TestResponsesRejectsInvalidBody：入口校验必须在任何计费副作用之前完成。
-func TestResponsesRejectsInvalidBody(t *testing.T) {
-	cases := []string{
-		`[]`,
+// TestResponsesFallbackFailsClosedWithoutBilling 是 R-13 的验收：插件未命中时
+// 通用回退必须 fail-closed（501 problem+json），且在**任何计费/上游调用之前**
+// 拒绝。假上游在 /chat/completions 返回 chat 对象，若旧实现（尽力转发）回归，
+// 本用例会以 200 + 非零计费/上游调用失败。
+func TestResponsesFallbackFailsClosedWithoutBilling(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"gpt-test","input":"hello"}`,
+		`{"model":"gpt-test","input":"hello","stream":true}`,
 		`not-json`,
-		`{"model":"gpt-test","max_output_tokens":-1}`,
-	}
-	for _, body := range cases {
+	} {
 		t.Run(body, func(t *testing.T) {
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				t.Error("upstream must not be called for an invalid request body")
-			}))
-			t.Cleanup(upstream.Close)
+			// T1 的 video 插件只声明 /v1/videos：索引非空，但 /v1/responses 未命中。
+			env := newResponsesEnv(t, newNativeRouteManager(t))
 
-			env := newRelayTestEnv(t, upstream, nil)
-			rec := env.doAuthed(t, http.MethodPost, "/v1/responses", body)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			rec := env.postResponses(t, body)
+			if rec.Code != http.StatusNotImplemented {
+				t.Fatalf("status = %d, want 501 (fail-closed); body=%s", rec.Code, rec.Body.String())
 			}
-			assertOpenAIErrorEnvelope(t, rec, "invalid_request")
-			if n := env.billing.preConsumeCount(); n != 0 {
-				t.Fatalf("pre-consume count = %d, want 0 for an invalid body", n)
+			if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+			}
+			var problem struct {
+				Type   string `json:"type"`
+				Title  string `json:"title"`
+				Status int    `json:"status"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+				t.Fatalf("decode problem: %v; body=%s", err, rec.Body.String())
+			}
+			if problem.Type != problemTypeEndpointNotSupported || problem.Status != http.StatusNotImplemented {
+				t.Fatalf("problem = %+v, want type=%s status=501", problem, problemTypeEndpointNotSupported)
+			}
+			if !strings.Contains(problem.Title, "plugin task channel") {
+				t.Fatalf("title = %q, want it to point at plugin task channels", problem.Title)
+			}
+			if rec.Header().Get("X-Request-ID") == "" {
+				t.Fatal("X-Request-ID must be set on the fail-closed response")
+			}
+
+			// 零副作用：两套计费会话都没有任何调用、没有任务行、上游零请求。
+			if n := env.relayBilling.preConsumeCount(); n != 0 {
+				t.Fatalf("generic relay pre-consume = %d, want 0", n)
+			}
+			if n := env.relayBilling.terminateCount(); n != 0 {
+				t.Fatalf("generic relay terminate = %d, want 0", n)
+			}
+			if n := env.relayBilling.refundCount(); n != 0 {
+				t.Fatalf("generic relay refund = %d, want 0", n)
+			}
+			if calls := env.taskBilling.ReserveCalls(); len(calls) != 0 {
+				t.Fatalf("task billing calls = %v, want none", calls)
+			}
+			if env.store.inserted != 0 {
+				t.Fatalf("tasks inserted = %d, want 0", env.store.inserted)
+			}
+			if n := env.transport.count(); n != 0 {
+				t.Fatalf("upstream requests = %d, want 0 (reject before any upstream call); calls=%v",
+					n, env.transport.paths())
 			}
 		})
+	}
+}
+
+// TestResponsesWithoutDispatcherStillFailsClosed：未装配插件分发面（探针/无任务
+// 数据面）时走同一条 fail-closed 分支——501 且不触上游，不 panic、不 404。
+func TestResponsesWithoutDispatcherStillFailsClosed(t *testing.T) {
+	transport := &countingTransport{base: http.DefaultTransport}
+	h := NewRelayHandler(RelayHandlerOptions{
+		Channels: &fakeRelayChannelStore{models: []string{"gpt-test"}},
+		Tokens: newFakeRelayTokenStore(relayTestToken, &auth.TokenMeta{
+			ID: relayTestTokenID, UserID: relayTestUserID, Status: "enabled", UnlimitedQuota: true,
+		}),
+		Access: &fakeRelayAccess{role: "admin", status: "enabled"},
+		Sealer: NewSecretSealer(relaySealerMaster),
+		Client: &http.Client{Transport: transport},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+relayTestToken)
+	rec := httptest.NewRecorder()
+	h.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%s", rec.Code, rec.Body.String())
+	}
+	if n := transport.count(); n != 0 {
+		t.Fatalf("upstream requests = %d, want 0", n)
 	}
 }

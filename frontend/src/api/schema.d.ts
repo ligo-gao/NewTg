@@ -3557,11 +3557,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * OpenAI Responses 创建（插件优先 + 通用回退）
+         * OpenAI Responses 创建（仅插件任务渠道）
          * @description 分发顺序（冻结）：先查插件 manifest 的 `routes[]`（方法 + 路径精确匹配），
-         *     命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）；
-         *     未命中回落 `relay.FormatOpenAIResponses` 的通用中继（`200`，响应体为上游
-         *     Responses 对象）。两条分支互斥，同一请求只发生一次预扣。
+         *     命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）。
+         *
+         *     未命中插件路由一律 `501` + `application/problem+json`
+         *     （`type=https://newtg.dev/problems/endpoint-not-supported`）：通用中继是
+         *     Chat 管线，无法表达 Responses 的 input/instructions 与响应形态，放行会
+         *     返回与输入无关的 200 并按错误 usage 结算。该分支零计费、零上游调用。
          */
         post: operations["createResponse"];
         delete?: never;
@@ -14443,13 +14446,6 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Responses 对象或 SSE 流（上游公开规范；schema 见 contract/adapter） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
             /** @description 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`） */
             202: {
                 headers: {
@@ -14460,9 +14456,40 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             402: components["responses"]["Error402"];
-            429: components["responses"]["Error429"];
+            /** @description 无匹配的插件任务渠道（插件未注册 / 无可用渠道） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 插件不可用（disabled / compile_failed） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             500: components["responses"]["Error500"];
-            503: components["responses"]["Error503"];
+            /**
+             * @description 未命中插件原生路由：通用中继不支持 Responses。
+             *     `application/problem+json`（RFC 7807），
+             *     `type=https://newtg.dev/problems/endpoint-not-supported`；
+             *     不产生计费、不调用上游。
+             */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 上游提交失败（任务插件路径） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     playgroundChatCompletion: {

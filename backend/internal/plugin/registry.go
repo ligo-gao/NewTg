@@ -547,7 +547,7 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 // `/v1/videos`、`/v1/batches` 等），**必须**同步增删本集合；参数段统一写成
 // `{}`，由 routeShape 的同一套段归一化与插件路由比较。集合只是「内建形状
 // 登记表」：是否拒绝插件声明还要看 pluginDispatchedBuiltinShapes（处理器
-// 是否先查 RouteIndex）与 builtinRoutePrefixes（通配族前缀）。
+// 是否先查 RouteIndex）与 builtinReservedRouteFamilies（通配族）。
 //
 // 当前条目与本仓库的注册点一一对应：
 //   - relay_endpoints.go：chat/completions、models、responses（T2；GET/compact 由 T3 注册，
@@ -590,27 +590,32 @@ var pluginDispatchedBuiltinShapes = map[string]struct{}{
 	"POST /v1/responses": {},
 }
 
-// builtinRoutePrefixes 是内建 ServeMux 通配族的前缀保留集（R-11/R-12）。
+// builtinReservedRouteFamilies 是内建 ServeMux 通配族的保留集合（R-11/R-12/R-14）。
 //
-// 为什么按前缀而不是形状相等：ServeMux 的 `/v1/models/{path...}` 会吞掉该前缀
-// 下的**任意**精确声明（`/v1/models/gpt-4o`、`/v1/models/x/y` …），而形状相等
-// 比较只挡得住 `/v1/models/{}` 这一种写法。漏掉的精确声明会「注册成功但永远
-// 不可达」，与本文件的 fail-closed 口径冲突。族根 `/v1/models` 本身不在前缀内
-// （`{path...}` 需要尾随斜杠才匹配），它由 builtinRouteShapes 的精确形状管理。
-var builtinRoutePrefixes = []string{"/v1/models/", "/v1beta/models/"}
+// 为什么按「族根 + 其下全部路径」而不是形状相等：ServeMux 的
+// `/v1/models/{path...}` 会吞掉该族下**任意**精确声明（`/v1/models/gpt-4o`、
+// `/v1/models/x/y` …），而形状相等比较只挡得住 `/v1/models/{}` 这一种写法。
+// 漏掉的精确声明会「注册成功但永远不可达」，与本文件的 fail-closed 口径冲突。
+//
+// 族根 `/v1/models`（所有方法）必须在族内（R-14）：注册 `POST /v1/models/{path...}`
+// 会让 ServeMux 对 `/v1/models` 发 307 重定向到 `/v1/models/`，随后由多模态
+// embeddings 处理器接管——插件声明的 `POST /v1/models` 永远收不到请求。
+var builtinReservedRouteFamilies = []string{"/v1/models", "/v1beta/models"}
 
-// builtinRoutePrefixFor 返回 route.Path 命中的内建通配前缀（无则空串）。
+// builtinReservedFamilyFor 返回 route.Path 所属的内建保留族（无则空串）。
 //
-// 只做字面前缀比较：manifest 路径必须以 `/v1/` 开头（R-09），参数段
-// （`{x}`/`:x`）出现在前缀本身就说明声明落在通配族下——这正是要拒绝的形态。
-func builtinRoutePrefixFor(path string) string {
+// 族根与「族根 + `/` + 任意后缀」都算命中；尾斜杠先归一，避免
+// `/v1/models/` 被当成族外路径。只做字面比较：manifest 路径必须以 `/v1/`
+// 开头（R-09），参数段（`{x}`/`:x`）出现在族内同样是要拒绝的形态。
+func builtinReservedFamilyFor(path string) string {
 	normalized := path
 	if !strings.HasPrefix(normalized, "/") {
 		normalized = "/" + normalized
 	}
-	for _, prefix := range builtinRoutePrefixes {
-		if strings.HasPrefix(normalized, prefix) {
-			return prefix
+	normalized = strings.TrimSuffix(normalized, "/")
+	for _, family := range builtinReservedRouteFamilies {
+		if normalized == family || strings.HasPrefix(normalized, family+"/") {
+			return family
 		}
 	}
 	return ""
@@ -629,7 +634,7 @@ func builtinRoutePrefixFor(path string) string {
 // 面分发；漏回滚任意一个都会让「已判定失败」的插件仍然可达或仍显示占用。
 //
 // 三类内建保留（判定顺序：前缀 → 形状）：
-//   - 通配前缀（R-11/R-12）：该前缀下任意声明都不可达，一律拒绝；
+//   - 通配族（R-11/R-12/R-14）：族根及其下任意声明都不可达，一律拒绝；
 //   - ServeMux 独占形状（R-10）：插件永远收不到，拒绝；
 //   - 处理器先查 RouteIndex 的形状（P-01）：插件可达，只参与插件间去重。
 func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *CompiledPlugin) Issues {
@@ -637,12 +642,13 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 	seen := make(map[string]struct{}, len(plugin.Manifest().Routes))
 	for idx, route := range plugin.Manifest().Routes {
 		shape := routeShape(route)
-		// R-11/R-12：内建通配族按前缀保留（任意深度、任意方法）。必须在形状
-		// 比较之前判定——精确声明 `/v1/models/gpt-4o` 的形状并不等于
-		// `/v1/models/{}`，只靠 map 比较会放行一条永远不可达的路由。
-		if prefix := builtinRoutePrefixFor(route.Path); prefix != "" {
+		// R-11/R-12/R-14：内建通配族按「族根 + 其下任意深度」保留（任意方法）。
+		// 必须在形状比较之前判定——精确声明 `/v1/models/gpt-4o` 的形状并不等于
+		// `/v1/models/{}`，只靠 map 比较会放行一条永远不可达的路由；族根
+		// `/v1/models` 还会被 ServeMux 307 到 `/v1/models/` 交给多模态处理器。
+		if family := builtinReservedFamilyFor(route.Path); family != "" {
 			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
-				"路由 %s 落在内建通配前缀 %s 下（内建模式优先，插件路由将不可达）", shape, prefix))
+				"路由 %s 落在内建保留族 %s 下（内建模式优先，插件路由将不可达）", shape, family))
 			continue
 		}
 		if _, reserved := builtinRouteShapes[shape]; reserved {

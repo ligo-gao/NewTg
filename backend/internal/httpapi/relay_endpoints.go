@@ -655,27 +655,31 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 
 // ---------- POST /v1/responses ----------
 
-// handleResponses 是 OpenAI Responses 创建端点（T2 / P-01）。
+// handleResponses 是 OpenAI Responses 创建端点（T2 / P-01 / R-13）。
 //
-// 分发顺序是冻结语义：
+// 分发语义（冻结）：
 //  1. 插件原生路由优先：命中 manifest routes[]（方法 + 路径精确匹配）即转
-//     任务插件提交；
-//  2. 未命中才回落 relay.FormatOpenAIResponses 的通用中继。
+//     任务插件提交（复用 handleSubmit：渠道选择 → 预扣 → 提交 → 落库）；
+//  2. 未命中一律 fail-closed（501 problem+json）：通用中继**不**承接 Responses。
 //
-// 为什么插件分支必须在此 return、绝不继续落到下方通用管线：任务提交路径
-// 在 handleSubmit 内部已经完成一次渠道选择与 PreConsume。若再进入通用中继，
-// 同一个请求会产生第二次预扣（两个计费会话、两条用量事实）——「计费只发生
-// 一次」是 P-01 的硬约束。插件优先而不是反过来，是因为该路径本来就是插件
-// 协议的创建端点：通用中继无法表达插件的异步任务/产物语义，而插件分支
-// 复用 handleSubmit，鉴权、准入、退款与落库都只有一份实现。
+// 为什么插件命中后必须 return：任务提交路径已在 handleSubmit 内部完成一次
+// PreConsume。若继续进入通用管线，同一请求会产生第二次预扣（两个计费会话、
+// 两条用量事实）——「计费只发生一次」是 P-01 的硬约束。
+//
+// 为什么回退是 501 而不是「尽力转发」（R-13）：通用中继是 Chat 管线——
+// adapters.OpenAI.BuildRequest 固定打上游 /chat/completions，且 IR 编码不
+// 透传 openai_responses 的 Raw，Responses 的 input/instructions 会全部丢失。
+// 若放行，客户端会拿到 200 + chat.completion（或 chat chunk SSE）并按与该
+// 输入无关的 usage 被结算——「静默给错答案」比明确报错更糟，且会产生真实
+// 扣费。因此这里在**任何计费/上游调用之前**拒绝，零副作用。
 //
 // 鉴权已由 Register 的 RelayAuth 中间件完成（与 /v1/chat/completions、
-// /v1/tasks 同一条链），插件分支不再重复包裹。
+// /v1/tasks 同一条链）：未认证请求先得到 401，不会看到本分支的 501。
 func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
 
 	// R-03：复用 T1 的只读路由索引，不另建匹配逻辑。每次请求都取当前快照，
-	// 让已停用的插件路由立即失效。
+	// 让已停用的插件路由立即失效；索引未命中才进入 fail-closed 分支。
 	if h.nativeRoutes != nil {
 		if match, ok := h.nativeRoutes.NativeRoutes().Match(r.Method, r.URL.Path); ok {
 			h.nativeRoutes.DispatchNativeRoute(w, r, match)
@@ -683,123 +687,27 @@ func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, err := readRelayBody(r)
-	if err != nil {
-		if errors.Is(err, errRelayBodyTooLarge) {
-			writeRelayError(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
-				"request body exceeds the 32 MiB limit")
-			return
-		}
-		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
-		return
+	// R-13：Responses 的通用回退已撤销（见上方 why 注释）。请求体刻意不读：
+	// 不做任何解析/校验/计费，直接给出可操作的错误。
+	//
+	// 形状选择：这里用 RFC 7807 problem+json（与 /api 面同一套 writeProblemDetail，
+	// 类型沿用 https://newtg.dev/problems/ 命名空间），而不是 /v1 常规的 OpenAI
+	// 信封——R-13 明确要求 problem+json 且不得另起第二套类型命名。该项是对
+	// relay-01 §3.6「/v1 永远 application/json」的有意例外，登记在修复报告中。
+	if requestID != "" {
+		w.Header().Set("X-Request-ID", requestID)
 	}
-	// 复原 body：BuildRelayContext 的 peekStreaming 需要读请求体判定 stream
-	// （它会把已读前缀拼回）；权威值随后由归一化层写入 RelayContext。
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
-	parsed, err := parseResponsesRequest(body)
-	if err != nil {
-		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request",
-			"invalid OpenAI Responses request body")
-		return
-	}
-
-	principal, ok := auth.PrincipalFrom(r.Context())
-	if !ok {
-		// 只有中间件未挂载才会到这里；fail-closed，绝不把零值身份当匿名用户。
-		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
-		return
-	}
-	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
-	if err != nil {
-		status, code, message := mapRelayContextError(err)
-		writeRelayError(w, status, requestID, code, message)
-		return
-	}
-	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）；
-	// 这里显式写 FormatOpenAIResponses，让计费与诊断看到真实的入站协议族。
-	relay.WithRequest(rc, parsed, relay.FormatOpenAIResponses, r.URL.Path)
-
-	// pin 的解析与校验顺序与 chat 一致：非管理员 pin 已在 BuildRelayContext
-	// 返回 403（R-P2a），这里拿到的 hasPin 等价于管理员 pin。
-	pinID, hasPin := relay.ParseChannelPin(r)
-	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
-		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
-			"this token is not allowed to access the requested model")
-		return
-	}
-	// R-84：停用模型必须在派发（含 PreConsume）之前 404，与 chat 入口同口径。
-	if h.modelStatus != nil {
-		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
-		if statusErr != nil {
-			writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
-				"failed to check model availability")
-			return
-		}
-		if found && status == modelPricingStatusDisabled {
-			writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
-				"the requested model is not available")
-			return
-		}
-	}
-
-	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
-		Model:     parsed.Model,
-		Group:     rc.UsingGroup,
-		MaxTokens: parsed.MaxTokens,
-	})
-
-	// 跨协议头（x-newtg-target-protocol）不在 Responses 面启用：该头约束的是
-	// Chat 协议族的回写形态，Responses 的转码尚未建模。传空协议 = 不按协议
-	// 过滤候选，与「未携带头」的既有行为完全一致。
-	deps := h.routeDeps(rc, pinID, hasPin, "")
-	if parsed.Stream {
-		h.serveStream(w, r, rc, deps)
-		return
-	}
-	h.serveJSON(w, r, rc, deps)
+	writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
+		"Responses endpoint requires a plugin task channel",
+		"the generic relay cannot execute /v1/responses; declare the route in an installed task plugin's routes[]")
 }
 
-// parseResponsesRequest 把 Responses 创建请求体解析为通用中继所需的最小 IR。
+// problemTypeEndpointNotSupported 是 R-13 冻结的 problem type URI。
 //
-// 只建模路由/计费/流式判定需要的字段（model / stream / max_output_tokens）：
-// 正文（input、instructions、tools…）随 Raw 原样携带——Responses 请求的
-// 完整转码不在本任务范围，通用中继按 OpenAI 兼容管线转发。
-//
-// 不复用 ir.ParseOpenAIRequest：后者按 Chat 形状填写 RawFormat 与 messages，
-// 会把入站协议错标成 openai，计费与诊断会读到错误的协议族。
-func parseResponsesRequest(body []byte) (*contract.Request, error) {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		// 与 Chat 入口同口径：只接受 JSON 对象（数组/标量/null 不是请求体）。
-		return nil, errors.New("request body must be a JSON object")
-	}
-	var payload struct {
-		Model           *string `json:"model"`
-		Stream          bool    `json:"stream"`
-		MaxOutputTokens *int    `json:"max_output_tokens"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
-	}
-	// max_output_tokens 会成为预扣估算维度：负值必须在进入 PreConsume 之前
-	// 拒绝（.agents/rules/billing.md：用户可控的计费乘数不得为负）。
-	if payload.MaxOutputTokens != nil && *payload.MaxOutputTokens < 0 {
-		return nil, errors.New("max_output_tokens must not be negative")
-	}
-	req := &contract.Request{
-		Stream:    payload.Stream,
-		RawFormat: relay.FormatOpenAIResponses,
-		Raw:       append(contract.ProtocolBody(nil), body...),
-	}
-	if payload.Model != nil {
-		req.Model = *payload.Model
-	}
-	// Responses 的长度预算字段是 max_output_tokens；契约统一的计费维度是
-	// MaxTokens，在这里归一，估算层不需要了解协议差异。
-	req.MaxTokens = payload.MaxOutputTokens
-	return req, nil
-}
+// 沿用仓库既有的 `https://newtg.dev/problems/` 命名空间（与
+// handlers_public_pricing.go 的 not-implemented 同源），不另造第二套命名；
+// 值为 URI 是因为 Problem.type 在 OpenAPI 里声明为 format: uri。
+const problemTypeEndpointNotSupported = "https://newtg.dev/problems/endpoint-not-supported"
 
 // requestChoiceCount 读取 OpenAI 请求体的 n（缺省/非法为 1）。
 // 只用于 finding 14 的「stream + n>1」拒绝，不进入 IR（契约未建模 n）。

@@ -248,26 +248,33 @@ func TestRegistryAllowsPluginDispatchedResponsesRoute(t *testing.T) {
 	}
 }
 
-// TestRegistryRejectsBuiltinWildcardPrefixRoutes 覆盖 R-11/R-12：内建通配族
-// `/v1/models/`、`/v1beta/models/` 按**前缀**保留——该前缀下任意深度、任意
-// 方法的插件路由都必须在注册期整插件失败。按形状相等比较挡不住
-// `/v1/models/gpt-4o` 这类精确声明：它注册成功、进入 RouteIndex，但
-// ServeMux 的 `/{path...}` 模式永远先命中，形成「显示 registered、实际不可达」。
-func TestRegistryRejectsBuiltinWildcardPrefixRoutes(t *testing.T) {
+// TestRegistryRejectsBuiltinReservedFamilyRoutes 覆盖 R-11/R-12/R-14：内建
+// 通配族 `/v1/models`、`/v1beta/models` 按「族根 + 其下任意深度、任意方法」
+// 保留——族内任何插件路由都必须在注册期整插件失败。
+//
+// 两种「注册成功但不可达」的形态都要挡住：
+//   - 族下精确声明（`/v1/models/gpt-4o`、`/v1/models/x/y`）：ServeMux 的
+//     `POST /v1/models/{path...}` 永远先命中；
+//   - 族根（`/v1/models`，任意方法）：注册 `{path...}` 模式后 ServeMux 会对
+//     族根发 307 重定向到 `/v1/models/`，随后由多模态 embeddings 处理器接管。
+func TestRegistryRejectsBuiltinReservedFamilyRoutes(t *testing.T) {
 	cases := []struct {
 		method string
 		path   string
 	}{
+		{"POST", "/v1/models"},
+		{"GET", "/v1/models"},
+		{"POST", "/v1/models/"},
 		{"POST", "/v1/models/gpt-4o"},
 		{"POST", "/v1/models/x/y"},
 		{"GET", "/v1/models/gpt-4o"},
 	}
-	// `/v1beta/models/` 已在 R-09 被加载期拒绝（原生路由必须以 /v1/ 开头），
-	// 无法构造出能走到前缀判定的插件源；builtinRoutePrefixes 里的该条目是
-	// 纵深防御（若将来 R-09 放开，前缀保留仍然生效），无独立用例。
+	// `/v1beta/models` 族已在 R-09 被加载期拒绝（原生路由必须以 /v1/ 开头），
+	// 构造不出能走到族判定的插件源；builtinReservedRouteFamilies 里的该条目
+	// 是纵深防御（若将来 R-09 放开，族保留仍然生效），无独立用例。
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			// 同一插件里再放一条本可注册的路由：前缀冲突必须让整插件失败，
+			// 同一插件里再放一条本可注册的路由：族冲突必须让整插件失败，
 			// 已写入索引的那一条要一并回滚（否则失败插件仍局部可达）。
 			source := fixture{Key: "sample", Routes: `[
 				{ method: "POST", path: "/v1/sample/unique", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
@@ -279,26 +286,15 @@ func TestRegistryRejectsBuiltinWildcardPrefixRoutes(t *testing.T) {
 			}
 			entry := m.Snapshot().Lookup("sample")
 			if entry.Status != StatusCompileFailed || !entry.Errors.hasRule("route_conflict") {
-				t.Fatalf("通配前缀下的路由必须整插件 compile_failed: %+v", entry)
+				t.Fatalf("保留族下的路由必须整插件 compile_failed: %+v", entry)
 			}
 			if _, ok := m.Snapshot().Routes().Match(tc.method, tc.path); ok {
-				t.Fatal("prefix-conflicting route must not enter the index")
+				t.Fatal("family-conflicting route must not enter the index")
 			}
 			if _, leaked := m.Snapshot().Routes().Match("POST", "/v1/sample/unique"); leaked {
 				t.Fatal("failed plugin's other routes must be rolled back")
 			}
 		})
-	}
-
-	// 族根本身不在前缀内（`{path...}` 需要尾随斜杠），仍按精确形状管理：
-	// POST /v1/models 没有对应的内建模式，插件声明是可路由的，不得误报。
-	source := fixture{Key: "modelsroot", Routes: routeJS("POST", "/v1/models", "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
-	m := MustNewManager(map[string]string{"modelsroot": source}, nil, Options{MasterEnabled: true})
-	if err := m.Reload(context.Background()); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if entry := m.Snapshot().Lookup("modelsroot"); entry.Status != StatusRegistered {
-		t.Fatalf("POST /v1/models 不在通配前缀内，不应被拒绝: %+v", entry)
 	}
 }
 
