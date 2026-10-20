@@ -216,6 +216,12 @@ func TestAnnouncementRepoActiveAndRead(t *testing.T) {
 		PublishAt: time.Now().UTC().Add(24 * time.Hour),
 	})
 	draft := createRepoAnnouncement(t, repo, AnnouncementInput{Title: "draft", Content: "x"})
+	// 已过期（虚拟态）：active 必须排除。
+	expiredAt := time.Now().UTC().Add(-time.Minute)
+	expired := createRepoAnnouncement(t, repo, AnnouncementInput{
+		Title: "expired", Content: "x", PublishNow: true,
+		PublishAt: time.Now().UTC().Add(-time.Hour), ExpireAt: &expiredAt,
+	})
 
 	const userID int64 = 987654321 // 无 FK，任意 bigint 即可
 	t.Cleanup(func() {
@@ -238,6 +244,9 @@ func TestAnnouncementRepoActiveAndRead(t *testing.T) {
 	}
 	if _, ok := seen[draft.ID]; ok {
 		t.Fatal("active 不应包含草稿")
+	}
+	if _, ok := seen[expired.ID]; ok {
+		t.Fatal("active 不应包含已过期公告")
 	}
 	if seen[active.ID].Read {
 		t.Fatal("未读公告 read 应为 false")

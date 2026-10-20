@@ -48,6 +48,10 @@ type announcementIntegrationEnv struct {
 	logs   *sql.DB
 	repo   *store.SQLAnnouncementRepo
 	router http.Handler
+	// adminID 是本次用例专用的管理员 id。为每个用例分配唯一 actor：
+	// 审计行写入共享日志库，而其它用例（如 audit-logs 分页）按 user_id
+	// 断言行数——复用 actor=1 会让我的公告审计污染它们的计数。
+	adminID int64
 }
 
 func newAnnouncementIntegrationEnv(t *testing.T) *announcementIntegrationEnv {
@@ -95,7 +99,19 @@ func newAnnouncementIntegrationEnv(t *testing.T) *announcementIntegrationEnv {
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &announcementIntegrationEnv{db: db, logs: logsDB, repo: repo, router: mux}
+	adminID := time.Now().UnixNano()%1_000_000_000 + 2_000_000_000
+	env := &announcementIntegrationEnv{db: db, logs: logsDB, repo: repo, router: mux, adminID: adminID}
+	if logsDB != nil {
+		t.Cleanup(func() {
+			_, _ = logsDB.Exec(`DELETE FROM audit_logs WHERE user_id = $1`, adminID)
+		})
+	}
+	return env
+}
+
+// adminPrincipal 返回本用例专用的全权管理员身份。
+func (e *announcementIntegrationEnv) adminPrincipal() *auth.Principal {
+	return announcementTestPrincipal(e.adminID, rbac.RoleAdmin, rbac.PermSettingsManage)
 }
 
 func (e *announcementIntegrationEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any) *httptest.ResponseRecorder {
@@ -130,8 +146,7 @@ func (e *announcementIntegrationEnv) cleanupAnnouncement(t *testing.T, id string
 
 func (e *announcementIntegrationEnv) createAnnouncement(t *testing.T, body map[string]any) map[string]any {
 	t.Helper()
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
-	got := e.do(t, admin, http.MethodPost, "/api/announcements", body)
+	got := e.do(t, e.adminPrincipal(), http.MethodPost, "/api/announcements", body)
 	if got.Code != http.StatusCreated {
 		t.Fatalf("create = %d，want 201（body=%s）", got.Code, got.Body.String())
 	}
@@ -158,7 +173,7 @@ func (e *announcementIntegrationEnv) insertUser(t *testing.T) int64 {
 // TestAnnouncementIntegrationCreateAndValidation 覆盖创建默认值与超长/时间校验。
 func TestAnnouncementIntegrationCreateAndValidation(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 
 	draft := env.createAnnouncement(t, map[string]any{
 		"title": "Draft", "content": "**hello**",
@@ -213,7 +228,7 @@ func (e *announcementIntegrationEnv) countAnnouncements(t *testing.T) int {
 // TestAnnouncementIntegrationPublishNowAtomic 覆盖 publish_now 的成功与回滚。
 func TestAnnouncementIntegrationPublishNowAtomic(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 
 	got := env.do(t, admin, http.MethodPost, "/api/announcements", map[string]any{
 		"title": "Publish now", "content": "body", "publish_now": true,
@@ -250,7 +265,7 @@ func TestAnnouncementIntegrationPublishNowAtomic(t *testing.T) {
 // TestAnnouncementIntegrationStateMachine 覆盖迁移矩阵与幂等。
 func TestAnnouncementIntegrationStateMachine(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 
 	draft := env.createAnnouncement(t, map[string]any{"title": "SM", "content": "x"})
 	id := draft["id"].(string)
@@ -298,7 +313,7 @@ func TestAnnouncementIntegrationStateMachine(t *testing.T) {
 // TestAnnouncementIntegrationN35EditSemantics 覆盖编辑已发布/已下线。
 func TestAnnouncementIntegrationN35EditSemantics(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 
 	created := env.createAnnouncement(t, map[string]any{
 		"title": "Edit me", "content": "v1", "publish_now": true,
@@ -352,7 +367,7 @@ func TestAnnouncementIntegrationN35EditSemantics(t *testing.T) {
 // TestAnnouncementIntegrationVirtualExpired 覆盖虚拟过期筛选。
 func TestAnnouncementIntegrationVirtualExpired(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 
 	publishAt := time.Now().UTC().Add(-2 * time.Hour)
 	expireAt := time.Now().UTC().Add(-time.Hour)
@@ -496,7 +511,7 @@ func containsKey(m map[string]bool, key string) bool {
 // TestAnnouncementIntegrationDeleteCascadesReads 覆盖删除同事务清已读。
 func TestAnnouncementIntegrationDeleteCascadesReads(t *testing.T) {
 	env := newAnnouncementIntegrationEnv(t)
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 	userID := env.insertUser(t)
 	user := announcementTestPrincipal(userID, rbac.RoleUser)
 
@@ -530,7 +545,7 @@ func TestAnnouncementIntegrationAuditHasNoContent(t *testing.T) {
 	if env.logs == nil {
 		t.Skip("NEWTG_TEST_LOGS_DSN 未设置，跳过审计断言")
 	}
-	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	admin := env.adminPrincipal()
 	secret := fmt.Sprintf("SECRET-BODY-%d", time.Now().UnixNano())
 
 	created := env.createAnnouncement(t, map[string]any{
