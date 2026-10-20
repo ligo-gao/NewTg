@@ -1214,6 +1214,7 @@
       "last_cleared": "Dọn lần cuối {time}",
       "never_cleared": "Chưa từng dọn",
       "empty": "Bộ đệm đĩa đã tắt (bị tắt bởi biến môi trường triển khai).",
+      "dir_unavailable": "Không thể truy cập thư mục bộ đệm.",
       "clear_button": "Dọn bộ đệm đĩa không hoạt động",
       "consequence": "Chỉ xóa các tệp không dùng trong 10 phút. Các yêu cầu đang chạy không bị ảnh hưởng.",
       "confirm_title": "Dọn bộ đệm đĩa không hoạt động",
@@ -1284,6 +1285,7 @@
       "invalid_value": "Giá trị không hợp lệ.",
       "disk_cache_not_configured": "Bộ đệm đĩa chưa được cấu hình.",
       "log_dir_not_configured": "Thư mục nhật ký chưa được cấu hình.",
+      "offline": "Mất kết nối mạng. Hãy kiểm tra kết nối và thử lại.",
       "rate_limited": "Quá nhiều yêu cầu. Hãy thử lại sau.",
       "rate_limited_retry": "Quá nhiều yêu cầu. Hãy thử lại sau {seconds} giây.",
       "generic": "Thao tác thất bại. Vui lòng thử lại."

@@ -1214,6 +1214,7 @@
       "last_cleared": "最近清理 {time}",
       "never_cleared": "从未清理",
       "empty": "磁盘缓存未启用（部署环境变量关闭）",
+      "dir_unavailable": "缓存目录不可访问。",
       "clear_button": "清理不活跃磁盘缓存",
       "consequence": "仅删除 10 分钟内未使用的缓存文件；正在进行的请求不受影响。",
       "confirm_title": "清理不活跃磁盘缓存",
@@ -1284,6 +1285,7 @@
       "invalid_value": "参数值无效。",
       "disk_cache_not_configured": "磁盘缓存未配置。",
       "log_dir_not_configured": "日志目录未配置。",
+      "offline": "网络连接已断开，请检查网络后重试。",
       "rate_limited": "请求过于频繁，请稍后再试。",
       "rate_limited_retry": "请求过于频繁，请在 {seconds} 秒后重试。",
       "generic": "操作失败，请重试。"

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -19,6 +19,8 @@ export interface DangerConfirmProps {
  * 上，避免回车误触不可逆操作；请求进行中两个按钮都禁用，防止重复提交。
  *
  * Dialog 基元挂载时先把焦点放到面板，所以这里等一帧再显式聚焦取消按钮。
+ * 焦点必须限定在本实例的 footer 内：页面上同时挂载三个 DangerConfirm，
+ * 用 document 级选择器会抓到别家的按钮（甚至已关闭弹窗的残留节点）。
  */
 export function DangerConfirm({
   open,
@@ -30,12 +32,14 @@ export function DangerConfirm({
   onConfirm,
 }: DangerConfirmProps) {
   const { t } = useI18n()
+  const footerRef = useRef<HTMLSpanElement>(null)
 
   useEffect(() => {
     if (!open) return
     const timer = globalThis.setTimeout(() => {
-      const candidates = document.querySelectorAll<HTMLElement>('[data-danger-cancel]')
-      candidates[candidates.length - 1]?.focus()
+      footerRef.current
+        ?.querySelector<HTMLElement>('[data-danger-cancel]')
+        ?.focus()
     }, 0)
     return () => globalThis.clearTimeout(timer)
   }, [open])
@@ -50,7 +54,7 @@ export function DangerConfirm({
       description={description}
       role="alertdialog"
       footer={
-        <>
+        <span ref={footerRef} className="contents">
           <Button
             variant="secondary"
             data-danger-cancel
@@ -64,7 +68,7 @@ export function DangerConfirm({
               ? t('admin.performance.common.working')
               : confirmLabel}
           </Button>
-        </>
+        </span>
       }
     />
   )

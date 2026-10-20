@@ -227,13 +227,29 @@ export function PerformancePage() {
     by_count: '20',
   })
 
+  // 写操作传输失败与 GET 的 offline 必须同等对待：否则页面仍显示「已连接」，
+  // 用户会反复点击一个注定失败的按钮。写成功后清除，浏览器 online 事件也清除
+  // （网络恢复后 GET 未必立刻重发，不能只依赖查询错误）。
+  const [writeOffline, setWriteOffline] = useState(false)
+
   // 服务端已断（ApiError.kind='offline'）与浏览器 offline 事件任一成立即视为
   // 离线：两者互不替代，但用户看到的结果都是「写操作不可用 + 离线快照」。
   const offline =
     !online ||
+    writeOffline ||
     [statsQuery.error, logsQuery.error, recentQuery.error].some(
       (error) => error instanceof ApiError && error.kind === 'offline',
     )
+
+  useEffect(() => {
+    if (online) setWriteOffline(false)
+  }, [online])
+
+  useEffect(() => {
+    const clear = (): void => setWriteOffline(false)
+    window.addEventListener('online', clear)
+    return () => window.removeEventListener('online', clear)
+  }, [])
 
   // 离线 Toast 只在「在线 → 离线」的跳变时播报一次；重复渲染不重复提醒。
   const wasOfflineRef = useRef(!online)
@@ -272,9 +288,14 @@ export function PerformancePage() {
     ])
   }
 
-  /** 统一错误文案：已知 Problem 码本地化，429 原地提示，其余通用。 */
+  /** 统一错误文案：已知 Problem 码本地化，429 原地提示，传输失败单独说明。 */
   const describeError = (error: unknown): string => {
     if (error instanceof ApiError) {
+      // 传输失败没有 Problem 码可映射，必须使用本地化的网络文案，而不是
+      // 让它落到「操作失败」——后者会误导用户去重复提交。
+      if (error.kind === 'offline') {
+        return t('admin.performance.errors.offline')
+      }
       if (error.status === 429) {
         return error.retry_after !== undefined
           ? t('admin.performance.errors.rate_limited_retry', {
@@ -290,15 +311,28 @@ export function PerformancePage() {
     return t('admin.performance.errors.generic')
   }
 
+  /**
+   * 写操作统一的离线判定：只有传输失败（status 0 → kind 'offline'）才把
+   * 页面推入离线态；409/422/429 都是服务端可达的业务结果，不能误标离线。
+   */
+  const noteWriteOutcome = (error?: unknown): void => {
+    setWriteOffline(
+      error instanceof ApiError ? error.kind === 'offline' : false,
+    )
+  }
+
   const handleDiskClear = async (): Promise<void> => {
     setDiskPending(true)
     setDiskOutcome(null)
     try {
-      const data = await clearDiskCache()
+      // 回传页面统计所属实例：实例漂移时服务端 409，而不是清错副本。
+      const data = await clearDiskCache(stats?.instance_id)
+      noteWriteOutcome()
       setDiskOutcome({ kind: 'success', data })
       // 成功后刷新统计与最近操作：结果行与卡片数字必须反映同一次清理。
       await Promise.all([statsQuery.refetch(), recentQuery.refetch()])
     } catch (error) {
+      noteWriteOutcome(error)
       setDiskOutcome({ kind: 'error', message: describeError(error) })
     } finally {
       setDiskPending(false)
@@ -310,10 +344,12 @@ export function PerformancePage() {
     setGcPending(true)
     setGcOutcome(null)
     try {
-      const data = await runGarbageCollection()
+      const data = await runGarbageCollection(stats?.instance_id)
+      noteWriteOutcome()
       setGcOutcome({ kind: 'success', data })
       await Promise.all([statsQuery.refetch(), recentQuery.refetch()])
     } catch (error) {
+      noteWriteOutcome(error)
       setGcOutcome({ kind: 'error', message: describeError(error) })
     } finally {
       setGcPending(false)
@@ -327,10 +363,12 @@ export function PerformancePage() {
     setLogsPending(true)
     setLogsOutcome(null)
     try {
-      const data = await cleanupLogs(mode, parsed.value)
+      const data = await cleanupLogs(mode, parsed.value, stats?.instance_id)
+      noteWriteOutcome()
       setLogsOutcome({ kind: 'success', data })
       await Promise.all([logsQuery.refetch(), recentQuery.refetch()])
     } catch (error) {
+      noteWriteOutcome(error)
       setLogsOutcome({ kind: 'error', message: describeError(error) })
     } finally {
       setLogsPending(false)
@@ -352,6 +390,7 @@ export function PerformancePage() {
   }
 
   const instanceId = stats?.instance_id
+  const configEnabled = stats?.config.enabled === true
   const diskEnabled = stats?.cache_stats.enabled === true
   const diskPath = stats?.disk_cache_info.path || stats?.config.path || ''
   const diskMaxMb = stats?.config.max_mb ?? 0
@@ -519,9 +558,18 @@ export function PerformancePage() {
               </p>
             </div>
 
-            {!diskEnabled ? (
+            {/*
+             * 空态原因必须由 config.enabled 区分：环境变量关闭与「已启用但
+             * 目录不可访问」是两种不同的运维问题，后者能通过修权限解决。
+             * 只用 cache_stats.enabled 会把两者混成同一句「未启用」。
+             */}
+            {!configEnabled ? (
               <p className="mt-3 text-sm text-ink-3">
                 {t('admin.performance.disk.empty')}
+              </p>
+            ) : !diskEnabled ? (
+              <p className="mt-3 text-sm text-ink-3">
+                {t('admin.performance.disk.dir_unavailable')}
               </p>
             ) : null}
 
@@ -847,6 +895,9 @@ export function PerformancePage() {
                           locale,
                         ),
                       })}
+                      {logsOutcome.data.skipped_active
+                        ? ` ${t('admin.performance.logs.result_skipped')}`
+                        : ''}
                     </ResultLine>
                   ) : (
                     <ResultLine tone="success" testId="performance-logs-result">
@@ -918,22 +969,22 @@ export function PerformancePage() {
             <table className="w-full min-w-[760px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-border-hairline text-xs text-ink-3">
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.time')}
                   </th>
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.actor')}
                   </th>
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.action')}
                   </th>
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.params')}
                   </th>
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.result')}
                   </th>
-                  <th className="px-2 py-2 font-medium">
+                  <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.amount')}
                   </th>
                 </tr>

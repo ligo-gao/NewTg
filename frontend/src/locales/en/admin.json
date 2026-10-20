@@ -1214,6 +1214,7 @@
       "last_cleared": "Last cleared {time}",
       "never_cleared": "Never cleared",
       "empty": "Disk cache is disabled (turned off by a deployment environment variable).",
+      "dir_unavailable": "Cache directory is not accessible.",
       "clear_button": "Clear inactive disk cache",
       "consequence": "Only files unused for 10 minutes are removed. In-flight requests are not affected.",
       "confirm_title": "Clear inactive disk cache",
@@ -1284,6 +1285,7 @@
       "invalid_value": "Invalid value.",
       "disk_cache_not_configured": "Disk cache is not configured.",
       "log_dir_not_configured": "Log directory is not configured.",
+      "offline": "Network connection lost. Check your connection and try again.",
       "rate_limited": "Too many requests. Try again shortly.",
       "rate_limited_retry": "Too many requests. Try again in {seconds} seconds.",
       "generic": "The action failed. Please try again."

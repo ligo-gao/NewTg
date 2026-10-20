@@ -116,6 +116,23 @@ describe('previewLogCleanup', () => {
       activeSkipped: false,
     })
   })
+
+  it('breaks mtime ties by file name descending, matching the server', () => {
+    // 服务端 sortPerfFilesDesc：mtime 相同按文件名倒序；活动文件取排序后首元素。
+    const tied = [
+      file('newtg-a.log', 100, '2026-10-19T11:00:00Z'),
+      file('newtg-b.log', 200, '2026-10-19T11:00:00Z'),
+    ]
+    // by_count 保留 1 个：保留 b，删除 a；活动文件是 b 而不是先出现的 a。
+    expect(previewLogCleanup(tied, 'by_count', 1, now)).toEqual({
+      count: 1,
+      bytes: 100,
+      activeSkipped: false,
+    })
+    // 同 mtime 且都在删除窗口内时，活动文件（b）被跳过，只统计 a。
+    const preview = previewLogCleanup(tied, 'by_days', 1, now)
+    expect(preview).toEqual({ count: 1, bytes: 100, activeSkipped: true })
+  })
 })
 
 describe('problem code extraction', () => {

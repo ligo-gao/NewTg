@@ -154,17 +154,21 @@ export function previewLogCleanup(
     .map((file) => ({ file, time: Date.parse(file.mod_time) }))
     .filter((entry) => Number.isFinite(entry.time))
 
-  // 活动文件 = 最新 mtime。并列时取第一个，保证预览与后端单选一致。
-  let active: (typeof entries)[number] | undefined
-  for (const entry of entries) {
-    if (active === undefined || entry.time > active.time) active = entry
-  }
+  // 排序口径必须与服务端 sortPerfFilesDesc 完全一致：mtime 倒序，mtime 相同
+  // 时按文件名倒序。少了 tie-break，前端「活动文件」与 by_count 的删除集在
+  // 同一秒写入多个文件的场景下会和服务端不同，预览数量随之失真。
+  const sorted = [...entries].sort((left, right) => {
+    if (left.time !== right.time) return right.time - left.time
+    if (left.file.name === right.file.name) return 0
+    return left.file.name < right.file.name ? 1 : -1
+  })
+
+  // 活动文件 = 排序后的首元素（最新 mtime；并列时文件名最大者）。
+  const active = sorted[0]
 
   let candidates: typeof entries
   if (mode === 'by_count') {
-    candidates = [...entries]
-      .sort((left, right) => right.time - left.time)
-      .slice(value)
+    candidates = sorted.slice(value)
   } else {
     const cutoff = nowMs - value * 24 * 60 * 60 * 1000
     candidates = entries.filter((entry) => entry.time < cutoff)

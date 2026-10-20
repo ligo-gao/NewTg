@@ -55,19 +55,35 @@ export async function fetchRecentOperations(
   )
 }
 
-export async function clearDiskCache(): Promise<PerformanceDiskCacheClearResult> {
+/**
+ * 写请求回传当前实例（契约：磁盘缓存/日志清理用 query，GC 用 body）。
+ *
+ * 页面展示的统计来自某一次 `GET /stats`，写操作却可能落在另一个副本上。
+ * 把页面钉住的实例标识随写请求回传，服务端就能在实例漂移时返回 409
+ * `instance_mismatch` 而不是静默操作错误的节点。没有 stats（首次加载失败）
+ * 时不传：此时页面没有可回传的实例，伪造一个反而会引入误判。
+ */
+export async function clearDiskCache(
+  instanceId?: string,
+): Promise<PerformanceDiskCacheClearResult> {
   return requireData(
     await apiClient.DELETE('/api/performance/disk-cache', {
-      params: { header: CONFIRM_HEADER },
+      params: {
+        query:
+          instanceId === undefined ? {} : { instance_id: instanceId },
+        header: CONFIRM_HEADER,
+      },
     }),
   )
 }
 
-export async function runGarbageCollection(): Promise<PerformanceGCResult> {
+export async function runGarbageCollection(
+  instanceId?: string,
+): Promise<PerformanceGCResult> {
   return requireData(
     await apiClient.POST('/api/performance/gc', {
       params: { header: CONFIRM_HEADER },
-      body: {},
+      body: instanceId === undefined ? {} : { instance_id: instanceId },
     }),
   )
 }
@@ -75,11 +91,16 @@ export async function runGarbageCollection(): Promise<PerformanceGCResult> {
 export async function cleanupLogs(
   mode: CleanupMode,
   value: number,
+  instanceId?: string,
 ): Promise<PerformanceLogCleanupResult> {
   return requireData(
     await apiClient.DELETE('/api/performance/logs', {
       params: {
-        query: { mode, value },
+        query: {
+          mode,
+          value,
+          ...(instanceId === undefined ? {} : { instance_id: instanceId }),
+        },
         header: CONFIRM_HEADER,
       },
     }),

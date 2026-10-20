@@ -1214,6 +1214,7 @@
       "last_cleared": "最近清理 {time}",
       "never_cleared": "從未清理",
       "empty": "磁碟快取未啟用（部署環境變數關閉）",
+      "dir_unavailable": "快取目錄無法存取。",
       "clear_button": "清理不活躍磁碟快取",
       "consequence": "僅刪除 10 分鐘內未使用的快取檔案；進行中的請求不受影響。",
       "confirm_title": "清理不活躍磁碟快取",
@@ -1284,6 +1285,7 @@
       "invalid_value": "參數值無效。",
       "disk_cache_not_configured": "磁碟快取未設定。",
       "log_dir_not_configured": "日誌目錄未設定。",
+      "offline": "網路連線已中斷，請檢查網路後重試。",
       "rate_limited": "請求過於頻繁，請稍後再試。",
       "rate_limited_retry": "請求過於頻繁，請在 {seconds} 秒後重試。",
       "generic": "操作失敗，請重試。"
