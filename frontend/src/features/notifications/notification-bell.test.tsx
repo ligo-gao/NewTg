@@ -34,10 +34,14 @@ function notification(
 interface RequestLog {
   listCalls: Array<{ page: number; pageSize: number }>
   readIds: number[]
+  unreadCalls: number
+  readAllCalls: number
 }
 
 interface InstallOptions {
   items?: UserNotification[]
+  /** 覆盖服务端未读数（默认按 items 的 read_at 推导）。 */
+  unread?: number
   listStatus?: number
   /** `null` omits the `Retry-After` header entirely. */
   retryAfter?: number | null
@@ -49,7 +53,17 @@ function install(options: InstallOptions = {}): RequestLog {
   const state = {
     items: options.items ?? [],
   }
-  const log: RequestLog = { listCalls: [], readIds: [] }
+  const log: RequestLog = {
+    listCalls: [],
+    readIds: [],
+    unreadCalls: 0,
+    readAllCalls: 0,
+  }
+  const countUnread = () =>
+    options.unread ??
+    state.items.filter(
+      (item) => item.read_at === null || item.read_at === undefined,
+    ).length
 
   server.use(
     http.get(`${ORIGIN}/api/me`, () =>
@@ -60,6 +74,11 @@ function install(options: InstallOptions = {}): RequestLog {
         permissions: [],
       }),
     ),
+    http.get(`${ORIGIN}/api/notifications/unread-count`, () => {
+      log.unreadCalls += 1
+      if (options.offline === true) return HttpResponse.error()
+      return HttpResponse.json({ unread: countUnread() })
+    }),
     http.get(`${ORIGIN}/api/notifications`, ({ request }) => {
       const url = new URL(request.url)
       const page = Number(url.searchParams.get('p') ?? '1')
@@ -89,6 +108,18 @@ function install(options: InstallOptions = {}): RequestLog {
         page,
         page_size: pageSize,
       })
+    }),
+    http.post(`${ORIGIN}/api/notifications/read-all`, () => {
+      log.readAllCalls += 1
+      const updated = state.items.filter(
+        (item) => item.read_at === null || item.read_at === undefined,
+      ).length
+      state.items = state.items.map((item) =>
+        item.read_at === null || item.read_at === undefined
+          ? { ...item, read_at: '2026-10-20T09:00:00Z' }
+          : item,
+      )
+      return HttpResponse.json({ updated })
     }),
     http.post(`${ORIGIN}/api/notifications/:id/read`, ({ params }) => {
       const id = Number(params.id)
@@ -168,8 +199,9 @@ describe('console notification bell', () => {
     // 第一页只取 20 条，第 21 条在第二页。
     expect(within(dialog).queryByText('Notice 21')).toBeNull()
     expect(within(dialog).getByText('Page 1 of 2')).toBeTruthy()
-    // 顶栏的未读探测（100 条）先于面板列表（20 条）发出。
-    expect(log.listCalls).toContainEqual({ page: 1, pageSize: 20 })
+    // 顶栏的未读计数走专用端点，不再翻 `page_size=100` 的首屏页。
+    expect(log.unreadCalls).toBeGreaterThanOrEqual(1)
+    expect(log.listCalls).not.toContainEqual({ page: 1, pageSize: 100 })
 
     const user = userEvent.setup()
     await user.click(within(dialog).getByRole('button', { name: 'Next' }))
@@ -235,10 +267,11 @@ describe('console notification bell', () => {
   })
 
   it('caps both the badge and the live-region count at 99+', async () => {
+    // 未读数来自专用端点：即使列表只有 2 条，服务端给出的 100 也必须完整
+    // 驱动徽章（证明不再受首屏 100 条窗口限制）。
     install({
-      items: Array.from({ length: 100 }, (_, index) =>
-        notification({ id: index + 1, title: `Notice ${index + 1}` }),
-      ),
+      items: [notification({ id: 1 }), notification({ id: 2 })],
+      unread: 100,
     })
     await renderWithProviders(<ConsoleHeader />, ['common'])
 
@@ -383,14 +416,38 @@ describe('console notification bell', () => {
     )
 
     await waitFor(() => {
-      expect(log.readIds.sort((a, b) => a - b)).toEqual([21, 22])
+      // 一次批量端点调用，不再逐条遍历。
+      expect(log.readAllCalls).toBe(1)
     })
+    expect(log.readIds).toEqual([])
     // 面板打开时顶栏被 Sheet 置为 inert；先关闭再读铃铛的可访问名称。
     await user.click(within(dialog).getByRole('button', { name: 'Close' }))
     await screen.findByRole('button', { name: 'Notifications' })
     expect(screen.getByRole('status').textContent).toBe(
       'No unread notifications',
     )
+  })
+
+  it('disables "mark all as read" from the server count even when the page is read', async () => {
+    // 当前页全是已读，但服务端仍有未读（例如第 2 页）：按钮必须可点。
+    install({
+      items: [
+        notification({
+          id: 63,
+          title: 'Read on page 1',
+          read_at: '2026-10-19T00:00:00Z',
+        }),
+      ],
+      unread: 3,
+    })
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    const dialog = await openPanel()
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole('button', { name: 'Mark all as read' }),
+      ).toHaveProperty('disabled', false)
+    })
   })
 
   it('counts down the server Retry-After and re-enables retry when it expires', async () => {

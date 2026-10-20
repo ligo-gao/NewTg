@@ -2430,6 +2430,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications/unread-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本人站内通知未读数
+         * @description 返回当前登录用户「可见且未读」的站内通知数量，统计口径与
+         *     `GET /api/notifications` 完全一致：`channel=inapp`、归属本人、
+         *     `read_at IS NULL`，且公告类投递只在公告仍生效时计入（公告下线、
+         *     虚拟过期或已删除后不计）。前端徽章据此展示，避免按页聚合的
+         *     100 条窗口漏计。
+         */
+        get: operations["getUserNotificationUnreadCount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 本人全部站内通知标记已读（幂等）
+         * @description 把当前登录用户所有「可见且未读」的站内通知一次置为已读，返回本次
+         *     实际更新的行数。已读行的 `read_at` 保持首次标记值（重复调用
+         *     `updated=0`）；公告已下线/过期/删除的投递不参与更新；不提供
+         *     `user_id` 参数，数据范围恒为本人。集合更新在单条 SQL 中完成，
+         *     不存在部分成功的中间态。
+         */
+        post: operations["markAllUserNotificationsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notifications/{id}/read": {
         parameters: {
             query?: never;
@@ -6444,6 +6492,14 @@ export interface components {
             total: number;
             page: number;
             page_size: number;
+        };
+        UserNotificationUnreadCount: {
+            /** @description 可见且未读的站内通知数；与通知列表同口径。 */
+            unread: number;
+        };
+        UserNotificationReadAllResult: {
+            /** @description 本次实际置读的行数；重复调用为 0（幂等）。 */
+            updated: number;
         };
         /**
          * @description expired 是虚拟态（不落库）
@@ -12230,6 +12286,58 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUserNotificationUnreadCount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotificationUnreadCount"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    markAllUserNotificationsRead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotificationReadAllResult"];
+                };
+            };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             500: components["responses"]["Error500"];

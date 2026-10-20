@@ -13,17 +13,19 @@ import { Sheet } from '@/shared/ui/base/sheet'
 import { Button } from '@/shared/ui/button'
 
 import {
-  collectUnreadNotificationIds,
+  getUserNotificationUnreadCount,
+  markAllUserNotificationsRead,
   markUserNotificationRead,
   listUserNotifications,
-  NOTIFICATION_COUNT_PAGE_SIZE,
   NOTIFICATION_PAGE_SIZE,
   type UserNotification,
 } from './api'
 import {
+  applyAllNotificationsRead,
   applyNotificationRead,
   NOTIFICATIONS_QUERY_PREFIX,
   notificationsListQueryKey,
+  notificationsUnreadCountQueryKey,
 } from './query-keys'
 
 export interface NotificationSheetProps {
@@ -194,18 +196,13 @@ export function NotificationSheet({
   })
 
   /*
-   * 未读总数探测：与铃铛共用同一 query key（`p=1&page_size=100`），因此面板
-   * 打开时通常直接命中缓存、不额外发请求。服务端没有未读计数端点，也没有
-   * `read=false` 过滤，「全部已读」是否可用只能由首屏页聚合判断；超过 100
-   * 条未读时窗口内有未读即视为可点。
+   * 未读计数：与铃铛共用同一个 query key，面板打开时通常直接命中缓存、
+   * 不额外发请求。服务端按与列表相同的可见性口径计数，所以「全部已读」
+   * 是否可用不再受首屏 100 条窗口限制。
    */
-  const unreadProbe = useQuery({
-    queryKey: notificationsListQueryKey(1, NOTIFICATION_COUNT_PAGE_SIZE),
-    queryFn: ({ signal }) =>
-      listUserNotifications(
-        { p: 1, page_size: NOTIFICATION_COUNT_PAGE_SIZE },
-        signal,
-      ),
+  const unreadCountQuery = useQuery({
+    queryKey: notificationsUnreadCountQueryKey,
+    queryFn: ({ signal }) => getUserNotificationUnreadCount(signal),
     enabled: open,
     staleTime: 30_000,
     retry: false,
@@ -299,17 +296,15 @@ export function NotificationSheet({
     setMarkingAll(true)
     setActionError(null)
     try {
-      const ids = await collectUnreadNotificationIds()
-      // 逐条调用：契约没有批量端点，且单条幂等，重复/并发重试安全。
-      for (const id of ids) {
-        await markUserNotificationRead(id)
-      }
+      // 服务端单条 SQL 集合置读：不存在部分成功，重复调用也安全。
+      await markAllUserNotificationsRead()
+      applyAllNotificationsRead(queryClient)
       await queryClient.invalidateQueries({
         queryKey: NOTIFICATIONS_QUERY_PREFIX,
       })
     } catch {
       setActionError('all')
-      // 部分成功也要刷新，让 UI 反映真实剩余未读。
+      // 失败时仍刷新，让 UI 反映服务端真实剩余未读（可能 0 也可能未变）。
       void queryClient.invalidateQueries({
         queryKey: NOTIFICATIONS_QUERY_PREFIX,
       })
@@ -320,10 +315,10 @@ export function NotificationSheet({
 
   const retryBlocked = retrySeconds !== null && retrySeconds > 0
   const unreadOnPage = items.filter(isUnread).length
-  // 探测结果优先（覆盖全部首屏 100 条）；尚未就绪时退回当前页判断。
+  // 计数结果优先（覆盖全部通知，而不是只有当前页）；尚未就绪时退回当前页判断。
   const hasUnread =
-    unreadProbe.data !== undefined
-      ? unreadProbe.data.items.some(isUnread)
+    unreadCountQuery.data !== undefined
+      ? unreadCountQuery.data.unread > 0
       : unreadOnPage > 0
 
   return (
@@ -349,8 +344,7 @@ export function NotificationSheet({
             )}
           </p>
           {/*
-           * 服务端无批量端点；按钮遍历全部页的未读并逐条标记。只有确认
-           * 没有任何未读时才禁用。
+           * 服务端批量端点一次置读全部可见未读；只有确认未读数为 0 时才禁用。
            */}
           <Button
             variant="secondary"

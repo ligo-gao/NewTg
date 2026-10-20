@@ -261,6 +261,10 @@ paths:
   # 仅登录用户本人；数据范围恒为会话/令牌身份。
   /api/notifications:
     $ref: './paths/user.yaml#/paths/~1api~1notifications'
+  /api/notifications/unread-count:
+    $ref: './paths/user.yaml#/paths/~1api~1notifications~1unread-count'
+  /api/notifications/read-all:
+    $ref: './paths/user.yaml#/paths/~1api~1notifications~1read-all'
   /api/notifications/{id}/read:
     $ref: './paths/user.yaml#/paths/~1api~1notifications~1{id}~1read'
 

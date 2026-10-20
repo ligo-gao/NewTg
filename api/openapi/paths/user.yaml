@@ -2382,6 +2382,64 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  /api/notifications/unread-count:
+    get:
+      tags: [user]
+      operationId: getUserNotificationUnreadCount
+      summary: 本人站内通知未读数
+      description: |
+        返回当前登录用户「可见且未读」的站内通知数量，统计口径与
+        `GET /api/notifications` 完全一致：`channel=inapp`、归属本人、
+        `read_at IS NULL`，且公告类投递只在公告仍生效时计入（公告下线、
+        虚拟过期或已删除后不计）。前端徽章据此展示，避免按页聚合的
+        100 条窗口漏计。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UserNotificationUnreadCount'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/notifications/read-all:
+    post:
+      tags: [user]
+      operationId: markAllUserNotificationsRead
+      summary: 本人全部站内通知标记已读（幂等）
+      description: |
+        把当前登录用户所有「可见且未读」的站内通知一次置为已读，返回本次
+        实际更新的行数。已读行的 `read_at` 保持首次标记值（重复调用
+        `updated=0`）；公告已下线/过期/删除的投递不参与更新；不提供
+        `user_id` 参数，数据范围恒为本人。集合更新在单条 SQL 中完成，
+        不存在部分成功的中间态。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UserNotificationReadAllResult'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/notifications/{id}/read:
     parameters:
       - name: id

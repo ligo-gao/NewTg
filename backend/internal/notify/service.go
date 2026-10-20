@@ -617,6 +617,18 @@ func (s *Service) ListUserNotifications(ctx context.Context, userID int64, page,
 	return out, total, nil
 }
 
+// CountUserUnreadNotifications 返回本人「可见且未读」的站内通知数。
+// 与 ListUserNotifications 共用存储层的可见性口径，徽章不会与列表打架。
+func (s *Service) CountUserUnreadNotifications(ctx context.Context, userID int64) (int, error) {
+	return s.store.CountUserUnreadInAppDeliveries(ctx, userID)
+}
+
+// MarkAllUserNotificationsRead 原子地把本人全部可见未读置读，返回更新行数。
+// 重复调用返回 0；已读时刻保持首次值（存储层以 read_at IS NULL 限定）。
+func (s *Service) MarkAllUserNotificationsRead(ctx context.Context, userID int64, now time.Time) (int, error) {
+	return s.store.MarkAllUserInAppDeliveriesRead(ctx, userID, now)
+}
+
 // MarkUserNotificationRead 幂等标记本人一条站内通知已读。重复调用返回 nil。
 func (s *Service) MarkUserNotificationRead(ctx context.Context, userID, id int64, now time.Time) error {
 	return s.store.MarkInAppDeliveryRead(ctx, userID, id, now)

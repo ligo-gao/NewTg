@@ -7868,6 +7868,18 @@ type UserNotificationList struct {
 	Total    int64              `json:"total"`
 }
 
+// UserNotificationReadAllResult defines model for UserNotificationReadAllResult.
+type UserNotificationReadAllResult struct {
+	// Updated 本次实际置读的行数；重复调用为 0（幂等）。
+	Updated int `json:"updated"`
+}
+
+// UserNotificationUnreadCount defines model for UserNotificationUnreadCount.
+type UserNotificationUnreadCount struct {
+	// Unread 可见且未读的站内通知数；与通知列表同口径。
+	Unread int `json:"unread"`
+}
+
 // UserRole defines model for UserRole.
 type UserRole string
 
@@ -8659,6 +8671,13 @@ type ListUserNotificationsParams struct {
 
 	// PageSize 每页条数（默认 20，上限 100）
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// MarkAllUserNotificationsReadParams defines parameters for MarkAllUserNotificationsRead.
+type MarkAllUserNotificationsReadParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // MarkUserNotificationReadParams defines parameters for MarkUserNotificationRead.

@@ -345,6 +345,131 @@ func TestUserInAppNotificationsHideInactiveAnnouncements(t *testing.T) {
 	}
 }
 
+// TestUserInAppUnreadCountAndMarkAllRead 是 R1 的真实 PostgreSQL 验收：
+//   - unread-count 与列表同口径（公告失效的投递不计入）；
+//   - read-all 只影响本人、幂等（read_at 保持首次值）、失效公告跳过、
+//     未读数为 0 时再调用仍为成功且 updated=0。
+func TestUserInAppUnreadCountAndMarkAllRead(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	userA := insertA5User(t, db, "en", "enabled")
+	userB := insertA5User(t, db, "en", "enabled")
+	now := time.Now().UTC()
+
+	activeID := "66666666-6666-4666-8666-666666666666"
+	offlineID := "77777777-7777-4777-8777-777777777777"
+	insertA5Announcement(t, db, activeID, "published", now.Add(-time.Hour), nil)
+	insertA5Announcement(t, db, offlineID, "offline", now.Add(-time.Hour), nil)
+
+	locale := LocaleEN
+	makeDelivery := func(userID int64, announcementID, dedupe, title string) Delivery {
+		var payload []byte
+		if announcementID == "" {
+			raw, err := json.Marshal(InAppPayload{Title: title})
+			if err != nil {
+				t.Fatalf("marshal ordinary payload: %v", err)
+			}
+			payload = raw
+		} else {
+			raw, err := json.Marshal(InAppPayload{AnnouncementID: announcementID, Title: title})
+			if err != nil {
+				t.Fatalf("marshal announcement payload: %v", err)
+			}
+			payload = raw
+		}
+		return Delivery{
+			TemplateKey:     stringPtr("system.announcement"),
+			Category:        "system.announcement",
+			Channel:         ChannelInApp,
+			Recipient:       fmt.Sprintf("user:%d", userID),
+			RecipientUserID: &userID,
+			Locale:          &locale,
+			Status:          "sent",
+			Attempt:         1,
+			DedupeKey:       dedupe,
+			Payload:         payload,
+		}
+	}
+	items := []Delivery{
+		// A：普通通知 + 生效公告 + 已下线公告（最后一条不可见）。
+		makeDelivery(userA, "", "ordinary:"+fmt.Sprint(userA), "ordinary A"),
+		makeDelivery(userA, activeID, "announcement:"+activeID+":"+fmt.Sprint(userA), "active A"),
+		makeDelivery(userA, offlineID, "announcement:"+offlineID+":"+fmt.Sprint(userA), "offline A"),
+		// B：普通通知，用于验证批量已读不影响他人。
+		makeDelivery(userB, "", "ordinary:"+fmt.Sprint(userB), "ordinary B"),
+	}
+	if inserted, err := service.store.InsertInAppDeliveries(ctx, items); err != nil || inserted != len(items) {
+		t.Fatalf("insert deliveries = %d/%v，want %d", inserted, err, len(items))
+	}
+
+	// 计数与列表同口径：A 看到 2 条（普通 + 生效公告），已下线公告不计。
+	unreadA, err := service.CountUserUnreadNotifications(ctx, userA)
+	if err != nil {
+		t.Fatalf("count A: %v", err)
+	}
+	listA, totalA, err := service.ListUserNotifications(ctx, userA, 1, 20)
+	if err != nil {
+		t.Fatalf("list A: %v", err)
+	}
+	if unreadA != 2 || totalA != 2 || len(listA) != 2 {
+		t.Fatalf("A 计数=%d 列表 total=%d len=%d，want 2/2/2", unreadA, totalA, len(listA))
+	}
+	var unreadB int
+	if unreadB, err = service.CountUserUnreadNotifications(ctx, userB); err != nil || unreadB != 1 {
+		t.Fatalf("B 计数 = %d/%v，want 1", unreadB, err)
+	}
+
+	firstRead := time.Date(2026, 10, 20, 16, 0, 0, 0, time.UTC)
+	updated, err := service.MarkAllUserNotificationsRead(ctx, userA, firstRead)
+	if err != nil {
+		t.Fatalf("mark all A: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("A 批量已读 updated=%d，want 2（失效公告不参与）", updated)
+	}
+	if unreadA, err = service.CountUserUnreadNotifications(ctx, userA); err != nil || unreadA != 0 {
+		t.Fatalf("A 已读后计数 = %d/%v，want 0", unreadA, err)
+	}
+	if unreadB, err = service.CountUserUnreadNotifications(ctx, userB); err != nil || unreadB != 1 {
+		t.Fatalf("B 被误更新：计数 = %d/%v，want 1", unreadB, err)
+	}
+
+	// 失效公告的投递不得被置读（它不在可见集内）。
+	var offlineReadAt *time.Time
+	if err := db.QueryRow(`SELECT read_at FROM notification_deliveries WHERE dedupe_key = $1`,
+		"announcement:"+offlineID+":"+fmt.Sprint(userA)).Scan(&offlineReadAt); err != nil {
+		t.Fatalf("read offline delivery: %v", err)
+	}
+	if offlineReadAt != nil {
+		t.Fatalf("失效公告投递 read_at = %v，want NULL（不参与更新）", offlineReadAt)
+	}
+
+	// 幂等：第二次 updated=0，已读时刻保持首次值。
+	secondRead := firstRead.Add(time.Hour)
+	if updated, err = service.MarkAllUserNotificationsRead(ctx, userA, secondRead); err != nil || updated != 0 {
+		t.Fatalf("第二次批量已读 = %d/%v，want 0", updated, err)
+	}
+	listA, _, err = service.ListUserNotifications(ctx, userA, 1, 20)
+	if err != nil {
+		t.Fatalf("list after read: %v", err)
+	}
+	for _, item := range listA {
+		if item.ReadAt == nil || !item.ReadAt.Equal(firstRead) {
+			t.Fatalf("通知 %d read_at = %v，want %v（保持首次值）", item.ID, item.ReadAt, firstRead)
+		}
+	}
+
+	// 无未读用户再调用：成功且 0。
+	if updated, err = service.MarkAllUserNotificationsRead(ctx, userB, firstRead); err != nil || updated != 1 {
+		t.Fatalf("B 批量已读 = %d/%v，want 1", updated, err)
+	}
+	if updated, err = service.MarkAllUserNotificationsRead(ctx, userB, secondRead); err != nil || updated != 0 {
+		t.Fatalf("B 第二次批量已读 = %d/%v，want 0", updated, err)
+	}
+}
+
 // TestAnnouncementInAppAudienceKeysetCoversLargeAudience 覆盖 G-DOM-37 ⑩：
 // 受众 >1500 时按 users.id keyset 分页（500/页），投递不得漏人、不得重复。
 func TestAnnouncementInAppAudienceKeysetCoversLargeAudience(t *testing.T) {

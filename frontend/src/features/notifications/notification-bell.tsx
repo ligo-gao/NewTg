@@ -4,12 +4,11 @@ import { useState } from 'react'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import {
-  listUserNotifications,
+  getUserNotificationUnreadCount,
   NOTIFICATION_BADGE_CAP,
-  NOTIFICATION_COUNT_PAGE_SIZE,
 } from './api'
 import { NotificationSheet } from './notification-sheet'
-import { notificationsListQueryKey } from './query-keys'
+import { notificationsUnreadCountQueryKey } from './query-keys'
 
 export interface NotificationBellProps {
   /**
@@ -23,10 +22,11 @@ export interface NotificationBellProps {
 /**
  * 控制台顶栏铃铛（A5 站内通知入口）。
  *
- * 未读计数没有专用端点，只能读取一页通知并按 `read_at === null` 计数。
- * 这里取服务端允许的最大页长 100；超过部分显示 `99+`，并在 aria-live
- * 文本里保持同样口径（不谎报精确数）。探测失败完全静默：通知入口本身
- * 仍可打开面板查看错误与重试，绝不让顶栏出现错误横幅。
+ * 未读数直接来自 `GET /api/notifications/unread-count`：服务端按与列表相同
+ * 的口径计数（含公告失效过滤），不再靠翻 `page_size=100` 一页去聚合，因此
+ * 第 101 条以后的未读也不会漏计。徽章与 aria-live 仍统一封顶 `99+`，不谎报
+ * 精确值。探测失败完全静默：通知入口本身仍可打开面板查看错误与重试，绝不
+ * 让顶栏出现错误横幅。
  */
 export function NotificationBell({
   signedIn = true,
@@ -36,25 +36,19 @@ export function NotificationBell({
   const [open, setOpen] = useState(false)
 
   const countQuery = useQuery({
-    queryKey: notificationsListQueryKey(1, NOTIFICATION_COUNT_PAGE_SIZE),
-    queryFn: ({ signal }) =>
-      listUserNotifications(
-        { p: 1, page_size: NOTIFICATION_COUNT_PAGE_SIZE },
-        signal,
-      ),
+    queryKey: notificationsUnreadCountQueryKey,
+    queryFn: ({ signal }) => getUserNotificationUnreadCount(signal),
     enabled: signedIn,
     // 通知不是实时流；30s 内复用（例如路由切换重挂载）已经足够新鲜。
     staleTime: 30_000,
     retry: false,
   })
 
-  const unread =
-    countQuery.data?.items.filter(
-      (item) => item.read_at === null || item.read_at === undefined,
-    ).length ?? 0
+  const unread = countQuery.data?.unread ?? 0
   /*
    * 封顶口径只有一处真源：徽章与 aria-live 都用 `99+` 表示「至少 99 条」。
-   * 探测窗口是 100 条，若不封顶，读屏会播报 100，而真实未读数可能更多。
+   * 服务端给出的是精确数，超过封顶值时不展示具体数字，避免读屏播报与徽章
+   * 不一致。
    */
   const displayCount =
     unread > NOTIFICATION_BADGE_CAP

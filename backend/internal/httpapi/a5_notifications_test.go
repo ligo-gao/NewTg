@@ -23,8 +23,10 @@ import (
 )
 
 type fakeUserNotificationService struct {
-	listFn func(context.Context, int64, int, int) ([]notify.UserNotificationView, int, error)
-	markFn func(context.Context, int64, int64, time.Time) error
+	listFn    func(context.Context, int64, int, int) ([]notify.UserNotificationView, int, error)
+	countFn   func(context.Context, int64) (int, error)
+	markFn    func(context.Context, int64, int64, time.Time) error
+	markAllFn func(context.Context, int64, time.Time) (int, error)
 }
 
 func (f *fakeUserNotificationService) ListUserNotifications(ctx context.Context, userID int64, page, pageSize int) ([]notify.UserNotificationView, int, error) {
@@ -34,11 +36,25 @@ func (f *fakeUserNotificationService) ListUserNotifications(ctx context.Context,
 	return nil, 0, nil
 }
 
+func (f *fakeUserNotificationService) CountUserUnreadNotifications(ctx context.Context, userID int64) (int, error) {
+	if f.countFn != nil {
+		return f.countFn(ctx, userID)
+	}
+	return 0, nil
+}
+
 func (f *fakeUserNotificationService) MarkUserNotificationRead(ctx context.Context, userID, id int64, now time.Time) error {
 	if f.markFn != nil {
 		return f.markFn(ctx, userID, id, now)
 	}
 	return nil
+}
+
+func (f *fakeUserNotificationService) MarkAllUserNotificationsRead(ctx context.Context, userID int64, now time.Time) (int, error) {
+	if f.markAllFn != nil {
+		return f.markAllFn(ctx, userID, now)
+	}
+	return 0, nil
 }
 
 func newNotificationTestHandlers(t *testing.T, service UserNotificationService) *http.ServeMux {
@@ -60,7 +76,9 @@ func TestUserNotificationsRequireLogin(t *testing.T) {
 	mux := newNotificationTestHandlers(t, &fakeUserNotificationService{})
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/notifications"},
+		{http.MethodGet, "/api/notifications/unread-count"},
 		{http.MethodPost, "/api/notifications/1/read"},
+		{http.MethodPost, "/api/notifications/read-all"},
 	} {
 		if got := doAnnouncementRequest(t, mux, nil, tc.method, tc.path, nil); got.Code != http.StatusUnauthorized && got.Code != http.StatusForbidden {
 			t.Fatalf("%s %s 未登录 = %d，want 401/403", tc.method, tc.path, got.Code)
@@ -162,6 +180,112 @@ func TestUserNotificationMarkReadIsIdempotentAndIsolated(t *testing.T) {
 	}
 	if got := doAnnouncementRequest(t, mux, principal, http.MethodPost, "/api/notifications/abc/read", nil); got.Code != http.StatusNotFound {
 		t.Fatalf("非法 id = %d，want 404", got.Code)
+	}
+}
+
+// TestUserNotificationUnreadCountScopesToPrincipal：计数端点只按登录身份取数，
+// 不接受 user_id 参数；响应形状冻结为 {"unread": n}。
+func TestUserNotificationUnreadCountScopesToPrincipal(t *testing.T) {
+	var gotUserID int64
+	mux := newNotificationTestHandlers(t, &fakeUserNotificationService{
+		countFn: func(_ context.Context, userID int64) (int, error) {
+			gotUserID = userID
+			return 7, nil
+		},
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(42, rbac.RoleUser),
+		http.MethodGet, "/api/notifications/unread-count?user_id=99", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("unread-count = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	if gotUserID != 42 {
+		t.Fatalf("计数 userID = %d，want 42（忽略查询参数）", gotUserID)
+	}
+	if body := strings.TrimSpace(got.Body.String()); body != `{"unread":7}` {
+		t.Fatalf("unread-count 响应 = %s", body)
+	}
+}
+
+// TestUserNotificationUnreadCountFailure：存储失败必须 500，不得把 0 当作
+// 「没有未读」静默返回（否则徽章会在故障时消失）。
+func TestUserNotificationUnreadCountFailure(t *testing.T) {
+	mux := newNotificationTestHandlers(t, &fakeUserNotificationService{
+		countFn: func(context.Context, int64) (int, error) {
+			return 0, errors.New("db down")
+		},
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(7, rbac.RoleUser),
+		http.MethodGet, "/api/notifications/unread-count", nil)
+	if got.Code != http.StatusInternalServerError {
+		t.Fatalf("计数故障 = %d，want 500", got.Code)
+	}
+}
+
+// TestUserNotificationMarkAllReadIsIdempotentAndScoped：批量已读只作用于本人，
+// 时钟接缝透传；重复调用由服务层幂等（第二次 updated=0）。
+func TestUserNotificationMarkAllReadIsIdempotentAndScoped(t *testing.T) {
+	fixed := time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC)
+	var (
+		mu      sync.Mutex
+		calls   int
+		gotUser int64
+		gotNow  time.Time
+	)
+	h, err := NewNotificationHandlers(NotificationHandlerConfig{
+		Service: &fakeUserNotificationService{
+			markAllFn: func(_ context.Context, userID int64, now time.Time) (int, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls++
+				gotUser, gotNow = userID, now
+				if calls == 1 {
+					return 3, nil
+				}
+				return 0, nil // 第二次：已读行不再更新
+			},
+		},
+		Authz:  rbac.NewAuthzMiddleware(),
+		Logger: testLogger(),
+		Now:    func() time.Time { return fixed },
+	})
+	if err != nil {
+		t.Fatalf("NewNotificationHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	principal := announcementTestPrincipal(21, rbac.RoleUser)
+
+	first := doAnnouncementRequest(t, mux, principal, http.MethodPost, "/api/notifications/read-all", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("read-all = %d，want 200（body=%s）", first.Code, first.Body.String())
+	}
+	if body := strings.TrimSpace(first.Body.String()); body != `{"updated":3}` {
+		t.Fatalf("read-all 响应 = %s", body)
+	}
+	second := doAnnouncementRequest(t, mux, principal, http.MethodPost, "/api/notifications/read-all", nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("重复 read-all = %d，want 200", second.Code)
+	}
+	if body := strings.TrimSpace(second.Body.String()); body != `{"updated":0}` {
+		t.Fatalf("重复 read-all 响应 = %s，want updated=0", body)
+	}
+	if gotUser != 21 || !gotNow.Equal(fixed) {
+		t.Fatalf("服务调用 = user=%d now=%v，want 21/%v", gotUser, gotNow, fixed)
+	}
+}
+
+// TestUserNotificationMarkAllReadFailure：批量失败必须 500，前端据此显示错误，
+// 不得假装已全部置读。
+func TestUserNotificationMarkAllReadFailure(t *testing.T) {
+	mux := newNotificationTestHandlers(t, &fakeUserNotificationService{
+		markAllFn: func(context.Context, int64, time.Time) (int, error) {
+			return 0, errors.New("db down")
+		},
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(7, rbac.RoleUser),
+		http.MethodPost, "/api/notifications/read-all", nil)
+	if got.Code != http.StatusInternalServerError {
+		t.Fatalf("read-all 故障 = %d，want 500", got.Code)
 	}
 }
 

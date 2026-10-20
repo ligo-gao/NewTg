@@ -646,6 +646,57 @@ func (s *Store) ListUserInAppDeliveries(ctx context.Context, userID int64, page,
 	return out, total, nil
 }
 
+// CountUserUnreadInAppDeliveries 返回某用户本人「可见且未读」的站内通知数。
+//
+// 统计口径必须与 ListUserInAppDeliveries 逐字同源：同样的 channel/归属条件，
+// 同样的 inAppVisibleAnnouncementClause，再加上 read_at IS NULL。任何一侧单独
+// 改动都会让徽章与列表互相矛盾（G-DOM-46），因此两者共用同一常量而不是各自
+// 复制一份条件。
+func (s *Store) CountUserUnreadInAppDeliveries(ctx context.Context, userID int64) (int, error) {
+	if userID <= 0 {
+		return 0, errors.New("notify: user id is required")
+	}
+	var unread int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM notification_deliveries
+		WHERE channel = 'inapp' AND recipient_user_id = $1
+		  AND read_at IS NULL`+inAppVisibleAnnouncementClause,
+		userID).Scan(&unread); err != nil {
+		return 0, fmt.Errorf("notify: count user unread inapp deliveries: %w", err)
+	}
+	return unread, nil
+}
+
+// MarkAllUserInAppDeliveriesRead 把本人所有「可见且未读」的站内通知一次置为
+// 已读，返回本次实际更新的行数。
+//
+// 幂等语义（G-DOM-47）：
+//   - `read_at IS NULL` 谓词保证已读行的 `read_at` 永不被覆盖——第二次调用
+//     更新 0 行，首次标记的时刻即最终值；
+//   - 只按 recipient_user_id 限定范围，绝不接受调用方传入他人 id；
+//   - 复用列表的 inAppVisibleAnnouncementClause：公告已下线/过期/删除的投递
+//     不参与更新（它们也不会出现在列表里，更新它们只会制造不可见的「已读」）。
+//
+// 这是一条集合 UPDATE，天然原子：要么本批可见未读全部置读，要么整条语句失败，
+// 不会出现「部分已读」的中间态。
+func (s *Store) MarkAllUserInAppDeliveriesRead(ctx context.Context, userID int64, now time.Time) (int, error) {
+	if userID <= 0 {
+		return 0, errors.New("notify: user id is required")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE notification_deliveries SET
+		read_at = $2, updated_at = now()
+		WHERE channel = 'inapp' AND recipient_user_id = $1
+		  AND read_at IS NULL`+inAppVisibleAnnouncementClause,
+		userID, now.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("notify: mark all user inapp deliveries read: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("notify: mark all user inapp deliveries read rows: %w", err)
+	}
+	return int(affected), nil
+}
+
 // MarkInAppDeliveryRead 幂等标记本人一条站内通知已读。
 // 他人通知与不存在的 id 同为 ErrDeliveryNotFound（不区分，避免枚举）。
 func (s *Store) MarkInAppDeliveryRead(ctx context.Context, userID, id int64, now time.Time) error {

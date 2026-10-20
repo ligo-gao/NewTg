@@ -1666,6 +1666,26 @@ schemas:
         minimum: 1
         maximum: 100
 
+  UserNotificationUnreadCount:
+    type: object
+    additionalProperties: false
+    required: [unread]
+    properties:
+      unread:
+        type: integer
+        minimum: 0
+        description: 可见且未读的站内通知数；与通知列表同口径。
+
+  UserNotificationReadAllResult:
+    type: object
+    additionalProperties: false
+    required: [updated]
+    properties:
+      updated:
+        type: integer
+        minimum: 0
+        description: 本次实际置读的行数；重复调用为 0（幂等）。
+
   ActiveAnnouncementList:
     type: object
     additionalProperties: false
