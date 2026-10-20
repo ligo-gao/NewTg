@@ -1692,6 +1692,123 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/performance/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 性能统计（磁盘缓存/内存/磁盘容量/只读配置）
+         * @description 目录不存在或不可读时 cache_stats.enabled=false 且 disk_cache_info 为零值，
+         *     不返回 500。config 回显部署环境变量；memory_stats 取自 runtime。
+         */
+        get: operations["getPerformanceStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/disk-cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 清理不活跃磁盘缓存文件
+         * @description 只删除 DISK_CACHE_PATH 下 mtime 早于 now-10min 的普通文件；非普通文件
+         *     （目录/符号链接）直接跳过且不计数。未启用/路径未配置 → 422
+         *     disk_cache_not_configured。单个删除失败计入 failed_files，不算整体失败。
+         */
+        delete: operations["clearPerformanceDiskCache"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/gc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 触发一次同步 runtime.GC
+         * @description 同步执行 runtime.GC()（不调用 debug.FreeOSMemory）；返回耗时与执行前后
+         *     的堆分配、GC 次数。重复触发幂等，每次成功都写审计 system.gc.run。
+         */
+        post: operations["runPerformanceGC"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 应用日志文件清单
+         * @description LOG_DIR 未配置（生产默认 stdout）时返回 enabled=false 的说明性空态（200）。
+         *     已配置时只统计匹配 LOG_FILE_PATTERN（默认 newtg-*.log）的普通文件；
+         *     目录、符号链接与其他文件名不计数。
+         */
+        get: operations["listPerformanceLogs"];
+        put?: never;
+        post?: never;
+        /**
+         * 按天数或文件数清理应用日志文件
+         * @description 只处理 LOG_DIR 下匹配 LOG_FILE_PATTERN 的普通文件；当前活动日志文件
+         *     （最新 mtime）永不删除。by_count 保留最新 N 个；by_days 删除 mtime 早于
+         *     now-N*24h 的文件。非法 mode → 422 invalid_mode；value<1 → 422
+         *     invalid_value；LOG_DIR 未配置 → 422 log_dir_not_configured。
+         *     不触碰 usage_logs 行。
+         */
+        delete: operations["cleanupPerformanceLogs"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/recent-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 最近性能运维操作（来自 audit_logs）
+         * @description 服务端过滤 category='operation' 且 detail.action ∈
+         *     {system.disk_cache.clear, system.gc.run, system.log_cleanup.run}，
+         *     按时间倒序。limit 默认 20、范围 1–100，越界 422 invalid_value。
+         *     不新建运维记录表，也不要求 /api/audit-logs 新增 action 过滤。
+         */
+        get: operations["listPerformanceRecentOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/redemption-codes": {
         parameters: {
             query?: never;
@@ -4823,6 +4940,148 @@ export interface components {
             status?: 1 | 2;
             version: string;
         };
+        PerformanceCacheStats: {
+            /** @description 生效态（DISK_CACHE_ENABLED 且目录可读）；目录缺失/不可读为 false。 */
+            enabled: boolean;
+            file_count: number;
+            /** Format: int64 */
+            total_bytes: number;
+            /**
+             * Format: date-time
+             * @description 本进程最近一次清理完成时间；从未清理或进程重启后为 null。
+             */
+            last_cleared_at: string | null;
+        };
+        PerformanceMemoryStats: {
+            /** Format: int64 */
+            alloc_bytes: number;
+            /** Format: int64 */
+            sys_bytes: number;
+            /** Format: int64 */
+            num_gc: number;
+            num_goroutine: number;
+        };
+        PerformanceDiskCacheInfo: {
+            /** @description 目录缺失/不可读时为空串（零值）。 */
+            path: string;
+            file_count: number;
+            /** Format: int64 */
+            total_bytes: number;
+            /**
+             * Format: date-time
+             * @description 目录内最新 mtime；无文件时为 null。
+             */
+            last_modified: string | null;
+        };
+        PerformanceDiskSpaceInfo: {
+            /** Format: int64 */
+            total_bytes: number;
+            /**
+             * Format: int64
+             * @description 非特权进程可用空间（statfs Bavail）。
+             */
+            free_bytes: number;
+            /** Format: int64 */
+            used_bytes: number;
+        };
+        PerformanceConfig: {
+            /** @description 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。 */
+            enabled: boolean;
+            path: string;
+            /** Format: int64 */
+            max_mb: number;
+            /** Format: int64 */
+            threshold_mb: number;
+        };
+        PerformanceStats: {
+            instance_id: string;
+            cache_stats: components["schemas"]["PerformanceCacheStats"];
+            memory_stats: components["schemas"]["PerformanceMemoryStats"];
+            disk_cache_info: components["schemas"]["PerformanceDiskCacheInfo"];
+            disk_space_info: components["schemas"]["PerformanceDiskSpaceInfo"];
+            config: components["schemas"]["PerformanceConfig"];
+        };
+        PerformanceDiskCacheClearResult: {
+            instance_id: string;
+            deleted_count: number;
+            /** Format: int64 */
+            freed_bytes: number;
+            /** @description 删除失败的普通文件名（不含路径）。 */
+            failed_files: string[];
+        };
+        PerformanceGCRequest: {
+            /** @description 目标实例标识；与当前实例不一致 → 409 instance_mismatch。 */
+            instance_id?: string;
+        };
+        PerformanceGCResult: {
+            instance_id: string;
+            /** Format: int64 */
+            duration_ms: number;
+            /** Format: int64 */
+            heap_alloc_before: number;
+            /** Format: int64 */
+            heap_alloc_after: number;
+            /** Format: int64 */
+            num_gc_before: number;
+            /** Format: int64 */
+            num_gc_after: number;
+        };
+        PerformanceLogFile: {
+            name: string;
+            /** Format: int64 */
+            size: number;
+            /** Format: date-time */
+            mod_time: string;
+        };
+        PerformanceLogs: {
+            /** @description false 表示 LOG_DIR 未配置（生产默认 stdout）。 */
+            enabled: boolean;
+            log_dir: string;
+            file_count: number;
+            /** Format: int64 */
+            total_size: number;
+            /** Format: date-time */
+            oldest_time: string | null;
+            /** Format: date-time */
+            newest_time: string | null;
+            files: components["schemas"]["PerformanceLogFile"][];
+        };
+        PerformanceLogCleanupResult: {
+            instance_id: string;
+            /** @enum {string} */
+            mode: "by_count" | "by_days";
+            value: number;
+            deleted_count: number;
+            /** Format: int64 */
+            freed_bytes: number;
+            /** @description 活动日志文件（最新 mtime）命中删除集并被跳过时为 true。 */
+            skipped_active: boolean;
+            failed_files: string[];
+        };
+        PerformanceRecentOperation: {
+            /** Format: date-time */
+            time: string;
+            /** @description 审计既有 username 快照（未解析时为 user#<id>）。 */
+            actor: string;
+            /** @enum {string} */
+            action: "system.disk_cache.clear" | "system.gc.run" | "system.log_cleanup.run";
+            route: string;
+            /** @enum {string} */
+            result: "success" | "failed";
+            instance_id: string;
+            /** Format: int64 */
+            deleted_count: number;
+            /** Format: int64 */
+            freed_bytes: number;
+            /** Format: int64 */
+            failed_count: number;
+            /** Format: int64 */
+            duration_ms: number;
+            skipped_active: boolean;
+        };
+        PerformanceRecentOperations: {
+            items: components["schemas"]["PerformanceRecentOperation"][];
+        };
         /**
          * @description expired 是虚拟态（不落库）
          * @enum {string}
@@ -6007,6 +6266,12 @@ export interface components {
          *     故通过查询参数传递；不匹配返回 409。
          */
         UpdatedAtQuery: string;
+        /**
+         * @description 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+         *     缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+         *     前端 DangerConfirm 只是体验层，本请求头才是授权门。
+         */
+        ConfirmAction: string;
         /** @description redemption_codes.id */
         PathRedemptionCodeID: number;
         /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
@@ -9307,6 +9572,190 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPerformanceStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 性能统计 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceStats"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    clearPerformanceDiskCache: {
+        parameters: {
+            query?: {
+                /** @description 目标实例标识；与当前实例不一致 → 409 instance_mismatch。 */
+                instance_id?: string;
+            };
+            header: {
+                /**
+                 * @description 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+                 *     缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+                 *     前端 DangerConfirm 只是体验层，本请求头才是授权门。
+                 */
+                "X-Confirm-Action": components["parameters"]["ConfirmAction"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 清理结果（部分失败仍为 200，见 failed_files） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceDiskCacheClearResult"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    runPerformanceGC: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+                 *     缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+                 *     前端 DangerConfirm 只是体验层，本请求头才是授权门。
+                 */
+                "X-Confirm-Action": components["parameters"]["ConfirmAction"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PerformanceGCRequest"];
+            };
+        };
+        responses: {
+            /** @description GC 结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceGCResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listPerformanceLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 日志文件清单 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceLogs"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    cleanupPerformanceLogs: {
+        parameters: {
+            query: {
+                mode: "by_count" | "by_days";
+                value: number;
+                /** @description 目标实例标识；与当前实例不一致 → 409 instance_mismatch。 */
+                instance_id?: string;
+            };
+            header: {
+                /**
+                 * @description 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+                 *     缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+                 *     前端 DangerConfirm 只是体验层，本请求头才是授权门。
+                 */
+                "X-Confirm-Action": components["parameters"]["ConfirmAction"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 清理结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceLogCleanupResult"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listPerformanceRecentOperations: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最近操作列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceRecentOperations"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
         };
     };

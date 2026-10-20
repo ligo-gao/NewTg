@@ -264,6 +264,17 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		cfg.TaskPluginHandlers.Register(rt.protected)
 	}
 
+	// 性能管理端点（modules-08 §3.19 / F-08-48～50；D3a）。三个对象都是
+	// 进程本地的，不依赖主库；日志库只用于「最近操作」的审计查询，缺省时
+	// 该端点返回空列表而不是拒绝挂载。六个端点统一要求 settings:manage。
+	NewPerformanceHandlers(PerformanceHandlerConfig{
+		LogDB:  cfg.LogDB,
+		Audit:  cfg.Audit,
+		Logger: cfg.Logger,
+		Redis:  cfg.Redis,
+		Authz:  cfg.Authz,
+	}).Register(rt.protected)
+
 	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限
 	// 回源。两者缺一时不挂载（部署配置缺失应在启动期由日志库健康检查暴露，
 	// 而不是让这里用空数据伪造 200）。

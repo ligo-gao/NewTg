@@ -3777,6 +3777,231 @@ paths:
           $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/performance/stats:
+    get:
+      tags:
+        - admin
+      operationId: getPerformanceStats
+      x-required-permission: settings:manage
+      summary: 性能统计（磁盘缓存/内存/磁盘容量/只读配置）
+      description: |
+        目录不存在或不可读时 cache_stats.enabled=false 且 disk_cache_info 为零值，
+        不返回 500。config 回显部署环境变量；memory_stats 取自 runtime。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 性能统计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceStats'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/performance/disk-cache:
+    delete:
+      tags:
+        - admin
+      operationId: clearPerformanceDiskCache
+      x-required-permission: settings:manage
+      summary: 清理不活跃磁盘缓存文件
+      description: |
+        只删除 DISK_CACHE_PATH 下 mtime 早于 now-10min 的普通文件；非普通文件
+        （目录/符号链接）直接跳过且不计数。未启用/路径未配置 → 422
+        disk_cache_not_configured。单个删除失败计入 failed_files，不算整体失败。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ConfirmAction'
+        - name: instance_id
+          in: query
+          required: false
+          description: 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 清理结果（部分失败仍为 200，见 failed_files）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceDiskCacheClearResult'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/performance/gc:
+    post:
+      tags:
+        - admin
+      operationId: runPerformanceGC
+      x-required-permission: settings:manage
+      summary: 触发一次同步 runtime.GC
+      description: |
+        同步执行 runtime.GC()（不调用 debug.FreeOSMemory）；返回耗时与执行前后
+        的堆分配、GC 次数。重复触发幂等，每次成功都写审计 system.gc.run。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ConfirmAction'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PerformanceGCRequest'
+      responses:
+        '200':
+          description: GC 结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceGCResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/performance/logs:
+    get:
+      tags:
+        - admin
+      operationId: listPerformanceLogs
+      x-required-permission: settings:manage
+      summary: 应用日志文件清单
+      description: |
+        LOG_DIR 未配置（生产默认 stdout）时返回 enabled=false 的说明性空态（200）。
+        已配置时只统计匹配 LOG_FILE_PATTERN（默认 newtg-*.log）的普通文件；
+        目录、符号链接与其他文件名不计数。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 日志文件清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceLogs'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: cleanupPerformanceLogs
+      x-required-permission: settings:manage
+      summary: 按天数或文件数清理应用日志文件
+      description: |
+        只处理 LOG_DIR 下匹配 LOG_FILE_PATTERN 的普通文件；当前活动日志文件
+        （最新 mtime）永不删除。by_count 保留最新 N 个；by_days 删除 mtime 早于
+        now-N*24h 的文件。非法 mode → 422 invalid_mode；value<1 → 422
+        invalid_value；LOG_DIR 未配置 → 422 log_dir_not_configured。
+        不触碰 usage_logs 行。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ConfirmAction'
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - by_count
+              - by_days
+        - name: value
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: instance_id
+          in: query
+          required: false
+          description: 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 清理结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceLogCleanupResult'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/performance/recent-operations:
+    get:
+      tags:
+        - admin
+      operationId: listPerformanceRecentOperations
+      x-required-permission: settings:manage
+      summary: 最近性能运维操作（来自 audit_logs）
+      description: |
+        服务端过滤 category='operation' 且 detail.action ∈
+        {system.disk_cache.clear, system.gc.run, system.log_cleanup.run}，
+        按时间倒序。limit 默认 20、范围 1–100，越界 422 invalid_value。
+        不新建运维记录表，也不要求 /api/audit-logs 新增 action 过滤。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: 最近操作列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceRecentOperations'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/redemption-codes:
     get:
       tags:
@@ -6993,6 +7218,16 @@ components:
       schema:
         type: string
         format: date-time
+    ConfirmAction:
+      name: X-Confirm-Action
+      in: header
+      required: true
+      description: |
+        服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+        缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+        前端 DangerConfirm 只是体验层，本请求头才是授权门。
+      schema:
+        type: string
     PathRedemptionCodeID:
       name: id
       in: path
@@ -10785,6 +11020,361 @@ components:
             - 2
         version:
           type: string
+    PerformanceCacheStats:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - file_count
+        - total_bytes
+        - last_cleared_at
+      properties:
+        enabled:
+          type: boolean
+          description: 生效态（DISK_CACHE_ENABLED 且目录可读）；目录缺失/不可读为 false。
+        file_count:
+          type: integer
+          minimum: 0
+        total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        last_cleared_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 本进程最近一次清理完成时间；从未清理或进程重启后为 null。
+    PerformanceMemoryStats:
+      type: object
+      additionalProperties: false
+      required:
+        - alloc_bytes
+        - sys_bytes
+        - num_gc
+        - num_goroutine
+      properties:
+        alloc_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        sys_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        num_gc:
+          type: integer
+          format: int64
+          minimum: 0
+        num_goroutine:
+          type: integer
+          minimum: 0
+    PerformanceDiskCacheInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+        - file_count
+        - total_bytes
+        - last_modified
+      properties:
+        path:
+          type: string
+          description: 目录缺失/不可读时为空串（零值）。
+        file_count:
+          type: integer
+          minimum: 0
+        total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        last_modified:
+          type: string
+          format: date-time
+          nullable: true
+          description: 目录内最新 mtime；无文件时为 null。
+    PerformanceDiskSpaceInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - total_bytes
+        - free_bytes
+        - used_bytes
+      properties:
+        total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        free_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 非特权进程可用空间（statfs Bavail）。
+        used_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+    PerformanceConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - path
+        - max_mb
+        - threshold_mb
+      properties:
+        enabled:
+          type: boolean
+          description: 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。
+        path:
+          type: string
+        max_mb:
+          type: integer
+          format: int64
+          minimum: 0
+        threshold_mb:
+          type: integer
+          format: int64
+          minimum: 0
+    PerformanceStats:
+      type: object
+      additionalProperties: false
+      required:
+        - instance_id
+        - cache_stats
+        - memory_stats
+        - disk_cache_info
+        - disk_space_info
+        - config
+      properties:
+        instance_id:
+          type: string
+        cache_stats:
+          $ref: '#/components/schemas/PerformanceCacheStats'
+        memory_stats:
+          $ref: '#/components/schemas/PerformanceMemoryStats'
+        disk_cache_info:
+          $ref: '#/components/schemas/PerformanceDiskCacheInfo'
+        disk_space_info:
+          $ref: '#/components/schemas/PerformanceDiskSpaceInfo'
+        config:
+          $ref: '#/components/schemas/PerformanceConfig'
+    PerformanceDiskCacheClearResult:
+      type: object
+      additionalProperties: false
+      required:
+        - instance_id
+        - deleted_count
+        - freed_bytes
+        - failed_files
+      properties:
+        instance_id:
+          type: string
+        deleted_count:
+          type: integer
+          minimum: 0
+        freed_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        failed_files:
+          type: array
+          description: 删除失败的普通文件名（不含路径）。
+          items:
+            type: string
+    PerformanceGCRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        instance_id:
+          type: string
+          description: 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+    PerformanceGCResult:
+      type: object
+      additionalProperties: false
+      required:
+        - instance_id
+        - duration_ms
+        - heap_alloc_before
+        - heap_alloc_after
+        - num_gc_before
+        - num_gc_after
+      properties:
+        instance_id:
+          type: string
+        duration_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        heap_alloc_before:
+          type: integer
+          format: int64
+          minimum: 0
+        heap_alloc_after:
+          type: integer
+          format: int64
+          minimum: 0
+        num_gc_before:
+          type: integer
+          format: int64
+          minimum: 0
+        num_gc_after:
+          type: integer
+          format: int64
+          minimum: 0
+    PerformanceLogFile:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - size
+        - mod_time
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        mod_time:
+          type: string
+          format: date-time
+    PerformanceLogs:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - log_dir
+        - file_count
+        - total_size
+        - oldest_time
+        - newest_time
+        - files
+      properties:
+        enabled:
+          type: boolean
+          description: false 表示 LOG_DIR 未配置（生产默认 stdout）。
+        log_dir:
+          type: string
+        file_count:
+          type: integer
+          minimum: 0
+        total_size:
+          type: integer
+          format: int64
+          minimum: 0
+        oldest_time:
+          type: string
+          format: date-time
+          nullable: true
+        newest_time:
+          type: string
+          format: date-time
+          nullable: true
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/PerformanceLogFile'
+    PerformanceLogCleanupResult:
+      type: object
+      additionalProperties: false
+      required:
+        - instance_id
+        - mode
+        - value
+        - deleted_count
+        - freed_bytes
+        - skipped_active
+        - failed_files
+      properties:
+        instance_id:
+          type: string
+        mode:
+          type: string
+          enum:
+            - by_count
+            - by_days
+        value:
+          type: integer
+          minimum: 1
+        deleted_count:
+          type: integer
+          minimum: 0
+        freed_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        skipped_active:
+          type: boolean
+          description: 活动日志文件（最新 mtime）命中删除集并被跳过时为 true。
+        failed_files:
+          type: array
+          items:
+            type: string
+    PerformanceRecentOperation:
+      type: object
+      additionalProperties: false
+      required:
+        - time
+        - actor
+        - action
+        - route
+        - result
+        - instance_id
+        - deleted_count
+        - freed_bytes
+        - failed_count
+        - duration_ms
+        - skipped_active
+      properties:
+        time:
+          type: string
+          format: date-time
+        actor:
+          type: string
+          description: 审计既有 username 快照（未解析时为 user#<id>）。
+        action:
+          type: string
+          enum:
+            - system.disk_cache.clear
+            - system.gc.run
+            - system.log_cleanup.run
+        route:
+          type: string
+        result:
+          type: string
+          enum:
+            - success
+            - failed
+        instance_id:
+          type: string
+        deleted_count:
+          type: integer
+          format: int64
+          minimum: 0
+        freed_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        failed_count:
+          type: integer
+          format: int64
+          minimum: 0
+        duration_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        skipped_active:
+          type: boolean
+    PerformanceRecentOperations:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PerformanceRecentOperation'
     RedemptionCodeStatusFilter:
       type: string
       enum:

@@ -191,6 +191,20 @@ paths:
   /api/vendors/{id}:
     $ref: './paths/admin.yaml#/paths/~1api~1vendors~1{id}'
 
+  # 性能管理（modules-08 §3.19 / F-08-48～F-08-50；D3a）。
+  # 三个对象都是进程/节点本地；instance_id 不匹配 → 409 且零副作用。
+  # 写操作要求 X-Confirm-Action: true（缺失 422 confirm_required）。
+  /api/performance/stats:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1stats'
+  /api/performance/disk-cache:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1disk-cache'
+  /api/performance/gc:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1gc'
+  /api/performance/logs:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1logs'
+  /api/performance/recent-operations:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1recent-operations'
+
   # 兑换码（M5 Task 2；管理面 + 用户核销）。
   /api/redemption-codes:
     $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'

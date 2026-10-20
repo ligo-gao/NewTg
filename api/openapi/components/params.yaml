@@ -124,3 +124,13 @@ parameters:
     description: 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403）
     schema:
       type: string
+  ConfirmAction:
+    name: X-Confirm-Action
+    in: header
+    required: true
+    description: |
+      服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+      缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+      前端 DangerConfirm 只是体验层，本请求头才是授权门。
+    schema:
+      type: string

@@ -3298,3 +3298,227 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error409'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 性能管理（modules-08 §3.19 / F-08-48～F-08-50；D3a）。
+  #
+  # 三个对象（磁盘缓存文件 / 运行时 GC / 应用日志文件）都是进程/节点本地：
+  # 请求携带的 instance_id 与当前实例（INSTANCE_ID，缺省为主机名）不一致时
+  # 409 instance_mismatch 且零副作用；不转发、不扇出。
+  # 配置来自部署环境变量（DISK_CACHE_ENABLED / DISK_CACHE_PATH /
+  # DISK_CACHE_MAX_MB / DISK_CACHE_THRESHOLD_MB / LOG_DIR / LOG_FILE_PATTERN），
+  # 不落 settings 键；读取与写入一律要求 settings:manage。
+  # 三个写操作必须携带 X-Confirm-Action: true，缺失/其他值 → 422
+  # confirm_required，且在任何文件系统访问之前拒绝。
+  # ---------------------------------------------------------------------------
+  /api/performance/stats:
+    get:
+      tags: [admin]
+      operationId: getPerformanceStats
+      x-required-permission: settings:manage
+      summary: 性能统计（磁盘缓存/内存/磁盘容量/只读配置）
+      description: |
+        目录不存在或不可读时 cache_stats.enabled=false 且 disk_cache_info 为零值，
+        不返回 500。config 回显部署环境变量；memory_stats 取自 runtime。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 性能统计
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceStats'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/disk-cache:
+    delete:
+      tags: [admin]
+      operationId: clearPerformanceDiskCache
+      x-required-permission: settings:manage
+      summary: 清理不活跃磁盘缓存文件
+      description: |
+        只删除 DISK_CACHE_PATH 下 mtime 早于 now-10min 的普通文件；非普通文件
+        （目录/符号链接）直接跳过且不计数。未启用/路径未配置 → 422
+        disk_cache_not_configured。单个删除失败计入 failed_files，不算整体失败。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/ConfirmAction'
+        - name: instance_id
+          in: query
+          required: false
+          description: 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+          schema: {type: string}
+      responses:
+        '200':
+          description: 清理结果（部分失败仍为 200，见 failed_files）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceDiskCacheClearResult'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/gc:
+    post:
+      tags: [admin]
+      operationId: runPerformanceGC
+      x-required-permission: settings:manage
+      summary: 触发一次同步 runtime.GC
+      description: |
+        同步执行 runtime.GC()（不调用 debug.FreeOSMemory）；返回耗时与执行前后
+        的堆分配、GC 次数。重复触发幂等，每次成功都写审计 system.gc.run。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/ConfirmAction'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/PerformanceGCRequest'
+      responses:
+        '200':
+          description: GC 结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceGCResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/logs:
+    get:
+      tags: [admin]
+      operationId: listPerformanceLogs
+      x-required-permission: settings:manage
+      summary: 应用日志文件清单
+      description: |
+        LOG_DIR 未配置（生产默认 stdout）时返回 enabled=false 的说明性空态（200）。
+        已配置时只统计匹配 LOG_FILE_PATTERN（默认 newtg-*.log）的普通文件；
+        目录、符号链接与其他文件名不计数。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 日志文件清单
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceLogs'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: cleanupPerformanceLogs
+      x-required-permission: settings:manage
+      summary: 按天数或文件数清理应用日志文件
+      description: |
+        只处理 LOG_DIR 下匹配 LOG_FILE_PATTERN 的普通文件；当前活动日志文件
+        （最新 mtime）永不删除。by_count 保留最新 N 个；by_days 删除 mtime 早于
+        now-N*24h 的文件。非法 mode → 422 invalid_mode；value<1 → 422
+        invalid_value；LOG_DIR 未配置 → 422 log_dir_not_configured。
+        不触碰 usage_logs 行。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/ConfirmAction'
+        - name: mode
+          in: query
+          required: true
+          schema: {type: string, enum: [by_count, by_days]}
+        - name: value
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1}
+        - name: instance_id
+          in: query
+          required: false
+          description: 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+          schema: {type: string}
+      responses:
+        '200':
+          description: 清理结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceLogCleanupResult'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/recent-operations:
+    get:
+      tags: [admin]
+      operationId: listPerformanceRecentOperations
+      x-required-permission: settings:manage
+      summary: 最近性能运维操作（来自 audit_logs）
+      description: |
+        服务端过滤 category='operation' 且 detail.action ∈
+        {system.disk_cache.clear, system.gc.run, system.log_cleanup.run}，
+        按时间倒序。limit 默认 20、范围 1–100，越界 422 invalid_value。
+        不新建运维记录表，也不要求 /api/audit-logs 新增 action 过滤。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        '200':
+          description: 最近操作列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceRecentOperations'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

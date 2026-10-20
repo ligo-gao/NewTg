@@ -1086,6 +1086,63 @@ func (e Pending2FAResponseStatus) Valid() bool {
 	}
 }
 
+// Defines values for PerformanceLogCleanupResultMode.
+const (
+	PerformanceLogCleanupResultModeByCount PerformanceLogCleanupResultMode = "by_count"
+	PerformanceLogCleanupResultModeByDays  PerformanceLogCleanupResultMode = "by_days"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceLogCleanupResultMode enum.
+func (e PerformanceLogCleanupResultMode) Valid() bool {
+	switch e {
+	case PerformanceLogCleanupResultModeByCount:
+		return true
+	case PerformanceLogCleanupResultModeByDays:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceRecentOperationAction.
+const (
+	SystemDiskCacheClear PerformanceRecentOperationAction = "system.disk_cache.clear"
+	SystemGcRun          PerformanceRecentOperationAction = "system.gc.run"
+	SystemLogCleanupRun  PerformanceRecentOperationAction = "system.log_cleanup.run"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceRecentOperationAction enum.
+func (e PerformanceRecentOperationAction) Valid() bool {
+	switch e {
+	case SystemDiskCacheClear:
+		return true
+	case SystemGcRun:
+		return true
+	case SystemLogCleanupRun:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceRecentOperationResult.
+const (
+	PerformanceRecentOperationResultFailed  PerformanceRecentOperationResult = "failed"
+	PerformanceRecentOperationResultSuccess PerformanceRecentOperationResult = "success"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceRecentOperationResult enum.
+func (e PerformanceRecentOperationResult) Valid() bool {
+	switch e {
+	case PerformanceRecentOperationResultFailed:
+		return true
+	case PerformanceRecentOperationResultSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PermissionGrant1.
 const (
 	Asterisk PermissionGrant1 = "*"
@@ -2322,6 +2379,24 @@ func (e ListOrdersParamsStatus) Valid() bool {
 	case ListOrdersParamsStatusPending:
 		return true
 	case ListOrdersParamsStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CleanupPerformanceLogsParamsMode.
+const (
+	CleanupPerformanceLogsParamsModeByCount CleanupPerformanceLogsParamsMode = "by_count"
+	CleanupPerformanceLogsParamsModeByDays  CleanupPerformanceLogsParamsMode = "by_days"
+)
+
+// Valid indicates whether the value is a known member of the CleanupPerformanceLogsParamsMode enum.
+func (e CleanupPerformanceLogsParamsMode) Valid() bool {
+	switch e {
+	case CleanupPerformanceLogsParamsModeByCount:
+		return true
+	case CleanupPerformanceLogsParamsModeByDays:
 		return true
 	default:
 		return false
@@ -4680,6 +4755,153 @@ type Pending2FAResponse struct {
 // Pending2FAResponseStatus 判别字段；客户端据此跳转 2FA challenge 页。
 type Pending2FAResponseStatus string
 
+// PerformanceCacheStats defines model for PerformanceCacheStats.
+type PerformanceCacheStats struct {
+	// Enabled 生效态（DISK_CACHE_ENABLED 且目录可读）；目录缺失/不可读为 false。
+	Enabled   bool `json:"enabled"`
+	FileCount int  `json:"file_count"`
+
+	// LastClearedAt 本进程最近一次清理完成时间；从未清理或进程重启后为 null。
+	LastClearedAt time.Time `json:"last_cleared_at"`
+	TotalBytes    int64     `json:"total_bytes"`
+}
+
+// PerformanceConfig defines model for PerformanceConfig.
+type PerformanceConfig struct {
+	// Enabled 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。
+	Enabled     bool   `json:"enabled"`
+	MaxMb       int64  `json:"max_mb"`
+	Path        string `json:"path"`
+	ThresholdMb int64  `json:"threshold_mb"`
+}
+
+// PerformanceDiskCacheClearResult defines model for PerformanceDiskCacheClearResult.
+type PerformanceDiskCacheClearResult struct {
+	DeletedCount int `json:"deleted_count"`
+
+	// FailedFiles 删除失败的普通文件名（不含路径）。
+	FailedFiles []string `json:"failed_files"`
+	FreedBytes  int64    `json:"freed_bytes"`
+	InstanceId  string   `json:"instance_id"`
+}
+
+// PerformanceDiskCacheInfo defines model for PerformanceDiskCacheInfo.
+type PerformanceDiskCacheInfo struct {
+	FileCount int `json:"file_count"`
+
+	// LastModified 目录内最新 mtime；无文件时为 null。
+	LastModified time.Time `json:"last_modified"`
+
+	// Path 目录缺失/不可读时为空串（零值）。
+	Path       string `json:"path"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+// PerformanceDiskSpaceInfo defines model for PerformanceDiskSpaceInfo.
+type PerformanceDiskSpaceInfo struct {
+	// FreeBytes 非特权进程可用空间（statfs Bavail）。
+	FreeBytes  int64 `json:"free_bytes"`
+	TotalBytes int64 `json:"total_bytes"`
+	UsedBytes  int64 `json:"used_bytes"`
+}
+
+// PerformanceGCRequest defines model for PerformanceGCRequest.
+type PerformanceGCRequest struct {
+	// InstanceId 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+	InstanceId *string `json:"instance_id,omitempty"`
+}
+
+// PerformanceGCResult defines model for PerformanceGCResult.
+type PerformanceGCResult struct {
+	DurationMs      int64  `json:"duration_ms"`
+	HeapAllocAfter  int64  `json:"heap_alloc_after"`
+	HeapAllocBefore int64  `json:"heap_alloc_before"`
+	InstanceId      string `json:"instance_id"`
+	NumGcAfter      int64  `json:"num_gc_after"`
+	NumGcBefore     int64  `json:"num_gc_before"`
+}
+
+// PerformanceLogCleanupResult defines model for PerformanceLogCleanupResult.
+type PerformanceLogCleanupResult struct {
+	DeletedCount int                             `json:"deleted_count"`
+	FailedFiles  []string                        `json:"failed_files"`
+	FreedBytes   int64                           `json:"freed_bytes"`
+	InstanceId   string                          `json:"instance_id"`
+	Mode         PerformanceLogCleanupResultMode `json:"mode"`
+
+	// SkippedActive 活动日志文件（最新 mtime）命中删除集并被跳过时为 true。
+	SkippedActive bool `json:"skipped_active"`
+	Value         int  `json:"value"`
+}
+
+// PerformanceLogCleanupResultMode defines model for PerformanceLogCleanupResult.Mode.
+type PerformanceLogCleanupResultMode string
+
+// PerformanceLogFile defines model for PerformanceLogFile.
+type PerformanceLogFile struct {
+	ModTime time.Time `json:"mod_time"`
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+}
+
+// PerformanceLogs defines model for PerformanceLogs.
+type PerformanceLogs struct {
+	// Enabled false 表示 LOG_DIR 未配置（生产默认 stdout）。
+	Enabled    bool                 `json:"enabled"`
+	FileCount  int                  `json:"file_count"`
+	Files      []PerformanceLogFile `json:"files"`
+	LogDir     string               `json:"log_dir"`
+	NewestTime time.Time            `json:"newest_time"`
+	OldestTime time.Time            `json:"oldest_time"`
+	TotalSize  int64                `json:"total_size"`
+}
+
+// PerformanceMemoryStats defines model for PerformanceMemoryStats.
+type PerformanceMemoryStats struct {
+	AllocBytes   int64 `json:"alloc_bytes"`
+	NumGc        int64 `json:"num_gc"`
+	NumGoroutine int   `json:"num_goroutine"`
+	SysBytes     int64 `json:"sys_bytes"`
+}
+
+// PerformanceRecentOperation defines model for PerformanceRecentOperation.
+type PerformanceRecentOperation struct {
+	Action PerformanceRecentOperationAction `json:"action"`
+
+	// Actor 审计既有 username 快照（未解析时为 user#<id>）。
+	Actor         string                           `json:"actor"`
+	DeletedCount  int64                            `json:"deleted_count"`
+	DurationMs    int64                            `json:"duration_ms"`
+	FailedCount   int64                            `json:"failed_count"`
+	FreedBytes    int64                            `json:"freed_bytes"`
+	InstanceId    string                           `json:"instance_id"`
+	Result        PerformanceRecentOperationResult `json:"result"`
+	Route         string                           `json:"route"`
+	SkippedActive bool                             `json:"skipped_active"`
+	Time          time.Time                        `json:"time"`
+}
+
+// PerformanceRecentOperationAction defines model for PerformanceRecentOperation.Action.
+type PerformanceRecentOperationAction string
+
+// PerformanceRecentOperationResult defines model for PerformanceRecentOperation.Result.
+type PerformanceRecentOperationResult string
+
+// PerformanceRecentOperations defines model for PerformanceRecentOperations.
+type PerformanceRecentOperations struct {
+	Items []PerformanceRecentOperation `json:"items"`
+}
+
+// PerformanceStats defines model for PerformanceStats.
+type PerformanceStats struct {
+	CacheStats    PerformanceCacheStats    `json:"cache_stats"`
+	Config        PerformanceConfig        `json:"config"`
+	DiskCacheInfo PerformanceDiskCacheInfo `json:"disk_cache_info"`
+	DiskSpaceInfo PerformanceDiskSpaceInfo `json:"disk_space_info"`
+	InstanceId    string                   `json:"instance_id"`
+	MemoryStats   PerformanceMemoryStats   `json:"memory_stats"`
+}
+
 // PermissionGrant 权限矩阵成员：20 键之一或全权通配符 "*"。
 type PermissionGrant struct {
 	union json.RawMessage
@@ -6609,6 +6831,9 @@ type WebhookTestResult struct {
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
 
+// ConfirmAction defines model for ConfirmAction.
+type ConfirmAction = string
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = openapi_types.UUID
 
@@ -7148,6 +7373,47 @@ type ChangePasswordParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ClearPerformanceDiskCacheParams defines parameters for ClearPerformanceDiskCache.
+type ClearPerformanceDiskCacheParams struct {
+	// InstanceId 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+	InstanceId *string `form:"instance_id,omitempty" json:"instance_id,omitempty"`
+
+	// XConfirmAction 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+	// 缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+	// 前端 DangerConfirm 只是体验层，本请求头才是授权门。
+	XConfirmAction ConfirmAction `json:"X-Confirm-Action"`
+}
+
+// RunPerformanceGCParams defines parameters for RunPerformanceGC.
+type RunPerformanceGCParams struct {
+	// XConfirmAction 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+	// 缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+	// 前端 DangerConfirm 只是体验层，本请求头才是授权门。
+	XConfirmAction ConfirmAction `json:"X-Confirm-Action"`
+}
+
+// CleanupPerformanceLogsParams defines parameters for CleanupPerformanceLogs.
+type CleanupPerformanceLogsParams struct {
+	Mode  CleanupPerformanceLogsParamsMode `form:"mode" json:"mode"`
+	Value int                              `form:"value" json:"value"`
+
+	// InstanceId 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
+	InstanceId *string `form:"instance_id,omitempty" json:"instance_id,omitempty"`
+
+	// XConfirmAction 服务端强制确认（modules-08 §3.19 Q3）。取值 "true"（大小写不敏感）；
+	// 缺失或其他值一律 422 confirm_required，且在任何副作用之前拒绝。
+	// 前端 DangerConfirm 只是体验层，本请求头才是授权门。
+	XConfirmAction ConfirmAction `json:"X-Confirm-Action"`
+}
+
+// CleanupPerformanceLogsParamsMode defines parameters for CleanupPerformanceLogs.
+type CleanupPerformanceLogsParamsMode string
+
+// ListPerformanceRecentOperationsParams defines parameters for ListPerformanceRecentOperations.
+type ListPerformanceRecentOperationsParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // ListTaskPluginsParams defines parameters for ListTaskPlugins.
@@ -7901,6 +8167,9 @@ type CompleteOrderManuallyJSONRequestBody = CompleteOrderRequest
 
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// RunPerformanceGCJSONRequestBody defines body for RunPerformanceGC for application/json ContentType.
+type RunPerformanceGCJSONRequestBody = PerformanceGCRequest
 
 // UploadTaskPluginJSONRequestBody defines body for UploadTaskPlugin for application/json ContentType.
 type UploadTaskPluginJSONRequestBody = UploadTaskPluginRequest

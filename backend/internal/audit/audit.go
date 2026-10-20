@@ -144,6 +144,15 @@ const (
 	ActionVendorUpdate     = "vendor.update"
 	ActionVendorDelete     = "vendor.delete"
 	ActionVendorOperations = "vendor.operations"
+
+	// D3a 性能管理（modules-08 §3.19 / F-08-48～50）。动作名沿用 log.export
+	// 的「域.动词」风格，由 writer 注入 detail.action（audit_logs 没有独立
+	// action 列；§3.19.2 的审计写入映射）。三类都是运维动作，归 operation。
+	// detail 只允许计数/字节数/耗时/实例标识，绝不记录缓存或日志正文
+	// （§3.19.2 明确要求）。
+	ActionSystemDiskCacheClear = "system.disk_cache.clear"
+	ActionSystemGCRun          = "system.gc.run"
+	ActionSystemLogCleanupRun  = "system.log_cleanup.run"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -230,6 +239,10 @@ var actionCategories = map[string]string{
 	ActionVendorUpdate:     categoryOperation,
 	ActionVendorDelete:     categoryOperation,
 	ActionVendorOperations: categoryOperation,
+
+	ActionSystemDiskCacheClear: categoryOperation,
+	ActionSystemGCRun:          categoryOperation,
+	ActionSystemLogCleanupRun:  categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。
