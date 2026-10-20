@@ -29,6 +29,8 @@ import (
 // M6d Task 1 追加任务插件三表（modules-08 §3.10.2），表数 24→27。
 // M6d Task 7a 给 channels 追加任务插件绑定 2 列（relay-06 §1.3），22→24。
 // M6d Task 6a 追加任务数据面主表 tasks（relay-06 §7），表数 27→28。
+// D1 追加模型目录两张表（platform-01 §22.7.1/§22.7.2），表数 28→30：
+// vendors 7 列、model_meta 20 列。
 var wantColumns = map[string]int{
 	"users":                   25,
 	"api_tokens":              15,
@@ -66,6 +68,10 @@ var wantColumns = map[string]int{
 	// M6d Task 6a 任务数据面主表（relay-06 §7）：契约 §2.5 统一列 13 + 插件
 	// 附加列 14 = 27 列。列数与设计表逐行对应，多一列少一列都视为漂移。
 	"tasks": 27,
+	// D1 模型目录与供应商（platform-01 §22.7.1 的 12+8 列 / §22.7.2 的 7 列）：
+	// 两表都以 GENERATED ALWAYS AS IDENTITY 作 PK，且都不设 FK（vendor_id 是逻辑引用）。
+	"vendors":    7,
+	"model_meta": 20,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -99,6 +105,10 @@ var wantNoFKTables = []string{
 	// 任务行是计费/审计事实：用户或渠道被硬删除后仍要保留历史任务，
 	// user_id / channel_id 只做逻辑引用（M6d Task 6a）。
 	"tasks",
+	// D1：供应商删除由应用层引用保护（有引用 ⇒ 409 + 计数），
+	// model_meta.vendor_id 不设 FK；model_meta 与 model_pricing 也不强制一一对应。
+	"vendors",
+	"model_meta",
 }
 
 // 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
@@ -125,6 +135,9 @@ var wantIdentityPKTables = []string{
 	"notification_deliveries",
 	// M6d Task 6a：tasks 以 GENERATED ALWAYS AS IDENTITY 作 PK。
 	"tasks",
+	// D1：模型目录两表同样使用单列 id identity 代理主键。
+	"vendors",
+	"model_meta",
 }
 
 // identityPKExceptions：5 张「自然键/非 identity 例外」表的 PK（均非 identity）：
@@ -135,8 +148,8 @@ var wantIdentityPKTables = []string{
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及两张 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：28 表
-// （M0 16 + M1 6 + M6c 2 + M6d 4）= 19 张单列 id identity + 5 张自然键例外
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：30 表
+// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2）= 21 张单列 id identity + 5 张自然键例外
 // + 2 张 uuid 代理键 + 2 张 run_id 领头自然键；**非 identity PK 的表恰 9 张**，
 // 由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
@@ -202,7 +215,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 28 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 30 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -362,6 +375,61 @@ func TestMainSchemaTaskIndexes(t *testing.T) {
 	}
 }
 
+// TestMainSchemaModelCatalogIndexes：（c.2）D1 两表的索引形状（platform-01
+// §22.7.1/§22.7.2）：
+//   - vendors 的唯一性必须落在 lower(name) 表达式上（大小写不敏感，停用行也占名）；
+//   - model_meta.model_name 是大小写敏感的 UNIQUE；
+//   - vendor_id / status 各一条普通索引；
+//   - tags **不建** GIN（D1-05；新增 PG 特性须先登记）。
+func TestMainSchemaModelCatalogIndexes(t *testing.T) {
+	db := openTestDB(t)
+
+	type wantIndex struct {
+		name    string
+		unique  bool
+		partial bool
+	}
+	for _, want := range []wantIndex{
+		{"vendors_name_lower_uq", true, false},
+		{"vendors_status_idx", false, false},
+		{"model_meta_model_name_uq", true, false},
+		{"model_meta_vendor_idx", false, false},
+		{"model_meta_status_idx", false, false},
+	} {
+		want := want
+		t.Run(want.name, func(t *testing.T) {
+			def, unique, partial, ok := indexInfo(t, db, want.name)
+			if !ok {
+				t.Fatalf("索引 %s 不存在", want.name)
+			}
+			if unique != want.unique || partial != want.partial {
+				t.Fatalf("%s unique=%v partial=%v，want %v/%v（定义：%s）",
+					want.name, unique, partial, want.unique, want.partial, def)
+			}
+			if want.name == "vendors_name_lower_uq" && !strings.Contains(def, "lower(") {
+				t.Fatalf("vendors 唯一索引必须建在 lower(name) 上：%s", def)
+			}
+		})
+	}
+
+	t.Run("model_meta.tags 无 GIN（D1-05）", func(t *testing.T) {
+		var n int
+		err := db.QueryRow(`SELECT count(*)
+			FROM pg_index i
+			JOIN pg_class t ON t.oid = i.indrelid
+			JOIN pg_class idx ON idx.oid = i.indexrelid
+			JOIN pg_namespace nsp ON nsp.oid = t.relnamespace
+			WHERE nsp.nspname = current_schema() AND t.relname = 'model_meta'
+			  AND pg_get_indexdef(i.indexrelid) LIKE '%tags%'`).Scan(&n)
+		if err != nil {
+			t.Fatalf("query model_meta indexes: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("model_meta.tags 不应建索引（D1-05），实际 %d 条", n)
+		}
+	})
+}
+
 // TestMainSchemaNoFKOnFinancialTables：（d）财务表无 FK（V5 财务逻辑引用）。
 func TestMainSchemaNoFKOnFinancialTables(t *testing.T) {
 	db := openTestDB(t)
@@ -468,7 +536,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 	db := openTestDB(t)
 
-	// (e.1) 19 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 21 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1 + D1 2）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -571,7 +639,7 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 
 // TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 9 张 =
 // 5 张自然键例外（identityPKExceptions）+ 2 张 uuid 代理键（uuidPKTables）
-// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（19 张）均为
+// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（21 张）均为
 // 单列 id + GENERATED ALWAYS AS IDENTITY。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	db := openTestDB(t)
@@ -674,6 +742,40 @@ var documentedChecks = []struct {
 	{
 		Table: "tasks", Name: "tasks_progress_percent_chk",
 		Fragments: []string{"progress_percent", ">= 0", "<= 100"},
+	},
+	// D1 / platform-01 §22.7.1：模型名字符集必须放行 `/`（公开模型名
+	// openai/gpt-5），三个数组列必须是 jsonb 数组（D1-03/D1-04）。
+	{
+		Table: "model_meta", Name: "model_meta_model_name_chk",
+		Fragments: []string{"model_name", "A-Za-z0-9", "128"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_tags_chk",
+		Fragments: []string{"tags", "jsonb_typeof", "array"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_capabilities_chk",
+		Fragments: []string{"capabilities", "jsonb_typeof", "array"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_modalities_chk",
+		Fragments: []string{"modalities", "jsonb_typeof", "array"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_parameters_chk",
+		Fragments: []string{"parameters", "jsonb_typeof", "array"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_knowledge_cutoff_chk",
+		Fragments: []string{"knowledge_cutoff", "0[1-9]"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_context_length_chk",
+		Fragments: []string{"context_length", ">= 0"},
+	},
+	{
+		Table: "model_meta", Name: "model_meta_max_output_chk",
+		Fragments: []string{"max_output", ">= 0"},
 	},
 }
 
@@ -799,6 +901,38 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO tasks
 			(public_task_id, family, action, plugin_key, fetch_mode, state, progress_percent, user_id)
 			VALUES ('chk_task_progress', 'plugin', 'generate', 'sample', 'poll', 'submitted', 101, 1)`)
+	})
+
+	// D1 / platform-01 §22.7.1：目录 CHECK 的写入路径同样必须真实拒绝，
+	// 而不是只存在于 catalog（与 R-24 的负向覆盖同口径）。
+	t.Run("模型名含空格被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO model_meta (model_name) VALUES ('bad model')`)
+	})
+	t.Run("模型名含 / 被接受", func(t *testing.T) {
+		// 公开模型名（如 openai/gpt-5）必须可建档；用回滚事务避免留下数据。
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO model_meta (model_name) VALUES ('openai/chk-model_1')`); err != nil {
+			t.Fatalf("含 / 的合法模型名被误拒：%v", err)
+		}
+	})
+	t.Run("tags 非数组被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO model_meta (model_name, tags)
+			VALUES ('chk_tags_object', '{"a":1}'::jsonb)`)
+	})
+	t.Run("knowledge_cutoff 非法月份被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO model_meta (model_name, knowledge_cutoff)
+			VALUES ('chk_cutoff', '2024-13')`)
+	})
+	t.Run("context_length 负数被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO model_meta (model_name, context_length)
+			VALUES ('chk_context_neg', -1)`)
+	})
+	t.Run("供应商 status 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO vendors (name, status) VALUES ('chk_vendor_status', 3)`)
 	})
 }
 
@@ -995,6 +1129,10 @@ func TestEnumChecksValuesSanity(t *testing.T) {
 		"model_pricing.mode":                true,
 		"model_pricing.status":              true,
 		"group_pricing.status":              true,
+		// D1 的三列 smallint 枚举（vendors.status / model_meta.status / name_rule）。
+		"vendors.status":       true,
+		"model_meta.status":    true,
+		"model_meta.name_rule": true,
 	}
 	for key, members := range EnumChecks {
 		for _, m := range members {

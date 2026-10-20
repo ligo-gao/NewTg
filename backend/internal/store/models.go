@@ -350,3 +350,62 @@ type PluginMarketplaceSource struct {
 
 // TableName 返回 GORM 表名。
 func (PluginMarketplaceSource) TableName() string { return "plugin_marketplace_sources" }
+
+// Vendor 对应 vendors（platform-01 §22.7.2，7 列；D1-01）。
+//
+// 口径：
+//   - 没有 version 列：乐观锁版本由 id/name/description/icon/status/
+//     created_at/updated_at 规范化后 sha256 派生（见 Vendor.Version）。
+//     持久化版本会形成第二真源，绕过应用的写入会让存储版本与内容脱节。
+//   - Name 的唯一性由表达式索引 lower(name) 保证（大小写不敏感，停用行也占名）。
+//   - ModelCount 是列表/详情投影的派生字段，**不落库**；Create/Update 返回
+//     的记录可能未填充（0），需要计数时以 Get/List 为准。
+type Vendor struct {
+	ID          int64     `gorm:"column:id;primaryKey"`
+	Name        string    `gorm:"column:name"`
+	Description *string   `gorm:"column:description"`
+	Icon        *string   `gorm:"column:icon"`
+	Status      int16     `gorm:"column:status"` // smallint：1=启用 / 2=停用
+	CreatedAt   time.Time `gorm:"column:created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at"`
+	ModelCount  int64     `gorm:"-"`
+}
+
+// TableName 返回 GORM 表名。
+func (Vendor) TableName() string { return "vendors" }
+
+// ModelMeta 对应 model_meta（platform-01 §22.7.1 的 12 列 + 公开页 8 列 = 20 列；
+// D1-02）。
+//
+// 口径：
+//   - jsonb 列用 []byte 承载原始 JSON（与 Channel.SupportedModels 同型）；
+//     Endpoints 固定为对象形态 {"/path":["POST"]}。
+//   - VendorID 是逻辑引用 vendors.id（**无 FK**）；NULL = 未归属。
+//   - Status：1=启用 / 2=停用（停用 ⇒ 公开面恒 hidden）。
+//   - SyncOfficial=false 表示本地锁定，上游同步 preview 判 blocked。
+//   - NameRule：0 精确 / 1 前缀 / 2 包含 / 3 后缀；注意 0 是合法零值。
+type ModelMeta struct {
+	ID              int64      `gorm:"column:id;primaryKey"`
+	ModelName       string     `gorm:"column:model_name"`
+	DisplayName     *string    `gorm:"column:display_name"`
+	Description     *string    `gorm:"column:description"`
+	Icon            *string    `gorm:"column:icon"`
+	Tags            []byte     `gorm:"column:tags"`
+	VendorID        *int64     `gorm:"column:vendor_id"`
+	Endpoints       []byte     `gorm:"column:endpoints"`
+	Capabilities    []byte     `gorm:"column:capabilities"`
+	Modalities      []byte     `gorm:"column:modalities"`
+	Parameters      []byte     `gorm:"column:parameters"`
+	ContextLength   *int64     `gorm:"column:context_length"`
+	MaxOutput       *int64     `gorm:"column:max_output"`
+	KnowledgeCutoff *string    `gorm:"column:knowledge_cutoff"`
+	ReleasedAt      *time.Time `gorm:"column:released_at"`
+	Status          int16      `gorm:"column:status"`
+	SyncOfficial    bool       `gorm:"column:sync_official"`
+	NameRule        int16      `gorm:"column:name_rule"`
+	CreatedAt       time.Time  `gorm:"column:created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (ModelMeta) TableName() string { return "model_meta" }

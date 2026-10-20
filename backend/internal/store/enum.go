@@ -104,13 +104,22 @@ var EnumChecks = map[string][]string{
 		"not_start", "submitted", "queued", "in_progress",
 		"success", "failure", "unknown",
 	},
+
+	// 模型目录与供应商（D1，platform-01 §22.7.1/§22.7.2）。
+	// vendors.status / model_meta.status：1=启用 / 2=停用；
+	// model_meta.name_rule：0=精确 / 1=前缀 / 2=包含 / 3=后缀（D1-02）。
+	// 这三列都是 smallint 枚举，成员按十进制文本登记，与 CHECK 解析同形。
+	"vendors.status":       {"1", "2"},
+	"model_meta.status":    {"1", "2"},
+	"model_meta.name_rule": {"0", "1", "2", "3"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
 // 口径与 EnumChecks 相同：键为 "<table>.<column>"，值为 CHECK IN 白名单成员。
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
-// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4 = 28 表），
+// 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
+// + D1 2 = 30 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
