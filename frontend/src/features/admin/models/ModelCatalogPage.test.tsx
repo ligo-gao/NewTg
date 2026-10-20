@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { HttpResponse, http } from 'msw'
+import { HttpResponse, delay, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { components } from '@/api/schema'
@@ -78,6 +78,8 @@ interface InstallOptions {
   batchChannelIds?: number[]
   syncPreviewStatus?: number
   syncApplyStatus?: number
+  syncPreviewDelayMs?: number
+  recordSyncPreview?: () => void
   recordList?: (params: URLSearchParams) => void
 }
 
@@ -93,6 +95,8 @@ function installHandlers({
   batchChannelIds,
   syncPreviewStatus = 200,
   syncApplyStatus = 200,
+  syncPreviewDelayMs = 0,
+  recordSyncPreview,
   recordList,
 }: InstallOptions = {}) {
   server.use(
@@ -168,7 +172,9 @@ function installHandlers({
         group_pricing_deleted: 0,
       })
     }),
-    http.get(`${ORIGIN}/api/models/sync/preview`, () => {
+    http.get(`${ORIGIN}/api/models/sync/preview`, async () => {
+      recordSyncPreview?.()
+      if (syncPreviewDelayMs > 0) await delay(syncPreviewDelayMs)
       if (syncPreviewStatus !== 200) {
         return HttpResponse.json(
           { type: 'about:blank', title: 'Unavailable', detail: 'unconfigured' },
@@ -396,6 +402,49 @@ describe('models tab', () => {
     ).toBeTruthy()
   })
 
+  it('rejects duplicate endpoint paths before submitting', async () => {
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit model' })
+    await user.click(within(sheet).getByRole('button', { name: 'Add endpoint' }))
+
+    const paths = within(sheet).getAllByLabelText('Path')
+    expect(paths).toHaveLength(2)
+    const duplicateRow = paths[1]
+    if (duplicateRow === undefined) throw new Error('second endpoint row missing')
+    await user.type(duplicateRow, '/v1/chat/completions')
+    await user.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(sheet).findByText(
+        'Endpoint path /v1/chat/completions appears more than once.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('rejects a tag longer than 32 runes even when it uses multibyte characters', async () => {
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit model' })
+    // 33 runes、66 UTF-8 bytes：服务端按 rune 校验，前端必须同口径。
+    fireEvent.change(within(sheet).getByLabelText('Tags'), {
+      target: { value: 'é'.repeat(33) },
+    })
+    await user.click(within(sheet).getByRole('button', { name: 'Add' }))
+
+    expect(
+      await within(sheet).findByText('Each tag must be 1–32 characters.'),
+    ).toBeTruthy()
+    // 被拒绝的标签不得进入选择集。
+    expect(within(sheet).queryByText('é'.repeat(33))).toBeNull()
+  })
+
   it('lists the channel ids when batch delete is rejected with channel_ids', async () => {
     installHandlers({ batchStatus: 422, batchChannelIds: [12, 19] })
     await renderWithProviders(<Harness />, ['common', 'admin'])
@@ -503,6 +552,57 @@ describe('models tab', () => {
     })
     expect(await within(dialog).findByText(/Preview again before applying/)).toBeTruthy()
     expect(within(dialog).getByRole('button', { name: 'Preview again' })).toBeTruthy()
+  })
+
+  it('discards the cached preview when the dialog closes', async () => {
+    let previewCalls = 0
+    installHandlers({ recordSyncPreview: () => { previewCalls += 1 } })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Sync from upstream' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Sync from upstream' })
+    await within(dialog).findByText('new/model')
+    expect(previewCalls).toBe(1)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Sync from upstream' })).toBeNull()
+    })
+
+    // 重新打开必须重新预览：若缓存未清除，这里会渲染旧清单且不发请求。
+    await user.click(screen.getByRole('button', { name: 'Sync from upstream' }))
+    const reopened = await screen.findByRole('dialog', { name: 'Sync from upstream' })
+    await within(reopened).findByText('new/model')
+    expect(previewCalls).toBe(2)
+  })
+
+  it('disables Apply and Preview again while the preview is refetching', async () => {
+    installHandlers({ syncApplyStatus: 409, syncPreviewDelayMs: 250 })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Sync from upstream' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Sync from upstream' })
+    await within(dialog).findByText('new/model')
+
+    await user.click(within(dialog).getByRole('button', { name: /Apply selected/ }))
+    const repreview = await within(dialog).findByRole('button', { name: 'Preview again' })
+
+    await user.click(repreview)
+    // 预览尚在飞行中：两个动作都必须锁定，避免用半旧的清单继续操作。
+    expect((repreview as HTMLButtonElement).disabled).toBe(true)
+    expect(
+      (within(dialog).getByRole('button', { name: /Apply selected/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+
+    // 新预览落地后解除 isFetching 锁定。
+    await waitFor(() => {
+      expect((repreview as HTMLButtonElement).disabled).toBe(false)
+    })
   })
 
   it('explains a 503 preview when the source URL is not configured', async () => {

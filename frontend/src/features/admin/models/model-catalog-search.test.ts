@@ -28,4 +28,21 @@ describe('normalizeModelCatalogSearch page sizes', () => {
       expect(search.vv_page_size).toBe(DEFAULT_MODEL_CATALOG_SEARCH.vv_page_size)
     },
   )
+
+  // 两个页签的默认档位各自独立：一侧非法只影响自己，不会串到另一侧。
+  it('falls back per field instead of borrowing the models default', () => {
+    const modelsInvalid = normalizeModelCatalogSearch({
+      mv_page_size: '37',
+      vv_page_size: '50',
+    })
+    expect(modelsInvalid.mv_page_size).toBe(DEFAULT_MODEL_CATALOG_SEARCH.mv_page_size)
+    expect(modelsInvalid.vv_page_size).toBe(50)
+
+    const vendorsInvalid = normalizeModelCatalogSearch({
+      mv_page_size: '10',
+      vv_page_size: '37',
+    })
+    expect(vendorsInvalid.mv_page_size).toBe(10)
+    expect(vendorsInvalid.vv_page_size).toBe(DEFAULT_MODEL_CATALOG_SEARCH.vv_page_size)
+  })
 })

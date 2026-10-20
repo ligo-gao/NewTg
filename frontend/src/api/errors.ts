@@ -155,6 +155,17 @@ function readNumber(
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+/**
+ * Reads an extension member that must be a non-negative integer（计数类字段，
+ * 如 `reference_count` 与 `conflicts[].vendor_id`）。负数、小数、字符串一律
+ * 丢弃：这些值只用于展示与定位，宁可退回通用文案也不把异常值拼进提示。
+ */
+function readCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : undefined
+}
+
 function readProblem402(
   body: Record<string, unknown> | undefined,
 ): Problem402 | undefined {
@@ -224,8 +235,8 @@ function readConflicts(
   const conflicts: VendorVersionConflict[] = []
   for (const item of value) {
     const record = asRecord(item)
-    const vendorId = readNumber(record, 'vendor_id')
-    if (vendorId === undefined || !Number.isInteger(vendorId)) continue
+    const vendorId = readCount(record?.vendor_id)
+    if (vendorId === undefined) continue
     const conflict: VendorVersionConflict = { vendor_id: vendorId }
     const currentVersion = readString(record, 'current_version')
     if (currentVersion !== undefined) conflict.current_version = currentVersion
@@ -256,7 +267,7 @@ export function parseProblem(input: ParseProblemInput): ApiError {
     request_id: input.requestId,
     fields: readFields(body),
     channel_ids: readChannelIds(body),
-    reference_count: readNumber(body, 'reference_count'),
+    reference_count: readCount(body?.reference_count),
     conflicts: readConflicts(body),
     retry_after: readRetryAfter(input.retryAfter),
     kind,

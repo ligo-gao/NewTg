@@ -104,6 +104,29 @@ describe('parseProblem', () => {
     expect(error.reference_count).toBeUndefined()
   })
 
+  it('rejects negative or fractional counts on reference_count and conflicts', () => {
+    for (const referenceCount of [-1, 1.5]) {
+      const error = parseProblem({
+        status: 409,
+        body: { reference_count: referenceCount },
+      })
+      expect(error.reference_count).toBeUndefined()
+    }
+
+    const error = parseProblem({
+      status: 409,
+      body: {
+        conflicts: [
+          { vendor_id: -2 },
+          { vendor_id: 3.5 },
+          { vendor_id: 4, current_version: 'sha256:abc' },
+        ],
+      },
+    })
+
+    expect(error.conflicts).toEqual([{ vendor_id: 4, current_version: 'sha256:abc' }])
+  })
+
   it('treats a network failure (status 0) as offline', () => {
     const error = parseProblem({ status: 0 })
 

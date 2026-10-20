@@ -92,13 +92,13 @@ function positiveInt(value: unknown): number | undefined {
  * `page_size` 只接受组件暴露的档位（10/20/50）。地址栏里可能是任意整数
  * （服务端上限 100，且 37 这类值不会出现在下拉选项里，`<select>` 会显示成
  * 空白），因此非档位值一律回落到默认值，保证发出的请求与控件状态一致。
+ * 默认值按字段传入：models / vendors 两个页签的默认档位各自独立，不能
+ * 互相借用（否则改了一侧的默认值会悄悄改变另一侧的回落行为）。
  */
-function pageSizeOf(value: unknown): number {
+function pageSizeOf(value: unknown, fallback: number): number {
   const parsed = positiveInt(value)
-  if (parsed === undefined) return DEFAULT_MODEL_CATALOG_SEARCH.mv_page_size
-  return (MODEL_PAGE_SIZES as readonly number[]).includes(parsed)
-    ? parsed
-    : DEFAULT_MODEL_CATALOG_SEARCH.mv_page_size
+  if (parsed === undefined) return fallback
+  return (MODEL_PAGE_SIZES as readonly number[]).includes(parsed) ? parsed : fallback
 }
 
 function oneOf<T extends string>(
@@ -130,7 +130,7 @@ export function normalizeModelCatalogSearch(
   if (raw.tab === 'vendors') search.tab = 'vendors'
 
   search.mv_p = positiveInt(raw.mv_p) ?? 1
-  search.mv_page_size = pageSizeOf(raw.mv_page_size)
+  search.mv_page_size = pageSizeOf(raw.mv_page_size, DEFAULT_MODEL_CATALOG_SEARCH.mv_page_size)
   const mvKeyword = keywordOf(raw.mv_keyword)
   if (mvKeyword !== undefined) search.mv_keyword = mvKeyword
   const mvVendor = positiveInt(raw.mv_vendor_id)
@@ -142,7 +142,7 @@ export function normalizeModelCatalogSearch(
   search.mv_sort = oneOf(raw.mv_sort, MODEL_SORTS) ?? 'model_name'
 
   search.vv_p = positiveInt(raw.vv_p) ?? 1
-  search.vv_page_size = pageSizeOf(raw.vv_page_size)
+  search.vv_page_size = pageSizeOf(raw.vv_page_size, DEFAULT_MODEL_CATALOG_SEARCH.vv_page_size)
   const vvKeyword = keywordOf(raw.vv_keyword)
   if (vvKeyword !== undefined) search.vv_keyword = vvKeyword
   const vvStatus = oneOf(raw.vv_status, ['enabled', 'disabled'] as const)
