@@ -505,7 +505,7 @@ export function LiveFeedSection() {
                 ? '0'
                 : `−${formatInteger(aggregate.cost_credits, locale)}`}
             </span>
-            <span>
+            <span className="text-ink-2">
               {' '}
               {t('public.live_feed.window.credit_unit')}
             </span>
