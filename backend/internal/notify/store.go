@@ -483,6 +483,43 @@ func (s *Store) CountInAppAudience(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// BalanceLowUser 是低余额扫描命中的一个用户：只取投递所需的两列，
+// 不把 users 行的邮箱/手机号等 PII 列带进内存（B4 脱敏要求）。
+type BalanceLowUser struct {
+	ID      int64
+	Balance int64
+}
+
+// ListLowBalanceUsers 返回 balance < threshold 的启用用户（按 id 升序）。
+//
+// 扫描口径是冻结的（tasks B4 / N6）：只认 status='enabled'，禁用用户即使
+// 余额为 0 也不产生通知；threshold <= 0 时由调用方直接跳过，不执行查询。
+// 用户量大时分页由调用方按 id keyset 推进——这里保留纯读接口，扫描器
+// 每 5 分钟一次全量命中集，避免把「明天仍低于阈值」的持久状态写进表。
+func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64) ([]BalanceLowUser, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, balance FROM users
+		WHERE status = 'enabled' AND balance < $1
+		ORDER BY id`, threshold)
+	if err != nil {
+		return nil, fmt.Errorf("notify: list low balance users: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BalanceLowUser
+	for rows.Next() {
+		var user BalanceLowUser
+		if err := rows.Scan(&user.ID, &user.Balance); err != nil {
+			return nil, fmt.Errorf("notify: scan low balance user: %w", err)
+		}
+		out = append(out, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notify: iterate low balance users: %w", err)
+	}
+	return out, nil
+}
+
 // InsertInAppDeliveries 批量写入站内投递记录（A5）。
 //
 // 单条 SQL 多值插入，每批由调用方限制 ≤500 行（10 列 × 500 = 5000 个参数，

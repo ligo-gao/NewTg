@@ -1,6 +1,7 @@
 package notify
 
 // B1b：Webhook 业务事件生产者（payment_success / user_signup）。
+// B4：追加 balance_low（N6 低余额扫描的投递入口）。
 //
 // 设计权威：modules-08 F-08-20（出站 Webhook 配置与投递）与 §3.9.6b
 // （至少一次 + 幂等键 = 有效一次）。N8 worker（webhookworker.go）只负责
@@ -54,6 +55,20 @@ type UserSignupEvent struct {
 	CreatedAt time.Time
 }
 
+// BalanceLowEvent 是 N6 低余额扫描命中一个用户时的输入（B4）。
+//
+// Balance/Threshold 都是积分整数；DetectedAt 是扫描轮次的「现在」
+// （UTC 写入 payload）。SiteDay 是站点时区下的日期（YYYY-MM-DD），
+// 只参与 dedupe_key，不写入 payload——它把「每人每天最多一条」钉在
+// 业务时区上，跨时区副本得到同一天键。
+type BalanceLowEvent struct {
+	UserID     int64
+	Balance    int64
+	Threshold  int64
+	DetectedAt time.Time
+	SiteDay    string
+}
+
 // paymentSuccessPayload 是 payment_success 的冻结请求体。
 // 字段名与顺序即接收方契约；新增字段需同步台账与设计回写。
 type paymentSuccessPayload struct {
@@ -72,6 +87,17 @@ type userSignupPayload struct {
 	UserID    int64  `json:"user_id"`
 	Username  string `json:"username"`
 	CreatedAt string `json:"created_at"`
+}
+
+// balanceLowPayload 是 balance_low 的冻结请求体。
+// 只含余额事实与阈值，**不含**邮箱、手机号、用户名等可识别信息：该事件
+// 会发往管理员配置的外部端点，最小化 PII 面。
+type balanceLowPayload struct {
+	Event      string `json:"event"`
+	UserID     int64  `json:"user_id"`
+	Balance    int64  `json:"balance"`
+	Threshold  int64  `json:"threshold"`
+	DetectedAt string `json:"detected_at"`
 }
 
 // WebhookEventProducer 把业务事件写成 webhook 投递行，可并发使用。
@@ -112,7 +138,7 @@ func (p *WebhookEventProducer) EnqueuePaymentSuccess(ctx context.Context, event 
 		// 不因此丢掉事件：用当前时刻保证 payload 仍是合法时间串。
 		paidAt = time.Now()
 	}
-	return p.enqueue(ctx, deliveryEvent{
+	_, err := p.enqueue(ctx, deliveryEvent{
 		category:  "billing.payment_success",
 		event:     eventName,
 		dedupeKey: fmt.Sprintf("order:%d:payment_success", event.OrderID),
@@ -125,6 +151,7 @@ func (p *WebhookEventProducer) EnqueuePaymentSuccess(ctx context.Context, event 
 			PaidAt:      paidAt.UTC().Format(time.RFC3339),
 		},
 	})
+	return err
 }
 
 // EnqueueUserSignup 写入一条 user_signup 投递（category auth.welcome）。
@@ -137,7 +164,7 @@ func (p *WebhookEventProducer) EnqueueUserSignup(ctx context.Context, event User
 	if createdAt.IsZero() {
 		createdAt = time.Now()
 	}
-	return p.enqueue(ctx, deliveryEvent{
+	_, err := p.enqueue(ctx, deliveryEvent{
 		category:  "auth.welcome",
 		event:     eventName,
 		dedupeKey: fmt.Sprintf("user:%d:signup", event.UserID),
@@ -146,6 +173,41 @@ func (p *WebhookEventProducer) EnqueueUserSignup(ctx context.Context, event User
 			UserID:    event.UserID,
 			Username:  event.Username,
 			CreatedAt: createdAt.UTC().Format(time.RFC3339),
+		},
+	})
+	return err
+}
+
+// EnqueueBalanceLow 写入一条 balance_low 投递（N6 低余额扫描，B4）。
+//
+// 返回值 inserted 表示本次是否真的落了一行：同一用户同一天重复扫描由
+// UNIQUE(dedupe_key) 去重，返回 (false, nil)。未订阅事件同样返回
+// (false, nil)——扫描器已先做订阅过滤，这里的重复过滤是纵深防御。
+// 只有序列化/DB 失败返回 error，调用方只记 Warn，绝不影响业务。
+func (p *WebhookEventProducer) EnqueueBalanceLow(ctx context.Context, event BalanceLowEvent) (bool, error) {
+	eventName, ok := WebhookEventForCategory("billing.balance_low")
+	if !ok {
+		return false, errors.New("notify: billing.balance_low has no webhook event")
+	}
+	detectedAt := event.DetectedAt
+	if detectedAt.IsZero() {
+		detectedAt = time.Now()
+	}
+	day := event.SiteDay
+	if day == "" {
+		// 调用方未给站点日期时退化为 UTC 日期；扫描器总会显式传入站点日期。
+		day = detectedAt.UTC().Format("2006-01-02")
+	}
+	return p.enqueue(ctx, deliveryEvent{
+		category:  "billing.balance_low",
+		event:     eventName,
+		dedupeKey: fmt.Sprintf("balance_low:%d:%s", event.UserID, day),
+		payload: balanceLowPayload{
+			Event:      "balance_low",
+			UserID:     event.UserID,
+			Balance:    event.Balance,
+			Threshold:  event.Threshold,
+			DetectedAt: detectedAt.UTC().Format(time.RFC3339),
 		},
 	})
 }
@@ -157,19 +219,20 @@ type deliveryEvent struct {
 	payload   any
 }
 
-// enqueue 是两条事件共用的写入路径：订阅过滤 → 序列化 → INSERT。
-func (p *WebhookEventProducer) enqueue(ctx context.Context, event deliveryEvent) error {
+// enqueue 是各事件共用的写入路径：订阅过滤 → 序列化 → INSERT。
+// inserted=false 表示未订阅或 dedupe_key 命中已有行（两种都算幂等成功）。
+func (p *WebhookEventProducer) enqueue(ctx context.Context, event deliveryEvent) (bool, error) {
 	if !p.subscription.Subscribed(event.event) {
 		// 订阅过滤与 worker 的发送前过滤共用同一份配置语义；未订阅不写行，
 		// 避免队列里堆积永远不会发送、也永远不会被 suppressed 的记录。
 		p.log.Debug("webhook event skipped: not subscribed", "event", event.event)
-		return nil
+		return false, nil
 	}
 	body, err := json.Marshal(event.payload)
 	if err != nil {
-		return fmt.Errorf("notify: marshal webhook payload %s: %w", event.event, err)
+		return false, fmt.Errorf("notify: marshal webhook payload %s: %w", event.event, err)
 	}
-	_, _, err = p.store.InsertDelivery(ctx, Delivery{
+	_, inserted, err := p.store.InsertDelivery(ctx, Delivery{
 		Category:  event.category,
 		Channel:   ChannelWebhook,
 		Recipient: webhookRecipientPlaceholder,
@@ -179,9 +242,9 @@ func (p *WebhookEventProducer) enqueue(ctx context.Context, event deliveryEvent)
 		Payload:   body,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return inserted, nil
 }
 
 // webhookRecipientPlaceholder 满足 notification_deliveries.recipient 的

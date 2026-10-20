@@ -536,8 +536,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	}
 	// B1b：worker 侧的充值结算（过期回收/支付宝轮询兜底）也走 settleOrder，
 	// 必须与 gateway 共享同一生产者语义。订阅过滤读取同一配置中心快照。
-	webhookEvents, err := notify.NewWebhookEventProducer(
-		notifyStore, notify.NewWebhookSender(center, cipher), log)
+	// 同一个 WebhookSender 也作为 balance_low 扫描器的订阅面：事件订阅语义
+	// 只有一份真源。
+	webhookSender := notify.NewWebhookSender(center, cipher)
+	webhookEvents, err := notify.NewWebhookEventProducer(notifyStore, webhookSender, log)
 	if err != nil {
 		cancelRankings()
 		rankingsWG.Wait()
@@ -555,11 +557,31 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		defer webhookWG.Done()
 		if err := notify.RunWebhookWorkerLoop(webhookCtx, notify.WebhookWorkerDeps{
 			Store:  notifyStore,
-			Sender: notify.NewWebhookSender(center, cipher),
+			Sender: webhookSender,
 			Redis:  rr.client,
 			Logger: log,
 		}); err != nil {
 			log.Error("webhook worker exited with error", "error", err)
+		}
+	}()
+
+	// N6 低余额扫描（billing-06 §9.6 / modules-08 F-08-11，tasks B4）：每 5
+	// 分钟扫描 balance < notify.webhook.balance_low_threshold 的启用用户，写入
+	// balance_low 投递行，由上面的 N8 worker 发送。独立 cancel/WaitGroup，
+	// 停机先于连接池关闭退出；跨副本重复扫描由 dedupe_key 按天收敛。
+	balanceCtx, cancelBalance := context.WithCancel(ctx)
+	var balanceWG sync.WaitGroup
+	balanceWG.Add(1)
+	go func() {
+		defer balanceWG.Done()
+		if err := notify.RunBalanceLowWorkerLoop(balanceCtx, notify.BalanceLowWorkerDeps{
+			Store:        notifyStore,
+			Producer:     webhookEvents,
+			Config:       center,
+			Subscription: webhookSender,
+			Logger:       log,
+		}); err != nil {
+			log.Error("balance low worker exited with error", "error", err)
 		}
 	}()
 
@@ -588,6 +610,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		subscriptionsWG.Wait()
 		cancelWebhook()
 		webhookWG.Wait()
+		cancelBalance()
+		balanceWG.Wait()
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -644,6 +668,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	subscriptionsWG.Wait()
 	cancelWebhook()
 	webhookWG.Wait()
+	cancelBalance()
+	balanceWG.Wait()
 	cancelDeploy()
 	deployWG.Wait()
 	if runErr == nil {

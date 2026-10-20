@@ -367,8 +367,8 @@ func mustLookup(t *testing.T, key string) Setting {
 // notify.webhook（F-08-20 / D2-10..11）的注册表与交叉校验验收。
 func TestWebhookSectionRegistered(t *testing.T) {
 	rows, ok := Section("notify.webhook")
-	if !ok || len(rows) != 4 {
-		t.Fatalf("notify.webhook section 行数 = %d，期望 4", len(rows))
+	if !ok || len(rows) != 5 {
+		t.Fatalf("notify.webhook section 行数 = %d，期望 5", len(rows))
 	}
 	enabled := mustLookup(t, "notify.webhook.enabled")
 	if enabled.Type != TypeBool || enabled.Default != false {
@@ -389,6 +389,19 @@ func TestWebhookSectionRegistered(t *testing.T) {
 	got := DefaultValue(events).([]any)
 	if len(got) != 1 || got[0] != "balance_low" {
 		t.Fatalf("events 默认 = %v，期望 [balance_low]", got)
+	}
+	threshold := mustLookup(t, "notify.webhook.balance_low_threshold")
+	if threshold.Type != TypeInt || threshold.Default != int64(0) {
+		t.Fatalf("balance_low_threshold 类型/默认 = %v/%v", threshold.Type, threshold.Default)
+	}
+	if threshold.Public {
+		t.Fatal("balance_low_threshold 是非公开键，不得进入 /api/status")
+	}
+	if threshold.MinInt == nil || *threshold.MinInt != 0 {
+		t.Fatalf("balance_low_threshold MinInt = %v，期望 0", threshold.MinInt)
+	}
+	if threshold.MaxInt == nil || *threshold.MaxInt != 1_000_000_000_000 {
+		t.Fatalf("balance_low_threshold MaxInt = %v，期望 1e12", threshold.MaxInt)
 	}
 }
 

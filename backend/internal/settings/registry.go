@@ -490,6 +490,13 @@ func buildRegistry() []Setting {
 		def("notify.webhook.events", "notify.webhook", TypeList, []any{"balance_low"},
 			normalize(normalizeWebhookEvents), element(validateWebhookEvent),
 			validate(maxItems(4, "notify.webhook.events"))),
+		// 低余额扫描阈值（积分）。0 = 关闭扫描（默认）；>0 且 Webhook 启用时，
+		// N6 worker 每 5 分钟扫描 balance < threshold 的启用用户并投递
+		// balance_low 事件（§F-08-11 / billing-06 §9.6）。非公开：只服务
+		// worker，不进入 /api/status 公开下发全集。上限 1e12 与其它积分
+		// 阈值键（billing.balance_alert_threshold_credits）同口径。
+		def("notify.webhook.balance_low_threshold", "notify.webhook", TypeInt, int64(0),
+			minInt(0), maxInt(1000000000000)),
 
 		// ==== plugin（M6d 任务插件平台，relay-06 / modules-08 §3.10）====
 		//

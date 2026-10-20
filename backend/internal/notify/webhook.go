@@ -54,6 +54,9 @@ const (
 	KeyWebhookURL     = "notify.webhook.url"
 	KeyWebhookSecret  = "notify.webhook.secret"
 	KeyWebhookEvents  = "notify.webhook.events"
+	// KeyWebhookBalanceLowThreshold 是低余额扫描阈值（积分）。0 = 关闭扫描。
+	// N6 worker（balance_low_worker.go）消费；生产者在入队前不读它。
+	KeyWebhookBalanceLowThreshold = "notify.webhook.balance_low_threshold"
 )
 
 // 线协议常量（F-03-10 第 9 条；Event-Id 为 B1a 实现扩展，见文件头）。
