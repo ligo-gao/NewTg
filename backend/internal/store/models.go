@@ -302,9 +302,6 @@ type RankingsProviderStat struct {
 	SharePct    *float64 `gorm:"column:share_pct"`
 	Rank        *int     `gorm:"column:rank"`
 	Slot        *int16   `gorm:"-"`
-	// Series 是读投影：该作者当前周期的时间桶 token（与 trend 桶对齐）。
-	// 只有作者榜 Top 5 有值；其余作者为 nil（不下发 series）。
-	Series []int64 `gorm:"-"`
 }
 
 // TableName 返回 GORM 表名。
