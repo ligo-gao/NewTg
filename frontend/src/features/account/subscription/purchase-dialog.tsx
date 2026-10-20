@@ -13,6 +13,7 @@ import { useToastStore } from '@/shared/ui/toast'
 import { CheckoutDialog } from '../topup/checkout-dialog'
 import { formatYuan } from '../topup/money'
 import type { CreateOrderResponse } from '../topup/types'
+import { isUiSupportedProvider } from '../topup/types'
 import type { OrderView } from '../topup/types'
 import type { AvailableSubscriptionPlan, SubscriptionProvider } from './types'
 
@@ -93,7 +94,11 @@ export function SubscriptionPurchaseDialog({
     enabled: plan !== null,
   })
 
-  const providers = configQuery.data?.enabled_providers ?? NO_PROVIDERS
+  // epay is advertised by the server but its redirect-form checkout is not
+  // wired into the console yet (G-DOM-72 ④); hide it rather than open a dead end.
+  const providers = (configQuery.data?.enabled_providers ?? NO_PROVIDERS).filter(
+    isUiSupportedProvider,
+  )
   const isFree = plan !== null && plan.price_amount === 0
 
   // Fresh intent per open: new key, cleared state. Keyed on the plan id (not

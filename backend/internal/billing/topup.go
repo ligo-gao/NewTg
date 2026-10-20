@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,7 +157,12 @@ type TopupOrder struct {
 	Order        *store.Order
 	ClientSecret string
 	QRCode       string
-	Replayed     bool
+	// PayURL / FormFields 是跳转式收银台（epay）的支付动作：
+	// 前端把 FormFields 以 application/x-www-form-urlencoded POST 到 PayURL。
+	// 两者都不落库（签名等同支付凭据），只在首次创建响应出现。
+	PayURL     string
+	FormFields map[string]string
+	Replayed   bool
 }
 
 // TopupService 是在线充值的应用服务，可并发使用。
@@ -432,6 +438,38 @@ func (s *TopupService) providerReady(provider string) (int64, error) {
 			return 0, fmt.Errorf("%w: alipay public_key invalid", ErrProviderDisabled)
 		}
 		return s.configYuan(ConfigAlipayMinTopupCents, DefaultProviderMinTopupCents)
+	case ProviderEpay:
+		// epay 无沙箱模式；启停与凭据完整性是唯一门槛。
+		if !s.configBool(ConfigEpayEnabled, false) {
+			return 0, ErrProviderDisabled
+		}
+		apiURL := strings.TrimSpace(s.configString(ConfigEpayAPIURL))
+		pid := s.configString(ConfigEpayPID)
+		key, err := s.configSecret(ConfigEpayKey)
+		if err != nil {
+			return 0, err
+		}
+		if apiURL == "" || pid == "" || key == "" {
+			return 0, fmt.Errorf("%w: epay api_url/pid/key missing", ErrProviderDisabled)
+		}
+		// api_url 必须是 https 绝对地址：收银台表单会把 pid、金额与签名
+		// 发往该地址，明文 http 会在传输层泄漏签名（虽然 MD5 签名不可逆，
+		// 但可被重放/篡改）。
+		parsed, err := url.Parse(apiURL)
+		if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Scheme != "https" {
+			return 0, fmt.Errorf("%w: epay api_url must be an absolute https URL", ErrProviderDisabled)
+		}
+		if parsed.User != nil {
+			return 0, fmt.Errorf("%w: epay api_url must not contain userinfo", ErrProviderDisabled)
+		}
+		// 收银台入口是站点根/固定 submit.php；query 与 fragment 会在拼接
+		// submit.php 时产生歧义，也容易把签名参数混进地址栏。
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return 0, fmt.Errorf("%w: epay api_url must not contain query or fragment", ErrProviderDisabled)
+		}
+		// 当前任务未给 epay 单独的 min_topup 键：沿用全局渠道默认下限，
+		// 有效下限仍是 max(全局, 该值)。
+		return DefaultProviderMinTopupCents, nil
 	default:
 		return 0, ErrInvalidProvider
 	}
@@ -468,7 +506,7 @@ func (s *TopupService) Options(ctx context.Context, userID int64) (TopupOptions,
 	// 全局最低与渠道最低在下单时取 max（F-04-01 步骤 4）；响应把两者
 	// 分别下发，前端用同一公式计算有效下限，服务端在 POST /api/orders
 	// 再次校验（P-9：UI 展示与下单校验同源）。
-	for _, provider := range []string{ProviderStripe, ProviderAlipay} {
+	for _, provider := range []string{ProviderStripe, ProviderAlipay, ProviderEpay} {
 		providerMin, err := s.providerReady(provider)
 		if err != nil {
 			if errors.Is(err, ErrProviderDisabled) || errors.Is(err, ErrTopupDisabled) {
@@ -545,7 +583,7 @@ func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int6
 		return s.replayOrder(existing, userID)
 	}
 
-	if provider != ProviderStripe && provider != ProviderAlipay {
+	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderEpay {
 		return nil, ErrInvalidProvider
 	}
 	currency = strings.ToUpper(strings.TrimSpace(currency))
@@ -632,6 +670,13 @@ func (s *TopupService) startProviderPayment(ctx context.Context, order *store.Or
 			return nil, fmt.Errorf("%w: alipay precreate", ErrProviderUnavailable)
 		}
 		return &TopupOrder{Order: order, QRCode: qrCode}, nil
+	case ProviderEpay:
+		result, createErr := s.createEpayPayment(ctx, order)
+		if createErr != nil {
+			s.markOrderFailed(ctx, order.ID, failureCodeForProvider(createErr))
+			return nil, fmt.Errorf("%w: epay checkout", ErrProviderUnavailable)
+		}
+		return result, nil
 	}
 	return nil, ErrInvalidProvider
 }
@@ -1344,10 +1389,20 @@ func centsToYuanString(cents int64) string {
 	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
 }
 
-// yuanToCents 把支付宝的元字符串（"10.00"）换算为分。小数位超过 2 或
-// 非数字一律拒绝：回调金额是资金比对输入，不能让精度歧义通过。
+// yuanAmountPattern 是渠道金额元串的唯一合法形状：非负十进制、可选 1–2 位
+// 小数。先做形状校验再交给 decimal，显式拒绝 `10.000`、`1e1`、`+10.00`
+// 等「decimal 能解析但不是渠道契约」的输入——回调金额是资金比对输入，
+// 任何精度/符号歧义都不得通过。
+var yuanAmountPattern = regexp.MustCompile(`^\d+(\.\d{1,2})?$`)
+
+// yuanToCents 把支付宝/易支付的元字符串（"10.00"）换算为分。小数位超过 2、
+// 非数字或带符号/指数一律拒绝：回调金额是资金比对输入，不能让精度歧义通过。
 func yuanToCents(value string) (int64, error) {
-	d, err := decimal.NewFromString(strings.TrimSpace(value))
+	// 不做 TrimSpace：空白也是格式歧义，资金比对输入按原样严格校验。
+	if !yuanAmountPattern.MatchString(value) {
+		return 0, fmt.Errorf("billing: invalid amount %q", value)
+	}
+	d, err := decimal.NewFromString(value)
 	if err != nil {
 		return 0, err
 	}

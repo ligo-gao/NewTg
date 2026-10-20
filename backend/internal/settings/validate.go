@@ -755,12 +755,23 @@ func validateAlipaySection(values map[string]any, secretConfigured map[string]bo
 // validateEpaySection 实现 F-04-21 的启用条件：api_url / pid / key 三者
 // 齐备才允许打开开关（否则渠道会在下单时才失败）。notify_url / return_url
 // 可选，留空由服务端按 site.server_address 推导。
+//
+// api_url 额外拒绝 query/fragment/userinfo：它是 submit.php 的基址，拼接
+// 后带 query 会产生「submit.php?x=y」这类歧义入口（providerReady 同样校验）。
 func validateEpaySection(values map[string]any, secretConfigured map[string]bool) error {
 	if values["pay.epay.enabled"] != true {
 		return nil
 	}
-	if strings.TrimSpace(asString(values["pay.epay.api_url"])) == "" {
+	apiURL := strings.TrimSpace(asString(values["pay.epay.api_url"]))
+	if apiURL == "" {
 		return invalid("pay.epay.api_url", "required when Epay is enabled")
+	}
+	parsed, err := url.Parse(apiURL)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Scheme != "https" {
+		return invalid("pay.epay.api_url", "must be an absolute https URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return invalid("pay.epay.api_url", "must not contain userinfo, query or fragment")
 	}
 	if strings.TrimSpace(asString(values["pay.epay.pid"])) == "" {
 		return invalid("pay.epay.pid", "required when Epay is enabled")

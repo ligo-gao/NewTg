@@ -10,6 +10,16 @@ export type OrderStatus =
 
 export type TopupProvider = 'stripe' | 'alipay'
 
+/**
+ * Providers this build can render end-to-end. The server may advertise `epay`
+ * (`enabled_providers`), but its redirect-form checkout is not wired into the
+ * console yet (registered as G-DOM-72 ④); filtering keeps the picker from
+ * offering a flow that cannot complete. Widen this when the epay form lands.
+ */
+export function isUiSupportedProvider(provider: string): provider is TopupProvider {
+  return provider === 'stripe' || provider === 'alipay'
+}
+
 export type TopupConfig = components['schemas']['TopupConfig']
 export type OrderView = components['schemas']['OrderView']
 export type TopupOrderView = components['schemas']['TopupOrderView']
