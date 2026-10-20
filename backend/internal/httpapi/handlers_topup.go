@@ -142,6 +142,15 @@ func NewTopupHandlers(cfg TopupHandlerConfig) (*TopupHandlers, error) {
 	return &TopupHandlers{svc: svc, rdb: cfg.Redis, log: log, now: now, authz: cfg.Authz}, nil
 }
 
+// Service 暴露底层支付服务，供订阅购买（S3）复用同一渠道实现。
+// 返回 nil 表示 handler 未装配（构造失败时不会走到这里）。
+func (h *TopupHandlers) Service() *billing.TopupService {
+	if h == nil {
+		return nil
+	}
+	return h.svc
+}
+
 // RegisterTopupRoutes 注册已登录用户端点。wrap 语义同其它 Register*Routes。
 func (h *TopupHandlers) RegisterTopupRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	mount := func(pattern string, handler http.Handler) {

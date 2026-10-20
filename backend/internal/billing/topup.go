@@ -564,11 +564,12 @@ func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int6
 		Amount:         amount,
 		Currency:       currency,
 		Status:         string(OrderPending),
+		BizKind:        store.OrderBizKindTopup,
 		IdempotencyKey: key,
 	}
 	err = s.db.WithContext(ctx).Raw(`
-		INSERT INTO orders (user_id, provider, amount, currency, status, idempotency_key)
-		VALUES (?, ?, ?, ?, 'pending', ?)
+		INSERT INTO orders (user_id, provider, amount, currency, status, idempotency_key, biz_kind)
+		VALUES (?, ?, ?, ?, 'pending', ?, 'topup')
 		RETURNING id, created_at, updated_at`,
 		userID, provider, amount, currency, key).
 		Row().Scan(&order.ID, &order.CreatedAt, &order.UpdatedAt)
@@ -589,7 +590,13 @@ func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int6
 
 	// 第二步：创建渠道支付单。失败时订单置 failed（F-04-03 异常流程：
 	// PaymentIntent 创建失败 → 订单 failed + Toast），绝不留下永久 pending。
-	switch provider {
+	return s.startProviderPayment(ctx, order)
+}
+
+// startProviderPayment 在订单行已落库后创建渠道支付单。充值订单与订阅
+// 购买订单共用这段协议代码（两者只有金额来源不同，渠道载荷完全一致）。
+func (s *TopupService) startProviderPayment(ctx context.Context, order *store.Order) (*TopupOrder, error) {
+	switch order.Provider {
 	case ProviderStripe:
 		result, createErr := s.createStripePaymentIntent(ctx, order)
 		if createErr != nil {
@@ -609,7 +616,7 @@ func (s *TopupService) CreateTopupOrder(ctx context.Context, userID, amount int6
 			return nil, fmt.Errorf("billing: store alipay out_trade_no: %w", err)
 		}
 		order.ProviderTxnID = &outTradeNo
-		qrCode, createErr := s.createAlipayPrecreate(ctx, outTradeNo, amount, currency)
+		qrCode, createErr := s.createAlipayPrecreate(ctx, outTradeNo, order.Amount, order.Currency)
 		if createErr != nil {
 			s.markOrderFailed(ctx, order.ID, failureCodeForProvider(createErr))
 			return nil, fmt.Errorf("%w: alipay precreate", ErrProviderUnavailable)
@@ -1380,6 +1387,14 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		s.log.Warn("payment callback for non-pending order",
 			"order_id", order.ID, "provider", order.Provider, "status", order.Status)
 		return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, order.Status)
+	}
+
+	// 订阅购买订单的入账动作不是「加钱到钱包」，而是在同一事务内创建
+	// subscriptions 实例并跳过 ComputeCredits/wallet_transactions
+	// （billing-08 §3.2/§3.8、S3 冻结裁决 3）。分流必须早于分组倍率与
+	// 积分计算：那些配置对订阅购买没有语义，读到脏配置不应阻止履约。
+	if order.BizKind == store.OrderBizKindSubscribe {
+		return s.settleSubscriptionOrder(ctx, order, providerAmount, providerCurrency, raw)
 	}
 
 	// 金额/币种比对在入账之前完成；任何不一致都不写余额、不写流水。

@@ -1842,6 +1842,24 @@ func (e SubscriptionPlanInputStatus) Valid() bool {
 	}
 }
 
+// Defines values for SubscriptionPurchaseRequestProvider.
+const (
+	SubscriptionPurchaseRequestProviderAlipay SubscriptionPurchaseRequestProvider = "alipay"
+	SubscriptionPurchaseRequestProviderStripe SubscriptionPurchaseRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionPurchaseRequestProvider enum.
+func (e SubscriptionPurchaseRequestProvider) Valid() bool {
+	switch e {
+	case SubscriptionPurchaseRequestProviderAlipay:
+		return true
+	case SubscriptionPurchaseRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TaskListItemFamily.
 const (
 	Plugin TaskListItemFamily = "plugin"
@@ -6935,8 +6953,14 @@ type SubscriptionPlanResetQuotaResult struct {
 
 // SubscriptionPurchaseRequest defines model for SubscriptionPurchaseRequest.
 type SubscriptionPurchaseRequest struct {
-	PlanId *int64 `json:"plan_id,omitempty"`
+	PlanId int64 `json:"plan_id"`
+
+	// Provider 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+	Provider SubscriptionPurchaseRequestProvider `json:"provider"`
 }
+
+// SubscriptionPurchaseRequestProvider 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+type SubscriptionPurchaseRequestProvider string
 
 // TaskListItem defines model for TaskListItem.
 type TaskListItem struct {

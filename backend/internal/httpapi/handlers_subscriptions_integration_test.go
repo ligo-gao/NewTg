@@ -18,33 +18,79 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
 
 type subscriptionIntegrationEnv struct {
-	db     *sql.DB
-	repo   *store.SQLSubscriptionRepo
-	router http.Handler
-	audit  *subAuditExecer
+	db       *sql.DB
+	repo     *store.SQLSubscriptionRepo
+	router   http.Handler
+	audit    *subAuditExecer
+	purchase *billing.TopupService
+}
+
+// newSubscriptionStripeStub 是购买集成测试的 Stripe PaymentIntent 桩。
+// intent id 由金额派生，测试可直接构造对应的 succeeded 事件。
+func newSubscriptionStripeStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/payment_intents" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"pi_s3_%s","client_secret":"pi_s3_%s_secret"}`,
+			r.PostForm.Get("amount"), r.PostForm.Get("amount"))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// subscriptionStripeSig / subscriptionStripeEvent 与 billing 的单测同构：
+// 这里走真实 HTTP 回调路径，不直接调用 settleOrder。
+func subscriptionStripeSig(secret string, timestamp int64, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(strconv.FormatInt(timestamp, 10)))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(mac.Sum(nil)))
+}
+
+func subscriptionStripeEvent(intentID string, amount int64) []byte {
+	return []byte(fmt.Sprintf(
+		`{"id":"evt_s3","type":"payment_intent.succeeded","data":{"object":{"id":%q,"amount":%d,"amount_received":%d,"currency":"cny","status":"succeeded"}}}`,
+		intentID, amount, amount))
 }
 
 func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
@@ -65,6 +111,22 @@ func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: db}), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open gorm: %v", err)
+	}
+	stripe := newSubscriptionStripeStub(t)
+	purchase, err := billing.NewTopupService(billing.TopupServiceConfig{
+		DB:            gormDB,
+		Config:        topupHTTPTestConfig(stripe.URL),
+		StripeBaseURL: stripe.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -73,14 +135,16 @@ func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
 	capture := &subAuditExecer{}
 	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
 		Repo: repo, DB: db, Redis: rdb, Authz: rbac.NewAuthzMiddleware(),
-		Audit: audit.New(capture), Logger: testLogger(),
+		Audit: audit.New(capture), Logger: testLogger(), Purchase: purchase,
 	})
 	if err != nil {
 		t.Fatalf("NewSubscriptionHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &subscriptionIntegrationEnv{db: db, repo: repo, router: mux, audit: capture}
+	return &subscriptionIntegrationEnv{
+		db: db, repo: repo, router: mux, audit: capture, purchase: purchase,
+	}
 }
 
 func (e *subscriptionIntegrationEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -382,7 +446,7 @@ func TestSubscriptionIntegrationBillingPreference(t *testing.T) {
 	}
 }
 
-func TestSubscriptionIntegrationUserIsolationAndPurchaseZeroWrite(t *testing.T) {
+func TestSubscriptionIntegrationUserIsolation(t *testing.T) {
 	env := newSubscriptionIntegrationEnv(t)
 	key := subscriptionITKey()
 	planID := env.insertPlanRow(t, "d5b-iso-"+key[4:], "enabled")
@@ -419,23 +483,159 @@ func TestSubscriptionIntegrationUserIsolationAndPurchaseZeroWrite(t *testing.T) 
 	if page2.Total != 2 || len(page2.Items) != 1 || page2.Page != 2 || page2.PageSize != 1 {
 		t.Fatalf("用户侧分页 = %+v，期望 total=2 page=2 size=1 items=1", page2)
 	}
+}
 
-	beforeSubs := env.countRows(t, "subscriptions")
-	beforeOrders := env.countRows(t, "orders")
-	beforePlans := env.countRows(t, "subscription_plans")
-	beforePreConsume := env.countRows(t, "subscription_pre_consume_records")
-	rr = env.do(t, &auth.Principal{UserID: userA, Role: rbac.RoleUser},
+// TestSubscriptionIntegrationPurchaseSettles is the S3 end-to-end proof on
+// real PostgreSQL: purchase → provider callback → subscriptions row.
+//
+// 断言：订单判别列/金额/币种来自套餐；支付成功后实例快照正确；钱包流水
+// 零新增；重复回调只建一行实例。
+func TestSubscriptionIntegrationPurchaseSettles(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	userID := env.insertUser(t, "user")
+	planID := env.insertPlanRow(t, "s3-"+subscriptionITKey(), "enabled")
+	key := "s3-purchase-" + subscriptionITKey()
+
+	beforeWallet := env.walletTxCount(t, userID)
+	rr := env.do(t, &auth.Principal{UserID: userID, Role: rbac.RoleUser},
 		http.MethodPost, "/api/subscription/purchase",
-		map[string]any{"plan_id": planID}, map[string]string{"Idempotency-Key": key})
-	if rr.Code != http.StatusNotImplemented {
+		map[string]any{"plan_id": planID, "provider": "stripe"},
+		map[string]string{"Idempotency-Key": key})
+	if rr.Code != http.StatusCreated {
 		t.Fatalf("purchase = %d（body=%s）", rr.Code, rr.Body.String())
 	}
-	if env.countRows(t, "subscriptions") != beforeSubs || env.countRows(t, "orders") != beforeOrders {
-		t.Fatalf("购买占位不得写 subscriptions/orders")
+	var created createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode purchase: %v", err)
 	}
-	if env.countRows(t, "subscription_plans") != beforePlans ||
-		env.countRows(t, "subscription_pre_consume_records") != beforePreConsume {
-		t.Fatalf("购买占位不得写 subscription_plans / subscription_pre_consume_records")
+	if created.Order.Status != "pending" || created.Order.Amount != 9900 ||
+		created.Order.Currency != "CNY" || created.ClientSecret == "" {
+		t.Fatalf("购买响应 = %+v", created)
+	}
+	orderID := created.Order.ID
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE order_id = $1`, orderID)
+		_, _ = env.db.Exec(`DELETE FROM orders WHERE id = $1`, orderID)
+	})
+
+	var bizKind string
+	var bizRef int64
+	if err := env.db.QueryRow(`SELECT biz_kind, biz_ref_id FROM orders WHERE id = $1`, orderID).
+		Scan(&bizKind, &bizRef); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	if bizKind != "subscribe" || bizRef != planID {
+		t.Fatalf("订单判别列 = %s/%d，期望 subscribe/%d", bizKind, bizRef, planID)
+	}
+	var subCount int64
+	if err := env.db.QueryRow(`SELECT count(*) FROM subscriptions WHERE order_id = $1`, orderID).
+		Scan(&subCount); err != nil {
+		t.Fatalf("count subscriptions: %v", err)
+	}
+	if subCount != 0 {
+		t.Fatalf("支付前不得有实例，得到 %d 行", subCount)
+	}
+
+	var txnID string
+	if err := env.db.QueryRow(`SELECT provider_txn_id FROM orders WHERE id = $1`, orderID).
+		Scan(&txnID); err != nil {
+		t.Fatalf("read provider txn: %v", err)
+	}
+	payload := subscriptionStripeEvent(txnID, 9900)
+	sig := subscriptionStripeSig("whsec_test_123", time.Now().Unix(), payload)
+	if err := env.purchase.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("stripe webhook: %v", err)
+	}
+
+	var (
+		gotUser, gotPlan, gotTotal, gotUsed, gotPrice int64
+		gotStatus, gotTitle, gotCurrency              string
+		gotOrder                                      sql.NullInt64
+		gotStart, gotEnd, gotReset                    sql.NullTime
+		gotPeriod                                     int
+		gotResetOnRenew, gotOverflow                  bool
+	)
+	if err := env.db.QueryRow(`
+		SELECT user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+		       next_reset_at, amount_total, amount_used, allow_wallet_overflow,
+		       order_id, currency, price_paid_amount, period_days, reset_on_renew
+		FROM subscriptions WHERE order_id = $1`, orderID).Scan(
+		&gotUser, &gotPlan, &gotTitle, &gotStatus, &gotStart, &gotEnd,
+		&gotReset, &gotTotal, &gotUsed, &gotOverflow, &gotOrder, &gotCurrency,
+		&gotPrice, &gotPeriod, &gotResetOnRenew); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if gotUser != userID || gotPlan != planID || gotTitle != "IT Plan" || gotStatus != "active" {
+		t.Fatalf("实例身份 = user:%d plan:%d title:%s status:%s", gotUser, gotPlan, gotTitle, gotStatus)
+	}
+	if gotTotal != 1000 || gotUsed != 0 || !gotOverflow {
+		t.Fatalf("额度快照 = total:%d used:%d overflow:%v", gotTotal, gotUsed, gotOverflow)
+	}
+	if !gotOrder.Valid || gotOrder.Int64 != orderID {
+		t.Fatalf("order_id = %v", gotOrder)
+	}
+	if gotCurrency != "CNY" || gotPrice != 9900 || gotPeriod != 30 || !gotResetOnRenew {
+		t.Fatalf("购买快照 = currency:%s price:%d period:%d reset:%v",
+			gotCurrency, gotPrice, gotPeriod, gotResetOnRenew)
+	}
+	if !gotReset.Valid || !gotReset.Time.Equal(gotEnd.Time) {
+		t.Fatalf("next_reset_at = %v，期望等于 end_at %v", gotReset.Time, gotEnd.Time)
+	}
+	if span := gotEnd.Time.Sub(gotStart.Time); span < 29*24*time.Hour || span > 31*24*time.Hour {
+		t.Fatalf("end_at-start_at = %v，期望约 30 天", span)
+	}
+	if got := env.walletTxCount(t, userID); got != beforeWallet {
+		t.Fatalf("订阅购买不得写 wallet_transactions：%d → %d", beforeWallet, got)
+	}
+
+	// 重复回调：幂等，只一行实例，钱包不变。
+	if err := env.purchase.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("replay webhook: %v", err)
+	}
+	if err := env.db.QueryRow(`SELECT count(*) FROM subscriptions WHERE order_id = $1`, orderID).
+		Scan(&subCount); err != nil {
+		t.Fatalf("count subscriptions after replay: %v", err)
+	}
+	if subCount != 1 {
+		t.Fatalf("重复回调后实例数 = %d，期望 1", subCount)
+	}
+	if got := env.walletTxCount(t, userID); got != beforeWallet {
+		t.Fatalf("重复回调后钱包流水 = %d，期望 %d", got, beforeWallet)
+	}
+}
+
+func (e *subscriptionIntegrationEnv) walletTxCount(t *testing.T, userID int64) int64 {
+	t.Helper()
+	var count int64
+	if err := e.db.QueryRow(`SELECT count(*) FROM wallet_transactions WHERE user_id = $1`, userID).
+		Scan(&count); err != nil {
+		t.Fatalf("count wallet transactions: %v", err)
+	}
+	return count
+}
+
+// TestSubscriptionIntegrationPurchaseRejectsDisabledPlan covers the 409 path on
+// real SQL: a disabled plan must not create an order.
+func TestSubscriptionIntegrationPurchaseRejectsDisabledPlan(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	userID := env.insertUser(t, "user")
+	planID := env.insertPlanRow(t, "s3-disabled-"+subscriptionITKey(), "disabled")
+	key := "s3-disabled-purchase-" + subscriptionITKey()
+
+	rr := env.do(t, &auth.Principal{UserID: userID, Role: rbac.RoleUser},
+		http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": planID, "provider": "stripe"},
+		map[string]string{"Idempotency-Key": key})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("停用套餐购买 = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
+	}
+	var count int64
+	if err := env.db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("拒绝的购买不得留订单，得到 %d 行", count)
 	}
 }
 

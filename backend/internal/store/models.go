@@ -195,14 +195,21 @@ func (RedemptionCode) TableName() string { return "redemption_codes" }
 //   - ManualReason/ManualOperatorID 在 manual_completed=true 时由 DB CHECK
 //     强制非空。
 type Order struct {
-	ID               int64      `gorm:"column:id;primaryKey"`
-	UserID           int64      `gorm:"column:user_id"`         // 逻辑引用 users.id（不设 FK）
-	Provider         string     `gorm:"column:provider"`        // stripe/alipay/creem/waffo/waffo_pancake/epay，创建后不可改
-	Amount           int64      `gorm:"column:amount"`          // 最小货币单位（分），DB CHECK >=0
-	Currency         string     `gorm:"column:currency"`        // ISO-4217 三字母
-	Status           string     `gorm:"column:status"`          // 五态，见上
-	IdempotencyKey   string     `gorm:"column:idempotency_key"` // 创建订单防重
-	ProviderTxnID    *string    `gorm:"column:provider_txn_id"` // 上游流水号；人工旁路为 manual:{order_id}
+	ID       int64  `gorm:"column:id;primaryKey"`
+	UserID   int64  `gorm:"column:user_id"`  // 逻辑引用 users.id（不设 FK）
+	Provider string `gorm:"column:provider"` // stripe/alipay/creem/waffo/waffo_pancake/epay，创建后不可改
+	Amount   int64  `gorm:"column:amount"`   // 最小货币单位（分），DB CHECK >=0
+	Currency string `gorm:"column:currency"` // ISO-4217 三字母
+	Status   string `gorm:"column:status"`   // 五态，见上
+	// BizKind / BizRefID 区分充值订单与订阅购买订单（billing-08 §6.2）。
+	// 两列在 D5a 迁移中已落库；S3 之前刻意不投影，现在写路径显式赋值。
+	// 读取一律按列名（GORM 自动 SELECT *），写入走 billing 的显式 INSERT。
+	// `default:topup` 让 GORM Create 在零值时交给 DB 默认值：否则零值 ""
+	// 会被显式写入并撞 orders_biz_kind_chk（既有测试用 GORM Create 建单）。
+	BizKind          string     `gorm:"column:biz_kind;default:topup"` // topup（默认）/ subscribe
+	BizRefID         *int64     `gorm:"column:biz_ref_id"`             // subscribe 时 = subscription_plans.id
+	IdempotencyKey   string     `gorm:"column:idempotency_key"`        // 创建订单防重
+	ProviderTxnID    *string    `gorm:"column:provider_txn_id"`        // 上游流水号；人工旁路为 manual:{order_id}
 	PaidAt           *time.Time `gorm:"column:paid_at"`
 	RawCallback      []byte     `gorm:"column:raw_callback"`      // jsonb，仅管理员可见
 	ProviderCurrency *string    `gorm:"column:provider_currency"` // 渠道结算币种（与站点计价分离）
@@ -589,10 +596,13 @@ type AnnouncementRead struct {
 // TableName 返回 GORM 表名。
 func (AnnouncementRead) TableName() string { return "announcement_reads" }
 
-// 注：orders.biz_kind / biz_ref_id 与 users.billing_preference 只存在于
-
-// 迁移与 EnumChecks 中，**刻意不加入 Order/User 的 GORM 投影**：
-//   - Order 由 billing 包用 GORM Create 写入（topup.go），新增 NOT NULL
-//     字符串字段的零值 "" 会撞 CHECK；本任务边界禁止改 billing/。
-//   - 订阅购买写路径（S4）需要读这两列时，按列名显式 SELECT 即可；
-//     届时若要加投影，必须同时给写入路径显式赋值。
+// 注：orders.biz_kind / biz_ref_id 已于 S3 加入 Order 投影（见 Order 注释）。
+// 写入路径必须显式赋值，不能依赖 GORM 的零值：biz_kind 的零值 "" 会撞
+// `orders_biz_kind_chk`。当前仅有 billing 包的显式 INSERT 写这两列。
+// users.billing_preference 仍只存在于迁移与 EnumChecks（D5b 按列名读写）。
+const (
+	// OrderBizKindTopup 是充值订单（DB 默认值）。
+	OrderBizKindTopup = "topup"
+	// OrderBizKindSubscribe 是订阅购买订单；BizRefID = subscription_plans.id。
+	OrderBizKindSubscribe = "subscribe"
+)

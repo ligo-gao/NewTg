@@ -114,6 +114,11 @@ type GatewayDeps struct {
 	//     SessionAuth/CSRF（渠道回调没有会话，安全性由验签+限流承担）。
 	TopupHandlers *TopupHandlers
 
+	// SubscriptionPurchase 是订阅购买（S3）的支付接缝。生产装配传
+	// TopupHandlers.Service()，使购买与充值共用同一个 TopupService
+	// （同一渠道配置/验签/幂等实现）。nil 时购买端点返回 503。
+	SubscriptionPurchase SubscriptionPurchaseService
+
 	// WalletHandlers 是 M5 Task 6 补齐的 /api/wallet/summary（modules-03
 	// §F-03-01）。非 nil 时挂到受保护子树，只读取当前会话用户自己的余额。
 	WalletHandlers *WalletHandlers
@@ -370,6 +375,8 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Audit:               deps.Audit,
 		SignupGrantAlert:    deps.SignupGrantAlert,
 		Logger:              deps.Logger,
+		// 订阅购买与充值共用同一个支付服务实例。
+		SubscriptionPurchase: deps.SubscriptionPurchase,
 	})
 	if err != nil {
 		return nil, err

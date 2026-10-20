@@ -916,10 +916,18 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 购买订阅（占位：固定 501）
-         * @description S3 支付/收银台尚未实现。端点固定返回 501
-         *     subscription_purchase_disabled，且零写入（不创建订单/订阅/幂等记录）。
-         *     Idempotency-Key 必带，缺失返回 400。
+         * 购买订阅（创建支付订单）
+         * @description 创建订阅购买订单（`orders.biz_kind='subscribe'`、`biz_ref_id=plan_id`），
+         *     金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay}，
+         *     支付载荷与充值下单同构（stripe 返回 client_secret，alipay 返回 qr_code）。
+         *
+         *     `Idempotency-Key` 必带；同 key 重放返回首次订单（200，不回放支付凭据）。
+         *     `price_amount=0` 的套餐在同一事务内直接创建 succeeded 订单与订阅实例，
+         *     不调用渠道，响应无 client_secret/qr_code。
+         *
+         *     失败口径：套餐不存在/停用或幂等键复用到另一订单 → 409；币种/金额/
+         *     套餐字段非法 → 422；渠道未配置 → 503；渠道出站失败 → 502。
+         *     任何失败都不会留下 succeeded 订单或 subscriptions 行。
          */
         post: operations["purchaseSubscription"];
         delete?: never;
@@ -4729,7 +4737,44 @@ export interface components {
         };
         SubscriptionPurchaseRequest: {
             /** Format: int64 */
-            plan_id?: number;
+            plan_id: number;
+            /**
+             * @description 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay";
+        };
+        TopupOrderView: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            provider: "stripe" | "alipay";
+            /**
+             * Format: int64
+             * @description 订单金额（分），服务端定价的唯一真源
+             */
+            amount: number;
+            currency: string;
+            /** @enum {string} */
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+            /**
+             * Format: int64
+             * @description 成功时到账积分快照；pending/failed 为 0
+             */
+            credited_credits: number;
+            /** @enum {string|null} */
+            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
+            /** Format: date-time */
+            paid_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        CreateOrderResponse: {
+            order: components["schemas"]["TopupOrderView"];
+            /** @description 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放） */
+            client_secret?: string;
+            /** @description 仅 alipay 首次创建返回 */
+            qr_code?: string;
         };
         /**
          * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
@@ -6808,38 +6853,6 @@ export interface components {
             /** @enum {string} */
             provider: "stripe" | "alipay";
         };
-        TopupOrderView: {
-            /** Format: int64 */
-            id: number;
-            /** @enum {string} */
-            provider: "stripe" | "alipay";
-            /**
-             * Format: int64
-             * @description 订单金额（分），服务端定价的唯一真源
-             */
-            amount: number;
-            currency: string;
-            /** @enum {string} */
-            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
-            /**
-             * Format: int64
-             * @description 成功时到账积分快照；pending/failed 为 0
-             */
-            credited_credits: number;
-            /** @enum {string|null} */
-            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
-            /** Format: date-time */
-            paid_at?: string | null;
-            /** Format: date-time */
-            created_at: string;
-        };
-        CreateOrderResponse: {
-            order: components["schemas"]["TopupOrderView"];
-            /** @description 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放） */
-            client_secret?: string;
-            /** @description 仅 alipay 首次创建返回 */
-            qr_code?: string;
-        };
         OrderVerifyResponse: {
             /** @description 渠道是否已确认收款；false 时订单状态不变 */
             paid: boolean;
@@ -8739,17 +8752,46 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SubscriptionPurchaseRequest"];
             };
         };
         responses: {
+            /** @description 幂等重放（返回首次订单，不含支付凭据） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            /** @description 订单已创建（首次购买） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            /** @description 购买功能未启用（固定 type/title） */
-            501: {
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            /** @description 渠道支付单创建失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 支付渠道未配置或已停用 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

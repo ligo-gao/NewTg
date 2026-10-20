@@ -24,9 +24,45 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
+
+// fakeSubscriptionPurchase 记录购买服务收到的入参，供 handler 单测断言
+// 「金额/币种全部由服务端按套餐读取」与错误映射。真实定价/事务行为由
+// billing 与集成测试覆盖。
+type fakeSubscriptionPurchase struct {
+	calls  []subscriptionPurchaseCall
+	result *billing.TopupOrder
+	err    error
+}
+
+type subscriptionPurchaseCall struct {
+	userID         int64
+	planID         int64
+	provider       string
+	idempotencyKey string
+}
+
+func (f *fakeSubscriptionPurchase) CreateSubscriptionOrder(_ context.Context,
+	userID, planID int64, provider, idempotencyKey string) (*billing.TopupOrder, error) {
+
+	f.calls = append(f.calls, subscriptionPurchaseCall{
+		userID: userID, planID: planID, provider: provider, idempotencyKey: idempotencyKey,
+	})
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &billing.TopupOrder{Order: &store.Order{
+		ID: 10, UserID: userID, Provider: provider, Amount: 9900,
+		Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindSubscribe,
+		BizRefID: &planID, IdempotencyKey: idempotencyKey,
+	}}, nil
+}
 
 // ---------------------------------------------------------------------------
 // 假仓储
@@ -395,10 +431,11 @@ func (r *fakeSubscriptionRepo) MarkPreConsumeRefunded(_ context.Context, request
 // ---------------------------------------------------------------------------
 
 type subscriptionTestEnv struct {
-	repo   *fakeSubscriptionRepo
-	router http.Handler
-	rdb    *redis.Client
-	audit  *subAuditExecer
+	repo     *fakeSubscriptionRepo
+	router   http.Handler
+	rdb      *redis.Client
+	audit    *subAuditExecer
+	purchase *fakeSubscriptionPurchase
 }
 
 // subAuditExecer 捕获 audit_logs 的 INSERT 参数（列序见 audit.insertSQL）。
@@ -436,18 +473,20 @@ func newSubscriptionTestEnv(t *testing.T) *subscriptionTestEnv {
 	t.Cleanup(func() { _ = rdb.Close() })
 	repo := newFakeSubscriptionRepo()
 	capture := &subAuditExecer{}
+	purchase := &fakeSubscriptionPurchase{}
 	// 这些用例不触碰 users 表；*sql.DB 零值只作为构造期非 nil 占位，
 	// 让「DB 必填」校验仍然真实执行。
 	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
 		Repo: repo, DB: &sql.DB{}, Redis: rdb,
 		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(capture), Logger: testLogger(),
+		Purchase: purchase,
 	})
 	if err != nil {
 		t.Fatalf("NewSubscriptionHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, audit: capture}
+	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, audit: capture, purchase: purchase}
 }
 
 func (e *subscriptionTestEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -1120,49 +1159,146 @@ func TestNormalizeBillingPreference(t *testing.T) {
 	}
 }
 
-func TestPurchaseReturns501WithoutWrites(t *testing.T) {
+func TestPurchaseRequiresIdempotencyKeyAndFields(t *testing.T) {
 	env := newSubscriptionTestEnv(t)
-	before := env.repo.writeCallCount
-	// 除写调用计数外，直接钉死两张与购买路径最相关的表：套餐与预扣记录。
-	beforePlans := len(env.repo.plans)
-	beforePreConsume := len(env.repo.preConsume)
 
+	// Idempotency-Key 缺失：服务端绝不能替客户端生成 key。
 	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
-		map[string]any{"plan_id": 1}, map[string]string{"Idempotency-Key": "purchase-1"})
-	if rr.Code != http.StatusNotImplemented {
+		map[string]any{"plan_id": 1, "provider": "stripe"}, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("缺少 Idempotency-Key = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+	if len(env.purchase.calls) != 0 {
+		t.Fatal("被拒绝的请求不得调用支付服务")
+	}
+
+	headers := map[string]string{"Idempotency-Key": "purchase-1"}
+	// 未知字段由 RBAC 字段层拒绝（403），不静默丢弃。
+	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 1, "provider": "stripe", "coupon": "x"}, headers)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("未知字段 = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// plan_id / provider 缺失 → 400，且不调用服务。
+	for name, body := range map[string]map[string]any{
+		"missing plan_id":  {"provider": "stripe"},
+		"missing provider": {"plan_id": 1},
+		"zero plan_id":     {"plan_id": 0, "provider": "stripe"},
+	} {
+		rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase", body, headers)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d，期望 400（body=%s）", name, rr.Code, rr.Body.String())
+		}
+	}
+	if len(env.purchase.calls) != 0 {
+		t.Fatalf("非法请求不得调用支付服务: %+v", env.purchase.calls)
+	}
+
+	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 1, "provider": "paypal"}, headers)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 provider = %d，期望 400", rr.Code)
+	}
+}
+
+func TestPurchaseDelegatesToPaymentService(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 42, "provider": "Alipay"},
+		map[string]string{"Idempotency-Key": "purchase-42"})
+	if rr.Code != http.StatusCreated {
 		t.Fatalf("purchase = %d（body=%s）", rr.Code, rr.Body.String())
 	}
-	problem := decodeSubProblemType(t, rr)
-	if problem != problemTypePurchaseDisable {
-		t.Fatalf("type = %s", problem)
+	if len(env.purchase.calls) != 1 {
+		t.Fatalf("支付服务调用次数 = %d，期望 1", len(env.purchase.calls))
 	}
-	if !strings.Contains(rr.Body.String(), "subscription_purchase_disabled") {
-		t.Fatalf("body 必须含固定文案: %s", rr.Body.String())
+	call := env.purchase.calls[0]
+	if call.userID != 7 || call.planID != 42 || call.provider != "alipay" ||
+		call.idempotencyKey != "purchase-42" {
+		t.Fatalf("入参 = %+v", call)
 	}
-	if env.repo.writeCallCount != before {
-		t.Fatalf("购买占位必须零写入")
+	var resp createOrderResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if len(env.repo.plans) != beforePlans || len(env.repo.preConsume) != beforePreConsume {
-		t.Fatalf("购买占位不得改动 subscription_plans / subscription_pre_consume_records：plans %d→%d，preconsume %d→%d",
-			beforePlans, len(env.repo.plans), beforePreConsume, len(env.repo.preConsume))
+	if resp.Order.ID != 10 || resp.Order.Provider != "alipay" {
+		t.Fatalf("响应订单 = %+v", resp.Order)
 	}
+	// 金额/币种来自服务端订单，不取自请求体。
+	if resp.Order.Amount != 9900 || resp.Order.Currency != "CNY" {
+		t.Fatalf("订单金额/币种 = %d/%s", resp.Order.Amount, resp.Order.Currency)
+	}
+}
 
-	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
-		map[string]any{"plan_id": 1}, nil)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("缺少 Idempotency-Key = %d，期望 400", rr.Code)
+func TestPurchaseReplayReturns200(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	env.purchase.result = &billing.TopupOrder{
+		Order: &store.Order{ID: 10, UserID: 7, Provider: "stripe", Amount: 9900,
+			Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindSubscribe},
+		Replayed: true,
 	}
+	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 1, "provider": "stripe"},
+		map[string]string{"Idempotency-Key": "purchase-replay"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("重放 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+}
 
-	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
-		map[string]any{"plan_id": 1, "coupon": "x"}, map[string]string{"Idempotency-Key": "purchase-2"})
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("未知字段 = %d，期望 403", rr.Code)
+func TestPurchaseErrorMapping(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"plan unavailable", billing.ErrSubscriptionPlanUnavailable, http.StatusConflict},
+		{"idempotency conflict", billing.ErrIdempotencyConflict, http.StatusConflict},
+		{"plan invalid", billing.ErrSubscriptionPlanInvalid, http.StatusUnprocessableEntity},
+		{"currency", billing.ErrInvalidCurrency, http.StatusUnprocessableEntity},
+		{"provider disabled", billing.ErrProviderDisabled, http.StatusServiceUnavailable},
+		{"payment config", billing.ErrPaymentConfig, http.StatusServiceUnavailable},
+		{"provider down", billing.ErrProviderUnavailable, http.StatusBadGateway},
+		{"invalid provider", billing.ErrInvalidProvider, http.StatusBadRequest},
 	}
-	if env.repo.writeCallCount != before {
-		t.Fatalf("被拒绝的购买请求不得写库")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newSubscriptionTestEnv(t)
+			env.purchase.err = tc.err
+			rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+				map[string]any{"plan_id": 1, "provider": "stripe"},
+				map[string]string{"Idempotency-Key": "purchase-err"})
+			if rr.Code != tc.status {
+				t.Fatalf("%v = %d，期望 %d（body=%s）", tc.err, rr.Code, tc.status, rr.Body.String())
+			}
+		})
 	}
-	if len(env.repo.plans) != beforePlans || len(env.repo.preConsume) != beforePreConsume {
-		t.Fatalf("被拒绝的购买请求不得改动套餐/预扣表")
+}
+
+func TestPurchaseWithoutPaymentServiceFailsClosed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
+		Repo: newFakeSubscriptionRepo(), DB: &sql.DB{}, Redis: rdb,
+		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(&subAuditExecer{}), Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewSubscriptionHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	req := httptest.NewRequest(http.MethodPost, "/api/subscription/purchase",
+		strings.NewReader(`{"plan_id":1,"provider":"stripe"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "nil-purchase")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), endUser(7)))
+	rr := serve(mux, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("未装配支付服务 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("503 必须带 Retry-After")
 	}
 }
 

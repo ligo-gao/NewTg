@@ -15,15 +15,16 @@
 //	GET    /api/subscriptions                         用户：本人实例（含终态）
 //	GET    /api/billing-preference                    用户：扣费偏好
 //	PUT    /api/billing-preference                    用户：扣费偏好（四值归一）
-//	POST   /api/subscription/purchase                 用户：购买占位（501，零写入）
+//	POST   /api/subscription/purchase                 用户：购买（创建支付订单）
 //
 // 设计约束：
 //   - 管理端点全部要求 settings:manage（§15.1）；写动作登记字段白名单，未知字段
 //     由 RBAC 字段层直接 403（绝不静默丢弃）。
 //   - 用户侧一律以 Principal.UserID 为唯一数据范围：接口不接收 user_id，也不存在
 //     可枚举他人实例的路径（§15.4）。管理侧单用户列表以 users:read 做功能级门。
-//   - 购买端点只返回固定的 501：S3（支付/OAuth 收银台）尚未实现，此处若悄悄
-//     创建订单会让前端误以为已下单；零写入保证重放/并发都不会留下副作用。
+//   - 购买端点在 S3 接通支付：订单创建/渠道载荷/幂等全部委托
+//     billing.TopupService（与充值同一套实现），本层只做请求形态与错误映射。
+//     金额/币种/周期/额度一律由服务端按套餐行读取，不信任请求体。
 //   - 所有错误体 RFC 7807；字段校验错误额外带 problem.fields（与定价端点同构）。
 package httpapi
 
@@ -46,6 +47,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -70,8 +72,21 @@ var planKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 const (
 	problemTypePlanKeyConflict = "https://newtg.dev/problems/plan_key_conflict"
 	problemTypePlanReferenced  = "https://newtg.dev/problems/plan_referenced"
-	problemTypePurchaseDisable = "https://newtg.dev/problems/subscription_purchase_disabled"
+	// 订阅购买（S3）：invalid=请求体/字段非法，conflict=套餐不可购买或
+	// 幂等键复用到另一份订单，unavailable=支付渠道未配置。
+	problemTypePurchaseInvalid     = "https://newtg.dev/problems/invalid_subscription_purchase"
+	problemTypePurchaseConflict    = "https://newtg.dev/problems/subscription_purchase_conflict"
+	problemTypePurchaseUnavailable = "https://newtg.dev/problems/subscription_purchase_unavailable"
 )
+
+// SubscriptionPurchaseService 是订阅购买的支付接缝。
+//
+// 生产实现为 *billing.TopupService；接口化让 handler 单测能注入桩，
+// 同时避免 httpapi 直接构造 GORM 事务。
+type SubscriptionPurchaseService interface {
+	CreateSubscriptionOrder(ctx context.Context, userID, planID int64,
+		provider, idempotencyKey string) (*billing.TopupOrder, error)
+}
 
 // 订阅域动作（字段策略按动作登记；与权限键不同）。
 var (
@@ -99,16 +114,20 @@ type SubscriptionHandlerConfig struct {
 	Authz  *rbac.AuthzMiddleware
 	Audit  *audit.Logger
 	Logger *slog.Logger
+	// Purchase 是订阅购买的支付接缝（生产为 *billing.TopupService）。
+	// nil 时购买端点返回 503（fail closed），不会静默创建订单。
+	Purchase SubscriptionPurchaseService
 }
 
 // SubscriptionHandlers 持有订阅端点依赖，可并发使用。
 type SubscriptionHandlers struct {
-	repo  store.SubscriptionRepo
-	db    *sql.DB
-	rdb   *redis.Client
-	authz *rbac.AuthzMiddleware
-	audit *audit.Logger
-	log   *slog.Logger
+	repo     store.SubscriptionRepo
+	db       *sql.DB
+	rdb      *redis.Client
+	authz    *rbac.AuthzMiddleware
+	audit    *audit.Logger
+	log      *slog.Logger
+	purchase SubscriptionPurchaseService
 }
 
 // NewSubscriptionHandlers 构造订阅端点。
@@ -135,7 +154,7 @@ func NewSubscriptionHandlers(cfg SubscriptionHandlerConfig) (*SubscriptionHandle
 	}
 	h := &SubscriptionHandlers{
 		repo: cfg.Repo, db: cfg.DB, rdb: cfg.Redis, authz: authz,
-		audit: cfg.Audit, log: logger,
+		audit: cfg.Audit, log: logger, purchase: cfg.Purchase,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -176,7 +195,8 @@ func (h *SubscriptionHandlers) registerPolicies() {
 		"preference": nil,
 	}})
 	h.authz.SetWritePolicy(userSubscriptionPurchaseAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
-		"plan_id": nil,
+		"plan_id":  nil,
+		"provider": nil,
 	}})
 }
 
@@ -1201,30 +1221,131 @@ func (h *SubscriptionHandlers) readBillingPreference(ctx context.Context, userID
 }
 
 // ---------------------------------------------------------------------------
-// 用户端：购买占位
+// 用户端：购买（S3）
 // ---------------------------------------------------------------------------
 
-// handlePurchase 是 S3 支付接缝实现前的固定占位。
+// subscriptionPurchaseRequest 是 POST /api/subscription/purchase 的请求体。
 //
-// 【为什么返回 501 而不是 400/503】契约要求前端在购买页明确呈现「暂不可用」，
-// 501 是「服务端未实现该功能」的语义；400 会被误读为参数错误，503 会被重试
-// 逻辑当作临时故障。响应 type/title 固定为 subscription_purchase_disabled，
-// 前端按 type 显示文案。
+// 用指针区分「缺失」与零值：plan_id=0 / provider="" 必须 400（参数缺失），
+// 而不是落到服务端当作「套餐 0 不存在」的 409。
+type subscriptionPurchaseRequest struct {
+	PlanID   *int64  `json:"plan_id"`
+	Provider *string `json:"provider"`
+}
+
+// handlePurchase 创建订阅购买订单（billing-08 §3.2/§15.2，S3）。
 //
-// 【零写入】不读写订单、订阅、幂等记录或 Redis：任何写入都会让 S3 上线前的
-// 重放/并发测试留下脏订单。Idempotency-Key 仍按契约要求存在性校验，缺失即 400。
+// 金额/币种/周期/额度全部由 billing 按套餐行读取；本层只校验请求形态。
+// Idempotency-Key 必带：缺失即 400，因为服务端替客户端生成 key 会让重试
+// 变成新订单（§3.2-3 的整个防重语义失效）。
+//
+// 0 元套餐由服务端在同一事务内直接建订单+实例，响应仍是同一结构，
+// 只是没有 client_secret/qr_code（前端据此进入「已生效」而不是收银台）。
 func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Request) {
-	if _, ok := adminPrincipal(w, r); !ok {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
 		return
 	}
-	if strings.TrimSpace(r.Header.Get("Idempotency-Key")) == "" {
-		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"Idempotency-Key header is required")
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "Idempotency-Key header is required", []string{"Idempotency-Key"})
 		return
 	}
-	writeSubscriptionFieldsProblem(w, http.StatusNotImplemented, problemTypePurchaseDisable,
-		"subscription_purchase_disabled",
-		"subscription purchase is not available yet", nil)
+	var req subscriptionPurchaseRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "request body must be a JSON object", nil)
+		return
+	}
+	var missing []string
+	if req.PlanID == nil {
+		missing = append(missing, "plan_id")
+	}
+	if req.Provider == nil || strings.TrimSpace(*req.Provider) == "" {
+		missing = append(missing, "provider")
+	}
+	if len(missing) > 0 {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "plan_id and provider are required", missing)
+		return
+	}
+	if *req.PlanID <= 0 {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "plan_id must be a positive integer", []string{"plan_id"})
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(*req.Provider))
+	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "provider must be stripe or alipay", []string{"provider"})
+		return
+	}
+	if h.purchase == nil {
+		// fail closed：没有支付接缝时绝不静默建单。503 表示「暂时不可用」，
+		// 前端可重试；不是 500（服务端缺陷）也不是 501（功能未实现）。
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePurchaseUnavailable,
+			"Subscription purchase is unavailable", "the payment service is not configured", nil)
+		return
+	}
+
+	result, err := h.purchase.CreateSubscriptionOrder(r.Context(), p.UserID, *req.PlanID, provider, key)
+	if err != nil {
+		h.writePurchaseError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if result.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, createOrderResponse{
+		Order:        topupOrderViewFrom(result.Order),
+		ClientSecret: result.ClientSecret,
+		QRCode:       result.QRCode,
+	})
+}
+
+// writePurchaseError 把 billing 的购买错误映射为 RFC 7807。
+//
+// 状态码口径（任务书冻结裁决 6）：
+//   - 套餐被删/禁用、幂等键复用到另一份订单                        → 409
+//   - 币种不符/金额非法/套餐字段损坏                                → 422
+//   - 渠道未启用或配置不完整（provider 未配置）                     → 503
+//   - 渠道出站失败（已建单、PaymentIntent/precreate 失败）          → 502
+//
+// 任何失败都不会留下 succeeded 订单或 subscriptions 行：服务端在同一事务
+// 内完成订单状态与实例创建，失败整体回滚。
+func (h *SubscriptionHandlers) writePurchaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, billing.ErrInvalidIdempotency),
+		errors.Is(err, billing.ErrInvalidProvider):
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
+			"Invalid subscription purchase", "provider or Idempotency-Key is invalid", nil)
+	case errors.Is(err, billing.ErrSubscriptionPlanUnavailable),
+		errors.Is(err, billing.ErrIdempotencyConflict):
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypePurchaseConflict,
+			"Subscription purchase conflict",
+			"the plan is not available or the Idempotency-Key belongs to another order", []string{"plan_id"})
+	case errors.Is(err, billing.ErrSubscriptionPlanInvalid),
+		errors.Is(err, billing.ErrInvalidCurrency),
+		errors.Is(err, billing.ErrInvalidTopupAmount):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypePurchaseInvalid,
+			"Invalid subscription plan", "the plan price or currency is not supported", []string{"plan_id"})
+	case errors.Is(err, billing.ErrTopupDisabled),
+		errors.Is(err, billing.ErrProviderDisabled),
+		errors.Is(err, billing.ErrPaymentConfig):
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePurchaseUnavailable,
+			"Payment provider is unavailable", "the selected payment provider is not available", []string{"provider"})
+	case errors.Is(err, billing.ErrProviderUnavailable):
+		writeSubscriptionFieldsProblem(w, http.StatusBadGateway, problemTypePurchaseUnavailable,
+			"Payment provider unavailable", "failed to initialize payment with the provider", nil)
+	default:
+		h.log.Error("create subscription order failed", "error", err)
+		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
+	}
 }
 
 // ---------------------------------------------------------------------------

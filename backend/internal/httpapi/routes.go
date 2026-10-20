@@ -69,6 +69,10 @@ type RouterConfig struct {
 	// NewRouter 自动构造（store.NewSubscriptionRepo + users 偏好读写）；
 	// 单元测试可显式注入。
 	SubscriptionHandlers *SubscriptionHandlers
+	// SubscriptionPurchase 是订阅购买（S3）的支付接缝；生产为
+	// *billing.TopupService（与充值共用同一渠道实现）。nil 时购买端点
+	// fail closed 返回 503，而不是静默建单。
+	SubscriptionPurchase SubscriptionPurchaseService
 	// AnnouncementHandlers 是 D7a 站点公告端点（modules-08 F-08-04）。
 	// nil 且 DB 非 nil 时由 NewRouter 自动构造：仓储是 store.NewAnnouncementRepo，
 	// Webhook 发送器从配置中心读取 notify.webhook.*（未配置时静默跳过），
@@ -258,12 +262,13 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// users 行，因此 DB 是构造前提（Repo 只是订阅表接缝）。
 	if cfg.SubscriptionHandlers == nil && cfg.DB != nil {
 		subscriptionHandlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
-			Repo:   store.NewSubscriptionRepo(cfg.DB),
-			DB:     cfg.DB,
-			Redis:  cfg.Redis,
-			Authz:  cfg.Authz,
-			Audit:  cfg.Audit,
-			Logger: cfg.Logger,
+			Repo:     store.NewSubscriptionRepo(cfg.DB),
+			DB:       cfg.DB,
+			Redis:    cfg.Redis,
+			Authz:    cfg.Authz,
+			Audit:    cfg.Audit,
+			Logger:   cfg.Logger,
+			Purchase: cfg.SubscriptionPurchase,
 		})
 		if err != nil {
 			return nil, err

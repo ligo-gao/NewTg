@@ -287,6 +287,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PricingRepo:             pricingRepo,
 		RedemptionHandlers:      redemptionHandler,
 		TopupHandlers:           topupHandler,
+		SubscriptionPurchase:    topupHandler.Service(),
 		WalletHandlers:          walletHandler,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
