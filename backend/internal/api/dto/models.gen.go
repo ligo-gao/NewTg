@@ -234,6 +234,7 @@ func (e CreateOrderRequestCurrency) Valid() bool {
 // Defines values for CreateOrderRequestProvider.
 const (
 	CreateOrderRequestProviderAlipay CreateOrderRequestProvider = "alipay"
+	CreateOrderRequestProviderEpay   CreateOrderRequestProvider = "epay"
 	CreateOrderRequestProviderStripe CreateOrderRequestProvider = "stripe"
 )
 
@@ -241,6 +242,8 @@ const (
 func (e CreateOrderRequestProvider) Valid() bool {
 	switch e {
 	case CreateOrderRequestProviderAlipay:
+		return true
+	case CreateOrderRequestProviderEpay:
 		return true
 	case CreateOrderRequestProviderStripe:
 		return true
@@ -1203,6 +1206,7 @@ func (e OrderViewFailureCode) Valid() bool {
 // Defines values for OrderViewProvider.
 const (
 	OrderViewProviderAlipay OrderViewProvider = "alipay"
+	OrderViewProviderEpay   OrderViewProvider = "epay"
 	OrderViewProviderStripe OrderViewProvider = "stripe"
 	OrderViewProviderWallet OrderViewProvider = "wallet"
 )
@@ -1211,6 +1215,8 @@ const (
 func (e OrderViewProvider) Valid() bool {
 	switch e {
 	case OrderViewProviderAlipay:
+		return true
+	case OrderViewProviderEpay:
 		return true
 	case OrderViewProviderStripe:
 		return true
@@ -1869,6 +1875,7 @@ func (e SubscriptionPlanInputStatus) Valid() bool {
 // Defines values for SubscriptionPurchaseRequestProvider.
 const (
 	SubscriptionPurchaseRequestProviderAlipay SubscriptionPurchaseRequestProvider = "alipay"
+	SubscriptionPurchaseRequestProviderEpay   SubscriptionPurchaseRequestProvider = "epay"
 	SubscriptionPurchaseRequestProviderStripe SubscriptionPurchaseRequestProvider = "stripe"
 	SubscriptionPurchaseRequestProviderWallet SubscriptionPurchaseRequestProvider = "wallet"
 )
@@ -1877,6 +1884,8 @@ const (
 func (e SubscriptionPurchaseRequestProvider) Valid() bool {
 	switch e {
 	case SubscriptionPurchaseRequestProviderAlipay:
+		return true
+	case SubscriptionPurchaseRequestProviderEpay:
 		return true
 	case SubscriptionPurchaseRequestProviderStripe:
 		return true
@@ -1890,6 +1899,7 @@ func (e SubscriptionPurchaseRequestProvider) Valid() bool {
 // Defines values for SubscriptionRenewRequestProvider.
 const (
 	SubscriptionRenewRequestProviderAlipay SubscriptionRenewRequestProvider = "alipay"
+	SubscriptionRenewRequestProviderEpay   SubscriptionRenewRequestProvider = "epay"
 	SubscriptionRenewRequestProviderStripe SubscriptionRenewRequestProvider = "stripe"
 )
 
@@ -1897,6 +1907,8 @@ const (
 func (e SubscriptionRenewRequestProvider) Valid() bool {
 	switch e {
 	case SubscriptionRenewRequestProviderAlipay:
+		return true
+	case SubscriptionRenewRequestProviderEpay:
 		return true
 	case SubscriptionRenewRequestProviderStripe:
 		return true
@@ -2094,6 +2106,7 @@ func (e TokenUsageObject) Valid() bool {
 // Defines values for TopupConfigEnabledProviders.
 const (
 	TopupConfigEnabledProvidersAlipay TopupConfigEnabledProviders = "alipay"
+	TopupConfigEnabledProvidersEpay   TopupConfigEnabledProviders = "epay"
 	TopupConfigEnabledProvidersStripe TopupConfigEnabledProviders = "stripe"
 )
 
@@ -2101,6 +2114,8 @@ const (
 func (e TopupConfigEnabledProviders) Valid() bool {
 	switch e {
 	case TopupConfigEnabledProvidersAlipay:
+		return true
+	case TopupConfigEnabledProvidersEpay:
 		return true
 	case TopupConfigEnabledProvidersStripe:
 		return true
@@ -2151,6 +2166,7 @@ func (e TopupOrderViewFailureCode) Valid() bool {
 // Defines values for TopupOrderViewProvider.
 const (
 	TopupOrderViewProviderAlipay TopupOrderViewProvider = "alipay"
+	TopupOrderViewProviderEpay   TopupOrderViewProvider = "epay"
 	TopupOrderViewProviderStripe TopupOrderViewProvider = "stripe"
 	TopupOrderViewProviderWallet TopupOrderViewProvider = "wallet"
 )
@@ -2159,6 +2175,8 @@ const (
 func (e TopupOrderViewProvider) Valid() bool {
 	switch e {
 	case TopupOrderViewProviderAlipay:
+		return true
+	case TopupOrderViewProviderEpay:
 		return true
 	case TopupOrderViewProviderStripe:
 		return true
@@ -4052,7 +4070,10 @@ type CreateOrderRequest struct {
 	// 统一大写）；USD/JPY/TRY 等一律 400，避免「分」口径被非人民币
 	// 金额放大到账积分。
 	Currency *CreateOrderRequestCurrency `json:"currency,omitempty"`
-	Provider CreateOrderRequestProvider  `json:"provider"`
+
+	// Provider 支付渠道。`epay`（微信易支付）不调用渠道 API，服务端返回
+	// `pay_url` + `form_fields` 供前端以表单 POST 打开收银台。
+	Provider CreateOrderRequestProvider `json:"provider"`
 }
 
 // CreateOrderRequestCurrency 站点计价币种。M5 **无汇率**，只接受 CNY（大小写不敏感，服务端
@@ -4060,14 +4081,22 @@ type CreateOrderRequest struct {
 // 金额放大到账积分。
 type CreateOrderRequestCurrency string
 
-// CreateOrderRequestProvider defines model for CreateOrderRequest.Provider.
+// CreateOrderRequestProvider 支付渠道。`epay`（微信易支付）不调用渠道 API，服务端返回
+// `pay_url` + `form_fields` 供前端以表单 POST 打开收银台。
 type CreateOrderRequestProvider string
 
 // CreateOrderResponse defines model for CreateOrderResponse.
 type CreateOrderResponse struct {
 	// ClientSecret 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
-	ClientSecret *string        `json:"client_secret,omitempty"`
-	Order        TopupOrderView `json:"order"`
+	ClientSecret *string `json:"client_secret,omitempty"`
+
+	// FormFields 仅 epay 首次创建返回；submit.php 表单字段（含 `sign`，小写 MD5）。
+	// 客户端以 application/x-www-form-urlencoded POST 到 `pay_url`。
+	FormFields *map[string]string `json:"form_fields,omitempty"`
+	Order      TopupOrderView     `json:"order"`
+
+	// PayUrl 仅 epay 首次创建返回；表单 POST 的目标收银台地址
+	PayUrl *string `json:"pay_url,omitempty"`
 
 	// QrCode 仅 alipay 首次创建返回
 	QrCode *string `json:"qr_code,omitempty"`
@@ -5420,7 +5449,8 @@ type OrderView struct {
 	PaidAt          *time.Time            `json:"paid_at,omitempty"`
 
 	// Provider 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
-	// 消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
+	// 消费方不能假设非 stripe 即 alipay（epay 也已存在）。请求侧枚举
+	// （充值/续费）为 stripe/alipay/epay。
 	Provider OrderViewProvider `json:"provider"`
 
 	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
@@ -5437,7 +5467,8 @@ type OrderView struct {
 type OrderViewFailureCode string
 
 // OrderViewProvider 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
-// 消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
+// 消费方不能假设非 stripe 即 alipay（epay 也已存在）。请求侧枚举
+// （充值/续费）为 stripe/alipay/epay。
 type OrderViewProvider string
 
 // OrderViewStatus 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
@@ -7088,23 +7119,27 @@ type SubscriptionPurchaseRequest struct {
 	// Provider 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
 	// `wallet` 为余额购买：服务端在同一事务内扣减钱包、写
 	// `subscription_purchase` 流水、将订单置 succeeded 并创建订阅实例；
-	// 余额不足返回 402，且不留下订单/实例/流水。
+	// 余额不足返回 402，且不留下订单/实例/流水。`epay` 返回
+	// `pay_url` + `form_fields`（与充值同构）。
 	Provider SubscriptionPurchaseRequestProvider `json:"provider"`
 }
 
 // SubscriptionPurchaseRequestProvider 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
 // `wallet` 为余额购买：服务端在同一事务内扣减钱包、写
 // `subscription_purchase` 流水、将订单置 succeeded 并创建订阅实例；
-// 余额不足返回 402，且不留下订单/实例/流水。
+// 余额不足返回 402，且不留下订单/实例/流水。`epay` 返回
+// `pay_url` + `form_fields`（与充值同构）。
 type SubscriptionPurchaseRequestProvider string
 
 // SubscriptionRenewRequest defines model for SubscriptionRenewRequest.
 type SubscriptionRenewRequest struct {
 	// Provider 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
+	// `epay` 返回 `pay_url` + `form_fields`（与充值同构）。
 	Provider SubscriptionRenewRequestProvider `json:"provider"`
 }
 
 // SubscriptionRenewRequestProvider 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
+// `epay` 返回 `pay_url` + `form_fields`（与充值同构）。
 type SubscriptionRenewRequestProvider string
 
 // TaskListItem defines model for TaskListItem.
@@ -7418,7 +7453,7 @@ type TopupOrderView struct {
 
 	// Provider 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
 	// （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
-	// 充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
+	// 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 	Provider TopupOrderViewProvider `json:"provider"`
 	Status   TopupOrderViewStatus   `json:"status"`
 }
@@ -7428,7 +7463,7 @@ type TopupOrderViewFailureCode string
 
 // TopupOrderViewProvider 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
 // （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
-// 充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
+// 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 type TopupOrderViewProvider string
 
 // TopupOrderViewStatus defines model for TopupOrderView.Status.
@@ -9354,6 +9389,20 @@ type VerifyEmailParams struct {
 type AlipayNotifyFormdataBody struct {
 }
 
+// EpayNotifyGetParams defines parameters for EpayNotifyGet.
+type EpayNotifyGetParams struct {
+	Pid         *string `form:"pid,omitempty" json:"pid,omitempty"`
+	OutTradeNo  *string `form:"out_trade_no,omitempty" json:"out_trade_no,omitempty"`
+	Money       *string `form:"money,omitempty" json:"money,omitempty"`
+	TradeStatus *string `form:"trade_status,omitempty" json:"trade_status,omitempty"`
+	Sign        *string `form:"sign,omitempty" json:"sign,omitempty"`
+	SignType    *string `form:"sign_type,omitempty" json:"sign_type,omitempty"`
+}
+
+// EpayNotifyFormdataBody defines parameters for EpayNotify.
+type EpayNotifyFormdataBody struct {
+}
+
 // StripeWebhookJSONBody defines parameters for StripeWebhook.
 type StripeWebhookJSONBody = map[string]interface{}
 
@@ -9669,6 +9718,9 @@ type VerifyEmailJSONRequestBody = VerifyEmailRequest
 
 // AlipayNotifyFormdataRequestBody defines body for AlipayNotify for application/x-www-form-urlencoded ContentType.
 type AlipayNotifyFormdataRequestBody AlipayNotifyFormdataBody
+
+// EpayNotifyFormdataRequestBody defines body for EpayNotify for application/x-www-form-urlencoded ContentType.
+type EpayNotifyFormdataRequestBody EpayNotifyFormdataBody
 
 // StripeWebhookJSONRequestBody defines body for StripeWebhook for application/json ContentType.
 type StripeWebhookJSONRequestBody = StripeWebhookJSONBody
