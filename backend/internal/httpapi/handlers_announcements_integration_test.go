@@ -762,6 +762,11 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	if decoded.Title != "A5" || strings.Contains(decoded.Summary, "*") {
 		t.Fatalf("payload = %+v", decoded)
 	}
+	// 深链必须落在 D7b 公开详情页：基址未配置时是站内相对路径，不能是
+	// 旧的 '/'（那会把用户带回首页，S4 前端深链因此失效）。
+	if want := "/announcements/" + id; decoded.LinkURL != want {
+		t.Fatalf("payload.link_url = %q，want %q", decoded.LinkURL, want)
+	}
 	// body 来自已播种的 system.announcement 模板；为空说明播种/渲染链路断了，
 	// 用户虽收到站内信却看不到正文。模板正文以标题开头，因此同时断言标题。
 	if strings.TrimSpace(decoded.Body) == "" {
@@ -925,6 +930,15 @@ func TestAnnouncementIntegrationPublicDetailVisibility(t *testing.T) {
 		"publish_now": true,
 	})
 	visibleID := visible["id"].(string)
+	// 公开读取不得写审计：先按公告 id 记录现有审计行数（创建/发布已各写
+	// 一条），读取后再比对。按 id 计数而非全表，避免并行用例互相干扰。
+	var auditBefore int
+	if env.logs != nil {
+		if err := env.logs.QueryRow(`SELECT count(*) FROM audit_logs WHERE detail->>'id' = $1`,
+			visibleID).Scan(&auditBefore); err != nil {
+			t.Fatalf("count audit before public read: %v", err)
+		}
+	}
 	got := env.do(t, nil, http.MethodGet, "/api/announcements/public/"+visibleID, nil)
 	if got.Code != http.StatusOK {
 		t.Fatalf("可见公告 = %d，want 200（body=%s）", got.Code, got.Body.String())
@@ -956,6 +970,17 @@ func TestAnnouncementIntegrationPublicDetailVisibility(t *testing.T) {
 	}
 	if reads != 0 {
 		t.Fatalf("公开读取写入了 %d 条已读记录", reads)
+	}
+	// 匿名只读同样不写审计（除 announcement_reads 外的表不应新增行）。
+	if env.logs != nil {
+		var auditAfter int
+		if err := env.logs.QueryRow(`SELECT count(*) FROM audit_logs WHERE detail->>'id' = $1`,
+			visibleID).Scan(&auditAfter); err != nil {
+			t.Fatalf("count audit after public read: %v", err)
+		}
+		if auditAfter != auditBefore {
+			t.Fatalf("公开读取新增了审计行：%d -> %d", auditBefore, auditAfter)
+		}
 	}
 
 	// 草稿不可见。

@@ -243,6 +243,15 @@ func (h *AnnouncementHandlers) Register(mux *http.ServeMux) {
 // 公开详情因此必须**不依赖** Principal、RBAC、CSRF，也不写审计/已读。
 func (h *AnnouncementHandlers) RegisterPublic(mux *http.ServeMux) {
 	mux.Handle("GET /api/announcements/public/{id}", http.HandlerFunc(h.handlePublicGet))
+	// 畸形公开路径的兜底（D7b 收口）：`/public`、`/public/`（空 id）与
+	// `/public/abc/def`（多 segment）不匹配上面的单 segment 模式，若不在此
+	// 显式登记就会落进根 mux 的 `/api/` 受保护子树，匿名访客收到 401——
+	// 把「路径写错」误报成「未登录」。这里用「精确 + 子树」两条模式把它们
+	// 固定在公开 404，且与不可见公告的 404 形状一致。两条兜底必须是 GET：
+	// 方法无关模式会与上面的 `GET /api/announcements/{id}` 在「路径更具体、
+	// 方法更宽」上冲突，ServeMux 注册期即 panic。
+	mux.Handle("GET /api/announcements/public", http.HandlerFunc(h.handlePublicNotFound))
+	mux.Handle("GET /api/announcements/public/", http.HandlerFunc(h.handlePublicNotFound))
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +728,19 @@ func (h *AnnouncementHandlers) handlePublicGet(w http.ResponseWriter, r *http.Re
 		return
 	}
 	w.Header().Set("Cache-Control", publicAnnouncementCacheControl)
+	// /api/ 全局 noStoreAPI 已写入 `Pragma: no-cache`；只覆盖 Cache-Control
+	// 会留下互相矛盾的缓存语义（HTTP/1.0 代理按 Pragma 拒绝缓存）。公开
+	// 详情是唯一允许共享缓存的公告响应，因此必须显式清掉 Pragma。
+	w.Header().Del("Pragma")
 	writeJSON(w, http.StatusOK, h.newPublicAnnouncementView(a))
+}
+
+// handlePublicNotFound 是畸形公开路径（空 id / 多 segment）的统一 404。
+// 响应形状与 handlePublicGet 的「不可见」分支逐字节一致：不解释原因、
+// 不泄露存在性，也不落进受保护子树变成 401。
+func (h *AnnouncementHandlers) handlePublicNotFound(w http.ResponseWriter, _ *http.Request) {
+	writeProblemDetail(w, http.StatusNotFound, problemTypeAnnouncementNotFound,
+		"Announcement not found", "")
 }
 
 // allowPublicRead 消耗 B8 公开只读桶（60/min/IP+path）。

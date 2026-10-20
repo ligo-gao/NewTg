@@ -784,6 +784,82 @@ func TestAnnouncementPublicDetailInternalErrorIs500(t *testing.T) {
 	}
 }
 
+// TestAnnouncementPublicDetailThroughRealRouter 是路由级端到端验收：用真实
+// NewRouter 证明公开详情确实挂在根 mux、绕过 SessionAuth/CSRF/Origin 链，
+// 而不是只在只挂 handler 的裸 ServeMux 上成立。请求刻意不带任何 Cookie/
+// CSRF 头，模拟匿名访客。
+func TestAnnouncementPublicDetailThroughRealRouter(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	repo := &fakeAnnouncementRepo{getPublicFn: func(context.Context, string, time.Time) (store.Announcement, error) {
+		a := sampleAnnouncement()
+		a.ID = id
+		return a, nil
+	}}
+	handlers, err := NewAnnouncementHandlers(AnnouncementHandlerConfig{Repo: repo, Logger: testLogger()})
+	if err != nil {
+		t.Fatalf("NewAnnouncementHandlers: %v", err)
+	}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	rt, err := NewRouter(RouterConfig{
+		Redis:                rdb,
+		Sessions:             auth.NewSessionManager(rdb, []byte(testSessionSecret)),
+		Repo:                 newFakeAuthRepo(),
+		AnnouncementHandlers: handlers,
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	get := func(path string) *httptest.ResponseRecorder {
+		// 无 Cookie、无 CSRF 头、无 Origin：真实匿名请求。
+		return serve(rt, httptest.NewRequest(http.MethodGet, path, http.NoBody))
+	}
+
+	got := get("/api/announcements/public/" + id)
+	if got.Code != http.StatusOK {
+		t.Fatalf("匿名公开详情 = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	if cc := got.Header().Get("Cache-Control"); cc != publicAnnouncementCacheControl {
+		t.Fatalf("Cache-Control = %q，want %q", cc, publicAnnouncementCacheControl)
+	}
+	// noStoreAPI 在外层写入 Pragma: no-cache；公开 handler 必须清掉它，
+	// 否则 HTTP/1.0 代理会按 Pragma 拒绝缓存，60s 共享缓存契约形同虚设。
+	if pragma := got.Header().Get("Pragma"); pragma == "no-cache" {
+		t.Fatalf("公开 200 仍带 Pragma: no-cache（noStoreAPI 未被清除）")
+	}
+
+	// 同一路径族的受保护详情必须仍要求登录：公开模式只匹配 public 字面量。
+	if unauthorized := get("/api/announcements/" + id); unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("匿名管理详情 = %d，want 401（body=%s）", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	// 畸形公开路径的兜底 404：既不能落进受保护链（401），也不能是裸
+	// http.NotFound 的 text/plain。
+	for _, path := range []string{
+		"/api/announcements/public/",        // 空 id
+		"/api/announcements/public",         // 缺 segment
+		"/api/announcements/public/abc/def", // 多 segment
+	} {
+		r := get(path)
+		if r.Code != http.StatusNotFound {
+			t.Fatalf("%s = %d，want 404（body=%s）", path, r.Code, r.Body.String())
+		}
+		if ct := r.Header().Get("Content-Type"); ct != "application/problem+json" {
+			t.Fatalf("%s Content-Type = %q，want problem+json", path, ct)
+		}
+		var problem map[string]any
+		if err := json.Unmarshal(r.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+		if problem["type"] != problemTypeAnnouncementNotFound {
+			t.Fatalf("%s type = %v，want %s", path, problem["type"], problemTypeAnnouncementNotFound)
+		}
+	}
+}
+
 func TestAnnouncementPublicReadRateLimited(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
