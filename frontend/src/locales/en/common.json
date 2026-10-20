@@ -737,5 +737,6 @@
   "nav.chat": "Chat",
   "nav.playground": "Playground",
   "nav.task_plugins": "Task plugins",
-  "nav.redemption_codes": "Redemption Codes"
+  "nav.redemption_codes": "Redemption Codes",
+  "nav.models": "Models & Vendors"
 }

@@ -737,5 +737,6 @@
   "nav.chat": "对话",
   "nav.playground": "Playground",
   "nav.task_plugins": "任务插件",
-  "nav.redemption_codes": "兑换码"
+  "nav.redemption_codes": "兑换码",
+  "nav.models": "模型与供应商"
 }

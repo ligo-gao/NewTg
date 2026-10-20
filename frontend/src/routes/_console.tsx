@@ -44,6 +44,15 @@ const NAV_ITEMS = [
   { href: '/security', key: 'common.nav.security' },
   // M2 channel management; `/admin/channels` sits under the admin layout guard.
   { href: '/admin/channels', key: 'common.nav.channels', admin: true },
+  // D1d 模型与供应商目录（modules-06 F-06-22～26）：页面与入口同权限——
+  // 读 `channels:read`；写面与批量/同步按钮在页内按更细的权限再收一层。
+  // 缺读权限时入口不渲染，直链由路由 beforeLoad 送 403。
+  {
+    href: '/admin/models',
+    key: 'common.nav.models',
+    admin: true,
+    permission: 'channels:read',
+  },
   { href: '/admin/users', key: 'common.nav.users', admin: true },
   { href: '/admin/users/groups', key: 'common.nav.groups', admin: true },
   // M6c FE-08: settings shell plus the two system pages that are reachable

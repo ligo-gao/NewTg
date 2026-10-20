@@ -39,6 +39,7 @@ import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
+import { Route as ConsoleAdminModelsRouteImport } from './routes/_console/admin/models'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 import { Route as ConsoleDashboardAuditLogsRouteImport } from './routes/_console/dashboard/audit-logs'
 import { Route as ConsoleDashboardUsageLogsRouteImport } from './routes/_console/dashboard/usage-logs'
@@ -204,6 +205,11 @@ const ConsoleAdminIndexRoute = ConsoleAdminIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ConsoleAdminRoute,
 } as any)
+const ConsoleAdminModelsRoute = ConsoleAdminModelsRouteImport.update({
+  id: '/models',
+  path: '/models',
+  getParentRoute: () => ConsoleAdminRoute,
+} as any)
 const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   id: '/dashboard/',
   path: '/dashboard/',
@@ -321,6 +327,7 @@ export interface FileRoutesByFullPath {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
+  '/admin/models': typeof ConsoleAdminModelsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin/': typeof ConsoleAdminIndexRoute
@@ -366,6 +373,7 @@ export interface FileRoutesByTo {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing': typeof PricingIndexRoute
+  '/admin/models': typeof ConsoleAdminModelsRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin': typeof ConsoleAdminIndexRoute
@@ -414,6 +422,7 @@ export interface FileRoutesById {
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
+  '/_console/admin/models': typeof ConsoleAdminModelsRoute
   '/_console/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/_console/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
@@ -462,6 +471,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
+    | '/admin/models'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin/'
@@ -507,6 +517,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing'
+    | '/admin/models'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin'
@@ -554,6 +565,7 @@ export interface FileRouteTypes {
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
+    | '/_console/admin/models'
     | '/_console/dashboard/audit-logs'
     | '/_console/dashboard/usage-logs'
     | '/_console/admin/'
@@ -805,6 +817,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminIndexRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/models': {
+      id: '/_console/admin/models'
+      path: '/models'
+      fullPath: '/admin/models'
+      preLoaderRoute: typeof ConsoleAdminModelsRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/dashboard/': {
       id: '/_console/dashboard/'
       path: '/dashboard'
@@ -914,6 +933,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface ConsoleAdminRouteChildren {
+  ConsoleAdminModelsRoute: typeof ConsoleAdminModelsRoute
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
@@ -930,6 +950,7 @@ interface ConsoleAdminRouteChildren {
 }
 
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
+  ConsoleAdminModelsRoute: ConsoleAdminModelsRoute,
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,

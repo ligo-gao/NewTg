@@ -737,5 +737,6 @@
   "nav.chat": "チャット",
   "nav.playground": "Playground",
   "nav.task_plugins": "タスクプラグイン",
-  "nav.redemption_codes": "引き換えコード"
+  "nav.redemption_codes": "引き換えコード",
+  "nav.models": "モデルとプロバイダー"
 }
