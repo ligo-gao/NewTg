@@ -89,9 +89,11 @@ func TestRankingsRepoTimeseriesFirstWeekBucket(t *testing.T) {
 		}
 	}
 
-	snap, found, err := repo.LatestRun(ctx, "year")
+	// 用 RunByID 定位本用例刚插入的 run：LatestRun("year") 会被共享隔离库里
+	// 其它包并发写入的更晚 snapshot_at 抢先（测试非密闭，复核实测可复现）。
+	snap, found, err := repo.RunByID(ctx, runID)
 	if err != nil || !found {
-		t.Fatalf("LatestRun(year): found=%v err=%v", found, err)
+		t.Fatalf("RunByID(%d): found=%v err=%v", runID, found, err)
 	}
 	if len(snap.Timeseries) != 2 ||
 		snap.Timeseries[0].Tokens != 111 || !snap.Timeseries[0].BucketStart.Equal(time.Date(2025, 12, 26, 0, 0, 0, 0, time.UTC)) ||
