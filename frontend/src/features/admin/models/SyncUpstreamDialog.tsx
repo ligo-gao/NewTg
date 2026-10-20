@@ -67,6 +67,12 @@ export function SyncUpstreamDialog({
   }, [open, queryClient])
 
   // 新预览默认勾选全部可写条目（create + update）；blocked 不进入选择集。
+  //
+  // 依赖里必须带上 `dataUpdatedAt`：重新预览成功后若上游清单与旧清单结构相同，
+  // React Query 的结构共享会保留同一个 `data` 引用，仅靠 `[preview.data]`
+  // 不会重跑本 effect——于是 409 的 `conflict` 和 Apply 的禁用会一直保留，
+  // 管理员再也无法重试。`dataUpdatedAt` 在每次请求成功时都会前进，用它作为
+  // 「成功事件」信号，冲突标记便按最新一次预览结果重置。
   useEffect(() => {
     const data: ModelSyncPreview | undefined = preview.data
     if (data === undefined) return
@@ -84,7 +90,7 @@ export function SyncUpstreamDialog({
     )
     setConflict(false)
     setApplyError(undefined)
-  }, [preview.data])
+  }, [preview.data, preview.dataUpdatedAt])
 
   const apply = useMutation({
     mutationFn: async (data: ModelSyncPreview) => {

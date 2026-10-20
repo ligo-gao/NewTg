@@ -554,6 +554,44 @@ describe('models tab', () => {
     expect(within(dialog).getByRole('button', { name: 'Preview again' })).toBeTruthy()
   })
 
+  it('clears the 409 conflict after Preview again even when the new preview is identical', async () => {
+    // 重新预览返回的清单与旧清单结构完全相同：React Query 的结构共享会保留
+    // 同一个 `data` 引用。冲突标记必须按「请求成功」事件重置，而不是按引用变化，
+    // 否则 Apply 会永远禁用、管理员无法重试。
+    let previewCalls = 0
+    installHandlers({
+      syncApplyStatus: 409,
+      recordSyncPreview: () => {
+        previewCalls += 1
+      },
+    })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Sync from upstream' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Sync from upstream' })
+    await within(dialog).findByText('new/model')
+    expect(previewCalls).toBe(1)
+
+    await user.click(within(dialog).getByRole('button', { name: /Apply selected/ }))
+    expect(await within(dialog).findByText(/Preview again before applying/)).toBeTruthy()
+    const applyButton = () =>
+      within(dialog).getByRole('button', { name: /Apply selected/ }) as HTMLButtonElement
+    expect(applyButton().disabled).toBe(true)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Preview again' }))
+    await waitFor(() => {
+      expect(previewCalls).toBe(2)
+    })
+
+    // 同样的清单落地后，冲突提示消失、Apply 恢复可用。
+    await waitFor(() => {
+      expect(within(dialog).queryByText(/Preview again before applying/)).toBeNull()
+    })
+    expect(applyButton().disabled).toBe(false)
+  })
+
   it('discards the cached preview when the dialog closes', async () => {
     let previewCalls = 0
     installHandlers({ recordSyncPreview: () => { previewCalls += 1 } })
