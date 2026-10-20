@@ -128,6 +128,19 @@ func (s *WebhookSender) Configured(_ context.Context) bool {
 	return settings.URL != "" && settings.Secret != ""
 }
 
+// Active 报告 N8 worker 当前是否可以真实投递：开关开启且 URL/secret 齐备。
+//
+// 与 Configured 分开是刻意的：测试端点忽略 enabled，而 worker 必须受它
+// 约束。返回 false 时 worker 不领取投递、也不消耗重试次数——业务事件在
+// 管理员打开开关/补齐配置后按原样发出，而不是先被判失败。
+func (s *WebhookSender) Active(_ context.Context) bool {
+	settings, err := s.settings()
+	if err != nil {
+		return false
+	}
+	return settings.Enabled && settings.URL != "" && settings.Secret != ""
+}
+
 // TargetHost 返回已保存 URL 的主机名（不含 userinfo/path/query），供测试
 // 端点的审计 detail 使用。任何解析失败都返回空串。
 func (s *WebhookSender) TargetHost() string {

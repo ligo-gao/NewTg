@@ -7991,6 +7991,14 @@ type WalletSummary struct {
 // WalletSummaryHealth 服务端计算的余额健康度
 type WalletSummaryHealth string
 
+// WebhookResumeResult POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
+// （`notify:webhook:paused` 与 `notify:webhook:fail_streak`），不修改任何
+// settings 键，也不重排队列中的 queued 投递。
+type WebhookResumeResult struct {
+	// Paused 恢复后恒为 false（字段保留以便前端直接消费）。
+	Paused bool `json:"paused"`
+}
+
 // WebhookTestResult POST /api/settings/test/webhook 的响应；测试样例非事件契约。
 type WebhookTestResult struct {
 	// Ok 目标是否返回 2xx；3xx/4xx/5xx 均为 false。
@@ -8852,6 +8860,13 @@ type RevokeOtherSessionsParams struct {
 
 // RevokeSessionParams defines parameters for RevokeSession.
 type RevokeSessionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ResumeWebhookNotificationsParams defines parameters for ResumeWebhookNotifications.
+type ResumeWebhookNotificationsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`

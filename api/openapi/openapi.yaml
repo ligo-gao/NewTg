@@ -281,6 +281,9 @@ paths:
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20）。
   /api/settings/test/webhook:
     $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1webhook'
+  # 通知渠道 · 恢复自动暂停的 Webhook 推送（modules-08 F-08-20）。
+  /api/settings/notify-webhook:resume:
+    $ref: './paths/admin.yaml#/paths/~1api~1settings~1notify-webhook:resume'
 
   # 模型部署控制面 · 部署管理（M6d Task 4 / modules-08 §3.20 F-08-52～F-08-58）。
   # 静态子路径全部先于 /api/deployments/{id} 声明。

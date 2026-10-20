@@ -1919,6 +1919,19 @@ schemas:
         description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
     description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。
 
+  WebhookResumeResult:
+    type: object
+    additionalProperties: false
+    required: [paused]
+    properties:
+      paused:
+        type: boolean
+        description: 恢复后恒为 false（字段保留以便前端直接消费）。
+    description: |
+      POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
+      （`notify:webhook:paused` 与 `notify:webhook:fail_streak`），不修改任何
+      settings 键，也不重排队列中的 queued 投递。
+
   # ---------------------------------------------------------------------------
   # 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）
   # ---------------------------------------------------------------------------

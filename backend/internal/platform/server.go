@@ -24,6 +24,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/subscriptionworker"
@@ -488,6 +489,40 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// N8 Webhook 发送/重试（billing-06 §9.7 / modules-08 F-08-20）：独立 goroutine
+	// + cancel/WaitGroup，ticker 1 分钟，停机时先于连接池关闭退出。发送器与
+	// gateway 的测试端点共用配置中心快照与同一把 SecretSealer，保证「测试通过」
+	// 与真实投递使用同一份签名/目标配置。
+	//
+	// 装配失败（Store 构造）阻止 worker 上线：没有该循环时业务事件会永远停在
+	// queued，且恢复端点/暂停状态失去消费者。循环内的 DB/Redis 故障只记录，
+	// 下一轮重试。
+	notifyStore, err := notify.NewStore(sqlDB)
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		cancelSubscriptions()
+		subscriptionsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: notify store: %w", err)
+	}
+	webhookCtx, cancelWebhook := context.WithCancel(ctx)
+	var webhookWG sync.WaitGroup
+	webhookWG.Add(1)
+	go func() {
+		defer webhookWG.Done()
+		if err := notify.RunWebhookWorkerLoop(webhookCtx, notify.WebhookWorkerDeps{
+			Store:  notifyStore,
+			Sender: notify.NewWebhookSender(center, cipher),
+			Redis:  rr.client,
+			Logger: log,
+		}); err != nil {
+			log.Error("webhook worker exited with error", "error", err)
+		}
+	}()
+
 	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
 	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
@@ -510,6 +545,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		rankingsWG.Wait()
 		cancelSubscriptions()
 		subscriptionsWG.Wait()
+		cancelWebhook()
+		webhookWG.Wait()
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -545,6 +582,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	rankingsWG.Wait()
 	cancelSubscriptions()
 	subscriptionsWG.Wait()
+	cancelWebhook()
+	webhookWG.Wait()
 	if runErr == nil {
 		runErr = expiryErr
 	}

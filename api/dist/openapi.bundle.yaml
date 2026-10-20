@@ -5736,6 +5736,41 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/settings/notify-webhook:resume:
+    post:
+      tags:
+        - admin
+      operationId: resumeWebhookNotifications
+      x-required-permission: settings:manage
+      summary: 恢复因连续失败而自动暂停的 Webhook 推送
+      description: |
+        清除 `notify:webhook:paused` 与 `notify:webhook:fail_streak`。
+        队列中的 queued 投递保持原 attempt/next_retry_at，由 N8 worker 在下一轮
+        （≤1 分钟）继续发送；测试端点从不经过暂停状态，因此不受影响。
+        该操作幂等：未暂停时调用同样返回 `paused=false`。
+        Redis 不可用 → 503（恢复未生效，不得谎报成功）。
+        审计动作 `settings.webhook_resume`，detail 仅 `paused`。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 暂停状态已清除（或原本未暂停）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookResumeResult'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '503':
+          description: Redis 不可用，暂停状态未能清除；响应为固定文案
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/deployments:
     get:
       tags:
@@ -14456,6 +14491,19 @@ components:
           minimum: 0
           description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
       description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。
+    WebhookResumeResult:
+      type: object
+      additionalProperties: false
+      required:
+        - paused
+      properties:
+        paused:
+          type: boolean
+          description: 恢复后恒为 false（字段保留以便前端直接消费）。
+      description: |
+        POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
+        （`notify:webhook:paused` 与 `notify:webhook:fail_streak`），不修改任何
+        settings 键，也不重排队列中的 queued 投递。
     DeployDeployment:
       type: object
       additionalProperties: false

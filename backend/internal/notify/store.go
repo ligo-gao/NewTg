@@ -627,6 +627,139 @@ func (s *Store) MarkInAppDeliveryRead(ctx context.Context, userID, id int64, now
 	return nil
 }
 
+// webhookDeliveryColumns 是 N8 worker 读取投递行的列序，与 scanDelivery 一致。
+const webhookDeliveryColumns = `id, template_key, category, channel, recipient, recipient_user_id,
+	locale, dedupe_key, status, attempt, next_retry_at, last_error, provider_message_id,
+	payload,` + inAppAnnouncementIDExpr + `, read_at, created_at, updated_at`
+
+// WebhookDeliveryClaim 是一条被本 worker 占用的 Webhook 投递。
+//
+// 占用方式是「事务 + SELECT ... FOR UPDATE SKIP LOCKED」：行锁一直持有到
+// MarkSent/MarkFailed/MarkSuppressed 提交或 Release 回滚。代价是发送期间
+// 占着一个连接（单次投递上限 10s），收益是**同一行绝不会被第二个副本
+// 同时发送**——SKIP LOCKED 让并发扫描直接跳过已锁行，即使部署了多个
+// worker 也不会重复投递。进程崩溃时事务自动回滚，行回到 queued，
+// 下一轮重新领取（至少一次；幂等锚是投递行的 dedupe_key）。
+type WebhookDeliveryClaim struct {
+	tx       *sql.Tx
+	Delivery Delivery
+	closed   bool
+}
+
+// ClaimWebhookDelivery 领取一条到期的 Webhook 投递。
+//
+// 返回 (nil,false,nil) 表示当前没有可领取的行；调用方据此结束本轮。
+// 领取口径即 N8 的冻结扫描条件：
+// channel='webhook' AND status='queued' AND (next_retry_at IS NULL OR <= now)。
+func (s *Store) ClaimWebhookDelivery(ctx context.Context, now time.Time) (*WebhookDeliveryClaim, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("notify: begin webhook claim: %w", err)
+	}
+	row := tx.QueryRowContext(ctx, `SELECT `+webhookDeliveryColumns+`
+		FROM notification_deliveries
+		WHERE channel = 'webhook' AND status = 'queued'
+		  AND (next_retry_at IS NULL OR next_retry_at <= $1)
+		ORDER BY next_retry_at NULLS FIRST, id
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, now.UTC())
+	delivery, err := scanDelivery(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return nil, false, nil
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, false, fmt.Errorf("notify: claim webhook delivery: %w", err)
+	}
+	return &WebhookDeliveryClaim{tx: tx, Delivery: delivery}, true, nil
+}
+
+// MarkSent 把投递置为 sent 并提交占用。
+func (c *WebhookDeliveryClaim) MarkSent(ctx context.Context, attempt int) error {
+	return c.finish(ctx, `UPDATE notification_deliveries
+		SET status = 'sent', attempt = $2, next_retry_at = NULL, last_error = NULL, updated_at = now()
+		WHERE id = $1`, c.Delivery.ID, attempt)
+}
+
+// MarkFailed 记录一次失败。nextRetryAt 非 nil 时保持 queued 并设置重试时刻；
+// nil 表示已达最大尝试次数，置为终态 failed。
+func (c *WebhookDeliveryClaim) MarkFailed(ctx context.Context, attempt int, nextRetryAt *time.Time, reason string) error {
+	status := "failed"
+	var next any
+	if nextRetryAt != nil {
+		status = "queued"
+		next = nextRetryAt.UTC()
+	}
+	return c.finish(ctx, `UPDATE notification_deliveries
+		SET status = $2, attempt = $3, next_retry_at = $4, last_error = $5, updated_at = now()
+		WHERE id = $1`, c.Delivery.ID, status, attempt, next, reason)
+}
+
+// MarkSuppressed 把投递置为 suppressed（例如事件已不在订阅列表内）。
+// 这不是端点故障：不消耗重试次数、不计入连续失败。
+func (c *WebhookDeliveryClaim) MarkSuppressed(ctx context.Context, reason string) error {
+	return c.finish(ctx, `UPDATE notification_deliveries
+		SET status = 'suppressed', next_retry_at = NULL, last_error = $2, updated_at = now()
+		WHERE id = $1`, c.Delivery.ID, reason)
+}
+
+// Release 放弃占用但不改行：投递保持 queued，下一轮重新领取。
+// 用于「配置暂时不可用/已暂停」这类不应消耗重试次数的情形。
+func (c *WebhookDeliveryClaim) Release() {
+	if c == nil || c.closed {
+		return
+	}
+	c.closed = true
+	_ = c.tx.Rollback()
+}
+
+func (c *WebhookDeliveryClaim) finish(ctx context.Context, query string, args ...any) error {
+	if c == nil || c.closed {
+		return errors.New("notify: webhook claim is already closed")
+	}
+	c.closed = true
+	if _, err := c.tx.ExecContext(ctx, query, args...); err != nil {
+		_ = c.tx.Rollback()
+		return fmt.Errorf("notify: update webhook delivery: %w", err)
+	}
+	if err := c.tx.Commit(); err != nil {
+		return fmt.Errorf("notify: commit webhook delivery: %w", err)
+	}
+	return nil
+}
+
+// ListQueuedWebhookDeliveries 返回当前到期的 Webhook 投递（只读，不加锁）。
+// worker 走 ClaimWebhookDelivery；本方法供排障与测试观察队列，禁止用于
+// 「先 list 再断言可发送」——那样会绕开 SKIP LOCKED 的单发保证。
+func (s *Store) ListQueuedWebhookDeliveries(ctx context.Context, now time.Time, limit int) ([]Delivery, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+webhookDeliveryColumns+`
+		FROM notification_deliveries
+		WHERE channel = 'webhook' AND status = 'queued'
+		  AND (next_retry_at IS NULL OR next_retry_at <= $1)
+		ORDER BY next_retry_at NULLS FIRST, id
+		LIMIT $2`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("notify: list queued webhook deliveries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Delivery
+	for rows.Next() {
+		item, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notify: iterate queued webhook deliveries: %w", err)
+	}
+	return out, nil
+}
+
 // rowScanner 抽象 *sql.Row / *sql.Rows，便于同一扫描逻辑复用。
 type rowScanner interface {
 	Scan(dest ...any) error

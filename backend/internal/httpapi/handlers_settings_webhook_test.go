@@ -166,6 +166,97 @@ func TestWebhookTestEndpointWithoutSender(t *testing.T) {
 	}
 }
 
+// webhookResumeMux 装配 resume 端点；rdb 可为 nil（测试装配缺失）。
+func webhookResumeMux(t *testing.T, rdb *redis.Client) *http.ServeMux {
+	t.Helper()
+	handlers, err := NewSettingsHandlers(SettingsHandlerConfig{
+		Service: &fakeSettingsService{},
+		Authz:   rbac.NewAuthzMiddleware(),
+		Idem:    NewMemoryIdempotencyStore(),
+		Redis:   rdb,
+	})
+	if err != nil {
+		t.Fatalf("NewSettingsHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	return mux
+}
+
+// TestWebhookResumeEndpointClearsPauseState 覆盖 F-08-20「恢复推送」：
+// 同时清 paused 与 fail_streak（否则下一次失败会立刻再次暂停），响应
+// {paused:false}，且不影响队列行。
+func TestWebhookResumeEndpointClearsPauseState(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+	if err := rdb.Set(ctx, notify.WebhookPausedKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed paused: %v", err)
+	}
+	if err := rdb.Set(ctx, notify.WebhookFailStreakKey, "87", 0).Err(); err != nil {
+		t.Fatalf("seed streak: %v", err)
+	}
+
+	mux := webhookResumeMux(t, rdb)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "",
+		webhookTestPrincipal(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body webhookResumeResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Paused {
+		t.Fatalf("body.paused = true，期望 false")
+	}
+	for _, key := range []string{notify.WebhookPausedKey, notify.WebhookFailStreakKey} {
+		if exists, err := rdb.Exists(ctx, key).Result(); err != nil || exists != 0 {
+			t.Fatalf("%s 未清除：exists=%d err=%v", key, exists, err)
+		}
+	}
+}
+
+func TestWebhookResumeEndpointRequiresSettingsManage(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+	_ = rdb.Set(ctx, notify.WebhookPausedKey, "1", 0).Err()
+	mux := webhookResumeMux(t, rdb)
+
+	// 普通用户。
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "",
+		&auth.Principal{UserID: 7, Role: rbac.RoleUser}, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("普通用户 = %d，期望 403", rr.Code)
+	}
+	// admin 但缺少 settings:manage。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "",
+		&auth.Principal{UserID: 8, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersRead}}, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺 settings:manage = %d，期望 403", rr.Code)
+	}
+	// 被拒绝的请求不得改变暂停状态。
+	if exists, _ := rdb.Exists(ctx, notify.WebhookPausedKey).Result(); exists != 1 {
+		t.Fatalf("被拒绝的请求清除了 paused 标记")
+	}
+}
+
+func TestWebhookResumeEndpointWithoutRedis(t *testing.T) {
+	mux := webhookResumeMux(t, nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "",
+		webhookTestPrincipal(), nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("未装配 Redis = %d，期望 503", rr.Code)
+	}
+}
+
 // TestWebhookTestRouteRequiresCSRF 是 LOW-6 的 router 层用例：端点挂在
 // SessionAuth → CSRF → OriginRefererCheck 链后，带有效会话但缺 CSRF 头
 // 必须 403，且不得触达发送器。

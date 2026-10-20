@@ -2602,6 +2602,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/notify-webhook:resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 恢复因连续失败而自动暂停的 Webhook 推送
+         * @description 清除 `notify:webhook:paused` 与 `notify:webhook:fail_streak`。
+         *     队列中的 queued 投递保持原 attempt/next_retry_at，由 N8 worker 在下一轮
+         *     （≤1 分钟）继续发送；测试端点从不经过暂停状态，因此不受影响。
+         *     该操作幂等：未暂停时调用同样返回 `paused=false`。
+         *     Redis 不可用 → 503（恢复未生效，不得谎报成功）。
+         *     审计动作 `settings.webhook_resume`，detail 仅 `paused`。
+         */
+        post: operations["resumeWebhookNotifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/deployments": {
         parameters: {
             query?: never;
@@ -6476,6 +6501,15 @@ export interface components {
             ok: boolean;
             /** @description 目标 HTTP 状态码原样回传（3xx 不跟随）。 */
             status_code: number;
+        };
+        /**
+         * @description POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
+         *     （`notify:webhook:paused` 与 `notify:webhook:fail_streak`），不修改任何
+         *     settings 键，也不重排队列中的 queued 投递。
+         */
+        WebhookResumeResult: {
+            /** @description 恢复后恒为 false（字段保留以便前端直接消费）。 */
+            paused: boolean;
         };
         DeployDeployment: {
             id: string;
@@ -12482,6 +12516,43 @@ export interface operations {
             };
             /** @description 连接失败或超时（未收到 HTTP 响应，固定文案） */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    resumeWebhookNotifications: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 暂停状态已清除（或原本未暂停） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookResumeResult"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description Redis 不可用，暂停状态未能清除；响应为固定文案 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

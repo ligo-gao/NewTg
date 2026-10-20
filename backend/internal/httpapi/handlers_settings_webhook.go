@@ -52,6 +52,70 @@ type webhookTestResponse struct {
 	StatusCode int  `json:"status_code"`
 }
 
+// webhookResumeResponse 是 POST /api/settings/notify-webhook:resume 的响应。
+// 恢复后 paused 恒为 false；保留字段而不是 204，让前端不必猜测结果。
+type webhookResumeResponse struct {
+	Paused bool `json:"paused"`
+}
+
+// handleResumeWebhook 清除 N8 的自动暂停状态（modules-08 F-08-20
+// 「暂停机制生效后可手动恢复推送」）。
+//
+// 暂停与连续失败计数都是**运行时状态**（Redis），不是 settings 键：
+//   - 删除 notify:webhook:paused 让 worker 下一轮重新领取队列；
+//   - 删除 notify:webhook:fail_streak 让恢复后的失败从 0 重新累计，
+//     否则残留的 51 会让下一次失败立刻再次暂停；
+//   - 队列本身不动：所有 queued 行保持原 attempt/next_retry_at。
+//
+// Redis 不可用时返回 503：恢复动作没有生效，不能谎报成功。
+// 审计 detail 只写 {paused:false}，不包含 secret、URL 或队列内容。
+func (h *SettingsHandlers) handleResumeWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.rdb == nil {
+		h.log.Error("settings: webhook resume requested without redis")
+		writeProblemDetail(w, http.StatusServiceUnavailable, authProblemInternal,
+			"Service unavailable", "")
+		return
+	}
+	if err := h.rdb.Del(r.Context(), notify.WebhookPausedKey, notify.WebhookFailStreakKey).Err(); err != nil {
+		if r.Context().Err() == nil {
+			h.log.Error("settings: clear webhook pause state failed", "err", err)
+		}
+		writeProblemDetail(w, http.StatusServiceUnavailable, authProblemInternal,
+			"Service unavailable", "")
+		return
+	}
+
+	principal, _ := auth.PrincipalFrom(r.Context())
+	actor := int64(0)
+	if principal != nil {
+		actor = principal.UserID
+	}
+	h.writeWebhookResumeAudit(r, actor)
+	writeJSON(w, http.StatusOK, webhookResumeResponse{Paused: false})
+}
+
+// writeWebhookResumeAudit 写 settings.webhook_resume。
+func (h *SettingsHandlers) writeWebhookResumeAudit(r *http.Request, actor int64) {
+	if h.audit == nil {
+		return
+	}
+	detail, err := json.Marshal(map[string]any{"paused": false})
+	if err != nil {
+		return
+	}
+	event := audit.Event{
+		Action:     audit.ActionSettingsWebhookResume,
+		Actor:      actor,
+		Method:     http.MethodPost,
+		Route:      "/api/settings/notify-webhook:resume",
+		StatusCode: http.StatusOK,
+		IP:         clientIP(r),
+		UserAgent:  r.UserAgent(),
+		Detail:     detail,
+	}
+	_ = writeAuditEvent(r.Context(), h.audit, event)
+}
+
 func (h *SettingsHandlers) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.webhook == nil {
 		// 装配缺失不是 422：管理员无法通过改配置修复它。

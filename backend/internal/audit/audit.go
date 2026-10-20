@@ -98,6 +98,12 @@ const (
 	// 密钥、路径、query 与响应体原文都不得进入审计。
 	ActionSettingsTestWebhook = "settings.test_webhook"
 
+	// ActionSettingsWebhookResume 是 POST /api/settings/notify-webhook:resume
+	// 的审计（modules-08 F-08-20「恢复推送」）。暂停是运行时状态而非设置值，
+	// 但恢复是管理员对出站通道的显式操作，必须可追溯。detail 只允许
+	// paused 这类布尔事实；secret/URL 与队列内容一律不记。
+	ActionSettingsWebhookResume = "settings.webhook_resume"
+
 	// ActionNotificationTemplateUpdate 是通知模板编辑的写审计
 	// （modules-08 §3.9 / F-08-25；brief 要求所有写操作审计）。模板行虽不在
 	// system_settings，但属于管理配置，归 operation 类。
@@ -232,8 +238,9 @@ var actionCategories = map[string]string{
 
 	ActionAuthzDenied: categorySecurity,
 
-	ActionSettingsUpdate:      categoryOperation,
-	ActionSettingsTestWebhook: categoryOperation,
+	ActionSettingsUpdate:        categoryOperation,
+	ActionSettingsTestWebhook:   categoryOperation,
+	ActionSettingsWebhookResume: categoryOperation,
 
 	ActionNotificationTemplateUpdate: categoryOperation,
 

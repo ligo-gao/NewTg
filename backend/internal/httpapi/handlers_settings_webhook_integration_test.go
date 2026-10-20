@@ -250,3 +250,61 @@ func TestIntegrationWebhookTestEndpoint(t *testing.T) {
 		}
 	})
 }
+
+// TestIntegrationWebhookResumeClearsPauseAndAudits 覆盖 F-08-20 恢复端点：
+// 真实 Redis 清键 + 真实审计库落 settings.webhook_resume，detail 只含
+// paused，且不含 secret/URL。
+func TestIntegrationWebhookResumeClearsPauseAndAudits(t *testing.T) {
+	logsDB, rdb, mux := newWebhookEndpointEnv(t)
+	actor := int64(424242)
+	principal := &auth.Principal{UserID: actor, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+	ctx := context.Background()
+
+	if err := rdb.Set(ctx, notify.WebhookPausedKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed paused: %v", err)
+	}
+	if err := rdb.Set(ctx, notify.WebhookFailStreakKey, "77", 0).Err(); err != nil {
+		t.Fatalf("seed streak: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/settings/notify-webhook:resume", "", principal, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body webhookResumeResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Paused {
+		t.Fatalf("body.paused = true")
+	}
+	for _, key := range []string{notify.WebhookPausedKey, notify.WebhookFailStreakKey} {
+		if exists, err := rdb.Exists(ctx, key).Result(); err != nil || exists != 0 {
+			t.Fatalf("%s 未清除：exists=%d err=%v", key, exists, err)
+		}
+	}
+
+	var raw []byte
+	if err := logsDB.QueryRow(`
+		SELECT detail FROM audit_logs
+		WHERE user_id = $1 AND route = '/api/settings/notify-webhook:resume'
+		ORDER BY id DESC LIMIT 1`, actor).Scan(&raw); err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail["action"] != audit.ActionSettingsWebhookResume {
+		t.Fatalf("action = %v，期望 %s", detail["action"], audit.ActionSettingsWebhookResume)
+	}
+	if detail["paused"] != false {
+		t.Fatalf("paused = %v，期望 false", detail["paused"])
+	}
+	for _, leak := range []string{"super-secret-value", "token=", "s3cret", "/hook"} {
+		if strings.Contains(string(raw), leak) {
+			t.Fatalf("审计泄露 %q: %s", leak, string(raw))
+		}
+	}
+}

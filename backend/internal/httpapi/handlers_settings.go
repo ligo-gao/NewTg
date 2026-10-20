@@ -79,6 +79,10 @@ var settingsUpdateAction = rbac.AuthzAction{ResourceKind: "settings", ActionName
 // 的未登记动作都失败关闭（security-02 §2.6.1 规则 6）。
 var settingsTestWebhookAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "test_webhook"}
 
+// settingsResumeWebhookAction 是恢复 Webhook 推送的写策略键。端点没有请求体，
+// 与 test_webhook 一样登记空字段集（RBAC 对未登记写动作失败关闭）。
+var settingsResumeWebhookAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "resume_webhook"}
+
 // NewSettingsHandlers 构造设置端点。
 func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 	if cfg.Service == nil {
@@ -107,6 +111,7 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 		log = slog.Default()
 	}
 	authz.SetWritePolicy(settingsTestWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
+	authz.SetWritePolicy(settingsResumeWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	return &SettingsHandlers{
 		service: cfg.Service, authz: authz, audit: cfg.Audit, idem: idem, log: log,
 		webhook: cfg.Webhook, rdb: cfg.Redis,
@@ -122,6 +127,10 @@ func (h *SettingsHandlers) Register(mux *http.ServeMux) {
 	// 审计动作独立于 settings.update，便于区分「改配置」与「探测端点」。
 	mux.Handle("POST /api/settings/test/webhook",
 		h.authz.Handler(rbac.PermSettingsManage, settingsTestWebhookAction)(http.HandlerFunc(h.handleTestWebhook)))
+	// 恢复自动暂停的 Webhook 推送（F-08-20）。与测试端点同为 settings:manage：
+	// 它改变的是出站投递状态，不是普通设置值，但仍属于设置管理面。
+	mux.Handle("POST /api/settings/notify-webhook:resume",
+		h.authz.Handler(rbac.PermSettingsManage, settingsResumeWebhookAction)(http.HandlerFunc(h.handleResumeWebhook)))
 }
 
 func (h *SettingsHandlers) handleGet(w http.ResponseWriter, r *http.Request) {
