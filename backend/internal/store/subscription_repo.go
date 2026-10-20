@@ -424,9 +424,11 @@ func (r *SQLSubscriptionRepo) setPlanStatus(ctx context.Context, id int64, statu
 // orders 中 biz_kind='subscribe' 且 status IN ('pending','succeeded') 的
 // 未终结订单：回调尚未落成实例的窗口里，订单本身就是必须保护的引用。
 //
-// 【订单计数无法靠套餐行锁阻止并发写入】下单路径（S4）尚未对 plan 行取
-// FOR SHARE；本事务的 FOR UPDATE 只与实例创建互斥。若未来下单路径需要与删除
-// 严格互斥，应在创建订单的同一事务里对 plan 行 FOR SHARE（登记为实现期项）。
+// 【订单计数与行锁】下单路径（S3）在创建订单的同一事务里对 plan 行取
+// `FOR SHARE`（billing.loadSubscriptionPlanForShare），与本事务的
+// `FOR UPDATE` 互斥：删除先持锁时，并发下单等待后查不到行而失败；下单
+// 先持锁时，删除等待提交后统计到新增的 pending 订单并返回 ErrPlanReferenced。
+// 因此「统计订单 → 删除」之间不可能插入新的未终结订阅订单。
 func (r *SQLSubscriptionRepo) DeletePlan(ctx context.Context, id int64) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
