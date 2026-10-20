@@ -210,6 +210,7 @@ func TestAnnouncementPublishDeliversInAppOnce(t *testing.T) {
 }
 
 func TestAnnouncementPublishInAppFailureDoesNotBlock(t *testing.T) {
+	capture := &captureExec{}
 	notifier := &fakeAnnouncementNotifier{err: errors.New("db down")}
 	repo := &fakeAnnouncementRepo{
 		publishFn: func(_ context.Context, id string, _ int64) (store.AnnouncementMutation, error) {
@@ -219,12 +220,34 @@ func TestAnnouncementPublishInAppFailureDoesNotBlock(t *testing.T) {
 		},
 	}
 	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
-		Repo: repo, Notifier: notifier, WaitForSideEffects: true,
+		Repo: repo, Notifier: notifier, Audit: audit.New(capture), WaitForSideEffects: true,
 	})
 	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage),
 		http.MethodPost, "/api/announcements/"+sampleAnnouncement().ID+"/publish", nil)
 	if got.Code != http.StatusOK {
 		t.Fatalf("投递失败后发布 = %d，want 200（best-effort）", got.Code)
+	}
+	// 整体失败必须与「零启用用户」可区分：审计显式 delivery_error=true。
+	var detail map[string]any
+	for _, call := range capture.snapshot() {
+		if len(call) < 10 {
+			continue
+		}
+		raw, ok := call[9].(string)
+		if !ok {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil && parsed["action"] == audit.ActionAnnouncementPublish {
+			detail = parsed
+			break
+		}
+	}
+	if detail == nil {
+		t.Fatal("未捕获 announcement.publish 审计")
+	}
+	if detail["delivery_error"] != true || detail["delivery_failed"] != float64(0) {
+		t.Fatalf("整体投递失败审计 = %v，want delivery_error=true/delivery_failed=0", detail)
 	}
 }
 

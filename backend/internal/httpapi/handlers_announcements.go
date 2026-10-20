@@ -728,10 +728,16 @@ func (h *AnnouncementHandlers) writeAudit(r *http.Request, action string, a stor
 func (h *AnnouncementHandlers) writePublishAudit(
 	r *http.Request, a store.Announcement, result notify.AnnouncementDeliveryResult,
 ) {
-	h.writeAudit(r, audit.ActionAnnouncementPublish, a, map[string]any{
-		"delivered_users": result.Delivered,
-		"delivery_failed": result.Failed,
-	})
+	detail := map[string]any{"delivered_users": result.Delivered}
+	if result.Failed < 0 {
+		// 整体失败（受众查询/投递入口报错）：计数无法可靠得出，
+		// 显式标 delivery_error，避免与「零启用用户」混淆。
+		detail["delivery_failed"] = 0
+		detail["delivery_error"] = true
+	} else {
+		detail["delivery_failed"] = result.Failed
+	}
+	h.writeAudit(r, audit.ActionAnnouncementPublish, a, detail)
 }
 
 // auditSuccessStatus 在响应写出前无法拿到真实状态码；公告写动作成功时
@@ -779,6 +785,10 @@ func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a s
 	if err != nil {
 		h.log.Warn("announcements: inapp notification delivery failed",
 			"announcement_id", a.ID, "err", err)
+		// Failed=-1 是「整体投递失败」哨兵：服务在查询受众阶段就失败，
+		// 零值 Result 会让审计误报 delivery_failed=0，与「没有启用用户」
+		// 不可区分。审计侧据此写 delivery_error=true。
+		result.Failed = -1
 		return result
 	}
 	if result.Failed > 0 {
