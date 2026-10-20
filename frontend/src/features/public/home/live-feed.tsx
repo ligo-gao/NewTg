@@ -8,7 +8,8 @@
  * 【聚合条】`window:{calls,cost_credits}` 由轮询端点返回（A6 冻结：SSE 帧
  * 不附带聚合读数）。SSE 模式下没有轮询循环，因此每 30s 轻量拉一次快照
  * 只刷新 window；否则聚合条会永远停在 onopen 播种时的那一刻。读数为
- * 最近 5 分钟滚动窗口，费用只以整数积分出现在这里，逐行事件不含费用。
+ * 近 60 秒（当前分钟桶近似，F-09-02），费用只以整数积分出现在这里，
+ * 逐行事件不含费用。
  *
  * 逐行字段不含费用：时间 / 模型 / 上游 / token(in/out) / 耗时 / 状态。
  * 桌面表格 + 移动端卡片；状态用图标 + 文字双编码，不用彩色徽章。
@@ -34,8 +35,8 @@ type ConnectionState = 'connecting' | 'live' | 'paused' | 'reconnecting'
 
 /**
  * SSE 模式下聚合条的刷新间隔。轮询降级模式由 5s 轮询顺带刷新，不需要
- * 这个计时器。取 30s：5 分钟窗口的分母足够大，30s 的滞后不会让读数感
- * 到停滞，同时把公开只读限流（60 次/分钟/IP+path）的占用压到很低。
+ * 这个计时器。取 30s：60 秒窗口下滞后上界约 30 秒（半个窗口），读数
+ * 仍然足够实时，同时把公开只读限流（60 次/分钟/IP+path）的占用压到很低。
  */
 const LIVE_FEED_WINDOW_REFRESH_MS = 30_000
 
@@ -472,12 +473,42 @@ export function LiveFeedSection() {
         {aggregate !== null ? (
           <p
             data-testid="live-feed-window"
-            className="mt-3 text-xs font-medium tabular-nums text-ink-2"
+            className="mt-3 text-xs font-medium tabular-nums text-ink-1"
+            // 完整句子只给读屏/无障碍名称；可见文本拆成三段，才能按 UI
+            // 设计给「−金额」或零值单独上色。
+            aria-label={
+              aggregate.cost_credits === 0
+                ? t('public.live_feed.window.cost_zero', {
+                    calls: formatInteger(aggregate.calls, locale),
+                  })
+                : t('public.live_feed.window', {
+                    calls: formatInteger(aggregate.calls, locale),
+                    credits: formatInteger(aggregate.cost_credits, locale),
+                  })
+            }
           >
-            {t('public.live_feed.window', {
-              calls: formatInteger(aggregate.calls, locale),
-              credits: formatInteger(aggregate.cost_credits, locale),
-            })}
+            <span>
+              {t('public.live_feed.window.calls', {
+                calls: formatInteger(aggregate.calls, locale),
+              })}
+            </span>
+            {/* 支出前缀用 Unicode 减号 U+2212（UI 设计 §F-09-02）；零值用
+                --amount-zero 渲染 0，非零用 --amount-out。 */}
+            <span
+              className={
+                aggregate.cost_credits === 0
+                  ? 'text-amount-zero'
+                  : 'text-amount-out'
+              }
+            >
+              {aggregate.cost_credits === 0
+                ? '0'
+                : `−${formatInteger(aggregate.cost_credits, locale)}`}
+            </span>
+            <span>
+              {' '}
+              {t('public.live_feed.window.credit_unit')}
+            </span>
           </p>
         ) : null}
 

@@ -182,7 +182,7 @@ describe('home live feed (F-09-02)', () => {
     expect(paths[0]).toBe('/api/home/live-feed?limit=20')
   })
 
-  it('renders the 5-minute aggregate window from the polling endpoint', async () => {
+  it('renders the 60-second aggregate window from the polling endpoint', async () => {
     vi.stubGlobal('EventSource', undefined)
     server.use(
       http.get(`${ORIGIN}/api/home/live-feed`, () =>
@@ -199,11 +199,126 @@ describe('home live feed (F-09-02)', () => {
     )
     await findByText('Live call feed')
     const bar = await findByTestId('live-feed-window')
-    expect(bar.textContent).toBe(
-      'Last 5 minutes · 128 calls · 1,530 credits',
-    )
+    // F-09-02 / A6：近 60 秒；支出用 Unicode 减号 U+2212。
+    expect(bar.textContent).toBe('Last 60s · 128 calls · −1,530 credits')
     // 聚合条是唯一的费用读数；逐行表格仍不含费用字段。
     expect(bar.textContent).toContain('1,530')
+  })
+
+  it('renders zero cost with the cost_zero copy and amount-zero color', async () => {
+    vi.stubGlobal('EventSource', undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () =>
+        HttpResponse.json({
+          events: [feedEvent()],
+          window: { calls: 5, cost_credits: 0 },
+        }),
+      ),
+    )
+
+    const { findByTestId, findByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    await findByText('Live call feed')
+    const bar = await findByTestId('live-feed-window')
+    expect(bar.textContent).toBe('Last 60s · 5 calls · 0 credits')
+    // cost_zero 完整句子作为无障碍名称；零值数字用 amount-zero token。
+    expect(bar.getAttribute('aria-label')).toBe(
+      'Last 60s · 5 calls · 0 credits',
+    )
+    expect(within(bar).getByText('0').className).toContain('text-amount-zero')
+    expect(bar.textContent).not.toContain('−')
+  })
+
+  it('refreshes the aggregate every 30s in SSE mode with a limit=1 snapshot', async () => {
+    vi.useFakeTimers()
+    useSse()
+    const paths: string[] = []
+    let windowCalls = 128
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, ({ request }) => {
+        const url = new URL(request.url)
+        paths.push(`${url.pathname}?${url.searchParams.toString()}`)
+        return HttpResponse.json({
+          // 播种拉 20 条事件；30s 刷新只取 window，不应替换事件列表。
+          events: url.searchParams.get('limit') === '20' ? [feedEvent()] : [],
+          window: { calls: windowCalls, cost_credits: 1530 },
+        })
+      }),
+    )
+
+    const { getByText, getByTestId, getByRole } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    expect(getByText('Live call feed')).toBeTruthy()
+    const source = MockEventSource.instances[0]
+    act(() => source?.onopen?.())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(paths[0]).toBe('/api/home/live-feed?limit=20')
+    const bar = getByTestId('live-feed-window')
+    expect(bar.textContent).toBe('Last 60s · 128 calls · −1,530 credits')
+
+    windowCalls = 130
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(paths.at(-1)).toBe('/api/home/live-feed?limit=1')
+    expect(bar.textContent).toBe('Last 60s · 130 calls · −1,530 credits')
+    // 刷新只更新 window：SSE 播种的事件仍在表里。
+    expect(getByRole('table').textContent).toContain('gpt-4o-mini')
+  })
+
+  it('keeps the last good aggregate when an SSE-mode refresh fails', async () => {
+    vi.useFakeTimers()
+    useSse()
+    let requests = 0
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () => {
+        requests += 1
+        if (requests === 1) {
+          return HttpResponse.json({
+            events: [feedEvent()],
+            window: { calls: 128, cost_credits: 1530 },
+          })
+        }
+        // 后续 30s 刷新失败：聚合条必须保留上一次成功读数，不能被清空或归零。
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Internal error', status: 500 },
+          { status: 500 },
+        )
+      }),
+    )
+
+    const { getByText, getByTestId } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    expect(getByText('Live call feed')).toBeTruthy()
+    const source = MockEventSource.instances[0]
+    act(() => source?.onopen?.())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const bar = getByTestId('live-feed-window')
+    expect(bar.textContent).toBe('Last 60s · 128 calls · −1,530 credits')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(requests).toBe(2)
+    expect(bar.textContent).toBe('Last 60s · 128 calls · −1,530 credits')
+
+    // 再过一个周期仍失败：旧读数继续保留，且 SSE 通道不受影响。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(requests).toBe(3)
+    expect(bar.textContent).toBe('Last 60s · 128 calls · −1,530 credits')
+    expect(getByText('Live')).toBeTruthy()
   })
 
   it('hides the aggregate bar when the window payload is malformed', async () => {

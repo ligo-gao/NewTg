@@ -150,7 +150,7 @@ func (h *LiveFeedHandlers) RegisterLiveFeedRoutes(rt *Router) {
 // events 直接透传 Redis 里的 JSON 对象（json.RawMessage），不二次投影：
 // 事件在写入侧已完成脱敏，读取侧再 Marshal 一次只会引入字段漂移。
 //
-// window 是 F-09-02 的聚合条（最近 5 分钟滚动分钟桶，A6 冻结语义）：
+// window 是 F-09-02 的聚合条（近 60 秒 = 当前分钟桶近似，A6 冻结语义）：
 // calls 计所有事件，cost_credits 只计成功事件的整数积分。逐行事件仍然
 // 不含任何费用字段（裁决 A-1）——费用只在这里以平台级聚合出现。
 type LiveFeedListResponse struct {

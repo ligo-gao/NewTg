@@ -160,11 +160,11 @@ export interface paths {
          *     `site.home_blocks.live_feed=false` 时返回 404。响应 `Cache-Control:
          *     no-store`。B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
          *
-         *     响应顶层 `window` 是聚合条：最近 **5 分钟滚动窗口**（按分钟桶汇总
-         *     当前分钟 + 前 4 个桶），calls 计所有事件，cost_credits 只计成功事件
-         *     的整数积分。逐行事件按裁决 A-1 不含任何费用字段。Redis 聚合桶
-         *     读取失败时 `window` 降级为 `{calls:0,cost_credits:0}` 且事件照常
-         *     返回；list 本身不可用时仍按下方 503 口径处理。
+         *     响应顶层 `window` 是聚合条：**近 60 秒**（按当前分钟桶汇总，0–60s
+         *     近似），calls 计所有事件，cost_credits 只计成功事件的整数积分。
+         *     逐行事件按裁决 A-1 不含任何费用字段。Redis 聚合桶读取失败时
+         *     `window` 降级为 `{calls:0,cost_credits:0}` 且事件照常返回；list
+         *     本身不可用时仍按下方 503 口径处理。
          */
         get: operations["getHomeLiveFeed"];
         put?: never;
@@ -4168,20 +4168,21 @@ export interface components {
             status: components["schemas"]["LiveFeedStatus"];
         };
         /**
-         * @description 聚合条读数。窗口冻结为**最近 5 分钟滚动窗口**：服务端按分钟桶累加
-         *     最近 5 个桶（当前分钟 + 前 4 个）。calls 计所有已发布事件；cost_credits
-         *     只计成功事件的整数积分（失败/退款不计费用）。这是平台级聚合，不含
-         *     任何单条调用费用，也不含用户/渠道维度。
+         * @description 聚合条读数。窗口冻结为**近 60 秒**（F-09-02）：服务端按分钟桶累加
+         *     当前分钟桶，属于 0–60s 近似（跨分钟时读数从整分钟重置到新桶）。
+         *     calls 计所有已发布事件；cost_credits 只计成功事件的整数积分
+         *     （失败/退款不计费用）。这是平台级聚合，不含任何单条调用费用，也不含
+         *     用户/渠道维度。
          */
         LiveFeedWindow: {
             /**
              * Format: int64
-             * @description 近 5 分钟调用次数（成功与失败都计入）。
+             * @description 近 60 秒调用次数（成功与失败都计入）。
              */
             calls: number;
             /**
              * Format: int64
-             * @description 近 5 分钟成功调用的消耗积分（整数，取结算事实）。
+             * @description 近 60 秒成功调用的消耗积分（整数，取结算事实）。
              */
             cost_credits: number;
         };

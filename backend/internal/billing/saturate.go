@@ -66,13 +66,17 @@ const (
 	// FeedWindowKeyPrefix 是聚合条分钟桶的键前缀（F-09-02 聚合条）。
 	// 每个桶是一对键：`...:<minute>:calls` 与 `...:<minute>:cost`。
 	FeedWindowKeyPrefix = "newtg:feed:win:"
-	// FeedWindowMinutes 是滚动窗口长度（按分钟桶计）：当前分钟 + 前 4 个。
-	// 【冻结值】F-09-02 原文写「近 60 秒」；A6 冻结为「最近 5 分钟滚动窗口」，
-	// 避免低流量部署的聚合条长期显示 0，同时让读数仍然足够实时。
-	FeedWindowMinutes = 5
+	// FeedWindowMinutes 是聚合窗口按分钟桶计的长度。
+	// 【冻结值】F-09-02 定义「近 60 秒」；A6 收口冻结为单个当前分钟桶。
+	// 投递写入「事件发生时刻」所在的分钟桶，读取只汇总该桶，因此读数是
+	// 0–60s 的近似：窗口实际覆盖 [当前分钟起点, now]，最长 60 秒。跨分钟
+	// 的瞬间读数会从整分钟跌到新桶的 0——这是近似语义的固有代价，换来
+	// 读取端一次 MGET、无需维护滑动窗口状态。
+	FeedWindowMinutes = 1
 	// FeedWindowBucketTTL 是分钟桶的保留时长（冻结 10 分钟）。
-	// 窗口只读最近 5 个桶，留 5 分钟余量是为了让窗口边界附近的读数不会
-	// 因为桶在「仍在窗口内」时就过期而突然下跌。
+	// 只读当前桶，仍保留 10 分钟：跨分钟边界后旧桶需要短暂存活（覆盖
+	// 时钟偏移、迟到的读取与同一分钟内的重复续期），过期桶永远不会被
+	// 汇总，保留时长不改变读数口径。
 	FeedWindowBucketTTL = 10 * time.Minute
 )
 
@@ -121,10 +125,10 @@ func FeedWindowCostKey(minute int64) string {
 	return fmt.Sprintf("%s%d:cost", FeedWindowKeyPrefix, minute)
 }
 
-// ReadFeedWindow 汇总最近 FeedWindowMinutes 个分钟桶的 calls/cost。
+// ReadFeedWindow 汇总当前分钟桶的 calls/cost（近 60 秒近似，F-09-02）。
 //
-// 【一次往返】10 个键用一条 MGET 读取：聚合条每个轮询请求都要读，逐键
-// GET 会把公开页的 Redis 往返放大 10 倍。
+// 【一次往返】calls/cost 两个键用一条 MGET 读取：聚合条每个轮询请求都要
+// 读，逐键 GET 会把公开页的 Redis 往返翻倍。
 //
 // 【坏桶按 0】桶值只可能由 INCR/INCRBY 产生；解析失败（手工写入/版本升级）
 // 时跳过该桶而不是返回错误——聚合条是展示面读数，不应因为一个坏数字让
@@ -194,9 +198,9 @@ func NewRedisFeedPublisher(rdb *redis.Client) *RedisFeedPublisher {
 // cost 只对 status=ok 的事件累加 event.CostCredits（整数积分）。失败事件
 // 不计费用，逐行事件本身也从不携带费用（裁决 A-1）。
 //
-// 【TTL】两个桶都设 FeedWindowBucketTTL。PEXPIRE 每次都续期是安全的：
+// 【TTL】两个桶都设 FeedWindowBucketTTL。EXPIRE（秒）每次都续期是安全的：
 // 同一分钟桶只会被该分钟的事件写入，重复续期不会延长到超过「最后一次
-// 写入 + 10 分钟」，窗口读取端最多看 5 个桶，不会读到过期边界的脏值。
+// 写入 + 10 分钟」；读取端只汇总当前分钟桶，不会读到过期桶的脏值。
 func (p *RedisFeedPublisher) PublishCall(ctx context.Context, event FeedEvent) error {
 	if p == nil || p.rdb == nil {
 		return errors.New("billing: live feed publisher has no redis client")

@@ -483,19 +483,25 @@ func TestLiveFeedStreamRenewsLeaseAndDropsOnEviction(t *testing.T) {
 // 聚合条 window（F-09-02 / A6 冻结语义）
 // ---------------------------------------------------------------------------
 
-// 成功事件计 cost、失败事件只计 calls；逐行事件仍不含任何费用字段。
+// 聚合条与事件列表共存；逐行事件仍不含任何费用字段。
+//
+// 【固定时钟】窗口冻结为单个当前分钟桶（近 60 秒近似）后，用真实时钟
+// 投递再读取会跨分钟概率性地读到 0；这里给 handler 注入固定时间并直接
+// 写该分钟桶。calls/cost 的计数规则（成功计费、失败只计 calls）由
+// billing.TestRedisFeedPublisherMaintainsWindowBuckets 用固定时钟覆盖。
 func TestLiveFeedListIncludesWindowAggregate(t *testing.T) {
-	env := newLiveFeedTestEnv(t, nil, nil)
+	fixed := time.Date(2026, 10, 20, 4, 0, 30, 0, time.UTC)
+	env := newLiveFeedTestEnv(t, nil, func(cfg *LiveFeedHandlerConfig) {
+		cfg.Now = func() time.Time { return fixed }
+	})
 	ctx := context.Background()
-	pub := billing.NewRedisFeedPublisher(env.rdb)
-	for _, event := range []billing.FeedEvent{
-		{ID: "ok000001", TS: "2026-10-20T04:00:00Z", Model: "m", Upstream: "openai", Status: "ok", CostCredits: 30},
-		{ID: "err00002", TS: "2026-10-20T04:00:01Z", Model: "m", Upstream: "openai", Status: "error", CostCredits: 999},
-		{ID: "ok000003", TS: "2026-10-20T04:00:02Z", Model: "m", Upstream: "openai", Status: "ok", CostCredits: 12},
-	} {
-		if err := pub.PublishCall(ctx, event); err != nil {
-			t.Fatalf("publish: %v", err)
-		}
+	seedLiveFeedEvents(t, env.rdb, 3)
+	minute := billing.FeedWindowMinute(fixed)
+	if err := env.rdb.Set(ctx, billing.FeedWindowCallsKey(minute), 3, 0).Err(); err != nil {
+		t.Fatalf("seed calls bucket: %v", err)
+	}
+	if err := env.rdb.Set(ctx, billing.FeedWindowCostKey(minute), 42, 0).Err(); err != nil {
+		t.Fatalf("seed cost bucket: %v", err)
 	}
 
 	rr := env.get("/api/home/live-feed?limit=2")

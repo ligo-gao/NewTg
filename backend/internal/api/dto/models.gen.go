@@ -4535,10 +4535,11 @@ type LiveFeedEvent struct {
 type LiveFeedList struct {
 	Events []LiveFeedEvent `json:"events"`
 
-	// Window 聚合条读数。窗口冻结为**最近 5 分钟滚动窗口**：服务端按分钟桶累加
-	// 最近 5 个桶（当前分钟 + 前 4 个）。calls 计所有已发布事件；cost_credits
-	// 只计成功事件的整数积分（失败/退款不计费用）。这是平台级聚合，不含
-	// 任何单条调用费用，也不含用户/渠道维度。
+	// Window 聚合条读数。窗口冻结为**近 60 秒**（F-09-02）：服务端按分钟桶累加
+	// 当前分钟桶，属于 0–60s 近似（跨分钟时读数从整分钟重置到新桶）。
+	// calls 计所有已发布事件；cost_credits 只计成功事件的整数积分
+	// （失败/退款不计费用）。这是平台级聚合，不含任何单条调用费用，也不含
+	// 用户/渠道维度。
 	Window LiveFeedWindow `json:"window"`
 }
 
@@ -4548,15 +4549,16 @@ type LiveFeedStatus string
 // LiveFeedUpstream 渠道类型映射的协议族；无来源为 unknown。
 type LiveFeedUpstream string
 
-// LiveFeedWindow 聚合条读数。窗口冻结为**最近 5 分钟滚动窗口**：服务端按分钟桶累加
-// 最近 5 个桶（当前分钟 + 前 4 个）。calls 计所有已发布事件；cost_credits
-// 只计成功事件的整数积分（失败/退款不计费用）。这是平台级聚合，不含
-// 任何单条调用费用，也不含用户/渠道维度。
+// LiveFeedWindow 聚合条读数。窗口冻结为**近 60 秒**（F-09-02）：服务端按分钟桶累加
+// 当前分钟桶，属于 0–60s 近似（跨分钟时读数从整分钟重置到新桶）。
+// calls 计所有已发布事件；cost_credits 只计成功事件的整数积分
+// （失败/退款不计费用）。这是平台级聚合，不含任何单条调用费用，也不含
+// 用户/渠道维度。
 type LiveFeedWindow struct {
-	// Calls 近 5 分钟调用次数（成功与失败都计入）。
+	// Calls 近 60 秒调用次数（成功与失败都计入）。
 	Calls int64 `json:"calls"`
 
-	// CostCredits 近 5 分钟成功调用的消耗积分（整数，取结算事实）。
+	// CostCredits 近 60 秒成功调用的消耗积分（整数，取结算事实）。
 	CostCredits int64 `json:"cost_credits"`
 }
 

@@ -768,11 +768,11 @@ paths:
         `site.home_blocks.live_feed=false` 时返回 404。响应 `Cache-Control:
         no-store`。B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
 
-        响应顶层 `window` 是聚合条：最近 **5 分钟滚动窗口**（按分钟桶汇总
-        当前分钟 + 前 4 个桶），calls 计所有事件，cost_credits 只计成功事件
-        的整数积分。逐行事件按裁决 A-1 不含任何费用字段。Redis 聚合桶
-        读取失败时 `window` 降级为 `{calls:0,cost_credits:0}` 且事件照常
-        返回；list 本身不可用时仍按下方 503 口径处理。
+        响应顶层 `window` 是聚合条：**近 60 秒**（按当前分钟桶汇总，0–60s
+        近似），calls 计所有事件，cost_credits 只计成功事件的整数积分。
+        逐行事件按裁决 A-1 不含任何费用字段。Redis 聚合桶读取失败时
+        `window` 降级为 `{calls:0,cost_credits:0}` 且事件照常返回；list
+        本身不可用时仍按下方 503 口径处理。
       security: []
       parameters:
         - name: limit

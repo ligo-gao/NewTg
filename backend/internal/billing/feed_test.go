@@ -222,19 +222,23 @@ func TestRedisFeedPublisherMaintainsWindowBuckets(t *testing.T) {
 	}
 }
 
-// 读取侧：只汇总当前分钟 + 前 4 个桶；窗口外与未来桶一律忽略。
-func TestReadFeedWindowRollsAcrossMinutesAndIgnoresOutside(t *testing.T) {
+// 读取侧：只汇总当前分钟桶（F-09-02 近 60 秒近似）；前一分钟、更早与
+// 未来桶一律忽略。
+func TestReadFeedWindowOnlyCountsCurrentMinuteBucket(t *testing.T) {
 	_, rdb := newFeedWindowTestRedis(t)
 	ctx := context.Background()
 	fixed := time.Date(2026, 10, 20, 4, 7, 30, 0, time.UTC)
 	minute := FeedWindowMinute(fixed)
 
+	if FeedWindowMinutes != 1 {
+		t.Fatalf("FeedWindowMinutes = %d, want 1（近 60 秒冻结语义）", FeedWindowMinutes)
+	}
+
 	// minute → (calls, cost)
 	seed := map[int64][2]int64{
-		minute:     {2, 70},   // 当前分钟
-		minute - 1: {1, 30},   // 前 1 分钟
-		minute - 4: {5, 100},  // 窗口最后一桶（前 4 分钟）
-		minute - 5: {99, 999}, // 窗口外（前 5 分钟）
+		minute:     {2, 70},   // 当前分钟：唯一计入
+		minute - 1: {99, 999}, // 上一分钟：窗口外
+		minute - 4: {5, 100},  // 更早：窗口外
 		minute + 1: {7, 7},    // 未来桶，不可信也不计入
 	}
 	for offset, values := range seed {
@@ -250,8 +254,8 @@ func TestReadFeedWindowRollsAcrossMinutesAndIgnoresOutside(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
-	if window.Calls != 8 || window.CostCredits != 200 {
-		t.Fatalf("window = %+v, want calls=8 cost=200（仅最近 5 个桶）", window)
+	if window.Calls != 2 || window.CostCredits != 70 {
+		t.Fatalf("window = %+v, want calls=2 cost=70（仅当前分钟桶）", window)
 	}
 }
 
