@@ -251,6 +251,26 @@ export function PerformancePage() {
     return () => window.removeEventListener('online', clear)
   }, [])
 
+  // 写失败后另外两条恢复路径都可能不可达：「写成功」只有在写按钮可用时才会
+  // 发生，而三个写按钮已因离线被禁用；服务端不可达但 `navigator.onLine` 仍为
+  // true 时浏览器也不会派发 online 事件。若只依赖它们，页面会永久锁在离线态，
+  // 即便点「刷新」后三个 GET 全部成功。任一 GET 成功即证明服务端可达，因此
+  // 刷新与卡片「重试」成功后同样清除写离线态（dataUpdatedAt 只在成功取数时
+  // 前进，失败不会误清除）。
+  useEffect(() => {
+    if (
+      statsQuery.dataUpdatedAt > 0 ||
+      logsQuery.dataUpdatedAt > 0 ||
+      recentQuery.dataUpdatedAt > 0
+    ) {
+      setWriteOffline(false)
+    }
+  }, [
+    statsQuery.dataUpdatedAt,
+    logsQuery.dataUpdatedAt,
+    recentQuery.dataUpdatedAt,
+  ])
+
   // 离线 Toast 只在「在线 → 离线」的跳变时播报一次；重复渲染不重复提醒。
   const wasOfflineRef = useRef(!online)
   useEffect(() => {

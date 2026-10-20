@@ -694,6 +694,92 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
   })
 
+  // 定向复核 MEDIUM：写失败后三个写按钮被禁用，写成功不可达；服务端不可达
+  // 但 navigator 仍在线时也不会触发 online 事件。「刷新」GET 成功必须能解锁。
+  it('recovers from the write-offline state when refresh GETs succeed', async () => {
+    const capture = installPage()
+    server.use(
+      http.delete(`${ORIGIN}/api/performance/disk-cache`, () => {
+        capture.disk.calls += 1
+        return HttpResponse.error()
+      }),
+    )
+    await renderPage()
+    const user = userEvent.setup()
+
+    // navigator 保持在线：这条路径不会派发 online 事件，只能靠 GET 成功恢复。
+    expect(window.navigator.onLine).toBe(true)
+    await confirmDiskClear(user)
+
+    await screen.findByTestId('performance-offline-snapshot')
+    expect(
+      (screen.getByRole('button', {
+        name: 'Clear inactive disk cache',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+    expect(capture.disk.calls).toBe(1)
+
+    const statsBefore = capture.gets.stats
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    // 三个 GET 都重新取数且成功。
+    await waitFor(() => expect(capture.gets.stats).toBe(statsBefore + 1))
+    await waitFor(() =>
+      expect(screen.queryByTestId('performance-offline-snapshot')).toBeNull(),
+    )
+    for (const name of [
+      'Clear inactive disk cache',
+      'Run runtime GC',
+      'Clean up log files',
+    ]) {
+      await waitFor(() =>
+        expect(
+          (screen.getByRole('button', { name }) as HTMLButtonElement).disabled,
+        ).toBe(false),
+      )
+    }
+    // 恢复只来自成功取数，没有额外重发写请求。
+    expect(capture.disk.calls).toBe(1)
+  })
+
+  it('keeps the write-offline state when the refresh GETs also fail', async () => {
+    const capture = installPage()
+    server.use(
+      http.delete(`${ORIGIN}/api/performance/disk-cache`, () => {
+        capture.disk.calls += 1
+        return HttpResponse.error()
+      }),
+    )
+    await renderPage()
+    const user = userEvent.setup()
+
+    await confirmDiskClear(user)
+    await screen.findByTestId('performance-offline-snapshot')
+
+    // 首次取数成功后才把 GET 切到传输失败，模拟「页面还在线、刷新时服务端已不可达」。
+    let failedGets = 0
+    server.use(
+      http.get(`${ORIGIN}/api/performance/stats`, () => {
+        failedGets += 1
+        return HttpResponse.error()
+      }),
+      http.get(`${ORIGIN}/api/performance/logs`, () => HttpResponse.error()),
+      http.get(`${ORIGIN}/api/performance/recent-operations`, () =>
+        HttpResponse.error(),
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    // 取数失败不构成可达证据：离线态与禁用保持。
+    await waitFor(() => expect(failedGets).toBe(1))
+    expect(screen.getByTestId('performance-offline-snapshot')).toBeTruthy()
+    expect(
+      (screen.getByRole('button', {
+        name: 'Run runtime GC',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+  })
+
   // -------------------------------------------------------------------------
   // L5：写请求钉住页面展示实例
   // -------------------------------------------------------------------------
