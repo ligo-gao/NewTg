@@ -131,7 +131,7 @@ func TestWebhookDoesNotFollowRedirects(t *testing.T) {
 
 	sender := testSender(webhookConfig(map[string]any{KeyWebhookURL: first.URL}), time.Unix(1700000000, 0))
 	// 即使注入的客户端默认会跟随重定向，sender 也必须强制不跟随。
-	sender.Client = &http.Client{Timeout: 2 * time.Second}
+	sender.httpClient = &http.Client{Timeout: 2 * time.Second}
 	result, err := sender.Send(context.Background(), []byte(`{}`), "balance_low", "")
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -231,6 +231,85 @@ func TestWebhookResolvesOnceAndDialsValidatedIP(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("loopback 测试服务器命中 %d 次，期望 0（不得拨向第二次解析结果）", got)
+	}
+}
+
+// TestWebhookBlockedAtConnectIsSanitized 是 F1 的回归：拨号期守卫拒绝时，
+// 错误必须保留 ErrWebhookBlockedTarget 分类，但**不得**携带底层 *url.Error
+// （它会拼出含 query 的完整 URL）。旧实现直接 return err，测试 URL 里的
+// token 就随 422 响应体泄露给调用方。
+func TestWebhookBlockedAtConnectIsSanitized(t *testing.T) {
+	sender := NewWebhookSender(webhookConfig(map[string]any{
+		// 不用 AllowPrivateTargets、也不注入客户端：走内置 client + guardedDial，
+		// 拨号时解析器给出私网地址，守卫在连接前拒绝。
+		KeyWebhookURL: "https://rebind.example.com/hook?token=super-secret-value",
+	}), openSealer{})
+	sender.Timeout = 2 * time.Second
+	sender.Resolve = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.8")}, nil
+	}
+
+	_, err := sender.Send(context.Background(), []byte(`{}`), "balance_low", "")
+	if !errors.Is(err, ErrWebhookBlockedTarget) {
+		t.Fatalf("err = %v，期望 ErrWebhookBlockedTarget", err)
+	}
+	for _, leak := range []string{"super-secret-value", "token=", "/hook", "rebind.example.com", "https://"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("拨号期拒绝的错误文本泄露 %q: %v", leak, err)
+		}
+	}
+}
+
+// TestWebhookDialsValidatedIP 是 F2 的补强：用原始 TCP listener 的 accept
+// 计数直接证明连接**落在已校验 IP 上**。若实现把主机名交给 DialContext，
+// 解析会得到 rebind.example.com 的真实公网地址（或失败），listener 永远
+// 收不到连接。AllowPrivateTargets=true 让这次合法的私网解析不被守卫拦下，
+// 于是「是否真的拨了 127.0.0.1」成为唯一变量。
+func TestWebhookDialsValidatedIP(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	var accepted int32
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			atomic.AddInt32(&accepted, 1)
+			// 立刻关闭：客户端 TLS 握手失败，测试无需真正跑 TLS。
+			_ = conn.Close()
+		}
+	}()
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+
+	var calls int32
+	sender := NewWebhookSender(webhookConfig(map[string]any{
+		KeyWebhookURL: "https://rebind.example.com:" + port + "/hook",
+	}), openSealer{})
+	sender.AllowPrivateTargets = true
+	sender.Timeout = 2 * time.Second
+	sender.Resolve = func(context.Context, string) ([]net.IP, error) {
+		atomic.AddInt32(&calls, 1)
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+
+	// 明文 listener 接不住 TLS 握手 → 传输失败；关键断言是下方的计数。
+	if _, sendErr := sender.Send(context.Background(), []byte(`{}`), "balance_low", ""); !errors.Is(sendErr, ErrWebhookTransport) {
+		t.Fatalf("err = %v，期望 ErrWebhookTransport（TLS 握手对端不是 TLS）", sendErr)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("解析次数 = %d，期望 1（拨号必须复用这次解析结果）", got)
+	}
+	if got := atomic.LoadInt32(&accepted); got != 1 {
+		t.Fatalf("listener accept 次数 = %d，期望 1（说明 TCP 连接确实拨向了已校验的 127.0.0.1）", got)
 	}
 }
 

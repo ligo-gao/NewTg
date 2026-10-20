@@ -86,9 +86,12 @@ type WebhookSender struct {
 
 	// Timeout 是单次投递上限；零值用 WebhookDefaultTimeout。
 	Timeout time.Duration
-	// Client 是测试缝隙；nil 时使用内置客户端（直连、禁用代理、拨号前
-	// 再次校验目标 IP）。注入的客户端仍会被强制加上「不跟随 3xx」策略。
-	Client *http.Client
+	// httpClient 是**仅测试用的接缝**：测试用它注入带 TLS 配置的客户端，
+	// 生产一律保持 nil，由 client() 构造内置客户端（直连、禁用代理、拨号前
+	// 再次校验目标 IP）。注入的客户端不经过 guardedDial，SSRF 守卫只剩
+	// deliver 里的发送前解析这一次，安全性弱于内置客户端——因此故意不导出，
+	// 包外代码无法设置（F3）。
+	httpClient *http.Client
 	// Resolve 是 SSRF 守卫的 DNS 缝隙；nil 时用系统解析器。
 	Resolve func(ctx context.Context, host string) ([]net.IP, error)
 	// Now 是时间戳缝隙（签名固定向量测试）。
@@ -198,7 +201,7 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 		// 的 IP」，这里不再预先解析：发送前解析 + 拨号时再解析就是 DNS
 		// rebinding 的窗口（两次解析可能给出不同答案）。
 		// 注入的客户端不经过 guardedDial，只能保留这一次发送前校验。
-		if s.Client != nil {
+		if s.httpClient != nil {
 			if err := s.guardHost(ctx, target.Hostname()); err != nil {
 				return WebhookResult{}, err
 			}
@@ -229,8 +232,12 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 		}
 		// 拨号阶段的守卫拒绝（解析结果在拨号时落入禁区）必须保留分类：
 		// 调用方据此返回 422 而不是把「目标被拒绝」误报成端点故障。
+		//
+		// 但**不得**原样返回 err：http.Client.Do 包的是 *url.Error，其 Error()
+		// 会拼上完整 URL（含 query 里的端点 token），而拨号期拒绝正是攻击者/
+		// 误配置最容易踩到的路径。重新包装成不含底层错误的哨兵（F1）。
 		if errors.Is(err, ErrWebhookBlockedTarget) {
-			return WebhookResult{}, err
+			return WebhookResult{}, fmt.Errorf("%w: target rejected at connect", ErrWebhookBlockedTarget)
 		}
 		// 不包装底层错误：net/url.Error 含完整 URL。
 		return WebhookResult{}, fmt.Errorf("%w: transport error", ErrWebhookTransport)
@@ -250,9 +257,9 @@ func (s *WebhookSender) client() *http.Client {
 	if timeout <= 0 {
 		timeout = WebhookDefaultTimeout
 	}
-	if s.Client != nil {
+	if s.httpClient != nil {
 		// 注入的客户端按值复制后强制策略；不缓存，测试可在多次投递间替换。
-		client := *s.Client
+		client := *s.httpClient
 		if client.Timeout <= 0 {
 			client.Timeout = timeout
 		}
