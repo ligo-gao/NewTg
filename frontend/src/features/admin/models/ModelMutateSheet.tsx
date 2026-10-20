@@ -22,9 +22,19 @@ type ParameterType = ModelMeta['parameters'][number]['type']
 
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
 const DESCRIPTION_MAX = 512
+// 与 backend/internal/store/model_meta_validate.go 的 maxModelMetaDisplayNameRunes
+// 对齐：公开卡片标题行是 varchar(64)。
+const DISPLAY_NAME_MAX = 64
 const TAGS_MAX = 10
+// 与 maxModelMetaTagRunes 对齐：单个标签 trim 后 1–32 字符。
+const TAG_MAX_RUNES = 32
 const ICON_MAX = 128
 const KNOWLEDGE_CUTOFF_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
+
+/** `String.length` 数的是 UTF-16 码元；服务端按 rune 校验，前端必须同口径。 */
+function runeLength(value: string): number {
+  return Array.from(value).length
+}
 
 const CAPABILITIES: readonly Capability[] = [
   'text',
@@ -185,6 +195,15 @@ export function ModelMutateSheet({
   function addTag(): void {
     const value = tagDraft.trim()
     if (value === '') return
+    // 服务端 trim 后要求 1–32 rune；超长标签若放进选择集只会在保存时
+    // 被整单拒绝，不如在这里就地拦下。
+    if (runeLength(value) > TAG_MAX_RUNES) {
+      setFieldErrors((current) => ({
+        ...current,
+        tags: t('admin.models.error_tag_length', { count: TAG_MAX_RUNES }),
+      }))
+      return
+    }
     if (tags.length >= TAGS_MAX) {
       setFieldErrors((current) => ({
         ...current,
@@ -227,6 +246,11 @@ export function ModelMutateSheet({
     if (mode === 'create' && !MODEL_NAME_PATTERN.test(modelName.trim())) {
       errors.model_name = t('admin.models.error_model_name')
     }
+    if (runeLength(displayName) > DISPLAY_NAME_MAX) {
+      errors.display_name = t('admin.models.error_display_name', {
+        count: DISPLAY_NAME_MAX,
+      })
+    }
     if (description.length > DESCRIPTION_MAX) {
       errors.description = t('admin.models.error_description', { count: DESCRIPTION_MAX })
     }
@@ -235,12 +259,15 @@ export function ModelMutateSheet({
     }
     if (tags.length > TAGS_MAX) {
       errors.tags = t('admin.models.tags_limit', { count: TAGS_MAX })
+    } else if (tags.some((tag) => runeLength(tag.trim()) > TAG_MAX_RUNES)) {
+      errors.tags = t('admin.models.error_tag_length', { count: TAG_MAX_RUNES })
     }
     if (knowledgeCutoff.trim() !== '' && !KNOWLEDGE_CUTOFF_PATTERN.test(knowledgeCutoff.trim())) {
       errors.knowledge_cutoff = t('admin.models.error_knowledge_cutoff')
     }
 
     const endpointObject: Record<string, Method[]> = {}
+    const seenPaths = new Set<string>()
     for (const row of endpoints) {
       const path = row.path.trim()
       if (path === '' && row.methods.length === 0) continue
@@ -252,6 +279,13 @@ export function ModelMutateSheet({
         errors.endpoints = t('admin.models.error_endpoint_methods')
         break
       }
+      // 对象键会静默覆盖：重复 path 行若直接写进 endpointObject，后一行
+      // 会悄悄吃掉前一行的方法集合。保存前必须报错。
+      if (seenPaths.has(path)) {
+        errors.endpoints = t('admin.models.error_endpoint_duplicate', { path })
+        break
+      }
+      seenPaths.add(path)
       endpointObject[path] = row.methods
     }
 
@@ -324,6 +358,7 @@ export function ModelMutateSheet({
         setFieldErrors,
         setFormError,
         setConflict,
+        mode,
       })
     } finally {
       setSubmitting(false)
@@ -362,7 +397,8 @@ export function ModelMutateSheet({
         <TextField
           label={t('admin.models.field_display_name')}
           value={displayName}
-          maxLength={128}
+          maxLength={DISPLAY_NAME_MAX}
+          error={fieldErrors.display_name}
           onChange={(event) => {
             setDisplayName(event.target.value)
           }}
@@ -453,6 +489,7 @@ export function ModelMutateSheet({
             <input
               aria-label={t('admin.models.field_tags')}
               className="h-10 flex-1 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              maxLength={TAG_MAX_RUNES}
               value={tagDraft}
               onChange={(event) => {
                 setTagDraft(event.target.value)
@@ -840,7 +877,27 @@ interface WriteErrorOptions {
   setFieldErrors: Dispatch<SetStateAction<Record<string, string>>>
   setFormError: (value: string | undefined) => void
   setConflict: (value: boolean) => void
+  /** 创建与编辑对 409 的语义不同：创建没有乐观锁版本。 */
+  mode: 'create' | 'edit'
 }
+
+/**
+ * 抽屉里真正渲染了行内错误的字段。`problem.fields` 可能包含这些集合之外的
+ * 列（capabilities / parameters / status…），只写进 state 不渲染会让 422
+ * 变成「点了保存什么都没发生」，必须汇总到表单级提示。
+ */
+const RENDERED_MODEL_FIELDS = new Set<string>([
+  'model_name',
+  'display_name',
+  'description',
+  'icon',
+  'vendor_id',
+  'tags',
+  'endpoints',
+  'context_length',
+  'max_output',
+  'knowledge_cutoff',
+])
 
 /**
  * 目录写操作的字段级错误映射。服务端把列名放在 Problem 的 `fields`
@@ -849,13 +906,22 @@ interface WriteErrorOptions {
  */
 export function handleWriteError(
   error: unknown,
-  { t, queryClient, setFieldErrors, setFormError, setConflict }: WriteErrorOptions,
+  { t, queryClient, setFieldErrors, setFormError, setConflict, mode }: WriteErrorOptions,
 ): void {
   if (!(error instanceof ApiError)) {
     setFormError(t('admin.models.action_error'))
     return
   }
   if (error.kind === 'conflict') {
+    if (mode === 'create') {
+      // 创建路径没有 `updated_at` 乐观锁，409 只可能是重名（唯一索引）。
+      // 复用编辑态的「记录已被他人修改」文案会把管理员引向错误的排查方向。
+      setFieldErrors((current) => ({
+        ...current,
+        model_name: t('admin.models.error_model_name_exists'),
+      }))
+      return
+    }
     setConflict(true)
     // 409 表示行已被别处修改：界面上的 updated_at 已过期，必须重查，
     // 否则再次保存会反复撞同一个版本（web-00 §5.6）。
@@ -864,13 +930,19 @@ export function handleWriteError(
     return
   }
   if (error.kind === 'validation') {
+    const fields = error.fields ?? []
     const errors: Record<string, string> = {}
-    for (const field of error.fields ?? []) {
-      const key = fieldMessageKey(field)
-      errors[field] = key === undefined ? t('admin.models.error_field', { field }) : t(key)
+    for (const field of fields) {
+      errors[field] = fieldMessage(field, t)
     }
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors)
+      const hidden = fields.filter((field) => !RENDERED_MODEL_FIELDS.has(field))
+      if (hidden.length > 0) {
+        setFormError(
+          t('admin.models.error_fields_summary', { fields: hidden.join(', ') }),
+        )
+      }
       return
     }
     setFormError(error.detail ?? t('admin.models.action_error'))
@@ -883,25 +955,28 @@ export function handleWriteError(
   setFormError(error.detail ?? t('admin.models.action_error'))
 }
 
-function fieldMessageKey(field: string): string | undefined {
+function fieldMessage(field: string, t: TranslateFn): string {
   switch (field) {
     case 'model_name':
-      return 'admin.models.error_model_name'
+      return t('admin.models.error_model_name')
+    case 'display_name':
+      // 带占位符的文案必须在这里补参数；只返回词典键会渲染出字面量 {count}。
+      return t('admin.models.error_display_name', { count: DISPLAY_NAME_MAX })
     case 'vendor_id':
-      return 'admin.models.error_vendor'
+      return t('admin.models.error_vendor')
     case 'endpoints':
-      return 'admin.models.error_endpoints'
+      return t('admin.models.error_endpoints')
     case 'tags':
-      return 'admin.models.error_tags'
+      return t('admin.models.error_tags')
     case 'description':
-      return 'admin.models.error_description_generic'
+      return t('admin.models.error_description_generic')
     case 'knowledge_cutoff':
-      return 'admin.models.error_knowledge_cutoff'
+      return t('admin.models.error_knowledge_cutoff')
     case 'context_length':
     case 'max_output':
-      return 'admin.models.error_non_negative'
+      return t('admin.models.error_non_negative')
     default:
-      return undefined
+      return t('admin.models.error_field', { field })
   }
 }
 

@@ -75,6 +75,35 @@ describe('parseProblem', () => {
     expect(error.fields).toEqual(['prompt_price', 'billing_expr'])
   })
 
+  it('parses whitelisted catalog extension members', () => {
+    const error = parseProblem({
+      status: 422,
+      body: {
+        title: 'Channel models cannot be emptied',
+        channel_ids: [12, 19],
+        reference_count: 3,
+        conflicts: [
+          { vendor_id: 4, current_version: 'sha256:abc', ignored: 'x' },
+          { vendor_id: 'bad' },
+        ],
+      },
+    })
+
+    expect(error.channel_ids).toEqual([12, 19])
+    expect(error.reference_count).toBe(3)
+    expect(error.conflicts).toEqual([{ vendor_id: 4, current_version: 'sha256:abc' }])
+  })
+
+  it('drops malformed channel_ids instead of surfacing partial values', () => {
+    const error = parseProblem({
+      status: 422,
+      body: { channel_ids: [1, '2'], reference_count: 'many' },
+    })
+
+    expect(error.channel_ids).toBeUndefined()
+    expect(error.reference_count).toBeUndefined()
+  })
+
   it('treats a network failure (status 0) as offline', () => {
     const error = parseProblem({ status: 0 })
 

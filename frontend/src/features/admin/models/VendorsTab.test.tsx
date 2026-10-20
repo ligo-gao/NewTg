@@ -47,6 +47,8 @@ interface InstallOptions {
   items?: Vendor[]
   total?: number
   applyStatus?: number
+  deleteStatus?: number
+  deleteReferenceCount?: number
   onApply?: (body: Record<string, unknown>) => void
   onPreview?: (body: Record<string, unknown>) => void
 }
@@ -55,6 +57,8 @@ function installHandlers({
   items = [vendorRow(), vendorRow({ id: 2, name: 'Anthropic', description: null, model_count: 3 })],
   total = 2,
   applyStatus = 200,
+  deleteStatus = 204,
+  deleteReferenceCount,
   onApply,
   onPreview,
 }: InstallOptions = {}) {
@@ -116,7 +120,23 @@ function installHandlers({
       }
       return HttpResponse.json({ affected: 5 })
     }),
-    http.delete(`${ORIGIN}/api/vendors/:id`, () => new HttpResponse(null, { status: 204 })),
+    http.delete(`${ORIGIN}/api/vendors/:id`, () => {
+      if (deleteStatus !== 204) {
+        const body: Record<string, unknown> = {
+          type: 'https://newtg.dev/problems/vendor_referenced',
+          title: 'Vendor is referenced',
+          detail: 'the vendor is referenced by model metadata',
+        }
+        if (deleteReferenceCount !== undefined) {
+          body.reference_count = deleteReferenceCount
+        }
+        return HttpResponse.json(body, {
+          status: deleteStatus,
+          headers: { 'Content-Type': 'application/problem+json' },
+        })
+      }
+      return new HttpResponse(null, { status: 204 })
+    }),
   )
 }
 
@@ -223,5 +243,26 @@ describe('vendors tab', () => {
     const wizard = await screen.findByRole('dialog', { name: 'Bulk operations' })
     expect((within(wizard).getByLabelText('Operation') as HTMLSelectElement).value).toBe('merge')
     expect(within(wizard).getByText('Anthropic')).toBeTruthy()
+  })
+
+  it('uses the server reference_count when a delete races with a new reference', async () => {
+    installHandlers({ deleteStatus: 409, deleteReferenceCount: 4 })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('OpenAI')
+
+    // OpenAI 在列表里没有模型（删除按钮可用），但服务端在删除前一刻发现了 4 条引用。
+    const [deleteOpenAI] = screen.getAllByRole('button', { name: 'Delete' })
+    await user.click(deleteOpenAI!)
+    const dialog = await screen.findByRole('alertdialog', { name: 'Delete vendor?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => {
+      expect(
+        useToastStore
+          .getState()
+          .toasts.some((toast) => toast.message.includes('referenced by 4 models')),
+      ).toBe(true)
+    })
   })
 })

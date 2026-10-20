@@ -17,6 +17,8 @@ import { invalidateCatalog } from './ModelMutateSheet'
 type ModelSyncPreview = components['schemas']['ModelSyncPreview']
 type ModelSyncApplyRequest = components['schemas']['ModelSyncApplyRequest']
 
+const SYNC_PREVIEW_KEY = ['admin-models-sync-preview'] as const
+
 export interface SyncUpstreamDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -47,13 +49,22 @@ export function SyncUpstreamDialog({
   const [applyError, setApplyError] = useState<string | undefined>(undefined)
 
   const preview = useQuery({
-    queryKey: ['admin-models-sync-preview'],
+    queryKey: SYNC_PREVIEW_KEY,
     enabled: open,
     retry: false,
     queryFn: async () => {
       return requireData(await apiClient.GET('/api/models/sync/preview'))
     },
   })
+
+  // 关闭（含应用成功后的自动关闭）即丢弃缓存：下一次打开必须重新预览。
+  // 否则 React Query 会先把旧清单当成 `data` 渲染出来，管理员可能在
+  // 「看起来还能用」的过期勾选上做决定（任务书 §1「409 提示重新预览」）。
+  useEffect(() => {
+    if (!open) {
+      queryClient.removeQueries({ queryKey: SYNC_PREVIEW_KEY })
+    }
+  }, [open, queryClient])
 
   // 新预览默认勾选全部可写条目（create + update）；blocked 不进入选择集。
   useEffect(() => {
@@ -302,7 +313,11 @@ export function SyncUpstreamDialog({
             ) : null}
 
             {conflict ? (
-              <Button variant="secondary" onClick={() => void preview.refetch()}>
+              <Button
+                variant="secondary"
+                disabled={preview.isFetching}
+                onClick={() => void preview.refetch()}
+              >
                 {t('admin.models.sync_repreview')}
               </Button>
             ) : null}
@@ -312,7 +327,9 @@ export function SyncUpstreamDialog({
                 {t('common.action.cancel')}
               </Button>
               <Button
-                disabled={apply.isPending || totalSelected === 0 || conflict}
+                disabled={
+                  apply.isPending || preview.isFetching || totalSelected === 0 || conflict
+                }
                 onClick={() => apply.mutate(data)}
               >
                 {t('admin.models.sync_apply', { count: totalSelected })}

@@ -74,6 +74,8 @@ interface InstallOptions {
   createStatus?: number
   createFields?: string[]
   updateStatus?: number
+  batchStatus?: number
+  batchChannelIds?: number[]
   syncPreviewStatus?: number
   syncApplyStatus?: number
   recordList?: (params: URLSearchParams) => void
@@ -87,6 +89,8 @@ function installHandlers({
   createStatus = 201,
   createFields,
   updateStatus = 200,
+  batchStatus = 200,
+  batchChannelIds,
   syncPreviewStatus = 200,
   syncApplyStatus = 200,
   recordList,
@@ -143,15 +147,27 @@ function installHandlers({
       return HttpResponse.json(modelRow())
     }),
     http.delete(`${ORIGIN}/api/models/:id`, () => new HttpResponse(null, { status: 204 })),
-    http.post(`${ORIGIN}/api/models/batch-delete`, () =>
-      HttpResponse.json({
+    http.post(`${ORIGIN}/api/models/batch-delete`, () => {
+      if (batchStatus !== 200) {
+        const body: Record<string, unknown> = {
+          type: 'https://newtg.dev/problems/channel_models_empty',
+          title: 'Channel models cannot be emptied',
+          detail: 'removing these models would leave the listed channels empty',
+        }
+        if (batchChannelIds !== undefined) body.channel_ids = batchChannelIds
+        return HttpResponse.json(body, {
+          status: batchStatus,
+          headers: { 'Content-Type': 'application/problem+json' },
+        })
+      }
+      return HttpResponse.json({
         requested: 1,
         deleted: 1,
         channels_updated: 0,
         pricing_deleted: 0,
         group_pricing_deleted: 0,
-      }),
-    ),
+      })
+    }),
     http.get(`${ORIGIN}/api/models/sync/preview`, () => {
       if (syncPreviewStatus !== 200) {
         return HttpResponse.json(
@@ -324,6 +340,78 @@ describe('models tab', () => {
     await waitFor(() => {
       expect(listCalls).toBeGreaterThan(before)
     })
+  })
+
+  it('maps a create-time 409 to the duplicate-name field instead of the concurrency banner', async () => {
+    installHandlers({ createStatus: 409, createFields: ['model_name'] })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'New model' }))
+    const sheet = await screen.findByRole('dialog', { name: 'New model' })
+    await user.type(within(sheet).getByLabelText('Model name'), 'openai/gpt-5')
+    await user.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(sheet).findByText('A model with this name already exists.'),
+    ).toBeTruthy()
+    expect(within(sheet).queryByText(/changed elsewhere/)).toBeNull()
+  })
+
+  it('renders a server display_name 422 inline and summarises unrendered fields', async () => {
+    installHandlers({ createStatus: 422, createFields: ['display_name', 'parameters'] })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'New model' }))
+    const sheet = await screen.findByRole('dialog', { name: 'New model' })
+    await user.type(within(sheet).getByLabelText('Model name'), 'new/model')
+    await user.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(sheet).findByText('Display name must be at most 64 characters.'),
+    ).toBeTruthy()
+    // parameters 没有行内输入位：必须汇总到表单级，否则 422 不可见。
+    expect(
+      within(sheet).getByText('Some fields were rejected: parameters.'),
+    ).toBeTruthy()
+  })
+
+  it('rejects a 65-rune display_name before submitting', async () => {
+    installHandlers({
+      items: [modelRow({ display_name: 'x'.repeat(65) })],
+    })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit model' })
+    await user.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    expect(
+      await within(sheet).findByText('Display name must be at most 64 characters.'),
+    ).toBeTruthy()
+  })
+
+  it('lists the channel ids when batch delete is rejected with channel_ids', async () => {
+    installHandlers({ batchStatus: 422, batchChannelIds: [12, 19] })
+    await renderWithProviders(<Harness />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByText('openai/gpt-5')
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select all models on this page' }))
+    await user.click(screen.getByRole('button', { name: /Delete selected/ }))
+    const sheet = await screen.findByRole('dialog', { name: /Delete 1 models/ })
+    await user.click(within(sheet).getByRole('button', { name: 'Delete (1)' }))
+
+    expect(
+      await within(sheet).findByText(
+        'Cannot delete: channels #12, #19 would be left without any supported model.',
+      ),
+    ).toBeTruthy()
   })
 
   it('disables “remove from channels” for non-exact rules and locks clear pricing without permission', async () => {

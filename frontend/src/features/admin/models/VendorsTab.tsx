@@ -133,12 +133,22 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
       await invalidateVendors(queryClient)
     },
     onError: (error) => {
-      push({ tone: 'error', message: vendorActionError(error, t) })
-      // 409 的常见原因是删除前一刻新增了引用（引用计数在列表里已过期）。
+      // 409 的常见原因是删除前一刻新增了引用（列表里的 model_count 已过期）。
+      // 服务端在 problem.reference_count 里给出最新计数，直接用真实数字提示，
+      // 而不是让管理员回到列表猜「到底还有几个模型」。
       if (error instanceof ApiError && error.kind === 'conflict') {
+        push({
+          tone: 'error',
+          message:
+            error.reference_count !== undefined
+              ? t('admin.vendors.delete_referenced', { count: error.reference_count })
+              : t('admin.vendors.conflict'),
+        })
         setDeleteTarget(null)
         void invalidateVendors(queryClient)
+        return
       }
+      push({ tone: 'error', message: vendorActionError(error, t) })
     },
   })
 

@@ -217,8 +217,9 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
       await invalidateCatalog(queryClient)
     },
     onError: (error) => {
-      setBatchError(catalogActionError(error, t))
-      push({ tone: 'error', message: catalogActionError(error, t) })
+      const message = batchDeleteError(error, t)
+      setBatchError(message)
+      push({ tone: 'error', message })
       // 404/409/422 之后列表与派生字段可能已经不一致；刷新但不自动重试
       // （web-00 §5.6：确定性拒绝不重放）。
       if (
@@ -749,4 +750,22 @@ function catalogActionError(error: unknown, t: TranslateFn): string {
     if (error.kind === 'forbidden') return t('admin.models.forbidden')
   }
   return t('admin.models.action_error')
+}
+
+/**
+ * 批量删除的 422 有两种：空选择/超限（无扩展字段）与「渠道将没有可用模型」
+ * （`channel_ids`）。后者必须把渠道号列出来，否则管理员只知道被拒绝，不知道
+ * 该先解除哪个渠道的最后一个模型。
+ */
+function batchDeleteError(error: unknown, t: TranslateFn): string {
+  if (
+    error instanceof ApiError &&
+    error.kind === 'validation' &&
+    error.channel_ids !== undefined &&
+    error.channel_ids.length > 0
+  ) {
+    const channels = error.channel_ids.map((id) => `#${id}`).join(', ')
+    return t('admin.models.batch_channels_empty', { channels })
+  }
+  return catalogActionError(error, t)
 }
