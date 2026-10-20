@@ -96,6 +96,14 @@ type AnnouncementWebhookSender interface {
 	Send(ctx context.Context, payload []byte, event, eventID string) (notify.WebhookResult, error)
 }
 
+// AnnouncementInAppNotifier 是 A5 站内通知投递接缝（生产 *notify.Service）。
+//
+// 只暴露公告需要的单个方法：handler 不应知道模板注册表/存储细节。
+// 返回的计数用于发布审计的 delivered_users（不含正文）。
+type AnnouncementInAppNotifier interface {
+	DeliverAnnouncementInApp(ctx context.Context, in notify.AnnouncementDeliveryInput) (notify.AnnouncementDeliveryResult, error)
+}
+
 // AnnouncementHandlerConfig 是公告端点的装配输入。
 type AnnouncementHandlerConfig struct {
 	Repo  store.AnnouncementRepo
@@ -107,6 +115,9 @@ type AnnouncementHandlerConfig struct {
 	Logger *slog.Logger
 	// Webhook 为 nil 时发布副作用只做 Redis 广播。
 	Webhook AnnouncementWebhookSender
+	// Notifier 为 nil 时发布不生成站内通知（纯内存/测试装配）。
+	// 生产由 notify.Service 提供（`system.announcement` 模板，A5）。
+	Notifier AnnouncementInAppNotifier
 	// BaseURL 返回站点对外基址（site.server_address）。缺省/空时 webhook
 	// payload 的 url 使用站内相对路径（R-D7-09）。
 	BaseURL func() string
@@ -127,6 +138,7 @@ type AnnouncementHandlers struct {
 	rdb      *redis.Client
 	log      *slog.Logger
 	webhook  AnnouncementWebhookSender
+	notifier AnnouncementInAppNotifier
 	baseURL  func() string
 	now      func() time.Time
 	waitSefe bool
@@ -160,7 +172,8 @@ func NewAnnouncementHandlers(cfg AnnouncementHandlerConfig) (*AnnouncementHandle
 	h := &AnnouncementHandlers{
 		repo: cfg.Repo, authz: authz, audit: cfg.Audit, idem: idem,
 		rdb: cfg.Redis, log: logger, webhook: cfg.Webhook,
-		baseURL: baseURL, now: now, waitSefe: cfg.WaitForSideEffects,
+		notifier: cfg.Notifier,
+		baseURL:  baseURL, now: now, waitSefe: cfg.WaitForSideEffects,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -525,9 +538,11 @@ func (h *AnnouncementHandlers) handleCreate(w http.ResponseWriter, r *http.Reque
 		h.writeAnnouncementError(w, err, "POST /api/announcements")
 		return
 	}
-	h.writeAudit(r, audit.ActionAnnouncementCreate, mut.Announcement)
+	h.writeAudit(r, audit.ActionAnnouncementCreate, mut.Announcement, nil)
 	if mut.Published {
-		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement)
+		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
+			map[string]any{"delivered_users": delivered})
 		h.afterPublish(r.Context(), mut.Announcement)
 	}
 	writeJSON(w, http.StatusCreated, h.newDetail(mut.Announcement))
@@ -560,9 +575,11 @@ func (h *AnnouncementHandlers) handleUpdate(w http.ResponseWriter, r *http.Reque
 		h.writeAnnouncementError(w, err, "PUT /api/announcements/{id}")
 		return
 	}
-	h.writeAudit(r, audit.ActionAnnouncementUpdate, mut.Announcement)
+	h.writeAudit(r, audit.ActionAnnouncementUpdate, mut.Announcement, nil)
 	if mut.Published {
-		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement)
+		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
+			map[string]any{"delivered_users": delivered})
 		h.afterPublish(r.Context(), mut.Announcement)
 	}
 	writeJSON(w, http.StatusOK, h.newDetail(mut.Announcement))
@@ -584,7 +601,7 @@ func (h *AnnouncementHandlers) handleDelete(w http.ResponseWriter, r *http.Reque
 		h.writeAnnouncementError(w, err, "DELETE /api/announcements/{id}")
 		return
 	}
-	h.writeAudit(r, audit.ActionAnnouncementDelete, existing)
+	h.writeAudit(r, audit.ActionAnnouncementDelete, existing, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -597,10 +614,16 @@ func (h *AnnouncementHandlers) handlePublish(w http.ResponseWriter, r *http.Requ
 		h.writeAnnouncementError(w, err, "POST /api/announcements/{id}/publish")
 		return
 	}
-	h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement)
-	// 幂等重放（Published=false）不重复广播：用户侧会把同一公告再弹一次。
 	if mut.Published {
+		// A5：站内投递先同步完成，否则发布审计拿不到 delivered_users。
+		// 投递本身是本地 DB 批量写，失败只 Warn（不回滚发布）。
+		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
+			map[string]any{"delivered_users": delivered})
+		// 幂等重放（Published=false）不重复广播：用户侧会把同一公告再弹一次。
 		h.afterPublish(r.Context(), mut.Announcement)
+	} else {
+		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement, nil)
 	}
 	writeJSON(w, http.StatusOK, h.newDetail(mut.Announcement))
 }
@@ -614,7 +637,7 @@ func (h *AnnouncementHandlers) handleOffline(w http.ResponseWriter, r *http.Requ
 		h.writeAnnouncementError(w, err, "POST /api/announcements/{id}/offline")
 		return
 	}
-	h.writeAudit(r, audit.ActionAnnouncementOffline, mut.Announcement)
+	h.writeAudit(r, audit.ActionAnnouncementOffline, mut.Announcement, nil)
 	writeJSON(w, http.StatusOK, h.newDetail(mut.Announcement))
 }
 
@@ -667,16 +690,21 @@ func (h *AnnouncementHandlers) handleMarkRead(w http.ResponseWriter, r *http.Req
 // ---------------------------------------------------------------------------
 
 // writeAudit 写公告审计。detail 只允许 id/title/status（R-D7-08）：
-// 正文可能含未公开内容，审计表不得成为它的第二副本。
-func (h *AnnouncementHandlers) writeAudit(r *http.Request, action string, a store.Announcement) {
+// 正文可能含未公开内容，审计表不得成为它的第二副本。extra 只用于发布事件
+// 的 delivered_users 计数（A5），调用方不得借此塞入正文/收件人明细。
+func (h *AnnouncementHandlers) writeAudit(r *http.Request, action string, a store.Announcement, extra map[string]any) {
 	if h.audit == nil {
 		return
 	}
-	detail, err := json.Marshal(map[string]any{
+	detailMap := map[string]any{
 		"id":     a.ID,
 		"title":  a.Title,
 		"status": a.Status,
-	})
+	}
+	for key, value := range extra {
+		detailMap[key] = value
+	}
+	detail, err := json.Marshal(detailMap)
 	if err != nil {
 		return
 	}
@@ -705,6 +733,75 @@ func auditSuccessStatus(action string) int {
 	default:
 		return http.StatusOK
 	}
+}
+
+// deliverAnnouncementInApp 为首次发布生成站内通知（A5），返回实际投递人数。
+//
+// 同步执行的理由：发布审计的 detail 必须带 delivered_users，而审计在响应
+// 前写出；投递本身只是本地 DB 批量插入（每批 ≤500）。它仍被定义成
+// best-effort——任何失败只 Warn 并返回已投递数，绝不改变「发布成功」。
+// ctx 用 WithoutCancel：客户端断开不应让半批投递留下不可见的中间态；
+// 15s 上限与其它发布副作用一致，防止慢库拖住 handler。
+func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a store.Announcement) int {
+	if h.notifier == nil {
+		return 0
+	}
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), announcementSideEffectTimeout)
+	defer cancel()
+
+	publishedAt := h.now()
+	if a.PublishedAt != nil {
+		publishedAt = *a.PublishedAt
+	}
+	result, err := h.notifier.DeliverAnnouncementInApp(runCtx, notify.AnnouncementDeliveryInput{
+		AnnouncementID: a.ID,
+		Title:          a.Title,
+		Summary:        announcementNotificationSummary(a.Content),
+		LinkURL:        h.announcementURL(),
+		PublishedAt:    publishedAt,
+	})
+	if err != nil {
+		h.log.Warn("announcements: inapp notification delivery failed",
+			"announcement_id", a.ID, "err", err)
+		return result.Delivered
+	}
+	if result.Failed > 0 {
+		h.log.Warn("announcements: inapp notification delivery partially failed",
+			"announcement_id", a.ID, "delivered", result.Delivered,
+			"duplicates", result.Duplicates, "failed", result.Failed)
+	}
+	return result.Delivered
+}
+
+// announcementNotificationSummary 从公告正文派生站内通知摘要。
+//
+// 公告表没有 summary 列（modules-08 F-08-04 数据字段表），而
+// `system.announcement` 模板要求 {{.summary}}。这里做一个最小的
+// Markdown→单行纯文本收敛（去列表/强调/代码标记、压空白），截断 120 个字符：
+// 通知正文里的链接/结构由模板的 [查看详情] 承担，摘要只负责一眼可读。
+func announcementNotificationSummary(content string) string {
+	var out []rune
+	skipSpace := false
+	for _, r := range content {
+		switch r {
+		case '#', '*', '_', '`', '>', '[', ']', '(', ')', '-', '|':
+			continue
+		case '\n', '\r', '\t', ' ':
+			if len(out) > 0 {
+				skipSpace = true
+			}
+			continue
+		}
+		if skipSpace {
+			out = append(out, ' ')
+			skipSpace = false
+		}
+		out = append(out, r)
+		if len(out) >= 120 {
+			break
+		}
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // afterPublish 触发发布副作用（R-D7-09）：best-effort，不阻塞、不失败发布。

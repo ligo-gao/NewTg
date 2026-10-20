@@ -78,6 +78,14 @@ type RouterConfig struct {
 	// Webhook 发送器从配置中心读取 notify.webhook.*（未配置时静默跳过），
 	// 站点基址取 site.server_address。单元测试可显式注入。
 	AnnouncementHandlers *AnnouncementHandlers
+	// NotifyService 是通知模板/投递服务（M6c + A5）。非 nil 时公告发布
+	// 会为每个启用用户生成 `system.announcement` 站内通知。生产由
+	// assembly 传入（启动期已播种模板）；nil 且 DB 非 nil 时由 NewRouter
+	// 构造一个未播种的实例（投递仍会落库，模板渲染失败只降级 body）。
+	NotifyService *notify.Service
+	// NotificationHandlers 是 A5 用户侧站内通知读取端点。nil 且 DB 非 nil
+	// 时由 NewRouter 自动构造并挂载。
+	NotificationHandlers *NotificationHandlers
 	// Sealer 密封令牌幂等缓存体（含一次性明文 key）。nil 时令牌端点跳过
 	// 幂等缓存（绝不回落明文）；生产由 CREDENTIAL_ENCRYPTION_KEY 派生。
 	Sealer configcenter.SecretSealer
@@ -283,13 +291,26 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 提供 DB 时才自动挂载；Webhook 发送器从配置中心快照读取，未配置时
 	// 发布副作用静默跳过（R-D7-09）。
 	if cfg.AnnouncementHandlers == nil && cfg.DB != nil {
+		// 直连 NewRouter 的装配（单测/嵌入式）没有 assembly 的启动播种；
+		// 仍构造一个 service，让投递记录照常落库（模板缺失只降级 body）。
+		if cfg.NotifyService == nil {
+			notifyStore, storeErr := notify.NewStore(cfg.DB)
+			if storeErr != nil {
+				return nil, storeErr
+			}
+			cfg.NotifyService, storeErr = notify.NewService(notify.ServiceConfig{Store: notifyStore})
+			if storeErr != nil {
+				return nil, storeErr
+			}
+		}
 		announcementHandlers, err := NewAnnouncementHandlers(AnnouncementHandlerConfig{
-			Repo:    store.NewAnnouncementRepo(cfg.DB),
-			Redis:   cfg.Redis,
-			Authz:   cfg.Authz,
-			Audit:   cfg.Audit,
-			Logger:  cfg.Logger,
-			Webhook: notify.NewWebhookSender(cfg.Config, cfg.Sealer),
+			Repo:     store.NewAnnouncementRepo(cfg.DB),
+			Redis:    cfg.Redis,
+			Authz:    cfg.Authz,
+			Audit:    cfg.Audit,
+			Logger:   cfg.Logger,
+			Webhook:  notify.NewWebhookSender(cfg.Config, cfg.Sealer),
+			Notifier: cfg.NotifyService,
 			// 与 assembly 的基址回退链一致：PUBLIC_BASE_URL → site.server_address。
 			// cfg.PublicBaseURL 在生产装配中已由 effectivePublicBaseURL 解析过，
 			// 这里再读一次 site.server_address 是为了直连 NewRouter 的装配
@@ -303,6 +324,34 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	}
 	if cfg.AnnouncementHandlers != nil {
 		cfg.AnnouncementHandlers.Register(rt.protected)
+	}
+
+	// 站内通知读取（A5；modules-08 §3.9.1 system.announcement）。投递记录
+	// 在 notification_deliveries，与公告表分离；只有提供 DB 时才挂载。
+	if cfg.NotificationHandlers == nil && cfg.DB != nil {
+		notifyService := cfg.NotifyService
+		if notifyService == nil {
+			notifyStore, err := notify.NewStore(cfg.DB)
+			if err != nil {
+				return nil, err
+			}
+			notifyService, err = notify.NewService(notify.ServiceConfig{Store: notifyStore})
+			if err != nil {
+				return nil, err
+			}
+		}
+		handlers, err := NewNotificationHandlers(NotificationHandlerConfig{
+			Service: notifyService,
+			Authz:   cfg.Authz,
+			Logger:  cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		cfg.NotificationHandlers = handlers
+	}
+	if cfg.NotificationHandlers != nil {
+		cfg.NotificationHandlers.Register(rt.protected)
 	}
 
 	// 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。目录没有内存兜底：

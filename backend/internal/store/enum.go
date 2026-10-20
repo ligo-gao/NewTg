@@ -142,12 +142,14 @@ var EnumChecks = map[string][]string{
 	"request_registry.state": {"in_flight", "settled", "refunded", "failed"},
 
 	// notification_templates / notification_deliveries（M6c Task 4，
-	// modules-08 §3.9.2 / §3.9.5）。两处 channel 枚举**互不为超集**是设计
-	// 明文：模板载体 {email,inapp}，投递记录 {email,webhook}。locale 与
-	// users.language 同集（canonical 7 语）。
+	// modules-08 §3.9.2 / §3.9.5）。模板载体 {email,inapp}。投递记录原设计
+	// 只有 {email,webhook}（inapp 不落表）；A5 冻结语义要求公告为每个启用
+	// 用户落一条 inapp 投递记录，故投递枚举扩为 {email,webhook,inapp}
+	// （迁移 20261020200000，契约扩展已登记 G-DOM-23/G-DOM-37）。
+	// locale 与 users.language 同集（canonical 7 语）。
 	"notification_templates.channel":  {"email", "inapp"},
 	"notification_templates.locale":   {"en", "zh-CN", "zh-TW", "fr", "ru", "ja", "vi"},
-	"notification_deliveries.channel": {"email", "webhook"},
+	"notification_deliveries.channel": {"email", "webhook", "inapp"},
 	"notification_deliveries.locale":  {"en", "zh-CN", "zh-TW", "fr", "ru", "ja", "vi"},
 	"notification_deliveries.status": {
 		"queued", "sent", "failed", "bounced", "suppressed",

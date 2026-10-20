@@ -298,8 +298,27 @@ func TestAnnouncementRepoDeleteCascadesReads(t *testing.T) {
 	if err := repo.MarkRead(ctx, userID, a.ID, time.Now().UTC()); err != nil {
 		t.Fatalf("MarkRead: %v", err)
 	}
+	// A5：公告的站内投递记录也必须在同一事务内清理（dedupe 前缀匹配）。
+	t.Cleanup(func() {
+		_, _ = repo.db.Exec(`DELETE FROM notification_deliveries WHERE dedupe_key LIKE $1`,
+			"announcement:"+a.ID+":%")
+	})
+	if _, err := repo.db.Exec(`INSERT INTO notification_deliveries
+		(template_key, category, channel, recipient, recipient_user_id, dedupe_key, status, payload)
+		VALUES ('system.announcement', 'system.announcement', 'inapp', $1, $2, $3, 'sent', '{"title":"x"}')`,
+		"user:987654322", userID, "announcement:"+a.ID+":987654322"); err != nil {
+		t.Fatalf("insert delivery: %v", err)
+	}
 	if err := repo.Delete(ctx, a.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+	var deliveries int
+	if err := repo.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1`, "announcement:"+a.ID+":%").Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("删除后残留 %d 条站内投递", deliveries)
 	}
 	var reads int
 	if err := repo.db.QueryRow(`SELECT count(*) FROM announcement_reads WHERE announcement_id = $1`,

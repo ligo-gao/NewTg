@@ -329,31 +329,31 @@ func (e GroupPricingMode1) Valid() bool {
 
 // Defines values for Language.
 const (
-	En   Language = "en"
-	Fr   Language = "fr"
-	Ja   Language = "ja"
-	Ru   Language = "ru"
-	Vi   Language = "vi"
-	ZhCN Language = "zh-CN"
-	ZhTW Language = "zh-TW"
+	LanguageEn   Language = "en"
+	LanguageFr   Language = "fr"
+	LanguageJa   Language = "ja"
+	LanguageRu   Language = "ru"
+	LanguageVi   Language = "vi"
+	LanguageZhCN Language = "zh-CN"
+	LanguageZhTW Language = "zh-TW"
 )
 
 // Valid indicates whether the value is a known member of the Language enum.
 func (e Language) Valid() bool {
 	switch e {
-	case En:
+	case LanguageEn:
 		return true
-	case Fr:
+	case LanguageFr:
 		return true
-	case Ja:
+	case LanguageJa:
 		return true
-	case Ru:
+	case LanguageRu:
 		return true
-	case Vi:
+	case LanguageVi:
 		return true
-	case ZhCN:
+	case LanguageZhCN:
 		return true
-	case ZhTW:
+	case LanguageZhTW:
 		return true
 	default:
 		return false
@@ -2238,6 +2238,39 @@ func (e UsageLogItemStatus) Valid() bool {
 	case UsageLogItemStatusRefused:
 		return true
 	case UsageLogItemStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserNotificationLocale.
+const (
+	UserNotificationLocaleEn   UserNotificationLocale = "en"
+	UserNotificationLocaleFr   UserNotificationLocale = "fr"
+	UserNotificationLocaleJa   UserNotificationLocale = "ja"
+	UserNotificationLocaleRu   UserNotificationLocale = "ru"
+	UserNotificationLocaleVi   UserNotificationLocale = "vi"
+	UserNotificationLocaleZhCN UserNotificationLocale = "zh-CN"
+	UserNotificationLocaleZhTW UserNotificationLocale = "zh-TW"
+)
+
+// Valid indicates whether the value is a known member of the UserNotificationLocale enum.
+func (e UserNotificationLocale) Valid() bool {
+	switch e {
+	case UserNotificationLocaleEn:
+		return true
+	case UserNotificationLocaleFr:
+		return true
+	case UserNotificationLocaleJa:
+		return true
+	case UserNotificationLocaleRu:
+		return true
+	case UserNotificationLocaleVi:
+		return true
+	case UserNotificationLocaleZhCN:
+		return true
+	case UserNotificationLocaleZhTW:
 		return true
 	default:
 		return false
@@ -7625,6 +7658,36 @@ type UsageStatsTimeseriesItem struct {
 	Requests int64  `json:"requests"`
 }
 
+// UserNotification defines model for UserNotification.
+type UserNotification struct {
+	// Body 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
+	Body      *string                 `json:"body,omitempty"`
+	Category  string                  `json:"category"`
+	CreatedAt time.Time               `json:"created_at"`
+	Id        int64                   `json:"id"`
+	LinkUrl   *string                 `json:"link_url,omitempty"`
+	Locale    *UserNotificationLocale `json:"locale,omitempty"`
+
+	// ReadAt null = 未读。
+	ReadAt  *time.Time `json:"read_at,omitempty"`
+	Summary *string    `json:"summary,omitempty"`
+
+	// TemplateKey 产生该通知的模板 key（当前恒为 system.announcement）。
+	TemplateKey *string `json:"template_key,omitempty"`
+	Title       *string `json:"title,omitempty"`
+}
+
+// UserNotificationLocale defines model for UserNotification.Locale.
+type UserNotificationLocale string
+
+// UserNotificationList defines model for UserNotificationList.
+type UserNotificationList struct {
+	Items    []UserNotification `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Total    int64              `json:"total"`
+}
+
 // UserRole defines model for UserRole.
 type UserRole string
 
@@ -8396,6 +8459,22 @@ type UpdateNotificationPreferencesParams struct {
 
 // TestNotificationParams defines parameters for TestNotification.
 type TestNotificationParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListUserNotificationsParams defines parameters for ListUserNotifications.
+type ListUserNotificationsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// MarkUserNotificationReadParams defines parameters for MarkUserNotificationRead.
+type MarkUserNotificationReadParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`

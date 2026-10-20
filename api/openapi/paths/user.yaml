@@ -2247,6 +2247,71 @@ paths:
               schema:
                 $ref: '../components/problem.yaml#/schemas/Problem'
 
+  # 站内通知 · 用户侧（A5；modules-08 §3.9.1 system.announcement）。
+  # 数据范围恒为当前登录本人；不接受 user_id 参数。
+  /api/notifications:
+    get:
+      tags: [user]
+      operationId: listUserNotifications
+      summary: 本人站内通知（含 read_at）
+      description: |
+        返回 channel=inapp 的投递记录，按 created_at DESC 排序；`read_at`
+        为 null 表示未读。A5 之前站内通知不落库，因此旧数据不会出现。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UserNotificationList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/notifications/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    post:
+      tags: [user]
+      operationId: markUserNotificationRead
+      summary: 标记本人站内通知已读（幂等）
+      description: |
+        重复调用返回 204，`read_at` 保持首次标记的时刻。他人通知、不存在
+        与非法 id 统一 404（不区分，避免枚举）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已标记（幂等）
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   # 站点公告 · 用户侧（D7a；modules-08 F-08-04 / R-D7-05）。
   # 仅登录用户本人；数据范围恒为会话/令牌身份，不接受 user_id 参数。
   /api/announcements/active:

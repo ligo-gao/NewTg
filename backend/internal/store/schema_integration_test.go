@@ -63,9 +63,10 @@ var wantColumns = map[string]int{
 	"custom_oauth_providers": 25,
 	"checkins":               5,
 	// M6c Task 4 通知模板体系（modules-08 §3.9.2 / §3.9.5）：
-	// 模板 14 列、投递记录 15 列；两表都无 FK（逻辑引用 users.id）。
+	// 模板 14 列、投递记录 15 列 + A5 的 payload/read_at 两列 = 17；
+	// 两表都无 FK（逻辑引用 users.id）。
 	"notification_templates":  14,
-	"notification_deliveries": 15,
+	"notification_deliveries": 17,
 	// M6d Task 1 任务插件三表（modules-08 §3.10.2 B-11/B-12/B-13）：
 	// 主表 10 列（冻结 DDL 的列清单；platform-01 表清单的「11」是系统侧
 	// 参照行计数，本仓库以 modules-08 唯一定义处为准）、版本行 11 列、市场源 7 列。

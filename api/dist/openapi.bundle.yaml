@@ -5117,6 +5117,69 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/notifications:
+    get:
+      tags:
+        - user
+      operationId: listUserNotifications
+      summary: 本人站内通知（含 read_at）
+      description: |
+        返回 channel=inapp 的投递记录，按 created_at DESC 排序；`read_at`
+        为 null 表示未读。A5 之前站内通知不落库，因此旧数据不会出现。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserNotificationList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/notifications/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    post:
+      tags:
+        - user
+      operationId: markUserNotificationRead
+      summary: 标记本人站内通知已读（幂等）
+      description: |
+        重复调用返回 204，`read_at` 保持首次标记的时刻。他人通知、不存在
+        与非法 id 统一 404（不区分，避免枚举）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已标记（幂等）
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/redemption-codes:
     get:
       tags:
@@ -13785,6 +13848,72 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ActiveAnnouncement'
+    UserNotification:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - category
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        template_key:
+          type: string
+          description: 产生该通知的模板 key（当前恒为 system.announcement）。
+        category:
+          type: string
+        title:
+          type: string
+        summary:
+          type: string
+        body:
+          type: string
+          description: 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
+        link_url:
+          type: string
+        locale:
+          type: string
+          enum:
+            - en
+            - zh-CN
+            - zh-TW
+            - fr
+            - ru
+            - ja
+            - vi
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: null = 未读。
+        created_at:
+          type: string
+          format: date-time
+    UserNotificationList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserNotification'
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
     RedemptionCodeStatusFilter:
       type: string
       enum:

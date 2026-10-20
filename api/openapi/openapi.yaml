@@ -250,6 +250,13 @@ paths:
   /api/announcements/{id}/read:
     $ref: './paths/user.yaml#/paths/~1api~1announcements~1{id}~1read'
 
+  # 站内通知读取（A5；modules-08 §3.9.1 system.announcement）。
+  # 仅登录用户本人；数据范围恒为会话/令牌身份。
+  /api/notifications:
+    $ref: './paths/user.yaml#/paths/~1api~1notifications'
+  /api/notifications/{id}/read:
+    $ref: './paths/user.yaml#/paths/~1api~1notifications~1{id}~1read'
+
   # 兑换码（M5 Task 2；管理面 + 用户核销）。
   /api/redemption-codes:
     $ref: './paths/admin.yaml#/paths/~1api~1redemption-codes'

@@ -28,6 +28,8 @@ var (
 	ErrUnknownTemplate = errors.New("notify: unknown template")
 	// ErrTemplateMissing 表示语言回退链（语言 → en）全部缺行（P1 fail-closed）。
 	ErrTemplateMissing = errors.New("notify: template row missing for all locales")
+	// ErrDeliveryNotFound：站内通知不存在或不属于当前用户（HTTP 404）。
+	ErrDeliveryNotFound = errors.New("notify: notification not found")
 )
 
 // TemplateRow 是 notification_templates 的一行（与 §3.9.2 列一一对应）。
@@ -62,8 +64,13 @@ type Delivery struct {
 	NextRetryAt       *time.Time
 	LastError         *string
 	ProviderMessageID *string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// Payload 是站内通知的渲染输入/结果（A5，迁移
+	// 20261020200000）。email/webhook 行为 NULL。
+	Payload []byte
+	// ReadAt 是站内通知的已读时刻；email/webhook 恒为 NULL。
+	ReadAt    *time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // TemplateFilter 是模板列表筛选（category/channel/locale/仅已修改）。
@@ -322,12 +329,12 @@ func (s *Store) InsertDelivery(ctx context.Context, d Delivery) (Delivery, bool,
 	}
 	row := s.db.QueryRowContext(ctx, `INSERT INTO notification_deliveries
 		(template_key, category, channel, recipient, recipient_user_id, locale,
-		 dedupe_key, status, attempt, last_error, provider_message_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 dedupe_key, status, attempt, last_error, provider_message_id, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (dedupe_key) DO NOTHING
 		RETURNING id, created_at, updated_at`,
 		templateKey, d.Category, string(d.Channel), d.Recipient, nullableInt64Ptr(d.RecipientUserID),
-		locale, d.DedupeKey, d.Status, d.Attempt, lastError, providerID)
+		locale, d.DedupeKey, d.Status, d.Attempt, lastError, providerID, nullableJSON(d.Payload))
 	var id int64
 	var createdAt, updatedAt time.Time
 	err := row.Scan(&id, &createdAt, &updatedAt)
@@ -382,7 +389,7 @@ func (s *Store) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]De
 	args = append(args, pageSize, (page-1)*pageSize)
 	query := fmt.Sprintf(`SELECT id, template_key, category, channel, recipient, recipient_user_id,
 		locale, dedupe_key, status, attempt, next_retry_at, last_error, provider_message_id,
-		created_at, updated_at
+		payload, read_at, created_at, updated_at
 		FROM notification_deliveries%s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d`, clause, len(args)-1, len(args))
@@ -404,6 +411,162 @@ func (s *Store) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]De
 		return nil, 0, fmt.Errorf("notify: list deliveries: %w", err)
 	}
 	return out, total, nil
+}
+
+// InAppAudience 是站内通知的一个收件人：用户 id + 该用户的语言。
+type InAppAudience struct {
+	UserID int64
+	Locale Locale
+}
+
+// ListInAppAudience 返回全部启用用户（status='enabled'）及其语言。
+//
+// A5 的冻结语义是「recipient_user_id = 每个启用用户」；这里刻意不做分页
+// 游标：公告广播是一次性全量事件，调用方按批（≤500）写入投递记录即可。
+// 只取 id/language 两列，避免把 users 行的敏感列带进内存。
+func (s *Store) ListInAppAudience(ctx context.Context) ([]InAppAudience, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, language FROM users WHERE status = 'enabled' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("notify: list inapp audience: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []InAppAudience
+	for rows.Next() {
+		var (
+			userID   int64
+			language string
+		)
+		if err := rows.Scan(&userID, &language); err != nil {
+			return nil, fmt.Errorf("notify: scan inapp audience: %w", err)
+		}
+		locale := Locale(language)
+		if _, ok := ParseLocale(language); !ok {
+			// users.language 有 CHECK 约束；若历史数据越过约束，按站点默认
+			// en 处理而不是让整次广播失败（读取端是 fail-soft 的展示面）。
+			locale = DefaultLocale
+		}
+		out = append(out, InAppAudience{UserID: userID, Locale: locale})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notify: iterate inapp audience: %w", err)
+	}
+	return out, nil
+}
+
+// InsertInAppDeliveries 批量写入站内投递记录（A5）。
+//
+// 单条 SQL 多值插入，每批由调用方限制 ≤500 行（13 列 × 500 = 6500 个参数，
+// 远低于 PostgreSQL 65535 上限）。ON CONFLICT (dedupe_key) DO NOTHING 让
+// 重复发布/重试天然幂等；返回**实际插入**行数，用于审计的 delivered_users。
+// 整批失败时返回错误且该批一条都不落库——调用方的「失败不阻塞发布」语义
+// 由它自己决定（Warn + 计数）。
+func (s *Store) InsertInAppDeliveries(ctx context.Context, items []Delivery) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	if len(items) > 500 {
+		return 0, errors.New("notify: inapp delivery batch must not exceed 500 rows")
+	}
+	var (
+		placeholders []string
+		args         []any
+	)
+	for _, d := range items {
+		base := len(args)
+		var templateKey any
+		if d.TemplateKey != nil {
+			templateKey = *d.TemplateKey
+		}
+		var locale any
+		if d.Locale != nil {
+			locale = string(*d.Locale)
+		}
+		args = append(args,
+			templateKey, d.Category, string(d.Channel), d.Recipient,
+			nullableInt64Ptr(d.RecipientUserID), locale, d.DedupeKey,
+			d.Status, d.Attempt, nullableJSON(d.Payload),
+		)
+		placeholders = append(placeholders, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10))
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO notification_deliveries
+		(template_key, category, channel, recipient, recipient_user_id, locale,
+		 dedupe_key, status, attempt, payload)
+		VALUES `+strings.Join(placeholders, ", ")+`
+		ON CONFLICT (dedupe_key) DO NOTHING`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("notify: batch insert inapp deliveries: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("notify: batch insert inapp deliveries rows: %w", err)
+	}
+	return int(affected), nil
+}
+
+// ListUserInAppDeliveries 分页返回某用户本人的站内通知（A5 读取端点）。
+// 数据范围只由 recipient_user_id 决定，绝不接受调用方传入他人 id。
+func (s *Store) ListUserInAppDeliveries(ctx context.Context, userID int64, page, pageSize int) ([]Delivery, int, error) {
+	if userID <= 0 {
+		return nil, 0, errors.New("notify: user id is required")
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM notification_deliveries
+		WHERE channel = 'inapp' AND recipient_user_id = $1`, userID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("notify: count user inapp deliveries: %w", err)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, template_key, category, channel, recipient,
+		recipient_user_id, locale, dedupe_key, status, attempt, next_retry_at, last_error,
+		provider_message_id, payload, read_at, created_at, updated_at
+		FROM notification_deliveries
+		WHERE channel = 'inapp' AND recipient_user_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2 OFFSET $3`, userID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, fmt.Errorf("notify: list user inapp deliveries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Delivery
+	for rows.Next() {
+		item, err := scanDelivery(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("notify: iterate user inapp deliveries: %w", err)
+	}
+	return out, total, nil
+}
+
+// MarkInAppDeliveryRead 幂等标记本人一条站内通知已读。
+// 他人通知与不存在的 id 同为 ErrDeliveryNotFound（不区分，避免枚举）。
+func (s *Store) MarkInAppDeliveryRead(ctx context.Context, userID, id int64, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE notification_deliveries SET
+		read_at = COALESCE(read_at, $3), updated_at = now()
+		WHERE id = $1 AND recipient_user_id = $2 AND channel = 'inapp'`,
+		id, userID, now.UTC())
+	if err != nil {
+		return fmt.Errorf("notify: mark inapp delivery read: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("notify: mark inapp delivery read rows: %w", err)
+	}
+	if affected == 0 {
+		return ErrDeliveryNotFound
+	}
+	return nil
 }
 
 // rowScanner 抽象 *sql.Row / *sql.Rows，便于同一扫描逻辑复用。
@@ -444,13 +607,21 @@ func scanDelivery(scanner rowScanner) (Delivery, error) {
 		recipientUserID       sql.NullInt64
 		nextRetryAt           sql.NullTime
 		lastError, providerID sql.NullString
+		payload               []byte
+		readAt                sql.NullTime
 	)
 	if err := scanner.Scan(&item.ID, &templateKey, &item.Category, &channel, &item.Recipient,
 		&recipientUserID, &locale, &item.DedupeKey, &item.Status, &item.Attempt,
-		&nextRetryAt, &lastError, &providerID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		&nextRetryAt, &lastError, &providerID, &payload, &readAt,
+		&item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Delivery{}, err
 	}
 	item.Channel = Channel(channel)
+	item.Payload = payload
+	if readAt.Valid {
+		value := readAt.Time
+		item.ReadAt = &value
+	}
 	if templateKey.Valid {
 		value := templateKey.String
 		item.TemplateKey = &value
@@ -497,6 +668,15 @@ func nullableInt64Ptr(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+// nullableJSON 把空 payload 写成 SQL NULL：email/webhook 行没有载荷，
+// 用空对象会让「无载荷」与「空载荷」不可区分。
+func nullableJSON(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return string(value)
 }
 
 // categoryForKey 在写入前由注册表裁决；Store 不做第二真源校验，但需要一个

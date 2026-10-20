@@ -1575,6 +1575,53 @@ schemas:
         type: boolean
         description: 当前用户是否已读；未登录不可访问本端点。
 
+  # 站内通知 · 用户侧投影（A5；modules-08 §3.9.1 system.announcement）。
+  # 不暴露 dedupe_key/recipient_user_id 等内部幂等锚。
+  UserNotification:
+    type: object
+    additionalProperties: false
+    required: [id, category, created_at]
+    properties:
+      id: {type: integer, format: int64}
+      template_key:
+        type: string
+        description: 产生该通知的模板 key（当前恒为 system.announcement）。
+      category: {type: string}
+      title: {type: string}
+      summary: {type: string}
+      body:
+        type: string
+        description: 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。
+      link_url: {type: string}
+      locale:
+        type: string
+        enum: [en, zh-CN, zh-TW, fr, ru, ja, vi]
+      read_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: null = 未读。
+      created_at: {type: string, format: date-time}
+
+  UserNotificationList:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/UserNotification'}
+      total:
+        type: integer
+        format: int64
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
   ActiveAnnouncementList:
     type: object
     additionalProperties: false

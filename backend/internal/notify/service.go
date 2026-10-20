@@ -10,10 +10,12 @@ package notify
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -374,6 +376,216 @@ func (s *Service) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]
 		out = append(out, viewFromDelivery(row))
 	}
 	return out, total, nil
+}
+
+// ---------------------------------------------------------------------------
+// A5：公告站内通知投递与用户侧读取
+// ---------------------------------------------------------------------------
+
+// AnnouncementDeliveryInput 是一次公告发布需要广播的站内通知内容。
+// Summary 由调用方从公告正文派生（公告表本身没有 summary 列），LinkURL 是
+// 站内相对路径或绝对 URL；两者都是 `system.announcement` 模板的变量。
+type AnnouncementDeliveryInput struct {
+	AnnouncementID string
+	Title          string
+	Summary        string
+	LinkURL        string
+	PublishedAt    time.Time
+}
+
+// AnnouncementDeliveryResult 是一次广播的计数（写审计 detail 用，不含正文）。
+type AnnouncementDeliveryResult struct {
+	Delivered  int
+	Duplicates int
+	Failed     int
+}
+
+// InAppPayload 是站内通知的落库载荷（notification_deliveries.payload）。
+// 读取端直接消费它，不回头查公告表：发布后编辑公告（N-35 原地更新）不应
+// 让用户已经收到的「站内信」改变标题/摘要。
+type InAppPayload struct {
+	Title       string `json:"title"`
+	Summary     string `json:"summary,omitempty"`
+	Body        string `json:"body,omitempty"`
+	LinkURL     string `json:"link_url,omitempty"`
+	PublishedAt string `json:"published_at,omitempty"`
+}
+
+// DeliverAnnouncementInApp 为每个启用用户生成一条 `system.announcement`
+// 站内投递记录（A5 冻结语义）。
+//
+// 幂等：dedupe_key=`announcement:<id>:<user_id>`，ON CONFLICT DO NOTHING。
+// 有效一次：重复发布/重试只会增加 Duplicates，不会产生第二条未读。
+// 失败软着陆：任何模板缺失/渲染失败都只记 Warn 并继续；调用方（公告 handler）
+// 只把本函数当 best-effort 副作用，绝不因它回滚发布。
+//
+// 模板渲染只影响 payload.body（展示用富文本）；title/summary/link_url 是
+// 原始变量，即使渲染失败也能展示——这比 P1「绝不静默发空」更严格地保留了
+// 用户可见信息，同时不会发出空标题的站内信。
+func (s *Service) DeliverAnnouncementInApp(ctx context.Context, in AnnouncementDeliveryInput) (AnnouncementDeliveryResult, error) {
+	var result AnnouncementDeliveryResult
+	if strings.TrimSpace(in.AnnouncementID) == "" {
+		return result, errors.New("notify: announcement id is required")
+	}
+	audience, err := s.store.ListInAppAudience(ctx)
+	if err != nil {
+		return result, err
+	}
+	if len(audience) == 0 {
+		return result, nil
+	}
+
+	spec, ok := LookupTemplate("system.announcement", ChannelInApp)
+	if !ok {
+		// 注册表是编译期常量；走到这里说明代码被改坏，仍不阻塞发布。
+		s.log.Error("notify: system.announcement template is not registered")
+		return AnnouncementDeliveryResult{Failed: len(audience)}, nil
+	}
+
+	vars := map[string]any{
+		"title":        in.Title,
+		"summary":      in.Summary,
+		"link_url":     in.LinkURL,
+		"published_at": in.PublishedAt.UTC().Format(time.RFC3339),
+	}
+	bodies := make(map[Locale]string)
+	payloads := make(map[Locale][]byte)
+
+	buildPayload := func(locale Locale) []byte {
+		payload := InAppPayload{
+			Title:       in.Title,
+			Summary:     in.Summary,
+			Body:        bodies[locale],
+			LinkURL:     in.LinkURL,
+			PublishedAt: vars["published_at"].(string),
+		}
+		raw, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			s.log.Warn("notify: marshal inapp payload failed", "err", marshalErr)
+			return nil
+		}
+		return raw
+	}
+
+	const batchSize = 500
+	batch := make([]Delivery, 0, batchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		inserted, insertErr := s.store.InsertInAppDeliveries(ctx, batch)
+		if insertErr != nil {
+			result.Failed += len(batch)
+			s.log.Warn("notify: insert inapp announcement deliveries failed",
+				"announcement_id", in.AnnouncementID, "rows", len(batch), "err", insertErr)
+		} else {
+			result.Delivered += inserted
+			result.Duplicates += len(batch) - inserted
+		}
+		batch = batch[:0]
+	}
+
+	for _, user := range audience {
+		locale := user.Locale
+		if _, ok := payloads[locale]; !ok {
+			body := ""
+			if content, resolved, row, resolveErr := s.resolve(ctx, spec, locale, false); resolveErr != nil {
+				// 模板行缺失（未播种/被删）不影响投递记录：payload 仍带原始
+				// 标题与摘要，读取端照常展示（见函数头注释）。
+				s.log.Warn("notify: resolve system.announcement template failed",
+					"locale", locale, "err", resolveErr)
+			} else if row != nil && !row.Enabled {
+				s.log.Warn("notify: system.announcement template is disabled", "locale", locale)
+			} else if rendered, renderErr := RenderContent(spec, content, resolved, vars); renderErr != nil {
+				s.log.Warn("notify: render system.announcement failed",
+					"locale", locale, "err", renderErr)
+			} else {
+				body = rendered.Body
+			}
+			bodies[locale] = body
+			payloads[locale] = buildPayload(locale)
+		}
+
+		userID := user.UserID
+		localeCopy := locale
+		batch = append(batch, Delivery{
+			TemplateKey:     stringPtr(spec.Key),
+			Category:        spec.Category,
+			Channel:         ChannelInApp,
+			Recipient:       "user:" + strconv.FormatInt(userID, 10),
+			RecipientUserID: &userID,
+			Locale:          &localeCopy,
+			// 冻结语义：dedupe 前缀固定为 announcement:<id>:<user>，公告
+			// 删除按 `announcement:<id>:%` 前缀同事务清理。
+			DedupeKey: "announcement:" + in.AnnouncementID + ":" + strconv.FormatInt(userID, 10),
+			Status:    "sent",
+			Attempt:   1,
+			Payload:   payloads[locale],
+		})
+		if len(batch) >= batchSize {
+			flush()
+		}
+	}
+	flush()
+	return result, nil
+}
+
+// UserNotificationView 是 GET /api/notifications 的 item。
+// 只暴露用户可见字段；dedupe_key/recipient_user_id 等内部幂等锚不外泄。
+type UserNotificationView struct {
+	ID          int64      `json:"id"`
+	TemplateKey string     `json:"template_key,omitempty"`
+	Category    string     `json:"category"`
+	Title       string     `json:"title"`
+	Summary     string     `json:"summary,omitempty"`
+	Body        string     `json:"body,omitempty"`
+	LinkURL     string     `json:"link_url,omitempty"`
+	Locale      string     `json:"locale,omitempty"`
+	ReadAt      *time.Time `json:"read_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// ListUserNotifications 返回本人站内通知（含 read_at）。userID 由认证上下文
+// 提供，本方法不提供任何「按 user_id 参数查询他人」的路径。
+func (s *Service) ListUserNotifications(ctx context.Context, userID int64, page, pageSize int) ([]UserNotificationView, int, error) {
+	rows, total, err := s.store.ListUserInAppDeliveries(ctx, userID, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]UserNotificationView, 0, len(rows))
+	for _, row := range rows {
+		view := UserNotificationView{
+			ID:        row.ID,
+			Category:  row.Category,
+			ReadAt:    row.ReadAt,
+			CreatedAt: row.CreatedAt,
+		}
+		if row.TemplateKey != nil {
+			view.TemplateKey = *row.TemplateKey
+		}
+		if row.Locale != nil {
+			view.Locale = string(*row.Locale)
+		}
+		if len(row.Payload) > 0 {
+			var payload InAppPayload
+			if err := json.Unmarshal(row.Payload, &payload); err != nil {
+				// 载荷损坏不应让整页 500：保留 id/时间，内容留空。
+				s.log.Warn("notify: decode inapp payload failed", "delivery_id", row.ID, "err", err)
+			} else {
+				view.Title = payload.Title
+				view.Summary = payload.Summary
+				view.Body = payload.Body
+				view.LinkURL = payload.LinkURL
+			}
+		}
+		out = append(out, view)
+	}
+	return out, total, nil
+}
+
+// MarkUserNotificationRead 幂等标记本人一条站内通知已读。重复调用返回 nil。
+func (s *Service) MarkUserNotificationRead(ctx context.Context, userID, id int64, now time.Time) error {
+	return s.store.MarkInAppDeliveryRead(ctx, userID, id, now)
 }
 
 // DeliveryView 是冻结合同 GET /api/notification-deliveries 的 item。

@@ -29,6 +29,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,9 +40,13 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
+
+// a5UserSeq 保证 A5 集成用例的用户名唯一（users.username 有唯一约束）。
+var a5UserSeq atomic.Int64
 
 type announcementIntegrationEnv struct {
 	db     *sql.DB
@@ -595,10 +600,11 @@ func TestAnnouncementIntegrationAuditHasNoContent(t *testing.T) {
 		if _, ok := parsed["action"]; ok {
 			seen[parsed["action"].(string)] = true
 		}
-		// detail 只允许 id/title/status + writer 注入的 action。
+		// detail 只允许 id/title/status + writer 注入的 action；
+		// A5 的发布审计额外带 delivered_users 计数（不含正文/收件人）。
 		for key := range parsed {
 			switch key {
-			case "id", "title", "status", "action":
+			case "id", "title", "status", "action", "delivered_users":
 			default:
 				t.Fatalf("审计 detail 出现未允许字段 %q：%s", key, detail)
 			}
@@ -615,5 +621,139 @@ func TestAnnouncementIntegrationAuditHasNoContent(t *testing.T) {
 		if !seen[action] {
 			t.Fatalf("缺少审计动作 %q（seen=%v）", action, seen)
 		}
+	}
+}
+
+// TestAnnouncementIntegrationInAppDeliveryAndAudit 覆盖 A5：
+//   - 首次发布为每个启用用户落一条 system.announcement 站内投递；
+//   - 发布审计 detail 带 delivered_users 且仍不含正文；
+//   - 公告删除同事务清理其投递记录。
+func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
+	env := newAnnouncementIntegrationEnv(t)
+	ctx := context.Background()
+
+	notifyStore, err := notify.NewStore(env.db)
+	if err != nil {
+		t.Fatalf("notify.NewStore: %v", err)
+	}
+	notifyService, err := notify.NewService(notify.ServiceConfig{Store: notifyStore, Logger: testLogger()})
+	if err != nil {
+		t.Fatalf("notify.NewService: %v", err)
+	}
+	if err := notifyService.EnsureSeeded(ctx); err != nil {
+		t.Fatalf("seed templates: %v", err)
+	}
+	var auditLogger *audit.Logger
+	if env.logs != nil {
+		auditLogger = audit.New(env.logs)
+	}
+	handlers, err := NewAnnouncementHandlers(AnnouncementHandlerConfig{
+		Repo: env.repo, Authz: rbac.NewAuthzMiddleware(), Audit: auditLogger,
+		Logger: testLogger(), Notifier: notifyService, WaitForSideEffects: true,
+	})
+	if err != nil {
+		t.Fatalf("NewAnnouncementHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+
+	// 两个启用用户（不同语言）+ 一个停用用户。
+	insertUser := func(language, status string) int64 {
+		t.Helper()
+		username := fmt.Sprintf("a5i_%d_%d", time.Now().UnixNano(), a5UserSeq.Add(1))
+		var id int64
+		if err := env.db.QueryRow(`INSERT INTO users (username, language, status)
+			VALUES ($1, $2, $3) RETURNING id`, username, language, status).Scan(&id); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+		t.Cleanup(func() { _, _ = env.db.Exec(`DELETE FROM users WHERE id = $1`, id) })
+		return id
+	}
+	insertUser("en", "enabled")
+	insertUser("zh-CN", "enabled")
+	disabledID := insertUser("en", "disabled")
+
+	got := doAnnouncementRequest(t, mux, env.adminPrincipal(), http.MethodPost, "/api/announcements",
+		map[string]any{"title": "A5", "content": "**maintenance** tonight", "publish_now": true})
+	if got.Code != http.StatusCreated {
+		t.Fatalf("publish_now create = %d（body=%s）", got.Code, got.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	id := view["id"].(string)
+	env.cleanupAnnouncement(t, id)
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM notification_deliveries WHERE dedupe_key LIKE $1`,
+			"announcement:"+id+":%")
+	})
+
+	// 并行测试包可能同时增删用户；只断言「至少覆盖本用例的两个启用用户」，
+	// 停用用户不投递，审计计数与落库行数一致（同一事实的两个投影）。
+	var delivered int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1 AND channel = 'inapp' AND status = 'sent' AND read_at IS NULL`,
+		"announcement:"+id+":%").Scan(&delivered); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if delivered < 2 {
+		t.Fatalf("投递 %d 条，want ≥ 本用例的 2 个启用用户", delivered)
+	}
+	var disabledRows int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1 AND recipient_user_id = $2`,
+		"announcement:"+id+":%", disabledID).Scan(&disabledRows); err != nil {
+		t.Fatalf("count disabled deliveries: %v", err)
+	}
+	if disabledRows != 0 {
+		t.Fatalf("停用用户收到 %d 条投递", disabledRows)
+	}
+	// 负载带标题/摘要，且摘要已从 Markdown 收敛为纯文本。
+	var payload []byte
+	if err := env.db.QueryRow(`SELECT payload FROM notification_deliveries
+		WHERE dedupe_key LIKE $1 LIMIT 1`, "announcement:"+id+":%").Scan(&payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	var decoded notify.InAppPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if decoded.Title != "A5" || strings.Contains(decoded.Summary, "*") {
+		t.Fatalf("payload = %+v", decoded)
+	}
+
+	if env.logs != nil {
+		var rawDetail string
+		if err := env.logs.QueryRow(`SELECT detail::text FROM audit_logs
+			WHERE detail->>'action' = $1 AND detail->>'id' = $2
+			ORDER BY id DESC LIMIT 1`, audit.ActionAnnouncementPublish, id).Scan(&rawDetail); err != nil {
+			t.Fatalf("query publish audit: %v", err)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(rawDetail), &detail); err != nil {
+			t.Fatalf("decode audit detail: %v", err)
+		}
+		count, ok := detail["delivered_users"].(float64)
+		if !ok || int(count) != delivered {
+			t.Fatalf("审计 delivered_users = %v，want 落库行数 %d（detail=%s）", detail["delivered_users"], delivered, rawDetail)
+		}
+		if strings.Contains(rawDetail, "maintenance") {
+			t.Fatalf("审计 detail 含正文：%s", rawDetail)
+		}
+	}
+
+	// 删除公告：同一事务清理投递。
+	if got := doAnnouncementRequest(t, mux, env.adminPrincipal(), http.MethodDelete,
+		"/api/announcements/"+id, nil); got.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d", got.Code)
+	}
+	var remaining int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1`, "announcement:"+id+":%").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("删除公告后残留 %d 条投递", remaining)
 	}
 }

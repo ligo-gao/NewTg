@@ -2315,6 +2315,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本人站内通知（含 read_at）
+         * @description 返回 channel=inapp 的投递记录，按 created_at DESC 排序；`read_at`
+         *     为 null 表示未读。A5 之前站内通知不落库，因此旧数据不会出现。
+         */
+        get: operations["listUserNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 标记本人站内通知已读（幂等）
+         * @description 重复调用返回 204，`read_at` 保持首次标记的时刻。他人通知、不存在
+         *     与非法 id 统一 404（不区分，避免枚举）。
+         */
+        post: operations["markUserNotificationRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/redemption-codes": {
         parameters: {
             query?: never;
@@ -6144,6 +6188,34 @@ export interface components {
         };
         ActiveAnnouncementList: {
             items: components["schemas"]["ActiveAnnouncement"][];
+        };
+        UserNotification: {
+            /** Format: int64 */
+            id: number;
+            /** @description 产生该通知的模板 key（当前恒为 system.announcement）。 */
+            template_key?: string;
+            category: string;
+            title?: string;
+            summary?: string;
+            /** @description 按用户语言渲染后的 Markdown 正文；模板渲染失败时为空。 */
+            body?: string;
+            link_url?: string;
+            /** @enum {string} */
+            locale?: "en" | "zh-CN" | "zh-TW" | "fr" | "ru" | "ja" | "vi";
+            /**
+             * Format: date-time
+             * @description null = 未读。
+             */
+            read_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        UserNotificationList: {
+            items: components["schemas"]["UserNotification"][];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            page_size: number;
         };
         /**
          * @description expired 是虚拟态（不落库）
@@ -11747,6 +11819,65 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listUserNotifications: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotificationList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    markUserNotificationRead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已标记（幂等） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];

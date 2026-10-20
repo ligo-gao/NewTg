@@ -515,6 +515,14 @@ func (r *SQLAnnouncementRepo) Delete(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("store: delete announcement(%s) reads: %w", id, err)
 	}
+	// A5：公告删除时同事务清理该公告的站内投递记录。dedupe_key 前缀
+	// `announcement:<id>:` 是冻结格式（公告 id 是 uuid，前缀无碰撞）；与
+	// announcement_reads 同理，不能让投递行在公告删除后永久滞留。
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM notification_deliveries WHERE dedupe_key LIKE $1`,
+		"announcement:"+id+":%"); err != nil {
+		return fmt.Errorf("store: delete announcement(%s) deliveries: %w", id, err)
+	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM announcements WHERE id = $1`, id)
 	if err != nil {
 		if isInvalidTextRepresentation(err) {

@@ -236,6 +236,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// /api/task*）。与插件运行时共用同一个 Manager 快照，避免管理面停用
 	// 插件后数据面仍从旧注册表接单。
 	var taskDataHandlers *TasksHandler
+	// notifyService 由下方 DB 装配构造并播种；提升到外层是为了同时传给
+	// NewRouter：公告发布的站内通知投递（A5）与用户侧读取端点共用它。
+	var notifyService *notify.Service
 	if deps.DB != nil {
 		var err error
 		pluginStore := deps.TaskPluginStore
@@ -377,6 +380,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Logger:              deps.Logger,
 		// 订阅购买与充值共用同一个支付服务实例。
 		SubscriptionPurchase: deps.SubscriptionPurchase,
+		NotifyService:        notifyService,
 	})
 	if err != nil {
 		return nil, err
@@ -497,7 +501,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if err != nil {
 			return nil, err
 		}
-		notifyService, err := notify.NewService(notify.ServiceConfig{
+		notifyService, err = notify.NewService(notify.ServiceConfig{
 			Store: notifyStore,
 			// SMTP 配置读同一配置中心快照；密钥类 password 经同一 Sealer 解封。
 			Sender: notify.NewSMTPSender(deps.Config, deps.Sealer),
