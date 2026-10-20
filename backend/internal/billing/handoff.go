@@ -70,12 +70,26 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 			} else if latest.Status == "refunded" {
 				return nil
 			}
+			// 任务/恢复路径的成功结算日志也带 billing_preference（LOW）：
+			// 重建会话没有 PreConsume 的 fundingPlan，偏好在这里读取后冻结。
+			// 读失败不影响资金正确性，日志省略该键即可。
+			prefText := ""
+			if pref, prefErr := e.subscriptionFunding.BillingPreference(ctx, ownerID); prefErr != nil {
+				slog.Warn("billing: read billing preference for task settlement log failed",
+					"request_id", requestID, "error", prefErr)
+			} else if text, textErr := store.BillingPreferenceText(pref); textErr == nil {
+				prefText = text
+			}
 			s := &Session{
 				engine:        e,
 				requestID:     requestID,
 				userID:        ownerID,
 				tokenID:       tokenID,
 				fundingSource: contract.FundingSubscription,
+				// 锁已在上方获取：会话内的订阅结算不得二次获取（Redis
+				// SETNX 不可重入）。
+				settlementLockHeld:    true,
+				billingPreferenceText: prefText,
 				rc: &contract.RelayContext{
 					RequestID: requestID,
 					UserID:    int(ownerID),
@@ -232,23 +246,24 @@ func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) erro
 				// 任何回补（仓储侧本身也幂等，但令牌回补必须跳过）。
 				return nil
 			}
-			// 结算/退款终态互斥：registry 已 settled 说明成功结算已经收尾，
-			// 迟到的失败回调不得再退款（否则同一请求双花）。
-			state, stateErr := e.subscriptionFunding.RequestRegistryState(ctx, requestID)
-			if stateErr != nil {
-				return fmt.Errorf("billing: read settlement state for %s: %w", requestID, stateErr)
-			}
-			if state == "settled" {
-				return nil
-			}
-			// 与 TerminateByRequestIDForToken 共用同一把 requestID 结算锁：
-			// 结算与退款必须串行，否则「退款回退 amount_used」与「结算 delta」
-			// 可以交错落地。锁内复核记录状态，处理同步退款不发锁的窗口。
+			// H1：先取 requestID 结算锁，**锁内**再读 registry。锁外预检
+			// 存在「读到未结算 → 结算方收尾 → 本方法继续退款」的双花窗口；
+			// 锁内复核把窗口关闭。settled/refunded 都是终态，直接返回 nil。
 			release, lockErr := e.acquireSettlementLock(ctx, requestID)
 			if lockErr != nil {
 				return lockErr
 			}
 			defer release()
+			state, stateErr := e.subscriptionFunding.RequestRegistryState(ctx, requestID)
+			if stateErr != nil {
+				return fmt.Errorf("billing: read settlement state for %s: %w", requestID, stateErr)
+			}
+			if state == "settled" || state == "refunded" {
+				return nil
+			}
+			// 第二道：预扣记录复核。同步退款路径（S4a Refund）不写 registry，
+			// 但会把记录置 refunded；持锁后复核一次，避免「先退款、后任务
+			// 失败回调」把同一笔额度再退一遍。
 			if latest, _, latestErr := e.subscriptionFunding.PreConsumeRecord(ctx, requestID); latestErr != nil {
 				return fmt.Errorf("billing: re-read subscription pre-consume for %s: %w", requestID, latestErr)
 			} else if latest.Status == "refunded" {
@@ -260,6 +275,8 @@ func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) erro
 				userID:        ownerID,
 				tokenID:       tokenID,
 				fundingSource: contract.FundingSubscription,
+				// 锁已由本方法持有：会话内的订阅退款不得二次获取。
+				settlementLockHeld: true,
 				rc: &contract.RelayContext{
 					RequestID: requestID,
 					UserID:    int(ownerID),

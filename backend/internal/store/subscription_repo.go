@@ -217,6 +217,10 @@ type SubscriptionRepo interface {
 	// （billing-04 §3.5 / billing-08 §5.1）：正为少补、负为多退，下界钳到 0；
 	// amount_total>0 且结果越界时拒绝。返回更新后的实例快照（成功日志键用）。
 	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (Subscription, error)
+	// RefundSubscriptionIncrement 回退 ChargeIncrement 已立即落账的增量，
+	// 仅在 amount_used >= amount 时生效（M3 周期重置守卫）。返回 false 表示
+	// 本周期已不再持有这笔增量，调用方应跳过而不得把 amount_used 扣成负数。
+	RefundSubscriptionIncrement(ctx context.Context, subscriptionID, amount int64) (bool, error)
 	// ListStalePreConsumes 返回「已预扣但仍未结算/退款」且早于 before 的幂等
 	// 记录，供 worker 崩溃兜底（billing-06 §5.2）。request_registry 已进入
 	// settled/refunded 的记录被排除：正常结算/退款已经处理过它们。
@@ -1211,6 +1215,34 @@ func (r *SQLSubscriptionRepo) PostConsumeUserSubscriptionDelta(ctx context.Conte
 	return sub, nil
 }
 
+// RefundSubscriptionIncrement 回退实时增量（ChargeIncrement）在本周期已追加的
+// amount_used（M3）。
+//
+// 与 `PostConsumeUserSubscriptionDelta(-amount)` 的差别是条件 UPDATE：
+// `amount_used >= $2` 未命中时不更新并返回 false，而不是把计数钳到 0。
+// 周期重置会先把 amount_used 归零；若此时仍做减法，旧周期的增量回退会侵蚀
+// 新周期已经发生的用量（用户新周期的额度被莫名恢复）。宁可少退一次（方向
+// 安全：只会少给用户额度，不会多送也不会产生负值），残余登记在
+// 未完成清单 G-DOM-34②/G-DOM-35。
+func (r *SQLSubscriptionRepo) RefundSubscriptionIncrement(ctx context.Context,
+	subscriptionID, amount int64) (bool, error) {
+	if subscriptionID <= 0 || amount <= 0 {
+		return false, ErrSubscriptionInvalid
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE subscriptions
+		   SET amount_used = amount_used - $2, updated_at = now()
+		 WHERE id = $1 AND amount_used >= $2`, subscriptionID, amount)
+	if err != nil {
+		return false, fmt.Errorf("store: reverse subscription increment(%d): %w", subscriptionID, err)
+	}
+	affected, rowsErr := res.RowsAffected()
+	if rowsErr != nil {
+		return false, fmt.Errorf("store: reverse subscription increment(%d) rows: %w", subscriptionID, rowsErr)
+	}
+	return affected == 1, nil
+}
+
 // ListStalePreConsumes 列出可被崩溃兜底退款的订阅预扣记录（billing-06 §5.2）。
 //
 // 判据：
@@ -1260,7 +1292,8 @@ func (r *SQLSubscriptionRepo) ListStalePreConsumes(ctx context.Context,
 	return out, nil
 }
 
-// nullableJSON 把空切片翻译为 SQL NULL：ModelScope 的 NULL 与 '[]' 语义// 不同（NULL=全部模型；'[]'=没有任何模型可用），不能互相顶替。
+// nullableJSON 把空切片翻译为 SQL NULL：ModelScope 的 NULL 与 '[]' 语义
+// 不同（NULL=全部模型；'[]'=没有任何模型可用），不能互相顶替。
 func nullableJSON(value []byte) any {
 	if len(value) == 0 {
 		return nil

@@ -1244,6 +1244,54 @@ func TestSubscriptionPostConsumeDelta(t *testing.T) {
 	}
 }
 
+// TestSubscriptionRefundIncrementGuard 覆盖 M3 的增量回退守卫：
+// amount_used >= amount 才回退；周期重置后旧周期增量回退不得侵蚀新周期用量。
+func TestSubscriptionRefundIncrementGuard(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4b-inc-refund")
+	now := time.Now().UTC()
+	sub := createTestSubscription(t, repo, plan, 900104, now.Add(-time.Hour), now.Add(time.Hour), nil)
+
+	if _, err := repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 200); err != nil {
+		t.Fatalf("seed amount_used: %v", err)
+	}
+	applied, err := repo.RefundSubscriptionIncrement(ctx, sub.ID, 30)
+	if err != nil || !applied {
+		t.Fatalf("RefundSubscriptionIncrement = %v/%v，want true/nil", applied, err)
+	}
+	if got := subscriptionAmountUsed(t, db, sub.ID); got != 170 {
+		t.Fatalf("amount_used = %d，want 170", got)
+	}
+
+	// 模拟周期重置（归零）后新周期已用 20：旧增量的 30 不得再回退。
+	if _, err := db.Exec(`UPDATE subscriptions SET amount_used = 20 WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("simulate reset: %v", err)
+	}
+	applied, err = repo.RefundSubscriptionIncrement(ctx, sub.ID, 30)
+	if err != nil || applied {
+		t.Fatalf("守卫未命中时 = %v/%v，want false/nil", applied, err)
+	}
+	if got := subscriptionAmountUsed(t, db, sub.ID); got != 20 {
+		t.Fatalf("amount_used = %d，want 20（不得侵蚀新周期用量）", got)
+	}
+
+	if _, err := repo.RefundSubscriptionIncrement(ctx, sub.ID, 0); !errors.Is(err, ErrSubscriptionInvalid) {
+		t.Fatalf("amount=0 err = %v，want ErrSubscriptionInvalid", err)
+	}
+}
+
+// subscriptionAmountUsed 读取实例已用额度（断言用）。
+func subscriptionAmountUsed(t *testing.T, db *sql.DB, id int64) int64 {
+	t.Helper()
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, id).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	return used
+}
+
 // TestSubscriptionListStalePreConsumes 覆盖崩溃兜底扫描的候选集
 // （billing-06 §5.2）：旧 consumed 命中；refunded、未到窗口、以及
 // request_registry 已 settled/refunded 的记录被排除；failed 不排除。

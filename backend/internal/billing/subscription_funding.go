@@ -77,6 +77,13 @@ type SubscriptionFundingSource interface {
 	// 实例快照。amount_total>0 越界时返回 store.ErrSubscriptionSettleExceeded，
 	// 调用方保留预扣、不做部分结算（billing-08 §5.1）。
 	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (SubscriptionSettlement, error)
+	// RefundSubscriptionIncrement 回退 ChargeIncrement 已立即追加的增量。
+	//
+	// 与 PostConsumeUserSubscriptionDelta(-amount) 的区别是**带存量下界守卫**：
+	// 只有 amount_used >= amount 才回退，返回 false 表示周期重置/并发抵扣已
+	// 使本周期不再持有这笔增量。此时不得把新周期用量扣成负数（M3），方向
+	// 安全地少退一次；残余语义登记在 G-DOM-34②/G-DOM-35。
+	RefundSubscriptionIncrement(ctx context.Context, subscriptionID, amount int64) (applied bool, err error)
 	// ListStalePreConsumes 返回早于 before 且尚未结算/退款的预扣记录
 	// （billing-06 §5.2 的崩溃兜底扫描）。
 	ListStalePreConsumes(ctx context.Context, before time.Time, limit int) ([]store.SubscriptionPreConsume, error)
@@ -196,6 +203,12 @@ func (f *StoreSubscriptionFunding) PostConsumeUserSubscriptionDelta(ctx context.
 		AmountTotal: sub.AmountTotal,
 		AmountUsed:  sub.AmountUsed,
 	}, nil
+}
+
+// RefundSubscriptionIncrement 转发带守卫的增量回退（M3）。
+func (f *StoreSubscriptionFunding) RefundSubscriptionIncrement(ctx context.Context,
+	subscriptionID, amount int64) (bool, error) {
+	return f.repo.RefundSubscriptionIncrement(ctx, subscriptionID, amount)
 }
 
 // ListStalePreConsumes 转发崩溃兜底扫描。

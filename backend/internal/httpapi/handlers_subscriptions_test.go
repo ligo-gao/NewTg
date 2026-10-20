@@ -465,6 +465,23 @@ func (r *fakeSubscriptionRepo) PostConsumeUserSubscriptionDelta(_ context.Contex
 	return *sub, nil
 }
 
+// RefundSubscriptionIncrement 是 M3 守卫的内存实现：amount_used >= amount
+// 才回退，否则返回 false（周期重置后不侵蚀新周期用量）。
+func (r *fakeSubscriptionRepo) RefundSubscriptionIncrement(_ context.Context,
+	subscriptionID, amount int64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sub, ok := r.subs[subscriptionID]
+	if !ok {
+		return false, store.ErrSubscriptionNotFound
+	}
+	if amount <= 0 || sub.AmountUsed < amount {
+		return false, nil
+	}
+	sub.AmountUsed -= amount
+	return true, nil
+}
+
 // ListStalePreConsumes 返回早于 before 的 consumed 记录（handler 测试的
 // 假仓储不区分 registry 终态）。
 func (r *fakeSubscriptionRepo) ListStalePreConsumes(_ context.Context,

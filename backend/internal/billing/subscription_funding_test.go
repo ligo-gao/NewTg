@@ -62,6 +62,17 @@ type fakeSubscriptionFunding struct {
 	postDeltaErr   error
 	listStaleErr   error
 	registry       map[string]string
+	// registryCalls / registryHook 供并发用例精确控制「锁外读 registry」与
+	// 「锁内复核」的交错；hook 在释放 f.mu 后调用，避免与其它方法死锁。
+	registryCalls int
+	registryHook  func(requestID string, call int)
+	// recordCalls / recordHook 同理，控制 RefundByRequestIDForToken 在取锁前
+	// 「识别订阅来源」与取锁后「第二道复核」之间的交错（H1 回归用例）。
+	recordCalls int
+	recordHook  func(requestID string, call int)
+	// markSettledFailures 是前 N 次 MarkRequestSettled 失败（重试用例）。
+	markSettledFailures int
+	markSettledCalls    int
 }
 
 // subscriptionDeltaCall 是一次结算增量调用（断言用）。
@@ -146,22 +157,29 @@ func (f *fakeSubscriptionFunding) MarkPreConsumeRefunded(_ context.Context, requ
 	}
 	rec.Status = "refunded"
 	f.records[requestID] = rec
-	if used := f.used[rec.SubscriptionID] - rec.PreConsumed; used > 0 {
-		f.used[rec.SubscriptionID] = used
-	} else {
-		f.used[rec.SubscriptionID] = 0
+	// 镜像 store 的 `amount_used >= pre_consumed` 守卫（G-DOM-32）：周期
+	// 重置后不命中时保持新周期用量不变，绝不扣成负数。
+	if f.used[rec.SubscriptionID] >= rec.PreConsumed {
+		f.used[rec.SubscriptionID] -= rec.PreConsumed
 	}
 	return nil
 }
 
 func (f *fakeSubscriptionFunding) PreConsumeRecord(_ context.Context, requestID string) (store.SubscriptionPreConsume, int64, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.recordCalls++
+	call := f.recordCalls
+	hook := f.recordHook
 	rec, ok := f.records[requestID]
+	owner := f.owners[requestID]
+	f.mu.Unlock()
+	if hook != nil {
+		hook(requestID, call)
+	}
 	if !ok {
 		return store.SubscriptionPreConsume{}, 0, store.ErrPreConsumeNotFound
 	}
-	return rec, f.owners[requestID], nil
+	return rec, owner, nil
 }
 
 // PostConsumeUserSubscriptionDelta 按 store 语义实现：下界 0、上界拒绝、
@@ -200,6 +218,18 @@ func (f *fakeSubscriptionFunding) PostConsumeUserSubscriptionDelta(_ context.Con
 	}, nil
 }
 
+// RefundSubscriptionIncrement 镜像 store 的 `amount_used >= amount` 守卫（M3）。
+func (f *fakeSubscriptionFunding) RefundSubscriptionIncrement(_ context.Context,
+	subscriptionID, amount int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if amount <= 0 || f.used[subscriptionID] < amount {
+		return false, nil
+	}
+	f.used[subscriptionID] -= amount
+	return true, nil
+}
+
 // ListStalePreConsumes 返回 consumed 且 created_at 早于 before 的记录。
 func (f *fakeSubscriptionFunding) ListStalePreConsumes(_ context.Context,
 	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
@@ -229,16 +259,30 @@ func (f *fakeSubscriptionFunding) deltas() []subscriptionDeltaCall {
 }
 
 // RequestRegistryState 返回内存中的结算终态（缺失 = 空串）。
+//
+// registryHook 在释放 f.mu 之后调用，供并发用例在「读到未结算」与「锁内
+// 复核」之间注入确定性交错。
 func (f *fakeSubscriptionFunding) RequestRegistryState(_ context.Context, requestID string) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.registry[requestID], nil
+	f.registryCalls++
+	call := f.registryCalls
+	hook := f.registryHook
+	state := f.registry[requestID]
+	f.mu.Unlock()
+	if hook != nil {
+		hook(requestID, call)
+	}
+	return state, nil
 }
 
 // MarkRequestSettled 幂等置 settled；已 refunded 不降级。
 func (f *fakeSubscriptionFunding) MarkRequestSettled(_ context.Context, requestID string, _ int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.markSettledCalls++
+	if f.markSettledCalls <= f.markSettledFailures {
+		return errors.New("fake: transient registry failure")
+	}
 	if f.registry[requestID] == "refunded" {
 		return nil
 	}
@@ -261,6 +305,27 @@ func (f *fakeSubscriptionFunding) usedOf(id int64) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.used[id]
+}
+
+// setUsed 直接改写订阅已用量（模拟周期重置/新周期使用）。
+func (f *fakeSubscriptionFunding) setUsed(id, value int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.used[id] = value
+}
+
+// registryCallCount 返回 RequestRegistryState 的调用次数（M2 缓存断言）。
+func (f *fakeSubscriptionFunding) registryCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.registryCalls
+}
+
+// recordStatus 返回预扣记录状态。
+func (f *fakeSubscriptionFunding) recordStatus(requestID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.records[requestID].Status
 }
 
 func (f *fakeSubscriptionFunding) calls() int {

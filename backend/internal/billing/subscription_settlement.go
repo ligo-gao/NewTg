@@ -32,6 +32,10 @@ const (
 	// ConfigSubscriptionRecoveryWindowSeconds 是「预扣记录多久仍未结算即
 	// 视为悬挂」的可配置窗口（默认 900s = 15 分钟）。
 	//
+	// 配置面：该键只从 configcenter 的 KV 读取（库内配置），**未**注册到
+	// settings registry 的管理面白名单；运维需直接写配置行，界面不可编辑
+	// （LOW：明确口径，避免误以为管理面可调）。
+	//
 	// 为什么必须大于一次正常请求的生命周期：长连接/任务在窗口内仍可能
 	// 正常 Terminate；过早退款会让结算 delta 落到已退款的记录上（存储层
 	// 幂等短路后额度少退一次），且用户会被误判为「免费」。
@@ -42,6 +46,13 @@ const (
 	// subscriptionRecoveryScanLimit 是单轮扫描上限：积压时有界处理，其余
 	// 下一轮继续（与 DueForReset/DeletePreConsumeBefore 同口径）。
 	subscriptionRecoveryScanLimit = 100
+
+	// subscriptionTerminalCheckTTL 是 ChargeIncrement 查询 registry 终态的
+	// 最短间隔（M2）。实时连接每个 response.done 都会调用增量，逐事件查库
+	// 会把日志级调用放大成数据库压力；1s 的缓存窗口只延迟「外部执行者写入
+	// 终态后本会话停止追加」的发现时间，方向安全（最多多记 1s 的真实用量，
+	// 不会少记已交付用量）。
+	subscriptionTerminalCheckTTL = time.Second
 )
 
 // terminateSubscriptionLocked 结算订阅来源的请求（调用方持有 s.mu）。
@@ -67,6 +78,39 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 	if s.subscriptionReplayed {
 		s.finishLocked(ctx, false)
 		return nil
+	}
+
+	// M1：订阅结算与退款/崩溃兜底共用 requestID 结算锁。没有这把锁时，
+	// 恢复扫描可以在「读 registry = 未结算」之后与本次结算交错，把同一个
+	// 预扣既退款又结算。handoff/worker 已预取锁时会话标志为 true，这里 no-op。
+	releaseLock, lockErr := s.ensureSettlementLockLocked(ctx)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer releaseLock()
+
+	// 锁内复核终态：另一个执行者可能在本会话进入前已完成结算/退款。registry
+	// 是订阅路径的权威终态证据；预扣记录是第二道（同步退款即使 registry 写
+	// 失败也会把记录置 refunded）。
+	state, stateErr := s.engine.subscriptionFunding.RequestRegistryState(ctx, s.requestID)
+	if stateErr != nil {
+		return fmt.Errorf("billing: read subscription settlement state for %s: %w", s.requestID, stateErr)
+	}
+	switch state {
+	case "settled":
+		s.finishLocked(ctx, false)
+		return nil
+	case "refunded":
+		s.finishLocked(ctx, true)
+		return nil
+	}
+	if rec, _, recErr := s.engine.subscriptionFunding.PreConsumeRecord(ctx, s.requestID); recErr == nil {
+		if rec.Status == "refunded" {
+			s.finishLocked(ctx, true)
+			return nil
+		}
+	} else if !errors.Is(recErr, store.ErrPreConsumeNotFound) {
+		return fmt.Errorf("billing: re-read subscription pre-consume for %s: %w", s.requestID, recErr)
 	}
 
 	already := s.preConsumed + s.consumed
@@ -95,20 +139,20 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 		// 因此这里显式标记 settlement_pending，供日志/对账与兜底扫描识别。
 		slog.Warn("billing: subscription settlement failed; keeping pre-consume for compensation",
 			"request_id", s.requestID, "subscription_id", s.subscriptionID,
-			"delta", delta, "settlement_pending", true, "error", err)
+			"delta", delta, "pre_consumed", s.preConsumed,
+			"increment_deducted", s.consumed, "settlement_pending", true, "error", err)
 		return fmt.Errorf("billing: settle subscription delta: %w", err)
 	}
 
 	// 结算成功后立刻记录 request_registry 终态：预扣记录在成功结算后仍是
 	// consumed，没有这条记录，15 分钟后的兜底扫描会把已结算的请求再退一次。
-	if err := s.engine.subscriptionFunding.MarkRequestSettled(
-		ctx, s.requestID, s.userID); err != nil {
-		// registry 写失败不改变「订阅已结算」事实；无法回滚 delta（重试会
-		// 二次结算）。显式告警 settlement_pending，兜底扫描仍有窗口误退，
-		// 但方向是「可能多退」而非静默吞钱，交由对账/日志定位。
-		slog.Warn("billing: record subscription settlement state failed; settlement_pending",
+	// 写入本身幂等，短暂故障按退避重试；仍失败时只能告警（delta 已提交，
+	// 不能回滚重试，否则二次结算）。
+	if err := s.engine.markRequestSettled(ctx, s.requestID, s.userID); err != nil {
+		slog.Warn("billing: record subscription settlement state failed after retries; settlement_pending",
 			"request_id", s.requestID, "user_id", s.userID,
-			"settlement_pending", true, "error", err)
+			"delta", delta, "pre_consumed", s.preConsumed,
+			"increment_deducted", s.consumed, "settlement_pending", true, "error", err)
 	}
 
 	// 资金已提交，随后把令牌额度从**已扣额**调整到最终成本（R-73）。
@@ -171,9 +215,13 @@ func (s *Session) adjustSubscriptionTokenLocked(ctx context.Context, cost int64)
 
 // billingPreferenceTextLocked 返回本请求冻结的用户偏好文本（日志键）。
 //
-// 偏好来自 resolveFundingPlanLocked 的冻结快照；未解析（理论上订阅来源
-// 必然已解析）或映射失败时返回空串，日志层据此省略该键而不是编造默认值。
+// 偏好来自 resolveFundingPlanLocked 的冻结快照；任务/恢复路径重建的会话没有
+// fundingPlan，由 handoff 读取后回填 billingPreferenceText（LOW）。两者都不
+// 可用时返回空串，日志层据此省略该键而不是编造默认值。
 func (s *Session) billingPreferenceTextLocked() string {
+	if s.billingPreferenceText != "" {
+		return s.billingPreferenceText
+	}
 	if s.fundingPlan == nil {
 		return ""
 	}
@@ -205,14 +253,27 @@ func (s *Session) chargeIncrementSubscriptionLocked(ctx context.Context, delta i
 		return nil
 	}
 
-	// Important-1：结案后不得再产生订阅消耗（否则额度无法归属到请求）。
-	terminal, err := s.engine.ledger.requestTerminal(ctx, s.requestID)
-	if err != nil {
-		return fmt.Errorf("billing: check request terminal state: %w", err)
-	}
-	if terminal {
+	// M2：结案后不得再产生订阅消耗（否则额度无法归属到请求）。订阅来源
+	// 没有钱包流水，ledger.requestTerminal 永远看不到这条请求；终态证据是
+	// request_registry。逐事件查库代价过高，用本地终态位 + 短 TTL 节流：
+	//   - 一旦观测到 settled/refunded 立即永久拒绝；
+	//   - 未观测到终态时最多每 subscriptionTerminalCheckTTL 查一次。
+	// 缓存窗口内的残余（外部结案后最多再追加 1s 用量）登记在 G-DOM-35⑤。
+	if s.subscriptionTerminal {
 		s.markTerminalLocked(ctx)
 		return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+	}
+	if s.terminalCheckAt.IsZero() || time.Since(s.terminalCheckAt) >= subscriptionTerminalCheckTTL {
+		state, stateErr := s.engine.subscriptionFunding.RequestRegistryState(ctx, s.requestID)
+		if stateErr != nil {
+			return fmt.Errorf("billing: check subscription terminal state: %w", stateErr)
+		}
+		s.terminalCheckAt = time.Now()
+		if state == "settled" || state == "refunded" {
+			s.subscriptionTerminal = true
+			s.markTerminalLocked(ctx)
+			return fmt.Errorf("%w: %s", ErrRequestClosed, s.requestID)
+		}
 	}
 
 	// N3：实时增量按当前分组的快照累计（跨组后旧快照不得继续使用）。
@@ -249,6 +310,31 @@ func emptyUsageFact(fact contract.UsageFact) bool {
 	return fact.Model == "" && usageIsZero(fact.Usage)
 }
 
+// markRequestSettled 写 request_registry.settled，并做有限退避重试。
+//
+// 为什么重试：delta 已经提交，registry 写失败会让兜底扫描在窗口后把已结算
+// 的预扣再退一次（用户多得额度，方向是「多退」）。写入本身是幂等 UPSERT，
+// 重试安全；仍失败时调用方只能告警并留给对账（G-DOM-36）。
+func (e *Engine) markRequestSettled(ctx context.Context, requestID string, userID int64) error {
+	backoff := [...]time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff[attempt-1]):
+			}
+		}
+		if err := e.subscriptionFunding.MarkRequestSettled(ctx, requestID, userID); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // RecoverStaleSubscriptionPreConsumes 扫描并幂等退款长期未结算的订阅预扣
 // （billing-06 §5.2；worker 每轮调用）。
 //
@@ -256,8 +342,10 @@ func emptyUsageFact(fact contract.UsageFact) bool {
 // now − 配置窗口（默认 15 分钟）；存储层同时排除 request_registry 已
 // settled/refunded 的记录。
 //
-// 【并发】MarkPreConsumeRefunded 在事务内 FOR UPDATE 并短路 refunded，因此
-// 与正常 Terminate/Refund 并发时最多一方退回额度；重复扫描无副作用。
+// 【并发】扫描与**所有**结算/退款入口（实时 Queue 的 Session.Terminate/
+// Refund 与任务 handoff）共用 requestID 结算锁（M1），因此「扫描判定未结算」
+// 与「正常收尾」不会交错；MarkPreConsumeRefunded 在事务内 FOR UPDATE 并短路
+// refunded 作为第二道幂等，重复扫描无副作用。
 //
 // 【令牌额度】预扣记录不存 tokenID，worker 无法回补令牌。这里只退订阅账户；
 // 令牌额度由请求所属租约的既有兜底路径处理（有租约时）或留在令牌上——

@@ -73,6 +73,20 @@ type Session struct {
 	// 这种会话没有自己的令牌扣减，也绝不能去退款：订阅记录由首个执行者持有，
 	// 重复退款会把额度退给错误的请求（LOW）。
 	subscriptionReplayed bool
+	// billingPreferenceText 是任务/恢复路径回填的偏好文本（结算日志键）。
+	// 这类会话没有 PreConsume 阶段的 fundingPlan，偏好由 handoff 在重建会话
+	// 时从资金接缝读取后冻结在这里（LOW：任务成功日志也带 billing_preference）。
+	billingPreferenceText string
+	// subscriptionTerminal / terminalCheckAt 是订阅增量路径的本地终态缓存
+	// （M2）：registry 的 settled/refunded 一旦观测到就永久拒绝新增量；
+	// 未观测到终态时按 subscriptionTerminalCheckTTL 节流查询，避免每个
+	// response.done 都打一次数据库。
+	subscriptionTerminal bool
+	terminalCheckAt      time.Time
+	// settlementLockHeld 表示调用方（handoff/worker）已经持有本 requestID 的
+	// 结算锁，会话内的订阅 Terminate/Refund 不得再次获取（Redis SETNX 不可
+	// 重入，二次获取会必然返回 ErrSettlementInProgress）。
+	settlementLockHeld bool
 
 	preConsumeCalled bool
 	settled          bool
@@ -818,11 +832,40 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 		return nil
 	}
 
+	// M1：与 Terminate/崩溃兜底共用 requestID 结算锁，锁内复核终态。
+	// handoff 已预取锁时 settlementLockHeld=true，这里不会二次获取。
+	releaseLock, lockErr := s.ensureSettlementLockLocked(ctx)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer releaseLock()
+	state, stateErr := s.engine.subscriptionFunding.RequestRegistryState(ctx, s.requestID)
+	if stateErr != nil {
+		return fmt.Errorf("billing: read subscription refund state for %s: %w", s.requestID, stateErr)
+	}
+	switch state {
+	case "settled":
+		// 结算已收尾：失败回调不得再退款（终态互斥）。
+		s.finishLocked(ctx, false)
+		return nil
+	case "refunded":
+		s.finishLocked(ctx, true)
+		return nil
+	}
+
 	if consumedRefunded > 0 {
-		if _, err := s.engine.subscriptionFunding.PostConsumeUserSubscriptionDelta(
-			ctx, s.subscriptionID, -consumedRefunded); err != nil {
+		// M3：带 `amount_used >= consumed` 守卫的回退。周期重置后守卫不命中，
+		// 本次回退缩为 no-op（方向安全），绝不用旧周期增量侵蚀新周期用量。
+		applied, err := s.engine.subscriptionFunding.RefundSubscriptionIncrement(
+			ctx, s.subscriptionID, consumedRefunded)
+		if err != nil {
 			// 增量未回退成功：保持 consumed 供重试；预扣也尚未退，幂等安全。
 			return fmt.Errorf("billing: reverse subscription increments: %w", err)
+		}
+		if !applied {
+			slog.Warn("billing: subscription increment refund skipped; amount_used no longer covers it (period reset or concurrent reversal)",
+				"request_id", s.requestID, "subscription_id", s.subscriptionID,
+				"increment_deducted", consumedRefunded)
 		}
 		s.consumed = 0
 	}
@@ -1031,6 +1074,29 @@ func (s *Session) markTerminalLocked(ctx context.Context) {
 	s.tokenDeducted = 0
 	s.stopHeartbeatLocked()
 	s.removeLeaseLocked(ctx)
+}
+
+// ensureSettlementLockLocked 确保本会话持有 requestID 结算锁（调用方持有 s.mu）。
+//
+// 订阅来源没有 wallet hold 行可做 CAS 锚点，结算/退款/崩溃兜底必须共用同一把
+// requestID 锁串行化（M1）：否则实时连接 Terminate 与恢复扫描可以在「扫描已
+// 判定未结算」之后交错落地，出现「已退款又结算」或「已结算又退款」。
+//
+// 已持有（handoff/worker 预取）时返回 no-op：Redis SETNX 不可重入，重复获取
+// 会必然失败。no-op 释放不会清 settlementLockHeld，由预取方负责释放。
+func (s *Session) ensureSettlementLockLocked(ctx context.Context) (func(), error) {
+	if s.settlementLockHeld {
+		return func() {}, nil
+	}
+	release, err := s.engine.acquireSettlementLock(ctx, s.requestID)
+	if err != nil {
+		return nil, err
+	}
+	s.settlementLockHeld = true
+	return func() {
+		s.settlementLockHeld = false
+		release()
+	}, nil
 }
 
 // adjustTokenToCostLocked 把令牌额度调整到最终结算成本（R-73）。
