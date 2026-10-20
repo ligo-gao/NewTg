@@ -739,5 +739,12 @@
   "nav.task_plugins": "Plugins de tâches",
   "nav.redemption_codes": "Codes de remboursement",
   "nav.models": "Modèles et fournisseurs",
-  "nav.performance": "Performances"
+  "nav.performance": "Performances",
+  "announcement_popup": {
+    "confirm": "J’ai compris",
+    "category_label": "Type d’annonce",
+    "category_notice": "Information",
+    "category_maintenance": "Maintenance",
+    "category_release": "Nouveauté"
+  }
 }

@@ -10,6 +10,7 @@ import { useState } from 'react'
 
 import { usePricingCapabilities } from '@/features/admin/pricing/use-pricing-capabilities'
 import { usePlaygroundEnabled } from '@/features/playground/visibility'
+import { AnnouncementPopup } from '@/features/shell/announcement-popup'
 import {
   CommandPalette,
   useCommandPaletteShortcut,
@@ -273,6 +274,11 @@ export function ConsoleLayout() {
       <main id="main" className="p-6">
         <Outlet />
       </main>
+      {/*
+       * 用户侧公告弹层（modules-01 归属，挂在控制台外壳）：只在布局渲染后
+       * 拉取生效中公告，不参与任何路由 loader，因此不阻塞导航。
+       */}
+      <AnnouncementPopup />
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}

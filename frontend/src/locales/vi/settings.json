@@ -56,7 +56,8 @@
     "module_system": "Lời nhắc hệ thống",
     "module_banner": "Biểu ngữ bảng điều khiển",
     "module_email": "Email",
-    "module_webhook": "Webhook"
+    "module_webhook": "Webhook",
+    "manage_announcements": "Quản lý thông báo"
   },
   "tab": {
     "site": "Trang",

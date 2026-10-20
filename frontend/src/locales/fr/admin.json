@@ -1294,5 +1294,130 @@
       "value_required": "Saisissez une valeur à conserver.",
       "value_range": "Saisissez un entier entre 1 et 36500."
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "Annonces",
+      "subtitle": "Publiez des informations, des maintenances et des nouveautés pour les utilisateurs connectés.",
+      "create": "Publier une annonce",
+      "offline_snapshot": "Hors ligne. La dernière liste chargée est affichée ; la publication est désactivée.",
+      "offline_write_disabled": "Hors ligne. La publication des modifications est désactivée jusqu’au retour de la connexion."
+    },
+    "loading": "Chargement des annonces…",
+    "filter": {
+      "status_label": "Statut",
+      "status_all": "Tous les statuts",
+      "category_label": "Catégorie",
+      "category_all": "Toutes les catégories"
+    },
+    "status": {
+      "draft": "Brouillon",
+      "published": "Publiée",
+      "expired": "Expirée",
+      "offline": "Hors ligne"
+    },
+    "category": {
+      "notice": "Information",
+      "maintenance": "Maintenance",
+      "release": "Nouveauté"
+    },
+    "columns": {
+      "title": "Titre",
+      "category": "Catégorie",
+      "status": "Statut",
+      "publish_at": "Prend effet",
+      "expire_at": "Expire",
+      "actions": "Actions"
+    },
+    "no_expiry": "Permanente",
+    "empty": {
+      "title": "Aucune annonce pour le moment",
+      "body": "Les annonces apparaissent dans la console des utilisateurs connectés après leur publication.",
+      "action": "Publier une annonce"
+    },
+    "error": {
+      "load": "Échec du chargement des annonces.",
+      "retry": "Réessayer",
+      "offline": "Connexion perdue. La dernière liste chargée est affichée.",
+      "not_found": "Cette annonce n’existe plus.",
+      "conflict": "L’annonce a été modifiée ailleurs. La liste a été actualisée.",
+      "action": "L’action a échoué. Veuillez réessayer."
+    },
+    "rate_limited": "Trop de requêtes. Veuillez réessayer plus tard.",
+    "rate_limited_retry": "Trop de requêtes. Réessayez dans {seconds} s.",
+    "toast": {
+      "saved": "Brouillon enregistré.",
+      "published": "Annonce publiée.",
+      "updated": "Annonce mise à jour.",
+      "offline": "Annonce retirée.",
+      "deleted": "Annonce supprimée."
+    },
+    "actions": {
+      "edit": "Modifier",
+      "publish": "Publier",
+      "offline": "Retirer",
+      "copy_link": "Copier le lien",
+      "delete": "Supprimer",
+      "edit_aria": "Modifier {title}",
+      "publish_aria": "Publier {title}",
+      "offline_aria": "Retirer {title}",
+      "copy_link_aria": "Copier le lien de la page des annonces pour {title}",
+      "delete_aria": "Supprimer {title}",
+      "copy_done": "Lien de la page des annonces copié.",
+      "copy_failed": "La copie a échoué. Veuillez copier l’adresse manuellement."
+    },
+    "confirm": {
+      "publish_title": "Publier l’annonce",
+      "publish_body": "Les utilisateurs la verront immédiatement. Publier maintenant ?",
+      "publish_confirm": "Publier",
+      "delete_title": "Supprimer l’annonce",
+      "delete_body": "Cette annonce sera définitivement supprimée. Cette action est irréversible.",
+      "delete_confirm": "Supprimer définitivement"
+    },
+    "pagination": {
+      "label": "Pagination des annonces",
+      "summary": "{from}–{to} sur {total}",
+      "page_size": "Lignes par page",
+      "previous": "Précédent",
+      "page_of": "Page {page} sur {pages}",
+      "next": "Suivant"
+    },
+    "drawer": {
+      "create_title": "Publier une annonce",
+      "edit_title": "Modifier l’annonce",
+      "load_error": "Échec du chargement de cette annonce.",
+      "title_label": "Titre",
+      "title_hint": "Jusqu’à {max} caractères.",
+      "title_required": "Saisissez un titre.",
+      "title_too_long": "Le titre doit contenir au plus {max} caractères.",
+      "category_label": "Catégorie",
+      "content_label": "Contenu (Markdown)",
+      "content_hint": "Le Markdown est rendu et assaini par le serveur.",
+      "content_required": "Saisissez le contenu de l’annonce.",
+      "content_too_long": "Le contenu doit faire au plus {max} octets UTF-8.",
+      "content_counter": "{used} / {max} octets · {chars} caractères",
+      "publish_at_label": "Prend effet",
+      "publish_at_readonly": "Déjà publiée : l’heure d’effet reste celle de la publication initiale (N-35).",
+      "publish_at_invalid": "Choisissez une heure d’effet valide.",
+      "expire_at_label": "Expire",
+      "expire_at_hint": "Laissez vide pour la conserver indéfiniment.",
+      "expire_at_invalid": "L’expiration doit être postérieure à l’heure d’effet.",
+      "expire_at_not_after": "L’expiration doit être postérieure à l’heure d’effet.",
+      "published_hint": "Cette annonce est publiée. L’enregistrement la met à jour sur place ; l’heure d’effet et l’heure de publication initiale ne changent pas.",
+      "offline_hint": "L’enregistrement d’une annonce retirée la remet en brouillon.",
+      "save_draft": "Enregistrer le brouillon",
+      "save_and_publish": "Enregistrer et publier",
+      "save_changes": "Enregistrer les modifications",
+      "saving": "Enregistrement…",
+      "publish_failed_rollback": "L’enregistrement et la publication ont échoué. Aucune modification n’a été enregistrée.",
+      "save_failed": "Échec de l’enregistrement de l’annonce.",
+      "error_offline": "Connexion perdue. Rien n’a été enregistré.",
+      "field_invalid": {
+        "title": "Vérifiez le titre.",
+        "content": "Vérifiez le contenu.",
+        "publish_at": "Vérifiez l’heure d’effet.",
+        "expire_at": "Vérifiez l’heure d’expiration."
+      }
+    }
   }
 }

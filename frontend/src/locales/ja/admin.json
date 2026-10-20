@@ -1294,5 +1294,130 @@
       "value_required": "保持値を入力してください。",
       "value_range": "1〜36500 の整数を入力してください。"
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "お知らせ",
+      "subtitle": "ログイン中のユーザーに告知・メンテナンス・更新情報を配信します。",
+      "create": "お知らせを公開",
+      "offline_snapshot": "オフラインです。最後に読み込んだ一覧を表示しています。公開操作は無効です。",
+      "offline_write_disabled": "オフラインです。接続が回復するまで変更を公開できません。"
+    },
+    "loading": "お知らせを読み込み中…",
+    "filter": {
+      "status_label": "ステータス",
+      "status_all": "すべてのステータス",
+      "category_label": "カテゴリ",
+      "category_all": "すべてのカテゴリ"
+    },
+    "status": {
+      "draft": "下書き",
+      "published": "公開中",
+      "expired": "期限切れ",
+      "offline": "非公開"
+    },
+    "category": {
+      "notice": "お知らせ",
+      "maintenance": "メンテナンス",
+      "release": "更新"
+    },
+    "columns": {
+      "title": "タイトル",
+      "category": "カテゴリ",
+      "status": "ステータス",
+      "publish_at": "有効開始",
+      "expire_at": "有効期限",
+      "actions": "操作"
+    },
+    "no_expiry": "無期限",
+    "empty": {
+      "title": "お知らせはまだありません",
+      "body": "公開されたお知らせは、ログイン中のユーザーのコンソールに表示されます。",
+      "action": "お知らせを公開"
+    },
+    "error": {
+      "load": "お知らせの読み込みに失敗しました。",
+      "retry": "再試行",
+      "offline": "ネットワーク接続が切断されました。最後に読み込んだ一覧を表示しています。",
+      "not_found": "このお知らせは存在しません。",
+      "conflict": "お知らせが別の場所で変更されました。一覧を更新しました。",
+      "action": "操作に失敗しました。もう一度お試しください。"
+    },
+    "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください。",
+    "rate_limited_retry": "リクエストが多すぎます。{seconds} 秒後に再試行してください。",
+    "toast": {
+      "saved": "下書きを保存しました。",
+      "published": "お知らせを公開しました。",
+      "updated": "お知らせを更新しました。",
+      "offline": "お知らせを非公開にしました。",
+      "deleted": "お知らせを削除しました。"
+    },
+    "actions": {
+      "edit": "編集",
+      "publish": "公開",
+      "offline": "非公開",
+      "copy_link": "リンクをコピー",
+      "delete": "削除",
+      "edit_aria": "{title} を編集",
+      "publish_aria": "{title} を公開",
+      "offline_aria": "{title} を非公開",
+      "copy_link_aria": "{title} のお知らせページのリンクをコピー",
+      "delete_aria": "{title} を削除",
+      "copy_done": "お知らせページのリンクをコピーしました。",
+      "copy_failed": "コピーに失敗しました。アドレスを手動でコピーしてください。"
+    },
+    "confirm": {
+      "publish_title": "お知らせを公開",
+      "publish_body": "公開するとユーザーにすぐ表示されます。公開しますか？",
+      "publish_confirm": "公開",
+      "delete_title": "お知らせを削除",
+      "delete_body": "このお知らせは完全に削除されます。この操作は元に戻せません。",
+      "delete_confirm": "完全に削除"
+    },
+    "pagination": {
+      "label": "お知らせのページ送り",
+      "summary": "{total} 件中 {from}–{to}",
+      "page_size": "1 ページの行数",
+      "previous": "前へ",
+      "page_of": "{pages} ページ中 {page} ページ",
+      "next": "次へ"
+    },
+    "drawer": {
+      "create_title": "お知らせを公開",
+      "edit_title": "お知らせを編集",
+      "load_error": "このお知らせの読み込みに失敗しました。",
+      "title_label": "タイトル",
+      "title_hint": "最大 {max} 文字。",
+      "title_required": "タイトルを入力してください。",
+      "title_too_long": "タイトルは最大 {max} 文字です。",
+      "category_label": "カテゴリ",
+      "content_label": "本文（Markdown）",
+      "content_hint": "Markdown はサーバー側でレンダリング・無害化されます。",
+      "content_required": "お知らせの本文を入力してください。",
+      "content_too_long": "本文は最大 {max} UTF-8 バイトです。",
+      "content_counter": "{used} / {max} バイト · {chars} 文字",
+      "publish_at_label": "有効開始",
+      "publish_at_readonly": "公開済みのため、有効開始時刻は公開時のまま変更されません（N-35）。",
+      "publish_at_invalid": "有効な開始時刻を選択してください。",
+      "expire_at_label": "有効期限",
+      "expire_at_hint": "空欄の場合は無期限で公開されます。",
+      "expire_at_invalid": "有効期限は有効開始より後にしてください。",
+      "expire_at_not_after": "有効期限は有効開始より後にしてください。",
+      "published_hint": "このお知らせは公開済みです。保存するとその場で更新され、有効開始時刻と初回公開時刻は変わりません。",
+      "offline_hint": "非公開のお知らせを保存すると下書きに戻ります。",
+      "save_draft": "下書きを保存",
+      "save_and_publish": "保存して公開",
+      "save_changes": "変更を保存",
+      "saving": "保存中…",
+      "publish_failed_rollback": "保存と公開に失敗しました。変更は保存されていません。",
+      "save_failed": "お知らせの保存に失敗しました。",
+      "error_offline": "ネットワーク接続が切断されました。何も保存されていません。",
+      "field_invalid": {
+        "title": "タイトルを確認してください。",
+        "content": "本文を確認してください。",
+        "publish_at": "有効開始時刻を確認してください。",
+        "expire_at": "有効期限を確認してください。"
+      }
+    }
   }
 }

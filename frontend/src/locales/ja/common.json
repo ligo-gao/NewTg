@@ -739,5 +739,12 @@
   "nav.task_plugins": "タスクプラグイン",
   "nav.redemption_codes": "引き換えコード",
   "nav.models": "モデルとプロバイダー",
-  "nav.performance": "パフォーマンス管理"
+  "nav.performance": "パフォーマンス管理",
+  "announcement_popup": {
+    "confirm": "了解しました",
+    "category_label": "お知らせの種類",
+    "category_notice": "お知らせ",
+    "category_maintenance": "メンテナンス",
+    "category_release": "更新"
+  }
 }

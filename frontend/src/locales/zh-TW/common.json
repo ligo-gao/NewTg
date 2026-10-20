@@ -739,5 +739,12 @@
   "nav.task_plugins": "任務外掛",
   "nav.redemption_codes": "兌換碼",
   "nav.models": "模型與供應商",
-  "nav.performance": "效能管理"
+  "nav.performance": "效能管理",
+  "announcement_popup": {
+    "confirm": "知道了",
+    "category_label": "公告類型",
+    "category_notice": "公告",
+    "category_maintenance": "維護",
+    "category_release": "更新"
+  }
 }

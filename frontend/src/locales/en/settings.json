@@ -56,7 +56,8 @@
     "module_system": "System prompt",
     "module_banner": "Console banner",
     "module_email": "Email",
-    "module_webhook": "Webhook"
+    "module_webhook": "Webhook",
+    "manage_announcements": "Manage announcements"
   },
   "tab": {
     "site": "Site",

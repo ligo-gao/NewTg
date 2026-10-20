@@ -1294,5 +1294,130 @@
       "value_required": "Enter a keep value.",
       "value_range": "Enter a whole number between 1 and 36500."
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "Announcements",
+      "subtitle": "Publish notices, maintenance windows and release updates to signed-in users.",
+      "create": "Publish announcement",
+      "offline_snapshot": "You are offline. Showing the last loaded list; publishing is disabled.",
+      "offline_write_disabled": "You are offline. Publishing changes is disabled until the connection returns."
+    },
+    "loading": "Loading announcements…",
+    "filter": {
+      "status_label": "Status",
+      "status_all": "All statuses",
+      "category_label": "Category",
+      "category_all": "All categories"
+    },
+    "status": {
+      "draft": "Draft",
+      "published": "Published",
+      "expired": "Expired",
+      "offline": "Offline"
+    },
+    "category": {
+      "notice": "Notice",
+      "maintenance": "Maintenance",
+      "release": "Release"
+    },
+    "columns": {
+      "title": "Title",
+      "category": "Category",
+      "status": "Status",
+      "publish_at": "Takes effect",
+      "expire_at": "Expires",
+      "actions": "Actions"
+    },
+    "no_expiry": "Permanent",
+    "empty": {
+      "title": "No announcements yet",
+      "body": "Announcements appear in the console for signed-in users after they are published.",
+      "action": "Publish announcement"
+    },
+    "error": {
+      "load": "Failed to load announcements.",
+      "retry": "Retry",
+      "offline": "Network connection lost. Showing the last loaded list.",
+      "not_found": "This announcement no longer exists.",
+      "conflict": "The announcement changed elsewhere. The list has been refreshed.",
+      "action": "The action failed. Please try again."
+    },
+    "rate_limited": "Too many requests. Please try again later.",
+    "rate_limited_retry": "Too many requests. Try again in {seconds} s.",
+    "toast": {
+      "saved": "Draft saved.",
+      "published": "Announcement published.",
+      "updated": "Announcement updated.",
+      "offline": "Announcement taken offline.",
+      "deleted": "Announcement deleted."
+    },
+    "actions": {
+      "edit": "Edit",
+      "publish": "Publish",
+      "offline": "Take offline",
+      "copy_link": "Copy link",
+      "delete": "Delete",
+      "edit_aria": "Edit {title}",
+      "publish_aria": "Publish {title}",
+      "offline_aria": "Take {title} offline",
+      "copy_link_aria": "Copy the announcements page link for {title}",
+      "delete_aria": "Delete {title}",
+      "copy_done": "Announcements page link copied.",
+      "copy_failed": "Copy failed. Please copy the address manually."
+    },
+    "confirm": {
+      "publish_title": "Publish announcement",
+      "publish_body": "Users will see it immediately. Publish now?",
+      "publish_confirm": "Publish",
+      "delete_title": "Delete announcement",
+      "delete_body": "This announcement will be permanently deleted. This action cannot be undone.",
+      "delete_confirm": "Delete permanently"
+    },
+    "pagination": {
+      "label": "Announcements pagination",
+      "summary": "{from}–{to} of {total}",
+      "page_size": "Rows per page",
+      "previous": "Previous",
+      "page_of": "Page {page} of {pages}",
+      "next": "Next"
+    },
+    "drawer": {
+      "create_title": "Publish announcement",
+      "edit_title": "Edit announcement",
+      "load_error": "Failed to load this announcement.",
+      "title_label": "Title",
+      "title_hint": "Up to {max} characters.",
+      "title_required": "Enter a title.",
+      "title_too_long": "The title must be at most {max} characters.",
+      "category_label": "Category",
+      "content_label": "Content (Markdown)",
+      "content_hint": "Markdown is rendered and sanitized by the server.",
+      "content_required": "Enter the announcement content.",
+      "content_too_long": "The content must be at most {max} UTF-8 bytes.",
+      "content_counter": "{used} / {max} bytes · {chars} characters",
+      "publish_at_label": "Takes effect",
+      "publish_at_readonly": "Already published: the effective time stays as originally published (N-35).",
+      "publish_at_invalid": "Choose a valid effective time.",
+      "expire_at_label": "Expires",
+      "expire_at_hint": "Leave empty to keep it published permanently.",
+      "expire_at_invalid": "The expiry must be later than the effective time.",
+      "expire_at_not_after": "The expiry must be later than the effective time.",
+      "published_hint": "This announcement is published. Saving updates it in place; the effective time and original publish time do not change.",
+      "offline_hint": "Saving a taken-down announcement returns it to draft.",
+      "save_draft": "Save draft",
+      "save_and_publish": "Save and publish",
+      "save_changes": "Save changes",
+      "saving": "Saving…",
+      "publish_failed_rollback": "Saving and publishing failed. No changes were saved.",
+      "save_failed": "Failed to save the announcement.",
+      "error_offline": "Network connection lost. Nothing was saved.",
+      "field_invalid": {
+        "title": "Check the title.",
+        "content": "Check the content.",
+        "publish_at": "Check the effective time.",
+        "expire_at": "Check the expiry time."
+      }
+    }
   }
 }

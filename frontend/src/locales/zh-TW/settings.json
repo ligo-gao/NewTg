@@ -56,7 +56,8 @@
     "module_system": "系統提示詞",
     "module_banner": "控制台橫幅",
     "module_email": "郵件",
-    "module_webhook": "Webhook"
+    "module_webhook": "Webhook",
+    "manage_announcements": "公告管理"
   },
   "tab": {
     "site": "網站",

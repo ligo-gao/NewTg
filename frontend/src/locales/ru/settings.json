@@ -56,7 +56,8 @@
     "module_system": "Системный запрос",
     "module_banner": "Баннер консоли",
     "module_email": "Почта",
-    "module_webhook": "Webhook"
+    "module_webhook": "Webhook",
+    "manage_announcements": "Управление объявлениями"
   },
   "tab": {
     "site": "Сайт",

@@ -67,6 +67,9 @@ function renderAt(path: string) {
 
 function guestHandlers() {
   server.use(
+    http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json(
         { type: 'unauthorized', title: 'Unauthorized' },
@@ -129,6 +132,9 @@ describe('route guard chain (web-00 §9.3)', () => {
   it('redirects the bare /admin path to the user list', async () => {
     server.use(
       http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
       http.get(`${ORIGIN}/api/me`, () =>
         HttpResponse.json({ username: 'root', role: 'admin', status: 'enabled' }),
       ),

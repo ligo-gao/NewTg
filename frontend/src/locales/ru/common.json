@@ -739,5 +739,12 @@
   "nav.task_plugins": "Плагины задач",
   "nav.redemption_codes": "Коды погашения",
   "nav.models": "Модели и поставщики",
-  "nav.performance": "Производительность"
+  "nav.performance": "Производительность",
+  "announcement_popup": {
+    "confirm": "Понятно",
+    "category_label": "Тип объявления",
+    "category_notice": "Уведомление",
+    "category_maintenance": "Обслуживание",
+    "category_release": "Обновление"
+  }
 }

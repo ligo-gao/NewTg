@@ -74,6 +74,9 @@ function renderAt(path: string) {
 
 function installSession() {
   server.use(
+    http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
     http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json({

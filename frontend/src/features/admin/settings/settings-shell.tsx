@@ -119,6 +119,20 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
             {t('settings.shell.dirty')}
           </p>
         ) : null}
+        {/*
+         * 公告管理入口（F-08-04）：公告是独立列表页，不进本 Shell 的 tab。
+         * 缺少 settings:manage 时不渲染——与页面 403 守卫同一权限口径。
+         * 用普通 <a>（而非 Router Link）是为了让 Shell 仍能在无路由上下文
+         * 的测试/嵌入场景渲染；它只做整页跳转，不参与 Shell 的脏标记。
+         */}
+        {canManage ? (
+          <a
+            href="/admin/settings/announcements"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            {t('settings.shell.manage_announcements')}
+          </a>
+        ) : null}
       </header>
 
       {!canManage && !meQuery.isPending ? (

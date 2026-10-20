@@ -1294,5 +1294,130 @@
       "value_required": "請輸入保留值。",
       "value_range": "請輸入 1–36500 之間的整數。"
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "公告管理",
+      "subtitle": "向已登入使用者發布通知、維護與更新公告。",
+      "create": "發布公告",
+      "offline_snapshot": "目前處於離線狀態。顯示上次載入的列表；發布操作已停用。",
+      "offline_write_disabled": "目前處於離線狀態，連線恢復前無法發布變更。"
+    },
+    "loading": "正在載入公告…",
+    "filter": {
+      "status_label": "狀態",
+      "status_all": "全部狀態",
+      "category_label": "分類",
+      "category_all": "全部分類"
+    },
+    "status": {
+      "draft": "草稿",
+      "published": "已發布",
+      "expired": "已過期",
+      "offline": "已下線"
+    },
+    "category": {
+      "notice": "公告",
+      "maintenance": "維護",
+      "release": "更新"
+    },
+    "columns": {
+      "title": "標題",
+      "category": "分類",
+      "status": "狀態",
+      "publish_at": "生效時間",
+      "expire_at": "過期時間",
+      "actions": "操作"
+    },
+    "no_expiry": "永久有效",
+    "empty": {
+      "title": "暫無公告",
+      "body": "公告發布後會顯示在已登入使用者的控制台中。",
+      "action": "發布公告"
+    },
+    "error": {
+      "load": "載入公告失敗。",
+      "retry": "重試",
+      "offline": "網路連線已中斷。顯示上次載入的列表。",
+      "not_found": "該公告已不存在。",
+      "conflict": "公告已被他人修改，列表已重新整理。",
+      "action": "操作失敗，請重試。"
+    },
+    "rate_limited": "請求過於頻繁，請稍後再試。",
+    "rate_limited_retry": "請求過於頻繁，請在 {seconds} 秒後重試。",
+    "toast": {
+      "saved": "草稿已儲存。",
+      "published": "公告已發布。",
+      "updated": "公告已更新。",
+      "offline": "公告已下線。",
+      "deleted": "公告已刪除。"
+    },
+    "actions": {
+      "edit": "編輯",
+      "publish": "發布",
+      "offline": "下線",
+      "copy_link": "複製連結",
+      "delete": "刪除",
+      "edit_aria": "編輯「{title}」",
+      "publish_aria": "發布「{title}」",
+      "offline_aria": "下線「{title}」",
+      "copy_link_aria": "複製「{title}」對應的公告頁連結",
+      "delete_aria": "刪除「{title}」",
+      "copy_done": "公告頁連結已複製。",
+      "copy_failed": "複製失敗，請手動複製位址。"
+    },
+    "confirm": {
+      "publish_title": "發布公告",
+      "publish_body": "發布後使用者立即可見，確認發布？",
+      "publish_confirm": "發布",
+      "delete_title": "刪除公告",
+      "delete_body": "刪除後無法復原。該公告將被永久刪除。",
+      "delete_confirm": "永久刪除"
+    },
+    "pagination": {
+      "label": "公告分頁",
+      "summary": "{from}–{to}，共 {total} 筆",
+      "page_size": "每頁筆數",
+      "previous": "上一頁",
+      "page_of": "第 {page} / {pages} 頁",
+      "next": "下一頁"
+    },
+    "drawer": {
+      "create_title": "發布公告",
+      "edit_title": "編輯公告",
+      "load_error": "載入公告失敗。",
+      "title_label": "標題",
+      "title_hint": "最多 {max} 個字元。",
+      "title_required": "請輸入標題。",
+      "title_too_long": "標題不能超過 {max} 個字元。",
+      "category_label": "分類",
+      "content_label": "內容（Markdown）",
+      "content_hint": "Markdown 由伺服器端渲染並淨化。",
+      "content_required": "請輸入公告內容。",
+      "content_too_long": "內容不能超過 {max} 個 UTF-8 位元組。",
+      "content_counter": "已用 {used} / {max} 位元組 · {chars} 個字元",
+      "publish_at_label": "生效時間",
+      "publish_at_readonly": "已發布公告的生效時間保持不變（N-35）。",
+      "publish_at_invalid": "請選擇有效的生效時間。",
+      "expire_at_label": "過期時間",
+      "expire_at_hint": "留空表示永久有效。",
+      "expire_at_invalid": "過期時間必須晚於生效時間。",
+      "expire_at_not_after": "過期時間必須晚於生效時間。",
+      "published_hint": "該公告已發布。儲存將原地更新內容；生效時間與首次發布時間不變。",
+      "offline_hint": "下線公告儲存後將回到草稿狀態。",
+      "save_draft": "儲存草稿",
+      "save_and_publish": "儲存並發布",
+      "save_changes": "儲存變更",
+      "saving": "儲存中…",
+      "publish_failed_rollback": "儲存並發布失敗，未儲存任何變更。",
+      "save_failed": "儲存公告失敗。",
+      "error_offline": "網路連線已中斷，未儲存任何變更。",
+      "field_invalid": {
+        "title": "請檢查標題。",
+        "content": "請檢查內容。",
+        "publish_at": "請檢查生效時間。",
+        "expire_at": "請檢查過期時間。"
+      }
+    }
   }
 }

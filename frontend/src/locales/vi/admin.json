@@ -1294,5 +1294,130 @@
       "value_required": "Hãy nhập giá trị giữ lại.",
       "value_range": "Hãy nhập số nguyên từ 1 đến 36500."
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "Thông báo",
+      "subtitle": "Đăng thông báo, lịch bảo trì và cập nhật cho người dùng đã đăng nhập.",
+      "create": "Đăng thông báo",
+      "offline_snapshot": "Đang ngoại tuyến. Hiển thị danh sách tải gần nhất; thao tác đăng đã bị tắt.",
+      "offline_write_disabled": "Đang ngoại tuyến. Không thể đăng thay đổi cho đến khi có kết nối lại."
+    },
+    "loading": "Đang tải thông báo…",
+    "filter": {
+      "status_label": "Trạng thái",
+      "status_all": "Tất cả trạng thái",
+      "category_label": "Danh mục",
+      "category_all": "Tất cả danh mục"
+    },
+    "status": {
+      "draft": "Bản nháp",
+      "published": "Đã đăng",
+      "expired": "Đã hết hạn",
+      "offline": "Đã gỡ"
+    },
+    "category": {
+      "notice": "Thông báo",
+      "maintenance": "Bảo trì",
+      "release": "Cập nhật"
+    },
+    "columns": {
+      "title": "Tiêu đề",
+      "category": "Danh mục",
+      "status": "Trạng thái",
+      "publish_at": "Có hiệu lực",
+      "expire_at": "Hết hạn",
+      "actions": "Thao tác"
+    },
+    "no_expiry": "Vĩnh viễn",
+    "empty": {
+      "title": "Chưa có thông báo nào",
+      "body": "Sau khi đăng, thông báo sẽ xuất hiện trong bảng điều khiển của người dùng đã đăng nhập.",
+      "action": "Đăng thông báo"
+    },
+    "error": {
+      "load": "Không tải được thông báo.",
+      "retry": "Thử lại",
+      "offline": "Mất kết nối mạng. Đang hiển thị danh sách tải gần nhất.",
+      "not_found": "Thông báo này không còn tồn tại.",
+      "conflict": "Thông báo đã được thay đổi ở nơi khác. Danh sách đã được làm mới.",
+      "action": "Thao tác thất bại. Vui lòng thử lại."
+    },
+    "rate_limited": "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
+    "rate_limited_retry": "Quá nhiều yêu cầu. Thử lại sau {seconds} giây.",
+    "toast": {
+      "saved": "Đã lưu bản nháp.",
+      "published": "Đã đăng thông báo.",
+      "updated": "Đã cập nhật thông báo.",
+      "offline": "Đã gỡ thông báo.",
+      "deleted": "Đã xóa thông báo."
+    },
+    "actions": {
+      "edit": "Sửa",
+      "publish": "Đăng",
+      "offline": "Gỡ xuống",
+      "copy_link": "Sao chép liên kết",
+      "delete": "Xóa",
+      "edit_aria": "Sửa {title}",
+      "publish_aria": "Đăng {title}",
+      "offline_aria": "Gỡ {title} xuống",
+      "copy_link_aria": "Sao chép liên kết trang thông báo cho {title}",
+      "delete_aria": "Xóa {title}",
+      "copy_done": "Đã sao chép liên kết trang thông báo.",
+      "copy_failed": "Sao chép thất bại. Vui lòng sao chép địa chỉ thủ công."
+    },
+    "confirm": {
+      "publish_title": "Đăng thông báo",
+      "publish_body": "Người dùng sẽ thấy ngay lập tức. Đăng bây giờ?",
+      "publish_confirm": "Đăng",
+      "delete_title": "Xóa thông báo",
+      "delete_body": "Thông báo này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
+      "delete_confirm": "Xóa vĩnh viễn"
+    },
+    "pagination": {
+      "label": "Phân trang thông báo",
+      "summary": "{from}–{to} trong {total}",
+      "page_size": "Số dòng mỗi trang",
+      "previous": "Trước",
+      "page_of": "Trang {page} / {pages}",
+      "next": "Sau"
+    },
+    "drawer": {
+      "create_title": "Đăng thông báo",
+      "edit_title": "Sửa thông báo",
+      "load_error": "Không tải được thông báo này.",
+      "title_label": "Tiêu đề",
+      "title_hint": "Tối đa {max} ký tự.",
+      "title_required": "Nhập tiêu đề.",
+      "title_too_long": "Tiêu đề tối đa {max} ký tự.",
+      "category_label": "Danh mục",
+      "content_label": "Nội dung (Markdown)",
+      "content_hint": "Markdown được máy chủ kết xuất và làm sạch.",
+      "content_required": "Nhập nội dung thông báo.",
+      "content_too_long": "Nội dung tối đa {max} byte UTF-8.",
+      "content_counter": "{used} / {max} byte · {chars} ký tự",
+      "publish_at_label": "Có hiệu lực",
+      "publish_at_readonly": "Đã đăng: thời điểm hiệu lực giữ nguyên như lần đăng đầu (N-35).",
+      "publish_at_invalid": "Chọn thời điểm hiệu lực hợp lệ.",
+      "expire_at_label": "Hết hạn",
+      "expire_at_hint": "Để trống để đăng vĩnh viễn.",
+      "expire_at_invalid": "Thời điểm hết hạn phải sau thời điểm hiệu lực.",
+      "expire_at_not_after": "Thời điểm hết hạn phải sau thời điểm hiệu lực.",
+      "published_hint": "Thông báo này đã được đăng. Lưu sẽ cập nhật tại chỗ; thời điểm hiệu lực và thời điểm đăng đầu tiên không thay đổi.",
+      "offline_hint": "Lưu thông báo đã gỡ sẽ đưa nó về bản nháp.",
+      "save_draft": "Lưu bản nháp",
+      "save_and_publish": "Lưu và đăng",
+      "save_changes": "Lưu thay đổi",
+      "saving": "Đang lưu…",
+      "publish_failed_rollback": "Lưu và đăng thất bại. Không có thay đổi nào được lưu.",
+      "save_failed": "Không lưu được thông báo.",
+      "error_offline": "Mất kết nối mạng. Không có gì được lưu.",
+      "field_invalid": {
+        "title": "Kiểm tra tiêu đề.",
+        "content": "Kiểm tra nội dung.",
+        "publish_at": "Kiểm tra thời điểm hiệu lực.",
+        "expire_at": "Kiểm tra thời điểm hết hạn."
+      }
+    }
   }
 }

@@ -739,5 +739,12 @@
   "nav.task_plugins": "任务插件",
   "nav.redemption_codes": "兑换码",
   "nav.models": "模型与供应商",
-  "nav.performance": "性能管理"
+  "nav.performance": "性能管理",
+  "announcement_popup": {
+    "confirm": "知道了",
+    "category_label": "公告类型",
+    "category_notice": "公告",
+    "category_maintenance": "维护",
+    "category_release": "更新"
+  }
 }

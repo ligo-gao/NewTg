@@ -1294,5 +1294,130 @@
       "value_required": "请输入保留值。",
       "value_range": "请输入 1–36500 之间的整数。"
     }
+  },
+  "announcements": {
+    "page": {
+      "title": "公告管理",
+      "subtitle": "向已登录用户发布通知、维护与更新公告。",
+      "create": "发布公告",
+      "offline_snapshot": "当前处于离线状态。显示上次加载的列表；发布操作已禁用。",
+      "offline_write_disabled": "当前处于离线状态，连接恢复前无法发布更改。"
+    },
+    "loading": "正在加载公告…",
+    "filter": {
+      "status_label": "状态",
+      "status_all": "全部状态",
+      "category_label": "分类",
+      "category_all": "全部分类"
+    },
+    "status": {
+      "draft": "草稿",
+      "published": "已发布",
+      "expired": "已过期",
+      "offline": "已下线"
+    },
+    "category": {
+      "notice": "公告",
+      "maintenance": "维护",
+      "release": "更新"
+    },
+    "columns": {
+      "title": "标题",
+      "category": "分类",
+      "status": "状态",
+      "publish_at": "生效时间",
+      "expire_at": "过期时间",
+      "actions": "操作"
+    },
+    "no_expiry": "永久有效",
+    "empty": {
+      "title": "暂无公告",
+      "body": "公告发布后会显示在已登录用户的控制台中。",
+      "action": "发布公告"
+    },
+    "error": {
+      "load": "加载公告失败。",
+      "retry": "重试",
+      "offline": "网络连接已断开。显示上次加载的列表。",
+      "not_found": "该公告已不存在。",
+      "conflict": "公告已被他人修改，列表已刷新。",
+      "action": "操作失败，请重试。"
+    },
+    "rate_limited": "请求过于频繁，请稍后重试。",
+    "rate_limited_retry": "请求过于频繁，请在 {seconds} 秒后重试。",
+    "toast": {
+      "saved": "草稿已保存。",
+      "published": "公告已发布。",
+      "updated": "公告已更新。",
+      "offline": "公告已下线。",
+      "deleted": "公告已删除。"
+    },
+    "actions": {
+      "edit": "编辑",
+      "publish": "发布",
+      "offline": "下线",
+      "copy_link": "复制链接",
+      "delete": "删除",
+      "edit_aria": "编辑「{title}」",
+      "publish_aria": "发布「{title}」",
+      "offline_aria": "下线「{title}」",
+      "copy_link_aria": "复制「{title}」对应的公告页链接",
+      "delete_aria": "删除「{title}」",
+      "copy_done": "公告页链接已复制。",
+      "copy_failed": "复制失败，请手动复制地址。"
+    },
+    "confirm": {
+      "publish_title": "发布公告",
+      "publish_body": "发布后用户立即可见，确认发布？",
+      "publish_confirm": "发布",
+      "delete_title": "删除公告",
+      "delete_body": "删除后不可恢复。该公告将被永久删除。",
+      "delete_confirm": "永久删除"
+    },
+    "pagination": {
+      "label": "公告分页",
+      "summary": "{from}–{to}，共 {total} 条",
+      "page_size": "每页条数",
+      "previous": "上一页",
+      "page_of": "第 {page} / {pages} 页",
+      "next": "下一页"
+    },
+    "drawer": {
+      "create_title": "发布公告",
+      "edit_title": "编辑公告",
+      "load_error": "加载公告失败。",
+      "title_label": "标题",
+      "title_hint": "最多 {max} 个字符。",
+      "title_required": "请输入标题。",
+      "title_too_long": "标题不能超过 {max} 个字符。",
+      "category_label": "分类",
+      "content_label": "内容（Markdown）",
+      "content_hint": "Markdown 由服务端渲染并净化。",
+      "content_required": "请输入公告内容。",
+      "content_too_long": "内容不能超过 {max} 个 UTF-8 字节。",
+      "content_counter": "已用 {used} / {max} 字节 · {chars} 个字符",
+      "publish_at_label": "生效时间",
+      "publish_at_readonly": "已发布公告的生效时间保持不变（N-35）。",
+      "publish_at_invalid": "请选择有效的生效时间。",
+      "expire_at_label": "过期时间",
+      "expire_at_hint": "留空表示永久有效。",
+      "expire_at_invalid": "过期时间必须晚于生效时间。",
+      "expire_at_not_after": "过期时间必须晚于生效时间。",
+      "published_hint": "该公告已发布。保存将原地更新内容；生效时间与首次发布时间不变。",
+      "offline_hint": "下线公告保存后将回到草稿状态。",
+      "save_draft": "保存草稿",
+      "save_and_publish": "保存并发布",
+      "save_changes": "保存更改",
+      "saving": "保存中…",
+      "publish_failed_rollback": "保存并发布失败，未保存任何更改。",
+      "save_failed": "保存公告失败。",
+      "error_offline": "网络连接已断开，未保存任何更改。",
+      "field_invalid": {
+        "title": "请检查标题。",
+        "content": "请检查内容。",
+        "publish_at": "请检查生效时间。",
+        "expire_at": "请检查过期时间。"
+      }
+    }
   }
 }

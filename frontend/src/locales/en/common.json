@@ -739,5 +739,12 @@
   "nav.task_plugins": "Task plugins",
   "nav.redemption_codes": "Redemption Codes",
   "nav.models": "Models & Vendors",
-  "nav.performance": "Performance"
+  "nav.performance": "Performance",
+  "announcement_popup": {
+    "confirm": "Got it",
+    "category_label": "Announcement type",
+    "category_notice": "Notice",
+    "category_maintenance": "Maintenance",
+    "category_release": "Update"
+  }
 }

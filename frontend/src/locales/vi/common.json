@@ -739,5 +739,12 @@
   "nav.task_plugins": "Plugin tác vụ",
   "nav.redemption_codes": "Mã đổi thưởng",
   "nav.models": "Mô hình và nhà cung cấp",
-  "nav.performance": "Hiệu năng"
+  "nav.performance": "Hiệu năng",
+  "announcement_popup": {
+    "confirm": "Đã hiểu",
+    "category_label": "Loại thông báo",
+    "category_notice": "Thông báo",
+    "category_maintenance": "Bảo trì",
+    "category_release": "Cập nhật"
+  }
 }

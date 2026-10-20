@@ -70,6 +70,9 @@ afterAll(() => server.close())
 
 function installSession(playground: boolean) {
   server.use(
+    http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json({
         username: 'alice',

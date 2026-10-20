@@ -103,6 +103,9 @@ function installShell(permissions: string[]) {
   installSettings()
   installEmptyList()
   server.use(
+    http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
     http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
     http.get(`${ORIGIN}/api/users`, () =>
       HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
@@ -187,6 +190,9 @@ describe('task plugins page shell (§6.10)', () => {
       http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
       http.get(`${ORIGIN}/api/users`, () =>
         HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
+      ),
+      http.get(`${ORIGIN}/api/announcements/active`, () =>
+        HttpResponse.json({ items: [] }),
       ),
     )
 

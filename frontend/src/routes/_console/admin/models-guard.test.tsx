@@ -39,6 +39,9 @@ afterAll(() => server.close())
 
 function installSession(role: 'admin' | 'user', permissions: string[]) {
   server.use(
+    http.get(`${ORIGIN}/api/announcements/active`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
     http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json({ username: 'alice', role, status: 'enabled', permissions }),

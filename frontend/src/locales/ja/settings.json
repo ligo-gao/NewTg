@@ -56,7 +56,8 @@
     "module_system": "システムプロンプト",
     "module_banner": "コンソールバナー",
     "module_email": "メール",
-    "module_webhook": "Webhook"
+    "module_webhook": "Webhook",
+    "manage_announcements": "お知らせの管理"
   },
   "tab": {
     "site": "サイト",

@@ -49,6 +49,7 @@ import { Route as ConsoleAdminPricingIndexRouteImport } from './routes/_console/
 import { Route as ConsoleAdminPricingGroupPricingRouteImport } from './routes/_console/admin/pricing/group-pricing'
 import { Route as ConsoleAdminPricingModelPricingRouteImport } from './routes/_console/admin/pricing/model-pricing'
 import { Route as ConsoleAdminSettingsIndexRouteImport } from './routes/_console/admin/settings/index'
+import { Route as ConsoleAdminSettingsAnnouncementsRouteImport } from './routes/_console/admin/settings/announcements'
 import { Route as ConsoleAdminSettingsNotificationTemplatesRouteImport } from './routes/_console/admin/settings/notification-templates'
 import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_console/admin/system/audit-logs'
 import { Route as ConsoleAdminSystemPerformanceRouteImport } from './routes/_console/admin/system/performance'
@@ -264,6 +265,12 @@ const ConsoleAdminSettingsIndexRoute =
     path: '/settings/',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSettingsAnnouncementsRoute =
+  ConsoleAdminSettingsAnnouncementsRouteImport.update({
+    id: '/settings/announcements',
+    path: '/settings/announcements',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminSettingsNotificationTemplatesRoute =
   ConsoleAdminSettingsNotificationTemplatesRouteImport.update({
     id: '/settings/notification-templates',
@@ -348,6 +355,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
@@ -396,6 +404,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof ConsoleDashboardIndexRoute
   '/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
@@ -447,6 +456,7 @@ export interface FileRoutesById {
   '/_console/dashboard/': typeof ConsoleDashboardIndexRoute
   '/_console/admin/pricing/group-pricing': typeof ConsoleAdminPricingGroupPricingRoute
   '/_console/admin/pricing/model-pricing': typeof ConsoleAdminPricingModelPricingRoute
+  '/_console/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/_console/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/_console/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
   '/_console/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
@@ -498,6 +508,7 @@ export interface FileRouteTypes {
     | '/dashboard/'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/settings/announcements'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
     | '/admin/system/performance'
@@ -546,6 +557,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/admin/pricing/group-pricing'
     | '/admin/pricing/model-pricing'
+    | '/admin/settings/announcements'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
     | '/admin/system/performance'
@@ -596,6 +608,7 @@ export interface FileRouteTypes {
     | '/_console/dashboard/'
     | '/_console/admin/pricing/group-pricing'
     | '/_console/admin/pricing/model-pricing'
+    | '/_console/admin/settings/announcements'
     | '/_console/admin/settings/notification-templates'
     | '/_console/admin/system/audit-logs'
     | '/_console/admin/system/performance'
@@ -913,6 +926,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSettingsIndexRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/settings/announcements': {
+      id: '/_console/admin/settings/announcements'
+      path: '/settings/announcements'
+      fullPath: '/admin/settings/announcements'
+      preLoaderRoute: typeof ConsoleAdminSettingsAnnouncementsRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/settings/notification-templates': {
       id: '/_console/admin/settings/notification-templates'
       path: '/settings/notification-templates'
@@ -977,6 +997,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
+  ConsoleAdminSettingsAnnouncementsRoute: typeof ConsoleAdminSettingsAnnouncementsRoute
   ConsoleAdminSettingsNotificationTemplatesRoute: typeof ConsoleAdminSettingsNotificationTemplatesRoute
   ConsoleAdminSystemAuditLogsRoute: typeof ConsoleAdminSystemAuditLogsRoute
   ConsoleAdminSystemPerformanceRoute: typeof ConsoleAdminSystemPerformanceRoute
@@ -995,6 +1016,8 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,
+  ConsoleAdminSettingsAnnouncementsRoute:
+    ConsoleAdminSettingsAnnouncementsRoute,
   ConsoleAdminSettingsNotificationTemplatesRoute:
     ConsoleAdminSettingsNotificationTemplatesRoute,
   ConsoleAdminSystemAuditLogsRoute: ConsoleAdminSystemAuditLogsRoute,
