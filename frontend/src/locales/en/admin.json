@@ -1519,7 +1519,7 @@
       "allow_wallet_overflow": "Allow wallet overflow",
       "allow_wallet_overflow_hint": "After the subscription quota is exhausted, usage may fall back to the wallet.",
       "model_scope": "Model Scope",
-      "model_scope_hint": "Admission filter only; it does not change prices. Leave empty for all models.",
+      "model_scope_hint": "Admission filter only; it does not change prices. All models or no models are chosen by the toggle above.",
       "all_models_toggle": "All models",
       "all_models_toggle_hint": "When off, only the models listed below are admitted. An empty list admits no model (not the same as all models).",
       "model_scope_row": "Model name {index}",

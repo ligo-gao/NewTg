@@ -1519,7 +1519,7 @@
       "allow_wallet_overflow": "Cho phép trừ vào ví",
       "allow_wallet_overflow_hint": "Sau khi hết hạn mức đăng ký, mức sử dụng vượt có thể trừ vào ví.",
       "model_scope": "Phạm vi mô hình",
-      "model_scope_hint": "Chỉ là bộ lọc đầu vào, không thay đổi giá. Để trống nghĩa là tất cả mô hình.",
+      "model_scope_hint": "Chỉ là bộ lọc đầu vào, không thay đổi giá. Tất cả mô hình hoặc không mô hình nào do công tắc phía trên chọn.",
       "all_models_toggle": "Tất cả mô hình",
       "all_models_toggle_hint": "Khi tắt, chỉ các mô hình được liệt kê bên dưới được chấp nhận. Danh sách trống không chấp nhận mô hình nào (khác với tất cả mô hình).",
       "model_scope_row": "Tên mô hình {index}",

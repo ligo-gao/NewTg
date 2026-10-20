@@ -1519,7 +1519,7 @@
       "allow_wallet_overflow": "ウォレットへの切り替えを許可",
       "allow_wallet_overflow_hint": "サブスクリプションのクォータを使い切った後、利用分をウォレットから差し引けるようにします。",
       "model_scope": "モデル範囲",
-      "model_scope_hint": "入場フィルターのみで、価格は変わりません。空欄はすべてのモデルです。",
+      "model_scope_hint": "入場フィルターのみで、価格は変わりません。全モデルかモデルなしは上のスイッチで選択します。",
       "all_models_toggle": "すべてのモデル",
       "all_models_toggle_hint": "オフにすると下記のモデルのみ許可します。空のリストはモデルを一切許可しません（すべてのモデルとは異なります）。",
       "model_scope_row": "モデル名 {index}",

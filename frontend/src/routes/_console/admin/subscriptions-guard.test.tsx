@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
@@ -61,11 +61,12 @@ function installSession(permissions: string[]) {
   )
 }
 
-function installPlans() {
+function installPlans(onRequest?: () => void) {
   server.use(
-    http.get(`${ORIGIN}/api/subscription-plans`, () =>
-      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
-    ),
+    http.get(`${ORIGIN}/api/subscription-plans`, () => {
+      onRequest?.()
+      return HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 })
+    }),
   )
 }
 
@@ -101,12 +102,20 @@ describe('/admin/subscriptions permission guard', () => {
   })
 
   it('does not redirect an admin holding settings:manage', async () => {
+    let planRequests = 0
     installSession(['settings:manage'])
-    installPlans()
+    installPlans(() => {
+      planRequests += 1
+    })
     const router = renderAt('/admin/subscriptions')
 
+    // The memory history already starts at /admin/subscriptions, so asserting
+    // the pathname alone would pass before an erroneous redirect could fire.
+    // Wait for evidence the guarded page actually rendered its data instead.
     await waitFor(() => {
-      expect(router.state.location.pathname).toBe('/admin/subscriptions')
+      expect(planRequests).toBeGreaterThan(0)
     })
+    expect(await screen.findByText('Subscription Plans')).toBeTruthy()
+    expect(router.state.location.pathname).toBe('/admin/subscriptions')
   })
 })

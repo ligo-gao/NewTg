@@ -1519,7 +1519,7 @@
       "allow_wallet_overflow": "Autoriser le débordement sur le portefeuille",
       "allow_wallet_overflow_hint": "Une fois le quota d’abonnement épuisé, l’usage peut être imputé au portefeuille.",
       "model_scope": "Portée des modèles",
-      "model_scope_hint": "Filtre d’admission uniquement ; ne change pas les prix. Laissez vide pour tous les modèles.",
+      "model_scope_hint": "Filtre d’admission uniquement ; ne change pas les prix. Tous les modèles ou aucun modèle se choisissent avec l’interrupteur ci-dessus.",
       "all_models_toggle": "Tous les modèles",
       "all_models_toggle_hint": "Désactivé, seuls les modèles listés ci-dessous sont admis. Une liste vide n’admet aucun modèle (ce n’est pas équivalent à tous les modèles).",
       "model_scope_row": "Nom du modèle {index}",

@@ -73,7 +73,9 @@ describe('SubscriptionPlanDrawer', () => {
       screen.getByText('Credits granted each period. 0 = unlimited.'),
     ).toBeTruthy()
     expect(
-      screen.getByText(/Leave empty for all models/),
+      screen.getByText(
+        /All models or no models are chosen by the toggle above/,
+      ),
     ).toBeTruthy()
     expect(
       (screen.getByLabelText('Grant Credits') as HTMLInputElement).value,

@@ -1519,7 +1519,7 @@
       "allow_wallet_overflow": "允許回落錢包",
       "allow_wallet_overflow_hint": "訂閱額度用盡後，超出的用量可改用錢包扣費。",
       "model_scope": "模型範圍",
-      "model_scope_hint": "僅作准入過濾，不改變價格。留空表示全部模型。",
+      "model_scope_hint": "僅作准入過濾，不改變價格；全部模型或不允許任何模型由上方開關選擇。",
       "all_models_toggle": "全部模型",
       "all_models_toggle_hint": "關閉後僅准入下方列出的模型；空清單表示不允許任何模型（與全部模型不同）。",
       "model_scope_row": "模型名稱 {index}",
