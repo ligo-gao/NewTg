@@ -3,6 +3,7 @@ package billing
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
@@ -32,6 +33,70 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 	if requestID == "" {
 		return ErrMissingRequestID
 	}
+
+	// S4b：订阅来源的任务/崩溃恢复结算。订阅预扣没有 wallet hold 行，
+	// 若继续走下面的钱包水合，空 fact 会直接 no-op（预扣记录永远停留在
+	// consumed，最终被兜底扫描误退），非空 fact 则会走「无 hold 补扣」把
+	// 成本再向钱包收一次。因此必须先识别订阅来源并按订阅语义重建会话。
+	if e.subscriptionFunding != nil {
+		ctx, cancel := opCtx()
+		defer cancel()
+		rec, ownerID, recErr := e.subscriptionFunding.PreConsumeRecord(ctx, requestID)
+		switch {
+		case recErr == nil:
+			if rec.Status == "refunded" {
+				// 已退款：终态互斥，不得再结算（否则同一请求双花）。
+				return nil
+			}
+			// 任务轮询器可能并发/重复调用。订阅没有 hold CAS 锚点，用
+			// requestID 结算锁 + request_registry 终态复核双重幂等：
+			// 已 settled/refunded 说明另一个执行者已经收尾。
+			release, lockErr := e.acquireSettlementLock(ctx, requestID)
+			if lockErr != nil {
+				return lockErr
+			}
+			defer release()
+			state, stateErr := e.subscriptionFunding.RequestRegistryState(ctx, requestID)
+			if stateErr != nil {
+				return fmt.Errorf("billing: read settlement state for %s: %w", requestID, stateErr)
+			}
+			if state == "settled" || state == "refunded" {
+				return nil
+			}
+			// 同步退款路径（S4a Refund）不写 registry，但会把记录置 refunded；
+			// 持锁后复核一次，避免「先退款、后结算」把已退额度再消耗一遍。
+			if latest, _, latestErr := e.subscriptionFunding.PreConsumeRecord(ctx, requestID); latestErr != nil {
+				return fmt.Errorf("billing: re-read subscription pre-consume for %s: %w", requestID, latestErr)
+			} else if latest.Status == "refunded" {
+				return nil
+			}
+			s := &Session{
+				engine:        e,
+				requestID:     requestID,
+				userID:        ownerID,
+				tokenID:       tokenID,
+				fundingSource: contract.FundingSubscription,
+				rc: &contract.RelayContext{
+					RequestID: requestID,
+					UserID:    int(ownerID),
+					TokenID:   int(tokenID),
+				},
+				// 水合订阅预扣与对应的令牌扣减；结算差额以它们为「已扣额」。
+				subscriptionID:          rec.SubscriptionID,
+				subscriptionPreConsumed: rec.PreConsumed,
+				preConsumed:             rec.PreConsumed,
+				tokenDeducted:           rec.PreConsumed,
+			}
+			// 空 fact 由 terminateSubscriptionLocked 按「预扣额即成本」结算
+			// （delta=0），不需要钱包的 terminateAtHeld 分支。
+			return s.Terminate(fact)
+		case errors.Is(recErr, store.ErrPreConsumeNotFound):
+			// 不是订阅来源：继续钱包路径。
+		default:
+			return fmt.Errorf("billing: read subscription pre-consume for %s: %w", requestID, recErr)
+		}
+	}
+
 	if fact.Model == "" && usageIsZero(fact.Usage) {
 		return e.terminateAtHeld(requestID, tokenID, fact)
 	}
@@ -167,6 +232,28 @@ func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) erro
 				// 任何回补（仓储侧本身也幂等，但令牌回补必须跳过）。
 				return nil
 			}
+			// 结算/退款终态互斥：registry 已 settled 说明成功结算已经收尾，
+			// 迟到的失败回调不得再退款（否则同一请求双花）。
+			state, stateErr := e.subscriptionFunding.RequestRegistryState(ctx, requestID)
+			if stateErr != nil {
+				return fmt.Errorf("billing: read settlement state for %s: %w", requestID, stateErr)
+			}
+			if state == "settled" {
+				return nil
+			}
+			// 与 TerminateByRequestIDForToken 共用同一把 requestID 结算锁：
+			// 结算与退款必须串行，否则「退款回退 amount_used」与「结算 delta」
+			// 可以交错落地。锁内复核记录状态，处理同步退款不发锁的窗口。
+			release, lockErr := e.acquireSettlementLock(ctx, requestID)
+			if lockErr != nil {
+				return lockErr
+			}
+			defer release()
+			if latest, _, latestErr := e.subscriptionFunding.PreConsumeRecord(ctx, requestID); latestErr != nil {
+				return fmt.Errorf("billing: re-read subscription pre-consume for %s: %w", requestID, latestErr)
+			} else if latest.Status == "refunded" {
+				return nil
+			}
 			s := &Session{
 				engine:        e,
 				requestID:     requestID,
@@ -186,7 +273,16 @@ func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) erro
 				preConsumed:             rec.PreConsumed,
 				tokenDeducted:           rec.PreConsumed,
 			}
-			return s.Refund()
+			if err := s.Refund(); err != nil {
+				return err
+			}
+			// 记录退款终态（幂等；已 settled 不降级）。失败只告警：预扣记录
+			// 已是 refunded，兜底扫描同样会排除它，不影响资金正确性。
+			if markErr := e.subscriptionFunding.MarkRequestRefunded(ctx, requestID, ownerID); markErr != nil {
+				slog.Warn("billing: record subscription refund state failed",
+					"request_id", requestID, "error", markErr)
+			}
+			return nil
 		case errors.Is(recErr, store.ErrPreConsumeNotFound):
 			// 不是订阅来源：继续走钱包路径。
 		default:

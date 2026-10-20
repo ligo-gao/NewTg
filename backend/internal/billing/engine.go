@@ -71,8 +71,22 @@ type SettlementOutcome struct {
 	// FundingSource 是本请求冻结的资金来源，用于 usage_logs.other 的
 	// billing_source 键（M4）。零值 = FundingWallet，保持既有日志口径。
 	FundingSource contract.FundingKind
-	ErrorClass    string
-	ErrorMessage  string
+
+	// 订阅结算快照（S4b；仅 FundingSource=subscription 时由 Terminate 填充）。
+	// 字段零值一律不写日志键（billing-08 §5.3 的「>0 / ≠0 才写」口径）。
+	SubscriptionID          int64  // subscription_id
+	SubscriptionPreConsumed int64  // subscription_pre_consumed（冻结的预扣额）
+	SubscriptionPostDelta   int64  // subscription_post_delta（可负）
+	SubscriptionPlanID      int64  // subscription_plan_id
+	SubscriptionPlanTitle   string // subscription_plan_title
+	SubscriptionTotal       int64  // subscription_total（amount_total>0 才写）
+	SubscriptionUsed        int64  // subscription_used
+	// BillingPreference 是用户偏好的落库文本（subscription_first 等）。
+	// 只在订阅来源时写 billing_preference；钱包路径保持既有日志口径不变。
+	BillingPreference string
+
+	ErrorClass   string
+	ErrorMessage string
 }
 
 // usage_logs.status 的整型枚举（backend/migrations-logs/20261018061805_init.up.sql）。

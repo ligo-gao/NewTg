@@ -48,6 +48,16 @@ type AbandonedRecoverer interface {
 	RecoverAbandonedByID(ctx context.Context, requestID string, tokenID int64) error
 }
 
+// StaleSubscriptionRecoverer 扫描并退款长期未结算的订阅预扣（S4b；
+// billing-06 §5.2 的「订阅预扣记录」状态面）。*Engine 是生产实现。
+//
+// 与 AbandonedLister 分开：钱包悬挂请求由 Redis 租约索引驱动，而订阅预扣
+// 的判据在主库幂等表上（created_at 窗口 + request_registry 终态），两者
+// 的候选集与幂等锚点不同，不能合并成一次扫描。
+type StaleSubscriptionRecoverer interface {
+	RecoverStaleSubscriptionPreConsumes(ctx context.Context, now time.Time, limit int) (int, error)
+}
+
 // WorkerDeps 是兜底循环的依赖与可调参数。
 //
 // 零值字段使用契约冻结值/默认值：
@@ -56,13 +66,16 @@ type AbandonedRecoverer interface {
 //   - Now 零值 → time.Now；Logger 零值 → slog.Default()；
 //   - EnsurePartitions 零值 → ensureUsagePartitionsFn。
 type WorkerDeps struct {
-	Abandoned         AbandonedLister
-	Recoverer         AbandonedRecoverer
-	LogsDB            *sql.DB // 日志库；nil 时跳过分区维护
-	Logger            *slog.Logger
-	Now               func() time.Time
-	ScanInterval      time.Duration
-	PartitionInterval time.Duration
+	Abandoned AbandonedLister
+	Recoverer AbandonedRecoverer
+	// SubscriptionRecoverer 是可选的订阅预扣兜底（nil 表示未装配订阅，
+	// 跳过该扫描；装配后每轮与悬挂请求扫描一起执行）。
+	SubscriptionRecoverer StaleSubscriptionRecoverer
+	LogsDB                *sql.DB // 日志库；nil 时跳过分区维护
+	Logger                *slog.Logger
+	Now                   func() time.Time
+	ScanInterval          time.Duration
+	PartitionInterval     time.Duration
 
 	// EnsurePartitions 覆盖分区维护函数（测试注入）；nil 用包级接缝。
 	EnsurePartitions func(ctx context.Context, logsDB *sql.DB, now time.Time) error
@@ -137,6 +150,7 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 	// 启动序：先保证日志分区存在，再处理悬挂请求（回收过程可能补写日志）。
 	ensure()
 	scanOnce(ctx, deps.Abandoned, deps.Recoverer, log, now)
+	recoverStaleSubscriptions(ctx, deps.SubscriptionRecoverer, log, now)
 
 	scanTicker := time.NewTicker(scanInterval)
 	defer scanTicker.Stop()
@@ -149,9 +163,32 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 			return nil
 		case <-scanTicker.C:
 			scanOnce(ctx, deps.Abandoned, deps.Recoverer, log, now)
+			recoverStaleSubscriptions(ctx, deps.SubscriptionRecoverer, log, now)
 		case <-partitionTicker.C:
 			ensure()
 		}
+	}
+}
+
+// recoverStaleSubscriptions 执行一轮订阅预扣兜底。
+//
+// nil 表示未装配订阅（纯钱包部署）：直接跳过，不产生任何日志噪声。
+// 扫描失败只记录并下一轮重试——与钱包悬挂扫描同一失败语义，绝不把
+// 「数据库不可用」当成「没有可退记录」。
+func recoverStaleSubscriptions(ctx context.Context, recoverer StaleSubscriptionRecoverer,
+	log *slog.Logger, now func() time.Time) {
+
+	if recoverer == nil {
+		return
+	}
+	recovered, err := recoverer.RecoverStaleSubscriptionPreConsumes(ctx, now(), subscriptionRecoveryScanLimit)
+	if err != nil {
+		log.Error("stale subscription pre-consume recovery failed; retrying next round",
+			"recovered", recovered, "error", err)
+		return
+	}
+	if recovered > 0 {
+		log.Info("recovered stale subscription pre-consume records", "count", recovered)
 	}
 }
 

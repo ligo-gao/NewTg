@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,15 @@ var (
 	// amount_used+amount 越上界），或实例已不在可消费状态。资金分派据此
 	// 继续尝试下一个候选；全部耗尽时由计费侧映射 402。
 	ErrSubscriptionQuotaInsufficient = errors.New("store: subscription quota insufficient")
+
+	// ErrSubscriptionSettleExceeded：结算增量会把 amount_used 推过 amount_total
+	// 上界（仅 amount_total>0 时成立）。与预扣的 ErrSubscriptionQuotaInsufficient
+	// 刻意区分：预扣失败可以继续尝试下一个候选，结算越界则只能拒绝本次结算、
+	// **保留已预扣额度**，不得部分结算（billing-08 §5.1）。
+	ErrSubscriptionSettleExceeded = errors.New("store: subscription settlement would exceed total")
+	// ErrSubscriptionDeltaOverflow：结算增量的整数运算溢出 int64（数据损坏/
+	// 恶意增量），必须拒绝而不是回绕出一个合法金额。
+	ErrSubscriptionDeltaOverflow = errors.New("store: subscription settlement delta overflows")
 )
 
 // ErrPlanReferenced 表示套餐仍被引用，删除被拒（HTTP 409）。
@@ -203,6 +213,14 @@ type SubscriptionRepo interface {
 	PreConsumeUserSubscription(ctx context.Context, requestID string, subscriptionID int64, amount int64) (rec SubscriptionPreConsume, created bool, err error)
 	GetPreConsume(ctx context.Context, requestID string) (SubscriptionPreConsume, error)
 	MarkPreConsumeRefunded(ctx context.Context, requestID string) error
+	// PostConsumeUserSubscriptionDelta 在结算时追加**可正可负**的已用额度增量
+	// （billing-04 §3.5 / billing-08 §5.1）：正为少补、负为多退，下界钳到 0；
+	// amount_total>0 且结果越界时拒绝。返回更新后的实例快照（成功日志键用）。
+	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (Subscription, error)
+	// ListStalePreConsumes 返回「已预扣但仍未结算/退款」且早于 before 的幂等
+	// 记录，供 worker 崩溃兜底（billing-06 §5.2）。request_registry 已进入
+	// settled/refunded 的记录被排除：正常结算/退款已经处理过它们。
+	ListStalePreConsumes(ctx context.Context, before time.Time, limit int) ([]SubscriptionPreConsume, error)
 }
 
 // SQLSubscriptionRepo 是 SubscriptionRepo 的 PostgreSQL 实现。
@@ -1123,8 +1141,126 @@ func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, reques
 	return nil
 }
 
-// nullableJSON 把空切片翻译为 SQL NULL：ModelScope 的 NULL 与 '[]' 语义
-// 不同（NULL=全部模型；'[]'=没有任何模型可用），不能互相顶替。
+// PostConsumeUserSubscriptionDelta 追加结算增量（billing-04 §3.5、billing-08 §5.1）。
+//
+// 语义（冻结）：
+//   - newUsed = max(amount_used + delta, 0)：订阅已用不得为负；
+//   - amount_total > 0 且 newUsed > amount_total → 拒绝（不得超卖）；调用方
+//     保留预扣、不做部分结算；
+//   - amount_total = 0 表示无限额度（R-D5-07），只守下界；
+//   - 行锁（SELECT ... FOR UPDATE）让并发结算/退款串行化，避免 read-modify-write
+//     丢更新。
+//
+// 【为什么返回整行而不是 error】成功日志需要同一次加锁读到的
+// amount_total/amount_used/plan_title_snapshot；结算后另起一次查询会与并发
+// 的预扣/重置产生不一致的「事后快照」。返回事务内看到的最终值，日志与账本
+// 同源。
+//
+// 【delta=0】空 fact / 按次结算不改变额度，但仍返回实例快照供日志使用；
+// 不加更新（避免无谓的 updated_at 写放大）。
+func (r *SQLSubscriptionRepo) PostConsumeUserSubscriptionDelta(ctx context.Context,
+	subscriptionID, delta int64) (Subscription, error) {
+	if subscriptionID <= 0 {
+		return Subscription{}, ErrSubscriptionInvalid
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: begin subscription delta(%d): %w", subscriptionID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sub, err := scanSubscription(tx.QueryRowContext(ctx,
+		`SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: lock subscription(%d): %w", subscriptionID, err)
+	}
+
+	newUsed := sub.AmountUsed
+	switch {
+	case delta > 0:
+		if sub.AmountUsed > math.MaxInt64-delta {
+			return Subscription{}, ErrSubscriptionDeltaOverflow
+		}
+		newUsed = sub.AmountUsed + delta
+	case delta < 0:
+		// 正数 + 负数不会溢出；结果可能落到 0 以下，按冻结语义钳到 0。
+		newUsed = sub.AmountUsed + delta
+		if newUsed < 0 {
+			newUsed = 0
+		}
+	}
+	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		// 事务回滚：本次 delta 完全不落地（不做部分结算）。
+		return Subscription{}, fmt.Errorf("%w: subscription %d used=%d delta=%d total=%d",
+			ErrSubscriptionSettleExceeded, subscriptionID, sub.AmountUsed, delta, sub.AmountTotal)
+	}
+	if newUsed != sub.AmountUsed {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE subscriptions SET amount_used = $2, updated_at = now()
+			 WHERE id = $1`, subscriptionID, newUsed); err != nil {
+			return Subscription{}, fmt.Errorf("store: apply subscription delta(%d): %w", subscriptionID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Subscription{}, fmt.Errorf("store: commit subscription delta(%d): %w", subscriptionID, err)
+	}
+	sub.AmountUsed = newUsed
+	return sub, nil
+}
+
+// ListStalePreConsumes 列出可被崩溃兜底退款的订阅预扣记录（billing-06 §5.2）。
+//
+// 判据：
+//   - status='consumed'：仍在预扣中（refunded 已退过，幂等短路由仓储保证，
+//     这里直接排除以减少扫描量）；
+//   - created_at < before：调用方按可配置窗口（默认 15 分钟）计算；
+//   - request_registry 中同 request_id 的记录不是 settled/refunded：
+//     registry 行缺失也纳入（M3 尚未写该表；缺失只表示没有相反证据）。
+//
+// 【为什么用 NOT EXISTS 而不是 JOIN】registry 是可选证据面，缺失必须继续
+// 处理；LEFT JOIN 需要额外的 NULL 判定，NOT EXISTS 直接表达「没有已结案
+// 证据」。
+//
+// ORDER BY/LIMIT 让每轮扫描有界且顺序稳定（积压时先处理最旧的记录）。
+func (r *SQLSubscriptionRepo) ListStalePreConsumes(ctx context.Context,
+	before time.Time, limit int) ([]SubscriptionPreConsume, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT r.request_id, r.subscription_id, r.status, r.pre_consumed, r.created_at
+		  FROM subscription_pre_consume_records r
+		 WHERE r.status = 'consumed'
+		   AND r.created_at < $1
+		   AND NOT EXISTS (
+		        SELECT 1 FROM request_registry rr
+		         WHERE rr.request_id = r.request_id
+		           AND rr.state IN ('settled', 'refunded'))
+		 ORDER BY r.created_at ASC, r.request_id ASC
+		 LIMIT $2`, before.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stale subscription pre-consume records: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]SubscriptionPreConsume, 0, limit)
+	for rows.Next() {
+		rec, scanErr := scanPreConsume(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan stale subscription pre-consume record: %w", scanErr)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate stale subscription pre-consume records: %w", err)
+	}
+	return out, nil
+}
+
+// nullableJSON 把空切片翻译为 SQL NULL：ModelScope 的 NULL 与 '[]' 语义// 不同（NULL=全部模型；'[]'=没有任何模型可用），不能互相顶替。
 func nullableJSON(value []byte) any {
 	if len(value) == 0 {
 		return nil

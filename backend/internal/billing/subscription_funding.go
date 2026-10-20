@@ -6,10 +6,9 @@ package billing
 // 冻结候选订阅，按四种偏好选择钱包或订阅；订阅侧先扣令牌额度，再走
 // `PreConsumeUserSubscription`，失败时补偿回滚令牌。
 //
-// 明确不在本文件：结算 delta（`PostConsumeUserSubscriptionDelta`）、
-// 日志键、崩溃恢复——它们属于 S4b。Session 对订阅来源的 Terminate /
-// ChargeIncrement / Reserve 因此只做「不碰钱包」的保护，真正的订阅结算
-// 由 S4b 接入。
+// 明确不在本文件：结算 delta、成功日志键、崩溃恢复——它们由 S4b 的
+// `subscription_settlement.go` 实现。Session 的 Terminate / ChargeIncrement
+// 在订阅来源下转发到那些入口，绝不落回钱包路径。
 
 import (
 	"context"
@@ -27,16 +26,30 @@ import (
 
 // SubscriptionAccount 是资金分派需要的订阅实例只读视图。
 //
-// 刻意不直接使用 store.Subscription：资金侧只依赖这 7 个字段，
+// 刻意不直接使用 store.Subscription：资金侧只依赖这 9 个字段，
 // 测试可以构造最小假仓储，而不必复制订阅表的全部快照列。
 type SubscriptionAccount struct {
 	ID                  int64
+	PlanID              int64  // 实例快照的 plan_id（日志键 subscription_plan_id）
+	PlanTitle           string // 实例快照的 plan_title（日志键 subscription_plan_title）
 	EndAt               time.Time
 	GraceDays           int32
 	AmountTotal         int64
 	AmountUsed          int64
 	AllowWalletOverflow bool
 	ModelScope          []byte
+}
+
+// SubscriptionSettlement 是结算增量落库后的订阅账户快照（S4b）。
+//
+// 成功日志的 subscription_plan_* / subscription_total/used/remain 必须与
+// 账本同源：这些值由同一次行锁事务返回，而不是结算后另起查询（并发预扣/
+// 重置会让事后查询与刚发生的 delta 不一致）。
+type SubscriptionSettlement struct {
+	PlanID      int64
+	PlanTitle   string
+	AmountTotal int64
+	AmountUsed  int64
 }
 
 // SubscriptionFundingSource 是订阅域对资金分派暴露的接缝
@@ -60,6 +73,25 @@ type SubscriptionFundingSource interface {
 	// 请求是否由订阅预扣」以及回补令牌所需的 userID。记录不存在时返回
 	// store.ErrPreConsumeNotFound（调用方回退到钱包路径）。
 	PreConsumeRecord(ctx context.Context, requestID string) (rec store.SubscriptionPreConsume, userID int64, err error)
+	// PostConsumeUserSubscriptionDelta 追加结算增量（可正可负），返回更新后的
+	// 实例快照。amount_total>0 越界时返回 store.ErrSubscriptionSettleExceeded，
+	// 调用方保留预扣、不做部分结算（billing-08 §5.1）。
+	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (SubscriptionSettlement, error)
+	// ListStalePreConsumes 返回早于 before 且尚未结算/退款的预扣记录
+	// （billing-06 §5.2 的崩溃兜底扫描）。
+	ListStalePreConsumes(ctx context.Context, before time.Time, limit int) ([]store.SubscriptionPreConsume, error)
+	// RequestRegistryState 读取 request_registry.state；行缺失返回空串。
+	//
+	// 订阅没有 wallet hold 行，结算幂等只能靠这张表：预扣记录本身只有
+	// consumed/refunded 两态，成功结算后仍是 consumed。registry 是
+	// 「已结算」的唯一持久化证据，也是兜底扫描排除已结案请求的判据。
+	RequestRegistryState(ctx context.Context, requestID string) (string, error)
+	// MarkRequestSettled 把 request_registry 置为 settled（幂等；已
+	// settled/refunded 时不回退状态）。
+	MarkRequestSettled(ctx context.Context, requestID string, userID int64) error
+	// MarkRequestRefunded 把 request_registry 置为 refunded（幂等；已 settled
+	// 时不降级——结算优先于迟到的退款回调）。
+	MarkRequestRefunded(ctx context.Context, requestID string, userID int64) error
 }
 
 // StoreSubscriptionFunding 把 store.SubscriptionRepo 适配为资金接缝。
@@ -109,6 +141,8 @@ func (f *StoreSubscriptionFunding) ListActiveSubscriptions(ctx context.Context, 
 	for _, sub := range subs {
 		out = append(out, SubscriptionAccount{
 			ID:                  sub.ID,
+			PlanID:              sub.PlanID,
+			PlanTitle:           sub.PlanTitleSnapshot,
 			EndAt:               sub.EndAt,
 			GraceDays:           sub.GraceDays,
 			AmountTotal:         sub.AmountTotal,
@@ -147,6 +181,82 @@ func (f *StoreSubscriptionFunding) PreConsumeRecord(ctx context.Context, request
 			"billing: read subscription %d of pre-consume %s: %w", rec.SubscriptionID, requestID, err)
 	}
 	return rec, sub.UserID, nil
+}
+
+// PostConsumeUserSubscriptionDelta 转发结算增量并裁剪为资金侧快照。
+func (f *StoreSubscriptionFunding) PostConsumeUserSubscriptionDelta(ctx context.Context,
+	subscriptionID, delta int64) (SubscriptionSettlement, error) {
+	sub, err := f.repo.PostConsumeUserSubscriptionDelta(ctx, subscriptionID, delta)
+	if err != nil {
+		return SubscriptionSettlement{}, err
+	}
+	return SubscriptionSettlement{
+		PlanID:      sub.PlanID,
+		PlanTitle:   sub.PlanTitleSnapshot,
+		AmountTotal: sub.AmountTotal,
+		AmountUsed:  sub.AmountUsed,
+	}, nil
+}
+
+// ListStalePreConsumes 转发崩溃兜底扫描。
+func (f *StoreSubscriptionFunding) ListStalePreConsumes(ctx context.Context,
+	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	return f.repo.ListStalePreConsumes(ctx, before, limit)
+}
+
+// RequestRegistryState 读取结算幂等状态（行缺失 = 空串）。
+func (f *StoreSubscriptionFunding) RequestRegistryState(ctx context.Context, requestID string) (string, error) {
+	var state string
+	err := f.db.QueryRowContext(ctx,
+		`SELECT state FROM request_registry WHERE request_id = $1`, requestID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("billing: read request registry state for %s: %w", requestID, err)
+	}
+	return state, nil
+}
+
+// MarkRequestSettled 记录订阅结算已完成。
+//
+// 用 UPSERT 而不是 INSERT：兜底扫描/任务轮询可能已经把行写成 in_flight
+// 或 failed，结算成功仍然是更强的终态证据。WHERE 子句保证 settled/refunded
+// 永远不会被降级（终态互斥）。
+//
+// 为什么放在资金适配器而不是 store.SubscriptionRepo：request_registry 是
+// 平台级结算幂等锚（platform-04 V9），不是订阅域表；只有订阅路径需要它，
+// 没必要扩大订阅仓储的职责面。
+func (f *StoreSubscriptionFunding) MarkRequestSettled(ctx context.Context,
+	requestID string, userID int64) error {
+	if _, err := f.db.ExecContext(ctx, `
+		INSERT INTO request_registry (request_id, user_id, state, settled_at)
+		VALUES ($1, $2, 'settled', now())
+		ON CONFLICT (request_id) DO UPDATE
+		   SET state = 'settled', settled_at = now()
+		 WHERE request_registry.state NOT IN ('settled', 'refunded')`,
+		requestID, userID); err != nil {
+		return fmt.Errorf("billing: mark request %s settled: %w", requestID, err)
+	}
+	return nil
+}
+
+// MarkRequestRefunded 记录订阅退款已完成（与 MarkRequestSettled 对称）。
+//
+// 已 settled 的行不降级：结算一旦成功，迟到的失败回调不得把终态改写成
+// 退款。已 refunded 重复写入是幂等的。
+func (f *StoreSubscriptionFunding) MarkRequestRefunded(ctx context.Context,
+	requestID string, userID int64) error {
+	if _, err := f.db.ExecContext(ctx, `
+		INSERT INTO request_registry (request_id, user_id, state, refunded_at)
+		VALUES ($1, $2, 'refunded', now())
+		ON CONFLICT (request_id) DO UPDATE
+		   SET state = 'refunded', refunded_at = now()
+		 WHERE request_registry.state <> 'settled'`,
+		requestID, userID); err != nil {
+		return fmt.Errorf("billing: mark request %s refunded: %w", requestID, err)
+	}
+	return nil
 }
 
 // fundingPlan 是一次请求冻结下来的来源选择结果。

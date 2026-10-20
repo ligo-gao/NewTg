@@ -384,7 +384,7 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		errorMessage:     nullString(truncateLogText(outcome.ErrorMessage, 500)),
 	}
 
-	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome.FundingSource))
+	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome))
 	if err != nil {
 		// other 只由本文件构造（字符串/数字/嵌套 map），Marshal 失败只可能
 		// 来自 QuotaClamp.Original 之类的非有限值；ClampAuditMap 已做 JSON
@@ -409,6 +409,8 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 //   - public 顶层平铺：request_path / frt / upstream_model_name /
 //     is_model_mapped / applied_discount / billing_source /
 //     usage_semantic / billing_mode / expr_b64；
+//   - 订阅来源成功日志额外写 billing_preference 与 subscription_* 快照
+//     （billing-08 §5.3）：所有值来自结算结果，不做二次查询；
 //   - admin_info：quota_saturation（4 键 op/kind/original/clamped）。
 //
 // **禁止 estimated_* 键**（billing-00 §11、billing-07 §6.9）：估算值在结果
@@ -420,9 +422,9 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 // discount_target 也无处取值。该缺口登记在 task-6-report，待契约补字段后
 // 由本函数补写（billing-04 §2.6 要求的两个 public 键）。
 func buildUsageLogOther(rc *contract.RelayContext,
-	model string, firstToken sql.NullInt64, funding contract.FundingKind) map[string]any {
+	model string, firstToken sql.NullInt64, outcome SettlementOutcome) map[string]any {
 
-	other := make(map[string]any, 6)
+	other := make(map[string]any, 14)
 
 	if rc.RequestPath != "" {
 		setPublicKey(other, "request_path", rc.RequestPath)
@@ -438,10 +440,49 @@ func buildUsageLogOther(rc *contract.RelayContext,
 	// 资金来源来自调用方冻结的选择（S4a 起订阅失败退款会传 subscription）；
 	// 不能从本函数的上下文猜测，否则同一请求的退款日志会误记为钱包。
 	billingSource := "wallet"
-	if funding == contract.FundingSubscription {
+	if outcome.FundingSource == contract.FundingSubscription {
 		billingSource = "subscription"
 	}
 	setPublicKey(other, "billing_source", billingSource)
+
+	if outcome.FundingSource == contract.FundingSubscription {
+		// 订阅来源成功/退款日志的专用键（billing-08 §5.3）。零值不写：
+		// 空 fact 的按预扣额结算没有 plan 快照时才可能缺失，宁缺勿造。
+		if outcome.BillingPreference != "" {
+			setPublicKey(other, "billing_preference", outcome.BillingPreference)
+		}
+		if outcome.SubscriptionID > 0 {
+			setPublicKey(other, "subscription_id", outcome.SubscriptionID)
+		}
+		if outcome.SubscriptionPlanID > 0 {
+			setPublicKey(other, "subscription_plan_id", outcome.SubscriptionPlanID)
+		}
+		if outcome.SubscriptionPlanTitle != "" {
+			setPublicKey(other, "subscription_plan_title", outcome.SubscriptionPlanTitle)
+		}
+		if outcome.SubscriptionTotal > 0 {
+			setPublicKey(other, "subscription_total", outcome.SubscriptionTotal)
+			setPublicKey(other, "subscription_used", outcome.SubscriptionUsed)
+			remain := outcome.SubscriptionTotal - outcome.SubscriptionUsed
+			if remain < 0 {
+				remain = 0
+			}
+			setPublicKey(other, "subscription_remain", remain)
+		}
+		if outcome.SubscriptionPreConsumed > 0 {
+			setPublicKey(other, "subscription_pre_consumed", outcome.SubscriptionPreConsumed)
+		}
+		if outcome.SubscriptionPostDelta != 0 {
+			setPublicKey(other, "subscription_post_delta", outcome.SubscriptionPostDelta)
+		}
+		// 「本次请求订阅消耗」只在成功结算时有意义；退款/失败日志不写消费。
+		if outcome.Status == UsageLogStatusSuccess && outcome.Cost > 0 {
+			setPublicKey(other, "subscription_consumed", outcome.Cost)
+		}
+		// 订阅计费不扣钱包（billing-07 §6.4：固定 0），显式写出让对账方
+		// 不必依赖「键缺失 = 0」的隐含约定。
+		setPublicKey(other, "wallet_quota_deducted", int64(0))
+	}
 
 	// 折扣日志：0<rate<1 才可判定为「命中且未全免」；rate=0 与零值无法
 	// 区分（见上方契约缺口注释），不在本函数猜测。

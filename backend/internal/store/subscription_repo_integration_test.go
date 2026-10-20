@@ -1168,3 +1168,160 @@ func TestSubscriptionRefundRaceWithResetIsNoop(t *testing.T) {
 		t.Fatalf("部分竞态后退款 amount_used = %d，want 50（no-op）", used)
 	}
 }
+
+// TestSubscriptionPostConsumeDelta 覆盖 S4b 结算增量的数据层语义
+// （billing-04 §3.5 / billing-08 §5.1）：正追加、负回退、下界 0、上界拒绝、
+// amount_total=0 无限额度、delta=0 返回快照但不改写。
+func TestSubscriptionPostConsumeDelta(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4b-delta")
+	now := time.Now().UTC()
+	sub := createTestSubscription(t, repo, plan, 900101, now.Add(-time.Hour), now.Add(time.Hour), nil)
+
+	got, err := repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 120)
+	if err != nil {
+		t.Fatalf("delta +120: %v", err)
+	}
+	if got.AmountUsed != 120 || got.AmountTotal != 1000 || got.PlanID != plan.ID ||
+		got.PlanTitleSnapshot != plan.Title {
+		t.Fatalf("delta +120 返回快照 = %+v，字段不符", got)
+	}
+
+	got, err = repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, -40)
+	if err != nil || got.AmountUsed != 80 {
+		t.Fatalf("delta -40 = %d/%v，want 80/nil", got.AmountUsed, err)
+	}
+
+	// 下界 0：负增量不得把已用推到负数。
+	got, err = repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, -1000)
+	if err != nil || got.AmountUsed != 0 {
+		t.Fatalf("delta -1000 = %d/%v，want 0/nil", got.AmountUsed, err)
+	}
+
+	// delta=0：返回快照、不加更新。
+	got, err = repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 0)
+	if err != nil || got.AmountUsed != 0 {
+		t.Fatalf("delta 0 = %d/%v，want 0/nil", got.AmountUsed, err)
+	}
+
+	// 上界拒绝：结果 1001 > amount_total 1000，事务不落地。
+	if _, err := repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 1001); !errors.Is(err, ErrSubscriptionSettleExceeded) {
+		t.Fatalf("越上界 err = %v，want ErrSubscriptionSettleExceeded", err)
+	}
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	if used != 0 {
+		t.Fatalf("越界拒绝后 amount_used = %d，want 0（不做部分结算）", used)
+	}
+
+	// 恰好到上界允许。
+	if got, err = repo.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 1000); err != nil || got.AmountUsed != 1000 {
+		t.Fatalf("delta 到上界 = %d/%v，want 1000/nil", got.AmountUsed, err)
+	}
+
+	if _, err := repo.PostConsumeUserSubscriptionDelta(ctx, 1<<60, 1); !errors.Is(err, ErrSubscriptionNotFound) {
+		t.Fatalf("不存在实例 err = %v，want ErrSubscriptionNotFound", err)
+	}
+
+	// amount_total=0 = 无限额度：只守下界，不设上界（R-D5-07）。
+	unlimited := SubscriptionCreateInput{
+		UserID: 900102, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		AmountTotal: 0, Currency: plan.Currency, PricePaidAmount: 0,
+		PeriodDays: plan.PeriodDays, ResetOnRenew: true,
+	}
+	inf, err := repo.CreateSubscription(ctx, unlimited)
+	if err != nil {
+		t.Fatalf("create unlimited: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM subscriptions WHERE id = $1`, inf.ID) })
+	if got, err = repo.PostConsumeUserSubscriptionDelta(ctx, inf.ID, 1<<40); err != nil || got.AmountUsed != 1<<40 {
+		t.Fatalf("无限额度 delta = %d/%v，want 1<<40/nil", got.AmountUsed, err)
+	}
+}
+
+// TestSubscriptionListStalePreConsumes 覆盖崩溃兜底扫描的候选集
+// （billing-06 §5.2）：旧 consumed 命中；refunded、未到窗口、以及
+// request_registry 已 settled/refunded 的记录被排除；failed 不排除。
+func TestSubscriptionListStalePreConsumes(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4b-stale")
+	now := time.Now().UTC()
+	sub := createTestSubscription(t, repo, plan, 900103, now.Add(-time.Hour), now.Add(time.Hour), nil)
+
+	insert := func(pre int64) string {
+		req := subscriptionRequestID(t)
+		if _, created, err := repo.PreConsumeUserSubscription(ctx, req, sub.ID, pre); err != nil || !created {
+			t.Fatalf("preconsume %s = %v/%v", req, created, err)
+		}
+		return req
+	}
+	backdate := func(req string, at time.Time) {
+		if _, err := db.Exec(`UPDATE subscription_pre_consume_records SET created_at = $2 WHERE request_id = $1`, req, at); err != nil {
+			t.Fatalf("backdate %s: %v", req, err)
+		}
+	}
+	setRegistry := func(req, state string) {
+		// request_registry 的主键与预扣表同为 uuid；user_id 无 FK。
+		if _, err := db.Exec(`INSERT INTO request_registry (request_id, user_id, state) VALUES ($1, $2, $3)`,
+			req, 900103, state); err != nil {
+			t.Fatalf("insert request_registry %s: %v", req, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM request_registry WHERE user_id = 900103`)
+	})
+
+	oldConsumed := insert(50)
+	backdate(oldConsumed, now.Add(-20*time.Minute))
+
+	refunded := insert(40)
+	backdate(refunded, now.Add(-20*time.Minute))
+	if err := repo.MarkPreConsumeRefunded(ctx, refunded); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+
+	fresh := insert(30) // created_at = now，未到窗口
+	_ = fresh
+
+	settled := insert(20)
+	backdate(settled, now.Add(-20*time.Minute))
+	setRegistry(settled, "settled")
+
+	registryRefunded := insert(20)
+	backdate(registryRefunded, now.Add(-20*time.Minute))
+	setRegistry(registryRefunded, "refunded")
+
+	failedState := insert(10)
+	backdate(failedState, now.Add(-20*time.Minute))
+	setRegistry(failedState, "failed")
+
+	list, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), 100)
+	if err != nil {
+		t.Fatalf("ListStalePreConsumes: %v", err)
+	}
+	got := map[string]bool{}
+	for _, rec := range list {
+		got[rec.RequestID] = true
+	}
+	if len(got) != 2 || !got[oldConsumed] || !got[failedState] {
+		t.Fatalf("stale 候选 = %v，want 仅 %s 与 %s", got, oldConsumed, failedState)
+	}
+	for _, req := range []string{refunded, settled, registryRefunded, fresh} {
+		if got[req] {
+			t.Fatalf("不应纳入 %s（已退款/已结案/未到窗口）", req)
+		}
+	}
+
+	// LIMIT 生效（有界扫描）。
+	limited, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), 1)
+	if err != nil || len(limited) != 1 {
+		t.Fatalf("limit=1 返回 %d 条/%v，want 1/nil", len(limited), err)
+	}
+}

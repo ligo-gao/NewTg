@@ -530,10 +530,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	}()
 
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
-		Abandoned: registry,
-		Recoverer: engine,
-		LogsDB:    sqlLogs,
-		Logger:    log,
+		Abandoned:             registry,
+		Recoverer:             engine,
+		SubscriptionRecoverer: engine,
+		LogsDB:                sqlLogs,
+		Logger:                log,
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。

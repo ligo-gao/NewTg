@@ -97,6 +97,65 @@ func workerTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// workerTestSubscriptionRecoverer 记录订阅兜底扫描的调用轮次与错误。
+type workerTestSubscriptionRecoverer struct {
+	mu    sync.Mutex
+	calls int
+	last  time.Time
+	err   error
+}
+
+func (r *workerTestSubscriptionRecoverer) RecoverStaleSubscriptionPreConsumes(
+	_ context.Context, now time.Time, _ int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.last = now
+	return 0, r.err
+}
+
+func (r *workerTestSubscriptionRecoverer) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// TestWorkerLoopScansStaleSubscriptionPreConsumes 验证订阅兜底与悬挂扫描
+// 每轮一起执行；nil 装配时跳过（纯钱包部署）。
+func TestWorkerLoopScansStaleSubscriptionPreConsumes(t *testing.T) {
+	lister := &workerTestLister{}
+	recoverer := &workerTestRecoverer{}
+	subs := &workerTestSubscriptionRecoverer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWorkerLoop(ctx, WorkerDeps{
+			Abandoned:             lister,
+			Recoverer:             recoverer,
+			SubscriptionRecoverer: subs,
+			Logger:                workerTestLogger(),
+			ScanInterval:          5 * time.Millisecond,
+		})
+	}()
+
+	// 启动即扫一轮 + 周期扫描；至少 2 轮证明接入了循环而不只是启动钩子。
+	workerWaitFor(t, func() bool { return subs.callCount() >= 2 }, "repeated subscription recovery scans")
+	if subs.last.IsZero() {
+		t.Fatal("订阅兜底未收到 now 参数")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWorkerLoop = %v，want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunWorkerLoop did not exit after cancel")
+	}
+}
+
 func workerWaitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

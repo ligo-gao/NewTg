@@ -57,6 +57,17 @@ type fakeSubscriptionFunding struct {
 	listCalls       int
 	// markFailures 是前 N 次退款调用返回错误（验证 3 次退避重试）。
 	markFailures int
+	// postDeltaCalls 记录结算增量；postDeltaErr 非 nil 时直接返回。
+	postDeltaCalls []subscriptionDeltaCall
+	postDeltaErr   error
+	listStaleErr   error
+	registry       map[string]string
+}
+
+// subscriptionDeltaCall 是一次结算增量调用（断言用）。
+type subscriptionDeltaCall struct {
+	subscriptionID int64
+	delta          int64
 }
 
 func newFakeSubscriptionFunding(pref contract.BillingPreference, subs ...SubscriptionAccount) *fakeSubscriptionFunding {
@@ -66,6 +77,7 @@ func newFakeSubscriptionFunding(pref contract.BillingPreference, subs ...Subscri
 		used:       map[int64]int64{},
 		records:    map[string]store.SubscriptionPreConsume{},
 		owners:     map[string]int64{},
+		registry:   map[string]string{},
 	}
 }
 
@@ -152,6 +164,99 @@ func (f *fakeSubscriptionFunding) PreConsumeRecord(_ context.Context, requestID 
 	return rec, f.owners[requestID], nil
 }
 
+// PostConsumeUserSubscriptionDelta 按 store 语义实现：下界 0、上界拒绝、
+// delta=0 仍返回快照。
+func (f *fakeSubscriptionFunding) PostConsumeUserSubscriptionDelta(_ context.Context,
+	subscriptionID, delta int64) (SubscriptionSettlement, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.postDeltaCalls = append(f.postDeltaCalls, subscriptionDeltaCall{subscriptionID, delta})
+	if f.postDeltaErr != nil {
+		return SubscriptionSettlement{}, f.postDeltaErr
+	}
+	var sub *SubscriptionAccount
+	for i := range f.subs {
+		if f.subs[i].ID == subscriptionID {
+			sub = &f.subs[i]
+			break
+		}
+	}
+	if sub == nil {
+		return SubscriptionSettlement{}, store.ErrSubscriptionNotFound
+	}
+	used := f.used[subscriptionID] + delta
+	if used < 0 {
+		used = 0
+	}
+	if sub.AmountTotal > 0 && used > sub.AmountTotal {
+		return SubscriptionSettlement{}, store.ErrSubscriptionSettleExceeded
+	}
+	f.used[subscriptionID] = used
+	return SubscriptionSettlement{
+		PlanID:      sub.PlanID,
+		PlanTitle:   sub.PlanTitle,
+		AmountTotal: sub.AmountTotal,
+		AmountUsed:  used,
+	}, nil
+}
+
+// ListStalePreConsumes 返回 consumed 且 created_at 早于 before 的记录。
+func (f *fakeSubscriptionFunding) ListStalePreConsumes(_ context.Context,
+	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listStaleErr != nil {
+		return nil, f.listStaleErr
+	}
+	out := make([]store.SubscriptionPreConsume, 0, len(f.records))
+	for _, rec := range f.records {
+		if rec.Status != "consumed" || !rec.CreatedAt.Before(before) {
+			continue
+		}
+		out = append(out, rec)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// deltas 返回已记录的结算增量调用。
+func (f *fakeSubscriptionFunding) deltas() []subscriptionDeltaCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]subscriptionDeltaCall(nil), f.postDeltaCalls...)
+}
+
+// RequestRegistryState 返回内存中的结算终态（缺失 = 空串）。
+func (f *fakeSubscriptionFunding) RequestRegistryState(_ context.Context, requestID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.registry[requestID], nil
+}
+
+// MarkRequestSettled 幂等置 settled；已 refunded 不降级。
+func (f *fakeSubscriptionFunding) MarkRequestSettled(_ context.Context, requestID string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.registry[requestID] == "refunded" {
+		return nil
+	}
+	f.registry[requestID] = "settled"
+	return nil
+}
+
+// MarkRequestRefunded 幂等置 refunded；已 settled 不降级。
+func (f *fakeSubscriptionFunding) MarkRequestRefunded(_ context.Context, requestID string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.registry[requestID] == "settled" {
+		return nil
+	}
+	f.registry[requestID] = "refunded"
+	return nil
+}
+
 func (f *fakeSubscriptionFunding) usedOf(id int64) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -180,7 +285,7 @@ func (f *fakeSubscriptionFunding) resolveCounts() (pref, list int) {
 func subscriptionAccount(id, total int64, scope []byte) SubscriptionAccount {
 	return SubscriptionAccount{
 		ID: id, EndAt: time.Now().Add(time.Hour), AmountTotal: total,
-		ModelScope: scope,
+		PlanID: 100 + id, PlanTitle: "Plan", ModelScope: scope,
 	}
 }
 
@@ -620,6 +725,49 @@ func TestStoreSubscriptionFundingRealRepository(t *testing.T) {
 	if used != 0 {
 		t.Fatalf("退款后 amount_used = %d，want 0", used)
 	}
+
+	// S4b：结算增量适配器 + request_registry 终态（成功结算的唯一持久化证据）。
+	settle, err := funding.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 50)
+	if err != nil {
+		t.Fatalf("PostConsumeUserSubscriptionDelta: %v", err)
+	}
+	if settle.PlanID != plan.ID || settle.PlanTitle != plan.Title ||
+		settle.AmountTotal != plan.GrantCredits || settle.AmountUsed != 50 {
+		t.Fatalf("结算快照 = %+v，字段不符", settle)
+	}
+	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "" {
+		t.Fatalf("初始 registry state = %q/%v，want 空/nil", state, err)
+	}
+	if err := funding.MarkRequestSettled(ctx, req, userID); err != nil {
+		t.Fatalf("MarkRequestSettled: %v", err)
+	}
+	if err := funding.MarkRequestSettled(ctx, req, userID); err != nil {
+		t.Fatalf("重复 MarkRequestSettled 应幂等: %v", err)
+	}
+	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "settled" {
+		t.Fatalf("registry state = %q/%v，want settled/nil", state, err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, req) })
+
+	// 退款终态对称且互斥：refunded 后不得被 settled 覆盖，反之亦然。
+	// 这里用一个独立 requestId（同一 uuid 已被上面的 settled 行占用）。
+	refundReq := testUUID(t)
+	if err := funding.MarkRequestRefunded(ctx, refundReq, userID); err != nil {
+		t.Fatalf("MarkRequestRefunded: %v", err)
+	}
+	if err := funding.MarkRequestSettled(ctx, refundReq, userID); err != nil {
+		t.Fatalf("refunded 后 MarkRequestSettled: %v", err)
+	}
+	if state, err := funding.RequestRegistryState(ctx, refundReq); err != nil || state != "refunded" {
+		t.Fatalf("registry state = %q/%v，want refunded（不得降级）", state, err)
+	}
+	if err := funding.MarkRequestRefunded(ctx, req, userID); err != nil {
+		t.Fatalf("settled 后 MarkRequestRefunded: %v", err)
+	}
+	if state, _ := funding.RequestRegistryState(ctx, req); state != "settled" {
+		t.Fatalf("settled 后被改写为 %q，want settled", state)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, refundReq) })
 }
 
 // TestSessionSubscriptionFirstModelScopeMismatch 覆盖 M1：存在活跃订阅但
@@ -773,9 +921,9 @@ func TestSessionSubscriptionRefundAllAttemptsFail(t *testing.T) {
 	}
 }
 
-// TestSessionSubscriptionGuardsNeverTouchWallet 覆盖 M6：订阅来源的
-// Reserve / ChargeIncrement / Terminate 只做「不碰钱包」的保护，不得产生
-// 任何钱包扣减或额外令牌扣减。
+// TestSessionSubscriptionGuardsNeverTouchWallet 覆盖订阅来源的资金隔离：
+// Reserve 仍 no-op（订阅不支持上浮），ChargeIncrement 立即结算订阅并同步
+// **令牌**额度（S4b 冻结语义），但任何路径都不得触碰钱包。
 func TestSessionSubscriptionGuardsNeverTouchWallet(t *testing.T) {
 	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionOnly, subscriptionAccount(7, 1000, nil))
 	e, db := newSubscriptionEngine(t, funding)
@@ -798,8 +946,12 @@ func TestSessionSubscriptionGuardsNeverTouchWallet(t *testing.T) {
 	if got := userBalance(t, db, userID); got != 500 {
 		t.Fatalf("钱包余额 = %d，want 500（订阅 guard 不得扣钱包）", got)
 	}
-	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
-		t.Fatalf("令牌剩余 = %d，want 200（guard 不得再扣令牌）", got)
+	// S4b：实时增量立即追加订阅额度并同步扣令牌（预扣 100 + 增量 30）。
+	if got := tokenRemain(t, db, tokenID).Int64; got != 170 {
+		t.Fatalf("令牌剩余 = %d，want 170（增量必须同步扣令牌）", got)
+	}
+	if got := funding.usedOf(7); got != 130 {
+		t.Fatalf("订阅 amount_used = %d，want 130（增量立即入账）", got)
 	}
 	if err := s.Terminate(contract.UsageFact{}); err != nil {
 		t.Fatalf("Terminate on subscription: %v", err)
@@ -807,8 +959,9 @@ func TestSessionSubscriptionGuardsNeverTouchWallet(t *testing.T) {
 	if got := userBalance(t, db, userID); got != 500 {
 		t.Fatalf("Terminate 后钱包余额 = %d，want 500", got)
 	}
-	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
-		t.Fatalf("Terminate 后令牌剩余 = %d，want 200", got)
+	// 空 fact 成本 = 预扣 + 增量 = 130，delta=0，令牌不再变化。
+	if got := tokenRemain(t, db, tokenID).Int64; got != 170 {
+		t.Fatalf("Terminate 后令牌剩余 = %d，want 170", got)
 	}
 	if !s.settled {
 		t.Fatal("Terminate 后 settled = false")

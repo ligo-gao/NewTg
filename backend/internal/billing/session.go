@@ -63,8 +63,8 @@ type Session struct {
 	trusted        bool
 
 	// 资金来源是每请求冻结一次的（billing-04 §3.3）：预扣与退款必须复用
-	// 同一选择，不能中途重新读取偏好。S4a 只实现来源选择/预扣/退款；
-	// 结算 delta 属 S4b。
+	// 同一选择，不能中途重新读取偏好。S4a 实现来源选择/预扣/退款；S4b 在
+	// subscription_settlement.go 中实现结算 delta、增量与崩溃兜底。
 	fundingSource           contract.FundingKind // 默认零值 = FundingWallet
 	subscriptionID          int64                // 订阅来源冻结的实例（结算复用同一 ID）
 	subscriptionPreConsumed int64                // 订阅来源冻结的预扣额
@@ -424,8 +424,9 @@ func (s *Session) Reserve(delta int64) error {
 		return nil
 	}
 	if s.fundingSource == contract.FundingSubscription {
-		// 订阅预扣是单实例额度，不支持 S4a 的上浮（上浮/差额结算属 S4b）。
-		// 这里若继续走钱包预留会形成双重计费：订阅已按预算真实扣款。
+		// 订阅预扣是单实例额度，不支持上浮。实时用量差异由 ChargeIncrement
+		// 直接追加订阅额度（S4b），最终差额由 Terminate 结算；这里若继续走
+		// 钱包预留会形成双重计费：订阅已按预算真实扣款。
 		return nil
 	}
 	if delta <= 0 {
@@ -494,17 +495,18 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 	if delta <= 0 {
 		return nil
 	}
-	if s.fundingSource == contract.FundingSubscription {
-		// S4b 负责把实时增量结算为订阅 delta。此处绝不能走钱包扣减：
-		// 订阅来源没有 wallet hold 行，钱包扣款会成为第二笔费用。
-		return nil
-	}
 	// fact 用于日志/审计上下文；增量金额以调用方传入的 delta 为准
 	// （实时连接已按每个 response.done 完成本地计数/上游用量换算）。
 	_ = fact
 
 	ctx, cancel := opCtx()
 	defer cancel()
+
+	if s.fundingSource == contract.FundingSubscription {
+		// S4b：实时增量立即结算到订阅账户并同步令牌额度。绝不能走钱包
+		// 扣减：订阅来源没有 wallet hold 行，钱包扣款会成为第二笔费用。
+		return s.chargeIncrementSubscriptionLocked(ctx, delta)
+	}
 
 	// Important-1：结案后不得再增量扣减（否则产生无法归属到 hold 的消费行）。
 	terminal, err := s.engine.ledger.requestTerminal(ctx, s.requestID)
@@ -561,12 +563,11 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	defer cancel()
 
 	if s.fundingSource == contract.FundingSubscription {
-		// S4b 接入订阅结算 delta（PostConsumeUserSubscriptionDelta）与
-		// subscription_* 日志键。S4a 绝不能落回下面的钱包结算路径：
+		// S4b：订阅结算走独立路径（PostConsumeUserSubscriptionDelta + 令牌
+		// 差额 + subscription_* 日志键）。绝不能落回下面的钱包结算路径：
 		// 订阅来源没有 consume_pre hold，`noHoldSettlement` 会把实际成本
-		// 再向钱包扣一次。这里先按「预扣额即结算额」关会话，S4b 替换本段。
-		s.finishLocked(ctx, false)
-		return nil
+		// 再向钱包扣一次。
+		return s.terminateSubscriptionLocked(ctx, fact)
 	}
 
 	st, err := s.engine.ledger.openHoldState(ctx, s.requestID)
@@ -801,15 +802,29 @@ func (s *Session) Refund() error {
 //   - 令牌额度与订阅账户是两笔账，退款时各自回滚。
 func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 	preDeductedForLog := s.preConsumed
+	// S4b：ChargeIncrement 立即落账的增量也必须随全额退款回退。否则请求
+	// 失败后订阅 amount_used 会留下「已交付但已退款」的消耗，用户额度被
+	// 永久占用；钱包路径的 refundSession 同样把 consumed 一并退回。
+	consumedRefunded := s.consumed
 
 	// 幂等回放会话不得退款：订阅记录属于首执行者（LOW）。
 	if s.subscriptionReplayed {
 		s.refunded = true
 		s.preConsumed = 0
+		s.consumed = 0
 		s.subscriptionPreConsumed = 0
 		s.stopHeartbeatLocked()
 		s.removeLeaseLocked(ctx)
 		return nil
+	}
+
+	if consumedRefunded > 0 {
+		if _, err := s.engine.subscriptionFunding.PostConsumeUserSubscriptionDelta(
+			ctx, s.subscriptionID, -consumedRefunded); err != nil {
+			// 增量未回退成功：保持 consumed 供重试；预扣也尚未退，幂等安全。
+			return fmt.Errorf("billing: reverse subscription increments: %w", err)
+		}
+		s.consumed = 0
 	}
 
 	if s.subscriptionPreConsumed > 0 {
@@ -832,7 +847,7 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 		outcome := SettlementOutcome{
 			Cost:          0,
 			PreDeducted:   preDeductedForLog,
-			Refunded:      preDeductedForLog,
+			Refunded:      preDeductedForLog + consumedRefunded,
 			Status:        UsageLogStatusRefunded,
 			FundingSource: contract.FundingSubscription,
 		}
@@ -845,6 +860,13 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 			s.removeLeaseLocked(ctx)
 			return fmt.Errorf("billing: write subscription refund log: %w", logErr)
 		}
+	}
+
+	// S4b：记录退款终态，供兜底扫描/迟到的任务回调排除。失败只告警：
+	// 预扣记录已是 refunded，扫描同样会跳过；不影响资金正确性。
+	if err := s.engine.subscriptionFunding.MarkRequestRefunded(ctx, s.requestID, s.userID); err != nil {
+		slog.Warn("billing: record subscription refund state failed",
+			"request_id", s.requestID, "error", err)
 	}
 
 	s.refunded = true

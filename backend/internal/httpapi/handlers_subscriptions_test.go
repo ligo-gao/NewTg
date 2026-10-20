@@ -444,6 +444,45 @@ func (r *fakeSubscriptionRepo) MarkPreConsumeRefunded(_ context.Context, request
 	return nil
 }
 
+// PostConsumeUserSubscriptionDelta 是 S4b 结算增量的内存实现（handler
+// 测试不覆盖结算语义，仅满足接口；真实语义由 store/billing 集成用例覆盖）。
+func (r *fakeSubscriptionRepo) PostConsumeUserSubscriptionDelta(_ context.Context,
+	subscriptionID, delta int64) (store.Subscription, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sub, ok := r.subs[subscriptionID]
+	if !ok {
+		return store.Subscription{}, store.ErrSubscriptionNotFound
+	}
+	used := sub.AmountUsed + delta
+	if used < 0 {
+		used = 0
+	}
+	if sub.AmountTotal > 0 && used > sub.AmountTotal {
+		return store.Subscription{}, store.ErrSubscriptionSettleExceeded
+	}
+	sub.AmountUsed = used
+	return *sub, nil
+}
+
+// ListStalePreConsumes 返回早于 before 的 consumed 记录（handler 测试的
+// 假仓储不区分 registry 终态）。
+func (r *fakeSubscriptionRepo) ListStalePreConsumes(_ context.Context,
+	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]store.SubscriptionPreConsume, 0, limit)
+	for _, rec := range r.preConsume {
+		if rec.Status == "consumed" && rec.CreatedAt.Before(before) {
+			out = append(out, rec)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // 测试装配
 // ---------------------------------------------------------------------------
