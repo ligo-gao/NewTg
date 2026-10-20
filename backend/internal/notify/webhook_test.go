@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"newtg/gateway/internal/egress"
 )
 
 // notify.webhook 发送器的单元验收（D2-12/D2-13/D2-15）：
@@ -33,6 +35,9 @@ func webhookConfig(overrides map[string]any) mapConfig {
 		KeyWebhookURL:     "https://hooks.example.com/endpoint",
 		KeyWebhookSecret:  "sealed:s3cret",
 		KeyWebhookEvents:  []string{"balance_low"},
+		// 单元用例使用 httptest / 伪造解析器，主机名不在出厂 allowlist 内；
+		// 域名维度在这里放开，地址维度仍由 egress 的 IP 规则验证。
+		egress.KeyDomainMode: "all",
 	}
 	for key, value := range overrides {
 		cfg[key] = value

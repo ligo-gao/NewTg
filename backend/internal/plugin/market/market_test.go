@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -141,4 +142,47 @@ func testTLSClient(server *httptest.Server) *Client {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
 	return &Client{HTTP: &http.Client{Transport: base}}
+}
+
+type marketConfig map[string]any
+
+func (m marketConfig) Get(key string) (json.RawMessage, bool) {
+	value, ok := m[key]
+	if !ok {
+		return nil, false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// TestFetchIndexUsesEgressPolicy 是 B2 接入回归：生产路径（HTTP == nil）
+// 必须经统一出站执行器校验域名与解析后的地址。
+func TestFetchIndexUsesEgressPolicy(t *testing.T) {
+	ctx := context.Background()
+
+	// 默认策略是 allowlist：未登记主机在解析前即被拒。
+	unlisted := &Client{
+		Config: marketConfig{},
+		Resolve: func(context.Context, string) ([]net.IP, error) {
+			t.Fatal("allowlist 拒绝不应触发解析")
+			return nil, nil
+		},
+	}
+	if _, err := unlisted.FetchIndex(ctx, "https://not-listed.example/index.json"); !errors.Is(err, ErrUnsafeURL) {
+		t.Fatalf("未登记主机 err = %v，期望 ErrUnsafeURL", err)
+	}
+
+	// 域名放开后，解析到私网的主机仍被地址规则拒绝。
+	private := &Client{
+		Config: marketConfig{"sec.ssrf.domain_mode": "all"},
+		Resolve: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("10.0.0.8")}, nil
+		},
+	}
+	if _, err := private.FetchIndex(ctx, "https://rebind.example/index.json"); !errors.Is(err, ErrUnsafeURL) {
+		t.Fatalf("私网解析 err = %v，期望 ErrUnsafeURL", err)
+	}
 }

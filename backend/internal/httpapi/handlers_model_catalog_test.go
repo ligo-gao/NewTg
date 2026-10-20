@@ -13,8 +13,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,6 +31,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -1992,13 +1995,12 @@ func TestVendorOperationErrorLocatesField(t *testing.T) {
 }
 
 func TestValidateSyncURL(t *testing.T) {
+	// 同步拉取已并入统一出站执行器（B2）；这里验证 basic + 无域名限制下
+	// 的形状规则：协议白名单、仅 80/443、拒绝 userinfo。
+	guard := egress.NewGuard(egress.Policy{Mode: egress.ModeBasic, DomainMode: egress.DomainAll})
 	allowed := []string{"http://example.com/manifest.json", "https://example.com:443/x", "http://example.com:80/x"}
 	for _, raw := range allowed {
-		parsed, err := url.Parse(raw)
-		if err != nil {
-			t.Fatalf("parse %q: %v", raw, err)
-		}
-		if err := validateSyncURL(parsed); err != nil {
+		if _, err := guard.ValidateURLShape(raw); err != nil {
 			t.Fatalf("应允许 %q：%v", raw, err)
 		}
 	}
@@ -2010,12 +2012,35 @@ func TestValidateSyncURL(t *testing.T) {
 		"http:///no-host",
 	}
 	for _, raw := range rejected {
-		parsed, err := url.Parse(raw)
-		if err != nil {
-			continue // 无法解析本身即拒绝
+		if _, err := guard.ValidateURLShape(raw); err == nil {
+			t.Fatalf("应拒绝目标 %q", raw)
 		}
-		if err := validateSyncURL(parsed); err == nil {
-			t.Fatalf("应拒绝重定向/目标 %q", raw)
-		}
+	}
+}
+
+// TestSyncSourceUsesEgressGuard 是 B2 接入回归：模型同步拉取必须经过
+// 统一出站执行器。伪造解析器返回私网地址时，请求在连接前被拒绝，且
+// 解析恰好发生一次（反 rebinding 路径）。
+func TestSyncSourceUsesEgressGuard(t *testing.T) {
+	var calls int
+	syncEgressResolver = func(context.Context, string) ([]net.IP, error) {
+		calls++
+		return []net.IP{net.ParseIP("10.0.0.8")}, nil
+	}
+	defer func() { syncEgressResolver = nil }()
+
+	source := NewModelSyncSourceFromConfig(mapConfig{
+		"model_sync.source_url": json.RawMessage(`"http://sync.example/manifest.json"`),
+		// 放开域名维度，确保拒绝来自地址规则而不是 allowlist。
+		"sec.ssrf.domain_mode": json.RawMessage(`"all"`),
+	})
+	if source == nil {
+		t.Fatal("sync source 不应为 nil")
+	}
+	if _, err := source(context.Background()); !errors.Is(err, ErrSyncSourceUnavailable) {
+		t.Fatalf("err = %v，期望 ErrSyncSourceUnavailable", err)
+	}
+	if calls != 1 {
+		t.Fatalf("解析次数 = %d，期望 1", calls)
 	}
 }

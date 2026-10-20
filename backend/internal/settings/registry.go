@@ -427,6 +427,11 @@ func buildRegistry() []Setting {
 
 		// ==== sec（F-08-17/18，§3.5）====
 		def("sec.ssrf.enabled", "sec", TypeBool, true, dangerousOff()),
+		// B2（security-04 §2.4）：统一出站执行器的三态强度。`enabled` 是
+		// 旧布尔开关，仅在本键缺失时作为 off/basic 的兼容来源；新装配一律
+		// 以 mode 为准（关闭型风险：off 会解除全部出站校验）。
+		def("sec.ssrf.mode", "sec", TypeEnum, "basic",
+			enum("off", "basic", "strict"), dangerousOff()),
 		def("sec.ssrf.allow_private_ip", "sec", TypeBool, false, dangerousOn()),
 		def("sec.ssrf.allowed_ports", "sec", TypeList, []any{int64(443)},
 			element(portElement)),
@@ -434,6 +439,10 @@ func buildRegistry() []Setting {
 			enum("all", "allowlist", "denylist")),
 		def("sec.ssrf.domain_list", "sec", TypeList, ssrfDefaultDomains,
 			element(validateDomainOrWildcard)),
+		// 重定向上限与连接超时按 B2 冻结语义补齐；两者都不公开下发。
+		def("sec.ssrf.max_redirects", "sec", TypeInt, int64(3), minInt(0), maxInt(10)),
+		def("sec.ssrf.connect_timeout_seconds", "sec", TypeInt, int64(10),
+			minInt(1), maxInt(120)),
 		def("sec.sensitive.enabled", "sec", TypeBool, false),
 		def("sec.sensitive.scope", "sec", TypeObject, map[string]any{
 			"prompt": true, "system": false,

@@ -9,15 +9,16 @@
 // 包体 = 单文件 JS 原始字节；安装前必须校验 source_hash（S3），任何不符
 // 零写入。
 //
-// 出站守卫（S2）：本包实现**最小**守卫——固定 https、拒绝重定向、拒绝
-// 私网/环回 IP 字面量与非限定主机名。DNS 解析后的地址校验（完整
-// ValidateURL/DialGuard）属 security-04；在此之前，域名解析到私网仍可能
-// 绕过，已在 T5 报告中登记。
+// 出站守卫（S2 / B2）：本包沿用 https 强制与「3xx 不跟随」语义；生产
+// 路径（未注入 HTTP）的协议/端口/userinfo/域名/解析地址校验与反 rebinding
+// 拨号统一由 internal/egress 完成（sec.ssrf.* 策略）。注入 HTTP 仅作为
+// 测试接缝，不改变重定向拒绝。
 package market
 
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"newtg/gateway/internal/egress"
 )
 
 // 默认上限：索引 1 MiB、包体 2 MiB（与 `plugin.upload.max_bytes` 默认值同口径）。
@@ -87,28 +90,72 @@ type Version struct {
 //
 // HTTP 可注入以支持测试（httptest TLS），但 CheckRedirect 始终被强制为
 // 「拒绝」：注入 transport 是测试接缝，不是放开重定向的开关。
+//
+// 生产路径（HTTP == nil）的出站统一走 internal/egress：解析全部地址并
+// 校验后才拨号（反 rebinding），3xx 仍不跟随。
 type Client struct {
 	HTTP           *http.Client
 	MaxIndexBytes  int64
 	MaxSourceBytes int64
+
+	// Config 是 sec.ssrf.* 的读取面；nil 时使用注册表默认策略。
+	Config egress.ConfigReader
+	// Resolve 是 DNS 缝隙（测试用）；nil 时用系统解析器。
+	Resolve func(ctx context.Context, host string) ([]net.IP, error)
+	// Guard / TLSConfig 是测试接缝：Guard 允许用例注入放开 httptest
+	// 随机端口的执行器；TLSConfig 用于接受 httptest 的自签证书。
+	Guard     *egress.Guard
+	TLSConfig *tls.Config
 }
 
 // NewClient 返回默认配置的客户端。
 func NewClient() *Client { return &Client{} }
 
+// NewClientWithConfig 返回从 sec.ssrf.* 读取策略的客户端（生产装配用）。
+func NewClientWithConfig(cfg egress.ConfigReader) *Client {
+	return &Client{Config: cfg}
+}
+
+func (c *Client) guard() *egress.Guard {
+	if c != nil && c.Guard != nil {
+		return c.Guard
+	}
+	var cfg egress.ConfigReader
+	if c != nil {
+		cfg = c.Config
+	}
+	guard := egress.NewGuard(egress.PolicyFromConfig(cfg))
+	if c != nil && c.Resolve != nil {
+		guard = guard.WithResolver(c.Resolve)
+	}
+	return guard
+}
+
 func (c *Client) httpClient() *http.Client {
-	base := http.DefaultClient
 	if c != nil && c.HTTP != nil {
-		base = c.HTTP
+		// 测试接缝：沿用注入的 transport（TLS 配置/拨号由用例控制）；
+		// 重定向仍被强制拒绝，保证 TestFetchIndexRejectsRedirects 有效。
+		clone := *c.HTTP
+		if clone.Timeout <= 0 {
+			clone.Timeout = DefaultTimeout
+		}
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		return &clone
 	}
-	clone := *base
-	if clone.Timeout <= 0 {
-		clone.Timeout = DefaultTimeout
+	var (
+		timeout   = DefaultTimeout
+		tlsConfig *tls.Config
+	)
+	if c != nil {
+		tlsConfig = c.TLSConfig
 	}
-	clone.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	return &clone
+	return c.guard().NewClient(egress.ClientOptions{
+		Timeout:         timeout,
+		FollowRedirects: false,
+		TLSConfig:       tlsConfig,
+	})
 }
 
 func (c *Client) maxIndex() int64 {
@@ -218,14 +265,27 @@ func (c *Client) FetchSource(ctx context.Context, rawURL, expectedHash string) (
 }
 
 func (c *Client) get(ctx context.Context, u *url.URL, limit int64) ([]byte, error) {
+	// 注入 HTTP 的用例由用例自己控制拨号（TLS/随机端口），这里只保留
+	// 静态 https 校验；生产路径（HTTP == nil）一律先过统一执行器。
+	if c == nil || c.HTTP == nil || c.Guard != nil {
+		if _, err := c.guard().ValidateURL(ctx, u.String()); err != nil {
+			return nil, mapEgressError(err, u)
+		}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("market: build request: %w", err)
+		return nil, fmt.Errorf("market: build request")
 	}
 	request.Header.Set("Accept", "application/json, text/javascript, */*")
-	response, err := c.httpClient().Do(request)
+	client := c.httpClient()
+	if c == nil || c.HTTP == nil {
+		// 生产路径每次新建 Transport（与原实现一致）；关闭空闲连接，
+		// 避免为每个市场源留下 30s 的连接池。
+		defer client.CloseIdleConnections()
+	}
+	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("market: request %s: %w", redactedURL(u), err)
+		return nil, mapRequestError(err, u)
 	}
 	defer response.Body.Close()
 
@@ -253,6 +313,36 @@ func redactedURL(u *url.URL) string {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+// mapEgressError 把统一执行器的校验失败映射回本包的稳定分类。
+//
+// URL 语义拒绝（协议/端口/userinfo/域名/地址）沿用 ErrUnsafeURL（422）；
+// 解析失败是「源不可达」而不是「URL 非法」，保持 502 语义。
+func mapEgressError(err error, u *url.URL) error {
+	switch {
+	case errors.Is(err, egress.ErrBlocked):
+		return fmt.Errorf("%w: %s", ErrUnsafeURL, redactedURL(u))
+	case errors.Is(err, egress.ErrRedirect):
+		return ErrRedirect
+	default:
+		return fmt.Errorf("market: source %s is unreachable", redactedURL(u))
+	}
+}
+
+// mapRequestError 收敛传输错误。底层的 *url.Error 会拼上完整 URL（含
+// query），因此**不包装**原始错误，只保留可判别的类别。
+func mapRequestError(err error, u *url.URL) error {
+	switch {
+	case errors.Is(err, egress.ErrBlocked):
+		return fmt.Errorf("%w: %s", ErrUnsafeURL, redactedURL(u))
+	case errors.Is(err, egress.ErrRedirect):
+		return ErrRedirect
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("market: request %s: %w", redactedURL(u), context.DeadlineExceeded)
+	default:
+		return fmt.Errorf("market: request %s failed", redactedURL(u))
+	}
 }
 
 // 索引内容的长度/形态上限。数值与 DB 列宽/运行时 manifest 校验同口径，

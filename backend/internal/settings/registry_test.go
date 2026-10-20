@@ -257,6 +257,8 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"rl.health.auto_disable_enabled:on",
 		"rl.health.disable_keywords:on", "sec.sensitive.words:on",
 		"sec.ssrf.allow_private_ip:on", "sec.ssrf.enabled:off",
+		// B2：mode 可以取 off（解除全部出站策略），按关闭型风险登记。
+		"sec.ssrf.mode:off",
 		"site.home_custom_html:on",
 	}
 	if strings.Join(dangerous, ",") != strings.Join(wantDangerous, ",") {

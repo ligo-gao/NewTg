@@ -200,7 +200,9 @@ func NewTaskPluginHandlers(cfg TaskPluginHandlerConfig) (*TaskPluginHandlers, er
 	}
 	client := cfg.Market
 	if client == nil {
-		client = market.NewClient()
+		// 市场源是管理员可填 URL + 服务端出站：生产默认客户端必须从
+		// sec.ssrf.* 读取策略（B2 / security-04 §2.4）。
+		client = market.NewClientWithConfig(cfg.Config)
 	}
 	now := cfg.Now
 	if now == nil {

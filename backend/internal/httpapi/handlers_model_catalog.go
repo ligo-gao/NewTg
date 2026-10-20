@@ -58,7 +58,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -66,6 +65,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -167,9 +167,6 @@ const (
 	// catalogSyncManifestMaxBytes 是上游清单原文上限；清单是元数据，4MB 足够
 	// 覆盖数千模型，同时避免把一次 preview 变成内存放大面。
 	catalogSyncManifestMaxBytes = 4 << 20
-	// catalogSyncMaxRedirects 是同步拉取允许的最大跳转次数（Go 默认 10；
-	// 上游清单不需要长跳转链，收紧可减少被重定向到内部服务的窗口）。
-	catalogSyncMaxRedirects = 3
 )
 
 var (
@@ -2864,6 +2861,9 @@ func dedupeInt64(values []int64) []int64 {
 // 上游清单拉取（SSRF 防护的最小实现）
 // ---------------------------------------------------------------------------
 
+// syncEgressResolver 是同步出站的 DNS 缝隙（仅测试；生产为 nil = 系统解析器）。
+var syncEgressResolver func(ctx context.Context, host string) ([]net.IP, error)
+
 // NewModelSyncSourceFromConfig 从配置中心读取 model_sync.source_url 构造拉取函数。
 // 配置读取失败/空值时返回 ErrSyncSourceNotConfigured（preview → 503）。
 func NewModelSyncSourceFromConfig(cfg ConfigReader) func(ctx context.Context) ([]byte, error) {
@@ -2883,54 +2883,32 @@ func NewModelSyncSourceFromConfig(cfg ConfigReader) func(ctx context.Context) ([
 		if sourceURL == "" {
 			return nil, ErrSyncSourceNotConfigured
 		}
-		return fetchSyncManifest(ctx, sourceURL)
+		guard := egress.NewGuard(egress.PolicyFromConfig(cfg))
+		if syncEgressResolver != nil {
+			guard = guard.WithResolver(syncEgressResolver)
+		}
+		return fetchSyncManifest(ctx, sourceURL, guard)
 	}
 }
 
 // fetchSyncManifest 拉取上游清单。
 //
-// 【SSRF 最小防护】sec.ssrf.* 的守卫实现尚未落地（本批边界不包含 settings），
-// 这里做与 sec.ssrf.* 默认值等价的保守判定：仅 http/https、仅 80/443、
-// 拒绝 userinfo、拒绝回环/私网/链路本地/组播地址。域名解析后的连接地址由
-// Dialer.Control 再校验一次（防 DNS rebinding）。比默认配置更严，不会放宽。
-func fetchSyncManifest(ctx context.Context, rawURL string) ([]byte, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
+// 【统一出站策略】security-04 §2.4 / B2：协议、端口、userinfo、域名与
+// 解析后的全部地址由 internal/egress 校验；拨号直连已校验 IP（反
+// rebinding）；重定向每一跳重新校验，上限 sec.ssrf.max_redirects。
+// 本函数只保留同步特有的语义：10s 总超时、Accept 头、4MB 上限与 2xx。
+func fetchSyncManifest(ctx context.Context, rawURL string, guard *egress.Guard) ([]byte, error) {
+	// 只做形状校验，**不预先解析**：解析发生在执行器的 DialContext，
+	// 一次解析、校验全部 IP、再拨已校验 IP（冻结语义 3）。
+	if _, err := guard.ValidateURLShape(rawURL); err != nil {
 		return nil, ErrSyncSourceUnavailable
 	}
-	if err := validateSyncURL(parsed); err != nil {
-		return nil, ErrSyncSourceUnavailable
-	}
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			Proxy: nil,
-			DialContext: (&net.Dialer{
-				Timeout: 5 * time.Second,
-				Control: func(_, address string, _ syscall.RawConn) error {
-					host, _, err := net.SplitHostPort(address)
-					if err != nil {
-						return err
-					}
-					ip := net.ParseIP(host)
-					if ip == nil || isDisallowedSyncIP(ip) {
-						return errors.New("outbound target is not allowed")
-					}
-					return nil
-				},
-			}).DialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 【为什么重定向目标要重新校验】初始 URL 的校验只覆盖第一次请求：
-			// 上游返回 302 → http://host:6379 时，若只靠 Dialer.Control，端口
-			// 6379 的连接仍会被建立（地址校验只拒绝私网，不限制端口）。重定向
-			// 必须复用同一套 scheme/端口/userinfo 规则（M5），并限制跳转次数。
-			if len(via) >= catalogSyncMaxRedirects {
-				return errors.New("too many redirects")
-			}
-			return validateSyncURL(req.URL)
-		},
-	}
+	client := guard.NewClient(egress.ClientOptions{
+		// 总超时沿用 D1b 的 10s；连接超时由 sec.ssrf.connect_timeout_seconds
+		// 控制（执行器内部使用）。
+		Timeout:         10 * time.Second,
+		FollowRedirects: true,
+	})
 	defer client.CloseIdleConnections()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -2953,44 +2931,8 @@ func fetchSyncManifest(ctx context.Context, rawURL string) ([]byte, error) {
 	return body, nil
 }
 
-// validateSyncURL 是同步拉取的目标校验：仅 http/https、仅默认端口/80/443、
-// 拒绝 userinfo。初始 URL 与每次重定向目标共用同一规则（M5）。
-func validateSyncURL(target *url.URL) error {
-	if target == nil || target.Host == "" || target.Hostname() == "" || target.User != nil {
-		return errors.New("outbound target must be an absolute URL without userinfo")
-	}
-	switch strings.ToLower(target.Scheme) {
-	case "http", "https":
-	default:
-		return errors.New("outbound target must use http or https")
-	}
-	if port := target.Port(); port != "" && port != "80" && port != "443" {
-		return errors.New("outbound target must use port 80 or 443")
-	}
-	return nil
-}
-
-// isDisallowedSyncIP 拒绝回环/私网/链路本地/组播/未指定/保留地址。
-func isDisallowedSyncIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil {
-		// 100.64.0.0/10（CGNAT）、192.0.0.0/24、198.18.0.0/15、240.0.0.0/4。
-		switch {
-		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127:
-			return true
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0:
-			return true
-		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19):
-			return true
-		case v4[0] >= 240:
-			return true
-		}
-	}
-	return false
-}
+// validateSyncURL 与 isDisallowedSyncIP 已由 internal/egress 统一实现
+// （B2）：形状校验、端口白名单、地址分类与反 rebinding 都在执行器内。
 
 // ---------------------------------------------------------------------------
 // 审计 / 幂等
