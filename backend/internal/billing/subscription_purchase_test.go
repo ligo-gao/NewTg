@@ -11,8 +11,10 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,6 +106,22 @@ func providerTxnID(t *testing.T, db *sql.DB, orderID int64) string {
 	return txn
 }
 
+// readSubscriptionMetadata 读取并解码 orders.channel_metadata 顶层对象。
+// 订阅快照必须是它的 `subscription` 子键（与其它写方共存）。
+func readSubscriptionMetadata(t *testing.T, db *sql.DB, orderID int64) map[string]json.RawMessage {
+	t.Helper()
+	var raw []byte
+	if err := db.QueryRow(`SELECT channel_metadata FROM orders WHERE id = $1`, orderID).
+		Scan(&raw); err != nil {
+		t.Fatalf("read channel_metadata of order %d: %v", orderID, err)
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("decode channel_metadata of order %d: %v", orderID, err)
+	}
+	return meta
+}
+
 func TestSubscriptionCreateOrderFieldsAndIdempotency(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	stripe := newStripeTestServer(t)
@@ -131,6 +149,14 @@ func TestSubscriptionCreateOrderFieldsAndIdempotency(t *testing.T) {
 	}
 	if len(order.ChannelMetadata) == 0 {
 		t.Fatal("channel_metadata 必须保存下单快照")
+	}
+	// 快照必须位于独占命名空间，不能占据 channel_metadata 顶层。
+	meta := readSubscriptionMetadata(t, db, order.ID)
+	if _, ok := meta["subscription"]; !ok {
+		t.Fatalf("channel_metadata 缺少 subscription 命名空间: %s", order.ChannelMetadata)
+	}
+	if _, ok := meta["plan_id"]; ok {
+		t.Fatalf("快照字段不得占据 channel_metadata 顶层: %s", order.ChannelMetadata)
 	}
 
 	// 同 key 重放：同一订单、不新建。
@@ -317,7 +343,7 @@ func TestSubscriptionSettleRollsBackOnInstanceFailure(t *testing.T) {
 	// 把快照里的 model_scope 改成对象：subscriptions_model_scope_chk 会拒绝，
 	// 用来证明「订单 UPDATE 与实例 INSERT 同事务，实例失败则订单保持 pending」。
 	if _, err := db.Exec(`UPDATE orders SET channel_metadata =
-		jsonb_set(channel_metadata, '{model_scope}', '{"bad":true}'::jsonb) WHERE id = $1`, orderID); err != nil {
+		jsonb_set(channel_metadata, '{subscription,model_scope}', '{"bad":true}'::jsonb) WHERE id = $1`, orderID); err != nil {
 		t.Fatalf("corrupt snapshot: %v", err)
 	}
 
@@ -379,5 +405,383 @@ func TestSubscriptionCreateOrderRejectsUnavailablePlans(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("渠道未配置时不得留订单，得到 %d 行", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S3 收口补测（M2/M3/LOW-5）
+// ---------------------------------------------------------------------------
+
+// TestSubscriptionSnapshotCoexistsWithOtherWriters 证明快照读取只认
+// `subscription` 命名空间：同一 jsonb 对象里存在其它写方的键时，结算仍能
+// 正确还原快照，且不会把别人的键当作快照字段或整对象覆写掉。
+func TestSubscriptionSnapshotCoexistsWithOtherWriters(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	planID := insertSubscriptionPlan(t, db, 9900, 777, 30, false, "enabled", "")
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("sub-namespace-%d", topupTestSeq.Add(1))
+
+	result, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderStripe, key)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	orderID := result.Order.ID
+	// 模拟另一个写方在共享列里追加自己的命名空间。
+	if _, err := db.Exec(`UPDATE orders
+		SET channel_metadata = channel_metadata || '{"provider":{"txn":"pi_other","raw":true}}'::jsonb
+		WHERE id = $1`, orderID); err != nil {
+		t.Fatalf("append sibling namespace: %v", err)
+	}
+
+	payload := stripeEventPayload(providerTxnID(t, db, orderID), 9900, "cny")
+	sig := stripeSignatureHeader("whsec_test_123", time.Now().Unix(), payload)
+	if err := svc.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("webhook: %v", err)
+	}
+	assertOrderStatus(t, db, orderID, "succeeded")
+	sub := readSubscriptionByOrder(t, db, orderID)
+	if sub == nil || sub.AmountTotal != 777 {
+		t.Fatalf("其它写方存在时快照解析失败: %+v", sub)
+	}
+	meta := readSubscriptionMetadata(t, db, orderID)
+	if _, ok := meta["subscription"]; !ok {
+		t.Fatal("结算不得覆写掉 subscription 命名空间")
+	}
+	var other map[string]any
+	if err := json.Unmarshal(meta["provider"], &other); err != nil || other["txn"] != "pi_other" {
+		t.Fatalf("其它写方的键被覆写: %s", meta["provider"])
+	}
+}
+
+// TestSubscriptionLegacyFlatSnapshotRejected 钉死旧格式的处理方式：
+// 顶层扁平快照（命名空间化之前的写入）不再兼容，结算明确失败并保持
+// pending，绝不按当前套餐猜测合同条件。
+func TestSubscriptionLegacyFlatSnapshotRejected(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	planID := insertSubscriptionPlan(t, db, 9900, 100, 30, false, "enabled", "")
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("sub-legacy-%d", topupTestSeq.Add(1))
+
+	result, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderStripe, key)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	orderID := result.Order.ID
+	// 降级成旧格式：把 subscription 子对象提升为顶层。
+	if _, err := db.Exec(`UPDATE orders SET channel_metadata = channel_metadata->'subscription'
+		WHERE id = $1`, orderID); err != nil {
+		t.Fatalf("flatten snapshot: %v", err)
+	}
+
+	payload := stripeEventPayload(providerTxnID(t, db, orderID), 9900, "cny")
+	sig := stripeSignatureHeader("whsec_test_123", time.Now().Unix(), payload)
+	err = svc.HandleStripeWebhook(context.Background(), payload, sig)
+	if !errors.Is(err, ErrSubscriptionSnapshot) {
+		t.Fatalf("旧扁平快照 err = %v，期望 ErrSubscriptionSnapshot", err)
+	}
+	assertOrderStatus(t, db, orderID, "pending")
+	if sub := readSubscriptionByOrder(t, db, orderID); sub != nil {
+		t.Fatalf("无效快照不得创建实例: %+v", sub)
+	}
+}
+
+// TestSubscriptionRejectsPlanBelowProviderMinimum 覆盖 LOW-1：套餐价低于
+// 渠道最低金额时必须在插单前 422（ErrInvalidTopupAmount），不留 pending 订单。
+func TestSubscriptionRejectsPlanBelowProviderMinimum(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+
+	// 默认渠道最低 1000 分（10 元），500 分低于下限。
+	planID := insertSubscriptionPlan(t, db, 500, 100, 30, false, "enabled", "")
+	key := fmt.Sprintf("sub-below-min-%d", topupTestSeq.Add(1))
+	if _, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID,
+		ProviderStripe, key); !errors.Is(err, ErrInvalidTopupAmount) {
+		t.Fatalf("低于渠道最低价 = %v，期望 ErrInvalidTopupAmount", err)
+	}
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("低于渠道最低价不得留下订单，得到 %d 行", count)
+	}
+
+	// 0 元套餐不受渠道最低价约束（不经渠道），已由
+	// TestSubscriptionZeroPriceCreatesImmediately 覆盖。
+}
+
+// TestSubscriptionAlipayNotifySettles 覆盖 LOW-5：支付宝异步通知同样走
+// subscribe 结算分支（建实例、不入钱包）。
+func TestSubscriptionAlipayNotifySettles(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	privatePEM, publicPEM := alipayTestKeys(t)
+	gateway := newAlipayTestServer(t, privatePEM, publicPEM)
+	appID := "2021000000000003"
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	svc, err := NewTopupService(TopupServiceConfig{DB: gormDB,
+		Config: alipayTestConfig(gateway.URL, appID, privatePEM, publicPEM)})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	planID := insertSubscriptionPlan(t, db, 9900, 4321, 30, true, "enabled", `["gpt-4o"]`)
+	key := fmt.Sprintf("sub-alipay-%d", topupTestSeq.Add(1))
+
+	result, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderAlipay, key)
+	if err != nil {
+		t.Fatalf("create alipay subscription: %v", err)
+	}
+	if result.QRCode == "" {
+		t.Fatal("支付宝首单必须返回 qr_code")
+	}
+	orderID := result.Order.ID
+	walletBefore := walletTxCount(t, db, userID)
+
+	notify := alipayNotify(t, privatePEM, appID, providerTxnID(t, db, orderID), "99.00", "TRADE_SUCCESS")
+	if err := svc.HandleAlipayNotify(context.Background(), notify); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	assertOrderStatus(t, db, orderID, "succeeded")
+	sub := readSubscriptionByOrder(t, db, orderID)
+	if sub == nil || sub.Status != "active" || sub.AmountTotal != 4321 ||
+		sub.PricePaidAmount != 9900 {
+		t.Fatalf("支付宝订阅实例 = %+v", sub)
+	}
+	var credited int64
+	if err := db.QueryRow(`SELECT credited_credits FROM orders WHERE id = $1`, orderID).
+		Scan(&credited); err != nil {
+		t.Fatalf("read credited_credits: %v", err)
+	}
+	if credited != 0 {
+		t.Fatalf("订阅订单 credited_credits = %d，期望 0", credited)
+	}
+	if got := walletTxCount(t, db, userID); got != walletBefore {
+		t.Fatalf("订阅结算不得写钱包流水：%d → %d", walletBefore, got)
+	}
+
+	// 重复通知幂等：不产生第二条实例。
+	if err := svc.HandleAlipayNotify(context.Background(), notify); err != nil {
+		t.Fatalf("replay notify: %v", err)
+	}
+	var subCount int64
+	if err := db.QueryRow(`SELECT count(*) FROM subscriptions WHERE order_id = $1`, orderID).
+		Scan(&subCount); err != nil {
+		t.Fatalf("count subscriptions: %v", err)
+	}
+	if subCount != 1 {
+		t.Fatalf("重复通知后实例数 = %d，期望 1", subCount)
+	}
+}
+
+// TestSubscriptionProviderOutboundFailureMarksOrderFailed 覆盖 LOW-5：
+// 渠道出站失败返回 ErrProviderUnavailable（HTTP 502），订单落 failed，
+// 不留下任何订阅实例。
+func TestSubscriptionProviderOutboundFailureMarksOrderFailed(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	// 必然连不上的地址，模拟 PaymentIntent 出站失败。
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	planID := insertSubscriptionPlan(t, db, 9900, 100, 30, false, "enabled", "")
+	key := fmt.Sprintf("sub-outbound-%d", topupTestSeq.Add(1))
+	if _, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID,
+		ProviderStripe, key); !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("渠道出站失败 = %v，期望 ErrProviderUnavailable", err)
+	}
+	var (
+		orderID int64
+		status  string
+	)
+	if err := db.QueryRow(`SELECT id, status FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&orderID, &status); err != nil {
+		t.Fatalf("read failed order: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("出站失败订单状态 = %s，期望 failed", status)
+	}
+	var subCount int64
+	if err := db.QueryRow(`SELECT count(*) FROM subscriptions WHERE order_id = $1`, orderID).
+		Scan(&subCount); err != nil {
+		t.Fatalf("count subscriptions: %v", err)
+	}
+	if subCount != 0 {
+		t.Fatalf("出站失败不得创建实例，得到 %d 行", subCount)
+	}
+}
+
+// TestSubscriptionConcurrentSameKeyReplays 覆盖 LOW-5：同一 Idempotency-Key
+// 并发下单时，后到者必须命中 UNIQUE 冲突并回查首次订单，而不是把冲突
+// 直接抛给调用方。最终只有一行订单，所有结果指向同一 ID。
+func TestSubscriptionConcurrentSameKeyReplays(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	planID := insertSubscriptionPlan(t, db, 9900, 100, 30, false, "enabled", "")
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("sub-race-%d", topupTestSeq.Add(1))
+
+	const workers = 4
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]*TopupOrder, workers)
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = svc.CreateSubscriptionOrder(
+				context.Background(), userID, planID, ProviderStripe, key)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var orderID int64
+	replays := 0
+	for i := 0; i < workers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("并发下单 %d 失败: %v", i, errs[i])
+		}
+		if results[i] == nil || results[i].Order == nil {
+			t.Fatalf("并发下单 %d 返回空结果", i)
+		}
+		if orderID == 0 {
+			orderID = results[i].Order.ID
+		} else if results[i].Order.ID != orderID {
+			t.Fatalf("并发下单返回不同订单：%d vs %d", results[i].Order.ID, orderID)
+		}
+		if results[i].Replayed {
+			replays++
+		}
+	}
+	if replays == 0 {
+		t.Fatal("并发同 key 至少应有一次重放（UNIQUE 冲突回查）")
+	}
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("并发同 key 订单数 = %d，期望 1", count)
+	}
+}
+
+// TestSubscriptionZeroPriceRollsBackOnInstanceFailure 覆盖 LOW-5：0 元套餐
+// 的「订单 succeeded + 实例」在同一事务内，实例插入失败必须让订单一起消失，
+// 不能留下「已付款但没有订阅」的订单。
+func TestSubscriptionZeroPriceRollsBackOnInstanceFailure(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	planID := insertSubscriptionPlan(t, db, 0, 5000, 7, false, "enabled", "")
+
+	// 用一条 NOT VALID 约束只拦截**新插入**的实例行（现有行不校验），
+	// 制造确定性的实例插入失败。
+	if _, err := db.Exec(`ALTER TABLE subscriptions
+		ADD CONSTRAINT subscriptions_test_force_fail CHECK (false) NOT VALID`); err != nil {
+		t.Fatalf("add test constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_test_force_fail`)
+	})
+
+	key := fmt.Sprintf("sub-free-rollback-%d", topupTestSeq.Add(1))
+	if _, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID,
+		ProviderStripe, key); err == nil {
+		t.Fatal("实例插入失败时 0 元下单必须返回错误")
+	}
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("实例失败回滚后不得留下订单，得到 %d 行", count)
+	}
+}
+
+// TestSubscriptionPurchaseWaitsForDeletePlanLock 覆盖 LOW-5：下单事务对
+// 套餐行取 FOR SHARE，与 DeletePlan 的 FOR UPDATE 互斥。用一条外层事务
+// 持有 FOR UPDATE 模拟删除路径：下单必须阻塞，删除提交后按「套餐不存在」
+// 失败，且不留下订单。
+func TestSubscriptionPurchaseWaitsForDeletePlanLock(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	planID := insertSubscriptionPlan(t, db, 9900, 100, 30, false, "enabled", "")
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("sub-delete-lock-%d", topupTestSeq.Add(1))
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var locked int64
+	if err := tx.QueryRow(`SELECT id FROM subscription_plans WHERE id = $1 FOR UPDATE`,
+		planID).Scan(&locked); err != nil {
+		t.Fatalf("lock plan row: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID,
+			ProviderStripe, key)
+		done <- err
+	}()
+
+	// 300ms 内不得完成：说明下单事务确实卡在 FOR SHARE 上。
+	select {
+	case err := <-done:
+		t.Fatalf("删除锁持有期间下单不应完成（err=%v）", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// 模拟 DeletePlan 的删除并提交，放行下单。
+	if _, err := tx.Exec(`DELETE FROM subscription_plans WHERE id = $1`, planID); err != nil {
+		t.Fatalf("delete plan: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit delete: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrSubscriptionPlanUnavailable) {
+			t.Fatalf("删除后下单 err = %v，期望 ErrSubscriptionPlanUnavailable", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("删除提交后下单仍未返回")
+	}
+
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("套餐删除后不得留下订单，得到 %d 行", count)
 	}
 }

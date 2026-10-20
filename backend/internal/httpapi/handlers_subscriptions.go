@@ -1233,6 +1233,29 @@ type subscriptionPurchaseRequest struct {
 	Provider *string `json:"provider"`
 }
 
+// 订阅购买的固定窗口限流（任务书 S3 收口 M1，冻结值）。
+//
+// 维度是「用户 × 套餐」而不是用户或 IP：一次购买只针对一个套餐，按套餐
+// 隔离既不会让用户浏览/切换套餐时误伤，也能拦住「同一套餐反复下单占用
+// 渠道」的自动化重试。键形 `rl:subpurchase:<userID>:<planID>` 是冻结契约
+// （运维排障与 Redis 快照都按它检索），不得加前缀层级。
+//
+// 失败策略 fail-closed：限流状态是购买防重的第一道闸，Redis 不可用时无法
+// 证明「未超限」，宁可 503 + Retry-After 也不能放行（与登录/注册同口径，
+// security-07 §2.3）。幂等重放同样计数：固定窗口只限制请求频率，不改变
+// 「同 key 返回同一订单」的语义。
+const (
+	subscriptionPurchaseRateKeyPrefix = "rl:subpurchase:"
+	subscriptionPurchaseRateLimit     = 5
+	subscriptionPurchaseRateWindow    = time.Minute
+)
+
+// subscriptionPurchaseRateKey 构造冻结键形 rl:subpurchase:<userID>:<planID>。
+func subscriptionPurchaseRateKey(userID, planID int64) string {
+	return subscriptionPurchaseRateKeyPrefix + strconv.FormatInt(userID, 10) + ":" +
+		strconv.FormatInt(planID, 10)
+}
+
 // handlePurchase 创建订阅购买订单（billing-08 §3.2/§15.2，S3）。
 //
 // 金额/币种/周期/额度全部由 billing 按套餐行读取；本层只校验请求形态。
@@ -1287,6 +1310,25 @@ func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Req
 		w.Header().Set("Retry-After", "5")
 		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePurchaseUnavailable,
 			"Subscription purchase is unavailable", "the payment service is not configured", nil)
+		return
+	}
+
+	// 限流放在请求形态校验之后、创建订单之前：非法请求不消耗配额；
+	// 合法请求（含幂等重放）按「用户 × 套餐」计数。
+	over, retryAfter, rateErr := allowRequestRate(r.Context(), h.rdb,
+		subscriptionPurchaseRateKey(p.UserID, *req.PlanID),
+		subscriptionPurchaseRateLimit, subscriptionPurchaseRateWindow)
+	if rateErr != nil {
+		// fail-closed：无法判定配额时拒绝，而不是放行（security-07 §2.3）。
+		h.log.Error("subscription purchase rate limiter failed",
+			"user_id", p.UserID, "plan_id", *req.PlanID, "error", rateErr)
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePurchaseUnavailable,
+			"Subscription purchase is unavailable", "the request rate limiter is unavailable", nil)
+		return
+	}
+	if over {
+		writeRateLimited(w, retryAfter, "Too many subscription purchase requests")
 		return
 	}
 

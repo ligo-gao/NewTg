@@ -11,8 +11,11 @@ package billing
 //
 // 快照纪律（R-D5-03）：套餐派生的列必须取「下单瞬间」的条件，而不是
 // 回调到达时重新读套餐——管理员可能在等待支付期间改价/改额度。因此下单
-// 时把套餐快照写入 orders.channel_metadata（jsonb，不含密钥），结算时只
-// 读快照。删除保护（DeletePlan 统计 pending/succeeded subscribe 订单）保证
+// 时把套餐快照写入 orders.channel_metadata 的**独占命名空间**
+// `{"subscription":{...}}`（jsonb，不含密钥），结算时只读该键。
+// channel_metadata 是订单表的共享列：其它写方（渠道原始字段、后续批次）
+// 可能在同一个对象里追加自己的键，因此写入与读取都不得假设对象整体形状，
+// 也不得整对象覆写。删除保护（DeletePlan 统计 pending/succeeded subscribe 订单）保证
 // 回调前套餐不会被删；本文件对套餐行取 FOR SHARE，与 DeletePlan 的
 // FOR UPDATE 互斥，消除「下单与删除」的窗口。
 //
@@ -49,7 +52,9 @@ var (
 	ErrSubscriptionSnapshot = errors.New("billing: subscription order snapshot is missing or invalid")
 )
 
-// subscriptionOrderSnapshot 是下单瞬间的套餐快照，落 orders.channel_metadata。
+// subscriptionOrderSnapshot 是下单瞬间的套餐快照。落库时包在
+// subscriptionOrderMetadata 的 `subscription` 键下，而不是直接作为
+// channel_metadata 的顶层对象。
 //
 // 字段与 subscriptions 的快照列一一对应（billing-08 §6.1 R-D5-03）。
 // `plan_id` 单独保存，用于与 orders.biz_ref_id 交叉校验，防止元数据被
@@ -66,6 +71,16 @@ type subscriptionOrderSnapshot struct {
 	GraceDays           int32           `json:"grace_days"`
 	Currency            string          `json:"currency"`
 	PriceAmount         int64           `json:"price_amount"`
+}
+
+// subscriptionOrderMetadata 是 orders.channel_metadata 中的订阅命名空间。
+//
+// 【为什么不把快照直接放顶层】orders.channel_metadata 是共享 jsonb 列：
+// 充值订单与未来的写方都可能在同一对象里放自己的键。快照放在独占子键
+// `subscription` 下，读取时只解这一个键——其它写方追加字段不会破坏快照，
+// 订阅侧也不会（也没有机会）整对象覆写别人的数据。
+type subscriptionOrderMetadata struct {
+	Subscription *subscriptionOrderSnapshot `json:"subscription"`
 }
 
 // CreateSubscriptionOrder 创建订阅购买订单。
@@ -132,13 +147,21 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 
 		// 0 元套餐不经过渠道；付费套餐在插入订单前确认渠道可用，
 		// 避免「先留下 pending 订单再 503」（与 CreateTopupOrder 一致）。
+		// 套餐价还必须达到该渠道的最低下单金额：渠道会在 precreate 阶段
+		// 拒绝过小金额，那时订单已落库、只能标 failed；这里提前 422，
+		// 不产生任何订单。0 元套餐是显式例外（完全免费，不经渠道）。
 		if plan.PriceAmount > 0 {
-			if _, err := s.providerReady(provider); err != nil {
+			providerMin, err := s.providerReady(provider)
+			if err != nil {
 				return err
+			}
+			if plan.PriceAmount < providerMin {
+				return fmt.Errorf("%w: plan %d price %d cents below provider %s minimum %d cents",
+					ErrInvalidTopupAmount, planID, plan.PriceAmount, provider, providerMin)
 			}
 		}
 
-		metadata, err := json.Marshal(snapshot)
+		metadata, err := json.Marshal(subscriptionOrderMetadata{Subscription: &snapshot})
 		if err != nil {
 			return fmt.Errorf("billing: marshal subscription order snapshot: %w", err)
 		}
@@ -364,10 +387,14 @@ func (s *TopupService) settleSubscriptionOrder(ctx context.Context, order *store
 	return s.refreshOrder(ctx, order)
 }
 
-// decodeSubscriptionSnapshot 从 orders.channel_metadata 还原下单快照。
+// decodeSubscriptionSnapshot 从 orders.channel_metadata 的 `subscription`
+// 命名空间还原下单快照。
 //
-// 不存在的快照不能回退到「读当前套餐」：那会把管理员在下单后做的编辑
-// 施加到用户已付款的合同上（R-D5-03 明确禁止）。
+// 只读本命名空间：同一 jsonb 对象里的其它键（渠道原始字段、其它子系统
+// 的元数据）既不影响解析，也不会被这里读成快照字段。缺少该键的对象
+// 一律视为「没有可用的下单快照」（包括历史上的扁平顶层格式）——不猜测、
+// 不兼容：按当前套餐重放会把管理员在下单后的编辑施加到用户已付款的
+// 合同上（R-D5-03 明确禁止）。
 func decodeSubscriptionSnapshot(order *store.Order) (subscriptionOrderSnapshot, error) {
 	if order.BizRefID == nil {
 		return subscriptionOrderSnapshot{}, fmt.Errorf("%w: order %d has no biz_ref_id",
@@ -377,10 +404,15 @@ func decodeSubscriptionSnapshot(order *store.Order) (subscriptionOrderSnapshot, 
 		return subscriptionOrderSnapshot{}, fmt.Errorf("%w: order %d has no channel_metadata",
 			ErrSubscriptionSnapshot, order.ID)
 	}
-	var snap subscriptionOrderSnapshot
-	if err := json.Unmarshal(order.ChannelMetadata, &snap); err != nil {
-		return snap, fmt.Errorf("%w: order %d: %v", ErrSubscriptionSnapshot, order.ID, err)
+	var meta subscriptionOrderMetadata
+	if err := json.Unmarshal(order.ChannelMetadata, &meta); err != nil {
+		return subscriptionOrderSnapshot{}, fmt.Errorf("%w: order %d: %v", ErrSubscriptionSnapshot, order.ID, err)
 	}
+	if meta.Subscription == nil {
+		return subscriptionOrderSnapshot{}, fmt.Errorf("%w: order %d has no subscription namespace",
+			ErrSubscriptionSnapshot, order.ID)
+	}
+	snap := *meta.Subscription
 	if snap.PlanID != *order.BizRefID || strings.TrimSpace(snap.PlanTitle) == "" ||
 		snap.PeriodDays < 1 || snap.GrantCredits < 0 || snap.PriceAmount < 0 ||
 		snap.Currency == "" {

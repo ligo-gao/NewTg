@@ -926,8 +926,12 @@ export interface paths {
          *     不调用渠道，响应无 client_secret/qr_code。
          *
          *     失败口径：套餐不存在/停用或幂等键复用到另一订单 → 409；币种/金额/
-         *     套餐字段非法 → 422；渠道未配置 → 503；渠道出站失败 → 502。
-         *     任何失败都不会留下 succeeded 订单或 subscriptions 行。
+         *     套餐字段非法（含套餐价低于渠道最低金额）→ 422；渠道未配置 → 503；
+         *     渠道出站失败 → 502。任何失败都不会留下 succeeded 订单或 subscriptions 行。
+         *
+         *     限流：按「用户 × 套餐」固定窗口 5 次/分钟（键
+         *     `rl:subpurchase:<userID>:<planID>`），超限 429 + Retry-After；
+         *     限流存储不可用时 fail-closed 503，不创建订单。
          */
         post: operations["purchaseSubscription"];
         delete?: never;
@@ -8781,6 +8785,18 @@ export interface operations {
             403: components["responses"]["Error403"];
             409: components["responses"]["Error409"];
             422: components["responses"]["Error422"];
+            /** @description 购买请求超过限流（5 次/分钟/用户×套餐） */
+            429: {
+                headers: {
+                    /** @description 当前限流窗口剩余秒数 */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
             /** @description 渠道支付单创建失败 */
             502: {
                 headers: {
@@ -8790,7 +8806,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description 支付渠道未配置或已停用 */
+            /** @description 支付渠道未配置、已停用或限流存储不可用 */
             503: {
                 headers: {
                     [name: string]: unknown;

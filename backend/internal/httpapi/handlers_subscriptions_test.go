@@ -406,6 +406,24 @@ func (r *fakeSubscriptionRepo) InsertPreConsume(_ context.Context, requestID str
 	return rec, nil
 }
 
+func (r *fakeSubscriptionRepo) PreConsumeUserSubscription(_ context.Context, requestID string, subscriptionID int64, amount int64) (store.SubscriptionPreConsume, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.preConsume[requestID]; ok {
+		if existing.Status == "refunded" {
+			return store.SubscriptionPreConsume{}, false, store.ErrPreConsumeRefunded
+		}
+		return existing, false, nil
+	}
+	r.writeCallCount++
+	rec := store.SubscriptionPreConsume{RequestID: requestID, SubscriptionID: subscriptionID, Status: "consumed", PreConsumed: amount}
+	r.preConsume[requestID] = rec
+	if sub, ok := r.subs[subscriptionID]; ok {
+		sub.AmountUsed += amount
+	}
+	return rec, true, nil
+}
+
 func (r *fakeSubscriptionRepo) GetPreConsume(_ context.Context, requestID string) (store.SubscriptionPreConsume, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -434,6 +452,7 @@ type subscriptionTestEnv struct {
 	repo     *fakeSubscriptionRepo
 	router   http.Handler
 	rdb      *redis.Client
+	mr       *miniredis.Miniredis
 	audit    *subAuditExecer
 	purchase *fakeSubscriptionPurchase
 }
@@ -486,7 +505,7 @@ func newSubscriptionTestEnv(t *testing.T) *subscriptionTestEnv {
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, audit: capture, purchase: purchase}
+	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, mr: mr, audit: capture, purchase: purchase}
 }
 
 func (e *subscriptionTestEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -1299,6 +1318,71 @@ func TestPurchaseWithoutPaymentServiceFailsClosed(t *testing.T) {
 	}
 	if rr.Header().Get("Retry-After") == "" {
 		t.Fatal("503 必须带 Retry-After")
+	}
+}
+
+// TestPurchaseRateLimitedPerUserAndPlan 覆盖 S3 收口 M1：固定窗口
+// 5 次/分钟，维度是「用户 × 套餐」。
+func TestPurchaseRateLimitedPerUserAndPlan(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	body := map[string]any{"plan_id": 42, "provider": "stripe"}
+
+	for i := 0; i < 5; i++ {
+		rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase", body,
+			map[string]string{"Idempotency-Key": fmt.Sprintf("rl-ok-%d", i)})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("第 %d 次下单 = %d（body=%s）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if len(env.purchase.calls) != 5 {
+		t.Fatalf("限流前支付服务调用次数 = %d，期望 5", len(env.purchase.calls))
+	}
+
+	// 第 6 次：429 + Retry-After，且不调用支付服务。
+	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase", body,
+		map[string]string{"Idempotency-Key": "rl-blocked"})
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 6 次下单 = %d，期望 429（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("429 必须带 Retry-After")
+	}
+	if len(env.purchase.calls) != 5 {
+		t.Fatalf("超限请求不得调用支付服务，调用次数 = %d", len(env.purchase.calls))
+	}
+
+	// 换套餐：另一维度，不受影响。
+	rr = env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 43, "provider": "stripe"},
+		map[string]string{"Idempotency-Key": "rl-other-plan"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("另一套餐 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+	// 换用户：同一套餐的另一个维度，也不受影响。
+	rr = env.do(t, endUser(8), http.MethodPost, "/api/subscription/purchase", body,
+		map[string]string{"Idempotency-Key": "rl-other-user"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("另一用户 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPurchaseRateLimiterFailsClosed 覆盖 S3 收口 M1：Redis 不可用时
+// 无法证明配额，必须 503 fail-closed，而不是放行下单。
+func TestPurchaseRateLimiterFailsClosed(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	env.mr.Close()
+
+	rr := env.do(t, endUser(7), http.MethodPost, "/api/subscription/purchase",
+		map[string]any{"plan_id": 42, "provider": "stripe"},
+		map[string]string{"Idempotency-Key": "rl-redis-down"})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Redis 故障 = %d，期望 503 fail-closed（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("fail-closed 503 必须带 Retry-After")
+	}
+	if len(env.purchase.calls) != 0 {
+		t.Fatalf("Redis 故障时不得调用支付服务，调用次数 = %d", len(env.purchase.calls))
 	}
 }
 
