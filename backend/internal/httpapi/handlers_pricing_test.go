@@ -1611,6 +1611,104 @@ func TestPricingPathParamValidation(t *testing.T) {
 	}
 }
 
+// 回归（参照侧缺陷修复）：公开模型名带厂商前缀（如 openai/gpt-5）是既有
+// 命名，model_meta 早已允许 "/"；定价侧此前拒绝 "/"，导致这些模型无法创建
+// 定价与覆盖价。用例同时冻结路径寻址方式：PATCH/DELETE 的 {model} 是单段，
+// 模型名里的 "/" 必须写成 %2F；动作端点走 {rest...}，可直接带 "/"。
+func TestPricingSlashModelNameLifecycle(t *testing.T) {
+	env := newPricingTestEnv(t)
+	model := "openai/gpt-5"
+	if escaped := url.PathEscape(model); escaped != "openai%2Fgpt-5" {
+		t.Fatalf("url.PathEscape(%q) = %q，期望 openai%%2Fgpt-5", model, escaped)
+	}
+	escapedModel := url.PathEscape(model)
+
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": model, "prompt_price": 125}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create slash model = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeModelPricingView(t, rr)
+	if view.Model != model || view.PromptPrice == nil || *view.PromptPrice != 125 {
+		t.Fatalf("created view = %+v", view)
+	}
+
+	// {model} 单段：客户端必须转义 "/"；ServeMux 按转义路径匹配、逐段解码，
+	// 因此 PathValue("model") 仍是完整的 "openai/gpt-5"。
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/model-pricing/"+escapedModel,
+		map[string]any{"updated_at": view.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 250}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch slash model = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	view = decodeModelPricingView(t, rr)
+	if view.PromptPrice == nil || *view.PromptPrice != 250 {
+		t.Fatalf("patched view = %+v", view)
+	}
+
+	// 动作端点用 {rest...} 接收整段，在最后一个冒号处切分动作。
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing/"+model+":disable",
+		map[string]any{"updated_at": view.UpdatedAt.Format(time.RFC3339Nano)}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable slash model = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	view = decodeModelPricingView(t, rr)
+	if view.Status != 2 {
+		t.Fatalf("status = %d，期望 2（停用）", view.Status)
+	}
+
+	// 分组覆盖价：group 与 model 由第一个 "/" 切分，模型名内的 "/" 保留。
+	rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+		map[string]any{"group": "vip", "model": model, "prompt_price": 50}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create group override = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	var override groupPricingView
+	if err := json.Unmarshal(rr.Body.Bytes(), &override); err != nil {
+		t.Fatalf("override JSON: %v", err)
+	}
+	rr = env.request(fullPricingAdmin(), http.MethodPatch, "/api/group-pricing/vip/"+model,
+		map[string]any{"updated_at": override.UpdatedAt.Format(time.RFC3339Nano), "prompt_price": 60}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch group override = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+
+	rr = env.request(fullPricingAdmin(), http.MethodDelete,
+		"/api/model-pricing/"+escapedModel+"?updated_at="+url.QueryEscape(view.UpdatedAt.Format(time.RFC3339Nano)), nil, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete slash model = %d，期望 204（body=%q）", rr.Code, rr.Body.String())
+	}
+	if _, ok := env.repo.models[model]; ok {
+		t.Fatalf("删除后 model_pricing 仍存在 %q", model)
+	}
+}
+
+// 回归：放宽 "/" 不能顺带放宽其它字符；空格、中文、超长（129）必须继续 400。
+// 128 字符上界也必须保持（两端都验证，防止误删 {1,128}）。
+func TestPricingModelNameValidationKeepsRejectingInvalidCharacters(t *testing.T) {
+	env := newPricingTestEnv(t)
+	for _, model := range []string{"openai gpt-5", "openai/模型", "openai?gpt", strings.Repeat("a", 129)} {
+		rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+			map[string]any{"model": model}, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("create model %q = %d，期望 400（body=%q）", model, rr.Code, rr.Body.String())
+		}
+		assertProblemFields(t, rr, "model")
+
+		rr = env.request(fullPricingAdmin(), http.MethodPost, "/api/group-pricing",
+			map[string]any{"group": "vip", "model": model}, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("group override model %q = %d，期望 400（body=%q）", model, rr.Code, rr.Body.String())
+		}
+		assertProblemFields(t, rr, "model")
+	}
+
+	rr := env.request(fullPricingAdmin(), http.MethodPost, "/api/model-pricing",
+		map[string]any{"model": strings.Repeat("a", 128)}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("128 字符模型名 = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
 // A3-F4：group 价列的 JSON null 不得静默当 0（会变成显式免费）。
 func TestPricingGroupPriceNullRejected(t *testing.T) {
 	env := newPricingTestEnv(t)

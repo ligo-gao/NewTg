@@ -121,6 +121,40 @@ func cleanupPricingIntegration(t *testing.T, db *sql.DB, model string) {
 	}
 }
 
+// TestPricingIntegrationSlashModel 验证带 "/" 的公开模型名（如 openai/gpt-5）
+// 在真实 PG 上可创建定价与分组覆盖价。此前 handler 正则不含 "/"，这类模型
+// 连写库都到不了（参照侧缺陷）；DB 本身对模型名没有字符集约束。
+func TestPricingIntegrationSlashModel(t *testing.T) {
+	env := newPricingIntegrationEnv(t)
+	model := fmt.Sprintf("openai/it-%d", time.Now().UnixNano())
+	t.Cleanup(func() { cleanupPricingIntegration(t, env.db, model) })
+
+	rr := env.request(t, http.MethodPost, "/api/model-pricing", map[string]any{
+		"model": model, "prompt_price": 125,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create slash model = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeModelPricingView(t, rr)
+	if view.Model != model {
+		t.Fatalf("view.Model = %q，期望 %q", view.Model, model)
+	}
+	var stored int
+	if err := env.db.QueryRow(`SELECT count(*) FROM model_pricing WHERE model = $1`, model).Scan(&stored); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("model_pricing 命中 %d 行，期望 1", stored)
+	}
+
+	rr = env.request(t, http.MethodPost, "/api/group-pricing", map[string]any{
+		"group": "default", "model": model, "prompt_price": 50,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create group override = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
 // TestPricingIntegrationOptimisticLockAndCascade 覆盖 SQL 乐观锁、唯一约束、
 // 分组覆盖价与级联删除。
 func TestPricingIntegrationOptimisticLockAndCascade(t *testing.T) {

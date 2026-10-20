@@ -785,6 +785,98 @@ func TestChannelCreateValidationAndMasking(t *testing.T) {
 	}
 }
 
+// 回归（参照侧缺陷修复）：公开模型名带厂商前缀（如 openai/gpt-5）是既有
+// 命名；渠道 supported_models 此前拒绝 "/"，导致这些模型无法绑定渠道。
+// 创建与 PATCH 两条写路径都必须接受 "/"，并原样落库（不做静默改写）。
+func TestChannelSupportedModelsAcceptSlashModelNames(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	body := map[string]any{
+		"name":             "slash-models",
+		"type":             "openai",
+		"credentials":      map[string]any{"api_key": "sk-slash-1234"},
+		"supported_models": []string{"openai/gpt-5", "anthropic/claude-3.5", "gpt-4o"},
+		"test_model":       "openai/gpt-5",
+	}
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), channelAdminPrincipal())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+	var resp ChannelResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	want := []string{"openai/gpt-5", "anthropic/claude-3.5", "gpt-4o"}
+	if len(resp.SupportedModels) != len(want) {
+		t.Fatalf("supported_models = %v，期望 %v", resp.SupportedModels, want)
+	}
+	for i := range want {
+		if resp.SupportedModels[i] != want[i] {
+			t.Fatalf("supported_models = %v，期望 %v", resp.SupportedModels, want)
+		}
+	}
+	stored := env.store.items[resp.ID]
+	if stored == nil {
+		t.Fatalf("渠道未落库")
+	}
+	var storedModels []string
+	if err := json.Unmarshal(stored.SupportedModels, &storedModels); err != nil {
+		t.Fatalf("stored supported_models: %v", err)
+	}
+	if len(storedModels) != len(want) || storedModels[0] != "openai/gpt-5" {
+		t.Fatalf("落库 supported_models = %v，期望 %v", storedModels, want)
+	}
+
+	// PATCH 也必须接受 "/"（编辑渠道时 supported_models 全量重发）。
+	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, fmt.Sprintf("/api/channels/%d", resp.ID),
+		map[string]any{
+			"expected_version": resp.Version,
+			"supported_models": []string{"openai/gpt-5.1", "gpt-4o"},
+			"test_model":       "openai/gpt-5.1",
+		}), channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("patch response: %v", err)
+	}
+	if len(resp.SupportedModels) != 2 || resp.SupportedModels[0] != "openai/gpt-5.1" {
+		t.Fatalf("patched supported_models = %v", resp.SupportedModels)
+	}
+}
+
+// 回归：放宽 "/" 不能顺带放宽其它字符；空格、中文、超长（129）必须继续
+// 422（supported_models 是字段级错误），且不写库。128 字符上界保持接受。
+func TestChannelSupportedModelsRejectInvalidModelNames(t *testing.T) {
+	base := func(models []string) map[string]any {
+		return map[string]any{
+			"name":             "invalid-models",
+			"type":             "openai",
+			"credentials":      map[string]any{"api_key": "sk-slash-1234"},
+			"supported_models": models,
+		}
+	}
+	for _, model := range []string{"openai gpt-5", "openai/模型", "openai?gpt", strings.Repeat("a", 129)} {
+		t.Run(model, func(t *testing.T) {
+			env := newChannelTestEnv(t, ChannelHandlerOptions{})
+			rr := serveWithPrincipal(t, env.mux,
+				jsonReq(t, http.MethodPost, "/api/channels", base([]string{model})), channelAdminPrincipal())
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+			}
+			if env.store.createCalls != 0 {
+				t.Fatalf("校验失败仍写库（createCalls=%d）", env.store.createCalls)
+			}
+		})
+	}
+
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels", base([]string{strings.Repeat("a", 128)})), channelAdminPrincipal())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("128 字符模型名 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
 // TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels 覆盖 F-06-10：
 // model_mapping 的每个键都是客户端可见别名，必须同时出现在 supported_models
 // 中；否则 /v1/models 会宣告一个永远无法路由的模型（finding 3 的服务端闸门）。

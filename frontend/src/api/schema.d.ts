@@ -6974,7 +6974,7 @@ export interface components {
         PathSessionID: string;
         /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
         PathGroupName: string;
-        /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+        /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
         PathPricingModel: string;
         /** @description 分组名（user_groups.name）。 */
         PathGroupTag: string;
@@ -9760,7 +9760,7 @@ export interface operations {
                 "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -9793,7 +9793,7 @@ export interface operations {
                 "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -9833,7 +9833,7 @@ export interface operations {
                 "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -9872,7 +9872,7 @@ export interface operations {
                 "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -9991,7 +9991,7 @@ export interface operations {
             path: {
                 /** @description 分组名（user_groups.name）。 */
                 group: components["parameters"]["PathGroupTag"];
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -10026,7 +10026,7 @@ export interface operations {
             path: {
                 /** @description 分组名（user_groups.name）。 */
                 group: components["parameters"]["PathGroupTag"];
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -10068,7 +10068,7 @@ export interface operations {
             path: {
                 /** @description 分组名（user_groups.name）。 */
                 group: components["parameters"]["PathGroupTag"];
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;
@@ -10109,7 +10109,7 @@ export interface operations {
             path: {
                 /** @description 分组名（user_groups.name）。 */
                 group: components["parameters"]["PathGroupTag"];
-                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。 */
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
                 model: components["parameters"]["PathPricingModel"];
             };
             cookie?: never;

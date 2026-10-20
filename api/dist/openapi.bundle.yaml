@@ -8024,10 +8024,10 @@ components:
       name: model
       in: path
       required: true
-      description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。
+      description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。
       schema:
         type: string
-        pattern: ^[A-Za-z0-9._:-]{1,128}$
+        pattern: ^[A-Za-z0-9._:/-]{1,128}$
     PathGroupTag:
       name: group
       in: path
@@ -11007,7 +11007,7 @@ components:
           format: int64
         model:
           type: string
-          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          pattern: ^[A-Za-z0-9._:/-]{1,128}$
         mode:
           $ref: '#/components/schemas/PricingMode'
         billing_expr:
@@ -11081,7 +11081,7 @@ components:
       properties:
         model:
           type: string
-          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          pattern: ^[A-Za-z0-9._:/-]{1,128}$
         mode:
           $ref: '#/components/schemas/PricingMode'
         billing_expr:
@@ -11224,7 +11224,7 @@ components:
             后者缺失返回 400。
         model:
           type: string
-          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          pattern: ^[A-Za-z0-9._:/-]{1,128}$
           description: 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
         group_ratio:
           type: number
@@ -11427,7 +11427,7 @@ components:
           description: 必须存在且启用（否则 422）。
         model:
           type: string
-          pattern: ^[A-Za-z0-9._:-]{1,128}$
+          pattern: ^[A-Za-z0-9._:/-]{1,128}$
           description: 必须已在 model_pricing 定价（否则 422）。
         prompt_price:
           type: integer

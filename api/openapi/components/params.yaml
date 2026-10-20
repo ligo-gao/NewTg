@@ -58,10 +58,10 @@ parameters:
     name: model
     in: path
     required: true
-    description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:-）；不存在 404。
+    description: 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。
     schema:
       type: string
-      pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      pattern: '^[A-Za-z0-9._:/-]{1,128}$'
   PathGroupTag:
     name: group
     in: path

@@ -1643,7 +1643,12 @@ func normalizeCredentials(ct contract.ChannelType, creds ChannelCredentials) Cha
 
 const maxBaseURLBytes = 512
 
-var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+// modelNameRe 与 store/model_meta_validate.go 的模型名字符集一致（1–128 字符）。
+//
+// 【为什么允许 "/"】公开模型名带厂商前缀（如 `openai/gpt-5`）是既有命名，
+// model_meta 与公开目录已按此字符集工作；渠道侧继续拒绝 "/" 会让这些模型
+// 无法被任何渠道承载（参照侧缺陷修复）。
+var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // requiredBaseURLTypes 是 relay-02 §7.1 「必填」组（基线序号 3,8,36,45,54,60,61,62,63）。
 var requiredBaseURLTypes = map[contract.ChannelType]struct{}{
@@ -1685,7 +1690,8 @@ func validateSupportedModels(v *validator, in []string) ([]string, []byte) {
 	seen := make(map[string]struct{}, len(in))
 	for i, m := range in {
 		if m == "" || len(m) > 128 || !modelNameRe.MatchString(m) {
-			// modules-06 F-06-04：1–128 字符，字母数字与 ._-: 允许。
+			// modules-06 F-06-04：1–128 字符，字母数字与 ._-:/ 允许（"/" 见
+			// modelNameRe 的注释）。
 			v.add("supported_models", fmt.Sprintf("supported_models[%d] is invalid", i))
 			continue
 		}

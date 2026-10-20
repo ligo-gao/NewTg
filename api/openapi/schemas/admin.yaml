@@ -425,7 +425,7 @@ schemas:
         format: int64
       model:
         type: string
-        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
       mode:
         $ref: '#/schemas/PricingMode'
       billing_expr:
@@ -500,7 +500,7 @@ schemas:
     properties:
       model:
         type: string
-        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
       mode:
         $ref: '#/schemas/PricingMode'
       billing_expr:
@@ -705,7 +705,7 @@ schemas:
           后者缺失返回 400。
       model:
         type: string
-        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
         description: 用于模型族默认值（补全倍率/Claude 缓存 1h）；可省略。
       group_ratio:
         type: number
@@ -837,7 +837,7 @@ schemas:
         description: 必须存在且启用（否则 422）。
       model:
         type: string
-        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
         description: 必须已在 model_pricing 定价（否则 422）。
       prompt_price:
         type: integer

@@ -71,8 +71,12 @@ const (
 	pricingModelLimitDef = 200
 )
 
-// pricingModelPattern 与 modules-06 F-06-14 的模型名字符集一致。
-var pricingModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+// pricingModelPattern 与 store/model_meta_validate.go 的模型名字符集一致。
+//
+// 【为什么允许 "/"】公开模型名本来就带厂商前缀（如 `openai/gpt-5`），
+// model_meta 已按此字符集落库；定价侧若继续拒绝 "/"，这些模型就无法创建
+// 定价行（参照侧缺陷修复）。长度上界仍是 128。
+var pricingModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // PricingHandlerConfig 是定价端点的装配输入。Repo 必填（生产由
 // store.NewPricingRepo(DB) 构造）；Redis 用于创建幂等；Authz 缺省时构造空中间件
@@ -598,7 +602,7 @@ func validatePricingModelParam(w http.ResponseWriter, model string) bool {
 		return true
 	}
 	writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest,
-		"Invalid request", "model path parameter must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
+		"Invalid request", "model path parameter must be 1-128 characters of [A-Za-z0-9._:/-]", []string{"model"})
 	return false
 }
 
@@ -845,7 +849,7 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 	model := payload.Model
 	if !pricingModelPattern.MatchString(model) {
 		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"model must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
+			"model must be 1-128 characters of [A-Za-z0-9._:/-]", []string{"model"})
 		return
 	}
 	// author 是 NOT NULL 列：创建时显式 null 与更新同样 422，而不是静默用默认值。
@@ -1585,7 +1589,7 @@ func (h *PricingHandlers) handleCreateGroupPricing(w http.ResponseWriter, r *htt
 	}
 	if !pricingModelPattern.MatchString(input.Model) {
 		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"model must be 1-128 characters of [A-Za-z0-9._:-]", []string{"model"})
+			"model must be 1-128 characters of [A-Za-z0-9._:/-]", []string{"model"})
 		return
 	}
 	rec, err := h.repo.CreateGroupPricing(r.Context(), input)
