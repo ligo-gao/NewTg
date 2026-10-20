@@ -1776,7 +1776,8 @@ export interface paths {
          * 按天数或文件数清理应用日志文件
          * @description 只处理 LOG_DIR 下匹配 LOG_FILE_PATTERN 的普通文件；当前活动日志文件
          *     （最新 mtime）永不删除。by_count 保留最新 N 个；by_days 删除 mtime 早于
-         *     now-N*24h 的文件。非法 mode → 422 invalid_mode；value<1 → 422
+         *     now-N*24h 的文件。非法 mode → 422 invalid_mode；value 不在 1–36500
+         *     （by_days 上限 100 年，更大的 value 会让 time.Duration 溢出）→ 422
          *     invalid_value；LOG_DIR 未配置 → 422 log_dir_not_configured。
          *     不触碰 usage_logs 行。
          */
@@ -1797,7 +1798,9 @@ export interface paths {
          * 最近性能运维操作（来自 audit_logs）
          * @description 服务端过滤 category='operation' 且 detail.action ∈
          *     {system.disk_cache.clear, system.gc.run, system.log_cleanup.run}，
-         *     按时间倒序。limit 默认 20、范围 1–100，越界 422 invalid_value。
+         *     按时间倒序（同一时间戳按 id 倒序）。limit 默认 20、范围 1–100，越界 422
+         *     invalid_value。日志清理行额外投影 mode/value 供参数摘要展示；其余操作
+         *     不返回这两个字段。
          *     不新建运维记录表，也不要求 /api/audit-logs 新增 action 过滤。
          */
         get: operations["listPerformanceRecentOperations"];
@@ -5069,6 +5072,13 @@ export interface components {
             /** @enum {string} */
             result: "success" | "failed";
             instance_id: string;
+            /**
+             * @description 仅 system.log_cleanup.run 行返回；其余操作省略该字段。
+             * @enum {string}
+             */
+            mode?: "by_count" | "by_days";
+            /** @description 仅 system.log_cleanup.run 行返回清理参数；其余操作省略该字段。 */
+            value?: number;
             /** Format: int64 */
             deleted_count: number;
             /** Format: int64 */
@@ -9699,6 +9709,10 @@ export interface operations {
         parameters: {
             query: {
                 mode: "by_count" | "by_days";
+                /**
+                 * @description by_count 为保留的最新文件数；by_days 为保留天数。上限 36500（100 年），
+                 *     超出 → 422 invalid_value。
+                 */
                 value: number;
                 /** @description 目标实例标识；与当前实例不一致 → 409 instance_mismatch。 */
                 instance_id?: string;

@@ -60,6 +60,15 @@ const (
 
 	performanceDefaultRecentLimit = 20
 	performanceMaxRecentLimit     = 100
+
+	// performanceMaxCleanupValue 是日志清理 value 的上限（100 年）。
+	//
+	// by_days 用 time.Duration(value) * 24 * time.Hour 计算截止时间，而
+	// int64 纳秒在约 106752 天（≈292 年）时溢出：更大的 value 会让截止时间
+	// 绕回未来，删除集合与意图完全相反。100 年既覆盖任何真实运维窗口，也把
+	// 乘法留在安全区间。by_count 同样套用该上限：万级文件数的保留集没有
+	// 实际意义，统一上限让 query 参数的契约只有一条边界。
+	performanceMaxCleanupValue = 36500
 )
 
 // performanceProblemType* 是 §3.19.2 错误码的 RFC 7807 type。detail 同时以
@@ -445,6 +454,14 @@ func (h *PerformanceHandlers) handleDiskCacheClear(w http.ResponseWriter, r *htt
 			continue
 		}
 		if err := h.rm(file.path); err != nil {
+			// 扫描后文件已被别的清理者/轮转删除（os.ErrNotExist）不是操作
+			// 失败：清理意图已经达成。按 deleted 计数并计入扫描时的字节数，
+			// 只有真实错误（权限、IO）才进 failed_files。
+			if errors.Is(err, os.ErrNotExist) {
+				resp.DeletedCount++
+				resp.FreedBytes += file.size
+				continue
+			}
 			// 单个删除失败不吞掉、也不让整次清理失败（Q7）：列进 failed_files，
 			// 已成功的删除保持生效，UI 展示部分失败。
 			resp.FailedFiles = append(resp.FailedFiles, file.name)
@@ -627,9 +644,10 @@ func (h *PerformanceHandlers) handleLogCleanup(w http.ResponseWriter, r *http.Re
 		return
 	}
 	value, err := strconv.Atoi(strings.TrimSpace(query.Get("value")))
-	if err != nil || value < 1 {
+	if err != nil || value < 1 || value > performanceMaxCleanupValue {
 		writeProblemDetail(w, http.StatusUnprocessableEntity, problemTypePerformanceInvalidValue,
-			"Invalid value", "INVALID_VALUE: value must be an integer >= 1")
+			"Invalid value",
+			"INVALID_VALUE: value must be an integer between 1 and "+strconv.Itoa(performanceMaxCleanupValue))
 		return
 	}
 	if cfg.logDir == "" {
@@ -675,6 +693,12 @@ func (h *PerformanceHandlers) handleLogCleanup(w http.ResponseWriter, r *http.Re
 			continue
 		}
 		if err := h.rm(file.path); err != nil {
+			// 与磁盘缓存清理同一语义：扫描后消失的文件视为已清理，不算失败。
+			if errors.Is(err, os.ErrNotExist) {
+				resp.DeletedCount++
+				resp.FreedBytes += file.size
+				continue
+			}
 			resp.FailedFiles = append(resp.FailedFiles, file.name)
 			continue
 		}
@@ -751,17 +775,21 @@ func sortPerfFilesDesc(files []perfFile) {
 // ---------------------------------------------------------------------------
 
 type recentOperation struct {
-	Time          time.Time `json:"time"`
-	Actor         string    `json:"actor"`
-	Action        string    `json:"action"`
-	Route         string    `json:"route"`
-	Result        string    `json:"result"`
-	InstanceID    string    `json:"instance_id"`
-	DeletedCount  int64     `json:"deleted_count"`
-	FreedBytes    int64     `json:"freed_bytes"`
-	FailedCount   int64     `json:"failed_count"`
-	DurationMS    int64     `json:"duration_ms"`
-	SkippedActive bool      `json:"skipped_active"`
+	Time       time.Time `json:"time"`
+	Actor      string    `json:"actor"`
+	Action     string    `json:"action"`
+	Route      string    `json:"route"`
+	Result     string    `json:"result"`
+	InstanceID string    `json:"instance_id"`
+	// Mode/Value 只对日志清理有值，供 D3b「参数摘要」列展示；其余两类操作
+	// 的审计 detail 没有这两个键，omitempty 让响应形状保持可选。
+	Mode          string `json:"mode,omitempty"`
+	Value         int64  `json:"value,omitempty"`
+	DeletedCount  int64  `json:"deleted_count"`
+	FreedBytes    int64  `json:"freed_bytes"`
+	FailedCount   int64  `json:"failed_count"`
+	DurationMS    int64  `json:"duration_ms"`
+	SkippedActive bool   `json:"skipped_active"`
 }
 
 type recentOperationsResponse struct {
@@ -792,7 +820,7 @@ func (h *PerformanceHandlers) handleRecentOperations(w http.ResponseWriter, r *h
 		COALESCE(route, ''), result, detail
 		FROM audit_logs
 		WHERE category = 'operation' AND detail->>'action' IN ($1, $2, $3)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT $4`
 	rows, err := h.logDB.QueryContext(r.Context(), query,
 		audit.ActionSystemDiskCacheClear, audit.ActionSystemGCRun, audit.ActionSystemLogCleanupRun, limit)
@@ -841,6 +869,10 @@ func applyRecentOperationDetail(item *recentOperation, raw []byte) {
 	if value, ok := detail["instance_id"].(string); ok {
 		item.InstanceID = value
 	}
+	if value, ok := detail["mode"].(string); ok {
+		item.Mode = value
+	}
+	item.Value = jsonInt64(detail["value"])
 	item.DeletedCount = jsonInt64(detail["deleted_count"])
 	item.FreedBytes = jsonInt64(detail["freed_bytes"])
 	item.FailedCount = jsonInt64(detail["failed_count"])

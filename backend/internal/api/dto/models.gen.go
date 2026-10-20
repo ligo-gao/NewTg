@@ -1125,6 +1125,24 @@ func (e PerformanceRecentOperationAction) Valid() bool {
 	}
 }
 
+// Defines values for PerformanceRecentOperationMode.
+const (
+	PerformanceRecentOperationModeByCount PerformanceRecentOperationMode = "by_count"
+	PerformanceRecentOperationModeByDays  PerformanceRecentOperationMode = "by_days"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceRecentOperationMode enum.
+func (e PerformanceRecentOperationMode) Valid() bool {
+	switch e {
+	case PerformanceRecentOperationModeByCount:
+		return true
+	case PerformanceRecentOperationModeByDays:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceRecentOperationResult.
 const (
 	PerformanceRecentOperationResultFailed  PerformanceRecentOperationResult = "failed"
@@ -4869,20 +4887,29 @@ type PerformanceRecentOperation struct {
 	Action PerformanceRecentOperationAction `json:"action"`
 
 	// Actor 审计既有 username 快照（未解析时为 user#<id>）。
-	Actor         string                           `json:"actor"`
-	DeletedCount  int64                            `json:"deleted_count"`
-	DurationMs    int64                            `json:"duration_ms"`
-	FailedCount   int64                            `json:"failed_count"`
-	FreedBytes    int64                            `json:"freed_bytes"`
-	InstanceId    string                           `json:"instance_id"`
+	Actor        string `json:"actor"`
+	DeletedCount int64  `json:"deleted_count"`
+	DurationMs   int64  `json:"duration_ms"`
+	FailedCount  int64  `json:"failed_count"`
+	FreedBytes   int64  `json:"freed_bytes"`
+	InstanceId   string `json:"instance_id"`
+
+	// Mode 仅 system.log_cleanup.run 行返回；其余操作省略该字段。
+	Mode          *PerformanceRecentOperationMode  `json:"mode,omitempty"`
 	Result        PerformanceRecentOperationResult `json:"result"`
 	Route         string                           `json:"route"`
 	SkippedActive bool                             `json:"skipped_active"`
 	Time          time.Time                        `json:"time"`
+
+	// Value 仅 system.log_cleanup.run 行返回清理参数；其余操作省略该字段。
+	Value *int `json:"value,omitempty"`
 }
 
 // PerformanceRecentOperationAction defines model for PerformanceRecentOperation.Action.
 type PerformanceRecentOperationAction string
+
+// PerformanceRecentOperationMode 仅 system.log_cleanup.run 行返回；其余操作省略该字段。
+type PerformanceRecentOperationMode string
 
 // PerformanceRecentOperationResult defines model for PerformanceRecentOperation.Result.
 type PerformanceRecentOperationResult string
@@ -7396,8 +7423,11 @@ type RunPerformanceGCParams struct {
 
 // CleanupPerformanceLogsParams defines parameters for CleanupPerformanceLogs.
 type CleanupPerformanceLogsParams struct {
-	Mode  CleanupPerformanceLogsParamsMode `form:"mode" json:"mode"`
-	Value int                              `form:"value" json:"value"`
+	Mode CleanupPerformanceLogsParamsMode `form:"mode" json:"mode"`
+
+	// Value by_count 为保留的最新文件数；by_days 为保留天数。上限 36500（100 年），
+	// 超出 → 422 invalid_value。
+	Value int `form:"value" json:"value"`
 
 	// InstanceId 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
 	InstanceId *string `form:"instance_id,omitempty" json:"instance_id,omitempty"`

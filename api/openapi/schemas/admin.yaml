@@ -2593,7 +2593,7 @@ schemas:
     properties:
       instance_id: {type: string}
       mode: {type: string, enum: [by_count, by_days]}
-      value: {type: integer, minimum: 1}
+      value: {type: integer, minimum: 1, maximum: 36500}
       deleted_count: {type: integer, minimum: 0}
       freed_bytes: {type: integer, format: int64, minimum: 0}
       skipped_active:
@@ -2629,6 +2629,15 @@ schemas:
       route: {type: string}
       result: {type: string, enum: [success, failed]}
       instance_id: {type: string}
+      mode:
+        type: string
+        enum: [by_count, by_days]
+        description: 仅 system.log_cleanup.run 行返回；其余操作省略该字段。
+      value:
+        type: integer
+        minimum: 1
+        maximum: 36500
+        description: 仅 system.log_cleanup.run 行返回清理参数；其余操作省略该字段。
       deleted_count: {type: integer, format: int64, minimum: 0}
       freed_bytes: {type: integer, format: int64, minimum: 0}
       failed_count: {type: integer, format: int64, minimum: 0}

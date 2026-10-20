@@ -120,6 +120,53 @@ func TestIntegrationPerformanceRecentOperationsEndToEnd(t *testing.T) {
 	}
 }
 
+// TestIntegrationPerformanceRecentOperationsTieBreakAndParamProjection：
+// 同一 created_at 的行按 id DESC 稳定排序（LOW-2），且日志清理行的
+// mode/value 从 detail 投影出来供参数摘要列使用（LOW-7）。
+func TestIntegrationPerformanceRecentOperationsTieBreakAndParamProjection(t *testing.T) {
+	env := newPerfIntegrationEnv(t)
+	const userID = int64(424244)
+	if _, err := env.db.Exec(`DELETE FROM audit_logs WHERE user_id = $1`, userID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM audit_logs WHERE user_id = $1`, userID)
+	})
+
+	sameTime := time.Now().UTC().Add(-time.Hour)
+	first := `{"action":"` + audit.ActionSystemLogCleanupRun + `","instance_id":"itest-gateway",` +
+		`"mode":"by_count","value":2,"deleted_count":1}`
+	second := `{"action":"` + audit.ActionSystemLogCleanupRun + `","instance_id":"itest-gateway",` +
+		`"mode":"by_days","value":30,"deleted_count":4}`
+	for _, detail := range []string{first, second} {
+		if _, err := env.db.Exec(`INSERT INTO audit_logs
+			(user_id, username, category, method, route, result, detail, created_at)
+			VALUES ($1, 'tester', 'operation', 'DELETE', '/api/performance/logs', 'success', $2::jsonb, $3)`,
+			userID, detail, sameTime); err != nil {
+			t.Fatalf("insert audit row: %v", err)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/performance/recent-operations?limit=2", "", perfManager(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("recent = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body recentOperationsResponse
+	decodePerfJSON(t, rr, &body)
+	if len(body.Items) != 2 {
+		t.Fatalf("items = %+v", body.Items)
+	}
+	// 同一时间戳：后插入（id 更大）的行在前。
+	if body.Items[0].Mode != "by_days" || body.Items[0].Value != 30 {
+		t.Fatalf("id DESC tiebreaker 失效或 mode/value 未投影: %+v", body.Items[0])
+	}
+	if body.Items[1].Mode != "by_count" || body.Items[1].Value != 2 {
+		t.Fatalf("第二行 = %+v", body.Items[1])
+	}
+}
+
 // TestIntegrationPerformanceRecentOperationsFilterAndLimit：只返回三类
 // detail.action + category=operation 的行，limit 生效且倒序。
 func TestIntegrationPerformanceRecentOperationsFilterAndLimit(t *testing.T) {

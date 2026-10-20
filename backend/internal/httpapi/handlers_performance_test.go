@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
@@ -34,6 +38,12 @@ type perfTestEnv struct {
 
 func newPerfTestEnv(t *testing.T) *perfTestEnv {
 	t.Helper()
+	return newPerfTestEnvWithRedis(t, nil)
+}
+
+// newPerfTestEnvWithRedis 允许注入 Redis 客户端（429 限流用例）。
+func newPerfTestEnvWithRedis(t *testing.T, rdb *redis.Client) *perfTestEnv {
+	t.Helper()
 	exec := &fakeAuditExec{}
 	env := &perfTestEnv{
 		env:   map[string]string{},
@@ -44,6 +54,7 @@ func newPerfTestEnv(t *testing.T) *perfTestEnv {
 		Audit:  audit.New(exec),
 		Logger: testLogger(),
 		Authz:  rbac.NewAuthzMiddleware(),
+		Redis:  rdb,
 		Now:    func() time.Time { return env.now },
 		Getenv: func(key string) string { return env.env[key] },
 		Hostname: func() (string, error) {
@@ -194,6 +205,16 @@ func TestPerformanceInstanceMismatchReturns409(t *testing.T) {
 		{http.MethodDelete, "/api/performance/logs?mode=by_days&value=1&instance_id=gateway-2", ""},
 		{http.MethodPost, "/api/performance/gc", `{"instance_id":"gateway-2"}`},
 	}
+	// GC 分支的零副作用用 GC 次数证明：实例不匹配时请求必须停在
+	// runtime.GC() 之前。磁盘/日志两个分支不会触发 GC，因此整个循环前后
+	// 的计数相等即说明 GC 没有被执行。（标准库没有 runtime.NumGC，
+	// 次数来自 ReadMemStats.NumGC。）
+	gcCount := func() uint32 {
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.NumGC
+	}
+	numGCBefore := gcCount()
 	for _, tc := range cases {
 		rr := httptest.NewRecorder()
 		env.mux.ServeHTTP(rr, perfRequest(tc.method, tc.target, tc.body, confirm))
@@ -204,8 +225,16 @@ func TestPerformanceInstanceMismatchReturns409(t *testing.T) {
 			t.Fatalf("缺少 INSTANCE_MISMATCH: %s", rr.Body.String())
 		}
 	}
+	numGCAfter := gcCount()
+	if numGCAfter != numGCBefore {
+		t.Fatalf("实例不匹配的 GC 请求不得执行 runtime.GC: num_gc %d -> %d", numGCBefore, numGCAfter)
+	}
 	assertExists(t, cacheFile)
 	assertExists(t, logFile)
+	// 409 是零副作用拒绝：三个分支都不得写审计。
+	if calls := env.audit.snapshot(); len(calls) != 0 {
+		t.Fatalf("实例不匹配不得写审计: %v", calls)
+	}
 
 	// 匹配当前实例时正常执行（证明 409 只因实例不符）。
 	rr := httptest.NewRecorder()
@@ -286,6 +315,13 @@ func TestPerformanceDiskCacheCleanupOnlyInactive(t *testing.T) {
 	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	// 符号链接即使目标 mtime 很旧也不能进入删除集：扫描按 Lstat 的
+	// Mode().IsRegular() 过滤，删除路径不可能跟随链接碰到目录外文件。
+	outside := writePerfFile(t, t.TempDir(), "outside", env.now.Add(-time.Hour), "outside")
+	link := filepath.Join(cacheDir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
 	failing := writePerfFile(t, cacheDir, "failing", env.now.Add(-time.Hour), "fail")
 	env.remove = func(path string) error {
 		if filepath.Base(path) == "failing" {
@@ -319,6 +355,10 @@ func TestPerformanceDiskCacheCleanupOnlyInactive(t *testing.T) {
 	if _, err := os.Stat(subdir); err != nil {
 		t.Fatalf("子目录必须保留: %v", err)
 	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("符号链接必须保留: %v", err)
+	}
+	assertExists(t, outside)
 
 	// 部分失败仍记 success，detail 带 failed_count（D3-10）。
 	calls := env.audit.snapshot()
@@ -332,6 +372,42 @@ func TestPerformanceDiskCacheCleanupOnlyInactive(t *testing.T) {
 	}
 }
 
+// TestPerformanceDiskCacheCleanupVanishedFileIsSuccess：扫描后文件被其他
+// 清理者/轮转删除（Remove 返回包装后的 os.ErrNotExist）不是失败——清理
+// 意图已达成，按 deleted 计数且不进 failed_files。
+func TestPerformanceDiskCacheCleanupVanishedFileIsSuccess(t *testing.T) {
+	env := newPerfTestEnv(t)
+	cacheDir := t.TempDir()
+	env.env["DISK_CACHE_ENABLED"] = "true"
+	env.env["DISK_CACHE_PATH"] = cacheDir
+	vanished := writePerfFile(t, cacheDir, "vanished", env.now.Add(-time.Hour), "gone")
+	env.remove = func(path string) error {
+		if filepath.Base(path) == "vanished" {
+			// 模拟扫描后另一个清理者先删掉：文件确实没了，Remove 报到
+			// ErrNotExist。包装一层验证调用方用 errors.Is 而不是 == 判定。
+			_ = os.Remove(path)
+			return fmt.Errorf("remove %s: %w", path, os.ErrNotExist)
+		}
+		return os.Remove(path)
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete, "/api/performance/disk-cache", "",
+		map[string]string{"X-Confirm-Action": "true"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cleanup = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body performanceDiskClearResponse
+	decodePerfJSON(t, rr, &body)
+	if body.DeletedCount != 1 || body.FreedBytes != 4 || len(body.FailedFiles) != 0 {
+		t.Fatalf("扫描后消失应计为成功: %+v", body)
+	}
+	assertGone(t, vanished)
+	if detail := auditDetail(t, env.audit.snapshot()[0]); detail["failed_count"].(float64) != 0 {
+		t.Fatalf("审计 failed_count = %v", detail["failed_count"])
+	}
+}
+
 // TestPerformanceDiskCacheNotConfigured：未启用/路径缺失 → 422。
 func TestPerformanceDiskCacheNotConfigured(t *testing.T) {
 	env := newPerfTestEnv(t)
@@ -340,6 +416,39 @@ func TestPerformanceDiskCacheNotConfigured(t *testing.T) {
 		map[string]string{"X-Confirm-Action": "true"}))
 	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), "disk_cache_not_configured") {
 		t.Fatalf("未配置 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPerformanceWriteRateLimit：三个写操作共用 10/min/admin 的固定窗口；
+// 第 11 次请求 429 并带 Retry-After（Redis 不可用时才 fail-open）。
+func TestPerformanceWriteRateLimit(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	env := newPerfTestEnvWithRedis(t, rdb)
+	env.env["DISK_CACHE_ENABLED"] = "true"
+	env.env["DISK_CACHE_PATH"] = t.TempDir()
+	confirm := map[string]string{"X-Confirm-Action": "true"}
+
+	for i := 0; i < performanceWriteRateLimit; i++ {
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete, "/api/performance/disk-cache", "", confirm))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("第 %d 次 = %d（body=%s）", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete, "/api/performance/disk-cache", "", confirm))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 %d 次 = %d，期望 429（body=%s）",
+			performanceWriteRateLimit+1, rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("429 缺少 Retry-After")
+	}
+	// 超限请求在列目录/删除之前返回：第 11 次不得再写审计。
+	if calls := env.audit.snapshot(); len(calls) != performanceWriteRateLimit {
+		t.Fatalf("审计条数 = %d，期望 %d", len(calls), performanceWriteRateLimit)
 	}
 }
 
@@ -508,6 +617,38 @@ func TestPerformanceLogCleanupByDaysSkipsActive(t *testing.T) {
 	assertExists(t, active)
 }
 
+// TestPerformanceLogCleanupVanishedFileIsSuccess：与磁盘缓存同一语义，
+// 日志文件在扫描后消失按成功计数、不进 failed_files。
+func TestPerformanceLogCleanupVanishedFileIsSuccess(t *testing.T) {
+	env := newPerfTestEnv(t)
+	logDir := t.TempDir()
+	env.env["LOG_DIR"] = logDir
+	vanished := writePerfFile(t, logDir, "newtg-vanished.log", env.now.Add(-40*24*time.Hour), "aa")
+	active := writePerfFile(t, logDir, "newtg-active.log", env.now.Add(-time.Hour), "cccc")
+	env.remove = func(path string) error {
+		if filepath.Base(path) == "newtg-vanished.log" {
+			_ = os.Remove(path)
+			return fmt.Errorf("remove %s: %w", path, os.ErrNotExist)
+		}
+		return os.Remove(path)
+	}
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete,
+		"/api/performance/logs?mode=by_days&value=30", "",
+		map[string]string{"X-Confirm-Action": "true"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cleanup = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body performanceLogCleanupResponse
+	decodePerfJSON(t, rr, &body)
+	if body.DeletedCount != 1 || body.FreedBytes != 2 || len(body.FailedFiles) != 0 {
+		t.Fatalf("扫描后消失应计为成功: %+v", body)
+	}
+	assertGone(t, vanished)
+	assertExists(t, active)
+}
+
 // TestPerformanceLogCleanupValidation：mode/value 非法与 LOG_DIR 未配置的
 // 422 码（请求参数先于部署配置校验）。
 func TestPerformanceLogCleanupValidation(t *testing.T) {
@@ -521,6 +662,11 @@ func TestPerformanceLogCleanupValidation(t *testing.T) {
 		{"/api/performance/logs?mode=by_hours&value=3", "invalid_mode"},
 		{"/api/performance/logs?mode=by_days&value=0", "invalid_value"},
 		{"/api/performance/logs?mode=by_days&value=abc", "invalid_value"},
+		// 上限 36500：106752 天恰是 int64 纳秒溢出的起点，213504 更大；
+		// 若放行会让 by_days 的截止时间绕回未来。
+		{"/api/performance/logs?mode=by_days&value=36501", "invalid_value"},
+		{"/api/performance/logs?mode=by_days&value=106752", "invalid_value"},
+		{"/api/performance/logs?mode=by_days&value=213504", "invalid_value"},
 	}
 	for _, tc := range cases {
 		rr := httptest.NewRecorder()
@@ -538,6 +684,15 @@ func TestPerformanceLogCleanupValidation(t *testing.T) {
 	}
 	if calls := env.audit.snapshot(); len(calls) != 0 {
 		t.Fatalf("校验失败不得写审计: %v", calls)
+	}
+
+	// 上限本身合法：配好目录后 value=36500 必须通过参数校验（空目录 200）。
+	env.env["LOG_DIR"] = t.TempDir()
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, perfRequest(http.MethodDelete,
+		"/api/performance/logs?mode=by_days&value=36500", "", confirm))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("value=36500 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 	}
 }
 
@@ -565,19 +720,38 @@ func TestPerformanceRecentOperationsLimitValidation(t *testing.T) {
 	}
 }
 
-// TestApplyRecentOperationDetail：detail 缺字段/类型异常时保留零值。
+// TestApplyRecentOperationDetail：detail 缺字段/类型异常时保留零值；
+// 日志清理行投影 mode/value 供参数摘要，其余行不输出这两个字段。
 func TestApplyRecentOperationDetail(t *testing.T) {
 	var item recentOperation
-	applyRecentOperationDetail(&item, []byte(`{"instance_id":"n1","deleted_count":3,`+
-		`"freed_bytes":42,"failed_count":1,"duration_ms":8,"skipped_active":true}`))
-	if item.InstanceID != "n1" || item.DeletedCount != 3 || item.FreedBytes != 42 ||
+	applyRecentOperationDetail(&item, []byte(`{"instance_id":"n1","mode":"by_days","value":30,`+
+		`"deleted_count":3,"freed_bytes":42,"failed_count":1,"duration_ms":8,"skipped_active":true}`))
+	if item.InstanceID != "n1" || item.Mode != "by_days" || item.Value != 30 ||
+		item.DeletedCount != 3 || item.FreedBytes != 42 ||
 		item.FailedCount != 1 || item.DurationMS != 8 || !item.SkippedActive {
 		t.Fatalf("detail 解析 = %+v", item)
 	}
+	// 日志清理行的 JSON 必须带 mode/value（LOW-7 的 D3b 参数摘要依赖）。
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"mode":"by_days"`) || !strings.Contains(string(raw), `"value":30`) {
+		t.Fatalf("日志清理行缺少 mode/value: %s", raw)
+	}
+
 	item = recentOperation{}
 	applyRecentOperationDetail(&item, []byte(`{"deleted_count":"oops"}`))
 	if item.DeletedCount != 0 {
 		t.Fatalf("脏数据不应 panic 或伪造: %+v", item)
+	}
+	// GC/磁盘缓存行的 detail 没有 mode/value：可选字段必须被省略。
+	raw, err = json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"mode"`) || strings.Contains(string(raw), `"value"`) {
+		t.Fatalf("非日志清理行不应输出 mode/value: %s", raw)
 	}
 }
 
