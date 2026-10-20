@@ -1499,6 +1499,127 @@ func TestSubscriptionPlanCreateIdempotency(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 用户周期末取消（billing-08 §15.2 P1）
+// ---------------------------------------------------------------------------
+
+// seedSubscription 直接写入假仓储，返回实例 ID。用于构造 active/终态两类样本。
+func seedSubscription(t *testing.T, env *subscriptionTestEnv, userID int64, status string) int64 {
+	t.Helper()
+	now := time.Now().UTC()
+	sub, err := env.repo.CreateSubscription(context.Background(), store.SubscriptionCreateInput{
+		UserID: userID, PlanID: 1, PlanTitleSnapshot: "Pro",
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(29 * 24 * time.Hour),
+		AmountTotal: 1000, PeriodDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+	env.repo.mu.Lock()
+	env.repo.subs[sub.ID].Status = status
+	env.repo.mu.Unlock()
+	return sub.ID
+}
+
+func TestSubscriptionCancelAtPeriodEnd(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID := int64(7), int64(8)
+	activeID := seedSubscription(t, env, ownerID, "active")
+	foreignID := seedSubscription(t, env, otherID, "active")
+	expiredID := seedSubscription(t, env, ownerID, "expired")
+	cancelledID := seedSubscription(t, env, ownerID, "cancelled")
+
+	t.Run("本人取消成功且幂等", func(t *testing.T) {
+		for attempt := 1; attempt <= 2; attempt++ {
+			rr := env.do(t, endUser(ownerID), http.MethodPost,
+				fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), nil, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("第 %d 次取消 = %d（body=%s）", attempt, rr.Code, rr.Body.String())
+			}
+			var view userSubscriptionView
+			if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+				t.Fatalf("decode subscription: %v", err)
+			}
+			if view.ID != activeID || view.Status != "active" || !view.CancelAtPeriodEnd {
+				t.Fatalf("取消后视图 = %+v", view)
+			}
+			// 用户侧投影不得带管理面/订单/价格字段（§15.4）。
+			var raw map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+				t.Fatalf("decode raw: %v", err)
+			}
+			for _, forbidden := range []string{"user_id", "order_id", "price_paid_amount", "currency", "allow_wallet_overflow"} {
+				if _, exists := raw[forbidden]; exists {
+					t.Fatalf("用户视图泄露 %q: %v", forbidden, raw)
+				}
+			}
+		}
+
+		args := env.audit.last(t)
+		if category, _ := args[2].(string); category != "operation" {
+			t.Fatalf("audit category = %v，期望 operation", args[2])
+		}
+		detail := decodeSubAuditDetail(t, args[9])
+		if detail["action"] != audit.ActionSubscriptionCancel {
+			t.Fatalf("audit action = %v", detail["action"])
+		}
+		if detail["id"] != float64(activeID) || len(detail) != 2 {
+			t.Fatalf("audit detail 只应含 action/id: %v", detail)
+		}
+	})
+
+	t.Run("他人实例统一 404 且不改状态", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/cancel", foreignID), nil, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("他人实例 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		env.repo.mu.Lock()
+		defer env.repo.mu.Unlock()
+		if env.repo.subs[foreignID].CancelAtPeriodEnd {
+			t.Fatal("他人实例不应被置位")
+		}
+	})
+
+	t.Run("终态 409", func(t *testing.T) {
+		for name, id := range map[string]int64{"expired": expiredID, "cancelled": cancelledID} {
+			rr := env.do(t, endUser(ownerID), http.MethodPost,
+				fmt.Sprintf("/api/subscriptions/%d/cancel", id), nil, nil)
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+			}
+			if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotActive {
+				t.Fatalf("%s type = %s", name, got)
+			}
+		}
+	})
+
+	t.Run("未登录 403", func(t *testing.T) {
+		rr := env.do(t, nil, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), nil, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("未登录 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("不存在/非法 id 404", func(t *testing.T) {
+		for _, path := range []string{"/api/subscriptions/999999/cancel", "/api/subscriptions/not-a-number/cancel"} {
+			rr := env.do(t, endUser(ownerID), http.MethodPost, path, nil, nil)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("%s = %d（body=%s）", path, rr.Code, rr.Body.String())
+			}
+		}
+	})
+
+	t.Run("携带字段 403 field_not_writable", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), map[string]any{"cancel_at_period_end": false}, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("带 body = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
 
@@ -1515,6 +1636,25 @@ func decodeSubProblemType(t *testing.T, rr *httptest.ResponseRecorder) string {
 		t.Fatalf("decode problem: %v", err)
 	}
 	return problem.Type
+}
+
+// decodeSubAuditDetail 解出审计 INSERT 的 detail 参数（jsonb 以 []byte/string 传入）。
+func decodeSubAuditDetail(t *testing.T, value any) map[string]any {
+	t.Helper()
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		t.Fatalf("detail 类型 = %T", value)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatalf("detail 不是 JSON: %v（%s）", err, raw)
+	}
+	return detail
 }
 
 func decodeSubProblemFields(t *testing.T, rr *httptest.ResponseRecorder) struct {

@@ -485,6 +485,97 @@ func TestSubscriptionIntegrationUserIsolation(t *testing.T) {
 	}
 }
 
+// TestSubscriptionIntegrationCancelAtPeriodEnd 在真实 PostgreSQL 上验证用户侧
+// 周期末取消：条件 UPDATE 的幂等、终态 409、跨用户 404（不泄露存在性）与
+// 未认证 403。store 层的单条 SQL 语义另由 subscription_repo_integration_test 覆盖。
+func TestSubscriptionIntegrationCancelAtPeriodEnd(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	planID := env.insertPlanRow(t, "cancel-"+subscriptionITKey(), "enabled")
+	owner := env.insertUser(t, "user")
+	other := env.insertUser(t, "user")
+	activeID := env.insertSubscription(t, owner, planID, "active", 10)
+	foreignID := env.insertSubscription(t, other, planID, "active", 10)
+	expiredID := env.insertSubscription(t, owner, planID, "expired", 10)
+	cancelledID := env.insertSubscription(t, owner, planID, "cancelled", 10)
+	ownerPrincipal := &auth.Principal{UserID: owner, Role: rbac.RoleUser}
+
+	// 本人取消：200 + 更新后的用户侧投影；重复调用仍 200（幂等）。
+	for attempt := 1; attempt <= 2; attempt++ {
+		rr := env.do(t, ownerPrincipal, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("第 %d 次取消 = %d（body=%s）", attempt, rr.Code, rr.Body.String())
+		}
+		var view userSubscriptionView
+		if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode subscription: %v", err)
+		}
+		if view.ID != activeID || view.Status != "active" || !view.CancelAtPeriodEnd {
+			t.Fatalf("取消后视图 = %+v", view)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode raw: %v", err)
+		}
+		for _, forbidden := range []string{"user_id", "order_id", "price_paid_amount", "currency", "allow_wallet_overflow"} {
+			if _, exists := raw[forbidden]; exists {
+				t.Fatalf("用户视图泄露 %q: %v", forbidden, raw)
+			}
+		}
+	}
+	var cancelled bool
+	if err := env.db.QueryRow(`SELECT cancel_at_period_end FROM subscriptions WHERE id = $1`, activeID).Scan(&cancelled); err != nil {
+		t.Fatalf("read cancel flag: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("cancel_at_period_end 未落库")
+	}
+
+	// 他人实例与不存在统一 404，且不得改动他人行。
+	if rr := env.do(t, ownerPrincipal, http.MethodPost,
+		fmt.Sprintf("/api/subscriptions/%d/cancel", foreignID), nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("他人实例 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if err := env.db.QueryRow(`SELECT cancel_at_period_end FROM subscriptions WHERE id = $1`, foreignID).Scan(&cancelled); err != nil {
+		t.Fatalf("read foreign flag: %v", err)
+	}
+	if cancelled {
+		t.Fatal("他人实例不应被置位")
+	}
+	if rr := env.do(t, ownerPrincipal, http.MethodPost,
+		"/api/subscriptions/99999999/cancel", nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("不存在实例 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 终态 409。
+	for name, id := range map[string]int64{"expired": expiredID, "cancelled": cancelledID} {
+		rr := env.do(t, ownerPrincipal, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/cancel", id), nil, nil)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+		}
+		if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotActive {
+			t.Fatalf("%s type = %s", name, got)
+		}
+	}
+
+	// authz 层在缺少 Principal 时失败关闭为 403（生产链路上会话中间件会先给 401）。
+	if rr := env.do(t, nil, http.MethodPost,
+		fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("未登录 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 审计：subscription.cancel + detail 仅 action/id。
+	args := env.audit.last(t)
+	if category, _ := args[2].(string); category != "operation" {
+		t.Fatalf("audit category = %v，期望 operation", args[2])
+	}
+	detail := subAuditObject(t, args[9])
+	if detail["action"] != audit.ActionSubscriptionCancel || detail["id"] != float64(activeID) || len(detail) != 2 {
+		t.Fatalf("audit detail = %v", detail)
+	}
+}
+
 // TestSubscriptionIntegrationPurchaseSettles is the S3 end-to-end proof on
 // real PostgreSQL: purchase → provider callback → subscriptions row.
 //

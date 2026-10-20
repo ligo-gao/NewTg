@@ -910,6 +910,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 周期末取消本人订阅（幂等）
+         * @description 置 `cancel_at_period_end=true`：实例保持 active 至 `end_at`，不立即作废
+         *     额度、不退款（billing-08 §3.5 P1）。仅本人 active 实例可取消；他人实例
+         *     与不存在统一 404（不泄露存在性）；expired/cancelled 终态 → 409。已置位
+         *     的重复调用仍返回 200（条件 UPDATE 幂等）。
+         *
+         *     请求无 body；携带任何字段返回 403 field_not_writable。响应为用户侧订阅
+         *     投影，不含 user_id/order_id/价格。
+         */
+        post: operations["cancelSubscriptionAtPeriodEnd"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription/purchase": {
         parameters: {
             query?: never;
@@ -8762,6 +8790,40 @@ export interface operations {
             };
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    cancelSubscriptionAtPeriodEnd: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新后的订阅（cancel_at_period_end=true） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSubscription"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
         };
     };

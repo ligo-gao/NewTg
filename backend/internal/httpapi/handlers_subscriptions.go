@@ -77,6 +77,9 @@ const (
 	problemTypePurchaseInvalid     = "https://newtg.dev/problems/invalid_subscription_purchase"
 	problemTypePurchaseConflict    = "https://newtg.dev/problems/subscription_purchase_conflict"
 	problemTypePurchaseUnavailable = "https://newtg.dev/problems/subscription_purchase_unavailable"
+	// 用户周期末取消（billing-08 §3.5 P1）：实例已进入 expired/cancelled
+	// 终态时不能再置位。独立 type 让前端可区分「不能取消」与「找不到」。
+	problemTypeSubscriptionNotActive = "https://newtg.dev/problems/subscription_not_active"
 )
 
 // SubscriptionPurchaseService 是订阅购买的支付接缝。
@@ -100,6 +103,7 @@ var (
 	adminUserSubscriptionsAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "admin_list_by_user"}
 	userBillingPreferenceAction    = rbac.AuthzAction{ResourceKind: "billing_preference", ActionName: "update"}
 	userSubscriptionPurchaseAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "purchase"}
+	userSubscriptionCancelAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
 )
 
 // SubscriptionHandlerConfig 是订阅端点装配输入。
@@ -198,6 +202,9 @@ func (h *SubscriptionHandlers) registerPolicies() {
 		"plan_id":  nil,
 		"provider": nil,
 	}})
+	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
+	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
+	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
 }
 
 // Register 把全部订阅端点挂到受保护子树（SessionAuth → CSRF → Origin 链之后）。
@@ -230,6 +237,8 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	// 用户面：数据范围恒为 Principal.UserID（§15.4）。
 	mux.Handle("GET /api/subscription/plans", http.HandlerFunc(h.handleListAvailablePlans))
 	mux.Handle("GET /api/subscriptions", http.HandlerFunc(h.handleListMySubscriptions))
+	mux.Handle("POST /api/subscriptions/{id}/cancel",
+		self(userSubscriptionCancelAction, h.handleCancelSubscriptionAtPeriodEnd))
 	mux.Handle("GET /api/billing-preference", http.HandlerFunc(h.handleGetBillingPreference))
 	mux.Handle("PUT /api/billing-preference", self(userBillingPreferenceAction, h.handlePutBillingPreference))
 	mux.Handle("POST /api/subscription/purchase", self(userSubscriptionPurchaseAction, h.handlePurchase))
@@ -663,7 +672,7 @@ func (p normalizedPlan) updateInput() store.SubscriptionPlanUpdate {
 	}
 }
 
-// parsePlanPathID 解析路径 id。非法 id 在契约里等同于不存在（404），
+// parsePlanPathID 解析套餐/订阅路径 id。非法 id 在契约里等同于不存在（404），
 // 不把它暴露成 400：ID 枚举不应获得比真实 404 更多的信息。
 func parsePlanPathID(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -829,7 +838,7 @@ func (h *SubscriptionHandlers) handleCreatePlan(w http.ResponseWriter, r *http.R
 		h.writeRepoError(w, "create subscription plan", err)
 		return
 	}
-	h.auditPlan(r, p, audit.ActionSubscriptionPlanCreate, map[string]any{
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionPlanCreate, map[string]any{
 		"id": plan.ID, "plan_key": plan.PlanKey,
 	}, http.StatusCreated)
 	writeJSON(w, http.StatusCreated, newSubscriptionPlanView(plan))
@@ -893,7 +902,7 @@ func (h *SubscriptionHandlers) handleUpdatePlan(w http.ResponseWriter, r *http.R
 		return
 	}
 	// 编辑不追溯已购实例：实例持有购买瞬间的快照（R-D5-03），审计只记标识。
-	h.auditPlan(r, p, audit.ActionSubscriptionPlanUpdate, map[string]any{
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionPlanUpdate, map[string]any{
 		"id": plan.ID, "plan_key": plan.PlanKey,
 	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, newSubscriptionPlanView(plan))
@@ -913,7 +922,7 @@ func (h *SubscriptionHandlers) handleDeletePlan(w http.ResponseWriter, r *http.R
 		h.writeRepoError(w, "delete subscription plan", err)
 		return
 	}
-	h.auditPlan(r, p, audit.ActionSubscriptionPlanDelete, map[string]any{"id": id}, http.StatusNoContent)
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionPlanDelete, map[string]any{"id": id}, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -954,7 +963,7 @@ func (h *SubscriptionHandlers) handlePlanStatus(w http.ResponseWriter, r *http.R
 		h.writeRepoError(w, "get subscription plan after status change", err)
 		return
 	}
-	h.auditPlan(r, p, action, map[string]any{
+	h.auditSubscriptionEvent(r, p, action, map[string]any{
 		"id": plan.ID, "plan_key": plan.PlanKey,
 	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, newSubscriptionPlanView(plan))
@@ -1008,7 +1017,7 @@ func (h *SubscriptionHandlers) handleResetPlanQuota(w http.ResponseWriter, r *ht
 		h.writeRepoError(w, "reset subscription plan quota", err)
 		return
 	}
-	h.auditPlan(r, p, audit.ActionSubscriptionPlanResetQuota, map[string]any{
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionPlanResetQuota, map[string]any{
 		"id": id, "plan_key": plan.PlanKey, "affected": affected,
 	}, http.StatusOK)
 	writeJSON(w, http.StatusOK, subscriptionResetQuotaView{Affected: affected})
@@ -1109,6 +1118,75 @@ func (h *SubscriptionHandlers) handleListMySubscriptions(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, userSubscriptionListView{
 		Items: items, Total: int64(total), Page: page, PageSize: pageSize,
 	})
+}
+
+// handleCancelSubscriptionAtPeriodEnd 实现 billing-08 §15.2 的用户侧 P1
+// 「周期末取消」：只置 cancel_at_period_end，不立即作废额度、不退款。
+//
+// 归属与状态分两步判定，刻意不把 owner 条件塞进 store 的条件 UPDATE：
+//   - GetSubscription 先做归属校验；他人实例与不存在统一 404，避免用状态码
+//     枚举订阅 ID（§15.4 的不泄漏口径）。
+//   - 终态（expired/cancelled）不满足条件 UPDATE 的 status='active'，由 store
+//     返回 ErrSubscriptionNotActive → 409；active 但已置位时 UPDATE 仍命中行，
+//     因此重复调用保持 200（幂等，§15.3）。
+//   - Get 与 UPDATE 之间的状态竞争由 store 的受影响行数兜底：若期间到期，
+//     同样落到 409 而不是假装成功。
+func (h *SubscriptionHandlers) handleCancelSubscriptionAtPeriodEnd(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		// 非法 id 与不存在同口径：不给出「格式错」这一额外信号。
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+
+	sub, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		// ErrSubscriptionNotFound → 404；其余仓储错误 → 500。
+		h.writeRepoError(w, "get subscription for cancel", err)
+		return
+	}
+	// 非本人一律 404：不能因为「存在但不属于你」返回 403 而泄露 ID 存在性。
+	if sub.UserID != p.UserID {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if sub.Status != "active" {
+		writeCancelNotActiveProblem(w)
+		return
+	}
+
+	if err := h.repo.CancelAtPeriodEnd(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSubscriptionNotFound):
+			writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		case errors.Is(err, store.ErrSubscriptionNotActive):
+			writeCancelNotActiveProblem(w)
+		default:
+			h.log.Error("cancel subscription at period end failed", "subscription_id", id, "error", err)
+			writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
+		}
+		return
+	}
+
+	// 返回更新后的用户侧投影（不含 user_id/order_id/价格）。重新读取而不是
+	// 本地改副本，确保 updated_at 与条件 UPDATE 的事实一致。
+	updated, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		h.writeRepoError(w, "reload subscription after cancel", err)
+		return
+	}
+	// 审计 detail 仅 id；用户侧动作与套餐管理共用同一审计口径。
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionCancel, map[string]any{"id": id}, http.StatusOK)
+	writeJSON(w, http.StatusOK, newUserSubscriptionView(updated))
+}
+
+func writeCancelNotActiveProblem(w http.ResponseWriter) {
+	writeAdminProblem(w, http.StatusConflict, problemTypeSubscriptionNotActive,
+		"subscription_not_active", "subscription is no longer active and cannot be cancelled at period end")
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,9 +1472,10 @@ func (h *SubscriptionHandlers) writePurchaseError(w http.ResponseWriter, err err
 // 审计
 // ---------------------------------------------------------------------------
 
-// auditPlan 写套餐管理动作审计。detail 只含 id/plan_key/受影响计数——绝不
-// 记录整行，避免把价格/额度配置复制进审计表（D1b 目录审计同口径）。
-func (h *SubscriptionHandlers) auditPlan(r *http.Request, p *auth.Principal, action string, detail map[string]any, status int) {
+// auditSubscriptionEvent 写订阅域动作审计（套餐管理 + 用户周期末取消同口径）。
+// detail 只含 id/plan_key/受影响计数——绝不记录整行，避免把价格/额度配置
+// 复制进审计表（D1b 目录审计同口径）。
+func (h *SubscriptionHandlers) auditSubscriptionEvent(r *http.Request, p *auth.Principal, action string, detail map[string]any, status int) {
 	if err := writeAuditEvent(r.Context(), h.audit, audit.Event{
 		Action:     action,
 		Actor:      p.UserID,

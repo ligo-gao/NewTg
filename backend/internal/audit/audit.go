@@ -165,6 +165,9 @@ const (
 	ActionSubscriptionPlanDisable    = "subscription_plan.disable"
 	ActionSubscriptionPlanResetQuota = "subscription_plan.reset_quota"
 	ActionBillingPreferenceUpdate    = "billing_preference.update"
+	// 用户周期末取消（billing-08 §15.2 P1）。属用户自助的资金/权益状态变更，
+	// 仍归 operation；detail 仅记录订阅 id，不复制行内价格/额度。
+	ActionSubscriptionCancel = "subscription.cancel"
 
 	// D7a 站点公告（modules-08 F-08-04 / R-D7-08）。全部归 operation：
 	// 创建/编辑/发布/下线/删除都是管理配置变更。detail 只允许 id/title/
@@ -272,6 +275,7 @@ var actionCategories = map[string]string{
 	ActionSubscriptionPlanDisable:    categoryOperation,
 	ActionSubscriptionPlanResetQuota: categoryOperation,
 	ActionBillingPreferenceUpdate:    categoryOperation,
+	ActionSubscriptionCancel:         categoryOperation,
 
 	ActionAnnouncementCreate:  categoryOperation,
 	ActionAnnouncementUpdate:  categoryOperation,

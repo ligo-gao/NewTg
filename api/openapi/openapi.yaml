@@ -114,6 +114,8 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1subscription~1plans'
   /api/subscriptions:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions'
+  /api/subscriptions/{id}/cancel:
+    $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1cancel'
   /api/subscription/purchase:
     $ref: './paths/user.yaml#/paths/~1api~1subscription~1purchase'
   /api/tokens:

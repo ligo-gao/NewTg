@@ -8755,6 +8755,13 @@ type ListMySubscriptionsParams struct {
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
+// CancelSubscriptionAtPeriodEndParams defines parameters for CancelSubscriptionAtPeriodEnd.
+type CancelSubscriptionAtPeriodEndParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListTasksParams defines parameters for ListTasks.
 type ListTasksParams struct {
 	UserId   *int    `form:"user_id,omitempty" json:"user_id,omitempty"`
