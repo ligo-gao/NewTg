@@ -171,7 +171,8 @@ const (
 
 	// D7a 站点公告（modules-08 F-08-04 / R-D7-08）。全部归 operation：
 	// 创建/编辑/发布/下线/删除都是管理配置变更。detail 只允许 id/title/
-	// status——公告正文可能含未公开内容，审计表不得成为它的第二副本。
+	// status 与发布事件的投递计数（delivered_users/delivery_failed）——
+	// 公告正文可能含未公开内容，审计表不得成为它的第二副本。
 	ActionAnnouncementCreate  = "announcement.create"
 	ActionAnnouncementUpdate  = "announcement.update"
 	ActionAnnouncementPublish = "announcement.publish"

@@ -601,10 +601,10 @@ func TestAnnouncementIntegrationAuditHasNoContent(t *testing.T) {
 			seen[parsed["action"].(string)] = true
 		}
 		// detail 只允许 id/title/status + writer 注入的 action；
-		// A5 的发布审计额外带 delivered_users 计数（不含正文/收件人）。
+		// A5 的发布审计额外带 delivered_users/delivery_failed 计数（不含正文/收件人）。
 		for key := range parsed {
 			switch key {
-			case "id", "title", "status", "action", "delivered_users":
+			case "id", "title", "status", "action", "delivered_users", "delivery_failed":
 			default:
 				t.Fatalf("审计 detail 出现未允许字段 %q：%s", key, detail)
 			}
@@ -624,14 +624,13 @@ func TestAnnouncementIntegrationAuditHasNoContent(t *testing.T) {
 	}
 }
 
-// TestAnnouncementIntegrationInAppDeliveryAndAudit 覆盖 A5：
-//   - 首次发布为每个启用用户落一条 system.announcement 站内投递；
-//   - 发布审计 detail 带 delivered_users 且仍不含正文；
-//   - 公告删除同事务清理其投递记录。
-func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
-	env := newAnnouncementIntegrationEnv(t)
-	ctx := context.Background()
-
+// newA5AnnouncementRouter 构造带真实 notify.Service 的公告路由（A5）。
+//
+// 模板播种是发布投递的前置：服务必须先 EnsureSeeded，否则 system.announcement
+// 缺行会让 payload.body 降级为空（投递记录仍落库）。把这段装配抽出来，供
+// 首次发布（POST publish_now）与编辑发布（PUT publish_now）两条路径复用。
+func newA5AnnouncementRouter(t *testing.T, env *announcementIntegrationEnv) (*notify.Service, *http.ServeMux) {
+	t.Helper()
 	notifyStore, err := notify.NewStore(env.db)
 	if err != nil {
 		t.Fatalf("notify.NewStore: %v", err)
@@ -640,7 +639,7 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("notify.NewService: %v", err)
 	}
-	if err := notifyService.EnsureSeeded(ctx); err != nil {
+	if err := notifyService.EnsureSeeded(context.Background()); err != nil {
 		t.Fatalf("seed templates: %v", err)
 	}
 	var auditLogger *audit.Logger
@@ -656,6 +655,17 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
+	return notifyService, mux
+}
+
+// TestAnnouncementIntegrationInAppDeliveryAndAudit 覆盖 A5：
+//   - 首次发布为每个启用用户落一条 system.announcement 站内投递；
+//   - payload.body 非空且含公告标题（模板已播种 + 渲染成功）；
+//   - 发布审计 detail 带 delivered_users/delivery_failed 且仍不含正文；
+//   - 公告删除同事务清理其投递记录，且不影响另一条公告的投递。
+func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
+	env := newAnnouncementIntegrationEnv(t)
+	_, mux := newA5AnnouncementRouter(t, env)
 
 	// 两个启用用户（不同语言）+ 一个停用用户。
 	insertUser := func(language, status string) int64 {
@@ -689,6 +699,33 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 			"announcement:"+id+":%")
 	})
 
+	// 负向对照：另一条已发布公告的投递必须不受本次删除影响。级联清理按
+	// dedupe_key 的 `announcement:<id>:%` 前缀匹配，任何把前缀写宽的改动
+	// （例如只按 `announcement:%`）都会在这里变红。
+	other := doAnnouncementRequest(t, mux, env.adminPrincipal(), http.MethodPost, "/api/announcements",
+		map[string]any{"title": "A5 other", "content": "unrelated", "publish_now": true})
+	if other.Code != http.StatusCreated {
+		t.Fatalf("create second announcement = %d（body=%s）", other.Code, other.Body.String())
+	}
+	var otherView map[string]any
+	if err := json.Unmarshal(other.Body.Bytes(), &otherView); err != nil {
+		t.Fatalf("decode second announcement: %v", err)
+	}
+	otherID := otherView["id"].(string)
+	env.cleanupAnnouncement(t, otherID)
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM notification_deliveries WHERE dedupe_key LIKE $1`,
+			"announcement:"+otherID+":%")
+	})
+	var otherDelivered int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1`, "announcement:"+otherID+":%").Scan(&otherDelivered); err != nil {
+		t.Fatalf("count second announcement deliveries: %v", err)
+	}
+	if otherDelivered < 2 {
+		t.Fatalf("第二条公告投递 %d 条，want ≥ 2", otherDelivered)
+	}
+
 	// 并行测试包可能同时增删用户；只断言「至少覆盖本用例的两个启用用户」，
 	// 停用用户不投递，审计计数与落库行数一致（同一事实的两个投影）。
 	var delivered int
@@ -709,7 +746,7 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	if disabledRows != 0 {
 		t.Fatalf("停用用户收到 %d 条投递", disabledRows)
 	}
-	// 负载带标题/摘要，且摘要已从 Markdown 收敛为纯文本。
+	// 负载带标题/摘要/渲染后的正文，且摘要已从 Markdown 收敛为纯文本。
 	var payload []byte
 	if err := env.db.QueryRow(`SELECT payload FROM notification_deliveries
 		WHERE dedupe_key LIKE $1 LIMIT 1`, "announcement:"+id+":%").Scan(&payload); err != nil {
@@ -721,6 +758,14 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	}
 	if decoded.Title != "A5" || strings.Contains(decoded.Summary, "*") {
 		t.Fatalf("payload = %+v", decoded)
+	}
+	// body 来自已播种的 system.announcement 模板；为空说明播种/渲染链路断了，
+	// 用户虽收到站内信却看不到正文。模板正文以标题开头，因此同时断言标题。
+	if strings.TrimSpace(decoded.Body) == "" {
+		t.Fatalf("payload.body 为空（模板未播种或渲染失败）：%+v", decoded)
+	}
+	if !strings.Contains(decoded.Body, "A5") {
+		t.Fatalf("payload.body 未包含公告标题：%q", decoded.Body)
 	}
 
 	if env.logs != nil {
@@ -737,6 +782,12 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 		count, ok := detail["delivered_users"].(float64)
 		if !ok || int(count) != delivered {
 			t.Fatalf("审计 delivered_users = %v，want 落库行数 %d（detail=%s）", detail["delivered_users"], delivered, rawDetail)
+		}
+		// 成功路径的失败计数必须存在且为 0：缺失会让运维无法区分「全成功」
+		// 与「旧版本没有该字段」。
+		failed, ok := detail["delivery_failed"].(float64)
+		if !ok || int(failed) != 0 {
+			t.Fatalf("审计 delivery_failed = %v，want 0（detail=%s）", detail["delivery_failed"], rawDetail)
 		}
 		if strings.Contains(rawDetail, "maintenance") {
 			t.Fatalf("审计 detail 含正文：%s", rawDetail)
@@ -755,5 +806,100 @@ func TestAnnouncementIntegrationInAppDeliveryAndAudit(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("删除公告后残留 %d 条投递", remaining)
+	}
+	// 负向对照：另一条公告的投递必须原样保留（前缀级联清理不得误伤）。
+	var otherRemaining int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1`, "announcement:"+otherID+":%").Scan(&otherRemaining); err != nil {
+		t.Fatalf("count other remaining: %v", err)
+	}
+	if otherRemaining != otherDelivered {
+		t.Fatalf("另一条公告投递被误删：%d -> %d", otherDelivered, otherRemaining)
+	}
+}
+
+// TestAnnouncementIntegrationUpdatePublishNowDelivers：PUT + publish_now 的
+// 首次发布（编辑草稿并原子发布）同样走站内投递，且审计带投递计数。
+func TestAnnouncementIntegrationUpdatePublishNowDelivers(t *testing.T) {
+	env := newAnnouncementIntegrationEnv(t)
+	_, mux := newA5AnnouncementRouter(t, env)
+
+	// 本用例需要一个启用用户作为收件人；并行测试会增删用户，只断言本行。
+	username := fmt.Sprintf("a5u_%d_%d", time.Now().UnixNano(), a5UserSeq.Add(1))
+	var userID int64
+	if err := env.db.QueryRow(`INSERT INTO users (username, language, status)
+		VALUES ($1, 'en', 'enabled') RETURNING id`, username).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = env.db.Exec(`DELETE FROM users WHERE id = $1`, userID) })
+
+	draft := env.createAnnouncement(t, map[string]any{"title": "Draft only", "content": "v1"})
+	id := draft["id"].(string)
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM notification_deliveries WHERE dedupe_key LIKE $1`,
+			"announcement:"+id+":%")
+	})
+	var before int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key LIKE $1`, "announcement:"+id+":%").Scan(&before); err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+	if before != 0 {
+		t.Fatalf("草稿阶段不应有投递，实际 %d 条", before)
+	}
+
+	got := doAnnouncementRequest(t, mux, env.adminPrincipal(), http.MethodPut,
+		"/api/announcements/"+id, map[string]any{
+			"title": "Published by PUT", "content": "**maintenance** now", "publish_now": true,
+		})
+	if got.Code != http.StatusOK {
+		t.Fatalf("PUT publish_now = %d（body=%s）", got.Code, got.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view["status"] != store.AnnouncementStatusPublished {
+		t.Fatalf("PUT publish_now 后 status = %v，want published", view["status"])
+	}
+
+	var delivered int
+	if err := env.db.QueryRow(`SELECT count(*) FROM notification_deliveries
+		WHERE dedupe_key = $1`, "announcement:"+id+":"+fmt.Sprint(userID)).Scan(&delivered); err != nil {
+		t.Fatalf("count delivery: %v", err)
+	}
+	if delivered != 1 {
+		t.Fatalf("PUT publish_now 后本用户投递 %d 条，want 1", delivered)
+	}
+	var payload []byte
+	if err := env.db.QueryRow(`SELECT payload FROM notification_deliveries
+		WHERE dedupe_key = $1`, "announcement:"+id+":"+fmt.Sprint(userID)).Scan(&payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	var decoded notify.InAppPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if decoded.Title != "Published by PUT" || strings.TrimSpace(decoded.Body) == "" {
+		t.Fatalf("PUT 首次发布 payload = %+v", decoded)
+	}
+
+	if env.logs != nil {
+		var rawDetail string
+		if err := env.logs.QueryRow(`SELECT detail::text FROM audit_logs
+			WHERE detail->>'action' = $1 AND detail->>'id' = $2
+			ORDER BY id DESC LIMIT 1`, audit.ActionAnnouncementPublish, id).Scan(&rawDetail); err != nil {
+			t.Fatalf("query publish audit: %v", err)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(rawDetail), &detail); err != nil {
+			t.Fatalf("decode audit detail: %v", err)
+		}
+		if _, ok := detail["delivered_users"].(float64); !ok {
+			t.Fatalf("PUT 发布审计缺 delivered_users：%s", rawDetail)
+		}
+		if failed, ok := detail["delivery_failed"].(float64); !ok || failed != 0 {
+			t.Fatalf("PUT 发布审计 delivery_failed = %v，want 0：%s", detail["delivery_failed"], rawDetail)
+		}
 	}
 }

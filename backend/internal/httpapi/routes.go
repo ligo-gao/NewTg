@@ -150,6 +150,13 @@ type Router struct {
 	// handler 是 mux 外层的统一响应策略（/api/ 默认 no-store）。在 NewRouter
 	// 构造时包住 mux 指针：之后追加的路由仍会经过该层。
 	handler http.Handler
+	// notifyService 是本次装配实际使用的通知服务（A5）。装配测试据此断言
+	// 生产路径传入的是已在启动期播种的实例，而不是 NewRouter 的兜底实例。
+	notifyService *notify.Service
+	// notifyFallback 记录 NewRouter 是否自行构造了未播种的兜底服务。
+	// BuildGatewayRouter 必须在传入前完成构造与播种；该标志为 true 表示
+	// 装配顺序回归（A5 收口 MEDIUM-1）。
+	notifyFallback bool
 }
 
 // TasksHandler 返回任务数据面 handler；未装配（无 DB 的单测）时为 nil。
@@ -302,6 +309,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			if storeErr != nil {
 				return nil, storeErr
 			}
+			rt.notifyFallback = true
 		}
 		announcementHandlers, err := NewAnnouncementHandlers(AnnouncementHandlerConfig{
 			Repo:     store.NewAnnouncementRepo(cfg.DB),
@@ -339,6 +347,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			if err != nil {
 				return nil, err
 			}
+			rt.notifyFallback = true
 		}
 		handlers, err := NewNotificationHandlers(NotificationHandlerConfig{
 			Service: notifyService,
@@ -353,6 +362,11 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	if cfg.NotificationHandlers != nil {
 		cfg.NotificationHandlers.Register(rt.protected)
 	}
+
+	// 记录本次装配实际使用的通知服务：公告 handler 与用户侧读取端点在同一
+	// 段装配中共享它（A5）。notifyFallback 为 true 时是 NewRouter 的兜底
+	// 实例——生产装配（BuildGatewayRouter）必须在调用前完成构造与播种。
+	rt.notifyService = cfg.NotifyService
 
 	// 模型目录 / 供应商目录（modules-06 F-06-22～26；D1b）。目录没有内存兜底：
 	// 只有提供 DB 时才挂载，避免纯内存装配用空数据伪造 200（与定价接缝一致）。

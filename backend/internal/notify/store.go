@@ -457,7 +457,7 @@ func (s *Store) ListInAppAudience(ctx context.Context) ([]InAppAudience, error) 
 
 // InsertInAppDeliveries 批量写入站内投递记录（A5）。
 //
-// 单条 SQL 多值插入，每批由调用方限制 ≤500 行（13 列 × 500 = 6500 个参数，
+// 单条 SQL 多值插入，每批由调用方限制 ≤500 行（10 列 × 500 = 5000 个参数，
 // 远低于 PostgreSQL 65535 上限）。ON CONFLICT (dedupe_key) DO NOTHING 让
 // 重复发布/重试天然幂等；返回**实际插入**行数，用于审计的 delivered_users。
 // 整批失败时返回错误且该批一条都不落库——调用方的「失败不阻塞发布」语义

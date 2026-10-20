@@ -236,9 +236,6 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// /api/task*）。与插件运行时共用同一个 Manager 快照，避免管理面停用
 	// 插件后数据面仍从旧注册表接单。
 	var taskDataHandlers *TasksHandler
-	// notifyService 由下方 DB 装配构造并播种；提升到外层是为了同时传给
-	// NewRouter：公告发布的站内通知投递（A5）与用户侧读取端点共用它。
-	var notifyService *notify.Service
 	if deps.DB != nil {
 		var err error
 		pluginStore := deps.TaskPluginStore
@@ -350,6 +347,38 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			ArtifactSigner: tasks.NewArtifactSigner(deps.CredentialEncryptionKey, 0),
 			PublicBaseURL:  deps.PublicBaseURL,
 		})
+	}
+
+	// 通知模板/投递服务（M6c Task 4 + A5）必须在 NewRouter **之前**构造并
+	// 播种：公告 handler 与用户侧读取端点都在 NewRouter 内部装配，共用同一个
+	// 实例。若这里传 nil，NewRouter 会为直连装配兜底构造一个**未播种**的服务，
+	// 生产公告投递就会用临时实例（模板缺失只降级 body，且审计计数来自另一个
+	// store）——这正是 A5 收口 MEDIUM-1 修复的装配顺序缺陷。
+	//
+	// 播种失败阻止上线：模板行缺失会让所有通知 fail-closed。两个表的行都在
+	// 主库（§3.9.2「独立表」），因此与其它 DB 装配一样只在 deps.DB 非 nil 时
+	// 构造；纯 Repo 单测没有这两个表，保持 nil（公告发布不投递）。
+	var notifyService *notify.Service
+	if deps.DB != nil {
+		notifyStore, err := notify.NewStore(deps.DB)
+		if err != nil {
+			return nil, err
+		}
+		notifyService, err = notify.NewService(notify.ServiceConfig{
+			Store: notifyStore,
+			// SMTP 配置读同一配置中心快照；密钥类 password 经同一 Sealer 解封。
+			Sender: notify.NewSMTPSender(deps.Config, deps.Sealer),
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		seedCtx, cancelSeed := context.WithTimeout(context.Background(), 10*time.Second)
+		seedErr := notifyService.EnsureSeeded(seedCtx)
+		cancelSeed()
+		if seedErr != nil {
+			return nil, seedErr
+		}
 	}
 
 	rt, err := NewRouter(RouterConfig{
@@ -494,28 +523,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		}).Register(rt.protected)
 
 		// 通知模板（M6c Task 4 / modules-08 §3.9）：模板表是独立表，不在
-		// system_settings 的 KV 里。启动期幂等补种内置行（ON CONFLICT DO
-		// NOTHING）——缺失行会让所有通知 fail-closed，属于配置性故障。
-		// 播种失败阻止上线，与设置/审计的 fail-fast 口径一致。
-		notifyStore, err := notify.NewStore(deps.DB)
-		if err != nil {
-			return nil, err
-		}
-		notifyService, err = notify.NewService(notify.ServiceConfig{
-			Store: notifyStore,
-			// SMTP 配置读同一配置中心快照；密钥类 password 经同一 Sealer 解封。
-			Sender: notify.NewSMTPSender(deps.Config, deps.Sealer),
-			Logger: deps.Logger,
-		})
-		if err != nil {
-			return nil, err
-		}
-		seedCtx, cancelSeed := context.WithTimeout(context.Background(), 10*time.Second)
-		seedErr := notifyService.EnsureSeeded(seedCtx)
-		cancelSeed()
-		if seedErr != nil {
-			return nil, seedErr
-		}
+		// system_settings 的 KV 里。notifyService 已在 NewRouter 之前构造并
+		// 完成启动播种（ON CONFLICT DO NOTHING），这里只把同一个实例交给
+		// 管理端点，避免模板视图与投递路径各持一个 store。
 		notifyHandlers, err := NewNotificationTemplateHandlers(NotificationTemplateHandlerConfig{
 			Service: notifyService,
 			Authz:   deps.Authz,

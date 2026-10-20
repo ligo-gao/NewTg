@@ -1009,6 +1009,17 @@ var documentedChecks = []struct {
 		Table: "announcements", Name: "announcements_expire_after_publish_chk",
 		Fragments: []string{"expire_at", "publish_at"},
 	},
+	// A5 / 迁移 20261020200000：站内通知投递的契约扩展。payload 只允许
+	// JSON 对象（读取端按固定键取值）；read_at 只对 inapp 行有意义，
+	// email/webhook 行不得携带已读时刻。
+	{
+		Table: "notification_deliveries", Name: "notification_deliveries_payload_obj_chk",
+		Fragments: []string{"payload", "jsonb_typeof", "object"},
+	},
+	{
+		Table: "notification_deliveries", Name: "notification_deliveries_read_at_chk",
+		Fragments: []string{"read_at", "channel", "inapp"},
+	},
 }
 
 func expectExecError(t *testing.T, db *sql.DB, stmt string) {

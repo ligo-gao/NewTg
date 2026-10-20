@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -540,9 +541,8 @@ func (h *AnnouncementHandlers) handleCreate(w http.ResponseWriter, r *http.Reque
 	}
 	h.writeAudit(r, audit.ActionAnnouncementCreate, mut.Announcement, nil)
 	if mut.Published {
-		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
-		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
-			map[string]any{"delivered_users": delivered})
+		result := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writePublishAudit(r, mut.Announcement, result)
 		h.afterPublish(r.Context(), mut.Announcement)
 	}
 	writeJSON(w, http.StatusCreated, h.newDetail(mut.Announcement))
@@ -577,9 +577,8 @@ func (h *AnnouncementHandlers) handleUpdate(w http.ResponseWriter, r *http.Reque
 	}
 	h.writeAudit(r, audit.ActionAnnouncementUpdate, mut.Announcement, nil)
 	if mut.Published {
-		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
-		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
-			map[string]any{"delivered_users": delivered})
+		result := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writePublishAudit(r, mut.Announcement, result)
 		h.afterPublish(r.Context(), mut.Announcement)
 	}
 	writeJSON(w, http.StatusOK, h.newDetail(mut.Announcement))
@@ -615,11 +614,10 @@ func (h *AnnouncementHandlers) handlePublish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if mut.Published {
-		// A5：站内投递先同步完成，否则发布审计拿不到 delivered_users。
+		// A5：站内投递先同步完成，否则发布审计拿不到投递计数。
 		// 投递本身是本地 DB 批量写，失败只 Warn（不回滚发布）。
-		delivered := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
-		h.writeAudit(r, audit.ActionAnnouncementPublish, mut.Announcement,
-			map[string]any{"delivered_users": delivered})
+		result := h.deliverAnnouncementInApp(r.Context(), mut.Announcement)
+		h.writePublishAudit(r, mut.Announcement, result)
 		// 幂等重放（Published=false）不重复广播：用户侧会把同一公告再弹一次。
 		h.afterPublish(r.Context(), mut.Announcement)
 	} else {
@@ -691,7 +689,8 @@ func (h *AnnouncementHandlers) handleMarkRead(w http.ResponseWriter, r *http.Req
 
 // writeAudit 写公告审计。detail 只允许 id/title/status（R-D7-08）：
 // 正文可能含未公开内容，审计表不得成为它的第二副本。extra 只用于发布事件
-// 的 delivered_users 计数（A5），调用方不得借此塞入正文/收件人明细。
+// 的投递计数（A5：delivered_users / delivery_failed），调用方不得借此塞入
+// 正文/收件人明细。
 func (h *AnnouncementHandlers) writeAudit(r *http.Request, action string, a store.Announcement, extra map[string]any) {
 	if h.audit == nil {
 		return
@@ -721,6 +720,20 @@ func (h *AnnouncementHandlers) writeAudit(r *http.Request, action string, a stor
 	_ = writeAuditEvent(r.Context(), h.audit, event)
 }
 
+// writePublishAudit 写发布审计并带站内投递计数（A5）。
+//
+// delivery_failed 与 delivered_users 成对出现：部分批次的 INSERT 失败（或
+// 进程在投递中途崩溃）不会被自动重试，运维需要从审计里一眼看出「有多少
+// 启用用户没收到」。计数只是可观测事实，不影响发布响应/事务。
+func (h *AnnouncementHandlers) writePublishAudit(
+	r *http.Request, a store.Announcement, result notify.AnnouncementDeliveryResult,
+) {
+	h.writeAudit(r, audit.ActionAnnouncementPublish, a, map[string]any{
+		"delivered_users": result.Delivered,
+		"delivery_failed": result.Failed,
+	})
+}
+
 // auditSuccessStatus 在响应写出前无法拿到真实状态码；公告写动作成功时
 // 创建是 201、删除是 204、其余 200。审计只需要「成功」这一事实，这里给出
 // 与端点契约一致的状态码。
@@ -735,16 +748,19 @@ func auditSuccessStatus(action string) int {
 	}
 }
 
-// deliverAnnouncementInApp 为首次发布生成站内通知（A5），返回实际投递人数。
+// deliverAnnouncementInApp 为首次发布生成站内通知（A5），返回投递计数。
 //
-// 同步执行的理由：发布审计的 detail 必须带 delivered_users，而审计在响应
-// 前写出；投递本身只是本地 DB 批量插入（每批 ≤500）。它仍被定义成
-// best-effort——任何失败只 Warn 并返回已投递数，绝不改变「发布成功」。
+// 同步执行的理由：发布审计的 detail 必须带 delivered_users/delivery_failed，
+// 而审计在响应前写出；投递本身只是本地 DB 批量插入（每批 ≤500）。它仍被
+// 定义成 best-effort——任何失败只 Warn 并返回已完成/失败的计数，绝不改变
+// 「发布成功」。注意：部分批次失败或进程崩溃后**不会自动恢复**；运维的
+// 手工恢复路径是「下线 → 再发布」，重新发布按 dedupe_key 只为缺失用户
+// 补齐（已投递的计为 duplicates），见 G-DOM-37 ⑤。
 // ctx 用 WithoutCancel：客户端断开不应让半批投递留下不可见的中间态；
 // 15s 上限与其它发布副作用一致，防止慢库拖住 handler。
-func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a store.Announcement) int {
+func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a store.Announcement) notify.AnnouncementDeliveryResult {
 	if h.notifier == nil {
-		return 0
+		return notify.AnnouncementDeliveryResult{}
 	}
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), announcementSideEffectTimeout)
 	defer cancel()
@@ -763,46 +779,51 @@ func (h *AnnouncementHandlers) deliverAnnouncementInApp(ctx context.Context, a s
 	if err != nil {
 		h.log.Warn("announcements: inapp notification delivery failed",
 			"announcement_id", a.ID, "err", err)
-		return result.Delivered
+		return result
 	}
 	if result.Failed > 0 {
 		h.log.Warn("announcements: inapp notification delivery partially failed",
 			"announcement_id", a.ID, "delivered", result.Delivered,
 			"duplicates", result.Duplicates, "failed", result.Failed)
 	}
-	return result.Delivered
+	return result
 }
 
 // announcementNotificationSummary 从公告正文派生站内通知摘要。
 //
 // 公告表没有 summary 列（modules-08 F-08-04 数据字段表），而
-// `system.announcement` 模板要求 {{.summary}}。这里做一个最小的
-// Markdown→单行纯文本收敛（去列表/强调/代码标记、压空白），截断 120 个字符：
-// 通知正文里的链接/结构由模板的 [查看详情] 承担，摘要只负责一眼可读。
+// `system.announcement` 模板要求 {{.summary}}。收敛顺序是有意的：
+//  1. 先剥链接/图片语法（`[文字](url)` → 文字、`![alt](src)` → alt），
+//     否则后面的行首/标记剥离会把 URL 的括号残片留在摘要里；
+//  2. 再剥**行首**标记（标题 #、引用 >、列表 -/*/1.），只认行首；
+//  3. 最后去强调/代码标记并压空白，截断 120 个字符。
+//
+// 连字符 `-` 只在「行首列表标记 + 空格」形态被移除，正文内的日期
+// （2026-10-20）与版本号（v1-2）保持原样——旧实现无条件删 `-` 会把
+// 日期粘成 20261020。
 func announcementNotificationSummary(content string) string {
-	var out []rune
-	skipSpace := false
-	for _, r := range content {
-		switch r {
-		case '#', '*', '_', '`', '>', '[', ']', '(', ')', '-', '|':
-			continue
-		case '\n', '\r', '\t', ' ':
-			if len(out) > 0 {
-				skipSpace = true
-			}
-			continue
-		}
-		if skipSpace {
-			out = append(out, ' ')
-			skipSpace = false
-		}
-		out = append(out, r)
-		if len(out) >= 120 {
-			break
-		}
+	text := announcementMarkdownImage.ReplaceAllString(content, "$1")
+	text = announcementMarkdownLink.ReplaceAllString(text, "$1")
+	text = announcementMarkdownLinePrefix.ReplaceAllString(text, "")
+	text = announcementMarkdownInlineMarker.ReplaceAllString(text, "")
+
+	words := strings.Fields(text)
+	joined := strings.Join(words, " ")
+	runes := []rune(joined)
+	if len(runes) > 120 {
+		runes = runes[:120]
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(runes))
 }
+
+var (
+	// 图片必须先于链接处理（图片语法包含链接语法）。
+	announcementMarkdownImage      = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	announcementMarkdownLink       = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	announcementMarkdownLinePrefix = regexp.MustCompile(`(?m)^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|[0-9]+[.)][ \t]+)`)
+	// 剩余的行内标记：强调、行内代码、分隔线字符与未成对的方括号/圆括号。
+	announcementMarkdownInlineMarker = regexp.MustCompile("[`*_~\\[\\]()|]")
+)
 
 // afterPublish 触发发布副作用（R-D7-09）：best-effort，不阻塞、不失败发布。
 //

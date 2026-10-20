@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -245,5 +246,112 @@ func TestAnnouncementIdempotentPublishSkipsInApp(t *testing.T) {
 	}
 	if len(notifier.inputs) != 0 {
 		t.Fatalf("幂等重放触发了 %d 次投递", len(notifier.inputs))
+	}
+}
+
+// TestAnnouncementUpdatePublishNowDelivers：PUT + publish_now 的首次发布路径
+// （编辑草稿并原子发布）同样必须触发站内投递——handler 里 update 与 create
+// 是两条独立分支，create 已覆盖，这里锁定 update 分支。
+func TestAnnouncementUpdatePublishNowDelivers(t *testing.T) {
+	notifier := &fakeAnnouncementNotifier{result: notify.AnnouncementDeliveryResult{Delivered: 2}}
+	repo := &fakeAnnouncementRepo{
+		updateFn: func(_ context.Context, id string, in store.AnnouncementInput, _ int64) (store.AnnouncementMutation, error) {
+			if !in.PublishNow {
+				t.Fatalf("publish_now 未透传到 store：%+v", in)
+			}
+			a := sampleAnnouncement()
+			a.ID = id
+			a.Title = in.Title
+			a.Content = in.Content
+			return store.AnnouncementMutation{Announcement: a, Published: true}, nil
+		},
+	}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
+		Repo: repo, Notifier: notifier, WaitForSideEffects: true,
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage),
+		http.MethodPut, "/api/announcements/"+sampleAnnouncement().ID,
+		map[string]any{"title": "First publish", "content": "maintenance", "publish_now": true})
+	if got.Code != http.StatusOK {
+		t.Fatalf("PUT publish_now = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	if len(notifier.inputs) != 1 {
+		t.Fatalf("PUT publish_now 投递调用 %d 次，want 1", len(notifier.inputs))
+	}
+	if notifier.inputs[0].AnnouncementID != sampleAnnouncement().ID {
+		t.Fatalf("投递公告 id = %s", notifier.inputs[0].AnnouncementID)
+	}
+}
+
+// TestAnnouncementPublishAuditRecordsDeliveryFailureCount：发布审计在
+// delivered_users 旁带 delivery_failed，部分批失败可被运维看见，但响应仍是
+// 200（best-effort，不回滚发布）。
+func TestAnnouncementPublishAuditRecordsDeliveryFailureCount(t *testing.T) {
+	capture := &captureExec{}
+	notifier := &fakeAnnouncementNotifier{
+		result: notify.AnnouncementDeliveryResult{Delivered: 2, Duplicates: 1, Failed: 3},
+	}
+	repo := &fakeAnnouncementRepo{
+		publishFn: func(_ context.Context, id string, _ int64) (store.AnnouncementMutation, error) {
+			a := sampleAnnouncement()
+			a.ID = id
+			return store.AnnouncementMutation{Announcement: a, Published: true}, nil
+		},
+	}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
+		Repo: repo, Notifier: notifier, Audit: audit.New(capture), WaitForSideEffects: true,
+	})
+	got := doAnnouncementRequest(t, mux, announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage),
+		http.MethodPost, "/api/announcements/"+sampleAnnouncement().ID+"/publish", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("投递部分失败后发布 = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+
+	var detail map[string]any
+	for _, call := range capture.snapshot() {
+		// insertSQL 参数顺序：actor, username, category, ip, ua, method,
+		// route, status, result, detail, before, after。
+		if len(call) < 10 {
+			continue
+		}
+		raw, ok := call[9].(string)
+		if !ok {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			t.Fatalf("审计 detail 不是 JSON：%s", raw)
+		}
+		if parsed["action"] == audit.ActionAnnouncementPublish {
+			detail = parsed
+			break
+		}
+	}
+	if detail == nil {
+		t.Fatal("未捕获 announcement.publish 审计")
+	}
+	if detail["delivered_users"] != float64(2) {
+		t.Fatalf("delivered_users = %v，want 2（detail=%v）", detail["delivered_users"], detail)
+	}
+	if detail["delivery_failed"] != float64(3) {
+		t.Fatalf("delivery_failed = %v，want 3（detail=%v）", detail["delivery_failed"], detail)
+	}
+}
+
+// TestAnnouncementNotificationSummary：摘要先剥链接/图片语法、再剥行首标记，
+// 正文里的日期连字符必须原样保留。
+func TestAnnouncementNotificationSummary(t *testing.T) {
+	content := "## 2026-10-20 维护窗口\n" +
+		"- 开始时间 2026-10-20 22:00\n" +
+		"> 状态请见 [状态页](https://status.example.com/incidents/1)\n" +
+		"![维护图示](https://cdn.example.com/a.png)\n" +
+		"代码 `v1-2` 与 **粗体** 保持可读"
+	got := announcementNotificationSummary(content)
+	want := "2026-10-20 维护窗口 开始时间 2026-10-20 22:00 状态请见 状态页 维护图示 代码 v1-2 与 粗体 保持可读"
+	if got != want {
+		t.Fatalf("summary = %q\nwant     %q", got, want)
+	}
+	if strings.Contains(got, "https://") {
+		t.Fatalf("摘要残留链接 URL：%q", got)
 	}
 }
