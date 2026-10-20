@@ -6089,6 +6089,15 @@ type GetTaskArtifactContentParams struct {
 	Access TaskArtifactAccess `form:"access" json:"access"`
 }
 
+// HeadTaskArtifactContentParams defines parameters for HeadTaskArtifactContent.
+type HeadTaskArtifactContentParams struct {
+	// TaskId 对外任务 ID（task_<32 hex>）
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+
+	// Access 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403）
+	Access TaskArtifactAccess `form:"access" json:"access"`
+}
+
 // RegenerateTwoFABackupCodesJSONRequestBody defines body for RegenerateTwoFABackupCodes for application/json ContentType.
 type RegenerateTwoFABackupCodesJSONRequestBody = TwoFAPasswordRequest
 

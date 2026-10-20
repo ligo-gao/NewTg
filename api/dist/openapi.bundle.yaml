@@ -5840,6 +5840,33 @@ paths:
           description: 上游拒绝或取产物失败
         '503':
           description: 插件当前不可用
+    head:
+      tags:
+        - relay
+      operationId: headTaskArtifactContent
+      summary: 取任务产物内容（HEAD）
+      description: |
+        与 GET 使用同一能力票据与校验，只返回状态码与头部，不写响应体。
+        签名无效/过期 403；任务或产物不存在 404；上游失败 502。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TaskPluginKey'
+        - $ref: '#/components/parameters/TaskArtifactKey'
+        - $ref: '#/components/parameters/TaskIDQuery'
+        - $ref: '#/components/parameters/TaskArtifactAccess'
+      responses:
+        '200':
+          description: 头部可用（响应体为空）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          description: access 票据无效或已过期
+        '404':
+          $ref: '#/components/responses/Error404'
+        '502':
+          description: 上游拒绝或取产物失败
+        '503':
+          description: 插件当前不可用
   /api/task/self:
     get:
       tags:

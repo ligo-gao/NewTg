@@ -62,11 +62,14 @@ type PendingRepo interface {
 	UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error
 }
 
-// BillingHandoff 是计费侧的异步交接收口（contract.BillingHandoff 的两个
-// ByRequestID 方法；Detach 属于提交路径，轮询器不需要）。
+// BillingHandoff 是计费侧的异步交接收口（token-aware）。
+//
+// 必须带 tokenID：提交时的 PreConsume 在同一事务里扣了钱包 hold 与
+// api_tokens.remain_quota；后台退款/结算若不传令牌身份，钱包退回但令牌额度
+// 永久少扣（Refund 的 tokenDeducted 条件恒假）。
 type BillingHandoff interface {
-	TerminateByRequestID(requestID string, fact contract.UsageFact) error
-	RefundByRequestID(requestID string) error
+	TerminateByRequestIDForToken(requestID string, tokenID int64, fact contract.UsageFact) error
+	RefundByRequestIDForToken(requestID string, tokenID int64) error
 }
 
 // PollerConfig 是轮询器的依赖与可调参数。零值字段使用冻结默认值。
@@ -315,9 +318,14 @@ func (p *Poller) classifyResponse(ctx context.Context, task *Task, compiled *plu
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 		p.recordFailure(ctx, task, "upstream_retryable")
 	default:
-		// 其它 4xx：先尝试解析；仍非终态则视为未识别，累计失败。
+		// 其它 4xx：先尝试解析；**仍非终态视为未识别并累计失败**（relay-06
+		// §8.2）。不能因为 body 能解析成 IN_PROGRESS 就清零计数——否则一个
+		// 持续返回 400/409 的上游能让任务拖到 1440 分钟超时，hold 被多锁。
 		if p.applyParsed(ctx, task, compiled, queryCtx, resp) {
-			return
+			// UNKNOWN 已在 applyUnknown 内累计、终态已由上分支 finalize。
+			if task.State == StateUnknown || task.State.Terminal() {
+				return
+			}
 		}
 		p.recordFailure(ctx, task, "upstream_unrecognized")
 	}
@@ -369,8 +377,18 @@ func (p *Poller) applyParsed(ctx context.Context, task *Task, compiled *plugin.C
 		// 非终态且有效 → 连续失败清零（relay-06 §8.2）。
 		Private: map[string]any{"poll_failures": 0},
 	}
-	if _, err := p.repo.ApplyPoll(ctx, task.ID, task.State, update); err != nil {
+	won, err := p.repo.ApplyPoll(ctx, task.ID, task.State, update)
+	if err != nil {
 		p.log.Error("tasks: persist poll progress failed", "task_id", task.PublicTaskID, "error", err)
+		return true
+	}
+	if won {
+		// 同步内存快照：调用方（如「其它 4xx 仍非终态」分支）紧接着还要用
+		// 新状态做 CAS 累计失败；不同步会让第二次 CAS 因 from 过期而丢失。
+		task.State = state
+		task.RawState = rawState
+		task.ProgressPercent = progress
+		task.Data = mergeMaps(task.Data, data)
 	}
 	return true
 }

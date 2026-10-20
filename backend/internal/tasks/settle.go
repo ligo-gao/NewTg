@@ -33,6 +33,10 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.Compi
 		return
 	}
 	requestID := toString(task.PrivateData["request_id"])
+	// 令牌身份来自任务行（T6a 持久化）：提交时的 PreConsume 已同事务扣减
+	// api_tokens.remain_quota；结算/退款必须带上它，否则令牌额度不会回补
+	// （T6b 复核 H1）。0 表示无令牌（/pg 会话路径）。
+	tokenID := int64(privateInt(task.PrivateData["token_id"]))
 	if requestID == "" {
 		// 没有 requestID 就无法按幂等锚点结算/退款。这是数据缺陷（T6a 之后
 		// 不应出现）；保留 billing_pending 让补偿扫描持续暴露，不猜金额。
@@ -42,9 +46,9 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.Compi
 	}
 	switch task.State {
 	case StateFailure:
-		p.refundTerminal(ctx, task, requestID)
+		p.refundTerminal(ctx, task, requestID, tokenID)
 	case StateSuccess:
-		p.settleSuccessAtHeld(ctx, task, requestID)
+		p.settleSuccessAtHeld(ctx, task, requestID, tokenID)
 	default:
 		// 非终态调用是编程错误：不静默推进，留给调用方修正。
 		p.log.Error("tasks: settleTerminal called for non-terminal task",
@@ -54,8 +58,8 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.Compi
 
 // refundTerminal 全额退款。RefundByRequestID 按 requestID 幂等：重复调用返回
 // nil，不会二次退款。
-func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID string) {
-	if err := p.billing.RefundByRequestID(requestID); err != nil {
+func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID string, tokenID int64) {
+	if err := p.billing.RefundByRequestIDForToken(requestID, tokenID); err != nil {
 		// 退款失败：保留 billing_pending，并写 refund_pending 供补偿扫描重试。
 		// 终态**不回退**（上游确实失败了），否则会重新进入轮询。
 		p.markBilling(ctx, task, nil, map[string]any{
@@ -82,8 +86,8 @@ func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID strin
 //
 // 幂等：TerminateByRequestID 按 requestID 幂等；重复调用只会重复写同一
 // 结论（日志按 requestID 幂等），金额不变。
-func (p *Poller) settleSuccessAtHeld(ctx context.Context, task *Task, requestID string) {
-	if err := p.billing.TerminateByRequestID(requestID, contract.UsageFact{}); err != nil {
+func (p *Poller) settleSuccessAtHeld(ctx context.Context, task *Task, requestID string, tokenID int64) {
+	if err := p.billing.TerminateByRequestIDForToken(requestID, tokenID, contract.UsageFact{}); err != nil {
 		// 结算失败：hold 仍在，写 settlement_pending + 保留 billing_pending，
 		// 补偿扫描下一轮重试。终态不回退。
 		p.markBilling(ctx, task, nil, map[string]any{

@@ -445,6 +445,10 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if settlementPending {
 		task.PrivateData["settlement_pending"] = true
 	}
+	if settled {
+		// 即时终态已封账（inline success/failure）：与轮询终态同一审计口径。
+		task.PrivateData["billing_final"] = true
+	}
 	if result.Immediate {
 		// 即时终态：不再轮询，定格完成时间。
 		task.FinishTime = &now

@@ -183,24 +183,28 @@ func cloneTask(t *Task) *Task {
 }
 
 type fakeHandoff struct {
-	mu           sync.Mutex
-	refunds      []string
-	terminates   []string
-	terminateErr error
-	refundErr    error
+	mu              sync.Mutex
+	refunds         []string
+	terminates      []string
+	refundTokens    []int64
+	terminateTokens []int64
+	terminateErr    error
+	refundErr       error
 }
 
-func (f *fakeHandoff) TerminateByRequestID(requestID string, _ contract.UsageFact) error {
+func (f *fakeHandoff) TerminateByRequestIDForToken(requestID string, tokenID int64, _ contract.UsageFact) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.terminates = append(f.terminates, requestID)
+	f.terminateTokens = append(f.terminateTokens, tokenID)
 	return f.terminateErr
 }
 
-func (f *fakeHandoff) RefundByRequestID(requestID string) error {
+func (f *fakeHandoff) RefundByRequestIDForToken(requestID string, tokenID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refunds = append(f.refunds, requestID)
+	f.refundTokens = append(f.refundTokens, tokenID)
 	return f.refundErr
 }
 
@@ -279,8 +283,9 @@ func submittedTask(id int64, channelID int64) *Task {
 		Quota:          100,
 		SubmitTime:     &submit,
 		Properties:     map[string]any{"OriginModelName": "sample-model"},
-		PrivateData:    map[string]any{"request_id": fmt.Sprintf("req_%d", id)},
-		Data:           map[string]any{},
+		// token_id 让 token-aware 结算路径可断言（T6b 复核 H1）。
+		PrivateData: map[string]any{"request_id": fmt.Sprintf("req_%d", id), "token_id": int64(9)},
+		Data:        map[string]any{},
 	}
 }
 
@@ -313,8 +318,8 @@ func TestPollSuccessKeepsReservation(t *testing.T) {
 		t.Fatalf("success must terminate at held without refund (refunds=%d terminates=%d)",
 			handoff.refundCount(), handoff.terminateCount())
 	}
-	if handoff.terminates[0] != "req_1" {
-		t.Fatalf("terminate used wrong request id: %v", handoff.terminates)
+	if handoff.terminates[0] != "req_1" || handoff.terminateTokens[0] != 9 {
+		t.Fatalf("terminate used wrong request id/token: ids=%v tokens=%v", handoff.terminates, handoff.terminateTokens)
 	}
 	usage, _ := got.Data["usage"].(map[string]any)
 	// seconds 钳到 MaxRequestTaskDurationSeconds；未声明字段（cost）不得落库。
@@ -353,6 +358,9 @@ func TestPoll404RefundsImmediately(t *testing.T) {
 	if got.FailReason != "upstream_task_not_found" {
 		t.Fatalf("fail reason = %q", got.FailReason)
 	}
+	if len(handoff.refundTokens) != 1 || handoff.refundTokens[0] != 9 {
+		t.Fatalf("refund must carry the task token id: %v", handoff.refundTokens)
+	}
 }
 
 func TestPollAuthFailureDoesNotRefundOrChangeState(t *testing.T) {
@@ -377,6 +385,34 @@ func TestPollAuthFailureDoesNotRefundOrChangeState(t *testing.T) {
 	}
 	if handoff.refundCount() != 0 {
 		t.Fatalf("401 must not refund")
+	}
+}
+
+func TestPollOther4xxNonTerminalAccumulatesFailure(t *testing.T) {
+	// 其它 4xx 即使 body 能解析成 IN_PROGRESS，也必须累计失败（relay-06
+	// §8.2）：否则持续 400 的上游可把任务拖到 1440 分钟超时，hold 被多锁。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := repo.add(submittedTask(1, 7))
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	got := repo.get(task.ID)
+	if got.State == StateSuccess || got.State == StateFailure {
+		t.Fatalf("non-terminal 4xx must not finalize: %s", got.State)
+	}
+	if privateInt(got.PrivateData["poll_failures"]) != 1 {
+		t.Fatalf("poll_failures = %v, want 1", got.PrivateData["poll_failures"])
+	}
+	if handoff.refundCount() != 0 || handoff.terminateCount() != 0 {
+		t.Fatalf("non-terminal 4xx must not settle or refund")
 	}
 }
 

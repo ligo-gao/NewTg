@@ -798,13 +798,17 @@ func (s *Session) Detach(requestID string) error {
 
 // TerminateByRequestID 按持久化 requestID 结算（T6b 轮询器入口）。
 // 转发给引擎：没有进程内 Session 时账本是唯一权威。
+//
+// 必须带上本会话的 tokenID：inline 任务的成功终结同样要归属到发起令牌
+// （T6b 复核 H1）；轮询器另有 token-aware 入口直接从任务行取 token_id。
 func (s *Session) TerminateByRequestID(requestID string, fact contract.UsageFact) error {
-	return s.engine.TerminateByRequestID(requestID, fact)
+	return s.engine.TerminateByRequestIDForToken(requestID, s.tokenID, fact)
 }
 
 // RefundByRequestID 按持久化 requestID 全额退款（T6b 失败/超时入口）。
+// 同上：带上 tokenID 才能回补 PreConsume 扣掉的令牌额度。
 func (s *Session) RefundByRequestID(requestID string) error {
-	return s.engine.RefundByRequestID(requestID)
+	return s.engine.RefundByRequestIDForToken(requestID, s.tokenID)
 }
 
 // NeedsRefund 判断调用方是否应走退款路径。

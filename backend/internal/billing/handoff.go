@@ -15,44 +15,51 @@ import (
 
 // TerminateByRequestID 在任务终态时结算（T6b 调用）。
 //
-// 两种语义：
-//
-//  1. **空 fact（Model 为空且用量全零）= 按预扣额终结**。这是 T6b 的成功
-//     任务默认路径：没有任务计价表达式时，差额不可信，但 hold 必须释放，
-//     否则 Detach 后 hold 无租约、补偿扫描也看不到，用户余额会被永久冻结。
-//     该路径**不解析定价**（不按 token 重算），直接把 hold 结清为 settled、
-//     金额不变（delta=0），并写 success 日志。
-//  2. 非空 fact：与 Session.Terminate 完全一致——按 fact 求实际成本、释放
-//     hold、多退少补、写 usage_logs。
-//
-// 幂等：已结算/已退款重复调用返回 nil。
+// 不带令牌身份：tokenID=0 时令牌额度不参与调整/日志归属。任务路径应使用
+// TerminateByRequestIDForToken——提交时的 PreConsume 已扣过令牌额度。
 func (e *Engine) TerminateByRequestID(requestID string, fact contract.UsageFact) error {
+	return e.TerminateByRequestIDForToken(requestID, 0, fact)
+}
+
+// TerminateByRequestIDForToken 是任务结算的 token-aware 入口。
+//
+// tokenID 来自任务行 `private_data.token_id`（T6a 持久化）：结算日志必须能
+// 归属到发起任务的令牌；at-held 路径本身不调整令牌额度（cost == 已预扣），
+// 但 usage_logs.token_id 必须正确。
+func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, fact contract.UsageFact) error {
 	if requestID == "" {
 		return ErrMissingRequestID
 	}
 	if fact.Model == "" && usageIsZero(fact.Usage) {
-		return e.terminateAtHeld(requestID, fact)
+		return e.terminateAtHeld(requestID, tokenID, fact)
 	}
 	// rc 只承载持久化事实：requestID 是日志幂等键，UserID 由 Terminate 从
 	// hold 行回填（见 session.go 的 ByRequestID 注释）。
 	s := &Session{
 		engine:    e,
 		requestID: requestID,
-		rc:        &contract.RelayContext{RequestID: requestID},
+		tokenID:   tokenID,
+		rc:        &contract.RelayContext{RequestID: requestID, TokenID: int(tokenID)},
 	}
 	return s.Terminate(fact)
 }
 
 // terminateAtHeld 把 hold 按**预扣额**结清（cost = held，差额 0）。
 //
+// 这是 T6b 成功任务的默认路径（空 fact）：没有任务计价表达式时差额不可信，
+// 但 hold 必须释放，否则 Detach 后 hold 无租约、补偿扫描也看不到，用户余额
+// 会被永久冻结。
+//
 // 为什么不能复用 Session.Terminate：重建会话没有冻结的价格快照，Terminate
 // 会按当前定价重新 Resolve（模型为空直接失败；按 token/倍率模式则把空用量
 // 算成 0 并全额退款——成功任务变免费服务）。任务成功且没有计价表达式时，
 // 唯一可信的金额就是当初预扣的 hold；这里显式以它为最终成本。
 //
+// tokenID 只用于 usage_logs 归属；金额不变 ⇒ 令牌额度无需调整。
+//
 // 顺序沿用 Terminate 的裁决：先写 usage_logs、后主库结算。日志失败则不结算
 // （hold 保留，补偿扫描会重试），钱不能因为日志库抖动被静默吞掉。
-func (e *Engine) terminateAtHeld(requestID string, fact contract.UsageFact) error {
+func (e *Engine) terminateAtHeld(requestID string, tokenID int64, fact contract.UsageFact) error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
@@ -71,7 +78,11 @@ func (e *Engine) terminateAtHeld(requestID string, fact contract.UsageFact) erro
 		Refunded:    0,
 		Status:      UsageLogStatusSuccess,
 	}
-	rc := &contract.RelayContext{RequestID: requestID, UserID: int(st.UserID)}
+	rc := &contract.RelayContext{
+		RequestID: requestID,
+		UserID:    int(st.UserID),
+		TokenID:   int(tokenID),
+	}
 	// fact 本身为空：usage_logs 的 pre_deducted/cost 由 outcome 承载，
 	// usage 字段保持零值（没有可信的上游用量事实）。
 	if e.saturator != nil {
@@ -103,10 +114,23 @@ func usageIsZero(u contract.Usage) bool {
 
 // RefundByRequestID 在任务失败/超时时全额退款（T6b 调用）。
 //
-// 从账本读出仍处于 hold 的金额并水合到临时会话，再走统一的 Refund 路径
-// ——不复制退款逻辑，退款日志/令牌回补/幂等锚点都保持单一实现。
-// 已结算/已退款/无 hold 重复调用返回 nil。
+// 不带令牌身份：任务路径应使用 RefundByRequestIDForToken，否则 PreConsume
+// 扣掉的令牌额度不会回补（钱包退回、令牌永久少扣）。
 func (e *Engine) RefundByRequestID(requestID string) error {
+	return e.RefundByRequestIDForToken(requestID, 0)
+}
+
+// RefundByRequestIDForToken 是任务退款/超时的 token-aware 入口。
+//
+// 从账本读出仍处于 hold 的金额并水合到临时会话：除了 preConsumed，还要把
+// tokenID / tokenDeducted 一起水合——PreConsume 在同一事务里扣了钱包 hold 与
+// 令牌额度，Refund 的 `if s.tokenDeducted > 0 → CreditToken` 只有水合后才
+// 会执行。tokenDeducted 取 hold 金额：它们是同一笔预扣的两个账本面。
+//
+// 后续走统一的 Refund 路径——不复制退款逻辑，退款日志/令牌回补/幂等锚点
+// （release 唯一索引 + 结案标记）都保持单一实现。
+// 已结算/已退款/无 hold 重复调用返回 nil。
+func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) error {
 	if requestID == "" {
 		return ErrMissingRequestID
 	}
@@ -120,10 +144,17 @@ func (e *Engine) RefundByRequestID(requestID string) error {
 	s := &Session{
 		engine:    e,
 		requestID: requestID,
-		rc:        &contract.RelayContext{RequestID: requestID, UserID: int(st.UserID)},
-		userID:    st.UserID,
-		// 水合 hold：Refund 的早返回条件看内存 preConsumed；账本行才是权威。
-		preConsumed: st.Held,
+		rc: &contract.RelayContext{
+			RequestID: requestID,
+			UserID:    int(st.UserID),
+			TokenID:   int(tokenID),
+		},
+		userID:  st.UserID,
+		tokenID: tokenID,
+		// 水合 hold 与令牌扣减：Refund 的早返回条件看内存 preConsumed，
+		// CreditToken 的条件看 tokenDeducted；账本行才是权威。
+		preConsumed:   st.Held,
+		tokenDeducted: st.Held,
 	}
 	return s.Refund()
 }

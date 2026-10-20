@@ -2639,7 +2639,12 @@ export interface paths {
         post?: never;
         delete?: never;
         options?: never;
-        head?: never;
+        /**
+         * 取任务产物内容（HEAD）
+         * @description 与 GET 使用同一能力票据与校验，只返回状态码与头部，不写响应体。
+         *     签名无效/过期 403；任务或产物不存在 404；上游失败 502。
+         */
+        head: operations["headTaskArtifactContent"];
         patch?: never;
         trace?: never;
     };
@@ -10206,6 +10211,57 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description 产物二进制流（Content-Type 取上游或产物声明；响应体真源不在本文件内联） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            /** @description access 票据无效或已过期 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error404"];
+            /** @description 上游拒绝或取产物失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 插件当前不可用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    headTaskArtifactContent: {
+        parameters: {
+            query: {
+                /** @description 对外任务 ID（task_<32 hex>） */
+                task_id: components["parameters"]["TaskIDQuery"];
+                /** @description 宿主签发的 HMAC 能力票据（长期有效；无效/过期 403） */
+                access: components["parameters"]["TaskArtifactAccess"];
+            };
+            header?: never;
+            path: {
+                /** @description 插件 key（1–30，^[a-z0-9][a-z0-9-]*$） */
+                key: components["parameters"]["TaskPluginKey"];
+                /** @description 任务内产物 key（由 task.data.artifacts[].key 投影；T6b 冻结字符集） */
+                artifact_key: components["parameters"]["TaskArtifactKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 头部可用（响应体为空） */
             200: {
                 headers: {
                     [name: string]: unknown;
