@@ -426,7 +426,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 兜底退款只依赖钱包流水，日志是辅助状态面（R-14）；但装配真实的
 	// Saturator 让引擎在将来被 worker 复用时行为与 gateway 一致。
 	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
-		billing.NewDBLogger(sqlLogs))
+		billing.NewDBLogger(sqlLogs).
+			// worker 的退款收敛不产生新调用（fact=nil），DBLogger 只在真正
+			// 插入新行时投递 live_feed；接线与 gateway 保持一致。
+			WithFeed(billing.NewRedisFeedPublisher(rr.client), log))
 
 	// 任务轮询（M6d T6b）：装配插件运行时 + async_task_poll 循环。失败即
 	// 阻止 worker 上线——没有轮询器时任务会一直停在 submitted，预扣永久冻结。

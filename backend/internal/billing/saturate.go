@@ -2,13 +2,19 @@ package billing
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
@@ -21,10 +27,97 @@ import (
 // 或由 worker 重试（见 engine.go 中 Saturator 的注释）。
 type DBLogger struct {
 	logsDB *sql.DB
+	// feed 是公开首页 live_feed 的投递接缝（modules-09 F-09-02）。nil 表示
+	// 未接线（单测/未配置 Redis），Saturate 跳过投递但计费语义不变。
+	feed FeedPublisher
+	// log 只用于投递失败的告警；nil 时回退 slog.Default。
+	log *slog.Logger
 }
 
 // NewDBLogger 构造日志落库器。logsDB 为 nil 时 Saturate 返回错误而不是 panic。
 func NewDBLogger(logsDB *sql.DB) *DBLogger { return &DBLogger{logsDB: logsDB} }
+
+// WithFeed 挂接 live_feed 事件投递器并返回自身（链式装配）。
+//
+// 【为什么放在 DBLogger 而不是 Engine】投递必须发生在 usage_logs 事务
+// **提交之后**：只有提交成功才代表这次调用已进入公共可展示的账本。把接缝
+// 放在写入方（DBLogger）能天然保证顺序，且发布失败只记日志、绝不回滚计费
+// ——公开页的一次 Redis 抖动不应让用户被重复扣费或请求失败。
+func (l *DBLogger) WithFeed(feed FeedPublisher, logger *slog.Logger) *DBLogger {
+	l.feed = feed
+	l.log = logger
+	return l
+}
+
+// 公开首页 live_feed 的 Redis 键（modules-09 F-09-02 / A6-#4）。
+//
+// 【list 与频道同名】list 供轮询降级（LPUSH 写入、LRANGE 读取），Pub/Sub
+// 频道供 SSE 扇出；两者用同一个名字让「最近事件」与「实时事件」不会因为
+// 拼写不同而分叉。SSE 订阅侧只读频道，轮询侧只读 list。
+const (
+	// FeedListKey 是 live_feed 最近事件的 Redis list。
+	FeedListKey = "newtg:feed:calls"
+	// FeedChannel 是 live_feed 实时广播频道（与 list 同名）。
+	FeedChannel = FeedListKey
+	// FeedListMax 是 list 保留的最近事件数（环形缓冲上界）。
+	FeedListMax = 200
+)
+
+// FeedEvent 是投递到公开 live_feed 的单条脱敏事件（F-09-02 数据字段表）。
+//
+// 【脱敏红线】字段是白名单，绝不包含 user_id / username / email / IP / UA /
+// token / channel_id / channel.name / base_url / prompt / response /
+// request_id 原文。upstream 只到协议族（openai/anthropic/gemini/unknown），
+// id 是 request_id 的不可逆短哈希，客户端只把它当列表 key。
+type FeedEvent struct {
+	ID        string `json:"id"`
+	TS        string `json:"ts"`
+	Model     string `json:"model"`
+	Upstream  string `json:"upstream"`
+	TokensIn  int    `json:"tokens_in"`
+	TokensOut int    `json:"tokens_out"`
+	LatencyMS int64  `json:"latency_ms"`
+	Status    string `json:"status"`
+}
+
+// FeedPublisher 是 live_feed 事件投递接缝（测试可注入失败实现）。
+type FeedPublisher interface {
+	PublishCall(ctx context.Context, event FeedEvent) error
+}
+
+// RedisFeedPublisher 用 LPUSH + LTRIM + PUBLISH 投递事件。
+type RedisFeedPublisher struct {
+	rdb *redis.Client
+}
+
+// NewRedisFeedPublisher 构造 Redis 投递器。rdb 为 nil 时 PublishCall 直接返回
+// 错误（由 DBLogger 记录并吞掉），不影响计费。
+func NewRedisFeedPublisher(rdb *redis.Client) *RedisFeedPublisher {
+	return &RedisFeedPublisher{rdb: rdb}
+}
+
+// PublishCall 原子写入 list（保留最近 FeedListMax 条）并广播到频道。
+//
+// 用 TxPipeline（MULTI/EXEC）让 LPUSH 与 LTRIM 不出现「插入了但没裁剪」
+// 的中间态；PUBLISH 同事务提交，订阅侧看到的事件与 list 内容一致。
+func (p *RedisFeedPublisher) PublishCall(ctx context.Context, event FeedEvent) error {
+	if p == nil || p.rdb == nil {
+		return errors.New("billing: live feed publisher has no redis client")
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		// 固定结构体的 Marshal 不会失败；保底避免把 nil 发出去。
+		return fmt.Errorf("billing: marshal live feed event: %w", err)
+	}
+	pipe := p.rdb.TxPipeline()
+	pipe.LPush(ctx, FeedListKey, payload)
+	pipe.LTrim(ctx, FeedListKey, 0, FeedListMax-1)
+	pipe.Publish(ctx, FeedChannel, payload)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("billing: publish live feed event: %w", err)
+	}
+	return nil
+}
 
 // 编译期断言：DBLogger 必须实现结算日志接缝。
 var _ Saturator = (*DBLogger)(nil)
@@ -99,10 +192,99 @@ func (l *DBLogger) Saturate(ctx context.Context, fact *contract.UsageFact,
 	if err != nil {
 		return err
 	}
-	if err := l.writeUsageLog(ctx, row); err != nil {
+	inserted, err := l.writeUsageLog(ctx, row)
+	if err != nil {
 		return fmt.Errorf("billing: saturate usage log for request %s: %w", row.requestID, err)
 	}
+	// 只有**真正插入新行**的调用才进入 live_feed：幂等命中（重试/重放）与
+	// worker 的退款收敛都不代表一条新的公开调用，重复投递会让公开页把同一
+	// 请求显示多次。fact == nil 是 worker 的退款占位，也没有可展示的用量。
+	//
+	// 投递失败只记日志：事件是展示面副作用，计费与 usage_logs 已经提交成功；
+	// 让一次 Redis 故障反向影响结算会打开「少收费/重复退款」的风险。
+	if inserted && fact != nil && l.feed != nil {
+		l.publishFeed(row, rc, outcome)
+	}
 	return nil
+}
+
+// publishFeed 以独立短超时投递脱敏事件。
+//
+// 【为什么不继承请求 ctx】Saturate 在请求收尾阶段调用，客户端断连会取消
+// 请求上下文；事件仍应尽力投递（否则高并发下的断连会让公开页「断流」）。
+// 用独立 Background + 2s 上限，既不被请求取消，也不会在 Redis 故障时挂住
+// 结算协程。
+func (l *DBLogger) publishFeed(row usageLogRow, rc *contract.RelayContext, outcome SettlementOutcome) {
+	event := buildFeedEvent(row, rc, outcome, time.Now().UTC())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := l.feed.PublishCall(ctx, event); err != nil {
+		logger := l.log
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("billing: publish live feed event failed; billing unaffected",
+			"request_id", row.requestID, "error", err)
+	}
+}
+
+// buildFeedEvent 把已落库的行投影为公开事件（F-09-02 字段表）。
+//
+// 所有字段都来自 row（已清洗/截断/钳制的日志投影）而不是原始 fact/rc：
+// 这样公开面与 usage_logs 的口径天然一致，也避免把渠道名/上游名/用户标识
+// 带到响应里。token 数只取 prompt+completion，与排行榜口径相同。
+func buildFeedEvent(row usageLogRow, rc *contract.RelayContext, outcome SettlementOutcome,
+	now time.Time) FeedEvent {
+
+	status := "error"
+	if outcome.Status == UsageLogStatusSuccess {
+		status = "ok"
+	}
+	latency := int64(0)
+	if row.latencyMS.Valid {
+		latency = row.latencyMS.Int64
+	}
+	upstream := "unknown"
+	if rc != nil {
+		upstream = feedUpstreamFamily(rc.ChannelType)
+	}
+	return FeedEvent{
+		ID:        feedEventID(row.requestID),
+		TS:        now.Format(time.RFC3339),
+		Model:     row.model,
+		Upstream:  upstream,
+		TokensIn:  row.promptTokens,
+		TokensOut: row.completionTokens,
+		LatencyMS: latency,
+		Status:    status,
+	}
+}
+
+// feedEventID 返回 request_id 的 8 位十六进制短哈希。
+//
+// 不直接下发 request_id：它是跨系统关联键，公开页只需要一个稳定的列表 key。
+// 哈希不可逆且定长，避免把内部标识原样暴露。
+func feedEventID(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return hex.EncodeToString(sum[:4])
+}
+
+// feedUpstreamFamily 把渠道类型映射为公开的协议族。
+//
+// 口径与 relay/usage 的 channelFamily 一致（anthropic/moonshot 为
+// Anthropic 原生，gemini/vertex_ai 为 Gemini 原生，其余按 OpenAI 兼容处理）；
+// 没有渠道来源（空 slug）时返回 unknown，不用「openai」掩盖未知。
+func feedUpstreamFamily(kind contract.ChannelType) string {
+	switch kind {
+	case contract.ChannelTypeUnknown:
+		return "unknown"
+	case contract.ChannelTypeAnthropic, contract.ChannelTypeMoonshot:
+		return "anthropic"
+	case contract.ChannelTypeGemini, contract.ChannelTypeVertexAi:
+		return "gemini"
+	default:
+		return "openai"
+	}
 }
 
 // buildUsageLogRow 把用量事实/请求上下文/结算结果投影成一行日志。
@@ -301,15 +483,17 @@ func setPublicKey(dst map[string]any, key string, value any) {
 }
 
 // writeUsageLog 在单个日志库事务内完成「加锁 → 查重 → 插入/收敛」。
+// 返回 inserted=true 仅表示本次**新插入**了一行终态日志（幂等命中与退款
+// 收敛都返回 false），供 live_feed 判断是否应投递一次新调用。
 //
 // 为什么必须用事务级咨询锁：request_id 无唯一约束，两个执行者（Terminate
 // 与 worker 退款）并发写时，单纯 SELECT-then-INSERT 在 READ COMMITTED 下
 // 互相看不到对方未提交的行，会写出两行。锁按 request_id 的哈希串行化
 // 同一请求的写者；不同请求之间只有极小概率的哈希碰撞（仅多一次串行）。
-func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
+func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, error) {
 	tx, err := l.logsDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin usage log tx: %w", err)
+		return false, fmt.Errorf("begin usage log tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -319,18 +503,18 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
 	// uuid→text 输出固定为小写无花括号形式，保证所有拼写共享同一把锁。
 	if _, err := tx.ExecContext(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 0))`, row.requestID); err != nil {
-		return fmt.Errorf("lock usage log request id: %w", err)
+		return false, fmt.Errorf("lock usage log request id: %w", err)
 	}
 
 	existing, err := existingUsageLogStatuses(ctx, tx, row.requestID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(existing) > 0 {
 		if row.status != UsageLogStatusRefunded {
 			// 已有终态 → 幂等命中。尤其不得把 refunded 覆盖成 success
 			// （R-25：worker 在 Saturate 与主库结算之间已判定悬挂并退款）。
-			return tx.Commit()
+			return false, tx.Commit()
 		}
 		// 单向收敛到 refunded：billing-06 §5.3 第 6 步要求「若存在日志行，
 		// 置 status=refunded」；cost 取本次结算的保留消耗（R-39/R-59：已交付
@@ -348,9 +532,9 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
 			 WHERE request_id = $1::uuid`,
 			row.requestID, row.status, row.cost, row.refunded,
 			row.errorClass.String, row.errorMessage.String); err != nil {
-			return fmt.Errorf("converge usage log to refunded: %w", err)
+			return false, fmt.Errorf("converge usage log to refunded: %w", err)
 		}
-		return tx.Commit()
+		return false, tx.Commit()
 	}
 
 	if _, err := tx.ExecContext(ctx, usageLogInsertSQL,
@@ -359,9 +543,12 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) error {
 		row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
 		row.latencyMS, row.firstTokenMS, row.stream, row.status,
 		row.errorClass, row.errorMessage, row.other); err != nil {
-		return fmt.Errorf("insert usage log: %w", err)
+		return false, fmt.Errorf("insert usage log: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // usageLogInsertSQL 显式列出 platform-01 §12 的 25 列。

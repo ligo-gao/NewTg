@@ -277,6 +277,188 @@ paths:
           $ref: '#/components/responses/Error429'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/rankings:
+    get:
+      tags:
+        - public
+      operationId: getPublicRankings
+      summary: 公开排行榜快照（周期 today/week/month/year）
+      description: |
+        只读 worker 预聚合的 `rankings_*` 快照（modules-09 F-09-29～F-09-33 /
+        §C1.7），不在请求时聚合 `usage_logs`。口径：仅 `usage_logs.status=success`
+        的 `prompt_tokens + completion_tokens`，窗口内 `requests < N` 的模型不
+        进入任何榜单（N=`site.rankings_min_samples`，隐私地板 50）。
+        响应字段按白名单构造，**不含** user_id/token_id/channel_id/upstream
+        名称/cost 等内部维度。`display_name` 缺失回退 `model`，`author` 缺失
+        回退 `Unknown`；`delta_pct` 在上一窗口 token 为 0 时为 null，
+        `prev_rank` 在上一窗口样本不足时为 null（`delta_tokens` 的 D6a 口径见
+        schema 说明）。`providers[].series` 按 R-D6-05 不返回。
+        Redis 缓存 `rankings:public:<period>`（TTL=刷新间隔）；快照表不可用
+        返回 503，快照从未生成返回 200 + `status=empty`（冷启动）。
+        B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
+      security: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RankingsPeriod'
+            default: week
+          description: 统计周期（缺省 week）；非法值 400。
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: '"{period}:{computed_at_epoch}"；无快照时为 "{period}:0"'
+              schema:
+                type: string
+            Cache-Control:
+              description: public, max-age=30, stale-while-revalidate=30
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RankingsResponse'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          description: 快照表不可用（依赖故障）
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/home/live-feed:
+    get:
+      tags:
+        - public
+      operationId: getHomeLiveFeed
+      summary: 首页实时调用动态（轮询降级，最近 N 条脱敏事件）
+      description: |
+        读取 Redis list `newtg:feed:calls` 的最近 limit 条事件（LPUSH，新在上）。
+        事件字段是白名单脱敏投影：不含账号、邮箱、IP、令牌、渠道 ID/名称、
+        base_url、prompt/response、request_id 原文（id 为 8 位十六进制短哈希）。
+        `site.home_blocks.live_feed=false` 时返回 404。响应 `Cache-Control:
+        no-store`。B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
+        【已知缺口】modules-09 F-09-02 的 `window:{calls,cost_credits}` 聚合条
+        尚未实现（逐行事件按裁决 A-1 不含费用），登记为 G-DOM-21。
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: 返回条数（缺省 20；非整数或 <1 返回 400；>100 截到 100）。
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveFeedList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          description: live_feed 区块已关闭（`site.home_blocks.live_feed=false`）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          description: Redis 不可用（事件源故障）
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/home/live-feed/stream:
+    get:
+      tags:
+        - public
+      operationId: getHomeLiveFeedStream
+      summary: 首页实时调用动态（SSE）
+      description: |
+        `Content-Type: text/event-stream`；事件类型 `call`，`data:` 为单条
+        LiveFeedEvent JSON；每 15s 发送 `: heartbeat` 注释保活。单 IP 并发
+        连接上限 5（modules-08 F-08-16 冻结值 / security-07 B9）：超限返回
+        429，客户端应降级为 `/api/home/live-feed` 轮询。租约存于 Redis ZSET，
+        随心跳续期，进程崩溃后最多 60s 自动回收。`site.home_blocks.live_feed
+        =false` 时返回 404。
+      security: []
+      responses:
+        '200':
+          description: SSE 流
+          headers:
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+            X-Accel-Buffering:
+              description: no（禁用代理层缓冲）
+              schema:
+                type: string
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: '`event: call` + `data: <LiveFeedEvent JSON>`；保活为 `: heartbeat`。'
+        '404':
+          description: live_feed 区块已关闭
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: 单 IP 并发连接超过 5
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Redis 不可用（无法建立租约/订阅）
+          headers:
+            Retry-After:
+              description: 建议重试等待秒数（实现冻结为 5）
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/pricing:
     get:
       tags:
@@ -8624,6 +8806,388 @@ components:
           type: integer
           format: int64
           description: 冻结调度控制维度大小（6）。
+    RankingsPeriod:
+      type: string
+      enum:
+        - today
+        - week
+        - month
+        - year
+      x-enum-varnames:
+        - RankingsPeriodToday
+        - RankingsPeriodWeek
+        - RankingsPeriodMonth
+        - RankingsPeriodYear
+      description: 排行榜统计周期（缺省 week）。
+    RankingsWindow:
+      type: object
+      additionalProperties: false
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: string
+          format: date-time
+          description: 窗口起点（站点时区 RFC3339，含偏移）。
+        end:
+          type: string
+          format: date-time
+          description: 窗口终点（≥ start）。
+    RankingsStatus:
+      type: string
+      enum:
+        - ok
+        - partial
+        - empty
+      x-enum-varnames:
+        - RankingsStatusOk
+        - RankingsStatusPartial
+        - RankingsStatusEmpty
+      description: empty=全窗口无模型达阈值（冷启动）；partial 当前不会产生。
+    RankingsModel:
+      type: object
+      additionalProperties: false
+      required:
+        - rank
+        - model
+        - display_name
+        - author
+        - total_tokens
+        - requests
+        - delta_tokens
+        - delta_pct
+        - prev_rank
+      description: |
+        模型榜一行。delta_tokens/delta_pct/prev_rank 可为 null：
+        `prev_rank=null` 表示上一窗口样本不足或模型新增；`delta_pct=null`
+        表示上一窗口该模型 token 为 0（前端显示「新增」）。D6a 聚合在
+        「无上一窗口」时把 prev 视为 0，因此 `delta_tokens` 此时等于当前
+        total_tokens；只有数据库确为 NULL 时才下发 null。
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+          description: 竞赛排名（并列同名次、下一名跳号）。
+        model:
+          type: string
+          maxLength: 128
+        display_name:
+          type: string
+          maxLength: 128
+          description: 展示名快照；缺失时等于 model。
+        author:
+          type: string
+          maxLength: 64
+          description: 模型作者/供应商；缺失时为 Unknown。
+        total_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        requests:
+          type: integer
+          format: int64
+          minimum: 0
+        delta_tokens:
+          anyOf:
+            - type: integer
+              format: int64
+            - enum:
+                - null
+        delta_pct:
+          anyOf:
+            - type: number
+              format: double
+            - enum:
+                - null
+          description: 环比百分比（保留 2 位）；上一窗口 token 为 0 时为 null。
+        prev_rank:
+          anyOf:
+            - type: integer
+              minimum: 1
+            - enum:
+                - null
+    RankingsMover:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+        - author
+        - delta_pct
+        - cur_tokens
+        - prev_tokens
+      properties:
+        model:
+          type: string
+          maxLength: 128
+        author:
+          type: string
+          maxLength: 64
+        delta_pct:
+          type: number
+          format: double
+          description: 上升项 >0（降序）、下降项 <0（升序）。
+        cur_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        prev_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+    RankingsMovers:
+      type: object
+      additionalProperties: false
+      required:
+        - up
+        - down
+      properties:
+        up:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/RankingsMover'
+        down:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/RankingsMover'
+    RankingsProvider:
+      type: object
+      additionalProperties: false
+      required:
+        - rank
+        - author
+        - total_tokens
+        - share_pct
+        - slot
+      description: |
+        作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        author:
+          type: string
+          maxLength: 64
+        total_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        share_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: 占本窗口全部入榜 token 的比例；全表合计 100.00。
+        slot:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 8
+            - enum:
+                - null
+          description: 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。
+    RankingsGranularity:
+      type: string
+      enum:
+        - hour
+        - day
+        - week
+      x-enum-varnames:
+        - RankingsGranularityHour
+        - RankingsGranularityDay
+        - RankingsGranularityWeek
+      description: 趋势桶粒度（today→hour、week/month→day、year→week）。
+    RankingsTrendSeries:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+        - slot
+        - tokens
+      properties:
+        model:
+          type: string
+          maxLength: 128
+          description: 模型名；归并系列固定为 Other。
+        slot:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 8
+            - enum:
+                - null
+          description: 实体稳定槽位；Other 无槽位（null）。
+        tokens:
+          type: array
+          items:
+            type: integer
+            format: int64
+            minimum: 0
+          description: 长度等于 trend.buckets；缺失点为 0。
+    RankingsTrend:
+      type: object
+      additionalProperties: false
+      required:
+        - granularity
+        - buckets
+        - series
+      description: |
+        历史趋势：today→hour、week/month→day、year→week（R-D6-04）。
+        series 最多 6 个实体 + Other（§C1.9）。
+      properties:
+        granularity:
+          $ref: '#/components/schemas/RankingsGranularity'
+        buckets:
+          type: array
+          items:
+            type: string
+            format: date-time
+          description: 时间桶起点（站点时区 RFC3339），升序。
+        series:
+          type: array
+          maxItems: 7
+          items:
+            $ref: '#/components/schemas/RankingsTrendSeries'
+    RankingsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - period
+        - timezone
+        - window
+        - computed_at
+        - freshness_seconds
+        - sample_threshold
+        - status
+        - models
+        - movers
+        - providers
+        - trend
+      description: |
+        GET /api/rankings 的完整快照投影。字段白名单：不含任何用户、令牌、
+        渠道或上游名称维度。冷启动（从未生成过快照）时 status=empty 且
+        computed_at/freshness_seconds 为 null；有快照时两者必有值。
+      properties:
+        period:
+          $ref: '#/components/schemas/RankingsPeriod'
+        timezone:
+          type: string
+          description: 统计窗口使用的站点时区（`site.timezone`，IANA 名）。
+        window:
+          $ref: '#/components/schemas/RankingsWindow'
+        computed_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - enum:
+                - null
+          description: 快照聚合完成时刻（站点时区 RFC3339）；冷启动为 null。
+        freshness_seconds:
+          anyOf:
+            - type: integer
+              format: int64
+              minimum: 0
+            - enum:
+                - null
+          description: 请求时刻与 computed_at 的差值；冷启动为 null。
+        sample_threshold:
+          type: integer
+          minimum: 50
+          maximum: 100000
+          description: 本次快照采用的模型最小样本阈值 N（`site.rankings_min_samples`）。
+        status:
+          $ref: '#/components/schemas/RankingsStatus'
+        models:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RankingsModel'
+        movers:
+          $ref: '#/components/schemas/RankingsMovers'
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankingsProvider'
+        trend:
+          $ref: '#/components/schemas/RankingsTrend'
+    LiveFeedUpstream:
+      type: string
+      enum:
+        - openai
+        - anthropic
+        - gemini
+        - unknown
+      x-enum-varnames:
+        - LiveFeedUpstreamOpenai
+        - LiveFeedUpstreamAnthropic
+        - LiveFeedUpstreamGemini
+        - LiveFeedUpstreamUnknown
+      description: 渠道类型映射的协议族；无来源为 unknown。
+    LiveFeedStatus:
+      type: string
+      enum:
+        - ok
+        - error
+      x-enum-varnames:
+        - LiveFeedStatusOk
+        - LiveFeedStatusError
+      description: 调用结果（不暴露错误码细节）。
+    LiveFeedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - ts
+        - model
+        - upstream
+        - tokens_in
+        - tokens_out
+        - latency_ms
+        - status
+      description: |
+        单条脱敏调用事件。绝不包含 user_id/username/email/IP/UA/令牌/
+        channel_id/channel 名/base_url/prompt/response/request_id 原文，
+        也不含费用（裁决 A-1：费用只在聚合条，且逐行受部署粒度影响）。
+      properties:
+        id:
+          type: string
+          pattern: ^[0-9a-f]{8}$
+          description: request_id 的不可逆 8 位十六进制短哈希，仅作列表 key。
+        ts:
+          type: string
+          format: date-time
+        model:
+          type: string
+          maxLength: 128
+        upstream:
+          $ref: '#/components/schemas/LiveFeedUpstream'
+        tokens_in:
+          type: integer
+          minimum: 0
+        tokens_out:
+          type: integer
+          minimum: 0
+        latency_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/LiveFeedStatus'
+    LiveFeedList:
+      type: object
+      additionalProperties: false
+      required:
+        - events
+      description: |
+        轮询降级响应。事件按时间倒序（最新在前）。F-09-02 的
+        `window:{calls,cost_credits}` 聚合条尚未实现（G-DOM-21）。
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/LiveFeedEvent'
     PublicGroupPrice:
       type: object
       additionalProperties: false

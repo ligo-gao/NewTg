@@ -112,6 +112,10 @@ type RouterConfig struct {
 	// PublicUserGroupLookup 是软鉴权读取 users.group 的接缝；nil 且 DB 非 nil
 	// 时使用 SQL 实现。缺失只影响「登录用户的 group_price」，不影响公开访问。
 	PublicUserGroupLookup PublicUserGroupLookup
+	// RankingsRepo 是公开排行榜（GET /api/rankings）的快照只读接缝。
+	// nil 且 DB 非 nil 时由 store.NewRankingsRepo(DB) 构造；两者都为空时
+	// 不挂载端点（纯内存装配没有 rankings_* 表）。
+	RankingsRepo store.RankingsRepo
 	// UserGroups 是 GET /api/status 的 usable_groups 查询接缝（Task 13）。
 	// nil 且 DB 非 nil 时由 store.NewUserGroupsRepo(DB) 构造；两者都为空时
 	// 该字段恒为空数组（纯内存装配的单元测试）。
@@ -400,6 +404,38 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		}
 		publicPricing.RegisterPublicPricingRoutes(rt)
 	}
+
+	// 公开排行榜（D6b；modules-09 F-09-29～F-09-33）。快照表没有内存兜底：
+	// 只有提供 DB 时才自动挂载（与定价/目录同一原则，绝不用空数据伪造 200）。
+	// Redis 是共享缓存，缺失时端点仍可回源快照表，只是少一层加速。
+	rankingsRepo := cfg.RankingsRepo
+	if rankingsRepo == nil && cfg.DB != nil {
+		rankingsRepo = store.NewRankingsRepo(cfg.DB)
+	}
+	if rankingsRepo != nil {
+		rankingsHandlers, err := NewRankingsHandlers(RankingsHandlerConfig{
+			Repo:   rankingsRepo,
+			Redis:  cfg.Redis,
+			Config: cfg.Config,
+			Logger: cfg.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rankingsHandlers.RegisterRankingsRoutes(rt)
+	}
+
+	// 首页 live_feed（D6b；modules-09 F-09-02）。事件源是计费写入方投递到
+	// Redis 的脱敏事件；没有 Redis 就没有真实数据源，因此不提供内存兜底。
+	liveFeedHandlers, err := NewLiveFeedHandlers(LiveFeedHandlerConfig{
+		Redis:  cfg.Redis,
+		Config: cfg.Config,
+		Logger: cfg.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	liveFeedHandlers.RegisterLiveFeedRoutes(rt)
 
 	rt.mux.HandleFunc("POST /api/auth/email-code", h.handleEmailCode)
 	rt.mux.HandleFunc("POST /api/auth/register", h.handleRegister)

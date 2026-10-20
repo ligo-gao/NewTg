@@ -114,6 +114,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rankings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公开排行榜快照（周期 today/week/month/year）
+         * @description 只读 worker 预聚合的 `rankings_*` 快照（modules-09 F-09-29～F-09-33 /
+         *     §C1.7），不在请求时聚合 `usage_logs`。口径：仅 `usage_logs.status=success`
+         *     的 `prompt_tokens + completion_tokens`，窗口内 `requests < N` 的模型不
+         *     进入任何榜单（N=`site.rankings_min_samples`，隐私地板 50）。
+         *     响应字段按白名单构造，**不含** user_id/token_id/channel_id/upstream
+         *     名称/cost 等内部维度。`display_name` 缺失回退 `model`，`author` 缺失
+         *     回退 `Unknown`；`delta_pct` 在上一窗口 token 为 0 时为 null，
+         *     `prev_rank` 在上一窗口样本不足时为 null（`delta_tokens` 的 D6a 口径见
+         *     schema 说明）。`providers[].series` 按 R-D6-05 不返回。
+         *     Redis 缓存 `rankings:public:<period>`（TTL=刷新间隔）；快照表不可用
+         *     返回 503，快照从未生成返回 200 + `status=empty`（冷启动）。
+         *     B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
+         */
+        get: operations["getPublicRankings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/home/live-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 首页实时调用动态（轮询降级，最近 N 条脱敏事件）
+         * @description 读取 Redis list `newtg:feed:calls` 的最近 limit 条事件（LPUSH，新在上）。
+         *     事件字段是白名单脱敏投影：不含账号、邮箱、IP、令牌、渠道 ID/名称、
+         *     base_url、prompt/response、request_id 原文（id 为 8 位十六进制短哈希）。
+         *     `site.home_blocks.live_feed=false` 时返回 404。响应 `Cache-Control:
+         *     no-store`。B8 公开只读限流 60 次/分钟/IP+path（fail-open）。
+         *     【已知缺口】modules-09 F-09-02 的 `window:{calls,cost_credits}` 聚合条
+         *     尚未实现（逐行事件按裁决 A-1 不含费用），登记为 G-DOM-21。
+         */
+        get: operations["getHomeLiveFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/home/live-feed/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 首页实时调用动态（SSE）
+         * @description `Content-Type: text/event-stream`；事件类型 `call`，`data:` 为单条
+         *     LiveFeedEvent JSON；每 15s 发送 `: heartbeat` 注释保活。单 IP 并发
+         *     连接上限 5（modules-08 F-08-16 冻结值 / security-07 B9）：超限返回
+         *     429，客户端应降级为 `/api/home/live-feed` 轮询。租约存于 Redis ZSET，
+         *     随心跳续期，进程崩溃后最多 60s 自动回收。`site.home_blocks.live_feed
+         *     =false` 时返回 404。
+         */
+        get: operations["getHomeLiveFeedStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pricing": {
         parameters: {
             query?: never;
@@ -3840,6 +3922,163 @@ export interface components {
              */
             routing_dims: number;
         };
+        /**
+         * @description 排行榜统计周期（缺省 week）。
+         * @enum {string}
+         */
+        RankingsPeriod: "today" | "week" | "month" | "year";
+        RankingsWindow: {
+            /**
+             * Format: date-time
+             * @description 窗口起点（站点时区 RFC3339，含偏移）。
+             */
+            start: string;
+            /**
+             * Format: date-time
+             * @description 窗口终点（≥ start）。
+             */
+            end: string;
+        };
+        /**
+         * @description empty=全窗口无模型达阈值（冷启动）；partial 当前不会产生。
+         * @enum {string}
+         */
+        RankingsStatus: "ok" | "partial" | "empty";
+        /**
+         * @description 模型榜一行。delta_tokens/delta_pct/prev_rank 可为 null：
+         *     `prev_rank=null` 表示上一窗口样本不足或模型新增；`delta_pct=null`
+         *     表示上一窗口该模型 token 为 0（前端显示「新增」）。D6a 聚合在
+         *     「无上一窗口」时把 prev 视为 0，因此 `delta_tokens` 此时等于当前
+         *     total_tokens；只有数据库确为 NULL 时才下发 null。
+         */
+        RankingsModel: {
+            /** @description 竞赛排名（并列同名次、下一名跳号）。 */
+            rank: number;
+            model: string;
+            /** @description 展示名快照；缺失时等于 model。 */
+            display_name: string;
+            /** @description 模型作者/供应商；缺失时为 Unknown。 */
+            author: string;
+            /** Format: int64 */
+            total_tokens: number;
+            /** Format: int64 */
+            requests: number;
+            delta_tokens: number | null;
+            /** @description 环比百分比（保留 2 位）；上一窗口 token 为 0 时为 null。 */
+            delta_pct: number | null;
+            prev_rank: number | null;
+        };
+        RankingsMover: {
+            model: string;
+            author: string;
+            /**
+             * Format: double
+             * @description 上升项 >0（降序）、下降项 <0（升序）。
+             */
+            delta_pct: number;
+            /** Format: int64 */
+            cur_tokens: number;
+            /** Format: int64 */
+            prev_tokens: number;
+        };
+        RankingsMovers: {
+            up: components["schemas"]["RankingsMover"][];
+            down: components["schemas"]["RankingsMover"][];
+        };
+        /** @description 作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。 */
+        RankingsProvider: {
+            rank: number;
+            author: string;
+            /** Format: int64 */
+            total_tokens: number;
+            /**
+             * Format: double
+             * @description 占本窗口全部入榜 token 的比例；全表合计 100.00。
+             */
+            share_pct: number;
+            /** @description 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。 */
+            slot: number | null;
+        };
+        /**
+         * @description 趋势桶粒度（today→hour、week/month→day、year→week）。
+         * @enum {string}
+         */
+        RankingsGranularity: "hour" | "day" | "week";
+        RankingsTrendSeries: {
+            /** @description 模型名；归并系列固定为 Other。 */
+            model: string;
+            /** @description 实体稳定槽位；Other 无槽位（null）。 */
+            slot: number | null;
+            /** @description 长度等于 trend.buckets；缺失点为 0。 */
+            tokens: number[];
+        };
+        /**
+         * @description 历史趋势：today→hour、week/month→day、year→week（R-D6-04）。
+         *     series 最多 6 个实体 + Other（§C1.9）。
+         */
+        RankingsTrend: {
+            granularity: components["schemas"]["RankingsGranularity"];
+            /** @description 时间桶起点（站点时区 RFC3339），升序。 */
+            buckets: string[];
+            series: components["schemas"]["RankingsTrendSeries"][];
+        };
+        /**
+         * @description GET /api/rankings 的完整快照投影。字段白名单：不含任何用户、令牌、
+         *     渠道或上游名称维度。冷启动（从未生成过快照）时 status=empty 且
+         *     computed_at/freshness_seconds 为 null；有快照时两者必有值。
+         */
+        RankingsResponse: {
+            period: components["schemas"]["RankingsPeriod"];
+            /** @description 统计窗口使用的站点时区（`site.timezone`，IANA 名）。 */
+            timezone: string;
+            window: components["schemas"]["RankingsWindow"];
+            /** @description 快照聚合完成时刻（站点时区 RFC3339）；冷启动为 null。 */
+            computed_at: string | null;
+            /** @description 请求时刻与 computed_at 的差值；冷启动为 null。 */
+            freshness_seconds: number | null;
+            /** @description 本次快照采用的模型最小样本阈值 N（`site.rankings_min_samples`）。 */
+            sample_threshold: number;
+            status: components["schemas"]["RankingsStatus"];
+            models: components["schemas"]["RankingsModel"][];
+            movers: components["schemas"]["RankingsMovers"];
+            providers: components["schemas"]["RankingsProvider"][];
+            trend: components["schemas"]["RankingsTrend"];
+        };
+        /**
+         * @description 渠道类型映射的协议族；无来源为 unknown。
+         * @enum {string}
+         */
+        LiveFeedUpstream: "openai" | "anthropic" | "gemini" | "unknown";
+        /**
+         * @description 调用结果（不暴露错误码细节）。
+         * @enum {string}
+         */
+        LiveFeedStatus: "ok" | "error";
+        /**
+         * @description 单条脱敏调用事件。绝不包含 user_id/username/email/IP/UA/令牌/
+         *     channel_id/channel 名/base_url/prompt/response/request_id 原文，
+         *     也不含费用（裁决 A-1：费用只在聚合条，且逐行受部署粒度影响）。
+         */
+        LiveFeedEvent: {
+            /** @description request_id 的不可逆 8 位十六进制短哈希，仅作列表 key。 */
+            id: string;
+            /** Format: date-time */
+            ts: string;
+            model: string;
+            upstream: components["schemas"]["LiveFeedUpstream"];
+            tokens_in: number;
+            tokens_out: number;
+            /** Format: int64 */
+            latency_ms: number;
+            status: components["schemas"]["LiveFeedStatus"];
+        };
+        /**
+         * @description 轮询降级响应。事件按时间倒序（最新在前）。F-09-02 的
+         *     `window:{calls,cost_credits}` 聚合条尚未实现（G-DOM-21）。
+         */
+        LiveFeedList: {
+            events: components["schemas"]["LiveFeedEvent"][];
+        };
         PublicGroupPrice: {
             group: string;
             /** @description 分组倍率（整数百分比，120 = 1.20x）。 */
@@ -7186,6 +7425,155 @@ export interface operations {
             };
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+        };
+    };
+    getPublicRankings: {
+        parameters: {
+            query?: {
+                /** @description 统计周期（缺省 week）；非法值 400。 */
+                period?: components["schemas"]["RankingsPeriod"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description "{period}:{computed_at_epoch}"；无快照时为 "{period}:0" */
+                    ETag?: string;
+                    /** @description public, max-age=30, stale-while-revalidate=30 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RankingsResponse"];
+                };
+            };
+            /** @description If-None-Match 命中（无 body） */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            429: components["responses"]["Error429"];
+            /** @description 快照表不可用（依赖故障） */
+            503: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getHomeLiveFeed: {
+        parameters: {
+            query?: {
+                /** @description 返回条数（缺省 20；非整数或 <1 返回 400；>100 截到 100）。 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveFeedList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            /** @description live_feed 区块已关闭（`site.home_blocks.live_feed=false`） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            /** @description Redis 不可用（事件源故障） */
+            503: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getHomeLiveFeedStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE 流 */
+            200: {
+                headers: {
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    /** @description no（禁用代理层缓冲） */
+                    "X-Accel-Buffering"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description live_feed 区块已关闭 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 单 IP 并发连接超过 5 */
+            429: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Redis 不可用（无法建立租约/订阅） */
+            503: {
+                headers: {
+                    /** @description 建议重试等待秒数（实现冻结为 5） */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getPublicPricing: {

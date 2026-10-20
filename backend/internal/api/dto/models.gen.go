@@ -360,6 +360,48 @@ func (e Language) Valid() bool {
 	}
 }
 
+// Defines values for LiveFeedStatus.
+const (
+	LiveFeedStatusError LiveFeedStatus = "error"
+	LiveFeedStatusOk    LiveFeedStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the LiveFeedStatus enum.
+func (e LiveFeedStatus) Valid() bool {
+	switch e {
+	case LiveFeedStatusError:
+		return true
+	case LiveFeedStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LiveFeedUpstream.
+const (
+	LiveFeedUpstreamAnthropic LiveFeedUpstream = "anthropic"
+	LiveFeedUpstreamGemini    LiveFeedUpstream = "gemini"
+	LiveFeedUpstreamOpenai    LiveFeedUpstream = "openai"
+	LiveFeedUpstreamUnknown   LiveFeedUpstream = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the LiveFeedUpstream enum.
+func (e LiveFeedUpstream) Valid() bool {
+	switch e {
+	case LiveFeedUpstreamAnthropic:
+		return true
+	case LiveFeedUpstreamGemini:
+		return true
+	case LiveFeedUpstreamOpenai:
+		return true
+	case LiveFeedUpstreamUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for LogsByKeyItemStatus.
 const (
 	LogsByKeyItemStatusError    LogsByKeyItemStatus = "error"
@@ -1500,6 +1542,72 @@ func (e QuotaAdjustmentRequestMode) Valid() bool {
 	case QuotaAdjustmentRequestModeOverride:
 		return true
 	case QuotaAdjustmentRequestModeSubtract:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RankingsGranularity.
+const (
+	RankingsGranularityDay  RankingsGranularity = "day"
+	RankingsGranularityHour RankingsGranularity = "hour"
+	RankingsGranularityWeek RankingsGranularity = "week"
+)
+
+// Valid indicates whether the value is a known member of the RankingsGranularity enum.
+func (e RankingsGranularity) Valid() bool {
+	switch e {
+	case RankingsGranularityDay:
+		return true
+	case RankingsGranularityHour:
+		return true
+	case RankingsGranularityWeek:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RankingsPeriod.
+const (
+	RankingsPeriodMonth RankingsPeriod = "month"
+	RankingsPeriodToday RankingsPeriod = "today"
+	RankingsPeriodWeek  RankingsPeriod = "week"
+	RankingsPeriodYear  RankingsPeriod = "year"
+)
+
+// Valid indicates whether the value is a known member of the RankingsPeriod enum.
+func (e RankingsPeriod) Valid() bool {
+	switch e {
+	case RankingsPeriodMonth:
+		return true
+	case RankingsPeriodToday:
+		return true
+	case RankingsPeriodWeek:
+		return true
+	case RankingsPeriodYear:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RankingsStatus.
+const (
+	RankingsStatusEmpty   RankingsStatus = "empty"
+	RankingsStatusOk      RankingsStatus = "ok"
+	RankingsStatusPartial RankingsStatus = "partial"
+)
+
+// Valid indicates whether the value is a known member of the RankingsStatus enum.
+func (e RankingsStatus) Valid() bool {
+	switch e {
+	case RankingsStatusEmpty:
+		return true
+	case RankingsStatusOk:
+		return true
+	case RankingsStatusPartial:
 		return true
 	default:
 		return false
@@ -4352,6 +4460,37 @@ type HomeStats struct {
 // Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 type Language string
 
+// LiveFeedEvent 单条脱敏调用事件。绝不包含 user_id/username/email/IP/UA/令牌/
+// channel_id/channel 名/base_url/prompt/response/request_id 原文，
+// 也不含费用（裁决 A-1：费用只在聚合条，且逐行受部署粒度影响）。
+type LiveFeedEvent struct {
+	// Id request_id 的不可逆 8 位十六进制短哈希，仅作列表 key。
+	Id        string `json:"id"`
+	LatencyMs int64  `json:"latency_ms"`
+	Model     string `json:"model"`
+
+	// Status 调用结果（不暴露错误码细节）。
+	Status    LiveFeedStatus `json:"status"`
+	TokensIn  int            `json:"tokens_in"`
+	TokensOut int            `json:"tokens_out"`
+	Ts        time.Time      `json:"ts"`
+
+	// Upstream 渠道类型映射的协议族；无来源为 unknown。
+	Upstream LiveFeedUpstream `json:"upstream"`
+}
+
+// LiveFeedList 轮询降级响应。事件按时间倒序（最新在前）。F-09-02 的
+// `window:{calls,cost_credits}` 聚合条尚未实现（G-DOM-21）。
+type LiveFeedList struct {
+	Events []LiveFeedEvent `json:"events"`
+}
+
+// LiveFeedStatus 调用结果（不暴露错误码细节）。
+type LiveFeedStatus string
+
+// LiveFeedUpstream 渠道类型映射的协议族；无来源为 unknown。
+type LiveFeedUpstream string
+
 // LoginEncryptionKeyResponse 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
 // 前端必须以 enabled === false 判定明文路径——字段缺失不得当作"关闭"
 // （模块-01 §3.14 DisableCache；该端点是加密登录的唯一引导）。
@@ -6251,6 +6390,209 @@ type QuotaAdjustmentResponse struct {
 	UserId        int64 `json:"user_id"`
 }
 
+// RankingsGranularity 趋势桶粒度（today→hour、week/month→day、year→week）。
+type RankingsGranularity string
+
+// RankingsModel 模型榜一行。delta_tokens/delta_pct/prev_rank 可为 null：
+// `prev_rank=null` 表示上一窗口样本不足或模型新增；`delta_pct=null`
+// 表示上一窗口该模型 token 为 0（前端显示「新增」）。D6a 聚合在
+// 「无上一窗口」时把 prev 视为 0，因此 `delta_tokens` 此时等于当前
+// total_tokens；只有数据库确为 NULL 时才下发 null。
+type RankingsModel struct {
+	// Author 模型作者/供应商；缺失时为 Unknown。
+	Author string `json:"author"`
+
+	// DeltaPct 环比百分比（保留 2 位）；上一窗口 token 为 0 时为 null。
+	DeltaPct    RankingsModel_DeltaPct    `json:"delta_pct"`
+	DeltaTokens RankingsModel_DeltaTokens `json:"delta_tokens"`
+
+	// DisplayName 展示名快照；缺失时等于 model。
+	DisplayName string                 `json:"display_name"`
+	Model       string                 `json:"model"`
+	PrevRank    RankingsModel_PrevRank `json:"prev_rank"`
+
+	// Rank 竞赛排名（并列同名次、下一名跳号）。
+	Rank        int   `json:"rank"`
+	Requests    int64 `json:"requests"`
+	TotalTokens int64 `json:"total_tokens"`
+}
+
+// RankingsModelDeltaPct0 defines model for RankingsModel.DeltaPct.0.
+type RankingsModelDeltaPct0 = float64
+
+// RankingsModelDeltaPct1 defines model for RankingsModel.DeltaPct.1.
+type RankingsModelDeltaPct1 = interface{}
+
+// RankingsModel_DeltaPct 环比百分比（保留 2 位）；上一窗口 token 为 0 时为 null。
+type RankingsModel_DeltaPct struct {
+	union json.RawMessage
+}
+
+// RankingsModelDeltaTokens0 defines model for RankingsModel.DeltaTokens.0.
+type RankingsModelDeltaTokens0 = int64
+
+// RankingsModelDeltaTokens1 defines model for RankingsModel.DeltaTokens.1.
+type RankingsModelDeltaTokens1 = interface{}
+
+// RankingsModel_DeltaTokens defines model for RankingsModel.DeltaTokens.
+type RankingsModel_DeltaTokens struct {
+	union json.RawMessage
+}
+
+// RankingsModelPrevRank0 defines model for RankingsModel.PrevRank.0.
+type RankingsModelPrevRank0 = int
+
+// RankingsModelPrevRank1 defines model for RankingsModel.PrevRank.1.
+type RankingsModelPrevRank1 = interface{}
+
+// RankingsModel_PrevRank defines model for RankingsModel.PrevRank.
+type RankingsModel_PrevRank struct {
+	union json.RawMessage
+}
+
+// RankingsMover defines model for RankingsMover.
+type RankingsMover struct {
+	Author    string `json:"author"`
+	CurTokens int64  `json:"cur_tokens"`
+
+	// DeltaPct 上升项 >0（降序）、下降项 <0（升序）。
+	DeltaPct   float64 `json:"delta_pct"`
+	Model      string  `json:"model"`
+	PrevTokens int64   `json:"prev_tokens"`
+}
+
+// RankingsMovers defines model for RankingsMovers.
+type RankingsMovers struct {
+	Down []RankingsMover `json:"down"`
+	Up   []RankingsMover `json:"up"`
+}
+
+// RankingsPeriod 排行榜统计周期（缺省 week）。
+type RankingsPeriod string
+
+// RankingsProvider 作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。
+type RankingsProvider struct {
+	Author string `json:"author"`
+	Rank   int    `json:"rank"`
+
+	// SharePct 占本窗口全部入榜 token 的比例；全表合计 100.00。
+	SharePct float64 `json:"share_pct"`
+
+	// Slot 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。
+	Slot        RankingsProvider_Slot `json:"slot"`
+	TotalTokens int64                 `json:"total_tokens"`
+}
+
+// RankingsProviderSlot0 defines model for RankingsProvider.Slot.0.
+type RankingsProviderSlot0 = int
+
+// RankingsProviderSlot1 defines model for RankingsProvider.Slot.1.
+type RankingsProviderSlot1 = interface{}
+
+// RankingsProvider_Slot 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。
+type RankingsProvider_Slot struct {
+	union json.RawMessage
+}
+
+// RankingsResponse GET /api/rankings 的完整快照投影。字段白名单：不含任何用户、令牌、
+// 渠道或上游名称维度。冷启动（从未生成过快照）时 status=empty 且
+// computed_at/freshness_seconds 为 null；有快照时两者必有值。
+type RankingsResponse struct {
+	// ComputedAt 快照聚合完成时刻（站点时区 RFC3339）；冷启动为 null。
+	ComputedAt RankingsResponse_ComputedAt `json:"computed_at"`
+
+	// FreshnessSeconds 请求时刻与 computed_at 的差值；冷启动为 null。
+	FreshnessSeconds RankingsResponse_FreshnessSeconds `json:"freshness_seconds"`
+	Models           []RankingsModel                   `json:"models"`
+	Movers           RankingsMovers                    `json:"movers"`
+
+	// Period 排行榜统计周期（缺省 week）。
+	Period    RankingsPeriod     `json:"period"`
+	Providers []RankingsProvider `json:"providers"`
+
+	// SampleThreshold 本次快照采用的模型最小样本阈值 N（`site.rankings_min_samples`）。
+	SampleThreshold int `json:"sample_threshold"`
+
+	// Status empty=全窗口无模型达阈值（冷启动）；partial 当前不会产生。
+	Status RankingsStatus `json:"status"`
+
+	// Timezone 统计窗口使用的站点时区（`site.timezone`，IANA 名）。
+	Timezone string `json:"timezone"`
+
+	// Trend 历史趋势：today→hour、week/month→day、year→week（R-D6-04）。
+	// series 最多 6 个实体 + Other（§C1.9）。
+	Trend  RankingsTrend  `json:"trend"`
+	Window RankingsWindow `json:"window"`
+}
+
+// RankingsResponseComputedAt0 defines model for RankingsResponse.ComputedAt.0.
+type RankingsResponseComputedAt0 = time.Time
+
+// RankingsResponseComputedAt1 defines model for RankingsResponse.ComputedAt.1.
+type RankingsResponseComputedAt1 = interface{}
+
+// RankingsResponse_ComputedAt 快照聚合完成时刻（站点时区 RFC3339）；冷启动为 null。
+type RankingsResponse_ComputedAt struct {
+	union json.RawMessage
+}
+
+// RankingsResponseFreshnessSeconds0 defines model for RankingsResponse.FreshnessSeconds.0.
+type RankingsResponseFreshnessSeconds0 = int64
+
+// RankingsResponseFreshnessSeconds1 defines model for RankingsResponse.FreshnessSeconds.1.
+type RankingsResponseFreshnessSeconds1 = interface{}
+
+// RankingsResponse_FreshnessSeconds 请求时刻与 computed_at 的差值；冷启动为 null。
+type RankingsResponse_FreshnessSeconds struct {
+	union json.RawMessage
+}
+
+// RankingsStatus empty=全窗口无模型达阈值（冷启动）；partial 当前不会产生。
+type RankingsStatus string
+
+// RankingsTrend 历史趋势：today→hour、week/month→day、year→week（R-D6-04）。
+// series 最多 6 个实体 + Other（§C1.9）。
+type RankingsTrend struct {
+	// Buckets 时间桶起点（站点时区 RFC3339），升序。
+	Buckets []time.Time `json:"buckets"`
+
+	// Granularity 趋势桶粒度（today→hour、week/month→day、year→week）。
+	Granularity RankingsGranularity   `json:"granularity"`
+	Series      []RankingsTrendSeries `json:"series"`
+}
+
+// RankingsTrendSeries defines model for RankingsTrendSeries.
+type RankingsTrendSeries struct {
+	// Model 模型名；归并系列固定为 Other。
+	Model string `json:"model"`
+
+	// Slot 实体稳定槽位；Other 无槽位（null）。
+	Slot RankingsTrendSeries_Slot `json:"slot"`
+
+	// Tokens 长度等于 trend.buckets；缺失点为 0。
+	Tokens []int64 `json:"tokens"`
+}
+
+// RankingsTrendSeriesSlot0 defines model for RankingsTrendSeries.Slot.0.
+type RankingsTrendSeriesSlot0 = int
+
+// RankingsTrendSeriesSlot1 defines model for RankingsTrendSeries.Slot.1.
+type RankingsTrendSeriesSlot1 = interface{}
+
+// RankingsTrendSeries_Slot 实体稳定槽位；Other 无槽位（null）。
+type RankingsTrendSeries_Slot struct {
+	union json.RawMessage
+}
+
+// RankingsWindow defines model for RankingsWindow.
+type RankingsWindow struct {
+	// End 窗口终点（≥ start）。
+	End time.Time `json:"end"`
+
+	// Start 窗口起点（站点时区 RFC3339，含偏移）。
+	Start time.Time `json:"start"`
+}
+
 // RedeemCodeRequest defines model for RedeemCodeRequest.
 type RedeemCodeRequest struct {
 	// Code 用户输入原样提交；服务端归一化后再哈希
@@ -7831,6 +8173,12 @@ type UpdateGroupParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// GetHomeLiveFeedParams defines parameters for GetHomeLiveFeed.
+type GetHomeLiveFeedParams struct {
+	// Limit 返回条数（缺省 20；非整数或 <1 返回 400；>100 截到 100）。
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // PatchMeParams defines parameters for PatchMe.
 type PatchMeParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -8208,6 +8556,12 @@ type GetPublicPricingParamsQuotaType string
 
 // GetPublicPricingParamsIncludeGroupPrice defines parameters for GetPublicPricing.
 type GetPublicPricingParamsIncludeGroupPrice string
+
+// GetPublicRankingsParams defines parameters for GetPublicRankings.
+type GetPublicRankingsParams struct {
+	// Period 统计周期（缺省 week）；非法值 400。
+	Period *RankingsPeriod `form:"period,omitempty" json:"period,omitempty"`
+}
 
 // ListRedemptionCodesParams defines parameters for ListRedemptionCodes.
 type ListRedemptionCodesParams struct {
@@ -11793,6 +12147,440 @@ func (t PublicModelDetail_ReleasedAt) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PublicModelDetail_ReleasedAt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsModelDeltaPct0 returns the union data inside the RankingsModel_DeltaPct as a RankingsModelDeltaPct0
+func (t RankingsModel_DeltaPct) AsRankingsModelDeltaPct0() (RankingsModelDeltaPct0, error) {
+	var body RankingsModelDeltaPct0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelDeltaPct0 overwrites any union data inside the RankingsModel_DeltaPct as the provided RankingsModelDeltaPct0
+func (t *RankingsModel_DeltaPct) FromRankingsModelDeltaPct0(v RankingsModelDeltaPct0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelDeltaPct0 performs a merge with any union data inside the RankingsModel_DeltaPct, using the provided RankingsModelDeltaPct0
+func (t *RankingsModel_DeltaPct) MergeRankingsModelDeltaPct0(v RankingsModelDeltaPct0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsModelDeltaPct1 returns the union data inside the RankingsModel_DeltaPct as a RankingsModelDeltaPct1
+func (t RankingsModel_DeltaPct) AsRankingsModelDeltaPct1() (RankingsModelDeltaPct1, error) {
+	var body RankingsModelDeltaPct1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelDeltaPct1 overwrites any union data inside the RankingsModel_DeltaPct as the provided RankingsModelDeltaPct1
+func (t *RankingsModel_DeltaPct) FromRankingsModelDeltaPct1(v RankingsModelDeltaPct1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelDeltaPct1 performs a merge with any union data inside the RankingsModel_DeltaPct, using the provided RankingsModelDeltaPct1
+func (t *RankingsModel_DeltaPct) MergeRankingsModelDeltaPct1(v RankingsModelDeltaPct1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsModel_DeltaPct) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsModel_DeltaPct) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsModelDeltaTokens0 returns the union data inside the RankingsModel_DeltaTokens as a RankingsModelDeltaTokens0
+func (t RankingsModel_DeltaTokens) AsRankingsModelDeltaTokens0() (RankingsModelDeltaTokens0, error) {
+	var body RankingsModelDeltaTokens0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelDeltaTokens0 overwrites any union data inside the RankingsModel_DeltaTokens as the provided RankingsModelDeltaTokens0
+func (t *RankingsModel_DeltaTokens) FromRankingsModelDeltaTokens0(v RankingsModelDeltaTokens0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelDeltaTokens0 performs a merge with any union data inside the RankingsModel_DeltaTokens, using the provided RankingsModelDeltaTokens0
+func (t *RankingsModel_DeltaTokens) MergeRankingsModelDeltaTokens0(v RankingsModelDeltaTokens0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsModelDeltaTokens1 returns the union data inside the RankingsModel_DeltaTokens as a RankingsModelDeltaTokens1
+func (t RankingsModel_DeltaTokens) AsRankingsModelDeltaTokens1() (RankingsModelDeltaTokens1, error) {
+	var body RankingsModelDeltaTokens1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelDeltaTokens1 overwrites any union data inside the RankingsModel_DeltaTokens as the provided RankingsModelDeltaTokens1
+func (t *RankingsModel_DeltaTokens) FromRankingsModelDeltaTokens1(v RankingsModelDeltaTokens1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelDeltaTokens1 performs a merge with any union data inside the RankingsModel_DeltaTokens, using the provided RankingsModelDeltaTokens1
+func (t *RankingsModel_DeltaTokens) MergeRankingsModelDeltaTokens1(v RankingsModelDeltaTokens1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsModel_DeltaTokens) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsModel_DeltaTokens) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsModelPrevRank0 returns the union data inside the RankingsModel_PrevRank as a RankingsModelPrevRank0
+func (t RankingsModel_PrevRank) AsRankingsModelPrevRank0() (RankingsModelPrevRank0, error) {
+	var body RankingsModelPrevRank0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelPrevRank0 overwrites any union data inside the RankingsModel_PrevRank as the provided RankingsModelPrevRank0
+func (t *RankingsModel_PrevRank) FromRankingsModelPrevRank0(v RankingsModelPrevRank0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelPrevRank0 performs a merge with any union data inside the RankingsModel_PrevRank, using the provided RankingsModelPrevRank0
+func (t *RankingsModel_PrevRank) MergeRankingsModelPrevRank0(v RankingsModelPrevRank0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsModelPrevRank1 returns the union data inside the RankingsModel_PrevRank as a RankingsModelPrevRank1
+func (t RankingsModel_PrevRank) AsRankingsModelPrevRank1() (RankingsModelPrevRank1, error) {
+	var body RankingsModelPrevRank1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsModelPrevRank1 overwrites any union data inside the RankingsModel_PrevRank as the provided RankingsModelPrevRank1
+func (t *RankingsModel_PrevRank) FromRankingsModelPrevRank1(v RankingsModelPrevRank1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsModelPrevRank1 performs a merge with any union data inside the RankingsModel_PrevRank, using the provided RankingsModelPrevRank1
+func (t *RankingsModel_PrevRank) MergeRankingsModelPrevRank1(v RankingsModelPrevRank1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsModel_PrevRank) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsModel_PrevRank) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsProviderSlot0 returns the union data inside the RankingsProvider_Slot as a RankingsProviderSlot0
+func (t RankingsProvider_Slot) AsRankingsProviderSlot0() (RankingsProviderSlot0, error) {
+	var body RankingsProviderSlot0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsProviderSlot0 overwrites any union data inside the RankingsProvider_Slot as the provided RankingsProviderSlot0
+func (t *RankingsProvider_Slot) FromRankingsProviderSlot0(v RankingsProviderSlot0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsProviderSlot0 performs a merge with any union data inside the RankingsProvider_Slot, using the provided RankingsProviderSlot0
+func (t *RankingsProvider_Slot) MergeRankingsProviderSlot0(v RankingsProviderSlot0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsProviderSlot1 returns the union data inside the RankingsProvider_Slot as a RankingsProviderSlot1
+func (t RankingsProvider_Slot) AsRankingsProviderSlot1() (RankingsProviderSlot1, error) {
+	var body RankingsProviderSlot1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsProviderSlot1 overwrites any union data inside the RankingsProvider_Slot as the provided RankingsProviderSlot1
+func (t *RankingsProvider_Slot) FromRankingsProviderSlot1(v RankingsProviderSlot1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsProviderSlot1 performs a merge with any union data inside the RankingsProvider_Slot, using the provided RankingsProviderSlot1
+func (t *RankingsProvider_Slot) MergeRankingsProviderSlot1(v RankingsProviderSlot1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsProvider_Slot) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsProvider_Slot) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsResponseComputedAt0 returns the union data inside the RankingsResponse_ComputedAt as a RankingsResponseComputedAt0
+func (t RankingsResponse_ComputedAt) AsRankingsResponseComputedAt0() (RankingsResponseComputedAt0, error) {
+	var body RankingsResponseComputedAt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsResponseComputedAt0 overwrites any union data inside the RankingsResponse_ComputedAt as the provided RankingsResponseComputedAt0
+func (t *RankingsResponse_ComputedAt) FromRankingsResponseComputedAt0(v RankingsResponseComputedAt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsResponseComputedAt0 performs a merge with any union data inside the RankingsResponse_ComputedAt, using the provided RankingsResponseComputedAt0
+func (t *RankingsResponse_ComputedAt) MergeRankingsResponseComputedAt0(v RankingsResponseComputedAt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsResponseComputedAt1 returns the union data inside the RankingsResponse_ComputedAt as a RankingsResponseComputedAt1
+func (t RankingsResponse_ComputedAt) AsRankingsResponseComputedAt1() (RankingsResponseComputedAt1, error) {
+	var body RankingsResponseComputedAt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsResponseComputedAt1 overwrites any union data inside the RankingsResponse_ComputedAt as the provided RankingsResponseComputedAt1
+func (t *RankingsResponse_ComputedAt) FromRankingsResponseComputedAt1(v RankingsResponseComputedAt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsResponseComputedAt1 performs a merge with any union data inside the RankingsResponse_ComputedAt, using the provided RankingsResponseComputedAt1
+func (t *RankingsResponse_ComputedAt) MergeRankingsResponseComputedAt1(v RankingsResponseComputedAt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsResponse_ComputedAt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsResponse_ComputedAt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsResponseFreshnessSeconds0 returns the union data inside the RankingsResponse_FreshnessSeconds as a RankingsResponseFreshnessSeconds0
+func (t RankingsResponse_FreshnessSeconds) AsRankingsResponseFreshnessSeconds0() (RankingsResponseFreshnessSeconds0, error) {
+	var body RankingsResponseFreshnessSeconds0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsResponseFreshnessSeconds0 overwrites any union data inside the RankingsResponse_FreshnessSeconds as the provided RankingsResponseFreshnessSeconds0
+func (t *RankingsResponse_FreshnessSeconds) FromRankingsResponseFreshnessSeconds0(v RankingsResponseFreshnessSeconds0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsResponseFreshnessSeconds0 performs a merge with any union data inside the RankingsResponse_FreshnessSeconds, using the provided RankingsResponseFreshnessSeconds0
+func (t *RankingsResponse_FreshnessSeconds) MergeRankingsResponseFreshnessSeconds0(v RankingsResponseFreshnessSeconds0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsResponseFreshnessSeconds1 returns the union data inside the RankingsResponse_FreshnessSeconds as a RankingsResponseFreshnessSeconds1
+func (t RankingsResponse_FreshnessSeconds) AsRankingsResponseFreshnessSeconds1() (RankingsResponseFreshnessSeconds1, error) {
+	var body RankingsResponseFreshnessSeconds1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsResponseFreshnessSeconds1 overwrites any union data inside the RankingsResponse_FreshnessSeconds as the provided RankingsResponseFreshnessSeconds1
+func (t *RankingsResponse_FreshnessSeconds) FromRankingsResponseFreshnessSeconds1(v RankingsResponseFreshnessSeconds1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsResponseFreshnessSeconds1 performs a merge with any union data inside the RankingsResponse_FreshnessSeconds, using the provided RankingsResponseFreshnessSeconds1
+func (t *RankingsResponse_FreshnessSeconds) MergeRankingsResponseFreshnessSeconds1(v RankingsResponseFreshnessSeconds1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsResponse_FreshnessSeconds) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsResponse_FreshnessSeconds) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRankingsTrendSeriesSlot0 returns the union data inside the RankingsTrendSeries_Slot as a RankingsTrendSeriesSlot0
+func (t RankingsTrendSeries_Slot) AsRankingsTrendSeriesSlot0() (RankingsTrendSeriesSlot0, error) {
+	var body RankingsTrendSeriesSlot0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsTrendSeriesSlot0 overwrites any union data inside the RankingsTrendSeries_Slot as the provided RankingsTrendSeriesSlot0
+func (t *RankingsTrendSeries_Slot) FromRankingsTrendSeriesSlot0(v RankingsTrendSeriesSlot0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsTrendSeriesSlot0 performs a merge with any union data inside the RankingsTrendSeries_Slot, using the provided RankingsTrendSeriesSlot0
+func (t *RankingsTrendSeries_Slot) MergeRankingsTrendSeriesSlot0(v RankingsTrendSeriesSlot0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRankingsTrendSeriesSlot1 returns the union data inside the RankingsTrendSeries_Slot as a RankingsTrendSeriesSlot1
+func (t RankingsTrendSeries_Slot) AsRankingsTrendSeriesSlot1() (RankingsTrendSeriesSlot1, error) {
+	var body RankingsTrendSeriesSlot1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRankingsTrendSeriesSlot1 overwrites any union data inside the RankingsTrendSeries_Slot as the provided RankingsTrendSeriesSlot1
+func (t *RankingsTrendSeries_Slot) FromRankingsTrendSeriesSlot1(v RankingsTrendSeriesSlot1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRankingsTrendSeriesSlot1 performs a merge with any union data inside the RankingsTrendSeries_Slot, using the provided RankingsTrendSeriesSlot1
+func (t *RankingsTrendSeries_Slot) MergeRankingsTrendSeriesSlot1(v RankingsTrendSeriesSlot1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RankingsTrendSeries_Slot) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RankingsTrendSeries_Slot) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

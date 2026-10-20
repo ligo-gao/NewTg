@@ -153,7 +153,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// T9：真实计费引擎。R-41/R-88 的生产保证要求 Redis 非 nil（结算双扣
 	// 窗口靠 requestID 锁收窄）；Saturator 写独立日志库（usage_logs）。
 	engine := billing.NewEngine(gormDB, logsDB, rdb, center, source,
-		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB))
+		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB).
+			// live_feed 投递（D6b）：事件在 usage_logs 提交成功后投递到 Redis；
+			// 失败只告警，不影响计费。Redis 与计费引擎共用同一连接。
+			WithFeed(billing.NewRedisFeedPublisher(rdb), log))
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
 	}

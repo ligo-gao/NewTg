@@ -904,3 +904,294 @@ schemas:
       409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
       直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
       冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。
+
+  # ---------------------------------------------------------------------------
+  # 公开排行榜（D6b；modules-09 F-09-29～F-09-33 / §C1.7）
+  # ---------------------------------------------------------------------------
+
+  RankingsPeriod:
+    type: string
+    enum: [today, week, month, year]
+    x-enum-varnames: [RankingsPeriodToday, RankingsPeriodWeek, RankingsPeriodMonth, RankingsPeriodYear]
+    description: 排行榜统计周期（缺省 week）。
+
+  RankingsStatus:
+    type: string
+    enum: [ok, partial, empty]
+    x-enum-varnames: [RankingsStatusOk, RankingsStatusPartial, RankingsStatusEmpty]
+    description: empty=全窗口无模型达阈值（冷启动）；partial 当前不会产生。
+
+  RankingsGranularity:
+    type: string
+    enum: [hour, day, week]
+    x-enum-varnames: [RankingsGranularityHour, RankingsGranularityDay, RankingsGranularityWeek]
+    description: 趋势桶粒度（today→hour、week/month→day、year→week）。
+
+  LiveFeedUpstream:
+    type: string
+    enum: [openai, anthropic, gemini, unknown]
+    x-enum-varnames: [LiveFeedUpstreamOpenai, LiveFeedUpstreamAnthropic, LiveFeedUpstreamGemini, LiveFeedUpstreamUnknown]
+    description: 渠道类型映射的协议族；无来源为 unknown。
+
+  LiveFeedStatus:
+    type: string
+    enum: [ok, error]
+    x-enum-varnames: [LiveFeedStatusOk, LiveFeedStatusError]
+    description: 调用结果（不暴露错误码细节）。
+
+  RankingsResponse:
+    type: object
+    additionalProperties: false
+    required:
+      [period, timezone, window, computed_at, freshness_seconds,
+       sample_threshold, status, models, movers, providers, trend]
+    description: |
+      GET /api/rankings 的完整快照投影。字段白名单：不含任何用户、令牌、
+      渠道或上游名称维度。冷启动（从未生成过快照）时 status=empty 且
+      computed_at/freshness_seconds 为 null；有快照时两者必有值。
+    properties:
+      period:
+        $ref: '#/schemas/RankingsPeriod'
+      timezone:
+        type: string
+        description: 统计窗口使用的站点时区（`site.timezone`，IANA 名）。
+      window:
+        $ref: '#/schemas/RankingsWindow'
+      computed_at:
+        anyOf:
+          - type: string
+            format: date-time
+          - enum: [null]
+        description: 快照聚合完成时刻（站点时区 RFC3339）；冷启动为 null。
+      freshness_seconds:
+        anyOf:
+          - type: integer
+            format: int64
+            minimum: 0
+          - enum: [null]
+        description: 请求时刻与 computed_at 的差值；冷启动为 null。
+      sample_threshold:
+        type: integer
+        minimum: 50
+        maximum: 100000
+        description: 本次快照采用的模型最小样本阈值 N（`site.rankings_min_samples`）。
+      status:
+        $ref: '#/schemas/RankingsStatus'
+      models:
+        type: array
+        maxItems: 50
+        items:
+          $ref: '#/schemas/RankingsModel'
+      movers:
+        $ref: '#/schemas/RankingsMovers'
+      providers:
+        type: array
+        items:
+          $ref: '#/schemas/RankingsProvider'
+      trend:
+        $ref: '#/schemas/RankingsTrend'
+
+  RankingsWindow:
+    type: object
+    additionalProperties: false
+    required: [start, end]
+    properties:
+      start:
+        type: string
+        format: date-time
+        description: 窗口起点（站点时区 RFC3339，含偏移）。
+      end:
+        type: string
+        format: date-time
+        description: 窗口终点（≥ start）。
+
+  RankingsModel:
+    type: object
+    additionalProperties: false
+    required: [rank, model, display_name, author, total_tokens, requests,
+               delta_tokens, delta_pct, prev_rank]
+    description: |
+      模型榜一行。delta_tokens/delta_pct/prev_rank 可为 null：
+      `prev_rank=null` 表示上一窗口样本不足或模型新增；`delta_pct=null`
+      表示上一窗口该模型 token 为 0（前端显示「新增」）。D6a 聚合在
+      「无上一窗口」时把 prev 视为 0，因此 `delta_tokens` 此时等于当前
+      total_tokens；只有数据库确为 NULL 时才下发 null。
+    properties:
+      rank:
+        type: integer
+        minimum: 1
+        description: 竞赛排名（并列同名次、下一名跳号）。
+      model:
+        type: string
+        maxLength: 128
+      display_name:
+        type: string
+        maxLength: 128
+        description: 展示名快照；缺失时等于 model。
+      author:
+        type: string
+        maxLength: 64
+        description: 模型作者/供应商；缺失时为 Unknown。
+      total_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      requests:
+        type: integer
+        format: int64
+        minimum: 0
+      delta_tokens:
+        anyOf:
+          - type: integer
+            format: int64
+          - enum: [null]
+      delta_pct:
+        anyOf:
+          - type: number
+            format: double
+          - enum: [null]
+        description: 环比百分比（保留 2 位）；上一窗口 token 为 0 时为 null。
+      prev_rank:
+        anyOf:
+          - type: integer
+            minimum: 1
+          - enum: [null]
+
+  RankingsMover:
+    type: object
+    additionalProperties: false
+    required: [model, author, delta_pct, cur_tokens, prev_tokens]
+    properties:
+      model: {type: string, maxLength: 128}
+      author: {type: string, maxLength: 64}
+      delta_pct:
+        type: number
+        format: double
+        description: 上升项 >0（降序）、下降项 <0（升序）。
+      cur_tokens: {type: integer, format: int64, minimum: 0}
+      prev_tokens: {type: integer, format: int64, minimum: 0}
+
+  RankingsMovers:
+    type: object
+    additionalProperties: false
+    required: [up, down]
+    properties:
+      up:
+        type: array
+        maxItems: 5
+        items:
+          $ref: '#/schemas/RankingsMover'
+      down:
+        type: array
+        maxItems: 5
+        items:
+          $ref: '#/schemas/RankingsMover'
+
+  RankingsProvider:
+    type: object
+    additionalProperties: false
+    required: [rank, author, total_tokens, share_pct, slot]
+    description: |
+      作者/供应商排名一行。**不含 series**（R-D6-05：供应商时间序列无存储）。
+    properties:
+      rank: {type: integer, minimum: 1}
+      author: {type: string, maxLength: 64}
+      total_tokens: {type: integer, format: int64, minimum: 0}
+      share_pct:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 100
+        description: 占本窗口全部入榜 token 的比例；全表合计 100.00。
+      slot:
+        anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 8
+          - enum: [null]
+        description: 实体稳定色板槽位；色板耗尽时为 null（不回绕/不重排）。
+
+  RankingsTrendSeries:
+    type: object
+    additionalProperties: false
+    required: [model, slot, tokens]
+    properties:
+      model:
+        type: string
+        maxLength: 128
+        description: 模型名；归并系列固定为 Other。
+      slot:
+        anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 8
+          - enum: [null]
+        description: 实体稳定槽位；Other 无槽位（null）。
+      tokens:
+        type: array
+        items: {type: integer, format: int64, minimum: 0}
+        description: 长度等于 trend.buckets；缺失点为 0。
+
+  RankingsTrend:
+    type: object
+    additionalProperties: false
+    required: [granularity, buckets, series]
+    description: |
+      历史趋势：today→hour、week/month→day、year→week（R-D6-04）。
+      series 最多 6 个实体 + Other（§C1.9）。
+    properties:
+      granularity:
+        $ref: '#/schemas/RankingsGranularity'
+      buckets:
+        type: array
+        items: {type: string, format: date-time}
+        description: 时间桶起点（站点时区 RFC3339），升序。
+      series:
+        type: array
+        maxItems: 7
+        items:
+          $ref: '#/schemas/RankingsTrendSeries'
+
+  # ---------------------------------------------------------------------------
+  # 首页实时调用动态（D6b；modules-09 F-09-02）
+  # ---------------------------------------------------------------------------
+
+  LiveFeedEvent:
+    type: object
+    additionalProperties: false
+    required: [id, ts, model, upstream, tokens_in, tokens_out, latency_ms, status]
+    description: |
+      单条脱敏调用事件。绝不包含 user_id/username/email/IP/UA/令牌/
+      channel_id/channel 名/base_url/prompt/response/request_id 原文，
+      也不含费用（裁决 A-1：费用只在聚合条，且逐行受部署粒度影响）。
+    properties:
+      id:
+        type: string
+        pattern: '^[0-9a-f]{8}$'
+        description: request_id 的不可逆 8 位十六进制短哈希，仅作列表 key。
+      ts:
+        type: string
+        format: date-time
+      model:
+        type: string
+        maxLength: 128
+      upstream:
+        $ref: '#/schemas/LiveFeedUpstream'
+      tokens_in: {type: integer, minimum: 0}
+      tokens_out: {type: integer, minimum: 0}
+      latency_ms: {type: integer, format: int64, minimum: 0}
+      status:
+        $ref: '#/schemas/LiveFeedStatus'
+
+  LiveFeedList:
+    type: object
+    additionalProperties: false
+    required: [events]
+    description: |
+      轮询降级响应。事件按时间倒序（最新在前）。F-09-02 的
+      `window:{calls,cost_credits}` 聚合条尚未实现（G-DOM-21）。
+    properties:
+      events:
+        type: array
+        items:
+          $ref: '#/schemas/LiveFeedEvent'

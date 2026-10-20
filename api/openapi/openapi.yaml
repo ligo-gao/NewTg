@@ -39,6 +39,13 @@ paths:
   # 公开读面（modules-09；M6c Task 7）：首页统计与定价目录。
   /api/home/stats:
     $ref: './paths/public.yaml#/paths/~1api~1home~1stats'
+  # 公开排行榜与 live_feed（D6b；modules-09 F-09-29～F-09-33 / F-09-02）。
+  /api/rankings:
+    $ref: './paths/public.yaml#/paths/~1api~1rankings'
+  /api/home/live-feed:
+    $ref: './paths/public.yaml#/paths/~1api~1home~1live-feed'
+  /api/home/live-feed/stream:
+    $ref: './paths/public.yaml#/paths/~1api~1home~1live-feed~1stream'
   /api/pricing:
     $ref: './paths/public.yaml#/paths/~1api~1pricing'
   /api/pricing/{model_id}:
