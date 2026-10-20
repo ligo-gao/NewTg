@@ -62,6 +62,14 @@ type Session struct {
 	freeModel      bool
 	trusted        bool
 
+	// 资金来源是每请求冻结一次的（billing-04 §3.3）：预扣与退款必须复用
+	// 同一选择，不能中途重新读取偏好。S4a 只实现来源选择/预扣/退款；
+	// 结算 delta 属 S4b。
+	fundingSource           contract.FundingKind // 默认零值 = FundingWallet
+	subscriptionID          int64                // 订阅来源冻结的实例（结算复用同一 ID）
+	subscriptionPreConsumed int64                // 订阅来源冻结的预扣额
+	fundingPlan             *fundingPlan         // 偏好 + 候选订阅的冻结快照
+
 	preConsumeCalled bool
 	settled          bool
 	refunded         bool
@@ -225,35 +233,35 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) error {
 		}
 	}
 
-	// 信任旁路在余额扣减之前判定：命中后 effectiveQuota=0，不写 hold 流水。
-	// 若命中，结算仍按真实用量扣费（信任只是免预扣，不是免费）。
-	trusted, err := s.engine.shouldTrust(ctx, s.rc, est, budget)
+	// S4a：每请求解析并冻结资金来源（billing-04 §3.3）。信任旁路与来源
+	// 选择正交——旁路只影响「扣多少」，不影响「从哪扣」；但订阅侧永不
+	// 旁路（订阅是有限额账户，必须真实扣，billing-00 §6.4）。因此先选源：
+	// 只有主来源是钱包时才允许命中 trusted；主来源是订阅时必须继续走
+	// 真实扣减。
+	plan, err := s.resolveFundingPlanLocked(ctx)
 	if err != nil {
 		return err
 	}
-	if trusted {
-		s.trusted = true
-		succeeded = true
-		return nil
+	if plan.primaryWallet() {
+		trusted, trustErr := s.engine.shouldTrust(ctx, s.rc, est, budget)
+		if trustErr != nil {
+			return trustErr
+		}
+		if trusted {
+			s.trusted = true
+			s.fundingSource = contract.FundingWallet
+			succeeded = true
+			return nil
+		}
+		if budget == 0 {
+			// 估算为 0（无计费用量/零价）：不产生 hold。结算时若真实用量
+			// 为正，走「少补」直接扣减（billing-00 §6.5：少补存在）。
+			s.fundingSource = contract.FundingWallet
+			succeeded = true
+			return nil
+		}
 	}
-
-	if budget == 0 {
-		// 估算为 0（无计费用量/零价）：不产生 hold。结算时若真实用量为正，
-		// 走「少补」直接扣减（billing-00 §6.5：少补存在）。
-		succeeded = true
-		return nil
-	}
-
-	// R-73：先令牌额度、再钱包，同一主库事务；任一步失败整体回滚。
-	if _, err := s.engine.ledger.ApplyDeltaWithToken(ctx, s.userID, s.tokenID, -budget,
-		"consume_pre", "hold", "usage_log", s.requestID); err != nil {
-		return err // 余额/令牌额度不足时是 *QuotaError
-	}
-	s.preConsumed = budget
-	s.tokenDeducted = budget
-
-	// 预扣成功后写租约（billing-03 §2.6）：只有真实 hold 才需要崩溃兜底。
-	if err := s.registerLeaseLocked(ctx); err != nil {
+	if err := s.chargeFundingLocked(ctx, plan, budget); err != nil {
 		return err
 	}
 	succeeded = true
@@ -411,6 +419,11 @@ func (s *Session) Reserve(delta int64) error {
 	if s.freeModel {
 		return nil
 	}
+	if s.fundingSource == contract.FundingSubscription {
+		// 订阅预扣是单实例额度，不支持 S4a 的上浮（上浮/差额结算属 S4b）。
+		// 这里若继续走钱包预留会形成双重计费：订阅已按预算真实扣款。
+		return nil
+	}
 	if delta <= 0 {
 		// 仅上浮：零/负增量不改变预留，也不应清 trusted（没有真实预留发生）。
 		return nil
@@ -477,6 +490,11 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 	if delta <= 0 {
 		return nil
 	}
+	if s.fundingSource == contract.FundingSubscription {
+		// S4b 负责把实时增量结算为订阅 delta。此处绝不能走钱包扣减：
+		// 订阅来源没有 wallet hold 行，钱包扣款会成为第二笔费用。
+		return nil
+	}
 	// fact 用于日志/审计上下文；增量金额以调用方传入的 delta 为准
 	// （实时连接已按每个 response.done 完成本地计数/上游用量换算）。
 	_ = fact
@@ -537,6 +555,15 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 
 	ctx, cancel := opCtx()
 	defer cancel()
+
+	if s.fundingSource == contract.FundingSubscription {
+		// S4b 接入订阅结算 delta（PostConsumeUserSubscriptionDelta）与
+		// subscription_* 日志键。S4a 绝不能落回下面的钱包结算路径：
+		// 订阅来源没有 consume_pre hold，`noHoldSettlement` 会把实际成本
+		// 再向钱包扣一次。这里先按「预扣额即结算额」关会话，S4b 替换本段。
+		s.finishLocked(ctx, false)
+		return nil
+	}
 
 	st, err := s.engine.ledger.openHoldState(ctx, s.requestID)
 	if err != nil {
@@ -689,6 +716,10 @@ func (s *Session) Refund() error {
 	ctx, cancel := opCtx()
 	defer cancel()
 
+	if s.fundingSource == contract.FundingSubscription {
+		return s.refundSubscriptionLocked(ctx)
+	}
+
 	if s.preConsumed == 0 {
 		// 无 hold 锚点（如 trusted 会话只有 ChargeIncrement 增量）：
 		// refundSession 以结案标记复核，再用 requestID 锁收窄并发窗口（R-41）。
@@ -751,6 +782,60 @@ func (s *Session) Refund() error {
 	s.refunded = true
 	s.preConsumed = 0
 	s.consumed = 0
+	s.stopHeartbeatLocked()
+	s.removeLeaseLocked(ctx)
+	return nil
+}
+
+// refundSubscriptionLocked 全额退回订阅来源的预扣（billing-04 §4）。
+//
+// 与钱包路径的非对称点是**刻意**的（重写高危区）：
+//   - 订阅退款按 requestId 幂等、最多 3 次、退避 200/400ms；
+//   - 钱包退款非幂等、不重试；
+//   - 订阅预扣没有 wallet hold 行，因此不得走 releaseHolds，否则会把
+//     不属于本次请求的钱包流水当成 hold 处理；
+//   - 令牌额度与订阅账户是两笔账，退款时各自回滚。
+func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
+	preDeductedForLog := s.preConsumed
+
+	if s.subscriptionPreConsumed > 0 {
+		if err := s.engine.refundSubscriptionPreConsume(ctx, s.requestID); err != nil {
+			return fmt.Errorf("billing: refund subscription pre-consume: %w", err)
+		}
+	}
+
+	// R-73：资金侧已退回，随后回补令牌额度（失败只记日志，不回滚资金）。
+	if s.tokenDeducted > 0 {
+		if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
+			slog.Warn("billing: token quota restore failed after subscription refund",
+				"request_id", s.requestID, "token_id", s.tokenID,
+				"amount", s.tokenDeducted, "error", tokenErr)
+		}
+		s.tokenDeducted = 0
+	}
+
+	if s.engine.saturator != nil {
+		outcome := SettlementOutcome{
+			Cost:        0,
+			PreDeducted: preDeductedForLog,
+			Refunded:    preDeductedForLog,
+			Status:      UsageLogStatusRefunded,
+		}
+		if logErr := s.engine.saturator.Saturate(ctx, nil, s.rc, outcome); logErr != nil {
+			s.refunded = true
+			s.preConsumed = 0
+			s.consumed = 0
+			s.subscriptionPreConsumed = 0
+			s.stopHeartbeatLocked()
+			s.removeLeaseLocked(ctx)
+			return fmt.Errorf("billing: write subscription refund log: %w", logErr)
+		}
+	}
+
+	s.refunded = true
+	s.preConsumed = 0
+	s.consumed = 0
+	s.subscriptionPreConsumed = 0
 	s.stopHeartbeatLocked()
 	s.removeLeaseLocked(ctx)
 	return nil

@@ -218,6 +218,9 @@ type Engine struct {
 	saturator Saturator
 	ledger    *Ledger
 	heartbeat time.Duration // 单测可缩短；零值按契约默认 30s
+	// subscriptionFunding 是订阅资金来源接缝（S4a）。nil 表示未装配，
+	// 资金分派保持纯钱包行为（与 S4a 之前一致）。
+	subscriptionFunding SubscriptionFundingSource
 
 	// historyCache 是免费模型可信阈值用的「历史累计消费」短 TTL 缓存。
 	historyMu    sync.Mutex
@@ -250,6 +253,14 @@ func NewEngine(db *gorm.DB, logsDB *sql.DB, rdb *redis.Client, cfg ConfigReader,
 		ledger:       NewLedger(db),
 		historyCache: make(map[int64]historyEntry),
 	}
+}
+
+// SetSubscriptionFunding 装配订阅资金来源（S4a）。
+//
+// 必须在会话创建前调用一次（装配期），构造后不再修改：引擎字段对并发
+// 只读是安全的前提。未装配时资金分派保持纯钱包行为。
+func (e *Engine) SetSubscriptionFunding(f SubscriptionFundingSource) {
+	e.subscriptionFunding = f
 }
 
 // NewSession 为一次请求绑定一个计费会话（relay 每请求调用工厂）。

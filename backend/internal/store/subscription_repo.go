@@ -58,6 +58,10 @@ var (
 	ErrPreConsumeRefunded = errors.New("store: subscription pre-consume record was already refunded")
 	// ErrPreConsumeInvalid：requestId 非法或预扣额 <= 0。
 	ErrPreConsumeInvalid = errors.New("store: subscription pre-consume input is invalid")
+	// ErrSubscriptionQuotaInsufficient：所选实例额度不足（amount_total>0 且
+	// amount_used+amount 越上界），或实例已不在可消费状态。资金分派据此
+	// 继续尝试下一个候选；全部耗尽时由计费侧映射 402。
+	ErrSubscriptionQuotaInsufficient = errors.New("store: subscription quota insufficient")
 )
 
 // ErrPlanReferenced 表示套餐仍被引用，删除被拒（HTTP 409）。
@@ -193,6 +197,10 @@ type SubscriptionRepo interface {
 
 	// Pre-consume idempotency records
 	InsertPreConsume(ctx context.Context, requestID string, subscriptionID int64, amount int64) (SubscriptionPreConsume, error)
+	// PreConsumeUserSubscription 是资金分派（billing-04 §3.4 / billing-08 §4.1）
+	// 的单实例预扣：幂等记录与 amount_used 增量在同一事务内落地。
+	// created=false 表示命中既有幂等记录（本次未再扣额度）。
+	PreConsumeUserSubscription(ctx context.Context, requestID string, subscriptionID int64, amount int64) (rec SubscriptionPreConsume, created bool, err error)
 	GetPreConsume(ctx context.Context, requestID string) (SubscriptionPreConsume, error)
 	MarkPreConsumeRefunded(ctx context.Context, requestID string) error
 }
@@ -933,6 +941,91 @@ func (r *SQLSubscriptionRepo) InsertPreConsume(ctx context.Context, requestID st
 	return existing, nil
 }
 
+// PreConsumeUserSubscription 在**同一事务**内完成订阅预扣的两件事：
+//
+//  1. 写/读 request_id 幂等记录（唯一键即幂等根，billing-04 §3.4）；
+//  2. 对选定的单个实例执行条件 `amount_used` 增量（禁止跨实例拆分，
+//     R-D5-02 —— 退款/兜底恢复只能按记录上的 subscription_id 回退）。
+//
+// 判定顺序与 InsertPreConsume 一致：已 refunded 再预扣报错；已 consumed
+// 幂等返回既有行且不再扣额度（created=false）。额度不足 / 实例已不可消费
+// 返回 ErrSubscriptionQuotaInsufficient，调用方继续下一个候选；由于整个
+// 事务回滚，失败的尝试不会留下幂等记录或任何额度增量。
+//
+// 条件 UPDATE 的 `status='active'` 与宽限判定在写入时重新求值：列表选择
+// 与扣减之间的到期竞态不能让已终结实例继续被消费。
+func (r *SQLSubscriptionRepo) PreConsumeUserSubscription(ctx context.Context,
+	requestID string, subscriptionID int64, amount int64) (SubscriptionPreConsume, bool, error) {
+
+	if strings.TrimSpace(requestID) == "" || subscriptionID <= 0 || amount <= 0 {
+		return SubscriptionPreConsume{}, false, ErrPreConsumeInvalid
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SubscriptionPreConsume{}, false, fmt.Errorf("store: begin subscription pre-consume: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rec, err := scanPreConsume(tx.QueryRowContext(ctx, `
+		INSERT INTO subscription_pre_consume_records
+			(request_id, subscription_id, status, pre_consumed)
+		VALUES ($1, $2, 'consumed', $3)
+		ON CONFLICT (request_id) DO NOTHING
+		RETURNING `+preConsumeColumns, requestID, subscriptionID, amount))
+	switch {
+	case err == nil:
+		// 新记录：只有本次真正插入的一方可以增加 amount_used。
+		// 上界守卫只在 amount_total > 0 时生效（0 = 无限额度，R-D5-07）；
+		// 下界由 DB CHECK 与这里的加法共同保证。
+		res, execErr := tx.ExecContext(ctx, `
+			UPDATE subscriptions
+			   SET amount_used = amount_used + $2, updated_at = now()
+			 WHERE id = $1
+			   AND status = 'active'
+			   AND end_at + make_interval(days => grace_days) > now()
+			   AND (amount_total = 0 OR amount_used + $2 <= amount_total)`,
+			subscriptionID, amount)
+		if execErr != nil {
+			return SubscriptionPreConsume{}, false,
+				fmt.Errorf("store: apply subscription pre-consume(%s): %w", requestID, execErr)
+		}
+		affected, rowsErr := res.RowsAffected()
+		if rowsErr != nil {
+			return SubscriptionPreConsume{}, false,
+				fmt.Errorf("store: subscription pre-consume(%s) rows: %w", requestID, rowsErr)
+		}
+		if affected != 1 {
+			// 事务随 rollback 一起撤销刚插入的幂等记录：候选耗尽必须能继续
+			// 尝试下一个实例，不能被一条「已预扣」记录卡死。
+			return SubscriptionPreConsume{}, false, ErrSubscriptionQuotaInsufficient
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return SubscriptionPreConsume{}, false,
+				fmt.Errorf("store: commit subscription pre-consume(%s): %w", requestID, commitErr)
+		}
+		return rec, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// 唯一键冲突：读取既有行。不能用 DO UPDATE 返回：已 refunded
+		// 的行必须报错而不是被改写回 consumed（幂等 ≠ 允许重放已退款请求）。
+		existing, readErr := scanPreConsume(tx.QueryRowContext(ctx,
+			`SELECT `+preConsumeColumns+` FROM subscription_pre_consume_records WHERE request_id = $1`,
+			requestID))
+		if readErr != nil {
+			return SubscriptionPreConsume{}, false, fmt.Errorf("store: read subscription pre-consume(%s): %w", requestID, readErr)
+		}
+		if existing.Status == "refunded" {
+			return SubscriptionPreConsume{}, false, ErrPreConsumeRefunded
+		}
+		return existing, false, nil
+	default:
+		if isInvalidTextRepresentation(err) {
+			return SubscriptionPreConsume{}, false, ErrPreConsumeInvalid
+		}
+		return SubscriptionPreConsume{}, false,
+			fmt.Errorf("store: insert subscription pre-consume(%s): %w", requestID, err)
+	}
+}
+
 // GetPreConsume 按 requestId 读取幂等记录。
 func (r *SQLSubscriptionRepo) GetPreConsume(ctx context.Context, requestID string) (SubscriptionPreConsume, error) {
 	rec, err := scanPreConsume(r.db.QueryRowContext(ctx,
@@ -950,38 +1043,61 @@ func (r *SQLSubscriptionRepo) GetPreConsume(ctx context.Context, requestID strin
 	return rec, nil
 }
 
-// MarkPreConsumeRefunded 把预扣记录置 refunded（请求失败退款，A 类）。
+// MarkPreConsumeRefunded 把预扣记录置 refunded，并在同一事务内回退该实例
+// 的 `amount_used`（请求失败退款，A 类；billing-08 §3.7/§4.5、TC-H-22）。
 //
-// 条件 UPDATE 只命中 consumed：已 refunded 时 RowsAffected=0，再查状态确认
-// 后返回 nil（退款按 requestId 幂等，billing-08 §3.7/§4.5）；行不存在才是
-// ErrPreConsumeNotFound。绝不从 refunded 回到 consumed。
+// 条件 UPDATE 只命中 consumed：已 refunded 时直接返回 nil（退款按 requestId
+// 幂等）；行不存在才是 ErrPreConsumeNotFound。绝不从 refunded 回到 consumed。
+//
+// 先用 `FOR UPDATE` 锁住记录行再判定状态：两个并发退款只有一个能把
+// consumed→refunded，第二个看到 refunded 后幂等返回，**不会**二次回退额度。
+// amount_used 用 GREATEST(...,0) 兜住下界（DB CHECK amount_used >= 0）：
+// 周期重置与在飞退款竞态下宁可少退不可把已用额度写成负数。
 func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, requestID string) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscription_pre_consume_records SET status = 'refunded'
-		WHERE request_id = $1 AND status = 'consumed'`, requestID)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin subscription refund(%s): %w", requestID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		subscriptionID int64
+		status         string
+		preConsumed    int64
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT subscription_id, status, pre_consumed
+		  FROM subscription_pre_consume_records
+		 WHERE request_id = $1
+		 FOR UPDATE`, requestID).Scan(&subscriptionID, &status, &preConsumed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPreConsumeNotFound
+	}
 	if err != nil {
 		if isInvalidTextRepresentation(err) {
 			return ErrPreConsumeInvalid
 		}
+		return fmt.Errorf("store: read subscription pre-consume(%s): %w", requestID, err)
+	}
+	if status == "refunded" {
+		return nil // 幂等命中：额度已回退过，不能再退一次。
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscription_pre_consume_records SET status = 'refunded'
+		WHERE request_id = $1 AND status = 'consumed'`, requestID); err != nil {
 		return fmt.Errorf("store: mark subscription pre-consume(%s) refunded: %w", requestID, err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: mark subscription pre-consume(%s) rows: %w", requestID, err)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions
+		   SET amount_used = GREATEST(amount_used - $2, 0), updated_at = now()
+		 WHERE id = $1`, subscriptionID, preConsumed); err != nil {
+		return fmt.Errorf("store: reverse subscription pre-consume(%s) usage: %w", requestID, err)
 	}
-	if affected == 1 {
-		return nil
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit subscription refund(%s): %w", requestID, err)
 	}
-	existing, getErr := r.GetPreConsume(ctx, requestID)
-	if getErr != nil {
-		return getErr
-	}
-	if existing.Status == "refunded" {
-		return nil
-	}
-	// 理论上不可达：条件只放了 consumed，0 行且状态不是 refunded。
-	return fmt.Errorf("store: subscription pre-consume(%s) refused transition from %s",
-		requestID, existing.Status)
+	return nil
 }
 
 // nullableJSON 把空切片翻译为 SQL NULL：ModelScope 的 NULL 与 '[]' 语义

@@ -866,6 +866,137 @@ func TestSubscriptionPreConsumeIdempotency(t *testing.T) {
 	}
 }
 
+func TestSubscriptionPreConsumeUserSubscriptionAtomic(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4a-pre-atomic")
+	now := time.Now().UTC()
+	sub := createTestSubscription(t, repo, plan, 900020, now.Add(-time.Hour), now.Add(time.Hour), nil)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, sub.ID)
+	})
+
+	readUsed := func() int64 {
+		t.Helper()
+		var used int64
+		if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+			t.Fatalf("read amount_used: %v", err)
+		}
+		return used
+	}
+
+	requestID := subscriptionRequestID(t)
+	rec, created, err := repo.PreConsumeUserSubscription(ctx, requestID, sub.ID, 120)
+	if err != nil || !created {
+		t.Fatalf("首次预扣 = %+v/%v/%v，want created true/nil", rec, created, err)
+	}
+	if rec.SubscriptionID != sub.ID || rec.PreConsumed != 120 || rec.Status != "consumed" {
+		t.Fatalf("预扣记录不符：%+v", rec)
+	}
+	if got := readUsed(); got != 120 {
+		t.Fatalf("amount_used = %d，want 120", got)
+	}
+
+	// 同 requestId 再预扣：幂等返回既有值，amount_used 不再增加。
+	again, created, err := repo.PreConsumeUserSubscription(ctx, requestID, sub.ID, 999)
+	if err != nil || created {
+		t.Fatalf("幂等预扣 = %+v created=%v err=%v，want created false/nil", again, created, err)
+	}
+	if again.PreConsumed != 120 {
+		t.Fatalf("幂等预扣 pre_consumed = %d，want 120", again.PreConsumed)
+	}
+	if got := readUsed(); got != 120 {
+		t.Fatalf("幂等预扣后 amount_used = %d，want 120（不双扣）", got)
+	}
+
+	// 超上界：失败尝试必须整体回滚（不留下幂等记录、不改 used）。
+	overID := subscriptionRequestID(t)
+	if _, _, err := repo.PreConsumeUserSubscription(ctx, overID, sub.ID, 900); !errors.Is(err, ErrSubscriptionQuotaInsufficient) {
+		t.Fatalf("超上界 err = %v，want ErrSubscriptionQuotaInsufficient", err)
+	}
+	if got := readUsed(); got != 120 {
+		t.Fatalf("失败预扣后 amount_used = %d，want 120", got)
+	}
+	if _, err := repo.GetPreConsume(ctx, overID); !errors.Is(err, ErrPreConsumeNotFound) {
+		t.Fatalf("失败预扣留下幂等记录：err = %v，want ErrPreConsumeNotFound", err)
+	}
+
+	// 退款：状态置 refunded 且 amount_used 回退；重复退款幂等。
+	if err := repo.MarkPreConsumeRefunded(ctx, requestID); err != nil {
+		t.Fatalf("退款: %v", err)
+	}
+	if got := readUsed(); got != 0 {
+		t.Fatalf("退款后 amount_used = %d，want 0", got)
+	}
+	if err := repo.MarkPreConsumeRefunded(ctx, requestID); err != nil {
+		t.Fatalf("重复退款应幂等：%v", err)
+	}
+	if got := readUsed(); got != 0 {
+		t.Fatalf("重复退款后 amount_used = %d，want 0（不重复回退）", got)
+	}
+
+	// 已退款再预扣：硬报错，且不得再改额度。
+	if _, _, err := repo.PreConsumeUserSubscription(ctx, requestID, sub.ID, 120); !errors.Is(err, ErrPreConsumeRefunded) {
+		t.Fatalf("已退款再预扣 err = %v，want ErrPreConsumeRefunded", err)
+	}
+	if got := readUsed(); got != 0 {
+		t.Fatalf("已退款再预扣后 amount_used = %d，want 0", got)
+	}
+
+	// 新 requestId 在退款后可以重新使用该实例。
+	freshID := subscriptionRequestID(t)
+	if _, created, err := repo.PreConsumeUserSubscription(ctx, freshID, sub.ID, 900); err != nil || !created {
+		t.Fatalf("退款后新预扣 = created %v err %v，want true/nil", created, err)
+	}
+	if got := readUsed(); got != 900 {
+		t.Fatalf("新预扣后 amount_used = %d，want 900", got)
+	}
+}
+
+func TestSubscriptionPreConsumeUserSubscriptionUnlimitedAndConcurrent(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+
+	// amount_total = 0（无限额度）：任意多次预扣都成功，上界守卫不生效。
+	unlimitedPlan, err := repo.CreatePlan(ctx, SubscriptionPlanInput{
+		PlanKey: subscriptionPlanKey("s4a-unlimited"), Title: "Unlimited",
+		PeriodDays: 30, PriceAmount: 0, Currency: "CNY", GrantCredits: 0,
+	})
+	if err != nil {
+		t.Fatalf("create unlimited plan: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, unlimitedPlan.ID) })
+	now := time.Now().UTC()
+	unlimited := createTestSubscription(t, repo, unlimitedPlan, 900021, now.Add(-time.Hour), now.Add(time.Hour), nil)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, unlimited.ID)
+	})
+
+	requestID := subscriptionRequestID(t)
+	const workers = 4
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			_, _, err := repo.PreConsumeUserSubscription(ctx, requestID, unlimited.ID, 10)
+			errs <- err
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("并发同 requestId 预扣 err = %v，want nil", err)
+		}
+	}
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, unlimited.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	if used != 10 {
+		t.Fatalf("并发预扣 amount_used = %d，want 10（唯一键收敛为一次扣减）", used)
+	}
+}
+
 func TestSubscriptionPreConsumeConcurrentSameRequest(t *testing.T) {
 	db := openTestDB(t)
 	repo := NewSubscriptionRepo(db)

@@ -306,6 +306,23 @@ func (l *Ledger) CreditToken(ctx context.Context, userID, tokenID, amount int64)
 	return nil
 }
 
+// DebitToken 只扣令牌额度、不写钱包流水（订阅来源预扣的「先令牌」一步）。
+//
+// 订阅来源的扣减分两段：令牌额度（本方法）与订阅账户（store 预扣），两者
+// 不在同一个事务里（订阅仓储走 database/sql，且设计允许补偿）。调用方必须
+// 在订阅预扣失败时用 CreditToken 精确回补同一金额（billing-04 §3.3）。
+//
+// tokenID <= 0 / remain_quota IS NULL（无限额）时 no-op；额度不足返回
+// *QuotaError（402），与钱包路径同一错误口径。
+func (l *Ledger) DebitToken(ctx context.Context, userID, tokenID, amount int64) error {
+	if tokenID <= 0 || amount <= 0 {
+		return nil
+	}
+	return l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return debitTokenTx(ctx, tx, userID, tokenID, amount)
+	})
+}
+
 // AdjustToken 按结算差额调整令牌额度：delta > 0 补扣，delta < 0 回补。
 // userID 用于校验令牌归属。
 //

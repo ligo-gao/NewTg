@@ -157,6 +157,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			// live_feed 投递（D6b）：事件在 usage_logs 提交成功后投递到 Redis；
 			// 失败只告警，不影响计费。Redis 与计费引擎共用同一连接。
 			WithFeed(billing.NewRedisFeedPublisher(rdb), log))
+	// S4a：订阅是请求路径的资金来源之一，必须装配到引擎；未装配时引擎
+	// 会保持纯钱包行为（订阅偏好被忽略）。
+	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
+		store.NewSubscriptionRepo(db), db))
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
 	}

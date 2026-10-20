@@ -431,6 +431,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 			// worker 的退款收敛不产生新调用（fact=nil），DBLogger 只在真正
 			// 插入新行时投递 live_feed；接线与 gateway 保持一致。
 			WithFeed(billing.NewRedisFeedPublisher(rr.client), log))
+	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
+	// 未装配会让订阅偏好退化为纯钱包行为。
+	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
+		store.NewSubscriptionRepo(sqlDB), sqlDB))
 
 	// 任务轮询（M6d T6b）：装配插件运行时 + async_task_poll 循环。失败即
 	// 阻止 worker 上线——没有轮询器时任务会一直停在 submitted，预扣永久冻结。
