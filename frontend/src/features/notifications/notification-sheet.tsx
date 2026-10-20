@@ -16,6 +16,7 @@ import {
   collectUnreadNotificationIds,
   markUserNotificationRead,
   listUserNotifications,
+  NOTIFICATION_COUNT_PAGE_SIZE,
   NOTIFICATION_PAGE_SIZE,
   type UserNotification,
 } from './api'
@@ -47,22 +48,38 @@ function isUnread(item: UserNotification): boolean {
  *     `UserNotification.announcement_id` 下发）→ `/announcements/{id}`。
  *     这是唯一能保证落到**该公告**详情的来源；`link_url` 是发布时刻的
  *     快照，历史投递可能仍指向旧路径。
- *  2. `link_url`：只接受站内单斜杠相对路径与 http(s) 绝对 URL；
- *     `javascript:`、协议相对 `//host` 等一律丢弃。
- *  3. 两者都缺失时沿用旧的投递 id 占位（无公告归因的普通站内信没有
- *     更合适的站内目标；保留行为而不凭空造路径）。
+ *  2. `link_url`：只接受两种形态——绝对 http(s) URL，或站内单斜杠深链。
+ *     站内深链必须拒绝 `//host`（协议相对外链）和 `/\host`：浏览器把
+ *     反斜杠归一为斜杠，`/\evil.example` 与 `//evil.example` 等价；编码形态
+ *     `/%5C` 同理，先归一后再判断。`javascript:`、裸相对路径等一律丢弃。
+ *  3. 两者都没有可用目标时返回 `null`——**不导航**。不再用投递 id 凭空
+ *     拼 `/announcements/{id}`：那不是公告 id，只会落到 404。
  */
 export function notificationHref(
-  item: Pick<UserNotification, 'id' | 'link_url' | 'announcement_id'>,
-): string {
+  item: Pick<UserNotification, 'link_url' | 'announcement_id'>,
+): string | null {
   const announcementId = item.announcement_id?.trim()
   if (announcementId !== undefined && announcementId !== '') {
     return `/announcements/${encodeURIComponent(announcementId)}`
   }
   const raw = item.link_url?.trim() ?? ''
-  if (raw.startsWith('/') && !raw.startsWith('//')) return raw
-  if (/^https?:\/\//i.test(raw)) return raw
-  return `/announcements/${item.id}`
+  if (raw === '') return null
+
+  // `%5C` 在浏览器路径解析中等价于反斜杠；只关心前两个**解码后**字符，
+  // 因为只有前导 `//`/`/\` 能把路径解释成另一台主机。
+  const head = raw.slice(0, 4).replace(/%5c/gi, '\\').slice(0, 2)
+  if (raw.startsWith('/') && head !== '//' && head !== '/\\') return raw
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      // 仅做合法性校验；不重建字符串，避免改写服务端下发的内容。
+      new URL(raw)
+      return raw
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 function formatAbsolute(value: string, locale: string): string {
@@ -86,17 +103,27 @@ function categoryLabel(item: UserNotification, t: TranslateFn): string {
   return item.category
 }
 
-function describeError(error: unknown, t: TranslateFn): string {
+function describeError(
+  error: unknown,
+  t: TranslateFn,
+  retrySeconds: number | null,
+): string {
   if (error instanceof ApiError) {
     if (error.kind === 'offline') {
       return t('common.notifications.error_offline')
     }
     if (error.kind === 'rate_limited') {
-      // Retry-After 是服务端事实；缺失时给出一个明确的等待窗口，
-      // 但不假装它是服务端下发的。
-      return t('common.notifications.error_rate_limited', {
-        seconds: error.retry_after ?? 60,
-      })
+      /*
+       * 倒计时只来自服务端 `Retry-After`：有值且仍大于 0 时展示剩余秒数，
+       * 到期后改成「可重试」文案；没有该头就**不发明时长**，直接允许手动
+       * 重试（旧实现的 `?? 60` 会让用户白等一分钟）。
+       */
+      if (retrySeconds !== null && retrySeconds > 0) {
+        return t('common.notifications.error_rate_limited', {
+          seconds: retrySeconds,
+        })
+      }
+      return t('common.notifications.error_rate_limited_ready')
     }
   }
   return t('common.notifications.error_generic')
@@ -141,6 +168,62 @@ export function NotificationSheet({
     retry: false,
   })
 
+  /*
+   * 未读总数探测：与铃铛共用同一 query key（`p=1&page_size=100`），因此面板
+   * 打开时通常直接命中缓存、不额外发请求。服务端没有未读计数端点，也没有
+   * `read=false` 过滤，「全部已读」是否可用只能由首屏页聚合判断；超过 100
+   * 条未读时窗口内有未读即视为可点。
+   */
+  const unreadProbe = useQuery({
+    queryKey: notificationsListQueryKey(1, NOTIFICATION_COUNT_PAGE_SIZE),
+    queryFn: ({ signal }) =>
+      listUserNotifications(
+        { p: 1, page_size: NOTIFICATION_COUNT_PAGE_SIZE },
+        signal,
+      ),
+    enabled: open,
+    staleTime: 30_000,
+    retry: false,
+  })
+
+  /*
+   * 429 倒计时：deadline 来自服务端 `retry_after`（缺失则保持 null），
+   * `nowMs` 由 250ms 定时器推进以便每秒刷新剩余秒数。到期后定时器自行
+   * 停止，重试按钮恢复可点；不自动重发请求（避免用户还在读错误时再次
+   * 触发限流）。
+   */
+  const retryAfterSeconds =
+    query.error instanceof ApiError && query.error.kind === 'rate_limited'
+      ? query.error.retry_after
+      : undefined
+  const [retryDeadline, setRetryDeadline] = useState<number | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    setNowMs(Date.now())
+    setRetryDeadline(
+      retryAfterSeconds === undefined
+        ? null
+        : Date.now() + retryAfterSeconds * 1000,
+    )
+    // `query.error` 每次失败都是新对象；同一秒数的新 429 也应重新计时。
+  }, [query.error, retryAfterSeconds])
+
+  useEffect(() => {
+    if (retryDeadline === null) return undefined
+    const timer = setInterval(() => {
+      const current = Date.now()
+      setNowMs(current)
+      if (current >= retryDeadline) clearInterval(timer)
+    }, 250)
+    return () => clearInterval(timer)
+  }, [retryDeadline])
+
+  const retrySeconds =
+    retryDeadline === null
+      ? null
+      : Math.max(0, Math.ceil((retryDeadline - nowMs) / 1000))
+
   const markRead = useMutation({
     mutationFn: markUserNotificationRead,
     onSuccess: (_data, id) => {
@@ -165,13 +248,20 @@ export function NotificationSheet({
       try {
         await markRead.mutateAsync(item.id)
       } catch {
-        // 已读标记失败不应剥夺用户查看内容的权利；服务端幂等，用户下次
-        // 打开仍可重试。这里只在面板内提示，不阻塞跳转。
+        /*
+         * 已读失败必须可见：保留面板并显示行内错误，绝不悄悄关闭后跳走
+         * （用户会以为已读成功，回来却发现仍是未读）。服务端幂等，用户
+         * 可再次点击重试。
+         */
         setActionError('read')
+        return
       } finally {
         setBusyId(null)
       }
     }
+    // 无可用目标（无 announcement_id、link_url 不是白名单形态）时不导航，
+    // 也不关闭面板：不存在可展示的详情，关闭只会让点击看起来生效了。
+    if (href === null) return
     onOpenChange(false)
     if (onNavigate !== undefined) {
       onNavigate(href)
@@ -203,9 +293,13 @@ export function NotificationSheet({
     }
   }
 
-  const rateLimited =
-    query.error instanceof ApiError && query.error.kind === 'rate_limited'
+  const retryBlocked = retrySeconds !== null && retrySeconds > 0
   const unreadOnPage = items.filter(isUnread).length
+  // 探测结果优先（覆盖全部首屏 100 条）；尚未就绪时退回当前页判断。
+  const hasUnread =
+    unreadProbe.data !== undefined
+      ? unreadProbe.data.items.some(isUnread)
+      : unreadOnPage > 0
 
   return (
     <Sheet
@@ -222,17 +316,22 @@ export function NotificationSheet({
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-ink-3">
-            {t('common.notifications.total', { count: total })}
+            {t(
+              total === 1
+                ? 'common.notifications.total_one'
+                : 'common.notifications.total',
+              { count: total },
+            )}
           </p>
           {/*
-           * 服务端无批量端点；按钮遍历全部页的未读并逐条标记。只在当前
-           * 页有未读时也保持可用——其它页可能仍有未读，不能据此禁用。
+           * 服务端无批量端点；按钮遍历全部页的未读并逐条标记。只有确认
+           * 没有任何未读时才禁用。
            */}
           <Button
             variant="secondary"
             className="h-8 px-2.5 text-[13px]"
             onClick={() => void markAllRead()}
-            disabled={markingAll || (total === 0 && unreadOnPage === 0)}
+            disabled={markingAll || !hasUnread}
           >
             {markingAll
               ? t('common.notifications.marking_all')
@@ -255,13 +354,13 @@ export function NotificationSheet({
         ) : query.isError ? (
           <div role="alert" className="flex flex-col items-start gap-2 py-4">
             <p className="text-sm text-ink-2">
-              {describeError(query.error, t)}
+              {describeError(query.error, t, retrySeconds)}
             </p>
             <Button
               variant="secondary"
               className="h-8 px-3 text-[13px]"
               onClick={() => void query.refetch()}
-              disabled={rateLimited}
+              disabled={retryBlocked}
             >
               {t('common.notifications.retry')}
             </Button>
@@ -323,16 +422,12 @@ export function NotificationSheet({
                       <span className="text-sm text-ink-2">{item.summary}</span>
                     ) : null}
                     {/*
-                     * body 是按用户语言渲染后的 Markdown 文本。这里按纯文本
-                     * 展示（whitespace-pre-wrap），不解析、不 innerHTML——
-                     * 通知正文没有可依赖的 HTML 净化契约，纯文本是唯一安全的
-                     * 呈现方式。
+                     * 不渲染 `body`：它是按用户语言渲染后的 Markdown 原文，
+                     * 直接当纯文本展示会把 `**加粗**`、`[查看详情](/)` 之类
+                     * 标记字面量暴露给用户。站内信的可用摘要已由服务端的
+                     * `summary`（剥链接/图片语法、收敛为纯文本）承担；详情
+                     * 在公告页呈现，面板只做「标题 + 摘要」的入口。
                      */}
-                    {item.body ? (
-                      <span className="block whitespace-pre-wrap break-words text-sm leading-5 text-ink-2">
-                        {item.body}
-                      </span>
-                    ) : null}
                   </button>
                 </li>
               )

@@ -39,6 +39,8 @@ interface RequestLog {
 interface InstallOptions {
   items?: UserNotification[]
   listStatus?: number
+  /** `null` omits the `Retry-After` header entirely. */
+  retryAfter?: number | null
   offline?: boolean
   readStatus?: number
 }
@@ -65,19 +67,19 @@ function install(options: InstallOptions = {}): RequestLog {
       log.listCalls.push({ page, pageSize })
       if (options.offline === true) return HttpResponse.error()
       if (options.listStatus !== undefined) {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/problem+json',
+        }
+        const retryAfter =
+          options.retryAfter === undefined ? 42 : options.retryAfter
+        if (retryAfter !== null) headers['Retry-After'] = String(retryAfter)
         return new HttpResponse(
           JSON.stringify({
             type: 'about:blank',
             title: 'Too Many Requests',
             status: options.listStatus,
           }),
-          {
-            status: options.listStatus,
-            headers: {
-              'Content-Type': 'application/problem+json',
-              'Retry-After': '42',
-            },
-          },
+          { status: options.listStatus, headers },
         )
       }
       const start = (page - 1) * pageSize
@@ -145,13 +147,13 @@ describe('console notification bell', () => {
     expect(within(dialog).getByText('You have no notifications.')).toBeTruthy()
   })
 
-  it('lists notifications with title, summary, body and paginates', async () => {
+  it('lists notifications with title and summary, never the Markdown body', async () => {
     const items = Array.from({ length: 22 }, (_, index) =>
       notification({
         id: index + 1,
         title: `Notice ${index + 1}`,
         summary: `Summary ${index + 1}`,
-        body: `Body ${index + 1}`,
+        body: `Read **this** and [view details](/announcements/${index + 1})`,
       }),
     )
     const log = install({ items })
@@ -160,7 +162,9 @@ describe('console notification bell', () => {
     const dialog = await openPanel()
     expect(within(dialog).getByText('Notice 1')).toBeTruthy()
     expect(within(dialog).getByText('Summary 1')).toBeTruthy()
-    expect(within(dialog).getByText('Body 1')).toBeTruthy()
+    // body 含 Markdown 字面量，面板只展示 title + summary，绝不外泄标记。
+    expect(within(dialog).queryByText(/\*\*this\*\*/)).toBeNull()
+    expect(within(dialog).queryByText(/\[view details\]/)).toBeNull()
     // 第一页只取 20 条，第 21 条在第二页。
     expect(within(dialog).queryByText('Notice 21')).toBeNull()
     expect(within(dialog).getByText('Page 1 of 2')).toBeTruthy()
@@ -209,13 +213,55 @@ describe('console notification bell', () => {
       name: 'Notifications (1 unread)',
     })
     expect(screen.getByRole('status').textContent).toBe(
-      '1 unread notifications',
+      '1 unread notification',
     )
   })
 
-  it('falls back to /announcements/{id} when link_url is absent', async () => {
+  it('uses singular copy for exactly one unread notification', async () => {
+    install({ items: [notification({ id: 1 })] })
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    const bell = await screen.findByRole('button', {
+      name: 'Notifications (1 unread)',
+    })
+    expect(bell.textContent).toContain('1')
+    expect(screen.getByRole('status').textContent).toBe(
+      '1 unread notification',
+    )
+
+    const dialog = await openPanel()
+    // 总数文案同样用单数，避免「1 notifications」。
+    expect(await within(dialog).findByText('1 notification')).toBeTruthy()
+  })
+
+  it('caps both the badge and the live-region count at 99+', async () => {
     install({
-      items: [notification({ id: 42, title: 'Announcement', link_url: undefined })],
+      items: Array.from({ length: 100 }, (_, index) =>
+        notification({ id: index + 1, title: `Notice ${index + 1}` }),
+      ),
+    })
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    const bell = await screen.findByRole('button', {
+      name: 'Notifications (99+ unread)',
+    })
+    expect(bell.textContent).toContain('99+')
+    // aria-live 与徽章同口径：不播报 100，因为真实未读数可能更多。
+    expect(screen.getByRole('status').textContent).toBe(
+      '99+ unread notifications',
+    )
+  })
+
+  it('keeps the panel open and shows an inline error when marking read fails', async () => {
+    const log = install({
+      items: [
+        notification({
+          id: 51,
+          title: 'Cannot mark me',
+          link_url: 'https://example.com/notice/51',
+        }),
+      ],
+      readStatus: 500,
     })
     const onNavigate = vi.fn()
     await renderWithProviders(
@@ -225,11 +271,67 @@ describe('console notification bell', () => {
 
     const dialog = await openPanel()
     const user = userEvent.setup()
-    await user.click(within(dialog).getByText('Announcement'))
+    await user.click(within(dialog).getByText('Cannot mark me'))
 
     await waitFor(() => {
-      expect(onNavigate).toHaveBeenCalledWith('/announcements/42')
+      expect(log.readIds).toEqual([51])
     })
+    // 失败必须可见：面板保留、行内错误出现、不跳转。
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(
+      within(dialog).getByText('Could not mark the notification as read.'),
+    ).toBeTruthy()
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it('does not navigate when there is no usable target', async () => {
+    install({
+      items: [
+        notification({ id: 42, title: 'No target', link_url: undefined }),
+      ],
+    })
+    const onNavigate = vi.fn()
+    await renderWithProviders(
+      <ConsoleHeader onNotificationNavigate={onNavigate} />,
+      ['common'],
+    )
+
+    const dialog = await openPanel()
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByText('No target'))
+
+    // 无 announcement_id、无白名单 link_url：不凭空拼路径，也不关闭面板。
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeTruthy()
+    })
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it('rejects a backslash protocol-relative link_url', async () => {
+    install({
+      items: [
+        notification({
+          id: 44,
+          title: 'Backslash target',
+          // `/\evil.example` 会被浏览器归一成 `//evil.example`（站外）。
+          link_url: '/\\evil.example/path',
+        }),
+      ],
+    })
+    const onNavigate = vi.fn()
+    await renderWithProviders(
+      <ConsoleHeader onNotificationNavigate={onNavigate} />,
+      ['common'],
+    )
+
+    const dialog = await openPanel()
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByText('Backslash target'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeTruthy()
+    })
+    expect(onNavigate).not.toHaveBeenCalled()
   })
 
   it('prefers payload announcement_id over link_url for the detail deep link', async () => {
@@ -287,17 +389,62 @@ describe('console notification bell', () => {
     )
   })
 
-  it('shows the server-driven Retry-After on 429', async () => {
-    install({ listStatus: 429 })
+  it('counts down the server Retry-After and re-enables retry when it expires', async () => {
+    install({ listStatus: 429, retryAfter: 1 })
     await renderWithProviders(<ConsoleHeader />, ['common'])
 
     const dialog = await openPanel()
     expect(
-      within(dialog).getByText('Too many requests. Try again in 42s.'),
+      await within(dialog).findByText('Too many requests. Try again in 1s.'),
     ).toBeTruthy()
+    const retry = within(dialog).getByRole('button', { name: 'Try again' })
+    expect(retry).toHaveProperty('disabled', true)
+
+    // 到期自动恢复：按钮可点，文案不再声称还需等待。
+    await waitFor(
+      () => {
+        expect(retry).toHaveProperty('disabled', false)
+      },
+      { timeout: 4000 },
+    )
+    expect(
+      within(dialog).getByText('Too many requests. Try again.'),
+    ).toBeTruthy()
+  })
+
+  it('allows manual retry when the 429 has no Retry-After header', async () => {
+    install({ listStatus: 429, retryAfter: null })
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    const dialog = await openPanel()
+    expect(
+      await within(dialog).findByText('Too many requests. Try again.'),
+    ).toBeTruthy()
+    // 缺失时不发明时长、也不倒计时：立即允许手动重试。
     expect(
       within(dialog).getByRole('button', { name: 'Try again' }),
-    ).toHaveProperty('disabled', true)
+    ).toHaveProperty('disabled', false)
+  })
+
+  it('disables "mark all as read" when nothing is unread', async () => {
+    install({
+      items: [
+        notification({
+          id: 61,
+          title: 'Already read',
+          read_at: '2026-10-19T00:00:00Z',
+        }),
+      ],
+    })
+    await renderWithProviders(<ConsoleHeader />, ['common'])
+
+    const dialog = await openPanel()
+    expect(within(dialog).getByText('Already read')).toBeTruthy()
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole('button', { name: 'Mark all as read' }),
+      ).toHaveProperty('disabled', true)
+    })
   })
 
   it('offers a retry when the network is offline', async () => {

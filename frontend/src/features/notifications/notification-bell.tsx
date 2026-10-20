@@ -52,11 +52,20 @@ export function NotificationBell({
     countQuery.data?.items.filter(
       (item) => item.read_at === null || item.read_at === undefined,
     ).length ?? 0
-  const badge = unread > NOTIFICATION_BADGE_CAP ? `${NOTIFICATION_BADGE_CAP}+` : String(unread)
+  /*
+   * 封顶口径只有一处真源：徽章与 aria-live 都用 `99+` 表示「至少 99 条」。
+   * 探测窗口是 100 条，若不封顶，读屏会播报 100，而真实未读数可能更多。
+   */
+  const displayCount =
+    unread > NOTIFICATION_BADGE_CAP
+      ? `${NOTIFICATION_BADGE_CAP}+`
+      : String(unread)
   const label =
-    unread > 0
-      ? t('common.notifications.bell_label', { count: unread })
-      : t('common.notifications.bell_label_none')
+    unread === 0
+      ? t('common.notifications.bell_label_none')
+      : unread === 1
+        ? t('common.notifications.bell_label_one', { count: 1 })
+        : t('common.notifications.bell_label', { count: displayCount })
 
   return (
     <>
@@ -87,7 +96,7 @@ export function NotificationBell({
             aria-hidden="true"
             className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold leading-4 text-on-brand"
           >
-            {badge}
+            {displayCount}
           </span>
         ) : null}
       </button>
@@ -96,9 +105,13 @@ export function NotificationBell({
        * 会被读屏读成没有上下文的「2」，而按钮名已含完整句子。
        */}
       <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-        {unread > 0
-          ? t('common.notifications.unread_count', { count: unread })
-          : t('common.notifications.unread_count_none')}
+        {unread === 0
+          ? t('common.notifications.unread_count_none')
+          : unread === 1
+            ? t('common.notifications.unread_count_one', { count: 1 })
+            : t('common.notifications.unread_count', {
+                count: displayCount,
+              })}
       </span>
       <NotificationSheet
         open={open}
