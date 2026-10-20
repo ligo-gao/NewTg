@@ -995,6 +995,21 @@ func TestModelCatalogModelValidation(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("limit=101 = %d，期望 400", rr.Code)
 	}
+	// status 在内存过滤（合法枚举必须真实生效）。
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models", map[string]any{
+		"model_name": "disabled-search", "status": 2,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create disabled = %d", rr.Code)
+	}
+	rr = env.request(catalogFullAdmin(), http.MethodGet, "/api/models/search?status=2", nil, nil)
+	var search modelSearchListView
+	if err := json.Unmarshal(rr.Body.Bytes(), &search); err != nil {
+		t.Fatalf("search JSON: %v", err)
+	}
+	if len(search.Items) != 1 || search.Items[0].ModelName != "disabled-search" {
+		t.Fatalf("search status=2 = %+v", search.Items)
+	}
 	rr = env.request(catalogFullAdmin(), http.MethodGet, "/api/models?status=bogus", nil, nil)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("非法 status = %d，期望 400", rr.Code)

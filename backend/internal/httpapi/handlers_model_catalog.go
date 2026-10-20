@@ -710,6 +710,15 @@ func validateCatalogIcon(icon *string) error {
 	return nil
 }
 
+// validateCatalogDescription 与 platform-01 §22.7.2 的 512 字符上限一致。
+// 供应商行没有 DB CHECK，必须在应用层拦住。
+func validateCatalogDescription(value *string) error {
+	if value != nil && utf8.RuneCountInString(*value) > 512 {
+		return errors.New("must be at most 512 characters")
+	}
+	return nil
+}
+
 func decodeModelStatus(raw json.RawMessage) (*int16, error) {
 	var status int16
 	if err := json.Unmarshal(raw, &status); err != nil || (status != 1 && status != 2) {
@@ -782,9 +791,14 @@ func buildModelMetaInput(body map[string]json.RawMessage) (store.ModelMetaInput,
 		if err != nil {
 			return input, fmt.Errorf("%s %v", field, err)
 		}
-		if field == "icon" {
+		switch field {
+		case "icon":
 			if err := validateCatalogIcon(value); err != nil {
 				return input, fmt.Errorf("icon %v", err)
+			}
+		case "description":
+			if err := validateCatalogDescription(value); err != nil {
+				return input, fmt.Errorf("description %v", err)
 			}
 		}
 		*dst = value
@@ -1235,9 +1249,9 @@ func (h *ModelCatalogHandlers) handleSearchModels(w http.ResponseWriter, r *http
 		}
 		limit = value
 	}
-	if _, err := parseCatalogStatus(q.Get("status")); err != nil {
-		// 选择器暂不支持 status 过滤以外的降级：非法枚举 400；合法值直接交给
-		// store.SearchModelMeta（它只支持关键字），status 由调用方再用详情接口确认。
+	status, err := parseCatalogStatus(q.Get("status"))
+	if err != nil {
+		// 管理面不宽容降级：非法枚举 400。
 		writeCatalogProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error(), nil)
 		return
 	}
@@ -1248,6 +1262,11 @@ func (h *ModelCatalogHandlers) handleSearchModels(w http.ResponseWriter, r *http
 	}
 	views := make([]modelSearchView, 0, len(items))
 	for _, rec := range items {
+		// store.SearchModelMeta 只支持关键字；status 在内存过滤，保持「非法
+		// 枚举 400、合法枚举真实生效」的契约，不静默忽略。
+		if status != nil && rec.Status != *status {
+			continue
+		}
 		views = append(views, modelSearchView{
 			ID: rec.ID, ModelName: rec.ModelName, DisplayName: rec.DisplayName, Status: rec.Status,
 		})
@@ -1681,9 +1700,14 @@ func buildVendorInput(body map[string]json.RawMessage) (store.VendorInput, error
 		if err != nil {
 			return input, fmt.Errorf("%s %v", field, err)
 		}
-		if field == "icon" {
+		switch field {
+		case "icon":
 			if err := validateCatalogIcon(value); err != nil {
 				return input, fmt.Errorf("icon %v", err)
+			}
+		case "description":
+			if err := validateCatalogDescription(value); err != nil {
+				return input, fmt.Errorf("description %v", err)
 			}
 		}
 		*dst = value
@@ -1771,6 +1795,10 @@ func (h *ModelCatalogHandlers) handleUpdateVendor(w http.ResponseWriter, r *http
 		value, _, err := decodeNullableString(raw)
 		if err != nil {
 			writeCatalogFieldsProblem(w, "description must be a string or null", []string{"description"})
+			return
+		}
+		if err := validateCatalogDescription(value); err != nil {
+			writeCatalogFieldsProblem(w, "description "+err.Error(), []string{"description"})
 			return
 		}
 		update.Description = value
@@ -2087,6 +2115,14 @@ func parseSyncManifest(raw []byte) (syncManifest, error) {
 			return manifest, fmt.Errorf("models[%d].model_name %q is duplicated", i, name)
 		}
 		seen[name] = struct{}{}
+		// 显式 null 与「字段缺失」同义：jsonb 列 NOT NULL，写入 null 会触发
+		// CHECK。上游用 null 表示「不提供」是最常见的形态，必须在入口归一化。
+		if string(model.Tags) == "null" {
+			manifest.Models[i].Tags = nil
+		}
+		if string(model.Capabilities) == "null" {
+			manifest.Models[i].Capabilities = nil
+		}
 	}
 	vendorSeen := make(map[string]struct{}, len(manifest.Vendors))
 	for i, vendor := range manifest.Vendors {
