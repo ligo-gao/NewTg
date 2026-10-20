@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/store"
 )
 
 // fakeWebhookSubscription 是订阅过滤的测试替身。
@@ -85,6 +88,43 @@ func countPaymentSuccessDeliveries(t *testing.T, db *sql.DB, orderID int64) int 
 		t.Fatalf("count payment deliveries: %v", err)
 	}
 	return count
+}
+
+// recordingPaymentWebhook 记录事件，用于不依赖 DB 的分支断言。
+type recordingPaymentWebhook struct {
+	events []notify.PaymentSuccessEvent
+}
+
+func (r *recordingPaymentWebhook) EnqueuePaymentSuccess(_ context.Context, event notify.PaymentSuccessEvent) error {
+	r.events = append(r.events, event)
+	return nil
+}
+
+// 订阅购买/续费订单即使走到 settleOrder 的状态早返回，也不得产生充值事件。
+func TestPaymentSuccessWebhookSkipsSubscriptionOrders(t *testing.T) {
+	producer := &recordingPaymentWebhook{}
+	svc := &TopupService{
+		webhook: producer,
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:     time.Now,
+	}
+	svc.enqueuePaymentSuccess(context.Background(), &store.Order{
+		ID: 1, Status: string(OrderSucceeded), BizKind: store.OrderBizKindSubscribe,
+	})
+	svc.enqueuePaymentSuccess(context.Background(), &store.Order{
+		ID: 2, Status: string(OrderSucceeded), BizKind: store.OrderBizKindRenew,
+	})
+	if len(producer.events) != 0 {
+		t.Fatalf("subscription orders produced %d payment events, want 0", len(producer.events))
+	}
+
+	svc.enqueuePaymentSuccess(context.Background(), &store.Order{
+		ID: 3, Status: string(OrderSucceeded), BizKind: store.OrderBizKindTopup,
+		Amount: 100, CreditedCredits: 100, Provider: "stripe",
+	})
+	if len(producer.events) != 1 || producer.events[0].OrderID != 3 {
+		t.Fatalf("topup order events = %+v, want one for order 3", producer.events)
+	}
 }
 
 func TestSettleOrderPaymentSuccessWebhookEnqueuesOnce(t *testing.T) {

@@ -31,6 +31,12 @@ func (s *TopupService) enqueuePaymentSuccess(ctx context.Context, order *store.O
 	if s.webhook == nil || order == nil || order.Status != string(OrderSucceeded) {
 		return
 	}
+	// payment_success 只属于充值订单。settleOrder 的状态早返回发生在
+	// biz-kind 分流之前，订阅购买/续费的幂等重放必须在这里挡掉，否则会
+	// 把「订阅生效」误报成一次充值成功。
+	if order.BizKind == store.OrderBizKindSubscribe || order.BizKind == store.OrderBizKindRenew {
+		return
+	}
 	paidAt := s.now().UTC()
 	if order.PaidAt != nil {
 		paidAt = order.PaidAt.UTC()
