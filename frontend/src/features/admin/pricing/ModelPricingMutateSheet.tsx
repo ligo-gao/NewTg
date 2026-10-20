@@ -15,6 +15,7 @@ import { PricePreview } from './PricePreview'
 import {
   convertPriceInput,
   DEFAULT_QUOTA_PER_UNIT,
+  isValidModelName,
   normalizePricingMode,
   parsePriceFields,
   priceToInput,
@@ -30,7 +31,6 @@ type ModelPricingCreateRequest = components['schemas']['ModelPricingCreateReques
 type ModelPricingUpdateRequest = components['schemas']['ModelPricingUpdateRequest']
 type PricingStatus = components['schemas']['PricingStatus']
 
-const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 const MODES: readonly PricingMode[] = ['per_token', 'per_request', 'tiered_expr']
 
 const EMPTY_PRICES: PriceFieldValues = {
@@ -125,7 +125,7 @@ export function ModelPricingMutateSheet({
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     const errors: Record<string, string> = {}
-    if (mode === 'create' && !MODEL_PATTERN.test(model.trim())) {
+    if (mode === 'create' && !isValidModelName(model)) {
       errors.model = t('admin.pricing.model_invalid')
     }
     if (pricingMode === 'tiered_expr' && expr.trim() === '') {

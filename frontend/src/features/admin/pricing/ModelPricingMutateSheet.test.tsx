@@ -9,6 +9,7 @@ import { renderWithProviders } from '@/test-support/providers'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { ModelPricingMutateSheet } from './ModelPricingMutateSheet'
+import { isValidModelName } from './pricing-utils'
 
 type ModelPricing = components['schemas']['ModelPricing']
 
@@ -154,6 +155,73 @@ describe('PricingMutateSheet expression preview', () => {
     expect(await findByText('Preview failed.')).toBeTruthy()
     await user.click(getByRole('button', { name: 'Retry preview' }))
     expect(await findByText('12 credits')).toBeTruthy()
+  })
+})
+
+describe('PricingMutateSheet model name validation', () => {
+  const INVALID_COPY =
+    'Use 1–128 characters: letters, digits, dot, underscore, dash, colon or slash.'
+  // 汉字字面量会触发 i18n lint 门禁；运行时构造等价输入。
+  const CJK_MODEL = String.fromCodePoint(0x6a21, 0x578b)
+
+  it('accepts the backend character set, including a vendor slash', () => {
+    expect(isValidModelName('openai/gpt-5')).toBe(true)
+    expect(isValidModelName('anthropic/claude-3.5-sonnet')).toBe(true)
+    expect(isValidModelName(' gpt-5 ')).toBe(true)
+    expect(isValidModelName('a'.repeat(128))).toBe(true)
+  })
+
+  it('rejects whitespace, CJK, question marks and values over 128 characters', () => {
+    expect(isValidModelName('gpt 5')).toBe(false)
+    expect(isValidModelName(CJK_MODEL)).toBe(false)
+    expect(isValidModelName('gpt?5')).toBe(false)
+    expect(isValidModelName('a'.repeat(129))).toBe(false)
+  })
+
+  it('submits a vendor-prefixed model without a local error', async () => {
+    installPreview()
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${ORIGIN}/api/model-pricing`, async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json(pricingRow({ model: 'openai/gpt-5' }), { status: 201 })
+      }),
+    )
+
+    const { getByLabelText, getByRole, queryByText } = await renderCreate()
+    const user = userEvent.setup()
+
+    await user.type(getByLabelText('Model'), 'openai/gpt-5')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(bodies).toHaveLength(1)
+    })
+    expect(bodies[0]).toMatchObject({ model: 'openai/gpt-5' })
+    expect(queryByText(INVALID_COPY)).toBeNull()
+  })
+
+  it('blocks invalid model names locally instead of sending a doomed request', async () => {
+    installPreview()
+    let createCalls = 0
+    server.use(
+      http.post(`${ORIGIN}/api/model-pricing`, () => {
+        createCalls += 1
+        return HttpResponse.json(pricingRow(), { status: 201 })
+      }),
+    )
+
+    const { findByText, getByLabelText, getByRole } = await renderCreate()
+    const user = userEvent.setup()
+    const input = getByLabelText('Model')
+
+    for (const bad of ['gpt 5', CJK_MODEL, 'gpt?5']) {
+      await user.clear(input)
+      await user.type(input, bad)
+      await user.click(getByRole('button', { name: 'Save' }))
+      expect(await findByText(INVALID_COPY)).toBeTruthy()
+    }
+    expect(createCalls).toBe(0)
   })
 })
 

@@ -17,6 +17,19 @@ export const DEFAULT_QUOTA_PER_UNIT = 100
  */
 export const MAX_PRICING_PRICE = Number.MAX_SAFE_INTEGER
 
+/**
+ * 与后端 model 名校验同步（`^[A-Za-z0-9._:/-]{1,128}$`）。`/` 是公开模型
+ * 名的厂商前缀分隔符（如 `openai/gpt-5`），不能在前端本地拒绝；字符集
+ * 变化必须同时改后端正则与这里，否则会出现「前端放行、服务端 422」或
+ * 反之的割裂。
+ */
+export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
+
+/** 模型名在提交前按 trim 后的值校验，和服务端一致。 */
+export function isValidModelName(name: string): boolean {
+  return MODEL_NAME_PATTERN.test(name.trim())
+}
+
 export type PriceUnit = 'credits' | 'yuan'
 
 export type PriceFieldKey = 'prompt' | 'completion' | 'cacheRead' | 'cacheWrite'
