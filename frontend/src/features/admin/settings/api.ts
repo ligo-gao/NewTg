@@ -175,6 +175,37 @@ export async function saveSettingsSection(
   return (await response.json()) as SettingsValuesResponse
 }
 
+/** Response of `POST /api/settings/test/webhook` (D2-14). */
+export interface WebhookTestResult {
+  /** Target answered with a 2xx status. 3xx/4xx/5xx are all `false`. */
+  ok: boolean
+  /** Target status code passed through; `0` when no HTTP response arrived. */
+  status_code: number
+}
+
+/**
+ * Sends the fixed sample event to the **saved** `notify.webhook.*` snapshot.
+ *
+ * The endpoint is in the generated contract, but the surrounding settings
+ * transport is hand-rolled (the section registry is not in the schema yet),
+ * so this sits next to `fetchSettingsSection` and shares its Problem
+ * normalization. `Retry-After` on 429 reaches callers via `ApiError`.
+ */
+export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResult> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  const csrfToken = getCsrfToken()
+  if (csrfToken !== undefined) headers[CSRF_HEADER] = csrfToken
+
+  const response = await fetch(apiUrl('/api/settings/test/webhook'), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    signal,
+  })
+  if (!response.ok) throw await normalizeError(response)
+  return (await response.json()) as WebhookTestResult
+}
+
 /** Minted once per save intent so a retried request is replayed, not doubled. */
 export function createIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

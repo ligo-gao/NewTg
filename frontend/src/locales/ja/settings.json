@@ -57,7 +57,10 @@
     "module_banner": "コンソールバナー",
     "module_email": "メール",
     "module_webhook": "Webhook",
-    "manage_announcements": "お知らせの管理"
+    "manage_announcements": "お知らせの管理",
+    "field_https_url": "絶対 https URL を入力してください。",
+    "cross_webhook_url": "Webhook を有効にするにはエンドポイント URL が必要です。",
+    "cross_webhook_secret": "Webhook を有効にするには署名シークレットが必要です。"
   },
   "tab": {
     "site": "サイト",
@@ -74,7 +77,7 @@
     "billing": "クレジット、登録特典、無料モデルの事前消費",
     "payment": "オンライン支払い方法とチャージのプリセット",
     "security": "受信レート制限と送信 SSRF 保護",
-    "notify": "SMTP メール配信",
+    "notify": "SMTP メール配信と送信 Webhook 通知",
     "policy": "障害の検出方法とチャネルのローテーション除外"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "リクエストレート制限",
     "sec": "SSRF と機密ワード",
     "notify_smtp": "SMTP",
-    "rl_health": "チャネルの健全性"
+    "rl_health": "チャネルの健全性",
+    "notify_webhook": "Webhook 通知"
   },
   "section_description": {
     "site": "すべてのページに表示され、コールバックリンクの基準になります",
@@ -103,7 +107,8 @@
     "rl": "独立したバケットが上流のクォータを保護します。0 は無制限です",
     "sec": "送信リクエストはゲートウェイを出る前に検査されます",
     "notify_smtp": "メール確認とメール通知に必要です",
-    "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります"
+    "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります",
+    "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "パスワード",
         "force_auth_login": "AUTH LOGIN を強制",
         "insecure_skip_verify": "TLS 証明書の検証をスキップ"
+      },
+      "webhook": {
+        "enabled": "Webhook を有効化",
+        "url": "エンドポイント URL",
+        "secret": "署名シークレット",
+        "events": "購読イベント"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "空の場合は送信アカウントにフォールバックします。",
         "from_name": "空の場合はサイト名にフォールバックします。",
         "insecure_skip_verify": "デバッグ専用です。本番環境では絶対に使用しないでください。"
+      },
+      "webhook": {
+        "url": "絶対 https URL を入力してください（1024 文字以内）。",
+        "secret": "HMAC-SHA256 署名ヘッダー X-NewTG-Signature に使用します。空欄のままにすると現在の値を保持します。",
+        "events": "チェックしたイベントのみ送信します。",
+        "events_empty": "イベントを購読していないため、Webhook は送信されません。"
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "なし",
     "alipay_gateway_production": "本番ゲートウェイ",
-    "alipay_gateway_sandbox": "サンドボックスゲートウェイ"
+    "alipay_gateway_sandbox": "サンドボックスゲートウェイ",
+    "event": {
+      "balance_low": "残高不足",
+      "payment_success": "支払い成功",
+      "announcement": "お知らせ公開",
+      "user_signup": "ユーザー登録"
+    }
   },
   "status": {
     "title": "システム状態",
@@ -546,6 +569,21 @@
       "status_failed": "失敗",
       "status_bounced": "バウンス",
       "status_suppressed": "抑制済み"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "テストイベントを送信",
+      "testing": "送信中…",
+      "result": "エンドポイントの応答: {code}",
+      "failed": "テストに失敗しました: {reason}",
+      "not_configured": "テストの前にエンドポイント URL と署名シークレットを保存してください。",
+      "timeout": "エンドポイントが時間内に応答しませんでした。",
+      "rate_limited": "テストイベントの送信回数が多すぎます。しばらく待ってから再試行してください。",
+      "retry_in": "{seconds}秒後に再試行",
+      "url_required": "テストを送信する前にエンドポイント URL を保存してください。",
+      "hint": "保存済みエンドポイントへ固定のサンプルイベントを送信します。有効化スイッチとイベント購読には左右されません。",
+      "offline": "オフラインです。接続を確認して再試行してください。"
     }
   }
 }

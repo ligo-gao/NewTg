@@ -57,7 +57,10 @@
     "module_banner": "Biểu ngữ bảng điều khiển",
     "module_email": "Email",
     "module_webhook": "Webhook",
-    "manage_announcements": "Quản lý thông báo"
+    "manage_announcements": "Quản lý thông báo",
+    "field_https_url": "Nhập URL https tuyệt đối.",
+    "cross_webhook_url": "Cần URL điểm cuối khi bật Webhook.",
+    "cross_webhook_secret": "Cần khóa bí mật ký khi bật Webhook."
   },
   "tab": {
     "site": "Trang",
@@ -74,7 +77,7 @@
     "billing": "Điểm, tặng khi đăng ký và trừ trước cho mô hình miễn phí",
     "payment": "Phương thức thanh toán trực tuyến và mức nạp sẵn",
     "security": "Giới hạn tốc độ đầu vào và bảo vệ SSRF đầu ra",
-    "notify": "Gửi thư SMTP",
+    "notify": "Gửi thư SMTP và thông báo Webhook ra ngoài",
     "policy": "Cách phát hiện lỗi và loại kênh khỏi vòng xoay"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "Giới hạn tốc độ yêu cầu",
     "sec": "SSRF và từ nhạy cảm",
     "notify_smtp": "SMTP",
-    "rl_health": "Sức khỏe kênh"
+    "rl_health": "Sức khỏe kênh",
+    "notify_webhook": "Thông báo Webhook"
   },
   "section_description": {
     "site": "Hiển thị trên mọi trang và dùng làm cơ sở cho liên kết gọi lại",
@@ -103,7 +107,8 @@
     "rl": "Các nhóm giới hạn độc lập bảo vệ hạn mức thượng nguồn; 0 nghĩa là không giới hạn",
     "sec": "Yêu cầu đi ra được kiểm tra trước khi rời cổng",
     "notify_smtp": "Cần thiết cho xác minh email và thông báo qua email",
-    "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên"
+    "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên",
+    "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "Mật khẩu",
         "force_auth_login": "Buộc AUTH LOGIN",
         "insecure_skip_verify": "Bỏ qua xác minh chứng chỉ TLS"
+      },
+      "webhook": {
+        "enabled": "Bật Webhook",
+        "url": "URL điểm cuối",
+        "secret": "Khóa bí mật ký",
+        "events": "Sự kiện đã đăng ký"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "Nếu trống sẽ dùng tài khoản gửi.",
         "from_name": "Nếu trống sẽ dùng tên trang.",
         "insecure_skip_verify": "Chỉ dùng để gỡ lỗi. Không bao giờ dùng trong sản xuất."
+      },
+      "webhook": {
+        "url": "Phải là URL https tuyệt đối, tối đa 1024 ký tự.",
+        "secret": "Dùng cho tiêu đề chữ ký HMAC-SHA256 X-NewTG-Signature. Để trống để giữ giá trị hiện tại.",
+        "events": "Chỉ gửi các sự kiện được chọn.",
+        "events_empty": "Chưa đăng ký sự kiện nào. Sẽ không có gì được gửi."
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "Không",
     "alipay_gateway_production": "Cổng sản xuất",
-    "alipay_gateway_sandbox": "Cổng hộp cát"
+    "alipay_gateway_sandbox": "Cổng hộp cát",
+    "event": {
+      "balance_low": "Số dư thấp",
+      "payment_success": "Thanh toán thành công",
+      "announcement": "Thông báo được đăng",
+      "user_signup": "Người dùng đăng ký"
+    }
   },
   "status": {
     "title": "Trạng thái hệ thống",
@@ -546,6 +569,21 @@
       "status_failed": "Thất bại",
       "status_bounced": "Bị trả lại",
       "status_suppressed": "Đã chặn"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "Gửi sự kiện thử",
+      "testing": "Đang gửi…",
+      "result": "Điểm cuối phản hồi {code}.",
+      "failed": "Kiểm tra thất bại: {reason}",
+      "not_configured": "Hãy lưu URL điểm cuối và khóa bí mật ký trước khi kiểm tra.",
+      "timeout": "Điểm cuối không phản hồi kịp thời.",
+      "rate_limited": "Gửi sự kiện thử quá nhiều. Vui lòng đợi rồi thử lại.",
+      "retry_in": "Thử lại sau {seconds} giây",
+      "url_required": "Hãy lưu URL điểm cuối trước khi gửi thử.",
+      "hint": "Gửi một sự kiện mẫu cố định tới điểm cuối đã lưu; không phụ thuộc công tắc bật và đăng ký sự kiện.",
+      "offline": "Bạn đang ngoại tuyến. Kiểm tra kết nối và thử lại."
     }
   }
 }

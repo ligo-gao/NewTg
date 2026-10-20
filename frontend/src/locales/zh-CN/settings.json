@@ -57,7 +57,10 @@
     "module_banner": "控制台横幅",
     "module_email": "邮件",
     "module_webhook": "Webhook",
-    "manage_announcements": "公告管理"
+    "manage_announcements": "公告管理",
+    "field_https_url": "请输入绝对的 https URL。",
+    "cross_webhook_url": "启用 Webhook 时必须填写端点 URL。",
+    "cross_webhook_secret": "启用 Webhook 时必须配置签名密钥。"
   },
   "tab": {
     "site": "站点",
@@ -74,7 +77,7 @@
     "billing": "积分、注册赠送与免费模型预扣",
     "payment": "在线支付方式与充值预设",
     "security": "入站限流与出站 SSRF 防护",
-    "notify": "SMTP 邮件发送",
+    "notify": "SMTP 邮件投递与出站 Webhook 通知",
     "policy": "如何识别故障并将渠道移出轮转"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "请求限流",
     "sec": "SSRF 与敏感词",
     "notify_smtp": "SMTP",
-    "rl_health": "渠道健康"
+    "rl_health": "渠道健康",
+    "notify_webhook": "Webhook 通知"
   },
   "section_description": {
     "site": "显示在每个页面上，并作为回调链接的基础地址",
@@ -103,7 +107,8 @@
     "rl": "独立令牌桶保护上游额度；0 表示不限",
     "sec": "出站请求在离开网关前会接受检查",
     "notify_smtp": "邮箱验证与邮件通知所必需",
-    "rl_health": "首次命中即可将渠道移出轮转"
+    "rl_health": "首次命中即可将渠道移出轮转",
+    "notify_webhook": "将余额、支付、公告与注册事件推送到 HTTPS 端点"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "密码",
         "force_auth_login": "强制使用 AUTH LOGIN",
         "insecure_skip_verify": "跳过 TLS 证书校验"
+      },
+      "webhook": {
+        "enabled": "启用 Webhook",
+        "url": "端点 URL",
+        "secret": "签名密钥",
+        "events": "订阅事件"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "留空时回退到发件账号。",
         "from_name": "留空时回退到站点名称。",
         "insecure_skip_verify": "仅用于调试，切勿在生产环境使用。"
+      },
+      "webhook": {
+        "url": "必须是绝对 https URL，最多 1024 个字符。",
+        "secret": "用于 HMAC-SHA256 签名头 X-NewTG-Signature。留空表示保持当前值。",
+        "events": "仅推送勾选的事件。",
+        "events_empty": "未订阅任何事件，Webhook 不会推送"
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "无",
     "alipay_gateway_production": "生产网关",
-    "alipay_gateway_sandbox": "沙箱网关"
+    "alipay_gateway_sandbox": "沙箱网关",
+    "event": {
+      "balance_low": "余额不足提醒",
+      "payment_success": "支付成功",
+      "announcement": "公告发布",
+      "user_signup": "用户注册"
+    }
   },
   "status": {
     "title": "系统状态",
@@ -546,6 +569,21 @@
       "status_failed": "失败",
       "status_bounced": "退信",
       "status_suppressed": "已抑制"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "发送测试事件",
+      "testing": "正在发送…",
+      "result": "目标端点返回 {code}",
+      "failed": "测试失败：{reason}",
+      "not_configured": "请先保存端点 URL 与签名密钥。",
+      "timeout": "端点未在限定时间内响应。",
+      "rate_limited": "测试事件发送过于频繁，请稍后重试。",
+      "retry_in": "重试（{seconds}s）",
+      "url_required": "请先保存端点 URL 再发送测试。",
+      "hint": "将向已保存的端点发送一条固定样例事件；不受启用开关与事件订阅影响。",
+      "offline": "网络已断开，请检查连接后重试。"
     }
   }
 }

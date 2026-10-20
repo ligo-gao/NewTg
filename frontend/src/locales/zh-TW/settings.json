@@ -57,7 +57,10 @@
     "module_banner": "控制台橫幅",
     "module_email": "郵件",
     "module_webhook": "Webhook",
-    "manage_announcements": "公告管理"
+    "manage_announcements": "公告管理",
+    "field_https_url": "請輸入絕對的 https URL。",
+    "cross_webhook_url": "啟用 Webhook 時必須填寫端點 URL。",
+    "cross_webhook_secret": "啟用 Webhook 時必須設定簽章密鑰。"
   },
   "tab": {
     "site": "網站",
@@ -74,7 +77,7 @@
     "billing": "積分、註冊贈送與免費模型預扣",
     "payment": "線上付款方式與儲值預設",
     "security": "入站限流與出站 SSRF 防護",
-    "notify": "SMTP 郵件傳送",
+    "notify": "SMTP 郵件投遞與對外 Webhook 通知",
     "policy": "如何偵測故障並將通道移出輪替"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "請求限流",
     "sec": "SSRF 與敏感詞",
     "notify_smtp": "SMTP",
-    "rl_health": "通道健康"
+    "rl_health": "通道健康",
+    "notify_webhook": "Webhook 通知"
   },
   "section_description": {
     "site": "顯示在每個頁面上，並作為回呼連結的基礎位址",
@@ -103,7 +107,8 @@
     "rl": "獨立權杖桶保護上游額度；0 表示不限",
     "sec": "出站請求在離開閘道前會接受檢查",
     "notify_smtp": "電子郵件驗證與郵件通知所必需",
-    "rl_health": "首次命中即可將通道移出輪替"
+    "rl_health": "首次命中即可將通道移出輪替",
+    "notify_webhook": "將餘額、付款、公告與註冊事件推送到 HTTPS 端點"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "密碼",
         "force_auth_login": "強制使用 AUTH LOGIN",
         "insecure_skip_verify": "略過 TLS 憑證驗證"
+      },
+      "webhook": {
+        "enabled": "啟用 Webhook",
+        "url": "端點 URL",
+        "secret": "簽章密鑰",
+        "events": "訂閱事件"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "留空時回退到寄件帳號。",
         "from_name": "留空時回退到網站名稱。",
         "insecure_skip_verify": "僅供偵錯，切勿在正式環境使用。"
+      },
+      "webhook": {
+        "url": "必須是絕對 https URL，最多 1024 個字元。",
+        "secret": "用於 HMAC-SHA256 簽章標頭 X-NewTG-Signature。留空表示保留目前值。",
+        "events": "僅推送勾選的事件。",
+        "events_empty": "未訂閱任何事件，Webhook 不會推送"
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "無",
     "alipay_gateway_production": "正式閘道",
-    "alipay_gateway_sandbox": "沙箱閘道"
+    "alipay_gateway_sandbox": "沙箱閘道",
+    "event": {
+      "balance_low": "餘額不足提醒",
+      "payment_success": "付款成功",
+      "announcement": "公告發布",
+      "user_signup": "使用者註冊"
+    }
   },
   "status": {
     "title": "系統狀態",
@@ -546,6 +569,21 @@
       "status_failed": "失敗",
       "status_bounced": "退信",
       "status_suppressed": "已抑制"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "傳送測試事件",
+      "testing": "正在傳送…",
+      "result": "目標端點回應 {code}",
+      "failed": "測試失敗：{reason}",
+      "not_configured": "請先儲存端點 URL 與簽章密鑰。",
+      "timeout": "端點未在時限內回應。",
+      "rate_limited": "測試事件傳送過於頻繁，請稍後再試。",
+      "retry_in": "重試（{seconds}s）",
+      "url_required": "請先儲存端點 URL 再傳送測試。",
+      "hint": "會對已儲存的端點傳送固定範例事件；不受啟用開關與事件訂閱影響。",
+      "offline": "網路已中斷，請檢查連線後再試。"
     }
   }
 }

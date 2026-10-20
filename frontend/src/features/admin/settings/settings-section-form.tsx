@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent } from 'r
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/errors'
+import { useCountdown } from '@/shared/lib/use-countdown'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -14,6 +15,7 @@ import {
   fetchSettingsSection,
   fieldErrorsOf,
   saveSettingsSection,
+  testWebhook,
   type SettingsItem,
 } from './api'
 import type { FieldConfig, SectionConfig } from './sections'
@@ -211,6 +213,21 @@ function validate(
     if (field.control === 'module_toggles') {
       return isRecord(value) ? undefined : t('settings.shell.field_invalid_json')
     }
+    if (field.control === 'multi_select') {
+      // An empty array is valid (the webhook then delivers nothing); entries
+      // must belong to the server-declared closed set.
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (entry) =>
+            typeof entry !== 'string' ||
+            !(field.options ?? []).some((option) => String(option.value) === entry),
+        )
+      ) {
+        return t('settings.shell.field_invalid_list')
+      }
+      return undefined
+    }
     if (field.control === 'json') {
       const candidate = parseJson(value)
       return isRecord(candidate) || Array.isArray(candidate)
@@ -237,6 +254,11 @@ function validate(
       // Absolute http(s) only: javascript:/data: URLs are rejected both here
       // and by the server's allowlist (F-08-01 validation table).
       if (!/^https?:\/\/[^\s]+$/i.test(trimmed)) return t('settings.shell.field_url')
+    }
+    if (field.key === 'notify.webhook.url' && trimmed !== '') {
+      // UI §6.6 / ruling 08-3: webhook endpoints are https-only. The backend
+      // allows an http draft while disabled, but the console never stores one.
+      if (!/^https:\/\/[^\s]+$/i.test(trimmed)) return t('settings.shell.field_https_url')
     }
     return undefined
   } catch {
@@ -423,6 +445,32 @@ export function SettingsSectionForm({
       }
     }
 
+    if (config.id === 'notify.webhook') {
+      // Backend D2-11 only demands a complete endpoint while enabled=true;
+      // a disabled draft may stay empty. Mirroring that split keeps a valid
+      // off-switch save from being blocked by empty fields.
+      const enabled = effective('notify.webhook.enabled') === true
+      if (enabled) {
+        const url = effective('notify.webhook.url')
+        if (typeof url !== 'string' || url.trim() === '') {
+          validationErrors['notify.webhook.url'] ??= t('settings.shell.cross_webhook_url')
+        } else if (!/^https:\/\/[^\s]+$/i.test(url.trim())) {
+          validationErrors['notify.webhook.url'] ??= t('settings.shell.field_https_url')
+        }
+
+        const secretItem = itemByKey.get('notify.webhook.secret')
+        const candidate = values['notify.webhook.secret']
+        const typed = typeof candidate === 'string' && candidate !== ''
+        const configured =
+          secretItem !== undefined && isSecretConfigured(secretItem) && candidate !== null
+        if (!typed && !configured) {
+          validationErrors['notify.webhook.secret'] ??= t(
+            'settings.shell.cross_webhook_secret',
+          )
+        }
+      }
+    }
+
     if (Object.keys(validationErrors).length > 0) {
       setFieldErrors(validationErrors)
       const firstKey = Object.keys(validationErrors)[0]
@@ -525,6 +573,13 @@ export function SettingsSectionForm({
 
   const sectionTitle = t(config.titleKey)
 
+  // The test endpoint reads the saved snapshot, so the button is enabled only
+  // when the stored URL is non-empty; an unsaved draft is not testable.
+  const webhookUrlItem = itemByKey.get('notify.webhook.url')
+  const storedWebhookUrl = webhookUrlItem === undefined ? '' : baselineValue(webhookUrlItem)
+  const webhookUrlConfigured =
+    typeof storedWebhookUrl === 'string' && storedWebhookUrl.trim() !== ''
+
   return (
     <section
       data-testid={`settings-section-${config.id}`}
@@ -611,17 +666,25 @@ export function SettingsSectionForm({
             ) : null}
           </div>
 
-          <footer className="flex items-center justify-end gap-2 border-t border-border-hairline pt-4">
-            {dirty && !readOnly ? (
-              <Button variant="ghost" onClick={discardDraft} disabled={saving}>
-                {t('settings.shell.discard')}
-              </Button>
+          <footer className="flex flex-col gap-3 border-t border-border-hairline pt-4">
+            {config.testKind === 'webhook' && !readOnly ? (
+              <WebhookTestPanel
+                disabled={saving}
+                urlConfigured={webhookUrlConfigured}
+              />
             ) : null}
-            {!readOnly ? (
-              <Button onClick={requestSave} disabled={!dirty || saving}>
-                {saving ? t('settings.shell.saving') : t('settings.shell.save')}
-              </Button>
-            ) : null}
+            <div className="flex items-center justify-end gap-2">
+              {dirty && !readOnly ? (
+                <Button variant="ghost" onClick={discardDraft} disabled={saving}>
+                  {t('settings.shell.discard')}
+                </Button>
+              ) : null}
+              {!readOnly ? (
+                <Button onClick={requestSave} disabled={!dirty || saving}>
+                  {saving ? t('settings.shell.saving') : t('settings.shell.save')}
+                </Button>
+              ) : null}
+            </div>
           </footer>
         </>
       ) : null}
@@ -666,6 +729,114 @@ export function SettingsSectionForm({
         }
       />
     </section>
+  )
+}
+
+interface WebhookTestPanelProps {
+  disabled: boolean
+  /** The saved URL is non-empty; the endpoint is not testable otherwise. */
+  urlConfigured: boolean
+}
+
+type TestTone = 'success' | 'danger' | 'warning'
+
+/**
+ * "Send test event" action for the Webhook section (UI §6.6 / F-08-20).
+ *
+ * The backend tests the **saved** configuration, ignores `enabled=false` and
+ * the event subscription, and rate-limits to 3 calls/minute per administrator.
+ * A 429 drives the inline countdown from `Retry-After`; every other result
+ * (including a non-2xx target response, which is still HTTP 200) renders in
+ * place and never touches the settings draft.
+ */
+function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
+  const { t } = useI18n()
+  const countdown = useCountdown()
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<{ tone: TestTone; message: string } | null>(null)
+
+  const blocked = disabled || sending || countdown.running || !urlConfigured
+
+  async function send(): Promise<void> {
+    setSending(true)
+    setResult(null)
+    try {
+      const response = await testWebhook()
+      setResult({
+        tone: response.ok ? 'success' : 'danger',
+        message: t('settings.webhook.test.result', { code: response.status_code }),
+      })
+    } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.kind === 'rate_limited') {
+          // Server-declared window; never invent a duration.
+          const seconds = error.retry_after ?? 60
+          countdown.start(seconds)
+          setResult({
+            tone: 'warning',
+            message: t('settings.webhook.test.rate_limited'),
+          })
+        } else if (error.status === 422) {
+          setResult({
+            tone: 'danger',
+            message: t('settings.webhook.test.not_configured'),
+          })
+        } else if (error.status === 504) {
+          setResult({
+            tone: 'danger',
+            message: t('settings.webhook.test.timeout'),
+          })
+        } else if (error.kind === 'offline') {
+          setResult({
+            tone: 'danger',
+            message: t('settings.webhook.test.offline'),
+          })
+        } else {
+          setResult({
+            tone: 'danger',
+            message: t('settings.webhook.test.failed', {
+              reason: error.detail ?? error.title,
+            }),
+          })
+        }
+      } else {
+        setResult({
+          tone: 'danger',
+          message: t('settings.webhook.test.failed', {
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        })
+      }
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const label = countdown.running
+    ? t('settings.webhook.test.retry_in', { seconds: countdown.seconds })
+    : sending
+      ? t('settings.webhook.test.testing')
+      : t('settings.webhook.test.button')
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p id="webhook-test-hint" className="text-xs text-ink-3">
+          {urlConfigured
+            ? t('settings.webhook.test.hint')
+            : t('settings.webhook.test.url_required')}
+        </p>
+        <Button
+          variant="secondary"
+          onClick={() => void send()}
+          disabled={blocked}
+          aria-describedby="webhook-test-hint"
+        >
+          {label}
+        </Button>
+      </div>
+      {result !== null ? <FormAlert tone={result.tone}>{result.message}</FormAlert> : null}
+    </div>
   )
 }
 
@@ -820,6 +991,66 @@ function FieldRow({
             )
           })}
         </div>
+        {hint !== undefined && error === undefined ? (
+          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+        ) : null}
+        {error !== undefined ? (
+          <p id={errorId} className="text-xs text-danger">{error}</p>
+        ) : null}
+      </fieldset>
+    )
+  }
+
+  if (field.control === 'multi_select') {
+    const selected = Array.isArray(value) ? value.map(String) : []
+    const options = field.options ?? []
+    return (
+      <fieldset
+        className="flex flex-col gap-1.5"
+        disabled={disabled}
+        aria-invalid={error !== undefined ? true : undefined}
+        aria-describedby={describedBy}
+        aria-errormessage={error !== undefined ? errorId : undefined}
+      >
+        <legend className="text-[13px] font-medium text-ink-1">{label}</legend>
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
+          {options.map((option) => {
+            const optionId = `${inputId}-${String(option.value)}`
+            const checked = selected.includes(String(option.value))
+            return (
+              <label
+                key={String(option.value)}
+                htmlFor={optionId}
+                className="flex items-center gap-2 text-sm text-ink-2"
+              >
+                <input
+                  id={optionId}
+                  type="checkbox"
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onChange(
+                      event.target.checked
+                        ? // Keep the server's option order in the payload so
+                          // the saved order stays stable regardless of click order.
+                          options
+                            .map((entry) => String(entry.value))
+                            .filter(
+                              (entry) =>
+                                entry === String(option.value) || selected.includes(entry),
+                            )
+                        : selected.filter((entry) => entry !== String(option.value)),
+                    )
+                  }
+                />
+                {t(option.labelKey)}
+              </label>
+            )
+          })}
+        </div>
+        {selected.length === 0 && field.emptyHintKey !== undefined && error === undefined ? (
+          <p role="status" className="text-xs text-warning">{t(field.emptyHintKey)}</p>
+        ) : null}
         {hint !== undefined && error === undefined ? (
           <p id={hintId} className="text-xs text-ink-3">{hint}</p>
         ) : null}

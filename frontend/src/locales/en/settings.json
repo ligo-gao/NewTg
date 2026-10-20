@@ -57,7 +57,10 @@
     "module_banner": "Console banner",
     "module_email": "Email",
     "module_webhook": "Webhook",
-    "manage_announcements": "Manage announcements"
+    "manage_announcements": "Manage announcements",
+    "field_https_url": "Enter an absolute https URL.",
+    "cross_webhook_url": "An endpoint URL is required when the webhook is enabled.",
+    "cross_webhook_secret": "A signing secret is required when the webhook is enabled."
   },
   "tab": {
     "site": "Site",
@@ -74,7 +77,7 @@
     "billing": "Credits, sign-up grants, and free-model pre-consumption",
     "payment": "Online payment methods and top-up presets",
     "security": "Inbound rate limits and outbound SSRF protection",
-    "notify": "SMTP mail delivery",
+    "notify": "SMTP mail delivery and outbound webhook notifications",
     "policy": "How failures are detected and channels are taken out of rotation"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "Request rate limits",
     "sec": "SSRF & sensitive words",
     "notify_smtp": "SMTP",
-    "rl_health": "Channel health"
+    "rl_health": "Channel health",
+    "notify_webhook": "Webhook notifications"
   },
   "section_description": {
     "site": "Shown on every page and used as the base for callback links",
@@ -103,7 +107,8 @@
     "rl": "Independent buckets protect upstream quota; 0 means unlimited",
     "sec": "Outbound requests are checked before they leave the gateway",
     "notify_smtp": "Required for email verification and email notifications",
-    "rl_health": "A response can take a channel out of rotation on the first match"
+    "rl_health": "A response can take a channel out of rotation on the first match",
+    "notify_webhook": "Push balance, payment, announcement, and sign-up events to an HTTPS endpoint"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "Password",
         "force_auth_login": "Force AUTH LOGIN",
         "insecure_skip_verify": "Skip TLS certificate verification"
+      },
+      "webhook": {
+        "enabled": "Enable webhook",
+        "url": "Endpoint URL",
+        "secret": "Signing secret",
+        "events": "Subscribed events"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "Falls back to the sender account when empty.",
         "from_name": "Falls back to the site title when empty.",
         "insecure_skip_verify": "For debugging only. Never use this in production."
+      },
+      "webhook": {
+        "url": "Must be an absolute https URL, at most 1024 characters.",
+        "secret": "Used for the HMAC-SHA256 signature header X-NewTG-Signature. Leave empty to keep the current value.",
+        "events": "Only the selected events are delivered.",
+        "events_empty": "No events subscribed. Nothing will be delivered."
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "None",
     "alipay_gateway_production": "Production gateway",
-    "alipay_gateway_sandbox": "Sandbox gateway"
+    "alipay_gateway_sandbox": "Sandbox gateway",
+    "event": {
+      "balance_low": "Low balance",
+      "payment_success": "Payment succeeded",
+      "announcement": "Announcement published",
+      "user_signup": "User signed up"
+    }
   },
   "status": {
     "title": "System status",
@@ -546,6 +569,21 @@
       "status_failed": "Failed",
       "status_bounced": "Bounced",
       "status_suppressed": "Suppressed"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "Send test event",
+      "testing": "Sending…",
+      "result": "Endpoint responded with {code}.",
+      "failed": "Test failed: {reason}",
+      "not_configured": "Save the endpoint URL and signing secret before testing.",
+      "timeout": "The endpoint did not respond in time.",
+      "rate_limited": "Too many test events. Please wait before trying again.",
+      "retry_in": "Retry in {seconds}s",
+      "url_required": "Save an endpoint URL before sending a test.",
+      "hint": "Sends a fixed sample event to the saved endpoint. Independent of the enable switch and event subscription.",
+      "offline": "You are offline. Check your connection and try again."
     }
   }
 }

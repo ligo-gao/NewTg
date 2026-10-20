@@ -34,6 +34,7 @@ export type FieldControl =
   | 'lines'
   | 'number_list'
   | 'module_toggles'
+  | 'multi_select'
   | 'json'
 
 export interface FieldOption {
@@ -59,6 +60,12 @@ export interface FieldConfig {
   greaterThan?: number
   integer?: boolean
   options?: readonly FieldOption[]
+  /**
+   * Shown instead of the hint while a `multi_select` value is the empty
+   * array (e.g. no webhook events subscribed). The empty array stays valid:
+   * the backend treats it as "deliver nothing", which is a legitimate draft.
+   */
+  emptyHintKey?: string
   /** Render the secret as a multi-line textarea (PEM keys). */
   multiline?: boolean
   /** Object keys rendered as switches by the `module_toggles` control. */
@@ -79,6 +86,12 @@ export interface SectionConfig {
   titleKey: string
   descriptionKey?: string
   fields: readonly FieldConfig[]
+  /**
+   * Section-scoped action rendered next to Save. `webhook` posts to
+   * `/api/settings/test/webhook`; keeping it declarative means one card can
+   * carry the shape without the shell knowing about notify.webhook.
+   */
+  testKind?: 'webhook'
 }
 
 export interface TabConfig {
@@ -484,6 +497,37 @@ const NOTIFY_SMTP: SectionConfig = {
   ],
 }
 
+const NOTIFY_WEBHOOK: SectionConfig = {
+  id: 'notify.webhook',
+  titleKey: 'settings.section.notify_webhook',
+  descriptionKey: 'settings.section_description.notify_webhook',
+  // The test action posts to the saved snapshot, so it is independent of the
+  // `enabled` switch and the event subscription (backend D2-14).
+  testKind: 'webhook',
+  fields: [
+    toggle('notify.webhook.enabled', label('notify.webhook.enabled')),
+    text('notify.webhook.url', label('notify.webhook.url'), {
+      maxLength: 1024,
+      hintKey: hint('notify.webhook.url'),
+    }),
+    field('notify.webhook.secret', label('notify.webhook.secret'), 'secret', {
+      hintKey: hint('notify.webhook.secret'),
+    }),
+    // Order mirrors the frozen backend set (registry/validate.go
+    // `webhookEvents`) so the audit diff and the checkbox order agree.
+    field('notify.webhook.events', label('notify.webhook.events'), 'multi_select', {
+      hintKey: hint('notify.webhook.events'),
+      emptyHintKey: hint('notify.webhook.events_empty'),
+      options: [
+        { value: 'balance_low', labelKey: 'settings.option.event.balance_low' },
+        { value: 'payment_success', labelKey: 'settings.option.event.payment_success' },
+        { value: 'announcement', labelKey: 'settings.option.event.announcement' },
+        { value: 'user_signup', labelKey: 'settings.option.event.user_signup' },
+      ],
+    }),
+  ],
+}
+
 // Wave 1 only ships F-08-45 (channel health); affinity and retry budgets are
 // later waves, so no config entries exist for `rl.affinity` / `rl.retry`.
 const RL_HEALTH: SectionConfig = {
@@ -559,7 +603,7 @@ export const SETTINGS_TABS_CONFIG: readonly TabConfig[] = [
     id: 'notify',
     labelKey: 'settings.tab.notify',
     descriptionKey: 'settings.tab_description.notify',
-    sections: [NOTIFY_SMTP],
+    sections: [NOTIFY_SMTP, NOTIFY_WEBHOOK],
   },
   {
     id: 'policy',

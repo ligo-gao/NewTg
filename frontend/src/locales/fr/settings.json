@@ -57,7 +57,10 @@
     "module_banner": "Bandeau de la console",
     "module_email": "E-mail",
     "module_webhook": "Webhook",
-    "manage_announcements": "Gérer les annonces"
+    "manage_announcements": "Gérer les annonces",
+    "field_https_url": "Saisissez une URL https absolue.",
+    "cross_webhook_url": "Une URL de point de terminaison est requise lorsque le Webhook est activé.",
+    "cross_webhook_secret": "Un secret de signature est requis lorsque le Webhook est activé."
   },
   "tab": {
     "site": "Site",
@@ -74,7 +77,7 @@
     "billing": "Crédits, dotation d'inscription et pré-consommation des modèles gratuits",
     "payment": "Moyens de paiement en ligne et montants de recharge prédéfinis",
     "security": "Limites de débit entrantes et protection SSRF sortante",
-    "notify": "Envoi d'e-mails SMTP",
+    "notify": "Envoi de courriels SMTP et notifications Webhook sortantes",
     "policy": "Détection des défaillances et retrait des canaux de la rotation"
   },
   "section": {
@@ -89,7 +92,8 @@
     "rl": "Limites de débit des requêtes",
     "sec": "SSRF et mots sensibles",
     "notify_smtp": "SMTP",
-    "rl_health": "Santé des canaux"
+    "rl_health": "Santé des canaux",
+    "notify_webhook": "Notifications Webhook"
   },
   "section_description": {
     "site": "Affiché sur chaque page et utilisé comme base pour les liens de rappel",
@@ -103,7 +107,8 @@
     "rl": "Des compartiments indépendants protègent le quota amont ; 0 signifie illimité",
     "sec": "Les requêtes sortantes sont vérifiées avant de quitter la passerelle",
     "notify_smtp": "Requis pour la vérification d'e-mail et les notifications par e-mail",
-    "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance"
+    "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance",
+    "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS"
   },
   "field": {
     "site": {
@@ -233,6 +238,12 @@
         "password": "Mot de passe",
         "force_auth_login": "Forcer AUTH LOGIN",
         "insecure_skip_verify": "Ignorer la vérification du certificat TLS"
+      },
+      "webhook": {
+        "enabled": "Activer le Webhook",
+        "url": "URL du point de terminaison",
+        "secret": "Secret de signature",
+        "events": "Événements abonnés"
       }
     },
     "rl_health": {
@@ -313,6 +324,12 @@
         "from_email": "Revient au compte expéditeur si vide.",
         "from_name": "Revient au titre du site si vide.",
         "insecure_skip_verify": "Pour le débogage uniquement. Ne jamais utiliser en production."
+      },
+      "webhook": {
+        "url": "Doit être une URL https absolue, 1024 caractères maximum.",
+        "secret": "Sert à l'en-tête de signature HMAC-SHA256 X-NewTG-Signature. Laissez vide pour conserver la valeur actuelle.",
+        "events": "Seuls les événements cochés sont envoyés.",
+        "events_empty": "Aucun événement abonné. Rien ne sera envoyé."
       }
     },
     "rl_health": {
@@ -336,7 +353,13 @@
     "starttls": "STARTTLS",
     "none": "Aucun",
     "alipay_gateway_production": "Passerelle de production",
-    "alipay_gateway_sandbox": "Passerelle bac à sable"
+    "alipay_gateway_sandbox": "Passerelle bac à sable",
+    "event": {
+      "balance_low": "Solde faible",
+      "payment_success": "Paiement réussi",
+      "announcement": "Annonce publiée",
+      "user_signup": "Inscription d'un utilisateur"
+    }
   },
   "status": {
     "title": "État du système",
@@ -546,6 +569,21 @@
       "status_failed": "Échec",
       "status_bounced": "Rejeté",
       "status_suppressed": "Supprimé"
+    }
+  },
+  "webhook": {
+    "test": {
+      "button": "Envoyer un événement de test",
+      "testing": "Envoi…",
+      "result": "Le point de terminaison a répondu {code}.",
+      "failed": "Échec du test : {reason}",
+      "not_configured": "Enregistrez l'URL et le secret de signature avant de tester.",
+      "timeout": "Le point de terminaison n'a pas répondu à temps.",
+      "rate_limited": "Trop d'événements de test. Veuillez patienter avant de réessayer.",
+      "retry_in": "Réessayer dans {seconds} s",
+      "url_required": "Enregistrez d'abord une URL de point de terminaison.",
+      "hint": "Envoie un événement d'exemple fixe au point de terminaison enregistré. Indépendant de l'activation et des abonnements.",
+      "offline": "Vous êtes hors ligne. Vérifiez votre connexion et réessayez."
     }
   }
 }
