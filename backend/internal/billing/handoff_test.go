@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/store"
 )
 
 // 本文件是任务异步交接面（contract.BillingHandoff）的验收。
@@ -280,6 +281,110 @@ func TestTerminateAtHeldForToken(t *testing.T) {
 	}
 	if got := userBalance(t, db, userID); got != 400 {
 		t.Fatalf("wallet changed on idempotent terminate: %d", got)
+	}
+}
+
+// TestRefundByRequestIDForTokenSubscription 验收 S4a 复核 H1：异步任务失败/
+// 超时时，订阅来源必须按 requestID 回退订阅额度与令牌额度（订阅没有钱包
+// hold 行，旧的 openHoldState 路径会直接 no-op，令牌永久少扣）。
+func TestRefundByRequestIDForTokenSubscription(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	repo := store.NewSubscriptionRepo(db)
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	engine.SetSubscriptionFunding(NewStoreSubscriptionFunding(repo, db))
+
+	ctx := context.Background()
+	plan, err := repo.CreatePlan(ctx, store.SubscriptionPlanInput{
+		PlanKey:      "handoff-sub-" + time.Now().Format("150405.000000000"),
+		Title:        "Handoff Sub",
+		PeriodDays:   30,
+		Currency:     "CNY",
+		GrantCredits: 1000,
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, plan.ID) })
+	now := time.Now().UTC()
+	sub, err := repo.CreateSubscription(ctx, store.SubscriptionCreateInput{
+		UserID: userID, PlanID: plan.ID, PlanTitleSnapshot: plan.Title,
+		StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour),
+		AmountTotal: plan.GrantCredits, AmountUsed: 0,
+		AllowWalletOverflow: plan.AllowWalletOverflow, Currency: plan.Currency,
+		PricePaidAmount: plan.PriceAmount, PeriodDays: plan.PeriodDays,
+		ResetOnRenew: plan.ResetOnRenew, GraceDays: plan.GraceDays,
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, sub.ID)
+		_, _ = db.Exec(`DELETE FROM subscriptions WHERE id = $1`, sub.ID)
+	})
+
+	requestID := testUUID(t)
+	session := newBillingTestSessionWithToken(engine, userID, tokenID, requestID, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if session.fundingSource != contract.FundingSubscription {
+		t.Fatalf("来源 = %v，want subscription", session.fundingSource)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("订阅预扣动了钱包: %d，want 500", got)
+	}
+	if got := readTokenRemain(t, db, tokenID); got != 400 {
+		t.Fatalf("预扣后令牌 = %d，want 400", got)
+	}
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	if used != 100 {
+		t.Fatalf("amount_used = %d，want 100", used)
+	}
+	if err := session.Detach(requestID); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	// 任务失败退款：只带 requestID + tokenID 的持久化入口。
+	if err := engine.RefundByRequestIDForToken(requestID, tokenID); err != nil {
+		t.Fatalf("RefundByRequestIDForToken: %v", err)
+	}
+	if got := readTokenRemain(t, db, tokenID); got != 500 {
+		t.Fatalf("退款后令牌 = %d，want 500（H1：令牌额度必须回补）", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("退款后钱包 = %d，want 500（订阅退款不得动钱包）", got)
+	}
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used after refund: %v", err)
+	}
+	if used != 0 {
+		t.Fatalf("退款后 amount_used = %d，want 0", used)
+	}
+	rec, err := repo.GetPreConsume(ctx, requestID)
+	if err != nil {
+		t.Fatalf("GetPreConsume: %v", err)
+	}
+	if rec.Status != "refunded" {
+		t.Fatalf("预扣记录状态 = %q，want refunded", rec.Status)
+	}
+
+	// 幂等：重复退款不得二次回补令牌或额度。
+	if err := engine.RefundByRequestIDForToken(requestID, tokenID); err != nil {
+		t.Fatalf("second RefundByRequestIDForToken: %v", err)
+	}
+	if got := readTokenRemain(t, db, tokenID); got != 500 {
+		t.Fatalf("幂等退款后令牌 = %d，want 500", got)
+	}
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used after idempotent refund: %v", err)
+	}
+	if used != 0 {
+		t.Fatalf("幂等退款后 amount_used = %d，want 0", used)
 	}
 }
 

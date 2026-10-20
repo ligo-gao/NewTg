@@ -49,8 +49,12 @@ type fakeSubscriptionFunding struct {
 	mu              sync.Mutex
 	used            map[int64]int64
 	records         map[string]store.SubscriptionPreConsume
+	owners          map[string]int64
 	preConsumeCalls int
+	attempts        []int64
 	markAttempts    int
+	prefCalls       int
+	listCalls       int
 	// markFailures 是前 N 次退款调用返回错误（验证 3 次退避重试）。
 	markFailures int
 }
@@ -61,10 +65,14 @@ func newFakeSubscriptionFunding(pref contract.BillingPreference, subs ...Subscri
 		subs:       subs,
 		used:       map[int64]int64{},
 		records:    map[string]store.SubscriptionPreConsume{},
+		owners:     map[string]int64{},
 	}
 }
 
 func (f *fakeSubscriptionFunding) BillingPreference(context.Context, int64) (contract.BillingPreference, error) {
+	f.mu.Lock()
+	f.prefCalls++
+	f.mu.Unlock()
 	if f.prefErr != nil {
 		return 0, f.prefErr
 	}
@@ -72,6 +80,9 @@ func (f *fakeSubscriptionFunding) BillingPreference(context.Context, int64) (con
 }
 
 func (f *fakeSubscriptionFunding) ListActiveSubscriptions(context.Context, int64, time.Time) ([]SubscriptionAccount, error) {
+	f.mu.Lock()
+	f.listCalls++
+	f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -83,6 +94,7 @@ func (f *fakeSubscriptionFunding) PreConsumeUserSubscription(_ context.Context,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.preConsumeCalls++
+	f.attempts = append(f.attempts, subscriptionID)
 	if rec, ok := f.records[requestID]; ok {
 		if rec.Status == "refunded" {
 			return store.SubscriptionPreConsume{}, false, store.ErrPreConsumeRefunded
@@ -130,6 +142,16 @@ func (f *fakeSubscriptionFunding) MarkPreConsumeRefunded(_ context.Context, requ
 	return nil
 }
 
+func (f *fakeSubscriptionFunding) PreConsumeRecord(_ context.Context, requestID string) (store.SubscriptionPreConsume, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.records[requestID]
+	if !ok {
+		return store.SubscriptionPreConsume{}, 0, store.ErrPreConsumeNotFound
+	}
+	return rec, f.owners[requestID], nil
+}
+
 func (f *fakeSubscriptionFunding) usedOf(id int64) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -140,6 +162,18 @@ func (f *fakeSubscriptionFunding) calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.preConsumeCalls
+}
+
+func (f *fakeSubscriptionFunding) attemptedIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.attempts...)
+}
+
+func (f *fakeSubscriptionFunding) resolveCounts() (pref, list int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.prefCalls, f.listCalls
 }
 
 // subscriptionAccount 构造一个活跃、额度充足的订阅候选。
@@ -159,13 +193,13 @@ func newSubscriptionEngine(t *testing.T, funding SubscriptionFundingSource) (*En
 }
 
 // TestSessionSubscriptionFirstUsesSubscription 覆盖：有活跃订阅且额度足时
-// 从订阅扣，钱包与令牌（无令牌）都不动，Session 冻结来源信息。
+// 从订阅扣，钱包不动；令牌按同一金额真实扣减（S4a 的「先令牌、后订阅」）。
 func TestSessionSubscriptionFirstUsesSubscription(t *testing.T) {
 	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst, subscriptionAccount(7, 1000, nil))
 	e, db := newSubscriptionEngine(t, funding)
 	userID := createBillingTestUser(t, db, 500)
 	tokenID := createBillingTestToken(t, db, userID, int64(500))
-	s := newBillingTestSessionWithToken(e, userID, 0, testRequestID("s4a-sub"), perCallSnapshot(100))
+	s := newBillingTestSessionWithToken(e, userID, tokenID, testRequestID("s4a-sub"), perCallSnapshot(100))
 
 	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
 		t.Fatalf("PreConsume: %v", err)
@@ -174,13 +208,18 @@ func TestSessionSubscriptionFirstUsesSubscription(t *testing.T) {
 		t.Fatalf("冻结来源 = %v/%d/%d，want subscription/7/100",
 			s.fundingSource, s.subscriptionID, s.preConsumed)
 	}
+	if s.tokenDeducted != 100 {
+		t.Fatalf("tokenDeducted = %d，want 100", s.tokenDeducted)
+	}
 	if got := funding.usedOf(7); got != 100 {
 		t.Fatalf("订阅 amount_used = %d，want 100", got)
 	}
 	if got := userBalance(t, db, userID); got != 500 {
 		t.Fatalf("钱包余额 = %d，want 500（订阅来源不得扣钱包）", got)
 	}
-	_ = tokenID
+	if got := tokenRemain(t, db, tokenID).Int64; got != 400 {
+		t.Fatalf("令牌剩余 = %d，want 400（订阅预扣先扣令牌额度）", got)
+	}
 }
 
 // TestSessionSubscriptionFirstFallsBackOnlyWithOverflow 覆盖溢出开关的
@@ -337,6 +376,9 @@ func TestSessionSubscriptionModelScope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst,
 				subscriptionAccount(7, 1000, tc.scope))
+			// M1：有活跃订阅但 scope 不匹配时按订阅失败处理，只有允许溢出才
+			// 回退钱包。这里显式开溢出，让本用例专注 scope 过滤本身。
+			funding.subs[0].AllowWalletOverflow = true
 			e, db := newSubscriptionEngine(t, funding)
 			userID := createBillingTestUser(t, db, 500)
 			// s.model 取自 est.Model = "m"。
@@ -444,6 +486,19 @@ func TestSessionSubscriptionIdempotentReplay(t *testing.T) {
 	}
 	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
 		t.Fatalf("令牌剩余 = %d，want 200（重放不得再扣令牌）", got)
+	}
+	// 回放会话不得退款：记录属于首执行者（LOW）。
+	if second.NeedsRefund() {
+		t.Fatal("回放会话 NeedsRefund = true，want false")
+	}
+	if err := second.Refund(); err != nil {
+		t.Fatalf("回放会话 Refund: %v", err)
+	}
+	if funding.markAttempts != 0 {
+		t.Fatalf("回放会话触发订阅退款 %d 次，want 0", funding.markAttempts)
+	}
+	if got := funding.usedOf(7); got != 100 {
+		t.Fatalf("回放会话退款后 amount_used = %d，want 100", got)
 	}
 }
 
@@ -564,6 +619,226 @@ func TestStoreSubscriptionFundingRealRepository(t *testing.T) {
 	}
 	if used != 0 {
 		t.Fatalf("退款后 amount_used = %d，want 0", used)
+	}
+}
+
+// TestSessionSubscriptionFirstModelScopeMismatch 覆盖 M1：存在活跃订阅但
+// model_scope 全部不匹配时，按「订阅失败」处理——只有允许溢出的实例才回退
+// 钱包，否则 402；不能因为「没有候选」就静默改扣钱包。
+func TestSessionSubscriptionFirstModelScopeMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		overflow    bool
+		wantErr     bool
+		wantBalance int64
+	}{
+		{name: "不匹配+禁止溢出：402", overflow: false, wantErr: true, wantBalance: 500},
+		{name: "不匹配+允许溢出：回退钱包", overflow: true, wantErr: false, wantBalance: 400},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := subscriptionAccount(7, 1000, []byte(`["other/*"]`))
+			sub.AllowWalletOverflow = tc.overflow
+			funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst, sub)
+			e, db := newSubscriptionEngine(t, funding)
+			userID := createBillingTestUser(t, db, 500)
+			s := newBillingTestSession(e, userID, testRequestID("s4a-scope"), perCallSnapshot(100))
+
+			err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+			if tc.wantErr {
+				if !errors.Is(err, ErrInsufficientQuota) {
+					t.Fatalf("err = %v，want ErrInsufficientQuota", err)
+				}
+				if s.fundingSource != contract.FundingWallet {
+					t.Fatalf("来源 = %v，want wallet（未扣款）", s.fundingSource)
+				}
+			} else if err != nil {
+				t.Fatalf("PreConsume: %v", err)
+			}
+			if tc.wantErr && s.preConsumed != 0 {
+				t.Fatalf("失败后 preConsumed = %d，want 0", s.preConsumed)
+			}
+			if got := userBalance(t, db, userID); got != tc.wantBalance {
+				t.Fatalf("钱包余额 = %d，want %d", got, tc.wantBalance)
+			}
+		})
+	}
+}
+
+// TestSessionWalletOnlySkipsSubscriptionList 覆盖 LOW：wallet_only 不应查询
+// 活跃订阅（资金方向与订阅列表无关）。这里让列表查询直接报错，证明它未被调用。
+func TestSessionWalletOnlySkipsSubscriptionList(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefWalletOnly, subscriptionAccount(7, 1000, nil))
+	funding.listErr = errors.New("list must not be called for wallet_only")
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("s4a-walletonly"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if _, list := funding.resolveCounts(); list != 0 {
+		t.Fatalf("wallet_only 查询订阅列表 %d 次，want 0", list)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("钱包余额 = %d，want 400", got)
+	}
+}
+
+// TestSessionFundingPlanResolvedOnce 覆盖 M6：偏好与候选列表每请求只解析
+// 一次，预扣/结算/退款复用同一份冻结快照。
+func TestSessionFundingPlanResolvedOnce(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst, subscriptionAccount(7, 1000, nil))
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("s4a-once"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	s.mu.Lock()
+	_, err := s.resolveFundingPlanLocked(context.Background())
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	pref, list := funding.resolveCounts()
+	if pref != 1 || list != 1 {
+		t.Fatalf("解析次数 pref=%d list=%d，want 1/1（每请求只解析一次）", pref, list)
+	}
+}
+
+// TestSessionSubscriptionCandidatesEndAtOrderAndContinue 覆盖 M6：多候选按
+// end_at 升序尝试；单实例额度不足时 continue 到下一个，顺序不受仓储返回
+// 顺序影响。
+func TestSessionSubscriptionCandidatesEndAtOrderAndContinue(t *testing.T) {
+	early := subscriptionAccount(11, 50, nil) // 更早到期但额度不足
+	early.EndAt = time.Now().Add(time.Hour)
+	late := subscriptionAccount(12, 1000, nil)
+	late.EndAt = time.Now().Add(2 * time.Hour)
+	// 故意逆序传入，验证 plan 内部按 end_at 重排。
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionOnly, late, early)
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("s4a-order"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got, want := funding.attemptedIDs(), []int64{11, 12}; len(got) != len(want) ||
+		got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("尝试顺序 = %v，want %v（end_at 升序 + 不足继续）", got, want)
+	}
+	if got := funding.usedOf(11); got != 0 {
+		t.Fatalf("不足候选 amount_used = %d，want 0", got)
+	}
+	if got := funding.usedOf(12); got != 100 {
+		t.Fatalf("可用候选 amount_used = %d，want 100", got)
+	}
+	if s.subscriptionID != 12 {
+		t.Fatalf("冻结订阅 = %d，want 12", s.subscriptionID)
+	}
+}
+
+// TestSessionSubscriptionRefundAllAttemptsFail 覆盖 M6：3 次退款全部失败时
+// 返回错误、不标记 refunded，资金/令牌保持已扣（可重试）。
+func TestSessionSubscriptionRefundAllAttemptsFail(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionOnly, subscriptionAccount(7, 1000, nil))
+	funding.markFailures = 3
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(300))
+	s := newBillingTestSessionWithToken(e, userID, tokenID, testRequestID("s4a-refund-fail"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := s.Refund(); err == nil {
+		t.Fatal("Refund = nil，want 3 次失败后的错误")
+	}
+	if funding.markAttempts != 3 {
+		t.Fatalf("退款尝试 = %d，want 3", funding.markAttempts)
+	}
+	if got := funding.usedOf(7); got != 100 {
+		t.Fatalf("退款失败后 amount_used = %d，want 100", got)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
+		t.Fatalf("退款失败后令牌剩余 = %d，want 200", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("钱包余额 = %d，want 500", got)
+	}
+	if !s.NeedsRefund() {
+		t.Fatal("退款失败后 NeedsRefund = false，want true（可重试）")
+	}
+}
+
+// TestSessionSubscriptionGuardsNeverTouchWallet 覆盖 M6：订阅来源的
+// Reserve / ChargeIncrement / Terminate 只做「不碰钱包」的保护，不得产生
+// 任何钱包扣减或额外令牌扣减。
+func TestSessionSubscriptionGuardsNeverTouchWallet(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionOnly, subscriptionAccount(7, 1000, nil))
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(300))
+	s := newBillingTestSessionWithToken(e, userID, tokenID, testRequestID("s4a-guards"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := s.Reserve(50); err != nil {
+		t.Fatalf("Reserve on subscription: %v", err)
+	}
+	if err := s.ChargeIncrement(30, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("ChargeIncrement on subscription: %v", err)
+	}
+	if got := s.Reserved(); got != 100 {
+		t.Fatalf("Reserve 改变了订阅预留: %d，want 100", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("钱包余额 = %d，want 500（订阅 guard 不得扣钱包）", got)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
+		t.Fatalf("令牌剩余 = %d，want 200（guard 不得再扣令牌）", got)
+	}
+	if err := s.Terminate(contract.UsageFact{}); err != nil {
+		t.Fatalf("Terminate on subscription: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("Terminate 后钱包余额 = %d，want 500", got)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 200 {
+		t.Fatalf("Terminate 后令牌剩余 = %d，want 200", got)
+	}
+	if !s.settled {
+		t.Fatal("Terminate 后 settled = false")
+	}
+}
+
+// TestSessionSubscriptionZeroBudgetPreConsumesOne 走真实 PreConsume 路径
+// （M6）：估算价 0 但非免费模型时，订阅预扣量置 1、令牌同步扣 1。
+func TestSessionSubscriptionZeroBudgetPreConsume(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionOnly, subscriptionAccount(7, 1000, nil))
+	e, db := newSubscriptionEngine(t, funding)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(300))
+	// ratio 定价为正价，但估算 PromptTokens=0 → 预算 0（不是免费模型）。
+	s := newBillingTestSessionWithToken(e, userID, tokenID, testRequestID("s4a-zero-pre"), ratioSnapshot(100, 0))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := funding.usedOf(7); got != 1 {
+		t.Fatalf("订阅 amount_used = %d，want 1（零预算置 1）", got)
+	}
+	if s.preConsumed != 1 || s.tokenDeducted != 1 {
+		t.Fatalf("preConsumed/tokenDeducted = %d/%d，want 1/1", s.preConsumed, s.tokenDeducted)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 299 {
+		t.Fatalf("令牌剩余 = %d，want 299", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("钱包余额 = %d，want 500", got)
 	}
 }
 

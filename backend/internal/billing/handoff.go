@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/store"
 )
 
 // 本文件是任务平台的**按 requestID 结算入口**（contract.BillingHandoff 的
@@ -139,12 +140,13 @@ func (e *Engine) RefundByRequestID(requestID string) error {
 
 // RefundByRequestIDForToken 是任务退款/超时的 token-aware 入口。
 //
-// 从账本读出仍处于 hold 的金额并水合到临时会话：除了 preConsumed，还要把
-// tokenID / tokenDeducted 一起水合——PreConsume 在同一事务里扣了钱包 hold 与
-// 令牌额度，Refund 的 `if s.tokenDeducted > 0 → CreditToken` 只有水合后才
-// 会执行。tokenDeducted 取 hold 金额：它们是同一笔预扣的两个账本面。
+// 两条资金来源分别处理（S4a H1）：
+//   - 订阅来源没有 wallet_transactions hold 行，按 requestID 查
+//     subscription_pre_consume_records：存在且未退款时回退订阅额度并回补
+//     令牌，退款走与同步 Refund 相同的 3 次退避重试；
+//   - 无订阅记录时维持原有钱包路径（从账本水合 hold）。
 //
-// 后续走统一的 Refund 路径——不复制退款逻辑，退款日志/令牌回补/幂等锚点
+// 钱包路径继续走统一的 Refund：不复制退款逻辑，退款日志/令牌回补/幂等锚点
 // （release 唯一索引 + 结案标记）都保持单一实现。
 // 已结算/已退款/无 hold 重复调用返回 nil。
 func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) error {
@@ -153,6 +155,44 @@ func (e *Engine) RefundByRequestIDForToken(requestID string, tokenID int64) erro
 	}
 	ctx, cancel := opCtx()
 	defer cancel()
+
+	// H1：异步任务失败/超时的订阅退款。记录存在即说明本次请求由订阅预扣
+	// （资金来源每请求冻结，不会同时有钱包 hold）。
+	if e.subscriptionFunding != nil {
+		rec, ownerID, recErr := e.subscriptionFunding.PreConsumeRecord(ctx, requestID)
+		switch {
+		case recErr == nil:
+			if rec.Status == "refunded" {
+				// 已退款：幂等命中。绝不能再次 MarkPreConsumeRefunded 之外的
+				// 任何回补（仓储侧本身也幂等，但令牌回补必须跳过）。
+				return nil
+			}
+			s := &Session{
+				engine:        e,
+				requestID:     requestID,
+				userID:        ownerID,
+				tokenID:       tokenID,
+				fundingSource: contract.FundingSubscription,
+				rc: &contract.RelayContext{
+					RequestID: requestID,
+					UserID:    int(ownerID),
+					TokenID:   int(tokenID),
+				},
+				// 水合订阅预扣与对应的令牌扣减：Refund 的早返回条件看
+				// preConsumed，CreditToken 的条件看 tokenDeducted。两者在
+				// chargeSubscriptionLocked 中是同一金额。
+				subscriptionID:          rec.SubscriptionID,
+				subscriptionPreConsumed: rec.PreConsumed,
+				preConsumed:             rec.PreConsumed,
+				tokenDeducted:           rec.PreConsumed,
+			}
+			return s.Refund()
+		case errors.Is(recErr, store.ErrPreConsumeNotFound):
+			// 不是订阅来源：继续走钱包路径。
+		default:
+			return fmt.Errorf("billing: read subscription pre-consume for %s: %w", requestID, recErr)
+		}
+	}
 
 	st, err := e.ledger.openHoldState(ctx, requestID)
 	if err != nil {

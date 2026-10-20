@@ -625,11 +625,17 @@ func (r *SQLSubscriptionRepo) ListSubscriptionsByUser(ctx context.Context, userI
 //
 // 到期判定含快照宽限期：end_at + grace_days > now。grace_days=0 时等价于
 // end_at > now。
+//
+// 【G-DOM-30 ②】cancel_at_period_end=true 的实例**不享宽限**：用户已明确
+// 不续费，周期末即终止（end_at > now 才可消费），与 ExpireDue 的到期口径
+// 一致。若这里仍按 grace_days 放行，已取消实例会在「到期后」继续被资金
+// 分派选中，而 ExpireDue 已把它标 expired 的竞态窗口里尤其危险。
 func (r *SQLSubscriptionRepo) ListActiveSubscriptions(ctx context.Context, userID int64, now time.Time) ([]Subscription, error) {
 	return r.querySubscriptions(ctx, `
 		SELECT `+subscriptionColumns+` FROM subscriptions
 		WHERE user_id = $1 AND status = 'active'
 		  AND end_at + make_interval(days => grace_days) > $2
+		  AND (NOT cancel_at_period_end OR end_at > $2)
 		ORDER BY end_at ASC, id ASC`, userID, now.UTC())
 }
 
@@ -654,6 +660,8 @@ func (r *SQLSubscriptionRepo) querySubscriptions(ctx context.Context, query stri
 }
 
 // HasActiveUserSubscription 实现 billing-08 §4.1 的读侧契约。
+//
+// G-DOM-30 ②：周期末取消的实例只活到 end_at，不享宽限。
 func (r *SQLSubscriptionRepo) HasActiveUserSubscription(ctx context.Context, userID int64, now time.Time) (bool, error) {
 	var ok bool
 	err := r.db.QueryRowContext(ctx, `
@@ -661,6 +669,7 @@ func (r *SQLSubscriptionRepo) HasActiveUserSubscription(ctx context.Context, use
 			SELECT 1 FROM subscriptions
 			WHERE user_id = $1 AND status = 'active'
 			  AND end_at + make_interval(days => grace_days) > $2
+			  AND (NOT cancel_at_period_end OR end_at > $2)
 		)`, userID, now.UTC()).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("store: has active subscription(user=%d): %w", userID, err)
@@ -670,6 +679,7 @@ func (r *SQLSubscriptionRepo) HasActiveUserSubscription(ctx context.Context, use
 
 // UserActiveSubscriptionsAllowWalletOverflow 实现 billing-08 §4.1：
 // 任一活跃实例的 allow_wallet_overflow 为真即允许 subscription_first 回落钱包。
+// G-DOM-30 ②：周期末取消的实例不享宽限，不能在到期后继续提供溢出能力。
 func (r *SQLSubscriptionRepo) UserActiveSubscriptionsAllowWalletOverflow(ctx context.Context, userID int64, now time.Time) (bool, error) {
 	var ok bool
 	err := r.db.QueryRowContext(ctx, `
@@ -677,6 +687,7 @@ func (r *SQLSubscriptionRepo) UserActiveSubscriptionsAllowWalletOverflow(ctx con
 			SELECT 1 FROM subscriptions
 			WHERE user_id = $1 AND status = 'active'
 			  AND end_at + make_interval(days => grace_days) > $2
+			  AND (NOT cancel_at_period_end OR end_at > $2)
 			  AND allow_wallet_overflow
 		)`, userID, now.UTC()).Scan(&ok)
 	if err != nil {
@@ -952,8 +963,9 @@ func (r *SQLSubscriptionRepo) InsertPreConsume(ctx context.Context, requestID st
 // 返回 ErrSubscriptionQuotaInsufficient，调用方继续下一个候选；由于整个
 // 事务回滚，失败的尝试不会留下幂等记录或任何额度增量。
 //
-// 条件 UPDATE 的 `status='active'` 与宽限判定在写入时重新求值：列表选择
-// 与扣减之间的到期竞态不能让已终结实例继续被消费。
+// 条件 UPDATE 的 `status='active'`、宽限判定与周期末取消判定在写入时重新
+// 求值：列表选择与扣减之间的到期竞态不能让已终结实例继续被消费。
+// G-DOM-30 ②：cancel_at_period_end=true 的实例不享宽限（end_at > now）。
 func (r *SQLSubscriptionRepo) PreConsumeUserSubscription(ctx context.Context,
 	requestID string, subscriptionID int64, amount int64) (SubscriptionPreConsume, bool, error) {
 
@@ -983,6 +995,7 @@ func (r *SQLSubscriptionRepo) PreConsumeUserSubscription(ctx context.Context,
 			 WHERE id = $1
 			   AND status = 'active'
 			   AND end_at + make_interval(days => grace_days) > now()
+			   AND (NOT cancel_at_period_end OR end_at > now())
 			   AND (amount_total = 0 OR amount_used + $2 <= amount_total)`,
 			subscriptionID, amount)
 		if execErr != nil {
@@ -1000,6 +1013,13 @@ func (r *SQLSubscriptionRepo) PreConsumeUserSubscription(ctx context.Context,
 			return SubscriptionPreConsume{}, false, ErrSubscriptionQuotaInsufficient
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
+			// 【未知窗口（LOW，已登记）】Commit 返回错误时事务的真实结果
+			// 不可知：可能已提交（幂等记录与 amount_used 增量都已落库），
+			// 也可能已回滚。调用方收到错误会回滚令牌额度并可能重试；若实际
+			// 已提交，重试会命中幂等记录（created=false）不再扣额度，资金
+			// 不会双扣，但本次请求的令牌回滚与订阅扣减可能不一致。数据库
+			// 连接级故障下无法消除该窗口，按「未知则上抛、由调用方/worker
+			// 对账」处理（见 未完成清单 G-DOM-31）。
 			return SubscriptionPreConsume{}, false,
 				fmt.Errorf("store: commit subscription pre-consume(%s): %w", requestID, commitErr)
 		}
@@ -1051,8 +1071,11 @@ func (r *SQLSubscriptionRepo) GetPreConsume(ctx context.Context, requestID strin
 //
 // 先用 `FOR UPDATE` 锁住记录行再判定状态：两个并发退款只有一个能把
 // consumed→refunded，第二个看到 refunded 后幂等返回，**不会**二次回退额度。
-// amount_used 用 GREATEST(...,0) 兜住下界（DB CHECK amount_used >= 0）：
-// 周期重置与在飞退款竞态下宁可少退不可把已用额度写成负数。
+// 【M3 竞态守卫】amount_used 回退带 `amount_used >= $2` 条件：若周期重置
+// 已把计数归零（或在飞请求与重置交叉），本次退款变成 no-op，绝不能用上一
+// 周期的预扣额去抵扣新周期的已用量。代价是极端交错下少退一次（用户少得
+// 一点额度，方向安全）；该残余已登记在未完成清单 G-DOM-32。
+// GREATEST(...,0) 只作最后的下界兜底（与 DB CHECK 同口径）。
 func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, requestID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1091,7 +1114,7 @@ func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, reques
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE subscriptions
 		   SET amount_used = GREATEST(amount_used - $2, 0), updated_at = now()
-		 WHERE id = $1`, subscriptionID, preConsumed); err != nil {
+		 WHERE id = $1 AND amount_used >= $2`, subscriptionID, preConsumed); err != nil {
 		return fmt.Errorf("store: reverse subscription pre-consume(%s) usage: %w", requestID, err)
 	}
 	if err := tx.Commit(); err != nil {

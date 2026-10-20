@@ -25,12 +25,6 @@ import (
 	"newtg/gateway/internal/store"
 )
 
-// ErrSubscriptionQuotaInsufficient 表示全部可用订阅都无法覆盖本次预扣。
-//
-// 与 store 的同名哨兵语义一致：资金分派把它映射为 402（ErrInsufficientQuota），
-// 而不是「免费放行」。保留独立哨兵便于测试区分「钱包不足」与「订阅耗尽」。
-var ErrSubscriptionQuotaInsufficient = errors.New("billing: subscription quota insufficient")
-
 // SubscriptionAccount 是资金分派需要的订阅实例只读视图。
 //
 // 刻意不直接使用 store.Subscription：资金侧只依赖这 7 个字段，
@@ -59,6 +53,13 @@ type SubscriptionFundingSource interface {
 	PreConsumeUserSubscription(ctx context.Context, requestID string, subscriptionID, amount int64) (rec store.SubscriptionPreConsume, created bool, err error)
 	// MarkPreConsumeRefunded 按 requestId 幂等退款（含 amount_used 回退）。
 	MarkPreConsumeRefunded(ctx context.Context, requestID string) error
+	// PreConsumeRecord 按 requestId 读取预扣记录及其订阅归属用户。
+	//
+	// 任务失败退款（RefundByRequestIDForToken）只有 requestID 与 tokenID：
+	// 订阅来源没有 wallet_transactions hold 行，必须靠这条记录判断「本次
+	// 请求是否由订阅预扣」以及回补令牌所需的 userID。记录不存在时返回
+	// store.ErrPreConsumeNotFound（调用方回退到钱包路径）。
+	PreConsumeRecord(ctx context.Context, requestID string) (rec store.SubscriptionPreConsume, userID int64, err error)
 }
 
 // StoreSubscriptionFunding 把 store.SubscriptionRepo 适配为资金接缝。
@@ -130,6 +131,24 @@ func (f *StoreSubscriptionFunding) MarkPreConsumeRefunded(ctx context.Context, r
 	return f.repo.MarkPreConsumeRefunded(ctx, requestID)
 }
 
+// PreConsumeRecord 读取预扣记录并解析归属用户。
+//
+// 预扣表刻意不存 user_id（5 列冻结，R-D5-02）：归属从 subscription_id 对应的
+// 实例读取。两个查询都在调用方相同的 ops 上下文内执行；记录不存在时原样
+// 返回 store.ErrPreConsumeNotFound，让调用方无歧义地回退钱包路径。
+func (f *StoreSubscriptionFunding) PreConsumeRecord(ctx context.Context, requestID string) (store.SubscriptionPreConsume, int64, error) {
+	rec, err := f.repo.GetPreConsume(ctx, requestID)
+	if err != nil {
+		return store.SubscriptionPreConsume{}, 0, err
+	}
+	sub, err := f.repo.GetSubscription(ctx, rec.SubscriptionID)
+	if err != nil {
+		return store.SubscriptionPreConsume{}, 0, fmt.Errorf(
+			"billing: read subscription %d of pre-consume %s: %w", rec.SubscriptionID, requestID, err)
+	}
+	return rec, sub.UserID, nil
+}
+
 // fundingPlan 是一次请求冻结下来的来源选择结果。
 //
 // 冻结发生在 PreConsume 内（billing-04 §3.3）：结算/回退必须复用同一份
@@ -141,19 +160,24 @@ type fundingPlan struct {
 	candidates []SubscriptionAccount
 	// allowOverflow 是「任一活跃订阅允许钱包溢出」的快照。
 	allowOverflow bool
+	// hasActive 表示用户存在至少一个活跃订阅（过滤 model_scope 之前）。
+	// 它区分两种「没有候选」：完全没订阅 → subscription_first 直接走钱包；
+	// 有活跃订阅但全部不覆盖当前模型 → 按订阅失败处理（M1）。
+	hasActive bool
 }
 
 // primaryWallet 判断主来源是否为钱包。
 //
 //   - wallet_only / wallet_first：钱包；
 //   - subscription_only：订阅（即使没有候选也不能改扣钱包）；
-//   - subscription_first：有可用候选才走订阅，否则直接钱包。
+//   - subscription_first：只有「完全没有活跃订阅」才直接走钱包。有活跃订阅
+//     但 model_scope 全部不匹配时仍按订阅失败处理，由溢出开关决定是否回退。
 func (p *fundingPlan) primaryWallet() bool {
 	switch p.preference {
 	case contract.PrefWalletOnly, contract.PrefWalletFirst:
 		return true
 	case contract.PrefSubscriptionFirst:
-		return len(p.candidates) == 0
+		return len(p.candidates) == 0 && !p.hasActive
 	default: // PrefSubscriptionOnly
 		return false
 	}
@@ -196,10 +220,19 @@ func (s *Session) resolveFundingPlanLocked(ctx context.Context) (*fundingPlan, e
 	}
 	plan.preference = normalizeFundingPreference(pref)
 
+	// wallet_only 不需要订阅候选：跳过活跃订阅查询，避免给纯钱包用户增加
+	// 一次与资金方向无关的数据库查询（LOW）。wallet_first 仍要查，因为它的
+	// 回退路径依赖候选。
+	if plan.preference == contract.PrefWalletOnly {
+		s.fundingPlan = plan
+		return plan, nil
+	}
+
 	subs, err := funding.ListActiveSubscriptions(ctx, s.userID, time.Now().UTC())
 	if err != nil {
 		return nil, fmt.Errorf("billing: list active subscriptions: %w", err)
 	}
+	plan.hasActive = len(subs) > 0
 	for _, sub := range subs {
 		if sub.AllowWalletOverflow {
 			plan.allowOverflow = true
@@ -289,7 +322,13 @@ func (s *Session) chargeFundingLocked(ctx context.Context, plan *fundingPlan, bu
 		return s.chargeSubscriptionLocked(ctx, budget, plan.candidates)
 	default: // contract.PrefSubscriptionFirst
 		if len(plan.candidates) == 0 {
-			return s.chargeWalletLocked(ctx, budget)
+			// 有活跃订阅但 model_scope 全部不匹配：按订阅失败处理（仅允许
+			// 溢出的实例可回退钱包），不能静默改扣钱包（M1）。完全没有活跃
+			// 订阅的情况已在 primaryWallet 直接走钱包，不会到这里。
+			if !plan.hasActive || plan.allowOverflow {
+				return s.chargeWalletLocked(ctx, budget)
+			}
+			return subscriptionQuotaError(budget)
 		}
 		err := s.chargeSubscriptionLocked(ctx, budget, plan.candidates)
 		if err == nil {
@@ -373,11 +412,11 @@ func (s *Session) chargeSubscriptionLocked(ctx context.Context, budget int64, ca
 			if creditErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, amount); creditErr != nil {
 				return fmt.Errorf("billing: rollback token after idempotent subscription replay: %w", creditErr)
 			}
-			s.adoptSubscriptionPreConsume(rec, 0)
+			s.adoptSubscriptionPreConsume(rec, 0, true)
 			return nil
 		}
 
-		s.adoptSubscriptionPreConsume(rec, amount)
+		s.adoptSubscriptionPreConsume(rec, amount, false)
 		return nil
 	}
 
@@ -393,9 +432,20 @@ func (s *Session) chargeSubscriptionLocked(ctx context.Context, budget int64, ca
 //
 // preConsumed/tokenDeducted 对创建路径等于本次 token 扣减额；幂等回放路径
 // 为 0（本会话没有可退的令牌额度，订阅记录由首个执行者持有）。
-func (s *Session) adoptSubscriptionPreConsume(rec store.SubscriptionPreConsume, tokenDeducted int64) {
+// replayed=true 还会置位 subscriptionReplayed，让 Refund/NeedsRefund 永不
+// 去退首执行者的记录（重复退款会白送额度）。
+func (s *Session) adoptSubscriptionPreConsume(rec store.SubscriptionPreConsume, tokenDeducted int64, replayed bool) {
 	s.fundingSource = contract.FundingSubscription
 	s.subscriptionID = rec.SubscriptionID
+	s.subscriptionReplayed = replayed
+	if replayed {
+		// 回放会话不持有任何可退金额：preConsumed 保持 0，NeedsRefund 为
+		// false；记录本身仍是首执行者的资产。
+		s.subscriptionPreConsumed = 0
+		s.preConsumed = 0
+		s.tokenDeducted = 0
+		return
+	}
 	s.subscriptionPreConsumed = rec.PreConsumed
 	s.preConsumed = rec.PreConsumed
 	s.tokenDeducted = tokenDeducted

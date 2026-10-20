@@ -240,7 +240,7 @@ func TestSaturateOtherSanitizesNUL(t *testing.T) {
 	rc.RequestPath = "/v1/chat\x00/completions"
 	rc.UpstreamModel = "gpt\x00-4o-upstream"
 
-	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{})
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, contract.FundingWallet)
 	blob, err := json.Marshal(other)
 	if err != nil {
 		t.Fatalf("marshal other: %v", err)
@@ -310,7 +310,7 @@ func TestSaturateStreamPrecedence(t *testing.T) {
 func TestSaturateNoModelMappingWhenSame(t *testing.T) {
 	rc := testRelayContext()
 	rc.UpstreamModel = rc.OriginModel
-	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{})
+	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{}, contract.FundingWallet)
 	if _, ok := other["upstream_model_name"]; ok {
 		t.Fatal("上游模型与请求模型相同，不应写 upstream_model_name")
 	}
@@ -398,6 +398,20 @@ func TestSaturateOtherPartitions(t *testing.T) {
 	if got := other["billing_source"]; got != "wallet" {
 		t.Fatalf("billing_source = %v", got)
 	}
+	// M4：订阅来源（失败退款）必须写 subscription；未传来源的零值保持 wallet。
+	subRow, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
+		Cost: 10, Status: UsageLogStatusSuccess, FundingSource: contract.FundingSubscription,
+	})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(subscription): %v", err)
+	}
+	var subOther map[string]any
+	if err := json.Unmarshal([]byte(subRow.other), &subOther); err != nil {
+		t.Fatalf("subscription other is not JSON: %v", err)
+	}
+	if got := subOther["billing_source"]; got != "subscription" {
+		t.Fatalf("subscription billing_source = %v", got)
+	}
 	if got := other["frt"]; got != float64(123) {
 		t.Fatalf("frt = %v, want 123", got)
 	}
@@ -417,7 +431,7 @@ func TestSaturateOtherPartitions(t *testing.T) {
 func TestSaturateOtherNoDiscountForZeroRate(t *testing.T) {
 	rc := testRelayContext()
 	rc.Discount = 0
-	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{})
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, contract.FundingWallet)
 	if _, ok := other["applied_discount"]; ok {
 		t.Fatal("rate=0 不得凭零值写入 applied_discount")
 	}
@@ -426,7 +440,7 @@ func TestSaturateOtherNoDiscountForZeroRate(t *testing.T) {
 	}
 
 	rc.Discount = 0.75
-	other = buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{})
+	other = buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, contract.FundingWallet)
 	if got := other["applied_discount"]; got != 0.75 {
 		t.Fatalf("applied_discount = %v, want 0.75", got)
 	}

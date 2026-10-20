@@ -384,7 +384,7 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		errorMessage:     nullString(truncateLogText(outcome.ErrorMessage, 500)),
 	}
 
-	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken))
+	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome.FundingSource))
 	if err != nil {
 		// other 只由本文件构造（字符串/数字/嵌套 map），Marshal 失败只可能
 		// 来自 QuotaClamp.Original 之类的非有限值；ClampAuditMap 已做 JSON
@@ -420,7 +420,7 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 // discount_target 也无处取值。该缺口登记在 task-6-report，待契约补字段后
 // 由本函数补写（billing-04 §2.6 要求的两个 public 键）。
 func buildUsageLogOther(rc *contract.RelayContext,
-	model string, firstToken sql.NullInt64) map[string]any {
+	model string, firstToken sql.NullInt64, funding contract.FundingKind) map[string]any {
 
 	other := make(map[string]any, 6)
 
@@ -435,8 +435,13 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		setPublicKey(other, "upstream_model_name", rc.UpstreamModel)
 		setPublicKey(other, "is_model_mapped", true)
 	}
-	// M3 只有钱包资金源（订阅属 M5）；写明来源供对账。
-	setPublicKey(other, "billing_source", "wallet")
+	// 资金来源来自调用方冻结的选择（S4a 起订阅失败退款会传 subscription）；
+	// 不能从本函数的上下文猜测，否则同一请求的退款日志会误记为钱包。
+	billingSource := "wallet"
+	if funding == contract.FundingSubscription {
+		billingSource = "subscription"
+	}
+	setPublicKey(other, "billing_source", billingSource)
 
 	// 折扣日志：0<rate<1 才可判定为「命中且未全免」；rate=0 与零值无法
 	// 区分（见上方契约缺口注释），不在本函数猜测。

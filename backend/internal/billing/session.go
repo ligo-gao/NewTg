@@ -69,6 +69,10 @@ type Session struct {
 	subscriptionID          int64                // 订阅来源冻结的实例（结算复用同一 ID）
 	subscriptionPreConsumed int64                // 订阅来源冻结的预扣额
 	fundingPlan             *fundingPlan         // 偏好 + 候选订阅的冻结快照
+	// subscriptionReplayed 表示本次会话命中了订阅预扣的幂等记录（created=false）。
+	// 这种会话没有自己的令牌扣减，也绝不能去退款：订阅记录由首个执行者持有，
+	// 重复退款会把额度退给错误的请求（LOW）。
+	subscriptionReplayed bool
 
 	preConsumeCalled bool
 	settled          bool
@@ -798,6 +802,16 @@ func (s *Session) Refund() error {
 func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 	preDeductedForLog := s.preConsumed
 
+	// 幂等回放会话不得退款：订阅记录属于首执行者（LOW）。
+	if s.subscriptionReplayed {
+		s.refunded = true
+		s.preConsumed = 0
+		s.subscriptionPreConsumed = 0
+		s.stopHeartbeatLocked()
+		s.removeLeaseLocked(ctx)
+		return nil
+	}
+
 	if s.subscriptionPreConsumed > 0 {
 		if err := s.engine.refundSubscriptionPreConsume(ctx, s.requestID); err != nil {
 			return fmt.Errorf("billing: refund subscription pre-consume: %w", err)
@@ -816,10 +830,11 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 
 	if s.engine.saturator != nil {
 		outcome := SettlementOutcome{
-			Cost:        0,
-			PreDeducted: preDeductedForLog,
-			Refunded:    preDeductedForLog,
-			Status:      UsageLogStatusRefunded,
+			Cost:          0,
+			PreDeducted:   preDeductedForLog,
+			Refunded:      preDeductedForLog,
+			Status:        UsageLogStatusRefunded,
+			FundingSource: contract.FundingSubscription,
 		}
 		if logErr := s.engine.saturator.Saturate(ctx, nil, s.rc, outcome); logErr != nil {
 			s.refunded = true

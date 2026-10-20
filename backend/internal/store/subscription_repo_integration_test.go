@@ -1033,3 +1033,138 @@ func TestSubscriptionPreConsumeConcurrentSameRequest(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// TestSubscriptionCancelAtPeriodEndBoundary 覆盖 M2 / G-DOM-30 ②：周期末取消
+// 的实例不享宽限。宽限期内（end_at < now < end_at+grace）未取消实例仍可
+// 消费；一旦置 cancel_at_period_end，三条读侧契约与预扣写入都必须拒绝。
+func TestSubscriptionCancelAtPeriodEndBoundary(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	now := time.Now().UTC()
+
+	graceDays := int32(7)
+	plan, err := repo.CreatePlan(ctx, SubscriptionPlanInput{
+		PlanKey:      subscriptionPlanKey("d5a-m2"),
+		Title:        "M2 Boundary",
+		PeriodDays:   30,
+		PriceAmount:  100,
+		Currency:     "CNY",
+		GrantCredits: 1000,
+		GraceDays:    graceDays,
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id IN
+			(SELECT id FROM subscriptions WHERE plan_id = $1)`, plan.ID)
+		_, _ = db.Exec(`DELETE FROM subscriptions WHERE plan_id = $1`, plan.ID)
+		_, _ = db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, plan.ID)
+	})
+
+	userID := int64(910001)
+	// end_at 已过 1 小时，但仍在 7 天宽限内。
+	sub := createTestSubscription(t, repo, plan, userID,
+		now.Add(-48*time.Hour), now.Add(-time.Hour), nil)
+
+	// 未取消：宽限期内的实例仍是活跃订阅。
+	actives, err := repo.ListActiveSubscriptions(ctx, userID, now)
+	if err != nil || len(actives) != 1 || actives[0].ID != sub.ID {
+		t.Fatalf("宽限期内 ListActiveSubscriptions = %+v/%v，want 实例 %d", actives, err, sub.ID)
+	}
+	if ok, err := repo.HasActiveUserSubscription(ctx, userID, now); err != nil || !ok {
+		t.Fatalf("宽限期内 HasActiveUserSubscription = %v/%v，want true", ok, err)
+	}
+	if ok, err := repo.UserActiveSubscriptionsAllowWalletOverflow(ctx, userID, now); err != nil || !ok {
+		t.Fatalf("宽限期内 AllowWalletOverflow = %v/%v，want true", ok, err)
+	}
+
+	// 置周期末取消：end_at 已过 → 不享宽限。
+	if err := repo.CancelAtPeriodEnd(ctx, sub.ID); err != nil {
+		t.Fatalf("CancelAtPeriodEnd: %v", err)
+	}
+	if actives, err := repo.ListActiveSubscriptions(ctx, userID, now); err != nil || len(actives) != 0 {
+		t.Fatalf("取消后 ListActiveSubscriptions = %+v/%v，want 空", actives, err)
+	}
+	if ok, err := repo.HasActiveUserSubscription(ctx, userID, now); err != nil || ok {
+		t.Fatalf("取消后 HasActiveUserSubscription = %v/%v，want false", ok, err)
+	}
+	if ok, err := repo.UserActiveSubscriptionsAllowWalletOverflow(ctx, userID, now); err != nil || ok {
+		t.Fatalf("取消后 AllowWalletOverflow = %v/%v，want false", ok, err)
+	}
+
+	// 预扣写入同样按「不享宽限」拒绝：条件 UPDATE 命中 0 行 → 额度不足，
+	// 且失败事务不留下幂等记录或 amount_used 增量。
+	req := subscriptionRequestID(t)
+	if _, _, err := repo.PreConsumeUserSubscription(ctx, req, sub.ID, 100); !errors.Is(err, ErrSubscriptionQuotaInsufficient) {
+		t.Fatalf("取消实例预扣 err = %v，want ErrSubscriptionQuotaInsufficient", err)
+	}
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	if used != 0 {
+		t.Fatalf("amount_used = %d，want 0", used)
+	}
+	if _, err := repo.GetPreConsume(ctx, req); !errors.Is(err, ErrPreConsumeNotFound) {
+		t.Fatalf("失败预扣留下记录: %v", err)
+	}
+}
+
+// TestSubscriptionRefundRaceWithResetIsNoop 覆盖 M3：周期重置已把
+// amount_used 归零（或归到小于预扣额）后，退款回退必须变成 no-op，不能把
+// 新周期的已用量扣成负数/少算。
+func TestSubscriptionRefundRaceWithResetIsNoop(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "d5a-m3")
+	now := time.Now().UTC()
+	sub := createTestSubscription(t, repo, plan, 910002, now.Add(-time.Hour), now.Add(time.Hour), nil)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, sub.ID)
+	})
+
+	requestID := subscriptionRequestID(t)
+	if _, created, err := repo.PreConsumeUserSubscription(ctx, requestID, sub.ID, 120); err != nil || !created {
+		t.Fatalf("PreConsumeUserSubscription = %v/%v，want created", created, err)
+	}
+
+	// 模拟竞态：B12 重置把 amount_used 归零。
+	if _, err := db.Exec(`UPDATE subscriptions SET amount_used = 0 WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("simulate reset: %v", err)
+	}
+	if err := repo.MarkPreConsumeRefunded(ctx, requestID); err != nil {
+		t.Fatalf("MarkPreConsumeRefunded: %v", err)
+	}
+	var used int64
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used: %v", err)
+	}
+	if used != 0 {
+		t.Fatalf("归零后退款 amount_used = %d，want 0（no-op）", used)
+	}
+	rec, err := repo.GetPreConsume(ctx, requestID)
+	if err != nil || rec.Status != "refunded" {
+		t.Fatalf("退款记录 = %+v/%v，want refunded", rec, err)
+	}
+
+	// 第二个请求：重置后新周期已有 50 已用，退款不得从新周期扣走。
+	req2 := subscriptionRequestID(t)
+	if _, created, err := repo.PreConsumeUserSubscription(ctx, req2, sub.ID, 120); err != nil || !created {
+		t.Fatalf("second PreConsume = %v/%v", created, err)
+	}
+	if _, err := db.Exec(`UPDATE subscriptions SET amount_used = 50 WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("simulate partial reset: %v", err)
+	}
+	if err := repo.MarkPreConsumeRefunded(ctx, req2); err != nil {
+		t.Fatalf("second MarkPreConsumeRefunded: %v", err)
+	}
+	if err := db.QueryRow(`SELECT amount_used FROM subscriptions WHERE id = $1`, sub.ID).Scan(&used); err != nil {
+		t.Fatalf("read amount_used after second refund: %v", err)
+	}
+	if used != 50 {
+		t.Fatalf("部分竞态后退款 amount_used = %d，want 50（no-op）", used)
+	}
+}

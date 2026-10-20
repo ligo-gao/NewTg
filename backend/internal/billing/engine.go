@@ -68,8 +68,11 @@ type SettlementOutcome struct {
 	// 其它状态忽略该字段（success 用 Cost，refused/error 强制 0）。
 	RetainedCost int64
 	Status       int16 // usage_logs.status（0..3）
-	ErrorClass   string
-	ErrorMessage string
+	// FundingSource 是本请求冻结的资金来源，用于 usage_logs.other 的
+	// billing_source 键（M4）。零值 = FundingWallet，保持既有日志口径。
+	FundingSource contract.FundingKind
+	ErrorClass    string
+	ErrorMessage  string
 }
 
 // usage_logs.status 的整型枚举（backend/migrations-logs/20261018061805_init.up.sql）。
