@@ -736,5 +736,6 @@
   },
   "nav.chat": "Чат",
   "nav.playground": "Playground",
-  "nav.task_plugins": "Плагины задач"
+  "nav.task_plugins": "Плагины задач",
+  "nav.redemption_codes": "Коды погашения"
 }

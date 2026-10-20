@@ -27,6 +27,15 @@ const NAV_ITEMS = [
   { href: '/tokens', key: 'common.nav.tokens' },
   { href: '/wallet', key: 'common.nav.wallet' },
   { href: '/orders', key: 'common.nav.orders' },
+  // M5 兑换码管理（modules-04 F-04-15/16）：web-00 §4 冻结为不带 /admin
+  // 前缀的管理专属 URL，页面自己施加 admin + redemption:manage 守卫；
+  // 这里同样按权限隐藏入口，避免把注定 403 的链接展示给无权限管理员。
+  {
+    href: '/redemption-codes',
+    key: 'common.nav.redemption_codes',
+    admin: true,
+    permission: 'redemption:manage',
+  },
   // M6 logs (modules-05): both pages narrow to the caller's own rows server-side.
   // IA §4.3 puts them under `/dashboard`; the old top-level paths redirect.
   { href: '/dashboard/usage-logs', key: 'common.nav.usage_logs' },

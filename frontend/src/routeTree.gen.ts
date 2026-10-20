@@ -25,6 +25,7 @@ import { Route as ConsoleModelConfigRouteImport } from './routes/_console/model-
 import { Route as ConsoleOrdersRouteImport } from './routes/_console/orders'
 import { Route as ConsolePlaygroundRouteImport } from './routes/_console/playground'
 import { Route as ConsoleProfileRouteImport } from './routes/_console/profile'
+import { Route as ConsoleRedemptionCodesRouteImport } from './routes/_console/redemption-codes'
 import { Route as ConsoleSecurityRouteImport } from './routes/_console/security'
 import { Route as ConsoleTokensRouteImport } from './routes/_console/tokens'
 import { Route as ConsoleUsageLogsRouteImport } from './routes/_console/usage-logs'
@@ -131,6 +132,11 @@ const ConsolePlaygroundRoute = ConsolePlaygroundRouteImport.update({
 const ConsoleProfileRoute = ConsoleProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleRedemptionCodesRoute = ConsoleRedemptionCodesRouteImport.update({
+  id: '/redemption-codes',
+  path: '/redemption-codes',
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsoleSecurityRoute = ConsoleSecurityRouteImport.update({
@@ -302,6 +308,7 @@ export interface FileRoutesByFullPath {
   '/orders': typeof ConsoleOrdersRoute
   '/playground': typeof ConsolePlaygroundRoute
   '/profile': typeof ConsoleProfileRoute
+  '/redemption-codes': typeof ConsoleRedemptionCodesRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
   '/usage-logs': typeof ConsoleUsageLogsRoute
@@ -346,6 +353,7 @@ export interface FileRoutesByTo {
   '/orders': typeof ConsoleOrdersRoute
   '/playground': typeof ConsolePlaygroundRoute
   '/profile': typeof ConsoleProfileRoute
+  '/redemption-codes': typeof ConsoleRedemptionCodesRoute
   '/security': typeof ConsoleSecurityRoute
   '/tokens': typeof ConsoleTokensRoute
   '/usage-logs': typeof ConsoleUsageLogsRoute
@@ -393,6 +401,7 @@ export interface FileRoutesById {
   '/_console/orders': typeof ConsoleOrdersRoute
   '/_console/playground': typeof ConsolePlaygroundRoute
   '/_console/profile': typeof ConsoleProfileRoute
+  '/_console/redemption-codes': typeof ConsoleRedemptionCodesRoute
   '/_console/security': typeof ConsoleSecurityRoute
   '/_console/tokens': typeof ConsoleTokensRoute
   '/_console/usage-logs': typeof ConsoleUsageLogsRoute
@@ -440,6 +449,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/playground'
     | '/profile'
+    | '/redemption-codes'
     | '/security'
     | '/tokens'
     | '/usage-logs'
@@ -484,6 +494,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/playground'
     | '/profile'
+    | '/redemption-codes'
     | '/security'
     | '/tokens'
     | '/usage-logs'
@@ -530,6 +541,7 @@ export interface FileRouteTypes {
     | '/_console/orders'
     | '/_console/playground'
     | '/_console/profile'
+    | '/_console/redemption-codes'
     | '/_console/security'
     | '/_console/tokens'
     | '/_console/usage-logs'
@@ -693,6 +705,13 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ConsoleProfileRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/redemption-codes': {
+      id: '/_console/redemption-codes'
+      path: '/redemption-codes'
+      fullPath: '/redemption-codes'
+      preLoaderRoute: typeof ConsoleRedemptionCodesRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/security': {
@@ -940,6 +959,7 @@ interface ConsoleRouteChildren {
   ConsoleOrdersRoute: typeof ConsoleOrdersRoute
   ConsolePlaygroundRoute: typeof ConsolePlaygroundRoute
   ConsoleProfileRoute: typeof ConsoleProfileRoute
+  ConsoleRedemptionCodesRoute: typeof ConsoleRedemptionCodesRoute
   ConsoleSecurityRoute: typeof ConsoleSecurityRoute
   ConsoleTokensRoute: typeof ConsoleTokensRoute
   ConsoleUsageLogsRoute: typeof ConsoleUsageLogsRoute
@@ -956,6 +976,7 @@ const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleOrdersRoute: ConsoleOrdersRoute,
   ConsolePlaygroundRoute: ConsolePlaygroundRoute,
   ConsoleProfileRoute: ConsoleProfileRoute,
+  ConsoleRedemptionCodesRoute: ConsoleRedemptionCodesRoute,
   ConsoleSecurityRoute: ConsoleSecurityRoute,
   ConsoleTokensRoute: ConsoleTokensRoute,
   ConsoleUsageLogsRoute: ConsoleUsageLogsRoute,

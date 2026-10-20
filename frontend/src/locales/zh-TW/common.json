@@ -736,5 +736,6 @@
   },
   "nav.chat": "對話",
   "nav.playground": "Playground",
-  "nav.task_plugins": "任務外掛"
+  "nav.task_plugins": "任務外掛",
+  "nav.redemption_codes": "兌換碼"
 }
