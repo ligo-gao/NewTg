@@ -397,7 +397,7 @@ type publicCatalogModel struct {
 	lowerID string
 	// 以下是从档案一次性派生的匹配值：filtered 每次请求要跑 6 遍 facet
 	// 子集，重复解析 JSON 会把公开目录的 CPU 成本按 facet 数放大。
-	capabilities  []string // 档案原值（枚举小写）
+	capabilities  []string // 去重后保留首个原值（按大小写折叠）
 	contextBucket string   // "" = 无档案或 context_length=null（不参与计数/筛选）
 	endpointTypes []string // D1-19 派生枚举（规范大小写）
 }
@@ -845,7 +845,7 @@ func (idx publicCatalogIndex) capabilityFacets(query publicPricingQuery) []Publi
 				continue
 			}
 			counts[value]++
-			// 同一 capacity 的多个大小写变体只保留首个原值作为 label，
+			// 同一 capability 的多个大小写变体只保留首个原值作为 label，
 			// 与装配期的保留首个原值口径一致。
 			if _, ok := labels[value]; !ok {
 				labels[value] = capability
