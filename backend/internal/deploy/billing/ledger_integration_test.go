@@ -250,7 +250,7 @@ func TestReconcileTerminationClosesSegment(t *testing.T) {
 			Status:               "terminated",
 			StartedAt:            &start,
 			FinishedAt:           timePtr(start.Add(40 * time.Minute)),
-			AmountPaid:           7.2,
+			AmountPaid:           ionet.Money{Decimal: decimal.RequireFromString("7.2")},
 			GPUsPerContainer:     1,
 			TotalContainers:      1,
 			HardwareID:           1,
@@ -400,7 +400,7 @@ func TestWorkerDiscoversRunningDeployment(t *testing.T) {
 			ID:                      "dep-sync",
 			Status:                  "running",
 			StartedAt:               &start,
-			AmountPaid:              7.2,
+			AmountPaid:              ionet.Money{Decimal: decimal.RequireFromString("7.2")},
 			GPUsPerContainer:        1,
 			TotalContainers:         1,
 			HardwareID:              1,
@@ -533,6 +533,320 @@ func readMigration(t *testing.T, name string) string {
 }
 
 func timePtr(v time.Time) *time.Time { return &v }
+
+// estimateFor 复制 flatRateEstimate 并换幂等键（同部署多段）。
+func estimateFor(deploymentID, key string, started *time.Time) SegmentEstimate {
+	est := flatRateEstimate(deploymentID, started)
+	est.IdempotencyKey = key
+	return est
+}
+
+func terminatedDetail(id string, started, finished time.Time, computeMinutes int, amountPaid string) ionet.DeploymentDetail {
+	return ionet.DeploymentDetail{
+		ID:                   id,
+		Status:               "terminated",
+		StartedAt:            &started,
+		FinishedAt:           &finished,
+		AmountPaid:           ionet.Money{Decimal: decimal.RequireFromString(amountPaid)},
+		GPUsPerContainer:     1,
+		TotalContainers:      1,
+		HardwareID:           1,
+		ComputeMinutesServed: computeMinutes,
+		Locations:            []ionet.DeploymentLocation{{ID: 1}},
+	}
+}
+
+// TestSettleCrossSegmentBaselineAndRegression 覆盖 M1/M6：
+//   - 跨段基线相减（960 → 1560 确认 600，而不是把累计值整段重复计入）；
+//   - provider 累计回退（1320 < 1560）时改走内部记账，不得记 0 且标 provider_exact。
+func TestSettleCrossSegmentBaselineAndRegression(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start1 := time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC)
+	now, setNow := testClock(start1.Add(30 * time.Minute))
+	fake := &ionet.FakeProvider{DeploymentDetail: terminatedDetail(
+		"dep-cross", start1, start1.Add(20*time.Minute), 16, "9.6")}
+	provider := func(context.Context) (ionet.DeploymentProvider, bool, error) { return fake, true, nil }
+	ledger := newTestLedger(t, db, now, provider, nil)
+
+	seg1, _, err := ledger.Hold(context.Background(), estimateFor("dep-cross", "seg1", &start1))
+	if err != nil {
+		t.Fatalf("Hold seg1: %v", err)
+	}
+	if state, err := ledger.Reconcile(context.Background(), seg1.SegmentID); err != nil || state != SegmentSettled {
+		t.Fatalf("Reconcile seg1 = (%q, %v)", state, err)
+	}
+	s1 := factsOfType(t, ledger, seg1.SegmentID, FactSettlement)
+	if len(s1) != 1 || s1[0].GPUSeconds != 960 || s1[0].UsageSource != UsageProviderExact {
+		t.Fatalf("seg1 settlement = %+v", s1)
+	}
+
+	start2 := start1.Add(time.Hour)
+	setNow(start2.Add(30 * time.Minute))
+	fake.DeploymentDetail = terminatedDetail("dep-cross", start2, start2.Add(26*time.Minute), 26, "9.6")
+	seg2, _, err := ledger.Hold(context.Background(), estimateFor("dep-cross", "seg2", &start2))
+	if err != nil {
+		t.Fatalf("Hold seg2: %v", err)
+	}
+	if state, err := ledger.Reconcile(context.Background(), seg2.SegmentID); err != nil || state != SegmentSettled {
+		t.Fatalf("Reconcile seg2 = (%q, %v)", state, err)
+	}
+	s2 := factsOfType(t, ledger, seg2.SegmentID, FactSettlement)
+	if len(s2) != 1 || s2[0].GPUSeconds != 600 {
+		t.Fatalf("seg2 settlement = %+v，want 600s（1560 − 960）", s2)
+	}
+	if s2[0].ProviderCumulativeSeconds == nil || *s2[0].ProviderCumulativeSeconds != 1560 {
+		t.Fatalf("seg2 cumulative = %v，want 1560", s2[0].ProviderCumulativeSeconds)
+	}
+
+	// 第三段：provider 累计回退到 1320 < 1560。
+	start3 := start2.Add(time.Hour)
+	setNow(start3.Add(30 * time.Minute))
+	fake.DeploymentDetail = terminatedDetail("dep-cross", start3, start3.Add(10*time.Minute), 22, "9.6")
+	seg3, _, err := ledger.Hold(context.Background(), estimateFor("dep-cross", "seg3", &start3))
+	if err != nil {
+		t.Fatalf("Hold seg3: %v", err)
+	}
+	if state, err := ledger.Reconcile(context.Background(), seg3.SegmentID); err != nil || state != SegmentSettled {
+		t.Fatalf("Reconcile seg3 = (%q, %v)", state, err)
+	}
+	s3 := factsOfType(t, ledger, seg3.SegmentID, FactSettlement)
+	if len(s3) != 1 {
+		t.Fatalf("seg3 settlements = %d", len(s3))
+	}
+	if s3[0].UsageSource != UsageInternalAccounting {
+		t.Fatalf("seg3 usage_source = %q，want internal_accounting（不得标 provider_exact）", s3[0].UsageSource)
+	}
+	// 内部记账窗口 = started_at → finished_at = 10 分钟 = 600 GPU·秒。
+	if s3[0].GPUSeconds != 600 {
+		t.Fatalf("seg3 gpu_seconds = %d，want 600（不得记 0）", s3[0].GPUSeconds)
+	}
+	if s3[0].ProviderCumulativeSeconds != nil {
+		t.Fatalf("回退段不得写入 provider 累计基线: %v", *s3[0].ProviderCumulativeSeconds)
+	}
+}
+
+// TestSettleZeroComputeSecondsUsesInternalAccounting 覆盖 M6：
+// provider 累计为 0（不可用）时按内部记账结算，不得当作免费。
+func TestSettleZeroComputeSecondsUsesInternalAccounting(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	now, _ := testClock(start.Add(45 * time.Minute))
+	fake := &ionet.FakeProvider{DeploymentDetail: terminatedDetail(
+		"dep-zero", start, start.Add(30*time.Minute), 0, "7.2")}
+	provider := func(context.Context) (ionet.DeploymentProvider, bool, error) { return fake, true, nil }
+	ledger := newTestLedger(t, db, now, provider, nil)
+
+	seg, _, err := ledger.Hold(context.Background(), flatRateEstimate("dep-zero", &start))
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if state, err := ledger.Reconcile(context.Background(), seg.SegmentID); err != nil || state != SegmentSettled {
+		t.Fatalf("Reconcile = (%q, %v)", state, err)
+	}
+	settlements := factsOfType(t, ledger, seg.SegmentID, FactSettlement)
+	if len(settlements) != 1 || settlements[0].GPUSeconds != 1800 ||
+		settlements[0].UsageSource != UsageInternalAccounting {
+		t.Fatalf("settlement = %+v，want 1800s / internal_accounting", settlements)
+	}
+}
+
+// TestInvoiceCorrectionWritesNewAdjustment 覆盖 M5/M6：
+// 同一周期更正发票必须写新调整（键含账单引用 + 序号），重复读同一张发票 no-op。
+func TestInvoiceCorrectionWritesNewAdjustment(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
+	now, _ := testClock(start.Add(2 * time.Hour))
+	periodStart := start
+	periodEnd := start.Add(2 * time.Hour)
+	reader := &fakeInvoiceReader{invoice: Invoice{
+		BillReference: "inv-001", AmountUSD: decimal.RequireFromString("8.64"),
+		PeriodStart: &periodStart, PeriodEnd: &periodEnd,
+	}}
+	ledger := newTestLedger(t, db, now, nil, reader)
+	seg, _, err := ledger.Hold(context.Background(), flatRateEstimate("dep-inv2", &start))
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if _, err := ledger.Settle(context.Background(), seg.SegmentID, GPUUsageFact{
+		SegmentID: seg.SegmentID, DeploymentID: seg.DeploymentID, GPUSeconds: 7200,
+		Source: UsageProviderExact,
+	}); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 144 {
+		t.Fatalf("第一张发票 = (%d, %v)，want 144", delta, err)
+	}
+	// 同一张发票重复读：0 差额，不追加事实。
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 0 {
+		t.Fatalf("重复读发票 = (%d, %v)，want (0, nil)", delta, err)
+	}
+	if n := len(factsOfType(t, ledger, seg.SegmentID, FactReconciliationAdjustment)); n != 1 {
+		t.Fatalf("adjustment facts = %d，want 1", n)
+	}
+	// 更正发票：同周期、新引用、新金额 → 新调整事实，不得静默丢弃。
+	reader.invoice = Invoice{
+		BillReference: "inv-001-rev", AmountUSD: decimal.RequireFromString("9.00"),
+		PeriodStart: &periodStart, PeriodEnd: &periodEnd,
+	}
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 36 {
+		t.Fatalf("更正发票 = (%d, %v)，want 36", delta, err)
+	}
+	facts := factsOfType(t, ledger, seg.SegmentID, FactReconciliationAdjustment)
+	if len(facts) != 2 {
+		t.Fatalf("adjustment facts = %d，want 2（更正不得覆盖/静默丢弃）", len(facts))
+	}
+	if facts[0].FactKey == facts[1].FactKey {
+		t.Fatalf("更正发票复用了 fact_key: %q", facts[0].FactKey)
+	}
+	// 再读更正发票：0 差额。
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 0 {
+		t.Fatalf("重复读更正发票 = (%d, %v)", delta, err)
+	}
+	totals, err := ledger.CostTotals(context.Background(), "dep-inv2")
+	if err != nil || totals.ConfirmedCost() != 900 {
+		t.Fatalf("totals = %+v, %v，want confirmed 900", totals, err)
+	}
+}
+
+// TestInvoiceNilPeriodAndMultiplePeriods 覆盖 M5：PeriodStart 为 nil 时逐次
+// 调整不共用键；多个账单周期的调整相加而不是互相覆盖。
+func TestInvoiceNilPeriodAndMultiplePeriods(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start := time.Date(2026, 10, 28, 6, 0, 0, 0, time.UTC)
+	now, _ := testClock(start.Add(2 * time.Hour))
+	reader := &fakeInvoiceReader{}
+	ledger := newTestLedger(t, db, now, nil, reader)
+	seg, _, err := ledger.Hold(context.Background(), flatRateEstimate("dep-inv3", &start))
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if _, err := ledger.Settle(context.Background(), seg.SegmentID, GPUUsageFact{
+		SegmentID: seg.SegmentID, DeploymentID: seg.DeploymentID, GPUSeconds: 7200,
+		Source: UsageProviderExact,
+	}); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	// nil 周期：两次不同引用必须各自落键。
+	reader.invoice = Invoice{BillReference: "nil-1", AmountUSD: decimal.RequireFromString("8.00")}
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 80 {
+		t.Fatalf("nil 周期#1 = (%d, %v)，want 80", delta, err)
+	}
+	reader.invoice = Invoice{BillReference: "nil-2", AmountUSD: decimal.RequireFromString("8.50")}
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 50 {
+		t.Fatalf("nil 周期#2 = (%d, %v)，want 50", delta, err)
+	}
+	if n := len(factsOfType(t, ledger, seg.SegmentID, FactReconciliationAdjustment)); n != 2 {
+		t.Fatalf("nil 周期 adjustment facts = %d，want 2（不得共用键）", n)
+	}
+	// 同一金额再读：0 差额。
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 0 {
+		t.Fatalf("nil 周期重复读 = (%d, %v)", delta, err)
+	}
+
+	// 两个不同账单周期：两条调整相加（900 + 100 = 1000），而不是后者覆盖前者。
+	p1s, p1e := start, start.Add(time.Hour)
+	p2s, p2e := start.Add(time.Hour), start.Add(2*time.Hour)
+	reader.invoice = Invoice{
+		BillReference: "cycle-1", AmountUSD: decimal.RequireFromString("9.00"),
+		PeriodStart: &p1s, PeriodEnd: &p1e,
+	}
+	if _, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil {
+		t.Fatalf("cycle-1: %v", err)
+	}
+	reader.invoice = Invoice{
+		BillReference: "cycle-2", AmountUSD: decimal.RequireFromString("1.00"),
+		PeriodStart: &p2s, PeriodEnd: &p2e,
+	}
+	if delta, err := ledger.ReconcileInvoice(context.Background(), seg.SegmentID); err != nil || delta != 100 {
+		t.Fatalf("cycle-2 delta = (%d, %v)，want 100", delta, err)
+	}
+	totals, err := ledger.CostTotals(context.Background(), "dep-inv3")
+	if err != nil {
+		t.Fatalf("CostTotals: %v", err)
+	}
+	// nil 周期两条（最后一条 850）+ cycle-1（900）+ cycle-2（100）= 1850。
+	if totals.ConfirmedCost() != 1850 {
+		t.Fatalf("confirmed cost = %d，want 1850（多周期/多引用相加）", totals.ConfirmedCost())
+	}
+}
+
+// TestWorkerAccruesAllSegmentsAcrossPages 覆盖 M4：批大小小于段数时仍处理全部段。
+func TestWorkerAccruesAllSegmentsAcrossPages(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start := time.Date(2026, 10, 29, 8, 0, 0, 0, time.UTC)
+	now, _ := testClock(start.Add(2*time.Hour + 10*time.Minute))
+	ledger := newTestLedger(t, db, now, nil, nil)
+	segments := make([]Segment, 0, 5)
+	for i := 0; i < 5; i++ {
+		// 相同 started_at，靠 segment_id 做 keyset 兜底。
+		est := estimateFor("dep-page", "page-seg-"+string(rune('a'+i)), &start)
+		seg, _, err := ledger.Hold(context.Background(), est)
+		if err != nil {
+			t.Fatalf("Hold %d: %v", i, err)
+		}
+		segments = append(segments, seg)
+	}
+	provider := func(context.Context) (ionet.DeploymentProvider, bool, error) { return nil, false, nil }
+	worker, err := NewWorker(WorkerDeps{Ledger: ledger, Provider: provider, Now: now, BatchSize: 2})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	stats, err := worker.AccrueOnce(context.Background())
+	if err != nil {
+		t.Fatalf("AccrueOnce: %v", err)
+	}
+	if stats.SegmentsAccrued != 5 {
+		t.Fatalf("segments accrued = %d，want 5（不能只扫批大小内的段）", stats.SegmentsAccrued)
+	}
+	for _, seg := range segments {
+		if n := len(factsOfType(t, ledger, seg.SegmentID, FactAccrual)); n != 2 {
+			t.Fatalf("segment %s accrual facts = %d，want 2", seg.SegmentID, n)
+		}
+	}
+}
+
+// TestReconcileAuditCarriesRetryAfter 覆盖 LOW：provider 错误审计带
+// error_code 与 retry_after_seconds。
+func TestReconcileAuditCarriesRetryAfter(t *testing.T) {
+	db := openBillingTestDB(t)
+	resetBillingTables(t, db)
+	start := time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC)
+	now, _ := testClock(start.Add(10 * time.Minute))
+	fake := &ionet.FakeProvider{
+		DeploymentDetailErr: &ionet.APIError{StatusCode: 429, RetryAfter: 3 * time.Second, Detail: "slow down"},
+	}
+	provider := func(context.Context) (ionet.DeploymentProvider, bool, error) { return fake, true, nil }
+	ledger := newTestLedger(t, db, now, provider, nil)
+	var audited map[string]any
+	ledger.audit = func(_ context.Context, action string, detail map[string]any) error {
+		if action == AuditActionReconcile {
+			audited = detail
+		}
+		return nil
+	}
+	seg, _, err := ledger.Hold(context.Background(), flatRateEstimate("dep-audit", &start))
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if _, err := ledger.Reconcile(context.Background(), seg.SegmentID); err == nil {
+		t.Fatal("期望 provider 429 错误")
+	}
+	if audited == nil {
+		t.Fatal("未写对账审计")
+	}
+	if audited["error_code"] != "deploy_rate_limited" {
+		t.Fatalf("error_code = %v", audited["error_code"])
+	}
+	if audited["retry_after_seconds"] != int64(3) {
+		t.Fatalf("retry_after_seconds = %v，want 3", audited["retry_after_seconds"])
+	}
+}
 
 // TestProviderFromSettings 锁定冻结键名与解封行为（无需 DB）。
 func TestProviderFromSettings(t *testing.T) {

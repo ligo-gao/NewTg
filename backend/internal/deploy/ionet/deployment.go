@@ -12,12 +12,55 @@ package ionet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
+
+// Money 是 provider 金额的精确表示。
+//
+// 反序列化同时接受 JSON 数字与数字字符串（provider 两种都出现过），内部
+// 一律转成 decimal：billing 的报价→单价链路不得经过 float64（M2 复核）。
+// 序列化输出未加引号的数字，保持对外 JSON 形状与既有一致。
+type Money struct {
+	decimal.Decimal
+}
+
+// UnmarshalJSON 接受 number / numeric string / null。
+func (m *Money) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		m.Decimal = decimal.Zero
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		trimmed = strings.TrimSpace(text)
+		if trimmed == "" {
+			m.Decimal = decimal.Zero
+			return nil
+		}
+	}
+	value, err := decimal.NewFromString(trimmed)
+	if err != nil {
+		return fmt.Errorf("ionet: unsupported money value %q", trimmed)
+	}
+	m.Decimal = value
+	return nil
+}
+
+// MarshalJSON 输出未加引号的 decimal（decimal.Decimal 默认会加引号）。
+func (m Money) MarshalJSON() ([]byte, error) {
+	return []byte(m.Decimal.String()), nil
+}
 
 const (
 	// PathDeployments 是部署集合端点（POST 创建 / GET 列表）。
@@ -89,12 +132,13 @@ type DeploymentContainerConfig struct {
 
 // DeploymentDetail 是部署概览（已归一化）。
 type DeploymentDetail struct {
-	ID                      string
-	Status                  string
-	CreatedAt               *time.Time
-	StartedAt               *time.Time
-	FinishedAt              *time.Time
-	AmountPaid              float64
+	ID         string
+	Status     string
+	CreatedAt  *time.Time
+	StartedAt  *time.Time
+	FinishedAt *time.Time
+	// AmountPaid 是 provider 记录的已付金额（精确 decimal）。
+	AmountPaid              Money
 	CompletedPercent        float64
 	TotalGPUs               int
 	GPUsPerContainer        int
@@ -197,11 +241,15 @@ type PriceBreakdown struct {
 }
 
 // PriceEstimationResponse 是价格估算结果（金额/币种/分解原样映射）。
+//
+// EstimatedCostSet 区分「provider 明确报价 0」与「provider 没有返回报价」：
+// 只有前者可以视为免费，缺省必须由调用方阻断（`gpu_price_unavailable`）。
 type PriceEstimationResponse struct {
-	EstimatedCost   float64        `json:"estimated_cost"`
-	Currency        string         `json:"currency"`
-	PriceBreakdown  PriceBreakdown `json:"price_breakdown"`
-	EstimationValid bool           `json:"estimation_valid"`
+	EstimatedCost    Money          `json:"estimated_cost"`
+	Currency         string         `json:"currency"`
+	PriceBreakdown   PriceBreakdown `json:"price_breakdown"`
+	EstimationValid  bool           `json:"estimation_valid"`
+	EstimatedCostSet bool           `json:"-"`
 }
 
 // DeploymentAction 是写操作的受理结果（创建/更新/续期/终止）。

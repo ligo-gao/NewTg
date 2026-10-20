@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 	"time"
 
@@ -102,9 +101,20 @@ func snapshotFromDetail(ctx context.Context, provider ionet.DeploymentProvider, 
 	if started == nil {
 		started = detail.CreatedAt
 	}
-	quote := decimal.NewFromFloat(detail.AmountPaid)
-	if !quote.IsPositive() {
-		hours := int(math.Ceil(float64(planned) / 3600))
+	// 报价来源优先级：provider 记录的已付金额 → 价格估算接口。
+	//
+	// 两者都是 decimal（adapter 用 Money 精确解析），不经过 float64；
+	// 「金额为零/负数」只是**入口条件**，是否可用由报价标记决定：缺省或
+	// 负数一律返回 ErrGPUPriceUnavailable，绝不静默当成免费（M2/M3）。
+	quote := detail.AmountPaid.Decimal
+	quoteSet := quote.IsPositive()
+	if quote.IsNegative() {
+		quoteSet = false
+	}
+	if !quoteSet {
+		// 时长向上取整必须是整数运算：planned 是秒，不能用 float64 ceil
+		// 后再转回 int（大数会丢精度）。
+		hours := (planned + 3599) / 3600
 		if hours < 1 {
 			hours = 1
 		}
@@ -113,7 +123,7 @@ func snapshotFromDetail(ctx context.Context, provider ionet.DeploymentProvider, 
 			LocationIDs:      intLocations(detail.Locations),
 			GPUsPerContainer: gpus,
 			ReplicaCount:     replicas,
-			DurationHours:    hours,
+			DurationHours:    int(hours),
 			Currency:         "USD",
 		})
 		if err != nil {
@@ -124,10 +134,20 @@ func snapshotFromDetail(ctx context.Context, provider ionet.DeploymentProvider, 
 		default:
 			return DeploymentSnapshot{}, fmt.Errorf("deploy billing: unsupported currency %q", price.Currency)
 		}
-		quote = decimal.NewFromFloat(price.EstimatedCost)
+		if !price.EstimatedCostSet {
+			return DeploymentSnapshot{}, fmt.Errorf("%w: provider price response has no cost", ErrGPUPriceUnavailable)
+		}
+		if price.EstimatedCost.IsNegative() {
+			return DeploymentSnapshot{}, fmt.Errorf("%w: negative estimated cost", ErrGPUPriceUnavailable)
+		}
+		if !price.EstimationValid {
+			return DeploymentSnapshot{}, fmt.Errorf("%w: provider marked the estimate invalid", ErrGPUPriceUnavailable)
+		}
+		// 显式 0 且报价标记为真：唯一合法的「免费」情形。
+		quote = price.EstimatedCost.Decimal
 	}
 	if quote.IsNegative() {
-		quote = decimal.Zero
+		return DeploymentSnapshot{}, fmt.Errorf("%w: negative quoted amount", ErrGPUPriceUnavailable)
 	}
 	locations := locationIDs(detail.Locations)
 	if len(locations) == 0 {

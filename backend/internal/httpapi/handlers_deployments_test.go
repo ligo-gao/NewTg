@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/deploy/ionet"
@@ -241,7 +243,7 @@ func validCreateBody() string {
 func TestDeployCreateSuccessChecksNameTwiceAndPriceFirst(t *testing.T) {
 	env := newDeployMgmtEnv(t)
 	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "deployment requested"}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 12.5, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("12.5")}, Currency: "USDC"}
 
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusAccepted {
@@ -526,7 +528,7 @@ func TestDeployExtendRequiresPriceAndWrites(t *testing.T) {
 		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 2,
 		Locations: []ionet.DeploymentLocation{{ID: 1}, {ID: 2}},
 	}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 3.5, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("3.5")}, Currency: "USDC"}
 	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
 
 	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
@@ -659,7 +661,7 @@ func TestDeployCatalogAndPriceEndpoints(t *testing.T) {
 		Locations: []ionet.Location{{ID: 1, Name: "us-east"}}, Total: 1,
 	}
 	env.provider.Replicas = ionet.AvailableReplicas{Replicas: []ionet.AvailableReplica{{LocationID: 1, AvailableCount: 3}}}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 9.99, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("9.99")}, Currency: "USDC"}
 
 	for _, target := range []string{
 		"/api/deployments/hardware-types",
@@ -813,7 +815,7 @@ func TestDeployWriteIdempotencyMatrix(t *testing.T) {
 				ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
 				Locations: []ionet.DeploymentLocation{{ID: 1}},
 			}
-			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 1, Currency: "USDC"}
+			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
 
 			missing := env.do(tc.method, tc.target, tc.body, nil)
 			if missing.Code != http.StatusBadRequest {
@@ -927,7 +929,7 @@ func TestDeployAllEndpointsRequireSettingsManage(t *testing.T) {
 
 func TestDeployNameConflictMapsToNameTaken(t *testing.T) {
 	env := newDeployMgmtEnv(t)
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: 1, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
 	env.provider.CreateErr = &ionet.APIError{StatusCode: http.StatusConflict}
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusConflict {

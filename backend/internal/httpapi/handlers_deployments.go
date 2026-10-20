@@ -1001,7 +1001,8 @@ func (h *DeployManagementHandlers) handleGet(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, deployDetailResponse{
 		ID: detail.ID, Status: detail.Status, CreatedAt: detail.CreatedAt,
 		StartedAt: detail.StartedAt, FinishedAt: detail.FinishedAt,
-		AmountPaid: detail.AmountPaid, CompletedPercent: detail.CompletedPercent,
+		// Money 是精确 decimal；对外 DTO 仍是展示用的 float64。
+		AmountPaid: detail.AmountPaid.InexactFloat64(), CompletedPercent: detail.CompletedPercent,
 		TotalGPUs: detail.TotalGPUs, GPUsPerContainer: detail.GPUsPerContainer,
 		TotalContainers: detail.TotalContainers, HardwareID: detail.HardwareID,
 		HardwareName: detail.HardwareName, BrandName: detail.BrandName,
@@ -1498,11 +1499,11 @@ func (h *DeployManagementHandlers) extendDeployment(w http.ResponseWriter, r *ht
 		status, body := h.providerErrorBody(w, r, err)
 		_, code := deployErrorCode(err)
 		h.writeDeployAudit(r, actor, audit.ActionDeployExtend, status, false,
-			extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost, requestID, code), nil, nil)
+			extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost.InexactFloat64(), requestID, code), nil, nil)
 		return status, body
 	}
 	h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusAccepted, true,
-		extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost, requestID, ""), nil, nil)
+		extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost.InexactFloat64(), requestID, ""), nil, nil)
 	return jsonBody(w, r, http.StatusAccepted, struct {
 		DeploymentID string `json:"deployment_id"`
 		Status       string `json:"status"`

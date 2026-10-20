@@ -382,6 +382,23 @@ func (l *Ledger) Reconcile(ctx context.Context, segmentID string) (string, error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
 			return l.handleProviderMissing(ctx, seg)
 		}
+		// 审计带上 provider 的重试提示与业务码，便于运维区分「限流」与
+		// 「不可达」；detail 不含密钥（APIError 已脱敏）。
+		auditDetail := map[string]any{
+			"deployment_id": seg.DeploymentID,
+			"segment_id":    seg.SegmentID,
+			"result":        "provider_error",
+			"error_code":    "deploy_provider_error",
+		}
+		if errors.As(err, &apiErr) {
+			if apiErr.StatusCode == 429 {
+				auditDetail["error_code"] = "deploy_rate_limited"
+			}
+			if apiErr.RetryAfter > 0 {
+				auditDetail["retry_after_seconds"] = int64(apiErr.RetryAfter / time.Second)
+			}
+		}
+		l.recordAudit(ctx, AuditActionReconcile, auditDetail)
 		return seg.State, err
 	}
 	snapshot, err := snapshotFromDetail(ctx, provider, detail)
@@ -467,18 +484,29 @@ func (l *Ledger) settleTerminal(ctx context.Context, seg Segment, snapshot Deplo
 	source := UsageProviderExact
 	var cumulative *int64
 	var billableSeconds int64
-	if snapshot.ComputeSeconds > 0 {
+	useProvider := snapshot.ComputeSeconds > 0
+	if useProvider {
 		prior, err := l.store.priorProviderCumulativeSeconds(ctx, seg)
 		if err != nil {
 			return seg.State, err
 		}
-		billableSeconds = snapshot.ComputeSeconds - prior
-		if billableSeconds < 0 {
-			billableSeconds = 0
+		if snapshot.ComputeSeconds >= prior {
+			billableSeconds = snapshot.ComputeSeconds - prior
+			v := snapshot.ComputeSeconds
+			cumulative = &v
+		} else {
+			// provider 累计回退（ComputeSeconds < 上一段基线）或本轮读数不可
+			// 比：绝不能把差值夹成 0 还标 provider_exact——那会把「数据异常」
+			// 记成「本段免费」。改走内部记账（M1 复核）。
+			useProvider = false
+			l.log.Warn("deploy billing: provider cumulative regressed, using internal accounting",
+				"segment_id", seg.SegmentID,
+				"compute_seconds", snapshot.ComputeSeconds,
+				"prior_seconds", prior,
+			)
 		}
-		v := snapshot.ComputeSeconds
-		cumulative = &v
-	} else {
+	}
+	if !useProvider {
 		source = UsageInternalAccounting
 		end := now
 		if snapshot.FinishedAt != nil {
@@ -488,6 +516,8 @@ func (l *Ledger) settleTerminal(ctx context.Context, seg Segment, snapshot Deplo
 			billableSeconds = int64(end.Sub(*started) / time.Second)
 		}
 	}
+	// 段上界含 300s 停止宽限（billing-05 §4.4.4）：内部记账同样受此约束，
+	// 防止 provider 终点异常时把整段墙钟时长记进账。
 	maxBillable := seg.PlannedSeconds + DeploymentStopGraceSeconds
 	if billableSeconds > maxBillable {
 		billableSeconds = maxBillable
@@ -507,6 +537,8 @@ func (l *Ledger) settleTerminal(ctx context.Context, seg Segment, snapshot Deplo
 		GPUsPerContainer:          gpus,
 		ReplicaCount:              replicas,
 		Source:                    source,
+		PeriodStart:               started,
+		PeriodEnd:                 snapshot.FinishedAt,
 		ProviderCumulativeSeconds: cumulative,
 		ProviderObservedAt:        &observed,
 	})
@@ -519,8 +551,12 @@ func (l *Ledger) settleTerminal(ctx context.Context, seg Segment, snapshot Deplo
 // ReconcileInvoice 把 provider 账单与已确认成本的差异写成
 // reconciliation_adjustment（billing-03 §5.9.3 第 6 条）。
 //
-// 本批 provider 适配器没有账单端点，因此 invoice reader 为 nil 时返回
-// ErrInvoiceUnavailable（已在台账登记为残余项）。
+// 幂等与更正：
+//   - 同一账单引用、同一金额重复对账 → 0 差额，不追加事实；
+//   - 同一周期收到更正发票（金额/引用变化）→ 写**新**调整事实（键含账单
+//     引用 + 序号），不得被唯一约束静默丢弃；
+//   - PeriodStart 为空 → 键里用 '-'，但序号保证逐次调整不共用键；
+//   - 多个账单周期 → 各周期取最后一条调整后求和（见 segmentConfirmedCredits）。
 func (l *Ledger) ReconcileInvoice(ctx context.Context, segmentID string) (int64, error) {
 	if l.invoice == nil {
 		return 0, ErrInvoiceUnavailable
@@ -547,46 +583,97 @@ func (l *Ledger) ReconcileInvoice(ctx context.Context, segmentID string) (int64,
 		current = *seg.SettledCredits
 	}
 	if invoiced == current {
+		l.recordAudit(ctx, AuditActionReconcile, map[string]any{
+			"deployment_id":    seg.DeploymentID,
+			"segment_id":       seg.SegmentID,
+			"bill_reference":   invoice.BillReference,
+			"invoiced_credits": invoiced,
+			"delta_credits":    0,
+			"result":           "invoice_unchanged",
+		})
 		return 0, nil
 	}
 	now := l.now().UTC()
-	fact := CostFact{
-		FactKey:          FactKey(FactReconciliationAdjustment, seg.SegmentID, invoice.PeriodStart),
-		SegmentID:        seg.SegmentID,
-		DeploymentID:     seg.DeploymentID,
-		FactType:         FactReconciliationAdjustment,
-		PeriodStart:      invoice.PeriodStart,
-		PeriodEnd:        invoice.PeriodEnd,
-		GPUsPerContainer: seg.GPUsPerContainer,
-		ReplicaCount:     seg.ReplicaCount,
-		GPUSeconds:       0,
-		Unit:             UnitGPUSecond,
-		UsageSource:      UsageProviderExact,
-		EstimatedCredits: current,
-		ConfirmedCredits: &invoiced,
-		State:            FactAdjusted,
-		AuditRef:         nullableString(invoice.BillReference),
-		CreatedAt:        now,
+	base := ReconciliationFactKeyBase(seg.SegmentID, invoice.PeriodStart, invoice.BillReference)
+	// 序号在事务内按现有前缀计数；并发同键由 ON CONFLICT 兜底，冲突时重算。
+	for attempt := 0; attempt < 5; attempt++ {
+		tx, err := l.store.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, err
+		}
+		if err := l.store.lockSegment(ctx, tx, seg.SegmentID); err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		exists, err := l.store.adjustmentExists(ctx, tx, seg.SegmentID, invoice.BillReference, invoiced)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if exists {
+			// 并发对账已经写入同一张发票。
+			_ = tx.Rollback()
+			return 0, nil
+		}
+		sequence, err := l.store.nextAdjustmentSequence(ctx, tx, seg.SegmentID, base)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		fact := CostFact{
+			FactKey:          ReconciliationFactKey(seg.SegmentID, invoice.PeriodStart, invoice.BillReference, sequence),
+			SegmentID:        seg.SegmentID,
+			DeploymentID:     seg.DeploymentID,
+			FactType:         FactReconciliationAdjustment,
+			PeriodStart:      invoice.PeriodStart,
+			PeriodEnd:        invoice.PeriodEnd,
+			GPUsPerContainer: seg.GPUsPerContainer,
+			ReplicaCount:     seg.ReplicaCount,
+			GPUSeconds:       0,
+			Unit:             UnitGPUSecond,
+			UsageSource:      UsageProviderExact,
+			EstimatedCredits: current,
+			ConfirmedCredits: &invoiced,
+			State:            FactAdjusted,
+			AuditRef:         nullableString(invoice.BillReference),
+			CreatedAt:        now,
+		}
+		inserted, err := l.store.insertFact(ctx, tx, fact)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if !inserted {
+			// 另一事务抢先写了同一序号：重算序号后重试。
+			_ = tx.Rollback()
+			continue
+		}
+		total, err := l.store.segmentConfirmedCredits(ctx, tx, seg.SegmentID)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if err := l.store.adjustSettledCredits(ctx, tx, seg.SegmentID, total, now); err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		delta := total - current
+		l.recordAudit(ctx, AuditActionReconcile, map[string]any{
+			"deployment_id":       seg.DeploymentID,
+			"segment_id":          seg.SegmentID,
+			"bill_reference":      invoice.BillReference,
+			"invoiced_credits":    invoiced,
+			"confirmed_credits":   total,
+			"delta_credits":       delta,
+			"adjustment_sequence": sequence,
+			"result":              "invoice_adjusted",
+		})
+		return delta, nil
 	}
-	tx, err := l.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	inserted, err := l.store.insertFact(ctx, tx, fact)
-	if err != nil {
-		return 0, err
-	}
-	if !inserted {
-		return 0, nil
-	}
-	if err := l.store.adjustSettledCredits(ctx, tx, seg.SegmentID, invoiced, now); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return invoiced - current, nil
+	return 0, fmt.Errorf("deploy billing: invoice reconciliation conflicted repeatedly for segment %s", seg.SegmentID)
 }
 
 // CostTotals 返回按部署（空串 = 全站）的成本汇总。
@@ -690,12 +777,23 @@ func (l *Ledger) normalizeUsage(seg Segment, fact GPUUsageFact) (GPUUsageFact, e
 	if fact.ReplicaCount == 0 {
 		fact.ReplicaCount = seg.ReplicaCount
 	}
+	// 乘数必须与段快照一致：结算事实不能用调用方临时传入的乘数改写
+	// 段内「每 GPU·秒 × 乘数」的口径（LOW 复核）。
+	if fact.GPUsPerContainer != seg.GPUsPerContainer || fact.ReplicaCount != seg.ReplicaCount {
+		return GPUUsageFact{}, fmt.Errorf("%w: usage multipliers must match the segment snapshot", ErrInvalidSegment)
+	}
 	if fact.GPUsPerContainer < 1 || fact.GPUsPerContainer > MaxDeploymentGPUsPerContainer ||
 		fact.ReplicaCount < 1 || fact.ReplicaCount > MaxDeploymentReplicas {
 		return GPUUsageFact{}, fmt.Errorf("%w: usage multipliers", ErrInvalidSegment)
 	}
 	if fact.GPUSeconds < 0 {
 		return GPUUsageFact{}, fmt.Errorf("%w: negative gpu_seconds", ErrInvalidSegment)
+	}
+	// 结算量不得超过本段上界（含 300s 宽限），否则会绕过预扣/账单校验
+	// 写入超量成本（LOW 复核）。
+	if fact.GPUSeconds > SegmentMaxGPUSeconds(seg) {
+		return GPUUsageFact{}, fmt.Errorf("%w: gpu_seconds %d exceeds segment max %d",
+			ErrInvalidSegment, fact.GPUSeconds, SegmentMaxGPUSeconds(seg))
 	}
 	if fact.Source == "" {
 		fact.Source = UsageInternalAccounting

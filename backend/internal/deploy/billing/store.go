@@ -27,6 +27,7 @@ type store struct {
 type queryer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 const segmentColumns = `segment_id, deployment_id, segment_kind, idempotency_key,
@@ -221,13 +222,18 @@ func (s *store) activeSegmentByDeployment(ctx context.Context, deploymentID stri
 	return seg, err
 }
 
-// listRunningSegments 返回可记账的段（已有 provider 确认起点）。
-func (s *store) listRunningSegments(ctx context.Context, limit int) ([]Segment, error) {
+// listRunningSegmentsAfter 是按 (started_at, segment_id) 的 keyset 分页。
+//
+// 为什么不用 OFFSET：Accrue 会持续写入事实并刷新心跳，单轮扫描可能跨越
+// 数分钟；OFFSET 在并发写入下会跳段/重扫。keyset 的游标只前进，能保证
+// 「所有运行段都被处理到」（M4 复核）。
+func (s *store) listRunningSegmentsAfter(ctx context.Context, afterStartedAt time.Time, afterSegmentID string, limit int) ([]Segment, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+segmentColumns+` FROM deployment_billing_segments
 		WHERE state = 'running' AND started_at IS NOT NULL
-		ORDER BY started_at
-		LIMIT $1`, limit)
+		  AND (started_at > $1 OR (started_at = $1 AND segment_id > $2))
+		ORDER BY started_at, segment_id
+		LIMIT $3`, afterStartedAt, afterSegmentID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -454,10 +460,14 @@ func (s *store) costTotals(ctx context.Context, deploymentID string) (CostTotals
 	}
 	rows.Close()
 
-	// 每段最终确认成本：按 fact_id 升序覆盖，adjustment 是绝对重述值。
-	final := make(map[string]int64)
+	// 每段最终确认成本：
+	//   - 有调整事实 → 外部账单是最终真源，按账单周期取每组最后一条
+	//     （fact_id 升序覆盖）后求和；多个账单周期相加，不能互相覆盖；
+	//   - 没有调整事实 → 取 settlement。
+	settlements := make(map[string]int64)
+	adjustments := make(map[string]map[string]int64)
 	finalRows, err := s.db.QueryContext(ctx, `
-		SELECT segment_id, fact_type, COALESCE(confirmed_credits, 0)
+		SELECT segment_id, fact_type, period_start, COALESCE(confirmed_credits, 0)
 		FROM deployment_cost_facts
 		WHERE fact_type IN ('settlement', 'reconciliation_adjustment')
 		  AND ($1 = '' OR deployment_id = $1)
@@ -468,41 +478,156 @@ func (s *store) costTotals(ctx context.Context, deploymentID string) (CostTotals
 	defer finalRows.Close()
 	for finalRows.Next() {
 		var segmentID, factType string
+		var periodStart sql.NullTime
 		var credits int64
-		if err := finalRows.Scan(&segmentID, &factType, &credits); err != nil {
+		if err := finalRows.Scan(&segmentID, &factType, &periodStart, &credits); err != nil {
 			return CostTotals{}, err
 		}
 		if factType == FactSettlement {
-			if _, exists := final[segmentID]; !exists {
-				final[segmentID] = credits
-			}
+			settlements[segmentID] = credits
 			continue
 		}
-		final[segmentID] = credits
+		group := adjustments[segmentID]
+		if group == nil {
+			group = make(map[string]int64)
+			adjustments[segmentID] = group
+		}
+		group[periodKey(periodStart)] = credits
 	}
 	if err := finalRows.Err(); err != nil {
 		return CostTotals{}, err
 	}
-	for _, credits := range final {
-		out.ConfirmedCredits += credits
+	for segmentID, settlement := range settlements {
+		group, ok := adjustments[segmentID]
+		if !ok {
+			out.ConfirmedCredits += settlement
+			continue
+		}
+		for _, credits := range group {
+			out.ConfirmedCredits += credits
+		}
+	}
+	// 只有调整、没有 settlement 的段（理论上不应出现）也要计入。
+	for segmentID, group := range adjustments {
+		if _, ok := settlements[segmentID]; ok {
+			continue
+		}
+		for _, credits := range group {
+			out.ConfirmedCredits += credits
+		}
 	}
 	return out, nil
 }
 
-// sumAccruedGPUSeconds 返回段内已记录的累计 GPU·秒（用于终态"只允许上调"
-// 与结算口径校验）。
-func (s *store) sumAccruedGPUSeconds(ctx context.Context, segmentID string) (int64, error) {
-	var total sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT SUM(gpu_seconds) FROM deployment_cost_facts
-		WHERE segment_id = $1 AND fact_type = 'accrual'`, segmentID).Scan(&total)
+// lockSegment 在事务内对该段行加锁，串行化同段的发票调整。
+//
+// 为什么需要：两个不同账单周期的调整并发提交时，各自按本事务可见的
+// 事实重算 settled_credits，可能用「缺了对方调整」的值覆盖；加行锁后
+// 第二个事务能看到第一个已提交的调整，最终金额正确。
+func (s *store) lockSegment(ctx context.Context, q queryer, segmentID string) error {
+	var one int
+	if err := q.QueryRowContext(ctx,
+		`SELECT 1 FROM deployment_billing_segments WHERE segment_id = $1 FOR UPDATE`,
+		segmentID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSegmentNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// adjustmentExists 判断「同一账单引用 + 同一金额」的调整是否已落账。
+//
+// 发票重读必须幂等：同一张发票重复对账不能每轮追加一条调整。账单引用
+// 为空时无法判断（不用金额猜测），交给 keyset 序号与金额相等短路处理。
+func (s *store) adjustmentExists(ctx context.Context, q queryer, segmentID, billReference string, credits int64) (bool, error) {
+	if billReference == "" {
+		return false, nil
+	}
+	var one int
+	err := q.QueryRowContext(ctx, `
+		SELECT 1 FROM deployment_cost_facts
+		WHERE segment_id = $1 AND fact_type = 'reconciliation_adjustment'
+		  AND audit_ref = $2 AND confirmed_credits = $3
+		LIMIT 1`, segmentID, billReference, credits).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// nextAdjustmentSequence 返回该 (段, 周期, 账单引用) 基键下的下一个序号。
+//
+// fact_key 里嵌入序号，保证：
+//   - PeriodStart 为空时不会与其它调整共用 "-" 键；
+//   - 同一周期收到更正发票（金额变化）时写新事实，而不是被唯一约束静默丢弃。
+func (s *store) nextAdjustmentSequence(ctx context.Context, q queryer, segmentID, base string) (int, error) {
+	prefix := base + ":"
+	var count int
+	err := q.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM deployment_cost_facts
+		WHERE segment_id = $1 AND fact_type = 'reconciliation_adjustment'
+		  AND left(fact_key, length($2)) = $2`, segmentID, prefix).Scan(&count)
 	if err != nil {
 		return 0, err
 	}
-	if !total.Valid {
-		return 0, nil
+	return count + 1, nil
+}
+
+// segmentConfirmedCredits 计算段的最终确认成本。
+//
+// 口径（与 CostTotals 一致）：
+//   - 没有调整事实 → 取 settlement 的确认金额；
+//   - 有调整事实 → 外部账单是最终真源：按账单周期分组，取每组最后一条
+//     调整（fact_id 升序），再求和。多个账单周期因此是相加而不是互相覆盖。
+func (s *store) segmentConfirmedCredits(ctx context.Context, q queryer, segmentID string) (int64, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT fact_type, period_start, COALESCE(confirmed_credits, 0)
+		FROM deployment_cost_facts
+		WHERE segment_id = $1 AND fact_type IN ('settlement', 'reconciliation_adjustment')
+		ORDER BY fact_id`, segmentID)
+	if err != nil {
+		return 0, err
 	}
-	return total.Int64, nil
+	defer rows.Close()
+	var settlement int64
+	adjustments := make(map[string]int64)
+	for rows.Next() {
+		var factType string
+		var periodStart sql.NullTime
+		var credits int64
+		if err := rows.Scan(&factType, &periodStart, &credits); err != nil {
+			return 0, err
+		}
+		if factType == FactSettlement {
+			settlement = credits
+			continue
+		}
+		adjustments[periodKey(periodStart)] = credits
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(adjustments) > 0 {
+		var total int64
+		for _, credits := range adjustments {
+			total += credits
+		}
+		return total, nil
+	}
+	return settlement, nil
+}
+
+// periodKey 把可空周期起点转成稳定的分组键。
+func periodKey(periodStart sql.NullTime) string {
+	if !periodStart.Valid {
+		return "-"
+	}
+	return periodStart.Time.UTC().Format(time.RFC3339)
 }
 
 // newSegmentID 用 UUID 文本作为本地段 ID（schema 为 text，不依赖 PG 扩展）。

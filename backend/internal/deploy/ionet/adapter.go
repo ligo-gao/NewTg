@@ -114,7 +114,7 @@ type wireDeploymentDetail struct {
 	CreatedAt               flexTime           `json:"created_at"`
 	StartedAt               flexTime           `json:"started_at"`
 	FinishedAt              flexTime           `json:"finished_at"`
-	AmountPaid              float64            `json:"amount_paid"`
+	AmountPaid              Money              `json:"amount_paid"`
 	CompletedPercent        float64            `json:"completed_percent"`
 	TotalGPUs               int                `json:"total_gpus"`
 	GPUsPerContainer        int                `json:"gpus_per_container"`
@@ -401,12 +401,12 @@ func decodeAvailableReplicas(raw []byte, hardwareID, gpuCount int) (AvailableRep
 func decodePriceEstimation(raw []byte, req PriceEstimationRequest) (PriceEstimationResponse, error) {
 	inner := unwrapData(raw)
 	var wire struct {
-		EstimatedCost   *float64        `json:"estimated_cost"`
+		EstimatedCost   *Money          `json:"estimated_cost"`
 		Currency        string          `json:"currency"`
 		EstimationValid *bool           `json:"estimation_valid"`
 		PriceBreakdown  *PriceBreakdown `json:"price_breakdown"`
 		// provider 实际形状（参照侧注释里的 data 字段）
-		TotalCostUSDC                *float64 `json:"total_cost_usdc"`
+		TotalCostUSDC                *Money   `json:"total_cost_usdc"`
 		IONetFee                     *float64 `json:"ionet_fee"`
 		IONetFeePercent              *float64 `json:"ionet_fee_percent"`
 		CurrencyConversionFee        *float64 `json:"currency_conversion_fee"`
@@ -417,13 +417,15 @@ func decodePriceEstimation(raw []byte, req PriceEstimationRequest) (PriceEstimat
 		return PriceEstimationResponse{}, &InvalidResponseError{Err: err}
 	}
 	out := PriceEstimationResponse{EstimationValid: true}
+	// 缺省报价不是错误响应：把「没有报价」显式传给计费层，由它按
+	// gpu_price_unavailable 阻断（不能默认 0 = 免费）。
 	switch {
 	case wire.EstimatedCost != nil:
 		out.EstimatedCost = *wire.EstimatedCost
+		out.EstimatedCostSet = true
 	case wire.TotalCostUSDC != nil:
 		out.EstimatedCost = *wire.TotalCostUSDC
-	default:
-		return PriceEstimationResponse{}, &InvalidResponseError{Err: errors.New("price response has no total cost")}
+		out.EstimatedCostSet = true
 	}
 	out.Currency = strings.ToUpper(strings.TrimSpace(wire.Currency))
 	if out.Currency == "" {
@@ -440,16 +442,22 @@ func decodePriceEstimation(raw []byte, req PriceEstimationRequest) (PriceEstimat
 		return out, nil
 	}
 	// 扁平 provider 形状：只填 provider 实际提供的费用项。
+	// 分解项仅用于展示，保留 float64；报价主值已在上方以 decimal 承载。
+	var totalCost *float64
+	if wire.TotalCostUSDC != nil {
+		value := wire.TotalCostUSDC.InexactFloat64()
+		totalCost = &value
+	}
 	out.PriceBreakdown = PriceBreakdown{
 		IONetFee:                     wire.IONetFee,
 		IONetFeePercent:              wire.IONetFeePercent,
 		CurrencyConversionFee:        wire.CurrencyConversionFee,
 		CurrencyConversionFeePercent: wire.CurrencyConversionFeePercent,
 		Discount:                     wire.Discount,
-		TotalCost:                    wire.TotalCostUSDC,
+		TotalCost:                    totalCost,
 	}
-	if wire.TotalCostUSDC != nil && wire.IONetFee != nil {
-		compute := *wire.TotalCostUSDC - *wire.IONetFee
+	if totalCost != nil && wire.IONetFee != nil {
+		compute := *totalCost - *wire.IONetFee
 		if wire.CurrencyConversionFee != nil {
 			compute -= *wire.CurrencyConversionFee
 		}

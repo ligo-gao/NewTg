@@ -217,24 +217,47 @@ func (w *Worker) AccrueOnce(ctx context.Context) (AccrueStats, error) {
 		stats.Errors += errs
 	}
 
-	segments, err := w.ledger.store.listRunningSegments(ctx, w.batchSize)
-	if err != nil {
-		return stats, err
-	}
-	for _, seg := range segments {
+	// keyset 分页处理**全部**运行段：单页 500 的 LIMIT 只限制每页大小，
+	// 不能只扫最老的一批（否则段数超过批量时后面的段永远不记账，M4 复核）。
+	var cursorStarted time.Time
+	var cursorID string
+	for {
 		if ctx.Err() != nil {
 			break
 		}
-		n, err := w.ledger.Accrue(ctx, seg.SegmentID)
+		segments, err := w.ledger.store.listRunningSegmentsAfter(ctx, cursorStarted, cursorID, w.batchSize)
 		if err != nil {
-			stats.Errors++
-			w.log.Warn("deploy billing: accrue segment failed",
-				"segment_id", seg.SegmentID, "error", err)
-			continue
+			return stats, err
 		}
-		if n > 0 {
-			stats.SegmentsAccrued++
-			stats.FactsWritten += n
+		if len(segments) == 0 {
+			break
+		}
+		for _, seg := range segments {
+			if ctx.Err() != nil {
+				break
+			}
+			n, err := w.ledger.Accrue(ctx, seg.SegmentID)
+			if err != nil {
+				stats.Errors++
+				w.log.Warn("deploy billing: accrue segment failed",
+					"segment_id", seg.SegmentID, "error", err)
+				continue
+			}
+			if n > 0 {
+				stats.SegmentsAccrued++
+				stats.FactsWritten += n
+			}
+		}
+		last := segments[len(segments)-1]
+		if last.StartedAt == nil {
+			// 查询条件已排除，这里只是防御：无法推进游标时必须停止，
+			// 否则会空转。
+			break
+		}
+		cursorStarted = *last.StartedAt
+		cursorID = last.SegmentID
+		if len(segments) < w.batchSize {
+			break
 		}
 	}
 	return stats, nil

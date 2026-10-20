@@ -16,6 +16,8 @@ package billing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -99,6 +101,12 @@ var ErrInvoiceUnavailable = errors.New("deploy billing: provider invoice unavail
 
 // ErrInvalidSegment 表示段/事实输入不满足设计约束。
 var ErrInvalidSegment = errors.New("deploy billing: invalid segment")
+
+// ErrGPUPriceUnavailable 表示 provider 没有给出可用报价（缺省或负数）。
+//
+// 报价缺失不得当作免费：调用方必须阻断建段/续期（M3 复核）。只有 provider
+// 显式返回 0 且带了报价标记时才允许 0 单价。
+var ErrGPUPriceUnavailable = errors.New("deploy billing: gpu price unavailable")
 
 // Segment 是 deployment_billing_segments 的一行。
 type Segment struct {
@@ -339,4 +347,34 @@ func FactKey(factType, segmentID string, periodStart *time.Time) string {
 		period = periodStart.UTC().Format(time.RFC3339)
 	}
 	return factType + ":" + segmentID + ":" + period
+}
+
+// ReconciliationFactKeyBase 是发票调整事实的稳定前缀。
+//
+// 发票调整不能只按 (段, 周期) 做键：PeriodStart 可能为空，且同一周期可能
+// 收到更正发票（新 BillReference / 新金额）。前缀纳入账单引用，实际键再
+// 追加序号（见 ReconciliationFactKey）。
+func ReconciliationFactKeyBase(segmentID string, periodStart *time.Time, billReference string) string {
+	period := "-"
+	if periodStart != nil {
+		period = periodStart.UTC().Format(time.RFC3339)
+	}
+	return FactReconciliationAdjustment + ":" + segmentID + ":" + period + ":" + billReferenceToken(billReference)
+}
+
+// ReconciliationFactKey 在基键后追加序号，保证每次金额变化都有独立事实。
+func ReconciliationFactKey(segmentID string, periodStart *time.Time, billReference string, sequence int) string {
+	return fmt.Sprintf("%s:%d", ReconciliationFactKeyBase(segmentID, periodStart, billReference), sequence)
+}
+
+// billReferenceToken 把账单引用压成定长 token。
+//
+// 为什么用 hash 而不是原字符串：fact_key 以 ':' 分段，原引用里若含 ':'
+// 会让「a」与「a:1」产生前缀歧义（序号前缀匹配会串组）；定长 hex 不会。
+func billReferenceToken(billReference string) string {
+	if billReference == "" {
+		return "-"
+	}
+	sum := sha256.Sum256([]byte(billReference))
+	return hex.EncodeToString(sum[:8])
 }

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // 本文件锁定新增 provider 方法的 HTTP 契约：固定路径、方法、请求体形状、
@@ -96,7 +98,8 @@ func TestDeploymentClientPathsAndMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EstimatePrice: %v", err)
 	}
-	if price.EstimatedCost != 4.25 || price.Currency != "USDC" || price.PriceBreakdown.IONetFee == nil {
+	if !price.EstimatedCost.Equal(decimal.RequireFromString("4.25")) || !price.EstimatedCostSet ||
+		price.Currency != "USDC" || price.PriceBreakdown.IONetFee == nil {
 		t.Fatalf("price = %+v", price)
 	}
 	replicas, err := client.AvailableReplicas(ctx, 1, 2)
@@ -244,7 +247,8 @@ func TestDecodePriceNestedBreakdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodePriceEstimation: %v", err)
 	}
-	if response.Currency != "USD" || response.EstimatedCost != 12.5 || !response.EstimationValid {
+	if response.Currency != "USD" || !response.EstimatedCost.Equal(decimal.RequireFromString("12.5")) ||
+		!response.EstimatedCostSet || !response.EstimationValid {
 		t.Fatalf("response = %+v", response)
 	}
 	if response.PriceBreakdown.ComputeCost == nil || *response.PriceBreakdown.ComputeCost != 10 {
@@ -255,5 +259,58 @@ func TestDecodePriceNestedBreakdown(t *testing.T) {
 	}
 	if response.PriceBreakdown.StorageCost != nil {
 		t.Fatal("缺失的费用项不得伪造")
+	}
+}
+
+// TestDecodePriceMoneyPresenceAndScalars 锁定 M3：缺省报价不是错误，但必须
+// 通过 EstimatedCostSet=false 显式暴露；数字字符串同样精确解析。
+func TestDecodePriceMoneyPresenceAndScalars(t *testing.T) {
+	// 缺省：不报错、不带报价标记（计费层据此阻断）。
+	missing, err := decodePriceEstimation([]byte(`{"currency":"usdc"}`), PriceEstimationRequest{})
+	if err != nil {
+		t.Fatalf("缺省报价不应是解码错误: %v", err)
+	}
+	if missing.EstimatedCostSet {
+		t.Fatal("缺省报价不得标记为已报价（否则会被当成免费）")
+	}
+
+	// 字符串金额：max 精度不得经过 float64。
+	exact, err := decodePriceEstimation([]byte(`{"data":{"total_cost_usdc":"0.123456789012345678"}}`),
+		PriceEstimationRequest{Currency: "usdc"})
+	if err != nil {
+		t.Fatalf("字符串金额解码: %v", err)
+	}
+	if !exact.EstimatedCostSet ||
+		!exact.EstimatedCost.Equal(decimal.RequireFromString("0.123456789012345678")) {
+		t.Fatalf("字符串金额未精确解析: %+v", exact)
+	}
+
+	// 显式 0：标记为已报价（唯一合法的免费情形）。
+	zero, err := decodePriceEstimation([]byte(`{"estimated_cost":0}`), PriceEstimationRequest{})
+	if err != nil || !zero.EstimatedCostSet || !zero.EstimatedCost.IsZero() {
+		t.Fatalf("显式 0 报价 = %+v, %v", zero, err)
+	}
+
+	// estimation_valid=false 必须保留给计费层判断。
+	invalid, err := decodePriceEstimation([]byte(`{"estimated_cost":1,"estimation_valid":false}`),
+		PriceEstimationRequest{})
+	if err != nil || invalid.EstimationValid {
+		t.Fatalf("estimation_valid=false 丢失: %+v, %v", invalid, err)
+	}
+}
+
+// TestDecodeDeploymentAmountPaidExact 锁定 amount_paid 的精确承载。
+func TestDecodeDeploymentAmountPaidExact(t *testing.T) {
+	detail, err := decodeDeploymentDetail([]byte(`{"id":"d1","amount_paid":"7.200000000000000001"}`), "d1")
+	if err != nil {
+		t.Fatalf("decodeDeploymentDetail: %v", err)
+	}
+	if !detail.AmountPaid.Equal(decimal.RequireFromString("7.200000000000000001")) {
+		t.Fatalf("amount_paid = %s，未精确解析", detail.AmountPaid)
+	}
+	// 序列化回 JSON 仍是数字，不是 decimal 默认的带引号字符串。
+	encoded, err := json.Marshal(detail.AmountPaid)
+	if err != nil || string(encoded) != "7.200000000000000001" {
+		t.Fatalf("marshal money = %s, %v", encoded, err)
 	}
 }
