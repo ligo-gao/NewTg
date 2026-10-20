@@ -380,13 +380,15 @@
       "total": "总额度",
       "used": "已用",
       "remain": "剩余",
+      "progress": "已用 {used} / {total}",
       "unlimited": "无限",
       "next_reset": "下次重置",
       "until": "至 {time}",
       "expired_at": "已于 {time} 过期",
       "cancelled_at": "已于 {time} 取消",
       "cancel_at_period_end": "周期末取消",
-      "cancel_error": "无法更新该订阅。"
+      "cancel_error": "无法更新该订阅。",
+      "cancelling": "正在取消…"
     },
     "status": {
       "active": "活跃",

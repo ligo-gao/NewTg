@@ -380,13 +380,15 @@
       "total": "Всего",
       "used": "Использовано",
       "remain": "Остаток",
+      "progress": "Использовано {used} из {total}",
       "unlimited": "Безлимитно",
       "next_reset": "Следующий сброс",
       "until": "До {time}",
       "expired_at": "Истекла {time}",
       "cancelled_at": "Отменена {time}",
       "cancel_at_period_end": "Отменить в конце периода",
-      "cancel_error": "Не удалось обновить подписку."
+      "cancel_error": "Не удалось обновить подписку.",
+      "cancelling": "Отмена…"
     },
     "status": {
       "active": "Активна",

@@ -380,13 +380,15 @@
       "total": "Tổng",
       "used": "Đã dùng",
       "remain": "Còn lại",
+      "progress": "Đã dùng {used} / {total}",
       "unlimited": "Không giới hạn",
       "next_reset": "Đặt lại tiếp theo",
       "until": "Đến {time}",
       "expired_at": "Đã hết hạn vào {time}",
       "cancelled_at": "Đã hủy vào {time}",
       "cancel_at_period_end": "Hủy vào cuối chu kỳ",
-      "cancel_error": "Không thể cập nhật đăng ký."
+      "cancel_error": "Không thể cập nhật đăng ký.",
+      "cancelling": "Đang hủy…"
     },
     "status": {
       "active": "Hoạt động",

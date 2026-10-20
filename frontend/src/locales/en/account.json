@@ -380,13 +380,15 @@
       "total": "Total",
       "used": "Used",
       "remain": "Remaining",
+      "progress": "{used} of {total} used",
       "unlimited": "Unlimited",
       "next_reset": "Next reset",
       "until": "Until {time}",
       "expired_at": "Expired at {time}",
       "cancelled_at": "Cancelled at {time}",
       "cancel_at_period_end": "Cancel at period end",
-      "cancel_error": "Could not update the subscription."
+      "cancel_error": "Could not update the subscription.",
+      "cancelling": "Cancelling..."
     },
     "status": {
       "active": "Active",

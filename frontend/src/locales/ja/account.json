@@ -380,13 +380,15 @@
       "total": "合計",
       "used": "使用済み",
       "remain": "残り",
+      "progress": "{total} 中 {used} 使用済み",
       "unlimited": "無制限",
       "next_reset": "次回リセット",
       "until": "{time} まで",
       "expired_at": "{time} に期限切れ",
       "cancelled_at": "{time} にキャンセル",
       "cancel_at_period_end": "期間末にキャンセル",
-      "cancel_error": "サブスクリプションを更新できませんでした。"
+      "cancel_error": "サブスクリプションを更新できませんでした。",
+      "cancelling": "キャンセル中…"
     },
     "status": {
       "active": "有効",

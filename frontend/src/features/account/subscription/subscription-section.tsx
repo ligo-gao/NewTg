@@ -18,10 +18,12 @@ export const PLANS_KEY = ['subscription', 'plans'] as const
 /**
  * /wallet 的订阅区（billing-08 §16.3 F-H-03/04）。
  *
- * Each block owns its loading/error/empty state so a failing preference read
- * cannot blank the plan grid. The six-state contract maps as:
+ * Each block owns its loading/error state so a failing preference read cannot
+ * blank the plan grid. The six-state contract maps as:
  *   - loading: skeleton rows (`aria-busy`);
- *   - empty: plans [] and subscriptions [] have their own copy (§16.5);
+ *   - empty: the *whole* subscription area is omitted when no plan is enabled
+ *     (billing-08 §16.3 / modules-04:623, 裁决 A3a-M2), not rendered as an
+ *     empty state — there is nothing a user could act on;
  *   - error: inline message + Retry;
  *   - 429: rendered inside the purchase dialog next to the failing action;
  *   - offline: `navigator.onLine` disables every write (subscribe, cancel,
@@ -30,9 +32,11 @@ export const PLANS_KEY = ['subscription', 'plans'] as const
  *     scoped to `Principal.UserID` and require only a signed-in user, so a 403
  *     is surfaced as an ordinary load error rather than a fake auth state.
  *
- * The page remains usable with zero enabled plans: the section renders the
- * documented empty state instead of disappearing (产品要求保留空态，便于用户
- * 确认订阅功能存在但当前无在售套餐).
+ * Plan-list errors still render the section: "we could not read the catalog"
+ * is actionable (Retry), unlike "the catalog is empty". My Subscriptions and
+ * the billing preference live inside the same area, so they disappear too when
+ * the area is omitted; the no-plans rule is about the subscription product as
+ * a whole, not just the plan grid.
  */
 export function SubscriptionSection() {
   const { t } = useI18n()
@@ -66,6 +70,14 @@ export function SubscriptionSection() {
     queryFn: async () =>
       requireData(await apiClient.GET('/api/billing-preference')),
   })
+
+  // 裁决 A3a-M2: no enabled plan means the subscription product is not offered.
+  // Render nothing at all — the empty-state copy in the dictionaries is kept
+  // for parity but intentionally unused here. Only a *successful* empty read
+  // hides the area; a failed read keeps the error + Retry visible.
+  if (plansQuery.isSuccess && (plansQuery.data?.items.length ?? 0) === 0) {
+    return null
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-4">
@@ -110,10 +122,6 @@ export function SubscriptionSection() {
               {t('account.subscription.plans.retry')}
             </Button>
           </div>
-        ) : (plansQuery.data?.items.length ?? 0) === 0 ? (
-          <p className="mt-4 text-sm text-ink-2">
-            {t('account.subscription.plans.empty')}
-          </p>
         ) : (
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {plansQuery.data?.items.map((plan) => (
@@ -140,6 +148,7 @@ export function SubscriptionSection() {
 
       <SubscriptionPurchaseDialog
         plan={purchasePlan}
+        offline={offline}
         onOpenChange={(open) => {
           if (!open) setPurchasePlan(null)
         }}

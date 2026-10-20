@@ -119,6 +119,7 @@ export function MySubscriptions({
                 locale={locale}
                 offline={offline}
                 pending={pendingId === item.id}
+                anyPending={pendingId !== null}
                 cancelError={cancelErrorId === item.id}
                 onCancel={() => void handleCancel(item)}
               />
@@ -135,6 +136,7 @@ function SubscriptionRow({
   locale,
   offline,
   pending,
+  anyPending,
   cancelError,
   onCancel,
 }: {
@@ -142,6 +144,8 @@ function SubscriptionRow({
   locale: string
   offline: boolean
   pending: boolean
+  /** Another row's cancel is in flight; serialize all cancel switches. */
+  anyPending: boolean
   cancelError: boolean
   onCancel: () => void
 }) {
@@ -171,7 +175,12 @@ function SubscriptionRow({
           })
 
   const cancelDisabled =
-    offline || item.status !== 'active' || item.cancel_at_period_end || pending
+    offline ||
+    item.status !== 'active' ||
+    item.cancel_at_period_end ||
+    // One cancel at a time: the server serializes per instance, and two
+    // in-flight switches would make the "which row is busy" notice ambiguous.
+    anyPending
 
   return (
     <article
@@ -230,6 +239,12 @@ function SubscriptionRow({
             aria-valuemin={0}
             aria-valuemax={item.amount_total}
             aria-valuenow={item.amount_used}
+            // The bar is a visual ratio; assistive tech gets the exact numbers
+            // instead of only a percentage implied by aria-valuenow/max.
+            aria-valuetext={t('account.subscription.mine.progress', {
+              used: formatCredits(item.amount_used),
+              total: formatCredits(item.amount_total),
+            })}
             className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-subtle"
           >
             <div
@@ -253,13 +268,22 @@ function SubscriptionRow({
               {t('account.subscription.mine.cancel_error')}
             </span>
           ) : null}
+          {pending ? (
+            <span role="status" className="text-xs text-ink-2">
+              {t('account.subscription.mine.cancelling')}
+            </span>
+          ) : null}
         </div>
 
         <button
           type="button"
           role="switch"
           aria-checked={item.cancel_at_period_end}
-          aria-label={t('account.subscription.mine.cancel_at_period_end')}
+          // The row title disambiguates multiple active instances: a bare
+          // "Cancel at period end" gives a screen reader no way to tell which
+          // subscription the switch belongs to.
+          aria-label={`${t('account.subscription.mine.cancel_at_period_end')}: ${item.plan_title_snapshot}`}
+          aria-busy={pending}
           disabled={cancelDisabled}
           onClick={onCancel}
           className={[

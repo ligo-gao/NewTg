@@ -380,13 +380,15 @@
       "total": "Total",
       "used": "Utilisé",
       "remain": "Restant",
+      "progress": "{used} sur {total} utilisés",
       "unlimited": "Illimité",
       "next_reset": "Prochaine réinitialisation",
       "until": "Jusqu'au {time}",
       "expired_at": "Expiré le {time}",
       "cancelled_at": "Annulé le {time}",
       "cancel_at_period_end": "Annuler en fin de période",
-      "cancel_error": "Impossible de mettre à jour l'abonnement."
+      "cancel_error": "Impossible de mettre à jour l'abonnement.",
+      "cancelling": "Annulation…"
     },
     "status": {
       "active": "Actif",

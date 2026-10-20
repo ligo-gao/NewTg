@@ -24,6 +24,12 @@ const NO_PROVIDERS: readonly SubscriptionProvider[] = []
 export interface SubscriptionPurchaseDialogProps {
   /** `null` closes the purchase intent. */
   plan: AvailableSubscriptionPlan | null
+  /**
+   * Browser offline signal. A write started while offline would only surface
+   * as an `offline` error after the round trip, so confirmation is disabled
+   * up front (same rule as the plan cards and cancel switches).
+   */
+  offline: boolean
   onOpenChange: (open: boolean) => void
   /** Called whenever an instance was created (free, replay-paid or webhook). */
   onPurchased: () => void
@@ -66,6 +72,7 @@ function newKey(): string {
  */
 export function SubscriptionPurchaseDialog({
   plan,
+  offline,
   onOpenChange,
   onPurchased,
 }: SubscriptionPurchaseDialogProps) {
@@ -90,10 +97,11 @@ export function SubscriptionPurchaseDialog({
   const isFree = plan !== null && plan.price_amount === 0
 
   // Fresh intent per open: new key, cleared state. Keyed on the plan id (not
-  // the object) because a plans refetch produces a new object for the same plan.
+  // the object) because a plans refetch produces a new object for the same
+  // plan. Closing (planId → null) clears as well, so reopening the *same* plan
+  // starts a new intent instead of resuming the previous attempt's state/key.
   useEffect(() => {
-    if (planId === null) return
-    keyRef.current = newKey()
+    keyRef.current = planId === null ? null : newKey()
     setProvider(null)
     setSubmitting(false)
     setError(null)
@@ -150,7 +158,7 @@ export function SubscriptionPurchaseDialog({
   }
 
   async function submit(): Promise<void> {
-    if (submitting || plan === null) return
+    if (submitting || offline || plan === null) return
     const effectiveProvider: SubscriptionProvider | null = isFree
       ? (providers[0] ?? 'stripe')
       : provider
@@ -266,6 +274,7 @@ export function SubscriptionPurchaseDialog({
       </Button>
       <Button
         disabled={
+          offline ||
           submitting ||
           (!isFree && (provider === null || providers.length === 0))
         }

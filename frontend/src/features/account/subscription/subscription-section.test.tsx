@@ -147,12 +147,24 @@ describe('SubscriptionSection', () => {
     expect(freeCard.getByText('gpt-4o')).toBeTruthy()
   })
 
-  it('shows the empty state when the server returns no plans', async () => {
+  it('renders no subscription area at all when no plan is enabled', async () => {
     useBaseHandlers({ plans: [], subscriptions: [] })
-    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    // 裁决 A3a-M2 (billing-08 §16.3 / modules-04:623): no enabled plan means
+    // the whole area is omitted, not replaced by an empty state. This also
+    // hides My Subscriptions and the billing preference.
+    const { container } = await renderWithProviders(<SubscriptionSection />, [
+      'common',
+      'account',
+    ])
 
-    expect(await screen.findByText('No plans available')).toBeTruthy()
-    expect(screen.getByText('You have no subscriptions yet')).toBeTruthy()
+    await waitFor(() => {
+      expect(container.firstChild).toBeNull()
+    })
+    expect(screen.queryByText('Subscription Plans')).toBeNull()
+    expect(screen.queryByText('My Subscriptions')).toBeNull()
+    expect(screen.queryByText('Billing Preference')).toBeNull()
+    // The empty-state copy is retained in the dictionaries but never rendered.
+    expect(screen.queryByText('No plans available')).toBeNull()
   })
 
   it('offers a retry when the plan list fails', async () => {
@@ -323,6 +335,7 @@ describe('SubscriptionSection', () => {
     let cancelCalls = 0
     let idempotencyKey: string | null = null
     let method: string | null = null
+    let path: string | null = null
     useBaseHandlers({ subscriptions: [ACTIVE_SUB] })
     server.use(
       http.get(`${ORIGIN}/api/subscriptions`, () =>
@@ -335,35 +348,70 @@ describe('SubscriptionSection', () => {
       http.post(`${ORIGIN}/api/subscriptions/5/cancel`, ({ request }) => {
         cancelCalls += 1
         method = request.method
+        path = new URL(request.url).pathname
         idempotencyKey = request.headers.get('idempotency-key')
-        return HttpResponse.json({ id: 5, cancel_at_period_end: true })
+        return HttpResponse.json({ ...ACTIVE_SUB, cancel_at_period_end: true })
       }),
     )
     await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
     const user = userEvent.setup()
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Cancel at period end',
+      name: 'Cancel at period end: Basic',
     })
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     await user.click(toggle)
 
     await waitFor(() => {
-      expect(screen.getByRole('switch', { name: 'Cancel at period end' }).getAttribute('aria-checked')).toBe('true')
+      expect(
+        screen
+          .getByRole('switch', { name: 'Cancel at period end: Basic' })
+          .getAttribute('aria-checked'),
+      ).toBe('true')
     })
     expect(cancelCalls).toBe(1)
     expect(method).toBe('POST')
+    // The generated client owns the path template; prove the id was expanded.
+    expect(path).toBe('/api/subscriptions/5/cancel')
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('surfaces a 409 cancel response inline and leaves the switch unchanged', async () => {
+    useBaseHandlers({ subscriptions: [ACTIVE_SUB] })
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/cancel`, () =>
+        HttpResponse.json({ title: 'ended' }, { status: 409 }),
+      ),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Cancel at period end: Basic',
+    })
+    await user.click(toggle)
+
+    // 409 = the instance already expired/cancelled: the write did not change
+    // the server field, so the switch must stay off and an inline error shows.
+    expect(
+      await screen.findByText('Could not update the subscription.'),
+    ).toBeTruthy()
+    expect(
+      screen
+        .getByRole('switch', { name: 'Cancel at period end: Basic' })
+        .getAttribute('aria-checked'),
+    ).toBe('false')
   })
 
   it('renders unlimited quota without a progress bar', async () => {
     useBaseHandlers({
-      plans: [],
       subscriptions: [ACTIVE_SUB, UNLIMITED_SUB],
     })
     await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
 
-    expect(await screen.findByText('Unlimited')).toBeTruthy()
+    const unlimitedRow = (await screen.findByText('Meterless')).closest('article')
+    expect(unlimitedRow).not.toBeNull()
+    expect(within(unlimitedRow as HTMLElement).getByText('Unlimited')).toBeTruthy()
     // Only the finite instance has a denominator; the unlimited one must not
     // render a bar at all.
     const bars = screen.getAllByRole('progressbar')
@@ -438,7 +486,7 @@ describe('SubscriptionSection', () => {
       expect(
         (
           (await screen.findByRole('switch', {
-            name: 'Cancel at period end',
+            name: 'Cancel at period end: Basic',
           })) as HTMLButtonElement
         ).disabled,
       ).toBe(true)
@@ -447,6 +495,206 @@ describe('SubscriptionSection', () => {
           screen.getAllByRole('radio')[0] as HTMLButtonElement
         ).disabled,
       ).toBe(true)
+    } finally {
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      })
+    }
+  })
+
+  it.each([
+    [409, 'This plan is no longer available, or the request was already used.'],
+    [422, 'This plan cannot be purchased right now.'],
+    [503, 'Payment is temporarily unavailable. Please try again later.'],
+  ] as const)(
+    'renders a %i purchase failure inline next to the action',
+    async (status, copy) => {
+      useBaseHandlers({})
+      server.use(
+        http.post(`${ORIGIN}/api/subscription/purchase`, () =>
+          HttpResponse.json({ title: 'boom' }, { status }),
+        ),
+      )
+      await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+      const user = userEvent.setup()
+
+      await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+      await screen.findByRole('radio', { name: 'Stripe' })
+      await user.click(screen.getByRole('button', { name: 'Confirm' }))
+
+      expect((await screen.findByRole('alert')).textContent).toBe(copy)
+      // The intent survives a failure: the dialog stays open for a retry.
+      expect(screen.getByRole('dialog')).toBeTruthy()
+    },
+  )
+
+  it('renders an offline purchase failure inline', async () => {
+    useBaseHandlers({})
+    server.use(
+      http.post(`${ORIGIN}/api/subscription/purchase`, () =>
+        HttpResponse.error(),
+      ),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await screen.findByRole('radio', { name: 'Stripe' })
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'You are offline. Reconnect to complete the purchase.',
+    )
+  })
+
+  it('reuses the same Idempotency-Key when retrying a failed purchase', async () => {
+    const keys: string[] = []
+    let attempts = 0
+    useBaseHandlers({})
+    server.use(
+      http.post(`${ORIGIN}/api/subscription/purchase`, ({ request }) => {
+        attempts += 1
+        keys.push(request.headers.get('idempotency-key') ?? '')
+        if (attempts === 1) {
+          return HttpResponse.json({ title: 'boom' }, { status: 500 })
+        }
+        return HttpResponse.json(
+          {
+            order: {
+              id: 21,
+              provider: 'stripe',
+              amount: 5000,
+              currency: 'CNY',
+              status: 'pending',
+              credited_credits: 0,
+              created_at: '2026-10-20T10:00:00Z',
+            },
+            client_secret: 'pi_retry_secret',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await screen.findByRole('radio', { name: 'Stripe' })
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not create the subscription order. Please try again.',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect(await screen.findByTestId('card-element')).toBeTruthy()
+    expect(keys).toHaveLength(2)
+    // A retry of the *same* intent must replay the first order, not create a
+    // second one: the key is minted on open and only replaced on close/retry.
+    expect(keys[1]).toBe(keys[0])
+  })
+
+  it('mints a different Idempotency-Key when the same plan is reopened', async () => {
+    const keys: string[] = []
+    useBaseHandlers({})
+    server.use(
+      http.post(`${ORIGIN}/api/subscription/purchase`, ({ request }) => {
+        keys.push(request.headers.get('idempotency-key') ?? '')
+        return HttpResponse.json({ title: 'boom' }, { status: 500 })
+      }),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    // First intent: fail, then cancel out of the dialog.
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await screen.findByRole('radio', { name: 'Stripe' })
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    await screen.findByRole('alert')
+    const firstDialog = screen.getByRole('dialog')
+    await user.click(within(firstDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    // Second intent on the same plan: state and key must be fresh.
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await screen.findByRole('radio', { name: 'Stripe' })
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[1]).not.toBe(keys[0])
+  })
+
+  it('shows next reset, quota progress width and an accessible value text', async () => {
+    useBaseHandlers({ subscriptions: [ACTIVE_SUB] })
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+
+    expect(await screen.findByText(/Next reset/)).toBeTruthy()
+    const bar = await screen.findByRole('progressbar')
+    // 250 used / 1000 total.
+    expect(bar.getAttribute('aria-valuenow')).toBe('250')
+    expect(bar.getAttribute('aria-valuemax')).toBe('1000')
+    expect(bar.getAttribute('aria-valuetext')).toBe('250 of 1,000 used')
+    const fill = bar.firstElementChild as HTMLElement | null
+    expect(fill).not.toBeNull()
+    expect(fill?.style.width).toBe('25%')
+  })
+
+  it('disables every cancel switch and shows a notice while one is in flight', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    useBaseHandlers({
+      subscriptions: [ACTIVE_SUB, { ...ACTIVE_SUB, id: 7, plan_title_snapshot: 'Pro' }],
+    })
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/cancel`, async () => {
+        await gate
+        return HttpResponse.json({ ...ACTIVE_SUB, cancel_at_period_end: true })
+      }),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    const basic = await screen.findByRole('switch', {
+      name: 'Cancel at period end: Basic',
+    })
+    const pro = screen.getByRole('switch', { name: 'Cancel at period end: Pro' })
+    await user.click(basic)
+
+    expect(await screen.findByText('Cancelling...')).toBeTruthy()
+    expect(basic.getAttribute('aria-busy')).toBe('true')
+    // The section serializes cancellations: the other row is disabled too.
+    await waitFor(() => {
+      expect((pro as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    release()
+    await waitFor(() => expect(screen.queryByText('Cancelling...')).toBeNull())
+  })
+
+  it('disables Confirm in an open purchase dialog when the connection drops', async () => {
+    useBaseHandlers({})
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await screen.findByRole('radio', { name: 'Stripe' })
+    expect(
+      (screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    })
+    try {
+      window.dispatchEvent(new Event('offline'))
+      await waitFor(() => {
+        expect(
+          (screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement)
+            .disabled,
+        ).toBe(true)
+      })
     } finally {
       Object.defineProperty(window.navigator, 'onLine', {
         configurable: true,
