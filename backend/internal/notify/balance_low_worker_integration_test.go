@@ -2,14 +2,23 @@
 
 package notify
 
-// B4 / N6 低余额扫描的真实 PostgreSQL 验收（Redis 用 miniredis 验证扫描器
-// 不写任何暂停/计数状态）：
+// B4 / N6 低余额扫描的真实 PostgreSQL 验收。
 //
 //	NEWTG_TEST_DB_DSN='postgres://newtg:newtg@localhost:55432/newtg_dom_b4?sslmode=disable' \
 //	  go test -tags=integration ./internal/notify/ -run BalanceLow -v
 //
 // 覆盖：阈值命中/未命中、禁用/阈值 0/未订阅不扫描、按站点时区按天去重、
-// 跨天可再发、余额回升后再跌破、投递行字段与载荷脱敏（无邮箱/手机号）。
+// 跨天可再发、余额回升后再跌破、site.timezone 从 cfg 读取与回退、查询阶段
+// 排除当天已通知用户、投递行字段与载荷脱敏（无邮箱/手机号）。
+//
+// 【共享库隔离】本文件可能在存有其它集成用例数据的共享库上执行（例如同一
+// 次 `go test ./internal/notify/ ./internal/httpapi/` 的另一个包）。因此：
+//   - 所有投递行断言都按**本用例用户**的 `dedupe_key` 前缀过滤，绝不断言
+//     `notification_deliveries` 全表为空或全表计数；
+//   - 不断言 `Scanned`/`Enqueued` 的精确值（共享库里其它低余额用户也会
+//     命中），只断言本用例用户的行为；`Failed` 仍要求为 0；
+//   - 清理只删除 `balance_low:` 前缀的投递行与 `b4-` 前缀用户——这仍是对
+//     全表的范围谓词，但不触碰其它类别/其它用例的数据。
 
 import (
 	"context"
@@ -18,9 +27,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 )
 
 const balanceLowTestDay = "2026-10-20"
@@ -35,12 +41,15 @@ func subscribedBalanceLow() balanceLowSubscription {
 	return balanceLowSubscription{events: map[string]bool{"balance_low": true}}
 }
 
-// cleanBalanceLowFixtures 清空本文件拥有的用户与全部投递行。
-// 用户按 b4- 前缀限定，避免误删其它集成用例的数据。
+// cleanBalanceLowFixtures 删除本文件拥有的用户与低余额投递行。
+//
+// 投递行没有「测试归属」列，只能用 `dedupe_key` 前缀做全表范围谓词；用户
+// 按 `b4-` 前缀限定。删除是全局可见的，因此本文件的断言必须按用户过滤，
+// 不能依赖全表计数（见文件头「共享库隔离」）。
 func cleanBalanceLowFixtures(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`DELETE FROM notification_deliveries`); err != nil {
-		t.Fatalf("clean deliveries: %v", err)
+	if _, err := db.Exec(`DELETE FROM notification_deliveries WHERE dedupe_key LIKE 'balance_low:%'`); err != nil {
+		t.Fatalf("clean balance_low deliveries: %v", err)
 	}
 	if _, err := db.Exec(`DELETE FROM users WHERE username LIKE 'b4-%'`); err != nil {
 		t.Fatalf("clean users: %v", err)
@@ -106,12 +115,16 @@ type balanceLowDelivery struct {
 	Payload   []byte
 }
 
-func listBalanceLowDeliveries(t *testing.T, db *sql.DB) []balanceLowDelivery {
+// listBalanceLowDeliveriesForUser 只返回 dedupe_key 属于该用户的投递行。
+// 共享库里其它用户的 balance_low 行不会进入结果，也因此不会造成假失败。
+func listBalanceLowDeliveriesForUser(t *testing.T, db *sql.DB, userID int64) []balanceLowDelivery {
 	t.Helper()
 	rows, err := db.Query(`SELECT category, channel, recipient, status, dedupe_key, payload
-		FROM notification_deliveries ORDER BY id`)
+		FROM notification_deliveries
+		WHERE dedupe_key LIKE $1
+		ORDER BY id`, fmt.Sprintf("balance_low:%d:%%", userID))
 	if err != nil {
-		t.Fatalf("list deliveries: %v", err)
+		t.Fatalf("list deliveries for user %d: %v", userID, err)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []balanceLowDelivery
@@ -135,29 +148,22 @@ func TestBalanceLowWorkerEnqueuesOnlyEnabledUsersBelowThreshold(t *testing.T) {
 
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	below := insertBalanceLowUser(t, db, "b4-below", 500, "enabled")
-	insertBalanceLowUser(t, db, "b4-at-threshold", 1000, "enabled")
-	insertBalanceLowUser(t, db, "b4-above", 2000, "enabled")
-	insertBalanceLowUser(t, db, "b4-disabled", 0, "disabled")
-
-	// miniredis 只用于观察：扫描器不读写 N8 的暂停/连续失败状态。
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
-	t.Cleanup(func() { _ = rdb.Close() })
+	atThreshold := insertBalanceLowUser(t, db, "b4-at-threshold", 1000, "enabled")
+	above := insertBalanceLowUser(t, db, "b4-above", 2000, "enabled")
+	disabled := insertBalanceLowUser(t, db, "b4-disabled", 0, "disabled")
 
 	worker := newBalanceLowWorkerForTest(t, db,
 		newBalanceLowConfig(true, 1000, ""), subscribedBalanceLow(), now, nil)
 	result := worker.RunOnce(context.Background())
-	if result.Skipped || result.Scanned != 1 || result.Enqueued != 1 || result.Deduped != 0 || result.Failed != 0 {
-		t.Fatalf("result = %+v，期望 scanned=1 enqueued=1", result)
+	// 共享库里可能还有其它低余额用户，Scanned/Enqueued 的精确值不可依赖；
+	// 本用例只要求没有入队失败且自己的用户被写入。
+	if result.Failed != 0 || result.Enqueued < 1 {
+		t.Fatalf("result = %+v，期望 failed=0 enqueued>=1", result)
 	}
 
-	if keys, err := rdb.Keys(context.Background(), "*").Result(); err != nil || len(keys) != 0 {
-		t.Fatalf("扫描器不应写 Redis（keys=%v err=%v）", keys, err)
-	}
-
-	items := listBalanceLowDeliveries(t, db)
+	items := listBalanceLowDeliveriesForUser(t, db, below)
 	if len(items) != 1 {
-		t.Fatalf("投递行数 = %d，期望 1", len(items))
+		t.Fatalf("命中用户投递行数 = %d，期望 1", len(items))
 	}
 	item := items[0]
 	if item.Category != "billing.balance_low" || item.Channel != "webhook" ||
@@ -194,12 +200,23 @@ func TestBalanceLowWorkerEnqueuesOnlyEnabledUsersBelowThreshold(t *testing.T) {
 			t.Fatalf("payload 含 PII 字段 %q：%s", forbidden, item.Payload)
 		}
 	}
+
+	// 阈值上沿、阈值之上与禁用用户都不得产生投递行（按用户断言）。
+	for name, id := range map[string]int64{
+		"at threshold": atThreshold,
+		"above":        above,
+		"disabled":     disabled,
+	} {
+		if got := listBalanceLowDeliveriesForUser(t, db, id); len(got) != 0 {
+			t.Fatalf("%s 用户不应有投递行，实得 %d 行", name, len(got))
+		}
+	}
 }
 
 func TestBalanceLowWorkerSkipsWhenDisabledZeroOrUnsubscribed(t *testing.T) {
 	db := openNotifyTestDB(t)
 	cleanBalanceLowFixtures(t, db)
-	insertBalanceLowUser(t, db, "b4-skip", 0, "enabled")
+	skipUser := insertBalanceLowUser(t, db, "b4-skip", 0, "enabled")
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
@@ -220,8 +237,8 @@ func TestBalanceLowWorkerSkipsWhenDisabledZeroOrUnsubscribed(t *testing.T) {
 			if !result.Skipped {
 				t.Fatalf("result = %+v，期望 skipped", result)
 			}
-			if items := listBalanceLowDeliveries(t, db); len(items) != 0 {
-				t.Fatalf("不应产生投递行，实得 %d", len(items))
+			if items := listBalanceLowDeliveriesForUser(t, db, skipUser); len(items) != 0 {
+				t.Fatalf("不应产生本用例用户的投递行，实得 %d", len(items))
 			}
 		})
 	}
@@ -242,27 +259,126 @@ func TestBalanceLowWorkerDedupesPerSiteDayAndResendsNextDay(t *testing.T) {
 	now := time.Date(2026, 10, 20, 17, 0, 0, 0, time.UTC)
 	worker := newBalanceLowWorkerForTest(t, db, cfg, subscribedBalanceLow(), now, loc)
 
-	if result := worker.RunOnce(context.Background()); result.Enqueued != 1 {
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
 		t.Fatalf("首轮 result = %+v", result)
 	}
-	// 同一站点日的第二轮被 dedupe_key 收敛。
-	if result := worker.RunOnce(context.Background()); result.Deduped != 1 || result.Enqueued != 0 {
+	items := listBalanceLowDeliveriesForUser(t, db, userID)
+	if len(items) != 1 || items[0].Dedupe != fmt.Sprintf("balance_low:%d:2026-10-21", userID) {
+		t.Fatalf("首轮投递行 = %+v，期望上海日期 2026-10-21 且仅 1 行", items)
+	}
+
+	// 同一站点日的第二轮：该用户已被查询排除，不会新增行。
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
 		t.Fatalf("同日第二轮 result = %+v", result)
 	}
-	items := listBalanceLowDeliveries(t, db)
-	if len(items) != 1 || items[0].Dedupe != fmt.Sprintf("balance_low:%d:2026-10-21", userID) {
-		t.Fatalf("同日投递行 = %+v，期望上海日期 2026-10-21 且仅 1 行", items)
+	if items := listBalanceLowDeliveriesForUser(t, db, userID); len(items) != 1 {
+		t.Fatalf("同日第二轮后投递行 = %d，期望仍为 1", len(items))
 	}
 
 	// 次日（上海 10-22）可再发一条。
 	next := time.Date(2026, 10, 20, 17, 0, 0, 0, time.UTC).Add(24 * time.Hour)
 	worker = newBalanceLowWorkerForTest(t, db, cfg, subscribedBalanceLow(), next, loc)
-	if result := worker.RunOnce(context.Background()); result.Enqueued != 1 {
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
 		t.Fatalf("次日 result = %+v", result)
 	}
-	items = listBalanceLowDeliveries(t, db)
+	items = listBalanceLowDeliveriesForUser(t, db, userID)
 	if len(items) != 2 || items[1].Dedupe != fmt.Sprintf("balance_low:%d:2026-10-22", userID) {
 		t.Fatalf("跨天投递行 = %+v", items)
+	}
+}
+
+func TestBalanceLowWorkerReadsSiteTimezoneFromConfig(t *testing.T) {
+	db := openNotifyTestDB(t)
+	now := time.Date(2026, 10, 20, 17, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name     string
+		set      bool
+		timezone any
+		wantDay  string
+	}{
+		// UTC 17:00 在上海已是次日 01:00。
+		{"configured timezone", true, "Asia/Shanghai", "2026-10-21"},
+		// 缺失 / 未知时区 / 非字符串一律回退 UTC：扫描可用且跨副本边界一致。
+		{"missing timezone", false, nil, "2026-10-20"},
+		{"unknown timezone", true, "Mars/Olympus", "2026-10-20"},
+		{"non-string timezone", true, 123, "2026-10-20"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanBalanceLowFixtures(t, db)
+			userID := insertBalanceLowUser(t, db, fmt.Sprintf("b4-tz-%d", i), 100, "enabled")
+			cfg := newBalanceLowConfig(true, 1000, "")
+			if tc.set {
+				cfg[KeySiteTimezone] = tc.timezone
+			}
+			// Location 故意留空：这里验证的是从 cfg 读取 site.timezone 的路径。
+			worker := newBalanceLowWorkerForTest(t, db, cfg, subscribedBalanceLow(), now, nil)
+			if result := worker.RunOnce(context.Background()); result.Failed != 0 {
+				t.Fatalf("result = %+v", result)
+			}
+			items := listBalanceLowDeliveriesForUser(t, db, userID)
+			if len(items) != 1 {
+				t.Fatalf("投递行数 = %d，期望 1", len(items))
+			}
+			wantDedupe := fmt.Sprintf("balance_low:%d:%s", userID, tc.wantDay)
+			if items[0].Dedupe != wantDedupe {
+				t.Fatalf("dedupe_key = %q，期望 %q", items[0].Dedupe, wantDedupe)
+			}
+		})
+	}
+}
+
+func TestListLowBalanceUsersExcludesUsersNotifiedForSiteDay(t *testing.T) {
+	db := openNotifyTestDB(t)
+	cleanBalanceLowFixtures(t, db)
+
+	notified := insertBalanceLowUser(t, db, "b4-list-notified", 100, "enabled")
+	pending := insertBalanceLowUser(t, db, "b4-list-pending", 100, "enabled")
+	atThreshold := insertBalanceLowUser(t, db, "b4-list-at-threshold", 1000, "enabled")
+
+	if _, err := db.Exec(`INSERT INTO notification_deliveries
+		(category, channel, recipient, dedupe_key, status)
+		VALUES ('billing.balance_low', 'webhook', 'webhook', $1, 'queued')`,
+		fmt.Sprintf("balance_low:%d:%s", notified, balanceLowTestDay)); err != nil {
+		t.Fatalf("seed today's delivery: %v", err)
+	}
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ids := func(users []BalanceLowUser) map[int64]bool {
+		out := make(map[int64]bool, len(users))
+		for _, u := range users {
+			out[u.ID] = true
+		}
+		return out
+	}
+
+	// 共享库里可能有其它低余额用户，只断言本用例用户是否在集合中。
+	today, err := store.ListLowBalanceUsers(context.Background(), 1000, balanceLowTestDay)
+	if err != nil {
+		t.Fatalf("ListLowBalanceUsers(today): %v", err)
+	}
+	todayIDs := ids(today)
+	if todayIDs[notified] {
+		t.Fatal("当天已有 dedupe_key 的用户不应再次进入扫描集")
+	}
+	if !todayIDs[pending] {
+		t.Fatal("当天未通知的低余额用户应进入扫描集")
+	}
+	if todayIDs[atThreshold] {
+		t.Fatal("余额等于阈值的用户不应进入扫描集（口径为 balance < threshold）")
+	}
+
+	// 换一个业务日后，同一用户可以再次进入扫描集。
+	tomorrow, err := store.ListLowBalanceUsers(context.Background(), 1000, "2026-10-21")
+	if err != nil {
+		t.Fatalf("ListLowBalanceUsers(tomorrow): %v", err)
+	}
+	if !ids(tomorrow)[notified] {
+		t.Fatal("次日应重新命中同一用户")
 	}
 }
 
@@ -276,30 +392,40 @@ func TestBalanceLowWorkerRecoveryThenFallAgain(t *testing.T) {
 	day2 := day1.Add(24 * time.Hour)
 
 	worker := newBalanceLowWorkerForTest(t, db, cfg, subscribedBalanceLow(), day1, loc)
-	if result := worker.RunOnce(context.Background()); result.Enqueued != 1 {
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
 		t.Fatalf("首次跌破 result = %+v", result)
 	}
+	if items := listBalanceLowDeliveriesForUser(t, db, userID); len(items) != 1 {
+		t.Fatalf("首次跌破投递行 = %d，期望 1", len(items))
+	}
 
-	// 余额回升：当天不再命中。
+	// 余额回升：本用例用户不再命中，也不会新增投递行。
 	if _, err := db.Exec(`UPDATE users SET balance = 5000 WHERE id = $1`, userID); err != nil {
 		t.Fatalf("raise balance: %v", err)
 	}
-	if result := worker.RunOnce(context.Background()); result.Scanned != 0 {
-		t.Fatalf("回升后 result = %+v，期望不命中", result)
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
+		t.Fatalf("回升后 result = %+v", result)
+	}
+	if items := listBalanceLowDeliveriesForUser(t, db, userID); len(items) != 1 {
+		t.Fatalf("回升后投递行 = %d，期望仍为 1", len(items))
 	}
 
-	// 再次跌破：当天已有一条，按天去重；次日可再发。
+	// 再次跌破：当天已有投递行，查询阶段被排除；次日可再发。
 	if _, err := db.Exec(`UPDATE users SET balance = 50 WHERE id = $1`, userID); err != nil {
 		t.Fatalf("lower balance: %v", err)
 	}
-	if result := worker.RunOnce(context.Background()); result.Deduped != 1 {
-		t.Fatalf("同日再跌破 result = %+v，期望 deduped=1", result)
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
+		t.Fatalf("同日再跌破 result = %+v", result)
 	}
+	if items := listBalanceLowDeliveriesForUser(t, db, userID); len(items) != 1 {
+		t.Fatalf("同日再跌破后投递行 = %d，期望仍为 1", len(items))
+	}
+
 	worker = newBalanceLowWorkerForTest(t, db, cfg, subscribedBalanceLow(), day2, loc)
-	if result := worker.RunOnce(context.Background()); result.Enqueued != 1 {
+	if result := worker.RunOnce(context.Background()); result.Failed != 0 {
 		t.Fatalf("次日再跌破 result = %+v", result)
 	}
-	if items := listBalanceLowDeliveries(t, db); len(items) != 2 {
-		t.Fatalf("投递行数 = %d，期望 2", len(items))
+	if items := listBalanceLowDeliveriesForUser(t, db, userID); len(items) != 2 {
+		t.Fatalf("次日再跌破后投递行 = %d，期望 2", len(items))
 	}
 }

@@ -244,7 +244,8 @@
         "enabled": "Bật Webhook",
         "url": "URL điểm cuối",
         "secret": "Khóa bí mật ký",
-        "events": "Sự kiện đã đăng ký"
+        "events": "Sự kiện đã đăng ký",
+        "balance_low_threshold": "Ngưỡng cảnh báo số dư thấp (điểm)"
       }
     },
     "rl_health": {
@@ -330,7 +331,8 @@
         "url": "Phải là URL https tuyệt đối, tối đa 1024 ký tự.",
         "secret": "Dùng cho tiêu đề chữ ký HMAC-SHA256 X-NewTG-Signature. Để trống để giữ giá trị hiện tại.",
         "events": "Chỉ gửi các sự kiện được chọn.",
-        "events_empty": "Chưa đăng ký sự kiện nào. Sẽ không có gì được gửi."
+        "events_empty": "Chưa đăng ký sự kiện nào. Sẽ không có gì được gửi.",
+        "balance_low_threshold": "0 tắt quét số dư thấp. Cần bật Webhook và đăng ký sự kiện balance_low."
       }
     },
     "rl_health": {

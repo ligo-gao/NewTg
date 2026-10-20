@@ -11,7 +11,8 @@ package notify
 //   - 命中口径：`users.status='enabled' AND users.balance < threshold`；
 //   - 每人每天最多一条投递：`dedupe_key='balance_low:<userID>:<YYYY-MM-DD>'`，
 //     日期取**站点时区**（`site.timezone`），不是 UTC——同一时刻在不同时区
-//     是不同业务日，跨副本必须得到同一个键；
+//     是不同业务日，跨副本必须得到同一个键；查询阶段即按该键排除当天已
+//     通知用户（减少无效插入），UNIQUE(dedupe_key) 继续兜底多副本竞态；
 //   - 投递行由 WebhookEventProducer 写入，category=`billing.balance_low`，
 //     payload=`{event,user_id,balance,threshold,detected_at}`；N8 worker 负责
 //     真正发送/重试；
@@ -69,11 +70,14 @@ type BalanceLowWorkerDeps struct {
 type BalanceLowScanResult struct {
 	// Skipped 表示本轮因开关关闭/阈值为 0/未订阅而没有扫描。
 	Skipped bool
-	// Scanned 是命中低余额条件的用户数。
+	// Scanned 是命中低余额条件**且当天尚未通知**的用户数（查询已排除
+	// 当天已有 dedupe_key 的用户）。
 	Scanned int
 	// Enqueued 是真正写入的新投递行数（未被 dedupe 命中）。
 	Enqueued int
-	// Deduped 是当天已有投递行、被 UNIQUE(dedupe_key) 忽略的用户数。
+	// Deduped 是查询之后、插入之前被其它副本抢先写入同一天投递行的用户数。
+	// 正常单副本路径下当天已通知的用户已被 ListLowBalanceUsers 排除，因此
+	// 这里只在多副本竞态或调用方绕过查询直接入队时非零。
 	Deduped int
 	// Failed 是入队失败的次数（DB/序列化错误；下一轮重试）。
 	Failed int
@@ -177,7 +181,12 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		return result
 	}
 
-	users, err := w.store.ListLowBalanceUsers(ctx, threshold)
+	now := w.now()
+	day := now.In(w.siteLocation()).Format("2006-01-02")
+
+	// 查询即排除当天已通知的用户：避免每轮为同一批持续低余额用户做注定
+	// 被 UNIQUE(dedupe_key) 丢弃的插入。多副本竞态仍由唯一约束兜底。
+	users, err := w.store.ListLowBalanceUsers(ctx, threshold, day)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.log.Warn("balance low worker: scan users failed", "error", err)
@@ -189,8 +198,6 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		return result
 	}
 
-	now := w.now()
-	day := now.In(w.siteLocation()).Format("2006-01-02")
 	for _, user := range users {
 		if ctx.Err() != nil {
 			break

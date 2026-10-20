@@ -244,7 +244,8 @@
         "enabled": "Activer le Webhook",
         "url": "URL du point de terminaison",
         "secret": "Secret de signature",
-        "events": "Événements abonnés"
+        "events": "Événements abonnés",
+        "balance_low_threshold": "Seuil d'alerte de solde faible (crédits)"
       }
     },
     "rl_health": {
@@ -330,7 +331,8 @@
         "url": "Doit être une URL https absolue, 1024 caractères maximum.",
         "secret": "Sert à l'en-tête de signature HMAC-SHA256 X-NewTG-Signature. Laissez vide pour conserver la valeur actuelle.",
         "events": "Seuls les événements cochés sont envoyés.",
-        "events_empty": "Aucun événement abonné. Rien ne sera envoyé."
+        "events_empty": "Aucun événement abonné. Rien ne sera envoyé.",
+        "balance_low_threshold": "0 désactive l'analyse des soldes faibles. Nécessite l'activation du Webhook et l'abonnement à l'événement balance_low."
       }
     },
     "rl_health": {

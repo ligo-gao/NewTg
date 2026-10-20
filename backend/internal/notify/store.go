@@ -490,17 +490,32 @@ type BalanceLowUser struct {
 	Balance int64
 }
 
-// ListLowBalanceUsers 返回 balance < threshold 的启用用户（按 id 升序）。
+// ListLowBalanceUsers 返回 balance < threshold 且**当天尚未通知**的启用用户
+// （按 id 升序）。
 //
 // 扫描口径是冻结的（tasks B4 / N6）：只认 status='enabled'，禁用用户即使
 // 余额为 0 也不产生通知；threshold <= 0 时由调用方直接跳过，不执行查询。
+// siteDay 是站点时区的业务日（YYYY-MM-DD），对应 dedupe_key 的日期后缀
+// `balance_low:<userID>:<siteDay>`。
+//
+// 已通知用户在 SQL 里用 NOT EXISTS 排除，而不是留给 INSERT 命中
+// UNIQUE(dedupe_key) 去丢弃：持续低余额的用户每天都会出现在命中集里，
+// 若不过滤，每轮扫描都要为同一批人做一次注定失败的插入（每 5 分钟一轮、
+// 用户量大时是纯噪声）。NOT EXISTS 走 dedupe_key 唯一索引，代价可控。
+// 这**不替代** UNIQUE 约束：多副本在同一轮同时查询时仍可能都通过
+// NOT EXISTS，最终由唯一约束收敛，Deduped 计数记录这种竞态。
+//
 // 用户量大时分页由调用方按 id keyset 推进——这里保留纯读接口，扫描器
 // 每 5 分钟一次全量命中集，避免把「明天仍低于阈值」的持久状态写进表。
-func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64) ([]BalanceLowUser, error) {
+func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64, siteDay string) ([]BalanceLowUser, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, balance FROM users
-		WHERE status = 'enabled' AND balance < $1
-		ORDER BY id`, threshold)
+		SELECT u.id, u.balance FROM users u
+		WHERE u.status = 'enabled' AND u.balance < $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM notification_deliveries d
+		      WHERE d.dedupe_key = 'balance_low:' || u.id::text || ':' || $2
+		  )
+		ORDER BY u.id`, threshold, siteDay)
 	if err != nil {
 		return nil, fmt.Errorf("notify: list low balance users: %w", err)
 	}

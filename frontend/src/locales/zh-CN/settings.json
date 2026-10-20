@@ -244,7 +244,8 @@
         "enabled": "启用 Webhook",
         "url": "端点 URL",
         "secret": "签名密钥",
-        "events": "订阅事件"
+        "events": "订阅事件",
+        "balance_low_threshold": "低余额提醒阈值（积分）"
       }
     },
     "rl_health": {
@@ -330,7 +331,8 @@
         "url": "必须是绝对 https URL，最多 1024 个字符。",
         "secret": "用于 HMAC-SHA256 签名头 X-NewTG-Signature。留空表示保持当前值。",
         "events": "仅推送勾选的事件。",
-        "events_empty": "未订阅任何事件，Webhook 不会推送"
+        "events_empty": "未订阅任何事件，Webhook 不会推送",
+        "balance_low_threshold": "0 表示关闭低余额扫描；需同时启用 Webhook 并订阅 balance_low 事件。"
       }
     },
     "rl_health": {

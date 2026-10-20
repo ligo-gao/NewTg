@@ -525,6 +525,16 @@ const NOTIFY_WEBHOOK: SectionConfig = {
         { value: 'user_signup', labelKey: 'settings.option.event.user_signup' },
       ],
     }),
+    // Explicit low-balance threshold for the N6 scan. 0 disables the scan;
+    // bounds mirror the registry (`notify.webhook.balance_low_threshold`,
+    // 0–1e12 credits). It is separate from
+    // `billing.balance_alert_threshold_credits` (the in-product alert), which
+    // the gate intentionally does not consume as a second source of truth.
+    number('notify.webhook.balance_low_threshold', label('notify.webhook.balance_low_threshold'), {
+      min: 0,
+      max: 1_000_000_000_000,
+      hintKey: hint('notify.webhook.balance_low_threshold'),
+    }),
   ],
 }
 

@@ -244,7 +244,8 @@
         "enabled": "Enable webhook",
         "url": "Endpoint URL",
         "secret": "Signing secret",
-        "events": "Subscribed events"
+        "events": "Subscribed events",
+        "balance_low_threshold": "Low-balance alert threshold (credits)"
       }
     },
     "rl_health": {
@@ -330,7 +331,8 @@
         "url": "Must be an absolute https URL, at most 1024 characters.",
         "secret": "Used for the HMAC-SHA256 signature header X-NewTG-Signature. Leave empty to keep the current value.",
         "events": "Only the selected events are delivered.",
-        "events_empty": "No events subscribed. Nothing will be delivered."
+        "events_empty": "No events subscribed. Nothing will be delivered.",
+        "balance_low_threshold": "0 disables low-balance scanning. Requires the Webhook switch and the balance_low event subscription."
       }
     },
     "rl_health": {

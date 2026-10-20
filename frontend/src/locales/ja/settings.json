@@ -244,7 +244,8 @@
         "enabled": "Webhook を有効化",
         "url": "エンドポイント URL",
         "secret": "署名シークレット",
-        "events": "購読イベント"
+        "events": "購読イベント",
+        "balance_low_threshold": "残高不足アラートのしきい値（クレジット）"
       }
     },
     "rl_health": {
@@ -330,7 +331,8 @@
         "url": "絶対 https URL を入力してください（1024 文字以内）。",
         "secret": "HMAC-SHA256 署名ヘッダー X-NewTG-Signature に使用します。空欄のままにすると現在の値を保持します。",
         "events": "チェックしたイベントのみ送信します。",
-        "events_empty": "イベントを購読していないため、Webhook は送信されません。"
+        "events_empty": "イベントを購読していないため、Webhook は送信されません。",
+        "balance_low_threshold": "0 で残高不足スキャンを無効化します。Webhook の有効化と balance_low イベントの購読が必要です。"
       }
     },
     "rl_health": {
