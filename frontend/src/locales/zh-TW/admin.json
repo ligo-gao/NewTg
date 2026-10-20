@@ -896,6 +896,11 @@
     "pagination_page": "第 {page}/{pages} 頁",
     "pagination_page_size": "每頁列數",
     "create": {
+      "default_batch": "批次-{date}",
+      "export_group": "匯出兌換碼",
+      "export_txt": "下載 TXT",
+      "export_markdown": "下載 Markdown",
+      "export_too_many": "數量過大，請分批匯出。",
       "title": "產生兌換碼",
       "batch": "批次名稱",
       "batch_hint": "1–20 個字元",

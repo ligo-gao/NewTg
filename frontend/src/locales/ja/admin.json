@@ -896,6 +896,11 @@
     "pagination_page": "{page} / {pages} ページ",
     "pagination_page_size": "表示件数",
     "create": {
+      "default_batch": "バッチ-{date}",
+      "export_group": "コードをエクスポート",
+      "export_txt": "TXT をダウンロード",
+      "export_markdown": "Markdown をダウンロード",
+      "export_too_many": "コードが多すぎます。分割してエクスポートしてください。",
       "title": "コードを生成",
       "batch": "バッチ名",
       "batch_hint": "1〜20 文字",

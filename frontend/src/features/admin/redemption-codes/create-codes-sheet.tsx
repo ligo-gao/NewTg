@@ -4,12 +4,18 @@ import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
-import { useI18n } from '@/shared/lib/i18n-context'
+import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { Sheet } from '@/shared/ui/base/sheet'
 import { FormAlert, TextField } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
+
+import {
+  downloadRedemptionCodes,
+  REDEMPTION_EXPORT_LIMIT,
+  type SaveFile,
+} from './redemption-export'
 
 type CreateRequest = components['schemas']['RedemptionCodeCreateRequest']
 type CreateResponse = components['schemas']['RedemptionCodeCreateResponse']
@@ -24,14 +30,42 @@ interface FormValues {
 
 type FieldErrors = Partial<Record<'batch_name' | 'credits' | 'count' | 'expires_at', string>>
 
-/** 契约 `batch_name` 默认「批次-YYYYMMDD」（F-04-15），按本地日期生成。 */
-function defaultBatchName(now: Date = new Date()): string {
+/**
+ * 契约 `batch_name` 默认「批次-YYYYMMDD」（F-04-15），按本地日期生成。
+ * 文案走 i18n 模板而不是硬编码 `Batch-`：默认值会原样落库并出现在列表/
+ * 导出文件里，硬编码英文会让其他语种的管理员留下英文批次名。
+ */
+function defaultBatchName(t: TranslateFn, now: Date = new Date()): string {
   const stamp = [
     now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, '0'),
     String(now.getDate()).padStart(2, '0'),
   ].join('')
-  return `Batch-${stamp}`
+  return t('admin.redemption.create.default_batch', { date: stamp })
+}
+
+/**
+ * 服务端 400 的 `detail` 是内部英文（`billing: invalid redemption batch:
+ * count must be between ...`），契约也没有 `fields`。这里按前缀映射回
+ * 对应的本地化字段文案；认不出的细节一律落到通用失败文案，绝不把内部
+ * 英文直接展示给用户。
+ */
+function validationMessage(detail: string | undefined, t: TranslateFn): string {
+  if (detail !== undefined) {
+    if (detail.includes('expires_at must be')) {
+      return t('admin.redemption.create.error_expires')
+    }
+    if (detail.includes('count must be')) {
+      return t('admin.redemption.create.error_count')
+    }
+    if (detail.includes('credits must be')) {
+      return t('admin.redemption.create.error_credits')
+    }
+    if (detail.includes('batch name')) {
+      return t('admin.redemption.create.error_batch')
+    }
+  }
+  return t('admin.redemption.create.error')
 }
 
 function parsePositiveInteger(value: string): number | undefined {
@@ -58,7 +92,7 @@ export function CreateCodesSheet({ open, onOpenChange, onCreated }: CreateCodesS
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
   const [values, setValues] = useState<FormValues>(() => ({
-    batchName: defaultBatchName(),
+    batchName: defaultBatchName(t),
     credits: '',
     count: '10',
     expiresAt: '',
@@ -68,7 +102,7 @@ export function CreateCodesSheet({ open, onOpenChange, onCreated }: CreateCodesS
   const [submitting, setSubmitting] = useState(false)
 
   function reset(): void {
-    setValues({ batchName: defaultBatchName(), credits: '', count: '10', expiresAt: '' })
+    setValues({ batchName: defaultBatchName(t), credits: '', count: '10', expiresAt: '' })
     setErrors({})
     setFormError(undefined)
   }
@@ -129,22 +163,14 @@ export function CreateCodesSheet({ open, onOpenChange, onCreated }: CreateCodesS
       onOpenChange(false)
     } catch (error) {
       if (error instanceof ApiError) {
-        // 服务端 `problem.fields` 指名字段时把错误落回对应输入，避免只在
-        // 表单顶部留一条用户无法定位的提示。
-        if (error.fields !== undefined && error.fields.length > 0) {
-          const mapped: FieldErrors = {}
-          for (const field of error.fields) {
-            if (field === 'batch_name') mapped.batch_name = t('admin.redemption.create.error_batch')
-            if (field === 'credits') mapped.credits = t('admin.redemption.create.error_credits')
-            if (field === 'count') mapped.count = t('admin.redemption.create.error_count')
-            if (field === 'expires_at') mapped.expires_at = t('admin.redemption.create.error_expires')
-          }
-          setErrors(mapped)
-        }
+        // 契约里创建失败只有 400（无 `fields`），服务端用 `detail` 说明
+        // 哪个校验没过。按前缀映射成本地化文案，避免把内部英文抛给用户。
         setFormError(
           error.kind === 'rate_limited'
             ? t('admin.redemption.rate_limited')
-            : error.detail ?? t('admin.redemption.create.error'),
+            : error.kind === 'validation'
+              ? validationMessage(error.detail, t)
+              : t('admin.redemption.create.error'),
         )
       } else {
         setFormError(t('admin.redemption.create.error'))
@@ -222,27 +248,40 @@ export function CreateCodesSheet({ open, onOpenChange, onCreated }: CreateCodesS
 export interface CreateCodesResultDialogProps {
   result: CreateResponse | null
   onClose: () => void
+  /** 下载接缝（测试注入 spy）；生产环境走浏览器下载。 */
+  saveFile?: SaveFile
 }
 
 /**
  * 生成成功弹窗。**明文码只在创建响应里出现一次**——服务端只存 SHA-256
  * 哈希，列表投影的 `code_mask` 固定为 `••••••`，因此这个弹窗关闭后没有任何
- * 入口能再取回码值；「复制全部」是唯一让管理员带走它们的方式。
+ * 入口能再取回码值；「复制全部」与本地下载是仅有的两种带走方式。
  *
- * 按任务约束不渲染导出入口（F-04-17 依赖的导出端点不存在；服务端契约
- * 只有创建响应本身），导出能力登记为契约缺口。
+ * 下载（F-04-17）是纯前端 Blob 生成，不依赖服务端端点；剪贴板不可用时
+ * 它仍是可用的兜底通道。列表页的「导出元数据」是 P1 后置项，本页不渲染
+ * 入口（见 D4 收口报告的登记项）。
  */
-export function CreateCodesResultDialog({ result, onClose }: CreateCodesResultDialogProps) {
+export function CreateCodesResultDialog({
+  result,
+  onClose,
+  saveFile,
+}: CreateCodesResultDialogProps) {
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
 
   if (result === null) return null
 
+  // 收窄后的别名：闭包（onClick/copyAll）里继续用 `result` 会丢失非空
+  // 收窄，`data` 是 const，TypeScript 会保留。
+  const data = result
+
+  // 超过上限时禁用下载并提示分批；复制仍可用（用户可能只想复制一部分）。
+  const tooMany = data.codes.length > REDEMPTION_EXPORT_LIMIT
+
   async function copyAll(): Promise<void> {
-    if (result === null) return
     try {
-      await navigator.clipboard.writeText(result.codes.join('\n'))
-      push({ tone: 'success', message: t('admin.redemption.create.copied', { count: result.count }) })
+      await navigator.clipboard.writeText(data.codes.join('\n'))
+      push({ tone: 'success', message: t('admin.redemption.create.copied', { count: data.count }) })
     } catch {
       push({ tone: 'error', message: t('admin.redemption.create.copy_error') })
     }
@@ -254,7 +293,7 @@ export function CreateCodesResultDialog({ result, onClose }: CreateCodesResultDi
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
-      title={t('admin.redemption.create.result_title', { count: result.count })}
+      title={t('admin.redemption.create.result_title', { count: data.count })}
       description={t('admin.redemption.create.result_warning')}
       footer={
         <>
@@ -269,13 +308,40 @@ export function CreateCodesResultDialog({ result, onClose }: CreateCodesResultDi
         className="h-[240px] overflow-y-auto rounded-lg border border-border-hairline bg-surface-subtle p-3 font-mono text-[13px] tracking-[0.05em]"
         aria-label={t('admin.redemption.create.codes_label')}
       >
-        {result.codes.map((code) => (
+        {data.codes.map((code) => (
           <li key={code} className="py-0.5">
             {code}
           </li>
         ))}
       </ul>
       <p className="mt-2 text-xs text-warning">{t('admin.redemption.create.result_warning')}</p>
+      <div
+        className="mt-3 flex flex-wrap items-center gap-2"
+        role="group"
+        aria-label={t('admin.redemption.create.export_group')}
+      >
+        <Button
+          variant="secondary"
+          className="h-8 px-3 text-[13px]"
+          disabled={tooMany}
+          onClick={() => downloadRedemptionCodes(data, 'txt', {}, saveFile)}
+        >
+          {t('admin.redemption.create.export_txt')}
+        </Button>
+        <Button
+          variant="secondary"
+          className="h-8 px-3 text-[13px]"
+          disabled={tooMany}
+          onClick={() => downloadRedemptionCodes(data, 'markdown', {}, saveFile)}
+        >
+          {t('admin.redemption.create.export_markdown')}
+        </Button>
+      </div>
+      {tooMany ? (
+        <p className="mt-2 text-xs text-danger">
+          {t('admin.redemption.create.export_too_many')}
+        </p>
+      ) : null}
     </Dialog>
   )
 }

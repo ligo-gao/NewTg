@@ -18,7 +18,10 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  vi.unstubAllGlobals()
+})
 afterAll(() => server.close())
 beforeEach(() => {
   useToastStore.setState({ toasts: [] })
@@ -154,6 +157,116 @@ describe('RedemptionCodesPage', () => {
     })
   })
 
+  it('reads the page size from the URL and resets to page 1 when it changes', async () => {
+    const requests: URLSearchParams[] = []
+    installHandlers({ total: 100, record: (params) => requests.push(params) })
+    const onSearchChange = vi.fn()
+    await renderWithProviders(
+      <RedemptionCodesPage search={{ p: 2, size: 50 }} onSearchChange={onSearchChange} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await screen.findByText('launch')
+
+    // 刷新/分享链接后仍用同一分页形状：size 来自 URL，而不是组件内 state。
+    await waitFor(() => {
+      expect(requests[0]?.get('page_size')).toBe('50')
+    })
+    expect(requests[0]?.get('p')).toBe('2')
+
+    const select = screen.getByLabelText('Rows per page') as HTMLSelectElement
+    expect(select.value).toBe('50')
+    await user.selectOptions(select, '10')
+    expect(onSearchChange).toHaveBeenCalledWith({ p: 1, size: 10 }, { replace: true })
+  })
+
+  it('shows the desktop-only gate below 1024px without requesting the list', async () => {
+    const record = vi.fn()
+    installHandlers({ record })
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
+
+    await renderWithProviders(
+      <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
+      ['common', 'admin'],
+    )
+
+    expect(await screen.findByText('Please use a desktop browser.')).toBeTruthy()
+    expect(record).not.toHaveBeenCalled()
+  })
+
+  it('returns to the first page after a successful generation', async () => {
+    const onSearchChange = vi.fn()
+    installHandlers({ total: 100 })
+    await renderWithProviders(
+      <RedemptionCodesPage search={{ p: 3 }} onSearchChange={onSearchChange} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await screen.findByText('launch')
+
+    await user.click(screen.getAllByRole('button', { name: 'Generate Codes' })[0]!)
+    const sheet = await screen.findByRole('dialog', { name: 'Generate Codes' })
+    await user.type(within(sheet).getByLabelText('Credits per Code'), '100')
+    await user.click(within(sheet).getByRole('button', { name: 'Generate' }))
+
+    await screen.findByRole('dialog', { name: /Successfully created/ })
+    expect(onSearchChange).toHaveBeenCalledWith({ p: 1 }, { replace: true })
+  })
+
+  it('refetches the list when a row action reports 404 (state changed elsewhere)', async () => {
+    let listCalls = 0
+    installHandlers({
+      record: () => {
+        listCalls += 1
+      },
+      onPatch: () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Not Found' },
+          { status: 404, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+    })
+
+    await renderWithProviders(
+      <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await screen.findByText('launch')
+    expect(listCalls).toBe(1)
+
+    await user.click(screen.getByRole('button', { name: 'Disable' }))
+    await waitFor(() => {
+      expect(listCalls).toBeGreaterThan(1)
+    })
+  })
+
+  it('prefills the localized default batch name', async () => {
+    await renderWithProviders(
+      <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await screen.findByText('launch')
+
+    await user.click(screen.getAllByRole('button', { name: 'Generate Codes' })[0]!)
+    const sheet = await screen.findByRole('dialog', { name: 'Generate Codes' })
+    const input = within(sheet).getByLabelText('Batch Name') as HTMLInputElement
+
+    expect(input.value).toMatch(/^Batch-\d{8}$/)
+  })
+
   it('shows the empty state and offers code generation', async () => {
     installHandlers({ items: [], total: 0 })
     await renderWithProviders(
@@ -207,8 +320,16 @@ describe('RedemptionCodesPage', () => {
     })
   })
 
-  it('keeps the sheet open and shows a field error on a 422', async () => {
-    installHandlers({ createStatus: 422 })
+  it('maps a contract 400 detail back to localized copy without leaking the internal text', async () => {
+    // 创建接口在契约里只有 400（没有 `fields` 扩展），detail 是内部英文。
+    installHandlers({
+      createStatus: 400,
+      createBody: {
+        type: 'about:blank',
+        title: 'Invalid request',
+        detail: 'billing: invalid redemption batch: credits must be > 0, got 0',
+      },
+    })
     await renderWithProviders(
       <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
       ['common', 'admin'],
@@ -224,13 +345,45 @@ describe('RedemptionCodesPage', () => {
     expect(
       await within(sheet).findByText('Credits must be a positive integer.'),
     ).toBeTruthy()
+    expect(within(sheet).queryByText(/billing: invalid redemption batch/)).toBeNull()
     expect(screen.queryByRole('dialog', { name: /Successfully created/ })).toBeNull()
+  })
+
+  it('falls back to the generic message for an unrecognized validation detail', async () => {
+    installHandlers({
+      createStatus: 400,
+      createBody: {
+        type: 'about:blank',
+        title: 'Invalid request',
+        detail: 'request body must be a JSON object',
+      },
+    })
+    await renderWithProviders(
+      <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+    await screen.findByText('launch')
+
+    await user.click(screen.getAllByRole('button', { name: 'Generate Codes' })[0]!)
+    const sheet = await screen.findByRole('dialog', { name: 'Generate Codes' })
+    await user.type(within(sheet).getByLabelText('Credits per Code'), '100')
+    await user.click(within(sheet).getByRole('button', { name: 'Generate' }))
+
+    expect(
+      await within(sheet).findByText('Could not generate codes. Please try again.'),
+    ).toBeTruthy()
+    expect(within(sheet).queryByText(/request body must be/)).toBeNull()
   })
 
   it('asks for confirmation before deleting and reports a 409 without retrying', async () => {
     const deleted: number[] = []
     const patches: string[] = []
+    let listCalls = 0
     installHandlers({
+      record: () => {
+        listCalls += 1
+      },
       onDelete: (id) => deleted.push(id),
       onPatch: (id, body) => {
         patches.push(`${id}:${body}`)
@@ -267,6 +420,10 @@ describe('RedemptionCodesPage', () => {
     expect(messages).toContain('Redeemed codes cannot be modified.')
     // 409 是确定性拒绝：一次请求即为最终结果，不做自动重试。
     expect(patches).toHaveLength(1)
+    // 但行状态已被别处改变，必须重查列表，否则界面继续展示过期状态。
+    await waitFor(() => {
+      expect(listCalls).toBeGreaterThan(1)
+    })
   })
 
   it('batch-deletes the selected rows after confirmation', async () => {

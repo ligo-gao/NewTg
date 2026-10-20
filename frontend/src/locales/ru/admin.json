@@ -896,6 +896,11 @@
     "pagination_page": "Страница {page} из {pages}",
     "pagination_page_size": "Строк на странице",
     "create": {
+      "default_batch": "Партия-{date}",
+      "export_group": "Экспорт кодов",
+      "export_txt": "Скачать TXT",
+      "export_markdown": "Скачать Markdown",
+      "export_too_many": "Слишком много кодов. Экспортируйте меньшими партиями.",
       "title": "Создать коды",
       "batch": "Название партии",
       "batch_hint": "1–20 символов",

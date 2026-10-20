@@ -16,7 +16,9 @@ import { useToastStore } from '@/shared/ui/toast'
 
 import { CreateCodesResultDialog, CreateCodesSheet } from './create-codes-sheet'
 import {
+  DEFAULT_REDEMPTION_PAGE_SIZE,
   hasRedemptionFilters,
+  REDEMPTION_PAGE_SIZES,
   type RedemptionSearch,
   type RedemptionStatusFilter,
 } from './redemption-search'
@@ -25,8 +27,6 @@ type RedemptionCode = components['schemas']['RedemptionCode']
 type RedemptionCodeStatus = components['schemas']['RedemptionCodeStatus']
 type CreateResponse = components['schemas']['RedemptionCodeCreateResponse']
 type ListQuery = NonNullable<operations['listRedemptionCodes']['parameters']['query']>
-
-const PAGE_SIZES = [10, 20, 50] as const
 
 interface FilterDraft {
   status: '' | RedemptionStatusFilter
@@ -110,7 +110,8 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   const wideEnough = useMinWidth(1024)
 
   const [draft, setDraft] = useState<FilterDraft>(() => draftOf(search))
-  const [pageSize, setPageSize] = useState(20)
+  // 每页条数与筛选/页码同源（都来自 URL）：刷新或分享链接后分页形状不变。
+  const pageSize = search.size ?? DEFAULT_REDEMPTION_PAGE_SIZE
   const [createOpen, setCreateOpen] = useState(false)
   const [created, setCreated] = useState<CreateResponse | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RedemptionCode | null>(null)
@@ -118,7 +119,9 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set())
 
   const listQuery = useQuery({
-    queryKey: ['admin-redemption-codes', search, pageSize],
+    // `search` 已包含 `size`；不要再叠加一个本地 state，否则刷新后
+    // 缓存键与实际请求的 page_size 可能不一致。
+    queryKey: ['admin-redemption-codes', search],
     enabled: wideEnough,
     placeholderData: keepPreviousData,
     queryFn: async () => {
@@ -515,11 +518,12 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
             value={pageSize}
             disabled={listQuery.isFetching}
             onChange={(event) => {
-              setPageSize(Number(event.target.value))
-              onSearchChange({ ...search, p: 1 }, { replace: true })
+              const size = Number(event.target.value) as RedemptionSearch['size']
+              // 换每页条数会改变总页数，停留在旧页码可能越过末页。
+              onSearchChange({ ...search, size, p: 1 }, { replace: true })
             }}
           >
-            {PAGE_SIZES.map((size) => (
+            {REDEMPTION_PAGE_SIZES.map((size) => (
               <option key={size} value={size}>
                 {size}
               </option>
@@ -552,6 +556,10 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
         onOpenChange={setCreateOpen}
         onCreated={(result) => {
           setCreated(result)
+          // 新码在列表首屏（UI §7.5「结果弹窗关闭后列表刷新首屏」）；
+          // 若用户当时停在第 N 页，必须同时把页码写回 URL，否则随后的
+          // 失效重查仍会拉第 N 页，用户看不到刚生成的批次。
+          onSearchChange({ ...search, p: 1 }, { replace: true })
           void invalidate()
         }}
       />

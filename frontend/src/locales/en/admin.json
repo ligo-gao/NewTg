@@ -896,6 +896,11 @@
     "pagination_page": "Page {page} of {pages}",
     "pagination_page_size": "Rows per page",
     "create": {
+      "default_batch": "Batch-{date}",
+      "export_group": "Export codes",
+      "export_txt": "Download TXT",
+      "export_markdown": "Download Markdown",
+      "export_too_many": "Too many codes. Please export in smaller batches.",
       "title": "Generate Codes",
       "batch": "Batch Name",
       "batch_hint": "1–20 characters",

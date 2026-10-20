@@ -896,6 +896,11 @@
     "pagination_page": "第 {page}/{pages} 页",
     "pagination_page_size": "每页条数",
     "create": {
+      "default_batch": "批次-{date}",
+      "export_group": "导出兑换码",
+      "export_txt": "下载 TXT",
+      "export_markdown": "下载 Markdown",
+      "export_too_many": "数量过大，请分批导出。",
       "title": "生成兑换码",
       "batch": "批次名",
       "batch_hint": "1–20 个字符",

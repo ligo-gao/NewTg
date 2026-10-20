@@ -896,6 +896,11 @@
     "pagination_page": "Trang {page} / {pages}",
     "pagination_page_size": "Số dòng mỗi trang",
     "create": {
+      "default_batch": "Lô-{date}",
+      "export_group": "Xuất mã",
+      "export_txt": "Tải TXT",
+      "export_markdown": "Tải Markdown",
+      "export_too_many": "Quá nhiều mã. Vui lòng xuất theo lô nhỏ hơn.",
       "title": "Tạo mã",
       "batch": "Tên lô",
       "batch_hint": "1–20 ký tự",

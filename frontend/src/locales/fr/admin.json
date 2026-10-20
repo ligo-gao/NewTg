@@ -896,6 +896,11 @@
     "pagination_page": "Page {page} sur {pages}",
     "pagination_page_size": "Lignes par page",
     "create": {
+      "default_batch": "Lot-{date}",
+      "export_group": "Exporter les codes",
+      "export_txt": "Télécharger le TXT",
+      "export_markdown": "Télécharger le Markdown",
+      "export_too_many": "Trop de codes. Veuillez exporter par lots plus petits.",
       "title": "Générer des codes",
       "batch": "Nom du lot",
       "batch_hint": "1 à 20 caractères",

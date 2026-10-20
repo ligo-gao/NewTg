@@ -13,13 +13,17 @@ import { reportServerError, isUnauthorizedError } from './auth-failures'
 /**
  * Web-00 §5.4 retry policy: one backing-off attempt for transient failures,
  * none for deterministic ones. 401/403/404/400(422) cannot succeed on replay
- * and retrying them would delay the guard/error landings by seconds.
+ * and retrying them would delay the guard/error landings by seconds. 429 is
+ * equally deterministic within the retry window: replaying it only multiplies
+ * pressure on a server that just asked us to slow down, so the countdown in
+ * `Retry-After` is the only correct response.
  */
 const NON_RETRYABLE_KINDS: ReadonlySet<ApiErrorKind> = new Set([
   'auth',
   'forbidden',
   'not_found',
   'validation',
+  'rate_limited',
 ])
 
 function shouldRetryQuery(failureCount: number, error: unknown): boolean {

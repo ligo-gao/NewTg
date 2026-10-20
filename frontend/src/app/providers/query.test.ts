@@ -138,4 +138,26 @@ describe('global auth failure handling (web-00 §9.6)', () => {
 
     expect(calls).toBe(1)
   })
+
+  it('does not retry a 429: the Retry-After countdown is the only response', async () => {
+    const client = createQueryClient()
+    let calls = 0
+
+    await expect(
+      client.fetchQuery({
+        queryKey: ['rate-limited'],
+        queryFn: async () => {
+          calls += 1
+          throw parseProblem({
+            status: 429,
+            retryAfter: '5',
+            body: { type: 'about:blank', title: 'Too Many Requests' },
+          })
+        },
+      }),
+    ).rejects.toThrow()
+
+    // 自动重试会在服务端刚要求降速时放大压力；必须恰好一次请求。
+    expect(calls).toBe(1)
+  })
 })

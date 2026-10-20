@@ -103,4 +103,28 @@ describe('/redemption-codes guard (web-00 §4, §9.3)', () => {
     expect(router.state.location.pathname).toBe('/redemption-codes')
     expect(await screen.findByText('No redemption codes yet.')).toBeTruthy()
   })
+
+  it('restores page and page size from the URL after a refresh or shared link', async () => {
+    installSession('admin', ['redemption:manage'])
+    const seen: URLSearchParams[] = []
+    server.use(
+      http.get(`${ORIGIN}/api/redemption-codes`, ({ request }) => {
+        seen.push(new URL(request.url).searchParams)
+        return HttpResponse.json({ items: [], total: 100, page: 2, page_size: 50 })
+      }),
+    )
+
+    renderAt('/redemption-codes?p=2&size=50')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Redemption Codes' }),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(seen[0]?.get('page_size')).toBe('50')
+    })
+    expect(seen[0]?.get('p')).toBe('2')
+    expect(
+      (screen.getByLabelText('Rows per page') as HTMLSelectElement).value,
+    ).toBe('50')
+  })
 })
