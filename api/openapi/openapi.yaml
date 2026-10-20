@@ -363,6 +363,8 @@ paths:
     $ref: './paths/public.yaml#/paths/~1api~1webhooks~1stripe'
   /api/webhooks/alipay:
     $ref: './paths/public.yaml#/paths/~1api~1webhooks~1alipay'
+  /api/webhooks/epay:
+    $ref: './paths/public.yaml#/paths/~1api~1webhooks~1epay'
 
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:

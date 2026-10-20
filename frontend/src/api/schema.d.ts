@@ -954,7 +954,7 @@ export interface paths {
          * 手动续费本人订阅（复用同一实例推进 end_at）
          * @description 创建续费订单（`orders.biz_kind='renew'`、`biz_ref_id=subscriptions.id`）。
          *     金额/币种/周期/额度由服务端按实例当前套餐行读取，不接受客户端传入；
-         *     provider ∈ {stripe, alipay}，支付载荷与购买同构。
+         *     provider ∈ {stripe, alipay, epay}，支付载荷与购买同构。
          *
          *     支付成功后**复用同一实例**：`end_at = GREATEST(end_at, now) + period_days`、
          *     `amount_used=0`、`next_reset_at` 为新 end_at（reset_on_renew=true）或 NULL、
@@ -989,8 +989,9 @@ export interface paths {
         /**
          * 购买订阅（创建支付订单）
          * @description 创建订阅购买订单（`orders.biz_kind='subscribe'`、`biz_ref_id=plan_id`），
-         *     金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay, wallet}：
-         *     前两者创建支付订单并返回支付载荷（stripe 返回 client_secret，alipay 返回 qr_code）；
+         *     金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay, epay, wallet}：
+         *     前三者创建支付订单并返回支付载荷（stripe 返回 client_secret，alipay 返回 qr_code，
+         *     epay 返回 pay_url + form_fields）；
          *     `wallet` 为余额购买，服务端在同一事务内扣减钱包、写一条
          *     `wallet_transactions(type=subscription_purchase)` 流水、将订单置 succeeded
          *     并创建订阅实例，响应无支付凭据。任一步失败整体回滚（含余额、流水、订单、实例）。
@@ -3255,7 +3256,8 @@ export interface paths {
          *     `order_state_conflict`。首次创建返回 201。
          *     **M5 无汇率：`currency` 只接受 CNY**（大小写不敏感），其它币种
          *     400。`provider=stripe` 返回 `client_secret`；`provider=alipay`
-         *     返回 `qr_code`。渠道未启用/配置不完整（含支付宝沙箱模式）返回
+         *     返回 `qr_code`；`provider=epay` 返回 `pay_url` + `form_fields`
+         *     （表单 POST 到收银台）。渠道未启用/配置不完整（含支付宝沙箱模式）返回
          *     403；渠道 5xx 返回 502 且订单置 failed。
          */
         post: operations["createOrder"];
@@ -3401,6 +3403,35 @@ export interface paths {
          *     每端点独立 60 次/分钟限流（429）。
          */
         post: operations["alipayNotify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhooks/epay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 易支付异步通知（query 编码）
+         * @description 与 POST 同一条验签/入账路径；部分易支付网关用 GET query 回调。
+         *     签名 = md5(参数按键名升序 `a=b&...` + key)（key 前无分隔符）（小写，空值不参与，
+         *     `sign`/`sign_type` 不参与），以常量时间比较。仅 `trade_status=TRADE_SUCCESS`
+         *     入账；金额（元字符串）小数位 >2 或与订单不符 → 400 + `fail` 且不入账。
+         *     重复通知幂等。每端点独立 60 次/分钟限流（429）。
+         */
+        get: operations["epayNotifyGet"];
+        put?: never;
+        /**
+         * 易支付异步通知（表单编码）
+         * @description 表单编码回调；验签、状态、金额与幂等语义与 GET 变体完全相同。
+         *     返回纯文本 `success` / `fail`。
+         */
+        post: operations["epayNotify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4942,9 +4973,10 @@ export interface components {
         SubscriptionRenewRequest: {
             /**
              * @description 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
+             *     `epay` 返回 `pay_url` + `form_fields`（与充值同构）。
              * @enum {string}
              */
-            provider: "stripe" | "alipay";
+            provider: "stripe" | "alipay" | "epay";
         };
         TopupOrderView: {
             /** Format: int64 */
@@ -4952,10 +4984,10 @@ export interface components {
             /**
              * @description 响应侧取值域。`wallet` 只出现在余额购买的订阅订单上
              *     （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
-             *     充值请求（CreateOrderRequest）与续费请求仍只接受 stripe/alipay。
+             *     充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
              * @enum {string}
              */
-            provider: "stripe" | "alipay" | "wallet";
+            provider: "stripe" | "alipay" | "epay" | "wallet";
             /**
              * Format: int64
              * @description 订单金额（分），服务端定价的唯一真源
@@ -4982,6 +5014,15 @@ export interface components {
             client_secret?: string;
             /** @description 仅 alipay 首次创建返回 */
             qr_code?: string;
+            /** @description 仅 epay 首次创建返回；表单 POST 的目标收银台地址 */
+            pay_url?: string;
+            /**
+             * @description 仅 epay 首次创建返回；submit.php 表单字段（含 `sign`，小写 MD5）。
+             *     客户端以 application/x-www-form-urlencoded POST 到 `pay_url`。
+             */
+            form_fields?: {
+                [key: string]: string;
+            };
         };
         SubscriptionPurchaseRequest: {
             /** Format: int64 */
@@ -4990,10 +5031,11 @@ export interface components {
              * @description 支付渠道；金额/币种由服务端按套餐行读取，不接受客户端传入。
              *     `wallet` 为余额购买：服务端在同一事务内扣减钱包、写
              *     `subscription_purchase` 流水、将订单置 succeeded 并创建订阅实例；
-             *     余额不足返回 402，且不留下订单/实例/流水。
+             *     余额不足返回 402，且不留下订单/实例/流水。`epay` 返回
+             *     `pay_url` + `form_fields`（与充值同构）。
              * @enum {string}
              */
-            provider: "stripe" | "alipay" | "wallet";
+            provider: "stripe" | "alipay" | "epay" | "wallet";
         };
         /**
          * @description 读时派生，优先级 disabled > expired > exhausted > enabled。
@@ -7065,7 +7107,7 @@ export interface components {
              */
             credits_ratio: number;
             /** @description 已启用且配置完整的渠道（P-13） */
-            enabled_providers: ("stripe" | "alipay")[];
+            enabled_providers: ("stripe" | "alipay" | "epay")[];
             /** @description 只包含 enabled_providers 中的渠道 */
             providers: {
                 [key: string]: components["schemas"]["TopupProviderConfig"];
@@ -7078,10 +7120,11 @@ export interface components {
             user_id: number;
             /**
              * @description 响应侧取值域。`wallet` 仅用于订阅余额购买订单；订单列表/详情的
-             *     消费方不能假设非 stripe 即 alipay。请求侧枚举（充值/续费）不变。
+             *     消费方不能假设非 stripe 即 alipay（epay 也已存在）。请求侧枚举
+             *     （充值/续费）为 stripe/alipay/epay。
              * @enum {string}
              */
-            provider: "stripe" | "alipay" | "wallet";
+            provider: "stripe" | "alipay" | "epay" | "wallet";
             /**
              * Format: int64
              * @description 订单金额（分），服务端定价唯一真源
@@ -7135,8 +7178,12 @@ export interface components {
              * @enum {string}
              */
             currency: "CNY";
-            /** @enum {string} */
-            provider: "stripe" | "alipay";
+            /**
+             * @description 支付渠道。`epay`（微信易支付）不调用渠道 API，服务端返回
+             *     `pay_url` + `form_fields` 供前端以表单 POST 打开收银台。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay" | "epay";
         };
         OrderVerifyResponse: {
             /** @description 渠道是否已确认收款；false 时订单状态不变 */
@@ -14019,6 +14066,119 @@ export interface operations {
                 content?: never;
             };
             /** @description 限流器不可用（fail closed） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    epayNotifyGet: {
+        parameters: {
+            query?: {
+                pid?: string;
+                out_trade_no?: string;
+                money?: string;
+                trade_status?: string;
+                sign?: string;
+                sign_type?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 处理完成（纯文本 `success`） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "fail";
+                };
+            };
+            /** @description 验签/载荷/金额不符或订单不存在（纯文本 `fail`，不入账） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "fail";
+                };
+            };
+            /** @description 超过 60 次/分钟 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（纯文本 `fail`，渠道会重投） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 渠道未启用/配置不完整或限流器不可用（纯文本 `fail`） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    epayNotify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    [key: string]: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 处理完成（纯文本 `success`） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "fail";
+                };
+            };
+            /** @description 验签/载荷/金额不符或订单不存在（纯文本 `fail`，不入账） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": "success" | "fail";
+                };
+            };
+            /** @description 超过 60 次/分钟 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（纯文本 `fail`，渠道会重投） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 渠道未启用/配置不完整或限流器不可用（纯文本 `fail`） */
             503: {
                 headers: {
                     [name: string]: unknown;

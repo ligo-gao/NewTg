@@ -19,6 +19,7 @@ import type {
   TopupConfig,
   TopupProvider,
 } from './types'
+import { isUiSupportedProvider } from './types'
 
 const CONFIG_KEY = ['topup', 'config'] as const
 const WALLET_SUMMARY_KEY = ['wallet', 'summary'] as const
@@ -82,7 +83,7 @@ export function TopupPage() {
   // order endpoint would reject it; require an explicit custom amount instead.
   useEffect(() => {
     if (config === undefined) return
-    const seededProvider = config.enabled_providers[0] ?? null
+    const seededProvider = config.enabled_providers.find(isUiSupportedProvider) ?? null
     const seededMin = providerMinFor(config, seededProvider)
     setAmountCents((current) => {
       if (current !== null) return current
@@ -105,7 +106,8 @@ export function TopupPage() {
     )
   }
 
-  const noProviders = config.enabled_providers.length === 0
+  const supportedProviders = config.enabled_providers.filter(isUiSupportedProvider)
+  const noProviders = supportedProviders.length === 0
   const selectedCents = customMode
     ? parseYuanToCents(customInput)
     : amountCents
@@ -265,7 +267,7 @@ export function TopupPage() {
                 className="flex flex-col gap-2"
                 onKeyDown={moveRadioFocus}
               >
-                {config.enabled_providers.map((option) => (
+                {supportedProviders.map((option) => (
                   <ProviderRadio
                     key={option}
                     provider={option}

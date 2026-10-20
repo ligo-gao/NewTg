@@ -1227,7 +1227,8 @@ paths:
         `order_state_conflict`。首次创建返回 201。
         **M5 无汇率：`currency` 只接受 CNY**（大小写不敏感），其它币种
         400。`provider=stripe` 返回 `client_secret`；`provider=alipay`
-        返回 `qr_code`。渠道未启用/配置不完整（含支付宝沙箱模式）返回
+        返回 `qr_code`；`provider=epay` 返回 `pay_url` + `form_fields`
+        （表单 POST 到收银台）。渠道未启用/配置不完整（含支付宝沙箱模式）返回
         403；渠道 5xx 返回 502 且订单置 failed。
       security:
         - sessionCookie: []
@@ -2166,8 +2167,9 @@ paths:
       summary: 购买订阅（创建支付订单）
       description: |
         创建订阅购买订单（`orders.biz_kind='subscribe'`、`biz_ref_id=plan_id`），
-        金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay, wallet}：
-        前两者创建支付订单并返回支付载荷（stripe 返回 client_secret，alipay 返回 qr_code）；
+        金额/币种/周期/额度一律由服务端按套餐行读取。provider ∈ {stripe, alipay, epay, wallet}：
+        前三者创建支付订单并返回支付载荷（stripe 返回 client_secret，alipay 返回 qr_code，
+        epay 返回 pay_url + form_fields）；
         `wallet` 为余额购买，服务端在同一事务内扣减钱包、写一条
         `wallet_transactions(type=subscription_purchase)` 流水、将订单置 succeeded
         并创建订阅实例，响应无支付凭据。任一步失败整体回滚（含余额、流水、订单、实例）。
@@ -2273,7 +2275,7 @@ paths:
       description: |
         创建续费订单（`orders.biz_kind='renew'`、`biz_ref_id=subscriptions.id`）。
         金额/币种/周期/额度由服务端按实例当前套餐行读取，不接受客户端传入；
-        provider ∈ {stripe, alipay}，支付载荷与购买同构。
+        provider ∈ {stripe, alipay, epay}，支付载荷与购买同构。
 
         支付成功后**复用同一实例**：`end_at = GREATEST(end_at, now) + period_days`、
         `amount_used=0`、`next_reset_at` 为新 end_at（reset_on_renew=true）或 NULL、

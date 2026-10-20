@@ -34,6 +34,7 @@ func TestPaymentSecretKeysRegistered(t *testing.T) {
 		"pay.stripe.webhook_secret",
 		"pay.alipay.private_key",
 		"pay.alipay.public_key",
+		"pay.epay.key",
 	} {
 		if _, ok := secretKeys[secret]; !ok {
 			t.Fatalf("%q 必须登记进 secretKeys（security-03 / modules-08 §3.20）", secret)

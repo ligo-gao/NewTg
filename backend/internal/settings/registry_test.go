@@ -248,7 +248,7 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"billing.currency_symbol:on", "billing.quota_per_unit:on",
 		"deploy.ionet.api_key:any", "deploy.ionet.enabled:off",
 		"pay.alipay.private_key:any", "pay.alipay.public_key:any",
-		"pay.epay.merchant_id:on", "pay.force_complete_max_amount:on",
+		"pay.epay.key:any", "pay.epay.pid:on", "pay.force_complete_max_amount:on",
 		"pay.online_enabled:off", "pay.stripe.secret_key:any",
 		"pay.stripe.webhook_secret:any", "pay.waffo.merchant_id:on",
 		"pay.waffo_pancake.merchant_id:on",
@@ -269,6 +269,7 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"auth.turnstile.secret_key", "deploy.ionet.api_key",
 		"notify.smtp.password", "notify.webhook.secret",
 		"pay.alipay.private_key", "pay.alipay.public_key",
+		"pay.epay.key",
 		"pay.stripe.secret_key", "pay.stripe.webhook_secret",
 	}
 	if strings.Join(secrets, ",") != strings.Join(wantSecrets, ",") {
@@ -296,6 +297,27 @@ func TestSectionValidators(t *testing.T) {
 	merged["pay.alipay.enabled"] = true
 	if err := validateAlipaySection(merged, nil); err == nil {
 		t.Fatal("启用支付宝但无 app_id/密钥应被拒")
+	}
+
+	// Epay（C1）：启用即要求 api_url + pid + key 齐备。
+	merged = sectionDefaults("pay.epay")
+	merged["pay.epay.enabled"] = true
+	if err := validateEpaySection(merged, nil); err == nil {
+		t.Fatal("启用 Epay 但无 api_url/pid/key 应被拒")
+	}
+	merged["pay.epay.api_url"] = "https://pay.example.com"
+	merged["pay.epay.pid"] = "1001"
+	if err := validateEpaySection(merged, map[string]bool{}); err == nil {
+		t.Fatal("启用 Epay 但未配置密钥应被拒")
+	}
+	if err := validateEpaySection(merged, map[string]bool{"pay.epay.key": true}); err != nil {
+		t.Fatalf("三项齐备应通过: %v", err)
+	}
+	if err := httpsAbsoluteURL("http://pay.example.com"); err == nil {
+		t.Fatal("epay api_url 必须是 https")
+	}
+	if err := httpsAbsoluteURL("https://user:pass@pay.example.com"); err == nil {
+		t.Fatal("epay api_url 不得含 userinfo")
 	}
 
 	if _, err := normalizeRaw(mustLookup(t, "pay.topup_group_ratio"),

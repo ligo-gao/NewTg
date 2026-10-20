@@ -56,7 +56,9 @@ var secretKeys = map[string]struct{}{
 	"pay.stripe.webhook_secret": {},
 	"pay.alipay.private_key":    {},
 	"pay.alipay.public_key":     {},
-	"notify.smtp.password":      {},
+	// Epay 签名密钥（modules-04 F-04-21）：与其它支付凭据同等级密封。
+	"pay.epay.key":         {},
+	"notify.smtp.password": {},
 	// F-08-20：Webhook 签名密钥必须与 SMTP 口令同等对待（加密落库、
 	// 读接口永不回明文）；漏登记会让投递进程读到密文而验签全失败。
 	"notify.webhook.secret": {},

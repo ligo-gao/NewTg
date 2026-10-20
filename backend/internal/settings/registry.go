@@ -385,12 +385,22 @@ func buildRegistry() []Setting {
 				"https://openapi-sandbox.dl.alipaydev.com/gateway.do")),
 		def("pay.alipay.sandbox", "pay.alipay", TypeBool, false, public()),
 
-		// ==== pay.epay / creem / waffo（§4.7 一次性登记）====
+		// ==== pay.epay（模块 04 F-04-21；C1 落地）====
+		// 收银台 API 根地址必须是 https 绝对 URL：表单会把商户号、金额与
+		// MD5 签名 POST 到该地址。pid 是商户号（非密钥但属敏感标识），
+		// key 是签名密钥（secret：落库密封、响应掩码）。
 		def("pay.epay.enabled", "pay.epay", TypeBool, false, public()),
-		def("pay.epay.gateway_url", "pay.epay", TypeString, "",
-			maxLen(512), validate(absoluteHTTPURL)),
-		def("pay.epay.merchant_id", "pay.epay", TypeString, "", maxLen(128), dangerousOn()),
+		def("pay.epay.api_url", "pay.epay", TypeString, "", maxLen(1024),
+			validate(httpsAbsoluteURL)),
+		def("pay.epay.pid", "pay.epay", TypeString, "", maxLen(128), dangerousOn()),
+		def("pay.epay.key", "pay.epay", TypeString, "", secret(), dangerousAny()),
+		// 可选回调/返回地址；留空时由 site.server_address 推导默认值。
+		def("pay.epay.notify_url", "pay.epay", TypeString, "", maxLen(1024),
+			validate(httpsAbsoluteURL)),
+		def("pay.epay.return_url", "pay.epay", TypeString, "", maxLen(1024),
+			validate(urlOrRelative)),
 
+		// ==== pay.creem / waffo（§4.7 一次性登记）====
 		def("pay.creem.enabled", "pay.creem", TypeBool, false, public()),
 		def("pay.creem.test_mode", "pay.creem", TypeBool, false),
 

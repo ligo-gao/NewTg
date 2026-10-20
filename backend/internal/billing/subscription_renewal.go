@@ -95,7 +95,7 @@ func (s *TopupService) CreateSubscriptionRenewalOrder(ctx context.Context,
 		return s.replayOrder(existing, userID)
 	}
 
-	if provider != ProviderStripe && provider != ProviderAlipay {
+	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderEpay {
 		return nil, ErrInvalidProvider
 	}
 

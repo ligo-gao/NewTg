@@ -1406,9 +1406,9 @@ func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Req
 	// wallet 是余额购买（P2b）：仍是订阅购买订单，仍要求 Idempotency-Key 与
 	// 同一限流；服务端在同一事务内扣款+履约，响应没有支付凭据。
 	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay &&
-		provider != billing.ProviderWallet {
+		provider != billing.ProviderWallet && provider != billing.ProviderEpay {
 		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePurchaseInvalid,
-			"Invalid subscription purchase", "provider must be stripe, alipay or wallet", []string{"provider"})
+			"Invalid subscription purchase", "provider must be stripe, alipay, epay or wallet", []string{"provider"})
 		return
 	}
 	if h.purchase == nil {
@@ -1452,6 +1452,8 @@ func (h *SubscriptionHandlers) handlePurchase(w http.ResponseWriter, r *http.Req
 		Order:        topupOrderViewFrom(result.Order),
 		ClientSecret: result.ClientSecret,
 		QRCode:       result.QRCode,
+		PayURL:       result.PayURL,
+		FormFields:   result.FormFields,
 	})
 }
 
@@ -1554,9 +1556,10 @@ func (h *SubscriptionHandlers) handleRenewSubscription(w http.ResponseWriter, r 
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(*req.Provider))
-	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay {
+	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay &&
+		provider != billing.ProviderEpay {
 		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
-			"Invalid subscription renewal", "provider must be stripe or alipay", []string{"provider"})
+			"Invalid subscription renewal", "provider must be stripe, alipay or epay", []string{"provider"})
 		return
 	}
 
@@ -1594,6 +1597,8 @@ func (h *SubscriptionHandlers) handleRenewSubscription(w http.ResponseWriter, r 
 		Order:        topupOrderViewFrom(result.Order),
 		ClientSecret: result.ClientSecret,
 		QRCode:       result.QRCode,
+		PayURL:       result.PayURL,
+		FormFields:   result.FormFields,
 	})
 }
 

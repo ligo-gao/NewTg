@@ -153,7 +153,8 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 
 	// provider=wallet 是余额购买（P2b）：不经第三方渠道，但仍复用订单
 	// 幂等与快照纪律。渠道校验只决定「如何履约」，不改变订单语义。
-	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderWallet {
+	if provider != ProviderStripe && provider != ProviderAlipay &&
+		provider != ProviderWallet && provider != ProviderEpay {
 		return nil, ErrInvalidProvider
 	}
 

@@ -51,6 +51,7 @@ const (
 	webhookRateWindow   = time.Minute
 	webhookRateStripe   = "newtg:webhook:rate:stripe:"
 	webhookRateAlipay   = "newtg:webhook:rate:alipay:"
+	webhookRateEpay     = "newtg:webhook:rate:epay:"
 	webhookMaxBodyBytes = 1 << 20
 
 	// 订单分页（P-9）：默认 20，上限 100；p 上限与其它管理列表一致。
@@ -180,6 +181,10 @@ func (h *TopupHandlers) RegisterTopupRoutes(mux *http.ServeMux, wrap func(http.H
 func (h *TopupHandlers) RegisterWebhookRoutes(rt *Router) {
 	rt.HandlePublic("POST /api/webhooks/stripe", http.HandlerFunc(h.handleStripeWebhook))
 	rt.HandlePublic("POST /api/webhooks/alipay", http.HandlerFunc(h.handleAlipayWebhook))
+	// epay 的通知方法由渠道配置决定，GET（query）与 POST（表单）都很常见；
+	// 两种方法走同一验签与入账路径。
+	rt.HandlePublic("GET /api/webhooks/epay", http.HandlerFunc(h.handleEpayWebhook))
+	rt.HandlePublic("POST /api/webhooks/epay", http.HandlerFunc(h.handleEpayWebhook))
 }
 
 // ---------------------------------------------------------------------------
@@ -222,9 +227,11 @@ type createOrderRequest struct {
 }
 
 type createOrderResponse struct {
-	Order        topupOrderView `json:"order"`
-	ClientSecret string         `json:"client_secret,omitempty"`
-	QRCode       string         `json:"qr_code,omitempty"`
+	Order        topupOrderView    `json:"order"`
+	ClientSecret string            `json:"client_secret,omitempty"`
+	QRCode       string            `json:"qr_code,omitempty"`
+	PayURL       string            `json:"pay_url,omitempty"`
+	FormFields   map[string]string `json:"form_fields,omitempty"`
 }
 
 // orderView 是订单列表/详情的统一投影（F-04-08/F-04-09）。
@@ -356,6 +363,8 @@ func (h *TopupHandlers) handleCreateOrder(w http.ResponseWriter, r *http.Request
 		Order:        topupOrderViewFrom(result.Order),
 		ClientSecret: result.ClientSecret,
 		QRCode:       result.QRCode,
+		PayURL:       result.PayURL,
+		FormFields:   result.FormFields,
 	})
 }
 
@@ -739,6 +748,29 @@ func (h *TopupHandlers) currentUser(w http.ResponseWriter, r *http.Request) (int
 // 按 IP 分桶会失去保护意义）。Redis 故障时 fail closed：资金入口不能因为
 // 限流器不可用而放量。
 func (h *TopupHandlers) allowWebhook(w http.ResponseWriter, r *http.Request, prefix string) bool {
+	status, retryAfter := h.checkWebhookLimit(r, prefix)
+	if status == 0 {
+		return true
+	}
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	}
+	if status == http.StatusTooManyRequests {
+		writeProblem(w, status, authProblemTooManyRequests, "Too many requests")
+		return false
+	}
+	writeProblem(w, status, authProblemServiceUnavailable, "Service temporarily unavailable")
+	return false
+}
+
+// checkWebhookLimit 是固定窗口限流的共享实现。返回 status=0 表示放行；
+// 否则返回应回写的 HTTP 状态与 Retry-After 秒数。把它与响应形状分离，
+// 是因为 epay 要求纯文本 ack，而 Stripe/支付宝走 RFC 7807。
+//
+// 键只含端点前缀与窗口序号：限流面是端点而非调用方（渠道回调 IP 不固定，
+// 按 IP 分桶会失去保护意义）。Redis 故障时 fail closed：资金入口不能因为
+// 限流器不可用而放量。
+func (h *TopupHandlers) checkWebhookLimit(r *http.Request, prefix string) (int, int) {
 	now := h.now()
 	bucket := now.Unix() / int64(webhookRateWindow/time.Second)
 	key := fmt.Sprintf("%s%d", prefix, bucket)
@@ -746,10 +778,7 @@ func (h *TopupHandlers) allowWebhook(w http.ResponseWriter, r *http.Request, pre
 	count, err := h.rdb.Incr(r.Context(), key).Result()
 	if err != nil {
 		h.log.Error("webhook rate limiter unavailable", "prefix", prefix, "error", err)
-		w.Header().Set("Retry-After", "5")
-		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
-			"Service temporarily unavailable")
-		return false
+		return http.StatusServiceUnavailable, 5
 	}
 	if count == 1 {
 		h.rdb.Expire(r.Context(), key, webhookRateWindow+time.Second)
@@ -760,11 +789,9 @@ func (h *TopupHandlers) allowWebhook(w http.ResponseWriter, r *http.Request, pre
 		if seconds < 1 {
 			seconds = 1
 		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests, "Too many requests")
-		return false
+		return http.StatusTooManyRequests, seconds
 	}
-	return true
+	return 0, 0
 }
 
 func (h *TopupHandlers) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
@@ -841,11 +868,75 @@ func (h *TopupHandlers) handleAlipayWebhook(w http.ResponseWriter, r *http.Reque
 
 // writeAlipayAck 输出支付宝要求的纯文本 ack（不是 JSON/problem）。
 func (h *TopupHandlers) writeAlipayAck(w http.ResponseWriter, status int, success bool) {
+	h.writePaymentAck(w, status, success, "success", "failure")
+}
+
+// writePaymentAck 是渠道纯文本 ack 的唯一写出点。
+func (h *TopupHandlers) writePaymentAck(w http.ResponseWriter, status int, success bool,
+	successText, failureText string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	if success {
-		_, _ = io.WriteString(w, "success")
+		_, _ = io.WriteString(w, successText)
 		return
 	}
-	_, _ = io.WriteString(w, "failure")
+	_, _ = io.WriteString(w, failureText)
+}
+
+// handleEpayWebhook 处理易支付通知（F-04-21）。
+//
+// 响应形状由渠道冻结为纯文本 `success`/`fail`（不是 JSON、不是 problem）：
+// 渠道只根据文本决定是否重投，JSON 错误体会被当成「未确认」无限重发。
+// 未启用/配置不完整返回 503 + fail（任务书明确要求）。
+func (h *TopupHandlers) handleEpayWebhook(w http.ResponseWriter, r *http.Request) {
+	status, retryAfter := h.checkWebhookLimit(r, webhookRateEpay)
+	if status != 0 {
+		if retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		}
+		h.writePaymentAck(w, status, false, "success", "fail")
+		return
+	}
+	// GET 的回调参数在 query，POST 在表单；ParseForm 合并两者到 r.Form。
+	// 限制原始体大小：未认证端点不能依赖默认上限。
+	r.Body = http.MaxBytesReader(w, r.Body, webhookMaxBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		h.writePaymentAck(w, http.StatusBadRequest, false, "success", "fail")
+		return
+	}
+	err := h.svc.HandleEpayNotify(r.Context(), r.Form)
+	switch {
+	case err == nil:
+		h.writePaymentAck(w, http.StatusOK, true, "success", "fail")
+	case errors.Is(err, billing.ErrWebhookSignature),
+		errors.Is(err, billing.ErrWebhookPayload):
+		// 非法签名/载荷：400 + fail，绝不入账。日志只记分类，不记完整 query
+		// （其中含签名与商户参数）。
+		h.log.Warn("epay notify rejected", "reason", "signature_or_payload")
+		h.writePaymentAck(w, http.StatusBadRequest, false, "success", "fail")
+	case errors.Is(err, billing.ErrAmountMismatch),
+		errors.Is(err, billing.ErrCurrencyMismatch):
+		// 金额不符已由服务层置 failed + 告警；400 + fail 让渠道停止重投。
+		h.writePaymentAck(w, http.StatusBadRequest, false, "success", "fail")
+	case errors.Is(err, billing.ErrOrderNotFound):
+		// 订单不存在不泄露存在性：与非法签名同形状的 400 + fail。
+		h.log.Warn("epay notify for unknown order")
+		h.writePaymentAck(w, http.StatusBadRequest, false, "success", "fail")
+	case errors.Is(err, billing.ErrProviderDisabled),
+		errors.Is(err, billing.ErrTopupDisabled):
+		// 渠道未启用或配置不完整：503，渠道会重投到运营修复为止。
+		h.log.Warn("epay notify while provider unavailable")
+		h.writePaymentAck(w, http.StatusServiceUnavailable, false, "success", "fail")
+	case errors.Is(err, billing.ErrPaymentConfig):
+		h.log.Error("epay notify configuration error")
+		h.writePaymentAck(w, http.StatusServiceUnavailable, false, "success", "fail")
+	case errors.Is(err, billing.ErrOrderStateConflict):
+		// 终态（failed/expired/cancelled）订单收到迟到回调：回 success 停止
+		// 重投；状态机不允许把它改回可入账（与支付宝同口径）。
+		h.log.Warn("epay notify for terminal order", "order_error", err)
+		h.writePaymentAck(w, http.StatusOK, true, "success", "fail")
+	default:
+		h.log.Error("epay notify processing failed", "error", err)
+		h.writePaymentAck(w, http.StatusInternalServerError, false, "success", "fail")
+	}
 }
