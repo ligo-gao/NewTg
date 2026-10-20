@@ -3589,7 +3589,7 @@ type AnnouncementDetail struct {
 	// rel="noopener noreferrer"（R-D7-04）。
 	ContentHtml string `json:"content_html"`
 
-	// ContentMarkdown Markdown 原文（≤16KB）。
+	// ContentMarkdown Markdown 原文（≤16384，按 UTF-8 字节计，不是字符数）。
 	ContentMarkdown string    `json:"content_markdown"`
 	CreatedAt       time.Time `json:"created_at"`
 	CreatedBy       int64     `json:"created_by"`
@@ -3655,7 +3655,7 @@ type AnnouncementWriteInput struct {
 	// Category 省略时默认 notice。
 	Category *AnnouncementCategory `json:"category,omitempty"`
 
-	// Content Markdown 原文；渲染期净化（R-D7-04）。
+	// Content Markdown 原文（≤16384，按 UTF-8 字节计）；渲染期净化（R-D7-04）。
 	Content string `json:"content"`
 
 	// ExpireAt null/省略 = 永久有效；必须晚于生效时间。

@@ -281,7 +281,11 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			Audit:   cfg.Audit,
 			Logger:  cfg.Logger,
 			Webhook: notify.NewWebhookSender(cfg.Config, cfg.Sealer),
-			BaseURL: announcementBaseURL(cfg.Config),
+			// 与 assembly 的基址回退链一致：PUBLIC_BASE_URL → site.server_address。
+			// cfg.PublicBaseURL 在生产装配中已由 effectivePublicBaseURL 解析过，
+			// 这里再读一次 site.server_address 是为了直连 NewRouter 的装配
+			// （单测/嵌入式）也遵守同一条链。
+			BaseURL: announcementBaseURL(cfg.Config, cfg.PublicBaseURL),
 		})
 		if err != nil {
 			return nil, err
@@ -460,11 +464,20 @@ func parseAllowedOrigins(raw string) []string {
 	return out
 }
 
-// announcementBaseURL 返回公告 Webhook payload 使用的站点基址
-// （site.server_address）。配置不可读/为空时返回空串，发送侧据此降级为
-// 站内相对路径（R-D7-09）。每次发布都重新读取，管理员改配置后立即生效。
-func announcementBaseURL(config ConfigReader) func() string {
+// announcementBaseURL 返回公告 Webhook payload 使用的站点基址，回退链与
+// assembly 一致：PUBLIC_BASE_URL（cfg.PublicBaseURL，可逗号分隔多个 → 取
+// 第一个）→ site.server_address → 空串（发送侧据此降级为站内相对路径，
+// R-D7-09）。每次发布都重新读取配置，管理员改 site.server_address 后立即
+// 生效。PUBLIC_BASE_URL 是部署期环境变量，组装闭包时已确定。
+func announcementBaseURL(config ConfigReader, publicBaseURL string) func() string {
+	envBase := ""
+	if origins := parseAllowedOrigins(publicBaseURL); len(origins) > 0 {
+		envBase = strings.TrimRight(origins[0], "/")
+	}
 	return func() string {
+		if envBase != "" {
+			return envBase
+		}
 		if config == nil {
 			return ""
 		}

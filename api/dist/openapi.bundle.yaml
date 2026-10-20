@@ -12855,7 +12855,7 @@ components:
           type: string
           minLength: 1
           maxLength: 16384
-          description: Markdown 原文；渲染期净化（R-D7-04）。
+          description: Markdown 原文（≤16384，按 UTF-8 字节计）；渲染期净化（R-D7-04）。
         publish_at:
           type: string
           format: date-time
@@ -12931,7 +12931,7 @@ components:
         content_markdown:
           type: string
           maxLength: 16384
-          description: Markdown 原文（≤16KB）。
+          description: Markdown 原文（≤16384，按 UTF-8 字节计，不是字符数）。
         content_html:
           type: string
           description: |

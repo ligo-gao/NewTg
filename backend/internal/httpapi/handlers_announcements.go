@@ -376,6 +376,12 @@ func (h *AnnouncementHandlers) validateAnnouncementPayload(p announcementPayload
 		// 「读接口永远降级纯文本」的半坏行存进库。
 		fields = append(fields, "content")
 	}
+	// 两侧都显式提交时才能在这里判时间窗；publish_at 省略时其值由 store
+	// 决定（创建取 now、编辑保留原值），store 的 ErrAnnouncementInvalid
+	// 仍是最后兜底。字段名必须回给前端，才能高亮 expire_at 输入框（L11）。
+	if p.ExpireAt != nil && p.PublishAt != nil && !p.ExpireAt.After(*p.PublishAt) {
+		fields = append(fields, "expire_at")
+	}
 	return in, fields
 }
 
@@ -455,6 +461,16 @@ func (h *AnnouncementHandlers) handleList(w http.ResponseWriter, r *http.Request
 	default:
 		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
 			"Invalid request", "unknown status filter")
+		return
+	}
+	// category 与 status 同口径：非法枚举值在 handler 预校验为 400，
+	// 不把自由文本透传给仓储（否则会静默返回空列表，用户以为没有数据）。
+	switch filter.Category {
+	case "", store.AnnouncementCategoryNotice, store.AnnouncementCategoryMaintenance,
+		store.AnnouncementCategoryRelease:
+	default:
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
+			"Invalid request", "unknown category filter")
 		return
 	}
 	if raw := strings.TrimSpace(query.Get("p")); raw != "" {
@@ -728,7 +744,7 @@ func (h *AnnouncementHandlers) publishSideEffects(ctx context.Context, a store.A
 		"title":           a.Title,
 		"category":        a.Category,
 		"published_at":    a.PublishedAt,
-		"url":             h.announcementURL(a.ID),
+		"url":             h.announcementURL(),
 	})
 	if err != nil {
 		h.log.Warn("announcements: marshal webhook payload failed",
@@ -748,15 +764,16 @@ func (h *AnnouncementHandlers) publishSideEffects(ctx context.Context, a store.A
 	}
 }
 
-// announcementURL 组装 webhook payload 的 url：站点基址 + /announcements/{id}；
-// 基址未配置时使用站内相对路径（R-D7-09 允许的缺省）。base 末尾的 `/`
-// 先剥掉，避免出现 `https://gw//announcements/...`。
-func (h *AnnouncementHandlers) announcementURL(id string) string {
-	base := strings.TrimSpace(h.baseURL())
-	if base == "" {
-		return "/announcements/" + id
-	}
-	return strings.TrimRight(base, "/") + "/announcements/" + id
+// announcementURL 组装 webhook payload 的 url：当前指向站点根 `/`。
+//
+// 公告详情页由 D7b 实现，在那之前 `/announcements/{id}` 会 404；按 R-D7-09
+// 「若前端无该页则用 `/`」的裁决先回根路径。**待 D7b 落地后恢复**
+// `base + "/announcements/" + id`（id 参数随之加回）。基址未配置时使用
+// 站内相对路径（R-D7-09 允许的缺省）；base 末尾的 `/` 先剥掉，避免出现
+// `https://gw//`。
+func (h *AnnouncementHandlers) announcementURL() string {
+	base := strings.TrimRight(strings.TrimSpace(h.baseURL()), "/")
+	return base + "/"
 }
 
 // ---------------------------------------------------------------------------

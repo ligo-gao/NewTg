@@ -257,6 +257,18 @@ func TestAnnouncementCreateValidation(t *testing.T) {
 		{"empty content", map[string]any{"title": "t", "content": ""}, "content"},
 		{"oversized content", map[string]any{"title": "t", "content": strings.Repeat("a", store.AnnouncementMaxContentBytes+1)}, "content"},
 		{"bad category", map[string]any{"title": "t", "content": "x", "category": "bogus"}, "category"},
+		// L11：时间窗不合法时必须回 fields:["expire_at"]，前端才能高亮
+		// 到期时间输入框；equal 与 before 都非法（要求严格晚于）。
+		{"expire equals publish", map[string]any{
+			"title": "t", "content": "x",
+			"publish_at": time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC),
+			"expire_at":  time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC),
+		}, "expire_at"},
+		{"expire before publish", map[string]any{
+			"title": "t", "content": "x",
+			"publish_at": time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC),
+			"expire_at":  time.Date(2026, 10, 21, 9, 59, 0, 0, time.UTC),
+		}, "expire_at"},
 	}
 	for _, c := range cases {
 		c := c
@@ -367,6 +379,8 @@ func TestAnnouncementListRejectsBadQuery(t *testing.T) {
 	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
 	for _, path := range []string{
 		"/api/announcements?status=bogus",
+		// M1：category 与 status 同口径，非法枚举值在 handler 预校验 400。
+		"/api/announcements?category=bogus",
 		"/api/announcements?p=0",
 		"/api/announcements?page_size=101",
 	} {
@@ -483,8 +497,9 @@ func TestAnnouncementPublishWebhookPayload(t *testing.T) {
 			t.Fatalf("payload 缺少 %q：%s", key, webhook.payloads[0])
 		}
 	}
-	if payload["url"] != "https://gw.example.com/announcements/11111111-1111-4111-8111-111111111111" {
-		t.Fatalf("url = %v", payload["url"])
+	// L3：公告详情页由 D7b 实现；那之前 url 回站点根，避免 webhook 指向 404。
+	if payload["url"] != "https://gw.example.com/" {
+		t.Fatalf("url = %v，want 站点根", payload["url"])
 	}
 	if payload["announcement_id"] != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("announcement_id = %v", payload["announcement_id"])
@@ -526,6 +541,106 @@ func TestAnnouncementIdempotentPublishDoesNotResendWebhook(t *testing.T) {
 	if len(webhook.payloads) != 0 {
 		t.Fatalf("幂等重放不应重复投递，实际 %d 次", len(webhook.payloads))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 发布副作用：Redis 广播（M2）
+// ---------------------------------------------------------------------------
+
+// newAnnouncementPubSub 订阅发布广播频道并等待 SUBSCRIBE 确认。先确认再发
+// 请求，避免「发布快于订阅」的假阴性。
+func newAnnouncementPubSub(t *testing.T) (*redis.Client, *redis.PubSub) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	pubsub := rdb.Subscribe(context.Background(), announcementAnnounceChannel)
+	t.Cleanup(func() { _ = pubsub.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := pubsub.Receive(ctx); err != nil {
+		t.Fatalf("subscribe %s: %v", announcementAnnounceChannel, err)
+	}
+	return rdb, pubsub
+}
+
+// expectAnnouncementBroadcast 断言频道上收到一条消息且内容为公告 id。
+func expectAnnouncementBroadcast(t *testing.T, pubsub *redis.PubSub, wantID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	msg, err := pubsub.ReceiveMessage(ctx)
+	if err != nil {
+		t.Fatalf("未收到 %s 广播：%v", announcementAnnounceChannel, err)
+	}
+	if msg.Channel != announcementAnnounceChannel {
+		t.Fatalf("channel = %q，want %q", msg.Channel, announcementAnnounceChannel)
+	}
+	if msg.Payload != wantID {
+		t.Fatalf("payload = %q，want 公告 id %q", msg.Payload, wantID)
+	}
+}
+
+// expectNoAnnouncementBroadcast 在短窗口内确认频道静默（副作用路径根本没跑）。
+func expectNoAnnouncementBroadcast(t *testing.T, pubsub *redis.PubSub) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if msg, err := pubsub.ReceiveMessage(ctx); err == nil {
+		t.Fatalf("不应广播，实际收到 %q on %s", msg.Payload, msg.Channel)
+	}
+}
+
+func TestAnnouncementPublishBroadcastsRedisChannel(t *testing.T) {
+	rdb, pubsub := newAnnouncementPubSub(t)
+	repo := &fakeAnnouncementRepo{publishFn: func(context.Context, string, int64) (store.AnnouncementMutation, error) {
+		return store.AnnouncementMutation{Announcement: sampleAnnouncement(), Published: true}, nil
+	}}
+	_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
+		Repo: repo, Redis: rdb, WaitForSideEffects: true,
+	})
+	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+	got := doAnnouncementRequest(t, mux, admin, http.MethodPost,
+		"/api/announcements/11111111-1111-4111-8111-111111111111/publish", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("publish = %d，want 200（body=%s）", got.Code, got.Body.String())
+	}
+	expectAnnouncementBroadcast(t, pubsub, sampleAnnouncement().ID)
+}
+
+func TestAnnouncementNoRebroadcastWhenStateAlreadyReached(t *testing.T) {
+	rdb, pubsub := newAnnouncementPubSub(t)
+	admin := announcementTestPrincipal(1, rbac.RoleAdmin, rbac.PermSettingsManage)
+
+	t.Run("idempotent publish", func(t *testing.T) {
+		repo := &fakeAnnouncementRepo{publishFn: func(context.Context, string, int64) (store.AnnouncementMutation, error) {
+			return store.AnnouncementMutation{Announcement: sampleAnnouncement(), Published: false}, nil
+		}}
+		_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
+			Repo: repo, Redis: rdb, WaitForSideEffects: true,
+		})
+		if got := doAnnouncementRequest(t, mux, admin, http.MethodPost,
+			"/api/announcements/11111111-1111-4111-8111-111111111111/publish", nil); got.Code != http.StatusOK {
+			t.Fatalf("status = %d，want 200", got.Code)
+		}
+		expectNoAnnouncementBroadcast(t, pubsub)
+	})
+
+	t.Run("edit published", func(t *testing.T) {
+		repo := &fakeAnnouncementRepo{updateFn: func(context.Context, string, store.AnnouncementInput, int64) (store.AnnouncementMutation, error) {
+			// N-35：编辑已发布公告是原地更新，不是一次新的发布迁移。
+			return store.AnnouncementMutation{Announcement: sampleAnnouncement(), Published: false}, nil
+		}}
+		_, mux := newAnnouncementTestHandlers(t, AnnouncementHandlerConfig{
+			Repo: repo, Redis: rdb, WaitForSideEffects: true,
+		})
+		if got := doAnnouncementRequest(t, mux, admin, http.MethodPut,
+			"/api/announcements/11111111-1111-4111-8111-111111111111",
+			map[string]any{"title": "Maintenance", "content": "**down**"}); got.Code != http.StatusOK {
+			t.Fatalf("status = %d，want 200（body=%s）", got.Code, got.Body.String())
+		}
+		expectNoAnnouncementBroadcast(t, pubsub)
+	})
 }
 
 // ---------------------------------------------------------------------------

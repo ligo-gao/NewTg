@@ -5726,7 +5726,7 @@ export interface components {
             title: string;
             /** @description 省略时默认 notice。 */
             category?: components["schemas"]["AnnouncementCategory"];
-            /** @description Markdown 原文；渲染期净化（R-D7-04）。 */
+            /** @description Markdown 原文（≤16384，按 UTF-8 字节计）；渲染期净化（R-D7-04）。 */
             content: string;
             /**
              * Format: date-time
@@ -5768,7 +5768,7 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
-            /** @description Markdown 原文（≤16KB）。 */
+            /** @description Markdown 原文（≤16384，按 UTF-8 字节计，不是字符数）。 */
             content_markdown: string;
             /**
              * @description 服务端净化后的 HTML 片段：原始 HTML 不解析（`<script>`/`<img
