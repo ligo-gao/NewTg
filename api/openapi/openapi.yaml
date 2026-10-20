@@ -377,6 +377,9 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
+  # Responses 创建（T2 / P-01：插件优先，未命中回落通用中继）。
+  /v1/responses:
+    $ref: './paths/relay.yaml#/paths/~1v1~1responses'
   # Playground 会话中继（relay-01 §1.5）。入口必须显式引用：bundle 只内联
   # openapi.yaml 可达的节点，片段文件里的孤儿 path 不会进入生成物。
   /pg/chat/completions:

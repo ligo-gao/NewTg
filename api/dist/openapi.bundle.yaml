@@ -7807,6 +7807,41 @@ paths:
           $ref: '#/components/responses/Error500'
         '503':
           $ref: '#/components/responses/Error503'
+  /v1/responses:
+    post:
+      tags:
+        - relay
+      operationId: createResponse
+      x-openai-compatible: true
+      x-relay-format: openai_responses
+      summary: OpenAI Responses 创建（插件优先 + 通用回退）
+      description: |
+        分发顺序（冻结）：先查插件 manifest 的 `routes[]`（方法 + 路径精确匹配），
+        命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）；
+        未命中回落 `relay.FormatOpenAIResponses` 的通用中继（`200`，响应体为上游
+        Responses 对象）。两条分支互斥，同一请求只发生一次预扣。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: OpenAI Responses API reference
+        url: https://platform.openai.com/docs/api-reference/responses
+      responses:
+        '200':
+          description: Responses 对象或 SSE 流（上游公开规范；schema 见 contract/adapter）
+        '202':
+          description: 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '402':
+          $ref: '#/components/responses/Error402'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
   /pg/chat/completions:
     post:
       tags:

@@ -3547,6 +3547,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * OpenAI Responses 创建（插件优先 + 通用回退）
+         * @description 分发顺序（冻结）：先查插件 manifest 的 `routes[]`（方法 + 路径精确匹配），
+         *     命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）；
+         *     未命中回落 `relay.FormatOpenAIResponses` 的通用中继（`200`，响应体为上游
+         *     Responses 对象）。两条分支互斥，同一请求只发生一次预扣。
+         */
+        post: operations["createResponse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/pg/chat/completions": {
         parameters: {
             query?: never;
@@ -14398,6 +14421,37 @@ export interface operations {
         responses: {
             /** @description ChatCompletion 对象或 SSE 流（schema 见上游公开规范） */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            402: components["responses"]["Error402"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    createResponse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Responses 对象或 SSE 流（上游公开规范；schema 见 contract/adapter） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`） */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

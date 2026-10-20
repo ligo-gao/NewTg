@@ -213,6 +213,95 @@ func TestRegistryBraceParamShapeConflict(t *testing.T) {
 	}
 }
 
+// TestRegistryAllowsPluginDispatchedResponsesRoute 冻结 P-01 与 R-10 的交集：
+// `POST /v1/responses` 虽然在保留集里，但它的内建处理器先查 RouteIndex，
+// 插件声明必须注册成功并可匹配——否则「插件优先、通用回退」的插件分支
+// 永远无法上线（整插件 route_conflict 失败）。
+func TestRegistryAllowsPluginDispatchedResponsesRoute(t *testing.T) {
+	source := fixture{Key: "video", Routes: routeJS("POST", "/v1/responses", "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+	m := MustNewManager(map[string]string{"video": source}, nil, Options{MasterEnabled: true})
+	if err := m.Reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	entry := m.Snapshot().Lookup("video")
+	if entry.Status != StatusRegistered {
+		t.Fatalf("plugin-first 的 /v1/responses 必须注册成功: %+v", entry)
+	}
+	match, ok := m.Snapshot().Routes().Match("POST", "/v1/responses")
+	if !ok || match.PluginKey != "video" || match.Route.Kind != "submit" {
+		t.Fatalf("plugin route must be matchable: %+v ok=%v", match, ok)
+	}
+
+	// 例外只解除「内建冲突」这一层：两个插件声明同一形状仍然按插件间冲突
+	// 处理（后到者整插件失败），否则运行期归谁执行就变成未定义。
+	// key 按字典序注册（"video" 先于 "zzlate"），先到者保留路由。
+	second := fixture{Key: "zzlate", Routes: routeJS("POST", "/v1/responses", "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+	m2 := MustNewManager(map[string]string{"video": source, "zzlate": second}, nil, Options{MasterEnabled: true})
+	if err := m2.Reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if entry := m2.Snapshot().Lookup("zzlate"); entry.Status != StatusCompileFailed || !entry.Errors.hasRule("route_conflict") {
+		t.Fatalf("duplicate /v1/responses declarations must conflict: %+v", entry)
+	}
+	if match, ok := m2.Snapshot().Routes().Match("POST", "/v1/responses"); !ok || match.PluginKey != "video" {
+		t.Fatalf("first plugin must keep the route: %+v ok=%v", match, ok)
+	}
+}
+
+// TestRegistryRejectsBuiltinWildcardPrefixRoutes 覆盖 R-11/R-12：内建通配族
+// `/v1/models/`、`/v1beta/models/` 按**前缀**保留——该前缀下任意深度、任意
+// 方法的插件路由都必须在注册期整插件失败。按形状相等比较挡不住
+// `/v1/models/gpt-4o` 这类精确声明：它注册成功、进入 RouteIndex，但
+// ServeMux 的 `/{path...}` 模式永远先命中，形成「显示 registered、实际不可达」。
+func TestRegistryRejectsBuiltinWildcardPrefixRoutes(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/v1/models/gpt-4o"},
+		{"POST", "/v1/models/x/y"},
+		{"GET", "/v1/models/gpt-4o"},
+	}
+	// `/v1beta/models/` 已在 R-09 被加载期拒绝（原生路由必须以 /v1/ 开头），
+	// 无法构造出能走到前缀判定的插件源；builtinRoutePrefixes 里的该条目是
+	// 纵深防御（若将来 R-09 放开，前缀保留仍然生效），无独立用例。
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			// 同一插件里再放一条本可注册的路由：前缀冲突必须让整插件失败，
+			// 已写入索引的那一条要一并回滚（否则失败插件仍局部可达）。
+			source := fixture{Key: "sample", Routes: `[
+				{ method: "POST", path: "/v1/sample/unique", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" },
+				{ method: "` + tc.method + `", path: "` + tc.path + `", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" }
+			]`}.Source()
+			m := MustNewManager(map[string]string{"sample": source}, nil, Options{MasterEnabled: true})
+			if err := m.Reload(context.Background()); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			entry := m.Snapshot().Lookup("sample")
+			if entry.Status != StatusCompileFailed || !entry.Errors.hasRule("route_conflict") {
+				t.Fatalf("通配前缀下的路由必须整插件 compile_failed: %+v", entry)
+			}
+			if _, ok := m.Snapshot().Routes().Match(tc.method, tc.path); ok {
+				t.Fatal("prefix-conflicting route must not enter the index")
+			}
+			if _, leaked := m.Snapshot().Routes().Match("POST", "/v1/sample/unique"); leaked {
+				t.Fatal("failed plugin's other routes must be rolled back")
+			}
+		})
+	}
+
+	// 族根本身不在前缀内（`{path...}` 需要尾随斜杠），仍按精确形状管理：
+	// POST /v1/models 没有对应的内建模式，插件声明是可路由的，不得误报。
+	source := fixture{Key: "modelsroot", Routes: routeJS("POST", "/v1/models", "submit", "buildSubmitRequest", "parseSubmitResponse")}.Source()
+	m := MustNewManager(map[string]string{"modelsroot": source}, nil, Options{MasterEnabled: true})
+	if err := m.Reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if entry := m.Snapshot().Lookup("modelsroot"); entry.Status != StatusRegistered {
+		t.Fatalf("POST /v1/models 不在通配前缀内，不应被拒绝: %+v", entry)
+	}
+}
+
 // TestRegistryRejectsBuiltinRouteConflict 覆盖复核 Important-2 / R-10：与内建
 // /v1 路由同形状的声明必须在注册期整插件失败（否则 ServeMux 更具体模式优先，
 // 插件路由静默不可达）。
@@ -228,6 +317,11 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 		{"POST", "/v1/images/generations"},
 		{"POST", "/v1/engines/:model/embeddings"},
 		{"GET", "/v1/realtime"},
+		// T2 / R-10：Responses 族中由 T3 注册、且没有插件优先分发面的形状。
+		// （POST /v1/responses 例外：处理器先查 RouteIndex，见
+		// TestRegistryAllowsPluginDispatchedResponsesRoute。）
+		{"GET", "/v1/responses/:response_id"},
+		{"POST", "/v1/responses/compact"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
