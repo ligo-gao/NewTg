@@ -247,9 +247,9 @@ func (h *AnnouncementHandlers) RegisterPublic(mux *http.ServeMux) {
 	// `/public/abc/def`（多 segment）不匹配上面的单 segment 模式，若不在此
 	// 显式登记就会落进根 mux 的 `/api/` 受保护子树，匿名访客收到 401——
 	// 把「路径写错」误报成「未登录」。这里用「精确 + 子树」两条模式把它们
-	// 固定在公开 404，且与不可见公告的 404 形状一致。两条兜底必须是 GET：
-	// 方法无关模式会与上面的 `GET /api/announcements/{id}` 在「路径更具体、
-	// 方法更宽」上冲突，ServeMux 注册期即 panic。
+	// 固定在公开 404，且与不可见公告的 404 形状一致。两条兜底限定 GET：
+	// 非 GET（POST/DELETE 等）应继续落进受保护链（匿名 401、带会话 405），
+	// 不能被公开兜底截获而绕过鉴权/CSRF。
 	mux.Handle("GET /api/announcements/public", http.HandlerFunc(h.handlePublicNotFound))
 	mux.Handle("GET /api/announcements/public/", http.HandlerFunc(h.handlePublicNotFound))
 }
