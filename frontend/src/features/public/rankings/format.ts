@@ -54,17 +54,8 @@ export function formatBucketFull(iso: string): string {
   return iso.replace('T', ' ').replace(/([+-]\d{2}:\d{2}|Z)$/, ' $1')
 }
 
-/** 时间显示（live_feed 时间列）：本地 `HH:mm:ss`，等宽字体由调用方设置。 */
-export function formatClock(iso: string, locale: string): string {
-  const ms = Date.parse(iso)
-  if (Number.isNaN(ms)) return iso
-  return new Intl.DateTimeFormat(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(new Date(ms))
-}
+// 排行榜格式化模块不提供 formatClock：live_feed 的时间列使用
+// `home/live-feed-data.ts` 的同名实现，避免第二份重复代码（L9）。
 
 export const PERIOD_LABEL_KEYS: Record<RankingsPeriod, string> = {
   today: 'public.rankings.period.today',

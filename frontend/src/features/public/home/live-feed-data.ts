@@ -14,7 +14,6 @@ import type { components } from '@/api/schema'
 
 export type LiveFeedEvent = components['schemas']['LiveFeedEvent']
 export type LiveFeedUpstream = components['schemas']['LiveFeedUpstream']
-export type LiveFeedStatus = components['schemas']['LiveFeedStatus']
 
 export const LIVE_FEED_LIMIT = 20
 export const LIVE_FEED_SSE_PATH = '/api/home/live-feed/stream'

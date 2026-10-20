@@ -10,6 +10,7 @@ import { renderWithProviders } from '@/test-support/providers'
 import { clearRankingsEtagCache, type RankingsPeriod } from './api'
 import { rankingsAccessRedirect } from './guard'
 import { RankingsPage } from './page'
+import { needsRankingsUrlRepair, validateRankingsSearch } from './params'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -297,6 +298,8 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(within(modelSection).getByTestId('model-table')).toBeTruthy()
     expect(within(modelSection).getAllByText('1,240,000').length).toBeGreaterThan(0)
     expect(within(modelSection).getByText('New')).toBeTruthy()
+    // 并列名次：两条模型共享服务端名次 2，必须原样展示而不是重排。
+    expect(within(modelSection).getAllByText('2').length).toBeGreaterThanOrEqual(2)
 
     // 趋势：表格视图提供精确值。
     const trendSection = document.getElementById('trend') as HTMLElement
@@ -346,6 +349,150 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     )
     expect(await findByText('Service temporarily unavailable')).toBeTruthy()
     expect(getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+
+  it('renders a retryable error when the response fails validation (plain Error)', async () => {
+    // normalizeRankings 抛普通 Error（不是 ApiError）；此前查询已失败但
+    // `error !== null` 为假，主区渲染空白。必须用 isError 判定。
+    installBaseHandlers(() => HttpResponse.json({ unexpected: true }))
+    const { findByText, getByRole, queryByTestId } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    expect(await findByText('Failed to load. Please retry.')).toBeTruthy()
+    expect(getByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(queryByTestId('rankings-skeleton')).toBeNull()
+  })
+
+  it('stops auto-retry and offers a manual retry after a second consecutive 429', async () => {
+    let calls = 0
+    installBaseHandlers(() => {
+      calls += 1
+      return HttpResponse.json(
+        { type: 'about:blank', title: 'Too many requests', status: 429 },
+        { status: 429, headers: { 'Retry-After': '1' } },
+      )
+    })
+    const { findByText, findByRole, queryByText } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    expect(await findByText(/Please retry in 1s/)).toBeTruthy()
+    // 第一次倒计时归零自动重试；第二个 429 必须回到可手动重试的错误态，
+    // 而不是永久停在「0 秒」。
+    expect(
+      await findByRole('button', { name: 'Retry' }, { timeout: 4000 }),
+    ).toBeTruthy()
+    expect(calls).toBe(2)
+    expect(queryByText(/Please retry in 0s/)).toBeNull()
+  })
+
+  it('warns when the snapshot is stale', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(
+        { ...rankingsFixture('week'), freshness_seconds: 7201 },
+        { headers: { ETag: '"week-stale"' } },
+      ),
+    )
+    const { findByText } = await renderWithProviders(<Harness />, ['public'])
+    expect(await findByText('Data may be delayed')).toBeTruthy()
+  })
+
+  it('recomputes freshness on a 304 using computed_at and local now', async () => {
+    const computedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    installBaseHandlers((request) => {
+      const etag = '"week-old"'
+      if (request.headers.get('If-None-Match') === etag) {
+        return new Response(null, { status: 304, headers: { ETag: etag } })
+      }
+      return HttpResponse.json(
+        {
+          ...rankingsFixture('week'),
+          computed_at: computedAt,
+          freshness_seconds: 0,
+        },
+        { headers: { ETag: etag } },
+      )
+    })
+    const { findByText, queryByText, getByRole } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByText('Model Rankings')
+    // 初始响应自报 0s（fresh），刷新命中 304 后按 computed_at 重算成 stale。
+    expect(queryByText('Data may be delayed')).toBeNull()
+    fireEvent.click(getByRole('button', { name: 'Refresh' }))
+    expect(await findByText('Data may be delayed')).toBeTruthy()
+  })
+
+  it('does not send If-None-Match after a cold-start response without ETag', async () => {
+    const requests: RequestRecord[] = []
+    installBaseHandlers((request) => {
+      requests.push({
+        period: new URL(request.url).searchParams.get('period'),
+        ifNoneMatch: request.headers.get('If-None-Match'),
+      })
+      // 冷启动快照按契约不下发 ETag。
+      return HttpResponse.json(emptyFixture('week'))
+    })
+    const { findByTestId, getByRole } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByTestId('rankings-cold-start')
+    fireEvent.click(getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]?.ifNoneMatch).toBeNull()
+  })
+
+  it('uses the server rank for providers instead of the array position', async () => {
+    const fixture = rankingsFixture('week')
+    const first = fixture.providers[0]
+    fixture.providers =
+      first === undefined
+        ? []
+        : [{ ...first, rank: 7 }, ...fixture.providers.slice(1)]
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-rank"' } }),
+    )
+    const { findByRole, getByTestId } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByRole('heading', { name: 'Model Rankings' })
+    const shareSection = document.getElementById('market-share') as HTMLElement
+    fireEvent.click(within(shareSection).getByRole('button', { name: 'Table' }))
+    const rows = within(getByTestId('provider-table'))
+      .getAllByRole('row')
+      .filter((row) => row.querySelectorAll('td').length > 0)
+    expect(rows[0]?.querySelectorAll('td')[0]?.textContent).toBe('7')
+  })
+
+  it('falls back to the local timezone when the response timezone is invalid', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(
+        { ...rankingsFixture('week'), timezone: 'Mars/Olympus' },
+        { headers: { ETag: '"week-bad-tz"' } },
+      ),
+    )
+    const { findByRole, container } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    expect(await findByRole('heading', { name: 'Model Rankings' })).toBeTruthy()
+    expect(container.textContent).toContain('Methodology')
+  })
+
+  it('normalizes an invalid period in the URL to the default week', () => {
+    expect(validateRankingsSearch({ period: 'decade' })).toEqual({
+      period: 'week',
+    })
+    expect(validateRankingsSearch({ period: 'today' })).toEqual({
+      period: 'today',
+    })
+    expect(needsRankingsUrlRepair('?period=decade')).toBe(true)
+    expect(needsRankingsUrlRepair('?period=week')).toBe(false)
+    expect(needsRankingsUrlRepair('?period=week&period=month')).toBe(true)
   })
 })
 

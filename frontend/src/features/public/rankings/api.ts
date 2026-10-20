@@ -247,6 +247,20 @@ interface CachedRankings {
   data: RankingsResponse
 }
 
+/**
+ * 304 复用时服务端不会重发 body，缓存的 `freshness_seconds` 停留在第一次
+ * 响应时刻。若不按 `computed_at` 与本地 now 重算，页面会把一份几小时前的
+ * 快照一直标成 fresh（freshness 三态永远不推进）。重算失败（无
+ * computed_at 或非法时间）时保留服务端原值，不猜造读数。
+ */
+export function recomputeFreshness(data: RankingsResponse): RankingsResponse {
+  if (data.computed_at === null) return data
+  const computedAt = Date.parse(data.computed_at)
+  if (Number.isNaN(computedAt)) return data
+  const seconds = Math.max(0, Math.floor((Date.now() - computedAt) / 1000))
+  return { ...data, freshness_seconds: seconds }
+}
+
 /** 每个周期只保留最新一份条件缓存；页面生命周期内有效。 */
 const etagCache = new Map<RankingsPeriod, CachedRankings>()
 
@@ -282,7 +296,10 @@ export async function fetchRankings(
         body: { title: 'Unexpected 304 for rankings' },
       })
     }
-    return cached.data
+    const data = recomputeFreshness(cached.data)
+    // 缓存里也写回重算后的读数，下一次 304 基于同一份基准继续推进。
+    etagCache.set(period, { etag: cached.etag, data })
+    return data
   }
   if (!response.ok) throw await toApiError(response)
 

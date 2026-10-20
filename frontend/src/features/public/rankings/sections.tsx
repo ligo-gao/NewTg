@@ -214,6 +214,8 @@ export function ModelRankingsSection({
             models={top}
             locale={locale}
             ariaLabel={t('public.rankings.model.chart_aria', { count: top.length })}
+            tokensLabel={t('public.rankings.model.tokens')}
+            requestsLabel={t('public.rankings.model.requests')}
           />
           {/* 移动端卡片：名次 + 模型 + 全宽细条 + 读数，无横向滚动。 */}
           <ul className="flex flex-col gap-3 md:hidden" data-testid="model-cards">
@@ -248,8 +250,10 @@ export function ModelRankingsSection({
                   />
                 </div>
                 <p className="ml-8 mt-1 text-xs tabular-nums text-ink-2">
-                  {formatCompact(model.total_tokens, locale)} ·{' '}
-                  {formatCompact(model.requests, locale)}
+                  {formatCompact(model.total_tokens, locale)}{' '}
+                  {t('public.rankings.model.tokens')} ·{' '}
+                  {formatCompact(model.requests, locale)}{' '}
+                  {t('public.rankings.model.requests')}
                 </p>
               </li>
             ))}
@@ -407,7 +411,9 @@ function MoverColumn({
                             : 0,
                           4,
                         )}%`,
-                        backgroundColor: color,
+                        // L7：幅度微条只表达大小，使用单一蓝色阶；方向已由
+                        // ▲/▼ 与百分比文字的双发散色承载，微条不再重复。
+                        backgroundColor: 'var(--chart-cat-1)',
                       }}
                     />
                   </span>
@@ -608,6 +614,8 @@ interface ShareEntry {
   tokens: number
   share: number
   slot: number | null
+  /** L8：名次以服务端 `rank` 为准；聚合出的 Other 没有服务端名次。 */
+  rank: number | null
 }
 
 function shareEntries(providers: readonly RankingsProvider[]): ShareEntry[] {
@@ -619,6 +627,7 @@ function shareEntries(providers: readonly RankingsProvider[]): ShareEntry[] {
       tokens: item.total_tokens,
       share: item.share_pct,
       slot: item.slot,
+      rank: item.rank,
     })),
     ...(rest.length > 0
       ? [
@@ -627,6 +636,7 @@ function shareEntries(providers: readonly RankingsProvider[]): ShareEntry[] {
             tokens: rest.reduce((sum, item) => sum + item.total_tokens, 0),
             share: rest.reduce((sum, item) => sum + item.share_pct, 0),
             slot: null,
+            rank: null,
           },
         ]
       : []),
@@ -666,7 +676,9 @@ function ProviderTable({
       <tbody>
         {entries.map((entry, index) => (
           <tr key={entry.label} className="border-t border-border-hairline">
-            <td className="px-3 py-2 tabular-nums text-ink-3">{index + 1}</td>
+            <td className="px-3 py-2 tabular-nums text-ink-3">
+              {entry.rank ?? index + 1}
+            </td>
             <td className="px-3 py-2">
               <span className="inline-flex items-center gap-2 text-ink-1">
                 <span
@@ -732,6 +744,7 @@ export function ShareSection({
               providers={providers}
               locale={locale}
               ariaLabel={t('public.rankings.share.chart_aria')}
+              otherLabel={t('public.rankings.share.other')}
             />
             <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-2">
               {entries.map((entry) => (
@@ -762,7 +775,7 @@ export function ShareSection({
               {entries.map((entry, index) => (
                 <li key={entry.label} className="flex justify-between gap-2">
                   <span className="truncate">
-                    {index + 1}.{' '}
+                    {entry.rank ?? index + 1}.{' '}
                     {entry.label === 'Other'
                       ? t('public.rankings.share.other')
                       : entry.label}

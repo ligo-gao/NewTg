@@ -11,7 +11,7 @@
  * 引导卡与四个「待累积」占位，并按配置显示定价/文档/注册入口。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -140,13 +140,30 @@ function RankingsSkeleton() {
   )
 }
 
-function absoluteTime(value: string, locale: string): string {
+/**
+ * 窗口时间必须按响应里的站点时区展示（R-D6：服务端按站点时区聚合）。
+ * 非法 IANA 名不应让整页崩溃：`Intl.DateTimeFormat` 会抛 RangeError，
+ * 此时回退浏览器本地时区，读数仍可读。
+ */
+function absoluteTime(
+  value: string,
+  locale: string,
+  timeZone?: string,
+): string {
   const ms = Date.parse(value)
   if (Number.isNaN(ms)) return value
-  return new Intl.DateTimeFormat(locale, {
+  const options: Intl.DateTimeFormatOptions = {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(ms))
+  }
+  try {
+    return new Intl.DateTimeFormat(
+      locale,
+      timeZone === undefined ? options : { ...options, timeZone },
+    ).format(new Date(ms))
+  } catch {
+    return new Intl.DateTimeFormat(locale, options).format(new Date(ms))
+  }
 }
 
 function RateLimitBanner({ seconds }: { seconds: number }) {
@@ -257,18 +274,30 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
   const rateLimited = error?.kind === 'rate_limited'
   const [retryAt, setRetryAt] = useState<number | null>(null)
   const [countdown, setCountdown] = useState(0)
+  const [manualRetry, setManualRetry] = useState(false)
+  // 只自动重试一次：连续第二个 429 说明限流仍在，继续倒计时会让页面
+  // 永远停在「0 秒」；此时交还可手动重试的错误态（M2）。
+  const autoRetried = useRef(false)
 
   // 服务端 Retry-After 是倒计时的唯一来源；缺省时用契约冻结的 5s。
   const retryAfter = error?.retry_after
   useEffect(() => {
     if (!rateLimited) {
+      autoRetried.current = false
+      setManualRetry(false)
+      setRetryAt(null)
+      return
+    }
+    if (autoRetried.current) {
+      // error 身份在每次失败后变化，effect 会随第二个 429 再次进入这里。
+      setManualRetry(true)
       setRetryAt(null)
       return
     }
     const seconds = retryAfter !== undefined && retryAfter > 0 ? retryAfter : 5
     setRetryAt(Date.now() + seconds * 1000)
     setCountdown(seconds)
-  }, [rateLimited, retryAfter])
+  }, [rateLimited, retryAfter, error])
 
   const refetch = query.refetch
   useEffect(() => {
@@ -278,7 +307,12 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
       setCountdown(left)
       if (left === 0) {
         setRetryAt(null)
-        void refetch()
+        if (!autoRetried.current) {
+          autoRetried.current = true
+          void refetch()
+        } else {
+          setManualRetry(true)
+        }
       }
     }
     tick()
@@ -303,6 +337,15 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
     ? null
     : freshnessState(data.freshness_seconds, period)
   const stale = freshness === 'stale' || freshness === 'expired'
+  // M1：normalizeRankings 抛的是普通 Error，不是 ApiError。只看
+  // `error !== null` 会把这类失败渲染成空白；`isError` 才是查询失败的
+  // 唯一判据，文案按通用失败处理（error 传 null）。
+  const showError = (query.isError && !rateLimited) || (rateLimited && manualRetry)
+  const retryRankings = () => {
+    autoRetried.current = false
+    setManualRetry(false)
+    void query.refetch()
+  }
 
   return (
     <div>
@@ -334,14 +377,14 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
               className="text-xs leading-5 text-ink-3"
               title={
                 data.computed_at !== null
-                  ? absoluteTime(data.computed_at, locale)
+                  ? absoluteTime(data.computed_at, locale, data.timezone)
                   : undefined
               }
             >
               {t('public.rankings.methodology')} ·{' '}
               {t('public.rankings.window', {
-                start: absoluteTime(data.window.start, locale),
-                end: absoluteTime(data.window.end, locale),
+                start: absoluteTime(data.window.start, locale, data.timezone),
+                end: absoluteTime(data.window.end, locale, data.timezone),
               })}{' '}
               · {t('public.rankings.min_samples', { count: data.sample_threshold })}{' '}
               {data.computed_at !== null ? (
@@ -357,7 +400,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
         </div>
       </header>
 
-      {rateLimited ? <RateLimitBanner seconds={countdown} /> : null}
+      {rateLimited && !manualRetry ? <RateLimitBanner seconds={countdown} /> : null}
       {stale ? (
         <div
           role="status"
@@ -375,8 +418,8 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
       >
         {query.isPending && !rateLimited ? (
           <RankingsSkeleton />
-        ) : error !== null && !rateLimited ? (
-          <RankingsError error={error} onRetry={() => void query.refetch()} />
+        ) : showError ? (
+          <RankingsError error={error} onRetry={retryRankings} />
         ) : data === undefined ? null : data.status === 'empty' ? (
           <>
             <ColdStartGuide

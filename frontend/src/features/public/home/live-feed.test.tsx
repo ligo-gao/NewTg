@@ -71,10 +71,17 @@ const server = setupServer()
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 beforeEach(() => {
   MockEventSource.instances = []
+  // L1：SSE onopen 会并行播种一次列表快照；默认返回空快照，单测按需覆盖。
+  server.use(
+    http.get(`${ORIGIN}/api/home/live-feed`, () =>
+      HttpResponse.json({ events: [] }),
+    ),
+  )
 })
 afterEach(() => {
   server.resetHandlers()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 afterAll(() => server.close())
 
@@ -107,8 +114,35 @@ describe('home live feed (F-09-02)', () => {
     expect(table.textContent).toContain('512')
     expect(within(table).getByText('830 ms')).toBeTruthy()
     expect(within(table).getByText('Success')).toBeTruthy()
-    // A-1：逐行不含费用/积分，页面也不伪造聚合条。
-    expect(container.textContent).not.toContain('credits')
+    // A-1：逐行不含费用/积分，页面也不伪造聚合条；加强为整块文本不得出现
+    // 任何费用词汇（cost/credit/price），而不只是不出现 credits。
+    expect(container.textContent).not.toMatch(/credits?|cost|price|billing/i)
+    expect(container.textContent).not.toContain('$')
+  })
+
+  it('seeds a 20-event snapshot when SSE opens', async () => {
+    useSse()
+    const paths: string[] = []
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, ({ request }) => {
+        const url = new URL(request.url)
+        paths.push(`${url.pathname}?${url.searchParams.toString()}`)
+        return HttpResponse.json({
+          events: [feedEvent({ id: 'seed-1', model: 'seeded-model' })],
+        })
+      }),
+    )
+
+    const { findByText, findAllByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    await findByText('Live call feed')
+    const source = MockEventSource.instances[0]
+    act(() => source?.onopen?.())
+
+    expect((await findAllByText('seeded-model')).length).toBeGreaterThan(0)
+    expect(paths[0]).toBe('/api/home/live-feed?limit=20')
   })
 
   it('deduplicates repeated event ids', async () => {
@@ -236,6 +270,155 @@ describe('home live feed (F-09-02)', () => {
     await findByText('Live call feed')
     const source = MockEventSource.instances[0]
     act(() => source?.onopen?.())
-    expect(await findByText('No recent calls yet')).toBeTruthy()
+    expect(await findByText('Waiting for new calls')).toBeTruthy()
+  })
+
+  it('hides the section when the feed endpoint returns 404', async () => {
+    vi.stubGlobal('EventSource', undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Not found', status: 404 },
+          { status: 404 },
+        ),
+      ),
+    )
+    const { findByText, queryByTestId } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    await findByText('Live call feed')
+    await waitFor(() => expect(queryByTestId('live-feed-section')).toBeNull())
+  })
+
+  it('backs off 5s, 15s, 60s on repeated 429 without reporting a disconnect', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    let calls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () => {
+        calls += 1
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Too many requests', status: 429 },
+          { status: 429 },
+        )
+      }),
+    )
+
+    const { getByText, queryByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    // 假时钟下不要用 findBy*/waitFor（它们依赖真实定时器）；首屏标题同步存在。
+    expect(getByText('Live call feed')).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(calls).toBe(1)
+
+    // 429 是限流退避，不是断线：不出现 Reconnecting 徽标或断开提示。
+    expect(queryByText('Reconnecting')).toBeNull()
+    expect(queryByText(/connection dropped/i)).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999)
+    })
+    expect(calls).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(calls).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14_999)
+    })
+    expect(calls).toBe(2)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(calls).toBe(3)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999)
+    })
+    expect(calls).toBe(3)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(calls).toBe(4)
+    expect(queryByText('Reconnecting')).toBeNull()
+  })
+
+  it('reconnects immediately on the online event instead of waiting out the backoff', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    let calls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () => {
+        calls += 1
+        if (calls === 1) {
+          return HttpResponse.json(
+            { type: 'about:blank', title: 'Too many requests', status: 429 },
+            { status: 429 },
+          )
+        }
+        return HttpResponse.json({
+          events: [feedEvent({ id: 'online-1', model: 'recovered-model' })],
+        })
+      }),
+    )
+
+    const { getByText, getAllByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    expect(getByText('Live call feed')).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(calls).toBe(1)
+
+    act(() => {
+      window.dispatchEvent(new Event('online'))
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(calls).toBe(2)
+    expect(getAllByText('recovered-model').length).toBeGreaterThan(0)
+    expect(getByText('Live')).toBeTruthy()
+  })
+
+  it('polls every 5s after a successful snapshot', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    let calls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/home/live-feed`, () => {
+        calls += 1
+        return HttpResponse.json({
+          events: [feedEvent({ id: `poll-${calls}` })],
+        })
+      }),
+    )
+
+    const { getByText } = await renderWithProviders(
+      <LiveFeedSection />,
+      ['public'],
+    )
+    expect(getByText('Live call feed')).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(calls).toBe(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999)
+    })
+    expect(calls).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(calls).toBe(2)
   })
 })

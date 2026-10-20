@@ -160,7 +160,7 @@ describe('homepage (F-09-01/03/04/05/06)', () => {
     )
 
     expect(await findByText('Live call feed')).toBeTruthy()
-    expect(await findByText('No recent calls yet')).toBeTruthy()
+    expect(await findByText('Waiting for new calls')).toBeTruthy()
     await waitFor(() =>
       expect(requestedPaths).toContain('/api/home/live-feed'),
     )

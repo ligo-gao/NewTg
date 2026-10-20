@@ -15,7 +15,7 @@
  */
 
 import type { RankingsModel, RankingsProvider, RankingsTrendSeries } from './api'
-import { formatBucketFull, formatBucketLabel, formatCompact } from './format'
+import { formatBucketFull, formatBucketLabel, formatCompact, formatPercent } from './format'
 
 /** 实体稳定槽位是 1–8（1-based）；Other/未知用中性灰，绝不生成第 9 色。 */
 export function seriesColor(slot: number | null): string {
@@ -28,6 +28,9 @@ interface ModelMagnitudeChartProps {
   models: readonly RankingsModel[]
   locale: string
   ariaLabel: string
+  /** tooltip 的字段名走 i18n，不在 SVG 里硬编码英文。 */
+  tokensLabel: string
+  requestsLabel: string
 }
 
 const MODEL_ROW_HEIGHT = 56
@@ -46,17 +49,23 @@ export function ModelMagnitudeChart({
   models,
   locale,
   ariaLabel,
+  tokensLabel,
+  requestsLabel,
 }: ModelMagnitudeChartProps) {
   const top = models.slice(0, 10)
   const maxTokens = Math.max(1, ...top.map((model) => model.total_tokens))
   const maxExponent = Math.max(1, Math.ceil(Math.log10(maxTokens)))
   const height = MODEL_TOP + top.length * MODEL_ROW_HEIGHT + 8
-  // maxTokens=1 时 log10 为 0；用 1 做分母避免 0/0。
-  const scale = maxTokens <= 1 ? 1 : Math.log10(maxTokens)
 
+  /**
+   * L4：刻度按 `exponent / maxExponent` 归一，而不是除以 `log10(maxTokens)`。
+   * 后者在 maxTokens 不是 10 的整数幂时会让最大十进制刻度（10^maxExponent）
+   * 落到绘图区之外，轴线与标签越界；按整数指数归一后 0..maxExponent 恰好
+   * 铺满 0..PLOT_WIDTH。
+   */
   const xForTokens = (tokens: number): number => {
     if (tokens <= 0) return 0
-    return (Math.log10(tokens) / scale) * MODEL_PLOT_WIDTH
+    return (Math.log10(tokens) / maxExponent) * MODEL_PLOT_WIDTH
   }
 
   return (
@@ -83,7 +92,7 @@ export function ModelMagnitudeChart({
                 <text
                   x={x}
                   y={12}
-                  textAnchor="middle"
+                  textAnchor={exponent === maxExponent ? 'end' : 'middle'}
                   className="fill-ink-3 text-[9px] tabular-nums"
                 >
                   {formatCompact(10 ** exponent, locale)}
@@ -106,7 +115,10 @@ export function ModelMagnitudeChart({
                 {`${model.display_name} · ${formatCompact(
                   model.total_tokens,
                   locale,
-                )} tokens · ${formatCompact(model.requests, locale)}`}
+                )} ${tokensLabel} · ${formatCompact(
+                  model.requests,
+                  locale,
+                )} ${requestsLabel}`}
               </title>
               <text
                 x={4}
@@ -278,6 +290,8 @@ interface ShareBarProps {
   providers: readonly RankingsProvider[]
   locale: string
   ariaLabel: string
+  /** 溢出实体的显示名走 i18n；不硬编码英文 `Other`。 */
+  otherLabel: string
 }
 
 /**
@@ -285,7 +299,12 @@ interface ShareBarProps {
  * （R-D6-05：供应商时间序列无存储），因此这里只画当前窗口的份额构成，
  * 不伪造时间趋势；精确值由右侧供应商排名列表与表格视图承载。
  */
-export function ShareBar({ providers, locale, ariaLabel }: ShareBarProps) {
+export function ShareBar({
+  providers,
+  locale,
+  ariaLabel,
+  otherLabel,
+}: ShareBarProps) {
   const top = providers.slice(0, 5)
   const rest = providers.slice(5)
   const otherTokens = rest.reduce((sum, item) => sum + item.total_tokens, 0)
@@ -298,7 +317,7 @@ export function ShareBar({ providers, locale, ariaLabel }: ShareBarProps) {
       slot: item.slot,
     })),
     ...(rest.length > 0
-      ? [{ label: 'Other', tokens: otherTokens, share: otherShare, slot: null }]
+      ? [{ label: otherLabel, tokens: otherTokens, share: otherShare, slot: null }]
       : []),
   ]
 
@@ -313,7 +332,7 @@ export function ShareBar({ providers, locale, ariaLabel }: ShareBarProps) {
         <div
           key={entry.label}
           data-series={entry.label}
-          title={`${entry.label} · ${entry.share.toFixed(1)}% · ${formatCompact(
+          title={`${entry.label} · ${formatPercent(entry.share, locale)} · ${formatCompact(
             entry.tokens,
             locale,
           )}`}

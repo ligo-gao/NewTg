@@ -168,7 +168,8 @@ function DesktopTable({ events, locale }: { events: LiveFeedEvent[]; locale: str
               {formatInteger(event.tokens_out, locale)}
             </td>
             <td className="pr-4 text-right font-mono tabular-nums text-ink-2">
-              {formatInteger(event.latency_ms, locale)} ms
+              {formatInteger(event.latency_ms, locale)}{' '}
+              {t('public.live_feed.unit.ms')}
             </td>
             <td className="text-right text-xs">
               <StatusCell status={event.status} />
@@ -208,7 +209,8 @@ function MobileCards({ events, locale }: { events: LiveFeedEvent[]; locale: stri
             </dd>
             <dt className="text-ink-2">{t('public.live_feed.col.latency')}</dt>
             <dd className="font-mono tabular-nums text-ink-2">
-              {formatInteger(event.latency_ms, locale)} ms
+              {formatInteger(event.latency_ms, locale)}{' '}
+              {t('public.live_feed.unit.ms')}
             </dd>
           </dl>
         </li>
@@ -245,22 +247,59 @@ export function LiveFeedSection() {
     let source: EventSource | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
     let failures = 0
+    let polling = false
+
+    /** SSE 与播种/轮询可能同时到达同一事件：按 id 去重、按时间倒序并保持 20 条上限。 */
+    const mergeEvents = (
+      previous: LiveFeedEvent[],
+      incoming: readonly LiveFeedEvent[],
+    ): LiveFeedEvent[] => {
+      const seen = new Set(previous.map((item) => item.id))
+      const merged = [...previous]
+      for (const item of incoming) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        merged.push(item)
+      }
+      // 快照是「最新在前」，SSE 事件是「随后到达」；统一按 ts 倒序，
+      // 避免播种后新事件被排到快照末尾而在前 12 行之外。
+      merged.sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))
+      return merged.slice(0, LIVE_FEED_LIMIT)
+    }
 
     const appendEvent = (event: LiveFeedEvent) => {
-      setEvents((previous) => {
-        if (previous.some((item) => item.id === event.id)) return previous
-        return [event, ...previous].slice(0, LIVE_FEED_LIMIT)
-      })
+      setEvents((previous) => mergeEvents(previous, [event]))
+    }
+
+    /**
+     * L1：SSE onopen 只证明通道建立，不代表已有事件。并行拉一次快照播种，
+     * 让首屏立刻有内容；首事件到达前统一显示「等待新调用」。播种失败不
+     * 影响 SSE（429/网络错误静默，404 仍按关闭区块处理）。
+     */
+    const seed = async () => {
+      try {
+        const next = await fetchLiveFeedEvents(LIVE_FEED_LIMIT)
+        if (disposed) return
+        setEvents((previous) => mergeEvents(previous, next))
+      } catch (error) {
+        if (disposed) return
+        if (error instanceof ApiError && error.kind === 'not_found') {
+          setDisabled(true)
+        }
+      }
     }
 
     const schedule = (delayMs: number) => {
       if (disposed) return
       timer = setTimeout(() => {
+        timer = undefined
         void poll()
       }, delayMs)
     }
 
     const poll = async () => {
+      if (disposed || polling) return
+      polling = true
       try {
         const next = await fetchLiveFeedEvents(LIVE_FEED_LIMIT)
         if (disposed) return
@@ -275,7 +314,11 @@ export function LiveFeedSection() {
           return
         }
         failures += 1
-        setConnection('reconnecting')
+        const limited =
+          error instanceof ApiError && error.kind === 'rate_limited'
+        // 429 是「限流退避」而不是断线：不退到 reconnecting 徽标/提示，
+        // 避免把服务端主动节流误报成连接中断（L5）。
+        if (!limited) setConnection('reconnecting')
         const retryAfter =
           error instanceof ApiError && error.retry_after !== undefined
             ? error.retry_after
@@ -289,6 +332,8 @@ export function LiveFeedSection() {
                 ? 15
                 : 60
         schedule(seconds * 1000)
+      } finally {
+        polling = false
       }
     }
 
@@ -304,6 +349,7 @@ export function LiveFeedSection() {
           if (disposed) return
           failures = 0
           setConnection('live')
+          void seed()
         }
         source.addEventListener('call', (raw) => {
           const event = parseLiveFeedSseData((raw as MessageEvent<string>).data)
@@ -323,8 +369,25 @@ export function LiveFeedSection() {
       }
     }
 
+    /**
+     * L5：网络恢复时立即补拉一次，不再等 5/15/60s 的退避窗口。仅降级
+     * 轮询时需要（SSE 由浏览器自行重连）；清理未触发的退避计时器避免
+     * 双请求。
+     */
+    const onOnline = () => {
+      if (disposed) return
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      failures = 0
+      if (source === undefined) void poll()
+    }
+    window.addEventListener('online', onOnline)
+
     return () => {
       disposed = true
+      window.removeEventListener('online', onOnline)
       source?.close()
       if (timer !== undefined) clearTimeout(timer)
     }
@@ -374,7 +437,7 @@ export function LiveFeedSection() {
         {showEmpty ? (
           connection === 'live' ? (
             <p className="mt-6 rounded-lg border border-dashed border-brand-line px-4 py-8 text-center text-sm text-ink-2">
-              {t('public.live_feed.empty')}
+              {t('public.live_feed.waiting')}
             </p>
           ) : connection === 'paused' ? (
             <p className="mt-6 text-center text-sm text-ink-2">
