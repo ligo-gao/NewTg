@@ -93,6 +93,11 @@ const (
 	// 与用户/渠道/分组的配置变更同组。
 	ActionSettingsUpdate = "settings.update"
 
+	// ActionSettingsTestWebhook 是 POST /api/settings/test/webhook 的审计
+	// （modules-08 F-08-20 / D2-14）。detail 只允许 event/status_code/ok/host：
+	// 密钥、路径、query 与响应体原文都不得进入审计。
+	ActionSettingsTestWebhook = "settings.test_webhook"
+
 	// ActionNotificationTemplateUpdate 是通知模板编辑的写审计
 	// （modules-08 §3.9 / F-08-25；brief 要求所有写操作审计）。模板行虽不在
 	// system_settings，但属于管理配置，归 operation 类。
@@ -178,7 +183,8 @@ var actionCategories = map[string]string{
 
 	ActionAuthzDenied: categorySecurity,
 
-	ActionSettingsUpdate: categoryOperation,
+	ActionSettingsUpdate:      categoryOperation,
+	ActionSettingsTestWebhook: categoryOperation,
 
 	ActionNotificationTemplateUpdate: categoryOperation,
 

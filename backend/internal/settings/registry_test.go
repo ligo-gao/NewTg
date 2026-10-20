@@ -265,7 +265,7 @@ func TestRegistryGoldenSets(t *testing.T) {
 	sort.Strings(secrets)
 	wantSecrets := []string{
 		"auth.turnstile.secret_key", "deploy.ionet.api_key",
-		"notify.smtp.password",
+		"notify.smtp.password", "notify.webhook.secret",
 		"pay.alipay.private_key", "pay.alipay.public_key",
 		"pay.stripe.secret_key", "pay.stripe.webhook_secret",
 	}
@@ -338,4 +338,123 @@ func mustLookup(t *testing.T, key string) Setting {
 		t.Fatalf("%q 未登记", key)
 	}
 	return setting
+}
+
+// notify.webhook（F-08-20 / D2-10..11）的注册表与交叉校验验收。
+func TestWebhookSectionRegistered(t *testing.T) {
+	rows, ok := Section("notify.webhook")
+	if !ok || len(rows) != 4 {
+		t.Fatalf("notify.webhook section 行数 = %d，期望 4", len(rows))
+	}
+	enabled := mustLookup(t, "notify.webhook.enabled")
+	if enabled.Type != TypeBool || enabled.Default != false {
+		t.Fatalf("enabled 类型/默认 = %v/%v", enabled.Type, enabled.Default)
+	}
+	url := mustLookup(t, "notify.webhook.url")
+	if url.Type != TypeString || url.MaxLen != 1024 {
+		t.Fatalf("url 类型/上限 = %v/%d", url.Type, url.MaxLen)
+	}
+	secret := mustLookup(t, "notify.webhook.secret")
+	if !secret.Secret {
+		t.Fatal("secret 必须登记为密钥类")
+	}
+	events := mustLookup(t, "notify.webhook.events")
+	if events.Type != TypeList {
+		t.Fatalf("events 类型 = %v", events.Type)
+	}
+	got := DefaultValue(events).([]any)
+	if len(got) != 1 || got[0] != "balance_low" {
+		t.Fatalf("events 默认 = %v，期望 [balance_low]", got)
+	}
+}
+
+func TestWebhookEventsNormalizeAndValidate(t *testing.T) {
+	events := mustLookup(t, "notify.webhook.events")
+
+	// 去重并保持提交顺序。
+	value, err := normalizeRaw(events, json.RawMessage(`["payment_success","balance_low","payment_success"]`))
+	if err != nil {
+		t.Fatalf("合法事件被拒: %v", err)
+	}
+	list := value.([]any)
+	if len(list) != 2 || list[0] != "payment_success" || list[1] != "balance_low" {
+		t.Fatalf("去重保序失败: %v", list)
+	}
+
+	// 允许空数组（= 不订阅任何事件）。
+	if _, err := normalizeRaw(events, json.RawMessage(`[]`)); err != nil {
+		t.Fatalf("空事件数组应允许: %v", err)
+	}
+
+	// 闭集之外的值、非字符串、超过 4 项都必须拒绝。
+	for _, bad := range []string{
+		`["payment_failed"]`,
+		`["balance_low","unknown"]`,
+		`[1]`,
+		`["balance_low","payment_success","announcement","user_signup","balance_low2"]`,
+	} {
+		if _, err := normalizeRaw(events, json.RawMessage(bad)); err == nil {
+			t.Fatalf("非法事件列表应被拒: %s", bad)
+		}
+	}
+}
+
+func TestWebhookSectionValidation(t *testing.T) {
+	base := sectionDefaults("notify.webhook")
+	base["notify.webhook.enabled"] = true
+
+	t.Run("https_and_secret_required", func(t *testing.T) {
+		values := cloneSettingsValues(t, base)
+		if err := validateWebhookSection(values, map[string]bool{}); err == nil {
+			t.Fatal("启用但无 URL/secret 应被拒")
+		}
+		values["notify.webhook.url"] = "https://hooks.example.com/x"
+		if err := validateWebhookSection(values, map[string]bool{}); err == nil {
+			t.Fatal("启用但无 secret 应被拒")
+		}
+		if err := validateWebhookSection(values, map[string]bool{"notify.webhook.secret": true}); err != nil {
+			t.Fatalf("https + secret 应通过: %v", err)
+		}
+	})
+
+	t.Run("http_rejected", func(t *testing.T) {
+		values := cloneSettingsValues(t, base)
+		values["notify.webhook.url"] = "http://hooks.example.com/x"
+		err := validateWebhookSection(values, map[string]bool{"notify.webhook.secret": true})
+		if err == nil {
+			t.Fatal("http URL 在启用时必须被拒（D2-11 不实现本地调试例外）")
+		}
+	})
+
+	t.Run("userinfo_and_fragment_rejected", func(t *testing.T) {
+		for _, raw := range []string{
+			"https://user:pass@hooks.example.com/x",
+			"https://hooks.example.com/x#frag",
+			"https:///nohost",
+		} {
+			values := cloneSettingsValues(t, base)
+			values["notify.webhook.url"] = raw
+			if err := validateWebhookSection(values, map[string]bool{"notify.webhook.secret": true}); err == nil {
+				t.Fatalf("%q 应被拒", raw)
+			}
+		}
+	})
+
+	t.Run("disabled_allows_incomplete_draft", func(t *testing.T) {
+		values := cloneSettingsValues(t, base)
+		values["notify.webhook.enabled"] = false
+		values["notify.webhook.url"] = ""
+		if err := validateWebhookSection(values, map[string]bool{}); err != nil {
+			t.Fatalf("未启用时允许未配置草稿: %v", err)
+		}
+	})
+}
+
+func cloneSettingsValues(t *testing.T, in map[string]any) map[string]any {
+	t.Helper()
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

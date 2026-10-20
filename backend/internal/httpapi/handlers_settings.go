@@ -21,8 +21,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 )
@@ -41,6 +44,21 @@ type SettingsHandlerConfig struct {
 	// Idem 是幂等存储；nil 时退化为进程内实现（单副本）。
 	Idem   IdempotencyStore
 	Logger *slog.Logger
+	// Webhook 是 POST /api/settings/test/webhook 的发送器接缝
+	// （生产 *notify.WebhookSender）。nil 时端点返回 503。
+	Webhook WebhookTester
+	// Redis 是测试 Webhook 的管理员限流桶；nil 时 fail-open（只读探测口径）。
+	Redis *redis.Client
+}
+
+// WebhookTester 是测试发送的最小能力集（生产为 *notify.WebhookSender）。
+//
+// Configured 只看 URL+secret，不看 enabled：测试目的就是验证未启用的配置
+// （D2-14）。TargetHost 只返回主机名，供审计 detail 使用。
+type WebhookTester interface {
+	Configured(ctx context.Context) bool
+	SendTest(ctx context.Context, payload []byte) (notify.WebhookResult, error)
+	TargetHost() string
 }
 
 // SettingsHandlers 持有设置端点依赖，可并发使用。
@@ -50,9 +68,16 @@ type SettingsHandlers struct {
 	audit   *audit.Logger
 	idem    IdempotencyStore
 	log     *slog.Logger
+	webhook WebhookTester
+	rdb     *redis.Client
 }
 
 var settingsUpdateAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "update"}
+
+// settingsTestWebhookAction 是测试 Webhook 的字段级写策略键。端点本身没有
+// 请求体（配置从已保存快照读取），空 Fields 仍必须登记：RBAC 对任何写方法
+// 的未登记动作都失败关闭（security-02 §2.6.1 规则 6）。
+var settingsTestWebhookAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "test_webhook"}
 
 // NewSettingsHandlers 构造设置端点。
 func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
@@ -81,7 +106,11 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &SettingsHandlers{service: cfg.Service, authz: authz, audit: cfg.Audit, idem: idem, log: log}, nil
+	authz.SetWritePolicy(settingsTestWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
+	return &SettingsHandlers{
+		service: cfg.Service, authz: authz, audit: cfg.Audit, idem: idem, log: log,
+		webhook: cfg.Webhook, rdb: cfg.Redis,
+	}, nil
 }
 
 // Register 把端点挂到受保护子树。
@@ -89,6 +118,10 @@ func (h *SettingsHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/settings", requireAdminRole(http.HandlerFunc(h.handleGet)))
 	mux.Handle("PUT /api/settings",
 		h.authz.Handler(rbac.PermSettingsManage, settingsUpdateAction)(http.HandlerFunc(h.handlePut)))
+	// 发送测试事件（F-08-20）：写语义（有出站副作用），权限 settings:manage；
+	// 审计动作独立于 settings.update，便于区分「改配置」与「探测端点」。
+	mux.Handle("POST /api/settings/test/webhook",
+		h.authz.Handler(rbac.PermSettingsManage, settingsTestWebhookAction)(http.HandlerFunc(h.handleTestWebhook)))
 }
 
 func (h *SettingsHandlers) handleGet(w http.ResponseWriter, r *http.Request) {

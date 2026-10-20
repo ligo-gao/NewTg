@@ -79,7 +79,7 @@ type Setting struct {
 var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
-	"rl", "rl.health", "sec", "notify.smtp",
+	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "deploy",
@@ -449,6 +449,24 @@ func buildRegistry() []Setting {
 		def("notify.smtp.insecure_skip_verify", "notify.smtp", TypeBool, false),
 		def("notify.smtp.from_email", "notify.smtp", TypeString, "", maxLen(254),
 			validate(emailOrEmpty)),
+
+		// ==== notify.webhook（F-08-20，§3.6）====
+		//
+		// 暂停状态/连续失败计数是运行时状态，不新增设置键（D2-10）：设置表的
+		// 每键都要有审计与乐观锁语义，把 worker 的临时状态塞进来会让「保存
+		// 设置」与「运行时暂停」互相覆盖。
+		def("notify.webhook.enabled", "notify.webhook", TypeBool, false),
+		// 键级只校验「非空时必须是绝对 http(s) URL」；https / 必填等随
+		// enabled 变化的约束在 section 交叉校验里（D2-11）。
+		def("notify.webhook.url", "notify.webhook", TypeString, "", maxLen(1024),
+			validate(validateAbsoluteHTTPURL)),
+		// 密钥类：configcenter.secretKeys 同步登记，落库前 AES-256-GCM 密封，
+		// 读接口只回 "******"（security-03 密钥治理）。
+		def("notify.webhook.secret", "notify.webhook", TypeString, "", secret()),
+		// 订阅事件闭集；允许空数组（= 不下发任何事件）；写入时去重保序。
+		def("notify.webhook.events", "notify.webhook", TypeList, []any{"balance_low"},
+			normalize(normalizeWebhookEvents), element(validateWebhookEvent),
+			validate(maxItems(4, "notify.webhook.events"))),
 
 		// ==== plugin（M6d 任务插件平台，relay-06 / modules-08 §3.10）====
 		//

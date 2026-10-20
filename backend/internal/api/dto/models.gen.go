@@ -213,6 +213,30 @@ func (e Language) Valid() bool {
 	}
 }
 
+// Defines values for LogsByKeyItemStatus.
+const (
+	LogsByKeyItemStatusError    LogsByKeyItemStatus = "error"
+	LogsByKeyItemStatusRefunded LogsByKeyItemStatus = "refunded"
+	LogsByKeyItemStatusRefused  LogsByKeyItemStatus = "refused"
+	LogsByKeyItemStatusSuccess  LogsByKeyItemStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the LogsByKeyItemStatus enum.
+func (e LogsByKeyItemStatus) Valid() bool {
+	switch e {
+	case LogsByKeyItemStatusError:
+		return true
+	case LogsByKeyItemStatusRefunded:
+		return true
+	case LogsByKeyItemStatusRefused:
+		return true
+	case LogsByKeyItemStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MarketplaceHomeSchemaVersion.
 const (
 	MarketplaceHomeSchemaVersionN1 MarketplaceHomeSchemaVersion = 1
@@ -2888,6 +2912,54 @@ type LoginResponse struct {
 	union json.RawMessage
 }
 
+// LogsByKeyItem GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
+// （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
+// 明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
+type LogsByKeyItem struct {
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	ChannelId        *int64    `json:"channel_id,omitempty"`
+	CompletionTokens int       `json:"completion_tokens"`
+	Cost             int64     `json:"cost"`
+	CreatedAt        time.Time `json:"created_at"`
+	ErrorClass       *string   `json:"error_class,omitempty"`
+	ErrorMessage     *string   `json:"error_message,omitempty"`
+	Group            *string   `json:"group,omitempty"`
+	Id               int64     `json:"id"`
+	LatencyMs        *int      `json:"latency_ms,omitempty"`
+	Model            string    `json:"model"`
+
+	// Other 按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
+	// 拒绝原因键一律剥离；error_message 打码为 ••••••）。
+	Other        map[string]interface{} `json:"other"`
+	PreDeducted  *int64                 `json:"pre_deducted,omitempty"`
+	PromptTokens int                    `json:"prompt_tokens"`
+	Refunded     int64                  `json:"refunded"`
+	RequestId    openapi_types.UUID     `json:"request_id"`
+
+	// RetryChain user 视图仅 8 个可见键；admin 视图保留完整选路细节
+	RetryChain *[]map[string]interface{} `json:"retry_chain,omitempty"`
+	Status     LogsByKeyItemStatus       `json:"status"`
+	Stream     bool                      `json:"stream"`
+	TokenId    *int64                    `json:"token_id,omitempty"`
+	TokenName  *string                   `json:"token_name,omitempty"`
+
+	// Ttft 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。
+	Ttft     *int    `json:"ttft,omitempty"`
+	Upstream *string `json:"upstream,omitempty"`
+
+	// Username 仅 admin+logs:read 视图返回
+	Username *string `json:"username,omitempty"`
+}
+
+// LogsByKeyItemStatus defines model for LogsByKeyItem.Status.
+type LogsByKeyItemStatus string
+
+// LogsByKeyPage 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。
+type LogsByKeyPage struct {
+	Items []LogsByKeyItem `json:"items"`
+}
+
 // MarketplaceHome defines model for MarketplaceHome.
 type MarketplaceHome struct {
 	CachedAt      time.Time                    `json:"cached_at"`
@@ -5086,6 +5158,15 @@ type WalletSummary struct {
 // WalletSummaryHealth 服务端计算的余额健康度
 type WalletSummaryHealth string
 
+// WebhookTestResult POST /api/settings/test/webhook 的响应；测试样例非事件契约。
+type WebhookTestResult struct {
+	// Ok 目标是否返回 2xx；3xx/4xx/5xx 均为 false。
+	Ok bool `json:"ok"`
+
+	// StatusCode 目标 HTTP 状态码原样回传（3xx 不跟随）。
+	StatusCode int `json:"status_code"`
+}
+
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
 
@@ -5700,6 +5781,13 @@ type RevokeOtherSessionsParams struct {
 
 // RevokeSessionParams defines parameters for RevokeSession.
 type RevokeSessionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// TestWebhookSettingsParams defines parameters for TestWebhookSettings.
+type TestWebhookSettingsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`

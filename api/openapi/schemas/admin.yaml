@@ -1904,3 +1904,17 @@ schemas:
       version: {type: string}
       plugin: {$ref: '#/schemas/TaskPlugin'}
       version_row: {$ref: '#/schemas/TaskPluginVersion'}
+
+  WebhookTestResult:
+    type: object
+    additionalProperties: false
+    required: [ok, status_code]
+    properties:
+      ok:
+        type: boolean
+        description: 目标是否返回 2xx；3xx/4xx/5xx 均为 false。
+      status_code:
+        type: integer
+        minimum: 0
+        description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
+    description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。

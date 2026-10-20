@@ -1541,6 +1541,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/test/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 向已保存的 Webhook 端点发送一条固定样例事件
+         * @description 配置取自**已保存**的 `notify.webhook.*` 快照；请求体为空。
+         *     URL/secret 未配置 → 422；目标被最小 SSRF 守卫拒绝 → 422；
+         *     连接失败/超时 → 504 固定文案；**已收到 HTTP 响应即返回 200**，
+         *     `ok` 表示目标是否 2xx，`status_code` 原样回传（含 3xx/4xx/5xx，3xx 不跟随）。
+         *     不受 `enabled=false` 与事件订阅影响（测试目的就是验证未启用的配置）。
+         *     限流 3 次/分钟/管理员。**不写 `notification_deliveries`**；审计动作
+         *     `settings.test_webhook`，detail 仅 event/status_code/ok/host。
+         *     样例 payload 不是事件契约（业务 payload 归模块 01/03/04）。
+         */
+        post: operations["testWebhookSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/deployments": {
         parameters: {
             query?: never;
@@ -2404,6 +2431,33 @@ export interface paths {
          *     展示可用性以 GET /api/status 的 usable_groups 为准。
          */
         get: operations["playgroundListModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/logs/by-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按 API 令牌只读查询自身最近用量明细
+         * @description 认证只接受 `Authorization: Bearer nkt-…`（只读令牌认证），不接受 Cookie、
+         *     `?key=` 或 `x-api-key`。**过期/额度耗尽的令牌仍可读，仅显式禁用返回 401**
+         *     （过期/耗尽/非法/禁用统一 `invalid_token`，不区分原因）。
+         *     数据范围是本令牌自身（`user_id` + `token_id`）：同用户的其它令牌与账户级
+         *     记录都不可见。无分页、无筛选；查询参数被忽略；固定返回最近 1000 条。
+         *     `other` 与 `retry_chain` 一律按 user 视图投影，`error_message` 固定打码，
+         *     不提供 reveal_sensitive。限流 60 次/分钟/令牌（Redis 故障 fail-open）。
+         *     不写审计、不打埋点、不发事件。
+         */
+        get: operations["listUsageLogsByKey"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4247,6 +4301,13 @@ export interface components {
             /** Format: int64 */
             latency_ms: number;
         };
+        /** @description POST /api/settings/test/webhook 的响应；测试样例非事件契约。 */
+        WebhookTestResult: {
+            /** @description 目标是否返回 2xx；3xx/4xx/5xx 均为 false。 */
+            ok: boolean;
+            /** @description 目标 HTTP 状态码原样回传（3xx 不跟随）。 */
+            status_code: number;
+        };
         DeployDeployment: {
             id: string;
             name: string;
@@ -4951,6 +5012,24 @@ export interface components {
             created_at: string;
             /** @description 仅 admin+logs:read 视图返回 */
             username?: string;
+        };
+        /**
+         * @description GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
+         *     （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
+         *     明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
+         */
+        LogsByKeyItem: components["schemas"]["UsageLogItem"] & {
+            /**
+             * @description 按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
+             *     拒绝原因键一律剥离；error_message 打码为 ••••••）。
+             */
+            other: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。 */
+        LogsByKeyPage: {
+            items: components["schemas"]["LogsByKeyItem"][];
         };
         UsageLogPage: components["schemas"]["Page"] & {
             items?: components["schemas"]["UsageLogItem"][];
@@ -8227,6 +8306,53 @@ export interface operations {
             };
         };
     };
+    testWebhookSettings: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已收到目标 HTTP 响应（2xx 或非 2xx） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResult"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description URL/secret 未配置，或目标地址被出站守卫拒绝 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            /** @description 连接失败或超时（未收到 HTTP 响应，固定文案） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     listDeployments: {
         parameters: {
             query?: {
@@ -9822,6 +9948,57 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listUsageLogsByKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 固定上限的最近明细；无记录时为 `{"items":[]}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogsByKeyPage"];
+                };
+            };
+            /**
+             * @description 凭据缺失/形态非法/令牌不存在/令牌已禁用。problem type 恒为
+             *     `invalid_token`，detail 不泄露禁用状态或令牌存在性。
+             */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 仅支持 GET */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            /** @description 令牌解析或日志查询故障（固定文案，不泄露内部错误） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
             };
         };
     };

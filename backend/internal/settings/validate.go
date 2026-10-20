@@ -354,6 +354,48 @@ func emailOrEmpty(v any) error {
 	return nil
 }
 
+// webhookEvents 是 notify.webhook.events 的冻结闭集（D2-10）。顺序仅用于
+// 错误文案；写入时去重保序（normalizeWebhookEvents），不在这里重排。
+var webhookEvents = []string{"balance_low", "payment_success", "announcement", "user_signup"}
+
+func validateWebhookEvent(v any) error {
+	event, ok := v.(string)
+	if !ok {
+		return errors.New("expected string")
+	}
+	if !contains(webhookEvents, strings.TrimSpace(event)) {
+		return fmt.Errorf("must be one of %s", strings.Join(webhookEvents, ", "))
+	}
+	return nil
+}
+
+// normalizeWebhookEvents 去重并保持提交顺序：事件是集合语义，重复项没有
+// 业务含义；保持顺序让审计 diff 与管理员看到的勾选顺序一致。
+func normalizeWebhookEvents(v any) (any, error) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, errors.New("expected array")
+	}
+	out := make([]any, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		event, ok := item.(string)
+		if !ok {
+			return nil, errors.New("expected string array")
+		}
+		event = strings.TrimSpace(event)
+		if event == "" {
+			return nil, errors.New("event must not be empty")
+		}
+		if _, dup := seen[event]; dup {
+			continue
+		}
+		seen[event] = struct{}{}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
 // pemKey 校验 PEM 外观与密钥种类。空串允许（未配置）；非空必须是
 // 带正确 BEGIN/END 标记的 PEM（支付宝私钥/公钥的保存期校验，F-08-14）。
 func pemKey(kind string) func(any) error {
@@ -543,6 +585,7 @@ var sectionValidators = map[string]sectionValidator{
 	"pay.waffo":         validateWaffoSection,
 	"pay.waffo_pancake": validateWaffoPancakeSection,
 	"notify.smtp":       validateSMTPSection,
+	"notify.webhook":    validateWebhookSection,
 	"rl.health":         validateRLHealthSection,
 	"sec":               validateSecSection,
 }
@@ -596,6 +639,41 @@ func validatePaySection(values map[string]any, _ map[string]bool) error {
 func validateSMTPSection(_ map[string]any, _ map[string]bool) error {
 	// from_email 留空回退 username（G7-R41）；两者皆空且已开启邮箱验证时
 	// 只给黄条警告、不阻断保存（§3.6 F-08-19）。
+	return nil
+}
+
+// validateWebhookSection 实现 F-08-20 的 section 级交叉校验（D2-11）。
+//
+// 只在 enabled=true 时要求完整：未启用的草稿允许留空/暂存 http URL，但一旦
+// 打开开关就必须是可直接投递的 https 绝对 URL。这里刻意比文档更严——F-08-20
+// 异常流程允许「本地调试 http + 显示警告」，D2-11 裁决不实现该例外（协议
+// 降级会让签名与密钥在明文中传输），偏差登记在报告。
+func validateWebhookSection(values map[string]any, secretConfigured map[string]bool) error {
+	if values["notify.webhook.enabled"] != true {
+		return nil
+	}
+	raw := strings.TrimSpace(asString(values["notify.webhook.url"]))
+	if raw == "" {
+		return invalid("notify.webhook.url", "required when webhook is enabled")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return invalid("notify.webhook.url", "must be an absolute URL")
+	}
+	if parsed.Scheme != "https" {
+		return invalid("notify.webhook.url", "must use https when webhook is enabled")
+	}
+	// userinfo 会进入 Authorization/Basic 语义并把凭据写进日志；fragment
+	// 不会发送给服务端，出现在配置里只说明粘贴错误。两者都在保存期拒绝。
+	if parsed.User != nil {
+		return invalid("notify.webhook.url", "userinfo is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return invalid("notify.webhook.url", "fragment is not allowed")
+	}
+	if !secretConfigured["notify.webhook.secret"] {
+		return invalid("notify.webhook.secret", "required when webhook is enabled")
+	}
 	return nil
 }
 

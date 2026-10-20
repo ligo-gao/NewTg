@@ -3298,6 +3298,51 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/settings/test/webhook:
+    post:
+      tags:
+        - admin
+      operationId: testWebhookSettings
+      x-required-permission: settings:manage
+      summary: 向已保存的 Webhook 端点发送一条固定样例事件
+      description: |
+        配置取自**已保存**的 `notify.webhook.*` 快照；请求体为空。
+        URL/secret 未配置 → 422；目标被最小 SSRF 守卫拒绝 → 422；
+        连接失败/超时 → 504 固定文案；**已收到 HTTP 响应即返回 200**，
+        `ok` 表示目标是否 2xx，`status_code` 原样回传（含 3xx/4xx/5xx，3xx 不跟随）。
+        不受 `enabled=false` 与事件订阅影响（测试目的就是验证未启用的配置）。
+        限流 3 次/分钟/管理员。**不写 `notification_deliveries`**；审计动作
+        `settings.test_webhook`，detail 仅 event/status_code/ok/host。
+        样例 payload 不是事件契约（业务 payload 归模块 01/03/04）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 已收到目标 HTTP 响应（2xx 或非 2xx）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTestResult'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          description: URL/secret 未配置，或目标地址被出站守卫拒绝
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '504':
+          description: 连接失败或超时（未收到 HTTP 响应，固定文案）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/deployments:
     get:
       tags:
@@ -5204,6 +5249,52 @@ paths:
           description: OpenAI ListModels 对象
         '401':
           description: 缺少/失效的会话 Cookie
+  /api/logs/by-key:
+    get:
+      tags:
+        - user
+      operationId: listUsageLogsByKey
+      summary: 按 API 令牌只读查询自身最近用量明细
+      description: |
+        认证只接受 `Authorization: Bearer nkt-…`（只读令牌认证），不接受 Cookie、
+        `?key=` 或 `x-api-key`。**过期/额度耗尽的令牌仍可读，仅显式禁用返回 401**
+        （过期/耗尽/非法/禁用统一 `invalid_token`，不区分原因）。
+        数据范围是本令牌自身（`user_id` + `token_id`）：同用户的其它令牌与账户级
+        记录都不可见。无分页、无筛选；查询参数被忽略；固定返回最近 1000 条。
+        `other` 与 `retry_chain` 一律按 user 视图投影，`error_message` 固定打码，
+        不提供 reveal_sensitive。限流 60 次/分钟/令牌（Redis 故障 fail-open）。
+        不写审计、不打埋点、不发事件。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 固定上限的最近明细；无记录时为 `{"items":[]}`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogsByKeyPage'
+        '401':
+          description: |
+            凭据缺失/形态非法/令牌不存在/令牌已禁用。problem type 恒为
+            `invalid_token`，detail 不泄露禁用状态或令牌存在性。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '405':
+          description: 仅支持 GET
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          description: 令牌解析或日志查询故障（固定文案，不泄露内部错误）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/usage-logs:
     get:
       tags:
@@ -9286,6 +9377,21 @@ components:
         latency_ms:
           type: integer
           format: int64
+    WebhookTestResult:
+      type: object
+      additionalProperties: false
+      required:
+        - ok
+        - status_code
+      properties:
+        ok:
+          type: boolean
+          description: 目标是否返回 2xx；3xx/4xx/5xx 均为 false。
+        status_code:
+          type: integer
+          minimum: 0
+          description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
+      description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。
     DeployDeployment:
       type: object
       additionalProperties: false
@@ -10925,6 +11031,35 @@ components:
           type: string
           description: 仅 admin+logs:read 视图返回
       description: 用量日志列表项（user 视图不含 username）。
+    LogsByKeyItem:
+      allOf:
+        - $ref: '#/components/schemas/UsageLogItem'
+        - type: object
+          required:
+            - other
+          properties:
+            other:
+              type: object
+              additionalProperties: true
+              description: |
+                按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
+                拒绝原因键一律剥离；error_message 打码为 ••••••）。
+      description: |
+        GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
+        （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
+        明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
+    LogsByKeyPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/LogsByKeyItem'
+      description: 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。
     UsageLogPage:
       allOf:
         - $ref: '#/components/schemas/Page'

@@ -180,6 +180,9 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1settings'
   /api/deployments/settings/test-connection:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1settings~1test-connection'
+  # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20）。
+  /api/settings/test/webhook:
+    $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1webhook'
 
   # 模型部署控制面 · 部署管理（M6d Task 4 / modules-08 §3.20 F-08-52～F-08-58）。
   # 静态子路径全部先于 /api/deployments/{id} 声明。

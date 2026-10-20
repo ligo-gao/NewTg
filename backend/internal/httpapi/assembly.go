@@ -423,6 +423,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Audit:   deps.Audit,
 			Idem:    NewRedisIdempotencyStore(deps.Redis),
 			Logger:  deps.Logger,
+			// F-08-20 测试事件：与投递进程共用同一配置快照与 Sealer，
+			// 保证「测试通过」意味着真实投递的签名/目标配置可用。
+			Webhook: notify.NewWebhookSender(deps.Config, deps.Sealer),
+			Redis:   deps.Redis,
 		})
 		if err != nil {
 			return nil, err

@@ -57,6 +57,9 @@ var secretKeys = map[string]struct{}{
 	"pay.alipay.private_key":    {},
 	"pay.alipay.public_key":     {},
 	"notify.smtp.password":      {},
+	// F-08-20：Webhook 签名密钥必须与 SMTP 口令同等对待（加密落库、
+	// 读接口永不回明文）；漏登记会让投递进程读到密文而验签全失败。
+	"notify.webhook.secret": {},
 	// M6d 部署控制面凭据（modules-08 §3.20.5）：io.net API Key 只经设置键
 	// 录入，任何走 Center.Save 的路径都必须先密封；部署侧读取依赖这份清单
 	// 与 settings 注册表一致，否则会出现「设置页加密、部署页读到密文」。
