@@ -409,3 +409,100 @@ type ModelMeta struct {
 
 // TableName 返回 GORM 表名。
 func (ModelMeta) TableName() string { return "model_meta" }
+
+// SubscriptionPlan 对应 subscription_plans（billing-08 §2.1，17 列；D5a）。
+//
+// 口径：
+//   - 本表**没有**模型价/倍率/折扣字段：订阅是资金账户，不是第二定价 owner
+//     （billing-08 §2.2）。一次请求的单价仍由定价层产出。
+//   - GrantCredits = 0 表示**无限额度**（R-D5-07），不是「无额度」；
+//     上界守卫只在 AmountTotal/GrantCredits > 0 时由应用层生效。
+//   - ModelScope 用 []byte 承载 jsonb 原文；nil = SQL NULL = 全部模型。
+//   - Currency 目前只允许 CNY（R-D5-07 / DB CHECK）。
+type SubscriptionPlan struct {
+	ID                  int64     `gorm:"column:id;primaryKey"`
+	PlanKey             string    `gorm:"column:plan_key"`
+	Title               string    `gorm:"column:title"`
+	Description         *string   `gorm:"column:description"`
+	PeriodDays          int32     `gorm:"column:period_days"`
+	PriceAmount         int64     `gorm:"column:price_amount"`
+	Currency            string    `gorm:"column:currency"`
+	GrantCredits        int64     `gorm:"column:grant_credits"`
+	ResetOnRenew        bool      `gorm:"column:reset_on_renew"`
+	AllowWalletOverflow bool      `gorm:"column:allow_wallet_overflow"`
+	ModelScope          []byte    `gorm:"column:model_scope"`
+	ConcurrencyLimit    *int32    `gorm:"column:concurrency_limit"`
+	GraceDays           int32     `gorm:"column:grace_days"`
+	Status              string    `gorm:"column:status"` // enabled/disabled
+	SortOrder           int32     `gorm:"column:sort_order"`
+	CreatedAt           time.Time `gorm:"column:created_at"`
+	UpdatedAt           time.Time `gorm:"column:updated_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (SubscriptionPlan) TableName() string { return "subscription_plans" }
+
+// Subscription 对应 subscriptions（billing-08 §6.1 + R-D5-03，23 列；D5a）。
+//
+// 口径：
+//   - 状态三态 active/expired/cancelled；expired/cancelled 是终态，续费是
+//     推进 EndAt 而不是新建行（§3.3 方案甲）。
+//   - PeriodDays/ResetOnRenew/GraceDays/ModelScope/ConcurrencyLimit 是
+//     购买瞬间的**套餐快照**（R-D5-03）：管理员编辑套餐不追溯已购实例。
+//   - AmountTotal = 0 表示无限额度；AmountUsed 下界 0，上界只在
+//     AmountTotal > 0 时由应用层守卫（R-D5-07 / R-D5-09）。
+//   - OrderID 唯一（同一订单只建一条实例）；NULL 不参与唯一性。
+type Subscription struct {
+	ID                  int64      `gorm:"column:id;primaryKey"`
+	UserID              int64      `gorm:"column:user_id"`
+	PlanID              int64      `gorm:"column:plan_id"`
+	PlanTitleSnapshot   string     `gorm:"column:plan_title_snapshot"`
+	Status              string     `gorm:"column:status"`
+	StartAt             time.Time  `gorm:"column:start_at"`
+	EndAt               time.Time  `gorm:"column:end_at"`
+	NextResetAt         *time.Time `gorm:"column:next_reset_at"`
+	AmountTotal         int64      `gorm:"column:amount_total"`
+	AmountUsed          int64      `gorm:"column:amount_used"`
+	AllowWalletOverflow bool       `gorm:"column:allow_wallet_overflow"`
+	AutoRenew           bool       `gorm:"column:auto_renew"`
+	CancelAtPeriodEnd   bool       `gorm:"column:cancel_at_period_end"`
+	OrderID             *int64     `gorm:"column:order_id"`
+	Currency            string     `gorm:"column:currency"`
+	PricePaidAmount     int64      `gorm:"column:price_paid_amount"`
+	PeriodDays          int32      `gorm:"column:period_days"`
+	ResetOnRenew        bool       `gorm:"column:reset_on_renew"`
+	GraceDays           int32      `gorm:"column:grace_days"`
+	ModelScope          []byte     `gorm:"column:model_scope"`
+	ConcurrencyLimit    *int32     `gorm:"column:concurrency_limit"`
+	CreatedAt           time.Time  `gorm:"column:created_at"`
+	UpdatedAt           time.Time  `gorm:"column:updated_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (Subscription) TableName() string { return "subscriptions" }
+
+// SubscriptionPreConsume 对应 subscription_pre_consume_records
+// （platform-04 §4.5 V10 + R-D5-02，5 列；D5a）。
+//
+// RequestID 是 uuid 字符串（PG uuid 列），与 request_registry.request_id
+// 同源同型；它是幂等唯一键，也是「已 refunded 再预扣报错」的判定行。
+// SubscriptionID 让一次预扣只能落在一个实例上（禁止跨实例拆分）。
+type SubscriptionPreConsume struct {
+	RequestID      string    `gorm:"column:request_id;primaryKey"`
+	SubscriptionID int64     `gorm:"column:subscription_id"`
+	Status         string    `gorm:"column:status"` // consumed/refunded
+	PreConsumed    int64     `gorm:"column:pre_consumed"`
+	CreatedAt      time.Time `gorm:"column:created_at"`
+}
+
+// TableName 返回 GORM 表名。
+func (SubscriptionPreConsume) TableName() string {
+	return "subscription_pre_consume_records"
+}
+
+// 注：orders.biz_kind / biz_ref_id 与 users.billing_preference 只存在于
+// 迁移与 EnumChecks 中，**刻意不加入 Order/User 的 GORM 投影**：
+//   - Order 由 billing 包用 GORM Create 写入（topup.go），新增 NOT NULL
+//     字符串字段的零值 "" 会撞 CHECK；本任务边界禁止改 billing/。
+//   - 订阅购买写路径（S4）需要读这两列时，按列名显式 SELECT 即可；
+//     届时若要加投影，必须同时给写入路径显式赋值。

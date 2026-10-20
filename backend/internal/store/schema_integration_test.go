@@ -31,8 +31,14 @@ import (
 // M6d Task 6a 追加任务数据面主表 tasks（relay-06 §7），表数 27→28。
 // D1 追加模型目录两张表（platform-01 §22.7.1/§22.7.2），表数 28→30：
 // vendors 7 列、model_meta 20 列。
+// D5a 追加订阅套餐数据层三表（billing-08 §2.1/§6.1 + platform-04 §4.5 V10），
+// 表数 30→33；并给 orders 补 biz_kind/biz_ref_id（23→25）、users 补
+// billing_preference（25→26）。
+//
+//	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
+//	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
-	"users":                   25,
+	"users":                   26,
 	"api_tokens":              15,
 	"user_groups":             9,
 	"system_settings":         5,
@@ -40,7 +46,7 @@ var wantColumns = map[string]int{
 	"model_pricing":           13,
 	"group_pricing":           10,
 	"redemption_codes":        11,
-	"orders":                  23,
+	"orders":                  25,
 	"wallet_transactions":     11,
 	"rankings_snapshot_runs":  8,
 	"rankings_model_stats":    10,
@@ -72,6 +78,13 @@ var wantColumns = map[string]int{
 	// 两表都以 GENERATED ALWAYS AS IDENTITY 作 PK，且都不设 FK（vendor_id 是逻辑引用）。
 	"vendors":    7,
 	"model_meta": 20,
+	// D5a 订阅套餐数据层（billing-08 §2.1 / §6.1 / platform-04 §4.5 V10）。
+	// subscriptions 的列数含 R-D5-03 的 5 个快照列（period_days/reset_on_renew/
+	// grace_days/model_scope/concurrency_limit）：少快照列会让「编辑套餐」
+	// 追溯已购实例，是设计明确禁止的语义漂移。
+	"subscription_plans":               17,
+	"subscriptions":                    23,
+	"subscription_pre_consume_records": 5,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -109,6 +122,11 @@ var wantNoFKTables = []string{
 	// model_meta.vendor_id 不设 FK；model_meta 与 model_pricing 也不强制一一对应。
 	"vendors",
 	"model_meta",
+	// D5a：订阅三表全部逻辑引用（user_id/plan_id/order_id/subscription_id），
+	// 与 platform-04 §3.4 V5 一致；套餐删除保护由应用层在事务内完成。
+	"subscription_plans",
+	"subscriptions",
+	"subscription_pre_consume_records",
 }
 
 // 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
@@ -138,26 +156,31 @@ var wantIdentityPKTables = []string{
 	// D1：模型目录两表同样使用单列 id identity 代理主键。
 	"vendors",
 	"model_meta",
+	// D5a：套餐与订阅实例均为单列 id identity 代理主键。
+	"subscription_plans",
+	"subscriptions",
 }
 
-// identityPKExceptions：5 张「自然键/非 identity 例外」表的 PK（均非 identity）：
+// identityPKExceptions：6 张「自然键/非 identity 例外」表的 PK（均非 identity）：
 // system_settings."key" text 自然键（platform-01 §4）、request_registry.request_id
 // uuid 自然键（§18 / platform-04 V9）、rankings_timeseries 与 rankings_entities 的
 // 自然唯一键（§16/§17）、task_plugins."key" text 自然键（M6d B-11，主表以
-// 插件 key 作 PK，不引入代理 id）。
+// 插件 key 作 PK，不引入代理 id）、subscription_pre_consume_records.request_id
+// uuid 自然键（D5a：幂等键就是主键，R-D5-02）。
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及两张 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：30 表
-// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2）= 21 张单列 id identity + 5 张自然键例外
-// + 2 张 uuid 代理键 + 2 张 run_id 领头自然键；**非 identity PK 的表恰 9 张**，
-// 由 TestMainSchemaNonIdentityPKSet 断言。
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：33 表
+// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3）= 23 张单列 id identity
+// + 6 张自然键例外 + 2 张 uuid 代理键 + 2 张 run_id 领头自然键；
+// **非 identity PK 的表恰 10 张**，由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
-	"system_settings":     {"key"},
-	"rankings_timeseries": {"model", "granularity", "bucket_start"},
-	"rankings_entities":   {"entity", "kind"},
-	"request_registry":    {"request_id"},
-	"task_plugins":        {"key"},
+	"system_settings":                  {"key"},
+	"rankings_timeseries":              {"model", "granularity", "bucket_start"},
+	"rankings_entities":                {"entity", "kind"},
+	"request_registry":                 {"request_id"},
+	"task_plugins":                     {"key"},
+	"subscription_pre_consume_records": {"request_id"},
 }
 
 // uuidPKTables：以 uuid 代理主键（单列 id + DEFAULT gen_random_uuid()）领头的表，
@@ -215,7 +238,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 30 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 33 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -430,6 +453,82 @@ func TestMainSchemaModelCatalogIndexes(t *testing.T) {
 	})
 }
 
+// TestMainSchemaSubscriptionIndexes：（c.3）D5a 订阅三表的索引形状
+// （billing-08 §2.1 展示索引、§3.1/§4.2 活跃订阅热路径、§7 B12 扫描、
+// R-D5-02 预扣记录反查）。
+//
+// 这里断言列与部分谓词而不只断言「存在」：同名但语义不同的索引（例如把
+// subscriptions_active_idx 建在全表 user_id 上）会让热路径查询退化为扫描，
+// 「索引存在」的断言就成了假阳性。
+func TestMainSchemaSubscriptionIndexes(t *testing.T) {
+	db := openTestDB(t)
+	cases := []struct {
+		name        string
+		wantColumns []string
+		wantUnique  bool
+		wantPartial bool
+		wantPred    string
+	}{
+		{"subscription_plans_plan_key_uq", []string{"plan_key"}, true, false, ""},
+		{"subscription_plans_status_sort_idx", []string{"status", "sort_order"}, false, false, ""},
+		{"subscriptions_order_id_uq", []string{"order_id"}, true, false, ""},
+		{"subscriptions_active_idx", []string{"user_id", "end_at"}, false, true, "active"},
+		{"subscriptions_expiry_idx", []string{"status", "end_at"}, false, true, "active"},
+		{"subscriptions_reset_idx", []string{"status", "next_reset_at"}, false, true, "next_reset_at"},
+		{"subscriptions_plan_idx", []string{"plan_id"}, false, false, ""},
+		{"subscription_pre_consume_records_subscription_idx", []string{"subscription_id"}, false, false, ""},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			def, unique, partial, ok := indexInfo(t, db, c.name)
+			if !ok {
+				t.Fatalf("索引 %s 不存在", c.name)
+			}
+			if unique != c.wantUnique || partial != c.wantPartial {
+				t.Fatalf("%s unique=%v partial=%v，want %v/%v（定义：%s）",
+					c.name, unique, partial, c.wantUnique, c.wantPartial, def)
+			}
+			for _, column := range c.wantColumns {
+				if !strings.Contains(def, column) {
+					t.Fatalf("%s 定义缺少列 %q：%s", c.name, column, def)
+				}
+			}
+			if c.wantPred != "" && !strings.Contains(def, c.wantPred) {
+				t.Fatalf("%s 部分谓词缺少 %q：%s", c.name, c.wantPred, def)
+			}
+		})
+	}
+
+	// TC-H-01：套餐表不得携带任何模型价/倍率/折扣字段（billing-08 §2.2 硬约束）。
+	// 订阅只能选账户，不能成为第二定价 owner；出现这些列名即设计被破坏。
+	t.Run("套餐表无定价字段", func(t *testing.T) {
+		rows, err := db.Query(`SELECT column_name FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'subscription_plans'`)
+		if err != nil {
+			t.Fatalf("query subscription_plans columns: %v", err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var column string
+			if err := rows.Scan(&column); err != nil {
+				t.Fatalf("scan column: %v", err)
+			}
+			if rePlanPricingColumn.MatchString(column) {
+				t.Fatalf("subscription_plans 不得有定价字段 %q（billing-08 §2.2）", column)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate subscription_plans columns: %v", err)
+		}
+	})
+}
+
+// rePlanPricingColumn 命中「单价/倍率/折扣」类列名（大小写不敏感）：
+// price/ratio/discount 允许出现在 price_amount（真实货币售价）之外均是违规。
+// price_amount 是购买层售价，不是模型单价，故显式放行。
+var rePlanPricingColumn = regexp.MustCompile(`(?i)^(model_?price|model_?ratio|ratio|discount|discount_?rate)$`)
+
 // TestMainSchemaNoFKOnFinancialTables：（d）财务表无 FK（V5 财务逻辑引用）。
 func TestMainSchemaNoFKOnFinancialTables(t *testing.T) {
 	db := openTestDB(t)
@@ -528,15 +627,15 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 5 项 + uuid 代理键 2 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 6 项 + uuid 代理键 2 项
 // + run_id 领头复合自然键。
 func TestMainSchemaIdentityPK(t *testing.T) {
-	if len(identityPKExceptions) != 5 {
-		t.Fatalf("自然键例外清单须恰 5 项（另有 2 张 uuid 代理键 + 2 张 run_id 领头的复合自然键），实际 %d 项", len(identityPKExceptions))
+	if len(identityPKExceptions) != 6 {
+		t.Fatalf("自然键例外清单须恰 6 项（另有 2 张 uuid 代理键 + 2 张 run_id 领头的复合自然键），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
-	// (e.1) 21 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1 + D1 2）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 23 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1 + D1 2 + D5a 2）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -637,9 +736,9 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 9 张 =
-// 5 张自然键例外（identityPKExceptions）+ 2 张 uuid 代理键（uuidPKTables）
-// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（21 张）均为
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 10 张 =
+// 6 张自然键例外（identityPKExceptions）+ 2 张 uuid 代理键（uuidPKTables）
+// + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余（23 张）均为
 // 单列 id + GENERATED ALWAYS AS IDENTITY。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	db := openTestDB(t)
@@ -653,8 +752,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 9 {
-		t.Fatalf("非 identity PK 表须恰 9 张（5 自然键 + 2 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 10 {
+		t.Fatalf("非 identity PK 表须恰 10 张（6 自然键 + 2 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string
@@ -776,6 +875,76 @@ var documentedChecks = []struct {
 	{
 		Table: "model_meta", Name: "model_meta_max_output_chk",
 		Fragments: []string{"max_output", ">= 0"},
+	},
+	// D5a / billing-08 §2.1/§6.1/§7 + R-D5-07/09：套餐与实例的边界约束。
+	// 枚举 CHECK 由 EnumChecks 对账；这里登记非枚举下界/长度/形态约束，
+	// 防止后续迁移把它们静默放宽（例如把 period_days >= 1 删成无约束）。
+	{
+		Table: "subscription_plans", Name: "subscription_plans_title_len_chk",
+		Fragments: []string{"char_length", "title", "64"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_description_len_chk",
+		Fragments: []string{"char_length", "description", "255"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_period_days_chk",
+		Fragments: []string{"period_days", ">= 1"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_price_amount_chk",
+		Fragments: []string{"price_amount", ">= 0"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_grant_credits_chk",
+		Fragments: []string{"grant_credits", ">= 0"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_grace_days_chk",
+		Fragments: []string{"grace_days", ">= 0"},
+	},
+	{
+		Table: "subscription_plans", Name: "subscription_plans_model_scope_chk",
+		Fragments: []string{"model_scope", "jsonb_typeof", "array"},
+	},
+	// R-D5-07：S1 只支持 CNY。单成员 CHECK 会被 PG 规范化为 `= 'CNY'::bpchar`，
+	// 不呈枚举形态，故按普通约束登记（见 enum.go 的说明）。
+	{
+		Table: "subscription_plans", Name: "subscription_plans_currency_chk",
+		Fragments: []string{"currency", "CNY"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_currency_chk",
+		Fragments: []string{"currency", "CNY"},
+	},
+	// R-D5-09：时间列 timestamptz、到期必须晚于生效。
+	{
+		Table: "subscriptions", Name: "subscriptions_end_at_chk",
+		Fragments: []string{"end_at", "start_at"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_amount_total_chk",
+		Fragments: []string{"amount_total", ">= 0"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_amount_used_chk",
+		Fragments: []string{"amount_used", ">= 0"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_price_paid_amount_chk",
+		Fragments: []string{"price_paid_amount", ">= 0"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_period_days_chk",
+		Fragments: []string{"period_days", ">= 1"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_grace_days_chk",
+		Fragments: []string{"grace_days", ">= 0"},
+	},
+	{
+		Table: "subscriptions", Name: "subscriptions_model_scope_chk",
+		Fragments: []string{"model_scope", "jsonb_typeof", "array"},
 	},
 }
 
@@ -933,6 +1102,61 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 	})
 	t.Run("供应商 status 越界被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO vendors (name, status) VALUES ('chk_vendor_status', 3)`)
+	})
+
+	// D5a：订阅数据层的写入路径同样必须被真实拒绝，而不只是约束存在于
+	// catalog。套餐/实例都不设 FK，负向探针可以直接插入最小行。
+	t.Run("套餐价格为负被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_plans
+			(plan_key, title, period_days, price_amount, currency)
+			VALUES ('chk_plan_price', 'x', 30, -1, 'CNY')`)
+	})
+	t.Run("套餐周期为 0 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_plans
+			(plan_key, title, period_days, price_amount, currency)
+			VALUES ('chk_plan_period', 'x', 0, 0, 'CNY')`)
+	})
+	t.Run("套餐标题为空被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_plans
+			(plan_key, title, period_days, price_amount, currency)
+			VALUES ('chk_plan_title', '', 30, 0, 'CNY')`)
+	})
+	t.Run("套餐非 CNY 币种被拒（R-D5-07）", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_plans
+			(plan_key, title, period_days, price_amount, currency)
+			VALUES ('chk_plan_currency', 'x', 30, 0, 'USD')`)
+	})
+	t.Run("订阅 end_at 不晚于 start_at 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, start_at, end_at, currency,
+			 period_days, price_paid_amount)
+			VALUES (1, 1, 'x', now(), now(), 'CNY', 30, 0)`)
+	})
+	t.Run("订阅 amount_used 为负被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, start_at, end_at, currency,
+			 period_days, price_paid_amount, amount_used)
+			VALUES (1, 1, 'x', now(), now() + interval '30 days', 'CNY', 30, 0, -1)`)
+	})
+	t.Run("订阅状态越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+			 currency, period_days, price_paid_amount)
+			VALUES (1, 1, 'x', 'bogus', now(), now() + interval '30 days', 'CNY', 30, 0)`)
+	})
+	t.Run("预扣记录状态越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_pre_consume_records
+			(request_id, subscription_id, status, pre_consumed)
+			VALUES ('00000000-0000-0000-0000-000000000001', 1, 'bogus', 1)`)
+	})
+	t.Run("orders.biz_kind 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO orders
+			(user_id, provider, amount, currency, idempotency_key, biz_kind)
+			VALUES (1, 'stripe', 1, 'USD', 'chk_biz_kind', 'bogus')`)
+	})
+	t.Run("users.billing_preference 越界被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO users (username, billing_preference)
+			VALUES ('chk_billing_pref', 'bogus')`)
 	})
 }
 

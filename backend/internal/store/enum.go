@@ -112,6 +112,20 @@ var EnumChecks = map[string][]string{
 	"vendors.status":       {"1", "2"},
 	"model_meta.status":    {"1", "2"},
 	"model_meta.name_rule": {"0", "1", "2", "3"},
+
+	// 订阅套餐数据层（D5a，billing-08 §2/§3/§6）。
+	//   - plans.status：enabled/disabled（R-D5-08，刻意为 text，不用 smallint）；
+	//   - subscriptions.status：active/expired/cancelled 三态（§3.1）；
+	//   - pre-consume 记录：consumed→refunded 单向（§4.4）；
+	//   - orders.biz_kind / users.billing_preference：R-D5-04 / R-D5-05。
+	// currency 不在此表：S1 只有单成员 CHECK（'CNY'），PG 会把单元素 IN
+	// 规范化为 `currency = 'CNY'::bpchar`，不呈枚举形态；其断言在
+	// schema_integration_test.go 的 documentedChecks（R-D5-07）。
+	"subscription_plans.status":               {"enabled", "disabled"},
+	"subscriptions.status":                    {"active", "expired", "cancelled"},
+	"subscription_pre_consume_records.status": {"consumed", "refunded"},
+	"orders.biz_kind":                         {"topup", "subscribe"},
+	"users.billing_preference":                {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
