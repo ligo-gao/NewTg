@@ -194,8 +194,14 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 		if target.User != nil || target.Fragment != "" {
 			return WebhookResult{}, fmt.Errorf("%w: userinfo or fragment in url", ErrWebhookBlockedTarget)
 		}
-		if err := s.guardHost(ctx, target.Hostname()); err != nil {
-			return WebhookResult{}, err
+		// 内置客户端在 guardedDial 里完成「解析一次 → 校验全部结果 → 拨已校验
+		// 的 IP」，这里不再预先解析：发送前解析 + 拨号时再解析就是 DNS
+		// rebinding 的窗口（两次解析可能给出不同答案）。
+		// 注入的客户端不经过 guardedDial，只能保留这一次发送前校验。
+		if s.Client != nil {
+			if err := s.guardHost(ctx, target.Hostname()); err != nil {
+				return WebhookResult{}, err
+			}
 		}
 	}
 
@@ -220,6 +226,11 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return WebhookResult{}, fmt.Errorf("%w: timeout", ErrWebhookTransport)
+		}
+		// 拨号阶段的守卫拒绝（解析结果在拨号时落入禁区）必须保留分类：
+		// 调用方据此返回 422 而不是把「目标被拒绝」误报成端点故障。
+		if errors.Is(err, ErrWebhookBlockedTarget) {
+			return WebhookResult{}, err
 		}
 		// 不包装底层错误：net/url.Error 含完整 URL。
 		return WebhookResult{}, fmt.Errorf("%w: transport error", ErrWebhookTransport)
@@ -274,49 +285,81 @@ func noWebhookRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// guardedDial 在真正拨号前再解析并校验一次目标 IP。仅做发送前检查会留下
-// DNS rebinding 窗口（校验时解析到公网、拨号时解析到 127.0.0.1）。
+// guardedDial 在一次解析内完成 SSRF 校验与拨号。
+//
+// 关键点：**绝不把主机名交给 DialContext**。DialContext 会自行再做一次解析，
+// 与校验时的解析是两次独立查询，攻击者控制的 DNS 可以在两次之间把答案从
+// 公网换成私网（DNS rebinding）。这里只解析一次、校验**全部**结果，然后
+// 直接拨已校验的 IP；主机名仅由 http.Transport 用于 TLS SNI/证书校验
+// （ServerName 取自请求 URL 的 host，不取拨号地址），因此不受影响。
+//
+// 多个 A/AAAA 记录逐个尝试：任一成功即返回；全部失败返回最后一个错误
+// （由 deliver 统一映射为传输失败）。任一结果落入禁区则整体拒绝且零连接。
 func (s *WebhookSender) guardedDial(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(address)
+		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid address", ErrWebhookBlockedTarget)
 		}
-		if err := s.guardHost(ctx, host); err != nil {
+		ips, err := s.resolveAllowedIPs(ctx, host)
+		if err != nil {
 			return nil, err
 		}
-		return dialer.DialContext(ctx, network, address)
+		var lastErr error
+		for _, ip := range ips {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr == nil {
+			// resolveAllowedIPs 保证非空；留一条防御性出口，避免返回 nil,nil。
+			return nil, fmt.Errorf("%w: no address to dial", ErrWebhookBlockedTarget)
+		}
+		return nil, lastErr
 	}
 }
 
-// guardHost 是最小 SSRF 守卫（D2-12/D2-16：不实现完整 sec.ssrf.* 策略）：
-// 拒绝 loopback、私网、link-local、未指定、多播与**无法解析**的主机名。
-// 任一解析结果落入禁区即整体拒绝（多 A 记录部分私网同样危险）。
+// guardHost 是发送前的最小 SSRF 检查，仅供注入客户端（不经过 guardedDial）
+// 使用：拒绝 loopback、私网、link-local、未指定、多播与**无法解析**的主机名。
 func (s *WebhookSender) guardHost(ctx context.Context, host string) error {
-	if s.AllowPrivateTargets {
-		return nil
-	}
+	_, err := s.resolveAllowedIPs(ctx, host)
+	return err
+}
+
+// resolveAllowedIPs 解析主机名并校验**全部**结果 IP，返回可直接拨号的地址。
+//
+// 任一解析结果落入禁区即整体拒绝（多 A 记录里混入私网同样危险，不能只拨
+// 其中「看起来安全」的那个）。返回的切片已通过校验，调用方必须直接拨它，
+// 不得再次解析——否则校验与连接的对象分离，SSRF 守卫失效。
+func (s *WebhookSender) resolveAllowedIPs(ctx context.Context, host string) ([]net.IP, error) {
 	if host == "" {
-		return fmt.Errorf("%w: empty host", ErrWebhookBlockedTarget)
+		return nil, fmt.Errorf("%w: empty host", ErrWebhookBlockedTarget)
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		if blockedIP(ip) {
-			return fmt.Errorf("%w: private address", ErrWebhookBlockedTarget)
+		if !s.AllowPrivateTargets && blockedIP(ip) {
+			return nil, fmt.Errorf("%w: private address", ErrWebhookBlockedTarget)
 		}
-		return nil
+		return []net.IP{ip}, nil
 	}
 	ips, err := s.lookupIP(ctx, host)
 	if err != nil || len(ips) == 0 {
 		// 未解析 host 一律拒绝：既防 DNS rebinding，也避免把解析失败伪装成
 		// 普通连接错误（那会让管理员误以为是端点挂了）。
-		return fmt.Errorf("%w: host does not resolve", ErrWebhookBlockedTarget)
+		return nil, fmt.Errorf("%w: host does not resolve", ErrWebhookBlockedTarget)
 	}
-	for _, ip := range ips {
-		if blockedIP(ip) {
-			return fmt.Errorf("%w: private address", ErrWebhookBlockedTarget)
+	if !s.AllowPrivateTargets {
+		for _, ip := range ips {
+			if blockedIP(ip) {
+				return nil, fmt.Errorf("%w: private address", ErrWebhookBlockedTarget)
+			}
 		}
 	}
-	return nil
+	return ips, nil
 }
 
 func (s *WebhookSender) lookupIP(ctx context.Context, host string) ([]net.IP, error) {

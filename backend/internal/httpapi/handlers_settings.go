@@ -271,6 +271,11 @@ func settingsErrorFields(err error) (status int, title, detail string) {
 	}
 }
 
+// problemTypeGatewayTimeout 用于「上游未在时限内回应」的 504（目前是测试
+// Webhook 的传输超时）。不能落到 internal_error：504 是可重试的上游故障，
+// 而 internal_error 会引导前端当作服务端缺陷处理。
+const problemTypeGatewayTimeout = "https://newtg.dev/problems/gateway_timeout"
+
 func settingsProblemType(status int) string {
 	switch status {
 	case http.StatusBadRequest:
@@ -279,6 +284,8 @@ func settingsProblemType(status int) string {
 		return authProblemConflict
 	case http.StatusUnprocessableEntity:
 		return problemTypeValidationFailed
+	case http.StatusGatewayTimeout:
+		return problemTypeGatewayTimeout
 	default:
 		return authProblemInternal
 	}

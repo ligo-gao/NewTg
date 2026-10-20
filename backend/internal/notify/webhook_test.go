@@ -193,6 +193,47 @@ func TestWebhookBlocksUnsafeTargets(t *testing.T) {
 	}
 }
 
+// TestWebhookResolvesOnceAndDialsValidatedIP 是 D2-12 MEDIUM-1 的回归：
+// 解析器第一次给公网、之后给私网（指向本机测试服务器）时，发送必须失败，
+// 且解析只能发生一次、测试服务器零命中——证明拨号用的是已校验的 IP，
+// 而不是让 DialContext 拿着主机名再做一次可被 rebinding 的解析。
+func TestWebhookResolvesOnceAndDialsValidatedIP(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var calls int32
+	sender := NewWebhookSender(webhookConfig(map[string]any{
+		KeyWebhookURL: "https://rebind.example.com/hook",
+	}), openSealer{})
+	sender.Timeout = 200 * time.Millisecond
+	sender.Resolve = func(context.Context, string) ([]net.IP, error) {
+		// 第一次（也是唯一一次允许的）解析：公网地址，可放行。
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return []net.IP{net.ParseIP("203.0.113.5")}, nil
+		}
+		// 若实现再次解析，这一次会得到本机测试服务器地址。旧实现会因此
+		// 连上 loopback 并“成功”，绕过守卫。
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+
+	_, sendErr := sender.Send(context.Background(), []byte(`{}`), "balance_low", "")
+	if !errors.Is(sendErr, ErrWebhookTransport) {
+		// 公网 IP 无监听 → 传输失败。关键是不能是 ErrWebhookBlockedTarget：
+		// 那说明实现又解析了一次并采信了第二次（私网）答案。
+		t.Fatalf("err = %v，期望 ErrWebhookTransport", sendErr)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("解析次数 = %d，期望 1（第二次解析就是 rebinding 窗口）", got)
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("loopback 测试服务器命中 %d 次，期望 0（不得拨向第二次解析结果）", got)
+	}
+}
+
 func TestWebhookSubscriptionFilter(t *testing.T) {
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

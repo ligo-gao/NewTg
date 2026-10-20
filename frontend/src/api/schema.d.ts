@@ -4972,6 +4972,61 @@ export interface components {
             /** @description 人工完成原因（按 Unicode 字符计数） */
             manual_reason: string;
         };
+        /**
+         * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
+         *     但**永不含 username**（该字段仅 admin+logs:read 的列表/详情出现），也不
+         *     存在 key/key_masked/明文令牌字段。error_message 恒为 ••••••，retry_chain
+         *     恒为 user 视图。
+         */
+        LogsByKeyItem: {
+            /** Format: int64 */
+            id: number;
+            /** Format: uuid */
+            request_id: string;
+            /** Format: int64 */
+            token_id?: number | null;
+            token_name?: string | null;
+            /** Format: int64 */
+            channel_id?: number | null;
+            upstream?: string | null;
+            model: string;
+            group?: string | null;
+            prompt_tokens: number;
+            completion_tokens: number;
+            cache_read_tokens: number;
+            cache_write_tokens: number;
+            /** Format: int64 */
+            pre_deducted?: number | null;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            refunded: number;
+            latency_ms?: number | null;
+            /** @description 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。 */
+            ttft?: number | null;
+            stream: boolean;
+            /** @enum {string} */
+            status: "success" | "error" | "refunded" | "refused";
+            error_class?: string | null;
+            error_message?: string | null;
+            /** @description user 视图仅 8 个可见键；admin 视图保留完整选路细节 */
+            retry_chain?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description 按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
+             *     拒绝原因键一律剥离；error_message 打码为 ••••••）。
+             */
+            other: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。 */
+        LogsByKeyPage: {
+            items: components["schemas"]["LogsByKeyItem"][];
+        };
         /** @description 用量日志列表项（user 视图不含 username）。 */
         UsageLogItem: {
             /** Format: int64 */
@@ -5012,24 +5067,6 @@ export interface components {
             created_at: string;
             /** @description 仅 admin+logs:read 视图返回 */
             username?: string;
-        };
-        /**
-         * @description GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
-         *     （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
-         *     明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
-         */
-        LogsByKeyItem: components["schemas"]["UsageLogItem"] & {
-            /**
-             * @description 按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
-             *     拒绝原因键一律剥离；error_message 打码为 ••••••）。
-             */
-            other: {
-                [key: string]: unknown;
-            };
-        };
-        /** @description 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。 */
-        LogsByKeyPage: {
-            items: components["schemas"]["LogsByKeyItem"][];
         };
         UsageLogPage: components["schemas"]["Page"] & {
             items?: components["schemas"]["UsageLogItem"][];
@@ -8342,6 +8379,24 @@ export interface operations {
                 };
             };
             429: components["responses"]["Error429"];
+            /** @description 服务端内部错误（如密钥解封失败）；响应为固定文案，不泄露内部细节 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 测试发送器未装配；响应为固定文案 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description 连接失败或超时（未收到 HTTP 响应，固定文案） */
             504: {
                 headers: {

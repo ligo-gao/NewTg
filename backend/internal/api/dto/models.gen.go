@@ -2912,9 +2912,10 @@ type LoginResponse struct {
 	union json.RawMessage
 }
 
-// LogsByKeyItem GET /api/logs/by-key 的行投影：字段同 UsageLogItem，但**永不含 username**
-// （该字段仅 admin+logs:read 的列表/详情出现），也不存在 key/key_masked/
-// 明文令牌字段。error_message 恒为 ••••••，retry_chain 恒为 user 视图。
+// LogsByKeyItem GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
+// 但**永不含 username**（该字段仅 admin+logs:read 的列表/详情出现），也不
+// 存在 key/key_masked/明文令牌字段。error_message 恒为 ••••••，retry_chain
+// 恒为 user 视图。
 type LogsByKeyItem struct {
 	CacheReadTokens  int       `json:"cache_read_tokens"`
 	CacheWriteTokens int       `json:"cache_write_tokens"`
@@ -2947,9 +2948,6 @@ type LogsByKeyItem struct {
 	// Ttft 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。
 	Ttft     *int    `json:"ttft,omitempty"`
 	Upstream *string `json:"upstream,omitempty"`
-
-	// Username 仅 admin+logs:read 视图返回
-	Username *string `json:"username,omitempty"`
 }
 
 // LogsByKeyItemStatus defines model for LogsByKeyItem.Status.

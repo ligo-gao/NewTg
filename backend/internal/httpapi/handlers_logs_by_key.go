@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -150,7 +149,9 @@ func (h *UsageLogHandlers) allowLogsByKey(w http.ResponseWriter, ctx context.Con
 	}
 	limited, retry, err := allowRequestRate(ctx, h.rdb, key, logsByKeyRateLimit, logsByKeyRateWindow)
 	if err != nil {
-		slog.Warn("logs by-key: rate limiter unavailable; allowing request",
+		// 用注入的 logger（与同 handler 的其它告警同一输出/字段口径），
+		// 不要退回进程级 slog.Default。
+		h.log.Warn("logs by-key: rate limiter unavailable; allowing request",
 			"token_id", tokenID, "error", err)
 		return false
 	}
