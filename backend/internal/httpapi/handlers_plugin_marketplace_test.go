@@ -78,7 +78,7 @@ func (m *marketTestServer) client(t *testing.T) *market.Client {
 	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
-	return &market.Client{HTTP: &http.Client{Transport: transport}}
+	return market.NewClientWithHTTP(&http.Client{Transport: transport})
 }
 
 func seedMarketSource(env *pluginTestEnv, id, url string) {

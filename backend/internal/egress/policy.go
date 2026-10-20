@@ -532,33 +532,75 @@ func isMetadataIP(ip net.IP) bool {
 // isReservedIP 覆盖 CGNAT 与不能作为公网目标的保留段。TEST-NET
 // （192.0.2/24、198.51.100/24、203.0.113/24）不在此列：它们常用于
 // 文档/测试，且不指向真实内网资源。
+//
+// IPv6 的隧道/转换前缀必须显式处理：6to4（2002::/16）与 NAT64
+// （64:ff9b::/96）的末 32 位是 IPv4 地址，转换后可以指向私网/元数据；
+// IPv4-compatible（::/96）不被 Go 的 To4() 识别，若不处理，
+// `::10.0.0.8` 一类目标会绕过全部 IPv4 规则。三类一律按内嵌 IPv4
+// 重新判定（6to4 整体视为保留——该机制已废弃）。
 func isReservedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil {
-		switch {
-		case v4[0] == 0: // 0.0.0.0/8（含 unspecified）
-			return true
-		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // 100.64.0.0/10 CGNAT
-			return true
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24
-			return true
-		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15
-			return true
-		case v4[0] >= 240: // 240.0.0.0/4（含 255.255.255.255）
-			return true
-		}
+		return isReservedIPv4(v4)
+	}
+	if len(ip) != net.IPv6len {
 		return false
 	}
+	// IPv4-compatible ::/96：前 96 位全零。内嵌 IPv4 必须走与字面量
+	// IPv4 完全相同的分类（私网/loopback/link-local/保留段）。
+	if allZeroBytes(ip[:12]) {
+		embedded := net.IP(ip[12:16])
+		return embedded.IsUnspecified() || embedded.IsLoopback() ||
+			embedded.IsPrivate() || embedded.IsLinkLocalUnicast() ||
+			embedded.IsLinkLocalMulticast() || embedded.IsMulticast() ||
+			isReservedIPv4(embedded)
+	}
+	// 2002::/16 6to4：内嵌任意 IPv4，且已废弃，整体拒绝。
+	if ip[0] == 0x20 && ip[1] == 0x02 {
+		return true
+	}
+	// 64:ff9b::/96 NAT64 well-known prefix：转换后内嵌 IPv4。
+	if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+		allZeroBytes(ip[4:12]) {
+		return true
+	}
 	// IPv6 保留：100::/64（discard）、2001:db8::/32（documentation）。
-	if len(ip) == net.IPv6len {
-		if ip[0] == 0x01 && ip[1] == 0x00 && ip[2] == 0 && ip[3] == 0 &&
-			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 {
-			return true
-		}
-		if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
-			return true
-		}
+	if ip[0] == 0x01 && ip[1] == 0x00 && allZeroBytes(ip[2:8]) {
+		return true
+	}
+	if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
+		return true
 	}
 	return false
+}
+
+// isReservedIPv4 是 IPv4 保留段分类（也用于 IPv6 中内嵌的 IPv4）。
+func isReservedIPv4(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	switch {
+	case v4[0] == 0: // 0.0.0.0/8（含 unspecified）
+		return true
+	case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // 100.64.0.0/10 CGNAT
+		return true
+	case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24
+		return true
+	case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15
+		return true
+	case v4[0] >= 240: // 240.0.0.0/4（含 255.255.255.255）
+		return true
+	}
+	return false
+}
+
+func allZeroBytes(bytes []byte) bool {
+	for _, b := range bytes {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // isIPv6Local 覆盖 strict 额外拒绝的 IPv6 本地地址（ULA、link-local、

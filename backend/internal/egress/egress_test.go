@@ -175,19 +175,26 @@ func TestValidateURLAddressClassification(t *testing.T) {
 	ctx := context.Background()
 	guard := NewGuard(Policy{Mode: ModeBasic, DomainMode: DomainAll})
 
+	// IPv6 字面量必须写成带方括号的 URL 形式（`https://[::1]/x`）。旧用例
+	// 拼成 `https://::1/x`，url.Parse 在形状阶段就报错，测试因此恒真、
+	// 从未真正走到 ipBlocked（M2 回归）。IPv4-mapped 地址同样覆盖：
+	// To4() 会还原成 IPv4，必须按 IPv4 规则拒绝。
 	blocked := []string{
 		"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1",
 		"169.254.169.254", "::1", "fe80::1", "fc00::1",
 		"224.0.0.1", "0.0.0.0", "100.64.0.1", "192.0.0.10",
 		"198.18.0.1", "240.0.0.1",
+		"::ffff:169.254.169.254", "::ffff:10.0.0.8",
+		// 隧道/转换前缀内嵌私网/元数据。
+		"2002:0a00:0008::1", "64:ff9b::a00:8", "::10.0.0.8", "::169.254.169.254",
 	}
 	for _, host := range blocked {
-		if _, err := guard.ValidateURL(ctx, "https://"+host+"/x"); !errors.Is(err, ErrBlocked) {
+		if _, err := guard.ValidateURL(ctx, urlForHost(host)); !errors.Is(err, ErrBlocked) {
 			t.Fatalf("basic 应拒绝 %s：%v", host, err)
 		}
 	}
-	for _, host := range []string{"8.8.8.8", "203.0.113.5"} {
-		if _, err := guard.ValidateURL(ctx, "https://"+host+"/x"); err != nil {
+	for _, host := range []string{"8.8.8.8", "203.0.113.5", "2001:4860:4860::8888"} {
+		if _, err := guard.ValidateURL(ctx, urlForHost(host)); err != nil {
 			t.Fatalf("basic 应允许 %s：%v", host, err)
 		}
 	}
@@ -248,6 +255,58 @@ func TestAllowPrivateIPCombinations(t *testing.T) {
 	if _, err := noOverride.ValidateURL(ctx, "https://hooks.internal/x"); !errors.Is(err, ErrBlocked) {
 		t.Fatalf("allow_private_ip=false 应拒绝 loopback：%v", err)
 	}
+}
+
+// TestModeOffBypassesPolicy 覆盖 off 策略：形状与地址规则全部放行（这是
+// 管理员显式选择的状态），但 off 仍不应预解析主机。
+func TestModeOffBypassesPolicy(t *testing.T) {
+	ctx := context.Background()
+	guard := NewGuard(Policy{Mode: ModeOff})
+	for _, raw := range []string{
+		"http://example.com:6379/x",
+		"https://user:pass@example.com/x",
+		"ftp://example.com/x",
+		"https://10.0.0.8/x",
+	} {
+		if _, err := guard.ValidateURL(ctx, raw); err != nil {
+			t.Fatalf("off 应放行 %q：%v", raw, err)
+		}
+	}
+
+	// off 不预解析：解析器一次都不应被调用。
+	called := false
+	off := NewGuard(Policy{Mode: ModeOff, AllowAnyPort: true}).WithResolver(func(context.Context, string) ([]net.IP, error) {
+		called = true
+		return []net.IP{net.ParseIP("10.0.0.8")}, nil
+	})
+	if _, err := off.ValidateURL(ctx, "https://rebind.example/x"); err != nil {
+		t.Fatalf("off 应放行私网解析：%v", err)
+	}
+	if called {
+		t.Fatal("off 模式不应在 ValidateURL 中预解析主机")
+	}
+
+	// 拨号路径仍然工作（不做地址拒绝）：直连 loopback 监听器。
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	conn, err := NewGuard(Policy{Mode: ModeOff}).DialContext(
+		ctx, "tcp", net.JoinHostPort("127.0.0.1", mustPort(t, listener)))
+	if err != nil {
+		t.Fatalf("off 拨号 loopback 失败：%v", err)
+	}
+	_ = conn.Close()
+}
+
+func mustPort(t *testing.T, listener net.Listener) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+	return port
 }
 
 func TestStrictRejectsMetadataAndIPv6Local(t *testing.T) {
@@ -478,6 +537,15 @@ func TestErrorsDoNotLeakURLQuery(t *testing.T) {
 	if !errors.Is(err, ErrBlocked) || strings.Contains(err.Error(), token) {
 		t.Fatalf("userinfo 拒绝泄露 URL：%v", err)
 	}
+}
+
+// urlForHost 把主机字面量转成合法 URL：IPv6 必须加方括号，否则
+// url.Parse 在形状阶段就失败，地址分类根本不会被执行。
+func urlForHost(host string) string {
+	if strings.Contains(host, ":") {
+		return "https://[" + host + "]/x"
+	}
+	return "https://" + host + "/x"
 }
 
 func containsString(values []string, want string) bool {

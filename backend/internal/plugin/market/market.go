@@ -88,24 +88,25 @@ type Version struct {
 
 // Client 拉取市场资源。零值可用（默认上限/超时/不跟随重定向）。
 //
-// HTTP 可注入以支持测试（httptest TLS），但 CheckRedirect 始终被强制为
-// 「拒绝」：注入 transport 是测试接缝，不是放开重定向的开关。
+// 出站注入点（http/guard/resolve/tlsConfig）一律未导出：它们是测试接缝，
+// 生产装配只能经 NewClientWithConfig 从 sec.ssrf.* 构造受守卫的客户端，
+// 不存在「顺手把 HTTP 字段换掉」的静默旁路。需要注入的用例必须显式调用
+// NewClientWithHTTP（见 LOW-2）。
 //
-// 生产路径（HTTP == nil）的出站统一走 internal/egress：解析全部地址并
+// 生产路径（http == nil）的出站统一走 internal/egress：解析全部地址并
 // 校验后才拨号（反 rebinding），3xx 仍不跟随。
 type Client struct {
-	HTTP           *http.Client
 	MaxIndexBytes  int64
 	MaxSourceBytes int64
 
 	// Config 是 sec.ssrf.* 的读取面；nil 时使用注册表默认策略。
 	Config egress.ConfigReader
-	// Resolve 是 DNS 缝隙（测试用）；nil 时用系统解析器。
-	Resolve func(ctx context.Context, host string) ([]net.IP, error)
-	// Guard / TLSConfig 是测试接缝：Guard 允许用例注入放开 httptest
-	// 随机端口的执行器；TLSConfig 用于接受 httptest 的自签证书。
-	Guard     *egress.Guard
-	TLSConfig *tls.Config
+
+	// 以下为仅测试接缝，故意未导出。
+	http          *http.Client
+	resolve       func(ctx context.Context, host string) ([]net.IP, error)
+	guardOverride *egress.Guard
+	tlsConfig     *tls.Config
 }
 
 // NewClient 返回默认配置的客户端。
@@ -116,26 +117,31 @@ func NewClientWithConfig(cfg egress.ConfigReader) *Client {
 	return &Client{Config: cfg}
 }
 
+// NewClientWithHTTP 是显式注入接缝（httptest TLS / 固定地址），只用于测试。
+// 字段未导出后，生产代码无法静默替换 transport；调用本构造函数即明确声明
+// 「这次出站由调用方控制拨号」。注入客户端仍保留 https 与「3xx 不跟随」。
+func NewClientWithHTTP(base *http.Client) *Client { return &Client{http: base} }
+
 func (c *Client) guard() *egress.Guard {
-	if c != nil && c.Guard != nil {
-		return c.Guard
+	if c != nil && c.guardOverride != nil {
+		return c.guardOverride
 	}
 	var cfg egress.ConfigReader
 	if c != nil {
 		cfg = c.Config
 	}
 	guard := egress.NewGuard(egress.PolicyFromConfig(cfg))
-	if c != nil && c.Resolve != nil {
-		guard = guard.WithResolver(c.Resolve)
+	if c != nil && c.resolve != nil {
+		guard = guard.WithResolver(c.resolve)
 	}
 	return guard
 }
 
 func (c *Client) httpClient() *http.Client {
-	if c != nil && c.HTTP != nil {
+	if c != nil && c.http != nil {
 		// 测试接缝：沿用注入的 transport（TLS 配置/拨号由用例控制）；
 		// 重定向仍被强制拒绝，保证 TestFetchIndexRejectsRedirects 有效。
-		clone := *c.HTTP
+		clone := *c.http
 		if clone.Timeout <= 0 {
 			clone.Timeout = DefaultTimeout
 		}
@@ -149,7 +155,7 @@ func (c *Client) httpClient() *http.Client {
 		tlsConfig *tls.Config
 	)
 	if c != nil {
-		tlsConfig = c.TLSConfig
+		tlsConfig = c.tlsConfig
 	}
 	return c.guard().NewClient(egress.ClientOptions{
 		Timeout:         timeout,
@@ -267,7 +273,7 @@ func (c *Client) FetchSource(ctx context.Context, rawURL, expectedHash string) (
 func (c *Client) get(ctx context.Context, u *url.URL, limit int64) ([]byte, error) {
 	// 注入 HTTP 的用例由用例自己控制拨号（TLS/随机端口），这里只保留
 	// 静态 https 校验；生产路径（HTTP == nil）一律先过统一执行器。
-	if c == nil || c.HTTP == nil || c.Guard != nil {
+	if c == nil || c.http == nil || c.guardOverride != nil {
 		if _, err := c.guard().ValidateURL(ctx, u.String()); err != nil {
 			return nil, mapEgressError(err, u)
 		}
@@ -278,7 +284,7 @@ func (c *Client) get(ctx context.Context, u *url.URL, limit int64) ([]byte, erro
 	}
 	request.Header.Set("Accept", "application/json, text/javascript, */*")
 	client := c.httpClient()
-	if c == nil || c.HTTP == nil {
+	if c == nil || c.http == nil {
 		// 生产路径每次新建 Transport（与原实现一致）；关闭空闲连接，
 		// 避免为每个市场源留下 30s 的连接池。
 		defer client.CloseIdleConnections()

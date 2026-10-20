@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"newtg/gateway/internal/egress"
 )
 
 func TestValidateURLMinimalSSRFGuard(t *testing.T) {
@@ -141,7 +143,7 @@ func testTLSClient(server *httptest.Server) *Client {
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
-	return &Client{HTTP: &http.Client{Transport: base}}
+	return &Client{http: &http.Client{Transport: base}}
 }
 
 type marketConfig map[string]any
@@ -166,7 +168,7 @@ func TestFetchIndexUsesEgressPolicy(t *testing.T) {
 	// 默认策略是 allowlist：未登记主机在解析前即被拒。
 	unlisted := &Client{
 		Config: marketConfig{},
-		Resolve: func(context.Context, string) ([]net.IP, error) {
+		resolve: func(context.Context, string) ([]net.IP, error) {
 			t.Fatal("allowlist 拒绝不应触发解析")
 			return nil, nil
 		},
@@ -178,11 +180,48 @@ func TestFetchIndexUsesEgressPolicy(t *testing.T) {
 	// 域名放开后，解析到私网的主机仍被地址规则拒绝。
 	private := &Client{
 		Config: marketConfig{"sec.ssrf.domain_mode": "all"},
-		Resolve: func(context.Context, string) ([]net.IP, error) {
+		resolve: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("10.0.0.8")}, nil
 		},
 	}
 	if _, err := private.FetchIndex(ctx, "https://rebind.example/index.json"); !errors.Is(err, ErrUnsafeURL) {
 		t.Fatalf("私网解析 err = %v，期望 ErrUnsafeURL", err)
+	}
+}
+
+// TestFetchIndexThroughGuardedClient 是 LOW-5 补测：生产路径（未注入
+// HTTP）经 egress 执行器成功出站——解析一次、校验后拨已校验 IP，并接受
+// httptest 的自签证书。它同时证明 guardOverride/ tlsConfig 测试接缝
+// 走的确实是受守卫的 transport，而不是被静默替换成裸 http.Client。
+func TestFetchIndexThroughGuardedClient(t *testing.T) {
+	index := `{"schema_version":1,"plugins":[]}`
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(index))
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+
+	guard := egress.NewGuard(egress.Policy{
+		Mode: egress.ModeBasic, DomainMode: egress.DomainAllowlist,
+		DomainList: []string{"market.example"},
+		// allow_private_ip + 显式 allowlist 命中 = 冻结的覆盖例外；
+		// AllowAnyPort 是测试接缝（httptest 随机端口）。
+		AllowPrivateIP: true, AllowAnyPort: true,
+	}).WithResolver(func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	})
+	client := &Client{
+		guardOverride: guard,
+		tlsConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+	}
+	got, err := client.FetchIndex(context.Background(), "https://market.example:"+port+"/index.json")
+	if err != nil {
+		t.Fatalf("guarded FetchIndex: %v", err)
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("schema_version = %d，期望 1", got.SchemaVersion)
 	}
 }

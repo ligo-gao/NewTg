@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/mail"
 	"net/url"
@@ -251,6 +252,34 @@ func validateAbsoluteHTTPURL(v any) error {
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return errors.New("must be an absolute http(s) URL")
+	}
+	return nil
+}
+
+// httpsAbsoluteURL 用于凭证/资金流向的外部地址（如支付收银台）：只接受
+// https 绝对 URL，拒绝 userinfo（会把凭据语义带进日志与握手）与相对路径。
+// 空串合法，由 section 校验决定「启用时是否必填」。
+func httpsAbsoluteURL(v any) error {
+	raw, ok := v.(string)
+	if !ok {
+		return errors.New("expected string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return errors.New("must be an absolute https URL")
+	}
+	if parsed.Scheme != "https" {
+		return errors.New("must use https")
+	}
+	if parsed.User != nil {
+		return errors.New("userinfo is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("fragment is not allowed")
 	}
 	return nil
 }
@@ -642,6 +671,23 @@ func validateSMTPSection(_ map[string]any, _ map[string]bool) error {
 	return nil
 }
 
+// webhookAllowlistWarning 是保存 notify.webhook 时的**非阻断**告警接缝
+// （modules-08 F-08-17 数据字段：「SMTP、通知 Webhook、更新源等管理员自填
+// 主机不在预置内，须自行加入，保存时若模式为 allowlist 且清单不含该主机
+// 给出明确提示」）。
+//
+// 约束说明（已登记台账）：settings 当前没有响应级 warning 通道，section
+// 校验器也拿不到其它 section 的已存值（notify.webhook 的 merged 视图不含
+// sec.ssrf.*），因此无法在保存时精确判断「当前生效的 domain_mode 是否为
+// allowlist 且清单未含该主机」。这里采用最小合规实现：只要是启用状态且
+// URL 合法，就写入一条服务端 slog 告警并照常返回 200（不阻断），由管理员
+// 在升级/配置时把主机补进 sec.ssrf.domain_list。
+var webhookAllowlistWarning = func(host string) {
+	slog.Warn("notify.webhook target may be rejected by the SSRF allowlist",
+		"host", host,
+		"hint", "add the host to sec.ssrf.domain_list, or set sec.ssrf.domain_mode=all/denylist (or mode=off) before relying on deliveries")
+}
+
 // validateWebhookSection 实现 F-08-20 的 section 级交叉校验（D2-11）。
 //
 // 只在 enabled=true 时要求完整：未启用的草稿允许留空/暂存 http URL，但一旦
@@ -674,6 +720,8 @@ func validateWebhookSection(values map[string]any, secretConfigured map[string]b
 	if !secretConfigured["notify.webhook.secret"] {
 		return invalid("notify.webhook.secret", "required when webhook is enabled")
 	}
+	// 保存成功后的非阻断提示（HTTP 仍为 200；见 webhookAllowlistWarning）。
+	webhookAllowlistWarning(parsed.Hostname())
 	return nil
 }
 
@@ -704,15 +752,21 @@ func validateAlipaySection(values map[string]any, secretConfigured map[string]bo
 	return nil
 }
 
-func validateEpaySection(values map[string]any, _ map[string]bool) error {
+// validateEpaySection 实现 F-04-21 的启用条件：api_url / pid / key 三者
+// 齐备才允许打开开关（否则渠道会在下单时才失败）。notify_url / return_url
+// 可选，留空由服务端按 site.server_address 推导。
+func validateEpaySection(values map[string]any, secretConfigured map[string]bool) error {
 	if values["pay.epay.enabled"] != true {
 		return nil
 	}
-	if strings.TrimSpace(asString(values["pay.epay.gateway_url"])) == "" {
-		return invalid("pay.epay.gateway_url", "required when Epay is enabled")
+	if strings.TrimSpace(asString(values["pay.epay.api_url"])) == "" {
+		return invalid("pay.epay.api_url", "required when Epay is enabled")
 	}
-	if strings.TrimSpace(asString(values["pay.epay.merchant_id"])) == "" {
-		return invalid("pay.epay.merchant_id", "required when Epay is enabled")
+	if strings.TrimSpace(asString(values["pay.epay.pid"])) == "" {
+		return invalid("pay.epay.pid", "required when Epay is enabled")
+	}
+	if !secretConfigured["pay.epay.key"] {
+		return invalid("pay.epay.key", "required when Epay is enabled")
 	}
 	return nil
 }

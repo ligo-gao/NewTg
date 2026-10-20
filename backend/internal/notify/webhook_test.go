@@ -298,8 +298,8 @@ func TestWebhookResolvesOnceAndDialsValidatedIP(t *testing.T) {
 // token 就随 422 响应体泄露给调用方。
 func TestWebhookBlockedAtConnectIsSanitized(t *testing.T) {
 	sender := NewWebhookSender(webhookConfig(map[string]any{
-		// 不用 AllowPrivateTargets、也不注入客户端：走内置 client + guardedDial，
-		// 拨号时解析器给出私网地址，守卫在连接前拒绝。
+		// 不用 AllowPrivateTargets、也不注入客户端：走内置 client + egress
+		// 执行器的 DialContext，拨号时解析器给出私网地址，守卫在连接前拒绝。
 		KeyWebhookURL: "https://rebind.example.com/hook?token=super-secret-value",
 	}), openSealer{})
 	sender.Timeout = 2 * time.Second
@@ -368,6 +368,29 @@ func TestWebhookDialsValidatedIP(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&accepted); got != 1 {
 		t.Fatalf("listener accept 次数 = %d，期望 1（说明 TCP 连接确实拨向了已校验的 127.0.0.1）", got)
+	}
+}
+
+// TestWebhookDefaultPolicyRejectsUnlistedHost 是 LOW-5 补测：在出厂默认
+// 策略（basic + allowlist + 预置域名清单）下，管理员自填的 webhook 主机
+// 未经 `sec.ssrf.domain_list` 登记时必须在发送前被拒绝。这也正是 M1
+// 部署影响登记的运行时表现。
+func TestWebhookDefaultPolicyRejectsUnlistedHost(t *testing.T) {
+	cfg := webhookConfig(map[string]any{
+		KeyWebhookURL: "https://hooks.example.com/endpoint",
+	})
+	// webhookConfig 为了让其它用例能打 httptest，显式放开了域名维度；
+	// 这里删掉它，恢复注册表默认 allowlist。
+	delete(cfg, egress.KeyDomainMode)
+
+	sender := NewWebhookSender(cfg, openSealer{})
+	sender.Resolve = func(context.Context, string) ([]net.IP, error) {
+		t.Fatal("默认 allowlist 必须在解析前拒绝未登记主机")
+		return nil, nil
+	}
+	_, err := sender.Send(context.Background(), []byte(`{}`), "balance_low", "")
+	if !errors.Is(err, ErrWebhookBlockedTarget) {
+		t.Fatalf("err = %v，期望 ErrWebhookBlockedTarget", err)
 	}
 }
 

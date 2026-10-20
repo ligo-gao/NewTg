@@ -2044,3 +2044,31 @@ func TestSyncSourceUsesEgressGuard(t *testing.T) {
 		t.Fatalf("解析次数 = %d，期望 1", calls)
 	}
 }
+
+// TestSyncSourceThroughGuardedClient 是 LOW-5 补测：同步拉取的成功分支
+// 同样要经 egress 执行器（解析一次 → 校验 → 拨已校验 IP），而不是只在
+// 拒绝路径上接入守卫。
+func TestSyncSourceThroughGuardedClient(t *testing.T) {
+	payload := []byte(`{"models":[]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/manifest.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	guard := egress.NewGuard(egress.Policy{
+		Mode: egress.ModeBasic, DomainMode: egress.DomainAll,
+		// AllowLoopback + AllowAnyPort 是仅测试装配的接缝（httptest 随机端口）。
+		AllowLoopback: true, AllowAnyPort: true,
+	})
+	body, err := fetchSyncManifest(context.Background(), server.URL+"/manifest.json", guard)
+	if err != nil {
+		t.Fatalf("fetchSyncManifest: %v", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body = %q，期望 %q", body, payload)
+	}
+}

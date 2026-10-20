@@ -101,11 +101,13 @@ type WebhookSender struct {
 
 	// Timeout 是单次投递上限；零值用 WebhookDefaultTimeout。
 	Timeout time.Duration
-	// httpClient 是**仅测试用的接缝**：测试用它注入带 TLS 配置的客户端，
-	// 生产一律保持 nil，由 client() 构造内置客户端（直连、禁用代理、拨号前
-	// 再次校验目标 IP）。注入的客户端不经过 guardedDial，SSRF 守卫只剩
-	// deliver 里的发送前解析这一次，安全性弱于内置客户端——因此故意不导出，
-	// 包外代码无法设置（F3）。
+	// httpClient 是**仅测试用的接缝**：测试用它注入带 TLS 配置的客户端
+	// （httptest）。生产保持 nil，由 client() 构造内置客户端：禁用代理，并在
+	// DialContext 中调用统一执行器 egress.Guard.DialContext，完成「解析一次
+	// → 校验全部 IP → 拨已校验 IP」。注入的客户端**不经过这条拨号路径**，
+	// 地址级校验只剩 deliver 的形状校验（不做 DNS）——安全性弱于内置客户端，
+	// 因此未导出，包外代码无法设置（F3；LOW-1 修正旧注释：guardedDial/
+	// guardHost 已随 B2 收敛到 internal/egress 删除）。
 	httpClient *http.Client
 	// Resolve 是 SSRF 守卫的 DNS 缝隙；nil 时用系统解析器。
 	Resolve func(ctx context.Context, host string) ([]net.IP, error)
@@ -219,7 +221,7 @@ func (s *WebhookSender) deliver(ctx context.Context, settings webhookSettings, p
 	guard := s.guard()
 	// 形状校验（协议/端口/userinfo/域名）**不做 DNS**：解析只发生在拨号
 	// 阶段一次，校验对象与连接对象因此一致（防 rebinding）。地址级拒绝
-	// 由 guardedDial 完成并保留 ErrBlocked 分类。
+	// 由内置客户端 DialContext 中的 egress.Guard 完成并保留 ErrBlocked 分类。
 	target, err := guard.ValidateURLShape(settings.URL)
 	if err != nil {
 		return WebhookResult{}, fmt.Errorf("%w: invalid url", ErrWebhookBlockedTarget)
