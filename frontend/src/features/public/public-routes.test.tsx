@@ -142,4 +142,31 @@ describe('public route integration (anonymous reachability)', () => {
     expect(nav.textContent).toContain('GPT-4o')
     expect(requestedPaths.some((path) => path === '/readyz')).toBe(false)
   })
+
+  it('renders a public announcement inside the shared header/footer shell', async () => {
+    installPublicHandlers()
+    server.use(
+      http.get(`${ORIGIN}/api/announcements/public/:id`, () =>
+        HttpResponse.json({
+          id: 'a-1',
+          title: 'Planned maintenance',
+          category: 'maintenance',
+          content_html: '<p>The gateway restarts at 02:00 UTC.</p>',
+          published_at: '2026-10-01T10:00:00Z',
+          expire_at: null,
+        }),
+      ),
+    )
+
+    const { findByRole, getByRole, router } = renderAt('/announcements/a-1')
+
+    expect(
+      await findByRole('heading', { level: 1, name: 'Planned maintenance' }),
+    ).toBeTruthy()
+    // PublicLayout owns the footer; the page itself does not render one.
+    expect(getByRole('contentinfo')).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/announcements/a-1')
+    })
+  })
 })

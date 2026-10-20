@@ -35,6 +35,7 @@ import { Route as Errors403RouteImport } from './routes/_errors/403'
 import { Route as Errors404RouteImport } from './routes/_errors/404'
 import { Route as Errors500RouteImport } from './routes/_errors/500'
 import { Route as Errors503RouteImport } from './routes/_errors/503'
+import { Route as AnnouncementsIdRouteImport } from './routes/announcements/$id'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
 import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
@@ -187,6 +188,11 @@ const Errors500Route = Errors500RouteImport.update({
 const Errors503Route = Errors503RouteImport.update({
   id: '/_errors/503',
   path: '/503',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnnouncementsIdRoute = AnnouncementsIdRouteImport.update({
+  id: '/announcements/$id',
+  path: '/announcements/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LegalDocRoute = LegalDocRouteImport.update({
@@ -351,6 +357,7 @@ export interface FileRoutesByFullPath {
   '/404': typeof Errors404Route
   '/500': typeof Errors500Route
   '/503': typeof Errors503Route
+  '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
@@ -401,6 +408,7 @@ export interface FileRoutesByTo {
   '/404': typeof Errors404Route
   '/500': typeof Errors500Route
   '/503': typeof Errors503Route
+  '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing': typeof PricingIndexRoute
@@ -454,6 +462,7 @@ export interface FileRoutesById {
   '/_errors/404': typeof Errors404Route
   '/_errors/500': typeof Errors500Route
   '/_errors/503': typeof Errors503Route
+  '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
   '/pricing/': typeof PricingIndexRoute
@@ -507,6 +516,7 @@ export interface FileRouteTypes {
     | '/404'
     | '/500'
     | '/503'
+    | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
@@ -557,6 +567,7 @@ export interface FileRouteTypes {
     | '/404'
     | '/500'
     | '/503'
+    | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing'
@@ -609,6 +620,7 @@ export interface FileRouteTypes {
     | '/_errors/404'
     | '/_errors/500'
     | '/_errors/503'
+    | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
     | '/pricing/'
@@ -651,6 +663,7 @@ export interface RootRouteChildren {
   Errors404Route: typeof Errors404Route
   Errors500Route: typeof Errors500Route
   Errors503Route: typeof Errors503Route
+  AnnouncementsIdRoute: typeof AnnouncementsIdRoute
   LegalDocRoute: typeof LegalDocRoute
   PricingModelIdRoute: typeof PricingModelIdRoute
   PricingIndexRoute: typeof PricingIndexRoute
@@ -839,6 +852,13 @@ declare module '@tanstack/react-router' {
       path: '/503'
       fullPath: '/503'
       preLoaderRoute: typeof Errors503RouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/announcements/$id': {
+      id: '/announcements/$id'
+      path: '/announcements/$id'
+      fullPath: '/announcements/$id'
+      preLoaderRoute: typeof AnnouncementsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/legal/$doc': {
@@ -1113,6 +1133,7 @@ const rootRouteChildren: RootRouteChildren = {
   Errors404Route: Errors404Route,
   Errors500Route: Errors500Route,
   Errors503Route: Errors503Route,
+  AnnouncementsIdRoute: AnnouncementsIdRoute,
   LegalDocRoute: LegalDocRoute,
   PricingModelIdRoute: PricingModelIdRoute,
   PricingIndexRoute: PricingIndexRoute,
