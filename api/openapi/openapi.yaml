@@ -236,6 +236,8 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1performance~1logs'
   /api/performance/recent-operations:
     $ref: './paths/admin.yaml#/paths/~1api~1performance~1recent-operations'
+  /api/instances:
+    $ref: './paths/admin.yaml#/paths/~1api~1instances'
 
   # 站点公告（D7a；modules-08 F-08-04）。管理面 settings:manage；
   # 用户侧 active/read 仅登录用户本人（R-D7-05/R-D7-11）。

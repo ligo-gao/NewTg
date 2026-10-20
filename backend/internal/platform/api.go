@@ -316,7 +316,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// pub/sub 失效路径与本地快照才会一致。
 		SettingsBroadcaster: center,
 		NodeName:            cfg.NodeName,
-		StartedAt:           time.Now(),
+		// 逐副本心跳/实例列表的标识：INSTANCE_ID → hostname（与 D3 性能
+		// 端点同一解析函数，避免两处漂移）。
+		InstanceID: httpapi.ResolveProcessInstanceID(),
+		StartedAt:  time.Now(),
 		// 任务提交与中继共用同一个计费引擎会话工厂（M6d Task 6a）：
 		// 预扣/退款/结算语义只能有一套实现。
 		Billing: engine.NewSession,

@@ -130,6 +130,28 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		_ = db.Close()
 		return fmt.Errorf("gateway: listen %s: %w", cfg.HTTPAddr, err)
 	}
+	// 逐副本心跳（modules-08 §3.7 F-08-21）：监听成功后立即写一次，此后
+	// 每 30s 刷新 TTL 90s 的 Redis key。独立于请求 ctx，停机时由 Stop
+	// 删除；先于 Redis 连接关闭，避免留下「幽灵实例」直到 TTL 到期。
+	var heartbeat *httpapi.InstanceHeartbeat
+	if rr, ok := redisRes.(redisResource); ok {
+		hb, err := httpapi.StartInstanceHeartbeat(context.Background(), httpapi.InstanceHeartbeatConfig{
+			Redis:      rr.client,
+			InstanceID: httpapi.ResolveProcessInstanceID(),
+			Role:       "gateway",
+			Version:    version.Version,
+			StartedAt:  time.Now(),
+			Logger:     log,
+		})
+		if err != nil {
+			_ = ln.Close()
+			_ = redisRes.Close()
+			_ = logsDB.Close()
+			_ = db.Close()
+			return fmt.Errorf("gateway: start instance heartbeat: %w", err)
+		}
+		heartbeat = hb
+	}
 	// R4：装配完成（监听就绪）即置位。
 	checker.MarkConfigLoaded()
 	serveErr := make(chan error, 1)
@@ -148,6 +170,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	case <-ctx.Done():
 	case err := <-serveErr:
 		// 监听异常退出（端口被抢、进程内关闭等）：清理资源后上报。
+		heartbeat.Stop()
 		_ = redisRes.Close()
 		_ = logsDB.Close()
 		_ = db.Close()
@@ -166,6 +189,8 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		// Shutdown 已失败并记录；Close 仅兜底释放监听，错误无需再次上报。
 		_ = srv.Close()
 	}
+	// HTTP 已停止对外服务：删除本实例心跳，其他副本立即看不到它。
+	heartbeat.Stop()
 	if err := logsDB.Close(); err != nil {
 		log.Warn("close logs db failed", "error", err)
 	}
@@ -650,6 +675,37 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// 逐副本心跳（modules-08 §3.7 F-08-21）：与 gateway 同一套 key/周期。
+	// 放在全部装配完成之后启动：装配失败直接返回，不会留下 TTL 内仍显示
+	// 存活的幽灵条目；停机时先 Stop 删除 key，再断开 Redis。
+	heartbeat, err := httpapi.StartInstanceHeartbeat(context.Background(), httpapi.InstanceHeartbeatConfig{
+		Redis:      rr.client,
+		InstanceID: httpapi.ResolveProcessInstanceID(),
+		Role:       "worker",
+		Version:    version.Version,
+		StartedAt:  time.Now(),
+		Logger:     log,
+	})
+	if err != nil {
+		cancelExpiry()
+		expiryWG.Wait()
+		cancelBalance()
+		balanceWG.Wait()
+		stopTaskPoller()
+		cancelRankings()
+		rankingsWG.Wait()
+		cancelSubscriptions()
+		subscriptionsWG.Wait()
+		cancelWebhook()
+		webhookWG.Wait()
+		cancelDeploy()
+		deployWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: start instance heartbeat: %w", err)
+	}
+
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,
 		Recoverer:             engine,
@@ -672,6 +728,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	balanceWG.Wait()
 	cancelDeploy()
 	deployWG.Wait()
+	heartbeat.Stop()
 	if runErr == nil {
 		runErr = expiryErr
 	}

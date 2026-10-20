@@ -4884,6 +4884,33 @@ paths:
           $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/instances:
+    get:
+      tags:
+        - admin
+      operationId: listInstances
+      x-required-permission: settings:manage
+      summary: 逐副本实例心跳列表
+      description: |
+        返回全部未过期实例心跳，按 instance_id 升序；`current_instance_id`
+        是处理本次请求的实例。当前实例即使心跳写失败也保留在 items 中。
+        实例数少，不分页。Redis 不可用时返回 503，detail 为固定文案，
+        不回显地址或内部错误。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 实例列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/announcements:
     get:
       tags:
@@ -13937,6 +13964,50 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PerformanceRecentOperation'
+    InstanceSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - instance_id
+        - status
+        - role
+        - version
+        - started_at
+        - last_seen
+      properties:
+        instance_id:
+          type: string
+          description: INSTANCE_ID，缺省为进程主机名。
+        status:
+          type: string
+          description: 心跳写入时的状态（当前恒为 active）；过期条目由 TTL 移除。
+        role:
+          type: string
+          enum:
+            - gateway
+            - worker
+        version:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+    InstanceList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - current_instance_id
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InstanceSummary'
+        current_instance_id:
+          type: string
+          description: 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。
     AnnouncementCategory:
       type: string
       enum:

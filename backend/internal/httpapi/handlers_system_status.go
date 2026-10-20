@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -24,23 +25,26 @@ const systemProbeTimeout = time.Second
 
 // SystemStatusConfig 是系统状态端点的装配输入。
 type SystemStatusConfig struct {
-	DB        *sql.DB
-	Redis     *redis.Client
-	NodeName  string
-	Role      string
-	StartedAt time.Time
-	Logger    *slog.Logger
+	DB       *sql.DB
+	Redis    *redis.Client
+	NodeName string
+	// InstanceID 是逐副本心跳的标识（INSTANCE_ID → hostname）。空时回退
+	// NodeName，保证最小装配仍能给出一个稳定名称。
+	InstanceID string
+	Role       string
+	StartedAt  time.Time
+	Logger     *slog.Logger
 }
 
 // SystemStatusHandlers 持有系统状态依赖。
 type SystemStatusHandlers struct {
-	db        *sql.DB
-	rdb       *redis.Client
-	nodeName  string
-	role      string
-	startedAt time.Time
-	log       *slog.Logger
-	now       func() time.Time
+	db         *sql.DB
+	rdb        *redis.Client
+	instanceID string
+	role       string
+	startedAt  time.Time
+	log        *slog.Logger
+	now        func() time.Time
 }
 
 // NewSystemStatusHandlers 构造端点。依赖缺失时探测一律记 fail（fail-closed），
@@ -58,8 +62,12 @@ func NewSystemStatusHandlers(cfg SystemStatusConfig) *SystemStatusHandlers {
 	if role == "" {
 		role = "gateway"
 	}
+	instanceID := cfg.InstanceID
+	if instanceID == "" {
+		instanceID = cfg.NodeName
+	}
 	return &SystemStatusHandlers{
-		db: cfg.DB, rdb: cfg.Redis, nodeName: cfg.NodeName, role: role,
+		db: cfg.DB, rdb: cfg.Redis, instanceID: instanceID, role: role,
 		startedAt: startedAt, log: log, now: time.Now,
 	}
 }
@@ -100,19 +108,20 @@ func (h *SystemStatusHandlers) handle(w http.ResponseWriter, r *http.Request) {
 		uptime = 0
 	}
 	instance := systemInstance{
-		Name:      h.nodeName,
+		Name:      h.instanceID,
 		Role:      h.role,
 		Version:   version.Version,
 		Status:    "active",
 		StartedAt: h.startedAt.UTC(),
 		LastSeen:  now,
 	}
+	instances := h.instances(r.Context(), instance)
 	writeJSON(w, http.StatusOK, systemStatusResponse{
 		Version:   version.Version,
 		BuildTime: version.BuildTime,
 		GitCommit: version.Commit,
 		Uptime:    uptime,
-		Instances: []systemInstance{instance},
+		Instances: instances,
 		Deps: systemDependencies{
 			DB:    h.probeDB(r.Context()),
 			Redis: h.probeRedis(r.Context()),
@@ -121,6 +130,40 @@ func (h *SystemStatusHandlers) handle(w http.ResponseWriter, r *http.Request) {
 			Worker: "unknown",
 		},
 	})
+}
+
+// instances 与 GET /api/instances 读同一 Redis 心跳源（F-08-21）。
+//
+// 当前实例即使没有心跳（Redis 故障 / 首次写失败）也必须保留：系统状态页
+// 的「版本与就绪」卡依赖它；缺失会让管理员误以为当前进程不存在。Redis
+// 故障时降级为「只有当前实例」，不把整个状态端点变成 503——版本/就绪信息
+// 仍应可读。
+func (h *SystemStatusHandlers) instances(ctx context.Context, current systemInstance) []systemInstance {
+	records, err := ListInstanceHeartbeats(ctx, h.rdb)
+	if err != nil {
+		h.log.Warn("system status: instance heartbeat read failed", "error", err)
+		return []systemInstance{current}
+	}
+	out := make([]systemInstance, 0, len(records)+1)
+	found := false
+	for _, rec := range records {
+		if rec.InstanceID == current.Name {
+			found = true
+		}
+		out = append(out, systemInstance{
+			Name:      rec.InstanceID,
+			Role:      rec.Role,
+			Version:   rec.Version,
+			Status:    rec.Status,
+			StartedAt: rec.StartedAt,
+			LastSeen:  rec.LastSeen,
+		})
+	}
+	if !found {
+		out = append(out, current)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func (h *SystemStatusHandlers) probeDB(ctx context.Context) string {

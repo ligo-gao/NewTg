@@ -2211,6 +2211,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 逐副本实例心跳列表
+         * @description 返回全部未过期实例心跳，按 instance_id 升序；`current_instance_id`
+         *     是处理本次请求的实例。当前实例即使心跳写失败也保留在 items 中。
+         *     实例数少，不分页。Redis 不可用时返回 503，detail 为固定文案，
+         *     不回显地址或内部错误。
+         */
+        get: operations["listInstances"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/announcements": {
         parameters: {
             query?: never;
@@ -6222,6 +6245,24 @@ export interface components {
         };
         PerformanceRecentOperations: {
             items: components["schemas"]["PerformanceRecentOperation"][];
+        };
+        InstanceSummary: {
+            /** @description INSTANCE_ID，缺省为进程主机名。 */
+            instance_id: string;
+            /** @description 心跳写入时的状态（当前恒为 active）；过期条目由 TTL 移除。 */
+            status: string;
+            /** @enum {string} */
+            role: "gateway" | "worker";
+            version: string;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            last_seen: string;
+        };
+        InstanceList: {
+            items: components["schemas"]["InstanceSummary"][];
+            /** @description 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。 */
+            current_instance_id: string;
         };
         /** @enum {string} */
         AnnouncementCategory: "notice" | "maintenance" | "release";
@@ -11811,6 +11852,29 @@ export interface operations {
             403: components["responses"]["Error403"];
             422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
+        };
+    };
+    listInstances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 实例列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstanceList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            503: components["responses"]["Error503"];
         };
     };
     listAnnouncements: {

@@ -217,19 +217,12 @@ func (h *PerformanceHandlers) config() performanceConfig {
 		diskCacheThresh:  parseEnvInt64(h.geten("DISK_CACHE_THRESHOLD_MB")),
 		logDir:           strings.TrimSpace(h.geten("LOG_DIR")),
 		logFilePattern:   strings.TrimSpace(h.geten("LOG_FILE_PATTERN")),
-		instanceID:       strings.TrimSpace(h.geten("INSTANCE_ID")),
+		// 与逐副本心跳共用同一解析（INSTANCE_ID → hostname → "unknown"），
+		// 避免性能页与实例表对「当前实例」给出不同答案。
+		instanceID: ResolveInstanceID(h.geten, h.host),
 	}
 	if cfg.logFilePattern == "" {
 		cfg.logFilePattern = defaultLogFilePattern
-	}
-	if cfg.instanceID == "" {
-		// 未显式配置时用主机名（D3-01）。宿主机名的失败不影响端点：回退到
-		// 固定占位值，让 instance_id 仍然是一个可比较的稳定字符串。
-		if name, err := h.host(); err == nil && strings.TrimSpace(name) != "" {
-			cfg.instanceID = strings.TrimSpace(name)
-		} else {
-			cfg.instanceID = "unknown"
-		}
 	}
 	return cfg
 }

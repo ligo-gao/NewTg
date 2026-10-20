@@ -19,25 +19,32 @@ afterAll(() => server.close())
 describe('SystemStatusPage', () => {
   it('renders version, uptime, dependencies and instance heartbeats', async () => {
     server.use(
-      http.get(`${ORIGIN}/api/system/status`, () =>
+      http.get(`${ORIGIN}/api/instances`, () =>
         HttpResponse.json({
-          version: '1.4.2',
-          uptime: 90_061,
-          instances: [
+          current_instance_id: 'gateway-1',
+          items: [
             {
-              node_name: 'gateway-1',
+              instance_id: 'gateway-1',
               role: 'gateway',
               status: 'active',
               version: '1.4.2',
               last_seen: '2026-10-19T10:00:00Z',
             },
             {
-              name: 'worker-1',
+              instance_id: 'worker-1',
               role: 'worker',
               status: 'stale',
               version: '1.4.1',
+              last_seen: '2026-10-19T09:58:00Z',
             },
           ],
+        }),
+      ),
+      http.get(`${ORIGIN}/api/system/status`, () =>
+        HttpResponse.json({
+          version: '1.4.2',
+          uptime: 90_061,
+          instances: [],
           dependencies: { db: 'ok', redis: { status: 'ok' }, worker: 'down' },
         }),
       ),
@@ -56,6 +63,9 @@ describe('SystemStatusPage', () => {
 
   it('shows the empty instance state', async () => {
     server.use(
+      http.get(`${ORIGIN}/api/instances`, () =>
+        HttpResponse.json({ current_instance_id: 'gateway-1', items: [] }),
+      ),
       http.get(`${ORIGIN}/api/system/status`, () =>
         HttpResponse.json({
           version: '1.4.2',
@@ -76,6 +86,12 @@ describe('SystemStatusPage', () => {
     const user = userEvent.setup()
     let calls = 0
     server.use(
+      http.get(`${ORIGIN}/api/instances`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Service Unavailable' },
+          { status: 503 },
+        ),
+      ),
       http.get(`${ORIGIN}/api/system/status`, () => {
         calls += 1
         return HttpResponse.json(
@@ -91,5 +107,54 @@ describe('SystemStatusPage', () => {
     const before = calls
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(calls).toBeGreaterThan(before))
+  })
+
+  it('hides the instance card without settings:manage', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/instances`, () =>
+        HttpResponse.json(
+          { type: 'https://newtg.dev/problems/forbidden', title: 'Forbidden' },
+          { status: 403 },
+        ),
+      ),
+      http.get(`${ORIGIN}/api/system/status`, () =>
+        HttpResponse.json({
+          version: '1.4.2',
+          uptime: 30,
+          instances: [{ name: 'gateway-1', role: 'gateway', status: 'active' }],
+          dependencies: { db: 'ok', redis: 'ok', worker: 'unknown' },
+        }),
+      ),
+    )
+
+    await renderWithProviders(<SystemStatusPage />, ['common', 'settings'])
+
+    expect((await screen.findAllByText('1.4.2')).length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('system-status-instances')).toBeNull()
+    expect(screen.queryByText('gateway-1')).toBeNull()
+  })
+
+  it('falls back to the status payload when the registry is unavailable', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/instances`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'Service Unavailable' },
+          { status: 503 },
+        ),
+      ),
+      http.get(`${ORIGIN}/api/system/status`, () =>
+        HttpResponse.json({
+          version: '1.4.2',
+          uptime: 30,
+          instances: [{ name: 'gateway-1', role: 'gateway', status: 'active' }],
+          dependencies: { db: 'ok', redis: 'ok', worker: 'unknown' },
+        }),
+      ),
+    )
+
+    await renderWithProviders(<SystemStatusPage />, ['common', 'settings'])
+
+    expect(await screen.findByTestId('system-status-instances')).toBeTruthy()
+    expect(screen.getByText('gateway-1')).toBeTruthy()
   })
 })

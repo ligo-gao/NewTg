@@ -72,3 +72,54 @@ func TestSystemStatusEndpoint(t *testing.T) {
 		t.Fatalf("普通用户 = %d，期望 403", rr.Code)
 	}
 }
+
+// system status 与 GET /api/instances 读同一 Redis 心跳源：另一个副本写入
+// 心跳后必须出现在聚合结果里，而当前实例即使没有心跳也要保留。
+func TestSystemStatusInstancesReadRedisHeartbeats(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	if err := rdb.HSet(t.Context(), InstanceHeartbeatKey("worker-1"), map[string]interface{}{
+		"status":     "active",
+		"role":       "worker",
+		"version":    "1.4.1",
+		"started_at": "2026-10-20T10:00:00Z",
+		"last_seen":  "2026-10-20T10:00:30Z",
+	}).Err(); err != nil {
+		t.Fatalf("seed heartbeat: %v", err)
+	}
+
+	handler := NewSystemStatusHandlers(SystemStatusConfig{
+		Redis: rdb, InstanceID: "gateway-1", Role: "gateway", StartedAt: time.Now(),
+	})
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	admin := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/system/status", "", admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Instances []struct {
+			Name   string `json:"name"`
+			Role   string `json:"role"`
+			Status string `json:"status"`
+		} `json:"instances"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	if len(body.Instances) != 2 {
+		t.Fatalf("instances = %+v，期望 2 条", body.Instances)
+	}
+	roles := map[string]string{}
+	for _, item := range body.Instances {
+		roles[item.Name] = item.Role
+	}
+	if roles["gateway-1"] != "gateway" || roles["worker-1"] != "worker" {
+		t.Fatalf("roles = %+v", roles)
+	}
+}

@@ -330,6 +330,24 @@ func (e GroupPricingMode1) Valid() bool {
 	}
 }
 
+// Defines values for InstanceSummaryRole.
+const (
+	Gateway InstanceSummaryRole = "gateway"
+	Worker  InstanceSummaryRole = "worker"
+)
+
+// Valid indicates whether the value is a known member of the InstanceSummaryRole enum.
+func (e InstanceSummaryRole) Valid() bool {
+	switch e {
+	case Gateway:
+		return true
+	case Worker:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Language.
 const (
 	LanguageEn   Language = "en"
@@ -4584,6 +4602,29 @@ type HomeStats struct {
 	// Upstreams 已启用渠道去重到上游服务商类型后的数量。
 	Upstreams int64 `json:"upstreams"`
 }
+
+// InstanceList defines model for InstanceList.
+type InstanceList struct {
+	// CurrentInstanceId 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。
+	CurrentInstanceId string            `json:"current_instance_id"`
+	Items             []InstanceSummary `json:"items"`
+}
+
+// InstanceSummary defines model for InstanceSummary.
+type InstanceSummary struct {
+	// InstanceId INSTANCE_ID，缺省为进程主机名。
+	InstanceId string              `json:"instance_id"`
+	LastSeen   time.Time           `json:"last_seen"`
+	Role       InstanceSummaryRole `json:"role"`
+	StartedAt  time.Time           `json:"started_at"`
+
+	// Status 心跳写入时的状态（当前恒为 active）；过期条目由 TTL 移除。
+	Status  string `json:"status"`
+	Version string `json:"version"`
+}
+
+// InstanceSummaryRole defines model for InstanceSummary.Role.
+type InstanceSummaryRole string
 
 // Language 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
 type Language string

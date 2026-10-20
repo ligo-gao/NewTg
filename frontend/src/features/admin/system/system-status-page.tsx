@@ -26,6 +26,16 @@ export interface SystemStatusResponse {
   dependencies?: Record<string, unknown>
 }
 
+/**
+ * `GET /api/instances` (F-08-21) is the authoritative per-replica source. The
+ * system-status `instances` array is kept as a fallback for older builds and
+ * as the degraded path when the registry is temporarily unavailable.
+ */
+export interface InstanceListResponse {
+  items?: unknown[]
+  current_instance_id?: string
+}
+
 export interface InstanceRow {
   name: string
   role: string
@@ -78,7 +88,11 @@ function normalizeInstance(value: unknown, index: number): InstanceRow {
   const record =
     typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
   return {
-    name: readString(record, 'node_name') || readString(record, 'name') || `#${index + 1}`,
+    name:
+      readString(record, 'instance_id') ||
+      readString(record, 'node_name') ||
+      readString(record, 'name') ||
+      `#${index + 1}`,
     role: readString(record, 'role'),
     status: readString(record, 'status'),
     version: readString(record, 'version'),
@@ -119,6 +133,21 @@ export async function fetchSystemStatus(signal?: AbortSignal): Promise<SystemSta
   return (await response.json()) as SystemStatusResponse
 }
 
+export async function fetchInstances(signal?: AbortSignal): Promise<InstanceListResponse> {
+  const url =
+    typeof location === 'undefined'
+      ? '/api/instances'
+      : new URL('/api/instances', location.origin).toString()
+  const response = await fetch(url, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw await toApiError(response)
+  return (await response.json()) as InstanceListResponse
+}
+
 function Card({
   title,
   children,
@@ -145,12 +174,25 @@ export function SystemStatusPage() {
     queryKey: ['system-status'],
     queryFn: ({ signal }) => fetchSystemStatus(signal),
   })
+  // The instance registry is a separate permission (`settings:manage`): an
+  // admin without it must not see the instance card at all. Other failures
+  // (503 registry unavailable) fall back to the status payload below.
+  const instancesQuery = useQuery({
+    queryKey: ['instances'],
+    queryFn: ({ signal }) => fetchInstances(signal),
+    retry: false,
+  })
 
   const data = query.data
   const dependencies = data?.dependencies ?? {}
+  const instancesForbidden =
+    instancesQuery.error instanceof ApiError && instancesQuery.error.status === 403
+  // Prefer the dedicated registry; fall back to the status payload so a
+  // registry outage still shows the current instance.
+  const instanceSource = instancesQuery.data?.items ?? data?.instances
   // The endpoint is being built in a parallel backend task; never assume the
   // collection shape (F10), otherwise a partial response blanks the page.
-  const instances = (Array.isArray(data?.instances) ? data.instances : []).map(normalizeInstance)
+  const instances = (Array.isArray(instanceSource) ? instanceSource : []).map(normalizeInstance)
   const lastUpdated = query.dataUpdatedAt > 0 ? new Date(query.dataUpdatedAt).toLocaleTimeString() : null
 
   return (
@@ -226,7 +268,8 @@ export function SystemStatusPage() {
             </ul>
           </Card>
 
-          <Card title={t('settings.status.instances_title')} testId="system-status-instances">
+          {!instancesForbidden ? (
+            <Card title={t('settings.status.instances_title')} testId="system-status-instances">
             {instances.length === 0 ? (
               <p className="text-sm text-ink-3">{t('settings.status.instances_empty')}</p>
             ) : (
@@ -265,7 +308,8 @@ export function SystemStatusPage() {
                 </table>
               </div>
             )}
-          </Card>
+            </Card>
+          ) : null}
         </>
       ) : null}
     </div>

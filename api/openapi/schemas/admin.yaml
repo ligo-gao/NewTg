@@ -2980,3 +2980,36 @@ schemas:
         description: |
           true = 在同一事务内写入并发布（draft/offline → published）；
           校验或发布失败整体回滚并返回 422（R-D7-06 组合路径）。
+
+  # 逐副本实例心跳（modules-08 §3.7 F-08-21）。字段冻结为六个；地址、端口、
+  # 密钥等连接信息永不返回。
+  InstanceSummary:
+    type: object
+    additionalProperties: false
+    required: [instance_id, status, role, version, started_at, last_seen]
+    properties:
+      instance_id:
+        type: string
+        description: INSTANCE_ID，缺省为进程主机名。
+      status:
+        type: string
+        description: 心跳写入时的状态（当前恒为 active）；过期条目由 TTL 移除。
+      role:
+        type: string
+        enum: [gateway, worker]
+      version: {type: string}
+      started_at: {type: string, format: date-time}
+      last_seen: {type: string, format: date-time}
+
+  InstanceList:
+    type: object
+    additionalProperties: false
+    required: [items, current_instance_id]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/InstanceSummary'
+      current_instance_id:
+        type: string
+        description: 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。

@@ -3590,6 +3590,38 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error500'
 
   # ---------------------------------------------------------------------------
+  # 逐副本实例心跳（modules-08 §3.7 F-08-21）。来源是 Redis 中带 TTL 的
+  # 心跳 key（newtg:instance:<instance_id>）；过期实例不会出现在列表里。
+  # 响应不含地址/端口/密钥，只回答「谁、角色、版本、最后心跳」。
+  # ---------------------------------------------------------------------------
+  /api/instances:
+    get:
+      tags: [admin]
+      operationId: listInstances
+      x-required-permission: settings:manage
+      summary: 逐副本实例心跳列表
+      description: |
+        返回全部未过期实例心跳，按 instance_id 升序；`current_instance_id`
+        是处理本次请求的实例。当前实例即使心跳写失败也保留在 items 中。
+        实例数少，不分页。Redis 不可用时返回 503，detail 为固定文案，
+        不回显地址或内部错误。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 实例列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/InstanceList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  # ---------------------------------------------------------------------------
   # 订阅套餐（D5b；billing-08 §15.1）。管理配置域，全部要求 settings:manage。
   # ---------------------------------------------------------------------------
   /api/subscription-plans:

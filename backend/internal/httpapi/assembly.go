@@ -151,8 +151,11 @@ type GatewayDeps struct {
 	TaskPluginAccess UserAccessStore
 
 	// NodeName / StartedAt 供 GET /api/system/status 的实例信息使用。
-	NodeName  string
-	StartedAt time.Time
+	NodeName string
+	// InstanceID 是逐副本心跳与 GET /api/instances 的实例标识
+	// （INSTANCE_ID → hostname）。空时回退 NodeName。
+	InstanceID string
+	StartedAt  time.Time
 
 	// Billing 为每次 /v1 任务提交构造计费会话（M6d Task 6a）。与中继共用
 	// 同一个 engine.NewSession；nil 时任务路径退回 billingseam.NewStub
@@ -518,12 +521,24 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		deployHandlers.Register(rt.protected)
 
 		NewSystemStatusHandlers(SystemStatusConfig{
-			DB:        deps.DB,
-			Redis:     deps.Redis,
-			NodeName:  deps.NodeName,
-			Role:      "gateway",
-			StartedAt: deps.StartedAt,
-			Logger:    deps.Logger,
+			DB:         deps.DB,
+			Redis:      deps.Redis,
+			NodeName:   deps.NodeName,
+			InstanceID: deps.InstanceID,
+			Role:       "gateway",
+			StartedAt:  deps.StartedAt,
+			Logger:     deps.Logger,
+		}).Register(rt.protected)
+
+		// 逐副本实例列表（modules-08 §3.7 F-08-21）：与系统状态页共用
+		// 同一 Redis 心跳源；权限 settings:manage，与性能页页头的实例标识
+		// 同门。
+		NewInstanceHandlers(InstanceHandlerConfig{
+			Redis:      deps.Redis,
+			InstanceID: deps.InstanceID,
+			Role:       "gateway",
+			Authz:      deps.Authz,
+			Logger:     deps.Logger,
 		}).Register(rt.protected)
 
 		// 通知模板（M6c Task 4 / modules-08 §3.9）：模板表是独立表，不在
