@@ -285,7 +285,7 @@ describe('console notification bell', () => {
   })
 
   it('does not navigate when there is no usable target', async () => {
-    install({
+    const log = install({
       items: [
         notification({ id: 42, title: 'No target', link_url: undefined }),
       ],
@@ -300,15 +300,18 @@ describe('console notification bell', () => {
     const user = userEvent.setup()
     await user.click(within(dialog).getByText('No target'))
 
-    // 无 announcement_id、无白名单 link_url：不凭空拼路径，也不关闭面板。
+    // 先等已读请求落地，再断言「没跳转」：`openItem` 要 await 完已读才做
+    // 导航判定，否则断言可能跑在判定之前，空过而不是真的验证。
     await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeTruthy()
+      expect(log.readIds).toEqual([42])
     })
+    // 无 announcement_id、无白名单 link_url：不凭空拼路径，也不关闭面板。
+    expect(screen.getByRole('dialog')).toBeTruthy()
     expect(onNavigate).not.toHaveBeenCalled()
   })
 
   it('rejects a backslash protocol-relative link_url', async () => {
-    install({
+    const log = install({
       items: [
         notification({
           id: 44,
@@ -329,8 +332,9 @@ describe('console notification bell', () => {
     await user.click(within(dialog).getByText('Backslash target'))
 
     await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeTruthy()
+      expect(log.readIds).toEqual([44])
     })
+    expect(screen.getByRole('dialog')).toBeTruthy()
     expect(onNavigate).not.toHaveBeenCalled()
   })
 

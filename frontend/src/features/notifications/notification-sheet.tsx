@@ -40,6 +40,12 @@ function isUnread(item: UserNotification): boolean {
   return item.read_at === null || item.read_at === undefined
 }
 
+// 站内路径解析用的固定哨兵 base：只用来判断「解析后主机有没有跑掉」，
+// 永远不会被导航或展示。用 `.invalid`（RFC 2606 保留 TLD）保证它不可能
+// 与真实站点重合。
+const INTERNAL_BASE = 'https://internal.invalid'
+const INTERNAL_BASE_ORIGIN = new URL(INTERNAL_BASE).origin
+
 /**
  * 通知目标地址（D7b 起公告详情页已落地）。
  *
@@ -48,10 +54,15 @@ function isUnread(item: UserNotification): boolean {
  *     `UserNotification.announcement_id` 下发）→ `/announcements/{id}`。
  *     这是唯一能保证落到**该公告**详情的来源；`link_url` 是发布时刻的
  *     快照，历史投递可能仍指向旧路径。
- *  2. `link_url`：只接受两种形态——绝对 http(s) URL，或站内单斜杠深链。
- *     站内深链必须拒绝 `//host`（协议相对外链）和 `/\host`：浏览器把
- *     反斜杠归一为斜杠，`/\evil.example` 与 `//evil.example` 等价；编码形态
- *     `/%5C` 同理，先归一后再判断。`javascript:`、裸相对路径等一律丢弃。
+ *  2. `link_url`：只接受两种形态——绝对 http(s) URL，或站内深链。
+ *     判定前先按 WHATWG URL 的规则剥离 TAB/LF/CR：解析器会在识别 scheme
+ *     之前丢弃这三个字符，`/\t/evil.example` 因此会被解释成
+ *     `//evil.example`（站外），任何「先看字面前两字符」的检查都会漏掉。
+ *     归一后的站内候选用固定 base 做一次 `new URL(compact, base)` 并比对
+ *     origin，一次覆盖 `//host`、`/\host`（反斜杠在特殊 scheme 中等价于
+ *     斜杠）、空白注入与大小写：只要解析结果不是 base 的 origin，就说明
+ *     浏览器会把它当成另一台主机，直接丢弃。`javascript:`、裸相对路径等
+ *     一律丢弃。
  *  3. 两者都没有可用目标时返回 `null`——**不导航**。不再用投递 id 凭空
  *     拼 `/announcements/{id}`：那不是公告 id，只会落到 404。
  */
@@ -65,21 +76,35 @@ export function notificationHref(
   const raw = item.link_url?.trim() ?? ''
   if (raw === '') return null
 
-  // `%5C` 在浏览器路径解析中等价于反斜杠；只关心前两个**解码后**字符，
-  // 因为只有前导 `//`/`/\` 能把路径解释成另一台主机。
-  const head = raw.slice(0, 4).replace(/%5c/gi, '\\').slice(0, 2)
-  if (raw.startsWith('/') && head !== '//' && head !== '/\\') return raw
+  // 与 WHATWG 解析器同口径归一：这三个字符在 URL 里被静默移除，若不先
+  // 剥掉，`"/\t/evil.example"` 之类会以「单斜杠站内路径」的字面通过检查，
+  // 浏览器却把它解析成 `//evil.example`。
+  const compact = raw.replace(/[\t\n\r]/g, '')
+  if (compact === '') return null
 
-  if (/^https?:\/\//i.test(raw)) {
+  // 绝对地址：仅 http(s)。校验后仍返回**归一后**的串，保持与服务端下发
+  // 内容一致（不重建 URL、不补默认端口/尾斜杠）。
+  if (/^https?:\/\//i.test(compact)) {
     try {
-      // 仅做合法性校验；不重建字符串，避免改写服务端下发的内容。
-      new URL(raw)
-      return raw
+      const url = new URL(compact)
+      return url.protocol === 'http:' || url.protocol === 'https:'
+        ? compact
+        : null
     } catch {
       return null
     }
   }
-  return null
+
+  // 站内路径必须是单斜杠开头；`//`、`/\`、`javascript:`、裸相对串都在
+  // 这里被挡掉。固定 base 只用于解析，不会出现在返回值里。
+  if (!compact.startsWith('/')) return null
+  try {
+    return new URL(compact, INTERNAL_BASE).origin === INTERNAL_BASE_ORIGIN
+      ? compact
+      : null
+  } catch {
+    return null
+  }
 }
 
 function formatAbsolute(value: string, locale: string): string {
