@@ -546,3 +546,58 @@ func TestRankingsTrendOtherAndSlot(t *testing.T) {
 		t.Fatal("D6a 粒度口径变更")
 	}
 }
+
+// TestRankingsProviderSeriesTop5AndAlignment：providers[].series 只给作者榜
+// Top 5，且长度/下标与 trend.buckets 对齐（B5a）。
+func TestRankingsProviderSeriesTop5AndAlignment(t *testing.T) {
+	now := time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)
+	snap := testRankingsSnapshot(now)
+	start := now.Add(-time.Hour)
+	snap.AuthorSeries = []store.RankingsAuthorTimeseries{
+		{Author: "Anthropic", Granularity: "day", BucketStart: start.Add(1 * time.Hour), Tokens: 300},
+		{Author: "Anthropic", Granularity: "day", BucketStart: start.Add(25 * time.Hour), Tokens: 200},
+		// 第 6 名即使有历史桶也不得下发（只写/只读 Top5）。
+		{Author: "sixth", Granularity: "day", BucketStart: start.Add(1 * time.Hour), Tokens: 999},
+	}
+	for _, author := range []string{"third", "fourth", "fifth", "sixth"} {
+		snap.Providers = append(snap.Providers, store.RankingsProviderStat{
+			RunID: 7, Author: author, TotalTokens: 10, SharePct: float64P(1), Rank: intP(len(snap.Providers) + 1),
+		})
+	}
+
+	repo := &fakeRankingsRepo{snap: snap, found: true}
+	env := newRankingsTestEnv(t, mapConfig{"site.timezone": configString("UTC")}, repo,
+		func() time.Time { return now })
+	rr := env.get("/api/rankings?period=week", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Providers []struct {
+			Author string  `json:"author"`
+			Series []int64 `json:"series"`
+		} `json:"providers"`
+		Trend struct {
+			Buckets []string `json:"buckets"`
+		} `json:"trend"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Providers) != 6 {
+		t.Fatalf("providers = %d，want 6", len(body.Providers))
+	}
+	got := body.Providers[0].Series
+	if len(got) != len(body.Trend.Buckets) {
+		t.Fatalf("series 长度 = %d，want trend.buckets=%d", len(got), len(body.Trend.Buckets))
+	}
+	if len(got) != 2 || got[0] != 300 || got[1] != 200 {
+		t.Fatalf("Anthropic series = %v，want [300 200]", got)
+	}
+	if body.Providers[1].Series != nil {
+		t.Fatalf("无历史桶的作者不应有 series，实际 %v", body.Providers[1].Series)
+	}
+	if body.Providers[5].Series != nil {
+		t.Fatalf("第 6 名不应有 series，实际 %v", body.Providers[5].Series)
+	}
+}

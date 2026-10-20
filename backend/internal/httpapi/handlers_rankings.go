@@ -138,16 +138,17 @@ type RankingsMovers struct {
 
 // RankingsProvider 是作者/供应商排名的一行（F-09-33）。
 //
-// 【为什么没有 series】R-D6-05 已裁决供应商时间序列没有存储（providers[].series
-// 不返回，登记在 G-DOM-20），前端 100% 堆叠面积图用 trend 的桶 + 当前份额
-// 表达，不伪造历史序列。Slot 沿用 rankings_entities 的稳定槽位；槽位耗尽时
-// 为 null（R-D6-06：不回绕、不重排）。
+// Series 是该作者当前周期的 token 桶，与 trend.buckets 一一对齐；只有作者榜
+// Top 5 下发（B5a：worker 只写 Top 5 的历史序列），其余作者省略该字段
+// （omitempty，前端以 100% 份额余量表达 Other）。Slot 沿用 rankings_entities
+// 的稳定槽位；槽位耗尽时为 null（R-D6-06：不回绕、不重排）。
 type RankingsProvider struct {
 	Rank        int     `json:"rank"`
 	Author      string  `json:"author"`
 	TotalTokens int64   `json:"total_tokens"`
 	SharePct    float64 `json:"share_pct"`
 	Slot        *int    `json:"slot"`
+	Series      []int64 `json:"series,omitempty"`
 }
 
 // RankingsTrendSeries 是趋势图的一条系列（F-09-32）。
@@ -359,6 +360,9 @@ func (h *RankingsHandlers) buildResponse(period rankings.Period, loc *time.Locat
 		})
 	}
 
+	trend, bucketTimes := buildRankingsTrend(period, loc, snap.Timeseries, modelOrder, slotByModel)
+	attachProviderSeries(providers, snap.AuthorSeries, bucketTimes)
+
 	return RankingsResponse{
 		Period:           string(run.Period),
 		Timezone:         loc.String(),
@@ -370,7 +374,44 @@ func (h *RankingsHandlers) buildResponse(period rankings.Period, loc *time.Locat
 		Models:           models,
 		Movers:           RankingsMovers{Up: up, Down: down},
 		Providers:        providers,
-		Trend:            buildRankingsTrend(period, loc, snap.Timeseries, modelOrder, slotByModel),
+		Trend:            trend,
+	}
+}
+
+// providerSeriesLimit 是下发 series 的作者数（B5a 冻结值：Top 5）。
+const providerSeriesLimit = 5
+
+// attachProviderSeries 把作者桶填入对应 provider 行，并与 trend 的时间桶对齐。
+//
+// 桶集合以 trend.buckets 为准（buildRankingsTrend 从模型桶并集得出）：作者
+// 桶是模型桶的派生聚合，模型桶集合是超集。缺失点补 0（面积图上是 0 段而
+// 不是断线）。只填前 5 行；其余作者与 Other 不下发 series。
+func attachProviderSeries(providers []RankingsProvider, points []store.RankingsAuthorTimeseries, buckets []time.Time) {
+	if len(buckets) == 0 || len(points) == 0 {
+		return
+	}
+	byAuthor := make(map[string]map[time.Time]int64, len(points))
+	for _, point := range points {
+		byBucket, ok := byAuthor[point.Author]
+		if !ok {
+			byBucket = make(map[time.Time]int64)
+			byAuthor[point.Author] = byBucket
+		}
+		byBucket[point.BucketStart.UTC()] += point.Tokens
+	}
+	for i := range providers {
+		if i >= providerSeriesLimit {
+			break
+		}
+		byBucket, ok := byAuthor[providers[i].Author]
+		if !ok {
+			continue
+		}
+		row := make([]int64, len(buckets))
+		for j, bucket := range buckets {
+			row[j] = byBucket[bucket]
+		}
+		providers[i].Series = row
 	}
 }
 
@@ -381,7 +422,7 @@ func (h *RankingsHandlers) buildResponse(period rankings.Period, loc *time.Locat
 // 桶集合取所有模型桶的并集，缺失点补 0（图表上是 0 段而不是断线）。
 func buildRankingsTrend(period rankings.Period, loc *time.Location,
 	points []store.RankingsTimeseries, modelOrder []string,
-	slotByModel map[string]*int) RankingsTrend {
+	slotByModel map[string]*int) (RankingsTrend, []time.Time) {
 
 	granularity := string(period.Granularity())
 	bucketSet := make(map[time.Time]struct{})
@@ -458,7 +499,7 @@ func buildRankingsTrend(period rankings.Period, loc *time.Location,
 		// Other 没有实体槽位（用中性灰），slot=null。
 		series = append(series, RankingsTrendSeries{Model: "Other", Slot: nil, Tokens: row})
 	}
-	return RankingsTrend{Granularity: granularity, Buckets: bucketLabels, Series: series}
+	return RankingsTrend{Granularity: granularity, Buckets: bucketLabels, Series: series}, buckets
 }
 
 func rankingsWindowView(window rankings.Window, loc *time.Location) RankingsWindow {
