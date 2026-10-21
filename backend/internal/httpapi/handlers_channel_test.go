@@ -54,6 +54,7 @@ type fakeChannelStore struct {
 	testResultErr error
 
 	createCalls      int
+	getCalls         int
 	updateCalls      int
 	deleteCalls      int
 	batchCalls       int
@@ -159,6 +160,7 @@ func (f *fakeChannelStore) List(_ context.Context, filter store.ChannelFilter) (
 func (f *fakeChannelStore) Get(_ context.Context, id int64) (*store.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getCalls++
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -2251,8 +2253,10 @@ func channelCreateBody(typ string, extra map[string]any) map[string]any {
 
 func createChannelForBinding(t *testing.T, env *channelTestEnv, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	// 创建必然携带 credentials（F-06-03），G-M6D-23 之后还需要敏感位。
 	rr := serveWithPrincipal(t, env.mux,
-		jsonReq(t, http.MethodPost, "/api/channels", body), channelAdminPrincipal(PermChannelsManage))
+		jsonReq(t, http.MethodPost, "/api/channels", body),
+		channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 	return rr
 }
 
@@ -2383,7 +2387,7 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
 			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"task_plugin_key":  "sora",
-		}), channelAdminPrincipal(PermChannelsManage))
+		}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("更新 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -2416,7 +2420,7 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 			"credentials":             map[string]any{"api_key": "sk-0123456789"},
 			"task_plugin_key":         nil,
 			"task_extend_plugin_keys": []string{},
-		}), channelAdminPrincipal(PermChannelsManage))
+		}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("清空绑定切换类型 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -2453,7 +2457,7 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
 			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"task_plugin_key":  "kling",
-		}), channelAdminPrincipal(PermChannelsManage))
+		}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("普通类型绑定 = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -2585,4 +2589,314 @@ func TestChannelTestSlowSuccessIsFailure(t *testing.T) {
 	if env.store.lastTestResult == nil || !*env.store.lastTestResult {
 		t.Fatal("阈值内的 last_test_result 必须为 true")
 	}
+}
+
+// ---------- G-M6D-23：渠道写端点的字段级授权（BOPLA） ----------
+
+// newSensitiveChannelEnv 构造带日志捕获的渠道测试环境：日志脱敏是
+// G-M6D-23 的验收项之一（响应/错误/日志不得出现明文凭据）。
+func newSensitiveChannelEnv(t *testing.T) (*channelTestEnv, *bytes.Buffer) {
+	t.Helper()
+	var logBuf bytes.Buffer
+	env := newChannelTestEnv(t, ChannelHandlerOptions{
+		Plugins: pluginBindingCatalog(),
+		Logger:  slog.New(slog.NewTextHandler(&logBuf, nil)),
+	})
+	return env, &logBuf
+}
+
+// assertSensitiveForbidden 断言字段级授权拒绝的固定 problem：
+// 403 + field_not_writable + 固定 detail，且响应体不含任何明文片段。
+func assertSensitiveForbidden(t *testing.T, rr *httptest.ResponseRecorder, secrets ...string) {
+	t.Helper()
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+	problem := decodeProblemBody(t, rr)
+	if problem["type"] != problemTypeFieldNotWritable {
+		t.Fatalf("problem.type = %v，期望 %s", problem["type"], problemTypeFieldNotWritable)
+	}
+	const wantDetail = "credential fields require the channels:manage_sensitive permission"
+	if problem["detail"] != wantDetail {
+		t.Fatalf("problem.detail = %v，期望固定文案 %q", problem["detail"], wantDetail)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(rr.Body.String(), secret) {
+			t.Fatalf("403 响应泄漏凭据片段 %q: %s", secret, rr.Body.String())
+		}
+	}
+}
+
+// TestChannelSensitiveFieldsRequireElevatedPermission 固化冻结口径：
+// 只有 channels:manage 的 admin 携带 credentials / task_plugin_key 时整笔
+// 403 且 store 零调用（无部分写入）；不带敏感字段的写请求权限不变。
+func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
+	const (
+		createSecret = "sk-create-secret-1234"
+		updateSecret = "sk-update-secret-5678"
+	)
+
+	env, logBuf := newSensitiveChannelEnv(t)
+	// 显式权限数组（非 NULL）确保 channels:manage_sensitive 确实缺失。
+	env.access.set(testAdminID, "admin", []string{PermChannelsRead, PermChannelsManage}, "enabled")
+	seed := seedChannel(t, env, nil)
+	principal := channelAdminPrincipal(PermChannelsManage)
+
+	t.Run("create 带 credentials → 403 且零写入", func(t *testing.T) {
+		body := channelCreateBody("openai", map[string]any{
+			"credentials": map[string]any{"api_key": createSecret},
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		assertSensitiveForbidden(t, rr, createSecret)
+		if env.store.createCalls != 0 {
+			t.Fatalf("createCalls = %d，期望 0（必须在写库前拒绝整笔请求）", env.store.createCalls)
+		}
+		if len(env.store.items) != 1 {
+			t.Fatalf("items = %d，期望仍只有种子渠道（无部分写入）", len(env.store.items))
+		}
+	})
+
+	t.Run("create 仅带 task_plugin_key → 403", func(t *testing.T) {
+		// 不带 credentials，单独证明 task_plugin_key 也会触发敏感门。
+		body := map[string]any{
+			"name": "plugin-only", "type": "task_plugin",
+			"base_url":         "https://upstream.example.com",
+			"supported_models": []string{"video-x"},
+			"task_plugin_key":  "kling",
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		assertSensitiveForbidden(t, rr)
+		if env.store.createCalls != 0 {
+			t.Fatalf("createCalls = %d，期望 0", env.store.createCalls)
+		}
+	})
+
+	t.Run("create 不带敏感字段 → 走普通校验（422，而非 403）", func(t *testing.T) {
+		// 创建按 F-06-03 必须有凭据，因此「不带 credentials 的 create 200」
+		// 在结构上不可达；这里断言的关键是：未命中敏感门，走既有 422，
+		// 且同样不写库。
+		body := map[string]any{
+			"name": "no-creds", "type": "openai",
+			"supported_models": []string{"gpt-4o"},
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "credentials are required") {
+			t.Fatalf("期望既有 credentials 必填校验：%s", rr.Body.String())
+		}
+		if env.store.createCalls != 0 {
+			t.Fatalf("createCalls = %d，期望 0", env.store.createCalls)
+		}
+	})
+
+	t.Run("update 带 credentials → 403 且 store 零调用", func(t *testing.T) {
+		beforeGets := env.store.getCalls
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"credentials":      map[string]any{"api_key": updateSecret},
+		}), principal)
+		assertSensitiveForbidden(t, rr, updateSecret)
+		if env.store.getCalls != beforeGets {
+			t.Fatalf("getCalls = %d，期望 %d（敏感门必须先于渠道读取）", env.store.getCalls, beforeGets)
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("updateCalls = %d，期望 0", env.store.updateCalls)
+		}
+		plaintext, err := env.sealer.Open(env.store.items[seed.ID].Credentials)
+		if err != nil {
+			t.Fatalf("open stored credentials: %v", err)
+		}
+		var creds ChannelCredentials
+		if err := json.Unmarshal(plaintext, &creds); err != nil {
+			t.Fatalf("decode stored credentials: %v", err)
+		}
+		if creds.APIKey != "sk-original-1234" {
+			t.Fatalf("原凭据被改写：%q", creds.APIKey)
+		}
+	})
+
+	t.Run("update 带 task_plugin_key → 403 且 store 零调用", func(t *testing.T) {
+		beforeGets := env.store.getCalls
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"task_plugin_key":  "kling",
+		}), principal)
+		assertSensitiveForbidden(t, rr)
+		if env.store.getCalls != beforeGets || env.store.updateCalls != 0 {
+			t.Fatalf("store 被调用：get=%d update=%d，期望均不增加", env.store.getCalls, env.store.updateCalls)
+		}
+	})
+
+	t.Run("update 不带敏感字段 → 200（非敏感字段权限不变）", func(t *testing.T) {
+		current := env.store.items[seed.ID]
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": current.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"remark":           "ops note",
+		}), principal)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.updateCalls != 1 {
+			t.Fatalf("updateCalls = %d，期望 1", env.store.updateCalls)
+		}
+	})
+
+	if strings.Contains(logBuf.String(), createSecret) || strings.Contains(logBuf.String(), updateSecret) {
+		t.Fatalf("日志泄漏明文凭据：%s", logBuf.String())
+	}
+}
+
+// TestChannelSensitiveFieldsWithElevatedPermission 覆盖持有敏感位时的
+// 正常路径（沿用既有加密/掩码），以及嵌套未知字段的 fail-closed 400。
+func TestChannelSensitiveFieldsWithElevatedPermission(t *testing.T) {
+	principal := channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive)
+
+	t.Run("create 带凭据 → 201，密文落库、响应仅掩码", func(t *testing.T) {
+		const secret = "sk-create-elevated-1234"
+		env, logBuf := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+
+		body := channelCreateBody("openai", map[string]any{
+			"credentials": map[string]any{"api_key": secret},
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), secret) {
+			t.Fatalf("响应泄漏明文凭据：%s", rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if resp.CredentialsSet == nil || !*resp.CredentialsSet {
+			t.Fatalf("credentials_set = %v，期望 true", resp.CredentialsSet)
+		}
+		if resp.CredentialsMasked == nil || resp.CredentialsMasked.APIKey == secret ||
+			!strings.Contains(resp.CredentialsMasked.APIKey, "…") {
+			t.Fatalf("credentials_masked = %+v，期望掩码而非明文", resp.CredentialsMasked)
+		}
+		stored := env.store.items[resp.ID]
+		plaintext, err := env.sealer.Open(stored.Credentials)
+		if err != nil {
+			t.Fatalf("open stored credentials: %v", err)
+		}
+		var creds ChannelCredentials
+		if err := json.Unmarshal(plaintext, &creds); err != nil {
+			t.Fatalf("decode stored credentials: %v", err)
+		}
+		if creds.APIKey != secret {
+			t.Fatalf("落库凭据 = %q，期望 %q", creds.APIKey, secret)
+		}
+		if strings.Contains(logBuf.String(), secret) {
+			t.Fatalf("日志泄漏明文凭据：%s", logBuf.String())
+		}
+	})
+
+	t.Run("update 带凭据 → 200 且重新加密", func(t *testing.T) {
+		const secret = "sk-update-elevated-5678"
+		env, logBuf := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		seed := seedChannel(t, env, nil)
+
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"credentials":      map[string]any{"api_key": secret},
+		}), principal)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), secret) {
+			t.Fatalf("响应泄漏明文凭据：%s", rr.Body.String())
+		}
+		plaintext, err := env.sealer.Open(env.store.items[seed.ID].Credentials)
+		if err != nil {
+			t.Fatalf("open stored credentials: %v", err)
+		}
+		var creds ChannelCredentials
+		if err := json.Unmarshal(plaintext, &creds); err != nil {
+			t.Fatalf("decode stored credentials: %v", err)
+		}
+		if creds.APIKey != secret {
+			t.Fatalf("更新后凭据 = %q，期望 %q", creds.APIKey, secret)
+		}
+		if strings.Contains(logBuf.String(), secret) {
+			t.Fatalf("日志泄漏明文凭据：%s", logBuf.String())
+		}
+	})
+
+	t.Run("create 嵌套未知字段 → 400 且零写入", func(t *testing.T) {
+		const (
+			secret = "sk-create-unknown-1234"
+			typo   = "sk-typo-secret-9999"
+		)
+		env, _ := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+
+		body := channelCreateBody("openai", map[string]any{
+			// apiKey 是 api_key 的典型拼写错误：必须 fail-closed，而不是
+			// 被静默丢弃后退化成「没给密钥」。
+			"credentials": map[string]any{"api_key": secret, "apiKey": typo},
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		}
+		problem := decodeProblemBody(t, rr)
+		if problem["type"] != problemTypeInvalidRequest {
+			t.Fatalf("problem.type = %v，期望 %s", problem["type"], problemTypeInvalidRequest)
+		}
+		if problem["detail"] != "credentials contains an unknown field" {
+			t.Fatalf("problem.detail = %v，期望固定 400 文案", problem["detail"])
+		}
+		for _, s := range []string{secret, typo} {
+			if strings.Contains(rr.Body.String(), s) {
+				t.Fatalf("400 响应泄漏凭据片段 %q: %s", s, rr.Body.String())
+			}
+		}
+		if env.store.createCalls != 0 || len(env.store.items) != 0 {
+			t.Fatalf("createCalls=%d items=%d，期望 0/0（无部分写入）", env.store.createCalls, len(env.store.items))
+		}
+	})
+
+	t.Run("update 嵌套未知字段 → 400 且不写库", func(t *testing.T) {
+		const (
+			secret = "sk-update-unknown-5678"
+			typo   = "sk-typo-update-9999"
+		)
+		env, _ := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		seed := seedChannel(t, env, nil)
+
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
+			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"credentials":      map[string]any{"api_key": secret, "apiKey": typo},
+		}), principal)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		}
+		for _, s := range []string{secret, typo} {
+			if strings.Contains(rr.Body.String(), s) {
+				t.Fatalf("400 响应泄漏凭据片段 %q: %s", s, rr.Body.String())
+			}
+		}
+		if env.store.updateCalls != 0 {
+			t.Fatalf("updateCalls = %d，期望 0", env.store.updateCalls)
+		}
+		plaintext, err := env.sealer.Open(env.store.items[seed.ID].Credentials)
+		if err != nil {
+			t.Fatalf("open stored credentials: %v", err)
+		}
+		var creds ChannelCredentials
+		if err := json.Unmarshal(plaintext, &creds); err != nil {
+			t.Fatalf("decode stored credentials: %v", err)
+		}
+		if creds.APIKey != "sk-original-1234" {
+			t.Fatalf("原凭据被改写：%q", creds.APIKey)
+		}
+	})
 }
