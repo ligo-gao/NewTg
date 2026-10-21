@@ -10158,6 +10158,81 @@ paths:
           description: 上游不可达/受理失败
         '503':
           description: 没有可用的 MJ 渠道
+  /mj/task/{id}/fetch:
+    get:
+      tags:
+        - relay
+      operationId: mjFetchTask
+      summary: Midjourney 单任务查询
+      description: |
+        按 `(user_id, MjId)` 读取本网关已回填的任务，不访问上游（两级轮询：
+        客户端只轮询网关）。返回 MJ 任务 DTO（status/progress/imageUrl/
+        videoUrl/videoUrls/buttons/properties 等）；上游原始 status 逐字保留。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/MJTaskID'
+      responses:
+        '200':
+          description: 任务 DTO 信封（`{code:1,description,result}`）
+        '400':
+          description: 路径 id 形状非法（`{code:4,description:invalid_id}`）
+        '401':
+          description: 令牌无效（`{code:5,description}`）
+        '404':
+          description: 任务不存在或不属于本人（`{code:4,description:task_not_found}`）
+        '500':
+          description: 内部错误（`{code:5,description}`）
+  /mj/task/list-by-condition:
+    post:
+      tags:
+        - relay
+      operationId: mjListTasks
+      summary: Midjourney 批量任务查询
+      description: |
+        `ids` 为 MjId 数组（≤100；空数组直接返回 `[]`）。只返回本人且存在
+        的 MJ 行，按输入顺序排列并保留重复项；他人/不存在的 id 被跳过（批量
+        语义没有单条错误通道，逐 id 报错会泄露存在性）。
+      security:
+        - bearerToken: []
+      requestBody:
+        $ref: '#/components/requestBodies/MJTaskList'
+      responses:
+        '200':
+          description: 任务 DTO 数组信封（空数组亦为 200）
+        '400':
+          description: ids 超过上限/元素非法/请求体畸形（`{code:4,description}`）
+        '401':
+          description: 令牌无效
+        '500':
+          description: 内部错误
+  /mj/task/{id}/image-seed:
+    post:
+      tags:
+        - relay
+      operationId: mjTaskImageSeed
+      summary: Midjourney 图片 seed 查询
+      description: |
+        按 `(user_id, MjId)` 取任务后，锁定原任务渠道把请求转发到
+        `{baseURL}/mj/task/{id}/image-seed`（30s 超时），上游 body 原样透传。
+        原渠道被禁用/删除时拒绝（与动作类渠道锁定同口径）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '#/components/parameters/MJTaskID'
+      responses:
+        '200':
+          description: 上游 seed 查询体（透传）
+        '400':
+          description: id 非法或原渠道不可用（`{code:4,description}`）
+        '401':
+          description: 令牌无效
+        '404':
+          description: 任务不存在或不属于本人（`{code:4,description:task_not_found}`）
+        '500':
+          description: 内部错误（渠道凭据不可用等）
+        '502':
+          description: 上游不可达/坏响应
   /api/task/self:
     get:
       tags:
@@ -10166,6 +10241,7 @@ paths:
       summary: 本人任务台账（分页）
       description: |
         按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+        `family` 可选按族过滤（plugin/mj；R-MJ-18），非法族名 400。
         台账不返回 data / private_data（设计 §7.1 Omit）。
       security:
         - sessionCookie: []
@@ -10189,6 +10265,15 @@ paths:
           required: false
           schema:
             type: string
+        - name: family
+          in: query
+          required: false
+          description: 族过滤；缺省展示全部（plugin + mj）
+          schema:
+            type: string
+            enum:
+              - plugin
+              - mj
       responses:
         '200':
           description: 任务分页
@@ -10439,6 +10524,15 @@ components:
       description: 批次 ID（`batch_<uuid>`）
       schema:
         type: string
+    MJTaskID:
+      name: id
+      in: path
+      required: true
+      description: MjId（`^[A-Za-z0-9_-]{1,128}$`）
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
   schemas:
     Problem:
       type: object
@@ -19210,6 +19304,20 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/AuditLogItem'
+    MJTaskListRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          maxItems: 100
+          description: MjId 列表（≤100；空数组直接返回 []）
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
     TaskListItem:
       type: object
       additionalProperties: false
@@ -19234,6 +19342,7 @@ components:
           type: string
           enum:
             - plugin
+            - mj
         action:
           type: string
         plugin_key:
@@ -19432,3 +19541,10 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+  requestBodies:
+    MJTaskList:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MJTaskListRequest'

@@ -152,6 +152,9 @@ type Poller struct {
 	reconcileLimit int
 	leaseKeepGap   time.Duration
 	allowPrivate   bool
+	// settler 是「无任务表达式」的终态结算接缝。插件族的成功任务仍由
+	// settleSuccess 先求值表达式；MJ 族直接使用同一个 Settler（W8/MJ-b）。
+	settler *Settler
 }
 
 // NewPoller 构造轮询器。Repo/Plugins/Billing 是硬依赖：缺任一无法推进任务，
@@ -201,6 +204,15 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 		p.timeout = *cfg.Timeout
 	}
 	p.allowPrivate = cfg.AllowPrivate
+	// 结算接缝与轮询器共享同一 billing/repo/log/now：两族对终态的资金语义
+	// 必须逐字一致，不能各持一份实现（W8/MJ-b）。
+	settler, err := NewSettler(SettlerConfig{
+		Billing: cfg.Billing, Repo: cfg.Repo, Logger: p.log, Now: p.now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.settler = settler
 	return p, nil
 }
 
@@ -298,17 +310,7 @@ func (p *Poller) pollOnce(ctx context.Context) {
 // 停止轮询或改变结算方向；租约过期后扫描可能抢先退款，终态 CAS 会阻止
 // 后续结算造成双花。
 func (p *Poller) renewTaskLease(ctx context.Context, task *Task) {
-	if task == nil {
-		return
-	}
-	requestID := toString(task.PrivateData["request_id"])
-	if requestID == "" {
-		return
-	}
-	if err := p.billing.RefreshInflightLeases(ctx, []string{requestID}); err != nil {
-		p.log.Warn("tasks: refresh inflight lease failed; settlement direction unchanged",
-			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
-	}
+	renewTaskLease(ctx, p.billing, p.log, task)
 }
 
 // startTaskLeaseKeeper 在单任务处理期间周期续租，返回停止函数（I-1 复核）。
@@ -317,18 +319,50 @@ func (p *Poller) renewTaskLease(ctx context.Context, task *Task) {
 // 而任务租约 TTL 的安全下界是 120s；只在进入时续租一次，遇到慢出站或调度
 // 抖动仍可能中途过期。keeper 每 30s（可注入）续一次，远小于 TTL 下界，
 // 使「单任务耗时 > TTL」只在进程真的死亡时才会发生。
+func (p *Poller) startTaskLeaseKeeper(ctx context.Context, task *Task) func() {
+	return startTaskLeaseKeeper(ctx, p.billing, p.log, task, p.leaseKeepGap)
+}
+
+// renewInflightLeases 为一批未终态任务续租（R-W9B-02）。
+func (p *Poller) renewInflightLeases(ctx context.Context, tasks []*Task) {
+	renewInflightLeases(ctx, p.billing, p.log, tasks)
+}
+
+// 以下是包级租约助手（W8/MJ-b）。
+//
+// 插件 poller 与 MJ poller 是两个独立的轮询器，但「在飞租约必须持续续期」
+// 是同一份 B2 契约：MJ 行若来自订阅来源，Detach 后同样只靠续租避免兜底
+// 扫描把仍在轮询的任务当成崩溃请求退款。把助手抽成包级函数，两个 poller
+// 共用同一实现，而不是让 MJ 侧再写一遍（漂移会让一族悄悄失去保护）。
+
+// renewTaskLease 为单个任务续租一次；无 request_id 时是 no-op。
+func renewTaskLease(ctx context.Context, billing BillingHandoff, log *slog.Logger, task *Task) {
+	if billing == nil || task == nil {
+		return
+	}
+	requestID := toString(task.PrivateData["request_id"])
+	if requestID == "" {
+		return
+	}
+	if err := billing.RefreshInflightLeases(ctx, []string{requestID}); err != nil {
+		log.Warn("tasks: refresh inflight lease failed; settlement direction unchanged",
+			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
+	}
+}
+
+// startTaskLeaseKeeper 在单任务处理期间周期续租，返回停止函数（I-1 复核）。
 //
 // 只在有 request_id 的非终态任务上启动；无 requestID 的任务无法结算，
-// 续租也没有意义。keeper 随 poller 上下文取消而停止（停机时不再续租）。
-func (p *Poller) startTaskLeaseKeeper(ctx context.Context, task *Task) func() {
-	if task == nil {
+// 续租也没有意义。keeper 随调用方上下文取消而停止（停机时不再续租）。
+func startTaskLeaseKeeper(ctx context.Context, billing BillingHandoff, log *slog.Logger,
+	task *Task, interval time.Duration) func() {
+	if billing == nil || task == nil {
 		return func() {}
 	}
 	requestID := toString(task.PrivateData["request_id"])
 	if requestID == "" {
 		return func() {}
 	}
-	interval := p.leaseKeepGap
 	if interval <= 0 {
 		interval = DefaultLeaseKeeperInterval
 	}
@@ -343,11 +377,11 @@ func (p *Poller) startTaskLeaseKeeper(ctx context.Context, task *Task) func() {
 			case <-keeperCtx.Done():
 				return
 			case <-ticker.C:
-				if err := p.billing.RefreshInflightLeases(keeperCtx, []string{requestID}); err != nil {
+				if err := billing.RefreshInflightLeases(keeperCtx, []string{requestID}); err != nil {
 					if keeperCtx.Err() != nil {
 						return // 停机取消导致的中断不是故障。
 					}
-					p.log.Warn("tasks: periodic inflight lease renewal failed; settlement direction unchanged",
+					log.Warn("tasks: periodic inflight lease renewal failed; settlement direction unchanged",
 						"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
 				}
 			}
@@ -364,7 +398,10 @@ func (p *Poller) startTaskLeaseKeeper(ctx context.Context, task *Task) func() {
 // 只收集有 request_id 的非终态任务：终态任务的资金已经/即将由结算/退款
 // 收敛，续租只会与终态 CAS 竞争；没有 request_id 的行无法结算，续租也
 // 没有意义。失败只记录，调用方继续轮询。
-func (p *Poller) renewInflightLeases(ctx context.Context, tasks []*Task) {
+func renewInflightLeases(ctx context.Context, billing BillingHandoff, log *slog.Logger, tasks []*Task) {
+	if billing == nil {
+		return
+	}
 	ids := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		if task == nil || task.State.Terminal() {
@@ -377,8 +414,8 @@ func (p *Poller) renewInflightLeases(ctx context.Context, tasks []*Task) {
 	if len(ids) == 0 {
 		return
 	}
-	if err := p.billing.RefreshInflightLeases(ctx, ids); err != nil {
-		p.log.Warn("tasks: refresh inflight leases for poll batch failed; settlement direction unchanged",
+	if err := billing.RefreshInflightLeases(ctx, ids); err != nil {
+		log.Warn("tasks: refresh inflight leases for poll batch failed; settlement direction unchanged",
 			"tasks", len(ids), "error", err)
 	}
 }

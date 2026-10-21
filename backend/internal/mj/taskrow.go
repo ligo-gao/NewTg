@@ -32,6 +32,18 @@ const (
 	// DataUploadURLs 只用于 upload-discord-images 的 inline 终态行。
 	DataUploadURLs = "upload_urls"
 
+	// 以下是轮询回填（MJ-b）写入 data 的上游任务快照键。
+	//
+	// 全部落 data 而不是 properties：data 不参与 /api/task/self 台账投影
+	// （repo 的 listColumns 显式省略），产物 URL/按钮/上游 properties 只
+	// 在 fetch/list 的 MJ DTO 里出现，避免把上游内部快照带进管理台账。
+	DataImageURL   = "image_url"
+	DataVideoURL   = "video_url"
+	DataVideoURLs  = "video_urls"
+	DataButtons    = "buttons"
+	DataProperties = "properties"
+	DataPromptEn   = "prompt_en"
+
 	// PropertyPrompt 是 prompt 在 properties 里的键。
 	PropertyPrompt = "prompt"
 

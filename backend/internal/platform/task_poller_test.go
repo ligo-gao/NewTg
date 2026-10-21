@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/tasks"
 )
@@ -178,6 +179,10 @@ func (wiringRepo) GetChannel(context.Context, int64) (*tasks.ChannelTarget, erro
 	return nil, nil
 }
 
+func (wiringRepo) MJChannelCandidates(context.Context, string, string) ([]tasks.MJChannelCandidate, error) {
+	return nil, nil
+}
+
 func (wiringRepo) ApplyPoll(context.Context, int64, tasks.State, tasks.PollUpdate) (bool, error) {
 	return false, nil
 }
@@ -276,6 +281,53 @@ func TestMJSettlerGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildMJPollDriverWiresGuardAndSettler 验收 W8/MJ-b 的装配：
+// 同一构造器同时产出 Handler 与 Settler，且 mj.enabled=true 时守卫放行；
+// 缺 sealer/计费时构造失败（不静默降级）。
+func TestBuildMJPollDriverWiresGuardAndSettler(t *testing.T) {
+	sealer := httpapi.NewSecretSealer("mj-platform-test-key")
+	driver, settler, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{},
+		wiringBilling{}, sealer, slog.Default())
+	if err != nil {
+		t.Fatalf("buildMJPollDriver: %v", err)
+	}
+	if driver == nil || settler == nil {
+		t.Fatalf("driver/settler must not be nil")
+	}
+	enabled := fakeSettingReader{"mj.enabled": json.RawMessage(`true`)}
+	if err := mjSettlerGuard(enabled, driver.PollTask); err != nil {
+		t.Fatalf("guard must pass once the MJ driver is wired: %v", err)
+	}
+
+	if _, _, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{}, wiringBilling{}, nil, slog.Default()); err == nil {
+		t.Fatalf("missing sealer must fail closed")
+	}
+	if _, _, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{}, nil, sealer, slog.Default()); err == nil {
+		t.Fatalf("missing billing must fail closed")
+	}
+}
+
+// TestBuildTaskPollersAcceptsMJHandlerAndSettler 证明唯一装配路径接受
+// MJ 驱动（守卫不再误拒已接线的部署）。
+func TestBuildTaskPollersAcceptsMJHandlerAndSettler(t *testing.T) {
+	_, _, err := buildTaskPollers(taskPollerDeps{
+		Repo:      wiringRepo{},
+		Plugins:   wiringPlugins{},
+		Billing:   wiringBilling{},
+		Limits:    fakeSettingReader{"mj.enabled": json.RawMessage(`true`)},
+		Log:       slog.Default(),
+		MJHandler: func(context.Context, *tasks.Task) error { return nil },
+		MJSettler: wiringSettler{},
+	})
+	if err != nil {
+		t.Fatalf("buildTaskPollers with MJ wiring: %v", err)
+	}
+}
+
+type wiringSettler struct{}
+
+func (wiringSettler) SettleTerminal(context.Context, *tasks.Task) {}
 
 // TestBuildTaskPollersRefusesMJWithoutSettler 证明守卫接在唯一装配路径上，
 // 而不只是一个孤立的辅助函数。

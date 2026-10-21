@@ -2165,13 +2165,16 @@ func (e SubscriptionRenewRequestProvider) Valid() bool {
 
 // Defines values for TaskListItemFamily.
 const (
-	Plugin TaskListItemFamily = "plugin"
+	TaskListItemFamilyMj     TaskListItemFamily = "mj"
+	TaskListItemFamilyPlugin TaskListItemFamily = "plugin"
 )
 
 // Valid indicates whether the value is a known member of the TaskListItemFamily enum.
 func (e TaskListItemFamily) Valid() bool {
 	switch e {
-	case Plugin:
+	case TaskListItemFamilyMj:
+		return true
+	case TaskListItemFamilyPlugin:
 		return true
 	default:
 		return false
@@ -3522,6 +3525,24 @@ func (e ListSubscriptionPlansParamsStatus) Valid() bool {
 	case ListSubscriptionPlansParamsStatusDisabled:
 		return true
 	case ListSubscriptionPlansParamsStatusEnabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListSelfTasksParamsFamily.
+const (
+	ListSelfTasksParamsFamilyMj     ListSelfTasksParamsFamily = "mj"
+	ListSelfTasksParamsFamilyPlugin ListSelfTasksParamsFamily = "plugin"
+)
+
+// Valid indicates whether the value is a known member of the ListSelfTasksParamsFamily enum.
+func (e ListSelfTasksParamsFamily) Valid() bool {
+	switch e {
+	case ListSelfTasksParamsFamilyMj:
+		return true
+	case ListSelfTasksParamsFamilyPlugin:
 		return true
 	default:
 		return false
@@ -5410,6 +5431,12 @@ type LogsByKeyItemStatus string
 // LogsByKeyPage 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。
 type LogsByKeyPage struct {
 	Items []LogsByKeyItem `json:"items"`
+}
+
+// MJTaskListRequest defines model for MJTaskListRequest.
+type MJTaskListRequest struct {
+	// Ids MjId 列表（≤100；空数组直接返回 []）
+	Ids []string `json:"ids"`
 }
 
 // MarketplaceHome defines model for MarketplaceHome.
@@ -9146,6 +9173,9 @@ type ConfirmAction = string
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = openapi_types.UUID
 
+// MJTaskID defines model for MJTaskID.
+type MJTaskID = string
+
 // PageQuery defines model for Page.
 type PageQuery = int
 
@@ -9236,6 +9266,9 @@ type Error503 = Problem
 // RelayError429 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError429 = RelayError
+
+// MJTaskList defines model for MJTaskList.
+type MJTaskList = MJTaskListRequest
 
 // RegenerateTwoFABackupCodesParams defines parameters for RegenerateTwoFABackupCodes.
 type RegenerateTwoFABackupCodesParams struct {
@@ -10200,7 +10233,13 @@ type ListSelfTasksParams struct {
 	P        *int    `form:"p,omitempty" json:"p,omitempty"`
 	PageSize *int    `form:"page_size,omitempty" json:"page_size,omitempty"`
 	State    *string `form:"state,omitempty" json:"state,omitempty"`
+
+	// Family 族过滤；缺省展示全部（plugin + mj）
+	Family *ListSelfTasksParamsFamily `form:"family,omitempty" json:"family,omitempty"`
 }
+
+// ListSelfTasksParamsFamily defines parameters for ListSelfTasks.
+type ListSelfTasksParamsFamily string
 
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
@@ -10978,6 +11017,9 @@ type EpayNotifyFormdataRequestBody EpayNotifyFormdataBody
 
 // StripeWebhookJSONRequestBody defines body for StripeWebhook for application/json ContentType.
 type StripeWebhookJSONRequestBody = StripeWebhookJSONBody
+
+// MjListTasksJSONRequestBody defines body for MjListTasks for application/json ContentType.
+type MjListTasksJSONRequestBody = MJTaskListRequest
 
 // Getter for additional properties for DeployHardwareType. Returns the specified
 // element and whether it was found

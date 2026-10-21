@@ -55,12 +55,20 @@ const (
 	// 用 context.WithoutCancel：客户端断开不能让已受理的上游任务丢失落库与
 	// 结算锚点（R-16 同口径）。上限防止 DB 卡死把请求 goroutine 永久占住。
 	mjResultPersistTimeout = 10 * time.Second
+
+	// maxMJListBodyBytes 是 list-by-condition 的请求体上限。
+	//
+	// R-MJ-16 已冻结 ids ≤ 100、单个 id ≤ 128 字符，最坏也就十几 KiB；
+	// 64KiB 给 JSON 包装留足余量，同时把解析成本钉死在一个小常量上。
+	maxMJListBodyBytes = 64 << 10
 )
 
-// MJTaskStore 是 MJ 提交路径的任务行存储接缝（生产 *tasks.Repo）。
+// MJTaskStore 是 MJ 提交/查询路径的任务行存储接缝（生产 *tasks.Repo）。
 type MJTaskStore interface {
 	Insert(ctx context.Context, t *tasks.Task) error
 	GetByUserUpstreamID(ctx context.Context, userID int64, upstreamID string) (*tasks.Task, error)
+	// ListByUserUpstreamIDs 是 list-by-condition 的批量归属读取（family=mj）。
+	ListByUserUpstreamIDs(ctx context.Context, userID int64, ids []string, limit int) ([]*tasks.Task, error)
 	// UpdateBilling 在 inline 上传结算后写 billing_final / settlement_pending。
 	UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error
 }
@@ -86,6 +94,17 @@ type MJSubmitter interface {
 
 var _ MJSubmitter = (*mj.SubmitClient)(nil)
 
+// MJQuerier 是查询族的上游接缝（生产 *mj.SubmitClient）。
+//
+// 与提交分开成接口：提交测试可以注入只实现 Submit 的假客户端而不被迫
+// 伪造 query/image-seed；生产两者是同一个客户端（固定路径/凭据/禁重定向）。
+type MJQuerier interface {
+	Query(ctx context.Context, cfg mj.SubmitConfig, mjID string) (*mj.QueryResult, *mj.Error)
+	ImageSeed(ctx context.Context, cfg mj.SubmitConfig, mjID string) ([]byte, *mj.Error)
+}
+
+var _ MJQuerier = (*mj.SubmitClient)(nil)
+
 // MJHandlerConfig 是 MJ 提交 handler 的装配输入。
 type MJHandlerConfig struct {
 	Store    MJTaskStore
@@ -106,7 +125,10 @@ type MJHandlerConfig struct {
 	Client *mj.SubmitClient
 	// Submitter 是上游提交测试接缝；非 nil 时优先于 Client。
 	Submitter MJSubmitter
-	Logger    *slog.Logger
+	// Querier 是查询族（fetch 的上游侧不使用；image-seed 使用）与轮询驱动
+	// 的测试接缝。nil 时复用 Client（*mj.SubmitClient 同时实现两者）。
+	Querier MJQuerier
+	Logger  *slog.Logger
 	// Now / Uint64N 是测试接缝：时间与加权随机源。
 	Now     func() time.Time
 	Uint64N func(uint64) uint64
@@ -122,6 +144,7 @@ type MJHandler struct {
 	config      ConfigReader
 	rateLimiter RelayRateLimiter
 	client      MJSubmitter
+	querier     MJQuerier
 	log         *slog.Logger
 	now         func() time.Time
 	uint64N     func(uint64) uint64
@@ -143,6 +166,17 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 			client = cfg.Client
 		} else {
 			client = mj.NewSubmitClient(nil)
+		}
+	}
+	// 查询接缝优先取显式 Querier；否则若提交客户端本身就是完整实现
+	// （*mj.SubmitClient/测试 fake），复用它——固定凭据/超时/禁重定向只有
+	// 一份实现。最后才构造默认客户端。
+	querier := cfg.Querier
+	if querier == nil {
+		if q, ok := client.(MJQuerier); ok {
+			querier = q
+		} else {
+			querier = mj.NewSubmitClient(nil)
 		}
 	}
 	log := cfg.Logger
@@ -167,17 +201,21 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		config:      cfg.Config,
 		rateLimiter: cfg.RateLimiter,
 		client:      client,
+		querier:     querier,
 		log:         log,
 		now:         now,
 		uint64N:     uint64N,
 	}
 }
 
-// Register 把 12 条提交端点挂到根 mux，并复用中继令牌鉴权链。
+// Register 把 12 条提交端点与 3 条查询端点挂到根 mux，并复用中继令牌鉴权链。
 //
 // 鉴权失败/未知端点也必须返回 MJ 信封（R-MJ-17）：RelayAuth 原生写的是
 // OpenAI 错误体，因此这里用 mjEnvelopeAuth 包一层，把 <400 的响应原样放行、
 // 把鉴权拒绝改写成 {code,description}。
+//
+// 查询族（relay-05 §1.2）不受 `mj.enabled` 追溯（设计 §1 注）：开关关闭
+// 不应隐藏历史任务与产物，因此只做令牌鉴权与归属校验。
 //
 // 未知 /mj 路径注册为兜底（不是 ServeMux 的裸 404）：MJ 客户端只认一种
 // 信封，裸 404 会让它把「路径拼错」当成网络故障。
@@ -192,6 +230,11 @@ func (h *MJHandler) Register(mux *http.ServeMux, authMiddleware func(http.Handle
 			h.handleSubmit(w, r, endpoint)
 		})))
 	}
+	// 查询族：更具体的模式优先于 `/mj/` 兜底，注册顺序不影响匹配。
+	mux.Handle("GET /mj/task/{id}/fetch", auth(http.HandlerFunc(h.handleTaskFetch)))
+	mux.Handle("POST /mj/task/list-by-condition", auth(http.HandlerFunc(h.handleTaskList)))
+	mux.Handle("POST /mj/task/{id}/image-seed", auth(http.HandlerFunc(h.handleImageSeed)))
+
 	unknown := auth(http.HandlerFunc(h.handleUnknown))
 	mux.Handle("/mj/", unknown)
 	mux.Handle("/mj", unknown)
@@ -701,11 +744,22 @@ func (h *MJHandler) resolveChannel(ctx context.Context, rc *contract.RelayContex
 }
 
 // decryptChannelCredential 解开渠道凭据并取 api_key（明文只活在本请求内存）。
+//
+// 提交/查询/轮询三个入口共用同一个解密实现（decryptChannelCredentialWith）：
+// 凭据格式与失败语义只应有一份，否则某条路径会悄悄接受另一种明文形态。
 func (h *MJHandler) decryptChannelCredential(sealed []byte) (string, error) {
+	return decryptChannelCredentialWith(h.sealer, sealed)
+}
+
+// decryptChannelCredentialWith 是渠道凭据解密的唯一实现。
+func decryptChannelCredentialWith(sealer *SecretSealer, sealed []byte) (string, error) {
 	if len(sealed) == 0 {
 		return "", nil
 	}
-	plain, err := h.sealer.Open(sealed)
+	if sealer == nil {
+		return "", errors.New("httpapi: channel credential sealer is not configured")
+	}
+	plain, err := sealer.Open(sealed)
 	if err != nil {
 		return "", err
 	}
@@ -756,8 +810,18 @@ func (h *MJHandler) retentionDeadline(now time.Time) *time.Time {
 			}
 		}
 	}
-	if days == 0 {
+	return MJRetentionDeadline(now, days)
+}
+
+// MJRetentionDeadline 是保留截止的唯一计算实现（提交路径与轮询终态共用）。
+//
+// days=0 → nil（不自动清理）；负值/超界已在调用方归一化为默认值。
+func MJRetentionDeadline(now time.Time, days int64) *time.Time {
+	if days <= 0 {
 		return nil
+	}
+	if days > 3650 {
+		days = 3650
 	}
 	deadline := now.Add(time.Duration(days) * 24 * time.Hour)
 	return &deadline

@@ -13,6 +13,7 @@ import (
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
@@ -29,6 +30,9 @@ import (
 const (
 	settingTaskPollTimeoutMinutes = "task.poll_timeout_minutes"
 	settingTaskPollMaxFailures    = "task.poll_max_failures"
+
+	// settingMJRetentionDays 是终态 MJ 任务的保留天数（#70）。
+	settingMJRetentionDays = "mj.retention_terminal_days"
 )
 
 // settingReader 是配置中心读取面的最小接口（生产 *configcenter.Center）。
@@ -82,23 +86,30 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 	}
 
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
-	// W8/MJ-A0：MJ 族有独立的领取入口（family='mj'）。A0 只装配领取骨架
-	// （Handler 为 nil：只领取、不推进/不结算）；MJ-b 在这里注入查询驱动，
-	// MJ-a2/d 注入计费时机。先装配的价值是让「MJ 行有唯一归属的 poller」
-	// 在数据面上成立，而不是只依赖插件 poller 的 SQL 过滤（R-MJ-04 纵深防御）。
-	//
+	// W8/MJ-b：MJ 族的查询驱动与补偿结算。Handler 负责「查上游 → CAS 回填 →
+	// 终态交给 Settler」，Settler 同时作为 MJPoller 的补偿扫描入口——两者
+	// 必须是同一个实例，否则「终态结算」与「pending 重试」会走两套资金
+	// 语义。
+	taskRepo := tasks.NewRepo(db)
+	mjDriver, mjSettler, err := buildMJPollDriver(taskRepo, center, engine, sealer, log)
+	if err != nil {
+		return nil, err
+	}
 	// W9-B4：两个轮询器由同一构造函数装配，配置上限只在该函数内解析一次
 	// 并同时注入两侧；接线本身有单测（buildTaskPollers 的 accessor 断言），
 	// 删除任一侧的赋值都会让用例变红。
 	poller, mjPoller, err := buildTaskPollers(taskPollerDeps{
-		Repo:    tasks.NewRepo(db),
-		Plugins: manager,
-		Billing: engine,
-		Decrypt: func(sealed []byte) (string, error) {
-			return decryptTaskChannelCredential(sealer, sealed)
+		Repo:      taskRepo,
+		Plugins:   manager,
+		Billing:   engine,
+		Decrypt:   func(sealed []byte) (string, error) { return decryptTaskChannelCredential(sealer, sealed) },
+		Limits:    center,
+		Log:       log,
+		MJHandler: mjDriver.PollTask,
+		MJSettler: mjSettler,
+		MJRetention: func(now time.Time) *time.Time {
+			return httpapi.MJRetentionDeadline(now, mjRetentionDays(center, log))
 		},
-		Limits: center,
-		Log:    log,
 	})
 	if err != nil {
 		return nil, err
@@ -137,10 +148,15 @@ type taskPollerDeps struct {
 	Decrypt func([]byte) (string, error)
 	Limits  settingReader
 	Log     *slog.Logger
-	// MJHandler 是 MJ 族的查询/结算驱动（MJ-b 接入点）。当前为 nil：
-	// MJPoller 只领取、不推进/不结算。mj.enabled=true 时装配守卫会拒绝
-	// 上线（见 mjSettlerGuard），避免普通提交的 hold 永久冻结。
+	// MJHandler 是 MJ 族的查询/结算驱动（MJ-b 接入点）。nil 时 MJPoller
+	// 只领取、不推进/不结算；mj.enabled=true 时装配守卫会拒绝上线
+	// （见 mjSettlerGuard），避免普通提交的 hold 永久冻结。
 	MJHandler tasks.MJTaskHandler
+	// MJSettler 是 MJ 族的补偿结算入口；与 MJHandler 的内部结算共用同一个
+	// tasks.Settler 实例。
+	MJSettler tasks.MJTaskSettler
+	// MJRetention 计算 MJ 终态保留截止（超时/失败上限推进的终态也要写）。
+	MJRetention func(now time.Time) *time.Time
 }
 
 // mjSettlerGuard 是「绘图族已开启但无人结算」的装配门禁（I2）。
@@ -210,16 +226,76 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
 		Repo:    deps.Repo,
 		Handler: deps.MJHandler,
+		Settler: deps.MJSettler,
+		// B2：MJ 行若来自订阅来源，Detach 后同样需要续租，否则兜底扫描会把
+		// 仍在轮询的任务当成崩溃请求退款（与插件 poller 同一份交接面）。
+		Billing: deps.Billing,
 		Logger:  log,
 		// 同一对配置同时约束 MJ 领取器。Handler 为空时它不会因超时改状态
 		//（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的守卫拒绝。
 		Timeout:     timeout,
 		MaxFailures: maxFailures,
+		// 终态保留期限与 MJ 驱动使用同一份设置（mj.retention_terminal_days）。
+		RetentionDeadline: deps.MJRetention,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("worker: mj task poller: %w", err)
 	}
 	return poller, mjPoller, nil
+}
+
+// mjPollRepo 是 buildMJPollDriver 的存储接缝（生产 *tasks.Repo）。
+//
+// 用接口而不是具体类型，让装配测试可以注入内存 fake 验证「driver/settler
+// 真的接上了」；生产仍只有 tasks.Repo 一个实现。
+type mjPollRepo interface {
+	httpapi.MJPollStore
+	httpapi.MJChannelSource
+	tasks.BillingFlagStore
+}
+
+// buildMJPollDriver 构造 MJ 族的查询/结算驱动（W8/MJ-b）。
+//
+// gateway 与 worker 都调用同一构造函数：gateway 只用它通过启动守卫
+// （证明「mj.enabled 打开时存在结算驱动」），worker 才真正运行它。把构造
+// 收进一个函数避免两侧各写一份依赖清单——漏一个依赖会让守卫通过但轮询
+// 静默不工作，正是守卫要防的故障。
+func buildMJPollDriver(repo mjPollRepo, reader settingReader, engine tasks.BillingSettler,
+	sealer *httpapi.SecretSealer, log *slog.Logger) (*httpapi.MJPollDriver, *tasks.Settler, error) {
+
+	settler, err := tasks.NewSettler(tasks.SettlerConfig{
+		Billing: engine, Repo: repo, Logger: log,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: mj settler: %w", err)
+	}
+	driver, err := httpapi.NewMJPollDriver(httpapi.MJPollDriverConfig{
+		Store:    repo,
+		Channels: repo,
+		Sealer:   sealer,
+		// 固定形状的 midjourney-proxy 客户端：禁重定向、mj-api-secret、
+		// 查询 15s（SubmitClient 的默认超时会按调用类型分别收窄）。
+		Client:  mj.NewSubmitClient(nil),
+		Settler: settler,
+		Logger:  log,
+		RetentionDays: func() int64 {
+			return mjRetentionDays(reader, log)
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: mj poll driver: %w", err)
+	}
+	return driver, settler, nil
+}
+
+// mjRetentionDays 读取终态保留天数；未配置/脏值回落设计默认 30。
+//
+// 0 是显式关闭（不写 retention_deadline），与「未配置」必须区分。
+func mjRetentionDays(reader settingReader, log *slog.Logger) int64 {
+	if days, ok := readSettingInt(reader, settingMJRetentionDays, log); ok {
+		return days
+	}
+	return 30
 }
 
 // decryptTaskChannelCredential 解开 channels.credentials 并取出 api_key。

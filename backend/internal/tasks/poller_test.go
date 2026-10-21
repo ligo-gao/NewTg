@@ -156,6 +156,9 @@ func (f *fakePollRepo) ApplyPoll(_ context.Context, id int64, from State, u Poll
 	if u.Quota != nil {
 		t.Quota = *u.Quota
 	}
+	if u.RetentionDeadline != nil {
+		t.RetentionDeadline = u.RetentionDeadline
+	}
 	f.casLog = append(f.casLog, string(from)+"->"+string(u.State))
 	f.updates = append(f.updates, cloneTask(t))
 	return true, nil

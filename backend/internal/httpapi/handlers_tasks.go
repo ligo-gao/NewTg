@@ -1088,8 +1088,15 @@ func (h *TasksHandler) handleSelfList(w http.ResponseWriter, r *http.Request) {
 		writeProblemDetail(w, http.StatusBadRequest, problemTypeInvalidRequest, "invalid_request", "unknown state filter")
 		return
 	}
+	// R-MJ-18：两族共用 tasks 表，台账默认展示全部；family 可选收窄。
+	// 非法族名是客户端构造错误（不是「没有任务」），必须显式 400。
+	family, ok := taskFamilyFilter(r)
+	if !ok {
+		writeProblemDetail(w, http.StatusBadRequest, problemTypeInvalidRequest, "invalid_request", "unknown family filter")
+		return
+	}
 	items, total, err := h.store.ListByUser(r.Context(), principal.UserID, tasks.ListFilter{
-		States: states, Page: page, PageSize: pageSize,
+		States: states, Family: family, Page: page, PageSize: pageSize,
 	})
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, problemTypeTasksDatabase, "database_error")
@@ -1340,6 +1347,22 @@ func taskDurationSeconds(v any) (int, bool) {
 		return 0, false
 	}
 	return int(num), true
+}
+
+// taskFamilyFilter 解析 /api/task/self 的 family 过滤（R-MJ-18）。
+//
+// 空值 = 不筛（保持历史行为：台账默认展示两族）；只有冻结集合
+// {plugin,mj} 合法。拼错的族名返回 ok=false，由 handler 显式 400——静默
+// 返回空集会让「过滤参数写错」看起来像「今天没有任务」。
+func taskFamilyFilter(r *http.Request) (string, bool) {
+	family := strings.TrimSpace(r.URL.Query().Get("family"))
+	if family == "" {
+		return "", true
+	}
+	if !tasks.ValidFamily(family) {
+		return "", false
+	}
+	return family, true
 }
 
 func tasksPageParams(r *http.Request) (int, int) {

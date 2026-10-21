@@ -64,13 +64,18 @@ const (
 	DescriptionInvalidTaskID       = "invalid_task_id"
 	DescriptionTooManyIDs          = "too_many_ids"
 	DescriptionInvalidID           = "invalid_id"
-	DescriptionIdempotencyTooLong  = "idempotency_key_too_long"
-	DescriptionInvalidIdempotency  = "invalid_idempotency_key"
-	DescriptionNoChannel           = "no_available_channel"
-	DescriptionOriginTaskMissing   = "get_channel_info_failed"
-	DescriptionChannelDisabled     = "channel_disabled"
-	DescriptionTaskNotSuccess      = "action_task_not_success"
-	DescriptionInternalError       = "internal_error"
+	// DescriptionTaskNotFound 是查询族「不存在或不属于本人」的唯一出口。
+	//
+	// 两种情形共用同一文案：区分它们会把 MjId 变成存在性 oracle（R-MJ-05
+	// 的归属纪律）。HTTP 状态同为 404，错误信封仍是 {code,description}。
+	DescriptionTaskNotFound       = "task_not_found"
+	DescriptionIdempotencyTooLong = "idempotency_key_too_long"
+	DescriptionInvalidIdempotency = "invalid_idempotency_key"
+	DescriptionNoChannel          = "no_available_channel"
+	DescriptionOriginTaskMissing  = "get_channel_info_failed"
+	DescriptionChannelDisabled    = "channel_disabled"
+	DescriptionTaskNotSuccess     = "action_task_not_success"
+	DescriptionInternalError      = "internal_error"
 
 	// 以下描述由 MJ-a2 的 HTTP/上游编排使用。全部是固定文案：错误体是
 	// 客户端唯一可见的诊断面，不允许拼接上游 URL、渠道凭据或上游原始

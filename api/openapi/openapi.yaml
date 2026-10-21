@@ -488,6 +488,13 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1mj~1submit~1upload-discord-images'
   /mj/insight-face/swap:
     $ref: './paths/relay.yaml#/paths/~1mj~1insight-face~1swap'
+  # 绘图任务族查询（W8/MJ-b，relay-05 §1.2）。
+  /mj/task/{id}/fetch:
+    $ref: './paths/relay.yaml#/paths/~1mj~1task~1{id}~1fetch'
+  /mj/task/list-by-condition:
+    $ref: './paths/relay.yaml#/paths/~1mj~1task~1list-by-condition'
+  /mj/task/{id}/image-seed:
+    $ref: './paths/relay.yaml#/paths/~1mj~1task~1{id}~1image-seed'
   /api/task/self:
     $ref: './paths/user.yaml#/paths/~1api~1task~1self'
   /api/task:

@@ -71,14 +71,18 @@ func (f *fakeTaskStore) GetByPublicIDAny(_ context.Context, publicID string) (*t
 	return nil, tasks.ErrTaskNotFound
 }
 
-func (f *fakeTaskStore) ListByUser(_ context.Context, userID int64, _ tasks.ListFilter) ([]tasks.Task, int, error) {
+func (f *fakeTaskStore) ListByUser(_ context.Context, userID int64, filter tasks.ListFilter) ([]tasks.Task, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]tasks.Task, 0)
 	for _, row := range f.rows {
-		if row.UserID == userID {
-			out = append(out, *row)
+		if row.UserID != userID {
+			continue
 		}
+		if filter.Family != "" && row.Family != filter.Family {
+			continue
+		}
+		out = append(out, *row)
 	}
 	return out, len(out), nil
 }
@@ -158,6 +162,8 @@ type taskBillingRecorder struct {
 	// 用了表达式求值结果，而不是退回按预扣额结清）。
 	costCalls []int64
 	costErr   error
+	// lastTokenID 是 ForToken 结算/退款收到的令牌身份（W8/MJ-b）。
+	lastTokenID int64
 }
 
 func newTaskBillingRecorder() *taskBillingRecorder {
@@ -238,6 +244,26 @@ func (b *taskBillingRecorder) RefundByRequestID(string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.refundByIDErr
+}
+
+// ForToken 变体是 tasks.BillingSettler 的接缝（W8/MJ-b 后台结算）。
+// 与 ByRequestID 分开记录，测试能断言后台结算真的带上了令牌身份。
+func (b *taskBillingRecorder) TerminateByRequestIDForToken(_ string, tokenID int64, _ contract.UsageFact) error {
+	b.record("terminate_by_id_for_token")
+	b.mu.Lock()
+	b.lastTokenID = tokenID
+	err := b.terminateByIDErr
+	b.mu.Unlock()
+	return err
+}
+
+func (b *taskBillingRecorder) RefundByRequestIDForToken(_ string, tokenID int64) error {
+	b.record("refund_by_id_for_token")
+	b.mu.Lock()
+	b.lastTokenID = tokenID
+	err := b.refundByIDErr
+	b.mu.Unlock()
+	return err
 }
 
 func (b *taskBillingRecorder) ReserveCalls() []string {
@@ -857,6 +883,50 @@ func TestTaskSelfListHidesUserAndAdminRequiresPermission(t *testing.T) {
 	sort.Strings(ids)
 	if strings.Join(ids, ",") != "task_1,task_2" {
 		t.Fatalf("admin list = %v", ids)
+	}
+}
+
+// TestTaskSelfListFamilyFilter 验收 R-MJ-18：/api/task/self 的 family 过滤
+// 只影响族，不放松归属；非法族名显式 400（不是静默空集）。
+func TestTaskSelfListFamilyFilter(t *testing.T) {
+	store := &fakeTaskStore{}
+	store.rows = append(store.rows,
+		&tasks.Task{PublicTaskID: "task_plugin", Family: tasks.FamilyPlugin, PluginKey: "sample", UserID: 42, CreatedAt: time.Now()},
+		&tasks.Task{PublicTaskID: "task_mj", Family: tasks.FamilyMJ, PluginKey: "", UserID: 42, CreatedAt: time.Now()},
+		// 他人的 MJ 行：任何 family 过滤下都不得出现。
+		&tasks.Task{PublicTaskID: "task_foreign", Family: tasks.FamilyMJ, PluginKey: "", UserID: 7, CreatedAt: time.Now()},
+	)
+	handler, _ := newTaskTestHandler(t, store, &fakeTaskChannels{}, sampleTaskManager(t), nil)
+
+	list := func(query string) (*httptest.ResponseRecorder, []string) {
+		rec := httptest.NewRecorder()
+		handler.handleSelfList(rec, taskRequest(http.MethodGet, "/api/task/self"+query, 42))
+		var resp taskListResponse
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode list: %v", err)
+			}
+		}
+		ids := make([]string, 0, len(resp.Items))
+		for _, item := range resp.Items {
+			ids = append(ids, item.PublicTaskID)
+		}
+		sort.Strings(ids)
+		return rec, ids
+	}
+
+	if _, ids := list(""); strings.Join(ids, ",") != "task_mj,task_plugin" {
+		t.Fatalf("unfiltered self list = %v, want both own rows", ids)
+	}
+	if _, ids := list("?family=mj"); strings.Join(ids, ",") != "task_mj" {
+		t.Fatalf("family=mj = %v, want only task_mj", ids)
+	}
+	if _, ids := list("?family=plugin"); strings.Join(ids, ",") != "task_plugin" {
+		t.Fatalf("family=plugin = %v, want only task_plugin", ids)
+	}
+	rec, _ := list("?family=bogus")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid family status = %d, want 400", rec.Code)
 	}
 }
 

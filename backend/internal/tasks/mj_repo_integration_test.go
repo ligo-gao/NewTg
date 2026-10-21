@@ -130,6 +130,95 @@ func TestMJChannelCandidatesFilterByTypeModelAndGroup(t *testing.T) {
 	}
 }
 
+func TestListByUserUpstreamIDsIsOwnerAndFamilyScoped(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	userID := time.Now().UnixNano() % 1_000_000
+	otherUser := userID + 1
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM tasks WHERE user_id IN ($1,$2)`, userID, otherUser)
+	})
+
+	now := time.Now().UTC()
+	insert := func(publicID string, owner int64, family, upstreamID string) *Task {
+		t.Helper()
+		task := &Task{
+			PublicTaskID: publicID, UpstreamTaskID: upstreamID, Family: family,
+			Action: "IMAGINE", PluginKey: "", FetchMode: "poll",
+			State: StateSubmitted, UserID: owner, Group: "default", ChannelID: 1,
+			Quota: 10, SubmitTime: &now,
+			Properties: map[string]any{}, Data: map[string]any{"image_url": "https://cdn/" + upstreamID},
+			PrivateData: map[string]any{"request_id": "req_" + publicID},
+		}
+		if family == FamilyPlugin {
+			task.PluginKey = "sample"
+			task.Action = "generate"
+		}
+		if err := repo.Insert(ctx, task); err != nil {
+			t.Fatalf("insert %s: %v", publicID, err)
+		}
+		return task
+	}
+
+	ownA := insert(fmt.Sprintf("task_mj_b_list_%d_a", userID), userID, FamilyMJ, "mj_b_list_a")
+	ownB := insert(fmt.Sprintf("task_mj_b_list_%d_b", userID), userID, FamilyMJ, "mj_b_list_b")
+	foreign := insert(fmt.Sprintf("task_mj_b_list_%d_foreign", userID), otherUser, FamilyMJ, "mj_b_list_a")
+	pluginRow := insert(fmt.Sprintf("task_mj_b_list_%d_plugin", userID), userID, FamilyPlugin, "mj_b_list_a")
+
+	rows, err := repo.ListByUserUpstreamIDs(ctx, userID,
+		[]string{"mj_b_list_a", "mj_b_list_b", "mj_b_missing"}, 100)
+	if err != nil {
+		t.Fatalf("ListByUserUpstreamIDs: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, row := range rows {
+		got[row.ID] = true
+	}
+	if len(rows) != 2 || !got[ownA.ID] || !got[ownB.ID] {
+		t.Fatalf("batch rows = %v, want only own MJ rows", taskIDs(rows))
+	}
+	if got[foreign.ID] || got[pluginRow.ID] {
+		t.Fatalf("batch crossed owner/family boundary: %v", taskIDs(rows))
+	}
+	// 读面必须带 data（fetch DTO 依赖产物 URL）。
+	for _, row := range rows {
+		if row.Data["image_url"] == "" {
+			t.Fatalf("batch row lost data projection: %+v", row.Data)
+		}
+	}
+
+	mjItems, total, err := repo.ListByUser(ctx, userID, ListFilter{Family: FamilyMJ})
+	if err != nil {
+		t.Fatalf("ListByUser(mj): %v", err)
+	}
+	if total != 2 || len(mjItems) != 2 {
+		t.Fatalf("family=mj list = %d/%d, want 2", len(mjItems), total)
+	}
+	for _, item := range mjItems {
+		if item.Family != FamilyMJ {
+			t.Fatalf("family=mj list contains %q", item.Family)
+		}
+	}
+	pluginItems, _, err := repo.ListByUser(ctx, userID, ListFilter{Family: FamilyPlugin})
+	if err != nil {
+		t.Fatalf("ListByUser(plugin): %v", err)
+	}
+	pluginIDs := make([]int64, 0, len(pluginItems))
+	for _, item := range pluginItems {
+		pluginIDs = append(pluginIDs, item.ID)
+	}
+	if len(pluginItems) != 1 || pluginIDs[0] != pluginRow.ID {
+		t.Fatalf("family=plugin list = %v", pluginIDs)
+	}
+
+	// 空 ids 不查库、返回空切片。
+	empty, err := repo.ListByUserUpstreamIDs(ctx, userID, nil, 100)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty ids = %v/%v", empty, err)
+	}
+}
+
 func TestGetByUserUpstreamIDIsFamilyAndOwnerScoped(t *testing.T) {
 	db := openTaskTestDB(t)
 	repo := NewRepo(db)

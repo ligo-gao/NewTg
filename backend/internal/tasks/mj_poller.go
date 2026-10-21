@@ -22,17 +22,31 @@ import (
 // 才能保证「MJ 行有唯一归属的 poller」，而不是靠插件 poller 的 SQL 过滤
 // 单点防护。
 
-// MJTaskHandler 是 MJ 任务推进的接缝（A0 的生产装配不注入）。
+// MJTaskHandler 是 MJ 任务推进的接缝。
 //
-// MJ-b 在这里接上游查询/状态映射；MJ-a2/d 在这里接终态结算。返回 error
-// 会由 MJPoller 计入连续失败（W9-B4 起与插件族同口径），达到配置上限时
-// 转 FAILURE；上游查询的具体重试/退避策略仍属于 MJ-b。
+// MJ-b 在这里接上游查询/状态映射与终态结算。返回 error 会由 MJPoller 计入
+// 连续失败（W9-B4 起与插件族同口径），达到配置上限时转 FAILURE；上游查询
+// 的具体重试/退避策略属于驱动实现。
 type MJTaskHandler func(ctx context.Context, task *Task) error
+
+// MJTaskSettler 是 MJ 族的补偿结算接缝（生产 tasks.Settler）。
+//
+// 与 Handler 分开：Handler 只在「非终态 → 查询上游」路径使用；补偿扫描
+// 处理的是**已终态**且带 billing_pending 的行，只需要结算/退款，绝不能再
+// 查上游或改状态。把两者混成一个函数会让补偿路径意外复活已终态任务。
+type MJTaskSettler interface {
+	SettleTerminal(ctx context.Context, task *Task)
+}
 
 // MJPollerConfig 是 MJ 领取器的依赖与可调参数；零值字段使用冻结默认值。
 type MJPollerConfig struct {
 	Repo    PendingRepo
 	Handler MJTaskHandler
+	// Settler 为 nil 时关闭补偿扫描（A0 冻结语义：只领取、不结算）。
+	Settler MJTaskSettler
+	// Billing 用于在飞租约续期（R-W9B-02 / B2）。nil 时跳过续租（仅测试
+	// 或没有订阅来源的装配）；生产必须注入计费交接面。
+	Billing BillingHandoff
 	Logger  *slog.Logger
 
 	// Now 是测试接缝；nil → time.Now（与插件 Poller 的 Now 同口径）。
@@ -40,6 +54,12 @@ type MJPollerConfig struct {
 
 	Interval   time.Duration
 	QueryLimit int
+	// LeaseKeeperInterval 是单任务处理期间的续租间隔（默认 30s）。
+	LeaseKeeperInterval time.Duration
+	// RetentionDeadline 计算终态保留截止（relay-05 §9）。nil = 不写
+	// retention_deadline（与 `mj.retention_terminal_days=0` 同义）。
+	// 超时/失败上限推进的终态也必须写期限，否则这类行永远不会被清理。
+	RetentionDeadline func(now time.Time) *time.Time
 	// MaxFailures / Timeout 与插件 Poller 同口径（W9-B4 / R-W9B-04）：
 	// nil = 未配置 → 设计默认；&0 = 禁用；&正值 = 按值。
 	//
@@ -50,19 +70,24 @@ type MJPollerConfig struct {
 	Timeout     *time.Duration
 }
 
-// MJPoller 只领取 family='mj' 的非终态任务。
+// MJPoller 只领取 family='mj' 的非终态任务，并补偿本族的待结算终态行。
 //
 // 与插件 Poller 一样，单副本由部署保证；跨副本的恰好一次推进仍由
-// ApplyPoll 的 (id, from_state) CAS 承担（Handler 内部使用）。
+// ApplyPoll 的 (id, from_state) CAS 承担（Handler 内部使用），结算侧再叠加
+// 按 request_id 的计费幂等（第二道保证）。
 type MJPoller struct {
-	repo        PendingRepo
-	handler     MJTaskHandler
-	log         *slog.Logger
-	now         func() time.Time
-	interval    time.Duration
-	queryLimit  int
-	maxFailures int
-	timeout     time.Duration
+	repo         PendingRepo
+	handler      MJTaskHandler
+	settler      MJTaskSettler
+	billing      BillingHandoff
+	log          *slog.Logger
+	now          func() time.Time
+	interval     time.Duration
+	queryLimit   int
+	maxFailures  int
+	timeout      time.Duration
+	leaseKeepGap time.Duration
+	retention    func(time.Time) *time.Time
 }
 
 // NewMJPoller 构造 MJ 领取器。Repo 是硬依赖：没有存储面就无法领取，
@@ -74,6 +99,8 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 	p := &MJPoller{
 		repo:       cfg.Repo,
 		handler:    cfg.Handler,
+		settler:    cfg.Settler,
+		billing:    cfg.Billing,
 		log:        cfg.Logger,
 		now:        cfg.Now,
 		interval:   orDefaultDuration(cfg.Interval, DefaultPollInterval),
@@ -82,6 +109,8 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.leaseKeepGap = orDefaultDuration(cfg.LeaseKeeperInterval, DefaultLeaseKeeperInterval)
+	p.retention = cfg.RetentionDeadline
 	// 三态默认化与 NewPoller 完全相同：nil 才回落默认，&0 保留为禁用。
 	p.maxFailures = DefaultMaxPollFailures
 	if cfg.MaxFailures != nil {
@@ -131,6 +160,37 @@ func (p *MJPoller) RunOnce(ctx context.Context) {
 
 func (p *MJPoller) runCycle(ctx context.Context) {
 	p.pollOnce(ctx)
+	p.reconcileOnce(ctx)
+}
+
+// reconcileOnce 处理本族「已终态但结算未落地」的行（billing_pending /
+// settlement_pending / refund_pending）。
+//
+// 这是「恰好一次」的补偿半边：终态 CAS 赢家负责第一次结算；如果结算调用
+// 失败（DB/账本抖动），Settler 会留下 pending 标记，本扫描在后续轮次重试。
+// 计费按 request_id 幂等，因此重复尝试不会二次扣费/退款。
+//
+// settlement_pending 只在 MJ 族的**结算失败**上出现；插件 poller 的补偿
+// 扫描固定 family='plugin'，两族不会互相替对方动钱（R-MJ-04）。
+func (p *MJPoller) reconcileOnce(ctx context.Context) {
+	if p.settler == nil {
+		// A0 语义：只领取、不结算。没有 Settler 时绝不猜金额。
+		return
+	}
+	rows, err := p.repo.ListReconcilable(ctx, FamilyMJ, DefaultReconcileLimit)
+	if err != nil {
+		p.log.Error("tasks: mj list reconcilable failed; retrying next round", "error", err)
+		return
+	}
+	for _, task := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		// 与插件补偿同口径：结算前补一次续租，避免兜底扫描在结算落地前
+		// 抢先退款（R-W9B-02）。
+		renewTaskLease(ctx, p.billing, p.log, task)
+		p.settler.SettleTerminal(ctx, task)
+	}
 }
 
 // pollOnce 固定领取 family='mj'。
@@ -145,6 +205,10 @@ func (p *MJPoller) pollOnce(ctx context.Context) {
 		p.log.Error("tasks: mj list pending failed; retrying next round", "error", err)
 		return
 	}
+	// B2 兼容：轮批开始先给本批所有非终态任务续一次在飞租约。MJ 行若来自
+	// 订阅来源，Detach 之后只靠这条续租避免兜底扫描把仍在轮询的任务当成
+	// 崩溃请求退款（那会把随后成功的任务变成免费）。
+	renewInflightLeases(ctx, p.billing, p.log, tasks)
 	for _, task := range tasks {
 		if ctx.Err() != nil {
 			return
@@ -178,6 +242,11 @@ func (p *MJPoller) processTask(ctx context.Context, task *Task) {
 	// Handler 已注入 = 调用方接管了 MJ 推进（MJ-b/MJ-a2/d）。此时超时与
 	// 连续失败上限按与插件族相同的配置生效（W9-B4 的「同一约束」）。
 	from := task.State
+	// B2：处理当前任务前续租一次，并在处理期间由 keeper 周期续租。MJ 单次
+	// 查询 15s + 结算，远小于租约 TTL，一次续租 + keeper 足以覆盖。
+	renewTaskLease(ctx, p.billing, p.log, task)
+	stopKeeper := startTaskLeaseKeeper(ctx, p.billing, p.log, task, p.leaseKeepGap)
+	defer stopKeeper()
 	if taskTimedOut(task, p.timeout, p.now()) {
 		p.failTask(ctx, task, from, "task_timeout")
 		return
@@ -197,6 +266,10 @@ func (p *MJPoller) processTask(ctx context.Context, task *Task) {
 // W9-B4 只负责把配置的判定接进来，不改变结算语义。
 func (p *MJPoller) failTask(ctx context.Context, task *Task, from State, reason string) {
 	now := p.now().UTC()
+	var retention *time.Time
+	if p.retention != nil {
+		retention = p.retention(now)
+	}
 	won, err := p.repo.ApplyPoll(ctx, task.ID, from, PollUpdate{
 		State:      StateFailure,
 		RawState:   task.RawState,
@@ -205,7 +278,8 @@ func (p *MJPoller) failTask(ctx context.Context, task *Task, from State, reason 
 		FinishTime: &now,
 		// 终态清零计数，与插件 finalize 同形状；补偿扫描据 billing_pending
 		// 发现待结算行。
-		Private: map[string]any{"billing_pending": true, "poll_failures": 0},
+		Private:           map[string]any{"billing_pending": true, "poll_failures": 0},
+		RetentionDeadline: retention,
 	})
 	if err != nil {
 		p.log.Error("tasks: mj fail task failed", "task_id", task.PublicTaskID, "reason", reason, "error", err)
