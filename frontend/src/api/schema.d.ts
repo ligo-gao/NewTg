@@ -3907,6 +3907,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Anthropic Messages（原生 Claude 入口）
+         * @description 请求/响应体遵循 Anthropic Messages API 公开规范（含 SSE 流式：
+         *     `message_start` / `content_block_*` / `message_delta` / `message_stop`）。
+         *
+         *     鉴权与 `/v1/chat/completions` 共用同一条令牌链：`Authorization` 恒生效；
+         *     `x-api-key` 在本路径作为 Claude 客户端的兼容载体生效（relay-01 §3.1）。
+         *     计费与 chat 走同一条 `BillingSession` 接缝（同一份预扣/结算语义）。
+         *
+         *     方向矩阵（R-59）：只有 Anthropic 协议族渠道（`anthropic`、兼容
+         *     Anthropic 协议的 `moonshot`）能承接；命中其它协议族渠道时返回 `501`
+         *     `application/problem+json`
+         *     （`type=https://newtg.dev/problems/endpoint-not-supported`），
+         *     因为中继缺少 IR → Anthropic 的响应编码器，放行会向 Claude 客户端
+         *     返回语义错误的形状。该分支零计费、零上游调用。
+         */
+        post: operations["createMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/responses": {
         parameters: {
             query?: never;
@@ -15770,6 +15802,64 @@ export interface operations {
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
+        };
+    };
+    createMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Anthropic message 对象或原生 SSE 事件流（schema 见上游公开规范） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            402: components["responses"]["Error402"];
+            /** @description 令牌模型白名单不允许该模型，或用户已被封禁 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模型已停用（`model_pricing.status=2`） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求体超过 32 MiB 上限 */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: components["responses"]["Error500"];
+            501: components["responses"]["Error501"];
+            /** @description 上游协议与端点不匹配、上游流不可用或适配器不支持流式 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 该模型没有可用渠道 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     createResponse: {

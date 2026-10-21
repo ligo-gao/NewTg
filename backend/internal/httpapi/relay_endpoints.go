@@ -39,6 +39,8 @@ import (
 //	GET  /v1/models             启用渠道 supported_models 去重并集
 //	POST /v1/responses          插件原生路由优先，未命中返回 501（T2 / P-01 / R-13）
 //	POST /v1/responses/compact  fail-closed 501（T3 / P-03：中继无法表达压缩语义）
+//	POST /v1/messages           Anthropic 原生入口（W7/M1）：仅路由到 Anthropic
+//	                            协议族渠道，其余方向 fail-closed 501（R-59）
 //
 // 边界（relay-01 §2 阶段序）：鉴权在中间件（relay_auth.go）已完成；本文件负责
 // 请求体上限与 IR 归一化（阶段 4）、RelayContext 组装（阶段 5）、路由/执行
@@ -306,6 +308,10 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// 没有压缩语义（见 handleResponsesCompact 的 why），因此 fail-closed 501。
 	// 精确模式：不会与 GET /v1/responses/{id}（handlers_tasks.go 注册）冲突。
 	mux.Handle("POST /v1/responses/compact", authMiddleware(http.HandlerFunc(h.handleResponsesCompact)))
+	// W7/M1：Anthropic Messages 原生入口。与 chat 共用同一个 RelayAuth 中间件
+	// 与同一个计费接缝（h.billing）；鉴权载体 x-api-key 的归一化已在
+	// relay_auth.go / relay.credentialFromRequest 中按路径固化。
+	mux.Handle("POST /v1/messages", authMiddleware(http.HandlerFunc(h.handleMessages)))
 
 	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
 	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
@@ -743,6 +749,458 @@ func (h *RelayHandler) handleResponsesCompact(w http.ResponseWriter, r *http.Req
 // handlers_public_pricing.go 的 not-implemented 同源），不另造第二套命名；
 // 值为 URI 是因为 Problem.type 在 OpenAPI 里声明为 format: uri。
 const problemTypeEndpointNotSupported = "https://newtg.dev/problems/endpoint-not-supported"
+
+// ---------- POST /v1/messages（Anthropic Messages 原生入口，W7/M1） ----------
+
+// handleMessages 把 Claude 原生客户端（含 Claude Code）的 `/v1/messages`
+// 接入中继管线。鉴权复用 Register 里的**同一个** RelayAuth（x-api-key 载体
+// 已按路径在 relay_auth.go 归一化），计费复用**同一条** contract.BillingSession
+// 接缝（h.billing），不另建计费路径。
+//
+// 方向矩阵（R-59，判定落在 relay_messages_test.go）：
+//   - 入站 Anthropic → 上游 Anthropic 协议族渠道（type 14 anthropic、
+//     type 25 moonshot，后者是 Anthropic 兼容协议）：**可转码**。
+//     请求经 IR 重新编码（system/messages/max_tokens/tools/stop_sequences 都在
+//     IR 建模范围内，Raw 作为未建模字段的透传基底）；响应与 SSE 是上游原生
+//     帧，对同协议的 Claude 客户端逐字节正确。
+//   - 入站 Anthropic → OpenAI / Gemini 原生渠道：**fail-closed 501**。
+//
+// 为什么 OpenAI/Gemini 上游不能「尽力转码」（R-59 与 R-13 同一口径）：请求
+// 方向可以经 IR 表达，但**响应方向没有 IR → Anthropic 的编码器**——
+// ir.FromIR 只产出 OpenAI Chat 形状，bridgeStream 也只渲染
+// chat.completion.chunk。放行会让 Claude 客户端收到一份 OpenAI 形状的 200
+// （或 OpenAI SSE），语义与它声明的协议无关，却按真实 usage 计费。这正是
+// 「看起来正常但内容错误」，比明确报错更糟。等 ir 包补齐 Anthropic 响应
+// 编码器后再放开（登记在 M1 报告）。
+//
+// 判定时点：方向由「请求模型 → 候选渠道」决定，必须先读到 model。请求体读入
+// 之后、PreConsume 与任何上游调用之前完成判定：routeDeps 的候选过滤在
+// ExecuteAttempts 的预扣步骤之前运行，因此 501 分支零计费、零上游请求。
+func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
+	requestID := newRelayRequestID()
+
+	body, err := readRelayBody(r)
+	if err != nil {
+		if errors.Is(err, errRelayBodyTooLarge) {
+			writeRelayError(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
+				"request body exceeds the 32 MiB limit")
+			return
+		}
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
+		return
+	}
+	// 复原 body：BuildRelayContext 的 peekStreaming 需要读请求体（stream 标志）。
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	parsed, err := ir.ParseAnthropicRequest(body)
+	if err != nil {
+		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案。
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
+		return
+	}
+
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		// 只有中间件未挂载才会到这里；fail-closed，绝不把零值身份当匿名用户。
+		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
+		return
+	}
+	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
+	if err != nil {
+		status, code, message := mapRelayContextError(err)
+		writeRelayError(w, status, requestID, code, message)
+		return
+	}
+	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
+	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+
+	// pin 必须在 BuildRelayContext 之后解析（R-P2a：非管理员 pin 已在那里
+	// 统一拒绝）。/v1/messages 不挂 /pg 会话平面（RegisterPlayground 只暴露
+	// 对话族），因此没有 TokenID==nil 的分组回源分支。
+	pinID, hasPin := relay.ParseChannelPin(r)
+	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
+			"this token is not allowed to access the requested model")
+		return
+	}
+
+	// R-84：停用模型必须在派发与预扣之前 404（与 chat 同口径）。
+	if h.modelStatus != nil {
+		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
+		if statusErr != nil {
+			writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
+				"failed to check model availability")
+			return
+		}
+		if found && status == modelPricingStatusDisabled {
+			writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+				"the requested model is not available")
+			return
+		}
+	}
+
+	// 与 chat 完全同一份预扣估算（finding 13）：max_tokens 直接影响预扣预算。
+	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
+		Model:     parsed.Model,
+		Group:     rc.UsingGroup,
+		MaxTokens: parsed.MaxTokens,
+	})
+
+	// 方向约束：只允许 Anthropic 协议族渠道（见上方方向矩阵）。
+	//
+	// 这里在构造 routeDeps（会新建计费会话）之前先判定方向：501 分支因此
+	// 既不创建计费会话、也不 PreConsume、更不触达上游。候选为空时不在这里
+	// 下结论——那属于「没有可用渠道」（503），交给执行层按既有口径映射。
+	if candidates, err := h.channels.Candidates(r.Context(), rc.OriginModel, rc.UsingGroup); err == nil && len(candidates) > 0 {
+		if !h.messagesDirectionSupported(r.Context(), candidates) {
+			h.writeMessagesMappedError(w, requestID, crossproto.ErrUpstreamProtocolUnsupported)
+			return
+		}
+	}
+
+	deps := h.routeDeps(rc, pinID, hasPin, crossproto.ProtocolAnthropic)
+	if parsed.Stream {
+		h.serveNativeStream(w, r, rc, deps)
+		return
+	}
+	h.serveNativeJSON(w, r, rc, deps)
+}
+
+// messagesDirectionSupported 判定候选集里是否存在 Anthropic 协议族渠道。
+//
+// 渠道类型 → 协议族的映射只来自 adapters.DispatchTable（crossproto 的
+// channelType 映射），不在这里另抄类型清单：新增 Anthropic 兼容渠道时方向
+// 判定必须自动跟随分派表。Get 失败的候选按「不可用」跳过（与执行层换渠道
+// 同口径）；真正的错误留给执行层映射。
+func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidates []contract.ChannelCandidate) bool {
+	for _, candidate := range candidates {
+		ch, err := h.channels.Get(ctx, int64(candidate.ChannelID))
+		if err != nil {
+			continue
+		}
+		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolAnthropic) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeMessagesMappedError 是 /v1/messages 的错误出口。
+//
+// 唯一的差异化映射是「没有 Anthropic 协议族渠道」：这是**端点的方向不支持**
+// （决定是否放行的是协议族能力，不是这一次请求的参数），按 R-59 返回 501
+// problem+json，与 /v1/responses 的 fail-closed 共用同一个 problem type。
+// 其余错误沿用 /v1 的统一 OpenAI 信封（RelayAuth 的 401/403 也是该形状，
+// 保持同一条鉴权链的响应一致性）。
+func (h *RelayHandler) writeMessagesMappedError(w http.ResponseWriter, requestID string, err error) {
+	if errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported) {
+		if requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
+		writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
+			"Messages endpoint requires an Anthropic-protocol channel",
+			"the generic relay can only answer /v1/messages through Anthropic/Moonshot channels; "+
+				"this request performs no billing and no upstream call")
+		return
+	}
+	writeRelayMappedError(w, requestID, err)
+}
+
+// serveNativeJSON 是非流式 /v1/messages 的执行与回写。
+//
+// 与 serveJSON 的差异只有一处：**不做响应方向跨协议转换**。方向约束已把
+// 上游限定为 Anthropic 协议族，因此 resp.Raw 就是 Anthropic 客户端期望的
+// 原生 JSON——逐字节透传（与 M2 的 OpenAI→OpenAI 透传同口径），而不是把
+// 上游原生体交给 ir.FromIR（那会产出 chat.completion，客户端语义错误）。
+// 计费仍由 relay.Route 在自己的 defer 里完成；这里包一层 deferredSettlement
+// 只是复用 chat 的「编码/写失败 → 不收费」语义。
+func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	var settlement *deferredSettlement
+	if deps.Billing != nil {
+		settlement = newDeferredSettlement(deps.Billing)
+		deps.Billing = settlement
+		defer settlement.abort()
+	}
+	resp, err := relay.Route(r.Context(), rc, deps)
+	if err != nil {
+		h.writeMessagesMappedError(w, rc.RequestID, err)
+		return
+	}
+	// 防御性方向校验：过滤保证只会命中 Anthropic 协议族，但重试/计划复用
+	// 不得让异构协议体悄悄透传（R-59）。未知协议也在这里拒绝。
+	if protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType); !known || protocol != crossproto.ProtocolAnthropic {
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+			"upstream protocol does not match this endpoint")
+		return
+	}
+	if resp == nil || len(resp.Raw) == 0 {
+		// 原生响应体缺失：宁可 502 也不回一份形状未知的 JSON。
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+			"upstream returned an empty response")
+		return
+	}
+	if settlement != nil {
+		_ = settlement.commit()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if rc.RequestID != "" {
+		w.Header().Set("X-Request-ID", rc.RequestID)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp.Raw)
+}
+
+// serveNativeStream 是流式 /v1/messages 的执行与桥接。
+//
+// 与 serveStream 的差异：客户端协议是 Anthropic，因此**不**走 OpenAI 的
+// chat.completion.chunk 渲染，也不注入 stream_options.include_usage，
+// 更不写 `data: [DONE]`（Anthropic SSE 以 `message_stop` 收尾）。
+func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	start := time.Now()
+	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
+	if err != nil {
+		h.writeMessagesMappedError(w, rc.RequestID, err)
+		return
+	}
+	defer func() { _ = result.Response.Body.Close() }()
+
+	streamAdapter, ok := result.Adapter.(contract.StreamAdapter)
+	if !ok {
+		// 预扣已成功（拿到 2xx），失败出口必须退款（R-85）。
+		if deps.Billing != nil {
+			_ = deps.Billing.Refund()
+		}
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "stream_unsupported",
+			"upstream adapter does not support streaming")
+		return
+	}
+	// 与 serveNativeJSON 同一道方向兜底（R-59）。
+	if protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType); !known || protocol != crossproto.ProtocolAnthropic {
+		if deps.Billing != nil {
+			_ = deps.Billing.Refund()
+		}
+		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+			"upstream protocol does not match this endpoint")
+		return
+	}
+
+	stream.SetSSEHeaders(w.Header())
+	if rc.RequestID != "" {
+		w.Header().Set("X-Request-ID", rc.RequestID)
+	}
+	sse := newRelaySSEWriter(w)
+	w.WriteHeader(http.StatusOK)
+	sse.flush()
+
+	h.pipeNativeAnthropicStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start)
+}
+
+// pipeNativeAnthropicStream 把 Anthropic 上游的 SSE 字节逐字节转给客户端，
+// 同时用适配器的 StreamEvents 解析**同一份字节**做用量提取与终结计费。
+//
+// 为什么不是「直接 io.Copy」：计费需要 usage 事实，而 Chat 口径的桥接会把
+// 事件重编码成 OpenAI 形状。这里用 io.TeeReader 把上游字节一分为二
+// （客户端写出一份、适配器解析一份），内容零改写；适配器只作为**用量与结束
+// 信号**的来源。这是同协议透传，不是「碰运气」：字节本来就是该协议合法的
+// 响应流（与 M2 的 OpenAI 原始帧透传同一判据）。
+//
+// 异常语义与 bridgeStream 一致：客户端断开/上游读取失败/看门狗超时一律
+// Refund（R-85），不伪造 `message_stop` 或任何收尾帧（relay-03 §5.2/§10.3）。
+func (h *RelayHandler) pipeNativeAnthropicStream(
+	r *http.Request,
+	rc *contract.RelayContext,
+	upstream io.ReadCloser,
+	upstreamHeader http.Header,
+	adapter contract.StreamAdapter,
+	billing contract.BillingSession,
+	sse *relaySSEWriter,
+	start time.Time,
+) {
+	var (
+		accumulated  contract.Usage
+		sawUsage     bool
+		received     int
+		sent         int
+		contentSent  int
+		softErrors   int
+		firstTokenMS *int
+		finished     bool
+		upstreamFail bool
+		clientGone   bool
+		timedOut     atomic.Bool
+	)
+
+	var closeOnce sync.Once
+	closeUpstream := func() { closeOnce.Do(func() { _ = upstream.Close() }) }
+
+	terminated := false
+	finalize := func(terminate func() error) {
+		if terminated || billing == nil {
+			return
+		}
+		terminated = true
+		_ = terminate()
+	}
+	terminate := func(fact contract.UsageFact) {
+		finalize(func() error { return billing.Terminate(fact) })
+	}
+	refund := func() {
+		finalize(func() error { return billing.Refund() })
+	}
+	// GC-7 兜底：任何未走显式终结的出口（含 panic）都必须释放预留。
+	defer refund()
+
+	// 看门狗与 bridgeStream 同口径：块间静默超过 streamInactivity 即判超时，
+	// 关闭上游 body 解除阻塞读。
+	inactivity := h.streamInactivity
+	if inactivity <= 0 {
+		inactivity = streamInactivityTimeout
+	}
+	watchdog := time.AfterFunc(inactivity, func() {
+		timedOut.Store(true)
+		closeUpstream()
+	})
+	defer watchdog.Stop()
+	touch := func() {
+		if !timedOut.Load() {
+			watchdog.Reset(inactivity)
+		}
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			watchdog.Stop()
+			relay.WithStream(rc, &contract.StreamStatus{
+				Phase:     contract.PhaseTerminated,
+				EndReason: contract.EndPanic,
+				Outcome:   relayStreamOutcome(contentSent),
+				RecvCount: received,
+				SendCount: sent,
+			}, sent, received, firstTokenMS)
+			refund()
+		}
+	}()
+
+	// teeWriter 是 io.TeeReader 的写端：原始字节块直接作为客户端帧写出。
+	// 写失败即客户端断开，返回错误会让 StreamEvents 的读取中止。
+	teeWriter := writerFunc(func(p []byte) (int, error) {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		if !sse.writeFrame(p) {
+			clientGone = true
+			return 0, io.ErrClosedPipe
+		}
+		sent++
+		contentSent++
+		if firstTokenMS == nil {
+			ms := int(time.Since(start).Milliseconds())
+			firstTokenMS = &ms
+		}
+		return len(p), nil
+	})
+
+	rw := struct {
+		io.Reader
+		io.Writer
+	}{Reader: io.TeeReader(upstream, teeWriter), Writer: io.Discard}
+
+	adapter.StreamEvents(rc, rw)(func(ev contract.StreamEvent) bool {
+		if r.Context().Err() != nil {
+			clientGone = true
+			return false
+		}
+		if clientGone {
+			return false
+		}
+		if timedOut.Load() {
+			upstreamFail = true
+			return false
+		}
+		touch()
+		received++
+
+		switch ev.Kind {
+		case contract.EventUsage:
+			if ev.Usage != nil {
+				mergeUsage(&accumulated, *ev.Usage)
+				sawUsage = true
+			}
+		case contract.EventFinish:
+			// 结束帧本身已由 tee 写出（Anthropic 的 message_stop）；这里只记录
+			// 「上游正常收尾」以便 EndReason 判定。
+			finished = true
+		case contract.EventError:
+			// 软错误（坏 JSON 块/上游 error 事件）原样到达客户端后继续；
+			// 硬错误（Raw 为空：读取失败/超限）或软错误超限则终止。
+			if len(ev.Raw) > 0 && softErrors < maxSoftStreamErrors {
+				softErrors++
+				return true
+			}
+			upstreamFail = true
+			return false
+		}
+		return true
+	})
+
+	// 头部兜底（R-05 优先级 3）：事件流没给出任何非零用量时，读上游
+	// `x-model-response-usage` 头；仍没有则由估计值兜底（Source=estimated）。
+	if !sawUsage || !usageHasFact(accumulated) {
+		extracted := usage.ExtractUsageMultimodal(&contract.Response{}, upstreamHeader, nil, rc.ChannelType)
+		if extracted.Usage.Source == contract.UsageUpstreamExact {
+			accumulated = extracted.Usage
+			sawUsage = true
+		}
+	}
+
+	abnormal := clientGone || upstreamFail || timedOut.Load()
+	endReason := contract.EndUpstreamDone
+	outcome := contract.OutcomeSuccess
+	switch {
+	case clientGone:
+		endReason = contract.EndClientAbort
+		outcome = relayStreamOutcome(contentSent)
+	case timedOut.Load():
+		endReason = contract.EndStreamTimeout
+		outcome = relayStreamOutcome(contentSent)
+	case upstreamFail:
+		endReason = contract.EndUpstreamError
+		outcome = relayStreamOutcome(contentSent)
+	case !finished:
+		endReason = contract.EndUpstreamEOF
+		outcome = relayStreamOutcome(contentSent)
+	}
+	relay.WithStream(rc, &contract.StreamStatus{
+		Phase:     contract.PhaseTerminated,
+		EndReason: endReason,
+		Outcome:   outcome,
+		RecvCount: received,
+		SendCount: sent,
+	}, sent, received, firstTokenMS)
+
+	if abnormal {
+		refund()
+		return
+	}
+
+	fact := contract.UsageFact{
+		Model:        rc.OriginModel,
+		Usage:        accumulated,
+		LatencyMS:    int(time.Since(start).Milliseconds()),
+		FirstTokenMS: firstTokenMS,
+		Stream:       true,
+		Attempts:     rc.AttemptIndex + 1,
+	}
+	if !usageHasFact(accumulated) {
+		fact.Usage = estimatedUsageFor(rc.ChannelType)
+	}
+	terminate(fact)
+}
+
+// writerFunc 把函数适配为 io.Writer（io.TeeReader 的写端）。
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // requestChoiceCount 读取 OpenAI 请求体的 n（缺省/非法为 1）。
 // 只用于 finding 14 的「stream + n>1」拒绝，不进入 IR（契约未建模 n）。

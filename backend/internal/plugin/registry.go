@@ -550,7 +550,8 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 // 是否先查 RouteIndex）与 builtinReservedRouteFamilies（通配族）。
 //
 // 当前条目与本仓库的注册点一一对应：
-//   - relay_endpoints.go：chat/completions、models、responses（T2 的创建、
+//   - relay_endpoints.go：chat/completions、messages（W7/M1 的 Anthropic 原生入口，
+//     处理器不查 RouteIndex，故只进保留集）、models、responses（T2 的创建、
 //     T3 的 compact）、GET responses 回放（T3 的产物检索，处理器在
 //     handlers_tasks.go 注册）；
 //   - handlers_tasks.go：tasks/{key} 及其产物族；
@@ -558,6 +559,7 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 var builtinRouteShapes = map[string]struct{}{
 	"POST /v1/chat/completions":             {},
 	"GET /v1/models":                        {},
+	"POST /v1/messages":                     {},
 	"POST /v1/responses":                    {},
 	"GET /v1/responses/{}":                  {},
 	"POST /v1/responses/compact":            {},

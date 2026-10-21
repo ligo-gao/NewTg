@@ -399,6 +399,10 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
+  # Anthropic Messages 原生入口（W7/M1）：Claude 原生客户端直连；非 Anthropic
+  # 协议族上游 fail-closed 501（R-59）。
+  /v1/messages:
+    $ref: './paths/relay.yaml#/paths/~1v1~1messages'
   # Responses 创建（T2 / P-01：插件优先，未命中返回 501，不回落通用中继）。
   /v1/responses:
     $ref: './paths/relay.yaml#/paths/~1v1~1responses'
