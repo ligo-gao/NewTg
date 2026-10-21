@@ -259,7 +259,11 @@ func parseSubmitResponse(raw []byte) (*SubmitResponse, error) {
 	}
 	out.Code = code
 	if wire.Result != nil {
-		out.Result, out.Results = parseResult(wire.Result)
+		result, results, resultErr := parseResult(wire.Result)
+		if resultErr != nil {
+			return nil, resultErr
+		}
+		out.Result, out.Results = result, results
 	}
 	out.Status = rawString(wire.Status)
 	out.Progress = rawString(wire.Progress)
@@ -301,17 +305,21 @@ func parseFlexibleInt(raw json.RawMessage) (int, bool) {
 //
 // 单值端点拿到数组时取第一个元素（部分 proxy 版本对单任务也返回数组）；
 // 上传端点拿到字符串时也放进 Results，避免调用方按端点再写一套解析。
-func parseResult(raw json.RawMessage) (string, []string) {
+//
+// 元素类型严格（M5）：数组里出现 object/bool/null 等无法表达为 MjId/URL
+// 的值时返回错误，而不是静默丢弃——静默丢项会让「上游返回了坏数据」被
+// 伪装成「部分成功」，客户端/计费都无法察觉。
+func parseResult(raw json.RawMessage) (string, []string, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return "", nil
+		return "", nil, nil
 	}
 	var single string
 	if err := json.Unmarshal(raw, &single); err == nil {
-		return single, []string{single}
+		return single, []string{single}, nil
 	}
 	var number json.Number
 	if err := json.Unmarshal(raw, &number); err == nil && number.String() != "" {
-		return number.String(), []string{number.String()}
+		return number.String(), []string{number.String()}, nil
 	}
 	var items []any
 	if err := json.Unmarshal(raw, &items); err == nil {
@@ -322,15 +330,17 @@ func parseResult(raw json.RawMessage) (string, []string) {
 				out = append(out, typed)
 			case float64:
 				out = append(out, strconv.FormatFloat(typed, 'f', -1, 64))
+			default:
+				return "", nil, fmt.Errorf("mj: upstream result contains unsupported element type %T", item)
 			}
 		}
 		first := ""
 		if len(out) > 0 {
 			first = out[0]
 		}
-		return first, out
+		return first, out, nil
 	}
-	return "", nil
+	return "", nil, fmt.Errorf("mj: upstream result is neither a scalar nor an array")
 }
 
 // rawString 把 JSON string 解出来；非 string/空值返回空串。

@@ -137,6 +137,42 @@ type taskPollerDeps struct {
 	Decrypt func([]byte) (string, error)
 	Limits  settingReader
 	Log     *slog.Logger
+	// MJHandler 是 MJ 族的查询/结算驱动（MJ-b 接入点）。当前为 nil：
+	// MJPoller 只领取、不推进/不结算。mj.enabled=true 时装配守卫会拒绝
+	// 上线（见 mjSettlerGuard），避免普通提交的 hold 永久冻结。
+	MJHandler tasks.MJTaskHandler
+}
+
+// mjSettlerGuard 是「绘图族已开启但无人结算」的装配门禁（I2）。
+//
+// 为什么必须 fail-closed：普通 MJ 提交在落库后 Detach（停心跳、移除 Redis
+// 在飞租约），hold 只等 MJ 侧终态结算/退款。MJ-b 之前 MJPoller 的 Handler
+// 为 nil：既不轮询也不结算，兜底扫描又只认 Redis 在飞会话与插件族 pending
+// 行，于是每一笔成功提交的预扣都会永久冻结。允许 mj.enabled=true 等于
+// 静默把用户余额锁死，所以宁可拒绝进程上线。
+//
+// handler 非 nil = 调用方已接管 MJ 推进/结算；此时才允许开启。
+func mjSettlerGuard(reader settingReader, handler tasks.MJTaskHandler) error {
+	if handler != nil || !settingBool(reader, "mj.enabled") {
+		return nil
+	}
+	return fmt.Errorf("mj.enabled is true but no MJ settlement handler is wired (MJ-b); refusing to start")
+}
+
+// settingBool 读取布尔设置；缺失/解析失败按 false（fail-closed）。
+func settingBool(reader settingReader, key string) bool {
+	if reader == nil {
+		return false
+	}
+	raw, ok := reader.Get(key)
+	if !ok {
+		return false
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value
 }
 
 // buildTaskPollers 用一个解析结果装配插件 poller 与 MJ poller（W9-B4）。
@@ -148,6 +184,10 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 	log := deps.Log
 	if log == nil {
 		log = slog.Default()
+	}
+	// I2：mj.enabled=true 但没有 MJ 结算驱动时拒绝上线（hold 会永久冻结）。
+	if err := mjSettlerGuard(deps.Limits, deps.MJHandler); err != nil {
+		return nil, nil, fmt.Errorf("worker: %w", err)
 	}
 	// 指针语义保证「未配置」与「显式 0=禁用」不会被混为一谈。
 	timeout, maxFailures := taskPollLimits(deps.Limits, log)
@@ -168,10 +208,11 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 		return nil, nil, fmt.Errorf("worker: task poller: %w", err)
 	}
 	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
-		Repo:   deps.Repo,
-		Logger: log,
-		// 同一对配置同时约束 MJ 领取器。Handler 为空时它仍不会因超时改
-		// 状态——A0 冻结语义，见 tasks/mj_poller.go。
+		Repo:    deps.Repo,
+		Handler: deps.MJHandler,
+		Logger:  log,
+		// 同一对配置同时约束 MJ 领取器。Handler 为空时它不会因超时改状态
+		//（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的守卫拒绝。
 		Timeout:     timeout,
 		MaxFailures: maxFailures,
 	})

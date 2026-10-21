@@ -148,6 +148,7 @@ type taskBillingRecorder struct {
 	refundErr        error
 	terminateErr     error
 	terminateByIDErr error
+	refundByIDErr    error
 	// hold 模拟真实引擎的预扣金额（桩的 PreConsume 只按 MaxTokens 预留，
 	// 任务估算没有 MaxTokens 时会是 0）。测试用它断言 quota/退款行为。
 	hold           int64
@@ -234,7 +235,9 @@ func (b *taskBillingRecorder) TerminateByRequestIDCost(_ string, cost int64, _ c
 
 func (b *taskBillingRecorder) RefundByRequestID(string) error {
 	b.record("refund_by_id")
-	return nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.refundByIDErr
 }
 
 func (b *taskBillingRecorder) ReserveCalls() []string {

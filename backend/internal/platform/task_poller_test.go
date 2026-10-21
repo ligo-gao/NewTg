@@ -251,3 +251,43 @@ func TestBuildTaskPollersWiresLimitsIntoBothPollers(t *testing.T) {
 		})
 	}
 }
+
+// TestMJSettlerGuard 冻结 I2 的装配门禁：mj.enabled=true 且没有 MJ 结算
+// 驱动时必须拒绝上线；未开启或已注入 handler 时放行。
+func TestMJSettlerGuard(t *testing.T) {
+	handler := func(context.Context, *tasks.Task) error { return nil }
+	cases := []struct {
+		name    string
+		reader  fakeSettingReader
+		handler tasks.MJTaskHandler
+		wantErr bool
+	}{
+		{"disabled without handler", fakeSettingReader{}, nil, false},
+		{"enabled without handler", fakeSettingReader{"mj.enabled": json.RawMessage(`true`)}, nil, true},
+		{"enabled with handler", fakeSettingReader{"mj.enabled": json.RawMessage(`true`)}, handler, false},
+		{"bad value fails closed", fakeSettingReader{"mj.enabled": json.RawMessage(`"yes"`)}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := mjSettlerGuard(tc.reader, tc.handler)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("mjSettlerGuard error = %v, want error=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestBuildTaskPollersRefusesMJWithoutSettler 证明守卫接在唯一装配路径上，
+// 而不只是一个孤立的辅助函数。
+func TestBuildTaskPollersRefusesMJWithoutSettler(t *testing.T) {
+	_, _, err := buildTaskPollers(taskPollerDeps{
+		Repo:    wiringRepo{},
+		Plugins: wiringPlugins{},
+		Billing: wiringBilling{},
+		Limits:  fakeSettingReader{"mj.enabled": json.RawMessage(`true`)},
+		Log:     slog.Default(),
+	})
+	if err == nil {
+		t.Fatal("buildTaskPollers must refuse mj.enabled without an MJ settlement handler")
+	}
+}

@@ -75,6 +75,17 @@ type MJChannelSource interface {
 
 var _ MJChannelSource = (*tasks.Repo)(nil)
 
+// MJSubmitter 是上游提交执行接缝（生产 *mj.SubmitClient）。
+//
+// 抽出接口只为测试「上游已受理后客户端断开」这类时序：真实客户端绑定
+// r.Context()，无法在返回成功的同时让请求上下文已取消。
+type MJSubmitter interface {
+	Submit(ctx context.Context, cfg mj.SubmitConfig, endpoint mj.Endpoint,
+		normalized *mj.NormalizedSubmit) (*mj.SubmitResponse, *mj.Error)
+}
+
+var _ MJSubmitter = (*mj.SubmitClient)(nil)
+
 // MJHandlerConfig 是 MJ 提交 handler 的装配输入。
 type MJHandlerConfig struct {
 	Store    MJTaskStore
@@ -93,7 +104,9 @@ type MJHandlerConfig struct {
 	RateLimiter RelayRateLimiter
 	// Client 是上游提交执行器；nil 时构造禁重定向的默认客户端。
 	Client *mj.SubmitClient
-	Logger *slog.Logger
+	// Submitter 是上游提交测试接缝；非 nil 时优先于 Client。
+	Submitter MJSubmitter
+	Logger    *slog.Logger
 	// Now / Uint64N 是测试接缝：时间与加权随机源。
 	Now     func() time.Time
 	Uint64N func(uint64) uint64
@@ -108,7 +121,7 @@ type MJHandler struct {
 	billing     func(*contract.RelayContext) contract.BillingSession
 	config      ConfigReader
 	rateLimiter RelayRateLimiter
-	client      *mj.SubmitClient
+	client      MJSubmitter
 	log         *slog.Logger
 	now         func() time.Time
 	uint64N     func(uint64) uint64
@@ -124,9 +137,13 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 	if billingFactory == nil {
 		billingFactory = func(*contract.RelayContext) contract.BillingSession { return billingseam.NewStub() }
 	}
-	client := cfg.Client
+	var client MJSubmitter = cfg.Submitter
 	if client == nil {
-		client = mj.NewSubmitClient(nil)
+		if cfg.Client != nil {
+			client = cfg.Client
+		} else {
+			client = mj.NewSubmitClient(nil)
+		}
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -331,6 +348,12 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 	// upload-discord-images 是数组形结果、无 MjId：生成 inline 终态行并在
 	// 提交时按 hold 结清（R-MJ-14），不参与轮询。
 	if endpoint == mj.EndpointUploadDiscord {
+		// 空数组不是「成功上传 0 张」：客户端拿不到任何附件 URL，却已被
+		// 计入一次固定价。按上游坏响应失败退款（M5）。
+		if len(resp.Results) == 0 {
+			writeMJError(w, &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionUpstreamBadResponse, Status: http.StatusBadGateway})
+			return
+		}
 		committed, settled = h.finishUpload(w, r, session, rc, principal, channel, resp, held)
 		return
 	}
@@ -388,6 +411,16 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 	}
 	committed = true
 
+	// I1：上游受理体可能直接带终态（SUCCESS/FAILURE/CANCEL）。这类行
+	// 不会再进入 ListPendingByFamily，也不带补偿扫描认领的 pending 标志；
+	// 如果不在提交路径就地结算，hold 会永久冻结。因此终态行与 inline 上传
+	// 走同一套「Detach → Terminate/Refund → billing_final/pending」。
+	if row.State.Terminal() {
+		settled = h.settleTerminalAtHeld(persistCtx, session, rc, row)
+		writeMJSuccess(w, resp.Result)
+		return
+	}
+
 	// 异步交接：停止心跳、移除在飞租约，保留 hold 到轮询终态（R-MJ-01）。
 	if handoff, ok := session.(contract.BillingHandoff); ok {
 		if err := handoff.Detach(rc.RequestID); err != nil {
@@ -399,6 +432,68 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 	}
 
 	writeMJSuccess(w, resp.Result)
+}
+
+// settleTerminalAtHeld 在提交路径结算一个**终态**任务行。
+//
+// 资金语义与插件族的终态结算一致（R-MJ-01）：
+//   - SUCCESS → 按预扣额结清（Terminate by request id）；
+//   - FAILURE/CANCEL → 全额退款（Refund by request id）。
+//
+// 顺序固定为 Detach → 结算：Detach 只停心跳/移除租约、保留 hold，不会把
+// 会话结案；反过来先结算再 Detach 会让心跳在已结案会话上继续续租。
+//
+// 结算失败不伪装成成功：写 settlement_pending/refund_pending 保留预扣，
+// 由 MJ 侧补偿扫描（MJ-b 接线后）或人工按 request_id 收敛。返回 true 表示
+// 资金已收敛（调用方的 defer 不再退款）。
+func (h *MJHandler) settleTerminalAtHeld(ctx context.Context, session contract.BillingSession,
+	rc *contract.RelayContext, row *tasks.Task) bool {
+
+	if row == nil {
+		return false
+	}
+	handoff, hasHandoff := session.(contract.BillingHandoff)
+	if hasHandoff {
+		if err := handoff.Detach(rc.RequestID); err != nil {
+			h.log.Warn("mj: billing detach before terminal settlement failed",
+				"request_id", rc.RequestID, "error", err)
+		}
+	}
+
+	if row.State == tasks.StateSuccess {
+		var err error
+		if hasHandoff {
+			err = handoff.TerminateByRequestID(rc.RequestID, contract.UsageFact{})
+		} else {
+			err = session.Terminate(contract.UsageFact{})
+		}
+		if err != nil {
+			h.log.Warn("mj: terminal success settlement did not complete; keeping hold",
+				"request_id", rc.RequestID, "error", err)
+			h.markBilling(ctx, row.ID, nil, map[string]any{"settlement_pending": true})
+			return false
+		}
+		h.markBilling(ctx, row.ID, nil, map[string]any{"billing_final": true})
+		return true
+	}
+
+	var err error
+	if hasHandoff {
+		err = handoff.RefundByRequestID(rc.RequestID)
+	} else {
+		err = session.Refund()
+	}
+	if err != nil {
+		h.log.Warn("mj: terminal failure refund did not complete; keeping hold",
+			"request_id", rc.RequestID, "error", err)
+		h.markBilling(ctx, row.ID, nil, map[string]any{"refund_pending": true})
+		return false
+	}
+	// 退款后行上的 quota 归零（与插件族失败退款同口径），避免台账把
+	// 已退回的 hold 记成已消费。
+	zero := int64(0)
+	h.markBilling(ctx, row.ID, &zero, map[string]any{"billing_final": true})
+	return true
 }
 
 // finishUpload 写 upload-discord-images 的 inline 终态行并在提交时结清。
@@ -445,34 +540,13 @@ func (h *MJHandler) finishUpload(w http.ResponseWriter, r *http.Request,
 	}
 
 	// 按预扣额结清：无任务表达式，固定动作价不存在「多退少补」。
-	settledOK := false
-	if handoff, ok := session.(contract.BillingHandoff); ok {
-		if detachErr := handoff.Detach(rc.RequestID); detachErr != nil {
-			h.log.Warn("mj: billing detach before inline settlement failed",
-				"request_id", rc.RequestID, "error", detachErr)
-		}
-		if termErr := handoff.TerminateByRequestID(rc.RequestID, contract.UsageFact{}); termErr != nil {
-			h.log.Warn("mj: inline upload settlement did not complete; keeping hold",
-				"request_id", rc.RequestID, "error", termErr)
-		} else {
-			settledOK = true
-		}
-	} else if termErr := session.Terminate(contract.UsageFact{}); termErr != nil {
-		h.log.Warn("mj: inline upload settlement did not complete; keeping hold",
-			"request_id", rc.RequestID, "error", termErr)
-	} else {
-		settledOK = true
-	}
+	// 与普通终态提交共用同一条 Detach → Terminate 路径（I1）。
+	settledOK := h.settleTerminalAtHeld(persistCtx, session, rc, row)
 
-	if settledOK {
-		// billing_final 是审计口径：inline 行已封账，补偿扫描不应再动它。
-		h.markBilling(persistCtx, row.ID, nil, map[string]any{"billing_final": true})
-	} else {
-		// 保留预扣并写 settlement_pending：补偿扫描据此发现「状态成功但
-		// 结算未完成」的行，重试按 hold 结清（不退款）。
-		h.markBilling(persistCtx, row.ID, nil, map[string]any{"settlement_pending": true})
-	}
-
+	// 结算失败时保留预扣并写 settlement_pending。注意（I2）：当前 MJ settler
+	// 尚未接线，没有 MJ 侧补偿扫描会自动重试；该标志供 MJ-b 接入后的
+	// `ListReconcilable(FamilyMJ)` 与人工按 request_id 收敛使用，不能据此
+	// 宣称「一定会被自动发现」。
 	writeMJSuccessResults(w, resp.Results)
 	return true, settledOK
 }
@@ -720,6 +794,10 @@ func decodeMJSubmitRequest(w http.ResponseWriter, r *http.Request) (*mj.SubmitRe
 // mjContextError 把 BuildRelayContext 的状态码折叠为 MJ 错误信封。
 func mjContextError(status int) *mj.Error {
 	switch status {
+	case http.StatusBadRequest:
+		// ErrRequestMissing 等「请求本身不可用」是客户端错误（M4），不能
+		// 折叠成 500 让客户端以为网关故障并重试。
+		return mj.BadRequest(mj.DescriptionInvalidRequest)
 	case http.StatusUnauthorized:
 		return &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInvalidToken, Status: http.StatusUnauthorized}
 	case http.StatusForbidden:
@@ -782,12 +860,16 @@ func writeMJJSON(w http.ResponseWriter, envelope mj.Envelope) {
 // 一致，复制一份实现会让两条入口的鉴权语义漂移。
 func mjEnvelopeAuth(inner func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		passed := false
-		wrapped := inner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			passed = true
-			next.ServeHTTP(w, r)
-		}))
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// passed 必须是**请求级**状态（C1）：把它放在构造函数闭包里会让
+			// 同一路由的首个成功请求永久置位，之后所有鉴权失败都错写成
+			// OpenAI 信封；并发请求还会产生数据竞争。因此每个请求构造一次
+			// 内层链，passed 只属于本次 ServeHTTP。
+			passed := false
+			wrapped := inner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				passed = true
+				next.ServeHTTP(w, r)
+			}))
 			buf := &mjBufferedResponseWriter{header: make(http.Header)}
 			wrapped.ServeHTTP(buf, r)
 			if passed {

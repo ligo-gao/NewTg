@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/ratelimit"
@@ -222,6 +224,7 @@ func (u *mjUpstream) calls() int {
 
 // mjTestEnv 是一次用例的装配结果。
 type mjTestEnv struct {
+	mu        sync.Mutex
 	mux       *http.ServeMux
 	store     *fakeMJStore
 	channels  *fakeMJChannels
@@ -234,18 +237,34 @@ type mjTestEnv struct {
 
 func (e *mjTestEnv) lastRecorder(t *testing.T) *taskBillingRecorder {
 	t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if len(e.recorders) == 0 {
 		t.Fatalf("no billing session was constructed")
 	}
 	return e.recorders[len(e.recorders)-1]
 }
 
+func (e *mjTestEnv) recorderCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.recorders)
+}
+
 // newMJTestEnv 构造 handler + mux。channels 由调用方预填（凭据已密封）。
 func newMJTestEnv(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 	config fakeMJConfig, upstream *mjUpstream) *mjTestEnv {
 	t.Helper()
+	return newMJTestEnvWithBilling(t, store, channels, config, upstream, nil)
+}
+
+// newMJTestEnvWithBilling 允许用例注入 recorder 的错误/持有额。
+func newMJTestEnvWithBilling(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
+	config fakeMJConfig, upstream *mjUpstream, configure func(*taskBillingRecorder)) *mjTestEnv {
+	t.Helper()
 	sealer := NewSecretSealer("mj-handler-test-key")
 	tokens, key42, _ := newMJTokens()
+	env := &mjTestEnv{store: store, channels: channels, upstream: upstream, sealer: sealer}
 	handler := NewMJHandler(MJHandlerConfig{
 		Store:    store,
 		Channels: channels,
@@ -254,6 +273,12 @@ func newMJTestEnv(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 		Billing: func(*contract.RelayContext) contract.BillingSession {
 			recorder := newTaskBillingRecorder()
 			recorder.hold = 50
+			if configure != nil {
+				configure(recorder)
+			}
+			env.mu.Lock()
+			env.recorders = append(env.recorders, recorder)
+			env.mu.Unlock()
 			return recorder
 		},
 		Config:      config,
@@ -263,17 +288,7 @@ func newMJTestEnv(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
-
-	env := &mjTestEnv{mux: mux, store: store, channels: channels, upstream: upstream, sealer: sealer}
-	// 把每个请求构造的 recorder 收集起来，便于断言资金调用次数。
-	original := handler.billing
-	handler.billing = func(rc *contract.RelayContext) contract.BillingSession {
-		session := original(rc)
-		if recorder, ok := session.(*taskBillingRecorder); ok {
-			env.recorders = append(env.recorders, recorder)
-		}
-		return session
-	}
+	env.mux = mux
 	env.defaultAuthorization = "Bearer " + key42
 	return env
 }
@@ -530,8 +545,8 @@ func TestMJSubmitUpstreamFailureRefundsWithoutRow(t *testing.T) {
 	}
 	body := decodeMJEnvelope(t, rec)
 	assertMJEnvelopeShape(t, body, 24, nil, false)
-	if body["description"] != mj.DescriptionSensitiveWord {
-		t.Fatalf("description = %v, want fixed %q (upstream text must not leak)", body["description"], mj.DescriptionSensitiveWord)
+	if body["description"] != "sensitive_word_detected" {
+		t.Fatalf("description = %v, want fixed %q (upstream text must not leak)", body["description"], "sensitive_word_detected")
 	}
 	if rows := store.insertedRows(); len(rows) != 0 {
 		t.Fatalf("upstream failure must not insert a task row: %+v", rows)
@@ -565,8 +580,8 @@ func TestMJSubmitDisabledGateIsFailClosed(t *testing.T) {
 			}
 			body := decodeMJEnvelope(t, rec)
 			assertMJEnvelopeShape(t, body, mj.CodeRequestError, nil, false)
-			if body["description"] != mj.DescriptionDisabled {
-				t.Fatalf("description = %v, want %q", body["description"], mj.DescriptionDisabled)
+			if body["description"] != "mj_not_enabled" {
+				t.Fatalf("description = %v, want %q", body["description"], "mj_not_enabled")
 			}
 			if upstream.calls() != 0 || len(store.insertedRows()) != 0 || len(env.recorders) != 0 {
 				t.Fatalf("disabled gate must be zero upstream/row/billing side effects")
@@ -594,12 +609,12 @@ func TestMJSubmitBoundsAndUnknownEndpoint(t *testing.T) {
 		body string
 		desc string
 	}{
-		{"prompt too long", mj.EndpointImagine.Path(), string(hugePrompt), mj.DescriptionPromptTooLong},
-		{"too many images", mj.EndpointDescribe.Path(), string(nineImages), mj.DescriptionBase64ArrayTooLarge},
-		{"invalid task id", mj.EndpointChange.Path(), `{"taskId":"bad/id","action":"UPSCALE","index":1}`, mj.DescriptionInvalidTaskID},
-		{"missing prompt", mj.EndpointImagine.Path(), `{}`, mj.DescriptionPromptRequired},
-		{"unknown action", mj.EndpointChange.Path(), `{"taskId":"mj_1","action":"NOPE","index":1}`, mj.DescriptionUnknownAction},
-		{"unknown endpoint", "/mj/submit/nope", `{"prompt":"x"}`, mj.DescriptionUnknownEndpoint},
+		{"prompt too long", mj.EndpointImagine.Path(), string(hugePrompt), "prompt_too_long"},
+		{"too many images", mj.EndpointDescribe.Path(), string(nineImages), "base64_array_too_large"},
+		{"invalid task id", mj.EndpointChange.Path(), `{"taskId":"bad/id","action":"UPSCALE","index":1}`, "invalid_task_id"},
+		{"missing prompt", mj.EndpointImagine.Path(), `{}`, "prompt_is_required"},
+		{"unknown action", mj.EndpointChange.Path(), `{"taskId":"mj_1","action":"NOPE","index":1}`, "unknown_action"},
+		{"unknown endpoint", "/mj/submit/nope", `{"prompt":"x"}`, "unknown_endpoint"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -634,7 +649,7 @@ func TestMJSubmitLockRejectionsHappenBeforeBilling(t *testing.T) {
 			channel:    nil,
 			config:     mjConfigured(nil),
 			wantStatus: http.StatusBadRequest,
-			wantDesc:   mj.DescriptionOriginTaskMissing,
+			wantDesc:   "get_channel_info_failed",
 		},
 		{
 			name:       "origin channel disabled",
@@ -642,7 +657,7 @@ func TestMJSubmitLockRejectionsHappenBeforeBilling(t *testing.T) {
 			channel:    &tasks.ChannelTarget{ID: 10, BaseURL: "http://invalid", Status: 2, Type: mj.ChannelTypeMidjourney},
 			config:     mjConfigured(nil),
 			wantStatus: http.StatusBadRequest,
-			wantDesc:   mj.DescriptionChannelDisabled,
+			wantDesc:   "channel_disabled",
 		},
 		{
 			name:       "origin channel type drifted",
@@ -650,7 +665,7 @@ func TestMJSubmitLockRejectionsHappenBeforeBilling(t *testing.T) {
 			channel:    &tasks.ChannelTarget{ID: 10, BaseURL: "http://invalid", Status: 1, Type: "openai"},
 			config:     mjConfigured(nil),
 			wantStatus: http.StatusBadRequest,
-			wantDesc:   mj.DescriptionChannelDisabled,
+			wantDesc:   "channel_disabled",
 		},
 		{
 			name:       "origin not success with switch on",
@@ -658,7 +673,7 @@ func TestMJSubmitLockRejectionsHappenBeforeBilling(t *testing.T) {
 			channel:    &tasks.ChannelTarget{ID: 10, BaseURL: "http://invalid", Status: 1, Type: mj.ChannelTypeMidjourney},
 			config:     mjConfigured(map[string]json.RawMessage{"mj.action_check_success_enabled": mjBoolSetting(true)}),
 			wantStatus: http.StatusBadRequest,
-			wantDesc:   mj.DescriptionTaskNotSuccess,
+			wantDesc:   "action_task_not_success",
 		},
 	}
 	for _, tc := range cases {
@@ -838,8 +853,8 @@ func TestMJAuthCarrierAndEnvelope(t *testing.T) {
 		}
 		body := decodeMJEnvelope(t, rec)
 		assertMJEnvelopeShape(t, body, mj.CodeUnknownError, nil, false)
-		if body["description"] != mj.DescriptionInvalidToken {
-			t.Fatalf("description = %v, want %q", body["description"], mj.DescriptionInvalidToken)
+		if body["description"] != "invalid_token" {
+			t.Fatalf("description = %v, want %q", body["description"], "invalid_token")
 		}
 	})
 
@@ -902,8 +917,8 @@ func TestMJRateLimitRejectsBeforeChannelAndBilling(t *testing.T) {
 	}
 	body := decodeMJEnvelope(t, rec)
 	assertMJEnvelopeShape(t, body, mj.CodeUnknownError, nil, false)
-	if body["description"] != mj.DescriptionRateLimited {
-		t.Fatalf("description = %v, want %q", body["description"], mj.DescriptionRateLimited)
+	if body["description"] != "rate_limited" {
+		t.Fatalf("description = %v, want %q", body["description"], "rate_limited")
 	}
 	if upstream.calls() != 0 || len(store.insertedRows()) != 0 {
 		t.Fatalf("rate-limited request must not reach upstream or persist")
@@ -938,5 +953,409 @@ func TestMJPathDetection(t *testing.T) {
 		if got := isMJPath(tc.path); got != tc.want {
 			t.Errorf("isMJPath(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// ---------- C1: auth wrapper state is per request ----------
+
+// TestMJEnvelopeAuthPerRequestState 复现 C1：同一路由先成功一次、再无凭据，
+// 失败请求仍必须是 401 MJ 信封（不能沿用上一次成功留下的 passed 标志）。
+func TestMJEnvelopeAuthPerRequestState(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+	env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+	// 1) 成功请求：让旧实现的共享 passed 置位。
+	okRec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointImagine.Path(), `{"prompt":"x"}`))
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", okRec.Code)
+	}
+
+	// 2) 同路由无凭据：必须是 401 + MJ 信封（不是 OpenAI 信封/200）。
+	req := httptest.NewRequest(http.MethodPost, mj.EndpointImagine.Path(), strings.NewReader(`{"prompt":"x"}`))
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("second request status = %d, want 401 (body=%s)", rec.Code, rec.Body.String())
+	}
+	body := decodeMJEnvelope(t, rec)
+	assertMJEnvelopeShape(t, body, mj.CodeUnknownError, nil, false)
+	if body["description"] != "invalid_token" {
+		t.Fatalf("description = %v, want invalid_token", body["description"])
+	}
+}
+
+// TestMJEnvelopeAuthConcurrentRequests 让成功/失败请求并发穿过同一路由：
+// 请求级状态必须让每个请求得到自己的结果（旧共享标志会串味并有数据竞争）。
+func TestMJEnvelopeAuthConcurrentRequests(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+	env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+	const requests = 80
+	var wg sync.WaitGroup
+	errs := make(chan string, requests)
+	for i := 0; i < requests; i++ {
+		authorized := i%2 == 0
+		wg.Add(1)
+		go func(authorized bool) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, mj.EndpointImagine.Path(), strings.NewReader(`{"prompt":"x"}`))
+			if authorized {
+				req.Header.Set("Authorization", env.defaultAuthorization)
+			}
+			rec := httptest.NewRecorder()
+			env.mux.ServeHTTP(rec, req)
+			body := decodeMJEnvelope(t, rec)
+			if authorized {
+				if rec.Code != http.StatusOK || int(body["code"].(float64)) != 1 {
+					errs <- fmt.Sprintf("authorized request got %d/%v", rec.Code, body)
+				}
+				return
+			}
+			if rec.Code != http.StatusUnauthorized || int(body["code"].(float64)) != mj.CodeUnknownError {
+				errs <- fmt.Sprintf("unauthorized request got %d/%v", rec.Code, body)
+			}
+		}(authorized)
+	}
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
+}
+
+// ---------- I1: terminal submit bodies are settled at submit time ----------
+
+func TestMJSubmitTerminalBodiesSettleAtSubmit(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		wantState  tasks.State
+		wantCall   string
+		wantQuota  *int64
+		wantUpdate string
+	}{
+		{"success", "SUCCESS", tasks.StateSuccess, "terminate_by_id", nil, "billing_final"},
+		{"failure", "FAILURE", tasks.StateFailure, "refund_by_id", int64Ptr(0), "billing_final"},
+		{"cancel", "CANCEL", tasks.StateFailure, "refund_by_id", int64Ptr(0), "billing_final"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeMJStore()
+			upstream := newMJUpstream(t, fmt.Sprintf(
+				`{"code":1,"description":"ok","result":"mj_up_1","properties":{"status":%q,"progress":"100%%"}}`, tc.status))
+			sealer := NewSecretSealer("mj-handler-test-key")
+			normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+			channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+				candidates: []tasks.MJChannelCandidate{normalCand}}
+			env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+			rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointImagine.Path(), `{"prompt":"x"}`))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+			}
+			rows := store.insertedRows()
+			if len(rows) != 1 || rows[0].State != tc.wantState || rows[0].RawState != tc.status {
+				t.Fatalf("row state/raw = %+v, want %s/%s", rows, tc.wantState, tc.status)
+			}
+			// 终态行不能再进入待轮询集合（证明「无人结算」的路径确实被关闭）。
+			if rows[0].State.Terminal() != true {
+				t.Fatalf("expected terminal row")
+			}
+			calls := env.lastRecorder(t).ReserveCalls()
+			if countCall(calls, "detach") != 1 || countCall(calls, tc.wantCall) != 1 {
+				t.Fatalf("billing calls = %v, want detach + %s", calls, tc.wantCall)
+			}
+			if countCall(calls, "refund") != 0 {
+				t.Fatalf("terminal settlement must not use the session Refund deferred path: %v", calls)
+			}
+			if len(store.updates) != 1 {
+				t.Fatalf("billing updates = %+v, want exactly one", store.updates)
+			}
+			update := store.updates[0]
+			if update.Flags[tc.wantUpdate] != true {
+				t.Fatalf("billing flags = %+v, want %s", update.Flags, tc.wantUpdate)
+			}
+			if tc.wantQuota == nil {
+				if update.Quota != nil {
+					t.Fatalf("billing quota = %v, want unchanged (nil)", *update.Quota)
+				}
+			} else if update.Quota == nil || *update.Quota != *tc.wantQuota {
+				t.Fatalf("billing quota = %v, want %d", update.Quota, *tc.wantQuota)
+			}
+		})
+	}
+}
+
+func TestMJSubmitTerminalSettlementFailureKeepsHold(t *testing.T) {
+	t.Run("success settlement failure", func(t *testing.T) {
+		store := newFakeMJStore()
+		upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1","properties":{"status":"SUCCESS"}}`)
+		sealer := NewSecretSealer("mj-handler-test-key")
+		normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+		channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+			candidates: []tasks.MJChannelCandidate{normalCand}}
+		env := newMJTestEnvWithBilling(t, store, channels, mjConfigured(nil), upstream,
+			func(r *taskBillingRecorder) { r.terminateByIDErr = errors.New("boom") })
+
+		rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointImagine.Path(), `{"prompt":"x"}`))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if len(store.updates) != 1 || store.updates[0].Flags["settlement_pending"] != true {
+			t.Fatalf("updates = %+v, want settlement_pending", store.updates)
+		}
+		if calls := env.lastRecorder(t).ReserveCalls(); countCall(calls, "refund") != 0 {
+			t.Fatalf("must keep hold, not refund: %v", calls)
+		}
+	})
+
+	t.Run("failure refund failure", func(t *testing.T) {
+		store := newFakeMJStore()
+		upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1","properties":{"status":"FAILURE"}}`)
+		sealer := NewSecretSealer("mj-handler-test-key")
+		normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+		channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+			candidates: []tasks.MJChannelCandidate{normalCand}}
+		env := newMJTestEnvWithBilling(t, store, channels, mjConfigured(nil), upstream,
+			func(r *taskBillingRecorder) { r.refundByIDErr = errors.New("boom") })
+
+		rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointImagine.Path(), `{"prompt":"x"}`))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if len(store.updates) != 1 || store.updates[0].Flags["refund_pending"] != true {
+			t.Fatalf("updates = %+v, want refund_pending", store.updates)
+		}
+		if calls := env.lastRecorder(t).ReserveCalls(); countCall(calls, "refund") != 0 {
+			t.Fatalf("committed row must not fall through to the deferred refund: %v", calls)
+		}
+	})
+}
+
+// ---------- M1/M3/M4/M5 ----------
+
+type mjLimiterCall struct {
+	Bucket ratelimit.Bucket
+	Key    string
+	Cost   int
+}
+
+type recordingMJRatelimiter struct {
+	mu    sync.Mutex
+	calls []mjLimiterCall
+}
+
+func (r *recordingMJRatelimiter) Allow(_ context.Context, bucket ratelimit.Bucket, key string, cost int) (ratelimit.Decision, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, mjLimiterCall{Bucket: bucket, Key: key, Cost: cost})
+	return ratelimit.Decision{Allowed: true}, nil
+}
+
+// TestMJSubmitUsesStandardRateLimitBuckets 断言 MJ 提交真的落在 B11/B10/B12
+// 的标准键与阈值上（M1），而不只是「接缝被调用过」。
+func TestMJSubmitUsesStandardRateLimitBuckets(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+
+	tokens, key42, _ := newMJTokens()
+	config := mjConfigured(nil)
+	limiter := &recordingMJRatelimiter{}
+	handler := NewMJHandler(MJHandlerConfig{
+		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
+		Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
+		Config:  config, RateLimiter: limiter,
+		Uint64N: func(uint64) uint64 { return 0 },
+	})
+	mux := http.NewServeMux()
+	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
+
+	req := httptest.NewRequest(http.MethodPost, mj.EndpointImagine.Path(), strings.NewReader(`{"prompt":"x"}`))
+	req.Header.Set("Authorization", "Bearer "+key42)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	settings := ratelimit.Resolve(config, slog.Default())
+	limiter.mu.Lock()
+	calls := append([]mjLimiterCall(nil), limiter.calls...)
+	limiter.mu.Unlock()
+	want := []struct {
+		name  string
+		key   string
+		limit int
+	}{
+		{ratelimit.BucketToken, ratelimit.TokenKey(1), settings.TokenLimit()},
+		{ratelimit.BucketUserModel, ratelimit.UserKey(42), settings.UserModelLimit("default")},
+		{ratelimit.BucketUserGlobal, ratelimit.UserGlobalKey(42), settings.UserGlobalLimit()},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("limiter calls = %+v, want %d buckets", calls, len(want))
+	}
+	for i, expected := range want {
+		got := calls[i]
+		if got.Bucket.Name != expected.name || got.Key != expected.key || got.Bucket.Limit != expected.limit || got.Cost != 1 {
+			t.Fatalf("call[%d] = %+v, want name=%s key=%s limit=%d cost=1",
+				i, got, expected.name, expected.key, expected.limit)
+		}
+		if got.Bucket.Window != relayRateLimitWindow || got.Bucket.FailMode != ratelimit.FailClosed {
+			t.Fatalf("call[%d] window/failmode = %v/%v", i, got.Bucket.Window, got.Bucket.FailMode)
+		}
+	}
+}
+
+func TestMJSubmitBillingErrorMappings(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantDesc   string
+	}{
+		{"quota not enough", billing.ErrInsufficientQuota, http.StatusPaymentRequired, "quota_not_enough"},
+		{"pricing unavailable", errors.New("no price"), http.StatusBadRequest, "task_pricing_unavailable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeMJStore()
+			upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+			sealer := NewSecretSealer("mj-handler-test-key")
+			normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+			channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+				candidates: []tasks.MJChannelCandidate{normalCand}}
+			env := newMJTestEnvWithBilling(t, store, channels, mjConfigured(nil), upstream,
+				func(r *taskBillingRecorder) { r.preConsumeErr = tc.err })
+
+			rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointImagine.Path(), `{"prompt":"x"}`))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			body := decodeMJEnvelope(t, rec)
+			assertMJEnvelopeShape(t, body, mj.CodeRequestError, nil, false)
+			if body["description"] != tc.wantDesc {
+				t.Fatalf("description = %v, want %s", body["description"], tc.wantDesc)
+			}
+			if upstream.calls() != 0 || len(store.insertedRows()) != 0 {
+				t.Fatalf("pre-consume failure must not reach upstream or persist")
+			}
+		})
+	}
+}
+
+func TestMJPlusOnlyWithoutPlusChannelIsForbidden(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+	env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+	rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointAction.Path(),
+		`{"customId":"MJ::JOB::upsample::1::uuid"}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", rec.Code, rec.Body.String())
+	}
+	body := decodeMJEnvelope(t, rec)
+	assertMJEnvelopeShape(t, body, mj.CodeRequestError, nil, false)
+	if body["description"] != "plus_channel_required" {
+		t.Fatalf("description = %v, want plus_channel_required", body["description"])
+	}
+	if upstream.calls() != 0 || len(store.insertedRows()) != 0 || env.recorderCount() != 0 {
+		t.Fatalf("plus capability rejection must be zero-cost")
+	}
+}
+
+// cancellingSubmitter 在返回成功前取消请求上下文，模拟「上游已受理、客户端
+// 断开」。落库与 Detach 必须仍完成（R-16 同口径）。
+type cancellingSubmitter struct {
+	cancel context.CancelFunc
+	result *mj.SubmitResponse
+}
+
+func (s *cancellingSubmitter) Submit(_ context.Context, _ mj.SubmitConfig, _ mj.Endpoint,
+	_ *mj.NormalizedSubmit) (*mj.SubmitResponse, *mj.Error) {
+	s.cancel()
+	return s.result, nil
+}
+
+func TestMJSubmitPersistsAfterClientDisconnect(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`) // 只用于渠道 URL
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tokens, key42, _ := newMJTokens()
+	recorder := newTaskBillingRecorder()
+	recorder.hold = 50
+	handler := NewMJHandler(MJHandlerConfig{
+		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
+		Billing:   func(*contract.RelayContext) contract.BillingSession { return recorder },
+		Config:    mjConfigured(nil),
+		Submitter: &cancellingSubmitter{cancel: cancel, result: &mj.SubmitResponse{Code: mj.CodeSuccess, Result: "mj_up_1"}},
+		Uint64N:   func(uint64) uint64 { return 0 },
+	})
+	mux := http.NewServeMux()
+	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
+
+	req := httptest.NewRequest(http.MethodPost, mj.EndpointImagine.Path(), strings.NewReader(`{"prompt":"x"}`)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+key42)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	if rows := store.insertedRows(); len(rows) != 1 || rows[0].UpstreamTaskID != "mj_up_1" {
+		t.Fatalf("disconnect must still persist the accepted task: %+v", rows)
+	}
+	if calls := recorder.ReserveCalls(); countCall(calls, "detach") != 1 {
+		t.Fatalf("disconnect must still detach: %v", calls)
+	}
+}
+
+func TestMJContextErrorMapsBadRequest(t *testing.T) {
+	err := mjContextError(http.StatusBadRequest)
+	if err == nil || err.Status != http.StatusBadRequest || err.Code != mj.CodeRequestError || err.Description != "invalid_request" {
+		t.Fatalf("mjContextError(400) = %+v, want 400/code4/invalid_request", err)
+	}
+}
+
+func TestMJUploadEmptyResultIsRejected(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"result":[]}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, normalCand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{normalCand}}
+	env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+	rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, mj.EndpointUploadDiscord.Path(), `{"base64Array":["aGk="]}`))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if rows := store.insertedRows(); len(rows) != 0 {
+		t.Fatalf("empty upload result must not persist: %+v", rows)
+	}
+	if calls := env.lastRecorder(t).ReserveCalls(); countCall(calls, "refund") != 1 {
+		t.Fatalf("empty upload result must refund the hold: %v", calls)
 	}
 }

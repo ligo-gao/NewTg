@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"newtg/gateway/internal/contract"
 )
 
 // 本文件是 tasks 表的 SQL 仓储（database/sql + pgx stdlib，与 store 包同口径）。
@@ -376,6 +378,17 @@ type MJChannelCandidate struct {
 	ModelMapping    map[string]string
 }
 
+// mjChannelTypes 是 MJ 渠道类型集合（SQL 参数真源）。
+//
+// 从 contract 的冻结通道类型派生（M6）：SQL 里的 `type = ANY(...)` 与领域层
+// 的 EligibleChannels 必须覆盖同一集合；任一侧改名而另一侧没跟上，会让
+// 「渠道明明存在却永远选不中」这种静默故障出现。测试
+// TestMJChannelTypesMatchContract 冻结本变量与 contract 常量的一致性。
+var mjChannelTypes = []string{
+	string(contract.ChannelTypeMidjourney),
+	string(contract.ChannelTypeMidjourneyPlus),
+}
+
 // MJChannelCandidates 返回可能服务该模型的 MJ 渠道（relay-05 §3.4）。
 //
 // 只按「MJ 渠道类型 + 模型命中 + 分组可见」取候选，**不在 SQL 里做加权
@@ -389,15 +402,17 @@ func (r *Repo) MJChannelCandidates(ctx context.Context, model, group string) ([]
 	if strings.TrimSpace(model) == "" {
 		return nil, errors.New("tasks: mj channel candidates require a model")
 	}
+	// 类型集合参数化（M6）：SQL 里不再硬编码渠道类型字面量，唯一真源是
+	// contract.ChannelType* → mjChannelTypes；测试断言三者不漂移。
 	query := `SELECT id, type, status, priority, weight, supported_models, model_mapping
 		FROM channels
 		WHERE status = 1
-		  AND type IN ('midjourney', 'midjourney_plus')
-		  AND (supported_models @> jsonb_build_array($1::text)
-		       OR jsonb_exists(model_mapping, $1))`
-	args := []any{model}
+		  AND type = ANY($1::text[])
+		  AND (supported_models @> jsonb_build_array($2::text)
+		       OR jsonb_exists(model_mapping, $2))`
+	args := []any{mjChannelTypes, model}
 	if group != "" {
-		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($2::text))`
+		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($3::text))`
 		args = append(args, group)
 	}
 	query += ` ORDER BY priority DESC, id ASC`

@@ -189,6 +189,19 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 		}
 	})
 
+	t.Run("unsupported result element", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"code":1,"result":["ok",{"bad":true}]}`))
+		}))
+		defer server.Close()
+		client := NewSubmitClient(nil)
+		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointUploadDiscord,
+			&NormalizedSubmit{Endpoint: EndpointUploadDiscord, Action: ActionUpload, Model: "mj_upload", Base64Array: []string{"aGk="}})
+		if err == nil || err.Description != DescriptionUpstreamBadResponse {
+			t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamBadResponse)
+		}
+	})
+
 	t.Run("missing code", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"description":"no code"}`))

@@ -4,17 +4,21 @@ import (
 	"math/rand/v2"
 	"strings"
 
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/tasks"
 )
 
 // 渠道类型字面量（relay-05 §3.4；基线 ChannelTypeMidjourney=2 /
 // ChannelTypeMidjourneyPlus=5）。
 //
+// 值从 contract 的冻结通道类型派生（M6）：渠道类型的唯一真源是
+// contract.ChannelType*，领域层再写一份字面量会在任一侧改名时静默漂移
+// （MJ 渠道永远不会被选中，表现为 no_available_channel）。
 // 用字符串而不是 DB 的 smallint：领域层只做策略判定，类型比较必须可读且
 // 与渠道配置的线值一致；int 映射留在 store 的扫描层，避免两个漂移点。
 const (
-	ChannelTypeMidjourney     = "midjourney"
-	ChannelTypeMidjourneyPlus = "midjourney_plus"
+	ChannelTypeMidjourney     = string(contract.ChannelTypeMidjourney)
+	ChannelTypeMidjourneyPlus = string(contract.ChannelTypeMidjourneyPlus)
 )
 
 // ChannelStatusEnabled 是「启用中」的渠道状态（store 的 status=1）。

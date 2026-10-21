@@ -1,6 +1,7 @@
 package mj
 
 import (
+	"newtg/gateway/internal/contract"
 	"testing"
 
 	"newtg/gateway/internal/tasks"
@@ -156,5 +157,16 @@ func TestResolveLock(t *testing.T) {
 				t.Fatalf("锁定失败必须是 400/code4，got %+v", err)
 			}
 		})
+	}
+}
+
+// TestChannelTypeConstantsMatchContract 冻结 MJ 渠道类型与 contract 的唯一真源
+// 一致（M6）：两侧任一改名都必须同时改这里，否则渠道选择会静默失效。
+func TestChannelTypeConstantsMatchContract(t *testing.T) {
+	if ChannelTypeMidjourney != string(contract.ChannelTypeMidjourney) {
+		t.Fatalf("ChannelTypeMidjourney = %q, contract = %q", ChannelTypeMidjourney, contract.ChannelTypeMidjourney)
+	}
+	if ChannelTypeMidjourneyPlus != string(contract.ChannelTypeMidjourneyPlus) {
+		t.Fatalf("ChannelTypeMidjourneyPlus = %q, contract = %q", ChannelTypeMidjourneyPlus, contract.ChannelTypeMidjourneyPlus)
 	}
 }

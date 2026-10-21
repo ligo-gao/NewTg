@@ -137,6 +137,24 @@ func TestFrozenWireLiterals(t *testing.T) {
 		{"ChannelDisabled", DescriptionChannelDisabled, "channel_disabled"},
 		{"TaskNotSuccess", DescriptionTaskNotSuccess, "action_task_not_success"},
 		{"InternalError", DescriptionInternalError, "internal_error"},
+		// W8/MJ-a2：提交编排新增的固定描述（16 个）。handler 测试用字面量
+		// 断言，常量本身的取值由本表独立钉住（M2）。
+		{"Disabled", DescriptionDisabled, "mj_not_enabled"},
+		{"PlusChannelRequired", DescriptionPlusChannelRequired, "plus_channel_required"},
+		{"QuotaNotEnough", DescriptionQuotaNotEnough, "quota_not_enough"},
+		{"PricingUnavailable", DescriptionPricingUnavailable, "task_pricing_unavailable"},
+		{"BodyTooLarge", DescriptionBodyTooLarge, "request_body_too_large"},
+		{"ChannelMisconfigured", DescriptionChannelMisconfigured, "channel_misconfigured"},
+		{"UpstreamError", DescriptionUpstreamError, "upstream_error"},
+		{"UpstreamBadResponse", DescriptionUpstreamBadResponse, "upstream_bad_response"},
+		{"UpstreamResponseTooLarge", DescriptionUpstreamResponseTooLarge, "upstream_response_too_large"},
+		{"NoAccount", DescriptionNoAccount, "no_account_instance"},
+		{"SensitiveWord", DescriptionSensitiveWord, "sensitive_word_detected"},
+		{"GroupSaturated", DescriptionGroupSaturated, "group_saturated"},
+		{"SubmitFailed", DescriptionSubmitFailed, "submit_failed"},
+		{"InvalidToken", DescriptionInvalidToken, "invalid_token"},
+		{"Forbidden", DescriptionForbidden, "forbidden"},
+		{"RateLimited", DescriptionRateLimited, "rate_limited"},
 	}
 	for _, c := range descriptions {
 		if c.got != c.want {

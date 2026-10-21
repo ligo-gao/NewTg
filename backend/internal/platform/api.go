@@ -173,6 +173,12 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err := center.Load(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: load config center: %w", err)
 	}
+	// I2：gateway 也不能在「无人结算 MJ」时接受提交。MJ-b 之前没有 MJ
+	// settler（worker 侧 Handler 为 nil），开启后每笔提交的 hold 都会永久
+	// 冻结；因此装配期直接拒绝。MJ-b 接线后应把非 nil handler 传进来。
+	if err := mjSettlerGuard(center, nil); err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
+	}
 	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
 	// 元↔积分换算基准），并接入钳制审计日志。必须在 Load 之后、任何
 	// handler 读取 CurrentQuotaPerUnit 之前；非法 QPU 让启动失败。
