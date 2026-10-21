@@ -2,6 +2,8 @@ package platform
 
 import (
 	"encoding/json"
+	"math"
+	"strconv"
 	"testing"
 
 	"newtg/gateway/internal/settings"
@@ -67,6 +69,42 @@ func TestResolveRetentionDaysInvalidFallsBack(t *testing.T) {
 		if got != 90 {
 			t.Fatalf("invalid %s = %d, want fallback 90", string(raw), got)
 		}
+	}
+}
+
+func TestResolveRetentionDaysDurationOverflowFallsBack(t *testing.T) {
+	// 2^31 天已在 int 范围内（64 位），但乘 24h 会溢出 time.Duration；
+	// 上界必须按 Duration 的安全刻度而不是 int 宽度来判。
+	for _, days := range []int64{
+		int64(math.MaxInt32) + 1,
+		int64(1) << 40,
+		math.MaxInt64,
+	} {
+		log, _ := newLimitsLog()
+		got := resolveRetentionDays(fakeSettingReader{
+			settingRedemptionRetentionDays: json.RawMessage(strconv.FormatInt(days, 10)),
+		}, settingRedemptionRetentionDays, 90, log)
+		if got != 90 {
+			t.Fatalf("%d days = %d, want fallback 90 (over %d)", days, got, maxRetentionDays)
+		}
+	}
+}
+
+func TestResolveRetentionDaysBoundaryAccepted(t *testing.T) {
+	log, _ := newLimitsLog()
+	got := resolveRetentionDays(fakeSettingReader{
+		settingRedemptionRetentionDays: json.RawMessage(strconv.FormatInt(maxRetentionDays, 10)),
+	}, settingRedemptionRetentionDays, 90, log)
+	if int64(got) != maxRetentionDays {
+		t.Fatalf("boundary %d days = %d, want accepted", maxRetentionDays, got)
+	}
+	// 上界 +1 必须回落。
+	log, _ = newLimitsLog()
+	got = resolveRetentionDays(fakeSettingReader{
+		settingRedemptionRetentionDays: json.RawMessage(strconv.FormatInt(maxRetentionDays+1, 10)),
+	}, settingRedemptionRetentionDays, 90, log)
+	if got != 90 {
+		t.Fatalf("boundary+1 = %d, want fallback 90", got)
 	}
 }
 

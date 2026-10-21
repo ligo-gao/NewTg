@@ -16,6 +16,10 @@
 -- `ORDER BY id ASC LIMIT` 取最旧的行；以 id 为索引第二列可直接顺序扫描，
 -- 不需要排序临时集。时间条件（COALESCE(retention_deadline, finish_time…)
 -- < now）作为索引过滤后的残余谓词执行——每批只触碰有限行。
+--
+-- 为什么谓词里没有「未被 task_batches_items 引用」：部分索引谓词只能引用
+-- 本表列，跨表 NOT EXISTS 不能进谓词。批次引用保护在删除 SQL 里作为残余
+-- 过滤执行（task_batches_items_task_idx 支撑反查）。
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS tasks_terminal_retention_idx

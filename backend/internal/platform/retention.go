@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -42,7 +43,7 @@ const (
 // 调用，否则进行中的 DELETE 会拿到「连接已关闭」错误，把正常停机噪声
 // 打进告警。两个循环各自独立：任一失败只记录，不影响另一个。
 func startRetentionWorkers(parent context.Context, db *sql.DB, rdb *redis.Client,
-	center *configcenter.Center, log *slog.Logger) func() {
+	center *configcenter.Center, node, instanceID string, log *slog.Logger) func() {
 
 	if log == nil {
 		log = slog.Default()
@@ -70,6 +71,8 @@ func startRetentionWorkers(parent context.Context, db *sql.DB, rdb *redis.Client
 			Logger:              log,
 			PluginRetentionDays: pluginDays,
 			MJRetentionDays:     mjDays,
+			Node:                node,
+			InstanceID:          instanceID,
 		}); err != nil {
 			log.Error("task retention worker exited with error", "error", err)
 		}
@@ -83,6 +86,8 @@ func startRetentionWorkers(parent context.Context, db *sql.DB, rdb *redis.Client
 			Redis:         rdb,
 			Logger:        log,
 			RetentionDays: redemptionDays,
+			Node:          node,
+			InstanceID:    instanceID,
 		}); err != nil {
 			log.Error("redemption retention worker exited with error", "error", err)
 		}
@@ -94,6 +99,13 @@ func startRetentionWorkers(parent context.Context, db *sql.DB, rdb *redis.Client
 	}
 }
 
+// maxRetentionDays 是保留天数的硬上界（约 106751 天 ≈ 292 年）：
+// `time.Duration` 的纳秒刻度是 int64，超过这个天数再乘 24h 会溢出成负数，
+// 让 cutoff 变成未来（提前全删）或远古（永不删）。注册表本身限制 3650 天，
+// 但 configcenter 的历史行/手工写入不受注册表校验，读取侧仍需防御。
+// 106751 * 24h ≈ 9.22e18ns < MaxInt64，恰好是安全的最大整数值。
+var maxRetentionDays = int64(math.MaxInt64) / int64(24*time.Hour)
+
 // resolveRetentionDays 把设置中心的键与设计默认合并成生效天数。
 //
 // 三态冻结（与 taskPollLimits 同口径）：
@@ -101,8 +113,8 @@ func startRetentionWorkers(parent context.Context, db *sql.DB, rdb *redis.Client
 //     已对后三种发出 warn）。负值不是「关闭」的另一种写法：设计只冻结了
 //     0 = 关闭，静默接受负数会让运营以为清理已关而实际仍在按默认值执行。
 //   - 显式 0 → 原样返回 0（关闭）。
-//   - 正值 → 透传；超过 int 的极端值回落默认并 warn，避免溢出成负数把
-//     「关闭」和「巨大保留期」混为一谈。
+//   - 正值 → 透传；超过 maxRetentionDays 的值回落默认并 warn，避免
+//     Duration 换算溢出后把「关闭」和「巨大保留期」混为一谈。
 func resolveRetentionDays(reader settingReader, key string, fallback int, log *slog.Logger) int {
 	if log == nil {
 		log = slog.Default()
@@ -111,9 +123,9 @@ func resolveRetentionDays(reader settingReader, key string, fallback int, log *s
 	if !ok {
 		return fallback
 	}
-	if days > math.MaxInt {
-		log.Warn("worker: retention setting overflows int; falling back to the design default",
-			"key", key, "days", days, "fallback", fallback)
+	if days > maxRetentionDays {
+		log.Warn("worker: retention setting is too large (duration overflow); falling back to the design default",
+			"key", key, "days", days, "max_days", maxRetentionDays, "fallback", fallback)
 		return fallback
 	}
 	return int(days)

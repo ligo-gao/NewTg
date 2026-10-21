@@ -84,6 +84,11 @@ type RedemptionRetentionDeps struct {
 	BatchSize     int
 	MaxBatches    int
 
+	// Node / InstanceID 只用于清理审计（设计 relay-05 §9：条数、时间窗、
+	// 执行的 worker 实例）。为空时不额外输出字段，不影响删除语义。
+	Node       string
+	InstanceID string
+
 	// Delete 是批量删除接缝（测试注入 fake；nil 时用 DB 的生产 SQL）。
 	Delete func(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
@@ -96,6 +101,8 @@ type redemptionRetentionWorker struct {
 	retentionDays int
 	batchSize     int
 	maxBatches    int
+	node          string
+	instanceID    string
 	deleteFn      func(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
@@ -181,6 +188,8 @@ func newRedemptionRetentionWorker(deps RedemptionRetentionDeps) (*redemptionRete
 		retentionDays: deps.RetentionDays,
 		batchSize:     batchSize,
 		maxBatches:    maxBatches,
+		node:          deps.Node,
+		instanceID:    deps.InstanceID,
 		deleteFn:      deleteFn,
 	}, nil
 }
@@ -206,11 +215,7 @@ func (w *redemptionRetentionWorker) runOnce(ctx context.Context) {
 	}
 	defer releaseWorkerLock(ctx, w.redis, redemptionRetentionLockKey, token, w.log)
 
-	deleted := w.reclaim(ctx)
-	if deleted > 0 {
-		w.log.Info("expired redemption codes reclaimed",
-			"count", deleted, "retention_days", w.retentionDays)
-	}
+	w.reclaim(ctx)
 }
 
 // reclaim 按批删除，返回本轮删除总数。
@@ -233,7 +238,7 @@ func (w *redemptionRetentionWorker) reclaim(ctx context.Context) int64 {
 		if err != nil {
 			// 本轮剩余批次不再执行；下一轮从头重试（删除幂等）。
 			w.log.Error("redemption retention delete failed; retrying next round", "error", err,
-				"deleted", total)
+				"deleted", total, "cutoff", cutoff, "node", w.node, "instance", w.instanceID)
 			return total
 		}
 		total += deleted
@@ -242,9 +247,19 @@ func (w *redemptionRetentionWorker) reclaim(ctx context.Context) int64 {
 			break
 		}
 	}
+	// 审计（relay-05 §9）：条数、时间窗与执行实例必须同一条日志可见；
+	// 否则运维事后无法判断「某天删了多少、按哪个 cutoff、哪个副本执行」。
+	if total > 0 {
+		w.log.Info("expired redemption codes reclaimed",
+			"count", total, "cutoff", cutoff, "retention_days", w.retentionDays,
+			"node", w.node, "instance", w.instanceID)
+	}
 	if total >= int64(w.batchSize*w.maxBatches) {
+		// 【已知假阳性】恰好删满预算且表里再无更多行时也会命中此告警；
+		// 多一次探测查询不值得，运维按下一轮日志（无新增）即可消解。
 		w.log.Warn("redemption retention hit the per-pass batch budget; backlog continues next pass",
-			"deleted", total, "batch_size", w.batchSize, "max_batches", w.maxBatches)
+			"deleted", total, "cutoff", cutoff, "batch_size", w.batchSize,
+			"max_batches", w.maxBatches, "node", w.node, "instance", w.instanceID)
 	}
 	return total
 }
@@ -259,6 +274,13 @@ func (w *redemptionRetentionWorker) reclaim(ctx context.Context) int64 {
 // 【为什么必须同时锁 status】管理员可能在删除与核销之间把码用掉：条件
 // UPDATE 与 DELETE 都以 status='unused' 为前置，谁先提交谁生效；DELETE
 // 后到达时核销会得到「无效码」，不会出现「已删但已入账」的双花。
+// 【为什么外层重复 status/expires_at 谓词】`id IN (SELECT ...)` 的子查询
+// 只是一次快照：READ COMMITTED 下选中后，管理员可能并发把 `unused` 改成
+// `disabled`（或核销成 `used`）并提交；PostgreSQL 的 EvalPlanQual 只重查
+// **外层** WHERE，不会重跑子查询。若外层只有 `id IN (...)`，重查仍为真，
+// 这一行就会被误删（disabled 码是管理员的操作内容，属于数据丢失）。
+// 把同一组谓词写在外层，让重查在「状态已变」时返回 false，把并发写变成
+// 「本轮跳过」，下一轮子查询也不会再选它。
 func DeleteExpiredRedemptionCodes(ctx context.Context, db *sql.DB, cutoff time.Time, limit int) (int64, error) {
 	if db == nil {
 		return 0, errors.New("billing: redemption retention database is not configured")
@@ -275,7 +297,10 @@ func DeleteExpiredRedemptionCodes(ctx context.Context, db *sql.DB, cutoff time.T
 			  AND expires_at < $1
 			ORDER BY expires_at ASC, id ASC
 			LIMIT $2
-		)`, cutoff.UTC(), limit)
+		)
+		  AND status = 'unused'
+		  AND expires_at IS NOT NULL
+		  AND expires_at < $1`, cutoff.UTC(), limit)
 	if err != nil {
 		return 0, fmt.Errorf("billing: delete expired redemption codes: %w", err)
 	}

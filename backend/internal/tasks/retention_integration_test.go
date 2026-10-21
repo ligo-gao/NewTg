@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,12 +92,24 @@ func taskExists(t *testing.T, db *sql.DB, id int64) bool {
 	return n > 0
 }
 
+// clearTerminalTasks 清掉库里其它测试残留的终态任务，让「删了几条」的
+// 精确断言可复现。DeleteTerminalTasksBefore 的删除面是按族的全表（生产
+// 语义），没有 user/batch 过滤；测试库专用且包内用例串行，清场是确定的。
+func clearTerminalTasks(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`DELETE FROM tasks
+		WHERE family IN ('plugin', 'mj') AND state IN ('success', 'failure')`); err != nil {
+		t.Fatalf("clear terminal tasks: %v", err)
+	}
+}
+
 func TestTaskRetentionDeletesOnlyEligibleTerminalRows(t *testing.T) {
 	db := openTaskTestDB(t)
 	ctx := context.Background()
 	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
 	userID := time.Now().UnixNano()%1_000_000 + 7_000_000
 	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+	clearTerminalTasks(t, db)
 
 	old := now.Add(-40 * 24 * time.Hour) // 超过 30 天
 	recent := now.Add(-10 * 24 * time.Hour)
@@ -182,6 +195,7 @@ func TestTaskRetentionBatchLimit(t *testing.T) {
 	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
 	userID := time.Now().UnixNano()%1_000_000 + 8_000_000
 	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+	clearTerminalTasks(t, db)
 
 	old := now.Add(-40 * 24 * time.Hour)
 	for i := 0; i < 5; i++ {
@@ -245,7 +259,11 @@ func TestTaskRetentionWorkerBothDisabled(t *testing.T) {
 		Family: FamilyPlugin, State: StateSuccess, FinishTime: &old})
 
 	// RunRetentionLoop 在两族都为 0 时直接返回，不触碰 DB/Redis。
-	if err := RunRetentionLoop(context.Background(), RetentionDeps{
+	// 用带超时的 ctx：若「0=关闭」守护被删，循环会进入 24h ticker 而不是
+	// 立即失败——超时让变异表现为断言红而不是测试挂死。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := RunRetentionLoop(ctx, RetentionDeps{
 		DB: db, Redis: rdb, Now: func() time.Time { return now },
 		PluginRetentionDays: 0, MJRetentionDays: 0,
 	}); err != nil {
@@ -256,14 +274,131 @@ func TestTaskRetentionWorkerBothDisabled(t *testing.T) {
 	}
 }
 
+func TestTaskRetentionSkipsBatchReferencedTasks(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	userID := time.Now().UnixNano()%1_000_000 + 11_000_000
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+	clearTerminalTasks(t, db)
+
+	old := now.Add(-40 * 24 * time.Hour)
+	id := insertRetentionTask(t, db, userID, retentionTaskFixture{
+		Family: FamilyPlugin, State: StateSuccess, FinishTime: &old})
+
+	// 父批次 total=1，子项指向该任务；删除任务会 CASCADE 掉子项，让
+	// GetBatchByID 把 total-linked 计入 failed，已完成批次倒退为 failed。
+	var batchID string
+	if err := db.QueryRow(`INSERT INTO task_batches (user_id, token_id, status, total)
+		VALUES ($1, 0, 'completed', 1) RETURNING id`, userID).Scan(&batchID); err != nil {
+		t.Fatalf("insert batch: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM task_batches WHERE id = $1`, batchID) })
+	if _, err := db.Exec(`INSERT INTO task_batches_items (batch_id, task_id) VALUES ($1, $2)`,
+		batchID, id); err != nil {
+		t.Fatalf("link batch item: %v", err)
+	}
+
+	deleted, err := DeleteTerminalTasksBefore(ctx, db, FamilyPlugin, 30, now, 100)
+	if err != nil {
+		t.Fatalf("delete terminal tasks: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 (task is referenced by a batch)", deleted)
+	}
+	if !taskExists(t, db, id) {
+		t.Fatal("batch-referenced task must survive retention cleanup")
+	}
+
+	// 聚合不变：仍是 completed/1 个已完成、0 失败（不是 failed）。
+	batch, err := repo.GetBatchByID(ctx, userID, batchID)
+	if err != nil {
+		t.Fatalf("GetBatchByID: %v", err)
+	}
+	if batch.Status != BatchStatusCompleted || batch.Completed != 1 || batch.Failed != 0 {
+		t.Fatalf("batch aggregation = status %q completed %d failed %d, want completed/1/0",
+			batch.Status, batch.Completed, batch.Failed)
+	}
+}
+
+func TestRetentionLockCompareAndDelete(t *testing.T) {
+	rdb := openTaskRetentionRedis(t)
+	ctx := context.Background()
+	key := fmt.Sprintf("w10n9:lock:test:%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = rdb.Del(ctx, key).Err() })
+
+	token, acquired, err := acquireRetentionLock(ctx, rdb, key, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("first acquire = (%v, %v), want acquired", acquired, err)
+	}
+	if _, second, err := acquireRetentionLock(ctx, rdb, key, time.Minute); err != nil || second {
+		t.Fatalf("second acquire = (%v, %v), want not acquired", second, err)
+	}
+	releaseRetentionLock(ctx, rdb, key, "not-the-owner", retentionTestLogger())
+	if n := rdb.Exists(ctx, key).Val(); n != 1 {
+		t.Fatalf("lock removed by a wrong token; exists = %d", n)
+	}
+	releaseRetentionLock(ctx, rdb, key, token, retentionTestLogger())
+	if n := rdb.Exists(ctx, key).Val(); n != 0 {
+		t.Fatalf("lock not released by its owner; exists = %d", n)
+	}
+}
+
 func TestTaskTerminalRetentionIndexExists(t *testing.T) {
 	db := openTaskTestDB(t)
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM pg_indexes
-		WHERE schemaname = current_schema() AND indexname = 'tasks_terminal_retention_idx'`).Scan(&n); err != nil {
-		t.Fatalf("query index: %v", err)
+	ctx := context.Background()
+
+	// 谓词断言：索引必须只覆盖终态且排除待补偿行（否则索引会跟着历史
+	// 全量增长，清理扫描重新退化为大范围扫描）。
+	var def string
+	if err := db.QueryRowContext(ctx,
+		`SELECT pg_get_indexdef('tasks_terminal_retention_idx'::regclass)`).Scan(&def); err != nil {
+		t.Fatalf("read index definition: %v", err)
 	}
-	if n != 1 {
-		t.Fatal("tasks_terminal_retention_idx missing; run migrations before integration tests")
+	for _, want := range []string{"success", "failure", "billing_pending", "settlement_pending", "refund_pending"} {
+		if !strings.Contains(def, want) {
+			t.Fatalf("index definition missing %q: %s", want, def)
+		}
+	}
+
+	// 计划断言：清理子查询在禁用 seqscan 时必须命中该索引，证明索引可用
+	// （只断言「索引存在」无法发现谓词写错导致索引不可用的回归）。
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin explain tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		EXPLAIN SELECT id FROM tasks
+		WHERE family = 'plugin'
+		  AND state IN ('success', 'failure')
+		  AND NOT (private_data @> '{"billing_pending": true}'::jsonb
+		        OR private_data @> '{"settlement_pending": true}'::jsonb
+		        OR private_data @> '{"refund_pending": true}'::jsonb)
+		  AND NOT EXISTS (SELECT 1 FROM task_batches_items bi WHERE bi.task_id = tasks.id)
+		ORDER BY id ASC
+		LIMIT 10`)
+	if err != nil {
+		t.Fatalf("explain retention delete: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan explain: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate explain: %v", err)
+	}
+	if !strings.Contains(plan.String(), "tasks_terminal_retention_idx") {
+		t.Fatalf("retention query does not use tasks_terminal_retention_idx:\n%s", plan.String())
 	}
 }

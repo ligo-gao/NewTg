@@ -834,7 +834,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// cancel/WaitGroup；设置键在启动时解析一次快照（见 platform/retention.go）。
 	// 放在其余装配之后、进入主循环之前，停机序统一在下方 cancel+Wait，
 	// 保证进行中的 DELETE 先于连接池关闭退出。
-	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center, log)
+	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
+		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
 
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,

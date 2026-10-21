@@ -88,6 +88,11 @@ type RetentionDeps struct {
 	BatchSize           int
 	MaxBatches          int
 
+	// Node / InstanceID 只用于清理审计（relay-05 §9：条数、时间窗、执行的
+	// worker 实例）。为空时不额外输出字段，不影响删除语义。
+	Node       string
+	InstanceID string
+
 	// Delete 是批量删除接缝（测试注入 fake；nil 时用 DB 的生产 SQL）。
 	Delete func(ctx context.Context, family string, retentionDays int, now time.Time, limit int) (int64, error)
 }
@@ -101,6 +106,8 @@ type retentionWorker struct {
 	mjRetentionDays     int
 	batchSize           int
 	maxBatches          int
+	node                string
+	instanceID          string
 	deleteFn            func(ctx context.Context, family string, retentionDays int, now time.Time, limit int) (int64, error)
 }
 
@@ -186,6 +193,8 @@ func newRetentionWorker(deps RetentionDeps) (*retentionWorker, error) {
 		mjRetentionDays:     deps.MJRetentionDays,
 		batchSize:           batchSize,
 		maxBatches:          maxBatches,
+		node:                deps.Node,
+		instanceID:          deps.InstanceID,
 		deleteFn:            deleteFn,
 	}, nil
 }
@@ -233,8 +242,11 @@ func (w *retentionWorker) runFamilies(ctx context.Context) int64 {
 		deleted := w.reclaimFamily(ctx, family.name, family.days, now)
 		total += deleted
 		if deleted > 0 {
+			// 审计（relay-05 §9）：条数、时间窗（cutoff）与执行实例同一行可见。
 			w.log.Info("terminal tasks reclaimed",
-				"family", family.name, "count", deleted, "retention_days", family.days)
+				"family", family.name, "count", deleted, "retention_days", family.days,
+				"cutoff", now.Add(-time.Duration(family.days)*24*time.Hour),
+				"node", w.node, "instance", w.instanceID)
 		}
 	}
 	return total
@@ -255,7 +267,9 @@ func (w *retentionWorker) reclaimFamily(ctx context.Context, family string, rete
 		deleted, err := w.deleteFn(ctx, family, retentionDays, now, w.batchSize)
 		if err != nil {
 			w.log.Error("task retention delete failed; retrying next round",
-				"family", family, "error", err, "deleted", total)
+				"family", family, "error", err, "deleted", total,
+				"cutoff", now.Add(-time.Duration(retentionDays)*24*time.Hour),
+				"node", w.node, "instance", w.instanceID)
 			return total
 		}
 		total += deleted
@@ -265,9 +279,13 @@ func (w *retentionWorker) reclaimFamily(ctx context.Context, family string, rete
 		}
 	}
 	if total >= int64(w.batchSize*w.maxBatches) {
+		// 【已知假阳性】恰好删满预算且表里再无更多行时也会命中此告警；
+		// 运维按下一轮日志（无新增）即可消解，不值得多一次探测查询。
 		w.log.Warn("task retention hit the per-pass batch budget; backlog continues next pass",
 			"family", family, "deleted", total,
-			"batch_size", w.batchSize, "max_batches", w.maxBatches)
+			"cutoff", now.Add(-time.Duration(retentionDays)*24*time.Hour),
+			"batch_size", w.batchSize, "max_batches", w.maxBatches,
+			"node", w.node, "instance", w.instanceID)
 	}
 	return total
 }
@@ -284,6 +302,12 @@ func (w *retentionWorker) reclaimFamily(ctx context.Context, family string, rete
 //
 // 【NOT pending 谓词】与 `tasks_billing_pending_idx` 的部分索引谓词一致，
 // 既保证待补偿行不被删，也让本查询能命中该索引之外的终态保留索引。
+//
+// 【批次引用保护】`task_batches_items.task_id` 对 tasks 是 `ON DELETE
+// CASCADE`；直接删任务会让父批次少一个子项，而 `GetBatchByID` 把
+// `total - linked` 计入 failed——已完成的批次会被重新聚合成 failed
+// （可见状态倒退）。因此被任何批次项引用的任务不参与清理；批次域后续
+// 需要自己的保留策略（见 W10 台账的批次保留后续项）。
 func DeleteTerminalTasksBefore(ctx context.Context, db *sql.DB, family string, retentionDays int, now time.Time, limit int) (int64, error) {
 	if !ValidFamily(family) {
 		// 拼错的族名必须报错而不是静默返回 0：那会把「配置写错」伪装成
@@ -313,6 +337,9 @@ func DeleteTerminalTasksBefore(ctx context.Context, db *sql.DB, family string, r
 			  AND NOT (private_data @> '{"billing_pending": true}'::jsonb
 			        OR private_data @> '{"settlement_pending": true}'::jsonb
 			        OR private_data @> '{"refund_pending": true}'::jsonb)
+			  AND NOT EXISTS (
+			        SELECT 1 FROM task_batches_items bi WHERE bi.task_id = tasks.id
+			      )
 			ORDER BY id ASC
 			LIMIT $4
 		)`, family, retentionDays, now.UTC(), limit)
