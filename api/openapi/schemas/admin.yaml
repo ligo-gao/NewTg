@@ -2837,6 +2837,18 @@ schemas:
       created_at: {type: string, format: date-time}
       updated_at: {type: string, format: date-time}
 
+  AdminSubscriptionCancelRequest:
+    type: object
+    additionalProperties: false
+    description: |
+      管理侧取消请求体（可省略）。immediate=false/缺省 = 周期末取消；true =
+      立即取消（end_at 提前到 now，进入快照宽限期，宽限期内仍可用，见路径说明）。
+      未知字段由 RBAC 字段层返回 403 field_not_writable。
+    properties:
+      immediate:
+        type: boolean
+        default: false
+
   AdminSubscriptionList:
     type: object
     additionalProperties: false

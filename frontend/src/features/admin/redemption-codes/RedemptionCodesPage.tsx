@@ -5,6 +5,7 @@ import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components, operations } from '@/api/schema'
+import { meQueryOptions } from '@/lib/session'
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { formatCredits } from '@/shared/lib/format'
 import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
@@ -15,6 +16,11 @@ import { TextField } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { CreateCodesResultDialog, CreateCodesSheet } from './create-codes-sheet'
+import {
+  downloadRedemptionListMetadata,
+  REDEMPTION_EXPORT_LIMIT,
+  type RedemptionExportFormat,
+} from './redemption-export'
 import {
   DEFAULT_REDEMPTION_PAGE_SIZE,
   hasRedemptionFilters,
@@ -117,6 +123,20 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   const [deleteTarget, setDeleteTarget] = useState<RedemptionCode | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set())
+  // 列表页「导出元数据」（F-04-17 第二种入口；C3/R-49）。
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<RedemptionExportFormat>('txt')
+  const [exportIncludeBatch, setExportIncludeBatch] = useState(true)
+  const [exportIncludeCredits, setExportIncludeCredits] = useState(true)
+  const [exportIncludeStatus, setExportIncludeStatus] = useState(true)
+
+  // used_by 是用户标识：只有持 users:read 的管理员才能在导出文件里看到它
+  // （R-49）。权限判定用 /api/me 的生效权限；服务端仍是最终权威，但本页
+  // 的导出是纯前端生成，没有「服务端再拒绝一次」的兜底，必须在这里裁剪。
+  const me = useQuery(meQueryOptions())
+  const canReadUsers =
+    me.data?.role === 'admin' &&
+    (me.data.permissions.includes('*') || me.data.permissions.includes('users:read'))
 
   const listQuery = useQuery({
     // `search` 已包含 `size`；不要再叠加一个本地 state，否则刷新后
@@ -276,6 +296,25 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   const allOnPageSelected =
     items.length > 0 && items.every((row) => selected.has(row.id))
   const selectedIds = [...selected]
+  const selectedRows = items.filter((row) => selected.has(row.id))
+
+  function exportMetadata(): void {
+    if (selectedRows.length > REDEMPTION_EXPORT_LIMIT) {
+      // 服务端不参与导出（纯前端 Blob），上限只能在这里兜住：一次生成
+      // 几万个单元格会卡死标签页。
+      push({ tone: 'error', message: t('admin.redemption.export_limit') })
+      return
+    }
+    const filename = downloadRedemptionListMetadata(selectedRows, exportFormat, {
+      includeBatch: exportIncludeBatch,
+      includeCredits: exportIncludeCredits,
+      includeStatus: exportIncludeStatus,
+      // R-49：无 users:read 时整列省略（不是留空）。
+      includeUsedBy: canReadUsers,
+    })
+    push({ tone: 'success', message: t('admin.redemption.export_success', { filename }) })
+    setExportOpen(false)
+  }
 
   if (!wideEnough) {
     return (
@@ -361,14 +400,24 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
                 : ''}
             </span>
           </div>
-          <Button
-            variant="danger"
-            className="h-8 px-3 text-[13px]"
-            disabled={selectedIds.length === 0 || batchRemove.isPending}
-            onClick={() => setBulkDeleteOpen(true)}
-          >
-            {t('admin.redemption.delete_selected', { count: selectedIds.length })}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-[13px]"
+              disabled={selectedIds.length === 0}
+              onClick={() => setExportOpen(true)}
+            >
+              {t('admin.redemption.export_metadata')}
+            </Button>
+            <Button
+              variant="danger"
+              className="h-8 px-3 text-[13px]"
+              disabled={selectedIds.length === 0 || batchRemove.isPending}
+              onClick={() => setBulkDeleteOpen(true)}
+            >
+              {t('admin.redemption.delete_selected', { count: selectedIds.length })}
+            </Button>
+          </div>
         </div>
 
         {listQuery.isPending ? (
@@ -570,6 +619,59 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
         }}
       />
       <CreateCodesResultDialog result={created} onClose={() => setCreated(null)} />
+
+      <Dialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        title={t('admin.redemption.export_title', { count: selectedRows.length })}
+        description={t('admin.redemption.export_hint')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setExportOpen(false)}>
+              {t('common.action.cancel')}
+            </Button>
+            <Button onClick={exportMetadata}>
+              {t('admin.redemption.export_download')}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <fieldset className="flex flex-col gap-2">
+            <legend className="text-[13px] font-medium text-ink-1">
+              {t('admin.redemption.export_format')}
+            </legend>
+            {(['txt', 'markdown'] as const).map((format) => (
+              <label key={format} className="flex items-center gap-2 text-sm text-ink-1">
+                <input
+                  type="radio"
+                  name="redemption-export-format"
+                  checked={exportFormat === format}
+                  onChange={() => setExportFormat(format)}
+                />
+                {t(`admin.redemption.export_format_${format}`)}
+              </label>
+            ))}
+          </fieldset>
+          <div className="flex flex-col gap-2 text-sm text-ink-1">
+            {(
+              [
+                ['batch', exportIncludeBatch, setExportIncludeBatch],
+                ['credits', exportIncludeCredits, setExportIncludeCredits],
+                ['status', exportIncludeStatus, setExportIncludeStatus],
+              ] as const
+            ).map(([key, value, setter]) => (
+              <label key={key} className="flex items-center gap-2">
+                <input type="checkbox" checked={value} onChange={(e) => setter(e.target.checked)} />
+                {t(`admin.redemption.export_include_${key}`)}
+              </label>
+            ))}
+          </div>
+          {canReadUsers ? null : (
+            <p className="text-xs text-ink-3">{t('admin.redemption.export_used_by_hidden')}</p>
+          )}
+        </div>
+      </Dialog>
 
       <Dialog
         open={deleteTarget !== null}

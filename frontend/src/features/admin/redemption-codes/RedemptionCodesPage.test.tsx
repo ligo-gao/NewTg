@@ -56,6 +56,8 @@ interface InstallOptions {
   onDelete?: (id: number) => void
   onPatch?: (id: string, body: string) => Response | undefined
   onBatchDelete?: (body: string) => void
+  /** 调用者的生效权限（决定导出文件是否包含 used_by，R-49）。 */
+  permissions?: string[]
 }
 
 function installHandlers({
@@ -67,8 +69,17 @@ function installHandlers({
   onDelete,
   onPatch,
   onBatchDelete,
+  permissions = ['redemption:manage', 'users:read'],
 }: InstallOptions = {}) {
   server.use(
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({
+        username: 'root',
+        role: 'admin',
+        status: 'enabled',
+        permissions,
+      }),
+    ),
     http.get(`${ORIGIN}/api/redemption-codes`, ({ request }) => {
       const params = new URL(request.url).searchParams
       record?.(params)
@@ -469,5 +480,68 @@ describe('RedemptionCodesPage', () => {
     await screen.findByText('••••••')
     expect((screen.getByRole('button', { name: 'Enable' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('exports metadata only and trims used_by without users:read (R-49)', async () => {
+    const user = userEvent.setup()
+    const blobs: Blob[] = []
+    // jsdom 没有实现 Object URL：直接补两个方法（不要整体替换 URL
+    // 构造器，否则 openapi-fetch 的 `new URL()` 会失效）。
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        blobs.push(blob)
+        return 'blob:redemption'
+      }),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    })
+    installHandlers({
+      items: [
+        codeRow({ id: 12, batch_name: 'launch', credits: 100, status: 'used', used_by: 7, used_at: '2026-10-02T10:00:00Z' }),
+      ],
+      total: 1,
+      // 只有兑换码管理权限：导出文件不得包含 used_by。
+      permissions: ['redemption:manage'],
+    })
+
+    await renderWithProviders(
+      <RedemptionCodesPage search={DEFAULT_SEARCH} onSearchChange={() => {}} />,
+      ['common', 'admin'],
+    )
+
+    const exportButton = (await screen.findByRole('button', {
+      name: 'Export metadata',
+    })) as HTMLButtonElement
+    expect(exportButton.disabled).toBe(true)
+
+    await screen.findByText('••••••')
+    await user.click(screen.getByRole('checkbox', { name: 'Select redemption code 12' }))
+    expect(exportButton.disabled).toBe(false)
+    await user.click(exportButton)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Export metadata (1 rows)' })
+    expect(
+      within(dialog).getByText(/lacks the users:read permission/),
+    ).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: 'Download' }))
+
+    await waitFor(() => expect(blobs).toHaveLength(1))
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsText(blobs[0]!)
+    })
+    expect(text).toContain('ID\tBatch\tCredits\tStatus\tCreated at\tUsed at')
+    expect(text).not.toContain('Used by')
+    expect(text).not.toContain('\t7')
+    expect(useToastStore.getState().toasts.at(-1)?.message).toContain(
+      'redemption-codes-metadata-',
+    )
   })
 })

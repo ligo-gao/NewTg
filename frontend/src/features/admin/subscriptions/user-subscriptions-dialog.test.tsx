@@ -1,6 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import type { components } from '@/api/schema'
@@ -77,8 +78,26 @@ function installSubscriptions(items: AdminSubscription[]) {
   )
 }
 
+/**
+ * 弹窗读取调用者的生效权限来决定是否渲染「立即取消」（R-47：users:update）。
+ * 缺省给 ['users:read']，保持只读用例的语义；写用例显式给 users:update。
+ */
+function installMe(permissions: string[] = ['users:read']) {
+  server.use(
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({
+        username: 'root',
+        role: 'admin',
+        status: 'enabled',
+        permissions,
+      }),
+    ),
+  )
+}
+
 describe('UserSubscriptionsDialog', () => {
   it('lists instances with quota progress and a masked order id, read-only', async () => {
+    installMe(['users:read'])
     installSubscriptions([
       subscription(),
       subscription({
@@ -102,7 +121,7 @@ describe('UserSubscriptionsDialog', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Subscriptions of @alice')).toBeTruthy()
     expect(
-      within(dialog).getByText(/Read-only\. Immediate cancellation is not available/),
+      within(dialog).getByText(/Immediate cancellation keeps the instance usable/),
     ).toBeTruthy()
 
     expect(await within(dialog).findByText('Pro Monthly')).toBeTruthy()
@@ -125,12 +144,13 @@ describe('UserSubscriptionsDialog', () => {
     expect(within(dialog).getAllByText('Unlimited')).toHaveLength(1)
     expect(within(dialog).getByText('Expired')).toBeTruthy()
 
-    // 本批只读：没有任何取消/写操作按钮，只有关闭。
+    // 只有 users:read：不渲染取消按钮，只有关闭。
     const buttons = within(dialog).getAllByRole('button')
     expect(buttons.map((button) => button.textContent)).toEqual(['Close'])
   })
 
   it('renders a 403 explanation instead of an empty list', async () => {
+    installMe(['users:read'])
     server.use(
       http.get(`${ORIGIN}/api/users/1/subscriptions`, () =>
         HttpResponse.json(
@@ -152,6 +172,7 @@ describe('UserSubscriptionsDialog', () => {
   })
 
   it('shows an empty state when the user has no instances', async () => {
+    installMe(['users:read'])
     installSubscriptions([])
 
     await renderWithProviders(
@@ -165,6 +186,7 @@ describe('UserSubscriptionsDialog', () => {
   })
 
   it('warns when more instances exist than the 100-row cap shows', async () => {
+    installMe(['users:read'])
     server.use(
       http.get(`${ORIGIN}/api/users/1/subscriptions`, () =>
         HttpResponse.json({
@@ -189,6 +211,7 @@ describe('UserSubscriptionsDialog', () => {
   })
 
   it('shows offline-specific copy when the read fails offline', async () => {
+    installMe(['users:read'])
     server.use(
       http.get(`${ORIGIN}/api/users/1/subscriptions`, () => HttpResponse.error()),
     )
@@ -203,5 +226,51 @@ describe('UserSubscriptionsDialog', () => {
         'Could not load data while offline. Reconnect and retry.',
       ),
     ).toBeTruthy()
+  })
+
+  it('immediately cancels after an explicit confirmation that explains the grace period', async () => {
+    installMe(['users:read', 'users:update'])
+    const calls: { path: string; body: unknown }[] = []
+    server.use(
+      http.get(`${ORIGIN}/api/users/1/subscriptions`, () =>
+        HttpResponse.json({
+          items: [subscription({ grace_days: 5 }), subscription({ id: 11, status: 'expired' })],
+          total: 2,
+          page: 1,
+          page_size: 100,
+        }),
+      ),
+      http.post(
+        `${ORIGIN}/api/users/1/subscriptions/10/cancel`,
+        async ({ request }) => {
+          calls.push({ path: new URL(request.url).pathname, body: await request.json() })
+          return HttpResponse.json(subscription({ grace_days: 5 }))
+        },
+      ),
+    )
+
+    await renderWithProviders(
+      <UserSubscriptionsDialog user={USER} onClose={() => undefined} />,
+      ['common', 'admin'],
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    // 终态行不渲染取消按钮：只有 active 行有一个「Cancel immediately」。
+    const cancelButtons = await within(dialog).findAllByRole('button', {
+      name: 'Cancel immediately',
+    })
+    expect(cancelButtons).toHaveLength(1)
+
+    await userEvent.click(cancelButtons[0]!)
+    const confirm = await screen.findByRole('alertdialog')
+    // R-48 文案：必须说明宽限期仍可用，否则会被误解为立刻停用。
+    expect(
+      within(confirm).getByText(/stays usable during its grace period of 5 days/),
+    ).toBeTruthy()
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel now' }))
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]?.path).toBe('/api/users/1/subscriptions/10/cancel')
+    expect(calls[0]?.body).toEqual({ immediate: true })
   })
 })

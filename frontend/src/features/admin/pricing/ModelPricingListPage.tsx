@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
@@ -24,6 +24,7 @@ import {
   type PricingStatus,
 } from './pricing-utils'
 import { usePricingCapabilities } from './use-pricing-capabilities'
+import { fetchSettingsSection } from '../settings/api'
 
 type ModelPricing = components['schemas']['ModelPricing']
 type ListQuery = NonNullable<operations['listModelPricing']['parameters']['query']>
@@ -43,6 +44,26 @@ interface EditTarget {
   pricing?: ModelPricing
 }
 
+export interface ModelPricingListPageProps {
+  /**
+   * F-08-37 深链（任务插件 → 定价 → 查看定价）携带的插件 key。
+   * 过滤只在前端做（R-50）：插件计价变体的唯一真源是
+   * `billing_setting.plugin_billing_expr`（键 `<pluginKey>::<model>`），
+   * 通过既有 GET /api/settings 读取后按模型名收敛列表；不新增后端端点，
+   * 也不给 /api/model-pricing 增加参数。
+   */
+  plugin?: string
+  /** 清除插件过滤（路由回写，去掉 ?plugin=）。 */
+  onClearPlugin?: () => void
+}
+
+/** 插件过滤时最多向后翻的页数（100 行/页）：防止一个异常大的目录把
+ * 浏览器拖死在串行请求上；超出时在页面明示只覆盖前 N 行。 */
+const PLUGIN_FILTER_MAX_PAGES = 10
+
+/** F-08-37 深链的插件计价表达式设置键（与后端 pricing.PluginBillingExprSettingKey 同值）。 */
+const PLUGIN_BILLING_EXPR_KEY = 'billing_setting.plugin_billing_expr'
+
 /**
  * F-06-13 模型定价列表。
  *
@@ -53,7 +74,10 @@ interface EditTarget {
  * 启停走 PATCH {status} 而不是 POST /{model}:enable 动作路由：模型名允许
  * 含 `:`，动作端点按最后一个冒号切分，PATCH 没有这个歧义。
  */
-export function ModelPricingListPage() {
+export function ModelPricingListPage({
+  plugin,
+  onClearPlugin,
+}: ModelPricingListPageProps = {}) {
   const { t, locale } = useI18n()
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
@@ -67,24 +91,89 @@ export function ModelPricingListPage() {
   const [disableTarget, setDisableTarget] = useState<ModelPricing | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ModelPricing | null>(null)
 
+  const pluginKey = plugin?.trim() ?? ''
+  const pluginFiltered = pluginKey !== ''
+
+  // 插件 → 模型集合来自设置面的 plugin_billing_expr（键 `<plugin>::<model>`）。
+  // 读失败/无配置都不臆造数据：列表显示为空态并说明原因，而不是悄悄
+  // 展示全部模型让管理员以为过滤生效。
+  const pluginSettings = useQuery({
+    queryKey: ['settings', 'billing_setting'],
+    enabled: pluginFiltered,
+    staleTime: 30_000,
+    queryFn: ({ signal }) => fetchSettingsSection('billing_setting', signal),
+  })
+
+  const pluginModels = useMemo(() => {
+    const out = new Set<string>()
+    if (!pluginFiltered || pluginSettings.data === undefined) return out
+    const item = pluginSettings.data.items.find(
+      (entry) => entry.key === PLUGIN_BILLING_EXPR_KEY,
+    )
+    const map = item?.value
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return out
+    const prefix = `${pluginKey}::`
+    for (const key of Object.keys(map)) {
+      if (key.startsWith(prefix)) out.add(key.slice(prefix.length))
+    }
+    return out
+  }, [pluginFiltered, pluginKey, pluginSettings.data])
+
   const listQuery = useQuery({
-    queryKey: ['admin-model-pricing', applied, page, pageSize],
+    queryKey: ['admin-model-pricing', applied, page, pageSize, pluginKey],
     // 能力探测完成前不发列表请求：无 pricing:read 时那是注定 403 的请求，
-    // 也会避免「先闪 403 再出现表格」。
-    enabled: !capabilities.loading && capabilities.canRead,
+    // 也会避免「先闪 403 再出现表格」。插件过滤还要等设置读取完成，
+    // 否则会用空集合把整页过滤掉。
+    enabled:
+      !capabilities.loading &&
+      capabilities.canRead &&
+      // 设置读取结束（成功或失败）后再发列表请求：读失败时也要让空态
+      // 明确说「无法读取插件配置」，而不是让禁用中的查询永远显示骨架。
+      (!pluginFiltered || !pluginSettings.isPending),
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      const query: ListQuery = {
-        p: page,
+      const base: ListQuery = {
+        p: 1,
         page_size: pageSize,
         sort: applied.sort,
       }
-      if (applied.keyword.trim() !== '') query.keyword = applied.keyword.trim()
-      if (applied.mode !== '') query.mode = applied.mode
-      if (applied.status !== '') query.status = applied.status
-      return requireData(
-        await apiClient.GET('/api/model-pricing', { params: { query } }),
-      )
+      if (applied.keyword.trim() !== '') base.keyword = applied.keyword.trim()
+      if (applied.mode !== '') base.mode = applied.mode
+      if (applied.status !== '') base.status = applied.status
+
+      if (!pluginFiltered) {
+        const withPage = { ...base, p: page }
+        return requireData(
+          await apiClient.GET('/api/model-pricing', { params: { query: withPage } }),
+        )
+      }
+
+      // 插件过滤是纯前端：服务端分页与本地过滤叠加会让「本页没有命中」
+      // 伪装成「没有数据」，所以按 100 行/页向后拉全量再过滤，然后本地
+      // 分页。上限 PLUGIN_FILTER_MAX_PAGES 保证异常目录不会无限递归。
+      const all: ModelPricing[] = []
+      let serverPage = 1
+      let total = 0
+      let quotaPerUnit = DEFAULT_QUOTA_PER_UNIT
+      for (; serverPage <= PLUGIN_FILTER_MAX_PAGES; serverPage++) {
+        const data = requireData(
+          await apiClient.GET('/api/model-pricing', {
+            params: { query: { ...base, p: serverPage, page_size: 100 } },
+          }),
+        )
+        all.push(...data.items)
+        total = data.total
+        quotaPerUnit = data.quota_per_unit ?? DEFAULT_QUOTA_PER_UNIT
+        if (data.items.length === 0 || all.length >= total) break
+      }
+      const filtered = all.filter((row) => pluginModels.has(row.model))
+      return {
+        items: filtered,
+        total: filtered.length,
+        page: 1,
+        page_size: pageSize,
+        quota_per_unit: quotaPerUnit,
+      }
     },
   })
 
@@ -172,10 +261,21 @@ export function ModelPricingListPage() {
   })
 
   const data = listQuery.data
-  const items = data?.items ?? []
+  // 插件过滤返回的是「过滤后的全量」，分页在本地切；普通路径仍由服务端
+  // offset 分页直接给出本页数据。
+  const allFilteredItems = data?.items ?? []
+  const items = pluginFiltered
+    ? allFilteredItems.slice((page - 1) * pageSize, page * pageSize)
+    : allFilteredItems
   const total = data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const quotaPerUnit = data?.quota_per_unit ?? DEFAULT_QUOTA_PER_UNIT
+
+  // 深链切换插件时回到第一页；否则换了插件还停在上一个插件过滤后的页码，
+  // 会显示越界空页。
+  useEffect(() => {
+    setPage(1)
+  }, [pluginKey])
 
   // 删除后 offset 分页可能越过末尾；契约要求回退到最后一页
   // （web-00 §5.5）。total 归零时同样回第 1 页，否则会显示
@@ -202,6 +302,18 @@ export function ModelPricingListPage() {
     applied.mode !== '' ||
     applied.status !== '' ||
     applied.sort !== 'model'
+
+  // 插件过滤的空态要说明「为什么空」：设置读取失败、该插件没有表达式、
+  // 或表达式有模型但当前筛选无命中，三种原因是不同的操作方向。
+  const emptyMessage = pluginFiltered
+    ? pluginSettings.isError
+      ? t('admin.pricing.plugin_filter_error')
+      : pluginModels.size === 0
+        ? t('admin.pricing.plugin_filter_empty')
+        : t('admin.pricing.empty_filtered')
+    : hasFilters
+      ? t('admin.pricing.empty_filtered')
+      : t('admin.pricing.empty')
 
   if (capabilities.loading) {
     return (
@@ -230,6 +342,20 @@ export function ModelPricingListPage() {
   return (
     <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
+
+      {pluginFiltered ? (
+        <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-sm text-ink-1">
+              {t('admin.pricing.plugin_filter_active', { plugin: pluginKey })}
+            </span>
+            <span className="text-xs text-ink-3">{t('admin.pricing.plugin_filter_hint')}</span>
+          </div>
+          <Button variant="secondary" className="h-8 px-3 text-[13px]" onClick={onClearPlugin}>
+            {t('admin.pricing.plugin_filter_clear')}
+          </Button>
+        </section>
+      ) : null}
 
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -347,9 +473,7 @@ export function ModelPricingListPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">
-              {hasFilters ? t('admin.pricing.empty_filtered') : t('admin.pricing.empty')}
-            </p>
+            <p className="text-sm text-ink-2">{emptyMessage}</p>
             {hasFilters ? (
               <Button variant="secondary" onClick={resetFilters}>
                 {t('admin.pricing.clear_filters')}

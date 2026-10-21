@@ -1,14 +1,17 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
+import { meQueryOptions } from '@/lib/session'
 import { formatCredits } from '@/shared/lib/format'
-import { useI18n } from '@/shared/lib/i18n-context'
+import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
+import { useToastStore } from '@/shared/ui/toast'
 
 import { formatDateTime } from './format'
 
@@ -32,13 +35,31 @@ export interface UserSubscriptionsDialogProps {
 /**
  * Manage Subscriptions（billing-08 §16.4 F-H-05）。
  *
- * 只读：管理侧「立即取消」端点尚未实现（登记 P2），因此这里不渲染任何写
- * 控件。数据源 `GET /api/users/{id}/subscriptions` 需要 `users:read`；无
- * 权限时在弹窗内展示 403 文案而不是假装空列表。`order_id` 以脱敏订单号
- * `#id` 呈现（§15.4）。
+ * 数据源 `GET /api/users/{id}/subscriptions` 需要 `users:read`；无权限时在
+ * 弹窗内展示 403 文案而不是假装空列表。`order_id` 以脱敏订单号 `#id` 呈现
+ * （§15.4）。
+ *
+ * 管理侧取消（C3/R-08/R-47）：只有持 `users:update` 的管理员看到行内
+ * 「立即取消」。权限判定用 `GET /api/me` 的生效权限（M6 R-17），前端闸门
+ * 只是 UX——服务端仍是最终权威（403 时按错误提示，不放宽）。
+ *
+ * 立即取消的语义（R-48）与用户侧周期末取消**不同**：它把 end_at 提前到
+ * 「现在」，实例进入快照宽限期（grace_days），宽限期内仍可继续使用已购
+ * 额度，宽限结束才到期；已购额度不退款。确认框必须写明这一点，否则管理
+ * 员会误以为「立即取消 = 立刻停用」。
  */
 export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDialogProps) {
   const { t, locale } = useI18n()
+  const queryClient = useQueryClient()
+  const push = useToastStore((state) => state.push)
+  const [cancelTarget, setCancelTarget] = useState<AdminSubscription | null>(null)
+
+  const me = useQuery(meQueryOptions())
+  // FAIL-CLOSED：会话未定/权限为空时不渲染写操作（用户侧 role=user 的
+  // permissions 恒为空数组，即使误挂管理员页面也不会出现取消按钮）。
+  const canCancel =
+    me.data?.role === 'admin' &&
+    (me.data.permissions.includes('*') || me.data.permissions.includes('users:update'))
 
   const query = useQuery({
     queryKey: ['admin-user-subscriptions', user?.id],
@@ -57,17 +78,51 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
       ),
   })
 
+  const cancelNow = useMutation({
+    mutationFn: async (target: AdminSubscription) => {
+      await apiClient.POST('/api/users/{id}/subscriptions/{subscription_id}/cancel', {
+        params: {
+          path: { id: target.user_id, subscription_id: target.id },
+        },
+        body: { immediate: true },
+      })
+    },
+    // 取消不是幂等可重试的「临时失败」：409 是确定性拒绝，重试只会把
+    // 提示延后；429 也不该在客户端放大压力。
+    retry: false,
+    onSuccess: async () => {
+      push({ tone: 'success', message: t('admin.subscriptions.user.cancel_now_success') })
+      setCancelTarget(null)
+      await queryClient.invalidateQueries({ queryKey: ['admin-user-subscriptions', user?.id] })
+    },
+    onError: (error) => {
+      push({ tone: 'error', message: cancelError(error, t) })
+      if (
+        error instanceof ApiError &&
+        (error.kind === 'conflict' || error.kind === 'not_found')
+      ) {
+        // 行状态已被别处改变（例如已到期）：关闭确认框并重查，避免
+        // 继续展示过期状态。
+        setCancelTarget(null)
+        void queryClient.invalidateQueries({
+          queryKey: ['admin-user-subscriptions', user?.id],
+        })
+      }
+    },
+  })
+
   const items = query.data?.items ?? []
   const error = query.error
 
   return (
+    <>
     <Dialog
       open={user !== null}
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
       title={t('admin.subscriptions.user.title', { username: user?.username ?? '' })}
-      description={t('admin.subscriptions.user.read_only')}
+      description={t('admin.subscriptions.user.description')}
       panelClassName="!max-w-[720px]"
       footer={
         <Button variant="secondary" onClick={onClose}>
@@ -137,6 +192,11 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('admin.subscriptions.user.column_order')}
                 </th>
+                {canCancel ? (
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    {t('admin.subscriptions.user.column_actions')}
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -189,6 +249,21 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                       ? '—'
                       : t('admin.subscriptions.user.order_ref', { id: item.order_id })}
                   </td>
+                  {canCancel ? (
+                    <td className="px-3 py-2 text-right">
+                      {/* 只有 active 可取消：终态实例不渲染按钮（服务端同样
+                          409，前端只是不给出注定失败的操作）。 */}
+                      {item.status === 'active' ? (
+                        <Button
+                          variant="danger"
+                          className="h-8 px-2 text-[13px]"
+                          onClick={() => setCancelTarget(item)}
+                        >
+                          {t('admin.subscriptions.user.cancel_now')}
+                        </Button>
+                      ) : null}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
@@ -201,7 +276,47 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
         </div>
       )}
     </Dialog>
+    {/* 确认框是兄弟节点而不是嵌套 Dialog：嵌套会让两个 focus-trap 争抢焦点，
+        且 aria-modal 语义不明确（与 ModelsTab/RedemptionCodesPage 同构）。 */}
+    <Dialog
+      open={cancelTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null)
+        }}
+        role="alertdialog"
+        title={t('admin.subscriptions.user.cancel_now_title')}
+        description={t('admin.subscriptions.user.cancel_now_body', {
+          days: cancelTarget?.grace_days ?? 0,
+        })}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCancelTarget(null)}>
+              {t('common.action.cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              disabled={cancelNow.isPending}
+              onClick={() => {
+                if (cancelTarget !== null) cancelNow.mutate(cancelTarget)
+              }}
+            >
+              {t('admin.subscriptions.user.cancel_now_confirm')}
+            </Button>
+          </>
+        }
+      />
+    </>
   )
+}
+
+function cancelError(error: unknown, t: TranslateFn): string {
+  if (error instanceof ApiError) {
+    if (error.kind === 'conflict') return t('admin.subscriptions.user.cancel_now_conflict')
+    if (error.kind === 'forbidden') return t('admin.subscriptions.user.cancel_now_forbidden')
+    if (error.kind === 'rate_limited') return t('admin.subscriptions.rate_limited_generic')
+    if (error.kind === 'offline') return t('admin.subscriptions.offline_read_error')
+  }
+  return t('admin.subscriptions.user.cancel_now_error')
 }
 
 function QuotaCell({

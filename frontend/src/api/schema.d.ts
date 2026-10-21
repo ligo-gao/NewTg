@@ -1750,6 +1750,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/users/{id}/subscriptions/{subscription_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                subscription_id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 管理侧取消用户订阅（immediate=true 为立即取消）
+         * @description 路径用户与订阅归属必须一致；用户不存在、订阅不存在、订阅属于他人一律
+         *     返回 **404**（不泄露订阅/用户 ID 的存在性与归属）。终态（expired，或
+         *     周期末取消时的 cancelled）→ 409 subscription_not_active。
+         *
+         *     `immediate=false`（缺省）与用户侧周期末取消同语义：只置
+         *     `cancel_at_period_end=true`，实例保持 active 至 `end_at`，不退款。
+         *
+         *     `immediate=true` 是**立即取消，与期末取消不同**：服务端把 `end_at`
+         *     提前到「现在」并清掉 `cancel_at_period_end`，实例**进入快照宽限期**
+         *     （`grace_days`）——宽限期内仍可继续使用已购额度，宽限结束才到期失效；
+         *     已购额度不因取消而退还。注意这不是「立刻停用」。同一订阅重复调用
+         *     幂等返回 200（不重复写事件）。
+         *
+         *     请求体可选；未知字段 403 field_not_writable。
+         */
+        post: operations["adminCancelUserSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/groups": {
         parameters: {
             query?: never;
@@ -6155,6 +6191,15 @@ export interface components {
             total: number;
             page: number;
             page_size: number;
+        };
+        /**
+         * @description 管理侧取消请求体（可省略）。immediate=false/缺省 = 周期末取消；true =
+         *     立即取消（end_at 提前到 now，进入快照宽限期，宽限期内仍可用，见路径说明）。
+         *     未知字段由 RBAC 字段层返回 403 field_not_writable。
+         */
+        AdminSubscriptionCancelRequest: {
+            /** @default false */
+            immediate: boolean;
         };
         AdminGroup: {
             /** Format: int64 */
@@ -11460,6 +11505,46 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    adminCancelUserSubscription: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+                subscription_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminSubscriptionCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description 取消后的订阅（管理投影） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSubscription"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
         };
     };

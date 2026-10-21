@@ -29,6 +29,119 @@ export interface RedemptionExportOptions {
   includeCredits?: boolean
 }
 
+// ---------------------------------------------------------------------------
+// 列表页「导出元数据」（F-04-17 第二种入口 / C3 R-49）
+// ---------------------------------------------------------------------------
+
+type RedemptionCode = components['schemas']['RedemptionCode']
+
+/**
+ * 列表导出只含元数据，**永远不含码值**（服务端只存哈希，列表投影
+ * `code_mask` 恒为掩码）。元数据列 = id/批次/面额/状态 + 时间与使用人。
+ */
+export interface RedemptionListExportOptions {
+  includeBatch?: boolean
+  includeCredits?: boolean
+  includeStatus?: boolean
+  /**
+   * 是否导出 `used_by`（使用人用户 ID）。**必须由调用方按 `users:read`
+   * 权限决定**（R-49）：兑换码导出与「看用户列表」是两条权限，只有
+   * redemption:manage 的管理员不该在文件里得到用户标识。缺省关闭
+   * （fail-closed），避免新增调用点忘记裁剪。
+   */
+  includeUsedBy?: boolean
+}
+
+/** 导出时的空值：保持机器可读的空串，而不是 UI 的「—」破折号。 */
+function cellOrEmpty(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return ''
+  return String(value)
+}
+
+/**
+ * 列表导出文件名。多批次选中时没有单一批次名，固定用 `metadata`
+ * 段落，仍保留日期便于对账归档。
+ */
+export function redemptionListExportFilename(
+  format: RedemptionExportFormat,
+  now: Date = new Date(),
+): string {
+  return redemptionExportFilename('metadata', format, now)
+}
+
+export function buildRedemptionListExportFile(
+  rows: readonly RedemptionCode[],
+  format: RedemptionExportFormat,
+  options: RedemptionListExportOptions = {},
+  now: Date = new Date(),
+): RedemptionExportFile {
+  const includeBatch = options.includeBatch ?? true
+  const includeCredits = options.includeCredits ?? true
+  const includeStatus = options.includeStatus ?? true
+  // R-49：没有 users:read 时连列都不出现（省略而不是留空），这样文件
+  // 结构本身不会暗示「这里本应有使用人」。
+  const includeUsedBy = options.includeUsedBy ?? false
+
+  if (rows.length > REDEMPTION_EXPORT_LIMIT) {
+    throw new Error('redemption export exceeds limit')
+  }
+
+  const headers = ['ID']
+  if (includeBatch) headers.push('Batch')
+  if (includeCredits) headers.push('Credits')
+  if (includeStatus) headers.push('Status')
+  headers.push('Created at', 'Used at')
+  if (includeUsedBy) headers.push('Used by')
+
+  const valuesOf = (row: RedemptionCode): string[] => {
+    const cells = [String(row.id)]
+    if (includeBatch) cells.push(sanitizeCell(row.batch_name ?? ''))
+    if (includeCredits) cells.push(String(row.credits))
+    if (includeStatus) cells.push(row.status)
+    cells.push(cellOrEmpty(row.created_at), cellOrEmpty(row.used_at))
+    if (includeUsedBy) cells.push(cellOrEmpty(row.used_by))
+    return cells
+  }
+
+  if (format === 'markdown') {
+    const align = headers.map((header) =>
+      header === 'ID' || header === 'Credits' || header === 'Used by' ? '---:' : '---',
+    )
+    const lines = [
+      `| ${headers.join(' | ')} |`,
+      `| ${align.join(' | ')} |`,
+      ...rows.map((row) => `| ${valuesOf(row).join(' | ')} |`),
+    ]
+    return {
+      filename: redemptionListExportFilename(format, now),
+      mime: 'text/markdown;charset=utf-8',
+      content: lines.join('\n') + '\n',
+    }
+  }
+
+  // TXT 用制表符分列（含时间戳的元数据导出需要可被表格软件直接解析；
+  // 码值导出那种「一行一码 - 批次」的形态不适合多列元数据）。
+  const lines = [headers.join('\t'), ...rows.map((row) => valuesOf(row).join('\t'))]
+  return {
+    filename: redemptionListExportFilename(format, now),
+    mime: 'text/plain;charset=utf-8',
+    content: lines.join('\n') + '\n',
+  }
+}
+
+/** 下载列表元数据导出；返回实际文件名（Toast/测试播报使用）。 */
+export function downloadRedemptionListMetadata(
+  rows: readonly RedemptionCode[],
+  format: RedemptionExportFormat,
+  options: RedemptionListExportOptions = {},
+  save: SaveFile = saveBlob,
+  now: Date = new Date(),
+): string {
+  const file = buildRedemptionListExportFile(rows, format, options, now)
+  save(new Blob([file.content], { type: file.mime }), file.filename)
+  return file.filename
+}
+
 export interface RedemptionExportFile {
   filename: string
   content: string

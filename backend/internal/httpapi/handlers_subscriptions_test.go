@@ -466,7 +466,10 @@ func (r *fakeSubscriptionRepo) CancelImmediately(_ context.Context, id int64) er
 	if sub.Status == "expired" {
 		return store.ErrSubscriptionNotActive
 	}
-	sub.Status = "cancelled"
+	// R-48：立即取消保留 active 并把 end_at 提前到 now，清掉周期末标记，
+	// 宽限期（快照 grace_days）内仍可消费。
+	sub.CancelAtPeriodEnd = false
+	sub.EndAt = time.Now().UTC()
 	return nil
 }
 
@@ -2118,6 +2121,150 @@ func TestSubscriptionCancelAtPeriodEnd(t *testing.T) {
 			fmt.Sprintf("/api/subscriptions/%d/cancel", activeID), map[string]any{"cancel_at_period_end": false}, nil)
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("带 body = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestAdminCancelUserSubscription 覆盖 C3/R-08/R-47/R-48：管理侧取消端点。
+//
+//   - 权限：users:update（用户管理写入口）；settings:manage / 只读 / 普通用户 403。
+//   - 归属：路径用户与实例归属不一致、实例不存在、非法 id 一律 404（不可区分）。
+//   - immediate=true：R-48 的立即取消（end_at 提前、保留 active/宽限）；
+//     false/缺省：与用户侧周期末取消同语义。
+//   - 终态 409；重复调用幂等 200。
+func TestAdminCancelUserSubscription(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID := int64(7), int64(8)
+	activeID := seedSubscription(t, env, ownerID, "active")
+	foreignID := seedSubscription(t, env, otherID, "active")
+	expiredID := seedSubscription(t, env, ownerID, "expired")
+	cancelledID := seedSubscription(t, env, ownerID, "cancelled")
+
+	path := func(userID, subID int64) string {
+		return fmt.Sprintf("/api/users/%d/subscriptions/%d/cancel", userID, subID)
+	}
+
+	t.Run("权限：users:update 通过，其它管理键与普通用户 403", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			principal  *auth.Principal
+			wantStatus int
+		}{
+			{"users:update", adminRestricted(rbac.PermUsersUpdate), http.StatusOK},
+			{"settings:manage", adminRestricted(rbac.PermSettingsManage), http.StatusForbidden},
+			{"users:read only", adminRestricted(rbac.PermUsersRead), http.StatusForbidden},
+			{"end user", endUser(ownerID), http.StatusForbidden},
+			{"unauthenticated", nil, http.StatusForbidden},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rr := env.do(t, tc.principal, http.MethodPost, path(ownerID, activeID),
+					map[string]any{"immediate": true}, nil)
+				if rr.Code != tc.wantStatus {
+					t.Fatalf("status = %d，期望 %d（body=%s）", rr.Code, tc.wantStatus, rr.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("立即取消保留 active 且提前 end_at", func(t *testing.T) {
+		// 先置周期末取消，验证立即取消会清掉该标记（宽限期因此恢复）。
+		env.repo.mu.Lock()
+		env.repo.subs[activeID].CancelAtPeriodEnd = true
+		env.repo.mu.Unlock()
+
+		rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+			path(ownerID, activeID), map[string]any{"immediate": true}, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("立即取消 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var view adminSubscriptionView
+		if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode subscription: %v", err)
+		}
+		if view.Status != "active" || view.CancelAtPeriodEnd {
+			t.Fatalf("立即取消后视图 = %+v，want active 且 cancel_at_period_end=false", view)
+		}
+		if view.EndAt.After(time.Now().UTC().Add(time.Second)) {
+			t.Fatalf("立即取消后 end_at = %v，期望提前到 now", view.EndAt)
+		}
+		// 管理投影必须带 user_id（管理对账口径）。
+		if view.UserID != ownerID {
+			t.Fatalf("admin 视图 user_id = %d，want %d", view.UserID, ownerID)
+		}
+
+		args := env.audit.last(t)
+		detail := decodeSubAuditDetail(t, args[9])
+		if detail["action"] != audit.ActionSubscriptionCancel ||
+			detail["id"] != float64(activeID) || detail["immediate"] != true {
+			t.Fatalf("audit detail = %v", detail)
+		}
+
+		// 重复调用幂等 200，不再改状态。
+		rr = env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+			path(ownerID, activeID), map[string]any{"immediate": true}, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("重复立即取消 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("immediate=false/缺省走周期末取消", func(t *testing.T) {
+		id := seedSubscription(t, env, ownerID, "active")
+		for _, body := range []any{nil, map[string]any{"immediate": false}} {
+			rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+				path(ownerID, id), body, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("周期末取消 = %d（body=%s）", rr.Code, rr.Body.String())
+			}
+			var view adminSubscriptionView
+			if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+				t.Fatalf("decode subscription: %v", err)
+			}
+			if view.Status != "active" || !view.CancelAtPeriodEnd {
+				t.Fatalf("周期末取消后视图 = %+v，want active + flag", view)
+			}
+		}
+	})
+
+	t.Run("他人实例与不存在统一 404，且不改他人状态", func(t *testing.T) {
+		for _, target := range []string{path(ownerID, foreignID), path(ownerID, 999999), path(ownerID, 0)} {
+			rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost, target,
+				map[string]any{"immediate": true}, nil)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("%s = %d（body=%s）", target, rr.Code, rr.Body.String())
+			}
+		}
+		env.repo.mu.Lock()
+		defer env.repo.mu.Unlock()
+		if env.repo.subs[foreignID].CancelAtPeriodEnd {
+			t.Fatal("他人实例不应被置位")
+		}
+	})
+
+	t.Run("终态 409", func(t *testing.T) {
+		for name, id := range map[string]int64{"expired": expiredID, "cancelled-period-end": cancelledID} {
+			rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+				path(ownerID, id), map[string]any{"immediate": false}, nil)
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+			}
+			if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotActive {
+				t.Fatalf("%s type = %s", name, got)
+			}
+		}
+		// immediate=true 对 expired 同样是 409。
+		rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+			path(ownerID, expiredID), map[string]any{"immediate": true}, nil)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expired 立即取消 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("未知字段 403 field_not_writable", func(t *testing.T) {
+		rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
+			path(ownerID, activeID), map[string]any{"end_at": "2020-01-01T00:00:00Z"}, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("未知字段 = %d（body=%s）", rr.Code, rr.Body.String())
 		}
 	})
 }

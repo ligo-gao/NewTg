@@ -3889,6 +3889,13 @@ type AdminSubscription struct {
 // AdminSubscriptionStatus defines model for AdminSubscription.Status.
 type AdminSubscriptionStatus string
 
+// AdminSubscriptionCancelRequest 管理侧取消请求体（可省略）。immediate=false/缺省 = 周期末取消；true =
+// 立即取消（end_at 提前到 now，进入快照宽限期，宽限期内仍可用，见路径说明）。
+// 未知字段由 RBAC 字段层返回 403 field_not_writable。
+type AdminSubscriptionCancelRequest struct {
+	Immediate *bool `json:"immediate,omitempty"`
+}
+
 // AdminSubscriptionList defines model for AdminSubscriptionList.
 type AdminSubscriptionList struct {
 	Items    []AdminSubscription `json:"items"`
@@ -9780,6 +9787,13 @@ type ListUserSubscriptionsParams struct {
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
+// AdminCancelUserSubscriptionParams defines parameters for AdminCancelUserSubscription.
+type AdminCancelUserSubscriptionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListVendorsParams defines parameters for ListVendors.
 type ListVendorsParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -10180,6 +10194,9 @@ type AdjustUserQuotaJSONRequestBody = QuotaAdjustmentRequest
 
 // SetUserStatusJSONRequestBody defines body for SetUserStatus for application/json ContentType.
 type SetUserStatusJSONRequestBody = AdminUserStatusRequest
+
+// AdminCancelUserSubscriptionJSONRequestBody defines body for AdminCancelUserSubscription for application/json ContentType.
+type AdminCancelUserSubscriptionJSONRequestBody = AdminSubscriptionCancelRequest
 
 // CreateVendorJSONRequestBody defines body for CreateVendor for application/json ContentType.
 type CreateVendorJSONRequestBody = VendorCreateRequest

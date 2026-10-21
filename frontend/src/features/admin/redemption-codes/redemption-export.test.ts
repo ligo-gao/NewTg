@@ -4,12 +4,14 @@ import type { components } from '@/api/schema'
 
 import {
   buildRedemptionExportFile,
+  buildRedemptionListExportFile,
   downloadRedemptionCodes,
   redemptionExportFilename,
   REDEMPTION_EXPORT_LIMIT,
 } from './redemption-export'
 
 type CreateResponse = components['schemas']['RedemptionCodeCreateResponse']
+type RedemptionCode = components['schemas']['RedemptionCode']
 
 const NOW = new Date(2026, 9, 20, 12, 0, 0)
 
@@ -122,5 +124,75 @@ describe('redemption export (F-04-17)', () => {
 
   it('freezes the export limit at 5000 rows', () => {
     expect(REDEMPTION_EXPORT_LIMIT).toBe(5000)
+  })
+})
+
+// R-49：列表导出元数据列必须按权限裁剪——没有 users:read 时既不输出
+// used_by 列，也不输出任何用户 ID。
+describe('redemption metadata export (C3/R-49)', () => {
+  const rows = [
+    codeRow({ id: 1, batch_name: 'launch', credits: 100, status: 'used', used_by: 7, used_at: '2026-10-02T10:00:00Z' }),
+    codeRow({ id: 2, batch_name: 'launch', credits: 50, status: 'unused' }),
+  ]
+
+  function codeRow(overrides: Partial<RedemptionCode> = {}): RedemptionCode {
+    return {
+      id: 12,
+      batch_name: 'launch',
+      credits: 10000,
+      status: 'unused',
+      code_mask: '••••••',
+      created_by: 1,
+      used_by: null,
+      used_at: null,
+      expires_at: null,
+      created_at: '2026-10-01T10:00:00Z',
+      updated_at: '2026-10-01T10:00:00Z',
+      ...overrides,
+    }
+  }
+
+  it('never contains code values, only metadata columns', () => {
+    const file = buildRedemptionListExportFile(rows, 'markdown', { includeUsedBy: true }, NOW)
+    expect(file.content).not.toContain('code_mask')
+    expect(file.content).not.toContain('••••••')
+    expect(file.content).toContain('| ID | Batch | Credits | Status | Created at | Used at | Used by |')
+    expect(file.content).toContain('| 1 | launch | 100 | used | 2026-10-01T10:00:00Z | 2026-10-02T10:00:00Z | 7 |')
+    // 未使用的行：时间与使用人为空串，而不是 UI 的「—」。
+    expect(file.content).toContain('| 2 | launch | 50 | unused | 2026-10-01T10:00:00Z |  |  |')
+  })
+
+  it('omits the used_by column entirely without users:read (fail-closed default)', () => {
+    const file = buildRedemptionListExportFile(rows, 'markdown', {}, NOW)
+    expect(file.content).not.toMatch(/Used by/)
+    expect(file.content).not.toContain('| 7 |')
+    // 默认即使调用方没传 includeUsedBy，也不能把 7 这个用户 ID 写进文件。
+    for (const line of file.content.split('\n')) {
+      expect(line).not.toMatch(/\b7\b/)
+    }
+  })
+
+  it('writes tab-separated TXT with a header and honours switches', () => {
+    const file = buildRedemptionListExportFile(
+      rows,
+      'txt',
+      { includeBatch: false, includeStatus: false, includeUsedBy: false },
+      NOW,
+    )
+    expect(file.filename).toBe('redemption-codes-metadata-20261020.txt')
+    const lines = file.content.trimEnd().split('\n')
+    expect(lines[0]).toBe('ID\tCredits\tCreated at\tUsed at')
+    expect(lines[1]).toBe('1\t100\t2026-10-01T10:00:00Z\t2026-10-02T10:00:00Z')
+  })
+
+  it('rejects an oversized selection instead of generating a giant blob', () => {
+    expect(() =>
+      buildRedemptionListExportFile(
+        Array.from({ length: REDEMPTION_EXPORT_LIMIT + 1 }, (_, index) =>
+          codeRow({ id: index + 1 }),
+        ),
+        'txt',
+      ),
+    ).toThrow(/exceeds limit/)
   })
 })

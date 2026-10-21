@@ -3563,6 +3563,74 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/users/{id}/subscriptions/{subscription_id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+      - name: subscription_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    post:
+      tags:
+        - admin
+      operationId: adminCancelUserSubscription
+      x-required-permission: users:update
+      summary: 管理侧取消用户订阅（immediate=true 为立即取消）
+      description: |
+        路径用户与订阅归属必须一致；用户不存在、订阅不存在、订阅属于他人一律
+        返回 **404**（不泄露订阅/用户 ID 的存在性与归属）。终态（expired，或
+        周期末取消时的 cancelled）→ 409 subscription_not_active。
+
+        `immediate=false`（缺省）与用户侧周期末取消同语义：只置
+        `cancel_at_period_end=true`，实例保持 active 至 `end_at`，不退款。
+
+        `immediate=true` 是**立即取消，与期末取消不同**：服务端把 `end_at`
+        提前到「现在」并清掉 `cancel_at_period_end`，实例**进入快照宽限期**
+        （`grace_days`）——宽限期内仍可继续使用已购额度，宽限结束才到期失效；
+        已购额度不因取消而退还。注意这不是「立刻停用」。同一订阅重复调用
+        幂等返回 200（不重复写事件）。
+
+        请求体可选；未知字段 403 field_not_writable。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSubscriptionCancelRequest'
+      responses:
+        '200':
+          description: 取消后的订阅（管理投影）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSubscription'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/groups:
     get:
       tags:
@@ -13279,6 +13347,17 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+    AdminSubscriptionCancelRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        管理侧取消请求体（可省略）。immediate=false/缺省 = 周期末取消；true =
+        立即取消（end_at 提前到 now，进入快照宽限期，宽限期内仍可用，见路径说明）。
+        未知字段由 RBAC 字段层返回 403 field_not_writable。
+      properties:
+        immediate:
+          type: boolean
+          default: false
     AdminGroup:
       type: object
       additionalProperties: false

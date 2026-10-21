@@ -560,8 +560,10 @@ func TestWithEventTxRetriesSeqConflict(t *testing.T) {
 	if err := db.QueryRow(`SELECT status FROM subscriptions WHERE id = $1`, sub.ID).Scan(&status); err != nil {
 		t.Fatalf("read status: %v", err)
 	}
-	if status != "cancelled" {
-		t.Fatalf("重试后 status = %s，期望 cancelled", status)
+	// R-48：立即取消不再把 status 置 cancelled，而是保留 active 并把 end_at
+	// 提前（宽限期语义）；本用例只关心事件重试，因此断言「迁移已落地」。
+	if status != "active" {
+		t.Fatalf("重试后 status = %s，期望 active（立即取消进入宽限）", status)
 	}
 }
 

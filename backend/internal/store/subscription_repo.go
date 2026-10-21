@@ -929,18 +929,43 @@ func (r *SQLSubscriptionRepo) CancelAtPeriodEnd(ctx context.Context, id int64) e
 	})
 }
 
-// CancelImmediately 立即取消（管理侧 P2，billing-08 §3.5）。
+// CancelImmediately 立即取消（管理侧 P2，billing-08 §3.5；C3/R-48 裁决）。
 //
-// 行锁内判定（S1）：
+// 行锁内判定：
 //   - 行不存在 → ErrSubscriptionNotFound；
-//   - 已是 cancelled → nil（重复调用幂等，目标终态已达成，不再追加事件）；
+//   - 已是 cancelled 终态 → nil（重复调用幂等，不再追加事件）；
 //   - 已是 expired → ErrSubscriptionNotActive（终态不可迁移）；
-//   - active → 置 cancelled 并同事务追加 cancelled(immediate=true) 事件。
+//   - active → `cancel_at_period_end=false` + `end_at=now()`，写
+//     cancelled(immediate=true) 事件。
+//
+// 【为什么不是 status='cancelled'（R-48）】立即取消与期末取消的区别只在
+// **计时起点**：立即取消把 `end_at` 提前到「现在」，随后照常走快照宽限期
+// （end_at + grace_days）——宽限期内实例仍是 active、仍可消费，宽限结束由
+// ExpireDue 迁移。若直接把 status 置 cancelled，三条读侧契约（列表/预扣/
+// 溢出）都会立刻拒绝，等于把「立即终止」和「立即取消但保留宽限」混为一谈，
+// 与 R-48 的 UI/OpenAPI 文案「宽限期内仍可用」矛盾。
+//
+// 【为什么 end_at 用 LEAST(end_at, now)】正常路径 end_at 在未来，LEAST 就是
+// now，与裁决字面一致；但实例可能已经在宽限期内（end_at 已过、尚未被
+// ExpireDue 清扫），此时把 end_at 改成 now 会把宽限期从「原到期日 + grace」
+// 偷偷延长到「今天 + grace」。立即取消只能提前、不能延长合同期。
+//
+// 【幂等口径】已经是「立即取消后才可能出现的状态」（active + 未置期末取消 +
+// end_at 不晚于 now）时返回 nil 且不重复追加事件；否则即使目标列值恰好相同
+// （例如期末取消后立即取消）也要写事件，因为这是一次真实的管理动作。
 func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) error {
 	return r.withEventTx(ctx, fmt.Sprintf("cancel subscription(%d)", id), func(tx *sql.Tx) error {
-		var status string
-		err := tx.QueryRowContext(ctx,
-			`SELECT status FROM subscriptions WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+		var (
+			status      string
+			ended       bool
+			cancelAtEnd bool
+		)
+		// 用数据库的 now() 判定「已到期」：应用时钟与库时钟可能不同步，
+		// 若用 time.Now() 比较刚写入的 end_at=now()，库稍快时会把幂等重放
+		// 误判为一次新动作并重复写事件。
+		err := tx.QueryRowContext(ctx, `
+			SELECT status, end_at <= now(), cancel_at_period_end FROM subscriptions
+			 WHERE id = $1 FOR UPDATE`, id).Scan(&status, &ended, &cancelAtEnd)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSubscriptionNotFound
 		}
@@ -951,8 +976,15 @@ func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) e
 		case "cancelled":
 			return nil
 		case "active":
+			// 已处于「立即取消生效后」的状态：不重复写事件（幂等重放）。
+			if !cancelAtEnd && ended {
+				return nil
+			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE subscriptions SET status = 'cancelled', updated_at = now()
+				UPDATE subscriptions
+				   SET cancel_at_period_end = false,
+				       end_at = LEAST(end_at, now()),
+				       updated_at = now()
 				 WHERE id = $1`, id); err != nil {
 				return fmt.Errorf("store: cancel subscription(%d): %w", id, err)
 			}

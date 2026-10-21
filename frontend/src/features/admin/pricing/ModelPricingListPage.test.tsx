@@ -3,7 +3,7 @@ import { setupServer } from 'msw/node'
 import { useQuery } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { components } from '@/api/schema'
 import { renderWithProviders } from '@/test-support/providers'
@@ -481,5 +481,55 @@ describe('ModelPricingListPage', () => {
       expect(modelProbeCalls).toBeGreaterThanOrEqual(2)
       expect(overrideProbeCalls).toBeGreaterThanOrEqual(2)
     })
+  })
+
+  it('filters rows to the plugin billing-expression models from the F-08-37 deep link', async () => {
+    installBaseHandlers({
+      items: [
+        pricingRow({ id: 1, model: 'sora-2' }),
+        pricingRow({ id: 2, model: 'gpt-5' }),
+        pricingRow({ id: 3, model: 'kling-other' }),
+      ],
+      total: 3,
+    })
+    // 插件计费变体是设置面数据（T5）；前端只读取，不新增端点（R-50）。
+    server.use(
+      http.get(`${ORIGIN}/api/settings`, () =>
+        HttpResponse.json({
+          section: 'billing_setting',
+          updated_at: null,
+          items: [
+            {
+              key: 'billing_setting.plugin_billing_expr',
+              value: {
+                'kling::sora-2': 'u("seconds")',
+                'kling::kling-other': 'u("seconds")',
+                'suno::other': 'u("duration")',
+              },
+              type: 'object',
+              default: {},
+              public: false,
+              secret: false,
+              dangerous: false,
+            },
+          ],
+        }),
+      ),
+    )
+    const onClearPlugin = vi.fn()
+
+    const { findByText, queryByText, getByText, getByRole } = await renderWithProviders(
+      <ModelPricingListPage plugin="kling" onClearPlugin={onClearPlugin} />,
+      ['common', 'admin'],
+    )
+
+    expect(await findByText('sora-2')).toBeTruthy()
+    expect(getByText('kling-other')).toBeTruthy()
+    // 非该插件的模型不出现。
+    expect(queryByText('gpt-5')).toBeNull()
+    expect(getByText('Filtered by plugin: kling')).toBeTruthy()
+
+    await userEvent.setup().click(getByRole('button', { name: 'Clear plugin filter' }))
+    expect(onClearPlugin).toHaveBeenCalledTimes(1)
   })
 })

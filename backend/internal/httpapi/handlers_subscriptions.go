@@ -11,6 +11,8 @@
 //	POST   /api/subscription-plans/{id}/disable       管理：停用（幂等）
 //	POST   /api/subscription-plans/{id}/reset-quota   管理：重置活跃实例额度
 //	GET    /api/users/{id}/subscriptions              管理：单用户实例（users:read）
+//	POST   /api/users/{id}/subscriptions/{subscription_id}/cancel
+//	                                                  管理：取消（users:update；immediate=true 立即取消，R-48）
 //	GET    /api/subscription/plans                    用户：可购套餐（仅 enabled）
 //	GET    /api/subscriptions                         用户：本人实例（含终态）
 //	GET    /api/subscriptions/{id}/events             用户：状态迁移事件流（本人或 users:read）
@@ -158,20 +160,23 @@ type SubscriptionPaymentMethodService interface {
 
 // 订阅域动作（字段策略按动作登记；与权限键不同）。
 var (
-	subscriptionPlanListAction     = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "list"}
-	subscriptionPlanReadAction     = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "read"}
-	subscriptionPlanCreateAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "create"}
-	subscriptionPlanUpdateAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "update"}
-	subscriptionPlanDeleteAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "delete"}
-	subscriptionPlanStatusAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "status"}
-	subscriptionPlanResetAction    = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "reset_quota"}
-	adminUserSubscriptionsAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "admin_list_by_user"}
-	userBillingPreferenceAction    = rbac.AuthzAction{ResourceKind: "billing_preference", ActionName: "update"}
-	userSubscriptionPurchaseAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "purchase"}
-	userSubscriptionCancelAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
-	userSubscriptionRenewAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
-	userSubscriptionChangeAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "change"}
-	userSubscriptionRefundAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "refund_request"}
+	subscriptionPlanListAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "list"}
+	subscriptionPlanReadAction   = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "read"}
+	subscriptionPlanCreateAction = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "create"}
+	subscriptionPlanUpdateAction = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "update"}
+	subscriptionPlanDeleteAction = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "delete"}
+	subscriptionPlanStatusAction = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "status"}
+	subscriptionPlanResetAction  = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "reset_quota"}
+	adminUserSubscriptionsAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "admin_list_by_user"}
+	// C3/R-08：管理侧立即取消/期末取消。单独登记动作，让字段白名单只放行
+	// `immediate`，避免与用户侧「无 body」的周期末取消共用策略。
+	adminUserSubscriptionCancelAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "admin_cancel"}
+	userBillingPreferenceAction       = rbac.AuthzAction{ResourceKind: "billing_preference", ActionName: "update"}
+	userSubscriptionPurchaseAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "purchase"}
+	userSubscriptionCancelAction      = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
+	userSubscriptionRenewAction       = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
+	userSubscriptionChangeAction      = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "change"}
+	userSubscriptionRefundAction      = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "refund_request"}
 	// S4：自动续费开关与支付令牌。令牌写动作只需已认证用户（数据范围恒为
 	// Principal.UserID），字段层仍生效。
 	userSubscriptionAutoRenewAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "auto_renew"}
@@ -298,6 +303,12 @@ func (h *SubscriptionHandlers) registerPolicies() {
 	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
 	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
 	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
+	// 管理侧取消（C3/R-08）：唯一可写字段是 immediate。缺省 false 等价于
+	// 用户侧周期末取消；true 才是 R-48 的立即取消。金额/时间/状态一律由
+	// 服务端按实例与快照决定，客户端不能指定。
+	h.authz.SetWritePolicy(adminUserSubscriptionCancelAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"immediate": nil,
+	}})
 	// S4 自动续费：只接受开关与令牌 id。金额/周期/扣费时刻一律由服务端按
 	// 套餐行与配置决定，客户端不可指定。
 	h.authz.SetWritePolicy(userSubscriptionAutoRenewAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
@@ -340,6 +351,16 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/subscription-plans/{id}/disable", admin(subscriptionPlanStatusAction, h.handlePlanDisable))
 	mux.Handle("POST /api/subscription-plans/{id}/reset-quota", admin(subscriptionPlanResetAction, h.handleResetPlanQuota))
 	mux.Handle("GET /api/users/{id}/subscriptions", usersRead(adminUserSubscriptionsAction, h.handleListUserSubscriptions))
+	// 管理侧取消（C3/R-08/R-47）：权限键取用户管理面的写权限 users:update。
+	// 冻结的 20 键目录里没有 users:manage（目录唯一来源 modules-07，不得
+	// 新增），users:update 是「管理这个用户」的既有写入口，与 settings:manage
+	// 严格分开：能改站点设置不代表能替用户取消订阅。
+	// 数据范围：路径用户与实例归属必须一致，否则 404（不泄露订阅存在性）。
+	usersWrite := func(action rbac.AuthzAction, next http.HandlerFunc) http.Handler {
+		return h.authz.Handler(rbac.PermUsersUpdate, action)(next)
+	}
+	mux.Handle("POST /api/users/{id}/subscriptions/{subscription_id}/cancel",
+		usersWrite(adminUserSubscriptionCancelAction, h.handleAdminCancelUserSubscription))
 
 	// 用户面：数据范围恒为 Principal.UserID（§15.4）。
 	mux.Handle("GET /api/subscription/plans", http.HandlerFunc(h.handleListAvailablePlans))
@@ -1406,6 +1427,112 @@ func (h *SubscriptionHandlers) handleCancelSubscriptionAtPeriodEnd(w http.Respon
 func writeCancelNotActiveProblem(w http.ResponseWriter) {
 	writeAdminProblem(w, http.StatusConflict, problemTypeSubscriptionNotActive,
 		"subscription_not_active", "subscription is no longer active and cannot be cancelled at period end")
+}
+
+// adminSubscriptionCancelRequest 是 POST
+// /api/users/{id}/subscriptions/{subscription_id}/cancel 的请求体。
+//
+// immediate=false / 缺省 = 周期末取消（与用户侧同语义）；true = R-48 的
+// 立即取消（end_at 提前到 now，进入宽限期）。不引入第二种取消 action。
+type adminSubscriptionCancelRequest struct {
+	Immediate *bool `json:"immediate"`
+}
+
+// handleAdminCancelUserSubscription 实现 C3 / R-08 的管理侧取消。
+//
+// 归属判定（R-47）：路径 `{id}` 是用户、`{subscription_id}` 是实例，两者
+// 必须匹配。用户不存在、实例不存在、实例属于他人一律 **404**——与用户侧
+// 及事件流的既有口径一致（§15.4）：403 会告诉攻击者「这个订阅存在，只是
+// 不属于这个用户」，形成订阅 ID 枚举信道；本端点还多了一层可枚举的
+// user_id，必须让四种失败形态不可区分。
+//
+// 状态：immediate=true 时由 store 判定（cancelled 幂等 200、expired 409）；
+// immediate=false 复用用户侧周期末取消，终态同样 409。Get 与写入之间的
+// 状态竞争由 store 的行锁/条件判定兜底，不在这里做「先读后写」的假设。
+func (h *SubscriptionHandlers) handleAdminCancelUserSubscription(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	userID, userOK := parsePositivePathID(r.PathValue("id"))
+	subID, subOK := parsePositivePathID(r.PathValue("subscription_id"))
+	if !userOK || !subOK {
+		// 非法 id 与不存在同口径，不额外泄露「格式错」。
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+
+	immediate := false
+	// body 可选：与 reset-quota 相同，只认读取后的实际内容（ContentLength
+	// 在 chunked/未知长度下不可靠）。
+	if r.Body != nil {
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAuthBodyBytes))
+		if err != nil {
+			writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				"unable to read request body")
+			return
+		}
+		if len(strings.TrimSpace(string(raw))) != 0 {
+			var payload adminSubscriptionCancelRequest
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+					"immediate must be a boolean")
+				return
+			}
+			if payload.Immediate != nil {
+				immediate = *payload.Immediate
+			}
+		}
+	}
+
+	sub, err := h.repo.GetSubscription(r.Context(), subID)
+	if err != nil {
+		h.writeRepoError(w, "get subscription for admin cancel", err)
+		return
+	}
+	// 归属先于状态：他人实例与不存在同响应，避免状态码差异泄露归属。
+	if sub.UserID != userID {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+
+	var cancelErr error
+	if immediate {
+		cancelErr = h.repo.CancelImmediately(r.Context(), subID)
+	} else {
+		cancelErr = h.repo.CancelAtPeriodEnd(r.Context(), subID)
+	}
+	if cancelErr != nil {
+		switch {
+		case errors.Is(cancelErr, store.ErrSubscriptionNotFound):
+			writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		case errors.Is(cancelErr, store.ErrSubscriptionNotActive):
+			writeCancelNotActiveProblem(w)
+		default:
+			h.log.Error("admin cancel subscription failed",
+				"user_id", userID, "subscription_id", subID, "immediate", immediate, "error", cancelErr)
+			writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
+		}
+		return
+	}
+
+	updated, err := h.repo.GetSubscription(r.Context(), subID)
+	if err != nil {
+		h.writeRepoError(w, "reload subscription after admin cancel", err)
+		return
+	}
+	h.auditSubscriptionEvent(r, p, audit.ActionSubscriptionCancel,
+		map[string]any{"id": subID, "immediate": immediate}, http.StatusOK)
+	writeJSON(w, http.StatusOK, newAdminSubscriptionView(updated))
+}
+
+// parsePositivePathID 解析正的 int64 路径参数；非法/非正一律 false。
+func parsePositivePathID(raw string) (int64, bool) {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 // subscriptionRefundRequest 是 POST /api/subscriptions/{id}/refund-request 的

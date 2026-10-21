@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -559,15 +560,23 @@ func TestSubscriptionConditionalTransitions(t *testing.T) {
 		t.Fatalf("周期末取消后 = %+v/%v，want active + flag", got, err)
 	}
 
-	// 立即取消：active → cancelled；重复调用幂等；之后周期末取消不再适用。
+	// 立即取消（R-48）：active 仍是 active，end_at 提前到「现在」并清掉
+	// 周期末标记，进入快照宽限期；重复调用幂等（不重复写事件）。
 	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
 		t.Fatalf("cancel immediately: %v", err)
 	}
 	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
 		t.Fatalf("重复 cancel immediately 应幂等：%v", err)
 	}
-	if err := repo.CancelAtPeriodEnd(ctx, sub.ID); !errors.Is(err, ErrSubscriptionNotActive) {
-		t.Fatalf("终态 period-end cancel err = %v，want ErrSubscriptionNotActive", err)
+	got, err = repo.GetSubscription(ctx, sub.ID)
+	if err != nil || got.Status != "active" || got.CancelAtPeriodEnd {
+		t.Fatalf("立即取消后 = %+v/%v，want active 且无周期末标记", got, err)
+	}
+	if got.EndAt.After(time.Now().UTC()) {
+		t.Fatalf("立即取消后 end_at = %v，期望不晚于 now", got.EndAt)
+	}
+	if err := repo.CancelAtPeriodEnd(ctx, sub.ID); err != nil {
+		t.Fatalf("立即取消后仍可置周期末取消（宽限期内）：%v", err)
 	}
 	if err := repo.CancelImmediately(ctx, 1<<60); !errors.Is(err, ErrSubscriptionNotFound) {
 		t.Fatalf("不存在实例 err = %v，want ErrSubscriptionNotFound", err)
@@ -1211,6 +1220,101 @@ func TestSubscriptionCancelAtPeriodEndBoundary(t *testing.T) {
 	}
 	if _, err := repo.GetPreConsume(ctx, req); !errors.Is(err, ErrPreConsumeNotFound) {
 		t.Fatalf("失败预扣留下记录: %v", err)
+	}
+}
+
+// TestSubscriptionCancelImmediatelyGrace 覆盖 C3 / R-48：管理侧立即取消把
+// end_at 提前到「现在」，实例仍是 active 并在快照宽限期内可消费；宽限期
+// 结束后 ExpireDue 迁移为 expired，额度随之不可用。宽限期内不发放新周期
+// 额度（H3 与立即取消正交：DueForReset 只认 end_at > now）。
+func TestSubscriptionCancelImmediatelyGrace(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	now := time.Now().UTC()
+
+	plan, err := repo.CreatePlan(ctx, SubscriptionPlanInput{
+		PlanKey:      subscriptionPlanKey("c3-immediate"),
+		Title:        "Immediate Grace",
+		PeriodDays:   30,
+		PriceAmount:  100,
+		Currency:     "CNY",
+		GrantCredits: 1000,
+		GraceDays:    3,
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id IN
+			(SELECT id FROM subscriptions WHERE plan_id = $1)`, plan.ID)
+		_, _ = db.Exec(`DELETE FROM subscription_events WHERE subscription_id IN
+			(SELECT id FROM subscriptions WHERE plan_id = $1)`, plan.ID)
+		_, _ = db.Exec(`DELETE FROM subscriptions WHERE plan_id = $1`, plan.ID)
+		_, _ = db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, plan.ID)
+	})
+
+	userID := int64(920001)
+	// 原合同还剩 5 天；立即取消后宽限期从「现在」起算 3 天。
+	sub := createTestSubscription(t, repo, plan, userID,
+		now.Add(-time.Hour), now.Add(5*24*time.Hour), nil)
+	if _, err := db.Exec(`UPDATE subscriptions SET grace_days = 3 WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("set grace: %v", err)
+	}
+
+	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
+		t.Fatalf("cancel immediately: %v", err)
+	}
+
+	got, err := repo.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if got.Status != "active" || got.CancelAtPeriodEnd {
+		t.Fatalf("立即取消后 = status %q / cancel_at_period_end %v，want active/false",
+			got.Status, got.CancelAtPeriodEnd)
+	}
+	if got.EndAt.After(time.Now().UTC()) {
+		t.Fatalf("立即取消后 end_at = %v，期望提前到 now", got.EndAt)
+	}
+
+	// 宽限期内可消费：读侧列表与预扣写入都仍接受该实例。
+	actives, err := repo.ListActiveSubscriptions(ctx, userID, now)
+	if err != nil || len(actives) != 1 || actives[0].ID != sub.ID {
+		t.Fatalf("宽限期内 ListActiveSubscriptions = %+v/%v，want 实例 %d", actives, err, sub.ID)
+	}
+	req := subscriptionRequestID(t)
+	if _, created, err := repo.PreConsumeUserSubscription(ctx, req, sub.ID, 100); err != nil || !created {
+		t.Fatalf("宽限期内预扣 = created %v / err %v，want 成功", created, err)
+	}
+
+	// 事件：created + cancelled(immediate=true)，重复调用不追加。
+	events, err := repo.ListSubscriptionEvents(ctx, sub.ID, 0, 100)
+	if err != nil || len(events) != 2 || events[1].Kind != SubscriptionEventCancelled {
+		t.Fatalf("立即取消事件 = %+v/%v", events, err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(events[1].Detail, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail["immediate"] != true {
+		t.Fatalf("detail.immediate = %v，want true", detail["immediate"])
+	}
+	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
+		t.Fatalf("重复 cancel immediately: %v", err)
+	}
+	if events, err = repo.ListSubscriptionEvents(ctx, sub.ID, 0, 100); err != nil || len(events) != 2 {
+		t.Fatalf("重复取消后事件数 = %d/%v，want 2（幂等不重写）", len(events), err)
+	}
+
+	// 宽限期结束后：ExpireDue 迁移为 expired，额度不再可用。
+	afterGrace := now.Add(4 * 24 * time.Hour)
+	if n, err := repo.ExpireDue(ctx, afterGrace); err != nil || n < 1 {
+		t.Fatalf("ExpireDue = %d/%v，want ≥1", n, err)
+	}
+	req2 := subscriptionRequestID(t)
+	if _, _, err := repo.PreConsumeUserSubscription(ctx, req2, sub.ID, 1); !errors.Is(err, ErrSubscriptionQuotaInsufficient) {
+		t.Fatalf("宽限结束后预扣 err = %v，want ErrSubscriptionQuotaInsufficient", err)
 	}
 }
 

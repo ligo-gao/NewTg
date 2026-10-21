@@ -485,6 +485,137 @@ func TestSubscriptionIntegrationUserIsolation(t *testing.T) {
 	}
 }
 
+// TestSubscriptionIntegrationAdminCancel 在真实 PostgreSQL 上验证管理侧取消
+// 端点（C3/R-08/R-47/R-48）：users:update 门控、路径用户与实例归属一致性、
+// immediate=true 的宽限语义（active + end_at 提前 + 事件 immediate=true）、
+// 周期末取消复用与终态 409。
+func TestSubscriptionIntegrationAdminCancel(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	planID := env.insertPlanRow(t, "cancel-admin-"+subscriptionITKey(), "enabled")
+	owner := env.insertUser(t, "user")
+	other := env.insertUser(t, "user")
+	activeID := env.insertSubscription(t, owner, planID, "active", 10)
+	foreignID := env.insertSubscription(t, other, planID, "active", 10)
+	expiredID := env.insertSubscription(t, owner, planID, "expired", 10)
+	cancelledID := env.insertSubscription(t, owner, planID, "cancelled", 10)
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id IN ($1,$2,$3,$4)`,
+			activeID, foreignID, expiredID, cancelledID)
+	})
+	// 立即取消后的宽限期取快照 grace_days；这里给 2 天，用于证明
+	// 「宽限期内仍可消费」而不是把实例立刻作废。
+	if _, err := env.db.Exec(`UPDATE subscriptions SET grace_days = 2 WHERE id = $1`, activeID); err != nil {
+		t.Fatalf("set grace: %v", err)
+	}
+
+	writer := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersUpdate}}
+	reader := &auth.Principal{UserID: 2, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersRead}}
+	path := func(userID, subID int64) string {
+		return fmt.Sprintf("/api/users/%d/subscriptions/%d/cancel", userID, subID)
+	}
+
+	// 权限：settings:manage/只读不通过；users:update 通过（与用户管理同门）。
+	if rr := env.do(t, reader, http.MethodPost, path(owner, activeID),
+		map[string]any{"immediate": true}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("users:read 取消 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 他人实例 / 路径用户不一致 / 不存在统一 404，且不改他人行。
+	for _, target := range []string{path(owner, foreignID), path(other, activeID), path(owner, 99999999)} {
+		if rr := env.do(t, writer, http.MethodPost, target,
+			map[string]any{"immediate": true}, nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("%s = %d（body=%s）", target, rr.Code, rr.Body.String())
+		}
+	}
+	var foreignFlag bool
+	if err := env.db.QueryRow(`SELECT cancel_at_period_end FROM subscriptions WHERE id = $1`, foreignID).Scan(&foreignFlag); err != nil {
+		t.Fatalf("read foreign flag: %v", err)
+	}
+	if foreignFlag {
+		t.Fatal("他人实例不应被改动")
+	}
+
+	// 立即取消：200 + admin 投影；库里 active、flag=false、end_at 不晚于 now。
+	rr := env.do(t, writer, http.MethodPost, path(owner, activeID),
+		map[string]any{"immediate": true}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("立即取消 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var view adminSubscriptionView
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode subscription: %v", err)
+	}
+	if view.ID != activeID || view.UserID != owner || view.Status != "active" || view.CancelAtPeriodEnd {
+		t.Fatalf("立即取消后视图 = %+v", view)
+	}
+	var (
+		status     string
+		flag       bool
+		endedEarly bool
+	)
+	if err := env.db.QueryRow(`
+		SELECT status, cancel_at_period_end, end_at <= now()
+		  FROM subscriptions WHERE id = $1`, activeID).Scan(&status, &flag, &endedEarly); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if status != "active" || flag || !endedEarly {
+		t.Fatalf("立即取消落库 = status %s / flag %v / ended %v，want active/false/true",
+			status, flag, endedEarly)
+	}
+
+	// 宽限期内仍可消费（R-48 文案的真相）：真实预扣成功。
+	// request_id 是 uuid 列，直接让库生成，避免手拼非法格式。
+	var reqID string
+	if err := env.db.QueryRow(`SELECT gen_random_uuid()::text`).Scan(&reqID); err != nil {
+		t.Fatalf("gen request id: %v", err)
+	}
+	if _, created, err := env.repo.PreConsumeUserSubscription(context.Background(), reqID, activeID, 5); err != nil || !created {
+		t.Fatalf("宽限期内预扣 = created %v / err %v，want 成功", created, err)
+	}
+	if _, err := env.db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, activeID); err != nil {
+		t.Fatalf("cleanup pre-consume: %v", err)
+	}
+
+	// 事件只有一条 cancelled(immediate=true)，重复调用幂等。
+	events, err := env.repo.ListSubscriptionEvents(context.Background(), activeID, 0, 100)
+	if err != nil || len(events) != 1 || events[0].Kind != store.SubscriptionEventCancelled {
+		t.Fatalf("立即取消事件 = %+v/%v", events, err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(events[0].Detail, &detail); err != nil || detail["immediate"] != true {
+		t.Fatalf("detail = %s / %v，want immediate=true", events[0].Detail, err)
+	}
+	if rr := env.do(t, writer, http.MethodPost, path(owner, activeID),
+		map[string]any{"immediate": true}, nil); rr.Code != http.StatusOK {
+		t.Fatalf("重复立即取消 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if events, err = env.repo.ListSubscriptionEvents(context.Background(), activeID, 0, 100); err != nil || len(events) != 1 {
+		t.Fatalf("重复取消后事件数 = %d/%v，want 1", len(events), err)
+	}
+
+	// 周期末取消（immediate=false/缺省）复用用户侧语义；终态 409。
+	periodID := env.insertSubscription(t, owner, planID, "active", 0)
+	rr = env.do(t, writer, http.MethodPost, path(owner, periodID), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("周期末取消 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if err := env.db.QueryRow(`SELECT cancel_at_period_end FROM subscriptions WHERE id = $1`, periodID).Scan(&flag); err != nil {
+		t.Fatalf("read period flag: %v", err)
+	}
+	if !flag {
+		t.Fatal("周期末取消未落库")
+	}
+	for name, id := range map[string]int64{"expired": expiredID, "cancelled": cancelledID} {
+		rr := env.do(t, writer, http.MethodPost, path(owner, id), nil, nil)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("%s 周期末取消 = %d（body=%s）", name, rr.Code, rr.Body.String())
+		}
+		if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotActive {
+			t.Fatalf("%s type = %s", name, got)
+		}
+	}
+}
+
 // TestSubscriptionIntegrationCancelAtPeriodEnd 在真实 PostgreSQL 上验证用户侧
 // 周期末取消：条件 UPDATE 的幂等、终态 409、跨用户 404（不泄露存在性）与
 // 未认证 403。store 层的单条 SQL 语义另由 subscription_repo_integration_test 覆盖。

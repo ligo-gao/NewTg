@@ -13,7 +13,8 @@ import { errorMessage } from './utils'
  * 定价的单一真源是模块 06 的模型定价（「模型 × 插件变体」计费表达式），
  * 本页签不提供任何输入控件，只做聚合入口 + 深链。契约目前没有插件维度的
  * 计费聚合端点，因此计费形态/变体数/关联模型数显示为「—」，并在页内说明；
- * 深链 `?plugin=<key>` 已携带参数，但模块 06 的 plugin 过滤尚未实现（登记）。
+ * 深链 `?plugin=<key>` 由模型定价页在前端按 `billing_setting.plugin_billing_expr`
+ * 的 `<pluginKey>::<model>` 键过滤（C3/R-50，不新增后端端点）。
  */
 export function PricingTab() {
   const { t } = useI18n()
