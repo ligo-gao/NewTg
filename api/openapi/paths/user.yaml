@@ -2106,6 +2106,7 @@ paths:
       summary: 本人任务台账（分页）
       description: |
         按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+        `family` 可选按族过滤（plugin/mj；R-MJ-18），非法族名 400。
         台账不返回 data / private_data（设计 §7.1 Omit）。
       security:
         - sessionCookie: []
@@ -2123,6 +2124,11 @@ paths:
           in: query
           required: false
           schema: {type: string}
+        - name: family
+          in: query
+          required: false
+          description: 族过滤；缺省展示全部（plugin + mj）
+          schema: {type: string, enum: [plugin, mj]}
       responses:
         '200':
           description: 任务分页

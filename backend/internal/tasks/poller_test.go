@@ -156,9 +156,24 @@ func (f *fakePollRepo) ApplyPoll(_ context.Context, id int64, from State, u Poll
 	if u.Quota != nil {
 		t.Quota = *u.Quota
 	}
+	if u.RetentionDeadline != nil {
+		t.RetentionDeadline = u.RetentionDeadline
+	}
 	f.casLog = append(f.casLog, string(from)+"->"+string(u.State))
 	f.updates = append(f.updates, cloneTask(t))
 	return true, nil
+}
+
+func (f *fakePollRepo) IncrementPollFailures(_ context.Context, id int64, from State) (int, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || t.State != from {
+		return 0, false, nil
+	}
+	failures := privateInt(t.PrivateData["poll_failures"]) + 1
+	t.PrivateData = mergeMaps(t.PrivateData, map[string]any{"poll_failures": failures})
+	return failures, true, nil
 }
 
 func (f *fakePollRepo) UpdateBilling(_ context.Context, id int64, quota *int64, private map[string]any) error {

@@ -13,6 +13,7 @@ import (
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
@@ -29,6 +30,14 @@ import (
 const (
 	settingTaskPollTimeoutMinutes = "task.poll_timeout_minutes"
 	settingTaskPollMaxFailures    = "task.poll_max_failures"
+
+	// MJ 族独立的轮询上限（relay-05 §6.1：MJ 卡住兜底 1h，插件 1440m，
+	// 两族故意不同）。共用 task.poll_* 会让调 MJ 连带改变插件任务。
+	settingMJPollTimeoutMinutes = "mj.poll_timeout_minutes"
+	settingMJPollMaxFailures    = "mj.poll_max_failures"
+
+	// settingMJRetentionDays 是终态 MJ 任务的保留天数（#70）。
+	settingMJRetentionDays = "mj.retention_terminal_days"
 )
 
 // settingReader 是配置中心读取面的最小接口（生产 *configcenter.Center）。
@@ -82,23 +91,30 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 	}
 
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
-	// W8/MJ-A0：MJ 族有独立的领取入口（family='mj'）。A0 只装配领取骨架
-	// （Handler 为 nil：只领取、不推进/不结算）；MJ-b 在这里注入查询驱动，
-	// MJ-a2/d 注入计费时机。先装配的价值是让「MJ 行有唯一归属的 poller」
-	// 在数据面上成立，而不是只依赖插件 poller 的 SQL 过滤（R-MJ-04 纵深防御）。
-	//
+	// W8/MJ-b：MJ 族的查询驱动与补偿结算。Handler 负责「查上游 → CAS 回填 →
+	// 终态交给 Settler」，Settler 同时作为 MJPoller 的补偿扫描入口——两者
+	// 必须是同一个实例，否则「终态结算」与「pending 重试」会走两套资金
+	// 语义。
+	taskRepo := tasks.NewRepo(db)
+	mjDriver, mjSettler, err := buildMJPollDriver(taskRepo, center, engine, sealer, log)
+	if err != nil {
+		return nil, err
+	}
 	// W9-B4：两个轮询器由同一构造函数装配，配置上限只在该函数内解析一次
 	// 并同时注入两侧；接线本身有单测（buildTaskPollers 的 accessor 断言），
 	// 删除任一侧的赋值都会让用例变红。
 	poller, mjPoller, err := buildTaskPollers(taskPollerDeps{
-		Repo:    tasks.NewRepo(db),
-		Plugins: manager,
-		Billing: engine,
-		Decrypt: func(sealed []byte) (string, error) {
-			return decryptTaskChannelCredential(sealer, sealed)
+		Repo:      taskRepo,
+		Plugins:   manager,
+		Billing:   engine,
+		Decrypt:   func(sealed []byte) (string, error) { return decryptTaskChannelCredential(sealer, sealed) },
+		Limits:    center,
+		Log:       log,
+		MJHandler: mjDriver.PollTask,
+		MJSettler: mjSettler,
+		MJRetention: func(now time.Time) *time.Time {
+			return httpapi.MJRetentionDeadline(now, mjRetentionDays(center, log))
 		},
-		Limits: center,
-		Log:    log,
 	})
 	if err != nil {
 		return nil, err
@@ -137,10 +153,15 @@ type taskPollerDeps struct {
 	Decrypt func([]byte) (string, error)
 	Limits  settingReader
 	Log     *slog.Logger
-	// MJHandler 是 MJ 族的查询/结算驱动（MJ-b 接入点）。当前为 nil：
-	// MJPoller 只领取、不推进/不结算。mj.enabled=true 时装配守卫会拒绝
-	// 上线（见 mjSettlerGuard），避免普通提交的 hold 永久冻结。
+	// MJHandler 是 MJ 族的查询/结算驱动（MJ-b 接入点）。nil 时 MJPoller
+	// 只领取、不推进/不结算；mj.enabled=true 时装配守卫会拒绝上线
+	// （见 mjSettlerGuard），避免普通提交的 hold 永久冻结。
 	MJHandler tasks.MJTaskHandler
+	// MJSettler 是 MJ 族的补偿结算入口；与 MJHandler 的内部结算共用同一个
+	// tasks.Settler 实例。
+	MJSettler tasks.MJTaskSettler
+	// MJRetention 计算 MJ 终态保留截止（超时/失败上限推进的终态也要写）。
+	MJRetention func(now time.Time) *time.Time
 }
 
 // mjSettlerGuard 是「绘图族已开启但无人结算」的装配门禁（I2）。
@@ -190,9 +211,14 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 		return nil, nil, fmt.Errorf("worker: %w", err)
 	}
 	// 指针语义保证「未配置」与「显式 0=禁用」不会被混为一谈。
+	// 两族分别解析：task.* 只约束插件 poller，mj.* 只约束 MJ poller。
 	timeout, maxFailures := taskPollLimits(deps.Limits, log)
+	mjTimeout, mjMaxFailures := mjPollLimits(deps.Limits, log)
 	log.Info("worker: task poll limits resolved",
-		"timeout", describeTimeout(timeout), "max_failures", describeMaxFailures(maxFailures))
+		"plugin_timeout", describePollTimeout(timeout, tasks.DefaultTaskTimeout),
+		"plugin_max_failures", describeMaxFailures(maxFailures),
+		"mj_timeout", describePollTimeout(mjTimeout, tasks.DefaultMJTaskTimeout),
+		"mj_max_failures", describeMaxFailures(mjMaxFailures))
 
 	poller, err := tasks.NewPoller(tasks.PollerConfig{
 		Repo:    deps.Repo,
@@ -210,16 +236,77 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
 		Repo:    deps.Repo,
 		Handler: deps.MJHandler,
+		Settler: deps.MJSettler,
+		// B2：MJ 行若来自订阅来源，Detach 后同样需要续租，否则兜底扫描会把
+		// 仍在轮询的任务当成崩溃请求退款（与插件 poller 同一份交接面）。
+		Billing: deps.Billing,
 		Logger:  log,
-		// 同一对配置同时约束 MJ 领取器。Handler 为空时它不会因超时改状态
-		//（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的守卫拒绝。
-		Timeout:     timeout,
-		MaxFailures: maxFailures,
+		// MJ 专属上限（mj.poll_*，默认 60m/20）。Handler 为空时它不会因
+		// 超时改状态（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的
+		// 守卫拒绝。
+		Timeout:     mjTimeout,
+		MaxFailures: mjMaxFailures,
+		// 终态保留期限与 MJ 驱动使用同一份设置（mj.retention_terminal_days）。
+		RetentionDeadline: deps.MJRetention,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("worker: mj task poller: %w", err)
 	}
 	return poller, mjPoller, nil
+}
+
+// mjPollRepo 是 buildMJPollDriver 的存储接缝（生产 *tasks.Repo）。
+//
+// 用接口而不是具体类型，让装配测试可以注入内存 fake 验证「driver/settler
+// 真的接上了」；生产仍只有 tasks.Repo 一个实现。
+type mjPollRepo interface {
+	httpapi.MJPollStore
+	httpapi.MJChannelSource
+	tasks.BillingFlagStore
+}
+
+// buildMJPollDriver 构造 MJ 族的查询/结算驱动（W8/MJ-b）。
+//
+// gateway 与 worker 都调用同一构造函数：gateway 只用它通过启动守卫
+// （证明「mj.enabled 打开时存在结算驱动」），worker 才真正运行它。把构造
+// 收进一个函数避免两侧各写一份依赖清单——漏一个依赖会让守卫通过但轮询
+// 静默不工作，正是守卫要防的故障。
+func buildMJPollDriver(repo mjPollRepo, reader settingReader, engine tasks.BillingSettler,
+	sealer *httpapi.SecretSealer, log *slog.Logger) (*httpapi.MJPollDriver, *tasks.Settler, error) {
+
+	settler, err := tasks.NewSettler(tasks.SettlerConfig{
+		Billing: engine, Repo: repo, Logger: log,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: mj settler: %w", err)
+	}
+	driver, err := httpapi.NewMJPollDriver(httpapi.MJPollDriverConfig{
+		Store:    repo,
+		Channels: repo,
+		Sealer:   sealer,
+		// 固定形状的 midjourney-proxy 客户端：禁重定向、mj-api-secret、
+		// 查询 15s（SubmitClient 的默认超时会按调用类型分别收窄）。
+		Client:  mj.NewSubmitClient(nil),
+		Settler: settler,
+		Logger:  log,
+		RetentionDays: func() int64 {
+			return mjRetentionDays(reader, log)
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: mj poll driver: %w", err)
+	}
+	return driver, settler, nil
+}
+
+// mjRetentionDays 读取终态保留天数；未配置/脏值回落设计默认 30。
+//
+// 0 是显式关闭（不写 retention_deadline），与「未配置」必须区分。
+func mjRetentionDays(reader settingReader, log *slog.Logger) int64 {
+	if days, ok := readSettingInt(reader, settingMJRetentionDays, log); ok {
+		return days
+	}
+	return 30
 }
 
 // decryptTaskChannelCredential 解开 channels.credentials 并取出 api_key。
@@ -239,11 +326,11 @@ func decryptTaskChannelCredential(sealer *httpapi.SecretSealer, sealed []byte) (
 	return creds.APIKey, nil
 }
 
-// taskPollLimits 把设置中心的两个任务轮询上限映射成轮询器配置（W9-B4）。
+// taskPollLimits 把设置中心的插件族轮询上限映射成轮询器配置（W9-B4）。
 //
 // 三态冻结（R-W9B-04）：
-//   - 键未落库（Center.Get ok=false）→ 返回 nil：交给 NewPoller/NewMJPoller
-//     回落设计默认（1440 分钟 / 20 次）。**不得**在这里填 0，也不得填默认值，
+//   - 键未落库（Center.Get ok=false）→ 返回 nil：交给 NewPoller 回落插件族
+//     设计默认（1440 分钟 / 20 次）。**不得**在这里填 0，也不得填默认值，
 //     否则「未配置」与「显式 0」在轮询器里就再也分不开。
 //   - 显式 0 → 返回指向 0 的指针：timedOut / maxFailures 判定据此禁用。
 //   - 正值 → 按值透传（分钟换算为 time.Duration）。
@@ -256,24 +343,35 @@ func decryptTaskChannelCredential(sealer *httpapi.SecretSealer, sealed []byte) (
 // 重建后生效（与「启动期装配」一致）；运行中热更新需要把读取下沉到轮询
 // 循环，本波不做。
 func taskPollLimits(reader settingReader, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
+	return pollLimits(reader, settingTaskPollTimeoutMinutes, settingTaskPollMaxFailures, log)
+}
+
+// mjPollLimits 解析 MJ 族专属上限；未配置时返回 nil，由 NewMJPoller 回落
+// 60m/20（relay-05 §6.1）。与 taskPollLimits 完全独立：改一侧不影响另一侧。
+func mjPollLimits(reader settingReader, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
+	return pollLimits(reader, settingMJPollTimeoutMinutes, settingMJPollMaxFailures, log)
+}
+
+// pollLimits 是两族上限的共享解析实现（键名与默认值由调用方决定）。
+func pollLimits(reader settingReader, timeoutKey, failuresKey string, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if minutes, ok := readSettingInt(reader, settingTaskPollTimeoutMinutes, log); ok {
+	if minutes, ok := readSettingInt(reader, timeoutKey, log); ok {
 		// 分钟 → Duration 的溢出护栏：注册表本身限制 525600 分钟，但
 		// configcenter 里的历史行/手工写入不受注册表校验，仍需防御。
 		if minutes > math.MaxInt64/int64(time.Minute) {
 			log.Warn("worker: task poll timeout is out of range; falling back to the design default",
-				"key", settingTaskPollTimeoutMinutes, "minutes", minutes)
+				"key", timeoutKey, "minutes", minutes)
 		} else {
 			d := time.Duration(minutes) * time.Minute
 			timeout = &d
 		}
 	}
-	if failures, ok := readSettingInt(reader, settingTaskPollMaxFailures, log); ok {
+	if failures, ok := readSettingInt(reader, failuresKey, log); ok {
 		if failures > int64(math.MaxInt) {
 			log.Warn("worker: task poll max failures overflows int; falling back to the design default",
-				"key", settingTaskPollMaxFailures, "max_failures", failures)
+				"key", failuresKey, "max_failures", failures)
 		} else {
 			v := int(failures)
 			maxFailures = &v
@@ -320,11 +418,11 @@ func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, 
 	return *value, true
 }
 
-// describeTimeout / describeMaxFailures 只服务于启动日志的可观测性：
-// nil 明确显示为 default，避免运维把「未配置」误读成「0=禁用」。
-func describeTimeout(timeout *time.Duration) string {
+// describePollTimeout 只服务于启动日志的可观测性：nil 显示为对应族的
+// 设计默认（插件 1440m / MJ 60m），避免运维把「未配置」误读成「0=禁用」。
+func describePollTimeout(timeout *time.Duration, fallback time.Duration) string {
 	if timeout == nil {
-		return fmt.Sprintf("default (%s)", tasks.DefaultTaskTimeout)
+		return fmt.Sprintf("default (%s)", fallback)
 	}
 	return timeout.String()
 }

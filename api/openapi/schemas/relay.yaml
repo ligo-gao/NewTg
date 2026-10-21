@@ -32,3 +32,16 @@ schemas:
             description: |
               机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
               `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
+
+  # list-by-condition 的请求体（W8/MJ-b）。网关自有形状（非上游协议），
+  # 因此登记在本域 schemas；上限与 R-MJ-16 冻结值一致。
+  MJTaskListRequest:
+    type: object
+    additionalProperties: false
+    required: [ids]
+    properties:
+      ids:
+        type: array
+        maxItems: 100
+        description: MjId 列表（≤100；空数组直接返回 []）
+        items: {type: string, minLength: 1, maxLength: 128}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/tasks"
 )
@@ -144,10 +145,10 @@ func TestTaskPollLimitsNilReader(t *testing.T) {
 func TestDescribeLimitsDistinguishesUnsetFromZero(t *testing.T) {
 	zero := 0
 	zeroTimeout := time.Duration(0)
-	if got := describeTimeout(nil); !strings.Contains(got, "default") {
+	if got := describePollTimeout(nil, tasks.DefaultTaskTimeout); !strings.Contains(got, "default") {
 		t.Fatalf("nil timeout must describe as default: %q", got)
 	}
-	if got := describeTimeout(&zeroTimeout); got == "default" || got != "0s" {
+	if got := describePollTimeout(&zeroTimeout, tasks.DefaultTaskTimeout); got == "default" || got != "0s" {
 		t.Fatalf("explicit zero must not describe as default: %q", got)
 	}
 	if got := describeMaxFailures(nil); !strings.Contains(got, "default") {
@@ -178,8 +179,16 @@ func (wiringRepo) GetChannel(context.Context, int64) (*tasks.ChannelTarget, erro
 	return nil, nil
 }
 
+func (wiringRepo) MJChannelCandidates(context.Context, string, string) ([]tasks.MJChannelCandidate, error) {
+	return nil, nil
+}
+
 func (wiringRepo) ApplyPoll(context.Context, int64, tasks.State, tasks.PollUpdate) (bool, error) {
 	return false, nil
+}
+
+func (wiringRepo) IncrementPollFailures(context.Context, int64, tasks.State) (int, bool, error) {
+	return 0, false, nil
 }
 
 func (wiringRepo) UpdateBilling(context.Context, int64, *int64, map[string]any) error {
@@ -211,18 +220,32 @@ func TestBuildTaskPollersWiresLimitsIntoBothPollers(t *testing.T) {
 	cases := []struct {
 		name        string
 		reader      fakeSettingReader
-		wantTimeout time.Duration
-		wantMax     int
+		wantPluginT time.Duration
+		wantPluginM int
+		wantMJT     time.Duration
+		wantMJM     int
 	}{
-		{"unset", fakeSettingReader{}, tasks.DefaultTaskTimeout, tasks.DefaultMaxPollFailures},
-		{"zero", fakeSettingReader{
+		{"unset", fakeSettingReader{},
+			tasks.DefaultTaskTimeout, tasks.DefaultMaxPollFailures,
+			tasks.DefaultMJTaskTimeout, tasks.DefaultMJMaxPollFailures},
+		{"task keys zero keep MJ defaults", fakeSettingReader{
 			settingTaskPollTimeoutMinutes: json.RawMessage(`0`),
 			settingTaskPollMaxFailures:    json.RawMessage(`0`),
-		}, 0, 0},
-		{"positive", fakeSettingReader{
+		}, 0, 0, tasks.DefaultMJTaskTimeout, tasks.DefaultMJMaxPollFailures},
+		{"mj keys zero keep plugin defaults", fakeSettingReader{
+			settingMJPollTimeoutMinutes: json.RawMessage(`0`),
+			settingMJPollMaxFailures:    json.RawMessage(`0`),
+		}, tasks.DefaultTaskTimeout, tasks.DefaultMaxPollFailures, 0, 0},
+		{"independent positive values", fakeSettingReader{
 			settingTaskPollTimeoutMinutes: json.RawMessage(`90`),
 			settingTaskPollMaxFailures:    json.RawMessage(`7`),
-		}, 90 * time.Minute, 7},
+			settingMJPollTimeoutMinutes:   json.RawMessage(`60`),
+			settingMJPollMaxFailures:      json.RawMessage(`5`),
+		}, 90 * time.Minute, 7, 60 * time.Minute, 5},
+		{"changing MJ does not affect plugin", fakeSettingReader{
+			settingMJPollTimeoutMinutes: json.RawMessage(`15`),
+			settingMJPollMaxFailures:    json.RawMessage(`2`),
+		}, tasks.DefaultTaskTimeout, tasks.DefaultMaxPollFailures, 15 * time.Minute, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,19 +259,38 @@ func TestBuildTaskPollersWiresLimitsIntoBothPollers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildTaskPollers: %v", err)
 			}
-			if got := poller.TimeoutLimit(); got != tc.wantTimeout {
-				t.Fatalf("plugin poller timeout = %v, want %v (wiring lost?)", got, tc.wantTimeout)
+			if got := poller.TimeoutLimit(); got != tc.wantPluginT {
+				t.Fatalf("plugin poller timeout = %v, want %v (wiring lost?)", got, tc.wantPluginT)
 			}
-			if got := poller.MaxFailuresLimit(); got != tc.wantMax {
-				t.Fatalf("plugin poller maxFailures = %d, want %d (wiring lost?)", got, tc.wantMax)
+			if got := poller.MaxFailuresLimit(); got != tc.wantPluginM {
+				t.Fatalf("plugin poller maxFailures = %d, want %d (wiring lost?)", got, tc.wantPluginM)
 			}
-			if got := mjPoller.TimeoutLimit(); got != tc.wantTimeout {
-				t.Fatalf("mj poller timeout = %v, want %v (wiring lost?)", got, tc.wantTimeout)
+			if got := mjPoller.TimeoutLimit(); got != tc.wantMJT {
+				t.Fatalf("mj poller timeout = %v, want %v (I-1: MJ must use mj.poll_timeout_minutes)", got, tc.wantMJT)
 			}
-			if got := mjPoller.MaxFailuresLimit(); got != tc.wantMax {
-				t.Fatalf("mj poller maxFailures = %d, want %d (wiring lost?)", got, tc.wantMax)
+			if got := mjPoller.MaxFailuresLimit(); got != tc.wantMJM {
+				t.Fatalf("mj poller maxFailures = %d, want %d (I-1)", got, tc.wantMJM)
 			}
 		})
+	}
+}
+
+// TestMJLimitsBadValuesFallBack 验收 MJ 键的三态之外：坏值/负值回落 MJ
+// 默认，绝不影响插件侧。
+func TestMJLimitsBadValuesFallBack(t *testing.T) {
+	for _, raw := range []string{`-1`, `"abc"`, `null`, `1.5`} {
+		reader := fakeSettingReader{
+			settingMJPollTimeoutMinutes: json.RawMessage(raw),
+			settingMJPollMaxFailures:    json.RawMessage(raw),
+		}
+		timeout, failures := mjPollLimits(reader, slog.Default())
+		if timeout != nil || failures != nil {
+			t.Fatalf("mj bad value %q must fall back to runtime defaults, got %v/%v", raw, timeout, failures)
+		}
+		pluginTimeout, pluginFailures := taskPollLimits(reader, slog.Default())
+		if pluginTimeout != nil || pluginFailures != nil {
+			t.Fatalf("mj bad value must not touch plugin limits: %v/%v", pluginTimeout, pluginFailures)
+		}
 	}
 }
 
@@ -276,6 +318,53 @@ func TestMJSettlerGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildMJPollDriverWiresGuardAndSettler 验收 W8/MJ-b 的装配：
+// 同一构造器同时产出 Handler 与 Settler，且 mj.enabled=true 时守卫放行；
+// 缺 sealer/计费时构造失败（不静默降级）。
+func TestBuildMJPollDriverWiresGuardAndSettler(t *testing.T) {
+	sealer := httpapi.NewSecretSealer("mj-platform-test-key")
+	driver, settler, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{},
+		wiringBilling{}, sealer, slog.Default())
+	if err != nil {
+		t.Fatalf("buildMJPollDriver: %v", err)
+	}
+	if driver == nil || settler == nil {
+		t.Fatalf("driver/settler must not be nil")
+	}
+	enabled := fakeSettingReader{"mj.enabled": json.RawMessage(`true`)}
+	if err := mjSettlerGuard(enabled, driver.PollTask); err != nil {
+		t.Fatalf("guard must pass once the MJ driver is wired: %v", err)
+	}
+
+	if _, _, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{}, wiringBilling{}, nil, slog.Default()); err == nil {
+		t.Fatalf("missing sealer must fail closed")
+	}
+	if _, _, err := buildMJPollDriver(wiringRepo{}, fakeSettingReader{}, nil, sealer, slog.Default()); err == nil {
+		t.Fatalf("missing billing must fail closed")
+	}
+}
+
+// TestBuildTaskPollersAcceptsMJHandlerAndSettler 证明唯一装配路径接受
+// MJ 驱动（守卫不再误拒已接线的部署）。
+func TestBuildTaskPollersAcceptsMJHandlerAndSettler(t *testing.T) {
+	_, _, err := buildTaskPollers(taskPollerDeps{
+		Repo:      wiringRepo{},
+		Plugins:   wiringPlugins{},
+		Billing:   wiringBilling{},
+		Limits:    fakeSettingReader{"mj.enabled": json.RawMessage(`true`)},
+		Log:       slog.Default(),
+		MJHandler: func(context.Context, *tasks.Task) error { return nil },
+		MJSettler: wiringSettler{},
+	})
+	if err != nil {
+		t.Fatalf("buildTaskPollers with MJ wiring: %v", err)
+	}
+}
+
+type wiringSettler struct{}
+
+func (wiringSettler) SettleTerminal(context.Context, *tasks.Task) {}
 
 // TestBuildTaskPollersRefusesMJWithoutSettler 证明守卫接在唯一装配路径上，
 // 而不只是一个孤立的辅助函数。

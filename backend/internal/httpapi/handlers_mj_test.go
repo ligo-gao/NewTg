@@ -110,6 +110,24 @@ func (s *fakeMJStore) GetByUserUpstreamID(_ context.Context, userID int64, upstr
 	return nil, tasks.ErrTaskNotFound
 }
 
+// ListByUserUpstreamIDs 模仿生产 SQL 的 (user_id, family='mj') 过滤。
+func (s *fakeMJStore) ListByUserUpstreamIDs(_ context.Context, userID int64, ids []string, _ int) ([]*tasks.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
+	out := make([]*tasks.Task, 0, len(ids))
+	for _, id := range ids {
+		if task, ok := s.byUserUpstream[mjUserUpstreamKey(userID, id)]; ok {
+			if task.Family == tasks.FamilyMJ {
+				out = append(out, task)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeMJStore) UpdateBilling(_ context.Context, id int64, quota *int64, private map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

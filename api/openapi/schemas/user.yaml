@@ -1784,7 +1784,7 @@ schemas:
         type: string
         description: 对外任务 ID（task_<32 hex>）
       upstream_task_id: {type: string}
-      family: {type: string, enum: [plugin]}
+      family: {type: string, enum: [plugin, mj]}
       action: {type: string}
       plugin_key: {type: string, maxLength: 30}
       plugin_generation: {type: integer, format: int64}

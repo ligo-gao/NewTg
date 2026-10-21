@@ -4793,6 +4793,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mj/task/{id}/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Midjourney 单任务查询
+         * @description 按 `(user_id, MjId)` 读取本网关已回填的任务，不访问上游（两级轮询：
+         *     客户端只轮询网关）。返回 MJ 任务 DTO（status/progress/imageUrl/
+         *     videoUrl/videoUrls/buttons/properties 等）；上游原始 status 逐字保留。
+         */
+        get: operations["mjFetchTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mj/task/list-by-condition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Midjourney 批量任务查询
+         * @description `ids` 为 MjId 数组（≤100；空数组直接返回 `[]`）。只返回本人且存在
+         *     的 MJ 行，按输入顺序排列并保留重复项；他人/不存在的 id 被跳过（批量
+         *     语义没有单条错误通道，逐 id 报错会泄露存在性）。
+         */
+        post: operations["mjListTasks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mj/task/{id}/image-seed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Midjourney 图片 seed 查询
+         * @description 按 `(user_id, MjId)` 取任务后，锁定原任务渠道把请求转发到
+         *     `{baseURL}/mj/task/{id}/image-seed`（30s 超时），上游 body 原样透传。
+         *     原渠道被禁用/删除时拒绝（与动作类渠道锁定同口径）。
+         */
+        post: operations["mjTaskImageSeed"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/self": {
         parameters: {
             query?: never;
@@ -4803,6 +4869,7 @@ export interface paths {
         /**
          * 本人任务台账（分页）
          * @description 按 created_at 倒序；`state` 可逗号分隔筛选 7 态之一或多值。
+         *     `family` 可选按族过滤（plugin/mj；R-MJ-18），非法族名 400。
          *     台账不返回 data / private_data（设计 §7.1 Omit）。
          */
         get: operations["listSelfTasks"];
@@ -8873,6 +8940,10 @@ export interface components {
         AuditLogPage: components["schemas"]["Page"] & {
             items?: components["schemas"]["AuditLogItem"][];
         };
+        MJTaskListRequest: {
+            /** @description MjId 列表（≤100；空数组直接返回 []） */
+            ids: string[];
+        };
         TaskListItem: {
             /** Format: int64 */
             id?: number;
@@ -8880,7 +8951,7 @@ export interface components {
             task_id: string;
             upstream_task_id?: string;
             /** @enum {string} */
-            family: "plugin";
+            family: "plugin" | "mj";
             action: string;
             plugin_key: string;
             /** Format: int64 */
@@ -9116,8 +9187,16 @@ export interface components {
         VideoID: string;
         /** @description 批次 ID（`batch_<uuid>`） */
         BatchID: string;
+        /** @description MjId（`^[A-Za-z0-9_-]{1,128}$`） */
+        MJTaskID: string;
     };
-    requestBodies: never;
+    requestBodies: {
+        MJTaskList: {
+            content: {
+                "application/json": components["schemas"]["MJTaskListRequest"];
+            };
+        };
+    };
     headers: never;
     pathItems: never;
 }
@@ -18316,12 +18395,158 @@ export interface operations {
             };
         };
     };
+    mjFetchTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MjId（`^[A-Za-z0-9_-]{1,128}$`） */
+                id: components["parameters"]["MJTaskID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务 DTO 信封（`{code:1,description,result}`） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 路径 id 形状非法（`{code:4,description:invalid_id}`） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 令牌无效（`{code:5,description}`） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务不存在或不属于本人（`{code:4,description:task_not_found}`） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（`{code:5,description}`） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mjListTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["MJTaskList"];
+        responses: {
+            /** @description 任务 DTO 数组信封（空数组亦为 200） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ids 超过上限/元素非法/请求体畸形（`{code:4,description}`） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mjTaskImageSeed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MjId（`^[A-Za-z0-9_-]{1,128}$`） */
+                id: components["parameters"]["MJTaskID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 上游 seed 查询体（透传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description id 非法或原渠道不可用（`{code:4,description}`） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务不存在或不属于本人（`{code:4,description:task_not_found}`） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（渠道凭据不可用等） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 上游不可达/坏响应 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listSelfTasks: {
         parameters: {
             query?: {
                 p?: number;
                 page_size?: number;
                 state?: string;
+                /** @description 族过滤；缺省展示全部（plugin + mj） */
+                family?: "plugin" | "mj";
             };
             header?: never;
             path?: never;

@@ -48,7 +48,7 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, compiled *plugi
 	}
 	switch task.State {
 	case StateFailure:
-		p.refundTerminal(ctx, task, requestID, tokenID)
+		p.settler.refundTerminal(ctx, task, requestID, tokenID)
 	case StateSuccess:
 		p.settleSuccess(ctx, task, requestID, tokenID, compiled)
 	default:
@@ -56,29 +56,6 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, compiled *plugi
 		p.log.Error("tasks: settleTerminal called for non-terminal task",
 			"task_id", task.PublicTaskID, "state", task.State)
 	}
-}
-
-// refundTerminal 全额退款。RefundByRequestID 按 requestID 幂等：重复调用返回
-// nil，不会二次退款。
-func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID string, tokenID int64) {
-	if err := p.billing.RefundByRequestIDForToken(requestID, tokenID); err != nil {
-		// 退款失败：保留 billing_pending，并写 refund_pending 供补偿扫描重试。
-		// 终态**不回退**（上游确实失败了），否则会重新进入轮询。
-		p.markBilling(ctx, task, nil, map[string]any{
-			"refund_pending":  true,
-			"billing_pending": true,
-		})
-		p.log.Error("tasks: refund failed; marked refund_pending for reconciliation",
-			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
-		return
-	}
-	// 退款成功：quota 归零（设计 §9.5「成功后清 quota」），并封账。
-	zero := int64(0)
-	p.finishBilling(ctx, task, &zero, map[string]any{
-		"billing_pending":    false,
-		"refund_pending":     false,
-		"settlement_pending": false,
-	})
 }
 
 // settleSuccess 结算成功任务：有冻结表达式按表达式差额结算，否则按预扣额结清。
@@ -92,7 +69,7 @@ func (p *Poller) settleSuccess(ctx context.Context, task *Task, requestID string
 		task.PrivateData[PrivateTieredSnapshot], task.Data, p.manifestFor(task, compiled))
 	if !configured {
 		// 没有冻结表达式：沿用 T5 之前的「按预扣额结清」，存量任务语义不变。
-		p.settleSuccessAtHeld(ctx, task, requestID, tokenID)
+		p.settler.settleSuccessAtHeld(ctx, task, requestID, tokenID)
 		return
 	}
 	if evalErr != nil {
@@ -111,7 +88,7 @@ func (p *Poller) settleSuccess(ctx context.Context, task *Task, requestID string
 	p.log.Info("tasks: settled success task by frozen expression",
 		"task_id", task.PublicTaskID, "request_id", requestID, "credits", credits,
 		"source", snapshotSource(task.PrivateData[PrivateTieredSnapshot]))
-	p.finishBilling(ctx, task, &credits, map[string]any{
+	p.settler.finishBilling(ctx, task, &credits, map[string]any{
 		"billing_pending":    false,
 		"settlement_pending": false,
 	})
@@ -133,7 +110,7 @@ func (p *Poller) markSettlementPending(ctx context.Context, task *Task, requestI
 	if task.PrivateData == nil || task.PrivateData["settlement_pending_since"] == nil {
 		flags["settlement_pending_since"] = p.now().UTC().Format(time.RFC3339)
 	}
-	p.markBilling(ctx, task, nil, flags)
+	p.settler.markBilling(ctx, task, nil, flags)
 	p.log.Error("tasks: settlement failed; kept pre-charged hold and marked settlement_pending",
 		"task_id", task.PublicTaskID, "request_id", requestID,
 		"pending_since", flags["settlement_pending_since"], "error", cause)
@@ -175,65 +152,9 @@ func (p *Poller) manifestFor(task *Task, compiled *plugin.CompiledPlugin) *plugi
 	return entry.Plugin.Manifest()
 }
 
-// settleSuccessAtHeld 以**预扣额**终结成功任务，释放 hold（差额 0）。
-//
-// 空 UsageFact 是计费侧冻结的「按预扣额结清」语义（billing/handoff.go）：
-// 不解析定价、不按 token 重算——因此不会把成功任务退成 0。仅用于没有
-// 任务计价表达式的任务；配置了表达式的成功任务必须走 settleSuccess。
-//
-// 幂等：TerminateByRequestID 按 requestID 幂等；重复调用只会重复写同一
-// 结论（日志按 requestID 幂等），金额不变。
-func (p *Poller) settleSuccessAtHeld(ctx context.Context, task *Task, requestID string, tokenID int64) {
-	if err := p.billing.TerminateByRequestIDForToken(requestID, tokenID, contract.UsageFact{}); err != nil {
-		// 结算失败：hold 仍在，写 settlement_pending + 保留 billing_pending，
-		// 补偿扫描下一轮重试。终态不回退。
-		p.markBilling(ctx, task, nil, map[string]any{
-			"settlement_pending": true,
-			"billing_pending":    true,
-		})
-		p.log.Error("tasks: terminate-at-held failed; marked settlement_pending for reconciliation",
-			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
-		return
-	}
-	// 成功：quota 即预扣额（本次结算不改变金额），封账并清除待办标记。
-	held := task.Quota
-	p.finishBilling(ctx, task, &held, map[string]any{
-		"billing_pending":    false,
-		"settlement_pending": false,
-	})
-}
-
-// finishBilling 在资金动作成功后落最终标记；失败只记录（幂等动作可重试）。
-func (p *Poller) finishBilling(ctx context.Context, task *Task, quota *int64, extra map[string]any) {
-	flags := map[string]any{
-		"billing_final": true,
-		// 复核 Minor-b：封账成功后清除待定审计字段。它们只在
-		// settlement_pending 期间有意义，残留会误导运维以为仍在待定。
-		// UpdateBilling 把 JSON null 解释为“删除该键”。
-		"settlement_pending_reason": nil,
-		"settlement_pending_since":  nil,
-	}
-	for k, v := range extra {
-		flags[k] = v
-	}
-	if err := p.repo.UpdateBilling(ctx, task.ID, quota, flags); err != nil {
-		p.log.Error("tasks: persist settlement result failed; reconciliation will retry",
-			"task_id", task.PublicTaskID, "error", err)
-		return
-	}
-	if task.PrivateData != nil {
-		for k, v := range flags {
-			task.PrivateData[k] = v
-		}
-	}
-}
-
-// markBilling 写待办标记；失败只记录（billing_pending 仍在，下一轮还会扫到）。
-func (p *Poller) markBilling(ctx context.Context, task *Task, quota *int64, flags map[string]any) {
-	if err := p.repo.UpdateBilling(ctx, task.ID, quota, flags); err != nil {
-		p.log.Error("tasks: persist billing pending flags failed", "task_id", task.PublicTaskID, "error", err)
-	}
-}
+// settleSuccessAtHeld / finishBilling / markBilling 已抽到 Settler
+// （settler.go）：插件族（表达式差额结算）与 MJ 族（无表达式、按预扣额）
+// 共用同一份资金动作实现，避免两套结算漂移。
 
 // reconcileOnce 是补偿扫描的最小版本（只处理插件族）。
 //

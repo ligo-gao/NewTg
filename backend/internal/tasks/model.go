@@ -151,8 +151,14 @@ type Task struct {
 
 // ListFilter 是台账分页/筛选输入（self 与 admin 共用）。
 type ListFilter struct {
-	UserID   int64   // 0 = 不按用户过滤（仅 admin）
-	States   []State // 空 = 不筛状态
+	UserID int64   // 0 = 不按用户过滤（仅 admin）
+	States []State // 空 = 不筛状态
+	// Family 是族过滤（R-MJ-18）；空 = 不筛。
+	//
+	// 两族共用 tasks 表，台账默认展示全部（历史行为不变）；客户端需要只看
+	// 插件任务或只看 MJ 任务时传 plugin/mj。取值由 handler 先按 ValidFamily
+	// 校验，仓储不做静默降级（拼错的族名会返回空集，掩盖故障）。
+	Family   string
 	Page     int
 	PageSize int
 }

@@ -27,8 +27,18 @@ const (
 	// SubmitTimeout 是单次提交/换脸的上游时限（relay-05 §6.1 冻结 60s）。
 	SubmitTimeout = 60 * time.Second
 
+	// QueryTimeout 是后台轮询单次查询的上游时限（relay-05 §6.1 冻结 15s）。
+	//
+	// 与提交的 60s 分开：轮询每 15s 一轮，单次查询若也等 60s，会让任务
+	// 之间的串行调度错位，并把某一轮的上游抖动放大成整轮阻塞。
+	QueryTimeout = 15 * time.Second
+
+	// ImageSeedTimeout 是 image-seed 的上游时限（relay-05 §6.1 冻结 30s）。
+	ImageSeedTimeout = 30 * time.Second
+
 	// MaxSubmitResponseBytes 是上游 JSON 响应上限（与插件出站同口径 4MiB）。
 	// 超限必须报错而不是截断：截断后的 JSON 可能被解析成「成功但无 result」。
+	// 查询/seed 共用同一上限：它们同样只接受有界 JSON。
 	MaxSubmitResponseBytes = 4 << 20
 
 	// upstreamSecretHeader 是上游 proxy 的渠道密钥载体（基线-07 §0）。
@@ -162,6 +172,239 @@ func (c *SubmitClient) Submit(ctx context.Context, cfg SubmitConfig, endpoint En
 		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
 	}
 	return parsed, nil
+}
+
+// QueryResult 是一次上游 fetch 的结构化结果（上游 `{code,result}` 的 result）。
+//
+// RawState/Progress 保留上游原文：对外线协议与 raw_state 列都要求逐字回传，
+// 归一化只发生在 mj.NormalizeStatus（R-MJ-15）。产物字段不在这里判空——
+// 空值表示本轮上游没有给出该字段，调用方按「不覆盖已有值」合并。
+type QueryResult struct {
+	HTTPStatus int
+	Code       int
+	// Description 是上游描述；仅供日志诊断，绝不写进客户端响应或任务行。
+	Description string
+
+	Status     string
+	Progress   string
+	ImageURL   string
+	VideoURL   string
+	VideoURLs  []string
+	Buttons    []any
+	Properties map[string]any
+	FailReason string
+	PromptEn   string
+	Action     string
+}
+
+// queryWire 是上游 fetch 结果体的冻结投影。
+//
+// status/progress 用 RawMessage 再转字符串：midjourney-proxy 不同版本下发过
+// 数字进度（"45" 与 45 都出现过），严格 string 解析会把整轮观测丢掉。
+type queryWire struct {
+	Code        json.RawMessage `json:"code"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+type queryResultWire struct {
+	Status     json.RawMessage `json:"status"`
+	Progress   json.RawMessage `json:"progress"`
+	ImageURL   string          `json:"imageUrl"`
+	VideoURL   string          `json:"videoUrl"`
+	VideoURLs  json.RawMessage `json:"videoUrls"`
+	Buttons    []any           `json:"buttons"`
+	Properties map[string]any  `json:"properties"`
+	FailReason string          `json:"failReason"`
+	PromptEn   string          `json:"promptEn"`
+	Action     string          `json:"action"`
+}
+
+// Query 读取上游任务状态（`GET {base}/mj/task/{id}/fetch`）。
+//
+// 复用提交客户端的固定凭据载体与禁重定向客户端：出站头必须覆盖为渠道凭据，
+// 客户端令牌绝不转发（见 Submit 的注释）。单次请求、不重试：重试策略属于
+// 轮询调度层（失败累计 + 1h 兜底），不在单次查询里叠加重试。
+//
+// 上游可解析但 code≠1（任务不存在/上游内部错误）返回 *Error：轮询侧对单轮
+// 失败只累计计数、不改状态，等待下一轮或超时兜底（relay-05 §6.2）。
+func (c *SubmitClient) Query(ctx context.Context, cfg SubmitConfig, mjID string) (*QueryResult, *Error) {
+	if !ValidMjID(mjID) {
+		// 任务行里出现非法 id 是数据缺陷；不把它拼进上游 URL。
+		return nil, BadRequest(DescriptionInvalidID)
+	}
+	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if base == "" {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionChannelMisconfigured, Status: http.StatusInternalServerError}
+	}
+	client := cfg.HTTP
+	if client == nil {
+		client = c.client
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+"/mj/task/"+mjID+"/fetch", nil)
+	if err != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(upstreamSecretHeader, cfg.APIKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, mjErr := readBoundedUpstream(resp.Body)
+	if mjErr != nil {
+		return nil, mjErr
+	}
+	// 3xx 不跟随（CheckRedirect=ErrUseLastResponse）：重定向目标不可信。
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		// 上游错误页不是业务事实：不解析、不透出正文。
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	parsed, parseErr := parseQueryResponse(raw)
+	if parseErr != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamBadResponse, Status: http.StatusBadGateway}
+	}
+	parsed.HTTPStatus = resp.StatusCode
+	if parsed.Code != CodeSuccess {
+		// 固定描述：上游错误文本可能含账号/代理地址等内部信息。
+		return nil, &Error{Code: parsed.Code, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	return parsed, nil
+}
+
+// ImageSeed 转发 image-seed 查询（`POST {base}/mj/task/{id}/image-seed`）。
+//
+// 返回上游原始 body（设计 §1.2「上游 seed 查询体透传」）：网关不解析 seed
+// 结构，也不改写 code/description。成功响应同样有界；非 2xx/坏响应一律
+// 折叠为固定错误，避免把上游错误页透给客户端。
+func (c *SubmitClient) ImageSeed(ctx context.Context, cfg SubmitConfig, mjID string) ([]byte, *Error) {
+	if !ValidMjID(mjID) {
+		return nil, BadRequest(DescriptionInvalidID)
+	}
+	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if base == "" {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionChannelMisconfigured, Status: http.StatusInternalServerError}
+	}
+	client := cfg.HTTP
+	if client == nil {
+		client = c.client
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, ImageSeedTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+"/mj/task/"+mjID+"/image-seed", nil)
+	if err != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(upstreamSecretHeader, cfg.APIKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, mjErr := readBoundedUpstream(resp.Body)
+	if mjErr != nil {
+		return nil, mjErr
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	// 透传体必须是 JSON：上游错误页（HTML）不能伪装成 seed 结果。
+	if !json.Valid(raw) {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamBadResponse, Status: http.StatusBadGateway}
+	}
+	return raw, nil
+}
+
+// readBoundedUpstream 读取有界响应体；超限/读失败折叠为固定错误。
+func readBoundedUpstream(body io.Reader) ([]byte, *Error) {
+	raw, err := io.ReadAll(io.LimitReader(body, MaxSubmitResponseBytes+1))
+	if err != nil {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
+	}
+	if len(raw) > MaxSubmitResponseBytes {
+		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamResponseTooLarge, Status: http.StatusBadGateway}
+	}
+	return raw, nil
+}
+
+// parseQueryResponse 结构化解析 fetch 响应。
+//
+// result 必须是对象；缺失/空值按坏响应处理（不能把「上游没给任务」当成
+// 「任务没有任何字段」推进任务状态）。
+func parseQueryResponse(raw []byte) (*QueryResult, error) {
+	var wire queryWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil, err
+	}
+	code, ok := parseFlexibleInt(wire.Code)
+	if !ok {
+		return nil, fmt.Errorf("mj: query response has no usable code")
+	}
+	out := &QueryResult{Code: code, Description: strings.TrimSpace(wire.Description)}
+	if code != CodeSuccess {
+		// 逻辑失败码（任务不存在/上游内部错误）可能不带 result；调用方按
+		// 失败处理并累计轮询失败，不解析空结果。
+		return out, nil
+	}
+	if len(wire.Result) == 0 || string(wire.Result) == "null" {
+		return nil, fmt.Errorf("mj: query response has no result")
+	}
+	var result queryResultWire
+	if err := json.Unmarshal(wire.Result, &result); err != nil {
+		return nil, fmt.Errorf("mj: query result is not an object: %w", err)
+	}
+	out.Status = rawString(result.Status)
+	out.Progress = rawString(result.Progress)
+	out.ImageURL = strings.TrimSpace(result.ImageURL)
+	out.VideoURL = strings.TrimSpace(result.VideoURL)
+	out.VideoURLs = parseStringList(result.VideoURLs)
+	out.Buttons = result.Buttons
+	out.Properties = result.Properties
+	out.FailReason = strings.TrimSpace(result.FailReason)
+	out.PromptEn = strings.TrimSpace(result.PromptEn)
+	out.Action = strings.TrimSpace(result.Action)
+	// 部分 proxy 版本把 status/progress 放在 properties 里（与提交受理体同形）。
+	if out.Status == "" && result.Properties != nil {
+		out.Status = rawStringFromAny(result.Properties["status"])
+	}
+	if out.Progress == "" && result.Properties != nil {
+		out.Progress = rawStringFromAny(result.Properties["progress"])
+	}
+	return out, nil
+}
+
+// parseStringList 解析 videoUrls 等字符串数组。
+//
+// 只接受字符串/数字元素，非数组/坏元素返回空切片而不是整轮失败：videoUrls
+// 是展示字段，不能因为一个坏元素把状态推进也丢掉（状态推进只依赖 status）。
+func parseStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var items []any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		switch typed := item.(type) {
+		case string:
+			out = append(out, typed)
+		case float64:
+			out = append(out, strconv.FormatFloat(typed, 'f', -1, 64))
+		}
+	}
+	return out
 }
 
 // submitWire 是出站请求体的冻结形状。

@@ -155,3 +155,21 @@ parameters:
       前端 DangerConfirm 只是体验层，本请求头才是授权门。
     schema:
       type: string
+
+  # MJ 任务 id 路径参数（W8/MJ-b）。字符集与 R-MJ-16 的 MjId 规则一致；
+  # 放在公共组件里是因为 relay 域 paths 不允许内联 schema。
+  MJTaskID:
+    name: id
+    in: path
+    required: true
+    description: MjId（`^[A-Za-z0-9_-]{1,128}$`）
+    schema: {type: string, minLength: 1, maxLength: 128}
+
+requestBodies:
+  # list-by-condition 的请求体（W8/MJ-b）；schema 真源在 schemas/relay.yaml。
+  MJTaskList:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/MJTaskListRequest'

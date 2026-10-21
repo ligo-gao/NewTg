@@ -996,3 +996,85 @@ paths:
           description: 上游不可达/受理失败
         '503':
           description: 没有可用的 MJ 渠道
+
+  # ---------------------------------------------------------------------------
+  # 绘图任务族查询（W8/MJ-b，relay-05 §1.2）。
+  #
+  # 归属键是 (user_id, MjId)：他人任务与不存在任务返回同一个 404 与同一条
+  # description，不制造存在性 oracle。查询族不受 `mj.enabled` 追溯（开关
+  # 关闭不隐藏历史任务），因此没有 403 门控响应。
+  # ---------------------------------------------------------------------------
+  /mj/task/{id}/fetch:
+    get:
+      tags: [relay]
+      operationId: mjFetchTask
+      summary: Midjourney 单任务查询
+      description: |
+        按 `(user_id, MjId)` 读取本网关已回填的任务，不访问上游（两级轮询：
+        客户端只轮询网关）。返回 MJ 任务 DTO（status/progress/imageUrl/
+        videoUrl/videoUrls/buttons/properties 等）；上游原始 status 逐字保留。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/MJTaskID'
+      responses:
+        '200':
+          description: 任务 DTO 信封（`{code:1,description,result}`）
+        '400':
+          description: 路径 id 形状非法（`{code:4,description:invalid_id}`）
+        '401':
+          description: 令牌无效（`{code:5,description}`）
+        '404':
+          description: 任务不存在或不属于本人（`{code:4,description:task_not_found}`）
+        '500':
+          description: 内部错误（`{code:5,description}`）
+
+  /mj/task/list-by-condition:
+    post:
+      tags: [relay]
+      operationId: mjListTasks
+      summary: Midjourney 批量任务查询
+      description: |
+        `ids` 为 MjId 数组（≤100；空数组直接返回 `[]`）。只返回本人且存在
+        的 MJ 行，按输入顺序排列并保留重复项；他人/不存在的 id 被跳过（批量
+        语义没有单条错误通道，逐 id 报错会泄露存在性）。
+      security:
+        - bearerToken: []
+      requestBody:
+        $ref: '../components/params.yaml#/requestBodies/MJTaskList'
+      responses:
+        '200':
+          description: 任务 DTO 数组信封（空数组亦为 200）
+        '400':
+          description: ids 超过上限/元素非法/请求体畸形（`{code:4,description}`）
+        '401':
+          description: 令牌无效
+        '500':
+          description: 内部错误
+
+  /mj/task/{id}/image-seed:
+    post:
+      tags: [relay]
+      operationId: mjTaskImageSeed
+      summary: Midjourney 图片 seed 查询
+      description: |
+        按 `(user_id, MjId)` 取任务后，锁定原任务渠道把请求转发到
+        `{baseURL}/mj/task/{id}/image-seed`（30s 超时），上游 body 原样透传。
+        原渠道被禁用/删除时拒绝（与动作类渠道锁定同口径）。
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/MJTaskID'
+      responses:
+        '200':
+          description: 上游 seed 查询体（透传）
+        '400':
+          description: id 非法或原渠道不可用（`{code:4,description}`）
+        '401':
+          description: 令牌无效
+        '404':
+          description: 任务不存在或不属于本人（`{code:4,description:task_not_found}`）
+        '500':
+          description: 内部错误（渠道凭据不可用等）
+        '502':
+          description: 上游不可达/坏响应

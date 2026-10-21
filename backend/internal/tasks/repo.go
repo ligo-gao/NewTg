@@ -170,6 +170,12 @@ func (r *Repo) list(ctx context.Context, f ListFilter, userID int64) ([]Task, in
 		}
 		where = append(where, "state IN ("+strings.Join(placeholders, ",")+")")
 	}
+	// 族过滤（R-MJ-18）：两族共用同一张表，台账默认全量；只有显式传
+	// family 时才收窄。handler 已按冻结集合校验，这里不做猜测式降级。
+	if f.Family != "" {
+		args = append(args, f.Family)
+		where = append(where, fmt.Sprintf("family = $%d", len(args)))
+	}
 	clause := ""
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
@@ -360,6 +366,34 @@ func (r *Repo) GetByUserUpstreamID(ctx context.Context, userID int64, upstreamID
 		return nil, fmt.Errorf("tasks: get task by user/upstream id: %w", err)
 	}
 	return t, nil
+}
+
+// ListByUserUpstreamIDs 批量读取同一用户、同一族内的任务行（MJ-b 的
+// list-by-condition）。
+//
+// 【为什么必须带 user_id + family】批量查询只返回本人任务：把 ids 直接
+// 当成全局键会跨用户泄露他人任务的存在与产物（R-MJ-05/18）；family 过滤
+// 防止插件行即便巧合有同名 upstream id 被 MJ 批量查询命中。
+//
+// 输入 ids 的去重/顺序由调用方负责：这里返回数据库顺序，调用方按输入
+// 顺序重组（重复 id 只落一行，避免同一任务在响应数组里出现两次）。
+func (r *Repo) ListByUserUpstreamIDs(ctx context.Context, userID int64, ids []string, limit int) ([]*Task, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("tasks: repository is not configured")
+	}
+	if userID <= 0 || len(ids) == 0 {
+		return []*Task{}, nil
+	}
+	// 上限是成本边界：调用方（R-MJ-16）已限制 ids ≤ 100，这里再钳一次，
+	// 防止内部调用方绕过归一化层放大单次查询。
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	return r.scanTasks(r.db.QueryContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE user_id = $1 AND family = $2 AND upstream_task_id = ANY($3::text[])
+		 ORDER BY id ASC LIMIT $4`,
+		userID, FamilyMJ, ids, limit))
 }
 
 // MJChannelCandidate 是 MJ 提交路径的渠道候选投影。
@@ -556,6 +590,9 @@ type PollUpdate struct {
 	FailReason *string
 	FinishTime *time.Time
 	Quota      *int64
+	// RetentionDeadline 在进入终态时写一次（relay-05 §9）。nil = 保留原值，
+	// 与其它指针字段同口径；清理 worker 是后续任务，本字段只负责留下期限。
+	RetentionDeadline *time.Time
 }
 
 // ApplyPoll 以 (id, fromState) 为条件更新任务行，返回是否赢得 CAS。
@@ -583,10 +620,11 @@ func (r *Repo) ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate
 			fail_reason = COALESCE($8, fail_reason),
 			finish_time = COALESCE($9, finish_time),
 			quota = COALESCE($10, quota),
+			retention_deadline = COALESCE($11, retention_deadline),
 			updated_at = now()
 		WHERE id = $1 AND state = $2`,
 		id, string(from), string(u.State), u.RawState, u.Progress,
-		data, priv, u.FailReason, u.FinishTime, u.Quota,
+		data, priv, u.FailReason, u.FinishTime, u.Quota, u.RetentionDeadline,
 	)
 	if err != nil {
 		return false, fmt.Errorf("tasks: apply poll: %w", err)
@@ -596,6 +634,35 @@ func (r *Repo) ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate
 		return false, fmt.Errorf("tasks: apply poll rows: %w", err)
 	}
 	return affected > 0, nil
+}
+
+// IncrementPollFailures 以 (id, from_state) 原子递增连续失败计数。
+//
+// jsonb_set + COALESCE 让递增发生在 SQL 内：并发轮询各自 +1，不会互相覆盖
+// （读-改-写只能留下最后一次写）。CAS 条件仍是 from_state：被别的执行者
+// 推进到其它状态后返回 won=false，调用方必须放弃。
+func (r *Repo) IncrementPollFailures(ctx context.Context, id int64, from State) (int, bool, error) {
+	if r == nil || r.db == nil {
+		return 0, false, errors.New("tasks: repository is not configured")
+	}
+	var failures int
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE tasks SET
+			private_data = jsonb_set(
+				private_data, '{poll_failures}',
+				to_jsonb(COALESCE((private_data->>'poll_failures')::int, 0) + 1),
+				true),
+			updated_at = now()
+		WHERE id = $1 AND state = $2
+		RETURNING COALESCE((private_data->>'poll_failures')::int, 0)`,
+		id, string(from)).Scan(&failures)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("tasks: increment poll failures: %w", err)
+	}
+	return failures, true, nil
 }
 
 // UpdateBilling 写结算侧事实（quota 与 private_data 标记），不带 CAS。

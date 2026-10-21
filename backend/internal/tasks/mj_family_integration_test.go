@@ -4,6 +4,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -240,4 +241,60 @@ func taskIDs(items []*Task) []int64 {
 		out = append(out, item.ID)
 	}
 	return out
+}
+
+// TestMJPollerIncrementFailuresAtomicOnRealDB 验收 M-6：真实 PostgreSQL 上
+// 的并发失败计数必须每次 +1（jsonb 原子递增），不能因读-改-写丢计数。
+func TestMJPollerIncrementFailuresAtomicOnRealDB(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	userID := time.Now().UnixNano() % 1_000_000
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+
+	row := insertFamilyTaskFixture(t, repo, ctx,
+		fmt.Sprintf("task_%d_mj_atomic", userID), userID, FamilyMJ, StateSubmitted,
+		map[string]any{"request_id": "req_atomic"})
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo:        repo,
+		MaxFailures: intPtr(1000),
+		Timeout:     durationPtr(0),
+		Handler: func(context.Context, *Task) error {
+			return errors.New("upstream down")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+
+	const workers = 10
+	snapshots := make([]*Task, workers)
+	for i := range snapshots {
+		snapshot, err := repo.GetByID(ctx, row.ID)
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		snapshots[i] = snapshot
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range snapshots {
+		snapshot := snapshots[i]
+		go func() {
+			defer wg.Done()
+			<-start
+			p.processTask(ctx, snapshot)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	got, err := repo.GetByID(ctx, row.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != workers {
+		t.Fatalf("poll_failures = %d, want %d (SQL increment lost updates)", failures, workers)
+	}
 }

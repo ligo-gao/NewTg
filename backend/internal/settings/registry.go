@@ -634,6 +634,13 @@ func buildRegistry() []Setting {
 			minInt(0), maxInt(3650)),
 		// 旧 simple-change 兼容开关（#71）：默认关，走正确的 SimpleChange 语义。
 		def("mj.legacy_simple_change_as_change", "mj", TypeBool, false),
+		// MJ 族轮询上限（W8/MJ-b）：与插件族 task.poll_* 刻意分开，因为设计
+		// 冻结 MJ 卡住兜底 1h、插件 1440m（relay-05 §6.1）。三态语义相同：
+		// 未配置 → 轮询器默认（60/20）；显式 0 → 禁用；正值 → 按值。
+		def("mj.poll_timeout_minutes", "mj", TypeInt, int64(60),
+			minInt(0), maxInt(525600)),
+		def("mj.poll_max_failures", "mj", TypeInt, int64(20),
+			minInt(0), maxInt(1000000)),
 
 		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
 		//

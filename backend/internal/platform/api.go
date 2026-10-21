@@ -33,6 +33,7 @@ import (
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tasks"
 	"newtg/gateway/internal/tokenstore"
 	"newtg/gateway/plugins"
 )
@@ -173,12 +174,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err := center.Load(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: load config center: %w", err)
 	}
-	// I2：gateway 也不能在「无人结算 MJ」时接受提交。MJ-b 之前没有 MJ
-	// settler（worker 侧 Handler 为 nil），开启后每笔提交的 hold 都会永久
-	// 冻结；因此装配期直接拒绝。MJ-b 接线后应把非 nil handler 传进来。
-	if err := mjSettlerGuard(center, nil); err != nil {
-		return nil, fmt.Errorf("gateway: %w", err)
-	}
+	// I2 的 MJ 结算守卫需要计费引擎，因此推迟到引擎构造之后（见下方
+	// engine.ValidateSubscriptionLeaseConfig 之后的 mjSettlerGuard）。
 	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
 	// 元↔积分换算基准），并接入钳制审计日志。必须在 Load 之后、任何
 	// handler 读取 CurrentQuotaPerUnit 之前；非法 QPU 让启动失败。
@@ -205,6 +202,18 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// M-1 复核：启动期校验租约 TTL / 兜底窗口，错误配置不得让 gateway 上线。
 	if err := engine.ValidateSubscriptionLeaseConfig(); err != nil {
 		return nil, fmt.Errorf("gateway: subscription lease config: %w", err)
+	}
+	// I2 / W8/MJ-b：mj.enabled=true 时必须存在 MJ 结算驱动，否则每笔普通
+	// 提交 Detach 后的 hold 会永久冻结。worker 侧用同一构造器运行驱动；
+	// gateway 这里也构造一份，只为让守卫验证「本部署确实带 MJ 结算路径」。
+	// 构造不会启动任何 goroutine。
+	mjDriver, _, err := buildMJPollDriver(tasks.NewRepo(db), center, engine,
+		httpapi.NewSecretSealer(cfg.CredentialEncryptionKey), log)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
+	}
+	if err := mjSettlerGuard(center, mjDriver.PollTask); err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
 	}
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
