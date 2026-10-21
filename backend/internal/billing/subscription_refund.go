@@ -132,7 +132,9 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 		return nil, err
 	}
 
-	if order.Provider == ProviderWallet {
+	// 0 元订单没有资金需要移动：免费套餐订单可能仍带 provider（创建时未走
+	// 渠道），不能因为「渠道没有交易号」把它判成退款失败。直接走本地落库。
+	if order.Amount == 0 || order.Provider == ProviderWallet {
 		return s.refundWalletOrder(ctx, order.ID, reason, in.ActorUserID)
 	}
 	if err := s.refundProviderPayment(ctx, order, reason); err != nil {
@@ -143,6 +145,11 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 		s.markOrderRefundFailed(ctx, order.ID, err)
 		fresh, getErr := s.GetOrder(ctx, order.ID)
 		if getErr == nil {
+			// 并发退款可能已在本次渠道调用期间完成（另一个管理员抢先成功）。
+			// 渠道幂等键保证没有第二笔退款，此时应按幂等成功返回而不是 502。
+			if OrderStatus(fresh.Status) == OrderRefunded {
+				return &RefundResult{Order: fresh, Refunded: false, Amount: fresh.RefundedAmount}, nil
+			}
 			order = fresh
 		}
 		return nil, fmt.Errorf("%w: %w", ErrRefundProviderFailed, err)
@@ -321,6 +328,9 @@ func loadRefundSubscription(ctx context.Context, db *gorm.DB, order *store.Order
 
 // refundWalletOrder 在单个事务内完成「订单 refunded + 钱包回补 + 订阅取消 +
 // 退款事件」。
+//
+// 它同时承担 0 元订单（免费套餐）的退款：没有资金需要移动，也不存在渠道
+// 交易号；walletRefundCredits 对 amount==0 直接返回 0，跳过流水写入。
 //
 // 回补积分取自原始 subscription_purchase 流水的**实际扣减额**，而不是按当前
 // quota_per_unit 重算：QPU 是站点配置，购买后可能被调整，重算会在汇率边界

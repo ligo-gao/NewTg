@@ -505,3 +505,31 @@ func TestRequestSubscriptionRefundMarksOrder(t *testing.T) {
 		t.Fatalf("已消耗订阅 err = %v，期望 ErrSubscriptionInUse", err)
 	}
 }
+
+// TestSubscriptionRefundFreeOrder：0 元免费套餐订单没有资金需要移动，
+// 即使 provider 是 stripe 也不能因为「没有渠道交易号」被判成退款失败。
+func TestSubscriptionRefundFreeOrder(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 0, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 0, "")
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	result, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "免费套餐不需要", ActorUserID: 1,
+	})
+	if err != nil {
+		t.Fatalf("free order refund: %v", err)
+	}
+	if !result.Refunded || result.Amount != 0 || result.Order.Status != string(OrderRefunded) {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "cancelled" {
+		t.Fatalf("订阅状态 = %s，期望 cancelled", got)
+	}
+}
