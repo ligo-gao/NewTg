@@ -328,15 +328,20 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 
 	// W7/M4-a/b：渠道自动禁用/恢复的异步执行面。构造失败属于装配错误（条件
 	// 更新是唯一状态迁移，缺 Store 会把「判定成功」变成静默无操作），直接
-	// 阻止上线。通知复用主库的 notification_deliveries；email 不在 M4 范围
-	// （R-M4-18），因此这里构造的 Service 不需要 Sender。
+	// 阻止上线。通知复用主库的 notification_deliveries；W10-EM1 起管理员侧
+	// 事件同时进入 email 队列（SMTP 未配置时行留队，由 worker 稍后发出）。
 	//
 	// 手工连通性测试（M4-b / R-M4-15）复用同一个 Reporter：handler 只上报
 	// ProbeResult，判定/条件更新/审计/站内通知仍由 reporter 的后台 goroutine
 	// 完成，且它只会禁用、永不自动恢复。
+	channelEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, cfg.PublicBaseURL, log)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: channel auto-disable email producer: %w", err)
+	}
 	channelNotifier, err := notify.NewService(notify.ServiceConfig{
-		Store:  notifyStore,
-		Logger: log,
+		Store:         notifyStore,
+		EmailProducer: channelEmailProducer,
+		Logger:        log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: channel auto-disable notifier: %w", err)

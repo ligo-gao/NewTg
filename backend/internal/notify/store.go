@@ -542,7 +542,19 @@ type BalanceLowUser struct {
 // 扫描口径是冻结的（tasks B4 / N6）：只认 status='enabled'，禁用用户即使
 // 余额为 0 也不产生通知；threshold <= 0 时由调用方直接跳过，不执行查询。
 // siteDay 是站点时区的业务日（YYYY-MM-DD），对应 dedupe_key 的日期后缀
-// `balance_low:<userID>:<siteDay>`。
+// `balance_low:<userID>:<siteDay>`（webhook）与
+// `email:balance_low:<userID>:<siteDay>`（email）。
+//
+// **按渠道独立去重（W10-EMAIL I-1）**：两种通知是两条独立队列，一方入队
+// 成功不应掩盖另一方失败。因此这里的条件是「至少一个**当前启用**的渠道
+// 当天还没有行」：
+//
+//	(webhook 启用 AND 无 webhook 行) OR (email 启用 AND 无 email 行)
+//
+// 旧实现把两个键放进同一个 NOT EXISTS（任一存在就排除），会让 email 入队
+// 失败的用户在 webhook 已成功的情况下当天不再重试；这正是本参数化的原因。
+// includeWebhook/includeEmail 由 worker 按本轮实际出口传入，调用方不要把
+// 未启用的渠道设为 true（否则会为该渠道做无意义的查询条件）。
 //
 // 已通知用户在 SQL 里用 NOT EXISTS 排除，而不是留给 INSERT 命中
 // UNIQUE(dedupe_key) 去丢弃：持续低余额的用户每天都会出现在命中集里，
@@ -553,15 +565,25 @@ type BalanceLowUser struct {
 //
 // 用户量大时分页由调用方按 id keyset 推进——这里保留纯读接口，扫描器
 // 每 5 分钟一次全量命中集，避免把「明天仍低于阈值」的持久状态写进表。
-func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64, siteDay string) ([]BalanceLowUser, error) {
+func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64, siteDay string, includeWebhook, includeEmail bool) ([]BalanceLowUser, error) {
+	if !includeWebhook && !includeEmail {
+		// 两条出口都没启用：没有任何需要通知的渠道，避免全表扫描。
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id, u.balance FROM users u
 		WHERE u.status = 'enabled' AND u.balance < $1
-		  AND NOT EXISTS (
-		      SELECT 1 FROM notification_deliveries d
-		      WHERE d.dedupe_key = 'balance_low:' || u.id::text || ':' || $2
+		  AND (
+		      ($3 AND NOT EXISTS (
+		          SELECT 1 FROM notification_deliveries d
+		          WHERE d.dedupe_key = 'balance_low:' || u.id::text || ':' || $2
+		      ))
+		      OR ($4 AND NOT EXISTS (
+		          SELECT 1 FROM notification_deliveries d
+		          WHERE d.dedupe_key = 'email:balance_low:' || u.id::text || ':' || $2
+		      ))
 		  )
-		ORDER BY u.id`, threshold, siteDay)
+		ORDER BY u.id`, threshold, siteDay, includeWebhook, includeEmail)
 	if err != nil {
 		return nil, fmt.Errorf("notify: list low balance users: %w", err)
 	}
@@ -778,12 +800,86 @@ func (s *Store) MarkInAppDeliveryRead(ctx context.Context, userID, id int64, now
 	return nil
 }
 
+// EmailProfile 是 email 投递所需的收件人画像：地址、语言与通知偏好。
+//
+// 只取投递所需的列，不把 users 的其它 PII（手机号、备注等）带进内存。
+// PreferencesCorrupt 表示 jsonb 不是对象：调用方对**非事务性**邮件必须
+// fail-closed（不发送），但事务性邮件仍需送达，所以这里不把损坏当成整行
+// 不可读。
+type EmailProfile struct {
+	UserID             int64
+	Username           string
+	Email              string
+	Locale             Locale
+	Preferences        NotificationPreferences
+	PreferencesCorrupt bool
+}
+
+// LoadEmailProfile 读取一个用户的邮件投递画像。用户不存在返回 sql.ErrNoRows。
+//
+// email 列可空（users_email_uq 是部分唯一索引）：空地址由调用方按「无收件
+// 地址 → 跳过入队」处理，不在这里报错——查询成功与「没有邮箱」是两回事。
+func (s *Store) LoadEmailProfile(ctx context.Context, userID int64) (EmailProfile, error) {
+	var (
+		profile  EmailProfile
+		email    sql.NullString
+		language string
+		rawPrefs []byte
+	)
+	if err := s.db.QueryRowContext(ctx, `SELECT id, username, email, language,
+		notification_preferences::text FROM users WHERE id = $1`, userID).
+		Scan(&profile.UserID, &profile.Username, &email, &language, &rawPrefs); err != nil {
+		return EmailProfile{}, err
+	}
+	profile.Email = email.String
+	locale, ok := ParseLocale(language)
+	if !ok {
+		// users.language 有 CHECK 约束；历史脏数据按站点默认 en 处理，
+		// 与 ListInAppAudience 的回退口径一致（不因单个坏值丢通知）。
+		locale = DefaultLocale
+	}
+	profile.Locale = locale
+	prefs, err := ParseNotificationPreferences(rawPrefs)
+	if err != nil {
+		profile.PreferencesCorrupt = true
+		return profile, nil
+	}
+	profile.Preferences = prefs
+	return profile, nil
+}
+
+// LoadEmailAddressProfile 只读取地址/用户名/语言，不触碰
+// notification_preferences 列。
+//
+// 用途：事务性邮件在偏好列读取失败（列缺失、jsonb 转换异常等）时仍要送达，
+// 而地址本身是可投递的最小依赖。偏好留零值；调用方只应在
+// IsTransactionalEmailCategory 为真时使用。
+func (s *Store) LoadEmailAddressProfile(ctx context.Context, userID int64) (EmailProfile, error) {
+	var (
+		profile  EmailProfile
+		email    sql.NullString
+		language string
+	)
+	if err := s.db.QueryRowContext(ctx, `SELECT id, username, email, language
+		FROM users WHERE id = $1`, userID).
+		Scan(&profile.UserID, &profile.Username, &email, &language); err != nil {
+		return EmailProfile{}, err
+	}
+	profile.Email = email.String
+	locale, ok := ParseLocale(language)
+	if !ok {
+		locale = DefaultLocale
+	}
+	profile.Locale = locale
+	return profile, nil
+}
+
 // webhookDeliveryColumns 是 N8 worker 读取投递行的列序，与 scanDelivery 一致。
 const webhookDeliveryColumns = `id, template_key, category, channel, recipient, recipient_user_id,
 	locale, dedupe_key, status, attempt, next_retry_at, last_error, provider_message_id,
 	payload,` + inAppAnnouncementIDExpr + `, read_at, created_at, updated_at`
 
-// WebhookDeliveryClaim 是一条被本 worker 占用的 Webhook 投递。
+// deliveryClaim 是一条被 worker 占用的投递行（webhook 与 email 共用）。
 //
 // 占用方式是「事务 + SELECT ... FOR UPDATE SKIP LOCKED」：行锁一直持有到
 // MarkSent/MarkFailed/MarkSuppressed 提交或 Release 回滚。代价是发送期间
@@ -791,11 +887,22 @@ const webhookDeliveryColumns = `id, template_key, category, channel, recipient, 
 // 同时发送**——SKIP LOCKED 让并发扫描直接跳过已锁行，即使部署了多个
 // worker 也不会重复投递。进程崩溃时事务自动回滚，行回到 queued，
 // 下一轮重新领取（至少一次；幂等锚是投递行的 dedupe_key）。
-type WebhookDeliveryClaim struct {
+//
+// W10-EMAIL：email worker 复用完全相同的占用/提交协议，只把领取条件换成
+// channel='email'。两个渠道共用同一个类型而不是各写一份：行锁语义、终态
+// 写入与 Release 行为必须逐字一致，任何一侧单独改动都会留下「占用未释放」
+// 的类别。
+type deliveryClaim struct {
 	tx       *sql.Tx
 	Delivery Delivery
 	closed   bool
 }
+
+// WebhookDeliveryClaim 是 webhook 渠道对被占用投递行的别名（兼容既有调用方）。
+type WebhookDeliveryClaim = deliveryClaim
+
+// EmailDeliveryClaim 是 email 渠道对被占用投递行的别名。
+type EmailDeliveryClaim = deliveryClaim
 
 // ClaimWebhookDelivery 领取一条到期的 Webhook 投递。
 //
@@ -803,17 +910,36 @@ type WebhookDeliveryClaim struct {
 // 领取口径即 N8 的冻结扫描条件：
 // channel='webhook' AND status='queued' AND (next_retry_at IS NULL OR <= now)。
 func (s *Store) ClaimWebhookDelivery(ctx context.Context, now time.Time) (*WebhookDeliveryClaim, bool, error) {
+	return s.claimDelivery(ctx, now, string(ChannelWebhook))
+}
+
+// ClaimEmailDelivery 领取一条到期的 email 投递（W10-EM3）。
+//
+// 扫描条件与 webhook 同形，只把渠道钉死为 email：
+// channel='email' AND status='queued' AND (next_retry_at IS NULL OR <= now)。
+// 渠道过滤是正确性的第一道闸：没有它，webhook 行的 payload（请求体）会被
+// 当成模板变量交给 SMTP，等于把签名请求体当邮件发出。
+//
+// 排序 next_retry_at NULLS FIRST, id：新入队行先发，重试行按到期先后，
+// 且同一轮内保持稳定（利于排障与测试断言）。
+func (s *Store) ClaimEmailDelivery(ctx context.Context, now time.Time) (*EmailDeliveryClaim, bool, error) {
+	return s.claimDelivery(ctx, now, string(ChannelEmail))
+}
+
+// claimDelivery 是两条渠道共用的领取实现。channel 由调用方传入常量，
+// 绝不来自外部输入，因此不存在拼接注入面。
+func (s *Store) claimDelivery(ctx context.Context, now time.Time, channel string) (*deliveryClaim, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("notify: begin webhook claim: %w", err)
+		return nil, false, fmt.Errorf("notify: begin %s claim: %w", channel, err)
 	}
 	row := tx.QueryRowContext(ctx, `SELECT `+webhookDeliveryColumns+`
 		FROM notification_deliveries
-		WHERE channel = 'webhook' AND status = 'queued'
+		WHERE channel = $2 AND status = 'queued'
 		  AND (next_retry_at IS NULL OR next_retry_at <= $1)
 		ORDER BY next_retry_at NULLS FIRST, id
 		LIMIT 1
-		FOR UPDATE SKIP LOCKED`, now.UTC())
+		FOR UPDATE SKIP LOCKED`, now.UTC(), channel)
 	delivery, err := scanDelivery(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Rollback()
@@ -821,21 +947,34 @@ func (s *Store) ClaimWebhookDelivery(ctx context.Context, now time.Time) (*Webho
 	}
 	if err != nil {
 		_ = tx.Rollback()
-		return nil, false, fmt.Errorf("notify: claim webhook delivery: %w", err)
+		return nil, false, fmt.Errorf("notify: claim %s delivery: %w", channel, err)
 	}
-	return &WebhookDeliveryClaim{tx: tx, Delivery: delivery}, true, nil
+	return &deliveryClaim{tx: tx, Delivery: delivery}, true, nil
 }
 
 // MarkSent 把投递置为 sent 并提交占用。
-func (c *WebhookDeliveryClaim) MarkSent(ctx context.Context, attempt int) error {
+func (c *deliveryClaim) MarkSent(ctx context.Context, attempt int) error {
 	return c.finish(ctx, `UPDATE notification_deliveries
 		SET status = 'sent', attempt = $2, next_retry_at = NULL, last_error = NULL, updated_at = now()
 		WHERE id = $1`, c.Delivery.ID, attempt)
 }
 
+// MarkSentWithProvider 在置 sent 的同时记录 SMTP Message-ID（退信关联用）。
+// 与 MarkSent 分开而不是加参数：webhook 没有 Message-ID，调用点保持零改动。
+func (c *deliveryClaim) MarkSentWithProvider(ctx context.Context, attempt int, providerMessageID string) error {
+	var providerID any
+	if providerMessageID != "" {
+		providerID = providerMessageID
+	}
+	return c.finish(ctx, `UPDATE notification_deliveries
+		SET status = 'sent', attempt = $2, next_retry_at = NULL, last_error = NULL,
+		    provider_message_id = $3, updated_at = now()
+		WHERE id = $1`, c.Delivery.ID, attempt, providerID)
+}
+
 // MarkFailed 记录一次失败。nextRetryAt 非 nil 时保持 queued 并设置重试时刻；
 // nil 表示已达最大尝试次数，置为终态 failed。
-func (c *WebhookDeliveryClaim) MarkFailed(ctx context.Context, attempt int, nextRetryAt *time.Time, reason string) error {
+func (c *deliveryClaim) MarkFailed(ctx context.Context, attempt int, nextRetryAt *time.Time, reason string) error {
 	status := "failed"
 	var next any
 	if nextRetryAt != nil {
@@ -847,9 +986,9 @@ func (c *WebhookDeliveryClaim) MarkFailed(ctx context.Context, attempt int, next
 		WHERE id = $1`, c.Delivery.ID, status, attempt, next, reason)
 }
 
-// MarkSuppressed 把投递置为 suppressed（例如事件已不在订阅列表内）。
-// 这不是端点故障：不消耗重试次数、不计入连续失败。
-func (c *WebhookDeliveryClaim) MarkSuppressed(ctx context.Context, reason string) error {
+// MarkSuppressed 把投递置为 suppressed（例如事件已不在订阅列表内、用户已
+// 退订该类别邮件）。这不是发送故障：不消耗重试次数、不计入发送失败。
+func (c *deliveryClaim) MarkSuppressed(ctx context.Context, reason string) error {
 	return c.finish(ctx, `UPDATE notification_deliveries
 		SET status = 'suppressed', next_retry_at = NULL, last_error = $2, updated_at = now()
 		WHERE id = $1`, c.Delivery.ID, reason)
@@ -857,7 +996,7 @@ func (c *WebhookDeliveryClaim) MarkSuppressed(ctx context.Context, reason string
 
 // Release 放弃占用但不改行：投递保持 queued，下一轮重新领取。
 // 用于「配置暂时不可用/已暂停」这类不应消耗重试次数的情形。
-func (c *WebhookDeliveryClaim) Release() {
+func (c *deliveryClaim) Release() {
 	if c == nil || c.closed {
 		return
 	}
@@ -865,17 +1004,17 @@ func (c *WebhookDeliveryClaim) Release() {
 	_ = c.tx.Rollback()
 }
 
-func (c *WebhookDeliveryClaim) finish(ctx context.Context, query string, args ...any) error {
+func (c *deliveryClaim) finish(ctx context.Context, query string, args ...any) error {
 	if c == nil || c.closed {
-		return errors.New("notify: webhook claim is already closed")
+		return errors.New("notify: delivery claim is already closed")
 	}
 	c.closed = true
 	if _, err := c.tx.ExecContext(ctx, query, args...); err != nil {
 		_ = c.tx.Rollback()
-		return fmt.Errorf("notify: update webhook delivery: %w", err)
+		return fmt.Errorf("notify: update delivery: %w", err)
 	}
 	if err := c.tx.Commit(); err != nil {
-		return fmt.Errorf("notify: commit webhook delivery: %w", err)
+		return fmt.Errorf("notify: commit delivery: %w", err)
 	}
 	return nil
 }

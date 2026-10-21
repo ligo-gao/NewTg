@@ -1,31 +1,36 @@
 package notify
 
 // N6 低余额通知扫描 worker（billing-06 §3.3 / §9.6，modules-08 F-08-11 /
-// F-08-20，tasks B4）。
+// F-08-20，tasks B4；W10-EMAIL 起同时产出 email）。
 //
 // 冻结语义：
 //   - 每 5 分钟扫描一次；启动即扫一轮（重启后不必等一个周期）；
-//   - 仅当 `notify.webhook.enabled=true`、`notify.webhook.balance_low_threshold>0`
-//     且 `notify.webhook.events` 订阅了 `balance_low` 时扫描；三者任一不满足
-//     都直接跳过，不产生查询；
+//   - 扫描门槛：`notify.webhook.balance_low_threshold>0`，且至少一个出口
+//     可用——webhook 出口 = `notify.webhook.enabled=true` 且订阅了
+//     `balance_low`；email 出口 = 装配了 EmailProducer（用户偏好才是
+//     email 的开关）。两者都不可用时整轮跳过，不产生查询；
 //   - 命中口径：`users.status='enabled' AND users.balance < threshold`；
-//   - 每人每天最多一条投递：`dedupe_key='balance_low:<userID>:<YYYY-MM-DD>'`，
-//     日期取**站点时区**（`site.timezone`），不是 UTC——同一时刻在不同时区
-//     是不同业务日，跨副本必须得到同一个键；查询阶段即按该键排除当天已
-//     通知用户（减少无效插入），UNIQUE(dedupe_key) 继续兜底多副本竞态；
-//   - 投递行由 WebhookEventProducer 写入，category=`billing.balance_low`，
-//     payload=`{event,user_id,balance,threshold,detected_at}`；N8 worker 负责
-//     真正发送/重试；
-//   - 多副本并发扫描是安全的：UNIQUE(dedupe_key) 让同一天同一用户只落一行，
-//     因此不需要额外的 Redis 租约（N6 的幂等锚就是 dedupe_key）。
+//   - 每人每天每渠道最多一条投递：
+//     webhook `balance_low:<userID>:<YYYY-MM-DD>`，
+//     email `email:balance_low:<userID>:<YYYY-MM-DD>`；日期取**站点时区**
+//     （`site.timezone`），不是 UTC——同一时刻在不同时区是不同业务日，
+//     跨副本必须得到同一个键；查询阶段按**渠道分别**排除当天已通知的
+//     用户（W10-EMAIL I-1：webhook 成功不得掩盖 email 失败），
+//     UNIQUE(dedupe_key) 继续兜底多副本竞态；
+//   - webhook 投递行由 WebhookEventProducer 写入，payload=
+//     `{event,user_id,balance,threshold,detected_at}`；email 投递行由
+//     EmailEventProducer 写入（模板变量 payload，偏好 opt-out 写 suppressed）；
+//   - 多副本并发扫描是安全的：UNIQUE(dedupe_key) 让同一天同一用户每渠道只落
+//     一行，因此不需要额外的 Redis 租约（N6 的幂等锚就是 dedupe_key）。
 //
-// 【去重与噪声】按天去重意味着用户持续低于阈值时**每天最多一条**；余额回升
-// 后再次跌破，当天仍只有一条，次日可再发。这里刻意不维护
+// 【去重与噪声】按天去重意味着用户持续低于阈值时**每渠道每天最多一条**；
+// 余额回升后再次跌破，当天仍只有一条，次日可再发。这里刻意不维护
 // `balance_alert_state` 一类状态表：状态表会引入「副本看到旧余额」的竞态，
 // 而按天的 dedupe_key 是数据库唯一约束保证的强不变量。
 //
 // 【失败语义】扫描/入队失败只记 Warn（告警收敛在日志），绝不影响业务请求；
-// 下一轮会重试同一批用户，已成功入队的用户由 dedupe_key 自动跳过。
+// 下一轮会重试同一批用户，已成功入队的渠道由各自 dedupe_key 自动跳过，
+// 另一渠道仍会继续尝试。
 
 import (
 	"context"
@@ -50,6 +55,10 @@ type BalanceLowWorkerDeps struct {
 	Store *Store
 	// Producer 负责订阅过滤与投递行写入（必填）。
 	Producer *WebhookEventProducer
+	// EmailProducer 负责 email 投递行写入（W10-EM1）。nil 时不产生 email，
+	// 只保留既有 webhook/inapp 语义；非 nil 时即使 webhook 未订阅也会扫描
+	// （用户偏好才是 email 的开关，SMTP 未配置只影响 worker 领取）。
+	EmailProducer *EmailEventProducer
 	// Config 读取 notify.webhook.enabled / balance_low_threshold / site.timezone
 	// （必填）。
 	Config ConfigReader
@@ -81,18 +90,24 @@ type BalanceLowScanResult struct {
 	Deduped int
 	// Failed 是入队失败的次数（DB/序列化错误；下一轮重试）。
 	Failed int
+	// EmailEnqueued 是新增的 email 投递行数（W10-EM1）。邮件与 webhook 是
+	// 两条独立队列，用户可能只订阅了邮件，因此计数分列。
+	EmailEnqueued int
+	// EmailFailed 是 email 入队失败次数（best-effort，不影响 webhook）。
+	EmailFailed int
 }
 
 // BalanceLowWorker 串行执行扫描轮次。
 type BalanceLowWorker struct {
-	store        *Store
-	producer     *WebhookEventProducer
-	cfg          ConfigReader
-	subscription WebhookEventSubscription
-	log          *slog.Logger
-	now          func() time.Time
-	location     *time.Location
-	interval     time.Duration
+	store         *Store
+	producer      *WebhookEventProducer
+	emailProducer *EmailEventProducer
+	cfg           ConfigReader
+	subscription  WebhookEventSubscription
+	log           *slog.Logger
+	now           func() time.Time
+	location      *time.Location
+	interval      time.Duration
 }
 
 // NewBalanceLowWorker 构造扫描器；依赖缺失是装配错误，必须在启动期暴露。
@@ -122,8 +137,8 @@ func NewBalanceLowWorker(deps BalanceLowWorkerDeps) (*BalanceLowWorker, error) {
 		interval = DefaultBalanceLowScanInterval
 	}
 	return &BalanceLowWorker{
-		store: deps.Store, producer: deps.Producer, cfg: deps.Config,
-		subscription: deps.Subscription, log: log, now: now,
+		store: deps.Store, producer: deps.Producer, emailProducer: deps.EmailProducer,
+		cfg: deps.Config, subscription: deps.Subscription, log: log, now: now,
 		location: deps.Location, interval: interval,
 	}, nil
 }
@@ -170,13 +185,25 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		result.Skipped = true
 		return result
 	}
-	if !enabled || threshold <= 0 {
+	if threshold <= 0 {
+		// 阈值 0 = 关闭余额提醒（站点级）。email 与 webhook 共用该阈值，
+		// 因为两者表达的是同一个业务事件「余额低于阈值」。
 		result.Skipped = true
 		return result
 	}
+	if !enabled {
+		// webhook 开关关闭不代表 email 关闭：email 的开关是用户偏好
+		// （balance_warning.enabled），站点阈值仍取自同一设置键。只要 email
+		// 生产者已装配，扫描就要继续。
+		if w.emailProducer == nil {
+			result.Skipped = true
+			return result
+		}
+	}
 	event, ok := WebhookEventForCategory("billing.balance_low")
-	if !ok || !w.subscription.Subscribed(event) {
-		// 未订阅时整轮跳过：不查询用户，也不写永远不会发送的投递行。
+	webhookActive := ok && w.subscription.Subscribed(event)
+	if !webhookActive && w.emailProducer == nil {
+		// 两条出口都不可用：不查询用户，也不写永远不会发送的投递行。
 		result.Skipped = true
 		return result
 	}
@@ -186,7 +213,7 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 
 	// 查询即排除当天已通知的用户：避免每轮为同一批持续低余额用户做注定
 	// 被 UNIQUE(dedupe_key) 丢弃的插入。多副本竞态仍由唯一约束兜底。
-	users, err := w.store.ListLowBalanceUsers(ctx, threshold, day)
+	users, err := w.store.ListLowBalanceUsers(ctx, threshold, day, webhookActive, w.emailProducer != nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.log.Warn("balance low worker: scan users failed", "error", err)
@@ -202,25 +229,44 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		if ctx.Err() != nil {
 			break
 		}
-		inserted, err := w.producer.EnqueueBalanceLow(ctx, BalanceLowEvent{
-			UserID:     user.ID,
-			Balance:    user.Balance,
-			Threshold:  threshold,
-			DetectedAt: now,
-			SiteDay:    day,
-		})
-		if err != nil {
-			// 单个用户失败不阻断其余用户；下一轮会重试，dedupe_key 保证
-			// 已成功的用户不会重复投递。
-			result.Failed++
-			w.log.Warn("balance low worker: enqueue failed",
-				"user_id", user.ID, "error", err)
-			continue
+		if webhookActive {
+			inserted, err := w.producer.EnqueueBalanceLow(ctx, BalanceLowEvent{
+				UserID:     user.ID,
+				Balance:    user.Balance,
+				Threshold:  threshold,
+				DetectedAt: now,
+				SiteDay:    day,
+			})
+			if err != nil {
+				// 单个用户失败不阻断其余用户；下一轮会重试，dedupe_key 保证
+				// 已成功的用户不会重复投递。
+				result.Failed++
+				w.log.Warn("balance low worker: enqueue failed",
+					"user_id", user.ID, "error", err)
+			} else if inserted {
+				result.Enqueued++
+			} else {
+				result.Deduped++
+			}
 		}
-		if inserted {
-			result.Enqueued++
-		} else {
-			result.Deduped++
+		// email 与 webhook 订阅面相互独立：即使 webhook 未订阅/写入失败，
+		// 用户仍可能只订阅了邮件。偏好闸门在生产者内解析，opt-out 直接写
+		// suppressed 终态（R-W10-06），这里只记计数。
+		if w.emailProducer != nil {
+			emailResult, emailErr := w.emailProducer.EnqueueBalanceLow(ctx, BalanceLowEmailEvent{
+				UserID:     user.ID,
+				Balance:    user.Balance,
+				Threshold:  threshold,
+				DetectedAt: now,
+				SiteDay:    day,
+			})
+			if emailErr != nil {
+				result.EmailFailed++
+				w.log.Warn("balance low worker: enqueue email failed",
+					"user_id", user.ID, "error", emailErr)
+			} else if emailResult.Status == EmailEnqueueQueued {
+				result.EmailEnqueued++
+			}
 		}
 	}
 	w.log.Info("balance low scan completed",
