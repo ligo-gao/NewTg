@@ -111,3 +111,20 @@ func TestWebhookSectionWarnsWithoutBlocking(t *testing.T) {
 		t.Fatalf("校验失败时不应告警：%v", warned)
 	}
 }
+
+// TestResponseTimeThresholdUpperBound 是复核 M-9 的写入侧守卫：阈值必须有
+// 有限上界（24h），否则 float64→time.Duration 溢出会让超时判定静默失效。
+func TestResponseTimeThresholdUpperBound(t *testing.T) {
+	setting, ok := Lookup("rl.health.response_time_threshold_seconds")
+	if !ok {
+		t.Fatal("rl.health.response_time_threshold_seconds 未注册")
+	}
+	if _, err := normalizeRaw(setting, json.RawMessage(`86400`)); err != nil {
+		t.Fatalf("上界值应被接受: %v", err)
+	}
+	for _, raw := range []string{`86401`, `1e18`} {
+		if _, err := normalizeRaw(setting, json.RawMessage(raw)); err == nil {
+			t.Fatalf("%s 超过上界必须被拒绝", raw)
+		}
+	}
+}

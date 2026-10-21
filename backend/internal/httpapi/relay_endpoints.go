@@ -76,11 +76,9 @@ const (
 	relayExpectContinueTimeout = 1 * time.Second
 
 	// channelTestTimeout 是渠道连通性测试的单次上限（modules-06 F-06-06 的 30s）。
+	// 体检单次上限是 channelhealth.ProbeTimeout（15s，R-M4-14）；两者由
+	// TestChannelTestTimeoutsFrozen 锁定，防止误合并。
 	channelTestTimeout = 30 * time.Second
-
-	// channelTestMaxErrorBodyBytes 限制连通性测试读取响应体的上限；只为让
-	// adapter.ClassifyError 有界读取，绝不回显（GC-6）。
-	channelTestMaxErrorBodyBytes = 64 << 10
 
 	// maxSoftStreamErrors 是软流错误的记录上限（relay-03 §4.3/§10.1：上限 20 条）。
 	// 第 21 条软错误按硬错误处理：继续吞错会让一个持续损坏的上游把连接

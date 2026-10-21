@@ -84,9 +84,13 @@ func LoadWorkerSettings(src SettingsSource) WorkerSettings {
 	}
 	if raw, ok := src.Get(KeyResponseTimeThresholdSeconds); ok && !isNullRaw(raw) {
 		var seconds float64
-		// 只接受有限正数；0/负数/NaN 视为脏值并回落默认（validate.go 的
-		// positiveFiniteNumber 已挡在写入路径，这里是读取侧的纵深防御）。
-		if json.Unmarshal(raw, &seconds) == nil && seconds > 0 && !math.IsInf(seconds, 0) && !math.IsNaN(seconds) {
+		// 只接受 (0, MaxResponseTimeThresholdSeconds] 的有限数。上限是对
+		// 复核 M-9 的纵深防御：写入路径已由注册表 maxFloat 拒绝越界值，但
+		// 历史行/手工改库可能出现 1e18 一类值——float64→time.Duration 会
+		// 溢出成负数，让超时判定静默失效；这里回落注册表默认（5s）。
+		if json.Unmarshal(raw, &seconds) == nil && seconds > 0 &&
+			seconds <= settings.MaxResponseTimeThresholdSeconds &&
+			!math.IsInf(seconds, 0) && !math.IsNaN(seconds) {
 			out.ResponseTimeThreshold = time.Duration(seconds * float64(time.Second))
 		}
 	}

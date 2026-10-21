@@ -2389,3 +2389,84 @@ func TestChannelPluginBindingRegistryFailureIs500(t *testing.T) {
 		t.Fatalf("未实际查询注册表：%v", catalog.calls)
 	}
 }
+
+// fakeConfigReader 是 ConfigReader 的内存实现（rl.health 阈值等）。
+type fakeConfigReader map[string]json.RawMessage
+
+func (m fakeConfigReader) Get(key string) (json.RawMessage, bool) {
+	value, ok := m[key]
+	return value, ok
+}
+
+// TestChannelTestTimeoutsFrozen 锁定两个超时常量：体检 15s（R-M4-14）、
+// 手工测试 30s。复核 M-3。
+func TestChannelTestTimeoutsFrozen(t *testing.T) {
+	if channelTestTimeout != 30*time.Second {
+		t.Fatalf("channelTestTimeout = %v, want 30s（F-06-06）", channelTestTimeout)
+	}
+	if channelhealth.ProbeTimeout != 15*time.Second {
+		t.Fatalf("channelhealth.ProbeTimeout = %v, want 15s（R-M4-14）", channelhealth.ProbeTimeout)
+	}
+}
+
+// TestChannelTestSlowSuccessIsFailure 是复核 M-6 的语义统一：手工测试的
+// last_test_result 与响应 success 都按 ProbeSucceeded（headers-only 阈值）
+// 判定——「慢但成功」记失败并返回 error_class=timeout，避免「测试成功随后
+// 被自动禁用」的自相矛盾。
+func TestChannelTestSlowSuccessIsFailure(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{
+		Config: fakeConfigReader{
+			channelhealth.KeyResponseTimeThresholdSeconds: json.RawMessage(`5`),
+		},
+	})
+	seedChannel(t, env, nil)
+	reporter := &fakeProbeReporter{}
+	env.handler.probeReporter = reporter
+	env.handler.tester = (&fakeChannelTester{latency: 5000}).test
+
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}),
+		channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var failure struct {
+		Success    bool   `json:"success"`
+		LatencyMS  int    `json:"latency_ms"`
+		ErrorClass string `json:"error_class"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	if failure.Success || failure.ErrorClass != "timeout" || failure.LatencyMS != 5000 {
+		t.Fatalf("慢但成功应记失败/timeout: %+v", failure)
+	}
+	if env.store.lastTestResult == nil || *env.store.lastTestResult {
+		t.Fatal("慢但成功的 last_test_result 必须为 false")
+	}
+	calls := reporter.snapshot()
+	if len(calls) != 1 || !calls[0].result.Success || calls[0].result.LatencyMS != 5000 {
+		t.Fatalf("判定层必须收到原始成功结果（由阈值判定）: %+v", calls)
+	}
+
+	// 阈值内仍然成功：同一配置下 4999ms 是健康。
+	env.handler.tester = (&fakeChannelTester{latency: 4999}).test
+	rr = serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}),
+		channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var ok struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &ok); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	if !ok.Success {
+		t.Fatal("4999ms 在 5s 阈值内应成功")
+	}
+	if env.store.lastTestResult == nil || !*env.store.lastTestResult {
+		t.Fatal("阈值内的 last_test_result 必须为 true")
+	}
+}

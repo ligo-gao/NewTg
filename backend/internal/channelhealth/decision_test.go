@@ -312,6 +312,13 @@ func TestDecideProbeFailureTriggers(t *testing.T) {
 			result:  ProbeResult{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth},
 			autoBan: false,
 		},
+		{
+			// 复核 I-2：慢响应分支也必须受 auto_ban 守卫——删掉
+			// DecideProbeFailure 顶部的 !autoBan 时本用例红。
+			name:    "slow-success-auto-ban-false",
+			result:  ProbeResult{Success: true, LatencyMS: 5000},
+			autoBan: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

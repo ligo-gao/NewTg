@@ -265,3 +265,56 @@ func TestProberBoundsErrorBody(t *testing.T) {
 		t.Fatalf("class = %d, want ErrUpstreamServer", result.ErrorClass)
 	}
 }
+
+// TestProbeTimeoutFrozen 锁定体检 15s 的冻结值（R-M4-14）。手工测试的 30s
+// 由 httpapi 的 TestChannelTestTimeoutsFrozen 断言；两者不能合并。
+func TestProbeTimeoutFrozen(t *testing.T) {
+	if ProbeTimeout != 15*time.Second {
+		t.Fatalf("ProbeTimeout = %v, want 15s（R-M4-14）", ProbeTimeout)
+	}
+	prober, err := NewProber(ProberConfig{Opener: fakeOpener{}, Client: &http.Client{}})
+	if err != nil {
+		t.Fatalf("NewProber: %v", err)
+	}
+	if prober.timeout != ProbeTimeout {
+		t.Fatalf("默认探测超时 = %v, want %v", prober.timeout, ProbeTimeout)
+	}
+}
+
+// TestProberMeasuresHeadersNotBody 是复核 I-3 的用例：上游先发响应头并
+// Flush，再延迟写 body —— LatencyMS 必须只反映到响应头的时间。变异（把
+// latency 移到 ReadAll 之后）时 LatencyMS ≈ body 延时，本用例红。
+func TestProberMeasuresHeadersNotBody(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		close(release)
+	}()
+
+	prober := newTestProber(t, sealerOpener(t, "sk-probe"), upstream.Client(), 3*time.Second)
+	start := time.Now()
+	result := prober.Probe(context.Background(),
+		probeChannel(string(contract.ChannelTypeOpenAI), upstream.URL, `{}`), "gpt-test")
+	elapsed := time.Since(start)
+
+	if !result.Success {
+		t.Fatalf("result = %+v, want success", result)
+	}
+	if elapsed < 250*time.Millisecond {
+		t.Fatalf("body 延时未被真正执行（elapsed=%v），用例前提不成立", elapsed)
+	}
+	if result.LatencyMS >= 200 {
+		t.Fatalf("LatencyMS = %d，包含了 body 读取时间（headers-only 语义被破坏）", result.LatencyMS)
+	}
+}

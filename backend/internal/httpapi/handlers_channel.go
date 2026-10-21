@@ -489,6 +489,11 @@ type ChannelHandlerOptions struct {
 	// ProbeReporter 是手工连通性测试的自动禁用接缝（W7/M4-b）。nil 时只回写
 	// last_test_*、不做状态判定（测试/降级装配；生产必须注入）。
 	ProbeReporter ProbeFailureReporter
+	// Config 读取 rl.health 设置（阈值/关键词）。nil 时按注册表默认（阈值
+	// 5s）。复核 M-6：手工测试的 last_test_result 与响应 success 必须与
+	// 体检共用同一 ProbeSucceeded 判定（含 headers-only 阈值），避免
+	// 「测试成功随后被自动禁用」。
+	Config ConfigReader
 	// Plugins 是任务插件注册表（渠道绑定校验）。nil 时任何 60/61 绑定都
 	// 视为未注册（fail-closed）；生产装配必须注入。
 	Plugins TaskPluginCatalog
@@ -504,6 +509,7 @@ type ChannelHandler struct {
 	sealer        *SecretSealer
 	tester        ChannelTester
 	probeReporter ProbeFailureReporter
+	config        ConfigReader
 	plugins       TaskPluginCatalog
 	idem          IdempotencyStore
 	log           *slog.Logger
@@ -532,6 +538,7 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		sealer:        sealer,
 		tester:        opts.Tester,
 		probeReporter: opts.ProbeReporter,
+		config:        opts.Config,
 		plugins:       opts.Plugins,
 		idem:          idem,
 		log:           logger,
@@ -1432,12 +1439,20 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 
 	latency, testErr := h.tester(r.Context(), ch, model)
 	now := time.Now().UTC()
-	if testErr != nil {
+	result, errorClass := probeOutcome(latency, testErr)
+	// 复核 M-6：手工测试与体检共用 ProbeSucceeded（含 headers-only 阈值）。
+	// 「2xx 但慢于阈值」按失败记：last_test_result=false、响应 success=false
+	// 且 error_class=timeout——否则会出现「测试成功随后被自动禁用」的矛盾。
+	if !channelhealth.ProbeSucceeded(result, channelhealth.LoadWorkerSettings(h.config)) {
 		// 仍回写失败结果（F-06-06 主流程 3）；回写失败不覆盖测试错误。
 		_ = h.channels.UpdateTestResult(r.Context(), id, now, false)
 		// W7/M4-b / R-M4-15：手工测试失败可以触发自动禁用（与中继/体检共用
 		// 判定），但绝不触发自动恢复。非阻塞入队，响应不等副作用。
-		h.reportProbe(r.Context(), ch, latency, testErr)
+		h.reportProbeResult(r.Context(), ch, result)
+		if errorClass == "" {
+			// 唯一没有 tester 错误的失败来源就是阈值超限（R-M4-02/14）。
+			errorClass = channelTestClassTimeout
+		}
 		// modules-06 F-06-06：连通性失败是**业务结果**而不是 HTTP 故障，
 		// 返回 200 {success:false, error_class}，便于前端展示失败原因。
 		// GC-6：只给泛化枚举 + 固定字段，原始错误（可能含 URL/key）整体丢弃。
@@ -1445,7 +1460,7 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 			Success:    false,
 			LatencyMS:  latency,
 			Model:      model,
-			ErrorClass: channelTestErrorClass(testErr),
+			ErrorClass: errorClass,
 		})
 		return
 	}
@@ -1453,36 +1468,40 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, storeErrorResponse(err))
 		return
 	}
-	// 成功也要上报：R-M4-02 的阈值只在体检/手工测试路径应用，「慢但成功」
-	// 的测试应记 channel_timeout；不会触发自动恢复（R-M4-15）。
-	h.reportProbe(r.Context(), ch, latency, nil)
+	// 成功也上报：判定层不会因成功禁用；保留接缝以便未来扩展（如恢复观察）。
+	h.reportProbeResult(r.Context(), ch, result)
 	writeChannelJSON(w, http.StatusOK, channelTestResponse{Success: true, LatencyMS: latency, Model: model})
 }
 
-// reportProbe 把手工测试结果交给自动禁用接缝（非阻塞；nil 接缝直接返回）。
+// probeOutcome 把 tester 的 (latency, error) 投影为共享的 ProbeResult。
 //
 // 错误分类来自 tester 的 typed error：上游非 2xx 携带 status/class/body，
 // 传输失败携带 timeout/network；其它错误（nil 渠道/未配置 sealer）保持零值，
-// 判定层不会据此禁用。
-func (h *ChannelHandler) reportProbe(ctx context.Context, ch *store.Channel, latencyMS int, testErr error) {
-	if h.probeReporter == nil || ch == nil {
-		return
-	}
+// 判定层不会据此禁用。errorClass 是 F-06-06 的五值枚举（空串表示待判定）。
+func probeOutcome(latencyMS int, testErr error) (channelhealth.ProbeResult, string) {
 	result := channelhealth.ProbeResult{LatencyMS: latencyMS}
 	if testErr == nil {
 		result.Success = true
-	} else {
-		var upstream *channelTestUpstreamError
-		if errors.As(testErr, &upstream) {
-			result.StatusCode = upstream.StatusCode
-			result.ErrorClass = upstream.Class
-			result.Body = upstream.Body
-		} else {
-			var transport *channelTestTransportError
-			if errors.As(testErr, &transport) {
-				result.TransportClass = transport.Class
-			}
-		}
+		return result, ""
+	}
+	var upstream *channelTestUpstreamError
+	if errors.As(testErr, &upstream) {
+		result.StatusCode = upstream.StatusCode
+		result.ErrorClass = upstream.Class
+		result.Body = upstream.Body
+		return result, channelTestErrorClass(testErr)
+	}
+	var transport *channelTestTransportError
+	if errors.As(testErr, &transport) {
+		result.TransportClass = transport.Class
+	}
+	return result, channelTestErrorClass(testErr)
+}
+
+// reportProbeResult 把已经构建好的探测结果交给自动禁用接缝（非阻塞）。
+func (h *ChannelHandler) reportProbeResult(ctx context.Context, ch *store.Channel, result channelhealth.ProbeResult) {
+	if h.probeReporter == nil || ch == nil {
+		return
 	}
 	h.probeReporter.ReportProbeFailure(ctx, ch.ID, ch.AutoBan, result)
 }

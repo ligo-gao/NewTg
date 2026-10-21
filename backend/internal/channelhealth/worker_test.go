@@ -58,9 +58,14 @@ type fakeHealthStore struct {
 	enableCalls  []int64
 
 	unconditionalEnable bool
+	// unconditionalDisable 让 fake 忽略 auto_ban 条件，用于证明 worker 的
+	// 判定层守卫（复核 I-2：慢响应分支的 !autoBan）本身有效。
+	unconditionalDisable bool
 
 	listErr     error
 	periodicErr error
+	disableErr  error
+	enableErr   error
 	now         time.Time
 }
 
@@ -83,9 +88,15 @@ func (f *fakeHealthStore) AutoDisable(_ context.Context, id int64, reason string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.disableCalls = append(f.disableCalls, disableCall{id: id, reason: reason})
+	if f.disableErr != nil {
+		return nil, false, f.disableErr
+	}
 	for i := range f.channels {
 		ch := &f.channels[i]
-		if ch.ID != id || ch.Status != 1 || !ch.AutoBan {
+		if ch.ID != id || ch.Status != 1 {
+			continue
+		}
+		if !f.unconditionalDisable && !ch.AutoBan {
 			continue
 		}
 		ch.Status = 3
@@ -102,6 +113,9 @@ func (f *fakeHealthStore) AutoEnable(_ context.Context, id int64) (*store.Channe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enableCalls = append(f.enableCalls, id)
+	if f.enableErr != nil {
+		return nil, false, f.enableErr
+	}
 	for i := range f.channels {
 		ch := &f.channels[i]
 		if ch.ID != id {
@@ -731,20 +745,34 @@ func TestWorkerConcurrencyBound(t *testing.T) {
 		channels = append(channels, workerChannel(i, 1, true, `["gpt-test"]`))
 	}
 	storeImpl := &fakeHealthStore{channels: channels}
-	prober := &concurrencyProber{sleep: 10 * time.Millisecond}
+	// 复核 M-1：屏障式断言——必须真的看到 2 个探测同时在飞，而不是依赖
+	// sleep 时长的运气。变异 test_concurrency=1 时第二个探测永远不来，用例红。
+	prober := &barrierProber{arrived: make(chan struct{}, 8), release: make(chan struct{})}
 	settings := workerSettings(map[string]any{KeyTestConcurrency: 2})
 	worker := newWorkerForTest(t, storeImpl, prober, settings,
 		&fakeLocker{acquired: true}, &fakeAudit{}, &fakeNotifier{})
 
-	stats, err := worker.RunOnce(context.Background())
-	if err != nil {
-		t.Fatalf("RunOnce: %v", err)
+	done := make(chan WorkerStats, 1)
+	go func() {
+		stats, _ := worker.RunOnce(context.Background())
+		done <- stats
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-prober.arrived:
+		case <-time.After(2 * time.Second):
+			close(prober.release)
+			<-done
+			t.Fatalf("并发探测未达到 2（test_concurrency=2）")
+		}
 	}
+	close(prober.release)
+	stats := <-done
 	if stats.Tested != 8 {
 		t.Fatalf("tested = %d, want 8", stats.Tested)
 	}
-	if max := prober.maxSeen(); max > 2 || max < 1 {
-		t.Fatalf("最大并发 = %d, want 1..2（test_concurrency=2）", max)
+	if max := prober.maxSeen(); max < 2 || max > 2 {
+		t.Fatalf("最大并发 = %d, want 2（test_concurrency=2）", max)
 	}
 }
 
@@ -896,26 +924,41 @@ func (p *blockingProber) Probe(ctx context.Context, ch *store.Channel, _ string)
 	return ProbeResult{LatencyMS: 1, StatusCode: 200, Success: true}
 }
 
-type concurrencyProber struct {
-	sleep   time.Duration
-	current int32
-	max     int32
+// barrierProber 让每个探测在到达后阻塞，直到测试关闭 release。测试先等到
+// 2 个到达信号，证明并发度为 2；随后放行，统计峰值。这样不依赖 sleep 时长
+// （复核 M-1）。
+type barrierProber struct {
+	arrived chan struct{}
+	release chan struct{}
+
+	mu      sync.Mutex
+	current int
+	max     int
 }
 
-func (p *concurrencyProber) Probe(context.Context, *store.Channel, string) ProbeResult {
-	now := atomic.AddInt32(&p.current, 1)
-	for {
-		old := atomic.LoadInt32(&p.max)
-		if now <= old || atomic.CompareAndSwapInt32(&p.max, old, now) {
-			break
-		}
+func (p *barrierProber) Probe(context.Context, *store.Channel, string) ProbeResult {
+	p.mu.Lock()
+	p.current++
+	if p.current > p.max {
+		p.max = p.current
 	}
-	time.Sleep(p.sleep)
-	atomic.AddInt32(&p.current, -1)
+	p.mu.Unlock()
+	select {
+	case p.arrived <- struct{}{}:
+	default:
+	}
+	<-p.release
+	p.mu.Lock()
+	p.current--
+	p.mu.Unlock()
 	return ProbeResult{LatencyMS: 1, StatusCode: 200, Success: true}
 }
 
-func (p *concurrencyProber) maxSeen() int32 { return atomic.LoadInt32(&p.max) }
+func (p *barrierProber) maxSeen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.max
+}
 
 type cancelProber struct {
 	started chan struct{}
@@ -932,4 +975,185 @@ func (p *cancelProber) Probe(ctx context.Context, _ *store.Channel, _ string) Pr
 	}
 	<-ctx.Done()
 	return ProbeResult{}
+}
+
+// TestRoundTTLIncludesSynchronousSideEffects 是复核 I-1 的直接用例：锁 TTL
+// 必须覆盖「探测 + 写 last_test_* + AutoDisable + 审计 + 通知」的最坏单槽
+// 35s，而不只是 15s 探测。变异（roundTTL 直接返回 interval）时 100 渠道 /
+// 并发 5 的预期 760s 会退化为 60s，本用例红。
+func TestRoundTTLIncludesSynchronousSideEffects(t *testing.T) {
+	if healthRoundSlotBudget != 35*time.Second {
+		t.Fatalf("单槽预算 = %v, want 35s（15+5+5+5+5）", healthRoundSlotBudget)
+	}
+	cases := []struct {
+		name         string
+		settings     WorkerSettings
+		channelCount int
+		want         time.Duration
+	}{
+		{
+			name:         "100-channels-5-concurrency-1m-interval",
+			settings:     WorkerSettings{Interval: time.Minute, Concurrency: 5},
+			channelCount: 100,
+			want:         time.Duration(20*35)*time.Second + time.Minute, // 760s
+		},
+		{
+			name:         "500-channels-1-concurrency-short-interval",
+			settings:     WorkerSettings{Interval: time.Minute, Concurrency: 1},
+			channelCount: 500,
+			want:         time.Duration(500*35)*time.Second + time.Minute, // 17560s
+		},
+		{
+			name:         "small-round-uses-interval",
+			settings:     WorkerSettings{Interval: 10 * time.Minute, Concurrency: 5},
+			channelCount: 1,
+			want:         10 * time.Minute, // 35s+1m=95s < 10m
+		},
+		{
+			name:         "zero-concurrency-clamps-to-one",
+			settings:     WorkerSettings{Interval: time.Minute, Concurrency: 0},
+			channelCount: 2,
+			want:         time.Duration(2*35)*time.Second + time.Minute,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := roundTTL(tc.settings, tc.channelCount); got != tc.want {
+				t.Fatalf("roundTTL = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWorkerSlowSuccessAutoBanFalse 是复核 I-2 的 worker 级用例：慢响应
+// 分支必须同样受 auto_ban 守卫（仅删 DecideProbeFailure 顶部的 !autoBan
+// 时本用例红）。
+func TestWorkerSlowSuccessAutoBanFalse(t *testing.T) {
+	storeImpl := &fakeHealthStore{
+		channels:             []store.Channel{workerChannel(1, 1, false, `["gpt-test"]`)},
+		unconditionalDisable: true, // 让判定层守卫成为唯一防线
+	}
+	prober := &fakeProber{fallback: ProbeResult{LatencyMS: 5000, StatusCode: 200, Success: true}}
+	auditImpl := &fakeAudit{}
+	settings := workerSettings(map[string]any{
+		KeyAutoDisableEnabled:           true,
+		KeyDisableKeywords:              []string{"never-matches"},
+		KeyResponseTimeThresholdSeconds: 5,
+	})
+	worker := newWorkerForTest(t, storeImpl, prober, settings,
+		&fakeLocker{acquired: true}, auditImpl, &fakeNotifier{})
+
+	stats, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.Disabled != 0 {
+		t.Fatalf("stats = %+v, auto_ban=false 不得禁用", stats)
+	}
+	if got := storeImpl.channel(t, 1); got.Status != 1 {
+		t.Fatalf("status = %d, want 1（auto_ban=false + 慢响应）", got.Status)
+	}
+	if writes := storeImpl.periodicFor(1); len(writes) != 1 || writes[0].success {
+		t.Fatalf("periodic writes = %+v, want one failure（慢响应记失败）", writes)
+	}
+	if len(auditImpl.snapshot()) != 0 {
+		t.Fatal("未迁移不得写审计")
+	}
+}
+
+// TestWorkerErrorPaths 覆盖复核 M-7 的故障路径：扫描失败、周期写失败、
+// AutoDisable/AutoEnable 存储错误都只记录并继续，不 panic、不误迁移。
+func TestWorkerErrorPaths(t *testing.T) {
+	t.Run("list-error", func(t *testing.T) {
+		storeImpl := &fakeHealthStore{
+			channels: []store.Channel{workerChannel(1, 1, true, `["gpt-test"]`)},
+			listErr:  errors.New("db down"),
+		}
+		prober := &fakeProber{}
+		worker := newWorkerForTest(t, storeImpl, prober, workerSettings(nil),
+			&fakeLocker{acquired: true}, &fakeAudit{}, &fakeNotifier{})
+		if _, err := worker.RunOnce(context.Background()); err == nil {
+			t.Fatal("扫描失败必须返回 error 供 RunLoop 记录")
+		}
+		if len(prober.callModels()) != 0 {
+			t.Fatal("扫描失败不得发起探测")
+		}
+	})
+
+	t.Run("periodic-write-error-still-applies-decision", func(t *testing.T) {
+		storeImpl := &fakeHealthStore{
+			channels:    []store.Channel{workerChannel(1, 1, true, `["gpt-test"]`)},
+			periodicErr: errors.New("write timeout"),
+		}
+		prober := &fakeProber{fallback: ProbeResult{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth}}
+		worker := newWorkerForTest(t, storeImpl, prober,
+			workerSettings(map[string]any{KeyAutoDisableEnabled: true}),
+			&fakeLocker{acquired: true}, &fakeAudit{}, &fakeNotifier{})
+
+		stats, err := worker.RunOnce(context.Background())
+		if err != nil {
+			t.Fatalf("周期写失败不得中止整轮: %v", err)
+		}
+		if stats.Tested != 1 || stats.Disabled != 1 {
+			t.Fatalf("stats = %+v, want tested=1 disabled=1（写失败仍应判定）", stats)
+		}
+		if got := storeImpl.channel(t, 1); got.Status != 3 {
+			t.Fatalf("status = %d, want 3（写失败不影响状态迁移）", got.Status)
+		}
+	})
+
+	t.Run("auto-disable-store-error", func(t *testing.T) {
+		storeImpl := &fakeHealthStore{
+			channels:   []store.Channel{workerChannel(1, 1, true, `["gpt-test"]`)},
+			disableErr: errors.New("update failed"),
+		}
+		auditImpl := &fakeAudit{}
+		prober := &fakeProber{fallback: ProbeResult{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth}}
+		worker := newWorkerForTest(t, storeImpl, prober,
+			workerSettings(map[string]any{KeyAutoDisableEnabled: true}),
+			&fakeLocker{acquired: true}, auditImpl, &fakeNotifier{})
+
+		stats, err := worker.RunOnce(context.Background())
+		if err != nil {
+			t.Fatalf("AutoDisable 存储错误不得中止整轮: %v", err)
+		}
+		if stats.Disabled != 0 {
+			t.Fatalf("stats.Disabled = %d, want 0（迁移失败）", stats.Disabled)
+		}
+		if got := storeImpl.channel(t, 1); got.Status != 1 {
+			t.Fatalf("status = %d, want 1（迁移失败保持原状）", got.Status)
+		}
+		if len(auditImpl.snapshot()) != 0 {
+			t.Fatal("迁移失败不得写审计（审计只在 changed=true 后）")
+		}
+	})
+
+	t.Run("auto-enable-store-error", func(t *testing.T) {
+		channel := workerChannel(1, 3, true, `["gpt-test"]`)
+		reason := "channel_auth_error"
+		channel.AutoDisabledReason = &reason
+		storeImpl := &fakeHealthStore{
+			channels:  []store.Channel{channel},
+			enableErr: errors.New("update failed"),
+		}
+		auditImpl := &fakeAudit{}
+		prober := &fakeProber{fallback: ProbeResult{LatencyMS: 10, StatusCode: 200, Success: true}}
+		worker := newWorkerForTest(t, storeImpl, prober,
+			workerSettings(map[string]any{KeyAutoEnableEnabled: true}),
+			&fakeLocker{acquired: true}, auditImpl, &fakeNotifier{})
+
+		stats, err := worker.RunOnce(context.Background())
+		if err != nil {
+			t.Fatalf("AutoEnable 存储错误不得中止整轮: %v", err)
+		}
+		if stats.Enabled != 0 {
+			t.Fatalf("stats.Enabled = %d, want 0（恢复失败）", stats.Enabled)
+		}
+		if got := storeImpl.channel(t, 1); got.Status != 3 {
+			t.Fatalf("status = %d, want 3（恢复失败保持原状）", got.Status)
+		}
+		if len(auditImpl.snapshot()) != 0 {
+			t.Fatal("恢复失败不得写审计")
+		}
+	})
 }

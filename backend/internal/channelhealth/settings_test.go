@@ -225,3 +225,29 @@ func TestLoadWorkerSettingsOverridesAndClamp(t *testing.T) {
 		t.Fatalf("脏值 interval/concurrency = %v/%d, want 10m/5", dirty.Interval, dirty.Concurrency)
 	}
 }
+
+// TestLoadWorkerSettingsThresholdOverflow 是复核 M-9 的读取侧防御：极大
+// 有限值（1e18）会让 float64→time.Duration 溢出为负数并静默关闭超时判定，
+// 必须回落注册表默认（5s）；上界内的值正常生效。
+func TestLoadWorkerSettingsThresholdOverflow(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{name: "max-allowed", raw: "86400", want: 86400 * time.Second},
+		{name: "above-max", raw: "86401", want: 5 * time.Second},
+		{name: "overflow", raw: "1e18", want: 5 * time.Second},
+		{name: "negative-overflow", raw: "-1e18", want: 5 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := LoadWorkerSettings(mapSettings{
+				KeyResponseTimeThresholdSeconds: json.RawMessage(tc.raw),
+			})
+			if settings.ResponseTimeThreshold != tc.want {
+				t.Fatalf("threshold = %v, want %v", settings.ResponseTimeThreshold, tc.want)
+			}
+		})
+	}
+}

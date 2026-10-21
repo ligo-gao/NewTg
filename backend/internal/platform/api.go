@@ -328,6 +328,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			Tester:        httpapi.NewChannelConnectivityTester(channelSealer, nil),
 			Idempotency:   httpapi.NewRedisIdempotencyStore(rdb),
 			ProbeReporter: attemptReporter,
+			// 手工测试与体检共用 rl.health 阈值（复核 M-6）：同一配置中心快照。
+			Config: center,
 			Plugins: httpapi.NewTaskPluginCatalog(
 				factoryKeys, store.NewTaskPluginRepo(db)),
 		},

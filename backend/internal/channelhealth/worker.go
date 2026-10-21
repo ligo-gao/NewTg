@@ -31,17 +31,28 @@ import (
 )
 
 const (
-	// defaultTickInterval 是调度基准 tick（1 分钟）。nextDue 存在分钟级精度：
-	// 改 interval 配置最迟一个 tick 生效，无需重启（R-M4-13）。
+	// defaultTickInterval 是调度基准 tick（1 分钟）。
+	//
+	// 精度说明（复核 M-5）：interval 只在**每轮结束后**按新配置重算并写入
+	// nextDue，因此管理员改 interval 时，当前 nextDue 仍按旧值等待——最坏
+	// 延迟 ≈ 旧 interval + 一个 tick。jitter 只在启动时应用一次；首次运行
+	// 还可能因 tick 粒度比 interval+jitter 多等最多一个 tick。
 	defaultTickInterval = time.Minute
 	// defaultJitterMax 是启动延迟的随机上限（0–60s，R-M4-13）。
 	defaultJitterMax = time.Minute
 	// workerStoreTimeout 是单条状态写/结果写的上限。与 reporter 同口径：
 	// 后台写不得无限期占用连接池。
 	workerStoreTimeout = 5 * time.Second
-	// probeSlotOverhead 是每批探测的固定余量（建立/关闭连接、写 last_test_*）。
-	// 用于计算锁 TTL 的最坏单轮预算。
-	probeSlotOverhead = 5 * time.Second
+	// healthRoundSlotBudget 是**单个探测槽位**的最坏同步耗时：
+	//
+	//	探测 15s + 写 last_test_* 5s + AutoDisable 条件更新 5s
+	//	+ 审计 5s + 站内通知 5s = 35s
+	//
+	// 复核 I-1：此前只计「15s + 5s」，漏掉了探测后的整条同步副作用链，
+	// 会让锁 TTL 短于最坏单轮（大批渠道时第二个副本可能提前抢锁重复探测）。
+	// 这里直接引用各写入的超时常量，任何一处调大都会自动抬高锁预算。
+	healthRoundSlotBudget = ProbeTimeout + workerStoreTimeout +
+		autoDisableStoreTimeout + 2*autoDisableSideEffectTimeout
 )
 
 // WorkerStore 是健康 worker 的存储面（生产 *store.ChannelRepo）。
@@ -190,8 +201,10 @@ func (w *Worker) RunLoop(ctx context.Context) error {
 			w.runRound(ctx)
 			nextDue = w.now().Add(w.currentInterval())
 		case <-ticker.C:
-			// 基准 tick 只负责「到点检查」：interval 每轮重读，因此管理员
-			// 改配置后最迟一个 tick 生效（R-M4-13 的 B 方案）。
+			// 基准 tick 只负责「到点检查」：interval 只在每轮结束后重读并写入
+			// nextDue，因此当前这轮仍按旧 interval 等待（最坏 ≈ 旧 interval +
+			// 一个 tick）。jitter 只在启动时应用一次；首次运行还可能因 tick
+			// 粒度比 interval+jitter 多等最多一个 tick（复核 M-5）。
 			if w.now().Before(nextDue) {
 				continue
 			}
@@ -397,18 +410,21 @@ func (w *Worker) writePeriodicResult(ctx context.Context, id int64, at time.Time
 
 // roundTTL 计算单轮锁的 TTL（R-M4-13：TTL ≥ 最坏单轮时长）。
 //
-// 最坏单轮 = ceil(渠道数/并发) 批 × (单次探测 15s + 固定余量) + 1 分钟。
-// 再与 interval 取较大值：interval 短于单轮时，TTL 至少覆盖一个周期，避免
-// 锁在上一轮尚未结束时过期。渠道数超过并发×预算的极端规模下 TTL 会不足，
-// 此时第二个副本可能重复探测——probe 是只读的，状态迁移仍是条件更新，
-// 损失仅为重复出站请求（可接受；渠道规模在 M4 是数十～数百）。
+// 最坏单轮 = ceil(渠道数/并发) 批 × healthRoundSlotBudget（探测 + 全部同步
+// 副作用的最坏耗时，复核 I-1）+ 1 分钟调度余量。再与 interval 取较大值：
+// interval 短于单轮时，TTL 至少覆盖一个周期，避免锁在上一轮尚未结束时过期。
+//
+// 注意（复核 M-8，登记不修）：TTL 也受 interval 抬高。若 interval 被配置成
+// 数小时而某轮实际很快失败，TTL 会继续占用键直到到期——其它副本在此期间
+// 跳过本轮。这是「宁可少测一轮也不并发探测」的 fail-closed 取舍，部署上应
+// 避免把 interval 设得远大于实际单轮时长。
 func roundTTL(settings WorkerSettings, channelCount int) time.Duration {
 	concurrency := settings.Concurrency
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	slots := (channelCount + concurrency - 1) / concurrency
-	budget := time.Duration(slots)*(ProbeTimeout+probeSlotOverhead) + time.Minute
+	budget := time.Duration(slots)*healthRoundSlotBudget + time.Minute
 	if settings.Interval > budget {
 		return settings.Interval
 	}

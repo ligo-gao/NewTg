@@ -76,6 +76,15 @@ type Setting struct {
 	Element func(any) error
 }
 
+// MaxResponseTimeThresholdSeconds 是 rl.health.response_time_threshold_seconds
+// 的上界（24 小时）。
+//
+// 复核 M-9：无上界的「极大有限值」（如 1e18）在读取侧 float64→time.Duration
+// 转换时会溢出成负数，使 `latency >= threshold` 恒真/恒假，静默关闭超时
+// 判定。写入侧用它拒绝越界值；读取侧（channelhealth.LoadWorkerSettings）
+// 对历史脏行回落注册表默认。
+const MaxResponseTimeThresholdSeconds = 86400
+
 // Sections 的返回顺序固定，便于前端与测试稳定比对。
 var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
@@ -198,6 +207,10 @@ func minInt(n int64) option { return func(s *Setting) { s.MinInt = &n } }
 func maxInt(n int64) option { return func(s *Setting) { s.MaxInt = &n } }
 func minFloat(n float64) option {
 	return func(s *Setting) { s.MinFloat = &n }
+}
+
+func maxFloat(n float64) option {
+	return func(s *Setting) { s.MaxFloat = &n }
 }
 
 func enum(values ...string) option {
@@ -442,7 +455,7 @@ func buildRegistry() []Setting {
 		// ==== rl.health（§3.16 F-08-45，P0）====
 		def("rl.health.auto_disable_enabled", "rl.health", TypeBool, false, dangerousOn()),
 		def("rl.health.response_time_threshold_seconds", "rl.health", TypeNumber, 5.0,
-			validate(positiveFiniteNumber)),
+			validate(positiveFiniteNumber), maxFloat(MaxResponseTimeThresholdSeconds)),
 		// R-M4-11：关键词表是**列表**而不是多行字符串。前端 lines 控件保存时
 		// 发送字符串数组（settings-section-form.tsx），TypeString 会以
 		// 「expected string」400 拒绝，因此必须用 TypeList；element 限制单项
