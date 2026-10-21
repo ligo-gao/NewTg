@@ -90,6 +90,9 @@ var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
+	// W10-N4 / N9：兑换码回收与任务保留清理。两组保留键都只服务 worker，
+	// 不进入公开下发全集；独立 section 让运营按域查看而不互相覆盖。
+	"redemption", "mj",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "task", "deploy",
@@ -546,6 +549,25 @@ func buildRegistry() []Setting {
 		def("notify.webhook.balance_low_threshold", "notify.webhook", TypeInt, int64(0),
 			minInt(0), maxInt(1000000000000)),
 
+		// ==== redemption（W10-N4 / R-W10-05：兑换码回收）====
+		//
+		// 只回收「超过保留期且 unused + expired」的码（billing-06 §7）。
+		// `expired` 仍是虚拟态：本键只控制物理删除窗口，不触发任何
+		// status/expired_at 的物化。默认 90 天与设计一致；**0 = 关闭**
+		// （与 N9 两个保留键同一冻结语义），关闭后过期码永久保留。
+		// 上限 10 年，防止把「天」误写成极大值后在换算 Duration 时溢出。
+		def("redemption.retention_days", "redemption", TypeInt, int64(90),
+			minInt(0), maxInt(3650)),
+
+		// ==== mj（W10-N9 / R-W10-10：MJ 族任务保留清理）====
+		//
+		// 与插件族的 `task.retention_terminal_days` **分开**：两族上游生命
+		// 周期不同，共用一个键会让运营无法单独调整（R-W10-10 选 A）。
+		// 只删终态（success/failure）行，未终结与待补偿行永不删除。
+		// 默认 30 天；0 = 关闭该族清理。
+		def("mj.retention_terminal_days", "mj", TypeInt, int64(30),
+			minInt(0), maxInt(3650)),
+
 		// ==== plugin（M6d 任务插件平台，relay-06 / modules-08 §3.10）====
 		//
 		// 全部归 plugin section（R-M6D-10）：管理员一次提交主开关与策略，
@@ -582,6 +604,11 @@ func buildRegistry() []Setting {
 			minInt(0), maxInt(525600)),
 		def("task.poll_max_failures", "task", TypeInt, int64(20),
 			minInt(0), maxInt(1000000)),
+		// W10-N9（R-W10-10）：插件族终态任务保留期（天）。只删 success/
+		// failure 且不带待补偿标记的行；MJ 族用独立的
+		// `mj.retention_terminal_days`。默认 30，0 = 关闭本族清理。
+		def("task.retention_terminal_days", "task", TypeInt, int64(30),
+			minInt(0), maxInt(3650)),
 
 		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
 		//

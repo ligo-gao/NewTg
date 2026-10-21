@@ -260,19 +260,19 @@ func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, 
 	}
 	var value *int64
 	if err := json.Unmarshal(raw, &value); err != nil {
-		log.Warn("worker: task poll setting is not a valid integer; falling back to the design default",
+		log.Warn("worker: setting is not a valid integer; falling back to the design default",
 			"key", key, "raw", string(raw), "error", err)
 		return 0, false
 	}
 	if value == nil {
-		log.Warn("worker: task poll setting is null; falling back to the design default",
+		log.Warn("worker: setting is null; falling back to the design default",
 			"key", key, "raw", string(raw))
 		return 0, false
 	}
 	if *value < 0 {
 		// 设计只冻结了 `<=0 禁用`：0 是唯一的禁用形式。负值是配置错误，
 		// 不是另一种禁用写法（见 taskPollLimits 的注释）。
-		log.Warn("worker: task poll setting is negative; falling back to the design default",
+		log.Warn("worker: setting is negative; falling back to the design default",
 			"key", key, "value", *value)
 		return 0, false
 	}

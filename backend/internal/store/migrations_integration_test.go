@@ -65,8 +65,11 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	m := newTestMigrator(t, db)
 	t.Cleanup(func() { _, _ = m.Close() })
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
+	// 只前滚到本用例要验证的版本，而不是全部迁移：后续迁移（如 W10-N9 的
+	// 终态保留索引）会排在它之后，`Steps(-1)` 就不再指向 tasks_mj_family，
+	// 让断言误判。固定目标是让用例只对这个迁移的 up/down 负责。
+	if err := m.Migrate(20261023090000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261023090000: %v", err)
 	}
 
 	// up 后：family='mj' 可写入，未知值仍被 CHECK 拒绝，领取索引存在。
