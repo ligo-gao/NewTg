@@ -2684,19 +2684,22 @@ export interface paths {
          * 读取一个设置 section
          * @description 必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
          *     pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
-         *     rl.health / policy）。未知 section 返回 404；缺参数返回 400。
+         *     rl.health / policy）。缺参数与未知 section 均返回 400。
          *     `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
          *     恒为掩码或 null。
          */
         get: operations["getSettingsSection"];
         /**
          * 保存一个设置 section（部分更新 + 乐观锁）
-         * @description 必须提供 `section`（query）。请求体只携带变更键：
+         * @description 必须提供 `section`（query）；未知 section 与缺参数均返回 400。
+         *     请求体只携带变更键（`values` 必填，`{}` 表示本次不改任何键）：
          *     - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
-         *     - `expect_updated_at` 与当前版本不一致返回 409（body 带当前 section，
-         *       客户端刷新后重试）；
-         *     - 命中危险方向且未带 `dangerous_confirmed=true` 时拒绝（服务端判定）。
-         *     类型/范围/URL 形状由注册表校验，失败返回 422 并定位到键。
+         *     - `expect_updated_at` 与当前版本不一致返回 409（Problem 体，客户端
+         *       应重新读取 section 后重试）；
+         *     - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
+         *       判定，响应 detail 指明原因）。
+         *     类型/范围/URL 形状由注册表校验，失败返回 400（`ValidationError`，
+         *     detail 定位到具体键）；只有锁定键（服务端只读）被修改才返回 422。
          */
         put: operations["updateSettingsSection"];
         post?: never;
@@ -6980,10 +6983,11 @@ export interface components {
             secret: boolean;
             dangerous: boolean;
             /**
-             * @description 危险项的风险方向；非危险项为空串。
+             * @description 危险项的风险方向；非危险项为空串。`any` 表示任意变更（含密钥替换）
+             *     都需要二次确认。
              * @enum {string}
              */
-            danger_direction?: "" | "on" | "off" | "change";
+            danger_direction?: "" | "on" | "off" | "any";
             /** @description 服务端只读项（管理面不可修改）。 */
             locked?: boolean;
         };
@@ -6998,8 +7002,9 @@ export interface components {
         };
         /**
          * @description 只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
-         *     字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
-         *     命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+         *     字符串 = 替换为新值。`values` 必填（`{}` 表示空更新）。
+         *     `expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+         *     命中危险方向时需要 `dangerous_confirmed=true`，否则返回 400。
          */
         SettingsUpdateRequest: {
             /** @description 可选；若提供必须与 query 的 section 一致，否则 400。 */
@@ -10687,7 +10692,6 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -11804,7 +11808,6 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -12078,7 +12081,6 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -12453,7 +12455,6 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -13126,7 +13127,6 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -13135,7 +13135,15 @@ export interface operations {
             query: {
                 section: string;
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                /** @description 可选；同键重放返回首次结果（2xx 才固化）。 */
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -13157,9 +13165,16 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
-            404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
-            422: components["responses"]["Error422"];
+            /** @description 锁定键（服务端只读，如 nav.console.require_auth）被修改 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             500: components["responses"]["Error500"];
         };
     };

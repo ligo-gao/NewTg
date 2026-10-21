@@ -3044,8 +3044,10 @@ schemas:
         type: boolean
       danger_direction:
         type: string
-        enum: ['', 'on', 'off', 'change']
-        description: 危险项的风险方向；非危险项为空串。
+        enum: ['', 'on', 'off', 'any']
+        description: |
+          危险项的风险方向；非危险项为空串。`any` 表示任意变更（含密钥替换）
+          都需要二次确认。
       locked:
         type: boolean
         description: 服务端只读项（管理面不可修改）。
@@ -3072,8 +3074,9 @@ schemas:
     required: [values]
     description: |
       只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
-      字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
-      命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+      字符串 = 替换为新值。`values` 必填（`{}` 表示空更新）。
+      `expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+      命中危险方向时需要 `dangerous_confirmed=true`，否则返回 400。
     properties:
       section:
         type: string

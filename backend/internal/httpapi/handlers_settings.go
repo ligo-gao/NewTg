@@ -65,14 +65,22 @@ type WebhookTester interface {
 type SettingsHandlers struct {
 	service SettingsService
 	authz   *rbac.AuthzMiddleware
-	audit   *audit.Logger
-	idem    IdempotencyStore
-	log     *slog.Logger
-	webhook WebhookTester
-	rdb     *redis.Client
+	// authzConfigured 记录调用方是否显式注入 RBAC：GET 的读门上，显式注入
+	// 走权限判定（与 OpenAPI 的 settings:manage 一致），未注入的单测装配退回
+	// 「仅管理员角色」的只读门。
+	authzConfigured bool
+	audit           *audit.Logger
+	idem            IdempotencyStore
+	log             *slog.Logger
+	webhook         WebhookTester
+	rdb             *redis.Client
 }
 
 var settingsUpdateAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "update"}
+
+// settingsReadAction 是 GET /api/settings 的读动作。读动作不登记字段策略
+// （RBAC 只对写方法的未登记动作失败关闭），但需要独立登记项以便与写动作区分。
+var settingsReadAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "read"}
 
 // settingsTestWebhookAction 是测试 Webhook 的字段级写策略键。端点本身没有
 // 请求体（配置从已保存快照读取），空 Fields 仍必须登记：RBAC 对任何写方法
@@ -113,14 +121,25 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 	authz.SetWritePolicy(settingsTestWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	authz.SetWritePolicy(settingsResumeWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	return &SettingsHandlers{
-		service: cfg.Service, authz: authz, audit: cfg.Audit, idem: idem, log: log,
+		service: cfg.Service, authz: authz, authzConfigured: cfg.Authz != nil,
+		audit: cfg.Audit, idem: idem, log: log,
 		webhook: cfg.Webhook, rdb: cfg.Redis,
 	}, nil
 }
 
 // Register 把端点挂到受保护子树。
 func (h *SettingsHandlers) Register(mux *http.ServeMux) {
-	mux.Handle("GET /api/settings", requireAdminRole(http.HandlerFunc(h.handleGet)))
+	// R-26：读设置与写设置同一权限门（settings:manage），与契约一致——
+	// 「能改设置」的权限自然覆盖「能看设置」，受限管理员不得读取整段配置
+	// （其中含支付/通知等敏感面）。
+	getSettings := http.Handler(http.HandlerFunc(h.handleGet))
+	if h.authzConfigured {
+		getSettings = h.authz.Handler(rbac.PermSettingsManage, settingsReadAction)(getSettings)
+	} else {
+		// 未注入 RBAC 的单测装配：保留仅管理员角色的只读门。
+		getSettings = requireAdminRole(getSettings)
+	}
+	mux.Handle("GET /api/settings", getSettings)
 	mux.Handle("PUT /api/settings",
 		h.authz.Handler(rbac.PermSettingsManage, settingsUpdateAction)(http.HandlerFunc(h.handlePut)))
 	// 发送测试事件（F-08-20）：写语义（有出站副作用），权限 settings:manage；
@@ -186,6 +205,12 @@ func (h *SettingsHandlers) handlePut(w http.ResponseWriter, r *http.Request) {
 			status := http.StatusBadRequest
 			return status, settingsProblem(status, "Invalid request",
 				"body section does not match query section"), false
+		}
+		// 契约要求 values 必填（空对象 {} 合法，表示本次不改任何键）：
+		// 缺失/null 不能静默当成空更新成功。
+		if req.Values == nil {
+			status := http.StatusBadRequest
+			return status, settingsProblem(status, "Invalid request", "values is required"), false
 		}
 
 		principal, _ := auth.PrincipalFrom(r.Context())

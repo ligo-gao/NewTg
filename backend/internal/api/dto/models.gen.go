@@ -1784,16 +1784,16 @@ func (e RedemptionCodeStatusResultStatus) Valid() bool {
 
 // Defines values for SettingsItemDangerDirection.
 const (
-	SettingsItemDangerDirectionChange SettingsItemDangerDirection = "change"
-	SettingsItemDangerDirectionEmpty  SettingsItemDangerDirection = ""
-	SettingsItemDangerDirectionOff    SettingsItemDangerDirection = "off"
-	SettingsItemDangerDirectionOn     SettingsItemDangerDirection = "on"
+	SettingsItemDangerDirectionAny   SettingsItemDangerDirection = "any"
+	SettingsItemDangerDirectionEmpty SettingsItemDangerDirection = ""
+	SettingsItemDangerDirectionOff   SettingsItemDangerDirection = "off"
+	SettingsItemDangerDirectionOn    SettingsItemDangerDirection = "on"
 )
 
 // Valid indicates whether the value is a known member of the SettingsItemDangerDirection enum.
 func (e SettingsItemDangerDirection) Valid() bool {
 	switch e {
-	case SettingsItemDangerDirectionChange:
+	case SettingsItemDangerDirectionAny:
 		return true
 	case SettingsItemDangerDirectionEmpty:
 		return true
@@ -7113,7 +7113,8 @@ type SetPermissionsRequest struct {
 // SettingsItem 注册表中的一项。`value` 为 null 表示该键尚未落库（使用 `default`）。
 // 秘密项（`secret=true`）的 `value` 恒为掩码（配置后）或 null，明文永不回传。
 type SettingsItem struct {
-	// DangerDirection 危险项的风险方向；非危险项为空串。
+	// DangerDirection 危险项的风险方向；非危险项为空串。`any` 表示任意变更（含密钥替换）
+	// 都需要二次确认。
 	DangerDirection *SettingsItemDangerDirection `json:"danger_direction,omitempty"`
 	Dangerous       bool                         `json:"dangerous"`
 
@@ -7133,7 +7134,8 @@ type SettingsItem struct {
 	Value interface{} `json:"value"`
 }
 
-// SettingsItemDangerDirection 危险项的风险方向；非危险项为空串。
+// SettingsItemDangerDirection 危险项的风险方向；非危险项为空串。`any` 表示任意变更（含密钥替换）
+// 都需要二次确认。
 type SettingsItemDangerDirection string
 
 // SettingsItemType defines model for SettingsItem.Type.
@@ -7149,8 +7151,9 @@ type SettingsSection struct {
 }
 
 // SettingsUpdateRequest 只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
-// 字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
-// 命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+// 字符串 = 替换为新值。`values` 必填（`{}` 表示空更新）。
+// `expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+// 命中危险方向时需要 `dangerous_confirmed=true`，否则返回 400。
 type SettingsUpdateRequest struct {
 	DangerousConfirmed *bool      `json:"dangerous_confirmed,omitempty"`
 	ExpectUpdatedAt    *time.Time `json:"expect_updated_at,omitempty"`
@@ -9150,6 +9153,13 @@ type GetSettingsSectionParams struct {
 // UpdateSettingsSectionParams defines parameters for UpdateSettingsSection.
 type UpdateSettingsSectionParams struct {
 	Section string `form:"section" json:"section"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+
+	// IdempotencyKey 可选；同键重放返回首次结果（2xx 才固化）。
+	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
 }
 
 // ResumeWebhookNotificationsParams defines parameters for ResumeWebhookNotifications.

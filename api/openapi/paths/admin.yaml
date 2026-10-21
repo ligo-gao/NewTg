@@ -2570,7 +2570,7 @@ paths:
       description: |
         必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
         pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
-        rl.health / policy）。未知 section 返回 404；缺参数返回 400。
+        rl.health / policy）。缺参数与未知 section 均返回 400。
         `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
         恒为掩码或 null。
       security:
@@ -2593,8 +2593,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     put:
@@ -2603,12 +2601,15 @@ paths:
       x-required-permission: settings:manage
       summary: 保存一个设置 section（部分更新 + 乐观锁）
       description: |
-        必须提供 `section`（query）。请求体只携带变更键：
+        必须提供 `section`（query）；未知 section 与缺参数均返回 400。
+        请求体只携带变更键（`values` 必填，`{}` 表示本次不改任何键）：
         - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
-        - `expect_updated_at` 与当前版本不一致返回 409（body 带当前 section，
-          客户端刷新后重试）；
-        - 命中危险方向且未带 `dangerous_confirmed=true` 时拒绝（服务端判定）。
-        类型/范围/URL 形状由注册表校验，失败返回 422 并定位到键。
+        - `expect_updated_at` 与当前版本不一致返回 409（Problem 体，客户端
+          应重新读取 section 后重试）；
+        - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
+          判定，响应 detail 指明原因）。
+        类型/范围/URL 形状由注册表校验，失败返回 400（`ValidationError`，
+        detail 定位到具体键）；只有锁定键（服务端只读）被修改才返回 422。
       security:
         - sessionCookie: []
       parameters:
@@ -2616,6 +2617,12 @@ paths:
           in: query
           required: true
           schema: {type: string, minLength: 1}
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: 可选；同键重放返回首次结果（2xx 才固化）。
+          schema: {type: string}
       requestBody:
         required: true
         content:
@@ -2635,12 +2642,14 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '409':
           $ref: '../components/responses.yaml#/responses/Error409'
         '422':
-          $ref: '../components/responses.yaml#/responses/Error422'
+          description: 锁定键（服务端只读，如 nav.console.require_auth）被修改
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
@@ -3085,8 +3094,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     put:
@@ -3393,8 +3400,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     put:
@@ -3847,8 +3852,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     put:
@@ -4177,8 +4180,6 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':
           $ref: '../components/responses.yaml#/responses/Error403'
-        '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
     put:

@@ -120,6 +120,55 @@ func TestSettingsGetRequiresAdmin(t *testing.T) {
 	}
 }
 
+// R-26：读设置与写设置同一权限门（settings:manage）。
+//
+// 契约声明 GET 需要 settings:manage；受限管理员（显式权限集不含该键）
+// 不得读取整段配置，即使它仍是 admin 角色。
+func TestSettingsGetRequiresSettingsManage(t *testing.T) {
+	service := &fakeSettingsService{getView: settings.SectionView{Items: []settings.Item{}}}
+	mux, _ := settingsTestMux(t, service, nil)
+
+	limited := &auth.Principal{UserID: 2, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermUsersRead}}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/settings?section=site", "", limited, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("无 settings:manage 的 admin GET = %d，期望 403", rr.Code)
+	}
+
+	allowed := &auth.Principal{UserID: 3, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermSettingsManage}}
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/settings?section=site", "", allowed, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("带 settings:manage 的 admin GET = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// 契约要求 values 必填：缺失/null 不得静默当成空更新成功；{} 合法。
+func TestSettingsPutRequiresValuesMember(t *testing.T) {
+	service := &fakeSettingsService{putResult: settings.UpdateResult{Section: "site", Values: map[string]any{}}}
+	mux, _ := settingsTestMux(t, service, nil)
+	admin := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/settings?section=site",
+		`{"expect_updated_at":null}`, admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("缺 values = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.putCalls != 0 {
+		t.Fatal("缺 values 不得落到服务层")
+	}
+
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/settings?section=site",
+		`{"values":{}}`, admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("空 values 对象 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
 func TestSettingsPutRequiresSettingsManage(t *testing.T) {
 	service := &fakeSettingsService{putResult: settings.UpdateResult{Section: "site", Values: map[string]any{}}}
 	mux, _ := settingsTestMux(t, service, nil)

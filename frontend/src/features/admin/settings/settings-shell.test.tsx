@@ -129,7 +129,12 @@ const PAY_EPAY_STATE: SectionState = {
     item('pay.epay.api_url', 'https://pay.example.com/api'),
     item('pay.epay.pid', '1001', { dangerous: true }),
     // 密钥只以掩码回传：表单不得把它写进输入框。
-    item('pay.epay.key', '******', { secret: true, default: null }),
+    item('pay.epay.key', '******', {
+      secret: true,
+      default: null,
+      dangerous: true,
+      danger_direction: 'any',
+    }),
     item('pay.epay.sign_mode', 'append'),
     item('pay.epay.notify_url', ''),
     item('pay.epay.return_url', ''),
@@ -469,12 +474,16 @@ describe('SettingsShell contract', () => {
       'amp',
     ])
 
-    // 输入新密钥后保存，只提交该键。
+    // 输入新密钥后保存，只提交该键；密钥替换属危险方向 any，必须二次确认。
     await user.type(key, 'new-epay-key')
     await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]?.section).toBe('pay.epay')
     expect(requests[0]?.body?.values).toEqual({ 'pay.epay.key': 'new-epay-key' })
+    expect(requests[0]?.body?.dangerous_confirmed).toBe(true)
   })
 
   it('renders the SSRF mode trio and warns the default allowlist is a breaking tightening (C2)', async () => {
