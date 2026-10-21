@@ -605,10 +605,15 @@ func (r *SQLSubscriptionRepo) ResetPlanQuota(ctx context.Context, planID int64, 
 		var (
 			batch  int64
 			lastID int64
-			ids    []int64
-			totals []int64
 		)
 		err := r.withEventTx(ctx, fmt.Sprintf("reset quota of plan(%d)", planID), func(tx *sql.Tx) error {
+			// 每次尝试都从空切片开始：withEventTx 在 seq 冲突时会重跑整个闭包，
+			// 若 ids/totals 声明在闭包外，重试会把同一批 id 再 append 一遍，
+			// 导致事件重复写入、affected 翻倍（复核 Important 实测）。
+			ids := make([]int64, 0, ResetScanLimit)
+			totals := make([]int64, 0, ResetScanLimit)
+			batch, lastID = 0, 0
+
 			rows, err := tx.QueryContext(ctx, `
 				WITH targets AS (
 					SELECT id FROM subscriptions
@@ -967,7 +972,7 @@ func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) e
 // 【R-22 分批 + M3 加锁顺序】单批 ≤ ExpireScanLimit：无界批次会在积压时持有
 // 全部到期行锁，阻塞这些实例上的预扣/结算/续费。CTE 里 `ORDER BY id` 让并发
 // 调用以相同顺序加锁（不同顺序的批量 UPDATE 在行交错时会产生 40P01 死锁）。
-// worker 循环调用本函数直到返回 0 行。
+// worker 循环调用本函数，直到某批返回不足 ExpireScanLimit（扫描集已清空）。
 func (r *SQLSubscriptionRepo) ExpireDue(ctx context.Context, now time.Time) (int64, error) {
 	var expired int64
 	err := r.withEventTx(ctx, "expire subscriptions", func(tx *sql.Tx) error {

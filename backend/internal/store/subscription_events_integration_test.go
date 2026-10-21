@@ -586,3 +586,90 @@ func waitForBlockedStatement(t *testing.T, db *sql.DB) {
 	}
 	t.Fatal("等待阻塞锁超时（目标事务可能没有走到冲突点）")
 }
+
+// TestResetPlanQuotaRetriesSeqConflict 覆盖复核 Important：批量重置在事件 seq
+// 冲突、withEventTx 整体重试时，不得重复计行或重复写事件。
+//
+// 冲突由旁路事务制造（不经 AppendSubscriptionEvent、不占订阅行锁，先占住
+// 第一个实例的 next seq，kind 用 created 以免与待验证的 reset 混淆）。若
+// ids/totals/batch 声明在闭包外，重试会把同一批 id 再 append 一遍：affected
+// 翻倍、每个实例出现两条 admin reset。本用例必须因此变红。
+func TestResetPlanQuotaRetriesSeqConflict(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s1-plan-reset-retry")
+	cleanupSubscriptionEvents(t, db, plan.ID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	// 直接插入实例（不经过 CreateSubscription）：事件流从空白开始，占位事件
+	// 不会与 created 计数纠缠，断言「恰一条 reset」更直接。
+	subs := make([]int64, 0, 2)
+	for i := 0; i < 2; i++ {
+		var id int64
+		err := db.QueryRow(`
+			INSERT INTO subscriptions
+				(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+				 next_reset_at, amount_total, amount_used, allow_wallet_overflow,
+				 currency, price_paid_amount, period_days, reset_on_renew, grace_days)
+			VALUES ($1, $2, 'x', 'active', $3, $4, $4, 1000, 55, true,
+			        'CNY', 0, 30, true, 0)
+			RETURNING id`, 900800+i, plan.ID, now.Add(-time.Hour), now.Add(30*24*time.Hour)).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert subscription %d: %v", i, err)
+		}
+		subs = append(subs, id)
+	}
+
+	// 旁路事务占住第一个实例的 seq 1，暂不提交。
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := blocker.Exec(`INSERT INTO subscription_events
+		(subscription_id, seq, kind, detail) VALUES ($1, 1, 'created', '{}'::jsonb)`, subs[0]); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("blocker insert: %v", err)
+	}
+
+	type resetResult struct {
+		affected int64
+		err      error
+	}
+	done := make(chan resetResult, 1)
+	go func() {
+		affected, resetErr := repo.ResetPlanQuota(ctx, plan.ID, true)
+		done <- resetResult{affected: affected, err: resetErr}
+	}()
+	waitForBlockedStatement(t, db)
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("commit blocker: %v", err)
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("ResetPlanQuota 未在 seq 冲突后重试成功: %v", result.err)
+	}
+	// 返回值必须等于实际订阅数，不能因重试把同一批重复计数。
+	if result.affected != int64(len(subs)) {
+		t.Fatalf("affected = %d，期望 %d（重试不得重复计行）", result.affected, len(subs))
+	}
+
+	for _, id := range subs {
+		events := listEvents(t, repo, id, 0)
+		requireContiguousSeq(t, events)
+		var quotaResets int
+		for _, event := range events {
+			if event.Kind != SubscriptionEventReset {
+				continue
+			}
+			quotaResets++
+			if detail := eventDetail(t, event); detail["actor"] != "admin" {
+				t.Fatalf("订阅 %d reset detail.actor = %v", id, detail["actor"])
+			}
+		}
+		if quotaResets != 1 {
+			t.Fatalf("订阅 %d reset 事件数 = %d，期望 1（重试不得重复写事件）: %+v",
+				id, quotaResets, events)
+		}
+	}
+}
