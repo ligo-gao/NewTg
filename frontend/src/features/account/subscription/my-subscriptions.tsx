@@ -350,6 +350,13 @@ function SubscriptionRow({
                     })}
                   </span>
                 ) : null}
+                {!item.auto_renew && item.auto_renew_failures >= 3 ? (
+                  // P-16：第 3 次失败后服务端关闭开关。只显示禁用状态会让
+                  // 用户以为是自己关的；这里必须说明原因与恢复方式。
+                  <span className="text-xs text-danger">
+                    {t('account.subscription.mine.auto_renew_failed_hint')}
+                  </span>
+                ) : null}
               </div>
               {paymentMethods.length > 0 ? (
                 <select

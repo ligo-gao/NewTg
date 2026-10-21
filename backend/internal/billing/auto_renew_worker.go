@@ -59,11 +59,24 @@ const (
 	// 换卡；测试通过 Deps.RetryInterval 注入短间隔。
 	DefaultAutoRenewRetryInterval = 6 * time.Hour
 
-	// autoRenewLockTTL 覆盖一次渠道调用（HTTP client 默认 10s 超时）与结算
-	// 事务，且远小于重试间隔；崩溃后最多 5 分钟即可被其它副本接管。
+	// autoRenewLockTTL 覆盖一次渠道调用与结算事务，且远小于重试间隔；
+	// 崩溃后最多 5 分钟即可被其它副本接管。
 	autoRenewLockTTL = 5 * time.Minute
-	// AutoRenewLockPrefix 是 P-17 冻结的锁命名空间。
+	// AutoRenewLockPrefix 是 P-17 冻结的锁命名空间。手动续费端点也使用
+	// 同一把锁（R-43），因此它导出为包常量。
 	AutoRenewLockPrefix = "subscriptions:renew:"
+
+	// DefaultAutoRenewPassTimeout 是单轮自动续费的硬 deadline（R-45）。
+	//
+	// 本 worker 与 B12 到期/重置同 goroutine（P-17），一轮扣款不能把它们
+	// 拖住数十分钟。30s 不超过扫描周期（60s）的一半。
+	DefaultAutoRenewPassTimeout = 30 * time.Second
+	// autoRenewChargeTimeout 是单次渠道扣款的上限（含网络）。
+	autoRenewChargeTimeout = 5 * time.Second
+	// DefaultAutoRenewBatchLimit 是单轮候选上限。上限 × 单次扣款上限
+	// （5 × 5s = 25s）必须小于 DefaultAutoRenewPassTimeout（R-45），
+	// 保证「最后一笔在最坏情况下也能在 deadline 内结束」。
+	DefaultAutoRenewBatchLimit = 5
 )
 
 // PaymentTokenSealer 是 SecretSealer 的最小方法集（生产实现为 credential
@@ -97,9 +110,12 @@ type AutoRenewChargeInput struct {
 	UserID          int64
 	SubscriptionID  int64
 	PaymentMethodID string
-	// IdempotencyKey 同时用于 orders.idempotency_key 与 Stripe
-	// Idempotency-Key 头：同一键的重试只会得到一个订单/一个 PaymentIntent。
-	IdempotencyKey string
+	// CycleEndAt 是下单时订阅的周期末（R-43 周期锚）。
+	//
+	// 幂等键由 charger 根据「订阅 + 周期末 + 已明确拒绝的订单数」推导，
+	// **不**使用连续失败数：retryable 失败（网络/5xx/结算失败）必须复用
+	// 同一键找回 pending 订单，绝不能换键导致二次扣款（R-44）。
+	CycleEndAt time.Time
 }
 
 // AutoRenewChargeResult 是扣款/即时履约后的订单信息（日志用）。
@@ -125,8 +141,15 @@ type AutoRenewCharger interface {
 // 渠道错误里可能回显卡信息，把它写进事件/通知会扩大敏感面。
 type AutoRenewChargeFailure struct {
 	Code string
-	// Retryable 只影响日志措辞；无论是否可重试都计入连续失败（P-16）。
+	// Retryable 表示失败没有产生「用户侧可归责的扣款结果」：网络/5xx/
+	// 结算事务失败。它**不计入**连续失败阈值、不发通知，下一轮用同一
+	// 幂等键继续确认原订单（R-44）。
 	Retryable bool
+	// InvalidToken 表示渠道明确认为令牌不可用（未知 PaymentMethod、卡过期/
+	// 卡号无效）。worker 会 MarkInvalid 并 fail-closed（R-42）。
+	InvalidToken bool
+	// OrderID 是本次失败对应的续费订单（通知去重键使用；0 表示未建单）。
+	OrderID int64
 }
 
 func (e *AutoRenewChargeFailure) Error() string {
@@ -194,6 +217,11 @@ type AutoRenewDeps struct {
 	LeadHours int
 	// RetryInterval 覆盖失败重试退避（测试注入；0 表示默认 6h）。
 	RetryInterval time.Duration
+	// PassTimeout / BatchLimit 覆盖单轮 deadline 与候选上限（R-45；
+	// 0 表示默认 30s / 5）。BatchLimit × autoRenewChargeTimeout 必须小于
+	// PassTimeout，否则会在 deadline 中途启动一笔无法完成的扣款。
+	PassTimeout time.Duration
+	BatchLimit  int
 }
 
 // AutoRenewResult 是一轮扫描的实际效果。
@@ -205,8 +233,10 @@ type AutoRenewResult struct {
 	Failed int
 	// Disabled 是因失败阈值或令牌失效被关闭自动续费的实例数。
 	Disabled int
-	// Skipped 是因锁竞争/状态变化而放弃的候选数。
+	// Skipped 是因锁竞争/状态变化/同周期已有在途续费而放弃的候选数。
 	Skipped int
+	// Retried 是本次因基础设施失败（可重试）而稍后重试的候选数。
+	Retried int
 }
 
 // AutoRenewWorker 串行执行自动续费轮次，可并发安全（每订阅有 Redis 锁）。
@@ -222,6 +252,8 @@ type AutoRenewWorker struct {
 	now           func() time.Time
 	leadOverride  int
 	retryInterval time.Duration
+	passTimeout   time.Duration
+	batchLimit    int
 }
 
 // NewAutoRenewWorker 构造 worker；依赖缺失是装配错误。
@@ -253,11 +285,28 @@ func NewAutoRenewWorker(deps AutoRenewDeps) (*AutoRenewWorker, error) {
 	if retry <= 0 {
 		retry = DefaultAutoRenewRetryInterval
 	}
+	passTimeout := deps.PassTimeout
+	if passTimeout <= 0 {
+		passTimeout = DefaultAutoRenewPassTimeout
+	}
+	batchLimit := deps.BatchLimit
+	if batchLimit <= 0 {
+		batchLimit = DefaultAutoRenewBatchLimit
+	}
+	// R-45 的硬约束：最坏情况下「上限笔数 × 单笔扣款上限」必须小于单轮
+	// deadline，否则最后一笔会在 deadline 中途被截断。配置不满足即装配失败，
+	// 不带着一个必然超时的参数上线。
+	if time.Duration(batchLimit)*autoRenewChargeTimeout >= passTimeout {
+		return nil, fmt.Errorf(
+			"billing: auto-renew batch limit %d x charge timeout %s must be < pass timeout %s",
+			batchLimit, autoRenewChargeTimeout, passTimeout)
+	}
 	return &AutoRenewWorker{
 		subs: deps.Subs, methods: deps.Methods, charger: deps.Charger,
 		sealer: deps.Sealer, cfg: deps.Config, redis: deps.Redis,
 		notifier: deps.Notifier, log: log, now: now,
 		leadOverride: deps.LeadHours, retryInterval: retry,
+		passTimeout: passTimeout, batchLimit: batchLimit,
 	}, nil
 }
 
@@ -278,25 +327,47 @@ func (w *AutoRenewWorker) RunPass(ctx context.Context) error {
 }
 
 // RunOnce 执行一轮：扫描窗口内实例，逐个抢订阅锁、复核状态并扣款。
+//
+// R-45：单轮有硬 deadline（默认 30s）与候选上限（默认 5），且启动每一笔
+// 扣款前检查剩余预算是否够一次最长扣款。本 worker 与 B12 扫描同 goroutine
+// （P-17），没有这个约束时 200 个候选 × 10s 超时会把到期/重置拖住半小时。
+// 未处理完的候选留在下一轮（tick 60s），已完成项的幂等由订单/周期锚保证。
 func (w *AutoRenewWorker) RunOnce(ctx context.Context) (AutoRenewResult, error) {
 	var res AutoRenewResult
 	if ctx.Err() != nil {
 		return res, nil
 	}
+	started := w.now()
+	passCtx, cancel := context.WithTimeout(ctx, w.passTimeout)
+	defer cancel()
+
 	lead := w.leadDuration()
-	now := w.now().UTC()
-	due, err := w.subs.ListDueForAutoRenew(ctx, now, lead, w.retryInterval,
-		store.AutoRenewScanLimit)
+	now := started.UTC()
+	due, err := w.subs.ListDueForAutoRenew(passCtx, now, lead, w.retryInterval, w.batchLimit)
 	if err != nil {
 		return res, err
 	}
 	res.Scanned = len(due)
 	for _, candidate := range due {
-		if ctx.Err() != nil {
+		// 启动下一笔前检查预算：剩余时间不足一次最长扣款时停止本轮，
+		// 而不是在 deadline 中途把渠道调用截断（截断会被当成可重试失败，
+		// 白等一个重试间隔）。
+		if deadline, ok := passCtx.Deadline(); ok &&
+			time.Until(deadline) < autoRenewChargeTimeout {
+			w.log.Warn("auto-renew pass reached its time budget; deferring the rest",
+				"processed", res.Charged+res.Failed+res.Disabled+res.Skipped,
+				"scanned", res.Scanned)
 			break
 		}
-		w.renewOne(ctx, candidate, now, lead, &res)
+		if passCtx.Err() != nil {
+			break
+		}
+		w.renewOne(passCtx, candidate, now, lead, &res)
 	}
+	w.log.Info("auto-renew pass finished",
+		"scanned", res.Scanned, "charged", res.Charged, "failed", res.Failed,
+		"disabled", res.Disabled, "retried", res.Retried, "skipped", res.Skipped,
+		"duration", w.now().Sub(started))
 	return res, nil
 }
 
@@ -381,15 +452,45 @@ func (w *AutoRenewWorker) renewOne(ctx context.Context, candidate store.Subscrip
 		return
 	}
 
+	// R-43：周期锚用抢锁后复核的最新 end_at。若手动续费已经把 end_at
+	// 推进（同一实例、不同周期），本轮的窗口判定会失效并由 charger 的
+	// 周期冲突/幂等重放处理，绝不按旧快照双扣。
 	result, chargeErr := w.charger.ChargeAutoRenewal(ctx, AutoRenewChargeInput{
 		UserID:          sub.UserID,
 		SubscriptionID:  sub.ID,
 		PaymentMethodID: strings.TrimSpace(plaintext),
-		// 幂等键按「订阅 + 当前周期末 + 第几次尝试」冻结：同一周期内的重试
-		// 复用同一订单；真正失败后下一轮是新的尝试号，允许重新建单。
-		IdempotencyKey: autoRenewIdempotencyKey(sub.ID, sub.EndAt, sub.AutoRenewFailures),
+		CycleEndAt:      sub.EndAt.UTC(),
 	})
 	if chargeErr != nil {
+		var failure *AutoRenewChargeFailure
+		_ = errors.As(chargeErr, &failure)
+		switch {
+		case errors.Is(chargeErr, ErrRenewalCycleConflict):
+			// 同周期已有在途续费（手动或另一副本）：不是失败，不计阈值、
+			// 不发通知；下一轮重新扫描，若那笔已完成，next cycle 自然换锚。
+			res.Skipped++
+			w.log.Info("auto-renew skipped: another renewal for this period is in flight",
+				"subscription_id", sub.ID)
+			return
+		case failure != nil && failure.Retryable:
+			// R-44：网络/5xx/结算失败没有用户可归责的结果。不计连续失败，
+			// 也不换幂等键；下一轮（6h）用同一键找回 pending 订单继续确认。
+			res.Retried++
+			w.log.Warn("auto-renew charge deferred (retryable infrastructure failure)",
+				"subscription_id", sub.ID,
+				"reason", AutoRenewFailureReason(chargeErr))
+			return
+		case failure != nil && failure.InvalidToken:
+			// R-42：渠道明确认为令牌不可用 → MarkInvalid + fail-closed，
+			// 不再反复尝试一张已经失效的卡。
+			if markErr := w.methods.MarkInvalid(ctx, sub.UserID, methodID); markErr != nil &&
+				!errors.Is(markErr, store.ErrPaymentMethodNotFound) {
+				w.log.Warn("auto-renew mark payment method invalid failed",
+					"payment_method_id", methodID, "error", markErr)
+			}
+			w.failClosed(ctx, sub, methodID, "payment_method_invalid", res)
+			return
+		}
 		reason := AutoRenewFailureReason(chargeErr)
 		state, ferr := w.subs.RecordAutoRenewFailure(ctx, sub.ID, now,
 			store.AutoRenewFailureThreshold, map[string]any{
@@ -406,7 +507,11 @@ func (w *AutoRenewWorker) renewOne(ctx context.Context, candidate store.Subscrip
 		if state.Disabled {
 			res.Disabled++
 		}
-		w.notify(ctx, sub, methodID, state, reason)
+		orderID := int64(0)
+		if failure != nil {
+			orderID = failure.OrderID
+		}
+		w.notify(ctx, sub, methodID, state, reason, orderID)
 		w.log.Warn("auto-renew charge failed",
 			"subscription_id", sub.ID, "reason", reason,
 			"failures", state.Failures, "auto_renew_disabled", state.Disabled)
@@ -432,13 +537,13 @@ func autoRenewDue(sub store.Subscription, now time.Time, lead time.Duration) boo
 		!sub.EndAt.After(now.Add(lead))
 }
 
-// autoRenewIdempotencyKey 生成「订阅 + 周期末 + 尝试号」幂等键。
-//
-// attempt 取当前连续失败数：首次尝试为 1，第 N 次重试为 N。成功路径不会
-// 再用到该周期（end_at 已推进）；失败重试（同一 attempt）复用同一订单，
-// 真正失败后的下一轮是新 attempt，才能重新建单。
-func autoRenewIdempotencyKey(subscriptionID int64, endAt time.Time, failures int32) string {
-	return fmt.Sprintf("auto-renew:%d:%d:%d", subscriptionID, endAt.UTC().Unix(), failures+1)
+// renewalFailureDedupeKey 生成站内通知的幂等键。
+func renewalFailureDedupeKey(sub store.Subscription, reason string, orderID int64) string {
+	if orderID > 0 {
+		return fmt.Sprintf("renewal_failed:order:%d", orderID)
+	}
+	return fmt.Sprintf("renewal_failed:sub:%d:%d:%s",
+		sub.ID, sub.EndAt.UTC().Unix(), reason)
 }
 
 // failClosed 关闭自动续费、写 renewal_failed 事件并通知（R-42）。
@@ -458,14 +563,14 @@ func (w *AutoRenewWorker) failClosed(ctx context.Context, sub store.Subscription
 	res.Disabled++
 	w.notify(ctx, sub, methodID, store.AutoRenewFailureState{
 		Failures: sub.AutoRenewFailures, Disabled: true,
-	}, reason)
+	}, reason, 0)
 	w.log.Warn("auto-renew disabled (fail-closed)",
 		"subscription_id", sub.ID, "reason", reason)
 }
 
 // notify 发一条站内通知（best-effort：失败只记日志）。
 func (w *AutoRenewWorker) notify(ctx context.Context, sub store.Subscription,
-	methodID string, state store.AutoRenewFailureState, reason string) {
+	methodID string, state store.AutoRenewFailureState, reason string, orderID int64) {
 
 	if w.notifier == nil {
 		return
@@ -477,10 +582,11 @@ func (w *AutoRenewWorker) notify(ctx context.Context, sub store.Subscription,
 		Attempt:         state.Failures,
 		Disabled:        state.Disabled,
 		Reason:          reason,
-		// 同一次失败只通知一次：重试是新的尝试号，用户会看到每次失败；
-		// 多副本被锁保护，dedupe 只是重叠扫描的兜底。
-		DedupeKey: fmt.Sprintf("renewal_failed:%d:%d:%d",
-			sub.ID, sub.EndAt.UTC().Unix(), state.Failures+1),
+		// 同一次失败只通知一次。去重键优先用失败订单 id：用户重开自动续费
+		// 后连续失败计数会归零，若再用 failures 会把新通知与旧通知撞在
+		// 一起（ON CONFLICT DO NOTHING 静默吞掉）。没有订单（fail-closed）
+		// 时用「订阅 + 周期末 + 原因」——同一周期同一原因只通知一次。
+		DedupeKey: renewalFailureDedupeKey(sub, reason, orderID),
 	}
 	if err := w.notifier.NotifyRenewalFailure(ctx, notice); err != nil && ctx.Err() == nil {
 		w.log.Warn("auto-renew notification failed",
@@ -576,17 +682,27 @@ type stripeChargeResponse struct {
 // ChargeAutoRenewal 用已存令牌做一次 off-session 扣款，并在成功时走与手动
 // 续费**相同**的结算事务（settleSubscriptionRenewal → store.RenewSubscription）。
 //
+// 【R-44 幂等键】键 = `auto-renew:<sub>:<cycle_end unix>:<rejected+1>`：
+//   - retryable 失败（网络/5xx/结算失败）**不**把订单置 failed，下一轮的
+//     rejected 计数不变 → 同一个 orders.idempotency_key 与 Stripe
+//     Idempotency-Key，找回并继续确认同一笔 PaymentIntent，不会二次扣款；
+//   - 只有渠道明确拒绝（订单被置 failed）才让 rejected+1，允许同一周期内
+//     用户换卡后重新建单。
+//
 // 失败分类：
-//   - 渠道明确拒绝（4xx / requires_payment_method / requires_action）→ 订单
-//     置 failed，返回不可重试的 AutoRenewChargeFailure；
-//   - 网络/5xx → 订单保持 pending，返回 provider_unavailable；下一轮用同一
-//     幂等键重试（Stripe 返回同一 PaymentIntent）。
+//   - 渠道明确拒绝 → 订单置 failed，返回不可重试的 AutoRenewChargeFailure；
+//   - 网络/5xx/结算失败 → 订单保持 pending，返回 Retryable，下一轮同键重试；
+//   - 同周期已有在途续费 → ErrRenewalCycleConflict（worker 跳过本轮）。
 func (s *TopupService) ChargeAutoRenewal(ctx context.Context,
 	in AutoRenewChargeInput) (AutoRenewChargeResult, error) {
 
 	var zero AutoRenewChargeResult
+	key, err := s.autoRenewalIdempotencyKey(ctx, in)
+	if err != nil {
+		return zero, err
+	}
 	order, immediate, replayed, err := s.createRenewalOrder(ctx, in.UserID,
-		in.SubscriptionID, ProviderStripe, in.IdempotencyKey)
+		in.SubscriptionID, ProviderStripe, key)
 	if err != nil {
 		return zero, err
 	}
@@ -602,42 +718,89 @@ func (s *TopupService) ChargeAutoRenewal(ctx context.Context,
 		// 上次扣款已成功、结算后的后续步骤失败；订单即事实，直接视为成功。
 		return result, nil
 	}
+	if order.Status == string(OrderRefundRequired) {
+		// 同周期另一笔续费已成功，本单已转人工退款；不再向渠道发任何请求。
+		return result, nil
+	}
 	if order.Status != string(OrderPending) {
-		return zero, &AutoRenewChargeFailure{Code: "order_not_pending"}
+		return zero, &AutoRenewChargeFailure{Code: "order_not_pending", OrderID: order.ID}
 	}
 
-	body, err := s.chargeStripeOffSession(ctx, order, strings.TrimSpace(in.PaymentMethodID), in.IdempotencyKey)
+	// R-45：单笔扣款有独立上限，保证整轮 deadline 可预测。
+	chargeCtx, cancel := context.WithTimeout(ctx, autoRenewChargeTimeout)
+	defer cancel()
+
+	body, err := s.chargeStripeOffSession(chargeCtx, order,
+		strings.TrimSpace(in.PaymentMethodID), key)
 	if err != nil {
 		var failure *AutoRenewChargeFailure
 		if errors.As(err, &failure) {
 			if !failure.Retryable {
 				s.markOrderFailed(ctx, order.ID, "provider_rejected")
 			}
-			return zero, err
+			failure.OrderID = order.ID
+			return zero, failure
 		}
 		// 未知错误按可重试处理：不把订单置 failed，避免一次网络抖动
 		// 让用户白白损失一次重试机会。
-		return zero, &AutoRenewChargeFailure{Code: AutoRenewFailureReason(err), Retryable: true}
+		return zero, &AutoRenewChargeFailure{
+			Code: AutoRenewFailureReason(err), Retryable: true, OrderID: order.ID,
+		}
 	}
 	if body.Status != "succeeded" {
 		s.markOrderFailed(ctx, order.ID, "provider_rejected")
-		code := "payment_required"
+		failure := &AutoRenewChargeFailure{Code: "payment_required", OrderID: order.ID}
 		if body.LastPaymentError != nil && body.LastPaymentError.Code != "" {
-			code = body.LastPaymentError.Code
+			failure.Code = body.LastPaymentError.Code
+			switch body.LastPaymentError.Code {
+			case "expired_card", "invalid_number", "incorrect_number", "incorrect_cvc":
+				// 渠道明确表示令牌本身不可用：fail-closed（R-42）。
+				failure.InvalidToken = true
+			}
 		}
 		if body.Status == "requires_action" {
 			// off-session 无法完成 SCA；必须由用户重新授权。
-			code = "authentication_required"
+			failure.Code = "authentication_required"
 		}
-		return zero, &AutoRenewChargeFailure{Code: code}
+		return zero, failure
 	}
 	// 金额/币种以渠道返回为准交给结算校验：不一致会被 failMismatch 置 failed
 	// 并返回错误，绝不会按错误金额续费。
-	if err := s.settleSubscriptionRenewal(ctx, order, body.Amount,
+	if err := s.settleSubscriptionRenewal(chargeCtx, order, body.Amount,
 		strings.ToUpper(strings.TrimSpace(body.Currency)), body.raw); err != nil {
-		return zero, &AutoRenewChargeFailure{Code: "settlement_failed", Retryable: true}
+		// 结算失败（DB 抖动/事件冲突）：订单保持 pending，下一轮同键重试；
+		// 周期锚保证即使渠道已扣款，也不会二次推进 end_at。
+		return zero, &AutoRenewChargeFailure{
+			Code: "settlement_failed", Retryable: true, OrderID: order.ID,
+		}
 	}
 	return result, nil
+}
+
+// autoRenewalIdempotencyKey 按「订阅 + 周期末 + 已明确拒绝的订单数」推导键。
+//
+// 用 rejected（status='failed' 且同周期的订单数）而不是连续失败数，是 R-44
+// 的核心：retryable 失败保持订单 pending，rejected 不变 → 键不变；只有渠道
+// 明确拒绝（订单 failed）才换键重下。
+func (s *TopupService) autoRenewalIdempotencyKey(ctx context.Context,
+	in AutoRenewChargeInput) (string, error) {
+
+	if in.SubscriptionID <= 0 || in.CycleEndAt.IsZero() {
+		return "", ErrRenewalSubscriptionNotFound
+	}
+	var rejected int64
+	err := s.db.WithContext(ctx).Raw(`
+		SELECT count(*) FROM orders
+		 WHERE user_id = ? AND biz_kind = 'renew' AND biz_ref_id = ?
+		   AND status = 'failed'
+		   AND (channel_metadata->'renewal'->>'cycle_end_at')::timestamptz = ?`,
+		in.UserID, in.SubscriptionID, in.CycleEndAt.UTC()).
+		Row().Scan(&rejected)
+	if err != nil {
+		return "", &AutoRenewChargeFailure{Code: "internal", Retryable: true}
+	}
+	return fmt.Sprintf("auto-renew:%d:%d:%d",
+		in.SubscriptionID, in.CycleEndAt.UTC().Unix(), rejected+1), nil
 }
 
 // stripeChargeBody 把响应体与解析结果一起返回（raw 用于 orders.raw_callback）。
@@ -703,7 +866,21 @@ func (s *TopupService) chargeStripeOffSession(ctx context.Context, order *store.
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 			return nil, &AutoRenewChargeFailure{Code: "provider_unavailable", Retryable: true}
 		}
-		return nil, &AutoRenewChargeFailure{Code: "payment_method_rejected"}
+		// 4xx 是渠道明确拒绝（不会产生资金流）。只有「资源不存在」（404 或
+		// error.code=resource_missing）才说明令牌本身失效；其余 4xx 可能是
+		// 请求参数问题，不应把用户的卡标记为 invalid。
+		invalidToken := resp.StatusCode == http.StatusNotFound
+		var apiErr struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error.Code == "resource_missing" {
+			invalidToken = true
+		}
+		return nil, &AutoRenewChargeFailure{
+			Code: "payment_method_rejected", InvalidToken: invalidToken,
+		}
 	}
 	var parsed stripeChargeResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.ID == "" {

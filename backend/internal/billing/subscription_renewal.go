@@ -45,7 +45,19 @@ var (
 	// ErrRenewalSnapshot：续费订单缺少可用快照或快照与订单不一致。正常写路径
 	// 不会出现；出现时保持 pending，绝不按当前套餐臆测合同条件。
 	ErrRenewalSnapshot = errors.New("billing: renewal order snapshot is missing or invalid")
+	// ErrRenewalCycleConflict：同一实例的同一周期已有一笔在途续费（R-43）。
+	// 手动与自动续费共用该判定：先到者拿到周期，后到者 409/跳过本轮，避免
+	// 两笔订单各扣一次钱、各推进一次 end_at。
+	ErrRenewalCycleConflict = errors.New("billing: a renewal for this period is already in progress")
 )
+
+// renewalPendingOrderWindow 是「在途续费订单」的有效窗口。
+//
+// 与订单过期 worker 的 30 分钟口径一致（billing-06 §9.4：pending 订单
+// created_at + 30min 未完成即 expired）。用时间窗而不是只看 status，是为了
+// 防止过期 worker 短暂停摆时，一条陈旧的 pending 订单永久阻塞该周期的
+// 自动续费（用户既付不了款也续不了费）。
+const renewalPendingOrderWindow = 30 * time.Minute
 
 // renewalOrderMetadata 是 orders.channel_metadata 中的续费命名空间。
 //
@@ -136,9 +148,21 @@ func (s *TopupService) createRenewalOrder(ctx context.Context,
 	var snapshot subscriptionOrderSnapshot
 	immediate := false
 	err := s.subscriptionTx(ctx, func(tx *gorm.DB) error {
-		planID, err := loadRenewableSubscriptionTx(tx, userID, subscriptionID)
+		planID, cycleEndAt, err := loadRenewableSubscriptionTx(tx, userID, subscriptionID)
 		if err != nil {
 			return err
+		}
+		// R-43 周期锚：锁定订阅行并冻结「本周期末」。之后任何结算都必须
+		// 以它为条件；同一周期的在途订单也据此去重，防止手动/自动双下单。
+		conflict, err := hasPendingRenewalForCycle(tx, userID, subscriptionID,
+			cycleEndAt, s.now().UTC().Add(-renewalPendingOrderWindow))
+		if err != nil {
+			return err
+		}
+		if conflict {
+			return fmt.Errorf("%w: subscription %d cycle ending %s",
+				ErrRenewalCycleConflict, subscriptionID,
+				cycleEndAt.UTC().Format(time.RFC3339Nano))
 		}
 		plan, err := loadSubscriptionPlanForShare(tx, planID)
 		if err != nil {
@@ -146,6 +170,7 @@ func (s *TopupService) createRenewalOrder(ctx context.Context,
 		}
 		snapshot = plan
 		snapshot.SubscriptionID = subscriptionID
+		snapshot.CycleEndAt = cycleEndAt.UTC()
 		order.Amount = plan.PriceAmount
 		order.Currency = plan.Currency
 
@@ -218,35 +243,60 @@ func (s *TopupService) createRenewalOrder(ctx context.Context,
 	return order, immediate, false, nil
 }
 
-// loadRenewableSubscriptionTx 读取续费目标并做归属/状态守卫，返回其 plan_id。
+// loadRenewableSubscriptionTx 读取续费目标并做归属/状态守卫，返回其 plan_id
+// 与**当前周期末**（R-43 周期锚）。
 //
-// 放在事务内、套餐行锁之前：先确认实例归当前用户，再谈绑定套餐。cancelled
-// 是唯一不可续费的终态（expired 允许续费后恢复 active）。不锁实例行：
-// 下单不修改实例，真正的迁移守卫在结算的条件 UPDATE（status IN active,
-// expired）；这里只拒绝「下单时已确定不能续费」的请求。
-func loadRenewableSubscriptionTx(tx *gorm.DB, userID, subscriptionID int64) (int64, error) {
+// 用 `FOR UPDATE` 锁定实例行：周期锚一旦读到，直到本事务提交前不会有并发
+// 续费/结算推进 end_at；同一周期的手动/自动下单由此串行化（另一把跨进程锁
+// 是 `subscriptions:renew:<id>`）。cancelled 是唯一不可续费的终态（expired
+// 允许续费后恢复 active）。
+func loadRenewableSubscriptionTx(tx *gorm.DB, userID, subscriptionID int64) (int64, time.Time, error) {
 	var (
 		ownerID int64
 		planID  int64
 		status  string
+		endAt   time.Time
 	)
-	err := tx.Raw(`SELECT user_id, plan_id, status FROM subscriptions WHERE id = ?`,
-		subscriptionID).Row().Scan(&ownerID, &planID, &status)
+	err := tx.Raw(`SELECT user_id, plan_id, status, end_at FROM subscriptions
+		WHERE id = ? FOR UPDATE`, subscriptionID).Row().
+		Scan(&ownerID, &planID, &status, &endAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("%w: subscription %d", ErrRenewalSubscriptionNotFound, subscriptionID)
+		return 0, time.Time{}, fmt.Errorf("%w: subscription %d", ErrRenewalSubscriptionNotFound, subscriptionID)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("billing: load subscription %d for renewal: %w", subscriptionID, err)
+		return 0, time.Time{}, fmt.Errorf("billing: load subscription %d for renewal: %w", subscriptionID, err)
 	}
 	if ownerID != userID {
 		// 归属不符与不存在同口径：不泄露他人订阅 ID 的存在性。
-		return 0, fmt.Errorf("%w: subscription %d", ErrRenewalSubscriptionNotFound, subscriptionID)
+		return 0, time.Time{}, fmt.Errorf("%w: subscription %d", ErrRenewalSubscriptionNotFound, subscriptionID)
 	}
 	if status != "active" && status != "expired" {
-		return 0, fmt.Errorf("%w: subscription %d is %s",
+		return 0, time.Time{}, fmt.Errorf("%w: subscription %d is %s",
 			ErrSubscriptionNotRenewable, subscriptionID, status)
 	}
-	return planID, nil
+	return planID, endAt.UTC(), nil
+}
+
+// hasPendingRenewalForCycle 判断同一周期是否已有在途续费订单（R-43）。
+//
+// 只匹配 30 分钟内的 pending 订单：过期 worker 会把无人支付的订单迁移为
+// expired，时间窗是它停摆时的兜底。succeeded 订单不需要看——一旦成功，
+// end_at 已经推进，本次读到的 cycleEndAt 就是新周期，不会命中。
+func hasPendingRenewalForCycle(tx *gorm.DB, userID, subscriptionID int64,
+	cycleEndAt, createdAfter time.Time) (bool, error) {
+
+	var count int64
+	err := tx.Raw(`
+		SELECT count(*) FROM orders
+		 WHERE user_id = ? AND biz_kind = 'renew' AND biz_ref_id = ?
+		   AND status = 'pending' AND created_at >= ?
+		   AND (channel_metadata->'renewal'->>'cycle_end_at')::timestamptz = ?`,
+		userID, subscriptionID, createdAfter.UTC(), cycleEndAt.UTC()).Scan(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("billing: check pending renewal for subscription %d: %w",
+			subscriptionID, err)
+	}
+	return count > 0, nil
 }
 
 // renewalExtendInput 把下单快照翻译为 store 的条件扩展入参。
@@ -275,6 +325,7 @@ func renewalExtendInput(userID int64, snap subscriptionOrderSnapshot,
 		Currency:            snap.Currency,
 		PricePaidAmount:     price,
 		Now:                 now,
+		ExpectedEndAt:       snap.CycleEndAt,
 	}
 }
 
@@ -307,6 +358,8 @@ func (s *TopupService) settleSubscriptionRenewal(ctx context.Context, order *sto
 	}
 	now := s.now().UTC()
 	extended := false
+	refundRequired := false
+	var applyErr error
 	err = s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		res := tx.Exec(`
 			UPDATE orders
@@ -319,20 +372,40 @@ func (s *TopupService) settleSubscriptionRenewal(ctx context.Context, order *sto
 			return fmt.Errorf("billing: settle renewal order %d: %w", order.ID, res.Error)
 		}
 		if res.RowsAffected == 0 {
-			// 并发回调/轮询已先行迁移：同一事务内回查，已成功即幂等返回。
+			// 并发回调/轮询已先行迁移：同一事务内回查，已成功/待退款即幂等返回。
 			// 这里**不得**再扩展实例——扩展只属于那一次 pending→succeeded。
 			var status string
 			if err := tx.Raw(`SELECT status FROM orders WHERE id = ?`, order.ID).
 				Row().Scan(&status); err != nil {
 				return fmt.Errorf("billing: re-read order %d: %w", order.ID, err)
 			}
-			if status == string(OrderSucceeded) {
+			if status == string(OrderSucceeded) || status == string(OrderRefundRequired) {
 				return nil
 			}
 			return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, status)
 		}
 		if _, err := store.RenewSubscription(ctx, tx.Statement.ConnPool,
 			renewalExtendInput(order.UserID, snap, order.Amount, now)); err != nil {
+			if errors.Is(err, store.ErrSubscriptionCycleChanged) {
+				// R-43：同一周期已有另一笔续费成功，end_at 已推进。钱已经
+				// 到账但不能二次加班——与 S2/R-29② 同构，转 refund_required
+				// 终态（R-33 白名单已显式加白），让退款流程处理，绝不让渠道
+				// 无限重投或把 end_at 加两个周期。
+				if transErr := Transition(OrderSucceeded, OrderRefundRequired); transErr != nil {
+					return transErr
+				}
+				if markErr := tx.Exec(`
+					UPDATE orders
+					SET status = 'refund_required', failure_code = 'manual_required',
+					    updated_at = now()
+					WHERE id = ? AND status = 'succeeded'`, order.ID).Error; markErr != nil {
+					return fmt.Errorf("billing: mark renewal order %d refund_required: %w",
+						order.ID, markErr)
+				}
+				refundRequired = true
+				applyErr = err
+				return nil
+			}
 			return err
 		}
 		extended = true
@@ -340,6 +413,12 @@ func (s *TopupService) settleSubscriptionRenewal(ctx context.Context, order *sto
 	})
 	if err != nil {
 		return err
+	}
+	if refundRequired {
+		// 告警（error 级别）：这笔钱必须人工退款，订单已终态、不会再被重投。
+		s.log.Error("subscription renewal paid after the period was already renewed; refund required",
+			"order_id", order.ID, "subscription_id", snap.SubscriptionID,
+			"user_id", order.UserID, "amount", order.Amount, "error", applyErr)
 	}
 	if extended {
 		s.log.Info("subscription renewed",
@@ -380,7 +459,7 @@ func decodeRenewalSnapshot(order *store.Order) (subscriptionOrderSnapshot, error
 	}
 	if snap.PlanID <= 0 || strings.TrimSpace(snap.PlanTitle) == "" ||
 		snap.PeriodDays < 1 || snap.GrantCredits < 0 || snap.PriceAmount < 0 ||
-		snap.GraceDays < 0 || snap.Currency == "" {
+		snap.GraceDays < 0 || snap.Currency == "" || snap.CycleEndAt.IsZero() {
 		return snap, fmt.Errorf("%w: order %d snapshot is incomplete", ErrRenewalSnapshot, order.ID)
 	}
 	if snap.PriceAmount != order.Amount || snap.Currency != order.Currency {

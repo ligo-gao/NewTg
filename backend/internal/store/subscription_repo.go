@@ -83,6 +83,10 @@ var (
 	// 调用方必须**整体重试事务**，而不是跳过该 seq（跳号会让 after_seq
 	// 增量拉取的客户端永久漏事件）。
 	ErrSubscriptionEventSeqConflict = errors.New("store: subscription event sequence conflict")
+	// ErrSubscriptionCycleChanged：续费/结算时实例的 end_at 已不是下单快照
+	// 冻结的周期末（R-43）。说明同一周期已有另一笔续费成功；本次订单的钱
+	// 已收但不能再推进 end_at，调用方必须转 refund_required，绝不二次加班。
+	ErrSubscriptionCycleChanged = errors.New("store: subscription cycle changed since the order was created")
 )
 
 // 订阅事件 kind 白名单（R-18 冻结）。S1 只产出 created/renewed/cancelled/
@@ -1157,6 +1161,11 @@ type RenewalExtendInput struct {
 	Currency            string
 	PricePaidAmount     int64
 	Now                 time.Time
+	// ExpectedEndAt 是下单时用 `FOR UPDATE` 读到的周期末（R-43 周期锚）。
+	// 结算的条件 UPDATE 要求 `end_at = ExpectedEndAt`：同一周期只有第一笔
+	// 续费能推进 end_at，后到的订单 affected=0 → ErrSubscriptionCycleChanged，
+	// 由调用方转 refund_required，绝不会把 end_at 加两个周期。
+	ExpectedEndAt time.Time
 }
 
 // RenewSubscription 在调用方事务内**条件扩展**一个续费实例（P2a）。
@@ -1175,17 +1184,17 @@ type RenewalExtendInput struct {
 //     price）按本次订单快照更新：R-D5-03 对续费同样适用，续费是按**当前
 //     套餐**订立的新周期合同，而不是沿用首购时的旧条件。
 //
-// 条件 `status IN ('active','expired')` 是唯一迁移守卫：cancelled 实例
-// 不可续费（RowsAffected=0 → ErrSubscriptionNotActive）；重复调用由调用方
-// 的订单状态守卫（pending→succeeded 只发生一次）兜住，本函数自身也因
-// 返回完整行而可安全重放（幂等扩两次的唯一防线是订单状态）。
+// 条件 `status IN ('active','expired')` 与 `end_at = ExpectedEndAt` 是双重
+// 迁移守卫（R-43）：前者拒绝 cancelled 终态，后者保证同一周期只成功一次。
+// 重复调用由调用方的订单状态守卫（pending→succeeded 只发生一次）兜住；
+// 即使订单状态守卫被绕过，周期锚也会让第二次 affected=0。
 func RenewSubscription(ctx context.Context, q SubscriptionTx,
 	in RenewalExtendInput) (Subscription, error) {
 
 	if in.SubscriptionID <= 0 || in.UserID <= 0 || in.PlanID <= 0 ||
 		in.PeriodDays < 1 || in.GrantCredits < 0 || in.GraceDays < 0 ||
 		in.PricePaidAmount < 0 || strings.TrimSpace(in.PlanTitleSnapshot) == "" ||
-		strings.TrimSpace(in.Currency) == "" {
+		strings.TrimSpace(in.Currency) == "" || in.ExpectedEndAt.IsZero() {
 		return Subscription{}, ErrSubscriptionInvalid
 	}
 	s, err := scanSubscription(q.QueryRowContext(ctx, `
@@ -1210,19 +1219,25 @@ func RenewSubscription(ctx context.Context, q SubscriptionTx,
 		    updated_at = now()
 		WHERE id = $1 AND user_id = $13 AND plan_id = $14
 		  AND status IN ('active', 'expired')
+		  AND end_at = $15
 		RETURNING `+subscriptionColumns,
 		in.SubscriptionID, in.Now.UTC(), in.PeriodDays, in.GrantCredits,
 		in.ResetOnRenew, in.PlanTitleSnapshot, in.AllowWalletOverflow,
 		in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit,
-		in.Currency, in.PricePaidAmount, in.UserID, in.PlanID))
+		in.Currency, in.PricePaidAmount, in.UserID, in.PlanID,
+		in.ExpectedEndAt.UTC()))
 	if errors.Is(err, sql.ErrNoRows) {
-		// 0 行：区分「不存在/归属或套餐不符」与「cancelled 终态」。
-		// 归属不符与不存在统一 ErrSubscriptionNotFound，不泄露跨用户存在性。
-		var status string
+		// 0 行：区分「不存在/归属或套餐不符」「cancelled 终态」与「周期已
+		// 被另一笔续费推进」（R-43）。归属不符与不存在统一 NotFound，不泄露
+		// 跨用户存在性；周期变化必须单独报告，调用方才能把钱转 refund_required。
+		var (
+			status     string
+			currentEnd time.Time
+		)
 		findErr := q.QueryRowContext(ctx, `
-			SELECT status FROM subscriptions
+			SELECT status, end_at FROM subscriptions
 			 WHERE id = $1 AND user_id = $2 AND plan_id = $3`,
-			in.SubscriptionID, in.UserID, in.PlanID).Scan(&status)
+			in.SubscriptionID, in.UserID, in.PlanID).Scan(&status, &currentEnd)
 		if errors.Is(findErr, sql.ErrNoRows) {
 			return Subscription{}, ErrSubscriptionNotFound
 		}
@@ -1230,8 +1245,20 @@ func RenewSubscription(ctx context.Context, q SubscriptionTx,
 			return Subscription{}, fmt.Errorf("store: read subscription(%d) for renewal: %w",
 				in.SubscriptionID, findErr)
 		}
-		return Subscription{}, fmt.Errorf("%w: subscription %d is %s",
-			ErrSubscriptionNotActive, in.SubscriptionID, status)
+		if status != "active" && status != "expired" {
+			return Subscription{}, fmt.Errorf("%w: subscription %d is %s",
+				ErrSubscriptionNotActive, in.SubscriptionID, status)
+		}
+		if !currentEnd.UTC().Equal(in.ExpectedEndAt.UTC()) {
+			return Subscription{}, fmt.Errorf("%w: subscription %d end_at moved from %s to %s",
+				ErrSubscriptionCycleChanged, in.SubscriptionID,
+				in.ExpectedEndAt.UTC().Format(time.RFC3339Nano),
+				currentEnd.UTC().Format(time.RFC3339Nano))
+		}
+		// 状态与周期都匹配却 0 行：只能是并发事务在本语句执行前后改了行。
+		// 保守地按周期变化处理，避免调用方把它当成「可重试」而无限重投。
+		return Subscription{}, fmt.Errorf("%w: subscription %d",
+			ErrSubscriptionCycleChanged, in.SubscriptionID)
 	}
 	if err != nil {
 		return Subscription{}, fmt.Errorf("store: renew subscription(%d): %w", in.SubscriptionID, err)

@@ -1058,7 +1058,7 @@ func TestSubscriptionRenew(t *testing.T) {
 			PlanTitleSnapshot: "Renewed Plan", PeriodDays: 30,
 			GrantCredits: 4242, ResetOnRenew: true, AllowWalletOverflow: false,
 			ModelScope: scope, ConcurrencyLimit: &limit, GraceDays: 3,
-			Currency: "CNY", PricePaidAmount: 19900, Now: now,
+			Currency: "CNY", PricePaidAmount: 19900, Now: now, ExpectedEndAt: oldEnd,
 		})
 		if err != nil {
 			t.Fatalf("renew active: %v", err)
@@ -1094,7 +1094,7 @@ func TestSubscriptionRenew(t *testing.T) {
 			SubscriptionID: sub.ID, UserID: 900003, PlanID: plan.ID,
 			PlanTitleSnapshot: plan.Title, PeriodDays: 30, GrantCredits: 1000,
 			ResetOnRenew: false, AllowWalletOverflow: true, GraceDays: 0,
-			Currency: "CNY", PricePaidAmount: 9900, Now: now,
+			Currency: "CNY", PricePaidAmount: 9900, Now: now, ExpectedEndAt: oldEnd,
 		})
 		if err != nil {
 			t.Fatalf("renew expired: %v", err)
@@ -1119,7 +1119,7 @@ func TestSubscriptionRenew(t *testing.T) {
 			SubscriptionID: sub.ID, UserID: 900003, PlanID: plan.ID,
 			PlanTitleSnapshot: plan.Title, PeriodDays: 30, GrantCredits: 1000,
 			ResetOnRenew: true, AllowWalletOverflow: true, Currency: "CNY",
-			PricePaidAmount: 9900, Now: now,
+			PricePaidAmount: 9900, Now: now, ExpectedEndAt: now.Add(24 * time.Hour),
 		}
 		if _, err := RenewSubscription(ctx, db, in); !errors.Is(err, ErrSubscriptionNotActive) {
 			t.Fatalf("cancelled err = %v，期望 ErrSubscriptionNotActive", err)

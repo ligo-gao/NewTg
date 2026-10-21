@@ -399,7 +399,8 @@
       "auto_renew_requires_method": "自動更新を有効にする前に支払い方法を追加してください。",
       "auto_renew_error": "自動更新を更新できませんでした。",
       "auto_renew_saving": "保存中...",
-      "auto_renew_failures": "連続失敗 {count} 回"
+      "auto_renew_failures": "連続失敗 {count} 回",
+      "auto_renew_failed_hint": "支払いの失敗が続いたため自動更新はオフになりました。カードを更新して再度有効にしてください。"
     },
     "status": {
       "active": "有効",

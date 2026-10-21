@@ -100,6 +100,9 @@ type subscriptionOrderSnapshot struct {
 	GraceDays           int32           `json:"grace_days"`
 	Currency            string          `json:"currency"`
 	PriceAmount         int64           `json:"price_amount"`
+	// CycleEndAt 只出现在续费订单：下单瞬间 `FOR UPDATE` 读到的周期末（R-43）。
+	// 结算时要求实例 end_at 仍等于它，同一周期只允许第一笔续费成功。
+	CycleEndAt time.Time `json:"cycle_end_at,omitempty"`
 }
 
 // subscriptionOrderMetadata 是 orders.channel_metadata 中的订阅命名空间。

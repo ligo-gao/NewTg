@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -178,5 +179,92 @@ func TestAutoRenewEndpointsFailClosedWithoutService(t *testing.T) {
 	}
 	if got := rec.Header().Get("Retry-After"); got == "" {
 		t.Fatal("503 must advertise Retry-After")
+	}
+}
+
+// TestManualRenewRespectsAutoRenewLock 覆盖 R-43：手动续费必须与自动续费
+// worker 争用同一把 `subscriptions:renew:<id>` 锁；锁被占用时返回 409，
+// 绝不创建第二笔订单。
+func TestManualRenewRespectsAutoRenewLock(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	repo := newFakeSubscriptionRepo()
+	repo.subs[5] = &store.Subscription{ID: 5, UserID: 7, Status: "active"}
+	purchase := &fakeSubscriptionPurchase{
+		renewResult: &billing.TopupOrder{Order: &store.Order{ID: 1}},
+	}
+	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
+		Repo: repo, DB: &sql.DB{}, Redis: rdb,
+		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(&subAuditExecer{}),
+		Logger: testLogger(), Purchase: purchase,
+	})
+	if err != nil {
+		t.Fatalf("NewSubscriptionHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	env := &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, mr: mr}
+
+	// 模拟自动续费 worker（或另一副本）正持有该实例的锁。
+	lockKey := billing.AutoRenewLockPrefix + "5"
+	if err := rdb.Set(context.Background(), lockKey, "other-replica", time.Minute).Err(); err != nil {
+		t.Fatalf("seed lock: %v", err)
+	}
+	rec := env.do(t, endUser(7), http.MethodPost, "/api/subscriptions/5/renew",
+		map[string]any{"provider": "stripe"},
+		map[string]string{"Idempotency-Key": "manual-lock-test"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if len(purchase.renewCalls) != 0 {
+		t.Fatalf("must not create a renewal order while the lock is held: %+v", purchase.renewCalls)
+	}
+}
+
+// TestSubscriptionListExposesAutoRenewState 覆盖 I2：列表响应必须包含
+// auto_renew_failures 与绑定的支付令牌 id，否则前端失败提示/默认卡是死代码。
+func TestSubscriptionListExposesAutoRenewState(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	repo := newFakeSubscriptionRepo()
+	methodID := "55555555-5555-5555-5555-555555555555"
+	repo.subs[5] = &store.Subscription{
+		ID: 5, UserID: 7, PlanID: 1, PlanTitleSnapshot: "Basic",
+		Status: "active", AutoRenew: true,
+		AutoRenewPaymentMethodID: &methodID,
+		AutoRenewFailures:        2,
+		PeriodDays:               30,
+	}
+	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
+		Repo: repo, DB: &sql.DB{}, Redis: rdb,
+		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(&subAuditExecer{}),
+		Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewSubscriptionHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+	rec := (&subscriptionTestEnv{router: mux}).do(t, endUser(7), http.MethodGet,
+		"/api/subscriptions", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(body.Items))
+	}
+	if got := body.Items[0]["auto_renew_failures"]; got != float64(2) {
+		t.Fatalf("auto_renew_failures = %v, want 2", got)
+	}
+	if got := body.Items[0]["auto_renew_payment_method_id"]; got != methodID {
+		t.Fatalf("auto_renew_payment_method_id = %v, want %s", got, methodID)
 	}
 }

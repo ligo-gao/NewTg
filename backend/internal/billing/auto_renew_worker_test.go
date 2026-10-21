@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,10 +179,18 @@ func newAutoRenewTestWorker(t *testing.T, subs AutoRenewSubscriptionStore,
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
-	notifier := &fakeNotifier{}
+	return newAutoRenewTestWorkerOnRedis(t, rdb, subs, methods, charger, sealer, now)
+}
+
+// newAutoRenewTestWorkerOnRedis 用共享的 Redis 构造 worker（双副本锁竞争用例）。
+func newAutoRenewTestWorkerOnRedis(t *testing.T, rdb *redis.Client,
+	subs AutoRenewSubscriptionStore, methods AutoRenewPaymentMethods,
+	charger AutoRenewCharger, sealer PaymentTokenSealer, now time.Time) *AutoRenewWorker {
+
+	t.Helper()
 	worker, err := NewAutoRenewWorker(AutoRenewDeps{
 		Subs: subs, Methods: methods, Charger: charger, Sealer: sealer,
-		Redis: rdb, Notifier: notifier, Now: func() time.Time { return now },
+		Redis: rdb, Notifier: &fakeNotifier{}, Now: func() time.Time { return now },
 		LeadHours: 24, RetryInterval: time.Nanosecond,
 	})
 	if err != nil {
@@ -229,9 +238,8 @@ func TestAutoRenewChargesInsideWindow(t *testing.T) {
 	if len(charger.calls) != 1 {
 		t.Fatalf("charge calls = %d, want 1", len(charger.calls))
 	}
-	wantKey := fmt.Sprintf("auto-renew:%d:%d:1", sub.ID, sub.EndAt.Unix())
-	if charger.calls[0].IdempotencyKey != wantKey {
-		t.Fatalf("idempotency key = %q, want %q", charger.calls[0].IdempotencyKey, wantKey)
+	if !charger.calls[0].CycleEndAt.Equal(sub.EndAt) {
+		t.Fatalf("cycle anchor = %s, want %s", charger.calls[0].CycleEndAt, sub.EndAt)
 	}
 	if charger.calls[0].PaymentMethodID != "pm_test_123" {
 		t.Fatalf("payment method = %q, want decrypted token", charger.calls[0].PaymentMethodID)
@@ -519,4 +527,416 @@ func TestPaymentMethodDeleteDisablesAutoRenew(t *testing.T) {
 // autoRenewTestLogger 丢弃日志：单测只关心状态。
 func autoRenewTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// R-44：retryable 失败（网络/5xx/结算）不计入用户连续失败，也不发通知；
+// 订单保持 pending，下一轮用同一幂等键继续确认。
+func TestAutoRenewRetryableFailureDoesNotCount(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	sub := autoRenewTestSubscription(21, now, now.Add(time.Hour))
+	subs := newFakeAutoRenewStore(sub)
+	methods := &fakeAutoRenewMethods{method: autoRenewTestMethod(*sub.AutoRenewPaymentMethodID)}
+	charger := &fakeCharger{err: &AutoRenewChargeFailure{
+		Code: "provider_unavailable", Retryable: true, OrderID: 77,
+	}}
+	worker := newAutoRenewTestWorker(t, subs, methods, charger, testTokenSealer{}, now)
+
+	res, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Retried != 1 || res.Failed != 0 || res.Disabled != 0 {
+		t.Fatalf("result = %+v, want retried=1 failed=0 disabled=0", res)
+	}
+	if subs.failures[sub.ID] != 0 {
+		t.Fatalf("failures = %d, want 0 for a retryable failure", subs.failures[sub.ID])
+	}
+	if len(subs.failureEvent) != 0 {
+		t.Fatalf("retryable failure must not write renewal_failed events: %v", subs.failureEvent)
+	}
+	if subs.disabled[sub.ID] {
+		t.Fatal("retryable failures must not disable auto-renew")
+	}
+}
+
+// R-42：渠道明确判定令牌不可用 → MarkInvalid + fail-closed，不计 3 次阈值。
+func TestAutoRenewInvalidTokenFailsClosed(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	sub := autoRenewTestSubscription(22, now, now.Add(time.Hour))
+	subs := newFakeAutoRenewStore(sub)
+	methods := &fakeAutoRenewMethods{method: autoRenewTestMethod(*sub.AutoRenewPaymentMethodID)}
+	charger := &fakeCharger{err: &AutoRenewChargeFailure{
+		Code: "expired_card", InvalidToken: true, OrderID: 78,
+	}}
+	worker := newAutoRenewTestWorker(t, subs, methods, charger, testTokenSealer{}, now)
+
+	res, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Disabled != 1 || !methods.invalidMarked {
+		t.Fatalf("result = %+v invalidMarked=%v, want disabled + marked invalid",
+			res, methods.invalidMarked)
+	}
+	if len(subs.disableEvent) != 1 ||
+		subs.disableEvent[0]["reason"] != "payment_method_invalid" {
+		t.Fatalf("disable events = %v", subs.disableEvent)
+	}
+}
+
+// blockingCharger 让第一个副本停在渠道调用内，验证第二个副本拿不到锁。
+type blockingCharger struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingCharger) ChargeAutoRenewal(context.Context,
+	AutoRenewChargeInput) (AutoRenewChargeResult, error) {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+	return AutoRenewChargeResult{OrderID: 1, Amount: 5000, Currency: "CNY"}, nil
+}
+
+// TestAutoRenewLockContentionBetweenReplicas 覆盖 P-17 的双副本互斥：
+// 第一个副本持有 subscriptions:renew:<id> 时，第二个副本必须跳过而不是扣款。
+// 变异把 acquireLock 改成恒 true 时，本用例会红（第二个副本会调用 charger）。
+func TestAutoRenewLockContentionBetweenReplicas(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	sub := autoRenewTestSubscription(23, now, now.Add(time.Hour))
+	method := autoRenewTestMethod(*sub.AutoRenewPaymentMethodID)
+
+	blocking := &blockingCharger{entered: make(chan struct{}), release: make(chan struct{})}
+	w1 := newAutoRenewTestWorkerOnRedis(t, rdb,
+		newFakeAutoRenewStore(sub), &fakeAutoRenewMethods{method: method},
+		blocking, testTokenSealer{}, now)
+
+	secondCharger := &fakeCharger{}
+	w2 := newAutoRenewTestWorkerOnRedis(t, rdb,
+		newFakeAutoRenewStore(sub), &fakeAutoRenewMethods{method: method},
+		secondCharger, testTokenSealer{}, now)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = w1.RunOnce(context.Background())
+		close(done)
+	}()
+	<-blocking.entered
+
+	res2, err := w2.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second replica RunOnce: %v", err)
+	}
+	if res2.Charged != 0 || res2.Skipped != 1 {
+		t.Fatalf("second replica result = %+v, want charged=0 skipped=1", res2)
+	}
+	if len(secondCharger.calls) != 0 {
+		t.Fatalf("second replica charged %d time(s) while the lock was held",
+			len(secondCharger.calls))
+	}
+
+	close(blocking.release)
+	<-done
+}
+
+// TestAutoRenewLeadHoursConfigBoundaries 覆盖 R-40 的 1–168 配置边界：
+// 0/169/非数字回退默认 24，边界值原样生效。
+func TestAutoRenewLeadHoursConfigBoundaries(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{`1`, 1},
+		{`24`, 24},
+		{`168`, 168},
+		{`0`, DefaultAutoRenewLeadHours},
+		{`169`, DefaultAutoRenewLeadHours},
+		{`"abc"`, DefaultAutoRenewLeadHours},
+		{`-5`, DefaultAutoRenewLeadHours},
+	}
+	for _, tc := range cases {
+		w := &AutoRenewWorker{
+			cfg: mapConfig{ConfigAutoRenewLeadHours: json.RawMessage(tc.raw)},
+			log: autoRenewTestLogger(),
+		}
+		if got := int(w.leadDuration() / time.Hour); got != tc.want {
+			t.Fatalf("lead for %s = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+	// 缺键：默认 24。
+	nilCfg := &AutoRenewWorker{log: autoRenewTestLogger()}
+	if got := int(nilCfg.leadDuration() / time.Hour); got != DefaultAutoRenewLeadHours {
+		t.Fatalf("default lead = %d, want %d", got, DefaultAutoRenewLeadHours)
+	}
+}
+
+// TestAutoRenewRejectsUnsafeBatchBudget 覆盖 R-45 的装配期约束：
+// batch limit × 单笔扣款上限必须小于单轮 deadline。
+func TestAutoRenewRejectsUnsafeBatchBudget(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	_, err := NewAutoRenewWorker(AutoRenewDeps{
+		Subs: newFakeAutoRenewStore(), Methods: &fakeAutoRenewMethods{},
+		Charger: &fakeCharger{}, Sealer: testTokenSealer{}, Redis: rdb,
+		PassTimeout: 10 * time.Second, BatchLimit: 5,
+	})
+	if err == nil {
+		t.Fatal("unsafe batch budget (5 x 5s >= 10s) must be rejected at construction")
+	}
+}
+
+// R-44：retryable 失败（Stripe 5xx）后重试必须复用同一 Idempotency-Key
+// 与同一订单，绝不能换键二次扣款。
+func TestAutoRenewRetryableReusesOrderAndKey(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	userID := createBillingTestUser(t, db, 0)
+	planID := insertSubscriptionPlan(t, db, 5000, 1000, 30, true, "enabled", "")
+	methodRepo := store.NewPaymentMethodRepo(db)
+	method, err := methodRepo.Create(context.Background(), store.PaymentMethodInput{
+		UserID: userID, Provider: "stripe", TokenCipher: "sealed:pm_retry_1_padding",
+		Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030,
+	})
+	if err != nil {
+		t.Fatalf("create payment method: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM payment_methods WHERE id = $1`, method.ID) })
+	subID := insertAutoRenewSubscription(t, db, userID, planID, method.ID, now.Add(2*time.Hour))
+
+	var (
+		mu    sync.Mutex
+		calls int
+		keys  []string
+	)
+	stripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(body))
+		mu.Lock()
+		calls++
+		call := calls
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		mu.Unlock()
+		if form.Get("confirm") != "true" {
+			http.Error(w, "unexpected unconfirmed intent", http.StatusBadRequest)
+			return
+		}
+		if call == 1 {
+			// 第一次：模拟渠道 500（用户的钱可能已扣、也可能没扣；网关必须
+			// 保持 pending 并用同一幂等键重试，由 Stripe 判定最终状态）。
+			http.Error(w, "upstream error", http.StatusInternalServerError)
+			return
+		}
+		_, _ = io.WriteString(w,
+			`{"id":"pi_retry_1","status":"succeeded","amount":5000,"currency":"cny"}`)
+	}))
+	defer stripe.Close()
+
+	cfg := mapConfig{
+		ConfigOnlineEnabled:       json.RawMessage("true"),
+		ConfigStripeEnabled:       json.RawMessage("true"),
+		ConfigStripeSecretKey:     json.RawMessage(`"sk_test_retry"`),
+		ConfigStripeWebhookSecret: json.RawMessage(`"whsec_test_retry"`),
+	}
+	topup, err := NewTopupService(TopupServiceConfig{
+		DB: gormDB, Config: cfg, Logger: autoRenewTestLogger(), StripeBaseURL: stripe.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+	worker := newAutoRenewTestWorker(t, store.NewSubscriptionRepo(db), methodRepo,
+		topup, testTokenSealer{}, now)
+
+	res, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first RunOnce: %v", err)
+	}
+	if res.Retried != 1 || res.Failed != 0 {
+		t.Fatalf("first result = %+v, want retried=1 failed=0", res)
+	}
+	var orderCount int
+	var status string
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE biz_kind='renew' AND biz_ref_id=$1`,
+		subID).Scan(&orderCount); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("orders = %d after a retryable failure, want 1 pending order", orderCount)
+	}
+	if err := db.QueryRow(`SELECT status FROM orders WHERE biz_kind='renew' AND biz_ref_id=$1`,
+		subID).Scan(&status); err != nil {
+		t.Fatalf("read order status: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("order status = %s, want pending after a retryable failure", status)
+	}
+
+	// 跳过 6h 退避后重试。
+	if _, err := db.Exec(`UPDATE subscriptions SET auto_renew_attempted_at = $2 WHERE id = $1`,
+		subID, now.Add(-7*time.Hour)); err != nil {
+		t.Fatalf("reset attempt time: %v", err)
+	}
+	res, err = worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if res.Charged != 1 {
+		t.Fatalf("second result = %+v, want charged=1", res)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE biz_kind='renew' AND biz_ref_id=$1`,
+		subID).Scan(&orderCount); err != nil {
+		t.Fatalf("count orders after retry: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("orders = %d after retry, want the same single order", orderCount)
+	}
+	if len(keys) != 2 || keys[0] != keys[1] || keys[0] == "" {
+		t.Fatalf("idempotency keys = %v, want the same non-empty key on both attempts", keys)
+	}
+}
+
+// R-43：手动续费订单在途时，自动续费必须跳过（不建第二笔订单、不扣款）；
+// 手动结算成功后同一周期再加一笔（模拟旧订单晚到的回调）只能转
+// refund_required，end_at 只加一个周期。
+func TestManualAndAutoRenewSameCycleOnlyOneCharge(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	userID := createBillingTestUser(t, db, 0)
+	planID := insertSubscriptionPlan(t, db, 5000, 1000, 30, true, "enabled", "")
+	methodRepo := store.NewPaymentMethodRepo(db)
+	method, err := methodRepo.Create(context.Background(), store.PaymentMethodInput{
+		UserID: userID, Provider: "stripe", TokenCipher: "sealed:pm_manual_1_padding",
+		Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030,
+	})
+	if err != nil {
+		t.Fatalf("create payment method: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM payment_methods WHERE id = $1`, method.ID) })
+	oldEnd := now.Add(2 * time.Hour)
+	subID := insertAutoRenewSubscription(t, db, userID, planID, method.ID, oldEnd)
+
+	stripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		if form.Get("confirm") == "true" {
+			// 自动续费路径不应该走到这里（手动订单在途时应被跳过）。
+			_, _ = io.WriteString(w,
+				`{"id":"pi_auto_unexpected","status":"succeeded","amount":5000,"currency":"cny"}`)
+			return
+		}
+		// 手动下单：创建未确认的 PaymentIntent。
+		_, _ = io.WriteString(w, `{"id":"pi_manual_1","client_secret":"cs_manual_1"}`)
+	}))
+	defer stripe.Close()
+
+	cfg := mapConfig{
+		ConfigOnlineEnabled:       json.RawMessage("true"),
+		ConfigStripeEnabled:       json.RawMessage("true"),
+		ConfigStripeSecretKey:     json.RawMessage(`"sk_test_manual"`),
+		ConfigStripeWebhookSecret: json.RawMessage(`"whsec_test_123"`),
+	}
+	topup, err := NewTopupService(TopupServiceConfig{
+		DB: gormDB, Config: cfg, Logger: autoRenewTestLogger(), StripeBaseURL: stripe.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewTopupService: %v", err)
+	}
+
+	manual, err := topup.CreateSubscriptionRenewalOrder(context.Background(),
+		userID, subID, "stripe", "manual-cycle-1")
+	if err != nil {
+		t.Fatalf("manual renewal order: %v", err)
+	}
+	if manual.ClientSecret == "" {
+		t.Fatal("manual order must carry the client secret")
+	}
+
+	worker := newAutoRenewTestWorker(t, store.NewSubscriptionRepo(db), methodRepo,
+		topup, testTokenSealer{}, now)
+	res, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("auto RunOnce: %v", err)
+	}
+	if res.Charged != 0 || res.Skipped != 1 {
+		t.Fatalf("auto result = %+v, want charged=0 skipped=1 (manual order in flight)", res)
+	}
+	var orderCount int
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE biz_kind='renew' AND biz_ref_id=$1`,
+		subID).Scan(&orderCount); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("orders = %d, want only the manual order", orderCount)
+	}
+
+	// 手动支付成功：end_at 只加一个周期。
+	if err := renewViaStripe(t, topup, db, manual.Order.ID, 5000); err != nil {
+		t.Fatalf("settle manual renewal: %v", err)
+	}
+	var afterManual time.Time
+	if err := db.QueryRow(`SELECT end_at FROM subscriptions WHERE id=$1`, subID).
+		Scan(&afterManual); err != nil {
+		t.Fatalf("read end_at: %v", err)
+	}
+	if got := afterManual.Sub(oldEnd); got < 30*24*time.Hour-time.Minute ||
+		got > 30*24*time.Hour+time.Minute {
+		t.Fatalf("end_at advanced by %v, want ~30d", got)
+	}
+
+	// 模拟同周期的旧订单晚到回调：用旧快照（cycle_end_at=oldEnd）插一笔
+	// pending 订单并结算，必须转 refund_required，end_at 保持不变。
+	var metadata []byte
+	if err := db.QueryRow(`SELECT channel_metadata FROM orders WHERE id=$1`,
+		manual.Order.ID).Scan(&metadata); err != nil {
+		t.Fatalf("read manual metadata: %v", err)
+	}
+	var staleID int64
+	if err := db.QueryRow(`
+		INSERT INTO orders (user_id, provider, amount, currency, status,
+			idempotency_key, biz_kind, biz_ref_id, channel_metadata)
+		VALUES ($1, 'stripe', 5000, 'CNY', 'pending', 'stale-cycle-1', 'renew', $2, $3)
+		RETURNING id`, userID, subID, metadata).Scan(&staleID); err != nil {
+		t.Fatalf("insert stale order: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM orders WHERE id = $1`, staleID) })
+	stale := &store.Order{
+		ID: staleID, UserID: userID, Provider: "stripe", Amount: 5000,
+		Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindRenew,
+		BizRefID: &subID, ChannelMetadata: metadata,
+	}
+	if err := topup.settleSubscriptionRenewal(context.Background(), stale,
+		5000, "CNY", []byte(`{"id":"evt_stale"}`)); err != nil {
+		t.Fatalf("stale renewal settlement must succeed (payment accepted): %v", err)
+	}
+	var staleStatus string
+	if err := db.QueryRow(`SELECT status FROM orders WHERE id=$1`, staleID).
+		Scan(&staleStatus); err != nil {
+		t.Fatalf("read stale order: %v", err)
+	}
+	if staleStatus != "refund_required" {
+		t.Fatalf("stale order status = %s, want refund_required", staleStatus)
+	}
+	var afterStale time.Time
+	if err := db.QueryRow(`SELECT end_at FROM subscriptions WHERE id=$1`, subID).
+		Scan(&afterStale); err != nil {
+		t.Fatalf("read end_at after stale settlement: %v", err)
+	}
+	if !afterStale.Equal(afterManual) {
+		t.Fatalf("end_at moved from %s to %s after the stale settlement, want unchanged",
+			afterManual, afterStale)
+	}
+	var succeeded int
+	if err := db.QueryRow(`SELECT count(*) FROM orders
+		WHERE biz_kind='renew' AND biz_ref_id=$1 AND status='succeeded'`, subID).
+		Scan(&succeeded); err != nil {
+		t.Fatalf("count succeeded orders: %v", err)
+	}
+	if succeeded != 1 {
+		t.Fatalf("succeeded renewal orders = %d, want exactly 1", succeeded)
+	}
 }

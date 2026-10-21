@@ -399,7 +399,8 @@
       "auto_renew_requires_method": "Hãy thêm phương thức thanh toán trước khi bật gia hạn tự động.",
       "auto_renew_error": "Không thể cập nhật gia hạn tự động.",
       "auto_renew_saving": "Đang lưu...",
-      "auto_renew_failures": "{count} lần thử thất bại liên tiếp"
+      "auto_renew_failures": "{count} lần thử thất bại liên tiếp",
+      "auto_renew_failed_hint": "Gia hạn tự động đã tắt sau nhiều lần thanh toán thất bại. Hãy cập nhật thẻ và bật lại."
     },
     "status": {
       "active": "Hoạt động",

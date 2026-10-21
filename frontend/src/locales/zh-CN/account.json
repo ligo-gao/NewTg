@@ -399,7 +399,8 @@
       "auto_renew_requires_method": "请先添加支付方式再开启自动续费。",
       "auto_renew_error": "无法更新自动续费。",
       "auto_renew_saving": "正在保存...",
-      "auto_renew_failures": "连续失败 {count} 次"
+      "auto_renew_failures": "连续失败 {count} 次",
+      "auto_renew_failed_hint": "自动续费因多次扣款失败已关闭，请更新支付方式后重新开启。"
     },
     "status": {
       "active": "活跃",

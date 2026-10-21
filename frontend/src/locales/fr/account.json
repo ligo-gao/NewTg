@@ -399,7 +399,8 @@
       "auto_renew_requires_method": "Ajoutez un moyen de paiement avant d'activer le renouvellement automatique.",
       "auto_renew_error": "Impossible de mettre à jour le renouvellement automatique.",
       "auto_renew_saving": "Enregistrement...",
-      "auto_renew_failures": "{count} tentative(s) échouée(s) consécutive(s)"
+      "auto_renew_failures": "{count} tentative(s) échouée(s) consécutive(s)",
+      "auto_renew_failed_hint": "Le renouvellement automatique est désactivé après plusieurs échecs de paiement. Ajoutez une carte puis réactivez-le."
     },
     "status": {
       "active": "Actif",

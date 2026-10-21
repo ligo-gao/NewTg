@@ -36,7 +36,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -455,15 +457,17 @@ type userSubscriptionView struct {
 	// amount_remain 必须整个省略而不是返回 0/null（user.yaml/admin.yaml 同口径）。
 	// 指针 nil + omitempty 正好覆盖 amountRemain 的 nil 分支；有限额度时指针
 	// 非 nil，字段照常输出（含 0）。
-	AmountRemain      *int64    `json:"amount_remain,omitempty"`
-	AutoRenew         bool      `json:"auto_renew"`
-	CancelAtPeriodEnd bool      `json:"cancel_at_period_end"`
-	PeriodDays        int32     `json:"period_days"`
-	GraceDays         int32     `json:"grace_days"`
-	ModelScope        []string  `json:"model_scope"`
-	ConcurrencyLimit  *int32    `json:"concurrency_limit"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	AmountRemain             *int64    `json:"amount_remain,omitempty"`
+	AutoRenew                bool      `json:"auto_renew"`
+	AutoRenewPaymentMethodID *string   `json:"auto_renew_payment_method_id,omitempty"`
+	AutoRenewFailures        int32     `json:"auto_renew_failures"`
+	CancelAtPeriodEnd        bool      `json:"cancel_at_period_end"`
+	PeriodDays               int32     `json:"period_days"`
+	GraceDays                int32     `json:"grace_days"`
+	ModelScope               []string  `json:"model_scope"`
+	ConcurrencyLimit         *int32    `json:"concurrency_limit"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 // adminSubscriptionView 额外带 user_id 与订单/价格列（管理对账口径）。
@@ -546,8 +550,10 @@ func newUserSubscriptionView(rec store.Subscription) userSubscriptionView {
 		StartAt: rec.StartAt, EndAt: rec.EndAt, NextResetAt: rec.NextResetAt,
 		AmountTotal: rec.AmountTotal, AmountUsed: rec.AmountUsed,
 		AmountRemain: amountRemain(rec.AmountTotal, rec.AmountUsed),
-		AutoRenew:    rec.AutoRenew, CancelAtPeriodEnd: rec.CancelAtPeriodEnd,
-		PeriodDays: rec.PeriodDays, GraceDays: rec.GraceDays,
+		AutoRenew:    rec.AutoRenew, AutoRenewPaymentMethodID: rec.AutoRenewPaymentMethodID,
+		AutoRenewFailures: rec.AutoRenewFailures,
+		CancelAtPeriodEnd: rec.CancelAtPeriodEnd,
+		PeriodDays:        rec.PeriodDays, GraceDays: rec.GraceDays,
 		ModelScope: decodeModelScope(rec.ModelScope), ConcurrencyLimit: rec.ConcurrencyLimit,
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
 	}
@@ -1790,6 +1796,42 @@ type subscriptionRenewRequest struct {
 	Provider *string `json:"provider"`
 }
 
+// 手动续费与自动续费共用 P-17 的锁命名空间（R-43）。TTL 只覆盖一次下单
+// 事务（渠道创建 PaymentIntent 也在其中）；真正的长期互斥由周期锚在结算
+// 时完成，不能指望在用户支付期间一直持有 Redis 锁。
+const renewOrderLockTTL = 30 * time.Second
+
+var releaseRenewLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0`)
+
+func (h *SubscriptionHandlers) acquireRenewLock(ctx context.Context,
+	id int64) (string, bool, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", false, err
+	}
+	token := hex.EncodeToString(buf)
+	key := billing.AutoRenewLockPrefix + strconv.FormatInt(id, 10)
+	acquired, err := h.rdb.SetNX(ctx, key, token, renewOrderLockTTL).Result()
+	if err != nil {
+		return "", false, err
+	}
+	return token, acquired, nil
+}
+
+func (h *SubscriptionHandlers) releaseRenewLock(id int64, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	key := billing.AutoRenewLockPrefix + strconv.FormatInt(id, 10)
+	if err := releaseRenewLockScript.Run(ctx, h.rdb, []string{key}, token).Err(); err != nil {
+		h.log.Warn("release renewal lock failed (TTL will reclaim it)",
+			"subscription_id", id, "error", err)
+	}
+}
+
 // handleRenewSubscription 创建手动续费订单（billing-08 §3.3 方案甲，P2a）。
 //
 // 状态口径：
@@ -1857,6 +1899,24 @@ func (h *SubscriptionHandlers) handleRenewSubscription(w http.ResponseWriter, r 
 		return
 	}
 
+	// R-43：与自动续费 worker 争用同一把 `subscriptions:renew:<id>` 锁。
+	// 拿不到说明同一实例正在下单/扣款，返回 409 让用户稍后重试，而不是
+	// 与对方各建一笔订单（周期锚仍会兜底，但不该让用户白付一次）。
+	lockToken, acquired, lockErr := h.acquireRenewLock(r.Context(), id)
+	if lockErr != nil {
+		h.log.Warn("acquire renewal lock failed", "subscription_id", id, "error", lockErr)
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeRenewUnavailable,
+			"Subscription renewal is unavailable", "the renewal service is temporarily unavailable", nil)
+		return
+	}
+	if !acquired {
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeRenewConflict,
+			"Subscription renewal conflict", "another renewal for this subscription is in progress", nil)
+		return
+	}
+	defer h.releaseRenewLock(id, lockToken)
+
 	result, err := h.purchase.CreateSubscriptionRenewalOrder(r.Context(), p.UserID, id, provider, key)
 	if err != nil {
 		h.writeRenewalError(w, err)
@@ -1893,6 +1953,12 @@ func (h *SubscriptionHandlers) writeRenewalError(w http.ResponseWriter, err erro
 		errors.Is(err, billing.ErrInvalidProvider):
 		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRenewInvalid,
 			"Invalid subscription renewal", "provider or Idempotency-Key is invalid", nil)
+	case errors.Is(err, billing.ErrRenewalCycleConflict):
+		// 同一周期已有在途续费（手动或自动）：不建第二笔订单，用户稍后重试
+		// 时若对方已完成，会读到新的 end_at 并进入下一个周期。
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeRenewConflict,
+			"Subscription renewal conflict",
+			"a renewal for this billing period is already in progress", nil)
 	case errors.Is(err, billing.ErrSubscriptionNotRenewable),
 		errors.Is(err, billing.ErrSubscriptionPlanUnavailable),
 		errors.Is(err, billing.ErrIdempotencyConflict):

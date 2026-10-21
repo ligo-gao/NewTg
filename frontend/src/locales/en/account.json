@@ -399,7 +399,8 @@
       "auto_renew_requires_method": "Add a payment method before enabling auto-renew.",
       "auto_renew_error": "Could not update auto-renew.",
       "auto_renew_saving": "Saving...",
-      "auto_renew_failures": "{count} consecutive failed attempt(s)"
+      "auto_renew_failures": "{count} consecutive failed attempt(s)",
+      "auto_renew_failed_hint": "Auto-renew is off after repeated payment failures. Add a card and turn it back on."
     },
     "status": {
       "active": "Active",

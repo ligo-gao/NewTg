@@ -105,6 +105,7 @@ func TestSubscriptionEventsLifecycle(t *testing.T) {
 		Currency:          plan.Currency,
 		PricePaidAmount:   plan.PriceAmount,
 		Now:               now,
+		ExpectedEndAt:     sub.EndAt,
 	}); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("renew: %v", err)
@@ -217,11 +218,13 @@ func TestSubscriptionEventsLifecycle(t *testing.T) {
 	}
 }
 
-// TestSubscriptionEventsConcurrentTransitionsKeepSeqContiguous 并发两条迁移
-// （这里是 5 条并发续费）不得产生重复或跳号 seq。
+// TestSubscriptionEventsConcurrentTransitionsKeepSeqContiguous 并发追加事件
+// 不得产生重复或跳号 seq。
 //
-// 续费路径允许 active 实例反复扩展，因此每个事务都会成功并各写一条事件，
-// 是验证 R-17「行锁内取 max+1 / 唯一键冲突整体重试而非跳号」的最直接场景。
+// 直接并发调用 AppendSubscriptionEvent（等价于 5 条并发迁移）：每个事务在
+// 订阅行锁内取 max+1，是验证 R-17「唯一键冲突整体重试而非跳号」的最直接
+// 场景。R-43 之后续费本身不允许同周期并发成功，故不通过 RenewSubscription
+// 制造并发。
 func TestSubscriptionEventsConcurrentTransitionsKeepSeqContiguous(t *testing.T) {
 	db := openTestDB(t)
 	repo := NewSubscriptionRepo(db)
@@ -250,19 +253,16 @@ func TestSubscriptionEventsConcurrentTransitionsKeepSeqContiguous(t *testing.T) 
 				mu.Unlock()
 				return
 			}
-			if _, err := RenewSubscription(ctx, tx, RenewalExtendInput{
-				SubscriptionID:    sub.ID,
-				UserID:            sub.UserID,
-				PlanID:            plan.ID,
-				PlanTitleSnapshot: plan.Title,
-				PeriodDays:        plan.PeriodDays,
-				GrantCredits:      plan.GrantCredits,
-				ResetOnRenew:      plan.ResetOnRenew,
-				GraceDays:         plan.GraceDays,
-				Currency:          plan.Currency,
-				PricePaidAmount:   int64(n),
-				Now:               now,
-			}); err != nil {
+			// R-43 之后同一周期的 RenewSubscription 只允许一笔成功，因此
+			// 这里直接并发追加 renewed 事件来验证 seq 机制本身（行锁内取
+			// max+1、唯一键冲突整体重试）。事件写入路径与续费共用同一个
+			// AppendSubscriptionEvent，覆盖目标不变。
+			if err := AppendSubscriptionEvent(ctx, tx, sub.ID,
+				SubscriptionEventRenewed, map[string]any{
+					"plan_id":           plan.ID,
+					"amount_total":      plan.GrantCredits,
+					"price_paid_amount": int64(n),
+				}); err != nil {
 				_ = tx.Rollback()
 				mu.Lock()
 				errs = append(errs, err)

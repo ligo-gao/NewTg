@@ -2338,6 +2338,9 @@ paths:
         （billing-08 §3.3 方案甲）。
 
         `Idempotency-Key` 必带；同 key 重放返回首次订单（200，不回放支付凭据）。
+        同一实例的**同一周期只允许一笔续费成功**（R-43）：下单时用 `FOR UPDATE`
+        冻结周期末并占用 `subscriptions:renew:<id>` 锁；已有在途续费时返回 409，
+        晚到的同周期支付回调会转 `refund_required`，`end_at` 绝不会加两个周期。
         `price_amount=0` 的套餐在同一事务内直接创建 succeeded 订单并扩展实例。
 
         仅本人实例；他人实例与不存在统一 404；`cancelled` 终态 → 409，
