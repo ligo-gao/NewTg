@@ -47,17 +47,17 @@ func TestPollerLimitsUnsetUseDesignDefaults(t *testing.T) {
 	if p.maxFailures != DefaultMaxPollFailures {
 		t.Fatalf("unset maxFailures = %d, want %d", p.maxFailures, DefaultMaxPollFailures)
 	}
-	// 1440 分钟边界：恰好 1440 分钟即超时（设计 `now - 上限*60 > submit_time`
-	// 的实现口径是「不早于」，与 timedOut 的 !Before 一致）。
-	start := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-DefaultTaskTimeout)
-	task := &Task{SubmitTime: &start}
-	if !p.timedOut(task) {
-		t.Fatalf("task at exactly the default timeout must time out")
-	}
-	inside := start.Add(time.Second)
-	task.SubmitTime = &inside
+	// 边界方向按设计/基线冻结为严格大于（`now - 上限*60 > submit_time`）：
+	// 恰好等于阈值**不**超时，超过一秒才超时。
+	exact := p.now().Add(-DefaultTaskTimeout)
+	task := &Task{SubmitTime: &exact}
 	if p.timedOut(task) {
-		t.Fatalf("task one second inside the default timeout must not time out")
+		t.Fatalf("exactly the default timeout must not time out (strict >)")
+	}
+	over := exact.Add(-time.Second)
+	task.SubmitTime = &over
+	if !p.timedOut(task) {
+		t.Fatalf("one second past the default timeout must time out")
 	}
 }
 
@@ -109,8 +109,12 @@ func TestPollerLimitsPositiveValuesAndBoundaries(t *testing.T) {
 		t.Fatalf("positive config not preserved: timeout=%v maxFailures=%d", p.timeout, p.maxFailures)
 	}
 	exact := p.now().Add(-time.Minute)
-	if !p.timedOut(&Task{SubmitTime: &exact}) {
-		t.Fatalf("exactly the configured timeout must time out")
+	if p.timedOut(&Task{SubmitTime: &exact}) {
+		t.Fatalf("exactly the configured timeout must not time out (strict >)")
+	}
+	over := exact.Add(-time.Second)
+	if !p.timedOut(&Task{SubmitTime: &over}) {
+		t.Fatalf("one second past the configured timeout must time out")
 	}
 	inside := exact.Add(time.Second)
 	if p.timedOut(&Task{SubmitTime: &inside}) {
@@ -237,6 +241,45 @@ func TestMJPollerEnforcesTimeoutAndFailureLimit(t *testing.T) {
 	if got.State != StateFailure || got.FailReason != "poll_failures_exceeded" ||
 		!boolFlag(got.PrivateData["billing_pending"]) {
 		t.Fatalf("MJ failure limit not enforced: %#v", got)
+	}
+}
+
+// TestMJPollerTimeoutBoundaryMatchesPluginPoller：MJ 与插件族共用严格大于
+// 的边界（Now 接缝注入固定时钟）。
+func TestMJPollerTimeoutBoundaryMatchesPluginPoller(t *testing.T) {
+	fixed := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	oneMinute := time.Minute
+	zeroInt := 0
+
+	repo := newFakePollRepo()
+	exact := mjSubmittedTask(1, 7)
+	exactTime := fixed.Add(-oneMinute)
+	exact.SubmitTime = &exactTime
+	repo.add(exact)
+
+	called := 0
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo: repo, Timeout: &oneMinute, MaxFailures: &zeroInt,
+		Now:     func() time.Time { return fixed },
+		Handler: func(context.Context, *Task) error { called++; return nil },
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+	p.RunOnce(context.Background())
+	if called != 1 {
+		t.Fatalf("exactly the timeout must not fail the row (strict >), handler calls=%d", called)
+	}
+
+	over := mjSubmittedTask(2, 7)
+	overTime := fixed.Add(-oneMinute - time.Second)
+	over.SubmitTime = &overTime
+	repo.add(over)
+	p.RunOnce(context.Background())
+	got := repo.get(over.ID)
+	if got.State != StateFailure || got.FailReason != "task_timeout" {
+		t.Fatalf("one second past the timeout must fail: state=%s reason=%s",
+			got.State, got.FailReason)
 	}
 }
 

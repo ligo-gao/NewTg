@@ -184,8 +184,9 @@ func TestW9B4PollerExplicitZeroDisables(t *testing.T) {
 	}
 }
 
-// TestW9B4PollerPositiveLimitsAndBoundaries：正值按值；恰好等于阈值算超时，
-// 超一（早一秒）不算；失败上限 2 在第 2 次触发。
+// TestW9B4PollerPositiveLimitsAndBoundaries：正值按值；超过阈值 10s 判超时、
+// 阈值内 10s 不判（严格大于的实钟验收；精确等号边界用注入 Now 的单测覆盖）；
+// 失败上限 2 在第 2 次触发。
 func TestW9B4PollerPositiveLimitsAndBoundaries(t *testing.T) {
 	repo, ctx := openW9B4Repo(t)
 	userID := w9b4UserID(t)
@@ -197,7 +198,8 @@ func TestW9B4PollerPositiveLimitsAndBoundaries(t *testing.T) {
 	zeroDuration := time.Duration(0)
 	zeroInt := 0
 	now := time.Now()
-	exact := insertW9B4Task(t, repo, ctx, userID, "w9b4_exact_timeout", FamilyPlugin, now.Add(-oneMinute))
+	over := insertW9B4Task(t, repo, ctx, userID, "w9b4_over_timeout", FamilyPlugin,
+		now.Add(-oneMinute-10*time.Second))
 	inside := insertW9B4Task(t, repo, ctx, userID, "w9b4_inside_timeout", FamilyPlugin,
 		now.Add(-oneMinute+10*time.Second))
 
@@ -205,9 +207,9 @@ func TestW9B4PollerPositiveLimitsAndBoundaries(t *testing.T) {
 	p := w9b4NewPluginPoller(t, repo, handoff, &oneMinute, &zeroInt)
 	p.RunOnce(ctx)
 
-	gotExact := getW9B4Task(t, repo, ctx, exact.ID)
-	if gotExact.State != StateFailure || gotExact.FailReason != "task_timeout" {
-		t.Fatalf("exactly 1m must time out: state=%s reason=%s", gotExact.State, gotExact.FailReason)
+	gotOver := getW9B4Task(t, repo, ctx, over.ID)
+	if gotOver.State != StateFailure || gotOver.FailReason != "task_timeout" {
+		t.Fatalf("10s past 1m must time out: state=%s reason=%s", gotOver.State, gotOver.FailReason)
 	}
 	gotInside := getW9B4Task(t, repo, ctx, inside.ID)
 	if gotInside.State.Terminal() {

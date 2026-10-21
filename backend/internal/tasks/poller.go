@@ -185,6 +185,16 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 	return p, nil
 }
 
+// TimeoutLimit / MaxFailuresLimit 返回已生效（三态默认化之后）的上限。
+//
+// 只读观测面：平台装配的接线测试与运维日志需要看到「配置是否真的传进来」，
+// 而不是只看构造函数的入参。0 明确表示禁用，与「未配置」回落后得到的
+// 1440m/20 可区分。
+func (p *Poller) TimeoutLimit() time.Duration { return p.timeout }
+
+// MaxFailuresLimit 见 TimeoutLimit。
+func (p *Poller) MaxFailuresLimit() int { return p.maxFailures }
+
 // Run 运行轮询循环直到 ctx 取消（停机不是错误）。
 func (p *Poller) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
@@ -589,10 +599,13 @@ func (p *Poller) timedOut(task *Task) bool {
 
 // taskTimedOut 是插件/MJ 两族共用的外层超时判定（W9-B4）。
 //
-// 抽成包级函数是为了让 MJPoller 与插件 Poller 使用**同一份**边界语义：
-// 恰好等于阈值即视为超时（`!now.Before(start.Add(timeout))`），避免两族
-// 各自实现后在边界上漂移。timeout <= 0 表示禁用（设计冻结的 `<=0` 语义），
-// 未配置由构造器先填默认值。
+// 抽成包级函数是为了让 MJPoller 与插件 Poller 使用**同一份**边界语义，
+// 避免两族各自实现后在边界上漂移。
+//
+// 边界方向按设计原文与基线实现冻结为**严格大于**
+// （`now - 上限*60 > submit_time`）：恰好等于阈值仍不算超时，超过一秒才
+// 算。timeout <= 0 表示禁用（设计冻结的 `<=0` 语义），未配置由构造器先
+// 填默认值。
 func taskTimedOut(task *Task, timeout time.Duration, now time.Time) bool {
 	if task == nil || timeout <= 0 {
 		return false
@@ -604,7 +617,7 @@ func taskTimedOut(task *Task, timeout time.Duration, now time.Time) bool {
 	if start == nil || start.IsZero() {
 		return false
 	}
-	return !now.Before(start.Add(timeout))
+	return now.After(start.Add(timeout))
 }
 
 // buildQueryContext 组装 TaskQueryContext（relay-06 §3.2）。

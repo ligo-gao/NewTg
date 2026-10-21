@@ -2,12 +2,15 @@ package platform
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -88,6 +91,9 @@ func TestTaskPollLimitsBadValuesFallBackWithWarning(t *testing.T) {
 		{"bool", `true`, `true`},
 		{"object", `{"v":1}`, `{"v":1}`},
 		{"negative", `-1`, `-1`},
+		// JSON null 解到 int64 会返回零值且无错误：必须与「显式 0」区分，
+		// 否则会静默禁用兜底（fail-open）。
+		{"null", `null`, `null`},
 		// 2^53-1 分钟 > MaxInt64/time.Minute：必须被溢出护栏拦下。
 		{"overflow-minutes", `9007199254740991`, `"abc"`},
 	}
@@ -149,5 +155,95 @@ func TestDescribeLimitsDistinguishesUnsetFromZero(t *testing.T) {
 	}
 	if got := describeMaxFailures(&zero); got != "0" {
 		t.Fatalf("explicit zero maxFailures = %q, want 0", got)
+	}
+}
+
+// ---- 接线用例（I1）---------------------------------------------------------
+//
+// buildTaskPollers 是 startTaskPoller 唯一的装配路径。这里用最小 fake 走
+// 同一函数，并从两个 poller 的 accessor 读回**生效值**：删除插件侧或 MJ
+// 侧的 Timeout/MaxFailures 赋值都会让用例变红，而不是静默回落默认。
+
+type wiringRepo struct{}
+
+func (wiringRepo) ListPendingByFamily(context.Context, string, int) ([]*tasks.Task, error) {
+	return nil, nil
+}
+
+func (wiringRepo) ListReconcilable(context.Context, string, int) ([]*tasks.Task, error) {
+	return nil, nil
+}
+
+func (wiringRepo) GetChannel(context.Context, int64) (*tasks.ChannelTarget, error) {
+	return nil, nil
+}
+
+func (wiringRepo) ApplyPoll(context.Context, int64, tasks.State, tasks.PollUpdate) (bool, error) {
+	return false, nil
+}
+
+func (wiringRepo) UpdateBilling(context.Context, int64, *int64, map[string]any) error {
+	return nil
+}
+
+type wiringPlugins struct{}
+
+func (wiringPlugins) Snapshot() *plugin.Snapshot   { return &plugin.Snapshot{} }
+func (wiringPlugins) Reload(context.Context) error { return nil }
+
+type wiringBilling struct{}
+
+func (wiringBilling) TerminateByRequestIDForToken(string, int64, contract.UsageFact) error {
+	return nil
+}
+
+func (wiringBilling) TerminateByRequestIDForTokenCost(string, int64, int64, contract.UsageFact) error {
+	return nil
+}
+
+func (wiringBilling) RefundByRequestIDForToken(string, int64) error { return nil }
+
+func TestBuildTaskPollersWiresLimitsIntoBothPollers(t *testing.T) {
+	cases := []struct {
+		name        string
+		reader      fakeSettingReader
+		wantTimeout time.Duration
+		wantMax     int
+	}{
+		{"unset", fakeSettingReader{}, tasks.DefaultTaskTimeout, tasks.DefaultMaxPollFailures},
+		{"zero", fakeSettingReader{
+			settingTaskPollTimeoutMinutes: json.RawMessage(`0`),
+			settingTaskPollMaxFailures:    json.RawMessage(`0`),
+		}, 0, 0},
+		{"positive", fakeSettingReader{
+			settingTaskPollTimeoutMinutes: json.RawMessage(`90`),
+			settingTaskPollMaxFailures:    json.RawMessage(`7`),
+		}, 90 * time.Minute, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poller, mjPoller, err := buildTaskPollers(taskPollerDeps{
+				Repo:    wiringRepo{},
+				Plugins: wiringPlugins{},
+				Billing: wiringBilling{},
+				Limits:  tc.reader,
+				Log:     slog.Default(),
+			})
+			if err != nil {
+				t.Fatalf("buildTaskPollers: %v", err)
+			}
+			if got := poller.TimeoutLimit(); got != tc.wantTimeout {
+				t.Fatalf("plugin poller timeout = %v, want %v (wiring lost?)", got, tc.wantTimeout)
+			}
+			if got := poller.MaxFailuresLimit(); got != tc.wantMax {
+				t.Fatalf("plugin poller maxFailures = %d, want %d (wiring lost?)", got, tc.wantMax)
+			}
+			if got := mjPoller.TimeoutLimit(); got != tc.wantTimeout {
+				t.Fatalf("mj poller timeout = %v, want %v (wiring lost?)", got, tc.wantTimeout)
+			}
+			if got := mjPoller.MaxFailuresLimit(); got != tc.wantMax {
+				t.Fatalf("mj poller maxFailures = %d, want %d (wiring lost?)", got, tc.wantMax)
+			}
+		})
 	}
 }

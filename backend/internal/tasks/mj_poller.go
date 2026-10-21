@@ -25,7 +25,8 @@ import (
 // MJTaskHandler 是 MJ 任务推进的接缝（A0 的生产装配不注入）。
 //
 // MJ-b 在这里接上游查询/状态映射；MJ-a2/d 在这里接终态结算。返回 error
-// 只用于日志：A0 不定义重试/失败计数语义，那属于 MJ-b 的调度策略。
+// 会由 MJPoller 计入连续失败（W9-B4 起与插件族同口径），达到配置上限时
+// 转 FAILURE；上游查询的具体重试/退避策略仍属于 MJ-b。
 type MJTaskHandler func(ctx context.Context, task *Task) error
 
 // MJPollerConfig 是 MJ 领取器的依赖与可调参数；零值字段使用冻结默认值。
@@ -33,6 +34,9 @@ type MJPollerConfig struct {
 	Repo    PendingRepo
 	Handler MJTaskHandler
 	Logger  *slog.Logger
+
+	// Now 是测试接缝；nil → time.Now（与插件 Poller 的 Now 同口径）。
+	Now func() time.Time
 
 	Interval   time.Duration
 	QueryLimit int
@@ -54,6 +58,7 @@ type MJPoller struct {
 	repo        PendingRepo
 	handler     MJTaskHandler
 	log         *slog.Logger
+	now         func() time.Time
 	interval    time.Duration
 	queryLimit  int
 	maxFailures int
@@ -70,8 +75,12 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 		repo:       cfg.Repo,
 		handler:    cfg.Handler,
 		log:        cfg.Logger,
+		now:        cfg.Now,
 		interval:   orDefaultDuration(cfg.Interval, DefaultPollInterval),
 		queryLimit: orDefaultInt(cfg.QueryLimit, DefaultQueryLimit),
+	}
+	if p.now == nil {
+		p.now = time.Now
 	}
 	// 三态默认化与 NewPoller 完全相同：nil 才回落默认，&0 保留为禁用。
 	p.maxFailures = DefaultMaxPollFailures
@@ -87,6 +96,15 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 	}
 	return p, nil
 }
+
+// TimeoutLimit / MaxFailuresLimit 返回三态默认化之后生效的上限。
+//
+// 与插件 Poller 同名方法同语义：只读观测面，供平台接线测试确认配置真的
+// 传到了 MJ 领取器；0 = 禁用，未配置时是 1440m/20。
+func (p *MJPoller) TimeoutLimit() time.Duration { return p.timeout }
+
+// MaxFailuresLimit 见 TimeoutLimit。
+func (p *MJPoller) MaxFailuresLimit() int { return p.maxFailures }
 
 // Run 运行领取循环直到 ctx 取消（停机不是错误）。
 func (p *MJPoller) Run(ctx context.Context) error {
@@ -160,7 +178,7 @@ func (p *MJPoller) processTask(ctx context.Context, task *Task) {
 	// Handler 已注入 = 调用方接管了 MJ 推进（MJ-b/MJ-a2/d）。此时超时与
 	// 连续失败上限按与插件族相同的配置生效（W9-B4 的「同一约束」）。
 	from := task.State
-	if taskTimedOut(task, p.timeout, time.Now()) {
+	if taskTimedOut(task, p.timeout, p.now()) {
 		p.failTask(ctx, task, from, "task_timeout")
 		return
 	}
@@ -178,7 +196,7 @@ func (p *MJPoller) processTask(ctx context.Context, task *Task) {
 // 这里不直接退款——MJPoller 没有计费依赖，MJ 的结算时机由 MJ-a2/d 负责，
 // W9-B4 只负责把配置的判定接进来，不改变结算语义。
 func (p *MJPoller) failTask(ctx context.Context, task *Task, from State, reason string) {
-	now := time.Now().UTC()
+	now := p.now().UTC()
 	won, err := p.repo.ApplyPoll(ctx, task.ID, from, PollUpdate{
 		State:      StateFailure,
 		RawState:   task.RawState,

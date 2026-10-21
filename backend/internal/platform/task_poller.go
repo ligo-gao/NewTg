@@ -82,41 +82,26 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 	}
 
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
-	// W9-B4 / R-W9B-04：把运营配置真正传进两个轮询器。指针语义保证
-	// 「未配置」与「显式 0=禁用」不会被混为一谈。
-	timeout, maxFailures := taskPollLimits(center, log)
-	log.Info("worker: task poll limits resolved",
-		"timeout", describeTimeout(timeout), "max_failures", describeMaxFailures(maxFailures))
-	poller, err := tasks.NewPoller(tasks.PollerConfig{
+	// W8/MJ-A0：MJ 族有独立的领取入口（family='mj'）。A0 只装配领取骨架
+	// （Handler 为 nil：只领取、不推进/不结算）；MJ-b 在这里注入查询驱动，
+	// MJ-a2/d 注入计费时机。先装配的价值是让「MJ 行有唯一归属的 poller」
+	// 在数据面上成立，而不是只依赖插件 poller 的 SQL 过滤（R-MJ-04 纵深防御）。
+	//
+	// W9-B4：两个轮询器由同一构造函数装配，配置上限只在该函数内解析一次
+	// 并同时注入两侧；接线本身有单测（buildTaskPollers 的 accessor 断言），
+	// 删除任一侧的赋值都会让用例变红。
+	poller, mjPoller, err := buildTaskPollers(taskPollerDeps{
 		Repo:    tasks.NewRepo(db),
 		Plugins: manager,
 		Billing: engine,
 		Decrypt: func(sealed []byte) (string, error) {
 			return decryptTaskChannelCredential(sealer, sealed)
 		},
-		Logger: log,
-		// Timeout/MaxFailures 为 nil 时回落设计默认（1440m/20）。
-		Timeout:     timeout,
-		MaxFailures: maxFailures,
+		Limits: center,
+		Log:    log,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("worker: task poller: %w", err)
-	}
-
-	// W8/MJ-A0：MJ 族有独立的领取入口（family='mj'）。A0 只装配领取骨架
-	// （Handler 为 nil：只领取、不推进/不结算）；MJ-b 在这里注入查询驱动，
-	// MJ-a2/d 注入计费时机。先装配的价值是让「MJ 行有唯一归属的 poller」
-	// 在数据面上成立，而不是只依赖插件 poller 的 SQL 过滤（R-MJ-04 纵深防御）。
-	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
-		Repo:   tasks.NewRepo(db),
-		Logger: log,
-		// 同一对配置同时约束 MJ 领取器（W9-B4）。Handler 为空时它仍不会
-		// 因超时改状态——A0 冻结语义，见 tasks/mj_poller.go。
-		Timeout:     timeout,
-		MaxFailures: maxFailures,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("worker: mj task poller: %w", err)
+		return nil, err
 	}
 
 	pollCtx, cancel := context.WithCancel(parent)
@@ -139,6 +124,61 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 		<-done
 		<-mjDone
 	}, nil
+}
+
+// taskPollerDeps 是 buildTaskPollers 的装配输入。
+//
+// Limits 是设置读取面（生产 *configcenter.Center，测试用 fake）；把依赖
+// 收进结构体是为了让接线单测只替换存储/计费/插件，而不复制生产构造路径。
+type taskPollerDeps struct {
+	Repo    tasks.PendingRepo
+	Plugins tasks.PluginSnapshotter
+	Billing tasks.BillingHandoff
+	Decrypt func([]byte) (string, error)
+	Limits  settingReader
+	Log     *slog.Logger
+}
+
+// buildTaskPollers 用一个解析结果装配插件 poller 与 MJ poller（W9-B4）。
+//
+// 这是「配置 → 两个轮询器」的唯一路径：startTaskPoller 与接线单测都调用
+// 它，因此删除任一侧的 Timeout/MaxFailures 赋值都会让接线用例变红，而不是
+// 只在集成环境里静默回落默认值。
+func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, error) {
+	log := deps.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	// 指针语义保证「未配置」与「显式 0=禁用」不会被混为一谈。
+	timeout, maxFailures := taskPollLimits(deps.Limits, log)
+	log.Info("worker: task poll limits resolved",
+		"timeout", describeTimeout(timeout), "max_failures", describeMaxFailures(maxFailures))
+
+	poller, err := tasks.NewPoller(tasks.PollerConfig{
+		Repo:    deps.Repo,
+		Plugins: deps.Plugins,
+		Billing: deps.Billing,
+		Decrypt: deps.Decrypt,
+		Logger:  log,
+		// nil 时 NewPoller 回落设计默认（1440m/20）。
+		Timeout:     timeout,
+		MaxFailures: maxFailures,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: task poller: %w", err)
+	}
+	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
+		Repo:   deps.Repo,
+		Logger: log,
+		// 同一对配置同时约束 MJ 领取器。Handler 为空时它仍不会因超时改
+		// 状态——A0 冻结语义，见 tasks/mj_poller.go。
+		Timeout:     timeout,
+		MaxFailures: maxFailures,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("worker: mj task poller: %w", err)
+	}
+	return poller, mjPoller, nil
 }
 
 // decryptTaskChannelCredential 解开 channels.credentials 并取出 api_key。
@@ -203,8 +243,13 @@ func taskPollLimits(reader settingReader, log *slog.Logger) (timeout *time.Durat
 
 // readSettingInt 读取一个非负整数设置。
 //
-// 返回 ok=false 覆盖三种情况：未配置、解析失败、负值。调用方因此只需区分
-// 「有合法值」与「回落默认」；具体的告警在这里发出，便于运维定位脏行。
+// 返回 ok=false 覆盖四种情况：未配置、JSON null、解析失败、负值。调用方
+// 因此只需区分「有合法值」与「回落默认」；具体的告警在这里发出，便于运维
+// 定位脏行。
+//
+// 为什么用 *int64：json.Unmarshal 把 `null` 解到 int64 时返回 nil error 且
+// 保持零值，会被误读成「显式 0 = 禁用」——这是 fail-open（静默关掉兜底）。
+// 解到指针后 null → nil 指针，明确落入「回落默认 + warn」。
 func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, bool) {
 	if reader == nil {
 		return 0, false
@@ -213,20 +258,25 @@ func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, 
 	if !ok {
 		return 0, false
 	}
-	var value int64
+	var value *int64
 	if err := json.Unmarshal(raw, &value); err != nil {
 		log.Warn("worker: task poll setting is not a valid integer; falling back to the design default",
 			"key", key, "raw", string(raw), "error", err)
 		return 0, false
 	}
-	if value < 0 {
+	if value == nil {
+		log.Warn("worker: task poll setting is null; falling back to the design default",
+			"key", key, "raw", string(raw))
+		return 0, false
+	}
+	if *value < 0 {
 		// 设计只冻结了 `<=0 禁用`：0 是唯一的禁用形式。负值是配置错误，
 		// 不是另一种禁用写法（见 taskPollLimits 的注释）。
 		log.Warn("worker: task poll setting is negative; falling back to the design default",
-			"key", key, "value", value)
+			"key", key, "value", *value)
 		return 0, false
 	}
-	return value, true
+	return *value, true
 }
 
 // describeTimeout / describeMaxFailures 只服务于启动日志的可观测性：
