@@ -15844,6 +15844,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
             501: components["responses"]["Error501"];
             /** @description 上游协议与端点不匹配、上游流不可用或适配器不支持流式 */

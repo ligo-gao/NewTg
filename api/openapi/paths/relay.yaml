@@ -82,6 +82,8 @@ paths:
           description: 模型已停用（`model_pricing.status=2`）
         '413':
           description: 请求体超过 32 MiB 上限
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
         '501':

@@ -774,8 +774,10 @@ const problemTypeEndpointNotSupported = "https://newtg.dev/problems/endpoint-not
 // 编码器后再放开（登记在 M1 报告）。
 //
 // 判定时点：方向由「请求模型 → 候选渠道」决定，必须先读到 model。请求体读入
-// 之后、PreConsume 与任何上游调用之前完成判定：routeDeps 的候选过滤在
-// ExecuteAttempts 的预扣步骤之前运行，因此 501 分支零计费、零上游请求。
+// 之后、PreConsume 与任何上游调用之前完成判定：常规路径在构造 routeDeps 之前
+// 就返回 501（连计费会话都不创建）；pin 指向异构渠道的 TOCTOU 兜底路径会先
+// 构造一个无副作用的会话，但仍在 PreConsume 之前被拒绝。两条路径都零计费、
+// 零上游请求。
 func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
 
@@ -796,6 +798,19 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案。
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
+		return
+	}
+	// Anthropic Messages 把 max_tokens 列为**必填**。IR 解析器对缺省保持 nil，
+	// 编码器（ir.BuildAnthropicRequestBody）会为跨协议调用补 8192——但那条
+	// 默认路径只为「OpenAI 客户端省略 max_tokens」服务，不能让原生入口继承：
+	// 缺省时 QuotaEstimate.MaxTokens 为 nil，免费模型的防滥用 hold 会退化为 0
+	// （billing/session.go 的 preConsumeFreeModelLocked：MaxTokens 缺失/≤0 →
+	// hold 0 → 不写流水），等于让免费模型的高成本请求零预扣（F-08-12）。
+	// 因此在这里、PreConsume 与任何上游调用之前显式拒绝缺失、0 与负数。
+	// 负数本会被 ir.validateScalars 拦住（同样是 400），这里统一口径。
+	if parsed.MaxTokens == nil || *parsed.MaxTokens <= 0 {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request",
+			"max_tokens is required and must be a positive integer")
 		return
 	}
 
@@ -839,7 +854,11 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 与 chat 完全同一份预扣估算（finding 13）：max_tokens 直接影响预扣预算。
+	// 与 chat 完全同一份预扣估算（finding 13）。准确口径：MaxTokens 只是
+	// QuotaEstimate 的输入之一——付费 token 模型的预扣仍由 estimateUsage
+	// 决定（当前为 0，不把 MaxTokens 换算成 Completion），它直接影响的是
+	// **免费模型**的防滥用 hold（MaxTokens × multiplier）。上面的入口校验
+	// 保证这里永远是非零的合法值。
 	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
 		Model:     parsed.Model,
 		Group:     rc.UsingGroup,
@@ -848,9 +867,18 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 方向约束：只允许 Anthropic 协议族渠道（见上方方向矩阵）。
 	//
-	// 这里在构造 routeDeps（会新建计费会话）之前先判定方向：501 分支因此
-	// 既不创建计费会话、也不 PreConsume、更不触达上游。候选为空时不在这里
-	// 下结论——那属于「没有可用渠道」（503），交给执行层按既有口径映射。
+	// 这里在构造 routeDeps（其 Billing 字段会新建计费会话）之前先判定方向：
+	// 常规 501 分支因此既不创建计费会话、也不 PreConsume、更不触达上游。
+	// 候选为空时不在这里下结论——那属于「没有可用渠道」（503），交给执行层
+	// 按既有口径映射。
+	//
+	// TOCTOU 兜底：预检通过后，routeDeps 的候选过滤仍可能拒绝（典型是 pin
+	// 指向 OpenAI 渠道、同时存在其它 Anthropic 候选）。那条路径会先由
+	// routeDeps 构造一个计费会话，随后在 PreConsume 之前被过滤拒绝——资金
+	// 副作用为 0：PreConsume/Terminate 从不发生；非流式兜底路径会对这个
+	// 未预扣的会话调用一次 no-op Refund（真实引擎在没有 hold 时直接返回
+	// nil，不写流水），流式路径则不调用。审计计数器的 Refund 可能为 1，
+	// 但它不产生任何资金变动。
 	if candidates, err := h.channels.Candidates(r.Context(), rc.OriginModel, rc.UsingGroup); err == nil && len(candidates) > 0 {
 		if !h.messagesDirectionSupported(r.Context(), candidates) {
 			h.writeMessagesMappedError(w, requestID, crossproto.ErrUpstreamProtocolUnsupported)
@@ -890,8 +918,11 @@ func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidate
 // 唯一的差异化映射是「没有 Anthropic 协议族渠道」：这是**端点的方向不支持**
 // （决定是否放行的是协议族能力，不是这一次请求的参数），按 R-59 返回 501
 // problem+json，与 /v1/responses 的 fail-closed 共用同一个 problem type。
-// 其余错误沿用 /v1 的统一 OpenAI 信封（RelayAuth 的 401/403 也是该形状，
-// 保持同一条鉴权链的响应一致性）。
+// 资金副作用为 0：常规路径甚至不创建计费会话；pin 触发的 TOCTOU 兜底路径
+// 只创建一个会话，PreConsume/Terminate 从不发生，非流式兜底会对未预扣会话
+// 调用一次 no-op Refund（真实引擎无 hold 时直接返回 nil，不写流水）。其余
+// 错误沿用 /v1 的统一 OpenAI 信封（RelayAuth 的 401/403 也是该形状，保持
+// 同一条鉴权链的响应一致性）。
 func (h *RelayHandler) writeMessagesMappedError(w http.ResponseWriter, requestID string, err error) {
 	if errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported) {
 		if requestID != "" {

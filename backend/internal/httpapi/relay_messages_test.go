@@ -14,6 +14,7 @@ package httpapi
 //     零计费 + 零上游请求（transport.count()==0）。
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/store"
 )
 
@@ -174,6 +177,9 @@ func TestMessagesAnthropicUpstreamRoundTrip(t *testing.T) {
 	if got := env.billing.preConsumeCalls(); got != 1 {
 		t.Fatalf("PreConsume calls = %d, want 1", got)
 	}
+	if est, ok := env.billing.lastEstimate(); !ok || est.MaxTokens == nil || *est.MaxTokens != 128 {
+		t.Fatalf("QuotaEstimate = %+v, want MaxTokens=128（免费模型 hold 依赖它）", est)
+	}
 	if got := env.billing.terminateCount(); got != 1 {
 		t.Fatalf("Terminate calls = %d, want 1", got)
 	}
@@ -290,8 +296,504 @@ func TestMessagesGeminiUpstreamFailsClosed(t *testing.T) {
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501; body=%s", w.Code, w.Body.String())
 	}
-	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 {
-		t.Fatalf("unsupported direction must not bill or call upstream: calls=%d preconsume=%d",
-			counter.count(), env.billing.preConsumeCalls())
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/problem+json") {
+		t.Fatalf("content-type = %q, want application/problem+json", got)
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("501 body is not JSON: %v", err)
+	}
+	if problem["type"] != problemTypeEndpointNotSupported {
+		t.Fatalf("problem type = %v, want %s", problem["type"], problemTypeEndpointNotSupported)
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("unsupported direction must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// ---------- 方向矩阵补齐：Moonshot 可用 / 任务平台不可用 ----------
+
+// TestMessagesMoonshotUpstreamRoundTrip：type 25 是 Anthropic 兼容协议，
+// 方向矩阵声称可用就必须有端点级证据：请求打到 /anthropic/v1/messages，
+// 携带解封凭据，计费 1/1/0。
+func TestMessagesMoonshotUpstreamRoundTrip(t *testing.T) {
+	var gotPath, gotAPIKey string
+	env, counter := messagesTestEnv(t, contract.ChannelTypeMoonshot, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, messagesUpstreamBody)
+	})
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Fatalf("upstream path = %q, want /anthropic/v1/messages", gotPath)
+	}
+	if gotAPIKey != upstreamCredential {
+		t.Fatalf("upstream x-api-key = %q, want the sealed channel credential", gotAPIKey)
+	}
+	if counter.count() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", counter.count())
+	}
+	if env.billing.preConsumeCalls() != 1 || env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 {
+		t.Fatalf("billing = pre %d/term %d/refund %d, want 1/1/0",
+			env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// TestMessagesTaskPluginUpstreamFailsClosed：任务插件类型不属于
+// openai/anthropic/gemini 任一协议族（ProtocolOfChannelType ok=false），
+// 必须与其它异构上游走同一条 501。
+func TestMessagesTaskPluginUpstreamFailsClosed(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeTaskPlugin, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/problem+json") {
+		t.Fatalf("content-type = %q, want application/problem+json", got)
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("unsupported direction must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// TestMessagesDirectionSupported 直接锁住方向判定函数（复核 M-1 的变异 A）：
+// 判定实现被改成「恒 true / 恒 false」或 Get 失败语义漂移，这里先红，
+// 不再只靠端点用例兜底。
+func TestMessagesDirectionSupported(t *testing.T) {
+	anthropicCh := &store.Channel{ID: 1, Type: string(contract.ChannelTypeAnthropic)}
+	openaiCh := &store.Channel{ID: 2, Type: string(contract.ChannelTypeOpenAI)}
+	moonshotCh := &store.Channel{ID: 3, Type: string(contract.ChannelTypeMoonshot)}
+	geminiCh := &store.Channel{ID: 4, Type: string(contract.ChannelTypeGemini)}
+	cases := []struct {
+		name       string
+		candidates []contract.ChannelCandidate
+		channels   map[int64]*store.Channel
+		want       bool
+	}{
+		{name: "anthropic", candidates: []contract.ChannelCandidate{{ChannelID: 1}},
+			channels: map[int64]*store.Channel{1: anthropicCh}, want: true},
+		{name: "moonshot", candidates: []contract.ChannelCandidate{{ChannelID: 3}},
+			channels: map[int64]*store.Channel{3: moonshotCh}, want: true},
+		{name: "openai", candidates: []contract.ChannelCandidate{{ChannelID: 2}},
+			channels: map[int64]*store.Channel{2: openaiCh}, want: false},
+		{name: "gemini", candidates: []contract.ChannelCandidate{{ChannelID: 4}},
+			channels: map[int64]*store.Channel{4: geminiCh}, want: false},
+		{name: "empty", candidates: nil, channels: map[int64]*store.Channel{}, want: false},
+		// Get 失败的候选按不可用跳过：后面的 Anthropic 候选仍能判定为可用。
+		{name: "get error then anthropic",
+			candidates: []contract.ChannelCandidate{{ChannelID: 9}, {ChannelID: 1}},
+			channels:   map[int64]*store.Channel{1: anthropicCh}, want: true},
+		// 全部 Get 失败 → 没有可用 Anthropic 渠道。
+		{name: "all get errors", candidates: []contract.ChannelCandidate{{ChannelID: 9}},
+			channels: map[int64]*store.Channel{}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			channels := &fakeRelayChannelStore{
+				candidates: tc.candidates,
+				channels:   tc.channels,
+			}
+			h := &RelayHandler{channels: channels}
+			if got := h.messagesDirectionSupported(context.Background(), tc.candidates); got != tc.want {
+				t.Fatalf("messagesDirectionSupported = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------- 入口校验：max_tokens 必填（I-1） ----------
+
+// TestMessagesMaxTokensRequired：Anthropic Messages 的 max_tokens 必填且 >0。
+// 缺失/0/负数都必须在 PreConsume 与上游调用之前 400，否则免费模型的防滥用
+// hold 会因 MaxTokens=nil 退化为 0（F-08-12）。
+func TestMessagesMaxTokensRequired(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "missing", body: `{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`},
+		{name: "zero", body: `{"model":"claude-test","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`},
+		{name: "negative", body: `{"model":"claude-test","max_tokens":-1,"messages":[{"role":"user","content":"hi"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("upstream must not be called: %s", r.URL.Path)
+			})
+			w := env.do(t, http.MethodPost, "/v1/messages", tc.body, messagesHeaders())
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+				env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+				t.Fatalf("invalid max_tokens must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+					counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+			}
+		})
+	}
+}
+
+// ---------- 入口校验：白名单 / 停用模型 / 体积上限 / pin ----------
+
+func TestMessagesTokenModelWhitelistForbidden(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+	})
+	meta := env.tokens.byHash[auth.HashTokenKey(relayTestToken)]
+	meta.ModelLimits = []string{"some-other-model"}
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("whitelist rejection must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+func TestMessagesDisabledModelReturns404(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+	})
+	env.handler.modelStatus = &fakeRelayModelStatus{
+		status: map[string]int16{messagesTestModel: modelPricingStatusDisabled},
+	}
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("disabled model must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+func TestMessagesBodyTooLargeReturns413(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+	})
+	body := `{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"` +
+		strings.Repeat("a", maxRelayBodyBytes+1) + `"}]}`
+
+	w := env.do(t, http.MethodPost, "/v1/messages", body, messagesHeaders())
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("oversized body must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// TestMessagesNonAdminPinForbidden：legacy sk-<key>-<channelId> 的 pin 是管理员
+// 运维能力；普通用户使用必须在 BuildRelayContext 里 403（与 chat 同口径），
+// 不得进入计费或上游。
+func TestMessagesNonAdminPinForbidden(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+	})
+	env.tokens = newFakeRelayTokenStore("sk-pintest", &auth.TokenMeta{
+		ID:             relayTestTokenID,
+		UserID:         relayTestUserID,
+		Status:         "enabled",
+		UnlimitedQuota: true,
+	})
+	// AuthMiddleware 在 h.Handler() 时读取 h.tokens，必须同时替换 handler 的引用。
+	env.handler.tokens = env.tokens
+	env.access.role = "user"
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"x-api-key": "sk-pintest-1"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
+		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
+		t.Fatalf("pin rejection must be side-effect free: calls=%d pre=%d term=%d refund=%d",
+			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+}
+
+// ---------- 原生流：帧计数（M-1 变异 E 的守卫） ----------
+
+func messagesStreamEnv(t *testing.T, channelType contract.ChannelType, upstreamHandler http.HandlerFunc) (*relayTestEnv, *observingStreamAdapter) {
+	t.Helper()
+	env, _ := messagesTestEnv(t, channelType, upstreamHandler)
+	inner, ok := adapters.NewAnthropicAdapter(channelType).(contract.StreamAdapter)
+	if !ok {
+		t.Fatal("anthropic adapter must implement StreamAdapter")
+	}
+	observing := &observingStreamAdapter{inner: inner}
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return observing, nil }
+	return env, observing
+}
+
+// TestMessagesStreamFrameCount 锁住 SendCount 的口径：SSE 帧数，而不是
+// io.Read 的块数。LF 与 CRLF 两种行尾都必须各计 3 帧。
+func TestMessagesStreamFrameCount(t *testing.T) {
+	frames := []string{
+		"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+		"event: ping\r\ndata: {\"type\":\"ping\"}\r\n\r\n",
+	}
+	for _, frame := range frames {
+		frame := frame
+		lineEnding := "LF"
+		if strings.Contains(frame, "\r\n") {
+			lineEnding = "CRLF"
+		}
+		t.Run(lineEnding, func(t *testing.T) {
+			env, observing := messagesStreamEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				// 一次写出三帧：变异实现（按 Read 块计数）只会得到 1。
+				_, _ = io.WriteString(w, frame+frame+frame)
+			})
+
+			w := env.do(t, http.MethodPost, "/v1/messages",
+				`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+				messagesHeaders())
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+			}
+			if observing.rc == nil || observing.rc.StreamStatus == nil {
+				t.Fatal("StreamStatus was not recorded")
+			}
+			if got := observing.rc.StreamStatus.SendCount; got != 3 {
+				t.Fatalf("SendCount = %d, want 3 SSE frames; body=%q", got, w.Body.String())
+			}
+		})
+	}
+}
+
+// ---------- 原生流：异常出口（I-2，变异 F 的守卫） ----------
+
+// TestMessagesStreamClientAbortRefunds：客户端断开 → 恰好一次 Refund、
+// 零 Terminate、EndReason=client_abort，且不写伪造的收尾帧。
+func TestMessagesStreamClientAbortRefunds(t *testing.T) {
+	env, observing := messagesStreamEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 保持流打开，直到网关关闭上游 body 级联取消请求 context。
+		<-r.Context().Done()
+	})
+	gateway := httptest.NewServer(env.handler.Handler())
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/messages",
+		strings.NewReader(`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", relayTestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	buf := make([]byte, 256)
+	n, readErr := resp.Body.Read(buf)
+	if readErr != nil && n == 0 {
+		t.Fatalf("read first frame: %v", readErr)
+	}
+	first := string(buf[:n])
+	cancel()
+	// cancel 之后把剩余可观察到的响应体也读完：断言「完整响应体」里没有
+	// 伪造的收尾帧，而不是只看首帧。
+	rest, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	body := first + string(rest)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for env.billing.refundCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("billing session was not refunded after client disconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（失败出口必须退款）", got)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if got := observing.rc.StreamStatus.EndReason; got != contract.EndClientAbort {
+		t.Fatalf("EndReason = %d, want EndClientAbort", got)
+	}
+	if strings.Contains(body, "message_stop") {
+		t.Fatalf("gateway forged a message_stop on abort: %q", body)
+	}
+}
+
+// TestMessagesStreamWatchdogTimeoutRefunds：块间静默超过看门狗阈值 →
+// 恰好一次 Refund、零 Terminate、EndReason=stream_timeout。
+func TestMessagesStreamWatchdogTimeoutRefunds(t *testing.T) {
+	env, observing := messagesStreamEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	})
+	env.handler.streamInactivity = 100 * time.Millisecond
+
+	start := time.Now()
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（响应头已发送）; body=%s", w.Code, w.Body.String())
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("handler returned after %v，早于看门狗阈值", elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("watchdog did not fire in time: %v", elapsed)
+	}
+	if strings.Contains(w.Body.String(), "message_stop") {
+		t.Fatalf("超时是异常结束，不得伪造 message_stop; body=%s", w.Body.String())
+	}
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（超时必须退款）", got)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if got := observing.rc.StreamStatus.EndReason; got != contract.EndStreamTimeout {
+		t.Fatalf("EndReason = %d, want EndStreamTimeout", got)
+	}
+}
+
+// TestMessagesStreamUpstreamReadErrorRefunds：上游发送若干字节后异常断开 →
+// 读取失败是硬错误，恰好一次 Refund、EndReason=upstream_error，不伪造收尾帧。
+func TestMessagesStreamUpstreamReadErrorRefunds(t *testing.T) {
+	env, observing := messagesStreamEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 中断连接：客户端读 body 时得到 unexpected EOF。
+		panic(http.ErrAbortHandler)
+	})
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（响应头已发送）; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "message_stop") {
+		t.Fatalf("读错误是异常结束，不得伪造 message_stop; body=%s", w.Body.String())
+	}
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（读错误必须退款）", got)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if got := observing.rc.StreamStatus.EndReason; got != contract.EndUpstreamError {
+		t.Fatalf("EndReason = %d, want EndUpstreamError", got)
+	}
+}
+
+// TestMessagesStreamPanicRefunds：StreamEvents 内 panic → 进程不崩、
+// 恰好一次 Refund、EndReason=panic，且不写伪造收尾帧。
+func TestMessagesStreamPanicRefunds(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	sealer := NewSecretSealer(relaySealerMaster)
+	baseURL := upstream.URL
+	channels := &fakeRelayChannelStore{
+		candidates: []contract.ChannelCandidate{{ChannelID: int(relayTestChannelID), Priority: 10, Weight: 1}},
+		channels: map[int64]*store.Channel{
+			relayTestChannelID: {
+				ID:              relayTestChannelID,
+				Type:            string(contract.ChannelTypeAnthropic),
+				BaseURL:         &baseURL,
+				Credentials:     sealedTestCredentials(t, sealer),
+				SupportedModels: []byte(`["claude-test"]`),
+				ModelMapping:    []byte(`{}`),
+				Status:          1,
+				CreatedAt:       time.Now().UTC(),
+			},
+		},
+		models: []string{messagesTestModel},
+	}
+	env := newRelayTestEnv(t, upstream, channels)
+	adapter := &scriptedStreamAdapter{
+		url:        upstream.URL + "/v1/messages",
+		events:     []contract.StreamEvent{{Kind: contract.EventDelta, Delta: "before-panic"}},
+		panicAfter: 1,
+	}
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return adapter, nil }
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（响应头已发送）; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "message_stop") {
+		t.Fatalf("panic 是异常结束，不得伪造 message_stop; body=%s", w.Body.String())
+	}
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（panic 必须退款）", got)
+	}
+	if adapter.rc == nil || adapter.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded after panic")
+	}
+	if got := adapter.rc.StreamStatus.EndReason; got != contract.EndPanic {
+		t.Fatalf("EndReason = %d, want EndPanic", got)
 	}
 }

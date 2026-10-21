@@ -335,6 +335,8 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 	}{
 		{"POST", "/v1/chat/completions"},
 		{"GET", "/v1/models"},
+		// W7/M1：Anthropic 原生入口是内建精确模式，处理器不查 RouteIndex。
+		{"POST", "/v1/messages"},
 		{"POST", "/v1/tasks/:key"},
 		{"GET", "/v1/tasks/{key}/artifacts"},
 		{"POST", "/v1/images/generations"},
