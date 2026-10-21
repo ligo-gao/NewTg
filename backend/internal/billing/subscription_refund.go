@@ -293,22 +293,19 @@ func refundableBizKind(kind string) bool {
 //     订阅——用户此前的付费周期仍在履约。
 //   - change succeeded：退款应回退 plan 变更，同样不能取消整条订阅。
 //   - refund_required：S2 的「钱已收、履约失败」，必须可退（R-30），且按
-//     R-36 不取消订阅。
-//   - refund_failed：重试路径。由 subscribed 进入的 subscribe 订单可继续；
-//     change 订单只可能来自 refund_required；renew 无法产生。
+//     R-36 不取消订阅。S4/R-43 之后 renew 也会产生 refund_required（同周期
+//     晚到支付），同样必须可退。
+//   - refund_failed：重试路径（R-32）。可能来自 succeeded（subscribe）或
+//     refund_required（change/renew）；两种都必须能重试。R-46 明确 renew
+//     的 refund_failed 不能因 biz_kind 被拒，否则渠道失败一次后永远无法
+//     重试。
 //
-// 两类 succeeded 订单返回 ErrRefundManualOnly（HTTP 422）：宁可少一个自动化
-// 入口，也不能误把用户仍在使用的订阅作废。
+// **succeeded** 的 renew/change 仍返回 ErrRefundManualOnly（HTTP 422）：
+// 已履约的续费/升降级要回退 end_at/plan，自动退款会误伤用户仍在使用的
+// 订阅（R-38 不变）。
 func autoRefundAllowed(order *store.Order) error {
-	switch OrderStatus(order.Status) {
-	case OrderSucceeded:
-		if order.BizKind != store.OrderBizKindSubscribe {
-			return fmt.Errorf("%w: order %d biz_kind %s", ErrRefundManualOnly, order.ID, order.BizKind)
-		}
-	case OrderRefundFailed:
-		if order.BizKind == store.OrderBizKindRenew {
-			return fmt.Errorf("%w: order %d biz_kind %s", ErrRefundManualOnly, order.ID, order.BizKind)
-		}
+	if OrderStatus(order.Status) == OrderSucceeded && order.BizKind != store.OrderBizKindSubscribe {
+		return fmt.Errorf("%w: order %d biz_kind %s", ErrRefundManualOnly, order.ID, order.BizKind)
 	}
 	return nil
 }
@@ -320,8 +317,8 @@ func autoRefundAllowed(order *store.Order) error {
 // 有效」的判定对象，因此跳过资格检查（R-30）。refund_failed 的来源有两种：
 //   - 由 succeeded 进入：说明这是一笔已履约的购买，重试时仍要重新核对资格
 //     （订阅可能在第一次失败后被消费）；
-//   - 由 refund_required 进入：只可能是 change 订单（S2 是 refund_required
-//     的唯一生产者，而 change 订单无法满足「未消耗且 active」，见下），继续跳过。
+//   - 由 refund_required 进入：只可能来自 change（S2）或 renew（S4/R-43），
+//     两者都是「钱已收、未履约」，没有可消耗的有效期，继续跳过。
 func (s *TopupService) checkSubscriptionRefundEligible(ctx context.Context,
 	db *gorm.DB, order *store.Order, now time.Time) error {
 
@@ -329,7 +326,8 @@ func (s *TopupService) checkSubscriptionRefundEligible(ctx context.Context,
 	if status == OrderRefundRequired {
 		return nil
 	}
-	if status == OrderRefundFailed && order.BizKind == store.OrderBizKindChange {
+	if status == OrderRefundFailed &&
+		(order.BizKind == store.OrderBizKindChange || order.BizKind == store.OrderBizKindRenew) {
 		return nil
 	}
 
@@ -812,12 +810,12 @@ func markOrderRefundedTx(tx *gorm.DB, orderID int64, from OrderStatus, reason st
 // 付过钱、正在使用的服务一并作废。
 func shouldCancelSubscriptionAfterRefund(order *store.Order) bool {
 	switch OrderStatus(order.Status) {
-	case OrderSucceeded:
-		return true
-	case OrderRefundFailed:
-		// refund_failed 由 succeeded 或 refund_required 进入；后者的唯一
-		// 生产者是 change 订单（见 checkSubscriptionRefundEligible 注释）。
-		return order.BizKind != store.OrderBizKindChange
+	case OrderSucceeded, OrderRefundFailed:
+		// 只有「已履约的购买（subscribe）」全额退款才收回权益并取消订阅。
+		// refund_failed 可能来自 succeeded（subscribe）或 refund_required
+		// （change/renew）：后者的钱对应一次未履约的变更/续费，取消整条
+		// 订阅会误伤用户仍在使用的周期（R-36/R-46）。
+		return order.BizKind == store.OrderBizKindSubscribe
 	default:
 		return false
 	}

@@ -868,18 +868,37 @@ func (s *TopupService) chargeStripeOffSession(ctx context.Context, order *store.
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 			return nil, &AutoRenewChargeFailure{Code: "provider_unavailable", Retryable: true}
 		}
-		// 4xx 是渠道明确拒绝（不会产生资金流）。只有「资源不存在」（404 或
-		// error.code=resource_missing）才说明令牌本身失效；其余 4xx 可能是
-		// 请求参数问题，不应把用户的卡标记为 invalid。
-		invalidToken := resp.StatusCode == http.StatusNotFound
+		if resp.StatusCode == http.StatusConflict {
+			// Stripe 并发同 Idempotency-Key 的请求尚未完成时返回 409
+			// `idempotency_error`。这不是扣款结果，绝不能把订单置 failed
+			// 或换键重下（R-44 的保守口径）：保持 pending，下一轮同键确认。
+			return nil, &AutoRenewChargeFailure{
+				Code: "idempotency_in_progress", Retryable: true,
+			}
+		}
 		var apiErr struct {
 			Error struct {
-				Code string `json:"code"`
+				Code  string `json:"code"`
+				Param string `json:"param"`
+				Type  string `json:"type"`
 			} `json:"error"`
 		}
-		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error.Code == "resource_missing" {
-			invalidToken = true
+		if err := json.Unmarshal(raw, &apiErr); err != nil || apiErr.Error.Code == "" {
+			// 响应不是 Stripe 的 error 对象（例如 base URL 配错返回的 HTML
+			// 404）：这是配置/路由故障，不是渠道对令牌的拒绝。按可重试处理，
+			// 避免把用户的令牌批量标记失效并 fail-closed。
+			return nil, &AutoRenewChargeFailure{Code: "provider_unavailable", Retryable: true}
 		}
+		if apiErr.Error.Code == "idempotency_error" {
+			return nil, &AutoRenewChargeFailure{
+				Code: "idempotency_in_progress", Retryable: true,
+			}
+		}
+		// 只有「payment_method 资源不存在」才说明令牌本身失效。即使 HTTP
+		// 状态是 404，也必须由响应体的 code+param 证明，避免 base URL 配错
+		// 导致的 404 被误判为令牌失效。
+		invalidToken := apiErr.Error.Code == "resource_missing" &&
+			(apiErr.Error.Param == "payment_method" || strings.Contains(apiErr.Error.Param, "payment_method"))
 		return nil, &AutoRenewChargeFailure{
 			Code: "payment_method_rejected", InvalidToken: invalidToken,
 		}

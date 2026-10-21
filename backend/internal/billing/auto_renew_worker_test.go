@@ -27,6 +27,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"newtg/gateway/internal/store"
 )
@@ -938,5 +939,116 @@ func TestManualAndAutoRenewSameCycleOnlyOneCharge(t *testing.T) {
 	}
 	if succeeded != 1 {
 		t.Fatalf("succeeded renewal orders = %d, want exactly 1", succeeded)
+	}
+}
+
+// slowCharger 模拟一笔耗时扣款（忽略 ctx，模拟已经在途的渠道调用）。
+type slowCharger struct {
+	delay time.Duration
+	calls []AutoRenewChargeInput
+}
+
+func (c *slowCharger) ChargeAutoRenewal(_ context.Context,
+	in AutoRenewChargeInput) (AutoRenewChargeResult, error) {
+	c.calls = append(c.calls, in)
+	time.Sleep(c.delay)
+	return AutoRenewChargeResult{OrderID: 1, Amount: 5000, Currency: "CNY"}, nil
+}
+
+// R-45：单轮预算耗尽时必须提前结束，不能在 deadline 中途启动下一笔；
+// 已完成项保留（不回滚），剩余候选留给下一轮。
+func TestAutoRenewPassDeadlineDefersRemaining(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	first := autoRenewTestSubscription(31, now, now.Add(time.Hour))
+	second := autoRenewTestSubscription(32, now, now.Add(time.Hour))
+	subs := newFakeAutoRenewStore(first, second)
+	methods := &fakeAutoRenewMethods{method: autoRenewTestMethod(*first.AutoRenewPaymentMethodID)}
+	// 第一笔耗时 7s；PassTimeout=11s，扣款上限 5s → 剩余 4s 时放弃第二笔。
+	charger := &slowCharger{delay: 7 * time.Second}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	worker, err := NewAutoRenewWorker(AutoRenewDeps{
+		Subs: subs, Methods: methods, Charger: charger, Sealer: testTokenSealer{},
+		Redis: rdb, Notifier: &fakeNotifier{}, Now: func() time.Time { return now },
+		LeadHours: 24, RetryInterval: time.Nanosecond,
+		PassTimeout: 11 * time.Second, BatchLimit: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewAutoRenewWorker: %v", err)
+	}
+
+	started := time.Now()
+	res, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	elapsed := time.Since(started)
+	if res.Scanned != 2 || res.Charged != 1 {
+		t.Fatalf("result = %+v, want scanned=2 charged=1 (second deferred)", res)
+	}
+	if len(charger.calls) != 1 {
+		t.Fatalf("charge calls = %d, want 1 (no new charge started on the last 4s)", len(charger.calls))
+	}
+	if elapsed > 9*time.Second {
+		t.Fatalf("pass took %v, want it to end after the first charge instead of running the second", elapsed)
+	}
+	// 已完成项保留；第二笔没有任何副作用（未被尝试、未记失败）。
+	if subs.failures[first.ID] != 0 || subs.failures[second.ID] != 0 {
+		t.Fatalf("failures = %v, want no failures", subs.failures)
+	}
+	if _, attempted := subs.attempted[second.ID]; attempted {
+		t.Fatal("the deferred subscription must not be attempted")
+	}
+}
+
+// 渠道错误分类（R-44 / R-42）：409 幂等冲突与「非 Stripe 响应」可按重试；
+// 只有响应体证明 payment_method 资源不存在才判令牌失效。
+func TestChargeStripeOffSessionClassifiesErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		retryable bool
+		invalid   bool
+	}{
+		{"idempotency conflict", http.StatusConflict,
+			`{"error":{"code":"idempotency_error","type":"idempotency_error"}}`, true, false},
+		{"non-stripe 404 (wrong base url)", http.StatusNotFound,
+			`<html>not found</html>`, true, false},
+		{"unknown payment method", http.StatusNotFound,
+			`{"error":{"code":"resource_missing","param":"payment_method"}}`, false, true},
+		{"other stripe rejection", http.StatusBadRequest,
+			`{"error":{"code":"parameter_invalid","param":"amount"}}`, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			svc, err := NewTopupService(TopupServiceConfig{
+				DB: &gorm.DB{}, Config: mapConfig{
+					ConfigStripeSecretKey: json.RawMessage(`"sk_test_classify"`),
+				},
+				Logger: autoRenewTestLogger(), StripeBaseURL: server.URL,
+			})
+			if err != nil {
+				t.Fatalf("NewTopupService: %v", err)
+			}
+			_, err = svc.chargeStripeOffSession(context.Background(), &store.Order{
+				ID: 1, UserID: 2, Amount: 5000, Currency: "CNY",
+			}, "pm_test_classify", "key-1")
+			var failure *AutoRenewChargeFailure
+			if !errors.As(err, &failure) {
+				t.Fatalf("err = %v, want AutoRenewChargeFailure", err)
+			}
+			if failure.Retryable != tc.retryable || failure.InvalidToken != tc.invalid {
+				t.Fatalf("failure = %+v, want retryable=%v invalid=%v",
+					failure, tc.retryable, tc.invalid)
+			}
+		})
 	}
 }

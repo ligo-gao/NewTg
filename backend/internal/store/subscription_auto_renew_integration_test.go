@@ -18,6 +18,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -289,5 +290,47 @@ func TestAutoRenewStorePreferenceValidation(t *testing.T) {
 	}
 	if _, err := repo.SetSubscriptionAutoRenew(ctx, 900504, cancelled.ID, true, &method.ID); err == nil {
 		t.Fatal("cancelled subscriptions must not enable auto-renew")
+	}
+}
+
+// TestRenewSubscriptionRejectsStaleExpectedEndAt 覆盖 R-43 的 store 级周期锚：
+// 下单快照的 end_at 与当前值不一致时返回 ErrSubscriptionCycleChanged，且
+// 不推进 end_at；匹配时才推进一次。
+func TestRenewSubscriptionRejectsStaleExpectedEndAt(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4-cycle-anchor")
+	now := time.Now().UTC().Truncate(time.Second)
+	oldEnd := now.Add(10 * 24 * time.Hour)
+	sub := createTestSubscription(t, repo, plan, 900506,
+		now.Add(-20*24*time.Hour), oldEnd, nil)
+
+	input := RenewalExtendInput{
+		SubscriptionID: sub.ID, UserID: 900506, PlanID: plan.ID,
+		PlanTitleSnapshot: plan.Title, PeriodDays: 30, GrantCredits: 1000,
+		ResetOnRenew: true, AllowWalletOverflow: true, Currency: "CNY",
+		PricePaidAmount: 9900, Now: now,
+		ExpectedEndAt: oldEnd.Add(time.Second), // 陈旧快照（另一笔已续费）
+	}
+	if _, err := RenewSubscription(ctx, db, input); !errors.Is(err, ErrSubscriptionCycleChanged) {
+		t.Fatalf("stale anchor err = %v, want ErrSubscriptionCycleChanged", err)
+	}
+	var currentEnd time.Time
+	if err := db.QueryRow(`SELECT end_at FROM subscriptions WHERE id = $1`, sub.ID).
+		Scan(&currentEnd); err != nil {
+		t.Fatalf("read end_at: %v", err)
+	}
+	if !currentEnd.UTC().Equal(oldEnd) {
+		t.Fatalf("end_at = %s, want unchanged %s", currentEnd, oldEnd)
+	}
+
+	input.ExpectedEndAt = oldEnd
+	got, err := RenewSubscription(ctx, db, input)
+	if err != nil {
+		t.Fatalf("matching anchor renewal: %v", err)
+	}
+	if !got.EndAt.UTC().Equal(oldEnd.Add(30 * 24 * time.Hour)) {
+		t.Fatalf("end_at = %s, want oldEnd+30d", got.EndAt)
 	}
 }

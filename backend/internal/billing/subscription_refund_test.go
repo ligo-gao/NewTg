@@ -868,3 +868,53 @@ func TestSubscriptionRefundWalletLimit(t *testing.T) {
 		t.Fatalf("订阅状态 = %s，期望 active", got)
 	}
 }
+
+// R-46：renew 订单的 refund_required（S4/R-43 晚到支付）在渠道退款失败后
+// 必须能通过退款端点重试（R-32）；成功后不取消用户仍在使用的订阅（R-36）。
+func TestRenewRefundRequiredFailureIsRetryable(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe, _ := newStripeRefundStub(t, true)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-10*24*time.Hour), 500, nil)
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderRefundRequired), store.OrderBizKindRenew, subID, 5000, "pi_renew_refund")
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+
+	// 第一次：渠道 500 → refund_failed，可重试。
+	_, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "晚到续费需退款", ActorUserID: 1,
+	})
+	if !errors.Is(err, ErrRefundProviderFailed) {
+		t.Fatalf("first refund err = %v, want ErrRefundProviderFailed", err)
+	}
+	status, failure, _, _ := readOrderRefundState(t, db, orderID)
+	if status != string(OrderRefundFailed) || failure != "provider_unavailable" {
+		t.Fatalf("after channel failure: status=%s failure=%s, want refund_failed", status, failure)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("channel failure must not touch the subscription, got %s", got)
+	}
+
+	// 第二次：R-46 要求 refund_failed 的 renew 可重试成功。
+	result, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "晚到续费需退款", ActorUserID: 1,
+	})
+	if err != nil {
+		t.Fatalf("retry refund: %v", err)
+	}
+	if !result.Refunded || result.Order.Status != string(OrderRefunded) {
+		t.Fatalf("retry result = %+v", result)
+	}
+	if status, failure, amount, _ := readOrderRefundState(t, db, orderID); status != string(OrderRefunded) ||
+		failure != "" || amount != 5000 {
+		t.Fatalf("refunded order = status:%s failure:%s amount:%d", status, failure, amount)
+	}
+	// R-36：退的是未履约的续费，不是用户正在使用的周期，绝不能取消订阅。
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("renew refund must not cancel the subscription, got %s", got)
+	}
+}
