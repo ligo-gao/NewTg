@@ -249,6 +249,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// /api/task*）。与插件运行时共用同一个 Manager 快照，避免管理面停用
 	// 插件后数据面仍从旧注册表接单。
 	var taskDataHandlers *TasksHandler
+	// mjHandler 是 W8/MJ-a2 的绘图任务族提交面（根 mux `/mj/*`）。与任务
+	// 数据面共用同一个 tasks.Repo（同一连接面/同一列语义），计费会话工厂
+	// 也与 /v1/tasks 共用 deps.Billing（预扣/退款只有一套实现）。
+	var mjHandler *MJHandler
 	if deps.DB != nil {
 		var err error
 		pluginStore := deps.TaskPluginStore
@@ -348,9 +352,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 
 		// 任务数据面（M6d Task 6a）：渠道选择与任务行共用一个 tasks.Repo
 		// 连接面；凭据 Sealer 与渠道管理同源（CREDENTIAL_ENCRYPTION_KEY）。
+		taskRepo := tasks.NewRepo(deps.DB)
 		taskDataHandlers = NewTasksHandler(TasksHandlerConfig{
-			Store:    tasks.NewRepo(deps.DB),
-			Channels: tasks.NewRepo(deps.DB),
+			Store:    taskRepo,
+			Channels: taskRepo,
 			Plugins:  manager,
 			Sealer:   NewSecretSealer(deps.CredentialEncryptionKey),
 			Tokens:   store.NewTokenRepo(deps.DB),
@@ -369,6 +374,19 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// W7/M5-b：提交面与中继共用同一 limiter/config（同一次装配）。
 			RateLimiter: deps.RateLimiter,
 			Config:      deps.Config,
+		})
+
+		// W8/MJ-a2：绘图任务族提交面。与任务数据面共用 taskRepo 与 Sealer；
+		// 计费会话工厂同样复用 deps.Billing（engine.NewSession），保证
+		// 「提交 hold → 终态结算/退款」只有一套资金实现。
+		mjHandler = NewMJHandler(MJHandlerConfig{
+			Store:       taskRepo,
+			Channels:    taskRepo,
+			Sealer:      NewSecretSealer(deps.CredentialEncryptionKey),
+			Tokens:      store.NewTokenRepo(deps.DB),
+			Billing:     deps.Billing,
+			Config:      deps.Config,
+			RateLimiter: deps.RateLimiter,
 		})
 	}
 
@@ -440,6 +458,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	}
 
 	rt.tasks = taskDataHandlers
+	// W8/MJ-a2：/mj/* 提交 handler 由 platform 挂到根 mux（令牌链），不挂在
+	// /api 管理面，也不经过 SessionAuth/CSRF。
+	rt.mj = mjHandler
 	if taskDataHandlers != nil {
 		// 台账端点复用管理面受保护链（SessionAuth → CSRF → Origin）。
 		// /v1 提交/查询在 platform.mountRelayRoutes 挂到令牌链上。

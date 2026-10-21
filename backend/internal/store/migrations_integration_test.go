@@ -77,10 +77,18 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	if !indexExists(t, db, "tasks_family_pending_idx") {
 		t.Fatal("tasks_family_pending_idx missing after up")
 	}
+	// W8/MJ-a2 的归属索引在同一链上（family 迁移之后的一步）。
+	if !indexExists(t, db, "tasks_mj_user_upstream_idx") || !indexExists(t, db, "tasks_mj_upstream_idx") {
+		t.Fatal("MJ upstream indexes missing after up")
+	}
 
-	// down 一步：必须先删 MJ 行（否则 CHECK 恢复失败），再恢复单值 CHECK。
-	if err := m.Steps(-1); err != nil {
-		t.Fatalf("migrate down 1: %v", err)
+	// down 两步：先回退 W8/MJ-a2 的索引迁移，再回退 family 迁移。family 的
+	// down 必须先删 MJ 行（否则 CHECK 恢复失败），再恢复单值 CHECK。
+	// 步数写成 2 而不是「down 到 family 版本」：测试冻结的是当前迁移链的
+	// 直接前驱关系；以后在 family 之后再加迁移时，这里必须同步增加步数
+	//（新迁移不会改变 family down 的语义，只是多了要回退的一层）。
+	if err := m.Steps(-2); err != nil {
+		t.Fatalf("migrate down 2: %v", err)
 	}
 	var mjRows int
 	if err := db.QueryRow(`SELECT count(*) FROM tasks WHERE family = 'mj'`).Scan(&mjRows); err != nil {
@@ -95,16 +103,22 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	if indexExists(t, db, "tasks_family_pending_idx") {
 		t.Fatal("down must drop tasks_family_pending_idx")
 	}
+	if indexExists(t, db, "tasks_mj_user_upstream_idx") || indexExists(t, db, "tasks_mj_upstream_idx") {
+		t.Fatal("down must drop MJ upstream indexes")
+	}
 	// 插件行在 down 后仍可写（CHECK 没有误伤合法族）。
 	execTaskInsert(t, db, "mig_plugin_after_down", "plugin")
 
-	// up 一步：迁移可反转（down 后再次前滚仍接受 mj）。
-	if err := m.Steps(1); err != nil {
-		t.Fatalf("migrate up 1: %v", err)
+	// up 两步：迁移可反转（down 后再次前滚仍接受 mj，索引恢复）。
+	if err := m.Steps(2); err != nil {
+		t.Fatalf("migrate up 2: %v", err)
 	}
 	execTaskInsert(t, db, "mig_mj_after_up", "mj")
 	if !indexExists(t, db, "tasks_family_pending_idx") {
 		t.Fatal("tasks_family_pending_idx missing after re-up")
+	}
+	if !indexExists(t, db, "tasks_mj_user_upstream_idx") || !indexExists(t, db, "tasks_mj_upstream_idx") {
+		t.Fatal("MJ upstream indexes missing after re-up")
 	}
 }
 

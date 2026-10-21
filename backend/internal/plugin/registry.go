@@ -614,7 +614,13 @@ var pluginDispatchedBuiltinShapes = map[string]struct{}{
 // 族根 `/v1/models`（所有方法）必须在族内（R-14）：注册 `POST /v1/models/{path...}`
 // 会让 ServeMux 对 `/v1/models` 发 307 重定向到 `/v1/models/`，随后由多模态
 // embeddings 处理器接管——插件声明的 `POST /v1/models` 永远收不到请求。
-var builtinReservedRouteFamilies = []string{"/v1/models", "/v1beta/models"}
+//
+// W8/MJ-a2：`/mj` 是根 mux 的第二条内建族（12 条提交端点 + 后续查询/代理），
+// 且 `/<mode>/mj/*` 别名会在 mux 之前重写进 `/mj/*`（R-MJ-07）。R-09 目前
+// 只允许插件声明 `/v1/` 路径，所以今天插件无法占用 `/mj`；把族根登记进保留
+// 集是纵深防御：将来 R-09 放开非 `/v1` 前缀时，仍不能在 `/mj` 下声明一条
+// 永远收不到请求的插件路由（R-MJ-08）。
+var builtinReservedRouteFamilies = []string{"/v1/models", "/v1beta/models", "/mj"}
 
 // builtinReservedFamilyFor 返回 route.Path 所属的内建保留族（无则空串）。
 //

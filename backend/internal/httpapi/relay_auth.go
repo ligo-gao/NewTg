@@ -232,6 +232,9 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 //   - Authorization 头总是第一优先，且总是生效：剥离 Bearer 前缀；无空格的
 //     裸 key 直用；Basic/自定义方案（带空格但非 Bearer）不构成令牌凭据，
 //     继续尝试兼容载体。
+//   - mj-api-secret：仅 MJ 路径（`/mj/*` 或 `/<seg>/mj/*`）且 Authorization
+//     key 为空或等于哨兵串 `midjourney-proxy` 时生效（relay-01 §3.1）。
+//     这是 midjourney-proxy 生态客户端的既有载体；哨兵串本身不是令牌。
 //   - x-api-key：仅 /v1/messages 或模型路径生效。
 //   - x-goog-api-key：同上（Gemini 兼容载体；M2 端点族只接 chat/models，
 //     但 messages 路径的载体规则在这里一并固化，供 relay-04 复用）。
@@ -239,22 +242,28 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 //     /v1beta/openai/models*）生效；这是兼容载体，进入日志/埋点前必须剥离
 //     （本函数不写日志，调用方也不得记录原始查询串）。
 func relayCredentialFromRequest(r *http.Request) (string, bool) {
-	if v := strings.TrimSpace(r.Header.Get("Authorization")); v != "" {
-		if i := strings.IndexByte(v, ' '); i >= 0 {
-			if strings.EqualFold(v[:i], "Bearer") {
-				if raw := strings.TrimSpace(v[i+1:]); raw != "" {
-					return raw, true
-				}
-			}
-		} else {
-			return v, true
-		}
-	}
-
 	path := ""
 	if r.URL != nil {
 		path = r.URL.Path
 	}
+
+	authRaw, authOK := authorizationCredential(r)
+	if authOK && !(isMJPath(path) && authRaw == mjProxySentinel) {
+		return authRaw, true
+	}
+	// MJ 客户端兼容载体：哨兵 Authorization 或完全缺失时才看该头。
+	// 非 MJ 路径一律忽略——否则普通 /v1 调用也能用这个头绕过 Bearer 语义。
+	if isMJPath(path) {
+		if v := strings.TrimSpace(r.Header.Get(mjAPISecretHeader)); v != "" {
+			return v, true
+		}
+	}
+	if authOK {
+		// 哨兵串在没有 mj-api-secret 时仍是「无效 key」而不是「无凭据」：
+		// 让下游统一走 401 invalid token，不把哨兵当成合法令牌去查库。
+		return authRaw, true
+	}
+
 	if isMessagesOrModelsPath(path) {
 		if v := strings.TrimSpace(r.Header.Get("x-api-key")); v != "" {
 			return v, true
@@ -271,6 +280,58 @@ func relayCredentialFromRequest(r *http.Request) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// authorizationCredential 只解析 Authorization 头（Bearer/裸 key）。
+//
+// 抽出来供 MJ 载体判定复用：需要先知道 Authorization 是否构成 key、以及它
+// 是否只是哨兵串，才能决定是否回落到 mj-api-secret。
+func authorizationCredential(r *http.Request) (string, bool) {
+	v := strings.TrimSpace(r.Header.Get("Authorization"))
+	if v == "" {
+		return "", false
+	}
+	if i := strings.IndexByte(v, ' '); i >= 0 {
+		if strings.EqualFold(v[:i], "Bearer") {
+			if raw := strings.TrimSpace(v[i+1:]); raw != "" {
+				return raw, true
+			}
+		}
+		return "", false
+	}
+	return v, true
+}
+
+const (
+	// mjAPISecretHeader 是 MJ 客户端可用的令牌载体（relay-01 §3.1）。
+	mjAPISecretHeader = "mj-api-secret"
+	// mjProxySentinel 是 midjourney-proxy 客户端在 Authorization 里放置的
+	// 占位串：真实的网关令牌在同一请求的 mj-api-secret 头里。
+	mjProxySentinel = "midjourney-proxy"
+)
+
+// isMJPath 报告路径是否属于 MJ 端点族。
+//
+// 生产路径在 mux 之前已把 `/<seg>/mj/*` 重写为 `/mj/*`；这里同时识别别名
+// 形态，使 handler 单测/未来绕过重写的装配也能正确选择载体。保留首段
+// （api/v1/pg/healthz/readyz）下的 `/mj` 不是 MJ 族——它们是别的处理面，
+// 不能因为第二段叫 mj 就接受 MJ 的令牌载体。
+func isMJPath(path string) bool {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) == 0 || segments[0] == "" {
+		return false
+	}
+	if segments[0] == "mj" {
+		return true
+	}
+	if len(segments) >= 2 && segments[1] == "mj" {
+		switch segments[0] {
+		case "api", "v1", "pg", "healthz", "readyz":
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // isMessagesOrModelsPath 覆盖 x-api-key / x-goog-api-key 的生效路径

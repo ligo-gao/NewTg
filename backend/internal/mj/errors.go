@@ -1,11 +1,12 @@
 // Package mj 是 Midjourney 系绘图任务族（family='mj'）的领域包：动作枚举与
 // 解析、上游状态归一化、提交入参上界、错误信封、任务行映射、MjId 归属与
-// 渠道选择/锁定语义。
+// 渠道选择/锁定语义，以及固定形状的上游提交客户端。
 //
-// 本包刻意只做纯函数与值类型：不碰 DB、不建 HTTP 路由、不发上游请求。
-// HTTP 装配（MJ-a2）、查询驱动（MJ-b）与图片代理（MJ-c）在各自的层里调用
-// 这里的结果。这样「归一化/上界/映射」可以脱离 IO 单测，也不会把凭据或
-// 路由语义带进数据面。
+// 本包不碰 DB、不建 HTTP 路由、不做计费：HTTP 装配（MJ-a2）、查询驱动
+// （MJ-b）与图片代理（MJ-c）在各自的层里调用这里的结果。提交客户端只负责
+// 「归一化结果 → `{base}/mj/submit/<kind>`」这一段出站线协议，渠道选择、
+// 预扣/退款顺序与任务落库都在 HTTP 编排层。这样「归一化/上界/映射」可以
+// 脱离 IO 单测，也不会把凭据或路由语义带进数据面。
 package mj
 
 import (
@@ -70,6 +71,26 @@ const (
 	DescriptionChannelDisabled     = "channel_disabled"
 	DescriptionTaskNotSuccess      = "action_task_not_success"
 	DescriptionInternalError       = "internal_error"
+
+	// 以下描述由 MJ-a2 的 HTTP/上游编排使用。全部是固定文案：错误体是
+	// 客户端唯一可见的诊断面，不允许拼接上游 URL、渠道凭据或上游原始
+	// description（上游可能把内部地址/账号信息带进错误文本）。
+	DescriptionDisabled                 = "mj_not_enabled"
+	DescriptionPlusChannelRequired      = "plus_channel_required"
+	DescriptionQuotaNotEnough           = "quota_not_enough"
+	DescriptionPricingUnavailable       = "task_pricing_unavailable"
+	DescriptionBodyTooLarge             = "request_body_too_large"
+	DescriptionChannelMisconfigured     = "channel_misconfigured"
+	DescriptionUpstreamError            = "upstream_error"
+	DescriptionUpstreamBadResponse      = "upstream_bad_response"
+	DescriptionUpstreamResponseTooLarge = "upstream_response_too_large"
+	DescriptionNoAccount                = "no_account_instance"
+	DescriptionSensitiveWord            = "sensitive_word_detected"
+	DescriptionGroupSaturated           = "group_saturated"
+	DescriptionSubmitFailed             = "submit_failed"
+	DescriptionInvalidToken             = "invalid_token"
+	DescriptionForbidden                = "forbidden"
+	DescriptionRateLimited              = "rate_limited"
 )
 
 // Error 是领域层错误：Code/Description 直接进 MJ 错误信封，Status 是给
@@ -186,4 +207,33 @@ func ClientCode(code int) int {
 		return CodeSuccess
 	}
 	return code
+}
+
+// UpstreamError 把「上游受理失败码」折叠为固定描述的错误信封。
+//
+// 只用于 code ∉ {1,21,22,23} 的提交结果。description 按码固定，绝不转发
+// 上游原文：上游错误文本可能包含账号/代理地址等内部信息。客户端仍能看到
+// 原始 code（R-MJ-13：响应透传上游 code）。
+func UpstreamError(code int) *Error {
+	switch code {
+	case CodeNoAccount:
+		return &Error{Code: CodeNoAccount, Description: DescriptionNoAccount, Status: 502}
+	case CodeSensitiveWord:
+		return &Error{Code: CodeSensitiveWord, Description: DescriptionSensitiveWord, Status: 400}
+	case CodeGroupSaturated:
+		return &Error{Code: CodeGroupSaturated, Description: DescriptionGroupSaturated, Status: 429}
+	}
+	return &Error{Code: code, Description: DescriptionSubmitFailed, Status: 502}
+}
+
+// QuotaNotEnough 构造余额不足错误（402，业务码 4）。
+func QuotaNotEnough() *Error {
+	return &Error{Code: CodeRequestError, Description: DescriptionQuotaNotEnough, Status: 402}
+}
+
+// PricingUnavailable 构造「模型未配置价格」错误（400，业务码 4）。
+//
+// 与余额不足分开：管理员没配价不是「充值就能用」，客户端/运营需要能区分。
+func PricingUnavailable() *Error {
+	return &Error{Code: CodeRequestError, Description: DescriptionPricingUnavailable, Status: 400}
 }

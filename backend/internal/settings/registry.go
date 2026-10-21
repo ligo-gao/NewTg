@@ -93,6 +93,9 @@ var sectionOrder = []string{
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "task", "deploy",
+	// W8/MJ-a2：绘图任务族（relay-05 §1）。整族 8 键进注册表，
+	// 键名/默认值与 system-config-mapping §4.7 #25–#30、#70–#71 逐字一致。
+	"mj",
 }
 
 var (
@@ -582,6 +585,26 @@ func buildRegistry() []Setting {
 			minInt(0), maxInt(525600)),
 		def("task.poll_max_failures", "task", TypeInt, int64(20),
 			minInt(0), maxInt(1000000)),
+
+		// ==== mj（W8/MJ-a2 绘图任务族，relay-05 §1）====
+		//
+		// 设计冻结为设置键（N-MAP-1 / C-44），不另立环境变量载体。全部非公开：
+		// 这些是站点能力/内部策略，不进 /api/status 匿名下发全集。
+		//
+		// 读取侧必须 fail-closed：键缺失/解析失败一律按 false 处理，尤其
+		// mj.enabled 关闭时提交端点直接 403，不解析、不预扣、不出站。
+		def("mj.enabled", "mj", TypeBool, false),
+		def("mj.notify_enabled", "mj", TypeBool, false),
+		def("mj.account_filter_enabled", "mj", TypeBool, false),
+		def("mj.mode_clear_enabled", "mj", TypeBool, false),
+		def("mj.forward_url_enabled", "mj", TypeBool, false),
+		def("mj.action_check_success_enabled", "mj", TypeBool, false),
+		// 终态保留天数（#70）：0 = 不自动清理（显式关闭）。上限 10 年，
+		// 避免把异常配置换算成 time.Duration 时溢出。
+		def("mj.retention_terminal_days", "mj", TypeInt, int64(30),
+			minInt(0), maxInt(3650)),
+		// 旧 simple-change 兼容开关（#71）：默认关，走正确的 SimpleChange 语义。
+		def("mj.legacy_simple_change_as_change", "mj", TypeBool, false),
 
 		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
 		//

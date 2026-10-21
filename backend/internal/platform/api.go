@@ -62,6 +62,9 @@ type gatewayAssembly struct {
 	// Tasks 是任务数据面 handler（M6d Task 6a）；由 mountRelayRoutes 挂到
 	// /v1 令牌链。nil 表示本次装配没有任务数据面（探针-only 测试）。
 	Tasks *httpapi.TasksHandler
+	// MJ 是绘图任务族提交 handler（W8/MJ-a2）；由 mountRelayRoutes 挂到根
+	// mux 的 /mj/*（令牌链）。nil 表示本次装配没有 MJ 提交面。
+	MJ *httpapi.MJHandler
 	// RateLimiter 是 W7/M5-b 的准入限流器：用同一个 Redis 客户端构造一次，
 	// 同时交给中继（chat/messages/多模态）与任务提交面。每次请求只做一次
 	// EVAL，不新建客户端、不持有计数（计数在 Redis）。
@@ -431,6 +434,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PricingSource:          source,
 		PricingOnChange:        pricingChanged,
 		Tasks:                  router.TasksHandler(),
+		MJ:                     router.MJHandler(),
 		RateLimiter:            rateLimiter,
 		AttemptFailureReporter: attemptReporter,
 		AttemptFailureReporterStop: func() {

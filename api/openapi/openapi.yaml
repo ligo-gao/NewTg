@@ -462,6 +462,32 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1v1~1batches~1{batch_id}'
   /v1/batches/{batch_id}/cancel:
     $ref: './paths/relay.yaml#/paths/~1v1~1batches~1{batch_id}~1cancel'
+
+  # 绘图任务族（W8/MJ-a2）：12 条提交端点（relay-05 §1.1）。
+  /mj/submit/imagine:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1imagine'
+  /mj/submit/change:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1change'
+  /mj/submit/simple-change:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1simple-change'
+  /mj/submit/action:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1action'
+  /mj/submit/modal:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1modal'
+  /mj/submit/shorten:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1shorten'
+  /mj/submit/describe:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1describe'
+  /mj/submit/blend:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1blend'
+  /mj/submit/edits:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1edits'
+  /mj/submit/video:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1video'
+  /mj/submit/upload-discord-images:
+    $ref: './paths/relay.yaml#/paths/~1mj~1submit~1upload-discord-images'
+  /mj/insight-face/swap:
+    $ref: './paths/relay.yaml#/paths/~1mj~1insight-face~1swap'
   /api/task/self:
     $ref: './paths/user.yaml#/paths/~1api~1task~1self'
   /api/task:

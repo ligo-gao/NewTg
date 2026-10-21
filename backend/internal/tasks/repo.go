@@ -40,6 +40,18 @@ type ChannelTarget struct {
 	BaseURL      string
 	Credentials  []byte
 	ModelMapping map[string]string
+	// Status / Type 是只读路由事实（W8/MJ-a2）。
+	//
+	// 动作类 MJ 任务必须锁定原任务渠道，并在提交前校验「原渠道仍启用」
+	// （relay-05 §4.1）。只查 base_url/credentials 无法区分 status=1 与
+	// 人工/自动禁用，会把已禁用的渠道当成可用目标，任务必然失败并需要
+	// 退款。Type 则用于 Plus-only 端点（midjourney_plus 才能承接）。
+	//
+	// 零值（0/""）表示调用方没有读取这两列（例如既有插件路径），不得据此
+	// 判定「已禁用」——只有 MJ 提交路径会在意它们，且它总是用 GetChannel
+	// 的新查询形状读取。
+	Status int
+	Type   string
 }
 
 const insertTaskSQL = `
@@ -223,17 +235,22 @@ func (r *Repo) GetChannel(ctx context.Context, id int64) (*ChannelTarget, error)
 		baseURL sql.NullString
 		cred    []byte
 		mapping []byte
+		status  int
+		typ     string
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT base_url, credentials, model_mapping FROM channels WHERE id = $1`, id).
-		Scan(&baseURL, &cred, &mapping)
+		`SELECT base_url, credentials, model_mapping, status, type FROM channels WHERE id = $1`, id).
+		Scan(&baseURL, &cred, &mapping, &status, &typ)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrChannelNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tasks: get channel: %w", err)
 	}
-	out := &ChannelTarget{ID: id, BaseURL: strings.TrimSpace(baseURL.String), Credentials: cred}
+	out := &ChannelTarget{
+		ID: id, BaseURL: strings.TrimSpace(baseURL.String), Credentials: cred,
+		Status: status, Type: typ,
+	}
 	if len(mapping) > 0 {
 		if err := json.Unmarshal(mapping, &out.ModelMapping); err != nil {
 			return nil, fmt.Errorf("tasks: decode channel model_mapping: %w", err)
@@ -308,6 +325,120 @@ func (r *Repo) GetByPublicIDAny(ctx context.Context, publicID string) (*Task, er
 		return nil, fmt.Errorf("tasks: get task by public id: %w", err)
 	}
 	return t, nil
+}
+
+// GetByUserUpstreamID 按 (user_id, upstream_task_id) 读取本族的任务行。
+//
+// 【归属是复用键，不是全局唯一键（R-MJ-05）】上游 code 21「任务已存在」
+// 可能让不同用户在各自请求里拿到同一个 MjId；把 upstream_task_id 当全局
+// 唯一会迫使第二个用户复用别人的行（跨用户数据泄露）或无法落库。
+// 因此查询必须同时带 user_id，并限定 family='mj'——插件任务即便巧合有
+// 同名 upstream id 也不得成为 MJ 动作任务的锁定来源。
+//
+// 同一个用户理论上仍可能有多行（历史上重复提交且上游返回同一 MjId）。
+// 取 id 最大的一行：那是最新一次受理，也是客户端最近看到的任务。
+func (r *Repo) GetByUserUpstreamID(ctx context.Context, userID int64, upstreamID string) (*Task, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("tasks: repository is not configured")
+	}
+	if userID <= 0 || strings.TrimSpace(upstreamID) == "" {
+		// 空 id 绝不查库：空串会匹配所有 inline 上传行（upstream_task_id=''），
+		// 把「没有原任务」伪装成「找到了一个上传任务」。
+		return nil, ErrTaskNotFound
+	}
+	t, err := scanTask(r.db.QueryRowContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE user_id = $1 AND upstream_task_id = $2 AND family = $3
+		 ORDER BY id DESC LIMIT 1`,
+		userID, upstreamID, FamilyMJ))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tasks: get task by user/upstream id: %w", err)
+	}
+	return t, nil
+}
+
+// MJChannelCandidate 是 MJ 提交路径的渠道候选投影。
+//
+// 与 contract.ChannelCandidate（中继路由用，只含 id/priority/weight）分开：
+// MJ 的领域层选择函数需要 type/status/supported_models/model_mapping 才能
+// 做「Plus-only、类型过滤、模型命中」三件事。本类型是数据面 → 领域层的
+// 传输形状，不携带凭据（凭据在选中后再按 id 单独读取）。
+type MJChannelCandidate struct {
+	ID              int64
+	Type            string
+	Status          int
+	Priority        int
+	Weight          uint
+	SupportedModels []string
+	ModelMapping    map[string]string
+}
+
+// MJChannelCandidates 返回可能服务该模型的 MJ 渠道（relay-05 §3.4）。
+//
+// 只按「MJ 渠道类型 + 模型命中 + 分组可见」取候选，**不在 SQL 里做加权
+// 随机/优先级选择**：选择策略在 mj.SelectChannel 纯函数里，测试可穷举
+// 优先级/权重/Plus-only 边界。SQL 里过滤掉非 MJ 类型（重要）：OpenAI
+// 渠道若被误配了 mj_* 模型，绝不能参与 MJ 提交。
+func (r *Repo) MJChannelCandidates(ctx context.Context, model, group string) ([]MJChannelCandidate, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("tasks: repository is not configured")
+	}
+	if strings.TrimSpace(model) == "" {
+		return nil, errors.New("tasks: mj channel candidates require a model")
+	}
+	query := `SELECT id, type, status, priority, weight, supported_models, model_mapping
+		FROM channels
+		WHERE status = 1
+		  AND type IN ('midjourney', 'midjourney_plus')
+		  AND (supported_models @> jsonb_build_array($1::text)
+		       OR jsonb_exists(model_mapping, $1))`
+	args := []any{model}
+	if group != "" {
+		query += ` AND (group_tags IS NULL OR group_tags @> jsonb_build_array($2::text))`
+		args = append(args, group)
+	}
+	query += ` ORDER BY priority DESC, id ASC`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: mj channel candidates: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MJChannelCandidate, 0, 4)
+	for rows.Next() {
+		var (
+			candidate     MJChannelCandidate
+			supported     []byte
+			mapping       []byte
+			priority, wgt int
+		)
+		if err := rows.Scan(&candidate.ID, &candidate.Type, &candidate.Status,
+			&priority, &wgt, &supported, &mapping); err != nil {
+			return nil, fmt.Errorf("tasks: mj channel candidate scan: %w", err)
+		}
+		candidate.Priority = priority
+		if wgt > 0 {
+			candidate.Weight = uint(wgt)
+		}
+		if len(supported) > 0 {
+			if err := json.Unmarshal(supported, &candidate.SupportedModels); err != nil {
+				return nil, fmt.Errorf("tasks: decode mj channel supported_models: %w", err)
+			}
+		}
+		if len(mapping) > 0 {
+			if err := json.Unmarshal(mapping, &candidate.ModelMapping); err != nil {
+				return nil, fmt.Errorf("tasks: decode mj channel model_mapping: %w", err)
+			}
+		}
+		out = append(out, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tasks: mj channel candidates iterate: %w", err)
+	}
+	return out, nil
 }
 
 // ListPendingByFamily 返回指定家族未完成的任务（relay-06 §8.1：state NOT IN 终态）。

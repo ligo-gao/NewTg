@@ -527,6 +527,11 @@ func TestMainSchemaTaskIndexes(t *testing.T) {
 		// 设计建议形状是 (family, state, next_poll_at)，但 tasks 无
 		// next_poll_at 列；非终态由部分谓词表达，id 支撑领取顺序。
 		{"tasks_family_pending_idx", []string{"family", "id"}, true, "success"},
+		// W8/MJ-a2：MJ 归属查询（R-MJ-05）。(user_id, upstream_task_id)
+		// 服务 code 21 复用与动作类端点锁定原渠道；单列 upstream_task_id
+		// 服务图片代理/批量查询的按 MjId 定位。两者都排除插件行与空 id。
+		{"tasks_mj_user_upstream_idx", []string{"user_id", "upstream_task_id"}, true, "mj"},
+		{"tasks_mj_upstream_idx", []string{"upstream_task_id"}, true, "mj"},
 	}
 	for _, c := range cases {
 		c := c

@@ -129,7 +129,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	// （既有测试不触真 PG/Redis）。assembly 携带真实计费引擎工厂；nil 时中继
 	// 回退 M2 桩（测试装配）。
 	mountRelayRoutes(mux, cfg, db, redisRes, assembly)
-	srv := newGatewayHTTPServer(SecurityHeaders(mux))
+	srv := newGatewayHTTPServer(SecurityHeaders(mjPathRewrite(mux)))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		// 监听失败是主错误；资源清理失败不覆盖它。
@@ -304,6 +304,12 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 	// 驱动，计费只经 BillingSession 接缝。
 	if assembly != nil && assembly.Tasks != nil {
 		assembly.Tasks.RegisterRelay(mux, relayHandler.AuthMiddleware())
+	}
+	// 绘图任务族（W8/MJ-a2）：12 条提交端点挂在根 mux 的 /mj/*，与 /v1 共用
+	// 同一条 RelayAuth（令牌面），但走 MJ 自己的归一化/渠道/计费编排。
+	// 路径别名 `/<seg>/mj/*` 在 mux 之前重写（R-MJ-07），见 mjPathRewrite。
+	if assembly != nil && assembly.MJ != nil {
+		assembly.MJ.Register(mux, relayHandler.AuthMiddleware())
 	}
 	// /pg/*（Playground 会话中继）：只接受会话 Cookie，重写到 /v1 后复用同一
 	// 管线。SessionManager 与 /api/* 使用同一 Redis 与 secret，登录态天然共享。

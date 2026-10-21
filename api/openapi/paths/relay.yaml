@@ -638,3 +638,361 @@ paths:
           description: 批次不存在或不属于本人
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
+
+  # ---------------------------------------------------------------------------
+  # 绘图任务族（W8/MJ-a2）：12 条提交端点（relay-05 §1.1）。
+  #
+  # 错误体不是 OpenAI 信封，也不是 RFC 7807：MJ 客户端只解析
+  # `{code,description[,result]}`（R-MJ-17）。成功 200 + `{code:1,...}`；
+  # 失败 4xx/5xx + `{code≠0,description}`。上游 URL/凭据永不进入响应体。
+  #
+  # 路径别名 `/<seg>/mj/*`（seg ∉ {api,v1,pg,healthz,readyz}）在 mux 之前
+  # 重写到本族（R-MJ-07）；别名不单独登记，语义与 /mj 完全等价。
+  # ---------------------------------------------------------------------------
+  /mj/submit/imagine:
+    post:
+      tags: [relay]
+      operationId: mjSubmitImagine
+      summary: Midjourney 文生图提交
+      description: |
+        `prompt` 必填；`botType`/`notifyHook`/`accountFilter`/`state` 可选
+        （`notifyHook`/`accountFilter` 默认由网关剥离）。受理成功返回
+        `{code:1,description,result:<MjId>}`；上游 21/22/23 重新编码为 code 1。
+        提交不重试、提交时预扣（R-MJ-01）；失败不落任务行并全额退款。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封（`result` 为 MjId）
+        '400':
+          description: 参数/上界校验失败或未知端点（`{code:4,description}`）
+        '401':
+          description: 令牌无效（`{code:5,description}`）
+        '402':
+          description: 余额不足（`{code:4,description:quota_not_enough}`）
+        '403':
+          description: 功能未开启或令牌模型白名单拒绝
+        '429':
+          description: 准入限流或上游分组饱和（`{code,description}`）
+        '500':
+          description: 内部错误（`{code:5,description}`）
+        '502':
+          description: 上游不可达/坏响应/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道（`{code:5,description:no_available_channel}`）
+
+  /mj/submit/change:
+    post:
+      tags: [relay]
+      operationId: mjSubmitChange
+      summary: Midjourney 放大/变换（锁定原渠道）
+      description: |
+        `taskId`、`action`、`index`（≠0）必填；动作任务强制使用原任务所属
+        渠道（原任务存在、渠道启用；开关开启时原任务必须 SUCCESS）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封（`result` 为 MjId）
+        '400':
+          description: 参数校验失败/原任务或渠道不可用（`{code:4,description}`）
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或能力不符
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/simple-change:
+    post:
+      tags: [relay]
+      operationId: mjSubmitSimpleChange
+      summary: Midjourney 简写动作（u/v/r）
+      description: |
+        `content` 形如 `"<taskId> u1"` / `"<taskId> v2"` / `"<taskId> r"`；
+        解析失败返回 `content_parse_failed`。锁定原渠道。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封（`result` 为 MjId）
+        '400':
+          description: content 解析失败/原任务不可用
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或能力不符
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/action:
+    post:
+      tags: [relay]
+      operationId: mjSubmitAction
+      summary: Midjourney Plus 按钮动作（customId）
+      description: |
+        Plus-only。`customId` 解析为 18 动作之一；未知动作返回
+        `unknown_action`。`taskId` 可选，提供时锁定原渠道。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封（`result` 为 MjId）
+        '400':
+          description: customId 解析失败/原任务不可用
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或需要 midjourney_plus 渠道
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/modal:
+    post:
+      tags: [relay]
+      operationId: mjSubmitModal
+      summary: Midjourney Plus modal / 局部重绘
+      description: Plus-only；`taskId` 必填并锁定原渠道。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: 参数校验失败/原任务不可用
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或需要 midjourney_plus 渠道
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/shorten:
+    post:
+      tags: [relay]
+      operationId: mjSubmitShorten
+      summary: Midjourney Plus 提示词精简
+      description: Plus-only；结果为文本，无图像产物。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: prompt 缺失/过长
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或需要 midjourney_plus 渠道
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/describe:
+    post:
+      tags: [relay]
+      operationId: mjSubmitDescribe
+      summary: Midjourney 图生文
+      description: base64Array 必填（≤8 项，单项 ≤8MiB）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: base64Array 缺失/超限
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或令牌模型白名单拒绝
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/blend:
+    post:
+      tags: [relay]
+      operationId: mjSubmitBlend
+      summary: Midjourney 多图融合
+      description: base64Array 必填；可选 dimensions。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: base64Array 缺失/超限
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或令牌模型白名单拒绝
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/edits:
+    post:
+      tags: [relay]
+      operationId: mjSubmitEdits
+      summary: Midjourney 图像编辑
+      description: prompt 必填；base64Array/maskBase64 可选。不锁定原渠道（无 taskId）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: prompt/base64 校验失败
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或令牌模型白名单拒绝
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/video:
+    post:
+      tags: [relay]
+      operationId: mjSubmitVideo
+      summary: Midjourney 视频生成（强制 VIDEO）
+      description: taskId 必填；action 由网关强制为 VIDEO，锁定原渠道。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: taskId 缺失/原任务不可用
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或能力不符
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/submit/upload-discord-images:
+    post:
+      tags: [relay]
+      operationId: mjSubmitUploadDiscordImages
+      summary: Midjourney 上传图片到 Discord
+      description: |
+        `base64Array` 必填。响应是数组形：`result: []string`（Discord 附件 URL）。
+        网关生成一条 `fetch_mode=inline` 的终态任务行并在提交时结算（R-MJ-14）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封（`result` 为 URL 数组）
+        '400':
+          description: base64Array 缺失/超限
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或令牌模型白名单拒绝
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
+
+  /mj/insight-face/swap:
+    post:
+      tags: [relay]
+      operationId: mjSubmitInsightFaceSwap
+      summary: Midjourney Plus 换脸
+      description: Plus-only；`sourceBase64`/`targetBase64` 必填。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: MJ 受理信封
+        '400':
+          description: source/target 缺失/超限
+        '401':
+          description: 令牌无效
+        '402':
+          description: 余额不足
+        '403':
+          description: 功能未开启或需要 midjourney_plus 渠道
+        '429':
+          description: 准入限流或上游分组饱和
+        '500':
+          description: 内部错误
+        '502':
+          description: 上游不可达/受理失败
+        '503':
+          description: 没有可用的 MJ 渠道
