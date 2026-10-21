@@ -92,7 +92,9 @@ var sectionOrder = []string{
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
 	// W10-N4 / N9：兑换码回收与任务保留清理。两组保留键都只服务 worker，
 	// 不进入公开下发全集；独立 section 让运营按域查看而不互相覆盖。
-	"redemption", "mj",
+	// rebase 修复：mj section 已在下方 W8/MJ-a2 组声明，这里不得重复，
+	// 否则 All() 会把整族设置追加两次（注册表唯一性测试直接失败）。
+	"redemption",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "task", "deploy",
@@ -567,9 +569,9 @@ func buildRegistry() []Setting {
 		// 与插件族的 `task.retention_terminal_days` **分开**：两族上游生命
 		// 周期不同，共用一个键会让运营无法单独调整（R-W10-10 选 A）。
 		// 只删终态（success/failure）行，未终结与待补偿行永不删除。
-		// 默认 30 天；0 = 关闭该族清理。
-		def("mj.retention_terminal_days", "mj", TypeInt, int64(30),
-			minInt(0), maxInt(3650)),
+		// 默认 30 天；0 = 关闭该族清理。键本体在下方 W8/MJ-a2 的 mj
+		// section 中定义——同一键只能注册一次（rebase 修复：删除重复定义，
+		// 否则 registry.init 直接 panic）。
 
 		// ==== plugin（M6d 任务插件平台，relay-06 / modules-08 §3.10）====
 		//
