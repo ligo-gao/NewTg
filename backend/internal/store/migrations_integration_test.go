@@ -69,8 +69,13 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	// 只前滚到本用例要验证的版本，而不是全部迁移：后续迁移（如 W10-N9 的
 	// 终态保留索引）会排在它之后，`Steps(-1)` 就不再指向 tasks_mj_family，
 	// 让断言误判。固定目标是让用例只对这个迁移的 up/down 负责。
-	if err := m.Migrate(20261023090000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up to 20261023090000: %v", err)
+	//
+	// 目标必须包含 W8/MJ-a2 的索引迁移（091000）：本用例断言它创建的
+	// `tasks_mj_user_upstream_idx`/`tasks_mj_upstream_idx` 在 up 后存在、
+	// down 后消失。只前滚到 family 迁移（090000）时这两个索引尚未创建，
+	// 断言会在正确的迁移链上稳定失败（2026-10-22 W8/MJ-c 集成门禁发现）。
+	if err := m.Migrate(20261023091000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261023091000: %v", err)
 	}
 
 	// up 后：family='mj' 可写入，未知值仍被 CHECK 拒绝，领取索引存在。
