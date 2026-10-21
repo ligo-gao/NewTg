@@ -602,6 +602,18 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		_ = dbRes.Close()
 		return fmt.Errorf("worker: auto-renew notify store: %w", err)
 	}
+	// W10-EM1：email 投递生产者（低余额、自动续费失败、渠道自动禁用）。
+	// 与 webhook 生产者共用同一个 Store/配置中心快照；SMTP 是否可用不影响
+	// 入队（未配置时 worker 不领取，配置修复后原样发出）。
+	emailProducer, err := notify.NewEmailEventProducer(autoRenewNotifyStore, center, log)
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: email event producer: %w", err)
+	}
 	autoRenewWorker, err := billing.NewAutoRenewWorker(billing.AutoRenewDeps{
 		Subs:     store.NewSubscriptionRepo(sqlDB),
 		Methods:  store.NewPaymentMethodRepo(sqlDB),
@@ -609,7 +621,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		Sealer:   cipher,
 		Config:   center,
 		Redis:    rr.client,
-		Notifier: newRenewalFailureNotifier(sqlDB, autoRenewNotifyStore, log),
+		Notifier: newRenewalFailureNotifier(sqlDB, autoRenewNotifyStore, emailProducer, log),
 		Logger:   log,
 	})
 	if err != nil {
@@ -694,6 +706,25 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// W10-EMAIL：email 投递 worker（modules-08 §3.9.6b，R-W10-06）。与 webhook
+	// 同一生命周期形态：独立 cancel + WaitGroup，停机先于连接池关闭退出。
+	// SMTP 配置复用 gateway 测试端点同一份快照与 SecretSealer；未配置时
+	// worker 不领取投递（行保持 queued），而不是把行误标 failed。
+	emailSender := notify.NewSMTPSender(center, cipher)
+	emailCtx, cancelEmail := context.WithCancel(ctx)
+	var emailWG sync.WaitGroup
+	emailWG.Add(1)
+	go func() {
+		defer emailWG.Done()
+		if err := notify.RunEmailWorkerLoop(emailCtx, notify.EmailWorkerDeps{
+			Store:  notifyStore,
+			Sender: emailSender,
+			Logger: log,
+		}); err != nil {
+			log.Error("email worker exited with error", "error", err)
+		}
+	}()
+
 	// N6 低余额扫描（billing-06 §9.6 / modules-08 F-08-11，tasks B4）：每 5
 	// 分钟扫描 balance < notify.webhook.balance_low_threshold 的启用用户，写入
 	// balance_low 投递行，由上面的 N8 worker 发送。独立 cancel/WaitGroup，
@@ -704,11 +735,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	go func() {
 		defer balanceWG.Done()
 		if err := notify.RunBalanceLowWorkerLoop(balanceCtx, notify.BalanceLowWorkerDeps{
-			Store:        notifyStore,
-			Producer:     webhookEvents,
-			Config:       center,
-			Subscription: webhookSender,
-			Logger:       log,
+			Store:         notifyStore,
+			Producer:      webhookEvents,
+			EmailProducer: emailProducer,
+			Config:        center,
+			Subscription:  webhookSender,
+			Logger:        log,
 		}); err != nil {
 			log.Error("balance low worker exited with error", "error", err)
 		}
@@ -752,6 +784,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		subscriptionsWG.Wait()
 		cancelWebhook()
 		webhookWG.Wait()
+		cancelEmail()
+		emailWG.Wait()
 		cancelBalance()
 		balanceWG.Wait()
 		// 体检循环可能正持有 Redis 锁或写 last_test_*，必须先于连接池关闭退出。
@@ -819,6 +853,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		subscriptionsWG.Wait()
 		cancelWebhook()
 		webhookWG.Wait()
+		cancelEmail()
+		emailWG.Wait()
 		cancelDeploy()
 		deployWG.Wait()
 		if healthStop != nil {
@@ -848,6 +884,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	subscriptionsWG.Wait()
 	cancelWebhook()
 	webhookWG.Wait()
+	cancelEmail()
+	emailWG.Wait()
 	cancelBalance()
 	balanceWG.Wait()
 	cancelDeploy()

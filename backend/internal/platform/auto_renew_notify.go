@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/notify"
@@ -30,14 +31,16 @@ import (
 type renewalFailureNotifier struct {
 	db    *sql.DB
 	store *notify.Store
+	// email 为 nil 时只做站内直投（W10-EM1 的 email 生产者按装配注入）。
+	email *notify.EmailEventProducer
 	log   *slog.Logger
 }
 
-func newRenewalFailureNotifier(db *sql.DB, store *notify.Store, log *slog.Logger) *renewalFailureNotifier {
+func newRenewalFailureNotifier(db *sql.DB, store *notify.Store, email *notify.EmailEventProducer, log *slog.Logger) *renewalFailureNotifier {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &renewalFailureNotifier{db: db, store: store, log: log}
+	return &renewalFailureNotifier{db: db, store: store, email: email, log: log}
 }
 
 func (n *renewalFailureNotifier) NotifyRenewalFailure(ctx context.Context,
@@ -62,7 +65,7 @@ func (n *renewalFailureNotifier) NotifyRenewalFailure(ctx context.Context,
 		return fmt.Errorf("platform: marshal renewal notification: %w", err)
 	}
 	userID := notice.UserID
-	_, err = n.store.InsertInAppDeliveries(ctx, []notify.Delivery{{
+	_, inAppErr := n.store.InsertInAppDeliveries(ctx, []notify.Delivery{{
 		Category:        "billing.payment_failed",
 		Channel:         notify.ChannelInApp,
 		Recipient:       fmt.Sprintf("user:%d", notice.UserID),
@@ -72,10 +75,94 @@ func (n *renewalFailureNotifier) NotifyRenewalFailure(ctx context.Context,
 		Attempt:         1,
 		Payload:         payload,
 	}})
-	if err != nil {
-		return fmt.Errorf("platform: insert renewal notification: %w", err)
+	// W10-EM1：自动续费失败是事务性资金事件（billing.payment_failed 在
+	// R-W10-06 的恒发集合内），有邮箱就发，不看用户偏好。邮件与站内信是
+	// 两条独立队列：站内写入失败不应连累邮件；邮件失败也不改变站内结果。
+	if n.email != nil {
+		if _, emailErr := n.email.EnqueuePaymentFailed(ctx, notify.PaymentFailedEmailEvent{
+			UserID:      notice.UserID,
+			AmountLabel: "—",
+			// 自动续费没有面向用户的订单号；用订阅 id 作为客服追溯键，
+			// 避免把内部扣款凭证（payment method token）写进通知。
+			OrderNo:     fmt.Sprintf("sub-%d", notice.SubscriptionID),
+			ReasonLabel: renewalFailureReasonLabel(lang, notice.Reason),
+			FailedAt:    time.Now(),
+			DedupeKey:   notice.DedupeKey,
+		}); emailErr != nil {
+			n.log.Warn("auto-renew notification: enqueue email failed",
+				"user_id", notice.UserID, "error", emailErr)
+		}
+	}
+	if inAppErr != nil {
+		return fmt.Errorf("platform: insert renewal notification: %w", inAppErr)
 	}
 	return nil
+}
+
+// renewalFailureReasonLabel 返回受控失败码的安全文案（7 语）。
+//
+// 只翻译 code 类别，绝不回显扣款渠道/上游错误原文（可能含卡信息）。
+func renewalFailureReasonLabel(lang, reason string) string {
+	labels := map[string]map[string]string{
+		"en": {
+			"plan_unavailable": "The subscription plan is no longer available",
+			"plan_invalid":     "The subscription plan is invalid",
+			"payment_config":   "Payment configuration is unavailable",
+		},
+		"zh-CN": {
+			"plan_unavailable": "订阅套餐已不可用",
+			"plan_invalid":     "订阅套餐配置无效",
+			"payment_config":   "支付配置不可用",
+		},
+		"zh-TW": {
+			"plan_unavailable": "訂閱方案已無法使用",
+			"plan_invalid":     "訂閱方案設定無效",
+			"payment_config":   "付款設定無法使用",
+		},
+		"fr": {
+			"plan_unavailable": "Le forfait d'abonnement n'est plus disponible",
+			"plan_invalid":     "Le forfait d'abonnement est invalide",
+			"payment_config":   "La configuration de paiement est indisponible",
+		},
+		"ru": {
+			"plan_unavailable": "Тарифный план больше недоступен",
+			"plan_invalid":     "Некорректный тарифный план",
+			"payment_config":   "Конфигурация платежей недоступна",
+		},
+		"ja": {
+			"plan_unavailable": "サブスクリプションプランは利用できません",
+			"plan_invalid":     "サブスクリプションプランが無効です",
+			"payment_config":   "支払い設定を利用できません",
+		},
+		"vi": {
+			"plan_unavailable": "Gói đăng ký không còn khả dụng",
+			"plan_invalid":     "Gói đăng ký không hợp lệ",
+			"payment_config":   "Cấu hình thanh toán không khả dụng",
+		},
+	}
+	byLang, ok := labels[lang]
+	if !ok {
+		byLang = labels["en"]
+	}
+	if label, ok := byLang[reason]; ok {
+		return label
+	}
+	switch lang {
+	case "zh-CN":
+		return "扣款未能完成"
+	case "zh-TW":
+		return "扣款未能完成"
+	case "fr":
+		return "Le paiement n'a pas pu être effectué"
+	case "ru":
+		return "Не удалось выполнить списание"
+	case "ja":
+		return "請求を完了できませんでした"
+	case "vi":
+		return "Không thể hoàn tất thanh toán"
+	default:
+		return "The payment could not be completed"
+	}
 }
 
 // renewalFailureCopy 返回 (title, body)。只使用受控原因码的安全文案；

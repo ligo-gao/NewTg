@@ -244,6 +244,24 @@ func (s *Service) DeliverChannelAutoDisabledInApp(ctx context.Context, in Channe
 			}
 			delivered += inserted
 		}
+		// W10-EM1：同一事件也进入 email 队列（管理员侧类别恒发，不查偏好）。
+		// 与站内直投同样是 best-effort：单封失败只 Warn，不回滚已完成的
+		// 渠道状态迁移；dedupe_key 保证重试幂等。
+		if s.emailProducer != nil {
+			for _, admin := range audience {
+				if _, err := s.emailProducer.EnqueueChannelAutoDisabled(ctx, ChannelAutoDisabledEmailEvent{
+					ChannelID:   in.ChannelID,
+					ChannelName: in.ChannelName,
+					ReasonCode:  in.ReasonCode,
+					DisabledAt:  in.DisabledAt,
+					DedupeKey:   in.DedupeKey,
+					AdminUserID: admin.UserID,
+				}); err != nil {
+					s.log.Warn("notify: enqueue channel_auto_disabled email failed",
+						"channel_id", in.ChannelID, "admin_user_id", admin.UserID, "err", err)
+				}
+			}
+		}
 		if len(audience) < batchSize {
 			return delivered, nil
 		}

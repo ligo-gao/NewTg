@@ -45,9 +45,19 @@ func startChannelHealthWorker(parent context.Context, cfg *config.Config, db, lo
 		return nil, err
 	}
 
-	// 站内通知（R-M4-09 的 C 节奏）：email 不在 M4（R-M4-18），因此
-	// Service 不需要 Sender。直投走内置 bundle 兜底，播种失败只 Warn。
-	notifier, err := notify.NewService(notify.ServiceConfig{Store: notifyStore, Logger: log})
+	// 站内通知（R-M4-09 的 C 节奏）+ W10-EM1 的 email 直投。Service 的
+	// email 生产者与 gateway 侧构造同一形状：管理员侧类别恒发，SMTP 未配置
+	// 时行留在队列，配置修复后由 email worker 发出。直投走内置 bundle 兜底，
+	// 播种失败只 Warn。
+	healthEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, log)
+	if err != nil {
+		return nil, err
+	}
+	notifier, err := notify.NewService(notify.ServiceConfig{
+		Store:         notifyStore,
+		EmailProducer: healthEmailProducer,
+		Logger:        log,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -44,17 +44,22 @@ var (
 type ServiceConfig struct {
 	Store  *Store
 	Sender Sender
-	Logger *slog.Logger
+	// EmailProducer 把管理员侧事件（如渠道自动禁用）同时写入 email 队列
+	// （W10-EM1）。nil 时只做站内直投——纯 Repo 单测与未装配 SMTP 的进程
+	// 不应因此失败。
+	EmailProducer *EmailEventProducer
+	Logger        *slog.Logger
 	// Now 是测试发送 dedupe_key 的时钟接缝；nil 时 time.Now。
 	Now func() time.Time
 }
 
 // Service 可并发使用。
 type Service struct {
-	store  *Store
-	sender Sender
-	log    *slog.Logger
-	now    func() time.Time
+	store         *Store
+	sender        Sender
+	emailProducer *EmailEventProducer
+	log           *slog.Logger
+	now           func() time.Time
 }
 
 // NewService 构造服务。Store 必填；Sender 允许为 nil（此时测试发送恒 422，
@@ -71,7 +76,10 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: cfg.Store, sender: cfg.Sender, log: log, now: now}, nil
+	return &Service{
+		store: cfg.Store, sender: cfg.Sender, emailProducer: cfg.EmailProducer,
+		log: log, now: now,
+	}, nil
 }
 
 // EnsureSeeded 幂等补种内置行。装配层在启动期调用；失败必须阻止上线

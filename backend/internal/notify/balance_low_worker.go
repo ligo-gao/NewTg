@@ -50,6 +50,10 @@ type BalanceLowWorkerDeps struct {
 	Store *Store
 	// Producer 负责订阅过滤与投递行写入（必填）。
 	Producer *WebhookEventProducer
+	// EmailProducer 负责 email 投递行写入（W10-EM1）。nil 时不产生 email，
+	// 只保留既有 webhook/inapp 语义；非 nil 时即使 webhook 未订阅也会扫描
+	// （用户偏好才是 email 的开关，SMTP 未配置只影响 worker 领取）。
+	EmailProducer *EmailEventProducer
 	// Config 读取 notify.webhook.enabled / balance_low_threshold / site.timezone
 	// （必填）。
 	Config ConfigReader
@@ -81,18 +85,24 @@ type BalanceLowScanResult struct {
 	Deduped int
 	// Failed 是入队失败的次数（DB/序列化错误；下一轮重试）。
 	Failed int
+	// EmailEnqueued 是新增的 email 投递行数（W10-EM1）。邮件与 webhook 是
+	// 两条独立队列，用户可能只订阅了邮件，因此计数分列。
+	EmailEnqueued int
+	// EmailFailed 是 email 入队失败次数（best-effort，不影响 webhook）。
+	EmailFailed int
 }
 
 // BalanceLowWorker 串行执行扫描轮次。
 type BalanceLowWorker struct {
-	store        *Store
-	producer     *WebhookEventProducer
-	cfg          ConfigReader
-	subscription WebhookEventSubscription
-	log          *slog.Logger
-	now          func() time.Time
-	location     *time.Location
-	interval     time.Duration
+	store         *Store
+	producer      *WebhookEventProducer
+	emailProducer *EmailEventProducer
+	cfg           ConfigReader
+	subscription  WebhookEventSubscription
+	log           *slog.Logger
+	now           func() time.Time
+	location      *time.Location
+	interval      time.Duration
 }
 
 // NewBalanceLowWorker 构造扫描器；依赖缺失是装配错误，必须在启动期暴露。
@@ -122,8 +132,8 @@ func NewBalanceLowWorker(deps BalanceLowWorkerDeps) (*BalanceLowWorker, error) {
 		interval = DefaultBalanceLowScanInterval
 	}
 	return &BalanceLowWorker{
-		store: deps.Store, producer: deps.Producer, cfg: deps.Config,
-		subscription: deps.Subscription, log: log, now: now,
+		store: deps.Store, producer: deps.Producer, emailProducer: deps.EmailProducer,
+		cfg: deps.Config, subscription: deps.Subscription, log: log, now: now,
 		location: deps.Location, interval: interval,
 	}, nil
 }
@@ -170,13 +180,25 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		result.Skipped = true
 		return result
 	}
-	if !enabled || threshold <= 0 {
+	if threshold <= 0 {
+		// 阈值 0 = 关闭余额提醒（站点级）。email 与 webhook 共用该阈值，
+		// 因为两者表达的是同一个业务事件「余额低于阈值」。
 		result.Skipped = true
 		return result
 	}
+	if !enabled {
+		// webhook 开关关闭不代表 email 关闭：email 的开关是用户偏好
+		// （balance_warning.enabled），站点阈值仍取自同一设置键。只要 email
+		// 生产者已装配，扫描就要继续。
+		if w.emailProducer == nil {
+			result.Skipped = true
+			return result
+		}
+	}
 	event, ok := WebhookEventForCategory("billing.balance_low")
-	if !ok || !w.subscription.Subscribed(event) {
-		// 未订阅时整轮跳过：不查询用户，也不写永远不会发送的投递行。
+	webhookActive := ok && w.subscription.Subscribed(event)
+	if !webhookActive && w.emailProducer == nil {
+		// 两条出口都不可用：不查询用户，也不写永远不会发送的投递行。
 		result.Skipped = true
 		return result
 	}
@@ -202,25 +224,44 @@ func (w *BalanceLowWorker) RunOnce(ctx context.Context) BalanceLowScanResult {
 		if ctx.Err() != nil {
 			break
 		}
-		inserted, err := w.producer.EnqueueBalanceLow(ctx, BalanceLowEvent{
-			UserID:     user.ID,
-			Balance:    user.Balance,
-			Threshold:  threshold,
-			DetectedAt: now,
-			SiteDay:    day,
-		})
-		if err != nil {
-			// 单个用户失败不阻断其余用户；下一轮会重试，dedupe_key 保证
-			// 已成功的用户不会重复投递。
-			result.Failed++
-			w.log.Warn("balance low worker: enqueue failed",
-				"user_id", user.ID, "error", err)
-			continue
+		if webhookActive {
+			inserted, err := w.producer.EnqueueBalanceLow(ctx, BalanceLowEvent{
+				UserID:     user.ID,
+				Balance:    user.Balance,
+				Threshold:  threshold,
+				DetectedAt: now,
+				SiteDay:    day,
+			})
+			if err != nil {
+				// 单个用户失败不阻断其余用户；下一轮会重试，dedupe_key 保证
+				// 已成功的用户不会重复投递。
+				result.Failed++
+				w.log.Warn("balance low worker: enqueue failed",
+					"user_id", user.ID, "error", err)
+			} else if inserted {
+				result.Enqueued++
+			} else {
+				result.Deduped++
+			}
 		}
-		if inserted {
-			result.Enqueued++
-		} else {
-			result.Deduped++
+		// email 与 webhook 订阅面相互独立：即使 webhook 未订阅/写入失败，
+		// 用户仍可能只订阅了邮件。偏好闸门在生产者内解析，opt-out 直接写
+		// suppressed 终态（R-W10-06），这里只记计数。
+		if w.emailProducer != nil {
+			emailResult, emailErr := w.emailProducer.EnqueueBalanceLow(ctx, BalanceLowEmailEvent{
+				UserID:     user.ID,
+				Balance:    user.Balance,
+				Threshold:  threshold,
+				DetectedAt: now,
+				SiteDay:    day,
+			})
+			if emailErr != nil {
+				result.EmailFailed++
+				w.log.Warn("balance low worker: enqueue email failed",
+					"user_id", user.ID, "error", emailErr)
+			} else if emailResult.Status == EmailEnqueueQueued {
+				result.EmailEnqueued++
+			}
 		}
 	}
 	w.log.Info("balance low scan completed",
