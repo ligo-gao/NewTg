@@ -2873,6 +2873,10 @@ export interface paths {
         /**
          * 终止部署（不可恢复）
          * @description 返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+         *     终止成功后按删除前观测到的实际用量结算当前计费段，并释放剩余预扣
+         *     （只 Release 未结算余额，不再 Hold）；结算失败不回滚删除，由对账任务
+         *     收敛。审计 detail 记录 `billing_segments_settled` /
+         *     `billing_confirmed_credits` / `billing_released_credits`。
          */
         delete: operations["deleteDeployment"];
         options?: never;

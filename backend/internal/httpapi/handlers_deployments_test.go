@@ -817,6 +817,37 @@ func TestDeployExtendProviderFailureReleasesHold(t *testing.T) {
 	}
 }
 
+// H2：删除成功 → 只做终止收敛，不再 Hold（P-18）。
+func TestDeployDeleteSettlesWithoutHolding(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "termination requested"}
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", StartedAt: deployTimePtr(time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)),
+		FinishedAt:           deployTimePtr(time.Date(2026, 10, 20, 10, 30, 0, 0, time.UTC)),
+		ComputeMinutesServed: 30,
+	}
+
+	rr := env.do(http.MethodDelete, "/api/deployments/dep-1", "", deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, _, terminated := env.billing.snapshot()
+	if len(holds) != 0 {
+		t.Fatalf("终止不得 Hold: %d", len(holds))
+	}
+	if len(terminated) != 1 || terminated[0].DeploymentID != "dep-1" {
+		t.Fatalf("终止必须收敛段: %+v", terminated)
+	}
+	if terminated[0].ComputeSeconds != 30*60 || terminated[0].FinishedAt == nil {
+		t.Fatalf("终止必须带删除前的 provider 观测: %+v", terminated[0])
+	}
+	rows := env.audit.snapshot()
+	detail := stringifyAuditRow(rows[len(rows)-1])
+	if !strings.Contains(detail, "billing_segments_settled") {
+		t.Fatalf("终止审计必须记录结算结果: %s", detail)
+	}
+}
+
 // ---------- 只读：详情 / 容器 / 日志 / 目录 / 价格 ----------
 
 func TestDeployDetailHasNoSecretFields(t *testing.T) {

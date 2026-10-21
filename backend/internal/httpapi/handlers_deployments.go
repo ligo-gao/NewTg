@@ -1757,6 +1757,9 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 	defer cancel()
 	provider := h.client(apiKey)
 	name := h.lookupDeploymentName(ctx, provider, deploymentID)
+	// 删除前的终态观测（best-effort）：删除成功后 provider 就查不到了，
+	// 计费用的 provider 累计只能在这之前取。失败不影响删除。
+	detail, detailErr := provider.GetDeployment(ctx, deploymentID)
 
 	action, err := provider.DeleteDeployment(ctx, deploymentID)
 	if err != nil {
@@ -1768,9 +1771,36 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 		}, nil, nil)
 		return status, body
 	}
-	h.writeDeployAudit(r, actor, audit.ActionDeployDelete, http.StatusAccepted, true, map[string]any{
+	detailFields := map[string]any{
 		"deployment_id": deploymentID, "name": name, "request_id": requestID,
-	}, nil, nil)
+	}
+	// H2：终止只做「按实际用量结算 + 释放剩余预扣」，不再 Hold（P-18）。
+	//
+	// provider 删除成功是强证据：立即收敛段，不等 N16 的 900s provider-404
+	// 窗口（那个窗口会把已知成本拖成「不可达」并最终按释放收尾）。
+	// 收敛失败不回滚删除（部署已不存在），留给对账任务；响应仍是 202。
+	if h.billing != nil {
+		obs := deploybilling.TerminationObservation{DeploymentID: deploymentID}
+		if detailErr == nil {
+			obs.ProviderStartedAt = detail.StartedAt
+			obs.FinishedAt = detail.FinishedAt
+			obs.ComputeSeconds = int64(detail.ComputeMinutesServed) * 60
+		}
+		ledgerCtx, cancelLedger := h.ledgerContext(r)
+		result, settleErr := h.billing.SettleTerminated(ledgerCtx, obs)
+		cancelLedger()
+		if settleErr != nil {
+			h.log.Warn("deploy: settle segment after termination failed",
+				"deployment_id", deploymentID, "err", settleErr)
+			detailFields["billing_result"] = "deferred"
+		} else {
+			detailFields["billing_segments_settled"] = result.SegmentsSettled
+			detailFields["billing_segments_released"] = result.SegmentsReleased
+			detailFields["billing_confirmed_credits"] = result.ConfirmedCredits
+			detailFields["billing_released_credits"] = result.ReleasedCredits
+		}
+	}
+	h.writeDeployAudit(r, actor, audit.ActionDeployDelete, http.StatusAccepted, true, detailFields, nil, nil)
 	return jsonBody(w, r, http.StatusAccepted, struct {
 		DeploymentID string `json:"deployment_id"`
 		Status       string `json:"status"`

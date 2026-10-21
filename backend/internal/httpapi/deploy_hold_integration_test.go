@@ -283,3 +283,66 @@ func TestDeployBillingExtendProviderFailureReleasesSegment(t *testing.T) {
 		t.Fatal("从未运行的段不得结算")
 	}
 }
+
+// H2：终止按实际用量结算，剩余预扣释放；重复删除不重复记账。
+func TestDeployBillingTerminationSettlesAndReleases(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	now, setNow := deployBillingClock(start)
+	env := newDeployBillingEnv(t, now, NewMemoryIdempotencyStore())
+	env.provider.Price = availablePrice()
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-run", Status: "requested"}
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-run", Status: "termination requested"}
+
+	if rr := env.do(http.MethodPost, "/api/deployments", billingCreateBody(), deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	segs := env.segments(t)
+	if len(segs) != 1 {
+		t.Fatalf("段数 = %d", len(segs))
+	}
+	segmentID := segs[0].SegmentID
+
+	// 对账把段从 pending_confirm 推进到 running（provider 已开始）。
+	setNow(start.Add(5 * time.Minute))
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-run", Status: "running", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 2,
+		StartedAt:            deployTimePtr(start),
+		Locations:            []ionet.DeploymentLocation{{ID: 1}},
+		ComputeMinutesServed: 0,
+	}
+	if _, err := env.ledger.ReconcileDeployment(context.Background(), "dep-run"); err != nil {
+		t.Fatalf("ReconcileDeployment: %v", err)
+	}
+
+	// 运行 30 分钟后删除：provider 报告 30 分钟用量 → 按用量结算。
+	setNow(start.Add(30 * time.Minute))
+	env.provider.DeploymentDetail.ComputeMinutesServed = 30
+	if rr := env.do(http.MethodDelete, "/api/deployments/dep-run", "", deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("delete status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	settled := env.segments(t)[0]
+	if settled.State != billing.SegmentSettled {
+		t.Fatalf("终止后 state = %s，want settled", settled.State)
+	}
+	if settled.SettledCredits == nil || *settled.SettledCredits <= 0 {
+		t.Fatalf("确认成本必须为正: %v", settled.SettledCredits)
+	}
+	if *settled.SettledCredits >= settled.PreconsumedCredits {
+		t.Fatalf("提前终止应释放剩余预扣: confirmed=%d preconsumed=%d",
+			*settled.SettledCredits, settled.PreconsumedCredits)
+	}
+	if env.factCount(t, segmentID, billing.FactSettlement) != 1 {
+		t.Fatal("必须恰有一条 settlement 事实")
+	}
+
+	// 重复收敛（另一轮删除/对账）：终态短路，不重复记账。
+	if _, err := env.ledger.SettleTerminated(context.Background(), billing.TerminationObservation{
+		DeploymentID: "dep-run", ComputeSeconds: 1800,
+	}); err != nil {
+		t.Fatalf("repeat SettleTerminated: %v", err)
+	}
+	if env.factCount(t, segmentID, billing.FactSettlement) != 1 {
+		t.Fatal("重复收敛不得重复写 settlement")
+	}
+}

@@ -95,3 +95,27 @@ func (l *Ledger) SettleTerminated(ctx context.Context, obs TerminationObservatio
 	}
 	return result, nil
 }
+
+// ReconcileDeployment 是 billing-03 §5.9.3 的部署级对账入口：把该部署的
+// 全部未终态段逐个交给 Reconcile（按 provider 实际状态收敛）。
+//
+// provider 已删除但段仍 open 时，段在 900s 窗口后转 abandoned 并释放预扣；
+// 重复调用只会在终态上 no-op，事实键唯一约束兜底不重复记账。
+func (l *Ledger) ReconcileDeployment(ctx context.Context, deploymentID string) ([]string, error) {
+	if deploymentID == "" {
+		return nil, ErrSegmentNotFound
+	}
+	segments, err := l.store.listOpenSegmentsByDeployment(ctx, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		state, err := l.Reconcile(ctx, seg.SegmentID)
+		if err != nil {
+			return states, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
