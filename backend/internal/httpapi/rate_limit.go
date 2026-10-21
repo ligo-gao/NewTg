@@ -8,6 +8,9 @@
 // 一致。固定窗口在窗口交界允许约 2× 突刺，这是 security-07 §2.2.1 明确接受
 // 的语义（照搬基线、不改算法）。
 //
+// W7/M5-a 起，脚本的单一实现位于 internal/ratelimit；本文件的 allowRequestRate
+// 只是保留原签名的薄委托，供既有认证面/公开面/管理面调用点继续使用。
+//
 // 键命名（冻结前缀 rateLimit:v2:ip:<mark>:<clientIP>）：
 //   - B3 只有 IP 维，恰好落在冻结形状上；
 //   - B1/B8 的维度分别是 IP+identifier / IP+path，因此在冻结前缀后追加第二维
@@ -20,13 +23,13 @@ package httpapi
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/ratelimit"
 )
 
 const (
@@ -80,43 +83,27 @@ func PublicReadRateLimitKey(ip, path string) string {
 	return RateLimitKeyPrefix + PublicReadRateMark + ":" + ip + ":" + path
 }
 
-// fixedWindowScript 原子完成「INCR + 首次设置过期 + 读取剩余 TTL」。
-// 单脚本避免 INCR 成功而 EXPIRE 失败导致计数永不过期；PTTL 与 INCR 在同一
-// 原子单元内读取，Retry-After 不会与窗口重置竞态。
-// 键存在但无 TTL（异常数据）时补设 TTL，避免永久桶。
-var fixedWindowScript = redis.NewScript(`
-local n = redis.call('INCR', KEYS[1])
-if n == 1 then
-  redis.call('PEXPIRE', KEYS[1], ARGV[1])
-end
-local ttl = redis.call('PTTL', KEYS[1])
-if ttl < 0 then
-  redis.call('PEXPIRE', KEYS[1], ARGV[1])
-  ttl = tonumber(ARGV[1])
-end
-return {n, ttl}
-`)
-
 // allowRequestRate 消耗固定窗口中的一个名额。
+//
+// 单一实现已迁入 internal/ratelimit（R-M5-01）；本函数保留原签名，让
+// 认证面/公开面/管理面的既有调用点与各自的 fail 策略保持不变。
 // 返回 over=true 表示本次请求超限，retryAfter 为当前窗口剩余时间。
 // Redis 错误原样上抛，由调用方按各面的 fail 策略处理。
+//
+// 注意：这些既有桶的阈值都 >0；ratelimit.Allow 对 limit<=0 采用「不限」
+// 语义（M5 的 0=不限 裁决），不改变任何现有桶的行为。
 func allowRequestRate(ctx context.Context, rdb *redis.Client, key string, limit int, window time.Duration) (bool, time.Duration, error) {
-	values, err := fixedWindowScript.Run(ctx, rdb, []string{key},
-		strconv.FormatInt(window.Milliseconds(), 10)).Int64Slice()
+	decision, err := ratelimit.New(rdb).Allow(ctx, ratelimit.Bucket{
+		Name:   "httpapi",
+		Limit:  limit,
+		Window: window,
+		// FailMode 只回填到 Decision，不参与 Allow 的返回值；各调用点的
+		// fail-open/fail-closed 仍由它们自己决定（见本文件头注释）。
+	}, key, 1)
 	if err != nil {
-		return false, 0, fmt.Errorf("httpapi: request rate limiter: %w", err)
+		return false, 0, err
 	}
-	if len(values) != 2 {
-		return false, 0, fmt.Errorf("httpapi: request rate limiter: unexpected reply length %d", len(values))
-	}
-	retry := window
-	if values[1] > 0 {
-		retry = time.Duration(values[1]) * time.Millisecond
-		if retry > window {
-			retry = window
-		}
-	}
-	return values[0] > int64(limit), retry, nil
+	return !decision.Allowed, decision.RetryAfter, nil
 }
 
 // allowRequestRate 是 authHandlers 的便捷形态（复用同一 Redis 客户端）。
