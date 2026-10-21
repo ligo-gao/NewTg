@@ -45,6 +45,13 @@ const (
 	DefaultPluginReloadInterval = 30 * time.Second
 	// DefaultReconcileLimit 是单轮补偿扫描的行数上限。
 	DefaultReconcileLimit = 200
+	// DefaultLeaseKeeperInterval 是任务处理期间的租约续租间隔（R-W9B-02）。
+	//
+	// 单次 processTask 最坏约 55s（插件 5s + 出站 30s + parse 5s + 结算
+	// 10s）。只在入队前续租一次时，一次慢出站就能让租约在任务处理中途
+	// 过期（I-1 复核）。30s 远小于租约 TTL 的安全下界 120s，保证任意单段
+	// 耗时内至少有一次续租；测试可注入更短间隔。
+	DefaultLeaseKeeperInterval = 30 * time.Second
 )
 
 // PluginSnapshotter 是轮询器对插件运行时的只读依赖（生产 *plugin.Manager）。
@@ -118,6 +125,9 @@ type PollerConfig struct {
 	Timeout        *time.Duration
 	ReloadInterval time.Duration
 	ReconcileLimit int
+	// LeaseKeeperInterval 是单任务处理期间的续租间隔（R-W9B-02 / I-1）。
+	// 零值使用 DefaultLeaseKeeperInterval（30s，远小于 120s TTL 下界）。
+	LeaseKeeperInterval time.Duration
 	// AllowPrivate 只允许测试注入 httptest（127.0.0.1）时置 true。
 	AllowPrivate bool
 }
@@ -140,6 +150,7 @@ type Poller struct {
 	timeout        time.Duration
 	reloadInterval time.Duration
 	reconcileLimit int
+	leaseKeepGap   time.Duration
 	allowPrivate   bool
 }
 
@@ -176,6 +187,7 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 	p.reloadInterval = orDefaultDuration(cfg.ReloadInterval, DefaultPluginReloadInterval)
 	p.queryLimit = orDefaultInt(cfg.QueryLimit, DefaultQueryLimit)
 	p.reconcileLimit = orDefaultInt(cfg.ReconcileLimit, DefaultReconcileLimit)
+	p.leaseKeepGap = orDefaultDuration(cfg.LeaseKeeperInterval, DefaultLeaseKeeperInterval)
 	// 任务上限的三态默认化（W9-B4 / R-W9B-04）：只有「未配置」（nil）回落
 	// 设计默认；显式 0 必须原样保留，供 timedOut/recordFailure 的 `<=0` /
 	// `>0` 判定解释成「禁用」。不得再写 `if x == 0 { x = default }`——
@@ -282,6 +294,71 @@ func (p *Poller) pollOnce(ctx context.Context) {
 	}
 }
 
+// renewTaskLease 为单个任务续租一次（R-W9B-02）。失败只记录：不能因此
+// 停止轮询或改变结算方向；租约过期后扫描可能抢先退款，终态 CAS 会阻止
+// 后续结算造成双花。
+func (p *Poller) renewTaskLease(ctx context.Context, task *Task) {
+	if task == nil {
+		return
+	}
+	requestID := toString(task.PrivateData["request_id"])
+	if requestID == "" {
+		return
+	}
+	if err := p.billing.RefreshInflightLeases(ctx, []string{requestID}); err != nil {
+		p.log.Warn("tasks: refresh inflight lease failed; settlement direction unchanged",
+			"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
+	}
+}
+
+// startTaskLeaseKeeper 在单任务处理期间周期续租，返回停止函数（I-1 复核）。
+//
+// 为什么需要它：processTask 内部最坏约 55s（插件 + 出站 + parse + 结算），
+// 而任务租约 TTL 的安全下界是 120s；只在进入时续租一次，遇到慢出站或调度
+// 抖动仍可能中途过期。keeper 每 30s（可注入）续一次，远小于 TTL 下界，
+// 使「单任务耗时 > TTL」只在进程真的死亡时才会发生。
+//
+// 只在有 request_id 的非终态任务上启动；无 requestID 的任务无法结算，
+// 续租也没有意义。keeper 随 poller 上下文取消而停止（停机时不再续租）。
+func (p *Poller) startTaskLeaseKeeper(ctx context.Context, task *Task) func() {
+	if task == nil {
+		return func() {}
+	}
+	requestID := toString(task.PrivateData["request_id"])
+	if requestID == "" {
+		return func() {}
+	}
+	interval := p.leaseKeepGap
+	if interval <= 0 {
+		interval = DefaultLeaseKeeperInterval
+	}
+	keeperCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keeperCtx.Done():
+				return
+			case <-ticker.C:
+				if err := p.billing.RefreshInflightLeases(keeperCtx, []string{requestID}); err != nil {
+					if keeperCtx.Err() != nil {
+						return // 停机取消导致的中断不是故障。
+					}
+					p.log.Warn("tasks: periodic inflight lease renewal failed; settlement direction unchanged",
+						"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 // renewInflightLeases 为一批未终态任务续租（R-W9B-02）。
 //
 // 只收集有 request_id 的非终态任务：终态任务的资金已经/即将由结算/退款
@@ -325,14 +402,12 @@ func (p *Poller) processTask(ctx context.Context, task *Task) {
 	// 「单轮内任务间隔 1s × 队列长度」超过 TTL 的情况——排队靠后的任务在
 	// 轮到它时租约可能已过 TTL。给当前任务的 requestID 续租后，兜底扫描
 	// 才不会在它运行期间把它退掉（否则任务完成后结算即免费）。
-	if requestID := toString(task.PrivateData["request_id"]); requestID != "" {
-		if err := p.billing.RefreshInflightLeases(ctx, []string{requestID}); err != nil {
-			// 续租失败只记录：不能因此停止轮询或改变结算方向；租约过期后
-			// 扫描可能抢先退款，终态 CAS 会阻止后续结算造成双花。
-			p.log.Warn("tasks: refresh inflight lease before processing failed; settlement direction unchanged",
-				"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
-		}
-	}
+	p.renewTaskLease(ctx, task)
+	// I-1：单次 processTask 最坏约 55s，仅靠进入时续租一次仍可能在处理
+	// 中途过期。处理期间由 keeper 周期续租（30s，远小于 120s TTL 下界），
+	// 并在出站前后、结算前再显式续租；任一环节丢一次心跳都不会失去租约。
+	stopKeeper := p.startTaskLeaseKeeper(ctx, task)
+	defer stopKeeper()
 	if p.timedOut(task) {
 		p.failAndRefund(ctx, task, "task_timeout")
 		return
@@ -379,12 +454,16 @@ func (p *Poller) processTask(ctx context.Context, task *Task) {
 		p.recordFailure(ctx, task, "query_request_invalid")
 		return
 	}
+	// I-1：出站是单任务里最长的一段（默认超时 30s）。出站前后各续租一次，
+	// 与 keeper 的周期续租共同保证这一段不会跨过租约 TTL。
+	p.renewTaskLease(ctx, task)
 	resp, err := DoOutbound(ctx, p.client, desc, AllowedHosts(channel.BaseURL, compiled.Manifest().AllowedHosts), p.allowPrivate)
 	if err != nil {
 		// 传输错误（含超时/白名单拒绝/重定向）：累计失败，最终超时退款。
 		p.recordFailure(ctx, task, "query_transport_failed")
 		return
 	}
+	p.renewTaskLease(ctx, task)
 	p.classifyResponse(ctx, task, compiled, queryCtx, resp)
 }
 
@@ -577,6 +656,10 @@ func (p *Poller) finalize(ctx context.Context, task *Task, state State, rawState
 		task.PrivateData = map[string]any{}
 	}
 	task.PrivateData["billing_pending"] = true
+	// I-1：结算/退款前最后一次续租。结算本身可能触发 DB/日志写（最坏约
+	// 10s）；若此前租约已接近过期，扫描可能在结算落地前抢先退款。续租在
+	// 终态 CAS 已赢之后执行，不会影响终态，只保证结算窗口内仍有在飞证据。
+	p.renewTaskLease(ctx, task)
 	p.settleTerminal(ctx, task, compiled)
 }
 

@@ -387,3 +387,45 @@ func TestWorkerLoopCanceledContext(t *testing.T) {
 		t.Fatalf("lister calls = %d, want 0", got)
 	}
 }
+
+// TestWorkerLoopDefersFirstSubscriptionScan 覆盖 M-4：启动时立即扫钱包悬挂
+// 请求，但订阅兜底必须等第一个周期——任务轮询器与 worker 并发启动，启动即
+// 扫可能在轮询器首批续租前误退刚交接的任务。
+func TestWorkerLoopDefersFirstSubscriptionScan(t *testing.T) {
+	lister := &workerTestLister{}
+	recoverer := &workerTestRecoverer{}
+	subs := &workerTestSubscriptionRecoverer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWorkerLoop(ctx, WorkerDeps{
+			Abandoned:             lister,
+			Recoverer:             recoverer,
+			SubscriptionRecoverer: subs,
+			Logger:                workerTestLogger(),
+			// 一个扫描周期取 1h：若启动轮会扫订阅，断言必然看到调用；
+			// 周期轮在测试窗口内不会触发，判定是确定性的。
+			ScanInterval: time.Hour,
+		})
+	}()
+
+	// 等启动轮（钱包扫描）完成并留出足够的调度余量。
+	workerWaitFor(t, func() bool { return lister.callCount() >= 1 }, "startup abandoned scan")
+	time.Sleep(50 * time.Millisecond)
+	if got := subs.callCount(); got != 0 {
+		cancel()
+		<-done
+		t.Fatalf("启动轮订阅扫描调用 = %d，want 0（必须延后一个周期）", got)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWorkerLoop = %v，want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunWorkerLoop did not exit after cancel")
+	}
+}

@@ -193,6 +193,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 会保持纯钱包行为（订阅偏好被忽略）。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
 		store.NewSubscriptionRepo(db), db))
+	// M-1 复核：启动期校验租约 TTL / 兜底窗口，错误配置不得让 gateway 上线。
+	if err := engine.ValidateSubscriptionLeaseConfig(); err != nil {
+		return nil, fmt.Errorf("gateway: subscription lease config: %w", err)
+	}
 	if err := center.Subscribe(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: subscribe config center: %w", err)
 	}

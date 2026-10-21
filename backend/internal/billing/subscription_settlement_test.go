@@ -574,3 +574,78 @@ func TestSessionSubscriptionRefundReversesIncrements(t *testing.T) {
 		t.Fatalf("钱包余额 = %d，want 500", got)
 	}
 }
+
+// TestSubscriptionLeaseConfigValidation 覆盖 M-1：窗口 <= TTL、TTL 低于安全
+// 下界、TTL <= 0 都必须被判为配置错误；同一套校验在启动期
+// （ValidateSubscriptionLeaseConfig）与扫描入口（RecoverStale...）一致生效。
+func TestSubscriptionLeaseConfigValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     mapConfig
+		wantErr bool
+	}{
+		{"defaults", mapConfig{}, false},
+		{"window == ttl", mapConfig{
+			ConfigSubscriptionRecoveryWindowSeconds:   json.RawMessage("120"),
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("120"),
+		}, true},
+		{"window < ttl", mapConfig{
+			ConfigSubscriptionRecoveryWindowSeconds:   json.RawMessage("60"),
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("120"),
+		}, true},
+		{"ttl below safety floor", mapConfig{
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("60"),
+		}, true},
+		{"ttl zero", mapConfig{
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("0"),
+		}, true},
+		{"ttl negative", mapConfig{
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("-1"),
+		}, true},
+		{"valid explicit", mapConfig{
+			ConfigSubscriptionRecoveryWindowSeconds:   json.RawMessage("900"),
+			ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("120"),
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine(nil, nil, nil, tc.cfg, nil, nil, nil)
+			e.SetSubscriptionFunding(newFakeSubscriptionFunding(contract.PrefSubscriptionFirst))
+
+			err := e.ValidateSubscriptionLeaseConfig()
+			if tc.wantErr && !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("ValidateSubscriptionLeaseConfig = %v，want ErrInvalidConfig", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ValidateSubscriptionLeaseConfig = %v，want nil", err)
+			}
+
+			// 扫描入口必须复用同一套校验：配置错误时在 list 之前就失败，
+			// 不能把错误配置当成「本轮没有候选」。
+			_, recErr := e.RecoverStaleSubscriptionPreConsumes(
+				context.Background(), time.Now().UTC(), 1)
+			if tc.wantErr && !errors.Is(recErr, ErrInvalidConfig) {
+				t.Fatalf("RecoverStale = %v，want ErrInvalidConfig", recErr)
+			}
+			if !tc.wantErr && recErr != nil {
+				t.Fatalf("RecoverStale = %v，want nil", recErr)
+			}
+		})
+	}
+}
+
+// TestSubscriptionLeaseTTLTestOverride 覆盖测试注入旋钮：非零 subLeaseTTL
+// 完全覆盖配置（允许毫秒级 TTL），零值仍走生产配置与 120s 下界。
+func TestSubscriptionLeaseTTLTestOverride(t *testing.T) {
+	e := NewEngine(nil, nil, nil, mapConfig{
+		ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage("1"),
+	}, nil, nil, nil)
+	if _, err := e.subscriptionLeaseTTL(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("生产配置 1s = %v，want ErrInvalidConfig（安全下界 120s）", err)
+	}
+	e.subLeaseTTL = 25 * time.Millisecond
+	got, err := e.subscriptionLeaseTTL()
+	if err != nil || got != 25*time.Millisecond {
+		t.Fatalf("override = %v/%v，want 25ms/nil", got, err)
+	}
+}

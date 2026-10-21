@@ -21,32 +21,39 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tasks"
 )
 
-// w9lConfig 构造缩短窗口/TTL 的计费配置（R-W9B-02 要求两组参数分开）。
-func w9lConfig(windowSeconds, leaseTTLSeconds int64) mapConfig {
+// w9lConfig 构造缩短的兜底窗口配置。
+//
+// 租约 TTL 不走配置键：生产路径有 120s 安全下界（I-1），测试通过
+// Engine.subLeaseTTL 注入毫秒级值来验证续租/过期语义。
+func w9lConfig(windowSeconds int64) mapConfig {
 	return mapConfig{
-		ConfigPreConsumeRatio:                     json.RawMessage("1.0"),
-		ConfigTrustQuotaUSD:                       json.RawMessage("0"),
-		ConfigSubscriptionRecoveryWindowSeconds:   json.RawMessage(strconv.FormatInt(windowSeconds, 10)),
-		ConfigSubscriptionInflightLeaseTTLSeconds: json.RawMessage(strconv.FormatInt(leaseTTLSeconds, 10)),
+		ConfigPreConsumeRatio:                   json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:                     json.RawMessage("0"),
+		ConfigSubscriptionRecoveryWindowSeconds: json.RawMessage(strconv.FormatInt(windowSeconds, 10)),
 	}
 }
 
-// w9lNewEngine 构造真实仓储 + 缩短参数的计费引擎。
-func w9lNewEngine(t *testing.T, cfg mapConfig) (*Engine, *sql.DB, *store.SQLSubscriptionRepo) {
+// w9lNewEngine 构造真实仓储 + 缩短窗口/TTL 的计费引擎。
+func w9lNewEngine(t *testing.T, windowSeconds, leaseTTLSeconds int64) (*Engine, *sql.DB, *store.SQLSubscriptionRepo) {
 	t.Helper()
 	gormDB, db := openBillingTestDB(t)
 	repo := store.NewSubscriptionRepo(db)
-	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	e := NewEngine(gormDB, nil, nil, w9lConfig(windowSeconds), nil, nil, nil)
 	e.SetSubscriptionFunding(NewStoreSubscriptionFunding(repo, db))
+	e.subLeaseTTL = time.Duration(leaseTTLSeconds) * time.Second
 	// 流式会话心跳：测试用毫秒级间隔驱动真实续租循环（钱包心跳旋钮不参与）。
 	e.subHeartbeat = 20 * time.Millisecond
 	return e, db, repo
@@ -98,7 +105,7 @@ func w9lLeaseHeartbeat(t *testing.T, db *sql.DB, requestID string) time.Time {
 // 请求年龄超过兜底窗口，但只要租约持续续租就不被退款；完成后按预扣额结算。
 func TestW9LLongRunningRequestKeptAliveByRenewal(t *testing.T) {
 	window, leaseTTL := int64(2), int64(1)
-	e, db, repo := w9lNewEngine(t, w9lConfig(window, leaseTTL))
+	e, db, repo := w9lNewEngine(t, window, leaseTTL)
 	userID, tokenID, sub, req := w9lSeed(t, db, repo, 100)
 
 	// 预扣记录已经超过窗口（模拟任务/长流已经跑过 900s 的等价场景）。
@@ -155,7 +162,7 @@ func TestW9LLongRunningRequestKeptAliveByRenewal(t *testing.T) {
 // 订阅会话 PreConsume 成功后自动启动续租循环；只要会话在跑，租约就保持
 // 新鲜、扫描不退款，Terminate 后置终态。
 func TestW9LSubscriptionSessionHeartbeatRenewsLease(t *testing.T) {
-	e, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	e, db, repo := w9lNewEngine(t, 2, 1)
 	userID := createBillingTestUser(t, db, 500)
 	tokenID := createBillingTestToken(t, db, userID, int64(500))
 	sub := w9bCreateSubscription(t, db, repo, userID, 1000)
@@ -223,7 +230,7 @@ func TestW9LSubscriptionSessionHeartbeatRenewsLease(t *testing.T) {
 // TestW9LCrashedRequestRefundedAfterLeaseExpiry 覆盖真正的崩溃：没有续租，
 // 租约在 TTL 后过期，扫描只退一次（方向安全：订阅退回，令牌保持已扣）。
 func TestW9LCrashedRequestRefundedAfterLeaseExpiry(t *testing.T) {
-	e, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	e, db, repo := w9lNewEngine(t, 2, 1)
 	_, tokenID, sub, req := w9lSeed(t, db, repo, 100)
 
 	now := time.Now().UTC()
@@ -258,7 +265,7 @@ func TestW9LCrashedRequestRefundedAfterLeaseExpiry(t *testing.T) {
 // TestW9LLeaseGuardRejectsLiveLease 覆盖扫描与续租的线性化：退款事务内的
 // 租约守卫在心跳新鲜时拒绝整笔退款；心跳过期后才允许退款。
 func TestW9LLeaseGuardRejectsLiveLease(t *testing.T) {
-	_, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	_, db, repo := w9lNewEngine(t, 2, 1)
 	_, tokenID, sub, req := w9lSeed(t, db, repo, 100)
 
 	now := time.Now().UTC()
@@ -317,7 +324,7 @@ func TestW9LLeaseGuardRejectsLiveLease(t *testing.T) {
 // TestW9LRenewalExtendsLease 覆盖「续租延长租约」：过期边缘的租约被续租后
 // 心跳前移，不再满足过期条件。
 func TestW9LRenewalExtendsLease(t *testing.T) {
-	e, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	e, db, repo := w9lNewEngine(t, 2, 1)
 	_, _, _, req := w9lSeed(t, db, repo, 100)
 
 	// 先把心跳放到 TTL 之外，再续租。
@@ -352,7 +359,7 @@ func TestW9LRenewalExtendsLease(t *testing.T) {
 // 不会出现「已退款又结算」或「重复退款」。
 func TestW9LScanAndRenewalConcurrent(t *testing.T) {
 	for i := 0; i < 5; i++ {
-		e, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+		e, db, repo := w9lNewEngine(t, 2, 1)
 		_, tokenID, sub, req := w9lSeed(t, db, repo, 100)
 		now := time.Now().UTC()
 		w9lBackdatePreConsume(t, db, req, now.Add(-10*time.Second))
@@ -417,11 +424,12 @@ func TestW9LScanAndRenewalConcurrent(t *testing.T) {
 	}
 }
 
-// TestW9LTaskPollerRenewalCoversLongRound 覆盖任务轮询的业务前提：单轮时长
-// 超过租约 TTL 时，逐任务续租仍能保住活跃任务（任务入口在 tasks 包有单元
-// 用例；这里验证它依赖的计费续租入口在真实 PG 上生效）。
-func TestW9LTaskPollerRenewalCoversLongRound(t *testing.T) {
-	e, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+// TestW9LRenewalEntryKeepsLongTaskAlive 覆盖计费侧续租入口：以「外部周期
+// 续租」模拟轮询器/keeper，证明单轮时长超过 TTL 时任务仍存活。
+// 真实的 tasks.Poller 端到端用例见 TestW9LPollerKeepsLongTaskAliveEndToEnd
+// （M-3 复核要求，二者互补：本用例只验证计费入口，不冒充 Poller 行为）。
+func TestW9LRenewalEntryKeepsLongTaskAlive(t *testing.T) {
+	e, db, repo := w9lNewEngine(t, 2, 1)
 	_, _, sub, req := w9lSeed(t, db, repo, 100)
 
 	// 模拟 Detach 后的任务：会话不再续租，轮询器在「单轮」中每 300ms
@@ -470,7 +478,7 @@ func TestW9LTaskPollerRenewalCoversLongRound(t *testing.T) {
 // creditTokenQuotaTx 的 UPDATE 必须绑定 user_id。令牌属于他人时回补 0 行，
 // 订阅退款仍然完成（事务不因此失败）。
 func TestW9LTokenCreditRequiresUserBinding(t *testing.T) {
-	_, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	_, db, repo := w9lNewEngine(t, 2, 1)
 	ownerID, ownerToken, _, req := w9lSeed(t, db, repo, 100)
 	otherID := createBillingTestUser(t, db, 500)
 
@@ -497,7 +505,7 @@ func TestW9LTokenCreditRequiresUserBinding(t *testing.T) {
 // 直接调仓储（绕过上层预检），registry 已 settled 时退款 CAS 未命中，
 // 整笔事务回滚——amount_used、预扣状态、令牌都不变。
 func TestW9LRefundRegistryCASMissRollsBackEverything(t *testing.T) {
-	_, db, repo := w9lNewEngine(t, w9lConfig(2, 1))
+	_, db, repo := w9lNewEngine(t, 2, 1)
 	_, tokenID, sub, req := w9lSeed(t, db, repo, 100)
 
 	// 模拟另一个执行者已结算：registry.settled（预扣记录仍是 consumed）。
@@ -529,5 +537,178 @@ func TestW9LRefundRegistryCASMissRollsBackEverything(t *testing.T) {
 	}
 	if got := tokenRemain(t, db, tokenID).Int64; got != 400 {
 		t.Fatalf("CAS 未命中后令牌 = %d，want 400（不得回补）", got)
+	}
+}
+
+// leaseE2ERepo 用真实 tasks.Repo 承载任务行，只把渠道查询替换成 httptest
+// 地址；其它 PendingRepo 方法（领取/CAS/私有数据）都走真实 PostgreSQL。
+type leaseE2ERepo struct {
+	*tasks.Repo
+	target *tasks.ChannelTarget
+}
+
+func (r leaseE2ERepo) GetChannel(context.Context, int64) (*tasks.ChannelTarget, error) {
+	copied := *r.target
+	return &copied, nil
+}
+
+// leaseE2EPlugin 是最小任务插件：一次 GET 查询 + IN_PROGRESS 解析。
+const leaseE2EPlugin = `globalThis.__NEWTG_PLUGIN__ = {
+  apiVersion: 1,
+  key: "lease-e2e",
+  name: "Lease E2E",
+  version: "1.0.0",
+  author: { name: "NewTG" },
+  description: { en: "lease e2e", zh: "续租端到端" },
+  models: ["lease-model"],
+  fetchMode: "per_task",
+  auth: { type: "none" },
+  channelTypes: [],
+  routes: [],
+  protocols: {},
+  usageSchema: {},
+  usageProfiles: [],
+  usageExamples: [],
+  requiredCapabilities: [],
+  buildSubmitRequest: function (ctx) { return { url: ctx.baseUrl + "/tasks", method: "POST" }; },
+  parseSubmitResponse: function (resp) { return { taskId: "up_1", state: "SUBMITTED" }; },
+  buildQueryRequest: function (ctx) {
+    return { url: ctx.baseUrl + "/query/" + ctx.taskId, method: "GET" };
+  },
+  parseTaskResult: function (ctx, body) {
+    var data = {};
+    try { data = JSON.parse(body || "{}"); } catch (e) { data = {}; }
+    return { state: data.state, progress: data.progress, taskData: data };
+  }
+};`
+
+// TestW9LPollerKeepsLongTaskAliveEndToEnd 是 M-3 要求的「真实 tasks.Poller
+// + 真实 PG」用例：任务单次处理耗时（慢出站 2.5s）远大于注入的租约 TTL
+// （1s），只要进程活着、keeper 在续租，兜底扫描就不得退款。
+//
+// 变异：删掉 processTask 里的 startTaskLeaseKeeper（只保留进入/出站前后
+// 的一次性续租）→ 出站 2.5s 越过 TTL，扫描在出站期间退款，本用例红。
+func TestW9LPollerKeepsLongTaskAliveEndToEnd(t *testing.T) {
+	e, db, repo := w9lNewEngine(t, 2, 1)
+	userID, tokenID, sub, req := w9lSeed(t, db, repo, 100)
+	w9lBackdatePreConsume(t, db, req, time.Now().UTC().Add(-10*time.Second))
+
+	outbound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 慢出站：2.5s 远大于 1s 租约 TTL，逐段一次性续租覆盖不住。
+		time.Sleep(2500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":10}`))
+	}))
+	defer outbound.Close()
+
+	manager, err := plugin.NewManager(map[string]string{"lease-e2e": leaseE2EPlugin}, nil,
+		plugin.Options{MasterEnabled: true})
+	if err != nil {
+		t.Fatalf("plugin manager: %v", err)
+	}
+	if err := manager.Reload(context.Background()); err != nil {
+		t.Fatalf("plugin reload: %v", err)
+	}
+
+	taskRepo := tasks.NewRepo(db)
+	now := time.Now().UTC()
+	publicID, err := tasks.NewPublicTaskID()
+	if err != nil {
+		t.Fatalf("NewPublicTaskID: %v", err)
+	}
+	task := &tasks.Task{
+		PublicTaskID:   publicID,
+		UpstreamTaskID: "up-lease-e2e",
+		Family:         tasks.FamilyPlugin,
+		Action:         "generate",
+		PluginKey:      "lease-e2e",
+		FetchMode:      "poll",
+		State:          tasks.StateSubmitted,
+		UserID:         userID,
+		Group:          "default",
+		ChannelID:      999,
+		Quota:          100,
+		SubmitTime:     &now,
+		Properties:     map[string]any{"OriginModelName": "lease-model"},
+		PrivateData:    map[string]any{"request_id": req, "token_id": tokenID},
+		Data:           map[string]any{},
+	}
+	if err := taskRepo.Insert(context.Background(), task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE id = $1`, task.ID) })
+
+	timeout, maxFailures := time.Hour, 20
+	poller, err := tasks.NewPoller(tasks.PollerConfig{
+		Repo: leaseE2ERepo{
+			Repo:   taskRepo,
+			target: &tasks.ChannelTarget{ID: 999, BaseURL: outbound.URL},
+		},
+		Plugins:             manager,
+		Billing:             e,
+		Client:              tasks.NewOutboundClient(),
+		AllowPrivate:        true,
+		Timeout:             &timeout,
+		MaxFailures:         &maxFailures,
+		LeaseKeeperInterval: 100 * time.Millisecond,
+		Now:                 time.Now,
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPoller: %v", err)
+	}
+
+	// 任务处理期间持续跑兜底扫描：必须始终 recovered=0。
+	scanCtx, cancelScan := context.WithCancel(context.Background())
+	scanDone := make(chan struct{})
+	var (
+		scanMu      sync.Mutex
+		recoveredAt []int
+	)
+	go func() {
+		defer close(scanDone)
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-scanCtx.Done():
+				return
+			case <-ticker.C:
+				n, err := e.RecoverStaleSubscriptionPreConsumes(context.Background(), time.Now().UTC(), 10)
+				if err != nil {
+					continue // 测试断言在下面读取最终状态
+				}
+				scanMu.Lock()
+				recoveredAt = append(recoveredAt, n)
+				scanMu.Unlock()
+			}
+		}
+	}()
+
+	poller.RunOnce(context.Background())
+	cancelScan()
+	<-scanDone
+
+	scanMu.Lock()
+	defer scanMu.Unlock()
+	for i, n := range recoveredAt {
+		if n != 0 {
+			t.Fatalf("第 %d 次扫描 recovered=%d，want 0（慢任务处理期间不得退款）", i, n)
+		}
+	}
+	if got := w9bAmountUsed(t, db, sub.ID); got != 100 {
+		t.Fatalf("慢任务处理后 amount_used=%d，want 100（预扣未退）", got)
+	}
+	if got := w9bRegistryState(t, db, req); got != "in_flight" {
+		t.Fatalf("慢任务处理后 registry=%q，want in_flight", got)
+	}
+	after, err := taskRepo.GetByID(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if after == nil || after.State != tasks.StateInProgress {
+		t.Fatalf("任务状态 = %v，want in_progress", after)
 	}
 }

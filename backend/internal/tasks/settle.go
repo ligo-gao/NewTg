@@ -258,6 +258,11 @@ func (p *Poller) reconcileOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// 补偿路径没有 processTask 的 keeper（任务已终态）：结算前补一次
+		// 续租（R-W9B-02 / I-1），避免「终态已提交、结算未落地」的窗口里
+		// 兜底扫描抢先退款，把成功任务变成免费。租约已 refunded 时是 0 行
+		// no-op，终态 CAS 仍是唯一仲裁者。
+		p.renewTaskLease(ctx, task)
 		p.settleTerminal(ctx, task, nil)
 	}
 }

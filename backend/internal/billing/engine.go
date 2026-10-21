@@ -242,6 +242,12 @@ type Engine struct {
 	// 打一次数据库，集成测试会耗尽连接池。零值按 TTL/3 与契约心跳取小
 	// （见 subscriptionLeaseHeartbeatInterval）。
 	subHeartbeat time.Duration
+	// subLeaseTTL 是订阅 in-flight 租约 TTL 的**测试注入**值（R-W9B-02）。
+	//
+	// 生产路径只能走配置键 billing.subscription_inflight_lease_ttl_seconds，
+	// 并有 120s 安全下界（I-1）；测试需要毫秒级 TTL 才能在不等待数分钟的
+	// 情况下验证续租/过期/扫描语义，因此保留这个旋钮。非零时完全覆盖配置。
+	subLeaseTTL time.Duration
 	// subscriptionFunding 是订阅资金来源接缝（S4a）。nil 表示未装配，
 	// 资金分派保持纯钱包行为（与 S4a 之前一致）。
 	subscriptionFunding SubscriptionFundingSource

@@ -521,3 +521,32 @@ func TestTaskPollDefaultsMatchPollerConstants(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscriptionInflightLeaseTTLSetting 覆盖 M-2：租约 TTL 必须进入
+// 注册表（管理 API 可写），默认值满足自身下界，且低于 120s 的写入被拒绝。
+func TestSubscriptionInflightLeaseTTLSetting(t *testing.T) {
+	const key = "billing.subscription_inflight_lease_ttl_seconds"
+	setting, ok := Lookup(key)
+	if !ok {
+		t.Fatalf("%q 未登记（管理 API 无法写入）", key)
+	}
+	if setting.Section != "billing" || setting.Type != TypeInt {
+		t.Fatalf("注册行 = section %q type %q，want billing/int", setting.Section, setting.Type)
+	}
+	if got, ok := DefaultValue(setting).(int64); !ok || got != 120 {
+		t.Fatalf("默认值 = %v (%T)，want int64(120)", DefaultValue(setting), DefaultValue(setting))
+	}
+	if setting.MinInt == nil || *setting.MinInt != 120 {
+		t.Fatalf("MinInt = %v，want 120", setting.MinInt)
+	}
+	for _, valid := range []string{`120`, `300`, `86400`} {
+		if _, err := normalizeRaw(setting, json.RawMessage(valid)); err != nil {
+			t.Fatalf("合法值 %s 被拒绝: %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{`0`, `60`, `119`, `86401`} {
+		if _, err := normalizeRaw(setting, json.RawMessage(invalid)); err == nil {
+			t.Fatalf("非法值 %s 未拒绝", invalid)
+		}
+	}
+}

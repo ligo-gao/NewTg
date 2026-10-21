@@ -147,10 +147,19 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 		}
 	}
 
-	// 启动序：先保证日志分区存在，再处理悬挂请求（回收过程可能补写日志）。
+	// 启动序：先保证日志分区存在，再处理钱包悬挂请求（回收过程可能补写日志）。
 	ensure()
 	scanOnce(ctx, deps.Abandoned, deps.Recoverer, log, now)
-	recoverStaleSubscriptions(ctx, deps.SubscriptionRecoverer, log, now)
+	// 订阅兜底**不在启动时立即执行**（R-W9B-02 / M-4 复核）。
+	//
+	// 任务轮询器与 worker 是并发启动的：任务提交路径 Detach 后到轮询器首次
+	// 批量续租之间存在一个很短的「无守护者」窗口。若 worker 启动即扫，可能
+	// 在轮询器完成首批续租之前就把刚交接、租约尚未刷新（或上一副本心跳已
+	// 接近过期）的任务当成崩溃请求退款。首轮延后一个扫描周期（默认 300s，
+	// 远大于该窗口），崩溃请求仍在候选集里，下一轮照常回收；方向安全。
+	//
+	// 钱包悬挂扫描不受影响：它的证据是 Redis 租约索引 + hold 行，不依赖
+	// 任务轮询器续租。
 
 	scanTicker := time.NewTicker(scanInterval)
 	defer scanTicker.Stop()

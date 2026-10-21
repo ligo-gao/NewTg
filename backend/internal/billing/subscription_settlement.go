@@ -46,15 +46,27 @@ const (
 	// ConfigSubscriptionInflightLeaseTTLSeconds 是订阅在飞租约的心跳超时阈值
 	// （R-W9B-02）。它与上面的兜底**窗口**是两组参数，严格分开：
 	//   - 窗口（默认 900s）决定「预扣记录多老才纳入扫描」；
-	//   - 租约 TTL（默认 60s）决定「心跳停多久才算进程已死」。
-	// 必须满足 0 < TTL < 窗口：用窗口当心跳阈值会把持续续租的长任务误退；
-	// 用 TTL 当窗口会让刚预扣的请求立刻可退。
+	//   - 租约 TTL（默认 120s）决定「心跳停多久才算进程已死」。
+	// 必须满足 minSubscriptionInflightLeaseTTLSeconds <= TTL < 窗口：用窗口
+	// 当心跳阈值会把持续续租的长任务误退；用 TTL 当窗口会让刚预扣的请求
+	// 立刻可退。
 	//
-	// 与钱包路径的 contract.InflightLeaseTTLSeconds（300s）分开配置：订阅
-	// 的预扣锚点在主库，续租是一条轻量 UPDATE，可以更灵敏地回收崩溃请求。
+	// 【为什么 TTL 有 120s 下界（I-1 复核）】单次 processTask 的最坏耗时约
+	// 55s（插件 5s + 出站 30s + parse 5s + 结算 10s）。虽然任务内会在出站
+	// 前后与结算前续租，但任何一次续租与下一次之间的最大间隔仍受单段耗时
+	// 约束；TTL 小于单任务预算时，一次慢出站就能让租约在处理中途过期，
+	// 兜底扫描会把仍在运行的任务当成崩溃退款。120s 给单段与调度抖动留出
+	// 两倍以上裕量，同时远小于 900s 窗口。测试可用 Engine.subLeaseTTL 注入
+	// 更短值来验证续租行为（生产配置路径仍强制下界）。
 	ConfigSubscriptionInflightLeaseTTLSeconds = "billing.subscription_inflight_lease_ttl_seconds"
 
-	defaultSubscriptionInflightLeaseTTLSeconds = int64(60)
+	// defaultSubscriptionInflightLeaseTTLSeconds 与下界同值：默认配置必须
+	// 满足自身校验，不允许「默认值非法、只有显式配置才合法」。
+	defaultSubscriptionInflightLeaseTTLSeconds = int64(120)
+
+	// minSubscriptionInflightLeaseTTLSeconds 是租约 TTL 的安全下界（I-1）：
+	// 必须大于单任务最坏预算，否则任务处理中途会失去租约。
+	minSubscriptionInflightLeaseTTLSeconds = int64(120)
 
 	// subscriptionRecoveryScanLimit 是单轮扫描上限：积压时有界处理，其余
 	// 下一轮继续（与 DueForReset/DeletePreConsumeBefore 同口径）。
@@ -372,21 +384,9 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 	if limit <= 0 {
 		limit = subscriptionRecoveryScanLimit
 	}
-	window, err := e.subscriptionRecoveryWindow()
+	window, leaseTTL, err := e.subscriptionLeaseParams()
 	if err != nil {
 		return 0, err
-	}
-	leaseTTL, err := e.subscriptionLeaseTTL()
-	if err != nil {
-		return 0, err
-	}
-	if window <= leaseTTL {
-		// 两组参数混用会让判定失去意义：窗口必须严格更大，才能同时表达
-		// 「够老」与「心跳已停」。配置错误必须显式上抛，不能静默退化成
-		// 只要到期就退（那是 G-DOM-35 的原始缺陷）。
-		return 0, fmt.Errorf("%w: %s (%s) must exceed %s (%s)",
-			ErrInvalidConfig, ConfigSubscriptionRecoveryWindowSeconds, window,
-			ConfigSubscriptionInflightLeaseTTLSeconds, leaseTTL)
 	}
 	nowUTC := now.UTC()
 	leaseExpiredBefore := nowUTC.Add(-leaseTTL)
@@ -488,27 +488,70 @@ func (e *Engine) subscriptionRecoveryWindow() (time.Duration, error) {
 
 // subscriptionLeaseTTL 读取订阅在飞租约的 TTL（R-W9B-02）。
 //
-// 非法值（≤0）按配置错误上抛而不是退化成「永不过期」：永不过期的租约会让
-// 真正的崩溃请求永远不被回收，订阅额度被永久冻结。
+// 两条来源：测试注入的 e.subLeaseTTL 优先；生产走配置键。非法值（≤0、
+// 低于 120s 安全下界）按配置错误上抛而不是退化成「永不过期」或「过短」：
+// 永不过期会让崩溃请求永远不被回收，过短会让单任务处理中途失去租约（I-1）。
 func (e *Engine) subscriptionLeaseTTL() (time.Duration, error) {
+	if e.subLeaseTTL > 0 {
+		return e.subLeaseTTL, nil
+	}
 	seconds, err := e.configInt64(ConfigSubscriptionInflightLeaseTTLSeconds,
 		defaultSubscriptionInflightLeaseTTLSeconds)
 	if err != nil {
 		return 0, err
 	}
-	if seconds <= 0 {
-		return 0, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig,
-			ConfigSubscriptionInflightLeaseTTLSeconds)
+	if seconds < minSubscriptionInflightLeaseTTLSeconds {
+		return 0, fmt.Errorf("%w: %s must be >= %ds (single-task budget safety floor)",
+			ErrInvalidConfig, ConfigSubscriptionInflightLeaseTTLSeconds,
+			minSubscriptionInflightLeaseTTLSeconds)
 	}
 	return time.Duration(seconds) * time.Second, nil
 }
 
+// subscriptionLeaseParams 读取并校验「兜底窗口 + 租约 TTL」两组参数。
+//
+// 集中在一处是为了让扫描入口与启动期校验（ValidateSubscriptionLeaseConfig）
+// 使用**同一套**规则，不会出现「扫描时合法、启动时没查」或反向漂移。
+func (e *Engine) subscriptionLeaseParams() (window, leaseTTL time.Duration, err error) {
+	window, err = e.subscriptionRecoveryWindow()
+	if err != nil {
+		return 0, 0, err
+	}
+	leaseTTL, err = e.subscriptionLeaseTTL()
+	if err != nil {
+		return 0, 0, err
+	}
+	if window <= leaseTTL {
+		// 两组参数混用会让判定失去意义：窗口必须严格更大，才能同时表达
+		// 「够老」与「心跳已停」。配置错误必须显式上抛，不能静默退化成
+		// 只要到期就退（那是 G-DOM-35 的原始缺陷）。
+		return 0, 0, fmt.Errorf("%w: %s (%s) must exceed %s (%s)",
+			ErrInvalidConfig, ConfigSubscriptionRecoveryWindowSeconds, window,
+			ConfigSubscriptionInflightLeaseTTLSeconds, leaseTTL)
+	}
+	return window, leaseTTL, nil
+}
+
+// ValidateSubscriptionLeaseConfig 在启动/装配期校验订阅租约配置（M-1 复核）。
+//
+// 为什么前移到装配期：若只在扫描时校验，配置错误要等到 worker 第一轮扫描
+// 才以「兜底失败」的形式暴露（且可能被当作瞬时 DB 故障重试），运维很难
+// 区分。启动期失败让错误配置无法上线。
+//
+// 未装配订阅（纯钱包部署）时 no-op：两条参数只服务于订阅扫描。
+func (e *Engine) ValidateSubscriptionLeaseConfig() error {
+	if e.subscriptionFunding == nil {
+		return nil
+	}
+	_, _, err := e.subscriptionLeaseParams()
+	return err
+}
+
 // subscriptionLeaseHeartbeatInterval 返回订阅租约的续租间隔。
 //
-// 固定取契约心跳间隔（30s）会让 60s 的 TTL 只剩一次容错：一次丢心跳就
-// 正好卡在过期边界。这里把间隔压到 TTL 的 1/3（60s → 20s），保证任意
-// 单个续租失败后仍有两次机会。测试专用旋钮 subHeartbeat 优先；下限 10ms
-// 防止配置成 0 导致忙循环。
+// 固定取契约心跳间隔（30s）对 120s 的 TTL 仍留出 4 倍裕量；这里再与
+// TTL/3 取小，保证 TTL 被测试/未来配置压小时任意单个续租失败后仍有两次
+// 机会。测试专用旋钮 subHeartbeat 优先；下限 10ms 防止配置成 0 导致忙循环。
 //
 // 刻意不复用 e.heartbeat：那是钱包 Redis 租约的测试旋钮，钱包用例把它压到
 // 10ms；订阅心跳若跟随，会把每个订阅会话变成每 10ms 一次数据库写。

@@ -652,3 +652,65 @@ func TestIntegrationSettingsDisableKeywordsList(t *testing.T) {
 		t.Fatal("非字符串元素必须被拒绝")
 	}
 }
+
+// TestIntegrationSettingsSubscriptionLeaseTTL 是 M-2 的设置读写用例：
+// 租约 TTL 键可通过管理面写入/读取，低于 120s 安全下界被拒绝，null 重置
+// 回注册表默认值。
+func TestIntegrationSettingsSubscriptionLeaseTTL(t *testing.T) {
+	db := openSettingsTestDB(t)
+	snapshotAndClean(t, db, "billing")
+	svc, err := NewService(ServiceConfig{DB: db, Broadcaster: &fakeBroadcaster{}, Sealer: fakeSealer{prefix: "sealed:"}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ctx := context.Background()
+	const key = "billing.subscription_inflight_lease_ttl_seconds"
+
+	readValue := func() any {
+		t.Helper()
+		view, err := svc.Get(ctx, "billing")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		for _, item := range view.Items {
+			if item.Key == key {
+				return item.Value
+			}
+		}
+		t.Fatalf("Get 未返回 %q", key)
+		return nil
+	}
+
+	first, err := svc.Put(ctx, UpdateInput{
+		Section: "billing",
+		Values:  map[string]json.RawMessage{key: json.RawMessage(`300`)},
+	})
+	if err != nil {
+		t.Fatalf("Put(300): %v", err)
+	}
+	if got := readValue(); got != float64(300) && got != int64(300) {
+		t.Fatalf("读取值 = %v (%T)，want 300", got, got)
+	}
+
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:         "billing",
+		ExpectUpdatedAt: first.UpdatedAt,
+		Values:          map[string]json.RawMessage{key: json.RawMessage(`60`)},
+	}); err == nil {
+		t.Fatal("Put(60) = nil，want 校验失败（120s 安全下界）")
+	}
+	if got := readValue(); got != float64(300) && got != int64(300) {
+		t.Fatalf("被拒绝的写入改变了值 = %v，want 300", got)
+	}
+
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:         "billing",
+		ExpectUpdatedAt: first.UpdatedAt,
+		Values:          map[string]json.RawMessage{key: json.RawMessage(`null`)},
+	}); err != nil {
+		t.Fatalf("Put(null): %v", err)
+	}
+	if got := readValue(); got != nil {
+		t.Fatalf("null 重置后 value = %v，want nil（回落默认 120）", got)
+	}
+}

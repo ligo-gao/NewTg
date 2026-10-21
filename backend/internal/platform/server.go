@@ -506,6 +506,15 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 未装配会让订阅偏好退化为纯钱包行为。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
 		store.NewSubscriptionRepo(sqlDB), sqlDB))
+	// M-1 复核：租约 TTL / 兜底窗口的校验前移到启动期。错误配置（TTL 低于
+	// 单任务预算、窗口 <= TTL）必须在 worker 上线前失败，而不是等到第一轮
+	// 扫描被当成瞬时 DB 故障反复重试。
+	if err := engine.ValidateSubscriptionLeaseConfig(); err != nil {
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: subscription lease config: %w", err)
+	}
 
 	// C2 GPU 站点成本账（Task 5c / G-OPS-012）：账本只读写
 	// deployment_billing_segments / deployment_cost_facts，**不触碰任何用户

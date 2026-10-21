@@ -368,6 +368,12 @@ func buildRegistry() []Setting {
 		def("billing.display_token_stat_enabled", "billing", TypeBool, true, public()),
 		def("billing.expose_group_ratios", "billing", TypeBool, false),
 		def("billing.group_group_ratio", "billing", TypeObject, map[string]any{}, validate(validateNestedRatioMap)),
+		// 订阅在飞租约 TTL（R-W9B-02 / M-2 复核）。管理面必须可写，否则
+		// 运维只能直接改配置行。下界 120s 来自 I-1：必须大于单任务最坏
+		// 预算（约 55s），否则任务处理中途会失去租约；上界 24h 防止
+		// 误写成「事实上的永不过期」。
+		def("billing.subscription_inflight_lease_ttl_seconds", "billing", TypeInt, int64(120),
+			minInt(120), maxInt(86400)),
 
 		// ==== billing_setting（T5 任务计价表达式，R-06 设置契约扩展）====
 		//
