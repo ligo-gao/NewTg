@@ -343,6 +343,8 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			Logger:   cfg.Logger,
 			Webhook:  notify.NewWebhookSender(cfg.Config, cfg.Sealer),
 			Notifier: cfg.NotifyService,
+			// F-08-18：公告 title/body 在落库前按 sec.sensitive.* 过滤。
+			Config: cfg.Config,
 			// 与 assembly 的基址回退链一致：PUBLIC_BASE_URL → site.server_address。
 			// cfg.PublicBaseURL 在生产装配中已由 effectivePublicBaseURL 解析过，
 			// 这里再读一次 site.server_address 是为了直连 NewRouter 的装配
