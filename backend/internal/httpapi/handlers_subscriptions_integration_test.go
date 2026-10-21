@@ -503,9 +503,13 @@ func TestSubscriptionIntegrationAdminCancel(t *testing.T) {
 			activeID, foreignID, expiredID, cancelledID)
 	})
 	// 立即取消后的宽限期取快照 grace_days；这里给 2 天，用于证明
-	// 「宽限期内仍可消费」而不是把实例立刻作废。
-	if _, err := env.db.Exec(`UPDATE subscriptions SET grace_days = 2 WHERE id = $1`, activeID); err != nil {
-		t.Fatalf("set grace: %v", err)
+	// 「宽限期内仍可消费」而不是把实例立刻作废。同时打开自动续费并挂令牌：
+	// 取消必须关掉它，否则 S4 worker 会继续对已取消订阅扣款（C3 复核 Critical）。
+	if _, err := env.db.Exec(`UPDATE subscriptions
+		SET grace_days = 2, auto_renew = true,
+		    auto_renew_payment_method_id = gen_random_uuid()
+		WHERE id = $1`, activeID); err != nil {
+		t.Fatalf("set grace/auto-renew: %v", err)
 	}
 
 	writer := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersUpdate}}
@@ -520,11 +524,20 @@ func TestSubscriptionIntegrationAdminCancel(t *testing.T) {
 		t.Fatalf("users:read 取消 = %d（body=%s）", rr.Code, rr.Body.String())
 	}
 
-	// 他人实例 / 路径用户不一致 / 不存在统一 404，且不改他人行。
+	// 他人实例 / 路径用户不一致 / 不存在统一 404（响应体逐字节相等），
+	// 且不改他人行。
+	var notFoundBodies []string
 	for _, target := range []string{path(owner, foreignID), path(other, activeID), path(owner, 99999999)} {
-		if rr := env.do(t, writer, http.MethodPost, target,
-			map[string]any{"immediate": true}, nil); rr.Code != http.StatusNotFound {
+		rr := env.do(t, writer, http.MethodPost, target,
+			map[string]any{"immediate": true}, nil)
+		if rr.Code != http.StatusNotFound {
 			t.Fatalf("%s = %d（body=%s）", target, rr.Code, rr.Body.String())
+		}
+		notFoundBodies = append(notFoundBodies, rr.Body.String())
+	}
+	for index := 1; index < len(notFoundBodies); index++ {
+		if notFoundBodies[index] != notFoundBodies[0] {
+			t.Fatalf("404 响应体不一致：\n%s\nvs\n%s", notFoundBodies[0], notFoundBodies[index])
 		}
 	}
 	var foreignFlag bool
@@ -552,15 +565,31 @@ func TestSubscriptionIntegrationAdminCancel(t *testing.T) {
 		status     string
 		flag       bool
 		endedEarly bool
+		autoRenew  bool
 	)
 	if err := env.db.QueryRow(`
-		SELECT status, cancel_at_period_end, end_at <= now()
-		  FROM subscriptions WHERE id = $1`, activeID).Scan(&status, &flag, &endedEarly); err != nil {
+		SELECT status, cancel_at_period_end, end_at <= now(), auto_renew
+		  FROM subscriptions WHERE id = $1`, activeID).
+		Scan(&status, &flag, &endedEarly, &autoRenew); err != nil {
 		t.Fatalf("read subscription: %v", err)
 	}
 	if status != "active" || flag || !endedEarly {
 		t.Fatalf("立即取消落库 = status %s / flag %v / ended %v，want active/false/true",
 			status, flag, endedEarly)
+	}
+	if autoRenew {
+		t.Fatal("立即取消后 auto_renew 仍为 true：S4 worker 会继续扣款")
+	}
+	// 不再进入自动续费候选（不会产生续费订单/重置额度）。
+	due, err := env.repo.ListDueForAutoRenew(context.Background(), time.Now().UTC(),
+		30*24*time.Hour, 6*time.Hour, 50)
+	if err != nil {
+		t.Fatalf("ListDueForAutoRenew: %v", err)
+	}
+	for _, candidate := range due {
+		if candidate.ID == activeID {
+			t.Fatal("立即取消后仍在自动续费候选中")
+		}
 	}
 
 	// 宽限期内仍可消费（R-48 文案的真相）：真实预扣成功。

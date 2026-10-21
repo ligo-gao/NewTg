@@ -1258,8 +1258,24 @@ func TestSubscriptionCancelImmediatelyGrace(t *testing.T) {
 	// 原合同还剩 5 天；立即取消后宽限期从「现在」起算 3 天。
 	sub := createTestSubscription(t, repo, plan, userID,
 		now.Add(-time.Hour), now.Add(5*24*time.Hour), nil)
-	if _, err := db.Exec(`UPDATE subscriptions SET grace_days = 3 WHERE id = $1`, sub.ID); err != nil {
-		t.Fatalf("set grace: %v", err)
+	// 打开自动续费并挂一个令牌（逻辑引用，无 FK）：这正是 C3 复核的
+	// Critical——若立即取消不关 auto_renew，S4 worker 会在下一 tick 命中
+	// 这条「已被管理员取消」的订阅并继续向用户扣款。
+	if _, err := db.Exec(`UPDATE subscriptions
+		SET grace_days = 3, auto_renew = true,
+		    auto_renew_payment_method_id = gen_random_uuid()
+		WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("set grace/auto-renew: %v", err)
+	}
+
+	// 取消前：该实例确实在续费窗口内（否则下面的「取消后不在候选中」
+	// 无法证明是取消造成的）。
+	dueBefore, err := repo.ListDueForAutoRenew(ctx, now, 6*24*time.Hour, 6*time.Hour, 50)
+	if err != nil {
+		t.Fatalf("ListDueForAutoRenew before cancel: %v", err)
+	}
+	if !containsSubscription(dueBefore, sub.ID) {
+		t.Fatalf("取消前应进入续费候选，实际 %+v", dueBefore)
 	}
 
 	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
@@ -1274,8 +1290,20 @@ func TestSubscriptionCancelImmediatelyGrace(t *testing.T) {
 		t.Fatalf("立即取消后 = status %q / cancel_at_period_end %v，want active/false",
 			got.Status, got.CancelAtPeriodEnd)
 	}
+	if got.AutoRenew {
+		t.Fatal("立即取消后 auto_renew 仍为 true：S4 worker 会对已取消订阅继续扣款")
+	}
 	if got.EndAt.After(time.Now().UTC()) {
 		t.Fatalf("立即取消后 end_at = %v，期望提前到 now", got.EndAt)
+	}
+
+	// 取消后：不再进入续费候选（不会产生续费订单/重置额度）。
+	dueAfter, err := repo.ListDueForAutoRenew(ctx, now, 6*24*time.Hour, 6*time.Hour, 50)
+	if err != nil {
+		t.Fatalf("ListDueForAutoRenew after cancel: %v", err)
+	}
+	if containsSubscription(dueAfter, sub.ID) {
+		t.Fatalf("立即取消后仍进入续费候选：%+v", dueAfter)
 	}
 
 	// 宽限期内可消费：读侧列表与预扣写入都仍接受该实例。

@@ -532,4 +532,43 @@ describe('ModelPricingListPage', () => {
     await userEvent.setup().click(getByRole('button', { name: 'Clear plugin filter' }))
     expect(onClearPlugin).toHaveBeenCalledTimes(1)
   })
+
+  it('distinguishes "plugin has no expressions" from a plain empty catalog', async () => {
+    installBaseHandlers({ items: [pricingRow()], total: 1 })
+    server.use(
+      http.get(`${ORIGIN}/api/settings`, () =>
+        HttpResponse.json({
+          section: 'billing_setting',
+          updated_at: null,
+          items: [
+            {
+              key: 'billing_setting.plugin_billing_expr',
+              value: { 'suno::other': 'u("duration")' },
+              type: 'object',
+              default: {},
+              public: false,
+              secret: false,
+              dangerous: false,
+            },
+          ],
+        }),
+      ),
+    )
+    const onClearPlugin = vi.fn()
+
+    const { findByText, getByText, queryByText, getByRole } = await renderWithProviders(
+      <ModelPricingListPage plugin="kling" onClearPlugin={onClearPlugin} />,
+      ['common', 'admin'],
+    )
+
+    expect(
+      await findByText('This plugin has no billing expressions configured.'),
+    ).toBeTruthy()
+    // 插件过滤命中 0 行时不能提示「还没有定价，去新增」——数据其实存在，
+    // 只是不属于这个插件。
+    expect(queryByText('Models without pricing cannot be requested by users.')).toBeNull()
+    await userEvent.setup().click(getByRole('button', { name: 'Clear filters' }))
+    expect(onClearPlugin).toHaveBeenCalledTimes(1)
+    expect(getByText('Filtered by plugin: kling')).toBeTruthy()
+  })
 })

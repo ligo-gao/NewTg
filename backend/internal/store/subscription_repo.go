@@ -950,22 +950,33 @@ func (r *SQLSubscriptionRepo) CancelAtPeriodEnd(ctx context.Context, id int64) e
 // ExpireDue 清扫），此时把 end_at 改成 now 会把宽限期从「原到期日 + grace」
 // 偷偷延长到「今天 + grace」。立即取消只能提前、不能延长合同期。
 //
+// 【为什么必须同时关 auto_renew】S4 的自动续费扫描只认
+// `status='active' AND auto_renew=true AND cancel_at_period_end=false AND
+// auto_renew_payment_method_id IS NOT NULL AND end_at <= now+lead`。S1 旧实现
+// 把 status 置 cancelled，这层保护由状态天然提供；R-48 保留 active 后若不在
+// 同一 UPDATE 里关掉 auto_renew，立即取消的实例会在下一个 tick 被 worker
+// 命中并向用户再次扣款，续费又会重置 amount_used、延长 end_at——既是对已
+// 取消订阅继续收费，也违反「宽限期内不重置新周期额度」。
+//
 // 【幂等口径】已经是「立即取消后才可能出现的状态」（active + 未置期末取消 +
-// end_at 不晚于 now）时返回 nil 且不重复追加事件；否则即使目标列值恰好相同
-// （例如期末取消后立即取消）也要写事件，因为这是一次真实的管理动作。
+// 已到期 + 未开自动续费）时返回 nil 且不重复追加事件；若用户/其它路径又把
+// auto_renew 打开，则本次仍要执行（关掉它）并记事件。否则即使目标列值恰好
+// 相同（例如期末取消后立即取消）也要写事件，因为这是一次真实的管理动作。
 func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) error {
 	return r.withEventTx(ctx, fmt.Sprintf("cancel subscription(%d)", id), func(tx *sql.Tx) error {
 		var (
 			status      string
 			ended       bool
 			cancelAtEnd bool
+			autoRenew   bool
 		)
 		// 用数据库的 now() 判定「已到期」：应用时钟与库时钟可能不同步，
 		// 若用 time.Now() 比较刚写入的 end_at=now()，库稍快时会把幂等重放
 		// 误判为一次新动作并重复写事件。
 		err := tx.QueryRowContext(ctx, `
-			SELECT status, end_at <= now(), cancel_at_period_end FROM subscriptions
-			 WHERE id = $1 FOR UPDATE`, id).Scan(&status, &ended, &cancelAtEnd)
+			SELECT status, end_at <= now(), cancel_at_period_end, auto_renew
+			  FROM subscriptions WHERE id = $1 FOR UPDATE`, id).
+			Scan(&status, &ended, &cancelAtEnd, &autoRenew)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSubscriptionNotFound
 		}
@@ -977,12 +988,13 @@ func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) e
 			return nil
 		case "active":
 			// 已处于「立即取消生效后」的状态：不重复写事件（幂等重放）。
-			if !cancelAtEnd && ended {
+			if !cancelAtEnd && ended && !autoRenew {
 				return nil
 			}
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE subscriptions
 				   SET cancel_at_period_end = false,
+				       auto_renew = false,
 				       end_at = LEAST(end_at, now()),
 				       updated_at = now()
 				 WHERE id = $1`, id); err != nil {

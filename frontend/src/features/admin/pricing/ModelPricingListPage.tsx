@@ -298,6 +298,7 @@ export function ModelPricingListPage({
   }
 
   const hasFilters =
+    pluginFiltered ||
     applied.keyword.trim() !== '' ||
     applied.mode !== '' ||
     applied.status !== '' ||
@@ -475,7 +476,15 @@ export function ModelPricingListPage({
           <div className="flex flex-col items-start gap-2 p-5">
             <p className="text-sm text-ink-2">{emptyMessage}</p>
             {hasFilters ? (
-              <Button variant="secondary" onClick={resetFilters}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  resetFilters()
+                  // 插件过滤不是本地草稿，必须通过路由回写清除，否则
+                  // 「清除筛选」之后列表仍然是空的。
+                  if (pluginFiltered) onClearPlugin?.()
+                }}
+              >
                 {t('admin.pricing.clear_filters')}
               </Button>
             ) : (

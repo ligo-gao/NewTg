@@ -466,9 +466,10 @@ func (r *fakeSubscriptionRepo) CancelImmediately(_ context.Context, id int64) er
 	if sub.Status == "expired" {
 		return store.ErrSubscriptionNotActive
 	}
-	// R-48：立即取消保留 active 并把 end_at 提前到 now，清掉周期末标记，
-	// 宽限期（快照 grace_days）内仍可消费。
+	// R-48：立即取消保留 active 并把 end_at 提前到 now，清掉周期末标记与
+	// 自动续费开关（否则 S4 worker 会继续对已取消订阅扣款）。
 	sub.CancelAtPeriodEnd = false
+	sub.AutoRenew = false
 	sub.EndAt = time.Now().UTC()
 	return nil
 }
@@ -2168,9 +2169,11 @@ func TestAdminCancelUserSubscription(t *testing.T) {
 	})
 
 	t.Run("立即取消保留 active 且提前 end_at", func(t *testing.T) {
-		// 先置周期末取消，验证立即取消会清掉该标记（宽限期因此恢复）。
+		// 先置周期末取消与自动续费，验证立即取消会把两者都清掉（后者是
+		// S4 worker 不再扣款的根因）。
 		env.repo.mu.Lock()
 		env.repo.subs[activeID].CancelAtPeriodEnd = true
+		env.repo.subs[activeID].AutoRenew = true
 		env.repo.mu.Unlock()
 
 		rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost,
@@ -2184,6 +2187,9 @@ func TestAdminCancelUserSubscription(t *testing.T) {
 		}
 		if view.Status != "active" || view.CancelAtPeriodEnd {
 			t.Fatalf("立即取消后视图 = %+v，want active 且 cancel_at_period_end=false", view)
+		}
+		if view.AutoRenew {
+			t.Fatal("立即取消后 auto_renew 仍为 true：S4 worker 会继续扣款")
 		}
 		if view.EndAt.After(time.Now().UTC().Add(time.Second)) {
 			t.Fatalf("立即取消后 end_at = %v，期望提前到 now", view.EndAt)
@@ -2227,11 +2233,20 @@ func TestAdminCancelUserSubscription(t *testing.T) {
 	})
 
 	t.Run("他人实例与不存在统一 404，且不改他人状态", func(t *testing.T) {
+		var bodies [][]byte
 		for _, target := range []string{path(ownerID, foreignID), path(ownerID, 999999), path(ownerID, 0)} {
 			rr := env.do(t, adminRestricted(rbac.PermUsersUpdate), http.MethodPost, target,
 				map[string]any{"immediate": true}, nil)
 			if rr.Code != http.StatusNotFound {
 				t.Fatalf("%s = %d（body=%s）", target, rr.Code, rr.Body.String())
+			}
+			bodies = append(bodies, rr.Body.Bytes())
+		}
+		// 逐字节相等：他人订阅/不存在/非法 id 三类失败的响应体必须完全
+		// 一致，不能靠「都是 404」之外的细节泄露归属。
+		for index := 1; index < len(bodies); index++ {
+			if string(bodies[index]) != string(bodies[0]) {
+				t.Fatalf("404 响应体不一致：\n%s\nvs\n%s", bodies[0], bodies[index])
 			}
 		}
 		env.repo.mu.Lock()
