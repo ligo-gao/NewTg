@@ -2789,7 +2789,9 @@ export interface paths {
          *     `https://newtg.dev/problems/deploy_quote_unavailable`，不按 0 计。
          *     创建受理后在站点成本账预扣（`deployment_billing_segments`，幂等键
          *     `deploy:create:<user_id>:<Idempotency-Key>`）；预扣失败返回 502
-         *     `deploy_billing_failed` 并回滚本次部署创建。部署计费只记站点成本，
+         *     `deploy_billing_failed` 并回滚本次部署创建。同一幂等键的账本重入
+         *     （例如换了请求体而绕开 HTTP 幂等缓存）会回滚本次重复创建的部署并
+         *     返回**既有段**对应的 deployment_id。部署计费只记站点成本，
          *     **不扣用户钱包 / 订阅 / 令牌额度**。
          *     registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
          *     不进审计（键名也不记）。成功返回 202 受理结果。
@@ -3022,6 +3024,9 @@ export interface paths {
          *     续期先在新计费段预扣（幂等键 `deploy:extend:<deployment_id>:<hours>`），
          *     预扣失败返回 502 `deploy_billing_failed` 且不发起 provider 写；provider
          *     续期失败时释放该段。续期生效后旧段在生效点结算关闭。
+         *     同一 (deployment, hours) 的键重入**不会**再次调用 provider：段仍活跃
+         *     时返回 202 与既有段状态；段已终态时返回 409，需换 Idempotency-Key
+         *     或查询部署当前状态。
          */
         post: operations["extendDeployment"];
         delete?: never;

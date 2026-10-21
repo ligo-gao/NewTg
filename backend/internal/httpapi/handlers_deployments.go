@@ -444,6 +444,50 @@ func int64Locations(ids []int) []int64 {
 	return out
 }
 
+// deploySettleAttempts 是终止即时结算的重试次数（含首次）。
+const deploySettleAttempts = 3
+
+// settleTerminationWithRetry 用有限退避重试终止结算。
+//
+// provider 删除成功是不可回退的证据；若即时结算因瞬时 DB 错误失败，N16 的
+// 900s provider-404 窗口最终会按 Release 收尾（成本记 0）且 abandoned 段
+// 无法再用发票纠正。所以这里先把可重试错误（DB/连接类）消化掉，全部失败
+// 才降级为 deferred。业务性错误（段不存在/输入非法/报价缺失）不重试。
+func (h *DeployManagementHandlers) settleTerminationWithRetry(r *http.Request,
+	obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error) {
+	var (
+		result  deploybilling.TerminationResult
+		lastErr error
+	)
+	backoff := 50 * time.Millisecond
+	for attempt := 1; attempt <= deploySettleAttempts; attempt++ {
+		ledgerCtx, cancel := h.ledgerContext(r)
+		result, lastErr = h.billing.SettleTerminated(ledgerCtx, obs)
+		cancel()
+		if lastErr == nil {
+			return result, nil
+		}
+		if !deployBillingRetryable(lastErr) || attempt == deploySettleAttempts {
+			break
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	return result, lastErr
+}
+
+// deployBillingRetryable 区分瞬时可重试错误与确定性失败。
+func deployBillingRetryable(err error) bool {
+	switch {
+	case errors.Is(err, deploybilling.ErrSegmentNotFound),
+		errors.Is(err, deploybilling.ErrInvalidSegment),
+		errors.Is(err, deploybilling.ErrGPUPriceUnavailable):
+		return false
+	default:
+		return true
+	}
+}
+
 // ---------- 幂等写包装 ----------
 
 // serveWriteIdempotent 覆盖五类写操作。
@@ -988,7 +1032,7 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		est.DeploymentID = action.DeploymentID
 		est.IdempotencyKey = deployCreateIdempotencyKey(actor, deployClientRequestID(r))
 		ledgerCtx, cancelLedger := h.ledgerContext(r)
-		_, _, holdErr := h.billing.Hold(ledgerCtx, est)
+		seg, created, holdErr := h.billing.Hold(ledgerCtx, est)
 		cancelLedger()
 		if holdErr != nil {
 			h.log.Error("deploy: site cost hold failed",
@@ -1000,6 +1044,19 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 				"Deployment billing unavailable",
 				"site cost reservation failed; the deployment creation was rolled back")
 		}
+		// P-20：同键重入返回**既有段**。既有段属于先前那次创建（不同的请求体
+		// 会绕开 HTTP 幂等缓存而再次执行到这里），本次刚创建的 provider 部署
+		// 是重复投递的孤儿：必须回滚，否则客户端拿到一个没有预扣段的
+		// deployment_id，账本与 provider 从此对不上。
+		if !created {
+			h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusAccepted, true,
+				createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID), nil, nil)
+			return jsonBody(w, r, http.StatusAccepted, struct {
+				DeploymentID string `json:"deployment_id"`
+				Status       string `json:"status"`
+			}{DeploymentID: seg.DeploymentID, Status: seg.State})
+		}
 	}
 
 	h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusAccepted,
@@ -1010,7 +1067,15 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 	}{DeploymentID: action.DeploymentID, Status: action.Status})
 }
 
-// rollbackDeploymentCreation 是预扣失败时的补偿：撤销刚创建的 provider 部署。
+// createReplayAuditDetail 记录「同键重入、返回既有段并回滚新部署」。
+func createReplayAuditDetail(req createDeploymentRequest, deploymentID, segmentID, requestID string) map[string]any {
+	detail := createAuditDetail(req, deploymentID, requestID, "")
+	detail["replayed_segment_id"] = segmentID
+	detail["result"] = "idempotent_replay"
+	return detail
+}
+
+// rollbackDeploymentCreation 是预扣失败/重入回滚时的补偿：撤销刚创建的 provider 部署。
 //
 // best-effort：provider 删除失败只记日志，不改变响应——此时站点成本账没有
 // 落段（Hold 失败），部署可能残留，运维可通过列表发现；反过来的顺序（先
@@ -1663,7 +1728,7 @@ func (h *DeployManagementHandlers) extendDeployment(w http.ResponseWriter, r *ht
 		est.DeploymentID = deploymentID
 		est.IdempotencyKey = deployExtendIdempotencyKey(deploymentID, req.DurationHours)
 		ledgerCtx, cancelLedger := h.ledgerContext(r)
-		seg, _, holdErr := h.billing.Hold(ledgerCtx, est)
+		seg, created, holdErr := h.billing.Hold(ledgerCtx, est)
 		cancelLedger()
 		if holdErr != nil {
 			h.log.Error("deploy: site cost hold failed on extend",
@@ -1674,6 +1739,27 @@ func (h *DeployManagementHandlers) extendDeployment(w http.ResponseWriter, r *ht
 			return deployProblemBytes(w, r, http.StatusBadGateway, problemTypeDeployBillingFailed,
 				"Deployment billing unavailable",
 				"site cost reservation failed; the deployment was not extended")
+		}
+		// P-20：同 (deployment, hours) 的键已存在 → 这是重入，**不得**再发起
+		// provider 续期。provider 不保证幂等：重复 ExtendDeployment 会真的多买
+		// 一次时长，而账本被唯一键约束收敛成一段，超出部分永久少记站点成本。
+		if !created {
+			if deploybilling.SegmentTerminal(seg.State) {
+				h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusConflict,
+					false, extendAuditDetail(deploymentID, req.DurationHours, 0, requestID,
+						"deploy_extend_key_consumed"), nil, nil)
+				return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployInvalidState,
+					"Extension already completed for this idempotency key",
+					"the billing segment for this deployment and duration is already closed; "+
+						"use a new Idempotency-Key or query the deployment for its current extension")
+			}
+			// 段仍活跃：本次重入不产生新的购买，返回既有段语义（不写 provider）。
+			h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusAccepted, true,
+				extendReplayAuditDetail(deploymentID, req.DurationHours, seg.SegmentID, requestID), nil, nil)
+			return jsonBody(w, r, http.StatusAccepted, struct {
+				DeploymentID string `json:"deployment_id"`
+				Status       string `json:"status"`
+			}{DeploymentID: deploymentID, Status: seg.State})
 		}
 		extendSegmentID = seg.SegmentID
 	}
@@ -1736,6 +1822,17 @@ func extendAuditDetail(deploymentID string, hours int, estimated float64, reques
 	return detail
 }
 
+// extendReplayAuditDetail 记录「同键重入、未写 provider」的既有段。
+func extendReplayAuditDetail(deploymentID string, hours int, segmentID, requestID string) map[string]any {
+	return map[string]any{
+		"deployment_id":       deploymentID,
+		"added_hours":         hours,
+		"replayed_segment_id": segmentID,
+		"result":              "idempotent_replay",
+		"request_id":          requestID,
+	}
+}
+
 // ---------- 终止 ----------
 
 func (h *DeployManagementHandlers) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -1786,9 +1883,7 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 			obs.FinishedAt = detail.FinishedAt
 			obs.ComputeSeconds = int64(detail.ComputeMinutesServed) * 60
 		}
-		ledgerCtx, cancelLedger := h.ledgerContext(r)
-		result, settleErr := h.billing.SettleTerminated(ledgerCtx, obs)
-		cancelLedger()
+		result, settleErr := h.settleTerminationWithRetry(r, obs)
 		if settleErr != nil {
 			h.log.Warn("deploy: settle segment after termination failed",
 				"deployment_id", deploymentID, "err", settleErr)

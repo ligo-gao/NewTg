@@ -12,6 +12,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -215,11 +216,30 @@ func TestDeployBillingCreateReplaySameClientRequestIDHoldsOnce(t *testing.T) {
 	env.provider.Price = availablePrice()
 	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
 
-	for i := 0; i < 2; i++ {
-		rr := env.do(http.MethodPost, "/api/deployments", billingCreateBody(), deployWriteHeaders())
-		if rr.Code != http.StatusAccepted {
-			t.Fatalf("第 %d 次 status = %d（body=%s）", i+1, rr.Code, rr.Body.String())
-		}
+	first := env.do(http.MethodPost, "/api/deployments", billingCreateBody(), deployWriteHeaders())
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("第一次 status = %d（body=%s）", first.Code, first.Body.String())
+	}
+	// 第二次投递会再次调用 provider（HTTP 幂等缓存被绕过），必须回滚孤儿的
+	// 部署并返回既有段对应的 deployment_id。
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-dup", Status: "requested"}
+	second := env.do(http.MethodPost, "/api/deployments", billingCreateBody(), deployWriteHeaders())
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("重放 status = %d（body=%s）", second.Code, second.Body.String())
+	}
+	var body struct {
+		DeploymentID string `json:"deployment_id"`
+		Status       string `json:"status"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode replay body: %v", err)
+	}
+	if body.DeploymentID != "dep-new" {
+		t.Fatalf("重放必须返回既有段的部署 ID: %+v", body)
+	}
+	if env.provider.DeleteCalls != 1 || env.provider.LastDeleteID != "dep-dup" {
+		t.Fatalf("重复部署必须回滚: deleteCalls=%d id=%q",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
 	}
 	segs := env.segments(t)
 	if len(segs) != 1 {
@@ -227,6 +247,38 @@ func TestDeployBillingCreateReplaySameClientRequestIDHoldsOnce(t *testing.T) {
 	}
 	if env.factCount(t, segs[0].SegmentID, billing.FactPreconsume) != 1 {
 		t.Fatal("同键重放不得重复预扣")
+	}
+}
+
+// I-1：同部署、同时长、不同 Idempotency-Key 两次续期 → provider 只续一次。
+func TestDeployBillingExtendReplaySameDurationExtendsOnce(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	now, _ := deployBillingClock(start)
+	env := newDeployBillingEnv(t, now, NewMemoryIdempotencyStore())
+	env.provider.Price = availablePrice()
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 2,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
+
+	if rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("第一次 status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	second := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`,
+		map[string]string{"Idempotency-Key": "idem-key-2"})
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("重入 status = %d（body=%s）", second.Code, second.Body.String())
+	}
+	if env.provider.ExtendCalls != 1 {
+		t.Fatalf("同键重入不得重复续期: ExtendCalls = %d", env.provider.ExtendCalls)
+	}
+	segs := env.segments(t)
+	if len(segs) != 1 {
+		t.Fatalf("段数 = %d，want 1", len(segs))
+	}
+	if segs[0].State != billing.SegmentRunning {
+		t.Fatalf("重入返回既有段的活跃状态: %s", segs[0].State)
 	}
 }
 
@@ -310,8 +362,8 @@ func TestDeployBillingTerminationSettlesAndReleases(t *testing.T) {
 		Locations:            []ionet.DeploymentLocation{{ID: 1}},
 		ComputeMinutesServed: 0,
 	}
-	if _, err := env.ledger.ReconcileDeployment(context.Background(), "dep-run"); err != nil {
-		t.Fatalf("ReconcileDeployment: %v", err)
+	if _, err := env.ledger.Reconcile(context.Background(), segmentID); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 
 	// 运行 30 分钟后删除：provider 报告 30 分钟用量 → 按用量结算。

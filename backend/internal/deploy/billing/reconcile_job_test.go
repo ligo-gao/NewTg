@@ -108,8 +108,11 @@ func TestSettleTerminatedReleasesNeverStartedSegment(t *testing.T) {
 	}
 }
 
-// H2 Step 2：provider 已删除但段仍 open → 对账任务关闭段且不重复记账。
-func TestReconcileDeploymentClosesDeletedDeploymentOnce(t *testing.T) {
+// H2 Step 2：provider 已删除但段仍 open → N16 对账任务关闭段且不重复记账。
+//
+// 走生产入口 Worker.ReconcileOnce（心跳过期的段 → Ledger.Reconcile），
+// 覆盖 404 窗口与重复运行的幂等；不另建部署级旁路。
+func TestWorkerReconcileClosesDeletedDeploymentOnce(t *testing.T) {
 	db := openBillingTestDB(t)
 	resetBillingTables(t, db)
 	start := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
@@ -118,33 +121,57 @@ func TestReconcileDeploymentClosesDeletedDeploymentOnce(t *testing.T) {
 	provider := &ionet.FakeProvider{
 		DeploymentDetailErr: &ionet.APIError{StatusCode: http.StatusNotFound},
 	}
-	ledger := newTestLedger(t, db, now, func(context.Context) (ionet.DeploymentProvider, bool, error) {
+	providerFunc := func(context.Context) (ionet.DeploymentProvider, bool, error) {
 		return provider, true, nil
-	}, nil)
+	}
+	ledger := newTestLedger(t, db, now, providerFunc, nil)
+	worker, err := NewWorker(WorkerDeps{Ledger: ledger, Provider: providerFunc, Now: now})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
 
 	seg, _, err := ledger.Hold(context.Background(), flatRateEstimate("dep-gone", nil))
 	if err != nil {
 		t.Fatalf("Hold: %v", err)
 	}
 
-	// 窗口内（900s 内）：保持 pending_confirm，不放弃。
-	setNow(start.Add(5 * time.Minute))
-	states, err := ledger.ReconcileDeployment(context.Background(), "dep-gone")
-	if err != nil {
-		t.Fatalf("ReconcileDeployment(window): %v", err)
+	// 心跳在 300s 租约内：N16 不扫描，段保持 pending_confirm。
+	setNow(start.Add(2 * time.Minute))
+	if stats, err := worker.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce(fresh heartbeat): %v", err)
+	} else if stats.SegmentsScanned != 0 {
+		t.Fatalf("心跳未过期不应扫描: %+v", stats)
 	}
-	if len(states) != 1 || states[0] != SegmentPendingConfirm {
-		t.Fatalf("窗口内状态 = %v，want pending_confirm", states)
+
+	// 窗口内（900s 内）：扫描到但 404 尚不放弃，仅刷新观测心跳。
+	// 心跳租约 300s：取 6 分钟确保严格超过租约边界。
+	setNow(start.Add(6 * time.Minute))
+	stats, err := worker.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce(window): %v", err)
+	}
+	if stats.SegmentsScanned != 1 || stats.SegmentsReleased != 0 {
+		t.Fatalf("窗口内统计 = %+v", stats)
+	}
+	if current, err := ledger.Segment(context.Background(), seg.SegmentID); err != nil {
+		t.Fatalf("Segment: %v", err)
+	} else if current.State != SegmentPendingConfirm {
+		t.Fatalf("窗口内状态 = %s，want pending_confirm", current.State)
 	}
 
 	// 窗口后：provider 404 → 关闭段并释放，成本 0。
 	setNow(start.Add(16 * time.Minute))
-	states, err = ledger.ReconcileDeployment(context.Background(), "dep-gone")
+	stats, err = worker.ReconcileOnce(context.Background())
 	if err != nil {
-		t.Fatalf("ReconcileDeployment: %v", err)
+		t.Fatalf("ReconcileOnce: %v", err)
 	}
-	if len(states) != 1 || states[0] != SegmentAbandoned {
-		t.Fatalf("窗口后状态 = %v，want abandoned", states)
+	if stats.SegmentsReleased != 1 {
+		t.Fatalf("窗口后统计 = %+v", stats)
+	}
+	if current, err := ledger.Segment(context.Background(), seg.SegmentID); err != nil {
+		t.Fatalf("Segment: %v", err)
+	} else if current.State != SegmentAbandoned {
+		t.Fatalf("窗口后状态 = %s，want abandoned", current.State)
 	}
 	released := factsOfType(t, ledger, seg.SegmentID, FactReleased)
 	if len(released) != 1 {
@@ -155,12 +182,12 @@ func TestReconcileDeploymentClosesDeletedDeploymentOnce(t *testing.T) {
 	}
 
 	// 重复对账：终态短路，不重复记账。
-	states, err = ledger.ReconcileDeployment(context.Background(), "dep-gone")
+	stats, err = worker.ReconcileOnce(context.Background())
 	if err != nil {
-		t.Fatalf("repeat ReconcileDeployment: %v", err)
+		t.Fatalf("repeat ReconcileOnce: %v", err)
 	}
-	if len(states) != 0 {
-		t.Fatalf("终态段不应再出现在未终态集合: %v", states)
+	if stats.SegmentsReleased != 0 {
+		t.Fatalf("重复对账不得再次释放: %+v", stats)
 	}
 	if got := len(factsOfType(t, ledger, seg.SegmentID, FactReleased)); got != 1 {
 		t.Fatalf("重复对账后 released 事实 = %d，want 1", got)

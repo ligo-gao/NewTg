@@ -307,8 +307,10 @@ func (w *Worker) ReconcileOnce(ctx context.Context) (ReconcileStats, error) {
 
 // syncDeployments 发现 provider 上运行中的部署并确保有幂等段。
 //
-// 这是本批唯一能创建段的路径（管理面写路径的 Hold 接线见台账残余项）；
-// 幂等键由部署 ID + provider 起点推导，重启/多副本都命中同一段。
+// 这是**兜底**建段路径：管理面创建/续期成功后已经预扣了段（H1），此处只在
+// 「provider 上有运行中部署、本地却没有活跃段」时补记（例如管理面写入后
+// 预扣落库前进程崩溃，或是旁路创建的部署）。幂等键由部署 ID + provider
+// 起点推导，重启/多副本都命中同一段；已有活跃段则跳过。
 func (w *Worker) syncDeployments(ctx context.Context, provider ionet.DeploymentProvider) (seen, created, errs int) {
 	const pageSize = 100
 	const maxPages = 50
