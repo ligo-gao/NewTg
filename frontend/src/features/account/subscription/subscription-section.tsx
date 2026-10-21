@@ -8,6 +8,7 @@ import { Button } from '@/shared/ui/button'
 
 import { BillingPreferenceCard, BILLING_PREFERENCE_KEY } from './billing-preference'
 import { MY_SUBSCRIPTIONS_KEY, MySubscriptions } from './my-subscriptions'
+import { PAYMENT_METHODS_KEY, PaymentMethodsSection } from './payment-methods'
 import { PlanCard } from './plan-card'
 import { SubscriptionPurchaseDialog } from './purchase-dialog'
 import { useOnlineStatus } from './use-online-status'
@@ -63,6 +64,14 @@ export function SubscriptionSection() {
           params: { query: { page_size: 100 } },
         }),
       ),
+  })
+
+  // S4：自动续费开关需要已保存的令牌列表；与令牌区共用同一份查询缓存，
+  // 删除/新增后只需失效 PAYMENT_METHODS_KEY。
+  const methodsQuery = useQuery({
+    queryKey: PAYMENT_METHODS_KEY,
+    queryFn: async () =>
+      requireData(await apiClient.GET('/api/payment-methods')),
   })
 
   const preferenceQuery = useQuery({
@@ -136,12 +145,15 @@ export function SubscriptionSection() {
         )}
       </section>
 
+      <PaymentMethodsSection offline={offline} />
+
       <MySubscriptions
         data={mineQuery.data}
         isPending={mineQuery.isPending}
         isError={mineQuery.isError}
         onRetry={() => void mineQuery.refetch()}
         offline={offline}
+        paymentMethods={methodsQuery.data?.items ?? []}
       />
 
       <BillingPreferenceCard query={preferenceQuery} offline={offline} />

@@ -391,7 +391,15 @@
       "cancelled_at": "Đã hủy vào {time}",
       "cancel_at_period_end": "Hủy vào cuối chu kỳ",
       "cancel_error": "Không thể cập nhật đăng ký.",
-      "cancelling": "Đang hủy…"
+      "cancelling": "Đang hủy…",
+      "auto_renew": "Gia hạn tự động",
+      "auto_renew_method": "Phương thức thanh toán",
+      "auto_renew_enabled": "Đã bật gia hạn tự động",
+      "auto_renew_disabled": "Đã tắt gia hạn tự động",
+      "auto_renew_requires_method": "Hãy thêm phương thức thanh toán trước khi bật gia hạn tự động.",
+      "auto_renew_error": "Không thể cập nhật gia hạn tự động.",
+      "auto_renew_saving": "Đang lưu...",
+      "auto_renew_failures": "{count} lần thử thất bại liên tiếp"
     },
     "status": {
       "active": "Hoạt động",
@@ -419,6 +427,31 @@
       "activated": "Đã kích hoạt đăng ký",
       "activated_unlimited": "Đã kích hoạt đăng ký với hạn mức không giới hạn"
     },
-    "offline_notice": "Bạn đang ngoại tuyến. Các thay đổi bị tắt cho đến khi có kết nối."
+    "offline_notice": "Bạn đang ngoại tuyến. Các thay đổi bị tắt cho đến khi có kết nối.",
+    "payment_methods": {
+      "title": "Phương thức thanh toán",
+      "subtitle": "Thẻ đã lưu với Stripe để gia hạn tự động.",
+      "loading": "Đang tải phương thức thanh toán...",
+      "error": "Không thể tải phương thức thanh toán.",
+      "retry": "Thử lại",
+      "empty": "Chưa có thẻ nào được lưu.",
+      "add": "Thêm thẻ",
+      "delete": "Xóa",
+      "deleting": "Đang xóa...",
+      "delete_error": "Không thể xóa thẻ.",
+      "deleted": "Đã xóa thẻ",
+      "card_ending": "{brand} kết thúc bằng {last4}",
+      "expires": "Hết hạn {month}/{year}",
+      "invalid": "Không còn sử dụng được",
+      "dialog_title": "Thêm thẻ thanh toán",
+      "dialog_hint": "Thông tin thẻ được gửi trực tiếp đến Stripe; cổng chỉ lưu token.",
+      "card_label": "Thông tin thẻ",
+      "save": "Lưu thẻ",
+      "saving": "Đang lưu...",
+      "cancel": "Hủy",
+      "save_error": "Không thể lưu thẻ.",
+      "unavailable": "Thanh toán bằng thẻ chưa được cấu hình.",
+      "saved": "Đã lưu thẻ."
+    }
   }
 }

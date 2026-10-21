@@ -13,6 +13,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
@@ -281,14 +282,32 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 内存兜底，只有提供 DB 时才自动挂载。用户的 billing_preference 存在
 	// users 行，因此 DB 是构造前提（Repo 只是订阅表接缝）。
 	if cfg.SubscriptionHandlers == nil && cfg.DB != nil {
+		// S4 支付令牌/自动续费（P-14）：需要 credential SecretSealer 才能把
+		// 令牌加密落库。未配置 Sealer 时不装配 service，相关端点 fail closed
+		// 503，而不是把令牌明文存进数据库。
+		var paymentMethods SubscriptionPaymentMethodService
+		if cfg.Sealer != nil {
+			service, err := billing.NewPaymentMethodService(billing.PaymentMethodServiceConfig{
+				Repo:   store.NewPaymentMethodRepo(cfg.DB),
+				Subs:   store.NewSubscriptionRepo(cfg.DB),
+				Config: cfg.Config,
+				Sealer: cfg.Sealer,
+				Logger: cfg.Logger,
+			})
+			if err != nil {
+				return nil, err
+			}
+			paymentMethods = service
+		}
 		subscriptionHandlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
-			Repo:     store.NewSubscriptionRepo(cfg.DB),
-			DB:       cfg.DB,
-			Redis:    cfg.Redis,
-			Authz:    cfg.Authz,
-			Audit:    cfg.Audit,
-			Logger:   cfg.Logger,
-			Purchase: cfg.SubscriptionPurchase,
+			Repo:           store.NewSubscriptionRepo(cfg.DB),
+			DB:             cfg.DB,
+			Redis:          cfg.Redis,
+			Authz:          cfg.Authz,
+			Audit:          cfg.Audit,
+			Logger:         cfg.Logger,
+			Purchase:       cfg.SubscriptionPurchase,
+			PaymentMethods: paymentMethods,
 		})
 		if err != nil {
 			return nil, err

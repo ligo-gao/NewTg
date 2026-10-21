@@ -2866,3 +2866,186 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error404'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # S4 自动续费与支付令牌（P-14/P-16/R-40/R-42）
+  # ---------------------------------------------------------------------------
+  /api/subscriptions/{id}/auto-renew:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    put:
+      tags: [user]
+      operationId: putSubscriptionAutoRenew
+      summary: 开启/关闭本人订阅的自动续费
+      description: |
+        只写订阅的自动续费偏好，不扣费、不改变本周期状态。
+
+        `enabled=true` 时必须给出可用的支付令牌：请求体可带
+        `payment_method_id`，缺省则沿用实例已绑定的令牌；两者都没有 →
+        422。令牌必须属于当前用户且 `status='active'`，否则 422。
+        `enabled=false` 不需要令牌，连续失败计数清零。
+
+        自动续费由 worker 在 `end_at - billing.auto_renew_lead_hours`
+        （默认 24h，范围 1–168）进入窗口后扣费；`cancel_at_period_end=true`
+        的实例一律不续费（R-40）。扣费失败写 `renewal_failed` 事件并发站内
+        通知；连续 3 次失败自动关闭开关（P-16）。
+
+        仅本人实例；他人实例与不存在统一 404；`cancelled` 终态 → 409。
+        支付服务未配置 → 503。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/SubscriptionAutoRenewRequest'
+      responses:
+        '200':
+          description: 自动续费偏好已更新
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/SubscriptionAutoRenewView'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 支付服务未配置
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/payment-methods:
+    get:
+      tags: [user]
+      operationId: listPaymentMethods
+      summary: 列出本人已保存的支付令牌（零回显）
+      description: |
+        只返回 brand/last4/exp 与令牌 id；**绝不**返回令牌（密文或明文）。
+        用户侧读取面没有分页信封（令牌数量以个位数计）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        '200':
+          description: 本人令牌列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/PaymentMethodList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 支付服务未配置
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+    post:
+      tags: [user]
+      operationId: createPaymentMethod
+      summary: 保存一个 Stripe 支付令牌
+      description: |
+        `token` 是前端用 Stripe.js 创建并提交给 Stripe 的 PaymentMethod id
+        （`pm_...`），网关不接触卡号。服务端回查 Stripe 取
+        brand/last4/exp（客户端提交的展示字段一律 403），并用
+        AES-256-GCM（credential SecretSealer）加密后落库。
+        渠道不支持/令牌不存在 → 422；非 stripe 渠道 → 400；
+        支付服务未配置 → 503。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/PaymentMethodCreateRequest'
+      responses:
+        '201':
+          description: 令牌已保存
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/PaymentMethod'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 支付服务未配置
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/payment-methods/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [user]
+      operationId: deletePaymentMethod
+      summary: 删除本人支付令牌（fail-closed 关闭关联自动续费）
+      description: |
+        删除令牌与「引用它的订阅 auto_renew=false + renewal_failed 事件」
+        在同一事务内完成（R-42），避免拿着已删除的令牌反复扣费。
+        不存在与不属于当前用户统一 404（uuid 形态非法同样 404）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除（幂等语义：重复删除返回 404）
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 支付服务未配置
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'

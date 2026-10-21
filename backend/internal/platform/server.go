@@ -529,6 +529,56 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// S4 自动续费（P-14/P-16/P-17/R-40/R-42）：与 B12 同线程执行，因此这里
+	// 只构造 worker（不启动 goroutine），把 RunPass 交给 subscriptionworker。
+	// 扣款复用 TopupService 的下单/结算路径（R-41）；令牌经 credential
+	// SecretSealer 解封（P-14）。装配失败阻止 worker 上线：没有自动续费循环
+	// 时，窗口内的实例会静默过期（用户以为已开启自动续费）。
+	autoRenewTopup, err := billing.NewTopupService(billing.TopupServiceConfig{
+		DB:     gormDB,
+		Config: center,
+		Sealer: cipher,
+		Logger: log,
+		// Webhook 不接线：自动续费的结算分支（renew）只推进实例并写订阅
+		// 事件，不产生 payment_success 投递；充值事件的 producer 在下方
+		// 构造，本服务只用于续费下单/扣款。
+	})
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: auto-renew topup service: %w", err)
+	}
+	autoRenewNotifyStore, err := notify.NewStore(sqlDB)
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: auto-renew notify store: %w", err)
+	}
+	autoRenewWorker, err := billing.NewAutoRenewWorker(billing.AutoRenewDeps{
+		Subs:     store.NewSubscriptionRepo(sqlDB),
+		Methods:  store.NewPaymentMethodRepo(sqlDB),
+		Charger:  autoRenewTopup,
+		Sealer:   cipher,
+		Config:   center,
+		Redis:    rr.client,
+		Notifier: newRenewalFailureNotifier(sqlDB, autoRenewNotifyStore, log),
+		Logger:   log,
+	})
+	if err != nil {
+		cancelRankings()
+		rankingsWG.Wait()
+		_ = redisRes.Close()
+		_ = logsRes.Close()
+		_ = dbRes.Close()
+		return fmt.Errorf("worker: auto-renew worker: %w", err)
+	}
+
 	// B12 订阅到期 / 额度重置 / 预扣幂等记录清理（billing-06 §9.3、
 	// billing-08 §7）。与排行榜循环同样的装配形态：独立取消 + WaitGroup，
 	// 停机时先于连接池关闭退出。三条维护都只读写订阅域表，不参与请求
@@ -545,6 +595,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 			Cleaner: repo,
 			Redis:   rr.client,
 			Logger:  log,
+			// P-17：自动续费与到期/重置同一 goroutine、同一 tick。
+			AutoRenew: autoRenewWorker.RunPass,
 		}); err != nil {
 			log.Error("subscription worker exited with error", "error", err)
 		}

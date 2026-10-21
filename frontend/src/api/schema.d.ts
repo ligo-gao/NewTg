@@ -1089,6 +1089,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/auto-renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 开启/关闭本人订阅的自动续费
+         * @description 只写订阅的自动续费偏好，不扣费、不改变本周期状态。
+         *
+         *     `enabled=true` 时必须给出可用的支付令牌：请求体可带
+         *     `payment_method_id`，缺省则沿用实例已绑定的令牌；两者都没有 →
+         *     422。令牌必须属于当前用户且 `status='active'`，否则 422。
+         *     `enabled=false` 不需要令牌，连续失败计数清零。
+         *
+         *     自动续费由 worker 在 `end_at - billing.auto_renew_lead_hours`
+         *     （默认 24h，范围 1–168）进入窗口后扣费；`cancel_at_period_end=true`
+         *     的实例一律不续费（R-40）。扣费失败写 `renewal_failed` 事件并发站内
+         *     通知；连续 3 次失败自动关闭开关（P-16）。
+         *
+         *     仅本人实例；他人实例与不存在统一 404；`cancelled` 终态 → 409。
+         *     支付服务未配置 → 503。
+         */
+        put: operations["putSubscriptionAutoRenew"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/payment-methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出本人已保存的支付令牌（零回显）
+         * @description 只返回 brand/last4/exp 与令牌 id；**绝不**返回令牌（密文或明文）。
+         *     用户侧读取面没有分页信封（令牌数量以个位数计）。
+         */
+        get: operations["listPaymentMethods"];
+        put?: never;
+        /**
+         * 保存一个 Stripe 支付令牌
+         * @description `token` 是前端用 Stripe.js 创建并提交给 Stripe 的 PaymentMethod id
+         *     （`pm_...`），网关不接触卡号。服务端回查 Stripe 取
+         *     brand/last4/exp（客户端提交的展示字段一律 403），并用
+         *     AES-256-GCM（credential SecretSealer）加密后落库。
+         *     渠道不支持/令牌不存在 → 422；非 stripe 渠道 → 400；
+         *     支付服务未配置 → 503。
+         */
+        post: operations["createPaymentMethod"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/payment-methods/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除本人支付令牌（fail-closed 关闭关联自动续费）
+         * @description 删除令牌与「引用它的订阅 auto_renew=false + renewal_failed 事件」
+         *     在同一事务内完成（R-42），避免拿着已删除的令牌反复扣费。
+         *     不存在与不属于当前用户统一 404（uuid 形态非法同样 404）。
+         */
+        delete: operations["deletePaymentMethod"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription/purchase": {
         parameters: {
             query?: never;
@@ -5429,6 +5518,9 @@ export interface components {
             /** Format: int64 */
             amount_remain?: number;
             auto_renew: boolean;
+            /** Format: uuid */
+            auto_renew_payment_method_id?: string | null;
+            auto_renew_failures: number;
             cancel_at_period_end: boolean;
             period_days: number;
             grace_days: number;
@@ -5600,6 +5692,51 @@ export interface components {
             requested_at: string;
             /** @description 首次申请的理由 */
             reason: string;
+        };
+        SubscriptionAutoRenewRequest: {
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description 启用时使用的令牌；缺省沿用实例已绑定的令牌。客户端提交金额/时刻
+             *     等其它字段会被 RBAC 字段层 403。
+             */
+            payment_method_id?: string;
+        };
+        SubscriptionAutoRenewView: {
+            /** Format: int64 */
+            subscription_id: number;
+            auto_renew: boolean;
+            /** Format: uuid */
+            auto_renew_payment_method_id?: string | null;
+            /** @description 连续失败次数；成功续费或人工切换后归零。 */
+            auto_renew_failures: number;
+        };
+        /**
+         * @description 支付令牌的**公开投影**：只有 brand/last4/exp 与句柄 id，
+         *     token_cipher（AES-GCM 密文）永不出现在任何响应中（P-14 零回显）。
+         */
+        PaymentMethod: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            provider: "stripe";
+            brand: string;
+            last4: string;
+            exp_month: number;
+            exp_year: number;
+            /** @enum {string} */
+            status: "active" | "invalid";
+            /** Format: date-time */
+            created_at: string;
+        };
+        PaymentMethodList: {
+            items: components["schemas"]["PaymentMethod"][];
+        };
+        PaymentMethodCreateRequest: {
+            /** @enum {string} */
+            provider: "stripe";
+            /** @description Stripe PaymentMethod id（`pm_...`），不是卡号。 */
+            token: string;
         };
         SubscriptionPurchaseRequest: {
             /** Format: int64 */
@@ -9955,6 +10092,168 @@ export interface operations {
             };
             500: components["responses"]["Error500"];
             /** @description 退款服务未装配（fail closed） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    putSubscriptionAutoRenew: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionAutoRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description 自动续费偏好已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionAutoRenewView"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            /** @description 支付服务未配置 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listPaymentMethods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 本人令牌列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentMethodList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+            /** @description 支付服务未配置 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    createPaymentMethod: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaymentMethodCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 令牌已保存 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentMethod"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            /** @description 支付服务未配置 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deletePaymentMethod: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除（幂等语义：重复删除返回 404） */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            /** @description 支付服务未配置 */
             503: {
                 headers: {
                     [name: string]: unknown;

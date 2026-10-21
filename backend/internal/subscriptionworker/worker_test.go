@@ -555,3 +555,41 @@ func TestCleanupPartialFailureKeepsDeleted(t *testing.T) {
 		t.Fatalf("cleaner calls = %d，want 2（第二批失败后停止）", cleaner.calls)
 	}
 }
+
+// TestSweepRunsAutoRenewInSamePass 是 P-17 的接线验收：自动续费与到期/重置
+// 在同一个 sweep 调用（同一 goroutine、同一 tick）里执行，且即使 sweep 锁
+// 被其它副本持有，本地的自动续费仍继续（扣费互斥在每订阅锁上）。
+func TestSweepRunsAutoRenewInSamePass(t *testing.T) {
+	repo := &fakeRepo{}
+	cleaner := &fakeCleaner{}
+	calls := 0
+	w, err := newWorker(Deps{
+		Repo: repo, Cleaner: cleaner, Redis: newTestRedis(t), Now: fixedNow,
+		AutoRenew: func(context.Context) error { calls++; return nil },
+	})
+	if err != nil {
+		t.Fatalf("newWorker: %v", err)
+	}
+	w.sweepOnce(context.Background())
+	if calls != 1 {
+		t.Fatalf("auto-renew calls = %d, want 1", calls)
+	}
+}
+
+// TestSweepAutoRenewFailureDoesNotStopSweep：自动续费轮次失败只记录，不影响
+// 到期/重置；下一轮重试。
+func TestSweepAutoRenewFailureDoesNotStopSweep(t *testing.T) {
+	repo := &fakeRepo{expireAffected: 2}
+	cleaner := &fakeCleaner{}
+	w, err := newWorker(Deps{
+		Repo: repo, Cleaner: cleaner, Redis: newTestRedis(t), Now: fixedNow,
+		AutoRenew: func(context.Context) error { return errors.New("charge backend down") },
+	})
+	if err != nil {
+		t.Fatalf("newWorker: %v", err)
+	}
+	w.sweepOnce(context.Background())
+	if repo.expireCalls == 0 {
+		t.Fatal("sweep must still run when auto-renew fails")
+	}
+}

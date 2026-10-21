@@ -18,5 +18,14 @@ export type BillingPreferenceValue = BillingPreference['preference']
 export type SubscriptionProvider =
   components['schemas']['SubscriptionPurchaseRequest']['provider']
 
+/**
+ * S4 支付令牌/自动续费。`PaymentMethod` 是服务端的公开投影：只有
+ * brand/last4/exp 与句柄 id，绝不包含令牌（P-14 零回显）。
+ */
+export type PaymentMethod = components['schemas']['PaymentMethod']
+export type PaymentMethodList = components['schemas']['PaymentMethodList']
+export type SubscriptionAutoRenewView =
+  components['schemas']['SubscriptionAutoRenewView']
+
 /** Reused verbatim so the purchase response flows into the top-up checkout. */
 export type { CreateOrderResponse } from '../topup/types'

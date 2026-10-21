@@ -391,7 +391,15 @@
       "cancelled_at": "{time} にキャンセル",
       "cancel_at_period_end": "期間末にキャンセル",
       "cancel_error": "サブスクリプションを更新できませんでした。",
-      "cancelling": "キャンセル中…"
+      "cancelling": "キャンセル中…",
+      "auto_renew": "自動更新",
+      "auto_renew_method": "支払い方法",
+      "auto_renew_enabled": "自動更新を有効にしました",
+      "auto_renew_disabled": "自動更新を無効にしました",
+      "auto_renew_requires_method": "自動更新を有効にする前に支払い方法を追加してください。",
+      "auto_renew_error": "自動更新を更新できませんでした。",
+      "auto_renew_saving": "保存中...",
+      "auto_renew_failures": "連続失敗 {count} 回"
     },
     "status": {
       "active": "有効",
@@ -419,6 +427,31 @@
       "activated": "サブスクリプションが有効になりました",
       "activated_unlimited": "サブスクリプションが有効になりました（クォータ無制限）"
     },
-    "offline_notice": "オフラインです。接続が回復するまで変更できません。"
+    "offline_notice": "オフラインです。接続が回復するまで変更できません。",
+    "payment_methods": {
+      "title": "支払い方法",
+      "subtitle": "サブスクリプションの自動更新用に Stripe に保存されたカードです。",
+      "loading": "支払い方法を読み込み中...",
+      "error": "支払い方法を読み込めませんでした。",
+      "retry": "再試行",
+      "empty": "保存されたカードはまだありません。",
+      "add": "カードを追加",
+      "delete": "削除",
+      "deleting": "削除中...",
+      "delete_error": "カードを削除できませんでした。",
+      "deleted": "カードを削除しました",
+      "card_ending": "{brand} 末尾 {last4}",
+      "expires": "有効期限 {month}/{year}",
+      "invalid": "使用不可",
+      "dialog_title": "支払いカードを追加",
+      "dialog_hint": "カード情報は Stripe に直接送信され、ゲートウェイはトークンのみを保存します。",
+      "card_label": "カード情報",
+      "save": "カードを保存",
+      "saving": "保存中...",
+      "cancel": "キャンセル",
+      "save_error": "カードを保存できませんでした。",
+      "unavailable": "カード決済が設定されていません。",
+      "saved": "カードを保存しました。"
+    }
   }
 }

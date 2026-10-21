@@ -391,7 +391,15 @@
       "cancelled_at": "已于 {time} 取消",
       "cancel_at_period_end": "周期末取消",
       "cancel_error": "无法更新该订阅。",
-      "cancelling": "正在取消…"
+      "cancelling": "正在取消…",
+      "auto_renew": "自动续费",
+      "auto_renew_method": "支付方式",
+      "auto_renew_enabled": "已开启自动续费",
+      "auto_renew_disabled": "已关闭自动续费",
+      "auto_renew_requires_method": "请先添加支付方式再开启自动续费。",
+      "auto_renew_error": "无法更新自动续费。",
+      "auto_renew_saving": "正在保存...",
+      "auto_renew_failures": "连续失败 {count} 次"
     },
     "status": {
       "active": "活跃",
@@ -419,6 +427,31 @@
       "activated": "订阅已激活",
       "activated_unlimited": "订阅已激活，额度无限"
     },
-    "offline_notice": "当前处于离线状态，恢复网络前无法修改。"
+    "offline_notice": "当前处于离线状态，恢复网络前无法修改。",
+    "payment_methods": {
+      "title": "支付方式",
+      "subtitle": "用于订阅自动续费的已保存卡片（由 Stripe 安全存储）。",
+      "loading": "正在加载支付方式...",
+      "error": "无法加载支付方式。",
+      "retry": "重试",
+      "empty": "还没有已保存的卡片。",
+      "add": "添加卡片",
+      "delete": "删除",
+      "deleting": "正在删除...",
+      "delete_error": "无法删除该卡片。",
+      "deleted": "卡片已删除",
+      "card_ending": "{brand} 尾号 {last4}",
+      "expires": "有效期 {month}/{year}",
+      "invalid": "已失效",
+      "dialog_title": "添加支付卡片",
+      "dialog_hint": "卡号只提交给 Stripe，网关仅保存支付令牌。",
+      "card_label": "卡片信息",
+      "save": "保存卡片",
+      "saving": "正在保存...",
+      "cancel": "取消",
+      "save_error": "无法保存该卡片。",
+      "unavailable": "未配置在线支付。",
+      "saved": "卡片已保存。"
+    }
   }
 }

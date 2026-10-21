@@ -391,7 +391,15 @@
       "cancelled_at": "Annulé le {time}",
       "cancel_at_period_end": "Annuler en fin de période",
       "cancel_error": "Impossible de mettre à jour l'abonnement.",
-      "cancelling": "Annulation…"
+      "cancelling": "Annulation…",
+      "auto_renew": "Renouvellement automatique",
+      "auto_renew_method": "Moyen de paiement",
+      "auto_renew_enabled": "Renouvellement automatique activé",
+      "auto_renew_disabled": "Renouvellement automatique désactivé",
+      "auto_renew_requires_method": "Ajoutez un moyen de paiement avant d'activer le renouvellement automatique.",
+      "auto_renew_error": "Impossible de mettre à jour le renouvellement automatique.",
+      "auto_renew_saving": "Enregistrement...",
+      "auto_renew_failures": "{count} tentative(s) échouée(s) consécutive(s)"
     },
     "status": {
       "active": "Actif",
@@ -419,6 +427,31 @@
       "activated": "Abonnement activé",
       "activated_unlimited": "Abonnement activé avec quota illimité"
     },
-    "offline_notice": "Vous êtes hors ligne. Les modifications sont désactivées jusqu'au retour de la connexion."
+    "offline_notice": "Vous êtes hors ligne. Les modifications sont désactivées jusqu'au retour de la connexion.",
+    "payment_methods": {
+      "title": "Moyens de paiement",
+      "subtitle": "Cartes enregistrées auprès de Stripe pour le renouvellement automatique.",
+      "loading": "Chargement des moyens de paiement...",
+      "error": "Impossible de charger les moyens de paiement.",
+      "retry": "Réessayer",
+      "empty": "Aucune carte enregistrée.",
+      "add": "Ajouter une carte",
+      "delete": "Supprimer",
+      "deleting": "Suppression...",
+      "delete_error": "Impossible de supprimer la carte.",
+      "deleted": "Carte supprimée",
+      "card_ending": "{brand} se terminant par {last4}",
+      "expires": "Expire {month}/{year}",
+      "invalid": "Inutilisable",
+      "dialog_title": "Ajouter une carte",
+      "dialog_hint": "Les données de carte vont directement à Stripe ; la passerelle ne stocke que le jeton.",
+      "card_label": "Données de la carte",
+      "save": "Enregistrer la carte",
+      "saving": "Enregistrement...",
+      "cancel": "Annuler",
+      "save_error": "Impossible d'enregistrer la carte.",
+      "unavailable": "Les paiements par carte ne sont pas configurés.",
+      "saved": "Carte enregistrée."
+    }
   }
 }

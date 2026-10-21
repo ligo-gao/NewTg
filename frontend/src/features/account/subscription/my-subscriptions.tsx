@@ -8,8 +8,8 @@ import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { formatSubscriptionTime } from './format'
-import { cancelSubscriptionAtPeriodEnd } from './subscription-api'
-import type { UserSubscription, UserSubscriptionList } from './types'
+import { cancelSubscriptionAtPeriodEnd, setSubscriptionAutoRenew } from './subscription-api'
+import type { PaymentMethod, UserSubscription, UserSubscriptionList } from './types'
 
 export const MY_SUBSCRIPTIONS_KEY = ['subscription', 'mine'] as const
 
@@ -18,8 +18,10 @@ export interface MySubscriptionsProps {
   isPending: boolean
   isError: boolean
   onRetry: () => void
-  /** Writes (period-end cancel) are disabled while offline. */
+  /** Writes (period-end cancel / auto-renew) are disabled while offline. */
   offline: boolean
+  /** 已保存的支付令牌（S4）：自动续费开关必须从中选择扣费方式。 */
+  paymentMethods: PaymentMethod[]
 }
 
 const STATUS_VARIANT: Record<UserSubscription['status'], StatusBadgeVariant> = {
@@ -46,12 +48,15 @@ export function MySubscriptions({
   isError,
   onRetry,
   offline,
+  paymentMethods,
 }: MySubscriptionsProps) {
   const { t, locale } = useI18n()
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const [pendingId, setPendingId] = useState<number | null>(null)
   const [cancelErrorId, setCancelErrorId] = useState<number | null>(null)
+  const [autoRenewPendingId, setAutoRenewPendingId] = useState<number | null>(null)
+  const [autoRenewErrorId, setAutoRenewErrorId] = useState<number | null>(null)
 
   async function handleCancel(item: UserSubscription): Promise<void> {
     if (pendingId !== null || offline) return
@@ -74,6 +79,37 @@ export function MySubscriptions({
       })
     } finally {
       setPendingId(null)
+    }
+  }
+
+  async function handleAutoRenew(
+    item: UserSubscription,
+    enabled: boolean,
+    paymentMethodId: string | undefined,
+  ): Promise<void> {
+    if (autoRenewPendingId !== null || offline) return
+    if (enabled && paymentMethodId === undefined) {
+      // 启用但没有可用令牌：服务端会 422；本地先给可操作提示，避免无谓请求。
+      push({ tone: 'error', message: t('account.subscription.mine.auto_renew_requires_method') })
+      return
+    }
+    setAutoRenewPendingId(item.id)
+    setAutoRenewErrorId(null)
+    try {
+      await setSubscriptionAutoRenew(item.id, enabled, paymentMethodId)
+      push({
+        tone: 'success',
+        message: enabled
+          ? t('account.subscription.mine.auto_renew_enabled')
+          : t('account.subscription.mine.auto_renew_disabled'),
+      })
+      // 服务端是唯一真源（含失败计数清零）；绝不本地猜测开关状态。
+      await queryClient.invalidateQueries({ queryKey: MY_SUBSCRIPTIONS_KEY })
+    } catch {
+      setAutoRenewErrorId(item.id)
+      push({ tone: 'error', message: t('account.subscription.mine.auto_renew_error') })
+    } finally {
+      setAutoRenewPendingId(null)
     }
   }
 
@@ -122,6 +158,13 @@ export function MySubscriptions({
                 anyPending={pendingId !== null}
                 cancelError={cancelErrorId === item.id}
                 onCancel={() => void handleCancel(item)}
+                paymentMethods={paymentMethods}
+                autoRenewPending={autoRenewPendingId === item.id}
+                autoRenewBusy={autoRenewPendingId !== null}
+                autoRenewError={autoRenewErrorId === item.id}
+                onAutoRenew={(enabled, methodId) =>
+                  void handleAutoRenew(item, enabled, methodId)
+                }
               />
             </li>
           ))}
@@ -139,6 +182,11 @@ function SubscriptionRow({
   anyPending,
   cancelError,
   onCancel,
+  paymentMethods,
+  autoRenewPending,
+  autoRenewBusy,
+  autoRenewError,
+  onAutoRenew,
 }: {
   item: UserSubscription
   locale: string
@@ -148,8 +196,21 @@ function SubscriptionRow({
   anyPending: boolean
   cancelError: boolean
   onCancel: () => void
+  paymentMethods: PaymentMethod[]
+  autoRenewPending: boolean
+  autoRenewBusy: boolean
+  autoRenewError: boolean
+  onAutoRenew: (enabled: boolean, methodId: string | undefined) => void
 }) {
   const { t } = useI18n()
+  const [selectedMethodId, setSelectedMethodId] = useState<string | undefined>(
+    item.auto_renew_payment_method_id ?? undefined,
+  )
+  const chosenMethodId =
+    selectedMethodId ?? item.auto_renew_payment_method_id ?? paymentMethods[0]?.id
+  const autoRenewDisabled =
+    offline || item.status !== 'active' || autoRenewBusy || autoRenewPending
+  const autoRenewLabel = `${t('account.subscription.mine.auto_renew')}: ${item.plan_title_snapshot}`
 
   const unlimited = item.amount_total === 0
   const remain = unlimited
@@ -275,7 +336,86 @@ function SubscriptionRow({
           ) : null}
         </div>
 
-        <button
+        <div className="flex flex-wrap items-center gap-3">
+          {item.status === 'active' ? (
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-ink-2" htmlFor={`auto-renew-method-${item.id}`}>
+                  {t('account.subscription.mine.auto_renew')}
+                </label>
+                {item.auto_renew && item.auto_renew_failures > 0 ? (
+                  <span className="text-xs text-danger">
+                    {t('account.subscription.mine.auto_renew_failures', {
+                      count: item.auto_renew_failures,
+                    })}
+                  </span>
+                ) : null}
+              </div>
+              {paymentMethods.length > 0 ? (
+                <select
+                  id={`auto-renew-method-${item.id}`}
+                  aria-label={`${t('account.subscription.mine.auto_renew_method')}: ${item.plan_title_snapshot}`}
+                  className="h-8 rounded-lg border border-border-default bg-surface-card px-2 text-xs text-ink-1 disabled:opacity-50"
+                  value={chosenMethodId ?? ''}
+                  disabled={autoRenewDisabled}
+                  onChange={(event) => {
+                    const next = event.target.value
+                    setSelectedMethodId(next)
+                    // 已开启时换卡立即生效：服务端会校验新令牌归属/可用性。
+                    if (item.auto_renew) onAutoRenew(true, next)
+                  }}
+                >
+                  {paymentMethods.map((method) => (
+                    <option key={method.id} value={method.id}>
+                      {method.brand} ···· {method.last4}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs text-ink-3">
+                  {t('account.subscription.mine.auto_renew_requires_method')}
+                </span>
+              )}
+              {autoRenewError ? (
+                <span role="alert" className="text-xs text-danger">
+                  {t('account.subscription.mine.auto_renew_error')}
+                </span>
+              ) : null}
+              {autoRenewPending ? (
+                <span role="status" className="text-xs text-ink-2">
+                  {t('account.subscription.mine.auto_renew_saving')}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+
+          {item.status === 'active' ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={item.auto_renew}
+              aria-label={autoRenewLabel}
+              aria-busy={autoRenewPending}
+              disabled={autoRenewDisabled || (paymentMethods.length === 0 && !item.auto_renew)}
+              onClick={() => onAutoRenew(!item.auto_renew, chosenMethodId)}
+              className={[
+                'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
+                item.auto_renew
+                  ? 'border-brand bg-brand'
+                  : 'border-border-default bg-surface-subtle',
+              ].join(' ')}
+            >
+              <span
+                aria-hidden="true"
+                className={[
+                  'inline-block size-3.5 rounded-full bg-white shadow transition-transform',
+                  item.auto_renew ? 'translate-x-[18px]' : 'translate-x-[3px]',
+                ].join(' ')}
+              />
+            </button>
+          ) : null}
+
+          <button
           type="button"
           role="switch"
           aria-checked={item.cancel_at_period_end}
@@ -300,7 +440,8 @@ function SubscriptionRow({
               item.cancel_at_period_end ? 'translate-x-[18px]' : 'translate-x-[3px]',
             ].join(' ')}
           />
-        </button>
+          </button>
+        </div>
       </div>
     </article>
   )

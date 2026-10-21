@@ -97,19 +97,24 @@ const (
 	SubscriptionEventCancelled  = "cancelled"
 	SubscriptionEventExpired    = "expired"
 	SubscriptionEventReset      = "reset"
+	// SubscriptionEventRenewalFailed 是 S4 自动续费扣款失败（P-16）。与
+	// renewed 成对出现，detail 携带 failures 与受控失败原因；第 3 次失败
+	// 同时记录 auto_renew_disabled=true（P-16/R-42）。
+	SubscriptionEventRenewalFailed = "renewal_failed"
 )
 
 // subscriptionEventKinds 是 kind 白名单的唯一判定源。新增 kind 必须同时改
 // 迁移里的 CHECK 与 EnumChecks（schema 集成测试双向对账）。
 var subscriptionEventKinds = map[string]struct{}{
-	SubscriptionEventCreated:    {},
-	SubscriptionEventRenewed:    {},
-	SubscriptionEventUpgraded:   {},
-	SubscriptionEventDowngraded: {},
-	SubscriptionEventRefunded:   {},
-	SubscriptionEventCancelled:  {},
-	SubscriptionEventExpired:    {},
-	SubscriptionEventReset:      {},
+	SubscriptionEventCreated:       {},
+	SubscriptionEventRenewed:       {},
+	SubscriptionEventUpgraded:      {},
+	SubscriptionEventDowngraded:    {},
+	SubscriptionEventRefunded:      {},
+	SubscriptionEventCancelled:     {},
+	SubscriptionEventExpired:       {},
+	SubscriptionEventReset:         {},
+	SubscriptionEventRenewalFailed: {},
 }
 
 // SubscriptionEvent 是一条订阅状态迁移事件（S1）。
@@ -314,6 +319,7 @@ const subscriptionColumns = `id, user_id, plan_id, plan_title_snapshot, status, 
 	end_at, next_reset_at, amount_total, amount_used, allow_wallet_overflow,
 	auto_renew, cancel_at_period_end, order_id, currency, price_paid_amount,
 	period_days, reset_on_renew, grace_days, model_scope, concurrency_limit,
+	auto_renew_payment_method_id, auto_renew_failures, auto_renew_attempted_at,
 	created_at, updated_at`
 
 const preConsumeColumns = `request_id, subscription_id, status, pre_consumed, created_at`
@@ -333,7 +339,9 @@ func scanSubscription(row interface{ Scan(...any) error }) (Subscription, error)
 		&s.StartAt, &s.EndAt, &s.NextResetAt, &s.AmountTotal, &s.AmountUsed,
 		&s.AllowWalletOverflow, &s.AutoRenew, &s.CancelAtPeriodEnd, &s.OrderID,
 		&s.Currency, &s.PricePaidAmount, &s.PeriodDays, &s.ResetOnRenew,
-		&s.GraceDays, &s.ModelScope, &s.ConcurrencyLimit, &s.CreatedAt, &s.UpdatedAt)
+		&s.GraceDays, &s.ModelScope, &s.ConcurrencyLimit,
+		&s.AutoRenewPaymentMethodID, &s.AutoRenewFailures, &s.AutoRenewAttemptedAt,
+		&s.CreatedAt, &s.UpdatedAt)
 	return s, err
 }
 

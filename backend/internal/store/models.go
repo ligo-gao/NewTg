@@ -549,16 +549,21 @@ type Subscription struct {
 	AllowWalletOverflow bool       `gorm:"column:allow_wallet_overflow"`
 	AutoRenew           bool       `gorm:"column:auto_renew"`
 	CancelAtPeriodEnd   bool       `gorm:"column:cancel_at_period_end"`
-	OrderID             *int64     `gorm:"column:order_id"`
-	Currency            string     `gorm:"column:currency"`
-	PricePaidAmount     int64      `gorm:"column:price_paid_amount"`
-	PeriodDays          int32      `gorm:"column:period_days"`
-	ResetOnRenew        bool       `gorm:"column:reset_on_renew"`
-	GraceDays           int32      `gorm:"column:grace_days"`
-	ModelScope          []byte     `gorm:"column:model_scope"`
-	ConcurrencyLimit    *int32     `gorm:"column:concurrency_limit"`
-	CreatedAt           time.Time  `gorm:"column:created_at"`
-	UpdatedAt           time.Time  `gorm:"column:updated_at"`
+	// S4 自动续费状态（P-14/P-16/R-42）：令牌逻辑引用、连续失败计数与最近
+	// 一次扣费尝试时刻。TokenCipher 只在 payment_methods 表，绝不进本行。
+	AutoRenewPaymentMethodID *string    `gorm:"column:auto_renew_payment_method_id"`
+	AutoRenewFailures        int32      `gorm:"column:auto_renew_failures"`
+	AutoRenewAttemptedAt     *time.Time `gorm:"column:auto_renew_attempted_at"`
+	OrderID                  *int64     `gorm:"column:order_id"`
+	Currency                 string     `gorm:"column:currency"`
+	PricePaidAmount          int64      `gorm:"column:price_paid_amount"`
+	PeriodDays               int32      `gorm:"column:period_days"`
+	ResetOnRenew             bool       `gorm:"column:reset_on_renew"`
+	GraceDays                int32      `gorm:"column:grace_days"`
+	ModelScope               []byte     `gorm:"column:model_scope"`
+	ConcurrencyLimit         *int32     `gorm:"column:concurrency_limit"`
+	CreatedAt                time.Time  `gorm:"column:created_at"`
+	UpdatedAt                time.Time  `gorm:"column:updated_at"`
 }
 
 // TableName 返回 GORM 表名。

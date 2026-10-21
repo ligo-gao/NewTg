@@ -391,7 +391,15 @@
       "cancelled_at": "Cancelled at {time}",
       "cancel_at_period_end": "Cancel at period end",
       "cancel_error": "Could not update the subscription.",
-      "cancelling": "Cancelling..."
+      "cancelling": "Cancelling...",
+      "auto_renew": "Auto-renew",
+      "auto_renew_method": "Payment method",
+      "auto_renew_enabled": "Auto-renew enabled",
+      "auto_renew_disabled": "Auto-renew disabled",
+      "auto_renew_requires_method": "Add a payment method before enabling auto-renew.",
+      "auto_renew_error": "Could not update auto-renew.",
+      "auto_renew_saving": "Saving...",
+      "auto_renew_failures": "{count} consecutive failed attempt(s)"
     },
     "status": {
       "active": "Active",
@@ -419,6 +427,31 @@
       "activated": "Subscription activated",
       "activated_unlimited": "Subscription activated with unlimited quota"
     },
-    "offline_notice": "You are offline. Changes are disabled until the connection returns."
+    "offline_notice": "You are offline. Changes are disabled until the connection returns.",
+    "payment_methods": {
+      "title": "Payment methods",
+      "subtitle": "Cards saved with Stripe for subscription auto-renewal.",
+      "loading": "Loading payment methods...",
+      "error": "Could not load payment methods.",
+      "retry": "Retry",
+      "empty": "No saved cards yet.",
+      "add": "Add card",
+      "delete": "Delete",
+      "deleting": "Deleting...",
+      "delete_error": "Could not delete the card.",
+      "deleted": "Card deleted",
+      "card_ending": "{brand} ending in {last4}",
+      "expires": "Expires {month}/{year}",
+      "invalid": "No longer usable",
+      "dialog_title": "Add a payment card",
+      "dialog_hint": "Card details go directly to Stripe; the gateway only stores the token.",
+      "card_label": "Card details",
+      "save": "Save card",
+      "saving": "Saving...",
+      "cancel": "Cancel",
+      "save_error": "Could not save the card.",
+      "unavailable": "Card payments are not configured.",
+      "saved": "Card saved."
+    }
   }
 }

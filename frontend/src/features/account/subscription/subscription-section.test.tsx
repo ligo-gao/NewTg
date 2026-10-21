@@ -69,6 +69,7 @@ const ACTIVE_SUB = {
   amount_used: 250,
   amount_remain: 750,
   auto_renew: false,
+  auto_renew_failures: 0,
   cancel_at_period_end: false,
   period_days: 30,
   grace_days: 0,
@@ -122,6 +123,10 @@ function useBaseHandlers(options: {
       HttpResponse.json({ preference: options.preference ?? 'subscription_first' }),
     ),
     http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(TOPUP_CONFIG)),
+    // S4：订阅区会读取已保存的支付令牌（自动续费选择器 + 令牌卡片）。
+    http.get(`${ORIGIN}/api/payment-methods`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
   )
 }
 
@@ -500,6 +505,9 @@ describe('SubscriptionSection', () => {
         configurable: true,
         get: () => true,
       })
+      // 恢复在线并通知 React Query 的 onlineManager；只改 getter 不会触发
+      // 重连，后续用例的所有查询会一直停在 pending。
+      window.dispatchEvent(new Event('online'))
     }
   })
 
@@ -700,6 +708,46 @@ describe('SubscriptionSection', () => {
         configurable: true,
         get: () => true,
       })
+      // 恢复在线并通知 React Query 的 onlineManager；只改 getter 不会触发
+      // 重连，后续用例的所有查询会一直停在 pending。
+      window.dispatchEvent(new Event('online'))
     }
+  })
+
+  it('enables auto-renew with the selected saved card', async () => {
+    const METHOD = {
+      id: '33333333-3333-3333-3333-333333333333',
+      provider: 'stripe',
+      brand: 'visa',
+      last4: '4242',
+      exp_month: 12,
+      exp_year: 2030,
+      status: 'active',
+      created_at: '2026-10-01T00:00:00Z',
+    }
+    useBaseHandlers({ subscriptions: [ACTIVE_SUB] })
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.get(`${ORIGIN}/api/payment-methods`, () =>
+        HttpResponse.json({ items: [METHOD] }),
+      ),
+      http.put(`${ORIGIN}/api/subscriptions/5/auto-renew`, async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          subscription_id: 5,
+          auto_renew: true,
+          auto_renew_payment_method_id: METHOD.id,
+          auto_renew_failures: 0,
+        })
+      }),
+    )
+
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+    // 卡片已保存：选择器默认选中它，开关把 enabled + 令牌 id 一起提交。
+    await user.click(await screen.findByRole('switch', { name: 'Auto-renew: Basic' }))
+    await waitFor(() => {
+      expect(sent).toEqual({ enabled: true, payment_method_id: METHOD.id })
+    })
   })
 })

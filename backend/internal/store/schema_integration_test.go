@@ -39,8 +39,11 @@ import (
 // C2 追加 GPU 资源租赁计费两表（platform-01 §22.13），表数 36→38。
 // T4 追加任务批次聚合两表（task_batches / task_batches_items），表数 38→40。
 // S1（W2）追加订阅事件流 subscription_events（5 列），表数 40→41。
+// S4（W2）追加支付令牌表 payment_methods（11 列）并给 subscriptions 补 3 列
+// 自动续费状态，表数 41→42、subscriptions 23→26。
 //
-//	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
+//	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
+//	与 S4 的 3 个自动续费状态列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
 	"users":            26,
@@ -99,11 +102,14 @@ var wantColumns = map[string]int{
 	// grace_days/model_scope/concurrency_limit）：少快照列会让「编辑套餐」
 	// 追溯已购实例，是设计明确禁止的语义漂移。
 	"subscription_plans":               17,
-	"subscriptions":                    23,
+	"subscriptions":                    26,
 	"subscription_pre_consume_records": 5,
 	// S1 订阅状态事件流（W2）：subscription_id / seq / kind / detail /
 	// created_at 五列，主键 (subscription_id, seq) 即读路径索引。
 	"subscription_events": 5,
+	// S4 支付令牌（P-14）：id/user_id/provider/token_cipher/brand/last4/
+	// exp_month/exp_year/status/created_at/updated_at 共 11 列。
+	"payment_methods": 11,
 	// C2 / Task 5c：GPU 资源租赁计费两表（platform-01 §22.13）。
 	// 列数与设计逐行对应：段 24 列、append-only 事实账本 19 列。
 	"deployment_billing_segments": 24,
@@ -154,6 +160,9 @@ var wantNoFKTables = []string{
 	"subscription_plans",
 	"subscriptions",
 	"subscription_pre_consume_records",
+	// S4：支付令牌只逻辑引用 users.id；删除令牌由应用层在同一事务内
+	// fail-closed 关闭关联订阅（R-42），不设 FK。
+	"payment_methods",
 }
 
 // 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
@@ -243,6 +252,8 @@ var uuidPKTables = map[string][]string{
 	"announcements": {"id"},
 	// T4：批次 id 由应用层 crypto/rand 生成（uuid v4），列上带安全默认值。
 	"task_batches": {"id"},
+	// S4：支付令牌 id 由 gen_random_uuid() 生成（外部可寻址的凭据句柄）。
+	"payment_methods": {"id"},
 }
 
 // runIDLedNaturalPKs：以 FK run_id 领头的复合自然唯一键（platform-01 §14/§15）。
@@ -297,7 +308,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 41 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 42 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -777,11 +788,11 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 11 项 + uuid 代理键 4 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 11 项 + uuid 代理键 5 项
 // + run_id 领头复合自然键 2 项 + 自定义列名 identity 1 项。
 func TestMainSchemaIdentityPK(t *testing.T) {
 	if len(identityPKExceptions) != 11 {
-		t.Fatalf("自然键例外清单须恰 11 项（另有 4 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
+		t.Fatalf("自然键例外清单须恰 11 项（另有 5 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -843,8 +854,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 
 	// (e.3) uuid 代理主键：单列 id、类型 uuid、DEFAULT gen_random_uuid()，
 	// 且**不是** identity（M6d B-12/B-13）。
-	if len(uuidPKTables) != 4 {
-		t.Fatalf("uuid 代理主键表须恰 4 张，实际 %d 张", len(uuidPKTables))
+	if len(uuidPKTables) != 5 {
+		t.Fatalf("uuid 代理主键表须恰 5 张，实际 %d 张", len(uuidPKTables))
 	}
 	for table, wantCols := range uuidPKTables {
 		table, wantCols := table, wantCols
@@ -905,8 +916,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 17 张 =
-// 11 张自然键例外（identityPKExceptions）+ 4 张 uuid 代理键（uuidPKTables）
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 18 张 =
+// 11 张自然键例外（identityPKExceptions）+ 5 张 uuid 代理键（uuidPKTables）
 // + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余均为 identity
 // 单列代理主键（其中 deployment_cost_facts 的列名是 fact_id）。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
@@ -921,8 +932,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 17 {
-		t.Fatalf("非 identity PK 表须恰 17 张（11 自然键 + 4 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 18 {
+		t.Fatalf("非 identity PK 表须恰 18 张（11 自然键 + 5 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string

@@ -115,6 +115,15 @@ type Deps struct {
 	// BatchSize / MaxBatches 覆盖单批与单轮上限。
 	BatchSize  int
 	MaxBatches int
+
+	// AutoRenew 是 S4 自动续费的轮次接缝（P-17）。
+	//
+	// 它**必须**在同一个 goroutine 里执行：自动续费与到期/重置共享「现在」
+	// 的扫描节奏，且续费成功的 end_at 推进必须与到期判定看到一致的时间序。
+	// 传 nil 时跳过（未装配支付令牌的部署不应自动扣费）。实现方
+	// （billing.AutoRenewWorker.RunPass）用每订阅 Redis 锁
+	// `subscriptions:renew:<id>` 收敛多副本，不依赖本循环的全局 sweep 锁。
+	AutoRenew func(ctx context.Context) error
 }
 
 // SweepResult 是一轮到期/重置的实际效果（affected 而非扫描数）。
@@ -136,6 +145,7 @@ type worker struct {
 	retention       time.Duration
 	batchSize       int
 	maxBatches      int
+	autoRenew       func(ctx context.Context) error
 }
 
 func newWorker(deps Deps) (*worker, error) {
@@ -187,6 +197,7 @@ func newWorker(deps Deps) (*worker, error) {
 		retention:       retention,
 		batchSize:       batchSize,
 		maxBatches:      maxBatches,
+		autoRenew:       deps.AutoRenew,
 	}, nil
 }
 
@@ -247,6 +258,20 @@ func (w *worker) sweepOnce(ctx context.Context) {
 			"expired", res.Expired,
 			"reset", res.Reset,
 		)
+	}
+	// S4 自动续费与到期/重置同线程、同 tick（P-17）。它不依赖 sweep 锁：
+	// 每订阅的 `subscriptions:renew:<id>` 锁才是扣费互斥；即使本副本没抢到
+	// sweep 锁，也允许它抢先处理窗口内的实例（多副本下只有一个能拿到该实例锁）。
+	w.autoRenewOnce(ctx)
+}
+
+// autoRenewOnce 执行一轮自动续费。失败只记录：与 sweep 一样，下一轮重试。
+func (w *worker) autoRenewOnce(ctx context.Context) {
+	if w.autoRenew == nil || ctx.Err() != nil {
+		return
+	}
+	if err := w.autoRenew(ctx); err != nil && ctx.Err() == nil {
+		w.log.Error("subscription auto-renew pass failed", "error", err)
 	}
 }
 

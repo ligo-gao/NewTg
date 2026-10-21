@@ -111,6 +111,14 @@ const (
 	// 独立问题类型（已开始/已消耗，422）。
 	problemTypeRefundRequestInvalid  = "https://newtg.dev/problems/invalid_subscription_refund_request"
 	problemTypeRefundRequestConflict = "https://newtg.dev/problems/subscription_refund_request_conflict"
+	// S4 自动续费/支付令牌：invalid=请求体或令牌不可用，unavailable=支付服务
+	// 未配置/渠道不可达。自动续费与普通订阅写动作分开，前端可给出针对性提示。
+	problemTypeAutoRenewInvalid         = "https://newtg.dev/problems/invalid_subscription_auto_renew"
+	problemTypeAutoRenewUnavailable     = "https://newtg.dev/problems/subscription_auto_renew_unavailable"
+	problemTypePaymentMethodInvalid     = "https://newtg.dev/problems/invalid_payment_method"
+	problemTypePaymentMethodUnavailable = "https://newtg.dev/problems/payment_methods_unavailable"
+	// 自动续费在 cancelled 终态不可开启（409），与「不能取消/不能续费」同构。
+	problemTypeSubscriptionAutoRenewConflict = "https://newtg.dev/problems/subscription_auto_renew_conflict"
 )
 
 // SubscriptionPurchaseService 是订阅购买的支付接缝。
@@ -133,6 +141,19 @@ type SubscriptionPurchaseService interface {
 		reason string) (*billing.RefundRequest, error)
 }
 
+// SubscriptionPaymentMethodService 是支付令牌与自动续费的服务接缝（S4）。
+//
+// 生产实现为 *billing.PaymentMethodService；nil 时相关端点 fail closed 503，
+// 不会静默假装保存成功。返回 store.PaymentMethod 的完整行（含密文列）是
+// 内部接缝；handler **只投影 brand/last4/exp**（P-14 零回显）。
+type SubscriptionPaymentMethodService interface {
+	CreatePaymentMethod(ctx context.Context, userID int64, provider, token string) (store.PaymentMethod, error)
+	ListPaymentMethods(ctx context.Context, userID int64) ([]store.PaymentMethod, error)
+	DeletePaymentMethod(ctx context.Context, userID int64, id string) ([]int64, error)
+	SetSubscriptionAutoRenew(ctx context.Context, userID, subscriptionID int64,
+		enabled bool, paymentMethodID *string) (store.Subscription, error)
+}
+
 // 订阅域动作（字段策略按动作登记；与权限键不同）。
 var (
 	subscriptionPlanListAction     = rbac.AuthzAction{ResourceKind: "subscription_plan", ActionName: "list"}
@@ -149,6 +170,11 @@ var (
 	userSubscriptionRenewAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
 	userSubscriptionChangeAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "change"}
 	userSubscriptionRefundAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "refund_request"}
+	// S4：自动续费开关与支付令牌。令牌写动作只需已认证用户（数据范围恒为
+	// Principal.UserID），字段层仍生效。
+	userSubscriptionAutoRenewAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "auto_renew"}
+	paymentMethodCreateAction       = rbac.AuthzAction{ResourceKind: "payment_method", ActionName: "create"}
+	paymentMethodDeleteAction       = rbac.AuthzAction{ResourceKind: "payment_method", ActionName: "delete"}
 )
 
 // SubscriptionHandlerConfig 是订阅端点装配输入。
@@ -166,6 +192,9 @@ type SubscriptionHandlerConfig struct {
 	// Purchase 是订阅购买的支付接缝（生产为 *billing.TopupService）。
 	// nil 时购买端点返回 503（fail closed），不会静默创建订单。
 	Purchase SubscriptionPurchaseService
+	// PaymentMethods 是支付令牌与自动续费的服务接缝（S4）。nil 时相关
+	// 端点返回 503（支付服务未配置），不会静默保存或假装成功。
+	PaymentMethods SubscriptionPaymentMethodService
 }
 
 // SubscriptionHandlers 持有订阅端点依赖，可并发使用。
@@ -177,6 +206,7 @@ type SubscriptionHandlers struct {
 	audit    *audit.Logger
 	log      *slog.Logger
 	purchase SubscriptionPurchaseService
+	payments SubscriptionPaymentMethodService
 }
 
 // NewSubscriptionHandlers 构造订阅端点。
@@ -204,6 +234,7 @@ func NewSubscriptionHandlers(cfg SubscriptionHandlerConfig) (*SubscriptionHandle
 	h := &SubscriptionHandlers{
 		repo: cfg.Repo, db: cfg.DB, rdb: cfg.Redis, authz: authz,
 		audit: cfg.Audit, log: logger, purchase: cfg.Purchase,
+		payments: cfg.PaymentMethods,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -265,6 +296,20 @@ func (h *SubscriptionHandlers) registerPolicies() {
 	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
 	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
 	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
+	// S4 自动续费：只接受开关与令牌 id。金额/周期/扣费时刻一律由服务端按
+	// 套餐行与配置决定，客户端不可指定。
+	h.authz.SetWritePolicy(userSubscriptionAutoRenewAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"enabled":           nil,
+		"payment_method_id": nil,
+	}})
+	// 令牌创建只接受 provider 与 Stripe 令牌 id；brand/last4/exp 由服务端
+	// 回查 Stripe 得到，客户端提交这些字段会 403（防止伪造展示信息）。
+	h.authz.SetWritePolicy(paymentMethodCreateAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"provider": nil,
+		"token":    nil,
+	}})
+	// DELETE 无 body：空白名单让携带字段的请求 403。
+	h.authz.SetWritePolicy(paymentMethodDeleteAction, empty)
 }
 
 // Register 把全部订阅端点挂到受保护子树（SessionAuth → CSRF → Origin 链之后）。
@@ -317,6 +362,16 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/billing-preference", http.HandlerFunc(h.handleGetBillingPreference))
 	mux.Handle("PUT /api/billing-preference", self(userBillingPreferenceAction, h.handlePutBillingPreference))
 	mux.Handle("POST /api/subscription/purchase", self(userSubscriptionPurchaseAction, h.handlePurchase))
+
+	// S4：自动续费开关与支付令牌。数据范围恒为 Principal.UserID；令牌读取
+	// 响应零回显（P-14），删除会 fail-closed 关闭引用它的订阅（R-42）。
+	mux.Handle("PUT /api/subscriptions/{id}/auto-renew",
+		self(userSubscriptionAutoRenewAction, h.handlePutSubscriptionAutoRenew))
+	mux.Handle("GET /api/payment-methods", http.HandlerFunc(h.handleListPaymentMethods))
+	mux.Handle("POST /api/payment-methods",
+		self(paymentMethodCreateAction, h.handleCreatePaymentMethod))
+	mux.Handle("DELETE /api/payment-methods/{id}",
+		self(paymentMethodDeleteAction, h.handleDeletePaymentMethod))
 }
 
 // ---------------------------------------------------------------------------
@@ -2065,6 +2120,241 @@ func (h *SubscriptionHandlers) writeChangeError(w http.ResponseWriter, err error
 // auditSubscriptionEvent 写订阅域动作审计（套餐管理 + 用户周期末取消同口径）。
 // detail 只含 id/plan_key/受影响计数——绝不记录整行，避免把价格/额度配置
 // 复制进审计表（D1b 目录审计同口径）。
+// ---------------------------------------------------------------------------
+// 自动续费与支付令牌（S4；P-14 / P-16 / R-40 / R-42）
+// ---------------------------------------------------------------------------
+
+// paymentMethodView 是令牌的公开投影。
+//
+// 【零回显（P-14）】刻意没有 token/token_cipher 字段：读取响应只暴露
+// brand/last4/exp，客户端无法从列表接口取回可用于扣费的令牌。
+type paymentMethodView struct {
+	ID        string    `json:"id"`
+	Provider  string    `json:"provider"`
+	Brand     string    `json:"brand"`
+	Last4     string    `json:"last4"`
+	ExpMonth  int16     `json:"exp_month"`
+	ExpYear   int16     `json:"exp_year"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type paymentMethodListView struct {
+	Items []paymentMethodView `json:"items"`
+}
+
+func newPaymentMethodView(pm store.PaymentMethod) paymentMethodView {
+	return paymentMethodView{
+		ID: pm.ID, Provider: pm.Provider, Brand: pm.Brand, Last4: pm.Last4,
+		ExpMonth: pm.ExpMonth, ExpYear: pm.ExpYear, Status: pm.Status,
+		CreatedAt: pm.CreatedAt,
+	}
+}
+
+type paymentMethodCreateRequest struct {
+	Provider *string `json:"provider"`
+	Token    *string `json:"token"`
+}
+
+// handleListPaymentMethods 列出本人令牌（新的在前）。
+func (h *SubscriptionHandlers) handleListPaymentMethods(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if h.payments == nil {
+		h.writePaymentMethodsUnavailable(w)
+		return
+	}
+	items, err := h.payments.ListPaymentMethods(r.Context(), p.UserID)
+	if err != nil {
+		h.log.Error("list payment methods failed", "error", err)
+		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "")
+		return
+	}
+	view := paymentMethodListView{Items: make([]paymentMethodView, 0, len(items))}
+	for _, item := range items {
+		view.Items = append(view.Items, newPaymentMethodView(item))
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleCreatePaymentMethod 保存一个 Stripe 令牌（服务端回查展示字段并加密）。
+func (h *SubscriptionHandlers) handleCreatePaymentMethod(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if h.payments == nil {
+		h.writePaymentMethodsUnavailable(w)
+		return
+	}
+	var req paymentMethodCreateRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePaymentMethodInvalid,
+			"Invalid payment method", "request body must be a JSON object", nil)
+		return
+	}
+	if req.Provider == nil || strings.TrimSpace(*req.Provider) == "" ||
+		req.Token == nil || strings.TrimSpace(*req.Token) == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePaymentMethodInvalid,
+			"Invalid payment method", "provider and token are required",
+			[]string{"provider", "token"})
+		return
+	}
+	created, err := h.payments.CreatePaymentMethod(r.Context(), p.UserID,
+		strings.TrimSpace(*req.Provider), strings.TrimSpace(*req.Token))
+	if err != nil {
+		h.writePaymentMethodError(w, err)
+		return
+	}
+	// 审计只记令牌 id 与展示元数据；密文/明文令牌绝不进审计（P-14）。
+	h.auditSubscriptionEvent(r, p, "subscription.payment_method.create",
+		map[string]any{"payment_method_id": created.ID, "brand": created.Brand,
+			"last4": created.Last4}, http.StatusCreated)
+	writeJSON(w, http.StatusCreated, newPaymentMethodView(created))
+}
+
+// handleDeletePaymentMethod 删除令牌；store 在同一事务内关闭引用它的自动续费
+// 并写 renewal_failed 事件（R-42）。
+func (h *SubscriptionHandlers) handleDeletePaymentMethod(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if h.payments == nil {
+		h.writePaymentMethodsUnavailable(w)
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if !store.ValidPaymentMethodID(id) {
+		// 非法 id 与不存在同口径：不给出「格式错」这一额外信号。
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	disabled, err := h.payments.DeletePaymentMethod(r.Context(), p.UserID, id)
+	if err != nil {
+		h.writePaymentMethodError(w, err)
+		return
+	}
+	h.auditSubscriptionEvent(r, p, "subscription.payment_method.delete",
+		map[string]any{"payment_method_id": id, "disabled_subscriptions": disabled},
+		http.StatusNoContent)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// subscriptionAutoRenewRequest 是 PUT /api/subscriptions/{id}/auto-renew 的
+// 请求体。enabled 必填；payment_method_id 仅在启用时需要（缺省时沿用实例
+// 已绑定的令牌）。
+type subscriptionAutoRenewRequest struct {
+	Enabled         *bool   `json:"enabled"`
+	PaymentMethodID *string `json:"payment_method_id"`
+}
+
+type subscriptionAutoRenewView struct {
+	SubscriptionID           int64   `json:"subscription_id"`
+	AutoRenew                bool    `json:"auto_renew"`
+	AutoRenewPaymentMethodID *string `json:"auto_renew_payment_method_id,omitempty"`
+	AutoRenewFailures        int32   `json:"auto_renew_failures"`
+}
+
+func (h *SubscriptionHandlers) handlePutSubscriptionAutoRenew(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	var req subscriptionAutoRenewRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeAutoRenewInvalid,
+			"Invalid auto-renew preference", "request body must be a JSON object", nil)
+		return
+	}
+	if req.Enabled == nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeAutoRenewInvalid,
+			"Invalid auto-renew preference", "enabled is required", []string{"enabled"})
+		return
+	}
+	if h.payments == nil {
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeAutoRenewUnavailable,
+			"Auto-renew is unavailable", "the payment service is not configured", nil)
+		return
+	}
+	updated, err := h.payments.SetSubscriptionAutoRenew(r.Context(), p.UserID, id,
+		*req.Enabled, req.PaymentMethodID)
+	if err != nil {
+		h.writeAutoRenewError(w, err)
+		return
+	}
+	h.auditSubscriptionEvent(r, p, "subscription.auto_renew.update",
+		map[string]any{"subscription_id": updated.ID, "auto_renew": updated.AutoRenew},
+		http.StatusOK)
+	writeJSON(w, http.StatusOK, subscriptionAutoRenewView{
+		SubscriptionID:           updated.ID,
+		AutoRenew:                updated.AutoRenew,
+		AutoRenewPaymentMethodID: updated.AutoRenewPaymentMethodID,
+		AutoRenewFailures:        updated.AutoRenewFailures,
+	})
+}
+
+func (h *SubscriptionHandlers) writePaymentMethodsUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePaymentMethodUnavailable,
+		"Payment methods are unavailable", "the payment service is not configured", nil)
+}
+
+// writePaymentMethodError 映射令牌服务的错误（与续费/购买同口径）。
+func (h *SubscriptionHandlers) writePaymentMethodError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrPaymentMethodNotFound):
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+	case errors.Is(err, store.ErrPaymentMethodInvalid),
+		errors.Is(err, billing.ErrInvalidPaymentToken):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypePaymentMethodInvalid,
+			"Invalid payment method", "the payment token is invalid or no longer usable", nil)
+	case errors.Is(err, billing.ErrInvalidProvider):
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypePaymentMethodInvalid,
+			"Invalid payment method", "only stripe is supported", []string{"provider"})
+	case errors.Is(err, billing.ErrPaymentMethodsUnavailable),
+		errors.Is(err, billing.ErrProviderUnavailable),
+		errors.Is(err, billing.ErrPaymentConfig):
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypePaymentMethodUnavailable,
+			"Payment methods are unavailable", "the payment provider is not available", nil)
+	default:
+		h.log.Error("payment method operation failed", "error", err)
+		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
+	}
+}
+
+// writeAutoRenewError 映射自动续费开关的错误。
+func (h *SubscriptionHandlers) writeAutoRenewError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrSubscriptionNotFound):
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+	case errors.Is(err, store.ErrSubscriptionNotActive):
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeSubscriptionAutoRenewConflict,
+			"subscription_auto_renew_conflict", "subscriptions in a terminal state cannot enable auto-renew", nil)
+	case errors.Is(err, store.ErrAutoRenewPaymentMethodRequired):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeAutoRenewInvalid,
+			"Invalid auto-renew preference", "an active payment method is required", []string{"payment_method_id"})
+	case errors.Is(err, store.ErrAutoRenewPaymentMethodInvalid):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeAutoRenewInvalid,
+			"Invalid auto-renew preference", "the payment method is not usable", []string{"payment_method_id"})
+	default:
+		h.log.Error("update auto-renew preference failed", "error", err)
+		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
+	}
+}
+
 func (h *SubscriptionHandlers) auditSubscriptionEvent(r *http.Request, p *auth.Principal, action string, detail map[string]any, status int) {
 	if err := writeAuditEvent(r.Context(), h.audit, audit.Event{
 		Action:     action,

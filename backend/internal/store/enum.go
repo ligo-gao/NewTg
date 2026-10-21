@@ -220,11 +220,17 @@ var EnumChecks = map[string][]string{
 	"subscription_events.kind": {
 		"created", "renewed", "upgraded", "downgraded",
 		"refunded", "cancelled", "expired", "reset",
+		// S4：自动续费扣款失败（P-16；迁移 20261022092000）。
+		"renewal_failed",
 	},
 	// 'change' 由 S2 加入（迁移 20261021120000）：biz_ref_id=subscriptions.id，
 	// amount 是应补差价而不是套餐全价。
 	"orders.biz_kind":          {"topup", "subscribe", "renew", "change"},
 	"users.billing_preference": {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
+
+	// S4 支付令牌（P-14）：provider 单成员 CHECK 会被 PG 规范化为等值表达式，
+	// 不呈枚举形态，故只登记 status（active/invalid）。
+	"payment_methods.status": {"active", "invalid"},
 
 	// 站点公告（D7a，modules-08 F-08-04 / R-D7-01）。
 	// status 只有三值：expired 是**虚拟态**（published + expire_at <= now），

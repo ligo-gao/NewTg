@@ -68,35 +68,61 @@ type renewalOrderMetadata struct {
 func (s *TopupService) CreateSubscriptionRenewalOrder(ctx context.Context,
 	userID, subscriptionID int64, provider, idempotencyKey string) (*TopupOrder, error) {
 
+	order, immediate, replayed, err := s.createRenewalOrder(ctx, userID, subscriptionID,
+		provider, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	// 0 元套餐在同一事务内已履约（immediate），不能再创建渠道支付单。
+	if immediate {
+		return &TopupOrder{Order: order}, nil
+	}
+	// 幂等重放不得重新创建渠道支付单（replayOrder 的全部意义是无副作用）。
+	if replayed {
+		return s.replayOrder(order, userID)
+	}
+	return s.startProviderPayment(ctx, order)
+}
+
+// createRenewalOrder 是手动续费与自动续费共享的「幂等查重 → 校验 → 落订单
+// + 快照」段，**不**创建渠道支付单（R-41：不得另写第二套续费 SQL）。
+//
+// 返回：
+//   - immediate=true：0 元套餐已在事务内 succeeded 且实例已推进，调用方不得
+//     再结算或扣款；
+//   - replayed=true：按幂等键命中既有订单，调用方不得创建新的渠道支付单。
+func (s *TopupService) createRenewalOrder(ctx context.Context,
+	userID, subscriptionID int64, provider, idempotencyKey string) (*store.Order, bool, bool, error) {
+
 	if userID <= 0 {
-		return nil, fmt.Errorf("%w: user id must be > 0", ErrInvalidFundingCredit)
+		return nil, false, false, fmt.Errorf("%w: user id must be > 0", ErrInvalidFundingCredit)
 	}
 	if subscriptionID <= 0 {
-		return nil, fmt.Errorf("%w: subscription id must be > 0", ErrRenewalSubscriptionNotFound)
+		return nil, false, false, fmt.Errorf("%w: subscription id must be > 0", ErrRenewalSubscriptionNotFound)
 	}
 	// 大小写/空白归一必须早于幂等查重（同 CreateSubscriptionOrder）。
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	key := strings.TrimSpace(idempotencyKey)
 	if key == "" || utf8.RuneCountInString(key) > maxIdempotencyKeyRunes || hasControlChars(key) {
-		return nil, ErrInvalidIdempotency
+		return nil, false, false, ErrInvalidIdempotency
 	}
 
 	// 幂等查重早于套餐/渠道/状态校验：运营在两次重试之间停用套餐时，
 	// 重试仍须拿到首次订单（与购买/充值的 P-2 口径一致）。
 	if existing, err := s.findOrderByIdempotencyKey(ctx, key); err != nil {
-		return nil, err
+		return nil, false, false, err
 	} else if existing != nil {
 		if existing.UserID != userID ||
 			existing.BizKind != store.OrderBizKindRenew ||
 			existing.BizRefID == nil || *existing.BizRefID != subscriptionID ||
 			existing.Provider != provider {
-			return nil, ErrIdempotencyConflict
+			return nil, false, false, ErrIdempotencyConflict
 		}
-		return s.replayOrder(existing, userID)
+		return existing, false, true, nil
 	}
 
 	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderEpay {
-		return nil, ErrInvalidProvider
+		return nil, false, false, ErrInvalidProvider
 	}
 
 	order := &store.Order{
@@ -182,17 +208,14 @@ func (s *TopupService) CreateSubscriptionRenewalOrder(ctx context.Context,
 					existing.BizKind == store.OrderBizKindRenew &&
 					existing.BizRefID != nil && *existing.BizRefID == subscriptionID &&
 					existing.Provider == provider {
-					return s.replayOrder(existing, userID)
+					return existing, false, true, nil
 				}
-				return nil, ErrIdempotencyConflict
+				return nil, false, false, ErrIdempotencyConflict
 			}
 		}
-		return nil, err
+		return nil, false, false, err
 	}
-	if immediate {
-		return &TopupOrder{Order: order}, nil
-	}
-	return s.startProviderPayment(ctx, order)
+	return order, immediate, false, nil
 }
 
 // loadRenewableSubscriptionTx 读取续费目标并做归属/状态守卫，返回其 plan_id。

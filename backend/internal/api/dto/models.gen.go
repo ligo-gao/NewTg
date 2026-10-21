@@ -1299,6 +1299,54 @@ func (e PasswordResetValidateResponseValid) Valid() bool {
 	}
 }
 
+// Defines values for PaymentMethodProvider.
+const (
+	PaymentMethodProviderStripe PaymentMethodProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the PaymentMethodProvider enum.
+func (e PaymentMethodProvider) Valid() bool {
+	switch e {
+	case PaymentMethodProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PaymentMethodStatus.
+const (
+	PaymentMethodStatusActive  PaymentMethodStatus = "active"
+	PaymentMethodStatusInvalid PaymentMethodStatus = "invalid"
+)
+
+// Valid indicates whether the value is a known member of the PaymentMethodStatus enum.
+func (e PaymentMethodStatus) Valid() bool {
+	switch e {
+	case PaymentMethodStatusActive:
+		return true
+	case PaymentMethodStatusInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PaymentMethodCreateRequestProvider.
+const (
+	PaymentMethodCreateRequestProviderStripe PaymentMethodCreateRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the PaymentMethodCreateRequestProvider enum.
+func (e PaymentMethodCreateRequestProvider) Valid() bool {
+	switch e {
+	case PaymentMethodCreateRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Pending2FAResponseStatus.
 const (
 	Pending2fa Pending2FAResponseStatus = "pending_2fa"
@@ -5700,6 +5748,41 @@ type PatchMeRequest struct {
 	DisplayName string `json:"display_name"`
 }
 
+// PaymentMethod 支付令牌的**公开投影**：只有 brand/last4/exp 与句柄 id，
+// token_cipher（AES-GCM 密文）永不出现在任何响应中（P-14 零回显）。
+type PaymentMethod struct {
+	Brand     string                `json:"brand"`
+	CreatedAt time.Time             `json:"created_at"`
+	ExpMonth  int                   `json:"exp_month"`
+	ExpYear   int                   `json:"exp_year"`
+	Id        openapi_types.UUID    `json:"id"`
+	Last4     string                `json:"last4"`
+	Provider  PaymentMethodProvider `json:"provider"`
+	Status    PaymentMethodStatus   `json:"status"`
+}
+
+// PaymentMethodProvider defines model for PaymentMethod.Provider.
+type PaymentMethodProvider string
+
+// PaymentMethodStatus defines model for PaymentMethod.Status.
+type PaymentMethodStatus string
+
+// PaymentMethodCreateRequest defines model for PaymentMethodCreateRequest.
+type PaymentMethodCreateRequest struct {
+	Provider PaymentMethodCreateRequestProvider `json:"provider"`
+
+	// Token Stripe PaymentMethod id（`pm_...`），不是卡号。
+	Token string `json:"token"`
+}
+
+// PaymentMethodCreateRequestProvider defines model for PaymentMethodCreateRequest.Provider.
+type PaymentMethodCreateRequestProvider string
+
+// PaymentMethodList defines model for PaymentMethodList.
+type PaymentMethodList struct {
+	Items []PaymentMethod `json:"items"`
+}
+
 // Pending2FAResponse defines model for Pending2FAResponse.
 type Pending2FAResponse struct {
 	// Status 判别字段；客户端据此跳转 2FA challenge 页。
@@ -7208,6 +7291,25 @@ type SetupResponseUserStatus string
 // 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
 type SquareState string
 
+// SubscriptionAutoRenewRequest defines model for SubscriptionAutoRenewRequest.
+type SubscriptionAutoRenewRequest struct {
+	Enabled bool `json:"enabled"`
+
+	// PaymentMethodId 启用时使用的令牌；缺省沿用实例已绑定的令牌。客户端提交金额/时刻
+	// 等其它字段会被 RBAC 字段层 403。
+	PaymentMethodId *openapi_types.UUID `json:"payment_method_id,omitempty"`
+}
+
+// SubscriptionAutoRenewView defines model for SubscriptionAutoRenewView.
+type SubscriptionAutoRenewView struct {
+	AutoRenew bool `json:"auto_renew"`
+
+	// AutoRenewFailures 连续失败次数；成功续费或人工切换后归零。
+	AutoRenewFailures        int                 `json:"auto_renew_failures"`
+	AutoRenewPaymentMethodId *openapi_types.UUID `json:"auto_renew_payment_method_id,omitempty"`
+	SubscriptionId           int64               `json:"subscription_id"`
+}
+
 // SubscriptionChangeRequest defines model for SubscriptionChangeRequest.
 type SubscriptionChangeRequest struct {
 	// PlanId 目标套餐 id。必须与当前套餐同币种、同 `period_days`（P-10），
@@ -8125,23 +8227,25 @@ type UserStatus string
 // UserSubscription 我的订阅投影；不含 user_id/order_id/价格/allow_wallet_overflow。
 // amount_total=0 表示无限额度，此时省略 amount_remain。
 type UserSubscription struct {
-	AmountRemain      *int64                 `json:"amount_remain,omitempty"`
-	AmountTotal       int64                  `json:"amount_total"`
-	AmountUsed        int64                  `json:"amount_used"`
-	AutoRenew         bool                   `json:"auto_renew"`
-	CancelAtPeriodEnd bool                   `json:"cancel_at_period_end"`
-	ConcurrencyLimit  *int                   `json:"concurrency_limit,omitempty"`
-	CreatedAt         time.Time              `json:"created_at"`
-	EndAt             time.Time              `json:"end_at"`
-	GraceDays         int                    `json:"grace_days"`
-	Id                int64                  `json:"id"`
-	ModelScope        *[]string              `json:"model_scope,omitempty"`
-	NextResetAt       *time.Time             `json:"next_reset_at,omitempty"`
-	PeriodDays        int                    `json:"period_days"`
-	PlanTitleSnapshot string                 `json:"plan_title_snapshot"`
-	StartAt           time.Time              `json:"start_at"`
-	Status            UserSubscriptionStatus `json:"status"`
-	UpdatedAt         time.Time              `json:"updated_at"`
+	AmountRemain             *int64                 `json:"amount_remain,omitempty"`
+	AmountTotal              int64                  `json:"amount_total"`
+	AmountUsed               int64                  `json:"amount_used"`
+	AutoRenew                bool                   `json:"auto_renew"`
+	AutoRenewFailures        int                    `json:"auto_renew_failures"`
+	AutoRenewPaymentMethodId *openapi_types.UUID    `json:"auto_renew_payment_method_id,omitempty"`
+	CancelAtPeriodEnd        bool                   `json:"cancel_at_period_end"`
+	ConcurrencyLimit         *int                   `json:"concurrency_limit,omitempty"`
+	CreatedAt                time.Time              `json:"created_at"`
+	EndAt                    time.Time              `json:"end_at"`
+	GraceDays                int                    `json:"grace_days"`
+	Id                       int64                  `json:"id"`
+	ModelScope               *[]string              `json:"model_scope,omitempty"`
+	NextResetAt              *time.Time             `json:"next_reset_at,omitempty"`
+	PeriodDays               int                    `json:"period_days"`
+	PlanTitleSnapshot        string                 `json:"plan_title_snapshot"`
+	StartAt                  time.Time              `json:"start_at"`
+	Status                   UserSubscriptionStatus `json:"status"`
+	UpdatedAt                time.Time              `json:"updated_at"`
 }
 
 // UserSubscriptionStatus defines model for UserSubscription.Status.
@@ -9000,6 +9104,20 @@ type ChangePasswordParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// CreatePaymentMethodParams defines parameters for CreatePaymentMethod.
+type CreatePaymentMethodParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeletePaymentMethodParams defines parameters for DeletePaymentMethod.
+type DeletePaymentMethodParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ClearPerformanceDiskCacheParams defines parameters for ClearPerformanceDiskCache.
 type ClearPerformanceDiskCacheParams struct {
 	// InstanceId 目标实例标识；与当前实例不一致 → 409 instance_mismatch。
@@ -9305,6 +9423,13 @@ type ListMySubscriptionsParams struct {
 
 	// PageSize 每页条数（默认 20，上限 100）
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// PutSubscriptionAutoRenewParams defines parameters for PutSubscriptionAutoRenew.
+type PutSubscriptionAutoRenewParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // CancelSubscriptionAtPeriodEndParams defines parameters for CancelSubscriptionAtPeriodEnd.
@@ -9954,6 +10079,9 @@ type RefundSubscriptionOrderJSONRequestBody = RefundOrderRequest
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
 
+// CreatePaymentMethodJSONRequestBody defines body for CreatePaymentMethod for application/json ContentType.
+type CreatePaymentMethodJSONRequestBody = PaymentMethodCreateRequest
+
 // RunPerformanceGCJSONRequestBody defines body for RunPerformanceGC for application/json ContentType.
 type RunPerformanceGCJSONRequestBody = PerformanceGCRequest
 
@@ -10010,6 +10138,9 @@ type ResetSubscriptionPlanQuotaJSONRequestBody = SubscriptionPlanResetQuotaReque
 
 // PurchaseSubscriptionJSONRequestBody defines body for PurchaseSubscription for application/json ContentType.
 type PurchaseSubscriptionJSONRequestBody = SubscriptionPurchaseRequest
+
+// PutSubscriptionAutoRenewJSONRequestBody defines body for PutSubscriptionAutoRenew for application/json ContentType.
+type PutSubscriptionAutoRenewJSONRequestBody = SubscriptionAutoRenewRequest
 
 // ChangeSubscriptionPlanJSONRequestBody defines body for ChangeSubscriptionPlan for application/json ContentType.
 type ChangeSubscriptionPlanJSONRequestBody = SubscriptionChangeRequest

@@ -1566,6 +1566,7 @@ schemas:
       - amount_total
       - amount_used
       - auto_renew
+      - auto_renew_failures
       - cancel_at_period_end
       - period_days
       - grace_days
@@ -1585,6 +1586,11 @@ schemas:
       amount_used: {type: integer, format: int64, minimum: 0}
       amount_remain: {type: integer, format: int64, minimum: 0}
       auto_renew: {type: boolean}
+      auto_renew_payment_method_id:
+        type: string
+        format: uuid
+        nullable: true
+      auto_renew_failures: {type: integer, minimum: 0}
       cancel_at_period_end: {type: boolean}
       period_days: {type: integer, minimum: 1}
       grace_days: {type: integer, minimum: 0}
@@ -1865,3 +1871,72 @@ schemas:
       items:
         type: array
         items: {$ref: '#/schemas/ActiveAnnouncement'}
+
+  # ---------------------------------------------------------------------------
+  # S4 自动续费与支付令牌（P-14/P-16/R-40/R-42）
+  # ---------------------------------------------------------------------------
+  SubscriptionAutoRenewRequest:
+    type: object
+    additionalProperties: false
+    required: [enabled]
+    properties:
+      enabled: {type: boolean}
+      payment_method_id:
+        type: string
+        format: uuid
+        description: |
+          启用时使用的令牌；缺省沿用实例已绑定的令牌。客户端提交金额/时刻
+          等其它字段会被 RBAC 字段层 403。
+
+  SubscriptionAutoRenewView:
+    type: object
+    additionalProperties: false
+    required: [subscription_id, auto_renew, auto_renew_failures]
+    properties:
+      subscription_id: {type: integer, format: int64}
+      auto_renew: {type: boolean}
+      auto_renew_payment_method_id:
+        type: string
+        format: uuid
+        nullable: true
+      auto_renew_failures:
+        type: integer
+        minimum: 0
+        description: 连续失败次数；成功续费或人工切换后归零。
+
+  PaymentMethod:
+    type: object
+    additionalProperties: false
+    required: [id, provider, brand, last4, exp_month, exp_year, status, created_at]
+    description: |
+      支付令牌的**公开投影**：只有 brand/last4/exp 与句柄 id，
+      token_cipher（AES-GCM 密文）永不出现在任何响应中（P-14 零回显）。
+    properties:
+      id: {type: string, format: uuid}
+      provider: {type: string, enum: [stripe]}
+      brand: {type: string, maxLength: 32}
+      last4: {type: string, pattern: '^[0-9]{4}$'}
+      exp_month: {type: integer, minimum: 1, maximum: 12}
+      exp_year: {type: integer, minimum: 2000, maximum: 9999}
+      status: {type: string, enum: [active, invalid]}
+      created_at: {type: string, format: date-time}
+
+  PaymentMethodList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items: {$ref: '#/schemas/PaymentMethod'}
+
+  PaymentMethodCreateRequest:
+    type: object
+    additionalProperties: false
+    required: [provider, token]
+    properties:
+      provider: {type: string, enum: [stripe]}
+      token:
+        type: string
+        pattern: '^pm_[A-Za-z0-9_-]{4,255}$'
+        description: Stripe PaymentMethod id（`pm_...`），不是卡号。

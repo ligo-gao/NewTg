@@ -124,6 +124,13 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1change'
   /api/subscriptions/{id}/refund-request:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1refund-request'
+  # S4：自动续费与支付令牌（P-14/P-16/R-40/R-42）。
+  /api/subscriptions/{id}/auto-renew:
+    $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1auto-renew'
+  /api/payment-methods:
+    $ref: './paths/user.yaml#/paths/~1api~1payment-methods'
+  /api/payment-methods/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1payment-methods~1{id}'
   /api/subscription/purchase:
     $ref: './paths/user.yaml#/paths/~1api~1subscription~1purchase'
   /api/tokens:
