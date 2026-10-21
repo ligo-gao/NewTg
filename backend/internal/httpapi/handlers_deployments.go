@@ -19,15 +19,18 @@ package httpapi
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"newtg/gateway/internal/api/dto"
@@ -37,6 +40,7 @@ import (
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/rbac"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -451,41 +455,61 @@ const deploySettleAttempts = 3
 //
 // provider 删除成功是不可回退的证据；若即时结算因瞬时 DB 错误失败，N16 的
 // 900s provider-404 窗口最终会按 Release 收尾（成本记 0）且 abandoned 段
-// 无法再用发票纠正。所以这里先把可重试错误（DB/连接类）消化掉，全部失败
-// 才降级为 deferred。业务性错误（段不存在/输入非法/报价缺失）不重试。
+// 无法再用发票纠正。所以这里先把可重试错误消化掉，全部失败才降级为 deferred。
+//
+// 结果**跨尝试累加**：一次 SettleTerminated 可能开了多个段，前一次已经结算
+// 成功的段在后续尝试里是终态 no-op；只返回最后一次的统计会把它们从审计里丢掉。
 func (h *DeployManagementHandlers) settleTerminationWithRetry(r *http.Request,
 	obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error) {
 	var (
-		result  deploybilling.TerminationResult
+		total   deploybilling.TerminationResult
 		lastErr error
 	)
 	backoff := 50 * time.Millisecond
 	for attempt := 1; attempt <= deploySettleAttempts; attempt++ {
 		ledgerCtx, cancel := h.ledgerContext(r)
-		result, lastErr = h.billing.SettleTerminated(ledgerCtx, obs)
+		result, err := h.billing.SettleTerminated(ledgerCtx, obs)
 		cancel()
-		if lastErr == nil {
-			return result, nil
+		total.SegmentsSettled += result.SegmentsSettled
+		total.SegmentsReleased += result.SegmentsReleased
+		total.ConfirmedCredits += result.ConfirmedCredits
+		total.ReleasedCredits += result.ReleasedCredits
+		if err == nil {
+			return total, nil
 		}
+		lastErr = err
 		if !deployBillingRetryable(lastErr) || attempt == deploySettleAttempts {
 			break
 		}
 		time.Sleep(backoff)
 		backoff *= 2
 	}
-	return result, lastErr
+	return total, lastErr
 }
 
-// deployBillingRetryable 区分瞬时可重试错误与确定性失败。
+// deployBillingRetryable 只对**显式列举**的瞬态错误重试。
+//
+// 白名单而不是黑名单：确定性错误（唯一键冲突、约束违反、输入非法）重试三次
+// 只会延长响应且毫无收益；未识别的错误同样按确定失败处理，交给 N16 对账。
 func deployBillingRetryable(err error) bool {
-	switch {
-	case errors.Is(err, deploybilling.ErrSegmentNotFound),
-		errors.Is(err, deploybilling.ErrInvalidSegment),
-		errors.Is(err, deploybilling.ErrGPUPriceUnavailable):
-		return false
-	default:
+	if errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) {
 		return true
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case strings.HasPrefix(pgErr.Code, "08"), // connection exception
+			strings.HasPrefix(pgErr.Code, "40"), // transaction rollback (serialization/deadlock)
+			strings.HasPrefix(pgErr.Code, "53"): // insufficient resources
+			return true
+		case pgErr.Code == "57P01", pgErr.Code == "57P02", pgErr.Code == "57P03":
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ---------- 幂等写包装 ----------
@@ -1037,7 +1061,11 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		if holdErr != nil {
 			h.log.Error("deploy: site cost hold failed",
 				"deployment_id", action.DeploymentID, "err", holdErr)
-			h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			// 只有「本次新建的部署」才回滚：provider 可能按键去重，把同一份配置
+			// 映射到既有部署；删掉它就等于删客户的活部署。
+			if action.DeploymentID != seg.DeploymentID {
+				h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			}
 			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusBadGateway,
 				false, createAuditDetail(req, action.DeploymentID, requestID, "deploy_billing_hold_failed"), nil, nil)
 			return deployProblemBytes(w, r, http.StatusBadGateway, problemTypeDeployBillingFailed,
@@ -1045,13 +1073,24 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 				"site cost reservation failed; the deployment creation was rolled back")
 		}
 		// P-20：同键重入返回**既有段**。既有段属于先前那次创建（不同的请求体
-		// 会绕开 HTTP 幂等缓存而再次执行到这里），本次刚创建的 provider 部署
-		// 是重复投递的孤儿：必须回滚，否则客户端拿到一个没有预扣段的
-		// deployment_id，账本与 provider 从此对不上。
+		// 会绕开 HTTP 幂等缓存而再次执行到这里）。
 		if !created {
-			h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			// provider 可能对重复创建去重并返回**同一个**部署 ID：此时它正是
+			// 既有段对应的活部署，绝不回滚。只有拿到不同 ID（本次真的新建了
+			// 一个孤儿部署）才撤销它。
+			if action.DeploymentID != seg.DeploymentID {
+				h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			}
+			if deploybilling.SegmentTerminal(seg.State) {
+				h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusConflict, false,
+					createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID, "deploy_create_key_consumed"), nil, nil)
+				return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployInvalidState,
+					"Deployment already completed for this idempotency key",
+					"the billing segment for this idempotency key is already closed; "+
+						"use a new Idempotency-Key or query the deployment")
+			}
 			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusAccepted, true,
-				createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID), nil, nil)
+				createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID, ""), nil, nil)
 			return jsonBody(w, r, http.StatusAccepted, struct {
 				DeploymentID string `json:"deployment_id"`
 				Status       string `json:"status"`
@@ -1067,9 +1106,9 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 	}{DeploymentID: action.DeploymentID, Status: action.Status})
 }
 
-// createReplayAuditDetail 记录「同键重入、返回既有段并回滚新部署」。
-func createReplayAuditDetail(req createDeploymentRequest, deploymentID, segmentID, requestID string) map[string]any {
-	detail := createAuditDetail(req, deploymentID, requestID, "")
+// createReplayAuditDetail 记录「同键重入、返回既有段」。
+func createReplayAuditDetail(req createDeploymentRequest, deploymentID, segmentID, requestID, errorCode string) map[string]any {
+	detail := createAuditDetail(req, deploymentID, requestID, errorCode)
 	detail["replayed_segment_id"] = segmentID
 	detail["result"] = "idempotent_replay"
 	return detail

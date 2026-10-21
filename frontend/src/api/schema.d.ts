@@ -2791,9 +2791,12 @@ export interface paths {
          *     创建受理后在站点成本账预扣（`deployment_billing_segments`，幂等键
          *     `deploy:create:<user_id>:<Idempotency-Key>`）；预扣失败返回 502
          *     `deploy_billing_failed` 并回滚本次部署创建。同一幂等键的账本重入
-         *     （例如换了请求体而绕开 HTTP 幂等缓存）会回滚本次重复创建的部署并
-         *     返回**既有段**对应的 deployment_id。部署计费只记站点成本，
-         *     **不扣用户钱包 / 订阅 / 令牌额度**。
+         *     （例如换了请求体而绕开 HTTP 幂等缓存）返回**既有段**的状态与
+         *     deployment_id：段仍活跃 → 202；段已终态 → 409（换新
+         *     Idempotency-Key 或查询部署）。只有当 provider 返回的是**另一个**
+         *     部署 ID 时才会回滚这次重复创建的部署——provider 对重复创建去重返回
+         *     同一 ID 时，那是既有段对应的活部署，绝不回滚。
+         *     部署计费只记站点成本，**不扣用户钱包 / 订阅 / 令牌额度**。
          *     registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
          *     不进审计（键名也不记）。成功返回 202 受理结果。
          */
