@@ -2441,7 +2441,7 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
 			"expected_version":        seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"task_extend_plugin_keys": []string{"kling", "kling"},
-		}), channelAdminPrincipal(PermChannelsManage))
+		}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("更新多绑 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -2628,8 +2628,9 @@ func assertSensitiveForbidden(t *testing.T, rr *httptest.ResponseRecorder, secre
 }
 
 // TestChannelSensitiveFieldsRequireElevatedPermission 固化冻结口径：
-// 只有 channels:manage 的 admin 携带 credentials / task_plugin_key 时整笔
-// 403 且 store 零调用（无部分写入）；不带敏感字段的写请求权限不变。
+// 只有 channels:manage 的 admin 携带 credentials / task_plugin_key /
+// task_extend_plugin_keys（值、[]、null 均算出现）时整笔 403 且 store
+// 零调用（无部分写入）；不带敏感字段的写请求权限不变。
 func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 	const (
 		createSecret = "sk-create-secret-1234"
@@ -2640,24 +2641,60 @@ func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 	// 显式权限数组（非 NULL）确保 channels:manage_sensitive 确实缺失。
 	env.access.set(testAdminID, "admin", []string{PermChannelsRead, PermChannelsManage}, "enabled")
 	seed := seedChannel(t, env, nil)
+	// 类型 60 渠道用于 extend 绑定；敏感门先于类型校验，仍应零调用。
+	extendSeed := seedChannel(t, env, func(ch *store.Channel) {
+		ch.Name = "extend-seed"
+		ch.Type = "newapi"
+		baseURL := "https://upstream.example.com"
+		ch.BaseURL = &baseURL
+		ch.TaskExtendPluginKeys = []byte(`["kling"]`)
+	})
 	principal := channelAdminPrincipal(PermChannelsManage)
 
+	// 复核 M-3：按子用例取 delta，避免前序子用例污染归因。
+	type counts struct{ create, get, update int }
+	snapshot := func() counts {
+		return counts{env.store.createCalls, env.store.getCalls, env.store.updateCalls}
+	}
+	assertZeroWrite := func(t *testing.T, before counts) {
+		t.Helper()
+		if now := snapshot(); now != before {
+			t.Fatalf("store 调用发生变化：before=%+v after=%+v，期望零调用", before, now)
+		}
+	}
+
 	t.Run("create 带 credentials → 403 且零写入", func(t *testing.T) {
+		before := snapshot()
 		body := channelCreateBody("openai", map[string]any{
 			"credentials": map[string]any{"api_key": createSecret},
 		})
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
 		assertSensitiveForbidden(t, rr, createSecret)
-		if env.store.createCalls != 0 {
-			t.Fatalf("createCalls = %d，期望 0（必须在写库前拒绝整笔请求）", env.store.createCalls)
+		assertZeroWrite(t, before)
+		if len(env.store.items) != 2 {
+			t.Fatalf("items = %d，期望仍只有两个种子渠道（无部分写入）", len(env.store.items))
 		}
-		if len(env.store.items) != 1 {
-			t.Fatalf("items = %d，期望仍只有种子渠道（无部分写入）", len(env.store.items))
-		}
+	})
+
+	t.Run("create credentials=null → 403（出现即敏感）", func(t *testing.T) {
+		before := snapshot()
+		body := channelCreateBody("openai", map[string]any{"credentials": nil})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		assertSensitiveForbidden(t, rr)
+		assertZeroWrite(t, before)
+	})
+
+	t.Run("create credentials={} → 403（出现即敏感）", func(t *testing.T) {
+		before := snapshot()
+		body := channelCreateBody("openai", map[string]any{"credentials": map[string]any{}})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		assertSensitiveForbidden(t, rr)
+		assertZeroWrite(t, before)
 	})
 
 	t.Run("create 仅带 task_plugin_key → 403", func(t *testing.T) {
 		// 不带 credentials，单独证明 task_plugin_key 也会触发敏感门。
+		before := snapshot()
 		body := map[string]any{
 			"name": "plugin-only", "type": "task_plugin",
 			"base_url":         "https://upstream.example.com",
@@ -2666,15 +2703,52 @@ func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 		}
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
 		assertSensitiveForbidden(t, rr)
-		if env.store.createCalls != 0 {
-			t.Fatalf("createCalls = %d，期望 0", env.store.createCalls)
-		}
+		assertZeroWrite(t, before)
 	})
+
+	t.Run("create task_plugin_key=null → 403（出现即敏感，M-1）", func(t *testing.T) {
+		// 不带 credentials：若把 null 误判为“缺省”，请求会走到类型校验
+		// （400）而不是 403，因此本用例能单独锁定 presence 语义。
+		before := snapshot()
+		body := map[string]any{
+			"name": "plugin-null", "type": "task_plugin",
+			"base_url":         "https://upstream.example.com",
+			"supported_models": []string{"video-x"},
+			"task_plugin_key":  nil,
+		}
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		assertSensitiveForbidden(t, rr)
+		assertZeroWrite(t, before)
+	})
+
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"值", []string{"kling"}},
+		{"空数组", []string{}},
+		{"null", nil},
+	} {
+		t.Run("create 仅带 task_extend_plugin_keys("+tc.name+") → 403", func(t *testing.T) {
+			before := snapshot()
+			body := map[string]any{
+				"name":                    "extend-only-" + tc.name,
+				"type":                    "newapi",
+				"base_url":                "https://upstream.example.com",
+				"supported_models":        []string{"video-x"},
+				"task_extend_plugin_keys": tc.value,
+			}
+			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+			assertSensitiveForbidden(t, rr)
+			assertZeroWrite(t, before)
+		})
+	}
 
 	t.Run("create 不带敏感字段 → 走普通校验（422，而非 403）", func(t *testing.T) {
 		// 创建按 F-06-03 必须有凭据，因此「不带 credentials 的 create 200」
 		// 在结构上不可达；这里断言的关键是：未命中敏感门，走既有 422，
 		// 且同样不写库。
+		before := snapshot()
 		body := map[string]any{
 			"name": "no-creds", "type": "openai",
 			"supported_models": []string{"gpt-4o"},
@@ -2686,24 +2760,17 @@ func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), "credentials are required") {
 			t.Fatalf("期望既有 credentials 必填校验：%s", rr.Body.String())
 		}
-		if env.store.createCalls != 0 {
-			t.Fatalf("createCalls = %d，期望 0", env.store.createCalls)
-		}
+		assertZeroWrite(t, before)
 	})
 
 	t.Run("update 带 credentials → 403 且 store 零调用", func(t *testing.T) {
-		beforeGets := env.store.getCalls
+		before := snapshot()
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
 			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"credentials":      map[string]any{"api_key": updateSecret},
 		}), principal)
 		assertSensitiveForbidden(t, rr, updateSecret)
-		if env.store.getCalls != beforeGets {
-			t.Fatalf("getCalls = %d，期望 %d（敏感门必须先于渠道读取）", env.store.getCalls, beforeGets)
-		}
-		if env.store.updateCalls != 0 {
-			t.Fatalf("updateCalls = %d，期望 0", env.store.updateCalls)
-		}
+		assertZeroWrite(t, before)
 		plaintext, err := env.sealer.Open(env.store.items[seed.ID].Credentials)
 		if err != nil {
 			t.Fatalf("open stored credentials: %v", err)
@@ -2718,18 +2785,37 @@ func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 	})
 
 	t.Run("update 带 task_plugin_key → 403 且 store 零调用", func(t *testing.T) {
-		beforeGets := env.store.getCalls
+		before := snapshot()
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
 			"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"task_plugin_key":  "kling",
 		}), principal)
 		assertSensitiveForbidden(t, rr)
-		if env.store.getCalls != beforeGets || env.store.updateCalls != 0 {
-			t.Fatalf("store 被调用：get=%d update=%d，期望均不增加", env.store.getCalls, env.store.updateCalls)
-		}
+		assertZeroWrite(t, before)
 	})
 
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"值", []string{"sora"}},
+		{"空数组", []string{}},
+		{"null", nil},
+	} {
+		t.Run("update 带 task_extend_plugin_keys("+tc.name+") → 403 且 store 零调用", func(t *testing.T) {
+			before := snapshot()
+			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch,
+				"/api/channels/"+fmt.Sprintf("%d", extendSeed.ID), map[string]any{
+					"expected_version":        extendSeed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+					"task_extend_plugin_keys": tc.value,
+				}), principal)
+			assertSensitiveForbidden(t, rr)
+			assertZeroWrite(t, before)
+		})
+	}
+
 	t.Run("update 不带敏感字段 → 200（非敏感字段权限不变）", func(t *testing.T) {
+		before := snapshot()
 		current := env.store.items[seed.ID]
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
 			"expected_version": current.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -2738,14 +2824,90 @@ func TestChannelSensitiveFieldsRequireElevatedPermission(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
 		}
-		if env.store.updateCalls != 1 {
-			t.Fatalf("updateCalls = %d，期望 1", env.store.updateCalls)
+		now := snapshot()
+		if now.update-before.update != 1 {
+			t.Fatalf("updateCalls delta = %d，期望 1", now.update-before.update)
+		}
+		if now.create != before.create {
+			t.Fatalf("createCalls 意外增加：%d → %d", before.create, now.create)
 		}
 	})
 
 	if strings.Contains(logBuf.String(), createSecret) || strings.Contains(logBuf.String(), updateSecret) {
 		t.Fatalf("日志泄漏明文凭据：%s", logBuf.String())
 	}
+}
+
+// TestChannelSensitiveGateReleasesIdempotencyKey 覆盖复核 M-2：
+// 403/400 属于非 2xx，幂等层必须释放 pending 标记；同键在提权/修正后
+// 可以真正重新执行，而不是重放拒绝响应。
+func TestChannelSensitiveGateReleasesIdempotencyKey(t *testing.T) {
+	t.Run("403 后同键提权可重新执行", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: NewMemoryIdempotencyStore()})
+		env.access.set(testAdminID, "admin", []string{PermChannelsRead, PermChannelsManage}, "enabled")
+		body := channelCreateBody("openai", nil)
+		const key = "bopla-403-retry"
+
+		req := jsonReq(t, http.MethodPost, "/api/channels", body)
+		req.Header.Set("Idempotency-Key", key)
+		rr := serveWithPrincipal(t, env.mux, req, channelAdminPrincipal(PermChannelsManage))
+		assertSensitiveForbidden(t, rr)
+		if env.store.createCalls != 0 {
+			t.Fatalf("首次 403 后 createCalls = %d，期望 0", env.store.createCalls)
+		}
+
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		req = jsonReq(t, http.MethodPost, "/api/channels", body)
+		req.Header.Set("Idempotency-Key", key)
+		rr = serveWithPrincipal(t, env.mux, req,
+			channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("提权后同键重试 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		if rr.Header().Get("Idempotent-Replayed") != "" {
+			t.Fatalf("403 被固化为重放响应：%s", rr.Body.String())
+		}
+		if env.store.createCalls != 1 {
+			t.Fatalf("createCalls = %d，期望 1", env.store.createCalls)
+		}
+	})
+
+	t.Run("400 后同键修正可重新执行", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{Idempotency: NewMemoryIdempotencyStore()})
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		const key = "bopla-400-retry"
+		const secret = "sk-idem-400-1234"
+
+		bad := channelCreateBody("openai", map[string]any{
+			"credentials": map[string]any{"api_key": secret, "apiKey": "sk-typo-9999"},
+		})
+		req := jsonReq(t, http.MethodPost, "/api/channels", bad)
+		req.Header.Set("Idempotency-Key", key)
+		rr := serveWithPrincipal(t, env.mux, req,
+			channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("嵌套未知字段 = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.createCalls != 0 {
+			t.Fatalf("400 后 createCalls = %d，期望 0", env.store.createCalls)
+		}
+
+		good := channelCreateBody("openai", map[string]any{
+			"credentials": map[string]any{"api_key": secret},
+		})
+		req = jsonReq(t, http.MethodPost, "/api/channels", good)
+		req.Header.Set("Idempotency-Key", key)
+		rr = serveWithPrincipal(t, env.mux, req,
+			channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("修正后同键重试 = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		if env.store.createCalls != 1 {
+			t.Fatalf("createCalls = %d，期望 1", env.store.createCalls)
+		}
+	})
 }
 
 // TestChannelSensitiveFieldsWithElevatedPermission 覆盖持有敏感位时的
@@ -2897,6 +3059,47 @@ func TestChannelSensitiveFieldsWithElevatedPermission(t *testing.T) {
 		}
 		if creds.APIKey != "sk-original-1234" {
 			t.Fatalf("原凭据被改写：%q", creds.APIKey)
+		}
+	})
+
+	t.Run("create 带 task_extend_plugin_keys → 201 且绑定正确", func(t *testing.T) {
+		env, _ := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		body := channelCreateBody("newapi", map[string]any{
+			"task_extend_plugin_keys": []string{"sora", "kling", "sora"},
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), principal)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if !slicesEqual(resp.TaskExtendPluginKeys, []string{"sora", "kling"}) {
+			t.Fatalf("task_extend_plugin_keys = %v，期望 [sora kling]", resp.TaskExtendPluginKeys)
+		}
+	})
+
+	t.Run("update 带 task_extend_plugin_keys → 200 且绑定正确", func(t *testing.T) {
+		env, _ := newSensitiveChannelEnv(t)
+		env.access.set(testAdminID, "admin",
+			[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+		baseURL := "https://upstream.example.com"
+		seed := seedChannel(t, env, func(ch *store.Channel) {
+			ch.Type = "newapi"
+			ch.BaseURL = &baseURL
+			ch.TaskExtendPluginKeys = []byte(`["sora"]`)
+		})
+		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch,
+			"/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+				"expected_version":        seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				"task_extend_plugin_keys": []string{"kling", "kling"},
+			}), principal)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+		resp := decodeJSONResponse[ChannelResponse](t, rr)
+		if !slicesEqual(resp.TaskExtendPluginKeys, []string{"kling"}) {
+			t.Fatalf("task_extend_plugin_keys = %v，期望 [kling]", resp.TaskExtendPluginKeys)
 		}
 	})
 }
