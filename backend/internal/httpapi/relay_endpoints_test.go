@@ -102,6 +102,9 @@ type fakeRelayChannelStore struct {
 
 	candidates    []contract.ChannelCandidate
 	candidatesErr error
+	// byGroup 非 nil 时按分组返回候选（M2 跨组用例）；candidates 仅在
+	// byGroup 为空时使用，保证既有单组用例的行为逐字节不变。
+	byGroup map[string][]contract.ChannelCandidate
 
 	channels map[int64]*store.Channel
 	getErr   error
@@ -109,11 +112,12 @@ type fakeRelayChannelStore struct {
 	models    []string
 	modelsErr error
 
-	lastModel  string
-	lastGroup  string
-	getCalls   int
-	candCalls  int
-	modelCalls int
+	lastModel     string
+	lastGroup     string
+	groupsQueried []string
+	getCalls      int
+	candCalls     int
+	modelCalls    int
 }
 
 func (f *fakeRelayChannelStore) Candidates(_ context.Context, model, group string) ([]contract.ChannelCandidate, error) {
@@ -121,10 +125,20 @@ func (f *fakeRelayChannelStore) Candidates(_ context.Context, model, group strin
 	defer f.mu.Unlock()
 	f.candCalls++
 	f.lastModel, f.lastGroup = model, group
+	f.groupsQueried = append(f.groupsQueried, group)
 	if f.candidatesErr != nil {
 		return nil, f.candidatesErr
 	}
+	if f.byGroup != nil {
+		return append([]contract.ChannelCandidate(nil), f.byGroup[group]...), nil
+	}
 	return append([]contract.ChannelCandidate(nil), f.candidates...), nil
+}
+
+func (f *fakeRelayChannelStore) queriedGroups() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.groupsQueried...)
 }
 
 func (f *fakeRelayChannelStore) Get(_ context.Context, id int64) (*store.Channel, error) {
@@ -305,7 +319,8 @@ func newRelayTestEnv(t *testing.T, upstream *httptest.Server, channels *fakeRela
 	}
 	// 仅当调用方没有显式给出候选（nil）时才填默认候选；显式空切片表示
 	// 「无可用渠道」场景，必须保留为空（relay-01 §2 阶段 3 的 503 分支）。
-	if channels.candidates == nil && channels.candidatesErr == nil {
+	// byGroup 非 nil 的跨组装置自带候选，不能注入默认候选覆盖分组语义。
+	if channels.candidates == nil && channels.candidatesErr == nil && channels.byGroup == nil {
 		channels.candidates = []contract.ChannelCandidate{{
 			ChannelID: int(relayTestChannelID),
 			Priority:  10,

@@ -14,6 +14,8 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"newtg/gateway/internal/auth"
 )
 
 // newMiniredisStore 返回只带 Redis 的 Store（缓存语义测试不需要 DB）。
@@ -23,6 +25,67 @@ func newMiniredisStore(t *testing.T) (*Store, *miniredis.Miniredis) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 	return New(nil, rdb, nil), mr
+}
+
+// TestCachedMetaRoundTripsAutoFields 覆盖 R-67 的缓存往返：写入含
+// auto_groups/cross_group_retry 与白名单的 TokenMeta → loadCachedMeta 必须
+// 原样还原（两个 TokenLookup 实现的口径不得因缓存而分叉）。
+func TestCachedMetaRoundTripsAutoFields(t *testing.T) {
+	st, _ := newMiniredisStore(t)
+	ctx := context.Background()
+	meta := &auth.TokenMeta{
+		ID:              7,
+		UserID:          11,
+		Status:          StatusEnabled,
+		Group:           GroupAuto,
+		ModelLimits:     []string{"gpt-allowed"},
+		AllowIPs:        []string{"10.0.0.0/8", "192.0.2.7"},
+		AutoGroups:      []string{"g1", "g2"},
+		CrossGroupRetry: true,
+		UnlimitedQuota:  true,
+	}
+	gen, ok := st.cacheGeneration(ctx)
+	if !ok {
+		t.Fatal("cacheGeneration 应可用")
+	}
+	st.storeCachedMeta(ctx, gen, "hash-auto", meta)
+
+	got, ok := st.loadCachedMeta(ctx, "hash-auto")
+	if !ok || got == nil {
+		t.Fatal("含 auto 字段的 meta 未能从缓存还原")
+	}
+	if got.Group != GroupAuto || got.CrossGroupRetry != true ||
+		len(got.AutoGroups) != 2 || got.AutoGroups[0] != "g1" || got.AutoGroups[1] != "g2" {
+		t.Fatalf("缓存还原的 auto 字段 = %#v，期望 group=auto / [g1 g2] / retry=true", got)
+	}
+	if len(got.ModelLimits) != 1 || got.ModelLimits[0] != "gpt-allowed" ||
+		len(got.AllowIPs) != 2 || got.AllowIPs[0] != "10.0.0.0/8" {
+		t.Fatalf("缓存还原的白名单 = %#v / %#v", got.ModelLimits, got.AllowIPs)
+	}
+
+	// 返回值的切片必须是副本：调用方改写不得污染缓存中的其他读者。
+	got.AutoGroups[0] = "mutated"
+	again, _ := st.loadCachedMeta(ctx, "hash-auto")
+	if again.AutoGroups[0] != "g1" {
+		t.Fatalf("缓存中的 AutoGroups 被调用方改写：%v", again.AutoGroups)
+	}
+}
+
+// TestCloneMetaCopiesProjectionSlices 冻结 cloneMeta 的深拷贝语义：缓存/DB
+// 返回的切片与调用方隔离（R-67 的两个实现都必须保持）。
+func TestCloneMetaCopiesProjectionSlices(t *testing.T) {
+	original := &auth.TokenMeta{
+		ModelLimits: []string{"m"},
+		AllowIPs:    []string{"10.0.0.0/8"},
+		AutoGroups:  []string{"g1"},
+	}
+	clone := cloneMeta(original)
+	clone.ModelLimits[0] = "x"
+	clone.AllowIPs[0] = "y"
+	clone.AutoGroups[0] = "z"
+	if original.ModelLimits[0] != "m" || original.AllowIPs[0] != "10.0.0.0/8" || original.AutoGroups[0] != "g1" {
+		t.Fatalf("cloneMeta 未深拷贝切片：%#v", original)
+	}
 }
 
 // TestExternalChangeBumpsGenerationBeforeInvalidation 覆盖 D1-1：

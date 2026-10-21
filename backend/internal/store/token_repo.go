@@ -45,6 +45,10 @@ func NewTokenRepo(db *sql.DB) *TokenRepo { return &TokenRepo{db: db} }
 // model_limits / allow_ips 是 relay-01 §3.4 的附加校验输入（M2 final review finding 6）：
 // 管理面此前完全不读这两列，导致受限令牌可以调用任意模型、从任意 IP 使用。
 // JSON 损坏时返回错误（fail-closed → 401），绝不放行成「无限制」。
+//
+// auto_groups / cross_group_retry 是 M2（W7）的自动分组投影（R-67）：本方法
+// 是**生产中继/任务面的唯一接缝**，字段缺失会让 group=auto 的令牌在请求期
+// 被 R-61 fail-closed 拒绝，因此投影必须与 tokenstore.Store.resolveMeta 同口径。
 func (r *TokenRepo) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, error) {
 	var (
 		meta        auth.TokenMeta
@@ -52,12 +56,13 @@ func (r *TokenRepo) Resolve(ctx context.Context, keyHash string) (*auth.TokenMet
 		remain      sql.NullInt64
 		modelLimits []byte
 		allowIPs    []byte
+		autoGroups  []byte
 	)
 	err := r.db.QueryRowContext(ctx, `SELECT id, user_id, status, "group", expires_at, remain_quota,
-		model_limits, allow_ips
+		model_limits, allow_ips, auto_groups, cross_group_retry
 		FROM api_tokens WHERE key_hash = $1`, keyHash).
 		Scan(&meta.ID, &meta.UserID, &meta.Status, &meta.Group, &expires, &remain,
-			&modelLimits, &allowIPs)
+			&modelLimits, &allowIPs, &autoGroups, &meta.CrossGroupRetry)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTokenNotFound
 	}
@@ -71,6 +76,12 @@ func (r *TokenRepo) Resolve(ctx context.Context, keyHash string) (*auth.TokenMet
 	meta.AllowIPs, err = decodeJSONStringArray(allowIPs)
 	if err != nil {
 		return nil, fmt.Errorf("store: invalid allow_ips for token %d: %w", meta.ID, err)
+	}
+	// R-67：auto 字段与 model_limits/allow_ips 同一口径——JSON 损坏即 fail-closed，
+	// 绝不放行成「自动分组未启用」以外的含义（空列表会在请求期 403，见 R-61）。
+	meta.AutoGroups, err = decodeJSONStringArray(autoGroups)
+	if err != nil {
+		return nil, fmt.Errorf("store: invalid auto_groups for token %d: %w", meta.ID, err)
 	}
 	if expires.Valid {
 		t := expires.Time

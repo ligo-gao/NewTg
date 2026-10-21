@@ -895,6 +895,27 @@ func (r *SQLPricingRepo) validateGroupAndSource(ctx context.Context, tx *sql.Tx,
 	return mode, nil
 }
 
+// GroupConfigured 严格判定分组存在且启用（user_groups.name=? AND status=1）。
+//
+// R-64 / I-25 的请求期校验（M2/W7）：跨组重试切换分组前必须确认该分组仍有
+// 倍率配置。**不得**复用 pricing.DBSource.lookupGroupRatio 的「未命中返回
+// 1.0」路径——那会把已删除/停用的分组按 1 倍率计费（T-1d-01 的资损面）。
+//
+// 刻意不缓存：分组删除/停用后必须立即返回 false，绝不能等缓存过期把陈旧
+// true 带进结算。查询失败原样上抛，调用方 fail-closed（绝不当作 false 或 true）。
+func (r *SQLPricingRepo) GroupConfigured(ctx context.Context, group string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("store: pricing repo is not configured")
+	}
+	var configured bool
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM user_groups WHERE name = $1 AND status = 1)`, group).
+		Scan(&configured); err != nil {
+		return false, fmt.Errorf("store: check group %s: %w", group, err)
+	}
+	return configured, nil
+}
+
 func isForeignKeyViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"

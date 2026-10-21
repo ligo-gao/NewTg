@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ import (
 	"newtg/gateway/internal/relay/stream"
 	"newtg/gateway/internal/relay/usage"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tokenstore"
 )
 
 // 本文件是 Task 8 phase 8B 的 /v1 中继端点：
@@ -174,6 +176,11 @@ type RelayHandlerOptions struct {
 	// NativeRoutes 是插件原生路由的执行面（T6c-a）；nil 时 /v1/ 兜底仍会
 	// 挂载，但只做 404/405 判定——未知路径的 OpenAI 信封不依赖它。
 	NativeRoutes NativeRouteDispatcher
+	// GroupConfigured 是 R-64/I-25 的分组倍率存在性校验：严格查询
+	// user_groups WHERE name=? AND status=1，**不得**复用 pricing 的
+	// 「未命中缓存 1.0」路径。nil 时跳过校验（仅测试/无计费降级装配）；
+	// 生产由 platform 注入 store.SQLPricingRepo.GroupConfigured。
+	GroupConfigured func(ctx context.Context, group string) (bool, error)
 }
 
 // NativeRouteDispatcher 是插件原生路由在 HTTP 面的唯一接缝（生产实现
@@ -212,6 +219,9 @@ type RelayHandler struct {
 	config           ConfigReader
 	userGroups       PlaygroundUserGroups
 	nativeRoutes     NativeRouteDispatcher
+	groupConfigured  func(ctx context.Context, group string) (bool, error)
+	// maxAutoGroups 是 R-63 的跨组上限（装配处解析并钳制 [1,20]）。
+	maxAutoGroups int
 	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
 	// 会话鉴权由 RegisterPlayground 的外层链完成）。
 	playground *http.ServeMux
@@ -259,6 +269,10 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		config:           opts.Config,
 		userGroups:       opts.UserGroups,
 		nativeRoutes:     opts.NativeRoutes,
+		groupConfigured:  opts.GroupConfigured,
+		// R-63：站点键 relay.cross_group_retry_max_groups（默认 3，非法回退
+		// 默认，钳制 [1,20]）。在这里解析一次，请求热路径只读字段。
+		maxAutoGroups: resolveCrossGroupRetryMaxGroups(opts.Config),
 	}
 	// M4 T4：生产装配默认注入真实多模态分派器（T1 复审 F2/F4/F5 与 R-02 的
 	// 落点）。显式传入的 Multimodal 优先（测试可替换）；nil 不再表示 501——
@@ -276,9 +290,50 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 			Client:     h.client,
 			MaxRetries: relayMaxRetries,
 			WriteError: writeRelayMappedError,
+			// 与 chat 同一套 R-63/R-64 语义：多模态端点同样可能携带 auto 令牌。
+			MaxAutoGroups:   h.maxAutoGroups,
+			GroupConfigured: h.groupConfigured,
 		})
 	}
 	return h
+}
+
+// resolveCrossGroupRetryMaxGroups 解析 R-63 的跨组尝试上限。
+//
+// 缺省 3；非整数/≤0 回退默认（配置损坏不得放大或关闭预算）；最后钳制到
+// [1,20]。组数上限只约束**尝试的分组数**，组内重试预算由 relayMaxRetries
+// 独立决定，不合并。
+func resolveCrossGroupRetryMaxGroups(config ConfigReader) int {
+	limit := tokenstore.DefaultCrossGroupRetryMaxGroups
+	if value, ok := configIntValue(config, tokenstore.KeyCrossGroupRetryMax); ok && value > 0 {
+		limit = value
+	}
+	if limit < 1 {
+		limit = tokenstore.DefaultCrossGroupRetryMaxGroups
+	}
+	if limit > relay.MaxCrossGroupRetryGroups {
+		limit = relay.MaxCrossGroupRetryGroups
+	}
+	return limit
+}
+
+// configIntValue 读取整数配置，同时接受 JSON number 与数字字符串。
+//
+// 与 tokenstore.configIntFrom 同口径（同一站点键不能因读取方不同而有两种
+// 解释）；非整数/缺失返回 ok=false，由调用方回退默认值。
+func configIntValue(config ConfigReader, key string) (int, bool) {
+	if value, ok := readConfigInt64(config, key); ok {
+		return int(value), true
+	}
+	raw := readConfigString(config, key)
+	if raw == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 // AuthMiddleware 返回 /v1 令牌鉴权中间件。
@@ -879,11 +934,12 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 未预扣的会话调用一次 no-op Refund（真实引擎在没有 hold 时直接返回
 	// nil，不写流水），流式路径则不调用。审计计数器的 Refund 可能为 1，
 	// 但它不产生任何资金变动。
-	if candidates, err := h.channels.Candidates(r.Context(), rc.OriginModel, rc.UsingGroup); err == nil && len(candidates) > 0 {
-		if !h.messagesDirectionSupported(r.Context(), candidates) {
-			h.writeMessagesMappedError(w, requestID, crossproto.ErrUpstreamProtocolUnsupported)
-			return
-		}
+	// R-68：方向预检必须按**有效分组序列**判定——首组 + 开关开启时的后续组
+	// （受 R-63 上限约束）。首组无 Anthropic、后续组有且开关开启时不得 501，
+	// 交给执行层换组；只有所有有候选的组都不支持 Anthropic 才 501。
+	if checked, supported := h.messagesDirectionCovered(r.Context(), rc); checked && !supported {
+		h.writeMessagesMappedError(w, requestID, crossproto.ErrUpstreamProtocolUnsupported)
+		return
 	}
 
 	deps := h.routeDeps(rc, pinID, hasPin, crossproto.ProtocolAnthropic)
@@ -892,6 +948,27 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serveNativeJSON(w, r, rc, deps)
+}
+
+// messagesDirectionCovered 按 R-68 的**有效分组序列**做方向预检。
+//
+// 返回 checked=false 表示有效序列中没有任何组存在候选（无法下方向结论，
+// 交给执行层按 ErrNoAvailableChannel/换组处理）；checked=true 且
+// supported=false 才表示「端点方向不支持」→ 501。这里与执行层共用
+// relay.GroupSequence，避免预检与真实换组范围漂移。
+func (h *RelayHandler) messagesDirectionCovered(ctx context.Context, rc *contract.RelayContext) (checked, supported bool) {
+	for _, group := range relay.GroupSequence(rc, h.maxAutoGroups) {
+		candidates, err := h.channels.Candidates(ctx, rc.OriginModel, group)
+		if err != nil || len(candidates) == 0 {
+			// 与既有单组口径一致：查询失败/空组不下方向结论，交给执行层。
+			continue
+		}
+		checked = true
+		if h.messagesDirectionSupported(ctx, candidates) {
+			return true, true
+		}
+	}
+	return checked, false
 }
 
 // messagesDirectionSupported 判定候选集里是否存在 Anthropic 协议族渠道。
@@ -1351,8 +1428,12 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 			if err != nil {
 				return nil, err
 			}
+			// R-62/R-68：auto 请求某个分组过滤后为空时，若后面还有未尝试的
+			// 分组，返回空候选让执行层换组，而不是把「本组不支持目标协议/无
+			// 渠道」误报成端点不支持。hasLaterGroups 每轮按当前 UsingGroup 计算。
+			allowEmpty := h.hasLaterGroup(rc)
 			if !hasPin {
-				return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
+				return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol, allowEmpty)
 			}
 			pinned := false
 			for i := range candidates {
@@ -1367,22 +1448,41 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 				// 绝不在这里按 pin 另取渠道，否则会绕过 §5.4 D 步的过滤兜底。
 				return nil, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID)
 			}
-			return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol)
+			return filterCandidatesByProtocol(ctx, h.channels, candidates, targetProtocol, allowEmpty)
 		},
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
 		},
-		Dispatch:   h.dispatch,
-		Billing:    h.billing(rc),
-		Client:     h.client,
-		MaxRetries: relayMaxRetries,
+		Dispatch:        h.dispatch,
+		Billing:         h.billing(rc),
+		Client:          h.client,
+		MaxRetries:      relayMaxRetries,
+		MaxAutoGroups:   h.maxAutoGroups,
+		GroupConfigured: h.groupConfigured,
 	}
+}
+
+// hasLaterGroup 报告当前分组之后是否还有未尝试的有效分组（R-62/R-63）。
+// 端点层的协议过滤与方向预检共用 relay.GroupSequence，保证「这里认为可以
+// 换组」与「执行层真正会换组」是同一序列。
+func (h *RelayHandler) hasLaterGroup(rc *contract.RelayContext) bool {
+	groups := relay.GroupSequence(rc, h.maxAutoGroups)
+	for i, group := range groups {
+		if group == rc.UsingGroup {
+			return i < len(groups)-1
+		}
+	}
+	return false
 }
 
 // filterCandidatesByProtocol 按目标上游协议过滤候选（跨协议转发）。
 //
 // targetProtocol 为空 = 未携带协议头：原样返回，保证 M2 选路行为逐字节不变
 // （只有候选切片本身，未排序、未改写）。
+//
+// allowEmpty 是 R-62/R-68 的跨组语义：auto 请求当前分组过滤后为空、但序列中
+// 还有后续分组时，返回空候选让执行层换组，而不是报 ErrUpstreamProtocolUnsupported
+// 把整笔请求快失败。只有当前分组是最后一个可尝试分组时才保持原有的显式失败。
 //
 // 过滤必须在 PreConsume 之前完成（本函数位于 Candidates 回调内，执行层在
 // 预扣前调用）：目标协议没有可用渠道时直接显式失败，不产生任何计费副作用。
@@ -1396,6 +1496,7 @@ func filterCandidatesByProtocol(
 	channels RelayChannelStore,
 	candidates []contract.ChannelCandidate,
 	targetProtocol crossproto.Protocol,
+	allowEmpty bool,
 ) ([]contract.ChannelCandidate, error) {
 	if targetProtocol == "" {
 		return candidates, nil
@@ -1426,6 +1527,12 @@ func filterCandidatesByProtocol(
 		}
 	}
 	if len(filtered) == 0 {
+		if allowEmpty {
+			// R-62/R-68：本组没有目标协议渠道，但序列里还有下一组。
+			// 空计划让执行层把本组视为耗尽并换组；若最终全部为空，
+			// 会以 ErrNoAvailableChannel / 最后一组的显式失败收尾。
+			return nil, nil
+		}
 		// 显式失败而不是回退到任意协议：客户端声明了目标协议，静默换协议
 		// 会让它按错误的响应语义解析（Review Focus 5 / GC-8）。
 		return nil, crossproto.ErrUpstreamProtocolUnsupported
@@ -2246,6 +2353,11 @@ func mapRelayContextError(err error) (int, string, string) {
 		return http.StatusUnauthorized, "", "invalid token"
 	case errors.Is(err, relay.ErrPinForbidden):
 		return http.StatusForbidden, "channel_pin_forbidden", "channel pin is not allowed for this user"
+	case errors.Is(err, relay.ErrAutoGroupsNotEnabled):
+		// R-61 / I-20：历史空列表 auto 令牌的请求期 fail-closed；绝不回退
+		// 用户分组，因此这里不给任何「换个分组再试」的暗示。
+		return http.StatusForbidden, "auto_groups_not_enabled",
+			"auto groups are not enabled for this token"
 	case errors.Is(err, relay.ErrIdentityOutOfRange):
 		return http.StatusInternalServerError, "internal_error", "internal error"
 	case errors.Is(err, relay.ErrRequestMissing):
@@ -2317,6 +2429,15 @@ func mapRelayError(err error) (int, string, string) {
 			return http.StatusServiceUnavailable, "model_not_found", "no available channel for the requested model"
 		case errors.Is(err, relay.ErrChannelNotFound):
 			return http.StatusNotFound, "channel_not_found", "the pinned channel is not available"
+		case errors.Is(err, relay.ErrGroupRatioMissing):
+			// R-64 / I-25：倍率缺失必须显式失败，绝不按默认 1 计费。
+			// 这是请求侧配置错误（403），不得落 502 上游故障。
+			return http.StatusForbidden, "group_ratio_missing",
+				"the group ratio is not configured for the selected group"
+		case errors.Is(err, relay.ErrGroupCheckFailed):
+			// 存储故障 fail-closed：既不能当已配置放行，也不能伪装成 403。
+			return http.StatusInternalServerError, "database_error",
+				"failed to verify the group configuration"
 		case errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported):
 			// 跨协议转发：目标协议没有匹配渠道 = 上游能力不支持，非重试类
 			// 错误（mapRelayError 走的 FastFail 分支已保证不重试）。
@@ -2336,9 +2457,22 @@ func mapRelayError(err error) (int, string, string) {
 
 	var attempts *relay.AttemptsError
 	if errors.As(err, &attempts) {
+		// R-66：重试耗尽时在既有 error.message 追加已尝试分组序列
+		// （不新增字段、不改 OpenAPI）。具体分组令牌的 Groups 为 nil，
+		// 错误体与 M1 逐字节一致。
+		suffix := ""
+		if len(attempts.Groups) > 0 {
+			suffix = "; groups tried: " + strings.Join(attempts.Groups, ", ")
+		}
+		if errors.Is(err, relay.ErrNoAvailableChannel) {
+			// R-62 空候选收尾：仍是 503 get_channel_failed 语义（与具体分组
+			// 的 FastFail 分支同码），但带上已尝试分组便于自助排查。
+			return http.StatusServiceUnavailable, "model_not_found",
+				"no available channel for the requested model" + suffix
+		}
 		// 任务书：AttemptsError → 502，并把尝试次数写进 message。
 		return http.StatusBadGateway, "upstream_error",
-			fmt.Sprintf("upstream request failed after %d attempt(s)", attempts.Attempts)
+			fmt.Sprintf("upstream request failed after %d attempt(s)", attempts.Attempts) + suffix
 	}
 
 	return http.StatusBadGateway, "upstream_error", "upstream request failed"

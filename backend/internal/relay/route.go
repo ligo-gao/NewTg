@@ -57,8 +57,27 @@ var (
 	// relay/stream 的事件桥接。
 	ErrStreamingInRoute = errors.New("relay: 流式请求必须使用 ExecuteAttempts 而非 Route")
 
+	// ErrGroupRatioMissing 表示当前要尝试的分组没有配置倍率
+	// （user_groups 缺失或 status != 1）。R-64 / I-25：倍率取不到必须显式
+	// 失败（HTTP 403 group_ratio_missing），**绝不**按默认 1 计费。
+	ErrGroupRatioMissing = errors.New("relay: 分组倍率未配置")
+
+	// ErrGroupCheckFailed 表示分组配置校验的存储查询失败。fail-closed：
+	// 查询失败既不能当作「已配置」放行，也不能当作「未配置」误导排障——
+	// 端点层映射 500 database_error（不落 502 上游故障）。
+	ErrGroupCheckFailed = errors.New("relay: 分组配置校验失败")
+
 	errRelayContextMissing = errors.New("relay: 缺少中继上下文")
 	errDependencyMissing   = errors.New("relay: 路由依赖缺失")
+)
+
+const (
+	// defaultCrossGroupRetryMaxGroups 是 R-63 的跨组上限默认值（站点键
+	// relay.cross_group_retry_max_groups 缺省/非法时使用）。
+	defaultCrossGroupRetryMaxGroups = 3
+	// MaxCrossGroupRetryGroups 是 R-63 的硬上限：无论配置多大，单请求最多
+	// 尝试 20 个分组，防止 auto_groups 把上游调用量线性放大。
+	MaxCrossGroupRetryGroups = 20
 )
 
 // RetryableError 标记一次**可重试**的尝试失败（上游瞬时故障/限流/5xx）。
@@ -105,9 +124,14 @@ func (e *FastFailError) Unwrap() error {
 // Attempts 是实际消耗的尝试轮数（含首试；每轮对应一次候选选择，即使失败发生在
 // 渠道解析/构造请求阶段也算一轮），Last 是最后一次尝试的错误。Error() 必须包含
 // 次数：端点层据此区分「一次就失败」与「重试耗尽」，日志也需要该计数做故障归因。
+//
+// Groups 是 group=auto 请求实际进入过的分组序列（按尝试顺序，含无候选的空组）。
+// R-66 要求重试耗尽时把序列追加到 error.message（"; groups tried: g1, g2"）；
+// 具体分组令牌该字段保持 nil，错误体与 M1 逐字节一致。
 type AttemptsError struct {
 	Attempts int
 	Last     error
+	Groups   []string
 }
 
 func (e *AttemptsError) Error() string {
@@ -173,6 +197,72 @@ type RouteDeps struct {
 	// MaxRetries 是重试次数（不含首试）：0 取默认 3，随后钳制到 [1,5]
 	// （GC-5 / C-9/D11）。总尝试次数 = 钳制后的值 + 1（relay-01 §6.1）。
 	MaxRetries int
+
+	// MaxAutoGroups 是 R-63 的跨组尝试分组数上限（装配处已解析并钳制到
+	// [1,20]）。0 表示未设置 → 默认 3。它只约束**分组数**，组内重试预算
+	// 仍由 MaxRetries 独立决定（R-63：组内预算不合并）。
+	MaxAutoGroups int
+
+	// GroupConfigured 严格校验某分组已配置且启用（R-64 / I-25：
+	// user_groups WHERE name=? AND status=1）。每组首次尝试前调用；返回
+	// false → ErrGroupRatioMissing（403），返回 error → ErrGroupCheckFailed
+	// （500 fail-closed）。nil 表示跳过校验（仅测试/无计费降级装配）。
+	GroupConfigured func(ctx context.Context, group string) (bool, error)
+}
+
+// GroupSequence 返回本次请求的**有效分组序列**（R-61/R-62/R-63/R-68）。
+//
+// 首元素 = rc.UsingGroup（鉴权层由 AutoGroups[0] 写入）。仅当 CrossGroupRetry
+// 为真且令牌带 AutoGroups 时追加后续组：顺序 = 提交顺序（I-22），重复组按首现
+// 去重，空串与 "auto" 哨兵被跳过（它们不可能是真实分组）。组数受 maxGroups
+// 与 R-63 的 20 硬上限约束；开关关闭时只返回首组——路由层不得自行放大范围。
+//
+// 端点层（/v1/messages 方向预检，R-68）与执行层共用本函数，保证「预检认为
+// 可达的分组」与「执行层真正会尝试的分组」是同一序列。
+func GroupSequence(rc *contract.RelayContext, maxGroups int) []string {
+	if rc == nil {
+		return nil
+	}
+	limit := maxGroups
+	if limit <= 0 {
+		limit = defaultCrossGroupRetryMaxGroups
+	}
+	if limit > MaxCrossGroupRetryGroups {
+		limit = MaxCrossGroupRetryGroups
+	}
+	// 首元素永远是 UsingGroup（即使为空：只有测试/内部直调会这样，
+	// store.Candidates 对空分组按「不过滤」处理）。直调方只填 AutoGroups
+	// 时以首项为准（R-61：UsingGroup 的初值 = AutoGroups[0]）；自动分组
+	// 序列只在 CrossGroupRetry 开启时追加。
+	first := rc.UsingGroup
+	if first == "" && len(rc.AutoGroups) > 0 {
+		first = rc.AutoGroups[0]
+	}
+	groups := make([]string, 0, limit)
+	groups = append(groups, first)
+	if !rc.CrossGroupRetry || len(rc.AutoGroups) == 0 {
+		return groups
+	}
+	for _, group := range rc.AutoGroups {
+		if group == "" || group == groupAuto {
+			continue
+		}
+		duplicate := false
+		for _, seen := range groups {
+			if seen == group {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if len(groups) >= limit {
+			break
+		}
+		groups = append(groups, group)
+	}
+	return groups
 }
 
 // AttemptResult 是一次成功尝试的原始产物。
@@ -225,8 +315,14 @@ func newDefaultRouteClient() *http.Client {
 //
 // 计费生命周期：PreConsume 成功之后的所有失败/取消/panic 出口都会 Refund 一次
 // （GC-7/R-85：失败整笔不收费；Terminate(零事实) 会让按次模型照常扣费）；
-// PreConsume 之前的失败（计划/pin/依赖校验，或请求在预扣前已取消）没有开启
-// 会话，因此**不调用** Refund。
+// PreConsume 之前的失败（计划/pin/依赖校验/分组倍率校验，或请求在预扣前已取消）
+// 没有开启会话，因此**不调用** Refund。
+//
+// 跨组重试（R-62，W7/M2）：rc.CrossGroupRetry 且令牌带 AutoGroups 时按
+// GroupSequence 逐组尝试；每组拥有独立的 RetryTimes+1 预算（组内预算不合并），
+// 组内耗尽后换下一组并重新调用 deps.Candidates 构计划（不复用旧候选）。换组是
+// WithUsingGroup 的唯一新改写点；pin 只在首组解析、不跨组。空候选集的分组视为
+// 耗尽并继续换组（TC-F-02-13-01），全部组都为空时以 ErrNoAvailableChannel 收尾。
 //
 // 职责边界（控制器裁决 R-P4）：候选排序、每轮渠道组整组写入、BuildRequest + Do、
 // HTTP 错误分类、重试/快失败判定、循环前一次性 PreConsume、最终失败 Terminate
@@ -254,55 +350,48 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	}
 	maxAttempts := ClampRetries(retries) + 1
 
-	// —— 1. 取得计划（已有计划优先，代表上游路由层已完成选路）——
-	plan := rc.AttemptPlan
-	if plan == nil {
-		if deps.Candidates == nil {
-			return nil, &FastFailError{Err: fmt.Errorf("%w: Candidates", errDependencyMissing)}
+	// —— 0. 有效分组序列（R-62/R-63/R-68）——
+	groups := GroupSequence(rc, deps.MaxAutoGroups)
+	// 只有 auto 令牌（AutoGroups 非空）才记录已尝试分组并附加 R-66 序列；
+	// 具体分组令牌的失败体必须与 M1 逐字节一致（M2 回归项）。
+	recordGroups := len(rc.AutoGroups) > 0
+	crossGroup := rc.CrossGroupRetry && recordGroups && len(groups) > 1
+	if len(groups) > 0 && rc.UsingGroup != groups[0] {
+		// 防御：鉴权层已保证 UsingGroup == AutoGroups[0]（R-61）。直接构造
+		// RelayContext 的调用方（测试/内部）只写 AutoGroups 时在此对齐，否则
+		// 候选查询会落到错误分组；同一处也同步预扣估算的分组（尚未预扣）。
+		WithUsingGroup(rc, groups[0])
+		if rc.QuotaEstimate != nil && rc.QuotaEstimate.Group != "" {
+			rc.QuotaEstimate.Group = groups[0]
 		}
-		candidates, err := deps.Candidates(ctx, rc)
-		if err != nil {
-			// 候选查询失败是选路失败（阶段 3，SkipRetry），不能当作上游瞬时故障重试。
-			// GC-6：store 类错误可能带 DSN/主机名/凭据，必须经 safeWrapf 只暴露固定描述。
-			return nil, &FastFailError{Err: safeWrapf(err, "relay: 候选渠道查询失败")}
-		}
-		plan = BuildAttemptPlanWithRetries(rc, candidates, retries)
-	}
-	if len(plan.Candidates) == 0 {
-		return nil, &FastFailError{Err: ErrNoAvailableChannel}
 	}
 
-	// —— 2. pin 优先（约束由上游路由层写入候选，本层不解析凭据）——
-	ordered, pinned, pinSingleAttempt, err := preferPinned(plan.Candidates)
+	// —— 1. 首组计划（已有计划优先，代表上游路由层已完成选路）——
+	var firstPlan *contract.AttemptPlan
+	if rc.AttemptPlan != nil {
+		firstPlan = rc.AttemptPlan
+	} else {
+		plan, err := fetchAttemptPlan(ctx, rc, deps, retries)
+		if err != nil {
+			return nil, err
+		}
+		firstPlan = plan
+	}
+	ordered, pinned, pinSingleAttempt, err := preferPinned(firstPlan.Candidates)
 	if err != nil {
 		return nil, err
 	}
-	// 即使 rc.AttemptPlan 自带了 MaxAttempts，执行层也不采用：配置的重试预算
-	// 是运维边界，不能由上游计划放大（R-P4）。
+	// R-62：pin 只在首个分组内解析；带 pin 的请求不跨组（即使 RetryMode 不是
+	// single_attempt，耗尽组内预算后也停在首组）。
 	effective := &contract.AttemptPlan{
 		Candidates:  ordered,
 		MaxAttempts: maxAttempts,
-		CrossGroup:  plan.CrossGroup,
+		CrossGroup:  firstPlan.CrossGroup,
 	}
+	priorities := attemptPriorities(ordered)
+	sawCandidates := len(ordered) > 0
 	// 路由组（relay-01 §7.3）：把本轮真正执行的计划写回上下文供审计/后续层读取。
 	WithRoute(rc, effective, 0, nil)
-
-	// —— 3. 循环前一次性预扣（relay-01 §6.1；契约 §6.1）——
-	// nil 估算按零值传递：接缝不做定价（GC-3），零值表示「调用方未提供估算」，
-	// 由真实计费实现（M3）决定如何处理，路由层不臆造金额。
-	if deps.Billing != nil {
-		estimate := contract.QuotaEstimate{}
-		if rc.QuotaEstimate != nil {
-			estimate = *rc.QuotaEstimate
-		}
-		if err := deps.Billing.PreConsume(estimate); err != nil {
-			// PreConsume 失败不开启会话（契约 §6.1），无需 Terminate；
-			// 快失败保留 errors.Is 链上的 402 语义（billingseam.ErrInsufficientQuota）。
-			// GC-6：计费/存储错误可能带连接串等敏感信息，经 safeWrapf 只暴露固定描述
-			// （safeError 的 Unwrap 仍保留完整错误链，故 errors.Is 不受影响）。
-			return nil, &FastFailError{Err: safeWrapf(err, "relay: 预扣费失败")}
-		}
-	}
 
 	// GC-7：预扣之后的所有失败出口都必须释放预算。Refund 自身幂等（契约 §6.1），
 	// 但本函数仍用本地标志保证恰好一次：显式失败出口立即释放；defer 只兜底
@@ -315,9 +404,13 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	// 常量表达式模型即使 UsageFact 全零也照常扣费，并把日志写成 success——
 	// 这正是 T9 复审复现的「失败请求照常扣 150 积分」。Refund 全额退回
 	// hold 与 ChargeIncrement 增量，并把 usage_logs 收敛为 refunded。
+	//
+	// preConsumed 守卫：PreConsume 之前的失败（含 R-64 的首组倍率校验、空候选
+	// 计划）没有开启会话，契约 §6.1 要求不调用 Refund。
+	preConsumed := false
 	released := false
 	releaseBudget := func() {
-		if released || deps.Billing == nil {
+		if released || deps.Billing == nil || !preConsumed {
 			return
 		}
 		released = true
@@ -341,160 +434,272 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 		client = defaultRouteClient
 	}
 
-	attempts := 0
+	attempts := 0 // 全局尝试序号（R-62 补充口径：AttemptIndex 反映整笔请求）
 	var lastErr error
+	var tried []string // 已进入的分组序列（仅 auto 请求写入 AttemptsError.Groups）
+	stopAll := false
 
-	// 去重后的优先级序列（relay-01 §6.4）：本轮尝试索引 i 映射到
-	// priorities[min(i, len-1)]——索引越界时钳到**最低优先级**并把该优先级内
-	// 的候选再试一遍，而不是钳到某个固定候选。这是照搬的乙类怪癖：重试预算
-	// 小于优先级数时低优先级候选永不参与；预算大于优先级数时末位优先级被重复。
-	priorities := attemptPriorities(ordered)
-
-	for i := 0; i < maxAttempts; i++ {
-		// 每次换轮前检查取消：客户端断开后不再消耗重试预算。
-		if err := ctx.Err(); err != nil {
-			lastErr = err
-			break
-		}
-
-		// 每轮选谁（relay-01 §5.2–§5.3 / §6.4）：
-		//   - pin 的首轮固定选 pin 候选（§5.4 A 步），不受加权随机影响；
-		//   - 其余轮次先按 §6.4 把尝试索引映射到目标优先级，再在该优先级内
-		//     按权重加权随机（SelectWithinPriority，全零权重退化为均匀）。
-		// 修复 final-review finding 1：原实现直接 Next(i) 确定性取候选，导致同
-		// 优先级里权重最高的渠道吃掉全部流量，权重语义形同虚设。
-		var candidate contract.ChannelCandidate
-		if pinned && i == 0 {
-			candidate = ordered[0]
-		} else {
-			target := priorities[min(i, len(priorities)-1)]
-			candidate = SelectWithinPriority(candidatesAtPriority(ordered, target), selectionUint64N)
-		}
-		attempts++
-		WithRoute(rc, effective, i, nil)
-
-		// 每轮整组解析并写入渠道组（relay-01 §7.4）：WithChannel 覆盖全部字段，
-		// 上一轮的 Credential/UpstreamModel/MultiKeyIndex 不会残留。
-		assignment, resolveErr := deps.ResolveChannel(ctx, candidate.ChannelID)
-		if resolveErr != nil {
+	for groupIdx := 0; groupIdx < len(groups); groupIdx++ {
+		group := groups[groupIdx]
+		if groupIdx > 0 {
+			// 客户端断开后不再切换分组：换组会继续消耗上游与预算。
 			if err := ctx.Err(); err != nil {
 				lastErr = err
+				stopAll = true
 				break
 			}
-			// 本轮解析失败时先把渠道组清空（只留候选 ID）：否则上一轮的
-			// APIBase/Credential/UpstreamModel 会滞留在上下文里，被审计或日志
-			// 误记到本轮（relay-01 §7.4 的「整组写入」语义要求不残留）。
-			WithChannel(rc, ChannelAssignment{ChannelID: candidate.ChannelID})
-			// 渠道解析失败（索引陈旧/渠道已删）是「这一轮不可用」：换下一个候选。
-			// 走重试预算而不是无限扫描，避免坏索引把单请求拖成线性放大。
-			lastErr = &RetryableError{Err: safeWrapf(resolveErr, "relay: 渠道 %d 解析失败", candidate.ChannelID)}
-			WithRoute(rc, effective, i, &contract.RelayError{
-				Class:     contract.ErrUnknown,
-				Code:      "channel:resolve_failed",
-				SkipRetry: pinSingleAttempt,
-				Message:   "渠道解析失败",
-			})
-			if pinSingleAttempt {
-				break
+			// R-62：换组是路由层对 UsingGroup 的唯一新改写点（relay-01 §7.1）。
+			WithUsingGroup(rc, group)
+			// 首组无候选而提前换组时预扣尚未发生：估算分组必须跟着换，
+			// 否则 PreConsume 会按旧组倍率冻结 hold（R-64/R-65 的资损面）。
+			if !preConsumed && rc.QuotaEstimate != nil && rc.QuotaEstimate.Group != "" {
+				rc.QuotaEstimate.Group = group
+			}
+			// R-62：每次换组后重新查询候选构计划，不得复用旧候选。
+			plan, err := fetchAttemptPlan(ctx, rc, deps, retries)
+			if err != nil {
+				releaseBudget()
+				return nil, err
+			}
+			ordered, _, _, err = preferPinned(plan.Candidates)
+			if err != nil {
+				releaseBudget()
+				return nil, err
+			}
+			effective = &contract.AttemptPlan{
+				Candidates:  ordered,
+				MaxAttempts: maxAttempts,
+				CrossGroup:  plan.CrossGroup,
+			}
+			priorities = attemptPriorities(ordered)
+			WithRoute(rc, effective, attempts, nil)
+			if len(ordered) > 0 {
+				sawCandidates = true
+			}
+		}
+
+		if len(ordered) == 0 {
+			// R-62：空候选集的分组视为耗尽并继续换组（TC-F-02-13-01：
+			// g1 无可用渠道 → g2）。只有**尚未产生任何错误**时才把
+			// ErrNoAvailableChannel 记为最终错误；否则保留最后一次真实失败
+			// （modules-02 §2.10：达到上限返回最后一次失败的原始状态码）。
+			if recordGroups {
+				tried = append(tried, group)
+			}
+			if lastErr == nil {
+				lastErr = ErrNoAvailableChannel
 			}
 			continue
 		}
-		// ChannelID 以候选为准（ResolveChannel 的返回可能不含 ID）；ChannelType
-		// 来自解析结果，分派与 BuildRequest 共用同一个值。
-		assignment.ChannelID = candidate.ChannelID
-		WithChannel(rc, assignment)
 
-		adapter, dispatchErr := dispatch(assignment.ChannelType)
-		if dispatchErr != nil {
-			// 契约 §4 冻结 ErrEndpointUnsupported「不重试、不自动禁用」；
-			// 换渠道重试与该分类冲突，故整体快失败（错误文本经安全包装，GC-6）。
-			releaseBudget()
-			return nil, &FastFailError{Err: safeWrapf(dispatchErr, "relay: 渠道 %d 的适配器分派失败", candidate.ChannelID)}
+		// R-64 / I-25：每组首次尝试前严格校验倍率已配置且启用。首组校验
+		// 先于 PreConsume；后续组在切换时校验。未被尝试的组缺失不阻塞。
+		// 仅对 auto 令牌生效：具体分组令牌保持 M1 行为（M2 回归项）。
+		if recordGroups && deps.GroupConfigured != nil {
+			configured, checkErr := deps.GroupConfigured(ctx, group)
+			if checkErr != nil {
+				releaseBudget()
+				// GC-6：存储错误可能带 DSN/SQL，只经 safeWrapf 暴露固定描述。
+				return nil, &FastFailError{Err: fmt.Errorf("%w: %w",
+					ErrGroupCheckFailed, safeWrapf(checkErr, "relay: 分组配置校验失败"))}
+			}
+			if !configured {
+				releaseBudget()
+				return nil, &FastFailError{Err: fmt.Errorf("%w: %s", ErrGroupRatioMissing, group)}
+			}
 		}
 
-		httpReq, buildErr := adapter.BuildRequest(rc, rc.Request)
-		if buildErr != nil {
+		// —— 3. 循环前一次性预扣（relay-01 §6.1；契约 §6.1）——
+		// nil 估算按零值传递：接缝不做定价（GC-3），零值表示「调用方未提供估算」，
+		// 由真实计费实现（M3）决定如何处理，路由层不臆造金额。
+		if !preConsumed && deps.Billing != nil {
+			estimate := contract.QuotaEstimate{}
+			if rc.QuotaEstimate != nil {
+				estimate = *rc.QuotaEstimate
+			}
+			if err := deps.Billing.PreConsume(estimate); err != nil {
+				// PreConsume 失败不开启会话（契约 §6.1），无需 Terminate；
+				// 快失败保留 errors.Is 链上的 402 语义（billingseam.ErrInsufficientQuota）。
+				// GC-6：计费/存储错误可能带连接串等敏感信息，经 safeWrapf 只暴露固定描述
+				// （safeError 的 Unwrap 仍保留完整错误链，故 errors.Is 不受影响）。
+				return nil, &FastFailError{Err: safeWrapf(err, "relay: 预扣费失败")}
+			}
+			preConsumed = true
+		}
+		if recordGroups {
+			tried = append(tried, group)
+		}
+
+		// 组内预算 = ClampRetries(RetryTimes)+1（R-62/R-63：组内预算不合并）。
+		for i := 0; i < maxAttempts; i++ {
+			// 每次换轮前检查取消：客户端断开后不再消耗重试预算。
 			if err := ctx.Err(); err != nil {
 				lastErr = err
+				stopAll = true
 				break
 			}
-			class, _ := adapters.ClassOf(buildErr)
-			WithRoute(rc, effective, i, &contract.RelayError{
-				Class:     class,
-				Code:      "channel:build_request_failed",
-				SkipRetry: !retryableErrorClass(class),
-				Message:   "上游请求构造失败",
-			})
-			if retryableErrorClass(class) {
-				lastErr = &RetryableError{Err: safeWrapf(buildErr, "relay: 构造上游请求失败（渠道 %d）", candidate.ChannelID)}
+
+			// 每轮选谁（relay-01 §5.2–§5.3 / §6.4）：
+			//   - pin 的首轮固定选 pin 候选（§5.4 A 步），不受加权随机影响；
+			//   - 其余轮次先按 §6.4 把尝试索引映射到目标优先级，再在该优先级内
+			//     按权重加权随机（SelectWithinPriority，全零权重退化为均匀）。
+			// 修复 final-review finding 1：原实现直接 Next(i) 确定性取候选，导致同
+			// 优先级里权重最高的渠道吃掉全部流量，权重语义形同虚设。
+			//
+			// R-62 补充口径：组内优先级映射用**组内序号 i**；WithRoute 的
+			// AttemptIndex 用**全局尝试序号**，让 usage_logs/UsageFact.Attempts
+			// 反映整笔请求实际打过的上游次数（跨组后不再从 0 重计）。
+			var candidate contract.ChannelCandidate
+			if pinned && groupIdx == 0 && i == 0 {
+				candidate = ordered[0]
+			} else {
+				target := priorities[min(i, len(priorities)-1)]
+				candidate = SelectWithinPriority(candidatesAtPriority(ordered, target), selectionUint64N)
+			}
+			attemptIndex := attempts
+			attempts++
+			WithRoute(rc, effective, attemptIndex, nil)
+
+			// 每轮整组解析并写入渠道组（relay-01 §7.4）：WithChannel 覆盖全部字段，
+			// 上一轮的 Credential/UpstreamModel/MultiKeyIndex 不会残留。
+			assignment, resolveErr := deps.ResolveChannel(ctx, candidate.ChannelID)
+			if resolveErr != nil {
+				if err := ctx.Err(); err != nil {
+					lastErr = err
+					stopAll = true
+					break
+				}
+				// 本轮解析失败时先把渠道组清空（只留候选 ID）：否则上一轮的
+				// APIBase/Credential/UpstreamModel 会滞留在上下文里，被审计或日志
+				// 误记到本轮（relay-01 §7.4 的「整组写入」语义要求不残留）。
+				WithChannel(rc, ChannelAssignment{ChannelID: candidate.ChannelID})
+				// 渠道解析失败（索引陈旧/渠道已删）是「这一轮不可用」：换下一个候选。
+				// 走重试预算而不是无限扫描，避免坏索引把单请求拖成线性放大。
+				lastErr = &RetryableError{Err: safeWrapf(resolveErr, "relay: 渠道 %d 解析失败", candidate.ChannelID)}
+				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
+					Class:     contract.ErrUnknown,
+					Code:      "channel:resolve_failed",
+					SkipRetry: pinSingleAttempt,
+					Message:   "渠道解析失败",
+				})
 				if pinSingleAttempt {
+					stopAll = true
 					break
 				}
 				continue
 			}
-			// 无分类的构造错误视为编程/配置错误：重试不会改变结果。
-			releaseBudget()
-			return nil, &FastFailError{Err: safeWrapf(buildErr, "relay: 构造上游请求失败（渠道 %d）", candidate.ChannelID)}
-		}
+			// ChannelID 以候选为准（ResolveChannel 的返回可能不含 ID）；ChannelType
+			// 来自解析结果，分派与 BuildRequest 共用同一个值。
+			assignment.ChannelID = candidate.ChannelID
+			WithChannel(rc, assignment)
 
-		// 适配器拿不到 ctx（契约 §3.1 的 BuildRequest 无 ctx 参数），执行层负责
-		// 把本轮 context 绑到请求上；否则客户端取消无法中止上游调用。
-		httpReq = httpReq.WithContext(ctx)
-
-		resp, doErr := client.Do(httpReq)
-		if doErr != nil {
-			// 上下文取消/超时优先判定：停止循环并释放预算（R-P13）。
-			if err := ctx.Err(); err != nil {
-				lastErr = err
-				break
+			adapter, dispatchErr := dispatch(assignment.ChannelType)
+			if dispatchErr != nil {
+				// 契约 §4 冻结 ErrEndpointUnsupported「不重试、不自动禁用」；
+				// 换渠道重试与该分类冲突，故整体快失败（错误文本经安全包装，GC-6）。
+				// R-62：适配器分派失败同时是**不换组**的硬停止。
+				releaseBudget()
+				return nil, &FastFailError{Err: safeWrapf(dispatchErr, "relay: 渠道 %d 的适配器分派失败", candidate.ChannelID)}
 			}
-			// 其余传输层错误（连接失败、响应头超时等）按 R-P13 一律可重试。
-			// GC-6：url.Error 的文本含完整 URL，故只保留安全摘要，不渲染底层文本。
-			lastErr = &RetryableError{Err: safeWrapf(doErr, "relay: 上游传输失败（渠道 %d）", candidate.ChannelID)}
-			WithRoute(rc, effective, i, &contract.RelayError{
-				Class:     contract.ErrRetryable,
-				Code:      "do_request_failed",
-				SkipRetry: pinSingleAttempt,
-				Message:   "上游传输失败",
+
+			httpReq, buildErr := adapter.BuildRequest(rc, rc.Request)
+			if buildErr != nil {
+				if err := ctx.Err(); err != nil {
+					lastErr = err
+					stopAll = true
+					break
+				}
+				class, _ := adapters.ClassOf(buildErr)
+				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
+					Class:     class,
+					Code:      "channel:build_request_failed",
+					SkipRetry: !retryableErrorClass(class),
+					Message:   "上游请求构造失败",
+				})
+				if retryableErrorClass(class) {
+					lastErr = &RetryableError{Err: safeWrapf(buildErr, "relay: 构造上游请求失败（渠道 %d）", candidate.ChannelID)}
+					if pinSingleAttempt {
+						stopAll = true
+						break
+					}
+					continue
+				}
+				// 无分类的构造错误视为编程/配置错误：重试不会改变结果。
+				releaseBudget()
+				return nil, &FastFailError{Err: safeWrapf(buildErr, "relay: 构造上游请求失败（渠道 %d）", candidate.ChannelID)}
+			}
+
+			// 适配器拿不到 ctx（契约 §3.1 的 BuildRequest 无 ctx 参数），执行层负责
+			// 把本轮 context 绑到请求上；否则客户端取消无法中止上游调用。
+			httpReq = httpReq.WithContext(ctx)
+
+			resp, doErr := client.Do(httpReq)
+			if doErr != nil {
+				// 上下文取消/超时优先判定：停止循环并释放预算（R-P13）。
+				if err := ctx.Err(); err != nil {
+					lastErr = err
+					stopAll = true
+					break
+				}
+				// 其余传输层错误（连接失败、响应头超时等）按 R-P13 一律可重试。
+				// GC-6：url.Error 的文本含完整 URL，故只保留安全摘要，不渲染底层文本。
+				lastErr = &RetryableError{Err: safeWrapf(doErr, "relay: 上游传输失败（渠道 %d）", candidate.ChannelID)}
+				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
+					Class:     contract.ErrRetryable,
+					Code:      "do_request_failed",
+					SkipRetry: pinSingleAttempt,
+					Message:   "上游传输失败",
+				})
+				if pinSingleAttempt {
+					stopAll = true
+					break
+				}
+				continue
+			}
+
+			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+				succeeded = true // 交由调用方结算；defer 不得释放
+				return &AttemptResult{
+					Response:  resp,
+					Adapter:   adapter,
+					Candidate: candidate,
+					Channel:   assignment,
+				}, nil
+			}
+
+			// 非 2xx：有界读取错误体只为分类（adapter.ClassifyError 可能需要它），
+			// 不进入错误文本（GC-6），随后关闭以复用/释放连接。
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+			_ = resp.Body.Close()
+			class := adapter.ClassifyError(resp.StatusCode, body)
+			statusErr := &UpstreamStatusError{StatusCode: resp.StatusCode, Class: class}
+			WithRoute(rc, effective, attemptIndex, &contract.RelayError{
+				Class:        class,
+				StatusCode:   resp.StatusCode,
+				SkipRetry:    !retryableStatus(resp.StatusCode),
+				IsChannelErr: class == contract.ErrChannelError,
+				Message:      statusErr.Error(),
 			})
+
+			if !retryableStatus(resp.StatusCode) {
+				// R-P13 固定集合：400/401/403/422、408/504/524 绝不换渠道重试，
+				// 同时是 R-62 的**不换组**硬停止（非可重试状态码）。
+				releaseBudget()
+				return nil, &FastFailError{Err: statusErr}
+			}
+			lastErr = &RetryableError{Err: statusErr}
 			if pinSingleAttempt {
+				// relay-01 §6.2：pin.RetryMode == single_attempt 时固定渠道只试一次。
+				stopAll = true
 				break
 			}
-			continue
 		}
 
-		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-			succeeded = true // 交由调用方结算；defer 不得释放
-			return &AttemptResult{
-				Response:  resp,
-				Adapter:   adapter,
-				Candidate: candidate,
-				Channel:   assignment,
-			}, nil
-		}
-
-		// 非 2xx：有界读取错误体只为分类（adapter.ClassifyError 可能需要它），
-		// 不进入错误文本（GC-6），随后关闭以复用/释放连接。
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		_ = resp.Body.Close()
-		class := adapter.ClassifyError(resp.StatusCode, body)
-		statusErr := &UpstreamStatusError{StatusCode: resp.StatusCode, Class: class}
-		WithRoute(rc, effective, i, &contract.RelayError{
-			Class:        class,
-			StatusCode:   resp.StatusCode,
-			SkipRetry:    !retryableStatus(resp.StatusCode),
-			IsChannelErr: class == contract.ErrChannelError,
-			Message:      statusErr.Error(),
-		})
-
-		if !retryableStatus(resp.StatusCode) {
-			// R-P13 固定集合：400/401/403/422、408/504/524 绝不换渠道重试。
-			releaseBudget()
-			return nil, &FastFailError{Err: statusErr}
-		}
-		lastErr = &RetryableError{Err: statusErr}
-		if pinSingleAttempt {
-			// relay-01 §6.2：pin.RetryMode == single_attempt 时固定渠道只试一次。
+		// 组内预算耗尽或硬停止：只有「可继续」时才进入下一个分组。
+		//   - stopAll：取消/pin 单次尝试等硬停止；
+		//   - !crossGroup：开关关闭或序列只有一组（R-62/R-63）；
+		//   - pinned：pin 只在首组解析，不跨组（R-62）。
+		if stopAll || !crossGroup || pinned {
 			break
 		}
 	}
@@ -504,7 +709,30 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	if lastErr == nil {
 		lastErr = ErrNoAvailableChannel // 防御：循环未产生错误就退出说明上游计划为空
 	}
-	return nil, &AttemptsError{Attempts: attempts, Last: lastErr}
+	if !sawCandidates && !recordGroups {
+		// 具体分组令牌（非 auto）：保持 M1 的 FastFail/503 逐字节语义。
+		return nil, &FastFailError{Err: ErrNoAvailableChannel}
+	}
+	var groupsTried []string
+	if recordGroups {
+		groupsTried = tried
+	}
+	return nil, &AttemptsError{Attempts: attempts, Last: lastErr, Groups: groupsTried}
+}
+
+// fetchAttemptPlan 查询候选并构建一个分组的尝试计划。
+//
+// 候选查询失败是选路失败（阶段 3，SkipRetry），不能当作上游瞬时故障重试；
+// GC-6：store 类错误可能带 DSN/主机名/凭据，必须经 safeWrapf 只暴露固定描述。
+func fetchAttemptPlan(ctx context.Context, rc *contract.RelayContext, deps RouteDeps, retries int) (*contract.AttemptPlan, error) {
+	if deps.Candidates == nil {
+		return nil, &FastFailError{Err: fmt.Errorf("%w: Candidates", errDependencyMissing)}
+	}
+	candidates, err := deps.Candidates(ctx, rc)
+	if err != nil {
+		return nil, &FastFailError{Err: safeWrapf(err, "relay: 候选渠道查询失败")}
+	}
+	return BuildAttemptPlanWithRetries(rc, candidates, retries), nil
 }
 
 // Route 执行一次**非流式**中继：ExecuteAttempts → ParseResponse → usage.ExtractUsage

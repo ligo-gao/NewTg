@@ -251,15 +251,20 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 
 	// 中继面：/v1/chat/completions 与 /v1/models（鉴权中间件在 handler 内挂载）。
 	// TRUSTED_PROXIES 决定 RelayAuth 是否采信 X-Forwarded-For（M2 策略见 relay_auth.go）。
+	//
+	// R-64：分组倍率的严格存在性查询与定价管理共用同一个仓储口径
+	// （user_groups.name=? AND status=1），不复用 DBSource 的「未命中缓存 1.0」。
+	pricingRepo := store.NewPricingRepo(sqlDB)
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
-		Channels:       channelRepo,
-		Tokens:         tokenRepo,
-		Access:         tokenRepo,
-		Sealer:         sealer,
-		Billing:        billingFactory,
-		ModelStatus:    modelStatus,
-		Config:         settings,
-		TrustedProxies: cfg.TrustedProxies,
+		Channels:        channelRepo,
+		Tokens:          tokenRepo,
+		Access:          tokenRepo,
+		Sealer:          sealer,
+		Billing:         billingFactory,
+		ModelStatus:     modelStatus,
+		Config:          settings,
+		GroupConfigured: pricingRepo.GroupConfigured,
+		TrustedProxies:  cfg.TrustedProxies,
 		// /pg/* 会话路径的分组回源：与 /api/status 的 usable_groups 同口径。
 		UserGroups: store.NewUserGroupsRepo(sqlDB),
 		// 原生路由索引/分发（manifest routes[] → /v1 兜底）。

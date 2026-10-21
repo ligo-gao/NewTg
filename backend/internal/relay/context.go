@@ -41,7 +41,20 @@ var (
 	// ErrIdentityOutOfRange 表示 M1 的 int64 主键无法无损落到契约的 int。
 	// 宁可拒绝请求，也不能让截断后的 id 指向另一个用户（见 idToInt）。
 	ErrIdentityOutOfRange = errors.New("relay: 身份 id 超出 int 表示范围")
+	// ErrAutoGroupsNotEnabled 表示 group=auto 的令牌没有可用的自动分组列表。
+	//
+	// R-61 / modules-02 I-20：历史遗留的空列表 auto 令牌必须在**请求期**
+	// fail-closed（HTTP 403 auto_groups_not_enabled），绝不回退 users.group——
+	// 否则一个保存期即应被拒绝的配置会在请求期静默按用户分组选路/计费。
+	ErrAutoGroupsNotEnabled = errors.New("relay: 自动分组未启用")
 )
+
+// groupAuto 是令牌分组的自动哨兵（modules-02 §2.9）。
+//
+// 与 tokenstore.GroupAuto 同值；协议层不 import 持久化包（depguard
+// relay-boundary），因此在此重复字面量并冻结语义：它只表示「按 AutoGroups
+// 序列选路」，永远不是真实分组名，不得进入候选查询或定价。
+const groupAuto = "auto"
 
 // RelayFormat 的取值在契约里没有冻结字面量（contract.RelayFormat 只承诺是协议标识）。
 // 这里给出「归一化前按路径可判定」的四个常用值；归一化层拿到完整请求后可以覆盖初值，
@@ -151,13 +164,27 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 		}
 
 		rc.TokenID = tokenID
-		// 控制器裁决：Bearer 路径从 TokenMeta.Group 同时填 UsingGroup 与 UserGroup。
-		// UserGroup 在此只是占位：TokenMeta 是令牌投影而非用户行，真正的用户分组
-		// 必须由 Task 8 在加载用户后覆盖再进入定价（relay-01 §7.1 定义 UserGroup 为用户分组）。
-		// 「令牌分组须 ∈ 用户可用分组」等附加校验与 auto 轮换的后续语义归鉴权层/路由层
-		// （relay-01 §3.4、§7.1）。
-		rc.UsingGroup = meta.Group
-		rc.UserGroup = meta.Group
+		// R-61：group=auto 在鉴权层解析成「有序分组序列」。
+		//   - 空列表 → fail-closed，绝不回退用户分组（I-20）；
+		//   - 否则 UsingGroup = 有序第一项，全表写进 rc.AutoGroups 供路由层换组；
+		//   - UserGroup 保持令牌分组的**字面值**（"auto"）：它是令牌投影占位，
+		//     定价与日志只消费 UsingGroup（本任务不改 UserGroup 语义）。
+		// 会话路径（TokenID == nil）没有自动分组语义，两个字段保持零值。
+		if meta.Group == groupAuto {
+			if len(meta.AutoGroups) == 0 {
+				return nil, ErrAutoGroupsNotEnabled
+			}
+			rc.UsingGroup = meta.AutoGroups[0]
+			rc.UserGroup = meta.Group
+			rc.AutoGroups = append([]string(nil), meta.AutoGroups...)
+			rc.CrossGroupRetry = meta.CrossGroupRetry
+		} else {
+			// 控制器裁决：Bearer 路径从 TokenMeta.Group 同时填 UsingGroup 与 UserGroup。
+			// UserGroup 在此只是占位：TokenMeta 是令牌投影而非用户行，真正的用户分组
+			// 必须由 Task 8 在加载用户后覆盖再进入定价（relay-01 §7.1 定义 UserGroup 为用户分组）。
+			rc.UsingGroup = meta.Group
+			rc.UserGroup = meta.Group
+		}
 	} else if hasPin && !isAdmin(principal.Role) {
 		// 会话路径不做令牌查询；但 pin 仍要在这里拒绝：路由层的 ParseChannelPin
 		// 只看请求头、不看身份来源，放行等于让非管理员会话用户绕过 §3.5。

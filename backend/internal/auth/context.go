@@ -77,6 +77,13 @@ type TokenMeta struct {
 	// 的 jsonb 列，SQL NULL 与 jsonb [] 均表示「不限」。
 	ModelLimits []string
 	AllowIPs    []string
+
+	// AutoGroups / CrossGroupRetry 是 modules-02 §2.9/§2.10 的自动分组投影
+	// （R-67：生产中继接缝 store.TokenRepo.Resolve 与 tokenstore 缓存必须同口径）。
+	// AutoGroups 仅在 Group == "auto" 时有效且**有序**（顺序即路由优先级，
+	// I-22）；CrossGroupRetry 只在 auto 分组下有意义（I-23）。
+	AutoGroups      []string
+	CrossGroupRetry bool
 }
 
 // TokenLookup 由 Task 12 的令牌存储实现：入参是 Bearer 明文的 SHA-256 哈希

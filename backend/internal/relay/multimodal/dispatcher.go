@@ -52,6 +52,10 @@ type Options struct {
 	Client *http.Client
 	// MaxRetries 与 relay.RouteDeps 同语义（0 = 默认 3）。
 	MaxRetries int
+	// MaxAutoGroups / GroupConfigured 与 relay.RouteDeps 同语义：auto 令牌在
+	// 多模态端点同样按 R-63/R-64 换组并做倍率存在性校验（M2/W7）。
+	MaxAutoGroups   int
+	GroupConfigured func(ctx context.Context, group string) (bool, error)
 	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时使用 relay-04
 	// 的端点×渠道类型矩阵（F2）。测试可注入以覆盖矩阵。
 	Supports func(contract.ChannelType) bool
@@ -203,9 +207,11 @@ func (d *Dispatcher) routeDeps(rc *contract.RelayContext, r *http.Request, plan 
 		Dispatch: func(channelType contract.ChannelType) (contract.Adapter, error) {
 			return d.adapterFor(channelType, plan)
 		},
-		Billing:    billing,
-		Client:     d.opts.Client,
-		MaxRetries: d.opts.MaxRetries,
+		Billing:         billing,
+		Client:          d.opts.Client,
+		MaxRetries:      d.opts.MaxRetries,
+		MaxAutoGroups:   d.opts.MaxAutoGroups,
+		GroupConfigured: d.opts.GroupConfigured,
 	}
 }
 

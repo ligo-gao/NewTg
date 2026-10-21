@@ -1164,12 +1164,16 @@ func batchFailureDetail(err error) string {
 // ---------------------------------------------------------------------------
 
 type resolveRow struct {
-	ID          int64
-	UserID      int64
-	Status      string
-	Group       string
-	ExpiresAt   *time.Time
-	RemainQuota *int64
+	ID              int64
+	UserID          int64
+	Status          string
+	Group           string
+	ExpiresAt       *time.Time
+	RemainQuota     *int64
+	ModelLimits     *string
+	AllowIPs        *string
+	AutoGroups      *string
+	CrossGroupRetry bool
 }
 
 // Resolve 实现 auth.TokenLookup：入参是完整明文的 SHA-256 哈希。
@@ -1177,6 +1181,10 @@ type resolveRow struct {
 // 返回口径（GC-11）：不存在/已删除/已重置 → ErrInvalidToken；禁用 →
 // ErrTokenDisabled；过期 → ErrTokenExpired；额度耗尽仍返回 meta（自读用量
 // 必须可用，modules-02 §2.13），由调用方决定 402/401。
+//
+// R-67：模型/IP 白名单与 auto 分组字段必须与生产接缝 store.TokenRepo.Resolve
+// 投影一致。本实现只服务管理会话路径（不消费这些列），但两个 TokenLookup
+// 实现的口径不得分叉——否则同一令牌在两条路径上会看到不同的分组/限制。
 func (s *Store) Resolve(ctx context.Context, keyHash string) (*auth.TokenMeta, error) {
 	meta, err := s.resolveMeta(ctx, keyHash)
 	if err != nil {
@@ -1218,7 +1226,8 @@ func (s *Store) resolveMeta(ctx context.Context, keyHash string) (*auth.TokenMet
 	gen, cacheable := s.cacheGeneration(ctx)
 	var row resolveRow
 	err := s.dbWith(ctx).Table("api_tokens").
-		Select(`id, user_id, status, "group", expires_at, remain_quota`).
+		Select(`id, user_id, status, "group", expires_at, remain_quota,
+			model_limits, allow_ips, auto_groups, cross_group_retry`).
 		Where("key_hash = ?", keyHash).
 		Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1230,12 +1239,16 @@ func (s *Store) resolveMeta(ctx context.Context, keyHash string) (*auth.TokenMet
 	}
 
 	meta := &auth.TokenMeta{
-		ID:             row.ID,
-		UserID:         row.UserID,
-		Status:         row.Status,
-		Group:          row.Group,
-		ExpiresAt:      row.ExpiresAt,
-		UnlimitedQuota: row.RemainQuota == nil,
+		ID:              row.ID,
+		UserID:          row.UserID,
+		Status:          row.Status,
+		Group:           row.Group,
+		ExpiresAt:       row.ExpiresAt,
+		ModelLimits:     decodeStringArray(row.ModelLimits),
+		AllowIPs:        decodeStringArray(row.AllowIPs),
+		AutoGroups:      decodeStringArray(row.AutoGroups),
+		CrossGroupRetry: row.CrossGroupRetry,
+		UnlimitedQuota:  row.RemainQuota == nil,
 	}
 	if row.RemainQuota != nil {
 		meta.RemainQuota = *row.RemainQuota
@@ -1530,6 +1543,9 @@ func cloneMeta(meta *auth.TokenMeta) *auth.TokenMeta {
 		return nil
 	}
 	clone := *meta
+	clone.ModelLimits = append([]string(nil), meta.ModelLimits...)
+	clone.AllowIPs = append([]string(nil), meta.AllowIPs...)
+	clone.AutoGroups = append([]string(nil), meta.AutoGroups...)
 	if meta.ExpiresAt != nil {
 		expires := *meta.ExpiresAt
 		clone.ExpiresAt = &expires

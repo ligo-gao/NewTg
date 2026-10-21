@@ -23,6 +23,11 @@ type RelayContext struct {
 	TokenID    int
 	UsingGroup string
 	UserGroup  string
+	// AutoGroups 是 group=auto 令牌的**有序**候选分组（写入方：鉴权层；读取方：
+	// 路由层）。UsingGroup 的轮换仍由路由层通过 WithUsingGroup 单点改写
+	// （relay-01 §7.1、R-61/R-62）；本字段只承载序列，不参与定价。
+	AutoGroups      []string
+	CrossGroupRetry bool // 跨分组重试开关（写入方：鉴权层；读取方：路由层，R-62）
 
 	// —— 请求组（写入方：归一化层）——
 	OriginModel string
