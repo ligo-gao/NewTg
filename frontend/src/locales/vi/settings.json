@@ -94,7 +94,8 @@
     "sec": "SSRF và từ nhạy cảm",
     "notify_smtp": "SMTP",
     "rl_health": "Sức khỏe kênh",
-    "notify_webhook": "Thông báo Webhook"
+    "notify_webhook": "Thông báo Webhook",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "Hiển thị trên mọi trang và dùng làm cơ sở cho liên kết gọi lại",
@@ -109,7 +110,8 @@
     "sec": "Yêu cầu đi ra được kiểm tra trước khi rời cổng",
     "notify_smtp": "Cần thiết cho xác minh email và thông báo qua email",
     "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên",
-    "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS"
+    "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS",
+    "pay_epay": "Cổng thanh toán Epay chung (ký MD5, tương thích ZPay)"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Khóa công khai Alipay",
         "gateway_url": "URL cổng",
         "sandbox": "Chế độ hộp cát"
+      },
+      "epay": {
+        "enabled": "Bật Epay",
+        "api_url": "URL API thanh toán",
+        "pid": "Mã merchant (pid)",
+        "key": "Khóa ký",
+        "sign_mode": "Cách ghép chữ ký",
+        "notify_url": "URL thông báo",
+        "return_url": "URL quay lại"
       }
     },
     "rl": {
@@ -215,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "Chế độ bảo vệ SSRF",
         "enabled": "Bật bảo vệ SSRF",
         "allow_private_ip": "Cho phép địa chỉ riêng",
         "allowed_ports": "Cổng được phép",
         "domain_mode": "Chế độ tên miền",
-        "domain_list": "Danh sách tên miền"
+        "domain_list": "Danh sách tên miền",
+        "max_redirects": "Số lần chuyển hướng tối đa",
+        "connect_timeout_seconds": "Thời gian chờ kết nối (giây)"
       },
       "sensitive": {
         "enabled": "Bật lọc từ nhạy cảm",
@@ -300,6 +314,13 @@
       "alipay": {
         "private_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại.",
         "public_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại."
+      },
+      "epay": {
+        "api_url": "Phải là URL https tuyệt đối, tối đa 1024 ký tự.",
+        "key": "Dùng để ký đơn hàng và xác thực callback. Để trống để giữ khóa hiện tại.",
+        "sign_mode": "append: chuỗi ký + khóa (chuẩn). amp: chuỗi ký & khóa (một số cổng). Đơn hàng và callback phải dùng cùng một cách.",
+        "notify_url": "Tùy chọn. URL https tuyệt đối; để trống sẽ suy ra từ địa chỉ dịch vụ.",
+        "return_url": "Tùy chọn. URL tuyệt đối hoặc đường dẫn tương đối trên site cho trình duyệt quay lại."
       }
     },
     "rl": {
@@ -313,7 +334,11 @@
         "enabled": "Áp dụng cho mọi yêu cầu đi ra: khám phá OAuth, webhook, gọi lại thanh toán, kiểm tra URL và chuyển tiếp đến kênh thượng nguồn.",
         "allow_private_ip": "Chỉ áp dụng cho yêu cầu đi ra.",
         "allowed_ports": "Số nguyên từ 1 đến 65535 phân tách bằng dấu phẩy.",
-        "domain_list": "Mỗi dòng một tên miền hoặc phân tách bằng dấu phẩy. Ở chế độ danh sách cho phép, danh sách trống sẽ chặn mọi yêu cầu đi ra."
+        "domain_list": "Mỗi dòng một tên miền hoặc phân tách bằng dấu phẩy. Ở chế độ danh sách cho phép, danh sách trống sẽ chặn mọi yêu cầu đi ra.",
+        "mode": "off tắt mọi kiểm tra ra ngoài; basic chặn địa chỉ riêng tư và loopback; strict còn yêu cầu địa chỉ phân giải phải là công khai. Chế độ miền mặc định là allowlist — đây là siết chặt phá vỡ tương thích (G-DOM-68): chỉ các host trong danh sách mới truy cập được, hãy thêm mọi host ra ngoài (webhook, callback thanh toán, OAuth discovery) trước khi nâng cấp.",
+        "domain_mode": "allowlist mặc định là siết chặt phá vỡ tương thích (G-DOM-68): yêu cầu ra ngoài tới host không có trong danh sách sẽ bị chặn.",
+        "max_redirects": "0–10. Mỗi bước chuyển hướng đều được kiểm tra lại.",
+        "connect_timeout_seconds": "1–120 giây."
       },
       "sensitive": {
         "scope": "Chọn trường lời nhắc nào được kiểm tra.",
@@ -362,7 +387,12 @@
       "payment_success": "Thanh toán thành công",
       "announcement": "Thông báo được đăng",
       "user_signup": "Người dùng đăng ký"
-    }
+    },
+    "epay_sign_append": "Nối khóa (chuẩn)",
+    "epay_sign_amp": "Nối bằng & (cổng cũ)",
+    "ssrf_mode_off": "Tắt",
+    "ssrf_mode_basic": "Cơ bản",
+    "ssrf_mode_strict": "Nghiêm ngặt"
   },
   "status": {
     "title": "Trạng thái hệ thống",

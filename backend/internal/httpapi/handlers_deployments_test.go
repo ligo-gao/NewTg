@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/rbac"
 )
@@ -30,6 +33,7 @@ type deployMgmtEnv struct {
 	secrets  *fakeDeploySecretStore
 	audit    *fakeAuditExec
 	idem     IdempotencyStore
+	billing  *fakeDeployBilling
 }
 
 func newDeployMgmtEnv(t *testing.T) *deployMgmtEnv {
@@ -37,19 +41,143 @@ func newDeployMgmtEnv(t *testing.T) *deployMgmtEnv {
 	return newDeployMgmtEnvWithIdem(t, NewMemoryIdempotencyStore())
 }
 
+// fakeDeployBilling 是站点成本账的内存替身：单测只需要断言「预扣/释放/
+// 终止收敛是否被调用以及入参」，真实幂等与金额换算由 billing 包的
+// 集成测试与账本本身覆盖。
+type fakeDeployBilling struct {
+	mu             sync.Mutex
+	holds          []deploybilling.SegmentEstimate
+	segments       map[string]deploybilling.Segment
+	byKey          map[string]deploybilling.Segment
+	releases       []string
+	terminated     []deploybilling.TerminationObservation
+	terminateCalls int
+	settleQueue    []fakeSettleOutcome
+	holdErr        error
+	settleErr      error
+	nextID         int
+}
+
+// fakeSettleOutcome 让连续多次 SettleTerminated 返回不同结果/错误。
+type fakeSettleOutcome struct {
+	result deploybilling.TerminationResult
+	err    error
+}
+
+func newFakeDeployBilling() *fakeDeployBilling {
+	return &fakeDeployBilling{
+		segments: map[string]deploybilling.Segment{},
+		byKey:    map[string]deploybilling.Segment{},
+	}
+}
+
+func (f *fakeDeployBilling) Hold(_ context.Context, est deploybilling.SegmentEstimate) (deploybilling.Segment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds = append(f.holds, est)
+	if f.holdErr != nil {
+		// 模拟「既有段 + 错误」的部分成功：账本实现当前不会这样返回，
+		// 但补偿路径必须对这种情况保守——返回了段的 ID 就说明它不是孤儿。
+		if existing, ok := f.byKey[est.IdempotencyKey]; ok {
+			return existing, false, f.holdErr
+		}
+		return deploybilling.Segment{}, false, f.holdErr
+	}
+	if existing, ok := f.byKey[est.IdempotencyKey]; ok {
+		return existing, false, nil
+	}
+	f.nextID++
+	seg := deploybilling.Segment{
+		SegmentID:      fmt.Sprintf("seg-%d", f.nextID),
+		DeploymentID:   est.DeploymentID,
+		SegmentKind:    est.SegmentKind,
+		IdempotencyKey: est.IdempotencyKey,
+		State:          est.State,
+	}
+	f.segments[seg.SegmentID] = seg
+	f.byKey[est.IdempotencyKey] = seg
+	return seg, true, nil
+}
+
+func (f *fakeDeployBilling) Release(_ context.Context, segmentID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases = append(f.releases, segmentID)
+	return nil
+}
+
+func (f *fakeDeployBilling) SettleTerminated(_ context.Context,
+	obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated = append(f.terminated, obs)
+	f.terminateCalls++
+	if len(f.settleQueue) > 0 {
+		outcome := f.settleQueue[0]
+		f.settleQueue = f.settleQueue[1:]
+		return outcome.result, outcome.err
+	}
+	if f.settleErr != nil {
+		return deploybilling.TerminationResult{}, f.settleErr
+	}
+	var result deploybilling.TerminationResult
+	for _, seg := range f.segments {
+		if seg.DeploymentID != obs.DeploymentID {
+			continue
+		}
+		result.SegmentsSettled++
+	}
+	return result, nil
+}
+
+// setSegmentState 修改内存段的终态，用于「同键重入但段已关闭」分支。
+func (f *fakeDeployBilling) setSegmentState(segmentID, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seg, ok := f.segments[segmentID]
+	if !ok {
+		return
+	}
+	seg.State = state
+	f.segments[segmentID] = seg
+	f.byKey[seg.IdempotencyKey] = seg
+}
+
+func (f *fakeDeployBilling) snapshot() (holds []deploybilling.SegmentEstimate, releases []string,
+	terminated []deploybilling.TerminationObservation) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]deploybilling.SegmentEstimate(nil), f.holds...),
+		append([]string(nil), f.releases...),
+		append([]deploybilling.TerminationObservation(nil), f.terminated...)
+}
+
 func newDeployMgmtEnvWithIdem(t *testing.T, idem IdempotencyStore) *deployMgmtEnv {
 	t.Helper()
 	service := &fakeSettingsService{getView: sampleDeployView(true, true)}
-	provider := &ionet.FakeProvider{NameAvailable: true}
+	// 默认给一个可用报价：P-21 之后「有报价」是创建/续期的前置条件，
+	// 各用例按需覆盖。
+	provider := &ionet.FakeProvider{
+		NameAvailable: true,
+		Price: ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true,
+			EstimationValid:  true,
+			Currency:         "USDC",
+		},
+	}
 	secrets := &fakeDeploySecretStore{key: "stored-key", ok: true}
 	exec := &fakeAuditExec{}
+	billing := newFakeDeployBilling()
 	env := &deployMgmtEnv{
 		service: service, provider: provider, secrets: secrets, audit: exec, idem: idem,
+		billing: billing,
 	}
 	handlers, err := NewDeployManagementHandlers(DeployManagementHandlerConfig{
 		Settings: service,
 		Secrets:  secrets,
 		Provider: func(string) ionet.DeploymentProvider { return provider },
+		Billing:  billing,
 		Authz:    rbac.NewAuthzMiddleware(),
 		Audit:    audit.New(exec),
 		Idem:     idem,
@@ -83,6 +211,25 @@ func decodeDeployProblem(t *testing.T, rr *httptest.ResponseRecorder) map[string
 	}
 	return problem
 }
+
+// passThroughIdemStore 让每次 Claim 都执行 handler：用于验证**账本层**的
+// 幂等（HTTP 层重放会把第二次请求挡在门外，测不到这条路径）。
+type passThroughIdemStore struct {
+	mu   sync.Mutex
+	next int
+}
+
+func (s *passThroughIdemStore) Claim(context.Context, string, time.Duration) (IdempotencyClaim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.next++
+	return IdempotencyClaim{Status: IdempotencyClaimAcquired, Token: fmt.Sprintf("tok-%d", s.next)}, nil
+}
+
+func (s *passThroughIdemStore) Complete(context.Context, string, string, IdempotentResponse, time.Duration) error {
+	return nil
+}
+func (s *passThroughIdemStore) Release(context.Context, string, string) error { return nil }
 
 // inFlightIdemStore 让 Claim 恒返回「同键在途」，用于覆盖 409 分支。
 type inFlightIdemStore struct{}
@@ -243,7 +390,7 @@ func validCreateBody() string {
 func TestDeployCreateSuccessChecksNameTwiceAndPriceFirst(t *testing.T) {
 	env := newDeployMgmtEnv(t)
 	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "deployment requested"}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("12.5")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("12.5")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusAccepted {
@@ -296,6 +443,55 @@ func TestDeployCreatePriceFailureDoesNotWrite(t *testing.T) {
 	}
 	if env.provider.CreateCalls != 0 {
 		t.Fatalf("报价失败不得发起 provider 写: %d", env.provider.CreateCalls)
+	}
+	holds, _, _ := env.billing.snapshot()
+	if len(holds) != 0 {
+		t.Fatalf("报价失败不得预扣: %d", len(holds))
+	}
+}
+
+// P-21：provider 回 200 但报价不可用（没给报价字段）→ 422 quote_unavailable，
+// 零 provider 写、零预扣；绝不按 0 计。
+func TestDeployCreateQuoteUnavailableRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		price ionet.PriceEstimationResponse
+	}{
+		{"missing quote", ionet.PriceEstimationResponse{EstimationValid: true, Currency: "USDC"}},
+		{"invalid estimate", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true, EstimationValid: false, Currency: "USDC"}},
+		{"negative quote", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(-1)},
+			EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}},
+		{"non-usd currency", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true, EstimationValid: true, Currency: "CNY"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDeployMgmtEnv(t)
+			env.provider.Price = tc.price
+			rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+			}
+			problem := decodeDeployProblem(t, rr)
+			if problem["type"] != problemTypeDeployQuoteUnavailable || problem["detail"] == nil {
+				t.Fatalf("problem = %+v", problem)
+			}
+			if env.provider.CreateCalls != 0 {
+				t.Fatalf("报价不可用不得发起 provider 写: %d", env.provider.CreateCalls)
+			}
+			holds, _, _ := env.billing.snapshot()
+			if len(holds) != 0 {
+				t.Fatalf("报价不可用不得预扣: %d", len(holds))
+			}
+			rows := env.audit.snapshot()
+			if len(rows) != 1 || !strings.Contains(stringifyAuditRow(rows[0]), "quote_unavailable") {
+				t.Fatalf("审计必须记录 quote_unavailable: %v", rows)
+			}
+		})
 	}
 }
 
@@ -528,7 +724,7 @@ func TestDeployExtendRequiresPriceAndWrites(t *testing.T) {
 		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 2,
 		Locations: []ionet.DeploymentLocation{{ID: 1}, {ID: 2}},
 	}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("3.5")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("3.5")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
 
 	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
@@ -565,6 +761,437 @@ func TestDeployDeleteAccepted(t *testing.T) {
 	}
 	if env.provider.LastDeleteID != "dep-1" {
 		t.Fatal("删除未透传 ID")
+	}
+}
+
+// ---------- 站点成本账接线（H1/H2） ----------
+
+// H1 Step 1（单测层）：创建成功产生 1 个预扣段，键符合 P-20。
+func TestDeployCreateHoldsSiteCostLedger(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, releases, _ := env.billing.snapshot()
+	if len(holds) != 1 || len(releases) != 0 {
+		t.Fatalf("holds/releases = %d/%d，期望 1/0", len(holds), len(releases))
+	}
+	est := holds[0]
+	if est.DeploymentID != "dep-new" || est.SegmentKind != deploybilling.SegmentKindCreate {
+		t.Fatalf("estimate = %+v", est)
+	}
+	if est.IdempotencyKey != "deploy:create:1:idem-key-1" {
+		t.Fatalf("P-20 创建幂等键 = %q", est.IdempotencyKey)
+	}
+	if est.PlannedSeconds != 24*3600 || est.GPUsPerContainer != 1 || est.ReplicaCount != 2 {
+		t.Fatalf("段快照与请求不一致: %+v", est)
+	}
+	if !est.QuoteUSD.Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("冻结报价 = %s", est.QuoteUSD)
+	}
+}
+
+// H1：预扣失败只回滚部署创建（P-19），返回 502 且不产生任何用户扣费。
+func TestDeployCreateHoldFailureRollsBackDeployment(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+	env.billing.holdErr = errors.New("ledger down")
+
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d，期望 502（body=%s）", rr.Code, rr.Body.String())
+	}
+	if got := decodeDeployProblem(t, rr)["type"]; got != problemTypeDeployBillingFailed {
+		t.Fatalf("problem.type = %v", got)
+	}
+	if env.provider.DeleteCalls != 1 || env.provider.LastDeleteID != "dep-new" {
+		t.Fatalf("预扣失败必须回滚刚创建的部署（delete calls=%d id=%q）",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+	rows := env.audit.snapshot()
+	if len(rows) != 1 || !strings.Contains(stringifyAuditRow(rows[0]), "deploy_billing_hold_failed") {
+		t.Fatalf("审计必须记录预扣失败: %v", rows)
+	}
+}
+
+// H1：续期先预扣新段，生效后关闭旧段（排除新段）。
+func TestDeployExtendHoldsThenSettlesPreviousSegment(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 2, TotalContainers: 3,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
+
+	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, _, terminated := env.billing.snapshot()
+	if len(holds) != 1 {
+		t.Fatalf("续期必须预扣恰好一次: %d", len(holds))
+	}
+	est := holds[0]
+	if est.SegmentKind != deploybilling.SegmentKindExtend ||
+		est.IdempotencyKey != "deploy:extend:dep-1:12" || est.StartedAt == nil {
+		t.Fatalf("续期段 = %+v", est)
+	}
+	if len(terminated) != 1 {
+		t.Fatalf("续期生效必须关闭旧段: %d", len(terminated))
+	}
+	if len(terminated[0].ExcludeSegmentIDs) != 1 {
+		t.Fatalf("关闭旧段时必须排除刚预扣的新段: %+v", terminated[0])
+	}
+}
+
+// H1：provider 续期失败 → 释放刚预扣的新段（段从未运行，成本 0）。
+func TestDeployExtendProviderFailureReleasesHold(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendErr = &ionet.APIError{StatusCode: http.StatusInternalServerError}
+
+	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`, deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, releases, terminated := env.billing.snapshot()
+	if len(holds) != 1 || len(releases) != 1 || releases[0] != "seg-1" {
+		t.Fatalf("holds/releases = %d/%v", len(holds), releases)
+	}
+	if len(terminated) != 0 {
+		t.Fatal("续期失败不得关闭旧段")
+	}
+}
+
+// I-1：同部署、同时长、不同 Idempotency-Key 两次续期 → provider 只续一次。
+//
+// P-20 的续期键由 (deployment, hours) 决定：第二次 Hold 命中既有段即重入，
+// 必须返回既有段语义且**不得**再写 provider（重复 ExtendDeployment 会真的
+// 多买时长，而账本只有一段）。
+func TestDeployExtendReplayDoesNotTouchProvider(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
+
+	first := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("第一次 status = %d（body=%s）", first.Code, first.Body.String())
+	}
+	second := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`,
+		map[string]string{"Idempotency-Key": "idem-key-2"})
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("重入 status = %d（body=%s）", second.Code, second.Body.String())
+	}
+	if env.provider.ExtendCalls != 1 {
+		t.Fatalf("同键重入不得重复调用 provider：ExtendCalls = %d", env.provider.ExtendCalls)
+	}
+	holds, _, terminated := env.billing.snapshot()
+	if len(holds) != 2 || len(terminated) != 1 {
+		t.Fatalf("holds/terminated = %d/%d（应该只有一次预扣与一次旧段收敛）", len(holds), len(terminated))
+	}
+	// 重入响应返回既有段的状态，而不是伪造新的 "extending"。
+	var body struct {
+		DeploymentID string `json:"deployment_id"`
+		Status       string `json:"status"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode replay body: %v", err)
+	}
+	if body.DeploymentID != "dep-1" || body.Status != "running" {
+		t.Fatalf("重入响应 = %+v，want 既有段状态", body)
+	}
+}
+
+// I-1：同键命中的段已终态 → 409（不能再续，也不能静默成功）。
+func TestDeployExtendReplayOfTerminalSegmentConflicts(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
+
+	if rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`, deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("第一次 status = %d", rr.Code)
+	}
+	env.billing.setSegmentState("seg-1", deploybilling.SegmentSettled)
+
+	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`,
+		map[string]string{"Idempotency-Key": "idem-key-2"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("终态段重入 = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.provider.ExtendCalls != 1 {
+		t.Fatalf("终态段不得再写 provider: %d", env.provider.ExtendCalls)
+	}
+	rows := env.audit.snapshot()
+	if !strings.Contains(stringifyAuditRow(rows[len(rows)-1]), "deploy_extend_key_consumed") {
+		t.Fatal("审计必须记录 deploy_extend_key_consumed")
+	}
+}
+
+// I-2：同 clientRequestID、不同 body 的创建重放 → 回滚新部署、返回既有部署 ID。
+func TestDeployCreateLedgerReplayRollsBackDuplicateDeployment(t *testing.T) {
+	env := newDeployMgmtEnvWithIdem(t, &passThroughIdemStore{})
+	env.provider.CreateResult = func() ionet.DeploymentAction {
+		return ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+	}()
+
+	first := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d（body=%s）", first.Code, first.Body.String())
+	}
+	// 不同 body（时长 48h）会绕开 HTTP 幂等指纹，但仍复用同一 clientRequestID。
+	// 第二次 provider 创建返回**不同**的部署 ID，才能区分「回滚重复部署」。
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-dup", Status: "requested"}
+	second := env.do(http.MethodPost, "/api/deployments",
+		strings.Replace(validCreateBody(), `"duration_hours":24`, `"duration_hours":48`, 1),
+		deployWriteHeaders())
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replay status = %d（body=%s）", second.Code, second.Body.String())
+	}
+	holds, _, _ := env.billing.snapshot()
+	if len(holds) != 2 {
+		t.Fatalf("两次请求各调用一次 Hold: %d", len(holds))
+	}
+	var body struct {
+		DeploymentID string `json:"deployment_id"`
+		Status       string `json:"status"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode replay body: %v", err)
+	}
+	if body.DeploymentID != "dep-new" {
+		t.Fatalf("重放响应必须指向既有段对应的部署: %+v", body)
+	}
+	if env.provider.DeleteCalls != 1 || env.provider.LastDeleteID != "dep-dup" {
+		t.Fatalf("重复创建的部署必须回滚: deleteCalls=%d id=%q",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+}
+
+// I-2：同键同 body 的 HTTP 层重放 → provider 只被调用一次（幂等缓存生效）。
+func TestDeployCreateHttpReplayDoesNotTouchProvider(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	first := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	second := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("status = %d/%d", first.Code, second.Code)
+	}
+	if env.provider.CreateCalls != 1 {
+		t.Fatalf("HTTP 重放不得重复创建部署: %d", env.provider.CreateCalls)
+	}
+	var firstBody, secondBody struct {
+		DeploymentID string `json:"deployment_id"`
+	}
+	_ = json.Unmarshal(first.Body.Bytes(), &firstBody)
+	_ = json.Unmarshal(second.Body.Bytes(), &secondBody)
+	if firstBody.DeploymentID != "dep-new" || secondBody.DeploymentID != firstBody.DeploymentID {
+		t.Fatalf("重放响应必须一致: %q vs %q", firstBody.DeploymentID, secondBody.DeploymentID)
+	}
+}
+
+// M-5：预扣失败的回滚删除也失败时，响应仍是 502 且记录预扣失败审计。
+func TestDeployCreateHoldFailureRollbackFailureIsAuditedNotFatal(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+	env.provider.DeleteErr = &ionet.APIError{StatusCode: http.StatusNotFound}
+	env.billing.holdErr = errors.New("ledger down")
+
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d，期望 502（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.provider.DeleteCalls != 1 {
+		t.Fatalf("必须尝试回滚: deleteCalls=%d", env.provider.DeleteCalls)
+	}
+	rows := env.audit.snapshot()
+	if len(rows) != 1 || !strings.Contains(stringifyAuditRow(rows[0]), "deploy_billing_hold_failed") {
+		t.Fatalf("审计必须记录预扣失败: %v", rows)
+	}
+}
+
+// Important 1：provider 对重复创建去重、返回**同一**部署 ID 时不得回滚。
+func TestDeployCreateReplaySameDeploymentIDIsNotRolledBack(t *testing.T) {
+	env := newDeployMgmtEnvWithIdem(t, &passThroughIdemStore{})
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	first := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d（body=%s）", first.Code, first.Body.String())
+	}
+	// 第二次返回同一个 ID：它是既有段对应的活部署，删掉就等于删客户的部署。
+	second := env.do(http.MethodPost, "/api/deployments",
+		strings.Replace(validCreateBody(), `"duration_hours":24`, `"duration_hours":48`, 1),
+		deployWriteHeaders())
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replay status = %d（body=%s）", second.Code, second.Body.String())
+	}
+	if env.provider.DeleteCalls != 0 {
+		t.Fatalf("同一个部署 ID 不得回滚: deleteCalls=%d id=%q",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+	var body struct {
+		DeploymentID string `json:"deployment_id"`
+	}
+	_ = json.Unmarshal(second.Body.Bytes(), &body)
+	if body.DeploymentID != "dep-new" {
+		t.Fatalf("重放必须返回既有部署: %+v", body)
+	}
+}
+
+// Important 1（对照）：ID 不同 = 本次真的新建了孤儿部署 → 必须回滚。
+// 已有 TestDeployCreateLedgerReplayRollsBackDuplicateDeployment 覆盖。
+
+// Important 1（同一条守卫）：预扣失败时，若 provider 去重返回既有部署 ID，也不得回滚。
+func TestDeployCreateHoldFailureDoesNotRollBackSameDeployment(t *testing.T) {
+	env := newDeployMgmtEnvWithIdem(t, &passThroughIdemStore{})
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	if rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	env.billing.holdErr = errors.New("ledger down")
+	env.provider.DeleteCalls = 0
+	rr := env.do(http.MethodPost, "/api/deployments",
+		strings.Replace(validCreateBody(), `"duration_hours":24`, `"duration_hours":48`, 1),
+		deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d，期望 502（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.provider.DeleteCalls != 0 {
+		t.Fatalf("既有段对应的部署不得回滚: deleteCalls=%d id=%q",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+}
+
+// Minor 4：创建重入命中的段已终态 → 409（与续期口径一致）。
+func TestDeployCreateReplayOfTerminalSegmentConflicts(t *testing.T) {
+	env := newDeployMgmtEnvWithIdem(t, &passThroughIdemStore{})
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	if rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders()); rr.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	env.billing.setSegmentState("seg-1", deploybilling.SegmentAbandoned)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-dup", Status: "requested"}
+
+	rr := env.do(http.MethodPost, "/api/deployments",
+		strings.Replace(validCreateBody(), `"duration_hours":24`, `"duration_hours":48`, 1),
+		deployWriteHeaders())
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("终态段重入 = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
+	}
+	// 孤儿部署仍要回滚。
+	if env.provider.DeleteCalls != 1 || env.provider.LastDeleteID != "dep-dup" {
+		t.Fatalf("孤儿部署必须回滚: deleteCalls=%d id=%q",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+	rows := env.audit.snapshot()
+	if !strings.Contains(stringifyAuditRow(rows[len(rows)-1]), "deploy_create_key_consumed") {
+		t.Fatal("审计必须记录 deploy_create_key_consumed")
+	}
+}
+
+// Important 2：重试部分成功时统计跨尝试累加（段 A 已结算、段 B 重试后成功）。
+func TestDeployDeleteSettleRetryAccumulatesResults(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "termination requested"}
+	env.billing.settleQueue = []fakeSettleOutcome{
+		{result: deploybilling.TerminationResult{SegmentsSettled: 1, ConfirmedCredits: 100}, err: driver.ErrBadConn},
+		{result: deploybilling.TerminationResult{SegmentsSettled: 1, ConfirmedCredits: 50}},
+	}
+
+	rr := env.do(http.MethodDelete, "/api/deployments/dep-1", "", deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.billing.terminateCalls != 2 {
+		t.Fatalf("第二次应成功，实际调用 %d 次", env.billing.terminateCalls)
+	}
+	detail := stringifyAuditRow(env.audit.snapshot()[len(env.audit.snapshot())-1])
+	if !strings.Contains(detail, `"billing_segments_settled":2`) {
+		t.Fatalf("段数必须跨尝试累加: %s", detail)
+	}
+	if !strings.Contains(detail, `"billing_confirmed_credits":150`) {
+		t.Fatalf("确认成本必须跨尝试累加: %s", detail)
+	}
+}
+
+// Minor 3：确定性错误不得重试（白名单之外的错误）。
+func TestDeployDeleteSettleDeterministicErrorIsNotRetried(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "termination requested"}
+	env.billing.settleErr = errors.New("invalid segment")
+
+	rr := env.do(http.MethodDelete, "/api/deployments/dep-1", "", deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if env.billing.terminateCalls != 1 {
+		t.Fatalf("确定性错误不得重试: %d 次", env.billing.terminateCalls)
+	}
+}
+
+// M-5 / I-3：删除成功但即时结算失败 → 202 + billing_result=deferred，且有限重试。
+func TestDeployDeleteSettleFailureIsDeferredAfterRetries(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "termination requested"}
+	env.billing.settleErr = driver.ErrBadConn
+
+	rr := env.do(http.MethodDelete, "/api/deployments/dep-1", "", deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.billing.terminateCalls != deploySettleAttempts {
+		t.Fatalf("可重试错误应重试 %d 次，实际 %d", deploySettleAttempts, env.billing.terminateCalls)
+	}
+	rows := env.audit.snapshot()
+	detail := stringifyAuditRow(rows[len(rows)-1])
+	if !strings.Contains(detail, "deferred") {
+		t.Fatalf("审计必须标记 billing_result=deferred: %s", detail)
+	}
+}
+
+// H2：删除成功 → 只做终止收敛，不再 Hold（P-18）。
+func TestDeployDeleteSettlesWithoutHolding(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeleteResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "termination requested"}
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", StartedAt: deployTimePtr(time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)),
+		FinishedAt:           deployTimePtr(time.Date(2026, 10, 20, 10, 30, 0, 0, time.UTC)),
+		ComputeMinutesServed: 30,
+	}
+
+	rr := env.do(http.MethodDelete, "/api/deployments/dep-1", "", deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, _, terminated := env.billing.snapshot()
+	if len(holds) != 0 {
+		t.Fatalf("终止不得 Hold: %d", len(holds))
+	}
+	if len(terminated) != 1 || terminated[0].DeploymentID != "dep-1" {
+		t.Fatalf("终止必须收敛段: %+v", terminated)
+	}
+	if terminated[0].ComputeSeconds != 30*60 || terminated[0].FinishedAt == nil {
+		t.Fatalf("终止必须带删除前的 provider 观测: %+v", terminated[0])
+	}
+	rows := env.audit.snapshot()
+	detail := stringifyAuditRow(rows[len(rows)-1])
+	if !strings.Contains(detail, "billing_segments_settled") {
+		t.Fatalf("终止审计必须记录结算结果: %s", detail)
 	}
 }
 
@@ -661,7 +1288,7 @@ func TestDeployCatalogAndPriceEndpoints(t *testing.T) {
 		Locations: []ionet.Location{{ID: 1, Name: "us-east"}}, Total: 1,
 	}
 	env.provider.Replicas = ionet.AvailableReplicas{Replicas: []ionet.AvailableReplica{{LocationID: 1, AvailableCount: 3}}}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("9.99")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("9.99")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 	for _, target := range []string{
 		"/api/deployments/hardware-types",
@@ -815,7 +1442,7 @@ func TestDeployWriteIdempotencyMatrix(t *testing.T) {
 				ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
 				Locations: []ionet.DeploymentLocation{{ID: 1}},
 			}
-			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
+			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 			missing := env.do(tc.method, tc.target, tc.body, nil)
 			if missing.Code != http.StatusBadRequest {
@@ -929,7 +1556,7 @@ func TestDeployAllEndpointsRequireSettingsManage(t *testing.T) {
 
 func TestDeployNameConflictMapsToNameTaken(t *testing.T) {
 	env := newDeployMgmtEnv(t)
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 	env.provider.CreateErr = &ionet.APIError{StatusCode: http.StatusConflict}
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusConflict {

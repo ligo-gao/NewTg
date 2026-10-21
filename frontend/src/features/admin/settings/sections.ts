@@ -392,6 +392,39 @@ const PAY_ALIPAY: SectionConfig = {
   ],
 }
 
+const PAY_EPAY: SectionConfig = {
+  id: 'pay.epay',
+  titleKey: 'settings.section.pay_epay',
+  descriptionKey: 'settings.section_description.pay_epay',
+  fields: [
+    toggle('pay.epay.enabled', label('pay.epay.enabled')),
+    text('pay.epay.api_url', label('pay.epay.api_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.api_url'),
+    }),
+    text('pay.epay.pid', label('pay.epay.pid'), { maxLength: 128 }),
+    // 签名密钥只写不读：服务端返回掩码，留空 = 不修改，清空 = 显式删除。
+    field('pay.epay.key', label('pay.epay.key'), 'secret', {
+      hintKey: hint('pay.epay.key'),
+    }),
+    field('pay.epay.sign_mode', label('pay.epay.sign_mode'), 'select', {
+      options: [
+        { value: 'append', labelKey: 'settings.option.epay_sign_append' },
+        { value: 'amp', labelKey: 'settings.option.epay_sign_amp' },
+      ],
+      hintKey: hint('pay.epay.sign_mode'),
+    }),
+    text('pay.epay.notify_url', label('pay.epay.notify_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.notify_url'),
+    }),
+    text('pay.epay.return_url', label('pay.epay.return_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.return_url'),
+    }),
+  ],
+}
+
 const RL: SectionConfig = {
   id: 'rl',
   titleKey: 'settings.section.rl',
@@ -423,6 +456,16 @@ const SEC: SectionConfig = {
   titleKey: 'settings.section.sec',
   descriptionKey: 'settings.section_description.sec',
   fields: [
+    // 三态强度取代旧布尔开关：off 会解除全部出站校验，属关闭型风险。
+    field('sec.ssrf.mode', label('sec.ssrf.mode'), 'select', {
+      options: [
+        { value: 'off', labelKey: 'settings.option.ssrf_mode_off' },
+        { value: 'basic', labelKey: 'settings.option.ssrf_mode_basic' },
+        { value: 'strict', labelKey: 'settings.option.ssrf_mode_strict' },
+      ],
+      hintKey: hint('sec.ssrf.mode'),
+      dangerDirection: 'off',
+    }),
     toggle('sec.ssrf.enabled', label('sec.ssrf.enabled'), {
       hintKey: hint('sec.ssrf.enabled'),
       dangerDirection: 'off',
@@ -440,9 +483,21 @@ const SEC: SectionConfig = {
         { value: 'allowlist', labelKey: 'settings.option.domain_allowlist' },
         { value: 'denylist', labelKey: 'settings.option.domain_denylist' },
       ],
+      // 默认 allowlist 是破坏性收紧（G-DOM-68）：提示必须写明。
+      hintKey: hint('sec.ssrf.domain_mode'),
     }),
     field('sec.ssrf.domain_list', label('sec.ssrf.domain_list'), 'lines', {
       hintKey: hint('sec.ssrf.domain_list'),
+    }),
+    number('sec.ssrf.max_redirects', label('sec.ssrf.max_redirects'), {
+      min: 0,
+      max: 10,
+      hintKey: hint('sec.ssrf.max_redirects'),
+    }),
+    number('sec.ssrf.connect_timeout_seconds', label('sec.ssrf.connect_timeout_seconds'), {
+      min: 1,
+      max: 120,
+      hintKey: hint('sec.ssrf.connect_timeout_seconds'),
     }),
     toggle('sec.sensitive.enabled', label('sec.sensitive.enabled')),
     field('sec.sensitive.scope', label('sec.sensitive.scope'), 'module_toggles', {
@@ -601,7 +656,7 @@ export const SETTINGS_TABS_CONFIG: readonly TabConfig[] = [
     id: 'payment',
     labelKey: 'settings.tab.payment',
     descriptionKey: 'settings.tab_description.payment',
-    sections: [PAY, PAY_STRIPE, PAY_ALIPAY],
+    sections: [PAY, PAY_STRIPE, PAY_ALIPAY, PAY_EPAY],
   },
   {
     id: 'security',

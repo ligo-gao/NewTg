@@ -94,7 +94,8 @@
     "sec": "SSRF と機密ワード",
     "notify_smtp": "SMTP",
     "rl_health": "チャネルの健全性",
-    "notify_webhook": "Webhook 通知"
+    "notify_webhook": "Webhook 通知",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "すべてのページに表示され、コールバックリンクの基準になります",
@@ -109,7 +110,8 @@
     "sec": "送信リクエストはゲートウェイを出る前に検査されます",
     "notify_smtp": "メール確認とメール通知に必要です",
     "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります",
-    "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します"
+    "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します",
+    "pay_epay": "汎用 Epay 決済（MD5 署名、ZPay 系ゲートウェイ互換）"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Alipay 公開鍵",
         "gateway_url": "ゲートウェイ URL",
         "sandbox": "サンドボックスモード"
+      },
+      "epay": {
+        "enabled": "Epay を有効化",
+        "api_url": "決済 API URL",
+        "pid": "加盟店 ID（pid）",
+        "key": "署名キー",
+        "sign_mode": "署名方式",
+        "notify_url": "通知 URL",
+        "return_url": "戻り URL"
       }
     },
     "rl": {
@@ -215,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF 保護モード",
         "enabled": "SSRF 保護を有効化",
         "allow_private_ip": "プライベートアドレスを許可",
         "allowed_ports": "許可ポート",
         "domain_mode": "ドメインモード",
-        "domain_list": "ドメインリスト"
+        "domain_list": "ドメインリスト",
+        "max_redirects": "最大リダイレクト数",
+        "connect_timeout_seconds": "接続タイムアウト（秒）"
       },
       "sensitive": {
         "enabled": "機密ワードフィルタを有効化",
@@ -300,6 +314,13 @@
       "alipay": {
         "private_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。",
         "public_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。"
+      },
+      "epay": {
+        "api_url": "https の絶対 URL（最大 1024 文字）。",
+        "key": "注文の署名とコールバック検証に使用します。空欄のままにすると現在のキーを保持します。",
+        "sign_mode": "append：署名文字列 + キー（標準）。amp：署名文字列 & キー（一部ゲートウェイ）。注文とコールバックは同じ方式でなければなりません。",
+        "notify_url": "任意。https の絶対 URL。空欄の場合はサービスアドレスから導出します。",
+        "return_url": "任意。絶対 URL またはサイト相対パス（ブラウザの戻り先）。"
       }
     },
     "rl": {
@@ -313,7 +334,11 @@
         "enabled": "すべての送信リクエストに適用されます：OAuth ディスカバリ、Webhook、支払いコールバック、URL ヘルスチェック、上流チャネルへの転送。",
         "allow_private_ip": "送信リクエストにのみ適用されます。",
         "allowed_ports": "1〜65535 のカンマ区切りの整数。",
-        "domain_list": "1 行に 1 ドメイン、またはカンマ区切り。許可リストモードでは空のリストがすべての送信リクエストをブロックします。"
+        "domain_list": "1 行に 1 ドメイン、またはカンマ区切り。許可リストモードでは空のリストがすべての送信リクエストをブロックします。",
+        "mode": "off はすべての外向き検査を無効化します。basic はプライベート/ループバック宛先を遮断します。strict は解決先が公開アドレスであることも要求します。ドメインモードの既定は allowlist で、これは破壊的な厳格化です（G-DOM-68）。一覧にあるホストのみ到達できるため、アップグレード前に Webhook・決済コールバック・OAuth 検出などの外向きホストをすべて追加してください。",
+        "domain_mode": "既定の allowlist は破壊的な厳格化です（G-DOM-68）。一覧にないホストへの外向きリクエストは遮断されます。",
+        "max_redirects": "0〜10。リダイレクトごとに再検証します。",
+        "connect_timeout_seconds": "1〜120 秒。"
       },
       "sensitive": {
         "scope": "検査するプロンプト項目を選択します。",
@@ -362,7 +387,12 @@
       "payment_success": "支払い成功",
       "announcement": "お知らせ公開",
       "user_signup": "ユーザー登録"
-    }
+    },
+    "epay_sign_append": "キーを付加（標準）",
+    "epay_sign_amp": "& で連結（旧式ゲートウェイ）",
+    "ssrf_mode_off": "オフ",
+    "ssrf_mode_basic": "基本",
+    "ssrf_mode_strict": "厳格"
   },
   "status": {
     "title": "システム状態",

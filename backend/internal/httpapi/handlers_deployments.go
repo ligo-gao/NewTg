@@ -19,23 +19,28 @@ package httpapi
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/rbac"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -61,7 +66,20 @@ const (
 	problemTypeDeployNameTaken        = "https://newtg.dev/problems/deploy_name_taken"
 	problemTypeDeployInvalidState     = "https://newtg.dev/problems/deploy_invalid_state"
 	problemTypeDeployPriceUnavailable = "https://newtg.dev/problems/deploy_price_unavailable"
+	// problemTypeDeployQuoteUnavailable 是 P-21：provider 回 200 但没有可用报价
+	// （缺报价字段/负金额/非 USD）时创建与续期都拒绝，不静默按 0 计。
+	problemTypeDeployQuoteUnavailable = "https://newtg.dev/problems/deploy_quote_unavailable"
+	// problemTypeDeployBillingFailed 是站点成本账写失败（预扣/结算）。P-19 口径：
+	// 失败只回滚部署创建，不产生任何用户扣费。
+	problemTypeDeployBillingFailed = "https://newtg.dev/problems/deploy_billing_failed"
 )
+
+// deployLedgerTimeout 是账本写操作的独立超时。
+//
+// 不复用 provider 调用上下文：provider 的 30s 预算可能已耗尽，而预扣/结算
+// 是本地事务，必须拿到自己的预算；也不跟随请求取消，否则客户端断开会让
+// 「已创建的部署」与「未落库的预扣」失配。
+const deployLedgerTimeout = 10 * time.Second
 
 var (
 	deployListAction     = rbac.AuthzAction{ResourceKind: "deployments", ActionName: "read"}
@@ -74,6 +92,17 @@ var (
 	deployReadProviderID = rbac.AuthzAction{ResourceKind: "deployments", ActionName: "read_provider"}
 )
 
+// DeployBillingLedger 是站点 GPU 成本账在管理面的最小接缝。
+//
+// 只暴露写路径真正需要的四个方法：创建/续期预扣（Hold）、创建失败回滚
+// （Release）、终止收敛（SettleTerminated）与只读的段定位。它是
+// `*deploybilling.Ledger` 的子集——**不得**在 httpapi 里另写一套记账。
+type DeployBillingLedger interface {
+	Hold(ctx context.Context, est deploybilling.SegmentEstimate) (deploybilling.Segment, bool, error)
+	Release(ctx context.Context, segmentID, reason string) error
+	SettleTerminated(ctx context.Context, obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error)
+}
+
 // DeployManagementHandlerConfig 是部署管理端点的装配输入。
 type DeployManagementHandlerConfig struct {
 	// Settings 必填：读取 section=deploy 的启用状态与 has_secret。
@@ -82,12 +111,15 @@ type DeployManagementHandlerConfig struct {
 	Secrets DeploySecretStore
 	// Provider 按生效密钥构造 provider 客户端；nil 时使用固定 host 的 ionet。
 	Provider func(apiKey string) ionet.DeploymentProvider
-	Authz    *rbac.AuthzMiddleware
-	Audit    *audit.Logger
-	Redis    *redis.Client
-	Idem     IdempotencyStore
-	Logger   *slog.Logger
-	Now      func() time.Time
+	// Billing 是站点成本账接缝。nil 表示该进程不做部署计费（只有测试装配
+	// 会省略）；生产装配在 gateway 与 worker 都构造真实账本。
+	Billing DeployBillingLedger
+	Authz   *rbac.AuthzMiddleware
+	Audit   *audit.Logger
+	Redis   *redis.Client
+	Idem    IdempotencyStore
+	Logger  *slog.Logger
+	Now     func() time.Time
 }
 
 // DeployManagementHandlers 持有部署管理端点依赖，可并发使用。
@@ -95,6 +127,7 @@ type DeployManagementHandlers struct {
 	service  SettingsService
 	secrets  DeploySecretStore
 	provider func(apiKey string) ionet.DeploymentProvider
+	billing  DeployBillingLedger
 	authz    *rbac.AuthzMiddleware
 	audit    *audit.Logger
 	rdb      *redis.Client
@@ -165,7 +198,7 @@ func NewDeployManagementHandlers(cfg DeployManagementHandlerConfig) (*DeployMana
 		idem = NewMemoryIdempotencyStore()
 	}
 	return &DeployManagementHandlers{
-		service: cfg.Settings, secrets: secrets, provider: provider,
+		service: cfg.Settings, secrets: secrets, provider: provider, billing: cfg.Billing,
 		authz: authz, audit: cfg.Audit, rdb: cfg.Redis, idem: idem,
 		log: log, now: now,
 	}, nil
@@ -355,6 +388,128 @@ func sanitizeImageRef(raw string) string {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+// ---------- 站点成本账接线（H1/H2） ----------
+
+// ledgerContext 给账本写操作一个独立预算（见 deployLedgerTimeout）。
+func (h *DeployManagementHandlers) ledgerContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), deployLedgerTimeout)
+}
+
+// deployClientRequestID 是 P-20 幂等键里的客户端请求标识：写操作必备的
+// Idempotency-Key 头（serveWriteIdempotent 已强制非空）。
+func deployClientRequestID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+}
+
+// deployCreateIdempotencyKey 是冻结的创建预扣键（P-20）。
+//
+// 不含部署 ID：预扣发生在 provider 返回部署 ID 之前（报价门与写入顺序见
+// billing-03 §5.9 逐项约束 1），所以只能由用户 + 客户端请求标识定位同一
+// 次创建。同一键重入由 Hold 的 idempotency_key 唯一约束返回既有段。
+func deployCreateIdempotencyKey(userID int64, clientRequestID string) string {
+	return fmt.Sprintf("deploy:create:%d:%s", userID, clientRequestID)
+}
+
+// deployExtendIdempotencyKey 是冻结的续期预扣键（P-20）。
+//
+// 续期是「同一时长的一次新段」：同部署同时长重入应命中同一段，不同时长
+// 是不同购买，必须各自成段。
+func deployExtendIdempotencyKey(deploymentID string, hours int) string {
+	return fmt.Sprintf("deploy:extend:%s:%d", deploymentID, hours)
+}
+
+// deployQuote 把 provider 报价归一成计费报价（P-21）。
+func deployQuote(price ionet.PriceEstimationResponse, name string, hardwareID int64,
+	locationIDs []int64, gpus, replicas int, durationSeconds int64) deploybilling.Quote {
+	quote := deploybilling.QuoteFromPrice(price.EstimatedCost.Decimal,
+		price.EstimatedCostSet, price.EstimationValid, price.Currency)
+	quote.Name = name
+	quote.HardwareID = hardwareID
+	quote.LocationIDs = locationIDs
+	quote.GPUsPerContainer = gpus
+	quote.ReplicaCount = replicas
+	quote.DurationSeconds = durationSeconds
+	return quote
+}
+
+func deployQuoteUnavailableBytes(w http.ResponseWriter, r *http.Request, verb string) (int, []byte) {
+	return deployProblemBytes(w, r, http.StatusUnprocessableEntity, problemTypeDeployQuoteUnavailable,
+		"Price quote unavailable",
+		"provider did not return a usable USD quote; the deployment was not "+verb)
+}
+
+func int64Locations(ids []int) []int64 {
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, int64(id))
+	}
+	return out
+}
+
+// deploySettleAttempts 是终止即时结算的重试次数（含首次）。
+const deploySettleAttempts = 3
+
+// settleTerminationWithRetry 用有限退避重试终止结算。
+//
+// provider 删除成功是不可回退的证据；若即时结算因瞬时 DB 错误失败，N16 的
+// 900s provider-404 窗口最终会按 Release 收尾（成本记 0）且 abandoned 段
+// 无法再用发票纠正。所以这里先把可重试错误消化掉，全部失败才降级为 deferred。
+//
+// 结果**跨尝试累加**：一次 SettleTerminated 可能开了多个段，前一次已经结算
+// 成功的段在后续尝试里是终态 no-op；只返回最后一次的统计会把它们从审计里丢掉。
+func (h *DeployManagementHandlers) settleTerminationWithRetry(r *http.Request,
+	obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error) {
+	var (
+		total   deploybilling.TerminationResult
+		lastErr error
+	)
+	backoff := 50 * time.Millisecond
+	for attempt := 1; attempt <= deploySettleAttempts; attempt++ {
+		ledgerCtx, cancel := h.ledgerContext(r)
+		result, err := h.billing.SettleTerminated(ledgerCtx, obs)
+		cancel()
+		total.SegmentsSettled += result.SegmentsSettled
+		total.SegmentsReleased += result.SegmentsReleased
+		total.ConfirmedCredits += result.ConfirmedCredits
+		total.ReleasedCredits += result.ReleasedCredits
+		if err == nil {
+			return total, nil
+		}
+		lastErr = err
+		if !deployBillingRetryable(lastErr) || attempt == deploySettleAttempts {
+			break
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	return total, lastErr
+}
+
+// deployBillingRetryable 只对**显式列举**的瞬态错误重试。
+//
+// 白名单而不是黑名单：确定性错误（唯一键冲突、约束违反、输入非法）重试三次
+// 只会延长响应且毫无收益；未识别的错误同样按确定失败处理，交给 N16 对账。
+func deployBillingRetryable(err error) bool {
+	if errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case strings.HasPrefix(pgErr.Code, "08"), // connection exception
+			strings.HasPrefix(pgErr.Code, "40"), // transaction rollback (serialization/deadlock)
+			strings.HasPrefix(pgErr.Code, "53"): // insufficient resources
+			return true
+		case pgErr.Code == "57P01", pgErr.Code == "57P02", pgErr.Code == "57P03":
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ---------- 幂等写包装 ----------
@@ -841,7 +996,14 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 			"Price estimation unavailable",
 			"provider price estimation failed; no deployment was created")
 	}
-	_ = price // 金额由前端单独确认；创建响应只返回受理结果。
+	// P-21：200 但没有可用报价（缺字段/负金额/非 USD）同样拒绝，绝不按 0 计。
+	quote := deployQuote(price, req.Name, int64(req.HardwareID), int64Locations(req.LocationIDs),
+		req.GPUsPerContainer, req.ReplicaCount, int64(req.DurationHours)*3600)
+	if !quote.Available {
+		h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusUnprocessableEntity,
+			false, createAuditDetail(req, "", requestID, "quote_unavailable"), nil, nil)
+		return deployQuoteUnavailableBytes(w, r, "created")
+	}
 
 	// 提交前再查重一次（对照 §3.20.3：名称可能在两次检查之间被占用）。
 	available, err = provider.CheckName(ctx, req.Name)
@@ -883,12 +1045,88 @@ func (h *DeployManagementHandlers) createDeployment(w http.ResponseWriter, r *ht
 		return status, body
 	}
 
+	// H1：创建成功后在站点成本账预扣（P-18：Hold 只出现在创建/延期两处）。
+	//
+	// 为什么预扣只能在 provider 返回部署 ID 之后：段以 deployment_id 为对账
+	// 主键（worker/reconcile 都按它查 provider），预扣先于创建就只能记一个
+	// 占位 ID，之后永远无法与真实部署对上。P-19 的补偿口径因此是「预扣失败
+	// 回滚部署创建」——只撤销本次创建，不触碰任何用户钱包/订阅/令牌。
+	if h.billing != nil {
+		est := deploybilling.EstimateForCreate(quote, req.GPUsPerContainer*req.ReplicaCount)
+		est.DeploymentID = action.DeploymentID
+		est.IdempotencyKey = deployCreateIdempotencyKey(actor, deployClientRequestID(r))
+		ledgerCtx, cancelLedger := h.ledgerContext(r)
+		seg, created, holdErr := h.billing.Hold(ledgerCtx, est)
+		cancelLedger()
+		if holdErr != nil {
+			h.log.Error("deploy: site cost hold failed",
+				"deployment_id", action.DeploymentID, "err", holdErr)
+			// 只有「本次新建的部署」才回滚：provider 可能按键去重，把同一份配置
+			// 映射到既有部署；删掉它就等于删客户的活部署。
+			if action.DeploymentID != seg.DeploymentID {
+				h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			}
+			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusBadGateway,
+				false, createAuditDetail(req, action.DeploymentID, requestID, "deploy_billing_hold_failed"), nil, nil)
+			return deployProblemBytes(w, r, http.StatusBadGateway, problemTypeDeployBillingFailed,
+				"Deployment billing unavailable",
+				"site cost reservation failed; the deployment creation was rolled back")
+		}
+		// P-20：同键重入返回**既有段**。既有段属于先前那次创建（不同的请求体
+		// 会绕开 HTTP 幂等缓存而再次执行到这里）。
+		if !created {
+			// provider 可能对重复创建去重并返回**同一个**部署 ID：此时它正是
+			// 既有段对应的活部署，绝不回滚。只有拿到不同 ID（本次真的新建了
+			// 一个孤儿部署）才撤销它。
+			if action.DeploymentID != seg.DeploymentID {
+				h.rollbackDeploymentCreation(r, provider, action.DeploymentID)
+			}
+			if deploybilling.SegmentTerminal(seg.State) {
+				h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusConflict, false,
+					createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID, "deploy_create_key_consumed"), nil, nil)
+				return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployInvalidState,
+					"Deployment already completed for this idempotency key",
+					"the billing segment for this idempotency key is already closed; "+
+						"use a new Idempotency-Key or query the deployment")
+			}
+			h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusAccepted, true,
+				createReplayAuditDetail(req, seg.DeploymentID, seg.SegmentID, requestID, ""), nil, nil)
+			return jsonBody(w, r, http.StatusAccepted, struct {
+				DeploymentID string `json:"deployment_id"`
+				Status       string `json:"status"`
+			}{DeploymentID: seg.DeploymentID, Status: seg.State})
+		}
+	}
+
 	h.writeDeployAudit(r, actor, audit.ActionDeployCreate, http.StatusAccepted,
 		true, createAuditDetail(req, action.DeploymentID, requestID, ""), nil, nil)
 	return jsonBody(w, r, http.StatusAccepted, struct {
 		DeploymentID string `json:"deployment_id"`
 		Status       string `json:"status"`
 	}{DeploymentID: action.DeploymentID, Status: action.Status})
+}
+
+// createReplayAuditDetail 记录「同键重入、返回既有段」。
+func createReplayAuditDetail(req createDeploymentRequest, deploymentID, segmentID, requestID, errorCode string) map[string]any {
+	detail := createAuditDetail(req, deploymentID, requestID, errorCode)
+	detail["replayed_segment_id"] = segmentID
+	detail["result"] = "idempotent_replay"
+	return detail
+}
+
+// rollbackDeploymentCreation 是预扣失败/重入回滚时的补偿：撤销刚创建的 provider 部署。
+//
+// best-effort：provider 删除失败只记日志，不改变响应——此时站点成本账没有
+// 落段（Hold 失败），部署可能残留，运维可通过列表发现；反过来的顺序（先
+// 返回失败再删除）会丢失「哪个部署需要清理」的信息。绝不重试 provider 写。
+func (h *DeployManagementHandlers) rollbackDeploymentCreation(r *http.Request,
+	provider ionet.DeploymentProvider, deploymentID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ionet.DefaultTimeout)
+	defer cancel()
+	if _, err := provider.DeleteDeployment(ctx, deploymentID); err != nil {
+		h.log.Warn("deploy: rollback of deployment creation failed",
+			"deployment_id", deploymentID, "err", err)
+	}
 }
 
 func validateCreateRequest(req *createDeploymentRequest) string {
@@ -910,11 +1148,22 @@ func validateCreateRequest(req *createDeploymentRequest) string {
 	if req.GPUsPerContainer < 1 {
 		return "gpus_per_container must be at least 1"
 	}
+	// 上界与计费乘数冻结值一致（billing-05 §4.4.4）：越过上界会让段快照
+	// 失真，而创建已经写到 provider，Hold 才拒绝会触发一次无谓的回滚。
+	if req.GPUsPerContainer > deploybilling.MaxDeploymentGPUsPerContainer {
+		return fmt.Sprintf("gpus_per_container must be at most %d", deploybilling.MaxDeploymentGPUsPerContainer)
+	}
 	if req.ReplicaCount < 1 {
 		return "replica_count must be at least 1"
 	}
+	if req.ReplicaCount > deploybilling.MaxDeploymentReplicas {
+		return fmt.Sprintf("replica_count must be at most %d", deploybilling.MaxDeploymentReplicas)
+	}
 	if req.DurationHours < 1 {
 		return "duration_hours must be at least 1"
+	}
+	if req.DurationHours > deploybilling.MaxDeploymentDurationHours {
+		return fmt.Sprintf("duration_hours must be at most %d", deploybilling.MaxDeploymentDurationHours)
 	}
 	if req.ImageURL = strings.TrimSpace(req.ImageURL); req.ImageURL == "" {
 		return "image_url is required"
@@ -1458,6 +1707,10 @@ func (h *DeployManagementHandlers) extendDeployment(w http.ResponseWriter, r *ht
 		return deployProblemBytes(w, r, http.StatusBadRequest, problemTypeDeployInvalidRequest,
 			"Invalid request", "duration_hours must be at least 1")
 	}
+	if req.DurationHours > deploybilling.MaxDeploymentDurationHours {
+		return deployProblemBytes(w, r, http.StatusBadRequest, problemTypeDeployInvalidRequest,
+			"Invalid request", fmt.Sprintf("duration_hours must be at most %d", deploybilling.MaxDeploymentDurationHours))
+	}
 
 	ctx, cancel := h.callContext(r)
 	defer cancel()
@@ -1493,15 +1746,100 @@ func (h *DeployManagementHandlers) extendDeployment(w http.ResponseWriter, r *ht
 			"Price estimation unavailable",
 			"provider price estimation failed; the deployment was not extended")
 	}
+	// P-21：续期同样要求可用报价，不得按 0 计。
+	quote := deployQuote(price, detail.ID, int64(detail.HardwareID), int64Locations(locationIDs),
+		detail.GPUsPerContainer, replicas, int64(req.DurationHours)*3600)
+	if !quote.Available {
+		h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusUnprocessableEntity,
+			false, extendAuditDetail(deploymentID, req.DurationHours, 0, requestID,
+				"quote_unavailable"), nil, nil)
+		return deployQuoteUnavailableBytes(w, r, "extended")
+	}
+
+	// H1：续期先预扣新段，再写 provider。
+	//
+	// 与创建不同，部署 ID 已知，所以可以严格按 billing-03 §5.9 逐项约束 1
+	// 「预扣不建立则 provider 写不发起」执行；provider 续期失败时释放新段
+	// （段从未运行 → released 事实，成本 0）。
+	var extendSegmentID string
+	if h.billing != nil {
+		est := deploybilling.EstimateForExtend(quote, detail.GPUsPerContainer*replicas, h.now())
+		est.DeploymentID = deploymentID
+		est.IdempotencyKey = deployExtendIdempotencyKey(deploymentID, req.DurationHours)
+		ledgerCtx, cancelLedger := h.ledgerContext(r)
+		seg, created, holdErr := h.billing.Hold(ledgerCtx, est)
+		cancelLedger()
+		if holdErr != nil {
+			h.log.Error("deploy: site cost hold failed on extend",
+				"deployment_id", deploymentID, "err", holdErr)
+			h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusBadGateway,
+				false, extendAuditDetail(deploymentID, req.DurationHours, 0, requestID,
+					"deploy_billing_hold_failed"), nil, nil)
+			return deployProblemBytes(w, r, http.StatusBadGateway, problemTypeDeployBillingFailed,
+				"Deployment billing unavailable",
+				"site cost reservation failed; the deployment was not extended")
+		}
+		// P-20：同 (deployment, hours) 的键已存在 → 这是重入，**不得**再发起
+		// provider 续期。provider 不保证幂等：重复 ExtendDeployment 会真的多买
+		// 一次时长，而账本被唯一键约束收敛成一段，超出部分永久少记站点成本。
+		if !created {
+			if deploybilling.SegmentTerminal(seg.State) {
+				h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusConflict,
+					false, extendAuditDetail(deploymentID, req.DurationHours, 0, requestID,
+						"deploy_extend_key_consumed"), nil, nil)
+				return deployProblemBytes(w, r, http.StatusConflict, problemTypeDeployInvalidState,
+					"Extension already completed for this idempotency key",
+					"the billing segment for this deployment and duration is already closed; "+
+						"use a new Idempotency-Key or query the deployment for its current extension")
+			}
+			// 段仍活跃：本次重入不产生新的购买，返回既有段语义（不写 provider）。
+			h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusAccepted, true,
+				extendReplayAuditDetail(deploymentID, req.DurationHours, seg.SegmentID, requestID), nil, nil)
+			return jsonBody(w, r, http.StatusAccepted, struct {
+				DeploymentID string `json:"deployment_id"`
+				Status       string `json:"status"`
+			}{DeploymentID: deploymentID, Status: seg.State})
+		}
+		extendSegmentID = seg.SegmentID
+	}
 
 	action, err := provider.ExtendDeployment(ctx, deploymentID, req.DurationHours)
 	if err != nil {
+		// provider 未续期成功 → 新段从未运行，释放全部预扣（不再 Hold）。
+		if h.billing != nil && extendSegmentID != "" {
+			ledgerCtx, cancelLedger := h.ledgerContext(r)
+			if releaseErr := h.billing.Release(ledgerCtx, extendSegmentID, "extend_failed"); releaseErr != nil {
+				h.log.Warn("deploy: release extend segment failed",
+					"segment_id", extendSegmentID, "err", releaseErr)
+			}
+			cancelLedger()
+		}
 		status, body := h.providerErrorBody(w, r, err)
 		_, code := deployErrorCode(err)
 		h.writeDeployAudit(r, actor, audit.ActionDeployExtend, status, false,
 			extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost.InexactFloat64(), requestID, code), nil, nil)
 		return status, body
 	}
+
+	// 续期生效：旧段在生效点结算关闭（billing-03 §5.9.2），新段从这一刻
+	// 起算。排除刚预扣的新段——它不是「被续期关闭的旧段」。
+	if h.billing != nil {
+		ledgerCtx, cancelLedger := h.ledgerContext(r)
+		_, settleErr := h.billing.SettleTerminated(ledgerCtx, deploybilling.TerminationObservation{
+			DeploymentID:      deploymentID,
+			ProviderStartedAt: detail.StartedAt,
+			FinishedAt:        deployTimePtr(h.now().UTC()),
+			ComputeSeconds:    int64(detail.ComputeMinutesServed) * 60,
+			ExcludeSegmentIDs: []string{extendSegmentID},
+		})
+		cancelLedger()
+		if settleErr != nil {
+			// 续期已生效，响应不能失败：旧段留给 N16 对账收敛。
+			h.log.Warn("deploy: settle previous segment after extend failed",
+				"deployment_id", deploymentID, "err", settleErr)
+		}
+	}
+
 	h.writeDeployAudit(r, actor, audit.ActionDeployExtend, http.StatusAccepted, true,
 		extendAuditDetail(deploymentID, req.DurationHours, price.EstimatedCost.InexactFloat64(), requestID, ""), nil, nil)
 	return jsonBody(w, r, http.StatusAccepted, struct {
@@ -1521,6 +1859,17 @@ func extendAuditDetail(deploymentID string, hours int, estimated float64, reques
 		detail["error_code"] = errorCode
 	}
 	return detail
+}
+
+// extendReplayAuditDetail 记录「同键重入、未写 provider」的既有段。
+func extendReplayAuditDetail(deploymentID string, hours int, segmentID, requestID string) map[string]any {
+	return map[string]any{
+		"deployment_id":       deploymentID,
+		"added_hours":         hours,
+		"replayed_segment_id": segmentID,
+		"result":              "idempotent_replay",
+		"request_id":          requestID,
+	}
 }
 
 // ---------- 终止 ----------
@@ -1544,6 +1893,9 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 	defer cancel()
 	provider := h.client(apiKey)
 	name := h.lookupDeploymentName(ctx, provider, deploymentID)
+	// 删除前的终态观测（best-effort）：删除成功后 provider 就查不到了，
+	// 计费用的 provider 累计只能在这之前取。失败不影响删除。
+	detail, detailErr := provider.GetDeployment(ctx, deploymentID)
 
 	action, err := provider.DeleteDeployment(ctx, deploymentID)
 	if err != nil {
@@ -1555,9 +1907,34 @@ func (h *DeployManagementHandlers) deleteDeployment(w http.ResponseWriter, r *ht
 		}, nil, nil)
 		return status, body
 	}
-	h.writeDeployAudit(r, actor, audit.ActionDeployDelete, http.StatusAccepted, true, map[string]any{
+	detailFields := map[string]any{
 		"deployment_id": deploymentID, "name": name, "request_id": requestID,
-	}, nil, nil)
+	}
+	// H2：终止只做「按实际用量结算 + 释放剩余预扣」，不再 Hold（P-18）。
+	//
+	// provider 删除成功是强证据：立即收敛段，不等 N16 的 900s provider-404
+	// 窗口（那个窗口会把已知成本拖成「不可达」并最终按释放收尾）。
+	// 收敛失败不回滚删除（部署已不存在），留给对账任务；响应仍是 202。
+	if h.billing != nil {
+		obs := deploybilling.TerminationObservation{DeploymentID: deploymentID}
+		if detailErr == nil {
+			obs.ProviderStartedAt = detail.StartedAt
+			obs.FinishedAt = detail.FinishedAt
+			obs.ComputeSeconds = int64(detail.ComputeMinutesServed) * 60
+		}
+		result, settleErr := h.settleTerminationWithRetry(r, obs)
+		if settleErr != nil {
+			h.log.Warn("deploy: settle segment after termination failed",
+				"deployment_id", deploymentID, "err", settleErr)
+			detailFields["billing_result"] = "deferred"
+		} else {
+			detailFields["billing_segments_settled"] = result.SegmentsSettled
+			detailFields["billing_segments_released"] = result.SegmentsReleased
+			detailFields["billing_confirmed_credits"] = result.ConfirmedCredits
+			detailFields["billing_released_credits"] = result.ReleasedCredits
+		}
+	}
+	h.writeDeployAudit(r, actor, audit.ActionDeployDelete, http.StatusAccepted, true, detailFields, nil, nil)
 	return jsonBody(w, r, http.StatusAccepted, struct {
 		DeploymentID string `json:"deployment_id"`
 		Status       string `json:"status"`

@@ -1472,6 +1472,18 @@ paths:
       description: |
         创建前与提交前各查重一次名称；创建前必须先取得 provider 报价，
         报价失败返回 422 deploy_price_unavailable 且不发起写。
+        provider 返回 200 但没有可用 USD 报价（缺报价字段 / 负金额 /
+        estimation_valid=false / 币种非 USD）时返回 422
+        `https://newtg.dev/problems/deploy_quote_unavailable`，不按 0 计。
+        创建受理后在站点成本账预扣（`deployment_billing_segments`，幂等键
+        `deploy:create:<user_id>:<Idempotency-Key>`）；预扣失败返回 502
+        `deploy_billing_failed` 并回滚本次部署创建。同一幂等键的账本重入
+        （例如换了请求体而绕开 HTTP 幂等缓存）返回**既有段**的状态与
+        deployment_id：段仍活跃 → 202；段已终态 → 409（换新
+        Idempotency-Key 或查询部署）。只有当 provider 返回的是**另一个**
+        部署 ID 时才会回滚这次重复创建的部署——provider 对重复创建去重返回
+        同一 ID 时，那是既有段对应的活部署，绝不回滚。
+        部署计费只记站点成本，**不扣用户钱包 / 订阅 / 令牌额度**。
         registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
         不进审计（键名也不记）。成功返回 202 受理结果。
       security:
@@ -1758,7 +1770,12 @@ paths:
       operationId: deleteDeployment
       x-required-permission: settings:manage
       summary: 终止部署（不可恢复）
-      description: 返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+      description: |
+        返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+        终止成功后按删除前观测到的实际用量结算当前计费段，并释放剩余预扣
+        （只 Release 未结算余额，不再 Hold）；结算失败不回滚删除，由对账任务
+        收敛。审计 detail 记录 `billing_segments_settled` /
+        `billing_confirmed_credits` / `billing_released_credits`。
       security:
         - sessionCookie: []
       parameters:
@@ -1938,7 +1955,16 @@ paths:
       operationId: extendDeployment
       x-required-permission: settings:manage
       summary: 续期（先报价后提交）
-      description: 续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+      description: |
+        续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+        报价不可用（无报价字段 / 负金额 / 币种非 USD / estimation_valid=false）
+        同样返回 422 `deploy_quote_unavailable`。
+        续期先在新计费段预扣（幂等键 `deploy:extend:<deployment_id>:<hours>`），
+        预扣失败返回 502 `deploy_billing_failed` 且不发起 provider 写；provider
+        续期失败时释放该段。续期生效后旧段在生效点结算关闭。
+        同一 (deployment, hours) 的键重入**不会**再次调用 provider：段仍活跃
+        时返回 202 与既有段状态；段已终态时返回 409，需换 Idempotency-Key
+        或查询部署当前状态。
       security:
         - sessionCookie: []
       parameters:
@@ -2536,6 +2562,102 @@ paths:
         '500': {$ref: '../components/responses.yaml#/responses/Error500'}
 
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20 / D2-14）。
+  # ---------------------------------------------------------------------------
+  # 通用设置面（modules-08 §3.2 / F-08-08；C2 补齐契约）。
+  #
+  # 一个 section = 注册表里的一组键；响应逐键给出 value/type/default 与危险标记。
+  # GET 只要求管理员角色；PUT 要求 settings:manage（受限管理员不得改设置）。
+  # 密钥只写不读：GET 对 secret 键回传掩码或 null，绝不回传明文。
+  # ---------------------------------------------------------------------------
+  /api/settings:
+    get:
+      tags: [admin]
+      operationId: getSettingsSection
+      x-required-permission: settings:manage
+      summary: 读取一个设置 section
+      description: |
+        必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
+        pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
+        rl.health / policy）。缺参数与未知 section 均返回 400。
+        `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
+        恒为掩码或 null。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: section
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: section 投影
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SettingsSection'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: updateSettingsSection
+      x-required-permission: settings:manage
+      summary: 保存一个设置 section（部分更新 + 乐观锁）
+      description: |
+        必须提供 `section`（query）；未知 section 与缺参数均返回 400。
+        请求体只携带变更键（`values` 必填，`{}` 表示本次不改任何键）：
+        - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
+        - `expect_updated_at` 与当前版本不一致返回 409（Problem 体，客户端
+          应重新读取 section 后重试）；
+        - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
+          判定，响应 detail 指明原因）。
+        类型/范围/URL 形状由注册表校验，失败返回 400，Problem 体带 `fields`
+        （出错的键名，客户端据此把错误落到具体字段）；只有锁定键（服务端只读）
+        被修改才返回 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: section
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SettingsUpdateRequest'
+      responses:
+        '200':
+          description: 保存结果（实际写入的键）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SettingsUpdateResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          description: 锁定键（服务端只读，如 nav.console.require_auth）被修改
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/settings/test/webhook:
     post:
       tags: [admin]

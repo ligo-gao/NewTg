@@ -94,7 +94,8 @@
     "sec": "SSRF 與敏感詞",
     "notify_smtp": "SMTP",
     "rl_health": "通道健康",
-    "notify_webhook": "Webhook 通知"
+    "notify_webhook": "Webhook 通知",
+    "pay_epay": "易支付"
   },
   "section_description": {
     "site": "顯示在每個頁面上，並作為回呼連結的基礎位址",
@@ -109,7 +110,8 @@
     "sec": "出站請求在離開閘道前會接受檢查",
     "notify_smtp": "電子郵件驗證與郵件通知所必需",
     "rl_health": "首次命中即可將通道移出輪替",
-    "notify_webhook": "將餘額、付款、公告與註冊事件推送到 HTTPS 端點"
+    "notify_webhook": "將餘額、付款、公告與註冊事件推送到 HTTPS 端點",
+    "pay_epay": "通用易支付收銀台（MD5 簽名，相容 ZPay 類閘道）"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "支付寶公鑰",
         "gateway_url": "閘道 URL",
         "sandbox": "沙箱模式"
+      },
+      "epay": {
+        "enabled": "啟用易支付",
+        "api_url": "收銀台 API 位址",
+        "pid": "商戶號（pid）",
+        "key": "簽名金鑰",
+        "sign_mode": "簽名拼接方式",
+        "notify_url": "回呼通知位址",
+        "return_url": "同步返回位址"
       }
     },
     "rl": {
@@ -215,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF 防護模式",
         "enabled": "啟用 SSRF 防護",
         "allow_private_ip": "允許私人位址",
         "allowed_ports": "允許的連接埠",
         "domain_mode": "網域模式",
-        "domain_list": "網域清單"
+        "domain_list": "網域清單",
+        "max_redirects": "最大重新導向次數",
+        "connect_timeout_seconds": "連線逾時（秒）"
       },
       "sensitive": {
         "enabled": "啟用敏感詞過濾",
@@ -300,6 +314,13 @@
       "alipay": {
         "private_key": "PEM 編碼。留空則維持目前金鑰。",
         "public_key": "PEM 編碼。留空則維持目前金鑰。"
+      },
+      "epay": {
+        "api_url": "必須是 https 絕對位址，最長 1024 字元。",
+        "key": "用於訂單簽名與回呼驗簽。留空表示保持目前金鑰。",
+        "sign_mode": "append：簽名字串 + 金鑰（標準）；amp：簽名字串與金鑰以 & 連接（部分閘道）。下單與回呼必須使用同一口徑。",
+        "notify_url": "選填，https 絕對位址；留空時依服務位址推導。",
+        "return_url": "選填，絕對位址或站點相對路徑，用於瀏覽器返回。"
       }
     },
     "rl": {
@@ -313,7 +334,11 @@
         "enabled": "適用於所有出站請求：OAuth 探索、Webhook、付款回呼、URL 健康檢查與上游通道轉送。",
         "allow_private_ip": "僅適用於出站請求。",
         "allowed_ports": "1 到 65535 之間的逗號分隔整數。",
-        "domain_list": "每行一個網域或以逗號分隔。白名單模式下空白清單會阻擋所有出站請求。"
+        "domain_list": "每行一個網域或以逗號分隔。白名單模式下空白清單會阻擋所有出站請求。",
+        "mode": "off 關閉全部出站檢查；basic 阻擋私網與回環目標；strict 額外要求解析結果必須是公網位址。網域模式預設為 allowlist（破壞性收緊，G-DOM-68）：只有網域清單內的主機可達，升級前請先補齊 Webhook、支付回呼與 OAuth 探索等全部出站主機。",
+        "domain_mode": "預設 allowlist 是破壞性收緊（G-DOM-68）：不在清單內的出站請求會被阻擋。",
+        "max_redirects": "0–10，每一跳都會重新檢查。",
+        "connect_timeout_seconds": "1–120 秒。"
       },
       "sensitive": {
         "scope": "選擇要檢查的提示詞欄位。",
@@ -362,7 +387,12 @@
       "payment_success": "付款成功",
       "announcement": "公告發布",
       "user_signup": "使用者註冊"
-    }
+    },
+    "epay_sign_append": "附加金鑰（標準）",
+    "epay_sign_amp": "以 & 連接（舊閘道）",
+    "ssrf_mode_off": "關閉",
+    "ssrf_mode_basic": "基礎",
+    "ssrf_mode_strict": "嚴格"
   },
   "status": {
     "title": "系統狀態",

@@ -94,7 +94,8 @@
     "sec": "SSRF et mots sensibles",
     "notify_smtp": "SMTP",
     "rl_health": "Santé des canaux",
-    "notify_webhook": "Notifications Webhook"
+    "notify_webhook": "Notifications Webhook",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "Affiché sur chaque page et utilisé comme base pour les liens de rappel",
@@ -109,7 +110,8 @@
     "sec": "Les requêtes sortantes sont vérifiées avant de quitter la passerelle",
     "notify_smtp": "Requis pour la vérification d'e-mail et les notifications par e-mail",
     "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance",
-    "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS"
+    "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS",
+    "pay_epay": "Caisse Epay générique (signée MD5, passerelles type ZPay)"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Clé publique Alipay",
         "gateway_url": "URL de la passerelle",
         "sandbox": "Mode bac à sable"
+      },
+      "epay": {
+        "enabled": "Activer Epay",
+        "api_url": "URL de l'API de paiement",
+        "pid": "Identifiant marchand (pid)",
+        "key": "Clé de signature",
+        "sign_mode": "Mode de signature",
+        "notify_url": "URL de notification",
+        "return_url": "URL de retour"
       }
     },
     "rl": {
@@ -215,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "Mode de protection SSRF",
         "enabled": "Activer la protection SSRF",
         "allow_private_ip": "Autoriser les adresses privées",
         "allowed_ports": "Ports autorisés",
         "domain_mode": "Mode de domaine",
-        "domain_list": "Liste de domaines"
+        "domain_list": "Liste de domaines",
+        "max_redirects": "Nombre maximal de redirections",
+        "connect_timeout_seconds": "Délai de connexion (secondes)"
       },
       "sensitive": {
         "enabled": "Activer le filtrage des mots sensibles",
@@ -300,6 +314,13 @@
       "alipay": {
         "private_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle.",
         "public_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle."
+      },
+      "epay": {
+        "api_url": "Doit être une URL https absolue, 1024 caractères maximum.",
+        "key": "Sert à signer les commandes et à vérifier les rappels. Laissez vide pour conserver la clé actuelle.",
+        "sign_mode": "append : chaîne signée + clé (standard). amp : chaîne signée & clé (certaines passerelles). Commandes et rappels doivent utiliser le même mode.",
+        "notify_url": "Facultatif. URL https absolue ; dérivée de l'adresse du service si vide.",
+        "return_url": "Facultatif. URL absolue ou chemin relatif au site pour le retour du navigateur."
       }
     },
     "rl": {
@@ -313,7 +334,11 @@
         "enabled": "S'applique à toutes les requêtes sortantes : découverte OAuth, webhooks, rappels de paiement, vérifications d'URL et transfert vers les canaux amont.",
         "allow_private_ip": "S'applique uniquement aux requêtes sortantes.",
         "allowed_ports": "Entiers séparés par des virgules entre 1 et 65535.",
-        "domain_list": "Un domaine par ligne ou séparés par des virgules. En mode liste d'autorisation, une liste vide bloque toutes les requêtes sortantes."
+        "domain_list": "Un domaine par ligne ou séparés par des virgules. En mode liste d'autorisation, une liste vide bloque toutes les requêtes sortantes.",
+        "mode": "off désactive tous les contrôles sortants ; basic bloque les cibles privées et loopback ; strict exige en plus que l'adresse résolue soit publique. Le mode de domaine par défaut est allowlist — un durcissement cassant (G-DOM-68) : seuls les hôtes listés sont joignables, ajoutez donc tous les hôtes sortants (webhooks, rappels de paiement, découverte OAuth) avant la mise à niveau.",
+        "domain_mode": "Le mode allowlist par défaut est un durcissement cassant (G-DOM-68) : les requêtes sortantes vers des hôtes non listés sont bloquées.",
+        "max_redirects": "0–10. Chaque redirection est revalidée.",
+        "connect_timeout_seconds": "1–120 secondes."
       },
       "sensitive": {
         "scope": "Choisissez les champs d'invite à inspecter.",
@@ -362,7 +387,12 @@
       "payment_success": "Paiement réussi",
       "announcement": "Annonce publiée",
       "user_signup": "Inscription d'un utilisateur"
-    }
+    },
+    "epay_sign_append": "Ajouter la clé (standard)",
+    "epay_sign_amp": "Joindre avec & (passerelles anciennes)",
+    "ssrf_mode_off": "Désactivé",
+    "ssrf_mode_basic": "Basique",
+    "ssrf_mode_strict": "Strict"
   },
   "status": {
     "title": "État du système",

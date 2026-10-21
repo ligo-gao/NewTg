@@ -2888,6 +2888,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取一个设置 section
+         * @description 必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
+         *     pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
+         *     rl.health / policy）。缺参数与未知 section 均返回 400。
+         *     `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
+         *     恒为掩码或 null。
+         */
+        get: operations["getSettingsSection"];
+        /**
+         * 保存一个设置 section（部分更新 + 乐观锁）
+         * @description 必须提供 `section`（query）；未知 section 与缺参数均返回 400。
+         *     请求体只携带变更键（`values` 必填，`{}` 表示本次不改任何键）：
+         *     - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
+         *     - `expect_updated_at` 与当前版本不一致返回 409（Problem 体，客户端
+         *       应重新读取 section 后重试）；
+         *     - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
+         *       判定，响应 detail 指明原因）。
+         *     类型/范围/URL 形状由注册表校验，失败返回 400，Problem 体带 `fields`
+         *     （出错的键名，客户端据此把错误落到具体字段）；只有锁定键（服务端只读）
+         *     被修改才返回 422。
+         */
+        put: operations["updateSettingsSection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/test/webhook": {
         parameters: {
             query?: never;
@@ -2963,6 +3000,18 @@ export interface paths {
          * 创建部署（产生 provider 侧费用）
          * @description 创建前与提交前各查重一次名称；创建前必须先取得 provider 报价，
          *     报价失败返回 422 deploy_price_unavailable 且不发起写。
+         *     provider 返回 200 但没有可用 USD 报价（缺报价字段 / 负金额 /
+         *     estimation_valid=false / 币种非 USD）时返回 422
+         *     `https://newtg.dev/problems/deploy_quote_unavailable`，不按 0 计。
+         *     创建受理后在站点成本账预扣（`deployment_billing_segments`，幂等键
+         *     `deploy:create:<user_id>:<Idempotency-Key>`）；预扣失败返回 502
+         *     `deploy_billing_failed` 并回滚本次部署创建。同一幂等键的账本重入
+         *     （例如换了请求体而绕开 HTTP 幂等缓存）返回**既有段**的状态与
+         *     deployment_id：段仍活跃 → 202；段已终态 → 409（换新
+         *     Idempotency-Key 或查询部署）。只有当 provider 返回的是**另一个**
+         *     部署 ID 时才会回滚这次重复创建的部署——provider 对重复创建去重返回
+         *     同一 ID 时，那是既有段对应的活部署，绝不回滚。
+         *     部署计费只记站点成本，**不扣用户钱包 / 订阅 / 令牌额度**。
          *     registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
          *     不进审计（键名也不记）。成功返回 202 受理结果。
          */
@@ -3081,6 +3130,10 @@ export interface paths {
         /**
          * 终止部署（不可恢复）
          * @description 返回 202 表示终止请求已受理；已产生费用以 provider 账单为准。
+         *     终止成功后按删除前观测到的实际用量结算当前计费段，并释放剩余预扣
+         *     （只 Release 未结算余额，不再 Hold）；结算失败不回滚删除，由对账任务
+         *     收敛。审计 detail 记录 `billing_segments_settled` /
+         *     `billing_confirmed_credits` / `billing_released_credits`。
          */
         delete: operations["deleteDeployment"];
         options?: never;
@@ -3185,6 +3238,14 @@ export interface paths {
         /**
          * 续期（先报价后提交）
          * @description 续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+         *     报价不可用（无报价字段 / 负金额 / 币种非 USD / estimation_valid=false）
+         *     同样返回 422 `deploy_quote_unavailable`。
+         *     续期先在新计费段预扣（幂等键 `deploy:extend:<deployment_id>:<hours>`），
+         *     预扣失败返回 502 `deploy_billing_failed` 且不发起 provider 写；provider
+         *     续期失败时释放该段。续期生效后旧段在生效点结算关闭。
+         *     同一 (deployment, hours) 的键重入**不会**再次调用 provider：段仍活跃
+         *     时返回 202 与既有段状态；段已终态时返回 409，需换 Idempotency-Key
+         *     或查询部署当前状态。
          */
         post: operations["extendDeployment"];
         delete?: never;
@@ -7327,6 +7388,65 @@ export interface components {
             total_available: number;
             /** Format: int64 */
             latency_ms: number;
+        };
+        /**
+         * @description 注册表中的一项。`value` 为 null 表示该键尚未落库（使用 `default`）。
+         *     秘密项（`secret=true`）的 `value` 恒为掩码（配置后）或 null，明文永不回传。
+         */
+        SettingsItem: {
+            key: string;
+            /** @description 当前生效值；secret 项为掩码；未落库时为 null。 */
+            value: unknown;
+            /** @enum {string} */
+            type: "bool" | "string" | "int" | "number" | "enum" | "list" | "object";
+            /** @description 注册表默认值（不因用户修改而变化）。 */
+            default: unknown;
+            /** @description 是否可经公开接口下发。 */
+            public: boolean;
+            secret: boolean;
+            dangerous: boolean;
+            /**
+             * @description 危险项的风险方向；非危险项为空串。`any` 表示任意变更（含密钥替换）
+             *     都需要二次确认。
+             * @enum {string}
+             */
+            danger_direction?: "" | "on" | "off" | "any";
+            /** @description 服务端只读项（管理面不可修改）。 */
+            locked?: boolean;
+        };
+        SettingsSection: {
+            section: string;
+            /**
+             * Format: date-time
+             * @description section 内各键 `updated_at` 的最大值；从未写入时为 null。
+             */
+            updated_at: string | null;
+            items: components["schemas"]["SettingsItem"][];
+        };
+        /**
+         * @description 只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
+         *     字符串 = 替换为新值。`values` 必填（`{}` 表示空更新）。
+         *     `expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+         *     命中危险方向时需要 `dangerous_confirmed=true`，否则返回 400。
+         */
+        SettingsUpdateRequest: {
+            /** @description 可选；若提供必须与 query 的 section 一致，否则 400。 */
+            section?: string;
+            values: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            expect_updated_at?: string | null;
+            dangerous_confirmed?: boolean;
+        };
+        SettingsUpdateResponse: {
+            section: string;
+            /** Format: date-time */
+            updated_at: string | null;
+            /** @description 本次实际写入的键与归一化后的值。 */
+            values: {
+                [key: string]: unknown;
+            };
         };
         /** @description POST /api/settings/test/webhook 的响应；测试样例非事件契约。 */
         WebhookTestResult: {
@@ -13758,6 +13878,80 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    getSettingsSection: {
+        parameters: {
+            query: {
+                section: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description section 投影 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsSection"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateSettingsSection: {
+        parameters: {
+            query: {
+                section: string;
+            };
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 保存结果（实际写入的键） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsUpdateResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            /** @description 锁定键（服务端只读，如 nav.console.require_auth）被修改 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
         };
     };
     testWebhookSettings: {

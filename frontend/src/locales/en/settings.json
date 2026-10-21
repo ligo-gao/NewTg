@@ -94,7 +94,8 @@
     "sec": "SSRF & sensitive words",
     "notify_smtp": "SMTP",
     "rl_health": "Channel health",
-    "notify_webhook": "Webhook notifications"
+    "notify_webhook": "Webhook notifications",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "Shown on every page and used as the base for callback links",
@@ -109,7 +110,8 @@
     "sec": "Outbound requests are checked before they leave the gateway",
     "notify_smtp": "Required for email verification and email notifications",
     "rl_health": "A response can take a channel out of rotation on the first match",
-    "notify_webhook": "Push balance, payment, announcement, and sign-up events to an HTTPS endpoint"
+    "notify_webhook": "Push balance, payment, announcement, and sign-up events to an HTTPS endpoint",
+    "pay_epay": "Generic Epay checkout (MD5-signed, ZPay-style gateways)"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Alipay public key",
         "gateway_url": "Gateway URL",
         "sandbox": "Sandbox mode"
+      },
+      "epay": {
+        "enabled": "Enable Epay",
+        "api_url": "Checkout API URL",
+        "pid": "Merchant ID (pid)",
+        "key": "Signing key",
+        "sign_mode": "Signature mode",
+        "notify_url": "Notify URL",
+        "return_url": "Return URL"
       }
     },
     "rl": {
@@ -215,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF protection mode",
         "enabled": "Enable SSRF protection",
         "allow_private_ip": "Allow private addresses",
         "allowed_ports": "Allowed ports",
         "domain_mode": "Domain mode",
-        "domain_list": "Domain list"
+        "domain_list": "Domain list",
+        "max_redirects": "Maximum redirects",
+        "connect_timeout_seconds": "Connect timeout (seconds)"
       },
       "sensitive": {
         "enabled": "Enable sensitive-word filtering",
@@ -300,6 +314,13 @@
       "alipay": {
         "private_key": "PEM encoded. Leave empty to keep the current key.",
         "public_key": "PEM encoded. Leave empty to keep the current key."
+      },
+      "epay": {
+        "api_url": "Must be an absolute https URL, at most 1024 characters.",
+        "key": "Signs orders and verifies callbacks. Leave empty to keep the current key.",
+        "sign_mode": "append: signature string + key (standard). amp: signature string & key (some gateways). Orders and callbacks must use the same mode.",
+        "notify_url": "Optional absolute https URL. Derived from the service address when empty.",
+        "return_url": "Optional absolute URL or site-relative path for the browser return."
       }
     },
     "rl": {
@@ -313,7 +334,11 @@
         "enabled": "Applies to all outbound requests: OAuth discovery, webhooks, payment callbacks, URL health checks, and upstream channel forwarding.",
         "allow_private_ip": "Applies to outbound requests only.",
         "allowed_ports": "Comma-separated integers between 1 and 65535.",
-        "domain_list": "One domain per line or comma-separated. In allowlist mode an empty list blocks every outbound request."
+        "domain_list": "One domain per line or comma-separated. In allowlist mode an empty list blocks every outbound request.",
+        "mode": "off disables every outbound check; basic blocks private and loopback targets; strict also requires the resolved address to be public. The default domain mode is allowlist — a breaking tightening (G-DOM-68): only listed hosts are reachable, so add every webhook, payment callback and OAuth discovery host before upgrading.",
+        "domain_mode": "Default allowlist is a breaking tightening (G-DOM-68): outbound requests to hosts not on the list are blocked.",
+        "max_redirects": "0–10. Every redirect hop is re-validated.",
+        "connect_timeout_seconds": "1–120 seconds."
       },
       "sensitive": {
         "scope": "Choose which prompt fields are inspected.",
@@ -362,7 +387,12 @@
       "payment_success": "Payment succeeded",
       "announcement": "Announcement published",
       "user_signup": "User signed up"
-    }
+    },
+    "epay_sign_append": "Append key (standard)",
+    "epay_sign_amp": "Join with & (legacy gateways)",
+    "ssrf_mode_off": "Off",
+    "ssrf_mode_basic": "Basic",
+    "ssrf_mode_strict": "Strict"
   },
   "status": {
     "title": "System status",

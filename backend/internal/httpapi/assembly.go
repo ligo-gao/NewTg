@@ -36,6 +36,7 @@ import (
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
+	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/plugin"
@@ -514,10 +515,22 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if deps.Sealer != nil {
 			deploySecrets = &sqlDeploySecretStore{db: deps.DB, sealer: deps.Sealer}
 		}
+		// 部署计费账本（W3 H1/H2）：管理面写路径的 Hold/Release/SettleTerminated
+		// 复用与 worker 同一个 DeploymentBillingLedger 实现（不另写记账）。
+		// 账本只读写成本表，不触碰用户资金；provider 接缝留空——管理面只做
+		// 本地预扣/结算，provider 观测由调用方即时传入。
+		deployBillingLedger, err := deploybilling.NewLedger(deploybilling.LedgerConfig{
+			DB:     deps.DB,
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("router: deploy billing ledger: %w", err)
+		}
 		deployHandlers, err := NewDeployManagementHandlers(DeployManagementHandlerConfig{
 			Settings: settingsService,
 			Secrets:  deploySecrets,
 			Provider: deps.DeployProvider,
+			Billing:  deployBillingLedger,
 			Authz:    deps.Authz,
 			Audit:    deps.Audit,
 			Redis:    deps.Redis,
