@@ -60,6 +60,10 @@ type GatewayDeps struct {
 	Redis    *redis.Client
 	Sessions *auth.SessionManager
 	Config   ConfigReader
+	// RateLimiter 是中继/任务提交的准入限流接缝（W7/M5-b）。生产由 platform
+	// 用同一个 Redis 客户端构造一次；nil 时不限流（单测装配没有 Redis，
+	// 不能把「未装配」变成「每个请求 500」）。
+	RateLimiter RelayRateLimiter
 	// Sealer 解封配置中心的密钥类键（auth.turnstile.secret_key）。生产为
 	// CREDENTIAL_ENCRYPTION_KEY 派生的 auth.SecretCipher。
 	Sealer       configcenter.SecretSealer
@@ -362,6 +366,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 				return pricing.BillingSettingFromConfig(deps.Config)
 			},
 			ModelExpr: TaskModelExprLookup(deps.DB),
+			// W7/M5-b：提交面与中继共用同一 limiter/config（同一次装配）。
+			RateLimiter: deps.RateLimiter,
+			Config:      deps.Config,
 		})
 	}
 

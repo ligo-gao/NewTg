@@ -120,6 +120,11 @@ type MultimodalHandlerOptions struct {
 	// Groups 是 /pg/* 会话路径的用户分组查询面；nil 时仅令牌路径可用
 	// （会话请求会 fail-closed 500）。
 	Groups PlaygroundUserGroups
+	// RateLimiter / Config 是 W7/M5-b 的准入限流接缝与阈值来源。由
+	// RelayHandler.Register 透传（与 chat 同一实例、同一配置快照）；
+	// RateLimiter 为 nil 时跳过（仅测试/降级装配）。
+	RateLimiter RelayRateLimiter
+	Config      ConfigReader
 }
 
 // MultimodalHandler 持有入口校验之外的最小依赖。
@@ -128,6 +133,8 @@ type MultimodalHandler struct {
 	modelStatus RelayModelStatusStore
 	dispatcher  MultimodalDispatcher
 	groups      PlaygroundUserGroups
+	rateLimiter RelayRateLimiter
+	config      ConfigReader
 }
 
 // NewMultimodalHandler 构造多模态端点 handler。
@@ -139,6 +146,8 @@ func NewMultimodalHandler(opts MultimodalHandlerOptions) *MultimodalHandler {
 		modelStatus: opts.ModelStatus,
 		dispatcher:  opts.Dispatcher,
 		groups:      opts.Groups,
+		rateLimiter: opts.RateLimiter,
+		config:      opts.Config,
 	}
 }
 
@@ -183,10 +192,10 @@ func RegisterMultimodalRoutes(mux *http.ServeMux, auth func(http.Handler) http.H
 }
 
 // serve 是所有多模态端点的公共流程：读体 → 入口校验 → 组装 RelayContext →
-// 交给 Dispatcher。
+// 准入限流（W7/M5-b，realtime 除外）→ 交给 Dispatcher。
 //
-// 为什么不在这里做限流/定价：它们的唯一入口是 billing 接缝与路由层（contract
-// §6），本层只承担 relay-04 §2 阶段 4–5 的职责。
+// 本层只承担 relay-04 §2 阶段 4–5 的职责与 R-M5-04 冻结的限流位置；定价与
+// 预扣仍属于 billing 接缝（contract §6），不在这里发生。
 func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoint contract.Endpoint) {
 	requestID := newRelayRequestID()
 
@@ -239,6 +248,19 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	if status, code, message, ok := applyPlaygroundSession(r.Context(), h.groups, principal, rc, model); !ok {
 		writeRelayError(w, status, requestID, code, message)
 		return
+	}
+
+	// W7/M5-b 准入限流（R-M5-04）：与 chat 同位置——分组解析之后、白名单/
+	// 停用检查/预扣/上游之前。
+	//
+	// 排除 realtime：`GET /v1/realtime` 的 WebSocket 升级在当前版本固定 501
+	// （M5 简报的冻结口径「realtime 501 不计」）。把它计入会先消耗配额再得到
+	// 一个必然失败的响应；升级真正落地时由该端点自己决定连接级语义。
+	if endpoint != contract.EndpointRealtime {
+		if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+			writeRelayRateLimitError(w, requestID, rejection)
+			return
+		}
 	}
 
 	// 鉴权/授权一致性（T1 复审 F2）：多模态端点必须复用 chat 路径的两道

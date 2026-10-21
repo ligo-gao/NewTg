@@ -199,6 +199,10 @@ type RelayHandlerOptions struct {
 	// AttemptFailureReporter 是 M4-a 的自动禁用判定接缝（生产
 	// *channelhealth.Reporter）。nil 时不上报（测试/降级装配）。
 	AttemptFailureReporter AttemptFailureReporter
+	// RateLimiter 是中继准入限流接缝（W7/M5-b）；生产由 platform 注入一个
+	// 复用现有 Redis 客户端的 *ratelimit.Limiter。nil 表示未装配（仅测试/
+	// 无 Redis 的降级装配），此时跳过限流、行为与 M5 之前一致。
+	RateLimiter RelayRateLimiter
 }
 
 // NativeRouteDispatcher 是插件原生路由在 HTTP 面的唯一接缝（生产实现
@@ -244,6 +248,8 @@ type RelayHandler struct {
 	groupConfigured func(ctx context.Context, group string) (bool, error)
 	// attemptReporter 是 M4-a 的自动禁用上报接缝；nil 时执行层回调为 nil。
 	attemptReporter AttemptFailureReporter
+	// rateLimiter 是 W7/M5-b 的准入限流接缝；nil 时三档桶全部跳过。
+	rateLimiter RelayRateLimiter
 	// maxAutoGroups 是 R-63 的跨组上限（装配处解析并钳制 [1,20]）。
 	maxAutoGroups int
 	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
@@ -301,6 +307,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		nativeRoutes:     opts.NativeRoutes,
 		groupConfigured:  opts.GroupConfigured,
 		attemptReporter:  opts.AttemptFailureReporter,
+		rateLimiter:      opts.RateLimiter,
 		// R-63：站点键 relay.cross_group_retry_max_groups（默认 3，非法回退
 		// 默认，钳制 [1,20]）。在这里解析一次，请求热路径只读字段。
 		maxAutoGroups: resolveCrossGroupRetryMaxGroups(opts.Config),
@@ -409,6 +416,9 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 		ModelStatus: h.modelStatus,
 		Dispatcher:  h.multimodal,
 		Groups:      h.userGroups,
+		// W7/M5-b：多模态族与 chat 共用同一个限流接缝与同一份配置快照。
+		RateLimiter: h.rateLimiter,
+		Config:      h.config,
 	}))
 
 	// T6c-a：插件原生路由（manifest routes[]）的 /v1 兜底。
@@ -757,6 +767,15 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// W7/M5-b 准入限流（R-M5-04）：位置固定在这里——BuildRelayContext 与分组
+	// 解析之后（/pg 的 UsingGroup 此时才可用），pin/白名单/routeDeps/PreConsume
+	// 与上游之前。被拒绝的请求因此零预扣、零 usage_logs、零上游调用；流式与
+	// 非流式在分流前只计一次（不按 SSE 帧计）。
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+		writeRelayRateLimitError(w, requestID, rejection)
+		return
+	}
+
 	// finding 1（relay-01 §3.5/§5.4-A）：pin 必须在 BuildRelayContext **之后**
 	// 解析——后者已经完成了「非管理员使用 pin → 403」的统一校验（R-P2a）。
 	// 提前解析会让会话路径的 pin 绕过那道校验。
@@ -984,6 +1003,14 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 的 system 已由解析器放进 Messages[0]（RoleSystem），因此同一个
 	// CheckRequest 同时覆盖 prompt 与 system 两个作用面。
 	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID) {
+		return
+	}
+
+	// W7/M5-b 准入限流（R-M5-04）：敏感词过滤之后、pin/白名单/停用检查/预扣
+	// 之前。原生入口没有 /pg 分支，因此不存在 TokenID==nil 的会话路径
+	// （B11 恒参与）。
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+		writeRelayRateLimitError(w, requestID, rejection)
 		return
 	}
 

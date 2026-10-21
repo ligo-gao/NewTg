@@ -30,6 +30,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
@@ -61,6 +62,10 @@ type gatewayAssembly struct {
 	// Tasks 是任务数据面 handler（M6d Task 6a）；由 mountRelayRoutes 挂到
 	// /v1 令牌链。nil 表示本次装配没有任务数据面（探针-only 测试）。
 	Tasks *httpapi.TasksHandler
+	// RateLimiter 是 W7/M5-b 的准入限流器：用同一个 Redis 客户端构造一次，
+	// 同时交给中继（chat/messages/多模态）与任务提交面。每次请求只做一次
+	// EVAL，不新建客户端、不持有计数（计数在 Redis）。
+	RateLimiter httpapi.RelayRateLimiter
 	// AttemptFailureReporter 是 W7/M4-a 的自动禁用判定接缝（生产
 	// *channelhealth.Reporter）。随装配启动、随 RunGateway ctx 退出；
 	// nil 表示探针-only/测试装配，中继不做自动禁用。
@@ -335,6 +340,11 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		},
 	)
 
+	// W7/M5-b：限流器只构造一次（无状态包装，复用上面的 Redis 客户端）。
+	// 中继面与任务提交面必须拿到同一个实例：两处各建一个包装虽无害，但会让
+	// 「跨副本共享计数」的验证失去单一装配点。
+	rateLimiter := ratelimit.New(rdb)
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -369,6 +379,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 任务提交与中继共用同一个计费引擎会话工厂（M6d Task 6a）：
 		// 预扣/退款/结算语义只能有一套实现。
 		Billing: engine.NewSession,
+		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
+		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
+		RateLimiter: ratelimit.New(rdb),
 	})
 	if err != nil {
 		return nil, err
@@ -391,6 +404,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PricingSource:          source,
 		PricingOnChange:        pricingChanged,
 		Tasks:                  router.TasksHandler(),
+		RateLimiter:            rateLimiter,
 		AttemptFailureReporter: attemptReporter,
 		AttemptFailureReporterStop: func() {
 			reporterCancel()

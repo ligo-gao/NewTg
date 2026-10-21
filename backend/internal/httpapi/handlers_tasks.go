@@ -109,6 +109,11 @@ type TasksHandlerConfig struct {
 	// clientModel 的第 3 级直接用提交期冻结的 rc.PriceSnapshot，不必再查。
 	// 查询失败按「没有第 4 级」处理（记录日志），不阻断任务提交。
 	ModelExpr func(ctx context.Context, model string) (mode, expr string, ok bool, err error)
+	// RateLimiter / Config 是 W7/M5-b 的准入限流接缝与阈值来源（R-M5-07：
+	// 只有**提交**面计入，查询/轮询/产物面不调用）。RateLimiter 为 nil 时
+	// 跳过（仅测试/无 Redis 的降级装配）。
+	RateLimiter RelayRateLimiter
+	Config      ConfigReader
 }
 
 // TasksHandler 持有任务端点依赖，可并发使用。
@@ -127,6 +132,9 @@ type TasksHandler struct {
 	// billingSetting/modelExpr 是 T5 任务计价表达式的配置读取缝。
 	billingSetting func() pricing.BillingSetting
 	modelExpr      func(ctx context.Context, model string) (mode, expr string, ok bool, err error)
+	// rateLimiter/config 是 W7/M5-b 的提交面准入限流缝（R-M5-07）。
+	rateLimiter RelayRateLimiter
+	config      ConfigReader
 }
 
 // NewTasksHandler 构造 handler。Store/Channels/Plugins/Sealer/Signer 是硬依赖：
@@ -165,6 +173,8 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 		allowPrivate:   cfg.AllowPrivateUpstream,
 		billingSetting: cfg.BillingSetting,
 		modelExpr:      cfg.ModelExpr,
+		rateLimiter:    cfg.RateLimiter,
+		config:         cfg.Config,
 	}
 }
 
@@ -288,6 +298,19 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		rc.RequestID = requestID
 	}
 	relay.WithRequest(rc, &contract.Request{Model: model}, "openai", r.URL.Path)
+
+	// W7/M5-b 准入限流（R-M5-07 / R-M5-04）：任务**提交**是本 handler 的唯一
+	// 限流点（videos / batches / 原生路由都汇合到这里）。位置在渠道选择与
+	// 预扣之前：被拒绝的提交不建任务行、不预扣、不触达上游。
+	//
+	// 与 chat/messages 的细微差异（登记）：令牌模型白名单在本函数开头、
+	// BuildRelayContext 之前执行，因此白名单 403 不消耗配额；chat/messages
+	// 的白名单在限流之后，白名单 403 会消耗配额。这是把限流放在
+	// BuildRelayContext 之后（rc.UsingGroup 可用）的必然结果，不是两套语义。
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+		writeRelayRateLimitError(w, requestID, rejection)
+		return
+	}
 
 	// 渠道候选（brief 步骤 3）：status=1 + 绑定插件 key + 支持模型，
 	// 按 priority/weight 取一个。无候选 → 404，发生在任何计费之前。

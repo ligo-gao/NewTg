@@ -271,8 +271,12 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 	// M4-a：自动禁用 reporter 由管理面装配（newGatewayAPI）构造并已 Start；
 	// 这里只做接口透传。nil（探针-only/测试装配）时中继完全跳过判定。
 	var attemptReporter httpapi.AttemptFailureReporter
+	// W7/M5-b：准入限流器同样是一次装配的产物（newGatewayAPI 用同一个 Redis
+	// 客户端构造一次），中继只透传。nil（探针-only/测试装配）时跳过限流。
+	var rateLimiter httpapi.RelayRateLimiter
 	if assembly != nil {
 		attemptReporter = assembly.AttemptFailureReporter
+		rateLimiter = assembly.RateLimiter
 	}
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
 		Channels:        channelRepo,
@@ -290,6 +294,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		NativeRoutes: nativeRoutes,
 		// M4-a：中继每轮非 2xx 失败 → 自动禁用判定（异步、非阻塞）。
 		AttemptFailureReporter: attemptReporter,
+		// W7/M5-b：三档准入桶（B11 → B10 → B12）与 429/500 错误出口。
+		RateLimiter: rateLimiter,
 	})
 	relayHandler.Register(mux)
 	// 任务数据面（M6d Task 6a）：/v1/tasks* 与中继共用同一 RelayAuth
