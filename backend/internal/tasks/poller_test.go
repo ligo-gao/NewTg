@@ -186,9 +186,11 @@ type fakeHandoff struct {
 	mu              sync.Mutex
 	refunds         []string
 	terminates      []string
+	costs           []int64
 	refundTokens    []int64
 	terminateTokens []int64
 	terminateErr    error
+	costErr         error
 	refundErr       error
 }
 
@@ -197,7 +199,17 @@ func (f *fakeHandoff) TerminateByRequestIDForToken(requestID string, tokenID int
 	defer f.mu.Unlock()
 	f.terminates = append(f.terminates, requestID)
 	f.terminateTokens = append(f.terminateTokens, tokenID)
+	f.costs = append(f.costs, -1) // -1 = 按预扣额结清（未使用表达式）
 	return f.terminateErr
+}
+
+func (f *fakeHandoff) TerminateByRequestIDForTokenCost(requestID string, tokenID, cost int64, _ contract.UsageFact) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminates = append(f.terminates, requestID)
+	f.terminateTokens = append(f.terminateTokens, tokenID)
+	f.costs = append(f.costs, cost)
+	return f.costErr
 }
 
 func (f *fakeHandoff) RefundByRequestIDForToken(requestID string, tokenID int64) error {

@@ -1,8 +1,9 @@
 // Package tasks 承载任务插件平台的数据面：持久化模型、状态机、提交执行器
 // 与产物投影（relay-06 §6/§7/§10.2/§10.5）。
 //
-// 依赖方向：本包只依赖 contract / plugin / 标准库。HTTP 形状、认证、计费
-// 会话装配都在 httpapi；反向依赖会形成环，也会把「凭据解密」带进数据面。
+// 依赖方向：本包依赖 contract / plugin / billing/pricing（任务计价表达式
+// 的编译与求值，T5）与标准库。HTTP 形状、认证、计费会话装配都在 httpapi；
+// 反向依赖会形成环，也会把「凭据解密」带进数据面。
 package tasks
 
 import (

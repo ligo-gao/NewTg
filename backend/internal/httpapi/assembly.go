@@ -33,6 +33,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/deploy/ionet"
@@ -353,6 +354,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// （T6b brief：不新增明文配置）；轮换该键即撤销所有已签发 URL。
 			ArtifactSigner: tasks.NewArtifactSigner(deps.CredentialEncryptionKey, 0),
 			PublicBaseURL:  deps.PublicBaseURL,
+			// T5：任务计价表达式。插件覆盖表来自设置中心快照；第 4 级
+			// （映射模型）回源 model_pricing。两者缺失都只是「没有表达式」，
+			// 结算沿用按预扣额结清。
+			BillingSetting: func() pricing.BillingSetting {
+				return pricing.BillingSettingFromConfig(deps.Config)
+			},
+			ModelExpr: TaskModelExprLookup(deps.DB),
 		})
 	}
 

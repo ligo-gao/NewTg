@@ -30,6 +30,30 @@ func (e *Engine) TerminateByRequestID(requestID string, fact contract.UsageFact)
 // 归属到发起任务的令牌；at-held 路径本身不调整令牌额度（cost == 已预扣），
 // 但 usage_logs.token_id 必须正确。
 func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, fact contract.UsageFact) error {
+	return e.terminateByRequestID(requestID, tokenID, nil, fact)
+}
+
+// TerminateByRequestIDForTokenCost 按**已求值**的任务成本结算（T5）。
+//
+// 成本来自提交期冻结的任务计价表达式（u("字段") 求值后的积分）。与
+// TerminateByRequestIDForToken 的差别仅在于「不重算价格」：fact 只用于
+// 日志归属，金额由 cost 承载。其余路径（订阅识别、结算锁、hold CAS、
+// 令牌额度调整、多退少补）完全复用，保证实时/轮询/补偿三条路径同一语义。
+//
+// 负成本拒绝：负值会成为抵扣（反向入账），表达式求值层已拒绝负结果，
+// 这里是引擎边界的第二道防线。
+func (e *Engine) TerminateByRequestIDForTokenCost(requestID string, tokenID, cost int64, fact contract.UsageFact) error {
+	if cost < 0 {
+		return fmt.Errorf("billing: task settlement cost must be non-negative (got %d)", cost)
+	}
+	return e.terminateByRequestID(requestID, tokenID, &cost, fact)
+}
+
+// terminateByRequestID 是 ByRequestID 结算的共同实现（钱包 + 订阅两条资金路径）。
+//
+// cost 为 nil 表示按既有语义（空 fact = 按预扣额结清；非空 fact = 按模型
+// 快照重算）；非 nil 表示使用调用方给定的冻结成本。
+func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int64, fact contract.UsageFact) error {
 	if requestID == "" {
 		return ErrMissingRequestID
 	}
@@ -100,9 +124,12 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 				subscriptionPreConsumed: rec.PreConsumed,
 				preConsumed:             rec.PreConsumed,
 				tokenDeducted:           rec.PreConsumed,
+				// T5：冻结成本优先于快照重算。
+				forcedCost: cost,
 			}
 			// 空 fact 由 terminateSubscriptionLocked 按「预扣额即成本」结算
-			// （delta=0），不需要钱包的 terminateAtHeld 分支。
+			// （delta=0），不需要钱包的 terminateAtHeld 分支。forcedCost 非
+			// nil 时同函数改用冻结成本。
 			return s.Terminate(fact)
 		case errors.Is(recErr, store.ErrPreConsumeNotFound):
 			// 不是订阅来源：继续钱包路径。
@@ -111,7 +138,7 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 		}
 	}
 
-	if fact.Model == "" && usageIsZero(fact.Usage) {
+	if cost == nil && fact.Model == "" && usageIsZero(fact.Usage) {
 		return e.terminateAtHeld(requestID, tokenID, fact)
 	}
 	// 从账本水合 hold 与令牌扣减：非空 fact 会「多退少补」，令牌额度也必须
@@ -131,6 +158,8 @@ func (e *Engine) TerminateByRequestIDForToken(requestID string, tokenID int64, f
 		userID:        st.UserID,
 		preConsumed:   st.Held,
 		tokenDeducted: st.Held,
+		// T5：任务表达式成本（nil = 按 fact 重算）。
+		forcedCost: cost,
 		rc: &contract.RelayContext{
 			RequestID: requestID,
 			UserID:    int(st.UserID),

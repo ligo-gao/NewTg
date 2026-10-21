@@ -115,7 +115,11 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 
 	already := s.preConsumed + s.consumed
 	cost := already
-	if !emptyUsageFact(fact) {
+	if s.forcedCost != nil {
+		// T5：任务计价表达式在提交期冻结，结算只读该成本，不重新解析定价
+		// （订阅路径同样不得按当前配置重算）。
+		cost = *s.forcedCost
+	} else if !emptyUsageFact(fact) {
 		// N3：结算必须使用最终选中分组的快照。
 		if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
 			return err

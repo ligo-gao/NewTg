@@ -88,6 +88,14 @@ type Session struct {
 	// 重入，二次获取会必然返回 ErrSettlementInProgress）。
 	settlementLockHeld bool
 
+	// forcedCost 是 T5 的任务计价表达式求值结果（整数积分）。
+	//
+	// 非 nil 时 Terminate 跳过「按快照重算」：任务结算的价格已在提交期冻结
+	// （P-08），结算只读快照，不得重新 Resolve 当前定价——重读会让任务运行
+	// 期间的改价改变已承诺金额，且重建会话没有价格快照时会把成本算成 0。
+	// 差额（多退少补）仍由既有的 hold CAS / settleHolds 完成。
+	forcedCost *int64
+
 	preConsumeCalled bool
 	settled          bool
 	refunded         bool
@@ -609,18 +617,26 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 	// N3：结算必须使用最终选中分组的快照。跨组重试（relay.WithUsingGroup）
 	// 会改写 rc.UsingGroup；若与预扣时冻结快照的分组不同，这里重新解析并
 	// 覆盖 s.snap 与 rc.PriceSnapshot，旧组倍率绝不参与最终金额。
-	if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
-		return err
-	}
+	//
+	// T5：forcedCost 非 nil 时价格已在提交期冻结（任务计价表达式），不得
+	// 重新解析——跳过整段快照刷新与定价求值，只做资金差额收敛。
+	var cost int64
+	if s.forcedCost != nil {
+		cost = *s.forcedCost
+	} else {
+		if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
+			return err
+		}
 
-	snap, err := s.currentSnapshotLocked(ctx, fact.Model)
-	if err != nil {
-		return err
+		snap, err := s.currentSnapshotLocked(ctx, fact.Model)
+		if err != nil {
+			return err
+		}
+		// 上游格式事实（只读派生元信息）：Claude 语义 = 缓存读是独立维度。
+		// usage_logs.other.usage_semantic 的生产写者（R-63 相邻的 T9 项）。
+		s.noteUsageSemanticFromFactLocked(snap, fact.Usage)
+		cost = s.actualCostLocked(snap, fact)
 	}
-	// 上游格式事实（只读派生元信息）：Claude 语义 = 缓存读是独立维度。
-	// usage_logs.other.usage_semantic 的生产写者（R-63 相邻的 T9 项）。
-	s.noteUsageSemanticFromFactLocked(snap, fact.Usage)
-	cost := s.actualCostLocked(snap, fact)
 
 	preDeducted := s.preConsumed
 	if preDeducted == 0 && st.Held > 0 {
@@ -968,6 +984,15 @@ func (s *Session) Detach(requestID string) error {
 // （T6b 复核 H1）；轮询器另有 token-aware 入口直接从任务行取 token_id。
 func (s *Session) TerminateByRequestID(requestID string, fact contract.UsageFact) error {
 	return s.engine.TerminateByRequestIDForToken(requestID, s.tokenID, fact)
+}
+
+// TerminateByRequestIDCost 按**已求值**的任务成本结算（T5 即时终态路径）。
+//
+// 与 TerminateByRequestID 的差别只在「成本从哪来」：任务计价表达式的
+// 结果是积分，结算时只读提交期冻结的成本，不再按模型快照重算。转发给
+// 引擎后仍复用同一条 hold CAS / 结算锁，因此与轮询路径的幂等口径一致。
+func (s *Session) TerminateByRequestIDCost(requestID string, cost int64, fact contract.UsageFact) error {
+	return s.engine.TerminateByRequestIDForTokenCost(requestID, s.tokenID, cost, fact)
 }
 
 // RefundByRequestID 按持久化 requestID 全额退款（T6b 失败/超时入口）。

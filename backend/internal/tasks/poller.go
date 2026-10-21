@@ -69,6 +69,13 @@ type PendingRepo interface {
 // 永久少扣（Refund 的 tokenDeducted 条件恒假）。
 type BillingHandoff interface {
 	TerminateByRequestIDForToken(requestID string, tokenID int64, fact contract.UsageFact) error
+	// TerminateByRequestIDForTokenCost 按**已求值**的任务成本结算（T5）。
+	//
+	// 为什么需要它：任务计价表达式（u("字段")）的结果是积分，不经过
+	// 模型的 token/倍率重算；若沿用 TerminateByRequestID 的空 fact 会按
+	// 预扣额结清（差额 0），配置了表达式也不会生效。该方法让「表达式求值」
+	// 与「资金收敛」解耦，同时复用同一条 hold CAS / 结算锁路径。
+	TerminateByRequestIDForTokenCost(requestID string, tokenID, cost int64, fact contract.UsageFact) error
 	RefundByRequestIDForToken(requestID string, tokenID int64) error
 }
 

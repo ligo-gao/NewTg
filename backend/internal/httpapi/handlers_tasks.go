@@ -33,6 +33,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
@@ -101,6 +102,13 @@ type TasksHandlerConfig struct {
 	// AllowPrivateUpstream 只允许测试注入 httptest（127.0.0.1）时置 true。
 	// 生产装配恒为 false；它只跳过字面量私网地址检查，不关闭白名单/重定向/大小限制。
 	AllowPrivateUpstream bool
+	// BillingSetting 读取任务计价表达式配置（T5）。nil 表示未配置插件覆盖，
+	// 解析链只回退到模型级表达式。
+	BillingSetting func() pricing.BillingSetting
+	// ModelExpr 读取**映射模型**的 billing_mode/表达式（T5 解析链第 4 级）。
+	// clientModel 的第 3 级直接用提交期冻结的 rc.PriceSnapshot，不必再查。
+	// 查询失败按「没有第 4 级」处理（记录日志），不阻断任务提交。
+	ModelExpr func(ctx context.Context, model string) (mode, expr string, ok bool, err error)
 }
 
 // TasksHandler 持有任务端点依赖，可并发使用。
@@ -116,6 +124,9 @@ type TasksHandler struct {
 	signer       *tasks.ArtifactSigner
 	publicBase   string
 	allowPrivate bool
+	// billingSetting/modelExpr 是 T5 任务计价表达式的配置读取缝。
+	billingSetting func() pricing.BillingSetting
+	modelExpr      func(ctx context.Context, model string) (mode, expr string, ok bool, err error)
 }
 
 // NewTasksHandler 构造 handler。Store/Channels/Plugins/Sealer/Signer 是硬依赖：
@@ -141,17 +152,19 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 		}
 	}
 	return &TasksHandler{
-		store:        cfg.Store,
-		batches:      batches,
-		channels:     cfg.Channels,
-		plugins:      cfg.Plugins,
-		sealer:       cfg.Sealer,
-		tokens:       cfg.Tokens,
-		billing:      billing,
-		client:       client,
-		signer:       cfg.ArtifactSigner,
-		publicBase:   strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
-		allowPrivate: cfg.AllowPrivateUpstream,
+		store:          cfg.Store,
+		batches:        batches,
+		channels:       cfg.Channels,
+		plugins:        cfg.Plugins,
+		sealer:         cfg.Sealer,
+		tokens:         cfg.Tokens,
+		billing:        billing,
+		client:         client,
+		signer:         cfg.ArtifactSigner,
+		publicBase:     strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
+		allowPrivate:   cfg.AllowPrivateUpstream,
+		billingSetting: cfg.BillingSetting,
+		modelExpr:      cfg.ModelExpr,
 	}
 }
 
@@ -339,6 +352,21 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// 任务计价表达式（T5 / P-08）：在预扣之后、出站提交之前解析并**冻结**。
+	//   - 放在预扣之后：rc.PriceSnapshot 已由 PreConsume 写入（模型级解析链
+	//     第 3 级的输入），避免重复解析定价；
+	//   - 放在出站之前：插件覆盖键为空/非法是配置错误，此时还没有产生上游
+	//     任务，直接 400 由 defer 全额退款，比落库后再失败更安全。
+	// 没有任何表达式时 frozen 为 nil，结算沿用「按预扣额结清」。
+	frozen, freezeErr := h.freezeTaskBilling(r.Context(), rc, key, model, upstreamModelName(channel, model))
+	if freezeErr != nil {
+		slog.Warn("tasks: task billing expression is not usable",
+			"request_id", rc.RequestID, "plugin", key, "model", model, "error", freezeErr)
+		writeRelayError(w, http.StatusBadRequest, requestID, "model_price_error",
+			"task pricing expression is invalid")
+		return
+	}
+
 	// 出站提交（brief 步骤 6/7）：插件构建 → 宿主连接 → 插件解析。
 	result, err := tasks.Submit(r.Context(), h.client, tasks.SubmitInput{
 		Plugin:       compiled,
@@ -376,10 +404,10 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	quota := session.Reserved()
 
-	// 即时终态的资金收敛（HIGH-2）：
+	// 即时终态的资金收敛（HIGH-2 / T5）：
 	//   - FAILURE：设计 §9.5「即时失败 settle 为 0」→ 全额退款，quota 落 0；
-	//   - SUCCESS 且已有 usage：立即 Terminate 结算；
-	//   - SUCCESS 无 usage：差额不可信，保留预扣，由 T6b 终态结算。
+	//   - SUCCESS：有冻结表达式则求值后差额结算；无表达式则按预扣额结清。
+	//   求值/资金失败都保留预扣并置 settlement_pending（P-07）。
 	refundPending := false
 	settlementPending := false
 	switch {
@@ -395,28 +423,18 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			quota = 0
 		}
 	case result.State == tasks.StateSuccess:
-		// 即时 SUCCESS 同口径「按预扣额终结」：先停心跳/租约，再以空 fact
-		// 结清 hold（差额 0）。不再按 usage 重算——没有任务计价表达式时
-		// 重算不可信，且 Detach 后不终结会让预扣永久冻结。
+		// 即时 SUCCESS 的两种口径（T5）：
+		//   - 有冻结表达式：求值真实成本后差额结算；
+		//   - 无表达式：沿用 T5 之前的「按预扣额终结」（空 fact，差额 0）。
 		//
 		// 顺序必须是 Detach → Terminate：Terminate 走独立的 ByRequestID
 		// 会话，不会停掉本请求的心跳 goroutine。
-		if handoff, ok := session.(contract.BillingHandoff); ok {
-			if err := handoff.Detach(rc.RequestID); err != nil {
-				// 交接失败不阻断资金收敛；最坏情况是心跳延迟被 worker 兜底
-				//（安全方向），任务行仍有 request_id 可人工收敛。
-				slog.Warn("tasks: billing detach failed before inline settlement",
-					"request_id", rc.RequestID, "error", err)
-			}
-			if err := handoff.TerminateByRequestID(rc.RequestID, contract.UsageFact{}); err != nil {
-				settlementPending = true
-				slog.Warn("tasks: terminate-at-held for immediate success did not complete",
-					"request_id", rc.RequestID, "error", err)
-			} else {
-				settled = true
-			}
+		done, finalQuota := h.settleImmediateSuccess(session, rc.RequestID, frozen,
+			result.Data, compiled.Manifest(), quota)
+		if done {
+			settled = true
+			quota = finalQuota
 		} else {
-			// 无交接面（测试桩/旧会话）：保留预扣并标 pending，由补偿扫描处理。
 			settlementPending = true
 		}
 	}
@@ -469,6 +487,12 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if principal.TokenID != nil {
 		task.PrivateData["token_id"] = *principal.TokenID
+	}
+	if frozen != nil {
+		// T5 / P-08：计价快照在提交期冻结，结算（含补偿扫描/重启后的
+		// worker）只读这一份，不重新解析配置。只进 private_data：台账投影
+		// 永远不返回（设计 §7.1）。
+		task.PrivateData[tasks.PrivateTieredSnapshot] = frozen
 	}
 	if refundPending {
 		task.PrivateData["refund_pending"] = true
@@ -1108,6 +1132,122 @@ func upstreamModelName(ch *tasks.ChannelTarget, model string) string {
 		}
 	}
 	return model
+}
+
+// freezeTaskBilling 按 P-06 的四级顺序解析任务计价表达式并冻结。
+//
+// 输入构造：
+//   - 第 1/2 级：设置中心的 plugin_billing_expr（插件覆盖）；
+//   - 第 3 级：客户端模型的 tiered 表达式——直接取 PreConsume 已冻结的
+//     rc.PriceSnapshot，既不重复解析定价，也保证与预扣用的同一份配置；
+//   - 第 4 级：映射模型只能回源读（本进程没有它的快照）。
+//
+// 返回 nil 表示没有任务级表达式（结算按预扣额结清）。返回 error 表示
+// 插件覆盖键存在但不可用（空/非法）——必须 fail-closed 拒绝提交，不能
+// 静默回退到 other 价格来源（R-37）。
+func (h *TasksHandler) freezeTaskBilling(ctx context.Context, rc *contract.RelayContext,
+	pluginKey, clientModel, mappedModel string) (map[string]any, error) {
+	setting := pricing.BillingSetting{}
+	if h.billingSetting != nil {
+		setting = h.billingSetting()
+	}
+	setting.PluginBillingExpr = cloneStringMap(setting.PluginBillingExpr)
+	setting.BillingMode = cloneStringMap(setting.BillingMode)
+	setting.BillingExpr = cloneStringMap(setting.BillingExpr)
+
+	if rc != nil && rc.PriceSnapshot != nil &&
+		rc.PriceSnapshot.Mode == contract.BillingModeTieredExpr &&
+		strings.TrimSpace(rc.PriceSnapshot.ExprString) != "" {
+		setting.BillingMode[clientModel] = "tiered_expr"
+		setting.BillingExpr[clientModel] = rc.PriceSnapshot.ExprString
+	}
+
+	if mappedModel != "" && mappedModel != clientModel && h.modelExpr != nil {
+		mode, expr, ok, err := h.modelExpr(ctx, mappedModel)
+		if err != nil {
+			// 查询失败不等于「没有表达式」：记日志后按第 4 级缺失处理。
+			// 任务仍可提交，差额结算失败时由 P-07 保留预扣，方向安全。
+			slog.Warn("tasks: read mapped model expression failed",
+				"model", mappedModel, "error", err)
+		} else if ok {
+			setting.BillingMode[mappedModel] = mode
+			setting.BillingExpr[mappedModel] = expr
+		}
+	}
+
+	e, source, err := pricing.ResolveTaskExpr(setting, pluginKey, clientModel, mappedModel)
+	if err != nil {
+		return nil, err
+	}
+	if e == nil {
+		return nil, nil
+	}
+	group := 1.0
+	if rc != nil && rc.PriceSnapshot != nil && rc.PriceSnapshot.GroupRatio > 0 {
+		group = rc.PriceSnapshot.GroupRatio
+	}
+	return tasks.FreezeTieredSnapshot(e, source, group), nil
+}
+
+// settleImmediateSuccess 收敛「上游即时成功」的资金（T5 实时结算路径）。
+//
+// 返回 settled=false 时调用方保留预扣并置 settlement_pending（P-07）；
+// finalQuota 是应写入任务行的最终额度（按预扣额结清时保持 heldQuota）。
+func (h *TasksHandler) settleImmediateSuccess(session contract.BillingSession, requestID string,
+	frozen map[string]any, data map[string]any, m *plugin.Manifest, heldQuota int64) (bool, int64) {
+	handoff, ok := session.(contract.BillingHandoff)
+	if !ok {
+		// 无交接面（测试桩/旧会话）：保留预扣并标 pending，由补偿扫描处理。
+		return false, 0
+	}
+	if err := handoff.Detach(requestID); err != nil {
+		// 交接失败不阻断资金收敛；最坏情况是心跳延迟被 worker 兜底
+		//（安全方向），任务行仍有 request_id 可人工收敛。
+		slog.Warn("tasks: billing detach failed before inline settlement",
+			"request_id", requestID, "error", err)
+	}
+
+	credits, configured, evalErr := tasks.EvalTaskCost(frozen, data, m)
+	if !configured {
+		// 无任务表达式：沿用「按预扣额结清」，金额不变。
+		if err := handoff.TerminateByRequestID(requestID, contract.UsageFact{}); err != nil {
+			slog.Warn("tasks: terminate-at-held for immediate success did not complete",
+				"request_id", requestID, "error", err)
+			return false, 0
+		}
+		return true, heldQuota
+	}
+	if evalErr != nil {
+		// 表达式求值失败：保留预扣（不退款），交由补偿扫描重试。
+		slog.Warn("tasks: evaluate task expression for immediate success failed; keeping hold",
+			"request_id", requestID, "error", evalErr)
+		return false, 0
+	}
+	costSettler, ok := session.(interface {
+		TerminateByRequestIDCost(requestID string, cost int64, fact contract.UsageFact) error
+	})
+	if !ok {
+		// 没有成本结算接缝时不能退回「按预扣额结清」：配置了表达式却按
+		// hold 结算会静默多收/少收。保留预扣等补偿路径（它会用冻结快照）。
+		slog.Warn("tasks: billing session does not support cost settlement; keeping hold",
+			"request_id", requestID)
+		return false, 0
+	}
+	if err := costSettler.TerminateByRequestIDCost(requestID, credits, contract.UsageFact{}); err != nil {
+		slog.Warn("tasks: expression settlement for immediate success did not complete",
+			"request_id", requestID, "credits", credits, "error", err)
+		return false, 0
+	}
+	return true, credits
+}
+
+// cloneStringMap 复制配置 map，避免调用方共享的表被本次解析污染。
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // taskDurationSeconds 读取请求体里的 seconds（任务时长）。

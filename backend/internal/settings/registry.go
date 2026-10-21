@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -77,7 +78,7 @@ type Setting struct {
 
 // Sections 的返回顺序固定，便于前端与测试稳定比对。
 var sectionOrder = []string{
-	"site", "nav", "auth", "auth.turnstile", "billing",
+	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
@@ -355,6 +356,18 @@ func buildRegistry() []Setting {
 		def("billing.expose_group_ratios", "billing", TypeBool, false),
 		def("billing.group_group_ratio", "billing", TypeObject, map[string]any{}, validate(validateNestedRatioMap)),
 
+		// ==== billing_setting（T5 任务计价表达式，R-06 设置契约扩展）====
+		//
+		// 仓库原本没有 `billing_setting` 命名空间；R-06 要求「无则新建并在
+		// 报告登记为设置契约扩展，不要平铺顶层键」，故新建本 section，键名
+		// 与 billing-02 §2.1/§3.5 的命名空间 + 字段名一致。
+		//
+		// 值形状：map["<pluginKey>::<model>"] = 任务用量表达式（u("字段")）。
+		// 非公开：表达式是运营配置，不进入 /api/status 的公开下发全集。
+		// 空值/非法键在保存期 422（R-37 fail-closed 的写入侧落点）。
+		def("billing_setting.plugin_billing_expr", "billing_setting", TypeObject,
+			map[string]any{}, validate(validatePluginBillingExprMap)),
+
 		// ==== pay（F-08-13…15）====
 		def("pay.online_enabled", "pay", TypeBool, true, public(), dangerousOff()),
 		def("pay.amount_presets_cny", "pay", TypeList, []any{
@@ -543,6 +556,48 @@ func validatePluginKey(v any) error {
 	}
 	if !pluginKeyPattern.MatchString(key) {
 		return fmt.Errorf("plugin key must match %s", pluginKeyPattern.String())
+	}
+	return nil
+}
+
+// validatePluginBillingExprMap 校验任务计价表达式表的形状。
+//
+// 键格式冻结为 "<pluginKey>::<model>"（billing-02 §2.6）：pluginKey 与
+// task_plugins.key 同约束（复用 pluginKeyPattern），model 非空。空值在这里
+// 就拒绝（R-37：键存在但为空是配置错误，运行期会 fail-closed 保留预扣，
+// 但不能让管理员把明显无效的配置保存进去）。
+//
+// 表达式源码本身不在此编译：设置包只做形状校验，编译/白名单由
+// pricing.CompileTaskExpr 在解析与结算时统一执行（避免两套语法判定）。
+func validatePluginBillingExprMap(v any) error {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("expected object")
+	}
+	if len(obj) > 1000 {
+		return fmt.Errorf("too many entries (max 1000)")
+	}
+	for key, value := range obj {
+		pluginKey, model, found := strings.Cut(key, "::")
+		if !found {
+			return fmt.Errorf("key %q must be \"<pluginKey>::<model>\"", key)
+		}
+		if !pluginKeyPattern.MatchString(pluginKey) {
+			return fmt.Errorf("key %q: plugin key must match %s", key, pluginKeyPattern.String())
+		}
+		if strings.TrimSpace(model) == "" || len(model) > 200 {
+			return fmt.Errorf("key %q: model must be non-empty and <= 200 chars", key)
+		}
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("key %q: expression must be a string", key)
+		}
+		if strings.TrimSpace(text) == "" {
+			return fmt.Errorf("key %q: expression must not be blank", key)
+		}
+		if len(text) > 64<<10 {
+			return fmt.Errorf("key %q: expression too long (max 64 KiB)", key)
+		}
 	}
 	return nil
 }

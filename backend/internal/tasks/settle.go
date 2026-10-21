@@ -10,25 +10,26 @@ import (
 
 // 本文件是终态结算与最小补偿扫描（relay-06 §9.4/§9.5）。
 //
-// 本批的计价事实源只有一处：计费引擎在提交期冻结的预扣（hold）。任务侧的
-// **计价表达式配置面**（`billing_setting.plugin_billing_expr["<pluginKey>::<model>"]`）
-// 在仓库中尚不存在，brief 明确禁止在 T6b 新建第二套。因此：
+// 计价事实源有两条，按任务行是否冻结了任务计价表达式区分：
 //
 //   - FAILURE：全额退款（RefundByRequestID）。
-//   - SUCCESS：按预扣额终结——`TerminateByRequestID(requestID, UsageFact{})`
-//     以 hold 为最终成本（差额 0）释放预扣并写成功日志。
+//   - SUCCESS 且 `private_data.tiered_snapshot` 存在：按冻结快照求值真实
+//     成本，差额结算（多退少补）——T5。
+//   - SUCCESS 且无快照：按预扣额终结——`TerminateByRequestID(requestID,
+//     UsageFact{})` 以 hold 为最终成本（差额 0）。这是 T5 之前提交的存量
+//     任务与「未配置任务表达式」的模型，语义必须保持不变。
 //
-// 为什么用空 fact 而不是按 pricing 重算：任务提交已 Detach，hold 没有租约；
-// 若不终结，用户余额会被永久占用（账本 hold 永不释放）。而重算需要可信的
-// 任务用量→金额映射（任务计价表达式），本批没有；空 fact 语义由计费侧
+// 为什么无表达式时仍用空 fact：任务提交已 Detach，hold 没有租约；若不
+// 终结，用户余额会被永久占用（账本 hold 永不释放）。空 fact 语义由计费侧
 // 明确定义为「按预扣额结清」，不做任何 token 重算，绝不会把成功任务退成 0。
 //
-// `settlement_pending` 只保留给两种失败：① Terminate 调用失败（可重试）；
-// ② 未来表达式求值失败（设计 §9.4「表达式失败保留预扣」）。正常成功任务
-// 终结后写 `billing_final=true` 且 `settlement_pending=false`。
+// `settlement_pending` 保留给两种失败：① Terminate 调用失败（可重试）；
+// ② 表达式求值失败——P-07 冻结：**保留预扣、不退款**，写审计/日志，由补偿
+// 扫描重试（差额不可信时退款等于把「表达式写错」变成免费服务）。
+// 正常成功任务终结后写 `billing_final=true` 且 `settlement_pending=false`。
 
 // settleTerminal 是终态结算的唯一入口。调用方必须已经通过 CAS 赢得终态。
-func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.CompiledPlugin) {
+func (p *Poller) settleTerminal(ctx context.Context, task *Task, compiled *plugin.CompiledPlugin) {
 	if task == nil {
 		return
 	}
@@ -48,7 +49,7 @@ func (p *Poller) settleTerminal(ctx context.Context, task *Task, _ *plugin.Compi
 	case StateFailure:
 		p.refundTerminal(ctx, task, requestID, tokenID)
 	case StateSuccess:
-		p.settleSuccessAtHeld(ctx, task, requestID, tokenID)
+		p.settleSuccess(ctx, task, requestID, tokenID, compiled)
 	default:
 		// 非终态调用是编程错误：不静默推进，留给调用方修正。
 		p.log.Error("tasks: settleTerminal called for non-terminal task",
@@ -79,10 +80,79 @@ func (p *Poller) refundTerminal(ctx context.Context, task *Task, requestID strin
 	})
 }
 
+// settleSuccess 结算成功任务：有冻结表达式按表达式差额结算，否则按预扣额结清。
+//
+// 【为什么实时与扫描共用本函数】两条路径（提交期即时成功 / 后台轮询 +
+// 补偿扫描）对同一任务必须给出同一金额。金额只由任务行里的冻结快照
+// 决定，不读配置、不看进程内状态，因此重试/重启/双执行者只会得到同一
+// 结论（幂等锚点仍是 requestID）。
+func (p *Poller) settleSuccess(ctx context.Context, task *Task, requestID string, tokenID int64, compiled *plugin.CompiledPlugin) {
+	credits, configured, evalErr := EvalTaskCost(
+		task.PrivateData[PrivateTieredSnapshot], task.Data, p.manifestFor(task, compiled))
+	if !configured {
+		// 没有冻结表达式：沿用 T5 之前的「按预扣额结清」，存量任务语义不变。
+		p.settleSuccessAtHeld(ctx, task, requestID, tokenID)
+		return
+	}
+	if evalErr != nil {
+		// P-07：求值失败 → 保留预扣（不退款），置 settlement_pending 供
+		// 补偿扫描重试。终态不回退（上游确实成功了，不能重新进入轮询）。
+		p.markSettlementPending(ctx, task, requestID, evalErr)
+		return
+	}
+	// 差额结算：credits 是最终应扣（多退少补由计费侧在 hold 上完成）。
+	// 传空 UsageFact 只影响 usage_logs 的 token 字段；真实金额由 cost 承载，
+	// 不会被误当「按 token 重算」。
+	if err := p.billing.TerminateByRequestIDForTokenCost(requestID, tokenID, credits, contract.UsageFact{}); err != nil {
+		p.markSettlementPending(ctx, task, requestID, err)
+		return
+	}
+	p.log.Info("tasks: settled success task by frozen expression",
+		"task_id", task.PublicTaskID, "request_id", requestID, "credits", credits,
+		"source", snapshotSource(task.PrivateData[PrivateTieredSnapshot]))
+	p.finishBilling(ctx, task, &credits, map[string]any{
+		"billing_pending":    false,
+		"settlement_pending": false,
+	})
+}
+
+// markSettlementPending 记录「保留预扣、等待补偿」的状态。
+//
+// 写 billing_pending 是兼容 T6b 补偿扫描的既有谓词（ListReconcilable 同时
+// 看 settlement_pending），两者一起写让旧扫描器与新扫描器都能看到。
+func (p *Poller) markSettlementPending(ctx context.Context, task *Task, requestID string, cause error) {
+	p.markBilling(ctx, task, nil, map[string]any{
+		"settlement_pending": true,
+		"billing_pending":    true,
+	})
+	p.log.Error("tasks: settlement failed; kept pre-charged hold and marked settlement_pending",
+		"task_id", task.PublicTaskID, "request_id", requestID, "error", cause)
+}
+
+// manifestFor 取任务所属插件的 manifest（快照仅用于用量字段→单位映射）。
+//
+// 轮询路径可能已经拿到 compiled；补偿扫描没有，因此回落到插件快照按
+// task.PluginKey 查找。插件已下架时返回 nil：EvalTaskCost 会因用量字段
+// 缺少单位声明而求值失败 → 保留预扣，方向安全。
+func (p *Poller) manifestFor(task *Task, compiled *plugin.CompiledPlugin) *plugin.Manifest {
+	if compiled != nil {
+		return compiled.Manifest()
+	}
+	if p.plugins == nil || task == nil || task.PluginKey == "" {
+		return nil
+	}
+	entry := p.plugins.Snapshot().Lookup(task.PluginKey)
+	if entry.Plugin == nil {
+		return nil
+	}
+	return entry.Plugin.Manifest()
+}
+
 // settleSuccessAtHeld 以**预扣额**终结成功任务，释放 hold（差额 0）。
 //
 // 空 UsageFact 是计费侧冻结的「按预扣额结清」语义（billing/handoff.go）：
-// 不解析定价、不按 token 重算——因此不会把成功任务退成 0。
+// 不解析定价、不按 token 重算——因此不会把成功任务退成 0。仅用于没有
+// 任务计价表达式的任务；配置了表达式的成功任务必须走 settleSuccess。
 //
 // 幂等：TerminateByRequestID 按 requestID 幂等；重复调用只会重复写同一
 // 结论（日志按 requestID 幂等），金额不变。

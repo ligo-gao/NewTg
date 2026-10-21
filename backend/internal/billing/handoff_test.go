@@ -205,6 +205,55 @@ func TestEngineHandoffByRequestID(t *testing.T) {
 	}
 }
 
+// TestTerminateByRequestIDForTokenCostAdjustsBothWays 验收 T5 的冻结成本结算：
+// hold=100、成本=70 → 退 30；成本=130 → 补扣 30。两条方向都走同一 hold CAS，
+// 且不重新解析定价（source=nil 也能结算）。
+func TestTerminateByRequestIDForTokenCostAdjustsBothWays(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	// source=nil：冻结成本路径不得依赖定价源。
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+
+	refundReq := testRequestID("handoff-cost-refund")
+	refundSession := newBillingTestSession(engine, userID, refundReq, perCallSnapshot(100))
+	if err := refundSession.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance after pre-consume = %d, want 400", got)
+	}
+	if err := engine.TerminateByRequestIDForTokenCost(refundReq, 0, 70, contract.UsageFact{}); err != nil {
+		t.Fatalf("cost settlement (refund): %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 430 {
+		t.Fatalf("balance after cost 70 = %d, want 430 (hold 100, refund 30)", got)
+	}
+	// 幂等：重复调用不得再调整。
+	if err := engine.TerminateByRequestIDForTokenCost(refundReq, 0, 70, contract.UsageFact{}); err != nil {
+		t.Fatalf("idempotent cost settlement: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 430 {
+		t.Fatalf("idempotent cost settlement changed balance: %d", got)
+	}
+
+	chargeReq := testRequestID("handoff-cost-charge")
+	chargeSession := newBillingTestSession(engine, userID, chargeReq, perCallSnapshot(100))
+	if err := chargeSession.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := engine.TerminateByRequestIDForTokenCost(chargeReq, 0, 130, contract.UsageFact{}); err != nil {
+		t.Fatalf("cost settlement (charge): %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 300 {
+		t.Fatalf("balance after cost 130 = %d, want 300 (hold 100, charge extra 30)", got)
+	}
+
+	// 负成本是调用方错误，必须在引擎边界拒绝。
+	if err := engine.TerminateByRequestIDForTokenCost(chargeReq, 0, -1, contract.UsageFact{}); err == nil {
+		t.Fatalf("negative cost must be rejected")
+	}
+}
+
 // TestRefundByRequestIDForToken 验收 T6b 复核 H1：后台退款必须同时回补
 // 钱包与令牌额度。提交时的 PreConsume 在同一事务里扣了两者；重建会话若
 // 只水合 preConsumed，Refund 的 `tokenDeducted > 0` 条件恒假，令牌额度会
