@@ -270,11 +270,16 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 复用中继上下文组装：RequestID / UserID / TokenID / 分组来自同一条
-	// 鉴权链，pin 的「非管理员拒绝」也在这里执行（R-P2a）。失败一律 401：
-	// 不区分存储故障与坏令牌，避免成为令牌探测信道。
+	// 鉴权链，pin 的「非管理员拒绝」也在这里执行（R-P2a）。
+	//
+	// 错误映射必须与 /v1 中继面同口径（W7/M2 复核 Minor-1）：R-61 的
+	// auto_groups_not_enabled、R-P2a 的 pin 403 不能被压成 401，否则同一
+	// 令牌在不同端点会得到互相矛盾的鉴权语义。令牌类错误仍按 §3.6 返回
+	// 401（mapRelayContextError 对 ErrTokenInvalid/ErrPrincipalMissing 不传 code）。
 	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
 	if err != nil {
-		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
+		status, code, message := mapRelayContextError(err)
+		writeRelayError(w, status, requestID, code, message)
 		return
 	}
 	// 计费幂等键与响应里的 requestId 对齐：客户端报障时同一个 ID 能同时定位

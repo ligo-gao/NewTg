@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
 )
 
@@ -421,6 +422,109 @@ func TestGroupSequence(t *testing.T) {
 			t.Fatalf("GroupSequence = %v，期望 [g1 g2]", got)
 		}
 	})
+}
+
+// TestCrossGroupUsesGroupLocalPriorityIndex 覆盖 R-62 复核 Minor-3：
+// 切到 g2 后，组内首轮的 priority 映射必须用**组内序号**（i=0 → 最高
+// priority），不得沿用全局尝试序号——否则 g2 会从最低优先级开始。
+func TestCrossGroupUsesGroupLocalPriorityIndex(t *testing.T) {
+	log := &routeCallLog{}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	source := &groupCandidateSource{byGroup: map[string][]contract.ChannelCandidate{
+		"g1": groupCandidates(1, 10),
+		"g2": {groupCandidates(2, 10)[0], groupCandidates(3, 5)[0]}, // 2 最高、3 次之
+	}}
+	deps := groupTestDeps(source, log, failingOrOK(map[int]bool{1: true}), billing, 1, 3, nil)
+	rc := autoContext("g1", "g2")
+
+	result, err := ExecuteAttempts(context.Background(), rc, deps)
+	if err != nil {
+		t.Fatalf("ExecuteAttempts() error = %v", err)
+	}
+	defer result.Response.Body.Close()
+	if result.Candidate.ChannelID != 2 {
+		t.Fatalf("g2 首轮选中渠道 %d，期望 2（组内最高 priority）", result.Candidate.ChannelID)
+	}
+	if got := fmt.Sprint(log.httpCalls); got != "[1 1 2]" {
+		t.Fatalf("上游尝试序列 = %v，期望 [1 1 2]（g2 必须从最高 priority 开始）", got)
+	}
+}
+
+// TestCrossGroupContextCancelBetweenGroups 覆盖 R-62 复核 Minor-4(a)：
+// 组间 ctx 取消后不得再切组、不得触达 g2 上游，预扣恰好退款一次。
+func TestCrossGroupContextCancelBetweenGroups(t *testing.T) {
+	log := &routeCallLog{}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	source := &groupCandidateSource{byGroup: map[string][]contract.ChannelCandidate{
+		"g1": groupCandidates(1, 10),
+		"g2": groupCandidates(2, 10),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g1Calls := 0
+	deps := groupTestDeps(source, log, func(channelID int) (*http.Response, error) {
+		if channelID == 1 {
+			g1Calls++
+			if g1Calls == 2 {
+				// 组内预算（retries=1 → 2 次）刚好耗尽时取消：外层换组
+				// 前的 ctx 检查必须拦住 g2。
+				cancel()
+			}
+		}
+		return routeResponse(http.StatusInternalServerError, "boom"), nil
+	}, billing, 1, 3, nil)
+	rc := autoContext("g1", "g2")
+
+	_, err := ExecuteAttempts(ctx, rc, deps)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("错误 = %v，期望 context.Canceled", err)
+	}
+	if got := fmt.Sprint(log.httpCalls); got != "[1 1]" {
+		t.Fatalf("上游尝试序列 = %v，期望 [1 1]（取消后不得触达 g2）", got)
+	}
+	if billing.preConsumeCalls != 1 || billing.refundCalls != 1 {
+		t.Fatalf("PreConsume=%d Refund=%d，期望 1/1（预扣恰好退款一次）",
+			billing.preConsumeCalls, billing.refundCalls)
+	}
+	var attempts *AttemptsError
+	if !errors.As(err, &attempts) {
+		t.Fatalf("错误 = %T %v，期望 *AttemptsError", err, err)
+	}
+	if fmt.Sprint(attempts.Groups) != "[g1]" {
+		t.Fatalf("AttemptsError.Groups = %v，期望 [g1]（g2 未被尝试）", attempts.Groups)
+	}
+}
+
+// TestCrossGroupDispatchFailureFastFails 覆盖 R-62 复核 Minor-4(b)：
+// 适配器分派失败（ErrEndpointUnsupported 族）是硬停止——直接 FastFail、
+// 不换组、不触达上游。
+func TestCrossGroupDispatchFailureFastFails(t *testing.T) {
+	log := &routeCallLog{}
+	billing := &recordingBilling{Stub: billingseam.NewStub()}
+	source := &groupCandidateSource{byGroup: map[string][]contract.ChannelCandidate{
+		"g1": groupCandidates(1, 10),
+		"g2": groupCandidates(2, 10),
+	}}
+	deps := groupTestDeps(source, log, failingOrOK(nil), billing, 1, 3, nil)
+	deps.Dispatch = func(contract.ChannelType) (contract.Adapter, error) {
+		return nil, adapters.ErrEndpointUnsupported
+	}
+	rc := autoContext("g1", "g2")
+
+	_, err := ExecuteAttempts(context.Background(), rc, deps)
+	var fast *FastFailError
+	if !errors.As(err, &fast) {
+		t.Fatalf("错误 = %T %v，期望 *FastFailError", err, err)
+	}
+	if !errors.Is(err, adapters.ErrEndpointUnsupported) {
+		t.Fatalf("错误链丢失 ErrEndpointUnsupported：%v", err)
+	}
+	if len(log.httpCalls) != 0 {
+		t.Fatalf("分派失败不得触达上游，实际调用 %v", log.httpCalls)
+	}
+	if billing.preConsumeCalls != 1 || billing.refundCalls != 1 {
+		t.Fatalf("PreConsume=%d Refund=%d，期望 1/1", billing.preConsumeCalls, billing.refundCalls)
+	}
 }
 
 // TestSpecificGroupUnchanged 覆盖用例 14：具体分组（非 auto）令牌即使

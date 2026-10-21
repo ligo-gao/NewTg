@@ -339,6 +339,39 @@ func newTaskSubmitHTTPReq(body string) *http.Request {
 	return req
 }
 
+// TestTaskSubmitAutoGroupsNotEnabledMaps403 覆盖 W7/M2 复核 Minor-1：
+// /v1/tasks 的 BuildRelayContext 错误必须复用中继面映射——空列表 auto
+// 令牌得到 403 auto_groups_not_enabled，而不是被压成 401 invalid token；
+// 且失败发生在任何渠道选择/计费之前。
+func TestTaskSubmitAutoGroupsNotEnabledMaps403(t *testing.T) {
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{}
+	handler, _ := newTaskTestHandler(t, store, channels, sampleTaskManager(t), nil)
+	// 令牌投影与鉴权中间件共用同一个 fake：R-61 的分组解析必须看到同一行。
+	tokens := &fakeTaskTokens{meta: &auth.TokenMeta{
+		ID: 1, UserID: 42, Status: "enabled", Group: "auto", UnlimitedQuota: true,
+	}}
+	handler.tokens = tokens
+	mux := http.NewServeMux()
+	handler.RegisterRelay(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, newTaskSubmitHTTPReq(`{"model":"sample-model","prompt":"hi","seconds":5}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d，期望 403；body=%s", rec.Code, rec.Body.String())
+	}
+	if got := decodeRelayError(t, rec.Body.Bytes()).Error.Code; got != "auto_groups_not_enabled" {
+		t.Fatalf("code = %q，期望 auto_groups_not_enabled", got)
+	}
+	if channels.calls != 0 {
+		t.Fatalf("渠道选择调用 = %d，期望 0（鉴权失败不得进入任务管线）", channels.calls)
+	}
+	if store.inserted != 0 {
+		t.Fatalf("任务落库 = %d，期望 0", store.inserted)
+	}
+}
+
 func TestTaskSubmitSuccessAndBillingOrder(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
