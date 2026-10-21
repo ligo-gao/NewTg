@@ -1335,6 +1335,23 @@ func TestSubscriptionCancelImmediatelyGrace(t *testing.T) {
 		t.Fatalf("重复取消后事件数 = %d/%v，want 2（幂等不重写）", len(events), err)
 	}
 
+	// 幂等判定把 auto_renew 纳入（R-54 的配套）：用户在宽限期里重新打开
+	// 自动续费后再取消，必须再次关掉它并追加事件——否则下一 tick 就被
+	// worker 扣款。
+	if _, err := db.Exec(`UPDATE subscriptions SET auto_renew = true WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("re-enable auto-renew: %v", err)
+	}
+	if err := repo.CancelImmediately(ctx, sub.ID); err != nil {
+		t.Fatalf("重新开启后再次取消: %v", err)
+	}
+	if got, err = repo.GetSubscription(ctx, sub.ID); err != nil || got.AutoRenew {
+		t.Fatalf("再次取消后 auto_renew = %v/%v，want false", got.AutoRenew, err)
+	}
+	if events, err = repo.ListSubscriptionEvents(ctx, sub.ID, 0, 100); err != nil || len(events) != 3 ||
+		events[2].Kind != SubscriptionEventCancelled {
+		t.Fatalf("再次取消后事件 = %+v/%v，want 追加一条 cancelled", events, err)
+	}
+
 	// 宽限期结束后：ExpireDue 迁移为 expired，额度不再可用。
 	afterGrace := now.Add(4 * 24 * time.Hour)
 	if n, err := repo.ExpireDue(ctx, afterGrace); err != nil || n < 1 {

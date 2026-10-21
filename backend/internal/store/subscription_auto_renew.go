@@ -45,6 +45,11 @@ var (
 	ErrPaymentMethodNotFound = errors.New("store: payment method not found")
 	// ErrPaymentMethodInvalid：令牌字段非法（422）。
 	ErrPaymentMethodInvalid = errors.New("store: payment method input is invalid")
+	// ErrSubscriptionEnded：实例已过 end_at（含立即取消后的宽限期），
+	// 不能再开启自动续费（R-54，422）。与 ErrSubscriptionNotActive 分开：
+	// 后者是 cancelled 终态（409），本错误是「还 active 但合同期已结束」，
+	// 恢复服务应走重新购买/显式续费而不是打开自动扣款。
+	ErrSubscriptionEnded = errors.New("store: subscription period has ended")
 )
 
 // AutoRenewFailureState 是一次失败记录的结果（供 worker 日志/通知使用）。
@@ -322,6 +327,19 @@ func (r *SQLSubscriptionRepo) SetSubscriptionAutoRenew(ctx context.Context, user
 	if paymentMethodID != nil && *paymentMethodID != "" {
 		id := *paymentMethodID
 		chosen = &id
+	}
+	// R-54：合同期已结束（end_at <= now）时不能重新开启自动续费。立即取消
+	// 把 end_at 提前到 now 但保留 status=active；若这里放行，用户马上就会
+	// 进入 ListDueForAutoRenew 候选并在下一 tick 被扣款、重置额度、延长
+	// end_at——等于用自动续费撤销管理员的取消。用数据库 now() 判定，避免
+	// 应用时钟偏差；关闭（enabled=false）不受此限制。
+	var ended bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT end_at <= now() FROM subscriptions WHERE id = $1`, subscriptionID).Scan(&ended); err != nil {
+		return Subscription{}, fmt.Errorf("store: check subscription(%d) end_at: %w", subscriptionID, err)
+	}
+	if ended {
+		return Subscription{}, ErrSubscriptionEnded
 	}
 	if chosen == nil || *chosen == "" {
 		return Subscription{}, ErrAutoRenewPaymentMethodRequired

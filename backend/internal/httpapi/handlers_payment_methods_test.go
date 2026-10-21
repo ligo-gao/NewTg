@@ -27,6 +27,8 @@ type fakePaymentMethodHandlerService struct {
 	method  *string
 	enabled bool
 	deleted string
+	// autoRenewErr 让用例模拟 store 的拒绝（R-54 等）。
+	autoRenewErr error
 }
 
 func (f *fakePaymentMethodHandlerService) CreatePaymentMethod(_ context.Context, userID int64,
@@ -55,6 +57,9 @@ func (f *fakePaymentMethodHandlerService) DeletePaymentMethod(_ context.Context,
 
 func (f *fakePaymentMethodHandlerService) SetSubscriptionAutoRenew(_ context.Context, userID, subscriptionID int64,
 	enabled bool, paymentMethodID *string) (store.Subscription, error) {
+	if f.autoRenewErr != nil {
+		return store.Subscription{}, f.autoRenewErr
+	}
 	f.enabled = enabled
 	f.method = paymentMethodID
 	return store.Subscription{
@@ -138,6 +143,23 @@ func TestPutSubscriptionAutoRenewPassesPreference(t *testing.T) {
 	}
 	if view.SubscriptionID != 42 || !view.AutoRenew || view.MethodID != methodID {
 		t.Fatalf("view = %+v", view)
+	}
+}
+
+// TestPutSubscriptionAutoRenewRejectsEnded 覆盖 R-54 的 HTTP 映射：store 拒绝
+// 已结束实例开启自动续费 → 422（既有订阅状态问题类型），不是 409/500。
+func TestPutSubscriptionAutoRenewRejectsEnded(t *testing.T) {
+	env, payments := newPaymentMethodTestEnv(t)
+	payments.autoRenewErr = store.ErrSubscriptionEnded
+	t.Cleanup(func() { payments.autoRenewErr = nil })
+
+	rec := env.do(t, endUser(7), http.MethodPut, "/api/subscriptions/42/auto-renew",
+		map[string]any{"enabled": true}, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := decodeSubProblemType(t, rec); got != problemTypeSubscriptionAutoRenewConflict {
+		t.Fatalf("problem type = %s，want %s", got, problemTypeSubscriptionAutoRenewConflict)
 	}
 }
 

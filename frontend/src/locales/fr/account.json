@@ -400,7 +400,8 @@
       "auto_renew_error": "Impossible de mettre à jour le renouvellement automatique.",
       "auto_renew_saving": "Enregistrement...",
       "auto_renew_failures": "{count} tentative(s) échouée(s) consécutive(s)",
-      "auto_renew_failed_hint": "Le renouvellement automatique est désactivé après plusieurs échecs de paiement. Ajoutez une carte puis réactivez-le."
+      "auto_renew_failed_hint": "Le renouvellement automatique est désactivé après plusieurs échecs de paiement. Ajoutez une carte puis réactivez-le.",
+      "auto_renew_ended_hint": "Cet abonnement a pris fin : l’auto-renouvellement ne peut pas être réactivé. Achetez un nouvel abonnement."
     },
     "status": {
       "active": "Actif",

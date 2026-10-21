@@ -203,13 +203,19 @@ function SubscriptionRow({
   onAutoRenew: (enabled: boolean, methodId: string | undefined) => void
 }) {
   const { t } = useI18n()
+  // R-54：立即取消后实例仍是 active 但在宽限期内（end_at 已过）。
+  // 此时重新开启自动续费会让 worker 立刻扣款并重置额度/延长周期，服务端
+  // 会返回 422；前端在这里就禁用开关并说明「请重新购买」，同时不再把
+  // 残留的旧卡作为默认选中项（避免误导用户「可以继续自动续费」）。
+  const ended = new Date(item.end_at).getTime() <= Date.now()
   const [selectedMethodId, setSelectedMethodId] = useState<string | undefined>(
-    item.auto_renew_payment_method_id ?? undefined,
+    ended ? undefined : (item.auto_renew_payment_method_id ?? undefined),
   )
-  const chosenMethodId =
-    selectedMethodId ?? item.auto_renew_payment_method_id ?? paymentMethods[0]?.id
+  const chosenMethodId = ended
+    ? undefined
+    : (selectedMethodId ?? item.auto_renew_payment_method_id ?? paymentMethods[0]?.id)
   const autoRenewDisabled =
-    offline || item.status !== 'active' || autoRenewBusy || autoRenewPending
+    offline || item.status !== 'active' || ended || autoRenewBusy || autoRenewPending
   const autoRenewLabel = `${t('account.subscription.mine.auto_renew')}: ${item.plan_title_snapshot}`
 
   const unlimited = item.amount_total === 0
@@ -357,6 +363,12 @@ function SubscriptionRow({
                     {t('account.subscription.mine.auto_renew_failed_hint')}
                   </span>
                 ) : null}
+                {ended ? (
+                  // R-54：合同期已结束（含立即取消后的宽限期）。
+                  <span className="text-xs text-ink-2">
+                    {t('account.subscription.mine.auto_renew_ended_hint')}
+                  </span>
+                ) : null}
               </div>
               {paymentMethods.length > 0 ? (
                 <select
@@ -372,6 +384,9 @@ function SubscriptionRow({
                     if (item.auto_renew) onAutoRenew(true, next)
                   }}
                 >
+                  {/* 已结束（R-54）时 chosenMethodId 为 undefined：给一个空
+                      选项，避免浏览器把第一张卡当作默认值回显。 */}
+                  {chosenMethodId === undefined ? <option value="" /> : null}
                   {paymentMethods.map((method) => (
                     <option key={method.id} value={method.id}>
                       {method.brand} ···· {method.last4}

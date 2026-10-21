@@ -400,7 +400,8 @@
       "auto_renew_error": "Could not update auto-renew.",
       "auto_renew_saving": "Saving...",
       "auto_renew_failures": "{count} consecutive failed attempt(s)",
-      "auto_renew_failed_hint": "Auto-renew is off after repeated payment failures. Add a card and turn it back on."
+      "auto_renew_failed_hint": "Auto-renew is off after repeated payment failures. Add a card and turn it back on.",
+      "auto_renew_ended_hint": "This subscription has ended, so auto-renew cannot be re-enabled. Purchase a new subscription to continue."
     },
     "status": {
       "active": "Active",

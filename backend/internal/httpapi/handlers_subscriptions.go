@@ -2535,6 +2535,14 @@ func (h *SubscriptionHandlers) writeAutoRenewError(w http.ResponseWriter, err er
 	case errors.Is(err, store.ErrSubscriptionNotActive):
 		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeSubscriptionAutoRenewConflict,
 			"subscription_auto_renew_conflict", "subscriptions in a terminal state cannot enable auto-renew", nil)
+	case errors.Is(err, store.ErrSubscriptionEnded):
+		// R-54：立即取消后实例仍是 active 但在宽限期内（end_at <= now），
+		// 重新开启自动续费会立刻进入扣款候选。422 表示「请求可理解但当前
+		// 状态不允许」，引导用户重新购买；复用既有的订阅状态问题类型，
+		// 不新增契约。
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeSubscriptionAutoRenewConflict,
+			"subscription_auto_renew_conflict",
+			"the subscription period has ended; purchase a new subscription to enable auto-renew", nil)
 	case errors.Is(err, store.ErrAutoRenewPaymentMethodRequired):
 		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeAutoRenewInvalid,
 			"Invalid auto-renew preference", "an active payment method is required", []string{"payment_method_id"})

@@ -293,6 +293,46 @@ func TestAutoRenewStorePreferenceValidation(t *testing.T) {
 	}
 }
 
+// TestSetSubscriptionAutoRenewRejectsEnded 覆盖 R-54：立即取消后实例仍是
+// active 但 end_at <= now，开启自动续费必须被拒绝（ErrSubscriptionEnded），
+// 否则用户自己就能在宽限期里把管理员的立即取消撤销掉（下一 tick 扣款）。
+// 未结束实例仍可正常开启；关闭操作对已结束实例仍允许（只减不增风险）。
+func TestSetSubscriptionAutoRenewRejectsEnded(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s4-r54")
+	now := time.Now().UTC().Truncate(time.Second)
+	const userID = int64(900510)
+	method := createAutoRenewTestMethod(t, db, userID)
+
+	// end_at 已过但仍在 grace 窗口内（与立即取消后的形态一致）。
+	ended := createTestSubscription(t, repo, plan, userID,
+		now.Add(-48*time.Hour), now.Add(-time.Hour), nil)
+	if _, err := db.Exec(`UPDATE subscriptions SET grace_days = 7 WHERE id = $1`, ended.ID); err != nil {
+		t.Fatalf("set grace: %v", err)
+	}
+	if _, err := repo.SetSubscriptionAutoRenew(ctx, userID, ended.ID, true, &method.ID); !errors.Is(err, ErrSubscriptionEnded) {
+		t.Fatalf("已结束实例开启自动续费 err = %v，want ErrSubscriptionEnded", err)
+	}
+	got, err := repo.GetSubscription(ctx, ended.ID)
+	if err != nil || got.AutoRenew {
+		t.Fatalf("被拒绝后 auto_renew = %v/%v，want false", got.AutoRenew, err)
+	}
+	// 关闭允许（幂等、不产生扣款风险）。
+	if _, err := repo.SetSubscriptionAutoRenew(ctx, userID, ended.ID, false, nil); err != nil {
+		t.Fatalf("已结束实例关闭自动续费应允许：%v", err)
+	}
+
+	// 未结束实例不受影响。
+	active := createTestSubscription(t, repo, plan, userID,
+		now.Add(-time.Hour), now.Add(5*24*time.Hour), nil)
+	enabled, err := repo.SetSubscriptionAutoRenew(ctx, userID, active.ID, true, &method.ID)
+	if err != nil || !enabled.AutoRenew {
+		t.Fatalf("未结束实例开启自动续费 = %+v/%v，want 成功", enabled, err)
+	}
+}
+
 // TestRenewSubscriptionRejectsStaleExpectedEndAt 覆盖 R-43 的 store 级周期锚：
 // 下单快照的 end_at 与当前值不一致时返回 ErrSubscriptionCycleChanged，且
 // 不推进 end_at；匹配时才推进一次。

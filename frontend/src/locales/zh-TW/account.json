@@ -400,7 +400,8 @@
       "auto_renew_error": "無法更新自動續費。",
       "auto_renew_saving": "正在儲存...",
       "auto_renew_failures": "連續失敗 {count} 次",
-      "auto_renew_failed_hint": "自動續費因多次扣款失敗已關閉，請更新付款方式後重新開啟。"
+      "auto_renew_failed_hint": "自動續費因多次扣款失敗已關閉，請更新付款方式後重新開啟。",
+      "auto_renew_ended_hint": "訂閱週期已結束，無法重新開啟自動續費。請重新購買訂閱。"
     },
     "status": {
       "active": "活躍",

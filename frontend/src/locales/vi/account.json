@@ -400,7 +400,8 @@
       "auto_renew_error": "Không thể cập nhật gia hạn tự động.",
       "auto_renew_saving": "Đang lưu...",
       "auto_renew_failures": "{count} lần thử thất bại liên tiếp",
-      "auto_renew_failed_hint": "Gia hạn tự động đã tắt sau nhiều lần thanh toán thất bại. Hãy cập nhật thẻ và bật lại."
+      "auto_renew_failed_hint": "Gia hạn tự động đã tắt sau nhiều lần thanh toán thất bại. Hãy cập nhật thẻ và bật lại.",
+      "auto_renew_ended_hint": "Đăng ký đã kết thúc nên không thể bật lại tự động gia hạn. Hãy mua đăng ký mới."
     },
     "status": {
       "active": "Hoạt động",

@@ -750,4 +750,47 @@ describe('SubscriptionSection', () => {
       expect(sent).toEqual({ enabled: true, payment_method_id: METHOD.id })
     })
   })
+
+  it('disables auto-renew for a subscription whose period has ended (R-54)', async () => {
+    // 立即取消后的形态：status=active 但 end_at 已过（宽限期内）。
+    const ENDED_SUB = {
+      ...ACTIVE_SUB,
+      id: 9,
+      end_at: '2020-01-01T00:00:00Z',
+      auto_renew: false,
+      auto_renew_payment_method_id: '33333333-3333-3333-3333-333333333333',
+    }
+    useBaseHandlers({ subscriptions: [ENDED_SUB] })
+    server.use(
+      http.get(`${ORIGIN}/api/payment-methods`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: '33333333-3333-3333-3333-333333333333',
+              provider: 'stripe',
+              brand: 'visa',
+              last4: '4242',
+              exp_month: 12,
+              exp_year: 2030,
+              status: 'active',
+              created_at: '2026-10-01T00:00:00Z',
+            },
+          ],
+        }),
+      ),
+    )
+
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+
+    const toggle = (await screen.findByRole('switch', {
+      name: 'Auto-renew: Basic',
+    })) as HTMLButtonElement
+    expect(toggle.disabled).toBe(true)
+    expect(
+      screen.getByText(/auto-renew cannot be re-enabled/),
+    ).toBeTruthy()
+    // 不再默认选中残留的旧卡：选择器没有值（开关已禁用，仅避免误导）。
+    const select = document.getElementById('auto-renew-method-9') as HTMLSelectElement
+    expect(select.value).toBe('')
+  })
 })

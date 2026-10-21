@@ -56,6 +56,17 @@ type subscriptionIntegrationEnv struct {
 	purchase *billing.TopupService
 }
 
+// integrationTokenSealer 是支付令牌的测试封装（不测加密，只测业务路径）。
+type integrationTokenSealer struct{}
+
+func (integrationTokenSealer) Seal(plaintext string) (string, error) {
+	return "sealed:" + plaintext, nil
+}
+
+func (integrationTokenSealer) Open(sealed string) (string, error) {
+	return strings.TrimPrefix(sealed, "sealed:"), nil
+}
+
 // newSubscriptionStripeStub 是购买集成测试的 Stripe PaymentIntent 桩。
 // intent id 由金额派生，测试可直接构造对应的 succeeded 事件。
 func newSubscriptionStripeStub(t *testing.T) *httptest.Server {
@@ -133,9 +144,21 @@ func newSubscriptionIntegrationEnv(t *testing.T) *subscriptionIntegrationEnv {
 
 	repo := store.NewSubscriptionRepo(db)
 	capture := &subAuditExecer{}
+	// R-54 的端到端验收需要真实 PaymentMethodService（PUT auto-renew 走
+	// store 的 end_at 守卫）。Sealer 用测试桩，真实加密由凭据包覆盖。
+	payments, err := billing.NewPaymentMethodService(billing.PaymentMethodServiceConfig{
+		Repo:   store.NewPaymentMethodRepo(db),
+		Subs:   repo,
+		Sealer: integrationTokenSealer{},
+		Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPaymentMethodService: %v", err)
+	}
 	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
 		Repo: repo, DB: db, Redis: rdb, Authz: rbac.NewAuthzMiddleware(),
 		Audit: audit.New(capture), Logger: testLogger(), Purchase: purchase,
+		PaymentMethods: payments,
 	})
 	if err != nil {
 		t.Fatalf("NewSubscriptionHandlers: %v", err)
@@ -603,6 +626,43 @@ func TestSubscriptionIntegrationAdminCancel(t *testing.T) {
 	}
 	if _, err := env.db.Exec(`DELETE FROM subscription_pre_consume_records WHERE subscription_id = $1`, activeID); err != nil {
 		t.Fatalf("cleanup pre-consume: %v", err)
+	}
+
+	// R-54：宽限期内（status=active、end_at<=now）重新开启自动续费必须 422，
+	// 否则下一 tick 就会被 worker 扣款并重置额度，等于用户撤销管理员的取消。
+	ownerPrincipal := &auth.Principal{UserID: owner, Role: rbac.RoleUser}
+	renewToggle := env.do(t, ownerPrincipal, http.MethodPut,
+		fmt.Sprintf("/api/subscriptions/%d/auto-renew", activeID),
+		map[string]any{"enabled": true}, nil)
+	if renewToggle.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("宽限期内开启自动续费 = %d（body=%s）", renewToggle.Code, renewToggle.Body.String())
+	}
+	if got := decodeSubProblemType(t, renewToggle); got != problemTypeSubscriptionAutoRenewConflict {
+		t.Fatalf("problem type = %s，want %s", got, problemTypeSubscriptionAutoRenewConflict)
+	}
+	if err := env.db.QueryRow(`SELECT auto_renew FROM subscriptions WHERE id = $1`, activeID).Scan(&autoRenew); err != nil {
+		t.Fatalf("read auto_renew: %v", err)
+	}
+	if autoRenew {
+		t.Fatal("被拒绝后 auto_renew 不应落库为 true")
+	}
+
+	// 未结束的实例仍可正常开启（证明守卫只针对 end_at <= now）。
+	methodRepo := store.NewPaymentMethodRepo(env.db)
+	method, err := methodRepo.Create(context.Background(), store.PaymentMethodInput{
+		UserID: owner, Provider: "stripe", TokenCipher: "sealed:pm_it_padding",
+		Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030,
+	})
+	if err != nil {
+		t.Fatalf("create payment method: %v", err)
+	}
+	t.Cleanup(func() { _, _ = env.db.Exec(`DELETE FROM payment_methods WHERE id = $1`, method.ID) })
+	openSub := env.insertSubscription(t, owner, planID, "active", 0)
+	enabled := env.do(t, ownerPrincipal, http.MethodPut,
+		fmt.Sprintf("/api/subscriptions/%d/auto-renew", openSub),
+		map[string]any{"enabled": true, "payment_method_id": method.ID}, nil)
+	if enabled.Code != http.StatusOK {
+		t.Fatalf("未结束实例开启自动续费 = %d（body=%s）", enabled.Code, enabled.Body.String())
 	}
 
 	// 事件只有一条 cancelled(immediate=true)，重复调用幂等。
