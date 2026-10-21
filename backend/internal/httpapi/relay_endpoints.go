@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"newtg/gateway/internal/relay/multimodal"
 	"newtg/gateway/internal/relay/stream"
 	"newtg/gateway/internal/relay/usage"
+	"newtg/gateway/internal/sensitive"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
 )
@@ -176,7 +178,11 @@ type RelayHandlerOptions struct {
 	Multimodal MultimodalDispatcher
 	// Config 是跨协议转发开关的读取面（configcenter.Center 实现 ConfigReader）。
 	// nil 时按默认 false 处理（GC-8 / R-03）：功能必须显式启用，绝无隐式开启。
+	// 同一读取面也供 sec.sensitive.*（F-08-18）使用。
 	Config ConfigReader
+	// Logger 是安全事件日志出口；nil 时用 slog.Default。命中事件只记
+	// security.sensitive_word_hit（不落命中词明文，F-08-18）。
+	Logger *slog.Logger
 	// UserGroups 是 /pg/* 会话中继的用户分组查询面（Task 13）：会话身份没有
 	// 令牌分组，必须回源 users."group" 才能选渠道；同时用可用分组模型清单
 	// 在计费前把「模型不可用」判成 403。nil 时 /pg 路径不可用（会话请求
@@ -229,9 +235,13 @@ type RelayHandler struct {
 	streamInactivity time.Duration
 	multimodal       MultimodalDispatcher
 	config           ConfigReader
-	userGroups       PlaygroundUserGroups
-	nativeRoutes     NativeRouteDispatcher
-	groupConfigured  func(ctx context.Context, group string) (bool, error)
+	// sensitive 是 sec.sensitive.* 的解析缓存（F-08-18）；零值可用。
+	// 每个请求从 h.config 取当前快照，配置变更后缓存按原始值哈希自然失效。
+	sensitive       *sensitive.Cache
+	log             *slog.Logger
+	userGroups      PlaygroundUserGroups
+	nativeRoutes    NativeRouteDispatcher
+	groupConfigured func(ctx context.Context, group string) (bool, error)
 	// attemptReporter 是 M4-a 的自动禁用上报接缝；nil 时执行层回调为 nil。
 	attemptReporter AttemptFailureReporter
 	// maxAutoGroups 是 R-63 的跨组上限（装配处解析并钳制 [1,20]）。
@@ -268,6 +278,10 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if inactivity <= 0 {
 		inactivity = streamInactivityTimeout
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	h := &RelayHandler{
 		channels:         opts.Channels,
 		tokens:           opts.Tokens,
@@ -281,6 +295,8 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		streamInactivity: inactivity,
 		multimodal:       opts.Multimodal,
 		config:           opts.Config,
+		sensitive:        &sensitive.Cache{},
+		log:              logger,
 		userGroups:       opts.UserGroups,
 		nativeRoutes:     opts.NativeRoutes,
 		groupConfigured:  opts.GroupConfigured,
@@ -600,6 +616,61 @@ func applyPlaygroundSession(
 
 // ---------- POST /v1/chat/completions ----------
 
+// rejectSensitiveContent 在 IR 解析后、PreConsume/上游之前执行 F-08-18 过滤。
+//
+// 返回 true 表示已写出 400 响应，调用方必须立即 return。设计口径
+// （modules-08 F-08-18）：命中 → 400 + 错误码 content_blocked，**不透露命中词**。
+// 因此错误文案固定、日志也不含命中词正文（只记事件名/作用面/请求 id）。
+//
+// 计费时序是硬约束：本函数必须在 routeDeps（其 Billing 字段会创建计费会话）
+// 与 relay.Route 之前调用；block 路径因此零 PreConsume、零上游请求。
+// action=log 时只记 warn 日志并放行（设计「记录日志放行」）。
+func (h *RelayHandler) rejectSensitiveContent(req *contract.Request, w http.ResponseWriter,
+	requestID string, userID int) bool {
+	cfg := h.sensitiveConfig()
+	if !cfg.Active() {
+		return false
+	}
+	result := cfg.CheckRequest(req)
+	if !result.Matched {
+		return false
+	}
+	h.logSensitiveHit(requestID, userID, result.Surface, cfg.Action)
+	if cfg.Action != sensitive.ActionBlock {
+		return false
+	}
+	writeRelayError(w, http.StatusBadRequest, requestID, "content_blocked",
+		"request content is blocked by the content policy")
+	return true
+}
+
+func (h *RelayHandler) sensitiveConfig() sensitive.Config {
+	cache := h.sensitive
+	if cache == nil {
+		cache = &sensitive.Cache{}
+	}
+	return cache.Load(h.config)
+}
+
+// logSensitiveHit 写 security.sensitive_word_hit（warn，F-08-18）。
+//
+// 设计要求「不落明文命中词」：这里刻意只记事件名、作用面、动作与请求/用户
+// id，不携带任何文本片段。requestID 同时作为 message 之外的独立字段，便于
+// 运行日志按请求关联。
+func (h *RelayHandler) logSensitiveHit(requestID string, userID int,
+	surface sensitive.Surface, action sensitive.Action) {
+	logger := h.log
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("security.sensitive_word_hit",
+		"event", "security.sensitive_word_hit",
+		"action", string(action),
+		"surface", string(surface),
+		"request_id", requestID,
+		"user_id", userID)
+}
+
 func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
 
@@ -665,6 +736,13 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
 	// 必须在 BuildRelayContext 之后写：它会先用 peekStreaming 填一个尽力值。
 	relay.WithRequest(rc, parsed, ir.FormatOpenAIChat, r.URL.Path)
+
+	// F-08-18：在 IR 归一化之后、PreConsume/上游之前过滤（见函数注释）。
+	// 放在 BuildRelayContext 之后是为了日志能带上 user_id；此时尚未创建
+	// 计费会话，block 路径仍然零计费。
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID) {
+		return
+	}
 
 	// /pg/* 会话路径（relay-01 §1.5）：BuildRelayContext 不查令牌，因此
 	// UsingGroup 为空；必须回源 users."group" 再写身份组，否则候选查询会
@@ -901,6 +979,13 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
 	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+
+	// F-08-18：与 chat 同一时点（IR 之后、PreConsume/上游之前）。/v1/messages
+	// 的 system 已由解析器放进 Messages[0]（RoleSystem），因此同一个
+	// CheckRequest 同时覆盖 prompt 与 system 两个作用面。
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID) {
+		return
+	}
 
 	// pin 必须在 BuildRelayContext 之后解析（R-P2a：非管理员 pin 已在那里
 	// 统一拒绝）。/v1/messages 不挂 /pg 会话平面（RegisterPlayground 只暴露

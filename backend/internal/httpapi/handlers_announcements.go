@@ -44,6 +44,7 @@ import (
 	"newtg/gateway/internal/markup"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/sensitive"
 	"newtg/gateway/internal/store"
 )
 
@@ -135,6 +136,9 @@ type AnnouncementHandlerConfig struct {
 	// 结束再返回，让「未配置静默/配置时 payload」可确定性断言。生产必须为
 	// false（副作用不得阻塞发布响应）。
 	WaitForSideEffects bool
+	// Config 是 sec.sensitive.* 的读取面（F-08-18）；nil 时过滤关闭。
+	// 公告写入（create/update）在落库前按它过滤 title/content。
+	Config ConfigReader
 }
 
 // AnnouncementHandlers 持有公告端点依赖，可并发使用。
@@ -150,6 +154,9 @@ type AnnouncementHandlers struct {
 	baseURL  func() string
 	now      func() time.Time
 	waitSefe bool
+	config   ConfigReader
+	// sensitive 是 sec.sensitive.* 的解析缓存（F-08-18）；零值可用。
+	sensitive *sensitive.Cache
 }
 
 // NewAnnouncementHandlers 构造公告端点。
@@ -182,6 +189,7 @@ func NewAnnouncementHandlers(cfg AnnouncementHandlerConfig) (*AnnouncementHandle
 		rdb: cfg.Redis, log: logger, webhook: cfg.Webhook,
 		notifier: cfg.Notifier,
 		baseURL:  baseURL, now: now, waitSefe: cfg.WaitForSideEffects,
+		config: cfg.Config, sensitive: &sensitive.Cache{},
 	}
 	h.registerPolicies()
 	return h, nil
@@ -457,6 +465,52 @@ func (h *AnnouncementHandlers) validateAnnouncementPayload(p announcementPayload
 	return in, fields
 }
 
+// checkAnnouncementSensitive 在公告落库前执行 F-08-18 过滤。
+//
+// 作用面：公告 title/body 是面向用户展示的内容，设计没有为公告单列作用面，
+// 这里按最接近的 prompt 面处理（与中继用户提示词同面；见 W9-sensitive 报告
+// 的待裁决项）。scope.prompt=false 时公告面保持原样。
+//
+// 命中 block 时返回命中的字段名（供既有 422 fields 契约使用），绝不含词正文；
+// action=log 只记 warn 日志后放行（零写入差异）。调用点必须在 repo 之前，
+// 保证 block 路径零写库。
+func (h *AnnouncementHandlers) checkAnnouncementSensitive(in store.AnnouncementInput,
+	actor int64, route string) (fields []string, blocked bool) {
+	cfg := h.announcementSensitiveConfig()
+	if !cfg.Active() {
+		return nil, false
+	}
+	// 设计只定义 prompt/system 两面；公告正文按 prompt 面处理。
+	if cfg.CheckText(sensitive.SurfacePrompt, in.Title) {
+		fields = append(fields, "title")
+	}
+	if cfg.CheckText(sensitive.SurfacePrompt, in.Content) {
+		fields = append(fields, "content")
+	}
+	if len(fields) == 0 {
+		return nil, false
+	}
+	// 不落明文命中词：只记事件/动作/作用面/actor/route（F-08-18）。
+	h.log.Warn("security.sensitive_word_hit",
+		"event", "security.sensitive_word_hit",
+		"action", string(cfg.Action),
+		"surface", string(sensitive.SurfacePrompt),
+		"actor_id", actor,
+		"route", route)
+	if cfg.Action != sensitive.ActionBlock {
+		return nil, false
+	}
+	return fields, true
+}
+
+func (h *AnnouncementHandlers) announcementSensitiveConfig() sensitive.Config {
+	cache := h.sensitive
+	if cache == nil {
+		cache = &sensitive.Cache{}
+	}
+	return cache.Load(h.config)
+}
+
 // writeValidationProblem 输出带 fields 的 422（管理面既有约定）。
 func writeValidationProblem(w http.ResponseWriter, fields []string) {
 	w.Header().Set("Content-Type", "application/problem+json")
@@ -592,6 +646,11 @@ func (h *AnnouncementHandlers) handleCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	actor := actorID(r)
+	// F-08-18：落库前过滤 title/body；block 时 422 且 repo.Create 永不调用。
+	if blockedFields, blocked := h.checkAnnouncementSensitive(in, actor, "POST /api/announcements"); blocked {
+		writeValidationProblem(w, blockedFields)
+		return
+	}
 	mut, err := h.repo.Create(r.Context(), in, actor)
 	if err != nil {
 		h.writeAnnouncementError(w, err, "POST /api/announcements")
@@ -626,6 +685,11 @@ func (h *AnnouncementHandlers) handleUpdate(w http.ResponseWriter, r *http.Reque
 	in, fields := h.validateAnnouncementPayload(payload)
 	if len(fields) > 0 {
 		writeValidationProblem(w, fields)
+		return
+	}
+	// F-08-18：与 create 同一时点（repo 之前），block 路径零写入。
+	if blockedFields, blocked := h.checkAnnouncementSensitive(in, actorID(r), "PUT /api/announcements/{id}"); blocked {
+		writeValidationProblem(w, blockedFields)
 		return
 	}
 	mut, err := h.repo.Update(r.Context(), r.PathValue("id"), in, actorID(r))
