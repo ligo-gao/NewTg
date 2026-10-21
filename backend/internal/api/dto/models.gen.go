@@ -216,6 +216,27 @@ func (e ChangeEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for ChannelStatus.
+const (
+	ChannelStatusN1 ChannelStatus = 1
+	ChannelStatusN2 ChannelStatus = 2
+	ChannelStatusN3 ChannelStatus = 3
+)
+
+// Valid indicates whether the value is a known member of the ChannelStatus enum.
+func (e ChannelStatus) Valid() bool {
+	switch e {
+	case ChannelStatusN1:
+		return true
+	case ChannelStatusN2:
+		return true
+	case ChannelStatusN3:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateOrderRequestCurrency.
 const (
 	CreateOrderRequestCurrencyCNY CreateOrderRequestCurrency = "CNY"
@@ -4582,6 +4603,79 @@ type ChangeEmailResponseEmailVerified bool
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+// Channel 上游渠道管理投影。`auto_disabled_reason` 是系统写入的稳定 reason code
+// （R-M4-05），非秘密；空值序列化为 null。自动禁用的展示时间复用
+// `updated_at`（不新增 auto_disabled_at 列），UI 文案为「最近更新」。
+type Channel struct {
+	AutoBan bool `json:"auto_ban"`
+
+	// AutoDisabledReason 自动禁用原因的稳定 code（R-M4-05）：
+	// channel_upstream_error / channel_auth_error / channel_keyword /
+	// channel_timeout。非自动禁用时为 null。
+	AutoDisabledReason *string   `json:"auto_disabled_reason,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+
+	// CredentialsMasked 掩码后的凭据（仅详情例外；永远不含明文密钥）。
+	CredentialsMasked *ChannelCredentialsMasked `json:"credentials_masked,omitempty"`
+
+	// CredentialsSet 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。
+	CredentialsSet *bool `json:"credentials_set,omitempty"`
+
+	// FailCount 保留诊断列；M4 不维护逐请求失败计数（R-M4-04）。
+	FailCount int `json:"fail_count"`
+
+	// GroupTags null = 全部分组（与空数组语义不同）。
+	GroupTags      *[]string  `json:"group_tags,omitempty"`
+	Id             int64      `json:"id"`
+	LastTestAt     *time.Time `json:"last_test_at,omitempty"`
+	LastTestResult *bool      `json:"last_test_result,omitempty"`
+	Name           string     `json:"name"`
+	Priority       int        `json:"priority"`
+	RateLimit      *int       `json:"rate_limit,omitempty"`
+	Remark         *string    `json:"remark,omitempty"`
+
+	// Status 1 enabled、2 manual_disabled、3 auto_disabled（无 deleted 状态）。
+	Status               ChannelStatus `json:"status"`
+	SupportedModels      []string      `json:"supported_models"`
+	Tag                  *string       `json:"tag,omitempty"`
+	TaskExtendPluginKeys []string      `json:"task_extend_plugin_keys"`
+	TaskPluginKey        *string       `json:"task_plugin_key,omitempty"`
+	TestModel            *string       `json:"test_model,omitempty"`
+	Type                 string        `json:"type"`
+
+	// UpdatedAt 乐观锁版本；PATCH 必须原样回传。也用于展示「最近更新」。
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Version R-P8：derived updated_at（RFC3339Nano UTC）。
+	Version string `json:"version"`
+	Weight  int    `json:"weight"`
+}
+
+// ChannelStatus 1 enabled、2 manual_disabled、3 auto_disabled（无 deleted 状态）。
+type ChannelStatus int
+
+// ChannelCredentialsMasked 掩码后的凭据（仅详情例外；永远不含明文密钥）。
+type ChannelCredentialsMasked struct {
+	// ApiKey 形如 sk-…abcd 的掩码，绝不回显明文。
+	ApiKey     string  `json:"api_key"`
+	ApiVersion *string `json:"api_version,omitempty"`
+	Deployment *string `json:"deployment,omitempty"`
+}
+
+// ChannelList GET /api/channels 的 offset 分页信封。
+type ChannelList struct {
+	Items []Channel `json:"items"`
+
+	// Page 当前页码（1 基）
+	Page int `json:"page"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize int `json:"page_size"`
+
+	// Total 满足条件的总条数
+	Total int `json:"total"`
 }
 
 // CompleteOrderRequest defines model for CompleteOrderRequest.

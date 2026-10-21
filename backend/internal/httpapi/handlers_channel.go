@@ -378,7 +378,10 @@ func (s *RedisIdempotencyStore) Release(ctx context.Context, key, token string) 
 
 // ChannelResponse 是 GC-6 白名单投影。列表与详情共用：
 // 列表永不带 credentials_*（omitempty + 不赋值）；详情额外带掩码与「已设置」标记。
-// 刻意不包含 base_url、credentials、model_mapping、auto_disabled_reason。
+// 刻意不包含 base_url、credentials、model_mapping。
+//
+// auto_disabled_reason 是稳定 reason code（R-M4-05），不是秘密：列表与详情都返回，
+// 前端按 code 本地化；为 null 时按仓内既有可空字段风格序列化为 JSON null。
 type ChannelResponse struct {
 	ID              int64    `json:"id"`
 	Name            string   `json:"name"`
@@ -394,8 +397,11 @@ type ChannelResponse struct {
 	Remark          *string  `json:"remark"`
 	Tag             *string  `json:"tag"`
 	FailCount       int32    `json:"fail_count"`
-	LastTestAt      *string  `json:"last_test_at"`
-	LastTestResult  *bool    `json:"last_test_result"`
+	// AutoDisabledReason 是系统自动禁用的稳定 code（R-M4-05）；非自动禁用时为 nil。
+	// 展示时间复用 updated_at，不新增 auto_disabled_at 列（R-M4-05）。
+	AutoDisabledReason *string `json:"auto_disabled_reason"`
+	LastTestAt         *string `json:"last_test_at"`
+	LastTestResult     *bool   `json:"last_test_result"`
 	// 任务插件绑定（M6d Task 7a / relay-06 §1.3）。两者互斥，按渠道类型
 	// 投影：类型 61 单绑、类型 60 多绑、其余渠道均为空。它们不是秘密。
 	TaskPluginKey        *string  `json:"task_plugin_key"`
@@ -931,10 +937,18 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 			v.add("status", "status must be 1 (enabled) or 2 (manual_disabled)")
 		}
 		patch.Status = req.Status
-		if *req.Status == 1 {
+		switch *req.Status {
+		case 1:
 			// 手动启用同时清零失败计数与自动禁用原因（F-06-08/TC-F-06-08-02）。
 			zero := int32(0)
 			patch.FailCount = &zero
+			patch.AutoDisabledReasonSet = true
+			patch.AutoDisabledReason = nil
+		case 2:
+			// R-M4-16：auto_disabled → manual_disabled 的直连 PATCH 必须清空
+			// auto_disabled_reason。否则人工禁用后会继续展示「最近一次自动禁用
+			// 原因」，与 manual_disabled 的语义冲突。fail_count 保持原值（该列
+			// 在 M4 只由启用路径清零，R-M4-04）。
 			patch.AutoDisabledReasonSet = true
 			patch.AutoDisabledReason = nil
 		}
@@ -1606,6 +1620,7 @@ func channelToResponse(ch *store.Channel) (ChannelResponse, error) {
 		Remark:               ch.Remark,
 		Tag:                  ch.Tag,
 		FailCount:            ch.FailCount,
+		AutoDisabledReason:   ch.AutoDisabledReason,
 		LastTestAt:           formatChannelTimePtr(ch.LastTestAt),
 		LastTestResult:       ch.LastTestResult,
 		TaskPluginKey:        ch.TaskPluginKey,

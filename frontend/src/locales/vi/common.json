@@ -269,6 +269,13 @@
       "auto_disabled": "Tắt tự động",
       "unknown": "Trạng thái không rõ"
     },
+    "reason": {
+      "channel_upstream_error": "Lỗi từ nhà cung cấp",
+      "channel_auth_error": "Xác thực thất bại",
+      "channel_keyword": "Khớp từ khóa vô hiệu hóa",
+      "channel_timeout": "Phản hồi quá thời gian",
+      "unknown": "Tự động vô hiệu hóa"
+    },
     "time": {
       "justNow": "vừa xong",
       "minutesAgo": "{count} phút trước",
@@ -416,6 +423,8 @@
       "nameTooLong": "Tên tối đa 64 ký tự."
     },
     "detail": {
+      "autoDisabledReason": "Lý do tự động vô hiệu hóa",
+      "reasonUpdatedAt": "Cập nhật lần cuối {at}",
       "id": "ID",
       "rateLimit": "Giới hạn tốc độ",
       "autoBan": "Tự động tắt",

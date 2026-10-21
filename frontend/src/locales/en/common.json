@@ -269,6 +269,13 @@
       "auto_disabled": "Auto Disabled",
       "unknown": "Unknown status"
     },
+    "reason": {
+      "channel_upstream_error": "Upstream error",
+      "channel_auth_error": "Authentication failed",
+      "channel_keyword": "Matched a disable keyword",
+      "channel_timeout": "Response timed out",
+      "unknown": "Automatically disabled"
+    },
     "time": {
       "justNow": "just now",
       "minutesAgo": "{count}m ago",
@@ -416,6 +423,8 @@
       "nameTooLong": "The name must be at most 64 characters."
     },
     "detail": {
+      "autoDisabledReason": "Auto-disable reason",
+      "reasonUpdatedAt": "Last updated {at}",
       "id": "ID",
       "rateLimit": "Rate limit",
       "autoBan": "Auto-disable",

@@ -623,7 +623,8 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 		"id": true, "name": true, "type": true, "status": true, "priority": true,
 		"weight": true, "supported_models": true, "group_tags": true, "rate_limit": true,
 		"auto_ban": true, "test_model": true, "remark": true, "tag": true,
-		"fail_count": true, "last_test_at": true, "last_test_result": true,
+		"fail_count": true, "auto_disabled_reason": true,
+		"last_test_at": true, "last_test_result": true,
 		"task_plugin_key": true, "task_extend_plugin_keys": true,
 		"created_at": true, "updated_at": true, "version": true,
 	}
@@ -633,7 +634,9 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 				t.Fatalf("列表响应出现白名单外字段 %q（GC-6）", key)
 			}
 		}
-		for _, forbidden := range []string{"base_url", "credentials", "api_key", "model_mapping", "auto_disabled_reason"} {
+		// auto_disabled_reason 是稳定 code（R-M4-05），不是秘密，必须在白名单内；
+		// 其余字段继续按 GC-6 断言不泄漏。
+		for _, forbidden := range []string{"base_url", "credentials", "api_key", "model_mapping"} {
 			if _, ok := item[forbidden]; ok {
 				t.Fatalf("列表响应泄漏字段 %q", forbidden)
 			}
@@ -667,6 +670,119 @@ func TestChannelListDefaults(t *testing.T) {
 	}
 	if f := env.store.lastFilter; f.Page != 1 || f.PageSize != 20 {
 		t.Fatalf("默认分页 = (%d,%d)，期望 (1,20)", f.Page, f.PageSize)
+	}
+}
+
+// TestChannelListAndDetailExposeAutoDisabledReason 锁定 W7/M4-c 的 DTO 契约：
+// 稳定 reason code 是**非秘密**字段，列表与详情都必须返回（R-M4-05）。
+// 空值按仓内既有可空字段风格序列化为 JSON null，而不是省略字段——前端
+// types.ts 把该字段声明为 `string | null`。
+func TestChannelListAndDetailExposeAutoDisabledReason(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	seedChannel(t, env, func(c *store.Channel) {
+		c.ID = 1
+		c.Name = "auto-disabled"
+		c.Status = 3
+		c.AutoDisabledReason = strPtr(channelhealth.ReasonAuthError)
+	})
+	seedChannel(t, env, func(c *store.Channel) {
+		c.ID = 2
+		c.Name = "healthy"
+	})
+	env.store.nextID = 3
+	// fake List 只读 listItems；显式按 id 顺序布置两行，避免 map 迭代顺序影响断言。
+	env.store.listItems = []store.Channel{
+		*cloneChannel(env.store.items[1]),
+		*cloneChannel(env.store.items[2]),
+	}
+	env.store.listTotal = 2
+
+	rr := serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels", nil), channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var envelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("list envelope: %v", err)
+	}
+	if len(envelope.Items) != 2 {
+		t.Fatalf("items = %d，期望 2", len(envelope.Items))
+	}
+	if got := string(envelope.Items[0]["auto_disabled_reason"]); got != `"`+channelhealth.ReasonAuthError+`"` {
+		t.Fatalf("列表 auto_disabled_reason = %s，期望 %q", got, channelhealth.ReasonAuthError)
+	}
+	// nil reason 必须显式为 null（字段存在，不能靠 omitempty 消失）。
+	if got := string(envelope.Items[1]["auto_disabled_reason"]); got != "null" {
+		t.Fatalf("健康渠道 auto_disabled_reason = %s，期望 null", got)
+	}
+
+	rr = serveWithPrincipal(t, env.mux, httptest.NewRequest(http.MethodGet, "/api/channels/1", nil), channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var detail ChannelResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("detail response: %v", err)
+	}
+	if detail.AutoDisabledReason == nil || *detail.AutoDisabledReason != channelhealth.ReasonAuthError {
+		t.Fatalf("详情 auto_disabled_reason = %v，期望 %q", detail.AutoDisabledReason, channelhealth.ReasonAuthError)
+	}
+	if detail.UpdatedAt == "" {
+		t.Fatal("详情 updated_at 为空：前端用 updated_at 展示「最近更新」（R-M4-05）")
+	}
+}
+
+// TestChannelPatchClearsAutoDisabledReason 覆盖 R-M4-16 的两条人工迁移：
+//   - auto_disabled → manual_disabled 必须清空 auto_disabled_reason；
+//   - 既有 auto_disabled → enabled 继续清空 reason/fail_count（F-06-08）。
+//
+// 不清 reason 的变异会让本用例红（fake store 忠实应用 AutoDisabledReasonSet）。
+func TestChannelPatchClearsAutoDisabledReason(t *testing.T) {
+	cases := []struct {
+		name       string
+		nextStatus int16
+		wantFail   int32
+	}{
+		{name: "manual-disable-clears-reason", nextStatus: 2, wantFail: 4},
+		{name: "manual-enable-clears-reason-and-fail-count", nextStatus: 1, wantFail: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newChannelTestEnv(t, ChannelHandlerOptions{})
+			seeded := seedChannel(t, env, func(c *store.Channel) {
+				c.ID = 1
+				c.Status = 3
+				c.AutoDisabledReason = strPtr(channelhealth.ReasonKeyword)
+				c.FailCount = 4
+			})
+			body := map[string]any{
+				"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				"status":           tc.nextStatus,
+			}
+			rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body), channelAdminPrincipal())
+			if rr.Code != http.StatusOK {
+				t.Fatalf("patch status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+			}
+			var resp ChannelResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("patch response: %v", err)
+			}
+			if resp.Status != tc.nextStatus {
+				t.Fatalf("status = %d，期望 %d", resp.Status, tc.nextStatus)
+			}
+			if resp.AutoDisabledReason != nil {
+				t.Fatalf("响应未清空 auto_disabled_reason: %v", *resp.AutoDisabledReason)
+			}
+			stored := env.store.items[1]
+			if stored.AutoDisabledReason != nil {
+				t.Fatalf("落库未清空 auto_disabled_reason: %v（R-M4-16）", *stored.AutoDisabledReason)
+			}
+			if stored.FailCount != tc.wantFail {
+				t.Fatalf("fail_count = %d，期望 %d", stored.FailCount, tc.wantFail)
+			}
+		})
 	}
 }
 

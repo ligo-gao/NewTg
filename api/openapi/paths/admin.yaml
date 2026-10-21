@@ -533,11 +533,11 @@ paths:
         - $ref: '../components/pagination.yaml#/parameters/PageSize'
       responses:
         '200':
-          description: OK（offset 分页信封；items 的 DTO 随 M6 细化）
+          description: OK（offset 分页信封；items 为渠道管理投影，密钥永不回显）
           content:
             application/json:
               schema:
-                $ref: '../components/pagination.yaml#/schemas/Page'
+                $ref: '../schemas/admin.yaml#/schemas/ChannelList'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':

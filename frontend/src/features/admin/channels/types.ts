@@ -32,6 +32,16 @@ export interface Channel {
   remark: string | null
   tag: string | null
   fail_count: number
+  /**
+   * Stable reason code written by the system when a channel is auto-disabled
+   * (R-M4-05): `channel_upstream_error` | `channel_auth_error` |
+   * `channel_keyword` | `channel_timeout`. `null` when not auto-disabled.
+   *
+   * The display time reuses `updated_at` — there is deliberately no
+   * `auto_disabled_at` column, so UI copy says "last updated", not
+   * "disabled at" (R-M4-05).
+   */
+  auto_disabled_reason: string | null
   last_test_at: string | null
   last_test_result: boolean | null
   created_at: string

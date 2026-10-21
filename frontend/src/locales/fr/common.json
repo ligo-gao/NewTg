@@ -269,6 +269,13 @@
       "auto_disabled": "Désactivé automatiquement",
       "unknown": "Statut inconnu"
     },
+    "reason": {
+      "channel_upstream_error": "Erreur du service amont",
+      "channel_auth_error": "Échec de l'authentification",
+      "channel_keyword": "Correspond à un mot-clé de désactivation",
+      "channel_timeout": "Délai de réponse dépassé",
+      "unknown": "Désactivé automatiquement"
+    },
     "time": {
       "justNow": "à l'instant",
       "minutesAgo": "il y a {count} min",
@@ -416,6 +423,8 @@
       "nameTooLong": "Le nom doit contenir au plus 64 caractères."
     },
     "detail": {
+      "autoDisabledReason": "Motif de la désactivation automatique",
+      "reasonUpdatedAt": "Dernière mise à jour {at}",
       "id": "ID",
       "rateLimit": "Limite de débit",
       "autoBan": "Désactivation automatique",

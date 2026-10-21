@@ -44,4 +44,37 @@ describe('ChannelStatusBadge', () => {
     expect(screen.getByTestId('channel-status-unknown').textContent).toBe('—')
     expect(screen.queryByTestId('status-badge')).toBeNull()
   })
+
+  it('localises the auto-disable reason in the tooltip (no raw code)', () => {
+    renderWithProviders(
+      <ChannelStatusBadge
+        status={3}
+        reason="channel_auth_error"
+        updatedAt="2026-10-01T00:00:00Z"
+      />,
+    )
+
+    const title = screen.getByTestId('channel-status-badge').getAttribute('title')
+    expect(title).toContain('Authentication failed')
+    expect(title).toContain('Last updated')
+    expect(title).not.toContain('channel_auth_error')
+  })
+
+  it('falls back to a generic label for unknown reason codes', () => {
+    renderWithProviders(
+      <ChannelStatusBadge status={3} reason="channel_future_reason" updatedAt={null} />,
+    )
+
+    const title = screen.getByTestId('channel-status-badge').getAttribute('title')
+    expect(title).toBe('Automatically disabled')
+    expect(title).not.toContain('channel_future_reason')
+  })
+
+  it('hides the tooltip when the auto-disable reason is empty', () => {
+    renderWithProviders(
+      <ChannelStatusBadge status={3} reason={null} updatedAt="2026-10-01T00:00:00Z" />,
+    )
+
+    expect(screen.getByTestId('channel-status-badge').getAttribute('title')).toBeNull()
+  })
 })

@@ -1,6 +1,7 @@
 import { useI18n } from '@/shared/lib/i18n-context'
 import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
 
+import { channelDisabledReasonKey } from './channel-disabled-reason'
 import type { ChannelStatus } from './types'
 
 /**
@@ -22,10 +23,21 @@ const STATUS_VALUES: readonly ChannelStatus[] = [1, 2, 3]
 
 export interface ChannelStatusBadgeProps {
   status: number
+  /**
+   * Stable auto-disable reason code (R-M4-05). Only rendered as a tooltip when
+   * the status is auto_disabled and the value is non-empty; empty values are
+   * hidden rather than showing an empty tooltip.
+   */
+  reason?: string | null
+  /**
+   * Display time for the tooltip. It reuses `updated_at` because there is no
+   * `auto_disabled_at` column (R-M4-05), hence "last updated" copy.
+   */
+  updatedAt?: string | null
 }
 
-export function ChannelStatusBadge({ status }: ChannelStatusBadgeProps) {
-  const { t } = useI18n()
+export function ChannelStatusBadge({ status, reason, updatedAt }: ChannelStatusBadgeProps) {
+  const { t, locale } = useI18n()
   const meta = STATUS_VALUES.includes(status as ChannelStatus)
     ? STATUS_META[status as ChannelStatus]
     : undefined
@@ -43,8 +55,20 @@ export function ChannelStatusBadge({ status }: ChannelStatusBadgeProps) {
     )
   }
 
+  // Empty reason = no tooltip (hide the row/tooltip instead of an empty bubble).
+  let tooltip: string | undefined
+  if (status === 3 && reason) {
+    const reasonLabel = t(channelDisabledReasonKey(reason))
+    const timestamp = updatedAt ? Date.parse(updatedAt) : Number.NaN
+    tooltip = Number.isNaN(timestamp)
+      ? reasonLabel
+      : `${reasonLabel} · ${t('common.channels.detail.reasonUpdatedAt', {
+          at: new Date(timestamp).toLocaleString(locale),
+        })}`
+  }
+
   return (
-    <span data-testid="channel-status-badge">
+    <span data-testid="channel-status-badge" title={tooltip}>
       <StatusBadge variant={meta.variant}>{t(meta.key)}</StatusBadge>
     </span>
   )

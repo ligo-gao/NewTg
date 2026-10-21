@@ -594,6 +594,93 @@ describe('ChannelListPage', () => {
     expect(within(detail).getByText('ID')).toBeTruthy()
   })
 
+  it('shows the localised auto-disable reason and last-updated time in the detail panel', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({
+              id: 4,
+              name: 'auto-banned',
+              status: 3,
+              auto_disabled_reason: 'channel_keyword',
+              updated_at: '2026-10-01T00:00:00Z',
+            }),
+          ]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('auto-banned')
+    await user.click(
+      screen.getByRole('button', { name: 'Expand details for auto-banned' }),
+    )
+
+    const detail = await screen.findByTestId('channel-detail-4')
+    expect(within(detail).getByText('Auto-disable reason')).toBeTruthy()
+    // Localised copy, never the raw reason code (R-M4-05).
+    expect(within(detail).getByText(/Matched a disable keyword/)).toBeTruthy()
+    expect(within(detail).getByText(/Last updated/)).toBeTruthy()
+    expect(within(detail).queryByText(/channel_keyword/)).toBeNull()
+  })
+
+  it('hides the auto-disable reason row when the reason is empty', async () => {
+    const user = userEvent.setup()
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({
+              id: 5,
+              name: 'reasonless',
+              status: 3,
+              auto_disabled_reason: null,
+            }),
+          ]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('reasonless')
+    await user.click(
+      screen.getByRole('button', { name: 'Expand details for reasonless' }),
+    )
+
+    const detail = await screen.findByTestId('channel-detail-5')
+    expect(within(detail).queryByText('Auto-disable reason')).toBeNull()
+  })
+
+  it('passes the auto-disable reason to the list badge tooltip', async () => {
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(
+          makeListResponse([
+            makeChannel({
+              id: 6,
+              name: 'timed-out',
+              status: 3,
+              auto_disabled_reason: 'channel_timeout',
+              updated_at: '2026-10-01T00:00:00Z',
+            }),
+          ]),
+        )
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('timed-out')
+
+    const title = screen.getByTestId('channel-status-badge').getAttribute('title')
+    expect(title).toContain('Response timed out')
+    expect(title).toContain('Last updated')
+  })
+
   it('shows the cross-protocol forwarding note without an editable switch', async () => {
     installFetch((request) => {
       if (request.method === 'GET' && request.url.pathname === '/api/channels') {

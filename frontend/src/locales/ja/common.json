@@ -269,6 +269,13 @@
       "auto_disabled": "自動で無効化",
       "unknown": "不明な状態"
     },
+    "reason": {
+      "channel_upstream_error": "上流エラー",
+      "channel_auth_error": "認証に失敗しました",
+      "channel_keyword": "無効化キーワードに一致",
+      "channel_timeout": "応答がタイムアウトしました",
+      "unknown": "自動無効化"
+    },
     "time": {
       "justNow": "たった今",
       "minutesAgo": "{count} 分前",
@@ -416,6 +423,8 @@
       "nameTooLong": "名前は最大 64 文字です。"
     },
     "detail": {
+      "autoDisabledReason": "自動無効化の理由",
+      "reasonUpdatedAt": "最終更新 {at}",
       "id": "ID",
       "rateLimit": "レート制限",
       "autoBan": "自動無効化",

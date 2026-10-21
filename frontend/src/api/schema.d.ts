@@ -4751,9 +4751,56 @@ export interface components {
              */
             expires_at?: string | null;
         };
-        /** @description 上游渠道 DTO 占位（密钥字段永不回显；schema 待 M6 细化） */
+        /**
+         * @description 上游渠道管理投影。`auto_disabled_reason` 是系统写入的稳定 reason code
+         *     （R-M4-05），非秘密；空值序列化为 null。自动禁用的展示时间复用
+         *     `updated_at`（不新增 auto_disabled_at 列），UI 文案为「最近更新」。
+         */
         Channel: {
-            [key: string]: unknown;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            type: string;
+            /**
+             * @description 1 enabled、2 manual_disabled、3 auto_disabled（无 deleted 状态）。
+             * @enum {integer}
+             */
+            status: 1 | 2 | 3;
+            priority: number;
+            weight: number;
+            supported_models: string[];
+            /** @description null = 全部分组（与空数组语义不同）。 */
+            group_tags?: string[] | null;
+            rate_limit?: number | null;
+            auto_ban: boolean;
+            test_model?: string | null;
+            remark?: string | null;
+            tag?: string | null;
+            /** @description 保留诊断列；M4 不维护逐请求失败计数（R-M4-04）。 */
+            fail_count: number;
+            /**
+             * @description 自动禁用原因的稳定 code（R-M4-05）：
+             *     channel_upstream_error / channel_auth_error / channel_keyword /
+             *     channel_timeout。非自动禁用时为 null。
+             */
+            auto_disabled_reason?: string | null;
+            /** Format: date-time */
+            last_test_at?: string | null;
+            last_test_result?: boolean | null;
+            task_plugin_key?: string | null;
+            task_extend_plugin_keys: string[];
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PATCH 必须原样回传。也用于展示「最近更新」。
+             */
+            updated_at: string;
+            /** @description R-P8：derived updated_at（RFC3339Nano UTC）。 */
+            version: string;
+            credentials_masked?: components["schemas"]["ChannelCredentialsMasked"];
+            /** @description 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。 */
+            credentials_set?: boolean;
         };
         /**
          * @description 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
@@ -8363,6 +8410,17 @@ export interface components {
         RefundOrderRequest: {
             /** @description 退款原因（进入 refunded 事件 detail，按 Unicode 字符计数） */
             reason: string;
+        };
+        /** @description 掩码后的凭据（仅详情例外；永远不含明文密钥）。 */
+        ChannelCredentialsMasked: {
+            /** @description 形如 sk-…abcd 的掩码，绝不回显明文。 */
+            api_key: string;
+            deployment?: string;
+            api_version?: string;
+        };
+        /** @description GET /api/channels 的 offset 分页信封。 */
+        ChannelList: components["schemas"]["Page"] & {
+            items?: components["schemas"]["Channel"][];
         };
         /**
          * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
@@ -16039,13 +16097,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK（offset 分页信封；items 的 DTO 随 M6 细化） */
+            /** @description OK（offset 分页信封；items 为渠道管理投影，密钥永不回显） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page"];
+                    "application/json": components["schemas"]["ChannelList"];
                 };
             };
             401: components["responses"]["Error401"];

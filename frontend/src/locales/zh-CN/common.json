@@ -269,6 +269,13 @@
       "auto_disabled": "自动停用",
       "unknown": "未知状态"
     },
+    "reason": {
+      "channel_upstream_error": "上游错误",
+      "channel_auth_error": "鉴权失败",
+      "channel_keyword": "命中禁用关键词",
+      "channel_timeout": "响应超时",
+      "unknown": "自动禁用"
+    },
     "time": {
       "justNow": "刚刚",
       "minutesAgo": "{count} 分钟前",
@@ -416,6 +423,8 @@
       "nameTooLong": "名称最多 64 个字符。"
     },
     "detail": {
+      "autoDisabledReason": "自动禁用原因",
+      "reasonUpdatedAt": "最近更新 {at}",
       "id": "ID",
       "rateLimit": "限流",
       "autoBan": "自动停用",

@@ -269,6 +269,13 @@
       "auto_disabled": "自動停用",
       "unknown": "未知狀態"
     },
+    "reason": {
+      "channel_upstream_error": "上游錯誤",
+      "channel_auth_error": "驗證失敗",
+      "channel_keyword": "命中停用關鍵字",
+      "channel_timeout": "回應逾時",
+      "unknown": "自動停用"
+    },
     "time": {
       "justNow": "剛剛",
       "minutesAgo": "{count} 分鐘前",
@@ -416,6 +423,8 @@
       "nameTooLong": "名稱最多 64 個字元。"
     },
     "detail": {
+      "autoDisabledReason": "自動停用原因",
+      "reasonUpdatedAt": "最近更新 {at}",
       "id": "ID",
       "rateLimit": "限流",
       "autoBan": "自動停用",

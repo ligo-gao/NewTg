@@ -27,6 +27,7 @@ import {
   updateChannel,
 } from './api'
 import { ChannelMutateSheet } from './channel-mutate-sheet'
+import { channelDisabledReasonKey } from './channel-disabled-reason'
 import { ChannelStatusBadge } from './channel-status-badge'
 import { ChannelTestDialog } from './channel-test-dialog'
 import { CrossProtocolForwardInfo } from './cross-protocol-forward-info'
@@ -707,7 +708,11 @@ export function ChannelListPage() {
                         <Tag>{channel.type}</Tag>
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
-                        <ChannelStatusBadge status={channel.status} />
+                        <ChannelStatusBadge
+                          status={channel.status}
+                          reason={channel.auto_disabled_reason}
+                          updatedAt={channel.updated_at}
+                        />
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
                         <ModelCell models={channel.supported_models} />
@@ -1061,6 +1066,7 @@ function LastTestCell({ channel }: { channel: Channel }) {
 
 function ChannelDetailPanel({ channel }: { channel: Channel }) {
   const { t, locale } = useI18n()
+  const updatedAt = new Date(channel.updated_at).toLocaleString(locale)
   const rows: Array<{ label: string; value: string }> = [
     { label: t('common.channels.detail.id'), value: String(channel.id) },
     {
@@ -1086,9 +1092,20 @@ function ChannelDetailPanel({ channel }: { channel: Channel }) {
     },
     {
       label: t('common.channels.detail.updated'),
-      value: new Date(channel.updated_at).toLocaleString(locale),
+      value: updatedAt,
     },
   ]
+  // 自动禁用原因只在 status=3 且 code 非空时显示（空值隐藏）。时间复用
+  // updated_at，因此文案是「最近更新」而不是「禁用时刻」（R-M4-05）。
+  if (channel.status === 3 && channel.auto_disabled_reason) {
+    rows.splice(rows.length - 1, 0, {
+      label: t('common.channels.detail.autoDisabledReason'),
+      value: `${t(channelDisabledReasonKey(channel.auto_disabled_reason))} · ${t(
+        'common.channels.detail.reasonUpdatedAt',
+        { at: updatedAt },
+      )}`,
+    })
+  }
   // The list DTO deliberately omits credentials_masked and credentials_set
   // (GC-6); only the detail endpoint returns them. Expanding a list row therefore
   // has no credentials cell to render — the mask is shown by the edit sheet's

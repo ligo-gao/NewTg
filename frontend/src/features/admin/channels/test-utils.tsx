@@ -166,6 +166,7 @@ export function makeChannel(overrides: Partial<Channel> = {}): Channel {
     remark: null,
     tag: null,
     fail_count: 0,
+    auto_disabled_reason: null,
     last_test_at: null,
     last_test_result: null,
     created_at: '2026-10-01T00:00:00Z',
