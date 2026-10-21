@@ -426,6 +426,10 @@ func TestBatchesRejectsUnsupportedInputsBeforeBilling(t *testing.T) {
 		  {"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model"}}]}`, http.StatusBadRequest},
 		{"metadata", `{"metadata":{"k":"v"},"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model"}}]}`, http.StatusBadRequest},
 		{"unknown_model", `{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"nope"}}]}`, http.StatusNotFound},
+		// M5：seconds 是计费乘数，必须在任何提交之前拒绝非法值。
+		{"seconds_zero", `{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model","seconds":0}}]}`, http.StatusBadRequest},
+		{"seconds_too_large", `{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model","seconds":999999}}]}`, http.StatusBadRequest},
+		{"seconds_fractional", `{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model","seconds":1.5}}]}`, http.StatusBadRequest},
 		{"empty", `{}`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
