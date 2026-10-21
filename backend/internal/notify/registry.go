@@ -146,7 +146,9 @@ var categoryOrder = []Category{
 	{Key: "billing.violation_fee", Locked: false, Channels: []Channel{ChannelEmail}, Keys: []string{"billing.violation_fee"}},
 	{Key: "system.announcement", Locked: true, Channels: []Channel{ChannelInApp}, Keys: []string{"system.announcement"}},
 	{Key: "system.smtp_test", Locked: true, Channels: []Channel{ChannelEmail}, Keys: []string{"system.smtp_test"}},
-	{Key: "ops.channel_auto_disabled", Locked: false, Channels: []Channel{ChannelEmail}, Keys: []string{"ops.channel_auto_disabled"}},
+	// W7/M4-a（R-M4-09）：渠道自动禁用同时提供站内模板。M4 只做 inapp
+	// 直投（无 SMTP 依赖）；email 模板保留但不接线（R-M4-18）。
+	{Key: "ops.channel_auto_disabled", Locked: false, Channels: []Channel{ChannelEmail, ChannelInApp}, Keys: []string{"ops.channel_auto_disabled"}},
 	{Key: "ops.redemption_expiring", Locked: false, Channels: []Channel{ChannelEmail}, Keys: []string{"ops.redemption_expiring"}},
 }
 
@@ -306,6 +308,17 @@ var templateSpecs = []Template{
 		{Name: "reason_label", Type: VarString, Required: true, Sample: "上游返回鉴权错误"},
 		{Name: "disabled_at", Type: VarString, Required: true, Sample: "2026-10-14T19:03:11Z"},
 		{Name: "channels_url", Type: VarString, Required: true, Sample: "https://gw.example.com/admin/channels/17"},
+	}},
+	// W7/M4-a：站内版本。inapp 没有 subject（DDL CHECK），标题由 `title`
+	// 变量承载（生产者按管理员语言本地化）；正文只引用稳定事实，不含
+	// 上游错误原文、凭据或 base_url（GC-6）。
+	{Key: "ops.channel_auto_disabled", Channel: ChannelInApp, Category: "ops.channel_auto_disabled", Variables: []Variable{
+		{Name: "title", Type: VarString, Required: true, Sample: "渠道已自动禁用"},
+		{Name: "channel_name", Type: VarString, Required: true, Sample: "openai-main"},
+		{Name: "channel_id", Type: VarString, Required: true, Sample: "17"},
+		{Name: "reason_label", Type: VarString, Required: true, Sample: "上游返回鉴权错误"},
+		{Name: "disabled_at", Type: VarString, Required: true, Sample: "2026-10-14T19:03:11Z"},
+		{Name: "channels_url", Type: VarString, Required: true, Sample: "/admin/channels"},
 	}},
 	{Key: "ops.redemption_expiring", Channel: ChannelEmail, Category: "ops.redemption_expiring", Variables: []Variable{
 		{Name: "admin_username", Type: VarString, Sample: "root"},

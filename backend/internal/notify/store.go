@@ -472,6 +472,52 @@ func (s *Store) ListInAppAudience(ctx context.Context, afterID int64, limit int)
 	return out, nil
 }
 
+// ListAdminInAppAudience 按 users.id 升序返回一页启用管理员
+// （role='admin' AND status='enabled'）。
+//
+// W7/M4-a：自动禁用通知只发给管理员——普通用户既看不到渠道配置，也不应
+// 知道站点上游的故障拓扑。分页/语言归一化与 ListInAppAudience 同口径，
+// 只把过滤条件从「全部启用用户」收紧为「启用管理员」。
+func (s *Store) ListAdminInAppAudience(ctx context.Context, afterID int64, limit int) ([]InAppAudience, error) {
+	if afterID < 0 {
+		afterID = 0
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, language FROM users
+		WHERE role = 'admin' AND status = 'enabled' AND id > $1
+		ORDER BY id
+		LIMIT $2`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("notify: list admin inapp audience: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []InAppAudience
+	for rows.Next() {
+		var (
+			userID   int64
+			language string
+		)
+		if err := rows.Scan(&userID, &language); err != nil {
+			return nil, fmt.Errorf("notify: scan admin inapp audience: %w", err)
+		}
+		locale := Locale(language)
+		if _, ok := ParseLocale(language); !ok {
+			// users.language 有 CHECK 约束；历史脏数据按站点默认处理，
+			// 不让一次广播因为单个坏值失败（读取端是 fail-soft 的展示面）。
+			locale = DefaultLocale
+		}
+		out = append(out, InAppAudience{UserID: userID, Locale: locale})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notify: iterate admin inapp audience: %w", err)
+	}
+	return out, nil
+}
+
 // CountInAppAudience 返回启用用户总数。只在模板缺失这类异常路径上使用，
 // 用于保留审计的「失败数 = 启用用户数」口径，不参与正常广播循环。
 func (s *Store) CountInAppAudience(ctx context.Context) (int, error) {

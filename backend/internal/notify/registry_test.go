@@ -5,7 +5,7 @@ import "testing"
 // 注册表是 §3.9.1 / §3.9.3 的封闭契约；这些断言是「不接受未登记键」的
 // 第一道门，任何新增/删除类别都必须同时改测试与设计文档。
 
-func TestRegistryHasSixteenCategoriesAndEighteenGroups(t *testing.T) {
+func TestRegistryHasSixteenCategoriesAndNineteenGroups(t *testing.T) {
 	categories := Categories()
 	if len(categories) != 16 {
 		t.Fatalf("category 数 = %d，want 16（§3.9.1）", len(categories))
@@ -25,8 +25,8 @@ func TestRegistryHasSixteenCategoriesAndEighteenGroups(t *testing.T) {
 	}
 
 	templates := Templates()
-	if len(templates) != 18 {
-		t.Fatalf("key×channel 组数 = %d，want 18（§3.9.3）", len(templates))
+	if len(templates) != 19 {
+		t.Fatalf("key×channel 组数 = %d，want 19（§3.9.3 + W7/M4-a inapp）", len(templates))
 	}
 	groups := make(map[string]bool, len(templates))
 	for _, spec := range templates {
@@ -39,13 +39,17 @@ func TestRegistryHasSixteenCategoriesAndEighteenGroups(t *testing.T) {
 		}
 		groups[group] = true
 	}
-	// billing.balance_low / billing.quota_exhausted 各有 email 与 inapp 两组，
-	// 故 18 组而非 16 组。
+	// billing.balance_low / billing.quota_exhausted 各有 email 与 inapp 两组；
+	// ops.channel_auto_disabled 在 M4-a 增补 inapp，故 19 组而非 16 组。
 	if !groups["billing.balance_low\x00email"] || !groups["billing.balance_low\x00inapp"] {
 		t.Fatal("billing.balance_low 必须同时有 email 与 inapp 模板")
 	}
 	if !groups["billing.quota_exhausted\x00email"] || !groups["billing.quota_exhausted\x00inapp"] {
 		t.Fatal("billing.quota_exhausted 必须同时有 email 与 inapp 模板")
+	}
+	// R-M4-09：自动禁用必须能站内直投（M4 不做 email 管道）。
+	if !groups["ops.channel_auto_disabled\x00inapp"] {
+		t.Fatal("ops.channel_auto_disabled 必须有 inapp 模板（R-M4-09）")
 	}
 }
 

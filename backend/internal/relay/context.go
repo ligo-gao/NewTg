@@ -456,6 +456,11 @@ type ChannelAssignment struct {
 	UpstreamModel string
 	GroupRatio    float64
 	CreatedTime   time.Time
+	// AutoBan 是渠道级自动禁用开关（channels.auto_ban，默认 true）。
+	// 它**不写入 RelayContext**：自动禁用判定属于执行层失败回调的入参，
+	// 适配器/计费/日志都无需感知。执行层每轮从 assignment 直接读取，
+	// 保证「本轮真正使用的渠道」的开关值就是判定用的值（R-M4-01 C）。
+	AutoBan bool
 }
 
 // WithChannel 一次性写渠道组（唯一写入方：执行层，每轮重试重写，relay-01 §7.4）。

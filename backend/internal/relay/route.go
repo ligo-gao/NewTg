@@ -166,6 +166,20 @@ func (e *UpstreamStatusError) Error() string {
 	return fmt.Sprintf("relay: 上游返回 HTTP %d（class=%d）", e.StatusCode, int(e.Class))
 }
 
+// AttemptFailureFunc 是「一轮上游返回非 2xx」的失败上报回调（W7/M4-a）。
+//
+// 唯一调用点是 ExecuteAttempts 中「拿到响应且非 2xx」的分支：只有那里同时
+// 拥有本轮 channelID、渠道级 auto_ban、ErrorClass、状态码与（有界）响应体。
+// 传输层错误、ctx 取消、适配器分派/构造失败都不调用——它们不是「上游对渠道
+// 表态」，据此自动禁用会把网络抖动、客户端断连或本地配置错误误判为渠道故障
+// （R-M4-01 C）。
+//
+// body 是已按 maxErrorBodyBytes 截断的响应体副本，只应交给关键词判定；回调
+// **不得**把它写入日志或暴露给客户端（GC-6）。实现方必须非阻塞（例如只做
+// 进程内入队），否则会把自动禁用的 DB/审计延迟带回中继热路径。
+type AttemptFailureFunc func(ctx context.Context, channelID int, autoBan bool,
+	class contract.ErrorClass, statusCode int, body []byte)
+
 // RouteDeps 是路由/执行层的显式依赖（控制器裁决 R-P4）。
 //
 // 之所以不读全局单例：候选来源与渠道解析在 M2 尚无 store（本包被 depguard
@@ -208,6 +222,14 @@ type RouteDeps struct {
 	// false → ErrGroupRatioMissing（403），返回 error → ErrGroupCheckFailed
 	// （500 fail-closed）。nil 表示跳过校验（仅测试/无计费降级装配）。
 	GroupConfigured func(ctx context.Context, group string) (bool, error)
+
+	// OnAttemptFailure 是「本轮拿到非 2xx 响应」的上报接缝（W7/M4-a）。
+	// nil 表示不上报（测试/降级）。回调在重试判定**之前**同步调用，因此：
+	//   - 即使后续候选成功、整笔请求 2xx，失败渠道的事实也不会丢失；
+	//   - 调用方必须 O(1) 且非阻塞（生产实现只做有界入队），绝不能在这里
+	//     做 DB 写或等待 I/O。
+	// 只覆盖「有响应且非 2xx」：传输错误/取消不触发（R-M4-01 C）。
+	OnAttemptFailure AttemptFailureFunc
 }
 
 // GroupSequence 返回本次请求的**有效分组序列**（R-61/R-62/R-63/R-68）。
@@ -680,6 +702,14 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				IsChannelErr: class == contract.ErrChannelError,
 				Message:      statusErr.Error(),
 			})
+
+			// M4-a 自动禁用接缝（R-M4-01 C）：在重试判定之前上报本轮渠道的
+			// 真实失败事实。channelID 必须取**本轮候选**而不是 rc.ChannelID：
+			// 跨组/换渠道后 rc 可能已被下一轮覆盖，而这里拥有的是本轮的确切
+			// 身份。传 autoBan 让上层不必再查库（assignment 来自同一行）。
+			if deps.OnAttemptFailure != nil {
+				deps.OnAttemptFailure(ctx, candidate.ChannelID, assignment.AutoBan, class, resp.StatusCode, body)
+			}
 
 			if !retryableStatus(resp.StatusCode) {
 				// R-P13 固定集合：400/401/403/422、408/504/524 绝不换渠道重试，

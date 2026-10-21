@@ -255,6 +255,12 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 	// R-64：分组倍率的严格存在性查询与定价管理共用同一个仓储口径
 	// （user_groups.name=? AND status=1），不复用 DBSource 的「未命中缓存 1.0」。
 	pricingRepo := store.NewPricingRepo(sqlDB)
+	// M4-a：自动禁用 reporter 由管理面装配（newGatewayAPI）构造并已 Start；
+	// 这里只做接口透传。nil（探针-only/测试装配）时中继完全跳过判定。
+	var attemptReporter httpapi.AttemptFailureReporter
+	if assembly != nil {
+		attemptReporter = assembly.AttemptFailureReporter
+	}
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
 		Channels:        channelRepo,
 		Tokens:          tokenRepo,
@@ -269,6 +275,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		UserGroups: store.NewUserGroupsRepo(sqlDB),
 		// 原生路由索引/分发（manifest routes[] → /v1 兜底）。
 		NativeRoutes: nativeRoutes,
+		// M4-a：中继每轮非 2xx 失败 → 自动禁用判定（异步、非阻塞）。
+		AttemptFailureReporter: attemptReporter,
 	})
 	relayHandler.Register(mux)
 	// 任务数据面（M6d Task 6a）：/v1/tasks* 与中继共用同一 RelayAuth

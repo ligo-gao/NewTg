@@ -569,6 +569,41 @@ func (r *ChannelRepo) BatchDelete(ctx context.Context, ids []int64) (BatchResult
 	return result, nil
 }
 
+// AutoDisable 执行一次**条件**状态迁移 enabled(1) → auto_disabled(3)
+// （relay-01 §10.2 / modules-06 F-06-09；W7/M4-a）。
+//
+// 三条守卫全部在 SQL 里，不在调用方：
+//   - `id = $1`：只动目标渠道；
+//   - `status = 1`：只有启用中的渠道才会被自动禁用。人工禁用（2）与已自动
+//     禁用（3）都必须 no-op——前者是管理员的显式决定，后者说明迁移已经发生；
+//   - `auto_ban = true`：渠道级开关（R-M4-01 C）；即使调用方漏判，数据库也
+//     不会禁用 `auto_ban=false` 的渠道。
+//
+// 返回 (channel, changed, err)：changed=false 且 err=nil 表示「条件不满足」，
+// 包括渠道不存在、已被人工改态、已自动禁用、或 auto_ban 为 false。调用方
+// （channelhealth.Reporter）只在 changed=true 时写审计/发通知，因此并发上报
+// 天然收敛为恰好一次迁移（PostgreSQL 行锁 + 条件 UPDATE）。
+//
+// 为什么不在 WHERE 里区分「不存在」与「条件不满足」：自动禁用是异步副作用，
+// 不存在/已改态都不需要调用方做任何补偿；额外一次存在性查询只会放大故障路径
+// 的 DB 负载。需要区分语义的调用方（测试/诊断）可直接用 Get。
+//
+// reason 使用稳定 code（R-M4-05），不是人类可读文本；列宽 255，code 恒短。
+func (r *ChannelRepo) AutoDisable(ctx context.Context, id int64, reason string) (*Channel, bool, error) {
+	query := `UPDATE channels
+		SET status = 3, auto_disabled_reason = $2, updated_at = now()
+		WHERE id = $1 AND status = 1 AND auto_ban = true
+		RETURNING ` + channelColumns
+	out, err := scanChannel(r.db.QueryRowContext(ctx, query, id, reason))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("store: auto-disable channel %d: %w", id, err)
+	}
+	return out, true, nil
+}
+
 // UpdateTestResult 回写连通性测试结果（modules-06 F-06-06）。
 //
 // updated_at 一并刷新：它是渠道行版本（R-P8），测试结果也是行内容的一部分；

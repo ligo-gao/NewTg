@@ -193,6 +193,12 @@ const (
 	ActionAnnouncementPublish = "announcement.publish"
 	ActionAnnouncementOffline = "announcement.offline"
 	ActionAnnouncementDelete  = "announcement.delete"
+
+	// W7/M4-a 渠道自动禁用（R-M4-10）。系统动作，不是管理员操作，但仍归
+	// operation：它是渠道配置面的状态迁移，必须与人工启停同一处检索。
+	// 写入约定：Actor=0 + Username="system"；detail 只允许 channel_id/
+	// channel_name/reason/trigger，绝不记录凭据、base_url 或上游响应体。
+	ActionChannelAutoDisable = "channel.auto_disable"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -302,6 +308,8 @@ var actionCategories = map[string]string{
 	ActionAnnouncementPublish: categoryOperation,
 	ActionAnnouncementOffline: categoryOperation,
 	ActionAnnouncementDelete:  categoryOperation,
+
+	ActionChannelAutoDisable: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

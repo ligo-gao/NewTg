@@ -168,6 +168,10 @@ var zhCNDefaults = map[string]Content{
 		CTAText: "前往渠道",
 		CTAURL:  "{{.channels_url}}",
 	},
+	"ops.channel_auto_disabled\x00inapp": {
+		Body: "{{.title}}：{{.channel_name}}（ID {{.channel_id}}）。" +
+			"原因：{{.reason_label}}。时间：{{.disabled_at}}。[前往渠道]({{.channels_url}})",
+	},
 	"ops.redemption_expiring\x00email": {
 		Subject: "兑换码批次即将过期：{{.batch_name}}",
 		Body: "管理员你好{{.admin_username}}：\n" +
@@ -197,6 +201,10 @@ func localizedSample(locale Locale, key string, variable Variable) string {
 		return "If this wasn't you, reset your password now."
 	case "welcome_bonus":
 		return "We've added 1,000 credits to your account."
+	case "title":
+		if key == "ops.channel_auto_disabled" {
+			return "Channel auto-disabled"
+		}
 	case "reason_label":
 		switch key {
 		case "billing.payment_failed":
@@ -351,6 +359,10 @@ var enDefaults = map[string]Content{
 			"Please review and re-enable it manually.",
 		CTAText: "Open channel",
 		CTAURL:  "{{.channels_url}}",
+	},
+	"ops.channel_auto_disabled\x00inapp": {
+		Body: "{{.title}}: {{.channel_name}} (ID {{.channel_id}}). " +
+			"Reason: {{.reason_label}}. Time: {{.disabled_at}}. [Open channels]({{.channels_url}})",
 	},
 	"ops.redemption_expiring\x00email": {
 		Subject: "Redemption code batch expiring soon: {{.batch_name}}",

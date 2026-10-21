@@ -89,24 +89,24 @@ func TestSeedIsIdempotentAndListCoversRegistry(t *testing.T) {
 	service := resetNotifyTables(t, db)
 	ctx := context.Background()
 
-	// 18 组 × 7 语 = 126 行。
-	if got := countRows(t, db, "notification_templates"); got != 126 {
-		t.Fatalf("播种行数 = %d，want 126", got)
+	// 19 组 × 7 语 = 133 行（M4-a 增补 ops.channel_auto_disabled/inapp）。
+	if got := countRows(t, db, "notification_templates"); got != 133 {
+		t.Fatalf("播种行数 = %d，want 133", got)
 	}
 	// 幂等：再次播种不得覆盖或新增。
 	if err := service.EnsureSeeded(ctx); err != nil {
 		t.Fatalf("第二次 seed: %v", err)
 	}
-	if got := countRows(t, db, "notification_templates"); got != 126 {
-		t.Fatalf("重复播种后行数 = %d，want 126（ON CONFLICT DO NOTHING）", got)
+	if got := countRows(t, db, "notification_templates"); got != 133 {
+		t.Fatalf("重复播种后行数 = %d，want 133（ON CONFLICT DO NOTHING）", got)
 	}
 
 	all, err := service.List(ctx, TemplateFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(all) != 126 {
-		t.Fatalf("列表行数 = %d，want 126", len(all))
+	if len(all) != 133 {
+		t.Fatalf("列表行数 = %d，want 133", len(all))
 	}
 	balance, err := service.List(ctx, TemplateFilter{Category: "billing.balance_low"})
 	if err != nil {
@@ -119,8 +119,10 @@ func TestSeedIsIdempotentAndListCoversRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List channel: %v", err)
 	}
-	if len(inapp) != 21 {
-		t.Fatalf("inapp 行数 = %d，want 21（3 个 inapp 模板 × 7 语）", len(inapp))
+	// 4 个 inapp 模板：system.announcement、billing.balance_low、
+	// billing.quota_exhausted、ops.channel_auto_disabled（W7/M4-a）。
+	if len(inapp) != 28 {
+		t.Fatalf("inapp 行数 = %d，want 28（4 个 inapp 模板 × 7 语）", len(inapp))
 	}
 	for _, item := range all {
 		if item.Customized {

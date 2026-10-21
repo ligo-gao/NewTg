@@ -56,6 +56,10 @@ type Options struct {
 	// 多模态端点同样按 R-63/R-64 换组并做倍率存在性校验（M2/W7）。
 	MaxAutoGroups   int
 	GroupConfigured func(ctx context.Context, group string) (bool, error)
+	// OnAttemptFailure 与 relay.RouteDeps.OnAttemptFailure 同语义（W7/M4-a）：
+	// 多模态非 realtime 端点同样经 ExecuteAttempts 执行，失败渠道必须进入
+	// 同一套自动禁用判定，不能只覆盖 chat 端点。nil 时不上报。
+	OnAttemptFailure relay.AttemptFailureFunc
 	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时使用 relay-04
 	// 的端点×渠道类型矩阵（F2）。测试可注入以覆盖矩阵。
 	Supports func(contract.ChannelType) bool
@@ -212,6 +216,8 @@ func (d *Dispatcher) routeDeps(rc *contract.RelayContext, r *http.Request, plan 
 		MaxRetries:      d.opts.MaxRetries,
 		MaxAutoGroups:   d.opts.MaxAutoGroups,
 		GroupConfigured: d.opts.GroupConfigured,
+		// M4-a：与 chat 端点共用同一条失败上报接缝（同一份判定/冷却/条件更新）。
+		OnAttemptFailure: d.opts.OnAttemptFailure,
 	}
 }
 

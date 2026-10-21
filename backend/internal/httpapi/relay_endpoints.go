@@ -127,6 +127,16 @@ type RelayModelStatusStore interface {
 
 var _ RelayModelStatusStore = (*store.SQLPricingRepo)(nil)
 
+// AttemptFailureReporter 接收中继每轮「非 2xx 响应」的失败事实（W7/M4-a）。
+//
+// 生产实现是 *channelhealth.Reporter：先做纯判定（全局开关/auto_ban/触发
+// 集合），命中后非阻塞入队，由后台 goroutine 执行条件更新 + 审计 + 站内通知。
+// 实现必须非阻塞；契约要求的触发集合与默认关闭语义由实现方负责。
+type AttemptFailureReporter interface {
+	ReportAttemptFailure(ctx context.Context, channelID int, autoBan bool,
+		class contract.ErrorClass, statusCode int, body []byte)
+}
+
 // modelPricingStatusDisabled 是 model_pricing.status 的停用值（modules-06
 // §3.7 状态机：1 启用 / 2 停用；迁移的 CHECK 约束只允许这两个值）。
 const modelPricingStatusDisabled int16 = 2
@@ -181,6 +191,9 @@ type RelayHandlerOptions struct {
 	// 「未命中缓存 1.0」路径。nil 时跳过校验（仅测试/无计费降级装配）；
 	// 生产由 platform 注入 store.SQLPricingRepo.GroupConfigured。
 	GroupConfigured func(ctx context.Context, group string) (bool, error)
+	// AttemptFailureReporter 是 M4-a 的自动禁用判定接缝（生产
+	// *channelhealth.Reporter）。nil 时不上报（测试/降级装配）。
+	AttemptFailureReporter AttemptFailureReporter
 }
 
 // NativeRouteDispatcher 是插件原生路由在 HTTP 面的唯一接缝（生产实现
@@ -220,6 +233,8 @@ type RelayHandler struct {
 	userGroups       PlaygroundUserGroups
 	nativeRoutes     NativeRouteDispatcher
 	groupConfigured  func(ctx context.Context, group string) (bool, error)
+	// attemptReporter 是 M4-a 的自动禁用上报接缝；nil 时执行层回调为 nil。
+	attemptReporter AttemptFailureReporter
 	// maxAutoGroups 是 R-63 的跨组上限（装配处解析并钳制 [1,20]）。
 	maxAutoGroups int
 	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
@@ -270,6 +285,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		userGroups:       opts.UserGroups,
 		nativeRoutes:     opts.NativeRoutes,
 		groupConfigured:  opts.GroupConfigured,
+		attemptReporter:  opts.AttemptFailureReporter,
 		// R-63：站点键 relay.cross_group_retry_max_groups（默认 3，非法回退
 		// 默认，钳制 [1,20]）。在这里解析一次，请求热路径只读字段。
 		maxAutoGroups: resolveCrossGroupRetryMaxGroups(opts.Config),
@@ -293,6 +309,9 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 			// 与 chat 同一套 R-63/R-64 语义：多模态端点同样可能携带 auto 令牌。
 			MaxAutoGroups:   h.maxAutoGroups,
 			GroupConfigured: h.groupConfigured,
+			// M4-a：多模态非 realtime 端点也经 ExecuteAttempts，失败渠道必须
+			// 进入同一条自动禁用上报路径（调研 §5.1 的实际可达路径）。
+			OnAttemptFailure: h.reportAttemptFailure,
 		})
 	}
 	return h
@@ -1420,6 +1439,13 @@ func readRelayBody(r *http.Request) ([]byte, error) {
 // RelayContext（R-P2a）；若 pin 目标不在候选集内，返回 relay.ErrChannelNotFound，
 // 由 ExecuteAttempts 在 PreConsume **之前**快失败（HTTP 404）。
 func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bool, targetProtocol crossproto.Protocol) relay.RouteDeps {
+	// M4-a：唯一同时拥有 channelID/autoBan/class/status/body 的接缝在
+	// 执行层；端点层只负责把生产 reporter 透传进去。reporter 为 nil 时保持
+	// 回调 nil，执行层完全跳过判定（测试/降级装配零开销）。
+	var onAttemptFailure relay.AttemptFailureFunc
+	if h.attemptReporter != nil {
+		onAttemptFailure = h.reportAttemptFailure
+	}
 	return relay.RouteDeps{
 		Candidates: func(ctx context.Context, rc *contract.RelayContext) ([]contract.ChannelCandidate, error) {
 			// 候选按**客户端请求模型**与令牌分组过滤（relay-01 §5；store 侧
@@ -1453,13 +1479,27 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 		ResolveChannel: func(ctx context.Context, channelID int) (relay.ChannelAssignment, error) {
 			return h.resolveChannel(ctx, rc, channelID)
 		},
-		Dispatch:        h.dispatch,
-		Billing:         h.billing(rc),
-		Client:          h.client,
-		MaxRetries:      relayMaxRetries,
-		MaxAutoGroups:   h.maxAutoGroups,
-		GroupConfigured: h.groupConfigured,
+		Dispatch:         h.dispatch,
+		Billing:          h.billing(rc),
+		Client:           h.client,
+		MaxRetries:       relayMaxRetries,
+		MaxAutoGroups:    h.maxAutoGroups,
+		GroupConfigured:  h.groupConfigured,
+		OnAttemptFailure: onAttemptFailure,
 	}
+}
+
+// reportAttemptFailure 把执行层的失败事实转交 reporter（M4-a）。
+//
+// 单独一层方法而不是直接把接口方法塞进 RouteDeps：nil reporter 必须退化为
+// nil 回调，让执行层完全跳过判定（测试/降级装配不引入额外开销）；同时把
+// 「reporter 可热替换」限制在 handler 内部，RouteDeps 的签名保持简单。
+func (h *RelayHandler) reportAttemptFailure(ctx context.Context, channelID int, autoBan bool,
+	class contract.ErrorClass, statusCode int, body []byte) {
+	if h == nil || h.attemptReporter == nil {
+		return
+	}
+	h.attemptReporter.ReportAttemptFailure(ctx, channelID, autoBan, class, statusCode, body)
 }
 
 // hasLaterGroup 报告当前分组之后是否还有未尝试的有效分组（R-62/R-63）。
@@ -1577,6 +1617,9 @@ func (h *RelayHandler) resolveChannel(ctx context.Context, rc *contract.RelayCon
 		UpstreamModel: modelMappingTarget(ch.ModelMapping, rc.OriginModel),
 		GroupRatio:    1.0,
 		CreatedTime:   ch.CreatedAt,
+		// M4-a：渠道级自动禁用开关随整组投影进执行层。每次 Get 都是当前
+		// 行值，因此管理员在请求进行中关闭 auto_ban 最多影响下一轮解析。
+		AutoBan: ch.AutoBan,
 	}, nil
 }
 
