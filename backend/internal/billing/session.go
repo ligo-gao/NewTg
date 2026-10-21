@@ -12,6 +12,7 @@ import (
 	"newtg/gateway/internal/billing/expr"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/store"
 )
 
 // maxImageN 是图像张数上界（relay-00 §10.1 MaxImageN = 128）。
@@ -808,7 +809,10 @@ func (s *Session) Refund() error {
 	// ND1：日志里的 pre_deducted 只应记录**预扣 hold**，不能把
 	// ChargeIncrement 实耗算进去（trusted/无 hold 会话没有预扣）。
 	preDeductedForLog := s.preConsumed
-	refundedAmount, _, err := s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
+	// R-W9B-03：钱包退款与令牌回补在 refundSession 的同一事务内。失败时
+	// 整笔回滚（hold 仍开放），调用方可以完整重放，绝不会「钱退了、令牌没退」。
+	refundedAmount, _, err := s.engine.ledger.refundSession(
+		ctx, s.userID, s.tokenID, s.requestID, s.consumed)
 	if errors.Is(err, errHoldClosed) || errors.Is(err, errNoOpenHold) {
 		// 已被其它执行者关闭：幂等命中，不再写第二行 release。
 		// 也不回补令牌/写退款日志：结案方已经按它自己的路径处理过。
@@ -823,16 +827,7 @@ func (s *Session) Refund() error {
 	if err != nil {
 		return fmt.Errorf("billing: refund: %w", err)
 	}
-
-	// R-73：钱包已全额退回，随后回补令牌额度（失败只记日志，不回滚资金）。
-	if s.tokenDeducted > 0 {
-		if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
-			slog.Warn("billing: token quota restore failed after wallet refund",
-				"request_id", s.requestID, "token_id", s.tokenID,
-				"amount", s.tokenDeducted, "error", tokenErr)
-		}
-		s.tokenDeducted = 0
-	}
+	s.tokenDeducted = 0
 
 	// Minor-3：Refund 必须把已写出的终态 usage_logs 行收敛为 refunded
 	// （T6 的 Saturator 按 request_id 幂等更新）。钱已经退回；日志失败
@@ -869,7 +864,8 @@ func (s *Session) Refund() error {
 //   - 钱包退款非幂等、不重试；
 //   - 订阅预扣没有 wallet hold 行，因此不得走 releaseHolds，否则会把
 //     不属于本次请求的钱包流水当成 hold 处理；
-//   - 令牌额度与订阅账户是两笔账，退款时各自回滚。
+//   - R-W9B-03：增量回退、预扣退款、amount_used 回退、令牌回补与 registry
+//     终态在存储层的**同一个事务**内（RefundSubscriptionRequest）。
 func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 	preDeductedForLog := s.preConsumed
 	// S4b：ChargeIncrement 立即落账的增量也必须随全额退款回退。否则请求
@@ -909,38 +905,48 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 		return nil
 	}
 
-	if consumedRefunded > 0 {
-		// M3：带 `amount_used >= consumed` 守卫的回退。周期重置后守卫不命中，
-		// 本次回退缩为 no-op（方向安全），绝不用旧周期增量侵蚀新周期用量。
-		applied, err := s.engine.subscriptionFunding.RefundSubscriptionIncrement(
-			ctx, s.subscriptionID, consumedRefunded)
-		if err != nil {
-			// 增量未回退成功：保持 consumed 供重试；预扣也尚未退，幂等安全。
-			return fmt.Errorf("billing: reverse subscription increments: %w", err)
-		}
-		if !applied {
-			slog.Warn("billing: subscription increment refund skipped; amount_used no longer covers it (period reset or concurrent reversal)",
-				"request_id", s.requestID, "subscription_id", s.subscriptionID,
-				"increment_deducted", consumedRefunded)
-		}
-		s.consumed = 0
+	// R-W9B-03：增量回退、预扣退款、令牌回补、registry 终态在存储层是**同一个
+	// 事务**。任一步失败整笔回滚（amount_used / 预扣 / 令牌都保持原状），可
+	// 完整重放；不会再出现「预扣退了、令牌没补」或「令牌补了、registry 没写」。
+	result, err := s.engine.refundSubscriptionRequest(ctx, store.SubscriptionRefund{
+		RequestID:   s.requestID,
+		UserID:      s.userID,
+		TokenID:     s.tokenID,
+		TokenAmount: s.tokenDeducted,
+		Consumed:    consumedRefunded,
+	})
+	if err != nil {
+		return fmt.Errorf("billing: refund subscription request: %w", err)
 	}
-
-	if s.subscriptionPreConsumed > 0 {
-		if err := s.engine.refundSubscriptionPreConsume(ctx, s.requestID); err != nil {
-			return fmt.Errorf("billing: refund subscription pre-consume: %w", err)
+	if !result.Applied {
+		// 幂等命中：预扣已 refunded 或 registry 已 settled（另一执行者先收尾）。
+		// 事务没有改动任何资金状态，按已有终态结束会话即可。
+		if result.Terminal == "refunded" {
+			s.finishLocked(ctx, true)
+		} else {
+			s.finishLocked(ctx, false)
 		}
+		return nil
 	}
-
-	// R-73：资金侧已退回，随后回补令牌额度（失败只记日志，不回滚资金）。
-	if s.tokenDeducted > 0 {
+	if consumedRefunded > 0 && !result.IncrementReversed {
+		// M3：周期重置后 `amount_used >= consumed` 守卫不命中，增量回退是
+		// 方向安全的 no-op；预扣退款仍然完成。
+		slog.Warn("billing: subscription increment refund skipped; amount_used no longer covers it (period reset or concurrent reversal)",
+			"request_id", s.requestID, "subscription_id", s.subscriptionID,
+			"increment_deducted", consumedRefunded)
+	}
+	// 生产适配器会把令牌回补并入退款事务；非事务适配器（测试替身）返回
+	// TokenCredited=false，这里退化为 best-effort，保持与旧行为一致。
+	if !result.TokenCredited && s.tokenDeducted > 0 {
 		if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
 			slog.Warn("billing: token quota restore failed after subscription refund",
 				"request_id", s.requestID, "token_id", s.tokenID,
 				"amount", s.tokenDeducted, "error", tokenErr)
 		}
-		s.tokenDeducted = 0
 	}
+	s.consumed = 0
+	s.subscriptionPreConsumed = 0
+	s.tokenDeducted = 0
 
 	if s.engine.saturator != nil {
 		outcome := SettlementOutcome{
@@ -1535,24 +1541,15 @@ func (s *Session) registerLeaseLocked(ctx context.Context) error {
 	if err := s.engine.registry.Register(ctx, s.requestID, s.userID, s.tokenID,
 		time.Duration(contract.InflightLeaseTTLSeconds)*time.Second); err != nil {
 		var rbErr error
+		// R-W9B-03：两条回滚路径都把令牌回补并入资金事务，登记失败后不再有
+		// 独立的 CreditToken（否则会二次回补或漏补）。
 		if s.consumed > 0 {
-			_, _, rbErr = s.engine.ledger.refundSession(ctx, s.userID, s.requestID, s.consumed)
+			_, _, rbErr = s.engine.ledger.refundSession(ctx, s.userID, s.tokenID, s.requestID, s.consumed)
 		} else {
-			_, _, rbErr = s.engine.ledger.releaseHolds(ctx, s.userID, s.requestID, "released")
+			_, _, rbErr = s.engine.ledger.releaseHolds(ctx, s.userID, s.tokenID, s.requestID, "released")
 		}
-		rolledBack := rbErr == nil
 		if rbErr != nil && !errors.Is(rbErr, errHoldClosed) && !errors.Is(rbErr, errNoOpenHold) {
 			return fmt.Errorf("billing: register lease: %v (rollback failed: %w)", err, rbErr)
-		}
-		// R-73/N5：只有钱包回滚**真的退回了钱**（rbErr==nil）才回补令牌。
-		// errHoldClosed / errNoOpenHold 表示 hold 已被其它路径关闭，资金由
-		// 那条路径负责（结算/退款各自会调整令牌）；此时再补会double-credit。
-		if rolledBack && s.tokenDeducted > 0 {
-			if tokenErr := s.engine.ledger.CreditToken(ctx, s.userID, s.tokenID, s.tokenDeducted); tokenErr != nil {
-				slog.Warn("billing: token quota restore failed after lease rollback",
-					"request_id", s.requestID, "token_id", s.tokenID,
-					"amount", s.tokenDeducted, "error", tokenErr)
-			}
 		}
 		s.preConsumed = 0
 		s.consumed = 0

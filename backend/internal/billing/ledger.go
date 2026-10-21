@@ -637,7 +637,11 @@ func (l *Ledger) settleHolds(ctx context.Context, userID int64, requestID string
 // Refund 用 released（请求失败的全额退款）；worker 兜底用 expired
 // （modules-03 F-03-04 的状态机）。金额来自数据库中的 hold 行，而不是会话
 // 内存值——崩溃后由持久化状态复原（billing-00 §6.2 的幂等锚）。
-func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, finalStatus string) (
+//
+// R-W9B-03：令牌额度回补与钱包退款在同一事务内（镜像 releaseAbandoned 的
+// ND2）。若拆成两步，进程在两步之间崩溃会让重试看到 errHoldClosed 而永远
+// 跳过令牌回补，用户永久少得该令牌额度。
+func (l *Ledger) releaseHolds(ctx context.Context, userID, tokenID int64, requestID, finalStatus string) (
 	held, balanceAfter int64, err error) {
 
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -652,7 +656,10 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 		// 退款是入账：applyDeltaTx 正数表示 credit。
 		balanceAfter, _, txErr = applyDeltaTxNote(ctx, tx, userID, held, "release",
 			"confirmed", "usage_log", requestID, refundNote)
-		return txErr
+		if txErr != nil {
+			return txErr
+		}
+		return creditTokenTx(ctx, tx, userID, tokenID, held)
 	})
 	return held, balanceAfter, err
 }
@@ -678,7 +685,11 @@ func (l *Ledger) releaseHolds(ctx context.Context, userID int64, requestID, fina
 //
 // 金额权威：held 来自数据库 hold 行；consumed 经 refundableConsumed 钳制到
 // 数据库 consume 行合计，会话内存只用于识别「本会话做过增量扣减」。
-func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID string, consumed int64) (
+//
+// R-W9B-03：令牌额度回补（creditTokenTx）与钱包退款在同一事务内提交，
+// 与 releaseAbandoned 的 ND2 同口径。total 是钱包实际退回的金额，也是当初
+// 一并从令牌扣走的金额：两者必须一起可见，绝不能「钱包已退、令牌少补」。
+func (l *Ledger) refundSession(ctx context.Context, userID, tokenID int64, requestID string, consumed int64) (
 	refunded, balanceAfter int64, err error) {
 
 	err = l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -720,6 +731,12 @@ func (l *Ledger) refundSession(ctx context.Context, userID int64, requestID stri
 			if held == 0 && isUniqueViolation(txErr) {
 				return errHoldClosed
 			}
+			return txErr
+		}
+		// R-W9B-03 / ND2：令牌回补与钱包退款同事务。total 与令牌扣减同源
+		// （ApplyDeltaWithToken / ChargeIncrement 都同时改钱包与令牌），因此
+		// 回补 total 即可把令牌额度恢复到预扣前；失败则整笔回滚。
+		if txErr := creditTokenTx(ctx, tx, userID, tokenID, total); txErr != nil {
 			return txErr
 		}
 		refunded = total

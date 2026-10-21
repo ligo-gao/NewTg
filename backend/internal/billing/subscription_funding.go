@@ -66,6 +66,10 @@ type SubscriptionFundingSource interface {
 	PreConsumeUserSubscription(ctx context.Context, requestID string, subscriptionID, amount int64) (rec store.SubscriptionPreConsume, created bool, err error)
 	// MarkPreConsumeRefunded 按 requestId 幂等退款（含 amount_used 回退）。
 	MarkPreConsumeRefunded(ctx context.Context, requestID string) error
+	// RefundSubscriptionRequest 在同一事务内完成订阅退款与令牌回补
+	// （R-W9B-03）：回退增量/预扣、置预扣 refunded、回补令牌、registry
+	// refunded CAS。结果 Applied=false 表示幂等命中（见 store 类型注释）。
+	RefundSubscriptionRequest(ctx context.Context, in store.SubscriptionRefund) (store.SubscriptionRefundResult, error)
 	// PreConsumeRecord 按 requestId 读取预扣记录及其订阅归属用户。
 	//
 	// 任务失败退款（RefundByRequestIDForToken）只有 requestID 与 tokenID：
@@ -76,7 +80,13 @@ type SubscriptionFundingSource interface {
 	// PostConsumeUserSubscriptionDelta 追加结算增量（可正可负），返回更新后的
 	// 实例快照。amount_total>0 越界时返回 store.ErrSubscriptionSettleExceeded，
 	// 调用方保留预扣、不做部分结算（billing-08 §5.1）。
+	//
+	// 只用于 ChargeIncrement 的实时增量：它不得写 registry 终态（请求尚未结束）。
 	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (SubscriptionSettlement, error)
+	// SettleSubscriptionDelta 是终态结算入口：delta 与 request_registry 的
+	// settled CAS 在同一个 PG 事务内（R-W9B-01）。applied=false 表示已有终态
+	// （另一执行者已结算/退款），整笔回滚、额度未变。
+	SettleSubscriptionDelta(ctx context.Context, requestID string, userID, subscriptionID, delta int64) (SubscriptionSettlement, bool, error)
 	// RefundSubscriptionIncrement 回退 ChargeIncrement 已立即追加的增量。
 	//
 	// 与 PostConsumeUserSubscriptionDelta(-amount) 的区别是**带存量下界守卫**：
@@ -172,6 +182,12 @@ func (f *StoreSubscriptionFunding) MarkPreConsumeRefunded(ctx context.Context, r
 	return f.repo.MarkPreConsumeRefunded(ctx, requestID)
 }
 
+// RefundSubscriptionRequest 转发原子退款事务（R-W9B-03）。
+func (f *StoreSubscriptionFunding) RefundSubscriptionRequest(ctx context.Context,
+	in store.SubscriptionRefund) (store.SubscriptionRefundResult, error) {
+	return f.repo.RefundSubscriptionRequest(ctx, in)
+}
+
 // PreConsumeRecord 读取预扣记录并解析归属用户。
 //
 // 预扣表刻意不存 user_id（5 列冻结，R-D5-02）：归属从 subscription_id 对应的
@@ -197,12 +213,30 @@ func (f *StoreSubscriptionFunding) PostConsumeUserSubscriptionDelta(ctx context.
 	if err != nil {
 		return SubscriptionSettlement{}, err
 	}
+	return settlementFromSubscription(sub), nil
+}
+
+// SettleSubscriptionDelta 转发「delta + registry 终态 CAS」同事务结算。
+func (f *StoreSubscriptionFunding) SettleSubscriptionDelta(ctx context.Context,
+	requestID string, userID, subscriptionID, delta int64) (SubscriptionSettlement, bool, error) {
+	sub, applied, err := f.repo.SettleSubscriptionDelta(ctx, requestID, userID, subscriptionID, delta)
+	if err != nil {
+		return SubscriptionSettlement{}, false, err
+	}
+	if !applied {
+		return SubscriptionSettlement{}, false, nil
+	}
+	return settlementFromSubscription(sub), true, nil
+}
+
+// settlementFromSubscription 把订阅行裁剪为日志侧快照（同一次行锁读到的值）。
+func settlementFromSubscription(sub store.Subscription) SubscriptionSettlement {
 	return SubscriptionSettlement{
 		PlanID:      sub.PlanID,
 		PlanTitle:   sub.PlanTitleSnapshot,
 		AmountTotal: sub.AmountTotal,
 		AmountUsed:  sub.AmountUsed,
-	}, nil
+	}
 }
 
 // RefundSubscriptionIncrement 转发带守卫的增量回退（M3）。
@@ -595,14 +629,15 @@ func subscriptionQuotaError(required int64) error {
 	}
 }
 
-// refundSubscriptionPreConsume 按 requestId 退款，最多 3 次、退避 200/400ms
+// refundSubscriptionRequest 执行原子订阅退款，最多 3 次、退避 200/400ms
 // （billing-04 §4：订阅退款幂等、可重试；钱包退款非幂等、不重试）。
 //
-// 仅在第一次失败后等待；成功/已退款立即返回。ctx 用于响应取消，避免
-// 退避期间把中继 goroutine 挂住。
-func (e *Engine) refundSubscriptionPreConsume(ctx context.Context, requestID string) error {
+// 重试只针对**事务失败**：预扣记录/registry 都是幂等锚点，整笔事务可以完整
+// 重放。Applied=false（已有终态）不是错误，立即返回让调用方收敛。
+func (e *Engine) refundSubscriptionRequest(ctx context.Context,
+	in store.SubscriptionRefund) (store.SubscriptionRefundResult, error) {
 	if e.subscriptionFunding == nil {
-		return fmt.Errorf("%w: subscription funding is not configured", ErrInvalidConfig)
+		return store.SubscriptionRefundResult{}, fmt.Errorf("%w: subscription funding is not configured", ErrInvalidConfig)
 	}
 	backoff := [...]time.Duration{200 * time.Millisecond, 400 * time.Millisecond}
 	var lastErr error
@@ -610,15 +645,16 @@ func (e *Engine) refundSubscriptionPreConsume(ctx context.Context, requestID str
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return store.SubscriptionRefundResult{}, ctx.Err()
 			case <-time.After(backoff[attempt-1]):
 			}
 		}
-		if err := e.subscriptionFunding.MarkPreConsumeRefunded(ctx, requestID); err != nil {
+		result, err := e.subscriptionFunding.RefundSubscriptionRequest(ctx, in)
+		if err != nil {
 			lastErr = err
 			continue
 		}
-		return nil
+		return result, nil
 	}
-	return lastErr
+	return store.SubscriptionRefundResult{}, lastErr
 }

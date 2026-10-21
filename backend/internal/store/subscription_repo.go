@@ -87,6 +87,12 @@ var (
 	// 冻结的周期末（R-43）。说明同一周期已有另一笔续费成功；本次订单的钱
 	// 已收但不能再推进 end_at，调用方必须转 refund_required，绝不二次加班。
 	ErrSubscriptionCycleChanged = errors.New("store: subscription cycle changed since the order was created")
+
+	// ErrRequestRegistryInvalid：requestID 不能转换为 request_registry.request_id
+	// 的 uuid 类型（SQLSTATE 22P02）。生产 RequestID 是 32 位小写十六进制，
+	// PostgreSQL 接受无连字符形态；外部/测试传入任意字符串时必须显式拒绝，
+	// 不能把类型错误伪装成数据库故障（否则结算会永远失败在 registry 写入上）。
+	ErrRequestRegistryInvalid = errors.New("store: request id is not a valid uuid")
 )
 
 // 订阅事件 kind 白名单（R-18 冻结）。S1 只产出 created/renewed/cancelled/
@@ -254,6 +260,36 @@ type SubscriptionCreateInput struct {
 	ConcurrencyLimit    *int32
 }
 
+// SubscriptionRefund 是一次订阅请求全额退款的输入（G-M6D-29 / R-W9B-03）。
+//
+// TokenAmount 是令牌侧要回补的额度；它必须与订阅侧的退款在**同一事务**内
+// 提交。TokenID<=0 或 TokenAmount<=0 时令牌步骤是 no-op（未绑定令牌 /
+// 无限额 / 兜底扫描不知道令牌归属）。Consumed 是 ChargeIncrement 已立即
+// 落账、需要随全额退款一起回退的增量。
+type SubscriptionRefund struct {
+	RequestID   string
+	UserID      int64
+	TokenID     int64
+	TokenAmount int64
+	Consumed    int64
+}
+
+// SubscriptionRefundResult 描述一次订阅退款事务的结果。
+//
+//   - Applied=false 表示幂等命中：预扣记录已 refunded，或 registry 已
+//     settled。两种情况下事务都没有修改任何资金状态，Terminal 给出已有终态。
+//   - IncrementReversed 表示 Consumed>0 且 `amount_used >= consumed` 守卫
+//     命中；false 是周期重置后的方向安全 no-op（M3）。
+//   - TokenCredited 表示令牌回补已并入本事务。生产实现恒为 true（Token 参数
+//     为 no-op 时也算 true：没有可重复回补的额度）；非事务适配器（测试替身）
+//     返回 false，调用方据此退化为 best-effort CreditToken。
+type SubscriptionRefundResult struct {
+	Applied           bool
+	Terminal          string
+	IncrementReversed bool
+	TokenCredited     bool
+}
+
 // SubscriptionRepo 是订阅域的存储接缝（D5b/S4 依赖；单测可注入假实现）。
 type SubscriptionRepo interface {
 	// Plans
@@ -294,6 +330,15 @@ type SubscriptionRepo interface {
 	// （billing-04 §3.5 / billing-08 §5.1）：正为少补、负为多退，下界钳到 0；
 	// amount_total>0 且结果越界时拒绝。返回更新后的实例快照（成功日志键用）。
 	PostConsumeUserSubscriptionDelta(ctx context.Context, subscriptionID, delta int64) (Subscription, error)
+	// SettleSubscriptionDelta 是**终态结算**入口（G-DOM-36 / R-W9B-01）：
+	// delta 与 request_registry 的 settled CAS 在同一个 PG 事务内提交。
+	// applied=false 表示该 requestID 已有终态（另一执行者已结算/退款），
+	// 整笔事务已回滚、订阅额度未变。
+	SettleSubscriptionDelta(ctx context.Context, requestID string, userID, subscriptionID, delta int64) (Subscription, bool, error)
+	// RefundSubscriptionRequest 在同一事务内完成一次订阅请求的全额退款：
+	// 回退增量 → 回退预扣 → 置预扣 refunded → 回补令牌 → registry refunded CAS
+	// （G-M6D-29 / R-W9B-03）。任一步失败整笔回滚。
+	RefundSubscriptionRequest(ctx context.Context, in SubscriptionRefund) (SubscriptionRefundResult, error)
 	// RefundSubscriptionIncrement 回退 ChargeIncrement 已立即落账的增量，
 	// 仅在 amount_used >= amount 时生效（M3 周期重置守卫）。返回 false 表示
 	// 本周期已不再持有这笔增量，调用方应跳过而不得把 amount_used 扣成负数。
@@ -1828,20 +1873,42 @@ func (r *SQLSubscriptionRepo) GetPreConsume(ctx context.Context, requestID strin
 // MarkPreConsumeRefunded 把预扣记录置 refunded，并在同一事务内回退该实例
 // 的 `amount_used`（请求失败退款，A 类；billing-08 §3.7/§4.5、TC-H-22）。
 //
-// 条件 UPDATE 只命中 consumed：已 refunded 时直接返回 nil（退款按 requestId
-// 幂等）；行不存在才是 ErrPreConsumeNotFound。绝不从 refunded 回到 consumed。
-//
-// 先用 `FOR UPDATE` 锁住记录行再判定状态：两个并发退款只有一个能把
-// consumed→refunded，第二个看到 refunded 后幂等返回，**不会**二次回退额度。
-// 【M3 竞态守卫】amount_used 回退带 `amount_used >= $2` 条件：若周期重置
-// 已把计数归零（或在飞请求与重置交叉），本次退款变成 no-op，绝不能用上一
-// 周期的预扣额去抵扣新周期的已用量。代价是极端交错下少退一次（用户少得
-// 一点额度，方向安全）；该残余已登记在未完成清单 G-DOM-32。
-// GREATEST(...,0) 只作最后的下界兜底（与 DB CHECK 同口径）。
+// 自 R-W9B-01 起它只是 RefundSubscriptionRequest 的兼容包装：registry 的
+// refunded 终态 CAS 也在同一事务内（无令牌/无增量参数）。保留旧签名供既有
+// store 用例与外部调用方使用，资金语义以 RefundSubscriptionRequest 为准。
 func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, requestID string) error {
+	_, err := r.RefundSubscriptionRequest(ctx, SubscriptionRefund{RequestID: requestID})
+	return err
+}
+
+// RefundSubscriptionRequest 是订阅请求的**原子全额退款**（G-M6D-29 /
+// R-W9B-03）。
+//
+// 同一 PG 事务内按固定顺序完成：
+//  1. `SELECT ... FOR UPDATE` 锁预扣行（并发退款只有一个能继续）；
+//  2. 回退 ChargeIncrement 已落账的增量（`amount_used >= consumed` 守卫）；
+//  3. 回退预扣额度（`amount_used >= pre_consumed` 守卫 + GREATEST 下界）；
+//  4. 预扣记录 consumed → refunded；
+//  5. 回补令牌额度（与订阅退款同事务，镜像 ledger.releaseAbandoned 的 ND2）；
+//  6. request_registry refunded CAS（`state <> 'settled'`）。
+//
+// 任何一步失败都整笔回滚：不会出现「钱包/订阅已退、令牌少补」，也不会出现
+// 「预扣已退、registry 仍空」而被兜底扫描二次退款。
+//
+// 锁顺序刻意保持「预扣行 → subscriptions → api_tokens → request_registry」；
+// 结算事务是「subscriptions → request_registry」，两者在 subscriptions 与
+// registry 上的顺序一致，不会形成环。
+//
+// applied=false 的两种幂等命中（记录已 refunded / registry 已 settled）都在
+// 写任何资金状态之前返回，事务随 defer 回滚。
+func (r *SQLSubscriptionRepo) RefundSubscriptionRequest(ctx context.Context,
+	in SubscriptionRefund) (SubscriptionRefundResult, error) {
+	if strings.TrimSpace(in.RequestID) == "" || in.Consumed < 0 || in.TokenAmount < 0 {
+		return SubscriptionRefundResult{}, ErrPreConsumeInvalid
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("store: begin subscription refund(%s): %w", requestID, err)
+		return SubscriptionRefundResult{}, fmt.Errorf("store: begin subscription refund(%s): %w", in.RequestID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -1854,35 +1921,224 @@ func (r *SQLSubscriptionRepo) MarkPreConsumeRefunded(ctx context.Context, reques
 		SELECT subscription_id, status, pre_consumed
 		  FROM subscription_pre_consume_records
 		 WHERE request_id = $1
-		 FOR UPDATE`, requestID).Scan(&subscriptionID, &status, &preConsumed)
+		 FOR UPDATE`, in.RequestID).Scan(&subscriptionID, &status, &preConsumed)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrPreConsumeNotFound
+		return SubscriptionRefundResult{}, ErrPreConsumeNotFound
 	}
 	if err != nil {
 		if isInvalidTextRepresentation(err) {
-			return ErrPreConsumeInvalid
+			return SubscriptionRefundResult{}, ErrPreConsumeInvalid
 		}
-		return fmt.Errorf("store: read subscription pre-consume(%s): %w", requestID, err)
+		return SubscriptionRefundResult{}, fmt.Errorf("store: read subscription pre-consume(%s): %w", in.RequestID, err)
 	}
 	if status == "refunded" {
-		return nil // 幂等命中：额度已回退过，不能再退一次。
+		// 幂等命中：上一次退款事务已经回退额度并回补令牌，不能再做一次。
+		return SubscriptionRefundResult{Terminal: "refunded", TokenCredited: true}, nil
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE subscription_pre_consume_records SET status = 'refunded'
-		WHERE request_id = $1 AND status = 'consumed'`, requestID); err != nil {
-		return fmt.Errorf("store: mark subscription pre-consume(%s) refunded: %w", requestID, err)
+	result := SubscriptionRefundResult{TokenCredited: true}
+
+	// ① 增量回退：带 `amount_used >= consumed` 守卫，周期重置后静默跳过。
+	if in.Consumed > 0 {
+		res, execErr := tx.ExecContext(ctx, `
+			UPDATE subscriptions
+			   SET amount_used = amount_used - $2, updated_at = now()
+			 WHERE id = $1 AND amount_used >= $2`, subscriptionID, in.Consumed)
+		if execErr != nil {
+			return SubscriptionRefundResult{}, fmt.Errorf(
+				"store: reverse subscription increment(%s): %w", in.RequestID, execErr)
+		}
+		affected, rowsErr := res.RowsAffected()
+		if rowsErr != nil {
+			return SubscriptionRefundResult{}, fmt.Errorf(
+				"store: reverse subscription increment(%s) rows: %w", in.RequestID, rowsErr)
+		}
+		result.IncrementReversed = affected == 1
 	}
+
+	// ② 预扣回退：与 MarkPreConsumeRefunded 的既有守卫同口径（G-DOM-32）。
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE subscriptions
 		   SET amount_used = GREATEST(amount_used - $2, 0), updated_at = now()
 		 WHERE id = $1 AND amount_used >= $2`, subscriptionID, preConsumed); err != nil {
-		return fmt.Errorf("store: reverse subscription pre-consume(%s) usage: %w", requestID, err)
+		return SubscriptionRefundResult{}, fmt.Errorf(
+			"store: reverse subscription pre-consume(%s) usage: %w", in.RequestID, err)
 	}
+
+	// ③ 预扣记录终态。
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscription_pre_consume_records SET status = 'refunded'
+		 WHERE request_id = $1 AND status = 'consumed'`, in.RequestID); err != nil {
+		return SubscriptionRefundResult{}, fmt.Errorf(
+			"store: mark subscription pre-consume(%s) refunded: %w", in.RequestID, err)
+	}
+
+	// ④ 令牌回补：与订阅退款同事务。TokenID<=0 / TokenAmount<=0 是 no-op，
+	// 仍视为「已并入事务」，避免调用方再补一次。
+	if err := creditTokenQuotaTx(ctx, tx, in.UserID, in.TokenID, in.TokenAmount); err != nil {
+		return SubscriptionRefundResult{}, err
+	}
+
+	// ⑤ registry 终态 CAS：已 settled 的行不得被迟到的退款降级；CAS 不命中
+	// 会连同上面所有资金变更一起回滚。
+	applied, terminal, err := refundRequestRegistryTx(ctx, tx, in.RequestID, in.UserID)
+	if err != nil {
+		return SubscriptionRefundResult{}, err
+	}
+	if !applied {
+		return SubscriptionRefundResult{Terminal: terminal, TokenCredited: true}, nil
+	}
+
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit subscription refund(%s): %w", requestID, err)
+		return SubscriptionRefundResult{}, fmt.Errorf("store: commit subscription refund(%s): %w", in.RequestID, err)
+	}
+	result.Applied = true
+	return result, nil
+}
+
+// creditTokenQuotaTx 在**不依赖 Ledger 连接**的事务里回补令牌额度。
+//
+// 为什么重复一段 SQL：退款事务由 database/sql 的 *sql.Tx 拥有，而 Ledger 走
+// GORM；两个句柄无法共享同一个事务。api_tokens 与订阅表在同一个主库
+// （R-W9B-03），因此这里直接执行与 ledger.creditTokenTx 等价的 UPDATE：
+// NULL 无限额 / 令牌已删除 / 归属不匹配 → 0 行，no-op 而不是错误。
+func creditTokenQuotaTx(ctx context.Context, tx *sql.Tx, userID, tokenID, amount int64) error {
+	if tokenID <= 0 || amount <= 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE api_tokens SET remain_quota = remain_quota + $1, updated_at = now()
+		 WHERE id = $2 AND user_id = $3 AND remain_quota IS NOT NULL`,
+		amount, tokenID, userID); err != nil {
+		return fmt.Errorf("store: credit token quota in refund transaction: %w", err)
 	}
 	return nil
+}
+
+// settleRequestRegistryTx 在同一事务内把 request_registry 置为 settled。
+// 返回 false 表示已有终态（settled/refunded），调用方必须回滚整笔结算。
+func settleRequestRegistryTx(ctx context.Context, tx *sql.Tx, requestID string, userID int64) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO request_registry (request_id, user_id, state, settled_at)
+		VALUES ($1, $2, 'settled', now())
+		ON CONFLICT (request_id) DO UPDATE
+		   SET state = 'settled', settled_at = now()
+		 WHERE request_registry.state NOT IN ('settled', 'refunded')
+		RETURNING state`, requestID, userID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		if isInvalidTextRepresentation(err) {
+			return false, ErrRequestRegistryInvalid
+		}
+		return false, fmt.Errorf("store: settle request registry(%s): %w", requestID, err)
+	}
+	return true, nil
+}
+
+// refundRequestRegistryTx 在同一事务内把 request_registry 置为 refunded。
+// `state <> 'settled'` 保证结算优先：CAS 不命中时返回已有终态，调用方回滚。
+func refundRequestRegistryTx(ctx context.Context, tx *sql.Tx, requestID string, userID int64) (bool, string, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO request_registry (request_id, user_id, state, refunded_at)
+		VALUES ($1, $2, 'refunded', now())
+		ON CONFLICT (request_id) DO UPDATE
+		   SET state = 'refunded', refunded_at = now()
+		 WHERE request_registry.state <> 'settled'
+		RETURNING state`, requestID, userID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 冲突且 WHERE 未命中：已有 settled 终态。读回它供调用方收敛。
+		if readErr := tx.QueryRowContext(ctx,
+			`SELECT state FROM request_registry WHERE request_id = $1`, requestID).Scan(&state); readErr != nil {
+			return false, "", fmt.Errorf("store: read settled registry state(%s): %w", requestID, readErr)
+		}
+		return false, state, nil
+	}
+	if err != nil {
+		if isInvalidTextRepresentation(err) {
+			return false, "", ErrRequestRegistryInvalid
+		}
+		return false, "", fmt.Errorf("store: refund request registry(%s): %w", requestID, err)
+	}
+	return true, state, nil
+}
+
+// SettleSubscriptionDelta 把结算增量与 request_registry 的 settled 终态放进
+// **同一个 PG 事务**（G-DOM-36 / G-DOM-34④ / R-W9B-01）。
+//
+// 与 PostConsumeUserSubscriptionDelta 的差别不止是多了 CAS：它保证
+// 「订阅已扣」与「终态已写」要么同时可见、要么同时不存在。进程在提交前被
+// kill -9 时事务整体回滚，预扣保留给兜底扫描；不会留下「已扣订阅、无终态」
+// 而被二次退款，也不会留下「有终态、delta 未落」而少收。
+//
+// 返回值 applied=false 表示 CAS 未命中（另一执行者已经结算/退款）：整笔事务
+// 已回滚，订阅额度未变；调用方必须按已有终态收敛，而不是重放 delta。
+func (r *SQLSubscriptionRepo) SettleSubscriptionDelta(ctx context.Context,
+	requestID string, userID, subscriptionID, delta int64) (Subscription, bool, error) {
+	if subscriptionID <= 0 {
+		return Subscription{}, false, ErrSubscriptionInvalid
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return Subscription{}, false, ErrRequestRegistryInvalid
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Subscription{}, false, fmt.Errorf("store: begin subscription delta(%d): %w", subscriptionID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sub, err := scanSubscription(tx.QueryRowContext(ctx,
+		`SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Subscription{}, false, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return Subscription{}, false, fmt.Errorf("store: lock subscription(%d): %w", subscriptionID, err)
+	}
+
+	newUsed := sub.AmountUsed
+	switch {
+	case delta > 0:
+		if sub.AmountUsed > math.MaxInt64-delta {
+			return Subscription{}, false, ErrSubscriptionDeltaOverflow
+		}
+		newUsed = sub.AmountUsed + delta
+	case delta < 0:
+		newUsed = sub.AmountUsed + delta
+		if newUsed < 0 {
+			newUsed = 0
+		}
+	}
+	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		// 事务回滚：本次 delta 完全不落地（不做部分结算）。
+		return Subscription{}, false, fmt.Errorf("%w: subscription %d used=%d delta=%d total=%d",
+			ErrSubscriptionSettleExceeded, subscriptionID, sub.AmountUsed, delta, sub.AmountTotal)
+	}
+	if newUsed != sub.AmountUsed {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE subscriptions SET amount_used = $2, updated_at = now()
+			 WHERE id = $1`, subscriptionID, newUsed); err != nil {
+			return Subscription{}, false, fmt.Errorf("store: apply subscription delta(%d): %w", subscriptionID, err)
+		}
+	}
+
+	applied, err := settleRequestRegistryTx(ctx, tx, requestID, userID)
+	if err != nil {
+		return Subscription{}, false, err
+	}
+	if !applied {
+		// 已有终态：回滚 delta（以及任何 amount_used 更新），由调用方收敛。
+		return Subscription{}, false, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Subscription{}, false, fmt.Errorf("store: commit subscription delta(%d): %w", subscriptionID, err)
+	}
+	sub.AmountUsed = newUsed
+	return sub, true, nil
 }
 
 // PostConsumeUserSubscriptionDelta 追加结算增量（billing-04 §3.5、billing-08 §5.1）。

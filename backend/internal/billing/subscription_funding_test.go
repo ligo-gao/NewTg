@@ -60,8 +60,10 @@ type fakeSubscriptionFunding struct {
 	// postDeltaCalls 记录结算增量；postDeltaErr 非 nil 时直接返回。
 	postDeltaCalls []subscriptionDeltaCall
 	postDeltaErr   error
-	listStaleErr   error
-	registry       map[string]string
+	// settleErr 模拟「delta + registry 同事务」整体失败（B1 回滚用例）。
+	settleErr    error
+	listStaleErr error
+	registry     map[string]string
 	// registryCalls / registryHook 供并发用例精确控制「锁外读 registry」与
 	// 「锁内复核」的交错；hook 在释放 f.mu 后调用，避免与其它方法死锁。
 	registryCalls int
@@ -70,9 +72,6 @@ type fakeSubscriptionFunding struct {
 	// 「识别订阅来源」与取锁后「第二道复核」之间的交错（H1 回归用例）。
 	recordCalls int
 	recordHook  func(requestID string, call int)
-	// markSettledFailures 是前 N 次 MarkRequestSettled 失败（重试用例）。
-	markSettledFailures int
-	markSettledCalls    int
 }
 
 // subscriptionDeltaCall 是一次结算增量调用（断言用）。
@@ -192,6 +191,78 @@ func (f *fakeSubscriptionFunding) PostConsumeUserSubscriptionDelta(_ context.Con
 	if f.postDeltaErr != nil {
 		return SubscriptionSettlement{}, f.postDeltaErr
 	}
+	return f.applyDeltaLocked(subscriptionID, delta)
+}
+
+// RefundSubscriptionIncrement 镜像 store 的 `amount_used >= amount` 守卫（M3）。
+func (f *fakeSubscriptionFunding) RefundSubscriptionIncrement(_ context.Context,
+	subscriptionID, amount int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if amount <= 0 || f.used[subscriptionID] < amount {
+		return false, nil
+	}
+	f.used[subscriptionID] -= amount
+	return true, nil
+}
+
+// SettleSubscriptionDelta 镜像 B1 的终态 CAS：registry 已有终态时 applied=false
+// 且不改额度；settleErr 模拟整个事务失败（不回滚模拟，因为假仓储没有事务）。
+func (f *fakeSubscriptionFunding) SettleSubscriptionDelta(_ context.Context,
+	requestID string, _ int64, subscriptionID, delta int64) (SubscriptionSettlement, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.postDeltaCalls = append(f.postDeltaCalls, subscriptionDeltaCall{subscriptionID, delta})
+	if f.settleErr != nil {
+		return SubscriptionSettlement{}, false, f.settleErr
+	}
+	if st := f.registry[requestID]; st == "settled" || st == "refunded" {
+		return SubscriptionSettlement{}, false, nil
+	}
+	settlement, err := f.applyDeltaLocked(subscriptionID, delta)
+	if err != nil {
+		return SubscriptionSettlement{}, false, err
+	}
+	f.registry[requestID] = "settled"
+	return settlement, true, nil
+}
+
+// RefundSubscriptionRequest 镜像 B3 的原子退款语义（假仓储不覆盖事务/令牌；
+// TokenCredited=false 让会话走 best-effort CreditToken，保持旧测试口径）。
+func (f *fakeSubscriptionFunding) RefundSubscriptionRequest(_ context.Context,
+	in store.SubscriptionRefund) (store.SubscriptionRefundResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markAttempts++
+	if f.markAttempts <= f.markFailures {
+		return store.SubscriptionRefundResult{}, errors.New("fake: transient refund failure")
+	}
+	rec, ok := f.records[in.RequestID]
+	if !ok {
+		return store.SubscriptionRefundResult{}, store.ErrPreConsumeNotFound
+	}
+	if rec.Status == "refunded" {
+		return store.SubscriptionRefundResult{Terminal: "refunded"}, nil
+	}
+	if f.registry[in.RequestID] == "settled" {
+		return store.SubscriptionRefundResult{Terminal: "settled"}, nil
+	}
+	result := store.SubscriptionRefundResult{Applied: true, TokenCredited: false}
+	if in.Consumed > 0 && f.used[rec.SubscriptionID] >= in.Consumed {
+		f.used[rec.SubscriptionID] -= in.Consumed
+		result.IncrementReversed = true
+	}
+	if f.used[rec.SubscriptionID] >= rec.PreConsumed {
+		f.used[rec.SubscriptionID] -= rec.PreConsumed
+	}
+	rec.Status = "refunded"
+	f.records[in.RequestID] = rec
+	f.registry[in.RequestID] = "refunded"
+	return result, nil
+}
+
+// applyDeltaLocked 是 PostConsume 与 Settle 共享的额度增量语义。
+func (f *fakeSubscriptionFunding) applyDeltaLocked(subscriptionID, delta int64) (SubscriptionSettlement, error) {
 	var sub *SubscriptionAccount
 	for i := range f.subs {
 		if f.subs[i].ID == subscriptionID {
@@ -216,18 +287,6 @@ func (f *fakeSubscriptionFunding) PostConsumeUserSubscriptionDelta(_ context.Con
 		AmountTotal: sub.AmountTotal,
 		AmountUsed:  used,
 	}, nil
-}
-
-// RefundSubscriptionIncrement 镜像 store 的 `amount_used >= amount` 守卫（M3）。
-func (f *fakeSubscriptionFunding) RefundSubscriptionIncrement(_ context.Context,
-	subscriptionID, amount int64) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if amount <= 0 || f.used[subscriptionID] < amount {
-		return false, nil
-	}
-	f.used[subscriptionID] -= amount
-	return true, nil
 }
 
 // ListStalePreConsumes 返回 consumed 且 created_at 早于 before 的记录。
@@ -275,14 +334,11 @@ func (f *fakeSubscriptionFunding) RequestRegistryState(_ context.Context, reques
 	return state, nil
 }
 
-// MarkRequestSettled 幂等置 settled；已 refunded 不降级。
+// MarkRequestSettled 幂等置 settled；已 refunded 不降级（审计接缝，B1 后
+// 正确性由 SettleSubscriptionDelta 的同事务 CAS 保证）。
 func (f *fakeSubscriptionFunding) MarkRequestSettled(_ context.Context, requestID string, _ int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.markSettledCalls++
-	if f.markSettledCalls <= f.markSettledFailures {
-		return errors.New("fake: transient registry failure")
-	}
 	if f.registry[requestID] == "refunded" {
 		return nil
 	}
@@ -791,7 +847,13 @@ func TestStoreSubscriptionFundingRealRepository(t *testing.T) {
 		t.Fatalf("退款后 amount_used = %d，want 0", used)
 	}
 
-	// S4b：结算增量适配器 + request_registry 终态（成功结算的唯一持久化证据）。
+	// R-W9B-01：退款事务本身写 registry refunded（不再是 Session 的第二条语句）。
+	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "refunded" {
+		t.Fatalf("退款后 registry state = %q/%v，want refunded/nil", state, err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, req) })
+
+	// S4b：结算增量适配器（ChargeIncrement 用）。它不得改写终态。
 	settle, err := funding.PostConsumeUserSubscriptionDelta(ctx, sub.ID, 50)
 	if err != nil {
 		t.Fatalf("PostConsumeUserSubscriptionDelta: %v", err)
@@ -800,39 +862,39 @@ func TestStoreSubscriptionFundingRealRepository(t *testing.T) {
 		settle.AmountTotal != plan.GrantCredits || settle.AmountUsed != 50 {
 		t.Fatalf("结算快照 = %+v，字段不符", settle)
 	}
-	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "" {
+	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "refunded" {
+		t.Fatalf("增量结算改写了终态 = %q/%v，want refunded", state, err)
+	}
+
+	// settled 审计接缝（R-W9B-11）与终态互斥：用一个全新 requestId。
+	settleReq := testUUID(t)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, settleReq) })
+	if state, err := funding.RequestRegistryState(ctx, settleReq); err != nil || state != "" {
 		t.Fatalf("初始 registry state = %q/%v，want 空/nil", state, err)
 	}
-	if err := funding.MarkRequestSettled(ctx, req, userID); err != nil {
+	if err := funding.MarkRequestSettled(ctx, settleReq, userID); err != nil {
 		t.Fatalf("MarkRequestSettled: %v", err)
 	}
-	if err := funding.MarkRequestSettled(ctx, req, userID); err != nil {
+	if err := funding.MarkRequestSettled(ctx, settleReq, userID); err != nil {
 		t.Fatalf("重复 MarkRequestSettled 应幂等: %v", err)
 	}
-	if state, err := funding.RequestRegistryState(ctx, req); err != nil || state != "settled" {
+	if state, err := funding.RequestRegistryState(ctx, settleReq); err != nil || state != "settled" {
 		t.Fatalf("registry state = %q/%v，want settled/nil", state, err)
 	}
-	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, req) })
-
-	// 退款终态对称且互斥：refunded 后不得被 settled 覆盖，反之亦然。
-	// 这里用一个独立 requestId（同一 uuid 已被上面的 settled 行占用）。
-	refundReq := testUUID(t)
-	if err := funding.MarkRequestRefunded(ctx, refundReq, userID); err != nil {
-		t.Fatalf("MarkRequestRefunded: %v", err)
-	}
-	if err := funding.MarkRequestSettled(ctx, refundReq, userID); err != nil {
+	// 已 refunded 的请求不得被审计接缝升级为 settled。
+	if err := funding.MarkRequestSettled(ctx, req, userID); err != nil {
 		t.Fatalf("refunded 后 MarkRequestSettled: %v", err)
 	}
-	if state, err := funding.RequestRegistryState(ctx, refundReq); err != nil || state != "refunded" {
-		t.Fatalf("registry state = %q/%v，want refunded（不得降级）", state, err)
+	if state, _ := funding.RequestRegistryState(ctx, req); state != "refunded" {
+		t.Fatalf("refunded 被改写为 %q，want refunded", state)
 	}
-	if err := funding.MarkRequestRefunded(ctx, req, userID); err != nil {
+	// settled 后 MarkRequestRefunded 也不得降级。
+	if err := funding.MarkRequestRefunded(ctx, settleReq, userID); err != nil {
 		t.Fatalf("settled 后 MarkRequestRefunded: %v", err)
 	}
-	if state, _ := funding.RequestRegistryState(ctx, req); state != "settled" {
+	if state, _ := funding.RequestRegistryState(ctx, settleReq); state != "settled" {
 		t.Fatalf("settled 后被改写为 %q，want settled", state)
 	}
-	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_registry WHERE request_id = $1`, refundReq) })
 }
 
 // TestSessionSubscriptionFirstModelScopeMismatch 覆盖 M1：存在活跃订阅但
