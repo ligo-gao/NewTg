@@ -129,6 +129,8 @@ type stripeRefundStub struct {
 	lastKey    string
 	lastIntent string
 	lastAmount int64
+	// onCall 在渠道请求处理期间执行（用 R-37 观察订单上的进行中标记）。
+	onCall func()
 }
 
 func (s *stripeRefundStub) snapshot() (int, string, string, int64) {
@@ -160,7 +162,11 @@ func newStripeRefundStub(t *testing.T, failFirst bool) (*httptest.Server, *strip
 		state.lastIntent = r.PostForm.Get("payment_intent")
 		state.lastAmount = amount
 		fail := state.failFirst && state.calls == 1
+		onCall := state.onCall
 		state.mu.Unlock()
+		if onCall != nil {
+			onCall()
+		}
 		if fail {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -189,7 +195,7 @@ func TestSubscriptionRefundRejectsUsedSubscription(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_used")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 5, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 5, &orderID)
 
 	svc := newStripeTopupService(t, gormDB, stripe.URL)
 	_, err := svc.RefundSubscription(context.Background(), RefundInput{
@@ -223,7 +229,7 @@ func TestSubscriptionRefundWalletReturnsCredits(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderWallet,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 	if _, err := db.Exec(`
 		INSERT INTO wallet_transactions
 			(user_id, type, amount, balance_after, status, reference_type, reference_id)
@@ -302,7 +308,7 @@ func TestSubscriptionRefundProviderFailureIsRetryable(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_retry")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 	svc := newStripeTopupService(t, gormDB, stripe.URL)
 
 	_, err := svc.RefundSubscription(context.Background(), RefundInput{
@@ -391,6 +397,11 @@ func TestSubscriptionRefundRequiredOrder(t *testing.T) {
 	if len(events) != 1 || events[0].Kind != store.SubscriptionEventRefunded {
 		t.Fatalf("事件 = %+v", events)
 	}
+	// R-36：refund_required 退的是 change 差价，biz_ref_id 指向用户仍在使用的
+	// 原订阅——退款绝不能取消它。
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("refund_required 退款后订阅状态 = %s，期望 active（R-36）", got)
+	}
 }
 
 // TestSubscriptionRefundEpayUnsupported：易支付没有退款 API，必须 fail closed
@@ -404,7 +415,7 @@ func TestSubscriptionRefundEpayUnsupported(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderEpay,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "epay_1")
-	insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
 
 	_, err := svc.RefundSubscription(context.Background(), RefundInput{
@@ -431,7 +442,7 @@ func TestSubscriptionRefundAlipay(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderAlipay,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "ali_1")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 
 	svc, err := NewTopupService(TopupServiceConfig{
 		DB:               gormDB,
@@ -466,7 +477,7 @@ func TestRequestSubscriptionRefundMarksOrder(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_req")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
 
 	request, err := svc.RequestSubscriptionRefund(context.Background(), subID, userID, "买错了")
@@ -500,7 +511,7 @@ func TestRequestSubscriptionRefundMarksOrder(t *testing.T) {
 	}
 
 	// 已消耗的订阅不能申请（P-13）。
-	usedSubID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 1, nil)
+	usedSubID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 1, nil)
 	if _, err := svc.RequestSubscriptionRefund(context.Background(), usedSubID, userID, "想退"); !errors.Is(err, ErrSubscriptionInUse) {
 		t.Fatalf("已消耗订阅 err = %v，期望 ErrSubscriptionInUse", err)
 	}
@@ -517,7 +528,7 @@ func TestSubscriptionRefundFreeOrder(t *testing.T) {
 	now := time.Now().UTC()
 	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
 		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 0, "")
-	subID := insertRefundSubscription(t, db, userID, planID, now.Add(24*time.Hour), 0, &orderID)
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
 	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
 
 	result, err := svc.RefundSubscription(context.Background(), RefundInput{
@@ -531,5 +542,226 @@ func TestSubscriptionRefundFreeOrder(t *testing.T) {
 	}
 	if got := readSubscriptionStatus(t, db, subID); got != "cancelled" {
 		t.Fatalf("订阅状态 = %s，期望 cancelled", got)
+	}
+}
+
+// TestSubscriptionRefundAfterWalletPurchase 是 R-35 的端到端用例：真实购买
+// （结算时 start_at = now）后立刻申请退款并获批。旧条件 start_at > now 在这
+// 条真实路径上恒假，本用例是它不可达的证据。
+func TestSubscriptionRefundAfterWalletPurchase(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 20_000)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+	svc := newWalletTopupServiceWithQPU(t, gormDB, 100)
+
+	key := fmt.Sprintf("refund-e2e-%d", topupTestSeq.Add(1))
+	purchase, err := svc.CreateSubscriptionOrder(context.Background(), userID, planID, ProviderWallet, key)
+	if err != nil {
+		t.Fatalf("wallet purchase: %v", err)
+	}
+	sub := readSubscriptionByOrder(t, db, purchase.Order.ID)
+	if sub == nil || sub.Status != "active" {
+		t.Fatalf("purchase subscription = %+v", sub)
+	}
+
+	request, err := svc.RequestSubscriptionRefund(context.Background(), sub.ID, userID, "买错了")
+	if err != nil {
+		t.Fatalf("request refund right after purchase: %v", err)
+	}
+	if request.OrderID != purchase.Order.ID {
+		t.Fatalf("request order = %d，期望 %d", request.OrderID, purchase.Order.ID)
+	}
+	result, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: request.OrderID, Reason: request.Reason, ActorUserID: 1,
+	})
+	if err != nil {
+		t.Fatalf("refund right after purchase: %v", err)
+	}
+	if !result.Refunded || result.Order.Status != string(OrderRefunded) {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := readWalletBalance(t, db, userID); got != 20_000 {
+		t.Fatalf("退款后余额 = %d，期望回到 20000", got)
+	}
+	if got := readSubscriptionStatus(t, db, sub.ID); got != "cancelled" {
+		t.Fatalf("订阅状态 = %s，期望 cancelled", got)
+	}
+}
+
+// TestSubscriptionRefundConcurrentWallet 验证 R-31/R-37 的并发闸门：两路并发
+// 钱包退款只回补一次，且只产生一条 refunded 事件。
+//
+// 变异（去掉事务内的 refunded 幂等早退或条件 UPDATE 的 status 谓词）会让
+// 余额变成 2×、reversal/事件变成 2 条，本用例随即失败。
+func TestSubscriptionRefundConcurrentWallet(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1_000)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderWallet,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "")
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
+	if _, err := db.Exec(`
+		INSERT INTO wallet_transactions
+			(user_id, type, amount, balance_after, status, reference_type, reference_id)
+		VALUES ($1, 'subscription_purchase', -9900, 1000, 'confirmed', 'order', $2)`,
+		userID, strconv.FormatInt(orderID, 10)); err != nil {
+		t.Fatalf("insert purchase wallet row: %v", err)
+	}
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	start := make(chan struct{})
+	results := make([]*RefundResult, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = svc.RefundSubscription(context.Background(), RefundInput{
+				OrderID: orderID, Reason: "并发退款", ActorUserID: int64(i + 1),
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d err = %v", i, err)
+		}
+	}
+	newRefunds := 0
+	for _, result := range results {
+		if result.Refunded {
+			newRefunds++
+		}
+	}
+	if newRefunds != 1 {
+		t.Fatalf("实际退款次数 = %d，期望恰好 1", newRefunds)
+	}
+	if got := readWalletBalance(t, db, userID); got != 10_900 {
+		t.Fatalf("余额 = %d，期望 10900（只回补一次）", got)
+	}
+	var reversals int64
+	if err := db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE type = 'reversal' AND reference_type = 'order' AND reference_id = $1`,
+		strconv.FormatInt(orderID, 10)).Scan(&reversals); err != nil {
+		t.Fatalf("count reversals: %v", err)
+	}
+	if reversals != 1 {
+		t.Fatalf("reversal 流水 = %d，期望 1", reversals)
+	}
+	if events := refundedEventCount(t, db, subID); events != 1 {
+		t.Fatalf("refunded 事件 = %d，期望 1", events)
+	}
+}
+
+// TestSubscriptionRefundConcurrentProvider 验证渠道订单两路并发时本地只落账
+// 一次：渠道幂等键相同，refunded 事件恰一条。
+func TestSubscriptionRefundConcurrentProvider(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripeServer, stripeState := newStripeRefundStub(t, false)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_concurrent")
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
+	svc := newStripeTopupService(t, gormDB, stripeServer.URL)
+
+	start := make(chan struct{})
+	results := make([]*RefundResult, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = svc.RefundSubscription(context.Background(), RefundInput{
+				OrderID: orderID, Reason: "并发渠道退款", ActorUserID: int64(i + 1),
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d err = %v", i, err)
+		}
+	}
+	newRefunds := 0
+	for _, result := range results {
+		if result.Refunded {
+			newRefunds++
+		}
+	}
+	if newRefunds != 1 {
+		t.Fatalf("本地实际落账次数 = %d，期望恰好 1", newRefunds)
+	}
+	if events := refundedEventCount(t, db, subID); events != 1 {
+		t.Fatalf("refunded 事件 = %d，期望 1", events)
+	}
+	status, failure, amount, _ := readOrderRefundState(t, db, orderID)
+	if status != string(OrderRefunded) || amount != 9900 || failure != "" {
+		t.Fatalf("订单 = status:%s failure:%s amount:%d", status, failure, amount)
+	}
+	calls, key, _, _ := stripeState.snapshot()
+	if calls < 1 || calls > 2 {
+		t.Fatalf("渠道调用次数 = %d，期望 1..2", calls)
+	}
+	if key != fmt.Sprintf("refund-order-%d", orderID) {
+		t.Fatalf("幂等键 = %q", key)
+	}
+}
+
+func refundedEventCount(t *testing.T, db *sql.DB, subscriptionID int64) int {
+	t.Helper()
+	count := 0
+	for _, event := range readSubscriptionEvents(t, db, subscriptionID) {
+		if event.Kind == store.SubscriptionEventRefunded {
+			count++
+		}
+	}
+	return count
+}
+
+// TestSubscriptionRefundMarksInProgress 验证 R-37：调用渠道期间订单的
+// failure_code 必须是 refund_in_progress；成功后清除。
+func TestSubscriptionRefundMarksInProgress(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe, state := newStripeRefundStub(t, false)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_progress")
+	insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
+
+	observed := ""
+	state.onCall = func() {
+		// 渠道请求处理时读取订单：markOrderRefundInProgress 已提交。
+		_, failure, _, _ := readOrderRefundState(t, db, orderID)
+		observed = failure
+	}
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	if _, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "进行中标记", ActorUserID: 1,
+	}); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if observed != "refund_in_progress" {
+		t.Fatalf("渠道调用期间 failure_code = %q，期望 refund_in_progress", observed)
+	}
+	if _, failure, _, _ := readOrderRefundState(t, db, orderID); failure != "" {
+		t.Fatalf("退款成功后 failure_code = %q，期望清空", failure)
 	}
 }

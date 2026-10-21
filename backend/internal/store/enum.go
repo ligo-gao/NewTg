@@ -122,9 +122,12 @@ var EnumChecks = map[string][]string{
 		"pending", "succeeded", "failed", "expired", "cancelled", "refund_required",
 		"refunded", "refund_failed",
 	},
+	// refund_in_progress 由 S3/R-37 加入（迁移 20261022091000）：渠道退款调用
+	// 期间的瞬时标记，不是资金事实；成功清空、失败改写为 provider_*。
 	"orders.failure_code": {
 		"provider_unavailable", "provider_rejected", "signature_invalid", "amount_mismatch",
 		"currency_mismatch", "order_not_found", "order_state_conflict", "manual_required",
+		"refund_in_progress",
 	},
 
 	// wallet_transactions（§11）

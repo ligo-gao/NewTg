@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
@@ -71,13 +72,20 @@ func topupHTTPTestConfig(stripeBaseURL string) topupConfigMap {
 
 func newTopupHTTPTestEnv(t *testing.T, stripeBaseURL string) *topupTestEnv {
 	t.Helper()
-	return newTopupHTTPTestEnvWithConfig(t, stripeBaseURL, nil)
+	return newTopupHTTPTestEnvWithAudit(t, stripeBaseURL, nil, nil)
 }
 
 // newTopupHTTPTestEnvWithConfig 允许用例在构造服务前改写站点配置
 // （渠道最低价、分组倍率等只读配置的快照）。
 func newTopupHTTPTestEnvWithConfig(t *testing.T, stripeBaseURL string,
 	mutate func(topupConfigMap)) *topupTestEnv {
+	t.Helper()
+	return newTopupHTTPTestEnvWithAudit(t, stripeBaseURL, mutate, nil)
+}
+
+// newTopupHTTPTestEnvWithAudit 额外注入审计写入器（S3 退款审计用例）。
+func newTopupHTTPTestEnvWithAudit(t *testing.T, stripeBaseURL string,
+	mutate func(topupConfigMap), auditLogger *audit.Logger) *topupTestEnv {
 
 	t.Helper()
 	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
@@ -113,6 +121,7 @@ func newTopupHTTPTestEnvWithConfig(t *testing.T, stripeBaseURL string,
 		Config:        cfg,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		StripeBaseURL: stripeBaseURL,
+		Audit:         auditLogger,
 	})
 	if err != nil {
 		t.Fatalf("NewTopupHandlers: %v", err)
@@ -1229,7 +1238,8 @@ func TestOrderVerifyAdminScope(t *testing.T) {
 // TestRefundOrderEndpoint 验证 HTTP 面：settings:manage 才能退款；
 // 非订阅/不可退状态 409；钱包退款成功返回更新后的订单视图。
 func TestRefundOrderEndpoint(t *testing.T) {
-	env := newTopupHTTPTestEnv(t, "http://127.0.0.1:1")
+	capture := &subAuditExecer{}
+	env := newTopupHTTPTestEnvWithAudit(t, "http://127.0.0.1:1", nil, audit.New(capture))
 	userID := env.createUser(1_000)
 	now := time.Now().UTC()
 
@@ -1321,6 +1331,45 @@ func TestRefundOrderEndpoint(t *testing.T) {
 		}
 		if balance != 10_900 {
 			t.Fatalf("replay 后 balance = %d，期望仍为 10900", balance)
+		}
+
+		// R-37：每次成功的退款响应都必须落一条 order.refund 审计。
+		capture.mu.Lock()
+		rows := make([][]any, len(capture.args))
+		copy(rows, capture.args)
+		capture.mu.Unlock()
+		if len(rows) != 2 {
+			t.Fatalf("审计行 = %d，期望 2（首次 + 幂等重放）", len(rows))
+		}
+		decodeAuditDetail := func(row []any) map[string]any {
+			if row[2] != "operation" {
+				t.Fatalf("审计 category = %v，期望 operation", row[2])
+			}
+			var rawDetail []byte
+			switch value := row[9].(type) {
+			case []byte:
+				rawDetail = value
+			case string:
+				rawDetail = []byte(value)
+			default:
+				t.Fatalf("审计 detail 类型 = %T", row[9])
+			}
+			var detail map[string]any
+			if err := json.Unmarshal(rawDetail, &detail); err != nil {
+				t.Fatalf("decode audit detail: %v", err)
+			}
+			return detail
+		}
+		first, last := decodeAuditDetail(rows[0]), decodeAuditDetail(rows[1])
+		if first["action"] != audit.ActionOrderRefund ||
+			first["order_id"] != float64(orderID) ||
+			first["amount"] != float64(9900) ||
+			first["reason"] != "未开始使用" ||
+			first["actor"] != float64(9002) {
+			t.Fatalf("首次审计 detail = %v", first)
+		}
+		if last["reason"] != "重复" {
+			t.Fatalf("幂等重放审计 detail = %v，期望记录本次尝试理由", last)
 		}
 	})
 }

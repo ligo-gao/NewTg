@@ -272,6 +272,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 订单端点按 orders:read/orders:manage 判定管理员范围；必须复用
 		// 同一个 authz 实例，才能拿到 SessionAuth 未填充的权威权限集合。
 		Authz: authz,
+		// S3 退款的资金动作审计（日志库）。
+		Audit: auditor,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: topup handlers: %w", err)

@@ -1077,10 +1077,10 @@ export interface paths {
          *     `refund_requested_at` / `refund_reason`，**不调用渠道也不变动钱包**
          *     ——实际退款由管理员通过 `POST /api/orders/{id}/refund` 审批。
          *
-         *     P-13：订阅必须未开始且未消耗（`amount_used == 0` 且
-         *     `start_at > now`），否则 422 `subscription_in_use`。重复申请幂等：
-         *     返回首次的申请时刻与理由。订单已退款 → 409；订单不是 succeeded →
-         *     409。
+         *     P-13 / R-35：订阅必须**未消耗、active 且未过期**（`amount_used == 0`、
+         *     `status='active'`、`end_at > now`），否则 422 `subscription_in_use`。
+         *     重复申请幂等：返回首次的申请时刻与理由。订单已退款 → 409；订单不是
+         *     succeeded → 409。
          */
         post: operations["requestSubscriptionRefund"];
         delete?: never;
@@ -3561,10 +3561,12 @@ export interface paths {
          *     `succeeded`、`refund_required`（S2/R-29② 的「钱已收、履约失败」）
          *     或 `refund_failed`（可重试）。
          *
-         *     P-13：`succeeded` 订单的订阅必须**未开始且未消耗**
-         *     （`amount_used == 0` 且 `start_at > now`），否则 422
-         *     `subscription_in_use`。`refund_required` 订单不适用该判定——履约
-         *     根本没有发生，必须可退（R-30）。
+         *     P-13 / R-35：`succeeded` 订单的订阅必须**未消耗、仍 active 且未过期**
+         *     （`amount_used == 0`、`status='active'`、`end_at > now`），否则 422
+         *     `subscription_in_use`。不再要求 `start_at > now`：订阅只在结算时以
+         *     当前时刻创建，预约生效实例在生产不可达，按字面条件会让所有已付款
+         *     订单永远退不了。`refund_required` 订单不适用该判定——履约根本没有
+         *     发生，必须可退（R-30）。
          *
          *     出账路径按 `orders.provider`：
          *     - `wallet`：本地回补钱包，回补额取原始 `subscription_purchase` 流水的
@@ -3572,7 +3574,9 @@ export interface paths {
          *       （R-31）。
          *     - `stripe` / `alipay`：调用渠道退款（Stripe Idempotency-Key /
          *       支付宝 out_request_no 固定为订单级键），成功后写订单与 `refunded`
-         *       事件。
+         *       事件。调渠道前先写 `failure_code='refund_in_progress'`（R-37），
+         *       成功清除、失败改写为 `provider_*`，运维可据此区分卡在渠道还是
+         *       本地；注意它只是失败码，订单状态仍是 succeeded/refund_failed。
          *     - `epay`：协议没有退款 API → 409 `provider_action_unsupported`，订单
          *       状态不变，需运营在渠道后台原路退款。
          *
@@ -5487,7 +5491,7 @@ export interface components {
              */
             credited_credits: number;
             /** @enum {string|null} */
-            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
+            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | "refund_in_progress" | null;
             /** Format: date-time */
             paid_at?: string | null;
             /** Format: date-time */
@@ -7735,7 +7739,7 @@ export interface components {
             /** Format: int64 */
             credited_credits: number;
             /** @enum {string|null} */
-            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | null;
+            failure_code?: "provider_unavailable" | "provider_rejected" | "signature_invalid" | "amount_mismatch" | "currency_mismatch" | "order_not_found" | "order_state_conflict" | "manual_required" | "refund_in_progress" | null;
             /** Format: date-time */
             paid_at?: string | null;
             manual_completed: boolean;
@@ -7744,19 +7748,19 @@ export interface components {
              * Format: int64
              * @description 已退金额（分）；只有 `refunded` 状态非零且等于 `amount`
              */
-            refunded_amount?: number;
+            refunded_amount: number;
             /**
              * Format: date-time
              * @description 退款完成时刻；非 `refunded` 状态为 null
              */
-            refunded_at?: string | null;
+            refunded_at: string | null;
             /** @description 退款/退款申请理由（首次申请或管理员批准时写入） */
-            refund_reason?: string | null;
+            refund_reason: string | null;
             /**
              * Format: date-time
              * @description 用户侧申请退款的时刻；未申请为 null
              */
-            refund_requested_at?: string | null;
+            refund_requested_at: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -14873,7 +14877,7 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
-            /** @description 订单状态不可退，或该渠道不支持退款 */
+            /** @description 订单状态不可退、该渠道不支持退款，或回补会超过钱包上界 */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -1192,6 +1192,7 @@ const (
 	OrderViewFailureCodeOrderStateConflict  OrderViewFailureCode = "order_state_conflict"
 	OrderViewFailureCodeProviderRejected    OrderViewFailureCode = "provider_rejected"
 	OrderViewFailureCodeProviderUnavailable OrderViewFailureCode = "provider_unavailable"
+	OrderViewFailureCodeRefundInProgress    OrderViewFailureCode = "refund_in_progress"
 	OrderViewFailureCodeSignatureInvalid    OrderViewFailureCode = "signature_invalid"
 )
 
@@ -1213,6 +1214,8 @@ func (e OrderViewFailureCode) Valid() bool {
 	case OrderViewFailureCodeProviderRejected:
 		return true
 	case OrderViewFailureCodeProviderUnavailable:
+		return true
+	case OrderViewFailureCodeRefundInProgress:
 		return true
 	case OrderViewFailureCodeSignatureInvalid:
 		return true
@@ -2236,6 +2239,7 @@ const (
 	TopupOrderViewFailureCodeOrderStateConflict  TopupOrderViewFailureCode = "order_state_conflict"
 	TopupOrderViewFailureCodeProviderRejected    TopupOrderViewFailureCode = "provider_rejected"
 	TopupOrderViewFailureCodeProviderUnavailable TopupOrderViewFailureCode = "provider_unavailable"
+	TopupOrderViewFailureCodeRefundInProgress    TopupOrderViewFailureCode = "refund_in_progress"
 	TopupOrderViewFailureCodeSignatureInvalid    TopupOrderViewFailureCode = "signature_invalid"
 )
 
@@ -2257,6 +2261,8 @@ func (e TopupOrderViewFailureCode) Valid() bool {
 	case TopupOrderViewFailureCodeProviderRejected:
 		return true
 	case TopupOrderViewFailureCodeProviderUnavailable:
+		return true
+	case TopupOrderViewFailureCodeRefundInProgress:
 		return true
 	case TopupOrderViewFailureCodeSignatureInvalid:
 		return true
@@ -5600,16 +5606,16 @@ type OrderView struct {
 	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
 
 	// RefundReason 退款/退款申请理由（首次申请或管理员批准时写入）
-	RefundReason *string `json:"refund_reason,omitempty"`
+	RefundReason string `json:"refund_reason"`
 
 	// RefundRequestedAt 用户侧申请退款的时刻；未申请为 null
-	RefundRequestedAt *time.Time `json:"refund_requested_at,omitempty"`
+	RefundRequestedAt time.Time `json:"refund_requested_at"`
 
 	// RefundedAmount 已退金额（分）；只有 `refunded` 状态非零且等于 `amount`
-	RefundedAmount *int64 `json:"refunded_amount,omitempty"`
+	RefundedAmount int64 `json:"refunded_amount"`
 
 	// RefundedAt 退款完成时刻；非 `refunded` 状态为 null
-	RefundedAt *time.Time `json:"refunded_at,omitempty"`
+	RefundedAt time.Time `json:"refunded_at"`
 
 	// Status 八态状态机（P-1 + S2/R-29② + S3）：
 	// - pending → succeeded/failed/expired/cancelled；

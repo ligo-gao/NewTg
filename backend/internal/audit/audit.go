@@ -180,6 +180,9 @@ const (
 	// 用户周期末取消（billing-08 §15.2 P1）。属用户自助的资金/权益状态变更，
 	// 仍归 operation；detail 仅记录订阅 id，不复制行内价格/额度。
 	ActionSubscriptionCancel = "subscription.cancel"
+	// S3 管理员退款（R-37）。资金动作必须可追溯到操作者与订单；detail 只允许
+	// order_id/amount/reason/actor（金额是订单分单位，reason 已由服务层校验）。
+	ActionOrderRefund = "order.refund"
 
 	// D7a 站点公告（modules-08 F-08-04 / R-D7-08）。全部归 operation：
 	// 创建/编辑/发布/下线/删除都是管理配置变更。detail 只允许 id/title/
@@ -292,6 +295,7 @@ var actionCategories = map[string]string{
 	ActionSubscriptionPlanResetQuota: categoryOperation,
 	ActionBillingPreferenceUpdate:    categoryOperation,
 	ActionSubscriptionCancel:         categoryOperation,
+	ActionOrderRefund:                categoryOperation,
 
 	ActionAnnouncementCreate:  categoryOperation,
 	ActionAnnouncementUpdate:  categoryOperation,

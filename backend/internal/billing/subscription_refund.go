@@ -62,6 +62,10 @@ var (
 	// ErrRefundProviderFailed 表示渠道退款失败，订单已置 refund_failed 可重试
 	// （R-32）。HTTP 层映射 502；调用方可以用 errors.Is 继续识别底层渠道错误。
 	ErrRefundProviderFailed = errors.New("billing: provider refund failed")
+	// ErrRefundWalletLimit 表示回补会把钱包推过 2^53−1 上界（R-37/M-6）。
+	// 独立哨兵让 HTTP 层给出 409 而不是笼统 500：这不是程序故障，而是
+	// 「余额已接近上限，退款需要人工处理」的业务结果。
+	ErrRefundWalletLimit = errors.New("billing: refund would exceed wallet limit")
 )
 
 // RefundInput 是一次管理员退款请求。
@@ -137,10 +141,23 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 	if order.Amount == 0 || order.Provider == ProviderWallet {
 		return s.refundWalletOrder(ctx, order.ID, reason, in.ActorUserID)
 	}
+	// R-37：调渠道之前先落「退款进行中」。渠道调用与本地事务之间没有原子性，
+	// 这个标记让「渠道已退、本地事务失败/进程崩溃」的订单在订单中心一眼可见，
+	// 而不是只剩一行日志。成功 finalize 会清空它，失败会改写成 provider_*。
+	//
+	// 渠道能力在落标记前判定：epay 没有退款 API，既不进「进行中」也不进
+	// refund_failed（重试永远不会成功），订单保持原状态等人工处理。
+	switch order.Provider {
+	case ProviderStripe, ProviderAlipay:
+	case ProviderEpay:
+		return nil, fmt.Errorf("%w: %s has no refund API", ErrProviderActionUnsupported, ProviderEpay)
+	default:
+		return nil, fmt.Errorf("%w: provider %s", ErrProviderDisabled, order.Provider)
+	}
+	if err := s.markOrderRefundInProgress(ctx, order.ID); err != nil {
+		return nil, err
+	}
 	if err := s.refundProviderPayment(ctx, order, reason); err != nil {
-		if errors.Is(err, ErrProviderActionUnsupported) {
-			return nil, err
-		}
 		// R-32：渠道退款失败 → refund_failed，可重试；不动订单金额/钱包。
 		s.markOrderRefundFailed(ctx, order.ID, err)
 		fresh, getErr := s.GetOrder(ctx, order.ID)
@@ -181,10 +198,9 @@ func (s *TopupService) RequestSubscriptionRefund(ctx context.Context,
 	if sub.UserID != userID {
 		return nil, store.ErrSubscriptionNotFound
 	}
-	// P-13：申请退款同样只对未开始、未消耗的订阅开放。
-	if sub.AmountUsed != 0 || !sub.StartAt.After(s.now().UTC()) {
-		return nil, fmt.Errorf("%w: subscription %d amount_used=%d start_at=%s",
-			ErrSubscriptionInUse, sub.ID, sub.AmountUsed, sub.StartAt.UTC().Format(time.RFC3339))
+	// R-35：申请退款同样只对「active、未消耗、未过期」的订阅开放。
+	if err := subscriptionRefundEligible(&sub, s.now().UTC()); err != nil {
+		return nil, err
 	}
 	if sub.OrderID == nil {
 		return nil, fmt.Errorf("%w: subscription %d has no purchase order", ErrRefundNotSupported, sub.ID)
@@ -255,14 +271,15 @@ func refundableBizKind(kind string) bool {
 	}
 }
 
-// checkSubscriptionRefundEligible 应用 P-13，并在需要时确认订阅行存在。
+// checkSubscriptionRefundEligible 应用 R-35 的资格判定，并在需要时确认订阅
+// 行存在。
 //
-// refund_required 订单是「钱已收、履约失败」：没有交付，就不存在「已开始/
-// 已消耗」的判定对象，因此跳过 P-13（R-30）。refund_failed 的来源有两种：
-//   - 由 succeeded 进入：说明这是一笔已履约的购买，重试时仍要重新核对
-//     P-13（订阅可能在第一次失败后开始被使用）；
+// refund_required 订单是「钱已收、履约失败」：没有交付，就不存在「已消耗/
+// 有效」的判定对象，因此跳过资格检查（R-30）。refund_failed 的来源有两种：
+//   - 由 succeeded 进入：说明这是一笔已履约的购买，重试时仍要重新核对资格
+//     （订阅可能在第一次失败后被消费）；
 //   - 由 refund_required 进入：只可能是 change 订单（S2 是 refund_required
-//     的唯一生产者，而 change 订单无法用 P-13 通过），继续跳过。
+//     的唯一生产者，而 change 订单无法满足「未消耗且 active」，见下），继续跳过。
 func (s *TopupService) checkSubscriptionRefundEligible(ctx context.Context,
 	db *gorm.DB, order *store.Order, now time.Time) error {
 
@@ -281,9 +298,26 @@ func (s *TopupService) checkSubscriptionRefundEligible(ctx context.Context,
 		}
 		return err
 	}
-	if sub.AmountUsed != 0 || !sub.StartAt.After(now) {
-		return fmt.Errorf("%w: subscription %d amount_used=%d start_at=%s",
-			ErrSubscriptionInUse, sub.ID, sub.AmountUsed, sub.StartAt.UTC().Format(time.RFC3339))
+	if err := subscriptionRefundEligible(sub, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+// subscriptionRefundEligible 是 R-35 的唯一资格判定：
+// `amount_used == 0` 且 `status == 'active'` 且未过期（`end_at > now`）。
+//
+// 【为什么不是 start_at > now】订阅只在结算时以**当前时刻**创建
+// （subscription_purchase.go：start_at = now），系统没有预约生效的实例，
+// renew/change 只改 end_at。因此「start_at 在未来」在生产不可达，按字面
+// 条件会让任何购买完成后的 succeeded 订单永远退不了。R-35 裁决改为
+// 「有效期内未消费即可退」，风险由「退款端点是 settings:manage 管理员动作、
+// 用户侧只写申请标记」控制。
+func subscriptionRefundEligible(sub *store.Subscription, now time.Time) error {
+	if sub.Status != "active" || sub.AmountUsed != 0 || !sub.EndAt.After(now) {
+		return fmt.Errorf("%w: subscription %d status=%s amount_used=%d end_at=%s",
+			ErrSubscriptionInUse, sub.ID, sub.Status, sub.AmountUsed,
+			sub.EndAt.UTC().Format(time.RFC3339))
 	}
 	return nil
 }
@@ -358,12 +392,15 @@ func (s *TopupService) refundWalletOrder(ctx context.Context,
 		if eligibilityErr != nil {
 			return eligibilityErr
 		}
+		// R-36：只有全额退还「已履约购买」时才收回权益；refund_required
+		// 退的是 change 订单的差价，指向的是用户仍在使用的原订阅，绝不能取消。
+		cancelSubscription := shouldCancelSubscriptionAfterRefund(order)
 
 		credits, err := walletRefundCredits(ctx, tx, order)
 		if err != nil {
 			return err
 		}
-		moved, err := markOrderRefundedTx(tx, order.ID, reason)
+		moved, err := markOrderRefundedTx(tx, order.ID, OrderStatus(order.Status), reason)
 		if err != nil {
 			return err
 		}
@@ -378,10 +415,13 @@ func (s *TopupService) refundWalletOrder(ctx context.Context,
 			if _, _, err := applyDeltaTxNote(ctx, tx, order.UserID, credits,
 				"reversal", "confirmed", "order", strconv.FormatInt(order.ID, 10),
 				truncateNote("subscription refund: "+reason)); err != nil {
+				if errors.Is(err, ErrWalletLimit) {
+					return fmt.Errorf("%w: order %d", ErrRefundWalletLimit, order.ID)
+				}
 				return fmt.Errorf("billing: refund wallet for order %d: %w", order.ID, err)
 			}
 		}
-		if err := finalizeSubscriptionRefundTx(ctx, tx, order, sub, reason); err != nil {
+		if err := finalizeSubscriptionRefundTx(ctx, tx, order, sub, reason, cancelSubscription); err != nil {
 			return err
 		}
 		amount = order.Amount
@@ -395,7 +435,8 @@ func (s *TopupService) refundWalletOrder(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	_ = actorID // 审计关联由 HTTP 层日志/订单事实承载；此处不落额外列。
+	s.log.Info("subscription refund completed",
+		"order_id", orderID, "amount", amount, "provider", fresh.Provider, "actor", actorID)
 	return &RefundResult{Order: fresh, Refunded: refunded, Amount: amount}, nil
 }
 
@@ -610,7 +651,8 @@ func (s *TopupService) finalizeProviderRefund(ctx context.Context,
 				"order_id", order.ID)
 			sub = nil
 		}
-		moved, err := markOrderRefundedTx(tx, order.ID, reason)
+		cancelSubscription := shouldCancelSubscriptionAfterRefund(order)
+		moved, err := markOrderRefundedTx(tx, order.ID, OrderStatus(order.Status), reason)
 		if err != nil {
 			return err
 		}
@@ -618,7 +660,7 @@ func (s *TopupService) finalizeProviderRefund(ctx context.Context,
 			// 并发请求已完成退款：不重复写订阅/事件；事务外重新读取。
 			return nil
 		}
-		if err := finalizeSubscriptionRefundTx(ctx, tx, order, sub, reason); err != nil {
+		if err := finalizeSubscriptionRefundTx(ctx, tx, order, sub, reason, cancelSubscription); err != nil {
 			return err
 		}
 		amount = order.Amount
@@ -632,11 +674,12 @@ func (s *TopupService) finalizeProviderRefund(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	_ = actorID
+	s.log.Info("subscription refund completed",
+		"order_id", orderID, "amount", amount, "provider", fresh.Provider, "actor", actorID)
 	return &RefundResult{Order: fresh, Refunded: refunded, Amount: amount}, nil
 }
 
-// lockedRefundEligibility 是钱包事务内版本的资格判定：P-13 与实例行锁
+// lockedRefundEligibility 是钱包事务内版本的资格判定：R-35 判定与实例行锁
 // 一起完成，避免「刚通过检查、立刻被并发消费」的窗口。
 func (s *TopupService) lockedRefundEligibility(ctx context.Context,
 	tx *gorm.DB, order *store.Order, now time.Time) (*store.Subscription, error) {
@@ -655,9 +698,8 @@ func (s *TopupService) lockedRefundEligibility(ctx context.Context,
 	if status == OrderRefundFailed && order.BizKind == store.OrderBizKindChange {
 		return sub, nil
 	}
-	if sub.AmountUsed != 0 || !sub.StartAt.After(now) {
-		return nil, fmt.Errorf("%w: subscription %d amount_used=%d start_at=%s",
-			ErrSubscriptionInUse, sub.ID, sub.AmountUsed, sub.StartAt.UTC().Format(time.RFC3339))
+	if err := subscriptionRefundEligible(sub, now); err != nil {
+		return nil, err
 	}
 	return sub, nil
 }
@@ -678,16 +720,21 @@ func lockOrderRow(ctx context.Context, tx *gorm.DB, orderID int64) (*store.Order
 
 // markOrderRefundedTx 把订单从任一可退状态条件迁移到 refunded。
 //
+// M-1：落库前显式过应用层状态机（Transition），让 order.go 的退款白名单
+// 有真实调用者；条件 UPDATE 仍是并发闸门，两者表达同一契约。
+//
 // 返回值 moved=false 表示并发请求已经把订单置为 refunded（本事务没有写入）。
-// 条件 UPDATE 是真正的并发闸门：两个管理员同时退款时只有一个能把行从
-// succeeded/refund_required/refund_failed 改走。refunded_amount 与状态同一
-// 条 UPDATE 写入，满足 R-31 的「同一事务」要求。
-func markOrderRefundedTx(tx *gorm.DB, orderID int64, reason string) (bool, error) {
+// refunded_amount 与状态同一条 UPDATE 写入，满足 R-31 的「同一事务」要求。
+// M-3：这里刻意**不**写 refund_requested_at——那是「用户申请过」的事实，
+// 只有 RequestSubscriptionRefund 能写；管理员直接退款不应伪装成用户申请。
+func markOrderRefundedTx(tx *gorm.DB, orderID int64, from OrderStatus, reason string) (bool, error) {
+	if err := Transition(from, OrderRefunded); err != nil {
+		return false, err
+	}
 	res := tx.Exec(`
 		UPDATE orders
 		SET status = 'refunded', refunded_amount = amount,
 		    refunded_at = now(), refund_reason = ?, failure_code = NULL,
-		    refund_requested_at = COALESCE(refund_requested_at, now()),
 		    updated_at = now()
 		WHERE id = ? AND status IN ('succeeded', 'refund_required', 'refund_failed')`,
 		reason, orderID)
@@ -707,18 +754,48 @@ func markOrderRefundedTx(tx *gorm.DB, orderID int64, reason string) (bool, error
 	return false, fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, orderID, status)
 }
 
-// finalizeSubscriptionRefundTx 取消订阅并在同一事务内追 refunded 事件（R-34）。
+// shouldCancelSubscriptionAfterRefund 决定退款成功后是否收回订阅权益（R-36）。
 //
-// P-13 只允许「未开始」的订阅退款，所以取消是即时终态（不是周期末取消）；
-// refund_required 的实例可能早已 cancelled/expired，条件 UPDATE 只对 active
-// 生效，事件仍然追加——它是「这笔订单的钱退了」的审计事实。
-func finalizeSubscriptionRefundTx(ctx context.Context, tx *gorm.DB,
-	order *store.Order, sub *store.Subscription, reason string) error {
-
-	if sub == nil {
-		return nil
+// 只有「全额退还已履约购买」（succeeded，以及由 succeeded 进入的
+// refund_failed 重试）才取消订阅。refund_required 的 change 订单退的是
+// **差价**，其 biz_ref_id 指向用户仍在使用、仍在履约的原订阅；取消它等于
+// 把用户已经付过钱、正在使用的服务一并作废。
+func shouldCancelSubscriptionAfterRefund(order *store.Order) bool {
+	switch OrderStatus(order.Status) {
+	case OrderSucceeded:
+		return true
+	case OrderRefundFailed:
+		// refund_failed 由 succeeded 或 refund_required 进入；后者的唯一
+		// 生产者是 change 订单（见 checkSubscriptionRefundEligible 注释）。
+		return order.BizKind != store.OrderBizKindChange
+	default:
+		return false
 	}
-	if sub.Status == "active" {
+}
+
+// markOrderRefundInProgress 在调用渠道前写入「退款进行中」失败码（R-37）。
+//
+// 它不改变订单状态（仍是 succeeded/refund_failed），只覆盖 failure_code；
+// 成功 finalize 清空、失败改写为 provider_*。并发退款已成功时 affected=0，
+// 上层会在渠道调用后通过幂等 finalize 收敛，绝不在这里报错阻断。
+func (s *TopupService) markOrderRefundInProgress(ctx context.Context, orderID int64) error {
+	res := s.db.WithContext(ctx).Exec(`
+		UPDATE orders
+		SET failure_code = 'refund_in_progress', updated_at = now()
+		WHERE id = ? AND status IN ('succeeded', 'refund_required', 'refund_failed')`, orderID)
+	if res.Error != nil {
+		return fmt.Errorf("billing: mark order %d refund_in_progress: %w", orderID, res.Error)
+	}
+	return nil
+}
+
+// finalizeSubscriptionRefundTx 在退款成功的事务内追 refunded 事件（R-34），
+// 并按 cancel 决定是否收回订阅权益（R-36）。
+func finalizeSubscriptionRefundTx(ctx context.Context, tx *gorm.DB,
+	order *store.Order, sub *store.Subscription, reason string, cancel bool) error {
+
+	if sub != nil && cancel && sub.Status == "active" {
+		// 全额退还未消费的有效期订阅：立即取消（不是周期末取消，因为钱已退）。
 		res := tx.Exec(`
 			UPDATE subscriptions
 			SET status = 'cancelled', cancel_at_period_end = false, updated_at = now()
@@ -726,6 +803,9 @@ func finalizeSubscriptionRefundTx(ctx context.Context, tx *gorm.DB,
 		if res.Error != nil {
 			return fmt.Errorf("billing: cancel refunded subscription %d: %w", sub.ID, res.Error)
 		}
+	}
+	if sub == nil {
+		return nil
 	}
 	// R-34：detail 只允许 order_id / amount / reason（金额是订单分单位）。
 	// 事件的 seq/行锁由 store.AppendSubscriptionEvent 统一处理。

@@ -39,6 +39,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/configcenter"
@@ -97,6 +98,9 @@ type TopupHandlerConfig struct {
 	// DB NULL=FULL；不解析会让受限管理员在订单端点被误判为全权。
 	// nil 仅用于已显式注入权威权限集合的测试。
 	Authz *rbac.AuthzMiddleware
+	// Audit 记录资金动作（S3 退款）。生产必填；nil 时退款仍成功但无审计，
+	// 仅用于不触退款的单测装配。
+	Audit *audit.Logger
 	// Now 是限流窗口时钟接缝；nil 时 time.Now。
 	Now func() time.Time
 	// StripeBaseURL / AlipayGatewayURL 是渠道地址覆盖（测试）。
@@ -115,6 +119,7 @@ type TopupHandlers struct {
 	log   *slog.Logger
 	now   func() time.Time
 	authz *rbac.AuthzMiddleware
+	audit *audit.Logger
 }
 
 // NewTopupHandlers 构造充值端点。Redis 必填：webhook 限流是公网资金接口
@@ -151,7 +156,7 @@ func NewTopupHandlers(cfg TopupHandlerConfig) (*TopupHandlers, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &TopupHandlers{svc: svc, rdb: cfg.Redis, log: log, now: now, authz: cfg.Authz}, nil
+	return &TopupHandlers{svc: svc, rdb: cfg.Redis, log: log, now: now, authz: cfg.Authz, audit: cfg.Audit}, nil
 }
 
 // Service 暴露底层支付服务，供订阅购买（S3）复用同一渠道实现。
@@ -775,6 +780,11 @@ func (h *TopupHandlers) handleRefundOrder(w http.ResponseWriter, r *http.Request
 			// 502（重试不会改变结果）。
 			writeOrderProblem(w, http.StatusConflict, problemTypeProviderActionUnsup,
 				"Action not supported", "This payment provider does not support refunds.")
+		case errors.Is(err, billing.ErrRefundWalletLimit):
+			// M-6：回补会把钱包推过 2^53−1 上界——业务结果而非程序故障，
+			// 用 409 让运营改成人工处理。
+			writeOrderProblem(w, http.StatusConflict, problemTypeRefundFailed,
+				"Wallet limit exceeded", "The refund would exceed the wallet balance limit; handle it manually.")
 		case errors.Is(err, billing.ErrRefundProviderFailed):
 			// R-32：订单已置 refund_failed，可用同一端点重试。
 			writeOrderProblem(w, http.StatusBadGateway, problemTypeRefundFailed,
@@ -791,6 +801,26 @@ func (h *TopupHandlers) handleRefundOrder(w http.ResponseWriter, r *http.Request
 			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		}
 		return
+	}
+	// R-37：资金动作必须留审计（日志库与业务库分离，detail 不受 R-34 的
+	// 事件三键约束）。幂等重放也记录一次成功操作，便于追溯管理员的每次尝试。
+	if err := writeAuditEvent(r.Context(), h.audit, audit.Event{
+		Action:     audit.ActionOrderRefund,
+		Actor:      p.UserID,
+		IP:         tokenRemoteIP(r),
+		UserAgent:  r.UserAgent(),
+		Method:     r.Method,
+		Route:      r.Pattern,
+		StatusCode: http.StatusOK,
+		Detail: adminMarshalRaw(map[string]any{
+			"order_id": result.Order.ID,
+			"amount":   result.Amount,
+			"reason":   req.Reason,
+			"actor":    p.UserID,
+		}),
+	}); err != nil {
+		h.log.Warn("order refund audit write failed",
+			"order_id", order.ID, "actor", p.UserID, "error", err)
 	}
 	// raw_callback 仅管理员可见（退款端点本身要求 settings:manage）。
 	writeJSON(w, http.StatusOK, orderViewFrom(result.Order, true))

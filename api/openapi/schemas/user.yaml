@@ -973,7 +973,8 @@ schemas:
         type: string
         nullable: true
         enum: [provider_unavailable, provider_rejected, signature_invalid, amount_mismatch,
-               currency_mismatch, order_not_found, order_state_conflict, manual_required, null]
+               currency_mismatch, order_not_found, order_state_conflict, manual_required,
+               refund_in_progress, null]
       paid_at:
         type: string
         format: date-time
@@ -1014,7 +1015,8 @@ schemas:
     type: object
     additionalProperties: false
     required: [id, user_id, provider, amount, currency, status, credited_credits,
-               manual_completed, created_at, updated_at, expires_at]
+               manual_completed, created_at, updated_at, expires_at,
+               refunded_amount, refunded_at, refund_reason, refund_requested_at]
     properties:
       id:
         type: integer
@@ -1054,7 +1056,8 @@ schemas:
         type: string
         nullable: true
         enum: [provider_unavailable, provider_rejected, signature_invalid, amount_mismatch,
-               currency_mismatch, order_not_found, order_state_conflict, manual_required, null]
+               currency_mismatch, order_not_found, order_state_conflict, manual_required,
+               refund_in_progress, null]
       paid_at:
         type: string
         format: date-time
