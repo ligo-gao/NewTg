@@ -2554,6 +2554,96 @@ paths:
         '500': {$ref: '../components/responses.yaml#/responses/Error500'}
 
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20 / D2-14）。
+  # ---------------------------------------------------------------------------
+  # 通用设置面（modules-08 §3.2 / F-08-08；C2 补齐契约）。
+  #
+  # 一个 section = 注册表里的一组键；响应逐键给出 value/type/default 与危险标记。
+  # GET 只要求管理员角色；PUT 要求 settings:manage（受限管理员不得改设置）。
+  # 密钥只写不读：GET 对 secret 键回传掩码或 null，绝不回传明文。
+  # ---------------------------------------------------------------------------
+  /api/settings:
+    get:
+      tags: [admin]
+      operationId: getSettingsSection
+      x-required-permission: settings:manage
+      summary: 读取一个设置 section
+      description: |
+        必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
+        pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
+        rl.health / policy）。未知 section 返回 404；缺参数返回 400。
+        `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
+        恒为掩码或 null。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: section
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: section 投影
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SettingsSection'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: updateSettingsSection
+      x-required-permission: settings:manage
+      summary: 保存一个设置 section（部分更新 + 乐观锁）
+      description: |
+        必须提供 `section`（query）。请求体只携带变更键：
+        - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
+        - `expect_updated_at` 与当前版本不一致返回 409（body 带当前 section，
+          客户端刷新后重试）；
+        - 命中危险方向且未带 `dangerous_confirmed=true` 时拒绝（服务端判定）。
+        类型/范围/URL 形状由注册表校验，失败返回 422 并定位到键。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: section
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/SettingsUpdateRequest'
+      responses:
+        '200':
+          description: 保存结果（实际写入的键）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SettingsUpdateResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/settings/test/webhook:
     post:
       tags: [admin]

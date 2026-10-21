@@ -226,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF 防护模式",
         "enabled": "启用 SSRF 防护",
         "allow_private_ip": "允许私有地址",
         "allowed_ports": "允许的端口",
         "domain_mode": "域名模式",
-        "domain_list": "域名列表"
+        "domain_list": "域名列表",
+        "max_redirects": "最大重定向次数",
+        "connect_timeout_seconds": "连接超时（秒）"
       },
       "sensitive": {
         "enabled": "启用敏感词过滤",
@@ -331,7 +334,11 @@
         "enabled": "适用于所有出站请求：OAuth 发现、Webhook、支付回调、URL 健康检查与上游渠道转发。",
         "allow_private_ip": "仅适用于出站请求。",
         "allowed_ports": "1 到 65535 之间的逗号分隔整数。",
-        "domain_list": "每行一个域名或用逗号分隔。白名单模式下空列表会阻止所有出站请求。"
+        "domain_list": "每行一个域名或用逗号分隔。白名单模式下空列表会阻止所有出站请求。",
+        "mode": "off 关闭全部出站校验；basic 阻断私网与回环目标；strict 额外要求解析结果必须是公网地址。域名模式默认为 allowlist（破坏性收紧，G-DOM-68）：只有域名列表内的主机可达，升级前请先补齐 Webhook、支付回调与 OAuth 发现等全部出站主机。",
+        "domain_mode": "默认 allowlist 是破坏性收紧（G-DOM-68）：不在列表内的出站请求会被阻断。",
+        "max_redirects": "0–10，每一跳都会重新校验。",
+        "connect_timeout_seconds": "1–120 秒。"
       },
       "sensitive": {
         "scope": "选择要检查的提示词字段。",
@@ -382,7 +389,10 @@
       "user_signup": "用户注册"
     },
     "epay_sign_append": "追加密钥（标准）",
-    "epay_sign_amp": "用 & 连接（旧网关）"
+    "epay_sign_amp": "用 & 连接（旧网关）",
+    "ssrf_mode_off": "关闭",
+    "ssrf_mode_basic": "基础",
+    "ssrf_mode_strict": "严格"
   },
   "status": {
     "title": "系统状态",

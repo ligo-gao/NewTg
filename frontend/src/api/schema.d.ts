@@ -2673,6 +2673,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取一个设置 section
+         * @description 必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
+         *     pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
+         *     rl.health / policy）。未知 section 返回 404；缺参数返回 400。
+         *     `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
+         *     恒为掩码或 null。
+         */
+        get: operations["getSettingsSection"];
+        /**
+         * 保存一个设置 section（部分更新 + 乐观锁）
+         * @description 必须提供 `section`（query）。请求体只携带变更键：
+         *     - 秘密键缺省 = 不修改，`null` = 显式清除，字符串 = 替换；
+         *     - `expect_updated_at` 与当前版本不一致返回 409（body 带当前 section，
+         *       客户端刷新后重试）；
+         *     - 命中危险方向且未带 `dangerous_confirmed=true` 时拒绝（服务端判定）。
+         *     类型/范围/URL 形状由注册表校验，失败返回 422 并定位到键。
+         */
+        put: operations["updateSettingsSection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/test/webhook": {
         parameters: {
             query?: never;
@@ -6929,6 +6962,63 @@ export interface components {
             total_available: number;
             /** Format: int64 */
             latency_ms: number;
+        };
+        /**
+         * @description 注册表中的一项。`value` 为 null 表示该键尚未落库（使用 `default`）。
+         *     秘密项（`secret=true`）的 `value` 恒为掩码（配置后）或 null，明文永不回传。
+         */
+        SettingsItem: {
+            key: string;
+            /** @description 当前生效值；secret 项为掩码；未落库时为 null。 */
+            value: unknown;
+            /** @enum {string} */
+            type: "bool" | "string" | "int" | "number" | "enum" | "list" | "object";
+            /** @description 注册表默认值（不因用户修改而变化）。 */
+            default: unknown;
+            /** @description 是否可经公开接口下发。 */
+            public: boolean;
+            secret: boolean;
+            dangerous: boolean;
+            /**
+             * @description 危险项的风险方向；非危险项为空串。
+             * @enum {string}
+             */
+            danger_direction?: "" | "on" | "off" | "change";
+            /** @description 服务端只读项（管理面不可修改）。 */
+            locked?: boolean;
+        };
+        SettingsSection: {
+            section: string;
+            /**
+             * Format: date-time
+             * @description section 内各键 `updated_at` 的最大值；从未写入时为 null。
+             */
+            updated_at: string | null;
+            items: components["schemas"]["SettingsItem"][];
+        };
+        /**
+         * @description 只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
+         *     字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+         *     命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+         */
+        SettingsUpdateRequest: {
+            /** @description 可选；若提供必须与 query 的 section 一致，否则 400。 */
+            section?: string;
+            values: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            expect_updated_at?: string | null;
+            dangerous_confirmed?: boolean;
+        };
+        SettingsUpdateResponse: {
+            section: string;
+            /** Format: date-time */
+            updated_at: string | null;
+            /** @description 本次实际写入的键与归一化后的值。 */
+            values: {
+                [key: string]: unknown;
+            };
         };
         /** @description POST /api/settings/test/webhook 的响应；测试样例非事件契约。 */
         WebhookTestResult: {
@@ -13011,6 +13101,66 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    getSettingsSection: {
+        parameters: {
+            query: {
+                section: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description section 投影 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsSection"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateSettingsSection: {
+        parameters: {
+            query: {
+                section: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 保存结果（实际写入的键） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsUpdateResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
         };
     };
     testWebhookSettings: {

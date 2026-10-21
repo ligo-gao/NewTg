@@ -3013,3 +3013,92 @@ schemas:
       current_instance_id:
         type: string
         description: 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。
+
+  # ---------------------------------------------------------------------------
+  # 通用设置面（GET/PUT /api/settings?section=）—— 设置注册表的 HTTP 投影。
+  # 键的集合、类型、默认值与危险标记以服务端注册表为唯一真源；本 schema
+  # 只描述线格式，不重复枚举具体键。
+  # ---------------------------------------------------------------------------
+  SettingsItem:
+    type: object
+    additionalProperties: false
+    required: [key, value, type, default, public, secret, dangerous]
+    description: |
+      注册表中的一项。`value` 为 null 表示该键尚未落库（使用 `default`）。
+      秘密项（`secret=true`）的 `value` 恒为掩码（配置后）或 null，明文永不回传。
+    properties:
+      key: {type: string}
+      value:
+        description: 当前生效值；secret 项为掩码；未落库时为 null。
+      type:
+        type: string
+        enum: [bool, string, int, number, enum, list, object]
+      default:
+        description: 注册表默认值（不因用户修改而变化）。
+      public:
+        type: boolean
+        description: 是否可经公开接口下发。
+      secret:
+        type: boolean
+      dangerous:
+        type: boolean
+      danger_direction:
+        type: string
+        enum: ['', 'on', 'off', 'change']
+        description: 危险项的风险方向；非危险项为空串。
+      locked:
+        type: boolean
+        description: 服务端只读项（管理面不可修改）。
+
+  SettingsSection:
+    type: object
+    additionalProperties: false
+    required: [section, updated_at, items]
+    properties:
+      section: {type: string}
+      updated_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: section 内各键 `updated_at` 的最大值；从未写入时为 null。
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/SettingsItem'
+
+  SettingsUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [values]
+    description: |
+      只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
+      字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+      命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+    properties:
+      section:
+        type: string
+        description: 可选；若提供必须与 query 的 section 一致，否则 400。
+      values:
+        type: object
+        additionalProperties: true
+      expect_updated_at:
+        type: string
+        format: date-time
+        nullable: true
+      dangerous_confirmed:
+        type: boolean
+
+  SettingsUpdateResponse:
+    type: object
+    additionalProperties: false
+    required: [section, updated_at, values]
+    properties:
+      section: {type: string}
+      updated_at:
+        type: string
+        format: date-time
+        nullable: true
+      values:
+        type: object
+        additionalProperties: true
+        description: 本次实际写入的键与归一化后的值。

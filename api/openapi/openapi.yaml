@@ -286,6 +286,9 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1settings'
   /api/deployments/settings/test-connection:
     $ref: './paths/admin.yaml#/paths/~1api~1deployments~1settings~1test-connection'
+  # 通用设置面（modules-08 §3.2）：一个 section = 注册表里的一组键。
+  /api/settings:
+    $ref: './paths/admin.yaml#/paths/~1api~1settings'
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20）。
   /api/settings/test/webhook:
     $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1webhook'

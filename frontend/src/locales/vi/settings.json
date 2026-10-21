@@ -226,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "Chế độ bảo vệ SSRF",
         "enabled": "Bật bảo vệ SSRF",
         "allow_private_ip": "Cho phép địa chỉ riêng",
         "allowed_ports": "Cổng được phép",
         "domain_mode": "Chế độ tên miền",
-        "domain_list": "Danh sách tên miền"
+        "domain_list": "Danh sách tên miền",
+        "max_redirects": "Số lần chuyển hướng tối đa",
+        "connect_timeout_seconds": "Thời gian chờ kết nối (giây)"
       },
       "sensitive": {
         "enabled": "Bật lọc từ nhạy cảm",
@@ -331,7 +334,11 @@
         "enabled": "Áp dụng cho mọi yêu cầu đi ra: khám phá OAuth, webhook, gọi lại thanh toán, kiểm tra URL và chuyển tiếp đến kênh thượng nguồn.",
         "allow_private_ip": "Chỉ áp dụng cho yêu cầu đi ra.",
         "allowed_ports": "Số nguyên từ 1 đến 65535 phân tách bằng dấu phẩy.",
-        "domain_list": "Mỗi dòng một tên miền hoặc phân tách bằng dấu phẩy. Ở chế độ danh sách cho phép, danh sách trống sẽ chặn mọi yêu cầu đi ra."
+        "domain_list": "Mỗi dòng một tên miền hoặc phân tách bằng dấu phẩy. Ở chế độ danh sách cho phép, danh sách trống sẽ chặn mọi yêu cầu đi ra.",
+        "mode": "off tắt mọi kiểm tra ra ngoài; basic chặn địa chỉ riêng tư và loopback; strict còn yêu cầu địa chỉ phân giải phải là công khai. Chế độ miền mặc định là allowlist — đây là siết chặt phá vỡ tương thích (G-DOM-68): chỉ các host trong danh sách mới truy cập được, hãy thêm mọi host ra ngoài (webhook, callback thanh toán, OAuth discovery) trước khi nâng cấp.",
+        "domain_mode": "allowlist mặc định là siết chặt phá vỡ tương thích (G-DOM-68): yêu cầu ra ngoài tới host không có trong danh sách sẽ bị chặn.",
+        "max_redirects": "0–10. Mỗi bước chuyển hướng đều được kiểm tra lại.",
+        "connect_timeout_seconds": "1–120 giây."
       },
       "sensitive": {
         "scope": "Chọn trường lời nhắc nào được kiểm tra.",
@@ -382,7 +389,10 @@
       "user_signup": "Người dùng đăng ký"
     },
     "epay_sign_append": "Nối khóa (chuẩn)",
-    "epay_sign_amp": "Nối bằng & (cổng cũ)"
+    "epay_sign_amp": "Nối bằng & (cổng cũ)",
+    "ssrf_mode_off": "Tắt",
+    "ssrf_mode_basic": "Cơ bản",
+    "ssrf_mode_strict": "Nghiêm ngặt"
   },
   "status": {
     "title": "Trạng thái hệ thống",

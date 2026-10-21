@@ -1782,6 +1782,63 @@ func (e RedemptionCodeStatusResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for SettingsItemDangerDirection.
+const (
+	SettingsItemDangerDirectionChange SettingsItemDangerDirection = "change"
+	SettingsItemDangerDirectionEmpty  SettingsItemDangerDirection = ""
+	SettingsItemDangerDirectionOff    SettingsItemDangerDirection = "off"
+	SettingsItemDangerDirectionOn     SettingsItemDangerDirection = "on"
+)
+
+// Valid indicates whether the value is a known member of the SettingsItemDangerDirection enum.
+func (e SettingsItemDangerDirection) Valid() bool {
+	switch e {
+	case SettingsItemDangerDirectionChange:
+		return true
+	case SettingsItemDangerDirectionEmpty:
+		return true
+	case SettingsItemDangerDirectionOff:
+		return true
+	case SettingsItemDangerDirectionOn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsItemType.
+const (
+	SettingsItemTypeBool   SettingsItemType = "bool"
+	SettingsItemTypeEnum   SettingsItemType = "enum"
+	SettingsItemTypeInt    SettingsItemType = "int"
+	SettingsItemTypeList   SettingsItemType = "list"
+	SettingsItemTypeNumber SettingsItemType = "number"
+	SettingsItemTypeObject SettingsItemType = "object"
+	SettingsItemTypeString SettingsItemType = "string"
+)
+
+// Valid indicates whether the value is a known member of the SettingsItemType enum.
+func (e SettingsItemType) Valid() bool {
+	switch e {
+	case SettingsItemTypeBool:
+		return true
+	case SettingsItemTypeEnum:
+		return true
+	case SettingsItemTypeInt:
+		return true
+	case SettingsItemTypeList:
+		return true
+	case SettingsItemTypeNumber:
+		return true
+	case SettingsItemTypeObject:
+		return true
+	case SettingsItemTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SetupResponseUserStatus.
 const (
 	SetupResponseUserStatusDisabled SetupResponseUserStatus = "disabled"
@@ -7053,6 +7110,65 @@ type SetPermissionsRequest struct {
 	AdminPermissions []PermissionGrant `json:"admin_permissions"`
 }
 
+// SettingsItem 注册表中的一项。`value` 为 null 表示该键尚未落库（使用 `default`）。
+// 秘密项（`secret=true`）的 `value` 恒为掩码（配置后）或 null，明文永不回传。
+type SettingsItem struct {
+	// DangerDirection 危险项的风险方向；非危险项为空串。
+	DangerDirection *SettingsItemDangerDirection `json:"danger_direction,omitempty"`
+	Dangerous       bool                         `json:"dangerous"`
+
+	// Default 注册表默认值（不因用户修改而变化）。
+	Default interface{} `json:"default"`
+	Key     string      `json:"key"`
+
+	// Locked 服务端只读项（管理面不可修改）。
+	Locked *bool `json:"locked,omitempty"`
+
+	// Public 是否可经公开接口下发。
+	Public bool             `json:"public"`
+	Secret bool             `json:"secret"`
+	Type   SettingsItemType `json:"type"`
+
+	// Value 当前生效值；secret 项为掩码；未落库时为 null。
+	Value interface{} `json:"value"`
+}
+
+// SettingsItemDangerDirection 危险项的风险方向；非危险项为空串。
+type SettingsItemDangerDirection string
+
+// SettingsItemType defines model for SettingsItem.Type.
+type SettingsItemType string
+
+// SettingsSection defines model for SettingsSection.
+type SettingsSection struct {
+	Items   []SettingsItem `json:"items"`
+	Section string         `json:"section"`
+
+	// UpdatedAt section 内各键 `updated_at` 的最大值；从未写入时为 null。
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SettingsUpdateRequest 只提交**变更**的键（部分更新）。秘密项：缺省 = 不修改；null = 显式清除；
+// 字符串 = 替换为新值。`expect_updated_at` 是乐观锁：与当前值不一致返回 409。
+// 命中危险方向时需要 `dangerous_confirmed=true`，否则 409/422（由服务端判定）。
+type SettingsUpdateRequest struct {
+	DangerousConfirmed *bool      `json:"dangerous_confirmed,omitempty"`
+	ExpectUpdatedAt    *time.Time `json:"expect_updated_at,omitempty"`
+
+	// Section 可选；若提供必须与 query 的 section 一致，否则 400。
+	Section *string                `json:"section,omitempty"`
+	Values  map[string]interface{} `json:"values"`
+}
+
+// SettingsUpdateResponse defines model for SettingsUpdateResponse.
+type SettingsUpdateResponse struct {
+	Section   string    `json:"section"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Values 本次实际写入的键与归一化后的值。
+	Values map[string]interface{} `json:"values"`
+}
+
 // SetupCompletedProblem 409 的 Problem 扩展：已初始化时带 initialized=true，让前端把重复提交
 // 直接导流到登录页（modules-01 F-01-20「已初始化标记」）；用户名/邮箱
 // 冲突的 409 不带该字段。该字段是 RFC 7807 允许的扩展成员。
@@ -9026,6 +9142,16 @@ type RevokeSessionParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// GetSettingsSectionParams defines parameters for GetSettingsSection.
+type GetSettingsSectionParams struct {
+	Section string `form:"section" json:"section"`
+}
+
+// UpdateSettingsSectionParams defines parameters for UpdateSettingsSection.
+type UpdateSettingsSectionParams struct {
+	Section string `form:"section" json:"section"`
+}
+
 // ResumeWebhookNotificationsParams defines parameters for ResumeWebhookNotifications.
 type ResumeWebhookNotificationsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -9784,6 +9910,9 @@ type UpdateRedemptionCodeStatusJSONRequestBody = RedemptionCodeStatusRequest
 
 // UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
 type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest
+
+// UpdateSettingsSectionJSONRequestBody defines body for UpdateSettingsSection for application/json ContentType.
+type UpdateSettingsSectionJSONRequestBody = SettingsUpdateRequest
 
 // CompleteSetupJSONRequestBody defines body for CompleteSetup for application/json ContentType.
 type CompleteSetupJSONRequestBody = SetupRequest

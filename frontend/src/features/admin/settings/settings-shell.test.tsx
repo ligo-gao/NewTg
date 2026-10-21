@@ -136,6 +136,16 @@ const PAY_EPAY_STATE: SectionState = {
   ],
 }
 
+const SSRF_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [
+    item('sec.ssrf.mode', 'basic', { dangerous: true, danger_direction: 'off' }),
+    item('sec.ssrf.max_redirects', 3),
+    item('sec.ssrf.connect_timeout_seconds', 10),
+    item('sec.ssrf.domain_mode', 'allowlist'),
+  ],
+}
+
 const POLICY_STATE: SectionState = {
   updated_at: '2026-10-19T10:00:00Z',
   items: [
@@ -210,6 +220,7 @@ async function renderShell(tab: SettingsTab = 'site') {
       'pay.stripe': structuredClone(PAY_STRIPE_STATE),
       'pay.alipay': structuredClone(PAY_ALIPAY_STATE),
       'pay.epay': structuredClone(PAY_EPAY_STATE),
+      sec: structuredClone(SSRF_STATE),
       'rl.health': structuredClone(POLICY_STATE),
     },
     requests,
@@ -464,6 +475,52 @@ describe('SettingsShell contract', () => {
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]?.section).toBe('pay.epay')
     expect(requests[0]?.body?.values).toEqual({ 'pay.epay.key': 'new-epay-key' })
+  })
+
+  it('renders the SSRF mode trio and warns the default allowlist is a breaking tightening (C2)', async () => {
+    const user = userEvent.setup()
+    const stores = {
+      site: structuredClone(SITE_STATE),
+      nav: structuredClone(NAV_STATE),
+      sec: structuredClone(SSRF_STATE),
+    }
+    const requests = installSettingsHandlers(stores)
+    await renderWithProviders(
+      <>
+        <Harness initial="security" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const card = await screen.findByTestId('settings-section-sec')
+    const mode = (await within(card).findByLabelText('SSRF protection mode')) as HTMLSelectElement
+    expect(Array.from(mode.options).map((option) => option.value)).toEqual([
+      '',
+      'off',
+      'basic',
+      'strict',
+    ])
+    expect(mode.value).toBe('basic')
+    expect((within(card).getByLabelText('Maximum redirects') as HTMLInputElement).value).toBe('3')
+    expect(
+      (within(card).getByLabelText('Connect timeout (seconds)') as HTMLInputElement).value,
+    ).toBe('10')
+
+    // G-DOM-68：默认 allowlist 是破坏性收紧，提示必须在场。
+    expect(within(card).getAllByText(/G-DOM-68/).length).toBeGreaterThan(0)
+    expect(
+      within(card).getAllByText(/breaking tightening/i).length,
+    ).toBeGreaterThan(0)
+
+    // 关闭型风险（mode=off）需要确认。
+    await user.selectOptions(mode, 'off')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByRole('alertdialog')).toBeTruthy()
+    expect(requests).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.body?.values).toEqual({ 'sec.ssrf.mode': 'off' })
   })
 
   it('keeps newlines in line lists and asks for dangerous confirmation (F1/F3)', async () => {

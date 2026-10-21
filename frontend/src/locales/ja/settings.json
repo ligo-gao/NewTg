@@ -226,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF 保護モード",
         "enabled": "SSRF 保護を有効化",
         "allow_private_ip": "プライベートアドレスを許可",
         "allowed_ports": "許可ポート",
         "domain_mode": "ドメインモード",
-        "domain_list": "ドメインリスト"
+        "domain_list": "ドメインリスト",
+        "max_redirects": "最大リダイレクト数",
+        "connect_timeout_seconds": "接続タイムアウト（秒）"
       },
       "sensitive": {
         "enabled": "機密ワードフィルタを有効化",
@@ -331,7 +334,11 @@
         "enabled": "すべての送信リクエストに適用されます：OAuth ディスカバリ、Webhook、支払いコールバック、URL ヘルスチェック、上流チャネルへの転送。",
         "allow_private_ip": "送信リクエストにのみ適用されます。",
         "allowed_ports": "1〜65535 のカンマ区切りの整数。",
-        "domain_list": "1 行に 1 ドメイン、またはカンマ区切り。許可リストモードでは空のリストがすべての送信リクエストをブロックします。"
+        "domain_list": "1 行に 1 ドメイン、またはカンマ区切り。許可リストモードでは空のリストがすべての送信リクエストをブロックします。",
+        "mode": "off はすべての外向き検査を無効化します。basic はプライベート/ループバック宛先を遮断します。strict は解決先が公開アドレスであることも要求します。ドメインモードの既定は allowlist で、これは破壊的な厳格化です（G-DOM-68）。一覧にあるホストのみ到達できるため、アップグレード前に Webhook・決済コールバック・OAuth 検出などの外向きホストをすべて追加してください。",
+        "domain_mode": "既定の allowlist は破壊的な厳格化です（G-DOM-68）。一覧にないホストへの外向きリクエストは遮断されます。",
+        "max_redirects": "0〜10。リダイレクトごとに再検証します。",
+        "connect_timeout_seconds": "1〜120 秒。"
       },
       "sensitive": {
         "scope": "検査するプロンプト項目を選択します。",
@@ -382,7 +389,10 @@
       "user_signup": "ユーザー登録"
     },
     "epay_sign_append": "キーを付加（標準）",
-    "epay_sign_amp": "& で連結（旧式ゲートウェイ）"
+    "epay_sign_amp": "& で連結（旧式ゲートウェイ）",
+    "ssrf_mode_off": "オフ",
+    "ssrf_mode_basic": "基本",
+    "ssrf_mode_strict": "厳格"
   },
   "status": {
     "title": "システム状態",

@@ -226,11 +226,14 @@
     },
     "sec": {
       "ssrf": {
+        "mode": "SSRF protection mode",
         "enabled": "Enable SSRF protection",
         "allow_private_ip": "Allow private addresses",
         "allowed_ports": "Allowed ports",
         "domain_mode": "Domain mode",
-        "domain_list": "Domain list"
+        "domain_list": "Domain list",
+        "max_redirects": "Maximum redirects",
+        "connect_timeout_seconds": "Connect timeout (seconds)"
       },
       "sensitive": {
         "enabled": "Enable sensitive-word filtering",
@@ -331,7 +334,11 @@
         "enabled": "Applies to all outbound requests: OAuth discovery, webhooks, payment callbacks, URL health checks, and upstream channel forwarding.",
         "allow_private_ip": "Applies to outbound requests only.",
         "allowed_ports": "Comma-separated integers between 1 and 65535.",
-        "domain_list": "One domain per line or comma-separated. In allowlist mode an empty list blocks every outbound request."
+        "domain_list": "One domain per line or comma-separated. In allowlist mode an empty list blocks every outbound request.",
+        "mode": "off disables every outbound check; basic blocks private and loopback targets; strict also requires the resolved address to be public. The default domain mode is allowlist — a breaking tightening (G-DOM-68): only listed hosts are reachable, so add every webhook, payment callback and OAuth discovery host before upgrading.",
+        "domain_mode": "Default allowlist is a breaking tightening (G-DOM-68): outbound requests to hosts not on the list are blocked.",
+        "max_redirects": "0–10. Every redirect hop is re-validated.",
+        "connect_timeout_seconds": "1–120 seconds."
       },
       "sensitive": {
         "scope": "Choose which prompt fields are inspected.",
@@ -382,7 +389,10 @@
       "user_signup": "User signed up"
     },
     "epay_sign_append": "Append key (standard)",
-    "epay_sign_amp": "Join with & (legacy gateways)"
+    "epay_sign_amp": "Join with & (legacy gateways)",
+    "ssrf_mode_off": "Off",
+    "ssrf_mode_basic": "Basic",
+    "ssrf_mode_strict": "Strict"
   },
   "status": {
     "title": "System status",

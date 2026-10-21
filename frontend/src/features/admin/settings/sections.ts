@@ -456,6 +456,16 @@ const SEC: SectionConfig = {
   titleKey: 'settings.section.sec',
   descriptionKey: 'settings.section_description.sec',
   fields: [
+    // 三态强度取代旧布尔开关：off 会解除全部出站校验，属关闭型风险。
+    field('sec.ssrf.mode', label('sec.ssrf.mode'), 'select', {
+      options: [
+        { value: 'off', labelKey: 'settings.option.ssrf_mode_off' },
+        { value: 'basic', labelKey: 'settings.option.ssrf_mode_basic' },
+        { value: 'strict', labelKey: 'settings.option.ssrf_mode_strict' },
+      ],
+      hintKey: hint('sec.ssrf.mode'),
+      dangerDirection: 'off',
+    }),
     toggle('sec.ssrf.enabled', label('sec.ssrf.enabled'), {
       hintKey: hint('sec.ssrf.enabled'),
       dangerDirection: 'off',
@@ -473,9 +483,21 @@ const SEC: SectionConfig = {
         { value: 'allowlist', labelKey: 'settings.option.domain_allowlist' },
         { value: 'denylist', labelKey: 'settings.option.domain_denylist' },
       ],
+      // 默认 allowlist 是破坏性收紧（G-DOM-68）：提示必须写明。
+      hintKey: hint('sec.ssrf.domain_mode'),
     }),
     field('sec.ssrf.domain_list', label('sec.ssrf.domain_list'), 'lines', {
       hintKey: hint('sec.ssrf.domain_list'),
+    }),
+    number('sec.ssrf.max_redirects', label('sec.ssrf.max_redirects'), {
+      min: 0,
+      max: 10,
+      hintKey: hint('sec.ssrf.max_redirects'),
+    }),
+    number('sec.ssrf.connect_timeout_seconds', label('sec.ssrf.connect_timeout_seconds'), {
+      min: 1,
+      max: 120,
+      hintKey: hint('sec.ssrf.connect_timeout_seconds'),
     }),
     toggle('sec.sensitive.enabled', label('sec.sensitive.enabled')),
     field('sec.sensitive.scope', label('sec.sensitive.scope'), 'module_toggles', {
