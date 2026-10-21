@@ -7,20 +7,46 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/metrics"
 )
 
-// RunMetricsServer 运行 metrics 侧车 HTTP 服务，阻塞至 ctx done 后优雅退出：
-//   - MetricsAddr=="0" → 不启动，立即返回 nil；
+// waitGroupWithin 等待 wg 结束，最多等 d。
+//
+// 指标监听/探针都以进程 ctx 退出为终止条件；错误路径下 ctx 可能尚未取消，
+// 无界 Wait 会把停机卡死。有界等待保证连接池关闭前尽力收敛，超时则由进程
+// 退出兜底（这些 goroutine 只读，不会写业务状态）。
+func waitGroupWithin(wg *sync.WaitGroup, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
+// RunMetricsServer 运行 metrics 侧车 HTTP 服务（无 /readyz，gateway 用主端口探针）。
+func RunMetricsServer(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	return RunMetricsServerWithReadiness(ctx, cfg, log, nil)
+}
+
+// RunMetricsServerWithReadiness 运行 metrics 侧车 HTTP 服务，阻塞至 ctx done 后
+// 优雅退出：
+//   - MetricsAddr=="0" 或空 → 不启动，立即返回 nil（空值防御：零值 Config
+//     直接 ListenAndServe 会绑 :80，测试/误装配下必须视为关闭）；
 //   - /metrics 仅当 MetricsToken 非空时挂载 handler，鉴权不符一律 404
 //     （非 401，不暴露端点存在性——本计划冻结口径）；
-//   - /healthz 恒 200：worker 没有主 HTTP 端口，运维/编排需要最小探活面
-//     （platform-05 §3.4「worker 同样在 METRICS_ADDR 暴露健康端点」）。
-func RunMetricsServer(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
-	if cfg.MetricsAddr == "0" {
+//   - /healthz 恒 200；ready 非 nil 时挂 /readyz（worker 角色传入完整五项
+//     判定，compose healthcheck 据此判活）。
+func RunMetricsServerWithReadiness(ctx context.Context, cfg *config.Config,
+	log *slog.Logger, ready http.Handler) error {
+	if cfg.MetricsAddr == "" || cfg.MetricsAddr == "0" {
 		return nil
 	}
 	mux := http.NewServeMux()
@@ -28,6 +54,9 @@ func RunMetricsServer(ctx context.Context, cfg *config.Config, log *slog.Logger)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	if ready != nil {
+		mux.Handle("/readyz", ready)
+	}
 	if cfg.MetricsToken != "" {
 		mux.Handle("/metrics", newMetricsHandler(cfg.MetricsToken))
 	}

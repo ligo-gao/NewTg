@@ -627,7 +627,9 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 渠道解析失败（索引陈旧/渠道已删）是「这一轮不可用」：换下一个候选。
 				// 走重试预算而不是无限扫描，避免坏索引把单请求拖成线性放大。
 				lastErr = &RetryableError{Err: safeWrapf(resolveErr, "relay: 渠道 %d 解析失败", candidate.ChannelID)}
-				reportAttempt(candidate.ChannelID, "", prevChannelType,
+				// 解析失败时渠道类型未知：用固定 "unknown" 而不是空标签，
+				// 且不更新 prevChannelType（本轮没有真正命中渠道类型）。
+				reportAttempt(candidate.ChannelID, "unknown", prevChannelType,
 					attemptRetryableFail, contract.ErrUnknown, attemptIndex, attemptStarted)
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     contract.ErrUnknown,

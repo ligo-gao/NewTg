@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
 )
 
 // RecoverAbandonedByID 是崩溃兜底的引擎入口（worker/T9 调用）。
@@ -55,7 +56,7 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string, tok
 	// ND2：钱包 hold 退回与令牌额度回补在 releaseAbandoned 的同一事务内
 	// 完成。进程在两者之间崩溃时整个事务回滚，重试会完整重放；不会出现
 	// 「钱包已退、令牌永远补不上」的半提交状态。
-	_, _, err := e.ledger.releaseAbandoned(opCtx, requestID, tokenID)
+	held, _, err := e.ledger.releaseAbandoned(opCtx, requestID, tokenID)
 	switch {
 	case errors.Is(err, errHoldClosed):
 		// 预扣行已处于 settled/released/expired：正常结算或此前的兜底已经
@@ -68,6 +69,10 @@ func (e *Engine) RecoverAbandonedByID(ctx context.Context, requestID string, tok
 		err = nil
 	case err != nil:
 		return fmt.Errorf("billing: recover abandoned request %s: %w", requestID, err)
+	default:
+		// 实际退出的 hold 金额按 reason=abandoned 计数（与请求内 sync 退款
+		// 区分）；金额为 0 时 ObserveRefund 内部跳过。
+		metrics.ObserveRefund("abandoned", held)
 	}
 
 	// 日志占位必须在 Remove 之前：写失败时保留租约索引，下一轮重试；

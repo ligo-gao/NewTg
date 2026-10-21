@@ -128,10 +128,9 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # R-07：M0 worker 不起 HTTP（METRICS_ADDR 监听在 M3 接入），先以 PID 1
-      # 的进程存活判活；worker 上线 /healthz 后改为
-      # ["CMD","/newtg","healthcheck","--url","http://127.0.0.1:8006/healthz"]。
-      test: ["CMD-SHELL", "ps | grep -q '[n]ewtg'"]
+      # W10-METRICS：worker 的 /readyz（五项判定）与 /metrics 同暴露在
+      # METRICS_ADDR；用二进制自带 healthcheck 子命令，2xx 即健康。
+      test: ["CMD", "/newtg", "healthcheck", "--url", "http://127.0.0.1:8006/readyz"]
       interval: 15s
       timeout: 3s
       retries: 5

@@ -115,17 +115,47 @@ func TestMetricsServerTokenSemantics(t *testing.T) {
 	_ = health.Body.Close()
 }
 
-// TestMetricsServerDisabled：METRICS_ADDR=0 不启动监听且立即返回。
-func TestMetricsServerDisabled(t *testing.T) {
-	cfg := &config.Config{MetricsAddr: "0"}
+// TestMetricsServerWithReadiness：I-4，worker 的 /readyz 与 /healthz 同端口。
+func TestMetricsServerWithReadiness(t *testing.T) {
+	addr := freeLocalAddr(t)
+	cfg := &config.Config{MetricsAddr: addr}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- RunMetricsServer(context.Background(), cfg, testMetricsLogger()) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("RunMetricsServer(disabled) = %v", err)
+	ready := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"degraded"}`))
+	})
+	go func() {
+		done <- RunMetricsServerWithReadiness(ctx, cfg, testMetricsLogger(), ready)
+	}()
+
+	resp := waitForHTTP(t, "http://"+addr+"/readyz", nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz status = %d, want 503 from readiness handler", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	health := waitForHTTP(t, "http://"+addr+"/healthz", nil)
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("/healthz = %d", health.StatusCode)
+	}
+	_ = health.Body.Close()
+}
+
+// TestMetricsServerDisabled：METRICS_ADDR=0 或空值不启动监听且立即返回。
+// 空值防御（M-6）：零值 Config 直接 ListenAndServe 会尝试绑 :80。
+func TestMetricsServerDisabled(t *testing.T) {
+	for _, addr := range []string{"0", ""} {
+		cfg := &config.Config{MetricsAddr: addr}
+		done := make(chan error, 1)
+		go func() { done <- RunMetricsServer(context.Background(), cfg, testMetricsLogger()) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("RunMetricsServer(addr=%q) = %v", addr, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("RunMetricsServer(addr=%q) blocked", addr)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("RunMetricsServer(disabled) blocked")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func populateAll(set *Set) {
 	set.ObserveQuotaClamp("quotaChecked", "overflow")
 	set.ObserveInsufficientQuota("gpt-x")
 	set.InitWorker()
-	set.ObserveWorkerTask("abandoned_reconcile", "succeeded", now)
+	set.ObserveWorkerTask("preconsume_reconcile", "succeeded", now)
 	set.SetWorkerAbandoned("wallet", 3, 12*time.Minute)
 	set.SetWorkerStreamLag(0)
 	set.SetRedisUp(true)
@@ -127,7 +128,7 @@ func gatherText(t *testing.T, reg *prometheus.Registry) (string, map[string]*dto
 }
 
 // TestExpositionFormatAndRequiredFamilies：文本 exposition 可被 Prometheus
-// 标准解析器读回，且首批 30 个 family 全部存在（变异：删任一必需指标即红）。
+// 标准解析器读回，且首批 31 个 family 全部存在（变异：删任一必需指标即红）。
 func TestExpositionFormatAndRequiredFamilies(t *testing.T) {
 	reg, set := NewRegistry()
 	populateAll(set)
@@ -318,6 +319,124 @@ func TestMetricsHandlerContentType(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "newtg_dependency_up") {
 		t.Fatalf("body missing dependency_up: %s", rec.Body.String())
 	}
+}
+
+// TestObserveRelayAttemptSuccessDoesNotCountError：C-1 回归。
+// 成功尝试即使误传 error_class="unknown" 也不得递增 errors_total，
+// 否则 A3 错误率恒 ~100%。
+func TestObserveRelayAttemptSuccessDoesNotCountError(t *testing.T) {
+	reg, set := NewRegistry()
+	set.ObserveRelayAttempt("chat_completions", "m", false, 1, "openai", "",
+		"ok", "unknown", 0, time.Millisecond)
+	_, parsed := gatherText(t, reg)
+	if fam := parsed["newtg_relay_errors_total"]; fam != nil && len(fam.Metric) > 0 {
+		t.Fatalf("success attempt must not increment errors_total: %v", fam.Metric)
+	}
+
+	set.ObserveRelayAttempt("chat_completions", "m", false, 1, "openai", "",
+		"nonretryable_fail", "upstream_auth", 0, time.Millisecond)
+	_, parsed = gatherText(t, reg)
+	count, ok := counterSum(parsed, "newtg_relay_errors_total",
+		map[string]string{"error_class": "upstream_auth"})
+	if !ok || count != 1 {
+		t.Fatalf("failure attempt errors_total = %v (ok=%v), want 1", count, ok)
+	}
+}
+
+// TestHTTPMethodLabelBounded：I-1 回归。自定义 method 不得制造无界序列。
+func TestHTTPMethodLabelBounded(t *testing.T) {
+	reg, set := NewRegistry()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {})
+	h := set.HTTPMiddleware("gateway", mux)
+	for i := 0; i < 500; i++ {
+		req := httptest.NewRequest("X-CUSTOM-"+strconv.Itoa(i), "/", nil)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	text, parsed := gatherText(t, reg)
+	if strings.Contains(text, "X-CUSTOM") {
+		t.Fatal("custom method leaked into exposition")
+	}
+	fam := parsed["newtg_http_requests_total"]
+	if fam == nil {
+		t.Fatal("http requests family missing")
+	}
+	methods := map[string]bool{}
+	for _, m := range fam.Metric {
+		for _, pair := range m.Label {
+			if pair.GetName() == "method" {
+				methods[pair.GetValue()] = true
+			}
+		}
+	}
+	if len(methods) != 1 || !methods["other"] {
+		t.Fatalf("method labels = %v, want only other", methods)
+	}
+}
+
+// TestGuardConstantsFrozen：M-4，护栏阈值是冻结口径，改动必须同步测试。
+func TestGuardConstantsFrozen(t *testing.T) {
+	if guardLimit != 5000 {
+		t.Fatalf("guardLimit = %d, want 5000", guardLimit)
+	}
+	if maxLabelValueLen != 128 {
+		t.Fatalf("maxLabelValueLen = %d, want 128", maxLabelValueLen)
+	}
+}
+
+// TestInitWorkerDoesNotSeedLastSuccess：I-5，启动时不得预置 last_success。
+func TestInitWorkerDoesNotSeedLastSuccess(t *testing.T) {
+	reg, set := NewRegistry()
+	set.InitWorker()
+	_, parsed := gatherText(t, reg)
+	if fam := parsed["newtg_worker_task_last_success_timestamp_seconds"]; fam != nil {
+		t.Fatalf("InitWorker must not seed last_success: %v", fam.Metric)
+	}
+	if fam := parsed["newtg_worker_task_runs_total"]; fam == nil ||
+		findMetric(t, parsed, "newtg_worker_task_runs_total",
+			map[string]string{"task_type": "preconsume_reconcile"}) == nil {
+		t.Fatal("InitWorker must pre-create preconsume_reconcile task runs")
+	}
+
+	set.ObserveWorkerTask("preconsume_reconcile", "succeeded", time.Millisecond)
+	_, parsed = gatherText(t, reg)
+	m := findMetric(t, parsed, "newtg_worker_task_last_success_timestamp_seconds",
+		map[string]string{"task_type": "preconsume_reconcile"})
+	if m == nil || m.GetGauge().GetValue() <= 0 {
+		t.Fatalf("last_success not set after a real success: %v", m)
+	}
+}
+
+// counterSum 返回匹配标签子集的 counter 值之和；family 不存在返回 ok=false。
+func counterSum(families map[string]*dto.MetricFamily, name string,
+	labels map[string]string) (float64, bool) {
+	fam, ok := families[name]
+	if !ok {
+		return 0, false
+	}
+	total := 0.0
+	matched := false
+	for _, m := range fam.Metric {
+		match := true
+		for wantName, wantValue := range labels {
+			found := false
+			for _, pair := range m.Label {
+				if pair.GetName() == wantName {
+					found = pair.GetValue() == wantValue
+					break
+				}
+			}
+			if !found {
+				match = false
+				break
+			}
+		}
+		if match {
+			matched = true
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total, matched
 }
 
 // findMetric 按标签子集查找一个样本；找不到返回 nil。

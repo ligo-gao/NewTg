@@ -226,7 +226,7 @@ func scanOnce(ctx context.Context, lister AbandonedLister, recoverer AbandonedRe
 	status := "succeeded"
 	var recovered int64
 	defer func() {
-		metrics.ObserveWorkerTask("abandoned_reconcile", status, time.Since(start))
+		metrics.ObserveWorkerTask("preconsume_reconcile", status, time.Since(start))
 		age := time.Duration(0)
 		if recovered > 0 {
 			// 候选都超过 AbandonedWindowSeconds；以窗口作为最老年龄的保守

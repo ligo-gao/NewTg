@@ -250,6 +250,11 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	params.ImageCount = s.reservedImages
 	base, err := pricing.ComputeQuota(*snap, params, usedVars)
 	if err != nil {
+		// M-2：估算期也会发生钳制（价格/上限配置错误），必须与结算期同口径
+		// 记录，否则 A6 只能看到结算期的一半事件。
+		if clamp, ok := pricing.AsClamp(err); ok {
+			s.noteQuotaClamp(clamp)
+		}
 		return fmt.Errorf("billing: estimate quota: %w", err)
 	}
 	if base < 0 {

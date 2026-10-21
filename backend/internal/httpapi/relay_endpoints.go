@@ -1601,9 +1601,15 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 		// W10-METRICS：执行层产出事实，端点层负责收敛为指标标签。
 		// 观察函数内部 recover/护栏，绝不向执行层返回错误或 panic。
 		ObserveAttempt: func(ev relay.AttemptEvent) {
+			// 成功尝试不带 error_class：ErrUnknown 是枚举零值，映射成
+			// "unknown" 会让每次成功都递增 errors_total（A3 恒 100%）。
+			className := ""
+			if ev.Result != "ok" {
+				className = relay.ErrorClassName(ev.ErrorClass)
+			}
 			metrics.ObserveRelayAttempt(ev.Endpoint, ev.Model, ev.Stream, ev.ChannelID,
 				ev.ChannelType, ev.FromType, ev.Result,
-				relay.ErrorClassName(ev.ErrorClass), ev.AttemptIndex, ev.Duration)
+				className, ev.AttemptIndex, ev.Duration)
 		},
 	}
 }
@@ -1941,12 +1947,12 @@ func includeUsageRequested(req *contract.Request) bool {
 // 适配器的 StreamEvents 事件流；ExecuteAttempts 在失败出口已 Terminate（GC-7），
 // 因此本函数只在**拿到 2xx 之后**负责终结计费会话，且恰好一次。
 func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
-	// start 覆盖连上游在内的完整请求时长：LatencyMS / FirstTokenMS 都相对
-	// 客户端请求开始计（与 relay.Route 的 start 口径一致）。
-	start := time.Now()
+	// 指标计时覆盖完整请求（含 body 解析/注入）；usage 的 LatencyMS 仍以
+	// ExecuteAttempts 前的 start 为基准（保持 M2 口径不变，M-10）。
+	requestStart := time.Now()
 	status := "success"
 	defer func() {
-		metrics.ObserveRelayRequest(relay.EndpointLabel(rc), rc.OriginModel, true, status, time.Since(start))
+		metrics.ObserveRelayRequest(relay.EndpointLabel(rc), rc.OriginModel, true, status, time.Since(requestStart))
 		// TTFT 只在流式路径且确实拿到首块时存在（非流式为 nil）。
 		if rc.FirstTokenMS != nil {
 			metrics.ObserveRelayFirstToken(relay.EndpointLabel(rc), rc.OriginModel,
@@ -1969,7 +1975,9 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	rc.Request = injected
 	rc.Streaming = true
 
-	// start 已在函数入口为指标与 usage 计时启动。
+	// start 覆盖连上游在内的完整请求时长：LatencyMS / FirstTokenMS 都相对
+	// 客户端请求开始计（与 relay.Route 的 start 口径一致）。
+	start := time.Now()
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
 		status = "error"
@@ -2000,7 +2008,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	w.WriteHeader(http.StatusOK)
 	sse.flush()
 
-	h.bridgeStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start, includeUsage)
+	status = h.bridgeStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start, includeUsage)
 }
 
 // forwardRawStreamEvent 判定适配器的原始 SSE 帧是否可以逐字节转发给客户端。
@@ -2038,6 +2046,10 @@ func forwardRawStreamEvent(channelType contract.ChannelType) bool {
 //
 // 异常结束（客户端断开/上游错误/超时/panic）不写收尾 usage 块与 [DONE]：
 // relay-03 §5.2/§10.3 要求由连接终止表达异常，伪造正常结束标记会误导客户端。
+//
+// 返回值是 W10-METRICS 的最终状态：正常结算为 success，异常退款为 refunded。
+// 调用方（serveStream）据此写 relay_requests_total；不能只看「HTTP 已 200」
+// 就记 success（SSE 的失败发生在 200 之后）。
 func (h *RelayHandler) bridgeStream(
 	r *http.Request,
 	rc *contract.RelayContext,
@@ -2048,7 +2060,8 @@ func (h *RelayHandler) bridgeStream(
 	sse *relaySSEWriter,
 	start time.Time,
 	includeUsage bool,
-) {
+) (streamStatus string) {
+	streamStatus = "success"
 	chunkID := "chatcmpl-newtg"
 	if rc.RequestID != "" {
 		chunkID = "chatcmpl-" + rc.RequestID
@@ -2166,6 +2179,7 @@ func (h *RelayHandler) bridgeStream(
 			// R-85：panic 是失败出口，整笔退款；不构造/上报用量事实
 			// （abnormal 的「部分用量」不再参与计费）。
 			refund()
+			streamStatus = "refunded"
 		}
 	}()
 
@@ -2379,6 +2393,7 @@ func (h *RelayHandler) bridgeStream(
 	// 而把零值/部分事实交给 Terminate 会让按次模型照常扣费并记 success。
 	if abnormal {
 		refund()
+		streamStatus = "refunded"
 		return
 	}
 
@@ -2399,6 +2414,7 @@ func (h *RelayHandler) bridgeStream(
 		fact.Usage = estimatedUsageFor(rc.ChannelType)
 	}
 	terminate(fact)
+	return
 }
 
 // estimatedUsageFor 为「无上游用量、需要本地估算」的事实补上**渠道协议族**

@@ -80,11 +80,14 @@ func (s *Set) ObserveRelayFirstToken(endpoint, model string, d time.Duration) {
 // result ∈ {ok, retryable_fail, nonretryable_fail}；errorClass 只在失败时
 // 非空。fromType 非空且 attemptIndex>0 时同时记一次故障转移（同类型重试
 // 也记：它同样是「上一轮失败后换了一轮」的可观测量）。
+//
+// 成功（result=="ok"）绝不递增 errors_total：调用方即使传了 ErrUnknown
+// （枚举零值），也不能把成功样本算成错误，否则 A3 错误率恒 ~100%。
 func (s *Set) ObserveRelayAttempt(endpoint, model string, stream bool, channelID int,
 	channelType, fromType, result, errorClass string, attemptIndex int, d time.Duration) {
 	defer swallowPanic()
 	s.relayAttempts.WithLabelValues(endpoint, result).Inc()
-	if errorClass != "" {
+	if result != "ok" && errorClass != "" {
 		s.relayErrors.WithLabelValues(endpoint, errorClass).Inc()
 	}
 	if channelID > 0 {
@@ -162,16 +165,16 @@ func (s *Set) ObserveWorkerTask(taskType, status string, d time.Duration) {
 
 // RegisterWorkerTask 预建任务子序列。
 //
-// 为什么把 last_success 初始化为当前时刻：Docker/K8s 重启后 Prometheus 会
-// 看到全新进程的 gauge；若初始为 0，A11（陈旧度 > 3×周期）会在首轮成功前
-// 立即误报。启动时刻是「尚无可信成功」的安全基线，首个成功会被真实值覆盖。
+// 刻意**不**在启动时写 last_success：若预置为启动时刻，A11（陈旧度 >
+// 3×周期）会在任务从未成功运行过时被这个假基线长期掩盖；若预置 0，又会
+// 立即误报。正确语义是「没有成功过就没有时间序列」——PromQL 对空集合
+// 不告警。family 在首次成功（ObserveWorkerTask status=succeeded）时出现。
 func (s *Set) RegisterWorkerTask(taskType string) {
 	defer swallowPanic()
 	s.workerTaskRuns.WithLabelValues(taskType, "succeeded").Add(0)
 	s.workerTaskRuns.WithLabelValues(taskType, "failed").Add(0)
 	s.workerTaskRuns.WithLabelValues(taskType, "skipped").Add(0)
 	s.workerTaskDuration.WithLabelValues(taskType)
-	s.workerTaskLastSuccess.WithLabelValues(taskType).Set(float64(time.Now().Unix()))
 }
 
 func (s *Set) SetWorkerAbandoned(source string, refunds int64, oldestAge time.Duration) {
@@ -193,18 +196,19 @@ func (s *Set) SetWorkerStreamLag(lag float64) {
 	s.workerStreamLag.Set(lag)
 }
 
-// workerPlaceholderTasks 是首批交付中尚未有独立循环的任务类型。
-//
-// poller/health 已有真实循环，但首批只在循环外层记录占位基线；email 与
-// retention 尚未落地（billing-06 后续批次）。预建序列让 A10/A11 的规则
-// 现在即可加载，且不会被误读为「family 不存在＝没配规则」。
+// workerPlaceholderTasks 是首批交付中尚未有独立循环或只在循环外层计数的
+// 任务类型。命名与 platform-05 §3.2.5 / A10 的关键任务对齐
+// （preconsume_reconcile、log_flush、rankings_snapshot 等），避免规则与
+// 实际 task_type 对不上。
 var workerPlaceholderTasks = []string{
 	"task_poller",
 	"channel_health",
+	"preconsume_reconcile",
+	"subscription_reconcile",
+	"log_flush",
+	"rankings_snapshot",
 	"email",
 	"retention",
-	"abandoned_reconcile",
-	"subscription_reconcile",
 }
 
 // InitWorker 初始化 worker 角色指标基线。
@@ -239,6 +243,9 @@ func (s *Set) SetRedisUp(up bool) {
 var redisCommandWhitelist = map[string]struct{}{
 	"get": {}, "set": {}, "del": {}, "incr": {}, "expire": {},
 	"xadd": {}, "xreadgroup": {}, "publish": {}, "ping": {},
+	// pipeline 是「一次管道批次」的聚合口径：逐条命令无法单独计时，
+	// 用批次总耗时记一条，避免把整条 pipeline 的时长重复记到每条命令上。
+	"pipeline": {},
 }
 
 func (s *Set) ObserveRedisCommand(cmd string, d time.Duration) {

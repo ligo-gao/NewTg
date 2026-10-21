@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+// httpMethodWhitelist 是 method 标签的白名单。
+//
+// 方法名在 HTTP 语法上是任意 token，未认证客户端可以用自定义方法（如
+// FOO_<随机串>）制造无界序列。指标只认标准方法，其余统一归 other。
+var httpMethodWhitelist = map[string]struct{}{
+	http.MethodGet: {}, http.MethodPost: {}, http.MethodPut: {},
+	http.MethodPatch: {}, http.MethodDelete: {}, http.MethodHead: {},
+	http.MethodOptions: {},
+}
+
+func methodLabel(method string) string {
+	if _, ok := httpMethodWhitelist[method]; ok {
+		return method
+	}
+	return "other"
+}
+
 // HTTPMiddleware 在 handler 外层记录 HTTP 指标。
 //
 // 关键点：route 标签取 r.Pattern（Go 1.22+ ServeMux 在调用 handler 前写入
@@ -26,7 +43,7 @@ func (s *Set) HTTPMiddleware(service string, next http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 			// r.Pattern 在 ServeHTTP 返回后才可读；此处已经拿到最终模板。
-			s.ObserveHTTP(service, r.Method, r.Pattern, status, time.Since(start), rec.written)
+			s.ObserveHTTP(service, methodLabel(r.Method), r.Pattern, status, time.Since(start), rec.written)
 		}()
 		next.ServeHTTP(rec, r)
 	})

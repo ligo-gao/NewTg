@@ -112,7 +112,11 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
+	// WaitGroup 覆盖 metrics 监听与探针，停机时在连接池关闭前有界等待（M-8）。
+	var metricsWG sync.WaitGroup
+	metricsWG.Add(2)
 	go func() {
+		defer metricsWG.Done()
 		if err := RunMetricsServer(ctx, cfg, log); err != nil {
 			log.Error("metrics server exited with error", "error", err)
 		}
@@ -126,7 +130,10 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	if rr, ok := redisRes.(redisResource); ok {
 		metricsRedis = rr.client
 	}
-	go startMetricsProbe(ctx, mainSQL, logsSQL, metricsRedis, log)
+	go func() {
+		defer metricsWG.Done()
+		startMetricsProbe(ctx, mainSQL, logsSQL, metricsRedis, log)
+	}()
 
 	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）与同一
 	// server 上的 /api/* 管理面（apiHandler 为 nil 时仅探针）。
@@ -215,9 +222,10 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		_ = srv.Close()
 	}
 	// HTTP 已停止对外服务：先停 reporter（排空队列）再关心跳与连接池。
-	// 顺序：HTTP 停止 → reporter 排空 → 心跳 → 日志库/主库/Redis。
+	// 顺序：HTTP 停止 → reporter 排空 → 心跳 → metrics 监听/探针 → 日志库/主库/Redis。
 	stopReporter()
 	heartbeat.Stop()
+	waitGroupWithin(&metricsWG, 5*time.Second)
 	if err := logsDB.Close(); err != nil {
 		log.Warn("close logs db failed", "error", err)
 	}
@@ -417,6 +425,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		"commit", version.Commit,
 		"node", cfg.NodeName,
 	)
+
+	// worker 的 /readyz 与 gateway 同口径（R3 期望版本 + dirty）。
+	expectedVersion, err := ExpectedSchemaVersion(migrations.FS)
+	if err != nil {
+		return fmt.Errorf("worker: expected schema version: %w", err)
+	}
 
 	dbRes, err := conn.openDB(ctx, cfg)
 	if err != nil {
@@ -899,17 +913,29 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
 		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
 
-	// W10-METRICS：worker 没有主 HTTP 端口，指标与最小 /healthz 暴露在
-	// METRICS_ADDR（platform-05 §3.4）；MetricsAddr=="0" 时监听不启动。
-	// InitWorker 预建任务/残留基线，保证空跑任务也有 family（A10–A13 可加载）。
-	// 探针只读 Ping/Stats，停机时随 ctx 退出，不泄漏监听或 goroutine。
+	// W10-METRICS：worker 没有主 HTTP 端口，指标与 /healthz、/readyz 暴露在
+	// METRICS_ADDR（platform-05 §3.4）；MetricsAddr=="0"/空时监听不启动。
+	// InitWorker 预建任务/残留基线，保证空跑任务也有 task_runs family
+	// （last_success 只在真实成功后出现，避免 A11 被假基线掩盖或误报）。
+	// 探针只读 Ping/Stats，停机时随 ctx 退出；WaitGroup 保证连接池关闭前
+	// 监听与探针都已停止。
+	workerChecker := NewChecker(sqlDB, rr.client, int(expectedVersion), log)
+	workerChecker.node = cfg.NodeName
+	workerChecker.MarkConfigLoaded()
+	workerChecker.MarkStartupDone()
 	metrics.InitWorker()
+	var metricsWG sync.WaitGroup
+	metricsWG.Add(2)
 	go func() {
-		if err := RunMetricsServer(ctx, cfg, log); err != nil {
+		defer metricsWG.Done()
+		if err := RunMetricsServerWithReadiness(ctx, cfg, log, http.HandlerFunc(workerChecker.HandlerReadyz)); err != nil {
 			log.Error("worker metrics server exited with error", "error", err)
 		}
 	}()
-	go startMetricsProbe(ctx, sqlDB, sqlLogs, rr.client, log)
+	go func() {
+		defer metricsWG.Done()
+		startMetricsProbe(ctx, sqlDB, sqlLogs, rr.client, log)
+	}()
 
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,
@@ -945,6 +971,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	if runErr == nil {
 		runErr = expiryErr
 	}
+	// 指标监听/探针必须先于连接池关闭退出（M-8）；有界等待避免错误路径卡死。
+	waitGroupWithin(&metricsWG, 5*time.Second)
 
 	// 停机序与启动序相反：先断 Redis（循环已退出，不再有租约写入），
 	// 再关日志库与主库。

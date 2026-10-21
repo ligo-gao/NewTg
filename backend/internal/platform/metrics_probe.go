@@ -115,9 +115,9 @@ func (redisMetricsHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		start := time.Now()
 		err := next(ctx, cmds)
-		for _, cmd := range cmds {
-			metrics.ObserveRedisCommand(cmd.Name(), time.Since(start))
-		}
+		// 管道内各命令无法单独计时；记一条批次总耗时（cmd=pipeline），
+		// 避免把同一段时长重复累加到每条命令上。
+		metrics.ObserveRedisCommand("pipeline", time.Since(start))
 		return err
 	}
 }
