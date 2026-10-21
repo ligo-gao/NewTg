@@ -506,7 +506,7 @@ func TestEmailProducerPreferenceGateAtEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	producer, err := NewEmailEventProducer(store, emailTestSiteConfig(), nil)
+	producer, err := NewEmailEventProducer(store, emailTestSiteConfig(), "", nil)
 	if err != nil {
 		t.Fatalf("NewEmailEventProducer: %v", err)
 	}
@@ -567,6 +567,25 @@ func TestEmailProducerPreferenceGateAtEnqueue(t *testing.T) {
 	}
 	if result.Status != EmailEnqueueQueued {
 		t.Fatalf("事务性入队被偏好拦截：%+v", result)
+	}
+
+	// 调用方漏写 email: 前缀时，入队层必须补齐，避免与 webhook/inapp 的
+	// 全局 UNIQUE(dedupe_key) 互相顶掉。
+	prefixed, err := producer.Enqueue(ctx, EmailEvent{
+		Category: "billing.payment_failed", DedupeKey: "plain-business-key",
+		UserID: optedIn, Variables: map[string]any{
+			"amount": "¥1.00", "order_no": "PLAIN-1", "reason_label": "declined",
+			"failed_at": "2026-10-22T12:00:00Z", "retry_url": "https://gw.example.com/wallet",
+		},
+	})
+	if err != nil || prefixed.Status != EmailEnqueueQueued {
+		t.Fatalf("无前缀入队 = %+v,%v", prefixed, err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM notification_deliveries WHERE dedupe_key = 'email:plain-business-key'
+	)`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("dedupe_key 未强制 email: 前缀：exists=%v err=%v", exists, err)
 	}
 }
 
@@ -828,7 +847,7 @@ func TestChannelAutoDisabledEnqueuesAdminEmail(t *testing.T) {
 	ctx := context.Background()
 
 	store, _ := NewStore(db)
-	producer, err := NewEmailEventProducer(store, emailTestSiteConfig(), nil)
+	producer, err := NewEmailEventProducer(store, emailTestSiteConfig(), "", nil)
 	if err != nil {
 		t.Fatalf("NewEmailEventProducer: %v", err)
 	}
@@ -876,7 +895,7 @@ func TestBalanceLowWorkerEnqueuesEmailForOptedInUser(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 
 	store, _ := NewStore(db)
-	emailProducer, err := NewEmailEventProducer(store, emailTestSiteConfig(), nil)
+	emailProducer, err := NewEmailEventProducer(store, emailTestSiteConfig(), "", nil)
 	if err != nil {
 		t.Fatalf("NewEmailEventProducer: %v", err)
 	}
@@ -928,6 +947,299 @@ func TestBalanceLowWorkerEnqueuesEmailForOptedInUser(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("重复扫描后 email 行数 = %d，期望 1", count)
+	}
+}
+
+// staticWebhookSubscription 让 webhook 出口处于「已订阅」状态，用于构造
+// 「webhook 已入队、email 仍需扫描」的场景。
+type staticWebhookSubscription struct{ event string }
+
+func (s staticWebhookSubscription) Subscribed(event string) bool { return event == s.event }
+
+// installEmailInsertFailure 让指定类别的 email 行插入抛错，返回解除函数。
+func installEmailInsertFailure(t *testing.T, db *sql.DB, category string) func() {
+	t.Helper()
+	const fn = "newtg_test_fail_email_insert"
+	if _, err := db.Exec(fmt.Sprintf(`
+		CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.channel = 'email' AND NEW.category = %s THEN
+				RAISE EXCEPTION 'forced email insert failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$`, fn, "'"+category+"'")); err != nil {
+		t.Fatalf("create failure function: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`
+		CREATE TRIGGER %s BEFORE INSERT ON notification_deliveries
+		FOR EACH ROW EXECUTE FUNCTION %s()`, fn, fn)); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+	drop := func() {
+		_, _ = db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON notification_deliveries`, fn))
+		_, _ = db.Exec(fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
+	}
+	t.Cleanup(drop)
+	return drop
+}
+
+// withRenamedPreferenceColumn 临时把 notification_preferences 改名，制造
+// 「偏好读取失败」；t.Cleanup 保证恢复（Fatal 也会执行）。
+func withRenamedPreferenceColumn(t *testing.T, db *sql.DB) {
+	t.Helper()
+	const renamed = "notification_preferences_w10e_test"
+	if _, err := db.Exec(`ALTER TABLE users RENAME COLUMN notification_preferences TO ` + renamed); err != nil {
+		t.Fatalf("rename preferences column: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`ALTER TABLE users RENAME COLUMN ` + renamed + ` TO notification_preferences`)
+	})
+}
+
+// TestBalanceLowEmailDedupeIndependentOfWebhook 是 I-1 的回归：webhook 当天
+// 已有行（成功或失败）不能阻止 email 渠道继续入队/重试。
+func TestBalanceLowEmailDedupeIndependentOfWebhook(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+
+	store, _ := NewStore(db)
+	emailProducer, err := NewEmailEventProducer(store, emailTestSiteConfig(), "", nil)
+	if err != nil {
+		t.Fatalf("NewEmailEventProducer: %v", err)
+	}
+	webhookProducer, err := NewWebhookEventProducer(store,
+		staticWebhookSubscription{event: "balance_low"}, nil)
+	if err != nil {
+		t.Fatalf("NewWebhookEventProducer: %v", err)
+	}
+	cfg := emailTestConfig{
+		"notify.webhook.enabled":               json.RawMessage(`true`),
+		"notify.webhook.balance_low_threshold": json.RawMessage(`100`),
+	}
+	worker, err := NewBalanceLowWorker(BalanceLowWorkerDeps{
+		Store: store, Producer: webhookProducer, EmailProducer: emailProducer,
+		Config: cfg, Subscription: staticWebhookSubscription{event: "balance_low"},
+		Now: func() time.Time { return now }, Location: time.UTC,
+	})
+	if err != nil {
+		t.Fatalf("NewBalanceLowWorker: %v", err)
+	}
+	userID := insertTestUser(t, db, "low-dup@example.com", "en",
+		`{"balance_warning":{"enabled":true,"channels":["email"]}}`, "user")
+	if _, err := db.Exec(`UPDATE users SET balance = 50 WHERE id = $1`, userID); err != nil {
+		t.Fatalf("set balance: %v", err)
+	}
+	// webhook 当天已有行（模拟 webhook 入队成功），email 还没有。
+	if _, err := db.Exec(`INSERT INTO notification_deliveries
+		(category, channel, recipient, dedupe_key, status)
+		VALUES ('billing.balance_low', 'webhook', 'webhook', $1, 'sent')`,
+		fmt.Sprintf("balance_low:%d:2026-10-22", userID)); err != nil {
+		t.Fatalf("seed webhook row: %v", err)
+	}
+
+	dropFailure := installEmailInsertFailure(t, db, "billing.balance_low")
+	first := worker.RunOnce(ctx)
+	if first.EmailFailed == 0 {
+		dropFailure()
+		t.Fatalf("email 失败轮 = %+v，期望至少 1 次 EmailFailed", first)
+	}
+	emailCountForUser := func() int {
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM notification_deliveries
+			WHERE channel = 'email' AND recipient_user_id = $1`, userID).Scan(&count); err != nil {
+			dropFailure()
+			t.Fatalf("count email rows: %v", err)
+		}
+		return count
+	}
+	if got := emailCountForUser(); got != 0 {
+		dropFailure()
+		t.Fatalf("email 行数 = %d，期望 0（首轮被注入失败）", got)
+	}
+
+	// 解除故障后下一轮必须继续尝试 email——webhook 键存在不得整体排除用户。
+	dropFailure()
+	second := worker.RunOnce(ctx)
+	if second.EmailEnqueued == 0 || second.EmailFailed != 0 {
+		t.Fatalf("恢复轮 = %+v，期望至少 1 次 EmailEnqueued", second)
+	}
+	if got := emailCountForUser(); got != 1 {
+		t.Fatalf("恢复后 email 行数 = %d，期望 1", got)
+	}
+}
+
+// TestEmailWorkerReleasesWhenPreferenceReadFails：发送前复核读偏好失败时
+// 行必须保持 queued、SMTP 不得调用（fail-open，下一轮重试）。
+func TestEmailWorkerReleasesWhenPreferenceReadFails(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+
+	userID := insertTestUser(t, db, "dberr@example.com", "en",
+		`{"balance_warning":{"enabled":true,"channels":["email"]}}`, "user")
+	id := insertEmailDelivery(t, db, emailDeliverySeed{
+		dedupe: "email:balance_low:dberr", category: "billing.balance_low",
+		recipient: "dberr@example.com", userID: &userID, locale: "en",
+		payload: emailPayload(t, map[string]any{
+			"balance": "10", "threshold": "100",
+			"topup_url": "https://gw.example.com/wallet", "site_title": "Example Gateway",
+		}),
+	})
+
+	withRenamedPreferenceColumn(t, db)
+	sender := &fakeEmailWorkerSender{configured: true}
+	worker := emailWorkerForTest(t, db, sender, now)
+	result := worker.RunOnce(ctx)
+	if result.Claimed != 1 || result.Sent != 0 || result.Failed != 0 || result.Suppressed != 0 {
+		t.Fatalf("result = %+v，期望领取后释放", result)
+	}
+	if sender.callCount() != 0 {
+		t.Fatalf("偏好读取失败仍调用 SMTP %d 次", sender.callCount())
+	}
+	status, attempt, _, _, _ := readEmailDelivery(t, db, id)
+	if status != "queued" || attempt != 0 {
+		t.Fatalf("行被消耗：%s/%d，期望 queued/0", status, attempt)
+	}
+}
+
+// TestEmailWorkerReleasesOnSMTPNotConfiguredMidRound：投递中途 SMTP 被清空
+// 时 Release，不消耗 attempt，本轮立即停止。
+func TestEmailWorkerReleasesOnSMTPNotConfiguredMidRound(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+
+	ids := []int64{
+		insertEmailDelivery(t, db, emailDeliverySeed{
+			dedupe: "email:smtp-gone:1", category: "billing.payment_failed",
+			recipient: "payer@example.com", locale: "en", payload: paymentFailedPayload(t),
+		}),
+		insertEmailDelivery(t, db, emailDeliverySeed{
+			dedupe: "email:smtp-gone:2", category: "billing.payment_failed",
+			recipient: "payer@example.com", locale: "en", payload: paymentFailedPayload(t),
+		}),
+	}
+	sender := &fakeEmailWorkerSender{
+		configured: true,
+		onSend: func(emailWorkerCall) (string, error) {
+			return "", ErrSMTPNotConfigured
+		},
+	}
+	worker := emailWorkerForTest(t, db, sender, now)
+	result := worker.RunOnce(ctx)
+	if result.Claimed != 1 || result.Sent != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v，期望只领取 1 条并释放", result)
+	}
+	if sender.callCount() != 1 {
+		t.Fatalf("Send 调用数 = %d，期望 1", sender.callCount())
+	}
+	for _, id := range ids {
+		status, attempt, next, lastError, _ := readEmailDelivery(t, db, id)
+		if status != "queued" || attempt != 0 || next != nil || lastError != nil {
+			t.Fatalf("SMTP 清空被消耗：%s/%d/%v/%v", status, attempt, next, lastError)
+		}
+	}
+}
+
+// TestEmailWorkerLocaleFallsBackToEnglish：精确语言行缺失时用 en 行渲染。
+func TestEmailWorkerLocaleFallsBackToEnglish(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+
+	if _, err := db.Exec(`DELETE FROM notification_templates
+		WHERE "key" = 'billing.payment_failed' AND locale = 'fr'`); err != nil {
+		t.Fatalf("delete fr template: %v", err)
+	}
+	id := insertEmailDelivery(t, db, emailDeliverySeed{
+		dedupe: "email:locale-fallback:1", category: "billing.payment_failed",
+		recipient: "payer@example.com", locale: "fr", payload: paymentFailedPayload(t),
+	})
+	sender := &fakeEmailWorkerSender{configured: true}
+	worker := emailWorkerForTest(t, db, sender, now)
+	if result := worker.RunOnce(ctx); result.Sent != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if status, _, _, _, _ := readEmailDelivery(t, db, id); status != "sent" {
+		t.Fatalf("status = %s", status)
+	}
+	calls := sender.callsSnapshot()
+	if len(calls) != 1 || !strings.Contains(calls[0].subject, "[Top-up failed]") {
+		t.Fatalf("未回退到 en 文案：%+v", calls)
+	}
+}
+
+// TestEmailWorkerSuppressesCorruptPreferences：偏好 jsonb 损坏时非事务性
+// 邮件 fail-closed（suppressed），事务性邮件仍送达。
+func TestEmailWorkerSuppressesCorruptPreferences(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+
+	userID := insertTestUser(t, db, "corrupt@example.com", "en", `"oops"`, "user")
+	balanceRow := insertEmailDelivery(t, db, emailDeliverySeed{
+		dedupe: "email:corrupt:balance", category: "billing.balance_low",
+		recipient: "corrupt@example.com", userID: &userID, locale: "en",
+		payload: emailPayload(t, map[string]any{
+			"balance": "10", "threshold": "100",
+			"topup_url": "https://gw.example.com/wallet", "site_title": "Example Gateway",
+		}),
+	})
+	paymentRow := insertEmailDelivery(t, db, emailDeliverySeed{
+		dedupe: "email:corrupt:payment", category: "billing.payment_failed",
+		recipient: "corrupt@example.com", userID: &userID, locale: "en",
+		payload: paymentFailedPayload(t),
+	})
+	sender := &fakeEmailWorkerSender{configured: true}
+	worker := emailWorkerForTest(t, db, sender, now)
+	result := worker.RunOnce(ctx)
+	if result.Suppressed != 1 || result.Sent != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	status, _, _, lastError, _ := readEmailDelivery(t, db, balanceRow)
+	if status != "suppressed" || lastError == nil || *lastError != "notification preferences are corrupt" {
+		t.Fatalf("损坏偏好行 = %s/%v", status, lastError)
+	}
+	if status, _, _, _, _ := readEmailDelivery(t, db, paymentRow); status != "sent" {
+		t.Fatalf("事务性行 status = %s", status)
+	}
+}
+
+// TestEmailProducerTransactionalSurvivesPreferenceReadFailure：偏好列读取
+// 失败时事务性事件仍入队（宽松默认），非事务性返回错误而不是猜测。
+func TestEmailProducerTransactionalSurvivesPreferenceReadFailure(t *testing.T) {
+	db := openNotifyTestDB(t)
+	resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	store, _ := NewStore(db)
+	producer, err := NewEmailEventProducer(store, emailTestSiteConfig(), "", nil)
+	if err != nil {
+		t.Fatalf("NewEmailEventProducer: %v", err)
+	}
+	userID := insertTestUser(t, db, "prefread@example.com", "en",
+		`{"balance_warning":{"enabled":true,"channels":["email"]}}`, "user")
+
+	withRenamedPreferenceColumn(t, db)
+	result, err := producer.EnqueuePaymentFailed(ctx, PaymentFailedEmailEvent{
+		UserID: userID, AmountLabel: "¥50.00", OrderNo: "20261022-ABC123",
+		ReasonLabel: "card declined", FailedAt: time.Now(), DedupeKey: "order:9:payment_failed",
+	})
+	if err != nil || result.Status != EmailEnqueueQueued {
+		t.Fatalf("事务性入队 = %+v,%v，期望 queued", result, err)
+	}
+	if _, err := producer.EnqueueBalanceLow(ctx, BalanceLowEmailEvent{
+		UserID: userID, Balance: 10, Threshold: 100,
+		DetectedAt: time.Now(), SiteDay: "2026-10-22",
+	}); err == nil {
+		t.Fatal("非事务性事件在偏好读取失败时必须返回错误（不能猜测偏好）")
 	}
 }
 

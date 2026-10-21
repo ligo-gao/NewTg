@@ -49,7 +49,7 @@ func startChannelHealthWorker(parent context.Context, cfg *config.Config, db, lo
 	// email 生产者与 gateway 侧构造同一形状：管理员侧类别恒发，SMTP 未配置
 	// 时行留在队列，配置修复后由 email worker 发出。直投走内置 bundle 兜底，
 	// 播种失败只 Warn。
-	healthEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, log)
+	healthEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, cfg.PublicBaseURL, log)
 	if err != nil {
 		return nil, err
 	}

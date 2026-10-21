@@ -325,7 +325,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 手工连通性测试（M4-b / R-M4-15）复用同一个 Reporter：handler 只上报
 	// ProbeResult，判定/条件更新/审计/站内通知仍由 reporter 的后台 goroutine
 	// 完成，且它只会禁用、永不自动恢复。
-	channelEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, log)
+	channelEmailProducer, err := notify.NewEmailEventProducer(notifyStore, center, cfg.PublicBaseURL, log)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: channel auto-disable email producer: %w", err)
 	}

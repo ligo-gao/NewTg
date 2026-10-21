@@ -357,7 +357,7 @@ func TestListLowBalanceUsersExcludesUsersNotifiedForSiteDay(t *testing.T) {
 	}
 
 	// 共享库里可能有其它低余额用户，只断言本用例用户是否在集合中。
-	today, err := store.ListLowBalanceUsers(context.Background(), 1000, balanceLowTestDay)
+	today, err := store.ListLowBalanceUsers(context.Background(), 1000, balanceLowTestDay, true, false)
 	if err != nil {
 		t.Fatalf("ListLowBalanceUsers(today): %v", err)
 	}
@@ -373,7 +373,7 @@ func TestListLowBalanceUsersExcludesUsersNotifiedForSiteDay(t *testing.T) {
 	}
 
 	// 换一个业务日后，同一用户可以再次进入扫描集。
-	tomorrow, err := store.ListLowBalanceUsers(context.Background(), 1000, "2026-10-21")
+	tomorrow, err := store.ListLowBalanceUsers(context.Background(), 1000, "2026-10-21", true, false)
 	if err != nil {
 		t.Fatalf("ListLowBalanceUsers(tomorrow): %v", err)
 	}

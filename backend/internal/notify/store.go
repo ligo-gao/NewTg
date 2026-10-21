@@ -542,7 +542,19 @@ type BalanceLowUser struct {
 // 扫描口径是冻结的（tasks B4 / N6）：只认 status='enabled'，禁用用户即使
 // 余额为 0 也不产生通知；threshold <= 0 时由调用方直接跳过，不执行查询。
 // siteDay 是站点时区的业务日（YYYY-MM-DD），对应 dedupe_key 的日期后缀
-// `balance_low:<userID>:<siteDay>`。
+// `balance_low:<userID>:<siteDay>`（webhook）与
+// `email:balance_low:<userID>:<siteDay>`（email）。
+//
+// **按渠道独立去重（W10-EMAIL I-1）**：两种通知是两条独立队列，一方入队
+// 成功不应掩盖另一方失败。因此这里的条件是「至少一个**当前启用**的渠道
+// 当天还没有行」：
+//
+//	(webhook 启用 AND 无 webhook 行) OR (email 启用 AND 无 email 行)
+//
+// 旧实现把两个键放进同一个 NOT EXISTS（任一存在就排除），会让 email 入队
+// 失败的用户在 webhook 已成功的情况下当天不再重试；这正是本参数化的原因。
+// includeWebhook/includeEmail 由 worker 按本轮实际出口传入，调用方不要把
+// 未启用的渠道设为 true（否则会为该渠道做无意义的查询条件）。
 //
 // 已通知用户在 SQL 里用 NOT EXISTS 排除，而不是留给 INSERT 命中
 // UNIQUE(dedupe_key) 去丢弃：持续低余额的用户每天都会出现在命中集里，
@@ -553,18 +565,25 @@ type BalanceLowUser struct {
 //
 // 用户量大时分页由调用方按 id keyset 推进——这里保留纯读接口，扫描器
 // 每 5 分钟一次全量命中集，避免把「明天仍低于阈值」的持久状态写进表。
-func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64, siteDay string) ([]BalanceLowUser, error) {
+func (s *Store) ListLowBalanceUsers(ctx context.Context, threshold int64, siteDay string, includeWebhook, includeEmail bool) ([]BalanceLowUser, error) {
+	if !includeWebhook && !includeEmail {
+		// 两条出口都没启用：没有任何需要通知的渠道，避免全表扫描。
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id, u.balance FROM users u
 		WHERE u.status = 'enabled' AND u.balance < $1
-		  AND NOT EXISTS (
-		      SELECT 1 FROM notification_deliveries d
-		      WHERE d.dedupe_key IN (
-		          'balance_low:' || u.id::text || ':' || $2,
-		          'email:balance_low:' || u.id::text || ':' || $2
-		      )
+		  AND (
+		      ($3 AND NOT EXISTS (
+		          SELECT 1 FROM notification_deliveries d
+		          WHERE d.dedupe_key = 'balance_low:' || u.id::text || ':' || $2
+		      ))
+		      OR ($4 AND NOT EXISTS (
+		          SELECT 1 FROM notification_deliveries d
+		          WHERE d.dedupe_key = 'email:balance_low:' || u.id::text || ':' || $2
+		      ))
 		  )
-		ORDER BY u.id`, threshold, siteDay)
+		ORDER BY u.id`, threshold, siteDay, includeWebhook, includeEmail)
 	if err != nil {
 		return nil, fmt.Errorf("notify: list low balance users: %w", err)
 	}
@@ -826,6 +845,32 @@ func (s *Store) LoadEmailProfile(ctx context.Context, userID int64) (EmailProfil
 		return profile, nil
 	}
 	profile.Preferences = prefs
+	return profile, nil
+}
+
+// LoadEmailAddressProfile 只读取地址/用户名/语言，不触碰
+// notification_preferences 列。
+//
+// 用途：事务性邮件在偏好列读取失败（列缺失、jsonb 转换异常等）时仍要送达，
+// 而地址本身是可投递的最小依赖。偏好留零值；调用方只应在
+// IsTransactionalEmailCategory 为真时使用。
+func (s *Store) LoadEmailAddressProfile(ctx context.Context, userID int64) (EmailProfile, error) {
+	var (
+		profile  EmailProfile
+		email    sql.NullString
+		language string
+	)
+	if err := s.db.QueryRowContext(ctx, `SELECT id, username, email, language
+		FROM users WHERE id = $1`, userID).
+		Scan(&profile.UserID, &profile.Username, &email, &language); err != nil {
+		return EmailProfile{}, err
+	}
+	profile.Email = email.String
+	locale, ok := ParseLocale(language)
+	if !ok {
+		locale = DefaultLocale
+	}
+	profile.Locale = locale
 	return profile, nil
 }
 

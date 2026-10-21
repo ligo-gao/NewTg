@@ -605,7 +605,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// W10-EM1：email 投递生产者（低余额、自动续费失败、渠道自动禁用）。
 	// 与 webhook 生产者共用同一个 Store/配置中心快照；SMTP 是否可用不影响
 	// 入队（未配置时 worker 不领取，配置修复后原样发出）。
-	emailProducer, err := notify.NewEmailEventProducer(autoRenewNotifyStore, center, log)
+	emailProducer, err := notify.NewEmailEventProducer(autoRenewNotifyStore, center, cfg.PublicBaseURL, log)
 	if err != nil {
 		cancelRankings()
 		rankingsWG.Wait()
@@ -675,6 +675,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		_ = dbRes.Close()
 		return fmt.Errorf("worker: notify store: %w", err)
 	}
+	// W10-EMAIL：worker 角色也必须在启动期补种模板。此前播种只发生在
+	// gateway 装配（httpapi assembly）与 channel health 的 best-effort 路径，
+	// 单独部署 worker（或 health 装配失败）时 email worker 会把所有投递判成
+	// "template is missing"。模板行缺失属于配置性故障：失败只 Warn，不阻止
+	// worker 上线（与 channel health 的既有口径一致），但必须留下明确日志。
+	seedNotifyTemplates(ctx, notifyStore, log)
 	// B1b：worker 侧的充值结算（过期回收/支付宝轮询兜底）也走 settleOrder，
 	// 必须与 gateway 共享同一生产者语义。订阅过滤读取同一配置中心快照。
 	// 同一个 WebhookSender 也作为 balance_low 扫描器的订阅面：事件订阅语义

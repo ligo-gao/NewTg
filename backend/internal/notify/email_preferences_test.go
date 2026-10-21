@@ -10,6 +10,53 @@ import (
 	"time"
 )
 
+func TestEmailRetryDelaysMatchWebhookSchedule(t *testing.T) {
+	// R-W10-06 冻结「与 webhook 同范式」。两个数组刻意独立声明，这里把
+	// 「当前一致」钉成断言：只改一侧时必须显式改测试并确认是产品决策。
+	if len(emailRetryDelays) != len(webhookRetryDelays) {
+		t.Fatalf("email/webhook 重试次数不同：%d vs %d", len(emailRetryDelays), len(webhookRetryDelays))
+	}
+	for i := range webhookRetryDelays {
+		if emailRetryDelays[i] != webhookRetryDelays[i] {
+			t.Fatalf("第 %d 个重试间隔不同：%v vs %v", i+1, emailRetryDelays[i], webhookRetryDelays[i])
+		}
+	}
+	if emailMaxAttempts != len(emailRetryDelays)+1 {
+		t.Fatalf("emailMaxAttempts = %d，期望初投 + %d 次重试", emailMaxAttempts, len(emailRetryDelays))
+	}
+}
+
+func TestDecodeEmailVariablesRejectsNonObjectPayload(t *testing.T) {
+	if _, problem := decodeEmailVariables([]byte(`"not-an-object"`)); problem != "email payload is invalid" {
+		t.Fatalf("非对象 payload = %q，期望 email payload is invalid", problem)
+	}
+	if _, problem := decodeEmailVariables([]byte(`[1,2]`)); problem != "email payload is invalid" {
+		t.Fatalf("数组 payload = %q", problem)
+	}
+	vars, problem := decodeEmailVariables([]byte(`{"order_no":"X"}`))
+	if problem != "" || vars["order_no"] != "X" {
+		t.Fatalf("合法 payload 解码失败：%v %q", vars, problem)
+	}
+	if vars, problem := decodeEmailVariables(nil); problem != "" || len(vars) != 0 {
+		t.Fatalf("空 payload = %v %q", vars, problem)
+	}
+}
+
+func TestEmailDedupeKeyForcesChannelPrefix(t *testing.T) {
+	cases := map[string]string{
+		"":                         "email:",
+		"plain:1":                  "email:plain:1",
+		"email:already":            "email:already",
+		"  email:spaced  ":         "email:spaced",
+		"balance_low:7:2026-10-22": "email:balance_low:7:2026-10-22",
+	}
+	for input, want := range cases {
+		if got := emailDedupeKey(input); got != want {
+			t.Fatalf("emailDedupeKey(%q) = %q，期望 %q", input, got, want)
+		}
+	}
+}
+
 func TestEmailTokenBucketAllowsTenImmediateThenThrottles(t *testing.T) {
 	bucket := newEmailTokenBucket(EmailRateLimitPerSecond, emailRateBurst)
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)

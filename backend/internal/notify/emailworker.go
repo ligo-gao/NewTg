@@ -49,10 +49,21 @@ const (
 	EmailRateLimitPerSecond = 10
 	// emailRateBurst 是桶容量：允许瞬时 10 封，之后严格按 10/s 排队。
 	emailRateBurst = 10
-
-	// emailMaxAttempts 是冻结的尝试总数：初投 + 3 次重试（1/5/25）。
-	emailMaxAttempts = 4
 )
+
+// emailRetryDelays 是 email 渠道的重试间隔（R-W10-06：与 webhook 同范式
+// 1/5/25）。刻意独立声明而不是直接复用 webhookRetryDelays：两个渠道的
+// 重试策略是各自冻结的契约，共享一个数组会让未来只调 webhook 的改动静默
+// 改变 email 行为。`TestEmailRetryDelaysMatchWebhookSchedule` 断言两者当前
+// 一致，偏离时必须显式改测试。
+var emailRetryDelays = [...]time.Duration{
+	1 * time.Minute,
+	5 * time.Minute,
+	25 * time.Minute,
+}
+
+// emailMaxAttempts 是冻结的尝试总数：初投 + len(emailRetryDelays) 次重试。
+const emailMaxAttempts = len(emailRetryDelays) + 1
 
 // EmailWorkerSender 是 worker 需要的发送能力。生产实现是 *SMTPSender；
 // 测试注入 fake。Configured 必须在每轮扫描前查询：SMTP 未配置时**不领取**，
@@ -296,7 +307,7 @@ func (w *EmailWorker) deliver(ctx context.Context, claim *EmailDeliveryClaim) em
 		return emailOutcomeReleased
 	default:
 		attempt := delivery.Attempt + 1
-		next := retryAtForAttempt(w.now().UTC(), attempt)
+		next := emailRetryAt(w.now().UTC(), attempt)
 		// last_error 只写固定分类：SMTP 服务器回显可能包含邮箱、IP 或
 		// 上游内部信息。
 		if err := claim.MarkFailed(ctx, attempt, next, "smtp delivery failed"); err != nil {
@@ -311,6 +322,17 @@ func (w *EmailWorker) deliver(ctx context.Context, claim *EmailDeliveryClaim) em
 		)
 		return emailOutcomeFailed
 	}
+}
+
+// emailRetryAt 返回第 attempt 次失败后的重试时刻；nil 表示已达终态。
+// attempt 是**已经发生的尝试次数**（初投失败后为 1）。
+func emailRetryAt(now time.Time, attempt int) *time.Time {
+	index := attempt - 1
+	if index < 0 || index >= len(emailRetryDelays) {
+		return nil
+	}
+	next := now.Add(emailRetryDelays[index])
+	return &next
 }
 
 // emailAllowedAtSend 是 R-W10-06 的发送前偏好复核。
@@ -372,11 +394,9 @@ func (w *EmailWorker) renderDelivery(ctx context.Context, delivery Delivery) (Re
 		return Rendered{}, "email template is disabled", true
 	}
 
-	variables := map[string]any{}
-	if len(delivery.Payload) > 0 {
-		if err := json.Unmarshal(delivery.Payload, &variables); err != nil || variables == nil {
-			return Rendered{}, "email payload is invalid", true
-		}
+	variables, payloadProblem := decodeEmailVariables(delivery.Payload)
+	if payloadProblem != "" {
+		return Rendered{}, payloadProblem, true
 	}
 	if err := ValidateVariables(spec, variables); err != nil {
 		var missing *ErrMissingVariable
@@ -395,6 +415,23 @@ func (w *EmailWorker) renderDelivery(ctx context.Context, delivery Delivery) (Re
 		return Rendered{}, "email template is invalid", true
 	}
 	return rendered, "", true
+}
+
+// decodeEmailVariables 把投递行 payload 解成模板变量。
+//
+// 空 payload 视为「无变量」；非对象（历史/绕过约束写入）返回固定分类，
+// 由调用方置终态 failed——重试不会让坏 JSON 变好。数据库的
+// notification_deliveries_payload_obj_chk 已保证正常写入必是对象，这里
+// 是纵深防御（同样保护未来放宽约束或从旧库恢复的场景）。
+func decodeEmailVariables(payload []byte) (map[string]any, string) {
+	variables := map[string]any{}
+	if len(payload) == 0 {
+		return variables, ""
+	}
+	if err := json.Unmarshal(payload, &variables); err != nil || variables == nil {
+		return nil, "email payload is invalid"
+	}
+	return variables, ""
 }
 
 // resolveEmailTemplate 实施语言回退链：精确行 → en 行 → 失败（P1）。

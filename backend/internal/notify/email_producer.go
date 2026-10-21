@@ -63,13 +63,17 @@ type EmailEnqueueResult struct {
 type EmailEventProducer struct {
 	store *Store
 	cfg   ConfigReader
-	log   *slog.Logger
+	// fallbackBaseURL 是 env PUBLIC_BASE_URL 的兜底（配置中心未写
+	// site.server_address 时使用）。两者都为空时，需要绝对链接的类别
+	// 跳过入队并 Warn。
+	fallbackBaseURL string
+	log             *slog.Logger
 }
 
 // NewEmailEventProducer 构造生产者。Store 必填；cfg 可为 nil（此时站点标题与
 // 公共基址为空，需要绝对链接的类别会跳过入队并记 Warn，而不是写入必然会
-// 渲染失败的投递行）。
-func NewEmailEventProducer(store *Store, cfg ConfigReader, logger *slog.Logger) (*EmailEventProducer, error) {
+// 渲染失败的投递行）。fallbackBaseURL 用于 PUBLIC_BASE_URL 回退。
+func NewEmailEventProducer(store *Store, cfg ConfigReader, fallbackBaseURL string, logger *slog.Logger) (*EmailEventProducer, error) {
 	if store == nil {
 		return nil, errors.New("notify: email event producer requires a store")
 	}
@@ -77,7 +81,12 @@ func NewEmailEventProducer(store *Store, cfg ConfigReader, logger *slog.Logger) 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &EmailEventProducer{store: store, cfg: cfg, log: log}, nil
+	return &EmailEventProducer{
+		store:           store,
+		cfg:             cfg,
+		fallbackBaseURL: strings.TrimRight(strings.TrimSpace(fallbackBaseURL), "/"),
+		log:             log,
+	}, nil
 }
 
 // EmailEvent 是通用 email 事件：调用方给出类别、幂等键与模板变量。
@@ -112,6 +121,10 @@ func (p *EmailEventProducer) Enqueue(ctx context.Context, event EmailEvent) (Ema
 	if !ok {
 		return EmailEnqueueResult{}, fmt.Errorf("notify: %s has no email template", key)
 	}
+	// dedupe_key 是**全表**唯一（webhook/inapp/email 共用），统一加 email:
+	// 前缀，调用方忘记加也不会与另一渠道的事件互相顶掉。
+	dedupeKey := emailDedupeKey(event.DedupeKey)
+	transactional := IsTransactionalEmailCategory(event.Category)
 
 	profile, err := p.store.LoadEmailProfile(ctx, event.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -120,11 +133,23 @@ func (p *EmailEventProducer) Enqueue(ctx context.Context, event EmailEvent) (Ema
 		return EmailEnqueueResult{Status: EmailEnqueueSkipped}, nil
 	}
 	if err != nil {
-		return EmailEnqueueResult{}, fmt.Errorf("notify: load email profile: %w", err)
+		// 事务性邮件（密码重置/支付结果等）不能因为偏好列读取异常而丢弃。
+		// 退化为只读地址/语言的最小画像：偏好取零值（对事务性无意义），
+		// 只要地址可读就继续入队；非事务性仍返回错误，避免在「不知道用户
+		// 是否已退订」的情况下发信。
+		if !transactional {
+			return EmailEnqueueResult{}, fmt.Errorf("notify: load email profile: %w", err)
+		}
+		fallback, fallbackErr := p.store.LoadEmailAddressProfile(ctx, event.UserID)
+		if fallbackErr != nil {
+			return EmailEnqueueResult{}, fmt.Errorf("notify: load email profile: %w", err)
+		}
+		p.log.Warn("email event: preference read failed; transactional mail continues with defaults",
+			"category", event.Category)
+		profile = fallback
 	}
 
 	recipient := EmailAddressForCategory(profile.Preferences, event.Category, profile.Email)
-	transactional := IsTransactionalEmailCategory(event.Category)
 
 	if !transactional && HasEmailPreference(event.Category) {
 		allowed := !profile.PreferencesCorrupt &&
@@ -142,7 +167,7 @@ func (p *EmailEventProducer) Enqueue(ctx context.Context, event EmailEvent) (Ema
 				Recipient:       recipient,
 				RecipientUserID: &profile.UserID,
 				Locale:          &profile.Locale,
-				DedupeKey:       event.DedupeKey,
+				DedupeKey:       dedupeKey,
 				Status:          "suppressed",
 				Attempt:         0,
 				LastError:       stringPtr("recipient opted out of email"),
@@ -189,7 +214,7 @@ func (p *EmailEventProducer) Enqueue(ctx context.Context, event EmailEvent) (Ema
 		Recipient:       recipient,
 		RecipientUserID: &profile.UserID,
 		Locale:          &profile.Locale,
-		DedupeKey:       event.DedupeKey,
+		DedupeKey:       dedupeKey,
 		Status:          "queued",
 		Attempt:         0,
 		Payload:         payload,
@@ -339,20 +364,32 @@ func (p *EmailEventProducer) EnqueueChannelAutoDisabled(ctx context.Context, eve
 	})
 }
 
-// baseURL 返回去掉尾斜杠的站点点位基址；未配置时为空串。
+// emailDedupeKey 强制 channel 前缀。dedupe_key 是全表唯一：同一业务事件也会
+// 产生 webhook/inapp 行，没有前缀就会互相顶掉（曾经的具体故障：低余额的
+// webhook 行占用了 email 行的幂等键，邮件被静默丢弃）。
+func emailDedupeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, "email:") {
+		return key
+	}
+	return "email:" + key
+}
+
+// baseURL 返回去掉尾斜杠的站点点位基址；配置中心优先，PUBLIC_BASE_URL 兜底，
+// 两者皆空时为空串。
 func (p *EmailEventProducer) baseURL() string {
-	if p.cfg == nil {
-		return ""
+	if p.cfg != nil {
+		raw, ok := p.cfg.Get(siteServerAddressKey)
+		if ok {
+			var value string
+			if err := json.Unmarshal(raw, &value); err == nil {
+				if trimmed := strings.TrimRight(strings.TrimSpace(value), "/"); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
 	}
-	raw, ok := p.cfg.Get(siteServerAddressKey)
-	if !ok {
-		return ""
-	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return ""
-	}
-	return strings.TrimRight(strings.TrimSpace(value), "/")
+	return p.fallbackBaseURL
 }
 
 func (p *EmailEventProducer) siteTitle() string {
