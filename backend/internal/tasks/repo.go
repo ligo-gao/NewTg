@@ -310,11 +310,24 @@ func (r *Repo) GetByPublicIDAny(ctx context.Context, publicID string) (*Task, er
 	return t, nil
 }
 
-// ListPending 返回未完成任务（relay-06 §8.1：state NOT IN 终态）。
+// ListPendingByFamily 返回指定家族未完成的任务（relay-06 §8.1：state NOT IN 终态）。
+//
+// 【为什么必须带 family（R-MJ-04，强制项）】tasks 是插件族与 MJ 族共用的同一张
+// 表（relay-05:238-240、relay-06:64）。插件 poller 若不按 family 过滤，会把
+// MJ 行当成插件任务领取：先累计 plugin_unavailable，约 20×15s 后强制
+// FAILURE 并退款（poller.go 的失败处理）——而 MJ 上游此时可能仍在产出，
+// 退款等于把「结果已生成」白送给用户，是直接的资金损失；同时 MJ 的 Action
+// 解释权（family=mj 的动作族）也会被插件钩子错误解释。
 //
 // 按 id 升序而不是创建时间：id 是单调的插入序，天然稳定，便于「同渠道内
 // 串行」的确定性遍历；LIMIT 把单轮扫描面压住（TASK_QUERY_LIMIT）。
-func (r *Repo) ListPending(ctx context.Context, limit int) ([]*Task, error) {
+//
+// 未知 family 返回错误而不是空集：静默空结果会把调用方拼错家族名伪装成
+// 「本轮没有任务」，让资金侧停摆不可见。
+func (r *Repo) ListPendingByFamily(ctx context.Context, family string, limit int) ([]*Task, error) {
+	if !ValidFamily(family) {
+		return nil, fmt.Errorf("tasks: list pending: unknown family %q", family)
+	}
 	if r == nil || r.db == nil {
 		return nil, errors.New("tasks: repository is not configured")
 	}
@@ -323,19 +336,29 @@ func (r *Repo) ListPending(ctx context.Context, limit int) ([]*Task, error) {
 	}
 	return r.scanTasks(r.db.QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
-		 WHERE state NOT IN ('success', 'failure')
-		 ORDER BY id ASC LIMIT $1`, limit))
+		 WHERE family = $1 AND state NOT IN ('success', 'failure')
+		 ORDER BY id ASC LIMIT $2`, family, limit))
 }
 
-// ListReconcilable 返回可能需要补偿的终态任务（本批最小版本）。
+// ListReconcilable 返回指定家族中可能需要补偿的终态任务（本批最小版本）。
 //
 // 判定依据是 private_data 上的布尔标记：billing_pending 在终态 CAS 的同一
 // 语句里写入，覆盖「状态已终态但结算/退款尚未发生就崩溃」的窗口；settlement_pending
 // / refund_pending 是 T6a/T6b 结算失败时留下的标记。
 //
+// 【family 过滤的作用（R-MJ-04）】补偿 = 按该族的计费语义动钱。插件 poller
+// 的补偿扫描只认领 family='plugin'，明确排除 MJ 行：MJ 的结算时机（R-MJ-01：
+// 提交 hold → 终态终结/退款）与提交路径要到 MJ-a2/d 才接线，在接线前让插件
+// 补偿器替 MJ 行结算等于在未知语义上动资金。MJ 族自己的补偿扫描随 MJ-a2
+// （写入 request_id）一起接；settleTerminal 本身对两族是同一套「SUCCESS 按
+// 预扣额结清 / FAILURE 全额退款」语义，届时只需传入 FamilyMJ。
+//
 // 扫描只取最近的终态行没有索引可依（partial pending 索引只覆盖未完成态）；
 // LIMIT 让单轮成本有界，索引优化与分页属 T6c。
-func (r *Repo) ListReconcilable(ctx context.Context, limit int) ([]*Task, error) {
+func (r *Repo) ListReconcilable(ctx context.Context, family string, limit int) ([]*Task, error) {
+	if !ValidFamily(family) {
+		return nil, fmt.Errorf("tasks: list reconcilable: unknown family %q", family)
+	}
 	if r == nil || r.db == nil {
 		return nil, errors.New("tasks: repository is not configured")
 	}
@@ -344,11 +367,12 @@ func (r *Repo) ListReconcilable(ctx context.Context, limit int) ([]*Task, error)
 	}
 	return r.scanTasks(r.db.QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
-		 WHERE state IN ('success', 'failure')
+		 WHERE family = $1
+		   AND state IN ('success', 'failure')
 		   AND (private_data @> '{"billing_pending": true}'::jsonb
 		        OR private_data @> '{"settlement_pending": true}'::jsonb
 		        OR private_data @> '{"refund_pending": true}'::jsonb)
-		 ORDER BY id ASC LIMIT $1`, limit))
+		 ORDER BY id ASC LIMIT $2`, family, limit))
 }
 
 func (r *Repo) scanTasks(rows *sql.Rows, err error) ([]*Task, error) {

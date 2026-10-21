@@ -61,6 +61,13 @@ type fakePollRepo struct {
 	updates []*Task
 	// casLog 记录每次 ApplyPoll 的 from → to。
 	casLog []string
+	// families 记录每次领取/补偿传入的 family，供断言「插件 poller 固定
+	// 请求 plugin、MJ poller 固定请求 mj」。
+	families []string
+	// ignoreFamily 模拟「领取 SQL 漏掉 family 过滤」的故障注入：仍记录
+	// 请求的 family，但返回所有族的非终态行，用于验证 processTask 的第二道
+	// family 防御（R-MJ-04 纵深防御）。
+	ignoreFamily bool
 }
 
 func newFakePollRepo() *fakePollRepo {
@@ -78,14 +85,16 @@ func (f *fakePollRepo) add(t *Task) *Task {
 	return cloneTask(copied)
 }
 
-func (f *fakePollRepo) ListPending(_ context.Context, limit int) ([]*Task, error) {
+func (f *fakePollRepo) ListPendingByFamily(_ context.Context, family string, limit int) ([]*Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.families = append(f.families, family)
 	out := make([]*Task, 0)
 	for _, t := range f.tasks {
-		if !t.State.Terminal() {
-			out = append(out, cloneTask(t))
+		if t.State.Terminal() || (!f.ignoreFamily && t.Family != family) {
+			continue
 		}
+		out = append(out, cloneTask(t))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	if len(out) > limit {
@@ -94,12 +103,13 @@ func (f *fakePollRepo) ListPending(_ context.Context, limit int) ([]*Task, error
 	return out, nil
 }
 
-func (f *fakePollRepo) ListReconcilable(_ context.Context, limit int) ([]*Task, error) {
+func (f *fakePollRepo) ListReconcilable(_ context.Context, family string, limit int) ([]*Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.families = append(f.families, family)
 	out := make([]*Task, 0)
 	for _, t := range f.tasks {
-		if !t.State.Terminal() {
+		if !t.State.Terminal() || (!f.ignoreFamily && t.Family != family) {
 			continue
 		}
 		if boolFlag(t.PrivateData["billing_pending"]) || boolFlag(t.PrivateData["settlement_pending"]) ||
@@ -169,6 +179,13 @@ func (f *fakePollRepo) get(id int64) *Task {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return cloneTask(f.tasks[id])
+}
+
+// requestedFamilies 返回每次领取/补偿请求的 family 快照。
+func (f *fakePollRepo) requestedFamilies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.families...)
 }
 
 func cloneTask(t *Task) *Task {
@@ -285,7 +302,7 @@ func submittedTask(id int64, channelID int64) *Task {
 		ID:             id,
 		PublicTaskID:   fmt.Sprintf("task_%032d", id),
 		UpstreamTaskID: fmt.Sprintf("up_%d", id),
-		Family:         "plugin",
+		Family:         FamilyPlugin,
 		Action:         "generate",
 		PluginKey:      "sample",
 		FetchMode:      "poll",
@@ -299,6 +316,18 @@ func submittedTask(id int64, channelID int64) *Task {
 		PrivateData: map[string]any{"request_id": fmt.Sprintf("req_%d", id), "token_id": int64(9)},
 		Data:        map[string]any{},
 	}
+}
+
+// mjSubmittedTask 构造 MJ 族任务的测试投影。
+//
+// R-MJ-03 冻结：family=mj ⇒ plugin_key=”（无插件），MJ 的 Action 由
+// family 解释，不能落进插件的动作词表。
+func mjSubmittedTask(id int64, channelID int64) *Task {
+	task := submittedTask(id, channelID)
+	task.Family = FamilyMJ
+	task.PluginKey = ""
+	task.Action = "IMAGINE"
+	return task
 }
 
 func TestPollSuccessKeepsReservation(t *testing.T) {
@@ -711,5 +740,172 @@ func TestNormalizeUsageClampsAndFilters(t *testing.T) {
 	}
 	if _, ok := got["cost"]; ok {
 		t.Fatalf("undeclared field must be dropped: %#v", got)
+	}
+}
+
+// ---------- W8/MJ-A0：两族领取隔离（R-MJ-04） ----------
+
+// TestPluginPollerRequestsPluginFamily：插件 poller 的领取与补偿都必须固定
+// 请求 family='plugin'。这是 R-MJ-04 的第一道防护（SQL 过滤）。
+func TestPluginPollerRequestsPluginFamily(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":10}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	repo.add(submittedTask(1, 7))
+	repo.add(mjSubmittedTask(2, 7))
+
+	p := newTestPoller(t, repo, &fakeHandoff{}, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	families := repo.requestedFamilies()
+	// 一轮 = pollOnce + reconcileOnce 各一次领取。
+	if len(families) != 2 {
+		t.Fatalf("expected two family-scoped claims, got %v", families)
+	}
+	for _, family := range families {
+		if family != FamilyPlugin {
+			t.Fatalf("plugin poller must claim family=%q, got %q", FamilyPlugin, family)
+		}
+	}
+}
+
+// TestPluginPollerSkipsMJRowEvenIfClaimed 验证第二道 family 防御（纵深防御）。
+//
+// 用 ignoreFamily 故障注入模拟「领取 SQL 漏掉 family 过滤」：假仓储仍把
+// MJ 行交给插件 poller。若 processTask 没有 family 断言，MJ 行会走
+// plugin_unavailable 累计失败（20 次后 FAILURE + 退款，R-MJ-04 的资金损失）。
+func TestPluginPollerSkipsMJRowEvenIfClaimed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"SUCCESS","progress":100}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.ignoreFamily = true
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	pluginTask := repo.add(submittedTask(1, 7))
+	mjTask := repo.add(mjSubmittedTask(2, 7))
+	handoff := &fakeHandoff{}
+
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	if got := repo.get(pluginTask.ID); got.State != StateSuccess {
+		t.Fatalf("plugin task must still be polled normally, state=%s", got.State)
+	}
+	got := repo.get(mjTask.ID)
+	if got.State != StateSubmitted || privateInt(got.PrivateData["poll_failures"]) != 0 || got.Quota != 100 {
+		t.Fatalf("MJ row must stay untouched by the plugin poller: %#v", got)
+	}
+	// 只有插件任务被结算（按预扣额终止），MJ 行绝不触发退款。
+	if handoff.refundCount() != 0 || handoff.terminateCount() != 1 || handoff.terminates[0] != "req_1" {
+		t.Fatalf("plugin poller settled the wrong rows: refunds=%v terminates=%v",
+			handoff.refunds, handoff.terminates)
+	}
+}
+
+// TestMJPollerClaimsOnlyMJFamily：MJ poller 的领取固定 family='mj'。
+func TestMJPollerClaimsOnlyMJFamily(t *testing.T) {
+	repo := newFakePollRepo()
+	repo.add(submittedTask(1, 7))
+	mjTask := repo.add(mjSubmittedTask(2, 7))
+
+	var claimed []int64
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo: repo,
+		Handler: func(_ context.Context, task *Task) error {
+			claimed = append(claimed, task.ID)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+	p.RunOnce(context.Background())
+
+	if len(claimed) != 1 || claimed[0] != mjTask.ID {
+		t.Fatalf("MJ poller must claim only the mj row, got %v", claimed)
+	}
+	families := repo.requestedFamilies()
+	if len(families) != 1 || families[0] != FamilyMJ {
+		t.Fatalf("MJ poller must request family=%q, got %v", FamilyMJ, families)
+	}
+}
+
+// TestMJPollerRejectsNonMJRow：即使领取 SQL 失效，MJ poller 也只推进 mj 行。
+func TestMJPollerRejectsNonMJRow(t *testing.T) {
+	repo := newFakePollRepo()
+	repo.ignoreFamily = true
+	repo.add(submittedTask(1, 7))
+	mjTask := repo.add(mjSubmittedTask(2, 7))
+
+	var claimed []int64
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo: repo,
+		Handler: func(_ context.Context, task *Task) error {
+			claimed = append(claimed, task.ID)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+	p.RunOnce(context.Background())
+
+	if len(claimed) != 1 || claimed[0] != mjTask.ID {
+		t.Fatalf("MJ poller must reject non-mj rows, got %v", claimed)
+	}
+}
+
+// TestListReconcilableFamilyScopeAndMJSettlement：补偿扫描按 family 隔离，
+// 且 MJ 行复用同一套终态结算语义（FAILURE 全额退款；SUCCESS 按预扣额结清）。
+//
+// 本用例冻结的是「数据面语义」而不是 MJ 的计费实现（R-MJ-01 的时机接线在
+// MJ-a2/d）：只要行上有 request_id/token_id，settleTerminal 对两族给出同一
+// 结论，因此将来 MJ poller 的补偿扫描可以安全复用。
+func TestListReconcilableFamilyScopeAndMJSettlement(t *testing.T) {
+	repo := newFakePollRepo()
+	pluginTask := submittedTask(1, 7)
+	pluginTask.State = StateFailure
+	pluginTask.PrivateData["billing_pending"] = true
+	mjTask := mjSubmittedTask(2, 7)
+	mjTask.State = StateFailure
+	mjTask.PrivateData["billing_pending"] = true
+	repo.add(pluginTask)
+	repo.add(mjTask)
+
+	pluginRows, err := repo.ListReconcilable(context.Background(), FamilyPlugin, 100)
+	if err != nil || len(pluginRows) != 1 || pluginRows[0].ID != pluginTask.ID {
+		t.Fatalf("plugin reconcilable rows = %v (err=%v)", pluginRows, err)
+	}
+	mjRows, err := repo.ListReconcilable(context.Background(), FamilyMJ, 100)
+	if err != nil || len(mjRows) != 1 || mjRows[0].ID != mjTask.ID {
+		t.Fatalf("mj reconcilable rows = %v (err=%v)", mjRows, err)
+	}
+
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.settleTerminal(context.Background(), repo.get(mjTask.ID), nil)
+	if handoff.refundCount() != 1 || handoff.refunds[0] != "req_2" {
+		t.Fatalf("MJ failure must refund through the shared terminal path: %v", handoff.refunds)
+	}
+	if got := repo.get(mjTask.ID); got.Quota != 0 {
+		t.Fatalf("MJ failure refund must zero quota, got %d", got.Quota)
+	}
+}
+
+// TestListReconcilableRejectsUnknownFamily：拼错的 family 必须报错而不是
+// 静默返回空集（否则资金侧的领取/补偿会无声停摆）。
+func TestListReconcilableRejectsUnknownFamily(t *testing.T) {
+	repo := NewRepo(nil)
+	if _, err := repo.ListPendingByFamily(context.Background(), "Plugin", 10); err == nil {
+		t.Fatal("unknown family must be rejected")
+	}
+	if _, err := repo.ListReconcilable(context.Background(), "", 10); err == nil {
+		t.Fatal("empty family must be rejected")
 	}
 }

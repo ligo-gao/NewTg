@@ -75,17 +75,37 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 		return nil, fmt.Errorf("worker: task poller: %w", err)
 	}
 
+	// W8/MJ-A0：MJ 族有独立的领取入口（family='mj'）。A0 只装配领取骨架
+	// （Handler 为 nil：只领取、不推进/不结算）；MJ-b 在这里注入查询驱动，
+	// MJ-a2/d 注入计费时机。先装配的价值是让「MJ 行有唯一归属的 poller」
+	// 在数据面上成立，而不是只依赖插件 poller 的 SQL 过滤（R-MJ-04 纵深防御）。
+	mjPoller, err := tasks.NewMJPoller(tasks.MJPollerConfig{
+		Repo:   tasks.NewRepo(db),
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("worker: mj task poller: %w", err)
+	}
+
 	pollCtx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
+	mjDone := make(chan struct{})
 	go func() {
 		defer close(done)
 		if err := poller.Run(pollCtx); err != nil {
 			log.Error("worker: task poller exited with error", "error", err)
 		}
 	}()
+	go func() {
+		defer close(mjDone)
+		if err := mjPoller.Run(pollCtx); err != nil {
+			log.Error("worker: mj task poller exited with error", "error", err)
+		}
+	}()
 	return func() {
 		cancel()
 		<-done
+		<-mjDone
 	}, nil
 }
 

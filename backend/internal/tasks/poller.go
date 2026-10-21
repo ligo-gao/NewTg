@@ -54,9 +54,13 @@ type PluginSnapshotter interface {
 }
 
 // PendingRepo 是轮询/补偿所需的存储面（生产 *Repo）。
+//
+// 两个列表方法都必须带 family：插件 poller 固定传 FamilyPlugin，MJ poller
+// 固定传 FamilyMJ。两族共用 tasks 表，漏掉 family 会让一族领取/结算另一族
+// 的行（R-MJ-04），这是资金正确性问题而不是性能问题。
 type PendingRepo interface {
-	ListPending(ctx context.Context, limit int) ([]*Task, error)
-	ListReconcilable(ctx context.Context, limit int) ([]*Task, error)
+	ListPendingByFamily(ctx context.Context, family string, limit int) ([]*Task, error)
+	ListReconcilable(ctx context.Context, family string, limit int) ([]*Task, error)
 	GetChannel(ctx context.Context, id int64) (*ChannelTarget, error)
 	ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate) (bool, error)
 	UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error
@@ -205,9 +209,13 @@ func (p *Poller) runCycle(ctx context.Context) {
 	p.reconcileOnce(ctx)
 }
 
-// pollOnce 拉取未完成任务并按渠道分组串行处理。
+// pollOnce 拉取本族未完成任务并按渠道分组串行处理。
+//
+// 固定 family='plugin'：本 poller 只解释插件族的 Action、只调用插件钩子、
+// 只按插件 1440m 超时推进。MJ 行由 MJPoller 领取（R-MJ-04）；SQL 过滤是
+// 第一道隔离，processTask 还有第二道（纵深防御）。
 func (p *Poller) pollOnce(ctx context.Context) {
-	tasks, err := p.repo.ListPending(ctx, p.queryLimit)
+	tasks, err := p.repo.ListPendingByFamily(ctx, FamilyPlugin, p.queryLimit)
 	if err != nil {
 		// 扫描失败 ≠ 无未完成任务：不更新任何水位，下一轮重试。
 		p.log.Error("tasks: list pending tasks failed; retrying next round", "error", err)
@@ -246,6 +254,16 @@ func (p *Poller) pollOnce(ctx context.Context) {
 // processTask 推进单个任务：超时检查 → 插件构建查询 → 出站 → 分类处理。
 func (p *Poller) processTask(ctx context.Context, task *Task) {
 	if task == nil || task.State.Terminal() {
+		return
+	}
+	// 【纵深防御 R-MJ-04】SQL 已按 family='plugin' 过滤，但轮询还有其它入口
+	// （测试 fake、将来新增的领取路径、回滚期间的旧二进制），任何一条漏掉
+	// family 都会让插件 poller 对 MJ 行累计 plugin_unavailable 并最终
+	// FAILURE + 退款。这里在动任何状态之前直接退出：不改 state、不加
+	// poll_failures、不结算——未识别的行保持原样比错误推进安全。
+	if task.Family != FamilyPlugin {
+		p.log.Warn("tasks: plugin poller received a non-plugin task; skipping (family isolation)",
+			"task_id", task.PublicTaskID, "family", task.Family)
 		return
 	}
 	if p.timedOut(task) {
