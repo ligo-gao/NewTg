@@ -8652,9 +8652,13 @@ paths:
         '402':
           $ref: '#/components/responses/Error402'
         '429':
-          $ref: '#/components/responses/Error429'
+          $ref: '#/components/responses/RelayError429'
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
           $ref: '#/components/responses/Error503'
   /v1/messages:
@@ -8699,9 +8703,13 @@ paths:
         '413':
           description: 请求体超过 32 MiB 上限
         '429':
-          $ref: '#/components/responses/Error429'
+          $ref: '#/components/responses/RelayError429'
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '501':
           $ref: '#/components/responses/Error501'
         '502':
@@ -8746,6 +8754,10 @@ paths:
           description: 请求体超过任务提交上限 4 MiB（`maxTaskSubmitBytes`）
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '501':
           $ref: '#/components/responses/Error501'
         '502':
@@ -8860,9 +8872,13 @@ paths:
         '404':
           description: 不支持的 /pg/* 子路径
         '429':
-          $ref: '#/components/responses/Error429'
+          $ref: '#/components/responses/RelayError429'
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
           $ref: '#/components/responses/Error503'
   /pg/models:
@@ -9482,6 +9498,10 @@ paths:
           description: 请求体超过 4 MiB
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '502':
           description: 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败）
     get:
@@ -9628,6 +9648,10 @@ paths:
           description: 请求体超过任务提交上限 4 MiB
         '500':
           $ref: '#/components/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '502':
           description: 上游提交失败（提交管线已退款）
   /v1/videos/{video_id}:
@@ -10456,6 +10480,32 @@ components:
         credentials_set:
           type: boolean
           description: 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。
+    RelayError:
+      type: object
+      description: |
+        中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+        ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - type
+            - code
+          properties:
+            message:
+              type: string
+              description: 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s`
+            type:
+              type: string
+              description: 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
+            code:
+              type: string
+              description: |
+                机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
+                `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
     Language:
       type: string
       enum:
@@ -18967,7 +19017,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     Error429:
-      description: 触发限流
+      description: 触发限流（管理面/公开面；RFC 7807 problem+json）
       headers:
         Retry-After:
           description: 建议重试等待秒数
@@ -18978,6 +19028,24 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    RelayError429:
+      description: |
+        触发中继准入限流（`rate_limit_exceeded`）。`Retry-After` 为建议重试的
+        整数秒数；响应体是 OpenAI 兼容错误信封（`{error:{message,type,code}}`）。
+      headers:
+        Retry-After:
+          description: 建议重试等待秒数（向上取整）
+          schema:
+            type: integer
+            minimum: 0
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RelayError'
     Error500:
       description: 服务端内部错误
       content:

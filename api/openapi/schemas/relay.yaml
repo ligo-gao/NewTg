@@ -2,4 +2,32 @@
 # 真源为 backend/internal/contract/*.go（IR）与各 adapter；对外以 externalDocs 指向
 # OpenAI/Anthropic/Gemini 公开规范。本文件保留域槽位，供 M1+ 需要时登记非协议面的
 # 网关自有枚举（如错误 code 表）使用。
-schemas: {}
+schemas:
+  # /v1（以及 /pg）唯一的错误信封（relay-01 §3.6）。
+  #
+  # 与 /api/* 的 RFC 7807 problem+json 刻意不同：中继协议面要能被 OpenAI/Anthropic
+  # SDK 原样解析，所以形状必须是 `{error:{...}}`。这里的真源不是本文档，而是
+  # backend/internal/httpapi/relay_auth.go 的 relayErrorEnvelope——W7/M5-c 只把
+  # 既成事实补进契约（R-M5-15），不改运行时形状。
+  RelayError:
+    type: object
+    description: |
+      中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+      ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+    required: [error]
+    properties:
+      error:
+        type: object
+        required: [message, type, code]
+        properties:
+          message:
+            type: string
+            description: 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s`
+          type:
+            type: string
+            description: 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
+          code:
+            type: string
+            description: |
+              机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
+              `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。

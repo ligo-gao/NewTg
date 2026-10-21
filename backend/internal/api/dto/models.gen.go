@@ -7632,6 +7632,22 @@ type RegisterRequest struct {
 	Username       string  `json:"username"`
 }
 
+// RelayError 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError struct {
+	Error struct {
+		// Code 机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
+		// `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
+		Code string `json:"code"`
+
+		// Message 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s`
+		Message string `json:"message"`
+
+		// Type 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
+		Type string `json:"type"`
+	} `json:"error"`
+}
+
 // RenameDeploymentRequest defines model for RenameDeploymentRequest.
 type RenameDeploymentRequest struct {
 	Name string `json:"name"`
@@ -9198,6 +9214,10 @@ type Error502 = Problem
 
 // Error503 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error503 = Problem
+
+// RelayError429 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError429 = RelayError
 
 // RegenerateTwoFABackupCodesParams defines parameters for RegenerateTwoFABackupCodes.
 type RegenerateTwoFABackupCodesParams struct {

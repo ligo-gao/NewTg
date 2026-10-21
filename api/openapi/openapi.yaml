@@ -513,6 +513,9 @@ components:
       $ref: './schemas/user.yaml#/schemas/Token'
     Channel:
       $ref: './schemas/admin.yaml#/schemas/Channel'
+    # 中继协议面的错误信封（真源 writeRelayError）；只被 RelayError429 使用。
+    RelayError:
+      $ref: './schemas/relay.yaml#/schemas/RelayError'
 
   responses:
     Error400:
@@ -531,6 +534,10 @@ components:
       $ref: './components/responses.yaml#/responses/Error422'
     Error429:
       $ref: './components/responses.yaml#/responses/Error429'
+    # 中继面 429（W7/M5-c）：OpenAI 兼容信封 + Retry-After/X-Request-ID，
+    # 与 /api/* 的 problem+json Error429 刻意分开。
+    RelayError429:
+      $ref: './components/responses.yaml#/responses/RelayError429'
     Error500:
       $ref: './components/responses.yaml#/responses/Error500'
     Error502:

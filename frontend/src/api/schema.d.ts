@@ -4803,6 +4803,23 @@ export interface components {
             credentials_set?: boolean;
         };
         /**
+         * @description 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+         *     ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+         */
+        RelayError: {
+            error: {
+                /** @description 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s` */
+                message: string;
+                /** @description 固定为 `new_api_error`（relay-01 §3.6 冻结字面量） */
+                type: string;
+                /**
+                 * @description 机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
+                 *     `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
+                 */
+                code: string;
+            };
+        };
+        /**
          * @description 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
          * @enum {string}
          */
@@ -8725,7 +8742,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description 触发限流 */
+        /** @description 触发限流（管理面/公开面；RFC 7807 problem+json） */
         Error429: {
             headers: {
                 /** @description 建议重试等待秒数 */
@@ -8734,6 +8751,22 @@ export interface components {
             };
             content: {
                 "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /**
+         * @description 触发中继准入限流（`rate_limit_exceeded`）。`Retry-After` 为建议重试的
+         *     整数秒数；响应体是 OpenAI 兼容错误信封（`{error:{message,type,code}}`）。
+         */
+        RelayError429: {
+            headers: {
+                /** @description 建议重试等待秒数（向上取整） */
+                "Retry-After"?: number;
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
             };
         };
         /** @description 服务端内部错误 */
@@ -16130,7 +16163,12 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             402: components["responses"]["Error402"];
-            429: components["responses"]["Error429"];
+            429: components["responses"]["RelayError429"];
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
@@ -16175,7 +16213,12 @@ export interface operations {
                 };
                 content?: never;
             };
-            429: components["responses"]["Error429"];
+            429: components["responses"]["RelayError429"];
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             501: components["responses"]["Error501"];
             /** @description 上游协议与端点不匹配、上游流不可用或适配器不支持流式 */
@@ -16234,6 +16277,11 @@ export interface operations {
                 };
                 content?: never;
             };
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             501: components["responses"]["Error501"];
             /** @description 上游提交失败（任务插件路径） */
@@ -16343,7 +16391,12 @@ export interface operations {
                 };
                 content?: never;
             };
-            429: components["responses"]["Error429"];
+            429: components["responses"]["RelayError429"];
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             503: components["responses"]["Error503"];
         };
@@ -16752,6 +16805,11 @@ export interface operations {
                 };
                 content?: never;
             };
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             /** @description 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败） */
             502: {
@@ -16932,6 +16990,11 @@ export interface operations {
                 };
                 content?: never;
             };
+            /**
+             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
+             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+             *     是否超限就不放行，客户端不应把它当作可重试的限流。
+             */
             500: components["responses"]["Error500"];
             /** @description 上游提交失败（提交管线已退款） */
             502: {

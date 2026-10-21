@@ -32,9 +32,13 @@ paths:
         '402':
           $ref: '../components/responses.yaml#/responses/Error402'
         '429':
-          $ref: '../components/responses.yaml#/responses/Error429'
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
@@ -83,9 +87,13 @@ paths:
         '413':
           description: 请求体超过 32 MiB 上限
         '429':
-          $ref: '../components/responses.yaml#/responses/Error429'
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
         '502':
@@ -132,6 +140,10 @@ paths:
           description: 请求体超过任务提交上限 4 MiB（`maxTaskSubmitBytes`）
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
         '502':
@@ -250,9 +262,13 @@ paths:
         '404':
           description: 不支持的 /pg/* 子路径
         '429':
-          $ref: '../components/responses.yaml#/responses/Error429'
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
@@ -307,6 +323,10 @@ paths:
           description: 请求体超过 4 MiB
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '502':
           description: 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败）
     get:
@@ -454,6 +474,10 @@ paths:
           description: 请求体超过任务提交上限 4 MiB
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+          description: |
+            服务端内部错误。限流器故障时按 fail-closed 返回
+            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
+            是否超限就不放行，客户端不应把它当作可重试的限流。
         '502':
           description: 上游提交失败（提交管线已退款）
 

@@ -49,7 +49,7 @@ responses:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
   Error429:
-    description: 触发限流
+    description: 触发限流（管理面/公开面；RFC 7807 problem+json）
     headers:
       Retry-After:
         description: 建议重试等待秒数
@@ -60,6 +60,31 @@ responses:
       application/problem+json:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
+  # RelayError429 是 /v1 与 /pg 中继协议面的限流响应（W7/M5-c，R-M5-15）。
+  #
+  # 为什么单独一个组件而不是复用 Error429：中继面的错误形状是 OpenAI 兼容
+  # 信封（application/json），不是 RFC 7807（relay-01 §3.6）。M5 限流的 429
+  # 由网关在准入阶段产生（B11→B10→B12，R-M5-05 短路），形状由
+  # writeRelayRateLimitError 冻结：x-request-id 与 message 的 requestId 同一值，
+  # Retry-After 是向上取整的整数秒（只在 429 出现；500 限流器故障不设该头）。
+  RelayError429:
+    description: |
+      触发中继准入限流（`rate_limit_exceeded`）。`Retry-After` 为建议重试的
+      整数秒数；响应体是 OpenAI 兼容错误信封（`{error:{message,type,code}}`）。
+    headers:
+      Retry-After:
+        description: 建议重试等待秒数（向上取整）
+        schema:
+          type: integer
+          minimum: 0
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
   Error500:
     description: 服务端内部错误
     content:

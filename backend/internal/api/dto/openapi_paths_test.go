@@ -39,6 +39,127 @@ func TestAdminSpecKeepsDocumentedNotFoundResponses(t *testing.T) {
 	}
 }
 
+// TestRelayRateLimitContractUsesRelayEnvelope 是 W7/M5-c 的限流契约守卫。
+//
+// 为什么直接扫源文件：drift 检查只能证明「源与生成物一致」，不能证明「源本身
+// 没有把中继 429 误写成 /api 的 problem+json」（源和 bundle 一起错时漂移检查
+// 依然 PASS）。M5 的 429 由网关自己产生，形状必须与 writeRelayError 一致：
+// {error:{message,type,code}} + Retry-After/X-Request-ID，不能回落到 RFC 7807。
+//
+// 同时反向守住 /api/*：管理面/公开面的 429 继续引用 Error429（problem+json），
+// 两组组件不得互相污染。
+func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
+	relayRaw, err := os.ReadFile("../../../../api/openapi/paths/relay.yaml")
+	if err != nil {
+		t.Fatalf("read relay.yaml: %v", err)
+	}
+	relaySpec := string(relayRaw)
+
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
+		block, ok := pathBlock(relaySpec, path)
+		if !ok {
+			t.Fatalf("spec is missing path %s", path)
+		}
+		postOp, ok := operation(block, "post")
+		if !ok {
+			t.Fatalf("%s no longer declares a POST operation", path)
+		}
+		if !strings.Contains(postOp, "$ref: '../components/responses.yaml#/responses/RelayError429'") {
+			t.Fatalf("%s POST 429 must reference the relay envelope component RelayError429", path)
+		}
+		if strings.Contains(postOp, "#/responses/Error429'") {
+			t.Fatalf("%s POST 429 must not fall back to the /api problem+json Error429", path)
+		}
+	}
+
+	responsesRaw, err := os.ReadFile("../../../../api/openapi/components/responses.yaml")
+	if err != nil {
+		t.Fatalf("read responses.yaml: %v", err)
+	}
+	responsesSpec := string(responsesRaw)
+
+	relay429, ok := componentBlock(responsesSpec, "RelayError429")
+	if !ok {
+		t.Fatal("responses.yaml is missing RelayError429")
+	}
+	// Retry-After 必须是整数秒；X-Request-ID 与响应体 message 里的 requestId 同源。
+	for _, want := range []string{
+		"Retry-After:",
+		"X-Request-ID:",
+		"type: integer",
+		"application/json",
+		"../schemas/relay.yaml#/schemas/RelayError",
+	} {
+		if !strings.Contains(relay429, want) {
+			t.Fatalf("RelayError429 must declare %q", want)
+		}
+	}
+	if strings.Contains(relay429, "application/problem+json") {
+		t.Fatal("RelayError429 must not advertise problem+json")
+	}
+
+	schemaRaw, err := os.ReadFile("../../../../api/openapi/schemas/relay.yaml")
+	if err != nil {
+		t.Fatalf("read schemas/relay.yaml: %v", err)
+	}
+	relayError, ok := componentBlock(string(schemaRaw), "RelayError")
+	if !ok {
+		t.Fatal("schemas/relay.yaml is missing RelayError")
+	}
+	for _, field := range []string{"message:", "type:", "code:"} {
+		if !strings.Contains(relayError, field) {
+			t.Fatalf("RelayError envelope must declare error.%s", strings.TrimSuffix(field, ":"))
+		}
+	}
+
+	// 反向守卫：/api/* 的 429 仍是 problem+json 组件，未被中继组件替换。
+	userRaw, err := os.ReadFile("../../../../api/openapi/paths/user.yaml")
+	if err != nil {
+		t.Fatalf("read user.yaml: %v", err)
+	}
+	account, ok := pathBlock(string(userRaw), "/api/account")
+	if !ok {
+		t.Fatal("spec is missing path /api/account")
+	}
+	if !strings.Contains(account, "$ref: '../components/responses.yaml#/responses/Error429'") {
+		t.Fatal("/api/account 429 must keep the problem+json Error429 component")
+	}
+	if strings.Contains(account, "RelayError429") {
+		t.Fatal("/api/account must not reference the relay envelope component")
+	}
+	error429, ok := componentBlock(responsesSpec, "Error429")
+	if !ok {
+		t.Fatal("responses.yaml is missing Error429")
+	}
+	if !strings.Contains(error429, "application/problem+json") {
+		t.Fatal("Error429 must remain problem+json for /api/*")
+	}
+}
+
+// componentBlock 返回公共组件文件中 `  <name>:` 起、到下一个同级键为止的文本。
+// 与 pathBlock 的区别只是键的缩进层级（组件在 responses:/schemas: 下缩进两格）。
+func componentBlock(spec, name string) (string, bool) {
+	head := "\n  " + name + ":\n"
+	start := strings.Index(spec, head)
+	if start < 0 {
+		return "", false
+	}
+	rest := spec[start+len(head):]
+	for i := 0; i < len(rest); {
+		j := strings.Index(rest[i:], "\n  ")
+		if j < 0 {
+			break
+		}
+		j += i
+		// 下一个同级键：换行 + 两空格 + 非空白字符（继续缩进表示仍是本组件）。
+		if j+3 < len(rest) && rest[j+3] != ' ' && rest[j+3] != '\n' && rest[j+3] != '#' {
+			return rest[:j], true
+		}
+		i = j + 1
+	}
+	return rest, true
+}
+
 // pathBlock 返回 `  <path>:` 起、到下一个同级路径（两空格缩进的 `/`）为止的文本。
 func pathBlock(spec, path string) (string, bool) {
 	key := "  " + path + ":\n"
