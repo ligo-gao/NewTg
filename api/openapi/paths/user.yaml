@@ -1317,10 +1317,11 @@ paths:
           in: query
           description: |
             按订单状态过滤。`refund_required`（S2/R-29②）表示「钱已收、履约
-            失败、待退款」的终态。
+            失败、待退款」；`refunded` 表示退款完成；`refund_failed` 表示渠道
+            退款失败、可重试。
           schema:
             type: string
-            enum: [pending, succeeded, failed, expired, cancelled, refund_required]
+            enum: [pending, succeeded, failed, expired, cancelled, refund_required, refunded, refund_failed]
         - name: q
           in: query
           description: 订单号子串（最长 128 字符）
@@ -2503,6 +2504,161 @@ paths:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '503':
           description: 支付渠道未配置或已停用
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  # 订阅订单退款（S3；P-13 / R-30–R-34）。
+  /api/orders/{id}/refund:
+    post:
+      tags: [admin]
+      operationId: refundSubscriptionOrder
+      x-required-permission: settings:manage
+      summary: 管理员退款一个订阅订单（全额，原路或回补钱包）
+      description: |
+        需要 `settings:manage`（比 `orders:read/manage` 更严的运营权限）。
+        只处理订阅订单（`biz_kind` = subscribe/renew/change），且必须处于
+        `succeeded`、`refund_required`（S2/R-29② 的「钱已收、履约失败」）
+        或 `refund_failed`（可重试）。
+
+        P-13：`succeeded` 订单的订阅必须**未开始且未消耗**
+        （`amount_used == 0` 且 `start_at > now`），否则 422
+        `subscription_in_use`。`refund_required` 订单不适用该判定——履约
+        根本没有发生，必须可退（R-30）。
+
+        出账路径按 `orders.provider`：
+        - `wallet`：本地回补钱包，回补额取原始 `subscription_purchase` 流水的
+          实际扣减额；订单 `refunded_amount` 与钱包 `reversal` 流水在同一事务
+          （R-31）。
+        - `stripe` / `alipay`：调用渠道退款（Stripe Idempotency-Key /
+          支付宝 out_request_no 固定为订单级键），成功后写订单与 `refunded`
+          事件。
+        - `epay`：协议没有退款 API → 409 `provider_action_unsupported`，订单
+          状态不变，需运营在渠道后台原路退款。
+
+        幂等（R-31）：同一订单重复调用返回既有结果（200），不会二次出账。
+        渠道退款失败 → 订单置 `refund_failed` 并返回 502，可用同一端点重试
+        （R-32）；重试不会二次扣减。成功时取消订阅（若仍 active）并追加
+        `subscription_events.kind='refunded'`，detail 只含
+        `order_id`/`amount`/`reason`。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/RefundOrderRequest'
+      responses:
+        '200':
+          description: 退款完成（或幂等重放返回既有结果）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/OrderView'
+        '400':
+          description: reason 非法（1–200 字符）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          description: 订单状态不可退，或该渠道不支持退款
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '422':
+          description: 订阅已开始或已消耗（subscription_in_use，P-13）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '502':
+          description: 渠道退款失败（订单已置 refund_failed，可重试）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  # 用户侧退款申请（S3）：只写订单标记，不动钱；管理员通过
+  # POST /api/orders/{id}/refund 审批并实际退款。
+  /api/subscriptions/{id}/refund-request:
+    post:
+      tags: [user]
+      operationId: requestSubscriptionRefund
+      summary: 申请退还一笔未开始、未消耗的订阅
+      description: |
+        仅本人实例；他人实例与不存在统一 404。只对购买该实例的订单写入
+        `refund_requested_at` / `refund_reason`，**不调用渠道也不变动钱包**
+        ——实际退款由管理员通过 `POST /api/orders/{id}/refund` 审批。
+
+        P-13：订阅必须未开始且未消耗（`amount_used == 0` 且
+        `start_at > now`），否则 422 `subscription_in_use`。重复申请幂等：
+        返回首次的申请时刻与理由。订单已退款 → 409；订单不是 succeeded →
+        409。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/user.yaml#/schemas/SubscriptionRefundRequest'
+      responses:
+        '200':
+          description: 已记录（幂等返回首次标记）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/SubscriptionRefundRequestView'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          description: 订阅已开始或已消耗（subscription_in_use，P-13）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 退款服务未装配（fail closed）
           content:
             application/problem+json:
               schema:

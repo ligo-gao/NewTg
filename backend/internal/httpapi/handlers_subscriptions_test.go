@@ -37,12 +37,41 @@ type fakeSubscriptionPurchase struct {
 	calls        []subscriptionPurchaseCall
 	renewCalls   []subscriptionRenewalCall
 	changeCalls  []billing.ChangePlanInput
+	refundCalls  []subscriptionRefundCall
 	result       *billing.TopupOrder
 	err          error
 	renewResult  *billing.TopupOrder
 	renewErr     error
 	changeResult *billing.ChangePlanResult
 	changeErr    error
+	refundResult *billing.RefundRequest
+	refundErr    error
+}
+
+// subscriptionRefundCall 记录用户侧退款申请（S3）。
+type subscriptionRefundCall struct {
+	subscriptionID int64
+	userID         int64
+	reason         string
+}
+
+// RequestSubscriptionRefund 是 S3 退款申请的桩：只记录入参并返回预设结果，
+// 真实 P-13 判定与订单标记由 billing 集成测试覆盖。
+func (f *fakeSubscriptionPurchase) RequestSubscriptionRefund(_ context.Context,
+	subscriptionID, userID int64, reason string) (*billing.RefundRequest, error) {
+
+	f.refundCalls = append(f.refundCalls, subscriptionRefundCall{
+		subscriptionID: subscriptionID, userID: userID, reason: reason,
+	})
+	if f.refundErr != nil {
+		return nil, f.refundErr
+	}
+	if f.refundResult != nil {
+		return f.refundResult, nil
+	}
+	return &billing.RefundRequest{
+		OrderID: 10, RequestedAt: time.Unix(1_700_000_000, 0).UTC(), Reason: reason,
+	}, nil
 }
 
 type subscriptionRenewalCall struct {
@@ -2245,6 +2274,79 @@ func TestSubscriptionEventsVisibilityAndShape(t *testing.T) {
 			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("未认证 = %d，期望 401", rr.Code)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// S3：用户侧退款申请（只写请求，不直接退款）
+// ---------------------------------------------------------------------------
+
+// TestRequestSubscriptionRefundHandler 验证端点契约：本人可申请、他人 404、
+// 缺失 reason 400、P-13 冲突映射 422、未装配支付服务 fail closed。
+func TestRequestSubscriptionRefundHandler(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID, subscriptionID := int64(51), int64(52), int64(9)
+	env.repo.mu.Lock()
+	env.repo.subs[subscriptionID] = &store.Subscription{
+		ID: subscriptionID, UserID: ownerID, PlanID: 1, Status: "active",
+	}
+	env.repo.mu.Unlock()
+	path := fmt.Sprintf("/api/subscriptions/%d/refund-request", subscriptionID)
+
+	t.Run("本人申请成功且只写请求", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, path,
+			map[string]any{"reason": "买错了套餐"}, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var body subscriptionRefundRequestView
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.OrderID != 10 || body.Reason != "买错了套餐" || body.RequestedAt.IsZero() {
+			t.Fatalf("body = %+v", body)
+		}
+		if len(env.purchase.refundCalls) != 1 ||
+			env.purchase.refundCalls[0].subscriptionID != subscriptionID ||
+			env.purchase.refundCalls[0].userID != ownerID {
+			t.Fatalf("refund calls = %+v", env.purchase.refundCalls)
+		}
+	})
+
+	t.Run("他人实例统一 404 且不调用服务", func(t *testing.T) {
+		before := len(env.purchase.refundCalls)
+		rr := env.do(t, endUser(otherID), http.MethodPost, path,
+			map[string]any{"reason": "想退款"}, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d，期望 404", rr.Code)
+		}
+		if len(env.purchase.refundCalls) != before {
+			t.Fatalf("越权请求不应到达退款服务: %+v", env.purchase.refundCalls)
+		}
+	})
+
+	t.Run("缺失 reason 400", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, path, map[string]any{}, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d，期望 400", rr.Code)
+		}
+	})
+
+	t.Run("P-13 冲突映射 422", func(t *testing.T) {
+		env.purchase.refundErr = billing.ErrSubscriptionInUse
+		defer func() { env.purchase.refundErr = nil }()
+		rr := env.do(t, endUser(ownerID), http.MethodPost, path,
+			map[string]any{"reason": "已开始使用"}, nil)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("未认证 fail-closed", func(t *testing.T) {
+		rr := env.do(t, nil, http.MethodPost, path, map[string]any{"reason": "x"}, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d，期望 403（authz 中间件 fail closed）", rr.Code)
 		}
 	})
 }

@@ -959,11 +959,12 @@ schemas:
         maxLength: 3
       status:
         type: string
-        enum: [pending, succeeded, failed, expired, cancelled, refund_required]
+        enum: [pending, succeeded, failed, expired, cancelled, refund_required, refunded, refund_failed]
         description: |
-          六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
-          升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
-          它不是 `failed`（那表示没收到钱）。
+          八态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+          升降级支付成功后订阅已被并发取消），等待退款流程处理；它不是
+          `failed`（那表示没收到钱）。`refunded`（S3）表示退款已完成；
+          `refund_failed`（S3）表示渠道退款失败、可重试（不是终态）。
       credited_credits:
         type: integer
         format: int64
@@ -1038,12 +1039,14 @@ schemas:
         maxLength: 3
       status:
         type: string
-        enum: [pending, succeeded, failed, expired, cancelled, refund_required]
+        enum: [pending, succeeded, failed, expired, cancelled, refund_required, refunded, refund_failed]
         description: |
-          六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
-          succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
-          （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
-          「钱已收、待退款」的终态。其余终态不可再迁移。
+          八态状态机（P-1 + S2/R-29② + S3）：
+          - pending → succeeded/failed/expired/cancelled；
+          - succeeded 的订阅订单在履约失败（订阅已被并发取消/换套餐）时转
+            `refund_required`（钱已收、待退款）；
+          - `refund_required` / `succeeded` → `refunded`（退款完成，终态）；
+          - 渠道退款失败 → `refund_failed`（可重试，不是终态）。
       credited_credits:
         type: integer
         format: int64
@@ -1063,6 +1066,24 @@ schemas:
         nullable: true
         minLength: 10
         maxLength: 200
+      refunded_amount:
+        type: integer
+        format: int64
+        description: 已退金额（分）；只有 `refunded` 状态非零且等于 `amount`
+      refunded_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 退款完成时刻；非 `refunded` 状态为 null
+      refund_reason:
+        type: string
+        nullable: true
+        description: 退款/退款申请理由（首次申请或管理员批准时写入）
+      refund_requested_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 用户侧申请退款的时刻；未申请为 null
       created_at:
         type: string
         format: date-time
@@ -1119,6 +1140,46 @@ schemas:
         minLength: 10
         maxLength: 200
         description: 人工完成原因（按 Unicode 字符计数）
+
+  # --- S3 订阅退款 -------------------------------------------------------
+  RefundOrderRequest:
+    type: object
+    additionalProperties: false
+    required: [reason]
+    properties:
+      reason:
+        type: string
+        minLength: 1
+        maxLength: 200
+        description: 退款原因（进入 refunded 事件 detail，按 Unicode 字符计数）
+
+  SubscriptionRefundRequest:
+    type: object
+    additionalProperties: false
+    required: [reason]
+    properties:
+      reason:
+        type: string
+        minLength: 1
+        maxLength: 200
+        description: 申请退款的原因（只写订单标记，不直接退款）
+
+  SubscriptionRefundRequestView:
+    type: object
+    additionalProperties: false
+    required: [order_id, requested_at, reason]
+    properties:
+      order_id:
+        type: integer
+        format: int64
+        description: 该订阅的购买订单 id（实际退款的目标）
+      requested_at:
+        type: string
+        format: date-time
+        description: 首次申请时刻（重复申请保持不变）
+      reason:
+        type: string
+        description: 首次申请的理由
 
   # --- M6 用量日志 / 统计 / 审计只读契约 ---------------------------------
 

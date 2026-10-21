@@ -43,15 +43,17 @@ import (
 //	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
-	"users":                   26,
-	"api_tokens":              15,
-	"user_groups":             9,
-	"system_settings":         5,
-	"channels":                24,
-	"model_pricing":           13,
-	"group_pricing":           10,
-	"redemption_codes":        11,
-	"orders":                  25,
+	"users":            26,
+	"api_tokens":       15,
+	"user_groups":      9,
+	"system_settings":  5,
+	"channels":         24,
+	"model_pricing":    13,
+	"group_pricing":    10,
+	"redemption_codes": 11,
+	// 25 列（platform-01 §0.1）+ S3 退款的 4 列
+	// （refunded_amount / refunded_at / refund_reason / refund_requested_at）。
+	"orders":                  29,
 	"wallet_transactions":     11,
 	"rankings_snapshot_runs":  8,
 	"rankings_model_stats":    10,

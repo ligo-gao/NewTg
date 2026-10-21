@@ -159,6 +159,8 @@
     "status_pending": "待支付",
     "status_succeeded": "支付成功",
     "status_refund_required": "待退款",
+    "status_refunded": "已退款",
+    "status_refund_failed": "退款失败",
     "status_failed": "支付失败",
     "status_expired": "已过期",
     "status_cancelled": "已取消",

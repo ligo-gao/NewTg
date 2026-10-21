@@ -1251,7 +1251,9 @@ const (
 	OrderViewStatusExpired        OrderViewStatus = "expired"
 	OrderViewStatusFailed         OrderViewStatus = "failed"
 	OrderViewStatusPending        OrderViewStatus = "pending"
+	OrderViewStatusRefundFailed   OrderViewStatus = "refund_failed"
 	OrderViewStatusRefundRequired OrderViewStatus = "refund_required"
+	OrderViewStatusRefunded       OrderViewStatus = "refunded"
 	OrderViewStatusSucceeded      OrderViewStatus = "succeeded"
 )
 
@@ -1266,7 +1268,11 @@ func (e OrderViewStatus) Valid() bool {
 		return true
 	case OrderViewStatusPending:
 		return true
+	case OrderViewStatusRefundFailed:
+		return true
 	case OrderViewStatusRefundRequired:
+		return true
+	case OrderViewStatusRefunded:
 		return true
 	case OrderViewStatusSucceeded:
 		return true
@@ -2289,7 +2295,9 @@ const (
 	TopupOrderViewStatusExpired        TopupOrderViewStatus = "expired"
 	TopupOrderViewStatusFailed         TopupOrderViewStatus = "failed"
 	TopupOrderViewStatusPending        TopupOrderViewStatus = "pending"
+	TopupOrderViewStatusRefundFailed   TopupOrderViewStatus = "refund_failed"
 	TopupOrderViewStatusRefundRequired TopupOrderViewStatus = "refund_required"
+	TopupOrderViewStatusRefunded       TopupOrderViewStatus = "refunded"
 	TopupOrderViewStatusSucceeded      TopupOrderViewStatus = "succeeded"
 )
 
@@ -2304,7 +2312,11 @@ func (e TopupOrderViewStatus) Valid() bool {
 		return true
 	case TopupOrderViewStatusPending:
 		return true
+	case TopupOrderViewStatusRefundFailed:
+		return true
 	case TopupOrderViewStatusRefundRequired:
+		return true
+	case TopupOrderViewStatusRefunded:
 		return true
 	case TopupOrderViewStatusSucceeded:
 		return true
@@ -2964,7 +2976,9 @@ const (
 	ListOrdersParamsStatusExpired        ListOrdersParamsStatus = "expired"
 	ListOrdersParamsStatusFailed         ListOrdersParamsStatus = "failed"
 	ListOrdersParamsStatusPending        ListOrdersParamsStatus = "pending"
+	ListOrdersParamsStatusRefundFailed   ListOrdersParamsStatus = "refund_failed"
 	ListOrdersParamsStatusRefundRequired ListOrdersParamsStatus = "refund_required"
+	ListOrdersParamsStatusRefunded       ListOrdersParamsStatus = "refunded"
 	ListOrdersParamsStatusSucceeded      ListOrdersParamsStatus = "succeeded"
 )
 
@@ -2979,7 +2993,11 @@ func (e ListOrdersParamsStatus) Valid() bool {
 		return true
 	case ListOrdersParamsStatusPending:
 		return true
+	case ListOrdersParamsStatusRefundFailed:
+		return true
 	case ListOrdersParamsStatusRefundRequired:
+		return true
+	case ListOrdersParamsStatusRefunded:
 		return true
 	case ListOrdersParamsStatusSucceeded:
 		return true
@@ -5581,10 +5599,24 @@ type OrderView struct {
 	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
 	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
 
-	// Status 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
-	// succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
-	// （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
-	// 「钱已收、待退款」的终态。其余终态不可再迁移。
+	// RefundReason 退款/退款申请理由（首次申请或管理员批准时写入）
+	RefundReason *string `json:"refund_reason,omitempty"`
+
+	// RefundRequestedAt 用户侧申请退款的时刻；未申请为 null
+	RefundRequestedAt *time.Time `json:"refund_requested_at,omitempty"`
+
+	// RefundedAmount 已退金额（分）；只有 `refunded` 状态非零且等于 `amount`
+	RefundedAmount *int64 `json:"refunded_amount,omitempty"`
+
+	// RefundedAt 退款完成时刻；非 `refunded` 状态为 null
+	RefundedAt *time.Time `json:"refunded_at,omitempty"`
+
+	// Status 八态状态机（P-1 + S2/R-29② + S3）：
+	// - pending → succeeded/failed/expired/cancelled；
+	// - succeeded 的订阅订单在履约失败（订阅已被并发取消/换套餐）时转
+	//   `refund_required`（钱已收、待退款）；
+	// - `refund_required` / `succeeded` → `refunded`（退款完成，终态）；
+	// - 渠道退款失败 → `refund_failed`（可重试，不是终态）。
 	Status    OrderViewStatus `json:"status"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	UserId    int64           `json:"user_id"`
@@ -5598,10 +5630,12 @@ type OrderViewFailureCode string
 // （充值/续费）为 stripe/alipay/epay。
 type OrderViewProvider string
 
-// OrderViewStatus 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
-// succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
-// （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
-// 「钱已收、待退款」的终态。其余终态不可再迁移。
+// OrderViewStatus 八态状态机（P-1 + S2/R-29② + S3）：
+//   - pending → succeeded/failed/expired/cancelled；
+//   - succeeded 的订阅订单在履约失败（订阅已被并发取消/换套餐）时转
+//     `refund_required`（钱已收、待退款）；
+//   - `refund_required` / `succeeded` → `refunded`（退款完成，终态）；
+//   - 渠道退款失败 → `refund_failed`（可重试，不是终态）。
 type OrderViewStatus string
 
 // Page offset 分页信封；各域 items 的 DTO 随里程碑细化。
@@ -7004,6 +7038,12 @@ type RedemptionCodeStatusResult struct {
 // RedemptionCodeStatusResultStatus defines model for RedemptionCodeStatusResult.Status.
 type RedemptionCodeStatusResultStatus string
 
+// RefundOrderRequest defines model for RefundOrderRequest.
+type RefundOrderRequest struct {
+	// Reason 退款原因（进入 refunded 事件 detail，按 Unicode 字符计数）
+	Reason string `json:"reason"`
+}
+
 // RegisterRequest 注册成功 201 + 会话 Cookie（自动登录）。重复 username/email 统一 409，
 // 文案不区分字段级差异以防账号枚举。邮箱域名白名单开启时域外地址 422。
 type RegisterRequest struct {
@@ -7336,6 +7376,24 @@ type SubscriptionPurchaseRequest struct {
 // `pay_url` + `form_fields`（与充值同构）。
 type SubscriptionPurchaseRequestProvider string
 
+// SubscriptionRefundRequest defines model for SubscriptionRefundRequest.
+type SubscriptionRefundRequest struct {
+	// Reason 申请退款的原因（只写订单标记，不直接退款）
+	Reason string `json:"reason"`
+}
+
+// SubscriptionRefundRequestView defines model for SubscriptionRefundRequestView.
+type SubscriptionRefundRequestView struct {
+	// OrderId 该订阅的购买订单 id（实际退款的目标）
+	OrderId int64 `json:"order_id"`
+
+	// Reason 首次申请的理由
+	Reason string `json:"reason"`
+
+	// RequestedAt 首次申请时刻（重复申请保持不变）
+	RequestedAt time.Time `json:"requested_at"`
+}
+
 // SubscriptionRenewRequest defines model for SubscriptionRenewRequest.
 type SubscriptionRenewRequest struct {
 	// Provider 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
@@ -7661,9 +7719,10 @@ type TopupOrderView struct {
 	// 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 	Provider TopupOrderViewProvider `json:"provider"`
 
-	// Status 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
-	// 升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
-	// 它不是 `failed`（那表示没收到钱）。
+	// Status 八态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+	// 升降级支付成功后订阅已被并发取消），等待退款流程处理；它不是
+	// `failed`（那表示没收到钱）。`refunded`（S3）表示退款已完成；
+	// `refund_failed`（S3）表示渠道退款失败、可重试（不是终态）。
 	Status TopupOrderViewStatus `json:"status"`
 }
 
@@ -7675,9 +7734,10 @@ type TopupOrderViewFailureCode string
 // 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 type TopupOrderViewProvider string
 
-// TopupOrderViewStatus 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
-// 升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
-// 它不是 `failed`（那表示没收到钱）。
+// TopupOrderViewStatus 八态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+// 升降级支付成功后订阅已被并发取消），等待退款流程处理；它不是
+// `failed`（那表示没收到钱）。`refunded`（S3）表示退款已完成；
+// `refund_failed`（S3）表示渠道退款失败、可重试（不是终态）。
 type TopupOrderViewStatus string
 
 // TopupProviderConfig 公开的渠道配置；secret 永不出现。
@@ -8875,7 +8935,8 @@ type ListOrdersParams struct {
 	PageSize *int `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// Status 按订单状态过滤。`refund_required`（S2/R-29②）表示「钱已收、履约
-	// 失败、待退款」的终态。
+	// 失败、待退款」；`refunded` 表示退款完成；`refund_failed` 表示渠道
+	// 退款失败、可重试。
 	Status *ListOrdersParamsStatus `form:"status,omitempty" json:"status,omitempty"`
 
 	// Q 订单号子串（最长 128 字符）
@@ -8907,6 +8968,13 @@ type CancelOrderParams struct {
 
 // CompleteOrderManuallyParams defines parameters for CompleteOrderManually.
 type CompleteOrderManuallyParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RefundSubscriptionOrderParams defines parameters for RefundSubscriptionOrder.
+type RefundSubscriptionOrderParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -9252,6 +9320,13 @@ type ChangeSubscriptionPlanParams struct {
 type ListSubscriptionEventsParams struct {
 	// AfterSeq 增量为游标；缺省 0 表示从头拉取。负数或非整数 → 400。
 	AfterSeq *int64 `form:"after_seq,omitempty" json:"after_seq,omitempty"`
+}
+
+// RequestSubscriptionRefundParams defines parameters for RequestSubscriptionRefund.
+type RequestSubscriptionRefundParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // RenewSubscriptionParams defines parameters for RenewSubscription.
@@ -9867,6 +9942,9 @@ type CreateOrderJSONRequestBody = CreateOrderRequest
 // CompleteOrderManuallyJSONRequestBody defines body for CompleteOrderManually for application/json ContentType.
 type CompleteOrderManuallyJSONRequestBody = CompleteOrderRequest
 
+// RefundSubscriptionOrderJSONRequestBody defines body for RefundSubscriptionOrder for application/json ContentType.
+type RefundSubscriptionOrderJSONRequestBody = RefundOrderRequest
+
 // ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
 type ChangePasswordJSONRequestBody = ChangePasswordRequest
 
@@ -9929,6 +10007,9 @@ type PurchaseSubscriptionJSONRequestBody = SubscriptionPurchaseRequest
 
 // ChangeSubscriptionPlanJSONRequestBody defines body for ChangeSubscriptionPlan for application/json ContentType.
 type ChangeSubscriptionPlanJSONRequestBody = SubscriptionChangeRequest
+
+// RequestSubscriptionRefundJSONRequestBody defines body for RequestSubscriptionRefund for application/json ContentType.
+type RequestSubscriptionRefundJSONRequestBody = SubscriptionRefundRequest
 
 // RenewSubscriptionJSONRequestBody defines body for RenewSubscription for application/json ContentType.
 type RenewSubscriptionJSONRequestBody = SubscriptionRenewRequest

@@ -159,6 +159,8 @@
     "status_pending": "En attente",
     "status_succeeded": "Réussie",
     "status_refund_required": "Remboursement requis",
+    "status_refunded": "Remboursé",
+    "status_refund_failed": "Échec du remboursement",
     "status_failed": "Échouée",
     "status_expired": "Expirée",
     "status_cancelled": "Annulée",

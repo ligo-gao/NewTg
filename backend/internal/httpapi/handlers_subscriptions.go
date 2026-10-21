@@ -106,6 +106,11 @@ const (
 	// P-10：跨币种/跨周期单位无法定义折算基准（422，独立 type 让前端可
 	// 直接提示「请选择同周期同币种的套餐」而不是笼统的 422）。
 	problemTypeCycleMismatch = "https://newtg.dev/problems/subscription_cycle_mismatch"
+	// 退款申请（S3）：invalid=请求体/字段非法，conflict=订阅不可退或订单
+	// 已不在可申请状态；subscription_in_use 复用 handlers_topup.go 的 P-13
+	// 独立问题类型（已开始/已消耗，422）。
+	problemTypeRefundRequestInvalid  = "https://newtg.dev/problems/invalid_subscription_refund_request"
+	problemTypeRefundRequestConflict = "https://newtg.dev/problems/subscription_refund_request_conflict"
 )
 
 // SubscriptionPurchaseService 是订阅购买的支付接缝。
@@ -122,6 +127,10 @@ type SubscriptionPurchaseService interface {
 	// ChangePlan 创建升级/降级请求（S2）。应补差价为 0 时同一事务内即时生效；
 	// > 0 时返回支付载荷，由结算分支改写**同一实例**的套餐快照与额度。
 	ChangePlan(ctx context.Context, in billing.ChangePlanInput) (billing.ChangePlanResult, error)
+	// RequestSubscriptionRefund 记录用户侧退款申请（S3）：只写订单标记，
+	// 不动钱；管理员通过 POST /api/orders/{id}/refund 审批并实际退款。
+	RequestSubscriptionRefund(ctx context.Context, subscriptionID, userID int64,
+		reason string) (*billing.RefundRequest, error)
 }
 
 // 订阅域动作（字段策略按动作登记；与权限键不同）。
@@ -139,6 +148,7 @@ var (
 	userSubscriptionCancelAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
 	userSubscriptionRenewAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
 	userSubscriptionChangeAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "change"}
+	userSubscriptionRefundAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "refund_request"}
 )
 
 // SubscriptionHandlerConfig 是订阅端点装配输入。
@@ -247,6 +257,11 @@ func (h *SubscriptionHandlers) registerPolicies() {
 		"plan_id":  nil,
 		"provider": nil,
 	}})
+	// 退款申请只接受 reason：金额/订单号一律由服务端按实例的购买订单解析，
+	// 客户端不能指定要退哪一笔。
+	h.authz.SetWritePolicy(userSubscriptionRefundAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"reason": nil,
+	}})
 	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
 	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
 	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
@@ -296,6 +311,9 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	// cancelled/expired → 409（过期实例没有剩余价值可折算，应走购买）。
 	mux.Handle("POST /api/subscriptions/{id}/change",
 		self(userSubscriptionChangeAction, h.handleChangeSubscription))
+	// 退款申请（S3）：只写订单标记，不直接退款；管理员通过订单退款端点审批。
+	mux.Handle("POST /api/subscriptions/{id}/refund-request",
+		self(userSubscriptionRefundAction, h.handleRequestSubscriptionRefund))
 	mux.Handle("GET /api/billing-preference", http.HandlerFunc(h.handleGetBillingPreference))
 	mux.Handle("PUT /api/billing-preference", self(userBillingPreferenceAction, h.handlePutBillingPreference))
 	mux.Handle("POST /api/subscription/purchase", self(userSubscriptionPurchaseAction, h.handlePurchase))
@@ -1327,6 +1345,88 @@ func (h *SubscriptionHandlers) handleCancelSubscriptionAtPeriodEnd(w http.Respon
 func writeCancelNotActiveProblem(w http.ResponseWriter) {
 	writeAdminProblem(w, http.StatusConflict, problemTypeSubscriptionNotActive,
 		"subscription_not_active", "subscription is no longer active and cannot be cancelled at period end")
+}
+
+// subscriptionRefundRequest 是 POST /api/subscriptions/{id}/refund-request 的
+// 请求体。只有 reason；目标订单由服务端按实例的购买订单解析。
+type subscriptionRefundRequest struct {
+	Reason *string `json:"reason"`
+}
+
+// subscriptionRefundRequestView 是退款申请的回执（不含任何资金动作）。
+type subscriptionRefundRequestView struct {
+	OrderID     int64     `json:"order_id"`
+	RequestedAt time.Time `json:"requested_at"`
+	Reason      string    `json:"reason"`
+}
+
+// handleRequestSubscriptionRefund 记录用户侧退款申请（S3）。
+//
+// 与购买/续费/升降级同一数据范围口径：本人实例；他人/不存在统一 404。
+// 这里刻意不调用任何渠道或钱包：审批与出账只在管理员退款端点发生。
+func (h *SubscriptionHandlers) handleRequestSubscriptionRefund(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if h.purchase == nil {
+		// 未装配支付服务时 fail closed，绝不假装「申请已受理」。
+		writeAdminProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Refund service unavailable", "")
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	// 归属校验先于状态判定：他人实例与不存在统一 404。
+	sub, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		h.writeRepoError(w, "get subscription for refund request", err)
+		return
+	}
+	if sub.UserID != p.UserID {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	var req subscriptionRefundRequest
+	if err := readAuthJSON(r, &req); err != nil || req.Reason == nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRefundRequestInvalid,
+			"Invalid refund request", "request body must be a JSON object with reason", []string{"reason"})
+		return
+	}
+
+	request, err := h.purchase.RequestSubscriptionRefund(r.Context(), id, p.UserID, *req.Reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrInvalidRefundReason):
+			writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRefundRequestInvalid,
+				"Invalid refund request", "reason must be 1-200 characters", []string{"reason"})
+		case errors.Is(err, billing.ErrSubscriptionInUse):
+			// P-13：订阅已开始/已消耗，不能申请全额退款。
+			writeAdminProblem(w, http.StatusUnprocessableEntity, problemTypeSubscriptionInUse,
+				"subscription_in_use", "Only subscriptions that have not started and have not been used can be refunded")
+		case errors.Is(err, store.ErrSubscriptionNotFound):
+			writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		case errors.Is(err, billing.ErrRefundNotSupported),
+			errors.Is(err, billing.ErrOrderStateConflict):
+			writeAdminProblem(w, http.StatusConflict, problemTypeRefundRequestConflict,
+				"Refund not available", "the subscription's purchase order is not refundable in its current state")
+		case errors.Is(err, billing.ErrOrderNotFound):
+			writeAdminProblem(w, http.StatusConflict, problemTypeRefundRequestConflict,
+				"Refund not available", "the subscription's purchase order no longer exists")
+		default:
+			h.log.Error("request subscription refund failed", "subscription_id", id, "error", err)
+			writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, subscriptionRefundRequestView{
+		OrderID:     request.OrderID,
+		RequestedAt: request.RequestedAt,
+		Reason:      request.Reason,
+	})
 }
 
 // ---------------------------------------------------------------------------

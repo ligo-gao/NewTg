@@ -116,9 +116,11 @@ var EnumChecks = map[string][]string{
 	// 不是第三方渠道：只出现在 biz_kind='subscribe' 的订单上。
 	"orders.provider": {"stripe", "alipay", "creem", "waffo", "waffo_pancake", "epay", "wallet"},
 	// refund_required 由 S2/R-29② 加入（迁移 20261021130000）：钱已收、履约
-	// 失败，留给退款流程的终态。
+	// 失败，留给退款流程的终态。refunded/refund_failed 由 S3 加入（迁移
+	// 20261022090000）：前者是退款完成终态，后者是渠道退款失败的可重试态。
 	"orders.status": {
 		"pending", "succeeded", "failed", "expired", "cancelled", "refund_required",
+		"refunded", "refund_failed",
 	},
 	"orders.failure_code": {
 		"provider_unavailable", "provider_rejected", "signature_invalid", "amount_mismatch",

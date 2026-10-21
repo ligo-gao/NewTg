@@ -1062,6 +1062,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/refund-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 申请退还一笔未开始、未消耗的订阅
+         * @description 仅本人实例；他人实例与不存在统一 404。只对购买该实例的订单写入
+         *     `refund_requested_at` / `refund_reason`，**不调用渠道也不变动钱包**
+         *     ——实际退款由管理员通过 `POST /api/orders/{id}/refund` 审批。
+         *
+         *     P-13：订阅必须未开始且未消耗（`amount_used == 0` 且
+         *     `start_at > now`），否则 422 `subscription_in_use`。重复申请幂等：
+         *     返回首次的申请时刻与理由。订单已退款 → 409；订单不是 succeeded →
+         *     409。
+         */
+        post: operations["requestSubscriptionRefund"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription/purchase": {
         parameters: {
             query?: never;
@@ -3518,6 +3545,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orders/{id}/refund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 管理员退款一个订阅订单（全额，原路或回补钱包）
+         * @description 需要 `settings:manage`（比 `orders:read/manage` 更严的运营权限）。
+         *     只处理订阅订单（`biz_kind` = subscribe/renew/change），且必须处于
+         *     `succeeded`、`refund_required`（S2/R-29② 的「钱已收、履约失败」）
+         *     或 `refund_failed`（可重试）。
+         *
+         *     P-13：`succeeded` 订单的订阅必须**未开始且未消耗**
+         *     （`amount_used == 0` 且 `start_at > now`），否则 422
+         *     `subscription_in_use`。`refund_required` 订单不适用该判定——履约
+         *     根本没有发生，必须可退（R-30）。
+         *
+         *     出账路径按 `orders.provider`：
+         *     - `wallet`：本地回补钱包，回补额取原始 `subscription_purchase` 流水的
+         *       实际扣减额；订单 `refunded_amount` 与钱包 `reversal` 流水在同一事务
+         *       （R-31）。
+         *     - `stripe` / `alipay`：调用渠道退款（Stripe Idempotency-Key /
+         *       支付宝 out_request_no 固定为订单级键），成功后写订单与 `refunded`
+         *       事件。
+         *     - `epay`：协议没有退款 API → 409 `provider_action_unsupported`，订单
+         *       状态不变，需运营在渠道后台原路退款。
+         *
+         *     幂等（R-31）：同一订单重复调用返回既有结果（200），不会二次出账。
+         *     渠道退款失败 → 订单置 `refund_failed` 并返回 502，可用同一端点重试
+         *     （R-32）；重试不会二次扣减。成功时取消订阅（若仍 active）并追加
+         *     `subscription_events.kind='refunded'`，detail 只含
+         *     `order_id`/`amount`/`reason`。
+         */
+        post: operations["refundSubscriptionOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/webhooks/stripe": {
         parameters: {
             query?: never;
@@ -5403,12 +5474,13 @@ export interface components {
             amount: number;
             currency: string;
             /**
-             * @description 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
-             *     升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
-             *     它不是 `failed`（那表示没收到钱）。
+             * @description 八态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+             *     升降级支付成功后订阅已被并发取消），等待退款流程处理；它不是
+             *     `failed`（那表示没收到钱）。`refunded`（S3）表示退款已完成；
+             *     `refund_failed`（S3）表示渠道退款失败、可重试（不是终态）。
              * @enum {string}
              */
-            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required" | "refunded" | "refund_failed";
             /**
              * Format: int64
              * @description 成功时到账积分快照；pending/failed 为 0
@@ -5498,6 +5570,24 @@ export interface components {
              *     重新求值。
              */
             new_end_at?: string;
+        };
+        SubscriptionRefundRequest: {
+            /** @description 申请退款的原因（只写订单标记，不直接退款） */
+            reason: string;
+        };
+        SubscriptionRefundRequestView: {
+            /**
+             * Format: int64
+             * @description 该订阅的购买订单 id（实际退款的目标）
+             */
+            order_id: number;
+            /**
+             * Format: date-time
+             * @description 首次申请时刻（重复申请保持不变）
+             */
+            requested_at: string;
+            /** @description 首次申请的理由 */
+            reason: string;
         };
         SubscriptionPurchaseRequest: {
             /** Format: int64 */
@@ -7633,13 +7723,15 @@ export interface components {
             amount: number;
             currency: string;
             /**
-             * @description 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
-             *     succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
-             *     （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
-             *     「钱已收、待退款」的终态。其余终态不可再迁移。
+             * @description 八态状态机（P-1 + S2/R-29② + S3）：
+             *     - pending → succeeded/failed/expired/cancelled；
+             *     - succeeded 的订阅订单在履约失败（订阅已被并发取消/换套餐）时转
+             *       `refund_required`（钱已收、待退款）；
+             *     - `refund_required` / `succeeded` → `refunded`（退款完成，终态）；
+             *     - 渠道退款失败 → `refund_failed`（可重试，不是终态）。
              * @enum {string}
              */
-            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required" | "refunded" | "refund_failed";
             /** Format: int64 */
             credited_credits: number;
             /** @enum {string|null} */
@@ -7648,6 +7740,23 @@ export interface components {
             paid_at?: string | null;
             manual_completed: boolean;
             manual_reason?: string | null;
+            /**
+             * Format: int64
+             * @description 已退金额（分）；只有 `refunded` 状态非零且等于 `amount`
+             */
+            refunded_amount?: number;
+            /**
+             * Format: date-time
+             * @description 退款完成时刻；非 `refunded` 状态为 null
+             */
+            refunded_at?: string | null;
+            /** @description 退款/退款申请理由（首次申请或管理员批准时写入） */
+            refund_reason?: string | null;
+            /**
+             * Format: date-time
+             * @description 用户侧申请退款的时刻；未申请为 null
+             */
+            refund_requested_at?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -7696,6 +7805,10 @@ export interface components {
         CompleteOrderRequest: {
             /** @description 人工完成原因（按 Unicode 字符计数） */
             manual_reason: string;
+        };
+        RefundOrderRequest: {
+            /** @description 退款原因（进入 refunded 事件 detail，按 Unicode 字符计数） */
+            reason: string;
         };
         /**
          * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
@@ -9775,6 +9888,61 @@ export interface operations {
                 };
             };
             /** @description 支付渠道未配置或已停用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    requestSubscriptionRefund: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionRefundRequest"];
+            };
+        };
+        responses: {
+            /** @description 已记录（幂等返回首次标记） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionRefundRequestView"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            /** @description 订阅已开始或已消耗（subscription_in_use，P-13） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+            /** @description 退款服务未装配（fail closed） */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -14353,9 +14521,10 @@ export interface operations {
                 page_size?: number;
                 /**
                  * @description 按订单状态过滤。`refund_required`（S2/R-29②）表示「钱已收、履约
-                 *     失败、待退款」的终态。
+                 *     失败、待退款」；`refunded` 表示退款完成；`refund_failed` 表示渠道
+                 *     退款失败、可重试。
                  */
-                status?: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
+                status?: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required" | "refunded" | "refund_failed";
                 /** @description 订单号子串（最长 128 字符） */
                 q?: string;
                 /** @description 仅 `orders:read` 管理员可用 */
@@ -14660,6 +14829,78 @@ export interface operations {
                 };
             };
             500: components["responses"]["Error500"];
+        };
+    };
+    refundSubscriptionOrder: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefundOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 退款完成（或幂等重放返回既有结果） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description reason 非法（1–200 字符） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            /** @description 订单状态不可退，或该渠道不支持退款 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 订阅已开始或已消耗（subscription_in_use，P-13） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+            /** @description 渠道退款失败（订单已置 refund_failed，可重试） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     stripeWebhook: {

@@ -122,6 +122,8 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1renew'
   /api/subscriptions/{id}/change:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1change'
+  /api/subscriptions/{id}/refund-request:
+    $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1refund-request'
   /api/subscription/purchase:
     $ref: './paths/user.yaml#/paths/~1api~1subscription~1purchase'
   /api/tokens:
@@ -369,6 +371,10 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1verify'
   /api/orders/{id}/complete:
     $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1complete'
+  # 订阅订单退款（S3）：管理员审批并实际出账；用户侧申请走
+  # /api/subscriptions/{id}/refund-request（只写标记）。
+  /api/orders/{id}/refund:
+    $ref: './paths/user.yaml#/paths/~1api~1orders~1{id}~1refund'
   /api/webhooks/stripe:
     $ref: './paths/public.yaml#/paths/~1api~1webhooks~1stripe'
   /api/webhooks/alipay:

@@ -10,6 +10,7 @@
 //	POST /api/orders/{id}/cancel     本人/orders:manage：pending → cancelled
 //	POST /api/orders/{id}/verify     本人/orders:manage：主动核实渠道并复用幂等入账
 //	POST /api/orders/{id}/complete   管理员 orders:manage：人工完成（须渠道已收款）
+//	POST /api/orders/{id}/refund     管理员 settings:manage：订阅订单退款（S3）
 //	POST /api/webhooks/stripe        公网：Stripe-Signature 验签后入账
 //	POST /api/webhooks/alipay        公网：RSA2 验签后入账
 //
@@ -75,6 +76,10 @@ const (
 	problemTypeProviderUnavailable = "https://newtg.dev/problems/provider_unavailable"
 	problemTypeProviderActionUnsup = "https://newtg.dev/problems/provider_action_unsupported"
 	problemTypeOrderNotPaid        = "https://newtg.dev/problems/order_not_paid"
+	// S3 退款：P-13 的「已开始/已消耗」与渠道退款失败各自独立 type，
+	// 前端/运营可机读区分「不能退」与「暂时没退成功」。
+	problemTypeSubscriptionInUse = "https://newtg.dev/problems/subscription_in_use"
+	problemTypeRefundFailed      = "https://newtg.dev/problems/refund_provider_failed"
 )
 
 // TopupHandlerConfig 是充值端点的装配输入。
@@ -173,6 +178,7 @@ func (h *TopupHandlers) RegisterTopupRoutes(mux *http.ServeMux, wrap func(http.H
 	mount("POST /api/orders/{id}/cancel", http.HandlerFunc(h.handleCancelOrder))
 	mount("POST /api/orders/{id}/verify", http.HandlerFunc(h.handleVerifyOrder))
 	mount("POST /api/orders/{id}/complete", http.HandlerFunc(h.handleCompleteOrder))
+	mount("POST /api/orders/{id}/refund", http.HandlerFunc(h.handleRefundOrder))
 }
 
 // RegisterWebhookRoutes 把两个公网回调挂到根 mux。
@@ -241,39 +247,48 @@ type createOrderResponse struct {
 // 不出现（omitempty + json.RawMessage），避免越权证据进入用户响应。
 // expires_at 是 created_at + 30min 的派生值（P-1，不落库）。
 type orderView struct {
-	ID              int64           `json:"id"`
-	UserID          int64           `json:"user_id"`
-	Provider        string          `json:"provider"`
-	Amount          int64           `json:"amount"`
-	Currency        string          `json:"currency"`
-	Status          string          `json:"status"`
-	CreditedCredits int64           `json:"credited_credits"`
-	FailureCode     *string         `json:"failure_code"`
-	PaidAt          *time.Time      `json:"paid_at"`
-	ManualCompleted bool            `json:"manual_completed"`
-	ManualReason    *string         `json:"manual_reason"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	ExpiresAt       time.Time       `json:"expires_at"`
-	RawCallback     json.RawMessage `json:"raw_callback,omitempty"`
+	ID              int64      `json:"id"`
+	UserID          int64      `json:"user_id"`
+	Provider        string     `json:"provider"`
+	Amount          int64      `json:"amount"`
+	Currency        string     `json:"currency"`
+	Status          string     `json:"status"`
+	CreditedCredits int64      `json:"credited_credits"`
+	FailureCode     *string    `json:"failure_code"`
+	PaidAt          *time.Time `json:"paid_at"`
+	ManualCompleted bool       `json:"manual_completed"`
+	ManualReason    *string    `json:"manual_reason"`
+	// S3 退款事实（只在退款相关状态有值；管理员和用户都可读）。
+	RefundedAmount    int64           `json:"refunded_amount"`
+	RefundedAt        *time.Time      `json:"refunded_at"`
+	RefundReason      *string         `json:"refund_reason"`
+	RefundRequestedAt *time.Time      `json:"refund_requested_at"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	ExpiresAt         time.Time       `json:"expires_at"`
+	RawCallback       json.RawMessage `json:"raw_callback,omitempty"`
 }
 
 func orderViewFrom(order *store.Order, includeRaw bool) orderView {
 	view := orderView{
-		ID:              order.ID,
-		UserID:          order.UserID,
-		Provider:        order.Provider,
-		Amount:          order.Amount,
-		Currency:        order.Currency,
-		Status:          order.Status,
-		CreditedCredits: order.CreditedCredits,
-		FailureCode:     order.FailureCode,
-		PaidAt:          order.PaidAt,
-		ManualCompleted: order.ManualCompleted,
-		ManualReason:    order.ManualReason,
-		CreatedAt:       order.CreatedAt,
-		UpdatedAt:       order.UpdatedAt,
-		ExpiresAt:       billing.OrderExpiresAt(order.CreatedAt),
+		ID:                order.ID,
+		UserID:            order.UserID,
+		Provider:          order.Provider,
+		Amount:            order.Amount,
+		Currency:          order.Currency,
+		Status:            order.Status,
+		CreditedCredits:   order.CreditedCredits,
+		FailureCode:       order.FailureCode,
+		PaidAt:            order.PaidAt,
+		ManualCompleted:   order.ManualCompleted,
+		ManualReason:      order.ManualReason,
+		RefundedAmount:    order.RefundedAmount,
+		RefundedAt:        order.RefundedAt,
+		RefundReason:      order.RefundReason,
+		RefundRequestedAt: order.RefundRequestedAt,
+		CreatedAt:         order.CreatedAt,
+		UpdatedAt:         order.UpdatedAt,
+		ExpiresAt:         billing.OrderExpiresAt(order.CreatedAt),
 	}
 	if includeRaw && len(order.RawCallback) > 0 {
 		view.RawCallback = json.RawMessage(order.RawCallback)
@@ -295,6 +310,11 @@ type orderVerifyResponse struct {
 
 type completeOrderRequest struct {
 	ManualReason string `json:"manual_reason"`
+}
+
+// refundOrderRequest 是管理员退款的请求体（S3）。
+type refundOrderRequest struct {
+	Reason string `json:"reason"`
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +499,7 @@ func (h *TopupHandlers) handleListOrders(w http.ResponseWriter, r *http.Request)
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	if status != "" && !billing.OrderStatus(status).Valid() {
 		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"status must be one of pending, succeeded, failed, expired, cancelled, refund_required")
+			"status must be one of pending, succeeded, failed, expired, cancelled, refund_required, refunded, refund_failed")
 		return
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -709,6 +729,71 @@ func (h *TopupHandlers) handleCompleteOrder(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, orderViewFrom(order, true))
+}
+
+// handleRefundOrder 实现管理员退款（S3；brief 冻结为 settings:manage）。
+//
+// 退款是资金动作，权限比订单查看更严：orders:read 不够，必须有
+// settings:manage（与套餐管理同级的运营权限）。订单状态机、P-13 资格、
+// 渠道调用、幂等与事件全部在 billing.RefundSubscription；本层只做
+// 身份/权限/请求形态与错误映射。
+func (h *TopupHandlers) handleRefundOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.orderPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if !rbac.HasPermission(*p, rbac.PermSettingsManage) {
+		writeProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden")
+		return
+	}
+	order, ok := h.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	var req refundOrderRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"request body must be a JSON object with reason")
+		return
+	}
+	result, err := h.svc.RefundSubscription(r.Context(), billing.RefundInput{
+		OrderID:     order.ID,
+		Reason:      req.Reason,
+		ActorUserID: p.UserID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrInvalidRefundReason):
+			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				"reason must be 1-200 characters")
+		case errors.Is(err, billing.ErrSubscriptionInUse):
+			// P-13：已开始或已消耗的订阅不能全额退款。
+			writeOrderProblem(w, http.StatusUnprocessableEntity, problemTypeSubscriptionInUse,
+				"Subscription in use", "Only subscriptions that have not started and have not been used can be refunded.")
+		case errors.Is(err, billing.ErrProviderActionUnsupported):
+			// 易支付等渠道没有退款 API：请求合法但渠道无此能力，409 而不是
+			// 502（重试不会改变结果）。
+			writeOrderProblem(w, http.StatusConflict, problemTypeProviderActionUnsup,
+				"Action not supported", "This payment provider does not support refunds.")
+		case errors.Is(err, billing.ErrRefundProviderFailed):
+			// R-32：订单已置 refund_failed，可用同一端点重试。
+			writeOrderProblem(w, http.StatusBadGateway, problemTypeRefundFailed,
+				"Refund failed at provider", "The provider refund failed; the order is marked refund_failed and can be retried.")
+		case errors.Is(err, billing.ErrOrderStateConflict),
+			errors.Is(err, billing.ErrInvalidOrderTransition),
+			errors.Is(err, billing.ErrRefundNotSupported):
+			writeOrderProblem(w, http.StatusConflict, problemTypeOrderConflict,
+				"Order state conflict", "This order cannot be refunded in its current state.")
+		case errors.Is(err, billing.ErrOrderNotFound):
+			writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
+		default:
+			h.log.Error("refund order failed", "order_id", order.ID, "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		}
+		return
+	}
+	// raw_callback 仅管理员可见（退款端点本身要求 settings:manage）。
+	writeJSON(w, http.StatusOK, orderViewFrom(result.Order, true))
 }
 
 // writeOrderError 把计费错误映射为稳定的 HTTP 面。

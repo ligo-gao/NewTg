@@ -159,6 +159,8 @@
     "status_pending": "Ожидает оплаты",
     "status_succeeded": "Успешен",
     "status_refund_required": "Требуется возврат",
+    "status_refunded": "Возвращено",
+    "status_refund_failed": "Ошибка возврата",
     "status_failed": "Ошибка",
     "status_expired": "Истёк",
     "status_cancelled": "Отменён",

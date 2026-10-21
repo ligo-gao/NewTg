@@ -187,8 +187,9 @@ func (RedemptionCode) TableName() string { return "redemption_codes" }
 //     CreditedCredits（入账时写入，供对账，非派生值——汇率与
 //     billing.quota_per_unit 都可能变化）。
 //   - Status 五态：pending → succeeded/failed/expired/cancelled；后四者
-//     终态。paid 是历史别名，落到 succeeded；refunded 预留不启用（MVP 不
-//     做订单级退款）。
+//     终态。paid 是历史别名，落到 succeeded；refund_required 是 S2 的
+//     「钱已收、履约失败」终态，refunded/refund_failed 是 S3 退款结果
+//     （refund_failed 可重试，不是终态）。
 //   - IdempotencyKey / ProviderTxnID 各为 UNIQUE（双唯一是硬要求，
 //     ARCH §2.2-2）；ProviderTxnID 为 NULL 时不参与唯一性。
 //   - 过期时间不落列：派生为 created_at + 30min（F-04-07）。
@@ -200,7 +201,14 @@ type Order struct {
 	Provider string `gorm:"column:provider"` // stripe/alipay/creem/waffo/waffo_pancake/epay，创建后不可改
 	Amount   int64  `gorm:"column:amount"`   // 最小货币单位（分），DB CHECK >=0
 	Currency string `gorm:"column:currency"` // ISO-4217 三字母
-	Status   string `gorm:"column:status"`   // 五态，见上
+	Status   string `gorm:"column:status"`   // 八态，见上
+	// RefundedAmount / RefundedAt / RefundReason / RefundRequestedAt 是 S3
+	// 退款事实（迁移 20261022090000）：DB CHECK 保证只有 refunded 状态可以
+	// 携带非零金额，且必须等于 amount（本任务只做全额退款）。
+	RefundedAmount    int64      `gorm:"column:refunded_amount"`
+	RefundedAt        *time.Time `gorm:"column:refunded_at"`
+	RefundReason      *string    `gorm:"column:refund_reason"`
+	RefundRequestedAt *time.Time `gorm:"column:refund_requested_at"`
 	// BizKind / BizRefID 区分充值订单与订阅购买订单（billing-08 §6.2）。
 	// 两列在 D5a 迁移中已落库；S3 之前刻意不投影，现在写路径显式赋值。
 	// 读取一律按列名（GORM 自动 SELECT *），写入走 billing 的显式 INSERT。

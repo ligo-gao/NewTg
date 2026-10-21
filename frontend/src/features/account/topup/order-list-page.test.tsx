@@ -20,6 +20,8 @@ const STATUSES: OrderStatus[] = [
   'pending',
   'succeeded',
   'refund_required',
+  'refunded',
+  'refund_failed',
   'failed',
   'expired',
   'cancelled',
@@ -43,7 +45,7 @@ function order(id: number, status: OrderStatus) {
 }
 
 describe('OrderListPage', () => {
-  it('renders all six order states with their badges', async () => {
+  it('renders all eight order states with their badges', async () => {
     const items = STATUSES.map((status, index) => order(index + 1, status))
     server.use(
       http.get(`${ORIGIN}/api/orders`, () =>
@@ -54,7 +56,7 @@ describe('OrderListPage', () => {
     await renderWithProviders(<OrderListPage />, ['common', 'account'])
 
     const rows = await screen.findAllByText(/^#\d$/)
-    expect(rows).toHaveLength(6)
+    expect(rows).toHaveLength(8)
 
     const variants = screen
       .getAllByTestId('status-badge')
@@ -62,6 +64,8 @@ describe('OrderListPage', () => {
     expect(variants).toEqual([
       'warning',
       'success',
+      'danger-outline',
+      'neutral',
       'danger-outline',
       'danger',
       'neutral',

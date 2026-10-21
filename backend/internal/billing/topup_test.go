@@ -170,6 +170,9 @@ func newAlipayTestServer(t *testing.T, privatePEM, publicPEM string) *httptest.S
 			node = `{"code":"10000","msg":"Success","trade_status":"TRADE_SUCCESS","total_amount":"10.00"}`
 		case "alipay.trade.close":
 			node = `{"code":"10000","msg":"Success"}`
+		case "alipay.trade.refund":
+			// S3：退款响应必须带签名（alipayCall 会验签）。
+			node = `{"code":"10000","msg":"Success","fund_change":"Y","refund_fee":"10.00"}`
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 			return

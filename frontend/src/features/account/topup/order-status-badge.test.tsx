@@ -10,12 +10,15 @@ const CASES: ReadonlyArray<{ status: OrderStatus; variant: string; label: string
   { status: 'succeeded', variant: 'success', label: 'Succeeded' },
   // S2/R-29②: money received, fulfilment failed → dashed danger badge.
   { status: 'refund_required', variant: 'danger-outline', label: 'Refund required' },
+  // S3: refund completed (closed, neutral) vs provider refund failed (retryable).
+  { status: 'refunded', variant: 'neutral', label: 'Refunded' },
+  { status: 'refund_failed', variant: 'danger-outline', label: 'Refund failed' },
   { status: 'failed', variant: 'danger', label: 'Failed' },
   { status: 'expired', variant: 'neutral', label: 'Expired' },
   { status: 'cancelled', variant: 'neutral-outline', label: 'Cancelled' },
 ]
 
-describe('OrderStatusBadge (P-1 five states + refund_required)', () => {
+describe('OrderStatusBadge (P-1 five states + refund_required + S3 refunds)', () => {
   it.each(CASES)(
     'renders $status as $variant with text and a dot',
     async ({ status, variant, label }) => {

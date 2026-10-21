@@ -658,6 +658,12 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 				// failure_code，绝不回滚成 pending：pending 会让渠道无限重投、
 				// 每次 5xx，且永远不会成功。钱要退，但退钱是人工/退款流程的事，
 				// 不能让支付方继续重试。
+				//
+				// 先过应用层状态机（R-33）：这条迁移已在 Transition 白名单里
+				// 显式加白；条件 UPDATE 仍是真正的并发闸门，两者表达同一契约。
+				if transErr := Transition(OrderSucceeded, OrderRefundRequired); transErr != nil {
+					return transErr
+				}
 				if markErr := tx.Exec(`
 					UPDATE orders
 					SET status = 'refund_required', failure_code = 'manual_required',

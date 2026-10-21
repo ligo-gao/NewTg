@@ -694,6 +694,9 @@ type orderDetailPayload struct {
 	CreditedCredits int64           `json:"credited_credits"`
 	ManualCompleted bool            `json:"manual_completed"`
 	ManualReason    *string         `json:"manual_reason"`
+	RefundedAmount  int64           `json:"refunded_amount"`
+	RefundedAt      *time.Time      `json:"refunded_at"`
+	RefundReason    *string         `json:"refund_reason"`
 	PaidAt          *time.Time      `json:"paid_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 	ExpiresAt       *time.Time      `json:"expires_at"`
@@ -1217,4 +1220,107 @@ func TestOrderVerifyAdminScope(t *testing.T) {
 	if !resp.Paid || resp.Order.Status != "succeeded" || resp.Order.PaidAt == nil {
 		t.Fatalf("manage admin verify response = %+v (view=%+v)", resp, view)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// S3：管理员退款端点
+// ---------------------------------------------------------------------------
+
+// TestRefundOrderEndpoint 验证 HTTP 面：settings:manage 才能退款；
+// 非订阅/不可退状态 409；钱包退款成功返回更新后的订单视图。
+func TestRefundOrderEndpoint(t *testing.T) {
+	env := newTopupHTTPTestEnv(t, "http://127.0.0.1:1")
+	userID := env.createUser(1_000)
+	now := time.Now().UTC()
+
+	// 一笔未开始、未消耗的钱包订阅订单（provider=wallet 不触渠道）。
+	key := fmt.Sprintf("refund-http-%d", time.Now().UnixNano())
+	var orderID int64
+	if err := env.db.QueryRow(`
+		INSERT INTO orders
+			(user_id, provider, amount, currency, status, idempotency_key,
+			 biz_kind, biz_ref_id, paid_at)
+		VALUES ($1, 'wallet', 9900, 'CNY', 'succeeded', $2, 'subscribe', 1, now())
+		RETURNING id`, userID, key).Scan(&orderID); err != nil {
+		t.Fatalf("insert wallet order: %v", err)
+	}
+	var subID int64
+	if err := env.db.QueryRow(`
+		INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+			 amount_total, amount_used, allow_wallet_overflow, order_id, currency,
+			 price_paid_amount, period_days, reset_on_renew, grace_days)
+		VALUES ($1, 1, 'HTTP Refund', 'active', $2, $3, 10000, 0, true, $4, 'CNY',
+		        9900, 30, false, 0)
+		RETURNING id`, userID, now.Add(24*time.Hour), now.Add(30*24*time.Hour),
+		orderID).Scan(&subID); err != nil {
+		t.Fatalf("insert subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, subID)
+		_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE id = $1`, subID)
+	})
+	if _, err := env.db.Exec(`
+		INSERT INTO wallet_transactions
+			(user_id, type, amount, balance_after, status, reference_type, reference_id)
+		VALUES ($1, 'subscription_purchase', -9900, 1000, 'confirmed', 'order', $2)`,
+		userID, strconv.FormatInt(orderID, 10)); err != nil {
+		t.Fatalf("insert wallet purchase: %v", err)
+	}
+
+	path := fmt.Sprintf("/api/orders/%d/refund", orderID)
+
+	t.Run("普通用户 403", func(t *testing.T) {
+		rr := env.request(userID, http.MethodPost, path,
+			map[string]any{"reason": "想退款"}, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("仅有 orders:manage 的管理员 403", func(t *testing.T) {
+		p := &auth.Principal{UserID: 9001, Role: rbac.RoleAdmin,
+			Permissions: []string{rbac.PermOrdersManage}}
+		rr := env.requestAs(p, http.MethodPost, path, map[string]any{"reason": "想退款"}, nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d，期望 403（brief 冻结为 settings:manage）", rr.Code)
+		}
+	})
+
+	t.Run("settings:manage 完成钱包退款", func(t *testing.T) {
+		p := &auth.Principal{UserID: 9002, Role: rbac.RoleAdmin,
+			Permissions: []string{rbac.PermSettingsManage}}
+		rr := env.requestAs(p, http.MethodPost, path, map[string]any{"reason": "未开始使用"}, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var order orderDetailPayload
+		if err := json.Unmarshal(rr.Body.Bytes(), &order); err != nil {
+			t.Fatalf("decode order: %v", err)
+		}
+		if order.Status != "refunded" || order.RefundedAmount != 9900 || order.RefundedAt == nil {
+			t.Fatalf("refund response = %+v", order)
+		}
+		var balance int64
+		if err := env.db.QueryRow(`SELECT balance FROM users WHERE id = $1`, userID).
+			Scan(&balance); err != nil {
+			t.Fatalf("read balance: %v", err)
+		}
+		if balance != 10_900 {
+			t.Fatalf("balance = %d，期望 10900", balance)
+		}
+
+		// 幂等重放仍为 200 且不再次回补。
+		replay := env.requestAs(p, http.MethodPost, path, map[string]any{"reason": "重复"}, nil)
+		if replay.Code != http.StatusOK {
+			t.Fatalf("replay status = %d（body=%s）", replay.Code, replay.Body.String())
+		}
+		if err := env.db.QueryRow(`SELECT balance FROM users WHERE id = $1`, userID).
+			Scan(&balance); err != nil {
+			t.Fatalf("read balance after replay: %v", err)
+		}
+		if balance != 10_900 {
+			t.Fatalf("replay 后 balance = %d，期望仍为 10900", balance)
+		}
+	})
 }
