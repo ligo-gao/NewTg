@@ -128,6 +128,13 @@ type SubscriptionEvent struct {
 // 无界读取会让长生命周期订阅的一次请求把整段历史装进内存。
 const SubscriptionEventScanLimit = 500
 
+// ExpireScanLimit 是 ExpireDue 单次事务处理的到期行上界（R-22）。
+//
+// 到期扫描原来是一条无界 UPDATE：积压时整个批次一个事务，期间持有全部到期
+// 订阅行锁，阻塞这些实例上的预扣/结算/续费。按批上界 + worker 循环到返回
+// 0 行，把锁持有时间与单事务 WAL 有界化；每批仍然「状态迁移 + 事件」原子。
+const ExpireScanLimit = 1000
+
 // subscriptionEventTxAttempts 是「状态迁移 + 事件」事务在 seq 唯一键冲突时
 // 的整体重试次数（含首次）。冲突是订阅行锁之外的兜底，正常路径不会消耗。
 const subscriptionEventTxAttempts = 3
@@ -571,8 +578,15 @@ func (r *SQLSubscriptionRepo) DeletePlan(ctx context.Context, id int64) error {
 //   - next_reset_at 为空（reset_on_renew=false）→ 保持 NULL，B12 本就不会
 //     重置该实例，不存在叠加。
 //
-// 单条条件 UPDATE + RowsAffected：并发购买的新实例要么被包含、要么不在
-// 本次 WHERE 快照里，不会出现「先查后改」的中间态。
+// 【S1/R-21 事件】管理侧重置与 worker 的周期重置语义相同（amount_used 归零、
+// 游标前移），事件流里必须同样出现 reset，否则用户/审计会看到额度无解释地
+// 归零。两条路径用 detail.actor 区分来源（admin / worker），kind 仍是冻结的
+// reset（不新增 cancel_scheduled 式的第二套取值）。
+//
+// 【R-22 分批】按 id 游标分批（每批 ≤ ResetScanLimit）而不是一条无界 UPDATE：
+// 大套餐下逐个订阅追加事件会让单事务持有大量行锁与 WAL。每批一个事务，
+// 「状态迁移 + 事件」仍原子；循环用 id > afterID 推进，不会被同一批反复命中。
+// 每批的 CTE 带 ORDER BY id + FOR UPDATE，并发调用按 id 顺序加锁，避免死锁。
 func (r *SQLSubscriptionRepo) ResetPlanQuota(ctx context.Context, planID int64, advanceNextReset bool) (int64, error) {
 	var exists bool
 	if err := r.db.QueryRowContext(ctx,
@@ -582,24 +596,84 @@ func (r *SQLSubscriptionRepo) ResetPlanQuota(ctx context.Context, planID int64, 
 	if !exists {
 		return 0, ErrPlanNotFound
 	}
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions
-		SET amount_used = 0,
-		    next_reset_at = CASE
-		        WHEN $2 AND next_reset_at IS NOT NULL
-		        THEN next_reset_at + make_interval(days => period_days)
-		        ELSE next_reset_at
-		    END,
-		    updated_at = now()
-		WHERE plan_id = $1 AND status = 'active'`, planID, advanceNextReset)
-	if err != nil {
-		return 0, fmt.Errorf("store: reset quota of plan(%d): %w", planID, err)
+	var total int64
+	var afterID int64
+	for {
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
+		var (
+			batch  int64
+			lastID int64
+			ids    []int64
+			totals []int64
+		)
+		err := r.withEventTx(ctx, fmt.Sprintf("reset quota of plan(%d)", planID), func(tx *sql.Tx) error {
+			rows, err := tx.QueryContext(ctx, `
+				WITH targets AS (
+					SELECT id FROM subscriptions
+					 WHERE plan_id = $1 AND status = 'active' AND id > $3
+					 ORDER BY id
+					 LIMIT $4
+					 FOR UPDATE
+				)
+				UPDATE subscriptions s
+				SET amount_used = 0,
+				    next_reset_at = CASE
+				        WHEN $2 AND s.next_reset_at IS NOT NULL
+				        THEN s.next_reset_at + make_interval(days => s.period_days)
+				        ELSE s.next_reset_at
+				    END,
+				    updated_at = now()
+				FROM targets t
+				WHERE s.id = t.id
+				RETURNING s.id, s.amount_total`,
+				planID, advanceNextReset, afterID, ResetScanLimit)
+			if err != nil {
+				return fmt.Errorf("store: reset quota of plan(%d): %w", planID, err)
+			}
+			for rows.Next() {
+				var (
+					id          int64
+					amountTotal int64
+				)
+				if err := rows.Scan(&id, &amountTotal); err != nil {
+					_ = rows.Close()
+					return fmt.Errorf("store: scan reset subscription of plan(%d): %w", planID, err)
+				}
+				ids = append(ids, id)
+				totals = append(totals, amountTotal)
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("store: iterate reset subscriptions of plan(%d): %w", planID, err)
+			}
+			if err := rows.Close(); err != nil {
+				return fmt.Errorf("store: close reset subscriptions of plan(%d): %w", planID, err)
+			}
+			for i, id := range ids {
+				if id > lastID {
+					lastID = id
+				}
+				if err := AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventReset, map[string]any{
+					"amount_total": totals[i],
+					"actor":        "admin",
+				}); err != nil {
+					return err
+				}
+			}
+			batch = int64(len(ids))
+			return nil
+		})
+		if err != nil {
+			return total, err
+		}
+		total += batch
+		if batch == 0 {
+			return total, nil
+		}
+		afterID = lastID
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: reset quota of plan(%d) rows: %w", planID, err)
-	}
-	return affected, nil
 }
 
 // CreateSubscription 创建订阅实例（订单入账/人工赠送调用）。
@@ -828,8 +902,11 @@ func (r *SQLSubscriptionRepo) CancelAtPeriodEnd(ctx context.Context, id int64) e
 			 WHERE id = $1`, id); err != nil {
 			return fmt.Errorf("store: cancel subscription(%d) at period end: %w", id, err)
 		}
-		// detail 只放「取消何时生效」这一非敏感判别位（R-18）：周期末取消
-		// 不立即终结实例，与 CancelImmediately 的 cancelled 事件需要可区分。
+		// detail 只放「取消何时生效」这一非敏感判别位：周期末取消不立即
+		// 终结实例，与 CancelImmediately 的 cancelled 事件需要可区分。
+		// R-20 裁决：detail.immediate 保留——R-18 的「只放 id 与金额」按
+		// 意图规则理解（防敏感信息），且 kind 白名单冻结为八值、不为
+		// 「周期末取消」新增第九种 kind。后来人不要改回无判别位的形式。
 		return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventCancelled,
 			map[string]any{"immediate": false})
 	})
@@ -886,18 +963,32 @@ func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) e
 // RETURNING id 取得**本次真正迁移**的行；并发/重复执行 affected=0 时不会
 // 产生空事件。逐个追加而非一条批量 INSERT，是为了复用 AppendSubscriptionEvent
 // 的行锁 + seq 生成口径（事件流必须连续无洞）。
+//
+// 【R-22 分批 + M3 加锁顺序】单批 ≤ ExpireScanLimit：无界批次会在积压时持有
+// 全部到期行锁，阻塞这些实例上的预扣/结算/续费。CTE 里 `ORDER BY id` 让并发
+// 调用以相同顺序加锁（不同顺序的批量 UPDATE 在行交错时会产生 40P01 死锁）。
+// worker 循环调用本函数直到返回 0 行。
 func (r *SQLSubscriptionRepo) ExpireDue(ctx context.Context, now time.Time) (int64, error) {
 	var expired int64
 	err := r.withEventTx(ctx, "expire subscriptions", func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			UPDATE subscriptions SET status = 'expired', updated_at = now()
-			WHERE status = 'active'
-			  AND (
-			        (cancel_at_period_end AND end_at <= $1)
-			     OR (NOT cancel_at_period_end
-			         AND end_at + make_interval(days => grace_days) <= $1)
-			  )
-			RETURNING id`, now.UTC())
+			WITH targets AS (
+				SELECT id FROM subscriptions
+				 WHERE status = 'active'
+				   AND (
+				         (cancel_at_period_end AND end_at <= $1)
+				      OR (NOT cancel_at_period_end
+				          AND end_at + make_interval(days => grace_days) <= $1)
+				   )
+				 ORDER BY id
+				 LIMIT $2
+				 FOR UPDATE
+			)
+			UPDATE subscriptions s
+			SET status = 'expired', updated_at = now()
+			FROM targets t
+			WHERE s.id = t.id AND s.status = 'active'
+			RETURNING s.id`, now.UTC(), ExpireScanLimit)
 		if err != nil {
 			return fmt.Errorf("store: expire subscriptions: %w", err)
 		}
@@ -1009,8 +1100,11 @@ func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int
 			return fmt.Errorf("store: reset subscription(%d) quota: %w", id, err)
 		}
 		affected = 1
-		return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventReset,
-			map[string]any{"amount_total": amountTotal})
+		return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventReset, map[string]any{
+			"amount_total": amountTotal,
+			// R-21：与管理员批量重置同 kind，用 actor 区分来源（worker/admin）。
+			"actor": "worker",
+		})
 	})
 	if err != nil {
 		return 0, err

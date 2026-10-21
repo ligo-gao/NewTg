@@ -1132,6 +1132,16 @@ var documentedChecks = []struct {
 		Table: "subscriptions", Name: "subscriptions_model_scope_chk",
 		Fragments: []string{"model_scope", "jsonb_typeof", "array"},
 	},
+	// S1：事件流的非枚举约束（kind 的八值白名单由 EnumChecks 对账）。
+	// seq 从 1 开始且同订阅内连续；detail 必须是对象，读侧才能按字段取值。
+	{
+		Table: "subscription_events", Name: "subscription_events_seq_chk",
+		Fragments: []string{"seq", ">= 1"},
+	},
+	{
+		Table: "subscription_events", Name: "subscription_events_detail_chk",
+		Fragments: []string{"detail", "jsonb_typeof", "object"},
+	},
 	// D7a / modules-08 F-08-04：标题非空且 ≤80；正文 64KiB 硬兜底
 	// （应用层 16KB）；过期必须晚于生效（R-D7-01）。
 	{
@@ -1359,6 +1369,15 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO subscription_pre_consume_records
 			(request_id, subscription_id, status, pre_consumed)
 			VALUES ('00000000-0000-0000-0000-000000000001', 1, 'bogus', 1)`)
+	})
+	// S1：事件流的写入路径同样必须真实拒绝（seq 下界 / detail 形态）。
+	t.Run("事件 seq 为 0 被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_events (subscription_id, seq, kind)
+			VALUES (1, 0, 'created')`)
+	})
+	t.Run("事件 detail 非对象被拒", func(t *testing.T) {
+		expectExecError(t, db, `INSERT INTO subscription_events (subscription_id, seq, kind, detail)
+			VALUES (1, 1, 'created', '[]'::jsonb)`)
 	})
 	t.Run("orders.biz_kind 越界被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO orders

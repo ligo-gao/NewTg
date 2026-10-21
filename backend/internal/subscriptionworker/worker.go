@@ -78,7 +78,8 @@ const (
 // 窄接口让单测 fake 不必实现套餐 CRUD / 预扣写入等无关能力。
 // *store.SQLSubscriptionRepo 是生产实现。
 type Repository interface {
-	// ExpireDue 条件更新到期实例，返回实际迁移行数。
+	// ExpireDue 条件更新到期实例，返回本批实际迁移行数。单次最多处理
+	// store.ExpireScanLimit 行（R-22）；sweep 循环调用直到不足一批。
 	ExpireDue(ctx context.Context, now time.Time) (int64, error)
 	// DueForReset 返回 next_reset_at 已到期且仍在本周期内的 active 实例
 	// （只读扫描；宽限期实例由 SQL 的 end_at > now 排除）。
@@ -273,11 +274,20 @@ func (w *worker) sweep(ctx context.Context) (SweepResult, bool, error) {
 	var res SweepResult
 	var errs []error
 
-	expired, err := w.repo.ExpireDue(ctx, now)
-	if err != nil {
-		errs = append(errs, err)
-	} else {
-		res.Expired = expired
+	// ExpireDue 单次只处理有界批次（R-22：每批 ≤ store.ExpireScanLimit），
+	// 循环直到某批不足上限——说明本次扫描的到期集已清空（等价于「返回 0 行
+	// 为止」，但省掉最后一次空查询）。积压能在一轮内清完，同时不让单事务
+	// 长时间持有大量到期订阅行锁、阻塞资金路径。ctx 取消后不再发起新批次。
+	for ctx.Err() == nil {
+		expired, err := w.repo.ExpireDue(ctx, now)
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+		res.Expired += expired
+		if expired < store.ExpireScanLimit {
+			break
+		}
 	}
 
 	due, err := w.repo.DueForReset(ctx, now)

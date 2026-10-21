@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"newtg/gateway/internal/store"
 )
 
@@ -819,4 +821,79 @@ func readSubscriptionEvents(t *testing.T, db *sql.DB, subscriptionID int64) []st
 		t.Fatalf("iterate subscription events: %v", err)
 	}
 	return out
+}
+
+// TestSubscriptionTxRetriesEventSeqConflict 覆盖 I3：billing 的 subscriptionTx
+// 在事件 seq 唯一键冲突时必须整体重试（新事务里重新取 seq），而不是把错误
+// 抛给支付回调、留下「订单成功但没有事件」的窗口。
+//
+// 冲突由旁路事务制造：它不经 AppendSubscriptionEvent（不加订阅行锁）先占住
+// seq 1 且保持未提交；subscriptionTx 首轮算出 max+1=1 后阻塞，旁路提交即
+// 触发 23505 → ErrSubscriptionEventSeqConflict → 整体重试写入 seq 2。
+func TestSubscriptionTxRetriesEventSeqConflict(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	subID := insertRenewalSubscription(t, db, userID, planID, "Old Title",
+		"active", now.Add(-time.Hour), now.Add(30*24*time.Hour), 0, true)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, subID)
+	})
+
+	blocker, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := blocker.Exec(`INSERT INTO subscription_events
+		(subscription_id, seq, kind, detail) VALUES ($1, 1, 'reset', '{}'::jsonb)`, subID); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("blocker insert: %v", err)
+	}
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.subscriptionTx(context.Background(), func(tx *gorm.DB) error {
+			return store.AppendSubscriptionEvent(context.Background(), tx.Statement.ConnPool,
+				subID, store.SubscriptionEventReset, map[string]any{"actor": "worker"})
+		})
+	}()
+	waitForBlockedTxn(t, db)
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("commit blocker: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("subscriptionTx 未在 seq 冲突后重试成功: %v", err)
+	}
+
+	events := readSubscriptionEvents(t, db, subID)
+	if len(events) != 2 {
+		t.Fatalf("事件数 = %d，期望 2（占位 + 重试后的 reset）: %+v", len(events), events)
+	}
+	for i, event := range events {
+		if event.Seq != int64(i+1) {
+			t.Fatalf("第 %d 条 seq = %d，期望 %d（不得跳号）", i, event.Seq, i+1)
+		}
+	}
+}
+
+// waitForBlockedTxn 轮询 pg_locks 直到出现未授予的锁（唯一索引冲突的等待是
+// 事务级锁，不带 relation）；隔离库里此时只有目标语句在等锁。
+func waitForBlockedTxn(t *testing.T, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("等待阻塞锁超时（目标事务可能没有走到冲突点）")
 }

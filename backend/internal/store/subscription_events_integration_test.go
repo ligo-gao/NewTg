@@ -341,3 +341,248 @@ func TestAppendSubscriptionEventRejectsUnknownKind(t *testing.T) {
 		t.Fatalf("入库前拒绝不得让事务进入 aborted 状态: %v", err)
 	}
 }
+
+// TestResetPlanQuotaWritesAdminEvents 覆盖 I1/R-21：管理侧批量重置与 worker 的
+// 周期重置语义相同，必须写 reset 事件，并用 detail.actor="admin" 区分来源。
+func TestResetPlanQuotaWritesAdminEvents(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s1-admin-reset")
+	cleanupSubscriptionEvents(t, db, plan.ID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	subs := []Subscription{
+		createTestSubscription(t, repo, plan, 900401, now.Add(-time.Hour), now.Add(30*24*time.Hour), nil),
+		createTestSubscription(t, repo, plan, 900402, now.Add(-time.Hour), now.Add(30*24*time.Hour), nil),
+	}
+	// 两项在批量重置前都有 created（seq 1）。
+	for _, sub := range subs {
+		if events := listEvents(t, repo, sub.ID, 0); len(events) != 1 {
+			t.Fatalf("前置事件 = %+v", events)
+		}
+	}
+
+	affected, err := repo.ResetPlanQuota(ctx, plan.ID, true)
+	if err != nil || affected < 2 {
+		t.Fatalf("reset plan quota = %d / %v", affected, err)
+	}
+	for _, sub := range subs {
+		events := listEvents(t, repo, sub.ID, 0)
+		if len(events) != 2 || events[1].Kind != SubscriptionEventReset {
+			t.Fatalf("管理员重置后事件 = %+v", events)
+		}
+		if detail := eventDetail(t, events[1]); detail["actor"] != "admin" {
+			t.Fatalf("reset detail.actor = %v，期望 admin", detail["actor"])
+		}
+	}
+}
+
+// TestExpireDueProcessesBatches 覆盖 I2/R-22：到期扫描单次 ≤ ExpireScanLimit，
+// 多轮处理完积压；每行恰一条 expired 事件（重复扫描不重复追加）。
+func TestExpireDueProcessesBatches(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s1-expire-batch")
+	cleanupSubscriptionEvents(t, db, plan.ID)
+
+	const total = ExpireScanLimit + 5
+	rows, err := db.Query(`
+		INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+			 amount_total, amount_used, allow_wallet_overflow, currency,
+			 price_paid_amount, period_days, reset_on_renew, grace_days)
+		SELECT 900500 + g, $1, 'batch', 'active',
+		       now() - interval '40 days', now() - interval '1 day',
+		       0, 0, true, 'CNY', 0, 30, false, 0
+		  FROM generate_series(1, $2) AS g
+		RETURNING id`, plan.ID, total)
+	if err != nil {
+		t.Fatalf("insert due subscriptions: %v", err)
+	}
+	ids := make([]int64, 0, total)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			t.Fatalf("scan due subscription id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		t.Fatalf("iterate due ids: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close due ids: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var processed int64
+	first := true
+	for round := 0; ; round++ {
+		affected, err := repo.ExpireDue(ctx, now)
+		if err != nil {
+			t.Fatalf("expire due round %d: %v", round, err)
+		}
+		if first {
+			if affected > ExpireScanLimit {
+				t.Fatalf("首批 = %d，超过上界 %d", affected, ExpireScanLimit)
+			}
+			first = false
+		}
+		processed += affected
+		if affected < ExpireScanLimit {
+			break
+		}
+		if round > 10 {
+			t.Fatal("分批循环未收敛")
+		}
+	}
+	if processed < total {
+		t.Fatalf("累计到期 = %d，期望至少 %d", processed, total)
+	}
+
+	// 每行恰一条 expired 事件；重复扫描（已无 due 行）不追加。
+	for _, id := range ids {
+		events := listEvents(t, repo, id, 0)
+		if len(events) != 1 || events[0].Seq != 1 || events[0].Kind != SubscriptionEventExpired {
+			t.Fatalf("订阅 %d 事件 = %+v，期望恰一条 expired", id, events)
+		}
+	}
+	if again, err := repo.ExpireDue(ctx, now); err != nil || again != 0 {
+		t.Fatalf("重复扫描 = %d/%v，期望 0/nil", again, err)
+	}
+}
+
+// TestAppendSubscriptionEventConcurrentWithoutCallerLock 覆盖 I3：并发事务
+// **直接**调用 AppendSubscriptionEvent（调用方不做任何行写）。去掉函数内的
+// `SELECT ... FOR UPDATE` 后，两个事务会算出同一个 seq，其中一个撞唯一键并
+// 报 ErrSubscriptionEventSeqConflict —— 本用例必须因此变红。
+func TestAppendSubscriptionEventConcurrentWithoutCallerLock(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s1-direct-append")
+	cleanupSubscriptionEvents(t, db, plan.ID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sub := createTestSubscription(t, repo, plan, 900601, now.Add(-time.Hour), now.Add(24*time.Hour), nil)
+
+	const writers = 4
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			if err := AppendSubscriptionEvent(ctx, tx, sub.ID, SubscriptionEventReset,
+				map[string]any{"actor": "worker"}); err != nil {
+				_ = tx.Rollback()
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			if err := tx.Commit(); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		t.Fatalf("并发直接追加失败（去掉行锁时这里会因 seq 冲突报错）：%v", errs[0])
+	}
+	events := listEvents(t, repo, sub.ID, 0)
+	if len(events) != writers+1 {
+		t.Fatalf("事件数 = %d，期望 %d", len(events), writers+1)
+	}
+	requireContiguousSeq(t, events)
+}
+
+// TestWithEventTxRetriesSeqConflict 覆盖 I3：强制一次真实的 seq 唯一键冲突
+// （一个未提交的旁路事务先占了 next seq），断言 withEventTx 整体重试后
+// seq 连续、事件数正确、不跳号。
+func TestWithEventTxRetriesSeqConflict(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := subscriptionCtx()
+	plan := newTestPlan(t, repo, db, "s1-retry")
+	cleanupSubscriptionEvents(t, db, plan.ID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sub := createTestSubscription(t, repo, plan, 900701, now.Add(-time.Hour), now.Add(24*time.Hour), nil)
+
+	// 旁路事务：不经 AppendSubscriptionEvent（不加订阅行锁）占住 seq 2，
+	// 先不提交。CancelImmediately 的首轮会算出 max+1=2 并在唯一键上等待。
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := blocker.Exec(`INSERT INTO subscription_events
+		(subscription_id, seq, kind, detail) VALUES ($1, 2, 'reset', '{}'::jsonb)`, sub.ID); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("blocker insert: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- repo.CancelImmediately(ctx, sub.ID) }()
+	waitForBlockedStatement(t, db)
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("commit blocker: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("CancelImmediately 未在冲突后重试成功: %v", err)
+	}
+
+	events := listEvents(t, repo, sub.ID, 0)
+	if len(events) != 3 {
+		t.Fatalf("事件数 = %d，期望 3（created + 占位 + 重试后的 cancelled）: %+v", len(events), events)
+	}
+	requireContiguousSeq(t, events)
+	if events[1].Kind != SubscriptionEventReset || events[2].Kind != SubscriptionEventCancelled {
+		t.Fatalf("事件顺序 = %+v", events)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM subscriptions WHERE id = $1`, sub.ID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("重试后 status = %s，期望 cancelled", status)
+	}
+}
+
+// waitForBlockedStatement 轮询 pg_locks，直到出现未授予的锁（目标事务已经
+// 走到唯一键/行锁等待）。用于把并发测试的时序变成确定事件，而不是 sleep。
+//
+// 【为什么只数「未授予」】唯一索引冲突的等待在 pg_locks 里是事务级锁
+// （locktype=transactionid），不带 relation，按表/索引名过滤会永远数不到；
+// 隔离库里此时只有目标语句在等锁，数总未授予数即可。
+func waitForBlockedStatement(t *testing.T, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("等待阻塞锁超时（目标事务可能没有走到冲突点）")
+}

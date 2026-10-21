@@ -23,10 +23,13 @@ type fakeRepo struct {
 
 	expireAffected int64
 	expireErr      error
-	due            []store.Subscription
-	dueErr         error
-	resetAffected  map[int64]int64
-	resetErr       error
+	// expireBatches 按调用顺序返回（R-22 多轮扫描用例）；用尽后回落到
+	// expireAffected。expireAffected 非 0 时表示每轮都返回该值。
+	expireBatches []int64
+	due           []store.Subscription
+	dueErr        error
+	resetAffected map[int64]int64
+	resetErr      error
 	// resetHook 在每次 ResetSubscriptionQuota 内执行（pass 中取消测试用）。
 	resetHook func()
 
@@ -41,6 +44,11 @@ type fakeRepo struct {
 func (r *fakeRepo) ExpireDue(_ context.Context, _ time.Time) (int64, error) {
 	r.mu.Lock()
 	r.expireCalls++
+	affected := r.expireAffected
+	if len(r.expireBatches) > 0 {
+		affected = r.expireBatches[0]
+		r.expireBatches = r.expireBatches[1:]
+	}
 	r.mu.Unlock()
 	if r.sweepEntered != nil {
 		select {
@@ -49,7 +57,7 @@ func (r *fakeRepo) ExpireDue(_ context.Context, _ time.Time) (int64, error) {
 		}
 		<-r.sweepRelease
 	}
-	return r.expireAffected, r.expireErr
+	return affected, r.expireErr
 }
 
 func (r *fakeRepo) DueForReset(_ context.Context, _ time.Time) ([]store.Subscription, error) {
@@ -179,6 +187,24 @@ func TestSweepResetsAllInstances(t *testing.T) {
 	}
 	if res.Reset != 0 {
 		t.Fatalf("second sweep result = %+v，want no double reset", res)
+	}
+}
+
+// TestSweepExpiresInBatches：R-22 要求到期扫描按批上界循环。一个满批之后
+// 不足一批即停止，总数是各批之和，不把积压留给下一分钟。
+func TestSweepExpiresInBatches(t *testing.T) {
+	repo := &fakeRepo{expireBatches: []int64{store.ExpireScanLimit, 7}}
+	w := newTestWorker(t, repo, &fakeCleaner{})
+
+	res, ran, err := w.sweep(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("sweep = %+v/%v/%v", res, ran, err)
+	}
+	if res.Expired != store.ExpireScanLimit+7 {
+		t.Fatalf("expired = %d，want %d", res.Expired, store.ExpireScanLimit+7)
+	}
+	if expire, _ := repo.callCounts(); expire != 2 {
+		t.Fatalf("ExpireDue 调用次数 = %d，want 2（满批后继续一轮）", expire)
 	}
 }
 
