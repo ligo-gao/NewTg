@@ -2990,6 +2990,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
     put:
@@ -4277,6 +4279,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
     put:
@@ -4616,6 +4620,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
     put:
@@ -5069,6 +5075,8 @@ paths:
           $ref: '#/components/responses/Error401'
         '403':
           $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
     put:
@@ -5837,8 +5845,9 @@ paths:
           应重新读取 section 后重试）；
         - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
           判定，响应 detail 指明原因）。
-        类型/范围/URL 形状由注册表校验，失败返回 400（`ValidationError`，
-        detail 定位到具体键）；只有锁定键（服务端只读）被修改才返回 422。
+        类型/范围/URL 形状由注册表校验，失败返回 400，Problem 体带 `fields`
+        （出错的键名，客户端据此把错误落到具体字段）；只有锁定键（服务端只读）
+        被修改才返回 422。
       security:
         - sessionCookie: []
       parameters:
@@ -5849,12 +5858,7 @@ paths:
             type: string
             minLength: 1
         - $ref: '#/components/parameters/CSRFToken'
-        - name: Idempotency-Key
-          in: header
-          required: false
-          description: 可选；同键重放返回首次结果（2xx 才固化）。
-          schema:
-            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:

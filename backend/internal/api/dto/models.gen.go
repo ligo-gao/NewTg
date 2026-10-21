@@ -9158,8 +9158,8 @@ type UpdateSettingsSectionParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 
-	// IdempotencyKey 可选；同键重放返回首次结果（2xx 才固化）。
-	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
 // ResumeWebhookNotificationsParams defines parameters for ResumeWebhookNotifications.

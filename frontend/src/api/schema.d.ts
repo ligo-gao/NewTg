@@ -2698,8 +2698,9 @@ export interface paths {
          *       应重新读取 section 后重试）；
          *     - 命中危险方向且未带 `dangerous_confirmed=true` 时返回 400（服务端
          *       判定，响应 detail 指明原因）。
-         *     类型/范围/URL 形状由注册表校验，失败返回 400（`ValidationError`，
-         *     detail 定位到具体键）；只有锁定键（服务端只读）被修改才返回 422。
+         *     类型/范围/URL 形状由注册表校验，失败返回 400，Problem 体带 `fields`
+         *     （出错的键名，客户端据此把错误落到具体字段）；只有锁定键（服务端只读）
+         *     被修改才返回 422。
          */
         put: operations["updateSettingsSection"];
         post?: never;
@@ -10697,6 +10698,7 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -11813,6 +11815,7 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -12086,6 +12089,7 @@ export interface operations {
             };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -12460,6 +12464,7 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -13146,8 +13151,8 @@ export interface operations {
                  *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
                  */
                 "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
-                /** @description 可选；同键重放返回首次结果（2xx 才固化）。 */
-                "Idempotency-Key"?: string;
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
