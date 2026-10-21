@@ -5,8 +5,13 @@ package billing
 // 业务边界：
 //   - 只处理**订阅订单**（biz_kind = subscribe / renew / change）。充值订单
 //     的退款不属于本端点；管理员若要对充值退款，走渠道后台或后续独立流程。
-//   - P-13：只有「未开始且未消耗」（amount_used == 0 且 start_at > now）的
-//     订阅可以全额退款；已消耗/已开始一律 ErrSubscriptionInUse（HTTP 422）。
+//   - R-35：只有「未消耗、active 且未过期」（amount_used == 0、status='active'
+//     且 end_at > now）的订阅可以全额退款；已消耗/已过期/已取消一律
+//     ErrSubscriptionInUse（HTTP 422）。
+//   - R-38：自动退款（全额 + 取消订阅）只对 biz_kind='subscribe' 的 succeeded
+//     订单开放。renew/change 的 succeeded 订单退款需要回退 end_at / plan，
+//     属于独立的领域逻辑，本批返回 422 要求人工处理——否则会把用户此前
+//     已付费、仍在使用的整条订阅一起作废。
 //   - R-30：S2 产生的 orders.status='refund_required'（钱已收、履约失败）
 //     必须可退。这类订单**不走 P-13**：履约根本没有发生，订阅是否已被消耗
 //     与「退还这笔没交付的钱」无关。
@@ -59,6 +64,10 @@ var (
 	ErrSubscriptionInUse = errors.New("billing: subscription is already started or used")
 	// ErrInvalidRefundReason 表示退款原因非法（空/超长/控制字符），HTTP 400。
 	ErrInvalidRefundReason = errors.New("billing: invalid refund reason")
+	// ErrRefundManualOnly 表示该订单不能自动退款（R-38）：renew/change 的
+	// succeeded 订单需要回退 end_at / plan，不能沿用「全额退款 + 取消整条
+	// 订阅」的自动化路径。HTTP 层映射 422，由运营人工处理。
+	ErrRefundManualOnly = errors.New("billing: order requires manual refund review")
 	// ErrRefundProviderFailed 表示渠道退款失败，订单已置 refund_failed 可重试
 	// （R-32）。HTTP 层映射 502；调用方可以用 errors.Is 继续识别底层渠道错误。
 	ErrRefundProviderFailed = errors.New("billing: provider refund failed")
@@ -128,6 +137,9 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 	if !refundableBizKind(order.BizKind) {
 		return nil, fmt.Errorf("%w: order %d has biz_kind %q", ErrRefundNotSupported, order.ID, order.BizKind)
 	}
+	if err := autoRefundAllowed(order); err != nil {
+		return nil, err
+	}
 
 	// 第一次资格检查（乐观、无锁）。钱包路径会在事务内用行锁重做；渠道路径
 	// 的最终落库不再重复 P-13——渠道已经退款成功后拒绝落库会造成「渠道已退、
@@ -175,8 +187,8 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 }
 
 // RequestSubscriptionRefund 记录用户侧退款申请（S3 brief：只写请求，不直接
-// 退款）。只有「未开始且未消耗」的订阅可以申请；管理员随后通过
-// POST /api/orders/{id}/refund 审批并实际退款。
+// 退款）。只有「未消耗、active 且未过期」的订阅可以申请（R-35）；管理员随后
+// 通过 POST /api/orders/{id}/refund 审批并实际退款。
 func (s *TopupService) RequestSubscriptionRefund(ctx context.Context,
 	subscriptionID, userID int64, reason string) (*RefundRequest, error) {
 
@@ -261,7 +273,10 @@ func refundableOrderStatus(status string) bool {
 	}
 }
 
-// refundableBizKind 限定本端点的业务范围：只有订阅购买/续费/升降级订单。
+// refundableBizKind 限定本端点的业务范围：订阅购买/续费/升降级订单。
+//
+// 注意它只回答「是不是订阅订单」；**能否自动退款**还要看 autoRefundAllowed
+// （R-38 把 succeeded 的 renew/change 排除在自动路径之外）。
 func refundableBizKind(kind string) bool {
 	switch kind {
 	case store.OrderBizKindSubscribe, store.OrderBizKindRenew, store.OrderBizKindChange:
@@ -269,6 +284,33 @@ func refundableBizKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// autoRefundAllowed 实现 R-38：自动退款（全额退款 + 取消整条订阅）只适用于
+// biz_kind='subscribe' 的 succeeded 订单。
+//
+//   - renew succeeded：退款应回退 end_at（把续费周期减回去），而不是取消整条
+//     订阅——用户此前的付费周期仍在履约。
+//   - change succeeded：退款应回退 plan 变更，同样不能取消整条订阅。
+//   - refund_required：S2 的「钱已收、履约失败」，必须可退（R-30），且按
+//     R-36 不取消订阅。
+//   - refund_failed：重试路径。由 subscribed 进入的 subscribe 订单可继续；
+//     change 订单只可能来自 refund_required；renew 无法产生。
+//
+// 两类 succeeded 订单返回 ErrRefundManualOnly（HTTP 422）：宁可少一个自动化
+// 入口，也不能误把用户仍在使用的订阅作废。
+func autoRefundAllowed(order *store.Order) error {
+	switch OrderStatus(order.Status) {
+	case OrderSucceeded:
+		if order.BizKind != store.OrderBizKindSubscribe {
+			return fmt.Errorf("%w: order %d biz_kind %s", ErrRefundManualOnly, order.ID, order.BizKind)
+		}
+	case OrderRefundFailed:
+		if order.BizKind == store.OrderBizKindRenew {
+			return fmt.Errorf("%w: order %d biz_kind %s", ErrRefundManualOnly, order.ID, order.BizKind)
+		}
+	}
+	return nil
 }
 
 // checkSubscriptionRefundEligible 应用 R-35 的资格判定，并在需要时确认订阅
@@ -434,6 +476,10 @@ func (s *TopupService) refundWalletOrder(ctx context.Context,
 	fresh, err := s.GetOrder(ctx, orderID)
 	if err != nil {
 		return nil, err
+	}
+	if !refunded {
+		// 幂等命中：Result.Amount 也返回既有退款额，而不是 0。
+		amount = fresh.RefundedAmount
 	}
 	s.log.Info("subscription refund completed",
 		"order_id", orderID, "amount", amount, "provider", fresh.Provider, "actor", actorID)
@@ -674,6 +720,10 @@ func (s *TopupService) finalizeProviderRefund(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if !refunded {
+		// 幂等命中：Result.Amount 也返回既有退款额，而不是 0。
+		amount = fresh.RefundedAmount
+	}
 	s.log.Info("subscription refund completed",
 		"order_id", orderID, "amount", amount, "provider", fresh.Provider, "actor", actorID)
 	return &RefundResult{Order: fresh, Refunded: refunded, Amount: amount}, nil
@@ -754,12 +804,12 @@ func markOrderRefundedTx(tx *gorm.DB, orderID int64, from OrderStatus, reason st
 	return false, fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, orderID, status)
 }
 
-// shouldCancelSubscriptionAfterRefund 决定退款成功后是否收回订阅权益（R-36）。
+// shouldCancelSubscriptionAfterRefund 决定退款成功后是否收回订阅权益（R-36/R-38）。
 //
-// 只有「全额退还已履约购买」（succeeded，以及由 succeeded 进入的
-// refund_failed 重试）才取消订阅。refund_required 的 change 订单退的是
-// **差价**，其 biz_ref_id 指向用户仍在使用、仍在履约的原订阅；取消它等于
-// 把用户已经付过钱、正在使用的服务一并作废。
+// R-38 已把 succeeded 的自动退款限定为 subscribe 订单，因此这里返回 true 的
+// 只有「全额退还已履约购买」。refund_required 的 change 订单退的是**差价**，
+// 其 biz_ref_id 指向用户仍在使用、仍在履约的原订阅；取消它等于把用户已经
+// 付过钱、正在使用的服务一并作废。
 func shouldCancelSubscriptionAfterRefund(order *store.Order) bool {
 	switch OrderStatus(order.Status) {
 	case OrderSucceeded:

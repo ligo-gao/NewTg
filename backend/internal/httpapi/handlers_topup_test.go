@@ -28,6 +28,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -1262,7 +1263,7 @@ func TestRefundOrderEndpoint(t *testing.T) {
 			 price_paid_amount, period_days, reset_on_renew, grace_days)
 		VALUES ($1, 1, 'HTTP Refund', 'active', $2, $3, 10000, 0, true, $4, 'CNY',
 		        9900, 30, false, 0)
-		RETURNING id`, userID, now.Add(24*time.Hour), now.Add(30*24*time.Hour),
+		RETURNING id`, userID, now.Add(-time.Hour), now.Add(30*24*time.Hour),
 		orderID).Scan(&subID); err != nil {
 		t.Fatalf("insert subscription: %v", err)
 	}
@@ -1372,4 +1373,142 @@ func TestRefundOrderEndpoint(t *testing.T) {
 			t.Fatalf("幂等重放审计 detail = %v，期望记录本次尝试理由", last)
 		}
 	})
+}
+
+// TestRefundOrderWalletLimit409 覆盖 M-6：钱包回补越过上界时 HTTP 面是
+// 409（可机读的业务结果），订单保持 succeeded、订阅保持 active。
+func TestRefundOrderWalletLimit409(t *testing.T) {
+	env := newTopupHTTPTestEnv(t, "http://127.0.0.1:1")
+	userID := env.createUser(contract.MaxWalletQuota - 100)
+	now := time.Now().UTC()
+
+	key := fmt.Sprintf("refund-limit-%d", time.Now().UnixNano())
+	var orderID int64
+	if err := env.db.QueryRow(`
+		INSERT INTO orders
+			(user_id, provider, amount, currency, status, idempotency_key,
+			 biz_kind, biz_ref_id, paid_at)
+		VALUES ($1, 'wallet', 9900, 'CNY', 'succeeded', $2, 'subscribe', 1, now())
+		RETURNING id`, userID, key).Scan(&orderID); err != nil {
+		t.Fatalf("insert wallet order: %v", err)
+	}
+	var subID int64
+	if err := env.db.QueryRow(`
+		INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+			 amount_total, amount_used, allow_wallet_overflow, order_id, currency,
+			 price_paid_amount, period_days, reset_on_renew, grace_days)
+		VALUES ($1, 1, 'HTTP Limit', 'active', $2, $3, 10000, 0, true, $4, 'CNY',
+		        9900, 30, false, 0)
+		RETURNING id`, userID, now.Add(-time.Hour), now.Add(30*24*time.Hour),
+		orderID).Scan(&subID); err != nil {
+		t.Fatalf("insert subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, subID)
+		_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE id = $1`, subID)
+	})
+	if _, err := env.db.Exec(`
+		INSERT INTO wallet_transactions
+			(user_id, type, amount, balance_after, status, reference_type, reference_id)
+		VALUES ($1, 'subscription_purchase', -9900, $2, 'confirmed', 'order', $3)`,
+		userID, contract.MaxWalletQuota-100, strconv.FormatInt(orderID, 10)); err != nil {
+		t.Fatalf("insert wallet purchase: %v", err)
+	}
+
+	p := &auth.Principal{UserID: 9003, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermSettingsManage}}
+	rr := env.requestAs(p, http.MethodPost, fmt.Sprintf("/api/orders/%d/refund", orderID),
+		map[string]any{"reason": "钱包上界"}, nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d，期望 409（body=%s）", rr.Code, rr.Body.String())
+	}
+	var status string
+	if err := env.db.QueryRow(`SELECT status FROM orders WHERE id = $1`, orderID).
+		Scan(&status); err != nil {
+		t.Fatalf("read order status: %v", err)
+	}
+	if status != string(billing.OrderSucceeded) {
+		t.Fatalf("订单状态 = %s，期望 succeeded", status)
+	}
+	var subStatus string
+	if err := env.db.QueryRow(`SELECT status FROM subscriptions WHERE id = $1`, subID).
+		Scan(&subStatus); err != nil {
+		t.Fatalf("read subscription status: %v", err)
+	}
+	if subStatus != "active" {
+		t.Fatalf("订阅状态 = %s，期望 active", subStatus)
+	}
+}
+
+// TestRefundOrderManualReview422 覆盖 R-38：renew/change 的 succeeded 订单
+// 走自动退款端点必须 422，且订单/订阅都不变。
+func TestRefundOrderManualReview422(t *testing.T) {
+	env := newTopupHTTPTestEnv(t, "http://127.0.0.1:1")
+	userID := env.createUser(0)
+	now := time.Now().UTC()
+	p := &auth.Principal{UserID: 9004, Role: rbac.RoleAdmin,
+		Permissions: []string{rbac.PermSettingsManage}}
+
+	cases := []struct {
+		name    string
+		bizKind string
+		amount  int64
+	}{
+		{"续费订单", "renew", 9900},
+		{"升降级订单", "change", 4900},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var subID int64
+			if err := env.db.QueryRow(`
+				INSERT INTO subscriptions
+					(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+					 amount_total, amount_used, allow_wallet_overflow, currency,
+					 price_paid_amount, period_days, reset_on_renew, grace_days)
+				VALUES ($1, 1, 'HTTP Manual', 'active', $2, $3, 10000, 0, true, 'CNY',
+				        9900, 30, false, 0)
+				RETURNING id`, userID, now.Add(-time.Hour), now.Add(30*24*time.Hour)).
+				Scan(&subID); err != nil {
+				t.Fatalf("insert subscription: %v", err)
+			}
+			t.Cleanup(func() {
+				_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, subID)
+				_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE id = $1`, subID)
+			})
+			key := fmt.Sprintf("refund-manual-%s-%d", tc.bizKind, time.Now().UnixNano())
+			var orderID int64
+			if err := env.db.QueryRow(`
+				INSERT INTO orders
+					(user_id, provider, amount, currency, status, idempotency_key,
+					 biz_kind, biz_ref_id, paid_at)
+				VALUES ($1, 'stripe', $2, 'CNY', 'succeeded', $3, $4, $5, now())
+				RETURNING id`, userID, tc.amount, key, tc.bizKind, subID).Scan(&orderID); err != nil {
+				t.Fatalf("insert order: %v", err)
+			}
+
+			rr := env.requestAs(p, http.MethodPost,
+				fmt.Sprintf("/api/orders/%d/refund", orderID),
+				map[string]any{"reason": "需要人工处理"}, nil)
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+			}
+			var status string
+			if err := env.db.QueryRow(`SELECT status FROM orders WHERE id = $1`, orderID).
+				Scan(&status); err != nil {
+				t.Fatalf("read order: %v", err)
+			}
+			if status != string(billing.OrderSucceeded) {
+				t.Fatalf("订单状态 = %s，期望 succeeded", status)
+			}
+			var subStatus string
+			if err := env.db.QueryRow(`SELECT status FROM subscriptions WHERE id = $1`, subID).
+				Scan(&subStatus); err != nil {
+				t.Fatalf("read subscription: %v", err)
+			}
+			if subStatus != "active" {
+				t.Fatalf("订阅状态 = %s，期望 active", subStatus)
+			}
+		})
+	}
 }

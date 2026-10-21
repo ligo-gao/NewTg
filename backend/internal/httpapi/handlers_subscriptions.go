@@ -1404,9 +1404,13 @@ func (h *SubscriptionHandlers) handleRequestSubscriptionRefund(w http.ResponseWr
 			writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeRefundRequestInvalid,
 				"Invalid refund request", "reason must be 1-200 characters", []string{"reason"})
 		case errors.Is(err, billing.ErrSubscriptionInUse):
-			// P-13：订阅已开始/已消耗，不能申请全额退款。
+			// R-35：已消耗 / 已过期 / 非 active 的订阅不能申请全额退款。
 			writeAdminProblem(w, http.StatusUnprocessableEntity, problemTypeSubscriptionInUse,
-				"subscription_in_use", "Only subscriptions that have not started and have not been used can be refunded")
+				"subscription_in_use", "Only active subscriptions that are unused and not expired can be refunded")
+		case errors.Is(err, billing.ErrRefundManualOnly):
+			// R-38：续费/升降级订单不走自动退款路径。
+			writeAdminProblem(w, http.StatusUnprocessableEntity, problemTypeRefundRequestConflict,
+				"refund_requires_manual_review", "this order type must be refunded manually")
 		case errors.Is(err, store.ErrSubscriptionNotFound):
 			writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
 		case errors.Is(err, billing.ErrRefundNotSupported),

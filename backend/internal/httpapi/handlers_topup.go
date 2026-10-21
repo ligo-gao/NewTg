@@ -81,6 +81,8 @@ const (
 	// 前端/运营可机读区分「不能退」与「暂时没退成功」。
 	problemTypeSubscriptionInUse = "https://newtg.dev/problems/subscription_in_use"
 	problemTypeRefundFailed      = "https://newtg.dev/problems/refund_provider_failed"
+	// R-38：renew/change 的 succeeded 订单不能自动退款，需人工处理。
+	problemTypeRefundManualReview = "https://newtg.dev/problems/refund_requires_manual_review"
 )
 
 // TopupHandlerConfig 是充值端点的装配输入。
@@ -772,9 +774,14 @@ func (h *TopupHandlers) handleRefundOrder(w http.ResponseWriter, r *http.Request
 			writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 				"reason must be 1-200 characters")
 		case errors.Is(err, billing.ErrSubscriptionInUse):
-			// P-13：已开始或已消耗的订阅不能全额退款。
+			// R-35：已消耗 / 已过期 / 非 active 的订阅不能全额退款。
 			writeOrderProblem(w, http.StatusUnprocessableEntity, problemTypeSubscriptionInUse,
-				"Subscription in use", "Only subscriptions that have not started and have not been used can be refunded.")
+				"Subscription in use", "Only active subscriptions that are unused and not expired can be refunded.")
+		case errors.Is(err, billing.ErrRefundManualOnly):
+			// R-38：renew/change 的 succeeded 订单需要回退 end_at / plan，
+			// 不能走「全额退款 + 取消整条订阅」的自动路径。
+			writeOrderProblem(w, http.StatusUnprocessableEntity, problemTypeRefundManualReview,
+				"Manual refund required", "Renewal and plan-change orders must be refunded manually; their subscription stays active.")
 		case errors.Is(err, billing.ErrProviderActionUnsupported):
 			// 易支付等渠道没有退款 API：请求合法但渠道无此能力，409 而不是
 			// 502（重试不会改变结果）。
@@ -814,9 +821,11 @@ func (h *TopupHandlers) handleRefundOrder(w http.ResponseWriter, r *http.Request
 		StatusCode: http.StatusOK,
 		Detail: adminMarshalRaw(map[string]any{
 			"order_id": result.Order.ID,
-			"amount":   result.Amount,
-			"reason":   req.Reason,
-			"actor":    p.UserID,
+			// 从订单快照读实收金额：并发落败方走幂等早退时 Result.Amount
+			// 可能为 0，用它审计会显示「退了 0 元」。
+			"amount": result.Order.RefundedAmount,
+			"reason": req.Reason,
+			"actor":  p.UserID,
 		}),
 	}); err != nil {
 		h.log.Warn("order refund audit write failed",

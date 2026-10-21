@@ -1072,7 +1072,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 申请退还一笔未开始、未消耗的订阅
+         * 申请退还一笔未消耗、未过期的订阅
          * @description 仅本人实例；他人实例与不存在统一 404。只对购买该实例的订单写入
          *     `refund_requested_at` / `refund_reason`，**不调用渠道也不变动钱包**
          *     ——实际退款由管理员通过 `POST /api/orders/{id}/refund` 审批。
@@ -3559,7 +3559,8 @@ export interface paths {
          * @description 需要 `settings:manage`（比 `orders:read/manage` 更严的运营权限）。
          *     只处理订阅订单（`biz_kind` = subscribe/renew/change），且必须处于
          *     `succeeded`、`refund_required`（S2/R-29② 的「钱已收、履约失败」）
-         *     或 `refund_failed`（可重试）。
+         *     或 `refund_failed`（可重试）。其中 `succeeded` 仅 subscribe 订单可
+         *     自动退款，renew/change 见下方 R-38。
          *
          *     P-13 / R-35：`succeeded` 订单的订阅必须**未消耗、仍 active 且未过期**
          *     （`amount_used == 0`、`status='active'`、`end_at > now`），否则 422
@@ -3567,6 +3568,13 @@ export interface paths {
          *     当前时刻创建，预约生效实例在生产不可达，按字面条件会让所有已付款
          *     订单永远退不了。`refund_required` 订单不适用该判定——履约根本没有
          *     发生，必须可退（R-30）。
+         *
+         *     R-38：自动退款（全额退款 + 取消整条订阅）只对 `biz_kind='subscribe'`
+         *     的 `succeeded` 订单开放。续费（renew）与升降级（change）的 succeeded
+         *     订单分别需要回退 `end_at` / plan，不能复用这条路径；请求返回 422
+         *     `refund_requires_manual_review`，由运营人工处理，且不会取消用户
+         *     仍在使用的订阅。`refund_required`（S2 的 change 履约失败）仍可退，
+         *     按 R-36 不取消订阅。
          *
          *     出账路径按 `orders.provider`：
          *     - `wallet`：本地回补钱包，回补额取原始 `subscription_purchase` 流水的
@@ -9936,7 +9944,7 @@ export interface operations {
             401: components["responses"]["Error401"];
             404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
-            /** @description 订阅已开始或已消耗（subscription_in_use，P-13） */
+            /** @description 订阅已消耗/已过期/非 active（subscription_in_use，R-35） */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -14886,7 +14894,10 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description 订阅已开始或已消耗（subscription_in_use，P-13） */
+            /**
+             * @description 订阅已消耗/已过期/非 active（subscription_in_use），或为续费/升降级
+             *     订单需要人工退款（R-38）
+             */
             422: {
                 headers: {
                     [name: string]: unknown;

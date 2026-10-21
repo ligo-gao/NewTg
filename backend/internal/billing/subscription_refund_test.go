@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
 
@@ -763,5 +764,107 @@ func TestSubscriptionRefundMarksInProgress(t *testing.T) {
 	}
 	if _, failure, _, _ := readOrderRefundState(t, db, orderID); failure != "" {
 		t.Fatalf("退款成功后 failure_code = %q，期望清空", failure)
+	}
+}
+
+// TestSubscriptionRefundRenewRequiresManual 覆盖 R-38：续费订单的退款应回退
+// end_at，而不是取消整条订阅；succeeded 的 renew 订单返回 ErrRefundManualOnly，
+// 且订单与订阅都不变。
+func TestSubscriptionRefundRenewRequiresManual(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-30*24*time.Hour), 0, nil)
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindRenew, subID, 9900, "pi_renew")
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	_, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "续费后退款", ActorUserID: 1,
+	})
+	if !errors.Is(err, ErrRefundManualOnly) {
+		t.Fatalf("err = %v，期望 ErrRefundManualOnly", err)
+	}
+	if status, _, amount, _ := readOrderRefundState(t, db, orderID); status != string(OrderSucceeded) || amount != 0 {
+		t.Fatalf("订单被改动: status=%s amount=%d", status, amount)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("订阅状态 = %s，期望 active（R-38 不得取消整条订阅）", got)
+	}
+}
+
+// TestSubscriptionRefundChangeRequiresManual 覆盖 R-38：已生效的升降级订单退的是
+// 差价，不能取消原订阅；succeeded 的 change 订单返回 ErrRefundManualOnly。
+func TestSubscriptionRefundChangeRequiresManual(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-10*24*time.Hour), 0, nil)
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindChange, subID, 4900, "pi_change_ok")
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	_, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "升降级后退款", ActorUserID: 1,
+	})
+	if !errors.Is(err, ErrRefundManualOnly) {
+		t.Fatalf("err = %v，期望 ErrRefundManualOnly", err)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("订阅状态 = %s，期望 active", got)
+	}
+}
+
+// TestSubscriptionRefundWalletLimit 覆盖 M-6：回补会越过钱包上界时返回
+// ErrRefundWalletLimit，订单保持 succeeded、订阅保持 active、不写 reversal。
+func TestSubscriptionRefundWalletLimit(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	// 距离钱包上界只剩 100，回补 9900 必然越界。
+	userID := createBillingTestUser(t, db, contract.MaxWalletQuota-100)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderWallet,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "")
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
+	if _, err := db.Exec(`
+		INSERT INTO wallet_transactions
+			(user_id, type, amount, balance_after, status, reference_type, reference_id)
+		VALUES ($1, 'subscription_purchase', -9900, $2, 'confirmed', 'order', $3)`,
+		userID, contract.MaxWalletQuota-100, strconv.FormatInt(orderID, 10)); err != nil {
+		t.Fatalf("insert purchase wallet row: %v", err)
+	}
+	svc := newStripeTopupService(t, gormDB, "http://127.0.0.1:1")
+
+	_, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "钱包上界", ActorUserID: 1,
+	})
+	if !errors.Is(err, ErrRefundWalletLimit) {
+		t.Fatalf("err = %v，期望 ErrRefundWalletLimit", err)
+	}
+	if status, _, amount, _ := readOrderRefundState(t, db, orderID); status != string(OrderSucceeded) || amount != 0 {
+		t.Fatalf("订单被改动: status=%s amount=%d", status, amount)
+	}
+	if got := readWalletBalance(t, db, userID); got != contract.MaxWalletQuota-100 {
+		t.Fatalf("余额 = %d，期望不变", got)
+	}
+	var reversals int64
+	if err := db.QueryRow(`SELECT count(*) FROM wallet_transactions
+		WHERE type = 'reversal' AND reference_id = $1`, strconv.FormatInt(orderID, 10)).
+		Scan(&reversals); err != nil {
+		t.Fatalf("count reversals: %v", err)
+	}
+	if reversals != 0 {
+		t.Fatalf("越界失败不应写 reversal，实际 %d 行", reversals)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "active" {
+		t.Fatalf("订阅状态 = %s，期望 active", got)
 	}
 }
