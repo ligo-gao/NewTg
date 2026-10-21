@@ -109,6 +109,13 @@ type Session struct {
 	leaseRegistered bool
 	leaseStop       chan struct{}
 	leaseDone       chan struct{}
+
+	// subLeaseStop/subLeaseDone 是订阅在飞租约（request_registry.in_flight）
+	// 的续租循环（R-W9B-02）。与上面的 Redis 租约分开：钱包路径的租约由
+	// Redis 承载（M3 既有行为，不得回归），订阅路径的租约必须落 PG 且与
+	// 预扣记录同事务出现。
+	subLeaseStop chan struct{}
+	subLeaseDone chan struct{}
 }
 
 // 编译期断言：Session 必须完整实现冻结的计费会话接口。
@@ -1596,6 +1603,10 @@ func (s *Session) startHeartbeatLocked() {
 }
 
 // stopHeartbeatLocked 停止并等待续约循环退出（调用方必须持有 s.mu）。
+//
+// 两个循环都要停：钱包会话只有 Redis 租约；订阅会话只有 PG 在飞租约；
+// 混合来源（wallet_first 回退订阅）理论上可能先后启动两者，统一停掉
+// 才能保证会话终结后不再有续租写入。
 func (s *Session) stopHeartbeatLocked() {
 	if s.leaseStop != nil {
 		close(s.leaseStop)
@@ -1605,6 +1616,55 @@ func (s *Session) stopHeartbeatLocked() {
 		<-s.leaseDone
 		s.leaseDone = nil
 	}
+	if s.subLeaseStop != nil {
+		close(s.subLeaseStop)
+		s.subLeaseStop = nil
+	}
+	if s.subLeaseDone != nil {
+		<-s.subLeaseDone
+		s.subLeaseDone = nil
+	}
+}
+
+// startSubscriptionLeaseHeartbeatLocked 启动订阅 in-flight 租约的续租循环
+// （调用方必须持有 s.mu）。
+//
+// 只在预扣事务成功（created=true）后调用：回放会话不拥有订阅记录，不能
+// 替首执行者续租。续租失败**只记日志**（R-W9B-02）：租约过期只会让兜底
+// 扫描多一个候选，资金方向仍由终态 CAS 与租约守卫仲裁，绝不因为一次心跳
+// 写失败就提前退款或停止请求。
+func (s *Session) startSubscriptionLeaseHeartbeatLocked() {
+	if s.engine.subscriptionFunding == nil || s.subLeaseStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.subLeaseStop = stop
+	s.subLeaseDone = done
+
+	interval := s.engine.subscriptionLeaseHeartbeatInterval()
+	requestID := s.requestID
+	funding := s.engine.subscriptionFunding
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		// 与钱包租约同口径：请求取消不应终止续租，只有会话终结信号才停。
+		base := context.WithoutCancel(context.Background())
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(base, billingOpTimeout)
+				if _, err := funding.RenewInflightLease(ctx, []string{requestID}); err != nil {
+					slog.Warn("billing: subscription inflight lease renewal failed; settlement direction unchanged",
+						"request_id", requestID, "error", err)
+				}
+				cancel()
+			}
+		}
+	}()
 }
 
 // removeLeaseLocked 删除在飞租约（调用方必须持有 s.mu）。

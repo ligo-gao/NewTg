@@ -272,6 +272,20 @@ type SubscriptionRefund struct {
 	TokenID     int64
 	TokenAmount int64
 	Consumed    int64
+	// LeaseExpiredBefore 非零时启用「在飞租约守卫」（R-W9B-02）。
+	//
+	// 崩溃兜底扫描与任务/流式续租是两条并发写路径。扫描读完候选到真正退款
+	// 之间，活跃请求可能已经续租成功；若直接退款，等于把活着的请求当崩溃
+	// 处理（多退方向，平台损失）。守卫在同一事务内对 request_registry 行
+	// `FOR UPDATE` 后判定，与续租的 UPDATE 线性化：
+	//   - 行缺失（旧数据/预扣前崩溃）→ 允许退款（没有在飞证据）；
+	//   - state='settled'/'refunded' → Applied=false，Terminal 为已有终态；
+	//   - state='in_flight' 且 heartbeat_at >= 该时刻 → Applied=false，
+	//     Terminal="in_flight"（仍在飞，本轮不退款）；
+	//   - 其余（in_flight 已过期 / failed）→ 允许退款。
+	//
+	// 零值 = 不守卫：同步退款与任务失败退款必须立即生效，不受租约影响。
+	LeaseExpiredBefore time.Time
 }
 
 // SubscriptionRefundResult 描述一次订阅退款事务的结果。
@@ -344,9 +358,13 @@ type SubscriptionRepo interface {
 	// 本周期已不再持有这笔增量，调用方应跳过而不得把 amount_used 扣成负数。
 	RefundSubscriptionIncrement(ctx context.Context, subscriptionID, amount int64) (bool, error)
 	// ListStalePreConsumes 返回「已预扣但仍未结算/退款」且早于 before 的幂等
-	// 记录，供 worker 崩溃兜底（billing-06 §5.2）。request_registry 已进入
-	// settled/refunded 的记录被排除：正常结算/退款已经处理过它们。
-	ListStalePreConsumes(ctx context.Context, before time.Time, limit int) ([]SubscriptionPreConsume, error)
+	// 记录，供 worker 崩溃兜底（billing-06 §5.2）。
+	//
+	// leaseExpiredBefore 是「在飞租约已过期」的时间界（R-W9B-02）：state 为
+	// settled/refunded 的记录被排除（已有终态）；state='in_flight' 且
+	// heartbeat_at >= leaseExpiredBefore 的记录同样被排除（请求仍在飞）。
+	// 租约缺失的旧记录仍然纳入（没有在飞证据，窗口后照常回收）。
+	ListStalePreConsumes(ctx context.Context, before, leaseExpiredBefore time.Time, limit int) ([]SubscriptionPreConsume, error)
 }
 
 // SQLSubscriptionRepo 是 SubscriptionRepo 的 PostgreSQL 实现。
@@ -1819,6 +1837,28 @@ func (r *SQLSubscriptionRepo) PreConsumeUserSubscription(ctx context.Context,
 			// 尝试下一个实例，不能被一条「已预扣」记录卡死。
 			return SubscriptionPreConsume{}, false, ErrSubscriptionQuotaInsufficient
 		}
+		// R-W9B-02（G-DOM-35①）：in-flight 租约必须与预扣记录**同事务**
+		// 出现。把租约放到预扣提交之后单独写，会留下「预扣已落、registry
+		// 未写」的崩溃窗口，兜底扫描随后把仍在运行的长任务/长流当成崩溃
+		// 请求退款（订阅侧多退，任务完成后变成免费）。
+		//
+		// user_id 在事务内从 subscriptions 取：预扣表刻意不存 user_id
+		// （5 列冻结，R-D5-02），而 request_registry.user_id 是 NOT NULL。
+		//
+		// ON CONFLICT DO NOTHING：已存在的终态行绝不能被新预扣复活；正常
+		// 情况下新记录的 requestID 不会与既有 registry 行相撞。
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO request_registry
+				(request_id, user_id, state, heartbeat_at, pre_deducted, created_at)
+			SELECT $1, s.user_id, 'in_flight', now(), $3, now()
+			  FROM subscriptions s WHERE s.id = $2
+			ON CONFLICT (request_id) DO NOTHING`, requestID, subscriptionID, amount); err != nil {
+			if isInvalidTextRepresentation(err) {
+				return SubscriptionPreConsume{}, false, ErrPreConsumeInvalid
+			}
+			return SubscriptionPreConsume{}, false,
+				fmt.Errorf("store: register subscription inflight lease(%s): %w", requestID, err)
+		}
 		if commitErr := tx.Commit(); commitErr != nil {
 			// 【未知窗口（LOW，已登记）】Commit 返回错误时事务的真实结果
 			// 不可知：可能已提交（幂等记录与 amount_used 增量都已落库），
@@ -1980,8 +2020,12 @@ func (r *SQLSubscriptionRepo) RefundSubscriptionRequest(ctx context.Context,
 	}
 
 	// ⑤ registry 终态 CAS：已 settled 的行不得被迟到的退款降级；CAS 不命中
-	// 会连同上面所有资金变更一起回滚。
-	applied, terminal, err := refundRequestRegistryTx(ctx, tx, in.RequestID, in.UserID)
+	// 会连同上面所有资金变更一起回滚。传入 LeaseExpiredBefore 时（仅崩溃
+	// 兜底扫描），同一事务内先做在飞租约守卫：活跃请求在扫描判定之后续租
+	// 成功的，整笔退款回滚（Applied=false, Terminal="in_flight"）。
+	// 锁顺序保持「预扣行 → subscriptions → api_tokens → registry」不变：
+	// 守卫在资金语句之后执行，被拒绝时靠 defer Rollback 撤销全部暂存变更。
+	applied, terminal, err := refundRequestRegistryTx(ctx, tx, in.RequestID, in.UserID, in.LeaseExpiredBefore)
 	if err != nil {
 		return SubscriptionRefundResult{}, err
 	}
@@ -2040,7 +2084,37 @@ func settleRequestRegistryTx(ctx context.Context, tx *sql.Tx, requestID string, 
 
 // refundRequestRegistryTx 在同一事务内把 request_registry 置为 refunded。
 // `state <> 'settled'` 保证结算优先：CAS 不命中时返回已有终态，调用方回滚。
-func refundRequestRegistryTx(ctx context.Context, tx *sql.Tx, requestID string, userID int64) (bool, string, error) {
+//
+// leaseExpiredBefore 非零时先做在飞租约守卫（R-W9B-02）：对 registry 行
+// FOR UPDATE 后检查心跳。SELECT FOR UPDATE 与续租的 UPDATE 会互相阻塞，
+// 因此只有两种线性化结果——续租先提交则本轮不退款（Terminal="in_flight"），
+// 退款先提交则续租的 `state='in_flight'` 条件不再命中（不会复活已退款行）。
+func refundRequestRegistryTx(ctx context.Context, tx *sql.Tx, requestID string,
+	userID int64, leaseExpiredBefore time.Time) (bool, string, error) {
+	if !leaseExpiredBefore.IsZero() {
+		var (
+			state     string
+			heartbeat time.Time
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT state, heartbeat_at FROM request_registry
+			 WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&state, &heartbeat)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// 租约缺失：没有在飞证据（旧数据或预扣前的崩溃），照常回收。
+		case err != nil:
+			if isInvalidTextRepresentation(err) {
+				return false, "", ErrRequestRegistryInvalid
+			}
+			return false, "", fmt.Errorf("store: read registry lease(%s): %w", requestID, err)
+		case state == "settled" || state == "refunded":
+			return false, state, nil
+		case state == "in_flight" && !heartbeat.Before(leaseExpiredBefore):
+			// 心跳在过期界之后：请求仍在飞，本轮不得退款。
+			return false, "in_flight", nil
+		}
+	}
+
 	var state string
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO request_registry (request_id, user_id, state, refunded_at)
@@ -2239,22 +2313,30 @@ func (r *SQLSubscriptionRepo) RefundSubscriptionIncrement(ctx context.Context,
 	return affected == 1, nil
 }
 
-// ListStalePreConsumes 列出可被崩溃兜底退款的订阅预扣记录（billing-06 §5.2）。
+// ListStalePreConsumes 列出可被崩溃兜底退款的订阅预扣记录（billing-06 §5.2；
+// R-W9B-02 的在飞租约谓词）。
 //
 // 判据：
 //   - status='consumed'：仍在预扣中（refunded 已退过，幂等短路由仓储保证，
 //     这里直接排除以减少扫描量）；
 //   - created_at < before：调用方按可配置窗口（默认 15 分钟）计算；
-//   - request_registry 中同 request_id 的记录不是 settled/refunded：
-//     registry 行缺失也纳入（M3 尚未写该表；缺失只表示没有相反证据）。
+//   - 租约不活：request_registry 中同 request_id 的行
+//     · 不存在（旧数据/无租约证据），或
+//     · state 既不是 settled/refunded（终态），且
+//     · 不是「in_flight 且 heartbeat_at >= leaseExpiredBefore」（仍在飞）。
+//
+// 【两组参数必须分开】before 是**扫描窗口**（窗口默认 900s，决定多老的
+// 请求才纳入）；leaseExpiredBefore 是**租约过期界**（TTL 默认 60s，决定
+// 心跳停多久才算死）。用窗口当心跳阈值会把持续续租的长任务误退；用 TTL
+// 当窗口会让刚预扣的请求立刻可退（R-17 / R-W9B-02）。
 //
 // 【为什么用 NOT EXISTS 而不是 JOIN】registry 是可选证据面，缺失必须继续
-// 处理；LEFT JOIN 需要额外的 NULL 判定，NOT EXISTS 直接表达「没有已结案
-// 证据」。
+// 处理；LEFT JOIN 需要额外的 NULL 判定，NOT EXISTS 直接表达「没有在飞证据
+// 或已结案证据」。
 //
 // ORDER BY/LIMIT 让每轮扫描有界且顺序稳定（积压时先处理最旧的记录）。
 func (r *SQLSubscriptionRepo) ListStalePreConsumes(ctx context.Context,
-	before time.Time, limit int) ([]SubscriptionPreConsume, error) {
+	before, leaseExpiredBefore time.Time, limit int) ([]SubscriptionPreConsume, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -2266,9 +2348,10 @@ func (r *SQLSubscriptionRepo) ListStalePreConsumes(ctx context.Context,
 		   AND NOT EXISTS (
 		        SELECT 1 FROM request_registry rr
 		         WHERE rr.request_id = r.request_id
-		           AND rr.state IN ('settled', 'refunded'))
+		           AND (rr.state IN ('settled', 'refunded')
+		                OR (rr.state = 'in_flight' AND rr.heartbeat_at >= $2)))
 		 ORDER BY r.created_at ASC, r.request_id ASC
-		 LIMIT $2`, before.UTC(), limit)
+		 LIMIT $3`, before.UTC(), leaseExpiredBefore.UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stale subscription pre-consume records: %w", err)
 	}

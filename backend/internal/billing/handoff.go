@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -167,6 +168,29 @@ func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int
 		},
 	}
 	return s.Terminate(fact)
+}
+
+// RefreshInflightLeases 续租一批订阅请求的 in-flight 租约（R-W9B-02）。
+//
+// 任务提交时会话 Detach，流式心跳随之停止；之后由任务轮询器成为任务的
+// 守护者。单轮轮询处理最多 1000 个任务、任务间隔 1s，整轮可能远超租约
+// TTL，因此轮询器必须在处理每个任务前续租（并在轮批次量续租一次），
+// 否则排队靠后的活跃任务会被兜底扫描当成崩溃退款，任务完成后再结算就
+// 变成免费（G-DOM-35）。
+//
+// 非订阅来源/未装配订阅时返回 nil：钱包任务的在飞证据是 hold 行，由既有
+// Redis 租约与账本回收路径处理，不受本方法影响。
+//
+// 续租失败只上抛错误供调用方告警；**不得**改变结算方向——租约过期只会
+// 让扫描多一个候选，终态 CAS 仍是唯一仲裁者。
+func (e *Engine) RefreshInflightLeases(ctx context.Context, requestIDs []string) error {
+	if e.subscriptionFunding == nil || len(requestIDs) == 0 {
+		return nil
+	}
+	if _, err := e.subscriptionFunding.RenewInflightLease(ctx, requestIDs); err != nil {
+		return fmt.Errorf("billing: refresh subscription inflight leases: %w", err)
+	}
+	return nil
 }
 
 // terminateAtHeld 把 hold 按**预扣额**结清（cost = held，差额 0）。

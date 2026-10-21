@@ -235,6 +235,13 @@ type Engine struct {
 	saturator Saturator
 	ledger    *Ledger
 	heartbeat time.Duration // 单测可缩短；零值按契约默认 30s
+	// subHeartbeat 是订阅 in-flight 租约的续租间隔（R-W9B-02）。
+	//
+	// 与 heartbeat 分开：heartbeat 是钱包 Redis 租约的测试注入旋钮，
+	// 钱包用例把它压到 10ms；若订阅心跳复用同一字段，每个订阅会话每 10ms
+	// 打一次数据库，集成测试会耗尽连接池。零值按 TTL/3 与契约心跳取小
+	// （见 subscriptionLeaseHeartbeatInterval）。
+	subHeartbeat time.Duration
 	// subscriptionFunding 是订阅资金来源接缝（S4a）。nil 表示未装配，
 	// 资金分派保持纯钱包行为（与 S4a 之前一致）。
 	subscriptionFunding SubscriptionFundingSource

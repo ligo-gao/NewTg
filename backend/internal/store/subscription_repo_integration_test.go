@@ -907,6 +907,29 @@ func TestSubscriptionPreConsumeUserSubscriptionAtomic(t *testing.T) {
 		t.Fatalf("amount_used = %d，want 120", got)
 	}
 
+	// R-W9B-02：预扣成功必须在同一事务内留下 in_flight 租约（含 user_id
+	// 与预扣额），否则「预扣已落、租约缺失」的崩溃窗口会让兜底扫描把仍在
+	// 运行的长任务误退。
+	var (
+		leaseState string
+		leaseUser  int64
+		leasePre   int64
+		leaseFresh bool
+	)
+	if err := db.QueryRow(`
+		SELECT state, user_id, pre_deducted, heartbeat_at > now() - interval '30s'
+		  FROM request_registry WHERE request_id = $1`, requestID).
+		Scan(&leaseState, &leaseUser, &leasePre, &leaseFresh); err != nil {
+		t.Fatalf("read inflight lease: %v", err)
+	}
+	if leaseState != "in_flight" || leaseUser != 900020 || leasePre != 120 || !leaseFresh {
+		t.Fatalf("in_flight 租约 = state %q user %d pre %d fresh %v，want in_flight/900020/120/true",
+			leaseState, leaseUser, leasePre, leaseFresh)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM request_registry WHERE user_id = 900020`)
+	})
+
 	// 同 requestId 再预扣：幂等返回既有值，amount_used 不再增加。
 	again, created, err := repo.PreConsumeUserSubscription(ctx, requestID, sub.ID, 999)
 	if err != nil || created {
@@ -1544,8 +1567,9 @@ func subscriptionAmountUsed(t *testing.T, db *sql.DB, id int64) int64 {
 }
 
 // TestSubscriptionListStalePreConsumes 覆盖崩溃兜底扫描的候选集
-// （billing-06 §5.2）：旧 consumed 命中；refunded、未到窗口、以及
-// request_registry 已 settled/refunded 的记录被排除；failed 不排除。
+// （billing-06 §5.2；R-W9B-02 的在飞租约谓词）：旧 consumed 且租约缺失/
+// 过期 → 命中；refunded、未到窗口、registry 已 settled/refunded、以及
+// in_flight 且心跳新鲜（仍在飞）的记录被排除；failed 不排除。
 func TestSubscriptionListStalePreConsumes(t *testing.T) {
 	db := openTestDB(t)
 	repo := NewSubscriptionRepo(db)
@@ -1567,10 +1591,20 @@ func TestSubscriptionListStalePreConsumes(t *testing.T) {
 		}
 	}
 	setRegistry := func(req, state string) {
-		// request_registry 的主键与预扣表同为 uuid；user_id 无 FK。
-		if _, err := db.Exec(`INSERT INTO request_registry (request_id, user_id, state) VALUES ($1, $2, $3)`,
+		// PreConsumeUserSubscription 现在会与预扣同事务写 in_flight 租约
+		// （R-W9B-02），因此这里必须 UPSERT 而不是 INSERT。
+		if _, err := db.Exec(`
+			INSERT INTO request_registry (request_id, user_id, state, heartbeat_at)
+			VALUES ($1, $2, $3, now())
+			ON CONFLICT (request_id) DO UPDATE
+			   SET state = EXCLUDED.state, heartbeat_at = now()`,
 			req, 900103, state); err != nil {
 			t.Fatalf("insert request_registry %s: %v", req, err)
+		}
+	}
+	backdateLease := func(req string, at time.Time) {
+		if _, err := db.Exec(`UPDATE request_registry SET heartbeat_at = $2 WHERE request_id = $1`, req, at); err != nil {
+			t.Fatalf("backdate lease %s: %v", req, err)
 		}
 	}
 	t.Cleanup(func() {
@@ -1579,6 +1613,9 @@ func TestSubscriptionListStalePreConsumes(t *testing.T) {
 
 	oldConsumed := insert(50)
 	backdate(oldConsumed, now.Add(-20*time.Minute))
+	// 预扣事务写入的租约心跳也是 now；把过期请求的租约一起回拨，模拟
+	// 「进程已崩溃」。
+	backdateLease(oldConsumed, now.Add(-20*time.Minute))
 
 	refunded := insert(40)
 	backdate(refunded, now.Add(-20*time.Minute))
@@ -1601,7 +1638,13 @@ func TestSubscriptionListStalePreConsumes(t *testing.T) {
 	backdate(failedState, now.Add(-20*time.Minute))
 	setRegistry(failedState, "failed")
 
-	list, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), 100)
+	// liveLease：预扣很老，但 in_flight 心跳新鲜 —— 长任务/长流仍在跑，
+	// 扫描不得把它当崩溃（G-DOM-35 的核心回归）。
+	liveLease := insert(15)
+	backdate(liveLease, now.Add(-20*time.Minute))
+
+	leaseCutoff := now.Add(-time.Minute) // TTL=60s 的等价过期界
+	list, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), leaseCutoff, 100)
 	if err != nil {
 		t.Fatalf("ListStalePreConsumes: %v", err)
 	}
@@ -1612,14 +1655,28 @@ func TestSubscriptionListStalePreConsumes(t *testing.T) {
 	if len(got) != 2 || !got[oldConsumed] || !got[failedState] {
 		t.Fatalf("stale 候选 = %v，want 仅 %s 与 %s", got, oldConsumed, failedState)
 	}
-	for _, req := range []string{refunded, settled, registryRefunded, fresh} {
+	for _, req := range []string{refunded, settled, registryRefunded, fresh, liveLease} {
 		if got[req] {
-			t.Fatalf("不应纳入 %s（已退款/已结案/未到窗口）", req)
+			t.Fatalf("不应纳入 %s（已退款/已结案/未到窗口/仍在飞）", req)
 		}
 	}
 
+	// 心跳超过租约过期界后，同一条记录重新变成候选（崩溃才会被回收）。
+	backdateLease(liveLease, now.Add(-2*time.Minute))
+	list, err = repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), leaseCutoff, 100)
+	if err != nil {
+		t.Fatalf("ListStalePreConsumes after lease expiry: %v", err)
+	}
+	got = map[string]bool{}
+	for _, rec := range list {
+		got[rec.RequestID] = true
+	}
+	if !got[liveLease] {
+		t.Fatalf("租约过期后 %s 应重新纳入候选", liveLease)
+	}
+
 	// LIMIT 生效（有界扫描）。
-	limited, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), 1)
+	limited, err := repo.ListStalePreConsumes(ctx, now.Add(-15*time.Minute), leaseCutoff, 1)
 	if err != nil || len(limited) != 1 {
 		t.Fatalf("limit=1 返回 %d 条/%v，want 1/nil", len(limited), err)
 	}

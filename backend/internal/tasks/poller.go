@@ -81,6 +81,13 @@ type BillingHandoff interface {
 	// 与「资金收敛」解耦，同时复用同一条 hold CAS / 结算锁路径。
 	TerminateByRequestIDForTokenCost(requestID string, tokenID, cost int64, fact contract.UsageFact) error
 	RefundByRequestIDForToken(requestID string, tokenID int64) error
+	// RefreshInflightLeases 续租订阅请求的 in-flight 租约（R-W9B-02）。
+	//
+	// 轮询器是任务 Detach 之后的守护者：单轮可能处理上千个任务、任务间隔
+	// 1s，整轮远超租约 TTL。必须在轮批开始与每个任务处理前续租，否则兜底
+	// 扫描会把仍在排队的活跃任务当成崩溃请求退款，任务随后成功即免费。
+	// 钱包任务/非订阅来源是 no-op。
+	RefreshInflightLeases(ctx context.Context, requestIDs []string) error
 }
 
 // PollerConfig 是轮询器的依赖与可调参数。零值字段使用冻结默认值。
@@ -244,6 +251,10 @@ func (p *Poller) pollOnce(ctx context.Context) {
 	if len(tasks) == 0 {
 		return
 	}
+	// R-W9B-02：轮批开始先给本批所有非终态任务续一次租约。这样即使某个
+	// 任务排在很长的单轮末尾，它的租约也不会在排队期间先过期；随后
+	// processTask 还会在真正处理前再续一次（覆盖单任务耗时/轮内长时间间隔）。
+	p.renewInflightLeases(ctx, tasks)
 	// 同渠道内串行是冻结语义（relay-06 §8.1）：同一渠道的上游限流/连接
 	// 复用由单线程顺序消化，避免并发轮询把渠道打出 429。
 	channelOrder := make([]int64, 0, len(tasks))
@@ -271,6 +282,30 @@ func (p *Poller) pollOnce(ctx context.Context) {
 	}
 }
 
+// renewInflightLeases 为一批未终态任务续租（R-W9B-02）。
+//
+// 只收集有 request_id 的非终态任务：终态任务的资金已经/即将由结算/退款
+// 收敛，续租只会与终态 CAS 竞争；没有 request_id 的行无法结算，续租也
+// 没有意义。失败只记录，调用方继续轮询。
+func (p *Poller) renewInflightLeases(ctx context.Context, tasks []*Task) {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task == nil || task.State.Terminal() {
+			continue
+		}
+		if id := toString(task.PrivateData["request_id"]); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := p.billing.RefreshInflightLeases(ctx, ids); err != nil {
+		p.log.Warn("tasks: refresh inflight leases for poll batch failed; settlement direction unchanged",
+			"tasks", len(ids), "error", err)
+	}
+}
+
 // processTask 推进单个任务：超时检查 → 插件构建查询 → 出站 → 分类处理。
 func (p *Poller) processTask(ctx context.Context, task *Task) {
 	if task == nil || task.State.Terminal() {
@@ -285,6 +320,18 @@ func (p *Poller) processTask(ctx context.Context, task *Task) {
 		p.log.Warn("tasks: plugin poller received a non-plugin task; skipping (family isolation)",
 			"task_id", task.PublicTaskID, "family", task.Family)
 		return
+	}
+	// R-W9B-02：真正处理当前任务前再续一次租约。轮批次量续租覆盖不了
+	// 「单轮内任务间隔 1s × 队列长度」超过 TTL 的情况——排队靠后的任务在
+	// 轮到它时租约可能已过 TTL。给当前任务的 requestID 续租后，兜底扫描
+	// 才不会在它运行期间把它退掉（否则任务完成后结算即免费）。
+	if requestID := toString(task.PrivateData["request_id"]); requestID != "" {
+		if err := p.billing.RefreshInflightLeases(ctx, []string{requestID}); err != nil {
+			// 续租失败只记录：不能因此停止轮询或改变结算方向；租约过期后
+			// 扫描可能抢先退款，终态 CAS 会阻止后续结算造成双花。
+			p.log.Warn("tasks: refresh inflight lease before processing failed; settlement direction unchanged",
+				"task_id", task.PublicTaskID, "request_id", requestID, "error", err)
+		}
 	}
 	if p.timedOut(task) {
 		p.failAndRefund(ctx, task, "task_timeout")

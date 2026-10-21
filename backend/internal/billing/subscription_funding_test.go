@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -290,16 +292,21 @@ func (f *fakeSubscriptionFunding) applyDeltaLocked(subscriptionID, delta int64) 
 }
 
 // ListStalePreConsumes 返回 consumed 且 created_at 早于 before 的记录。
+// 假实现把「租约」建模为 registry 里的 "in_flight:<heartbeat unixnano>" 状态：
+// 心跳不早于 leaseExpiredBefore 时视为存活、不纳入候选（R-W9B-02）。
 func (f *fakeSubscriptionFunding) ListStalePreConsumes(_ context.Context,
-	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	before, leaseExpiredBefore time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listStaleErr != nil {
 		return nil, f.listStaleErr
 	}
 	out := make([]store.SubscriptionPreConsume, 0, len(f.records))
-	for _, rec := range f.records {
+	for id, rec := range f.records {
 		if rec.Status != "consumed" || !rec.CreatedAt.Before(before) {
+			continue
+		}
+		if heartbeat, ok := leaseHeartbeat(f.registry[id]); ok && !heartbeat.Before(leaseExpiredBefore) {
 			continue
 		}
 		out = append(out, rec)
@@ -308,6 +315,39 @@ func (f *fakeSubscriptionFunding) ListStalePreConsumes(_ context.Context,
 		}
 	}
 	return out, nil
+}
+
+// leaseHeartbeat 解析假 registry 中的 "in_flight:<unixnano>" 心跳时间。
+func leaseHeartbeat(state string) (time.Time, bool) {
+	const prefix = "in_flight:"
+	if !strings.HasPrefix(state, prefix) {
+		return time.Time{}, false
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(state, prefix), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, n).UTC(), true
+}
+
+// RenewInflightLease 刷新假 registry 中 in_flight 行的心跳。
+func (f *fakeSubscriptionFunding) RenewInflightLease(_ context.Context,
+	requestIDs []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, id := range requestIDs {
+		if strings.HasPrefix(f.registry[id], "in_flight") || f.registry[id] == "" {
+			// 没有 registry 行时，真实实现是 0 行（这里只在已有预扣记录时
+			// 建模，避免把不存在的请求“续租”成存活证据）。
+			if _, known := f.records[id]; !known {
+				continue
+			}
+			f.registry[id] = "in_flight:" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // deltas 返回已记录的结算增量调用。

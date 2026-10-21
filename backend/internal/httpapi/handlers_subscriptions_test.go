@@ -653,9 +653,9 @@ func (r *fakeSubscriptionRepo) RefundSubscriptionRequest(_ context.Context,
 }
 
 // ListStalePreConsumes 返回早于 before 的 consumed 记录（handler 测试的
-// 假仓储不区分 registry 终态）。
+// 假仓储不区分 registry 终态与在飞租约；计费侧语义由 billing 集成测试覆盖）。
 func (r *fakeSubscriptionRepo) ListStalePreConsumes(_ context.Context,
-	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	before, _ time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]store.SubscriptionPreConsume, 0, limit)

@@ -95,8 +95,18 @@ type SubscriptionFundingSource interface {
 	// 安全地少退一次；残余语义登记在 G-DOM-34②/G-DOM-35。
 	RefundSubscriptionIncrement(ctx context.Context, subscriptionID, amount int64) (applied bool, err error)
 	// ListStalePreConsumes 返回早于 before 且尚未结算/退款的预扣记录
-	// （billing-06 §5.2 的崩溃兜底扫描）。
-	ListStalePreConsumes(ctx context.Context, before time.Time, limit int) ([]store.SubscriptionPreConsume, error)
+	// （billing-06 §5.2 的崩溃兜底扫描）。leaseExpiredBefore 是在飞租约的
+	// 过期界（R-W9B-02）：心跳晚于它的 in_flight 租约视为存活，不纳入。
+	ListStalePreConsumes(ctx context.Context, before, leaseExpiredBefore time.Time, limit int) ([]store.SubscriptionPreConsume, error)
+	// RenewInflightLease 续租这些 requestID 的 in-flight 租约（R-W9B-02）。
+	//
+	// 只更新 state='in_flight' 的行：已 settled/refunded 的请求不会被续租
+	// 复活（任务轮询/流式心跳可能在结案后仍持有旧 requestID）。返回实际
+	// 续租行数；非订阅来源的 requestID 自然产生 0 行，不是错误。
+	//
+	// 续租失败只由调用方记录日志，不得改变既有结算方向：租约过期只会让
+	// 兜底扫描多一次候选，真正的资金仲裁仍是终态 CAS。
+	RenewInflightLease(ctx context.Context, requestIDs []string) (int, error)
 	// RequestRegistryState 读取 request_registry.state；行缺失返回空串。
 	//
 	// 订阅没有 wallet hold 行，结算幂等只能靠这张表：预扣记录本身只有
@@ -247,8 +257,81 @@ func (f *StoreSubscriptionFunding) RefundSubscriptionIncrement(ctx context.Conte
 
 // ListStalePreConsumes 转发崩溃兜底扫描。
 func (f *StoreSubscriptionFunding) ListStalePreConsumes(ctx context.Context,
-	before time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
-	return f.repo.ListStalePreConsumes(ctx, before, limit)
+	before, leaseExpiredBefore time.Time, limit int) ([]store.SubscriptionPreConsume, error) {
+	return f.repo.ListStalePreConsumes(ctx, before, leaseExpiredBefore, limit)
+}
+
+// RenewInflightLease 续租订阅请求的 in-flight 租约（R-W9B-02）。
+//
+// 为什么放在资金适配器而不是 store.SubscriptionRepo：与 RequestRegistryState
+// 同因——request_registry 是平台级生命周期锚，不是订阅域表；续租只需要
+// 一条按 requestID 的条件 UPDATE。
+//
+// `state='in_flight'` 是**方向安全**的关键条件：结案后的租约行不得因为
+// 一次迟到的任务轮询续租而复活；否则兜底扫描会重新把它当成在飞请求。
+func (f *StoreSubscriptionFunding) RenewInflightLease(ctx context.Context,
+	requestIDs []string) (int, error) {
+	ids := make([]string, 0, len(requestIDs))
+	for _, id := range requestIDs {
+		if validRegistryRequestID(id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	// request_id 是 uuid 列：先把文本数组 unnest 再转 uuid，避免调用方用
+	// ANY($1::uuid[]) 时让一个畸形 id 把整批续租打回 22P02。不可解析的 id
+	// 已在上面过滤掉，这里只处理合法 UUID 形态。
+	res, err := f.db.ExecContext(ctx, `
+		UPDATE request_registry SET heartbeat_at = now()
+		 WHERE request_id IN (SELECT unnest($1::text[])::uuid)
+		   AND state = 'in_flight'`, ids)
+	if err != nil {
+		return 0, fmt.Errorf("billing: renew subscription inflight lease: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("billing: renew subscription inflight lease rows: %w", err)
+	}
+	return int(affected), nil
+}
+
+// validRegistryRequestID 判断字符串能否安全转换为 PostgreSQL uuid。
+//
+// 生产 RequestID 是 32 位小写十六进制；测试/外部也使用带连字符的规范
+// UUID。只接受这两种形态：任何其它字符串都会让 `::uuid` 抛 22P02，
+// 而一条畸形任务行不应该阻断同一批其它任务的续租。
+func validRegistryRequestID(id string) bool {
+	switch len(id) {
+	case 32:
+		for i := 0; i < len(id); i++ {
+			if !isHexDigit(id[i]) {
+				return false
+			}
+		}
+		return true
+	case 36:
+		for i := 0; i < len(id); i++ {
+			switch i {
+			case 8, 13, 18, 23:
+				if id[i] != '-' {
+					return false
+				}
+			default:
+				if !isHexDigit(id[i]) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// isHexDigit 报告字节是否为十六进制字符（大小写均可，PostgreSQL uuid 接受）。
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 // RequestRegistryState 读取结算幂等状态（行缺失 = 空串）。
@@ -574,6 +657,11 @@ func (s *Session) chargeSubscriptionLocked(ctx context.Context, budget int64, ca
 		}
 
 		s.adoptSubscriptionPreConsume(rec, amount, false)
+		// R-W9B-02：预扣事务已写入 in-flight 租约；从这里开始由会话心跳
+		// 续租，直到 Terminate/Refund/Detach 停止（任务路径交给轮询器）。
+		// 心跳独立于 300s 静默看门狗：持续出块的长流与「静默但仍在跑」的
+		// 请求都必须保持租约新鲜，否则窗口后会被兜底扫描误退。
+		s.startSubscriptionLeaseHeartbeatLocked()
 		return nil
 	}
 

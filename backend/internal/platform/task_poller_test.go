@@ -203,6 +203,10 @@ func (wiringBilling) TerminateByRequestIDForTokenCost(string, int64, int64, cont
 
 func (wiringBilling) RefundByRequestIDForToken(string, int64) error { return nil }
 
+// RefreshInflightLeases 是 R-W9B-02 的续租接缝；装配测试不关心租约，
+// 实现为 no-op 即可让 fake 满足 tasks.BillingHandoff。
+func (wiringBilling) RefreshInflightLeases(context.Context, []string) error { return nil }
+
 func TestBuildTaskPollersWiresLimitsIntoBothPollers(t *testing.T) {
 	cases := []struct {
 		name        string

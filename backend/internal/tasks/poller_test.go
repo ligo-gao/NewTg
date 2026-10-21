@@ -209,6 +209,22 @@ type fakeHandoff struct {
 	terminateErr    error
 	costErr         error
 	refundErr       error
+	// refreshCalls 记录每次续租请求的 requestID（R-W9B-02 用例断言）。
+	refreshCalls []string
+	refreshErr   error
+}
+
+func (f *fakeHandoff) RefreshInflightLeases(_ context.Context, requestIDs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshCalls = append(f.refreshCalls, requestIDs...)
+	return f.refreshErr
+}
+
+func (f *fakeHandoff) refreshSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.refreshCalls...)
 }
 
 func (f *fakeHandoff) TerminateByRequestIDForToken(requestID string, tokenID int64, _ contract.UsageFact) error {

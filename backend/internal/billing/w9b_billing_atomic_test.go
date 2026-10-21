@@ -131,6 +131,23 @@ func w9bPreConsumeStatus(t *testing.T, db *sql.DB, requestID string) string {
 	return status
 }
 
+// w9bAgePreConsumeAndLease 把预扣记录与在飞租约一起回拨，模拟「请求已超过
+// 兜底窗口且进程已崩溃」（R-W9B-02：两个条件必须同时满足，否则扫描会正确
+// 地把持续续租的长请求当成在飞并跳过）。
+func w9bAgePreConsumeAndLease(t *testing.T, db *sql.DB, requestID string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`UPDATE subscription_pre_consume_records SET created_at = now() - interval '1 hour'
+		  WHERE request_id = $1`, requestID); err != nil {
+		t.Fatalf("age pre-consume: %v", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE request_registry SET heartbeat_at = now() - interval '1 hour'
+		  WHERE request_id = $1`, requestID); err != nil {
+		t.Fatalf("age inflight lease: %v", err)
+	}
+}
+
 // w9bCleanupRequest 删除本用例写入的 registry / 预扣 / 钱包流水。
 func w9bCleanupRequest(t *testing.T, db *sql.DB, requestID string) {
 	t.Helper()
@@ -255,8 +272,8 @@ func TestW9BSettlementRegistryFailureRollsBackDelta(t *testing.T) {
 	if got := w9bPreConsumeStatus(t, db, req); got != "consumed" {
 		t.Fatalf("失败后预扣记录 = %q，want consumed（保留给兜底扫描）", got)
 	}
-	if got := w9bRegistryState(t, db, req); got != "" {
-		t.Fatalf("失败后 registry = %q，want 空（不得伪造终态）", got)
+	if got := w9bRegistryState(t, db, req); got != "in_flight" {
+		t.Fatalf("失败后 registry = %q，want in_flight（R-W9B-02 预扣租约仍在，不得伪造终态）", got)
 	}
 	if got := tokenRemain(t, db, tokenID).Int64; got != 400 {
 		t.Fatalf("失败后令牌剩余 = %d，want 400（结算未成功不得调整令牌）", got)
@@ -342,12 +359,9 @@ func TestW9BConcurrentTerminateAndRecoveryExactlyOnce(t *testing.T) {
 		req := testUUID(t)
 		w9bCleanupRequest(t, db, req)
 		w9bSeedSubscriptionPreConsume(t, db, repo, req, sub.ID, tokenID, 100)
-		// 让扫描看到这条预扣：记录年龄超过默认窗口（900s）。
-		if _, err := db.Exec(
-			`UPDATE subscription_pre_consume_records SET created_at = now() - interval '1 hour'
-			  WHERE request_id = $1`, req); err != nil {
-			t.Fatalf("age pre-consume: %v", err)
-		}
+		// 让扫描看到这条预扣：记录年龄超过窗口，且租约心跳也过期
+		// （R-W9B-02 的两个条件必须同时成立）。
+		w9bAgePreConsumeAndLease(t, db, req)
 
 		release := w9bBlockSubscriptionRow(t, db, sub.ID)
 		start := make(chan struct{})
@@ -433,11 +447,8 @@ func TestW9BLateTerminateAfterRefundNoop(t *testing.T) {
 	req := testUUID(t)
 	w9bCleanupRequest(t, db, req)
 	w9bSeedSubscriptionPreConsume(t, db, repo, req, sub.ID, tokenID, 100)
-	if _, err := db.Exec(
-		`UPDATE subscription_pre_consume_records SET created_at = now() - interval '1 hour'
-		  WHERE request_id = $1`, req); err != nil {
-		t.Fatalf("age pre-consume: %v", err)
-	}
+	// 预扣超过窗口且租约心跳已过期（R-W9B-02），扫描才会接管。
+	w9bAgePreConsumeAndLease(t, db, req)
 
 	recovered, err := e.RecoverStaleSubscriptionPreConsumes(context.Background(), time.Now().UTC(), 10)
 	if err != nil || recovered != 1 {
@@ -586,8 +597,8 @@ func TestW9BSubscriptionRefundTokenCreditAtomic(t *testing.T) {
 	if got := w9bPreConsumeStatus(t, db, req); got != "consumed" {
 		t.Fatalf("回滚后预扣记录 = %q，want consumed", got)
 	}
-	if got := w9bRegistryState(t, db, req); got != "" {
-		t.Fatalf("回滚后 registry = %q，want 空", got)
+	if got := w9bRegistryState(t, db, req); got != "in_flight" {
+		t.Fatalf("回滚后 registry = %q，want in_flight（预扣租约仍在，不得伪造终态）", got)
 	}
 	if got := tokenRemain(t, db, tokenID).Int64; got != 370 {
 		t.Fatalf("回滚后令牌 = %d，want 370", got)

@@ -43,6 +43,19 @@ const (
 
 	defaultSubscriptionRecoveryWindowSeconds = int64(900)
 
+	// ConfigSubscriptionInflightLeaseTTLSeconds 是订阅在飞租约的心跳超时阈值
+	// （R-W9B-02）。它与上面的兜底**窗口**是两组参数，严格分开：
+	//   - 窗口（默认 900s）决定「预扣记录多老才纳入扫描」；
+	//   - 租约 TTL（默认 60s）决定「心跳停多久才算进程已死」。
+	// 必须满足 0 < TTL < 窗口：用窗口当心跳阈值会把持续续租的长任务误退；
+	// 用 TTL 当窗口会让刚预扣的请求立刻可退。
+	//
+	// 与钱包路径的 contract.InflightLeaseTTLSeconds（300s）分开配置：订阅
+	// 的预扣锚点在主库，续租是一条轻量 UPDATE，可以更灵敏地回收崩溃请求。
+	ConfigSubscriptionInflightLeaseTTLSeconds = "billing.subscription_inflight_lease_ttl_seconds"
+
+	defaultSubscriptionInflightLeaseTTLSeconds = int64(60)
+
 	// subscriptionRecoveryScanLimit 是单轮扫描上限：积压时有界处理，其余
 	// 下一轮继续（与 DueForReset/DeletePreConsumeBefore 同口径）。
 	subscriptionRecoveryScanLimit = 100
@@ -332,13 +345,18 @@ func emptyUsageFact(fact contract.UsageFact) bool {
 // （billing-06 §5.2；worker 每轮调用）。
 //
 // 【判据】subscription_pre_consume_records.status='consumed' 且创建时间早于
-// now − 配置窗口（默认 15 分钟）；存储层同时排除 request_registry 已
-// settled/refunded 的记录。
+// now − 配置窗口（默认 15 分钟），**并且**在飞租约缺失或已过期（R-W9B-02）：
+// registry 行缺失、state 非终态且非 in_flight，或 in_flight 且心跳早于
+// now − 租约 TTL。持续续租的长流/长任务（流式会话心跳、任务轮询器逐任务
+// 续租）因此不会被退款；真正崩溃的进程在 TTL 后即可回收。
 //
 // 【并发】扫描与**所有**结算/退款入口（实时 Queue 的 Session.Terminate/
 // Refund 与任务 handoff）共用 requestID 结算锁（M1），因此「扫描判定未结算」
 // 与「正常收尾」不会交错；RefundSubscriptionRequest 在事务内 FOR UPDATE 并
 // 以 registry refunded CAS 作为第二道幂等，重复扫描无副作用。
+// 扫描与续租的并发由退款事务内的租约守卫仲裁：续租先提交则本轮不退款
+// （Applied=false, Terminal="in_flight"），退款先提交则续租的 in_flight
+// 条件不再命中，不会出现「已退款又被续租复活」。
 //
 // 【令牌额度】预扣记录不存 tokenID，worker 无法回补令牌。这里只退订阅账户；
 // 令牌额度由请求所属租约的既有兜底路径处理（有租约时）或留在令牌上——
@@ -358,7 +376,22 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 	if err != nil {
 		return 0, err
 	}
-	recs, err := e.subscriptionFunding.ListStalePreConsumes(ctx, now.UTC().Add(-window), limit)
+	leaseTTL, err := e.subscriptionLeaseTTL()
+	if err != nil {
+		return 0, err
+	}
+	if window <= leaseTTL {
+		// 两组参数混用会让判定失去意义：窗口必须严格更大，才能同时表达
+		// 「够老」与「心跳已停」。配置错误必须显式上抛，不能静默退化成
+		// 只要到期就退（那是 G-DOM-35 的原始缺陷）。
+		return 0, fmt.Errorf("%w: %s (%s) must exceed %s (%s)",
+			ErrInvalidConfig, ConfigSubscriptionRecoveryWindowSeconds, window,
+			ConfigSubscriptionInflightLeaseTTLSeconds, leaseTTL)
+	}
+	nowUTC := now.UTC()
+	leaseExpiredBefore := nowUTC.Add(-leaseTTL)
+	recs, err := e.subscriptionFunding.ListStalePreConsumes(
+		ctx, nowUTC.Add(-window), leaseExpiredBefore, limit)
 	if err != nil {
 		return 0, fmt.Errorf("billing: list stale subscription pre-consume records: %w", err)
 	}
@@ -396,8 +429,14 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 		// R-W9B-03：订阅退款（含 amount_used 回退、预扣终态、registry 终态）
 		// 在存储层是**一个事务**。这里不传令牌：预扣记录不存 tokenID，worker
 		// 无法回补令牌（方向安全的「少退」，见函数头）。锁内复核到的未终态
-		// 只是优化；真正的仲裁仍是事务内的 registry CAS。
-		result, err := e.refundSubscriptionRequest(ctx, store.SubscriptionRefund{RequestID: rec.RequestID})
+		// 只是优化；真正的仲裁仍是事务内的 registry CAS + 租约守卫。
+		//
+		// LeaseExpiredBefore 让扫描与续租在同一事务内线性化（R-W9B-02）：
+		// 判定之后请求续租成功的，整笔退款回滚并返回 Terminal="in_flight"。
+		result, err := e.refundSubscriptionRequest(ctx, store.SubscriptionRefund{
+			RequestID:          rec.RequestID,
+			LeaseExpiredBefore: leaseExpiredBefore,
+		})
 		if err != nil {
 			release()
 			// 「不得静默吞错」：逐条告警，整批继续。
@@ -408,8 +447,8 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 			continue
 		}
 		if !result.Applied {
-			// 幂等命中：预扣已 refunded 或 registry 已 settled（另一个执行者
-			// 在候选查询与退款之间收尾）。事务没有做任何资金变更，跳过。
+			// 幂等命中或租约仍在飞：预扣已 refunded / registry 已 settled /
+			// 心跳在过期界之后。事务没有做任何资金变更，跳过。
 			release()
 			continue
 		}
@@ -445,4 +484,48 @@ func (e *Engine) subscriptionRecoveryWindow() (time.Duration, error) {
 			ConfigSubscriptionRecoveryWindowSeconds)
 	}
 	return time.Duration(seconds) * time.Second, nil
+}
+
+// subscriptionLeaseTTL 读取订阅在飞租约的 TTL（R-W9B-02）。
+//
+// 非法值（≤0）按配置错误上抛而不是退化成「永不过期」：永不过期的租约会让
+// 真正的崩溃请求永远不被回收，订阅额度被永久冻结。
+func (e *Engine) subscriptionLeaseTTL() (time.Duration, error) {
+	seconds, err := e.configInt64(ConfigSubscriptionInflightLeaseTTLSeconds,
+		defaultSubscriptionInflightLeaseTTLSeconds)
+	if err != nil {
+		return 0, err
+	}
+	if seconds <= 0 {
+		return 0, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig,
+			ConfigSubscriptionInflightLeaseTTLSeconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
+// subscriptionLeaseHeartbeatInterval 返回订阅租约的续租间隔。
+//
+// 固定取契约心跳间隔（30s）会让 60s 的 TTL 只剩一次容错：一次丢心跳就
+// 正好卡在过期边界。这里把间隔压到 TTL 的 1/3（60s → 20s），保证任意
+// 单个续租失败后仍有两次机会。测试专用旋钮 subHeartbeat 优先；下限 10ms
+// 防止配置成 0 导致忙循环。
+//
+// 刻意不复用 e.heartbeat：那是钱包 Redis 租约的测试旋钮，钱包用例把它压到
+// 10ms；订阅心跳若跟随，会把每个订阅会话变成每 10ms 一次数据库写。
+func (e *Engine) subscriptionLeaseHeartbeatInterval() time.Duration {
+	if e.subHeartbeat > 0 {
+		return e.subHeartbeat
+	}
+	ttl, err := e.subscriptionLeaseTTL()
+	if err != nil {
+		ttl = time.Duration(defaultSubscriptionInflightLeaseTTLSeconds) * time.Second
+	}
+	interval := time.Duration(contract.InflightHeartbeatSeconds) * time.Second
+	if third := ttl / 3; third > 0 && third < interval {
+		interval = third
+	}
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	return interval
 }
