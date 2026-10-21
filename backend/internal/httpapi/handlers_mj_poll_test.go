@@ -317,3 +317,21 @@ func TestMJPollTaskRetentionDisabled(t *testing.T) {
 		t.Fatalf("retention days=0 must not write a deadline: %v", row.RetentionDeadline)
 	}
 }
+
+// TestMJPollTaskRejectsNonMJBeforeSettling 验收 M-1：family 防御必须先于
+// SettleTerminal，避免把误送的插件终态行按 MJ 语义结算。
+func TestMJPollTaskRejectsNonMJBeforeSettling(t *testing.T) {
+	fixture := newMJPollFixture(t, mjPollTask(tasks.StateSuccess))
+	pluginTask := mjPollTask(tasks.StateSuccess)
+	pluginTask.Family = tasks.FamilyPlugin
+
+	if err := fixture.driver.PollTask(context.Background(), pluginTask); err == nil {
+		t.Fatalf("non-mj terminal task must be rejected")
+	}
+	if fixture.settler.count() != 0 {
+		t.Fatalf("non-mj task must not be settled, got %d calls", fixture.settler.count())
+	}
+	if fixture.querier.queries() != 0 {
+		t.Fatalf("non-mj task must not query upstream")
+	}
+}

@@ -145,7 +145,8 @@ func TestPollerLimitsPositiveValuesAndBoundaries(t *testing.T) {
 	}
 }
 
-// TestMJPollerLimitsThreeStates：MJ 领取器与插件 poller 同口径。
+// TestMJPollerLimitsThreeStates：MJ 领取器有独立默认（1h / 20），与插件
+// 的 1440m 刻意不同（relay-05 §6.1）；三态语义与插件一致。
 func TestMJPollerLimitsThreeStates(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -153,7 +154,7 @@ func TestMJPollerLimitsThreeStates(t *testing.T) {
 		wantTimeout time.Duration
 		wantMax     int
 	}{
-		{"unset", MJPollerConfig{}, DefaultTaskTimeout, DefaultMaxPollFailures},
+		{"unset", MJPollerConfig{}, DefaultMJTaskTimeout, DefaultMJMaxPollFailures},
 		{"zero", MJPollerConfig{Timeout: durationPtr(0), MaxFailures: intPtr(0)}, 0, 0},
 		{"positive", MJPollerConfig{Timeout: durationPtr(time.Minute), MaxFailures: intPtr(3)}, time.Minute, 3},
 	}

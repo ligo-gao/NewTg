@@ -31,6 +31,11 @@ const (
 	settingTaskPollTimeoutMinutes = "task.poll_timeout_minutes"
 	settingTaskPollMaxFailures    = "task.poll_max_failures"
 
+	// MJ 族独立的轮询上限（relay-05 §6.1：MJ 卡住兜底 1h，插件 1440m，
+	// 两族故意不同）。共用 task.poll_* 会让调 MJ 连带改变插件任务。
+	settingMJPollTimeoutMinutes = "mj.poll_timeout_minutes"
+	settingMJPollMaxFailures    = "mj.poll_max_failures"
+
 	// settingMJRetentionDays 是终态 MJ 任务的保留天数（#70）。
 	settingMJRetentionDays = "mj.retention_terminal_days"
 )
@@ -206,9 +211,14 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 		return nil, nil, fmt.Errorf("worker: %w", err)
 	}
 	// 指针语义保证「未配置」与「显式 0=禁用」不会被混为一谈。
+	// 两族分别解析：task.* 只约束插件 poller，mj.* 只约束 MJ poller。
 	timeout, maxFailures := taskPollLimits(deps.Limits, log)
+	mjTimeout, mjMaxFailures := mjPollLimits(deps.Limits, log)
 	log.Info("worker: task poll limits resolved",
-		"timeout", describeTimeout(timeout), "max_failures", describeMaxFailures(maxFailures))
+		"plugin_timeout", describePollTimeout(timeout, tasks.DefaultTaskTimeout),
+		"plugin_max_failures", describeMaxFailures(maxFailures),
+		"mj_timeout", describePollTimeout(mjTimeout, tasks.DefaultMJTaskTimeout),
+		"mj_max_failures", describeMaxFailures(mjMaxFailures))
 
 	poller, err := tasks.NewPoller(tasks.PollerConfig{
 		Repo:    deps.Repo,
@@ -231,10 +241,11 @@ func buildTaskPollers(deps taskPollerDeps) (*tasks.Poller, *tasks.MJPoller, erro
 		// 仍在轮询的任务当成崩溃请求退款（与插件 poller 同一份交接面）。
 		Billing: deps.Billing,
 		Logger:  log,
-		// 同一对配置同时约束 MJ 领取器。Handler 为空时它不会因超时改状态
-		//（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的守卫拒绝。
-		Timeout:     timeout,
-		MaxFailures: maxFailures,
+		// MJ 专属上限（mj.poll_*，默认 60m/20）。Handler 为空时它不会因
+		// 超时改状态（A0 冻结语义）；mj.enabled=true 的空 Handler 已被上面的
+		// 守卫拒绝。
+		Timeout:     mjTimeout,
+		MaxFailures: mjMaxFailures,
 		// 终态保留期限与 MJ 驱动使用同一份设置（mj.retention_terminal_days）。
 		RetentionDeadline: deps.MJRetention,
 	})
@@ -315,11 +326,11 @@ func decryptTaskChannelCredential(sealer *httpapi.SecretSealer, sealed []byte) (
 	return creds.APIKey, nil
 }
 
-// taskPollLimits 把设置中心的两个任务轮询上限映射成轮询器配置（W9-B4）。
+// taskPollLimits 把设置中心的插件族轮询上限映射成轮询器配置（W9-B4）。
 //
 // 三态冻结（R-W9B-04）：
-//   - 键未落库（Center.Get ok=false）→ 返回 nil：交给 NewPoller/NewMJPoller
-//     回落设计默认（1440 分钟 / 20 次）。**不得**在这里填 0，也不得填默认值，
+//   - 键未落库（Center.Get ok=false）→ 返回 nil：交给 NewPoller 回落插件族
+//     设计默认（1440 分钟 / 20 次）。**不得**在这里填 0，也不得填默认值，
 //     否则「未配置」与「显式 0」在轮询器里就再也分不开。
 //   - 显式 0 → 返回指向 0 的指针：timedOut / maxFailures 判定据此禁用。
 //   - 正值 → 按值透传（分钟换算为 time.Duration）。
@@ -332,24 +343,35 @@ func decryptTaskChannelCredential(sealer *httpapi.SecretSealer, sealed []byte) (
 // 重建后生效（与「启动期装配」一致）；运行中热更新需要把读取下沉到轮询
 // 循环，本波不做。
 func taskPollLimits(reader settingReader, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
+	return pollLimits(reader, settingTaskPollTimeoutMinutes, settingTaskPollMaxFailures, log)
+}
+
+// mjPollLimits 解析 MJ 族专属上限；未配置时返回 nil，由 NewMJPoller 回落
+// 60m/20（relay-05 §6.1）。与 taskPollLimits 完全独立：改一侧不影响另一侧。
+func mjPollLimits(reader settingReader, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
+	return pollLimits(reader, settingMJPollTimeoutMinutes, settingMJPollMaxFailures, log)
+}
+
+// pollLimits 是两族上限的共享解析实现（键名与默认值由调用方决定）。
+func pollLimits(reader settingReader, timeoutKey, failuresKey string, log *slog.Logger) (timeout *time.Duration, maxFailures *int) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if minutes, ok := readSettingInt(reader, settingTaskPollTimeoutMinutes, log); ok {
+	if minutes, ok := readSettingInt(reader, timeoutKey, log); ok {
 		// 分钟 → Duration 的溢出护栏：注册表本身限制 525600 分钟，但
 		// configcenter 里的历史行/手工写入不受注册表校验，仍需防御。
 		if minutes > math.MaxInt64/int64(time.Minute) {
 			log.Warn("worker: task poll timeout is out of range; falling back to the design default",
-				"key", settingTaskPollTimeoutMinutes, "minutes", minutes)
+				"key", timeoutKey, "minutes", minutes)
 		} else {
 			d := time.Duration(minutes) * time.Minute
 			timeout = &d
 		}
 	}
-	if failures, ok := readSettingInt(reader, settingTaskPollMaxFailures, log); ok {
+	if failures, ok := readSettingInt(reader, failuresKey, log); ok {
 		if failures > int64(math.MaxInt) {
 			log.Warn("worker: task poll max failures overflows int; falling back to the design default",
-				"key", settingTaskPollMaxFailures, "max_failures", failures)
+				"key", failuresKey, "max_failures", failures)
 		} else {
 			v := int(failures)
 			maxFailures = &v
@@ -396,11 +418,11 @@ func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, 
 	return *value, true
 }
 
-// describeTimeout / describeMaxFailures 只服务于启动日志的可观测性：
-// nil 明确显示为 default，避免运维把「未配置」误读成「0=禁用」。
-func describeTimeout(timeout *time.Duration) string {
+// describePollTimeout 只服务于启动日志的可观测性：nil 显示为对应族的
+// 设计默认（插件 1440m / MJ 60m），避免运维把「未配置」误读成「0=禁用」。
+func describePollTimeout(timeout *time.Duration, fallback time.Duration) string {
 	if timeout == nil {
-		return fmt.Sprintf("default (%s)", tasks.DefaultTaskTimeout)
+		return fmt.Sprintf("default (%s)", fallback)
 	}
 	return timeout.String()
 }

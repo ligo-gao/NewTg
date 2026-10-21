@@ -70,6 +70,13 @@ type PendingRepo interface {
 	ListReconcilable(ctx context.Context, family string, limit int) ([]*Task, error)
 	GetChannel(ctx context.Context, id int64) (*ChannelTarget, error)
 	ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate) (bool, error)
+	// IncrementPollFailures 以 (id, from_state) 为条件**原子**递增
+	// private_data.poll_failures，返回递增后的计数与是否赢得 CAS（MJ-b / M-6）。
+	//
+	// 读-改-写（先 privateInt 再写回）在并发轮询下会丢失计数：两个执行者
+	// 读到同一个旧值，各自写 N+1，最终只增加 1，失败上限永远打不到。SQL
+	// 原子递增让每次成功调用都真实 +1。
+	IncrementPollFailures(ctx context.Context, id int64, from State) (int, bool, error)
 	UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error
 }
 

@@ -636,6 +636,35 @@ func (r *Repo) ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate
 	return affected > 0, nil
 }
 
+// IncrementPollFailures 以 (id, from_state) 原子递增连续失败计数。
+//
+// jsonb_set + COALESCE 让递增发生在 SQL 内：并发轮询各自 +1，不会互相覆盖
+// （读-改-写只能留下最后一次写）。CAS 条件仍是 from_state：被别的执行者
+// 推进到其它状态后返回 won=false，调用方必须放弃。
+func (r *Repo) IncrementPollFailures(ctx context.Context, id int64, from State) (int, bool, error) {
+	if r == nil || r.db == nil {
+		return 0, false, errors.New("tasks: repository is not configured")
+	}
+	var failures int
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE tasks SET
+			private_data = jsonb_set(
+				private_data, '{poll_failures}',
+				to_jsonb(COALESCE((private_data->>'poll_failures')::int, 0) + 1),
+				true),
+			updated_at = now()
+		WHERE id = $1 AND state = $2
+		RETURNING COALESCE((private_data->>'poll_failures')::int, 0)`,
+		id, string(from)).Scan(&failures)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("tasks: increment poll failures: %w", err)
+	}
+	return failures, true, nil
+}
+
 // UpdateBilling 写结算侧事实（quota 与 private_data 标记），不带 CAS。
 //
 // 结算发生在终态 CAS 之后；此处失败只意味着「标记没落库」，调用方必须把它

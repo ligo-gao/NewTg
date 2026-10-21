@@ -4,6 +4,8 @@ package tasks
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -74,6 +76,9 @@ func TestMJPollerTimeoutFailsAndRefundsInSameCycle(t *testing.T) {
 	submit := now.Add(-2 * time.Hour)
 	task := mjPendingTask("req_timeout")
 	task.SubmitTime = &submit
+	// 旧 raw_state 必须是可区分的非空值：网关强制失败若沿用它会把这些
+	// 文本回给客户端（I-2 的回归断言）。
+	task.RawState = "IN_PROGRESS"
 	row := repo.add(task)
 
 	handoff := &fakeHandoff{}
@@ -109,6 +114,9 @@ func TestMJPollerTimeoutFailsAndRefundsInSameCycle(t *testing.T) {
 	}
 	if got.RetentionDeadline == nil {
 		t.Fatalf("timeout failure must write a retention deadline")
+	}
+	if got.RawState != "" {
+		t.Fatalf("gateway-forced FAILURE must clear raw_state (I-2), got %q", got.RawState)
 	}
 	// 同一轮 pollOnce 之后紧接补偿扫描：超时失败的行必须被退款。
 	if handoff.refundCount() != 1 {
@@ -165,3 +173,120 @@ func TestMJPollerWithoutSettlerDoesNotReconcile(t *testing.T) {
 		t.Fatalf("without settler only pollOnce should claim: %v", repo.requestedFamilies())
 	}
 }
+
+// TestMJPollerClearFailuresOnlyForKnownStates 验收 I-3：unknown 成功返回
+// 不得清零已有失败计数（否则失败上限永远打不到），已知非终态才清零。
+func TestMJPollerClearFailuresOnlyForKnownStates(t *testing.T) {
+	cases := []struct {
+		name     string
+		state    State
+		wantLeft int
+	}{
+		{"unknown preserved", StateUnknown, 3},
+		{"known status clears", StateInProgress, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakePollRepo()
+			task := mjPendingTask("req_clear")
+			task.State = tc.state
+			task.PrivateData["poll_failures"] = float64(3)
+			row := repo.add(task)
+			p, err := NewMJPoller(MJPollerConfig{
+				Repo: repo,
+				// 本用例只测计数清零语义：禁用超时，避免固定 submit_time
+				// 在真实 now 下先被判超时（那会走 failTask 而不是 clear）。
+				Timeout: durationPtr(0),
+				Handler: func(context.Context, *Task) error {
+					// 观测成功但不推进状态：clearFailures 是唯一会写计数的路径。
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewMJPoller: %v", err)
+			}
+			p.RunOnce(context.Background())
+			got := repo.get(row.ID)
+			if failures := privateInt(got.PrivateData["poll_failures"]); failures != tc.wantLeft {
+				t.Fatalf("poll_failures = %d, want %d (state=%s)", failures, tc.wantLeft, tc.state)
+			}
+		})
+	}
+}
+
+// TestMJPollerSameChannelSerialWithGap 验收 M-3：同渠道任务逐条串行，任务
+// 之间间隔 TaskGap（默认 1s），不并发打同一上游渠道。
+func TestMJPollerSameChannelSerialWithGap(t *testing.T) {
+	repo := newFakePollRepo()
+	first := repo.add(mjPendingTask("req_serial_1"))
+	second := repo.add(mjPendingTask("req_serial_2"))
+
+	var order []int64
+	var sleeps []time.Duration
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo: repo,
+		// 固定 submit_time 在真实 now 下会先超时；本用例只测渠道串行。
+		Timeout: durationPtr(0),
+		Handler: func(_ context.Context, task *Task) error {
+			order = append(order, task.ID)
+			return nil
+		},
+		TaskGap: 2 * time.Second,
+		Sleep: func(_ context.Context, d time.Duration) error {
+			sleeps = append(sleeps, d)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+	p.RunOnce(context.Background())
+
+	if len(order) != 2 || order[0] != first.ID || order[1] != second.ID {
+		t.Fatalf("processing order = %v, want [%d %d] serial", order, first.ID, second.ID)
+	}
+	if len(sleeps) != 1 || sleeps[0] != 2*time.Second {
+		t.Fatalf("same-channel gap sleeps = %v, want exactly [2s]", sleeps)
+	}
+}
+
+// TestMJPollerConcurrentFailureIncrementIsAtomic 验收 M-6：并发轮询失败时
+// 每次失败都真实 +1（SQL/jsonb 原子递增），读-改-写会丢计数。
+func TestMJPollerConcurrentFailureIncrementIsAtomic(t *testing.T) {
+	repo := newFakePollRepo()
+	row := repo.add(mjPendingTask("req_race_fail"))
+	const workers = 20
+	p, err := NewMJPoller(MJPollerConfig{
+		Repo:        repo,
+		MaxFailures: intPtr(1000),
+		// 禁用超时：并发用例只测失败计数原子递增。
+		Timeout: durationPtr(0),
+		Handler: func(context.Context, *Task) error {
+			return errUpstreamDown
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMJPoller: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		snapshot := repo.get(row.ID)
+		go func() {
+			defer wg.Done()
+			<-start
+			p.processTask(context.Background(), snapshot)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	got := repo.get(row.ID)
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != workers {
+		t.Fatalf("concurrent failures = %d, want %d (lost increments)", failures, workers)
+	}
+}
+
+var errUpstreamDown = errors.New("upstream down")

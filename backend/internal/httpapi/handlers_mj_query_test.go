@@ -110,6 +110,11 @@ func TestMJFetchOwnershipAndProjection(t *testing.T) {
 	channels := &fakeMJChannels{channels: map[int64]*tasks.ChannelTarget{}}
 	store.byUserUpstream[mjUserUpstreamKey(42, "mj_1")] = mjQueryTask(42, "mj_1", tasks.StateInProgress)
 	store.byUserUpstream[mjUserUpstreamKey(43, "mj_1")] = mjQueryTask(43, "mj_1", tasks.StateSuccess)
+	// 网关自身判定的失败：raw_state 为空，状态必须投影为 FAILURE（I-2）。
+	forced := mjQueryTask(42, "mj_forced", tasks.StateFailure)
+	forced.RawState = ""
+	forced.FailReason = "task_timeout"
+	store.byUserUpstream[mjUserUpstreamKey(42, "mj_forced")] = forced
 	mux, auth := newMJQueryHandler(t, store, channels, &fakeMJQuerier{})
 
 	serve := func(userAuth, path string) *httptest.ResponseRecorder {
@@ -141,6 +146,24 @@ func TestMJFetchOwnershipAndProjection(t *testing.T) {
 		}
 		if result["prompt"] != "a cat" {
 			t.Fatalf("prompt = %v", result["prompt"])
+		}
+	})
+
+	t.Run("gateway forced failure projects FAILURE", func(t *testing.T) {
+		rec := serve(auth, "/mj/task/mj_forced/fetch")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+		}
+		body := decodeMJEnvelope(t, rec)
+		result, ok := body["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("result is not an object: %v", body["result"])
+		}
+		if result["status"] != "FAILURE" {
+			t.Fatalf("gateway-forced failure status = %v, want FAILURE (raw_state must be empty)", result["status"])
+		}
+		if result["failReason"] != "task_timeout" {
+			t.Fatalf("failReason = %v", result["failReason"])
 		}
 	})
 
@@ -229,6 +252,44 @@ func TestMJListByConditionOwnershipOrderAndBounds(t *testing.T) {
 		}
 		if strings.TrimSpace(rec.Body.String()) != `{"code":1,"description":"","result":[]}` {
 			t.Fatalf("empty ids body = %s", rec.Body.String())
+		}
+	})
+
+	t.Run("duplicate ids preserved", func(t *testing.T) {
+		rec := post(`{"ids":["mj_1","mj_1"]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		body := decodeMJEnvelope(t, rec)
+		results, _ := body["result"].([]any)
+		if len(results) != 2 || results[0].(map[string]any)["id"] != "mj_1" || results[1].(map[string]any)["id"] != "mj_1" {
+			t.Fatalf("duplicate ids must be preserved in order: %v", results)
+		}
+	})
+
+	t.Run("missing or null ids", func(t *testing.T) {
+		for _, body := range []string{`{}`, `{"ids":null}`} {
+			rec := post(body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("body %s status = %d, want 400 (OpenAPI requires ids)", body, rec.Code)
+			}
+			envelope := decodeMJEnvelope(t, rec)
+			if envelope["description"] != mj.DescriptionInvalidRequest {
+				t.Fatalf("body %s description = %v", body, envelope["description"])
+			}
+		}
+	})
+
+	t.Run("oversized body uses dedicated description", func(t *testing.T) {
+		// 合法 JSON 形状 + 超长字符串：解码器必须读到 MaxBytesReader 上限
+		// 之后才失败（纯非 JSON 正文会先报语法错误）。
+		rec := post(`{"ids":["` + strings.Repeat("a", maxMJListBodyBytes+1) + `"]}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+		body := decodeMJEnvelope(t, rec)
+		if body["description"] != mj.DescriptionBodyTooLarge {
+			t.Fatalf("description = %v, want %s", body["description"], mj.DescriptionBodyTooLarge)
 		}
 	})
 
@@ -327,6 +388,25 @@ func TestMJImageSeedLocksOriginChannelAndPassesThrough(t *testing.T) {
 		}
 		if querier.calls() != before {
 			t.Fatalf("disabled channel must not reach upstream")
+		}
+	})
+
+	t.Run("channel type drift", func(t *testing.T) {
+		drifted := *channels.channels[7]
+		drifted.Status = 1
+		drifted.Type = "openai"
+		channels.channels[7] = &drifted
+		before := querier.calls()
+		rec := post(auth, "/mj/task/mj_1/image-seed")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+		body := decodeMJEnvelope(t, rec)
+		if body["description"] != mj.DescriptionChannelDisabled {
+			t.Fatalf("description = %v", body["description"])
+		}
+		if querier.calls() != before {
+			t.Fatalf("non-MJ channel must not reach upstream")
 		}
 	})
 }

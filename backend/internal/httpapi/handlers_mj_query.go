@@ -62,8 +62,11 @@ func (h *MJHandler) handleTaskFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 // mjListRequest 是 list-by-condition 的请求体（基线内联结构 `{ids:[...]}`）。
+//
+// IDs 用指针区分「字段缺失/null」与「显式空数组」：OpenAPI 声明 ids
+// required，缺失/null 必须 400；`[]` 才是设计规定的「返回 []」。
 type mjListRequest struct {
-	IDs []string `json:"ids"`
+	IDs *[]string `json:"ids"`
 }
 
 // handleTaskList 处理 POST /mj/task/list-by-condition。
@@ -84,11 +87,23 @@ func (h *MJHandler) handleTaskList(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxMJListBodyBytes)
 	var req mjListRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// 超限与畸形 JSON 分开：超限是成本边界（R-MJ-16），用专用描述让
+		// 客户端知道缩小请求，而不是误以为 JSON 语法错误。
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeMJError(w, mj.BadRequest(mj.DescriptionBodyTooLarge))
+			return
+		}
 		// 空 body / 畸形 JSON 都是客户端构造错误；不区分具体原因。
 		writeMJError(w, mj.BadRequest(mj.DescriptionInvalidRequest))
 		return
 	}
-	ids, mjErr := mj.ParseListIDs(req.IDs)
+	if req.IDs == nil {
+		// 缺失/null 与 OpenAPI 的 required 对齐（M-5）。
+		writeMJError(w, mj.BadRequest(mj.DescriptionInvalidRequest))
+		return
+	}
+	ids, mjErr := mj.ParseListIDs(*req.IDs)
 	if mjErr != nil {
 		writeMJError(w, mjErr)
 		return
@@ -162,6 +177,12 @@ func (h *MJHandler) handleImageSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if channel.Status != mj.ChannelStatusEnabled {
+		writeMJError(w, mj.BadRequest(mj.DescriptionChannelDisabled))
+		return
+	}
+	// M-2：原渠道可能被管理员改成非 MJ 类型。继续用它会把 MJ 请求发给一个
+	// 不理解该协议的上游（与提交路径的渠道类型漂移校验同口径）。
+	if channel.Type != mj.ChannelTypeMidjourney && channel.Type != mj.ChannelTypeMidjourneyPlus {
 		writeMJError(w, mj.BadRequest(mj.DescriptionChannelDisabled))
 		return
 	}

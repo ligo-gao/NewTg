@@ -22,6 +22,17 @@ import (
 // 才能保证「MJ 行有唯一归属的 poller」，而不是靠插件 poller 的 SQL 过滤
 // 单点防护。
 
+// MJ 族的轮询上限冻结值（relay-05 §6.1）。
+//
+// 【为什么与插件族分开】设计明文：MJ 的卡住兜底是 **1h**，插件是 1440m，
+// 两族非同族、勿互引。把两者接到同一个 task.poll_* 键上会让「调 MJ 兜底」
+// 连带改变插件任务的执行超时（1440m → 60m 会把仍在生成的长视频任务提前
+// 失败退款）。因此 MJ 有独立键与独立默认值。
+const (
+	DefaultMJTaskTimeout     = 60 * time.Minute
+	DefaultMJMaxPollFailures = 20
+)
+
 // MJTaskHandler 是 MJ 任务推进的接缝。
 //
 // MJ-b 在这里接上游查询/状态映射与终态结算。返回 error 会由 MJPoller 计入
@@ -54,18 +65,23 @@ type MJPollerConfig struct {
 
 	Interval   time.Duration
 	QueryLimit int
+	// TaskGap 是同一渠道内相邻任务之间的串行间隔（relay-05 §5/§6.2：与插件
+	// 族同一调度语义，避免并发轮询把同一上游渠道打出 429）。默认 1s。
+	TaskGap time.Duration
+	// Sleep 是测试接缝；nil → 上下文感知定时器。
+	Sleep func(ctx context.Context, d time.Duration) error
 	// LeaseKeeperInterval 是单任务处理期间的续租间隔（默认 30s）。
 	LeaseKeeperInterval time.Duration
 	// RetentionDeadline 计算终态保留截止（relay-05 §9）。nil = 不写
 	// retention_deadline（与 `mj.retention_terminal_days=0` 同义）。
 	// 超时/失败上限推进的终态也必须写期限，否则这类行永远不会被清理。
 	RetentionDeadline func(now time.Time) *time.Time
-	// MaxFailures / Timeout 与插件 Poller 同口径（W9-B4 / R-W9B-04）：
-	// nil = 未配置 → 设计默认；&0 = 禁用；&正值 = 按值。
+	// MaxFailures / Timeout 的三态语义与插件 Poller 相同（W9-B4 / R-W9B-04）：
+	// nil = 未配置 → MJ 专属默认（60m / 20）；&0 = 禁用；&正值 = 按值。
 	//
-	// 两族共用同一对配置键（task.poll_timeout_minutes / task.poll_max_failures），
-	// 因为运营语义是「轮询兜底要不要生效」，而不是「插件族和 MJ 族各调一套」；
-	// 默认值与插件族一致（20 / 1440m）也保证未配置时两族行为可预期。
+	// 键是 MJ 专属的 mj.poll_timeout_minutes / mj.poll_max_failures：设计
+	// 明确 MJ 兜底 1h、插件 1440m（relay-05 §6.1），共用 task.* 会让调整
+	// 一族连带改变另一族的执行超时。
 	MaxFailures *int
 	Timeout     *time.Duration
 }
@@ -83,6 +99,8 @@ type MJPoller struct {
 	log          *slog.Logger
 	now          func() time.Time
 	interval     time.Duration
+	taskGap      time.Duration
+	sleep        func(context.Context, time.Duration) error
 	queryLimit   int
 	maxFailures  int
 	timeout      time.Duration
@@ -104,19 +122,25 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 		log:        cfg.Logger,
 		now:        cfg.Now,
 		interval:   orDefaultDuration(cfg.Interval, DefaultPollInterval),
+		taskGap:    orDefaultDuration(cfg.TaskGap, DefaultTaskGap),
+		sleep:      cfg.Sleep,
 		queryLimit: orDefaultInt(cfg.QueryLimit, DefaultQueryLimit),
 	}
 	if p.now == nil {
 		p.now = time.Now
 	}
+	if p.sleep == nil {
+		p.sleep = sleepContext
+	}
 	p.leaseKeepGap = orDefaultDuration(cfg.LeaseKeeperInterval, DefaultLeaseKeeperInterval)
 	p.retention = cfg.RetentionDeadline
-	// 三态默认化与 NewPoller 完全相同：nil 才回落默认，&0 保留为禁用。
-	p.maxFailures = DefaultMaxPollFailures
+	// 三态默认化与 NewPoller 相同：nil 才回落 MJ 专属默认（60m/20），
+	// &0 保留为禁用。绝不能复用插件的 1440m（relay-05 §6.1 明示两族不同）。
+	p.maxFailures = DefaultMJMaxPollFailures
 	if cfg.MaxFailures != nil {
 		p.maxFailures = *cfg.MaxFailures
 	}
-	p.timeout = DefaultTaskTimeout
+	p.timeout = DefaultMJTaskTimeout
 	if cfg.Timeout != nil {
 		p.timeout = *cfg.Timeout
 	}
@@ -129,7 +153,7 @@ func NewMJPoller(cfg MJPollerConfig) (*MJPoller, error) {
 // TimeoutLimit / MaxFailuresLimit 返回三态默认化之后生效的上限。
 //
 // 与插件 Poller 同名方法同语义：只读观测面，供平台接线测试确认配置真的
-// 传到了 MJ 领取器；0 = 禁用，未配置时是 1440m/20。
+// 传到了 MJ 领取器；0 = 禁用，未配置时是 MJ 默认 60m/20。
 func (p *MJPoller) TimeoutLimit() time.Duration { return p.timeout }
 
 // MaxFailuresLimit 见 TimeoutLimit。
@@ -209,11 +233,30 @@ func (p *MJPoller) pollOnce(ctx context.Context) {
 	// 订阅来源，Detach 之后只靠这条续租避免兜底扫描把仍在轮询的任务当成
 	// 崩溃请求退款（那会把随后成功的任务变成免费）。
 	renewInflightLeases(ctx, p.billing, p.log, tasks)
+	// 同渠道内串行（relay-05 §5/§6.2）：同一上游渠道的限流/连接复用由单线程
+	// 顺序消化，避免并发轮询把渠道打出 429。跨渠道仍按领取顺序推进。
+	channelOrder := make([]int64, 0, len(tasks))
+	byChannel := make(map[int64][]*Task)
 	for _, task := range tasks {
-		if ctx.Err() != nil {
-			return
+		id := taskChannelID(task)
+		if _, seen := byChannel[id]; !seen {
+			channelOrder = append(channelOrder, id)
 		}
-		p.processTask(ctx, task)
+		byChannel[id] = append(byChannel[id], task)
+	}
+	for _, channelID := range channelOrder {
+		group := byChannel[channelID]
+		for i, task := range group {
+			if ctx.Err() != nil {
+				return
+			}
+			if i > 0 {
+				if err := p.sleep(ctx, p.taskGap); err != nil {
+					return
+				}
+			}
+			p.processTask(ctx, task)
+		}
 	}
 }
 
@@ -271,8 +314,11 @@ func (p *MJPoller) failTask(ctx context.Context, task *Task, from State, reason 
 		retention = p.retention(now)
 	}
 	won, err := p.repo.ApplyPoll(ctx, task.ID, from, PollUpdate{
-		State:      StateFailure,
-		RawState:   task.RawState,
+		State: StateFailure,
+		// 网关自身判定的终态没有上游原文：raw_state 必须清空，让
+		// ProjectStatus 回 "FAILURE"。若沿用旧 raw（如 IN_PROGRESS），
+		// fetch 的 status 会永远回 "IN_PROGRESS"（I-2）。
+		RawState:   "",
 		Progress:   task.ProgressPercent,
 		FailReason: &reason,
 		FinishTime: &now,
@@ -294,16 +340,13 @@ func (p *MJPoller) failTask(ctx context.Context, task *Task, from State, reason 
 
 // recordFailure 累计 MJ 连续轮询失败；达到上限时转 FAILURE。
 //
+// 计数用仓储的原子递增（M-6）：并发轮询两个执行者都读到旧值再写回时，
+// 只会留下一次 +1，失败上限永远打不到，hold 被无限期锁住。
+//
 // 与插件 recordFailure 的差异只在结算动作：插件族在这里立即退款，MJ 族
-// 把 billing_pending 留给 MJ-a2/d。上限 <= 0 表示禁用（设计冻结语义）。
+// 把 billing_pending 留给补偿扫描。上限 <= 0 表示禁用（设计冻结语义）。
 func (p *MJPoller) recordFailure(ctx context.Context, task *Task, from State, cause error) {
-	failures := privateInt(task.PrivateData["poll_failures"]) + 1
-	won, err := p.repo.ApplyPoll(ctx, task.ID, from, PollUpdate{
-		State:    from,
-		RawState: task.RawState,
-		Progress: task.ProgressPercent,
-		Private:  map[string]any{"poll_failures": failures},
-	})
+	failures, won, err := p.repo.IncrementPollFailures(ctx, task.ID, from)
 	if err != nil {
 		p.log.Error("tasks: mj record poll failure failed", "task_id", task.PublicTaskID, "error", err)
 		return
@@ -321,9 +364,18 @@ func (p *MJPoller) recordFailure(ctx context.Context, task *Task, from State, ca
 
 // clearFailures 在 Handler 成功推进后清零连续失败计数。
 //
+// 【unknown 不得清零（I-3）】R-MJ-15 规定未知状态不累计失败，但「不累计」
+// 不等于「清零已有计数」：若上游连续返回未知状态，清零会让失败上限永远
+// 打不到，任务拖到超时才失败。只有已知非 unknown 状态才清零。
+//
 // 只清「已有计数」的行；CAS 失败说明 Handler 已自行推进状态，计数由
 // Handler 的新状态承担（best-effort，与插件族「有效响应清零」同语义）。
+// Handler 必须把观测结果同步回 task.State（MJ 驱动这么做），否则这里读到
+// 的是旧快照。
 func (p *MJPoller) clearFailures(ctx context.Context, task *Task, from State) {
+	if task.State == StateUnknown {
+		return
+	}
 	if task.PrivateData == nil || privateInt(task.PrivateData["poll_failures"]) == 0 {
 		return
 	}

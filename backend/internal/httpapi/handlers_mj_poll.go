@@ -96,15 +96,16 @@ func (d *MJPollDriver) PollTask(ctx context.Context, task *tasks.Task) error {
 	if task == nil {
 		return nil
 	}
+	// M-1：family 防御必须先于任何结算动作。终态分支会调用 Settler；若先
+	// 结算再判族，一个被错误送进来的插件终态行会被按 MJ 语义结算/退款。
+	if task.Family != tasks.FamilyMJ {
+		return fmt.Errorf("mj: poll driver received non-mj task %q", task.PublicTaskID)
+	}
 	if task.State.Terminal() {
 		// 终态行不应进入领取集合；若被误送进来，只做结算（幂等），绝不查
 		// 上游或改状态——否则会把已成功任务重新拉回非终态。
 		d.settler.SettleTerminal(ctx, task)
 		return nil
-	}
-	if task.Family != tasks.FamilyMJ {
-		// 与 MJPoller 的 family 断言对称：驱动只解释 MJ 行。
-		return fmt.Errorf("mj: poll driver received non-mj task %q", task.PublicTaskID)
 	}
 	channelID := task.LockedChannelID
 	if channelID == 0 {
@@ -192,8 +193,17 @@ func (d *MJPollDriver) PollTask(ctx context.Context, task *tasks.Task) error {
 	}
 	// unknown：R-MJ-15 明确「不累计失败」。这里既不写 poll_failures，也不
 	// 把状态猜成 failure；raw_state 保真，等待下一轮或超时兜底。
-	if _, err := d.store.ApplyPoll(ctx, task.ID, task.State, update); err != nil {
+	won, err := d.store.ApplyPoll(ctx, task.ID, task.State, update)
+	if err != nil {
 		return fmt.Errorf("mj: persist poll state for task %q: %w", task.PublicTaskID, err)
+	}
+	if won {
+		// 同步内存快照（I-3）：MJPoller 的 clearFailures 依据 task.State 判断
+		// 是否清零；不同步会让 unknown 观测仍以旧状态被清零，失败上限失效。
+		task.State = status.State
+		task.RawState = status.RawState
+		task.ProgressPercent = status.ProgressPercent
+		task.Data = mergeMJPollData(task.Data, delta)
 	}
 	return nil
 }
