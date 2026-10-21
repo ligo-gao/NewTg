@@ -96,7 +96,8 @@ export function ModelPricingListPage({
 
   // 插件 → 模型集合来自设置面的 plugin_billing_expr（键 `<plugin>::<model>`）。
   // 读失败/无配置都不臆造数据：列表显示为空态并说明原因，而不是悄悄
-  // 展示全部模型让管理员以为过滤生效。
+  // 展示全部模型让管理员以为过滤生效。唯一的例外是 403（无 settings:manage），
+  // 见下方 pluginUnavailable：那不是读取故障，而是功能不可用。
   const pluginSettings = useQuery({
     queryKey: ['settings', 'billing_setting'],
     enabled: pluginFiltered,
@@ -104,9 +105,23 @@ export function ModelPricingListPage({
     queryFn: ({ signal }) => fetchSettingsSection('billing_setting', signal),
   })
 
+  // R-55：GET /api/settings 在并发线合并后要求 `settings:manage`（R-26），
+  // 而 /admin 路由守卫只判 role === 'admin'。因此没有该能力的 admin 仍能
+  // 带着 F-08-37 的 ?plugin= 深链进来，读设置时拿到 403。这与「设置读取
+  // 失败」语义不同：不是暂时性故障，而是插件过滤对本用户不可用。此时：
+  // 隐藏筛选入口、不渲染错误提示，列表退回未过滤的普通分页，页面其余
+  // 功能（增删改查）不受影响。其它读取失败仍走原有空态并说明原因。
+  const pluginUnavailable =
+    pluginFiltered &&
+    pluginSettings.isError &&
+    pluginSettings.error instanceof ApiError &&
+    pluginSettings.error.kind === 'forbidden'
+  // 过滤是否真正生效：路由上有 plugin 且过滤功能可用。
+  const pluginActive = pluginFiltered && !pluginUnavailable
+
   const pluginModels = useMemo(() => {
     const out = new Set<string>()
-    if (!pluginFiltered || pluginSettings.data === undefined) return out
+    if (!pluginActive || pluginSettings.data === undefined) return out
     const item = pluginSettings.data.items.find(
       (entry) => entry.key === PLUGIN_BILLING_EXPR_KEY,
     )
@@ -117,7 +132,7 @@ export function ModelPricingListPage({
       if (key.startsWith(prefix)) out.add(key.slice(prefix.length))
     }
     return out
-  }, [pluginFiltered, pluginKey, pluginSettings.data])
+  }, [pluginActive, pluginKey, pluginSettings.data])
 
   const listQuery = useQuery({
     queryKey: ['admin-model-pricing', applied, page, pageSize, pluginKey],
@@ -129,7 +144,7 @@ export function ModelPricingListPage({
       capabilities.canRead &&
       // 设置读取结束（成功或失败）后再发列表请求：读失败时也要让空态
       // 明确说「无法读取插件配置」，而不是让禁用中的查询永远显示骨架。
-      (!pluginFiltered || !pluginSettings.isPending),
+      (!pluginActive || !pluginSettings.isPending),
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const base: ListQuery = {
@@ -141,7 +156,7 @@ export function ModelPricingListPage({
       if (applied.mode !== '') base.mode = applied.mode
       if (applied.status !== '') base.status = applied.status
 
-      if (!pluginFiltered) {
+      if (!pluginActive) {
         const withPage = { ...base, p: page }
         return requireData(
           await apiClient.GET('/api/model-pricing', { params: { query: withPage } }),
@@ -264,7 +279,7 @@ export function ModelPricingListPage({
   // 插件过滤返回的是「过滤后的全量」，分页在本地切；普通路径仍由服务端
   // offset 分页直接给出本页数据。
   const allFilteredItems = data?.items ?? []
-  const items = pluginFiltered
+  const items = pluginActive
     ? allFilteredItems.slice((page - 1) * pageSize, page * pageSize)
     : allFilteredItems
   const total = data?.total ?? 0
@@ -298,7 +313,7 @@ export function ModelPricingListPage({
   }
 
   const hasFilters =
-    pluginFiltered ||
+    pluginActive ||
     applied.keyword.trim() !== '' ||
     applied.mode !== '' ||
     applied.status !== '' ||
@@ -306,7 +321,7 @@ export function ModelPricingListPage({
 
   // 插件过滤的空态要说明「为什么空」：设置读取失败、该插件没有表达式、
   // 或表达式有模型但当前筛选无命中，三种原因是不同的操作方向。
-  const emptyMessage = pluginFiltered
+  const emptyMessage = pluginActive
     ? pluginSettings.isError
       ? t('admin.pricing.plugin_filter_error')
       : pluginModels.size === 0
@@ -344,7 +359,7 @@ export function ModelPricingListPage({
     <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
 
-      {pluginFiltered ? (
+      {pluginActive ? (
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-3">
           <div className="flex flex-col gap-1">
             <span className="text-sm text-ink-1">
@@ -482,7 +497,7 @@ export function ModelPricingListPage({
                   resetFilters()
                   // 插件过滤不是本地草稿，必须通过路由回写清除，否则
                   // 「清除筛选」之后列表仍然是空的。
-                  if (pluginFiltered) onClearPlugin?.()
+                  if (pluginActive) onClearPlugin?.()
                 }}
               >
                 {t('admin.pricing.clear_filters')}

@@ -571,4 +571,43 @@ describe('ModelPricingListPage', () => {
     expect(onClearPlugin).toHaveBeenCalledTimes(1)
     expect(getByText('Filtered by plugin: kling')).toBeTruthy()
   })
+
+  // R-55：GET /api/settings 要求 settings:manage（R-26），但 /admin 只判
+  // role === 'admin'。没有该能力的 admin 仍可能带 ?plugin= 深链进来。
+  // 403 表示「插件过滤不可用」而非「设置读取失败」：不能把整页拖进错误态，
+  // 也不能谎称插件没有配置——隐藏筛选入口、退回普通列表、不提示错误。
+  it('treats a 403 settings read as an unavailable plugin filter, not an error', async () => {
+    installBaseHandlers({
+      items: [pricingRow({ id: 1, model: 'sora-2' }), pricingRow({ id: 2, model: 'gpt-5' })],
+      total: 2,
+    })
+    server.use(
+      http.get(`${ORIGIN}/api/settings`, () =>
+        HttpResponse.json({ type: 'about:blank', title: 'Forbidden' }, { status: 403 }),
+      ),
+    )
+    const onClearPlugin = vi.fn()
+
+    const {
+      findByText,
+      getByText,
+      getByLabelText,
+      queryByText,
+      queryByRole,
+    } = await renderWithProviders(
+      <ModelPricingListPage plugin="kling" onClearPlugin={onClearPlugin} />,
+      ['common', 'admin'],
+    )
+
+    // 未过滤的完整列表照常渲染（gpt-5 不属于 kling 也要出现）。
+    expect(await findByText('gpt-5')).toBeTruthy()
+    expect(getByText('sora-2')).toBeTruthy()
+    // 筛选入口（深链横幅与清除按钮）整体隐藏。
+    expect(queryByText('Filtered by plugin: kling')).toBeNull()
+    expect(queryByRole('button', { name: 'Clear plugin filter' })).toBeNull()
+    // 不显示「无法读取插件计费配置」的错误空态。
+    expect(queryByText('Could not read the plugin billing configuration.')).toBeNull()
+    // 页面其余筛选功能不受影响。
+    expect(getByLabelText('Model prefix')).toBeTruthy()
+  })
 })
