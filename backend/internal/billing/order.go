@@ -86,6 +86,14 @@ func (s OrderStatus) Terminal() bool {
 // 终态→任何状态（包括自身）都拒绝：数据库层迁移使用条件 UPDATE
 // （WHERE id=? AND status='pending'），本函数是同一契约的应用层表达，
 // 让调用方在碰 DB 之前就得到可读错误。
+//
+// 【不在此表的迁移】`succeeded → refund_required`（S2/R-29②：订阅订单支付
+// 成功但履约失败）**刻意不放进 Transition 白名单**：它只发生在订阅结算事务
+// 内部（`settleSubscriptionChange` 用条件 UPDATE `WHERE id=? AND status=
+// 'succeeded'` 直接落库），没有第二个调用方，也就没有需要预校验的路径。
+// 退款流程（S3）如果要用本函数表达该迁移，必须显式把这一对加进开关——
+// 在此之前它会被拒绝（fail closed），这是有意的：任何新的「已付款 →
+// 待退款」入口都应当先被复核。
 func Transition(from, to OrderStatus) error {
 	// 显式列出四个合法目标，避免依赖 Terminal() 的实现细节。
 	switch {

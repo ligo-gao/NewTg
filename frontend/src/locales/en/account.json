@@ -158,6 +158,7 @@
     "status_all": "All",
     "status_pending": "Pending",
     "status_succeeded": "Succeeded",
+    "status_refund_required": "Refund required",
     "status_failed": "Failed",
     "status_expired": "Expired",
     "status_cancelled": "Cancelled",

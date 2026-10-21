@@ -158,6 +158,7 @@
     "status_all": "全部",
     "status_pending": "待付款",
     "status_succeeded": "付款成功",
+    "status_refund_required": "待退款",
     "status_failed": "付款失敗",
     "status_expired": "已過期",
     "status_cancelled": "已取消",

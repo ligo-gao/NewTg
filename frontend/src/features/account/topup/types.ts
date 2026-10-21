@@ -1,9 +1,16 @@
 import type { components } from '@/api/schema'
 
-/** Order states frozen by P-1 (the UI never invents `paid`/`refunded`). */
+/**
+ * Order states the console renders. Five come from the frozen P-1 state machine;
+ * `refund_required` was added by S2/R-29② for the "money received, fulfilment
+ * failed" case (e.g. a plan change paid after the subscription was cancelled).
+ * It is a terminal state awaiting a refund, so the UI must show it instead of
+ * falling back to an em dash. The UI still never invents `paid`/`refunded`.
+ */
 export type OrderStatus =
   | 'pending'
   | 'succeeded'
+  | 'refund_required'
   | 'failed'
   | 'expired'
   | 'cancelled'

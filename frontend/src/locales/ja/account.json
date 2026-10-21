@@ -158,6 +158,7 @@
     "status_all": "すべて",
     "status_pending": "支払い待ち",
     "status_succeeded": "成功",
+    "status_refund_required": "返金が必要",
     "status_failed": "失敗",
     "status_expired": "期限切れ",
     "status_cancelled": "キャンセル済み",

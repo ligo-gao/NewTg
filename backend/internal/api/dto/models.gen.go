@@ -2960,11 +2960,12 @@ func (e SearchModelCatalogParamsStatus) Valid() bool {
 
 // Defines values for ListOrdersParamsStatus.
 const (
-	ListOrdersParamsStatusCancelled ListOrdersParamsStatus = "cancelled"
-	ListOrdersParamsStatusExpired   ListOrdersParamsStatus = "expired"
-	ListOrdersParamsStatusFailed    ListOrdersParamsStatus = "failed"
-	ListOrdersParamsStatusPending   ListOrdersParamsStatus = "pending"
-	ListOrdersParamsStatusSucceeded ListOrdersParamsStatus = "succeeded"
+	ListOrdersParamsStatusCancelled      ListOrdersParamsStatus = "cancelled"
+	ListOrdersParamsStatusExpired        ListOrdersParamsStatus = "expired"
+	ListOrdersParamsStatusFailed         ListOrdersParamsStatus = "failed"
+	ListOrdersParamsStatusPending        ListOrdersParamsStatus = "pending"
+	ListOrdersParamsStatusRefundRequired ListOrdersParamsStatus = "refund_required"
+	ListOrdersParamsStatusSucceeded      ListOrdersParamsStatus = "succeeded"
 )
 
 // Valid indicates whether the value is a known member of the ListOrdersParamsStatus enum.
@@ -2977,6 +2978,8 @@ func (e ListOrdersParamsStatus) Valid() bool {
 	case ListOrdersParamsStatusFailed:
 		return true
 	case ListOrdersParamsStatusPending:
+		return true
+	case ListOrdersParamsStatusRefundRequired:
 		return true
 	case ListOrdersParamsStatusSucceeded:
 		return true
@@ -8868,9 +8871,12 @@ type MarkUserNotificationReadParams struct {
 
 // ListOrdersParams defines parameters for ListOrders.
 type ListOrdersParams struct {
-	P        *int                    `form:"p,omitempty" json:"p,omitempty"`
-	PageSize *int                    `form:"page_size,omitempty" json:"page_size,omitempty"`
-	Status   *ListOrdersParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	P        *int `form:"p,omitempty" json:"p,omitempty"`
+	PageSize *int `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Status 按订单状态过滤。`refund_required`（S2/R-29②）表示「钱已收、履约
+	// 失败、待退款」的终态。
+	Status *ListOrdersParamsStatus `form:"status,omitempty" json:"status,omitempty"`
 
 	// Q 订单号子串（最长 128 字符）
 	Q *string `form:"q,omitempty" json:"q,omitempty"`

@@ -8,12 +8,14 @@ import { OrderStatusBadge, type OrderStatus } from './order-status-badge'
 const CASES: ReadonlyArray<{ status: OrderStatus; variant: string; label: string }> = [
   { status: 'pending', variant: 'warning', label: 'Pending' },
   { status: 'succeeded', variant: 'success', label: 'Succeeded' },
+  // S2/R-29②: money received, fulfilment failed → dashed danger badge.
+  { status: 'refund_required', variant: 'danger-outline', label: 'Refund required' },
   { status: 'failed', variant: 'danger', label: 'Failed' },
   { status: 'expired', variant: 'neutral', label: 'Expired' },
   { status: 'cancelled', variant: 'neutral-outline', label: 'Cancelled' },
 ]
 
-describe('OrderStatusBadge (P-1 five states)', () => {
+describe('OrderStatusBadge (P-1 five states + refund_required)', () => {
   it.each(CASES)(
     'renders $status as $variant with text and a dot',
     async ({ status, variant, label }) => {

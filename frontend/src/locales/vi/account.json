@@ -158,6 +158,7 @@
     "status_all": "Tất cả",
     "status_pending": "Chờ thanh toán",
     "status_succeeded": "Thành công",
+    "status_refund_required": "Cần hoàn tiền",
     "status_failed": "Thất bại",
     "status_expired": "Đã hết hạn",
     "status_cancelled": "Đã hủy",

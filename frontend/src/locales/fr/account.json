@@ -158,6 +158,7 @@
     "status_all": "Toutes",
     "status_pending": "En attente",
     "status_succeeded": "Réussie",
+    "status_refund_required": "Remboursement requis",
     "status_failed": "Échouée",
     "status_expired": "Expirée",
     "status_cancelled": "Annulée",

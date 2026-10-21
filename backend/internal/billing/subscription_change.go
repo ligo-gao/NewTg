@@ -174,7 +174,8 @@ func subscriptionRemainingValue(pricePaid int64, periodDays int32, endAt, now ti
 //     按新套餐单价折成时长 —— 时长 = floor(剩余价值 × 新周期秒 / 新套餐价)。
 //     剩余价值恰好等于新套餐价时正好是一个完整周期，两种情形在边界上连续；
 //   - 新套餐价 = 0（免费套餐）：没有单价可折算，直接给一个完整免费周期；
-//     实例已有更长的剩余时间时由 SQL 的 GREATEST(end_at, …) 保住，不缩短。
+//     实例已有更长的剩余时间时由**调用方**（ChangePlan）取
+//     max(旧 end_at, now+时长) 保住，不缩短——写侧不再做 GREATEST（R-27）。
 func subscriptionChangeAmounts(remainValue, newPrice int64, newPeriodDays int32) (int64, int64) {
 	periodSeconds := int64(newPeriodDays) * subscriptionDaySeconds
 	if newPrice <= 0 {

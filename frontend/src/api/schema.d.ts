@@ -14351,7 +14351,11 @@ export interface operations {
             query?: {
                 p?: number;
                 page_size?: number;
-                status?: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+                /**
+                 * @description 按订单状态过滤。`refund_required`（S2/R-29②）表示「钱已收、履约
+                 *     失败、待退款」的终态。
+                 */
+                status?: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
                 /** @description 订单号子串（最长 128 字符） */
                 q?: string;
                 /** @description 仅 `orders:read` 管理员可用 */

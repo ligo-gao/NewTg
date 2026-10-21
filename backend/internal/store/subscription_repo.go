@@ -1340,8 +1340,10 @@ func LockSubscriptionForChange(ctx context.Context, q SubscriptionTx,
 //     的意图不因换套餐而自动撤回（续费才清，因为续费是继续付费的表达）。
 //
 // 条件 `plan_id = FromPlanID AND status = 'active'` 是唯一迁移守卫：下单后
-// 若实例已被并发升降级/取消/到期，RowsAffected=0 直接报错，由调用方回滚
-// 整个事务（订单保持 pending），绝不把改动叠加到别人的合同上。
+// 若实例已被并发升降级/取消/到期，RowsAffected=0 直接报错，绝不把改动叠加
+// 到别人的合同上。结算路径（billing.settleSubscriptionChange）据此把已收款
+// 的订单转 `refund_required` 终态（R-29②）——**不是**回滚成 pending：pending
+// 会让渠道无限重投且永远不会成功。
 func ChangeSubscriptionPlan(ctx context.Context, q SubscriptionTx,
 	in SubscriptionChangeInput) (Subscription, error) {
 
