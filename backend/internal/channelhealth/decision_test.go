@@ -174,6 +174,46 @@ func TestDecideFailureExcludedClasses(t *testing.T) {
 	}
 }
 
+// TestDecideFailureKeywordIgnoredForExcludedClasses：I-1 回归——四类「非渠道
+// 健康信号」即使响应体命中关键词也不得触发（R-M4-01 C）。
+//
+// 典型现实场景：上游把 "Permission denied" 回显在 400/422 的错误体里；
+// 若关键词匹配无条件执行，参数错误会被误判成渠道故障并禁用。
+func TestDecideFailureKeywordIgnoredForExcludedClasses(t *testing.T) {
+	settings := enabledSettings(
+		"permission denied",
+		"you exceeded your current quota",
+		"your credit balance is too low",
+	)
+	cases := []struct {
+		name   string
+		class  contract.ErrorClass
+		status int
+	}{
+		{"endpoint-unsupported", contract.ErrEndpointUnsupported, 400},
+		{"channel-config", contract.ErrChannelConfig, 400},
+		{"param-invalid", contract.ErrParamInvalid, 422},
+		{"unknown", contract.ErrUnknown, 418},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"error":"Permission denied: You exceeded your current quota"}`)
+			if decision, ok := DecideFailure(tc.class, tc.status, body, true, settings); ok {
+				t.Fatalf("%s + 关键词 body 不得触发（I-1: 删早退必红）: %+v", tc.name, decision)
+			}
+		})
+	}
+	// 反例：429/5xx 仍保留关键词触发语义（I-1 只排除四类）。
+	if _, ok := DecideFailure(contract.ErrUpstreamRateLimit, 429,
+		[]byte("You exceeded your current quota"), true, settings); !ok {
+		t.Fatal("429 + 关键词仍应触发")
+	}
+	if _, ok := DecideFailure(contract.ErrUpstreamServer, 500,
+		[]byte("Permission denied"), true, settings); !ok {
+		t.Fatal("5xx + 关键词仍应触发")
+	}
+}
+
 // TestDecideFailureBodyUpperBound：关键词只在前 64 KiB 内匹配。
 func TestDecideFailureBodyUpperBound(t *testing.T) {
 	settings := enabledSettings("disable-me")

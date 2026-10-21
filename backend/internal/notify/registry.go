@@ -106,7 +106,8 @@ type Content struct {
 	CTAURL  string
 }
 
-// Template 是注册表的一行：一个 (key, channel) 组合（§3.9.3 的 18 组）。
+// Template 是注册表的一行：一个 (key, channel) 组合（§3.9.3 的 19 组；
+// W7/M4-a 为 ops.channel_auto_disabled 增补 inapp）。
 // Category 与 Key 同名（16 个 category 各对应一个 key），但仍显式存储：
 // 投递记录的 category 是独立字段，未来若出现同 category 多 key 不必改模型。
 type Template struct {
@@ -190,7 +191,8 @@ func IsRegisteredCategory(key string) bool {
 	return ok
 }
 
-// templateSpecs 是 18 个 (key, channel) 组。Defaults 在 defaults.go 中以
+// templateSpecs 是 19 个 (key, channel) 组（M4-a 增补 ops.channel_auto_disabled/inapp）。
+// Defaults 在 defaults.go 中以
 // 初始化函数填入，避免与本文件的大段文案掺杂。
 var templateSpecs = []Template{
 	{Key: "auth.verify_code", Channel: ChannelEmail, Category: "auth.verify_code", Variables: []Variable{

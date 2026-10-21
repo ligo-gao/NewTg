@@ -101,6 +101,14 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	if assembly != nil {
 		apiHandler = assembly.Handler
 	}
+	// I-2：自动禁用 reporter 的停机顺序固定为「先 cancel + Wait，再关
+	// 主库/日志库」。幂等（cancel/Wait 均可重复调用），四条资源清理路径
+	// 都调用它，避免停机排空写撞上已关闭的连接池。
+	stopReporter := func() {
+		if assembly != nil && assembly.AttemptFailureReporterStop != nil {
+			assembly.AttemptFailureReporterStop()
+		}
+	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
 	go func() {
@@ -125,6 +133,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		// 监听失败是主错误；资源清理失败不覆盖它。
+		stopReporter()
 		_ = redisRes.Close()
 		_ = logsDB.Close()
 		_ = db.Close()
@@ -144,6 +153,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 			Logger:     log,
 		})
 		if err != nil {
+			stopReporter()
 			_ = ln.Close()
 			_ = redisRes.Close()
 			_ = logsDB.Close()
@@ -170,6 +180,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	case <-ctx.Done():
 	case err := <-serveErr:
 		// 监听异常退出（端口被抢、进程内关闭等）：清理资源后上报。
+		stopReporter()
 		heartbeat.Stop()
 		_ = redisRes.Close()
 		_ = logsDB.Close()
@@ -189,7 +200,9 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		// Shutdown 已失败并记录；Close 仅兜底释放监听，错误无需再次上报。
 		_ = srv.Close()
 	}
-	// HTTP 已停止对外服务：删除本实例心跳，其他副本立即看不到它。
+	// HTTP 已停止对外服务：先停 reporter（排空队列）再关心跳与连接池。
+	// 顺序：HTTP 停止 → reporter 排空 → 心跳 → 日志库/主库/Redis。
+	stopReporter()
 	heartbeat.Stop()
 	if err := logsDB.Close(); err != nil {
 		log.Warn("close logs db failed", "error", err)

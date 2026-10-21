@@ -28,6 +28,10 @@ const (
 	// autoDisableSideEffectTimeout 是审计/通知的单次上限。两者都是
 	// best-effort：失败只 Warn，绝不回滚已提交的状态迁移（R-M4-09）。
 	autoDisableSideEffectTimeout = 5 * time.Second
+	// autoDisableDrainTimeout 是停机排空队列的总预算（I-2）。ctx 取消后
+	// Reporter 仍会处理已判定的事件，但最多再花这么久，避免优雅停机被
+	// 积压事件无限拖长。
+	autoDisableDrainTimeout = 5 * time.Second
 )
 
 // AutoDisableStore 是 Reporter 需要的存储面（生产 *store.ChannelRepo）。
@@ -157,12 +161,39 @@ func (r *Reporter) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
+				// I-2：停机时先排空已判定的事件，而不是直接丢弃。排空预算
+				// 有界（5s），且 platform 会在关闭 DB/日志库之前 Wait()，
+				// 因此不会出现「排空写入撞上已关闭连接池」。
+				r.drain()
 				return
 			case event := <-r.events:
 				r.handle(ctx, event)
 			}
 		}
 	}()
+}
+
+// drain 在停机窗口内处理队列中剩余的事件（最多 autoDisableDrainTimeout）。
+//
+// 只处理已经入队的事件：不再接受新上报（loop 已退出），也不阻塞停机超过
+// 预算。每个事件的存储写/审计/通知各自仍有 5s 超时，因此单个事件的最坏
+// 时长是常数级、不随队列长度线性放大停机时间。
+func (r *Reporter) drain() {
+	ctx, cancel := context.WithTimeout(context.Background(), autoDisableDrainTimeout)
+	defer cancel()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case event := <-r.events:
+			r.handle(ctx, event)
+		case <-ctx.Done():
+			return
+		default:
+			return
+		}
+	}
 }
 
 // Wait 等待后台 goroutine 退出（测试与停机顺序断言用）。

@@ -81,6 +81,14 @@ func DecideFailure(class contract.ErrorClass, statusCode int, body []byte, autoB
 		}
 	case contract.ErrChannelError:
 		return Decision{ReasonCode: ReasonUpstreamError, Trigger: TriggerUpstreamError}, true
+	case contract.ErrEndpointUnsupported, contract.ErrChannelConfig,
+		contract.ErrParamInvalid, contract.ErrUnknown:
+		// I-1（复核）：这四类**不是渠道健康信号**，关键词匹配必须在这里
+		// 早退。否则上游把「Permission denied」回显在 400/422/EOF 等响应体
+		// 里时，会被关键词规则误判成渠道故障，违反 R-M4-01 C 的「参数类/
+		// 端点不支持/渠道配置错误不禁」。注意 429/5xx（ErrUpstreamRateLimit /
+		// ErrUpstreamServer / ErrRetryable）仍会落到下面的关键词匹配。
+		return Decision{}, false
 	}
 
 	if matchDisableKeyword(body, settings.DisableKeywords) {

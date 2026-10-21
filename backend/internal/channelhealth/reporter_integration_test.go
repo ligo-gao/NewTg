@@ -302,15 +302,19 @@ func TestReporterIntegrationAuthDisable(t *testing.T) {
 	}
 
 	deliveries := f.deliveryRows(t, channelID)
-	if len(deliveries) != 2 {
-		t.Fatalf("站内投递行数 = %d, want 2（仅管理员）: %+v", len(deliveries), deliveries)
-	}
-	byUser := make(map[int64]string, len(deliveries))
+	// M-4：只统计本用例创建的管理员。集成库可能残留其它测试/历史运行
+	// 创建的启用 admin，断言「恰好 2 条」会对外部人口敏感。
+	byUser := make(map[int64]string, 2)
 	for _, delivery := range deliveries {
 		if delivery.UserID == user {
 			t.Fatalf("普通用户收到了运维通知: %+v", delivery)
 		}
-		byUser[delivery.UserID] = delivery.Payload
+		if delivery.UserID == adminZH || delivery.UserID == adminEN {
+			byUser[delivery.UserID] = delivery.Payload
+		}
+	}
+	if len(byUser) != 2 {
+		t.Fatalf("本用例管理员投递数 = %d, want 2（全部投递: %+v）", len(byUser), deliveries)
 	}
 	if payload, ok := byUser[adminZH]; !ok || !strings.Contains(payload, "上游鉴权错误") ||
 		!strings.Contains(payload, "渠道已自动禁用") {
@@ -428,7 +432,7 @@ func TestReporterIntegrationConcurrentSingleTransition(t *testing.T) {
 	f := newIntegrationFixture(t)
 	id := f.insertChannel(t, "m4a-conc", 1, true)
 	f.cleanupDeliveries(t, id)
-	f.insertUser(t, "admin", "en")
+	adminID := f.insertUser(t, "admin", "en")
 	reporter := integrationReporter(t, f, true)
 
 	var wg sync.WaitGroup
@@ -450,7 +454,14 @@ func TestReporterIntegrationConcurrentSingleTransition(t *testing.T) {
 		t.Fatalf("审计行数 = %d, want 1（同一迁移只写一条）", len(audits))
 	}
 	deliveries := f.deliveryRows(t, id)
-	if len(deliveries) != 1 {
-		t.Fatalf("投递行数 = %d, want 1（每个管理员一条）", len(deliveries))
+	// M-4：只数本用例创建的管理员，避免库中残留 admin 让断言误红。
+	mine := 0
+	for _, delivery := range deliveries {
+		if delivery.UserID == adminID {
+			mine++
+		}
+	}
+	if mine != 1 {
+		t.Fatalf("本用例管理员投递数 = %d, want 1（全部投递: %+v）", mine, deliveries)
 	}
 }

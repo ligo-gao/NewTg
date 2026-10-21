@@ -376,6 +376,22 @@ func TestReporterReportReturnsWhileStoreIsSlow(t *testing.T) {
 	}
 }
 
+// TestReporterDrainsQueueOnShutdown：I-2——ctx 取消后队列里已判定的事件
+// 仍会被处理（而不是被直接丢弃），Wait 返回时排空完成。
+func TestReporterDrainsQueueOnShutdown(t *testing.T) {
+	storeImpl := &fakeAutoDisableStore{channel: disabledChannel(31), changed: true}
+	reporter := testReporter(t, storeImpl, nil, nil, ReporterConfig{})
+	// 先入队，再用已取消的 ctx 启动：loop 选择 ctx.Done 后必须进入 drain。
+	reporter.ReportAttemptFailure(context.Background(), 31, true, contract.ErrUpstreamAuth, 401, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reporter.Start(ctx)
+	reporter.Wait()
+	if got := storeImpl.callCount(); got != 1 {
+		t.Fatalf("停机排空调用 AutoDisable %d 次, want 1（I-2: 直接 return 必红）", got)
+	}
+}
+
 // TestReporterStartStopsOnContextCancel：Start 只起一个 goroutine，ctx 取消后
 // Wait 能返回（无 goroutine 泄漏）。
 func TestReporterStartStopsOnContextCancel(t *testing.T) {

@@ -65,6 +65,10 @@ type gatewayAssembly struct {
 	// *channelhealth.Reporter）。随装配启动、随 RunGateway ctx 退出；
 	// nil 表示探针-only/测试装配，中继不做自动禁用。
 	AttemptFailureReporter httpapi.AttemptFailureReporter
+	// AttemptFailureReporterStop 取消 reporter 的唯一 goroutine 并等待它
+	// 排空队列。runGateway 必须在关闭主库/日志库**之前**调用，否则停机窗口
+	// 的排空写会撞上已关闭的连接池（I-2）。
+	AttemptFailureReporterStop func()
 }
 
 // pricingCacheInvalidator 是定价源进程内缓存失效的最小缝。
@@ -364,7 +368,12 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	}
 	// 单 goroutine、随网关 ctx 退出；ReportAttemptFailure 只做非阻塞入队，
 	// 请求响应不等待条件更新/审计/通知（brief 第 2 条）。
-	attemptReporter.Start(ctx)
+	//
+	// I-2：用可独立取消的 ctx 启动，runGateway 在关闭 DB/日志库之前调用
+	// Stop（cancel + Wait）——既保证停机窗口把队列排空，也保证不会在连接池
+	// 关闭后还有后台写。
+	reporterCtx, reporterCancel := context.WithCancel(ctx)
+	attemptReporter.Start(reporterCtx)
 
 	return &gatewayAssembly{
 		Handler:                router,
@@ -375,6 +384,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		PricingOnChange:        pricingChanged,
 		Tasks:                  router.TasksHandler(),
 		AttemptFailureReporter: attemptReporter,
+		AttemptFailureReporterStop: func() {
+			reporterCancel()
+			attemptReporter.Wait()
+		},
 	}, nil
 }
 

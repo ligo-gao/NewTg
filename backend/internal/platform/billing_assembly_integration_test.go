@@ -92,6 +92,17 @@ func TestIntegrationGatewayPricingOnChangeInvalidatesSource(t *testing.T) {
 	if assembly == nil || assembly.Handler == nil {
 		t.Fatal("assembly/handler = nil, want the management router")
 	}
+	// W7/M4-a 生产装配断言：自动禁用 reporter 与停机排空钩子都必须存在。
+	// 缺 reporter 会让中继的自动禁用接缝静默退化；缺 Stop 会让停机排空
+	// 写入撞上正在关闭的连接池（I-2）。
+	if assembly.AttemptFailureReporter == nil {
+		t.Fatal("assembly.AttemptFailureReporter = nil, want *channelhealth.Reporter")
+	}
+	if assembly.AttemptFailureReporterStop == nil {
+		t.Fatal("assembly.AttemptFailureReporterStop = nil, want cancel+Wait hook")
+	}
+	// 本用例的 ctx 永不取消；显式停掉 reporter，避免测试进程泄漏 goroutine。
+	t.Cleanup(assembly.AttemptFailureReporterStop)
 	if assembly.Billing == nil {
 		t.Fatal("assembly.Billing = nil, want engine.NewSession")
 	}
