@@ -16,6 +16,7 @@
 //	GET    /api/subscriptions/{id}/events             用户：状态迁移事件流（本人或 users:read）
 //	POST   /api/subscriptions/{id}/cancel             用户：周期末取消（幂等；终态 409）
 //	POST   /api/subscriptions/{id}/renew              用户：手动续费（必须 Idempotency-Key）
+//	POST   /api/subscriptions/{id}/change             用户：升级/降级（必须 Idempotency-Key）
 //	GET    /api/billing-preference                    用户：扣费偏好
 //	PUT    /api/billing-preference                    用户：扣费偏好（四值归一）
 //	POST   /api/subscription/purchase                 用户：购买（创建支付订单）
@@ -95,6 +96,16 @@ const (
 	problemTypeRenewUnavailable = "https://newtg.dev/problems/subscription_renewal_unavailable"
 	// 实例处于 cancelled 终态：与「不能取消」分开，前端可据此提示重新购买。
 	problemTypeSubscriptionNotRenewable = "https://newtg.dev/problems/subscription_not_renewable"
+	// 升降级（S2）：invalid=请求体/字段非法或目标套餐与当前相同，
+	// conflict=实例不可升降级或幂等键复用，unavailable=支付渠道未配置。
+	problemTypeChangeInvalid     = "https://newtg.dev/problems/invalid_subscription_change"
+	problemTypeChangeConflict    = "https://newtg.dev/problems/subscription_change_conflict"
+	problemTypeChangeUnavailable = "https://newtg.dev/problems/subscription_change_unavailable"
+	// 实例已不在可升降级状态（cancelled/expired）：前端可据此提示重新购买。
+	problemTypeSubscriptionNotChangeable = "https://newtg.dev/problems/subscription_not_changeable"
+	// P-10：跨币种/跨周期单位无法定义折算基准（422，独立 type 让前端可
+	// 直接提示「请选择同周期同币种的套餐」而不是笼统的 422）。
+	problemTypeCycleMismatch = "https://newtg.dev/problems/subscription_cycle_mismatch"
 )
 
 // SubscriptionPurchaseService 是订阅购买的支付接缝。
@@ -108,6 +119,9 @@ type SubscriptionPurchaseService interface {
 	// billing 的结算分支推进**同一实例**的 end_at，不新建 subscriptions 行。
 	CreateSubscriptionRenewalOrder(ctx context.Context, userID, subscriptionID int64,
 		provider, idempotencyKey string) (*billing.TopupOrder, error)
+	// ChangePlan 创建升级/降级请求（S2）。应补差价为 0 时同一事务内即时生效；
+	// > 0 时返回支付载荷，由结算分支改写**同一实例**的套餐快照与额度。
+	ChangePlan(ctx context.Context, in billing.ChangePlanInput) (billing.ChangePlanResult, error)
 }
 
 // 订阅域动作（字段策略按动作登记；与权限键不同）。
@@ -124,6 +138,7 @@ var (
 	userSubscriptionPurchaseAction = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "purchase"}
 	userSubscriptionCancelAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "cancel"}
 	userSubscriptionRenewAction    = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "renew"}
+	userSubscriptionChangeAction   = rbac.AuthzAction{ResourceKind: "subscription", ActionName: "change"}
 )
 
 // SubscriptionHandlerConfig 是订阅端点装配输入。
@@ -226,6 +241,12 @@ func (h *SubscriptionHandlers) registerPolicies() {
 	h.authz.SetWritePolicy(userSubscriptionRenewAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
 		"provider": nil,
 	}})
+	// 升降级只需新套餐 id 与 provider：应补差价由服务端按剩余价值折算，
+	// 任何价格字段都不接受客户端输入。
+	h.authz.SetWritePolicy(userSubscriptionChangeAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"plan_id":  nil,
+		"provider": nil,
+	}})
 	// 周期末取消没有可写字段：空白名单 = 无 body 的请求通过，携带任何字段
 	// 的 body 一律 403 field_not_writable（与启停/删除同构）。
 	h.authz.SetWritePolicy(userSubscriptionCancelAction, empty)
@@ -271,6 +292,10 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	// 续费与取消同为「本人实例 + 幂等写」：cancelled → 409，active/expired 可续。
 	mux.Handle("POST /api/subscriptions/{id}/renew",
 		self(userSubscriptionRenewAction, h.handleRenewSubscription))
+	// 升降级（S2）同属「本人实例 + 幂等写」：active 实例可升降级，
+	// cancelled/expired → 409（过期实例没有剩余价值可折算，应走购买）。
+	mux.Handle("POST /api/subscriptions/{id}/change",
+		self(userSubscriptionChangeAction, h.handleChangeSubscription))
 	mux.Handle("GET /api/billing-preference", http.HandlerFunc(h.handleGetBillingPreference))
 	mux.Handle("PUT /api/billing-preference", self(userBillingPreferenceAction, h.handlePutBillingPreference))
 	mux.Handle("POST /api/subscription/purchase", self(userSubscriptionPurchaseAction, h.handlePurchase))
@@ -1731,6 +1756,199 @@ func (h *SubscriptionHandlers) writeRenewalError(w http.ResponseWriter, err erro
 			"Payment provider unavailable", "failed to initialize payment with the provider", nil)
 	default:
 		h.log.Error("create subscription renewal order failed", "error", err)
+		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
+			"Internal server error", "", nil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 升级 / 降级（S2；任务书 P-10/P-11/P-12、R-23～R-25）
+// ---------------------------------------------------------------------------
+
+// subscriptionChangeRequest 是 POST /api/subscriptions/{id}/change 的请求体。
+//
+// 只有目标套餐与支付渠道：应补差价一律由服务端按「新套餐价 − 剩余价值」折算
+// （P-11），客户端传入的任何金额字段都会被 RBAC 字段层 403。
+type subscriptionChangeRequest struct {
+	PlanID   *int64  `json:"plan_id"`
+	Provider *string `json:"provider"`
+}
+
+// subscriptionChangeView 是升降级的响应体。
+//
+// 与购买/续费同构（order + 支付载荷），另外回显折算结果：price_delta 是本次
+// 实付差价（单位分），credits_delta 是周期总额度变化，event_kind 是
+// upgraded/downgraded，new_end_at 是折算后的到期时刻（pending 订单在下单
+// 瞬间求值，实际写入以支付成功时刻为准）。
+type subscriptionChangeView struct {
+	Order        topupOrderView    `json:"order"`
+	ClientSecret string            `json:"client_secret,omitempty"`
+	QRCode       string            `json:"qr_code,omitempty"`
+	PayURL       string            `json:"pay_url,omitempty"`
+	FormFields   map[string]string `json:"form_fields,omitempty"`
+	FromPlanID   int64             `json:"from_plan_id"`
+	ToPlanID     int64             `json:"to_plan_id"`
+	EventKind    string            `json:"event_kind"`
+	PriceDelta   int64             `json:"price_delta"`
+	CreditsDelta int64             `json:"credits_delta"`
+	NewEndAt     *time.Time        `json:"new_end_at"`
+}
+
+// handleChangeSubscription 创建订阅升级/降级（S2）。
+//
+// 状态口径与续费一致：
+//   - 仅本人实例；他人实例与不存在统一 404（不泄露 ID 存在性）；
+//   - 只有 active 可升降级：cancelled/expired → 409（过期实例已无剩余价值，
+//     应走购买通道买一份新合同）；
+//   - Idempotency-Key 必带：0 元差价也要防重复折算，服务端代生成会让重试
+//     变成新请求，防重语义失效；
+//   - 同币种、同周期天数（P-10）由 billing 校验，跨币种/跨周期 → 422
+//     subscription_cycle_mismatch；
+//   - 额度与事件由 billing 在同一事务内完成（R-24/R-25），本层只做请求形态
+//     与错误映射，不参与折算。
+func (h *SubscriptionHandlers) handleChangeSubscription(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		// 非法 id 与不存在同口径：不给出「格式错」这一额外信号。
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "Idempotency-Key header is required", []string{"Idempotency-Key"})
+		return
+	}
+	var req subscriptionChangeRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "request body must be a JSON object", nil)
+		return
+	}
+	if req.PlanID == nil || *req.PlanID <= 0 {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "plan_id is required", []string{"plan_id"})
+		return
+	}
+	if req.Provider == nil || strings.TrimSpace(*req.Provider) == "" {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "provider is required", []string{"provider"})
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(*req.Provider))
+	if provider != billing.ProviderStripe && provider != billing.ProviderAlipay &&
+		provider != billing.ProviderEpay {
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "provider must be stripe, alipay or epay", []string{"provider"})
+		return
+	}
+
+	// 归属校验先于状态判定：他人实例与不存在统一 404（§15.4）。
+	sub, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		h.writeRepoError(w, "get subscription for change", err)
+		return
+	}
+	if sub.UserID != p.UserID {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if sub.Status != "active" {
+		writeChangeNotChangeableProblem(w)
+		return
+	}
+	if h.purchase == nil {
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeChangeUnavailable,
+			"Subscription change is unavailable", "the payment service is not configured", nil)
+		return
+	}
+
+	result, err := h.purchase.ChangePlan(r.Context(), billing.ChangePlanInput{
+		UserID: p.UserID, SubscriptionID: id, NewPlanID: *req.PlanID,
+		Provider: provider, IdempotencyKey: key,
+	})
+	if err != nil {
+		h.writeChangeError(w, err)
+		return
+	}
+	view := subscriptionChangeView{
+		Order:        topupOrderViewFrom(result.Order),
+		ClientSecret: result.ClientSecret,
+		QRCode:       result.QRCode,
+		PayURL:       result.PayURL,
+		FormFields:   result.FormFields,
+		FromPlanID:   result.FromPlanID,
+		ToPlanID:     result.NewPlanID,
+		EventKind:    result.EventKind,
+		PriceDelta:   result.PriceDelta,
+		CreditsDelta: result.CreditsDelta,
+	}
+	if !result.NewEndAt.IsZero() {
+		endAt := result.NewEndAt.UTC()
+		view.NewEndAt = &endAt
+	}
+	status := http.StatusCreated
+	if result.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, view)
+}
+
+func writeChangeNotChangeableProblem(w http.ResponseWriter) {
+	writeAdminProblem(w, http.StatusConflict, problemTypeSubscriptionNotChangeable,
+		"subscription_not_changeable", "only active subscriptions can be upgraded or downgraded")
+}
+
+// writeChangeError 把 billing 的升降级错误映射为 RFC 7807。
+//
+// 口径与续费一致：目标/当前套餐不可用、实例不可升降级、幂等键复用 → 409；
+// 跨币种/跨周期（P-10）与套餐字段非法 → 422；渠道未配置 → 503；渠道出站
+// 失败 → 502。任何失败都不会留下 succeeded 订单，也不会改写实例。
+func (h *SubscriptionHandlers) writeChangeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, billing.ErrChangeSubscriptionNotFound):
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+	case errors.Is(err, billing.ErrInvalidIdempotency),
+		errors.Is(err, billing.ErrInvalidProvider):
+		writeSubscriptionFieldsProblem(w, http.StatusBadRequest, problemTypeChangeInvalid,
+			"Invalid subscription change", "provider or Idempotency-Key is invalid", nil)
+	case errors.Is(err, billing.ErrSubscriptionCycleMismatch):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeCycleMismatch,
+			"subscription_cycle_mismatch",
+			"the target plan must use the same currency and cycle as the current subscription",
+			[]string{"plan_id"})
+	case errors.Is(err, billing.ErrChangePlanUnchanged),
+		errors.Is(err, billing.ErrSubscriptionPlanInvalid):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeChangeInvalid,
+			"Invalid subscription change",
+			"the target plan is invalid or is already the current plan", []string{"plan_id"})
+	case errors.Is(err, billing.ErrChangeOrderChanged),
+		errors.Is(err, billing.ErrSubscriptionNotChangeable),
+		errors.Is(err, billing.ErrSubscriptionPlanUnavailable),
+		errors.Is(err, billing.ErrIdempotencyConflict):
+		writeSubscriptionFieldsProblem(w, http.StatusConflict, problemTypeChangeConflict,
+			"Subscription change conflict",
+			"the subscription cannot be changed or the Idempotency-Key belongs to another order", nil)
+	case errors.Is(err, billing.ErrInvalidCurrency),
+		errors.Is(err, billing.ErrInvalidTopupAmount):
+		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeChangeInvalid,
+			"Invalid subscription plan", "the plan price or currency is not supported", nil)
+	case errors.Is(err, billing.ErrTopupDisabled),
+		errors.Is(err, billing.ErrProviderDisabled),
+		errors.Is(err, billing.ErrPaymentConfig):
+		w.Header().Set("Retry-After", "5")
+		writeSubscriptionFieldsProblem(w, http.StatusServiceUnavailable, problemTypeChangeUnavailable,
+			"Payment provider is unavailable", "the selected payment provider is not available", []string{"provider"})
+	case errors.Is(err, billing.ErrProviderUnavailable):
+		writeSubscriptionFieldsProblem(w, http.StatusBadGateway, problemTypeChangeUnavailable,
+			"Payment provider unavailable", "failed to initialize payment with the provider", nil)
+	default:
+		h.log.Error("change subscription plan failed", "error", err)
 		writeSubscriptionFieldsProblem(w, http.StatusInternalServerError, authProblemInternal,
 			"Internal server error", "", nil)
 	}

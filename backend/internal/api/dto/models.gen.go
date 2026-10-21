@@ -1824,6 +1824,45 @@ func (e SquareState) Valid() bool {
 	}
 }
 
+// Defines values for SubscriptionChangeRequestProvider.
+const (
+	SubscriptionChangeRequestProviderAlipay SubscriptionChangeRequestProvider = "alipay"
+	SubscriptionChangeRequestProviderEpay   SubscriptionChangeRequestProvider = "epay"
+	SubscriptionChangeRequestProviderStripe SubscriptionChangeRequestProvider = "stripe"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionChangeRequestProvider enum.
+func (e SubscriptionChangeRequestProvider) Valid() bool {
+	switch e {
+	case SubscriptionChangeRequestProviderAlipay:
+		return true
+	case SubscriptionChangeRequestProviderEpay:
+		return true
+	case SubscriptionChangeRequestProviderStripe:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SubscriptionChangeResponseEventKind.
+const (
+	SubscriptionChangeResponseEventKindDowngraded SubscriptionChangeResponseEventKind = "downgraded"
+	SubscriptionChangeResponseEventKindUpgraded   SubscriptionChangeResponseEventKind = "upgraded"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionChangeResponseEventKind enum.
+func (e SubscriptionChangeResponseEventKind) Valid() bool {
+	switch e {
+	case SubscriptionChangeResponseEventKindDowngraded:
+		return true
+	case SubscriptionChangeResponseEventKindUpgraded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SubscriptionEventKind.
 const (
 	SubscriptionEventKindCancelled  SubscriptionEventKind = "cancelled"
@@ -7110,6 +7149,62 @@ type SetupResponseUserStatus string
 // 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
 type SquareState string
 
+// SubscriptionChangeRequest defines model for SubscriptionChangeRequest.
+type SubscriptionChangeRequest struct {
+	// PlanId 目标套餐 id。必须与当前套餐同币种、同 `period_days`（P-10），
+	// 且不能是当前套餐。应补差价由服务端按剩余价值折算，客户端不得传入。
+	PlanId int64 `json:"plan_id"`
+
+	// Provider 支付渠道；应补差价 > 0 时返回支付载荷，= 0（降级/免费）时渠道不参与
+	// 履约、订单在同一事务内直接 succeeded。
+	Provider SubscriptionChangeRequestProvider `json:"provider"`
+}
+
+// SubscriptionChangeRequestProvider 支付渠道；应补差价 > 0 时返回支付载荷，= 0（降级/免费）时渠道不参与
+// 履约、订单在同一事务内直接 succeeded。
+type SubscriptionChangeRequestProvider string
+
+// SubscriptionChangeResponse defines model for SubscriptionChangeResponse.
+type SubscriptionChangeResponse struct {
+	// ClientSecret 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
+	ClientSecret *string `json:"client_secret,omitempty"`
+
+	// CreditsDelta 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负
+	CreditsDelta int64 `json:"credits_delta"`
+
+	// EventKind 按套餐方向判定：新套餐价 > 旧套餐价 ⇒ upgraded，否则 downgraded
+	// （周期末的降级即使需要补差价也仍是 downgraded）。
+	EventKind SubscriptionChangeResponseEventKind `json:"event_kind"`
+
+	// FormFields 仅 epay 首次创建返回（与充值同构）
+	FormFields *map[string]string `json:"form_fields,omitempty"`
+
+	// FromPlanId 升降级前的套餐 id（事件 detail 的 from_plan_id）
+	FromPlanId int64 `json:"from_plan_id"`
+
+	// NewEndAt 折算后的到期时刻。0 元路径（即时生效）是实际写入值；付费路径是下单
+	// 瞬间的折算结果，真实写入时刻在支付成功时以「支付成功时刻 + 冻结时长」
+	// 重新求值。
+	NewEndAt *time.Time     `json:"new_end_at,omitempty"`
+	Order    TopupOrderView `json:"order"`
+
+	// PayUrl 仅 epay 首次创建返回；表单 POST 的目标收银台地址
+	PayUrl *string `json:"pay_url,omitempty"`
+
+	// PriceDelta 本次实付差价（单位：分）；降级为 0（不退款）
+	PriceDelta int64 `json:"price_delta"`
+
+	// QrCode 仅 alipay 首次创建返回
+	QrCode *string `json:"qr_code,omitempty"`
+
+	// ToPlanId 目标套餐 id（事件 detail 的 to_plan_id）
+	ToPlanId int64 `json:"to_plan_id"`
+}
+
+// SubscriptionChangeResponseEventKind 按套餐方向判定：新套餐价 > 旧套餐价 ⇒ upgraded，否则 downgraded
+// （周期末的降级即使需要补差价也仍是 downgraded）。
+type SubscriptionChangeResponseEventKind string
+
 // SubscriptionEvent 一条订阅状态迁移事件（S1/R-18）。detail 只含 id 与金额等非敏感字段。
 type SubscriptionEvent struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -9121,6 +9216,14 @@ type CancelSubscriptionAtPeriodEndParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ChangeSubscriptionPlanParams defines parameters for ChangeSubscriptionPlan.
+type ChangeSubscriptionPlanParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken     *CSRFToken `json:"X-CSRF-Token,omitempty"`
+	IdempotencyKey string     `json:"Idempotency-Key"`
+}
+
 // ListSubscriptionEventsParams defines parameters for ListSubscriptionEvents.
 type ListSubscriptionEventsParams struct {
 	// AfterSeq 增量为游标；缺省 0 表示从头拉取。负数或非整数 → 400。
@@ -9799,6 +9902,9 @@ type ResetSubscriptionPlanQuotaJSONRequestBody = SubscriptionPlanResetQuotaReque
 
 // PurchaseSubscriptionJSONRequestBody defines body for PurchaseSubscription for application/json ContentType.
 type PurchaseSubscriptionJSONRequestBody = SubscriptionPurchaseRequest
+
+// ChangeSubscriptionPlanJSONRequestBody defines body for ChangeSubscriptionPlan for application/json ContentType.
+type ChangeSubscriptionPlanJSONRequestBody = SubscriptionChangeRequest
 
 // RenewSubscriptionJSONRequestBody defines body for RenewSubscription for application/json ContentType.
 type RenewSubscriptionJSONRequestBody = SubscriptionRenewRequest

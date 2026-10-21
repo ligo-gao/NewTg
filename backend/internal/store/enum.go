@@ -212,7 +212,9 @@ var EnumChecks = map[string][]string{
 		"created", "renewed", "upgraded", "downgraded",
 		"refunded", "cancelled", "expired", "reset",
 	},
-	"orders.biz_kind":          {"topup", "subscribe", "renew"},
+	// 'change' 由 S2 加入（迁移 20261021120000）：biz_ref_id=subscriptions.id，
+	// amount 是应补差价而不是套餐全价。
+	"orders.biz_kind":          {"topup", "subscribe", "renew", "change"},
 	"users.billing_preference": {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
 
 	// 站点公告（D7a，modules-08 F-08-04 / R-D7-01）。

@@ -1122,3 +1122,170 @@ func TestSubscriptionIntegrationEventsVisibility(t *testing.T) {
 		t.Fatalf("after_seq=1 应为空，实际 %+v", got.Events)
 	}
 }
+
+// TestSubscriptionIntegrationChangePlan 走真实 HTTP + 真实 PostgreSQL 验证 S2
+// 升级链路：应补差价落 change 订单 → 渠道回调 → 同一实例迁移到新套餐、
+// 额度重算、追加 upgraded 事件；跨周期/同套餐/终态各自返回契约内的状态码。
+func TestSubscriptionIntegrationChangePlan(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	userID := env.insertUser(t, "user")
+	oldPlanID := env.insertPlanRow(t, "s2-old-"+subscriptionITKey(), "enabled")
+	newPlanID := env.insertPlanRowWithPrice(t, "s2-new-"+subscriptionITKey(), 19900, 5000, 30)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-15 * 24 * time.Hour)
+	var subID int64
+	if err := env.db.QueryRow(`
+		INSERT INTO subscriptions
+			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+			 next_reset_at, amount_total, amount_used, allow_wallet_overflow,
+			 currency, price_paid_amount, period_days, reset_on_renew, grace_days)
+		VALUES ($1, $2, 'IT Plan', 'active', $3, $4, $4, 1000, 321, true,
+		        'CNY', 9900, 30, true, 0)
+		RETURNING id`, userID, oldPlanID, start, now.Add(15*24*time.Hour)).Scan(&subID); err != nil {
+		t.Fatalf("insert subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, subID)
+		_, _ = env.db.Exec(`DELETE FROM orders WHERE (biz_kind = 'change' AND biz_ref_id = $1)
+			OR idempotency_key LIKE 's2-change-%'`, subID)
+		_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE id = $1`, subID)
+	})
+	cancelledID := env.insertSubscription(t, userID, oldPlanID, "cancelled", 0)
+
+	owner := &auth.Principal{UserID: userID, Role: rbac.RoleUser}
+	path := fmt.Sprintf("/api/subscriptions/%d/change", subID)
+	headers := map[string]string{"Idempotency-Key": "s2-change-" + subscriptionITKey()}
+
+	rr := env.do(t, owner, http.MethodPost, path,
+		map[string]any{"plan_id": newPlanID, "provider": "stripe"}, headers)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("change = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var created subscriptionChangeView
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode change: %v", err)
+	}
+	// 剩余 15 天 × 9900 / 30 天 = 4950 ⇒ 应补 = 19900 − 4950 = 14950（±1 抖动）。
+	if created.Order.Status != "pending" || created.PriceDelta < 14949 || created.PriceDelta > 14950 {
+		t.Fatalf("升降级响应 = %+v", created)
+	}
+	if created.EventKind != "upgraded" || created.CreditsDelta != 4000 ||
+		created.FromPlanID != oldPlanID || created.ToPlanID != newPlanID {
+		t.Fatalf("折算回显 = %+v", created)
+	}
+	orderID := created.Order.ID
+	var bizKind string
+	var bizRef int64
+	if err := env.db.QueryRow(`SELECT biz_kind, biz_ref_id FROM orders WHERE id = $1`, orderID).
+		Scan(&bizKind, &bizRef); err != nil {
+		t.Fatalf("read change order: %v", err)
+	}
+	if bizKind != "change" || bizRef != subID {
+		t.Fatalf("订单判别列 = %s/%d，期望 change/%d", bizKind, bizRef, subID)
+	}
+
+	var txnID string
+	if err := env.db.QueryRow(`SELECT provider_txn_id FROM orders WHERE id = $1`, orderID).
+		Scan(&txnID); err != nil {
+		t.Fatalf("read provider txn: %v", err)
+	}
+	payload := subscriptionStripeEvent(txnID, created.Order.Amount)
+	sig := subscriptionStripeSig("whsec_test_123", time.Now().Unix(), payload)
+	if err := env.purchase.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
+		t.Fatalf("change stripe webhook: %v", err)
+	}
+
+	var (
+		gotPlan, gotTotal, gotUsed, gotPrice int64
+		gotEnd                               time.Time
+		gotTitle                             string
+	)
+	if err := env.db.QueryRow(`
+		SELECT plan_id, plan_title_snapshot, amount_total, amount_used,
+		       price_paid_amount, end_at
+		FROM subscriptions WHERE id = $1`, subID).Scan(
+		&gotPlan, &gotTitle, &gotTotal, &gotUsed, &gotPrice, &gotEnd); err != nil {
+		t.Fatalf("read changed subscription: %v", err)
+	}
+	if gotPlan != newPlanID || gotTotal != 5000 || gotUsed != 321 || gotPrice != 19900 {
+		t.Fatalf("升级后实例 = plan:%d total:%d used:%d price:%d",
+			gotPlan, gotTotal, gotUsed, gotPrice)
+	}
+	if gotTitle != "IT Plan" {
+		t.Fatalf("升级后快照 title = %s", gotTitle)
+	}
+	if delta := gotEnd.Sub(now); delta < 29*24*time.Hour || delta > 31*24*time.Hour {
+		t.Fatalf("升级后 end_at = %s（距 now %s），期望约 30 天", gotEnd, delta)
+	}
+	var events int
+	if err := env.db.QueryRow(`SELECT count(*) FROM subscription_events
+		WHERE subscription_id = $1 AND kind = 'upgraded'`, subID).Scan(&events); err != nil {
+		t.Fatalf("count upgraded events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("upgraded 事件数 = %d，期望 1", events)
+	}
+
+	t.Run("跨周期 422", func(t *testing.T) {
+		quarterly := env.insertPlanRowWithPrice(t, "s2-q-"+subscriptionITKey(), 29900, 8000, 90)
+		rr := env.do(t, owner, http.MethodPost, path,
+			map[string]any{"plan_id": quarterly, "provider": "stripe"},
+			map[string]string{"Idempotency-Key": "s2-change-cycle-" + subscriptionITKey()})
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("跨周期 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var problem struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if problem.Type != problemTypeCycleMismatch {
+			t.Fatalf("problem type = %s，期望 %s", problem.Type, problemTypeCycleMismatch)
+		}
+	})
+
+	t.Run("同套餐 422", func(t *testing.T) {
+		rr := env.do(t, owner, http.MethodPost, fmt.Sprintf("/api/subscriptions/%d/change", subID),
+			map[string]any{"plan_id": newPlanID, "provider": "stripe"},
+			map[string]string{"Idempotency-Key": "s2-change-same-" + subscriptionITKey()})
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("同套餐 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("cancelled 409", func(t *testing.T) {
+		rr := env.do(t, owner, http.MethodPost,
+			fmt.Sprintf("/api/subscriptions/%d/change", cancelledID),
+			map[string]any{"plan_id": newPlanID, "provider": "stripe"},
+			map[string]string{"Idempotency-Key": "s2-change-cancel-" + subscriptionITKey()})
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("cancelled = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// insertPlanRowWithPrice 插入指定价格/额度/周期的套餐（S2 需要「新旧不同价」
+// 与「跨周期」两类样本；insertPlanRow 固定 9900/1000/30 天）。
+func (e *subscriptionIntegrationEnv) insertPlanRowWithPrice(t *testing.T,
+	planKey string, price, grant int64, periodDays int32) int64 {
+
+	t.Helper()
+	var id int64
+	err := e.db.QueryRow(`
+		INSERT INTO subscription_plans
+			(plan_key, title, period_days, price_amount, currency, grant_credits,
+			 reset_on_renew, allow_wallet_overflow, grace_days, status, sort_order)
+		VALUES ($1, 'IT Plan', $2, $3, 'CNY', $4, true, true, 0, 'enabled', 1)
+		RETURNING id`, planKey, periodDays, price, grant).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert plan with price: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.db.Exec(`DELETE FROM subscriptions WHERE plan_id = $1`, id)
+		_, _ = e.db.Exec(`DELETE FROM orders WHERE biz_kind = 'subscribe' AND biz_ref_id = $1`, id)
+		_, _ = e.db.Exec(`DELETE FROM subscription_plans WHERE id = $1`, id)
+	})
+	return id
+}

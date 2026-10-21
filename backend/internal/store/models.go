@@ -631,4 +631,8 @@ const (
 	// （P2a，billing-08 §3.3 方案甲：支付成功后推进同一实例的 end_at，
 	// 不新建 subscriptions 行）。
 	OrderBizKindRenew = "renew"
+	// OrderBizKindChange 是订阅升级/降级订单；BizRefID = subscriptions.id
+	// （S2/R-23：amount 是**应补差价**而不是套餐全价，履约动作为改写同一实例
+	// 的套餐快照与额度并追加 upgraded/downgraded 事件，见迁移 20261021120000）。
+	OrderBizKindChange = "change"
 )

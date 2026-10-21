@@ -1242,6 +1242,171 @@ func RenewSubscription(ctx context.Context, q SubscriptionTx,
 	return s, nil
 }
 
+// SubscriptionChangeInput 是一次升级/降级要写入实例的**冻结快照**（S2）。
+//
+// 与 RenewalExtendInput 的区别：续费只推进周期，升降级还要改写套餐身份
+// （plan_id/title/period/grant/scope/limit/grace/currency/price）。字段全部
+// 来自**下单瞬间**的套餐行（R-D5-03）：用户等支付期间管理员改价/改额度，
+// 不得改变已付款的合同。
+//
+// UserID / FromPlanID 是归属与身份条件：只有「该用户的、仍停在该旧套餐上的
+// 实例」才能被迁移，防止订单元数据错配或篡改把改动打到别的实例上。
+type SubscriptionChangeInput struct {
+	SubscriptionID      int64
+	UserID              int64
+	FromPlanID          int64
+	PlanID              int64
+	PlanTitleSnapshot   string
+	PeriodDays          int32
+	GrantCredits        int64
+	ResetOnRenew        bool
+	AllowWalletOverflow bool
+	ModelScope          []byte
+	ConcurrencyLimit    *int32
+	GraceDays           int32
+	Currency            string
+	PricePaidAmount     int64
+	// EndAt 是折算后的新到期时刻。写入时取 GREATEST(end_at, EndAt)：
+	// 升降级的折算公式只会延长到期（见 billing.subscriptionChangeAmounts），
+	// 这里的守卫用于杜绝「任何路径不得缩短周期」的意外（例如免费套餐没有
+	// 单价可折算时）。
+	EndAt     time.Time
+	EventKind string
+	// PriceDelta 是本次实际补缴的差价（分，≥0），CreditsDelta 是新旧周期
+	// 总额度之差。两者只进事件 detail（R-24/R-18），不参与任何价格计算。
+	PriceDelta   int64
+	CreditsDelta int64
+}
+
+// LockSubscriptionForChange 在调用方事务内对实例行加 `FOR UPDATE` 并做归属/
+// 状态守卫，返回加锁瞬间的整行（S2/R-25）。
+//
+// 【为什么必须先锁后读】剩余价值来自 price_paid_amount + start_at/end_at，
+// 已用额度来自 amount_used；两者若不在行锁内读取，并发的预扣（会写
+// amount_used）或结算/退款会与本函数的计算交错，算出「按旧已用量记账、
+// 按新已用量交付」的中间态。锁住实例行后，所有写 amount_used 的路径
+// （PreConsumeUserSubscription / PostConsumeUserSubscriptionDelta /
+// MarkPreConsumeRefunded 都是条件 UPDATE，会在本事务提交前阻塞）都被串行化。
+//
+// 归属不符与不存在统一 ErrSubscriptionNotFound：不泄露他人订阅 ID 的存在性。
+// 只有 active 实例可以升降级：cancelled 是终态；expired 已无剩余时间可折算，
+// 「从零开始买一个别的套餐」应当走购买通道，而不是在旧实例上改写合同。
+func LockSubscriptionForChange(ctx context.Context, q SubscriptionTx,
+	userID, subscriptionID int64) (Subscription, error) {
+
+	if userID <= 0 || subscriptionID <= 0 {
+		return Subscription{}, ErrSubscriptionInvalid
+	}
+	s, err := scanSubscription(q.QueryRowContext(ctx,
+		`SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`,
+		subscriptionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: lock subscription(%d) for change: %w", subscriptionID, err)
+	}
+	if s.UserID != userID {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
+	if s.Status != "active" {
+		return Subscription{}, fmt.Errorf("%w: subscription %d is %s",
+			ErrSubscriptionNotActive, subscriptionID, s.Status)
+	}
+	return s, nil
+}
+
+// ChangeSubscriptionPlan 在调用方事务内**条件改写**一个实例的套餐身份与额度
+// （S2/P-12）并同事务追加 upgraded/downgraded 事件（R-24）。
+//
+// 冻结语义：
+//   - 不改 id、不改 start_at：同一个计费实例被迁移到新套餐，在飞请求结算时
+//     冻结的 subscriptionId 仍指向它（与续费方案甲同一理由）；
+//   - end_at = GREATEST(end_at, in.EndAt)：折算只会延长（P-11）；
+//   - amount_total = 新套餐 grant_credits；amount_used 保留（used 就是
+//     pre_consume 累计出来的已用量），但不得超过新总额度——remain 为负时
+//     钳到 0 而不是记账负数（P-12）。新 grant_credits=0 表示无限额度
+//     （R-D5-07），此时不存在上界，已用量原样保留；
+//   - next_reset_at：reset_on_renew=true → 新的 end_at；false → NULL
+//     （与 CreateSubscription/RenewSubscription 同口径，避免 DueForReset
+//     扫到永远到期的僵尸游标）；
+//   - 状态保持 active；cancel_at_period_end 不被改写：用户对「周期末取消」
+//     的意图不因换套餐而自动撤回（续费才清，因为续费是继续付费的表达）。
+//
+// 条件 `plan_id = FromPlanID AND status = 'active'` 是唯一迁移守卫：下单后
+// 若实例已被并发升降级/取消/到期，RowsAffected=0 直接报错，由调用方回滚
+// 整个事务（订单保持 pending），绝不把改动叠加到别人的合同上。
+func ChangeSubscriptionPlan(ctx context.Context, q SubscriptionTx,
+	in SubscriptionChangeInput) (Subscription, error) {
+
+	if in.SubscriptionID <= 0 || in.UserID <= 0 || in.FromPlanID <= 0 || in.PlanID <= 0 ||
+		in.PlanID == in.FromPlanID || in.PeriodDays < 1 || in.GrantCredits < 0 ||
+		in.GraceDays < 0 || in.PricePaidAmount < 0 || in.PriceDelta < 0 ||
+		in.EndAt.IsZero() || strings.TrimSpace(in.PlanTitleSnapshot) == "" ||
+		strings.TrimSpace(in.Currency) == "" {
+		return Subscription{}, ErrSubscriptionInvalid
+	}
+	if in.EventKind != SubscriptionEventUpgraded && in.EventKind != SubscriptionEventDowngraded {
+		return Subscription{}, ErrSubscriptionInvalid
+	}
+	s, err := scanSubscription(q.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET plan_id = $2,
+		    plan_title_snapshot = $3,
+		    period_days = $4,
+		    amount_total = $5::bigint,
+		    amount_used = CASE WHEN $5::bigint > 0 AND amount_used > $5::bigint
+		        THEN $5::bigint ELSE amount_used END,
+		    next_reset_at = CASE WHEN $6 THEN GREATEST(end_at, $7) ELSE NULL END,
+		    end_at = GREATEST(end_at, $7),
+		    reset_on_renew = $6,
+		    allow_wallet_overflow = $8,
+		    grace_days = $9,
+		    model_scope = $10,
+		    concurrency_limit = $11,
+		    currency = $12,
+		    price_paid_amount = $13,
+		    updated_at = now()
+		WHERE id = $1 AND user_id = $14 AND plan_id = $15 AND status = 'active'
+		RETURNING `+subscriptionColumns,
+		in.SubscriptionID, in.PlanID, in.PlanTitleSnapshot, in.PeriodDays,
+		in.GrantCredits, in.ResetOnRenew, in.EndAt.UTC(), in.AllowWalletOverflow,
+		in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit,
+		in.Currency, in.PricePaidAmount, in.UserID, in.FromPlanID))
+	if errors.Is(err, sql.ErrNoRows) {
+		// 0 行：区分「不存在/归属或旧套餐不符」与「不再是 active」。
+		var status string
+		findErr := q.QueryRowContext(ctx, `
+			SELECT status FROM subscriptions
+			 WHERE id = $1 AND user_id = $2 AND plan_id = $3`,
+			in.SubscriptionID, in.UserID, in.FromPlanID).Scan(&status)
+		if errors.Is(findErr, sql.ErrNoRows) {
+			return Subscription{}, ErrSubscriptionNotFound
+		}
+		if findErr != nil {
+			return Subscription{}, fmt.Errorf("store: read subscription(%d) for change: %w",
+				in.SubscriptionID, findErr)
+		}
+		return Subscription{}, fmt.Errorf("%w: subscription %d is %s",
+			ErrSubscriptionNotActive, in.SubscriptionID, status)
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: change subscription(%d) plan: %w", in.SubscriptionID, err)
+	}
+	// 【S1/S2 事件】事件与套餐/额度改写同事务：0 元路径在本事务内提交，付费
+	// 路径由 billing 把「订单 pending→succeeded」与本次改写放在同一 GORM
+	// 事务里。detail 只有四个键（R-24）：来源/目标套餐、实付差价、额度差额。
+	if err := AppendSubscriptionEvent(ctx, q, s.ID, in.EventKind, map[string]any{
+		"from_plan_id":  in.FromPlanID,
+		"to_plan_id":    in.PlanID,
+		"price_delta":   in.PriceDelta,
+		"credits_delta": in.CreditsDelta,
+	}); err != nil {
+		return Subscription{}, err
+	}
+	return s, nil
+}
+
 // AppendSubscriptionEvent 在调用方事务内追加一条订阅状态迁移事件（S1/R-17）。
 //
 // 【为什么必须与状态变更同事务】事件是「这次迁移发生了什么」的账本。若先

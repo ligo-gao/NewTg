@@ -1005,6 +1005,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 升级/降级本人订阅（按剩余价值折算）
+         * @description 把**同一实例**迁移到目标套餐（`orders.biz_kind='change'`、
+         *     `biz_ref_id=subscriptions.id`，订单金额是应补差价而不是套餐全价）。
+         *     实例 id 与 `start_at` 不变；额度按新套餐 `grant_credits` 重算全周期并
+         *     保留已用量（超过新总额度时钳到总额度）。改动与 `upgraded`/`downgraded`
+         *     事件在同一事务内提交。
+         *
+         *     折算口径（服务端唯一真源，客户端不得传入金额）：
+         *     - 剩余价值 = round(`price_paid_amount` × 剩余秒 / 周期总秒)，剩余秒
+         *       向下取整到秒、已过期按 0；
+         *     - 应补 = max(0, 新套餐价 − 剩余价值)；
+         *     - 应补 > 0：走支付渠道，支付成功后换成一个完整新周期；
+         *     - 应补 = 0（降级）：不退款，差额按新套餐单价折算为**延长时长**写入
+         *       `end_at`，同一事务内即时生效，响应无支付凭据。
+         *
+         *     仅允许同币种、同周期天数（`period_days`）的套餐；跨币种/跨周期 →
+         *     422 `subscription_cycle_mismatch`。目标套餐即当前套餐 → 422。
+         *
+         *     `Idempotency-Key` 必带；同 key 重放返回首次结果（200，不回放支付凭据），
+         *     同 key 改口到另一套餐 → 409。仅本人实例，他人实例与不存在统一 404；
+         *     仅 `active` 实例可升降级，`cancelled`/`expired` → 409。
+         *     套餐停用/删除、实例不可升降级、幂等键复用 → 409；套餐字段非法 → 422；
+         *     渠道未配置 → 503；渠道出站失败 → 502。任何失败都不会留下 succeeded
+         *     订单，也不会改写实例。
+         */
+        post: operations["changeSubscriptionPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription/purchase": {
         parameters: {
             query?: never;
@@ -5375,6 +5419,66 @@ export interface components {
                 [key: string]: string;
             };
         };
+        SubscriptionChangeRequest: {
+            /**
+             * Format: int64
+             * @description 目标套餐 id。必须与当前套餐同币种、同 `period_days`（P-10），
+             *     且不能是当前套餐。应补差价由服务端按剩余价值折算，客户端不得传入。
+             */
+            plan_id: number;
+            /**
+             * @description 支付渠道；应补差价 > 0 时返回支付载荷，= 0（降级/免费）时渠道不参与
+             *     履约、订单在同一事务内直接 succeeded。
+             * @enum {string}
+             */
+            provider: "stripe" | "alipay" | "epay";
+        };
+        SubscriptionChangeResponse: {
+            order: components["schemas"]["TopupOrderView"];
+            /** @description 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放） */
+            client_secret?: string;
+            /** @description 仅 alipay 首次创建返回 */
+            qr_code?: string;
+            /** @description 仅 epay 首次创建返回；表单 POST 的目标收银台地址 */
+            pay_url?: string;
+            /** @description 仅 epay 首次创建返回（与充值同构） */
+            form_fields?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int64
+             * @description 升降级前的套餐 id（事件 detail 的 from_plan_id）
+             */
+            from_plan_id: number;
+            /**
+             * Format: int64
+             * @description 目标套餐 id（事件 detail 的 to_plan_id）
+             */
+            to_plan_id: number;
+            /**
+             * @description 按套餐方向判定：新套餐价 > 旧套餐价 ⇒ upgraded，否则 downgraded
+             *     （周期末的降级即使需要补差价也仍是 downgraded）。
+             * @enum {string}
+             */
+            event_kind: "upgraded" | "downgraded";
+            /**
+             * Format: int64
+             * @description 本次实付差价（单位：分）；降级为 0（不退款）
+             */
+            price_delta: number;
+            /**
+             * Format: int64
+             * @description 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负
+             */
+            credits_delta: number;
+            /**
+             * Format: date-time
+             * @description 折算后的到期时刻。0 元路径（即时生效）是实际写入值；付费路径是下单
+             *     瞬间的折算结果，真实写入时刻在支付成功时以「支付成功时刻 + 冻结时长」
+             *     重新求值。
+             */
+            new_end_at?: string;
+        };
         SubscriptionPurchaseRequest: {
             /** Format: int64 */
             plan_id: number;
@@ -9563,6 +9667,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreateOrderResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            /** @description 渠道支付单创建失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 支付渠道未配置或已停用 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    changeSubscriptionPlan: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description 幂等重放（返回首次结果，不含支付凭据） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionChangeResponse"];
+                };
+            };
+            /** @description 升降级已生效或订单已创建（首次） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionChangeResponse"];
                 };
             };
             400: components["responses"]["Error400"];

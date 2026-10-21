@@ -120,6 +120,8 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1cancel'
   /api/subscriptions/{id}/renew:
     $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1renew'
+  /api/subscriptions/{id}/change:
+    $ref: './paths/user.yaml#/paths/~1api~1subscriptions~1{id}~1change'
   /api/subscription/purchase:
     $ref: './paths/user.yaml#/paths/~1api~1subscription~1purchase'
   /api/tokens:

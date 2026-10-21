@@ -32,9 +32,11 @@ func (s *TopupService) enqueuePaymentSuccess(ctx context.Context, order *store.O
 		return
 	}
 	// payment_success 只属于充值订单。settleOrder 的状态早返回发生在
-	// biz-kind 分流之前，订阅购买/续费的幂等重放必须在这里挡掉，否则会
-	// 把「订阅生效」误报成一次充值成功。
-	if order.BizKind == store.OrderBizKindSubscribe || order.BizKind == store.OrderBizKindRenew {
+	// biz-kind 分流之前，订阅购买/续费/升降级的幂等重放必须在这里挡掉，
+	// 否则会把「订阅生效」误报成一次充值成功（升降级的 amount 是差价，
+	// 报成充值金额更是错的）。
+	if order.BizKind == store.OrderBizKindSubscribe || order.BizKind == store.OrderBizKindRenew ||
+		order.BizKind == store.OrderBizKindChange {
 		return
 	}
 	paidAt := s.now().UTC()

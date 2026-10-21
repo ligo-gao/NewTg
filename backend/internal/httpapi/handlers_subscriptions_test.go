@@ -34,12 +34,15 @@ import (
 // 「金额/币种全部由服务端按套餐读取」与错误映射。真实定价/事务行为由
 // billing 与集成测试覆盖。
 type fakeSubscriptionPurchase struct {
-	calls       []subscriptionPurchaseCall
-	renewCalls  []subscriptionRenewalCall
-	result      *billing.TopupOrder
-	err         error
-	renewResult *billing.TopupOrder
-	renewErr    error
+	calls        []subscriptionPurchaseCall
+	renewCalls   []subscriptionRenewalCall
+	changeCalls  []billing.ChangePlanInput
+	result       *billing.TopupOrder
+	err          error
+	renewResult  *billing.TopupOrder
+	renewErr     error
+	changeResult *billing.ChangePlanResult
+	changeErr    error
 }
 
 type subscriptionRenewalCall struct {
@@ -95,9 +98,33 @@ func (f *fakeSubscriptionPurchase) CreateSubscriptionRenewalOrder(_ context.Cont
 	}}, nil
 }
 
+// ChangePlan 记录升降级入参并返回桩结果（S2）。真实折算/事务行为由
+// billing 的集成测试覆盖。
+func (f *fakeSubscriptionPurchase) ChangePlan(_ context.Context,
+	in billing.ChangePlanInput) (billing.ChangePlanResult, error) {
+
+	f.changeCalls = append(f.changeCalls, in)
+	if f.changeErr != nil {
+		return billing.ChangePlanResult{}, f.changeErr
+	}
+	if f.changeResult != nil {
+		return *f.changeResult, nil
+	}
+	return billing.ChangePlanResult{
+		OrderID: 30, Order: &store.Order{
+			ID: 30, UserID: in.UserID, Provider: in.Provider, Amount: 14950,
+			Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindChange,
+			BizRefID: &in.SubscriptionID, IdempotencyKey: in.IdempotencyKey,
+		},
+		PriceDelta: 14950, CreditsDelta: 4000, EventKind: store.SubscriptionEventUpgraded,
+		FromPlanID: 1, NewPlanID: in.NewPlanID,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // 假仓储
 // ---------------------------------------------------------------------------
+
 type fakeSubscriptionRepo struct {
 	mu             sync.Mutex
 	plans          map[int64]*store.SubscriptionPlan
@@ -1795,6 +1822,176 @@ func TestSubscriptionRenewWithoutPaymentServiceFailsClosed(t *testing.T) {
 	if rr.Header().Get("Retry-After") == "" {
 		t.Fatal("503 必须带 Retry-After")
 	}
+}
+
+// TestSubscriptionChangeEndpoint 覆盖 S2 升降级端点的请求形态、归属/状态守卫
+// 与错误映射。折算公式与事务语义由 billing 的集成测试覆盖，这里只钉住
+// handler 的契约（入参归一、幂等键、problem type）。
+func TestSubscriptionChangeEndpoint(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID := int64(7), int64(8)
+	activeID := seedSubscription(t, env, ownerID, "active")
+	cancelledID := seedSubscription(t, env, ownerID, "cancelled")
+	foreignID := seedSubscription(t, env, otherID, "active")
+	headers := func(key string) map[string]string { return map[string]string{"Idempotency-Key": key} }
+	changePath := func(id int64) string {
+		return fmt.Sprintf("/api/subscriptions/%d/change", id)
+	}
+	body := func(planID int64, provider string) map[string]any {
+		out := map[string]any{"plan_id": planID}
+		if provider != "" {
+			out["provider"] = provider
+		}
+		return out
+	}
+
+	t.Run("Idempotency-Key 必带", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+			body(2, "stripe"), nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("缺少 Idempotency-Key = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if len(env.purchase.changeCalls) != 0 {
+			t.Fatal("被拒绝的请求不得调用支付服务")
+		}
+	})
+
+	t.Run("未知字段 403", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+			map[string]any{"plan_id": 2, "provider": "stripe", "price_delta": 1}, headers("change-extra"))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("未知字段 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("plan_id/provider 缺失或非法 400", func(t *testing.T) {
+		cases := map[string]map[string]any{
+			"missing plan_id":  {"provider": "stripe"},
+			"zero plan_id":     {"plan_id": 0, "provider": "stripe"},
+			"missing provider": {"plan_id": 2},
+			"invalid provider": {"plan_id": 2, "provider": "paypal"},
+			// wallet 是余额购买专属，升降级没有余额扣款分支。
+			"wallet provider": {"plan_id": 2, "provider": "wallet"},
+		}
+		for name, reqBody := range cases {
+			rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID), reqBody,
+				headers("change-bad"))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d（body=%s）", name, rr.Code, rr.Body.String())
+			}
+		}
+		if len(env.purchase.changeCalls) != 0 {
+			t.Fatalf("非法请求不得调用支付服务: %+v", env.purchase.changeCalls)
+		}
+	})
+
+	t.Run("他人实例 404", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(foreignID),
+			body(2, "stripe"), headers("change-foreign"))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("他人实例 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if len(env.purchase.changeCalls) != 0 {
+			t.Fatal("他人实例不得调用支付服务")
+		}
+	})
+
+	t.Run("cancelled 409", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(cancelledID),
+			body(2, "stripe"), headers("change-cancelled"))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("cancelled = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if got := decodeSubProblemType(t, rr); got != problemTypeSubscriptionNotChangeable {
+			t.Fatalf("type = %s", got)
+		}
+		if len(env.purchase.changeCalls) != 0 {
+			t.Fatal("终态实例不得调用支付服务")
+		}
+	})
+
+	t.Run("active 委托支付服务并回显折算结果", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+			body(5, "Alipay"), headers("change-ok"))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("active = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		call := env.purchase.changeCalls[len(env.purchase.changeCalls)-1]
+		if call.UserID != ownerID || call.SubscriptionID != activeID || call.NewPlanID != 5 ||
+			call.Provider != "alipay" || call.IdempotencyKey != "change-ok" {
+			t.Fatalf("入参 = %+v", call)
+		}
+		var view subscriptionChangeView
+		if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode change view: %v", err)
+		}
+		if view.ToPlanID != 5 || view.FromPlanID != 1 || view.EventKind != store.SubscriptionEventUpgraded ||
+			view.PriceDelta != 14950 || view.CreditsDelta != 4000 {
+			t.Fatalf("响应 = %+v", view)
+		}
+	})
+
+	t.Run("重放 200", func(t *testing.T) {
+		replay := billing.ChangePlanResult{
+			OrderID: 30, Order: &store.Order{ID: 30, UserID: ownerID, Provider: "stripe",
+				Amount: 14950, Currency: "CNY", Status: "pending", BizKind: store.OrderBizKindChange},
+			Replayed: true, PriceDelta: 14950, EventKind: store.SubscriptionEventUpgraded,
+			FromPlanID: 1, NewPlanID: 2,
+		}
+		env.purchase.changeResult = &replay
+		t.Cleanup(func() { env.purchase.changeResult = nil })
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+			body(2, "stripe"), headers("change-replay"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("重放 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("错误映射", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			err    error
+			status int
+		}{
+			{"subscription missing", billing.ErrChangeSubscriptionNotFound, http.StatusNotFound},
+			{"not changeable", billing.ErrSubscriptionNotChangeable, http.StatusConflict},
+			{"plan unavailable", billing.ErrSubscriptionPlanUnavailable, http.StatusConflict},
+			{"idempotency conflict", billing.ErrIdempotencyConflict, http.StatusConflict},
+			{"order changed", billing.ErrChangeOrderChanged, http.StatusConflict},
+			{"plan unchanged", billing.ErrChangePlanUnchanged, http.StatusUnprocessableEntity},
+			{"cycle mismatch", billing.ErrSubscriptionCycleMismatch, http.StatusUnprocessableEntity},
+			{"plan invalid", billing.ErrSubscriptionPlanInvalid, http.StatusUnprocessableEntity},
+			{"provider disabled", billing.ErrProviderDisabled, http.StatusServiceUnavailable},
+			{"provider down", billing.ErrProviderUnavailable, http.StatusBadGateway},
+			{"invalid idempotency", billing.ErrInvalidIdempotency, http.StatusBadRequest},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				env.purchase.changeResult = nil
+				env.purchase.changeErr = tc.err
+				t.Cleanup(func() { env.purchase.changeErr = nil })
+				rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+					body(2, "stripe"), headers("change-err"))
+				if rr.Code != tc.status {
+					t.Fatalf("%v = %d，期望 %d（body=%s）", tc.err, rr.Code, tc.status, rr.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("跨周期 422 用独立 problem type", func(t *testing.T) {
+		env.purchase.changeResult = nil
+		env.purchase.changeErr = billing.ErrSubscriptionCycleMismatch
+		t.Cleanup(func() { env.purchase.changeErr = nil })
+		rr := env.do(t, endUser(ownerID), http.MethodPost, changePath(activeID),
+			body(2, "stripe"), headers("change-cycle"))
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("跨周期 = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		if got := decodeSubProblemType(t, rr); got != problemTypeCycleMismatch {
+			t.Fatalf("type = %s，期望 %s", got, problemTypeCycleMismatch)
+		}
+	})
 }
 
 func TestSubscriptionCancelAtPeriodEnd(t *testing.T) {

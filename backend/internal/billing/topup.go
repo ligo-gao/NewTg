@@ -1482,6 +1482,9 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		return s.settleSubscriptionOrder(ctx, order, providerAmount, providerCurrency, raw)
 	case store.OrderBizKindRenew:
 		return s.settleSubscriptionRenewal(ctx, order, providerAmount, providerCurrency, raw)
+	case store.OrderBizKindChange:
+		// S2 升降级：金额是应补差价，履约动作为改写同一实例的套餐快照与额度。
+		return s.settleSubscriptionChange(ctx, order, providerAmount, providerCurrency, raw)
 	}
 
 	// 金额/币种比对在入账之前完成；任何不一致都不写余额、不写流水。
