@@ -25,14 +25,12 @@ const (
 //
 // 任何 base64/蒙版/凭据都不得写入这两列（设计 §3.3 与安全约束）。
 const (
+	// DataCode/DataDescription 是上游受理码与描述的审计快照，由 TaskRow
+	// 从 Submission.Code/Description 写入。
 	DataCode        = "code"
 	DataDescription = "description"
-	DataPromptEN    = "prompt_en"
-	DataImageURL    = "image_url"
-	DataVideoURL    = "video_url"
-	DataVideoURLs   = "video_urls"
-	DataButtons     = "buttons"
-	DataUploadURLs  = "upload_urls"
+	// DataUploadURLs 只用于 upload-discord-images 的 inline 终态行。
+	DataUploadURLs = "upload_urls"
 
 	// PropertyPrompt 是 prompt 在 properties 里的键。
 	PropertyPrompt = "prompt"
@@ -63,12 +61,16 @@ type Submission struct {
 	Quota           int64
 	SubmitTime      time.Time
 	RequestID       string
+	// Code/Description 是上游受理码与描述（只进 data，不建宽列）。
+	Code        *int
+	Description string
 
 	// RetentionDeadline 只在 a2 写终态行时使用；提交行通常为空。
 	RetentionDeadline *time.Time
 
 	// Data / Properties 是调用方追加的上游快照与轻量元数据；
-	// TaskRow 会与 code/description/prompt 合并，调用方不得放入二进制载荷。
+	// TaskRow 会把 Code/Description 与 prompt 分别合并进 data/properties，
+	// 调用方不得放入二进制载荷。
 	Data       map[string]any
 	Properties map[string]any
 }
@@ -83,6 +85,13 @@ type Submission struct {
 // ProgressPercent 钳制到 0–100：tasks 列有 CHECK，越界会让整条插入失败，
 // 而进度只是展示值，钳制比拒绝提交更安全。
 func TaskRow(s Submission) *tasks.Task {
+	data := mergeData(s.Data)
+	if s.Code != nil {
+		data[DataCode] = *s.Code
+	}
+	if s.Description != "" {
+		data[DataDescription] = s.Description
+	}
 	task := &tasks.Task{
 		PublicTaskID:      s.PublicTaskID,
 		UpstreamTaskID:    s.UpstreamTaskID,
@@ -102,7 +111,7 @@ func TaskRow(s Submission) *tasks.Task {
 		ChannelID:         s.ChannelID,
 		Quota:             s.Quota,
 		Properties:        mergePrompt(s.Properties, s.Prompt),
-		Data:              mergeData(s.Data),
+		Data:              data,
 		PrivateData:       privateData(s.RequestID, s.TokenID),
 	}
 	if !s.SubmitTime.IsZero() {
@@ -186,7 +195,11 @@ func mergePrompt(extra map[string]any, prompt string) map[string]any {
 	return merged
 }
 
-// mergeData 复制调用方 data 并写入上游 code/description 的占位结构。
+// mergeData 浅拷贝调用方 data。
+//
+// 不在这里写任何占位键：code/description 由 TaskRow 按 Submission 的
+// 显式字段写入，upload_urls 由 UploadInlineTask 写入。共享 map 会被调用方
+// 后续修改（并发下是数据竞争），因此必须复制。
 func mergeData(extra map[string]any) map[string]any {
 	merged := make(map[string]any, len(extra))
 	for key, value := range extra {

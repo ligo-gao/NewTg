@@ -200,6 +200,13 @@ func TestNormalizeRequiredFields(t *testing.T) {
 // 上界 +1 必须返回固定 400。放宽任一上界都会让对应行变红。
 func TestNormalizeInputBounds(t *testing.T) {
 	bigBase64 := func(n int) string { return strings.Repeat("A", n) }
+	// 多字节夹具自检：3 字节字符必须精确落在字节边界上，否则用例本身失真。
+	if got := len(strings.Repeat("猫", 10922) + "aa"); got != 32*1024 {
+		t.Fatalf("多字节 prompt 夹具 = %d 字节，期望 32768", got)
+	}
+	if got := len(strings.Repeat("猫", 341) + "a"); got != 1024 {
+		t.Fatalf("多字节 content 夹具 = %d 字节，期望 1024", got)
+	}
 
 	// ---- 恰好在上界：全部必须成功 ----
 	okCases := []struct {
@@ -208,7 +215,10 @@ func TestNormalizeInputBounds(t *testing.T) {
 		req      *SubmitRequest
 	}{
 		{"prompt 32KiB", EndpointImagine, &SubmitRequest{Prompt: ptr(strings.Repeat("p", 32*1024))}},
+		// 上界按**字节**而不是字符计：多字节 UTF-8 的 32KiB 边界同样必须成立。
+		{"prompt 32KiB multibyte", EndpointImagine, &SubmitRequest{Prompt: ptr(strings.Repeat("猫", 10922) + "aa")}},
 		{"content 1KiB", EndpointImagine, &SubmitRequest{Prompt: ptr("ok"), Content: ptr(strings.Repeat("c", 1024))}},
+		{"content 1KiB multibyte", EndpointImagine, &SubmitRequest{Prompt: ptr("ok"), Content: ptr(strings.Repeat("猫", 341) + "a")}},
 		{"customId 1KiB", EndpointImagine, &SubmitRequest{Prompt: ptr("ok"), CustomID: ptr(strings.Repeat("c", 1024))}},
 		{"base64 8 items", EndpointDescribe, &SubmitRequest{Base64Array: make([]string, 8)}},
 		{"base64 item 8MiB", EndpointDescribe, &SubmitRequest{Base64Array: []string{bigBase64(8 << 20)}}},
@@ -239,8 +249,18 @@ func TestNormalizeInputBounds(t *testing.T) {
 			DescriptionPromptTooLong,
 		},
 		{
+			"prompt 32KiB+1 multibyte", EndpointImagine,
+			&SubmitRequest{Prompt: ptr(strings.Repeat("猫", 10922) + "aaa")},
+			DescriptionPromptTooLong,
+		},
+		{
 			"content 1KiB+1", EndpointImagine,
 			&SubmitRequest{Prompt: ptr("ok"), Content: ptr(strings.Repeat("c", 1024+1))},
+			DescriptionContentTooLong,
+		},
+		{
+			"content 1KiB+1 multibyte", EndpointImagine,
+			&SubmitRequest{Prompt: ptr("ok"), Content: ptr(strings.Repeat("猫", 341) + "aa")},
 			DescriptionContentTooLong,
 		},
 		{

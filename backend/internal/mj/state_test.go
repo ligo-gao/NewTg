@@ -44,8 +44,8 @@ func TestNormalizeStatusPreservesRaw(t *testing.T) {
 	if got.State != tasks.StateFailure {
 		t.Fatalf("State = %q，期望 failure", got.State)
 	}
-	if got.RawState != "CANCEL" {
-		t.Fatalf("RawState = %q，期望去掉首尾空白的 CANCEL", got.RawState)
+	if got.RawState != "  CANCEL  " {
+		t.Fatalf("RawState = %q，必须逐字保留上游原文", got.RawState)
 	}
 	if got.ProgressPercent != 45 {
 		t.Fatalf("ProgressPercent = %d，期望 45", got.ProgressPercent)
@@ -87,11 +87,14 @@ func TestParseProgress(t *testing.T) {
 		{"100%", 100},
 		{"45", 45},
 		{"  45 %  ", 45},
+		{"100.0%", 100},
+		{"45.9%", 45},
+		{"0.0%", 0},
 		{"101%", 100}, // 钳制到 DB CHECK 上界
 		{"-1%", 0},
 		{"", 0},
 		{"abc%", 0},
-		{"45.5%", 0},
+		{"NaN", 0},
 	}
 	for _, c := range cases {
 		if got := ParseProgress(c.raw); got != c.want {
@@ -112,8 +115,9 @@ func TestProjectStatus(t *testing.T) {
 		{tasks.StateFailure, "", "FAILURE"},
 		{tasks.StateInProgress, "", ""},
 		{tasks.StateUnknown, "", ""},
-		// 上游回填状态逐字回传：CANCEL 不被改写成 FAILURE。
+		// 上游回填状态逐字回传：CANCEL 不被改写成 FAILURE，空白也不修剪。
 		{tasks.StateFailure, "CANCEL", "CANCEL"},
+		{tasks.StateFailure, "  CANCEL  ", "  CANCEL  "},
 		{tasks.StateInProgress, "MODAL", "MODAL"},
 		{tasks.StateSuccess, "SUCCESS", "SUCCESS"},
 	}

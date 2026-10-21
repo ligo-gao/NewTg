@@ -1,6 +1,7 @@
 package mj
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -33,8 +34,10 @@ type Status struct {
 // 是 state。
 func NormalizeStatus(rawState, rawProgress string) Status {
 	return Status{
-		State:           MapState(rawState),
-		RawState:        strings.TrimSpace(rawState),
+		State:    MapState(rawState),
+		RawState: rawState,
+		// raw_state 逐字保留（含大小写/空白）：对外线协议回传的是上游原文，
+		// 只有枚举参与内部判定（relay-05 §3.1）。
 		ProgressPercent: ParseProgress(rawProgress),
 	}
 }
@@ -79,25 +82,27 @@ func IsFailure(state tasks.State) bool {
 
 // ParseProgress 把上游进度串解析为 0–100 的整数。
 //
-// 接受 "45%" / "45"；空、非数字、负值 → 0；超过 100 → 100（钳制）。
-// 上游偶尔给 "100.0%" 这类带小数的形态，这里按前缀整数解析，失败归零。
+// 接受 "45%" / "45" / "100.0%"（小数向下取整，例如 "45.9%"→45）；空、
+// 非数字、非有限值、负值 → 0；超过 100 → 100（钳制到 DB CHECK 上界）。
+// 上游确实下发过 "100.0%" 这类形态，按整数解析会把完成态误判成 0%。
 func ParseProgress(raw string) int {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimSuffix(s, "%")
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
+	value, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(value) {
 		return 0
 	}
-	if n < 0 {
+	if value < 0 {
 		return 0
 	}
-	if n > 100 {
+	if value > 100 {
 		return 100
 	}
-	return n
+	return int(value)
 }
 
 // ProjectProgress 把内部数值进度投影为基线线协议形态 "N%".
@@ -125,7 +130,7 @@ func ProjectProgress(percent int) string {
 // 注意 raw 优先：CANCEL 经 MapState 变成内部 failure，但客户端应看到
 // "CANCEL"（上游原文），而不是被改写成 "FAILURE"。
 func ProjectStatus(state tasks.State, raw string) string {
-	raw = strings.TrimSpace(raw)
+	// 逐字回传，不做 TrimSpace：raw_state 的保真也是对外契约的一部分。
 	if raw != "" {
 		return raw
 	}

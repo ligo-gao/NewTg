@@ -57,8 +57,9 @@ func TestEndpointsComplete(t *testing.T) {
 		EndpointModal, EndpointShorten, EndpointDescribe, EndpointBlend,
 		EndpointEdits, EndpointVideo, EndpointUploadDiscord, EndpointInsightFace,
 	}
-	if len(Endpoints) != 12 || len(want) != 12 {
-		t.Fatalf("端点数量 = %d，期望 12", len(Endpoints))
+	got := Endpoints()
+	if len(got) != 12 || len(want) != 12 {
+		t.Fatalf("端点数量 = %d，期望 12", len(got))
 	}
 	seen := make(map[Endpoint]bool, len(want))
 	for _, endpoint := range want {
@@ -76,6 +77,20 @@ func TestEndpointsComplete(t *testing.T) {
 	}
 	if Endpoint("submit/notify").Valid() {
 		t.Fatalf("休眠端点 /mj/notify 不得进提交端点集合")
+	}
+
+	// 返回的是副本：调用方原地修改不得污染包内清单（a2 依赖它注册路由）。
+	got[0] = "mutated"
+	if Endpoints()[0] == "mutated" {
+		t.Fatalf("Endpoints() 返回了共享切片")
+	}
+	actions := Actions()
+	if len(actions) != 18 {
+		t.Fatalf("Actions() = %d 项，期望 18", len(actions))
+	}
+	actions[0] = "mutated"
+	if Actions()[0] == "mutated" {
+		t.Fatalf("Actions() 返回了共享切片")
 	}
 }
 
@@ -150,7 +165,7 @@ func TestPlusOnlyEndpoints(t *testing.T) {
 		EndpointAction: true, EndpointModal: true,
 		EndpointShorten: true, EndpointInsightFace: true,
 	}
-	for _, endpoint := range Endpoints {
+	for _, endpoint := range Endpoints() {
 		if got := RequiresPlus(endpoint); got != plus[endpoint] {
 			t.Fatalf("%s RequiresPlus = %v，期望 %v", endpoint, got, plus[endpoint])
 		}

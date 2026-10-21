@@ -9,6 +9,7 @@
 package mj
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -90,6 +91,19 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("mj: %s (code %d)", e.Description, e.Code)
 }
 
+// MarshalJSON 把 Error 折叠为 R-MJ-17 的两字段信封。
+//
+// 【为什么必须显式实现】Code/Description/Status 三个导出字段如果被默认
+// 序列化，会得到 `{"Code":4,"Description":"...","Status":400}`——大小写与
+// 字段集都不符合线协议，还把内部 HTTP 建议值暴露给客户端。任何直接
+// json.Marshal(err)（日志、代理、测试）都必须只看到 {code,description}。
+func (e Error) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Code        int    `json:"code"`
+		Description string `json:"description"`
+	}{Code: e.Code, Description: e.Description})
+}
+
 // HTTPStatus 返回建议状态码；未设置时按请求错误处理（400）。
 func (e *Error) HTTPStatus() int {
 	if e == nil || e.Status == 0 {
@@ -129,7 +143,13 @@ type Envelope struct {
 }
 
 // NewSuccess 构造成功信封。description 沿用上游/固定文案，不做改写。
+//
+// result 为 nil 时补空数组：成功受理体按设计恒有 result 字段（上传端点是
+// []string），缺字段会让客户端无法区分「空结果」与「旧/异常响应」。
 func NewSuccess(description string, result any) Envelope {
+	if result == nil {
+		result = []string{}
+	}
 	return Envelope{Code: CodeSuccess, Description: description, Result: result}
 }
 

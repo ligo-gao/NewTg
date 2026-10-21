@@ -14,6 +14,7 @@ func TestTaskRowMapping(t *testing.T) {
 	deadline := submit.Add(30 * 24 * time.Hour)
 	origin := []string{"origin-mj-1"}
 
+	code := 1
 	row := TaskRow(Submission{
 		PublicTaskID:      "task_internal_1",
 		UpstreamTaskID:    "mj-id-1",
@@ -31,8 +32,10 @@ func TestTaskRowMapping(t *testing.T) {
 		Quota:             100,
 		SubmitTime:        submit,
 		RequestID:         "req-1",
+		Code:              &code,
+		Description:       "queued",
 		RetentionDeadline: &deadline,
-		Data:              map[string]any{DataCode: 1, DataDescription: "queued"},
+		Data:              map[string]any{"extra": "kept"},
 	})
 
 	if row.Family != tasks.FamilyMJ {
@@ -67,6 +70,9 @@ func TestTaskRowMapping(t *testing.T) {
 	}
 	if row.Data[DataCode] != 1 || row.Data[DataDescription] != "queued" {
 		t.Fatalf("data 快照错误: %#v", row.Data)
+	}
+	if row.Data["extra"] != "kept" {
+		t.Fatalf("调用方 data 未保留: %#v", row.Data)
 	}
 	if row.PrivateData[PrivateRequestID] != "req-1" || row.PrivateData[PrivateTokenID] != int64(11) {
 		t.Fatalf("结算锚点错误: %#v", row.PrivateData)

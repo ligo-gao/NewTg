@@ -59,6 +59,41 @@ var actionModels = map[Action]string{
 	ActionEdits:         "mj_edits",
 }
 
+// actionOrder 是 18 个动作的稳定遍历顺序（relay-05 §3.2 的表序）。
+//
+// 与 actionModels 分开保存：map 的迭代顺序不稳定，而下发 /v1/models、
+// 生成文档与测试快照都需要一个确定的顺序。
+var actionOrder = []Action{
+	ActionImagine,
+	ActionDescribe,
+	ActionBlend,
+	ActionUpscale,
+	ActionVariation,
+	ActionReroll,
+	ActionInpaint,
+	ActionModal,
+	ActionZoom,
+	ActionCustomZoom,
+	ActionShorten,
+	ActionHighVariation,
+	ActionLowVariation,
+	ActionPan,
+	ActionSwapFace,
+	ActionUpload,
+	ActionVideo,
+	ActionEdits,
+}
+
+// Actions 返回冻结的 18 个动作副本。
+//
+// 返回副本而不是导出切片：a2 若原地排序/截断共享切片，会悄悄改变本包的
+// 权威动作表（以及依赖它的 /v1/models 与计价遍历顺序）。
+func Actions() []Action {
+	out := make([]Action, len(actionOrder))
+	copy(out, actionOrder)
+	return out
+}
+
 // Model 返回动作对应的模型名。未知动作返回 false——调用方必须拒绝而不是
 // 拿空模型名去选渠道（空模型会退化成「任意渠道」）。
 func (a Action) Model() (string, bool) {
@@ -105,8 +140,8 @@ const (
 	EndpointInsightFace   Endpoint = "insight-face/swap"
 )
 
-// Endpoints 是 12 条提交端点的稳定顺序清单（测试与遍历用）。
-var Endpoints = []Endpoint{
+// endpoints 是 12 条提交端点的稳定顺序清单。
+var endpoints = []Endpoint{
 	EndpointImagine,
 	EndpointChange,
 	EndpointSimpleChange,
@@ -119,6 +154,16 @@ var Endpoints = []Endpoint{
 	EndpointVideo,
 	EndpointUploadDiscord,
 	EndpointInsightFace,
+}
+
+// Endpoints 返回 12 条提交端点的副本（供 a2 注册与测试遍历）。
+//
+// 返回副本的理由同 Actions：调用方原地修改共享切片会破坏所有使用方的
+// 端点集合，而这正是 a2 路由注册的依据。
+func Endpoints() []Endpoint {
+	out := make([]Endpoint, len(endpoints))
+	copy(out, endpoints)
+	return out
 }
 
 // Path 返回端点的对外路径。
@@ -163,8 +208,12 @@ func LocksOrigin(e Endpoint, taskID string) bool {
 
 // ResolvedAction 是一次提交解析出的动作与索引。
 //
-// Index 对多数端点为 0（不适用）；UPSCALE/VARIATION 取 1–4，REROLL 为 0
-// （与基线一致：r 不带索引）。
+// Index 的取值按解析路径不同：
+//   - customId 的 upsample/variation 取按钮索引；customId 的其余动作
+//     （low/high variation、pan、reroll、Outpaint、CustomZoom、Inpaint）
+//     固定为 1；
+//   - simple-change 的 `r` 为 0（基线 r 不带索引），u/v 取 1–4；
+//   - 固定动作端点为 0（不适用）。
 type ResolvedAction struct {
 	Action Action
 	Index  int

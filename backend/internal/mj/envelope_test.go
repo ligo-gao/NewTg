@@ -49,6 +49,56 @@ func TestSuccessEnvelopeShape(t *testing.T) {
 	}
 }
 
+// TestErrorMarshalJSONWireOnly 钉死 *Error 直接序列化也只有线协议两字段。
+//
+// R-MJ-17 不允许 Status/内部错误链出现在任何响应里；Error 的导出字段
+// （Code/Description/Status）若走默认序列化会输出 PascalCase + status，
+// 因此必须有显式 MarshalJSON。删掉它本用例必须变红。
+func TestErrorMarshalJSONWireOnly(t *testing.T) {
+	raw, err := json.Marshal(BadRequest(DescriptionUnknownAction))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("*Error 序列化字段数 = %d，期望 2: %s", len(fields), raw)
+	}
+	if _, ok := fields["status"]; ok {
+		t.Fatalf("*Error 泄露了 Status: %s", raw)
+	}
+	if _, ok := fields["Status"]; ok {
+		t.Fatalf("*Error 使用了默认字段名 Status: %s", raw)
+	}
+	if _, ok := fields["Code"]; ok {
+		t.Fatalf("*Error 使用了默认字段名 Code: %s", raw)
+	}
+	if fields["code"] != float64(CodeRequestError) || fields["description"] != DescriptionUnknownAction {
+		t.Fatalf("线码/描述错误: %s", raw)
+	}
+}
+
+// TestSuccessEnvelopeAlwaysHasResult 成功信封的 result 字段恒存在。
+func TestSuccessEnvelopeAlwaysHasResult(t *testing.T) {
+	raw, err := json.Marshal(NewSuccess("ok", nil))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(fields) != 3 {
+		t.Fatalf("nil result 成功信封字段数 = %d，期望 3: %s", len(fields), raw)
+	}
+	result, ok := fields["result"].([]any)
+	if !ok || len(result) != 0 {
+		t.Fatalf("nil result 必须折叠为空数组: %s", raw)
+	}
+}
+
 // TestFailureEnvelopeShape 钉死错误信封只有 {code, description}。
 func TestFailureEnvelopeShape(t *testing.T) {
 	envelope := NewFailure(BadRequest(DescriptionUnknownAction))

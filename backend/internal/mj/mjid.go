@@ -79,6 +79,12 @@ func ReusableTask(existing *tasks.Task, key ReuseKey) bool {
 	if existing == nil {
 		return false
 	}
+	// 空 UpstreamTaskID 一律不可复用：上传 inline 行（upstream_task_id=''）
+	// 没有上游任务，若 a2 直接构造空 key 查询，会把「所有 inline 行」都当成
+	// 同一任务复用（跨用户/跨上传的归属串味）。
+	if key.UpstreamTaskID == "" || existing.UpstreamTaskID == "" {
+		return false
+	}
 	return existing.Family == tasks.FamilyMJ &&
 		existing.UserID == key.UserID &&
 		existing.UpstreamTaskID == key.UpstreamTaskID

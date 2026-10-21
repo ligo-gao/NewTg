@@ -76,14 +76,20 @@ func TestReuseKeyAndReusableTask(t *testing.T) {
 	}
 	// 不同用户 / 不同 MjId / 插件族 / nil 都不得复用。
 	for name, existing := range map[string]*tasks.Task{
-		"other user":  {Family: tasks.FamilyMJ, UserID: 8, UpstreamTaskID: "abc"},
-		"other mj id": {Family: tasks.FamilyMJ, UserID: 7, UpstreamTaskID: "xyz"},
-		"plugin":      {Family: tasks.FamilyPlugin, UserID: 7, UpstreamTaskID: "abc"},
-		"nil":         nil,
+		"other user":     {Family: tasks.FamilyMJ, UserID: 8, UpstreamTaskID: "abc"},
+		"other mj id":    {Family: tasks.FamilyMJ, UserID: 7, UpstreamTaskID: "xyz"},
+		"plugin":         {Family: tasks.FamilyPlugin, UserID: 7, UpstreamTaskID: "abc"},
+		"empty upstream": {Family: tasks.FamilyMJ, UserID: 7, UpstreamTaskID: ""},
+		"nil":            nil,
 	} {
 		if ReusableTask(existing, key) {
-			t.Fatalf("%s 不得复用（跨用户/跨族会把 A 的任务或退款暴露给 B）", name)
+			t.Fatalf("%s 不得复用（跨用户/跨族/空 id 会把任务或退款串味）", name)
 		}
+	}
+	// a2 若绕过 NewReuseKey 直接构造空 key，也不得匹配任何行（含 upload inline）。
+	emptyKey := ReuseKey{UserID: 7}
+	if ReusableTask(&tasks.Task{Family: tasks.FamilyMJ, UserID: 7, UpstreamTaskID: ""}, emptyKey) {
+		t.Fatalf("空 UpstreamTaskID 必须拒绝复用")
 	}
 }
 
