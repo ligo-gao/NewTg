@@ -138,6 +138,8 @@ paths:
           description: 插件不可用（disabled / compile_failed）
         '413':
           description: 请求体超过任务提交上限 4 MiB（`maxTaskSubmitBytes`）
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
           description: |
@@ -321,6 +323,8 @@ paths:
           description: 插件不可用（disabled / compile_failed）
         '413':
           description: 请求体超过 4 MiB
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
           description: |
@@ -472,6 +476,8 @@ paths:
           description: 没有任务插件声明该模型
         '413':
           description: 请求体超过任务提交上限 4 MiB
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
           description: |

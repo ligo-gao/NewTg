@@ -1863,6 +1863,21 @@ func (e RedemptionCodeStatusResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for RelayErrorErrorType.
+const (
+	NewApiError RelayErrorErrorType = "new_api_error"
+)
+
+// Valid indicates whether the value is a known member of the RelayErrorErrorType enum.
+func (e RelayErrorErrorType) Valid() bool {
+	switch e {
+	case NewApiError:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SettingsItemDangerDirection.
 const (
 	SettingsItemDangerDirectionAny   SettingsItemDangerDirection = "any"
@@ -7644,9 +7659,12 @@ type RelayError struct {
 		Message string `json:"message"`
 
 		// Type 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
-		Type string `json:"type"`
+		Type RelayErrorErrorType `json:"type"`
 	} `json:"error"`
 }
+
+// RelayErrorErrorType 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
+type RelayErrorErrorType string
 
 // RenameDeploymentRequest defines model for RenameDeploymentRequest.
 type RenameDeploymentRequest struct {

@@ -55,7 +55,17 @@ func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
 	}
 	relaySpec := string(relayRaw)
 
-	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
+	// 每一处会真正走到中继提交/准入接缝并返回 429 的 POST 都必须声明 relay
+	// 组件：chat/messages 走 BuildRelayContext 限流；tasks/videos/responses
+	// 由 handleSubmit 同一接缝限流；/pg 会话路径同样计入 B10/B12。
+	for _, path := range []string{
+		"/v1/chat/completions",
+		"/v1/messages",
+		"/pg/chat/completions",
+		"/v1/tasks/{key}",
+		"/v1/videos",
+		"/v1/responses",
+	} {
 		block, ok := pathBlock(relaySpec, path)
 		if !ok {
 			t.Fatalf("spec is missing path %s", path)
@@ -70,6 +80,20 @@ func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
 		if strings.Contains(postOp, "#/responses/Error429'") {
 			t.Fatalf("%s POST 429 must not fall back to the /api problem+json Error429", path)
 		}
+	}
+
+	// /v1/batches 顶层**不声明** 429：每个子行各自计数，子行 429 被记为
+	// request_counts.failed，父批次仍返回 200；声明 429 会误导客户端。
+	batches, ok := pathBlock(relaySpec, "/v1/batches")
+	if !ok {
+		t.Fatal("spec is missing path /v1/batches")
+	}
+	batchesPost, ok := operation(batches, "post")
+	if !ok {
+		t.Fatal("/v1/batches no longer declares a POST operation")
+	}
+	if strings.Contains(batchesPost, "'429':") {
+		t.Fatal("/v1/batches must not declare 429 (child limits surface as failed rows, not a batch-level 429)")
 	}
 
 	responsesRaw, err := os.ReadFile("../../../../api/openapi/components/responses.yaml")
@@ -106,10 +130,27 @@ func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
 	if !ok {
 		t.Fatal("schemas/relay.yaml is missing RelayError")
 	}
-	for _, field := range []string{"message:", "type:", "code:"} {
-		if !strings.Contains(relayError, field) {
-			t.Fatalf("RelayError envelope must declare error.%s", strings.TrimSuffix(field, ":"))
+	// 属性级断言（不是裸 `type:`）：`error` 对象自身也有 `type: object`，
+	// 只匹配字符串会让「删掉 error.type」的变异继续变绿。
+	errorBlock, ok := childBlock(relayError, "      error:\n", 6)
+	if !ok {
+		t.Fatal("RelayError must declare an error object")
+	}
+	if !strings.Contains(errorBlock, "required: [message, type, code]") {
+		t.Fatal("RelayError.error must require message, type and code")
+	}
+	errorProps, ok := childBlock(errorBlock, "        properties:\n", 8)
+	if !ok {
+		t.Fatal("RelayError.error must declare properties")
+	}
+	normalized := "\n" + errorProps
+	for _, field := range []string{"message", "type", "code"} {
+		if !strings.Contains(normalized, "\n          "+field+":\n") {
+			t.Fatalf("RelayError envelope must declare error.%s", field)
 		}
+	}
+	if !strings.Contains(normalized, "enum: [new_api_error]") {
+		t.Fatal("RelayError.error.type must freeze the literal new_api_error")
 	}
 
 	// 反向守卫：/api/* 的 429 仍是 problem+json 组件，未被中继组件替换。
@@ -158,6 +199,28 @@ func componentBlock(spec, name string) (string, bool) {
 		i = j + 1
 	}
 	return rest, true
+}
+
+// childBlock 返回以 head 开头、到下一个缩进 <= parentIndent 的非空行为止的
+// 子块文本。用于把「error 对象内部」与它自己的 type: object 区分开——属性级
+// 断言必须落在正确的缩进层级，否则删掉 error.type 仍会被 schema 级 type 蒙混。
+func childBlock(spec, head string, parentIndent int) (string, bool) {
+	start := strings.Index(spec, head)
+	if start < 0 {
+		return "", false
+	}
+	rest := spec[start+len(head):]
+	var out []string
+	for _, line := range strings.Split(rest, "\n") {
+		if strings.TrimSpace(line) != "" {
+			indent := len(line) - len(strings.TrimLeft(line, " "))
+			if indent <= parentIndent {
+				break
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n"), true
 }
 
 // pathBlock 返回 `  <path>:` 起、到下一个同级路径（两空格缩进的 `/`）为止的文本。

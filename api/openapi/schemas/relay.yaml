@@ -25,6 +25,7 @@ schemas:
             description: 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s`
           type:
             type: string
+            enum: [new_api_error]
             description: 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
           code:
             type: string

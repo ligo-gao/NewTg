@@ -4810,8 +4810,11 @@ export interface components {
             error: {
                 /** @description 固定文案（不包含上游 URL/凭据/SQL 等内部信息）；限流为 `rate limit exceeded; retry in {n}s` */
                 message: string;
-                /** @description 固定为 `new_api_error`（relay-01 §3.6 冻结字面量） */
-                type: string;
+                /**
+                 * @description 固定为 `new_api_error`（relay-01 §3.6 冻结字面量）
+                 * @enum {string}
+                 */
+                type: "new_api_error";
                 /**
                  * @description 机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
                  *     `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
@@ -16277,6 +16280,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: components["responses"]["RelayError429"];
             /**
              * @description 服务端内部错误。限流器故障时按 fail-closed 返回
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -16805,6 +16809,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: components["responses"]["RelayError429"];
             /**
              * @description 服务端内部错误。限流器故障时按 fail-closed 返回
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -16990,6 +16995,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: components["responses"]["RelayError429"];
             /**
              * @description 服务端内部错误。限流器故障时按 fail-closed 返回
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
