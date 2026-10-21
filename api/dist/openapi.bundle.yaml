@@ -8627,6 +8627,75 @@ paths:
           $ref: '#/components/responses/Error403'
         '429':
           $ref: '#/components/responses/Error429'
+  /api/channels/{id}/credentials/reveal:
+    post:
+      tags:
+        - admin
+      operationId: revealChannelCredentials
+      x-required-permission: channels:manage_sensitive
+      summary: 一次性揭示渠道完整凭据（受控例外）
+      description: |
+        请求体 {reason, password?, totp_code?}：reason 1–200 字符（纯空白 422）；
+        因子**恰好一个**且必须匹配账号当前 MFA 状态（已启用 TOTP → totp_code，
+        未启用 → password），同时提供/均缺失/形态不符 → 422（不执行解密）。
+        权限不足在步进认证之前判定（403，错误体不含凭据信息）；步进认证失败
+        403 reauth_required 并计入既有失败锁定（锁定 429 + Retry-After）；
+        按管理员 10 次/小时限流，超限 429。成功响应仅返回该渠道凭据对象一次，
+        带 Cache-Control: no-store 与 Pragma: no-cache、不产生 ETag。
+        审计（channel.credentials_reveal）只记 channel_id/reason/revealed_fields
+        与结果，**永不记录凭据内容（含片段、掩码、长度或哈希）**。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 渠道 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelCredentialsRevealRequest'
+      responses:
+        '200':
+          description: 完整凭据对象（仅此一次，不得缓存）
+          headers:
+            Cache-Control:
+              description: 固定 no-store。
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              description: 固定 no-cache（兼容 HTTP/1.0 缓存）。
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelCredentialsRevealed'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /v1/chat/completions:
     post:
       tags:
@@ -18902,6 +18971,39 @@ components:
               items:
                 $ref: '#/components/schemas/Channel'
       description: GET /api/channels 的 offset 分页信封。
+    ChannelCredentialsRevealRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。
+        password:
+          type: string
+          description: 未启用 TOTP 时的唯一因子。
+        totp_code:
+          type: string
+          pattern: ^[0-9]{6}$
+          description: 已启用 TOTP 时的唯一因子。
+    ChannelCredentialsRevealed:
+      type: object
+      additionalProperties: false
+      required:
+        - api_key
+      description: |
+        一次性返回的完整凭据对象（与 details 的 credentials_masked 同一字段
+        形状，但值为明文）；不得被缓存或持久化。
+      properties:
+        api_key:
+          type: string
+        deployment:
+          type: string
+        api_version:
+          type: string
     LogsByKeyItem:
       type: object
       additionalProperties: false

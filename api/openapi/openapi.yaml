@@ -401,6 +401,9 @@ paths:
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
+  # W11：凭据受控揭示（security-03 §2.10）。唯一返回完整凭据的端点。
+  /api/channels/{id}/credentials/reveal:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1credentials~1reveal'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
   # Anthropic Messages 原生入口（W7/M1）：Claude 原生客户端直连；非 Anthropic

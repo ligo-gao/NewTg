@@ -4700,6 +4700,26 @@ type ChannelCredentialsMasked struct {
 	Deployment *string `json:"deployment,omitempty"`
 }
 
+// ChannelCredentialsRevealRequest defines model for ChannelCredentialsRevealRequest.
+type ChannelCredentialsRevealRequest struct {
+	// Password 未启用 TOTP 时的唯一因子。
+	Password *string `json:"password,omitempty"`
+
+	// Reason 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。
+	Reason string `json:"reason"`
+
+	// TotpCode 已启用 TOTP 时的唯一因子。
+	TotpCode *string `json:"totp_code,omitempty"`
+}
+
+// ChannelCredentialsRevealed 一次性返回的完整凭据对象（与 details 的 credentials_masked 同一字段
+// 形状，但值为明文）；不得被缓存或持久化。
+type ChannelCredentialsRevealed struct {
+	ApiKey     string  `json:"api_key"`
+	ApiVersion *string `json:"api_version,omitempty"`
+	Deployment *string `json:"deployment,omitempty"`
+}
+
 // ChannelList GET /api/channels 的 offset 分页信封。
 type ChannelList struct {
 	Items []Channel `json:"items"`
@@ -9409,6 +9429,13 @@ type ListChannelsParams struct {
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
+// RevealChannelCredentialsParams defines parameters for RevealChannelCredentials.
+type RevealChannelCredentialsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Status   *string `form:"status,omitempty" json:"status,omitempty"`
@@ -10795,6 +10822,9 @@ type RegisterJSONRequestBody = RegisterRequest
 
 // UpdateBillingPreferenceJSONRequestBody defines body for UpdateBillingPreference for application/json ContentType.
 type UpdateBillingPreferenceJSONRequestBody = BillingPreferenceUpdateRequest
+
+// RevealChannelCredentialsJSONRequestBody defines body for RevealChannelCredentials for application/json ContentType.
+type RevealChannelCredentialsJSONRequestBody = ChannelCredentialsRevealRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = CreateDeploymentRequest

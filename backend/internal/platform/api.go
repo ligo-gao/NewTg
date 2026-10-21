@@ -369,6 +369,16 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: channel auto-disable reporter: %w", err)
 	}
 
+	// W11：渠道凭据揭示的步进认证门（security-03 §2.10）。复用用户口令/TOTP
+	// 材料源：已启用 MFA 只接受 totp_code，未启用只接受 password。缺门时
+	// handler 会 fail-closed（503），但生产不能依赖降级——构造失败即启动失败。
+	// 门实例与账号 handler 内部的实例各自持有同一 Redis 计数桶，语义一致。
+	revealSource, err := httpapi.NewSQLAccountReauthSource(db, cfg.CredentialEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: channel reveal reauth source: %w", err)
+	}
+	channelRevealGate := auth.NewReauthGate(rdb, revealSource, auth.VerifyTOTP)
+
 	channelHandler := httpapi.NewChannelHandler(
 		store.NewChannelRepo(db),
 		store.NewTokenRepo(db),
@@ -381,6 +391,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			Config: center,
 			Plugins: httpapi.NewTaskPluginCatalog(
 				factoryKeys, store.NewTaskPluginRepo(db)),
+			// W11：揭示端点的管理员维限流（10 次/小时）与步进认证。
+			Redis:  rdb,
+			Reauth: channelRevealGate,
+			Audit:  auditor,
 		},
 	)
 

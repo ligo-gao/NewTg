@@ -141,6 +141,41 @@ schemas:
               $ref: '#/schemas/Channel'
     description: GET /api/channels 的 offset 分页信封。
 
+  # 凭据受控揭示（W11；security-03 §2.10）。请求因子**恰好一个**且匹配账号
+  # 当前 MFA 状态；响应是唯一允许返回完整凭据的形态。
+  ChannelCredentialsRevealRequest:
+    type: object
+    additionalProperties: false
+    required: [reason]
+    properties:
+      reason:
+        type: string
+        minLength: 1
+        maxLength: 200
+        description: 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。
+      password:
+        type: string
+        description: 未启用 TOTP 时的唯一因子。
+      totp_code:
+        type: string
+        pattern: '^[0-9]{6}$'
+        description: 已启用 TOTP 时的唯一因子。
+
+  ChannelCredentialsRevealed:
+    type: object
+    additionalProperties: false
+    required: [api_key]
+    description: |
+      一次性返回的完整凭据对象（与 details 的 credentials_masked 同一字段
+      形状，但值为明文）；不得被缓存或持久化。
+    properties:
+      api_key:
+        type: string
+      deployment:
+        type: string
+      api_version:
+        type: string
+
   AdminUser:
     type: object
     additionalProperties: false

@@ -24,6 +24,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,13 @@ const (
 	// 10 次/分钟/IP 只拦住自动化轰炸，不影响人工安装向导的正常重试。
 	SetupRateLimit  = 10
 	SetupRateWindow = time.Minute
+
+	// B14：渠道凭据揭示（security-03 §2.10 / modules-06 F-06-03）。设计冻结
+	// 「按管理员 10 次/小时」，维度是**管理员**而不是 IP（同一管理员换 IP
+	// 不应刷新配额）。超限 429 + Retry-After，计数只在服务端维护。
+	ChannelRevealRateMark   = "CR"
+	ChannelRevealRateLimit  = 10
+	ChannelRevealRateWindow = time.Hour
 )
 
 // SetupRateLimitKey 构造 B13 桶键：rateLimit:v2:ip:ST:<ip>。
@@ -81,6 +89,16 @@ func RegisterRateLimitKey(ip string) string {
 // PublicReadRateLimitKey 构造 B8 桶键：rateLimit:v2:ip:PB:<ip>:<path>。
 func PublicReadRateLimitKey(ip, path string) string {
 	return RateLimitKeyPrefix + PublicReadRateMark + ":" + ip + ":" + path
+}
+
+// ChannelRevealRateLimitKey 构造 B14 桶键：rateLimit:v2:user:CR:<userID>。
+//
+// 冻结前缀 RateLimitKeyPrefix 是 IP 维命名空间；凭据揭示按**管理员**计数
+// （security-03 §2.10），因此显式使用 user 维段而不是把 userID 塞进 ip 段——
+// 键必须自描述，运维直读 Redis 时不能把用户 id 误读成地址。这是对冻结键形
+// 的扩展，与 B1/B8 的第二维扩展同一处理方式。
+func ChannelRevealRateLimitKey(userID int64) string {
+	return "rateLimit:v2:user:" + ChannelRevealRateMark + ":" + strconv.FormatInt(userID, 10)
 }
 
 // allowRequestRate 消耗固定窗口中的一个名额。

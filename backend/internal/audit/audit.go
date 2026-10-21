@@ -203,6 +203,22 @@ const (
 	// 把 auto_disabled 拉回 enabled。同一 Actor/Username 约定；detail 只含
 	// channel_id/channel_name，before/after 只含 status。
 	ActionChannelAutoEnable = "channel.auto_enable"
+
+	// W11 渠道管理写审计（O-1 缺口补齐；modules-06 F-06-02/03）。创建/编辑/
+	// 删除都是管理配置变更，归 operation。detail 只允许 channel_id/name 与
+	// 变更字段**名**（credentials_changed 只记布尔）；凭据值、密文、掩码、
+	// 长度与 base_url 一律不进入审计——审计保留 12 个月，不能成为密钥副本。
+	ActionChannelCreate = "channel.create"
+	ActionChannelUpdate = "channel.update"
+	ActionChannelDelete = "channel.delete"
+
+	// W11 渠道凭据受控揭示（security-03 §2.10；modules-06 F-06-03）。这是
+	// 「常规接口永不返回明文」的唯一例外，审计是它唯一的长期追溯面：
+	// detail 只允许 channel_id/reason/revealed_fields，**永不记录凭据内容
+	// （含片段、掩码、长度或哈希）**；失败尝试同样记 result='failed'。
+	// 动作名按 W11 冻结口径 `channel.credentials_reveal`（设计文档 §2.10 的
+	// detail 文案为 credentials_revealed，本实现以冻结口径为准并登记差异）。
+	ActionChannelCredentialsReveal = "channel.credentials_reveal"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -315,6 +331,11 @@ var actionCategories = map[string]string{
 
 	ActionChannelAutoDisable: categoryOperation,
 	ActionChannelAutoEnable:  categoryOperation,
+
+	ActionChannelCreate:            categoryOperation,
+	ActionChannelUpdate:            categoryOperation,
+	ActionChannelDelete:            categoryOperation,
+	ActionChannelCredentialsReveal: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

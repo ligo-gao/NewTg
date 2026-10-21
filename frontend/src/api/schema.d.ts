@@ -3941,6 +3941,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/channels/{id}/credentials/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 一次性揭示渠道完整凭据（受控例外）
+         * @description 请求体 {reason, password?, totp_code?}：reason 1–200 字符（纯空白 422）；
+         *     因子**恰好一个**且必须匹配账号当前 MFA 状态（已启用 TOTP → totp_code，
+         *     未启用 → password），同时提供/均缺失/形态不符 → 422（不执行解密）。
+         *     权限不足在步进认证之前判定（403，错误体不含凭据信息）；步进认证失败
+         *     403 reauth_required 并计入既有失败锁定（锁定 429 + Retry-After）；
+         *     按管理员 10 次/小时限流，超限 429。成功响应仅返回该渠道凭据对象一次，
+         *     带 Cache-Control: no-store 与 Pragma: no-cache、不产生 ETag。
+         *     审计（channel.credentials_reveal）只记 channel_id/reason/revealed_fields
+         *     与结果，**永不记录凭据内容（含片段、掩码、长度或哈希）**。
+         */
+        post: operations["revealChannelCredentials"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -8755,6 +8783,23 @@ export interface components {
         /** @description GET /api/channels 的 offset 分页信封。 */
         ChannelList: components["schemas"]["Page"] & {
             items?: components["schemas"]["Channel"][];
+        };
+        ChannelCredentialsRevealRequest: {
+            /** @description 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。 */
+            reason: string;
+            /** @description 未启用 TOTP 时的唯一因子。 */
+            password?: string;
+            /** @description 已启用 TOTP 时的唯一因子。 */
+            totp_code?: string;
+        };
+        /**
+         * @description 一次性返回的完整凭据对象（与 details 的 credentials_masked 同一字段
+         *     形状，但值为明文）；不得被缓存或持久化。
+         */
+        ChannelCredentialsRevealed: {
+            api_key: string;
+            deployment?: string;
+            api_version?: string;
         };
         /**
          * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
@@ -16471,6 +16516,50 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             429: components["responses"]["Error429"];
+        };
+    };
+    revealChannelCredentials: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 渠道 id（正整数）；非法/不存在同形 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelCredentialsRevealRequest"];
+            };
+        };
+        responses: {
+            /** @description 完整凭据对象（仅此一次，不得缓存） */
+            200: {
+                headers: {
+                    /** @description 固定 no-store。 */
+                    "Cache-Control"?: "no-store";
+                    /** @description 固定 no-cache（兼容 HTTP/1.0 缓存）。 */
+                    Pragma?: "no-cache";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelCredentialsRevealed"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
         };
     };
     createChatCompletion: {
