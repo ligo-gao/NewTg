@@ -2751,6 +2751,120 @@ func (e VerifyEmailResponseEmailVerified) Valid() bool {
 	}
 }
 
+// Defines values for WalletAdjustmentContextMode.
+const (
+	WalletAdjustmentContextModeAdd      WalletAdjustmentContextMode = "add"
+	WalletAdjustmentContextModeOverride WalletAdjustmentContextMode = "override"
+	WalletAdjustmentContextModeSubtract WalletAdjustmentContextMode = "subtract"
+)
+
+// Valid indicates whether the value is a known member of the WalletAdjustmentContextMode enum.
+func (e WalletAdjustmentContextMode) Valid() bool {
+	switch e {
+	case WalletAdjustmentContextModeAdd:
+		return true
+	case WalletAdjustmentContextModeOverride:
+		return true
+	case WalletAdjustmentContextModeSubtract:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletOrderContextBizKind.
+const (
+	WalletOrderContextBizKindChange    WalletOrderContextBizKind = "change"
+	WalletOrderContextBizKindRenew     WalletOrderContextBizKind = "renew"
+	WalletOrderContextBizKindSubscribe WalletOrderContextBizKind = "subscribe"
+	WalletOrderContextBizKindTopup     WalletOrderContextBizKind = "topup"
+)
+
+// Valid indicates whether the value is a known member of the WalletOrderContextBizKind enum.
+func (e WalletOrderContextBizKind) Valid() bool {
+	switch e {
+	case WalletOrderContextBizKindChange:
+		return true
+	case WalletOrderContextBizKindRenew:
+		return true
+	case WalletOrderContextBizKindSubscribe:
+		return true
+	case WalletOrderContextBizKindTopup:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletOrderContextProvider.
+const (
+	WalletOrderContextProviderAlipay       WalletOrderContextProvider = "alipay"
+	WalletOrderContextProviderCreem        WalletOrderContextProvider = "creem"
+	WalletOrderContextProviderEpay         WalletOrderContextProvider = "epay"
+	WalletOrderContextProviderStripe       WalletOrderContextProvider = "stripe"
+	WalletOrderContextProviderWaffo        WalletOrderContextProvider = "waffo"
+	WalletOrderContextProviderWaffoPancake WalletOrderContextProvider = "waffo_pancake"
+	WalletOrderContextProviderWallet       WalletOrderContextProvider = "wallet"
+)
+
+// Valid indicates whether the value is a known member of the WalletOrderContextProvider enum.
+func (e WalletOrderContextProvider) Valid() bool {
+	switch e {
+	case WalletOrderContextProviderAlipay:
+		return true
+	case WalletOrderContextProviderCreem:
+		return true
+	case WalletOrderContextProviderEpay:
+		return true
+	case WalletOrderContextProviderStripe:
+		return true
+	case WalletOrderContextProviderWaffo:
+		return true
+	case WalletOrderContextProviderWaffoPancake:
+		return true
+	case WalletOrderContextProviderWallet:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletOrderContextStatus.
+const (
+	WalletOrderContextStatusCancelled      WalletOrderContextStatus = "cancelled"
+	WalletOrderContextStatusExpired        WalletOrderContextStatus = "expired"
+	WalletOrderContextStatusFailed         WalletOrderContextStatus = "failed"
+	WalletOrderContextStatusPending        WalletOrderContextStatus = "pending"
+	WalletOrderContextStatusRefundFailed   WalletOrderContextStatus = "refund_failed"
+	WalletOrderContextStatusRefundRequired WalletOrderContextStatus = "refund_required"
+	WalletOrderContextStatusRefunded       WalletOrderContextStatus = "refunded"
+	WalletOrderContextStatusSucceeded      WalletOrderContextStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the WalletOrderContextStatus enum.
+func (e WalletOrderContextStatus) Valid() bool {
+	switch e {
+	case WalletOrderContextStatusCancelled:
+		return true
+	case WalletOrderContextStatusExpired:
+		return true
+	case WalletOrderContextStatusFailed:
+		return true
+	case WalletOrderContextStatusPending:
+		return true
+	case WalletOrderContextStatusRefundFailed:
+		return true
+	case WalletOrderContextStatusRefundRequired:
+		return true
+	case WalletOrderContextStatusRefunded:
+		return true
+	case WalletOrderContextStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WalletSummaryHealth.
 const (
 	WalletSummaryHealthDepleted WalletSummaryHealth = "depleted"
@@ -2766,6 +2880,117 @@ func (e WalletSummaryHealth) Valid() bool {
 	case WalletSummaryHealthHealthy:
 		return true
 	case WalletSummaryHealthLow:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletTransactionReferenceType.
+const (
+	WalletTransactionReferenceTypeAdminOp           WalletTransactionReferenceType = "admin_op"
+	WalletTransactionReferenceTypeAffiliateTransfer WalletTransactionReferenceType = "affiliate_transfer"
+	WalletTransactionReferenceTypeCheckin           WalletTransactionReferenceType = "checkin"
+	WalletTransactionReferenceTypeOrder             WalletTransactionReferenceType = "order"
+	WalletTransactionReferenceTypePromo             WalletTransactionReferenceType = "promo"
+	WalletTransactionReferenceTypeRedemption        WalletTransactionReferenceType = "redemption"
+	WalletTransactionReferenceTypeReversal          WalletTransactionReferenceType = "reversal"
+	WalletTransactionReferenceTypeSignupGrant       WalletTransactionReferenceType = "signup_grant"
+	WalletTransactionReferenceTypeUsageLog          WalletTransactionReferenceType = "usage_log"
+)
+
+// Valid indicates whether the value is a known member of the WalletTransactionReferenceType enum.
+func (e WalletTransactionReferenceType) Valid() bool {
+	switch e {
+	case WalletTransactionReferenceTypeAdminOp:
+		return true
+	case WalletTransactionReferenceTypeAffiliateTransfer:
+		return true
+	case WalletTransactionReferenceTypeCheckin:
+		return true
+	case WalletTransactionReferenceTypeOrder:
+		return true
+	case WalletTransactionReferenceTypePromo:
+		return true
+	case WalletTransactionReferenceTypeRedemption:
+		return true
+	case WalletTransactionReferenceTypeReversal:
+		return true
+	case WalletTransactionReferenceTypeSignupGrant:
+		return true
+	case WalletTransactionReferenceTypeUsageLog:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletTransactionStatus.
+const (
+	WalletTransactionStatusConfirmed WalletTransactionStatus = "confirmed"
+	WalletTransactionStatusExpired   WalletTransactionStatus = "expired"
+	WalletTransactionStatusHold      WalletTransactionStatus = "hold"
+	WalletTransactionStatusReleased  WalletTransactionStatus = "released"
+	WalletTransactionStatusSettled   WalletTransactionStatus = "settled"
+)
+
+// Valid indicates whether the value is a known member of the WalletTransactionStatus enum.
+func (e WalletTransactionStatus) Valid() bool {
+	switch e {
+	case WalletTransactionStatusConfirmed:
+		return true
+	case WalletTransactionStatusExpired:
+		return true
+	case WalletTransactionStatusHold:
+		return true
+	case WalletTransactionStatusReleased:
+		return true
+	case WalletTransactionStatusSettled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WalletTransactionType.
+const (
+	WalletTransactionTypeAdminAdjustment      WalletTransactionType = "admin_adjustment"
+	WalletTransactionTypeAffiliateTransfer    WalletTransactionType = "affiliate_transfer"
+	WalletTransactionTypeBonus                WalletTransactionType = "bonus"
+	WalletTransactionTypeCheckinBonus         WalletTransactionType = "checkin_bonus"
+	WalletTransactionTypeConsume              WalletTransactionType = "consume"
+	WalletTransactionTypeConsumePre           WalletTransactionType = "consume_pre"
+	WalletTransactionTypeRedemption           WalletTransactionType = "redemption"
+	WalletTransactionTypeRelease              WalletTransactionType = "release"
+	WalletTransactionTypeReversal             WalletTransactionType = "reversal"
+	WalletTransactionTypeSubscriptionPurchase WalletTransactionType = "subscription_purchase"
+	WalletTransactionTypeTopup                WalletTransactionType = "topup"
+)
+
+// Valid indicates whether the value is a known member of the WalletTransactionType enum.
+func (e WalletTransactionType) Valid() bool {
+	switch e {
+	case WalletTransactionTypeAdminAdjustment:
+		return true
+	case WalletTransactionTypeAffiliateTransfer:
+		return true
+	case WalletTransactionTypeBonus:
+		return true
+	case WalletTransactionTypeCheckinBonus:
+		return true
+	case WalletTransactionTypeConsume:
+		return true
+	case WalletTransactionTypeConsumePre:
+		return true
+	case WalletTransactionTypeRedemption:
+		return true
+	case WalletTransactionTypeRelease:
+		return true
+	case WalletTransactionTypeReversal:
+		return true
+	case WalletTransactionTypeSubscriptionPurchase:
+		return true
+	case WalletTransactionTypeTopup:
 		return true
 	default:
 		return false
@@ -3594,6 +3819,96 @@ func (e ListVendorsParamsSort) Valid() bool {
 	case ListVendorsParamsSortName:
 		return true
 	case ListVendorsParamsSortUpdatedAt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListWalletTransactionsParamsType.
+const (
+	ListWalletTransactionsParamsTypeAdminAdjustment      ListWalletTransactionsParamsType = "admin_adjustment"
+	ListWalletTransactionsParamsTypeAffiliateTransfer    ListWalletTransactionsParamsType = "affiliate_transfer"
+	ListWalletTransactionsParamsTypeBonus                ListWalletTransactionsParamsType = "bonus"
+	ListWalletTransactionsParamsTypeCheckinBonus         ListWalletTransactionsParamsType = "checkin_bonus"
+	ListWalletTransactionsParamsTypeConsume              ListWalletTransactionsParamsType = "consume"
+	ListWalletTransactionsParamsTypeConsumePre           ListWalletTransactionsParamsType = "consume_pre"
+	ListWalletTransactionsParamsTypeRedemption           ListWalletTransactionsParamsType = "redemption"
+	ListWalletTransactionsParamsTypeRelease              ListWalletTransactionsParamsType = "release"
+	ListWalletTransactionsParamsTypeReversal             ListWalletTransactionsParamsType = "reversal"
+	ListWalletTransactionsParamsTypeSubscriptionPurchase ListWalletTransactionsParamsType = "subscription_purchase"
+	ListWalletTransactionsParamsTypeTopup                ListWalletTransactionsParamsType = "topup"
+)
+
+// Valid indicates whether the value is a known member of the ListWalletTransactionsParamsType enum.
+func (e ListWalletTransactionsParamsType) Valid() bool {
+	switch e {
+	case ListWalletTransactionsParamsTypeAdminAdjustment:
+		return true
+	case ListWalletTransactionsParamsTypeAffiliateTransfer:
+		return true
+	case ListWalletTransactionsParamsTypeBonus:
+		return true
+	case ListWalletTransactionsParamsTypeCheckinBonus:
+		return true
+	case ListWalletTransactionsParamsTypeConsume:
+		return true
+	case ListWalletTransactionsParamsTypeConsumePre:
+		return true
+	case ListWalletTransactionsParamsTypeRedemption:
+		return true
+	case ListWalletTransactionsParamsTypeRelease:
+		return true
+	case ListWalletTransactionsParamsTypeReversal:
+		return true
+	case ListWalletTransactionsParamsTypeSubscriptionPurchase:
+		return true
+	case ListWalletTransactionsParamsTypeTopup:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListWalletTransactionsParamsStatus.
+const (
+	ListWalletTransactionsParamsStatusConfirmed ListWalletTransactionsParamsStatus = "confirmed"
+	ListWalletTransactionsParamsStatusExpired   ListWalletTransactionsParamsStatus = "expired"
+	ListWalletTransactionsParamsStatusHold      ListWalletTransactionsParamsStatus = "hold"
+	ListWalletTransactionsParamsStatusReleased  ListWalletTransactionsParamsStatus = "released"
+	ListWalletTransactionsParamsStatusSettled   ListWalletTransactionsParamsStatus = "settled"
+)
+
+// Valid indicates whether the value is a known member of the ListWalletTransactionsParamsStatus enum.
+func (e ListWalletTransactionsParamsStatus) Valid() bool {
+	switch e {
+	case ListWalletTransactionsParamsStatusConfirmed:
+		return true
+	case ListWalletTransactionsParamsStatusExpired:
+		return true
+	case ListWalletTransactionsParamsStatusHold:
+		return true
+	case ListWalletTransactionsParamsStatusReleased:
+		return true
+	case ListWalletTransactionsParamsStatusSettled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListWalletTransactionsParamsDir.
+const (
+	In  ListWalletTransactionsParamsDir = "in"
+	Out ListWalletTransactionsParamsDir = "out"
+)
+
+// Valid indicates whether the value is a known member of the ListWalletTransactionsParamsDir enum.
+func (e ListWalletTransactionsParamsDir) Valid() bool {
+	switch e {
+	case In:
+		return true
+	case Out:
 		return true
 	default:
 		return false
@@ -8518,6 +8833,41 @@ type VerifyEmailResponse struct {
 // VerifyEmailResponseEmailVerified defines model for VerifyEmailResponse.EmailVerified.
 type VerifyEmailResponseEmailVerified bool
 
+// WalletAdjustmentContext admin_adjustment 的调整方式（从机器 note 前缀解析，R-M3-05）。
+// 理由/操作人当前未落库（module 07 写路径缺口），故不在此出现。
+type WalletAdjustmentContext struct {
+	Mode WalletAdjustmentContextMode `json:"mode"`
+}
+
+// WalletAdjustmentContextMode defines model for WalletAdjustmentContext.Mode.
+type WalletAdjustmentContextMode string
+
+// WalletOrderContext 关联订单摘要（reference_type='order'；按 id+user_id 查询）。
+type WalletOrderContext struct {
+	Amount   int64                      `json:"amount"`
+	BizKind  WalletOrderContextBizKind  `json:"biz_kind"`
+	Currency string                     `json:"currency"`
+	Id       int64                      `json:"id"`
+	Provider WalletOrderContextProvider `json:"provider"`
+	Status   WalletOrderContextStatus   `json:"status"`
+}
+
+// WalletOrderContextBizKind defines model for WalletOrderContext.BizKind.
+type WalletOrderContextBizKind string
+
+// WalletOrderContextProvider defines model for WalletOrderContext.Provider.
+type WalletOrderContextProvider string
+
+// WalletOrderContextStatus defines model for WalletOrderContext.Status.
+type WalletOrderContextStatus string
+
+// WalletRedemptionContext 兑换码上下文；刻意不含 code_hash。
+type WalletRedemptionContext struct {
+	BatchName string `json:"batch_name"`
+	Credits   int64  `json:"credits"`
+	Id        int64  `json:"id"`
+}
+
 // WalletSummary defines model for WalletSummary.
 type WalletSummary struct {
 	// Balance 可用余额（积分），`users.balance` 原子读
@@ -8544,6 +8894,100 @@ type WalletSummary struct {
 
 // WalletSummaryHealth 服务端计算的余额健康度
 type WalletSummaryHealth string
+
+// WalletTransaction 流水列表行。金额是**有符号整数积分**（收入正、支出负），按 JSON number
+// 序列化（R-M3-03；与 WalletSummary/OrderView 同口径，额度 ≤2^53−1）。
+// 列表刻意不返回 note / user_id。
+type WalletTransaction struct {
+	// Amount 有符号积分；收入正、支出负、不可为 0
+	Amount int64 `json:"amount"`
+
+	// BalanceAfter 变动后余额
+	BalanceAfter int64     `json:"balance_after"`
+	CreatedAt    time.Time `json:"created_at"`
+	Id           int64     `json:"id"`
+
+	// ReferenceId usage_log=requestID；order/redemption=对应 ID；admin_op=幂等键
+	ReferenceId   string                         `json:"reference_id"`
+	ReferenceType WalletTransactionReferenceType `json:"reference_type"`
+	Status        WalletTransactionStatus        `json:"status"`
+
+	// Type wallet_transactions.type 的 11 个 DB 值（含 subscription_purchase，G-DOM-48）
+	Type WalletTransactionType `json:"type"`
+}
+
+// WalletTransactionDetail 流水详情。服务端一次组装全部上下文（R-M3-04），前端不串多个端点。
+// 刻意独立定义完整字段而非 allOf 引用 WalletTransaction：父 schema 的
+// additionalProperties:false 会拒绝这里追加的上下文键。
+type WalletTransactionDetail struct {
+	Adjustment   WalletAdjustmentContext `json:"adjustment"`
+	Amount       int64                   `json:"amount"`
+	BalanceAfter int64                   `json:"balance_after"`
+
+	// CorrectsTransactionId 仅 reversal 且 reference_type='order'：同订单最新一条
+	// subscription_purchase 流水的 id；没有则 null（R-M3-06）。
+	CorrectsTransactionId int64     `json:"corrects_transaction_id"`
+	CreatedAt             time.Time `json:"created_at"`
+	Id                    int64     `json:"id"`
+
+	// Note 仅 admin_adjustment 且非机器格式时返回；机器 note 的
+	// `idem:<64hex>` 指纹段在服务端剥离，绝不回显（R-M3-05）。
+	Note          string                         `json:"note"`
+	Order         WalletOrderContext             `json:"order"`
+	Redemption    WalletRedemptionContext        `json:"redemption"`
+	ReferenceId   string                         `json:"reference_id"`
+	ReferenceType WalletTransactionReferenceType `json:"reference_type"`
+	Segments      WalletTransactionSegments      `json:"segments"`
+	Status        WalletTransactionStatus        `json:"status"`
+
+	// Type wallet_transactions.type 的 11 个 DB 值（含 subscription_purchase，G-DOM-48）
+	Type  WalletTransactionType `json:"type"`
+	Usage WalletUsageContext    `json:"usage"`
+}
+
+// WalletTransactionPage defines model for WalletTransactionPage.
+type WalletTransactionPage struct {
+	// Items 空结果恒为 []（不是 null）
+	Items []WalletTransaction `json:"items"`
+
+	// Page 1 基；越界请求回落到最后一页
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+	Total    int64 `json:"total"`
+}
+
+// WalletTransactionReferenceType 关联对象类型（DB CHECK 的 9 个值）
+type WalletTransactionReferenceType string
+
+// WalletTransactionSegments 同一 usage_log（user_id+reference_id）的三段金额：
+// held=−Σ(consume_pre)、refunded=Σ(release)、
+// charged=held+(−Σ(consume))−refunded；均为非负整数。
+type WalletTransactionSegments struct {
+	Charged  int64 `json:"charged"`
+	Held     int64 `json:"held"`
+	Refunded int64 `json:"refunded"`
+}
+
+// WalletTransactionStatus defines model for WalletTransactionStatus.
+type WalletTransactionStatus string
+
+// WalletTransactionType wallet_transactions.type 的 11 个 DB 值（含 subscription_purchase，G-DOM-48）
+type WalletTransactionType string
+
+// WalletUsageContext usage_logs 的调用摘要（日志库）。按 `request_id + user_id` 查询；
+// 日志库不可用/缺行时整个对象为 null。
+type WalletUsageContext struct {
+	CompletionTokens int    `json:"completion_tokens"`
+	Cost             int64  `json:"cost"`
+	LogId            int64  `json:"log_id"`
+	Model            string `json:"model"`
+
+	// PreDeducted NULL 表示该请求没有预扣（跨组补扣等）
+	PreDeducted  int64              `json:"pre_deducted"`
+	PromptTokens int                `json:"prompt_tokens"`
+	Refunded     int64              `json:"refunded"`
+	RequestId    openapi_types.UUID `json:"request_id"`
+}
 
 // WebhookResumeResult POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
 // （`notify:webhook:paused` 与 `notify:webhook:fail_streak`），不修改任何
@@ -9999,6 +10443,48 @@ type VerifyEmailParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
+
+// ListWalletTransactionsParams defines parameters for ListWalletTransactions.
+type ListWalletTransactionsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Type 流水类型（DB CHECK 的 11 个值，含 subscription_purchase）
+	Type *ListWalletTransactionsParamsType `form:"type,omitempty" json:"type,omitempty"`
+
+	// Status 状态筛选（consume_pre 行持有 hold/settled/released/expired）
+	Status *ListWalletTransactionsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Dir 方向；in ⇔ amount>0，out ⇔ amount<0
+	Dir *ListWalletTransactionsParamsDir `form:"dir,omitempty" json:"dir,omitempty"`
+
+	// From 起始时刻（含），RFC3339；默认 to−30 天
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 结束时刻（不含），RFC3339；默认当前时刻
+	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+
+	// Min ABS(amount) 下界（含）
+	Min *int64 `form:"min,omitempty" json:"min,omitempty"`
+
+	// Max ABS(amount) 上界（含）
+	Max *int64 `form:"max,omitempty" json:"max,omitempty"`
+
+	// Ref 关联号；UUID 形状做去连字符归一，其它精确匹配
+	Ref *string `form:"ref,omitempty" json:"ref,omitempty"`
+}
+
+// ListWalletTransactionsParamsType defines parameters for ListWalletTransactions.
+type ListWalletTransactionsParamsType string
+
+// ListWalletTransactionsParamsStatus defines parameters for ListWalletTransactions.
+type ListWalletTransactionsParamsStatus string
+
+// ListWalletTransactionsParamsDir defines parameters for ListWalletTransactions.
+type ListWalletTransactionsParamsDir string
 
 // AlipayNotifyFormdataBody defines parameters for AlipayNotify.
 type AlipayNotifyFormdataBody struct {

@@ -286,6 +286,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		LogDB:  logsDB,
 		Config: center,
 		Logger: log,
+		// R-M3-11：钱包流水读取（列表+详情共用）的用户维限流桶。
+		Redis: rdb,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: wallet handlers: %w", err)

@@ -1,27 +1,30 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { loadRouteDictionary } from '@/app/providers/i18n'
-import { SubscriptionSection } from '@/features/account/subscription/subscription-section'
-import { TopupPage } from '@/features/account/topup/topup-page'
+import {
+  validateWalletSearch,
+  type WalletTransactionsSearch,
+} from '@/features/account/wallet/search'
+import { WalletPage } from '@/features/account/wallet/wallet-page'
 
 export const Route = createFileRoute('/_console/wallet')({
+  // R-M3-01：`?tab=transactions` 是流水页的唯一 URL 形状；缺省/非法值
+  // 归一为 `topup`，默认视图不携带多余参数。
+  validateSearch: validateWalletSearch,
   loader: () => loadRouteDictionary('account'),
-  component: WalletPage,
+  component: WalletRoute,
 })
 
-/**
- * `/wallet` = recharge stack + subscriptions (billing-08 §16.3).
- *
- * The subscription block lives beside `TopupPage` rather than inside it so the
- * recharge page (and its tests) keep their existing data contract: rendering
- * three extra queries there would make every top-up mount depend on the
- * subscription endpoints.
- */
-function WalletPage() {
+function WalletRoute() {
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
   return (
-    <div className="flex flex-col gap-4">
-      <TopupPage />
-      <SubscriptionSection />
-    </div>
+    <WalletPage
+      search={search as WalletTransactionsSearch}
+      onSearchChange={(next) => {
+        // Replace 让筛选输入不堆满浏览器历史，同时保持链接可刷新/分享。
+        void navigate({ search: next, replace: true })
+      }}
+    />
   )
 }

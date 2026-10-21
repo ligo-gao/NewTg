@@ -1,14 +1,18 @@
-// Package httpapi 的钱包摘要端点（modules-03 §F-03-01）。
+// Package httpapi 的钱包端点（modules-03 §F-03-01/F-03-02/F-03-03）。
 //
 // 端点面：
 //
-//	GET /api/wallet/summary   已登录用户：本人余额、冻结、累计消费与健康度
+//	GET /api/wallet/summary            已登录用户：本人余额、冻结、累计消费与健康度
+//	GET /api/wallet/transactions       本人钱包流水列表（筛选 + offset 分页）
+//	GET /api/wallet/transactions/{id}  本人单条流水详情（服务端组装上下文）
 //
 // 安全口径：
 //   - 用户身份只来自会话 Principal，没有任何 user_id 参数；跨用户读取在
 //     接口形状上就不存在，服务端不提供枚举入口。
 //   - 余额/冻结/消费在同一主库读取，请求计数来自日志库；任一查询失败返回
 //     500，不返回「部分 0」的伪造摘要（前端卡片宁可显示重试）。
+//   - 流水读取一律按 Principal.UserID 过滤（列表/详情/日志上下文同口径）；
+//     详情不存在、属于他人、id 非法统一 404，不提供存在性探测。
 package httpapi
 
 import (
@@ -20,6 +24,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/auth"
 )
@@ -30,22 +37,29 @@ const ConfigBalanceAlertThreshold = "billing.balance_alert_threshold_credits"
 
 const defaultBalanceAlertThreshold int64 = 1000
 
-// WalletHandlerConfig 是钱包摘要端点的装配输入。
+// WalletHandlerConfig 是钱包端点的装配输入。
 type WalletHandlerConfig struct {
 	DB *sql.DB
 	// LogDB 是 usage_logs 所在日志库；nil 时 total_requests 记为 0（仅测试
-	// 缝隙，生产装配恒提供）。
+	// 缝隙，生产装配恒提供），流水详情的 usage 上下文降级为 null。
 	LogDB  *sql.DB
 	Config ConfigReader
 	Logger *slog.Logger
+	// Redis 是用户维读限流桶（rateLimit:v2:user:WT:<userID>）的连接；
+	// nil 时限流失效（fail-open），不影响查询正确性。
+	Redis *redis.Client
+	// Now 是时间窗口的时钟接缝（默认 now−30d / now）；测试注入固定时刻。
+	Now func() time.Time
 }
 
-// WalletHandlers 持有钱包摘要端点的依赖，可并发使用。
+// WalletHandlers 持有钱包端点的依赖，可并发使用。
 type WalletHandlers struct {
 	db    *sql.DB
 	logDB *sql.DB
 	cfg   ConfigReader
 	log   *slog.Logger
+	rdb   *redis.Client
+	now   func() time.Time
 }
 
 // NewWalletHandlers 构造钱包端点。主库必填：余额是资金读数，不能降级为 0。
@@ -57,16 +71,28 @@ func NewWalletHandlers(cfg WalletHandlerConfig) (*WalletHandlers, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &WalletHandlers{db: cfg.DB, logDB: cfg.LogDB, cfg: cfg.Config, log: logger}, nil
+	return &WalletHandlers{
+		db:    cfg.DB,
+		logDB: cfg.LogDB,
+		cfg:   cfg.Config,
+		log:   logger,
+		rdb:   cfg.Redis,
+		now:   cfg.Now,
+	}, nil
 }
 
 // RegisterWalletRoutes 注册已登录用户端点。wrap 语义同其它 Register*Routes。
 func (h *WalletHandlers) RegisterWalletRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
-	var handler http.Handler = http.HandlerFunc(h.handleSummary)
-	if wrap != nil {
-		handler = wrap(handler)
+	register := func(pattern string, handler http.HandlerFunc) {
+		var hd http.Handler = handler
+		if wrap != nil {
+			hd = wrap(hd)
+		}
+		mux.Handle(pattern, hd)
 	}
-	mux.Handle("GET /api/wallet/summary", handler)
+	register("GET /api/wallet/summary", h.handleSummary)
+	register("GET /api/wallet/transactions", h.handleTransactionList)
+	register("GET /api/wallet/transactions/{id}", h.handleTransactionDetail)
 }
 
 type walletSummaryView struct {

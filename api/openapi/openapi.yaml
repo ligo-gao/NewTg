@@ -369,6 +369,10 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1{key}~1versions~1{version}'
   /api/wallet/summary:
     $ref: './paths/user.yaml#/paths/~1api~1wallet~1summary'
+  /api/wallet/transactions:
+    $ref: './paths/user.yaml#/paths/~1api~1wallet~1transactions'
+  /api/wallet/transactions/{id}:
+    $ref: './paths/user.yaml#/paths/~1api~1wallet~1transactions~1{id}'
 
   # 在线充值（M5 Task 3；用户端点 + 公网回调）。
   /api/topup/config:

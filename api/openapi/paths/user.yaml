@@ -1186,6 +1186,132 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  # 钱包流水（modules-03 §F-03-02/F-03-03；W7/M3）。
+  # 仅本人数据：user_id 恒取会话 Principal，接口形状没有 user_id 参数。
+  /api/wallet/transactions:
+    get:
+      tags: [user]
+      operationId: listWalletTransactions
+      summary: 当前用户钱包流水列表
+      description: |
+        仅返回当前会话用户的流水（无 user_id 参数，传入也忽略）。排序固定为
+        `created_at DESC, id DESC`（同刻多行按 id 稳定排序），`p` 越界回落
+        最后一页。默认时间窗为近 30 天、`[from, to)` 左闭右开，跨度上限
+        90 天。`min`/`max` 作用于 `ABS(amount)` 的闭区间，与 `dir` 正交。
+        `ref` 原样精确匹配 `reference_id`；若值形如 UUID（32 hex 或
+        8-4-4-4-12）则双方去连字符/大小写归一比较。任何参数非法统一 422。
+        `items` 恒为数组（空结果 `[]`）；响应不返回 `note`/`user_id`。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: type
+          in: query
+          description: 流水类型（DB CHECK 的 11 个值，含 subscription_purchase）
+          schema:
+            type: string
+            enum:
+              - topup
+              - redemption
+              - consume_pre
+              - consume
+              - release
+              - reversal
+              - admin_adjustment
+              - bonus
+              - affiliate_transfer
+              - checkin_bonus
+              - subscription_purchase
+        - name: status
+          in: query
+          description: 状态筛选（consume_pre 行持有 hold/settled/released/expired）
+          schema:
+            type: string
+            enum: [hold, settled, released, expired, confirmed]
+        - name: dir
+          in: query
+          description: 方向；in ⇔ amount>0，out ⇔ amount<0
+          schema:
+            type: string
+            enum: [in, out]
+        - name: from
+          in: query
+          description: 起始时刻（含），RFC3339；默认 to−30 天
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: 结束时刻（不含），RFC3339；默认当前时刻
+          schema: { type: string, format: date-time }
+        - name: min
+          in: query
+          description: 'ABS(amount) 下界（含）'
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: max
+          in: query
+          description: 'ABS(amount) 上界（含）'
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: ref
+          in: query
+          description: 关联号；UUID 形状做去连字符归一，其它精确匹配
+          schema: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: offset 分页信封
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/WalletTransactionPage'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/wallet/transactions/{id}:
+    get:
+      tags: [user]
+      operationId: getWalletTransaction
+      summary: 当前用户钱包流水详情（服务端组装上下文）
+      description: |
+        同时按 `id` 与 `user_id` 查询：不存在、属于他人、id 非法一律 404，
+        不给出存在性探测入口。`usage` 按 `request_id + user_id` 查日志库，
+        日志库不可用或缺行时为 null（资金行仍 200）；`order`/`redemption`/
+        `segments` 在主库组装。`admin_adjustment` 的机器 note
+        （`admin adjustment: <mode> idem:<hex>`）只解析 `mode`，指纹段
+        绝不回显；`redemption` 不返回 code hash。`segments` 仅
+        `reference_type=usage_log` 时返回，公式：
+        held=−Σ(consume_pre)、refunded=Σ(release)、
+        charged=held+(−Σ(consume))−refunded。`corrects_transaction_id` 仅
+        reversal 行，反查同订单的 subscription_purchase 行。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/WalletTransactionDetail'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   # M5 在线充值配置（modules-04 §4.A F-04-01；P-9/P-17）。
   /api/topup/config:
     get:

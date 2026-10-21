@@ -908,6 +908,326 @@ schemas:
         type: string
         description: 当前定价分组（`users.group`）
 
+  # ---------------------------------------------------------------------------
+  # 钱包流水（modules-03 §F-03-02/F-03-03；W7/M3）
+  # ---------------------------------------------------------------------------
+
+  WalletTransactionType:
+    type: string
+    description: wallet_transactions.type 的 11 个 DB 值（含 subscription_purchase，G-DOM-48）
+    enum:
+      - topup
+      - redemption
+      - consume_pre
+      - consume
+      - release
+      - reversal
+      - admin_adjustment
+      - bonus
+      - affiliate_transfer
+      - checkin_bonus
+      - subscription_purchase
+
+  WalletTransactionStatus:
+    type: string
+    enum: [hold, settled, released, expired, confirmed]
+
+  WalletTransactionReferenceType:
+    type: string
+    description: 关联对象类型（DB CHECK 的 9 个值）
+    enum:
+      - order
+      - redemption
+      - usage_log
+      - admin_op
+      - reversal
+      - signup_grant
+      - promo
+      - checkin
+      - affiliate_transfer
+
+  WalletTransaction:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - type
+      - amount
+      - balance_after
+      - status
+      - reference_type
+      - reference_id
+      - created_at
+    description: |
+      流水列表行。金额是**有符号整数积分**（收入正、支出负），按 JSON number
+      序列化（R-M3-03；与 WalletSummary/OrderView 同口径，额度 ≤2^53−1）。
+      列表刻意不返回 note / user_id。
+    properties:
+      id:
+        type: integer
+        format: int64
+        minimum: 1
+      type:
+        $ref: '#/schemas/WalletTransactionType'
+      amount:
+        type: integer
+        format: int64
+        description: 有符号积分；收入正、支出负、不可为 0
+      balance_after:
+        type: integer
+        format: int64
+        minimum: 0
+        description: 变动后余额
+      status:
+        $ref: '#/schemas/WalletTransactionStatus'
+      reference_type:
+        allOf:
+          - $ref: '#/schemas/WalletTransactionReferenceType'
+        nullable: true
+      reference_id:
+        type: string
+        maxLength: 64
+        nullable: true
+        description: usage_log=requestID；order/redemption=对应 ID；admin_op=幂等键
+      created_at:
+        type: string
+        format: date-time
+
+  WalletTransactionPage:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        description: 空结果恒为 []（不是 null）
+        items:
+          $ref: '#/schemas/WalletTransaction'
+      total:
+        type: integer
+        format: int64
+        minimum: 0
+      page:
+        type: integer
+        minimum: 1
+        description: 1 基；越界请求回落到最后一页
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  WalletUsageContext:
+    type: object
+    additionalProperties: false
+    required:
+      - log_id
+      - request_id
+      - model
+      - prompt_tokens
+      - completion_tokens
+      - cost
+      - pre_deducted
+      - refunded
+    description: |
+      usage_logs 的调用摘要（日志库）。按 `request_id + user_id` 查询；
+      日志库不可用/缺行时整个对象为 null。
+    properties:
+      log_id:
+        type: integer
+        format: int64
+        minimum: 1
+      request_id:
+        type: string
+        format: uuid
+      model:
+        type: string
+      prompt_tokens:
+        type: integer
+        minimum: 0
+      completion_tokens:
+        type: integer
+        minimum: 0
+      cost:
+        type: integer
+        format: int64
+        minimum: 0
+      pre_deducted:
+        type: integer
+        format: int64
+        minimum: 0
+        nullable: true
+        description: NULL 表示该请求没有预扣（跨组补扣等）
+      refunded:
+        type: integer
+        format: int64
+        minimum: 0
+        nullable: true
+
+  WalletOrderContext:
+    type: object
+    additionalProperties: false
+    required: [id, status, amount, currency, provider, biz_kind]
+    description: 关联订单摘要（reference_type='order'；按 id+user_id 查询）。
+    properties:
+      id:
+        type: integer
+        format: int64
+        minimum: 1
+      status:
+        type: string
+        enum: [pending, succeeded, failed, expired, cancelled, refund_required, refunded, refund_failed]
+      amount:
+        type: integer
+        format: int64
+        minimum: 0
+      currency:
+        type: string
+        maxLength: 3
+      provider:
+        type: string
+        enum: [stripe, alipay, creem, waffo, waffo_pancake, epay, wallet]
+      biz_kind:
+        type: string
+        enum: [topup, subscribe, renew, change]
+
+  WalletRedemptionContext:
+    type: object
+    additionalProperties: false
+    required: [id, batch_name, credits]
+    description: 兑换码上下文；刻意不含 code_hash。
+    properties:
+      id:
+        type: integer
+        format: int64
+        minimum: 1
+      batch_name:
+        type: string
+        maxLength: 32
+        nullable: true
+      credits:
+        type: integer
+        format: int64
+        minimum: 1
+
+  WalletAdjustmentContext:
+    type: object
+    additionalProperties: false
+    required: [mode]
+    description: |
+      admin_adjustment 的调整方式（从机器 note 前缀解析，R-M3-05）。
+      理由/操作人当前未落库（module 07 写路径缺口），故不在此出现。
+    properties:
+      mode:
+        type: string
+        enum: [add, subtract, override]
+
+  WalletTransactionSegments:
+    type: object
+    additionalProperties: false
+    required: [held, charged, refunded]
+    description: |
+      同一 usage_log（user_id+reference_id）的三段金额：
+      held=−Σ(consume_pre)、refunded=Σ(release)、
+      charged=held+(−Σ(consume))−refunded；均为非负整数。
+    properties:
+      held:
+        type: integer
+        format: int64
+        minimum: 0
+      charged:
+        type: integer
+        format: int64
+        minimum: 0
+      refunded:
+        type: integer
+        format: int64
+        minimum: 0
+
+  WalletTransactionDetail:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - type
+      - amount
+      - balance_after
+      - status
+      - reference_type
+      - reference_id
+      - created_at
+      - note
+      - usage
+      - order
+      - redemption
+      - adjustment
+      - segments
+      - corrects_transaction_id
+    description: |
+      流水详情。服务端一次组装全部上下文（R-M3-04），前端不串多个端点。
+      刻意独立定义完整字段而非 allOf 引用 WalletTransaction：父 schema 的
+      additionalProperties:false 会拒绝这里追加的上下文键。
+    properties:
+      id:
+        type: integer
+        format: int64
+        minimum: 1
+      type:
+        $ref: '#/schemas/WalletTransactionType'
+      amount:
+        type: integer
+        format: int64
+      balance_after:
+        type: integer
+        format: int64
+        minimum: 0
+      status:
+        $ref: '#/schemas/WalletTransactionStatus'
+      reference_type:
+        allOf:
+          - $ref: '#/schemas/WalletTransactionReferenceType'
+        nullable: true
+      reference_id:
+        type: string
+        maxLength: 64
+        nullable: true
+      created_at:
+        type: string
+        format: date-time
+      note:
+        type: string
+        maxLength: 200
+        nullable: true
+        description: |
+          仅 admin_adjustment 且非机器格式时返回；机器 note 的
+          `idem:<64hex>` 指纹段在服务端剥离，绝不回显（R-M3-05）。
+      usage:
+        allOf:
+          - $ref: '#/schemas/WalletUsageContext'
+        nullable: true
+      order:
+        allOf:
+          - $ref: '#/schemas/WalletOrderContext'
+        nullable: true
+      redemption:
+        allOf:
+          - $ref: '#/schemas/WalletRedemptionContext'
+        nullable: true
+      adjustment:
+        allOf:
+          - $ref: '#/schemas/WalletAdjustmentContext'
+        nullable: true
+      segments:
+        allOf:
+          - $ref: '#/schemas/WalletTransactionSegments'
+        nullable: true
+      corrects_transaction_id:
+        type: integer
+        format: int64
+        nullable: true
+        description: |
+          仅 reversal 且 reference_type='order'：同订单最新一条
+          subscription_purchase 流水的 id；没有则 null（R-M3-06）。
+
   CreateOrderRequest:
     type: object
     additionalProperties: false

@@ -3582,6 +3582,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wallet/transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前用户钱包流水列表
+         * @description 仅返回当前会话用户的流水（无 user_id 参数，传入也忽略）。排序固定为
+         *     `created_at DESC, id DESC`（同刻多行按 id 稳定排序），`p` 越界回落
+         *     最后一页。默认时间窗为近 30 天、`[from, to)` 左闭右开，跨度上限
+         *     90 天。`min`/`max` 作用于 `ABS(amount)` 的闭区间，与 `dir` 正交。
+         *     `ref` 原样精确匹配 `reference_id`；若值形如 UUID（32 hex 或
+         *     8-4-4-4-12）则双方去连字符/大小写归一比较。任何参数非法统一 422。
+         *     `items` 恒为数组（空结果 `[]`）；响应不返回 `note`/`user_id`。
+         */
+        get: operations["listWalletTransactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wallet/transactions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前用户钱包流水详情（服务端组装上下文）
+         * @description 同时按 `id` 与 `user_id` 查询：不存在、属于他人、id 非法一律 404，
+         *     不给出存在性探测入口。`usage` 按 `request_id + user_id` 查日志库，
+         *     日志库不可用或缺行时为 null（资金行仍 200）；`order`/`redemption`/
+         *     `segments` 在主库组装。`admin_adjustment` 的机器 note
+         *     （`admin adjustment: <mode> idem:<hex>`）只解析 `mode`，指纹段
+         *     绝不回显；`redemption` 不返回 code hash。`segments` 仅
+         *     `reference_type=usage_log` 时返回，公式：
+         *     held=−Σ(consume_pre)、refunded=Σ(release)、
+         *     charged=held+(−Σ(consume))−refunded。`corrects_transaction_id` 仅
+         *     reversal 行，反查同订单的 subscription_purchase 行。
+         */
+        get: operations["getWalletTransaction"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/topup/config": {
         parameters: {
             query?: never;
@@ -8013,6 +8068,153 @@ export interface components {
             health: "healthy" | "low" | "depleted";
             /** @description 当前定价分组（`users.group`） */
             group: string;
+        };
+        /**
+         * @description wallet_transactions.type 的 11 个 DB 值（含 subscription_purchase，G-DOM-48）
+         * @enum {string}
+         */
+        WalletTransactionType: "topup" | "redemption" | "consume_pre" | "consume" | "release" | "reversal" | "admin_adjustment" | "bonus" | "affiliate_transfer" | "checkin_bonus" | "subscription_purchase";
+        /** @enum {string} */
+        WalletTransactionStatus: "hold" | "settled" | "released" | "expired" | "confirmed";
+        /**
+         * @description 关联对象类型（DB CHECK 的 9 个值）
+         * @enum {string}
+         */
+        WalletTransactionReferenceType: "order" | "redemption" | "usage_log" | "admin_op" | "reversal" | "signup_grant" | "promo" | "checkin" | "affiliate_transfer";
+        /**
+         * @description 流水列表行。金额是**有符号整数积分**（收入正、支出负），按 JSON number
+         *     序列化（R-M3-03；与 WalletSummary/OrderView 同口径，额度 ≤2^53−1）。
+         *     列表刻意不返回 note / user_id。
+         */
+        WalletTransaction: {
+            /** Format: int64 */
+            id: number;
+            type: components["schemas"]["WalletTransactionType"];
+            /**
+             * Format: int64
+             * @description 有符号积分；收入正、支出负、不可为 0
+             */
+            amount: number;
+            /**
+             * Format: int64
+             * @description 变动后余额
+             */
+            balance_after: number;
+            status: components["schemas"]["WalletTransactionStatus"];
+            reference_type: components["schemas"]["WalletTransactionReferenceType"] | null;
+            /** @description usage_log=requestID；order/redemption=对应 ID；admin_op=幂等键 */
+            reference_id: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        WalletTransactionPage: {
+            /** @description 空结果恒为 []（不是 null） */
+            items: components["schemas"]["WalletTransaction"][];
+            /** Format: int64 */
+            total: number;
+            /** @description 1 基；越界请求回落到最后一页 */
+            page: number;
+            page_size: number;
+        };
+        /**
+         * @description usage_logs 的调用摘要（日志库）。按 `request_id + user_id` 查询；
+         *     日志库不可用/缺行时整个对象为 null。
+         */
+        WalletUsageContext: {
+            /** Format: int64 */
+            log_id: number;
+            /** Format: uuid */
+            request_id: string;
+            model: string;
+            prompt_tokens: number;
+            completion_tokens: number;
+            /** Format: int64 */
+            cost: number;
+            /**
+             * Format: int64
+             * @description NULL 表示该请求没有预扣（跨组补扣等）
+             */
+            pre_deducted: number | null;
+            /** Format: int64 */
+            refunded: number | null;
+        };
+        /** @description 关联订单摘要（reference_type='order'；按 id+user_id 查询）。 */
+        WalletOrderContext: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required" | "refunded" | "refund_failed";
+            /** Format: int64 */
+            amount: number;
+            currency: string;
+            /** @enum {string} */
+            provider: "stripe" | "alipay" | "creem" | "waffo" | "waffo_pancake" | "epay" | "wallet";
+            /** @enum {string} */
+            biz_kind: "topup" | "subscribe" | "renew" | "change";
+        };
+        /** @description 兑换码上下文；刻意不含 code_hash。 */
+        WalletRedemptionContext: {
+            /** Format: int64 */
+            id: number;
+            batch_name: string | null;
+            /** Format: int64 */
+            credits: number;
+        };
+        /**
+         * @description admin_adjustment 的调整方式（从机器 note 前缀解析，R-M3-05）。
+         *     理由/操作人当前未落库（module 07 写路径缺口），故不在此出现。
+         */
+        WalletAdjustmentContext: {
+            /** @enum {string} */
+            mode: "add" | "subtract" | "override";
+        };
+        /**
+         * @description 同一 usage_log（user_id+reference_id）的三段金额：
+         *     held=−Σ(consume_pre)、refunded=Σ(release)、
+         *     charged=held+(−Σ(consume))−refunded；均为非负整数。
+         */
+        WalletTransactionSegments: {
+            /** Format: int64 */
+            held: number;
+            /** Format: int64 */
+            charged: number;
+            /** Format: int64 */
+            refunded: number;
+        };
+        /**
+         * @description 流水详情。服务端一次组装全部上下文（R-M3-04），前端不串多个端点。
+         *     刻意独立定义完整字段而非 allOf 引用 WalletTransaction：父 schema 的
+         *     additionalProperties:false 会拒绝这里追加的上下文键。
+         */
+        WalletTransactionDetail: {
+            /** Format: int64 */
+            id: number;
+            type: components["schemas"]["WalletTransactionType"];
+            /** Format: int64 */
+            amount: number;
+            /** Format: int64 */
+            balance_after: number;
+            status: components["schemas"]["WalletTransactionStatus"];
+            reference_type: components["schemas"]["WalletTransactionReferenceType"] | null;
+            reference_id: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description 仅 admin_adjustment 且非机器格式时返回；机器 note 的
+             *     `idem:<64hex>` 指纹段在服务端剥离，绝不回显（R-M3-05）。
+             */
+            note: string | null;
+            usage: components["schemas"]["WalletUsageContext"] | null;
+            order: components["schemas"]["WalletOrderContext"] | null;
+            redemption: components["schemas"]["WalletRedemptionContext"] | null;
+            adjustment: components["schemas"]["WalletAdjustmentContext"] | null;
+            segments: components["schemas"]["WalletTransactionSegments"] | null;
+            /**
+             * Format: int64
+             * @description 仅 reversal 且 reference_type='order'：同订单最新一条
+             *     subscription_purchase 流水的 id；没有则 null（R-M3-06）。
+             */
+            corrects_transaction_id: number | null;
         };
         /** @description 公开的渠道配置；secret 永不出现。 */
         TopupProviderConfig: {
@@ -15117,6 +15319,77 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listWalletTransactions: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 流水类型（DB CHECK 的 11 个值，含 subscription_purchase） */
+                type?: "topup" | "redemption" | "consume_pre" | "consume" | "release" | "reversal" | "admin_adjustment" | "bonus" | "affiliate_transfer" | "checkin_bonus" | "subscription_purchase";
+                /** @description 状态筛选（consume_pre 行持有 hold/settled/released/expired） */
+                status?: "hold" | "settled" | "released" | "expired" | "confirmed";
+                /** @description 方向；in ⇔ amount>0，out ⇔ amount<0 */
+                dir?: "in" | "out";
+                /** @description 起始时刻（含），RFC3339；默认 to−30 天 */
+                from?: string;
+                /** @description 结束时刻（不含），RFC3339；默认当前时刻 */
+                to?: string;
+                /** @description ABS(amount) 下界（含） */
+                min?: number;
+                /** @description ABS(amount) 上界（含） */
+                max?: number;
+                /** @description 关联号；UUID 形状做去连字符归一，其它精确匹配 */
+                ref?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description offset 分页信封 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletTransactionPage"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getWalletTransaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletTransactionDetail"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
+            429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
         };
     };
