@@ -181,10 +181,12 @@ var EnumChecks = map[string][]string{
 	"plugin_marketplace_sources.last_check_status": {"pending", "ok", "failed"},
 
 	// 任务数据面主表（M6d Task 6a，relay-06 §7 / 契约 §2.5）。
-	// family 当前只有 plugin（本族判别键）；fetch_mode 是「本系统如何取回」，
-	// 与插件清单 meta.fetchMode（per_task/batch）同名不同义；state 是
-	// TaskState 的 7 态持久化字面量。
-	"tasks.family":     {"plugin"},
+	// family 是族判别键：plugin=任务插件平台（06），mj=绘图任务族（05，
+	// W8/MJ-A0 迁移 20261023090000 扩入）；两族共用同一张 tasks 表，
+	// 由 family 决定 Action 的解释权与轮询归属（R-MJ-03/R-MJ-04）。
+	// fetch_mode 是「本系统如何取回」，与插件清单 meta.fetchMode
+	// （per_task/batch）同名不同义；state 是 TaskState 的 7 态持久化字面量。
+	"tasks.family":     {"plugin", "mj"},
 	"tasks.fetch_mode": {"poll", "callback", "inline"},
 	"tasks.state": {
 		"not_start", "submitted", "queued", "in_progress",

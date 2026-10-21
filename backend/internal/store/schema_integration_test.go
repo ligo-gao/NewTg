@@ -523,6 +523,10 @@ func TestMainSchemaTaskIndexes(t *testing.T) {
 		{"tasks_user_created_idx", []string{"user_id", "created_at"}, false, ""},
 		// T6b：终态补偿扫描的部分索引（T6b 迁移）。谓词含 billing_pending。
 		{"tasks_billing_pending_idx", []string{"id"}, true, "billing_pending"},
+		// W8/MJ-A0：按 family 领取非终态行（R-MJ-04 的两族独立轮询路径）。
+		// 设计建议形状是 (family, state, next_poll_at)，但 tasks 无
+		// next_poll_at 列；非终态由部分谓词表达，id 支撑领取顺序。
+		{"tasks_family_pending_idx", []string{"family", "id"}, true, "success"},
 	}
 	for _, c := range cases {
 		c := c
@@ -1296,9 +1300,25 @@ func TestMainSchemaDocumentedConstraints(t *testing.T) {
 			VALUES ('chk_task_state', 'plugin', 'generate', 'sample', 'poll', 'bogus', 1)`)
 	})
 	t.Run("任务 family 越界被拒", func(t *testing.T) {
+		// W8/MJ-A0：'mj' 已成为合法族（20261023090000），未知值用 'bogus'
+		// 证明 CHECK 仍然真实生效，而不是只把约束删掉了。
 		expectExecError(t, db, `INSERT INTO tasks
 			(public_task_id, family, action, plugin_key, fetch_mode, state, user_id)
-			VALUES ('chk_task_family', 'mj', 'generate', 'sample', 'poll', 'submitted', 1)`)
+			VALUES ('chk_task_family', 'bogus', 'generate', 'sample', 'poll', 'submitted', 1)`)
+	})
+	t.Run("任务 family 接受 mj", func(t *testing.T) {
+		// 正向探针：MJ 族共用 tasks 表（R-MJ-03），必须能真实写入。
+		// 用回滚事务避免留下数据（public_task_id 全局唯一）。
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO tasks
+			(public_task_id, family, action, plugin_key, fetch_mode, state, user_id)
+			VALUES ('chk_task_family_mj', 'mj', 'IMAGINE', '', 'poll', 'submitted', 1)`); err != nil {
+			t.Fatalf("mj family must be accepted: %v", err)
+		}
 	})
 	t.Run("任务 progress 越界被拒", func(t *testing.T) {
 		expectExecError(t, db, `INSERT INTO tasks

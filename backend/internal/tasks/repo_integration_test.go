@@ -153,10 +153,10 @@ func TestRepoPollingAndSettlement(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// ListPending 只返回未完成行。
-	pending, err := repo.ListPending(ctx, 1000)
+	// ListPendingByFamily 只返回本族的未完成行。
+	pending, err := repo.ListPendingByFamily(ctx, FamilyPlugin, 1000)
 	if err != nil {
-		t.Fatalf("ListPending: %v", err)
+		t.Fatalf("ListPendingByFamily: %v", err)
 	}
 	if !containsTask(pending, task.ID) {
 		t.Fatalf("pending list missing the new task")
@@ -202,7 +202,7 @@ func TestRepoPollingAndSettlement(t *testing.T) {
 	}
 
 	// 补偿扫描按 private_data 标记命中；UpdateBilling 清标记并回写 quota。
-	reconcilable, err := repo.ListReconcilable(ctx, 100)
+	reconcilable, err := repo.ListReconcilable(ctx, FamilyPlugin, 100)
 	if err != nil {
 		t.Fatalf("ListReconcilable: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestRepoPollingAndSettlement(t *testing.T) {
 	if got.Quota != 0 || boolFlag(got.PrivateData["billing_pending"]) || !boolFlag(got.PrivateData["billing_final"]) {
 		t.Fatalf("billing update not applied: quota=%d private=%#v", got.Quota, got.PrivateData)
 	}
-	reconcilable, err = repo.ListReconcilable(ctx, 100)
+	reconcilable, err = repo.ListReconcilable(ctx, FamilyPlugin, 100)
 	if err != nil {
 		t.Fatalf("ListReconcilable after finish: %v", err)
 	}

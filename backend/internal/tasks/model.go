@@ -73,6 +73,30 @@ func ParseState(raw string) State {
 	}
 }
 
+// Family 是 tasks.family 的持久化字面量（契约 §2.5 的族判别键）。
+//
+// 为什么用字符串常量而不是复用 contract.TaskFamily 的 int 枚举：DB 列是
+// text + CHECK，仓储写入与 SQL 过滤直接落字面量；内部枚举只服务于契约层，
+// 在数据面再做一层 int ↔ text 映射只会多一个漂移点（且 enum 对账要求
+// DB 成员集合与 store.EnumChecks 逐字相等）。
+//
+// 资金含义：family 决定「谁有权推进/结算这一行」。插件 poller 误领 MJ 行
+// 会按插件语义累计 plugin_unavailable 并在上限后 FAILURE + 退款，而 MJ
+// 上游可能仍在产出——这是直接的资金损失（R-MJ-04），所以过滤是正确性前提，
+// 不是性能优化。
+const (
+	FamilyPlugin = "plugin"
+	FamilyMJ     = "mj"
+)
+
+// ValidFamily 报告 family 是否属于冻结的两族集合。
+//
+// 领取接口用它拒绝拼错的家族名：静默返回空结果会让「一个字打错」
+// 表现成「今天没有待轮询任务」，把资金侧故障藏起来。
+func ValidFamily(family string) bool {
+	return family == FamilyPlugin || family == FamilyMJ
+}
+
 // PublicTaskIDPrefix 是冻结的对外任务前缀（relay-06 §7：task_<32 随机>）。
 const PublicTaskIDPrefix = "task_"
 

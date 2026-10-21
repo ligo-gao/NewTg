@@ -235,7 +235,11 @@ func (p *Poller) markBilling(ctx context.Context, task *Task, quota *int64, flag
 	}
 }
 
-// reconcileOnce 是补偿扫描的最小版本。
+// reconcileOnce 是补偿扫描的最小版本（只处理插件族）。
+//
+// family='plugin' 是刻意的：补偿 = 按族的计费语义动钱。MJ 行的结算接线在
+// MJ-a2/d（R-MJ-01 / R-MJ-04），在那之前插件补偿器不得替它结算；MJ 族自己
+// 的补偿扫描届时传 FamilyMJ 即可复用同一 settleTerminal。
 //
 // 处理对象（均为终态）：
 //   - FAILURE 且 billing_pending/refund_pending：重试退款；
@@ -245,7 +249,7 @@ func (p *Poller) markBilling(ctx context.Context, task *Task, quota *int64, flag
 //
 // 单轮上限 defaultReconcileLimit（200 行）；更细的分页/水位属 T6c。
 func (p *Poller) reconcileOnce(ctx context.Context) {
-	tasks, err := p.repo.ListReconcilable(ctx, p.reconcileLimit)
+	tasks, err := p.repo.ListReconcilable(ctx, FamilyPlugin, p.reconcileLimit)
 	if err != nil {
 		p.log.Error("tasks: list reconcilable tasks failed; retrying next round", "error", err)
 		return
