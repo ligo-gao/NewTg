@@ -94,7 +94,8 @@
     "sec": "SSRF et mots sensibles",
     "notify_smtp": "SMTP",
     "rl_health": "Santé des canaux",
-    "notify_webhook": "Notifications Webhook"
+    "notify_webhook": "Notifications Webhook",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "Affiché sur chaque page et utilisé comme base pour les liens de rappel",
@@ -109,7 +110,8 @@
     "sec": "Les requêtes sortantes sont vérifiées avant de quitter la passerelle",
     "notify_smtp": "Requis pour la vérification d'e-mail et les notifications par e-mail",
     "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance",
-    "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS"
+    "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS",
+    "pay_epay": "Caisse Epay générique (signée MD5, passerelles type ZPay)"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Clé publique Alipay",
         "gateway_url": "URL de la passerelle",
         "sandbox": "Mode bac à sable"
+      },
+      "epay": {
+        "enabled": "Activer Epay",
+        "api_url": "URL de l'API de paiement",
+        "pid": "Identifiant marchand (pid)",
+        "key": "Clé de signature",
+        "sign_mode": "Mode de signature",
+        "notify_url": "URL de notification",
+        "return_url": "URL de retour"
       }
     },
     "rl": {
@@ -300,6 +311,13 @@
       "alipay": {
         "private_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle.",
         "public_key": "Encodé en PEM. Laissez vide pour conserver la clé actuelle."
+      },
+      "epay": {
+        "api_url": "Doit être une URL https absolue, 1024 caractères maximum.",
+        "key": "Sert à signer les commandes et à vérifier les rappels. Laissez vide pour conserver la clé actuelle.",
+        "sign_mode": "append : chaîne signée + clé (standard). amp : chaîne signée & clé (certaines passerelles). Commandes et rappels doivent utiliser le même mode.",
+        "notify_url": "Facultatif. URL https absolue ; dérivée de l'adresse du service si vide.",
+        "return_url": "Facultatif. URL absolue ou chemin relatif au site pour le retour du navigateur."
       }
     },
     "rl": {
@@ -362,7 +380,9 @@
       "payment_success": "Paiement réussi",
       "announcement": "Annonce publiée",
       "user_signup": "Inscription d'un utilisateur"
-    }
+    },
+    "epay_sign_append": "Ajouter la clé (standard)",
+    "epay_sign_amp": "Joindre avec & (passerelles anciennes)"
   },
   "status": {
     "title": "État du système",

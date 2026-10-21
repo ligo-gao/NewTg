@@ -94,7 +94,8 @@
     "sec": "SSRF と機密ワード",
     "notify_smtp": "SMTP",
     "rl_health": "チャネルの健全性",
-    "notify_webhook": "Webhook 通知"
+    "notify_webhook": "Webhook 通知",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "すべてのページに表示され、コールバックリンクの基準になります",
@@ -109,7 +110,8 @@
     "sec": "送信リクエストはゲートウェイを出る前に検査されます",
     "notify_smtp": "メール確認とメール通知に必要です",
     "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります",
-    "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します"
+    "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します",
+    "pay_epay": "汎用 Epay 決済（MD5 署名、ZPay 系ゲートウェイ互換）"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Alipay 公開鍵",
         "gateway_url": "ゲートウェイ URL",
         "sandbox": "サンドボックスモード"
+      },
+      "epay": {
+        "enabled": "Epay を有効化",
+        "api_url": "決済 API URL",
+        "pid": "加盟店 ID（pid）",
+        "key": "署名キー",
+        "sign_mode": "署名方式",
+        "notify_url": "通知 URL",
+        "return_url": "戻り URL"
       }
     },
     "rl": {
@@ -300,6 +311,13 @@
       "alipay": {
         "private_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。",
         "public_key": "PEM エンコード。空欄のままにすると現在のキーを維持します。"
+      },
+      "epay": {
+        "api_url": "https の絶対 URL（最大 1024 文字）。",
+        "key": "注文の署名とコールバック検証に使用します。空欄のままにすると現在のキーを保持します。",
+        "sign_mode": "append：署名文字列 + キー（標準）。amp：署名文字列 & キー（一部ゲートウェイ）。注文とコールバックは同じ方式でなければなりません。",
+        "notify_url": "任意。https の絶対 URL。空欄の場合はサービスアドレスから導出します。",
+        "return_url": "任意。絶対 URL またはサイト相対パス（ブラウザの戻り先）。"
       }
     },
     "rl": {
@@ -362,7 +380,9 @@
       "payment_success": "支払い成功",
       "announcement": "お知らせ公開",
       "user_signup": "ユーザー登録"
-    }
+    },
+    "epay_sign_append": "キーを付加（標準）",
+    "epay_sign_amp": "& で連結（旧式ゲートウェイ）"
   },
   "status": {
     "title": "システム状態",

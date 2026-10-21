@@ -392,6 +392,39 @@ const PAY_ALIPAY: SectionConfig = {
   ],
 }
 
+const PAY_EPAY: SectionConfig = {
+  id: 'pay.epay',
+  titleKey: 'settings.section.pay_epay',
+  descriptionKey: 'settings.section_description.pay_epay',
+  fields: [
+    toggle('pay.epay.enabled', label('pay.epay.enabled')),
+    text('pay.epay.api_url', label('pay.epay.api_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.api_url'),
+    }),
+    text('pay.epay.pid', label('pay.epay.pid'), { maxLength: 128 }),
+    // 签名密钥只写不读：服务端返回掩码，留空 = 不修改，清空 = 显式删除。
+    field('pay.epay.key', label('pay.epay.key'), 'secret', {
+      hintKey: hint('pay.epay.key'),
+    }),
+    field('pay.epay.sign_mode', label('pay.epay.sign_mode'), 'select', {
+      options: [
+        { value: 'append', labelKey: 'settings.option.epay_sign_append' },
+        { value: 'amp', labelKey: 'settings.option.epay_sign_amp' },
+      ],
+      hintKey: hint('pay.epay.sign_mode'),
+    }),
+    text('pay.epay.notify_url', label('pay.epay.notify_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.notify_url'),
+    }),
+    text('pay.epay.return_url', label('pay.epay.return_url'), {
+      maxLength: 1024,
+      hintKey: hint('pay.epay.return_url'),
+    }),
+  ],
+}
+
 const RL: SectionConfig = {
   id: 'rl',
   titleKey: 'settings.section.rl',
@@ -601,7 +634,7 @@ export const SETTINGS_TABS_CONFIG: readonly TabConfig[] = [
     id: 'payment',
     labelKey: 'settings.tab.payment',
     descriptionKey: 'settings.tab_description.payment',
-    sections: [PAY, PAY_STRIPE, PAY_ALIPAY],
+    sections: [PAY, PAY_STRIPE, PAY_ALIPAY, PAY_EPAY],
   },
   {
     id: 'security',

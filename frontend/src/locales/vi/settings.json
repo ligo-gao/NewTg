@@ -94,7 +94,8 @@
     "sec": "SSRF và từ nhạy cảm",
     "notify_smtp": "SMTP",
     "rl_health": "Sức khỏe kênh",
-    "notify_webhook": "Thông báo Webhook"
+    "notify_webhook": "Thông báo Webhook",
+    "pay_epay": "Epay"
   },
   "section_description": {
     "site": "Hiển thị trên mọi trang và dùng làm cơ sở cho liên kết gọi lại",
@@ -109,7 +110,8 @@
     "sec": "Yêu cầu đi ra được kiểm tra trước khi rời cổng",
     "notify_smtp": "Cần thiết cho xác minh email và thông báo qua email",
     "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên",
-    "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS"
+    "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS",
+    "pay_epay": "Cổng thanh toán Epay chung (ký MD5, tương thích ZPay)"
   },
   "field": {
     "site": {
@@ -205,6 +207,15 @@
         "public_key": "Khóa công khai Alipay",
         "gateway_url": "URL cổng",
         "sandbox": "Chế độ hộp cát"
+      },
+      "epay": {
+        "enabled": "Bật Epay",
+        "api_url": "URL API thanh toán",
+        "pid": "Mã merchant (pid)",
+        "key": "Khóa ký",
+        "sign_mode": "Cách ghép chữ ký",
+        "notify_url": "URL thông báo",
+        "return_url": "URL quay lại"
       }
     },
     "rl": {
@@ -300,6 +311,13 @@
       "alipay": {
         "private_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại.",
         "public_key": "Mã hóa PEM. Để trống để giữ khóa hiện tại."
+      },
+      "epay": {
+        "api_url": "Phải là URL https tuyệt đối, tối đa 1024 ký tự.",
+        "key": "Dùng để ký đơn hàng và xác thực callback. Để trống để giữ khóa hiện tại.",
+        "sign_mode": "append: chuỗi ký + khóa (chuẩn). amp: chuỗi ký & khóa (một số cổng). Đơn hàng và callback phải dùng cùng một cách.",
+        "notify_url": "Tùy chọn. URL https tuyệt đối; để trống sẽ suy ra từ địa chỉ dịch vụ.",
+        "return_url": "Tùy chọn. URL tuyệt đối hoặc đường dẫn tương đối trên site cho trình duyệt quay lại."
       }
     },
     "rl": {
@@ -362,7 +380,9 @@
       "payment_success": "Thanh toán thành công",
       "announcement": "Thông báo được đăng",
       "user_signup": "Người dùng đăng ký"
-    }
+    },
+    "epay_sign_append": "Nối khóa (chuẩn)",
+    "epay_sign_amp": "Nối bằng & (cổng cũ)"
   },
   "status": {
     "title": "Trạng thái hệ thống",

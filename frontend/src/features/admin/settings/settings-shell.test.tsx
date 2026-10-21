@@ -122,6 +122,20 @@ const PAY_ALIPAY_STATE: SectionState = {
   items: [item('pay.alipay.enabled', false)],
 }
 
+const PAY_EPAY_STATE: SectionState = {
+  updated_at: '2026-10-19T10:00:00Z',
+  items: [
+    item('pay.epay.enabled', true),
+    item('pay.epay.api_url', 'https://pay.example.com/api'),
+    item('pay.epay.pid', '1001', { dangerous: true }),
+    // 密钥只以掩码回传：表单不得把它写进输入框。
+    item('pay.epay.key', '******', { secret: true, default: null }),
+    item('pay.epay.sign_mode', 'append'),
+    item('pay.epay.notify_url', ''),
+    item('pay.epay.return_url', ''),
+  ],
+}
+
 const POLICY_STATE: SectionState = {
   updated_at: '2026-10-19T10:00:00Z',
   items: [
@@ -195,6 +209,7 @@ async function renderShell(tab: SettingsTab = 'site') {
       pay: structuredClone(PAY_STATE),
       'pay.stripe': structuredClone(PAY_STRIPE_STATE),
       'pay.alipay': structuredClone(PAY_ALIPAY_STATE),
+      'pay.epay': structuredClone(PAY_EPAY_STATE),
       'rl.health': structuredClone(POLICY_STATE),
     },
     requests,
@@ -408,6 +423,47 @@ describe('SettingsShell contract', () => {
 
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]?.body?.values).toEqual({ 'pay.amount_presets_cny': [10, 30, 50] })
+  })
+
+  it('renders the Epay card with seven fields and never echoes the signing key (C1)', async () => {
+    const user = userEvent.setup()
+    const requests = await renderShell('payment')
+
+    const card = await screen.findByTestId('settings-section-pay.epay')
+    await within(card).findByLabelText('Enable Epay')
+    for (const labelText of [
+      'Enable Epay',
+      'Checkout API URL',
+      'Merchant ID (pid)',
+      'Signing key',
+      'Signature mode',
+      'Notify URL',
+      'Return URL',
+    ]) {
+      expect(within(card).getByLabelText(labelText)).toBeTruthy()
+    }
+
+    // 密钥是 secret 输入且不回显服务端掩码。
+    const key = within(card).getByLabelText('Signing key') as HTMLInputElement
+    expect(key.type).toBe('password')
+    expect(key.value).toBe('')
+    expect(within(card).queryByDisplayValue('******')).toBeNull()
+    expect(within(card).getByText('Configured')).toBeTruthy()
+
+    // 签名方式只有两种口径。
+    const signMode = within(card).getByLabelText('Signature mode') as HTMLSelectElement
+    expect(Array.from(signMode.options).map((option) => option.value)).toEqual([
+      '',
+      'append',
+      'amp',
+    ])
+
+    // 输入新密钥后保存，只提交该键。
+    await user.type(key, 'new-epay-key')
+    await user.click(within(card).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]?.section).toBe('pay.epay')
+    expect(requests[0]?.body?.values).toEqual({ 'pay.epay.key': 'new-epay-key' })
   })
 
   it('keeps newlines in line lists and asks for dangerous confirmation (F1/F3)', async () => {
