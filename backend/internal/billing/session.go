@@ -558,13 +558,19 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 // Terminate 终结会话并结算最终差额（多退少补，含少补）。
 //
 // 跨库顺序（裁决）：usage_logs 在独立日志库，**不存在跨库事务**。
-// 固定顺序为：
+// 基础顺序为：
 //  1. 只读预检 hold 状态（worker 已退款的会话不再写成功日志）；
 //  2. 构造 SettlementOutcome 并调用 Saturator.Saturate（按 request_id 幂等）；
 //  3. 主库结算（关 hold + 差额流水，同一事务）。
 //
-// 若第 2 步失败 → 不结算，保留 hold，返回 error；若第 3 步失败 → 日志已写，
-// hold 仍在，worker 兜底退款时把日志置 refunded（billing-06 §5.3 的兜底路径）。
+// 【两条 charge-first 例外】需要向钱包**补扣**时（无 hold 补扣、或成本
+// 超出已预扣+已增量），顺序反转为「先主库扣款、后写日志」：否则扣款事务
+// 回滚后 success 日志会永久按全价夸大收入（R-18 / T5 复核 I5）。此时
+// 日志写失败不会再重试扣款，只上抛错误供补写。
+//
+// 其余方向的失败面：第 2 步失败 → 不结算，保留 hold，返回 error；第 3 步
+// 失败 → 日志已写，hold 仍在，worker 兜底退款时把日志置 refunded
+// （billing-06 §5.3 的兜底路径）。
 func (s *Session) Terminate(fact contract.UsageFact) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -140,16 +140,20 @@ func (p *Poller) markSettlementPending(ctx context.Context, task *Task, requestI
 }
 
 // truncateSettlementReason 截断待定原因，避免把上游大段错误写进 jsonb。
+//
+// 按 rune 而不是字节截断：PostgreSQL 的 UTF8 编码拒绝非法字节序列，按
+// 字节切会把多字节字符截成半个，导致整轮 private_data 更新失败
+// （settlement_pending_reason/since 反而落不了库）。
 func truncateSettlementReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	const max = 512
-	text := err.Error()
-	if len(text) > max {
-		text = text[:max]
+	const maxRunes = 512
+	runes := []rune(err.Error())
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
 	}
-	return text
+	return string(runes)
 }
 
 // manifestFor 取任务所属插件的 manifest。
@@ -201,7 +205,14 @@ func (p *Poller) settleSuccessAtHeld(ctx context.Context, task *Task, requestID 
 
 // finishBilling 在资金动作成功后落最终标记；失败只记录（幂等动作可重试）。
 func (p *Poller) finishBilling(ctx context.Context, task *Task, quota *int64, extra map[string]any) {
-	flags := map[string]any{"billing_final": true}
+	flags := map[string]any{
+		"billing_final": true,
+		// 复核 Minor-b：封账成功后清除待定审计字段。它们只在
+		// settlement_pending 期间有意义，残留会误导运维以为仍在待定。
+		// UpdateBilling 把 JSON null 解释为“删除该键”。
+		"settlement_pending_reason": nil,
+		"settlement_pending_since":  nil,
+	}
 	for k, v := range extra {
 		flags[k] = v
 	}

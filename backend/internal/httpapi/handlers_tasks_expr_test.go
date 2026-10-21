@@ -79,6 +79,23 @@ func TestFreezeTaskBillingSkipsTokenExpressionWithMarker(t *testing.T) {
 	}
 }
 
+// TestFreezeTaskBillingSkipsModelConstantExpression 覆盖复核 Important-1：
+// 模型级纯常量表达式即使可编译也必须跳过（不引用 u()），并落 held_skip。
+func TestFreezeTaskBillingSkipsModelConstantExpression(t *testing.T) {
+	h := &TasksHandler{}
+	rc := &contract.RelayContext{PriceSnapshot: &contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: "0.5",
+	}}
+	res, err := h.freezeTaskBilling(context.Background(), rc, "sample", "client", "upstream", nil)
+	if err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if res.snapshot != nil || res.skip == nil || res.skip["source"] != "held_skip" {
+		t.Fatalf("model constant must be held_skip: %#v", res)
+	}
+}
+
 // TestFreezeTaskBillingBrokenTaskExpressionRejected 覆盖复核 I2：
 // 含 u( 却不可编译的模型表达式必须在提交期 fail-closed。
 func TestFreezeTaskBillingBrokenTaskExpressionRejected(t *testing.T) {

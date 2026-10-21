@@ -141,6 +141,32 @@ func TestSettleExprTerminateErrorKeepsPending(t *testing.T) {
 	}
 }
 
+// TestSettleUsesFrozenQuotaPerUnit 覆盖复核 M1：快照冻结的 QPU 必须优先于
+// 结算时进程当前的 QPU（变异：删掉 EvalTaskCost 的 WithQuotaPerUnit 会变红）。
+func TestSettleUsesFrozenQuotaPerUnit(t *testing.T) {
+	prev := pricing.CurrentQuotaPerUnit()
+	// 进程当前 QPU=100；快照把提交期的 QPU 改成 200。
+	if err := pricing.SetQuotaPerUnit(100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pricing.SetQuotaPerUnit(prev) })
+
+	repo := newFakePollRepo()
+	snapshot := snapshotFor(t, `u("seconds") * 0.7`, 1)
+	snapshot["quota_per_unit"] = float64(200)
+	task := repo.add(successTaskWithSnapshot(t, snapshot,
+		map[string]any{"seconds": float64(10)}))
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, nil)
+
+	p.settleTerminal(context.Background(), task, compilePollPlugin(t))
+
+	// 10 秒 × $0.7 × 200 = 1400；若误用进程 QPU=100 则会是 700。
+	if len(handoff.costs) != 1 || handoff.costs[0] != 1400 {
+		t.Fatalf("costs=%v, want [1400] from frozen QPU", handoff.costs)
+	}
+}
+
 // TestSettleUsesFrozenUnitsAfterPluginRename 覆盖复核 I1：插件在任务提交后
 // 改名/下架，结算仍按快照冻结的「字段 → 单位」求值，不因 live manifest
 // 缺失而永久卡在 settlement_pending。

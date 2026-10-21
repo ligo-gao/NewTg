@@ -188,6 +188,42 @@ func TestResolveTaskExprModelSkipIsExplicit(t *testing.T) {
 	}
 }
 
+// TestResolveTaskExprModelConstantSkipped 覆盖复核 Important-1：模型级纯常量
+// 表达式即使可编译，也不是任务表达式（不引用 u()）→ 必须跳过并给出原因。
+func TestResolveTaskExprModelConstantSkipped(t *testing.T) {
+	cfg := BillingSetting{
+		PluginBillingExpr: map[string]string{},
+		BillingMode:       map[string]string{"m": "tiered_expr"},
+		BillingExpr:       map[string]string{"m": "0.5"},
+	}
+	res, err := ResolveTaskExprDetailed(cfg, "sample", "m", "m")
+	if err != nil {
+		t.Fatalf("constant must be skipped, not error: %v", err)
+	}
+	if res.Expr != nil || res.Source != ExprSourceHeldSkip || res.SkipReason == "" {
+		t.Fatalf("model constant must be held_skip: %#v", res)
+	}
+}
+
+// TestResolveTaskExprPluginConstantIsTaskExpr 插件级常量按次价是合法任务
+// 表达式（与模型级不同），必须正常求值。
+func TestResolveTaskExprPluginConstantIsTaskExpr(t *testing.T) {
+	prev := CurrentQuotaPerUnit()
+	if err := SetQuotaPerUnit(100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = SetQuotaPerUnit(prev) })
+
+	cfg := BillingSetting{PluginBillingExpr: map[string]string{"sample::m": "0.5"}}
+	e, src, err := ResolveTaskExpr(cfg, "sample", "m", "m")
+	if err != nil || e == nil || src != ExprSourcePluginClient {
+		t.Fatalf("plugin constant must resolve: e=%v src=%s err=%v", e, src, err)
+	}
+	if credits, err := EvalTaskUsage(e, contract.TaskUsageFact{}); err != nil || credits != 50 {
+		t.Fatalf("credits=%d err=%v, want 50", credits, err)
+	}
+}
+
 // TestResolveTaskExprModelBrokenTaskExprFailsClosed 覆盖复核 I2：模型级
 // 表达式含 u( 却不可编译 → 提交期 fail-closed，不能静默回落 held。
 func TestResolveTaskExprModelBrokenTaskExprFailsClosed(t *testing.T) {

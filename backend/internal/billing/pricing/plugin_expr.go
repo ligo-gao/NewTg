@@ -308,25 +308,24 @@ func ResolveTaskExprDetailed(cfg BillingSetting, pluginKey, clientModel, mappedM
 	return skipped, nil
 }
 
-// taskExprOrNil 在模型配置了 tiered 表达式时编译它。
+// taskExprOrNil 在模型配置了 tiered 表达式时判断它能否作为任务表达式。
 //
-// 模型级表达式可能是 token 语义（p/c），不能当任务表达式用。区分两种失败：
-//   - 源码不含 u( → 不是任务表达式，返回 skipReason（正常回落）；
-//   - 源码含 u( 但编译失败 → 返回 error（配置错误，提交期 fail-closed）。
-//
-// 为什么含 u( 不能静默跳过：那是管理员显式写的任务覆盖，写坏后回落 held
-// 会让金额与配置意图不一致，且没有任何可审计的“降级”信号。
+// 判别式是 **ContainsTaskUsageCall**，不是「能否编译」（复核 Important-1）：
+//   - 不含 u( → 无论是否可编译，都不是任务表达式，返回 skipReason；
+//     纯常量 `"0.5"` 也属于此列——它在模型级是「按次/固定价」语义，不能
+//     被当成任务用量表达式冻结，否则会静默改变计费口径且不留跳过标记。
+//   - 含 u( 但不可编译 → error（显式任务覆盖写坏了，提交期 fail-closed）。
 func taskExprOrNil(cfg BillingSetting, model string) (*Expr, string, error) {
 	if !isTieredModel(cfg, model) {
 		return nil, "", nil
 	}
 	src := cfg.BillingExpr[model]
+	if !ContainsTaskUsageCall(src) {
+		return nil, "tiered expression does not reference u() task usage", nil
+	}
 	e, err := CompileTaskExpr(src)
 	if err != nil {
-		if ContainsTaskUsageCall(src) {
-			return nil, "", fmt.Errorf("%w: 模型 %q 的任务表达式不可编译: %v", ErrInvalidSpec, model, err)
-		}
-		return nil, "tiered expression does not reference u() task usage", nil
+		return nil, "", fmt.Errorf("%w: 模型 %q 的任务表达式不可编译: %v", ErrInvalidSpec, model, err)
 	}
 	return e, "", nil
 }

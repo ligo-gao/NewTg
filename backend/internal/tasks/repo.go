@@ -432,6 +432,12 @@ func (r *Repo) ApplyPoll(ctx context.Context, id int64, from State, u PollUpdate
 //
 // 结算发生在终态 CAS 之后；此处失败只意味着「标记没落库」，调用方必须把它
 // 当作结算失败上报，绝不能当成功——否则下一次补偿扫描看不到这笔待办。
+// UpdateBilling 合并 billing 标记（不覆盖其它 private_data 键）。
+//
+// 【JSON null = 删除键】复核 Minor-b 需要「封账后清除 settlement_pending_*
+// 审计字段」。`public || patch` 会把 null 写成一个永久 null 值，所以这里
+// 把补丁里值为 null 的键从结果中减去：调用方用 nil 表达“删除”，无需再开
+// 一个专用 SQL 路径。
 func (r *Repo) UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error {
 	if r == nil || r.db == nil {
 		return errors.New("tasks: repository is not configured")
@@ -442,7 +448,10 @@ func (r *Repo) UpdateBilling(ctx context.Context, id int64, quota *int64, privat
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE tasks SET quota = COALESCE($2, quota),
-		        private_data = private_data || $3::jsonb, updated_at = now()
+		        private_data = (private_data || $3::jsonb)
+		            - COALESCE((SELECT array_agg(k) FROM jsonb_each($3::jsonb) AS e(k, v)
+		                        WHERE v = 'null'::jsonb), '{}'::text[]),
+		        updated_at = now()
 		 WHERE id = $1`, id, quota, priv); err != nil {
 		return fmt.Errorf("tasks: update billing: %w", err)
 	}
