@@ -338,7 +338,7 @@ func TestRefundRejectsCrossUserConsumeRows(t *testing.T) {
 		}
 	}
 
-	_, _, err := NewLedger(gormDB).refundSession(context.Background(), userA, req, 10)
+	_, _, err := NewLedger(gormDB).refundSession(context.Background(), userA, 0, req, 10)
 	if err == nil {
 		t.Fatal("refundSession = nil, want error（跨用户流水必须拒绝退款）")
 	}

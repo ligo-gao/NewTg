@@ -135,33 +135,43 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 	}
 
 	delta := cost - already
-	settle, err := s.engine.subscriptionFunding.PostConsumeUserSubscriptionDelta(
-		ctx, s.subscriptionID, delta)
+	// R-W9B-01：delta 与 request_registry 的 settled 终态在**同一个 PG 事务**
+	// 内提交。registry 是「已结算」的唯一持久化证据；把两者拆成两步会留下
+	// 「已扣订阅、无终态」的崩溃窗口，兜底扫描随后会二次退款（G-DOM-36）。
+	// applied=false 表示 CAS 未命中：另一执行者已结算/退款，本次事务整笔
+	// 回滚（delta 未落地），按已有终态收敛即可。
+	settle, applied, err := s.engine.subscriptionFunding.SettleSubscriptionDelta(
+		ctx, s.requestID, s.userID, s.subscriptionID, delta)
 	if err != nil {
 		// 结算失败（越界/数据库故障）：本次 delta 未落地，保留预扣。绝不
-		// 静默吞错；request_registry 的 settled 由 Terminate 成功才写，
-		// 因此这里显式标记 settlement_pending，供日志/对账与兜底扫描识别。
+		// 静默吞错；registry 终态与 delta 同事务，失败即整体回滚，兜底扫描
+		// 仍能看到 consumed 记录并负责补偿。
 		slog.Warn("billing: subscription settlement failed; keeping pre-consume for compensation",
 			"request_id", s.requestID, "subscription_id", s.subscriptionID,
 			"delta", delta, "pre_consumed", s.preConsumed,
 			"increment_deducted", s.consumed, "settlement_pending", true, "error", err)
 		return fmt.Errorf("billing: settle subscription delta: %w", err)
 	}
-
-	// 结算成功后立刻记录 request_registry 终态：预扣记录在成功结算后仍是
-	// consumed，没有这条记录，15 分钟后的兜底扫描会把已结算的请求再退一次。
-	// 写入本身幂等，短暂故障按退避重试；仍失败时只能告警（delta 已提交，
-	// 不能回滚重试，否则二次结算）。
-	if err := s.engine.markRequestSettled(ctx, s.requestID, s.userID); err != nil {
-		slog.Warn("billing: record subscription settlement state failed after retries; settlement_pending",
-			"request_id", s.requestID, "user_id", s.userID,
-			"delta", delta, "pre_consumed", s.preConsumed,
-			"increment_deducted", s.consumed, "settlement_pending", true, "error", err)
+	if !applied {
+		// 终态 CAS 未命中（不可能是本次事务的部分提交：失败即回滚）。再读
+		// registry 区分「已结算」与「已退款」，不要一律标成 refunded。
+		state, stateErr := s.engine.subscriptionFunding.RequestRegistryState(ctx, s.requestID)
+		if stateErr != nil {
+			return fmt.Errorf("billing: read subscription terminal state for %s: %w", s.requestID, stateErr)
+		}
+		if state == "refunded" {
+			s.finishLocked(ctx, true)
+			return nil
+		}
+		// settled（或 registry 行缺失但预扣已被置 refunded 的旧数据）：两者
+		// 都是「已在别处结案」，finishLocked(false) 不再持有可退金额。
+		s.finishLocked(ctx, false)
+		return nil
 	}
 
 	// 资金已提交，随后把令牌额度从**已扣额**调整到最终成本（R-73）。
 	// 令牌不足只记 settlement_pending：订阅侧的账已经正确，重试结算会把
-	// 订阅 delta 再落一次，因此不能以错误形式把会话留在未结算态。
+	// 订阅 delta 再落一次（CAS 会拦住），以错误形式留在未结算态没有意义。
 	s.adjustSubscriptionTokenLocked(ctx, cost)
 
 	refunded := int64(0)
@@ -314,30 +324,9 @@ func emptyUsageFact(fact contract.UsageFact) bool {
 	return fact.Model == "" && usageIsZero(fact.Usage)
 }
 
-// markRequestSettled 写 request_registry.settled，并做有限退避重试。
-//
-// 为什么重试：delta 已经提交，registry 写失败会让兜底扫描在窗口后把已结算
-// 的预扣再退一次（用户多得额度，方向是「多退」）。写入本身是幂等 UPSERT，
-// 重试安全；仍失败时调用方只能告警并留给对账（G-DOM-36）。
-func (e *Engine) markRequestSettled(ctx context.Context, requestID string, userID int64) error {
-	backoff := [...]time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff[attempt-1]):
-			}
-		}
-		if err := e.subscriptionFunding.MarkRequestSettled(ctx, requestID, userID); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-	return lastErr
-}
+// markRequestSettled 已随 R-W9B-01 删除：registry 终态不再由独立语句尽力
+// 写入，而是与 delta 同事务（见 SettleSubscriptionDelta）。保留
+// MarkRequestSettled 适配器方法只作为审计/调试接缝，正确性不依赖它。
 
 // RecoverStaleSubscriptionPreConsumes 扫描并幂等退款长期未结算的订阅预扣
 // （billing-06 §5.2；worker 每轮调用）。
@@ -348,8 +337,8 @@ func (e *Engine) markRequestSettled(ctx context.Context, requestID string, userI
 //
 // 【并发】扫描与**所有**结算/退款入口（实时 Queue 的 Session.Terminate/
 // Refund 与任务 handoff）共用 requestID 结算锁（M1），因此「扫描判定未结算」
-// 与「正常收尾」不会交错；MarkPreConsumeRefunded 在事务内 FOR UPDATE 并短路
-// refunded 作为第二道幂等，重复扫描无副作用。
+// 与「正常收尾」不会交错；RefundSubscriptionRequest 在事务内 FOR UPDATE 并
+// 以 registry refunded CAS 作为第二道幂等，重复扫描无副作用。
 //
 // 【令牌额度】预扣记录不存 tokenID，worker 无法回补令牌。这里只退订阅账户；
 // 令牌额度由请求所属租约的既有兜底路径处理（有租约时）或留在令牌上——
@@ -377,7 +366,7 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 	recovered := 0
 	var failures []error
 	for _, rec := range recs {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
 			break
 		}
 		// 与 Terminate/Refund 共用 requestID 结算锁：扫描到记录后、真正退款
@@ -404,7 +393,12 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 			release()
 			continue
 		}
-		if err := e.refundSubscriptionPreConsume(ctx, rec.RequestID); err != nil {
+		// R-W9B-03：订阅退款（含 amount_used 回退、预扣终态、registry 终态）
+		// 在存储层是**一个事务**。这里不传令牌：预扣记录不存 tokenID，worker
+		// 无法回补令牌（方向安全的「少退」，见函数头）。锁内复核到的未终态
+		// 只是优化；真正的仲裁仍是事务内的 registry CAS。
+		result, err := e.refundSubscriptionRequest(ctx, store.SubscriptionRefund{RequestID: rec.RequestID})
+		if err != nil {
 			release()
 			// 「不得静默吞错」：逐条告警，整批继续。
 			slog.Warn("billing: refund stale subscription pre-consume failed; retrying next round",
@@ -413,7 +407,13 @@ func (e *Engine) RecoverStaleSubscriptionPreConsumes(
 			failures = append(failures, fmt.Errorf("%s: %w", rec.RequestID, err))
 			continue
 		}
-		// 记录退款终态，供其它执行者（迟到的 Terminate/任务回调）观察。
+		if !result.Applied {
+			// 幂等命中：预扣已 refunded 或 registry 已 settled（另一个执行者
+			// 在候选查询与退款之间收尾）。事务没有做任何资金变更，跳过。
+			release()
+			continue
+		}
+		// 记录退款终态（审计兜底；资金正确性已由上面的同事务 CAS 保证）。
 		// user_id 在预扣表里不存在，写 0；该表无 FK，0 只表示 worker 未知归属。
 		if markErr := e.subscriptionFunding.MarkRequestRefunded(ctx, rec.RequestID, 0); markErr != nil {
 			slog.Warn("billing: record stale subscription refund state failed",

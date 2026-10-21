@@ -407,31 +407,41 @@ func TestSessionSubscriptionChargeIncrementTokenDebitFailure(t *testing.T) {
 	}
 }
 
-// LOW：MarkRequestSettled 短暂失败按退避重试，最终成功仍写 settled。
-func TestSubscriptionSettlementRegistryRetries(t *testing.T) {
+// B1：结算事务失败（registry 写失败在同一事务内）时 delta 不得单独落地。
+// 旧实现先提交 delta、再尽力写 registry；R-W9B-01 把两者合并后，任何失败都
+// 必须表现为「订阅额度未变、registry 无终态、预扣保留给兜底扫描」。
+func TestSubscriptionSettlementRegistryFailureKeepsPreConsume(t *testing.T) {
 	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst,
 		subscriptionAccount(7, 1000, nil))
-	funding.markSettledFailures = 2
+	funding.settleErr = errors.New("fake: registry write failed inside transaction")
 	gormDB, db := openBillingTestDB(t)
 	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
 	e.SetSubscriptionFunding(funding)
 	userID := createBillingTestUser(t, db, 500)
 	tokenID := createBillingTestToken(t, db, userID, int64(500))
-	req := testRequestID("s4b-registry-retry")
+	req := testRequestID("s4b-registry-rollback")
 	s := newBillingTestSessionWithToken(e, userID, tokenID, req, perCallSnapshot(100))
 	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
 		t.Fatalf("PreConsume: %v", err)
 	}
-	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
-		t.Fatalf("Terminate: %v", err)
+
+	err := s.Terminate(contract.UsageFact{Model: "m"})
+	if err == nil {
+		t.Fatal("结算事务失败时 Terminate = nil，want error")
 	}
-	if state := funding.registry[req]; state != "settled" {
-		t.Fatalf("registry = %q，want settled（第 3 次尝试应成功）", state)
+	if got := funding.usedOf(7); got != 100 {
+		t.Fatalf("失败后 amount_used = %d，want 100（delta 不得单独提交）", got)
 	}
-	funding.mu.Lock()
-	calls := funding.markSettledCalls
-	funding.mu.Unlock()
-	if calls != 3 {
-		t.Fatalf("MarkRequestSettled 调用 = %d，want 3", calls)
+	if state := funding.registry[req]; state != "" {
+		t.Fatalf("失败后 registry = %q，want 空", state)
+	}
+	if s.settled {
+		t.Fatal("失败后 settled = true，want false（预扣保留待补偿）")
+	}
+	if !s.NeedsRefund() {
+		t.Fatal("失败后 NeedsRefund = false，want true")
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 400 {
+		t.Fatalf("失败后令牌剩余 = %d，want 400（未结算不得调整）", got)
 	}
 }

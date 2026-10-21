@@ -163,6 +163,7 @@ type fakeSubscriptionRepo struct {
 	nextSubID      int64
 	resets         []resetCall
 	preConsume     map[string]store.SubscriptionPreConsume
+	registry       map[string]string
 	events         map[int64][]store.SubscriptionEvent
 	writeCallCount int
 	// leakForeign 模拟仓储实现漂移：ListSubscriptionsByUser 故意返回他人实例。
@@ -181,6 +182,7 @@ func newFakeSubscriptionRepo() *fakeSubscriptionRepo {
 		subs:          map[int64]*store.Subscription{},
 		pendingOrders: map[int64]int{},
 		preConsume:    map[string]store.SubscriptionPreConsume{},
+		registry:      map[string]string{},
 		events:        map[int64][]store.SubscriptionEvent{},
 	}
 }
@@ -593,6 +595,61 @@ func (r *fakeSubscriptionRepo) RefundSubscriptionIncrement(_ context.Context,
 	}
 	sub.AmountUsed -= amount
 	return true, nil
+}
+
+// SettleSubscriptionDelta 是 B1 终态结算的内存实现：handler 测试不覆盖
+// 事务/并发语义，真实语义由 billing/store 集成用例覆盖。这里镜像
+// 「registry 已有终态 → applied=false 且不改额度」。
+func (r *fakeSubscriptionRepo) SettleSubscriptionDelta(_ context.Context,
+	requestID string, _ int64, subscriptionID, delta int64) (store.Subscription, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.registry[requestID] == "settled" || r.registry[requestID] == "refunded" {
+		return store.Subscription{}, false, nil
+	}
+	sub, ok := r.subs[subscriptionID]
+	if !ok {
+		return store.Subscription{}, false, store.ErrSubscriptionNotFound
+	}
+	used := sub.AmountUsed + delta
+	if used < 0 {
+		used = 0
+	}
+	if sub.AmountTotal > 0 && used > sub.AmountTotal {
+		return store.Subscription{}, false, store.ErrSubscriptionSettleExceeded
+	}
+	sub.AmountUsed = used
+	r.registry[requestID] = "settled"
+	return *sub, true, nil
+}
+
+// RefundSubscriptionRequest 是 B3 原子退款的内存实现（不含真实 DB 事务）。
+func (r *fakeSubscriptionRepo) RefundSubscriptionRequest(_ context.Context,
+	in store.SubscriptionRefund) (store.SubscriptionRefundResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.preConsume[in.RequestID]
+	if !ok {
+		return store.SubscriptionRefundResult{}, store.ErrPreConsumeNotFound
+	}
+	if rec.Status == "refunded" {
+		return store.SubscriptionRefundResult{Terminal: "refunded", TokenCredited: true}, nil
+	}
+	if r.registry[in.RequestID] == "settled" {
+		return store.SubscriptionRefundResult{Terminal: "settled", TokenCredited: true}, nil
+	}
+	if sub, ok := r.subs[rec.SubscriptionID]; ok {
+		if in.Consumed > 0 && sub.AmountUsed >= in.Consumed {
+			sub.AmountUsed -= in.Consumed
+		}
+		if sub.AmountUsed >= rec.PreConsumed {
+			sub.AmountUsed -= rec.PreConsumed
+		}
+	}
+	rec.Status = "refunded"
+	r.preConsume[in.RequestID] = rec
+	r.registry[in.RequestID] = "refunded"
+	return store.SubscriptionRefundResult{Applied: true, TokenCredited: true}, nil
 }
 
 // ListStalePreConsumes 返回早于 before 的 consumed 记录（handler 测试的
