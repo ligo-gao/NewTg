@@ -216,12 +216,36 @@ func (r *Reporter) ReportAttemptFailure(_ context.Context, channelID int, autoBa
 	if !ok {
 		return
 	}
+	r.enqueueDisable(int64(channelID), decision)
+}
+
+// ReportProbeFailure 接收一次手工连通性测试的结果（W7/M4-b / R-M4-15）。
+//
+// 手工测试与体检共用同一判定（DecideProbeFailure：鉴权/关键词/响应时间阈值），
+// 但**只禁不禁**：本方法只会入队自动禁用，绝不调用 AutoEnable——「测试成功」
+// 不是恢复条件（R-M4-15 冻结）。
+//
+// 非阻塞：handler 在写完测试结果后调用它，条件更新/审计/通知仍在后台
+// goroutine 完成，与中继上报共用同一队列（顺序与去重语义一致）。
+func (r *Reporter) ReportProbeFailure(_ context.Context, channelID int64, autoBan bool, result ProbeResult) {
+	if r == nil || channelID <= 0 {
+		return
+	}
+	decision, ok := DecideProbeFailure(result, autoBan, LoadWorkerSettings(r.config))
+	if !ok {
+		return
+	}
+	r.enqueueDisable(channelID, decision)
+}
+
+// enqueueDisable 做冷却检查与非阻塞入队（中继上报与手工测试共用）。
+func (r *Reporter) enqueueDisable(channelID int64, decision Decision) {
 	now := r.now()
-	if !r.allowReport(int64(channelID), now) {
+	if !r.allowReport(channelID, now) {
 		return
 	}
 	select {
-	case r.events <- attemptFailure{channelID: int64(channelID), decision: decision}:
+	case r.events <- attemptFailure{channelID: channelID, decision: decision}:
 	default:
 		// 队列满：丢弃并计数。丢弃是安全的——渠道下一轮请求会再次命中同一
 		// 触发条件并重新上报；绝不能为了入队而阻塞响应。
@@ -300,61 +324,85 @@ func (r *Reporter) allowReport(channelID int64, now time.Time) bool {
 // 状态迁移是唯一有回滚语义的步骤；审计/通知失败只记 Warn，不回滚状态
 // （R-M4-09：通知是 best-effort，渠道已经不可用这一事实必须保留）。
 func (r *Reporter) handle(ctx context.Context, event attemptFailure) {
+	_, changed, err := applyAutoDisable(ctx, r.store, r.audit, r.notifier, r.log,
+		r.channelsURL, event.channelID, event.decision)
+	switch {
+	case err != nil:
+		r.failed.Add(1)
+	case changed:
+		r.applied.Add(1)
+	}
+}
+
+// AutoEnableStore 是自动恢复所需的存储面（生产 *store.ChannelRepo）。
+type AutoEnableStore interface {
+	AutoEnable(ctx context.Context, id int64) (*store.Channel, bool, error)
+}
+
+// applyAutoDisable 是自动禁用副作用的唯一实现。
+//
+// W7/M4-b 起被 Reporter（中继/手工测试）与健康 worker 共用：两条入口的
+// 条件更新、审计与通知必须逐字一致，否则同一个渠道会因入口不同而产生
+// 不同的副作用（例如体检禁用不写审计）。返回 (channel, changed, err)；
+// 只有 changed=true 才写审计/通知，失败只 Warn，绝不回滚已提交的迁移。
+func applyAutoDisable(ctx context.Context, store AutoDisableStore, auditor AuditWriter,
+	notifier AutoDisableNotifier, log *slog.Logger, channelsURL string,
+	channelID int64, decision Decision) (*store.Channel, bool, error) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoDisableStoreTimeout)
-	channel, changed, err := r.store.AutoDisable(writeCtx, event.channelID, event.decision.ReasonCode)
+	channel, changed, err := store.AutoDisable(writeCtx, channelID, decision.ReasonCode)
 	cancel()
 	if err != nil {
-		r.failed.Add(1)
 		// 只记录 channel_id/reason 与存储错误：不含响应体、base_url 或凭据。
-		r.log.Warn("channelhealth: auto-disable update failed",
-			"channel_id", event.channelID, "reason", event.decision.ReasonCode, "error", err)
-		return
+		log.Warn("channelhealth: auto-disable update failed",
+			"channel_id", channelID, "reason", decision.ReasonCode, "error", err)
+		return nil, false, err
 	}
 	if !changed {
 		// 条件不满足：渠道已被人工改态、已自动禁用、auto_ban 被关闭，或行已删。
 		// 这是并发上报的预期路径，不写审计、不发通知。
-		r.log.Debug("channelhealth: auto-disable skipped (state changed)",
-			"channel_id", event.channelID, "reason", event.decision.ReasonCode)
-		return
+		log.Debug("channelhealth: auto-disable skipped (state changed)",
+			"channel_id", channelID, "reason", decision.ReasonCode)
+		return nil, false, nil
 	}
-	r.applied.Add(1)
 	// 结构化日志只含稳定 code，不含上游错误原文（GC-6）。
-	r.log.Info("channelhealth: channel auto-disabled",
-		"channel_id", event.channelID, "reason", event.decision.ReasonCode, "trigger", event.decision.Trigger)
-	r.recordAudit(channel, event)
-	r.notifyAdmins(channel, event)
+	log.Info("channelhealth: channel auto-disabled",
+		"channel_id", channelID, "reason", decision.ReasonCode, "trigger", decision.Trigger)
+	writeAutoDisableAudit(auditor, log, channel, channelID, decision)
+	notifyChannelAutoDisabled(notifier, log, channelsURL, channel, decision)
+	return channel, true, nil
 }
 
-// recordAudit 写 channel.auto_disable 审计。
+// writeAutoDisableAudit 写 channel.auto_disable 审计。
 //
 // R-M4-10：Actor=0 + Username="system"；detail 只允许非秘密事实
 // （channel_id/channel_name/reason/trigger），before/after 只允许 status 与
 // reason code。写失败只 Warn——审计库不可用不得把已迁移的渠道回滚。
-func (r *Reporter) recordAudit(channel *store.Channel, event attemptFailure) {
-	if r.audit == nil {
+func writeAutoDisableAudit(auditor AuditWriter, log *slog.Logger, channel *store.Channel,
+	channelID int64, decision Decision) {
+	if auditor == nil {
 		return
 	}
 	detailFields := map[string]any{
-		"channel_id": event.channelID,
-		"reason":     event.decision.ReasonCode,
-		"trigger":    event.decision.Trigger,
+		"channel_id": channelID,
+		"reason":     decision.ReasonCode,
+		"trigger":    decision.Trigger,
 	}
 	if channel != nil && channel.Name != "" {
 		detailFields["channel_name"] = channel.Name
 	}
 	detail, err := json.Marshal(detailFields)
 	if err != nil {
-		r.log.Warn("channelhealth: marshal audit detail failed", "channel_id", event.channelID, "error", err)
+		log.Warn("channelhealth: marshal audit detail failed", "channel_id", channelID, "error", err)
 		return
 	}
 	before, _ := json.Marshal(map[string]any{"status": 1})
 	after, _ := json.Marshal(map[string]any{
 		"status":               3,
-		"auto_disabled_reason": event.decision.ReasonCode,
+		"auto_disabled_reason": decision.ReasonCode,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), autoDisableSideEffectTimeout)
 	defer cancel()
-	err = r.audit.LogEvent(ctx, audit.Event{
+	err = auditor.LogEvent(ctx, audit.Event{
 		Action:   audit.ActionChannelAutoDisable,
 		Actor:    0,
 		Username: "system",
@@ -363,33 +411,94 @@ func (r *Reporter) recordAudit(channel *store.Channel, event attemptFailure) {
 		After:    after,
 	})
 	if err != nil {
-		r.log.Warn("channelhealth: auto-disable audit write failed",
-			"channel_id", event.channelID, "error", err)
+		log.Warn("channelhealth: auto-disable audit write failed",
+			"channel_id", channelID, "error", err)
 	}
 }
 
-// notifyAdmins 给全体管理员写站内通知（best-effort，R-M4-09）。
+// notifyChannelAutoDisabled 给全体管理员写站内通知（best-effort，R-M4-09）。
 //
 // 去重键基于本次迁移的 updated_at：同一次迁移在重试/并发下只会产生一组
 // 投递行；人工重新启用后再次自动禁用会得到新的 updated_at，因此是新事件。
-func (r *Reporter) notifyAdmins(channel *store.Channel, event attemptFailure) {
-	if r.notifier == nil || channel == nil {
+func notifyChannelAutoDisabled(notifier AutoDisableNotifier, log *slog.Logger,
+	channelsURL string, channel *store.Channel, decision Decision) {
+	if notifier == nil || channel == nil {
 		return
 	}
 	dedupe := fmt.Sprintf("channel_auto_disabled:%d:%s",
 		channel.ID, channel.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	ctx, cancel := context.WithTimeout(context.Background(), autoDisableSideEffectTimeout)
 	defer cancel()
-	delivered, err := r.notifier.DeliverChannelAutoDisabledInApp(ctx, notify.ChannelAutoDisabledInput{
+	delivered, err := notifier.DeliverChannelAutoDisabledInApp(ctx, notify.ChannelAutoDisabledInput{
 		ChannelID:   channel.ID,
 		ChannelName: channel.Name,
-		ReasonCode:  event.decision.ReasonCode,
+		ReasonCode:  decision.ReasonCode,
 		DisabledAt:  channel.UpdatedAt,
-		ChannelsURL: r.channelsURL,
+		ChannelsURL: channelsURL,
 		DedupeKey:   dedupe,
 	})
 	if err != nil {
-		r.log.Warn("channelhealth: auto-disable notification failed",
+		log.Warn("channelhealth: auto-disable notification failed",
 			"channel_id", channel.ID, "delivered", delivered, "error", err)
+	}
+}
+
+// applyAutoEnable 执行一次自动恢复（W7/M4-b / R-M4-09/15）。
+//
+// 条件更新 `WHERE status=3` 保证人工禁用永不恢复；changed=false 是并发
+// 或人工改态的预期路径，不写审计。返回是否真的迁移。
+//
+// 不发送站内通知：设计只要求「禁用」通知（R-M4-09 的目标/节奏），恢复是
+// 渠道重新可用的正向事件，重复通知只会淹没运维（报告 §3.2 冻结）。
+func applyAutoEnable(ctx context.Context, store AutoEnableStore, auditor AuditWriter,
+	log *slog.Logger, channelID int64) (bool, error) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoDisableStoreTimeout)
+	channel, changed, err := store.AutoEnable(writeCtx, channelID)
+	cancel()
+	if err != nil {
+		log.Warn("channelhealth: auto-enable update failed",
+			"channel_id", channelID, "error", err)
+		return false, err
+	}
+	if !changed {
+		log.Debug("channelhealth: auto-enable skipped (state changed)", "channel_id", channelID)
+		return false, nil
+	}
+	log.Info("channelhealth: channel auto-enabled", "channel_id", channelID)
+	writeAutoEnableAudit(auditor, log, channel, channelID)
+	return true, nil
+}
+
+// writeAutoEnableAudit 写 channel.auto_enable 审计（R-M4-10 的同一约定）：
+// Actor=0 + Username="system"，before/after 只含 status，detail 只含
+// channel_id/channel_name；不含原因 code（恢复没有触发来源）。
+func writeAutoEnableAudit(auditor AuditWriter, log *slog.Logger, channel *store.Channel, channelID int64) {
+	if auditor == nil {
+		return
+	}
+	detailFields := map[string]any{"channel_id": channelID}
+	if channel != nil && channel.Name != "" {
+		detailFields["channel_name"] = channel.Name
+	}
+	detail, err := json.Marshal(detailFields)
+	if err != nil {
+		log.Warn("channelhealth: marshal auto-enable audit detail failed", "channel_id", channelID, "error", err)
+		return
+	}
+	before, _ := json.Marshal(map[string]any{"status": 3})
+	after, _ := json.Marshal(map[string]any{"status": 1})
+	ctx, cancel := context.WithTimeout(context.Background(), autoDisableSideEffectTimeout)
+	defer cancel()
+	err = auditor.LogEvent(ctx, audit.Event{
+		Action:   audit.ActionChannelAutoEnable,
+		Actor:    0,
+		Username: "system",
+		Detail:   detail,
+		Before:   before,
+		After:    after,
+	})
+	if err != nil {
+		log.Warn("channelhealth: auto-enable audit write failed",
+			"channel_id", channelID, "error", err)
 	}
 }

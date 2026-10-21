@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"newtg/gateway/internal/contract"
 )
@@ -235,5 +236,130 @@ func TestDecideFailureClassPrecedence(t *testing.T) {
 		[]byte("quota exceeded"), true, settings)
 	if !ok || decision.ReasonCode != ReasonAuthError {
 		t.Fatalf("401 + 关键词应记 channel_auth_error（分类优先），得到 %+v/%v", decision, ok)
+	}
+}
+
+// probeSettings 构造「开关打开 + 5s 阈值」的体检设置。
+func probeSettings(threshold time.Duration) WorkerSettings {
+	return WorkerSettings{
+		DecisionSettings:      enabledSettings("quota exceeded"),
+		AutoEnableEnabled:     true,
+		ResponseTimeThreshold: threshold,
+		Interval:              10 * time.Minute,
+		Concurrency:           5,
+	}
+}
+
+// TestDecideProbeFailureTriggers：探测路径的四类触发（鉴权/关键词/阈值）
+// 与三类明确不触发（传输/无 adapter/本地配置）。
+func TestDecideProbeFailureTriggers(t *testing.T) {
+	settings := probeSettings(5 * time.Second)
+	cases := []struct {
+		name     string
+		result   ProbeResult
+		autoBan  bool
+		wantOK   bool
+		wantCode string
+	}{
+		{
+			name:     "auth-401",
+			result:   ProbeResult{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth},
+			autoBan:  true,
+			wantOK:   true,
+			wantCode: ReasonAuthError,
+		},
+		{
+			name:     "keyword-500",
+			result:   ProbeResult{StatusCode: 500, ErrorClass: contract.ErrUpstreamServer, Body: []byte("QUOTA EXCEEDED")},
+			autoBan:  true,
+			wantOK:   true,
+			wantCode: ReasonKeyword,
+		},
+		{
+			name:     "slow-success",
+			result:   ProbeResult{Success: true, LatencyMS: 5000},
+			autoBan:  true,
+			wantOK:   true,
+			wantCode: ReasonTimeout,
+		},
+		{
+			name:    "fast-success",
+			result:  ProbeResult{Success: true, LatencyMS: 4999},
+			autoBan: true,
+		},
+		{
+			name:    "transport-timeout",
+			result:  ProbeResult{TransportClass: TransportTimeout},
+			autoBan: true,
+		},
+		{
+			name:    "unsupported",
+			result:  ProbeResult{Unsupported: true},
+			autoBan: true,
+		},
+		{
+			name:    "credential-invalid",
+			result:  ProbeResult{CredentialInvalid: true},
+			autoBan: true,
+		},
+		{
+			name:    "build-failed",
+			result:  ProbeResult{BuildFailed: true},
+			autoBan: true,
+		},
+		{
+			name:    "auto-ban-false",
+			result:  ProbeResult{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth},
+			autoBan: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, ok := DecideProbeFailure(tc.result, tc.autoBan, settings)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v（decision=%+v）", ok, tc.wantOK, decision)
+			}
+			if tc.wantOK && decision.ReasonCode != tc.wantCode {
+				t.Fatalf("reason = %q, want %q", decision.ReasonCode, tc.wantCode)
+			}
+		})
+	}
+}
+
+// TestDecideProbeFailureSwitchOff：全局自动禁用关闭时，阈值/鉴权/关键词都不触发。
+func TestDecideProbeFailureSwitchOff(t *testing.T) {
+	settings := probeSettings(5 * time.Second)
+	settings.AutoDisableEnabled = false
+	for _, result := range []ProbeResult{
+		{Success: true, LatencyMS: 60_000},
+		{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth},
+		{StatusCode: 500, ErrorClass: contract.ErrUpstreamServer, Body: []byte("quota exceeded")},
+	} {
+		if decision, ok := DecideProbeFailure(result, true, settings); ok {
+			t.Fatalf("开关关闭仍判定禁用: %+v（result=%+v）", decision, result)
+		}
+	}
+}
+
+// TestProbeSucceededBoundary：健康判定必须与 DecideProbeFailure 的 >= 边界互补
+// （阈值处一律判失败）。
+func TestProbeSucceededBoundary(t *testing.T) {
+	settings := probeSettings(5 * time.Second)
+	if ProbeSucceeded(ProbeResult{Success: true, LatencyMS: 4999}, settings) != true {
+		t.Fatal("4999ms 应判健康")
+	}
+	if ProbeSucceeded(ProbeResult{Success: true, LatencyMS: 5000}, settings) != false {
+		t.Fatal("5000ms 应判失败（>= 阈值）")
+	}
+	for _, result := range []ProbeResult{
+		{Unsupported: true, Success: true},
+		{CredentialInvalid: true, Success: true},
+		{BuildFailed: true, Success: true},
+		{TransportClass: TransportTimeout},
+		{StatusCode: 401, ErrorClass: contract.ErrUpstreamAuth},
+	} {
+		if ProbeSucceeded(result, settings) {
+			t.Fatalf("非健康结果被判定为健康: %+v", result)
+		}
 	}
 }

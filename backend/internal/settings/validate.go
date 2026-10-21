@@ -355,6 +355,27 @@ func validateSensitiveWord(v any) error {
 	return nil
 }
 
+// validateDisableKeyword 校验 rl.health.disable_keywords 的单个关键词
+// （R-M4-11：TypeList + element(maxLen)）。
+//
+// 为什么拒绝纯空白项而不是静默丢弃：设置写入是管理员的显式动作，静默改写
+// 会让「保存后回显」与「提交内容」不一致；空行由前端 lines 控件在提交前
+// 过滤。256 字符上限覆盖所有真实上游错误文案（默认最长一条 68 字符），
+// 同时保证关键词匹配（R-M4-12 的 lowercase Contains）的输入有界。
+func validateDisableKeyword(v any) error {
+	word, ok := v.(string)
+	if !ok {
+		return errors.New("expected string")
+	}
+	if strings.TrimSpace(word) == "" {
+		return errors.New("keyword must not be empty")
+	}
+	if utf8.RuneCountInString(word) > 256 {
+		return errors.New("keyword must be at most 256 characters")
+	}
+	return nil
+}
+
 func portElement(v any) error {
 	n, ok := v.(int64)
 	if !ok {

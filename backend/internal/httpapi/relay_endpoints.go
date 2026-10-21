@@ -21,6 +21,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/billing/expr"
 	"newtg/gateway/internal/billing/pricing"
+	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/relay"
@@ -2961,6 +2962,10 @@ func newRelayTransport() *http.Transport {
 type channelTestUpstreamError struct {
 	StatusCode int
 	Class      contract.ErrorClass
+	// Body 是 ≤64 KiB 的上游错误体，仅供 M4-b 的自动禁用判定做关键词匹配。
+	// 它**不参与** Error()，也不会被日志/响应回显——持有它的是 handler 与
+	// channelhealth 判定函数（GC-6 的边界在这里是字段级而不是进程级）。
+	Body []byte
 }
 
 func (e *channelTestUpstreamError) Error() string {
@@ -2992,15 +2997,11 @@ func (e *channelTestTransportError) Error() string {
 // channelTestTransportClass 区分超时与一般网络失败：
 //   - context deadline 或 net.Error.Timeout() → timeout；
 //   - 其余（连接拒绝、DNS、TLS 握手失败、客户端取消）→ network。
+//
+// 实现委托 channelhealth.TransportClass：手工测试与健康体检必须对同一
+// 传输错误给出同一分类（R-M4-01 的「传输层错误不禁用」依赖它）。
 func channelTestTransportClass(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return channelTestClassTimeout
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return channelTestClassTimeout
-	}
-	return channelTestClassNetwork
+	return channelhealth.TransportClass(err)
 }
 
 // channelTestErrorClass 把连通性测试错误归一为 modules-06 F-06-06 的
@@ -3040,9 +3041,27 @@ func channelTestErrorClass(err error) string {
 	return channelTestClassServer
 }
 
+// NewChannelProbeClient 返回健康体检使用的上游客户端。
+//
+// 与中继/手工测试共用 newRelayTransport（relay-01 §11.1 的连接池与超时策略），
+// 不新增第二套出站路径；整体超时由每次探测的 ctx 控制（体检 15s，R-M4-14），
+// 因此这里不设置 Client.Timeout（长连接池需要跨探测复用）。
+func NewChannelProbeClient() *http.Client {
+	return &http.Client{
+		Transport: newRelayTransport(),
+		// 3xx 视为上游异常，不跟随重定向（避免凭据被转发到第三方）。
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
 // NewChannelConnectivityTester 构造 modules-06 F-06-06 的真实连通性测试：
 // 解封凭据 → 适配器构造一个最小非流式请求（单条 user "ping"，max_tokens=1）
 // → 30s 内发送 → 非 2xx 按 adapter.ClassifyError 归类并返回非敏感错误。
+//
+// W7/M4-b 起它是 channelhealth.Prober 的**薄适配**：请求构造、凭据解封与
+// 状态码分类只有一份实现，手工测试与健康体检共享（R-M4-15）。本函数只做
+// 「ProbeResult → 既有五值 error_class 错误」的映射，保持 phase 8A 的
+// ChannelTester 签名不变。
 //
 // 返回值是 phase 8A 的 ChannelTester 签名（latencyMS, error）。
 func NewChannelConnectivityTester(sealer *SecretSealer, client *http.Client) ChannelTester {
@@ -3053,77 +3072,40 @@ func NewChannelConnectivityTester(sealer *SecretSealer, client *http.Client) Cha
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}
+	prober, err := channelhealth.NewProber(channelhealth.ProberConfig{
+		Opener:  sealer,
+		Client:  client,
+		Timeout: channelTestTimeout, // 手工测试沿用 30s（R-M4-14 的例外）
+	})
 	return func(ctx context.Context, ch *store.Channel, model string) (int, error) {
 		if ch == nil {
 			return 0, errors.New("httpapi: channel test: channel is nil")
 		}
-		if sealer == nil {
+		if sealer == nil || err != nil {
 			return 0, errors.New("httpapi: channel test: credential sealer is not configured")
 		}
-		plaintext, err := sealer.Open(ch.Credentials)
-		if err != nil {
-			return 0, errRelayCredentialInvalid
-		}
-		var creds ChannelCredentials
-		if err := json.Unmarshal(plaintext, &creds); err != nil || creds.APIKey == "" {
-			return 0, errRelayCredentialInvalid
-		}
-
-		channelType := contract.ChannelType(ch.Type)
-		adapter, err := adapters.Dispatch(channelType)
-		if err != nil {
+		result := prober.Probe(ctx, ch, model)
+		switch {
+		case result.Unsupported:
 			// 适配器分派错误只含渠道类型；仍用固定文案（GC-6 的最后一道出口）。
 			return 0, errors.New("httpapi: channel test: no adapter for this channel type")
-		}
-		apiBase := ""
-		if ch.BaseURL != nil {
-			apiBase = *ch.BaseURL
-		}
-
-		maxTokens := 1
-		request := &contract.Request{
-			Model:  model,
-			Stream: false,
-			Messages: []contract.Message{{
-				Role:    contract.RoleUser,
-				Content: []contract.ContentPart{{Kind: contract.PartText, Text: "ping"}},
-			}},
-			MaxTokens: &maxTokens,
-			RawFormat: ir.FormatOpenAIChat,
-		}
-		rc := &contract.RelayContext{
-			ChannelType:   channelType,
-			APIBase:       apiBase,
-			Credential:    creds.APIKey,
-			UpstreamModel: modelMappingTarget(ch.ModelMapping, model),
-			CreatedTime:   ch.CreatedAt,
-		}
-
-		httpReq, err := adapter.BuildRequest(rc, request)
-		if err != nil {
+		case result.CredentialInvalid:
+			return 0, errRelayCredentialInvalid
+		case result.BuildFailed:
 			// 构造错误可能回显 URL（GC-6）→ 固定文案。
 			return 0, errors.New("httpapi: channel test: build upstream request failed")
-		}
-
-		testCtx, cancel := context.WithTimeout(ctx, channelTestTimeout)
-		defer cancel()
-		start := time.Now()
-		resp, err := client.Do(httpReq.WithContext(testCtx))
-		if err != nil {
+		case result.TransportClass != "":
 			// *url.Error 的文本含完整 URL → 绝不透出（GC-6）；只保留
 			// timeout/network 这一层泛化归因，供 F-06-06 的 error_class 使用。
-			return 0, &channelTestTransportError{Class: channelTestTransportClass(err)}
-		}
-		latency := int(time.Since(start).Milliseconds())
-		defer func() { _ = resp.Body.Close() }()
-
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, channelTestMaxErrorBodyBytes))
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return 0, &channelTestTransportError{Class: result.TransportClass}
+		case !result.Success:
 			return 0, &channelTestUpstreamError{
-				StatusCode: resp.StatusCode,
-				Class:      adapter.ClassifyError(resp.StatusCode, body),
+				StatusCode: result.StatusCode,
+				Class:      result.ErrorClass,
+				Body:       result.Body,
 			}
+		default:
+			return result.LatencyMS, nil
 		}
-		return latency, nil
 	}
 }

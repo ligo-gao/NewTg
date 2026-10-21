@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
@@ -1307,6 +1308,100 @@ func TestChannelTestFailureRedactsError(t *testing.T) {
 	if env.store.lastTestResult == nil || !*env.store.lastTestResult {
 		t.Fatalf("成功测试未回写 last_test_result=true")
 	}
+}
+
+// TestChannelTestReportsProbeResult 覆盖 R-M4-15：手工测试失败可以触发自动
+// 禁用（与中继/体检共用判定），成功也可以上报（阈值只在判定层应用），但
+// handler 只把 ProbeResult 交给接缝——绝不自行恢复渠道。
+func TestChannelTestReportsProbeResult(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	seedChannel(t, env, nil)
+	reporter := &fakeProbeReporter{}
+	env.handler.probeReporter = reporter
+
+	// 上游 401：status/class/body/autoBan 必须完整传给判定层。
+	env.handler.tester = (&fakeChannelTester{
+		err: &channelTestUpstreamError{
+			StatusCode: http.StatusUnauthorized,
+			Class:      contract.ErrUpstreamAuth,
+			Body:       []byte("Your credit balance is too low"),
+		},
+	}).test
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}),
+		channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	calls := reporter.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("上报次数 = %d, want 1", len(calls))
+	}
+	if calls[0].id != 1 || !calls[0].autoBan {
+		t.Fatalf("上报 = id %d autoBan %v, want 1/true", calls[0].id, calls[0].autoBan)
+	}
+	if calls[0].result.StatusCode != http.StatusUnauthorized ||
+		calls[0].result.ErrorClass != contract.ErrUpstreamAuth ||
+		string(calls[0].result.Body) != "Your credit balance is too low" {
+		t.Fatalf("ProbeResult = %+v, want 401/auth/body", calls[0].result)
+	}
+	if calls[0].result.Success {
+		t.Fatal("失败测试不得标记 Success")
+	}
+
+	// 成功路径也要上报：阈值（R-M4-02）由判定层应用；handler 不自行恢复。
+	env.handler.tester = (&fakeChannelTester{latency: 42}).test
+	rr = serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}),
+		channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("成功测试 status = %d", rr.Code)
+	}
+	calls = reporter.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("上报次数 = %d, want 2", len(calls))
+	}
+	if !calls[1].result.Success || calls[1].result.LatencyMS != 42 {
+		t.Fatalf("成功结果 = %+v, want success/latency=42", calls[1].result)
+	}
+
+	// 不可分类的普通错误：保持零值，判定层不会据此禁用（GC-6）。
+	env.handler.tester = (&fakeChannelTester{err: errors.New("boom")}).test
+	rr = serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/1/test", map[string]any{"model": "gpt-4o"}),
+		channelAdminPrincipal())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("失败测试 status = %d", rr.Code)
+	}
+	calls = reporter.snapshot()
+	if calls[2].result.Success || calls[2].result.StatusCode != 0 ||
+		calls[2].result.ErrorClass != contract.ErrUnknown || calls[2].result.TransportClass != "" {
+		t.Fatalf("不可分类错误 = %+v, want 零值结果", calls[2].result)
+	}
+}
+
+type probeReport struct {
+	id      int64
+	autoBan bool
+	result  channelhealth.ProbeResult
+}
+
+type fakeProbeReporter struct {
+	mu    sync.Mutex
+	calls []probeReport
+}
+
+func (f *fakeProbeReporter) ReportProbeFailure(_ context.Context, id int64, autoBan bool,
+	result channelhealth.ProbeResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, probeReport{id: id, autoBan: autoBan, result: result})
+}
+
+func (f *fakeProbeReporter) snapshot() []probeReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]probeReport(nil), f.calls...)
 }
 
 // TestChannelDetailMaskedCredentials 覆盖 GC-6 的详情例外：只加

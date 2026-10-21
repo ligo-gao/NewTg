@@ -698,6 +698,19 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		}
 	}()
 
+	// W7/M4-b 渠道健康体检（modules-06 F-06-12）：默认常开（R-M4-07），
+	// 每 test_interval_minutes 探测 status IN (1,3) 的渠道，失败按 R-M4-01
+	// 判定自动禁用，成功且开关开启时自动恢复（R-M4-09/15）。
+	//
+	// 装配失败只记录并继续：体检不是交易路径，缺 worker 不应阻止计费/任务
+	// 上线（与任务轮询/计费的失败语义不同）。停机时 cancel + Wait 先于
+	// Redis/DB 关闭（与其他后台循环同一顺序）。
+	healthStop, err := startChannelHealthWorker(ctx, cfg, sqlDB, sqlLogs, rr.client, center, notifyStore, log)
+	if err != nil {
+		log.Error("worker: channel health worker disabled", "error", err)
+		healthStop = nil
+	}
+
 	// M0 语义：装配全部成功（DB/日志库/Redis/配置中心/定价源/引擎/注册表）
 	// 后才打 success marker；运维据此区分「进程起来了但装配失败」与
 	// 「worker 已进入循环」。失败路径在 marker 之前返回，不会出现假成功。
@@ -725,6 +738,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		webhookWG.Wait()
 		cancelBalance()
 		balanceWG.Wait()
+		// 体检循环可能正持有 Redis 锁或写 last_test_*，必须先于连接池关闭退出。
+		if healthStop != nil {
+			healthStop()
+		}
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -788,6 +805,9 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		webhookWG.Wait()
 		cancelDeploy()
 		deployWG.Wait()
+		if healthStop != nil {
+			healthStop()
+		}
 		_ = redisRes.Close()
 		_ = logsRes.Close()
 		_ = dbRes.Close()
@@ -816,6 +836,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	balanceWG.Wait()
 	cancelDeploy()
 	deployWG.Wait()
+	// 体检在停机窗口内不再发起新探测；Wait 保证进行中的探测与状态写完成
+	// 后才关闭 Redis/DB（与 M4-a reporter 的清理顺序同口径）。
+	if healthStop != nil {
+		healthStop()
+	}
 	heartbeat.Stop()
 	if runErr == nil {
 		runErr = expiryErr

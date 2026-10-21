@@ -2,6 +2,7 @@ package channelhealth
 
 import (
 	"bytes"
+	"time"
 
 	"newtg/gateway/internal/contract"
 )
@@ -27,6 +28,9 @@ const (
 	TriggerUpstreamError = "upstream_error"
 	TriggerAuth          = "auth"
 	TriggerKeyword       = "keyword"
+	// TriggerTimeout：体检/手工测试的响应头耗时 ≥ 阈值（R-M4-02），
+	// 中继逐请求不产生该触发。
+	TriggerTimeout = "timeout"
 )
 
 // maxDecisionBodyBytes 与执行层错误体读取上限一致（relay/route.go 的
@@ -120,4 +124,57 @@ func matchDisableKeyword(body []byte, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+// DecideProbeFailure 判定一次**探测结果**是否应触发自动禁用。
+//
+// 与 DecideFailure 的关系：
+//   - 非 2xx 响应完全委托 DecideFailure（同一触发集合，R-M4-01/15）；
+//   - 增加一条**仅探测路径**的触发：2xx 但响应头耗时 ≥ 阈值 → channel_timeout
+//     （R-M4-02；中继逐请求不计时，因此该分支只在本函数出现）。
+//
+// 明确不触发（R-M4-01 C / R-M4-06）：
+//   - 传输层超时/网络错误：那是「本次没拿到响应」，不构成渠道故障证据，
+//     只记 last_test_result=false；
+//   - 无 adapter（Unsupported）：整轮跳过，不改 last_test_*；
+//   - 凭据解封/请求构造失败：本地配置问题，禁用会掩盖真正原因。
+//
+// 阈值比较用 `>=`（R-M4-14 的边界语义：「达到阈值即记失败」）；success 的
+// 判定用互补的 `<`，两处必须同时改，否则边界用例会红。
+func DecideProbeFailure(result ProbeResult, autoBan bool, settings WorkerSettings) (Decision, bool) {
+	// 开关与 auto_ban 的守卫必须在这里也做一次：阈值分支不经过
+	// DecideFailure，若只依赖委托，关闭开关的站点仍会因「慢响应」禁用
+	// （变异：删掉这两行 → TestDecideProbeFailureSwitchOff 红）。
+	if !settings.AutoDisableEnabled || !autoBan {
+		return Decision{}, false
+	}
+	if result.Unsupported || result.CredentialInvalid || result.BuildFailed || result.TransportClass != "" {
+		return Decision{}, false
+	}
+	if result.Success {
+		if settings.ResponseTimeThreshold <= 0 {
+			return Decision{}, false
+		}
+		elapsed := time.Duration(result.LatencyMS) * time.Millisecond
+		if elapsed >= settings.ResponseTimeThreshold {
+			return Decision{ReasonCode: ReasonTimeout, Trigger: TriggerTimeout}, true
+		}
+		return Decision{}, false
+	}
+	return DecideFailure(result.ErrorClass, result.StatusCode, result.Body, autoBan, settings.DecisionSettings)
+}
+
+// ProbeSucceeded 报告一次探测是否算「健康」（2xx 且未超过阈值）。
+//
+// 与 DecideProbeFailure 的边界必须一致（>= 判失败 ⇔ < 判成功）；worker 用
+// 它写 last_test_result，自动恢复也只在 true 时发生（R-M4-09/15）。
+func ProbeSucceeded(result ProbeResult, settings WorkerSettings) bool {
+	if !result.Success || result.TransportClass != "" || result.Unsupported ||
+		result.CredentialInvalid || result.BuildFailed {
+		return false
+	}
+	if settings.ResponseTimeThreshold <= 0 {
+		return true
+	}
+	return time.Duration(result.LatencyMS)*time.Millisecond < settings.ResponseTimeThreshold
 }

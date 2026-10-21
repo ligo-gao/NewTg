@@ -2,8 +2,10 @@ package channelhealth
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mapSettings 是 SettingsSource 的内存实现（configcenter 快照的等价物）。
@@ -128,5 +130,98 @@ func TestParseDisableKeywordsRejectsScalar(t *testing.T) {
 		if _, ok := ParseDisableKeywords(raw); ok {
 			t.Fatalf("%s 不应被接受为关键词表", raw)
 		}
+	}
+}
+
+// TestLoadWorkerSettingsDefaults：六键全部缺省时按注册表默认（R-M4-07/13/14）：
+// 自动恢复关闭、阈值 5s、间隔 10 分钟、并发 5；自动禁用仍默认关闭。
+func TestLoadWorkerSettingsDefaults(t *testing.T) {
+	for name, source := range map[string]SettingsSource{
+		"nil":     nil,
+		"missing": mapSettings{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings := LoadWorkerSettings(source)
+			if settings.AutoDisableEnabled {
+				t.Fatal("rl.health.auto_disable_enabled 默认必须 false（危险方向）")
+			}
+			if settings.AutoEnableEnabled {
+				t.Fatal("rl.health.auto_enable_enabled 默认必须 false（R-M4-09）")
+			}
+			if settings.ResponseTimeThreshold != 5*time.Second {
+				t.Fatalf("threshold = %v, want 5s", settings.ResponseTimeThreshold)
+			}
+			if settings.Interval != 10*time.Minute {
+				t.Fatalf("interval = %v, want 10m", settings.Interval)
+			}
+			if settings.Concurrency != 5 {
+				t.Fatalf("concurrency = %d, want 5", settings.Concurrency)
+			}
+		})
+	}
+}
+
+// TestLoadWorkerSettingsOverridesAndClamp：配置值生效；越界钳制到注册表
+// 范围（1–1440 / 1–50），脏值回落默认（R-M4-13）。
+func TestLoadWorkerSettingsOverridesAndClamp(t *testing.T) {
+	source := mapSettings{
+		KeyAutoEnableEnabled:            json.RawMessage(`true`),
+		KeyResponseTimeThresholdSeconds: json.RawMessage(`2.5`),
+		KeyTestIntervalMinutes:          json.RawMessage(`15`),
+		KeyTestConcurrency:              json.RawMessage(`7`),
+	}
+	settings := LoadWorkerSettings(source)
+	if !settings.AutoEnableEnabled {
+		t.Fatal("auto_enable_enabled=true 未生效")
+	}
+	if settings.ResponseTimeThreshold != 2500*time.Millisecond {
+		t.Fatalf("threshold = %v, want 2.5s", settings.ResponseTimeThreshold)
+	}
+	if settings.Interval != 15*time.Minute {
+		t.Fatalf("interval = %v, want 15m", settings.Interval)
+	}
+	if settings.Concurrency != 7 {
+		t.Fatalf("concurrency = %d, want 7", settings.Concurrency)
+	}
+
+	for name, tc := range map[string]struct {
+		interval    int
+		concurrency int
+		wantInt     time.Duration
+		wantConc    int
+	}{
+		"below-min": {interval: 0, concurrency: 0, wantInt: time.Minute, wantConc: 1},
+		"above-max": {interval: 99999, concurrency: 999, wantInt: 1440 * time.Minute, wantConc: 50},
+		"negative":  {interval: -5, concurrency: -1, wantInt: time.Minute, wantConc: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clamped := LoadWorkerSettings(mapSettings{
+				KeyTestIntervalMinutes: json.RawMessage(strconv.Itoa(tc.interval)),
+				KeyTestConcurrency:     json.RawMessage(strconv.Itoa(tc.concurrency)),
+			})
+			if clamped.Interval != tc.wantInt {
+				t.Fatalf("interval = %v, want %v", clamped.Interval, tc.wantInt)
+			}
+			if clamped.Concurrency != tc.wantConc {
+				t.Fatalf("concurrency = %d, want %d", clamped.Concurrency, tc.wantConc)
+			}
+		})
+	}
+
+	// 脏值/非法阈值：回落默认而不是把 worker 停摆。
+	dirty := LoadWorkerSettings(mapSettings{
+		KeyAutoEnableEnabled:            json.RawMessage(`"true"`),
+		KeyResponseTimeThresholdSeconds: json.RawMessage(`0`),
+		KeyTestIntervalMinutes:          json.RawMessage(`"ten"`),
+		KeyTestConcurrency:              json.RawMessage(`null`),
+	})
+	if dirty.AutoEnableEnabled {
+		t.Fatal("字符串 \"true\" 不得被解释为开启")
+	}
+	if dirty.ResponseTimeThreshold != 5*time.Second {
+		t.Fatalf("非法阈值 = %v, want 5s 默认", dirty.ResponseTimeThreshold)
+	}
+	if dirty.Interval != 10*time.Minute || dirty.Concurrency != 5 {
+		t.Fatalf("脏值 interval/concurrency = %v/%d, want 10m/5", dirty.Interval, dirty.Concurrency)
 	}
 }

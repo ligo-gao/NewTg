@@ -604,6 +604,89 @@ func (r *ChannelRepo) AutoDisable(ctx context.Context, id int64, reason string) 
 	return out, true, nil
 }
 
+// AutoEnable 执行一次**条件**状态迁移 auto_disabled(3) → enabled(1)
+// （relay-01 §10.3 / modules-06 F-06-09；W7/M4-b 的自动恢复）。
+//
+// `WHERE status = 3` 是「人工禁用永不自动恢复」的数据库级守卫：即使调用方
+// （健康 worker）错误地把 manual_disabled 行送进来，也不会改变它的状态。
+// 与 AutoDisable 一样，守卫不放在调用方，避免两个入口各写一份判定。
+//
+// 同一迁移顺带清空 auto_disabled_reason 与 fail_count（R-M4-16）：恢复后的
+// 渠道不应继续展示过期的自动禁用原因，失败计数（保留列，R-M4-04）也归零。
+// updated_at 推进：这是行内容变化，管理员 PATCH 的乐观锁版本必须随之更新。
+//
+// 返回 (channel, changed, err)；changed=false 表示条件不满足（不存在、已启用、
+// 人工禁用）。调用方只在 changed=true 时写 channel.auto_enable 审计。
+func (r *ChannelRepo) AutoEnable(ctx context.Context, id int64) (*Channel, bool, error) {
+	query := `UPDATE channels
+		SET status = 1, auto_disabled_reason = NULL, fail_count = 0, updated_at = now()
+		WHERE id = $1 AND status = 3
+		RETURNING ` + channelColumns
+	out, err := scanChannel(r.db.QueryRowContext(ctx, query, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("store: auto-enable channel %d: %w", id, err)
+	}
+	return out, true, nil
+}
+
+// ListForHealthCheck 返回健康检查的扫描集：enabled(1) + auto_disabled(3)，
+// 按 id 升序（modules-06 F-06-12）。
+//
+// 为什么不复用 List：List 是管理面分页/筛选查询，只支持单一 status，且会
+// 做 count(*) 与排序；健康检查需要全量、稳定的顺序（便于日志对账与测试），
+// 不应为了两行状态再引入分页。manual_disabled(2) 不在集合内——人工禁用
+// 既不需要体检，也绝不自动恢复（R-M4-09/15）。
+func (r *ChannelRepo) ListForHealthCheck(ctx context.Context) ([]Channel, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+channelColumns+` FROM channels WHERE status IN (1, 3) ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list channels for health check: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]Channel, 0, 32)
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan health check channel: %w", err)
+		}
+		items = append(items, *ch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate health check channels: %w", err)
+	}
+	return items, nil
+}
+
+// UpdatePeriodicTestResult 回写周期健康检查结果（modules-06 F-06-12）。
+//
+// 与 UpdateTestResult 的唯一区别：**不推进 updated_at**（R-M4-08）。
+// updated_at 同时是管理员 PATCH 的乐观锁版本（R-P8）：每 10 分钟给全部渠道
+// 写一次 last_test_* 会让正在编辑渠道的管理员持续收到 409——「体检后台写」
+// 与「人工编辑」是两条无关的写路径，不能让前者消耗后者的版本号。
+//
+// 状态迁移（AutoDisable/AutoEnable）仍然推进版本：那是渠道可用性的真实变化，
+// 管理员的旧快照必须失效。手工测试沿用 UpdateTestResult（推进版本）不变。
+func (r *ChannelRepo) UpdatePeriodicTestResult(ctx context.Context, id int64, at time.Time, success bool) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE channels SET last_test_at = $2, last_test_result = $3 WHERE id = $1`,
+		id, at.UTC(), success)
+	if err != nil {
+		return fmt.Errorf("store: update periodic test result for channel %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: update periodic test result rows: %w", err)
+	}
+	if n == 0 {
+		return ErrChannelNotFound
+	}
+	return nil
+}
+
 // UpdateTestResult 回写连通性测试结果（modules-06 F-06-06）。
 //
 // updated_at 一并刷新：它是渠道行版本（R-P8），测试结果也是行内容的一部分；

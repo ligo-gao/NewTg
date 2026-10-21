@@ -574,3 +574,81 @@ func TestIntegrationSettingsBroadcastUpdatesCenter(t *testing.T) {
 		t.Fatalf("center 值 = %s, err=%v", raw, err)
 	}
 }
+
+// TestIntegrationSettingsDisableKeywordsList 是 R-M4-11 的数据库级验收：
+// 前端 lines 控件提交的字符串数组必须能保存并原样回显；旧 TypeString 行
+// 仍可读（消费者 channelhealth.ParseDisableKeywords 按行拆分），以字符串
+// 形态提交则被 TypeList 拒绝。
+func TestIntegrationSettingsDisableKeywordsList(t *testing.T) {
+	db := openSettingsTestDB(t)
+	snapshotAndClean(t, db, "rl.health")
+	svc, err := NewService(ServiceConfig{DB: db, Broadcaster: &fakeBroadcaster{}, Sealer: fakeSealer{prefix: "sealed:"}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ctx := context.Background()
+
+	// 数组保存（危险项需确认）。
+	_, err = svc.Put(ctx, UpdateInput{
+		Section:            "rl.health",
+		DangerousConfirmed: true,
+		Values: map[string]json.RawMessage{
+			"rl.health.disable_keywords": json.RawMessage(`["Your credit balance is too low","Permission denied"]`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("保存数组关键词: %v", err)
+	}
+	view, err := svc.Get(ctx, "rl.health")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	var keywords any
+	for _, item := range view.Items {
+		if item.Key == "rl.health.disable_keywords" {
+			keywords = item.Value
+		}
+	}
+	list, ok := keywords.([]any)
+	if !ok || len(list) != 2 || list[0] != "Your credit balance is too low" {
+		t.Fatalf("回显关键词 = %#v, want 2 项数组", keywords)
+	}
+
+	// 旧行兼容：直接写入 JSON string（M4 之前 TypeString 的落库形态），
+	// 读取面必须原样返回字符串，交给消费方按行拆分。
+	if _, err := db.ExecContext(ctx,
+		`UPDATE system_settings SET value = $1::jsonb WHERE "key" = 'rl.health.disable_keywords'`,
+		`"legacy one\nlegacy two"`); err != nil {
+		t.Fatalf("写入旧 string 行: %v", err)
+	}
+	view, _ = svc.Get(ctx, "rl.health")
+	for _, item := range view.Items {
+		if item.Key != "rl.health.disable_keywords" {
+			continue
+		}
+		legacy, ok := item.Value.(string)
+		if !ok || legacy != "legacy one\nlegacy two" {
+			t.Fatalf("旧 string 行回显 = %#v", item.Value)
+		}
+	}
+
+	// 字符串提交在新类型下被拒绝（400 等价），数组元素非法同样拒绝。
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:            "rl.health",
+		DangerousConfirmed: true,
+		Values: map[string]json.RawMessage{
+			"rl.health.disable_keywords": json.RawMessage(`"a\nb"`),
+		},
+	}); err == nil {
+		t.Fatal("字符串形态不得通过 TypeList 写入")
+	}
+	if _, err := svc.Put(ctx, UpdateInput{
+		Section:            "rl.health",
+		DangerousConfirmed: true,
+		Values: map[string]json.RawMessage{
+			"rl.health.disable_keywords": json.RawMessage(`["ok", 42]`),
+		},
+	}); err == nil {
+		t.Fatal("非字符串元素必须被拒绝")
+	}
+}

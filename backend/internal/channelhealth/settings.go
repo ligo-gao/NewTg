@@ -9,7 +9,9 @@ package channelhealth
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
+	"time"
 
 	"newtg/gateway/internal/settings"
 )
@@ -24,7 +26,93 @@ const (
 	//   2. 新 TypeList 行（JSON 字符串数组，M4-b 切换后的规范形态）；
 	//   3. 缺键/脏值 → 注册表默认（R-M4-11 / R-M4-12）。
 	KeyDisableKeywords = "rl.health.disable_keywords"
+	// KeyAutoEnableEnabled 是自动恢复开关。默认 false（R-M4-09）：自动把
+	// auto_disabled 渠道拉回流量是危险方向，必须由管理员显式开启。
+	KeyAutoEnableEnabled = "rl.health.auto_enable_enabled"
+	// KeyResponseTimeThresholdSeconds 是体检/手工测试的响应时间阈值
+	// （R-M4-02：只在这两条路径应用，中继逐请求不计时）。
+	KeyResponseTimeThresholdSeconds = "rl.health.response_time_threshold_seconds"
+	// KeyTestIntervalMinutes 是体检周期（1–1440，默认 10）。每轮重读，
+	// 改配置无需重启（R-M4-13）。
+	KeyTestIntervalMinutes = "rl.health.test_interval_minutes"
+	// KeyTestConcurrency 是每轮探测并发度（1–50，默认 5）。
+	KeyTestConcurrency = "rl.health.test_concurrency"
 )
+
+// WorkerSettings 是健康 worker / 手工测试所需的一次设置快照。
+//
+// 内嵌 DecisionSettings：禁用判定（开关、关键词）与中继上报共用同一套
+// 语义；自动恢复、阈值、调度与并发只属于体检路径（R-M4-02/09/13）。
+type WorkerSettings struct {
+	DecisionSettings
+	// AutoEnableEnabled 默认 false；只有周期健康 worker 读取它
+	// （R-M4-15：手工测试成功绝不触发恢复）。
+	AutoEnableEnabled bool
+	// ResponseTimeThreshold 是「响应头耗时 ≥ 阈值即记失败」的边界
+	// （modules-06 F-06-09；R-M4-02/14）。比较用 >=，0 值按注册表默认。
+	ResponseTimeThreshold time.Duration
+	// Interval 是两轮体检之间的间隔；启动后的首次运行也等待一个 Interval
+	// 再加 jitter（R-M4-13，避免重启风暴）。
+	Interval time.Duration
+	// Concurrency 是单轮并发探测上限（1–50）。
+	Concurrency int
+}
+
+// LoadWorkerSettings 读取 rl.health 的六键，缺失/脏值回落注册表默认。
+//
+// configcenter.Get 只返回已存行（不合并默认），所以每个键都要显式回落；
+// 数值越界一律钳制到注册表范围而不是拒绝启动——体检是后台任务，错误的
+// 设置不应让 worker 沉没，但也不得把并发/间隔放大到设计之外。
+func LoadWorkerSettings(src SettingsSource) WorkerSettings {
+	base := LoadDecisionSettings(src)
+	out := WorkerSettings{
+		DecisionSettings:      base,
+		AutoEnableEnabled:     registryBoolDefault(KeyAutoEnableEnabled, false),
+		ResponseTimeThreshold: time.Duration(registryFloatDefault(KeyResponseTimeThresholdSeconds, 5.0) * float64(time.Second)),
+		Interval:              time.Duration(clampInt(registryIntDefault(KeyTestIntervalMinutes, 10), 1, 1440)) * time.Minute,
+		Concurrency:           clampInt(registryIntDefault(KeyTestConcurrency, 5), 1, 50),
+	}
+	if src == nil {
+		return out
+	}
+	if raw, ok := src.Get(KeyAutoEnableEnabled); ok {
+		var enabled bool
+		// 与自动禁用开关同口径：只接受 JSON bool，脏值保持 false。
+		if json.Unmarshal(raw, &enabled) == nil {
+			out.AutoEnableEnabled = enabled
+		}
+	}
+	if raw, ok := src.Get(KeyResponseTimeThresholdSeconds); ok && !isNullRaw(raw) {
+		var seconds float64
+		// 只接受有限正数；0/负数/NaN 视为脏值并回落默认（validate.go 的
+		// positiveFiniteNumber 已挡在写入路径，这里是读取侧的纵深防御）。
+		if json.Unmarshal(raw, &seconds) == nil && seconds > 0 && !math.IsInf(seconds, 0) && !math.IsNaN(seconds) {
+			out.ResponseTimeThreshold = time.Duration(seconds * float64(time.Second))
+		}
+	}
+	if raw, ok := src.Get(KeyTestIntervalMinutes); ok && !isNullRaw(raw) {
+		var minutes int64
+		if json.Unmarshal(raw, &minutes) == nil {
+			out.Interval = time.Duration(clampInt(int(minutes), 1, 1440)) * time.Minute
+		}
+	}
+	if raw, ok := src.Get(KeyTestConcurrency); ok && !isNullRaw(raw) {
+		var concurrency int64
+		if json.Unmarshal(raw, &concurrency) == nil {
+			out.Concurrency = clampInt(int(concurrency), 1, 50)
+		}
+	}
+	return out
+}
+
+// isNullRaw 报告配置值是否为 JSON null。
+//
+// json.Unmarshal 对 null 不报错（保持零值），若不显式排除，「null」会被
+// 当成 0 再钳制到下限（并发 1、间隔 1 分钟），与「脏值回落注册表默认」
+// 的约定不一致。缺键/清空（settings 的 CLEAR 删除整行）才是回落默认。
+func isNullRaw(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
 
 // SettingsSource 是配置快照的最小读取面（configcenter.Center 实现）。
 // 与 httpapi.ConfigReader 同构，但保留独立声明，避免本包反向依赖 HTTP 层。
@@ -126,6 +214,51 @@ func registryBoolDefault(key string, fallback bool) bool {
 		return value
 	}
 	return fallback
+}
+
+// registryIntDefault 返回注册表整数默认值；缺键/类型不符时用 fallback。
+func registryIntDefault(key string, fallback int) int {
+	setting, ok := settings.Lookup(key)
+	if !ok {
+		return fallback
+	}
+	switch value := settings.DefaultValue(setting).(type) {
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return fallback
+	}
+}
+
+// registryFloatDefault 返回注册表数值默认值；缺键/类型不符时用 fallback。
+func registryFloatDefault(key string, fallback float64) float64 {
+	setting, ok := settings.Lookup(key)
+	if !ok {
+		return fallback
+	}
+	switch value := settings.DefaultValue(setting).(type) {
+	case float64:
+		return value
+	case int64:
+		return float64(value)
+	default:
+		return fallback
+	}
+}
+
+// clampInt 把配置值钳制到注册表声明的闭区间（R-M4-13 的 1–1440 / 1–50）。
+// 钳制而不是报错：体检是后台任务，越界配置不应让循环停摆，但也不能
+// 让并发/间隔超出设计（并发过高会放大出站风暴）。
+func clampInt(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 // registryKeywordDefaults 读取注册表的关键词默认值。

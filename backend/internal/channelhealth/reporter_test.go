@@ -419,3 +419,75 @@ func TestReporterStartStopsOnContextCancel(t *testing.T) {
 		t.Fatal("ctx 取消后 reporter goroutine 未退出")
 	}
 }
+
+// TestReporterProbeFailureDisablesOnThreshold：手工测试的「慢但成功」按
+// R-M4-02/14 记 channel_timeout 并触发禁用（手工测试与体检共用阈值语义）。
+func TestReporterProbeFailureDisablesOnThreshold(t *testing.T) {
+	channel := disabledChannel(21)
+	storeImpl := &fakeAutoDisableStore{channel: channel, changed: true}
+	auditImpl := &fakeAudit{}
+	notifierImpl := &fakeNotifier{}
+	reporter := testReporter(t, storeImpl, auditImpl, notifierImpl, ReporterConfig{
+		Config: mapSettings{
+			KeyAutoDisableEnabled:           json.RawMessage(`true`),
+			KeyResponseTimeThresholdSeconds: json.RawMessage(`5`),
+		},
+	})
+
+	reporter.ReportProbeFailure(context.Background(), 21, true,
+		ProbeResult{Success: true, LatencyMS: 5000})
+	if processed := reporter.RunOnce(context.Background()); processed != 1 {
+		t.Fatalf("RunOnce processed = %d, want 1（阈值边界 >= 应判失败）", processed)
+	}
+	call, ok := storeImpl.lastCall()
+	if !ok || call.reason != ReasonTimeout {
+		t.Fatalf("AutoDisable reason = %+v/%v, want %s", call, ok, ReasonTimeout)
+	}
+	events := auditImpl.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("审计事件 = %d, want 1", len(events))
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(events[0].Detail, &detail); err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if detail["trigger"] != TriggerTimeout {
+		t.Fatalf("trigger = %v, want %s", detail["trigger"], TriggerTimeout)
+	}
+}
+
+// TestReporterProbeFailureSuccessNeverRecovers：成功的探测（快速或自动恢复
+// 开关开启）绝不产生任何上报——手工测试只禁不禁（R-M4-15）。
+func TestReporterProbeFailureSuccessNeverRecovers(t *testing.T) {
+	storeImpl := &fakeAutoDisableStore{channel: disabledChannel(22), changed: true}
+	reporter := testReporter(t, storeImpl, &fakeAudit{}, &fakeNotifier{}, ReporterConfig{
+		Config: mapSettings{
+			KeyAutoDisableEnabled:           json.RawMessage(`true`),
+			KeyAutoEnableEnabled:            json.RawMessage(`true`),
+			KeyResponseTimeThresholdSeconds: json.RawMessage(`5`),
+		},
+	})
+
+	reporter.ReportProbeFailure(context.Background(), 22, true,
+		ProbeResult{Success: true, LatencyMS: 10})
+	if processed := reporter.RunOnce(context.Background()); processed != 0 {
+		t.Fatalf("成功探测被入队 %d 条，want 0（手工测试绝不恢复）", processed)
+	}
+	if storeImpl.callCount() != 0 {
+		t.Fatal("成功探测不得调用 AutoDisable")
+	}
+}
+
+// TestReporterProbeFailureTransportIsNotAHealthSignal：传输层错误只记
+// last_test_*（handler 已完成），reporter 不入队。
+func TestReporterProbeFailureTransportIsNotAHealthSignal(t *testing.T) {
+	storeImpl := &fakeAutoDisableStore{channel: disabledChannel(23), changed: true}
+	reporter := testReporter(t, storeImpl, &fakeAudit{}, &fakeNotifier{}, ReporterConfig{
+		Config: mapSettings{KeyAutoDisableEnabled: json.RawMessage(`true`)},
+	})
+	reporter.ReportProbeFailure(context.Background(), 23, true,
+		ProbeResult{TransportClass: TransportTimeout})
+	if processed := reporter.RunOnce(context.Background()); processed != 0 {
+		t.Fatalf("传输错误入队 %d 条，want 0", processed)
+	}
+}

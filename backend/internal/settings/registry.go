@@ -443,12 +443,23 @@ func buildRegistry() []Setting {
 		def("rl.health.auto_disable_enabled", "rl.health", TypeBool, false, dangerousOn()),
 		def("rl.health.response_time_threshold_seconds", "rl.health", TypeNumber, 5.0,
 			validate(positiveFiniteNumber)),
-		def("rl.health.disable_keywords", "rl.health", TypeString,
-			"Your credit balance is too low\nThis organization has been disabled.\n"+
-				"You exceeded your current quota\nPermission denied\n"+
-				"The security token included in the request is invalid\n"+
-				"Operation not allowed\nYour account is not authorized",
-			dangerousOn(), maxLen(8192)),
+		// R-M4-11：关键词表是**列表**而不是多行字符串。前端 lines 控件保存时
+		// 发送字符串数组（settings-section-form.tsx），TypeString 会以
+		// 「expected string」400 拒绝，因此必须用 TypeList；element 限制单项
+		// 长度，maxItems 限制匹配成本（R-M4-12 的有界复杂度）。
+		// 历史 TypeString 行由消费方 channelhealth.ParseDisableKeywords 兼容。
+		def("rl.health.disable_keywords", "rl.health", TypeList,
+			[]any{
+				"Your credit balance is too low",
+				"This organization has been disabled.",
+				"You exceeded your current quota",
+				"Permission denied",
+				"The security token included in the request is invalid",
+				"Operation not allowed",
+				"Your account is not authorized",
+			},
+			dangerousOn(), element(validateDisableKeyword),
+			validate(maxItems(100, "rl.health.disable_keywords"))),
 		def("rl.health.auto_enable_enabled", "rl.health", TypeBool, false),
 		def("rl.health.test_interval_minutes", "rl.health", TypeInt, int64(10), minInt(1), maxInt(1440)),
 		def("rl.health.test_concurrency", "rl.health", TypeInt, int64(5), minInt(1), maxInt(50)),

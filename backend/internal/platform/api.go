@@ -222,17 +222,6 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	for key := range pluginSources {
 		factoryKeys = append(factoryKeys, key)
 	}
-	channelHandler := httpapi.NewChannelHandler(
-		store.NewChannelRepo(db),
-		store.NewTokenRepo(db),
-		channelSealer,
-		httpapi.ChannelHandlerOptions{
-			Tester:      httpapi.NewChannelConnectivityTester(channelSealer, nil),
-			Idempotency: httpapi.NewRedisIdempotencyStore(rdb),
-			Plugins: httpapi.NewTaskPluginCatalog(
-				factoryKeys, store.NewTaskPluginRepo(db)),
-		},
-	)
 
 	// 定价仓储同时服务管理面与中继的停用模型检查（R-84）：同一实例、
 	// 同一套候选解析语义，避免两处对「这个模型是否被停用」得出不同答案。
@@ -302,6 +291,48 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: wallet handlers: %w", err)
 	}
 
+	// W7/M4-a/b：渠道自动禁用/恢复的异步执行面。构造失败属于装配错误（条件
+	// 更新是唯一状态迁移，缺 Store 会把「判定成功」变成静默无操作），直接
+	// 阻止上线。通知复用主库的 notification_deliveries；email 不在 M4 范围
+	// （R-M4-18），因此这里构造的 Service 不需要 Sender。
+	//
+	// 手工连通性测试（M4-b / R-M4-15）复用同一个 Reporter：handler 只上报
+	// ProbeResult，判定/条件更新/审计/站内通知仍由 reporter 的后台 goroutine
+	// 完成，且它只会禁用、永不自动恢复。
+	channelNotifier, err := notify.NewService(notify.ServiceConfig{
+		Store:  notifyStore,
+		Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: channel auto-disable notifier: %w", err)
+	}
+	attemptReporter, err := channelhealth.NewReporter(channelhealth.ReporterConfig{
+		Store:    store.NewChannelRepo(db),
+		Config:   center,
+		Audit:    auditor,
+		Notifier: channelNotifier,
+		Logger:   log,
+		// 相对路径即可：通知中心的 LinkURL 由前端自行拼接站点基址，
+		// 不依赖 PUBLIC_BASE_URL（为空时也不产生死链）。
+		ChannelsURL: "/admin/channels",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: channel auto-disable reporter: %w", err)
+	}
+
+	channelHandler := httpapi.NewChannelHandler(
+		store.NewChannelRepo(db),
+		store.NewTokenRepo(db),
+		channelSealer,
+		httpapi.ChannelHandlerOptions{
+			Tester:        httpapi.NewChannelConnectivityTester(channelSealer, nil),
+			Idempotency:   httpapi.NewRedisIdempotencyStore(rdb),
+			ProbeReporter: attemptReporter,
+			Plugins: httpapi.NewTaskPluginCatalog(
+				factoryKeys, store.NewTaskPluginRepo(db)),
+		},
+	)
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -341,33 +372,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, err
 	}
 
-	// W7/M4-a：渠道自动禁用的异步执行面。构造失败属于装配错误（条件更新是
-	// 唯一状态迁移，缺 Store 会把「判定成功」变成静默无操作），直接阻止上线。
-	// 通知复用主库的 notification_deliveries；email 不在 M4 范围（R-M4-18），
-	// 因此这里构造的 Service 不需要 Sender。模板播种已由 BuildGatewayRouter
-	// 完成（上面返回前 EnsureSeeded 失败会阻止启动）。
-	channelNotifier, err := notify.NewService(notify.ServiceConfig{
-		Store:  notifyStore,
-		Logger: log,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gateway: channel auto-disable notifier: %w", err)
-	}
-	attemptReporter, err := channelhealth.NewReporter(channelhealth.ReporterConfig{
-		Store:    store.NewChannelRepo(db),
-		Config:   center,
-		Audit:    auditor,
-		Notifier: channelNotifier,
-		Logger:   log,
-		// 相对路径即可：通知中心的 LinkURL 由前端自行拼接站点基址，
-		// 不依赖 PUBLIC_BASE_URL（为空时也不产生死链）。
-		ChannelsURL: "/admin/channels",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gateway: channel auto-disable reporter: %w", err)
-	}
-	// 单 goroutine、随网关 ctx 退出；ReportAttemptFailure 只做非阻塞入队，
-	// 请求响应不等待条件更新/审计/通知（brief 第 2 条）。
+	// 单 goroutine、随网关 ctx 退出；ReportAttemptFailure/ReportProbeFailure
+	// 只做非阻塞入队，请求响应不等待条件更新/审计/通知（brief 第 2 条）。
 	//
 	// I-2：用可独立取消的 ctx 启动，runGateway 在关闭 DB/日志库之前调用
 	// Stop（cancel + Wait）——既保证停机窗口把队列排空，也保证不会在连接池

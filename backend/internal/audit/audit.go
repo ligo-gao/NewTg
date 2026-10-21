@@ -199,6 +199,10 @@ const (
 	// 写入约定：Actor=0 + Username="system"；detail 只允许 channel_id/
 	// channel_name/reason/trigger，绝不记录凭据、base_url 或上游响应体。
 	ActionChannelAutoDisable = "channel.auto_disable"
+	// W7/M4-b 渠道自动恢复（R-M4-09/10）：健康 worker 探测成功且开关开启时
+	// 把 auto_disabled 拉回 enabled。同一 Actor/Username 约定；detail 只含
+	// channel_id/channel_name，before/after 只含 status。
+	ActionChannelAutoEnable = "channel.auto_enable"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -310,6 +314,7 @@ var actionCategories = map[string]string{
 	ActionAnnouncementDelete:  categoryOperation,
 
 	ActionChannelAutoDisable: categoryOperation,
+	ActionChannelAutoEnable:  categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

@@ -24,6 +24,7 @@ import (
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
@@ -69,6 +70,15 @@ var (
 // 负责构造适配器、以 max_tokens=1 发一次上游请求；本任务只约束 handler 的错误
 // 映射（失败 → 泛化 RFC7807，绝不回传上游 URL/key）。
 type ChannelTester func(ctx context.Context, ch *store.Channel, model string) (latencyMS int, err error)
+
+// ProbeFailureReporter 是手工连通性测试结果的自动禁用接缝（W7/M4-b / R-M4-15）。
+//
+// 生产实现是 *channelhealth.Reporter：与中继/体检共用同一判定
+// （DecideProbeFailure），但**只禁不禁**——手工测试成功绝不触发自动恢复
+// （R-M4-15 冻结）。实现方必须非阻塞：handler 在写响应前同步调用它。
+type ProbeFailureReporter interface {
+	ReportProbeFailure(ctx context.Context, channelID int64, autoBan bool, result channelhealth.ProbeResult)
+}
 
 // TaskPluginVersionLookup 是「有效 active 上传版本」的存在性读取面
 // （生产实现 *store.TaskPluginRepo）。渠道绑定校验用它补足注册表的上传侧。
@@ -476,6 +486,9 @@ type channelTestResponse struct {
 type ChannelHandlerOptions struct {
 	Tester      ChannelTester
 	Idempotency IdempotencyStore
+	// ProbeReporter 是手工连通性测试的自动禁用接缝（W7/M4-b）。nil 时只回写
+	// last_test_*、不做状态判定（测试/降级装配；生产必须注入）。
+	ProbeReporter ProbeFailureReporter
 	// Plugins 是任务插件注册表（渠道绑定校验）。nil 时任何 60/61 绑定都
 	// 视为未注册（fail-closed）；生产装配必须注入。
 	Plugins TaskPluginCatalog
@@ -486,13 +499,14 @@ type ChannelHandlerOptions struct {
 
 // ChannelHandler 持有渠道端点依赖。字段不导出，phase 8B 通过构造函数注入。
 type ChannelHandler struct {
-	channels ChannelStore
-	access   UserAccessStore
-	sealer   *SecretSealer
-	tester   ChannelTester
-	plugins  TaskPluginCatalog
-	idem     IdempotencyStore
-	log      *slog.Logger
+	channels      ChannelStore
+	access        UserAccessStore
+	sealer        *SecretSealer
+	tester        ChannelTester
+	probeReporter ProbeFailureReporter
+	plugins       TaskPluginCatalog
+	idem          IdempotencyStore
+	log           *slog.Logger
 }
 
 // NewChannelHandler 构造 handler。
@@ -513,13 +527,14 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		logger = slog.Default()
 	}
 	return &ChannelHandler{
-		channels: channels,
-		access:   access,
-		sealer:   sealer,
-		tester:   opts.Tester,
-		plugins:  opts.Plugins,
-		idem:     idem,
-		log:      logger,
+		channels:      channels,
+		access:        access,
+		sealer:        sealer,
+		tester:        opts.Tester,
+		probeReporter: opts.ProbeReporter,
+		plugins:       opts.Plugins,
+		idem:          idem,
+		log:           logger,
 	}
 }
 
@@ -1420,6 +1435,9 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 	if testErr != nil {
 		// 仍回写失败结果（F-06-06 主流程 3）；回写失败不覆盖测试错误。
 		_ = h.channels.UpdateTestResult(r.Context(), id, now, false)
+		// W7/M4-b / R-M4-15：手工测试失败可以触发自动禁用（与中继/体检共用
+		// 判定），但绝不触发自动恢复。非阻塞入队，响应不等副作用。
+		h.reportProbe(r.Context(), ch, latency, testErr)
 		// modules-06 F-06-06：连通性失败是**业务结果**而不是 HTTP 故障，
 		// 返回 200 {success:false, error_class}，便于前端展示失败原因。
 		// GC-6：只给泛化枚举 + 固定字段，原始错误（可能含 URL/key）整体丢弃。
@@ -1435,7 +1453,38 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, storeErrorResponse(err))
 		return
 	}
+	// 成功也要上报：R-M4-02 的阈值只在体检/手工测试路径应用，「慢但成功」
+	// 的测试应记 channel_timeout；不会触发自动恢复（R-M4-15）。
+	h.reportProbe(r.Context(), ch, latency, nil)
 	writeChannelJSON(w, http.StatusOK, channelTestResponse{Success: true, LatencyMS: latency, Model: model})
+}
+
+// reportProbe 把手工测试结果交给自动禁用接缝（非阻塞；nil 接缝直接返回）。
+//
+// 错误分类来自 tester 的 typed error：上游非 2xx 携带 status/class/body，
+// 传输失败携带 timeout/network；其它错误（nil 渠道/未配置 sealer）保持零值，
+// 判定层不会据此禁用。
+func (h *ChannelHandler) reportProbe(ctx context.Context, ch *store.Channel, latencyMS int, testErr error) {
+	if h.probeReporter == nil || ch == nil {
+		return
+	}
+	result := channelhealth.ProbeResult{LatencyMS: latencyMS}
+	if testErr == nil {
+		result.Success = true
+	} else {
+		var upstream *channelTestUpstreamError
+		if errors.As(testErr, &upstream) {
+			result.StatusCode = upstream.StatusCode
+			result.ErrorClass = upstream.Class
+			result.Body = upstream.Body
+		} else {
+			var transport *channelTestTransportError
+			if errors.As(testErr, &transport) {
+				result.TransportClass = transport.Class
+			}
+		}
+	}
+	h.probeReporter.ReportProbeFailure(ctx, ch.ID, ch.AutoBan, result)
 }
 
 // ---------- 列表筛选解析 ----------
