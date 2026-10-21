@@ -817,6 +817,9 @@ func TestMJPollerClaimsOnlyMJFamily(t *testing.T) {
 	var claimed []int64
 	p, err := NewMJPoller(MJPollerConfig{
 		Repo: repo,
+		// 本用例只验证族的领取隔离；显式禁用超时，避免固定 submit_time
+		// 随时间推移越过默认 1440 分钟而抢在 Handler 之前判失败。
+		Timeout: durationPtr(0),
 		Handler: func(_ context.Context, task *Task) error {
 			claimed = append(claimed, task.ID)
 			return nil
@@ -846,6 +849,9 @@ func TestMJPollerRejectsNonMJRow(t *testing.T) {
 	var claimed []int64
 	p, err := NewMJPoller(MJPollerConfig{
 		Repo: repo,
+		// 本用例只验证族的领取隔离；显式禁用超时，避免固定 submit_time
+		// 随时间推移越过默认 1440 分钟而抢在 Handler 之前判失败。
+		Timeout: durationPtr(0),
 		Handler: func(_ context.Context, task *Task) error {
 			claimed = append(claimed, task.ID)
 			return nil

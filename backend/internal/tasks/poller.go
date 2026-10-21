@@ -98,11 +98,17 @@ type PollerConfig struct {
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
 
-	Interval       time.Duration
-	TaskGap        time.Duration
-	QueryLimit     int
-	MaxFailures    int
-	Timeout        time.Duration
+	Interval   time.Duration
+	TaskGap    time.Duration
+	QueryLimit int
+	// MaxFailures / Timeout 用指针表达三态（W9-B4 / R-W9B-04）：
+	//   nil   = 未配置 → 使用设计默认（20 / 1440m，见 NewPoller）；
+	//   &0    = 显式禁用该判定（设计冻结的 `<=0` 禁用语义）；
+	//   &正值 = 按配置值。
+	// 旧签名用裸 int/Duration，0 同时被解释为「未设置」和「禁用」，正是
+	// G-M6D-27 的语义相反缺陷；指针让两种意图在类型层面不可混淆。
+	MaxFailures    *int
+	Timeout        *time.Duration
 	ReloadInterval time.Duration
 	ReconcileLimit int
 	// AllowPrivate 只允许测试注入 httptest（127.0.0.1）时置 true。
@@ -163,13 +169,17 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 	p.reloadInterval = orDefaultDuration(cfg.ReloadInterval, DefaultPluginReloadInterval)
 	p.queryLimit = orDefaultInt(cfg.QueryLimit, DefaultQueryLimit)
 	p.reconcileLimit = orDefaultInt(cfg.ReconcileLimit, DefaultReconcileLimit)
-	p.maxFailures = cfg.MaxFailures
-	if p.maxFailures == 0 {
-		p.maxFailures = DefaultMaxPollFailures
+	// 任务上限的三态默认化（W9-B4 / R-W9B-04）：只有「未配置」（nil）回落
+	// 设计默认；显式 0 必须原样保留，供 timedOut/recordFailure 的 `<=0` /
+	// `>0` 判定解释成「禁用」。不得再写 `if x == 0 { x = default }`——
+	// 那会把运营的「禁用」静默变成「20 次/1440 分钟后强制退款」。
+	p.maxFailures = DefaultMaxPollFailures
+	if cfg.MaxFailures != nil {
+		p.maxFailures = *cfg.MaxFailures
 	}
-	p.timeout = cfg.Timeout
-	if p.timeout == 0 {
-		p.timeout = DefaultTaskTimeout
+	p.timeout = DefaultTaskTimeout
+	if cfg.Timeout != nil {
+		p.timeout = *cfg.Timeout
 	}
 	p.allowPrivate = cfg.AllowPrivate
 	return p, nil
@@ -574,7 +584,17 @@ func (p *Poller) recordFailure(ctx context.Context, task *Task, reason string) {
 }
 
 func (p *Poller) timedOut(task *Task) bool {
-	if p.timeout <= 0 {
+	return taskTimedOut(task, p.timeout, p.now())
+}
+
+// taskTimedOut 是插件/MJ 两族共用的外层超时判定（W9-B4）。
+//
+// 抽成包级函数是为了让 MJPoller 与插件 Poller 使用**同一份**边界语义：
+// 恰好等于阈值即视为超时（`!now.Before(start.Add(timeout))`），避免两族
+// 各自实现后在边界上漂移。timeout <= 0 表示禁用（设计冻结的 `<=0` 语义），
+// 未配置由构造器先填默认值。
+func taskTimedOut(task *Task, timeout time.Duration, now time.Time) bool {
+	if task == nil || timeout <= 0 {
 		return false
 	}
 	start := task.SubmitTime
@@ -584,7 +604,7 @@ func (p *Poller) timedOut(task *Task) bool {
 	if start == nil || start.IsZero() {
 		return false
 	}
-	return !p.now().Before(start.Add(p.timeout))
+	return !now.Before(start.Add(timeout))
 }
 
 // buildQueryContext 组装 TaskQueryContext（relay-06 §3.2）。

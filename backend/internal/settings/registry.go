@@ -92,7 +92,7 @@ var sectionOrder = []string{
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
-	"plugin", "deploy",
+	"plugin", "task", "deploy",
 }
 
 var (
@@ -556,6 +556,26 @@ func buildRegistry() []Setting {
 		// 硬边界：任何超出 provider/网关内存预算的值在保存期就拒绝。
 		def("plugin.upload.max_bytes", "plugin", TypeInt, int64(2097152),
 			minInt(1), maxInt(67108864)),
+
+		// ==== task（W9-B4 / G-M6D-27：任务轮询上限）====
+		//
+		// 设计回写（2026-10-21，R-W9B-04/08）：设计把 TASK_TIMEOUT_MINUTES /
+		// TASK_POLL_MAX_FAILURES 写成基线环境变量，但新系统的可运行配置面是
+		// system_settings（configcenter 统一承载；轮询器在 worker 启动时取快照，
+		// 改动随 worker 重建生效），本波据此新增 `task` section。
+		// 键名映射：poll_timeout_minutes ↔ TASK_TIMEOUT_MINUTES（1440 分钟），
+		// poll_max_failures ↔ TASK_POLL_MAX_FAILURES（20）。
+		//
+		// 语义冻结：**未配置 → 设计默认；显式 0 → 禁用该判定；正值 → 按值**。
+		// 注册表这里存的是「管理员写入值」，不承担默认判定——未配置时读取方
+		// 拿到 ok=false，必须交给轮询器的默认常量（见 platform/task_poller.go
+		// 的 taskPollLimits）。因此这里 Default 仅用于管理面展示，取值与
+		// tasks.DefaultTaskTimeout/DefaultMaxPollFailures 保持一致。
+		// 上限取 1 年/100 万次，避免把 Timeout 换算成 time.Duration 时溢出。
+		def("task.poll_timeout_minutes", "task", TypeInt, int64(1440),
+			minInt(0), maxInt(525600)),
+		def("task.poll_max_failures", "task", TypeInt, int64(20),
+			minInt(0), maxInt(1000000)),
 
 		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
 		//
