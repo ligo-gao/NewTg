@@ -2748,6 +2748,13 @@ export interface paths {
          * 创建部署（产生 provider 侧费用）
          * @description 创建前与提交前各查重一次名称；创建前必须先取得 provider 报价，
          *     报价失败返回 422 deploy_price_unavailable 且不发起写。
+         *     provider 返回 200 但没有可用 USD 报价（缺报价字段 / 负金额 /
+         *     estimation_valid=false / 币种非 USD）时返回 422
+         *     `https://newtg.dev/problems/deploy_quote_unavailable`，不按 0 计。
+         *     创建受理后在站点成本账预扣（`deployment_billing_segments`，幂等键
+         *     `deploy:create:<user_id>:<Idempotency-Key>`）；预扣失败返回 502
+         *     `deploy_billing_failed` 并回滚本次部署创建。部署计费只记站点成本，
+         *     **不扣用户钱包 / 订阅 / 令牌额度**。
          *     registry_secret 与 secret_env_variables 只写不读：不落库、不回显、
          *     不进审计（键名也不记）。成功返回 202 受理结果。
          */
@@ -2970,6 +2977,11 @@ export interface paths {
         /**
          * 续期（先报价后提交）
          * @description 续期前必须取得 provider 报价；报价失败返回 422 且不发起写。
+         *     报价不可用（无报价字段 / 负金额 / 币种非 USD / estimation_valid=false）
+         *     同样返回 422 `deploy_quote_unavailable`。
+         *     续期先在新计费段预扣（幂等键 `deploy:extend:<deployment_id>:<hours>`），
+         *     预扣失败返回 502 `deploy_billing_failed` 且不发起 provider 写；provider
+         *     续期失败时释放该段。续期生效后旧段在生效点结算关闭。
          */
         post: operations["extendDeployment"];
         delete?: never;

@@ -222,6 +222,23 @@ func (s *store) activeSegmentByDeployment(ctx context.Context, deploymentID stri
 	return seg, err
 }
 
+// listOpenSegmentsByDeployment 返回该部署**全部**未终态段（按创建顺序）。
+//
+// 终止/续期边界必须收敛所有仍开着的段：续期会在同一部署下留下多条段，
+// 只处理「最新一条」会让更早的段永远挂着（既有 activeSegmentByDeployment
+// 只用于判重与续期基线）。终态段不在结果里，保证重复收敛是 no-op。
+func (s *store) listOpenSegmentsByDeployment(ctx context.Context, deploymentID string) ([]Segment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+segmentColumns+` FROM deployment_billing_segments
+		WHERE deployment_id = $1 AND state NOT IN ('settled', 'abandoned', 'failed')
+		ORDER BY created_at, segment_id`, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectSegments(rows)
+}
+
 // listRunningSegmentsAfter 是按 (started_at, segment_id) 的 keyset 分页。
 //
 // 为什么不用 OFFSET：Accrue 会持续写入事实并刷新心跳，单轮扫描可能跨越

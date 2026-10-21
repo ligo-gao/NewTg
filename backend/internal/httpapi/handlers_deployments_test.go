@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/rbac"
 )
@@ -30,6 +32,7 @@ type deployMgmtEnv struct {
 	secrets  *fakeDeploySecretStore
 	audit    *fakeAuditExec
 	idem     IdempotencyStore
+	billing  *fakeDeployBilling
 }
 
 func newDeployMgmtEnv(t *testing.T) *deployMgmtEnv {
@@ -37,19 +40,111 @@ func newDeployMgmtEnv(t *testing.T) *deployMgmtEnv {
 	return newDeployMgmtEnvWithIdem(t, NewMemoryIdempotencyStore())
 }
 
+// fakeDeployBilling 是站点成本账的内存替身：单测只需要断言「预扣/释放/
+// 终止收敛是否被调用以及入参」，真实幂等与金额换算由 billing 包的
+// 集成测试与账本本身覆盖。
+type fakeDeployBilling struct {
+	mu         sync.Mutex
+	holds      []deploybilling.SegmentEstimate
+	segments   map[string]deploybilling.Segment
+	byKey      map[string]deploybilling.Segment
+	releases   []string
+	terminated []deploybilling.TerminationObservation
+	holdErr    error
+	settleErr  error
+	nextID     int
+}
+
+func newFakeDeployBilling() *fakeDeployBilling {
+	return &fakeDeployBilling{
+		segments: map[string]deploybilling.Segment{},
+		byKey:    map[string]deploybilling.Segment{},
+	}
+}
+
+func (f *fakeDeployBilling) Hold(_ context.Context, est deploybilling.SegmentEstimate) (deploybilling.Segment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds = append(f.holds, est)
+	if f.holdErr != nil {
+		return deploybilling.Segment{}, false, f.holdErr
+	}
+	if existing, ok := f.byKey[est.IdempotencyKey]; ok {
+		return existing, false, nil
+	}
+	f.nextID++
+	seg := deploybilling.Segment{
+		SegmentID:      fmt.Sprintf("seg-%d", f.nextID),
+		DeploymentID:   est.DeploymentID,
+		SegmentKind:    est.SegmentKind,
+		IdempotencyKey: est.IdempotencyKey,
+		State:          est.State,
+	}
+	f.segments[seg.SegmentID] = seg
+	f.byKey[est.IdempotencyKey] = seg
+	return seg, true, nil
+}
+
+func (f *fakeDeployBilling) Release(_ context.Context, segmentID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases = append(f.releases, segmentID)
+	return nil
+}
+
+func (f *fakeDeployBilling) SettleTerminated(_ context.Context,
+	obs deploybilling.TerminationObservation) (deploybilling.TerminationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated = append(f.terminated, obs)
+	if f.settleErr != nil {
+		return deploybilling.TerminationResult{}, f.settleErr
+	}
+	var result deploybilling.TerminationResult
+	for _, seg := range f.segments {
+		if seg.DeploymentID != obs.DeploymentID {
+			continue
+		}
+		result.SegmentsSettled++
+	}
+	return result, nil
+}
+
+func (f *fakeDeployBilling) snapshot() (holds []deploybilling.SegmentEstimate, releases []string,
+	terminated []deploybilling.TerminationObservation) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]deploybilling.SegmentEstimate(nil), f.holds...),
+		append([]string(nil), f.releases...),
+		append([]deploybilling.TerminationObservation(nil), f.terminated...)
+}
+
 func newDeployMgmtEnvWithIdem(t *testing.T, idem IdempotencyStore) *deployMgmtEnv {
 	t.Helper()
 	service := &fakeSettingsService{getView: sampleDeployView(true, true)}
-	provider := &ionet.FakeProvider{NameAvailable: true}
+	// 默认给一个可用报价：P-21 之后「有报价」是创建/续期的前置条件，
+	// 各用例按需覆盖。
+	provider := &ionet.FakeProvider{
+		NameAvailable: true,
+		Price: ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true,
+			EstimationValid:  true,
+			Currency:         "USDC",
+		},
+	}
 	secrets := &fakeDeploySecretStore{key: "stored-key", ok: true}
 	exec := &fakeAuditExec{}
+	billing := newFakeDeployBilling()
 	env := &deployMgmtEnv{
 		service: service, provider: provider, secrets: secrets, audit: exec, idem: idem,
+		billing: billing,
 	}
 	handlers, err := NewDeployManagementHandlers(DeployManagementHandlerConfig{
 		Settings: service,
 		Secrets:  secrets,
 		Provider: func(string) ionet.DeploymentProvider { return provider },
+		Billing:  billing,
 		Authz:    rbac.NewAuthzMiddleware(),
 		Audit:    audit.New(exec),
 		Idem:     idem,
@@ -243,7 +338,7 @@ func validCreateBody() string {
 func TestDeployCreateSuccessChecksNameTwiceAndPriceFirst(t *testing.T) {
 	env := newDeployMgmtEnv(t)
 	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "deployment requested"}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("12.5")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("12.5")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusAccepted {
@@ -296,6 +391,55 @@ func TestDeployCreatePriceFailureDoesNotWrite(t *testing.T) {
 	}
 	if env.provider.CreateCalls != 0 {
 		t.Fatalf("报价失败不得发起 provider 写: %d", env.provider.CreateCalls)
+	}
+	holds, _, _ := env.billing.snapshot()
+	if len(holds) != 0 {
+		t.Fatalf("报价失败不得预扣: %d", len(holds))
+	}
+}
+
+// P-21：provider 回 200 但报价不可用（没给报价字段）→ 422 quote_unavailable，
+// 零 provider 写、零预扣；绝不按 0 计。
+func TestDeployCreateQuoteUnavailableRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		price ionet.PriceEstimationResponse
+	}{
+		{"missing quote", ionet.PriceEstimationResponse{EstimationValid: true, Currency: "USDC"}},
+		{"invalid estimate", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true, EstimationValid: false, Currency: "USDC"}},
+		{"negative quote", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(-1)},
+			EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}},
+		{"non-usd currency", ionet.PriceEstimationResponse{
+			EstimatedCost:    ionet.Money{Decimal: decimal.NewFromInt(10)},
+			EstimatedCostSet: true, EstimationValid: true, Currency: "CNY"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDeployMgmtEnv(t)
+			env.provider.Price = tc.price
+			rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+			}
+			problem := decodeDeployProblem(t, rr)
+			if problem["type"] != problemTypeDeployQuoteUnavailable || problem["detail"] == nil {
+				t.Fatalf("problem = %+v", problem)
+			}
+			if env.provider.CreateCalls != 0 {
+				t.Fatalf("报价不可用不得发起 provider 写: %d", env.provider.CreateCalls)
+			}
+			holds, _, _ := env.billing.snapshot()
+			if len(holds) != 0 {
+				t.Fatalf("报价不可用不得预扣: %d", len(holds))
+			}
+			rows := env.audit.snapshot()
+			if len(rows) != 1 || !strings.Contains(stringifyAuditRow(rows[0]), "quote_unavailable") {
+				t.Fatalf("审计必须记录 quote_unavailable: %v", rows)
+			}
+		})
 	}
 }
 
@@ -528,7 +672,7 @@ func TestDeployExtendRequiresPriceAndWrites(t *testing.T) {
 		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 2,
 		Locations: []ionet.DeploymentLocation{{ID: 1}, {ID: 2}},
 	}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("3.5")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("3.5")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
 
 	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
@@ -565,6 +709,111 @@ func TestDeployDeleteAccepted(t *testing.T) {
 	}
 	if env.provider.LastDeleteID != "dep-1" {
 		t.Fatal("删除未透传 ID")
+	}
+}
+
+// ---------- 站点成本账接线（H1/H2） ----------
+
+// H1 Step 1（单测层）：创建成功产生 1 个预扣段，键符合 P-20。
+func TestDeployCreateHoldsSiteCostLedger(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, releases, _ := env.billing.snapshot()
+	if len(holds) != 1 || len(releases) != 0 {
+		t.Fatalf("holds/releases = %d/%d，期望 1/0", len(holds), len(releases))
+	}
+	est := holds[0]
+	if est.DeploymentID != "dep-new" || est.SegmentKind != deploybilling.SegmentKindCreate {
+		t.Fatalf("estimate = %+v", est)
+	}
+	if est.IdempotencyKey != "deploy:create:1:idem-key-1" {
+		t.Fatalf("P-20 创建幂等键 = %q", est.IdempotencyKey)
+	}
+	if est.PlannedSeconds != 24*3600 || est.GPUsPerContainer != 1 || est.ReplicaCount != 2 {
+		t.Fatalf("段快照与请求不一致: %+v", est)
+	}
+	if !est.QuoteUSD.Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("冻结报价 = %s", est.QuoteUSD)
+	}
+}
+
+// H1：预扣失败只回滚部署创建（P-19），返回 502 且不产生任何用户扣费。
+func TestDeployCreateHoldFailureRollsBackDeployment(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.CreateResult = ionet.DeploymentAction{DeploymentID: "dep-new", Status: "requested"}
+	env.billing.holdErr = errors.New("ledger down")
+
+	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d，期望 502（body=%s）", rr.Code, rr.Body.String())
+	}
+	if got := decodeDeployProblem(t, rr)["type"]; got != problemTypeDeployBillingFailed {
+		t.Fatalf("problem.type = %v", got)
+	}
+	if env.provider.DeleteCalls != 1 || env.provider.LastDeleteID != "dep-new" {
+		t.Fatalf("预扣失败必须回滚刚创建的部署（delete calls=%d id=%q）",
+			env.provider.DeleteCalls, env.provider.LastDeleteID)
+	}
+	rows := env.audit.snapshot()
+	if len(rows) != 1 || !strings.Contains(stringifyAuditRow(rows[0]), "deploy_billing_hold_failed") {
+		t.Fatalf("审计必须记录预扣失败: %v", rows)
+	}
+}
+
+// H1：续期先预扣新段，生效后关闭旧段（排除新段）。
+func TestDeployExtendHoldsThenSettlesPreviousSegment(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 2, TotalContainers: 3,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendResult = ionet.DeploymentAction{DeploymentID: "dep-1", Status: "extending"}
+
+	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":12}`, deployWriteHeaders())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, _, terminated := env.billing.snapshot()
+	if len(holds) != 1 {
+		t.Fatalf("续期必须预扣恰好一次: %d", len(holds))
+	}
+	est := holds[0]
+	if est.SegmentKind != deploybilling.SegmentKindExtend ||
+		est.IdempotencyKey != "deploy:extend:dep-1:12" || est.StartedAt == nil {
+		t.Fatalf("续期段 = %+v", est)
+	}
+	if len(terminated) != 1 {
+		t.Fatalf("续期生效必须关闭旧段: %d", len(terminated))
+	}
+	if len(terminated[0].ExcludeSegmentIDs) != 1 {
+		t.Fatalf("关闭旧段时必须排除刚预扣的新段: %+v", terminated[0])
+	}
+}
+
+// H1：provider 续期失败 → 释放刚预扣的新段（段从未运行，成本 0）。
+func TestDeployExtendProviderFailureReleasesHold(t *testing.T) {
+	env := newDeployMgmtEnv(t)
+	env.provider.DeploymentDetail = ionet.DeploymentDetail{
+		ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
+		Locations: []ionet.DeploymentLocation{{ID: 1}},
+	}
+	env.provider.ExtendErr = &ionet.APIError{StatusCode: http.StatusInternalServerError}
+
+	rr := env.do(http.MethodPost, "/api/deployments/dep-1/extend", `{"duration_hours":6}`, deployWriteHeaders())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	holds, releases, terminated := env.billing.snapshot()
+	if len(holds) != 1 || len(releases) != 1 || releases[0] != "seg-1" {
+		t.Fatalf("holds/releases = %d/%v", len(holds), releases)
+	}
+	if len(terminated) != 0 {
+		t.Fatal("续期失败不得关闭旧段")
 	}
 }
 
@@ -661,7 +910,7 @@ func TestDeployCatalogAndPriceEndpoints(t *testing.T) {
 		Locations: []ionet.Location{{ID: 1, Name: "us-east"}}, Total: 1,
 	}
 	env.provider.Replicas = ionet.AvailableReplicas{Replicas: []ionet.AvailableReplica{{LocationID: 1, AvailableCount: 3}}}
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("9.99")}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.RequireFromString("9.99")}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 	for _, target := range []string{
 		"/api/deployments/hardware-types",
@@ -815,7 +1064,7 @@ func TestDeployWriteIdempotencyMatrix(t *testing.T) {
 				ID: "dep-1", HardwareID: 7, GPUsPerContainer: 1, TotalContainers: 1,
 				Locations: []ionet.DeploymentLocation{{ID: 1}},
 			}
-			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
+			env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 
 			missing := env.do(tc.method, tc.target, tc.body, nil)
 			if missing.Code != http.StatusBadRequest {
@@ -929,7 +1178,7 @@ func TestDeployAllEndpointsRequireSettingsManage(t *testing.T) {
 
 func TestDeployNameConflictMapsToNameTaken(t *testing.T) {
 	env := newDeployMgmtEnv(t)
-	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, Currency: "USDC"}
+	env.provider.Price = ionet.PriceEstimationResponse{EstimatedCost: ionet.Money{Decimal: decimal.NewFromInt(1)}, EstimatedCostSet: true, EstimationValid: true, Currency: "USDC"}
 	env.provider.CreateErr = &ionet.APIError{StatusCode: http.StatusConflict}
 	rr := env.do(http.MethodPost, "/api/deployments", validCreateBody(), deployWriteHeaders())
 	if rr.Code != http.StatusConflict {
