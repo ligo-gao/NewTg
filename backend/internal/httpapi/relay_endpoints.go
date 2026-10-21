@@ -1006,6 +1006,12 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 //
 // 异常语义与 bridgeStream 一致：客户端断开/上游读取失败/看门狗超时一律
 // Refund（R-85），不伪造 `message_stop` 或任何收尾帧（relay-03 §5.2/§10.3）。
+//
+// 与 bridgeStream 的两处口径差异，均因字节级透传没有协议级分帧：
+//   - SendCount 按空行边界计 SSE 帧（见 countFrames），ping 帧也计入；
+//   - OutcomePartial 的判据是「已写出任何帧」，无法像语义桥接那样只数内容帧。
+//     一个只发 ping 后中断的流会被记为 partial 而非 failed——两者都是异常
+//     结束并全额退款，只影响审计字段。
 func (h *RelayHandler) pipeNativeAnthropicStream(
 	r *http.Request,
 	rc *contract.RelayContext,
@@ -1021,7 +1027,6 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 		sawUsage     bool
 		received     int
 		sent         int
-		contentSent  int
 		softErrors   int
 		firstTokenMS *int
 		finished     bool
@@ -1073,7 +1078,7 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 			relay.WithStream(rc, &contract.StreamStatus{
 				Phase:     contract.PhaseTerminated,
 				EndReason: contract.EndPanic,
-				Outcome:   relayStreamOutcome(contentSent),
+				Outcome:   relayStreamOutcome(sent),
 				RecvCount: received,
 				SendCount: sent,
 			}, sent, received, firstTokenMS)
@@ -1083,6 +1088,26 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 
 	// teeWriter 是 io.TeeReader 的写端：原始字节块直接作为客户端帧写出。
 	// 写失败即客户端断开，返回错误会让 StreamEvents 的读取中止。
+	//
+	// SendCount 的口径是**SSE 帧数**（与 chat 桥接每个 EventRaw/合成帧记一次
+	// 同义），不是写次数：tee 拿到的是上游字节块，可能含多帧、也可能在帧中间
+	// 被截断。lineEmpty 跨块保留，帧边界落在两次 Read 之间也能正确计数。
+	lineEmpty := false
+	countFrames := func(p []byte) {
+		for _, b := range p {
+			switch b {
+			case '\n':
+				if lineEmpty {
+					sent++
+				}
+				lineEmpty = true
+			case '\r':
+				// CRLF 的 \r 不改变行状态，由随后的 \n 收行。
+			default:
+				lineEmpty = false
+			}
+		}
+	}
 	teeWriter := writerFunc(func(p []byte) (int, error) {
 		if len(p) == 0 {
 			return 0, nil
@@ -1091,8 +1116,7 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 			clientGone = true
 			return 0, io.ErrClosedPipe
 		}
-		sent++
-		contentSent++
+		countFrames(p)
 		if firstTokenMS == nil {
 			ms := int(time.Since(start).Milliseconds())
 			firstTokenMS = &ms
@@ -1159,16 +1183,16 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 	switch {
 	case clientGone:
 		endReason = contract.EndClientAbort
-		outcome = relayStreamOutcome(contentSent)
+		outcome = relayStreamOutcome(sent)
 	case timedOut.Load():
 		endReason = contract.EndStreamTimeout
-		outcome = relayStreamOutcome(contentSent)
+		outcome = relayStreamOutcome(sent)
 	case upstreamFail:
 		endReason = contract.EndUpstreamError
-		outcome = relayStreamOutcome(contentSent)
+		outcome = relayStreamOutcome(sent)
 	case !finished:
 		endReason = contract.EndUpstreamEOF
-		outcome = relayStreamOutcome(contentSent)
+		outcome = relayStreamOutcome(sent)
 	}
 	relay.WithStream(rc, &contract.StreamStatus{
 		Phase:     contract.PhaseTerminated,
