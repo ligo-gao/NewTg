@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
@@ -121,19 +122,41 @@ func (p *Poller) settleSuccess(ctx context.Context, task *Task, requestID string
 // 写 billing_pending 是兼容 T6b 补偿扫描的既有谓词（ListReconcilable 同时
 // 看 settlement_pending），两者一起写让旧扫描器与新扫描器都能看到。
 func (p *Poller) markSettlementPending(ctx context.Context, task *Task, requestID string, cause error) {
-	p.markBilling(ctx, task, nil, map[string]any{
+	flags := map[string]any{
 		"settlement_pending": true,
 		"billing_pending":    true,
-	})
+		// 复核 I3：长期 settlement_pending 必须可观测。把失败原因与首次进入
+		// 待定的时间落进 private_data，运维无需翻日志即可区分「表达式/用量
+		// 损坏」与「暂时性 DB 故障」，并据此判断 hold 被钉住的时长。
+		"settlement_pending_reason": truncateSettlementReason(cause),
+	}
+	if task.PrivateData == nil || task.PrivateData["settlement_pending_since"] == nil {
+		flags["settlement_pending_since"] = p.now().UTC().Format(time.RFC3339)
+	}
+	p.markBilling(ctx, task, nil, flags)
 	p.log.Error("tasks: settlement failed; kept pre-charged hold and marked settlement_pending",
-		"task_id", task.PublicTaskID, "request_id", requestID, "error", cause)
+		"task_id", task.PublicTaskID, "request_id", requestID,
+		"pending_since", flags["settlement_pending_since"], "error", cause)
 }
 
-// manifestFor 取任务所属插件的 manifest（快照仅用于用量字段→单位映射）。
+// truncateSettlementReason 截断待定原因，避免把上游大段错误写进 jsonb。
+func truncateSettlementReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	const max = 512
+	text := err.Error()
+	if len(text) > max {
+		text = text[:max]
+	}
+	return text
+}
+
+// manifestFor 取任务所属插件的 manifest。
 //
-// 轮询路径可能已经拿到 compiled；补偿扫描没有，因此回落到插件快照按
-// task.PluginKey 查找。插件已下架时返回 nil：EvalTaskCost 会因用量字段
-// 缺少单位声明而求值失败 → 保留预扣，方向安全。
+// 复核 I1 之后它只是**旧快照**的回落：新快照已冻结表达式引用的字段单位，
+// 结算不再依赖活插件。轮询路径可能已经拿到 compiled；补偿扫描没有，因此
+// 回落到插件快照按 task.PluginKey 查找。
 func (p *Poller) manifestFor(task *Task, compiled *plugin.CompiledPlugin) *plugin.Manifest {
 	if compiled != nil {
 		return compiled.Manifest()
@@ -226,17 +249,24 @@ func (p *Poller) reconcileOnce(ctx context.Context) {
 
 // buildTaskUsageFact 把 task.data.usage 转成契约的 TaskUsageFact（只数量）。
 //
-// 本批结算以预扣额终结、不消费 usage 求值；保留这个唯一构造入口是为了
-// T6c 的任务计价表达式：届时的表达式求值只应从这里读 usage，避免出现第二套
-// 「从 data 读 usage」的实现。单位来自插件声明；未声明单位的数值字段不入
-// Units（设计 §9.3：枚举字段无单位）。
+// 这是「从 data 读 usage」的唯一构造入口：表达式求值只走这里，避免出现
+// 第二套实现。单位来自插件声明（或提交期冻结的单位表，见
+// buildTaskUsageFactWithUnits）；未声明单位的数值字段不入 Units
+// （设计 §9.3：枚举字段无单位）。
 func buildTaskUsageFact(data map[string]any, m *plugin.Manifest) contract.TaskUsageFact {
+	return buildTaskUsageFactWithUnits(data, usageFieldUnits(m))
+}
+
+// buildTaskUsageFactWithUnits 按给定的「字段 → 单位」表构造用量事实。
+//
+// 复核 I1：结算优先使用提交期冻结的单位表，插件改名/下架/升级都不会改变
+// 已提交任务的取数与钳制口径。
+func buildTaskUsageFactWithUnits(data map[string]any, units map[string]string) contract.TaskUsageFact {
 	fact := contract.TaskUsageFact{Facts: map[string]contract.UsageFactValue{}}
 	usage, ok := data["usage"].(map[string]any)
 	if !ok || len(usage) == 0 {
 		return fact
 	}
-	units := usageFieldUnits(m)
 	for name, value := range usage {
 		unit, declared := units[name]
 		if !declared {

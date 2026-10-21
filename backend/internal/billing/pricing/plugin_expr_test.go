@@ -122,7 +122,7 @@ func TestTaskExprOrNilSkipsTokenExpression(t *testing.T) {
 		BillingExpr:       map[string]string{"m": "p * 2 + c * 8"},
 	}
 	e, src, err := ResolveTaskExpr(cfg, "sample", "m", "m")
-	if err != nil || e != nil || src != "" {
+	if err != nil || e != nil || src != ExprSourceHeldSkip {
 		t.Fatalf("token 表达式应被跳过：e=%v src=%s err=%v", e, src, err)
 	}
 }
@@ -171,7 +171,73 @@ func TestEvalTaskUsageMissingOrNonNumericFailsClosed(t *testing.T) {
 	}
 }
 
-// TestEvalTaskUsageConstantAndMinimum 验证常量表达式与最小计费口径。
+// TestResolveTaskExprModelSkipIsExplicit 覆盖复核 I2：模型级 token 表达式
+// 被跳过时必须给出可审计的 SkipReason，而不是与「未配置」不可区分。
+func TestResolveTaskExprModelSkipIsExplicit(t *testing.T) {
+	cfg := BillingSetting{
+		PluginBillingExpr: map[string]string{},
+		BillingMode:       map[string]string{"m": "tiered_expr"},
+		BillingExpr:       map[string]string{"m": "p * 2"},
+	}
+	res, err := ResolveTaskExprDetailed(cfg, "sample", "m", "m")
+	if err != nil {
+		t.Fatalf("skip must not error: %v", err)
+	}
+	if res.Expr != nil || res.Source != ExprSourceHeldSkip || res.SkipModel != "m" || res.SkipReason == "" {
+		t.Fatalf("skip resolution incomplete: %#v", res)
+	}
+}
+
+// TestResolveTaskExprModelBrokenTaskExprFailsClosed 覆盖复核 I2：模型级
+// 表达式含 u( 却不可编译 → 提交期 fail-closed，不能静默回落 held。
+func TestResolveTaskExprModelBrokenTaskExprFailsClosed(t *testing.T) {
+	cfg := BillingSetting{
+		PluginBillingExpr: map[string]string{},
+		BillingMode:       map[string]string{"m": "tiered_expr"},
+		BillingExpr:       map[string]string{"m": `u("seconds") +`},
+	}
+	if _, _, err := ResolveTaskExpr(cfg, "sample", "m", "m"); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("broken u() model expression err=%v, want ErrInvalidSpec", err)
+	}
+}
+
+// TestContainsTaskUsageCall 只识别真正的 u( 调用，不误伤含 u 的标识符。
+func TestContainsTaskUsageCall(t *testing.T) {
+	cases := map[string]bool{
+		`u("seconds") * 0.4`: true,
+		`u ("seconds")`:      true,
+		`1 + 2 * 3`:          false,
+		`units("x")`:         false,
+		`func_u(1)`:          false,
+		`p + c`:              false,
+	}
+	for src, want := range cases {
+		if got := ContainsTaskUsageCall(src); got != want {
+			t.Fatalf("ContainsTaskUsageCall(%q)=%v, want %v", src, got, want)
+		}
+	}
+}
+
+// TestEvalTaskUsageUsesFrozenQuotaPerUnit 覆盖复核 M1：快照冻结的兑换比
+// 优先于进程当前值。
+func TestEvalTaskUsageUsesFrozenQuotaPerUnit(t *testing.T) {
+	prev := CurrentQuotaPerUnit()
+	if err := SetQuotaPerUnit(100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = SetQuotaPerUnit(prev) })
+
+	e, err := CompileTaskExpr(`u("seconds") * 0.7`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// 冻结 QPU=200 → 10 秒 × $0.7 × 200 = 1400（若误用当前 100 会是 700）。
+	credits, err := EvalTaskUsage(e.WithQuotaPerUnit(200), taskFactFrom(map[string]float64{"seconds": 10}))
+	if err != nil || credits != 1400 {
+		t.Fatalf("credits=%d err=%v, want 1400 with frozen QPU", credits, err)
+	}
+}
+
 func TestEvalTaskUsageConstantAndMinimum(t *testing.T) {
 	prev := CurrentQuotaPerUnit()
 	if err := SetQuotaPerUnit(100); err != nil {

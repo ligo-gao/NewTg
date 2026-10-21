@@ -254,6 +254,59 @@ func TestTerminateByRequestIDForTokenCostAdjustsBothWays(t *testing.T) {
 	}
 }
 
+// TestTerminateByRequestIDForTokenCostInsufficientChargeWritesNoLog 覆盖复核
+// I5：补扣失败时资金回滚，不得提前写成功/全价 usage_log；余额补足后差额
+// 结算成功才落日志。
+func TestTerminateByRequestIDForTokenCostInsufficientChargeWritesNoLog(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	logsDB := openTask5LogsDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	engine := NewEngine(gormDB, logsDB, nil, billingTestConfig(), nil, nil, NewDBLogger(logsDB))
+	req := newTask5UUID(t)
+	t.Cleanup(func() { _, _ = logsDB.Exec(`DELETE FROM usage_logs WHERE request_id = $1::uuid`, req) })
+
+	session := newBillingTestSession(engine, userID, req, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 0 {
+		t.Fatalf("balance after pre-consume = %d, want 0", got)
+	}
+	// cost=130 超出 hold 100，需要补扣 30；钱包为 0 → 资金失败。
+	if err := engine.TerminateByRequestIDForTokenCost(req, 0, 130, contract.UsageFact{}); err == nil {
+		t.Fatalf("insufficient wallet must fail the extra charge")
+	}
+	var n int
+	if err := logsDB.QueryRow(
+		`SELECT count(*) FROM usage_logs WHERE request_id = $1::uuid`, req).Scan(&n); err != nil {
+		t.Fatalf("count usage_logs: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("usage_logs rows = %d, want 0 (no success log before funds are charged)", n)
+	}
+	if got := userBalance(t, db, userID); got != 0 {
+		t.Fatalf("hold must remain after failed charge: balance=%d", got)
+	}
+
+	// 成本 70：多退 30，成功写日志（status=success，cost=70）。
+	if err := engine.TerminateByRequestIDForTokenCost(req, 0, 70, contract.UsageFact{}); err != nil {
+		t.Fatalf("cost settlement after hold remains: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 30 {
+		t.Fatalf("balance after cost 70 = %d, want 30", got)
+	}
+	var status int16
+	var cost int64
+	if err := logsDB.QueryRow(
+		`SELECT status, cost FROM usage_logs WHERE request_id = $1::uuid`, req).
+		Scan(&status, &cost); err != nil {
+		t.Fatalf("read usage_logs: %v", err)
+	}
+	if status != UsageLogStatusSuccess || cost != 70 {
+		t.Fatalf("usage_log status/cost = %d/%d, want %d/70", status, cost, UsageLogStatusSuccess)
+	}
+}
+
 // TestRefundByRequestIDForToken 验收 T6b 复核 H1：后台退款必须同时回补
 // 钱包与令牌额度。提交时的 PreConsume 在同一事务里扣了两者；重建会话若
 // 只水合 preConsumed，Refund 的 `tokenDeducted > 0` 条件恒假，令牌额度会

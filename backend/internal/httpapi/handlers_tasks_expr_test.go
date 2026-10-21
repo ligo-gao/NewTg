@@ -23,15 +23,18 @@ func TestFreezeTaskBillingPluginOverrideWins(t *testing.T) {
 		ExprString: `u("seconds") * 9`,
 		GroupRatio: 2,
 	}}
-	snap, err := h.freezeTaskBilling(context.Background(), rc, "sample", "client", "upstream")
+	snap, err := h.freezeTaskBilling(context.Background(), rc, "sample", "client", "upstream", nil)
 	if err != nil {
 		t.Fatalf("freeze: %v", err)
 	}
-	if snap == nil || snap["expr"] != `u("seconds") * 0.7` || snap["source"] != "plugin_client" {
+	if snap.snapshot == nil || snap.snapshot["expr"] != `u("seconds") * 0.7` || snap.snapshot["source"] != "plugin_client" {
 		t.Fatalf("unexpected snapshot: %#v", snap)
 	}
-	if snap["group_ratio"] != float64(2) {
-		t.Fatalf("group ratio not frozen: %#v", snap["group_ratio"])
+	if snap.snapshot["group_ratio"] != float64(2) {
+		t.Fatalf("group ratio not frozen: %#v", snap.snapshot["group_ratio"])
+	}
+	if snap.snapshot["quota_per_unit"] == nil {
+		t.Fatalf("quota per unit must be frozen: %#v", snap.snapshot)
 	}
 }
 
@@ -42,7 +45,7 @@ func TestFreezeTaskBillingBlankPluginExprRejected(t *testing.T) {
 		}
 	}}
 	if _, err := h.freezeTaskBilling(context.Background(), &contract.RelayContext{},
-		"sample", "client", "upstream"); err == nil {
+		"sample", "client", "upstream", nil); err == nil {
 		t.Fatalf("blank plugin expression must be rejected at submission")
 	}
 }
@@ -50,8 +53,41 @@ func TestFreezeTaskBillingBlankPluginExprRejected(t *testing.T) {
 func TestFreezeTaskBillingNoExpression(t *testing.T) {
 	h := &TasksHandler{}
 	snap, err := h.freezeTaskBilling(context.Background(), &contract.RelayContext{},
-		"sample", "client", "upstream")
-	if err != nil || snap != nil {
+		"sample", "client", "upstream", nil)
+	if err != nil || snap.snapshot != nil || snap.skip != nil {
 		t.Fatalf("no expression: snap=%#v err=%v", snap, err)
+	}
+}
+
+// TestFreezeTaskBillingSkipsTokenExpressionWithMarker 覆盖复核 I2：模型级
+// token 表达式被跳过时必须留下 held_skip 标记与原因。
+func TestFreezeTaskBillingSkipsTokenExpressionWithMarker(t *testing.T) {
+	h := &TasksHandler{}
+	rc := &contract.RelayContext{PriceSnapshot: &contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: "p * 2 + c * 8",
+	}}
+	res, err := h.freezeTaskBilling(context.Background(), rc, "sample", "client", "upstream", nil)
+	if err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if res.snapshot != nil || res.skip == nil {
+		t.Fatalf("token expression must be skipped: %#v", res)
+	}
+	if res.skip["source"] != "held_skip" || res.skip["reason"] == "" {
+		t.Fatalf("skip marker incomplete: %#v", res.skip)
+	}
+}
+
+// TestFreezeTaskBillingBrokenTaskExpressionRejected 覆盖复核 I2：
+// 含 u( 却不可编译的模型表达式必须在提交期 fail-closed。
+func TestFreezeTaskBillingBrokenTaskExpressionRejected(t *testing.T) {
+	h := &TasksHandler{}
+	rc := &contract.RelayContext{PriceSnapshot: &contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: `u("seconds") +`,
+	}}
+	if _, err := h.freezeTaskBilling(context.Background(), rc, "sample", "client", "upstream", nil); err == nil {
+		t.Fatalf("broken u() expression must be rejected at submission")
 	}
 }

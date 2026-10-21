@@ -358,7 +358,8 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	//   - 放在出站之前：插件覆盖键为空/非法是配置错误，此时还没有产生上游
 	//     任务，直接 400 由 defer 全额退款，比落库后再失败更安全。
 	// 没有任何表达式时 frozen 为 nil，结算沿用「按预扣额结清」。
-	frozen, freezeErr := h.freezeTaskBilling(r.Context(), rc, key, model, upstreamModelName(channel, model))
+	frozenInfo, freezeErr := h.freezeTaskBilling(r.Context(), rc, key, model,
+		upstreamModelName(channel, model), compiled.Manifest())
 	if freezeErr != nil {
 		slog.Warn("tasks: task billing expression is not usable",
 			"request_id", rc.RequestID, "plugin", key, "model", model, "error", freezeErr)
@@ -366,6 +367,7 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			"task pricing expression is invalid")
 		return
 	}
+	frozen := frozenInfo.snapshot
 
 	// 出站提交（brief 步骤 6/7）：插件构建 → 宿主连接 → 插件解析。
 	result, err := tasks.Submit(r.Context(), h.client, tasks.SubmitInput{
@@ -493,6 +495,11 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// worker）只读这一份，不重新解析配置。只进 private_data：台账投影
 		// 永远不返回（设计 §7.1）。
 		task.PrivateData[tasks.PrivateTieredSnapshot] = frozen
+	}
+	if frozenInfo.skip != nil {
+		// 复核 I2：模型级 tiered 表达式不是任务表达式（不引用 u()）而被
+		// 显式跳过。落标记 + 原因，避免与「从未配置」不可区分。
+		task.PrivateData[tasks.PrivateTaskExprSkip] = frozenInfo.skip
 	}
 	if refundPending {
 		task.PrivateData["refund_pending"] = true
@@ -1134,6 +1141,15 @@ func upstreamModelName(ch *tasks.ChannelTarget, model string) string {
 	return model
 }
 
+// frozenTaskBilling 是 freezeTaskBilling 的结果。
+//
+// snapshot 与 skip 互斥：有任务表达式时冻结快照；模型级表达式被显式跳过
+// 时写 skip 标记（复核 I2：跳过必须可审计，不能与「未配置」混淆）。
+type frozenTaskBilling struct {
+	snapshot map[string]any
+	skip     map[string]any
+}
+
 // freezeTaskBilling 按 P-06 的四级顺序解析任务计价表达式并冻结。
 //
 // 输入构造：
@@ -1142,11 +1158,15 @@ func upstreamModelName(ch *tasks.ChannelTarget, model string) string {
 //     rc.PriceSnapshot，既不重复解析定价，也保证与预扣用的同一份配置；
 //   - 第 4 级：映射模型只能回源读（本进程没有它的快照）。
 //
-// 返回 nil 表示没有任务级表达式（结算按预扣额结清）。返回 error 表示
-// 插件覆盖键存在但不可用（空/非法）——必须 fail-closed 拒绝提交，不能
-// 静默回退到 other 价格来源（R-37）。
+// 失败口径（复核 I2）：
+//   - 插件覆盖键存在但不可用（空/非法）→ error：必须 fail-closed 拒绝提交，
+//     不能静默回退到其它价格来源（R-37）；
+//   - 模型级表达式含 u( 却不可编译 → error（显式任务覆盖写坏了）；
+//   - 模型级表达式不含 u( → skip 标记，按 held 结算（token 语义表达式）。
+//
+// 返回的 snapshot 携带表达式引用的字段单位与 QuotaPerUnit（复核 I1/M1）。
 func (h *TasksHandler) freezeTaskBilling(ctx context.Context, rc *contract.RelayContext,
-	pluginKey, clientModel, mappedModel string) (map[string]any, error) {
+	pluginKey, clientModel, mappedModel string, m *plugin.Manifest) (frozenTaskBilling, error) {
 	setting := pricing.BillingSetting{}
 	if h.billingSetting != nil {
 		setting = h.billingSetting()
@@ -1175,18 +1195,29 @@ func (h *TasksHandler) freezeTaskBilling(ctx context.Context, rc *contract.Relay
 		}
 	}
 
-	e, source, err := pricing.ResolveTaskExpr(setting, pluginKey, clientModel, mappedModel)
+	res, err := pricing.ResolveTaskExprDetailed(setting, pluginKey, clientModel, mappedModel)
 	if err != nil {
-		return nil, err
+		return frozenTaskBilling{}, err
 	}
-	if e == nil {
-		return nil, nil
+	if res.Expr == nil {
+		if res.SkipReason == "" {
+			return frozenTaskBilling{}, nil
+		}
+		slog.Info("tasks: model tiered expression is not a task expression; settling at held",
+			"plugin", pluginKey, "model", res.SkipModel, "reason", res.SkipReason)
+		return frozenTaskBilling{skip: map[string]any{
+			"source": string(pricing.ExprSourceHeldSkip),
+			"model":  res.SkipModel,
+			"reason": res.SkipReason,
+		}}, nil
 	}
 	group := 1.0
 	if rc != nil && rc.PriceSnapshot != nil && rc.PriceSnapshot.GroupRatio > 0 {
 		group = rc.PriceSnapshot.GroupRatio
 	}
-	return tasks.FreezeTieredSnapshot(e, source, group), nil
+	return frozenTaskBilling{
+		snapshot: tasks.FreezeTieredSnapshot(res.Expr, res.Source, group, m),
+	}, nil
 }
 
 // settleImmediateSuccess 收敛「上游即时成功」的资金（T5 实时结算路径）。

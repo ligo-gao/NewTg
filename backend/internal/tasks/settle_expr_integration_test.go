@@ -22,14 +22,15 @@ import (
 // 本文件本身只用内存 fake（真实验证在计费引擎的 hold CAS 测试里），
 // 因此不依赖 PG；放在集成门禁里是为了与 T5 的验收命令一致。
 
-// snapshotFor 构造与提交期冻结同形状的快照。
+// snapshotFor 构造与提交期冻结同形状的快照（单位来自当前插件 manifest）。
 func snapshotFor(t *testing.T, expr string, group float64) map[string]any {
 	t.Helper()
 	compiled, err := pricing.CompileTaskExpr(expr)
 	if err != nil {
 		t.Fatalf("compile task expr: %v", err)
 	}
-	return FreezeTieredSnapshot(compiled, pricing.ExprSourcePluginClient, group)
+	return FreezeTieredSnapshot(compiled, pricing.ExprSourcePluginClient, group,
+		compilePollPlugin(t).Manifest())
 }
 
 func successTaskWithSnapshot(t *testing.T, snapshot map[string]any, usage map[string]any) *Task {
@@ -78,9 +79,9 @@ func TestSettleExprDifferenceSettlement(t *testing.T) {
 // 不退款、置 settlement_pending。
 func TestSettleExprErrorKeepsHoldAndMarksPending(t *testing.T) {
 	repo := newFakePollRepo()
-	// 表达式引用插件未上报的字段（schema 声明了 seconds，但 data 只有 clips）。
+	// 表达式引用的字段在任务 data 里不存在（快照冻结了单位但上游没报数）。
 	task := repo.add(successTaskWithSnapshot(t,
-		snapshotFor(t, `u("clips") * 0.5`, 1), map[string]any{"clips": float64(10)}))
+		snapshotFor(t, `u("missing") * 0.5`, 1), map[string]any{"clips": float64(10)}))
 	handoff := &fakeHandoff{}
 	p := newTestPoller(t, repo, handoff, nil)
 
@@ -137,6 +138,59 @@ func TestSettleExprTerminateErrorKeepsPending(t *testing.T) {
 	}
 	if got.Quota != 1000 {
 		t.Fatalf("hold must be kept: quota=%d", got.Quota)
+	}
+}
+
+// TestSettleUsesFrozenUnitsAfterPluginRename 覆盖复核 I1：插件在任务提交后
+// 改名/下架，结算仍按快照冻结的「字段 → 单位」求值，不因 live manifest
+// 缺失而永久卡在 settlement_pending。
+func TestSettleUsesFrozenUnitsAfterPluginRename(t *testing.T) {
+	prev := pricing.CurrentQuotaPerUnit()
+	if err := pricing.SetQuotaPerUnit(100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pricing.SetQuotaPerUnit(prev) })
+
+	repo := newFakePollRepo()
+	task := successTaskWithSnapshot(t,
+		snapshotFor(t, `u("seconds") * 0.7`, 1), map[string]any{"seconds": float64(10)})
+	task.PluginKey = "renamed-plugin-after-submit"
+	task = repo.add(task)
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, nil)
+
+	// compiled=nil：模拟补偿扫描/重启后只能按 PluginKey 查快照（查不到）。
+	p.settleTerminal(context.Background(), task, nil)
+
+	if len(handoff.costs) != 1 || handoff.costs[0] != 700 {
+		t.Fatalf("costs=%v, want [700] from frozen units", handoff.costs)
+	}
+	got := repo.get(task.ID)
+	if got.Quota != 700 || !boolFlag(got.PrivateData["billing_final"]) {
+		t.Fatalf("settlement did not complete: quota=%d private=%#v", got.Quota, got.PrivateData)
+	}
+}
+
+// TestSettleCorruptSnapshotFailsClosed 覆盖复核 M2：快照存在但 expr 为空是
+// 数据损坏，必须报错保留预扣，不能静默按 held 结清。
+func TestSettleCorruptSnapshotFailsClosed(t *testing.T) {
+	repo := newFakePollRepo()
+	task := successTaskWithSnapshot(t, map[string]any{
+		"mode": "tiered_expr", "expr": "   ",
+	}, map[string]any{"seconds": float64(10)})
+	task = repo.add(task)
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, nil)
+
+	p.settleTerminal(context.Background(), task, compilePollPlugin(t))
+
+	if len(handoff.costs) != 0 || handoff.refundCount() != 0 {
+		t.Fatalf("corrupt snapshot must neither settle nor refund: costs=%v refunds=%d",
+			handoff.costs, handoff.refundCount())
+	}
+	got := repo.get(task.ID)
+	if !boolFlag(got.PrivateData["settlement_pending"]) || got.Quota != 1000 {
+		t.Fatalf("corrupt snapshot must keep hold and mark pending: %#v", got.PrivateData)
 	}
 }
 

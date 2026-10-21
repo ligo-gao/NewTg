@@ -696,6 +696,40 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 		return nil
 	}
 
+	// R-18：hold 不足以覆盖最终成本时，settleHolds 会额外向钱包补扣；补扣
+	// 可能因余额不足/DB 故障整事务回滚。若此时先写了 success 日志，账单会
+	// 永久按全价夸大收入、而钱并未收上来（且无告警）。因此「少补」路径与
+	// noHoldCharge 同口径：**先资金、后日志**。退款/持平方向不需要额外
+	// 扣款，保留「先日志后结算」的既有裁决（CAS 保证不会多退）。
+	if cost > preDeducted+s.consumed {
+		if _, _, err := s.engine.ledger.settleHolds(ctx, userID, s.requestID, s.consumed, cost); err != nil {
+			if errors.Is(err, errHoldClosed) {
+				status, statErr := s.engine.ledger.closedHoldStatus(ctx, s.requestID)
+				if statErr != nil {
+					return fmt.Errorf("billing: read closed hold status: %w", statErr)
+				}
+				s.finishLocked(ctx, status == "released" || status == "expired")
+				return nil
+			}
+			// 补扣失败：hold 保留，不写 success 日志，由补偿扫描重试。
+			return fmt.Errorf("billing: settle holds with extra charge: %w", err)
+		}
+		s.consumed = cost
+		// R-73：钱包已提交，随后把令牌额度调整到最终成本（失败只记日志）。
+		s.adjustTokenToCostLocked(ctx, cost)
+		if s.engine.saturator != nil {
+			if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
+				// 钱已扣且 hold 已关：重试会二次扣款，保持 settled 并上抛日志错误。
+				s.finishLocked(ctx, false)
+				return fmt.Errorf("billing: write usage log after charging: %w", err)
+			}
+		}
+		s.finishLocked(ctx, false)
+		return nil
+	}
+
+	// T5 复核 I5 的补扣分支已在上面处理（先资金、后日志）；这里只剩
+	// 「退款/持平方向」的既有顺序：先写日志、后主库结算（CAS 是幂等锚点）。
 	if s.engine.saturator != nil {
 		if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
 			// 日志写失败：不结算；hold 留着由 worker 兜底退款。

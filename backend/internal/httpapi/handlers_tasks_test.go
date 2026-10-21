@@ -153,6 +153,10 @@ type taskBillingRecorder struct {
 	hold           int64
 	detached       bool
 	detachRequests []string
+	// costCalls 记录 T5 成本结算入口（复核 I4：实时路径必须可区分是否真的
+	// 用了表达式求值结果，而不是退回按预扣额结清）。
+	costCalls []int64
+	costErr   error
 }
 
 func newTaskBillingRecorder() *taskBillingRecorder {
@@ -217,6 +221,15 @@ func (b *taskBillingRecorder) TerminateByRequestID(string, contract.UsageFact) e
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.terminateByIDErr
+}
+
+// TerminateByRequestIDCost 是 T5 的成本结算入口（复核 I4）。
+func (b *taskBillingRecorder) TerminateByRequestIDCost(_ string, cost int64, _ contract.UsageFact) error {
+	b.record("terminate_by_id_cost")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.costCalls = append(b.costCalls, cost)
+	return b.costErr
 }
 
 func (b *taskBillingRecorder) RefundByRequestID(string) error {

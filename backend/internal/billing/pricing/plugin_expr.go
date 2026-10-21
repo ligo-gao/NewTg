@@ -3,6 +3,7 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -66,7 +67,24 @@ const (
 	ExprSourceClientTiered ExprSource = "client_tiered"
 	// ExprSourceMappedExpr：④ 映射模型自身的 tiered 表达式
 	ExprSourceMappedExpr ExprSource = "mapped_expr"
+	// ExprSourceHeldSkip：模型配置了 tiered 表达式，但它不是任务表达式
+	// （不引用 u()）。这是**显式跳过**而不是「未配置」：调用方必须在
+	// private_data 落标记，避免与「根本没有表达式」混淆（复核 I2）。
+	ExprSourceHeldSkip ExprSource = "held_skip"
 )
+
+// TaskExprResolution 是 ResolveTaskExpr 的详细结果（T5 复核 I2）。
+//
+// 为什么不把跳过原因塞进 error：跳过是**正常回落**（模型表达式是 token
+// 语义），调用方要按 held 结算并在任务行留下可审计的标记；而含 u() 却编译
+// 失败是配置错误，必须从 error 返回并在提交期 fail-closed。
+type TaskExprResolution struct {
+	Expr   *Expr
+	Source ExprSource
+	// SkipReason 非空表示遇到并跳过了模型级表达式（Expr 为 nil）。
+	SkipModel  string
+	SkipReason string
+}
 
 // BillingSetting 是任务表达式解析所需的配置切片。
 //
@@ -116,6 +134,11 @@ type Expr struct {
 	Source string
 	// groupRatio 是提交期冻结的分组倍率（模型侧快照同源）。
 	groupRatio float64
+	// quotaPerUnit 是提交期冻结的 QuotaPerUnit（复核 M1）。
+	//
+	// 站点兑换比是热更配置；若结算期才读当前值，提交与结算之间的一次
+	// 改动就会让同一任务的金额前后不一致。快照冻结它、结算只读快照。
+	quotaPerUnit int64
 	// ev 是改写后编译得到的求值器。
 	ev *expr.Evaluator
 	// keyByVar：改写变量 → 任务用量字段名。
@@ -133,6 +156,39 @@ func (e *Expr) WithGroupRatio(r float64) *Expr {
 	copied := *e
 	copied.groupRatio = r
 	return &copied
+}
+
+// WithQuotaPerUnit 返回带冻结兑换比的副本（复核 M1）。
+//
+// q <= 0 表示未冻结（旧快照），EvalTaskUsage 回落到进程当前值。
+func (e *Expr) WithQuotaPerUnit(q int64) *Expr {
+	if e == nil {
+		return nil
+	}
+	copied := *e
+	copied.quotaPerUnit = q
+	return &copied
+}
+
+// UsageKeys 返回表达式引用的任务用量字段名（去重、稳定顺序）。
+//
+// 提交期用它把「字段 → 单位」冻结进任务快照（复核 I1）：结算不再依赖
+// 活插件的 usageSchema，插件改名/下架不会让已提交任务求值失败。
+func (e *Expr) UsageKeys() []string {
+	if e == nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(e.keyByVar))
+	out := make([]string, 0, len(e.keyByVar))
+	for _, key := range e.keyByVar {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CompileTaskExpr 编译一条任务用量表达式。
@@ -179,21 +235,38 @@ func CompileTaskExpr(src string) (*Expr, error) {
 //
 // mappedModel == clientModel 时第 2/4 级不重复求值（P-06）。
 // 返回 (nil, "", nil) 表示「未配置任务表达式」，调用方沿用按预扣额结清。
+// 需要区分「跳过模型级表达式」时用 ResolveTaskExprDetailed。
 func ResolveTaskExpr(cfg BillingSetting, pluginKey, clientModel, mappedModel string) (*Expr, ExprSource, error) {
+	res, err := ResolveTaskExprDetailed(cfg, pluginKey, clientModel, mappedModel)
+	if err != nil {
+		return nil, "", err
+	}
+	return res.Expr, res.Source, nil
+}
+
+// ResolveTaskExprDetailed 是带跳过原因的四级解析（T5 复核 I2）。
+//
+// 失败口径（复核 I2 之后）：
+//   - 插件键存在但空白/不可编译 → error（提交期 400 + 全额退款）；
+//   - 模型级表达式**引用 u(** 却不可编译 → error（显式配置了任务覆盖却
+//     写坏，静默回落 held 会把「写错」变成免费/多收，必须拒绝）；
+//   - 模型级表达式不引用 u( → 不是任务表达式，跳过并在结果里记录原因，
+//     由调用方按 held 结算并把 source:"held_skip" 落 private_data。
+func ResolveTaskExprDetailed(cfg BillingSetting, pluginKey, clientModel, mappedModel string) (TaskExprResolution, error) {
 	pluginKey = strings.TrimSpace(pluginKey)
 	clientModel = strings.TrimSpace(clientModel)
 	mappedModel = strings.TrimSpace(mappedModel)
 	if pluginKey == "" || clientModel == "" {
-		return nil, "", fmt.Errorf("%w: 任务表达式解析需要 pluginKey 与 clientModel", ErrInvalidSpec)
+		return TaskExprResolution{}, fmt.Errorf("%w: 任务表达式解析需要 pluginKey 与 clientModel", ErrInvalidSpec)
 	}
 
 	// ① 插件键（客户端模型）。键存在即命中；空值是配置错误，不回退。
 	if src, ok := cfg.PluginBillingExpr[pluginKey+"::"+clientModel]; ok {
 		e, err := CompileTaskExpr(src)
 		if err != nil {
-			return nil, "", err
+			return TaskExprResolution{}, err
 		}
-		return e, ExprSourcePluginClient, nil
+		return TaskExprResolution{Expr: e, Source: ExprSourcePluginClient}, nil
 	}
 
 	// ② 插件键（最终映射模型）。与 ① 只有模型名不同，映射相同视为同一级。
@@ -201,41 +274,84 @@ func ResolveTaskExpr(cfg BillingSetting, pluginKey, clientModel, mappedModel str
 		if src, ok := cfg.PluginBillingExpr[pluginKey+"::"+mappedModel]; ok {
 			e, err := CompileTaskExpr(src)
 			if err != nil {
-				return nil, "", err
+				return TaskExprResolution{}, err
 			}
-			return e, ExprSourcePluginMapped, nil
+			return TaskExprResolution{Expr: e, Source: ExprSourcePluginMapped}, nil
 		}
 	}
 
+	var skipped TaskExprResolution
+
 	// ③ 客户端模型的 tiered 表达式。
-	if e := taskExprOrNil(cfg, clientModel); e != nil {
-		return e, ExprSourceClientTiered, nil
+	if e, skipReason, err := taskExprOrNil(cfg, clientModel); err != nil {
+		return TaskExprResolution{}, err
+	} else if e != nil {
+		return TaskExprResolution{Expr: e, Source: ExprSourceClientTiered}, nil
+	} else if skipReason != "" {
+		skipped = TaskExprResolution{
+			Source: ExprSourceHeldSkip, SkipModel: clientModel, SkipReason: skipReason,
+		}
 	}
 
 	// ④ 映射模型的 tiered 表达式。
 	if mappedModel != "" && mappedModel != clientModel {
-		if e := taskExprOrNil(cfg, mappedModel); e != nil {
-			return e, ExprSourceMappedExpr, nil
+		if e, skipReason, err := taskExprOrNil(cfg, mappedModel); err != nil {
+			return TaskExprResolution{}, err
+		} else if e != nil {
+			return TaskExprResolution{Expr: e, Source: ExprSourceMappedExpr}, nil
+		} else if skipReason != "" && skipped.SkipReason == "" {
+			skipped = TaskExprResolution{
+				Source: ExprSourceHeldSkip, SkipModel: mappedModel, SkipReason: skipReason,
+			}
 		}
 	}
-	return nil, "", nil
+	return skipped, nil
 }
 
 // taskExprOrNil 在模型配置了 tiered 表达式时编译它。
 //
-// 模型级表达式可能是 token 语义（p/c），不能当任务表达式用。这里把
-// 「编译失败」视为「不是任务表达式」并返回 nil，让解析链继续向下/回到
-// held 结清；这与①的空表达式 fail-closed 不同：①是显式插件覆盖，空/错
-// 一定是配置错误，静默回退会让管理员误以为覆盖生效。
-func taskExprOrNil(cfg BillingSetting, model string) *Expr {
+// 模型级表达式可能是 token 语义（p/c），不能当任务表达式用。区分两种失败：
+//   - 源码不含 u( → 不是任务表达式，返回 skipReason（正常回落）；
+//   - 源码含 u( 但编译失败 → 返回 error（配置错误，提交期 fail-closed）。
+//
+// 为什么含 u( 不能静默跳过：那是管理员显式写的任务覆盖，写坏后回落 held
+// 会让金额与配置意图不一致，且没有任何可审计的“降级”信号。
+func taskExprOrNil(cfg BillingSetting, model string) (*Expr, string, error) {
 	if !isTieredModel(cfg, model) {
-		return nil
+		return nil, "", nil
 	}
-	e, err := CompileTaskExpr(cfg.BillingExpr[model])
+	src := cfg.BillingExpr[model]
+	e, err := CompileTaskExpr(src)
 	if err != nil {
-		return nil
+		if ContainsTaskUsageCall(src) {
+			return nil, "", fmt.Errorf("%w: 模型 %q 的任务表达式不可编译: %v", ErrInvalidSpec, model, err)
+		}
+		return nil, "tiered expression does not reference u() task usage", nil
 	}
-	return e
+	return e, "", nil
+}
+
+// ContainsTaskUsageCall 报告表达式中是否出现任务用量调用 u(。
+//
+// 只用于「编译失败后判断这是不是任务表达式」，不做语法分析：`u (` 也
+// 算命中（空格允许），`func_u(`/`units(` 不算（前一个字符是标识符字符）。
+func ContainsTaskUsageCall(src string) bool {
+	for i := 0; i < len(src); i++ {
+		if src[i] != 'u' {
+			continue
+		}
+		if i > 0 && isIdentPartByte(src[i-1]) {
+			continue
+		}
+		k := i + 1
+		for k < len(src) && isSpaceByte(src[k]) {
+			k++
+		}
+		if k < len(src) && src[k] == '(' {
+			return true
+		}
+	}
+	return false
 }
 
 func isTieredModel(cfg BillingSetting, model string) bool {
@@ -281,7 +397,12 @@ func EvalTaskUsage(e *Expr, fact contract.TaskUsageFact) (int64, error) {
 		// 未冻结分组倍率（旧快照/单测）按 1，与模型侧快照缺省口径一致。
 		group = 1
 	}
-	total := dec(out).Mul(decimal.NewFromInt(CurrentQuotaPerUnit())).Mul(dec(group))
+	// M1：优先用提交期冻结的兑换比；旧快照/单测回落到进程当前值。
+	qpu := e.quotaPerUnit
+	if qpu <= 0 {
+		qpu = CurrentQuotaPerUnit()
+	}
+	total := dec(out).Mul(decimal.NewFromInt(qpu)).Mul(dec(group))
 	quota, clamp := QuotaFromDecimalChecked(total)
 	if clamp != nil {
 		return quota, &ClampError{Clamp: clamp}
