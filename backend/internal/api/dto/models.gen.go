@@ -9173,6 +9173,12 @@ type ConfirmAction = string
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = openapi_types.UUID
 
+// MJImageExp defines model for MJImageExp.
+type MJImageExp = int64
+
+// MJImageSig defines model for MJImageSig.
+type MJImageSig = string
+
 // MJTaskID defines model for MJTaskID.
 type MJTaskID = string
 
@@ -10680,6 +10686,15 @@ type StripeWebhookJSONBody = map[string]interface{}
 
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
+
+// MjImageProxyParams defines parameters for MjImageProxy.
+type MjImageProxyParams struct {
+	// Sig 图片票据签名（base64url，无填充；HMAC-SHA256）
+	Sig MJImageSig `form:"sig" json:"sig"`
+
+	// Exp 票据过期时间（Unix 秒；TTL 300s）
+	Exp MJImageExp `form:"exp" json:"exp"`
+}
 
 // PlaygroundChatCompletionParams defines parameters for PlaygroundChatCompletion.
 type PlaygroundChatCompletionParams struct {

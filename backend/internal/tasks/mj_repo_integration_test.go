@@ -279,3 +279,76 @@ func TestGetByUserUpstreamIDIsFamilyAndOwnerScoped(t *testing.T) {
 		t.Fatalf("plugin row must not be visible to MJ reuse lookup, err = %v", err)
 	}
 }
+
+// TestListOwnersByUpstreamIDReturnsAllOwners 是 W8/MJ-c 图片代理的归属候选
+// 查询验收（真实 SQL）：同一 MjId 的多位 owner 全部返回、family 隔离、
+// 固定排序与 limit 截断、空 id 不命中 inline 上传行。
+func TestListOwnersByUpstreamIDReturnsAllOwners(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	base := time.Now().UnixNano() % 1_000_000
+	users := []int64{base, base + 1, base + 2}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM tasks WHERE user_id = ANY($1)`, users)
+	})
+
+	now := time.Now().UTC()
+	makeRow := func(userID int64, upstreamID, family, pluginKey string) *Task {
+		return &Task{
+			PublicTaskID:   fmt.Sprintf("task_mjc_%d_%s_%s", userID, upstreamID, family),
+			UpstreamTaskID: upstreamID, Family: family, Action: "IMAGINE",
+			PluginKey: pluginKey, FetchMode: "poll", State: StateSuccess,
+			UserID: userID, Group: "default", ChannelID: 1, SubmitTime: &now,
+			Properties: map[string]any{}, PrivateData: map[string]any{},
+			Data: map[string]any{"image_url": "https://cdn.example/" + upstreamID + ".png"},
+		}
+	}
+	for _, userID := range users {
+		if err := repo.Insert(ctx, makeRow(userID, "mj_c_shared", FamilyMJ, "")); err != nil {
+			t.Fatalf("insert mj row for %d: %v", userID, err)
+		}
+	}
+	// 插件行即便同名也不得成为图片候选。
+	if err := repo.Insert(ctx, makeRow(users[0], "mj_c_plugin", FamilyPlugin, "sample")); err != nil {
+		t.Fatalf("insert plugin row: %v", err)
+	}
+
+	rows, err := repo.ListOwnersByUpstreamID(ctx, "mj_c_shared", 100)
+	if err != nil {
+		t.Fatalf("ListOwnersByUpstreamID: %v", err)
+	}
+	if len(rows) != len(users) {
+		t.Fatalf("candidates = %d, want %d", len(rows), len(users))
+	}
+	for i, row := range rows {
+		if row.UserID != users[i] {
+			t.Fatalf("candidate[%d].UserID = %d, want %d (ordered by user_id)", i, row.UserID, users[i])
+		}
+		if row.Data["image_url"] == "" {
+			t.Fatalf("candidate[%d] lost data.image_url: %v", i, row.Data)
+		}
+	}
+
+	// limit 截断是确定的（按 user_id 升序）。
+	limited, err := repo.ListOwnersByUpstreamID(ctx, "mj_c_shared", 2)
+	if err != nil {
+		t.Fatalf("limited query: %v", err)
+	}
+	if len(limited) != 2 || limited[0].UserID != users[0] || limited[1].UserID != users[1] {
+		t.Fatalf("limited candidates = %+v", limited)
+	}
+
+	// family 隔离与空 id。
+	pluginRows, err := repo.ListOwnersByUpstreamID(ctx, "mj_c_plugin", 100)
+	if err != nil {
+		t.Fatalf("plugin query: %v", err)
+	}
+	if len(pluginRows) != 0 {
+		t.Fatalf("plugin row leaked into image candidates: %+v", pluginRows)
+	}
+	emptyRows, err := repo.ListOwnersByUpstreamID(ctx, "", 100)
+	if err != nil || len(emptyRows) != 0 {
+		t.Fatalf("empty id query = (%v,%v), want empty", emptyRows, err)
+	}
+}

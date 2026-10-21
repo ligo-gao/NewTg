@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -128,13 +129,38 @@ func (s *fakeMJStore) ListByUserUpstreamIDs(_ context.Context, userID int64, ids
 	return out, nil
 }
 
+// ListOwnersByUpstreamID 模仿生产 SQL 的全局 MjId 查询：family='mj' 过滤、
+// 按 (user_id, id) 固定排序并在 limit 处截断。
+func (s *fakeMJStore) ListOwnersByUpstreamID(_ context.Context, upstreamID string, limit int) ([]*tasks.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
+	out := make([]*tasks.Task, 0, 4)
+	for _, task := range s.byUserUpstream {
+		if task.UpstreamTaskID == upstreamID && task.Family == tasks.FamilyMJ {
+			out = append(out, task)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *fakeMJStore) UpdateBilling(_ context.Context, id int64, quota *int64, private map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updates = append(s.updates, mjBillingUpdate{ID: id, Quota: quota, Flags: private})
 	return nil
 }
-
 func (s *fakeMJStore) insertedRows() []*tasks.Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,6 +326,7 @@ func newMJTestEnvWithBilling(t *testing.T, store *fakeMJStore, channels *fakeMJC
 			return recorder
 		},
 		Config:      config,
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
 		RateLimiter: nil,
 		Now:         func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
 		Uint64N:     func(uint64) uint64 { return 0 },
@@ -830,8 +857,9 @@ func TestMJUploadSettlementFailureKeepsHoldAndMarksPending(t *testing.T) {
 			recorder.terminateByIDErr = errors.New("boom")
 			return recorder
 		},
-		Config:  mjConfigured(nil),
-		Uint64N: func(uint64) uint64 { return 0 },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
@@ -919,6 +947,7 @@ func TestMJRateLimitRejectsBeforeChannelAndBilling(t *testing.T) {
 			return nil
 		},
 		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
 		RateLimiter: rejectingMJRatelimiter{},
 		Uint64N:     func(uint64) uint64 { return 0 },
 	})
@@ -1197,7 +1226,8 @@ func TestMJSubmitUsesStandardRateLimitBuckets(t *testing.T) {
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
 		Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
 		Config:  config, RateLimiter: limiter,
-		Uint64N: func(uint64) uint64 { return 0 },
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
@@ -1326,10 +1356,11 @@ func TestMJSubmitPersistsAfterClientDisconnect(t *testing.T) {
 	recorder.hold = 50
 	handler := NewMJHandler(MJHandlerConfig{
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
-		Billing:   func(*contract.RelayContext) contract.BillingSession { return recorder },
-		Config:    mjConfigured(nil),
-		Submitter: &cancellingSubmitter{cancel: cancel, result: &mj.SubmitResponse{Code: mj.CodeSuccess, Result: "mj_up_1"}},
-		Uint64N:   func(uint64) uint64 { return 0 },
+		Billing:     func(*contract.RelayContext) contract.BillingSession { return recorder },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
+		Submitter:   &cancellingSubmitter{cancel: cancel, result: &mj.SubmitResponse{Code: mj.CodeSuccess, Result: "mj_up_1"}},
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))

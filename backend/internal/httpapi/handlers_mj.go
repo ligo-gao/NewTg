@@ -30,6 +30,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/billingseam"
@@ -69,6 +70,9 @@ type MJTaskStore interface {
 	GetByUserUpstreamID(ctx context.Context, userID int64, upstreamID string) (*tasks.Task, error)
 	// ListByUserUpstreamIDs 是 list-by-condition 的批量归属读取（family=mj）。
 	ListByUserUpstreamIDs(ctx context.Context, userID int64, ids []string, limit int) ([]*tasks.Task, error)
+	// ListOwnersByUpstreamID 是图片代理按 MjId 取候选 owner 的全局读取
+	// （MJ-c）。验签前不知道 owner，只能取出候选行逐个复算 HMAC（R-MJ-05）。
+	ListOwnersByUpstreamID(ctx context.Context, upstreamID string, limit int) ([]*tasks.Task, error)
 	// UpdateBilling 在 inline 上传结算后写 billing_final / settlement_pending。
 	UpdateBilling(ctx context.Context, id int64, quota *int64, private map[string]any) error
 }
@@ -128,7 +132,14 @@ type MJHandlerConfig struct {
 	// Querier 是查询族（fetch 的上游侧不使用；image-seed 使用）与轮询驱动
 	// 的测试接缝。nil 时复用 Client（*mj.SubmitClient 同时实现两者）。
 	Querier MJQuerier
-	Logger  *slog.Logger
+	// ImageSigner 签发/校验 /mj/image/{id} 的签名 URL（W8/MJ-c）。必填：
+	// 没有它图片代理无法验签，注册一个永远 404 的端点比不注册更危险。
+	ImageSigner *mj.ImageSigner
+	// ImageGuard 是图片出站守卫的测试接缝（httptest 只能监听 127.0.0.1，
+	// 需要 AllowLoopback/自定义解析器）。nil 时每次请求按 sec.ssrf.* 构造，
+	// 且构造结果永远至少 basic + DomainAll（见 mjImagePolicy）。
+	ImageGuard *egress.Guard
+	Logger     *slog.Logger
 	// Now / Uint64N 是测试接缝：时间与加权随机源。
 	Now     func() time.Time
 	Uint64N func(uint64) uint64
@@ -145,6 +156,8 @@ type MJHandler struct {
 	rateLimiter RelayRateLimiter
 	client      MJSubmitter
 	querier     MJQuerier
+	imageSigner *mj.ImageSigner
+	imageGuard  *egress.Guard
 	log         *slog.Logger
 	now         func() time.Time
 	uint64N     func(uint64) uint64
@@ -153,8 +166,8 @@ type MJHandler struct {
 // NewMJHandler 构造 handler。Store/Channels/Sealer/Tokens 是硬依赖：
 // 缺任一都不存在安全降级（会把配置错误伪装成用户可见失败或绕过归属校验）。
 func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
-	if cfg.Store == nil || cfg.Channels == nil || cfg.Sealer == nil || cfg.Tokens == nil {
-		panic("httpapi: NewMJHandler requires store, channel source, sealer and token lookup")
+	if cfg.Store == nil || cfg.Channels == nil || cfg.Sealer == nil || cfg.Tokens == nil || cfg.ImageSigner == nil {
+		panic("httpapi: NewMJHandler requires store, channel source, sealer, token lookup and image signer")
 	}
 	billingFactory := cfg.Billing
 	if billingFactory == nil {
@@ -202,6 +215,8 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		rateLimiter: cfg.RateLimiter,
 		client:      client,
 		querier:     querier,
+		imageSigner: cfg.ImageSigner,
+		imageGuard:  cfg.ImageGuard,
 		log:         log,
 		now:         now,
 		uint64N:     uint64N,
@@ -234,6 +249,9 @@ func (h *MJHandler) Register(mux *http.ServeMux, authMiddleware func(http.Handle
 	mux.Handle("GET /mj/task/{id}/fetch", auth(http.HandlerFunc(h.handleTaskFetch)))
 	mux.Handle("POST /mj/task/list-by-condition", auth(http.HandlerFunc(h.handleTaskList)))
 	mux.Handle("POST /mj/task/{id}/image-seed", auth(http.HandlerFunc(h.handleImageSeed)))
+	// 图片代理（W8/MJ-c）：响应是二进制流，不能用会整段缓冲的 mjEnvelopeAuth，
+	// 改用只在鉴权失败时改写信封的 mjStreamAuth（成功路径保持流式）。
+	mux.Handle("GET /mj/image/{id}", mjStreamAuth(authMiddleware)(http.HandlerFunc(h.handleMJImage)))
 
 	unknown := auth(http.HandlerFunc(h.handleUnknown))
 	mux.Handle("/mj/", unknown)

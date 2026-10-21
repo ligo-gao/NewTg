@@ -4859,6 +4859,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mj/image/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Midjourney 图片代理（签名 URL）
+         * @description 按 MjId 取候选任务行并对候选 owner 逐个复算 HMAC，任一匹配即通过；
+         *     随后用统一出站执行器校验目标地址（私网/环回/link-local/元数据/
+         *     CGNAT/保留段、反 rebinding、禁跟随重定向）并流式回写图片字节。
+         *     `sig`/`exp` 之外不接受任何参数。
+         */
+        get: operations["mjImageProxy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/self": {
         parameters: {
             query?: never;
@@ -9189,6 +9212,10 @@ export interface components {
         BatchID: string;
         /** @description MjId（`^[A-Za-z0-9_-]{1,128}$`） */
         MJTaskID: string;
+        /** @description 图片票据签名（base64url，无填充；HMAC-SHA256） */
+        MJImageSig: string;
+        /** @description 票据过期时间（Unix 秒；TTL 300s） */
+        MJImageExp: number;
     };
     requestBodies: {
         MJTaskList: {
@@ -18531,6 +18558,67 @@ export interface operations {
                 content?: never;
             };
             /** @description 上游不可达/坏响应 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mjImageProxy: {
+        parameters: {
+            query: {
+                /** @description 图片票据签名（base64url，无填充；HMAC-SHA256） */
+                sig: components["parameters"]["MJImageSig"];
+                /** @description 票据过期时间（Unix 秒；TTL 300s） */
+                exp: components["parameters"]["MJImageExp"];
+            };
+            header?: never;
+            path: {
+                /** @description MjId（`^[A-Za-z0-9_-]{1,128}$`） */
+                id: components["parameters"]["MJTaskID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 图片字节流（Content-Type 透传，限 image/*；缺失按 image/jpeg） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 令牌无效（`{code:5,description:invalid_token}`） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 目标地址被 SSRF 策略拒绝（`{code:4,description:forbidden}`） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description id/签名/归属任一不通过（`{code:4,description:task_not_found}`） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 内部错误（`{code:5,description:internal_error}`） */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 存储 URL 不可用或上游失败（`{code:5,description:upstream_error}`） */
             502: {
                 headers: {
                     [name: string]: unknown;

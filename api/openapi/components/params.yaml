@@ -165,6 +165,21 @@ parameters:
     description: MjId（`^[A-Za-z0-9_-]{1,128}$`）
     schema: {type: string, minLength: 1, maxLength: 128}
 
+  # 图片签名 URL 的查询参数（W8/MJ-c，R-MJ-09）。放在公共组件里是因为
+  # relay 域 paths 不允许内联 schema（真源在组件里）。
+  MJImageSig:
+    name: sig
+    in: query
+    required: true
+    description: 图片票据签名（base64url，无填充；HMAC-SHA256）
+    schema: {type: string, minLength: 1}
+  MJImageExp:
+    name: exp
+    in: query
+    required: true
+    description: 票据过期时间（Unix 秒；TTL 300s）
+    schema: {type: integer, format: int64, minimum: 1}
+
 requestBodies:
   # list-by-condition 的请求体（W8/MJ-b）；schema 真源在 schemas/relay.yaml。
   MJTaskList:
