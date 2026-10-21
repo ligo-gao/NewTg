@@ -62,6 +62,14 @@ func TestAllowZeroLimitIsUnlimited(t *testing.T) {
 	if keys := mr.Keys(); len(keys) != 0 {
 		t.Fatalf("负阈值不应建键，实际键 = %v", keys)
 	}
+
+	// M5-a 复核 M-2：证明短路路径「不访问 Redis」——关掉后端后仍放行且无 error。
+	// 若实现先访问 Redis 再判断 limit，这里会拿到 error 或被拒。
+	mr.Close()
+	if decision, err := l.Allow(context.Background(),
+		Bucket{Limit: 0, Window: testWindow}, key, 1); err != nil || !decision.Allowed {
+		t.Fatalf("limit=0 在 Redis 关闭后仍应放行：decision=%+v err=%v", decision, err)
+	}
 }
 
 // A2：第 N 次通过、第 N+1 次拒绝；Retry-After 为窗口剩余整秒。
@@ -151,13 +159,16 @@ func TestAllowKeysAreIsolated(t *testing.T) {
 }
 
 // A5（行为面）：分组覆盖阈值生效；覆盖 0 = 该组不限；未覆盖组走默认。
+// 覆盖值从真实配置 JSON 解析（`Resolve`），而不是直接构造 Settings——这样
+// 「覆盖值解析放大/缩小」的变异也能被本用例杀死（复核 I-2）。
 func TestAllowGroupOverrideThreshold(t *testing.T) {
 	mr, rdb := newLimiterTestRedis(t)
 	l := New(rdb)
-	settings := Settings{
-		UserModelRPM:   60,
-		GroupOverrides: map[string]int64{"vip": 1200, "free": 0},
-	}
+	log, _ := newTestLogger()
+	settings := Resolve(fakeConfig{
+		KeyUserModelRPM:   "60",
+		KeyGroupOverrides: `{"vip":1200,"free":0}`,
+	}, log)
 
 	// vip：61 次仍放行（默认 60 会在第 61 次拒绝）。
 	vipBucket := Bucket{Limit: settings.UserModelLimit("vip"), Window: testWindow}
@@ -190,19 +201,23 @@ func TestAllowGroupOverrideThreshold(t *testing.T) {
 	}
 }
 
-// A6：Redis 故障时 Allow 返回 error，不 panic、不静默放行。
+// A6：Redis 故障时 Allow 返回 error，不 panic、不静默放行；
+// 错误路径仍回填 bucket 的 FailMode（复核 M-1），供调用方直接决策。
 func TestAllowRedisFailureReturnsError(t *testing.T) {
 	mr, rdb := newLimiterTestRedis(t)
 	l := New(rdb)
 	mr.Close()
 
 	decision, err := l.Allow(context.Background(),
-		Bucket{Limit: 60, Window: testWindow}, UserKey(1), 1)
+		Bucket{Limit: 60, Window: testWindow, FailMode: FailOpen}, UserKey(1), 1)
 	if err == nil {
 		t.Fatal("Redis 不可用时必须返回 error，由调用方决定 fail 策略")
 	}
 	if decision.Allowed {
 		t.Fatalf("故障时 Decision 不得声称放行：%+v", decision)
+	}
+	if decision.FailMode != FailOpen {
+		t.Fatalf("错误路径 FailMode = %v，期望回填 bucket 的 %v", decision.FailMode, FailOpen)
 	}
 }
 
@@ -357,12 +372,31 @@ func mustAllowCost(t *testing.T, l *Limiter, bucket Bucket, key string, cost int
 	return decision
 }
 
-// 空键是接线错误，必须返回 error（不能静默共享空桶）。
+// 空键是接线错误，必须返回 error（不能静默共享空桶）；错误路径保留 FailMode。
+// 这里用 FailOpen（非零值），否则「未回填」与零值 FailClosed 无法区分。
 func TestAllowRejectsEmptyKey(t *testing.T) {
 	_, rdb := newLimiterTestRedis(t)
 	l := New(rdb)
-	if _, err := l.Allow(context.Background(), Bucket{Limit: 60, Window: testWindow}, "", 1); err == nil {
+	decision, err := l.Allow(context.Background(),
+		Bucket{Limit: 60, Window: testWindow, FailMode: FailOpen}, "", 1)
+	if err == nil {
 		t.Fatal("空键必须返回 error")
+	}
+	if decision.FailMode != FailOpen {
+		t.Fatalf("错误路径 FailMode = %v，期望 %v", decision.FailMode, FailOpen)
+	}
+}
+
+// nil Limiter 同样是接线错误：返回 error 且保留 FailMode（不得 nil 解引用 panic）。
+func TestAllowNilLimiterReturnsError(t *testing.T) {
+	var l *Limiter
+	decision, err := l.Allow(context.Background(),
+		Bucket{Limit: 60, Window: testWindow, FailMode: FailOpen}, UserKey(1), 1)
+	if err == nil {
+		t.Fatal("nil Limiter 必须返回 error")
+	}
+	if decision.FailMode != FailOpen {
+		t.Fatalf("错误路径 FailMode = %v，期望 %v", decision.FailMode, FailOpen)
 	}
 }
 
@@ -374,4 +408,129 @@ func mustKeyValue(t *testing.T, mr *miniredis.Miniredis, key string) string {
 		t.Fatalf("读取键 %q 失败: %v", key, err)
 	}
 	return value
+}
+
+// 复核 I-2：覆盖值 1200 的精确边界——第 1200 次放行、第 1201 次拒绝。
+// 覆盖值经真实 JSON 解析（Resolve），因此「解析放大/缩小」的变异会在这里变红。
+func TestAllowGroupOverrideBoundary1200(t *testing.T) {
+	_, rdb := newLimiterTestRedis(t)
+	l := New(rdb)
+	log, _ := newTestLogger()
+	settings := Resolve(fakeConfig{
+		KeyGroupOverrides: `{"vip":1200}`,
+	}, log)
+	if got := settings.UserModelLimit("vip"); got != 1200 {
+		t.Fatalf("解析后的 vip 阈值 = %d，期望 1200", got)
+	}
+	bucket := Bucket{Limit: settings.UserModelLimit("vip"), Window: testWindow}
+	key := UserKey(31)
+
+	for i := 1; i <= 1200; i++ {
+		if decision := mustAllow(t, l, bucket, key); !decision.Allowed {
+			t.Fatalf("vip 第 %d 次应放行（覆盖值 1200）", i)
+		}
+	}
+	if decision := mustAllow(t, l, bucket, key); decision.Allowed {
+		t.Fatal("vip 第 1201 次应被拒绝")
+	}
+}
+
+// 复核 I-1：RetryAfter 的「向上取整到整秒」与「最小 1s」。
+func TestRetryAfterRoundsUpToWholeSeconds(t *testing.T) {
+	cases := []struct {
+		name        string
+		ttl, window time.Duration
+		want        time.Duration
+	}{
+		{"sub-second ttl ceils to 1s", 500 * time.Millisecond, time.Minute, time.Second},
+		{"1ns ceils to 1s", time.Nanosecond, time.Minute, time.Second},
+		{"fractional seconds ceil", 30500 * time.Millisecond, time.Minute, 31 * time.Second},
+		{"exact second unchanged", 30 * time.Second, time.Minute, 30 * time.Second},
+		{"ttl capped at window", 2 * time.Minute, time.Minute, time.Minute},
+		{"non-positive ttl uses window", -time.Second, time.Minute, time.Minute},
+		// 1s 下限是防御分支：Allow 会把 Window<=0 归一为 1 分钟，脚本也会把
+		// PTTL<0 修成窗口，因此 (0,0) 只能由直接调用触发。这里钉住该契约。
+		{"1s floor", 0, 0, time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryAfter(tc.ttl, tc.window); got != tc.want {
+				t.Errorf("retryAfter(%v, %v) = %v，期望 %v", tc.ttl, tc.window, got, tc.want)
+			}
+		})
+	}
+}
+
+// 复核 I-1（计数路径）：预置 500ms TTL 的桶，被拒时 RetryAfter 必须是 1s。
+func TestAllowSubSecondTTLReturnsOneSecond(t *testing.T) {
+	mr, rdb := newLimiterTestRedis(t)
+	l := New(rdb)
+	key := UserKey(33)
+	if err := mr.Set(key, "1"); err != nil {
+		t.Fatalf("预置键失败: %v", err)
+	}
+	mr.SetTTL(key, 500*time.Millisecond)
+
+	decision := mustAllow(t, l, Bucket{Limit: 1, Window: testWindow}, key)
+	if decision.Allowed {
+		t.Fatal("count=2 > limit=1 应被拒绝")
+	}
+	if decision.RetryAfter != time.Second {
+		t.Fatalf("RetryAfter = %v，期望向上取整为 1s", decision.RetryAfter)
+	}
+}
+
+// 复核 M-3：New 不拥有注入的客户端——Close 不能关闭调用方的连接池。
+func TestNewDoesNotOwnInjectedClient(t *testing.T) {
+	_, rdb := newLimiterTestRedis(t)
+	l := New(rdb)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close() = %v，期望 nil", err)
+	}
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("注入的客户端被关闭了: %v", err)
+	}
+	if decision := mustAllow(t, l, Bucket{Limit: 1, Window: testWindow}, UserKey(35)); !decision.Allowed {
+		t.Fatal("Close 后注入客户端仍应可用")
+	}
+}
+
+// 复核 M-3：NewWithAddr 自建并接管客户端；Close 后该实例不可再用。
+func TestNewWithAddrOwnsClient(t *testing.T) {
+	mr := miniredis.RunT(t)
+	l, err := NewWithAddr(mr.Addr())
+	if err != nil {
+		t.Fatalf("NewWithAddr() error: %v", err)
+	}
+	if decision := mustAllow(t, l, Bucket{Limit: 1, Window: testWindow}, UserKey(37)); !decision.Allowed {
+		t.Fatal("首次调用应放行")
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close() = %v，期望 nil", err)
+	}
+	if _, err := l.Allow(context.Background(), Bucket{Limit: 1, Window: testWindow}, UserKey(37), 1); err == nil {
+		t.Fatal("Close 后自建客户端应已关闭，Allow 必须返回 error")
+	}
+	if _, err := NewWithAddr("  "); err == nil {
+		t.Fatal("空地址必须返回 error")
+	}
+}
+
+// 复核 M-5：Window<=0 回落 1 分钟（而不是 PEXPIRE 0 让桶永不计数）。
+func TestAllowNonPositiveWindowDefaultsToOneMinute(t *testing.T) {
+	for _, window := range []time.Duration{0, -time.Second} {
+		mr, rdb := newLimiterTestRedis(t)
+		l := New(rdb)
+		bucket := Bucket{Limit: 1, Window: window}
+		key := UserKey(39)
+		if decision := mustAllow(t, l, bucket, key); !decision.Allowed {
+			t.Fatalf("window=%v 首次应放行", window)
+		}
+		if decision := mustAllow(t, l, bucket, key); decision.Allowed {
+			t.Fatalf("window=%v 第二次应被拒绝（窗口必须真的生效）", window)
+		}
+		if ttl := mr.TTL(key); ttl != time.Minute {
+			t.Fatalf("window=%v 的 TTL = %v，期望回落到 1m", window, ttl)
+		}
+	}
 }

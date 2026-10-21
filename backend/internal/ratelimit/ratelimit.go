@@ -115,18 +115,20 @@ func (l *Limiter) Allow(ctx context.Context, bucket Bucket, key string, cost int
 	if bucket.Limit <= 0 || cost <= 0 {
 		return decision, nil
 	}
+	// 错误路径同样回填 FailMode（M5-a 复核 M-1）：调用方拿到 err 时仍能直接
+	// 按 bucket 的 fail_mode 决策（例如中继面 fail-closed），不必回头再取一次。
 	if key == "" {
 		// 键是服务端鉴权上下文构造的（F-1 约束），空键说明接线错误；
 		// 返回 error 让调用方按自己的 fail 策略处理，而不是静默共享一个空桶。
-		return Decision{}, errors.New("ratelimit: empty bucket key")
+		return Decision{FailMode: bucket.FailMode}, errors.New("ratelimit: empty bucket key")
 	}
 	if l == nil || l.rdb == nil {
-		return Decision{}, errors.New("ratelimit: nil redis client")
+		return Decision{FailMode: bucket.FailMode}, errors.New("ratelimit: nil redis client")
 	}
 
 	count, ttl, err := fixedWindow(ctx, l.rdb, key, window, cost)
 	if err != nil {
-		return Decision{}, err
+		return Decision{FailMode: bucket.FailMode}, err
 	}
 	decision.Allowed = count <= int64(bucket.Limit)
 	decision.RetryAfter = retryAfter(ttl, window)
