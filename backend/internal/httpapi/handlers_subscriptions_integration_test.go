@@ -1048,3 +1048,77 @@ func TestSubscriptionIntegrationWalletPurchase(t *testing.T) {
 		t.Fatalf("余额不足后 bob balance = %d，期望 5000", got)
 	}
 }
+
+// TestSubscriptionIntegrationEventsVisibility 是 S1 端点的数据库级验收：
+// 创建实例与 created 事件同事务可见，本人/users:read 可读，他人 404，
+// after_seq 增量读取在真实 SQL 上成立。
+func TestSubscriptionIntegrationEventsVisibility(t *testing.T) {
+	env := newSubscriptionIntegrationEnv(t)
+	planID := env.insertPlanRow(t, "events-"+subscriptionITKey(), "enabled")
+	owner := env.insertUser(t, "user")
+	other := env.insertUser(t, "user")
+
+	now := time.Now().UTC()
+	sub, err := env.repo.CreateSubscription(context.Background(), store.SubscriptionCreateInput{
+		UserID:            owner,
+		PlanID:            planID,
+		PlanTitleSnapshot: "IT Plan",
+		StartAt:           now.Add(-time.Hour),
+		EndAt:             now.Add(30 * 24 * time.Hour),
+		AmountTotal:       1000,
+		Currency:          "CNY",
+		PricePaidAmount:   9900,
+		PeriodDays:        30,
+		ResetOnRenew:      true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM subscription_events WHERE subscription_id = $1`, sub.ID)
+		_, _ = env.db.Exec(`DELETE FROM subscriptions WHERE id = $1`, sub.ID)
+	})
+
+	path := fmt.Sprintf("/api/subscriptions/%d/events", sub.ID)
+	decode := func(rr *httptest.ResponseRecorder) subscriptionEventListView {
+		t.Helper()
+		var body subscriptionEventListView
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode events: %v（body=%s）", err, rr.Body.String())
+		}
+		return body
+	}
+
+	rr := env.do(t, &auth.Principal{UserID: owner, Role: rbac.RoleUser}, http.MethodGet, path, nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("本人读取 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	body := decode(rr)
+	if len(body.Events) != 1 || body.Events[0].Seq != 1 ||
+		body.Events[0].Kind != store.SubscriptionEventCreated {
+		t.Fatalf("events = %+v", body.Events)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(body.Events[0].Detail, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail["plan_id"] != float64(planID) || detail["price_paid_amount"] != float64(9900) {
+		t.Fatalf("created detail = %v", detail)
+	}
+
+	// 他人 404（不是 403）；users:read 管理员 200；无 users:read 管理员 404。
+	if rr := env.do(t, &auth.Principal{UserID: other, Role: rbac.RoleUser}, http.MethodGet, path, nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("他人读取 = %d，期望 404", rr.Code)
+	}
+	if rr := env.do(t, adminRestricted(rbac.PermUsersRead), http.MethodGet, path, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("users:read 管理员读取 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr := env.do(t, adminRestricted(rbac.PermSettingsManage), http.MethodGet, path, nil, nil); rr.Code != http.StatusNotFound {
+		t.Fatalf("无 users:read 管理员读取 = %d，期望 404", rr.Code)
+	}
+	if rr := env.do(t, &auth.Principal{UserID: owner, Role: rbac.RoleUser}, http.MethodGet, path+"?after_seq=1", nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("after_seq 读取 = %d", rr.Code)
+	} else if got := decode(rr); len(got.Events) != 0 {
+		t.Fatalf("after_seq=1 应为空，实际 %+v", got.Events)
+	}
+}

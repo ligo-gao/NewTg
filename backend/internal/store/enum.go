@@ -205,8 +205,15 @@ var EnumChecks = map[string][]string{
 	"subscription_plans.status":               {"enabled", "disabled"},
 	"subscriptions.status":                    {"active", "expired", "cancelled"},
 	"subscription_pre_consume_records.status": {"consumed", "refunded"},
-	"orders.biz_kind":                         {"topup", "subscribe", "renew"},
-	"users.billing_preference":                {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
+	// S1 订阅事件流的 kind 白名单（R-18 冻结）：S1 只产出 created/renewed/
+	// cancelled/expired/reset；upgraded/downgraded/refunded 由 S2/S3 接入，
+	// 白名单先冻结，避免各批次对同一含义使用不同拼写。
+	"subscription_events.kind": {
+		"created", "renewed", "upgraded", "downgraded",
+		"refunded", "cancelled", "expired", "reset",
+	},
+	"orders.biz_kind":          {"topup", "subscribe", "renew"},
+	"users.billing_preference": {"subscription_first", "wallet_first", "subscription_only", "wallet_only"},
 
 	// 站点公告（D7a，modules-08 F-08-04 / R-D7-01）。
 	// status 只有三值：expired 是**虚拟态**（published + expire_at <= now），

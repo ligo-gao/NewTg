@@ -107,6 +107,7 @@ type fakeSubscriptionRepo struct {
 	nextSubID      int64
 	resets         []resetCall
 	preConsume     map[string]store.SubscriptionPreConsume
+	events         map[int64][]store.SubscriptionEvent
 	writeCallCount int
 	// leakForeign 模拟仓储实现漂移：ListSubscriptionsByUser 故意返回他人实例。
 	// handler 仍必须按归属过滤后再算 total/分页（L2 防御用例）。
@@ -124,6 +125,7 @@ func newFakeSubscriptionRepo() *fakeSubscriptionRepo {
 		subs:          map[int64]*store.Subscription{},
 		pendingOrders: map[int64]int{},
 		preConsume:    map[string]store.SubscriptionPreConsume{},
+		events:        map[int64][]store.SubscriptionEvent{},
 	}
 }
 
@@ -318,6 +320,27 @@ func (r *fakeSubscriptionRepo) GetSubscription(_ context.Context, id int64) (sto
 		return store.Subscription{}, store.ErrSubscriptionNotFound
 	}
 	return *sub, nil
+}
+
+func (r *fakeSubscriptionRepo) ListSubscriptionEvents(_ context.Context,
+	subscriptionID int64, afterSeq int64, limit int) ([]store.SubscriptionEvent, error) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if subscriptionID <= 0 || afterSeq < 0 {
+		return nil, store.ErrSubscriptionEventInvalid
+	}
+	out := make([]store.SubscriptionEvent, 0, len(r.events[subscriptionID]))
+	for _, event := range r.events[subscriptionID] {
+		if event.Seq <= afterSeq {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, event)
+	}
+	return out, nil
 }
 
 func (r *fakeSubscriptionRepo) ListSubscriptionsByUser(_ context.Context, userID int64) ([]store.Subscription, error) {
@@ -1922,4 +1945,109 @@ func decodeSubProblemFields(t *testing.T, rr *httptest.ResponseRecorder) struct 
 		t.Fatalf("decode problem fields: %v", err)
 	}
 	return problem
+}
+
+// ---------------------------------------------------------------------------
+// S1：状态迁移事件流读取
+// ---------------------------------------------------------------------------
+
+// TestSubscriptionEventsVisibilityAndShape 验证 R-19：本人或 users:read 可见，
+// 他人订阅 404（不是 403），after_seq 增量过滤，缺失身份 fail-closed。
+func TestSubscriptionEventsVisibilityAndShape(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, otherID := int64(41), int64(42)
+	subscriptionID := int64(7)
+	env.repo.mu.Lock()
+	env.repo.subs[subscriptionID] = &store.Subscription{
+		ID: subscriptionID, UserID: ownerID, PlanID: 1, Status: "active",
+	}
+	env.repo.events[subscriptionID] = []store.SubscriptionEvent{
+		{SubscriptionID: subscriptionID, Seq: 1, Kind: store.SubscriptionEventCreated,
+			Detail: []byte(`{"plan_id":1,"amount_total":1000}`), CreatedAt: time.Unix(1000, 0).UTC()},
+		{SubscriptionID: subscriptionID, Seq: 2, Kind: store.SubscriptionEventCancelled,
+			Detail: []byte(`{"immediate":false}`), CreatedAt: time.Unix(2000, 0).UTC()},
+	}
+	env.repo.mu.Unlock()
+
+	t.Run("本人可见", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var body subscriptionEventListView
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(body.Events) != 2 || body.Events[0].Seq != 1 ||
+			body.Events[1].Kind != store.SubscriptionEventCancelled {
+			t.Fatalf("events = %+v", body.Events)
+		}
+		if string(body.Events[0].Detail) != `{"plan_id":1,"amount_total":1000}` {
+			t.Fatalf("detail 透传失真: %s", body.Events[0].Detail)
+		}
+	})
+
+	t.Run("after_seq 增量", func(t *testing.T) {
+		rr := env.do(t, endUser(ownerID), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events?after_seq=1", subscriptionID), nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+		var body subscriptionEventListView
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(body.Events) != 1 || body.Events[0].Seq != 2 {
+			t.Fatalf("after_seq=1 events = %+v", body.Events)
+		}
+	})
+
+	t.Run("他人订阅 404 而非 403", func(t *testing.T) {
+		rr := env.do(t, endUser(otherID), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d，期望 404（不得泄露 ID 存在性，body=%s）",
+				rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("users:read 管理员可读他人订阅", func(t *testing.T) {
+		rr := env.do(t, adminRestricted(rbac.PermUsersRead), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("无 users:read 的管理员按普通用户口径 404", func(t *testing.T) {
+		rr := env.do(t, adminRestricted(rbac.PermSettingsManage), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d，期望 404", rr.Code)
+		}
+	})
+
+	t.Run("不存在与非法 after_seq", func(t *testing.T) {
+		if rr := env.do(t, endUser(ownerID), http.MethodGet,
+			"/api/subscriptions/999/events", nil, nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("不存在订阅 = %d", rr.Code)
+		}
+		if rr := env.do(t, endUser(ownerID), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events?after_seq=-1", subscriptionID), nil, nil); rr.Code != http.StatusBadRequest {
+			t.Fatalf("负数 after_seq = %d，期望 400", rr.Code)
+		}
+		if rr := env.do(t, endUser(ownerID), http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events?after_seq=abc", subscriptionID), nil, nil); rr.Code != http.StatusBadRequest {
+			t.Fatalf("非数字 after_seq = %d，期望 400", rr.Code)
+		}
+	})
+
+	t.Run("未认证 fail-closed", func(t *testing.T) {
+		rr := env.do(t, nil, http.MethodGet,
+			fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("未认证 = %d，期望 401", rr.Code)
+		}
+	})
 }

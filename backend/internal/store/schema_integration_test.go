@@ -37,6 +37,8 @@ import (
 // D7a 追加站点公告两表（modules-08 F-08-04 / R-D7-01/R-D7-02），表数 33→35。
 // B5a 追加供应商时间序列表（rankings_author_timeseries），表数 35→36。
 // C2 追加 GPU 资源租赁计费两表（platform-01 §22.13），表数 36→38。
+// T4 追加任务批次聚合两表（task_batches / task_batches_items），表数 38→40。
+// S1（W2）追加订阅事件流 subscription_events（5 列），表数 40→41。
 //
 //	subscription_plans 17 列、subscriptions 23 列（含 R-D5-03 的 5 个快照列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
@@ -97,6 +99,9 @@ var wantColumns = map[string]int{
 	"subscription_plans":               17,
 	"subscriptions":                    23,
 	"subscription_pre_consume_records": 5,
+	// S1 订阅状态事件流（W2）：subscription_id / seq / kind / detail /
+	// created_at 五列，主键 (subscription_id, seq) 即读路径索引。
+	"subscription_events": 5,
 	// C2 / Task 5c：GPU 资源租赁计费两表（platform-01 §22.13）。
 	// 列数与设计逐行对应：段 24 列、append-only 事实账本 19 列。
 	"deployment_billing_segments": 24,
@@ -212,6 +217,9 @@ var identityPKExceptions = map[string][]string{
 	"deployment_billing_segments": {"segment_id"},
 	// T4 / P-04：批次关联的主键就是「批次 × 子任务」这对自然键。
 	"task_batches_items": {"batch_id", "task_id"},
+	// S1：事件流的主键就是「订阅 × 同订阅内连续序号」这对自然键；seq 的
+	// 无洞语义由订阅行锁保证，代理 id 不提供任何额外保证。
+	"subscription_events": {"subscription_id", "seq"},
 }
 
 // identityPKCustomColumn：identity 代理主键但列名不是 "id" 的表。
@@ -287,7 +295,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 40 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 41 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -767,11 +775,11 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 9 项 + uuid 代理键 3 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 11 项 + uuid 代理键 4 项
 // + run_id 领头复合自然键 2 项 + 自定义列名 identity 1 项。
 func TestMainSchemaIdentityPK(t *testing.T) {
-	if len(identityPKExceptions) != 10 {
-		t.Fatalf("自然键例外清单须恰 10 项（另有 4 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
+	if len(identityPKExceptions) != 11 {
+		t.Fatalf("自然键例外清单须恰 11 项（另有 4 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -895,8 +903,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 16 张 =
-// 10 张自然键例外（identityPKExceptions）+ 4 张 uuid 代理键（uuidPKTables）
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 17 张 =
+// 11 张自然键例外（identityPKExceptions）+ 4 张 uuid 代理键（uuidPKTables）
 // + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余均为 identity
 // 单列代理主键（其中 deployment_cost_facts 的列名是 fact_id）。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
@@ -911,8 +919,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 16 {
-		t.Fatalf("非 identity PK 表须恰 16 张（10 自然键 + 4 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 17 {
+		t.Fatalf("非 identity PK 表须恰 17 张（11 自然键 + 4 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string

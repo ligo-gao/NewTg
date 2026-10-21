@@ -254,22 +254,22 @@ func (e CreateOrderRequestProvider) Valid() bool {
 
 // Defines values for EmailCodeRequestPurpose.
 const (
-	Bind     EmailCodeRequestPurpose = "bind"
-	Register EmailCodeRequestPurpose = "register"
-	Reset    EmailCodeRequestPurpose = "reset"
-	Verify   EmailCodeRequestPurpose = "verify"
+	EmailCodeRequestPurposeBind     EmailCodeRequestPurpose = "bind"
+	EmailCodeRequestPurposeRegister EmailCodeRequestPurpose = "register"
+	EmailCodeRequestPurposeReset    EmailCodeRequestPurpose = "reset"
+	EmailCodeRequestPurposeVerify   EmailCodeRequestPurpose = "verify"
 )
 
 // Valid indicates whether the value is a known member of the EmailCodeRequestPurpose enum.
 func (e EmailCodeRequestPurpose) Valid() bool {
 	switch e {
-	case Bind:
+	case EmailCodeRequestPurposeBind:
 		return true
-	case Register:
+	case EmailCodeRequestPurposeRegister:
 		return true
-	case Reset:
+	case EmailCodeRequestPurposeReset:
 		return true
-	case Verify:
+	case EmailCodeRequestPurposeVerify:
 		return true
 	default:
 		return false
@@ -1818,6 +1818,42 @@ func (e SquareState) Valid() bool {
 	case Unavailable:
 		return true
 	case Visible:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SubscriptionEventKind.
+const (
+	SubscriptionEventKindCancelled  SubscriptionEventKind = "cancelled"
+	SubscriptionEventKindCreated    SubscriptionEventKind = "created"
+	SubscriptionEventKindDowngraded SubscriptionEventKind = "downgraded"
+	SubscriptionEventKindExpired    SubscriptionEventKind = "expired"
+	SubscriptionEventKindRefunded   SubscriptionEventKind = "refunded"
+	SubscriptionEventKindRenewed    SubscriptionEventKind = "renewed"
+	SubscriptionEventKindReset      SubscriptionEventKind = "reset"
+	SubscriptionEventKindUpgraded   SubscriptionEventKind = "upgraded"
+)
+
+// Valid indicates whether the value is a known member of the SubscriptionEventKind enum.
+func (e SubscriptionEventKind) Valid() bool {
+	switch e {
+	case SubscriptionEventKindCancelled:
+		return true
+	case SubscriptionEventKindCreated:
+		return true
+	case SubscriptionEventKindDowngraded:
+		return true
+	case SubscriptionEventKindExpired:
+		return true
+	case SubscriptionEventKindRefunded:
+		return true
+	case SubscriptionEventKindRenewed:
+		return true
+	case SubscriptionEventKindReset:
+		return true
+	case SubscriptionEventKindUpgraded:
 		return true
 	default:
 		return false
@@ -7074,6 +7110,24 @@ type SetupResponseUserStatus string
 // 部分 ⇒ partial，无启用渠道 ⇒ unavailable。
 type SquareState string
 
+// SubscriptionEvent 一条订阅状态迁移事件（S1/R-18）。detail 只含 id 与金额等非敏感字段。
+type SubscriptionEvent struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Detail 只含 id 与金额（R-18）；禁止密钥、支付凭据、完整邮箱。
+	Detail map[string]interface{} `json:"detail"`
+	Kind   SubscriptionEventKind  `json:"kind"`
+	Seq    int64                  `json:"seq"`
+}
+
+// SubscriptionEventKind defines model for SubscriptionEvent.Kind.
+type SubscriptionEventKind string
+
+// SubscriptionEventList defines model for SubscriptionEventList.
+type SubscriptionEventList struct {
+	Events []SubscriptionEvent `json:"events"`
+}
+
 // SubscriptionPlan defines model for SubscriptionPlan.
 type SubscriptionPlan struct {
 	// AllowWalletOverflow 订阅额度用尽后是否允许回落钱包（内部开关，用户侧不返回）
@@ -9065,6 +9119,12 @@ type CancelSubscriptionAtPeriodEndParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListSubscriptionEventsParams defines parameters for ListSubscriptionEvents.
+type ListSubscriptionEventsParams struct {
+	// AfterSeq 增量为游标；缺省 0 表示从头拉取。负数或非整数 → 400。
+	AfterSeq *int64 `form:"after_seq,omitempty" json:"after_seq,omitempty"`
 }
 
 // RenewSubscriptionParams defines parameters for RenewSubscription.

@@ -257,6 +257,12 @@ func TestSubscriptionSettleCreatesInstanceWithoutWallet(t *testing.T) {
 		t.Fatalf("model_scope 快照 = %s", sub.ModelScope)
 	}
 
+	// S1：购买与 created 事件同事务——支付成功那一刻就有一条 created。
+	events := readSubscriptionEvents(t, db, sub.ID)
+	if len(events) != 1 || events[0].Seq != 1 || events[0].Kind != store.SubscriptionEventCreated {
+		t.Fatalf("购买后事件 = %+v，期望恰一条 created", events)
+	}
+
 	// 重复回调：只一行实例、钱包仍无新流水。
 	if err := svc.HandleStripeWebhook(context.Background(), payload, sig); err != nil {
 		t.Fatalf("replay webhook: %v", err)
@@ -271,6 +277,10 @@ func TestSubscriptionSettleCreatesInstanceWithoutWallet(t *testing.T) {
 	}
 	if got := walletTxCount(t, db, userID); got != walletBefore {
 		t.Fatalf("重复回调用钱包流水数 = %d，期望 %d", got, walletBefore)
+	}
+	// 幂等重放不得追加第二条 created（事件流是迁移账本，不是回调日志）。
+	if got := readSubscriptionEvents(t, db, sub.ID); len(got) != 1 {
+		t.Fatalf("重复回调后事件数 = %d，期望 1", len(got))
 	}
 }
 
@@ -784,4 +794,29 @@ func TestSubscriptionPurchaseWaitsForDeletePlanLock(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("套餐删除后不得留下订单，得到 %d 行", count)
 	}
+}
+
+// readSubscriptionEvents 读取某实例的事件流（按 seq 升序），供 S1 断言
+// 「结算/续费与事件同事务」。
+func readSubscriptionEvents(t *testing.T, db *sql.DB, subscriptionID int64) []store.SubscriptionEvent {
+	t.Helper()
+	rows, err := db.Query(`
+		SELECT subscription_id, seq, kind, detail, created_at
+		  FROM subscription_events WHERE subscription_id = $1 ORDER BY seq ASC`, subscriptionID)
+	if err != nil {
+		t.Fatalf("read subscription events: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]store.SubscriptionEvent, 0, 4)
+	for rows.Next() {
+		var e store.SubscriptionEvent
+		if err := rows.Scan(&e.SubscriptionID, &e.Seq, &e.Kind, &e.Detail, &e.CreatedAt); err != nil {
+			t.Fatalf("scan subscription event: %v", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate subscription events: %v", err)
+	}
+	return out
 }

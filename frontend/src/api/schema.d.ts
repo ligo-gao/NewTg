@@ -911,6 +911,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subscriptions/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * 订阅状态迁移事件流（本人或 users:read）
+         * @description 返回 `seq > after_seq` 的事件，按 seq 升序，单次最多 500 条。
+         *     kind 冻结为 created/renewed/upgraded/downgraded/refunded/cancelled/
+         *     expired/reset；detail 只含 id 与金额，不含密钥、支付凭据或邮箱（R-18）。
+         *
+         *     seq 在同一订阅内从 1 开始连续无洞；客户端用响应中最大的 seq 作为
+         *     下一次的 after_seq 增量拉取。可见性为本人或持 users:read 的管理员；
+         *     他人订阅与不存在统一返回 404（不是 403，避免订阅 ID 枚举）。
+         */
+        get: operations["listSubscriptionEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscriptions/{id}/cancel": {
         parameters: {
             query?: never;
@@ -5277,6 +5305,22 @@ export interface components {
             page: number;
             page_size: number;
         };
+        /** @description 一条订阅状态迁移事件（S1/R-18）。detail 只含 id 与金额等非敏感字段。 */
+        SubscriptionEvent: {
+            /** Format: int64 */
+            seq: number;
+            /** @enum {string} */
+            kind: "created" | "renewed" | "upgraded" | "downgraded" | "refunded" | "cancelled" | "expired" | "reset";
+            /** @description 只含 id 与金额（R-18）；禁止密钥、支付凭据、完整邮箱。 */
+            detail: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            created_at: string;
+        };
+        SubscriptionEventList: {
+            events: components["schemas"]["SubscriptionEvent"][];
+        };
         SubscriptionRenewRequest: {
             /**
              * @description 支付渠道；目标实例来自路径，金额/周期由服务端按套餐行读取。
@@ -9415,6 +9459,35 @@ export interface operations {
             };
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listSubscriptionEvents: {
+        parameters: {
+            query?: {
+                /** @description 增量为游标；缺省 0 表示从头拉取。负数或非整数 → 400。 */
+                after_seq?: number;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionEventList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };

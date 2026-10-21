@@ -24,6 +24,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -72,7 +73,64 @@ var (
 	// ErrSubscriptionDeltaOverflow：结算增量的整数运算溢出 int64（数据损坏/
 	// 恶意增量），必须拒绝而不是回绕出一个合法金额。
 	ErrSubscriptionDeltaOverflow = errors.New("store: subscription settlement delta overflows")
+
+	// ErrSubscriptionEventInvalid：事件入参非法（未知 kind / 空订阅 / 负数
+	// after_seq）。未知 kind 必须拒绝而不是落库：kind 是冻结白名单（R-18），
+	// 让未来拼错的 kind 静默落库会污染事件流且无法被 CHECK 之外的下游识别。
+	ErrSubscriptionEventInvalid = errors.New("store: subscription event input is invalid")
+	// ErrSubscriptionEventSeqConflict：seq 唯一键冲突。正常情况下订阅行锁
+	// 已经串行化，出现它说明有写方绕过了锁或数据库出现了非预期的并发；
+	// 调用方必须**整体重试事务**，而不是跳过该 seq（跳号会让 after_seq
+	// 增量拉取的客户端永久漏事件）。
+	ErrSubscriptionEventSeqConflict = errors.New("store: subscription event sequence conflict")
 )
+
+// 订阅事件 kind 白名单（R-18 冻结）。S1 只产出 created/renewed/cancelled/
+// expired/reset；upgraded/downgraded/refunded 由 S2/S3 接入，白名单先冻结，
+// 避免各批次对同一含义使用不同拼写。
+const (
+	SubscriptionEventCreated    = "created"
+	SubscriptionEventRenewed    = "renewed"
+	SubscriptionEventUpgraded   = "upgraded"
+	SubscriptionEventDowngraded = "downgraded"
+	SubscriptionEventRefunded   = "refunded"
+	SubscriptionEventCancelled  = "cancelled"
+	SubscriptionEventExpired    = "expired"
+	SubscriptionEventReset      = "reset"
+)
+
+// subscriptionEventKinds 是 kind 白名单的唯一判定源。新增 kind 必须同时改
+// 迁移里的 CHECK 与 EnumChecks（schema 集成测试双向对账）。
+var subscriptionEventKinds = map[string]struct{}{
+	SubscriptionEventCreated:    {},
+	SubscriptionEventRenewed:    {},
+	SubscriptionEventUpgraded:   {},
+	SubscriptionEventDowngraded: {},
+	SubscriptionEventRefunded:   {},
+	SubscriptionEventCancelled:  {},
+	SubscriptionEventExpired:    {},
+	SubscriptionEventReset:      {},
+}
+
+// SubscriptionEvent 是一条订阅状态迁移事件（S1）。
+//
+// Detail 保留 jsonb 原文（[]byte）：读侧（HTTP 端点）直接透传，不在 store
+// 重新编码一次；空值在写入时归一为 `{}`，不会出现 SQL NULL。
+type SubscriptionEvent struct {
+	SubscriptionID int64
+	Seq            int64
+	Kind           string
+	Detail         []byte
+	CreatedAt      time.Time
+}
+
+// SubscriptionEventScanLimit 是单次事件拉取的上限：事件流只增不减，
+// 无界读取会让长生命周期订阅的一次请求把整段历史装进内存。
+const SubscriptionEventScanLimit = 500
+
+// subscriptionEventTxAttempts 是「状态迁移 + 事件」事务在 seq 唯一键冲突时
+// 的整体重试次数（含首次）。冲突是订阅行锁之外的兜底，正常路径不会消耗。
+const subscriptionEventTxAttempts = 3
 
 // ErrPlanReferenced 表示套餐仍被引用，删除被拒（HTTP 409）。
 //
@@ -204,6 +262,9 @@ type SubscriptionRepo interface {
 	ExpireDue(ctx context.Context, now time.Time) (int64, error)
 	DueForReset(ctx context.Context, now time.Time) ([]Subscription, error)
 	ResetSubscriptionQuota(ctx context.Context, id int64, now time.Time) (int64, error)
+	// ListSubscriptionEvents 返回某订阅 seq > afterSeq 的事件（升序，上限
+	// limit）。可见性（本人 / users:read）属于 HTTP 层，store 不做归属过滤。
+	ListSubscriptionEvents(ctx context.Context, subscriptionID int64, afterSeq int64, limit int) ([]SubscriptionEvent, error)
 
 	// Pre-consume idempotency records
 	InsertPreConsume(ctx context.Context, requestID string, subscriptionID int64, amount int64) (SubscriptionPreConsume, error)
@@ -573,52 +634,66 @@ func (r *SQLSubscriptionRepo) CreateSubscription(ctx context.Context, in Subscri
 		nextResetAt = nullableTime(in.NextResetAt)
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Subscription{}, fmt.Errorf("store: begin create subscription: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// 【事件】创建实例与 created 事件同事务提交（S1/R-17）：订阅一出现就有一条
+	// 「它是什么、从哪来」的账本，后续迁移的 seq 从 2 开始连续递增。
+	var created Subscription
+	err := r.withEventTx(ctx, fmt.Sprintf("create subscription(user=%d plan=%d)", in.UserID, in.PlanID),
+		func(tx *sql.Tx) error {
+			var planID int64
+			err := tx.QueryRowContext(ctx,
+				`SELECT id FROM subscription_plans WHERE id = $1 FOR SHARE`, in.PlanID).Scan(&planID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrPlanNotFound
+			}
+			if err != nil {
+				return fmt.Errorf("store: check subscription plan(%d): %w", in.PlanID, err)
+			}
 
-	var planID int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM subscription_plans WHERE id = $1 FOR SHARE`, in.PlanID).Scan(&planID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Subscription{}, ErrPlanNotFound
-	}
+			s, err := scanSubscription(tx.QueryRowContext(ctx, `
+				INSERT INTO subscriptions
+					(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
+					 next_reset_at, amount_total, amount_used, allow_wallet_overflow,
+					 auto_renew, cancel_at_period_end, order_id, currency,
+					 price_paid_amount, period_days, reset_on_renew, grace_days,
+					 model_scope, concurrency_limit)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+				        $14, $15, $16, $17, $18, $19, $20)
+				RETURNING `+subscriptionColumns,
+				in.UserID, in.PlanID, in.PlanTitleSnapshot, status, startAt, endAt,
+				nextResetAt, in.AmountTotal, in.AmountUsed,
+				in.AllowWalletOverflow, in.AutoRenew, in.CancelAtPeriodEnd, in.OrderID,
+				in.Currency, in.PricePaidAmount, in.PeriodDays, in.ResetOnRenew,
+				in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit))
+			if err != nil {
+				switch {
+				case isUniqueViolation(err):
+					return ErrSubscriptionDuplicate
+				case isCheckViolation(err), isInvalidTextRepresentation(err),
+					isStringDataRightTruncation(err):
+					return ErrSubscriptionInvalid
+				}
+				return fmt.Errorf("store: create subscription(user=%d plan=%d): %w",
+					in.UserID, in.PlanID, err)
+			}
+			// detail 只含 id 与金额（R-18）：不写支付凭据、邮箱或任何用户输入。
+			detail := map[string]any{
+				"plan_id":           in.PlanID,
+				"amount_total":      in.AmountTotal,
+				"price_paid_amount": in.PricePaidAmount,
+			}
+			if in.OrderID != nil {
+				detail["order_id"] = *in.OrderID
+			}
+			if err := AppendSubscriptionEvent(ctx, tx, s.ID, SubscriptionEventCreated, detail); err != nil {
+				return err
+			}
+			created = s
+			return nil
+		})
 	if err != nil {
-		return Subscription{}, fmt.Errorf("store: check subscription plan(%d): %w", in.PlanID, err)
+		return Subscription{}, err
 	}
-
-	s, err := scanSubscription(tx.QueryRowContext(ctx, `
-		INSERT INTO subscriptions
-			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
-			 next_reset_at, amount_total, amount_used, allow_wallet_overflow,
-			 auto_renew, cancel_at_period_end, order_id, currency,
-			 price_paid_amount, period_days, reset_on_renew, grace_days,
-			 model_scope, concurrency_limit)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		        $14, $15, $16, $17, $18, $19, $20)
-		RETURNING `+subscriptionColumns,
-		in.UserID, in.PlanID, in.PlanTitleSnapshot, status, startAt, endAt,
-		nextResetAt, in.AmountTotal, in.AmountUsed,
-		in.AllowWalletOverflow, in.AutoRenew, in.CancelAtPeriodEnd, in.OrderID,
-		in.Currency, in.PricePaidAmount, in.PeriodDays, in.ResetOnRenew,
-		in.GraceDays, nullableJSON(in.ModelScope), in.ConcurrencyLimit))
-	if err != nil {
-		switch {
-		case isUniqueViolation(err):
-			return Subscription{}, ErrSubscriptionDuplicate
-		case isCheckViolation(err), isInvalidTextRepresentation(err),
-			isStringDataRightTruncation(err):
-			return Subscription{}, ErrSubscriptionInvalid
-		}
-		return Subscription{}, fmt.Errorf("store: create subscription(user=%d plan=%d): %w",
-			in.UserID, in.PlanID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Subscription{}, fmt.Errorf("store: commit create subscription: %w", err)
-	}
-	return s, nil
+	return created, nil
 }
 
 // GetSubscription 按 id 读取实例。
@@ -719,78 +794,80 @@ func (r *SQLSubscriptionRepo) UserActiveSubscriptionsAllowWalletOverflow(ctx con
 }
 
 // CancelAtPeriodEnd 置「周期末取消」：实例仍 active 至 end_at，只是不再续费
-// （billing-08 §3.5 P1）。已置位时重复调用仍命中行（幂等）。
+// （billing-08 §3.5 P1）。已置位时重复调用仍命中原行（幂等）。
+//
+// 【为什么改成行锁内先读后写】S1 要求取消与 cancelled 事件同事务（R-17）。
+// 先 `SELECT ... FOR UPDATE` 再判定，才能区分三种 0 行语义（不存在 /
+// 已终态 / 已置位），并且只有「本次真正把 false 改成 true」才追加事件：
+// 幂等重放不应在事件流里留下第二条 cancelled。行锁与条件 UPDATE 等价地
+// 串行化并发取消；Get 与 UPDATE 之间不再有状态竞争窗口。
 func (r *SQLSubscriptionRepo) CancelAtPeriodEnd(ctx context.Context, id int64) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions SET cancel_at_period_end = true, updated_at = now()
-		WHERE id = $1 AND status = 'active'`, id)
-	if err != nil {
-		return fmt.Errorf("store: cancel subscription(%d) at period end: %w", id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: cancel subscription(%d) rows: %w", id, err)
-	}
-	if affected == 1 {
-		return nil
-	}
-	// affected=0：区分「不存在」与「已终态」。终态不能再置取消标记，返回
-	// ErrSubscriptionNotActive 让 handler 映射 409（而不是假装成功）。
-	status, findErr := r.subscriptionStatus(ctx, id)
-	if findErr != nil {
-		return findErr
-	}
-	if status == "" {
-		return ErrSubscriptionNotFound
-	}
-	return ErrSubscriptionNotActive
+	return r.withEventTx(ctx, fmt.Sprintf("cancel subscription(%d) at period end", id), func(tx *sql.Tx) error {
+		var (
+			status  string
+			already bool
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT status, cancel_at_period_end FROM subscriptions
+			 WHERE id = $1 FOR UPDATE`, id).Scan(&status, &already)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSubscriptionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: read subscription(%d) for cancel at period end: %w", id, err)
+		}
+		if status != "active" {
+			// 终态不能再置取消标记（与旧条件 UPDATE 的 0 行分支同语义）。
+			return ErrSubscriptionNotActive
+		}
+		if already {
+			return nil // 幂等：目标状态已达成，不重复追加事件。
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE subscriptions SET cancel_at_period_end = true, updated_at = now()
+			 WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("store: cancel subscription(%d) at period end: %w", id, err)
+		}
+		// detail 只放「取消何时生效」这一非敏感判别位（R-18）：周期末取消
+		// 不立即终结实例，与 CancelImmediately 的 cancelled 事件需要可区分。
+		return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventCancelled,
+			map[string]any{"immediate": false})
+	})
 }
 
 // CancelImmediately 立即取消（管理侧 P2，billing-08 §3.5）。
 //
-// 条件 UPDATE 只命中 active；0 行时：
+// 行锁内判定（S1）：
 //   - 行不存在 → ErrSubscriptionNotFound；
-//   - 已是 cancelled → nil（重复调用幂等，目标终态已达成）；
-//   - 已是 expired → ErrSubscriptionNotActive（终态不可迁移）。
+//   - 已是 cancelled → nil（重复调用幂等，目标终态已达成，不再追加事件）；
+//   - 已是 expired → ErrSubscriptionNotActive（终态不可迁移）；
+//   - active → 置 cancelled 并同事务追加 cancelled(immediate=true) 事件。
 func (r *SQLSubscriptionRepo) CancelImmediately(ctx context.Context, id int64) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions SET status = 'cancelled', updated_at = now()
-		WHERE id = $1 AND status = 'active'`, id)
-	if err != nil {
-		return fmt.Errorf("store: cancel subscription(%d): %w", id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: cancel subscription(%d) rows: %w", id, err)
-	}
-	if affected == 1 {
-		return nil
-	}
-	status, findErr := r.subscriptionStatus(ctx, id)
-	if findErr != nil {
-		return findErr
-	}
-	switch status {
-	case "":
-		return ErrSubscriptionNotFound
-	case "cancelled":
-		return nil
-	default:
-		return ErrSubscriptionNotActive
-	}
-}
-
-func (r *SQLSubscriptionRepo) subscriptionStatus(ctx context.Context, id int64) (string, error) {
-	var status string
-	err := r.db.QueryRowContext(ctx,
-		`SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: read subscription(%d) status: %w", id, err)
-	}
-	return status, nil
+	return r.withEventTx(ctx, fmt.Sprintf("cancel subscription(%d)", id), func(tx *sql.Tx) error {
+		var status string
+		err := tx.QueryRowContext(ctx,
+			`SELECT status FROM subscriptions WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSubscriptionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: read subscription(%d) status: %w", id, err)
+		}
+		switch status {
+		case "cancelled":
+			return nil
+		case "active":
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE subscriptions SET status = 'cancelled', updated_at = now()
+				 WHERE id = $1`, id); err != nil {
+				return fmt.Errorf("store: cancel subscription(%d): %w", id, err)
+			}
+			return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventCancelled,
+				map[string]any{"immediate": true})
+		default:
+			return ErrSubscriptionNotActive
+		}
+	})
 }
 
 // ExpireDue 把到期实例置 expired（B12；billing-08 §3.4 / §7）。
@@ -804,23 +881,57 @@ func (r *SQLSubscriptionRepo) subscriptionStatus(ctx context.Context, id int64) 
 // 若把宽限无条件套用到已取消实例，用户点了「周期末取消」后仍能多用
 // grace_days 天，与取消语义冲突。
 // 注意：到期实例仍允许在飞请求结算 delta（§3.4），本函数不碰 amount_used。
+//
+// 【S1 事件】每条被迁移的行在同一事务内追加 expired 事件。批量 UPDATE 用
+// RETURNING id 取得**本次真正迁移**的行；并发/重复执行 affected=0 时不会
+// 产生空事件。逐个追加而非一条批量 INSERT，是为了复用 AppendSubscriptionEvent
+// 的行锁 + seq 生成口径（事件流必须连续无洞）。
 func (r *SQLSubscriptionRepo) ExpireDue(ctx context.Context, now time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions SET status = 'expired', updated_at = now()
-		WHERE status = 'active'
-		  AND (
-		        (cancel_at_period_end AND end_at <= $1)
-		     OR (NOT cancel_at_period_end
-		         AND end_at + make_interval(days => grace_days) <= $1)
-		  )`, now.UTC())
+	var expired int64
+	err := r.withEventTx(ctx, "expire subscriptions", func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			UPDATE subscriptions SET status = 'expired', updated_at = now()
+			WHERE status = 'active'
+			  AND (
+			        (cancel_at_period_end AND end_at <= $1)
+			     OR (NOT cancel_at_period_end
+			         AND end_at + make_interval(days => grace_days) <= $1)
+			  )
+			RETURNING id`, now.UTC())
+		if err != nil {
+			return fmt.Errorf("store: expire subscriptions: %w", err)
+		}
+		ids := make([]int64, 0, 16)
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("store: scan expiring subscription: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("store: iterate expiring subscriptions: %w", err)
+		}
+		// 必须先关闭结果集再发下一条语句：pgx 连接在结果集读完/关闭前不能复用。
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("store: close expiring subscriptions: %w", err)
+		}
+		for _, id := range ids {
+			// detail 留空：到期原因完全由 kind 与订阅自身的 end_at/grace_days
+			// 快照表达（R-18 只允许 id 与金额，不重复状态字段）。
+			if err := AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventExpired, nil); err != nil {
+				return err
+			}
+		}
+		expired = int64(len(ids))
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("store: expire subscriptions: %w", err)
+		return 0, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: expire subscriptions rows: %w", err)
-	}
-	return affected, nil
+	return expired, nil
 }
 
 // DueForReset 返回 next_reset_at 已到期的活跃实例（B12 重置扫描）。
@@ -870,24 +981,39 @@ const ResetScanLimit = 1000
 // 【与在飞请求的竞态】设计已登记（billing-08 §13-3）：重置归零时冻结该实例
 // 的在飞请求，其 Terminate delta 会落到已重置计数上。本函数不等待在飞租约，
 // 调用方（worker）按 §13-3 的处置决定是否在重置前检查租约。
+// 【S1 事件】本次真正重置（affected=1）时才追加 reset 事件，且与 UPDATE 同
+// 事务：并发 worker / 重复 pass 中只有一个能命中条件 UPDATE，事件同样只出
+// 一条，不会出现「同一周期两条 reset」。detail 带该实例本周期总额度（金额，
+// R-18），供事后解释「重置回了多少额度」。
 func (r *SQLSubscriptionRepo) ResetSubscriptionQuota(ctx context.Context, id int64, now time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE subscriptions
-		SET amount_used = 0,
-		    next_reset_at = next_reset_at + make_interval(days =>
-		        (FLOOR(EXTRACT(EPOCH FROM ($2 - next_reset_at))
-		               / (period_days * 86400.0))::int + 1) * period_days),
-		    updated_at = now()
-		WHERE id = $1 AND status = 'active' AND reset_on_renew
-		  AND next_reset_at IS NOT NULL AND next_reset_at <= $2
-		  AND end_at > $2
-		  AND period_days > 0`, id, now.UTC())
+	var affected int64
+	err := r.withEventTx(ctx, fmt.Sprintf("reset subscription(%d) quota", id), func(tx *sql.Tx) error {
+		var amountTotal int64
+		err := tx.QueryRowContext(ctx, `
+			UPDATE subscriptions
+			SET amount_used = 0,
+			    next_reset_at = next_reset_at + make_interval(days =>
+			        (FLOOR(EXTRACT(EPOCH FROM ($2 - next_reset_at))
+			               / (period_days * 86400.0))::int + 1) * period_days),
+			    updated_at = now()
+			WHERE id = $1 AND status = 'active' AND reset_on_renew
+			  AND next_reset_at IS NOT NULL AND next_reset_at <= $2
+			  AND end_at > $2
+			  AND period_days > 0
+			RETURNING amount_total`, id, now.UTC()).Scan(&amountTotal)
+		if errors.Is(err, sql.ErrNoRows) {
+			affected = 0
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("store: reset subscription(%d) quota: %w", id, err)
+		}
+		affected = 1
+		return AppendSubscriptionEvent(ctx, tx, id, SubscriptionEventReset,
+			map[string]any{"amount_total": amountTotal})
+	})
 	if err != nil {
-		return 0, fmt.Errorf("store: reset subscription(%d) quota: %w", id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: reset subscription(%d) rows: %w", id, err)
+		return 0, err
 	}
 	return affected, nil
 }
@@ -1003,7 +1129,156 @@ func RenewSubscription(ctx context.Context, q SubscriptionTx,
 	if err != nil {
 		return Subscription{}, fmt.Errorf("store: renew subscription(%d): %w", in.SubscriptionID, err)
 	}
+	// 【S1 事件】续费与 renewed 事件必须同事务：调用方（billing）把订单
+	// pending→succeeded 与本次条件扩展放在同一 GORM 事务里，事件也落在
+	// 这个事务中，支付成功但事件缺失/事件先于支付可见的窗口都不存在。
+	// detail 只含 id 与金额（R-18），周期长度属于合同快照、可由订单回查。
+	if err := AppendSubscriptionEvent(ctx, q, s.ID, SubscriptionEventRenewed, map[string]any{
+		"plan_id":           in.PlanID,
+		"amount_total":      in.GrantCredits,
+		"price_paid_amount": in.PricePaidAmount,
+	}); err != nil {
+		return Subscription{}, err
+	}
 	return s, nil
+}
+
+// AppendSubscriptionEvent 在调用方事务内追加一条订阅状态迁移事件（S1/R-17）。
+//
+// 【为什么必须与状态变更同事务】事件是「这次迁移发生了什么」的账本。若先
+// 提交状态再单独补事件，进程崩溃或连接断开就会留下「状态变了但没有事件」
+// 或「有事件但状态没变」的不可解释历史，S2/S3 的退款/升降级判断也会读到
+// 与状态不一致的事件流。原子提交是事件流作为审计/排障依据的前提。
+//
+// 【seq 为什么在订阅行锁内生成】seq 是同一订阅内连续无洞的序号，客户端用
+// after_seq 增量拉取。并发两条迁移若各自 `SELECT MAX(seq)+1`，会读到同一个
+// max 并撞唯一键 (subscription_id, seq)。先对本订阅行 `FOR UPDATE` 取得写
+// 锁，把同一订阅的事件追加串行化，再计算 max+1；不同订阅之间互不阻塞。
+//
+// 【为什么锁的是订阅行而不是事件表】PostgreSQL 拒绝对聚合使用 FOR UPDATE
+// （"FOR UPDATE is not allowed with aggregate functions"），所以 R-17 的
+// 「`SELECT COALESCE(MAX(seq),0)+1 ... FOR UPDATE` 在订阅行锁内」实现为：
+// 先锁 subscriptions 行，再在同一事务里做聚合查询。语义就是要求的
+// 「以订阅为粒度的互斥」，且可执行。
+//
+// 【唯一键冲突】即使有行锁，仍把冲突翻译为 ErrSubscriptionEventSeqConflict，
+// 让调用方整体重试事务（见 withEventTx / billing 的 subscriptionTx），
+// 绝不跳号——跳号会让 after_seq 客户端漏事件。
+func AppendSubscriptionEvent(ctx context.Context, tx SubscriptionTx,
+	subscriptionID int64, kind string, detail map[string]any) error {
+
+	if subscriptionID <= 0 {
+		return ErrSubscriptionEventInvalid
+	}
+	if _, ok := subscriptionEventKinds[kind]; !ok {
+		return fmt.Errorf("%w: unknown kind %q", ErrSubscriptionEventInvalid, kind)
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	payload, err := json.Marshal(detail)
+	if err != nil {
+		// detail 由服务端构造；编码失败说明放了不可编码的值（如 chan），
+		// 属于编程错误，进事件流前就必须失败，不能落一条空 detail。
+		return fmt.Errorf("%w: marshal detail: %v", ErrSubscriptionEventInvalid, err)
+	}
+
+	var locked int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&locked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: lock subscription(%d) for event: %w", subscriptionID, err)
+	}
+
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(seq), 0) + 1
+		  FROM subscription_events WHERE subscription_id = $1`, subscriptionID).Scan(&seq); err != nil {
+		return fmt.Errorf("store: next subscription(%d) event seq: %w", subscriptionID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO subscription_events (subscription_id, seq, kind, detail)
+		VALUES ($1, $2, $3, $4)`, subscriptionID, seq, kind, payload); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: subscription %d seq %d", ErrSubscriptionEventSeqConflict, subscriptionID, seq)
+		}
+		return fmt.Errorf("store: append subscription(%d) event %q: %w", subscriptionID, kind, err)
+	}
+	return nil
+}
+
+// withEventTx 执行「状态迁移 + 事件」事务，并在事件 seq 唯一键冲突时整体重试。
+//
+// 【为什么整体重试】迁移 UPDATE 与事件 INSERT 在同一事务里；冲突发生时事务
+// 已被 PostgreSQL 标记为 aborted，只有在**新事务**里重新求值条件 UPDATE
+// （幂等：重复执行 affected 可能为 0）才能安全重来。跳号或忽略事件都会破坏
+// 「状态与事件一一对应」的契约。
+//
+// 回调执行时必须只使用事务内读到的数据，且不得有事务外副作用：重试会重新
+// 执行整个闭包。
+func (r *SQLSubscriptionRepo) withEventTx(ctx context.Context, op string, fn func(*sql.Tx) error) error {
+	var lastErr error
+	for attempt := 0; attempt < subscriptionEventTxAttempts; attempt++ {
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("store: begin %s: %w", op, err)
+		}
+		err = fn(tx)
+		if err == nil {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return fmt.Errorf("store: commit %s: %w", op, commitErr)
+			}
+			return nil
+		}
+		_ = tx.Rollback()
+		if !errors.Is(err, ErrSubscriptionEventSeqConflict) {
+			return err
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("store: %s after %d attempts: %w", op, subscriptionEventTxAttempts, lastErr)
+}
+
+// ListSubscriptionEvents 返回某订阅 seq > afterSeq 的事件，按 seq 升序。
+//
+// 可见性（本人或 users:read）是 HTTP 层职责：store 只按订阅 id 取数，
+// 不做归属过滤，避免「数据层静默少返回」掩盖越权调用。
+func (r *SQLSubscriptionRepo) ListSubscriptionEvents(ctx context.Context,
+	subscriptionID int64, afterSeq int64, limit int) ([]SubscriptionEvent, error) {
+
+	if subscriptionID <= 0 || afterSeq < 0 {
+		return nil, ErrSubscriptionEventInvalid
+	}
+	if limit <= 0 || limit > SubscriptionEventScanLimit {
+		limit = SubscriptionEventScanLimit
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT subscription_id, seq, kind, detail, created_at
+		  FROM subscription_events
+		 WHERE subscription_id = $1 AND seq > $2
+		 ORDER BY seq ASC
+		 LIMIT $3`, subscriptionID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list subscription(%d) events: %w", subscriptionID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	events := make([]SubscriptionEvent, 0, 16)
+	for rows.Next() {
+		var e SubscriptionEvent
+		if err := rows.Scan(&e.SubscriptionID, &e.Seq, &e.Kind, &e.Detail, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan subscription(%d) event: %w", subscriptionID, err)
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate subscription(%d) events: %w", subscriptionID, err)
+	}
+	return events, nil
 }
 
 // DeletePreConsumeBefore 删除 created_at 早于 cutoff 的预扣幂等记录（B12）。

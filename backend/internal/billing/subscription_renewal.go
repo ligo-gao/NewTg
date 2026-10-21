@@ -109,7 +109,7 @@ func (s *TopupService) CreateSubscriptionRenewalOrder(ctx context.Context,
 	}
 	var snapshot subscriptionOrderSnapshot
 	immediate := false
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		planID, err := loadRenewableSubscriptionTx(tx, userID, subscriptionID)
 		if err != nil {
 			return err
@@ -284,7 +284,7 @@ func (s *TopupService) settleSubscriptionRenewal(ctx context.Context, order *sto
 	}
 	now := s.now().UTC()
 	extended := false
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		res := tx.Exec(`
 			UPDATE orders
 			SET status = 'succeeded', paid_at = now(), raw_callback = ?,

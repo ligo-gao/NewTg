@@ -1538,6 +1538,32 @@ schemas:
       page: {type: integer, minimum: 1}
       page_size: {type: integer, minimum: 1, maximum: 100}
 
+  SubscriptionEvent:
+    type: object
+    additionalProperties: false
+    required: [seq, kind, detail, created_at]
+    description: |
+      一条订阅状态迁移事件（S1/R-18）。detail 只含 id 与金额等非敏感字段。
+    properties:
+      seq: {type: integer, format: int64, minimum: 1}
+      kind:
+        type: string
+        enum: [created, renewed, upgraded, downgraded, refunded, cancelled, expired, reset]
+      detail:
+        type: object
+        additionalProperties: true
+        description: 只含 id 与金额（R-18）；禁止密钥、支付凭据、完整邮箱。
+      created_at: {type: string, format: date-time}
+
+  SubscriptionEventList:
+    type: object
+    additionalProperties: false
+    required: [events]
+    properties:
+      events:
+        type: array
+        items: {$ref: '#/schemas/SubscriptionEvent'}
+
   BillingPreference:
     type: object
     additionalProperties: false

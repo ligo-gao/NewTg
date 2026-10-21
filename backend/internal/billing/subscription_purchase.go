@@ -112,6 +112,28 @@ type subscriptionOrderMetadata struct {
 	Subscription *subscriptionOrderSnapshot `json:"subscription"`
 }
 
+// subscriptionEventTxAttempts 是「订单结算/实例迁移 + 事件」事务在事件 seq
+// 唯一键冲突时的整体重试次数（含首次）。store 的订阅行锁已把同订阅的事件
+// 追加串行化，冲突只是兜底；整体重试保证不跳号、不让状态与事件分家。
+const subscriptionEventTxAttempts = 3
+
+// subscriptionTx 执行一个订阅写事务，并在事件 seq 冲突时整体重来。
+//
+// 【为什么重试整个事务】事件 INSERT 与订单/实例迁移在同一事务里；冲突后
+// PostgreSQL 已把事务标记为 aborted，只能在新事务里重新求值条件 UPDATE。
+// 闭包必须只做事务内工作——重试会从头再执行一遍（订单 pending→succeeded
+// 的 RowsAffected 语义与事件 seq 计算都会重新求值）。
+func (s *TopupService) subscriptionTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
+	var lastErr error
+	for attempt := 0; attempt < subscriptionEventTxAttempts; attempt++ {
+		lastErr = s.db.WithContext(ctx).Transaction(fn)
+		if !errors.Is(lastErr, store.ErrSubscriptionEventSeqConflict) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
 // CreateSubscriptionOrder 创建订阅购买订单。
 //
 // 入参只有 plan_id 与 provider：金额/币种/周期/额度一律从套餐行读取，
@@ -168,7 +190,7 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 	}
 	var snapshot subscriptionOrderSnapshot
 	immediate := false
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		plan, err := loadSubscriptionPlanForShare(tx, planID)
 		if err != nil {
 			return err
@@ -249,7 +271,7 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 			}
 			order.Status = string(OrderSucceeded)
 			immediate = true
-			return insertSubscriptionTx(tx, order, snapshot, s.now().UTC())
+			return insertSubscriptionTx(ctx, tx, order, snapshot, s.now().UTC())
 		}
 
 		if plan.PriceAmount == 0 {
@@ -267,7 +289,7 @@ func (s *TopupService) CreateSubscriptionOrder(ctx context.Context,
 				return fmt.Errorf("billing: create free subscription order: %w", err)
 			}
 			// 同一事务内建实例：订单 succeeded 与订阅实例原子出现。
-			return insertSubscriptionTx(tx, order, snapshot, s.now().UTC())
+			return insertSubscriptionTx(ctx, tx, order, snapshot, s.now().UTC())
 		}
 
 		err = tx.Raw(`
@@ -359,12 +381,16 @@ func loadSubscriptionPlanForShare(tx *gorm.DB, planID int64) (subscriptionOrderS
 	return snap, nil
 }
 
-// insertSubscriptionTx 在调用方的 GORM 事务内插入 subscriptions 行。
+// insertSubscriptionTx 在调用方的 GORM 事务内插入 subscriptions 行，并在同一
+// 事务内追加 created 事件（S1/R-17）。
 //
 // 不复用 store.SQLSubscriptionRepo.CreateSubscription：后者自开
 // database/sql 事务，无法与订单状态更新原子提交，会留下「订单成功但没建
 // 实例」的窗口。快照列全部来自下单时冻结的 snapshot，而不是当前套餐。
-func insertSubscriptionTx(tx *gorm.DB, order *store.Order,
+//
+// 【事件】事件与实例/订单同事务：支付成功那一刻，事件流的第一条就存在。
+// detail 只含 id 与金额（R-18），不含支付凭据或用户信息。
+func insertSubscriptionTx(ctx context.Context, tx *gorm.DB, order *store.Order,
 	snap subscriptionOrderSnapshot, startAt time.Time) error {
 
 	startAt = startAt.UTC()
@@ -382,22 +408,30 @@ func insertSubscriptionTx(tx *gorm.DB, order *store.Order,
 		concurrency = *snap.ConcurrencyLimit
 	}
 
-	err := tx.Exec(`
+	var subscriptionID int64
+	err := tx.Raw(`
 		INSERT INTO subscriptions
 			(user_id, plan_id, plan_title_snapshot, status, start_at, end_at,
 			 next_reset_at, amount_total, amount_used, allow_wallet_overflow,
 			 auto_renew, cancel_at_period_end, order_id, currency,
 			 price_paid_amount, period_days, reset_on_renew, grace_days,
 			 model_scope, concurrency_limit)
-		VALUES (?, ?, ?, 'active', ?, ?, ?, ?, 0, ?, false, false, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, 'active', ?, ?, ?, ?, 0, ?, false, false, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`,
 		order.UserID, snap.PlanID, snap.PlanTitle, startAt, endAt, nextResetAt,
 		snap.GrantCredits, snap.AllowWalletOverflow, order.ID, snap.Currency,
 		order.Amount, snap.PeriodDays, snap.ResetOnRenew, snap.GraceDays,
-		modelScope, concurrency).Error
+		modelScope, concurrency).Row().Scan(&subscriptionID)
 	if err != nil {
 		return fmt.Errorf("billing: create subscription for order %d: %w", order.ID, err)
 	}
-	return nil
+	return store.AppendSubscriptionEvent(ctx, tx.Statement.ConnPool, subscriptionID,
+		store.SubscriptionEventCreated, map[string]any{
+			"plan_id":           snap.PlanID,
+			"order_id":          order.ID,
+			"amount_total":      snap.GrantCredits,
+			"price_paid_amount": order.Amount,
+		})
 }
 
 // settleSubscriptionOrder 是 subscribe 订单的入账入口。
@@ -431,7 +465,7 @@ func (s *TopupService) settleSubscriptionOrder(ctx context.Context, order *store
 	}
 	startAt := s.now().UTC()
 	created := false
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		res := tx.Exec(`
 			UPDATE orders
 			SET status = 'succeeded', paid_at = now(), raw_callback = ?,
@@ -454,7 +488,7 @@ func (s *TopupService) settleSubscriptionOrder(ctx context.Context, order *store
 			}
 			return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, status)
 		}
-		if err := insertSubscriptionTx(tx, order, snap, startAt); err != nil {
+		if err := insertSubscriptionTx(ctx, tx, order, snap, startAt); err != nil {
 			return err
 		}
 		created = true

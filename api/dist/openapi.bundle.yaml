@@ -1734,6 +1734,55 @@ paths:
           $ref: '#/components/responses/Error401'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/subscriptions/{id}/events:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    get:
+      tags:
+        - user
+      operationId: listSubscriptionEvents
+      summary: 订阅状态迁移事件流（本人或 users:read）
+      description: |
+        返回 `seq > after_seq` 的事件，按 seq 升序，单次最多 500 条。
+        kind 冻结为 created/renewed/upgraded/downgraded/refunded/cancelled/
+        expired/reset；detail 只含 id 与金额，不含密钥、支付凭据或邮箱（R-18）。
+
+        seq 在同一订阅内从 1 开始连续无洞；客户端用响应中最大的 seq 作为
+        下一次的 after_seq 增量拉取。可见性为本人或持 users:read 的管理员；
+        他人订阅与不存在统一返回 404（不是 403，避免订阅 ID 枚举）。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: after_seq
+          in: query
+          required: false
+          description: 增量为游标；缺省 0 表示从头拉取。负数或非整数 → 400。
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionEventList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/subscriptions/{id}/cancel:
     parameters:
       - name: id
@@ -11462,6 +11511,49 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+    SubscriptionEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - seq
+        - kind
+        - detail
+        - created_at
+      description: |
+        一条订阅状态迁移事件（S1/R-18）。detail 只含 id 与金额等非敏感字段。
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        kind:
+          type: string
+          enum:
+            - created
+            - renewed
+            - upgraded
+            - downgraded
+            - refunded
+            - cancelled
+            - expired
+            - reset
+        detail:
+          type: object
+          additionalProperties: true
+          description: 只含 id 与金额（R-18）；禁止密钥、支付凭据、完整邮箱。
+        created_at:
+          type: string
+          format: date-time
+    SubscriptionEventList:
+      type: object
+      additionalProperties: false
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionEvent'
     SubscriptionRenewRequest:
       type: object
       additionalProperties: false

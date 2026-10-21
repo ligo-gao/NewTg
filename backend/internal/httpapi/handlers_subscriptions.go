@@ -13,6 +13,7 @@
 //	GET    /api/users/{id}/subscriptions              管理：单用户实例（users:read）
 //	GET    /api/subscription/plans                    用户：可购套餐（仅 enabled）
 //	GET    /api/subscriptions                         用户：本人实例（含终态）
+//	GET    /api/subscriptions/{id}/events             用户：状态迁移事件流（本人或 users:read）
 //	POST   /api/subscriptions/{id}/cancel             用户：周期末取消（幂等；终态 409）
 //	POST   /api/subscriptions/{id}/renew              用户：手动续费（必须 Idempotency-Key）
 //	GET    /api/billing-preference                    用户：扣费偏好
@@ -260,6 +261,11 @@ func (h *SubscriptionHandlers) Register(mux *http.ServeMux) {
 	// 用户面：数据范围恒为 Principal.UserID（§15.4）。
 	mux.Handle("GET /api/subscription/plans", http.HandlerFunc(h.handleListAvailablePlans))
 	mux.Handle("GET /api/subscriptions", http.HandlerFunc(h.handleListMySubscriptions))
+	// 事件流读取（S1/R-19）：可见性为「本人或 users:read」。这里不挂 authz
+	// 权限 wrapper——同一个端点对普通用户与管理员都开放，真正的数据范围判定
+	// 在 handler 内（先归属后 404）。缺少身份时 handler fail-closed 401。
+	mux.Handle("GET /api/subscriptions/{id}/events",
+		http.HandlerFunc(h.handleListSubscriptionEvents))
 	mux.Handle("POST /api/subscriptions/{id}/cancel",
 		self(userSubscriptionCancelAction, h.handleCancelSubscriptionAtPeriodEnd))
 	// 续费与取消同为「本人实例 + 幂等写」：cancelled → 409，active/expired 可续。
@@ -1144,6 +1150,89 @@ func (h *SubscriptionHandlers) handleListMySubscriptions(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, userSubscriptionListView{
 		Items: items, Total: int64(total), Page: page, PageSize: pageSize,
 	})
+}
+
+// subscriptionEventLimit 是事件流单次返回上限（store 侧再兜底一次）。
+// 事件只增不减；after_seq 让客户端分页推进，而不是一次拉完整段历史。
+const subscriptionEventLimit = 500
+
+// subscriptionEventView 是一条状态迁移事件。detail 透传 jsonb 对象，
+// 字段集由写入方按 R-18 冻结（只有 id 与金额等非敏感值）。
+type subscriptionEventView struct {
+	Seq       int64           `json:"seq"`
+	Kind      string          `json:"kind"`
+	Detail    json.RawMessage `json:"detail"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type subscriptionEventListView struct {
+	Events []subscriptionEventView `json:"events"`
+}
+
+// handleListSubscriptionEvents 实现 GET /api/subscriptions/{id}/events?after_seq=
+// （S1/R-19）。
+//
+// 可见性：本人或持 users:read 的管理员。他人订阅返回 **404 而不是 403**——
+// 与既有取消/续费的归属口径一致（§15.4）：403 会告诉攻击者「这个 ID 存在，
+// 只是不属于你」，形成订阅 ID 枚举信道。为了做到这一点，必须先读订阅做归属
+// 判定再取事件；不存在与无权访问走同一响应。
+func (h *SubscriptionHandlers) handleListSubscriptionEvents(w http.ResponseWriter, r *http.Request) {
+	p, ok := adminPrincipal(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parsePlanPathID(r)
+	if !ok {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	afterSeq, err := parseAfterSeq(r)
+	if err != nil {
+		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", err.Error())
+		return
+	}
+	sub, err := h.repo.GetSubscription(r.Context(), id)
+	if err != nil {
+		// 不存在 → 404；其它仓储错误 → 500。
+		h.writeRepoError(w, "get subscription for events", err)
+		return
+	}
+	if sub.UserID != p.UserID && !rbac.HasPermission(*p, rbac.PermUsersRead) {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	events, err := h.repo.ListSubscriptionEvents(r.Context(), id, afterSeq, subscriptionEventLimit)
+	if err != nil {
+		h.writeRepoError(w, "list subscription events", err)
+		return
+	}
+	items := make([]subscriptionEventView, 0, len(events))
+	for _, event := range events {
+		detail := json.RawMessage(event.Detail)
+		if len(detail) == 0 {
+			// store 写入时归一为 {}；这里对历史/异常行做同口径兜底，
+			// 保证响应契约里 detail 永远是对象而不是 null。
+			detail = json.RawMessage(`{}`)
+		}
+		items = append(items, subscriptionEventView{
+			Seq: event.Seq, Kind: event.Kind, Detail: detail, CreatedAt: event.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, subscriptionEventListView{Events: items})
+}
+
+// parseAfterSeq 解析增量游标：缺省为 0（从头拉取）；负数/非数字是客户端
+// 错误 → 400，而不是静默当作 0（静默归一会让分页实现永远重复第一页）。
+func parseAfterSeq(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("after_seq"))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("after_seq must be a non-negative integer")
+	}
+	return value, nil
 }
 
 // handleCancelSubscriptionAtPeriodEnd 实现 billing-08 §15.2 的用户侧 P1

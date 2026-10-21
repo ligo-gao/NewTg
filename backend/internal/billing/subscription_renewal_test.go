@@ -178,6 +178,12 @@ func TestSubscriptionRenewActiveExtendsSameInstance(t *testing.T) {
 		t.Fatalf("续费不得写 wallet_transactions：%d → %d", beforeWallet, got)
 	}
 
+	// S1：续费与 renewed 事件同事务（该实例是测试直接插入的，没有 created）。
+	renewEvents := readSubscriptionEvents(t, db, subID)
+	if len(renewEvents) != 1 || renewEvents[0].Kind != store.SubscriptionEventRenewed {
+		t.Fatalf("续费后事件 = %+v，期望恰一条 renewed", renewEvents)
+	}
+
 	// 重复回调：订单已 succeeded，直接幂等返回，end_at 不再推进。
 	if err := renewViaStripe(t, svc, db, order.Order.ID, 9900); err != nil {
 		t.Fatalf("replay renewal webhook: %v", err)
@@ -188,6 +194,9 @@ func TestSubscriptionRenewActiveExtendsSameInstance(t *testing.T) {
 	}
 	if after.AmountUsed != 0 || after.Status != "active" {
 		t.Fatalf("重复回调改写了实例: %+v", after)
+	}
+	if got := readSubscriptionEvents(t, db, subID); len(got) != 1 {
+		t.Fatalf("重复回调后事件数 = %d，期望 1（不得重复追加 renewed）", len(got))
 	}
 }
 
