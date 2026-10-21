@@ -720,7 +720,9 @@ func (s *TopupService) ChargeAutoRenewal(ctx context.Context,
 	}
 	if order.Status == string(OrderRefundRequired) {
 		// 同周期另一笔续费已成功，本单已转人工退款；不再向渠道发任何请求。
-		return result, nil
+		// 这不是「已续费」：本轮必须按周期冲突跳过，绝不能计入 Charged。
+		return zero, fmt.Errorf("%w: order %d is refund_required",
+			ErrRenewalCycleConflict, order.ID)
 	}
 	if order.Status != string(OrderPending) {
 		return zero, &AutoRenewChargeFailure{Code: "order_not_pending", OrderID: order.ID}
