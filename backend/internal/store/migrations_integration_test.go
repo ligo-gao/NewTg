@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,8 +66,11 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	m := newTestMigrator(t, db)
 	t.Cleanup(func() { _, _ = m.Close() })
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
+	// 只前滚到本用例要验证的版本，而不是全部迁移：后续迁移（如 W10-N9 的
+	// 终态保留索引）会排在它之后，`Steps(-1)` 就不再指向 tasks_mj_family，
+	// 让断言误判。固定目标是让用例只对这个迁移的 up/down 负责。
+	if err := m.Migrate(20261023090000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261023090000: %v", err)
 	}
 
 	// up 后：family='mj' 可写入，未知值仍被 CHECK 拒绝，领取索引存在。
@@ -119,6 +123,79 @@ func TestTasksMJFamilyMigrationUpDown(t *testing.T) {
 	}
 	if !indexExists(t, db, "tasks_mj_user_upstream_idx") || !indexExists(t, db, "tasks_mj_upstream_idx") {
 		t.Fatal("MJ upstream indexes missing after re-up")
+	}
+}
+
+// TestTasksTerminalRetentionIndexMigrationUpDown 验证 W10-N9 的保留索引迁移
+// 可反转：up 建索引（含终态/待补偿谓词），down 删除，再次 up 恢复。
+//
+// 固定目标版本 20261023120000（当前 tip），与上面的 MJ 用例同一套临时
+// schema 手法；断言的 finally 状态是「索引存在」，不依赖其它迁移的副作用。
+func TestTasksTerminalRetentionIndexMigrationUpDown(t *testing.T) {
+	baseDSN := os.Getenv("NEWTG_TEST_DB_DSN")
+	if baseDSN == "" {
+		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过集成测试")
+	}
+
+	admin, err := sql.Open("pgx", baseDSN)
+	if err != nil {
+		t.Fatalf("open admin db: %v", err)
+	}
+	if err := admin.Ping(); err != nil {
+		t.Fatalf("ping admin db: %v", err)
+	}
+	schema := fmt.Sprintf("w10n9_mig_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+		_ = admin.Close()
+	})
+
+	dsn, err := dsnWithSearchPath(baseDSN, schema)
+	if err != nil {
+		t.Fatalf("build scoped dsn: %v", err)
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open scoped db: %v", err)
+	}
+	m := newTestMigrator(t, db)
+	t.Cleanup(func() { _, _ = m.Close() })
+
+	if err := m.Migrate(20261023120000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261023120000: %v", err)
+	}
+	if !indexExists(t, db, "tasks_terminal_retention_idx") {
+		t.Fatal("tasks_terminal_retention_idx missing after up")
+	}
+	var def string
+	if err := db.QueryRow(`SELECT pg_get_indexdef('tasks_terminal_retention_idx'::regclass)`).Scan(&def); err != nil {
+		t.Fatalf("read index definition: %v", err)
+	}
+	for _, want := range []string{"success", "failure", "billing_pending"} {
+		if !strings.Contains(def, want) {
+			t.Fatalf("index definition missing %q: %s", want, def)
+		}
+	}
+
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("migrate down 1: %v", err)
+	}
+	if indexExists(t, db, "tasks_terminal_retention_idx") {
+		t.Fatal("down must drop tasks_terminal_retention_idx")
+	}
+	// down 不改变数据面：终态任务仍可写入。
+	if err := execTaskInsertErr(db, "mig_terminal_after_down", "plugin"); err != nil {
+		t.Fatalf("insert after down: %v", err)
+	}
+
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("migrate up 1: %v", err)
+	}
+	if !indexExists(t, db, "tasks_terminal_retention_idx") {
+		t.Fatal("tasks_terminal_retention_idx missing after re-up")
 	}
 }
 

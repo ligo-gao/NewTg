@@ -878,6 +878,13 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: start instance heartbeat: %w", err)
 	}
 
+	// W10-N4/N9：兑换码回收与任务保留清理。两者都是每日后台维护，独立
+	// cancel/WaitGroup；设置键在启动时解析一次快照（见 platform/retention.go）。
+	// 放在其余装配之后、进入主循环之前，停机序统一在下方 cancel+Wait，
+	// 保证进行中的 DELETE 先于连接池关闭退出。
+	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
+		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
+
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,
 		Recoverer:             engine,
@@ -887,6 +894,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	stopRetention()
 	cancelExpiry()
 	expiryWG.Wait()
 	stopTaskPoller()
