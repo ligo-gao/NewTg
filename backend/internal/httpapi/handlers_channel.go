@@ -33,8 +33,11 @@ import (
 //
 //	GET    /api/channels                  channels:read
 //	POST   /api/channels                  channels:manage        + Idempotency-Key
+//	      └ 请求体含 credentials / task_plugin_key / task_extend_plugin_keys
+//	        时额外要求 channels:manage_sensitive
 //	GET    /api/channels/{id}             channels:read
 //	PATCH  /api/channels/{id}             channels:manage        + expected_version（R-P8）
+//	      └ 同上：含敏感绑定字段时额外要求 channels:manage_sensitive
 //	DELETE /api/channels/{id}             channels:manage_sensitive
 //	PATCH  /api/channels/batch            channels:manage        {action, ids}
 //	POST   /api/channels/batch-delete     channels:manage_sensitive + Idempotency-Key
@@ -43,6 +46,10 @@ import (
 // 端点形状按 R-P5（modules-06 的 REST 形态，不是计划草案的 colon action）。
 // 安全不变量（GC-6/GC-8）：响应只走白名单字段；base_url 与凭据明文永不出现；
 // 错误体不含上游 URL、密钥或内部 SQL 文本。
+//
+// 字段级写授权（BOPLA，G-M6D-23 / security-02 §2.6.1）：凭据与任务插件绑定是
+// 敏感字段分区，仅 channels:manage 不足以写入；命中时必须在任何校验通过/写库
+// 之前整笔 403，绝不部分写入（见 checkSensitiveWriteFields）。
 
 // ---------- 存储 / 权限 / 测试接缝 ----------
 
@@ -422,25 +429,34 @@ type channelListResponse struct {
 }
 
 type createChannelRequest struct {
-	Name            string              `json:"name"`
-	Type            string              `json:"type"`
-	BaseURL         *string             `json:"base_url"`
-	Credentials     *ChannelCredentials `json:"credentials"`
-	SupportedModels []string            `json:"supported_models"`
-	GroupTags       json.RawMessage     `json:"group_tags"`
-	ModelMapping    json.RawMessage     `json:"model_mapping"`
-	Weight          *int16              `json:"weight"`
-	Priority        *int16              `json:"priority"`
-	RateLimit       json.RawMessage     `json:"rate_limit"`
-	Status          *int16              `json:"status"` // 创建恒为 1；此字段仅为兼容前端全量表单
-	AutoBan         *bool               `json:"auto_ban"`
-	TestModel       *string             `json:"test_model"`
-	Remark          *string             `json:"remark"`
-	Tag             *string             `json:"tag"`
+	Name    string  `json:"name"`
+	Type    string  `json:"type"`
+	BaseURL *string `json:"base_url"`
+	// Credentials 用 RawMessage 而不是 *ChannelCredentials：DTO 级
+	// DisallowUnknownFields 只会把嵌套未知字段报成顶层 unknown field（403），
+	// 而 G-M6D-23 冻结的口径是嵌套凭据未知字段 400。原始载荷交给
+	// decodeCredentialsPayload 做严格解码，才能把两种拒绝区分开。
+	Credentials     json.RawMessage `json:"credentials"`
+	SupportedModels []string        `json:"supported_models"`
+	GroupTags       json.RawMessage `json:"group_tags"`
+	ModelMapping    json.RawMessage `json:"model_mapping"`
+	Weight          *int16          `json:"weight"`
+	Priority        *int16          `json:"priority"`
+	RateLimit       json.RawMessage `json:"rate_limit"`
+	Status          *int16          `json:"status"` // 创建恒为 1；此字段仅为兼容前端全量表单
+	AutoBan         *bool           `json:"auto_ban"`
+	TestModel       *string         `json:"test_model"`
+	Remark          *string         `json:"remark"`
+	Tag             *string         `json:"tag"`
 	// 任务插件绑定（relay-06 §1.3）：类型 61 必填 key；类型 60 必填
 	// extend 数组；其余类型两者都必须缺省/为空。
-	TaskPluginKey        *string  `json:"task_plugin_key"`
-	TaskExtendPluginKeys []string `json:"task_extend_plugin_keys"`
+	//
+	// 两个字段都用 RawMessage 而不是 *string / []string：BOPLA 的敏感门按
+	// “字段是否出现”判定（G-M6D-23 复核 I-1/M-1），显式 null 与缺省必须
+	// 可区分；同时避免 DTO 解码把 null 折叠成零值。严格解码在
+	// channelFromCreate 内完成，错误统一 400。
+	TaskPluginKey        json.RawMessage `json:"task_plugin_key"`
+	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
 }
 
 type updateChannelRequest struct {
@@ -639,6 +655,13 @@ func (h *ChannelHandler) createChannel(r *http.Request) (int, []byte, bool) {
 		return errorResponse(invalidRequestError("request body is not valid JSON"))
 	}
 
+	// G-M6D-23：凭据/插件绑定属于 credential 字段分区。权限门必须先于
+	// 任何业务校验与写库——低权限管理员携带这些字段时整笔 403，
+	// 不得先校验通过再在写库处拒绝（那会留下部分写入或歧义响应）。
+	if apiErr := h.checkSensitiveWriteFields(r.Context(), req.Credentials != nil, req.TaskPluginKey != nil, req.TaskExtendPluginKeys != nil); apiErr != nil {
+		return errorResponse(apiErr)
+	}
+
 	v := &validator{}
 	ch, apiErr := h.channelFromCreate(r.Context(), v, &req)
 	if apiErr != nil {
@@ -739,18 +762,39 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 	}
 
 	// 任务插件绑定（relay-06 §1.3）：类型决定形态，跨类型误填一律 400。
-	pluginKey, extendKeys, bindErr := h.validatePluginBinding(ctx, ct, req.TaskPluginKey, req.TaskExtendPluginKeys)
+	// RawMessage 需要在这里严格解码：null 与缺省都规范化为“未提供”，
+	// 非字符串/非字符串数组的载荷按 invalid_request 400 拒绝（与旧 DTO
+	// 解码的 400 口径一致，但保留“字段是否出现”供敏感门使用）。
+	rawPluginKey, keyErr := decodeOptionalTaskPluginKey(req.TaskPluginKey)
+	if keyErr != nil {
+		return nil, invalidRequestError("task_plugin_key must be a string or null")
+	}
+	extendInput, extendErr := decodeTaskExtendPluginKeys(req.TaskExtendPluginKeys)
+	if extendErr != nil {
+		return nil, invalidRequestError("task_extend_plugin_keys must be an array of strings or null")
+	}
+	pluginKey, extendKeys, bindErr := h.validatePluginBinding(ctx, ct, rawPluginKey, extendInput)
 	if bindErr != nil {
 		return nil, bindErr
 	}
 
 	var sealed []byte
-	if req.Credentials == nil {
+	creds, hasCredentials, credErr := decodeCredentialsPayload(req.Credentials)
+	if credErr != nil {
+		// 未知嵌套字段是 BOPLA 的 fail-closed 形态（G-M6D-23）：旧实现
+		// 静默忽略未知字段，拼错的 api_key 会退化成「没给密钥」，从而
+		// 悄悄沿用旧值。其它形状错误沿用创建端点的 400 invalid_request。
+		if _, ok := unknownJSONField(credErr); ok {
+			return nil, unknownCredentialsFieldError()
+		}
+		return nil, invalidRequestError("credentials must be an object")
+	}
+	if !hasCredentials {
 		v.add("credentials", "credentials are required")
 	} else {
-		v.addFields(validateCredentials(ct, *req.Credentials))
+		v.addFields(validateCredentials(ct, creds))
 		if len(v.fields) == 0 {
-			sealed = h.sealCredentials(v, ct, *req.Credentials)
+			sealed = h.sealCredentials(v, ct, creds)
 		}
 	}
 
@@ -794,6 +838,14 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeAPIError(w, invalidRequestError("request body is not valid JSON"))
+		return
+	}
+
+	// G-M6D-23：字段级敏感写门必须先于 expected_version 校验与渠道读取，
+	// 让无 channels:manage_sensitive 的调用者得到固定的 403（而不是先被
+	// 版本/存在性校验带偏），并保证 store 零调用、无部分写入。
+	if apiErr := h.checkSensitiveWriteFields(r.Context(), req.Credentials != nil, req.TaskPluginKey != nil, req.TaskExtendPluginKeys != nil); apiErr != nil {
+		writeAPIError(w, apiErr)
 		return
 	}
 
@@ -1016,10 +1068,15 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 		// F-06-03：null / 缺省 / 空 api_key → 保持原值，不重新加密。
 		// 只有非空 api_key 才触发校验与封装。
 		if !isJSONNull(req.Credentials) {
-			var creds ChannelCredentials
-			if err := json.Unmarshal(req.Credentials, &creds); err != nil {
+			creds, hasValue, credErr := decodeCredentialsPayload(req.Credentials)
+			if credErr != nil {
+				// G-M6D-23：嵌套未知字段 400（fail-closed），不静默忽略。
+				// 其它形状错误沿用既有 422 字段错误（凭据输入非法）。
+				if _, ok := unknownJSONField(credErr); ok {
+					return store.ChannelPatch{}, unknownCredentialsFieldError()
+				}
 				v.add("credentials", "credentials must be an object or null")
-			} else if creds.APIKey != "" {
+			} else if hasValue && creds.APIKey != "" {
 				credentialsProvided = true
 				// azure 只改 api_key 时，请求体通常不带 deployment/api_version；
 				// 它们仍是有效配置（在旧密文里）。先与已解密的凭据合并，再校验，
@@ -1722,6 +1779,75 @@ func normalizeCredentials(ct contract.ChannelType, creds ChannelCredentials) Cha
 	return ChannelCredentials{APIKey: creds.APIKey}
 }
 
+// decodeCredentialsPayload 严格解码 credentials 输入（G-M6D-23）。
+//
+// DisallowUnknownFields 是本批次冻结的 fail-closed 口径：嵌套凭据里的未知
+// 字段必须 400，而不是像旧实现那样静默忽略。静默忽略会把 `apiKey` 这类
+// 拼写错误变成「没给密钥」，更新时悄悄保留旧凭据、创建时给出误导性的
+// 「api_key is required」，掩盖真实的配置错误。
+//
+// 返回 (creds, hasValue, err)：
+//   - hasValue=false：缺省或 JSON null（创建视为未提供；更新表示保持原值）；
+//   - err 非空：结构非法。调用方用 unknownJSONField 区分「未知字段」（400）
+//     与「类型错误」（沿用各端点既有的 400/422）。错误文本只来自
+//     encoding/json，不含任何字段值，绝不把密钥片段回显到响应或日志。
+func decodeCredentialsPayload(raw json.RawMessage) (ChannelCredentials, bool, error) {
+	if raw == nil || isJSONNull(raw) {
+		return ChannelCredentials{}, false, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var creds ChannelCredentials
+	if err := dec.Decode(&creds); err != nil {
+		return ChannelCredentials{}, false, err
+	}
+	// 防御尾随数据：父对象解码已保证单个值，这里仍拒绝多值载荷，
+	// 避免不同解码层对同一字节流产生不同视图（parser differential）。
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return ChannelCredentials{}, false, errors.New("trailing data after credentials")
+	}
+	return creds, true, nil
+}
+
+// unknownCredentialsFieldError 是嵌套凭据未知字段的固定 400 文案。
+// 不携带字段名或值：错误体可能被前端日志/网关访问日志记录，凭据结构里
+// 任何位置都可能存放密钥片段。
+func unknownCredentialsFieldError() *apiError {
+	return invalidRequestError("credentials contains an unknown field")
+}
+
+// decodeOptionalTaskPluginKey 严格解码 create 的 task_plugin_key。
+//
+// 缺省与 JSON null 都返回 (nil, nil)：两者在校验语义上都是「未提供/清空」，
+// 但调用方用 raw != nil 单独判定字段是否出现（G-M6D-23 复核 M-1：显式 null
+// 也必须触发敏感门）。其它类型返回 error，由调用方映射为 400。
+func decodeOptionalTaskPluginKey(raw json.RawMessage) (*string, error) {
+	if raw == nil || isJSONNull(raw) {
+		return nil, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+// decodeTaskExtendPluginKeys 严格解码 create 的 task_extend_plugin_keys。
+//
+// 缺省与 JSON null 都返回 nil；数组解码为 []string；其它类型返回 error。
+// 与 update 的 RawMessage 处理保持同一口径（数组元素类型由 json 包严格校验），
+// 避免 create/update 对同一载荷给出不同判定。
+func decodeTaskExtendPluginKeys(raw json.RawMessage) ([]string, error) {
+	if raw == nil || isJSONNull(raw) {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
 // ---------- 字段校验 ----------
 
 const maxBaseURLBytes = 512
@@ -2271,6 +2397,55 @@ func idempotencyScopeKey(r *http.Request, headerKey string) string {
 		userID = p.UserID
 	}
 	return fmt.Sprintf("%d:%s %s:%s", userID, r.Method, r.URL.Path, headerKey)
+}
+
+// checkSensitiveWriteFields 实现渠道写端点的字段级授权（BOPLA，G-M6D-23；
+// security-02 §2.6.1；modules-06 F-06-03 凭据写保护）。
+//
+// 冻结口径：请求体一旦包含 credentials（含其嵌套字段）、task_plugin_key
+// 或 task_extend_plugin_keys（类型 60 多绑，复核 I-1），调用者除
+// channels:manage 外还必须持有 channels:manage_sensitive；缺失时返回固定
+// 的 403 problem，并在任何校验通过/写库之前拒绝整笔请求。
+//
+// 「出现即敏感」是与设计一致的保守选择：显式 null / 空对象在更新时虽表示
+// 「保持原值」，但控制台全量回传表单时若允许无敏感位的管理员提交，凭据分区
+// 的写入面就重新打开（也掩盖了调用者确实意图操作凭据字段）。
+// 非敏感字段（name/base_url/model_mapping/status 等）的权限完全不变。
+func (h *ChannelHandler) checkSensitiveWriteFields(ctx context.Context, credentialsPresent, taskPluginKeyPresent, taskExtendPluginKeysPresent bool) *apiError {
+	if !credentialsPresent && !taskPluginKeyPresent && !taskExtendPluginKeysPresent {
+		return nil
+	}
+	err := CheckPermission(ctx, h.access, PermChannelsManageSensitive)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
+		// 与 authorize 的映射一致：身份失效不是权限不足。
+		return &apiError{
+			Status: http.StatusUnauthorized,
+			Type:   problemTypeUnauthorized,
+			Title:  "Unauthorized",
+		}
+	case errors.Is(err, ErrAccessStore):
+		// 不把 DB 故障伪装成 403（与 authorize 同口径）。
+		return internalAPIError()
+	default:
+		return sensitiveFieldForbiddenError()
+	}
+}
+
+// sensitiveFieldForbiddenError 是字段级授权拒绝的固定 problem。
+//
+// 类型沿用 security-02 §2.6.1 的 field_not_writable：调用者通过了功能级
+// channels:manage，但没有该字段分区的门 channels:manage_sensitive。文案固定、
+// 不含字段名或字段值，避免错误体/访问日志回显请求内容（可能含密钥）。
+func sensitiveFieldForbiddenError() *apiError {
+	return &apiError{
+		Status: http.StatusForbidden,
+		Type:   problemTypeFieldNotWritable,
+		Title:  "Field not writable",
+		Detail: "credential fields require the channels:manage_sensitive permission",
+	}
 }
 
 // authorize 把 CheckPermission 的三种结果映射为 HTTP：
