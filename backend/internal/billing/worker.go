@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
 )
 
 // 本文件是 worker 的计费兜底循环（billing-06 §5）：周期扫描在飞租约、
@@ -190,14 +191,25 @@ func recoverStaleSubscriptions(ctx context.Context, recoverer StaleSubscriptionR
 	if recoverer == nil {
 		return
 	}
+	// W10-METRICS：订阅兜底与钱包兜底分开计数（source 标签区分资金面）。
+	start := time.Now()
+	status := "succeeded"
+	defer func() {
+		metrics.ObserveWorkerTask("subscription_reconcile", status, time.Since(start))
+	}()
+
 	recovered, err := recoverer.RecoverStaleSubscriptionPreConsumes(ctx, now(), subscriptionRecoveryScanLimit)
 	if err != nil {
+		status = "failed"
 		log.Error("stale subscription pre-consume recovery failed; retrying next round",
 			"recovered", recovered, "error", err)
 		return
 	}
 	if recovered > 0 {
 		log.Info("recovered stale subscription pre-consume records", "count", recovered)
+		// 扫描窗口是最老记录的保守下界（候选至少超过窗口才会被扫到）。
+		metrics.SetWorkerAbandoned("subscription", int64(recovered),
+			time.Duration(contract.AbandonedWindowSeconds)*time.Second)
 	}
 }
 
@@ -208,8 +220,25 @@ func recoverStaleSubscriptions(ctx context.Context, recoverer StaleSubscriptionR
 func scanOnce(ctx context.Context, lister AbandonedLister, recoverer AbandonedRecoverer,
 	log *slog.Logger, now func() time.Time) {
 
+	// W10-METRICS：一轮扫描计一次任务执行；失败只影响 status 标签，不改变
+	// 既有「记录后下一轮重试」的失败语义。
+	start := time.Now()
+	status := "succeeded"
+	var recovered int64
+	defer func() {
+		metrics.ObserveWorkerTask("abandoned_reconcile", status, time.Since(start))
+		age := time.Duration(0)
+		if recovered > 0 {
+			// 候选都超过 AbandonedWindowSeconds；以窗口作为最老年龄的保守
+			// 下界，A9 不会因此误报（阈值 900s > 窗口 600s）。
+			age = time.Duration(contract.AbandonedWindowSeconds) * time.Second
+		}
+		metrics.SetWorkerAbandoned("wallet", recovered, age)
+	}()
+
 	entries, err := lister.ListAbandoned(ctx, now())
 	if err != nil {
+		status = "failed"
 		// 【关键】扫描失败 ≠ 无悬挂：这里绝不更新任何「已处理」水位，
 		// 下一轮会从头再扫（Redis 的 ZSET 索引本身就是完整候选集）。
 		log.Error("abandoned request scan failed; retrying next round", "error", err)
@@ -235,5 +264,6 @@ func scanOnce(ctx context.Context, lister AbandonedLister, recoverer AbandonedRe
 		}
 		log.Info("recovered abandoned request",
 			"request_id", entry.RequestID, "token_id", entry.TokenID)
+		recovered++
 	}
 }

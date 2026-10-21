@@ -27,6 +27,8 @@ func OpenRedis(ctx context.Context, cfg *config.Config) (Resource, error) {
 	}
 	opt.PoolSize = cfg.RedisPoolSize
 	client := redis.NewClient(opt)
+	// W10-METRICS：命令耗时是旁路观察，Hook 内部不得改变返回值/错误语义。
+	client.AddHook(redisMetricsHook{})
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {

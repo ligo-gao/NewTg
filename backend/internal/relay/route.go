@@ -230,6 +230,11 @@ type RouteDeps struct {
 	//     做 DB 写或等待 I/O。
 	// 只覆盖「有响应且非 2xx」：传输错误/取消不触发（R-M4-01 C）。
 	OnAttemptFailure AttemptFailureFunc
+
+	// ObserveAttempt 是 W10-METRICS 的只读观察接缝：每轮上游尝试结束时
+	// 上报一次（成功/可重试失败/不可重试失败）。必须非阻塞；nil 时完全
+	// 跳过，不改变任何执行/计费语义。
+	ObserveAttempt AttemptObserver
 }
 
 // GroupSequence 返回本次请求的**有效分组序列**（R-61/R-62/R-63/R-68）。
@@ -460,6 +465,29 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	var lastErr error
 	var tried []string // 已进入的分组序列（仅 auto 请求写入 AttemptsError.Groups）
 	stopAll := false
+	// prevChannelType 只服务故障转移指标：记录上一轮真正解析出的渠道类型。
+	prevChannelType := ""
+
+	// reportAttempt 是 W10-METRICS 的唯一上报点：nil 观察者零开销；
+	// EndpointLabel 把 path 收敛为有界枚举，Model 由指标包的护栏限基数。
+	reportAttempt := func(channelID int, channelType, fromType, result string,
+		class contract.ErrorClass, attemptIndex int, started time.Time) {
+		if deps.ObserveAttempt == nil {
+			return
+		}
+		deps.ObserveAttempt(AttemptEvent{
+			Endpoint:     EndpointLabel(rc),
+			Model:        rc.OriginModel,
+			Stream:       rc.Streaming,
+			ChannelID:    channelID,
+			ChannelType:  channelType,
+			FromType:     fromType,
+			AttemptIndex: attemptIndex,
+			Result:       result,
+			ErrorClass:   class,
+			Duration:     time.Since(started),
+		})
+	}
 
 	for groupIdx := 0; groupIdx < len(groups); groupIdx++ {
 		group := groups[groupIdx]
@@ -580,6 +608,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 			}
 			attemptIndex := attempts
 			attempts++
+			attemptStarted := time.Now()
 			WithRoute(rc, effective, attemptIndex, nil)
 
 			// 每轮整组解析并写入渠道组（relay-01 §7.4）：WithChannel 覆盖全部字段，
@@ -598,6 +627,8 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 渠道解析失败（索引陈旧/渠道已删）是「这一轮不可用」：换下一个候选。
 				// 走重试预算而不是无限扫描，避免坏索引把单请求拖成线性放大。
 				lastErr = &RetryableError{Err: safeWrapf(resolveErr, "relay: 渠道 %d 解析失败", candidate.ChannelID)}
+				reportAttempt(candidate.ChannelID, "", prevChannelType,
+					attemptRetryableFail, contract.ErrUnknown, attemptIndex, attemptStarted)
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     contract.ErrUnknown,
 					Code:      "channel:resolve_failed",
@@ -614,12 +645,15 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 			// 来自解析结果，分派与 BuildRequest 共用同一个值。
 			assignment.ChannelID = candidate.ChannelID
 			WithChannel(rc, assignment)
+			channelType := string(assignment.ChannelType)
 
 			adapter, dispatchErr := dispatch(assignment.ChannelType)
 			if dispatchErr != nil {
 				// 契约 §4 冻结 ErrEndpointUnsupported「不重试、不自动禁用」；
 				// 换渠道重试与该分类冲突，故整体快失败（错误文本经安全包装，GC-6）。
 				// R-62：适配器分派失败同时是**不换组**的硬停止。
+				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
+					attemptFatalFail, contract.ErrChannelTypeUnimplemented, attemptIndex, attemptStarted)
 				releaseBudget()
 				return nil, &FastFailError{Err: safeWrapf(dispatchErr, "relay: 渠道 %d 的适配器分派失败", candidate.ChannelID)}
 			}
@@ -632,6 +666,13 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 					break
 				}
 				class, _ := adapters.ClassOf(buildErr)
+				buildResult := attemptFatalFail
+				if retryableErrorClass(class) {
+					buildResult = attemptRetryableFail
+				}
+				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
+					buildResult, class, attemptIndex, attemptStarted)
+				prevChannelType = channelType
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     class,
 					Code:      "channel:build_request_failed",
@@ -666,6 +707,9 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 其余传输层错误（连接失败、响应头超时等）按 R-P13 一律可重试。
 				// GC-6：url.Error 的文本含完整 URL，故只保留安全摘要，不渲染底层文本。
 				lastErr = &RetryableError{Err: safeWrapf(doErr, "relay: 上游传输失败（渠道 %d）", candidate.ChannelID)}
+				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
+					attemptRetryableFail, contract.ErrRetryable, attemptIndex, attemptStarted)
+				prevChannelType = channelType
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     contract.ErrRetryable,
 					Code:      "do_request_failed",
@@ -681,6 +725,8 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 
 			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 				succeeded = true // 交由调用方结算；defer 不得释放
+				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
+					attemptOK, contract.ErrUnknown, attemptIndex, attemptStarted)
 				return &AttemptResult{
 					Response:  resp,
 					Adapter:   adapter,
@@ -695,6 +741,13 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 			_ = resp.Body.Close()
 			class := adapter.ClassifyError(resp.StatusCode, body)
 			statusErr := &UpstreamStatusError{StatusCode: resp.StatusCode, Class: class}
+			statusResult := attemptFatalFail
+			if retryableStatus(resp.StatusCode) {
+				statusResult = attemptRetryableFail
+			}
+			reportAttempt(candidate.ChannelID, channelType, prevChannelType,
+				statusResult, class, attemptIndex, attemptStarted)
+			prevChannelType = channelType
 			WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 				Class:        class,
 				StatusCode:   resp.StatusCode,

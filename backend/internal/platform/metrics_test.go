@@ -9,7 +9,7 @@ import (
 )
 
 // TestMetricsAuth404：metrics handler 鉴权——无 token / 错 token 一律 404（不暴露端点存在性），
-// Bearer 或 ?token= 匹配时 200 且 body 含 newtg_metrics_stub 占位。
+// Bearer 或 ?token= 匹配时 200 且 body 是真实 Prometheus 文本（W10-METRICS）。
 func TestMetricsAuth404(t *testing.T) {
 	const token = "s3cret"
 	handler := newMetricsHandler(token)
@@ -24,8 +24,8 @@ func TestMetricsAuth404(t *testing.T) {
 		{"no credentials", "", "", http.StatusNotFound, ""},
 		{"wrong bearer", "Bearer wrong", "", http.StatusNotFound, ""},
 		{"wrong query token", "", "token=wrong", http.StatusNotFound, ""},
-		{"valid bearer", "Bearer " + token, "", http.StatusOK, "newtg_metrics_stub"},
-		{"valid query token", "", "token=" + token, http.StatusOK, "newtg_metrics_stub"},
+		{"valid bearer", "Bearer " + token, "", http.StatusOK, "newtg_build_info"},
+		{"valid query token", "", "token=" + token, http.StatusOK, "newtg_build_info"},
 	}
 
 	for _, tc := range cases {

@@ -26,6 +26,7 @@ import (
 	"newtg/gateway/internal/contract"
 	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/store"
@@ -117,6 +118,16 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		}
 	}()
 
+	// W10-METRICS：连接池/依赖/迁移指标探针。只读 Ping 与 Stats，与 /readyz
+	// 同源；stub Resource（测试装配）无法还原具体类型时传 nil，探针自然跳过。
+	mainSQL, _ := db.(*sql.DB)
+	logsSQL, _ := logsDB.(*sql.DB)
+	var metricsRedis *redis.Client
+	if rr, ok := redisRes.(redisResource); ok {
+		metricsRedis = rr.client
+	}
+	go startMetricsProbe(ctx, mainSQL, logsSQL, metricsRedis, log)
+
 	// HTTP 主服务：/healthz（恒 200）与 /readyz（五项实时判定）与同一
 	// server 上的 /api/* 管理面（apiHandler 为 nil 时仅探针）。
 	checker := checkerFromResources(db, redisRes, int(expectedVersion), log)
@@ -129,7 +140,10 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	// （既有测试不触真 PG/Redis）。assembly 携带真实计费引擎工厂；nil 时中继
 	// 回退 M2 桩（测试装配）。
 	mountRelayRoutes(mux, cfg, db, redisRes, assembly)
-	srv := newGatewayHTTPServer(SecurityHeaders(mjPathRewrite(mux)))
+	// W10-METRICS：指标中间件在最外层，测量包含安全响应头在内的完整服务时长；
+	// route 标签由内层 ServeMux 写入 r.Pattern（不会取原始 path）。
+	// mjPathRewrite 与 SecurityHeaders 保持在指标层内侧（feat/domains 的挂载顺序）。
+	srv := newGatewayHTTPServer(metrics.HTTPMiddleware("gateway", SecurityHeaders(mjPathRewrite(mux))))
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		// 监听失败是主错误；资源清理失败不覆盖它。
@@ -884,6 +898,18 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 保证进行中的 DELETE 先于连接池关闭退出。
 	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
 		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
+
+	// W10-METRICS：worker 没有主 HTTP 端口，指标与最小 /healthz 暴露在
+	// METRICS_ADDR（platform-05 §3.4）；MetricsAddr=="0" 时监听不启动。
+	// InitWorker 预建任务/残留基线，保证空跑任务也有 family（A10–A13 可加载）。
+	// 探针只读 Ping/Stats，停机时随 ctx 退出，不泄漏监听或 goroutine。
+	metrics.InitWorker()
+	go func() {
+		if err := RunMetricsServer(ctx, cfg, log); err != nil {
+			log.Error("worker metrics server exited with error", "error", err)
+		}
+	}()
+	go startMetricsProbe(ctx, sqlDB, sqlLogs, rr.client, log)
 
 	runErr := billing.RunWorkerLoop(ctx, billing.WorkerDeps{
 		Abandoned:             registry,

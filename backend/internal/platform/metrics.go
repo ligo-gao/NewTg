@@ -10,20 +10,24 @@ import (
 	"time"
 
 	"newtg/gateway/internal/config"
+	"newtg/gateway/internal/metrics"
 )
-
-// metricsStubBody 是 M0 占位响应体；M7 按 platform-05 换 promhttp 后删除。
-const metricsStubBody = "newtg_metrics_stub 1\n"
 
 // RunMetricsServer 运行 metrics 侧车 HTTP 服务，阻塞至 ctx done 后优雅退出：
 //   - MetricsAddr=="0" → 不启动，立即返回 nil；
 //   - /metrics 仅当 MetricsToken 非空时挂载 handler，鉴权不符一律 404
-//     （非 401，不暴露端点存在性——本计划冻结口径）。
+//     （非 401，不暴露端点存在性——本计划冻结口径）；
+//   - /healthz 恒 200：worker 没有主 HTTP 端口，运维/编排需要最小探活面
+//     （platform-05 §3.4「worker 同样在 METRICS_ADDR 暴露健康端点」）。
 func RunMetricsServer(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if cfg.MetricsAddr == "0" {
 		return nil
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
 	if cfg.MetricsToken != "" {
 		mux.Handle("/metrics", newMetricsHandler(cfg.MetricsToken))
 	}
@@ -58,11 +62,14 @@ func RunMetricsServer(ctx context.Context, cfg *config.Config, log *slog.Logger)
 	}
 }
 
-// newMetricsHandler 返回带鉴权的 stub handler：接受 header
+// newMetricsHandler 返回带鉴权的 /metrics handler：接受 header
 // Authorization: Bearer <token> 或 ?token=<token>，任一匹配即 200，否则 404。
+//
+// 鉴权层原样保留 M0 冻结语义；响应体换成真实 Prometheus 文本（W10-METRICS）。
 func newMetricsHandler(token string) http.Handler {
 	want := []byte("Bearer " + token)
 	raw := []byte(token)
+	inner := metrics.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authOK := subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) == 1
 		queryOK := subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), raw) == 1
@@ -70,8 +77,6 @@ func newMetricsHandler(token string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		// 常量响应体；写失败通常是对端已断开，此时 HTTP server 无法再补救。
-		_, _ = fmt.Fprint(w, metricsStubBody)
+		inner.ServeHTTP(w, r)
 	})
 }

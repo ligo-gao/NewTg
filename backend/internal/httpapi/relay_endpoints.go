@@ -24,6 +24,7 @@ import (
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
@@ -1597,6 +1598,13 @@ func (h *RelayHandler) routeDeps(rc *contract.RelayContext, pinID int, hasPin bo
 		MaxAutoGroups:    h.maxAutoGroups,
 		GroupConfigured:  h.groupConfigured,
 		OnAttemptFailure: onAttemptFailure,
+		// W10-METRICS：执行层产出事实，端点层负责收敛为指标标签。
+		// 观察函数内部 recover/护栏，绝不向执行层返回错误或 panic。
+		ObserveAttempt: func(ev relay.AttemptEvent) {
+			metrics.ObserveRelayAttempt(ev.Endpoint, ev.Model, ev.Stream, ev.ChannelID,
+				ev.ChannelType, ev.FromType, ev.Result,
+				relay.ErrorClassName(ev.ErrorClass), ev.AttemptIndex, ev.Duration)
+		},
 	}
 }
 
@@ -1843,6 +1851,14 @@ func (d *deferredSettlement) commit() error {
 func (d *deferredSettlement) abort() { _ = d.Refund() }
 
 func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	// W10-METRICS：最终结果与端到端延迟。status 先按 success，所有错误出口
+	// 在返回前置 error；观察发生在 defer，不影响响应写出。
+	start := time.Now()
+	status := "success"
+	defer func() {
+		metrics.ObserveRelayRequest(relay.EndpointLabel(rc), rc.OriginModel, false, status, time.Since(start))
+	}()
+
 	var settlement *deferredSettlement
 	if deps.Billing != nil {
 		settlement = newDeferredSettlement(deps.Billing)
@@ -1852,6 +1868,7 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	}
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
+		status = "error"
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -1870,6 +1887,7 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	if err != nil {
 		// F3：客户端拿不到响应 → 不收费。defer 的 abort 会在内层会话尚未
 		// Terminate 时真正退款（提交前 finalized 仍为 false）。
+		status = "error"
 		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"failed to encode the upstream response")
 		return
@@ -1923,12 +1941,26 @@ func includeUsageRequested(req *contract.Request) bool {
 // 适配器的 StreamEvents 事件流；ExecuteAttempts 在失败出口已 Terminate（GC-7），
 // 因此本函数只在**拿到 2xx 之后**负责终结计费会话，且恰好一次。
 func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	// start 覆盖连上游在内的完整请求时长：LatencyMS / FirstTokenMS 都相对
+	// 客户端请求开始计（与 relay.Route 的 start 口径一致）。
+	start := time.Now()
+	status := "success"
+	defer func() {
+		metrics.ObserveRelayRequest(relay.EndpointLabel(rc), rc.OriginModel, true, status, time.Since(start))
+		// TTFT 只在流式路径且确实拿到首块时存在（非流式为 nil）。
+		if rc.FirstTokenMS != nil {
+			metrics.ObserveRelayFirstToken(relay.EndpointLabel(rc), rc.OriginModel,
+				time.Duration(*rc.FirstTokenMS)*time.Millisecond)
+		}
+	}()
+
 	// relay-03 §2.3：include_usage 默认 true，但客户端显式 false 优先。
 	// 仅当需要时才注入 stream_options.include_usage=true（Raw 的其它字段保留）；
 	// 客户端显式 false 时原样透传，不注入、也不合成末块 usage。
 	includeUsage := includeUsageRequested(rc.Request)
 	injected := usage.InjectIncludeUsage(rc.Request, includeUsage)
 	if injected == nil {
+		status = "error"
 		writeRelayError(w, http.StatusBadRequest, rc.RequestID, "invalid_request", "invalid request body")
 		return
 	}
@@ -1937,11 +1969,10 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	rc.Request = injected
 	rc.Streaming = true
 
-	// start 覆盖连上游在内的完整请求时长：LatencyMS / FirstTokenMS 都相对
-	// 客户端请求开始计（与 relay.Route 的 start 口径一致）。
-	start := time.Now()
+	// start 已在函数入口为指标与 usage 计时启动。
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
+		status = "error"
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -1954,6 +1985,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 		if deps.Billing != nil {
 			_ = deps.Billing.Refund()
 		}
+		status = "error"
 		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "stream_unsupported",
 			"upstream adapter does not support streaming")
 		return

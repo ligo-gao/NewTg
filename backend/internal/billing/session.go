@@ -12,6 +12,7 @@ import (
 	"newtg/gateway/internal/billing/expr"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/store"
 )
 
@@ -139,9 +140,26 @@ func opCtx() (context.Context, context.CancelFunc) {
 // 余额不足返回 *QuotaError（errors.Is(err, ErrInsufficientQuota) 成立），
 // 由 T9 映射 HTTP 402。同一会话二次 PreConsume 返回 ErrBudgetExceeded
 // （C-10/D12 的 400 语义）。
-func (s *Session) PreConsume(est contract.QuotaEstimate) error {
+func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// W10-METRICS：预扣与 402 拒绝是付费漏斗的入口口径。观察函数内部
+	// recover，采样失败只丢样本；defer 只读会话字段，不改变任何业务路径。
+	// model 在函数前段才从 est/rc 补齐，因此延迟到返回时取。
+	defer func() {
+		if err == nil {
+			metrics.ObservePreConsume(s.model, s.group, s.preConsumed)
+			return
+		}
+		if errors.Is(err, ErrInsufficientQuota) {
+			model := s.model
+			if model == "" {
+				model = est.Model
+			}
+			metrics.ObserveInsufficientQuota(model)
+		}
+	}()
 
 	if s.requestID == "" {
 		return ErrMissingRequestID
@@ -579,9 +597,20 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 // 其余方向的失败面：第 2 步失败 → 不结算，保留 hold，返回 error；第 3 步
 // 失败 → 日志已写，hold 仍在，worker 兜底退款时把日志置 refunded
 // （billing-06 §5.3 的兜底路径）。
-func (s *Session) Terminate(fact contract.UsageFact) error {
+func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// W10-METRICS：结算积分是营收口径（§5.4 点名的「计费金额」）。
+	// settledCost 只在资金事务提交成功后赋值；观察发生在返回前，不影响
+	// 任何 early-return/幂等语义。订阅来源的结算走独立函数，不在本 defer
+	// 覆盖范围内（首批只统计钱包结算）。
+	var settledCost int64
+	defer func() {
+		if err == nil && settledCost > 0 {
+			metrics.ObserveSettle(s.model, s.group, billingModeName(s.snap), settledCost)
+		}
+	}()
 
 	if s.requestID == "" {
 		return ErrMissingRequestID
@@ -695,6 +724,7 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 			}
 			return fmt.Errorf("billing: charge without hold: %w", err)
 		}
+		settledCost = cost
 		s.consumed = cost
 		// R-73：钱包已提交，随后把令牌额度调整到最终成本（失败只记日志）。
 		s.adjustTokenToCostLocked(ctx, cost)
@@ -728,6 +758,7 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 			// 补扣失败：hold 保留，不写 success 日志，由补偿扫描重试。
 			return fmt.Errorf("billing: settle holds with extra charge: %w", err)
 		}
+		settledCost = cost
 		s.consumed = cost
 		// R-73：钱包已提交，随后把令牌额度调整到最终成本（失败只记日志）。
 		s.adjustTokenToCostLocked(ctx, cost)
@@ -767,6 +798,7 @@ func (s *Session) Terminate(fact contract.UsageFact) error {
 		// 这是两库一致性裁决下的既定失败面，不是跨库事务。
 		return fmt.Errorf("billing: settle holds: %w", err)
 	}
+	settledCost = cost
 
 	// R-73：资金先提交，再调整令牌额度（billing-03 §2.5/§5.7）。
 	s.adjustTokenToCostLocked(ctx, cost)
@@ -855,6 +887,10 @@ func (s *Session) Refund() error {
 			return fmt.Errorf("billing: write refund log: %w", logErr)
 		}
 	}
+
+	// W10-METRICS：同步退款按金额计入 billing_refund_credits_total。
+	// 放在终态置位之前：即便下一步的状态写失败，资金已经退出，指标应保留。
+	metrics.ObserveRefund("sync", refundedAmount)
 
 	s.refunded = true
 	s.preConsumed = 0
@@ -954,6 +990,9 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 	s.consumed = 0
 	s.subscriptionPreConsumed = 0
 	s.tokenDeducted = 0
+	// W10-METRICS：订阅路径的退款同样计入 billing_refund_credits_total；
+	// reason=sync 表示请求内同步释放（worker 兜底是另一条路径）。
+	metrics.ObserveRefund("sync", preDeductedForLog+consumedRefunded)
 
 	if s.engine.saturator != nil {
 		outcome := SettlementOutcome{
@@ -1250,6 +1289,38 @@ func (s *Session) noteQuotaClamp(clamp *contract.QuotaClamp) {
 		return
 	}
 	s.rc.QuotaClamp = clamp
+	// W10-METRICS：只记首个钳制事件（与审计口径一致）。op/kind 都是冻结
+	// 枚举，基数有界；这是 A6「钳制 > 0 即告警」的唯一数据源。
+	metrics.ObserveQuotaClamp(clamp.Op, clampKindName(clamp.Kind))
+}
+
+// billingModeName 把契约枚举映射为指标标签（platform-05 §3.2.4 冻结取值）。
+func billingModeName(snap *contract.PriceSnapshot) string {
+	if snap == nil {
+		return "unknown"
+	}
+	switch snap.Mode {
+	case contract.BillingModePerCall:
+		return "per_request"
+	case contract.BillingModeTieredExpr:
+		return "tiered_expr"
+	case contract.BillingModeRatio:
+		return "ratio"
+	default:
+		return "unknown"
+	}
+}
+
+// clampKindName 把 ClampKind 映射为指标标签（overflow/underflow/nan）。
+func clampKindName(kind contract.ClampKind) string {
+	switch kind {
+	case contract.ClampUnderflow:
+		return "underflow"
+	case contract.ClampNaN:
+		return "nan"
+	default:
+		return "overflow"
+	}
 }
 
 // keepPreConsumedCostLocked 是求值失败的保守回退：保留预扣 + 已增量扣减；

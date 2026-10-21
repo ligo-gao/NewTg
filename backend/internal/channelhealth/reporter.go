@@ -11,6 +11,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/store"
 )
@@ -367,6 +368,13 @@ func applyAutoDisable(ctx context.Context, store AutoDisableStore, auditor Audit
 	// 结构化日志只含稳定 code，不含上游错误原文（GC-6）。
 	log.Info("channelhealth: channel auto-disabled",
 		"channel_id", channelID, "reason", decision.ReasonCode, "trigger", decision.Trigger)
+	// W10-METRICS：A2 的早期信号。channel_type/reason 都是目录级/冻结枚举，
+	// 不含 channel_id（已由 channel_requests_total 的有界标签覆盖）。
+	channelType := ""
+	if channel != nil {
+		channelType = channel.Type
+	}
+	metrics.ObserveChannelAutoDisabled(channelType, decision.ReasonCode)
 	writeAutoDisableAudit(auditor, log, channel, channelID, decision)
 	notifyChannelAutoDisabled(notifier, log, channelsURL, channel, decision)
 	return channel, true, nil
