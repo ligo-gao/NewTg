@@ -27,8 +27,10 @@ const relayRateLimitWindow = time.Minute
 // 同一实现指向 miniredis。这里用窄接口而不是具体类型，是为了让「未装配」
 // （nil）显式表达：单元测试与降级装配不该为了跑通转发而被迫准备 Redis。
 //
-// nil 表示**跳过限流**，与装配完成后的「配置全 0」不是同一件事：前者只允许
-// 出现在测试/无 Redis 的装配里，生产装配永远注入非 nil（platform/server.go）。
+// nil 表示**跳过限流**，与装配完成后的「配置全 0」不是同一件事：后者仍会
+// 逐桶求值（只是阈值 0 不访问 Redis）。nil 只允许出现在测试/降级装配里；
+// 生产装配由 platform.newRelayRateLimiter 保证非 nil——缺失 Redis 会让启动
+// 失败，而不是静默把三档桶全部关掉。
 type RelayRateLimiter interface {
 	Allow(ctx context.Context, bucket ratelimit.Bucket, key string, cost int) (ratelimit.Decision, error)
 }
@@ -163,6 +165,10 @@ func checkRelayRateLimit(
 }
 
 // writeRelayRateLimitError 写中继信封的 429/500。
+//
+// requestID 必须传 rc.RequestID（而不是 handler 局部的另一个 ID）：429 的日志
+// 用同一个值记录，计费幂等键也来自它。两个 ID 并存会让客户端报障时只能对上
+// 响应或日志之一（M5-b 复核 F3）。
 //
 // Retry-After 只在 429 上出现：它是「何时可重试」的客户端信号，500 是限流器
 // 故障（R-M5-10 明确不设该头，避免客户端把内部故障当限流重试）。

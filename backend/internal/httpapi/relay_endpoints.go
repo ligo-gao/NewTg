@@ -772,7 +772,7 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 与上游之前。被拒绝的请求因此零预扣、零 usage_logs、零上游调用；流式与
 	// 非流式在分流前只计一次（不按 SSE 帧计）。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
-		writeRelayRateLimitError(w, requestID, rejection)
+		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
 
@@ -1010,7 +1010,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 之前。原生入口没有 /pg 分支，因此不存在 TokenID==nil 的会话路径
 	// （B11 恒参与）。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
-		writeRelayRateLimitError(w, requestID, rejection)
+		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
 

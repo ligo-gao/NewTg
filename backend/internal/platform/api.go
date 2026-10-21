@@ -123,6 +123,23 @@ func (prodConnectors) newAPIHandler(ctx context.Context, cfg *config.Config,
 	return newGatewayAPI(ctx, cfg, sqlDB, sqlLogs, redisRes.client, log)
 }
 
+// newRelayRateLimiter 构造生产准入限流器（W7/M5-b）。
+//
+// handler 侧把 nil limiter 解释为「跳过限流」，那只允许出现在单测/降级装配里。
+// 生产装配必须把「没有 Redis / 构造返回 nil」变成**启动错误**：静默返回 nil
+// 会让 B11/B10/B12 三档桶在没有任何提示的情况下全部停用，而这正是限流要防
+// 的滥用面（装配遗漏不应该等同于「管理员关闭了限流」）。
+func newRelayRateLimiter(rdb *redis.Client) (httpapi.RelayRateLimiter, error) {
+	if rdb == nil {
+		return nil, errors.New("gateway: relay rate limiter requires a redis client")
+	}
+	limiter := ratelimit.New(rdb)
+	if limiter == nil {
+		return nil, errors.New("gateway: relay rate limiter construction returned nil")
+	}
+	return limiter, nil
+}
+
 // newGatewayAPI 构造 /api/* 的完整路由。db/logsDB/rdb 必须已通过
 // OpenDB/OpenLogsDB/OpenRedis 验证连通性。
 //
@@ -343,7 +360,13 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// W7/M5-b：限流器只构造一次（无状态包装，复用上面的 Redis 客户端）。
 	// 中继面与任务提交面必须拿到同一个实例：两处各建一个包装虽无害，但会让
 	// 「跨副本共享计数」的验证失去单一装配点。
-	rateLimiter := ratelimit.New(rdb)
+	//
+	// 构造失败必须让启动失败（见 newRelayRateLimiter）：handler 把 nil 解释为
+	// 「跳过限流」，静默 nil 会让三档桶在无提示的情况下全部停用。
+	rateLimiter, err := newRelayRateLimiter(rdb)
+	if err != nil {
+		return nil, err
+	}
 
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
@@ -381,7 +404,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Billing: engine.NewSession,
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
-		RateLimiter: ratelimit.New(rdb),
+		RateLimiter: rateLimiter,
 	})
 	if err != nil {
 		return nil, err

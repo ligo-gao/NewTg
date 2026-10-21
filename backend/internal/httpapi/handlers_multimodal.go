@@ -258,7 +258,7 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	// 一个必然失败的响应；升级真正落地时由该端点自己决定连接级语义。
 	if endpoint != contract.EndpointRealtime {
 		if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
-			writeRelayRateLimitError(w, requestID, rejection)
+			writeRelayRateLimitError(w, rc.RequestID, rejection)
 			return
 		}
 	}

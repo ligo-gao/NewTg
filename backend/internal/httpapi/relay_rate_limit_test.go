@@ -17,9 +17,11 @@ package httpapi
 // relay_rate_limit_integration_test.go（-tags=integration）。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -834,4 +836,164 @@ func TestRelayRateLimitTaskRedisFailureIsFailClosed(t *testing.T) {
 	if env.store.inserted != 0 {
 		t.Fatalf("任务行 = %d，期望 0", env.store.inserted)
 	}
+}
+
+// ---------- 入口级 fail-closed（M5-b 复核 F6） ----------
+
+// TestRelayRateLimitMessagesRedisFailureIsFailClosed 与 chat 同口径：Messages
+// 入口在限流器故障时也必须 500，而不是把这一个入口留成 fail-open。
+func TestRelayRateLimitMessagesRedisFailureIsFailClosed(t *testing.T) {
+	env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+		config:      rateLimitConfig(10, 10, 10, ""),
+		channelType: contract.ChannelTypeAnthropic,
+		model:       messagesTestModel,
+		upstream: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, messagesUpstreamBody)
+		},
+	})
+	env.mr.Close()
+	assertRateLimitCheckFailed500(t, env.messages(t, relayTestToken))
+	if got := env.upstream.count(); got != 0 {
+		t.Fatalf("上游调用 = %d，期望 0", got)
+	}
+	if got := env.billing.preConsumeCount(); got != 0 {
+		t.Fatalf("PreConsume = %d，期望 0", got)
+	}
+}
+
+// TestRelayRateLimitMultimodalRedisFailureIsFailClosed 锁定多模态入口的
+// fail-closed：共享同一 helper 也不能靠「公共代码正确」代替入口级断言。
+func TestRelayRateLimitMultimodalRedisFailureIsFailClosed(t *testing.T) {
+	env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+		config:     rateLimitConfig(10, 10, 10, ""),
+		multimodal: true,
+	})
+	env.mr.Close()
+	assertRateLimitCheckFailed500(t, env.embeddings(t, relayTestToken))
+	if got := env.multimodal.calls; got != 0 {
+		t.Fatalf("dispatcher 调用 = %d，期望 0", got)
+	}
+}
+
+// ---------- 429 日志与响应使用同一个 request id（M5-b 复核 F3/F6） ----------
+
+// captureDefaultSlog 把默认 logger 指到内存 buffer；t.Cleanup 恢复。
+// handler 用 slog.Default()，因此不需要为日志另开注入缝。
+func captureDefaultSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return buf
+}
+
+func TestRelayRateLimit429LogsInfoWithConsistentRequestID(t *testing.T) {
+	env := newRateLimitTestEnv(t, rateLimitEnvOptions{config: rateLimitConfig(1, 0, 0, "")})
+	if w := env.chat(t, relayTestToken, rateLimitChatBody); w.Code != http.StatusOK {
+		t.Fatalf("第 1 次 status = %d，期望 200；body=%s", w.Code, w.Body.String())
+	}
+	logs := captureDefaultSlog(t)
+	w := env.chat(t, relayTestToken, rateLimitChatBody)
+	assertRateLimited429(t, w)
+
+	requestID := w.Header().Get("X-Request-ID")
+	line := logs.String()
+	if !strings.Contains(line, "level=INFO") {
+		t.Fatalf("429 必须以 INFO 记录（R-M5-15），got %q", line)
+	}
+	if !strings.Contains(line, `msg="relay rate limit exceeded"`) {
+		t.Fatalf("缺少限流日志，got %q", line)
+	}
+	// 日志里的 request_id 与响应的 X-Request-ID 必须是同一个值（F3）。
+	if !strings.Contains(line, "request_id="+requestID) {
+		t.Fatalf("日志 request_id 与响应 X-Request-ID（%s）不一致：%q", requestID, line)
+	}
+	if !strings.Contains(line, "status_code=429") {
+		t.Fatalf("日志缺少 status_code=429：%q", line)
+	}
+	// 响应正文的 requestId 也来自同一个值。
+	if !strings.Contains(w.Body.String(), "(requestId: "+requestID+")") {
+		t.Fatalf("响应 requestId 与 X-Request-ID（%s）不一致：%s", requestID, w.Body.String())
+	}
+}
+
+// ---------- 批次：每行一次（M5-b 复核 F4） ----------
+
+// TestRelayRateLimitBatchRowsAreCountedIndividually 记录现实口径：批次不是
+// 「一次请求一个名额」，而是**每行一个名额**（每行都是一个独立任务提交，
+// 独立预扣、独立上游调用）。超限的尾部行提交失败并被计入 failed，父批次本身
+// 仍作为聚合视图返回 200（handleBatchesSubmit 的实际状态码；不是 202）。
+func TestRelayRateLimitBatchRowsAreCountedIndividually(t *testing.T) {
+	manager := newBatchManager(t, map[string]string{
+		"fast": videoPluginSource("fast", "fast-model", true),
+	})
+	hits := &atomic.Int32{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"up_1"}`)
+	}))
+	t.Cleanup(upstream.Close)
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := newFakeBatchTaskStore()
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
+		ID: 9, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk-test"),
+	}}
+	billing := &billingCallLog{}
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	handler := NewTasksHandler(TasksHandlerConfig{
+		Store:    store,
+		Channels: channels,
+		Plugins:  manager,
+		Sealer:   sealer,
+		Tokens:   &fakeTaskTokens{meta: &auth.TokenMeta{ID: 1, UserID: 42, Status: "enabled", Group: "default", UnlimitedQuota: true}},
+		Billing: func(*contract.RelayContext) contract.BillingSession {
+			return &perRequestBilling{Stub: billingseam.NewStub(), log: billing}
+		},
+		ArtifactSigner:       tasks.NewArtifactSigner("task-handler-test-key", 0),
+		AllowPrivateUpstream: true,
+		RateLimiter:          ratelimit.New(rdb),
+		Config:               rateLimitConfig(2, 0, 0, ""),
+	})
+	mux := newTaskRelayMux(handler)
+
+	body := `{"endpoint":"/v1/videos","completion_window":"24h","requests":[` +
+		`{"custom_id":"r1","method":"POST","url":"/v1/videos","body":{"model":"fast-model","seconds":5}},` +
+		`{"custom_id":"r2","method":"POST","url":"/v1/videos","body":{"model":"fast-model","seconds":5}},` +
+		`{"custom_id":"r3","method":"POST","url":"/v1/videos","body":{"model":"fast-model","seconds":5}}]}`
+	rec := postBatch(t, mux, body)
+	if rec.Code != http.StatusOK {
+		// 父批次是聚合视图：单行失败不改变批次创建的 200。
+		t.Fatalf("批次 status = %d，期望 200（父批次聚合）；body=%s", rec.Code, rec.Body.String())
+	}
+	var created batchObject
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode batch: %v; body=%s", err, rec.Body.String())
+	}
+	if created.RequestCounts.Total != 3 || created.RequestCounts.Completed != 2 || created.RequestCounts.Failed != 1 {
+		t.Fatalf("request_counts = %+v，期望 total=3 completed=2 failed=1（尾部行被 429）",
+			created.RequestCounts)
+	}
+	// fakeBatchTaskStore 自身也有 inserted（批次父行数），任务行数看内嵌的
+	// fakeTaskStore（第 3 行 429 不落库、不预扣、不触达上游）。
+	if got := store.fakeTaskStore.inserted; got != 2 {
+		t.Fatalf("任务行 = %d，期望 2（第 3 行 429 不落库）", got)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("上游调用 = %d，期望 2（第 3 行未触达上游）", got)
+	}
+	preConsumed := 0
+	for _, call := range billing.snapshot() {
+		if call == "preconsume" {
+			preConsumed++
+		}
+	}
+	if preConsumed != 2 {
+		t.Fatalf("PreConsume = %d，期望 2（第 3 行未预扣）", preConsumed)
+	}
+	assertRedisCount(t, mr, ratelimit.UserKey(42), "3")
 }

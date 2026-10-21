@@ -272,7 +272,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 	// 这里只做接口透传。nil（探针-only/测试装配）时中继完全跳过判定。
 	var attemptReporter httpapi.AttemptFailureReporter
 	// W7/M5-b：准入限流器同样是一次装配的产物（newGatewayAPI 用同一个 Redis
-	// 客户端构造一次），中继只透传。nil（探针-only/测试装配）时跳过限流。
+	// 客户端构造一次），中继只透传。生产装配由 newRelayRateLimiter 保证非 nil
+	// （缺 Redis 即启动失败）；nil 只可能来自探针-only/测试装配，此时跳过限流。
 	var rateLimiter httpapi.RelayRateLimiter
 	if assembly != nil {
 		attemptReporter = assembly.AttemptFailureReporter

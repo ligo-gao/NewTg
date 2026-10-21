@@ -308,7 +308,7 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// 的白名单在限流之后，白名单 403 会消耗配额。这是把限流放在
 	// BuildRelayContext 之后（rc.UsingGroup 可用）的必然结果，不是两套语义。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
-		writeRelayRateLimitError(w, requestID, rejection)
+		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
 

@@ -109,6 +109,11 @@ func TestIntegrationGatewayPricingOnChangeInvalidatesSource(t *testing.T) {
 	if assembly.ModelStatus == nil {
 		t.Fatal("assembly.ModelStatus = nil, want the pricing repo")
 	}
+	// W7/M5-b：生产装配必须注入非 nil 准入限流器。handler 把 nil 解释为
+	// 「跳过限流」，装配遗漏会让三档桶静默停用（M5-b 复核 F1）。
+	if assembly.RateLimiter == nil {
+		t.Fatal("assembly.RateLimiter = nil, want the production relay rate limiter")
+	}
 	if assembly.PricingSource == nil || assembly.PricingOnChange == nil {
 		t.Fatalf("pricing wiring incomplete: source_nil=%v onChange_nil=%v, want both non-nil",
 			assembly.PricingSource == nil, assembly.PricingOnChange == nil)
