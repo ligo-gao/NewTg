@@ -7,9 +7,19 @@ import { Button } from '@/shared/ui/button'
 import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { ChangePlanDialog } from './change-plan-dialog'
+import { SubscriptionEventsDialog } from './events-dialog'
 import { formatSubscriptionTime } from './format'
+import { RefundDialog } from './refund-dialog'
+import { RenewDialog } from './renew-dialog'
+import { refundIneligibilityKey } from './support'
 import { cancelSubscriptionAtPeriodEnd, setSubscriptionAutoRenew } from './subscription-api'
-import type { PaymentMethod, UserSubscription, UserSubscriptionList } from './types'
+import type {
+  AvailableSubscriptionPlan,
+  PaymentMethod,
+  UserSubscription,
+  UserSubscriptionList,
+} from './types'
 
 export const MY_SUBSCRIPTIONS_KEY = ['subscription', 'mine'] as const
 
@@ -22,6 +32,8 @@ export interface MySubscriptionsProps {
   offline: boolean
   /** 已保存的支付令牌（S4）：自动续费开关必须从中选择扣费方式。 */
   paymentMethods: PaymentMethod[]
+  /** 可用套餐：续费金额预览与升降级目标列表用（服务端仍是定价真源）。 */
+  plans: readonly AvailableSubscriptionPlan[]
 }
 
 const STATUS_VARIANT: Record<UserSubscription['status'], StatusBadgeVariant> = {
@@ -49,6 +61,7 @@ export function MySubscriptions({
   onRetry,
   offline,
   paymentMethods,
+  plans,
 }: MySubscriptionsProps) {
   const { t, locale } = useI18n()
   const queryClient = useQueryClient()
@@ -57,6 +70,19 @@ export function MySubscriptions({
   const [cancelErrorId, setCancelErrorId] = useState<number | null>(null)
   const [autoRenewPendingId, setAutoRenewPendingId] = useState<number | null>(null)
   const [autoRenewErrorId, setAutoRenewErrorId] = useState<number | null>(null)
+  // 每个写入口一个「当前实例」：dialogs 关闭即为 null，天然串行化且不会把
+  // 实例对象复制进全局状态。
+  const [renewTarget, setRenewTarget] = useState<UserSubscription | null>(null)
+  const [changeTarget, setChangeTarget] = useState<UserSubscription | null>(null)
+  const [refundTarget, setRefundTarget] = useState<UserSubscription | null>(null)
+  const [eventsTarget, setEventsTarget] = useState<UserSubscription | null>(null)
+
+  // All four write dialogs (renew/change/refund) and the read-only event flow
+  // refresh the same list; the server's projection is the only truth, so we
+  // never patch rows locally.
+  function refreshSubscriptions(): void {
+    void queryClient.invalidateQueries({ queryKey: MY_SUBSCRIPTIONS_KEY })
+  }
 
   async function handleCancel(item: UserSubscription): Promise<void> {
     if (pendingId !== null || offline) return
@@ -114,63 +140,105 @@ export function MySubscriptions({
   }
 
   return (
-    <section
-      aria-labelledby="subscription-mine-title"
-      className="rounded-xl border border-border-hairline bg-surface-card p-5"
-    >
-      <h2
-        id="subscription-mine-title"
-        className="text-[15px] font-semibold text-ink-1"
+    <>
+      <section
+        aria-labelledby="subscription-mine-title"
+        className="rounded-xl border border-border-hairline bg-surface-card p-5"
       >
-        {t('account.subscription.mine.title')}
-      </h2>
-
-      {isPending ? (
-        <div
-          role="status"
-          aria-label={t('account.subscription.mine.loading')}
-          aria-busy="true"
-          className="mt-4 flex flex-col gap-3"
+        <h2
+          id="subscription-mine-title"
+          className="text-[15px] font-semibold text-ink-1"
         >
-          <div aria-hidden="true" className="h-24 animate-pulse rounded-lg bg-surface-subtle" />
-          <div aria-hidden="true" className="h-24 animate-pulse rounded-lg bg-surface-subtle" />
-        </div>
-      ) : isError ? (
-        <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
-          <span>{t('account.subscription.mine.error')}</span>
-          <Button variant="secondary" onClick={onRetry}>
-            {t('account.subscription.mine.retry')}
-          </Button>
-        </div>
-      ) : data === undefined || data.items.length === 0 ? (
-        <p className="mt-4 text-sm text-ink-2">
-          {t('account.subscription.mine.empty')}
-        </p>
-      ) : (
-        <ul className="mt-4 flex flex-col gap-3">
-          {data.items.map((item) => (
-            <li key={item.id}>
-              <SubscriptionRow
-                item={item}
-                locale={locale}
-                offline={offline}
-                pending={pendingId === item.id}
-                anyPending={pendingId !== null}
-                cancelError={cancelErrorId === item.id}
-                onCancel={() => void handleCancel(item)}
-                paymentMethods={paymentMethods}
-                autoRenewPending={autoRenewPendingId === item.id}
-                autoRenewBusy={autoRenewPendingId !== null}
-                autoRenewError={autoRenewErrorId === item.id}
-                onAutoRenew={(enabled, methodId) =>
-                  void handleAutoRenew(item, enabled, methodId)
-                }
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+          {t('account.subscription.mine.title')}
+        </h2>
+
+        {isPending ? (
+          <div
+            role="status"
+            aria-label={t('account.subscription.mine.loading')}
+            aria-busy="true"
+            className="mt-4 flex flex-col gap-3"
+          >
+            <div aria-hidden="true" className="h-24 animate-pulse rounded-lg bg-surface-subtle" />
+            <div aria-hidden="true" className="h-24 animate-pulse rounded-lg bg-surface-subtle" />
+          </div>
+        ) : isError ? (
+          <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+            <span>{t('account.subscription.mine.error')}</span>
+            <Button variant="secondary" onClick={onRetry}>
+              {t('account.subscription.mine.retry')}
+            </Button>
+          </div>
+        ) : data === undefined || data.items.length === 0 ? (
+          <p className="mt-4 text-sm text-ink-2">
+            {t('account.subscription.mine.empty')}
+          </p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {data.items.map((item) => (
+              <li key={item.id}>
+                <SubscriptionRow
+                  item={item}
+                  locale={locale}
+                  offline={offline}
+                  pending={pendingId === item.id}
+                  anyPending={pendingId !== null}
+                  cancelError={cancelErrorId === item.id}
+                  onCancel={() => void handleCancel(item)}
+                  paymentMethods={paymentMethods}
+                  autoRenewPending={autoRenewPendingId === item.id}
+                  autoRenewBusy={autoRenewPendingId !== null}
+                  autoRenewError={autoRenewErrorId === item.id}
+                  onAutoRenew={(enabled, methodId) =>
+                    void handleAutoRenew(item, enabled, methodId)
+                  }
+                  onRenew={() => setRenewTarget(item)}
+                  onChangePlan={() => setChangeTarget(item)}
+                  onRefund={() => setRefundTarget(item)}
+                  onShowEvents={() => setEventsTarget(item)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 写操作各自成弹窗：列表只负责选择目标实例，金额/折算全部由服务端
+          在弹窗提交时计算；成功后统一失效列表查询而不是本地改行。 */}
+      <RenewDialog
+        subscription={renewTarget}
+        plans={plans}
+        offline={offline}
+        onOpenChange={(open) => {
+          if (!open) setRenewTarget(null)
+        }}
+        onRenewed={refreshSubscriptions}
+      />
+      <ChangePlanDialog
+        subscription={changeTarget}
+        plans={plans}
+        offline={offline}
+        onOpenChange={(open) => {
+          if (!open) setChangeTarget(null)
+        }}
+        onChanged={refreshSubscriptions}
+      />
+      <RefundDialog
+        subscription={refundTarget}
+        offline={offline}
+        onOpenChange={(open) => {
+          if (!open) setRefundTarget(null)
+        }}
+        onRequested={refreshSubscriptions}
+      />
+      <SubscriptionEventsDialog
+        subscription={eventsTarget}
+        plans={plans}
+        onOpenChange={(open) => {
+          if (!open) setEventsTarget(null)
+        }}
+      />
+    </>
   )
 }
 
@@ -187,6 +255,10 @@ function SubscriptionRow({
   autoRenewBusy,
   autoRenewError,
   onAutoRenew,
+  onRenew,
+  onChangePlan,
+  onRefund,
+  onShowEvents,
 }: {
   item: UserSubscription
   locale: string
@@ -201,6 +273,10 @@ function SubscriptionRow({
   autoRenewBusy: boolean
   autoRenewError: boolean
   onAutoRenew: (enabled: boolean, methodId: string | undefined) => void
+  onRenew: () => void
+  onChangePlan: () => void
+  onRefund: () => void
+  onShowEvents: () => void
 }) {
   const { t } = useI18n()
   // R-54：立即取消后实例仍是 active 但在宽限期内（end_at 已过）。
@@ -217,6 +293,8 @@ function SubscriptionRow({
   const autoRenewDisabled =
     offline || item.status !== 'active' || ended || autoRenewBusy || autoRenewPending
   const autoRenewLabel = `${t('account.subscription.mine.auto_renew')}: ${item.plan_title_snapshot}`
+  // P-13/R-35：资格由本地先判定并解释原因；服务端 422 仍是最终裁决。
+  const refundKey = refundIneligibilityKey(item)
 
   const unlimited = item.amount_total === 0
   const remain = unlimited
@@ -464,6 +542,57 @@ function SubscriptionRow({
           />
           </button>
         </div>
+      </div>
+
+      {/* 订阅生命周期入口：续费/变更/退款是写操作（离线禁用），事件流只读。
+          每个按钮都带套餐快照名，避免多条实例时读屏无法区分目标。 */}
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-hairline pt-3">
+        {item.status !== 'cancelled' ? (
+          <Button
+            variant="secondary"
+            className="h-8 px-2.5 text-xs"
+            disabled={offline}
+            aria-label={`${t('account.subscription.mine.renew')}: ${item.plan_title_snapshot}`}
+            onClick={onRenew}
+          >
+            {t('account.subscription.mine.renew')}
+          </Button>
+        ) : null}
+        {item.status === 'active' ? (
+          <Button
+            variant="secondary"
+            className="h-8 px-2.5 text-xs"
+            disabled={offline}
+            aria-label={`${t('account.subscription.mine.change_plan')}: ${item.plan_title_snapshot}`}
+            onClick={onChangePlan}
+          >
+            {t('account.subscription.mine.change_plan')}
+          </Button>
+        ) : null}
+        <Button
+          variant="ghost"
+          className="h-8 px-2.5 text-xs"
+          aria-label={`${t('account.subscription.mine.events')}: ${item.plan_title_snapshot}`}
+          onClick={onShowEvents}
+        >
+          {t('account.subscription.mine.events')}
+        </Button>
+        {item.status === 'active' ? (
+          <span className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              className="h-8 px-2.5 text-xs"
+              disabled={offline || refundKey !== null}
+              aria-label={`${t('account.subscription.mine.refund')}: ${item.plan_title_snapshot}`}
+              onClick={onRefund}
+            >
+              {t('account.subscription.mine.refund')}
+            </Button>
+            {refundKey !== null ? (
+              <span className="text-xs text-ink-3">{t(refundKey)}</span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
     </article>
   )

@@ -123,6 +123,17 @@ function useBaseHandlers(options: {
       HttpResponse.json({ preference: options.preference ?? 'subscription_first' }),
     ),
     http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(TOPUP_CONFIG)),
+    // 购买弹窗会读取钱包余额以决定是否提供 wallet 资金来源（P2b）；
+    // 默认余额为 0，wallet 选项仍可用（服务端 402 由用例单独覆盖）。
+    http.get(`${ORIGIN}/api/wallet/summary`, () =>
+      HttpResponse.json({
+        balance: 0,
+        held_credits: 0,
+        total_consumed: 0,
+        total_requests: 0,
+        threshold: 1000,
+      }),
+    ),
     // S4：订阅区会读取已保存的支付令牌（自动续费选择器 + 令牌卡片）。
     http.get(`${ORIGIN}/api/payment-methods`, () =>
       HttpResponse.json({ items: [] }),

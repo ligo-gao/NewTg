@@ -154,6 +154,7 @@ export function SubscriptionSection() {
         onRetry={() => void mineQuery.refetch()}
         offline={offline}
         paymentMethods={methodsQuery.data?.items ?? []}
+        plans={plansQuery.data?.items ?? []}
       />
 
       <BillingPreferenceCard query={preferenceQuery} offline={offline} />

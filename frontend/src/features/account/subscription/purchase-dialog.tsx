@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
@@ -18,9 +18,21 @@ import type { OrderView } from '../topup/types'
 import type { AvailableSubscriptionPlan, SubscriptionProvider } from './types'
 
 const TOPUP_CONFIG_KEY = ['topup', 'config'] as const
+/**
+ * Shares the balance cache with the top-up page and playground. Wallet purchase
+ * (P2b) is a purchase-only funding source: the server accepts it on
+ * `POST /api/subscription/purchase`, while renew/change stay channel-only.
+ */
+const WALLET_SUMMARY_KEY = ['wallet', 'summary'] as const
 
 /** Stable empty list: a fresh `[]` per render would retrigger the seeding effect. */
 const NO_PROVIDERS: readonly SubscriptionProvider[] = []
+
+function providerLabelKey(provider: SubscriptionProvider): string {
+  if (provider === 'wallet') return 'account.subscription.purchase.wallet'
+  if (provider === 'alipay') return 'account.orders.provider_alipay'
+  return 'account.orders.provider_stripe'
+}
 
 export interface SubscriptionPurchaseDialogProps {
   /** `null` closes the purchase intent. */
@@ -94,11 +106,30 @@ export function SubscriptionPurchaseDialog({
     enabled: plan !== null,
   })
 
+  // Wallet funding (P2b). The option is offered only when the wallet summary
+  // is readable: a deployment without the wallet surface (or a transient read
+  // failure) hides it instead of sending the user into a 404/503 dead end.
+  const walletQuery = useQuery({
+    queryKey: WALLET_SUMMARY_KEY,
+    queryFn: async () =>
+      requireData(await apiClient.GET('/api/wallet/summary')),
+    enabled: plan !== null,
+  })
+
   // epay is advertised by the server but its redirect-form checkout is not
   // wired into the console yet (G-DOM-72 ④); hide it rather than open a dead end.
-  const providers = (configQuery.data?.enabled_providers ?? NO_PROVIDERS).filter(
-    isUiSupportedProvider,
-  )
+  // Memoized because the list seeds a useEffect; a fresh array each render
+  // would re-run that effect on every keystroke-like update.
+  const providers: readonly SubscriptionProvider[] = useMemo(() => {
+    const channels = (
+      configQuery.data?.enabled_providers ?? NO_PROVIDERS
+    ).filter(isUiSupportedProvider)
+    // Wallet is a purchase-only funding source (P2b); append it after the
+    // channels so the default selection stays a real payment provider. Hide it
+    // entirely when the wallet summary cannot be read.
+    return walletQuery.isSuccess ? [...channels, 'wallet'] : channels
+  }, [configQuery.data, walletQuery.isSuccess])
+  const walletBalance = walletQuery.data?.balance
   const isFree = plan !== null && plan.price_amount === 0
 
   // Fresh intent per open: new key, cleared state. Keyed on the plan id (not
@@ -140,6 +171,11 @@ export function SubscriptionPurchaseDialog({
       }
       if (caught.kind === 'offline') {
         return { key: 'account.subscription.purchase.offline' }
+      }
+      if (caught.kind === 'quota') {
+        // 402 is the wallet-funding branch (P2b): the transaction rolled back,
+        // leaving no order/instance/ledger row behind.
+        return { key: 'account.subscription.purchase.insufficient_wallet' }
       }
       // 502 (provider outbound) and 503 (provider/limiter unavailable) share
       // the "try again later" copy; both are transient by contract.
@@ -224,7 +260,7 @@ export function SubscriptionPurchaseDialog({
       </legend>
       {providers.length === 0 ? (
         <p className="text-sm text-ink-2">
-          {configQuery.isPending
+          {configQuery.isPending || walletQuery.isPending
             ? t('account.subscription.purchase.loading_providers')
             : t('account.subscription.purchase.no_providers')}
         </p>
@@ -233,24 +269,29 @@ export function SubscriptionPurchaseDialog({
           {providers.map((option) => (
             <label
               key={option}
-              className="flex cursor-pointer items-center gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1"
+              className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1"
             >
-              <input
-                type="radio"
-                name="subscription-provider"
-                value={option}
-                checked={provider === option}
-                disabled={submitting}
-                onChange={() => {
-                  setProvider(option)
-                }}
-                className="accent-brand"
-              />
-              {t(
-                option === 'stripe'
-                  ? 'account.orders.provider_stripe'
-                  : 'account.orders.provider_alipay',
-              )}
+              <span className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="subscription-provider"
+                  value={option}
+                  checked={provider === option}
+                  disabled={submitting}
+                  onChange={() => {
+                    setProvider(option)
+                  }}
+                  className="accent-brand"
+                />
+                {t(providerLabelKey(option))}
+              </span>
+              {option === 'wallet' && walletBalance !== undefined ? (
+                <span className="text-xs tabular-nums text-ink-2">
+                  {t('account.subscription.purchase.wallet_balance', {
+                    balance: formatCredits(walletBalance),
+                  })}
+                </span>
+              ) : null}
             </label>
           ))}
         </div>
