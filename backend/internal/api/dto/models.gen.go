@@ -1247,11 +1247,12 @@ func (e OrderViewProvider) Valid() bool {
 
 // Defines values for OrderViewStatus.
 const (
-	OrderViewStatusCancelled OrderViewStatus = "cancelled"
-	OrderViewStatusExpired   OrderViewStatus = "expired"
-	OrderViewStatusFailed    OrderViewStatus = "failed"
-	OrderViewStatusPending   OrderViewStatus = "pending"
-	OrderViewStatusSucceeded OrderViewStatus = "succeeded"
+	OrderViewStatusCancelled      OrderViewStatus = "cancelled"
+	OrderViewStatusExpired        OrderViewStatus = "expired"
+	OrderViewStatusFailed         OrderViewStatus = "failed"
+	OrderViewStatusPending        OrderViewStatus = "pending"
+	OrderViewStatusRefundRequired OrderViewStatus = "refund_required"
+	OrderViewStatusSucceeded      OrderViewStatus = "succeeded"
 )
 
 // Valid indicates whether the value is a known member of the OrderViewStatus enum.
@@ -1264,6 +1265,8 @@ func (e OrderViewStatus) Valid() bool {
 	case OrderViewStatusFailed:
 		return true
 	case OrderViewStatusPending:
+		return true
+	case OrderViewStatusRefundRequired:
 		return true
 	case OrderViewStatusSucceeded:
 		return true
@@ -2282,11 +2285,12 @@ func (e TopupOrderViewProvider) Valid() bool {
 
 // Defines values for TopupOrderViewStatus.
 const (
-	TopupOrderViewStatusCancelled TopupOrderViewStatus = "cancelled"
-	TopupOrderViewStatusExpired   TopupOrderViewStatus = "expired"
-	TopupOrderViewStatusFailed    TopupOrderViewStatus = "failed"
-	TopupOrderViewStatusPending   TopupOrderViewStatus = "pending"
-	TopupOrderViewStatusSucceeded TopupOrderViewStatus = "succeeded"
+	TopupOrderViewStatusCancelled      TopupOrderViewStatus = "cancelled"
+	TopupOrderViewStatusExpired        TopupOrderViewStatus = "expired"
+	TopupOrderViewStatusFailed         TopupOrderViewStatus = "failed"
+	TopupOrderViewStatusPending        TopupOrderViewStatus = "pending"
+	TopupOrderViewStatusRefundRequired TopupOrderViewStatus = "refund_required"
+	TopupOrderViewStatusSucceeded      TopupOrderViewStatus = "succeeded"
 )
 
 // Valid indicates whether the value is a known member of the TopupOrderViewStatus enum.
@@ -2299,6 +2303,8 @@ func (e TopupOrderViewStatus) Valid() bool {
 	case TopupOrderViewStatusFailed:
 		return true
 	case TopupOrderViewStatusPending:
+		return true
+	case TopupOrderViewStatusRefundRequired:
 		return true
 	case TopupOrderViewStatusSucceeded:
 		return true
@@ -5572,8 +5578,10 @@ type OrderView struct {
 	// RawCallback 仅管理员（role=admin）详情可见；用户响应不包含该字段
 	RawCallback *map[string]interface{} `json:"raw_callback,omitempty"`
 
-	// Status 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
-	// expired/cancelled；终态不可再迁移。
+	// Status 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
+	// succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
+	// （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
+	// 「钱已收、待退款」的终态。其余终态不可再迁移。
 	Status    OrderViewStatus `json:"status"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	UserId    int64           `json:"user_id"`
@@ -5587,8 +5595,10 @@ type OrderViewFailureCode string
 // （充值/续费）为 stripe/alipay/epay。
 type OrderViewProvider string
 
-// OrderViewStatus 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
-// expired/cancelled；终态不可再迁移。
+// OrderViewStatus 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
+// succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
+// （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
+// 「钱已收、待退款」的终态。其余终态不可再迁移。
 type OrderViewStatus string
 
 // Page offset 分页信封；各域 items 的 DTO 随里程碑细化。
@@ -7169,7 +7179,9 @@ type SubscriptionChangeResponse struct {
 	// ClientSecret 仅 stripe 首次创建返回（等同支付凭据，不落库、不回放）
 	ClientSecret *string `json:"client_secret,omitempty"`
 
-	// CreditsDelta 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负
+	// CreditsDelta 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负。
+	// 注意它不是「可用额度」的变化量：已用量超过新总额度时会被钳到
+	// 新总额度（remain 置 0，P-12），此时可用额度的变化与该字段不一致。
 	CreditsDelta int64 `json:"credits_delta"`
 
 	// EventKind 按套餐方向判定：新套餐价 > 旧套餐价 ⇒ upgraded，否则 downgraded
@@ -7645,7 +7657,11 @@ type TopupOrderView struct {
 	// （P2b：下单即在同一事务内扣款并履约，没有渠道回调与支付凭据）；
 	// 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 	Provider TopupOrderViewProvider `json:"provider"`
-	Status   TopupOrderViewStatus   `json:"status"`
+
+	// Status 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+	// 升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
+	// 它不是 `failed`（那表示没收到钱）。
+	Status TopupOrderViewStatus `json:"status"`
 }
 
 // TopupOrderViewFailureCode defines model for TopupOrderView.FailureCode.
@@ -7656,7 +7672,9 @@ type TopupOrderViewFailureCode string
 // 充值请求（CreateOrderRequest）与续费请求接受 stripe/alipay/epay。
 type TopupOrderViewProvider string
 
-// TopupOrderViewStatus defines model for TopupOrderView.Status.
+// TopupOrderViewStatus 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+// 升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
+// 它不是 `failed`（那表示没收到钱）。
 type TopupOrderViewStatus string
 
 // TopupProviderConfig 公开的渠道配置；secret 永不出现。

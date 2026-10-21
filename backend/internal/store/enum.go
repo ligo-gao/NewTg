@@ -115,7 +115,11 @@ var EnumChecks = map[string][]string{
 	// provider 的 wallet 是 P2b 余额购买订阅（迁移 20261020230000），
 	// 不是第三方渠道：只出现在 biz_kind='subscribe' 的订单上。
 	"orders.provider": {"stripe", "alipay", "creem", "waffo", "waffo_pancake", "epay", "wallet"},
-	"orders.status":   {"pending", "succeeded", "failed", "expired", "cancelled"},
+	// refund_required 由 S2/R-29② 加入（迁移 20261021130000）：钱已收、履约
+	// 失败，留给退款流程的终态。
+	"orders.status": {
+		"pending", "succeeded", "failed", "expired", "cancelled", "refund_required",
+	},
 	"orders.failure_code": {
 		"provider_unavailable", "provider_rejected", "signature_invalid", "amount_mismatch",
 		"currency_mismatch", "order_not_found", "order_state_conflict", "manual_required",

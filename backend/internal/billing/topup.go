@@ -1467,6 +1467,15 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		s.enqueuePaymentSuccess(ctx, order)
 		return nil
 	}
+	if order.Status == string(OrderRefundRequired) {
+		// 已收款、待退款的终态（S2/R-29②）：重投回调什么都不做，也不再进
+		// 「non-pending 告警」——渠道重投是常态，而这里每次都会被拒，
+		// 报警只会掩盖真正的失败。HTTP 层据此回 200，停止无限重投。
+		if err := s.refreshOrder(ctx, order); err != nil {
+			return err
+		}
+		return nil
+	}
 	if order.Status != string(OrderPending) {
 		s.log.Warn("payment callback for non-pending order",
 			"order_id", order.ID, "provider", order.Provider, "status", order.Status)

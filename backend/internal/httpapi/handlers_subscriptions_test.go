@@ -1957,7 +1957,7 @@ func TestSubscriptionChangeEndpoint(t *testing.T) {
 			{"not changeable", billing.ErrSubscriptionNotChangeable, http.StatusConflict},
 			{"plan unavailable", billing.ErrSubscriptionPlanUnavailable, http.StatusConflict},
 			{"idempotency conflict", billing.ErrIdempotencyConflict, http.StatusConflict},
-			{"order changed", billing.ErrChangeOrderChanged, http.StatusConflict},
+			{"pending change order", billing.ErrChangeOrderPending, http.StatusConflict},
 			{"plan unchanged", billing.ErrChangePlanUnchanged, http.StatusUnprocessableEntity},
 			{"cycle mismatch", billing.ErrSubscriptionCycleMismatch, http.StatusUnprocessableEntity},
 			{"plan invalid", billing.ErrSubscriptionPlanInvalid, http.StatusUnprocessableEntity},

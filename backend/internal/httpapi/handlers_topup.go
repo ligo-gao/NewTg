@@ -479,7 +479,7 @@ func (h *TopupHandlers) handleListOrders(w http.ResponseWriter, r *http.Request)
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	if status != "" && !billing.OrderStatus(status).Valid() {
 		writeOrderProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
-			"status must be one of pending, succeeded, failed, expired, cancelled")
+			"status must be one of pending, succeeded, failed, expired, cancelled, refund_required")
 		return
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("q"))

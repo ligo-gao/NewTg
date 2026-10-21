@@ -1266,10 +1266,15 @@ type SubscriptionChangeInput struct {
 	GraceDays           int32
 	Currency            string
 	PricePaidAmount     int64
-	// EndAt 是折算后的新到期时刻。写入时取 GREATEST(end_at, EndAt)：
-	// 升降级的折算公式只会延长到期（见 billing.subscriptionChangeAmounts），
-	// 这里的守卫用于杜绝「任何路径不得缩短周期」的意外（例如免费套餐没有
-	// 单价可折算时）。
+	// EndAt 是折算后的新到期时刻，**直接写入**（不做 GREATEST 截留）。
+	//
+	// 【R-27】付费与即时（含 0 元）路径都严格 `end_at = now + 时长`：时长与
+	// 应补差价是同一个折算公式的两侧，若这里再保留旧 end_at（提前续费过的
+	// 实例往往 `end_at − now > period_days`），用户只付了「新价 − 剩余价值」
+	// 却拿到超出折算时长的周期，运营方按剩余价值折扣、按旧周期交付，等于
+	// 重复计价。唯一例外是**免费套餐**（新套餐价 0、没有单价可折算）：那时
+	// 由调用方（billing）在 Go 侧取 max(旧 end_at, now+时长) 后传入，仍以
+	// 这里写入的值为准。
 	EndAt     time.Time
 	EventKind string
 	// PriceDelta 是本次实际补缴的差价（分，≥0），CreditsDelta 是新旧周期
@@ -1322,7 +1327,8 @@ func LockSubscriptionForChange(ctx context.Context, q SubscriptionTx,
 // 冻结语义：
 //   - 不改 id、不改 start_at：同一个计费实例被迁移到新套餐，在飞请求结算时
 //     冻结的 subscriptionId 仍指向它（与续费方案甲同一理由）；
-//   - end_at = GREATEST(end_at, in.EndAt)：折算只会延长（P-11）；
+//   - end_at = in.EndAt（不做 GREATEST，见 SubscriptionChangeInput.EndAt 的
+//     R-27 说明）：折算时长由调用方按剩余价值算出，写侧不再二次放水；
 //   - amount_total = 新套餐 grant_credits；amount_used 保留（used 就是
 //     pre_consume 累计出来的已用量），但不得超过新总额度——remain 为负时
 //     钳到 0 而不是记账负数（P-12）。新 grant_credits=0 表示无限额度
@@ -1357,8 +1363,8 @@ func ChangeSubscriptionPlan(ctx context.Context, q SubscriptionTx,
 		    amount_total = $5::bigint,
 		    amount_used = CASE WHEN $5::bigint > 0 AND amount_used > $5::bigint
 		        THEN $5::bigint ELSE amount_used END,
-		    next_reset_at = CASE WHEN $6 THEN GREATEST(end_at, $7) ELSE NULL END,
-		    end_at = GREATEST(end_at, $7),
+		    next_reset_at = CASE WHEN $6 THEN $7::timestamptz ELSE NULL END,
+		    end_at = $7::timestamptz,
 		    reset_on_renew = $6,
 		    allow_wallet_overflow = $8,
 		    grace_days = $9,

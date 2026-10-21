@@ -50,12 +50,13 @@ var (
 	// ErrChangePlanUnchanged：目标套餐就是当前套餐。重复提交同一请求必须在
 	// 校验阶段被拒（409），而不是「再折算一次」把用户额度反复重算。
 	ErrChangePlanUnchanged = errors.New("billing: target plan is already the current plan")
+	// ErrChangeOrderPending：该实例已有一张 pending 的 change 订单（R-29①）。
+	// 两张并发订单在结算时只有一张能迁移实例，后到者必然「钱收了、套餐没生效」，
+	// 因此下单阶段就 409，让用户先完成或等前一张订单结束。
+	ErrChangeOrderPending = errors.New("billing: subscription already has a pending change order")
 	// ErrChangeSnapshot：升降级订单缺少可用快照，或快照与订单/实例不一致。
 	// 正常写路径不会出现；出现时保持 pending，绝不按当前套餐臆测合同条件。
 	ErrChangeSnapshot = errors.New("billing: subscription change order snapshot is missing or invalid")
-	// ErrChangeOrderChanged：结算时实例已不在下单时的旧套餐上（并发升降级/
-	// 续费/取消）。订单保持 pending 等人工核对，绝不叠加到别人的合同上。
-	ErrChangeOrderChanged = errors.New("billing: subscription changed since the change order was created")
 )
 
 // 一天的秒数。周期总秒按 period_days × 86400 计算（不是 end_at − start_at）：
@@ -121,8 +122,10 @@ type subscriptionChangeSnapshot struct {
 	Currency            string          `json:"currency"`
 	PriceAmount         int64           `json:"price_amount"`
 	// PriceDelta 是应补差价（= 订单金额）；RemainingValue 是折算用的旧套餐
-	// 剩余价值（仅供排障，不参与任何后续计算）。
+	// 剩余价值；WaivedDelta 是因「低于渠道最低支付额」而被免收的差价（R-28，
+	// 事件里 price_delta 记为 0，这里是对账用的唯一金额记录）。
 	PriceDelta     int64 `json:"price_delta"`
+	WaivedDelta    int64 `json:"waived_delta,omitempty"`
 	RemainingValue int64 `json:"remaining_value"`
 	// DurationSeconds 是折算后的新周期时长（秒），结算时以「支付成功时刻 +
 	// DurationSeconds」求 end_at——等待支付的时间不应计入用户周期。
@@ -227,13 +230,7 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 		if snap.ToPlanID != in.NewPlanID {
 			return ChangePlanResult{}, ErrIdempotencyConflict
 		}
-		result := ChangePlanResult{
-			OrderID: existing.ID, Order: existing, Replayed: true,
-			PriceDelta: snap.PriceDelta, CreditsDelta: snap.CreditsDelta,
-			EventKind: snap.EventKind, FromPlanID: snap.FromPlanID, NewPlanID: snap.ToPlanID,
-			NewEndAt: replayEndAt(existing, snap),
-		}
-		return result, nil
+		return changeReplayResult(existing)
 	}
 
 	if provider != ProviderStripe && provider != ProviderAlipay && provider != ProviderEpay {
@@ -241,9 +238,10 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 	}
 
 	var (
-		order     store.Order
-		snapshot  subscriptionChangeSnapshot
-		immediate bool
+		order       store.Order
+		snapshot    subscriptionChangeSnapshot
+		immediate   bool
+		waivedDelta int64
 	)
 	err := s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		// R-25：先对实例行加锁，再读余额与已用。锁在事务内，任何并发预扣/
@@ -255,8 +253,26 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 			return mapSubscriptionChangeStoreError(err, in.SubscriptionID)
 		}
 		if sub.PlanID == in.NewPlanID {
+			// 【I1】并发同 key 打 0 元路径时，先到者已把实例迁到目标套餐并提交；
+			// 后到者拿到行锁后看到「已经是目标套餐」。这时若直接报
+			// ErrChangePlanUnchanged，就永远走不到事务外的唯一键回放兜底
+			// （那里才是幂等语义的真正保证）。所以先按 key 回查 change 订单：
+			// 命中同一份合同（同用户/同实例/同目标/同渠道）就返回 Replayed，
+			// 否则才是「目标即当前套餐」的 422。
+			if replayed, err := replayChangeOrderTx(ctx, tx, in, provider, key); err != nil {
+				return err
+			} else if replayed != nil {
+				order = *replayed
+				return errChangeReplayed
+			}
 			return fmt.Errorf("%w: subscription %d already on plan %d",
 				ErrChangePlanUnchanged, in.SubscriptionID, in.NewPlanID)
+		}
+		// 【R-29①】同一实例至多允许一张 pending 的 change 订单。两张并发（不同
+		// key）订单都会在结算时抢同一次迁移：后到者必然失败，钱已收、套餐无法
+		// 生效。下单阶段就把第二次请求挡掉（409），比事后退款便宜得多。
+		if err := ensureNoPendingChangeOrderTx(ctx, tx, in.SubscriptionID, key); err != nil {
+			return err
 		}
 		plan, err := loadSubscriptionPlanForShare(tx, in.NewPlanID)
 		if err != nil {
@@ -280,11 +296,30 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 		if plan.PriceAmount > sub.PricePaidAmount {
 			eventKind = store.SubscriptionEventUpgraded
 		}
-		// 折算只会延长到期；GREATEST 在这里先求一次值（而不是只交给 SQL），
-		// 是为了让快照里冻结的 end_at 与最终写入值一致——换成免费套餐等
-		// 没有单价可折算的情形下，旧周期的剩余时间必须保住。
+		if priceDelta > 0 {
+			// 付费差价在插入订单前确认渠道可用与最低金额（与购买/续费同口径）。
+			providerMin, err := s.providerReady(provider)
+			if err != nil {
+				return err
+			}
+			if priceDelta < providerMin {
+				// 【R-28】差价低于渠道最低支付额时**免收并即时生效**：刚买完就
+				// 升一点点（例如 ¥99 → ¥100、剩 28 天 ⇒ 差价 ¥7.60）是正常的
+				// 小额升级，不该因为渠道下限变成死路，也不值得让用户走一次
+				// 支付。免收额只进快照供对账，事件按 price_delta=0 记录。
+				waivedDelta = priceDelta
+				priceDelta = 0
+			}
+		}
+		// 【R-27】付费与即时路径一律 `end_at = now + 折算时长`；只有免费套餐
+		// （新套餐价 0、没有单价可折算）才保留既有的更长剩余时间。
+		//
+		// 为什么不无条件 GREATEST：提前续费过的实例 `end_at − now > period_days`，
+		// 若在这里保住旧 end_at，用户按「新价 − 剩余价值」付了钱却拿到超出折算
+		// 时长的周期——剩余价值已经把旧周期的剩余时间折成折扣，再送一遍时间就是
+		// 重复计价（运营方漏收）。
 		endAt := now.Add(time.Duration(durationSeconds) * time.Second)
-		if sub.EndAt.UTC().After(endAt) {
+		if plan.PriceAmount == 0 && sub.EndAt.UTC().After(endAt) {
 			endAt = sub.EndAt.UTC()
 		}
 		snapshot = subscriptionChangeSnapshot{
@@ -302,6 +337,7 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 			Currency:            plan.Currency,
 			PriceAmount:         plan.PriceAmount,
 			PriceDelta:          priceDelta,
+			WaivedDelta:         waivedDelta,
 			RemainingValue:      remainValue,
 			DurationSeconds:     durationSeconds,
 			// credits_delta 是「本周期总额度」的变化量（新 grant − 旧 total），
@@ -320,18 +356,6 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 			IdempotencyKey: key,
 			Amount:         priceDelta,
 			Currency:       plan.Currency,
-		}
-		if priceDelta > 0 {
-			// 付费差价在插入订单前确认渠道可用与最低金额（与购买/续费同口径），
-			// 避免「先留下 pending 订单再 503」。
-			providerMin, err := s.providerReady(provider)
-			if err != nil {
-				return err
-			}
-			if priceDelta < providerMin {
-				return fmt.Errorf("%w: change delta %d cents below provider %s minimum %d cents",
-					ErrInvalidTopupAmount, priceDelta, provider, providerMin)
-			}
 		}
 
 		metadata, err := json.Marshal(subscriptionChangeMetadata{Change: &snapshot})
@@ -374,6 +398,11 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errChangeReplayed) {
+			// 锁内已认定这是同 key 的重放（见 replayChangeOrderTx）：事务内
+			// 没有任何写入，回滚后按首次订单回放。
+			return changeReplayResult(&order)
+		}
 		if isUniqueViolation(err) {
 			// 并发同 key：后到者回查首次订单。
 			if existing, findErr := s.findOrderByIdempotencyKey(ctx, key); findErr == nil && existing != nil {
@@ -383,18 +412,20 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 					existing.Provider == provider {
 					if snap, snapErr := decodeSubscriptionChangeSnapshot(existing); snapErr == nil &&
 						snap.ToPlanID == in.NewPlanID {
-						return ChangePlanResult{
-							OrderID: existing.ID, Order: existing, Replayed: true,
-							PriceDelta: snap.PriceDelta, CreditsDelta: snap.CreditsDelta,
-							EventKind: snap.EventKind, FromPlanID: snap.FromPlanID, NewPlanID: snap.ToPlanID,
-							NewEndAt: replayEndAt(existing, snap),
-						}, nil
+						return changeReplayResult(existing)
 					}
 				}
 				return ChangePlanResult{}, ErrIdempotencyConflict
 			}
 		}
 		return ChangePlanResult{}, err
+	}
+	if waivedDelta > 0 {
+		// R-28：差价低于渠道最低支付额而被免收——留一条日志供对账（事件里
+		// price_delta=0，快照里的 waived_delta 是唯一的金额记录）。
+		s.log.Info("waived subscription change delta below provider minimum",
+			"subscription_id", in.SubscriptionID, "plan_id", in.NewPlanID,
+			"user_id", in.UserID, "provider", provider, "waived_delta", waivedDelta)
 	}
 
 	result := ChangePlanResult{
@@ -419,14 +450,100 @@ func (s *TopupService) ChangePlan(ctx context.Context, in ChangePlanInput) (Chan
 	return result, nil
 }
 
-// replayEndAt 只在 0 元（即时生效）订单上给回放调用方 end_at：那种订单的
-// 快照 end_at 就是实际写入值。付费订单的真实 end_at 在支付成功时才以
-// 「支付成功时刻 + 冻结时长」求值，回放下单瞬间的估值会误导。
+// errChangeReplayed 是「锁内认定同 key 重放」的内部信号：它让事务回滚
+// （回滚前也没有任何写入），把首次订单带回调用方。
+var errChangeReplayed = errors.New("billing: subscription change replayed")
+
+// changeReplayResult 把已存在的 change 订单还原为重放结果（不含支付凭据）。
+func changeReplayResult(order *store.Order) (ChangePlanResult, error) {
+	snap, err := decodeSubscriptionChangeSnapshot(order)
+	if err != nil {
+		return ChangePlanResult{}, err
+	}
+	return ChangePlanResult{
+		OrderID: order.ID, Order: order, Replayed: true,
+		PriceDelta: snap.PriceDelta, CreditsDelta: snap.CreditsDelta,
+		EventKind: snap.EventKind, FromPlanID: snap.FromPlanID, NewPlanID: snap.ToPlanID,
+		NewEndAt: replayEndAt(order, snap),
+	}, nil
+}
+
+// replayChangeOrderTx 在实例行锁内按幂等键回查同一份升降级合同。
+//
+// 命中条件与事务外的幂等查重完全一致（同用户/同实例/同渠道/同目标套餐），
+// 因此「锁内回查」不会比事务外查重放得更宽。这个分支专门服务 I1：0 元路径
+// 先到者提交后实例已在目标套餐上，后到者若只看套餐就会误报
+// ErrChangePlanUnchanged，永远走不到唯一键回放兜底。
+func replayChangeOrderTx(ctx context.Context, tx *gorm.DB, in ChangePlanInput,
+	provider, key string) (*store.Order, error) {
+
+	var order store.Order
+	err := tx.WithContext(ctx).Raw(`
+		SELECT id, user_id, provider, amount, currency, status, idempotency_key,
+		       biz_kind, biz_ref_id, channel_metadata, created_at, updated_at
+		  FROM orders WHERE idempotency_key = ?`, key).Scan(&order).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("billing: lookup change order by key: %w", err)
+	}
+	if order.ID == 0 {
+		return nil, nil
+	}
+	if order.UserID != in.UserID || order.BizKind != store.OrderBizKindChange ||
+		order.BizRefID == nil || *order.BizRefID != in.SubscriptionID ||
+		order.Provider != provider {
+		return nil, ErrIdempotencyConflict
+	}
+	snap, err := decodeSubscriptionChangeSnapshot(&order)
+	if err != nil {
+		return nil, err
+	}
+	if snap.ToPlanID != in.NewPlanID {
+		return nil, ErrIdempotencyConflict
+	}
+	return &order, nil
+}
+
+// ensureNoPendingChangeOrderTx 挡住「同一实例两张并发 change 订单」（R-29①）。
+//
+// 结算阶段只有「第一张 pending 订单 → succeeded」那一次迁移能成功，后到者
+// 必然失败；钱已经收了、套餐却没生效，只能退款。下单阶段用一次带索引的
+// 等值查询把它挡在 409，比事后处理便宜得多。同 key 的重复请求不算 pending
+// 冲突：那是重放，由上面的幂等分支返回首次订单。
+func ensureNoPendingChangeOrderTx(ctx context.Context, tx *gorm.DB,
+	subscriptionID int64, key string) error {
+
+	var pending int64
+	if err := tx.WithContext(ctx).Raw(`
+		SELECT count(*) FROM orders
+		 WHERE biz_kind = 'change' AND biz_ref_id = ? AND status = 'pending'
+		   AND idempotency_key <> ?`, subscriptionID, key).Row().Scan(&pending); err != nil {
+		return fmt.Errorf("billing: count pending change orders: %w", err)
+	}
+	if pending > 0 {
+		return fmt.Errorf("%w: subscription %d has %d pending change order(s)",
+			ErrChangeOrderPending, subscriptionID, pending)
+	}
+	return nil
+}
+
+// replayEndAt 给回放调用方 end_at：
+//   - 0 元（即时生效）订单：快照里的 end_at 就是实际写入值；
+//   - 已支付订单（M5）：真实值 = paid_at + 冻结时长（结算时就是这样求值的）；
+//   - 仍 pending 的付费订单：下单瞬间的估值会误导，留空。
 func replayEndAt(order *store.Order, snap subscriptionChangeSnapshot) time.Time {
-	if order.Status != string(OrderSucceeded) || order.Amount != 0 {
+	if order.Status != string(OrderSucceeded) {
 		return time.Time{}
 	}
-	return snap.EndAt
+	if order.Amount == 0 {
+		return snap.EndAt
+	}
+	if order.PaidAt != nil {
+		return order.PaidAt.UTC().Add(time.Duration(snap.DurationSeconds) * time.Second)
+	}
+	return time.Time{}
 }
 
 // mapSubscriptionChangeStoreError 把 store 的实例守卫错误翻译成计费语义。
@@ -504,6 +621,8 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 	}
 	now := s.now().UTC()
 	changed := false
+	refundRequired := false
+	var applyErr error
 	err = s.subscriptionTx(ctx, func(tx *gorm.DB) error {
 		res := tx.Exec(`
 			UPDATE orders
@@ -522,7 +641,7 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 				Row().Scan(&status); err != nil {
 				return fmt.Errorf("billing: re-read order %d: %w", order.ID, err)
 			}
-			if status == string(OrderSucceeded) {
+			if status == string(OrderSucceeded) || status == string(OrderRefundRequired) {
 				return nil
 			}
 			return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, status)
@@ -533,8 +652,21 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 			switch {
 			case errors.Is(err, store.ErrSubscriptionNotFound),
 				errors.Is(err, store.ErrSubscriptionNotActive):
-				// 实例在下单后被取消/到期/换了套餐：整笔回滚，订单留 pending。
-				return fmt.Errorf("%w: %v", ErrChangeOrderChanged, err)
+				// 【R-29②】钱已收、套餐却已无法应用（实例在下单后被取消/到期/
+				// 换了套餐）。订单转 refund_required 终态并把失败原因留在
+				// failure_code，绝不回滚成 pending：pending 会让渠道无限重投、
+				// 每次 5xx，且永远不会成功。钱要退，但退钱是人工/退款流程的事，
+				// 不能让支付方继续重试。
+				if markErr := tx.Exec(`
+					UPDATE orders
+					SET status = 'refund_required', failure_code = 'manual_required',
+					    updated_at = now()
+					WHERE id = ? AND status = 'succeeded'`, order.ID).Error; markErr != nil {
+					return fmt.Errorf("billing: mark change order %d refund_required: %w", order.ID, markErr)
+				}
+				refundRequired = true
+				applyErr = err
+				return nil
 			}
 			return err
 		}
@@ -544,6 +676,12 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 	if err != nil {
 		return err
 	}
+	if refundRequired {
+		// 告警（error 级别）：这笔钱必须人工退款，订单已是终态不会再被重投。
+		s.log.Error("subscription change paid but plan could not be applied; refund required",
+			"order_id", order.ID, "subscription_id", snap.SubscriptionID,
+			"user_id", order.UserID, "amount", order.Amount, "error", applyErr)
+	}
 	if changed {
 		s.log.Info("subscription plan changed",
 			"order_id", order.ID, "subscription_id", snap.SubscriptionID,
@@ -551,6 +689,7 @@ func (s *TopupService) settleSubscriptionChange(ctx context.Context, order *stor
 			"user_id", order.UserID, "event", snap.EventKind,
 			"price_delta", snap.PriceDelta, "duration_seconds", snap.DurationSeconds)
 	}
+	// 无论成功还是转退款，都向支付方返回「已收到」：重投不会改变结果。
 	return s.refreshOrder(ctx, order)
 }
 
@@ -585,7 +724,8 @@ func decodeSubscriptionChangeSnapshot(order *store.Order) (subscriptionChangeSna
 	if snap.FromPlanID <= 0 || snap.ToPlanID <= 0 || snap.FromPlanID == snap.ToPlanID ||
 		strings.TrimSpace(snap.PlanTitle) == "" || snap.PeriodDays < 1 ||
 		snap.GrantCredits < 0 || snap.GraceDays < 0 || snap.PriceAmount < 0 ||
-		snap.PriceDelta < 0 || snap.RemainingValue < 0 || snap.DurationSeconds <= 0 ||
+		snap.PriceDelta < 0 || snap.WaivedDelta < 0 || snap.RemainingValue < 0 ||
+		snap.DurationSeconds <= 0 ||
 		snap.EndAt.IsZero() || strings.TrimSpace(snap.Currency) == "" {
 		return snap, fmt.Errorf("%w: order %d snapshot is incomplete", ErrChangeSnapshot, order.ID)
 	}

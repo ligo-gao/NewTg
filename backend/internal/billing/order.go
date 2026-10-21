@@ -5,9 +5,10 @@ import "errors"
 // 订单状态机（modules-04 §3；裁决 P-1）。
 //
 // 枚举与数据库 CHECK 完全一致：pending / succeeded / failed / expired /
-// cancelled。`paid` 是架构 spec 的历史别名，映射为 succeeded；`refunded`
-// 仅为未来扩展预留，MVP 不启用（不退款），故这里刻意不定义常量——
-// 任何尝试写入 refunded 的代码都应在编译期就暴露。
+// cancelled / refund_required（后者由 S2/R-29② 引入，迁移 20261021130000）。
+// `paid` 是架构 spec 的历史别名，映射为 succeeded；`refunded` 仍为未来扩展
+// 预留（购买退款属 S3），故这里刻意不定义常量——任何尝试写入 refunded 的
+// 代码都应在编译期就暴露。
 type OrderStatus string
 
 const (
@@ -20,6 +21,11 @@ const (
 	OrderExpired OrderStatus = "expired"
 	// OrderCancelled 表示用户主动取消。
 	OrderCancelled OrderStatus = "cancelled"
+	// OrderRefundRequired 表示**钱已收、履约失败**（S2/R-29②：升降级支付成功后
+	// 订阅已被并发取消/换套餐，迁移无法应用）。终态：不再接受回调重投，也不再
+	// 自动迁移——留给退款流程（S3）人工处理。不是 pending，否则渠道会无限重投、
+	// 每次 5xx，且永远不会成功。
+	OrderRefundRequired OrderStatus = "refund_required"
 )
 
 var (
@@ -55,7 +61,8 @@ func (e *OrderTransitionError) Unwrap() error { return ErrInvalidOrderTransition
 // Valid 报告 s 是否是数据库 CHECK 允许的落库状态。
 func (s OrderStatus) Valid() bool {
 	switch s {
-	case OrderPending, OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled:
+	case OrderPending, OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled,
+		OrderRefundRequired:
 		return true
 	default:
 		return false
@@ -66,7 +73,7 @@ func (s OrderStatus) Valid() bool {
 // 超时关闭后的成功通知都必须被拒绝，否则会重复入账或改写对账事实。
 func (s OrderStatus) Terminal() bool {
 	switch s {
-	case OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled:
+	case OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled, OrderRefundRequired:
 		return true
 	default:
 		return false

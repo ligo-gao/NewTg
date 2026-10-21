@@ -1035,6 +1035,19 @@ export interface paths {
          *     仅允许同币种、同周期天数（`period_days`）的套餐；跨币种/跨周期 →
          *     422 `subscription_cycle_mismatch`。目标套餐即当前套餐 → 422。
          *
+         *     周期口径（R-27）：付费与 0 元路径一律 `end_at = now + 折算时长`，
+         *     **不再保留**提前续费/降级延长留下的更长 end_at——那段时间已经以
+         *     「剩余价值」的形式折成了折扣。唯一例外是免费套餐（新套餐价 0，没有
+         *     单价可折算），保留更长的剩余时间。
+         *
+         *     小额差价（R-28）：应补低于渠道最低支付额时**免收并即时生效**，
+         *     事件记 `price_delta=0`，免收额留在订单快照的 `waived_delta`。
+         *
+         *     并发（R-29）：同一实例已有一张 pending 的 change 订单时再提交（不同
+         *     Idempotency-Key）→ 409；若支付成功后订阅已被并发取消/到期/换套餐导致
+         *     迁移无法应用，订单转 `refund_required` 终态（已收款、待退款），支付方
+         *     收到 2xx，不会被无限重投。同 key 的并发请求一律返回首次结果（200）。
+         *
          *     `Idempotency-Key` 必带；同 key 重放返回首次结果（200，不回放支付凭据），
          *     同 key 改口到另一套餐 → 409。仅本人实例，他人实例与不存在统一 404；
          *     仅 `active` 实例可升降级，`cancelled`/`expired` → 409。
@@ -5389,8 +5402,13 @@ export interface components {
              */
             amount: number;
             currency: string;
-            /** @enum {string} */
-            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+            /**
+             * @description 六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+             *     升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
+             *     它不是 `failed`（那表示没收到钱）。
+             * @enum {string}
+             */
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
             /**
              * Format: int64
              * @description 成功时到账积分快照；pending/failed 为 0
@@ -5468,7 +5486,9 @@ export interface components {
             price_delta: number;
             /**
              * Format: int64
-             * @description 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负
+             * @description 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负。
+             *     注意它不是「可用额度」的变化量：已用量超过新总额度时会被钳到
+             *     新总额度（remain 置 0，P-12），此时可用额度的变化与该字段不一致。
              */
             credits_delta: number;
             /**
@@ -7613,11 +7633,13 @@ export interface components {
             amount: number;
             currency: string;
             /**
-             * @description 五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
-             *     expired/cancelled；终态不可再迁移。
+             * @description 六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
+             *     succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
+             *     （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
+             *     「钱已收、待退款」的终态。其余终态不可再迁移。
              * @enum {string}
              */
-            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled";
+            status: "pending" | "succeeded" | "failed" | "expired" | "cancelled" | "refund_required";
             /** Format: int64 */
             credited_credits: number;
             /** @enum {string|null} */

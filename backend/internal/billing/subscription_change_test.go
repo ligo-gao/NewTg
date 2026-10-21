@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,7 +285,8 @@ func TestSubscriptionChangeUpgradeMidPeriod(t *testing.T) {
 		t.Fatalf("重复回调后事件数 = %d，期望 1（不得重复追加 upgraded）", len(got))
 	}
 
-	// 同 key 重放：返回同一订单，不再折算一次。
+	// 同 key 重放：返回同一订单，不再折算一次；M5：已支付订单回放的
+	// new_end_at = paid_at + 冻结时长（结算时就是这样求值的）。
 	again, err := svc.ChangePlan(context.Background(), ChangePlanInput{
 		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
 		Provider: ProviderStripe, IdempotencyKey: key,
@@ -292,6 +294,12 @@ func TestSubscriptionChangeUpgradeMidPeriod(t *testing.T) {
 	if err != nil || !again.Replayed || again.OrderID != result.Order.ID {
 		t.Fatalf("同 key 重放 = %+v / %v", again, err)
 	}
+	if again.NewEndAt.IsZero() {
+		t.Fatal("已支付订单回放必须给出 new_end_at（paid_at + 冻结时长）")
+	}
+	// paid_at 来自 DB 的 now()（微秒），实例 end_at 用的是 Go 侧时钟，
+	// 两者在同一事务的不同时钟源上取值，允许 1 秒抖动。
+	assertTimeNear(t, again.NewEndAt, after.EndAt.UTC(), time.Second, "回放 new_end_at")
 	var count int64
 	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
 		Scan(&count); err != nil {
@@ -408,6 +416,20 @@ func TestSubscriptionChangeDowngradeExtendsWithoutPayment(t *testing.T) {
 	if detail["from_plan_id"] != float64(oldPlanID) || detail["to_plan_id"] != float64(newPlanID) ||
 		detail["price_delta"] != float64(0) || detail["credits_delta"] != float64(-600) {
 		t.Fatalf("降级事件 detail = %v", detail)
+	}
+
+	// M6：0 元路径的同 key 重放——实例已在新套餐上（锁内回放分支），
+	// 必须返回首次订单而不是 422「目标即当前套餐」。
+	again, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
+		Provider: ProviderStripe, IdempotencyKey: result.Order.IdempotencyKey,
+	})
+	if err != nil || !again.Replayed || again.OrderID != result.Order.ID {
+		t.Fatalf("0 元路径同 key 重放 = %+v / %v", again, err)
+	}
+	assertTimeNear(t, again.NewEndAt, after.EndAt.UTC(), time.Second, "0 元重放 new_end_at")
+	if got := readSubscriptionEvents(t, db, subID); len(got) != 1 {
+		t.Fatalf("0 元重放不得追加事件：%d 条", len(got))
 	}
 }
 
@@ -592,15 +614,183 @@ func TestSubscriptionChangeZeroPriceTargetIsImmediate(t *testing.T) {
 	if after.PlanID != freePlanID || after.AmountTotal != 300 || after.PricePaidAmount != 0 {
 		t.Fatalf("换成免费套餐后实例 = %+v", after)
 	}
-	// 剩余 45 天 > 免费套餐的 30 天：GREATEST(end_at, …) 保住剩余时间。
+	// 剩余 45 天 > 免费套餐的 30 天：免费套餐没有单价可折算，保留剩余时间
+	// （R-27 的唯一例外）。
 	if !after.EndAt.UTC().Equal(oldEnd) {
 		t.Fatalf("换免费套餐不得缩短周期：%s → %s", oldEnd, after.EndAt)
 	}
 }
 
-// TestSubscriptionChangeSettlementFailureLeavesOrderPending 覆盖「失败零扩展」：
-// 下单后实例被并发取消，webhook 结算必须失败并回滚订单状态，实例保持不动。
-func TestSubscriptionChangeSettlementFailureLeavesOrderPending(t *testing.T) {
+// TestSubscriptionChangePaidIgnoresSurplusRemaining 覆盖 R-27 / C1：提前续费
+// 过的实例（`end_at − now > period_days`）升级时，必须严格
+// `end_at = now + 折算时长`，不能因为旧 end_at 更长就保留它——否则用户按
+// 「新价 − 剩余价值」付钱，却拿到超出折算时长的周期（重复计价、运营方漏收）。
+func TestSubscriptionChangePaidIgnoresSurplusRemaining(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	oldPlanID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+	newPlanID := insertSubscriptionPlan(t, db, 19900, 5000, 30, true, "enabled", "")
+	now := time.Now().UTC().Truncate(time.Second)
+	// 已经提前续费一次：剩 45 天 > 一个周期（30 天）。
+	oldEnd := now.Add(45 * 24 * time.Hour)
+	subID := insertChangeSubscription(t, db, userID, oldPlanID, "active",
+		9900, 1000, 100, 30, now.Add(-15*24*time.Hour), oldEnd)
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	result, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
+		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-surplus-%d", topupTestSeq.Add(1)),
+	})
+	if err != nil {
+		t.Fatalf("create change order: %v", err)
+	}
+	// 剩余价值 = 9900 × 45 / 30 = 14850；应补 = 19900 − 14850 = 5050。
+	if result.PriceDelta < 5049 || result.PriceDelta > 5050 {
+		t.Fatalf("应补差价 = %d，期望 5049..5050", result.PriceDelta)
+	}
+	if err := changeViaStripe(t, svc, db, result.Order.ID, result.Order.Amount); err != nil {
+		t.Fatalf("change webhook: %v", err)
+	}
+	after := readRenewalSubscription(t, db, subID)
+	if after.PlanID != newPlanID {
+		t.Fatalf("实例未迁移到新套餐: %+v", after)
+	}
+	// 关键：新周期是 30 天，而不是旧 end_at 的 45 天。
+	if delta := after.EndAt.UTC().Sub(now); delta < 29*24*time.Hour || delta > 31*24*time.Hour {
+		t.Fatalf("升级后剩余时长 = %s，期望约 30 天（不得保留旧的 45 天）", delta)
+	}
+	if after.EndAt.After(oldEnd) {
+		t.Fatalf("升级不得超出折算时长：新 %s > 旧 %s", after.EndAt, oldEnd)
+	}
+}
+
+// TestSubscriptionChangeZeroDeltaIgnoresSurplusRemaining 覆盖 R-27 的 0 元分支：
+// 剩余时间远超一个周期时，差额折算出的时长才是交付时长，不能保留旧 end_at
+// （否则「剩余价值 ≥ 新价 ⇒ 应补 0」再叠加旧周期，等于白送）。
+func TestSubscriptionChangeZeroDeltaIgnoresSurplusRemaining(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	oldPlanID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+	newPlanID := insertSubscriptionPlan(t, db, 15000, 3000, 30, true, "enabled", "")
+	now := time.Now().UTC().Truncate(time.Second)
+	oldEnd := now.Add(60 * 24 * time.Hour)
+	subID := insertChangeSubscription(t, db, userID, oldPlanID, "active",
+		9900, 1000, 0, 30, now.Add(-time.Hour), oldEnd)
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	result, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
+		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-surplus-zero-%d", topupTestSeq.Add(1)),
+	})
+	if err != nil {
+		t.Fatalf("create change: %v", err)
+	}
+	// 剩余价值 = 9900 × 60 / 30 = 19800 ≥ 15000 ⇒ 应补 0；
+	// 时长 = 19800 × 30 天 / 15000 = 39.6 天。
+	if result.PriceDelta != 0 || result.Order.Status != string(OrderSucceeded) {
+		t.Fatalf("0 元升级 = %+v", result)
+	}
+	after := readRenewalSubscription(t, db, subID)
+	if delta := after.EndAt.UTC().Sub(now); delta < 39*24*time.Hour || delta > 40*24*time.Hour {
+		t.Fatalf("0 元升级后剩余时长 = %s，期望约 39.6 天（不得保留旧的 60 天）", delta)
+	}
+}
+
+// TestSubscriptionChangeWaivesDeltaBelowProviderMinimum 覆盖 R-28：应补低于
+// 渠道最低支付额时免收并即时生效，事件 price_delta=0，快照留下 waived_delta。
+func TestSubscriptionChangeWaivesDeltaBelowProviderMinimum(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	oldPlanID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+	// 新价 10000、剩 28 天 ⇒ 剩余价值 9240 ⇒ 应补 760 分 < 渠道下限 1000 分。
+	newPlanID := insertSubscriptionPlan(t, db, 10000, 1200, 30, true, "enabled", "")
+	now := time.Now().UTC().Truncate(time.Second)
+	subID := insertChangeSubscription(t, db, userID, oldPlanID, "active",
+		9900, 1000, 30, 30, now.Add(-2*24*time.Hour), now.Add(28*24*time.Hour))
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	result, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
+		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-waive-%d", topupTestSeq.Add(1)),
+	})
+	if err != nil {
+		t.Fatalf("create waived change: %v", err)
+	}
+	if result.PriceDelta != 0 || result.Order.Amount != 0 ||
+		result.Order.Status != string(OrderSucceeded) || result.ClientSecret != "" {
+		t.Fatalf("低于渠道下限的差价应免收并即时生效: %+v", result)
+	}
+	after := readRenewalSubscription(t, db, subID)
+	if after.PlanID != newPlanID || after.AmountTotal != 1200 || after.AmountUsed != 30 {
+		t.Fatalf("免收后实例 = %+v", after)
+	}
+	detail := readChangeEventDetail(t, db, subID, store.SubscriptionEventUpgraded)
+	if detail["price_delta"] != float64(0) {
+		t.Fatalf("免收事件的 price_delta = %v，期望 0", detail["price_delta"])
+	}
+	meta := readSubscriptionMetadata(t, db, result.Order.ID)
+	var snap map[string]any
+	if err := json.Unmarshal(meta["change"], &snap); err != nil {
+		t.Fatalf("decode change snapshot: %v", err)
+	}
+	if snap["waived_delta"] != float64(760) {
+		t.Fatalf("快照 waived_delta = %v，期望 760", snap["waived_delta"])
+	}
+}
+
+// TestSubscriptionChangeRejectsSecondPendingOrder 覆盖 R-29①：同一实例已有
+// pending 的 change 订单时，第二张（不同 key）必须在**下单阶段** 409，
+// 而不是收了钱之后在结算阶段失败。
+func TestSubscriptionChangeRejectsSecondPendingOrder(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	oldPlanID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+	planB := insertSubscriptionPlan(t, db, 19900, 5000, 30, true, "enabled", "")
+	planC := insertSubscriptionPlan(t, db, 29900, 8000, 30, true, "enabled", "")
+	now := time.Now().UTC().Truncate(time.Second)
+	subID := insertChangeSubscription(t, db, userID, oldPlanID, "active",
+		9900, 1000, 0, 30, now.Add(-time.Hour), now.Add(29*24*time.Hour))
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	first, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: planB,
+		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-pend-1-%d", topupTestSeq.Add(1)),
+	})
+	if err != nil {
+		t.Fatalf("first change order: %v", err)
+	}
+	if first.Order.Status != string(OrderPending) {
+		t.Fatalf("第一张订单应为 pending: %+v", first.Order)
+	}
+	key2 := fmt.Sprintf("change-pend-2-%d", topupTestSeq.Add(1))
+	if _, err := svc.ChangePlan(context.Background(), ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: planC,
+		Provider: ProviderStripe, IdempotencyKey: key2,
+	}); !errors.Is(err, ErrChangeOrderPending) {
+		t.Fatalf("第二张并发订单 err = %v，期望 ErrChangeOrderPending", err)
+	}
+	assertNoOrderWithKey(t, db, key2)
+	if sub := readRenewalSubscription(t, db, subID); sub.PlanID != oldPlanID {
+		t.Fatalf("被拒绝的第二张订单不得改动实例: %+v", sub)
+	}
+}
+
+// TestSubscriptionChangeSettlementMarksRefundRequired 覆盖 R-29②：下单后实例
+// 被并发取消，结算**不得**留在 pending（渠道会无限重投），而是转
+// refund_required 终态并向支付方返回成功；实例与事件都保持不动。
+func TestSubscriptionChangeSettlementMarksRefundRequired(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	stripe := newStripeTestServer(t)
 	userID := createBillingTestUser(t, db, 0)
@@ -615,7 +805,7 @@ func TestSubscriptionChangeSettlementFailureLeavesOrderPending(t *testing.T) {
 	svc := newStripeTopupService(t, gormDB, stripe.URL)
 	result, err := svc.ChangePlan(context.Background(), ChangePlanInput{
 		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
-		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-race-%d", topupTestSeq.Add(1)),
+		Provider: ProviderStripe, IdempotencyKey: fmt.Sprintf("change-refund-%d", topupTestSeq.Add(1)),
 	})
 	if err != nil {
 		t.Fatalf("create change order: %v", err)
@@ -623,16 +813,110 @@ func TestSubscriptionChangeSettlementFailureLeavesOrderPending(t *testing.T) {
 	if _, err := db.Exec(`UPDATE subscriptions SET status = 'cancelled' WHERE id = $1`, subID); err != nil {
 		t.Fatalf("cancel subscription concurrently: %v", err)
 	}
-	if err := changeViaStripe(t, svc, db, result.Order.ID, result.Order.Amount); err == nil {
-		t.Fatal("实例已 cancelled 时结算必须失败")
+	// R-29②：结算返回 nil（支付方收到 2xx），订单进 refund_required 终态。
+	if err := changeViaStripe(t, svc, db, result.Order.ID, result.Order.Amount); err != nil {
+		t.Fatalf("结算应转 refund_required 而不是返回错误: %v", err)
 	}
-	assertOrderStatus(t, db, result.Order.ID, string(OrderPending))
+	assertOrderStatus(t, db, result.Order.ID, string(OrderRefundRequired))
+	var failureCode sql.NullString
+	var paidAt sql.NullTime
+	if err := db.QueryRow(`SELECT failure_code, paid_at FROM orders WHERE id = $1`, result.Order.ID).
+		Scan(&failureCode, &paidAt); err != nil {
+		t.Fatalf("read refund order: %v", err)
+	}
+	if !failureCode.Valid || failureCode.String != "manual_required" {
+		t.Fatalf("failure_code = %v，期望 manual_required", failureCode)
+	}
+	if !paidAt.Valid {
+		t.Fatal("refund_required 订单必须保留 paid_at（已收款证据）")
+	}
 	sub := readRenewalSubscription(t, db, subID)
 	if sub.PlanID != oldPlanID || sub.Status != "cancelled" || sub.AmountTotal != 1000 {
 		t.Fatalf("失败结算不得改写实例: %+v", sub)
 	}
 	if got := readSubscriptionEvents(t, db, subID); len(got) != 0 {
 		t.Fatalf("失败结算不得追加事件，得到 %+v", got)
+	}
+	// 重复回调：订单已是终态，直接幂等返回，不再改写。
+	if err := changeViaStripe(t, svc, db, result.Order.ID, result.Order.Amount); err != nil {
+		t.Fatalf("重投回调应幂等返回: %v", err)
+	}
+	assertOrderStatus(t, db, result.Order.ID, string(OrderRefundRequired))
+}
+
+// TestSubscriptionChangeConcurrentSameKeyReplays 覆盖 I1：两个并发请求用同一
+// 幂等键打 0 元路径时，先到者把实例迁到目标套餐；后到者拿到行锁后看到
+// 「已经是目标套餐」，必须回放首次订单（200），而不是 422「目标即当前套餐」。
+func TestSubscriptionChangeConcurrentSameKeyReplays(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripe := newStripeTestServer(t)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+
+	oldPlanID := insertSubscriptionPlan(t, db, 9900, 1000, 30, true, "enabled", "")
+	newPlanID := insertSubscriptionPlan(t, db, 4900, 400, 30, true, "enabled", "")
+	now := time.Now().UTC().Truncate(time.Second)
+	subID := insertChangeSubscription(t, db, userID, oldPlanID, "active",
+		9900, 1000, 20, 30, now.Add(-time.Hour), now.Add(29*24*time.Hour))
+
+	svc := newStripeTopupService(t, gormDB, stripe.URL)
+	key := fmt.Sprintf("change-concurrent-%d", topupTestSeq.Add(1))
+	in := ChangePlanInput{
+		UserID: userID, SubscriptionID: subID, NewPlanID: newPlanID,
+		Provider: ProviderStripe, IdempotencyKey: key,
+	}
+
+	const workers = 2
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []ChangePlanResult
+		errs    []error
+	)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := svc.ChangePlan(context.Background(), in)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			results = append(results, result)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for _, err := range errs {
+		t.Fatalf("并发同 key 不得失败: %v", err)
+	}
+	if len(results) != workers {
+		t.Fatalf("成功结果数 = %d，期望 %d", len(results), workers)
+	}
+	orderID := results[0].OrderID
+	for _, result := range results[1:] {
+		if result.OrderID != orderID {
+			t.Fatalf("并发同 key 返回了不同订单：%d vs %d", orderID, result.OrderID)
+		}
+	}
+	var orders int64
+	if err := db.QueryRow(`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key).
+		Scan(&orders); err != nil {
+		t.Fatalf("count change orders: %v", err)
+	}
+	if orders != 1 {
+		t.Fatalf("并发同 key 订单数 = %d，期望 1", orders)
+	}
+	if got := readSubscriptionEvents(t, db, subID); len(got) != 1 {
+		t.Fatalf("并发同 key 事件数 = %d，期望 1（不得重复折算）", len(got))
+	}
+	if sub := readRenewalSubscription(t, db, subID); sub.PlanID != newPlanID {
+		t.Fatalf("并发升降级后实例 = %+v，期望已迁移到新套餐", sub)
 	}
 }
 

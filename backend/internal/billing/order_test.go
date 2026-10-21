@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestOrderTransition 钉死 M5 §3 的五态订单状态机（裁决 P-1）：
-// 只有 pending 可以迁移，四个终态一律不可再迁移。
+// TestOrderTransition 钉死 M5 §3 的订单状态机（裁决 P-1 + S2/R-29②）：
+// 只有 pending 可以迁移，五个终态（含 refund_required）一律不可再迁移。
 func TestOrderTransition(t *testing.T) {
 	valid := [][2]OrderStatus{
 		{OrderPending, OrderSucceeded},
@@ -20,9 +20,11 @@ func TestOrderTransition(t *testing.T) {
 		}
 	}
 
-	terminal := []OrderStatus{OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled}
+	terminal := []OrderStatus{OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled,
+		OrderRefundRequired}
 	for _, from := range terminal {
-		for _, to := range []OrderStatus{OrderPending, OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled} {
+		for _, to := range []OrderStatus{OrderPending, OrderSucceeded, OrderFailed,
+			OrderExpired, OrderCancelled, OrderRefundRequired} {
 			err := Transition(from, to)
 			if err == nil {
 				t.Errorf("Transition(%s, %s) = nil, want terminal-state error", from, to)
@@ -58,7 +60,8 @@ func TestOrderTransition(t *testing.T) {
 
 // TestOrderStatusValid 校验枚举合法性与终态判定。
 func TestOrderStatusValid(t *testing.T) {
-	for _, s := range []OrderStatus{OrderPending, OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled} {
+	for _, s := range []OrderStatus{OrderPending, OrderSucceeded, OrderFailed, OrderExpired,
+		OrderCancelled, OrderRefundRequired} {
 		if !s.Valid() {
 			t.Errorf("%s.Valid() = false, want true", s)
 		}
@@ -69,7 +72,8 @@ func TestOrderStatusValid(t *testing.T) {
 	if OrderPending.Terminal() {
 		t.Error("pending.Terminal() = true, want false")
 	}
-	for _, s := range []OrderStatus{OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled} {
+	for _, s := range []OrderStatus{OrderSucceeded, OrderFailed, OrderExpired, OrderCancelled,
+		OrderRefundRequired} {
 		if !s.Terminal() {
 			t.Errorf("%s.Terminal() = false, want true", s)
 		}

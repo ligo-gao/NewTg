@@ -1927,7 +1927,7 @@ func (h *SubscriptionHandlers) writeChangeError(w http.ResponseWriter, err error
 		writeSubscriptionFieldsProblem(w, http.StatusUnprocessableEntity, problemTypeChangeInvalid,
 			"Invalid subscription change",
 			"the target plan is invalid or is already the current plan", []string{"plan_id"})
-	case errors.Is(err, billing.ErrChangeOrderChanged),
+	case errors.Is(err, billing.ErrChangeOrderPending),
 		errors.Is(err, billing.ErrSubscriptionNotChangeable),
 		errors.Is(err, billing.ErrSubscriptionPlanUnavailable),
 		errors.Is(err, billing.ErrIdempotencyConflict):

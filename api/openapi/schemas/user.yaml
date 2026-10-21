@@ -959,7 +959,11 @@ schemas:
         maxLength: 3
       status:
         type: string
-        enum: [pending, succeeded, failed, expired, cancelled]
+        enum: [pending, succeeded, failed, expired, cancelled, refund_required]
+        description: |
+          六态：`refund_required`（S2/R-29②）表示**钱已收、履约失败**（例如
+          升降级支付成功后订阅已被并发取消），是终态，等待退款流程处理；
+          它不是 `failed`（那表示没收到钱）。
       credited_credits:
         type: integer
         format: int64
@@ -1034,10 +1038,12 @@ schemas:
         maxLength: 3
       status:
         type: string
-        enum: [pending, succeeded, failed, expired, cancelled]
+        enum: [pending, succeeded, failed, expired, cancelled, refund_required]
         description: |
-          五态状态机（P-1）：只有 pending 可以迁移到 succeeded/failed/
-          expired/cancelled；终态不可再迁移。
+          六态状态机（P-1 + S2/R-29②）：pending 可以迁移到
+          succeeded/failed/expired/cancelled；succeeded 的订阅订单在履约失败
+          （订阅已被并发取消/换套餐）时可以转 `refund_required` ——
+          「钱已收、待退款」的终态。其余终态不可再迁移。
       credited_credits:
         type: integer
         format: int64
@@ -1676,7 +1682,10 @@ schemas:
       credits_delta:
         type: integer
         format: int64
-        description: 周期总额度变化量（新 grant_credits − 旧 amount_total），可为负
+        description: |
+          周期总额度变化量（新 grant_credits − 旧 amount_total），可为负。
+          注意它不是「可用额度」的变化量：已用量超过新总额度时会被钳到
+          新总额度（remain 置 0，P-12），此时可用额度的变化与该字段不一致。
       new_end_at:
         type: string
         format: date-time
